@@ -27,8 +27,8 @@ context: |
     codes, files on disk, what a hook injects
   - Internal mechanisms go in design.md unless they are the contract itself
 
-  Stack: <to decide>
-  Verification: <added with the first code>
+  Stack: Rust, one crate, binary `bilbo`; `jiff` is the only dependency
+  Verification: `cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test`
 
 rules:
   proposal:

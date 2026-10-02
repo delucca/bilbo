@@ -31,5 +31,38 @@ of sources they cite. The product frame and vocabulary live in
 
 ## Conventions
 
-- Pin every dependency to an exact version in its manifest. Floating ranges
-  make builds irreproducible.
+- Pin every dependency exactly. Cargo pins through the committed
+  `Cargo.lock`, with the caret idiom in `Cargo.toml`; ecosystems without a
+  lockfile pin in the manifest. Floating ranges make builds irreproducible.
+
+## Architecture
+
+One crate, binary `bilbo`; `jiff` is the only dependency. `Cargo.lock` is
+committed and pins the build.
+
+- `Cargo.toml`: manifest.
+- `src/main.rs`: verb dispatch, `--help`, `Failure`, exit codes 0, 1, 2 and the
+  only writer of stdout and stderr (every stderr line gets `bilbo: `) (`cli`
+  spec).
+- `src/store.rs`: store root resolution and listing `notes/` (`note-store`
+  spec). Root resolution takes `Env` as a value, built once in `main`.
+- `src/note.rs`: kinds, filename, ULID, `created`, the strict frontmatter and
+  title reader, and the note renderer (`note-store` spec).
+- `src/new.rs`: `bilbo new`, argument checks, atomic create (`note-create`
+  spec).
+- `src/check.rs`: `bilbo check`, read-only (`store-check` spec).
+- `store` and `note` never print and never return `Failure`; they return
+  plain values and `String` messages. Verbs build on them, never on each
+  other, return `crate::Failure` and never print.
+- A new verb is `src/<verb>.rs`, its `mod` line, dispatch arm and USAGE line
+  in `src/main.rs`, `tests/<verb>.rs`, its own capability spec, and a MODIFIED
+  `cli` spec (its Verb dispatch requirement lists the verbs).
+- Unit tests live in the module they test. CLI behavior is tested in
+  `tests/cli.rs`, `tests/new.rs` and `tests/check.rs` through the built binary
+  with a clean environment; `tests/common/mod.rs` holds the shared runner and
+  temp folders.
+- Verification is the `Verification` line of `openspec/config.yaml`: `cargo fmt
+  --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test`. Run them
+  in `nix shell nixpkgs#cargo nixpkgs#rustc nixpkgs#clippy nixpkgs#rustfmt -c
+  <cmd>`, with `CARGO_TARGET_DIR` set to this checkout's `target`: a global
+  value moves `./target/debug/bilbo` elsewhere.
