@@ -1,0 +1,24 @@
+{
+  "name": "bilbo",
+  "version": "0.1.0",
+  "description": "Recall the notes earlier agent sessions wrote, through the bilbo CLI.",
+  "author": {
+    "name": "delucca"
+  },
+  "repository": "https://github.com/delucca/bilbo",
+  "license": "Apache-2.0",
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "bilbo",
+    "shortDescription": "Recall notes from earlier sessions",
+    "longDescription": "Search the Markdown notes earlier agent sessions wrote, best passage first, with the bilbo CLI. Install the bilbo binary separately.",
+    "developerName": "delucca",
+    "category": "Developer Tools",
+    "capabilities": [
+      "Read"
+    ],
+    "defaultPrompt": [
+      "Recall what we decided about the release steps"
+    ]
+  }
+}
