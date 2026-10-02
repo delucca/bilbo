@@ -1,9 +1,13 @@
 mod check;
+mod config;
+mod embed;
+mod index;
 mod new;
 mod note;
 mod rank;
 mod recall;
 mod store;
+mod vectors;
 
 use std::io::Write;
 use std::process::ExitCode;
@@ -22,12 +26,16 @@ const USAGE: &str = "\
 usage: bilbo new <kind> <topic> [--title <text>]
        bilbo check
        bilbo recall <query>... [--kind <kind>]... [--limit <n>]
+       bilbo index
        bilbo --help
 new creates <root>/notes/<kind>-<topic>.md and prints its path.
 check prints every problem in the store and changes nothing.
 recall prints the notes that best match the query, best first, 10 unless --limit says otherwise.
+index embeds the passages the vector cache lacks and drops the ones no note holds any more.
 kinds: plan, spec, design, decision, gotcha, research, review, report, reference
 root: $BILBO_HOME, else $XDG_DATA_HOME/bilbo, else $HOME/.local/share/bilbo
+config: $BILBO_CONFIG, else $XDG_CONFIG_HOME/bilbo/config, else $HOME/.config/bilbo/config
+cache: $XDG_CACHE_HOME/bilbo, else $HOME/.cache/bilbo
 ";
 
 fn main() -> ExitCode {
@@ -61,8 +69,14 @@ fn run() -> Result<ExitCode, Failure> {
             })
         }
         Some("recall") => {
-            let lines = recall::run(&args[1..], &env)?;
-            lines.iter().for_each(|line| print_stdout(line));
+            let found = recall::run(&args[1..], &env)?;
+            found.warnings.iter().for_each(|line| print_stderr(line));
+            found.lines.iter().for_each(|line| print_stdout(line));
+            Ok(ExitCode::SUCCESS)
+        }
+        Some("index") => {
+            let line = index::run(&args[1..], &env)?;
+            print_stdout(&line);
             Ok(ExitCode::SUCCESS)
         }
         Some(arg) if arg.starts_with('-') => Err(Failure::Usage(format!("unknown option '{arg}'"))),

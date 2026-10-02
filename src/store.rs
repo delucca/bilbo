@@ -1,24 +1,38 @@
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
-/// The environment variables root resolution reads; tests build it by hand.
+use crate::{note, rank};
+
+/// The environment variables root, config and cache resolution read; tests build it by hand.
 pub struct Env {
     pub bilbo_home: Option<OsString>,
     pub xdg_data_home: Option<OsString>,
     pub home: Option<OsString>,
+    pub bilbo_config: Option<OsString>,
+    pub xdg_config_home: Option<OsString>,
+    pub xdg_cache_home: Option<OsString>,
 }
 
 impl Env {
     pub fn from_process() -> Env {
+        Env::from_vars(|name| std::env::var_os(name))
+    }
+
+    /// `var` looks a variable up by name; `from_process` passes the real environment.
+    pub fn from_vars(var: impl Fn(&str) -> Option<OsString>) -> Env {
         Env {
-            bilbo_home: std::env::var_os("BILBO_HOME"),
-            xdg_data_home: std::env::var_os("XDG_DATA_HOME"),
-            home: std::env::var_os("HOME"),
+            bilbo_home: var("BILBO_HOME"),
+            xdg_data_home: var("XDG_DATA_HOME"),
+            home: var("HOME"),
+            bilbo_config: var("BILBO_CONFIG"),
+            xdg_config_home: var("XDG_CONFIG_HOME"),
+            xdg_cache_home: var("XDG_CACHE_HOME"),
         }
     }
 }
 
-fn absolute(value: &Option<OsString>) -> Option<PathBuf> {
+/// The value as a path when it is set, not empty and absolute.
+pub fn absolute(value: &Option<OsString>) -> Option<PathBuf> {
     value
         .as_ref()
         .filter(|v| !v.is_empty())
@@ -96,6 +110,43 @@ pub fn entries(dir: &Path) -> std::io::Result<Vec<Entry>> {
     Ok(entries)
 }
 
+/// A note recall and index read, with its passages.
+pub struct Stored {
+    pub path: PathBuf,
+    pub kind: String,
+    pub created: Option<String>,
+    pub document: rank::Document,
+}
+
+/// The notes recall searches, in name order: UTF-8-named regular files with a valid note name, read lossily; others are skipped in silence.
+pub fn read_notes(notes: &Path) -> std::io::Result<Vec<Stored>> {
+    let mut stored = Vec::new();
+    for entry in entries(notes)? {
+        if !entry.utf8 || entry.kind != EntryKind::File {
+            continue;
+        }
+        let Ok(name) = note::parse_name(&entry.name) else {
+            continue;
+        };
+        let Ok(bytes) = std::fs::read(&entry.path) else {
+            continue;
+        };
+        let text = String::from_utf8_lossy(&bytes);
+        let lines = note::lines(&text);
+        let read = note::read(&text);
+        let stem = entry.name.strip_suffix(".md").unwrap_or(&entry.name);
+        stored.push(Stored {
+            path: entry.path,
+            kind: name.kind,
+            created: read.created,
+            document: rank::Document {
+                passages: rank::passages(&lines[read.body_start - 1..], read.body_start, stem),
+            },
+        });
+    }
+    Ok(stored)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -105,7 +156,37 @@ mod tests {
             bilbo_home: bilbo.map(OsString::from),
             xdg_data_home: xdg.map(OsString::from),
             home: home.map(OsString::from),
+            bilbo_config: None,
+            xdg_config_home: None,
+            xdg_cache_home: None,
         }
+    }
+
+    #[test]
+    fn from_vars_reads_every_variable() {
+        let table = [
+            ("BILBO_HOME", "/a"),
+            ("XDG_DATA_HOME", "/b"),
+            ("HOME", "/c"),
+            ("BILBO_CONFIG", "/d"),
+            ("XDG_CONFIG_HOME", "/e"),
+            ("XDG_CACHE_HOME", "/f"),
+        ];
+        let lookup = |name: &str| {
+            table
+                .iter()
+                .find(|(key, _)| *key == name)
+                .map(|(_, value)| OsString::from(value))
+        };
+        let e = Env::from_vars(lookup);
+        assert_eq!(e.bilbo_home, Some(OsString::from("/a")));
+        assert_eq!(e.xdg_data_home, Some(OsString::from("/b")));
+        assert_eq!(e.home, Some(OsString::from("/c")));
+        assert_eq!(e.bilbo_config, Some(OsString::from("/d")));
+        assert_eq!(e.xdg_config_home, Some(OsString::from("/e")));
+        assert_eq!(e.xdg_cache_home, Some(OsString::from("/f")));
+        let none = Env::from_vars(|_| None);
+        assert!(none.bilbo_config.is_none() && none.xdg_cache_home.is_none());
     }
 
     #[test]
