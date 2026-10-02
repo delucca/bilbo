@@ -1,0 +1,52 @@
+schema: spec-driven
+
+context: |
+  bilbo gives coding agents a durable memory: notes they write and recall
+  across sessions, and a library of fetched sources they can cite. Agents
+  are the only readers and writers of the store; humans install, configure
+  and occasionally inspect it.
+
+  Parts:
+  - a CLI, the one interface to everything below
+  - a store of Markdown files with YAML frontmatter
+  - a search index (keyword and vector), rebuilt from the store
+  - a daemon that keeps the index current and serves queries
+  - skills, agents and hooks for Claude Code and Codex that drive the CLI
+
+  Vocabulary (use these words, do not coin synonyms):
+  - note: an authored Markdown file of one kind, on one topic
+  - kind: a note's type (plan, decision, gotcha, ...)
+  - source: fetched text kept verbatim; the library is the set of sources
+  - store: where notes and sources live; the index is derived from it
+  - embedder: the external service that turns text into vectors
+  - digest: the short list of relevant notes a hook injects into a prompt
+  - citation: a reference from an answer to a passage in a note or source
+
+  Product language:
+  - Specs describe what a user or an agent can observe: CLI output and exit
+    codes, files on disk, what a hook injects
+  - Internal mechanisms go in design.md unless they are the contract itself
+
+  Stack: <to decide>
+  Verification: <added with the first code>
+
+rules:
+  proposal:
+    - Include a Non-goals section
+    - Name the capability specs under openspec/specs/ the change modifies
+  specs:
+    - Requirements use SHALL; each has at least one Scenario, including at
+      least one negative scenario
+  design:
+    - Justify every new dependency against the standard library and the
+      existing ones
+    - Name the existing module a change extends before adding a new one
+  tasks:
+    - Every task ends with the command that verifies it
+    - The last task runs the full test suite
+
+operations:
+  archive:
+    guidance:
+      - Confirm the merged specs read as current truth, with no
+        ADDED/MODIFIED/REMOVED framing left in openspec/specs/
