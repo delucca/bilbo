@@ -7,15 +7,19 @@
 ## ADDED Requirements
 
 ### Requirement: Index the store
-`bilbo index` SHALL take the passages of every note `recall` searches, send each passage the cache lacks to the embedder, keep the vectors of passages that still exist, drop the rest, and print one line to stdout, `embedded <n>, kept <n>, dropped <n>`, then exit 0. It takes no arguments.
+`bilbo index` SHALL take the passages that hold text, of every note `recall` searches, send each passage the cache lacks to the embedder, keep the vectors of passages that still exist, drop the rest, and print one line to stdout, `embedded <n>, kept <n>, dropped <n>`, then exit 0. Identical passages, with the same heading path and text, SHALL be sent and counted once. When nothing is embedded or dropped, the cache SHALL be left unchanged. It takes no arguments.
 
 #### Scenario: A first run
-- **WHEN** the store holds two notes with three passages in all, the cache is empty and an agent runs `bilbo index`
+- **WHEN** the store holds two notes with three passages that hold text in all, the cache is empty and an agent runs `bilbo index`
 - **THEN** the embedder receives three inputs, stdout is `embedded 3, kept 0, dropped 0` and the exit code is 0
+
+#### Scenario: A heading without text
+- **WHEN** a note's title heading has no text before its first `##` section
+- **THEN** `bilbo index` sends no input for the title alone; the title still reaches the embedder in the heading path of every other passage of the note
 
 #### Scenario: Nothing changed
 - **WHEN** `bilbo index` ran and nothing in the store changed since
-- **THEN** a second run sends no request to the embedder and prints `embedded 0, kept 3, dropped 0`
+- **THEN** a second run sends no request to the embedder, prints `embedded 0, kept 3, dropped 0` and leaves the cache file's bytes and modification time unchanged
 
 #### Scenario: An edited and a deleted note
 - **WHEN** one passage of a note was edited and another note was deleted since the last run
