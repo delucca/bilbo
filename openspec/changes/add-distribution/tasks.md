@@ -66,7 +66,7 @@ Until group 2 lands the dev shell, run cargo commands inside `nix shell nixpkgs#
 ## 6. Integration
 
 - [x] 6.1 Run the full suite. Verify with `nix develop -c sh -c 'cargo fmt --check && cargo clippy --locked --all-targets -- -D warnings && cargo test --locked' && nix flake check -L`
-- [ ] 6.2 After merge, with the maintainer's go-ahead, push the tag `v<version>` and check the release. Record the commands and output in the change folder as `smoke.md`:
+- [x] 6.2 After merge, with the maintainer's go-ahead, push the tag `v<version>` and check the release. Record the commands and output in the change folder as `smoke.md`:
   - it holds four archives, four `.sha256` files and `bilbo-installer.sh`;
   - every checksum matches;
   - the published `bilbo-installer.sh` checks a glibc floor no lower than what the ubuntu-22.04 build links (`rg check_glibc`);

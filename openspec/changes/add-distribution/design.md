@@ -118,7 +118,7 @@ The job is not added to the required checks without the maintainer's go-ahead, b
 
 ## Risks / Trade-offs
 
-- **Unverified checksums.** dist's shell installer downloads over HTTPS but does not check the `.sha256` yet. → The proposal records this as a non-goal. Users who want verification download the archive and its checksum by hand.
+- **Checksums verified only where `sha256sum` exists.** dist 0.33.0's shell installer checks the archive's sha256 when `sha256sum` is on PATH, as on Linux. Stock macOS lacks it, so there the installer skips the check and says so (`smoke.md`). → Trust on macOS is HTTPS from GitHub. Users who want verification there run `shasum -a 256 -c` on the archive by hand.
 - **Release workflow drift.** A dist upgrade can add actions or change the workflow. → `tests/workflows.rs` fails on an unpinned action. Upgrading dist is a deliberate edit to `cargo-dist-version` followed by `dist generate`, and its diff is reviewed like code.
 - **Nix and CI toolchains can differ.** nixpkgs 26.05 may move past rustc 1.95.0 in a point update while CI stays on 1.95.0. → That only matters if the newer compiler rejects the code, which `nix flake check` in CI would catch. `rust-version` stays the floor.
 - **The plugin can still drift for curl users.** The installer ships only the binary, and the Claude Code plugin still follows `main`. → add-setup solves this. Codex takes `--ref v<version>`, and Claude Code can add a marketplace from a path or a pinned source. This change does not make it worse.
