@@ -39,15 +39,17 @@ of sources they cite. The product frame and vocabulary live in
 
 ## Architecture
 
-One crate, binary `bilbo`; `jiff` is the only dependency. `Cargo.lock` is
-committed and pins the build.
+One crate, binary `bilbo`. Dependencies: `jiff`, `ureq` (HTTP and TLS, with
+its `json` feature) and `serde`; `serde_json` is a dev-dependency for the fake
+embedder. `Cargo.lock` is committed and pins the build.
 
 - `Cargo.toml`: manifest.
 - `src/main.rs`: verb dispatch, `--help`, `Failure`, exit codes 0, 1, 2 and the
   only writer of stdout and stderr (every stderr line gets `bilbo: `) (`cli`
   spec).
-- `src/store.rs`: store root resolution and listing `notes/` (`note-store`
-  spec). Root resolution takes `Env` as a value, built once in `main`.
+- `src/store.rs`: store root resolution, listing `notes/` and reading the notes
+  `recall` and `index` search (`note-store` spec). Root, config and cache
+  resolution take `Env` as a value, built once in `main`.
 - `src/note.rs`: kinds, filename, ULID, `created`, the line splitter, the
   strict frontmatter and title reader (which also returns the valid `created`
   and the body's first line), and the note renderer (`note-store` spec).
@@ -55,9 +57,21 @@ committed and pins the build.
   spec).
 - `src/check.rs`: `bilbo check`, read-only (`store-check` spec).
 - `src/rank.rs`: words (case and Latin accent folding), passages (heading
-  paths, 4,000-byte parts) and BM25 ranking (`note-recall` spec). Shared by
-  verbs; knows nothing of the store or the CLI.
+  paths, 4,000-byte parts), BM25 ranking, the embedder input and reciprocal
+  rank fusion (`note-recall` spec). Shared by verbs; knows nothing of the
+  store or the CLI.
 - `src/recall.rs`: `bilbo recall`, read-only (`note-recall` spec).
+- `src/config.rs`: config file location and the strict `key = value` reader
+  (`config` spec).
+- `src/embed.rs`: the embedder client: one `POST <url>/v1/embeddings` per batch
+  of at most 16, a bearer token from a file or a variable, unit-normalized
+  vectors. Its messages never hold the token.
+- `src/vectors.rs`: the vector cache, one file per store root under the cache
+  folder, keyed by FNV-1a 64 of the embedder input, replaced atomically
+  (`note-index` spec).
+- `src/index.rs`: `bilbo index`; writes only the cache (`note-index` spec).
+  Nothing in bilbo runs it on its own: a timer, a hook or the agent does, and
+  `recall` says how many passages are not indexed.
 - `plugins/bilbo/`: the agent plugin (`agent-plugin` spec).
   `.claude-plugin/plugin.json` sets no `version`, so Claude Code follows
   commits; `.codex-plugin/plugin.json`'s `version` equals `Cargo.toml`'s, so
@@ -67,17 +81,19 @@ committed and pins the build.
 - `.claude-plugin/marketplace.json` and `.agents/plugins/marketplace.json`: the
   Claude Code and Codex marketplaces, one `bilbo` entry each with the source
   `./plugins/bilbo`.
-- `store`, `note` and `rank` never print and never return `Failure`; they
-  return plain values and `String` messages. Verbs build on them, never on each
-  other, return `crate::Failure` and never print.
+- `store`, `note`, `rank`, `config`, `embed` and `vectors` never print and
+  never return `Failure`; they return plain values and `String` messages. Verbs
+  build on them, never on each other, return `crate::Failure` and never print.
 - A new verb is `src/<verb>.rs`, its `mod` line, dispatch arm and USAGE line
   in `src/main.rs`, `tests/<verb>.rs`, its own capability spec, and a MODIFIED
   `cli` spec (its Verb dispatch requirement lists the verbs).
 - Unit tests live in the module they test. CLI behavior is tested in
-  `tests/cli.rs`, `tests/new.rs`, `tests/check.rs` and `tests/recall.rs`
-  through the built binary with a clean environment; `tests/common/mod.rs`
-  holds the shared runner and temp folders. The `#[ignore]` speed test in
-  `tests/recall.rs` runs with `cargo test --release --test recall -- --ignored`.
+  `tests/cli.rs`, `tests/new.rs`, `tests/check.rs`, `tests/recall.rs` and
+  `tests/index.rs` through the built binary with a clean environment;
+  `tests/common/mod.rs` holds the shared runner, temp folders and the fake
+  embedder (a `TcpListener` on `127.0.0.1` serving vectors from a substring
+  table). The `#[ignore]` speed test in `tests/recall.rs` runs with
+  `cargo test --release --test recall -- --ignored`.
 - `tests/plugin.rs`: the plugin's files, skill frontmatter and versions,
   checked in CI. Locally, also run `claude plugin validate .` and
   `claude plugin validate plugins/bilbo` (one missing-version warning each is

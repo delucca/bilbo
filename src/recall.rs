@@ -1,13 +1,18 @@
-use std::path::PathBuf;
+use std::collections::HashSet;
+use std::path::{Path, PathBuf};
+use std::time::Duration;
 
-use crate::rank::{self, Document};
-use crate::store::{self, EntryKind};
-use crate::{Failure, note};
+use crate::rank::{self, Document, Hit};
+use crate::{Failure, config, embed, note, store, vectors};
 
 const DEFAULT_LIMIT: usize = 10;
 const SNIPPET_CHARS: usize = 300;
+const QUERY_BYTES: usize = 2000;
+const QUERY_TIMEOUT: Duration = Duration::from_secs(5);
 
 struct Request {
+    /// The query arguments joined by single spaces.
+    query: String,
     /// `rank::words(&query)`, never empty.
     words: Vec<String>,
     /// Empty means every kind.
@@ -22,50 +27,58 @@ struct Found {
     created: Option<String>,
 }
 
-/// Output lines: three per hit, an empty line between hits, best hit first.
-pub fn run(args: &[String], env: &store::Env) -> Result<Vec<String>, Failure> {
+pub struct Output {
+    /// stderr lines (without "bilbo: "), printed before stdout.
+    pub warnings: Vec<String>,
+    /// Three lines per hit, an empty line between hits, best hit first.
+    pub lines: Vec<String>,
+}
+
+pub fn run(args: &[String], env: &store::Env) -> Result<Output, Failure> {
     let request = parse(args)?;
+    let settings = config::load(env).map_err(Failure::Config)?;
     let root = store::root(env).map_err(Failure::Config)?;
     let notes = root.join("notes");
     if !notes.is_dir() {
         return Err(Failure::Refused(format!("no store at {}", root.display())));
     }
-    let entries = store::entries(&notes)
+    let stored = store::read_notes(&notes)
         .map_err(|e| Failure::Refused(format!("cannot read {}: {e}", notes.display())))?;
 
-    let mut found: Vec<Found> = Vec::new();
-    let mut documents = Vec::new();
-    for entry in &entries {
-        if !entry.utf8 || entry.kind != EntryKind::File {
-            continue;
-        }
-        let Ok(name) = note::parse_name(&entry.name) else {
-            continue;
-        };
-        let Ok(bytes) = std::fs::read(&entry.path) else {
-            continue;
-        };
-        let text = String::from_utf8_lossy(&bytes);
-        let lines = note::lines(&text);
-        let read = note::read(&text);
-        let stem = entry.name.strip_suffix(".md").unwrap_or(&entry.name);
-        documents.push(Document {
-            passages: rank::passages(&lines[read.body_start - 1..], read.body_start, stem),
-        });
-        found.push(Found {
-            path: entry.path.clone(),
-            kind: name.kind,
-            created: read.created,
-        });
-    }
-
-    let hits: Vec<_> = rank::rank(&request.words, &documents)
+    let (documents, found): (Vec<Document>, Vec<Found>) = stored
         .into_iter()
-        .filter(|hit| request.kinds.is_empty() || request.kinds.contains(&found[hit.document].kind))
+        .map(|n| {
+            (
+                n.document,
+                Found {
+                    path: n.path,
+                    kind: n.kind,
+                    created: n.created,
+                },
+            )
+        })
+        .unzip();
+
+    let allowed: Vec<bool> = found
+        .iter()
+        .map(|f| request.kinds.is_empty() || request.kinds.contains(&f.kind))
+        .collect();
+
+    let keyword: Vec<Hit> = rank::keyword(&request.words, &documents)
+        .into_iter()
+        .filter(|hit| allowed[hit.document])
+        .collect();
+    let (meaning, mut warnings) = match &settings.embedder {
+        Some(embedder) => meaning(embedder, env, &root, &request.query, &documents, &allowed),
+        None => (Vec::new(), Vec::new()),
+    };
+    let hits: Vec<Hit> = rank::fuse(&keyword, &meaning)
+        .into_iter()
         .take(request.limit)
         .collect();
     if hits.is_empty() {
-        return Err(Failure::Refused("no notes match".into()));
+        warnings.push("no notes match".into());
+        return Err(Failure::Refused(warnings.join("\n")));
     }
 
     let mut out = Vec::new();
@@ -98,7 +111,101 @@ pub fn run(args: &[String], env: &store::Env) -> Result<Vec<String>, Failure> {
             snippet
         });
     }
-    Ok(out)
+    Ok(Output {
+        warnings,
+        lines: out,
+    })
+}
+
+/// The meaning order (at most `rank::CANDIDATES` hits, only documents whose `allowed` is true) and the warnings.
+fn meaning(
+    embedder: &config::Embedder,
+    env: &store::Env,
+    root: &Path,
+    query: &str,
+    documents: &[Document],
+    allowed: &[bool],
+) -> (Vec<Hit>, Vec<String>) {
+    let keys: Vec<Vec<Option<u64>>> = documents
+        .iter()
+        .map(|d| {
+            d.passages
+                .iter()
+                .map(|p| rank::input(p).map(|input| vectors::key(&input)))
+                .collect()
+        })
+        .collect();
+    let cache = vectors::dir(env)
+        .map(|dir| vectors::load(&vectors::path(&dir, root)))
+        .unwrap_or_default();
+    let mut seen = HashSet::new();
+    let mut missing = 0;
+    let mut indexed_any = false;
+    for key in keys
+        .iter()
+        .flatten()
+        .flatten()
+        .filter(|key| seen.insert(**key))
+    {
+        if cache.get(&embedder.model, *key).is_some() {
+            indexed_any = true;
+        } else {
+            missing += 1;
+        }
+    }
+
+    let mut warnings = Vec::new();
+    let mut hits = Vec::new();
+    if indexed_any {
+        let mut text = format!("{}{query}", embedder.query_prefix);
+        text.truncate(text.floor_char_boundary(QUERY_BYTES));
+        let answer = embed::Client::new(embedder, |n| std::env::var_os(n), QUERY_TIMEOUT)
+            .and_then(|client| client.embed(&[text]))
+            .and_then(|mut vectors| {
+                let q = vectors.remove(0);
+                if q.len() == cache.dims {
+                    Ok(q)
+                } else {
+                    Err(format!(
+                        "embedder {} answered {} dimensions; the cache holds {}",
+                        embedder.url,
+                        q.len(),
+                        cache.dims
+                    ))
+                }
+            });
+        match answer {
+            Ok(q) => {
+                let mut scored: Vec<(f32, Hit)> = Vec::new();
+                for (document, passages) in keys.iter().enumerate().filter(|(d, _)| allowed[*d]) {
+                    for (passage, key) in passages.iter().enumerate() {
+                        let Some(v) = key.and_then(|key| cache.get(&embedder.model, key)) else {
+                            continue;
+                        };
+                        let sim: f32 = q.iter().zip(v).map(|(a, b)| a * b).sum();
+                        if f64::from(sim) >= embedder.min_similarity {
+                            scored.push((sim, Hit { document, passage }));
+                        }
+                    }
+                }
+                scored.sort_by(|a, b| {
+                    b.0.total_cmp(&a.0)
+                        .then(a.1.document.cmp(&b.1.document))
+                        .then(a.1.passage.cmp(&b.1.passage))
+                });
+                hits = scored
+                    .into_iter()
+                    .take(rank::CANDIDATES)
+                    .map(|(_, hit)| hit)
+                    .collect();
+            }
+            Err(e) => warnings.push(format!("embedder unavailable ({e}); keyword results only")),
+        }
+    }
+    if missing > 0 {
+        warnings.push(format!("{missing} passages not indexed; run bilbo index"));
+    }
+    (hits, warnings)
 }
 
 fn parse(args: &[String]) -> Result<Request, Failure> {
@@ -144,6 +251,7 @@ fn parse(args: &[String]) -> Result<Request, Failure> {
         )));
     }
     Ok(Request {
+        query,
         words,
         kinds,
         limit: limit.unwrap_or(DEFAULT_LIMIT),

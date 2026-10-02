@@ -6,12 +6,16 @@ const USAGE: &str = "\
 usage: bilbo new <kind> <topic> [--title <text>]
        bilbo check
        bilbo recall <query>... [--kind <kind>]... [--limit <n>]
+       bilbo index
        bilbo --help
 new creates <root>/notes/<kind>-<topic>.md and prints its path.
 check prints every problem in the store and changes nothing.
 recall prints the notes that best match the query, best first, 10 unless --limit says otherwise.
+index embeds the passages the vector cache lacks and drops the ones no note holds any more.
 kinds: plan, spec, design, decision, gotcha, research, review, report, reference
 root: $BILBO_HOME, else $XDG_DATA_HOME/bilbo, else $HOME/.local/share/bilbo
+config: $BILBO_CONFIG, else $XDG_CONFIG_HOME/bilbo/config, else $HOME/.config/bilbo/config
+cache: $XDG_CACHE_HOME/bilbo, else $HOME/.cache/bilbo
 ";
 
 fn prefixed_usage() -> String {
@@ -46,6 +50,7 @@ fn unknown_verb_is_usage_error() {
         run.stderr.contains("bilbo new")
             && run.stderr.contains("bilbo check")
             && run.stderr.contains("bilbo recall")
+            && run.stderr.contains("bilbo index")
     );
     assert!(!home.exists());
     assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
@@ -65,7 +70,12 @@ fn help_goes_to_stdout() {
 #[test]
 fn help_after_a_verb_prints_help() {
     let dir = TempDir::new("cli-help-verb");
-    for args in [["check", "--help"], ["new", "-h"], ["recall", "--help"]] {
+    for args in [
+        ["check", "--help"],
+        ["new", "-h"],
+        ["recall", "--help"],
+        ["index", "--help"],
+    ] {
         let run = bilbo(dir.path(), &[], &args);
         assert_eq!(run.code, 0);
         assert_eq!(run.stdout, USAGE);
@@ -209,4 +219,101 @@ fn non_utf8_argument_is_usage_error() {
         run.stderr
             .starts_with("bilbo: arguments must be valid UTF-8\n")
     );
+}
+
+#[test]
+fn fake_embedder_answers() {
+    use std::io::{Read, Write};
+    use std::net::TcpStream;
+
+    fn post(fake: &common::Fake, body: &str) -> String {
+        let mut stream = TcpStream::connect(fake.url.trim_start_matches("http://")).unwrap();
+        write!(
+            stream,
+            "POST /v1/embeddings HTTP/1.1\r\nHost: x\r\nContent-Length: {}\r\n\r\n{body}",
+            body.len()
+        )
+        .unwrap();
+        let mut answer = String::new();
+        stream.read_to_string(&mut answer).unwrap();
+        answer
+    }
+
+    let fake = common::Fake::start(4);
+    fake.vector("alpha", &[3.0, 4.0, 0.0, 0.0]);
+    let answer = post(&fake, r#"{"model":"m","input":["alpha one","beta"]}"#);
+    assert!(answer.starts_with("HTTP/1.1 200 OK\r\n"), "{answer}");
+    assert_eq!(answer.matches(r#""embedding":["#).count(), 2, "{answer}");
+    assert!(answer.contains("[3,4,0,0]"), "{answer}");
+    assert!(answer.contains("[0,0,0,1]"), "{answer}");
+    assert_eq!(fake.inputs(), ["alpha one", "beta"]);
+
+    fake.status(401);
+    assert!(post(&fake, "{}").starts_with("HTTP/1.1 401 Unauthorized\r\n"));
+    drop(fake);
+}
+
+#[test]
+fn check_and_new_ignore_the_config() {
+    let dir = TempDir::new("cli-ignore-config");
+    let home = home(&dir);
+    std::fs::create_dir_all(dir.path().join("store/notes")).unwrap();
+    let missing = dir.path().join("no-such-config");
+    let env = [
+        ("BILBO_HOME", home.as_str()),
+        ("BILBO_CONFIG", missing.to_str().unwrap()),
+    ];
+    let check = bilbo(dir.path(), &env, &["check"]);
+    assert_eq!(check.code, 0);
+    assert!(check.stdout.is_empty() && check.stderr.is_empty());
+    let new = bilbo(dir.path(), &env, &["new", "plan", "x"]);
+    assert_eq!(new.code, 0, "{}", new.stderr);
+}
+
+#[test]
+fn fake_embedder_recovers_from_a_stall() {
+    use std::io::{Read, Write};
+    use std::net::TcpStream;
+    use std::time::{Duration, Instant};
+
+    fn connect(fake: &common::Fake, path: &str) -> TcpStream {
+        let mut stream = TcpStream::connect(fake.url.trim_start_matches("http://")).unwrap();
+        let body = r#"{"model":"m","input":["a"]}"#;
+        write!(
+            stream,
+            "POST {path} HTTP/1.1\r\nHost: x\r\nContent-Length: {}\r\n\r\n{body}",
+            body.len()
+        )
+        .unwrap();
+        stream
+    }
+
+    let fake = common::Fake::start(4);
+    fake.stall();
+    let mut stalled = connect(&fake, "/v1/embeddings");
+    stalled
+        .set_read_timeout(Some(Duration::from_millis(300)))
+        .unwrap();
+    assert!(stalled.read(&mut [0u8; 1]).is_err());
+    drop(stalled);
+    fake.heal();
+    let mut answer = String::new();
+    connect(&fake, "/v1/embeddings")
+        .read_to_string(&mut answer)
+        .unwrap();
+    assert!(answer.starts_with("HTTP/1.1 200 OK\r\n"), "{answer}");
+
+    let mut answer = String::new();
+    connect(&fake, "/v2/embeddings")
+        .read_to_string(&mut answer)
+        .unwrap();
+    assert!(answer.starts_with("HTTP/1.1 404 Not Found\r\n"), "{answer}");
+    assert_eq!(fake.requests().len(), 3);
+
+    fake.stall();
+    let _held = connect(&fake, "/v1/embeddings");
+    std::thread::sleep(Duration::from_millis(200));
+    let start = Instant::now();
+    drop(fake);
+    assert!(start.elapsed() < Duration::from_secs(1));
 }

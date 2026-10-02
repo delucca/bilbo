@@ -1,9 +1,15 @@
+use std::collections::HashSet;
+
 use crate::note::fence_run;
 
 pub const PART_BYTES: usize = 4000;
+pub const INPUT_BYTES: usize = 4000;
+
+pub const CANDIDATES: usize = 50;
 
 const K1: f64 = 1.2;
 const B: f64 = 0.75;
+const RRF_K: f64 = 60.0;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Passage {
@@ -19,9 +25,9 @@ pub struct Document {
     pub passages: Vec<Passage>,
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Hit {
-    /// Index into the documents given to `rank`.
+    /// Index into the documents given to `keyword`.
     pub document: usize,
     /// Index into that document's passages.
     pub passage: usize,
@@ -260,9 +266,19 @@ fn parts(path: Vec<String>, lines: &[&str], first_line: usize, start_line: usize
         .collect()
 }
 
-/// Each document's best passage holding at least one of `query` (folded words; repeats count once), best first.
-/// Ties: lower document index first. Callers pass documents in path order.
-pub fn rank(query: &[String], documents: &[Document]) -> Vec<Hit> {
+/// The embedder input for `passage`: its heading path joined with " > ", a newline and its text, cut to 4,000 bytes on a char boundary; `None` when the passage has no text.
+pub fn input(passage: &Passage) -> Option<String> {
+    if passage.text.is_empty() {
+        return None;
+    }
+    let mut text = format!("{}\n{}", passage.path.join(" > "), passage.text);
+    text.truncate(text.floor_char_boundary(INPUT_BYTES));
+    Some(text)
+}
+
+/// Every passage holding at least one of `query` (folded words; repeats count once), best first.
+/// Ties: lower document index, then lower passage index. Callers pass documents in path order.
+pub fn keyword(query: &[String], documents: &[Document]) -> Vec<Hit> {
     let mut words: Vec<&str> = Vec::new();
     for word in query {
         if !words.contains(&word.as_str()) {
@@ -296,7 +312,7 @@ pub fn rank(query: &[String], documents: &[Document]) -> Vec<Hit> {
         .map(|q| stats.iter().filter(|(_, _, _, tf)| tf[q] > 0).count())
         .collect();
 
-    let mut best: Vec<Option<(f64, usize)>> = vec![None; documents.len()];
+    let mut hits: Vec<(f64, Hit)> = Vec::new();
     for (d, p, dl, tf) in &stats {
         let mut score = 0.0;
         let mut candidate = false;
@@ -306,25 +322,100 @@ pub fn rank(query: &[String], documents: &[Document]) -> Vec<Hit> {
             let idf = (1.0 + (n - df + 0.5) / (df + 0.5)).ln();
             score += idf * tf * (K1 + 1.0) / (tf + K1 * (1.0 - B + B * *dl as f64 / avgdl));
         }
-        if candidate && best[*d].is_none_or(|(top, _)| score > top) {
-            best[*d] = Some((score, *p));
+        if candidate {
+            hits.push((
+                score,
+                Hit {
+                    document: *d,
+                    passage: *p,
+                },
+            ));
+        }
+    }
+    hits.sort_by(|a, b| {
+        b.0.total_cmp(&a.0)
+            .then(a.1.document.cmp(&b.1.document))
+            .then(a.1.passage.cmp(&b.1.passage))
+    });
+    hits.into_iter().map(|(_, hit)| hit).collect()
+}
+
+/// One hit per document, best first: reciprocal rank fusion of the first `CANDIDATES` of each list, then the
+/// documents only `keyword` holds past that cut, in its order. Ties: lower document index, then lower passage index.
+pub fn fuse(keyword: &[Hit], meaning: &[Hit]) -> Vec<Hit> {
+    let mut scores: Vec<(Hit, f64)> = Vec::new();
+    for list in [keyword, meaning] {
+        for (i, hit) in list.iter().take(CANDIDATES).enumerate() {
+            let term = 1.0 / (RRF_K + (i + 1) as f64);
+            match scores.iter_mut().find(|(seen, _)| seen == hit) {
+                Some((_, score)) => *score += term,
+                None => scores.push((*hit, term)),
+            }
         }
     }
 
-    let mut hits: Vec<(f64, Hit)> = best
-        .into_iter()
-        .enumerate()
-        .filter_map(|(document, best)| {
-            best.map(|(score, passage)| (score, Hit { document, passage }))
-        })
-        .collect();
-    hits.sort_by(|a, b| b.0.total_cmp(&a.0).then(a.1.document.cmp(&b.1.document)));
-    hits.into_iter().map(|(_, hit)| hit).collect()
+    let mut best: Vec<(Hit, f64)> = Vec::new();
+    for (hit, score) in scores {
+        match best
+            .iter_mut()
+            .find(|(top, _)| top.document == hit.document)
+        {
+            Some((top, top_score)) => {
+                if score > *top_score || (score == *top_score && hit.passage < top.passage) {
+                    *top = hit;
+                    *top_score = score;
+                }
+            }
+            None => best.push((hit, score)),
+        }
+    }
+    best.sort_by(|a, b| b.1.total_cmp(&a.1).then(a.0.document.cmp(&b.0.document)));
+
+    let mut out: Vec<Hit> = best.into_iter().map(|(hit, _)| hit).collect();
+    let mut seen: HashSet<usize> = out.iter().map(|hit| hit.document).collect();
+    for hit in keyword.iter().skip(CANDIDATES) {
+        if seen.insert(hit.document) {
+            out.push(*hit);
+        }
+    }
+    out
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn passage(path: &[&str], text: &str) -> Passage {
+        Passage {
+            path: path.iter().map(|s| s.to_string()).collect(),
+            line: 1,
+            text: text.into(),
+        }
+    }
+
+    #[test]
+    fn input_carries_the_heading_path() {
+        let p = passage(&["Note store", "Layout"], "One flat folder.");
+        assert_eq!(
+            input(&p).as_deref(),
+            Some("Note store > Layout\nOne flat folder.")
+        );
+    }
+
+    #[test]
+    fn input_is_cut_on_a_char_boundary() {
+        let text = "ã".repeat(2000);
+        let p = passage(&["Ta"], &text);
+        let cut = input(&p).unwrap();
+        let uncut = format!("Ta\n{text}");
+        assert!(cut.len() <= INPUT_BYTES && cut.len() >= INPUT_BYTES - 1);
+        assert!(uncut.starts_with(&cut));
+    }
+
+    #[test]
+    fn empty_text_has_no_input() {
+        assert_eq!(input(&passage(&["T"], "")), None);
+    }
 
     #[test]
     fn words_fold_case_and_accents() {
@@ -570,6 +661,14 @@ mod tests {
         }
     }
 
+    fn rank(query: &[String], documents: &[Document]) -> Vec<Hit> {
+        fuse(&keyword(query, documents), &[])
+    }
+
+    fn hit(document: usize, passage: usize) -> Hit {
+        Hit { document, passage }
+    }
+
     fn order(hits: &[Hit]) -> Vec<usize> {
         hits.iter().map(|h| h.document).collect()
     }
@@ -679,5 +778,63 @@ mod tests {
                 passage: 0
             }]
         );
+    }
+
+    #[test]
+    fn keyword_lists_every_passage() {
+        let docs = [document(&["alpha filler filler filler", "alpha"])];
+        assert_eq!(keyword(&words("alpha"), &docs), [hit(0, 1), hit(0, 0)]);
+    }
+
+    #[test]
+    fn agreement_beats_one_signal() {
+        let keyword = [hit(0, 0), hit(2, 0)];
+        let meaning = [hit(1, 0), hit(0, 0)];
+        assert_eq!(order(&fuse(&keyword, &meaning)), [0, 1, 2]);
+    }
+
+    #[test]
+    fn meaning_only_hit_is_kept() {
+        assert_eq!(fuse(&[], &[hit(3, 2)]), [hit(3, 2)]);
+    }
+
+    #[test]
+    fn fuse_without_meaning_keeps_keyword_order() {
+        let docs: Vec<Document> = (0..60)
+            .map(|i| document(&[&format!("alpha {}", "filler ".repeat(i))]))
+            .collect();
+        let k = keyword(&words("alpha"), &docs);
+        assert_eq!(k.len(), 60);
+        assert_eq!(fuse(&k, &[]), k);
+    }
+
+    #[test]
+    fn keyword_tail_follows_the_fused_hits() {
+        let k: Vec<Hit> = (0..60).map(|d| hit(d, 0)).collect();
+        let fused = fuse(&k, &[hit(59, 0)]);
+        assert_eq!(fused.len(), 60);
+        assert_eq!(fused[0].document, 0);
+        assert_eq!(fused[1].document, 59);
+        let rest: Vec<usize> = (1..50).chain(50..59).collect();
+        assert_eq!(order(&fused[2..]), rest);
+    }
+
+    #[test]
+    fn meaning_past_50_is_dropped() {
+        let meaning: Vec<Hit> = (0..51).map(|d| hit(d, 0)).collect();
+        assert_eq!(fuse(&[], &meaning).len(), 50);
+    }
+
+    #[test]
+    fn best_passage_wins_inside_a_document() {
+        let keyword = [hit(0, 1), hit(0, 0)];
+        assert_eq!(fuse(&keyword, &[]), [hit(0, 1)]);
+        let meaning = [hit(0, 0)];
+        assert_eq!(fuse(&keyword, &meaning), [hit(0, 0)]);
+    }
+
+    #[test]
+    fn equal_scores_go_to_the_lower_document() {
+        assert_eq!(order(&fuse(&[hit(2, 0)], &[hit(1, 0)])), [1, 2]);
     }
 }

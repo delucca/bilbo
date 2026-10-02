@@ -1,19 +1,23 @@
 mod common;
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
-use common::{IDS, Run, TempDir, bilbo, note_text, snapshot, store, write};
+use common::{Fake, IDS, Run, TempDir, bilbo, config, dead_url, note_text, snapshot, store, write};
 
 const USAGE: &str = "\
 usage: bilbo new <kind> <topic> [--title <text>]
        bilbo check
        bilbo recall <query>... [--kind <kind>]... [--limit <n>]
+       bilbo index
        bilbo --help
 new creates <root>/notes/<kind>-<topic>.md and prints its path.
 check prints every problem in the store and changes nothing.
 recall prints the notes that best match the query, best first, 10 unless --limit says otherwise.
+index embeds the passages the vector cache lacks and drops the ones no note holds any more.
 kinds: plan, spec, design, decision, gotcha, research, review, report, reference
 root: $BILBO_HOME, else $XDG_DATA_HOME/bilbo, else $HOME/.local/share/bilbo
+config: $BILBO_CONFIG, else $XDG_CONFIG_HOME/bilbo/config, else $HOME/.config/bilbo/config
+cache: $XDG_CACHE_HOME/bilbo, else $HOME/.cache/bilbo
 ";
 
 const CREATED: &str = "2026-10-02T14:23-03:00";
@@ -855,4 +859,521 @@ fn recall_over_a_6_mib_store_is_fast() {
     eprintln!("store {mib:.1} MiB, recall took {} ms", elapsed.as_millis());
     assert_eq!(run.code, 0);
     assert!(elapsed.as_millis() < 250, "{elapsed:?}");
+}
+
+/// A store and a config for the embedder at `url`, with `extra` config lines after the standard two.
+fn prepare(dir: &TempDir, url: &str, extra: &[&str]) -> (PathBuf, PathBuf) {
+    let root = store(dir);
+    let url = format!("embedder.url = {url}");
+    let mut lines = vec![url.as_str(), "embedder.model = test-model"];
+    lines.extend(extra);
+    (root, config(dir, &lines))
+}
+
+fn recall_with(
+    dir: &TempDir,
+    root: &Path,
+    config: &Path,
+    extra_env: &[(&str, &str)],
+    args: &[&str],
+) -> Run {
+    let mut vars = vec![
+        ("BILBO_HOME", root.to_str().unwrap()),
+        ("BILBO_CONFIG", config.to_str().unwrap()),
+    ];
+    let cache = dir.path().join("cache");
+    vars.push(("XDG_CACHE_HOME", cache.to_str().unwrap()));
+    vars.extend_from_slice(extra_env);
+    let mut full = vec!["recall"];
+    full.extend(args);
+    bilbo(dir.path(), &vars, &full)
+}
+
+fn index_now(dir: &TempDir, root: &Path, config: &Path, extra_env: &[(&str, &str)]) {
+    let cache = dir.path().join("cache");
+    let mut vars = vec![
+        ("BILBO_HOME", root.to_str().unwrap()),
+        ("BILBO_CONFIG", config.to_str().unwrap()),
+        ("XDG_CACHE_HOME", cache.to_str().unwrap()),
+    ];
+    vars.extend_from_slice(extra_env);
+    let run = bilbo(dir.path(), &vars, &["index"]);
+    assert_eq!(run.code, 0, "{}", run.stderr);
+}
+
+/// A store holding `notes` (file name, title, body), indexed through the fake; returns the root and the config.
+fn embedded(
+    dir: &TempDir,
+    fake: &Fake,
+    extra: &[&str],
+    notes: &[(&str, &str, &str)],
+) -> (PathBuf, PathBuf) {
+    let (root, config) = prepare(dir, &fake.url, extra);
+    for (name, title, body) in notes {
+        write(&root, name, &note(title, body));
+    }
+    index_now(dir, &root, &config, &[]);
+    (root, config)
+}
+
+fn note_store() -> (&'static str, &'static str, &'static str) {
+    (
+        "decision-note-store.md",
+        "Note store",
+        "## Layout\n\nOne flat folder.\n",
+    )
+}
+
+fn rollback_notes() -> [(&'static str, &'static str, &'static str); 2] {
+    [
+        ("plan-a.md", "Plan a", "rollback steps\n"),
+        ("plan-b.md", "Plan b", "undo the release\n"),
+    ]
+}
+
+fn down_config(dir: &TempDir) -> PathBuf {
+    config(
+        dir,
+        &[
+            &format!("embedder.url = {}", dead_url()),
+            "embedder.model = test-model",
+        ],
+    )
+}
+
+#[test]
+fn paraphrase_is_found() {
+    let dir = TempDir::new("recall-paraphrase");
+    let fake = Fake::start(4);
+    fake.vector("where do notes live", &[1.0, 0.0, 0.0, 0.0]);
+    fake.vector("flat folder", &[0.6, 0.8, 0.0, 0.0]);
+    let (root, config) = embedded(&dir, &fake, &[], &[note_store()]);
+    let run = recall_with(&dir, &root, &config, &[], &["where", "do", "notes", "live"]);
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    assert!(run.stderr.is_empty(), "{}", run.stderr);
+    assert_eq!(blocks(&run), 1, "{}", run.stdout);
+    assert!(
+        run.stdout.contains("decision-note-store.md"),
+        "{}",
+        run.stdout
+    );
+    assert!(run.stdout.contains("One flat folder."), "{}", run.stdout);
+}
+
+#[test]
+fn weak_similarity_is_not_a_hit() {
+    let dir = TempDir::new("recall-weak");
+    let fake = Fake::start(4);
+    fake.vector("where do notes live", &[1.0, 0.0, 0.0, 0.0]);
+    fake.vector("flat folder", &[0.2, 0.9798, 0.0, 0.0]);
+    let (root, config) = embedded(&dir, &fake, &[], &[note_store()]);
+    let run = recall_with(&dir, &root, &config, &[], &["where do notes live"]);
+    failed(&run, 1, "bilbo: no notes match\n");
+    assert_eq!(run.stderr, "bilbo: no notes match\n");
+}
+
+#[test]
+fn agreement_beats_one_signal() {
+    let dir = TempDir::new("recall-agreement");
+    let fake = Fake::start(4);
+    fake.vector("rollback steps", &[0.8, 0.6, 0.0, 0.0]);
+    fake.vector("undo the release", &[1.0, 0.0, 0.0, 0.0]);
+    fake.vector("rollback", &[1.0, 0.0, 0.0, 0.0]);
+    let (root, config) = embedded(&dir, &fake, &[], &rollback_notes());
+    let run = recall_with(&dir, &root, &config, &[], &["rollback"]);
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    assert!(run.stderr.is_empty(), "{}", run.stderr);
+    assert_eq!(blocks(&run), 2, "{}", run.stdout);
+    let a = run.stdout.find("plan-a.md").unwrap();
+    let b = run.stdout.find("plan-b.md").unwrap();
+    assert!(a < b, "{}", run.stdout);
+}
+
+#[test]
+fn embedder_down_falls_back() {
+    let dir = TempDir::new("recall-down");
+    let fake = Fake::start(4);
+    let (root, _) = embedded(&dir, &fake, &[], &rollback_notes());
+    let dead = down_config(&dir);
+    let run = recall_with(&dir, &root, &dead, &[], &["rollback"]);
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    assert!(run.stdout.contains("plan-a.md"), "{}", run.stdout);
+    assert_eq!(run.stderr.lines().count(), 1, "{}", run.stderr);
+    let start = format!(
+        "bilbo: embedder unavailable (embedder {} unreachable: ",
+        dead_url_of(&dead)
+    );
+    assert!(run.stderr.starts_with(&start), "{}", run.stderr);
+    assert!(
+        run.stderr.ends_with("); keyword results only\n"),
+        "{}",
+        run.stderr
+    );
+}
+
+/// The URL a config written by `down_config` names.
+fn dead_url_of(config: &Path) -> String {
+    let text = std::fs::read_to_string(config).unwrap();
+    text.lines()
+        .next()
+        .unwrap()
+        .strip_prefix("embedder.url = ")
+        .unwrap()
+        .to_string()
+}
+
+#[test]
+fn stalled_embedder_falls_back_after_5_s() {
+    let dir = TempDir::new("recall-stall");
+    let fake = Fake::start(4);
+    let (root, config) = embedded(&dir, &fake, &[], &rollback_notes());
+    fake.stall();
+    let start = std::time::Instant::now();
+    let run = recall_with(&dir, &root, &config, &[], &["rollback"]);
+    let elapsed = start.elapsed();
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    assert_eq!(
+        run.stderr,
+        format!(
+            "bilbo: embedder unavailable (embedder {} did not answer within 5 s); keyword results only\n",
+            fake.url
+        )
+    );
+    assert!(run.stdout.contains("plan-a.md"), "{}", run.stdout);
+    assert!(elapsed.as_secs_f64() >= 4.5, "{elapsed:?}");
+    assert!(elapsed.as_secs_f64() < 10.0, "{elapsed:?}");
+}
+
+#[test]
+fn rejected_query_falls_back() {
+    let dir = TempDir::new("recall-rejected");
+    let fake = Fake::start(4);
+    let (root, config) = embedded(&dir, &fake, &[], &rollback_notes());
+    for code in [401, 500] {
+        fake.status(code);
+        let run = recall_with(&dir, &root, &config, &[], &["rollback"]);
+        assert_eq!(run.code, 0, "{}", run.stderr);
+        assert_eq!(
+            run.stderr,
+            format!(
+                "bilbo: embedder unavailable (embedder {} answered {code}); keyword results only\n",
+                fake.url
+            )
+        );
+        assert!(run.stdout.contains("plan-a.md"), "{}", run.stdout);
+    }
+}
+
+#[test]
+fn note_written_after_the_index() {
+    let dir = TempDir::new("recall-after-index");
+    let fake = Fake::start(4);
+    fake.vector("rollback", &[1.0, 0.0, 0.0, 0.0]);
+    let (root, config) = embedded(&dir, &fake, &[], &[note_store()]);
+    let cache = dir.path().join("cache");
+    let made = bilbo(
+        dir.path(),
+        &[
+            ("BILBO_HOME", root.to_str().unwrap()),
+            ("XDG_CACHE_HOME", cache.to_str().unwrap()),
+        ],
+        &["new", "plan", "rollback-plan", "--title", "Rollback plan"],
+    );
+    assert_eq!(made.code, 0, "{}", made.stderr);
+    let path = root.join("notes/plan-rollback-plan.md");
+    let mut text = std::fs::read_to_string(&path).unwrap();
+    text.push_str("\nrollback steps\n");
+    std::fs::write(&path, text).unwrap();
+    let run = recall_with(&dir, &root, &config, &[], &["rollback"]);
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    assert!(
+        run.stdout.contains("plan-rollback-plan.md"),
+        "{}",
+        run.stdout
+    );
+    assert_eq!(
+        run.stderr,
+        "bilbo: 1 passages not indexed; run bilbo index\n"
+    );
+}
+
+#[test]
+fn no_embedder_no_warnings() {
+    let dir = TempDir::new("recall-no-embedder");
+    let root = store(&dir);
+    write(&root, "plan-a.md", &note("Plan a", "rollback steps\n"));
+    let home = dir.path().join("home");
+    std::fs::create_dir_all(&home).unwrap();
+    let run = bilbo(
+        dir.path(),
+        &[
+            ("BILBO_HOME", root.to_str().unwrap()),
+            ("HOME", home.to_str().unwrap()),
+        ],
+        &["recall", "rollback"],
+    );
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    assert!(run.stderr.is_empty(), "{}", run.stderr);
+    assert_eq!(blocks(&run), 1);
+}
+
+#[test]
+fn query_prefix_and_cut() {
+    let dir = TempDir::new("recall-prefix");
+    let fake = Fake::start(4);
+    let extra = ["embedder.query_prefix = \"Instruct: find notes\\nQuery: \""];
+    let (root, config) = embedded(&dir, &fake, &extra, &[note_store()]);
+    recall_with(&dir, &root, &config, &[], &["where do notes live"]);
+    let last = fake.requests().pop().unwrap();
+    assert_eq!(
+        last.inputs,
+        ["Instruct: find notes\nQuery: where do notes live"]
+    );
+
+    let long = "ação ".repeat(600);
+    let long = long.trim_end();
+    recall_with(&dir, &root, &config, &[], &[long]);
+    let sent = fake.requests().pop().unwrap().inputs;
+    assert_eq!(sent.len(), 1);
+    let full = format!("Instruct: find notes\nQuery: {long}");
+    assert!(sent[0].len() <= 2000, "{}", sent[0].len());
+    assert!(sent[0].len() >= 1996, "{}", sent[0].len());
+    assert!(full.starts_with(&sent[0]));
+}
+
+#[test]
+fn unindexed_store_sends_no_query() {
+    let dir = TempDir::new("recall-unindexed");
+    let fake = Fake::start(4);
+    let (root, config) = prepare(&dir, &fake.url, &[]);
+    for (name, title, body) in rollback_notes() {
+        write(&root, name, &note(title, body));
+    }
+    let run = recall_with(&dir, &root, &config, &[], &["rollback"]);
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    assert_eq!(
+        run.stderr,
+        "bilbo: 2 passages not indexed; run bilbo index\n"
+    );
+    assert!(run.stdout.contains("plan-a.md"), "{}", run.stdout);
+    assert!(fake.requests().is_empty());
+}
+
+#[test]
+fn model_mismatch_counts_every_passage() {
+    let dir = TempDir::new("recall-model");
+    let fake = Fake::start(4);
+    let (root, _) = embedded(&dir, &fake, &[], &rollback_notes());
+    let sent = fake.requests().len();
+    let other = config(
+        &dir,
+        &[
+            &format!("embedder.url = {}", fake.url),
+            "embedder.model = model-b",
+        ],
+    );
+    let run = recall_with(&dir, &root, &other, &[], &["rollback"]);
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    assert_eq!(
+        run.stderr,
+        "bilbo: 2 passages not indexed; run bilbo index\n"
+    );
+    assert_eq!(fake.requests().len(), sent);
+}
+
+#[test]
+fn kind_filter_applies_to_meaning() {
+    let dir = TempDir::new("recall-kind-meaning");
+    let fake = Fake::start(4);
+    fake.vector("where do notes live", &[1.0, 0.0, 0.0, 0.0]);
+    fake.vector("flat folder", &[0.6, 0.8, 0.0, 0.0]);
+    let (root, config) = embedded(
+        &dir,
+        &fake,
+        &[],
+        &[note_store(), ("plan-a.md", "Plan a", "other text\n")],
+    );
+    let all = recall_with(&dir, &root, &config, &[], &["where do notes live"]);
+    assert_eq!(all.code, 0, "{}", all.stderr);
+    assert!(
+        all.stdout.contains("decision-note-store.md"),
+        "{}",
+        all.stdout
+    );
+    let plans = recall_with(
+        &dir,
+        &root,
+        &config,
+        &[],
+        &["where do notes live", "--kind", "plan"],
+    );
+    failed(&plans, 1, "bilbo: no notes match\n");
+}
+
+#[test]
+fn keyword_matches_past_50_still_print() {
+    let dir = TempDir::new("recall-past-50");
+    let fake = Fake::start(4);
+    let (root, config) = prepare(&dir, &fake.url, &[]);
+    for i in 0..60 {
+        write(
+            &root,
+            &format!("plan-n{i:02}.md"),
+            &note(&format!("N{i}"), "rollback\n"),
+        );
+    }
+    index_now(&dir, &root, &config, &[]);
+    let run = recall_with(&dir, &root, &config, &[], &["rollback", "--limit", "60"]);
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    assert!(run.stderr.is_empty(), "{}", run.stderr);
+    assert_eq!(blocks(&run), 60);
+}
+
+#[test]
+fn no_match_keeps_the_warning() {
+    let dir = TempDir::new("recall-no-match-warning");
+    let fake = Fake::start(4);
+    let (root, _) = embedded(&dir, &fake, &[], &rollback_notes());
+    let dead = down_config(&dir);
+    let run = recall_with(&dir, &root, &dead, &[], &["zzz", "unmatched"]);
+    failed(&run, 1, "bilbo: embedder unavailable (");
+    assert!(
+        run.stderr
+            .ends_with("); keyword results only\nbilbo: no notes match\n"),
+        "{}",
+        run.stderr
+    );
+    assert_eq!(run.stderr.lines().count(), 2, "{}", run.stderr);
+}
+
+#[test]
+fn empty_token_variable_falls_back() {
+    let dir = TempDir::new("recall-empty-token");
+    let fake = Fake::start(4);
+    let (root, config) = prepare(&dir, &fake.url, &["embedder.token_env = EMBED_TOKEN"]);
+    for (name, title, body) in rollback_notes() {
+        write(&root, name, &note(title, body));
+    }
+    index_now(&dir, &root, &config, &[("EMBED_TOKEN", "tok")]);
+    let run = recall_with(&dir, &root, &config, &[("EMBED_TOKEN", "")], &["rollback"]);
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    assert_eq!(
+        run.stderr,
+        "bilbo: embedder unavailable (embedder token variable EMBED_TOKEN is empty); keyword results only\n"
+    );
+    assert!(run.stdout.contains("plan-a.md"), "{}", run.stdout);
+}
+
+#[test]
+fn recall_leaves_store_and_cache_as_found() {
+    let dir = TempDir::new("recall-as-found");
+    let fake = Fake::start(4);
+    fake.vector("where do notes live", &[1.0, 0.0, 0.0, 0.0]);
+    fake.vector("flat folder", &[0.6, 0.8, 0.0, 0.0]);
+    let (root, config) = embedded(&dir, &fake, &[], &[note_store()]);
+    let cache = dir.path().join("cache");
+    let (store_before, cache_before) = (snapshot(&root), snapshot(&cache));
+    let run = recall_with(&dir, &root, &config, &[], &["where do notes live"]);
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    assert_eq!(blocks(&run), 1);
+    assert_eq!(snapshot(&root), store_before);
+    assert_eq!(snapshot(&cache), cache_before);
+}
+
+#[test]
+fn config_errors_exit_2() {
+    let dir = TempDir::new("recall-config");
+    let fake = Fake::start(4);
+    let (root, config_path) = embedded(&dir, &fake, &[], &rollback_notes());
+    let path = config_path.display().to_string();
+    let url = format!("embedder.url = {}", fake.url);
+    let keys = "keys: embedder.url, embedder.model, embedder.token_file, embedder.token_env, embedder.query_prefix, embedder.min_similarity";
+    let cases: Vec<(Vec<&str>, String)> = vec![
+        (
+            vec!["# c", "embedder.model = x", "embeder.url = http://h"],
+            format!("bilbo: {path}:3: unknown key 'embeder.url'; {keys}\n"),
+        ),
+        (
+            vec![&url],
+            format!("bilbo: {path}: embedder.url is set but embedder.model is not\n"),
+        ),
+        (
+            vec![
+                &url,
+                "embedder.model = m",
+                "embedder.token_file = /x",
+                "embedder.token_env = Y",
+            ],
+            format!("bilbo: {path}: set embedder.token_file or embedder.token_env, not both\n"),
+        ),
+        (
+            vec![&url, "embedder.model = m", "embedder.min_similarity = 1.5"],
+            format!(
+                "bilbo: {path}:3: embedder.min_similarity must be a number from 0 to 1, got '1.5'\n"
+            ),
+        ),
+        (
+            vec![&url, "embedder.model ="],
+            format!("bilbo: {path}:2: embedder.model needs a value\n"),
+        ),
+    ];
+    let sent = fake.requests().len();
+    for (lines, stderr) in cases {
+        config(&dir, &lines);
+        let run = recall_with(&dir, &root, &config_path, &[], &["rollback"]);
+        failed(&run, 2, "bilbo: ");
+        assert_eq!(run.stderr, stderr);
+
+        let usage = recall_with(&dir, &root, &config_path, &[], &["- ?"]);
+        assert_eq!(usage.code, 2);
+        assert!(
+            usage
+                .stderr
+                .starts_with("bilbo: query '- ?' has no words of 2 or more letters or digits\n"),
+            "{}",
+            usage.stderr
+        );
+    }
+    assert_eq!(fake.requests().len(), sent);
+
+    let missing = dir.path().join("no-such-config");
+    let run = recall_with(&dir, &root, &missing, &[], &["rollback"]);
+    failed(
+        &run,
+        2,
+        &format!("bilbo: cannot read {}: ", missing.display()),
+    );
+}
+
+#[test]
+fn textless_title_is_not_a_meaning_hit() {
+    let dir = TempDir::new("recall-textless-title");
+    let fake = Fake::start(4);
+    fake.vector("quux", &[1.0, 0.0, 0.0, 0.0]);
+    fake.vector("Zork\n", &[1.0, 0.0, 0.0, 0.0]);
+    let notes = [("plan-a.md", "Zork", "## Sec\n\nalpha beta\n")];
+    let (root, config) = embedded(&dir, &fake, &[], &notes);
+    assert!(
+        fake.inputs().iter().all(|input| input != "Zork\n"),
+        "{:?}",
+        fake.inputs()
+    );
+    let run = recall_with(&dir, &root, &config, &[], &["quux"]);
+    failed(&run, 1, "bilbo: no notes match\n");
+    assert_eq!(run.stderr, "bilbo: no notes match\n");
+}
+
+#[test]
+fn not_indexed_count_ignores_textless_passages() {
+    let dir = TempDir::new("recall-textless-count");
+    let fake = Fake::start(4);
+    let (root, config) = embedded(&dir, &fake, &[], &rollback_notes());
+    write(&root, "plan-empty.md", &note("Empty", ""));
+    write(&root, "plan-fresh.md", &note("Fresh", "fresh text\n"));
+    let run = recall_with(&dir, &root, &config, &[], &["rollback"]);
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    assert_eq!(
+        run.stderr,
+        "bilbo: 1 passages not indexed; run bilbo index\n"
+    );
 }
