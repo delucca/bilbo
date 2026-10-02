@@ -62,7 +62,13 @@ committed and pins the build.
   with a clean environment; `tests/common/mod.rs` holds the shared runner and
   temp folders.
 - Verification is the `Verification` line of `openspec/config.yaml`: `cargo fmt
-  --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test`. Run them
-  in `nix shell nixpkgs#cargo nixpkgs#rustc nixpkgs#clippy nixpkgs#rustfmt -c
-  <cmd>`, with `CARGO_TARGET_DIR` set to this checkout's `target`: a global
-  value moves `./target/debug/bilbo` elsewhere.
+  --check`, `cargo clippy --locked --all-targets -- -D warnings`, `cargo test
+  --locked`. Run them in `nix shell nixpkgs#cargo nixpkgs#rustc nixpkgs#clippy
+  nixpkgs#rustfmt -c <cmd>`, with `CARGO_TARGET_DIR` set to this checkout's
+  `target`: a global value moves `./target/debug/bilbo` elsewhere.
+- `.github/workflows/ci.yml`: the `verify` job runs the Verification line on
+  every PR and every push to main, and the `main pull requests` ruleset
+  requires it. It runs Rust 1.95.0, the `rust-version` floor, while the nix
+  shell runs whatever nixpkgs ships, so a newer local clippy can flag lints CI
+  does not. Bump the toolchain with `rust-version`. Actions are pinned by
+  commit SHA.
