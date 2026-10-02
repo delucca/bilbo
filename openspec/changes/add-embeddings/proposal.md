@@ -24,6 +24,7 @@ Keyword recall misses a note when the query uses other words than the note does,
 
 - `note-recall`: the Ranking requirement fuses keyword and meaning ranks when an embedder is configured. A new requirement covers falling back to keywords.
 - `cli`: the Verb dispatch requirement adds `index`.
+- `agent-plugin`: the recall skill passes on `recall`'s new warning lines, and still retries when `bilbo: no notes match` follows a warning.
 
 ## Non-goals
 

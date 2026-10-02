@@ -7,7 +7,7 @@ Where bilbo reads its settings and the exact shape of the settings file, so a hu
 ## ADDED Requirements
 
 ### Requirement: Config location
-bilbo SHALL read its settings from `BILBO_CONFIG` when it is set and not empty, then `$XDG_CONFIG_HOME/bilbo/config` when `XDG_CONFIG_HOME` is an absolute path, then `$HOME/.config/bilbo/config`. A relative `BILBO_CONFIG` SHALL be a usage error. A missing file SHALL mean every setting takes its default; a `BILBO_CONFIG` that names a missing file SHALL be an error.
+bilbo SHALL read its settings from `BILBO_CONFIG` when it is set and not empty, then `$XDG_CONFIG_HOME/bilbo/config` when `XDG_CONFIG_HOME` is an absolute path, then `$HOME/.config/bilbo/config`. A relative `BILBO_CONFIG` SHALL be a usage error. A missing file SHALL mean every setting takes its default; a `BILBO_CONFIG` that names a missing file SHALL be an error. Only `recall` and `index` SHALL read settings; `new` and `check` SHALL run whatever the config holds.
 
 #### Scenario: The default location
 - **WHEN** neither `BILBO_CONFIG` nor `XDG_CONFIG_HOME` is set and `HOME` is `/Users/a`
@@ -21,8 +21,12 @@ bilbo SHALL read its settings from `BILBO_CONFIG` when it is set and not empty, 
 - **WHEN** `BILBO_CONFIG` is `/tmp/nope` and that file does not exist
 - **THEN** every verb that reads settings prints a message naming `/tmp/nope` to stderr and exits 2
 
+#### Scenario: Check ignores the config
+- **WHEN** `BILBO_CONFIG` names a missing file and an agent runs `bilbo check` on a clean store
+- **THEN** stderr is empty and the exit code is 0
+
 ### Requirement: Config format
-The config file SHALL hold one setting per line as `<key> = <value>`, with blank lines and lines starting with `#` ignored. Keys are known names, each at most once. A value runs to the end of the line with surrounding spaces trimmed. A value wrapped in double quotes keeps its spaces, and inside it `\"` is a quote. In any value, `\n` stands for a newline and `\\` for a backslash. Any other line, an unknown key or a repeated key SHALL be an error naming the file and line.
+The config file SHALL hold one setting per line as `<key> = <value>`, with blank lines and lines starting with `#` ignored. Keys are known names, each at most once. A value runs to the end of the line with surrounding spaces trimmed. A value wrapped in double quotes keeps its spaces, and inside it `\"` is a quote. In any value, `\n` stands for a newline and `\\` for a backslash. A `#` after the key is part of the value. Any other line, an unknown key, a repeated key, an empty value for any key but `embedder.query_prefix`, or text after a closing quote SHALL be an error naming the file and line.
 
 #### Scenario: A valid file
 - **WHEN** the file holds `# embedder on bagend`, a blank line and `embedder.url = http://bagend:8081`
@@ -36,12 +40,16 @@ The config file SHALL hold one setting per line as `<key> = <value>`, with blank
 - **WHEN** the file holds `embedder.model = qwen3-embedding-0.6b   ` with trailing spaces
 - **THEN** the model is `qwen3-embedding-0.6b`
 
+#### Scenario: An empty value
+- **WHEN** the file holds `embedder.model =` on line 2
+- **THEN** every verb that reads settings prints a message naming the file, line 2 and `embedder.model` to stderr and exits 2
+
 #### Scenario: An unknown key
 - **WHEN** the file holds `embeder.url = http://bagend:8081` on line 3
 - **THEN** every verb that reads settings prints a message naming the file, line 3 and `embeder.url` to stderr and exits 2
 
 ### Requirement: Embedder settings
-The embedder keys SHALL be `embedder.url` (an `http` or `https` URL; without it bilbo is keyword-only), `embedder.model` (required with a URL), `embedder.token_file` or `embedder.token_env` (at most one; a bearer token read from that file, an absolute path or one starting with `~/`, or from that variable, with surrounding whitespace trimmed), `embedder.query_prefix` (text put before every query, empty by default) and `embedder.min_similarity` (a number from 0 to 1, 0.35 by default).
+The embedder keys SHALL be `embedder.url` (an `http` or `https` URL; without it bilbo is keyword-only), `embedder.model` (required with a URL), `embedder.token_file` or `embedder.token_env` (at most one; a bearer token read from that file, an absolute path or one starting with `~/`, or from that variable, with surrounding whitespace trimmed), `embedder.query_prefix` (text put before every query, empty by default) and `embedder.min_similarity` (a number from 0 to 1, 0.5 by default).
 
 #### Scenario: A URL without a model
 - **WHEN** the file sets `embedder.url` and not `embedder.model`
@@ -56,11 +64,15 @@ The embedder keys SHALL be `embedder.url` (an `http` or `https` URL; without it 
 - **THEN** every verb that reads settings prints a message naming `embedder.min_similarity` to stderr and exits 2
 
 ### Requirement: Secrets stay out of output
-bilbo SHALL NOT print an embedder token, in full or in part, on stdout or stderr. A missing or empty token file or variable SHALL be reported by its path or variable name only.
+bilbo SHALL NOT print an embedder token, in full or in part, on stdout or stderr. A missing or empty token file or variable SHALL be reported by its path or variable name only. An `embedder.url` that holds a user name or password SHALL be an error that does not repeat the URL.
 
 #### Scenario: An empty token variable
 - **WHEN** `embedder.token_env = EMBED_TOKEN` and `EMBED_TOKEN` is empty, and an agent runs `bilbo index`
 - **THEN** stderr names `EMBED_TOKEN` and the exit code is 1
+
+#### Scenario: A password in the URL is not echoed
+- **WHEN** the file holds `embedder.url = http://u:sekrit@bagend:8081`
+- **THEN** every verb that reads settings prints a message naming `embedder.url` to stderr, holds no part of `sekrit`, and exits 2
 
 #### Scenario: A rejected token is not echoed
 - **WHEN** the embedder answers 401 to a request carrying the token
