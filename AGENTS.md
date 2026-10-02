@@ -28,6 +28,9 @@ of sources they cite. The product frame and vocabulary live in
   symlink makes every `openspec update` rewrite them.
   `.agents/plugins/marketplace.json` is written by hand, not by
   `openspec update`.
+- `.github/workflows/release.yml` is output of `dist generate`, from
+  `dist-workspace.toml`. Never edit it by hand: the release workflow's `plan`
+  job runs `dist plan` on every PR, and it fails when the file is stale.
 - Use OpenSpec 1.14.0, the version in their `generatedBy` field. The
   workflows call subcommands that older releases lack.
 
@@ -44,9 +47,25 @@ its `json` feature) and `serde`; `serde_json` is a dev-dependency for the fake
 embedder. `Cargo.lock` is committed and pins the build.
 
 - `Cargo.toml`: manifest.
-- `src/main.rs`: verb dispatch, `--help`, `Failure`, exit codes 0, 1, 2 and the
-  only writer of stdout and stderr (every stderr line gets `bilbo: `) (`cli`
-  spec).
+- `flake.nix` and `flake.lock`: the Nix flake (`distribution` spec), for
+  aarch64-darwin, x86_64-linux and aarch64-linux. `packages.default` builds
+  `bilbo` from `Cargo.lock` and runs the tests in its check phase. Its `src`
+  is a `lib.fileset`, so a new file the build or the tests read must join it.
+  It copies `plugins/bilbo/` and both marketplaces into `share/bilbo/`, which
+  is a local marketplace either tool can add by path. `devShells.default`
+  holds cargo, rustc, clippy and rustfmt from `nixpkgs` (26.05, rustc 1.95.0)
+  and cargo-dist from `nixpkgs-unstable`. The check phase skips
+  `every_action_is_pinned_by_sha`, because `.github` is not in `src`.
+- `dist-workspace.toml`: the cargo-dist config (`distribution` spec): the
+  dist version, the four targets, the shell installer, `install-path`, the
+  `macos-15` runner for aarch64-apple-darwin and the
+  `[dist.github-action-commits]` pins. dist also reads `Cargo.toml`'s
+  `repository` and builds with its `[profile.dist]`.
+- `tests/workflows.rs`: every `uses:` in `.github/workflows/` names a 40-hex
+  commit SHA; local `./` actions are exempt.
+- `src/main.rs`: verb dispatch, `--help`, `--version`, `Failure`, exit codes 0,
+  1, 2 and the only writer of stdout and stderr (every stderr line gets
+  `bilbo: `) (`cli` spec).
 - `src/store.rs`: store root resolution, listing `notes/` and reading the notes
   `recall` and `index` search (`note-store` spec). Root, config and cache
   resolution take `Env` as a value, built once in `main`.
@@ -101,12 +120,37 @@ embedder. `Cargo.lock` is committed and pins the build.
   `PYTHONDONTWRITEBYTECODE=1 python3 ~/.codex/skills/.system/plugin-creator/scripts/validate_plugin.py plugins/bilbo`.
 - Verification is the `Verification` line of `openspec/config.yaml`: `cargo fmt
   --check`, `cargo clippy --locked --all-targets -- -D warnings`, `cargo test
-  --locked`. Run them in `nix shell nixpkgs#cargo nixpkgs#rustc nixpkgs#clippy
-  nixpkgs#rustfmt -c <cmd>`, with `CARGO_TARGET_DIR` set to this checkout's
-  `target`: a global value moves `./target/debug/bilbo` elsewhere.
+  --locked`. Run them as `nix develop -c <cmd>`, with `CARGO_TARGET_DIR` set to
+  this checkout's `target`: a global value moves `./target/debug/bilbo`
+  elsewhere.
 - `.github/workflows/ci.yml`: the `verify` job runs the Verification line on
   every PR and every push to main, and the `main pull requests` ruleset
-  requires it. It runs Rust 1.95.0, the `rust-version` floor, while the nix
-  shell runs whatever nixpkgs ships, so a newer local clippy can flag lints CI
-  does not. Bump the toolchain with `rust-version`. Actions are pinned by
-  commit SHA.
+  requires it. It runs Rust 1.95.0, the `rust-version` floor, and so does the
+  dev shell, from the nixpkgs 26.05 pinned in `flake.lock`; a lock bump can
+  bring a newer clippy that flags lints CI does not. Bump the toolchain with
+  `rust-version`. The `nix` job runs `nix flake check -L` and evaluates the
+  aarch64-darwin package. Actions are pinned by commit SHA.
+
+## Releases
+
+1. Bump `version` in `Cargo.toml` and in
+   `plugins/bilbo/.codex-plugin/plugin.json` together, then run
+   `nix develop -c cargo update --workspace` so `Cargo.lock` follows.
+   `tests/plugin.rs` fails when the two versions differ.
+2. Merge through a pull request.
+3. Tag the commit on `main` that carries the bump (the tip of `main` after
+   the rebase-merge) `v<version>` and push the tag. The release workflow
+   publishes the GitHub Release. A tag that does not match `Cargo.toml` fails
+   in `plan` and publishes nothing. Push only `v<version>` tags: the
+   generated trigger also accepts `<version>` and `bilbo-v<version>`, and
+   either would publish a second release.
+
+To upgrade dist, change `cargo-dist-version` and the `nixpkgs-unstable` input
+(`nix flake update nixpkgs-unstable`) together, until
+`nix develop -c dist --version` matches. Then run `nix develop -c dist init
+--yes` and pin every action the new `release.yml` names in
+`[dist.github-action-commits]`, using the commit from
+`gh api repos/<owner>/<repo>/git/ref/tags/<tag>` (dereference an annotated
+tag with `gh api repos/<owner>/<repo>/git/tags/<sha>`). Run
+`nix develop -c dist generate` again, and check that `cargo test --locked
+--test workflows` passes.
