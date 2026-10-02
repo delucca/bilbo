@@ -5,9 +5,11 @@ use common::{TempDir, bilbo};
 const USAGE: &str = "\
 usage: bilbo new <kind> <topic> [--title <text>]
        bilbo check
+       bilbo recall <query>... [--kind <kind>]... [--limit <n>]
        bilbo --help
 new creates <root>/notes/<kind>-<topic>.md and prints its path.
 check prints every problem in the store and changes nothing.
+recall prints the notes that best match the query, best first, 10 unless --limit says otherwise.
 kinds: plan, spec, design, decision, gotcha, research, review, report, reference
 root: $BILBO_HOME, else $XDG_DATA_HOME/bilbo, else $HOME/.local/share/bilbo
 ";
@@ -40,7 +42,11 @@ fn unknown_verb_is_usage_error() {
     assert_eq!(run.code, 2);
     assert!(run.stdout.is_empty());
     assert!(run.stderr.contains("bilbo: unknown verb 'frobnicate'\n"));
-    assert!(run.stderr.contains("bilbo new") && run.stderr.contains("bilbo check"));
+    assert!(
+        run.stderr.contains("bilbo new")
+            && run.stderr.contains("bilbo check")
+            && run.stderr.contains("bilbo recall")
+    );
     assert!(!home.exists());
     assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
 }
@@ -59,7 +65,7 @@ fn help_goes_to_stdout() {
 #[test]
 fn help_after_a_verb_prints_help() {
     let dir = TempDir::new("cli-help-verb");
-    for args in [["check", "--help"], ["new", "-h"]] {
+    for args in [["check", "--help"], ["new", "-h"], ["recall", "--help"]] {
         let run = bilbo(dir.path(), &[], &args);
         assert_eq!(run.code, 0);
         assert_eq!(run.stdout, USAGE);
@@ -92,6 +98,17 @@ fn check_verb_runs() {
     assert_eq!(run.code, 0);
     assert!(run.stdout.is_empty());
     assert!(run.stderr.is_empty());
+}
+
+#[test]
+fn no_recall_hits_exits_1() {
+    let dir = TempDir::new("cli-recall-empty");
+    let home = home(&dir);
+    std::fs::create_dir_all(dir.path().join("store/notes")).unwrap();
+    let run = bilbo(dir.path(), &[("BILBO_HOME", &home)], &["recall", "wumpus"]);
+    assert_eq!(run.code, 1);
+    assert!(run.stdout.is_empty());
+    assert_eq!(run.stderr, "bilbo: no notes match\n");
 }
 
 #[test]
@@ -153,7 +170,11 @@ fn failure_leaves_stdout_empty() {
 #[test]
 fn relative_bilbo_home_is_refused() {
     let dir = TempDir::new("cli-relative-home");
-    for args in [&["new", "plan", "x"][..], &["check"][..]] {
+    for args in [
+        &["new", "plan", "x"][..],
+        &["check"][..],
+        &["recall", "rollback"][..],
+    ] {
         let run = bilbo(dir.path(), &[("BILBO_HOME", "store")], args);
         assert_eq!(run.code, 2);
         assert!(run.stdout.is_empty());
