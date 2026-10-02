@@ -1,0 +1,9 @@
+{
+  "name": "bilbo",
+  "description": "Recall the notes earlier agent sessions wrote, through the bilbo CLI.",
+  "author": {
+    "name": "delucca"
+  },
+  "repository": "https://github.com/delucca/bilbo",
+  "license": "Apache-2.0"
+}

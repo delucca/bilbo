@@ -26,6 +26,8 @@ of sources they cite. The product frame and vocabulary live in
   them after an OpenSpec version bump instead of editing them. Keep the two
   skill folders as separate copies: each tool gets its own wording, and a
   symlink makes every `openspec update` rewrite them.
+  `.agents/plugins/marketplace.json` is written by hand, not by
+  `openspec update`.
 - Use OpenSpec 1.14.0, the version in their `generatedBy` field. The
   workflows call subcommands that older releases lack.
 
@@ -46,21 +48,41 @@ committed and pins the build.
   spec).
 - `src/store.rs`: store root resolution and listing `notes/` (`note-store`
   spec). Root resolution takes `Env` as a value, built once in `main`.
-- `src/note.rs`: kinds, filename, ULID, `created`, the strict frontmatter and
-  title reader, and the note renderer (`note-store` spec).
+- `src/note.rs`: kinds, filename, ULID, `created`, the line splitter, the
+  strict frontmatter and title reader (which also returns the valid `created`
+  and the body's first line), and the note renderer (`note-store` spec).
 - `src/new.rs`: `bilbo new`, argument checks, atomic create (`note-create`
   spec).
 - `src/check.rs`: `bilbo check`, read-only (`store-check` spec).
-- `store` and `note` never print and never return `Failure`; they return
-  plain values and `String` messages. Verbs build on them, never on each
+- `src/rank.rs`: words (case and Latin accent folding), passages (heading
+  paths, 4,000-byte parts) and BM25 ranking (`note-recall` spec). Shared by
+  verbs; knows nothing of the store or the CLI.
+- `src/recall.rs`: `bilbo recall`, read-only (`note-recall` spec).
+- `plugins/bilbo/`: the agent plugin (`agent-plugin` spec).
+  `.claude-plugin/plugin.json` sets no `version`, so Claude Code follows
+  commits; `.codex-plugin/plugin.json`'s `version` equals `Cargo.toml`'s, so
+  bump them together. `skills/recall/SKILL.md` runs `bilbo recall` from PATH.
+  Skill frontmatter uses only `name`, `description`, `license` and
+  `allowed-tools`, the keys both tools accept.
+- `.claude-plugin/marketplace.json` and `.agents/plugins/marketplace.json`: the
+  Claude Code and Codex marketplaces, one `bilbo` entry each with the source
+  `./plugins/bilbo`.
+- `store`, `note` and `rank` never print and never return `Failure`; they
+  return plain values and `String` messages. Verbs build on them, never on each
   other, return `crate::Failure` and never print.
 - A new verb is `src/<verb>.rs`, its `mod` line, dispatch arm and USAGE line
   in `src/main.rs`, `tests/<verb>.rs`, its own capability spec, and a MODIFIED
   `cli` spec (its Verb dispatch requirement lists the verbs).
 - Unit tests live in the module they test. CLI behavior is tested in
-  `tests/cli.rs`, `tests/new.rs` and `tests/check.rs` through the built binary
-  with a clean environment; `tests/common/mod.rs` holds the shared runner and
-  temp folders.
+  `tests/cli.rs`, `tests/new.rs`, `tests/check.rs` and `tests/recall.rs`
+  through the built binary with a clean environment; `tests/common/mod.rs`
+  holds the shared runner and temp folders. The `#[ignore]` speed test in
+  `tests/recall.rs` runs with `cargo test --release --test recall -- --ignored`.
+- `tests/plugin.rs`: the plugin's files, skill frontmatter and versions,
+  checked in CI. Locally, also run `claude plugin validate .` and
+  `claude plugin validate plugins/bilbo` (one missing-version warning each is
+  expected; never `--strict`) and
+  `PYTHONDONTWRITEBYTECODE=1 python3 ~/.codex/skills/.system/plugin-creator/scripts/validate_plugin.py plugins/bilbo`.
 - Verification is the `Verification` line of `openspec/config.yaml`: `cargo fmt
   --check`, `cargo clippy --locked --all-targets -- -D warnings`, `cargo test
   --locked`. Run them in `nix shell nixpkgs#cargo nixpkgs#rustc nixpkgs#clippy
