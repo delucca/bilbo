@@ -45,13 +45,13 @@ Until group 2 lands the dev shell, run cargo commands inside `nix shell nixpkgs#
 
 ## 4. CI Nix job
 
-- [ ] 4.1 Add a `nix` job to `.github/workflows/ci.yml`:
+- [x] 4.1 Add a `nix` job to `.github/workflows/ci.yml`:
   - `cachix/install-nix-action` pinned by SHA;
   - `nix flake check -L`;
   - `nix eval --raw .#packages.aarch64-darwin.default.drvPath`.
 
   `tests/workflows.rs` covers the new pin. Verify with `cargo test --locked --test workflows` and by pushing the branch and seeing the `nix` job pass in `gh pr checks`
-- [ ] 4.2 Ask the maintainer whether to add `nix` to the required checks of the `main pull requests` ruleset (id 24376306). Change the ruleset only on a yes. Verify with `gh api repos/delucca/bilbo/rulesets/24376306 --jq '.rules[] | select(.type=="required_status_checks")'` showing the agreed list
+- [x] 4.2 Ask the maintainer whether to add `nix` to the required checks of the `main pull requests` ruleset (id 24376306). Change the ruleset only on a yes. Verify with `gh api repos/delucca/bilbo/rulesets/24376306 --jq '.rules[] | select(.type=="required_status_checks")'` showing the agreed list
 
 ## 5. README
 
