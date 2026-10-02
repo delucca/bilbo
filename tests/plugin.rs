@@ -104,6 +104,8 @@ fn recall_skill_drives_bilbo() {
         "command -v bilbo",
         "bilbo recall [--kind K]... [--limit N] -- '",
         "bilbo: no notes match",
+        "Judge exit 1 by the last stderr line",
+        "keyword results only",
         "at most two more queries",
         "say which query produced the hits",
         "recall: bilbo is not on PATH; install the bilbo CLI first",

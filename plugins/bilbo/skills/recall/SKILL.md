@@ -34,17 +34,18 @@ Finds the notes earlier sessions wrote, through `bilbo recall`, and shows the hi
    - Add `--limit N` only when the user asked for a number of hits. The default is 10.
    - Run it as one command, with nothing chained: no `;`, `&&`, pipe or `echo $?`. The tool result already reports a non-zero exit code, and a chained command falls outside `allowed-tools` and asks for approval.
 
-3. Act on the exit code and stderr:
+3. Act on the exit code and stderr. Judge exit 1 by the last stderr line: warning lines can come before it.
 
    | Exit | stderr | What to do |
    |---|---|---|
    | 0 | empty | render the hits (step 5) |
-   | 1 | `bilbo: no notes match` | retry (step 4) |
+   | 0 | warning lines | render the hits (step 5), then pass the warnings on in one sentence: `embedder unavailable (...); keyword results only` means the hits come from keywords alone, `<n> passages not indexed; run bilbo index` means the newest notes were matched by keywords only |
+   | 1 | last line `bilbo: no notes match` | retry (step 4) |
    | 1 | `bilbo: no store at <root>` | the store root comes from the user's environment: `BILBO_HOME`, else `$XDG_DATA_HOME/bilbo`, else `$HOME/.local/share/bilbo`. Never set `BILBO_HOME` yourself: a `VAR=x bilbo ...` prefix is outside `Bash(bilbo recall *)`. Report the path and stop |
    | 1 | anything else | print bilbo's first stderr line, and stop |
    | 2 | a usage error | print bilbo's first stderr line, and stop |
 
-4. bilbo matches whole words, ignoring case and accents, with no stemming or synonyms: `notes` does not find `note`, and a Portuguese query does not find an English note. When nothing matched, run at most two more queries in the words the note itself would likely use: the singular or plural form, the other language (English or Portuguese), the note's likely title. Keep the user's options. When none matches, say that nothing matched, name the queries tried, and stop.
+4. bilbo matches whole words, ignoring case and accents, with no stemming: `notes` does not find `note`. When an embedder is configured it also matches by meaning, across wording and languages; without one, or when it is unavailable, a Portuguese query does not find an English note. When nothing matched, run at most two more queries in the words the note itself would likely use: the singular or plural form, the other language (English or Portuguese), the note's likely title. Keep the user's options. When none matches, say that nothing matched, name the queries tried, and stop.
 
 5. bilbo prints one block per note, best first, blocks separated by a blank line:
 
