@@ -8,6 +8,7 @@ usage: bilbo new <kind> <topic> [--title <text>]
        bilbo recall <query>... [--kind <kind>]... [--limit <n>]
        bilbo index
        bilbo --help
+       bilbo --version
 new creates <root>/notes/<kind>-<topic>.md and prints its path.
 check prints every problem in the store and changes nothing.
 recall prints the notes that best match the query, best first, 10 unless --limit says otherwise.
@@ -92,6 +93,36 @@ fn unknown_top_level_option_is_usage_error() {
     assert!(
         run.stderr
             .starts_with("bilbo: unknown option '--verbose'\n")
+    );
+}
+
+#[test]
+fn version_goes_to_stdout() {
+    let dir = TempDir::new("cli-version");
+    let run = bilbo(dir.path(), &[], &["--version"]);
+    assert_eq!(run.code, 0);
+    assert_eq!(run.stdout, format!("bilbo {}\n", env!("CARGO_PKG_VERSION")));
+    assert!(run.stderr.is_empty());
+}
+
+#[test]
+fn version_is_not_a_verb_option() {
+    let dir = TempDir::new("cli-version-verb");
+    let run = bilbo(dir.path(), &[], &["check", "--version"]);
+    assert_eq!(run.code, 2);
+    assert!(run.stdout.is_empty());
+    assert!(run.stderr.contains("bilbo: unknown option '--version'\n"));
+}
+
+#[test]
+fn version_with_more_arguments_is_usage_error() {
+    let dir = TempDir::new("cli-version-extra");
+    let run = bilbo(dir.path(), &[], &["--version", "now"]);
+    assert_eq!(run.code, 2);
+    assert!(run.stdout.is_empty());
+    assert_eq!(
+        run.stderr,
+        format!("bilbo: unknown option '--version'\n{}", prefixed_usage())
     );
 }
 
