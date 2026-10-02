@@ -50,7 +50,7 @@ bilbo is meant to be installable by people other than its maintainer. Today the 
   This change only puts the plugin files where add-setup can reach them.
 - **Hook installation.** It waits for add-note-digest.
 - **Homebrew, Windows, a PowerShell installer and musl builds.** Each one can be added through dist's config when someone asks for it.
-- **Signed releases and installer-side checksum verification.** dist publishes checksums, but its shell installer does not verify them yet. Trust is HTTPS from GitHub.
+- **Signed releases and installer-side checksum verification.** dist publishes checksums, and its shell installer verifies them only where `sha256sum` exists, which leaves out stock macOS. There, trust is HTTPS from GitHub.
 - **An installer that supports NixOS.** NixOS users take the flake.
 - **The dnix side.** The flake input, and adding the package on rivendell, are a dnix commit made after this change merges.
 
