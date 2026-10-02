@@ -100,7 +100,7 @@ Recall SHALL search every entry of `<root>/notes/` that is a regular file, not h
 - **THEN** bilbo exits 2 and stdout is empty
 
 ### Requirement: Options and the query
-Options SHALL be accepted before or after the query words. An argument `--` SHALL end the options, so every argument after it is a query word, even one starting with `-`. Any other argument starting with `-` before `--` that is not `--kind` or `--limit` SHALL be a usage error.
+Options SHALL be accepted before or after the query words. `--kind=<kind>` and `--limit=<n>` SHALL be the same as `--kind <kind>` and `--limit <n>`. An argument `--` SHALL end the options, so every argument after it is a query word, even one starting with `-`. Any other argument before `--` that starts with `-` followed by a character other than whitespace SHALL be a usage error.
 
 #### Scenario: A word that looks like an option
 - **WHEN** an agent runs `bilbo recall -- --title flag`
@@ -110,8 +110,12 @@ Options SHALL be accepted before or after the query words. An argument `--` SHAL
 - **WHEN** an agent runs `bilbo recall rollback --json`
 - **THEN** bilbo prints a message naming `--json` as unknown to stderr and exits 2
 
+#### Scenario: An option with its value after `=`
+- **WHEN** an agent runs `bilbo recall rollback --kind=decision --limit=1`
+- **THEN** stdout is the same as for `bilbo recall rollback --kind decision --limit 1`
+
 ### Requirement: Snippet
-The snippet SHALL be the matching passage's text without its heading line, with every run of whitespace turned into one space, cut to its first 300 characters, never inside a character.
+The snippet SHALL be the matching passage's text without its heading line, with every run of whitespace turned into one space, cut to its first 300 characters, never inside a character. An empty snippet SHALL be printed as `-`.
 
 #### Scenario: A multi-line passage
 - **WHEN** the matching passage is two paragraphs of 500 characters in all
@@ -120,6 +124,10 @@ The snippet SHALL be the matching passage's text without its heading line, with 
 #### Scenario: A short passage is not padded
 - **WHEN** the matching passage is the single line `Use two slots.`
 - **THEN** the snippet is `Use two slots.`
+
+#### Scenario: A passage with no text
+- **WHEN** the best match is a heading with no text under it
+- **THEN** the snippet line is `-`
 
 ### Requirement: Nothing matches
 When no note matches, `bilbo recall` SHALL print `bilbo: no notes match` to stderr, leave stdout empty and exit 1.
