@@ -28,6 +28,7 @@ usage: bilbo new <kind> <topic> [--title <text>]
        bilbo recall <query>... [--kind <kind>]... [--limit <n>]
        bilbo index
        bilbo --help
+       bilbo --version
 new creates <root>/notes/<kind>-<topic>.md and prints its path.
 check prints every problem in the store and changes nothing.
 recall prints the notes that best match the query, best first, 10 unless --limit says otherwise.
@@ -49,6 +50,10 @@ fn run() -> Result<ExitCode, Failure> {
     let args = collect_args()?;
     if wants_help(&args) {
         print_stdout(USAGE.trim_end());
+        return Ok(ExitCode::SUCCESS);
+    }
+    if args == ["--version"] {
+        print_stdout(concat!("bilbo ", env!("CARGO_PKG_VERSION")));
         return Ok(ExitCode::SUCCESS);
     }
     let env = store::Env::from_process();

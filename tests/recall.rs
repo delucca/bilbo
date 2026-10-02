@@ -10,6 +10,7 @@ usage: bilbo new <kind> <topic> [--title <text>]
        bilbo recall <query>... [--kind <kind>]... [--limit <n>]
        bilbo index
        bilbo --help
+       bilbo --version
 new creates <root>/notes/<kind>-<topic>.md and prints its path.
 check prints every problem in the store and changes nothing.
 recall prints the notes that best match the query, best first, 10 unless --limit says otherwise.
