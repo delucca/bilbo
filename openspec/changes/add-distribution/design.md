@@ -45,13 +45,16 @@ On a pull request it runs `dist plan` only, which is dist's default `pr-run-mode
 ### The dist config
 
 - `cargo-dist-version = "0.33.0"`. CI installs exactly this version. The dev shell gets the same one from a pinned `nixpkgs-unstable` input.
+- `Cargo.toml` gains `repository = "https://github.com/delucca/bilbo"`. dist refuses to generate GitHub CI without it.
 - `ci = "github"` and `installers = ["shell"]`. No PowerShell, no Homebrew and no npm installer. Each would add a platform or a publishing secret that nobody has asked for.
 - `targets = ["aarch64-apple-darwin", "x86_64-apple-darwin", "x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu"]`.
-- `install-path = ["$XDG_BIN_HOME/", "~/.local/bin/"]`.
+- `install-path = ["$XDG_BIN_HOME/", "~/.local/bin"]`, the form `dist init` writes back.
   - dist's default is `~/.cargo/bin`, which makes no sense for people who don't use Rust.
   - The cascade mirrors how bilbo already resolves `XDG_DATA_HOME`, `XDG_CONFIG_HOME` and `XDG_CACHE_HOME`.
   - `~/.local/bin` is also where uv and pipx install, so it is usually on PATH already.
 - `install-updater = false`. Upgrading means running the installer again. A separate `bilbo-update` binary is one more thing to explain.
+- `source-tarball = false`. GitHub already attaches source archives, and dist's own would be a fifth archive with a fifth `.sha256`.
+- `[dist.github-custom-runners]` builds aarch64-apple-darwin on `macos-15`. dist's default, `macos-14`, is retired on 2026-11-02.
 - `[dist.github-action-commits]` pins every action the generated workflow uses (checkout, upload and download artifact, and the others `dist init` lists) to the commit SHA of the tag dist expects.
   - `tests/workflows.rs` reads every file in `.github/workflows/` and fails on any `uses:` line whose ref is not a 40-hex SHA.
   - That catches an action dist adds in a later version that we forgot to pin, and it covers `ci.yml` too.
@@ -66,7 +69,7 @@ On a pull request it runs `dist plan` only, which is dist's default `pr-run-mode
 
 - **No `-V`.** Every short flag becomes something a verb can no longer use.
 - **`--version` after a verb stays an unknown option**, the same way an unknown option already behaves, so verbs keep their own option space.
-- **`bilbo --version now` falls through to dispatch.** There `--version` is an unknown verb, which gives the usage error in the spec without any special case.
+- **`bilbo --version now` falls through to dispatch.** There it starts with `-`, so the existing arm reports `--version` as an unknown option and prints the usage, which is the usage error in the spec without any special case.
 
 `--help` stays as it is: it is accepted anywhere before `--`.
 
@@ -87,12 +90,14 @@ outputs, for aarch64-darwin, x86_64-linux, aarch64-linux:
   - `cargoLock.lockFile = ./Cargo.lock` gives a vendor hash that never needs updating;
   - `version` comes from `(lib.importTOML ./Cargo.toml).package.version`;
   - `meta.mainProgram = "bilbo"`.
-- **`src` is a `lib.fileset`** of `Cargo.toml`, `Cargo.lock`, `src`, `tests`, `plugins` and the two marketplace folders.
+- **`src` is a `lib.fileset`** of `Cargo.toml`, `Cargo.lock`, `src`, `tests`, `plugins` and the two marketplace files.
   - Edits to `openspec/`, `README.md` or the workflows don't rebuild the package.
+  - `.github` is therefore not in `src`, so the check phase skips `every_action_is_pinned_by_sha` through `checkFlags`. The `verify` job runs it.
   - `tests/plugin.rs` reads the marketplaces, which is why the build needs them.
 - **Tests run in `checkPhase`.**
   - The fake embedder listens on `127.0.0.1`. The Linux sandbox has loopback. On macOS, `__darwinAllowLocalNetworking = true` allows it when the sandbox is on.
   - The ignored speed test stays ignored.
+- **`.gitignore` gains `/result`**, the link `nix build` leaves in the checkout.
 - **`postInstall` copies the marketplace layout** into `$out/share/bilbo/`: `plugins/bilbo`, `.claude-plugin/marketplace.json` and `.agents/plugins/marketplace.json`.
   - A marketplace's `source: "./plugins/bilbo"` resolves relative to its root, so the folder is a marketplace either tool can add by path.
   - add-setup builds on this. A `claude plugin marketplace add <store path>` installs the skills from the binary's own commit.
@@ -107,7 +112,7 @@ outputs, for aarch64-darwin, x86_64-linux, aarch64-linux:
 
 - it installs Nix with `cachix/install-nix-action`, pinned by SHA;
 - it runs `nix flake check -L`, which builds the x86_64-linux package and runs its tests;
-- it also runs `nix eval .#packages.aarch64-darwin.default.version`, so a darwin-only evaluation error fails too.
+- it also runs `nix eval --raw .#packages.aarch64-darwin.default.drvPath`, so a darwin-only evaluation error fails too. `.version` would not do: it comes from `importTOML` and never instantiates the darwin derivation.
 
 The job is not added to the required checks without the maintainer's go-ahead, because the ruleset is a repository setting.
 
@@ -118,6 +123,8 @@ The job is not added to the required checks without the maintainer's go-ahead, b
 - **Nix and CI toolchains can differ.** nixpkgs 26.05 may move past rustc 1.95.0 in a point update while CI stays on 1.95.0. → That only matters if the newer compiler rejects the code, which `nix flake check` in CI would catch. `rust-version` stays the floor.
 - **The plugin can still drift for curl users.** The installer ships only the binary, and the Claude Code plugin still follows `main`. → add-setup solves this. Codex takes `--ref v<version>`, and Claude Code can add a marketplace from a path or a pinned source. This change does not make it worse.
 - **The installer edits shell rc files** when the install folder is not on PATH. → That is dist's documented behavior, and the installer prints what it changed. `README.md` mentions it.
+- **Other tag shapes also publish.** The generated trigger matches any tag holding `<major>.<minor>.<patch>`, so `0.1.0` or `bilbo-v0.1.0` would publish too. → `AGENTS.md` says to push only `v<version>`; `release.yml` is generated, so the trigger is not narrowed by hand.
+- **glibc floor.** Linux builds run on Ubuntu 22.04 (glibc 2.35). dist auto-detects the floor per build; the 6.2 smoke check reads the installer's `check_glibc` in the published release to confirm it is not below 2.35.
 
 ## Migration Plan
 
