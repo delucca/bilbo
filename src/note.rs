@@ -34,6 +34,7 @@ pub fn is_topic(s: &str) -> bool {
 
 #[derive(Debug)]
 pub struct Name {
+    pub kind: String,
     pub topic: String,
 }
 
@@ -54,6 +55,7 @@ pub fn parse_name(file_name: &str) -> Result<Name, String> {
         return Err(format!("name: invalid topic '{topic}': {TOPIC_RULE}"));
     }
     Ok(Name {
+        kind: kind.into(),
         topic: topic.into(),
     })
 }
@@ -141,6 +143,10 @@ impl fmt::Display for Problem {
 
 pub struct Note {
     pub id: Option<String>,
+    /// The first `created:` value when it passes `is_created`.
+    pub created: Option<String>,
+    /// Physical line the body starts on: the line after the closing `---`, or 1 when there is no closed frontmatter.
+    pub body_start: usize,
     pub problems: Vec<Problem>,
 }
 
@@ -155,30 +161,49 @@ pub fn read(text: &str) -> Note {
         }
         None => text,
     };
-    let mut lines: Vec<&str> = text.split('\n').collect();
-    if lines.last() == Some(&"") {
-        lines.pop();
-    }
-    if let Some(n) = lines.iter().position(|l| l.ends_with('\r')) {
+    if let Some(n) = text.split('\n').position(|l| l.ends_with('\r')) {
         problems.push(Problem::at(n + 1, "line endings: use LF, not CRLF"));
     }
-    for line in &mut lines {
-        *line = line.strip_suffix('\r').unwrap_or(line);
-    }
+    let lines = split_lines(text);
 
     let mut id = None;
+    let mut created = None;
+    let mut body_start = 1;
     if lines.first() != Some(&"---") {
         problems.push(Problem::at(1, "frontmatter: missing; line 1 must be '---'"));
         problems.extend(title_problem(&lines, 1));
     } else if let Some(close) = lines[1..].iter().position(|l| *l == "---") {
         let close = close + 1;
-        id = read_keys(&lines[1..close], &mut problems);
+        (id, created) = read_keys(&lines[1..close], &mut problems);
+        body_start = close + 2;
         problems.extend(title_problem(&lines[close + 1..], close + 2));
     } else {
         problems.push(Problem::at(1, "frontmatter: no closing '---' line"));
     }
     problems.sort_by_key(|p| p.line.unwrap_or(usize::MAX));
-    Note { id, problems }
+    Note {
+        id,
+        created,
+        body_start,
+        problems,
+    }
+}
+
+/// Physical lines as `read` numbers them: one leading byte order mark dropped, split on '\n', no empty line after a
+/// final '\n', one trailing '\r' removed from each.
+pub fn lines(text: &str) -> Vec<&str> {
+    split_lines(text.strip_prefix('\u{feff}').unwrap_or(text))
+}
+
+fn split_lines(text: &str) -> Vec<&str> {
+    let mut lines: Vec<&str> = text.split('\n').collect();
+    if lines.last() == Some(&"") {
+        lines.pop();
+    }
+    for line in &mut lines {
+        *line = line.strip_suffix('\r').unwrap_or(line);
+    }
+    lines
 }
 
 /// "---\nid: <id>\ncreated: <created>\n---\n\n# <title>\n"
@@ -195,10 +220,11 @@ struct Keys {
     sources_line: Option<usize>,
     items: usize,
     id: Option<String>,
+    created: Option<String>,
 }
 
 /// `lines` are the ones between the delimiters; the first is physical line 2.
-fn read_keys(lines: &[&str], problems: &mut Vec<Problem>) -> Option<String> {
+fn read_keys(lines: &[&str], problems: &mut Vec<Problem>) -> (Option<String>, Option<String>) {
     let mut keys = Keys::default();
     for (i, line) in lines.iter().enumerate() {
         keys.line(i + 2, line, problems);
@@ -210,7 +236,7 @@ fn read_keys(lines: &[&str], problems: &mut Vec<Problem>) -> Option<String> {
     if !keys.seen_created {
         problems.push(Problem::whole("created: missing"));
     }
-    keys.id
+    (keys.id, keys.created)
 }
 
 impl Keys {
@@ -252,15 +278,17 @@ impl Keys {
             "created" => {
                 let first = !std::mem::replace(&mut self.seen_created, true);
                 repeated(first, n, key, problems);
-                if let Some(value) = value(n, key, rest, problems)
-                    && !is_created(value)
-                {
-                    problems.push(Problem::at(
-                        n,
-                        format!(
-                            "created: '{value}' is not YYYY-MM-DDTHH:MM±HH:MM, a real local time to the minute"
-                        ),
-                    ));
+                if let Some(value) = value(n, key, rest, problems) {
+                    if !is_created(value) {
+                        problems.push(Problem::at(
+                            n,
+                            format!(
+                                "created: '{value}' is not YYYY-MM-DDTHH:MM±HH:MM, a real local time to the minute"
+                            ),
+                        ));
+                    } else if first {
+                        self.created = Some(value.to_string());
+                    }
                 }
             }
             "sources" => {
@@ -384,7 +412,7 @@ fn title_problem(body: &[&str], first_line: usize) -> Option<Problem> {
 }
 
 /// The fence character, its run length and the rest of the line, when `line` is a fence line.
-fn fence_run(line: &str) -> Option<(char, usize, &str)> {
+pub fn fence_run(line: &str) -> Option<(char, usize, &str)> {
     let stripped = line.trim_start_matches(' ');
     if line.len() - stripped.len() > 3 {
         return None;
@@ -403,7 +431,7 @@ mod tests {
     const ID: &str = "01M3YJ7R6HK6NQ30DCDB1P4DYB";
     const CREATED: &str = "2026-10-02T14:23-03:00";
 
-    fn lines(lines: &[&str]) -> String {
+    fn joined(lines: &[&str]) -> String {
         lines.iter().map(|l| format!("{l}\n")).collect()
     }
 
@@ -419,7 +447,7 @@ mod tests {
         ];
         all.extend(extra);
         all.extend(["---", "", "# Title"]);
-        lines(&all)
+        joined(&all)
     }
 
     fn with_body(body: &[&str]) -> String {
@@ -431,12 +459,13 @@ mod tests {
             "",
         ];
         all.extend(body);
-        lines(&all)
+        joined(&all)
     }
 
     #[test]
     fn well_named_note() {
         let name = parse_name("decision-note-store.md").unwrap();
+        assert_eq!(name.kind, "decision");
         assert_eq!(name.topic, "note-store");
     }
 
@@ -467,7 +496,7 @@ mod tests {
     #[test]
     fn minimal_frontmatter_is_valid() {
         assert!(messages(&with_front(&[])).is_empty());
-        let flipped = lines(&[
+        let flipped = joined(&[
             "---",
             "created: 2026-10-02T14:23-03:00",
             "id: 01M3YJ7R6HK6NQ30DCDB1P4DYB",
@@ -525,7 +554,7 @@ mod tests {
         let spaced = with_front(&[]).replacen("---", "--- ", 1);
         assert!(messages(&spaced)[0].starts_with("frontmatter: missing"));
 
-        let open = lines(&[
+        let open = joined(&[
             "---",
             "id: 01M3YJ7R6HK6NQ30DCDB1P4DYB",
             "created: 2026-10-02T14:23-03:00",
@@ -748,6 +777,58 @@ mod tests {
             two,
             ["title: found 2 '# ' headings outside code fences, expected one (line 8)"]
         );
+    }
+
+    #[test]
+    fn read_returns_created_and_body_start() {
+        let note = read(&with_front(&[]));
+        assert_eq!(note.created.as_deref(), Some(CREATED));
+        assert_eq!(note.body_start, 5);
+    }
+
+    #[test]
+    fn invalid_created_is_none() {
+        let bad = with_front(&[]).replace(CREATED, "2026-10-02");
+        let note = read(&bad);
+        assert_eq!(note.created, None);
+        assert_eq!(note.body_start, 5);
+        let second =
+            with_front(&[&format!("created: {CREATED}")]).replacen(CREATED, "2026-10-02", 1);
+        assert_eq!(read(&second).created, None);
+    }
+
+    #[test]
+    fn no_frontmatter_body_starts_at_line_1() {
+        let note = read("# Title\n");
+        assert_eq!(note.body_start, 1);
+        assert_eq!(note.created, None);
+    }
+
+    #[test]
+    fn unclosed_frontmatter_body_starts_at_line_1() {
+        let open = joined(&["---", &format!("created: {CREATED}"), "# Title"]);
+        let note = read(&open);
+        assert_eq!(note.body_start, 1);
+        assert_eq!(note.created, None);
+    }
+
+    #[test]
+    fn body_start_after_last_line() {
+        let text = joined(&[
+            "---",
+            &format!("id: {ID}"),
+            &format!("created: {CREATED}"),
+            "---",
+        ]);
+        assert_eq!(read(&text).body_start, 5);
+        assert_eq!(lines(&text).len(), 4);
+    }
+
+    #[test]
+    fn lines_match_read_numbering() {
+        assert_eq!(lines("\u{feff}a\r\nb\r\n"), ["a", "b"]);
+        assert_eq!(lines("a\n\nb"), ["a", "", "b"]);
+        assert_eq!(lines(""), Vec::<&str>::new());
     }
 
     #[test]

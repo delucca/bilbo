@@ -1,10 +1,8 @@
 mod common;
 
-use std::collections::BTreeMap;
-use std::path::{Path, PathBuf};
-use std::time::SystemTime;
+use std::path::Path;
 
-use common::{IDS, Run, TempDir, bilbo, note_text, store, write};
+use common::{IDS, Run, TempDir, bilbo, note_text, snapshot, store, write};
 
 fn check(dir: &TempDir, root: &Path) -> Run {
     bilbo(
@@ -164,24 +162,6 @@ fn subfolder_is_reported() {
         run.stdout,
         "notes/archive: folder: notes/ holds only note files\n"
     );
-}
-
-fn snapshot(root: &Path) -> BTreeMap<PathBuf, (Option<Vec<u8>>, SystemTime)> {
-    let mut out = BTreeMap::new();
-    let mut pending = vec![root.to_path_buf()];
-    while let Some(path) = pending.pop() {
-        let meta = std::fs::metadata(&path).unwrap();
-        let bytes = if meta.is_dir() {
-            for entry in std::fs::read_dir(&path).unwrap() {
-                pending.push(entry.unwrap().path());
-            }
-            None
-        } else {
-            Some(std::fs::read(&path).unwrap())
-        };
-        out.insert(path, (bytes, meta.modified().unwrap()));
-    }
-    out
 }
 
 #[test]

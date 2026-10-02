@@ -1,9 +1,11 @@
 #![allow(dead_code)]
 
+use std::collections::BTreeMap;
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::SystemTime;
 
 static COUNTER: AtomicUsize = AtomicUsize::new(0);
 
@@ -82,4 +84,22 @@ pub fn store(dir: &TempDir) -> PathBuf {
 
 pub fn write(root: &Path, name: &str, text: &str) {
     std::fs::write(root.join("notes").join(name), text).unwrap();
+}
+
+pub fn snapshot(root: &Path) -> BTreeMap<PathBuf, (Option<Vec<u8>>, SystemTime)> {
+    let mut out = BTreeMap::new();
+    let mut pending = vec![root.to_path_buf()];
+    while let Some(path) = pending.pop() {
+        let meta = std::fs::metadata(&path).unwrap();
+        let bytes = if meta.is_dir() {
+            for entry in std::fs::read_dir(&path).unwrap() {
+                pending.push(entry.unwrap().path());
+            }
+            None
+        } else {
+            Some(std::fs::read(&path).unwrap())
+        };
+        out.insert(path, (bytes, meta.modified().unwrap()));
+    }
+    out
 }

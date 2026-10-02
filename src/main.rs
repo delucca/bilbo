@@ -1,6 +1,8 @@
 mod check;
 mod new;
 mod note;
+mod rank;
+mod recall;
 mod store;
 
 use std::io::Write;
@@ -19,9 +21,11 @@ pub enum Failure {
 const USAGE: &str = "\
 usage: bilbo new <kind> <topic> [--title <text>]
        bilbo check
+       bilbo recall <query>... [--kind <kind>]... [--limit <n>]
        bilbo --help
 new creates <root>/notes/<kind>-<topic>.md and prints its path.
 check prints every problem in the store and changes nothing.
+recall prints the notes that best match the query, best first, 10 unless --limit says otherwise.
 kinds: plan, spec, design, decision, gotcha, research, review, report, reference
 root: $BILBO_HOME, else $XDG_DATA_HOME/bilbo, else $HOME/.local/share/bilbo
 ";
@@ -55,6 +59,11 @@ fn run() -> Result<ExitCode, Failure> {
             } else {
                 ExitCode::FAILURE
             })
+        }
+        Some("recall") => {
+            let lines = recall::run(&args[1..], &env)?;
+            lines.iter().for_each(|line| print_stdout(line));
+            Ok(ExitCode::SUCCESS)
         }
         Some(arg) if arg.starts_with('-') => Err(Failure::Usage(format!("unknown option '{arg}'"))),
         Some(arg) => Err(Failure::Usage(format!("unknown verb '{arg}'"))),
