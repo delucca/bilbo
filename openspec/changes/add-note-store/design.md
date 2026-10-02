@@ -45,7 +45,7 @@ This is the first code, so there is no existing module to extend. Each module ow
 | Need | Choice | Why not the alternative |
 |---|---|---|
 | Local time with the machine's UTC offset, for `created` | `jiff` 0.2.37 (`Zoned::now()`, `strftime("%Y-%m-%dT%H:%M%:z")`) | The standard library has no time zones. Calling `localtime_r` through `libc` needs `unsafe`, platform-specific code and a second dependency anyway. `chrono` works too, but jiff is maintained by the author of `regex` and has the more correct tz handling. |
-| Calendar validation of `created` in `check` | `jiff` `strptime` with the same format, which rejects `2026-02-30` | Comes free with the dependency `new` already needs. A hand-written leap-year table would duplicate it. |
+| Calendar validation of `created` in `check` | `jiff` `strtime::parse` with the same format, then `.to_datetime()`, which rejects `2026-02-30`. A byte-shape check runs first, because `parse` accepts forms the contract forbids (seconds, `-00:00`, single-digit fields). | Comes free with the dependency `new` already needs. A hand-written leap-year table would duplicate it. |
 | ULID | Written by hand: 48-bit milliseconds since the epoch plus 80 random bits from `/dev/urandom`, Crockford base32. About 20 lines, as the legacy minting script shows. | The `ulid` crate pulls in `rand`. `getrandom` only matters on Windows, which is a non-goal. |
 | Arguments | Parsed by hand over `std::env::args` | Two verbs and one option. `clap` adds about a dozen transitive crates. Revisit when search adds filters. |
 | Frontmatter | A strict line reader | `serde_yaml` is archived and its forks are young. A YAML reader would accept forms the contract forbids (flow lists, unquoted or single-quoted items, `sources: []`), so `check` would need a second validation layer on top of it. The strict reader is the validator. |
@@ -55,14 +55,14 @@ This is the first code, so there is no existing module to extend. Each module ow
 
 ### Atomic, no-clobber create
 
-`new` writes the rendered note to `notes/.new-<id>.tmp`, calls `fsync`, then `std::fs::hard_link`s it to `notes/<kind>-<topic>.md` and removes the temp file. `link` fails with `EEXIST` when the target exists, so of two racing runs exactly one wins. No reader ever sees a partial file.
+`new` writes the rendered note to `notes/.new-<id>.tmp`, calls `fsync`, lists `notes/` again for the topic, then `std::fs::hard_link`s it to `notes/<kind>-<topic>.md`. The temp file is removed on every path after its creation. `link` fails with `EEXIST` when the target exists, so of two racing runs exactly one wins. No reader ever sees a partial file.
 
 - Why not `rename`: it silently replaces an existing note.
 - Why not `OpenOptions::create_new` and then writing: the empty file is visible before its bytes are, and the later daemon could index it half-written.
 
-The temp file starts with `.`, so `check` and later readers ignore it. A crash between the link and the unlink leaves a harmless hidden file behind.
+The temp file starts with `.`, so `check` and later readers ignore it. A crash after the temp file is created leaves a harmless hidden file behind.
 
-Topic uniqueness across kinds is checked by listing `notes/` before the link. Two runs that request the same topic under different kinds at the same instant can both win. That window is milliseconds wide, and `check` reports the result. A lock file would close it, but at the cost of a stale-lock failure mode, which is worse.
+Topic uniqueness across kinds is checked by listing `notes/` before writing and again after the `fsync`, just before the link. Two runs that request the same topic under different kinds at the same instant can still both win. On macOS, `fsync` is `F_FULLFSYNC` and the two runs tend to finish it together: simultaneous starts ended with two notes in 1 to 6 of 20 test rounds. `check` reports both files. A lock file would close the window, but at the cost of a stale-lock failure mode, which is worse.
 
 ### One store path on every OS
 

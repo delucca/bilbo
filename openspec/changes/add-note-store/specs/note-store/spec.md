@@ -94,14 +94,14 @@ A note SHALL open with a line holding exactly `---`, then its keys, then a secon
 - **THEN** the store is invalid at both files
 
 ### Requirement: Created timestamp
-`created` SHALL be a real local date and time, to the minute, with a numeric UTC offset, in the form `YYYY-MM-DDTHH:MM±HH:MM`.
+`created` SHALL be a real local date and time, to the minute, with a numeric UTC offset, in the form `YYYY-MM-DDTHH:MM±HH:MM`. `-00:00` is not allowed; UTC is `+00:00`.
 
 #### Scenario: A valid timestamp
 - **WHEN** a note has `created: 2026-10-02T14:23-03:00`
 - **THEN** `created` is valid
 
 #### Scenario: Other forms are invalid
-- **WHEN** a note has `created: 2026-10-02`, `created: 2026-10-02T14:23:05-03:00` or `created: 2026-10-02T17:23Z`
+- **WHEN** a note has `created: 2026-10-02`, `created: 2026-10-02T14:23:05-03:00`, `created: 2026-10-02T17:23Z` or `created: 2026-10-02T14:23-00:00`
 - **THEN** the note is invalid
 
 #### Scenario: An impossible date is invalid
