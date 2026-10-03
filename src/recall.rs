@@ -1,4 +1,3 @@
-use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -6,7 +5,6 @@ use crate::rank::{self, Document, Hit};
 use crate::{Failure, config, embed, note, store, vectors};
 
 const DEFAULT_LIMIT: usize = 10;
-const SNIPPET_CHARS: usize = 300;
 const QUERY_BYTES: usize = 2000;
 const QUERY_TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -99,17 +97,7 @@ pub fn run(args: &[String], env: &store::Env) -> Result<Output, Failure> {
             created.as_deref().unwrap_or("-")
         ));
         out.push(passage.path.join(" > "));
-        let collapsed = passage
-            .text
-            .split_whitespace()
-            .collect::<Vec<_>>()
-            .join(" ");
-        let snippet: String = collapsed.chars().take(SNIPPET_CHARS).collect();
-        out.push(if snippet.is_empty() {
-            "-".into()
-        } else {
-            snippet
-        });
+        out.push(rank::snippet(passage));
     }
     Ok(Output {
         warnings,
@@ -126,77 +114,24 @@ fn meaning(
     documents: &[Document],
     allowed: &[bool],
 ) -> (Vec<Hit>, Vec<String>) {
-    let keys: Vec<Vec<Option<u64>>> = documents
-        .iter()
-        .map(|d| {
-            d.passages
-                .iter()
-                .map(|p| rank::input(p).map(|input| vectors::key(&input)))
-                .collect()
-        })
-        .collect();
     let cache = vectors::dir(env)
         .map(|dir| vectors::load(&vectors::path(&dir, root)))
         .unwrap_or_default();
-    let mut seen = HashSet::new();
-    let mut missing = 0;
-    let mut indexed_any = false;
-    for key in keys
-        .iter()
-        .flatten()
-        .flatten()
-        .filter(|key| seen.insert(**key))
-    {
-        if cache.get(&embedder.model, *key).is_some() {
-            indexed_any = true;
-        } else {
-            missing += 1;
-        }
-    }
+    let (found, missing) = vectors::lookup(&cache, &embedder.model, documents);
+    let indexed_any = found.iter().flatten().any(Option::is_some);
 
     let mut warnings = Vec::new();
     let mut hits = Vec::new();
     if indexed_any {
         let mut text = format!("{}{query}", embedder.query_prefix);
         text.truncate(text.floor_char_boundary(QUERY_BYTES));
-        let answer = embed::Client::new(embedder, |n| std::env::var_os(n), QUERY_TIMEOUT)
-            .and_then(|client| client.embed(&[text]))
-            .and_then(|mut vectors| {
-                let q = vectors.remove(0);
-                if q.len() == cache.dims {
-                    Ok(q)
-                } else {
-                    Err(format!(
-                        "embedder {} answered {} dimensions; the cache holds {}",
-                        embedder.url,
-                        q.len(),
-                        cache.dims
-                    ))
-                }
-            });
-        match answer {
+        match embed::query(embedder, &text, QUERY_TIMEOUT, cache.dims) {
             Ok(q) => {
-                let mut scored: Vec<(f32, Hit)> = Vec::new();
-                for (document, passages) in keys.iter().enumerate().filter(|(d, _)| allowed[*d]) {
-                    for (passage, key) in passages.iter().enumerate() {
-                        let Some(v) = key.and_then(|key| cache.get(&embedder.model, key)) else {
-                            continue;
-                        };
-                        let sim: f32 = q.iter().zip(v).map(|(a, b)| a * b).sum();
-                        if f64::from(sim) >= embedder.min_similarity {
-                            scored.push((sim, Hit { document, passage }));
-                        }
-                    }
-                }
-                scored.sort_by(|a, b| {
-                    b.0.total_cmp(&a.0)
-                        .then(a.1.document.cmp(&b.1.document))
-                        .then(a.1.passage.cmp(&b.1.passage))
-                });
-                hits = scored
+                hits = rank::meaning(&q, &found, embedder.min_similarity)
                     .into_iter()
-                    .take(rank::CANDIDATES)
                     .map(|(_, hit)| hit)
+                    .filter(|hit| allowed[hit.document])
+                    .take(rank::CANDIDATES)
                     .collect();
             }
             Err(e) => warnings.push(format!("embedder unavailable ({e}); keyword results only")),

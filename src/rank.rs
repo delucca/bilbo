@@ -6,6 +6,7 @@ pub const PART_BYTES: usize = 4000;
 pub const INPUT_BYTES: usize = 4000;
 
 pub const CANDIDATES: usize = 50;
+pub const SNIPPET_CHARS: usize = 300;
 
 const K1: f64 = 1.2;
 const B: f64 = 0.75;
@@ -338,6 +339,57 @@ pub fn keyword(query: &[String], documents: &[Document]) -> Vec<Hit> {
             .then(a.1.passage.cmp(&b.1.passage))
     });
     hits.into_iter().map(|(_, hit)| hit).collect()
+}
+
+/// Every passage with a vector whose similarity to `query` is at least `floor`, best first, with
+/// that similarity. Vectors are unit length, so similarity is the dot product. Ties as in `keyword`.
+pub fn meaning(query: &[f32], vectors: &[Vec<Option<&[f32]>>], floor: f64) -> Vec<(f32, Hit)> {
+    let mut scored = Vec::new();
+    for (document, passages) in vectors.iter().enumerate() {
+        for (passage, vector) in passages.iter().enumerate() {
+            let Some(v) = vector else { continue };
+            let sim: f32 = query.iter().zip(*v).map(|(a, b)| a * b).sum();
+            if f64::from(sim) >= floor {
+                scored.push((sim, Hit { document, passage }));
+            }
+        }
+    }
+    scored.sort_by(|a, b| {
+        b.0.total_cmp(&a.0)
+            .then(a.1.document.cmp(&b.1.document))
+            .then(a.1.passage.cmp(&b.1.passage))
+    });
+    scored
+}
+
+/// The passage's text with whitespace runs collapsed to one space, cut to `SNIPPET_CHARS` chars; `-` when it has none.
+pub fn snippet(passage: &Passage) -> String {
+    let collapsed = passage
+        .text
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    let snippet: String = collapsed.chars().take(SNIPPET_CHARS).collect();
+    if snippet.is_empty() {
+        "-".into()
+    } else {
+        snippet
+    }
+}
+
+/// How many distinct `words` (folded) the passage holds, in its heading path or its text.
+pub fn shared(passage: &Passage, words: &[String]) -> usize {
+    let mut found: HashSet<&str> = HashSet::new();
+    let mut count = |word: &str| {
+        if let Some(w) = words.iter().find(|w| w.as_str() == word) {
+            found.insert(w);
+        }
+    };
+    for segment in &passage.path {
+        each_word(segment, &mut count);
+    }
+    each_word(&passage.text, &mut count);
+    found.len()
 }
 
 /// One hit per document, best first: reciprocal rank fusion of the first `CANDIDATES` of each list, then the
@@ -791,6 +843,77 @@ mod tests {
         let keyword = [hit(0, 0), hit(2, 0)];
         let meaning = [hit(1, 0), hit(0, 0)];
         assert_eq!(order(&fuse(&keyword, &meaning)), [0, 1, 2]);
+    }
+
+    fn vecs<'a>(rows: &'a [&'a [Option<[f32; 2]>]]) -> Vec<Vec<Option<&'a [f32]>>> {
+        rows.iter()
+            .map(|r| r.iter().map(|v| v.as_ref().map(|a| a.as_slice())).collect())
+            .collect()
+    }
+
+    #[test]
+    fn meaning_keeps_the_floor_and_orders_best_first() {
+        let rows: [&[Option<[f32; 2]>]; 2] = [
+            &[Some([0.6, 0.8]), Some([1.0, 0.0])],
+            &[Some([0.0, 1.0]), Some([0.8, 0.6])],
+        ];
+        let hits = meaning(&[1.0, 0.0], &vecs(&rows), 0.6);
+        let got: Vec<(f32, usize, usize)> = hits
+            .iter()
+            .map(|(s, h)| (*s, h.document, h.passage))
+            .collect();
+        assert_eq!(got, [(1.0, 0, 1), (0.8, 1, 1), (0.6, 0, 0)]);
+    }
+
+    #[test]
+    fn meaning_skips_passages_without_a_vector() {
+        let rows: [&[Option<[f32; 2]>]; 2] = [&[None, Some([1.0, 0.0])], &[None]];
+        let hits = meaning(&[1.0, 0.0], &vecs(&rows), 0.0);
+        assert_eq!(hits.len(), 1);
+        assert_eq!((hits[0].1.document, hits[0].1.passage), (0, 1));
+    }
+
+    #[test]
+    fn meaning_ties_go_to_the_lower_index() {
+        let rows: [&[Option<[f32; 2]>]; 2] =
+            [&[Some([1.0, 0.0]), Some([1.0, 0.0])], &[Some([1.0, 0.0])]];
+        let hits = meaning(&[1.0, 0.0], &vecs(&rows), 0.5);
+        let got: Vec<(usize, usize)> = hits.iter().map(|(_, h)| (h.document, h.passage)).collect();
+        assert_eq!(got, [(0, 0), (0, 1), (1, 0)]);
+    }
+
+    #[test]
+    fn snippet_collapses_whitespace_and_cuts_at_300_chars() {
+        assert_eq!(snippet(&passage(&["T"], "a \n\t b   c")), "a b c");
+        let long = passage(&["T"], &"ã ".repeat(400));
+        let cut = snippet(&long);
+        assert_eq!(cut.chars().count(), SNIPPET_CHARS);
+        assert!(cut.starts_with("ã ã"));
+    }
+
+    #[test]
+    fn snippet_of_an_empty_passage_is_a_dash() {
+        assert_eq!(snippet(&passage(&["T"], "")), "-");
+        assert_eq!(snippet(&passage(&["T"], " \n ")), "-");
+    }
+
+    fn words_of(list: &[&str]) -> Vec<String> {
+        list.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn shared_counts_distinct_words_in_text_and_heading() {
+        let p = passage(&["Store layout"], "layout of the store, store again");
+        assert_eq!(shared(&p, &words_of(&["store", "layout", "absent"])), 2);
+        let q = passage(&["Heading"], "body");
+        assert_eq!(shared(&q, &words_of(&["heading", "body"])), 2);
+        assert_eq!(shared(&q, &[]), 0);
+    }
+
+    #[test]
+    fn shared_folds_case_and_accents() {
+        let p = passage(&["Decisão"], "TOMADA hoje");
+        assert_eq!(shared(&p, &words_of(&["decisao", "tomada"])), 2);
     }
 
     #[test]

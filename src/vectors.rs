@@ -1,8 +1,9 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::Write;
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 
+use crate::rank::{self, Document};
 use crate::store::{self, Env};
 
 pub const MAGIC: &[u8; 10] = b"BILBOVEC1\n";
@@ -24,6 +25,34 @@ impl Cache {
         }
         self.vectors.get(&key).map(Vec::as_slice)
     }
+}
+
+/// The cached vector of each passage of `documents` (`None` without text or vector), and how many
+/// distinct passage inputs have no vector made by `model`.
+pub fn lookup<'a>(
+    cache: &'a Cache,
+    model: &str,
+    documents: &[Document],
+) -> (Vec<Vec<Option<&'a [f32]>>>, usize) {
+    let mut seen = HashSet::new();
+    let mut missing = 0;
+    let found = documents
+        .iter()
+        .map(|d| {
+            d.passages
+                .iter()
+                .map(|p| {
+                    let key = key(&rank::input(p)?);
+                    let vector = cache.get(model, key);
+                    if vector.is_none() && seen.insert(key) {
+                        missing += 1;
+                    }
+                    vector
+                })
+                .collect()
+        })
+        .collect();
+    (found, missing)
 }
 
 /// FNV-1a 64 of the input's UTF-8 bytes.
@@ -179,6 +208,44 @@ mod tests {
             "HOME" => home.map(Into::into),
             _ => None,
         })
+    }
+
+    fn doc(texts: &[&str]) -> Document {
+        Document {
+            passages: texts
+                .iter()
+                .map(|t| rank::Passage {
+                    path: vec!["T".into()],
+                    line: 1,
+                    text: t.to_string(),
+                })
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn lookup_finds_vectors_and_counts_missing_inputs_once() {
+        let docs = [doc(&["known", "", "same"]), doc(&["same", "other"])];
+        let known = key(&rank::input(&docs[0].passages[0]).unwrap());
+        let mut c = cache(&[]);
+        c.vectors.insert(known, vec![1.0, 0.0, 0.0]);
+        let (found, missing) = lookup(&c, "m", &docs);
+        assert_eq!(found[0][0], Some([1.0, 0.0, 0.0].as_slice()));
+        assert_eq!(found[0][1], None);
+        assert_eq!(found[0][2], None);
+        assert_eq!(found[1], [None, None]);
+        assert_eq!(missing, 2);
+    }
+
+    #[test]
+    fn lookup_misses_everything_for_another_model() {
+        let docs = [doc(&["known", "other"])];
+        let k = key(&rank::input(&docs[0].passages[0]).unwrap());
+        let mut c = cache(&[]);
+        c.vectors.insert(k, vec![1.0, 0.0, 0.0]);
+        let (found, missing) = lookup(&c, "another", &docs);
+        assert_eq!(found[0], [None, None]);
+        assert_eq!(missing, 2);
     }
 
     #[test]

@@ -93,8 +93,8 @@ impl Client {
         match error {
             ureq::Error::StatusCode(code) => format!("embedder {url} answered {code}"),
             ureq::Error::Timeout(_) => format!(
-                "embedder {url} did not answer within {} s",
-                self.timeout.as_secs()
+                "embedder {url} did not answer within {}",
+                seconds(self.timeout)
             ),
             ureq::Error::Io(e) => format!("embedder {url} unreachable: {e}"),
             ureq::Error::HostNotFound => format!("embedder {url} unreachable: host not found"),
@@ -142,6 +142,38 @@ impl Client {
     #[cfg(test)]
     fn timeout(&self) -> Option<Duration> {
         self.agent.config().timeouts().global
+    }
+}
+
+/// The query's unit vector from one request, bounded by `timeout`; it must have `dims` dimensions,
+/// the vector cache's.
+pub fn query(
+    embedder: &config::Embedder,
+    text: &str,
+    timeout: Duration,
+    dims: usize,
+) -> Result<Vec<f32>, String> {
+    let client = Client::new(embedder, |name| std::env::var_os(name), timeout)?;
+    let q = client.embed(&[text.to_string()])?.remove(0);
+    if q.len() == dims {
+        Ok(q)
+    } else {
+        Err(format!(
+            "embedder {} answered {} dimensions; the cache holds {dims}",
+            embedder.url,
+            q.len()
+        ))
+    }
+}
+
+/// `300 ms` under a second, else `5 s` or `1.2 s`.
+fn seconds(d: Duration) -> String {
+    if d < Duration::from_secs(1) {
+        format!("{} ms", d.as_millis())
+    } else if d.subsec_millis() == 0 {
+        format!("{} s", d.as_secs())
+    } else {
+        format!("{:.1} s", d.as_secs_f64())
     }
 }
 
@@ -555,7 +587,28 @@ mod tests {
             Client::new(&embedder(&url, None), |_| None, Duration::from_millis(300)).unwrap();
         let message = client.embed(&texts(1)).unwrap_err();
         handle.join().unwrap();
-        assert_eq!(message, format!("embedder {url} did not answer within 0 s"));
+        assert_eq!(
+            message,
+            format!("embedder {url} did not answer within 300 ms")
+        );
+    }
+
+    #[test]
+    fn query_checks_the_dimensions() {
+        let (url, handle) = serve_once(&ok(r#"{"data":[{"embedding":[1,0,0]}]}"#));
+        let message = query(&embedder(&url, None), "hello", Duration::from_secs(5), 4).unwrap_err();
+        handle.join().unwrap();
+        assert_eq!(
+            message,
+            format!("embedder {url} answered 3 dimensions; the cache holds 4")
+        );
+    }
+
+    #[test]
+    fn seconds_reads_well() {
+        assert_eq!(seconds(Duration::from_millis(300)), "300 ms");
+        assert_eq!(seconds(Duration::from_secs(5)), "5 s");
+        assert_eq!(seconds(Duration::from_millis(1137)), "1.1 s");
     }
 
     #[test]
