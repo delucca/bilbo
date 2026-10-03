@@ -21,6 +21,7 @@ dependencies = [
  "cliclack",
  "jiff",
  "libc",
+ "ring",
  "serde",
  "serde_json",
  "ureq",
