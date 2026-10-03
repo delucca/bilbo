@@ -10,7 +10,7 @@
     {
       "name": "bilbo",
       "source": "./plugins/bilbo",
-      "description": "Recall the notes earlier agent sessions wrote, through the bilbo CLI."
+      "description": "Write and recall the notes agent sessions keep, through the bilbo CLI."
     }
   ]
 }

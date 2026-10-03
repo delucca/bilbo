@@ -1232,6 +1232,44 @@ mod tests {
         assert!(writes(&rpc).is_empty());
     }
 
+    const COMPACT_KEY: &str = "bilbo@bilbo:hooks/hooks.json:session_start:0:0";
+    const COMPACT_HASH: &str =
+        "sha256:a81858bef5fb353c95c7f98c4f5c8db9e6bd95f30dc9513adff2136f9c6c99dc";
+
+    #[test]
+    fn trust_hooks_trusts_only_the_new_hook() {
+        let mut rpc = script(result(fixture!("codex-app-server-list-two-hooks")));
+        assert_eq!(
+            trust_hooks(&mut rpc, Path::new("/fixture/home")),
+            Ok(Trust::Wrote { changed: false })
+        );
+        assert_eq!(
+            writes(&rpc),
+            [&serde_json::json!({
+                "edits": [{
+                    "keyPath": "hooks.state",
+                    "value": {COMPACT_KEY: {"trusted_hash": COMPACT_HASH}},
+                    "mergeStrategy": "upsert"
+                }],
+                "reloadUserConfig": false
+            })]
+        );
+    }
+
+    #[test]
+    fn trust_hooks_keeps_two_trusted_hooks() {
+        let mut listed = result(fixture!("codex-app-server-list-two-hooks"));
+        for hook in listed["data"][0]["hooks"].as_array_mut().unwrap() {
+            hook["trustStatus"] = serde_json::json!("trusted");
+        }
+        let mut rpc = script(listed);
+        assert_eq!(
+            trust_hooks(&mut rpc, Path::new("/fixture/home")),
+            Ok(Trust::Kept)
+        );
+        assert!(writes(&rpc).is_empty());
+    }
+
     #[test]
     fn trust_hooks_marks_modified_as_changed() {
         let mut rpc = script(result(fixture!("codex-app-server-list-modified")));
@@ -1330,6 +1368,40 @@ mod tests {
         };
         assert_eq!(forget_hooks(&mut none), Ok(0));
         assert_eq!(none.seen.len(), 1);
+    }
+
+    #[test]
+    fn forget_hooks_deletes_every_bilbo_key() {
+        let mut read = result(fixture!("codex-app-server-config-read"));
+        let state = read["config"]["hooks"]["state"].as_object_mut().unwrap();
+        state.insert(
+            COMPACT_KEY.into(),
+            serde_json::json!({"trusted_hash": COMPACT_HASH}),
+        );
+        state.insert(
+            "other@plugin:hooks/hooks.json:stop:0:0".into(),
+            serde_json::json!({"trusted_hash": "sha256:other"}),
+        );
+        let mut rpc = Scripted {
+            replies: vec![
+                ("config/read", Ok(read)),
+                (
+                    "config/batchWrite",
+                    Ok(result(fixture!("codex-app-server-batch-write"))),
+                ),
+            ],
+            seen: Vec::new(),
+        };
+        assert_eq!(forget_hooks(&mut rpc), Ok(2));
+        let written = writes(&rpc);
+        assert_eq!(written.len(), 1);
+        assert_eq!(
+            written[0]["edits"],
+            serde_json::json!([
+                {"keyPath": format!("hooks.state.\"{COMPACT_KEY}\""), "value": null, "mergeStrategy": "replace"},
+                {"keyPath": format!("hooks.state.\"{KEY}\""), "value": null, "mergeStrategy": "replace"}
+            ])
+        );
     }
 
     #[test]
