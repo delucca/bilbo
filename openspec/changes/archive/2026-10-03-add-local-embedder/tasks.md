@@ -62,4 +62,4 @@ Run every command inside `nix develop -c <cmd>` from the repo root, with `CARGO_
   - `bilbo setup --remove --yes` cleans up.
 
   Record the download time, the resident memory of `llama-server`, and the transcripts in `smoke.md`. Verify with `rg -q 'io.github.delucca.bilbo.embedder' openspec/changes/add-local-embedder/smoke.md`
-- [ ] 7.2 Run the full suite and the flake checks. Verify with `cargo fmt --check && cargo clippy --locked --all-targets -- -D warnings && cargo test --locked && nix flake check -L`
+- [x] 7.2 Run the full suite and the flake checks. Verify with `cargo fmt --check && cargo clippy --locked --all-targets -- -D warnings && cargo test --locked && nix flake check -L`
