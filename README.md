@@ -6,7 +6,8 @@ session and finds again in the next.
 Agents re-derive what an earlier session already worked out. bilbo gives them
 a store of plain Markdown notes they write with their own file tools, and a
 `bilbo` command that starts, checks, searches and indexes those notes. A
-`recall` skill for Claude Code and Codex puts the search in the agent's hands.
+`note` skill and a `recall` skill for Claude Code and Codex put the writing and
+the search in the agent's hands.
 
 - **Plain files.** One note per topic in `<root>/notes/`, named
   `<kind>-<topic>.md`, with a small YAML frontmatter. Read, edit, grep or
@@ -16,7 +17,8 @@ a store of plain Markdown notes they write with their own file tools, and a
   model, and `recall` finds notes that share no word with the query.
 - **Agent plugin.** `bilbo setup` installs the plugin in Claude Code and Codex
   and a timer that keeps the index current. The plugin also hands the agent the
-  notes that bear on each prompt, before it starts.
+  notes that bear on each prompt, before it starts, and reminds it to write
+  down what a session settled once its context is compacted.
 
 ## Contents
 
@@ -156,8 +158,22 @@ notes/plan-broken.md: title: missing; add one '# <title>' line after the frontma
 
 ### From an agent
 
-The bilbo plugin gives Claude Code and Codex a `recall` skill. It runs
-`bilbo recall` with the user's words, retries twice in the note's likely
+The bilbo plugin gives Claude Code and Codex two skills, `note` and `recall`.
+
+`note` writes what a later session should know. The agent runs it when you ask
+to keep something ("note this", "save this as a decision"), or when the session
+settled something a later one would otherwise work out again. It looks for the
+note on the subject first with `bilbo recall`, and updates that note instead of
+adding a second one. A new note comes from `bilbo new`; a note whose kind
+changes is renamed with `mv -n`. It then runs `bilbo check`, fixes the lines
+that name its own note, and reports the note's absolute path. It never invents
+a source, and when `bilbo` is missing it says so and stops.
+
+After each compaction, the plugin's `SessionStart` hook adds one line asking
+the agent to save what the session settled, once the current task allows. It
+prints nothing without `bilbo` on `PATH`.
+
+`recall` runs `bilbo recall` with the user's words, retries twice in the note's likely
 wording when nothing matches, and offers to open a hit. It searches through
 `bilbo` only: when the binary is missing, it says so and stops.
 
@@ -207,7 +223,7 @@ and so on). It does five things:
 - writes the config, after checking the embedder with one real request;
 - installs the bilbo plugin in Claude Code and Codex, at the binary's own
   version, for each of the two that is on your `PATH`;
-- trusts the plugin's digest hook in Codex, which runs a plugin hook only once
+- trusts the plugin's hooks in Codex, which runs a plugin hook only once
   it is trusted: setup asks `codex app-server` to record the trust, so no
   review step is left, and a release that changes the hook is trusted again on
   the next run;
@@ -296,7 +312,7 @@ bilbo setup --remove
 
 This unloads the timer and the local embedder's service, removes the plugin
 and its marketplace from Claude Code and Codex, and takes away Codex's trust of
-the hook. It keeps the store, the config,
+the hooks. It keeps the store, the config,
 the key file and the downloaded model, and prints their paths. In a terminal
 it asks first; `--yes` skips the question.
 

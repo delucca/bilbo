@@ -105,15 +105,22 @@ PYTHONDONTWRITEBYTECODE=1 python3 ~/.codex/skills/.system/plugin-creator/scripts
 - `tests/fixtures/agents/` holds recorded `claude` and `codex` output, the
   first line being the command. When a tool's JSON moves, re-record them
   against throwaway `CLAUDE_CONFIG_DIR` and `CODEX_HOME`.
-- `plugins/bilbo/hooks/hooks.json`'s command must never pass on bilbo's exit
-  code (`; exit 0`: an older `bilbo` exits 2 on the unknown verb) and must stay
-  quiet without `bilbo` on `PATH`.
+- Every command in `plugins/bilbo/hooks/hooks.json` must never pass on
+  bilbo's exit code (`; exit 0`: an older `bilbo` exits 2 on the unknown verb)
+  and must stay quiet without `bilbo` on `PATH`.
+- On an auto-compaction, neither Claude Code nor Codex passes PreCompact or
+  PostCompact output to the model. SessionStart with the matcher `compact` is
+  the event that does, in both (`openspec/changes/archive/2026-10-03-add-note-skill/probe.md`,
+  the path the archive gives it).
 - Codex runs a plugin hook only once it is trusted, and `codex exec` skips an
   untrusted one in silence. `bilbo setup` trusts it through `codex app-server`
   (the fake `codex` imitates it), never by editing `config.toml`. Changing
   `hooks.json` changes Codex's hash, so the next `setup` reports `hook
   updated`. Probe hooks in a throwaway `CODEX_HOME`, never `~/.codex`, and
   re-record `tests/fixtures/agents/codex-app-server-*` when the protocol moves.
+- Codex runs hooks under `$SHELL -lc`, and a login profile can rebuild `PATH`.
+  A hook probe needs `bilbo` in a folder that profile keeps, such as
+  `$HOME/.nix-profile/bin` of the throwaway `HOME`.
 
 ## Releases
 
