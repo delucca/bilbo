@@ -1,8 +1,29 @@
 # bilbo
 
 Durable memory for coding agents: notes they write and recall, and a library
-of sources they cite. The product frame and vocabulary live in
-`openspec/config.yaml`.
+of sources they cite. Product frame, vocabulary and stack live in
+`openspec/config.yaml`; install and setup in `README.md`.
+
+## Commands
+
+Run everything in the dev shell, with the target folder in this checkout: a
+global `CARGO_TARGET_DIR` moves `./target/debug/bilbo` elsewhere.
+
+```sh
+export CARGO_TARGET_DIR="$PWD/target"
+# Verification (the `Verification` line of openspec/config.yaml; CI's verify job)
+nix develop -c cargo fmt --check
+nix develop -c cargo clippy --locked --all-targets -- -D warnings
+nix develop -c cargo test --locked
+# The flake (CI's nix job); `nix build` also runs the tests in the package's check phase
+nix flake check -L
+nix build
+# Recall speed test, ignored by default
+nix develop -c cargo test --release --test recall -- --ignored
+# After touching plugins/ (one missing-version warning each is expected; never --strict)
+claude plugin validate . && claude plugin validate plugins/bilbo
+PYTHONDONTWRITEBYTECODE=1 python3 ~/.codex/skills/.system/plugin-creator/scripts/validate_plugin.py plugins/bilbo
+```
 
 ## Workflow
 
@@ -11,228 +32,94 @@ of sources they cite. The product frame and vocabulary live in
   the user approves it, `/opsx:archive` when it ships. Codex runs the same
   workflows as `$openspec-explore`, `$openspec-propose`,
   `$openspec-apply-change` and `$openspec-archive-change`.
-- Treat `openspec/specs/` as the current contract and change it only through
+- `openspec/specs/` is the current contract. Change it only through
   `/opsx:archive` or `/opsx:sync`, so every spec edit traces back to a
   reviewed change.
 - Make fixes that leave behavior unchanged (typos, refactors, test-only
   edits) directly, without a change.
-- A change that adds a command, a dependency manifest or a top-level
-  directory also updates this file.
+- Update this file when a change adds a command, a generated file or a rule
+  that the code, the specs and the README cannot show. Describe modules in
+  their specs and code, not here.
+
+## Architecture rules
+
+- `src/main.rs` is the only writer of stdout and stderr, and prefixes every
+  stderr line with `bilbo: `. The one exception is the setup wizard, which
+  cliclack draws on stderr without the prefix.
+- Library modules (`store`, `note`, `rank`, `config`, `embed`, `model`,
+  `vectors`, `command`, `agents`, `timer`) return plain values and `String`
+  messages: they never print and never return `Failure`. Verbs build on
+  them, never on each other, return `crate::Failure` and never print.
+- A new verb is `src/<verb>.rs`, its `mod` line, dispatch arm and USAGE line
+  in `src/main.rs`, `tests/<verb>.rs`, its own capability spec, and a
+  MODIFIED `cli` spec (its Verb dispatch requirement lists the verbs).
+- Keep each dependency in its one user: `cliclack` and `libc` in
+  `src/wizard.rs`, `ring` in `src/model.rs`. Justify a new one in the
+  change's `design.md`.
+- Unit tests live in the module they test. CLI behavior is tested through
+  the built binary with a clean environment, using the fakes in
+  `tests/common/` (a fake embedder, and fake `claude`, `codex`, `launchctl`,
+  `systemctl` and `llama-server` scripts that use only shell builtins).
+- Tests stay offline. A test that gets past planning with `--embedder-local`
+  calls `place_model` first; only the `#[ignore]`
+  `model::tests::pinned_url_honors_a_range` reaches Hugging Face.
+- Plugin skill frontmatter uses only `name`, `description`, `license` and
+  `allowed-tools`, the keys both Claude Code and Codex accept.
+- Pin every dependency exactly: Cargo through the committed `Cargo.lock`,
+  other ecosystems in the manifest; actions in `.github/workflows/` by
+  40-hex commit SHA (`tests/workflows.rs` enforces it).
 
 ## Generated files
 
 - `.claude/commands/opsx/`, `.claude/skills/openspec-*` and
-  `.agents/skills/openspec-*` are output of `openspec update`. Regenerate
-  them after an OpenSpec version bump instead of editing them. Keep the two
-  skill folders as separate copies: each tool gets its own wording, and a
-  symlink makes every `openspec update` rewrite them.
-  `.agents/plugins/marketplace.json` is written by hand, not by
-  `openspec update`.
-- `.github/workflows/release.yml` is output of `dist generate`, from
-  `dist-workspace.toml`. Never edit it by hand: the release workflow's `plan`
-  job runs `dist plan` on every PR, and it fails when the file is stale.
-- Use OpenSpec 1.14.0, the version in their `generatedBy` field. The
-  workflows call subcommands that older releases lack.
+  `.agents/skills/openspec-*` come from `openspec update`, using OpenSpec
+  1.14.0 (their `generatedBy`; older releases lack subcommands the
+  workflows call). Regenerate them after a version bump instead of editing
+  them. Keep the two skill folders as separate copies: each tool gets its
+  own wording, and a symlink makes every `openspec update` rewrite them.
+- `.agents/plugins/marketplace.json` is written by hand.
+- `.github/workflows/release.yml` comes from `dist generate`, from
+  `dist-workspace.toml`. Regenerate it instead of editing it: the release
+  `plan` job runs `dist plan` on every PR and fails when the file is stale.
 
-## Conventions
+## Gotchas
 
-- Pin every dependency exactly. Cargo pins through the committed
-  `Cargo.lock`, with the caret idiom in `Cargo.toml`; ecosystems without a
-  lockfile pin in the manifest. Floating ranges make builds irreproducible.
-
-## Architecture
-
-One crate, binary `bilbo`. Dependencies: `jiff`, `ureq` (HTTP and TLS, with
-its `json` feature), `serde`, `serde_json` (the agent CLIs' JSON and the fake
-embedder), `cliclack` (the wizard, only in `src/wizard.rs`), `libc` (the
-wizard's guard that keeps the tty from echoing a pasted key, only in
-`src/wizard.rs`), `ring` (SHA-256 of the downloaded model, only in
-`src/model.rs`; already in the lock through `rustls`) and `zeroize` (the
-pasted key). `Cargo.lock` is committed and pins the build.
-
-- `Cargo.toml`: manifest.
-- `flake.nix` and `flake.lock`: the Nix flake (`distribution` spec), for
-  aarch64-darwin, x86_64-linux and aarch64-linux. `packages.default` builds
-  `bilbo` from `Cargo.lock` and runs the tests in its check phase. Its `src`
-  is a `lib.fileset`, so a new file the build or the tests read must join it.
-  It copies `plugins/bilbo/` and both marketplaces into `share/bilbo/`, which
-  is a local marketplace either tool can add by path. `homeManagerModules.default`
-  (`programs.bilbo`; `setup` spec) is a thin wrapper: it writes the config from
-  `settings` and runs `bilbo setup --yes` on activation, passing the store root
-  and home-manager's XDG folders itself, because activation reads no session
-  variables. The `home-manager` input is read only by the `home-manager-module`
-  check, which evaluates the module with sample settings without building
-  bilbo; a consumer sets `bilbo.inputs.home-manager.follows`. Its
-  `localEmbedder` options (`enable`, `port`, `llamaServer`, default nixpkgs'
-  `llama-server`) write the local URL, model and Qwen query prefix into the
-  config, assert the URL and model are not set to anything else, and pass
-  `--embedder-local`, `--embedder-port` and `--llama-server` on activation;
-  the check evaluates a sample with them on. `devShells.default` holds cargo,
-  rustc, clippy and rustfmt from `nixpkgs` (26.05, rustc 1.95.0) and
-  cargo-dist from `nixpkgs-unstable`. The check phase skips
-  `every_action_is_pinned_by_sha`, because `.github` is not in `src`.
-- `dist-workspace.toml`: the cargo-dist config (`distribution` spec): the
-  dist version, the four targets, the shell installer, `install-path`, the
-  `macos-15` runner for aarch64-apple-darwin and the
-  `[dist.github-action-commits]` pins. dist also reads `Cargo.toml`'s
-  `repository` and builds with its `[profile.dist]`.
-- `tests/workflows.rs`: every `uses:` in `.github/workflows/` names a 40-hex
-  commit SHA; local `./` actions are exempt.
-- `src/main.rs`: verb dispatch, `--help`, `--version`, `Failure`, exit codes 0,
-  1, 2 and the only writer of stdout and stderr (every stderr line gets
-  `bilbo: `), except the wizard's prompts, which cliclack draws on stderr
-  (`cli` spec).
-- `src/store.rs`: store root resolution, listing `notes/` and reading the notes
-  `recall` and `index` search (`note-store` spec). Root, config and cache
-  resolution take `Env` as a value, built once in `main`.
-- `src/note.rs`: kinds, filename, ULID, `created`, the line splitter, the
-  strict frontmatter and title reader (which also returns the valid `created`
-  and the body's first line), and the note renderer (`note-store` spec).
-- `src/new.rs`: `bilbo new`, argument checks, atomic create (`note-create`
-  spec).
-- `src/check.rs`: `bilbo check`, read-only (`store-check` spec).
-- `src/rank.rs`: words (case and Latin accent folding), passages (heading
-  paths, 4,000-byte parts), BM25 ranking, the embedder input and reciprocal
-  rank fusion (`note-recall` spec). Shared by verbs; knows nothing of the
-  store or the CLI.
-- `src/recall.rs`: `bilbo recall`, read-only (`note-recall` spec).
-- `src/config.rs`: config file location and the strict `key = value` reader
-  (`config` spec).
-- `src/embed.rs`: the embedder client: one `POST <url>/v1/embeddings` per batch
-  of at most 16, a bearer token from a file or a variable, unit-normalized
-  vectors. Its messages never hold the token. `ready` polls `GET <url>/health`
-  every 500 ms until it answers 2xx or the deadline passes (llama-server
-  answers 503 while it loads the model).
-- `src/model.rs`: the local embedder's pinned model (`local-embedder` spec):
-  the Hugging Face URL at a fixed revision, its size and SHA-256, its path
-  `<cache>/models/Qwen3-Embedding-0.6B-Q8_0.gguf`, and `server_args`, the
-  fixed `llama-server` flags. A file of the pinned size at that path is kept
-  without reading it. The download goes to `<path>.part`, continues it with a
-  range request, starts over when the server ignores the range, and renames it
-  into place only after the size and hash match. Each request gets a 60 s body
-  window and is sent again from where it stopped when bytes arrived; a request
-  that received nothing ends the download and keeps the `.part` file. A hash
-  mismatch deletes it. The only user of `ring`.
-- `src/vectors.rs`: the vector cache, one file per store root under the cache
-  folder, keyed by FNV-1a 64 of the embedder input, replaced atomically
-  (`note-index` spec).
-- `src/index.rs`: `bilbo index`; writes only the cache (`note-index` spec).
-  Nothing in bilbo runs it on its own: a timer, a hook or the agent does, and
-  `recall` says how many passages are not indexed.
-- `plugins/bilbo/`: the agent plugin (`agent-plugin` spec).
-  `.claude-plugin/plugin.json` sets no `version`, so Claude Code follows
-  commits; `.codex-plugin/plugin.json`'s `version` equals `Cargo.toml`'s, so
-  bump them together. `skills/recall/SKILL.md` runs `bilbo recall` from PATH.
-  Skill frontmatter uses only `name`, `description`, `license` and
-  `allowed-tools`, the keys both tools accept.
-- `.claude-plugin/marketplace.json` and `.agents/plugins/marketplace.json`: the
-  Claude Code and Codex marketplaces, one `bilbo` entry each with the source
-  `./plugins/bilbo`.
-- `src/command.rs`: the `Runner` trait and `System`, which runs another
-  program with stdin closed and bilbo's environment, plus the PATH lookup.
-  Shared by `agents` and `timer`.
-- `src/agents.rs`: the `claude` and `codex` plugin commands, their JSON, the
-  same-source rule (a marketplace from another source is removed before the
-  add) and the plugin source: the package's `share/bilbo/`, else
-  `delucca/bilbo` at `v<version>` (`setup` spec).
-- `src/timer.rs`: launchd and systemd jobs: the index timer (periodic) and the
-  embedder service (kept alive), as pure text with the carried store, config
-  and XDG locations, and their load, `reload` and unload (`setup` and
-  `local-embedder` specs). launchd jobs are booted out with `--wait`, because
-  a plain bootout returns while the old process still runs and the next
-  bootstrap fails. Removal fails and keeps the files when `launchctl` or
-  `systemctl` is missing.
-- `src/wizard.rs`: the wizard behind the `Prompter` trait; the only user of
-  cliclack. It draws on stderr without the `bilbo: ` prefix (the `cli` spec's
-  exception). Its `Terminal` adapter is the only code the unit tests cannot
-  reach.
-- `src/setup.rs`: `bilbo setup`, plan then apply, and `--remove`
-  (`setup` spec). The wizard path and `--remove` take `&mut impl Prompter`;
-  `setup::tests::driven` runs them end to end with a scripted one. A config of
-  only comments takes embedder flags (`config updated`, `config.bak`). For
-  `--embedder-local` the plan stage resolves `llama-server` (given or on PATH,
-  never canonicalized, so a Homebrew upgrade keeps working) and probes the
-  port; a prepare stage after the confirmation downloads the model, writes and
-  loads the service, waits up to 120 s for `ready` and runs the embedder check,
-  and on failure removes the service and keeps the model. A service whose
-  config is no longer local is removed (`server removed: not local`); `--remove`
-  keeps the model and prints its path.
-- `store`, `note`, `rank`, `config`, `embed`, `model`, `vectors`, `command`,
-  `agents` and `timer` never print and never return `Failure`; they return plain
-  values and `String` messages. Verbs (`setup` included) build on them, never on
-  each other, return `crate::Failure` and never print.
-- A new verb is `src/<verb>.rs`, its `mod` line, dispatch arm and USAGE line
-  in `src/main.rs`, `tests/<verb>.rs`, its own capability spec, and a MODIFIED
-  `cli` spec (its Verb dispatch requirement lists the verbs).
-- Unit tests live in the module they test. CLI behavior is tested in
-  `tests/cli.rs`, `tests/new.rs`, `tests/check.rs`, `tests/recall.rs` and
-  `tests/index.rs` through the built binary with a clean environment;
-  `tests/common/mod.rs` holds the shared runner, temp folders and the fake
-  embedder (a `TcpListener` on `127.0.0.1` serving vectors from a substring
-  table, and answering `GET /health`). `Fake::start_when` binds its port at once
-  and listens only when a trigger file appears, as a service the manager starts
-  does; `Fake::loading(n)` answers `/health` with 503 `n` times first;
-  `common::unused_port` hands out a port nothing listens on. The `#[ignore]`
-  speed test in `tests/recall.rs` runs with `cargo test --release --test recall
-  -- --ignored`.
-- `tests/setup.rs` runs `bilbo setup` through the built binary.
-  `tests/common/fakes.rs` writes fake `claude`, `codex`, `launchctl`,
-  `systemctl` and `llama-server` scripts into a temp folder that is the whole
-  PATH, so they use only shell builtins. The fake `launchctl` keeps one loaded
-  state per label, and writes `embedder.started` when the embedder label is
-  bootstrapped, which a `start_when` fake waits for; the fake `llama-server` is
-  never run. A test that gets past planning with `--embedder-local` places a
-  sparse model file of the pinned size first (`place_model`): no test reaches
-  Hugging Face, and only the `#[ignore]`
-  `model::tests::pinned_url_honors_a_range` touches the network.
-  `tests/fixtures/agents/` holds recorded real outputs, the first line being the
-  command; refresh them against throwaway `CLAUDE_CONFIG_DIR` and `CODEX_HOME`
-  when a tool's JSON moves. The timer tests are per platform, and CI runs the
-  Linux ones. The macOS suite takes about 16 s, because macOS scans each freshly
-  written script; Linux takes about 3 s. The wizard's `Terminal` adapter is
-  covered only by the recorded expect runs in
-  `openspec/changes/archive/2026-10-02-add-setup/smoke.md` and
-  `openspec/changes/archive/2026-10-03-add-local-embedder/smoke.md`.
-- `tests/plugin.rs`: the plugin's files, skill frontmatter and versions,
-  checked in CI. Locally, also run `claude plugin validate .` and
-  `claude plugin validate plugins/bilbo` (one missing-version warning each is
-  expected; never `--strict`) and
-  `PYTHONDONTWRITEBYTECODE=1 python3 ~/.codex/skills/.system/plugin-creator/scripts/validate_plugin.py plugins/bilbo`.
-- Verification is the `Verification` line of `openspec/config.yaml`: `cargo fmt
-  --check`, `cargo clippy --locked --all-targets -- -D warnings`, `cargo test
-  --locked`. Run them as `nix develop -c <cmd>`, with `CARGO_TARGET_DIR` set to
-  this checkout's `target`: a global value moves `./target/debug/bilbo`
-  elsewhere.
-- `.github/workflows/ci.yml`: the `verify` job runs the Verification line on
-  every PR and every push to main, and the `main pull requests` ruleset requires
-  it and the `nix` job. It then runs the tests again with the version bumped to
-  99.99.99, so a test that hardcodes the current version fails before a release
-  bump does. It runs Rust 1.95.0, the `rust-version` floor, and so
-  does the dev shell, from the nixpkgs 26.05 pinned in `flake.lock`; a lock bump
-  can bring a newer clippy that flags lints CI does not. Bump the toolchain with
-  `rust-version`. The `nix` job runs `nix flake check -L` and evaluates the
-  aarch64-darwin package. Actions are pinned by commit SHA.
+- `flake.nix` builds from a `lib.fileset`: a new file the build or the
+  tests read must join it, or `nix build` fails while cargo passes.
+- CI reruns the tests with the version bumped to 99.99.99. Read the version
+  from `env!("CARGO_PKG_VERSION")` in tests, never a literal.
+- CI and the dev shell run Rust 1.95.0, the `rust-version` floor. Bump the
+  toolchain together with `rust-version`. A `flake.lock` bump can bring a
+  newer clippy that flags lints CI does not.
+- CI runs on Linux, so it skips the macOS-only tests in `src/timer.rs`,
+  `src/setup.rs` and `tests/setup.rs`. After touching launchd code, run them
+  on macOS. `tests/setup.rs` runs several times slower there, because macOS
+  scans each freshly written script.
+- The wizard's `Terminal` adapter is the only code the unit tests cannot
+  reach. After changing it, repeat the expect runs recorded in the
+  `smoke.md` of `openspec/changes/archive/2026-10-02-add-setup/` and
+  `2026-10-03-add-local-embedder/`.
+- `tests/fixtures/agents/` holds recorded `claude` and `codex` output, the
+  first line being the command. When a tool's JSON moves, re-record them
+  against throwaway `CLAUDE_CONFIG_DIR` and `CODEX_HOME`.
 
 ## Releases
 
-1. Bump `version` in `Cargo.toml` and in
-   `plugins/bilbo/.codex-plugin/plugin.json` together, then run
-   `nix develop -c cargo update --workspace` so `Cargo.lock` follows.
-   `tests/plugin.rs` fails when the two versions differ.
+1. Bump `version` in `Cargo.toml` and `plugins/bilbo/.codex-plugin/plugin.json`
+   together (`tests/plugin.rs` fails when they differ), then run
+   `nix develop -c cargo update --workspace`. `.claude-plugin/plugin.json`
+   sets no version, so Claude Code follows commits.
 2. Merge through a pull request.
-3. Tag the commit on `main` that carries the bump (the tip of `main` after
-   the rebase-merge) `v<version>` and push the tag. The release workflow
-   publishes the GitHub Release. A tag that does not match `Cargo.toml` fails
-   in `plan` and publishes nothing. Push only `v<version>` tags: the
-   generated trigger also accepts `<version>` and `bilbo-v<version>`, and
-   either would publish a second release.
+3. Tag the commit on `main` that carries the bump `v<version>` and push the
+   tag; the release workflow publishes the GitHub Release. Push only
+   `v<version>` tags: the generated trigger also accepts `<version>` and
+   `bilbo-v<version>`, and either would publish a second release.
 
-To upgrade dist, change `cargo-dist-version` and the `nixpkgs-unstable` input
-(`nix flake update nixpkgs-unstable`) together, until
-`nix develop -c dist --version` matches. Then run `nix develop -c dist init
---yes` and pin every action the new `release.yml` names in
-`[dist.github-action-commits]`, using the commit from
-`gh api repos/<owner>/<repo>/git/ref/tags/<tag>` (dereference an annotated
-tag with `gh api repos/<owner>/<repo>/git/tags/<sha>`). Run
-`nix develop -c dist generate` again, and check that `cargo test --locked
---test workflows` passes.
+To upgrade dist: change `cargo-dist-version` and run
+`nix flake update nixpkgs-unstable` until `nix develop -c dist --version`
+matches. Run `nix develop -c dist init --yes`, pin every action the new
+`release.yml` names in `[dist.github-action-commits]` (commit from
+`gh api repos/<owner>/<repo>/git/ref/tags/<tag>`; dereference an annotated
+tag with `gh api repos/<owner>/<repo>/git/tags/<sha>`), run
+`nix develop -c dist generate` again, then
+`nix develop -c cargo test --locked --test workflows`.
