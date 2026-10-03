@@ -1,6 +1,6 @@
 ---
 name: recall
-description: Searches the notes in the bilbo store with `bilbo recall` and shows the best passages. Use for "what do we know about X", "did we decide", "recall X". NOT for writing a note.
+description: Searches the notes in the bilbo store with `bilbo recall` and shows the best passages. Use for "what do we know about X", "did we decide", "recall X". NOT for writing a note (note).
 license: Apache-2.0
 allowed-tools: Bash(command -v bilbo), Bash(bilbo recall *), Read
 ---

@@ -1875,7 +1875,7 @@ fn summary(plan: &Plan) -> Vec<String> {
                 "Install the bilbo plugin in {label} from {}{}",
                 plan.source.display(),
                 if tool == agents::Tool::Codex {
-                    " and trust its digest hook"
+                    " and trust its hooks"
                 } else {
                     ""
                 }
@@ -2675,10 +2675,12 @@ mod tests {
             change: agents::Change::Install(Vec::new()),
         };
         let lines = summary(&p);
-        assert!(lines.contains(
-            &"Install the bilbo plugin in Codex from delucca/bilbo#v1.2.3 and trust its digest hook"
-                .to_string()
-        ));
+        assert!(
+            lines.contains(
+                &"Install the bilbo plugin in Codex from delucca/bilbo#v1.2.3 and trust its hooks"
+                    .to_string()
+            )
+        );
         assert!(lines.contains(
             &"Install the bilbo plugin in Claude Code from delucca/bilbo#v1.2.3".to_string()
         ));
