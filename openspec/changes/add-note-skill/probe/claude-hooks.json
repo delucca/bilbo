@@ -1,0 +1,16 @@
+{
+  "hooks": {
+    "PreCompact": [
+      {"hooks": [{"type": "command", "command": "$PROBE/hook.sh PRECOMPACTPLAIN plain PreCompact"}]},
+      {"hooks": [{"type": "command", "command": "$PROBE/hook.sh PRECOMPACTJSON json PreCompact"}]}
+    ],
+    "PostCompact": [
+      {"hooks": [{"type": "command", "command": "$PROBE/hook.sh POSTCOMPACTPLAIN plain PostCompact"}]},
+      {"hooks": [{"type": "command", "command": "$PROBE/hook.sh POSTCOMPACTJSON json PostCompact"}]}
+    ],
+    "SessionStart": [
+      {"matcher": "compact", "hooks": [{"type": "command", "command": "$PROBE/hook.sh SESSIONSTARTCOMPACT plain SessionStart"}]},
+      {"hooks": [{"type": "command", "command": "$PROBE/hook.sh SESSIONSTARTANY none SessionStart"}]}
+    ]
+  }
+}
