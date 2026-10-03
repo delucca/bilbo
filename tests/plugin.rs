@@ -1,7 +1,11 @@
-//! The agent plugin's files, checked by string: no tool is needed in CI.
+//! The agent plugin's files, checked by string and by running the hook command: no tool is needed in CI.
 
+mod common;
+
+use common::TempDir;
 use std::fs;
 use std::path::PathBuf;
+use std::process::Command;
 
 fn path(relative: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(relative)
@@ -24,6 +28,8 @@ const CODEX_MANIFEST: &str = "plugins/bilbo/.codex-plugin/plugin.json";
 const CLAUDE_MARKETPLACE: &str = ".claude-plugin/marketplace.json";
 const CODEX_MARKETPLACE: &str = ".agents/plugins/marketplace.json";
 const SKILL: &str = "plugins/bilbo/skills/recall/SKILL.md";
+const HOOKS: &str = "plugins/bilbo/hooks/hooks.json";
+const DIGEST_COMMAND: &str = "command -v bilbo >/dev/null 2>&1 || exit 0; bilbo digest; exit 0";
 
 #[test]
 fn plugin_files_exist() {
@@ -33,10 +39,11 @@ fn plugin_files_exist() {
         CLAUDE_MARKETPLACE,
         CODEX_MARKETPLACE,
         SKILL,
+        HOOKS,
     ] {
         assert!(path(file).is_file(), "{file} is not a file");
     }
-    for absent in ["hooks", "agents", ".mcp.json"] {
+    for absent in ["agents", ".mcp.json"] {
         let full = format!("plugins/bilbo/{absent}");
         assert!(!path(&full).exists(), "{full} must not exist");
     }
@@ -116,4 +123,70 @@ fn recall_skill_drives_bilbo() {
         !text.contains("nbrecall"),
         "the skill names the legacy tool"
     );
+}
+
+#[test]
+fn digest_hook_runs_bilbo_digest_and_never_blocks() {
+    let hooks: serde_json::Value = serde_json::from_str(&read(HOOKS)).expect("hooks.json is JSON");
+    let events = hooks["hooks"].as_object().expect("a hooks object");
+    assert_eq!(events.keys().collect::<Vec<_>>(), ["UserPromptSubmit"]);
+    let groups = events["UserPromptSubmit"].as_array().unwrap();
+    assert_eq!(groups.len(), 1);
+    assert!(groups[0].get("matcher").is_none(), "no matcher");
+    let handlers = groups[0]["hooks"].as_array().unwrap();
+    assert_eq!(handlers.len(), 1);
+    assert_eq!(
+        handlers[0],
+        serde_json::json!({"type": "command", "command": DIGEST_COMMAND, "timeout": 5})
+    );
+}
+
+#[test]
+fn manifests_do_not_name_the_hooks() {
+    for file in [CLAUDE_MANIFEST, CODEX_MANIFEST] {
+        assert!(!read(file).contains("\"hooks\""), "{file} names hooks");
+    }
+}
+
+/// The hook's command from hooks.json, run under `/bin/sh -c` with `bin` as the whole PATH.
+fn run_hook(bin: &std::path::Path) -> std::process::Output {
+    let hooks: serde_json::Value = serde_json::from_str(&read(HOOKS)).unwrap();
+    let command = hooks["hooks"]["UserPromptSubmit"][0]["hooks"][0]["command"]
+        .as_str()
+        .expect("a command");
+    Command::new("/bin/sh")
+        .args(["-c", command])
+        .env_clear()
+        .env("PATH", bin)
+        .output()
+        .expect("sh runs")
+}
+
+#[test]
+fn digest_hook_is_silent_without_bilbo() {
+    let dir = TempDir::new("hook-absent");
+    let out = run_hook(dir.path());
+    assert_eq!(out.status.code(), Some(0));
+    assert!(out.stdout.is_empty() && out.stderr.is_empty());
+}
+
+#[test]
+fn digest_hook_exits_zero_when_bilbo_fails() {
+    let dir = TempDir::new("hook-old");
+    let fake = dir.path().join("bilbo");
+    // Written by a child process: a write fd held here can make the exec fail with ETXTBSY.
+    let made = Command::new("/bin/sh")
+        .args([
+            "-c",
+            r#"printf '%s\n' '#!/bin/sh' 'echo old >&2' 'exit 2' > "$1" && chmod 755 "$1""#,
+            "sh",
+        ])
+        .arg(&fake)
+        .status()
+        .unwrap();
+    assert!(made.success());
+    let out = run_hook(dir.path());
+    assert_eq!(out.status.code(), Some(0));
+    assert!(out.stdout.is_empty());
+    assert_eq!(out.stderr, b"old\n");
 }

@@ -632,6 +632,8 @@ struct Facts {
     config: ConfigState,
     /// The embedder of the file read; `None` for an absent file or one without `embedder.url`.
     existing: Option<Embedder>,
+    /// The digest lines of the file read, as written, which a rewrite keeps.
+    digest: Vec<(&'static str, String)>,
     /// The file is there and sets no key: only comments and blank lines.
     config_empty: bool,
     token_path: PathBuf,
@@ -711,11 +713,14 @@ fn gather(
         )
     })?;
     let config = config_state(&config_path);
-    let existing = match config {
-        ConfigState::Absent => None,
-        _ if std::fs::symlink_metadata(&config_path).is_err() => None,
-        ConfigState::Managed { .. } if !config_path.exists() => None,
-        _ => config::load(env).map_err(Failure::Config)?.embedder,
+    let (existing, digest) = match config {
+        ConfigState::Absent => (None, Vec::new()),
+        _ if std::fs::symlink_metadata(&config_path).is_err() => (None, Vec::new()),
+        ConfigState::Managed { .. } if !config_path.exists() => (None, Vec::new()),
+        _ => {
+            let settings = config::load(env).map_err(Failure::Config)?;
+            (settings.embedder, settings.digest_lines)
+        }
     };
     let config_empty = matches!(config, ConfigState::Present) && sets_no_key(&config_path);
     let token_path = config_path.parent().unwrap_or(Path::new("/")).join("token");
@@ -747,6 +752,7 @@ fn gather(
         config_path,
         config,
         existing,
+        digest,
         config_empty,
         token_path,
         exe,
@@ -949,6 +955,8 @@ struct Plan {
     config: ConfigPlan,
     /// The embedder the config holds once setup is done.
     embedder: Option<Embedder>,
+    /// The digest lines a rewritten config keeps.
+    digest: Vec<(&'static str, String)>,
     key: KeyPlan,
     /// The key the wizard was given; written to the token file and never shown.
     pasted: Option<Zeroizing<String>>,
@@ -1080,6 +1088,7 @@ fn answer_batch(flags: &Flags, facts: Facts, outside: &mut impl Outside) -> Resu
         config_path: facts.config_path,
         config,
         embedder,
+        digest: facts.digest,
         key,
         pasted: None,
         check,
@@ -1212,6 +1221,7 @@ fn answer_wizard(facts: &Facts, answers: wizard::Answers, local: Option<LocalPla
         config_path: facts.config_path.clone(),
         config,
         embedder,
+        digest: facts.digest.clone(),
         key,
         pasted: answers.pasted,
         check,
@@ -1862,8 +1872,13 @@ fn summary(plan: &Plan) -> Vec<String> {
         };
         lines.push(match change {
             agents::Change::Install(_) => format!(
-                "Install the bilbo plugin in {label} from {}",
-                plan.source.display()
+                "Install the bilbo plugin in {label} from {}{}",
+                plan.source.display(),
+                if tool == agents::Tool::Codex {
+                    " and trust its digest hook"
+                } else {
+                    ""
+                }
             ),
             agents::Change::Update(_) => format!(
                 "Update the bilbo plugin in {label} to {}",
@@ -1927,9 +1942,12 @@ fn apply(plan: &Plan) -> Outcome {
     model_step(plan, &mut report);
     server_step(plan, &mut report);
     embedder_step(plan, &mut report);
+    let mut codex_installed = false;
     for (tool, plugin) in plugins(plan) {
-        plugin_step(tool, plugin, &plan.source, &mut report);
+        let left = plugin_step(tool, plugin, &plan.source, &mut report);
+        codex_installed = tool == agents::Tool::Codex && left;
     }
+    hook_step(&plan.codex, codex_installed, &mut report);
     timer_step(&plan.timer, &mut report);
     Outcome {
         lines: report.lines,
@@ -1980,24 +1998,32 @@ fn plugin_step(
     plugin: &PluginPlan,
     source: &agents::Source,
     report: &mut Report,
-) {
+) -> bool {
     let step = tool.name();
     let (program, change) = match plugin {
         PluginPlan::Skipped(reason) => {
-            return report.line(step, "skipped", Some((*reason).into()));
+            report.line(step, "skipped", Some((*reason).into()));
+            return false;
         }
         PluginPlan::Unreadable(message) => {
-            return report.line(step, "failed", Some(message.clone()));
+            report.line(step, "failed", Some(message.clone()));
+            return false;
         }
         PluginPlan::Run { program, change } => (program, change),
     };
     let (status, commands) = match change {
-        agents::Change::Keep => return report.line(step, "kept", None),
+        agents::Change::Keep => {
+            report.line(step, "kept", None);
+            return true;
+        }
         agents::Change::Install(commands) => ("installed", commands),
         agents::Change::Update(commands) => ("updated", commands),
     };
     match agents::run_all(tool, &command::System, program, commands) {
-        Ok(()) => report.line(step, status, Some(source.display())),
+        Ok(()) => {
+            report.line(step, status, Some(source.display()));
+            true
+        }
         Err(failed) => {
             let mut detail = format!("{}: {}", source.display(), failed.message);
             let adding = failed.args.get(..3).is_some_and(|head| {
@@ -2010,7 +2036,61 @@ fn plugin_step(
                     .push_str("; for a build without a release tag, pass --plugin-source <folder>");
             }
             report.line(step, "failed", Some(detail));
+            false
         }
+    }
+}
+
+/// The detail of a failed hook step: the first line of the message, cut to 200 characters.
+fn short(message: &str) -> String {
+    command::first_line(message).chars().take(200).collect()
+}
+
+/// Trusts the bilbo hook in Codex when the codex step left the plugin installed.
+fn hook_step(codex: &PluginPlan, installed: bool, report: &mut Report) {
+    let program = match codex {
+        PluginPlan::Run { program, .. } if installed => program,
+        _ => return report.line("hook", "skipped", Some("no codex plugin".into())),
+    };
+    let cwd = std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .filter(|home| home.is_absolute())
+        .unwrap_or_else(|| PathBuf::from("/"));
+    let mut rpc = match agents::app_server(program) {
+        Ok(rpc) => rpc,
+        Err(message) => return report.line("hook", "failed", Some(short(&message))),
+    };
+    let trusted = agents::trust_hooks(&mut rpc, &cwd);
+    rpc.finish();
+    match trusted {
+        Ok(agents::Trust::Kept) => report.line("hook", "kept", Some("trusted in Codex".into())),
+        Ok(agents::Trust::Wrote { changed }) => report.line(
+            "hook",
+            if changed { "updated" } else { "installed" },
+            Some("trusted in Codex".into()),
+        ),
+        Ok(agents::Trust::NoHook) => {
+            report.line("hook", "skipped", Some("codex lists no bilbo hook".into()))
+        }
+        Err(message) => report.line("hook", "failed", Some(short(&message))),
+    }
+}
+
+/// Forgets the trust of every bilbo hook in Codex, whether or not the plugin is still there.
+fn forget_step(program: &Option<PathBuf>, report: &mut Report) {
+    let Some(program) = program else {
+        return report.line("hook", "skipped", Some("not found".into()));
+    };
+    let mut rpc = match agents::app_server(program) {
+        Ok(rpc) => rpc,
+        Err(message) => return report.line("hook", "failed", Some(short(&message))),
+    };
+    let forgotten = agents::forget_hooks(&mut rpc);
+    rpc.finish();
+    match forgotten {
+        Ok(0) => report.line("hook", "skipped", Some("not trusted".into())),
+        Ok(_) => report.line("hook", "removed", None),
+        Err(message) => report.line("hook", "failed", Some(short(&message))),
     }
 }
 
@@ -2046,6 +2126,8 @@ struct RemovePlan {
     server: TimerRemoval,
     claude: ToolRemoval,
     codex: ToolRemoval,
+    /// The `codex` whose app-server forgets the hook trust; `None` when there is none.
+    hook: Option<PathBuf>,
     timer: TimerRemoval,
 }
 
@@ -2125,6 +2207,10 @@ fn plan_remove(flags: &Flags, env: &store::Env, path: Option<std::ffi::OsString>
             },
         }
     };
+    let hook = flags
+        .codex
+        .clone()
+        .or_else(|| command::find("codex", path.as_deref()));
     let facts = timer_facts(env, path.as_deref());
     let server = installed_service(&facts).unwrap_or(TimerRemoval::Skipped("not installed"));
     let timer = match facts.platform {
@@ -2163,6 +2249,7 @@ fn plan_remove(flags: &Flags, env: &store::Env, path: Option<std::ffi::OsString>
         server,
         claude: tool(agents::Tool::Claude, &flags.claude),
         codex: tool(agents::Tool::Codex, &flags.codex),
+        hook,
         timer,
     }
 }
@@ -2239,6 +2326,7 @@ fn apply_remove(plan: &RemovePlan) -> Outcome {
             }
         }
     }
+    forget_step(&plan.hook, &mut report);
     match &plan.timer {
         TimerRemoval::Skipped(reason) => report.line("timer", "skipped", Some((*reason).into())),
         TimerRemoval::Run {
@@ -2291,7 +2379,8 @@ fn config_step(plan: &Plan, report: &mut Report) {
         ConfigPlan::Create(embedder) => (embedder, false),
         ConfigPlan::Update(embedder) => (embedder, true),
     };
-    let settings = embedder.as_ref().map(config::settings).unwrap_or_default();
+    let mut settings = embedder.as_ref().map(config::settings).unwrap_or_default();
+    settings.extend(plan.digest.iter().cloned());
     let header = format!(
         "# bilbo config, written by bilbo setup {} on {}",
         env!("CARGO_PKG_VERSION"),
@@ -2457,6 +2546,7 @@ mod tests {
             config_path: "/c/bilbo/config".into(),
             config,
             embedder,
+            digest: Vec::new(),
             key: KeyPlan::NoEmbedder,
             pasted: None,
             check,
@@ -2571,6 +2661,27 @@ mod tests {
                 "Keep the bilbo plugin in Codex",
             ]
         );
+    }
+
+    #[test]
+    fn summary_names_the_hook_trust_when_codex_gets_the_plugin() {
+        let mut p = plan(ConfigPlan::Keep, Some(embedder("m")), EmbedderPlan::Kept);
+        p.claude = PluginPlan::Run {
+            program: "/bin/claude".into(),
+            change: agents::Change::Install(Vec::new()),
+        };
+        p.codex = PluginPlan::Run {
+            program: "/bin/codex".into(),
+            change: agents::Change::Install(Vec::new()),
+        };
+        let lines = summary(&p);
+        assert!(lines.contains(
+            &"Install the bilbo plugin in Codex from delucca/bilbo#v1.2.3 and trust its digest hook"
+                .to_string()
+        ));
+        assert!(lines.contains(
+            &"Install the bilbo plugin in Claude Code from delucca/bilbo#v1.2.3".to_string()
+        ));
     }
 
     #[test]
@@ -2763,6 +2874,7 @@ mod tests {
             config_path: dir.join("cfg/config"),
             config,
             existing,
+            digest: Vec::new(),
             config_empty: false,
             token_path: dir.join("cfg/token"),
             exe: "/bin/bilbo".into(),
@@ -3639,6 +3751,30 @@ mod tests {
         }
 
         #[test]
+        fn the_wizard_keeps_the_digest_settings() {
+            let b = boxed("keep-digest");
+            b.write_config("a");
+            let mut text = std::fs::read_to_string(b.config()).unwrap();
+            text.push_str("digest.enable = on\ndigest.min_similarity = 0.6\ndigest.log = on\n");
+            std::fs::write(b.config(), text).unwrap();
+            let mut p = Scripted {
+                inputs: vec![("Model name", "b")],
+                selects: vec![NO_TIMER],
+                ..Scripted::default()
+            };
+            let run = wizard_run(&b, &mut p);
+            assert!(run.result.is_ok());
+            let text = std::fs::read_to_string(b.config()).unwrap();
+            let at = |needle: &str| {
+                text.find(needle)
+                    .unwrap_or_else(|| panic!("{needle}: {text}"))
+            };
+            assert!(at("embedder.model = b") < at("digest.enable = on"));
+            assert!(at("digest.enable = on") < at("digest.min_similarity = 0.6"));
+            assert!(at("digest.min_similarity = 0.6") < at("digest.log = on"));
+        }
+
+        #[test]
         fn keeping_every_default_keeps_the_config() {
             let b = boxed("keep");
             b.write_config("a");
@@ -3698,6 +3834,10 @@ mod tests {
             let lines = report(&run);
             assert!(
                 lines.contains(&"codex skipped: not chosen".to_string()),
+                "{lines:?}"
+            );
+            assert!(
+                lines.contains(&"hook skipped: no codex plugin".to_string()),
                 "{lines:?}"
             );
             assert!(

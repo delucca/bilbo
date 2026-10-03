@@ -1,6 +1,6 @@
 mod common;
 
-use common::{TempDir, bilbo};
+use common::{TempDir, bilbo, bilbo_input};
 
 const USAGE: &str = "\
 usage: bilbo new <kind> <topic> [--title <text>]
@@ -8,12 +8,14 @@ usage: bilbo new <kind> <topic> [--title <text>]
        bilbo recall <query>... [--kind <kind>]... [--limit <n>]
        bilbo index
        bilbo setup [--yes | --interactive] [--remove] [<setup option>]...
+       bilbo digest
        bilbo --help
        bilbo --version
 new creates <root>/notes/<kind>-<topic>.md and prints its path.
 check prints every problem in the store and changes nothing.
 recall prints the notes that best match the query, best first, 10 unless --limit says otherwise.
 index embeds the passages the vector cache lacks and drops the ones no note holds any more.
+digest reads a prompt hook's JSON on stdin and prints the notes that bear on the prompt; it always exits 0.
 setup creates the store and the config and installs the agent plugin, the index timer and, when asked, the local embedder; in a terminal it asks first.
 setup options: --embedder-url <url>, --embedder-model <name>, --embedder-token-env <var>, --embedder-token-file <path>, --embedder-query-prefix <text>, --embedder-local, --embedder-port <port>, --llama-server <path>, --no-plugin, --claude <path>, --codex <path>, --plugin-source <folder|owner/repo#ref>, --no-timer, --index-every <minutes>
 kinds: plan, spec, design, decision, gotcha, research, review, report, reference
@@ -57,9 +59,40 @@ fn unknown_verb_is_usage_error() {
             && run.stderr.contains("bilbo recall")
             && run.stderr.contains("bilbo index")
             && run.stderr.contains("bilbo setup")
+            && run.stderr.contains("bilbo digest")
     );
     assert!(!home.exists());
     assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
+}
+
+#[test]
+fn digest_is_a_verb() {
+    let dir = TempDir::new("cli-digest");
+    let home = dir.path().join("home");
+    let run = bilbo_input(
+        dir.path(),
+        &[("BILBO_HOME", home.to_str().unwrap())],
+        &["digest"],
+        "not json",
+    );
+    assert_eq!(run.code, 0);
+    assert!(run.stdout.is_empty());
+    assert_eq!(run.stderr, "bilbo: the hook input is not a JSON object\n");
+}
+
+#[test]
+fn digest_exits_0_on_an_unknown_option() {
+    let dir = TempDir::new("cli-digest-option");
+    let home = dir.path().join("home");
+    let run = bilbo(
+        dir.path(),
+        &[("BILBO_HOME", home.to_str().unwrap())],
+        &["digest", "--verbose"],
+    );
+    assert_eq!(run.code, 0);
+    assert!(run.stdout.is_empty());
+    assert_eq!(run.stderr.lines().count(), 1);
+    assert!(run.stderr.starts_with("bilbo: ") && run.stderr.contains("--verbose"));
 }
 
 #[test]

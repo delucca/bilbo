@@ -1,0 +1,5 @@
+$ {"id":2,"method":"hooks/list","params":{"cwds":["/fixture/home"]}}
+exit 0
+--- stdout
+{"id":2,"result":{"data":[{"cwd":"/fixture/home","hooks":[{"key":"bilbo@bilbo:hooks/hooks.json:user_prompt_submit:0:0","eventName":"userPromptSubmit","handlerType":"command","command":"command -v bilbo >/dev/null 2>&1 || exit 0; bilbo digest; exit 0","async":false,"matcher":null,"timeoutSec":5,"statusMessage":null,"additionalContextLimit":null,"sourcePath":"<codex-home>/plugins/cache/bilbo/bilbo/0.3.0/hooks/hooks.json","source":"plugin","pluginId":"bilbo@bilbo","displayOrder":0,"enabled":true,"isManaged":false,"currentHash":"sha256:25e2d1e2cbe24cbc61bd80f28e947112c2db5245aaf103860d7721932066d0ed","trustStatus":"trusted"}],"warnings":[],"errors":[]}]}}
+--- stderr

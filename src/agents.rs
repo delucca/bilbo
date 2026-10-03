@@ -414,6 +414,100 @@ pub fn message(tool: Tool, output: &Output) -> String {
     }
 }
 
+/// What `trust_hooks` did in Codex.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Trust {
+    /// Every bilbo hook was already trusted.
+    Kept,
+    /// It wrote the trust; `changed` when a hook had been trusted before and changed since.
+    Wrote { changed: bool },
+    /// Codex lists no bilbo hook.
+    NoHook,
+}
+
+/// Opens Codex's app-server and says hello.
+pub fn app_server(program: &Path) -> Result<crate::command::Rpc, String> {
+    use crate::command::Calls;
+    let mut rpc =
+        crate::command::Rpc::start(program, &["app-server"], std::time::Duration::from_secs(30))?;
+    rpc.call(
+        "initialize",
+        serde_json::json!({"clientInfo": {"name": "bilbo", "version": env!("CARGO_PKG_VERSION")}}),
+    )?;
+    rpc.notify("initialized")?;
+    Ok(rpc)
+}
+
+/// Lists Codex's hooks for `cwd` and trusts every bilbo one that is untrusted or changed.
+pub fn trust_hooks(rpc: &mut dyn crate::command::Calls, cwd: &Path) -> Result<Trust, String> {
+    let listed = rpc.call("hooks/list", serde_json::json!({ "cwds": [cwd] }))?;
+    let hooks: Vec<&Value> = listed["data"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .flat_map(|entry| entry["hooks"].as_array().into_iter().flatten())
+        .filter(|hook| hook["pluginId"] == PLUGIN)
+        .collect();
+    if hooks.is_empty() {
+        return Ok(Trust::NoHook);
+    }
+    let mut value = serde_json::Map::new();
+    let mut changed = false;
+    for hook in hooks {
+        let (Some(key), Some(hash), Some(status)) = (
+            hook["key"].as_str(),
+            hook["currentHash"].as_str(),
+            hook["trustStatus"].as_str(),
+        ) else {
+            return Err("codex listed a bilbo hook without key, currentHash or trustStatus".into());
+        };
+        match status {
+            "trusted" | "managed" => {}
+            "untrusted" | "modified" => {
+                changed |= status == "modified";
+                value.insert(key.to_string(), serde_json::json!({ "trusted_hash": hash }));
+            }
+            _ => {
+                return Err(format!(
+                    "codex reports trust status '{status}' for a bilbo hook"
+                ));
+            }
+        }
+    }
+    if value.is_empty() {
+        return Ok(Trust::Kept);
+    }
+    rpc.call(
+        "config/batchWrite",
+        serde_json::json!({"edits": [{"keyPath": "hooks.state", "value": value, "mergeStrategy": "upsert"}], "reloadUserConfig": false}),
+    )?;
+    Ok(Trust::Wrote { changed })
+}
+
+/// Deletes every trust entry of a bilbo hook from Codex's config; how many there were.
+pub fn forget_hooks(rpc: &mut dyn crate::command::Calls) -> Result<usize, String> {
+    let read = rpc.call("config/read", serde_json::json!({ "includeLayers": false }))?;
+    let keys: Vec<String> = read["config"]["hooks"]["state"]
+        .as_object()
+        .into_iter()
+        .flatten()
+        .map(|(key, _)| key.clone())
+        .filter(|key| key.starts_with(&format!("{PLUGIN}:")))
+        .collect();
+    if keys.is_empty() {
+        return Ok(0);
+    }
+    let edits: Vec<Value> = keys
+        .iter()
+        .map(|key| serde_json::json!({"keyPath": format!("hooks.state.\"{key}\""), "value": null, "mergeStrategy": "replace"}))
+        .collect();
+    rpc.call(
+        "config/batchWrite",
+        serde_json::json!({ "edits": edits, "reloadUserConfig": false }),
+    )?;
+    Ok(keys.len())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1056,5 +1150,193 @@ mod tests {
         for bad in ["bare", "a/b", "a/b#", "a/b#-x", "a/b#x y", "a b/c#d"] {
             assert_eq!(parse(bad), Err(nor(bad)), "{bad}");
         }
+    }
+
+    /// A `Calls` that answers each method from a recorded reply and keeps every request.
+    struct Scripted {
+        replies: Vec<(&'static str, Result<Value, String>)>,
+        seen: Vec<(String, Value)>,
+    }
+
+    impl crate::command::Calls for Scripted {
+        fn call(&mut self, method: &str, params: Value) -> Result<Value, String> {
+            self.seen.push((method.to_string(), params));
+            self.replies
+                .iter()
+                .find(|(name, _)| *name == method)
+                .map(|(_, reply)| reply.clone())
+                .unwrap_or_else(|| Err(format!("unscripted {method}")))
+        }
+    }
+
+    /// The `result` of the reply a fixture recorded.
+    fn result(output: Output) -> Value {
+        let reply: Value = serde_json::from_str(output.stdout.trim()).unwrap();
+        reply["result"].clone()
+    }
+
+    const KEY: &str = "bilbo@bilbo:hooks/hooks.json:user_prompt_submit:0:0";
+    const HASH: &str = "sha256:25e2d1e2cbe24cbc61bd80f28e947112c2db5245aaf103860d7721932066d0ed";
+
+    fn script(listed: Value) -> Scripted {
+        Scripted {
+            replies: vec![
+                ("hooks/list", Ok(listed)),
+                (
+                    "config/batchWrite",
+                    Ok(result(fixture!("codex-app-server-batch-write"))),
+                ),
+            ],
+            seen: Vec::new(),
+        }
+    }
+
+    fn writes(rpc: &Scripted) -> Vec<&Value> {
+        rpc.seen
+            .iter()
+            .filter(|(method, _)| method == "config/batchWrite")
+            .map(|(_, params)| params)
+            .collect()
+    }
+
+    #[test]
+    fn trust_hooks_writes_untrusted_hooks() {
+        let mut rpc = script(result(fixture!("codex-app-server-list-untrusted")));
+        let trust = trust_hooks(&mut rpc, Path::new("/fixture/home"));
+        assert_eq!(trust, Ok(Trust::Wrote { changed: false }));
+        assert_eq!(rpc.seen[0].0, "hooks/list");
+        assert_eq!(
+            rpc.seen[0].1,
+            serde_json::json!({"cwds": ["/fixture/home"]})
+        );
+        assert_eq!(
+            writes(&rpc),
+            [&serde_json::json!({
+                "edits": [{
+                    "keyPath": "hooks.state",
+                    "value": {KEY: {"trusted_hash": HASH}},
+                    "mergeStrategy": "upsert"
+                }],
+                "reloadUserConfig": false
+            })]
+        );
+    }
+
+    #[test]
+    fn trust_hooks_keeps_trusted_hooks() {
+        let mut rpc = script(result(fixture!("codex-app-server-list-trusted")));
+        assert_eq!(
+            trust_hooks(&mut rpc, Path::new("/fixture/home")),
+            Ok(Trust::Kept)
+        );
+        assert!(writes(&rpc).is_empty());
+    }
+
+    #[test]
+    fn trust_hooks_marks_modified_as_changed() {
+        let mut rpc = script(result(fixture!("codex-app-server-list-modified")));
+        assert_eq!(
+            trust_hooks(&mut rpc, Path::new("/fixture/home")),
+            Ok(Trust::Wrote { changed: true })
+        );
+        assert_eq!(writes(&rpc).len(), 1);
+    }
+
+    #[test]
+    fn trust_hooks_without_a_bilbo_hook() {
+        let mut listed = result(fixture!("codex-app-server-list-untrusted"));
+        listed["data"][0]["hooks"][0]["pluginId"] = "other@plugin".into();
+        let mut other = script(listed);
+        assert_eq!(
+            trust_hooks(&mut other, Path::new("/fixture/home")),
+            Ok(Trust::NoHook)
+        );
+        let mut none = script(serde_json::json!({"data": [{"cwd": "/", "hooks": []}]}));
+        assert_eq!(
+            trust_hooks(&mut none, Path::new("/fixture/home")),
+            Ok(Trust::NoHook)
+        );
+        assert!(writes(&other).is_empty() && writes(&none).is_empty());
+    }
+
+    #[test]
+    fn trust_hooks_leaves_managed_hooks_and_reports_what_codex_got_wrong() {
+        let mut listed = result(fixture!("codex-app-server-list-untrusted"));
+        listed["data"][0]["hooks"][0]["trustStatus"] = "managed".into();
+        let mut rpc = script(listed);
+        assert_eq!(trust_hooks(&mut rpc, Path::new("/")), Ok(Trust::Kept));
+        let mut listed = result(fixture!("codex-app-server-list-untrusted"));
+        listed["data"][0]["hooks"][0]["currentHash"] = Value::Null;
+        let mut rpc = script(listed);
+        assert_eq!(
+            trust_hooks(&mut rpc, Path::new("/")),
+            Err("codex listed a bilbo hook without key, currentHash or trustStatus".into())
+        );
+        let mut failing = script(Value::Null);
+        failing.replies[1].1 = Err("codex app-server answered config/batchWrite: boom".into());
+        failing.replies[0].1 = Ok(result(fixture!("codex-app-server-list-untrusted")));
+        assert_eq!(
+            trust_hooks(&mut failing, Path::new("/")),
+            Err("codex app-server answered config/batchWrite: boom".into())
+        );
+    }
+
+    #[test]
+    fn trust_hooks_refuses_an_unknown_trust_status() {
+        let mut listed = result(fixture!("codex-app-server-list-untrusted"));
+        listed["data"][0]["hooks"][0]["trustStatus"] = "blocked".into();
+        let mut rpc = script(listed);
+        assert_eq!(
+            trust_hooks(&mut rpc, Path::new("/")),
+            Err("codex reports trust status 'blocked' for a bilbo hook".into())
+        );
+        assert!(writes(&rpc).is_empty());
+    }
+
+    #[test]
+    fn forget_hooks_deletes_bilbo_keys_only() {
+        let mut read = result(fixture!("codex-app-server-config-read"));
+        read["config"]["hooks"]["state"]["other@plugin:hooks/hooks.json:stop:0:0"] =
+            serde_json::json!({"trusted_hash": "sha256:other"});
+        let mut rpc = Scripted {
+            replies: vec![
+                ("config/read", Ok(read)),
+                (
+                    "config/batchWrite",
+                    Ok(result(fixture!("codex-app-server-batch-write"))),
+                ),
+            ],
+            seen: Vec::new(),
+        };
+        assert_eq!(forget_hooks(&mut rpc), Ok(1));
+        assert_eq!(rpc.seen[0].1, serde_json::json!({"includeLayers": false}));
+        assert_eq!(
+            writes(&rpc),
+            [&serde_json::json!({
+                "edits": [{
+                    "keyPath": format!("hooks.state.\"{KEY}\""),
+                    "value": null,
+                    "mergeStrategy": "replace"
+                }],
+                "reloadUserConfig": false
+            })]
+        );
+        let mut none = Scripted {
+            replies: vec![(
+                "config/read",
+                Ok(serde_json::json!({"config": {"hooks": {"state": {"other@plugin:x": {}}}}})),
+            )],
+            seen: Vec::new(),
+        };
+        assert_eq!(forget_hooks(&mut none), Ok(0));
+        assert_eq!(none.seen.len(), 1);
+    }
+
+    #[test]
+    fn an_unknown_method_reply_is_an_error_object() {
+        let reply: Value =
+            serde_json::from_str(fixture!("codex-app-server-unknown-method").stdout.trim())
+                .unwrap();
+        assert_eq!(reply["error"]["code"], -32600);
     }
 }

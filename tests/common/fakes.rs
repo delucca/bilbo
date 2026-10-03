@@ -105,6 +105,69 @@ source_json() {
   *) printf '{"sourceType":"local","source":"%s"}' "${m#local }" ;;
   esac
 }
+if [ "$1" = app-server ]; then
+  injected app-server
+  hash=sha256:fake
+  [ -s "$D/codex.hook-hash" ] && read -r hash <"$D/codex.hook-hash"
+  key='bilbo@bilbo:hooks/hooks.json:user_prompt_submit:0:0'
+  n=0
+  while IFS= read -r line; do
+    case "$line" in
+    *'"id":'*) n=$((n+1)) ;;
+    *) continue ;;
+    esac
+    trust=
+    [ -s "$D/codex.trust" ] && read -r trust <"$D/codex.trust"
+    case "$line" in
+    *'"method":"initialize"'*)
+      printf 'app-server initialize\n' >>"$D/codex.log"
+      printf '{"id":%s,"result":{}}\n' "$n"
+      ;;
+    *'"method":"hooks/list"'*)
+      printf 'app-server hooks/list\n' >>"$D/codex.log"
+      if [ -z "$p" ] || [ -s "$D/codex.no-hook" ]; then
+        printf '{"id":%s,"result":{"data":[{"cwd":"/","hooks":[],"warnings":[],"errors":[]}]}}\n' "$n"
+      else
+        status=untrusted
+        if [ "$trust" = "$hash" ]; then
+          status=trusted
+        elif [ -n "$trust" ]; then
+          status=modified
+        fi
+        printf '{"id":%s,"result":{"data":[{"cwd":"/","hooks":[{"key":"%s","pluginId":"bilbo@bilbo","source":"plugin","isManaged":false,"currentHash":"%s","trustStatus":"%s"}],"warnings":[],"errors":[]}]}}\n' "$n" "$key" "$hash" "$status"
+      fi
+      ;;
+    *'"method":"config/batchWrite"'*)
+      printf 'app-server config/batchWrite\n' >>"$D/codex.log"
+      printf '%s\n' "$line" >>"$D/codex.batch-writes"
+      if [ -s "$D/codex.readonly" ]; then
+        printf '{"id":%s,"error":{"code":-32603,"message":"failed to persist config.toml: failed to persist config at %s/config.toml"}}\n' "$n" "$D"
+        continue
+      fi
+      case "$line" in
+      *'"value":null'*) printf '\n' >"$D/codex.trust" ;;
+      *)
+        t=${line#*trusted_hash\":\"}
+        printf '%s\n' "${t%%\"*}" >"$D/codex.trust"
+        ;;
+      esac
+      printf '{"id":%s,"result":{"status":"ok"}}\n' "$n"
+      ;;
+    *'"method":"config/read"'*)
+      printf 'app-server config/read\n' >>"$D/codex.log"
+      if [ -n "$trust" ]; then
+        printf '{"id":%s,"result":{"config":{"hooks":{"state":{"%s":{"trusted_hash":"%s"},"other@plugin:hooks/hooks.json:stop:0:0":{"trusted_hash":"sha256:other"}}}}}}\n' "$n" "$key" "$trust"
+      else
+        printf '{"id":%s,"result":{"config":{"hooks":{"state":{"other@plugin:hooks/hooks.json:stop:0:0":{"trusted_hash":"sha256:other"}}}}}}\n' "$n"
+      fi
+      ;;
+    *)
+      printf '{"id":%s,"error":{"code":-32601,"message":"unknown method"}}\n' "$n"
+      ;;
+    esac
+  done
+  exit 0
+fi
 case "$1 $2 $3" in
 "plugin marketplace list")
   if [ -z "$m" ]; then

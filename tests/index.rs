@@ -656,7 +656,7 @@ fn config_errors_exit_2() {
     three(&s);
     let path = s.config.display().to_string();
     let url = format!("embedder.url = {}", fake.url);
-    let keys = "keys: embedder.url, embedder.model, embedder.token_file, embedder.token_env, embedder.query_prefix, embedder.min_similarity";
+    let keys = "keys: embedder.url, embedder.model, embedder.token_file, embedder.token_env, embedder.query_prefix, embedder.min_similarity, digest.enable, digest.min_similarity, digest.log";
     let cases: Vec<(Vec<&str>, String)> = vec![
         (
             vec!["# c", "embedder.model = x", "embeder.url = http://h"],
@@ -764,4 +764,21 @@ fn old_vectors_of_textless_passages_are_dropped() {
     ok(&run);
     assert_eq!(run.stdout, "embedded 0, kept 0, dropped 1\n");
     assert_eq!(fake.requests().len(), 1);
+}
+
+#[test]
+fn digest_similarity_out_of_range() {
+    let fake = Fake::start(4);
+    let s = setup("index-digest-similarity", &fake, &[]);
+    three(&s);
+    common::config(&s.dir, &["digest.min_similarity = 1.5"]);
+    let run = index(&s, &[], &[]);
+    failed(&run, 2);
+    assert!(
+        run.stderr
+            .contains(&format!("{}:1: digest.min_similarity", s.config.display())),
+        "{}",
+        run.stderr
+    );
+    assert!(fake.requests().is_empty());
 }

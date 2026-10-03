@@ -1,0 +1,5 @@
+$ {"id":3,"method":"config/batchWrite","params":{"edits":[{"keyPath":"hooks.state","value":{"bilbo@bilbo:hooks/hooks.json:user_prompt_submit:0:0":{"trusted_hash":"sha256:25e2d1e2cbe24cbc61bd80f28e947112c2db5245aaf103860d7721932066d0ed"}},"mergeStrategy":"upsert"}],"reloadUserConfig":false}}
+exit 0
+--- stdout
+{"id":3,"result":{"status":"ok","version":"sha256:42de2658325e6f84e30fb3ddf645bba7e23a0dd26f07c08f7c301e20ff1495b7","filePath":"<codex-home>/config.toml","overriddenMetadata":null}}
+--- stderr

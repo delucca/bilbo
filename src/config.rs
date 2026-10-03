@@ -2,14 +2,18 @@ use crate::store::{self, Env};
 use std::path::{Path, PathBuf};
 
 pub const DEFAULT_MIN_SIMILARITY: f64 = 0.5;
+pub const DEFAULT_DIGEST_SIMILARITY: f64 = 0.55;
 
-pub const KEYS: [&str; 6] = [
+pub const KEYS: [&str; 9] = [
     "embedder.url",
     "embedder.model",
     "embedder.token_file",
     "embedder.token_env",
     "embedder.query_prefix",
     "embedder.min_similarity",
+    "digest.enable",
+    "digest.min_similarity",
+    "digest.log",
 ];
 
 pub const QWEN_PREFIX: &str = "Instruct: Given a question, retrieve notes that answer it\nQuery: ";
@@ -20,6 +24,29 @@ pub struct Settings {
     pub path: Option<PathBuf>,
     /// `None` without `embedder.url`: bilbo is keyword-only.
     pub embedder: Option<Embedder>,
+    pub digest: Digest,
+    /// The digest lines the file held, as written (unquoted), in `KEYS` order; a rewrite keeps them.
+    pub digest_lines: Vec<(&'static str, String)>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Digest {
+    /// Whether `bilbo digest` does anything; off, it prints and writes nothing.
+    pub enable: bool,
+    /// The similarity a note's best passage needs to enter the digest when an embedder answers.
+    pub min_similarity: f64,
+    /// Whether `bilbo digest` appends a line per run to its log.
+    pub log: bool,
+}
+
+impl Default for Digest {
+    fn default() -> Digest {
+        Digest {
+            enable: true,
+            min_similarity: DEFAULT_DIGEST_SIMILARITY,
+            log: false,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -60,6 +87,8 @@ pub fn load(env: &Env) -> Result<Settings, String> {
         return Ok(Settings {
             path: None,
             embedder: None,
+            digest: Digest::default(),
+            digest_lines: Vec::new(),
         });
     };
     let bytes = match std::fs::read(&path) {
@@ -74,6 +103,8 @@ pub fn load(env: &Env) -> Result<Settings, String> {
             return Ok(Settings {
                 path: Some(path),
                 embedder: None,
+                digest: Digest::default(),
+                digest_lines: Vec::new(),
             });
         }
         Err(e) => return Err(format!("cannot read {}: {e}", path.display())),
@@ -81,15 +112,23 @@ pub fn load(env: &Env) -> Result<Settings, String> {
     let text =
         String::from_utf8(bytes).map_err(|_| format!("{}: not valid UTF-8", path.display()))?;
     let home = store::absolute(&env.home);
-    let embedder = parse(&path, &text, home.as_deref())?;
+    let (embedder, digest, digest_lines) = parse(&path, &text, home.as_deref())?;
     Ok(Settings {
         path: Some(path),
         embedder,
+        digest,
+        digest_lines,
     })
 }
 
-/// The embedder of the file `path` holding `text`; `home` expands `~/`.
-fn parse(path: &Path, text: &str, home: Option<&Path>) -> Result<Option<Embedder>, String> {
+/// The embedder and digest settings of the file `path` holding `text`, and the digest lines as
+/// written in `KEYS` order; `home` expands `~/`.
+#[allow(clippy::type_complexity)]
+fn parse(
+    path: &Path,
+    text: &str,
+    home: Option<&Path>,
+) -> Result<(Option<Embedder>, Digest, Vec<(&'static str, String)>), String> {
     let at = path.display();
     let text = text.strip_prefix('\u{feff}').unwrap_or(text);
     let mut seen: Vec<(&str, usize)> = Vec::new();
@@ -99,6 +138,8 @@ fn parse(path: &Path, text: &str, home: Option<&Path>) -> Result<Option<Embedder
     let mut token_env = None;
     let mut query_prefix = String::new();
     let mut min_similarity = DEFAULT_MIN_SIMILARITY;
+    let mut digest = Digest::default();
+    let mut digest_lines: Vec<(&'static str, String)> = Vec::new();
     for (index, line) in text.split('\n').enumerate() {
         let n = index + 1;
         let line = line.strip_suffix('\r').unwrap_or(line);
@@ -132,6 +173,9 @@ fn parse(path: &Path, text: &str, home: Option<&Path>) -> Result<Option<Embedder
         })?;
         if value.is_empty() && key != "embedder.query_prefix" {
             return Err(format!("{at}:{n}: {key} needs a value"));
+        }
+        if key.starts_with("digest.") {
+            digest_lines.push((key, value.clone()));
         }
         match key {
             "embedder.url" => {
@@ -180,16 +224,46 @@ fn parse(path: &Path, text: &str, home: Option<&Path>) -> Result<Option<Embedder
                     )
                 })?;
             }
+            "digest.enable" => {
+                digest.enable = match value.as_str() {
+                    "on" => true,
+                    "off" => false,
+                    _ => {
+                        return Err(format!(
+                            "{at}:{n}: digest.enable must be on or off, got '{value}'"
+                        ));
+                    }
+                };
+            }
+            "digest.min_similarity" => {
+                digest.min_similarity = parse_similarity(&value).ok_or_else(|| {
+                    format!(
+                        "{at}:{n}: digest.min_similarity must be a number from 0 to 1, got '{value}'"
+                    )
+                })?;
+            }
+            "digest.log" => {
+                digest.log = match value.as_str() {
+                    "on" => true,
+                    "off" => false,
+                    _ => {
+                        return Err(format!(
+                            "{at}:{n}: digest.log must be on or off, got '{value}'"
+                        ));
+                    }
+                };
+            }
             _ => query_prefix = value,
         }
     }
+    digest_lines.sort_by_key(|(key, _)| KEYS.iter().position(|k| k == key));
     if token_file.is_some() && token_env.is_some() {
         return Err(format!(
             "{at}: set embedder.token_file or embedder.token_env, not both"
         ));
     }
     let Some(url) = url else {
-        return Ok(None);
+        return Ok((None, digest, digest_lines));
     };
     let Some(model) = model else {
         return Err(format!(
@@ -199,13 +273,17 @@ fn parse(path: &Path, text: &str, home: Option<&Path>) -> Result<Option<Embedder
     let token = token_file
         .map(Token::File)
         .or_else(|| token_env.map(Token::Var));
-    Ok(Some(Embedder {
-        url,
-        model,
-        token,
-        query_prefix,
-        min_similarity,
-    }))
+    Ok((
+        Some(Embedder {
+            url,
+            model,
+            token,
+            query_prefix,
+            min_similarity,
+        }),
+        digest,
+        digest_lines,
+    ))
 }
 
 fn trim(text: &str) -> &str {
@@ -438,7 +516,78 @@ mod tests {
     const BASE: &str = "embedder.url = http://bagend:8081\nembedder.model = m\n";
 
     fn parsed(text: &str) -> Result<Option<Embedder>, String> {
-        parse(Path::new("/c"), text, Some(Path::new("/home/a")))
+        parse(Path::new("/c"), text, Some(Path::new("/home/a"))).map(|(e, _, _)| e)
+    }
+
+    fn digest(text: &str) -> Result<Digest, String> {
+        parse(Path::new("/c"), text, Some(Path::new("/home/a"))).map(|(_, d, _)| d)
+    }
+
+    #[test]
+    fn digest_defaults() {
+        assert_eq!(
+            digest(BASE).unwrap(),
+            Digest {
+                enable: true,
+                min_similarity: 0.55,
+                log: false
+            }
+        );
+        assert_eq!(digest("").unwrap(), Digest::default());
+    }
+
+    #[test]
+    fn digest_keys_without_an_embedder() {
+        let d =
+            digest("digest.enable = off\ndigest.min_similarity = 0.7\ndigest.log = on\n").unwrap();
+        assert_eq!(
+            d,
+            Digest {
+                enable: false,
+                min_similarity: 0.7,
+                log: true
+            }
+        );
+    }
+
+    #[test]
+    fn digest_lines_keep_what_the_file_wrote_in_keys_order() {
+        let text = "digest.log = \"off\"\nembedder.url = http://h\nembedder.model = m\ndigest.enable = on\ndigest.min_similarity = 0.55\n";
+        let (_, _, lines) = parse(Path::new("/c"), text, None).unwrap();
+        assert_eq!(
+            lines,
+            [
+                ("digest.enable", "on".to_string()),
+                ("digest.min_similarity", "0.55".to_string()),
+                ("digest.log", "off".to_string())
+            ]
+        );
+        assert!(
+            parse(
+                Path::new("/c"),
+                "embedder.url = http://h\nembedder.model = m\n",
+                None
+            )
+            .unwrap()
+            .2
+            .is_empty()
+        );
+    }
+
+    #[test]
+    fn digest_bad_values() {
+        assert_eq!(
+            digest("digest.enable = no\n").unwrap_err(),
+            "/c:1: digest.enable must be on or off, got 'no'"
+        );
+        assert_eq!(
+            digest("digest.log = yes\n").unwrap_err(),
+            "/c:1: digest.log must be on or off, got 'yes'"
+        );
+        assert_eq!(
+            digest("\ndigest.min_similarity = 1.5\n").unwrap_err(),
+            "/c:2: digest.min_similarity must be a number from 0 to 1, got '1.5'"
+        );
     }
 
     fn embedder(text: &str) -> Embedder {
@@ -623,7 +772,7 @@ mod tests {
     fn unknown_key_names_file_and_line() {
         assert_eq!(
             err("# c\n\nembeder.url = http://x\n"),
-            "/c:3: unknown key 'embeder.url'; keys: embedder.url, embedder.model, embedder.token_file, embedder.token_env, embedder.query_prefix, embedder.min_similarity"
+            "/c:3: unknown key 'embeder.url'; keys: embedder.url, embedder.model, embedder.token_file, embedder.token_env, embedder.query_prefix, embedder.min_similarity, digest.enable, digest.min_similarity, digest.log"
         );
     }
 

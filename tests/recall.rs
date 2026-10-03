@@ -2,7 +2,10 @@ mod common;
 
 use std::path::{Path, PathBuf};
 
-use common::{Fake, IDS, Run, TempDir, bilbo, config, dead_url, note_text, snapshot, store, write};
+use common::{
+    Fake, IDS, Run, TempDir, bench_store, bilbo, config, dead_url, note_text, snapshot, store,
+    write,
+};
 
 const USAGE: &str = "\
 usage: bilbo new <kind> <topic> [--title <text>]
@@ -10,12 +13,14 @@ usage: bilbo new <kind> <topic> [--title <text>]
        bilbo recall <query>... [--kind <kind>]... [--limit <n>]
        bilbo index
        bilbo setup [--yes | --interactive] [--remove] [<setup option>]...
+       bilbo digest
        bilbo --help
        bilbo --version
 new creates <root>/notes/<kind>-<topic>.md and prints its path.
 check prints every problem in the store and changes nothing.
 recall prints the notes that best match the query, best first, 10 unless --limit says otherwise.
 index embeds the passages the vector cache lacks and drops the ones no note holds any more.
+digest reads a prompt hook's JSON on stdin and prints the notes that bear on the prompt; it always exits 0.
 setup creates the store and the config and installs the agent plugin, the index timer and, when asked, the local embedder; in a terminal it asks first.
 setup options: --embedder-url <url>, --embedder-model <name>, --embedder-token-env <var>, --embedder-token-file <path>, --embedder-query-prefix <text>, --embedder-local, --embedder-port <port>, --llama-server <path>, --no-plugin, --claude <path>, --codex <path>, --plugin-source <folder|owner/repo#ref>, --no-timer, --index-every <minutes>
 kinds: plan, spec, design, decision, gotcha, research, review, report, reference
@@ -647,214 +652,11 @@ fn recall_leaves_store_as_found() {
     assert_eq!(snapshot(&root), before);
 }
 
-const BENCH_SECTIONS: usize = 6;
-
-const BENCH_WORDS: &[&str] = &[
-    "embedder",
-    "timeout",
-    "decisão",
-    "ação",
-    "configuração",
-    "memória",
-    "código",
-    "índice",
-    "sessão",
-    "versão",
-    "também",
-    "não",
-    "função",
-    "próximo",
-    "rollback",
-    "cache",
-    "store",
-    "note",
-    "index",
-    "query",
-    "passage",
-    "heading",
-    "ranking",
-    "score",
-    "token",
-    "buffer",
-    "thread",
-    "queue",
-    "retry",
-    "backoff",
-    "latency",
-    "deploy",
-    "release",
-    "branch",
-    "commit",
-    "review",
-    "agent",
-    "prompt",
-    "model",
-    "context",
-    "window",
-    "limit",
-    "batch",
-    "worker",
-    "stream",
-    "socket",
-    "client",
-    "server",
-    "request",
-    "response",
-    "schema",
-    "migration",
-    "column",
-    "table",
-    "record",
-    "field",
-    "value",
-    "string",
-    "number",
-    "array",
-    "object",
-    "module",
-    "package",
-    "crate",
-    "library",
-    "compiler",
-    "runtime",
-    "memory",
-    "storage",
-    "decisão",
-    "solução",
-    "organização",
-    "informação",
-    "atenção",
-    "relação",
-    "operação",
-    "documentação",
-    "integração",
-    "execução",
-    "validação",
-    "descrição",
-    "condição",
-    "posição",
-    "variável",
-    "método",
-    "análise",
-    "técnica",
-    "prática",
-    "histórico",
-    "automático",
-    "dinâmico",
-    "estático",
-    "através",
-    "além",
-    "então",
-    "porém",
-    "já",
-    "até",
-    "você",
-    "são",
-    "está",
-    "será",
-    "podem",
-    "devem",
-    "quando",
-    "depois",
-    "antes",
-    "sempre",
-    "nunca",
-    "porque",
-    "enquanto",
-    "durante",
-    "entre",
-    "sobre",
-    "sem",
-    "com",
-    "para",
-    "the",
-    "and",
-    "with",
-    "from",
-    "into",
-    "over",
-    "under",
-    "while",
-    "after",
-    "before",
-    "because",
-    "should",
-    "would",
-    "could",
-    "might",
-    "every",
-    "other",
-    "which",
-    "their",
-    "about",
-    "first",
-    "last",
-    "next",
-    "same",
-    "each",
-    "only",
-];
-
-fn xorshift(seed: &mut u64) -> u64 {
-    *seed ^= *seed << 13;
-    *seed ^= *seed >> 7;
-    *seed ^= *seed << 17;
-    *seed
-}
-
-fn bench_text(seed: &mut u64, words: usize) -> String {
-    let picked: Vec<&str> = (0..words)
-        .map(|_| BENCH_WORDS[(xorshift(seed) % BENCH_WORDS.len() as u64) as usize])
-        .collect();
-    picked.join(" ")
-}
-
-/// A paragraph of 40 to 120 words.
-fn paragraph(seed: &mut u64) -> String {
-    let words = 40 + (xorshift(seed) % 81) as usize;
-    bench_text(seed, words)
-}
-
 #[test]
 #[ignore = "timing; run with --release -- --ignored"]
 fn recall_over_a_6_mib_store_is_fast() {
-    const KINDS: [&str; 9] = [
-        "plan",
-        "spec",
-        "design",
-        "decision",
-        "gotcha",
-        "research",
-        "review",
-        "report",
-        "reference",
-    ];
     let dir = TempDir::new("recall-speed");
-    let root = store(&dir);
-    let mut seed = 0x9E37_79B9_7F4A_7C15u64;
-    let mut total = 0usize;
-    for i in 0..450 {
-        let mut text = format!(
-            "---\nid: {}\ncreated: {CREATED}\n---\n\n# Bench note {i}\n",
-            IDS[0]
-        );
-        for section in 0..BENCH_SECTIONS {
-            text.push_str(&format!(
-                "\n## Section {section}\n\n{}\n",
-                paragraph(&mut seed)
-            ));
-            for sub in 0..2 + (section + i) % 3 {
-                text.push_str(&format!("\n### Part {sub}\n\n{}\n", paragraph(&mut seed)));
-            }
-            if section % 3 == 0 {
-                text.push_str("\n```\nfn main() {}\n# not a heading\n```\n");
-            }
-        }
-        total += text.len();
-        write(&root, &format!("{}-bench-{i}.md", KINDS[i % 9]), &text);
-    }
-    let mib = total as f64 / (1024.0 * 1024.0);
-    assert!((5.5..=6.5).contains(&mib), "{mib} MiB");
+    let (root, mib) = bench_store(&dir);
 
     let args = ["embedder", "timeout", "decisao"];
     assert_eq!(recall(&dir, &root, &args).code, 0);
@@ -1292,7 +1094,7 @@ fn config_errors_exit_2() {
     let (root, config_path) = embedded(&dir, &fake, &[], &rollback_notes());
     let path = config_path.display().to_string();
     let url = format!("embedder.url = {}", fake.url);
-    let keys = "keys: embedder.url, embedder.model, embedder.token_file, embedder.token_env, embedder.query_prefix, embedder.min_similarity";
+    let keys = "keys: embedder.url, embedder.model, embedder.token_file, embedder.token_env, embedder.query_prefix, embedder.min_similarity, digest.enable, digest.min_similarity, digest.log";
     let cases: Vec<(Vec<&str>, String)> = vec![
         (
             vec!["# c", "embedder.model = x", "embeder.url = http://h"],
@@ -1381,4 +1183,46 @@ fn not_indexed_count_ignores_textless_passages() {
         run.stderr,
         "bilbo: 1 passages not indexed; run bilbo index\n"
     );
+}
+
+#[test]
+fn digest_log_must_be_on_or_off() {
+    let dir = TempDir::new("recall-digest-log");
+    let root = store(&dir);
+    let config_path = config(&dir, &["digest.log = yes"]);
+    let run = recall_with(&dir, &root, &config_path, &[], &["rollback"]);
+    failed(&run, 2, "bilbo: ");
+    assert!(
+        run.stderr
+            .contains(&format!("{}:1: digest.log", config_path.display())),
+        "{}",
+        run.stderr
+    );
+}
+
+#[test]
+fn digest_enable_must_be_on_or_off() {
+    let dir = TempDir::new("recall-digest-enable");
+    let root = store(&dir);
+    let config_path = config(&dir, &["digest.enable = no"]);
+    let run = recall_with(&dir, &root, &config_path, &[], &["rollback"]);
+    failed(&run, 2, "bilbo: ");
+    assert!(
+        run.stderr
+            .contains(&format!("{}:1: digest.enable", config_path.display())),
+        "{}",
+        run.stderr
+    );
+}
+
+#[test]
+fn digest_keys_alone_are_keyword_only() {
+    let dir = TempDir::new("recall-digest-alone");
+    let root = store(&dir);
+    write(&root, "plan-a.md", &note("Plan a", "rollback steps\n"));
+    let config_path = config(&dir, &["digest.log = on"]);
+    let run = recall_with(&dir, &root, &config_path, &[], &["rollback"]);
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    assert!(run.stdout.contains("plan-a.md"), "{}", run.stdout);
+    assert!(run.stderr.is_empty(), "{}", run.stderr);
 }

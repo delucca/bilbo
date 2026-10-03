@@ -2,6 +2,7 @@ mod agents;
 mod check;
 mod command;
 mod config;
+mod digest;
 mod embed;
 mod index;
 mod model;
@@ -34,12 +35,14 @@ usage: bilbo new <kind> <topic> [--title <text>]
        bilbo recall <query>... [--kind <kind>]... [--limit <n>]
        bilbo index
        bilbo setup [--yes | --interactive] [--remove] [<setup option>]...
+       bilbo digest
        bilbo --help
        bilbo --version
 new creates <root>/notes/<kind>-<topic>.md and prints its path.
 check prints every problem in the store and changes nothing.
 recall prints the notes that best match the query, best first, 10 unless --limit says otherwise.
 index embeds the passages the vector cache lacks and drops the ones no note holds any more.
+digest reads a prompt hook's JSON on stdin and prints the notes that bear on the prompt; it always exits 0.
 setup creates the store and the config and installs the agent plugin, the index timer and, when asked, the local embedder; in a terminal it asks first.
 setup options: --embedder-url <url>, --embedder-model <name>, --embedder-token-env <var>, --embedder-token-file <path>, --embedder-query-prefix <text>, --embedder-local, --embedder-port <port>, --llama-server <path>, --no-plugin, --claude <path>, --codex <path>, --plugin-source <folder|owner/repo#ref>, --no-timer, --index-every <minutes>
 kinds: plan, spec, design, decision, gotcha, research, review, report, reference
@@ -102,6 +105,14 @@ fn run() -> Result<ExitCode, Failure> {
             } else {
                 ExitCode::SUCCESS
             })
+        }
+        Some("digest") => {
+            let outcome = digest::run(&args[1..], &mut std::io::stdin().lock(), &env);
+            outcome.lines.iter().for_each(|line| print_stdout(line));
+            if let Some(line) = &outcome.diagnostic {
+                print_stderr(line);
+            }
+            Ok(ExitCode::SUCCESS)
         }
         Some(arg) if arg.starts_with('-') => Err(Failure::Usage(format!("unknown option '{arg}'"))),
         Some(arg) => Err(Failure::Usage(format!("unknown verb '{arg}'"))),

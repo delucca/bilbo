@@ -110,6 +110,7 @@ fn modes_a_pipe_runs_without_the_wizard() {
             "embedder skipped: none configured".to_string(),
             "claude skipped: not found".to_string(),
             "codex skipped: not found".to_string(),
+            "hook skipped: no codex plugin".to_string(),
             "timer skipped: no embedder".to_string(),
         ]
     );
@@ -525,6 +526,7 @@ fn report_fresh_run() {
             "embedder skipped: none configured".to_string(),
             "claude skipped: --no-plugin".to_string(),
             "codex skipped: --no-plugin".to_string(),
+            "hook skipped: no codex plugin".to_string(),
             "timer skipped: no embedder".to_string(),
         ]
     );
@@ -558,7 +560,7 @@ fn store_root_cannot_be_created() {
         report[0].starts_with(&format!("store failed: cannot create {home}/notes: ")),
         "{report:?}"
     );
-    assert_eq!(report.len(), 9, "a failed step stops nothing: {report:?}");
+    assert_eq!(report.len(), 10, "a failed step stops nothing: {report:?}");
     assert!(report[1].starts_with("config written: "));
 }
 
@@ -1101,11 +1103,11 @@ fn plugin_setup(m: &Machine, extra: &[&str]) -> Run {
     setup(m, &[], &args)
 }
 
-/// The calls of a fake that are not the two read-only lists.
+/// The calls of a fake that are not the two read-only lists or an app-server request.
 fn changing(m: &Machine, tool: &str) -> Vec<String> {
     fakes::log(&m.state, tool)
         .into_iter()
-        .filter(|call| !call.ends_with("list --json"))
+        .filter(|call| !call.ends_with("list --json") && !call.starts_with("app-server"))
         .collect()
 }
 
@@ -1141,10 +1143,15 @@ fn plugin_fresh_install_in_codex() {
             "plugin list --json",
             format!("plugin marketplace add delucca/bilbo --ref v{VERSION} --json").as_str(),
             "plugin add bilbo@bilbo --json",
+            "app-server",
+            "app-server initialize",
+            "app-server hooks/list",
+            "app-server config/batchWrite",
         ]
     );
     let lines = lines(&run);
     assert!(lines.contains(&format!("codex installed: delucca/bilbo#v{VERSION}").as_str()));
+    assert!(lines.contains(&"hook installed: trusted in Codex"));
     assert!(lines.contains(&"claude skipped: not found"));
 }
 
@@ -1400,6 +1407,13 @@ fn plugin_rerun_runs_no_changing_command() {
     let claude = changing(&m, "claude").len();
     let codex = changing(&m, "codex").len();
     assert_eq!((claude, codex), (2, 2));
+    let writes = |m: &Machine| {
+        fakes::log(&m.state, "codex")
+            .iter()
+            .filter(|call| *call == "app-server config/batchWrite")
+            .count()
+    };
+    assert_eq!(writes(&m), 1);
     let second = plugin_setup(&m, &[]);
     assert_eq!(second.code, 0, "{}", second.stderr);
     let lines = lines(&second);
@@ -1407,6 +1421,151 @@ fn plugin_rerun_runs_no_changing_command() {
     assert!(lines.contains(&"codex kept"));
     assert_eq!(changing(&m, "claude").len(), claude);
     assert_eq!(changing(&m, "codex").len(), codex);
+    assert_eq!(writes(&m), 1);
+}
+
+// ---------------------------------------------------------------------------
+// Codex hook trust
+
+fn batch_writes(m: &Machine) -> usize {
+    fakes::log(&m.state, "codex")
+        .iter()
+        .filter(|call| *call == "app-server config/batchWrite")
+        .count()
+}
+
+#[test]
+fn hook_fresh_install_trusts() {
+    let m = agents_machine("hook-fresh", &["codex"]);
+    let run = plugin_setup(&m, &[]);
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    assert!(lines(&run).contains(&"hook installed: trusted in Codex"));
+    let log = fakes::log(&m.state, "codex");
+    assert!(
+        log.contains(&"app-server hooks/list".to_string()),
+        "{log:?}"
+    );
+    assert_eq!(batch_writes(&m), 1);
+    assert_eq!(fakes::get(&m.state, "codex", "trust"), "sha256:fake");
+    let order: Vec<_> = lines(&run)
+        .into_iter()
+        .filter(|l| l.starts_with("codex ") || l.starts_with("hook ") || l.starts_with("timer "))
+        .map(|l| l.split(' ').next().unwrap())
+        .collect();
+    assert_eq!(order, ["codex", "hook", "timer"]);
+}
+
+#[test]
+fn hook_rerun_keeps() {
+    let m = agents_machine("hook-rerun", &["codex"]);
+    assert_eq!(plugin_setup(&m, &[]).code, 0);
+    let before = fakes::log(&m.state, "codex").len();
+    let run = plugin_setup(&m, &[]);
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    assert!(lines(&run).contains(&"hook kept: trusted in Codex"));
+    assert_eq!(batch_writes(&m), 1);
+    let second = &fakes::log(&m.state, "codex")[before..];
+    assert!(
+        second.contains(&"app-server hooks/list".to_string()),
+        "{second:?}"
+    );
+    assert!(!second.contains(&"app-server config/batchWrite".to_string()));
+}
+
+#[test]
+fn hook_changed_is_trusted_again() {
+    let m = agents_machine("hook-changed", &["codex"]);
+    assert_eq!(plugin_setup(&m, &[]).code, 0);
+    fakes::set(&m.state, "codex", "hook-hash", "sha256:changed");
+    let run = plugin_setup(&m, &[]);
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    assert!(lines(&run).contains(&"hook updated: trusted in Codex"));
+    assert_eq!(batch_writes(&m), 2);
+    assert_eq!(fakes::get(&m.state, "codex", "trust"), "sha256:changed");
+}
+
+#[test]
+fn hook_no_plugin_skips() {
+    let m = agents_machine("hook-no-plugin", &["codex"]);
+    let run = plugin_setup(&m, &["--no-plugin"]);
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    assert!(lines(&run).contains(&"hook skipped: no codex plugin"));
+    assert!(
+        fakes::log(&m.state, "codex")
+            .iter()
+            .all(|call| !call.starts_with("app-server"))
+    );
+}
+
+#[test]
+fn hook_codex_lists_no_bilbo_hook() {
+    let m = agents_machine("hook-none", &["codex"]);
+    fakes::set(&m.state, "codex", "no-hook", "1");
+    let run = plugin_setup(&m, &[]);
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    assert!(lines(&run).contains(&"hook skipped: codex lists no bilbo hook"));
+    assert_eq!(batch_writes(&m), 0);
+}
+
+#[test]
+fn hook_unwritable_config_fails() {
+    let m = agents_machine("hook-readonly", &["codex"]);
+    fakes::set(&m.state, "codex", "readonly", "1");
+    let run = plugin_setup(&m, &[]);
+    assert_eq!(run.code, 1, "{}", run.stderr);
+    let report = lines(&run);
+    let hook = report
+        .iter()
+        .find(|l| l.starts_with("hook failed: "))
+        .unwrap();
+    assert!(hook.contains("failed to persist config.toml"), "{hook}");
+    assert!(!hook.contains('\n') && hook.chars().count() < 260);
+    assert_eq!(report.last(), Some(&"timer skipped: --no-timer"));
+    assert_eq!(fakes::get(&m.state, "codex", "trust"), "");
+}
+
+#[test]
+fn hook_app_server_missing_fails() {
+    let m = agents_machine("hook-no-server", &["codex"]);
+    fakes::set(&m.state, "codex", "fail-app-server", "no app-server here");
+    let run = plugin_setup(&m, &[]);
+    assert_eq!(run.code, 1, "{}", run.stderr);
+    let report = lines(&run);
+    assert!(
+        report
+            .iter()
+            .any(|l| l.starts_with("hook failed: ") && l.ends_with("no app-server here")),
+        "{report:?}"
+    );
+    assert_eq!(report.last(), Some(&"timer skipped: --no-timer"));
+}
+
+#[test]
+fn hook_remove_deletes_the_trust() {
+    let m = agents_machine("hook-remove", &["claude", "codex"]);
+    assert_eq!(plugin_setup(&m, &[]).code, 0);
+    assert_eq!(fakes::get(&m.state, "codex", "trust"), "sha256:fake");
+    let run = setup(&m, &[], &["--remove", "--yes"]);
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    assert!(lines(&run).contains(&"hook removed"));
+    assert_eq!(fakes::get(&m.state, "codex", "trust"), "");
+    let writes = std::fs::read_to_string(m.state.join("codex.batch-writes")).unwrap();
+    let last = writes.lines().last().unwrap();
+    assert!(
+        last.contains(
+            r#""keyPath":"hooks.state.\"bilbo@bilbo:hooks/hooks.json:user_prompt_submit:0:0\"""#
+        ) && last.contains(r#""value":null"#),
+        "{last}"
+    );
+}
+
+#[test]
+fn hook_remove_without_trust() {
+    let m = agents_machine("hook-remove-none", &["codex"]);
+    let run = setup(&m, &[], &["--remove", "--yes"]);
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    assert!(lines(&run).contains(&"hook skipped: not trusted"));
+    assert_eq!(batch_writes(&m), 0);
 }
 
 // ---------------------------------------------------------------------------
@@ -1814,6 +1973,7 @@ fn remove_an_install() {
             "server skipped: not installed".to_string(),
             "claude removed".to_string(),
             "codex removed".to_string(),
+            "hook removed".to_string(),
             "timer removed".to_string(),
         ]
     );
@@ -1844,6 +2004,7 @@ fn remove_nothing_installed() {
             "server skipped: not installed",
             "claude skipped: not installed",
             "codex skipped: not installed",
+            "hook skipped: not trusted",
             "timer skipped: not installed",
         ]
     );
@@ -1857,8 +2018,12 @@ fn remove_nothing_installed() {
     let run = setup(&bare, &[], &["--remove", "--yes"]);
     assert_eq!(run.code, 0, "{}", run.stderr);
     assert_eq!(
-        lines(&run)[5..7],
-        ["claude skipped: not found", "codex skipped: not found"]
+        lines(&run)[5..8],
+        [
+            "claude skipped: not found",
+            "codex skipped: not found",
+            "hook skipped: not found"
+        ]
     );
 }
 
@@ -2272,6 +2437,7 @@ fn local_fresh_run_reports_every_step() {
             "embedder ok: 1024 dimensions".to_string(),
             "claude skipped: --no-plugin".to_string(),
             "codex skipped: --no-plugin".to_string(),
+            "hook skipped: no codex plugin".to_string(),
             "timer installed: every 15 min".to_string(),
         ]
     );

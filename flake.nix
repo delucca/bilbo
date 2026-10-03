@@ -94,6 +94,9 @@
             "embedder.token_env"
             "embedder.query_prefix"
             "embedder.min_similarity"
+            "digest.enable"
+            "digest.min_similarity"
+            "digest.log"
           ];
           # The same quoting rule as config::render in src/config.rs.
           quote =
@@ -299,6 +302,11 @@
             };
           };
           disabled = hm { enable = false; };
+          digestOnly = hm {
+            enable = true;
+            settings."digest.enable" = "off";
+            settings."digest.log" = "on";
+          };
           local = hm {
             enable = true;
             localEmbedder.enable = true;
@@ -359,6 +367,13 @@
             assert fails localElsewhere;
             assert fails localOtherModel;
             assert !(disabled.config.xdg.configFile ? "bilbo/config");
+            assert
+              digestOnly.config.xdg.configFile."bilbo/config".text == ''
+                # bilbo config, written by home-manager from programs.bilbo.settings
+                digest.enable = off
+                digest.log = on
+              '';
+            assert (builtins.tryEval digestOnly.activationPackage.drvPath).success;
             pkgs.writeText "bilbo-home-manager-module" (builtins.unsafeDiscardStringContext activation);
         }
       );

@@ -58,6 +58,28 @@ pub fn bilbo_os(cwd: &Path, env: &[(&str, &str)], args: &[&OsStr]) -> Run {
         .args(args)
         .output()
         .unwrap();
+    checked(output)
+}
+
+/// Like `bilbo`, with `input` on stdin.
+pub fn bilbo_input(cwd: &Path, env: &[(&str, &str)], args: &[&str], input: &str) -> Run {
+    let mut child = Command::new(env!("CARGO_BIN_EXE_bilbo"))
+        .env_clear()
+        .envs(env.iter().copied())
+        .current_dir(cwd)
+        .args(args)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut stdin = child.stdin.take().unwrap();
+    let _ = stdin.write_all(input.as_bytes());
+    drop(stdin);
+    checked(child.wait_with_output().unwrap())
+}
+
+fn checked(output: std::process::Output) -> Run {
     let run = Run {
         code: output.status.code().unwrap(),
         stdout: String::from_utf8(output.stdout).unwrap(),
@@ -129,6 +151,7 @@ struct State {
     status: Option<u16>,
     too_few: bool,
     stall: bool,
+    delay: Duration,
     loading: usize,
     health_checks: usize,
     answered: usize,
@@ -176,6 +199,7 @@ impl Fake {
             status: None,
             too_few: false,
             stall: false,
+            delay: Duration::ZERO,
             loading: 0,
             health_checks: 0,
             answered: 0,
@@ -253,6 +277,11 @@ impl Fake {
         self.state.lock().unwrap().too_few = true;
     }
 
+    /// Wait `delay` before answering each embeddings request.
+    pub fn delay(&self, delay: Duration) {
+        self.state.lock().unwrap().delay = delay;
+    }
+
     /// Read each request and never answer it.
     pub fn stall(&self) {
         self.state.lock().unwrap().stall = true;
@@ -265,6 +294,7 @@ impl Fake {
         state.status = None;
         state.too_few = false;
         state.stall = false;
+        state.delay = Duration::ZERO;
         state.answered = 0;
     }
 
@@ -461,6 +491,10 @@ fn serve(stream: TcpStream, shared: &Mutex<State>, stop: &AtomicBool) {
             (code, r#"{"error":{"message":"fake"}}"#.to_string())
         }
     };
+    let delay = shared.lock().unwrap().delay;
+    if !wrong && !delay.is_zero() {
+        std::thread::sleep(delay);
+    }
     respond(stream, code, &text);
 }
 
@@ -523,4 +557,213 @@ pub fn config(dir: &TempDir, lines: &[&str]) -> PathBuf {
     text.push('\n');
     std::fs::write(&path, text).unwrap();
     path
+}
+
+const BENCH_SECTIONS: usize = 6;
+
+const BENCH_WORDS: &[&str] = &[
+    "embedder",
+    "timeout",
+    "decisão",
+    "ação",
+    "configuração",
+    "memória",
+    "código",
+    "índice",
+    "sessão",
+    "versão",
+    "também",
+    "não",
+    "função",
+    "próximo",
+    "rollback",
+    "cache",
+    "store",
+    "note",
+    "index",
+    "query",
+    "passage",
+    "heading",
+    "ranking",
+    "score",
+    "token",
+    "buffer",
+    "thread",
+    "queue",
+    "retry",
+    "backoff",
+    "latency",
+    "deploy",
+    "release",
+    "branch",
+    "commit",
+    "review",
+    "agent",
+    "prompt",
+    "model",
+    "context",
+    "window",
+    "limit",
+    "batch",
+    "worker",
+    "stream",
+    "socket",
+    "client",
+    "server",
+    "request",
+    "response",
+    "schema",
+    "migration",
+    "column",
+    "table",
+    "record",
+    "field",
+    "value",
+    "string",
+    "number",
+    "array",
+    "object",
+    "module",
+    "package",
+    "crate",
+    "library",
+    "compiler",
+    "runtime",
+    "memory",
+    "storage",
+    "decisão",
+    "solução",
+    "organização",
+    "informação",
+    "atenção",
+    "relação",
+    "operação",
+    "documentação",
+    "integração",
+    "execução",
+    "validação",
+    "descrição",
+    "condição",
+    "posição",
+    "variável",
+    "método",
+    "análise",
+    "técnica",
+    "prática",
+    "histórico",
+    "automático",
+    "dinâmico",
+    "estático",
+    "através",
+    "além",
+    "então",
+    "porém",
+    "já",
+    "até",
+    "você",
+    "são",
+    "está",
+    "será",
+    "podem",
+    "devem",
+    "quando",
+    "depois",
+    "antes",
+    "sempre",
+    "nunca",
+    "porque",
+    "enquanto",
+    "durante",
+    "entre",
+    "sobre",
+    "sem",
+    "com",
+    "para",
+    "the",
+    "and",
+    "with",
+    "from",
+    "into",
+    "over",
+    "under",
+    "while",
+    "after",
+    "before",
+    "because",
+    "should",
+    "would",
+    "could",
+    "might",
+    "every",
+    "other",
+    "which",
+    "their",
+    "about",
+    "first",
+    "last",
+    "next",
+    "same",
+    "each",
+    "only",
+];
+
+fn xorshift(seed: &mut u64) -> u64 {
+    *seed ^= *seed << 13;
+    *seed ^= *seed >> 7;
+    *seed ^= *seed << 17;
+    *seed
+}
+
+fn bench_text(seed: &mut u64, words: usize) -> String {
+    let picked: Vec<&str> = (0..words)
+        .map(|_| BENCH_WORDS[(xorshift(seed) % BENCH_WORDS.len() as u64) as usize])
+        .collect();
+    picked.join(" ")
+}
+
+/// A paragraph of 40 to 120 words.
+fn paragraph(seed: &mut u64) -> String {
+    let words = 40 + (xorshift(seed) % 81) as usize;
+    bench_text(seed, words)
+}
+
+/// A generated store of 450 notes, about 6 MiB, for the timing tests; returns the root and its size in MiB.
+pub fn bench_store(dir: &TempDir) -> (PathBuf, f64) {
+    const KINDS: [&str; 9] = [
+        "plan",
+        "spec",
+        "design",
+        "decision",
+        "gotcha",
+        "research",
+        "review",
+        "report",
+        "reference",
+    ];
+    let root = store(dir);
+    let mut seed = 0x9E37_79B9_7F4A_7C15u64;
+    let mut total = 0usize;
+    for i in 0..450 {
+        let mut text = format!(
+            "---\nid: {}\ncreated: 2026-10-02T14:23-03:00\n---\n\n# Bench note {i}\n",
+            IDS[0]
+        );
+        for section in 0..BENCH_SECTIONS {
+            text.push_str(&format!(
+                "\n## Section {section}\n\n{}\n",
+                paragraph(&mut seed)
+            ));
+            for sub in 0..2 + (section + i) % 3 {
+                text.push_str(&format!("\n### Part {sub}\n\n{}\n", paragraph(&mut seed)));
+            }
+            if section % 3 == 0 {
+                text.push_str("\n```\nfn main() {}\n# not a heading\n```\n");
+            }
+        }
+        total += text.len();
+        write(&root, &format!("{}-bench-{i}.md", KINDS[i % 9]), &text);
+    }
+    let mib = total as f64 / (1024.0 * 1024.0);
+    assert!((5.5..=6.5).contains(&mib), "{mib} MiB");
+    (root, mib)
 }
