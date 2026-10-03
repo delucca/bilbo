@@ -434,7 +434,7 @@ When the codex step leaves `bilbo@bilbo` installed (`installed`, `updated` or `k
 
 #### Scenario: A fresh install trusts the hook
 - **WHEN** `codex` is on PATH with no `bilbo` marketplace and a user runs `bilbo setup --yes`
-- **THEN** the codex line says `installed`, the hook line says `installed: trusted in Codex`, and Codex runs the hook on the next prompt without asking for a review
+- **THEN** the codex line says `installed`, the hook line says `installed: trusted in Codex`, and Codex runs the digest hook and the compaction hook without asking for a review
 
 #### Scenario: A rerun keeps the trust
 - **WHEN** setup already trusted the hook and the user runs `bilbo setup --yes` again
@@ -443,6 +443,10 @@ When the codex step leaves `bilbo@bilbo` installed (`installed`, `updated` or `k
 #### Scenario: A changed hook is trusted again
 - **WHEN** a new bilbo release changes the hook's command, so Codex lists it as changed since it was trusted
 - **THEN** setup writes the new trust and the hook line says `updated: trusted in Codex`
+
+#### Scenario: A release that adds a hook
+- **WHEN** setup trusted the digest hook for an earlier release, and the installed release adds the compaction hook, which Codex lists as untrusted
+- **THEN** setup writes trust for the compaction hook only, leaves the digest hook's trust as it was, and the hook line says `installed: trusted in Codex`
 
 #### Scenario: An unknown trust status is not trusted
 - **WHEN** Codex lists a bilbo hook with a trust status `setup` does not know, such as `blocked`
