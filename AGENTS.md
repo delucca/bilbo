@@ -46,8 +46,9 @@ One crate, binary `bilbo`. Dependencies: `jiff`, `ureq` (HTTP and TLS, with
 its `json` feature), `serde`, `serde_json` (the agent CLIs' JSON and the fake
 embedder), `cliclack` (the wizard, only in `src/wizard.rs`), `libc` (the
 wizard's guard that keeps the tty from echoing a pasted key, only in
-`src/wizard.rs`) and `zeroize` (the pasted key). `Cargo.lock` is committed and
-pins the build.
+`src/wizard.rs`), `ring` (SHA-256 of the downloaded model, only in
+`src/model.rs`; already in the lock through `rustls`) and `zeroize` (the
+pasted key). `Cargo.lock` is committed and pins the build.
 
 - `Cargo.toml`: manifest.
 - `flake.nix` and `flake.lock`: the Nix flake (`distribution` spec), for
@@ -61,9 +62,14 @@ pins the build.
   and home-manager's XDG folders itself, because activation reads no session
   variables. The `home-manager` input is read only by the `home-manager-module`
   check, which evaluates the module with sample settings without building
-  bilbo; a consumer sets `bilbo.inputs.home-manager.follows`. `devShells.default`
-  holds cargo, rustc, clippy and rustfmt from `nixpkgs` (26.05, rustc 1.95.0)
-  and cargo-dist from `nixpkgs-unstable`. The check phase skips
+  bilbo; a consumer sets `bilbo.inputs.home-manager.follows`. Its
+  `localEmbedder` options (`enable`, `port`, `llamaServer`, default nixpkgs'
+  `llama-server`) write the local URL, model and Qwen query prefix into the
+  config, assert the URL and model are not set to anything else, and pass
+  `--embedder-local`, `--embedder-port` and `--llama-server` on activation;
+  the check evaluates a sample with them on. `devShells.default` holds cargo,
+  rustc, clippy and rustfmt from `nixpkgs` (26.05, rustc 1.95.0) and
+  cargo-dist from `nixpkgs-unstable`. The check phase skips
   `every_action_is_pinned_by_sha`, because `.github` is not in `src`.
 - `dist-workspace.toml`: the cargo-dist config (`distribution` spec): the
   dist version, the four targets, the shell installer, `install-path`, the
@@ -94,7 +100,19 @@ pins the build.
   (`config` spec).
 - `src/embed.rs`: the embedder client: one `POST <url>/v1/embeddings` per batch
   of at most 16, a bearer token from a file or a variable, unit-normalized
-  vectors. Its messages never hold the token.
+  vectors. Its messages never hold the token. `ready` polls `GET <url>/health`
+  every 500 ms until it answers 2xx or the deadline passes (llama-server
+  answers 503 while it loads the model).
+- `src/model.rs`: the local embedder's pinned model (`local-embedder` spec):
+  the Hugging Face URL at a fixed revision, its size and SHA-256, its path
+  `<cache>/models/Qwen3-Embedding-0.6B-Q8_0.gguf`, and `server_args`, the
+  fixed `llama-server` flags. A file of the pinned size at that path is kept
+  without reading it. The download goes to `<path>.part`, continues it with a
+  range request, starts over when the server ignores the range, and renames it
+  into place only after the size and hash match. Each request gets a 60 s body
+  window and is sent again from where it stopped when bytes arrived; a request
+  that received nothing ends the download and keeps the `.part` file. A hash
+  mismatch deletes it. The only user of `ring`.
 - `src/vectors.rs`: the vector cache, one file per store root under the cache
   folder, keyed by FNV-1a 64 of the embedder input, replaced atomically
   (`note-index` spec).
@@ -117,9 +135,12 @@ pins the build.
   same-source rule (a marketplace from another source is removed before the
   add) and the plugin source: the package's `share/bilbo/`, else
   `delucca/bilbo` at `v<version>` (`setup` spec).
-- `src/timer.rs`: the launchd plist and the systemd units as pure text with
-  the carried store, config and XDG locations, and their load and unload
-  (`setup` spec). Removal fails and keeps the files when `launchctl` or
+- `src/timer.rs`: launchd and systemd jobs: the index timer (periodic) and the
+  embedder service (kept alive), as pure text with the carried store, config
+  and XDG locations, and their load, `reload` and unload (`setup` and
+  `local-embedder` specs). launchd jobs are booted out with `--wait`, because
+  a plain bootout returns while the old process still runs and the next
+  bootstrap fails. Removal fails and keeps the files when `launchctl` or
   `systemctl` is missing.
 - `src/wizard.rs`: the wizard behind the `Prompter` trait; the only user of
   cliclack. It draws on stderr without the `bilbo: ` prefix (the `cli` spec's
@@ -128,11 +149,18 @@ pins the build.
 - `src/setup.rs`: `bilbo setup`, plan then apply, and `--remove`
   (`setup` spec). The wizard path and `--remove` take `&mut impl Prompter`;
   `setup::tests::driven` runs them end to end with a scripted one. A config of
-  only comments takes embedder flags (`config updated`, `config.bak`).
-- `store`, `note`, `rank`, `config`, `embed`, `vectors`, `command`, `agents`
-  and `timer` never print and never return `Failure`; they return plain values
-  and `String` messages. Verbs (`setup` included) build on them, never on each
-  other, return `crate::Failure` and never print.
+  only comments takes embedder flags (`config updated`, `config.bak`). For
+  `--embedder-local` the plan stage resolves `llama-server` (given or on PATH,
+  never canonicalized, so a Homebrew upgrade keeps working) and probes the
+  port; a prepare stage after the confirmation downloads the model, writes and
+  loads the service, waits up to 120 s for `ready` and runs the embedder check,
+  and on failure removes the service and keeps the model. A service whose
+  config is no longer local is removed (`server removed: not local`); `--remove`
+  keeps the model and prints its path.
+- `store`, `note`, `rank`, `config`, `embed`, `model`, `vectors`, `command`,
+  `agents` and `timer` never print and never return `Failure`; they return plain
+  values and `String` messages. Verbs (`setup` included) build on them, never on
+  each other, return `crate::Failure` and never print.
 - A new verb is `src/<verb>.rs`, its `mod` line, dispatch arm and USAGE line
   in `src/main.rs`, `tests/<verb>.rs`, its own capability spec, and a MODIFIED
   `cli` spec (its Verb dispatch requirement lists the verbs).
@@ -141,19 +169,30 @@ pins the build.
   `tests/index.rs` through the built binary with a clean environment;
   `tests/common/mod.rs` holds the shared runner, temp folders and the fake
   embedder (a `TcpListener` on `127.0.0.1` serving vectors from a substring
-  table). The `#[ignore]` speed test in `tests/recall.rs` runs with
-  `cargo test --release --test recall -- --ignored`.
+  table, and answering `GET /health`). `Fake::start_when` binds its port at once
+  and listens only when a trigger file appears, as a service the manager starts
+  does; `Fake::loading(n)` answers `/health` with 503 `n` times first;
+  `common::unused_port` hands out a port nothing listens on. The `#[ignore]`
+  speed test in `tests/recall.rs` runs with `cargo test --release --test recall
+  -- --ignored`.
 - `tests/setup.rs` runs `bilbo setup` through the built binary.
-  `tests/common/fakes.rs` writes fake `claude`, `codex`, `launchctl` and
-  `systemctl` scripts into a temp folder that is the whole PATH, so they use
-  only shell builtins. `tests/fixtures/agents/` holds recorded real outputs,
-  the first line being the command; refresh them against throwaway
-  `CLAUDE_CONFIG_DIR` and `CODEX_HOME` when a tool's JSON moves. The timer
-  tests are per platform, and CI runs the Linux ones. The macOS suite takes
-  about 11 s, because macOS scans each freshly written script; Linux takes
-  under a second. The wizard's `Terminal` adapter is covered only by the
-  recorded expect run in
-  `openspec/changes/archive/2026-10-02-add-setup/smoke.md`.
+  `tests/common/fakes.rs` writes fake `claude`, `codex`, `launchctl`,
+  `systemctl` and `llama-server` scripts into a temp folder that is the whole
+  PATH, so they use only shell builtins. The fake `launchctl` keeps one loaded
+  state per label, and writes `embedder.started` when the embedder label is
+  bootstrapped, which a `start_when` fake waits for; the fake `llama-server` is
+  never run. A test that gets past planning with `--embedder-local` places a
+  sparse model file of the pinned size first (`place_model`): no test reaches
+  Hugging Face, and only the `#[ignore]`
+  `model::tests::pinned_url_honors_a_range` touches the network.
+  `tests/fixtures/agents/` holds recorded real outputs, the first line being the
+  command; refresh them against throwaway `CLAUDE_CONFIG_DIR` and `CODEX_HOME`
+  when a tool's JSON moves. The timer tests are per platform, and CI runs the
+  Linux ones. The macOS suite takes about 16 s, because macOS scans each freshly
+  written script; Linux takes under a second. The wizard's `Terminal` adapter is
+  covered only by the recorded expect runs in
+  `openspec/changes/archive/2026-10-02-add-setup/smoke.md` and
+  `openspec/changes/archive/2026-10-03-add-local-embedder/smoke.md`.
 - `tests/plugin.rs`: the plugin's files, skill frontmatter and versions,
   checked in CI. Locally, also run `claude plugin validate .` and
   `claude plugin validate plugins/bilbo` (one missing-version warning each is
