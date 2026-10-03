@@ -152,8 +152,8 @@ pins the build.
   tests are per platform, and CI runs the Linux ones. The macOS suite takes
   about 11 s, because macOS scans each freshly written script; Linux takes
   under a second. The wizard's `Terminal` adapter is covered only by the
-  recorded expect run in the add-setup change's `smoke.md`
-  (under `openspec/changes/archive/` once archived).
+  recorded expect run in
+  `openspec/changes/archive/2026-10-02-add-setup/smoke.md`.
 - `tests/plugin.rs`: the plugin's files, skill frontmatter and versions,
   checked in CI. Locally, also run `claude plugin validate .` and
   `claude plugin validate plugins/bilbo` (one missing-version warning each is
