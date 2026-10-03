@@ -84,6 +84,8 @@
         }:
         let
           cfg = config.programs.bilbo;
+          localUrl = "http://127.0.0.1:${toString cfg.localEmbedder.port}";
+          localModel = "qwen3-embedding-0.6b";
           # The order bilbo setup writes them in (config::KEYS).
           keys = [
             "embedder.url"
@@ -134,6 +136,13 @@
               else
                 [ "--no-timer" ]
             )
+            ++ lib.optionals cfg.localEmbedder.enable [
+              "--embedder-local"
+              "--embedder-port"
+              (toString cfg.localEmbedder.port)
+              "--llama-server"
+              cfg.localEmbedder.llamaServer
+            ]
           );
         in
         {
@@ -191,10 +200,36 @@
               default = null;
               description = "The codex executable; null looks it up on the activation PATH, which rarely has it.";
             };
+            localEmbedder = {
+              enable = lib.mkEnableOption "the local embedder: bilbo downloads its pinned model and runs llama-server as a login service";
+              port = lib.mkOption {
+                type = lib.types.ints.between 1024 65535;
+                default = 8737;
+                description = "The port llama-server listens on, on 127.0.0.1.";
+              };
+              llamaServer = lib.mkOption {
+                type = lib.types.str;
+                default = lib.getExe' pkgs.llama-cpp "llama-server";
+                defaultText = lib.literalExpression ''lib.getExe' pkgs.llama-cpp "llama-server"'';
+                description = "The llama-server executable the service runs.";
+              };
+            };
           };
 
           config = lib.mkIf cfg.enable {
+            programs.bilbo.settings = lib.mkIf cfg.localEmbedder.enable {
+              "embedder.url" = lib.mkDefault localUrl;
+              "embedder.model" = lib.mkDefault localModel;
+              "embedder.query_prefix" =
+                lib.mkDefault "Instruct: Given a question, retrieve notes that answer it\nQuery: ";
+            };
             assertions = [
+              {
+                assertion =
+                  !cfg.localEmbedder.enable
+                  || (cfg.settings."embedder.url" == localUrl && cfg.settings."embedder.model" == localModel);
+                message = "programs.bilbo: localEmbedder.enable serves ${localModel} at ${localUrl}; leave settings.\"embedder.url\" and settings.\"embedder.model\" unset, or set them to those values.";
+              }
               {
                 assertion = !(cfg.index.enable && cfg.settings."embedder.token_env" != null);
                 message = "programs.bilbo: the index timer cannot read the variable in settings.\"embedder.token_env\"; set settings.\"embedder.token_file\" instead, or index.enable = false.";
@@ -264,6 +299,23 @@
             };
           };
           disabled = hm { enable = false; };
+          local = hm {
+            enable = true;
+            localEmbedder.enable = true;
+          };
+          localElsewhere = hm {
+            enable = true;
+            localEmbedder.enable = true;
+            settings."embedder.url" = "http://bagend:8081";
+          };
+          localOtherModel = hm {
+            enable = true;
+            localEmbedder.enable = true;
+            settings."embedder.model" = "nomic-embed-text";
+          };
+          localConfig = local.config.xdg.configFile."bilbo/config".text;
+          localActivation = builtins.unsafeDiscardStringContext local.config.home.activation.bilboSetup.data;
+          llamaServer = builtins.unsafeDiscardStringContext (lib.getExe' pkgs.llama-cpp "llama-server");
           rooted = hm {
             enable = true;
             storeRoot = "/data/my notes/bilbo";
@@ -293,6 +345,19 @@
             assert fails misspelled;
             assert fails tokenEnv;
             assert !(disabled.config.home.activation ? bilboSetup);
+            assert
+              localConfig == ''
+                # bilbo config, written by home-manager from programs.bilbo.settings
+                embedder.url = http://127.0.0.1:8737
+                embedder.model = qwen3-embedding-0.6b
+                embedder.query_prefix = "Instruct: Given a question, retrieve notes that answer it\nQuery: "
+              '';
+            assert lib.hasInfix
+              "/bin/bilbo setup --yes --index-every 15 --embedder-local --embedder-port 8737 --llama-server ${llamaServer}"
+              localActivation;
+            assert (builtins.tryEval local.activationPackage.drvPath).success;
+            assert fails localElsewhere;
+            assert fails localOtherModel;
             assert !(disabled.config.xdg.configFile ? "bilbo/config");
             pkgs.writeText "bilbo-home-manager-module" (builtins.unsafeDiscardStringContext activation);
         }
