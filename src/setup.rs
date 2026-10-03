@@ -2803,10 +2803,14 @@ mod tests {
         }
     }
 
+    /// A manager that exits 0 and, for systemd, reports a live user session.
+    const LIVE_MANAGER: &str =
+        "#!/bin/sh\ncase \"$*\" in\n\"--user is-system-running\") echo running;;\nesac\nexit 0\n";
+
     /// Facts for a box whose manager answers: a script that exits 0 stands in for `launchctl` or `systemctl`.
     fn local_facts(dir: &Path) -> Facts {
         let tool = dir.join("manager");
-        write_script(&tool, "#!/bin/sh\nexit 0\n");
+        write_script(&tool, LIVE_MANAGER);
         let mut facts = seen(dir, None, ConfigState::Absent);
         facts.timer = TimerFacts {
             platform: timer::platform(),
@@ -3249,6 +3253,12 @@ mod tests {
 
         impl Scripted {
             fn prompt(&mut self, text: &str) -> io::Result<()> {
+                assert!(
+                    self.asked < 100,
+                    "the wizard asked {} prompts without ending; last shown: {:#?}",
+                    self.asked,
+                    &self.shown[self.shown.len().saturating_sub(12)..]
+                );
                 self.shown.push(text.to_string());
                 let n = self.asked;
                 self.asked += 1;
@@ -3407,14 +3417,15 @@ mod tests {
             fn tool(&self, name: &str) {
                 super::write_script(&self.bin.join(name), "#!/bin/sh\nexit 0\n");
             }
+            /// The service manager: on Linux a `systemctl` whose user session is live.
             fn manager(&self) -> &'static str {
-                let name = if cfg!(target_os = "macos") {
+                if cfg!(target_os = "macos") {
+                    self.tool("launchctl");
                     "launchctl"
                 } else {
+                    super::write_script(&self.bin.join("systemctl"), super::LIVE_MANAGER);
                     "systemctl"
-                };
-                self.tool(name);
-                name
+                }
             }
             fn write_config(&self, model: &str) {
                 std::fs::create_dir_all(self.config().parent().unwrap()).unwrap();
