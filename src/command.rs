@@ -132,11 +132,37 @@ impl Rpc {
     }
 
     fn send(&mut self, message: &serde_json::Value) -> Result<(), String> {
-        use std::io::Write;
-        let stdin = self.stdin.as_mut().ok_or("stdin closed")?;
-        writeln!(stdin, "{message}")
-            .and_then(|()| stdin.flush())
+        self.write(message)
             .map_err(|e| format!("{} stopped reading: {e}", self.name))
+    }
+
+    fn write(&mut self, message: &serde_json::Value) -> std::io::Result<()> {
+        use std::io::Write;
+        let stdin = self
+            .stdin
+            .as_mut()
+            .ok_or_else(|| std::io::Error::other("stdin closed"))?;
+        writeln!(stdin, "{message}").and_then(|()| stdin.flush())
+    }
+
+    /// Reaps a child that went away and names it, with the first line it wrote to stderr.
+    fn ended(&mut self, method: &str) -> String {
+        self.stop();
+        let stderr = self
+            .stderr
+            .take()
+            .and_then(|reader| reader.join().ok())
+            .unwrap_or_default();
+        let why = first_line(&stderr);
+        format!(
+            "{} ended before answering {method}{}",
+            self.name,
+            if why.is_empty() {
+                String::new()
+            } else {
+                format!(": {why}")
+            }
+        )
     }
 
     /// Closes stdin and kills the child if it still runs, then reaps it.
@@ -169,7 +195,12 @@ impl Calls for Rpc {
     ) -> Result<serde_json::Value, String> {
         self.next += 1;
         let id = self.next;
-        self.send(&serde_json::json!({ "id": id, "method": method, "params": params }))?;
+        let request = serde_json::json!({ "id": id, "method": method, "params": params });
+        match self.write(&request) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::BrokenPipe => return Err(self.ended(method)),
+            Err(e) => return Err(format!("{} stopped reading: {e}", self.name)),
+        }
         let deadline = std::time::Instant::now() + self.limit;
         loop {
             let left = deadline.saturating_duration_since(std::time::Instant::now());
@@ -184,22 +215,7 @@ impl Calls for Rpc {
                     ));
                 }
                 Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
-                    self.stop();
-                    let stderr = self
-                        .stderr
-                        .take()
-                        .and_then(|reader| reader.join().ok())
-                        .unwrap_or_default();
-                    let why = first_line(&stderr);
-                    return Err(format!(
-                        "{} ended before answering {method}{}",
-                        self.name,
-                        if why.is_empty() {
-                            String::new()
-                        } else {
-                            format!(": {why}")
-                        }
-                    ));
+                    return Err(self.ended(method));
                 }
             };
             let Ok(reply) = serde_json::from_str::<serde_json::Value>(&line) else {
@@ -405,6 +421,16 @@ mod tests {
         let mut quiet = sh("exit 0", SECOND);
         let err = quiet.call("m", serde_json::json!({})).unwrap_err();
         assert!(err.ends_with(" ended before answering m"), "{err}");
+    }
+
+    #[test]
+    fn rpc_names_a_child_that_ended_before_the_request() {
+        let mut rpc = sh("echo gone >&2; exit 1", SECOND);
+        while let Ok(None) = rpc.child.try_wait() {
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        let err = rpc.call("m", serde_json::json!({})).unwrap_err();
+        assert!(err.ends_with(" ended before answering m: gone"), "{err}");
     }
 
     #[test]
