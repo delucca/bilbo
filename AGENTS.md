@@ -189,7 +189,7 @@ pasted key). `Cargo.lock` is committed and pins the build.
   command; refresh them against throwaway `CLAUDE_CONFIG_DIR` and `CODEX_HOME`
   when a tool's JSON moves. The timer tests are per platform, and CI runs the
   Linux ones. The macOS suite takes about 16 s, because macOS scans each freshly
-  written script; Linux takes under a second. The wizard's `Terminal` adapter is
+  written script; Linux takes about 3 s. The wizard's `Terminal` adapter is
   covered only by the recorded expect runs in
   `openspec/changes/archive/2026-10-02-add-setup/smoke.md` and
   `openspec/changes/archive/2026-10-03-add-local-embedder/smoke.md`.
