@@ -7,16 +7,20 @@ usage: bilbo new <kind> <topic> [--title <text>]
        bilbo check
        bilbo recall <query>... [--kind <kind>]... [--limit <n>]
        bilbo index
+       bilbo setup [--yes | --interactive] [--remove] [<setup option>]...
        bilbo --help
        bilbo --version
 new creates <root>/notes/<kind>-<topic>.md and prints its path.
 check prints every problem in the store and changes nothing.
 recall prints the notes that best match the query, best first, 10 unless --limit says otherwise.
 index embeds the passages the vector cache lacks and drops the ones no note holds any more.
+setup creates the store and the config and installs the agent plugin and the index timer; in a terminal it asks first.
+setup options: --embedder-url <url>, --embedder-model <name>, --embedder-token-env <var>, --embedder-token-file <path>, --embedder-query-prefix <text>, --no-plugin, --claude <path>, --codex <path>, --plugin-source <folder|owner/repo#ref>, --no-timer, --index-every <minutes>
 kinds: plan, spec, design, decision, gotcha, research, review, report, reference
 root: $BILBO_HOME, else $XDG_DATA_HOME/bilbo, else $HOME/.local/share/bilbo
 config: $BILBO_CONFIG, else $XDG_CONFIG_HOME/bilbo/config, else $HOME/.config/bilbo/config
 cache: $XDG_CACHE_HOME/bilbo, else $HOME/.cache/bilbo
+state: $XDG_STATE_HOME/bilbo, else $HOME/.local/state/bilbo
 ";
 
 fn prefixed_usage() -> String {
@@ -52,6 +56,7 @@ fn unknown_verb_is_usage_error() {
             && run.stderr.contains("bilbo check")
             && run.stderr.contains("bilbo recall")
             && run.stderr.contains("bilbo index")
+            && run.stderr.contains("bilbo setup")
     );
     assert!(!home.exists());
     assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
@@ -76,6 +81,7 @@ fn help_after_a_verb_prints_help() {
         ["new", "-h"],
         ["recall", "--help"],
         ["index", "--help"],
+        ["setup", "--help"],
     ] {
         let run = bilbo(dir.path(), &[], &args);
         assert_eq!(run.code, 0);
@@ -347,4 +353,19 @@ fn fake_embedder_recovers_from_a_stall() {
     let start = Instant::now();
     drop(fake);
     assert!(start.elapsed() < Duration::from_secs(1));
+}
+
+#[test]
+fn setup_is_a_verb() {
+    let dir = TempDir::new("cli-setup");
+    let home = dir.path().join("home");
+    std::fs::create_dir_all(&home).unwrap();
+    let run = bilbo(
+        dir.path(),
+        &[("HOME", home.to_str().unwrap())],
+        &["setup", "--yes", "--no-plugin"],
+    );
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    assert!(run.stderr.is_empty());
+    assert!(run.stdout.starts_with("store created: "));
 }

@@ -1,0 +1,27 @@
+$ codex plugin list --json
+exit 0
+--- stdout
+{
+  "installed": [
+    {
+      "pluginId": "bilbo@bilbo",
+      "name": "bilbo",
+      "marketplaceName": "bilbo",
+      "version": "0.1.0",
+      "installed": true,
+      "enabled": true,
+      "source": {
+        "source": "local",
+        "path": "/fixture/bilbo/plugins/bilbo"
+      },
+      "marketplaceSource": {
+        "sourceType": "local",
+        "source": "/fixture/bilbo"
+      },
+      "installPolicy": "AVAILABLE",
+      "authPolicy": "ON_INSTALL"
+    }
+  ],
+  "available": []
+}
+--- stderr

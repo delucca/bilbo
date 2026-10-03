@@ -1,0 +1,9 @@
+$ codex plugin marketplace add delucca/bilbo --ref v0.1.0 --json
+exit 0
+--- stdout
+{
+  "marketplaceName": "bilbo",
+  "installedRoot": "/fixture/home/codex/.tmp/marketplaces/bilbo",
+  "alreadyAdded": true
+}
+--- stderr

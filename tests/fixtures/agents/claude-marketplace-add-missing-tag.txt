@@ -1,0 +1,7 @@
+$ claude plugin marketplace add delucca/bilbo#v9.9.9 --json
+exit 1
+--- stdout
+{"command":"marketplace-add","outcome":"failed","message":"Failed to clone marketplace repository: Cloning into '/fixture/home/claude/plugins/marketplaces/delucca-bilbo..clone'...\nfatal: Remote branch v9.9.9 not found in upstream origin","failureCode":"error_not_found"}
+--- stderr
+✘ Failed to add marketplace: Failed to clone marketplace repository: Cloning into '/fixture/home/claude/plugins/marketplaces/delucca-bilbo..clone'...
+fatal: Remote branch v9.9.9 not found in upstream origin

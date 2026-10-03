@@ -1,0 +1,5 @@
+$ codex plugin marketplace add /fixture/bilbo --json
+exit 1
+--- stdout
+--- stderr
+Error: marketplace 'bilbo' is already added from a different source; remove it before adding this source

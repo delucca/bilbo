@@ -1,0 +1,5 @@
+$ codex plugin marketplace remove bilbo --json
+exit 1
+--- stdout
+--- stderr
+Error: marketplace `bilbo` is not configured or installed

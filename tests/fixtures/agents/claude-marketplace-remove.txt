@@ -1,0 +1,5 @@
+$ claude plugin marketplace remove bilbo --json
+exit 0
+--- stdout
+{"command":"marketplace-remove","outcome":"ok","marketplace":"bilbo","message":"Successfully removed marketplace: bilbo"}
+--- stderr

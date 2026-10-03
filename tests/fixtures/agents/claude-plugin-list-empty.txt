@@ -1,0 +1,5 @@
+$ claude plugin list --json
+exit 0
+--- stdout
+[]
+--- stderr

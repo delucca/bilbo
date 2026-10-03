@@ -1,0 +1,16 @@
+$ claude plugin list --json
+exit 0
+--- stdout
+[
+  {
+    "id": "bilbo@bilbo",
+    "version": "c20adb35961f",
+    "scope": "user",
+    "enabled": true,
+    "installPath": "/fixture/home/claude/plugins/cache/bilbo/bilbo/c20adb35961f",
+    "installedAt": "2026-10-03T00:27:51.838Z",
+    "lastUpdated": "2026-10-03T00:27:51.838Z",
+    "projectEnabled": false
+  }
+]
+--- stderr

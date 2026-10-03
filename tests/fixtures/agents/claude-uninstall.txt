@@ -1,0 +1,5 @@
+$ claude plugin uninstall bilbo@bilbo --json
+exit 0
+--- stdout
+{"command":"uninstall","outcome":"ok","plugin":"bilbo@bilbo","pluginId":"bilbo@bilbo","scope":"user","keptData":false,"message":"Successfully uninstalled plugin: bilbo (scope: user)"}
+--- stderr

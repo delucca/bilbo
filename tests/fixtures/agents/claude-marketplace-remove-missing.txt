@@ -1,0 +1,6 @@
+$ claude plugin marketplace remove bilbo --json
+exit 1
+--- stdout
+{"command":"marketplace-remove","marketplace":"bilbo","outcome":"failed","message":"Marketplace 'bilbo' not found","failureCode":"not_configured"}
+--- stderr
+✘ Failed to remove marketplace: Marketplace 'bilbo' not found

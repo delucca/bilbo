@@ -1,0 +1,5 @@
+$ claude plugin marketplace add delucca/bilbo#v0.1.0 --json
+exit 0
+--- stdout
+{"command":"marketplace-add","outcome":"ok","marketplace":"bilbo","message":"Cloning via SSH: git@github.com:delucca/bilbo.git\nRefreshing marketplace cache (timeout: 120s)…\nCloning repository (timeout: 120s): git@github.com:delucca/bilbo.git (ref: v0.1.0)\nClone complete, validating marketplace…\nCleaning up old marketplace cache…\nSuccessfully added marketplace: bilbo (declared in user settings)"}
+--- stderr

@@ -1,0 +1,2 @@
+2.1.288 (Claude Code)
+codex-cli 0.155.1

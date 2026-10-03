@@ -1,0 +1,5 @@
+$ codex plugin add nope@bilbo --json
+exit 1
+--- stdout
+--- stderr
+Error: plugin `nope` was not found in marketplace `bilbo`

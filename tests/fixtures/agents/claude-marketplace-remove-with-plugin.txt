@@ -1,0 +1,5 @@
+$ claude plugin marketplace remove bilbo --json
+exit 0
+--- stdout
+{"command":"marketplace-remove","outcome":"ok","marketplace":"bilbo","message":"Successfully removed marketplace: bilbo\nAlso uninstalled 1 plugin from this marketplace:\n  bilbo@bilbo\nThe removal also deletes their saved options, secrets and data where it can.\nTo use a plugin again, add the marketplace back and reinstall the plugin."}
+--- stderr

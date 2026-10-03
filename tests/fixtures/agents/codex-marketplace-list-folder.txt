@@ -1,0 +1,16 @@
+$ codex plugin marketplace list --json
+exit 0
+--- stdout
+{
+  "marketplaces": [
+    {
+      "name": "bilbo",
+      "root": "/fixture/bilbo",
+      "marketplaceSource": {
+        "sourceType": "local",
+        "source": "/fixture/bilbo"
+      }
+    }
+  ]
+}
+--- stderr

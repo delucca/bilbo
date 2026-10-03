@@ -1,0 +1,9 @@
+$ codex plugin marketplace add delucca/bilbo --ref v9.9.9 --json
+exit 1
+--- stdout
+--- stderr
+Error: git checkout v9.9.9 failed with status exit status: 1
+stdout:
+
+stderr:
+error: pathspec 'v9.9.9' did not match any file(s) known to git

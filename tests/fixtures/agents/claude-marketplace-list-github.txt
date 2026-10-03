@@ -1,0 +1,13 @@
+$ claude plugin marketplace list --json
+exit 0
+--- stdout
+[
+  {
+    "name": "bilbo",
+    "source": "github",
+    "repo": "delucca/bilbo",
+    "ref": "v0.1.0",
+    "installLocation": "/fixture/home/claude/plugins/marketplaces/bilbo"
+  }
+]
+--- stderr

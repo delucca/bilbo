@@ -1,0 +1,6 @@
+$ claude plugin marketplace add /fixture/home --json
+exit 1
+--- stdout
+{"command":"marketplace-add","outcome":"failed","message":"Marketplace file not found at /fixture/home/.claude-plugin/marketplace.json","failureCode":"manifest_missing"}
+--- stderr
+✘ Failed to add marketplace: Marketplace file not found at /fixture/home/.claude-plugin/marketplace.json

@@ -1,0 +1,6 @@
+$ claude plugin enable bilbo@bilbo --json
+exit 1
+--- stdout
+{"command":"enable","outcome":"failed","plugin":"bilbo@bilbo","message":"Plugin \"bilbo@bilbo\" is already enabled","failureCode":"already_in_goal_state","alreadyInGoalState":true}
+--- stderr
+✘ Failed to enable plugin "bilbo@bilbo": Plugin "bilbo@bilbo" is already enabled

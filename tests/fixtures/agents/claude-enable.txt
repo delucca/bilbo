@@ -1,0 +1,5 @@
+$ claude plugin enable bilbo@bilbo --json
+exit 0
+--- stdout
+{"command":"enable","outcome":"ok","plugin":"bilbo@bilbo","pluginId":"bilbo@bilbo","scope":"user","message":"Successfully enabled plugin: bilbo (scope: user)"}
+--- stderr

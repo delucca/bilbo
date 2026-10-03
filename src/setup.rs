@@ -1,0 +1,2557 @@
+//! The setup verb.
+use std::io::{IsTerminal, Write};
+use std::os::unix::fs::OpenOptionsExt;
+use std::path::{Path, PathBuf};
+use std::time::Duration;
+use zeroize::Zeroizing;
+
+use crate::config::{self, Embedder, Token};
+use crate::{Failure, agents, command, embed, store, timer, wizard};
+use wizard::Prompter;
+
+const CHECK: Duration = Duration::from_secs(15);
+const OLLAMA: &str = "http://localhost:11434";
+const DEFAULT_MINUTES: u32 = 15;
+
+const BOOL_FLAGS: [&str; 5] = [
+    "--yes",
+    "--interactive",
+    "--remove",
+    "--no-plugin",
+    "--no-timer",
+];
+const VALUE_FLAGS: [&str; 9] = [
+    "--embedder-url",
+    "--embedder-model",
+    "--embedder-token-env",
+    "--embedder-token-file",
+    "--embedder-query-prefix",
+    "--claude",
+    "--codex",
+    "--plugin-source",
+    "--index-every",
+];
+const EMBEDDER_FLAGS: [&str; 5] = [
+    "--embedder-url",
+    "--embedder-model",
+    "--embedder-token-env",
+    "--embedder-token-file",
+    "--embedder-query-prefix",
+];
+const ANSWER_FLAGS: [&str; 8] = [
+    "--embedder-url",
+    "--embedder-model",
+    "--embedder-token-env",
+    "--embedder-token-file",
+    "--embedder-query-prefix",
+    "--no-plugin",
+    "--no-timer",
+    "--index-every",
+];
+const REMOVE_FLAGS: [&str; 4] = ["--yes", "--interactive", "--claude", "--codex"];
+
+/// The report lines for stdout and whether any step failed.
+pub struct Outcome {
+    pub lines: Vec<String>,
+    pub failed: bool,
+}
+
+pub fn run(args: &[String], env: &store::Env) -> Result<Outcome, Failure> {
+    let flags = settle(args, env)?;
+    let path = std::env::var_os("PATH");
+    match flags.mode {
+        Mode::Wizard => return run_wizard(&flags, env, path),
+        Mode::Remove => return remove(&flags, env, path, &mut wizard::Terminal),
+        Mode::Batch => {}
+    }
+    let facts = gather(&flags, env, path)?;
+    let plan = answer_batch(&flags, facts)?;
+    Ok(apply(&plan))
+}
+
+/// The wizard on the terminal, with the real Ollama probe, embedder check and first index.
+fn run_wizard(
+    flags: &Flags,
+    env: &store::Env,
+    path: Option<std::ffi::OsString>,
+) -> Result<Outcome, Failure> {
+    wizard_with(
+        flags,
+        env,
+        path,
+        &mut wizard::Terminal,
+        || embed::ollama_models(OLLAMA, Duration::from_secs(1)),
+        |embedder, pasted| match pasted {
+            Some(key) => {
+                let client = embed::Client::with_token(embedder, Some(key.to_string()), CHECK);
+                vector_length(&client)
+            }
+            None => check_embedder(embedder),
+        },
+        run_index,
+    )
+}
+
+/// The wizard: ask, plan, confirm, apply, then offer the first index. `probe` finds the Ollama
+/// models, `check` tries an embedder and `index` runs the first index; all three are the caller's
+/// so a test can run the wizard without a terminal, a network or the real tools.
+fn wizard_with<P: Prompter>(
+    flags: &Flags,
+    env: &store::Env,
+    path: Option<std::ffi::OsString>,
+    p: &mut P,
+    probe: impl FnOnce() -> Option<Vec<String>>,
+    check: impl FnMut(&Embedder, Option<&str>) -> Result<usize, String>,
+    index: impl FnOnce(&Path) -> Result<String, String>,
+) -> Result<Outcome, Failure> {
+    let facts = gather(flags, env, path)?;
+    let managed = match &facts.config {
+        ConfigState::Managed { target } => Some(target.clone()),
+        _ => None,
+    };
+    let ollama = match managed {
+        Some(_) => None,
+        None => probe(),
+    };
+    let seen = wizard::Facts {
+        root: facts.root.clone(),
+        config_path: facts.config_path.clone(),
+        existing: facts.existing.clone(),
+        managed,
+        token_path: facts.token_path.clone(),
+        token_exists: facts.token_path.exists(),
+        ollama,
+        claude: facts.claude.clone(),
+        codex: facts.codex.clone(),
+        timer: facts.timer.platform.is_some(),
+        timer_minutes: facts
+            .timer
+            .platform
+            .zip(timer_place(&facts.timer))
+            .and_then(|(platform, place)| timer::minutes(platform, &place)),
+    };
+    let answers = wizard::ask(p, &seen, check, |name| {
+        std::env::var_os(name).is_some_and(|value| !value.is_empty())
+    })
+    .map_err(|e| stopped(p, e))?;
+    let exe = facts.exe.clone();
+    let plan = answer_wizard(facts, answers);
+    match wizard::confirm(p, &summary(&plan)) {
+        Ok(true) => {}
+        Ok(false) => return Err(declined(p)),
+        Err(e) => return Err(stopped(p, e)),
+    }
+    let outcome = apply(&plan);
+    if !outcome.failed && plan.embedder.is_some() {
+        let notes = store::read_notes(&plan.notes).map_or(0, |notes| notes.len());
+        let _ = wizard::first_index(p, notes, || index(&exe));
+    }
+    let _ = wizard::finish(p, outcome.failed);
+    Ok(outcome)
+}
+
+/// `<exe> index` with stdin closed: its first stdout line, or its stderr without the `bilbo: ` prefixes.
+fn run_index(exe: &Path) -> Result<String, String> {
+    let output = std::process::Command::new(exe)
+        .arg("index")
+        .stdin(std::process::Stdio::null())
+        .output()
+        .map_err(|e| format!("cannot run {} index: {e}", exe.display()))?;
+    if output.status.success() {
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        return Ok(stdout.lines().next().unwrap_or("").to_string());
+    }
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let lines: Vec<&str> = stderr
+        .lines()
+        .map(|line| line.strip_prefix("bilbo: ").unwrap_or(line))
+        .collect();
+    Err(if lines.is_empty() {
+        format!("index {}", output.status)
+    } else {
+        lines.join("\n")
+    })
+}
+
+fn usage<T>(message: impl Into<String>) -> Result<T, Failure> {
+    Err(Failure::Usage(message.into()))
+}
+
+// ---------------------------------------------------------------------------
+// Flags
+
+#[derive(Default)]
+struct Args {
+    /// Flag names in the order given.
+    given: Vec<&'static str>,
+    yes: bool,
+    interactive: bool,
+    remove: bool,
+    no_plugin: bool,
+    no_timer: bool,
+    embedder_url: Option<String>,
+    embedder_model: Option<String>,
+    token_env: Option<String>,
+    token_file: Option<String>,
+    query_prefix: Option<String>,
+    claude: Option<String>,
+    codex: Option<String>,
+    plugin_source: Option<String>,
+    index_every: Option<String>,
+}
+
+impl Args {
+    fn has(&self, flag: &str) -> bool {
+        self.given.contains(&flag)
+    }
+
+    /// The first of `names` given on the command line.
+    fn first(&self, names: &[&str]) -> Option<&'static str> {
+        self.given.iter().copied().find(|g| names.contains(g))
+    }
+}
+
+/// Walks every argument: unknown option, positional, missing value, repeat.
+fn parse(args: &[String]) -> Result<Args, Failure> {
+    let mut out = Args::default();
+    let mut at = 0;
+    while at < args.len() {
+        let arg = &args[at];
+        at += 1;
+        if !arg.starts_with('-') || arg == "-" {
+            return usage(format!(
+                "setup takes only options; argument {at} is not one"
+            ));
+        }
+        let (name, inline) = match arg.split_once('=') {
+            Some((name, value)) => (name, Some(value.to_string())),
+            None => (arg.as_str(), None),
+        };
+        if let Some(flag) = BOOL_FLAGS.iter().find(|f| **f == name) {
+            if inline.is_some() {
+                return usage(format!("{flag} takes no value"));
+            }
+            if out.has(flag) {
+                return usage(format!("{flag} given more than once"));
+            }
+            out.given.push(flag);
+            match *flag {
+                "--yes" => out.yes = true,
+                "--interactive" => out.interactive = true,
+                "--remove" => out.remove = true,
+                "--no-plugin" => out.no_plugin = true,
+                _ => out.no_timer = true,
+            }
+        } else if let Some(flag) = VALUE_FLAGS.iter().find(|f| **f == name) {
+            if out.has(flag) {
+                return usage(format!("{flag} given more than once"));
+            }
+            let value = match inline {
+                Some(value) => Some(value),
+                None => {
+                    let next = args.get(at).cloned();
+                    if let Some(option) = next.as_deref().filter(|n| n.starts_with("--")) {
+                        let name = option.split('=').next().unwrap_or(option);
+                        return usage(format!("{flag} needs a value, got the option {name}"));
+                    }
+                    if next.is_some() {
+                        at += 1;
+                    }
+                    next
+                }
+            };
+            let Some(value) = value.filter(|v| !v.is_empty() || *flag == "--embedder-query-prefix")
+            else {
+                return usage(format!("{flag} needs a value"));
+            };
+            out.given.push(flag);
+            let slot = match *flag {
+                "--embedder-url" => &mut out.embedder_url,
+                "--embedder-model" => &mut out.embedder_model,
+                "--embedder-token-env" => &mut out.token_env,
+                "--embedder-token-file" => &mut out.token_file,
+                "--embedder-query-prefix" => &mut out.query_prefix,
+                "--claude" => &mut out.claude,
+                "--codex" => &mut out.codex,
+                "--plugin-source" => &mut out.plugin_source,
+                _ => &mut out.index_every,
+            };
+            *slot = Some(value);
+        } else {
+            return usage(format!("unknown option '{name}'"));
+        }
+    }
+    Ok(out)
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Mode {
+    Batch,
+    Wizard,
+    Remove,
+}
+
+/// The embedder the flags describe.
+struct EmbedderFlags {
+    url: String,
+    model: String,
+    token: Option<Token>,
+    query_prefix: Option<String>,
+}
+
+impl EmbedderFlags {
+    fn embedder(&self) -> Embedder {
+        Embedder {
+            url: self.url.clone(),
+            model: self.model.clone(),
+            token: self.token.clone(),
+            query_prefix: self
+                .query_prefix
+                .clone()
+                .unwrap_or_else(|| config::default_query_prefix(&self.model).to_string()),
+            min_similarity: config::DEFAULT_MIN_SIMILARITY,
+        }
+    }
+}
+
+/// Every flag, checked and typed.
+struct Flags {
+    mode: Mode,
+    /// `--remove` asks first: in a terminal without `--yes`, or with `--interactive`.
+    confirm: bool,
+    no_plugin: bool,
+    no_timer: bool,
+    minutes: Option<u32>,
+    embedder: Option<EmbedderFlags>,
+    /// The first embedder flag on the command line, for messages.
+    embedder_flag: Option<&'static str>,
+    claude: Option<PathBuf>,
+    codex: Option<PathBuf>,
+    source: Option<agents::Source>,
+}
+
+fn settle(args: &[String], env: &store::Env) -> Result<Flags, Failure> {
+    let args = parse(args)?;
+    if args.yes && args.interactive {
+        return usage("--yes and --interactive cannot be used together");
+    }
+    if args.interactive
+        && let Some(flag) = args.first(&ANSWER_FLAGS)
+    {
+        return usage(format!(
+            "--interactive cannot be used with {flag}; it answers a wizard question"
+        ));
+    }
+    if args.remove
+        && let Some(flag) = args
+            .given
+            .iter()
+            .find(|f| **f != "--remove" && !REMOVE_FLAGS.contains(f))
+    {
+        return usage(format!("--remove cannot be used with {flag}"));
+    }
+    if args.embedder_url.is_none()
+        && let Some(flag) = args.first(&EMBEDDER_FLAGS)
+    {
+        return usage(format!("{flag} needs --embedder-url"));
+    }
+    if args.embedder_url.is_some() && args.embedder_model.is_none() {
+        return usage("--embedder-url needs --embedder-model");
+    }
+    if args.token_env.is_some() && args.token_file.is_some() {
+        return usage("--embedder-token-env and --embedder-token-file cannot be used together");
+    }
+    if args.no_timer && args.index_every.is_some() {
+        return usage("--no-timer and --index-every cannot be used together");
+    }
+    if args.no_plugin
+        && let Some(flag) = args.first(&["--claude", "--codex", "--plugin-source"])
+    {
+        return usage(format!("--no-plugin and {flag} cannot be used together"));
+    }
+
+    let minutes = match &args.index_every {
+        Some(value) => Some(parse_minutes(value)?),
+        None => None,
+    };
+    let home = store::absolute(&env.home);
+    let embedder = match (&args.embedder_url, &args.embedder_model) {
+        (Some(url), Some(model)) => Some(embedder_flags(&args, url, model, home.as_deref())?),
+        _ => None,
+    };
+    let cwd = std::env::current_dir()
+        .map_err(|e| Failure::Refused(format!("cannot read the working directory: {e}")))?;
+    let claude = tool_flag("--claude", &args.claude, &cwd)?;
+    let codex = tool_flag("--codex", &args.codex, &cwd)?;
+    let source = match &args.plugin_source {
+        Some(text) => Some(
+            agents::parse_source(text, &cwd, home.as_deref())
+                .map_err(|e| Failure::Usage(format!("--plugin-source {e}")))?,
+        ),
+        None => None,
+    };
+
+    let terminals = std::io::stdin().is_terminal() && std::io::stderr().is_terminal();
+    if args.interactive && !terminals {
+        return usage(
+            "the wizard needs a terminal on stdin and stderr; --interactive cannot run here",
+        );
+    }
+    let answers = args.first(&ANSWER_FLAGS).is_some();
+    let mode = if args.remove {
+        Mode::Remove
+    } else if args.interactive || (!args.yes && !answers && terminals) {
+        Mode::Wizard
+    } else {
+        Mode::Batch
+    };
+    Ok(Flags {
+        mode,
+        confirm: args.remove && (args.interactive || (!args.yes && terminals)),
+        no_plugin: args.no_plugin,
+        no_timer: args.no_timer,
+        minutes,
+        embedder,
+        embedder_flag: args.first(&EMBEDDER_FLAGS),
+        claude,
+        codex,
+        source,
+    })
+}
+
+fn parse_minutes(value: &str) -> Result<u32, Failure> {
+    let digits = !value.is_empty() && value.bytes().all(|b| b.is_ascii_digit());
+    match value.parse::<u32>() {
+        Ok(n) if digits && (1..=1440).contains(&n) => Ok(n),
+        _ => usage(format!(
+            "--index-every takes 1 to 1440 minutes, got '{value}'"
+        )),
+    }
+}
+
+fn embedder_flags(
+    args: &Args,
+    url: &str,
+    model: &str,
+    home: Option<&Path>,
+) -> Result<EmbedderFlags, Failure> {
+    if let Some(problem) = config::url_problem(url) {
+        return if problem.contains("user name") {
+            usage("--embedder-url must not hold a user name or password")
+        } else {
+            usage(format!(
+                "--embedder-url must be an http:// or https:// URL with a host, got '{url}'"
+            ))
+        };
+    }
+    let token = match (&args.token_env, &args.token_file) {
+        (Some(name), _) => {
+            if !config::is_variable_name(name) {
+                return usage(
+                    "--embedder-token-env must be a variable name (letters, digits and _, not starting with a digit)",
+                );
+            }
+            Some(Token::Var(name.clone()))
+        }
+        (_, Some(file)) => Some(Token::File(token_file(file, home)?)),
+        _ => None,
+    };
+    Ok(EmbedderFlags {
+        url: url.to_string(),
+        model: model.to_string(),
+        token,
+        query_prefix: args.query_prefix.clone(),
+    })
+}
+
+fn token_file(value: &str, home: Option<&Path>) -> Result<PathBuf, Failure> {
+    if Path::new(value).is_absolute() {
+        return Ok(PathBuf::from(value));
+    }
+    let Some(rest) = value.strip_prefix("~/") else {
+        return usage("--embedder-token-file must be an absolute path or start with ~/");
+    };
+    match home {
+        Some(home) => Ok(home.join(rest)),
+        None => usage("--embedder-token-file starts with ~/ but HOME is not an absolute path"),
+    }
+}
+
+/// A `--claude` or `--codex` path; a relative one joins the working directory.
+fn tool_flag(flag: &str, value: &Option<String>, cwd: &Path) -> Result<Option<PathBuf>, Failure> {
+    let Some(value) = value else {
+        return Ok(None);
+    };
+    let path = cwd.join(value);
+    if command::is_executable(&path) {
+        Ok(Some(path))
+    } else {
+        usage(format!("{flag} {value} is not an executable file"))
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Gather
+
+enum ConfigState {
+    Absent,
+    Present,
+    /// `target` is the link's target as written, or the config path when it is not a link.
+    Managed {
+        target: String,
+    },
+}
+
+/// What the machine holds now.
+struct Facts {
+    root: PathBuf,
+    notes: PathBuf,
+    config_path: PathBuf,
+    config: ConfigState,
+    /// The embedder of the file read; `None` for an absent file or one without `embedder.url`.
+    existing: Option<Embedder>,
+    /// The file is there and sets no key: only comments and blank lines.
+    config_empty: bool,
+    token_path: PathBuf,
+    exe: PathBuf,
+    source: agents::Source,
+    claude: Option<PathBuf>,
+    codex: Option<PathBuf>,
+    timer: TimerFacts,
+}
+
+/// What the timer step reads from the machine and the environment.
+struct TimerFacts {
+    platform: Option<timer::Platform>,
+    home: Option<PathBuf>,
+    config_home: Option<PathBuf>,
+    state_dir: Option<PathBuf>,
+    /// `launchctl` or `systemctl` on PATH.
+    tool: Option<PathBuf>,
+    /// The locations setup saw, in the order the job carries them, or the first one that cannot be.
+    locations: Result<Vec<(&'static str, String)>, String>,
+}
+
+fn timer_facts(env: &store::Env, path: Option<&std::ffi::OsStr>) -> TimerFacts {
+    let platform = timer::platform();
+    let program = match platform {
+        Some(timer::Platform::Launchd) => Some("launchctl"),
+        Some(timer::Platform::Systemd) => Some("systemctl"),
+        None => None,
+    };
+    TimerFacts {
+        platform,
+        home: store::absolute(&env.home),
+        config_home: store::config_home(env),
+        state_dir: store::state_dir(env),
+        tool: program.and_then(|name| command::find(name, path)),
+        locations: locations(env),
+    }
+}
+
+fn locations(env: &store::Env) -> Result<Vec<(&'static str, String)>, String> {
+    let vars = [
+        ("BILBO_HOME", &env.bilbo_home),
+        ("BILBO_CONFIG", &env.bilbo_config),
+        ("XDG_DATA_HOME", &env.xdg_data_home),
+        ("XDG_CONFIG_HOME", &env.xdg_config_home),
+        ("XDG_CACHE_HOME", &env.xdg_cache_home),
+        ("XDG_STATE_HOME", &env.xdg_state_home),
+    ];
+    let mut out = Vec::new();
+    for (name, value) in vars {
+        if let Some(path) = store::absolute(value) {
+            let text = path
+                .into_os_string()
+                .into_string()
+                .map_err(|_| format!("{name} is not valid UTF-8"))?;
+            out.push((name, text));
+        }
+    }
+    Ok(out)
+}
+
+fn gather(
+    flags: &Flags,
+    env: &store::Env,
+    path: Option<std::ffi::OsString>,
+) -> Result<Facts, Failure> {
+    let root = store::root(env).map_err(Failure::Config)?;
+    let notes = root.join("notes");
+    let (config_path, _) = config::path(env).map_err(Failure::Config)?.ok_or_else(|| {
+        Failure::Config(
+            "cannot find the config file: set BILBO_CONFIG, XDG_CONFIG_HOME or HOME to an absolute path"
+                .into(),
+        )
+    })?;
+    let config = config_state(&config_path);
+    let existing = match config {
+        ConfigState::Absent => None,
+        _ if std::fs::symlink_metadata(&config_path).is_err() => None,
+        ConfigState::Managed { .. } if !config_path.exists() => None,
+        _ => config::load(env).map_err(Failure::Config)?.embedder,
+    };
+    let config_empty = matches!(config, ConfigState::Present) && sets_no_key(&config_path);
+    let token_path = config_path.parent().unwrap_or(Path::new("/")).join("token");
+    let exe = std::env::current_exe()
+        .and_then(std::fs::canonicalize)
+        .map_err(|e| Failure::Refused(format!("cannot find the bilbo executable: {e}")))?;
+    let source = flags
+        .source
+        .clone()
+        .unwrap_or_else(|| agents::default_source(&exe, env!("CARGO_PKG_VERSION")));
+    let tool = |given: &Option<PathBuf>, name: &str| {
+        if flags.no_plugin {
+            return None;
+        }
+        given
+            .clone()
+            .or_else(|| command::find(name, path.as_deref()))
+    };
+    let claude = tool(&flags.claude, "claude");
+    let codex = tool(&flags.codex, "codex");
+    Ok(Facts {
+        root,
+        notes,
+        config_path,
+        config,
+        existing,
+        config_empty,
+        token_path,
+        exe,
+        source,
+        claude,
+        codex,
+        timer: timer_facts(env, path.as_deref()),
+    })
+}
+
+/// Whether the file holds only comments and blank lines.
+fn sets_no_key(path: &Path) -> bool {
+    std::fs::read_to_string(path).is_ok_and(|text| {
+        let text = text.strip_prefix('\u{feff}').unwrap_or(&text);
+        text.lines().all(|line| {
+            let line = line.trim();
+            line.is_empty() || line.starts_with('#')
+        })
+    })
+}
+
+fn config_state(path: &Path) -> ConfigState {
+    if let Ok(meta) = std::fs::symlink_metadata(path) {
+        if meta.file_type().is_symlink() {
+            let target = std::fs::read_link(path)
+                .map_or_else(|_| path.display().to_string(), |t| t.display().to_string());
+            return ConfigState::Managed { target };
+        }
+        return if folder_is_readonly(path) {
+            ConfigState::Managed {
+                target: path.display().to_string(),
+            }
+        } else {
+            ConfigState::Present
+        };
+    }
+    if folder_is_readonly(path) {
+        ConfigState::Managed {
+            target: path.display().to_string(),
+        }
+    } else {
+        ConfigState::Absent
+    }
+}
+
+/// The config's folder exists and has no write bit; nothing is written to find out.
+fn folder_is_readonly(path: &Path) -> bool {
+    path.parent()
+        .and_then(|dir| std::fs::metadata(dir).ok())
+        .is_some_and(|meta| meta.is_dir() && meta.permissions().readonly())
+}
+
+// ---------------------------------------------------------------------------
+// Plan
+
+enum ConfigPlan {
+    Create(Option<Embedder>),
+    Update(Option<Embedder>),
+    Keep,
+    Managed(String),
+}
+
+enum KeyPlan {
+    NoEmbedder,
+    /// The key comes from `token`; `kept` when the config already named it.
+    Token {
+        token: Token,
+        kept: bool,
+    },
+    /// The wizard's pasted key is saved to `path`.
+    Pasted {
+        path: PathBuf,
+    },
+    Local,
+    NoKey,
+}
+
+enum EmbedderPlan {
+    None,
+    Kept,
+    Checked(usize),
+}
+
+enum PluginPlan {
+    Skipped(&'static str),
+    /// The tool's lists could not be read; the message is the step's failure.
+    Unreadable(String),
+    Run {
+        program: PathBuf,
+        change: agents::Change,
+    },
+}
+
+enum TimerPlan {
+    Skipped(&'static str),
+    Failed(String),
+    /// The key comes from this variable, which a timer cannot read.
+    KeyVariable(String),
+    /// A timer is installed and none is wanted.
+    Remove {
+        reason: &'static str,
+        platform: timer::Platform,
+        tool: Option<PathBuf>,
+        place: timer::Place,
+    },
+    /// The installed files already hold the job.
+    Keep,
+    Install {
+        platform: timer::Platform,
+        tool: PathBuf,
+        job: timer::Job,
+        files: Vec<(PathBuf, String)>,
+        update: bool,
+    },
+}
+
+struct Plan {
+    notes: PathBuf,
+    store_exists: bool,
+    config_path: PathBuf,
+    config: ConfigPlan,
+    /// The embedder the config holds once setup is done.
+    embedder: Option<Embedder>,
+    key: KeyPlan,
+    /// The key the wizard was given; written to the token file and never shown.
+    pasted: Option<Zeroizing<String>>,
+    check: EmbedderPlan,
+    source: agents::Source,
+    claude: PluginPlan,
+    codex: PluginPlan,
+    timer: TimerPlan,
+}
+
+/// Non-interactive answers: the flags over the config that is there, the embedder checked when a new config gets one.
+fn answer_batch(flags: &Flags, facts: Facts) -> Result<Plan, Failure> {
+    let path = facts.config_path.display();
+    let mut check = EmbedderPlan::None;
+    let (config, embedder) = match (&facts.config, &flags.embedder) {
+        (ConfigState::Managed { .. }, Some(_)) => {
+            let flag = flags.embedder_flag.unwrap_or("--embedder-url");
+            return Err(Failure::Config(format!(
+                "{path} is managed elsewhere; change the embedder there, not with {flag}"
+            )));
+        }
+        (ConfigState::Managed { target }, None) => {
+            (ConfigPlan::Managed(target.clone()), facts.existing.clone())
+        }
+        (ConfigState::Present, Some(given)) if facts.config_empty => {
+            let planned = given.embedder();
+            let dims = check_embedder(&planned).map_err(Failure::Refused)?;
+            check = EmbedderPlan::Checked(dims);
+            (ConfigPlan::Update(Some(planned.clone())), Some(planned))
+        }
+        (ConfigState::Present, Some(given)) => {
+            let planned = given.embedder();
+            if !same_embedder(facts.existing.as_ref(), &planned) {
+                let what = if facts.existing.is_some() {
+                    "other embedder settings"
+                } else {
+                    "settings but no embedder"
+                };
+                return Err(Failure::Refused(format!(
+                    "{path} already sets {what}; edit it, or run bilbo setup in a terminal to change it"
+                )));
+            }
+            (ConfigPlan::Keep, facts.existing.clone())
+        }
+        (ConfigState::Present, None) => (ConfigPlan::Keep, facts.existing.clone()),
+        (ConfigState::Absent, Some(given)) => {
+            let planned = given.embedder();
+            let dims = check_embedder(&planned).map_err(Failure::Refused)?;
+            check = EmbedderPlan::Checked(dims);
+            (ConfigPlan::Create(Some(planned.clone())), Some(planned))
+        }
+        (ConfigState::Absent, None) => (ConfigPlan::Create(None), None),
+    };
+    if matches!(check, EmbedderPlan::None) && embedder.is_some() {
+        check = EmbedderPlan::Kept;
+    }
+    let kept = !matches!(config, ConfigPlan::Create(_) | ConfigPlan::Update(_));
+    let key = match &embedder {
+        None => KeyPlan::NoEmbedder,
+        Some(e) => match &e.token {
+            Some(token) => KeyPlan::Token {
+                token: token.clone(),
+                kept,
+            },
+            None if config::is_local(&e.url) => KeyPlan::Local,
+            None => KeyPlan::NoKey,
+        },
+    };
+    let plugin = |tool, found: &Option<PathBuf>| match found {
+        Some(program) => plan_plugin(tool, program, &facts.source),
+        None if flags.no_plugin => PluginPlan::Skipped("--no-plugin"),
+        None => PluginPlan::Skipped("not found"),
+    };
+    let claude = plugin(agents::Tool::Claude, &facts.claude);
+    let codex = plugin(agents::Tool::Codex, &facts.codex);
+    let timer = plan_timer(
+        &facts,
+        embedder.as_ref(),
+        flags.no_timer.then_some("--no-timer"),
+        flags.minutes.unwrap_or(DEFAULT_MINUTES),
+    );
+    Ok(Plan {
+        store_exists: facts.notes.is_dir(),
+        notes: facts.notes,
+        config_path: facts.config_path,
+        config,
+        embedder,
+        key,
+        pasted: None,
+        check,
+        source: facts.source,
+        claude,
+        codex,
+        timer,
+    })
+}
+
+/// The wizard's answers over what the machine holds, as the same plan the batch builds.
+fn answer_wizard(facts: Facts, answers: wizard::Answers) -> Plan {
+    let embedder = answers.embedder;
+    let config = match &facts.config {
+        ConfigState::Managed { target } => ConfigPlan::Managed(target.clone()),
+        ConfigState::Absent => ConfigPlan::Create(embedder.clone()),
+        ConfigState::Present => {
+            let unchanged = match &embedder {
+                Some(planned) => same_embedder(facts.existing.as_ref(), planned),
+                None => facts.existing.is_none(),
+            };
+            if unchanged {
+                ConfigPlan::Keep
+            } else {
+                ConfigPlan::Update(embedder.clone())
+            }
+        }
+    };
+    let config_kept = matches!(config, ConfigPlan::Keep | ConfigPlan::Managed(_));
+    let key = match (&embedder, &answers.pasted) {
+        (None, _) => KeyPlan::NoEmbedder,
+        (Some(_), Some(_)) => KeyPlan::Pasted {
+            path: facts.token_path.clone(),
+        },
+        (Some(e), None) => match &e.token {
+            Some(token) => KeyPlan::Token {
+                token: token.clone(),
+                kept: config_kept
+                    || (*token == Token::File(facts.token_path.clone())
+                        && facts.token_path.exists()),
+            },
+            None if config::is_local(&e.url) => KeyPlan::Local,
+            None => KeyPlan::NoKey,
+        },
+    };
+    let check = match (&embedder, answers.dims) {
+        (None, _) => EmbedderPlan::None,
+        (Some(_), Some(dims)) => EmbedderPlan::Checked(dims),
+        (Some(_), None) => EmbedderPlan::Kept,
+    };
+    let plugin = |tool, found: &Option<PathBuf>, chosen: bool| match found {
+        Some(program) if chosen => plan_plugin(tool, program, &facts.source),
+        Some(_) => PluginPlan::Skipped("not chosen"),
+        None => PluginPlan::Skipped("not found"),
+    };
+    let claude = plugin(agents::Tool::Claude, &facts.claude, answers.claude);
+    let codex = plugin(agents::Tool::Codex, &facts.codex, answers.codex);
+    let asked = embedder.is_some() && facts.timer.platform.is_some();
+    let timer = plan_timer(
+        &facts,
+        embedder.as_ref(),
+        (asked && answers.timer.is_none()).then_some("not chosen"),
+        answers.timer.unwrap_or(DEFAULT_MINUTES),
+    );
+    Plan {
+        store_exists: facts.notes.is_dir(),
+        notes: facts.notes,
+        config_path: facts.config_path,
+        config,
+        embedder,
+        key,
+        pasted: answers.pasted,
+        check,
+        source: facts.source,
+        claude,
+        codex,
+        timer,
+    }
+}
+
+/// Where the timer's files live, when the folders it needs are known.
+fn timer_place(t: &TimerFacts) -> Option<timer::Place> {
+    match t.platform? {
+        timer::Platform::Launchd => t.home.clone().map(|home| timer::Place {
+            home,
+            config_home: t.config_home.clone().unwrap_or_default(),
+        }),
+        timer::Platform::Systemd => t.config_home.clone().map(|config_home| timer::Place {
+            home: t.home.clone().unwrap_or_default(),
+            config_home,
+        }),
+    }
+}
+
+/// Decides the timer step. `off` is why the user wants no timer; no embedder means none either.
+/// Reads files, and on Linux asks `systemctl` whether a user manager answers; changes nothing.
+fn plan_timer(
+    facts: &Facts,
+    embedder: Option<&Embedder>,
+    off: Option<&'static str>,
+    minutes: u32,
+) -> TimerPlan {
+    let t = &facts.timer;
+    let Some(platform) = t.platform else {
+        return TimerPlan::Skipped(off.unwrap_or(if embedder.is_none() {
+            "no embedder"
+        } else {
+            "unsupported platform"
+        }));
+    };
+    let place = timer_place(t);
+    let wanted = match (off, embedder) {
+        (Some(reason), _) => Err(reason),
+        (None, None) => Err("no embedder"),
+        (None, Some(embedder)) => Ok(embedder),
+    };
+    let embedder = match wanted {
+        Ok(embedder) => embedder,
+        Err(reason) => {
+            return match place.filter(|place| timer::installed(platform, place)) {
+                Some(_) if t.tool.is_none() => TimerPlan::Failed(format!(
+                    "{} not found on PATH",
+                    match platform {
+                        timer::Platform::Launchd => "launchctl",
+                        timer::Platform::Systemd => "systemctl",
+                    }
+                )),
+                Some(place) => TimerPlan::Remove {
+                    reason,
+                    platform,
+                    tool: t.tool.clone(),
+                    place,
+                },
+                None => TimerPlan::Skipped(reason),
+            };
+        }
+    };
+    let tool = match (platform, &t.tool) {
+        (timer::Platform::Launchd, None) => {
+            return TimerPlan::Failed("launchctl not found on PATH".into());
+        }
+        (timer::Platform::Systemd, Some(tool)) if !timer::session(&command::System, tool) => {
+            return TimerPlan::Skipped("no systemd user session");
+        }
+        (timer::Platform::Systemd, None) => return TimerPlan::Skipped("no systemd user session"),
+        (_, Some(tool)) => tool.clone(),
+    };
+    if let Some(Token::Var(name)) = &embedder.token {
+        return TimerPlan::KeyVariable(name.clone());
+    }
+    let env = match &t.locations {
+        Ok(env) => env.clone(),
+        Err(message) => return TimerPlan::Failed(message.clone()),
+    };
+    let Some(state_dir) = &t.state_dir else {
+        return TimerPlan::Failed(
+            "cannot find the state folder: set XDG_STATE_HOME, or HOME, to an absolute path".into(),
+        );
+    };
+    let Some(place) = place else {
+        return TimerPlan::Failed(match platform {
+            timer::Platform::Launchd => "cannot find the home folder: set HOME to an absolute path",
+            timer::Platform::Systemd => {
+                "cannot find the config folder: set XDG_CONFIG_HOME, or HOME, to an absolute path"
+            }
+        }
+        .into());
+    };
+    let job = timer::Job {
+        exe: facts.exe.clone(),
+        minutes,
+        log: state_dir.join("bilbo/index.log"),
+        env,
+    };
+    let files = match timer::files(platform, &place, &job) {
+        Ok(files) => files,
+        Err(message) => return TimerPlan::Failed(message),
+    };
+    match timer::current(&files) {
+        timer::Current::Same => TimerPlan::Keep,
+        current => TimerPlan::Install {
+            platform,
+            tool,
+            job,
+            files,
+            update: current == timer::Current::Different,
+        },
+    }
+}
+
+/// Reads the tool's lists, the only commands planning runs, and decides what to change.
+fn plan_plugin(tool: agents::Tool, program: &Path, source: &agents::Source) -> PluginPlan {
+    match agents::read(tool, &command::System, program) {
+        Ok(state) => PluginPlan::Run {
+            program: program.to_path_buf(),
+            change: agents::plan(tool, &state, source, env!("CARGO_PKG_VERSION")),
+        },
+        Err(message) => PluginPlan::Unreadable(message),
+    }
+}
+
+/// Equal on url, model, token and query prefix; the similarity floor is not a flag.
+fn same_embedder(existing: Option<&Embedder>, planned: &Embedder) -> bool {
+    existing.is_some_and(|e| {
+        e.url == planned.url
+            && e.model == planned.model
+            && e.token == planned.token
+            && e.query_prefix == planned.query_prefix
+    })
+}
+
+/// One embed request, with the 15 s limit; the vector length, or the message.
+fn check_embedder(embedder: &Embedder) -> Result<usize, String> {
+    let client = embed::Client::new(embedder, |name| std::env::var_os(name), CHECK)?;
+    vector_length(&client)
+}
+
+fn vector_length(client: &embed::Client) -> Result<usize, String> {
+    let vectors = client.embed(&["bilbo setup check".to_string()])?;
+    Ok(vectors.first().map_or(0, Vec::len))
+}
+
+/// What setup will do, one line each, for the wizard's confirmation.
+fn summary(plan: &Plan) -> Vec<String> {
+    let mut lines = Vec::new();
+    let notes = plan.notes.display();
+    let path = plan.config_path.display();
+    lines.push(if plan.store_exists {
+        format!("Keep the store folder {notes}")
+    } else {
+        format!("Create the store folder {notes}")
+    });
+    lines.push(match &plan.config {
+        ConfigPlan::Create(_) => format!("Write the config {path}"),
+        ConfigPlan::Update(_) => {
+            let name = plan
+                .config_path
+                .file_name()
+                .map_or(String::new(), |n| n.to_string_lossy().into_owned());
+            format!("Update the config {path} (the old one becomes {name}.bak)")
+        }
+        ConfigPlan::Keep => format!("Keep the config {path}"),
+        ConfigPlan::Managed(_) => format!("Keep the config {path}, managed elsewhere"),
+    });
+    match &plan.key {
+        KeyPlan::Token { token, .. } => lines.push(match token {
+            Token::Var(name) => format!("Read the key from the variable {name}"),
+            Token::File(file) => format!("Read the key from {}", file.display()),
+        }),
+        KeyPlan::Pasted { path } => lines.push(format!(
+            "Save the pasted key to {}, readable only by you",
+            path.display()
+        )),
+        _ => {}
+    }
+    lines.push(match (&plan.embedder, &plan.check) {
+        (None, _) => "Search by keywords only".to_string(),
+        (Some(e), EmbedderPlan::Checked(dims)) => {
+            format!("Embed with {} at {} ({dims} dimensions)", e.model, e.url)
+        }
+        (Some(e), _) => format!("Embed with {} at {}", e.model, e.url),
+    });
+    for (tool, plugin) in plugins(plan) {
+        let label = tool.label();
+        let change = match plugin {
+            PluginPlan::Run { change, .. } => change,
+            PluginPlan::Unreadable(message) => {
+                lines.push(format!("{label} plugin: failed, {message}"));
+                continue;
+            }
+            PluginPlan::Skipped(_) => continue,
+        };
+        lines.push(match change {
+            agents::Change::Install(_) => format!(
+                "Install the bilbo plugin in {label} from {}",
+                plan.source.display()
+            ),
+            agents::Change::Update(_) => format!(
+                "Update the bilbo plugin in {label} to {}",
+                plan.source.display()
+            ),
+            agents::Change::Keep => format!("Keep the bilbo plugin in {label}"),
+        });
+    }
+    match &plan.timer {
+        TimerPlan::Skipped("--no-timer" | "not chosen" | "no embedder") => {}
+        TimerPlan::Skipped(reason) => lines.push(format!("Timer: skipped, {reason}")),
+        TimerPlan::Failed(message) => lines.push(format!("Timer: failed, {message}")),
+        TimerPlan::KeyVariable(name) => lines.push(format!(
+            "The index timer will fail: the key comes from the variable {name}"
+        )),
+        TimerPlan::Remove { .. } => lines.push("Remove the index timer".to_string()),
+        TimerPlan::Keep => lines.push("Keep the index timer".to_string()),
+        TimerPlan::Install { platform, job, .. } => lines.push(format!(
+            "Run bilbo index every {} min ({})",
+            job.minutes,
+            match platform {
+                timer::Platform::Launchd => format!("launchd agent {}", timer::LABEL),
+                timer::Platform::Systemd => "systemd timer bilbo-index.timer".to_string(),
+            }
+        )),
+    }
+    lines
+}
+
+fn plugins(plan: &Plan) -> [(agents::Tool, &PluginPlan); 2] {
+    [
+        (agents::Tool::Claude, &plan.claude),
+        (agents::Tool::Codex, &plan.codex),
+    ]
+}
+
+// ---------------------------------------------------------------------------
+// Apply
+
+#[derive(Default)]
+struct Report {
+    lines: Vec<String>,
+    failed: bool,
+}
+
+impl Report {
+    fn line(&mut self, step: &str, status: &str, detail: Option<String>) {
+        self.failed |= status == "failed";
+        self.lines.push(match detail {
+            Some(detail) => format!("{step} {status}: {detail}"),
+            None => format!("{step} {status}"),
+        });
+    }
+}
+
+fn apply(plan: &Plan) -> Outcome {
+    let mut report = Report::default();
+    store_step(plan, &mut report);
+    config_step(plan, &mut report);
+    key_step(plan, &mut report);
+    embedder_step(plan, &mut report);
+    for (tool, plugin) in plugins(plan) {
+        plugin_step(tool, plugin, &plan.source, &mut report);
+    }
+    timer_step(&plan.timer, &mut report);
+    Outcome {
+        lines: report.lines,
+        failed: report.failed,
+    }
+}
+
+fn timer_step(plan: &TimerPlan, report: &mut Report) {
+    match plan {
+        TimerPlan::Skipped(reason) => report.line("timer", "skipped", Some((*reason).into())),
+        TimerPlan::Failed(message) => report.line("timer", "failed", Some(message.clone())),
+        TimerPlan::KeyVariable(name) => report.line(
+            "timer",
+            "failed",
+            Some(format!(
+                "the index timer cannot read the key variable {name}; keep the key in a file (--embedder-token-file) or pass --no-timer"
+            )),
+        ),
+        TimerPlan::Keep => report.line("timer", "kept", None),
+        TimerPlan::Remove {
+            reason,
+            platform,
+            tool,
+            place,
+        } => match timer::uninstall(*platform, &command::System, tool.as_deref(), place) {
+            Ok(()) => report.line("timer", "removed", Some((*reason).into())),
+            Err(message) => report.line("timer", "failed", Some(message)),
+        },
+        TimerPlan::Install {
+            platform,
+            tool,
+            job,
+            files,
+            update,
+        } => match timer::install(*platform, &command::System, tool, job, files) {
+            Ok(()) => report.line(
+                "timer",
+                if *update { "updated" } else { "installed" },
+                Some(format!("every {} min", job.minutes)),
+            ),
+            Err(message) => report.line("timer", "failed", Some(message)),
+        },
+    }
+}
+
+fn plugin_step(
+    tool: agents::Tool,
+    plugin: &PluginPlan,
+    source: &agents::Source,
+    report: &mut Report,
+) {
+    let step = tool.name();
+    let (program, change) = match plugin {
+        PluginPlan::Skipped(reason) => {
+            return report.line(step, "skipped", Some((*reason).into()));
+        }
+        PluginPlan::Unreadable(message) => {
+            return report.line(step, "failed", Some(message.clone()));
+        }
+        PluginPlan::Run { program, change } => (program, change),
+    };
+    let (status, commands) = match change {
+        agents::Change::Keep => return report.line(step, "kept", None),
+        agents::Change::Install(commands) => ("installed", commands),
+        agents::Change::Update(commands) => ("updated", commands),
+    };
+    match agents::run_all(tool, &command::System, program, commands) {
+        Ok(()) => report.line(step, status, Some(source.display())),
+        Err(failed) => {
+            let mut detail = format!("{}: {}", source.display(), failed.message);
+            let adding = failed.args.get(..3).is_some_and(|head| {
+                head.iter()
+                    .map(String::as_str)
+                    .eq(["plugin", "marketplace", "add"])
+            });
+            if adding && matches!(source, agents::Source::GitHub { .. }) {
+                detail
+                    .push_str("; for a build without a release tag, pass --plugin-source <folder>");
+            }
+            report.line(step, "failed", Some(detail));
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Remove
+
+enum ToolRemoval {
+    Skipped(&'static str),
+    /// The tool's lists could not be read.
+    Failed(String),
+    Run {
+        program: PathBuf,
+        commands: Vec<Vec<String>>,
+    },
+}
+
+enum TimerRemoval {
+    Skipped(&'static str),
+    Run {
+        platform: timer::Platform,
+        tool: Option<PathBuf>,
+        place: timer::Place,
+    },
+}
+
+/// What `--remove` will do; the store, the config and the key file are only named.
+struct RemovePlan {
+    store: Option<PathBuf>,
+    config: Option<PathBuf>,
+    key: Option<PathBuf>,
+    claude: ToolRemoval,
+    codex: ToolRemoval,
+    timer: TimerRemoval,
+}
+
+fn remove<P: Prompter>(
+    flags: &Flags,
+    env: &store::Env,
+    path: Option<std::ffi::OsString>,
+    p: &mut P,
+) -> Result<Outcome, Failure> {
+    store::root(env).map_err(Failure::Config)?;
+    config::path(env).map_err(Failure::Config)?;
+    let plan = plan_remove(flags, env, path);
+    let summary = remove_summary(&plan);
+    if !flags.confirm || summary.is_empty() {
+        return Ok(apply_remove(&plan));
+    }
+    let asked = p
+        .intro("bilbo setup --remove")
+        .and_then(|()| wizard::confirm_remove(p, &summary));
+    match asked {
+        Ok(true) => {}
+        Ok(false) => return Err(declined(p)),
+        Err(e) => return Err(stopped(p, e)),
+    }
+    let outcome = apply_remove(&plan);
+    let _ = wizard::finish(p, outcome.failed);
+    Ok(outcome)
+}
+
+/// A wizard error: Ctrl-C or Esc cancels, anything else stops it; nothing was changed either way.
+fn stopped<P: Prompter>(p: &mut P, e: std::io::Error) -> Failure {
+    if e.kind() == std::io::ErrorKind::Interrupted {
+        return declined(p);
+    }
+    wizard::cancelled(p);
+    Failure::Refused(format!("the wizard stopped: {e}; nothing changed"))
+}
+
+fn declined<P: Prompter>(p: &mut P) -> Failure {
+    wizard::cancelled(p);
+    Failure::Refused("setup cancelled; nothing changed".into())
+}
+
+fn plan_remove(flags: &Flags, env: &store::Env, path: Option<std::ffi::OsString>) -> RemovePlan {
+    let notes = store::root(env)
+        .ok()
+        .map(|root| root.join("notes"))
+        .filter(|notes| notes.is_dir());
+    let config_path = config::path(env).ok().flatten().map(|(path, _)| path);
+    let config = config_path
+        .clone()
+        .filter(|path| std::fs::symlink_metadata(path).is_ok());
+    let named = config::load(env)
+        .ok()
+        .and_then(|settings| settings.embedder)
+        .and_then(|embedder| match embedder.token {
+            Some(Token::File(file)) => Some(file),
+            _ => None,
+        });
+    let key = named.filter(|file| file.exists()).or_else(|| {
+        config_path
+            .and_then(|path| path.parent().map(|dir| dir.join("token")))
+            .filter(|file| file.exists())
+    });
+    let tool = |tool: agents::Tool, given: &Option<PathBuf>| {
+        let Some(program) = given
+            .clone()
+            .or_else(|| command::find(tool.name(), path.as_deref()))
+        else {
+            return ToolRemoval::Skipped("not found");
+        };
+        match agents::read(tool, &command::System, &program) {
+            Err(message) => ToolRemoval::Failed(message),
+            Ok(state) => match agents::removal(tool, &state) {
+                commands if commands.is_empty() => ToolRemoval::Skipped("not installed"),
+                commands => ToolRemoval::Run { program, commands },
+            },
+        }
+    };
+    let facts = timer_facts(env, path.as_deref());
+    let timer = match facts.platform {
+        None => TimerRemoval::Skipped("unsupported platform"),
+        Some(platform) => {
+            let place = match platform {
+                timer::Platform::Launchd => facts.home.clone().map(|home| timer::Place {
+                    home,
+                    config_home: facts.config_home.clone().unwrap_or_default(),
+                }),
+                timer::Platform::Systemd => {
+                    facts.config_home.clone().map(|config_home| timer::Place {
+                        home: facts.home.clone().unwrap_or_default(),
+                        config_home,
+                    })
+                }
+            };
+            match place.filter(|place| timer::installed(platform, place)) {
+                Some(place) => TimerRemoval::Run {
+                    platform,
+                    tool: facts.tool,
+                    place,
+                },
+                None => TimerRemoval::Skipped("not installed"),
+            }
+        }
+    };
+    RemovePlan {
+        store: notes,
+        config,
+        key,
+        claude: tool(agents::Tool::Claude, &flags.claude),
+        codex: tool(agents::Tool::Codex, &flags.codex),
+        timer,
+    }
+}
+
+/// The confirmation text: only what is removed; empty when nothing is.
+fn remove_summary(plan: &RemovePlan) -> Vec<String> {
+    let mut lines = Vec::new();
+    for (tool, removal) in [
+        (agents::Tool::Claude, &plan.claude),
+        (agents::Tool::Codex, &plan.codex),
+    ] {
+        if matches!(removal, ToolRemoval::Run { .. }) {
+            lines.push(format!("Remove the bilbo plugin from {}", tool.label()));
+        }
+    }
+    if matches!(plan.timer, TimerRemoval::Run { .. }) {
+        lines.push("Remove the index timer".to_string());
+    }
+    if !lines.is_empty() {
+        lines.push("Keep the store, the config and the key file".to_string());
+    }
+    lines
+}
+
+fn apply_remove(plan: &RemovePlan) -> Outcome {
+    let mut report = Report::default();
+    let kept = |step: &str, path: &Option<PathBuf>, none: &str, report: &mut Report| {
+        report.line(
+            step,
+            "skipped",
+            Some(match path {
+                Some(path) => format!("kept {}", path.display()),
+                None => none.to_string(),
+            }),
+        );
+    };
+    kept("store", &plan.store, "no store", &mut report);
+    kept("config", &plan.config, "no config", &mut report);
+    kept("key", &plan.key, "no key file", &mut report);
+    for (tool, removal) in [
+        (agents::Tool::Claude, &plan.claude),
+        (agents::Tool::Codex, &plan.codex),
+    ] {
+        let step = tool.name();
+        match removal {
+            ToolRemoval::Skipped(reason) => report.line(step, "skipped", Some((*reason).into())),
+            ToolRemoval::Failed(message) => report.line(step, "failed", Some(message.clone())),
+            ToolRemoval::Run { program, commands } => {
+                match agents::run_all(tool, &command::System, program, commands) {
+                    Ok(()) => report.line(step, "removed", None),
+                    Err(failed) => report.line(step, "failed", Some(failed.message)),
+                }
+            }
+        }
+    }
+    match &plan.timer {
+        TimerRemoval::Skipped(reason) => report.line("timer", "skipped", Some((*reason).into())),
+        TimerRemoval::Run {
+            platform,
+            tool,
+            place,
+        } => match timer::uninstall(*platform, &command::System, tool.as_deref(), place) {
+            Ok(()) => report.line("timer", "removed", None),
+            Err(message) => report.line("timer", "failed", Some(message)),
+        },
+    }
+    Outcome {
+        lines: report.lines,
+        failed: report.failed,
+    }
+}
+
+fn store_step(plan: &Plan, report: &mut Report) {
+    let notes = plan.notes.display().to_string();
+    if plan.notes.is_dir() {
+        return report.line("store", "kept", Some(notes));
+    }
+    match std::fs::create_dir_all(&plan.notes) {
+        Ok(()) => report.line("store", "created", Some(notes)),
+        Err(e) => report.line(
+            "store",
+            "failed",
+            Some(format!("cannot create {notes}: {e}")),
+        ),
+    }
+}
+
+fn config_step(plan: &Plan, report: &mut Report) {
+    let path = plan.config_path.display().to_string();
+    let (embedder, backup) = match &plan.config {
+        ConfigPlan::Keep => return report.line("config", "kept", Some(path)),
+        ConfigPlan::Managed(target) => {
+            return report.line(
+                "config",
+                "kept",
+                Some(format!("managed elsewhere ({target})")),
+            );
+        }
+        ConfigPlan::Create(embedder) => (embedder, false),
+        ConfigPlan::Update(embedder) => (embedder, true),
+    };
+    let settings = embedder.as_ref().map(config::settings).unwrap_or_default();
+    let header = format!(
+        "# bilbo config, written by bilbo setup {} on {}",
+        env!("CARGO_PKG_VERSION"),
+        jiff::Zoned::now().date()
+    );
+    let text = config::render(&header, &settings);
+    match write_config(&plan.config_path, &text, backup) {
+        Ok(()) => report.line(
+            "config",
+            if backup { "updated" } else { "written" },
+            Some(path),
+        ),
+        Err(e) => report.line("config", "failed", Some(e)),
+    }
+}
+
+fn key_step(plan: &Plan, report: &mut Report) {
+    match &plan.key {
+        KeyPlan::NoEmbedder => report.line("key", "skipped", Some("no embedder".into())),
+        KeyPlan::Token { token, kept } => {
+            let status = if *kept { "kept" } else { "ok" };
+            let detail = match token {
+                Token::File(file) if *kept => file.display().to_string(),
+                Token::File(file) => format!("file {}", file.display()),
+                Token::Var(name) => format!("variable {name}"),
+            };
+            report.line("key", status, Some(detail));
+        }
+        KeyPlan::Pasted { path } => {
+            let key = plan.pasted.as_ref().map_or("", |key| key.as_str());
+            match write_token(path, key) {
+                Ok(()) => report.line("key", "written", Some(path.display().to_string())),
+                Err(e) => report.line("key", "failed", Some(e)),
+            }
+        }
+        KeyPlan::Local => report.line("key", "skipped", Some("local embedder".into())),
+        KeyPlan::NoKey => report.line("key", "skipped", Some("no key".into())),
+    }
+}
+
+fn embedder_step(plan: &Plan, report: &mut Report) {
+    match &plan.check {
+        EmbedderPlan::None => report.line("embedder", "skipped", Some("none configured".into())),
+        EmbedderPlan::Kept => report.line("embedder", "skipped", Some("config kept".into())),
+        EmbedderPlan::Checked(dims) => {
+            report.line("embedder", "ok", Some(format!("{dims} dimensions")))
+        }
+    }
+}
+
+/// Writes `text` to a temporary file in the folder, then renames it over `path`, after moving an old file to `<name>.bak` when `backup`.
+fn write_config(path: &Path, text: &str, backup: bool) -> Result<(), String> {
+    let fail = |e: std::io::Error| format!("cannot write {}: {e}", path.display());
+    let dir = path.parent().unwrap_or(Path::new("/"));
+    std::fs::create_dir_all(dir).map_err(fail)?;
+    let temp = dir.join(format!(".config.tmp-{}", std::process::id()));
+    let _ = std::fs::remove_file(&temp);
+    let written = (|| {
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temp)?;
+        file.write_all(text.as_bytes())?;
+        file.sync_all()?;
+        if backup {
+            let name = path
+                .file_name()
+                .map_or(String::new(), |n| n.to_string_lossy().into_owned());
+            std::fs::rename(path, dir.join(format!("{name}.bak")))?;
+        }
+        std::fs::rename(&temp, path)
+    })();
+    if written.is_err() {
+        let _ = std::fs::remove_file(&temp);
+    }
+    written.map_err(fail)
+}
+
+/// Writes the key and a newline to `path` through a temporary file that is created with mode 0600 before any byte goes in, then renamed over `path`.
+fn write_token(path: &Path, key: &str) -> Result<(), String> {
+    let fail = |e: std::io::Error| format!("cannot write {}: {e}", path.display());
+    let dir = path.parent().unwrap_or(Path::new("/"));
+    std::fs::create_dir_all(dir).map_err(fail)?;
+    let temp = dir.join(format!(".token.tmp-{}", std::process::id()));
+    let _ = std::fs::remove_file(&temp);
+    let written = (|| {
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&temp)?;
+        file.write_all(key.trim().as_bytes())?;
+        file.write_all(b"\n")?;
+        file.sync_all()?;
+        std::fs::rename(&temp, path)
+    })();
+    if written.is_err() {
+        let _ = std::fs::remove_file(&temp);
+    }
+    written.map_err(fail)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn strings(args: &[&str]) -> Vec<String> {
+        args.iter().map(|a| a.to_string()).collect()
+    }
+
+    fn embedder(model: &str) -> Embedder {
+        Embedder {
+            url: "http://127.0.0.1:8081".into(),
+            model: model.into(),
+            token: None,
+            query_prefix: config::default_query_prefix(model).into(),
+            min_similarity: config::DEFAULT_MIN_SIMILARITY,
+        }
+    }
+
+    fn plan(config: ConfigPlan, embedder: Option<Embedder>, check: EmbedderPlan) -> Plan {
+        Plan {
+            notes: "/r/notes".into(),
+            store_exists: false,
+            config_path: "/c/bilbo/config".into(),
+            config,
+            embedder,
+            key: KeyPlan::NoEmbedder,
+            pasted: None,
+            check,
+            source: agents::Source::GitHub {
+                repo: "delucca/bilbo".into(),
+                git_ref: "v1.2.3".into(),
+            },
+            claude: PluginPlan::Skipped("--no-plugin"),
+            codex: PluginPlan::Skipped("--no-plugin"),
+            timer: TimerPlan::Skipped("no embedder"),
+        }
+    }
+
+    #[test]
+    fn parse_takes_both_value_forms_and_an_empty_prefix() {
+        let args = parse(&strings(&[
+            "--embedder-url=http://x:1",
+            "--embedder-model",
+            "m",
+            "--embedder-query-prefix=",
+            "--index-every",
+            "30",
+        ]))
+        .ok()
+        .unwrap();
+        assert_eq!(args.embedder_url.as_deref(), Some("http://x:1"));
+        assert_eq!(args.embedder_model.as_deref(), Some("m"));
+        assert_eq!(args.query_prefix.as_deref(), Some(""));
+        assert_eq!(args.index_every.as_deref(), Some("30"));
+        assert_eq!(args.given.len(), 4);
+    }
+
+    #[test]
+    fn parse_refuses_what_it_cannot_read() {
+        let message = |args: &[&str]| match parse(&strings(args)) {
+            Err(Failure::Usage(m)) => m,
+            _ => panic!("expected a usage error"),
+        };
+        assert_eq!(message(&["--token=sk-1"]), "unknown option '--token'");
+        assert_eq!(
+            message(&["--yes", "x"]),
+            "setup takes only options; argument 2 is not one"
+        );
+        assert_eq!(message(&["--claude"]), "--claude needs a value");
+        assert_eq!(message(&["--claude="]), "--claude needs a value");
+        assert_eq!(message(&["--yes", "--yes"]), "--yes given more than once");
+        assert_eq!(message(&["--yes=1"]), "--yes takes no value");
+    }
+
+    #[test]
+    fn minutes_range() {
+        assert!(parse_minutes("1").is_ok());
+        assert!(parse_minutes("1440").is_ok());
+        for bad in ["0", "1441", "abc", "", "+5", "-1"] {
+            assert!(parse_minutes(bad).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn same_embedder_ignores_the_similarity_floor() {
+        let mut stored = embedder("m");
+        stored.min_similarity = 0.7;
+        assert!(same_embedder(Some(&stored), &embedder("m")));
+        assert!(!same_embedder(Some(&stored), &embedder("n")));
+        assert!(!same_embedder(None, &embedder("m")));
+    }
+
+    #[test]
+    fn summary_fresh_keyword_run() {
+        let lines = summary(&plan(ConfigPlan::Create(None), None, EmbedderPlan::None));
+        assert_eq!(
+            lines,
+            [
+                "Create the store folder /r/notes",
+                "Write the config /c/bilbo/config",
+                "Search by keywords only",
+            ]
+        );
+    }
+
+    #[test]
+    fn summary_names_the_embedder_and_the_key_source() {
+        let mut p = plan(
+            ConfigPlan::Update(Some(embedder("m"))),
+            Some(embedder("m")),
+            EmbedderPlan::Checked(1024),
+        );
+        p.store_exists = true;
+        p.key = KeyPlan::Token {
+            token: Token::Var("MY_KEY".into()),
+            kept: false,
+        };
+        p.claude = PluginPlan::Run {
+            program: "/bin/claude".into(),
+            change: agents::Change::Install(Vec::new()),
+        };
+        p.codex = PluginPlan::Run {
+            program: "/bin/codex".into(),
+            change: agents::Change::Keep,
+        };
+        assert_eq!(
+            summary(&p),
+            [
+                "Keep the store folder /r/notes",
+                "Update the config /c/bilbo/config (the old one becomes config.bak)",
+                "Read the key from the variable MY_KEY",
+                "Embed with m at http://127.0.0.1:8081 (1024 dimensions)",
+                "Install the bilbo plugin in Claude Code from delucca/bilbo#v1.2.3",
+                "Keep the bilbo plugin in Codex",
+            ]
+        );
+    }
+
+    #[test]
+    fn summary_managed_config() {
+        let lines = summary(&plan(
+            ConfigPlan::Managed("/nix/store/x".into()),
+            Some(embedder("m")),
+            EmbedderPlan::Kept,
+        ));
+        assert!(lines.contains(&"Keep the config /c/bilbo/config, managed elsewhere".to_string()));
+        assert!(lines.contains(&"Embed with m at http://127.0.0.1:8081".to_string()));
+    }
+
+    #[test]
+    fn write_config_replaces_atomically_and_keeps_a_backup() {
+        let dir = std::env::temp_dir().join(format!("bilbo-setup-unit-{}", std::process::id()));
+        let path = dir.join("nested/config");
+        write_config(&path, "one\n", false).unwrap();
+        write_config(&path, "two\n", true).unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "two\n");
+        assert_eq!(
+            std::fs::read_to_string(dir.join("nested/config.bak")).unwrap(),
+            "one\n"
+        );
+        let leftovers = std::fs::read_dir(dir.join("nested"))
+            .unwrap()
+            .filter(|e| {
+                e.as_ref()
+                    .unwrap()
+                    .file_name()
+                    .to_string_lossy()
+                    .contains(".tmp-")
+            })
+            .count();
+        assert_eq!(leftovers, 0);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn scratch(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("bilbo-setup-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn sets_no_key_reads_like_the_config_parser() {
+        let dir = scratch("sets-no-key");
+        let cases = [
+            ("", true),
+            ("# a\n\n  # b\r\n", true),
+            ("\u{feff}", true),
+            ("\u{feff}# comment\n", true),
+            ("embedder.min_similarity = 0.6\n", false),
+            ("\u{feff}embedder.url = http://x\n", false),
+        ];
+        for (i, (text, want)) in cases.iter().enumerate() {
+            let path = dir.join(format!("config-{i}"));
+            std::fs::write(&path, text).unwrap();
+            assert_eq!(sets_no_key(&path), *want, "{text:?}");
+        }
+        assert!(!sets_no_key(&dir.join("missing")));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn key_file_is_mode_0600() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = scratch("key-mode");
+        let path = dir.join("nested/token");
+        write_token(&path, "  sk-abc123 \n").unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "sk-abc123\n");
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o600);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn key_file_is_replaced() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = scratch("key-replace");
+        let path = dir.join("token");
+        std::fs::write(&path, "old\n").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        write_token(&path, "new").unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "new\n");
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o600);
+        let leftovers = std::fs::read_dir(&dir)
+            .unwrap()
+            .filter(|e| {
+                e.as_ref()
+                    .unwrap()
+                    .file_name()
+                    .to_string_lossy()
+                    .contains(".tmp-")
+            })
+            .count();
+        assert_eq!(leftovers, 0);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn key_never_in_report_or_summary() {
+        let dir = scratch("key-report");
+        let token = dir.join("cfg/token");
+        let mut stored = embedder("m");
+        stored.url = "https://api.example.com".into();
+        stored.token = Some(Token::File(token.clone()));
+        let mut p = plan(
+            ConfigPlan::Create(Some(stored.clone())),
+            Some(stored),
+            EmbedderPlan::Checked(8),
+        );
+        p.notes = dir.join("notes");
+        p.config_path = dir.join("cfg/config");
+        p.key = KeyPlan::Pasted {
+            path: token.clone(),
+        };
+        p.pasted = Some(Zeroizing::new("sk-secret-9".to_string()));
+        let shown = summary(&p);
+        assert!(shown.contains(&format!(
+            "Save the pasted key to {}, readable only by you",
+            token.display()
+        )));
+        let outcome = apply(&p);
+        assert!(!outcome.failed, "{:?}", outcome.lines);
+        assert!(
+            outcome
+                .lines
+                .contains(&format!("key written: {}", token.display()))
+        );
+        for line in shown.iter().chain(&outcome.lines) {
+            assert!(!line.contains("sk-secret"), "{line}");
+        }
+        assert_eq!(std::fs::read_to_string(&token).unwrap(), "sk-secret-9\n");
+        assert!(
+            !std::fs::read_to_string(dir.join("cfg/config"))
+                .unwrap()
+                .contains("sk-secret")
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn key_write_failure_is_reported_without_the_key() {
+        let dir = scratch("key-fail");
+        std::fs::write(dir.join("blocker"), "x").unwrap();
+        let path = dir.join("blocker/token");
+        let mut p = plan(ConfigPlan::Keep, Some(embedder("m")), EmbedderPlan::Kept);
+        p.key = KeyPlan::Pasted { path };
+        p.pasted = Some(Zeroizing::new("sk-secret-9".to_string()));
+        p.notes = dir.join("notes");
+        let outcome = apply(&p);
+        assert!(outcome.failed);
+        let line = outcome
+            .lines
+            .iter()
+            .find(|l| l.starts_with("key "))
+            .unwrap();
+        assert!(line.starts_with("key failed: cannot write "));
+        assert!(!line.contains("sk-secret"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn seen(dir: &Path, existing: Option<Embedder>, config: ConfigState) -> Facts {
+        Facts {
+            root: dir.to_path_buf(),
+            notes: dir.join("notes"),
+            config_path: dir.join("cfg/config"),
+            config,
+            existing,
+            config_empty: false,
+            token_path: dir.join("cfg/token"),
+            exe: "/bin/bilbo".into(),
+            source: agents::Source::GitHub {
+                repo: "delucca/bilbo".into(),
+                git_ref: "v1.2.3".into(),
+            },
+            claude: None,
+            codex: None,
+            timer: TimerFacts {
+                platform: None,
+                home: None,
+                config_home: None,
+                state_dir: None,
+                tool: None,
+                locations: Ok(Vec::new()),
+            },
+        }
+    }
+
+    fn answered(embedder: Option<Embedder>, pasted: Option<&str>) -> wizard::Answers {
+        wizard::Answers {
+            dims: embedder.as_ref().map(|_| 1024),
+            embedder,
+            pasted: pasted.map(|key| Zeroizing::new(key.to_string())),
+            claude: true,
+            codex: true,
+            timer: None,
+        }
+    }
+
+    #[test]
+    fn wizard_same_embedder_keeps_the_config_and_a_changed_one_updates_it() {
+        let dir = scratch("wizard-config");
+        let stored = embedder("m");
+        let same = answer_wizard(
+            seen(&dir, Some(stored.clone()), ConfigState::Present),
+            answered(Some(stored.clone()), None),
+        );
+        assert!(matches!(same.config, ConfigPlan::Keep));
+        assert!(matches!(same.check, EmbedderPlan::Checked(1024)));
+        let other = answer_wizard(
+            seen(&dir, Some(stored), ConfigState::Present),
+            answered(Some(embedder("n")), None),
+        );
+        assert!(matches!(other.config, ConfigPlan::Update(Some(_))));
+        let keyword = answer_wizard(seen(&dir, None, ConfigState::Present), answered(None, None));
+        assert!(matches!(keyword.config, ConfigPlan::Keep));
+        assert!(matches!(keyword.key, KeyPlan::NoEmbedder));
+        let fresh = answer_wizard(seen(&dir, None, ConfigState::Absent), answered(None, None));
+        assert!(matches!(fresh.config, ConfigPlan::Create(None)));
+        assert!(matches!(fresh.codex, PluginPlan::Skipped("not found")));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn key_pasted_plans_a_write_and_keeps_it_out_of_the_summary() {
+        let dir = scratch("key-plan");
+        let mut chosen = embedder("m");
+        chosen.url = "https://api.example.com".into();
+        chosen.token = Some(Token::File(dir.join("cfg/token")));
+        let plan = answer_wizard(
+            seen(&dir, None, ConfigState::Absent),
+            answered(Some(chosen), Some("sk-secret-9")),
+        );
+        assert!(matches!(&plan.key, KeyPlan::Pasted { path } if *path == dir.join("cfg/token")));
+        assert!(summary(&plan).iter().all(|l| !l.contains("sk-secret")));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn key_declined_replace_is_kept() {
+        let dir = scratch("key-declined");
+        std::fs::create_dir_all(dir.join("cfg")).unwrap();
+        std::fs::write(dir.join("cfg/token"), "old\n").unwrap();
+        let mut chosen = embedder("m");
+        chosen.url = "https://api.example.com".into();
+        chosen.token = Some(Token::File(dir.join("cfg/token")));
+        let plan = answer_wizard(
+            seen(&dir, None, ConfigState::Absent),
+            answered(Some(chosen), None),
+        );
+        assert!(matches!(plan.key, KeyPlan::Token { kept: true, .. }));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn first_index_runs_the_binary_with_the_verb() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = scratch("run-index");
+        let exe = dir.join("fake");
+        std::fs::write(
+            &exe,
+            "#!/bin/sh\nif [ \"$1\" = index ]; then echo 'embedded 2, kept 0, dropped 0'; echo second; else exit 3; fi\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert_eq!(run_index(&exe).unwrap(), "embedded 2, kept 0, dropped 0");
+        let failing = dir.join("failing");
+        std::fs::write(
+            &failing,
+            "#!/bin/sh\necho 'bilbo: no embedder' >&2\necho 'bilbo: more' >&2\nexit 1\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&failing, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert_eq!(run_index(&failing).unwrap_err(), "no embedder\nmore");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn summary_shows_a_timer_that_will_not_run_and_a_plugin_that_cannot_be_read() {
+        let mut p = plan(ConfigPlan::Keep, Some(embedder("m")), EmbedderPlan::Kept);
+        p.timer = TimerPlan::Skipped("no systemd user session");
+        p.claude = PluginPlan::Unreadable("cannot read `claude plugin list --json`: boom".into());
+        p.codex = PluginPlan::Skipped("not chosen");
+        assert_eq!(
+            summary(&p),
+            [
+                "Create the store folder /r/notes",
+                "Keep the config /c/bilbo/config",
+                "Embed with m at http://127.0.0.1:8081",
+                "Claude Code plugin: failed, cannot read `claude plugin list --json`: boom",
+                "Timer: skipped, no systemd user session",
+            ]
+        );
+        p.timer = TimerPlan::Failed("launchctl not found on PATH".into());
+        assert!(summary(&p).contains(&"Timer: failed, launchctl not found on PATH".to_string()));
+        for reason in ["--no-timer", "not chosen", "no embedder"] {
+            p.timer = TimerPlan::Skipped(reason);
+            assert!(
+                !summary(&p).iter().any(|l| l.starts_with("Timer")),
+                "{reason}"
+            );
+        }
+    }
+
+    /// The wizard and `--remove` driven without a terminal, against temp folders.
+    mod driven {
+        use super::*;
+        use std::cell::Cell;
+        use std::ffi::OsString;
+        use std::io;
+
+        /// Answers by prompt text; anything not listed takes the prompt's own initial value.
+        #[derive(Default)]
+        struct Scripted {
+            /// (text the prompt holds, choice index; `usize::MAX` is the last one)
+            selects: Vec<(&'static str, usize)>,
+            multi: Vec<(&'static str, Vec<usize>)>,
+            inputs: Vec<(&'static str, &'static str)>,
+            confirms: Vec<(&'static str, bool)>,
+            /// Ctrl-C at the nth prompt (0-based).
+            interrupt_at: Option<usize>,
+            asked: usize,
+            /// The prompt count when "Apply these changes?" or "Remove these?" came up.
+            at_confirm: Option<usize>,
+            shown: Vec<String>,
+        }
+
+        impl Scripted {
+            fn prompt(&mut self, text: &str) -> io::Result<()> {
+                self.shown.push(text.to_string());
+                let n = self.asked;
+                self.asked += 1;
+                if text == "Apply these changes?" || text == "Remove these?" {
+                    self.at_confirm = Some(n);
+                }
+                if self.interrupt_at == Some(n) {
+                    return Err(io::Error::from(io::ErrorKind::Interrupted));
+                }
+                Ok(())
+            }
+        }
+
+        impl Prompter for Scripted {
+            fn intro(&mut self, title: &str) -> io::Result<()> {
+                self.shown.push(format!("intro: {title}"));
+                Ok(())
+            }
+            fn info(&mut self, text: &str) -> io::Result<()> {
+                self.shown.push(format!("info: {text}"));
+                Ok(())
+            }
+            fn warn(&mut self, text: &str) -> io::Result<()> {
+                self.shown.push(format!("warn: {text}"));
+                Ok(())
+            }
+            fn note(&mut self, title: &str, body: &str) -> io::Result<()> {
+                self.shown.push(format!("note: {title}\n{body}"));
+                Ok(())
+            }
+            fn select(
+                &mut self,
+                prompt: &str,
+                choices: &[wizard::Choice],
+                initial: usize,
+            ) -> io::Result<usize> {
+                self.prompt(prompt)?;
+                Ok(self
+                    .selects
+                    .iter()
+                    .find(|(text, _)| prompt.contains(text))
+                    .map_or(initial, |(_, i)| (*i).min(choices.len() - 1)))
+            }
+            fn multiselect(
+                &mut self,
+                prompt: &str,
+                _: &[wizard::Choice],
+                initial: &[usize],
+            ) -> io::Result<Vec<usize>> {
+                self.prompt(prompt)?;
+                Ok(self
+                    .multi
+                    .iter()
+                    .find(|(text, _)| prompt.contains(text))
+                    .map_or(initial.to_vec(), |(_, picked)| picked.clone()))
+            }
+            fn input(
+                &mut self,
+                prompt: &str,
+                default: &str,
+                _: fn(&str) -> Result<(), String>,
+            ) -> io::Result<String> {
+                self.prompt(prompt)?;
+                Ok(self
+                    .inputs
+                    .iter()
+                    .find(|(text, _)| prompt.contains(text))
+                    .map_or(default, |(_, value)| value)
+                    .to_string())
+            }
+            fn password(
+                &mut self,
+                prompt: &str,
+                _: fn(&str) -> Result<(), String>,
+            ) -> io::Result<Zeroizing<String>> {
+                self.prompt(prompt)?;
+                Ok(Zeroizing::new(String::new()))
+            }
+            fn confirm(&mut self, prompt: &str, initial: bool) -> io::Result<bool> {
+                self.prompt(prompt)?;
+                Ok(self
+                    .confirms
+                    .iter()
+                    .find(|(text, _)| prompt.contains(text))
+                    .map_or(initial, |(_, yes)| *yes))
+            }
+            fn spin<T>(
+                &mut self,
+                message: &str,
+                work: impl FnOnce() -> Result<T, String>,
+                _: impl FnOnce(&T) -> String,
+            ) -> Result<T, String> {
+                self.shown.push(format!("spin: {message}"));
+                work()
+            }
+            fn outro(&mut self, text: &str) -> io::Result<()> {
+                self.shown.push(format!("outro: {text}"));
+                Ok(())
+            }
+            fn cancel(&mut self, text: &str) -> io::Result<()> {
+                self.shown.push(format!("cancel: {text}"));
+                Ok(())
+            }
+        }
+
+        struct Sandbox {
+            dir: PathBuf,
+            bin: PathBuf,
+            env: store::Env,
+        }
+
+        impl Drop for Sandbox {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.dir);
+            }
+        }
+
+        fn boxed(name: &str) -> Sandbox {
+            let dir = scratch(&format!("driven-{name}"));
+            let bin = dir.join("bin");
+            std::fs::create_dir_all(&bin).unwrap();
+            let env = store::Env {
+                bilbo_home: None,
+                xdg_data_home: None,
+                home: Some(dir.join("home").into()),
+                bilbo_config: None,
+                xdg_config_home: None,
+                xdg_cache_home: None,
+                xdg_state_home: None,
+            };
+            std::fs::create_dir_all(dir.join("home")).unwrap();
+            Sandbox { dir, bin, env }
+        }
+
+        impl Sandbox {
+            fn home(&self) -> PathBuf {
+                self.dir.join("home")
+            }
+            fn config(&self) -> PathBuf {
+                self.home().join(".config/bilbo/config")
+            }
+            fn path(&self) -> Option<OsString> {
+                Some(self.bin.clone().into())
+            }
+            /// An executable that does nothing, on this box's PATH.
+            fn tool(&self, name: &str) {
+                use std::os::unix::fs::PermissionsExt;
+                let file = self.bin.join(name);
+                std::fs::write(&file, "#!/bin/sh\nexit 0\n").unwrap();
+                std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o755)).unwrap();
+            }
+            fn manager(&self) -> &'static str {
+                let name = if cfg!(target_os = "macos") {
+                    "launchctl"
+                } else {
+                    "systemctl"
+                };
+                self.tool(name);
+                name
+            }
+            fn write_config(&self, model: &str) {
+                std::fs::create_dir_all(self.config().parent().unwrap()).unwrap();
+                std::fs::write(
+                    self.config(),
+                    format!("embedder.url = http://127.0.0.1:8081\nembedder.model = {model}\n"),
+                )
+                .unwrap();
+            }
+            /// Every file under the box's home with its content, for before and after.
+            fn snapshot(&self) -> Vec<(PathBuf, String)> {
+                fn walk(dir: &Path, out: &mut Vec<(PathBuf, String)>) {
+                    let mut entries: Vec<_> = std::fs::read_dir(dir)
+                        .unwrap()
+                        .map(|e| e.unwrap().path())
+                        .collect();
+                    entries.sort();
+                    for path in entries {
+                        if path.is_dir() {
+                            out.push((path.clone(), String::new()));
+                            walk(&path, out);
+                        } else {
+                            out.push((
+                                path.clone(),
+                                std::fs::read_to_string(&path).unwrap_or_default(),
+                            ));
+                        }
+                    }
+                }
+                let mut out = Vec::new();
+                walk(&self.home(), &mut out);
+                out
+            }
+            fn place(&self) -> timer::Place {
+                timer::Place {
+                    home: self.home(),
+                    config_home: self.home().join(".config"),
+                }
+            }
+            fn timer_files(&self) -> Vec<PathBuf> {
+                timer::paths(timer::platform().unwrap(), &self.place())
+            }
+            fn install_timer_files(&self) {
+                for file in self.timer_files() {
+                    std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+                    std::fs::write(file, "old\n").unwrap();
+                }
+            }
+        }
+
+        fn flags(args: &[&str], mode: Mode, env: &store::Env) -> Flags {
+            let strings: Vec<String> = args.iter().map(|a| a.to_string()).collect();
+            let mut flags = settle(&strings, env).ok().unwrap();
+            flags.mode = mode;
+            flags
+        }
+
+        struct Run {
+            result: Result<Outcome, Failure>,
+            probed: Cell<bool>,
+            checked: Cell<usize>,
+            indexed: Cell<bool>,
+        }
+
+        fn wizard_run(b: &Sandbox, p: &mut Scripted) -> Run {
+            let probed = Cell::new(false);
+            let checked = Cell::new(0);
+            let indexed = Cell::new(false);
+            let flags = flags(&["--yes"], Mode::Wizard, &b.env);
+            let result = wizard_with(
+                &flags,
+                &b.env,
+                b.path(),
+                p,
+                || {
+                    probed.set(true);
+                    None
+                },
+                |_, _| {
+                    checked.set(checked.get() + 1);
+                    Ok(8)
+                },
+                |_| {
+                    indexed.set(true);
+                    Ok("indexed".into())
+                },
+            );
+            Run {
+                result,
+                probed,
+                checked,
+                indexed,
+            }
+        }
+
+        fn refused(run: Run) -> String {
+            match run.result {
+                Err(Failure::Refused(message)) => message,
+                Err(_) => panic!("expected Refused"),
+                Ok(_) => panic!("expected a refusal"),
+            }
+        }
+
+        fn report(run: &Run) -> &[String] {
+            &run.result.as_ref().ok().expect("an outcome").lines
+        }
+
+        #[test]
+        fn a_wizard_error_closes_the_frame_too() {
+            let mut p = Scripted::default();
+            let failure = stopped(&mut p, io::Error::other("boom"));
+            assert!(
+                matches!(&failure, Failure::Refused(m) if m == "the wizard stopped: boom; nothing changed")
+            );
+            assert_eq!(p.shown, ["cancel: Cancelled. Nothing changed."]);
+        }
+
+        const NO_TIMER: (&str, usize) = ("index fresh", usize::MAX);
+
+        #[test]
+        fn declining_the_summary_writes_nothing() {
+            let b = boxed("decline");
+            b.manager();
+            let before = b.snapshot();
+            let mut p = Scripted {
+                confirms: vec![("Apply these changes?", false)],
+                selects: vec![NO_TIMER],
+                ..Scripted::default()
+            };
+            let run = wizard_run(&b, &mut p);
+            assert_eq!(refused(run), "setup cancelled; nothing changed");
+            assert_eq!(b.snapshot(), before);
+            assert!(
+                p.shown
+                    .contains(&"cancel: Cancelled. Nothing changed.".to_string())
+            );
+        }
+
+        #[test]
+        fn interrupting_at_any_prompt_writes_nothing() {
+            let b = boxed("interrupt-count");
+            b.manager();
+            let mut counting = Scripted {
+                selects: vec![("embedder should", 3), ("Which embedder", 3)],
+                inputs: vec![
+                    ("Embedder URL", "http://127.0.0.1:8081"),
+                    ("Model name", "m"),
+                ],
+                ..Scripted::default()
+            };
+            let counted = wizard_run(&b, &mut counting);
+            assert!(counted.result.is_ok());
+            let last = counting.at_confirm.expect("the summary was confirmed");
+            assert!(last >= 4, "{last}");
+            for i in 0..=last {
+                let b = boxed(&format!("interrupt-{i}"));
+                b.manager();
+                let before = b.snapshot();
+                let mut p = Scripted {
+                    selects: counting.selects.clone(),
+                    inputs: counting.inputs.clone(),
+                    interrupt_at: Some(i),
+                    ..Scripted::default()
+                };
+                let run = wizard_run(&b, &mut p);
+                assert_eq!(
+                    refused(run),
+                    "setup cancelled; nothing changed",
+                    "prompt {i}"
+                );
+                assert_eq!(b.snapshot(), before, "prompt {i}");
+                assert!(!b.config().exists(), "prompt {i}");
+            }
+        }
+
+        #[test]
+        fn changing_the_model_updates_the_config_and_keeps_the_old_one() {
+            let b = boxed("change-model");
+            b.write_config("a");
+            let old = std::fs::read_to_string(b.config()).unwrap();
+            let mut p = Scripted {
+                inputs: vec![("Model name", "b")],
+                selects: vec![NO_TIMER],
+                ..Scripted::default()
+            };
+            let run = wizard_run(&b, &mut p);
+            assert_eq!(
+                report(&run)[1],
+                format!("config updated: {}", b.config().display())
+            );
+            assert_eq!(
+                std::fs::read_to_string(b.config().with_file_name("config.bak")).unwrap(),
+                old
+            );
+            assert!(
+                std::fs::read_to_string(b.config())
+                    .unwrap()
+                    .contains("embedder.model = b")
+            );
+            assert_eq!(run.checked.get(), 1);
+            assert!(run.indexed.get());
+        }
+
+        #[test]
+        fn keeping_every_default_keeps_the_config() {
+            let b = boxed("keep");
+            b.write_config("a");
+            let old = std::fs::read_to_string(b.config()).unwrap();
+            let mut p = Scripted {
+                selects: vec![NO_TIMER],
+                ..Scripted::default()
+            };
+            let run = wizard_run(&b, &mut p);
+            assert_eq!(
+                report(&run)[1],
+                format!("config kept: {}", b.config().display())
+            );
+            assert_eq!(std::fs::read_to_string(b.config()).unwrap(), old);
+            assert!(!b.config().with_file_name("config.bak").exists());
+        }
+
+        #[test]
+        fn a_managed_config_is_neither_probed_nor_checked() {
+            let b = boxed("managed");
+            let target = b.dir.join("managed-config");
+            std::fs::write(
+                &target,
+                "embedder.url = http://127.0.0.1:8081\nembedder.model = m\n",
+            )
+            .unwrap();
+            std::fs::create_dir_all(b.config().parent().unwrap()).unwrap();
+            std::os::unix::fs::symlink(&target, b.config()).unwrap();
+            let mut p = Scripted {
+                selects: vec![NO_TIMER],
+                ..Scripted::default()
+            };
+            let run = wizard_run(&b, &mut p);
+            assert_eq!(
+                report(&run)[1],
+                format!("config kept: managed elsewhere ({})", target.display())
+            );
+            assert!(!run.probed.get());
+            assert_eq!(run.checked.get(), 0);
+            assert!(!p.shown.iter().any(|s| s.contains("Which embedder")));
+            assert!(std::fs::symlink_metadata(b.config()).unwrap().is_symlink());
+        }
+
+        #[test]
+        fn unticked_codex_is_skipped_and_no_timer_removes_the_old_one() {
+            let b = boxed("unticked");
+            b.tool("codex");
+            let manager = b.manager();
+            b.write_config("m");
+            b.install_timer_files();
+            let mut p = Scripted {
+                multi: vec![("Install the bilbo plugin in", vec![])],
+                selects: vec![NO_TIMER],
+                ..Scripted::default()
+            };
+            let run = wizard_run(&b, &mut p);
+            let lines = report(&run);
+            assert!(
+                lines.contains(&"codex skipped: not chosen".to_string()),
+                "{lines:?}"
+            );
+            assert!(
+                lines.contains(&"timer removed: not chosen".to_string()),
+                "{manager}: {lines:?}"
+            );
+            assert!(b.timer_files().iter().all(|f| !f.exists()));
+            assert!(!run.result.as_ref().ok().unwrap().failed);
+        }
+
+        fn remove_run(b: &Sandbox, p: &mut Scripted) -> Result<Outcome, Failure> {
+            let mut flags = flags(&["--remove"], Mode::Remove, &b.env);
+            flags.confirm = true;
+            remove(&flags, &b.env, b.path(), p)
+        }
+
+        #[test]
+        fn remove_with_nothing_to_remove_asks_nothing() {
+            let b = boxed("remove-empty");
+            let mut p = Scripted::default();
+            let outcome = remove_run(&b, &mut p).ok().unwrap();
+            assert!(!outcome.failed);
+            assert!(p.shown.is_empty(), "{:?}", p.shown);
+        }
+
+        #[test]
+        fn remove_declined_or_interrupted_changes_nothing() {
+            for interrupt in [None, Some(0)] {
+                let b = boxed("remove-decline");
+                b.manager();
+                b.install_timer_files();
+                let before = b.snapshot();
+                let mut p = Scripted {
+                    interrupt_at: interrupt,
+                    ..Scripted::default()
+                };
+                match remove_run(&b, &mut p) {
+                    Err(Failure::Refused(message)) => {
+                        assert_eq!(message, "setup cancelled; nothing changed");
+                    }
+                    _ => panic!("expected a refusal"),
+                }
+                assert!(
+                    p.shown.iter().any(|s| s.contains("Remove the index timer")),
+                    "{:?}",
+                    p.shown
+                );
+                assert_eq!(b.snapshot(), before);
+            }
+        }
+
+        #[test]
+        fn remove_confirmed_removes_the_timer() {
+            let b = boxed("remove-yes");
+            b.manager();
+            b.install_timer_files();
+            let mut p = Scripted {
+                confirms: vec![("Remove these?", true)],
+                ..Scripted::default()
+            };
+            let outcome = remove_run(&b, &mut p).ok().unwrap();
+            assert!(
+                outcome.lines.contains(&"timer removed".to_string()),
+                "{:?}",
+                outcome.lines
+            );
+            assert!(b.timer_files().iter().all(|f| !f.exists()));
+        }
+    }
+}

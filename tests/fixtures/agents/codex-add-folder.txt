@@ -1,0 +1,12 @@
+$ codex plugin add bilbo@bilbo --json
+exit 0
+--- stdout
+{
+  "pluginId": "bilbo@bilbo",
+  "name": "bilbo",
+  "marketplaceName": "bilbo",
+  "version": "0.1.0",
+  "installedPath": "/fixture/home/codex/plugins/cache/bilbo/bilbo/0.1.0",
+  "authPolicy": "ON_INSTALL"
+}
+--- stderr

@@ -1,0 +1,6 @@
+$ claude plugin marketplace add delucca/bilbo#v0.1.0 --json
+exit 1
+--- stdout
+{"command":"marketplace-add","outcome":"failed","message":"Cannot add marketplace \"bilbo\": its source doesn't match its extraKnownMarketplaces entry in user or managed settings; add it from the source that entry lists, or change the entry.","failureCode":"declared"}
+--- stderr
+✘ Failed to add marketplace: Cannot add marketplace "bilbo": its source doesn't match its extraKnownMarketplaces entry in user or managed settings; add it from the source that entry lists, or change the entry.

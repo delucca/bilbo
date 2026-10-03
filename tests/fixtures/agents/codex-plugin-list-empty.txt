@@ -1,0 +1,8 @@
+$ codex plugin list --json
+exit 0
+--- stdout
+{
+  "installed": [],
+  "available": []
+}
+--- stderr

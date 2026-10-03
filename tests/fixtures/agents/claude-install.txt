@@ -1,0 +1,5 @@
+$ claude plugin install bilbo@bilbo --json
+exit 0
+--- stdout
+{"command":"install","outcome":"ok","plugin":"bilbo@bilbo","pluginId":"bilbo@bilbo","scope":"user","message":"Successfully installed plugin: bilbo@bilbo (scope: user)"}
+--- stderr

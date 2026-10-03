@@ -1,0 +1,9 @@
+$ codex plugin marketplace add /fixture/bilbo --json
+exit 0
+--- stdout
+{
+  "marketplaceName": "bilbo",
+  "installedRoot": "/fixture/bilbo",
+  "alreadyAdded": false
+}
+--- stderr

@@ -1,0 +1,5 @@
+$ claude plugin marketplace add /fixture/bilbo --json
+exit 0
+--- stdout
+{"command":"marketplace-add","outcome":"ok","marketplace":"bilbo","message":"Successfully added marketplace: bilbo (declared in user settings)"}
+--- stderr

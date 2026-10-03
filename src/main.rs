@@ -1,4 +1,6 @@
+mod agents;
 mod check;
+mod command;
 mod config;
 mod embed;
 mod index;
@@ -6,8 +8,11 @@ mod new;
 mod note;
 mod rank;
 mod recall;
+mod setup;
 mod store;
+mod timer;
 mod vectors;
+mod wizard;
 
 use std::io::Write;
 use std::process::ExitCode;
@@ -27,16 +32,20 @@ usage: bilbo new <kind> <topic> [--title <text>]
        bilbo check
        bilbo recall <query>... [--kind <kind>]... [--limit <n>]
        bilbo index
+       bilbo setup [--yes | --interactive] [--remove] [<setup option>]...
        bilbo --help
        bilbo --version
 new creates <root>/notes/<kind>-<topic>.md and prints its path.
 check prints every problem in the store and changes nothing.
 recall prints the notes that best match the query, best first, 10 unless --limit says otherwise.
 index embeds the passages the vector cache lacks and drops the ones no note holds any more.
+setup creates the store and the config and installs the agent plugin and the index timer; in a terminal it asks first.
+setup options: --embedder-url <url>, --embedder-model <name>, --embedder-token-env <var>, --embedder-token-file <path>, --embedder-query-prefix <text>, --no-plugin, --claude <path>, --codex <path>, --plugin-source <folder|owner/repo#ref>, --no-timer, --index-every <minutes>
 kinds: plan, spec, design, decision, gotcha, research, review, report, reference
 root: $BILBO_HOME, else $XDG_DATA_HOME/bilbo, else $HOME/.local/share/bilbo
 config: $BILBO_CONFIG, else $XDG_CONFIG_HOME/bilbo/config, else $HOME/.config/bilbo/config
 cache: $XDG_CACHE_HOME/bilbo, else $HOME/.cache/bilbo
+state: $XDG_STATE_HOME/bilbo, else $HOME/.local/state/bilbo
 ";
 
 fn main() -> ExitCode {
@@ -83,6 +92,15 @@ fn run() -> Result<ExitCode, Failure> {
             let line = index::run(&args[1..], &env)?;
             print_stdout(&line);
             Ok(ExitCode::SUCCESS)
+        }
+        Some("setup") => {
+            let outcome = setup::run(&args[1..], &env)?;
+            outcome.lines.iter().for_each(|line| print_stdout(line));
+            Ok(if outcome.failed {
+                ExitCode::FAILURE
+            } else {
+                ExitCode::SUCCESS
+            })
         }
         Some(arg) if arg.starts_with('-') => Err(Failure::Usage(format!("unknown option '{arg}'"))),
         Some(arg) => Err(Failure::Usage(format!("unknown verb '{arg}'"))),

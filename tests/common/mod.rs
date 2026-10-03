@@ -11,6 +11,8 @@ use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, SystemTime};
 
+pub mod fakes;
+
 static COUNTER: AtomicUsize = AtomicUsize::new(0);
 
 pub struct TempDir(PathBuf);

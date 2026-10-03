@@ -1,0 +1,12 @@
+$ claude plugin marketplace list --json
+exit 0
+--- stdout
+[
+  {
+    "name": "bilbo",
+    "source": "directory",
+    "path": "/fixture/bilbo",
+    "installLocation": "/fixture/bilbo"
+  }
+]
+--- stderr
