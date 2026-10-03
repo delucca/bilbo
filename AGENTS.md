@@ -15,9 +15,8 @@ export CARGO_TARGET_DIR="$PWD/target"
 nix develop -c cargo fmt --check
 nix develop -c cargo clippy --locked --all-targets -- -D warnings
 nix develop -c cargo test --locked
-# The flake (CI's nix job); `nix build` also runs the tests in the package's check phase
+# The package with its tests in the Nix sandbox, and the home-manager module check (CI's nix job)
 nix flake check -L
-nix build
 # Recall speed test, ignored by default
 nix develop -c cargo test --release --test recall -- --ignored
 # After touching plugins/ (one missing-version warning each is expected; never --strict)
@@ -85,7 +84,7 @@ PYTHONDONTWRITEBYTECODE=1 python3 ~/.codex/skills/.system/plugin-creator/scripts
 ## Gotchas
 
 - `flake.nix` builds from a `lib.fileset`: a new file the build or the
-  tests read must join it, or `nix build` fails while cargo passes.
+  tests read must join it, or `nix flake check` fails while cargo passes.
 - CI reruns the tests with the version bumped to 99.99.99. Read the version
   from `env!("CARGO_PKG_VERSION")` in tests, never a literal.
 - CI and the dev shell run Rust 1.95.0, the `rust-version` floor. Bump the
