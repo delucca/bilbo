@@ -978,6 +978,7 @@ fn key_local_embedder_is_skipped() {
 
 const CLAUDE_STATE_OLD: &str = "github delucca/bilbo v0.0.9";
 const CODEX_STATE_OLD: &str = "git https://github.com/delucca/bilbo.git v0.0.9";
+const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 fn agents_machine(name: &str, tools: &[&str]) -> Machine {
     let m = machine(name);
@@ -1009,12 +1010,12 @@ fn plugin_fresh_install_in_claude() {
         [
             "plugin marketplace list --json",
             "plugin list --json",
-            "plugin marketplace add delucca/bilbo#v0.1.0 --json",
+            format!("plugin marketplace add delucca/bilbo#v{VERSION} --json").as_str(),
             "plugin install bilbo@bilbo --json",
         ]
     );
     let lines = lines(&run);
-    assert!(lines.contains(&"claude installed: delucca/bilbo#v0.1.0"));
+    assert!(lines.contains(&format!("claude installed: delucca/bilbo#v{VERSION}").as_str()));
     assert!(lines.contains(&"codex skipped: not found"));
     assert_eq!(fakes::get(&m.state, "claude", "plugin"), "true");
 }
@@ -1029,12 +1030,12 @@ fn plugin_fresh_install_in_codex() {
         [
             "plugin marketplace list --json",
             "plugin list --json",
-            "plugin marketplace add delucca/bilbo --ref v0.1.0 --json",
+            format!("plugin marketplace add delucca/bilbo --ref v{VERSION} --json").as_str(),
             "plugin add bilbo@bilbo --json",
         ]
     );
     let lines = lines(&run);
-    assert!(lines.contains(&"codex installed: delucca/bilbo#v0.1.0"));
+    assert!(lines.contains(&format!("codex installed: delucca/bilbo#v{VERSION}").as_str()));
     assert!(lines.contains(&"claude skipped: not found"));
 }
 
@@ -1051,7 +1052,7 @@ fn plugin_older_source_is_updated() {
         changing(&m, "claude"),
         [
             "plugin marketplace remove bilbo --json",
-            "plugin marketplace add delucca/bilbo#v0.1.0 --json",
+            format!("plugin marketplace add delucca/bilbo#v{VERSION} --json").as_str(),
             "plugin install bilbo@bilbo --json",
         ]
     );
@@ -1059,13 +1060,13 @@ fn plugin_older_source_is_updated() {
         changing(&m, "codex"),
         [
             "plugin marketplace remove bilbo --json",
-            "plugin marketplace add delucca/bilbo --ref v0.1.0 --json",
+            format!("plugin marketplace add delucca/bilbo --ref v{VERSION} --json").as_str(),
             "plugin add bilbo@bilbo --json",
         ]
     );
     let lines = lines(&run);
-    assert!(lines.contains(&"claude updated: delucca/bilbo#v0.1.0"));
-    assert!(lines.contains(&"codex updated: delucca/bilbo#v0.1.0"));
+    assert!(lines.contains(&format!("claude updated: delucca/bilbo#v{VERSION}").as_str()));
+    assert!(lines.contains(&format!("codex updated: delucca/bilbo#v{VERSION}").as_str()));
 }
 
 #[test]
@@ -1075,9 +1076,14 @@ fn plugin_codex_current_is_kept() {
         &m.state,
         "codex",
         "marketplace",
-        "git https://github.com/delucca/bilbo.git v0.1.0",
+        format!("git https://github.com/delucca/bilbo.git v{VERSION}").as_str(),
     );
-    fakes::set(&m.state, "codex", "plugin", "0.1.0 true");
+    fakes::set(
+        &m.state,
+        "codex",
+        "plugin",
+        format!("{VERSION} true").as_str(),
+    );
     let run = plugin_setup(&m, &[]);
     assert_eq!(run.code, 0, "{}", run.stderr);
     assert!(lines(&run).contains(&"codex kept"));
@@ -1091,7 +1097,7 @@ fn plugin_disabled_is_reinstalled() {
         &m.state,
         "claude",
         "marketplace",
-        "github delucca/bilbo v0.1.0",
+        format!("github delucca/bilbo v{VERSION}").as_str(),
     );
     fakes::set(&m.state, "claude", "plugin", "false");
     let run = plugin_setup(&m, &[]);
@@ -1100,7 +1106,7 @@ fn plugin_disabled_is_reinstalled() {
         changing(&m, "claude"),
         ["plugin install bilbo@bilbo --json"]
     );
-    assert!(lines(&run).contains(&"claude updated: delucca/bilbo#v0.1.0"));
+    assert!(lines(&run).contains(&format!("claude updated: delucca/bilbo#v{VERSION}").as_str()));
     assert_eq!(fakes::get(&m.state, "claude", "plugin"), "true");
 }
 
@@ -1137,8 +1143,8 @@ fn plugin_failing_install_does_not_stop_later_steps() {
     let run = setup(&m, &[], &["--yes"]);
     assert_eq!(run.code, 1, "{}", run.stderr);
     let lines = lines(&run);
-    assert!(lines.contains(&"claude failed: delucca/bilbo#v0.1.0: boom"));
-    assert!(lines.contains(&"codex installed: delucca/bilbo#v0.1.0"));
+    assert!(lines.contains(&format!("claude failed: delucca/bilbo#v{VERSION}: boom").as_str()));
+    assert!(lines.contains(&format!("codex installed: delucca/bilbo#v{VERSION}").as_str()));
     assert!(lines.contains(&"timer skipped: no embedder"));
 }
 
@@ -1155,16 +1161,16 @@ fn plugin_missing_tag_names_the_source_and_the_hint() {
         &m.state,
         "codex",
         "fail-marketplace-add",
-        "Error: git checkout v0.1.0 failed with status exit status: 1",
+        format!("Error: git checkout v{VERSION} failed with status exit status: 1").as_str(),
     );
     let run = plugin_setup(&m, &[]);
     assert_eq!(run.code, 1, "{}", run.stderr);
     let hint = "; for a build without a release tag, pass --plugin-source <folder>";
     let lines = lines(&run);
-    assert!(lines.contains(&format!("claude failed: delucca/bilbo#v0.1.0: Failed to clone marketplace repository: nope{hint}").as_str()));
+    assert!(lines.contains(&format!("claude failed: delucca/bilbo#v{VERSION}: Failed to clone marketplace repository: nope{hint}").as_str()));
     assert!(lines.contains(
         &format!(
-            "codex failed: delucca/bilbo#v0.1.0: git checkout v0.1.0 failed with status exit status: 1{hint}"
+            "codex failed: delucca/bilbo#v{VERSION}: git checkout v{VERSION} failed with status exit status: 1{hint}"
         )
         .as_str()
     ));
@@ -1210,7 +1216,7 @@ fn packaged_binary(m: &Machine) -> (PathBuf, PathBuf) {
 fn plugin_package_folder_is_the_source() {
     let m = agents_machine("plugin-package", &["claude", "codex"]);
     let (exe, share) = packaged_binary(&m);
-    fakes::set(&m.state, "codex", "local-version", "0.1.0");
+    fakes::set(&m.state, "codex", "local-version", VERSION);
     let run = setup_with(&exe, &m, &["--yes", "--no-timer"]);
     assert_eq!(run.code, 0, "{}", run.stderr);
     let share = share.display();
@@ -1242,7 +1248,7 @@ fn plugin_source_flag_folder_and_repo() {
     let m = agents_machine("plugin-source", &["claude", "codex"]);
     let folder = std::fs::canonicalize(m.dir.path()).unwrap().join("market");
     package_folder(&folder);
-    fakes::set(&m.state, "codex", "local-version", "0.1.0");
+    fakes::set(&m.state, "codex", "local-version", VERSION);
     let shown = folder.display().to_string();
     let run = plugin_setup(&m, &["--plugin-source", &shown]);
     assert_eq!(run.code, 0, "{}", run.stderr);
@@ -1273,7 +1279,7 @@ fn plugin_claude_flag_path_is_used() {
     let run = plugin_setup(&m, &["--claude", program.to_str().unwrap()]);
     assert_eq!(run.code, 0, "{}", run.stderr);
     let lines = lines(&run);
-    assert!(lines.contains(&"claude installed: delucca/bilbo#v0.1.0"));
+    assert!(lines.contains(&format!("claude installed: delucca/bilbo#v{VERSION}").as_str()));
     assert!(lines.contains(&"codex skipped: not found"));
 }
 
@@ -1767,7 +1773,7 @@ fn remove_accepts_tool_paths() {
         &m.state,
         "claude",
         "marketplace",
-        "github delucca/bilbo v0.1.0",
+        format!("github delucca/bilbo v{VERSION}").as_str(),
     );
     fakes::set(&m.state, "claude", "plugin", "true");
     let claude = tools.join("claude");

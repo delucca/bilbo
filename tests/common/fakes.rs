@@ -149,7 +149,7 @@ case "$1 $2 $3" in
   *)
     version=
     [ -f "$D/codex.local-version" ] && read -r version <"$D/codex.local-version"
-    version=${version:-0.1.0}
+    version=${version:-@VERSION@}
     ;;
   esac
   printf '%s true\n' "$version" >"$D/codex.plugin"
@@ -242,7 +242,9 @@ pub fn install(bin: &Path, state: &Path, tools: &[&str]) {
             "systemctl" => SYSTEMCTL,
             other => panic!("no fake for {other}"),
         };
-        let script = template.replace("@STATE@", &state.display().to_string());
+        let script = template
+            .replace("@STATE@", &state.display().to_string())
+            .replace("@VERSION@", env!("CARGO_PKG_VERSION"));
         let path = bin.join(tool);
         std::fs::write(&path, script).unwrap();
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
