@@ -1,6 +1,6 @@
 {
   "name": "bilbo",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Recall the notes earlier agent sessions wrote, through the bilbo CLI.",
   "author": {
     "name": "delucca"
