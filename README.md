@@ -15,7 +15,8 @@ a store of plain Markdown notes they write with their own file tools, and a
   bilbo at Ollama, OpenAI or any OpenAI-compatible URL, or let it run a local
   model, and `recall` finds notes that share no word with the query.
 - **Agent plugin.** `bilbo setup` installs the plugin in Claude Code and Codex
-  and a timer that keeps the index current.
+  and a timer that keeps the index current. The plugin also hands the agent the
+  notes that bear on each prompt, before it starts.
 
 ## Contents
 
@@ -123,6 +124,7 @@ else `$XDG_DATA_HOME/bilbo`, else `~/.local/share/bilbo`, on macOS too.
 | `bilbo check` | Prints every problem in the store, one per line, and changes nothing. Exits 1 when it finds any. |
 | `bilbo recall <query>... [--kind <kind>]... [--limit <n>]` | Prints the notes that best match, best first, 10 by default. Exits 1 when nothing matches. |
 | `bilbo index` | Embeds the passages the vector cache lacks and drops the ones no note holds any more. |
+| `bilbo digest` | Run by the plugin's prompt hook; see [The digest](#the-digest). |
 | `bilbo setup` | See [Set up](#set-up). |
 
 `recall` prints one block per note: the path and line of the best passage, the
@@ -159,16 +161,56 @@ The bilbo plugin gives Claude Code and Codex a `recall` skill. It runs
 wording when nothing matches, and offers to open a hit. It searches through
 `bilbo` only: when the binary is missing, it says so and stops.
 
+### The digest
+
+`bilbo digest` is what the plugin's prompt hook runs, in Claude Code and in
+Codex, on every prompt. It reads the hook's JSON from stdin and prints the
+notes that bear on the prompt, which the tool hands to the agent as context:
+
+```text
+<!-- bilbo digest: 2 of 3 notes -->
+Notes that may bear on this prompt (open the file to read more):
+- /Users/me/.local/share/bilbo/notes/gotcha-sqlite-busy-timeout.md:13 (gotcha, 2026-10-03T13:31-03:00) SQLite needs a busy timeout > Fix: Set `busy_timeout = 5000` right after opening the connection.
+- ...
+(1 more passed; run bilbo recall for them)
+```
+
+A session's first digest lists up to 6 notes and later ones up to 3, never a
+note the session already got, and never more than 9,000 bytes. When nothing
+passes, it prints nothing.
+
+A note passes only when it is close to the prompt. With an embedder, one of its
+passages must reach `digest.min_similarity`; sharing words is not enough. Without
+one, or when the embedder fails, is slow or has indexed nothing, a passage must
+hold at least 3 of the prompt's words of four letters or more. The embedder gets
+at most 1.2 seconds, and the whole run stays within 1.5. A prompt that starts with a path finds nothing.
+
+`bilbo digest` always exits 0, so a failure never blocks a prompt: it prints
+nothing and says why in one line on stderr. It remembers what each session was
+shown in a file named after the session id, under `sessions/` in bilbo's cache
+folder, and deletes those files after 30 days. It never changes the store or
+the vector cache.
+
+With `digest.log = on`, each run appends one JSON line to `digest.jsonl` under
+bilbo's state folder (`$XDG_STATE_HOME/bilbo`, else `~/.local/state/bilbo`):
+the session, the first 500 characters of the prompt, how the notes were
+ranked, how many passed, which were shown and any error. The prompts are
+plain text on disk, so the file is mode 0600 and off by default.
+
 ## Set up
 
 `bilbo setup` plans every step, shows the plan, asks once, then applies it and
 prints one line per step (`created`, `written`, `kept`, `installed`, `failed`,
-and so on). It does four things:
+and so on). It does five things:
 
 - creates the store, `<root>/notes/`;
 - writes the config, after checking the embedder with one real request;
 - installs the bilbo plugin in Claude Code and Codex, at the binary's own
   version, for each of the two that is on your `PATH`;
+- trusts the plugin's digest hook in Codex, which runs a plugin hook only once
+  it is trusted: setup asks `codex app-server` to record the trust, so no
+  review step is left, and a release that changes the hook is trusted again on
+  the next run;
 - installs a timer that runs `bilbo index` every 15 minutes (a launchd agent on
   macOS, a systemd user timer on Linux), when an embedder is configured.
 
@@ -252,8 +294,9 @@ the service.
 bilbo setup --remove
 ```
 
-This unloads the timer and the local embedder's service, and removes the plugin
-and its marketplace from Claude Code and Codex. It keeps the store, the config,
+This unloads the timer and the local embedder's service, removes the plugin
+and its marketplace from Claude Code and Codex, and takes away Codex's trust of
+the hook. It keeps the store, the config,
 the key file and the downloaded model, and prints their paths. In a terminal
 it asks first; `--yes` skips the question.
 
@@ -281,6 +324,7 @@ inputs.bilbo = {
     settings = {
       "embedder.url" = "http://localhost:11434";
       "embedder.model" = "nomic-embed-text";
+      "digest.log" = "on";
     };
     claude = "/Users/me/.local/bin/claude"; # null: look on the activation PATH
     codex = null;
@@ -327,6 +371,9 @@ embedder.model = nomic-embed-text
 | `embedder.token_file`, `embedder.token_env` | Where the bearer token lives: a file (absolute or `~/`) or a variable. At most one. |
 | `embedder.query_prefix` | Text put before every query. Empty by default. |
 | `embedder.min_similarity` | How close a passage must be to enter the meaning ranking, 0 to 1. Default 0.5. |
+| `digest.enable` | `off` turns [the digest](#the-digest) off: the hook prints nothing and writes nothing. `on` by default. |
+| `digest.min_similarity` | How close a passage must be to enter the digest when an embedder answers, 0 to 1. Default 0.55. |
+| `digest.log` | `on` appends each digest run to the digest log. `off` by default. |
 
 bilbo never prints the token. The vector cache lives under
 `$XDG_CACHE_HOME/bilbo`, else `~/.cache/bilbo`; deleting it loses nothing that

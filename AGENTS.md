@@ -17,8 +17,9 @@ nix develop -c cargo clippy --locked --all-targets -- -D warnings
 nix develop -c cargo test --locked
 # The package with its tests in the Nix sandbox, and the home-manager module check (CI's nix job)
 nix flake check -L
-# Recall speed test, ignored by default
+# Recall and digest speed tests, ignored by default
 nix develop -c cargo test --release --test recall -- --ignored
+nix develop -c cargo test --release --test digest -- --ignored
 # After touching plugins/ (one missing-version warning each is expected; never --strict)
 claude plugin validate . && claude plugin validate plugins/bilbo
 PYTHONDONTWRITEBYTECODE=1 python3 ~/.codex/skills/.system/plugin-creator/scripts/validate_plugin.py plugins/bilbo
@@ -48,7 +49,10 @@ PYTHONDONTWRITEBYTECODE=1 python3 ~/.codex/skills/.system/plugin-creator/scripts
 - Library modules (`store`, `note`, `rank`, `config`, `embed`, `model`,
   `vectors`, `command`, `agents`, `timer`) return plain values and `String`
   messages: they never print and never return `Failure`. Verbs build on
-  them, never on each other, return `crate::Failure` and never print.
+  them, never on each other, return `crate::Failure` and never print. `digest`
+  is the exception: it returns a `digest::Outcome` (lines and one diagnostic)
+  and `main` always exits 0 for it, because a prompt hook that exits 2 blocks
+  the prompt.
 - A new verb is `src/<verb>.rs`, its `mod` line, dispatch arm and USAGE line
   in `src/main.rs`, `tests/<verb>.rs`, its own capability spec, and a
   MODIFIED `cli` spec (its Verb dispatch requirement lists the verbs).
@@ -101,6 +105,15 @@ PYTHONDONTWRITEBYTECODE=1 python3 ~/.codex/skills/.system/plugin-creator/scripts
 - `tests/fixtures/agents/` holds recorded `claude` and `codex` output, the
   first line being the command. When a tool's JSON moves, re-record them
   against throwaway `CLAUDE_CONFIG_DIR` and `CODEX_HOME`.
+- `plugins/bilbo/hooks/hooks.json`'s command must never pass on bilbo's exit
+  code (`; exit 0`: an older `bilbo` exits 2 on the unknown verb) and must stay
+  quiet without `bilbo` on `PATH`.
+- Codex runs a plugin hook only once it is trusted, and `codex exec` skips an
+  untrusted one in silence. `bilbo setup` trusts it through `codex app-server`
+  (the fake `codex` imitates it), never by editing `config.toml`. Changing
+  `hooks.json` changes Codex's hash, so the next `setup` reports `hook
+  updated`. Probe hooks in a throwaway `CODEX_HOME`, never `~/.codex`, and
+  re-record `tests/fixtures/agents/codex-app-server-*` when the protocol moves.
 
 ## Releases
 
