@@ -35,6 +35,13 @@ jobs:
       - name: Test
         run: cargo test --locked
 
+      - name: Test at a bumped version
+        run: |
+          sed -i 's/^version = ".*"$/version = "99.99.99"/' Cargo.toml
+          sed -i 's/"version": ".*"/"version": "99.99.99"/' plugins/bilbo/.codex-plugin/plugin.json
+          cargo update --workspace
+          cargo test --locked
+
   nix:
     name: nix
     runs-on: ubuntu-latest
