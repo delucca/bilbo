@@ -144,7 +144,7 @@ The wizard SHALL offer, in this order: no embedder (keyword search only), a loca
 
 #### Scenario: The local embedder without llama-server
 - **WHEN** no `llama-server` is on PATH and the user picks the local embedder
-- **THEN** the wizard names `brew install llama.cpp` and the distribution's `llama.cpp` package and asks for the path to `llama-server`, and Esc returns to the list of embedders
+- **THEN** the wizard names `brew install llama.cpp` and the distribution's `llama.cpp` package and asks for the path to `llama-server`, and an empty answer returns to the list of embedders
 
 #### Scenario: No service manager
 - **WHEN** the wizard runs on Linux without a systemd user session
@@ -225,7 +225,7 @@ The flake SHALL export `homeManagerModules.default` with `programs.bilbo.enable`
 
 #### Scenario: The local embedder from Nix
 - **WHEN** a configuration sets `programs.bilbo.localEmbedder.enable = true` and no embedder settings
-- **THEN** the config holds `embedder.url = http://127.0.0.1:8737` and `embedder.model = qwen3-embedding-0.6b`, and activation runs `bilbo setup --yes --embedder-local --embedder-port 8737 --llama-server <nixpkgs llama-server>`
+- **THEN** the config holds `embedder.url = http://127.0.0.1:8737`, `embedder.model = qwen3-embedding-0.6b` and the Qwen `embedder.query_prefix` (`"Instruct: Given a question, retrieve notes that answer it\nQuery: "`), and activation runs `bilbo setup --yes --embedder-local --embedder-port 8737 --llama-server <nixpkgs llama-server>`
 
 #### Scenario: The local embedder with another URL fails evaluation
 - **WHEN** a configuration sets `programs.bilbo.localEmbedder.enable = true` and `programs.bilbo.settings."embedder.url" = "http://bagend:8081"`

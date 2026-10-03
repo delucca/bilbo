@@ -35,7 +35,7 @@ This was the maintainer's choice among three options:
 
 ### The user provides llama-server
 
-bilbo looks it up on PATH or takes `--llama-server`. It never downloads it.
+bilbo looks it up on PATH or takes `--llama-server`, and runs it at that path without resolving links: Homebrew's `/opt/homebrew/bin/llama-server` survives `brew upgrade`, while the `Cellar/llama.cpp/<version>/` folder it links to is deleted. It never downloads it.
 - Prebuilt binaries differ by OS, CPU and GPU backend (Metal, CUDA, Vulkan, CPU). The user's package manager already picks the right build, and keeps it patched.
 - On macOS, a downloaded binary would be quarantined by Gatekeeper.
 - Rejected alternative: download a pinned ggml-org release zip per target. That means four targets, each with backend variants, and a security update path that bilbo would own.
@@ -84,7 +84,8 @@ Progress:
 The rule is to extend an existing module before adding one, so `src/timer.rs` is extended:
 - `Job` gains a kind: `Periodic { minutes }` (today's timer) or `Service`, plus its label and arguments.
 - **launchd:** `Service` writes `RunAtLoad` and `KeepAlive` instead of `StartInterval`.
-- **systemd:** `Service` writes `bilbo-embedder.service` with `Restart=on-failure` and `WantedBy=default.target`, and has no `.timer`. Loading it is `daemon-reload` plus `enable --now`.
+- **launchd, both jobs:** the bootout before a bootstrap or a delete is `bootout --wait`. Without `--wait` it returns while llama-server is still shutting down, and the following `bootstrap` fails with `5: Input/output error`. The smoke run found this with the real model; a 20 MB test model exits too fast to show it. launchd kills a job that ignores SIGTERM after its ExitTimeOut.
+- **systemd:** `Service` writes `bilbo-embedder.service` with `Restart=on-failure` and `WantedBy=default.target`, and has no `.timer`. Loading it is `daemon-reload`, `enable` and `restart`, as for the timer: `enable --now` would not restart a running service, so a changed file would not take effect. The unit also sets `RestartSec=10` and `StartLimitIntervalSec=0`; without them systemd stops retrying after five failures in 10 s.
 - `install`, `uninstall`, `current` and the cleanup on failure become per-job, keyed by label and unit name.
 - The file keeps its name. Its doc line becomes "launchd and systemd jobs: the index timer and the embedder service".
 
@@ -108,6 +109,8 @@ On failure, it uninstalls the service and stops. Non-interactive mode exits 1. T
 
 **Apply stage.** Unchanged, plus the `model` and `server` report lines, which come from the prepare stage's outcome.
 
+**An unused service is removed.** When the config setup leaves has no local embedder (no embedder, another model, or a URL other than `http://127.0.0.1:<port>`) and the service is installed, the server step unloads and deletes it and reports `server removed: not local`, as the timer step removes an unwanted timer. Otherwise a home-manager `localEmbedder.enable = false`, or a wizard switch to another embedder, would leave about 1 GB in use for nothing. A run not asked for the local embedder that keeps a local config leaves the service alone (`skipped: not asked`).
+
 ### The home-manager module
 
 - `localEmbedder.enable` sets `settings."embedder.url"` and `."embedder.model"` with `lib.mkDefault`.
@@ -126,18 +129,18 @@ On failure, it uninstalls the service and stops. Non-interactive mode exits 1. T
 
 - [A llama.cpp update changes or drops a flag] → The flags used have been stable for a long time. A failed start shows up in the readiness step with the log path. The smoke run covers both the Homebrew and nixpkgs builds.
 - [About 1 GB of memory stays in use] → The wizard says so before the user confirms. `setup --remove` frees it.
-- [A cache cleaner deletes the model] → The service fails to start and launchd or systemd keeps retrying (launchd throttles to one start every 10 s). `recall` falls back to keywords with its warning. Running setup again downloads the model again. The service log names the missing file.
+- [A cache cleaner deletes the model] → The service fails to start and launchd or systemd keeps retrying, both once every 10 s (launchd's throttle, the unit's `RestartSec`). `recall` falls back to keywords with its warning. Running setup again downloads the model again. The service log names the missing file.
 - [Hugging Face drops the revision, or rate-limits] → The download fails with the status and the URL. Nothing half-written stays at the model path.
-- [A stalled download hangs] → ureq has no per-read stall timeout (see Open Questions). Ctrl-C and a rerun resume from the `.part` file.
+- [A stalled download hangs] → Each request has a 60 s budget for its body (see Open Questions). A request that received bytes is sent again from where it stopped; one that received nothing ends the download, and a rerun resumes from the `.part` file.
 - [A 639 MB download during `just switch`] → It happens once. Later activations see the model `kept`.
 - [Any local process can use the server] → It listens on loopback only and serves embeddings only. A machine's own users are trusted the same way bilbo trusts its own store.
 
 ## Migration Plan
 
 - Existing installs are untouched: no config changes unless the user picks the local choice.
-- Rollback: `bilbo setup --remove` unloads the service, or in Nix, set `localEmbedder.enable = false`. Then delete `<cache>/models/` by hand.
+- Rollback: `bilbo setup --remove` unloads the service, or in Nix, set `localEmbedder.enable = false` with another embedder or none, and activation removes it. Then delete `<cache>/models/` by hand.
 - dnix adopts it in a later commit by enabling `programs.bilbo.localEmbedder` on rivendell and rohan.
 
 ## Open Questions
 
-- **Download timeouts.** Which ureq 3 timeouts give a stall limit for a long body without capping the whole download? `timeout_recv_body` is a total. Confirm with the ureq docs during task 2.1. It does not change the specs.
+- **Download timeouts.** Settled during task 2.1. ureq 3.4.2, the latest release, has no per-read timeout: `timeout_recv_body` is a total budget from the response headers on, and `timeout_per_read` exists only on ureq's main branch. So each request gets `timeout_connect` 30 s, `timeout_recv_response` 60 s and `timeout_recv_body` 60 s, and no `timeout_global`. When the body budget runs out after the request wrote at least one byte, the download sends a new request with `Range: bytes=<len>-` and goes on; when it wrote nothing, it fails and keeps the `.part` file. A stall ends the run within two windows, and a slow but moving download never does. A released `timeout_per_read` can replace this later.

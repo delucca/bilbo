@@ -1,12 +1,43 @@
-//! The index timer files and their launchd or systemd commands.
+//! launchd and systemd jobs: the index timer and the embedder service.
 
 use crate::command::{Output, Runner, first_line};
 use std::path::{Path, PathBuf};
 
 pub const LABEL: &str = "io.github.delucca.bilbo.index";
+pub const EMBEDDER_LABEL: &str = "io.github.delucca.bilbo.embedder";
 
 const ID: &str = "/usr/bin/id";
-const UNIT: &str = "bilbo-index.timer";
+
+/// Which job a set of files belongs to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Name {
+    Index,
+    Embedder,
+}
+
+impl Name {
+    pub fn label(self) -> &'static str {
+        match self {
+            Name::Index => LABEL,
+            Name::Embedder => EMBEDDER_LABEL,
+        }
+    }
+
+    /// The systemd unit that is enabled, restarted and disabled.
+    pub fn unit(self) -> &'static str {
+        match self {
+            Name::Index => "bilbo-index.timer",
+            Name::Embedder => "bilbo-embedder.service",
+        }
+    }
+
+    fn target(self) -> &'static str {
+        match self {
+            Name::Index => "timers.target.wants",
+            Name::Embedder => "default.target.wants",
+        }
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Platform {
@@ -25,11 +56,37 @@ pub fn platform() -> Option<Platform> {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Kind {
+    /// Runs and exits every `minutes`: the index timer.
+    Periodic { minutes: u32 },
+    /// Starts at login and is restarted when it exits: the embedder.
+    Service,
+}
+
 pub struct Job {
-    pub exe: PathBuf,
-    pub minutes: u32,
+    pub kind: Kind,
+    pub program: PathBuf,
+    pub args: Vec<String>,
     pub log: PathBuf,
     pub env: Vec<(&'static str, String)>,
+}
+
+impl Job {
+    pub fn name(&self) -> Name {
+        match self.kind {
+            Kind::Periodic { .. } => Name::Index,
+            Kind::Service => Name::Embedder,
+        }
+    }
+
+    /// The interval of a periodic job, 0 for a service.
+    pub fn minutes(&self) -> u32 {
+        match self.kind {
+            Kind::Periodic { minutes } => minutes,
+            Kind::Service => 0,
+        }
+    }
 }
 
 pub struct Place {
@@ -76,31 +133,63 @@ pub fn plist(job: &Job) -> String {
         out.push_str("\t</dict>\n");
     }
     let log = xml(&job.log.to_string_lossy());
+    let label = job.name().label();
+    let mut program = format!(
+        "\t\t<string>{}</string>\n",
+        xml(&job.program.to_string_lossy())
+    );
+    for arg in &job.args {
+        program.push_str(&format!("\t\t<string>{}</string>\n", xml(arg)));
+    }
+    let (keep_alive, run_at_load, interval) = match job.kind {
+        Kind::Periodic { minutes } => (
+            String::new(),
+            "false",
+            format!(
+                "\t<key>StartInterval</key>\n\t<integer>{}</integer>\n",
+                u64::from(minutes) * 60
+            ),
+        ),
+        Kind::Service => (
+            "\t<key>KeepAlive</key>\n\t<true/>\n".into(),
+            "true",
+            String::new(),
+        ),
+    };
     out.push_str(&format!(
-        "\t<key>Label</key>\n\t<string>{LABEL}</string>\n\
-\t<key>ProgramArguments</key>\n\t<array>\n\t\t<string>{}</string>\n\t\t<string>index</string>\n\t</array>\n\
-\t<key>RunAtLoad</key>\n\t<false/>\n\
+        "{keep_alive}\t<key>Label</key>\n\t<string>{label}</string>\n\
+\t<key>ProgramArguments</key>\n\t<array>\n{program}\t</array>\n\
+\t<key>RunAtLoad</key>\n\t<{run_at_load}/>\n\
 \t<key>StandardErrorPath</key>\n\t<string>{log}</string>\n\
 \t<key>StandardOutPath</key>\n\t<string>{log}</string>\n\
-\t<key>StartInterval</key>\n\t<integer>{}</integer>\n\
-</dict>\n</plist>\n",
-        xml(&job.exe.to_string_lossy()),
-        u64::from(job.minutes) * 60
+{interval}</dict>\n</plist>\n"
     ));
     out
 }
 
 pub fn service(job: &Job) -> Result<String, String> {
-    let exe = job.exe.to_string_lossy();
+    let program = job.program.to_string_lossy();
     let log = job.log.to_string_lossy();
-    if exe.contains(['\n', '\r']) {
-        return Err("the bilbo path holds a newline".into());
+    let (what, head) = match job.kind {
+        Kind::Periodic { .. } => (
+            "the bilbo path",
+            "[Unit]\nDescription=Index the bilbo store\n\n[Service]\nType=oneshot\n",
+        ),
+        Kind::Service => (
+            "the llama-server path",
+            "[Unit]\nDescription=bilbo's local embedder\nStartLimitIntervalSec=0\n\n[Service]\n",
+        ),
+    };
+    if program.contains(['\n', '\r']) {
+        return Err(format!("{what} holds a newline"));
+    }
+    if job.args.iter().any(|arg| arg.contains(['\n', '\r'])) {
+        return Err("an argument holds a newline".into());
     }
     if log.contains(['\n', '\r']) {
         return Err("the log path holds a newline".into());
     }
-    let mut out =
-        String::from("[Unit]\nDescription=Index the bilbo store\n\n[Service]\nType=oneshot\n");
+    let mut out = String::from(head);
     for (name, value) in &job.env {
         if value.contains(['\n', '\r']) {
             return Err(format!("{name} holds a newline"));
@@ -111,15 +200,32 @@ pub fn service(job: &Job) -> Result<String, String> {
         ));
     }
     let append = log.replace('%', "%%");
+    let exec = match job.kind {
+        Kind::Periodic { .. } => {
+            let mut exec = quoted(&program, true);
+            for arg in &job.args {
+                exec.push(' ');
+                exec.push_str(arg);
+            }
+            exec
+        }
+        Kind::Service => std::iter::once(program.as_ref())
+            .chain(job.args.iter().map(String::as_str))
+            .map(|part| quoted(part, true))
+            .collect::<Vec<_>>()
+            .join(" "),
+    };
     out.push_str(&format!(
-        "ExecStart={} index\nStandardOutput=append:{append}\nStandardError=append:{append}\n",
-        quoted(&exe, true)
+        "ExecStart={exec}\nStandardOutput=append:{append}\nStandardError=append:{append}\n"
     ));
+    if job.kind == Kind::Service {
+        out.push_str("Restart=on-failure\nRestartSec=10\n\n[Install]\nWantedBy=default.target\n");
+    }
     Ok(out)
 }
 
 pub fn timer(job: &Job) -> String {
-    let n = job.minutes;
+    let n = job.minutes();
     format!(
         "[Unit]\nDescription=Run bilbo index every {n} min\n\n[Timer]\nOnActiveSec={n}min\nOnUnitActiveSec={n}min\n\n[Install]\nWantedBy=timers.target\n"
     )
@@ -129,22 +235,23 @@ fn units(place: &Place) -> PathBuf {
     place.config_home.join("systemd").join("user")
 }
 
-fn wants(place: &Place) -> PathBuf {
-    units(place).join("timers.target.wants").join(UNIT)
+fn wants(place: &Place, name: Name) -> PathBuf {
+    units(place).join(name.target()).join(name.unit())
 }
 
-pub fn paths(platform: Platform, place: &Place) -> Vec<PathBuf> {
-    match platform {
-        Platform::Launchd => vec![
+pub fn paths(platform: Platform, place: &Place, name: Name) -> Vec<PathBuf> {
+    match (platform, name) {
+        (Platform::Launchd, name) => vec![
             place
                 .home
                 .join("Library/LaunchAgents")
-                .join(format!("{LABEL}.plist")),
+                .join(format!("{}.plist", name.label())),
         ],
-        Platform::Systemd => vec![
+        (Platform::Systemd, Name::Index) => vec![
             units(place).join("bilbo-index.service"),
-            units(place).join(UNIT),
+            units(place).join(Name::Index.unit()),
         ],
+        (Platform::Systemd, Name::Embedder) => vec![units(place).join(Name::Embedder.unit())],
     }
 }
 
@@ -153,11 +260,15 @@ pub fn files(
     place: &Place,
     job: &Job,
 ) -> Result<Vec<(PathBuf, String)>, String> {
-    let texts = match platform {
-        Platform::Launchd => vec![plist(job)],
-        Platform::Systemd => vec![service(job)?, timer(job)],
+    let texts = match (platform, job.kind) {
+        (Platform::Launchd, _) => vec![plist(job)],
+        (Platform::Systemd, Kind::Periodic { .. }) => vec![service(job)?, timer(job)],
+        (Platform::Systemd, Kind::Service) => vec![service(job)?],
     };
-    Ok(paths(platform, place).into_iter().zip(texts).collect())
+    Ok(paths(platform, place, job.name())
+        .into_iter()
+        .zip(texts)
+        .collect())
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -181,8 +292,10 @@ pub fn current(files: &[(PathBuf, String)]) -> Current {
     }
 }
 
-pub fn installed(platform: Platform, place: &Place) -> bool {
-    paths(platform, place).iter().any(|path| path.exists())
+pub fn installed(platform: Platform, place: &Place, name: Name) -> bool {
+    paths(platform, place, name)
+        .iter()
+        .any(|path| path.exists())
 }
 
 /// Whether the user manager answers: `systemctl --user is-system-running` prints a live state.
@@ -240,9 +353,12 @@ fn uid(runner: &dyn Runner) -> Result<String, String> {
     }
 }
 
-/// `launchctl bootout`, where a job that is not loaded (exit 3 or 113) is fine.
-fn bootout(runner: &dyn Runner, tool: &Path, uid: &str) -> Result<(), String> {
-    let args = args(&["bootout", &format!("gui/{uid}/{LABEL}")]);
+/// `launchctl bootout --wait`, where a job that is not loaded (exit 3 or 113) is fine. Without
+/// `--wait` it returns while the process is still terminating, and the `bootstrap` after it
+/// fails with `5: Input/output error`. launchd kills a job that ignores SIGTERM after its
+/// ExitTimeOut (20 s by default).
+fn bootout(runner: &dyn Runner, tool: &Path, uid: &str, name: Name) -> Result<(), String> {
+    let args = args(&["bootout", "--wait", &format!("gui/{uid}/{}", name.label())]);
     let out = runner.run(tool, &args)?;
     if out.success() || matches!(out.code, Some(3 | 113)) {
         Ok(())
@@ -281,9 +397,9 @@ fn delete(path: &Path) -> Result<(), String> {
 
 /// Creates the log folder, writes every file atomically, then loads the job.
 /// Launchd: `id -u`, `bootout` (exit 3 or 113 ignored), `bootstrap`.
-/// Systemd: `daemon-reload`, `enable` and `restart` of the timer.
+/// Systemd: `daemon-reload`, `enable` and `restart` of the job's unit.
 /// When a write or load step fails, the files this call wrote (and the systemd wants link) are
-/// deleted, so the next run sees no timer; the original error is the one returned.
+/// deleted, so the next run sees no job; the original error is the one returned.
 pub fn install(
     platform: Platform,
     runner: &dyn Runner,
@@ -294,18 +410,52 @@ pub fn install(
     if let Some(dir) = job.log.parent() {
         create_dir(dir)?;
     }
-    let loaded = write_all(files).and_then(|()| load(platform, runner, tool, files));
+    let first = files
+        .first()
+        .map(|(path, _)| path.as_path())
+        .unwrap_or(Path::new(""));
+    let loaded = write_all(files).and_then(|()| load(platform, runner, tool, job.name(), first));
     if loaded.is_err() {
         for (path, _) in files {
             let _ = delete(path);
             if platform == Platform::Systemd
                 && let Some(dir) = path.parent()
             {
-                let _ = delete(&dir.join("timers.target.wants").join(UNIT));
+                let _ = delete(&dir.join(job.name().target()).join(job.name().unit()));
             }
         }
     }
     loaded
+}
+
+/// Loads the job's files again as they are on disk: launchd `bootout` and `bootstrap` of the
+/// plist, systemd `daemon-reload` and `restart` of the unit. Writes and deletes nothing, so a
+/// failure leaves the job's files in place.
+pub fn reload(
+    platform: Platform,
+    runner: &dyn Runner,
+    tool: &Path,
+    place: &Place,
+    name: Name,
+) -> Result<(), String> {
+    match platform {
+        Platform::Launchd => {
+            let plist = paths(platform, place, name)
+                .into_iter()
+                .next()
+                .unwrap_or_default();
+            load(platform, runner, tool, name, &plist)
+        }
+        Platform::Systemd => {
+            for step in [
+                &["--user", "daemon-reload"][..],
+                &["--user", "restart", name.unit()],
+            ] {
+                run_ok(runner, tool, &args(step))?;
+            }
+            Ok(())
+        }
+    }
 }
 
 fn write_all(files: &[(PathBuf, String)]) -> Result<(), String> {
@@ -319,27 +469,29 @@ fn load(
     platform: Platform,
     runner: &dyn Runner,
     tool: &Path,
-    files: &[(PathBuf, String)],
+    name: Name,
+    plist: &Path,
 ) -> Result<(), String> {
     match platform {
         Platform::Launchd => {
             let uid = uid(runner)?;
-            bootout(runner, tool, &uid)?;
-            let plist = files
-                .first()
-                .map(|(path, _)| path.to_string_lossy().into_owned())
-                .unwrap_or_default();
+            bootout(runner, tool, &uid, name)?;
             run_ok(
                 runner,
                 tool,
-                &["bootstrap".into(), format!("gui/{uid}"), plist],
+                &[
+                    "bootstrap".into(),
+                    format!("gui/{uid}"),
+                    plist.to_string_lossy().into_owned(),
+                ],
             )
         }
         Platform::Systemd => {
+            let unit = name.unit();
             for step in [
                 &["--user", "daemon-reload"][..],
-                &["--user", "enable", UNIT],
-                &["--user", "restart", UNIT],
+                &["--user", "enable", unit],
+                &["--user", "restart", unit],
             ] {
                 run_ok(runner, tool, &args(step))?;
             }
@@ -352,8 +504,8 @@ fn load(
 /// `OnUnitActiveSec=<n>min`. None when the file is missing or does not parse.
 pub fn minutes(platform: Platform, place: &Place) -> Option<u32> {
     let path = match platform {
-        Platform::Launchd => paths(platform, place).into_iter().next()?,
-        Platform::Systemd => units(place).join(UNIT),
+        Platform::Launchd => paths(platform, place, Name::Index).into_iter().next()?,
+        Platform::Systemd => units(place).join(Name::Index.unit()),
     };
     let text = std::fs::read_to_string(path).ok()?;
     match platform {
@@ -390,6 +542,7 @@ pub fn uninstall(
     runner: &dyn Runner,
     tool: Option<&Path>,
     place: &Place,
+    name: Name,
 ) -> Result<(), String> {
     let Some(tool) = tool else {
         return Err(format!(
@@ -403,24 +556,28 @@ pub fn uninstall(
     match platform {
         Platform::Launchd => {
             let uid = uid(runner)?;
-            bootout(runner, tool, &uid)?;
+            bootout(runner, tool, &uid, name)?;
         }
         Platform::Systemd => {
             let live = Some(tool).filter(|tool| session(runner, tool));
             if let Some(tool) = live {
-                run_ok(runner, tool, &args(&["--user", "disable", "--now", UNIT]))?;
+                run_ok(
+                    runner,
+                    tool,
+                    &args(&["--user", "disable", "--now", name.unit()]),
+                )?;
             }
-            for path in paths(platform, place) {
+            for path in paths(platform, place, name) {
                 delete(&path)?;
             }
-            delete(&wants(place))?;
+            delete(&wants(place, name))?;
             if let Some(tool) = live {
                 run_ok(runner, tool, &args(&["--user", "daemon-reload"]))?;
             }
             return Ok(());
         }
     }
-    for path in paths(platform, place) {
+    for path in paths(platform, place, name) {
         delete(&path)?;
     }
     Ok(())
@@ -483,8 +640,9 @@ mod tests {
 
     fn job(minutes: u32, env: Vec<(&'static str, String)>) -> Job {
         Job {
-            exe: "/opt/bilbo/bin/bilbo".into(),
-            minutes,
+            kind: Kind::Periodic { minutes },
+            program: "/opt/bilbo/bin/bilbo".into(),
+            args: vec!["index".into()],
             log: "/Users/a/.local/state/bilbo/index.log".into(),
             env,
         }
@@ -545,7 +703,7 @@ mod tests {
     #[test]
     fn plist_escapes_xml() {
         let mut j = job(15, vec![("BILBO_HOME", "/a&b/<c>".to_string())]);
-        j.exe = "/o&p/bilbo".into();
+        j.program = "/o&p/bilbo".into();
         let text = plist(&j);
         assert!(
             text.contains("<string>/a&amp;b/&lt;c&gt;</string>"),
@@ -576,14 +734,14 @@ StandardError=append:/home/a/.local/state/bilbo/index.log\n";
             )
         };
         assert_eq!(timer(&j), expected_timer(15));
-        j.minutes = 30;
+        j.kind = Kind::Periodic { minutes: 30 };
         assert_eq!(timer(&j), expected_timer(30));
     }
 
     #[test]
     fn service_quotes_and_escapes() {
         let mut j = job(15, vec![("BILBO_HOME", "/d \"q\"/100%\\x".to_string())]);
-        j.exe = "/opt/my bilbo/$b\"%/bilbo".into();
+        j.program = "/opt/my bilbo/$b\"%/bilbo".into();
         j.log = "/state/100%/index.log".into();
         let text = service(&j).unwrap();
         assert!(
@@ -605,7 +763,7 @@ StandardError=append:/home/a/.local/state/bilbo/index.log\n";
         let j = job(15, vec![("XDG_DATA_HOME", "/a\nb".to_string())]);
         assert_eq!(service(&j).unwrap_err(), "XDG_DATA_HOME holds a newline");
         let mut j = job(15, vec![]);
-        j.exe = "/a\nb".into();
+        j.program = "/a\nb".into();
         assert_eq!(service(&j).unwrap_err(), "the bilbo path holds a newline");
         let mut j = job(15, vec![]);
         j.log = "/a\nb".into();
@@ -619,13 +777,13 @@ StandardError=append:/home/a/.local/state/bilbo/index.log\n";
             config_home: "/c".into(),
         };
         assert_eq!(
-            paths(Platform::Launchd, &p),
+            paths(Platform::Launchd, &p, Name::Index),
             [PathBuf::from(
                 "/h/Library/LaunchAgents/io.github.delucca.bilbo.index.plist"
             )]
         );
         assert_eq!(
-            paths(Platform::Systemd, &p),
+            paths(Platform::Systemd, &p, Name::Index),
             [
                 PathBuf::from("/c/systemd/user/bilbo-index.service"),
                 PathBuf::from("/c/systemd/user/bilbo-index.timer")
@@ -658,10 +816,10 @@ StandardError=append:/home/a/.local/state/bilbo/index.log\n";
     fn installed_when_any_path_exists() {
         let s = scratch("installed");
         let p = place(&s.0);
-        assert!(!installed(Platform::Systemd, &p));
+        assert!(!installed(Platform::Systemd, &p, Name::Index));
         let f = files(Platform::Systemd, &p, &job(15, vec![])).unwrap();
         write_atomic(&f[1].0, &f[1].1).unwrap();
-        assert!(installed(Platform::Systemd, &p));
+        assert!(installed(Platform::Systemd, &p, Name::Index));
     }
 
     #[test]
@@ -685,7 +843,7 @@ StandardError=append:/home/a/.local/state/bilbo/index.log\n";
             *runner.calls.borrow(),
             [
                 "/usr/bin/id -u".to_string(),
-                format!("/x/launchctl bootout gui/501/{LABEL}"),
+                format!("/x/launchctl bootout --wait gui/501/{LABEL}"),
                 format!("/x/launchctl bootstrap gui/501 {plist}"),
             ]
         );
@@ -792,7 +950,7 @@ StandardError=append:/home/a/.local/state/bilbo/index.log\n";
             &f,
         )
         .unwrap_err();
-        assert!(!installed(Platform::Launchd, &p));
+        assert!(!installed(Platform::Launchd, &p, Name::Index));
         assert_eq!(current(&f), Current::Missing);
     }
 
@@ -803,7 +961,7 @@ StandardError=append:/home/a/.local/state/bilbo/index.log\n";
         let mut j = job(15, vec![]);
         j.log = s.0.join("state/index.log");
         let f = files(Platform::Systemd, &p, &j).unwrap();
-        let wants_link = wants(&p);
+        let wants_link = wants(&p, Name::Index);
         std::fs::create_dir_all(wants_link.parent().unwrap()).unwrap();
         std::fs::write(&wants_link, "").unwrap();
         let runner = script(vec![out(0, "", ""), out(1, "", "enable broke")]);
@@ -816,7 +974,7 @@ StandardError=append:/home/a/.local/state/bilbo/index.log\n";
         )
         .unwrap_err();
         assert!(err.ends_with("failed: enable broke"), "{err}");
-        assert!(!installed(Platform::Systemd, &p));
+        assert!(!installed(Platform::Systemd, &p, Name::Index));
         assert!(!wants_link.exists());
     }
 
@@ -892,13 +1050,14 @@ StandardError=append:/home/a/.local/state/bilbo/index.log\n";
             &runner,
             Some(Path::new("/x/launchctl")),
             &p,
+            Name::Index,
         )
         .unwrap();
         assert_eq!(
             *runner.calls.borrow(),
             [
                 "/usr/bin/id -u".to_string(),
-                format!("/x/launchctl bootout gui/501/{LABEL}")
+                format!("/x/launchctl bootout --wait gui/501/{LABEL}")
             ]
         );
         assert!(!f[0].0.exists());
@@ -908,7 +1067,7 @@ StandardError=append:/home/a/.local/state/bilbo/index.log\n";
         for (path, text) in files(Platform::Systemd, p, &job(15, vec![])).unwrap() {
             write_atomic(&path, &text).unwrap();
         }
-        write_atomic(&wants(p), "link").unwrap();
+        write_atomic(&wants(p, Name::Index), "link").unwrap();
     }
 
     #[test]
@@ -922,6 +1081,7 @@ StandardError=append:/home/a/.local/state/bilbo/index.log\n";
             &runner,
             Some(Path::new("/x/systemctl")),
             &p,
+            Name::Index,
         )
         .unwrap();
         assert_eq!(
@@ -932,8 +1092,8 @@ StandardError=append:/home/a/.local/state/bilbo/index.log\n";
                 "/x/systemctl --user daemon-reload",
             ]
         );
-        assert!(!installed(Platform::Systemd, &p));
-        assert!(!wants(&p).exists());
+        assert!(!installed(Platform::Systemd, &p, Name::Index));
+        assert!(!wants(&p, Name::Index).exists());
     }
 
     #[test]
@@ -947,14 +1107,15 @@ StandardError=append:/home/a/.local/state/bilbo/index.log\n";
             &runner,
             Some(Path::new("/x/systemctl")),
             &p,
+            Name::Index,
         )
         .unwrap();
         assert_eq!(
             *runner.calls.borrow(),
             ["/x/systemctl --user is-system-running"]
         );
-        assert!(!installed(Platform::Systemd, &p));
-        assert!(!wants(&p).exists());
+        assert!(!installed(Platform::Systemd, &p, Name::Index));
+        assert!(!wants(&p, Name::Index).exists());
     }
 
     #[test]
@@ -973,10 +1134,10 @@ StandardError=append:/home/a/.local/state/bilbo/index.log\n";
                 }
             }
             let runner = script(vec![]);
-            let err = uninstall(platform, &runner, None, &p).unwrap_err();
+            let err = uninstall(platform, &runner, None, &p, Name::Index).unwrap_err();
             assert_eq!(err, format!("{name} not found on PATH"));
             assert!(runner.calls.borrow().is_empty());
-            assert!(installed(platform, &p));
+            assert!(installed(platform, &p, Name::Index));
         }
     }
 
@@ -1001,5 +1162,448 @@ StandardError=append:/home/a/.local/state/bilbo/index.log\n";
         ] {
             assert!(!session(&script(vec![answer]), tool));
         }
+    }
+
+    fn embedder(model: &str, log: PathBuf, env: Vec<(&'static str, String)>) -> Job {
+        Job {
+            kind: Kind::Service,
+            program: "/opt/llama/bin/llama-server".into(),
+            args: ["--model", model, "--port", "8737", "--parallel", "1"]
+                .map(String::from)
+                .to_vec(),
+            log,
+            env,
+        }
+    }
+
+    fn embedder_job(root: &Path) -> Job {
+        embedder("/m/q.gguf", root.join("state/bilbo/embedder.log"), vec![])
+    }
+
+    fn systemd_embedder_installed(p: &Place, j: &Job) {
+        for (path, text) in files(Platform::Systemd, p, j).unwrap() {
+            write_atomic(&path, &text).unwrap();
+        }
+        write_atomic(&wants(p, Name::Embedder), "link").unwrap();
+    }
+
+    #[test]
+    fn service_plist_for_the_embedder() {
+        let j = embedder(
+            "/m/q.gguf",
+            "/Users/a/.local/state/bilbo/embedder.log".into(),
+            vec![],
+        );
+        let expected = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
+<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n\
+<plist version=\"1.0\">\n\
+<dict>\n\
+\t<key>KeepAlive</key>\n\
+\t<true/>\n\
+\t<key>Label</key>\n\
+\t<string>io.github.delucca.bilbo.embedder</string>\n\
+\t<key>ProgramArguments</key>\n\
+\t<array>\n\
+\t\t<string>/opt/llama/bin/llama-server</string>\n\
+\t\t<string>--model</string>\n\
+\t\t<string>/m/q.gguf</string>\n\
+\t\t<string>--port</string>\n\
+\t\t<string>8737</string>\n\
+\t\t<string>--parallel</string>\n\
+\t\t<string>1</string>\n\
+\t</array>\n\
+\t<key>RunAtLoad</key>\n\
+\t<true/>\n\
+\t<key>StandardErrorPath</key>\n\
+\t<string>/Users/a/.local/state/bilbo/embedder.log</string>\n\
+\t<key>StandardOutPath</key>\n\
+\t<string>/Users/a/.local/state/bilbo/embedder.log</string>\n\
+</dict>\n\
+</plist>\n";
+        assert_eq!(plist(&j), expected);
+        let with_env = plist(&embedder(
+            "/m/q.gguf",
+            "/l".into(),
+            vec![("HOME", "/h".to_string())],
+        ));
+        assert!(
+            with_env.contains("<dict>\n\t<key>EnvironmentVariables</key>\n\t<dict>\n\t\t<key>HOME</key>\n\t\t<string>/h</string>\n\t</dict>\n\t<key>KeepAlive</key>"),
+            "{with_env}"
+        );
+    }
+
+    #[test]
+    fn service_unit_for_the_embedder() {
+        let j = embedder(
+            "/m/q.gguf",
+            "/home/a/.local/state/bilbo/embedder.log".into(),
+            vec![],
+        );
+        let expected = "[Unit]\n\
+Description=bilbo's local embedder\n\
+StartLimitIntervalSec=0\n\
+\n\
+[Service]\n\
+ExecStart=\"/opt/llama/bin/llama-server\" \"--model\" \"/m/q.gguf\" \"--port\" \"8737\" \"--parallel\" \"1\"\n\
+StandardOutput=append:/home/a/.local/state/bilbo/embedder.log\n\
+StandardError=append:/home/a/.local/state/bilbo/embedder.log\n\
+Restart=on-failure\n\
+RestartSec=10\n\
+\n\
+[Install]\n\
+WantedBy=default.target\n";
+        assert_eq!(service(&j).unwrap(), expected);
+
+        let odd = service(&embedder(
+            "/my models/$m\"%/q.gguf",
+            "/l%/e.log".into(),
+            vec![("HOME", "/h $x".to_string())],
+        ))
+        .unwrap();
+        assert!(odd.contains("\"/my models/$$m\\\"%%/q.gguf\""), "{odd}");
+        assert!(odd.contains("StandardOutput=append:/l%%/e.log\n"), "{odd}");
+        assert!(
+            odd.contains("[Service]\nEnvironment=\"HOME=/h $x\"\nExecStart="),
+            "{odd}"
+        );
+
+        let mut bad = embedder_job(Path::new("/s"));
+        bad.args.push("a\nb".into());
+        assert!(service(&bad).is_err());
+        let mut bad = embedder_job(Path::new("/s"));
+        bad.program = "/a\nb".into();
+        assert_eq!(
+            service(&bad).unwrap_err(),
+            "the llama-server path holds a newline"
+        );
+    }
+
+    #[test]
+    fn embedder_paths_per_platform() {
+        let p = Place {
+            home: "/h".into(),
+            config_home: "/c".into(),
+        };
+        assert_eq!(
+            paths(Platform::Launchd, &p, Name::Embedder),
+            [PathBuf::from(
+                "/h/Library/LaunchAgents/io.github.delucca.bilbo.embedder.plist"
+            )]
+        );
+        assert_eq!(
+            paths(Platform::Systemd, &p, Name::Embedder),
+            [PathBuf::from("/c/systemd/user/bilbo-embedder.service")]
+        );
+        assert_eq!(
+            wants(&p, Name::Embedder),
+            PathBuf::from("/c/systemd/user/default.target.wants/bilbo-embedder.service")
+        );
+        assert_eq!(embedder_job(Path::new("/s")).name(), Name::Embedder);
+        assert_eq!(job(15, vec![]).name(), Name::Index);
+        let f = files(Platform::Systemd, &p, &embedder_job(Path::new("/s"))).unwrap();
+        assert_eq!(f.len(), 1);
+        assert_eq!(f[0].0, paths(Platform::Systemd, &p, Name::Embedder)[0]);
+    }
+
+    #[test]
+    fn install_embedder_launchd_commands() {
+        let s = scratch("emb-launchd");
+        let p = place(&s.0);
+        let j = embedder_job(&s.0);
+        let f = files(Platform::Launchd, &p, &j).unwrap();
+        let runner = script(vec![out(0, "501\n", "")]);
+        install(
+            Platform::Launchd,
+            &runner,
+            Path::new("/x/launchctl"),
+            &j,
+            &f,
+        )
+        .unwrap();
+        assert_eq!(
+            *runner.calls.borrow(),
+            [
+                "/usr/bin/id -u".to_string(),
+                format!("/x/launchctl bootout --wait gui/501/{EMBEDDER_LABEL}"),
+                format!("/x/launchctl bootstrap gui/501 {}", f[0].0.display()),
+            ]
+        );
+        assert_eq!(current(&f), Current::Same);
+        assert!(s.0.join("state/bilbo").is_dir());
+    }
+
+    #[test]
+    fn install_embedder_systemd_commands() {
+        let s = scratch("emb-systemd");
+        let p = place(&s.0);
+        let j = embedder_job(&s.0);
+        let f = files(Platform::Systemd, &p, &j).unwrap();
+        let runner = script(vec![]);
+        install(
+            Platform::Systemd,
+            &runner,
+            Path::new("/x/systemctl"),
+            &j,
+            &f,
+        )
+        .unwrap();
+        assert_eq!(
+            *runner.calls.borrow(),
+            [
+                "/x/systemctl --user daemon-reload",
+                "/x/systemctl --user enable bilbo-embedder.service",
+                "/x/systemctl --user restart bilbo-embedder.service",
+            ]
+        );
+        assert_eq!(current(&f), Current::Same);
+    }
+
+    #[test]
+    fn install_embedder_failure_leaves_no_files_or_wants_link() {
+        let s = scratch("emb-rollback");
+        let p = place(&s.0);
+        let j = embedder_job(&s.0);
+        let f = files(Platform::Systemd, &p, &j).unwrap();
+        let link = wants(&p, Name::Embedder);
+        std::fs::create_dir_all(link.parent().unwrap()).unwrap();
+        std::fs::write(&link, "").unwrap();
+        let runner = script(vec![
+            out(0, "", ""),
+            out(0, "", ""),
+            out(1, "", "restart broke"),
+        ]);
+        let err = install(
+            Platform::Systemd,
+            &runner,
+            Path::new("/x/systemctl"),
+            &j,
+            &f,
+        )
+        .unwrap_err();
+        assert!(err.ends_with("failed: restart broke"), "{err}");
+        assert!(!installed(Platform::Systemd, &p, Name::Embedder));
+        assert!(!link.exists());
+
+        let f = files(Platform::Launchd, &p, &j).unwrap();
+        let runner = script(vec![
+            out(0, "501\n", ""),
+            out(0, "", ""),
+            out(5, "", "boom"),
+        ]);
+        install(
+            Platform::Launchd,
+            &runner,
+            Path::new("/x/launchctl"),
+            &j,
+            &f,
+        )
+        .unwrap_err();
+        assert!(!installed(Platform::Launchd, &p, Name::Embedder));
+    }
+
+    #[test]
+    fn reload_launchd_boots_the_plist_out_and_in() {
+        let s = scratch("reload-launchd");
+        let p = place(&s.0);
+        let f = files(Platform::Launchd, &p, &embedder_job(&s.0)).unwrap();
+        write_atomic(&f[0].0, &f[0].1).unwrap();
+        let runner = script(vec![out(0, "501\n", "")]);
+        reload(
+            Platform::Launchd,
+            &runner,
+            Path::new("/x/launchctl"),
+            &p,
+            Name::Embedder,
+        )
+        .unwrap();
+        assert_eq!(
+            *runner.calls.borrow(),
+            [
+                "/usr/bin/id -u".to_string(),
+                format!("/x/launchctl bootout --wait gui/501/{EMBEDDER_LABEL}"),
+                format!("/x/launchctl bootstrap gui/501 {}", f[0].0.display()),
+            ]
+        );
+        assert_eq!(current(&f), Current::Same);
+    }
+
+    #[test]
+    fn reload_systemd_restarts_the_unit() {
+        let s = scratch("reload-systemd");
+        let p = place(&s.0);
+        let f = files(Platform::Systemd, &p, &embedder_job(&s.0)).unwrap();
+        write_atomic(&f[0].0, &f[0].1).unwrap();
+        let runner = script(vec![]);
+        reload(
+            Platform::Systemd,
+            &runner,
+            Path::new("/x/systemctl"),
+            &p,
+            Name::Embedder,
+        )
+        .unwrap();
+        assert_eq!(
+            *runner.calls.borrow(),
+            [
+                "/x/systemctl --user daemon-reload",
+                "/x/systemctl --user restart bilbo-embedder.service",
+            ]
+        );
+    }
+
+    #[test]
+    fn reload_failure_keeps_the_files() {
+        let s = scratch("reload-fails");
+        let p = place(&s.0);
+        for (platform, tool, answers) in [
+            (
+                Platform::Launchd,
+                "/x/launchctl",
+                vec![out(0, "501\n", ""), out(0, "", ""), out(5, "", "boom")],
+            ),
+            (
+                Platform::Systemd,
+                "/x/systemctl",
+                vec![out(0, "", ""), out(1, "", "restart broke")],
+            ),
+        ] {
+            let f = files(platform, &p, &embedder_job(&s.0)).unwrap();
+            write_atomic(&f[0].0, &f[0].1).unwrap();
+            let runner = script(answers);
+            reload(platform, &runner, Path::new(tool), &p, Name::Embedder).unwrap_err();
+            assert_eq!(current(&f), Current::Same);
+        }
+    }
+
+    #[test]
+    fn uninstall_embedder_launchd() {
+        let s = scratch("un-emb-launchd");
+        let p = place(&s.0);
+        let f = files(Platform::Launchd, &p, &embedder_job(&s.0)).unwrap();
+        write_atomic(&f[0].0, &f[0].1).unwrap();
+        let runner = script(vec![out(0, "501\n", "")]);
+        uninstall(
+            Platform::Launchd,
+            &runner,
+            Some(Path::new("/x/launchctl")),
+            &p,
+            Name::Embedder,
+        )
+        .unwrap();
+        assert_eq!(
+            *runner.calls.borrow(),
+            [
+                "/usr/bin/id -u".to_string(),
+                format!("/x/launchctl bootout --wait gui/501/{EMBEDDER_LABEL}")
+            ]
+        );
+        assert!(!f[0].0.exists());
+    }
+
+    #[test]
+    fn uninstall_embedder_systemd_with_session() {
+        let s = scratch("un-emb-systemd");
+        let p = place(&s.0);
+        systemd_embedder_installed(&p, &embedder_job(&s.0));
+        let runner = script(vec![out(0, "running\n", "")]);
+        uninstall(
+            Platform::Systemd,
+            &runner,
+            Some(Path::new("/x/systemctl")),
+            &p,
+            Name::Embedder,
+        )
+        .unwrap();
+        assert_eq!(
+            *runner.calls.borrow(),
+            [
+                "/x/systemctl --user is-system-running",
+                "/x/systemctl --user disable --now bilbo-embedder.service",
+                "/x/systemctl --user daemon-reload",
+            ]
+        );
+        assert!(!installed(Platform::Systemd, &p, Name::Embedder));
+        assert!(!wants(&p, Name::Embedder).exists());
+    }
+
+    #[test]
+    fn uninstall_leaves_the_other_job() {
+        for platform in [Platform::Launchd, Platform::Systemd] {
+            let s = scratch("un-other");
+            let p = place(&s.0);
+            let index = files(platform, &p, &job(15, vec![])).unwrap();
+            let service = files(platform, &p, &embedder_job(&s.0)).unwrap();
+            for (path, text) in index.iter().chain(&service) {
+                write_atomic(path, text).unwrap();
+            }
+            write_atomic(&wants(&p, Name::Index), "link").unwrap();
+            write_atomic(&wants(&p, Name::Embedder), "link").unwrap();
+            let answer = match platform {
+                Platform::Launchd => "501\n",
+                Platform::Systemd => "running\n",
+            };
+            let live = || script(vec![out(0, answer, "")]);
+            let (tool, other) = match platform {
+                Platform::Launchd => (Path::new("/x/launchctl"), "/usr/bin/id -u"),
+                Platform::Systemd => (
+                    Path::new("/x/systemctl"),
+                    "/x/systemctl --user is-system-running",
+                ),
+            };
+            let runner = live();
+            uninstall(platform, &runner, Some(tool), &p, Name::Embedder).unwrap();
+            assert_eq!(runner.calls.borrow()[0], other);
+            assert!(!installed(platform, &p, Name::Embedder));
+            assert!(installed(platform, &p, Name::Index));
+            assert_eq!(current(&index), Current::Same);
+            assert!(wants(&p, Name::Index).exists());
+
+            for (path, text) in &service {
+                write_atomic(path, text).unwrap();
+            }
+            write_atomic(&wants(&p, Name::Embedder), "link").unwrap();
+            uninstall(platform, &live(), Some(tool), &p, Name::Index).unwrap();
+            assert!(!installed(platform, &p, Name::Index));
+            assert!(installed(platform, &p, Name::Embedder));
+            assert_eq!(current(&service), Current::Same);
+            assert!(wants(&p, Name::Embedder).exists());
+        }
+    }
+
+    #[test]
+    fn both_jobs_load_side_by_side() {
+        let s = scratch("side-by-side");
+        let p = place(&s.0);
+        let mut index = job(15, vec![]);
+        index.log = s.0.join("state/bilbo/index.log");
+        let service = embedder_job(&s.0);
+        let runner = script(vec![
+            out(0, "501\n", ""),
+            out(0, "", ""),
+            out(0, "", ""),
+            out(0, "501\n", ""),
+        ]);
+        for j in [&index, &service] {
+            let f = files(Platform::Launchd, &p, j).unwrap();
+            install(Platform::Launchd, &runner, Path::new("/x/launchctl"), j, &f).unwrap();
+        }
+        let calls = runner.calls.borrow();
+        let bootouts: Vec<_> = calls.iter().filter(|c| c.contains("bootout")).collect();
+        assert_eq!(
+            bootouts,
+            [
+                &format!("/x/launchctl bootout --wait gui/501/{LABEL}"),
+                &format!("/x/launchctl bootout --wait gui/501/{EMBEDDER_LABEL}"),
+            ],
+            "{calls:?}"
+        );
+        assert_eq!(
+            current(&files(Platform::Launchd, &p, &index).unwrap()),
+            Current::Same
+        );
+        assert_eq!(
+            current(&files(Platform::Launchd, &p, &service).unwrap()),
+            Current::Same
+        );
     }
 }

@@ -1,6 +1,6 @@
 use crate::config::{self, Token};
 use std::ffi::OsString;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 pub const BATCH: usize = 16;
 
@@ -169,6 +169,39 @@ pub fn ollama_models(url: &str, timeout: Duration) -> Option<Vec<String>> {
     Some(tags.models.into_iter().map(|m| m.name).collect())
 }
 
+const POLL: Duration = Duration::from_millis(500);
+
+/// Polls `GET <url>/health` every 500 ms until it answers 2xx or `deadline` has passed; llama-server answers 503 while it loads the model.
+/// The error is `embedder <url> was not ready within <s> s; <last>`, where <last> is `it answered <code>`, `it did not answer` or `it was unreachable: <e>`.
+pub fn ready(url: &str, deadline: Duration) -> Result<(), String> {
+    let health = format!("{}/health", url.trim_end_matches('/'));
+    let start = Instant::now();
+    loop {
+        let left = deadline.saturating_sub(start.elapsed());
+        let agent: ureq::Agent = ureq::Agent::config_builder()
+            .timeout_global(Some(
+                left.min(Duration::from_secs(2))
+                    .max(Duration::from_millis(100)),
+            ))
+            .http_status_as_error(false)
+            .build()
+            .into();
+        let last = match agent.get(&health).call() {
+            Ok(response) if response.status().is_success() => return Ok(()),
+            Ok(response) => format!("it answered {}", response.status().as_u16()),
+            Err(ureq::Error::Timeout(_)) => "it did not answer".to_string(),
+            Err(e) => format!("it was unreachable: {e}"),
+        };
+        if start.elapsed() + POLL > deadline {
+            return Err(format!(
+                "embedder {url} was not ready within {} s; {last}",
+                deadline.as_secs()
+            ));
+        }
+        std::thread::sleep(POLL);
+    }
+}
+
 /// The unit vector, or all zeros for a zero vector; `None` when the norm is not finite.
 fn normalize(vector: &[f64]) -> Option<Vec<f32>> {
     let norm = vector.iter().map(|x| x * x).sum::<f64>().sqrt();
@@ -319,6 +352,77 @@ mod tests {
         let result = client(&url).embed(&texts(inputs));
         handle.join().unwrap();
         result
+    }
+
+    /// Answers one connection per reply, in order.
+    fn serve_each(replies: Vec<String>) -> (String, JoinHandle<Vec<String>>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let handle = std::thread::spawn(move || {
+            let mut requests = Vec::new();
+            for response in replies {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
+                let mut raw = String::new();
+                loop {
+                    let mut line = String::new();
+                    reader.read_line(&mut line).unwrap();
+                    raw.push_str(&line);
+                    if line == "\r\n" || line.is_empty() {
+                        break;
+                    }
+                }
+                stream.write_all(response.as_bytes()).unwrap();
+                stream.flush().unwrap();
+                requests.push(raw);
+            }
+            requests
+        });
+        (url, handle)
+    }
+
+    #[test]
+    fn ready_at_once() {
+        let (url, handle) = serve_each(vec![ok(r#"{"status":"ok"}"#)]);
+        ready(&url, Duration::from_secs(5)).unwrap();
+        let requests = handle.join().unwrap();
+        assert_eq!(requests[0].lines().next(), Some("GET /health HTTP/1.1"));
+    }
+
+    #[test]
+    fn ready_after_503() {
+        let loading = reply("503 Service Unavailable", r#"{"error":{"code":503}}"#);
+        let (url, handle) = serve_each(vec![loading.clone(), loading, ok("{}")]);
+        let start = Instant::now();
+        ready(&url, Duration::from_secs(10)).unwrap();
+        assert!(start.elapsed() >= Duration::from_secs(1));
+        handle.join().unwrap();
+    }
+
+    #[test]
+    fn ready_deadline_passes() {
+        let url = {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            format!("http://{}", listener.local_addr().unwrap())
+        };
+        let start = Instant::now();
+        let error = ready(&url, Duration::from_secs(1)).unwrap_err();
+        assert!(start.elapsed() < Duration::from_secs(2));
+        assert!(
+            error.starts_with(&format!(
+                "embedder {url} was not ready within 1 s; it was unreachable:"
+            )),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn ready_reports_the_last_status() {
+        let loading = reply("503 Service Unavailable", "{}");
+        let (url, handle) = serve_each(vec![loading; 6]);
+        let error = ready(&url, Duration::from_secs(1)).unwrap_err();
+        assert!(error.ends_with("it answered 503"), "{error}");
+        drop(handle);
     }
 
     #[test]

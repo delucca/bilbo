@@ -175,10 +175,31 @@ esac
 const LAUNCHCTL: &str = r##"#!/bin/sh
 D='@STATE@'
 printf '%s\n' "$*" >>"$D/launchctl.log"
+case "$1" in
+bootout)
+  [ "$2" = --wait ] && set -- bootout "$3"
+  label=${2##*/}
+  ;;
+bootstrap)
+  label=${3##*/}
+  label=${label%.plist}
+  ;;
+*) label= ;;
+esac
+case "$label" in
+*.embedder)
+  f="$D/launchctl.loaded-embedder"
+  fail="$D/launchctl.fail-$1-embedder"
+  ;;
+*)
+  f="$D/launchctl.loaded"
+  fail="$D/launchctl.fail-$1"
+  ;;
+esac
 loaded=
-[ -s "$D/launchctl.loaded" ] && read -r loaded <"$D/launchctl.loaded"
-if [ -s "$D/launchctl.fail-$1" ]; then
-  read -r line <"$D/launchctl.fail-$1"
+[ -s "$f" ] && read -r loaded <"$f"
+if [ -s "$fail" ]; then
+  read -r line <"$fail"
   printf '%s\n' "$line" >&2
   exit 5
 fi
@@ -188,14 +209,15 @@ bootout)
     printf 'Boot-out failed: 3: No such process\n' >&2
     exit 3
   fi
-  : >"$D/launchctl.loaded"
+  : >"$f"
   ;;
 bootstrap)
   if [ -n "$loaded" ]; then
     printf 'Bootstrap failed: 5: Input/output error\nTry re-running the command as root for richer errors.\n' >&2
     exit 5
   fi
-  printf '%s\n' "$3" >"$D/launchctl.loaded"
+  printf '%s\n' "$3" >"$f"
+  case "$label" in *.embedder) : >"$D/embedder.started" ;; esac
   ;;
 *)
   printf 'fake launchctl: unexpected arguments: %s\n' "$*" >&2
@@ -209,11 +231,13 @@ D='@STATE@'
 printf '%s\n' "$*" >>"$D/systemctl.log"
 state=running
 [ -s "$D/systemctl.state" ] && read -r state <"$D/systemctl.state"
-if [ -s "$D/systemctl.fail-$2" ]; then
-  read -r line <"$D/systemctl.fail-$2"
-  printf '%s\n' "$line" >&2
-  exit 1
-fi
+for fail in "$D/systemctl.fail-$2-$3" "$D/systemctl.fail-$2"; do
+  if [ -s "$fail" ]; then
+    read -r line <"$fail"
+    printf '%s\n' "$line" >&2
+    exit 1
+  fi
+done
 case "$*" in
 "--user is-system-running")
   printf '%s\n' "$state"
@@ -223,12 +247,18 @@ case "$*" in
 "--user daemon-reload" | "--user restart bilbo-index.timer") ;;
 "--user enable bilbo-index.timer") printf 'enabled\n' >"$D/systemctl.enabled" ;;
 "--user disable --now bilbo-index.timer") : >"$D/systemctl.enabled" ;;
+"--user enable bilbo-embedder.service") printf 'enabled\n' >"$D/systemctl.embedder-enabled" ;;
+"--user restart bilbo-embedder.service") : >"$D/embedder.started" ;;
+"--user disable --now bilbo-embedder.service") : >"$D/systemctl.embedder-enabled" ;;
 *)
   printf 'fake systemctl: unexpected arguments: %s\n' "$*" >&2
   exit 64
   ;;
 esac
 "##;
+
+const LLAMA_SERVER: &str =
+    "#!/bin/sh\nprintf 'fake llama-server: tests never run it\\n' >&2\nexit 64\n";
 
 /// Writes executable fakes named `tools` into `bin`, keeping state and logs in `state`.
 pub fn install(bin: &Path, state: &Path, tools: &[&str]) {
@@ -240,6 +270,7 @@ pub fn install(bin: &Path, state: &Path, tools: &[&str]) {
             "codex" => CODEX,
             "launchctl" => LAUNCHCTL,
             "systemctl" => SYSTEMCTL,
+            "llama-server" => LLAMA_SERVER,
             other => panic!("no fake for {other}"),
         };
         let script = template

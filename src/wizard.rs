@@ -8,6 +8,12 @@ use zeroize::Zeroizing;
 const OLLAMA_URL: &str = "http://localhost:11434";
 const OPENAI_URL: &str = "https://api.openai.com";
 
+const NONE: usize = 0;
+const LOCAL: usize = 1;
+const OLLAMA: usize = 2;
+const OPENAI: usize = 3;
+const OTHER: usize = 4;
+
 pub struct Choice {
     pub label: String,
     pub hint: String,
@@ -52,6 +58,15 @@ pub trait Prompter {
         &mut self,
         message: &str,
         work: impl FnOnce() -> Result<T, String>,
+        done: impl FnOnce(&T) -> String,
+    ) -> Result<T, String>;
+    /// Runs `work` under a progress bar of `total` bytes; `work` reports the bytes done so far.
+    /// Stops with `done(&ok)` or shows the error text, like `spin`.
+    fn progress<T>(
+        &mut self,
+        message: &str,
+        total: u64,
+        work: impl FnOnce(&mut dyn FnMut(u64)) -> Result<T, String>,
         done: impl FnOnce(&T) -> String,
     ) -> Result<T, String>;
     fn outro(&mut self, text: &str) -> io::Result<()>;
@@ -191,6 +206,27 @@ impl Prompter for Terminal {
         }
     }
 
+    fn progress<T>(
+        &mut self,
+        message: &str,
+        total: u64,
+        work: impl FnOnce(&mut dyn FnMut(u64)) -> Result<T, String>,
+        done: impl FnOnce(&T) -> String,
+    ) -> Result<T, String> {
+        let bar = cliclack::progress_bar(total).with_download_template();
+        bar.start(message);
+        match work(&mut |n| bar.set_position(n)) {
+            Ok(value) => {
+                bar.stop(done(&value));
+                Ok(value)
+            }
+            Err(message) => {
+                bar.error(&message);
+                Err(message)
+            }
+        }
+    }
+
     fn outro(&mut self, text: &str) -> io::Result<()> {
         cliclack::outro(text)
     }
@@ -198,6 +234,19 @@ impl Prompter for Terminal {
     fn cancel(&mut self, text: &str) -> io::Result<()> {
         cliclack::outro_cancel(text)
     }
+}
+
+/// What the wizard knows about the local embedder.
+pub struct Local {
+    /// `http://127.0.0.1:8737` and `qwen3-embedding-0.6b`: what the choice sets.
+    pub url: String,
+    pub model_name: String,
+    /// The model's download size in MB.
+    pub download_mb: u64,
+    /// `llama-server` on PATH.
+    pub llama_server: Option<PathBuf>,
+    /// Why the choice cannot run here, if it cannot.
+    pub unavailable: Option<String>,
 }
 
 pub struct Facts {
@@ -218,6 +267,7 @@ pub struct Facts {
     pub timer: bool,
     /// The interval of the installed timer, if one is installed.
     pub timer_minutes: Option<u32>,
+    pub local: Local,
 }
 
 pub struct Answers {
@@ -230,10 +280,17 @@ pub struct Answers {
     pub codex: bool,
     /// `None`: not chosen, or no embedder.
     pub timer: Option<u32>,
+    /// Some(llama-server) when the local embedder was chosen; `embedder` is then the local one and `dims` None.
+    pub local: Option<PathBuf>,
 }
 
 type Keyed = (Option<Token>, Option<Zeroizing<String>>);
-type Settled = (Option<Embedder>, Option<Zeroizing<String>>, Option<usize>);
+type Settled = (
+    Option<Embedder>,
+    Option<Zeroizing<String>>,
+    Option<usize>,
+    Option<PathBuf>,
+);
 
 pub fn ask<P: Prompter>(
     p: &mut P,
@@ -247,7 +304,7 @@ pub fn ask<P: Prompter>(
         facts.root.display()
     ))?;
 
-    let (embedder, pasted, dims) = match &facts.managed {
+    let (embedder, pasted, dims, local) = match &facts.managed {
         Some(target) => {
             let lines = match &facts.existing {
                 Some(e) => format!("embedder.url = {}\nembedder.model = {}", e.url, e.model),
@@ -262,7 +319,7 @@ pub fn ask<P: Prompter>(
                     lines
                 ),
             )?;
-            (facts.existing.clone(), None, None)
+            (facts.existing.clone(), None, None, None)
         }
         None => ask_embedder(p, facts, &mut check, &var_set)?,
     };
@@ -279,6 +336,7 @@ pub fn ask<P: Prompter>(
         claude,
         codex,
         timer,
+        local,
     })
 }
 
@@ -290,10 +348,12 @@ fn ask_embedder<P: Prompter>(
 ) -> io::Result<Settled> {
     let existing = facts.existing.as_ref();
     loop {
+        let initial = initial_provider(existing, &facts.local);
         let provider = p.select(
             "Which embedder should recall use?",
             &[
                 Choice::new("No embedder", "keyword search only"),
+                Choice::new("Local embedder, run by bilbo", local_hint(&facts.local)),
                 Choice::new(
                     "Ollama on this machine",
                     match usable_models(facts) {
@@ -306,19 +366,38 @@ fn ask_embedder<P: Prompter>(
                 Choice::new("OpenAI", "api.openai.com"),
                 Choice::new("Another OpenAI-compatible URL", ""),
             ],
-            initial_provider(existing),
+            initial,
         )?;
-        if provider == 0 {
-            return Ok((None, None, None));
+        if provider == NONE {
+            return Ok((None, None, None, None));
+        }
+        if provider == LOCAL {
+            if let Some(reason) = &facts.local.unavailable {
+                p.warn(reason)?;
+                continue;
+            }
+            let Some(llama_server) = ask_llama_server(p, &facts.local)? else {
+                continue;
+            };
+            let embedder = Embedder {
+                url: facts.local.url.clone(),
+                model: facts.local.model_name.clone(),
+                token: None,
+                query_prefix: config::default_query_prefix(&facts.local.model_name).to_string(),
+                min_similarity: existing
+                    .map(|e| e.min_similarity)
+                    .unwrap_or(config::DEFAULT_MIN_SIMILARITY),
+            };
+            return Ok((Some(embedder), None, None, Some(llama_server)));
         }
 
         let existing_model = existing.map(|e| e.model.as_str()).unwrap_or("");
         let ollama_url = match existing {
-            Some(e) if initial_provider(existing) == 1 => e.url.as_str(),
+            Some(e) if initial == OLLAMA => e.url.as_str(),
             _ => OLLAMA_URL,
         };
         let (url, model) = match provider {
-            1 => match usable_models(facts) {
+            OLLAMA => match usable_models(facts) {
                 Some(models) => {
                     let initial = existing
                         .and_then(|e| models.iter().position(|m| *m == e.model))
@@ -341,7 +420,7 @@ fn ask_embedder<P: Prompter>(
                     (url, model)
                 }
             },
-            2 => {
+            OPENAI => {
                 let default = match existing {
                     Some(e) if e.url == OPENAI_URL => e.model.as_str(),
                     _ => "text-embedding-3-small",
@@ -354,7 +433,7 @@ fn ask_embedder<P: Prompter>(
             }
             _ => {
                 let default = existing
-                    .filter(|_| initial_provider(existing) == 3)
+                    .filter(|_| initial == OTHER)
                     .map(|e| e.url.as_str())
                     .unwrap_or("");
                 let url = p
@@ -425,7 +504,7 @@ fn ask_embedder<P: Prompter>(
                 |n| format!("{} answered with {n}-dimensional vectors", embedder.url),
             );
             match checked {
-                Ok(dims) => return Ok((Some(embedder), pasted, Some(dims))),
+                Ok(dims) => return Ok((Some(embedder), pasted, Some(dims), None)),
                 Err(_) => {
                     let next = p.select(
                         "The embedder check failed. What now?",
@@ -439,12 +518,63 @@ fn ask_embedder<P: Prompter>(
                     match next {
                         0 => continue,
                         1 => break,
-                        _ => return Ok((None, None, None)),
+                        _ => return Ok((None, None, None, None)),
                     }
                 }
             }
         }
     }
+}
+
+fn local_hint(local: &Local) -> String {
+    match (&local.unavailable, &local.llama_server) {
+        (Some(reason), _) => reason.clone(),
+        (None, Some(_)) => format!("llama-server found, {} MB download", local.download_mb),
+        (None, None) => format!("llama-server not found, {} MB download", local.download_mb),
+    }
+}
+
+/// The llama-server to run: the one found, or a path typed after the note. `None`: back to the list.
+fn ask_llama_server<P: Prompter>(p: &mut P, local: &Local) -> io::Result<Option<PathBuf>> {
+    if let Some(found) = &local.llama_server {
+        return Ok(Some(found.clone()));
+    }
+    p.note(
+        "llama-server not found",
+        "bilbo runs llama-server but does not install it. Install it with brew install llama.cpp, your distribution's llama.cpp package or Nix's llama-cpp, or type its path. Leave the path empty to go back.",
+    )?;
+    let path = p.input("Path to llama-server", "", check_program)?;
+    let path = path.trim();
+    if path.is_empty() {
+        return Ok(None);
+    }
+    let home = std::env::var_os("HOME");
+    Ok(Some(expand_home(
+        path,
+        home.as_deref().map(std::path::Path::new),
+    )))
+}
+
+/// After the local embedder failed past the confirmation: shows the message and the log,
+/// and returns true to try again, false to continue with keyword search only.
+pub fn local_failed<P: Prompter>(
+    p: &mut P,
+    message: &str,
+    log: &std::path::Path,
+) -> io::Result<bool> {
+    p.warn(&format!(
+        "{message}\nThe server's log is {}.",
+        log.display()
+    ))?;
+    let next = p.select(
+        "The local embedder failed. What now?",
+        &[
+            Choice::new("Try again", ""),
+            Choice::new("Continue with keyword search only", ""),
+        ],
+        0,
+    )?;
+    Ok(next == 0)
 }
 
 /// The key question for a non-local URL: the token and the pasted key.
@@ -480,7 +610,7 @@ fn ask_key<P: Prompter>(
         0 => {
             let default = match existing_token {
                 Some(Token::Var(name)) => name.as_str(),
-                _ if provider == 2 => "OPENAI_API_KEY",
+                _ if provider == OPENAI => "OPENAI_API_KEY",
                 _ => "",
             };
             loop {
@@ -625,12 +755,15 @@ fn usable_models(facts: &Facts) -> Option<&Vec<String>> {
     facts.ollama.as_ref().filter(|models| !models.is_empty())
 }
 
-fn initial_provider(existing: Option<&Embedder>) -> usize {
-    match existing.map(|e| e.url.as_str()) {
-        None => 0,
-        Some("http://localhost:11434" | "http://127.0.0.1:11434") => 1,
-        Some(OPENAI_URL) => 2,
-        Some(_) => 3,
+fn initial_provider(existing: Option<&Embedder>, local: &Local) -> usize {
+    match existing {
+        None => NONE,
+        Some(e) if e.url == local.url && e.model == local.model_name => LOCAL,
+        Some(e) => match e.url.as_str() {
+            "http://localhost:11434" | "http://127.0.0.1:11434" => OLLAMA,
+            OPENAI_URL => OPENAI,
+            _ => OTHER,
+        },
     }
 }
 
@@ -652,6 +785,28 @@ fn check_url(text: &str) -> Result<(), String> {
             Err("Leave the user name and password out of the URL".to_string())
         }
         Some(_) => Err("Enter an http:// or https:// URL with a host".to_string()),
+    }
+}
+
+fn check_program(text: &str) -> Result<(), String> {
+    let text = text.trim();
+    if text.is_empty() {
+        return Ok(());
+    }
+    let home = std::env::var_os("HOME").filter(|h| std::path::Path::new(h).is_absolute());
+    let path = if std::path::Path::new(text).is_absolute() {
+        Some(PathBuf::from(text))
+    } else if text.starts_with("~/") {
+        home.map(|h| expand_home(text, Some(std::path::Path::new(&h))))
+    } else {
+        None
+    };
+    match path {
+        Some(path) if crate::command::is_executable(&path) => Ok(()),
+        _ => Err(
+            "Enter the path of an executable llama-server, or leave it empty to go back"
+                .to_string(),
+        ),
     }
 }
 
@@ -865,6 +1020,25 @@ mod tests {
                 }
             }
         }
+        fn progress<T>(
+            &mut self,
+            message: &str,
+            total: u64,
+            work: impl FnOnce(&mut dyn FnMut(u64)) -> Result<T, String>,
+            done: impl FnOnce(&T) -> String,
+        ) -> Result<T, String> {
+            self.log(format!("progress: {message} of {total}"));
+            match work(&mut |_| {}) {
+                Ok(v) => {
+                    self.log(format!("progress done: {}", done(&v)));
+                    Ok(v)
+                }
+                Err(e) => {
+                    self.log(format!("progress error: {e}"));
+                    Err(e)
+                }
+            }
+        }
         fn outro(&mut self, text: &str) -> io::Result<()> {
             self.log(format!("outro: {text}"));
             Ok(())
@@ -888,6 +1062,13 @@ mod tests {
             codex: Some(PathBuf::from("/bin/codex")),
             timer: true,
             timer_minutes: None,
+            local: Local {
+                url: "http://127.0.0.1:8737".to_string(),
+                model_name: "qwen3-embedding-0.6b".to_string(),
+                download_mb: 639,
+                llama_server: Some(PathBuf::from("/bin/llama-server")),
+                unavailable: None,
+            },
         }
     }
 
@@ -923,7 +1104,7 @@ mod tests {
 
     fn openai_paste_script() -> Vec<Answer> {
         with_tail(vec![
-            Answer::Select(2),
+            Answer::Select(OPENAI),
             text(""),
             Answer::No,
             Answer::Select(2),
@@ -933,7 +1114,10 @@ mod tests {
 
     #[test]
     fn keyword_only_asks_nothing_more() {
-        let (r, s) = run(&facts(), vec![Answer::Select(0), Answer::Multi(vec![0, 1])]);
+        let (r, s) = run(
+            &facts(),
+            vec![Answer::Select(NONE), Answer::Multi(vec![0, 1])],
+        );
         let a = r.unwrap();
         assert!(a.embedder.is_none() && a.timer.is_none() && a.dims.is_none());
         assert!(a.claude && a.codex);
@@ -946,7 +1130,7 @@ mod tests {
         f.ollama = Some(vec!["llama3".into(), "nomic-embed-text:latest".into()]);
         let (r, s) = run(
             &f,
-            with_tail(vec![Answer::Select(1), Answer::Default, Answer::No]),
+            with_tail(vec![Answer::Select(OLLAMA), Answer::Default, Answer::No]),
         );
         let e = r.unwrap().embedder.unwrap();
         assert_eq!(e.url, "http://localhost:11434");
@@ -960,7 +1144,7 @@ mod tests {
         let (r, s) = run(
             &facts(),
             with_tail(vec![
-                Answer::Select(1),
+                Answer::Select(OLLAMA),
                 text(""),
                 text("nomic-embed-text"),
                 Answer::No,
@@ -991,7 +1175,7 @@ mod tests {
         f.ollama = Some(vec!["Qwen3-Embedding-0.6B".into()]);
         let (r, _) = run(
             &f,
-            with_tail(vec![Answer::Select(1), Answer::Default, Answer::No]),
+            with_tail(vec![Answer::Select(OLLAMA), Answer::Default, Answer::No]),
         );
         assert_eq!(
             r.unwrap().embedder.unwrap().query_prefix,
@@ -1006,7 +1190,7 @@ mod tests {
         let (r, s) = run(
             &f,
             with_tail(vec![
-                Answer::Select(1),
+                Answer::Select(OLLAMA),
                 Answer::Default,
                 Answer::Yes,
                 Answer::Select(2),
@@ -1029,7 +1213,7 @@ mod tests {
         let (r, s) = run(
             &f,
             with_tail(vec![
-                Answer::Select(1),
+                Answer::Select(OLLAMA),
                 Answer::Default,
                 Answer::Yes,
                 Answer::Select(1),
@@ -1050,7 +1234,7 @@ mod tests {
         let (r, _) = run(
             &f,
             with_tail(vec![
-                Answer::Select(3),
+                Answer::Select(OTHER),
                 text("http://127.0.0.1:8081"),
                 text("my-model"),
                 Answer::Yes,
@@ -1071,7 +1255,7 @@ mod tests {
         let (r, s) = run(
             &facts(),
             with_tail(vec![
-                Answer::Select(1),
+                Answer::Select(OLLAMA),
                 text(""),
                 text("nomic-embed-text"),
                 Answer::No,
@@ -1083,9 +1267,163 @@ mod tests {
     }
 
     #[test]
+    fn local_found_asks_nothing_more() {
+        let (r, s) = run(&facts(), with_tail(vec![Answer::Select(LOCAL)]));
+        let a = r.unwrap();
+        let e = a.embedder.unwrap();
+        assert_eq!(e.url, "http://127.0.0.1:8737");
+        assert_eq!(e.model, "qwen3-embedding-0.6b");
+        assert_eq!(e.query_prefix, config::default_query_prefix(&e.model));
+        assert!(e.token.is_none() && a.pasted.is_none() && a.dims.is_none());
+        assert_eq!(a.local, Some(PathBuf::from("/bin/llama-server")));
+        assert_eq!(a.timer, Some(15));
+        assert!(!s.saw("input:") && !s.saw("API key") && !s.saw("advanced settings"));
+        assert!(!s.saw("spin:"));
+        assert!(s.saw("Local embedder, run by bilbo / llama-server found, 639 MB download"));
+    }
+
+    #[test]
+    fn local_missing_asks_the_path() {
+        let mut f = facts();
+        f.local.llama_server = None;
+        let (r, s) = run(&f, with_tail(vec![Answer::Select(LOCAL), text("/bin/sh")]));
+        let a = r.unwrap();
+        assert_eq!(a.local, Some(PathBuf::from("/bin/sh")));
+        assert!(s.saw("llama-server not found, 639 MB download"));
+        assert!(
+            s.saw("note: llama-server not found\nbilbo runs llama-server but does not install it")
+        );
+        assert!(s.saw("brew install llama.cpp"));
+        assert!(s.saw("input: Path to llama-server default="));
+    }
+
+    #[test]
+    fn local_missing_empty_path_returns_to_the_list() {
+        let mut f = facts();
+        f.local.llama_server = None;
+        let (r, s) = run(
+            &f,
+            vec![
+                Answer::Select(LOCAL),
+                text(""),
+                Answer::Select(NONE),
+                Answer::Multi(vec![0, 1]),
+            ],
+        );
+        let a = r.unwrap();
+        assert!(a.embedder.is_none() && a.local.is_none());
+        let lists = s
+            .shown
+            .iter()
+            .filter(|l| l.starts_with("select: Which embedder"))
+            .count();
+        assert_eq!(lists, 2);
+    }
+
+    #[test]
+    fn local_missing_path_must_be_executable() {
+        assert!(check_program("").is_ok());
+        assert!(check_program("/bin/sh").is_ok());
+        assert!(check_program("/nonexistent/llama-server").is_err());
+        assert!(check_program("llama-server").is_err());
+    }
+
+    #[test]
+    fn local_unavailable_says_why_and_returns_to_the_list() {
+        let mut f = facts();
+        f.local.unavailable = Some("port 8737 is in use".to_string());
+        let (r, s) = run(
+            &f,
+            vec![
+                Answer::Select(LOCAL),
+                Answer::Select(NONE),
+                Answer::Multi(vec![0, 1]),
+            ],
+        );
+        assert!(r.unwrap().embedder.is_none());
+        assert!(s.saw("Local embedder, run by bilbo / port 8737 is in use"));
+        assert!(s.saw("warn: port 8737 is in use"));
+        assert!(!s.saw("note: llama-server not found"));
+    }
+
+    #[test]
+    fn local_preselected_on_rerun() {
+        let mut f = facts();
+        f.existing = Some(embedder("http://127.0.0.1:8737", "qwen3-embedding-0.6b"));
+        let (r, s) = run(&f, with_tail(vec![Answer::Default]));
+        assert!(s.saw("select: Which embedder should recall use? initial=1"));
+        let a = r.unwrap();
+        assert_eq!(a.local, Some(PathBuf::from("/bin/llama-server")));
+        assert_eq!(a.embedder.unwrap().min_similarity, 0.5);
+    }
+
+    #[test]
+    fn local_hint_names_the_download_size() {
+        let mut local = facts().local;
+        assert_eq!(local_hint(&local), "llama-server found, 639 MB download");
+        local.llama_server = None;
+        assert_eq!(
+            local_hint(&local),
+            "llama-server not found, 639 MB download"
+        );
+        local.unavailable = Some("no service manager".to_string());
+        assert_eq!(local_hint(&local), "no service manager");
+    }
+
+    #[test]
+    fn local_failed_retry_and_keyword_only() {
+        let log = std::path::Path::new("/s/bilbo/embedder.log");
+        let mut s = Script::new(vec![Answer::Select(0), Answer::Select(1)]);
+        assert!(local_failed(&mut s, "server failed", log).unwrap());
+        assert!(!local_failed(&mut s, "server failed", log).unwrap());
+        assert!(s.saw("warn: server failed\nThe server's log is /s/bilbo/embedder.log."));
+        assert!(s.saw("The local embedder failed. What now? initial=0 [Try again / ; Continue with keyword search only / ]"));
+    }
+
+    #[test]
+    fn local_timer_is_still_asked() {
+        let mut f = facts();
+        f.timer_minutes = Some(30);
+        let (r, s) = run(
+            &f,
+            vec![
+                Answer::Select(LOCAL),
+                Answer::Multi(vec![]),
+                Answer::Default,
+                Answer::Default,
+            ],
+        );
+        assert_eq!(r.unwrap().timer, Some(30));
+        assert!(s.saw("Keep the index fresh in the background? initial=1"));
+    }
+
+    #[test]
+    fn progress_runs_the_work_under_the_bar() {
+        let mut s = Script::new(vec![]);
+        let seen = std::cell::Cell::new(0);
+        let got = s.progress(
+            "Downloading",
+            10,
+            |report| {
+                report(10);
+                seen.set(1);
+                Ok(7)
+            },
+            |n| format!("done {n}"),
+        );
+        assert_eq!(got, Ok(7));
+        assert_eq!(seen.get(), 1);
+        assert!(s.saw("progress: Downloading of 10") && s.saw("progress done: done 7"));
+        let err: Result<(), String> =
+            s.progress("Downloading", 10, |_| Err("boom".into()), |_| String::new());
+        assert_eq!(err, Err("boom".to_string()));
+        assert!(s.saw("progress error: boom"));
+    }
+
+    #[test]
     fn unset_variable_warns_and_asks_again() {
         let mut script = Script::new(with_tail(vec![
-            Answer::Select(2),
+            Answer::Select(OPENAI),
             text(""),
             Answer::No,
             Answer::Select(0),
@@ -1129,7 +1467,7 @@ mod tests {
         let (r, _) = run(
             &facts(),
             with_tail(vec![
-                Answer::Select(2),
+                Answer::Select(OPENAI),
                 text(""),
                 Answer::No,
                 Answer::Select(1),
@@ -1153,7 +1491,7 @@ mod tests {
         let (r, s) = run(
             &f,
             with_tail(vec![
-                Answer::Select(2),
+                Answer::Select(OPENAI),
                 text(""),
                 Answer::No,
                 Answer::Select(2),
@@ -1174,7 +1512,7 @@ mod tests {
     fn check_failure_retry() {
         let calls = std::cell::Cell::new(0);
         let mut script = Script::new(with_tail(vec![
-            Answer::Select(2),
+            Answer::Select(OPENAI),
             text(""),
             Answer::No,
             Answer::Select(3),
@@ -1203,7 +1541,7 @@ mod tests {
     fn check_failure_change_goes_back() {
         let calls = std::cell::Cell::new(0);
         let mut script = Script::new(with_tail(vec![
-            Answer::Select(2),
+            Answer::Select(OPENAI),
             text(""),
             Answer::No,
             Answer::Select(3),
@@ -1236,7 +1574,7 @@ mod tests {
     #[test]
     fn check_failure_keyword_only() {
         let mut script = Script::new(vec![
-            Answer::Select(2),
+            Answer::Select(OPENAI),
             text(""),
             Answer::No,
             Answer::Select(3),
@@ -1259,7 +1597,7 @@ mod tests {
     #[test]
     fn rejected_key_shows_url_and_status_not_the_key() {
         let mut script = Script::new(vec![
-            Answer::Select(2),
+            Answer::Select(OPENAI),
             text(""),
             Answer::No,
             Answer::Select(2),
@@ -1283,7 +1621,7 @@ mod tests {
 
     #[test]
     fn untick_codex() {
-        let (r, _) = run(&facts(), vec![Answer::Select(0), Answer::Multi(vec![0])]);
+        let (r, _) = run(&facts(), vec![Answer::Select(NONE), Answer::Multi(vec![0])]);
         let a = r.unwrap();
         assert!(a.claude && !a.codex);
     }
@@ -1292,7 +1630,7 @@ mod tests {
     fn only_codex_found_maps_the_tick_back() {
         let mut f = facts();
         f.claude = None;
-        let (r, s) = run(&f, vec![Answer::Select(0), Answer::Multi(vec![0])]);
+        let (r, s) = run(&f, vec![Answer::Select(NONE), Answer::Multi(vec![0])]);
         let a = r.unwrap();
         assert!(!a.claude && a.codex);
         assert!(s.saw("Codex / /bin/codex") && !s.saw("Claude Code / "));
@@ -1303,7 +1641,7 @@ mod tests {
         let mut f = facts();
         f.claude = None;
         f.codex = None;
-        let (r, s) = run(&f, vec![Answer::Select(0)]);
+        let (r, s) = run(&f, vec![Answer::Select(NONE)]);
         let a = r.unwrap();
         assert!(!a.claude && !a.codex);
         assert!(s.saw("info: Neither claude nor codex was found, so the plugin is skipped."));
@@ -1314,7 +1652,7 @@ mod tests {
     fn timer_choices() {
         let head = || {
             vec![
-                Answer::Select(2),
+                Answer::Select(OPENAI),
                 text(""),
                 Answer::No,
                 Answer::Select(3),
@@ -1343,7 +1681,7 @@ mod tests {
         let (r, s) = run(
             &facts(),
             with_tail(vec![
-                Answer::Select(2),
+                Answer::Select(OPENAI),
                 text(""),
                 Answer::No,
                 Answer::Select(0),
@@ -1403,7 +1741,7 @@ mod tests {
         let (r, s) = run(
             &f,
             vec![
-                Answer::Select(2),
+                Answer::Select(OPENAI),
                 text(""),
                 Answer::No,
                 Answer::Select(3),
