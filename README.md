@@ -1,8 +1,31 @@
 # bilbo
 
-Durable memory for coding agents: notes they write and recall, and a library
-of sources they cite. The `bilbo` command creates, checks, searches and
-indexes those notes.
+Durable memory for coding agents: Markdown notes an agent writes in one
+session and finds again in the next.
+
+Agents re-derive what an earlier session already worked out. bilbo gives them
+a store of plain Markdown notes they write with their own file tools, and a
+`bilbo` command that starts, checks, searches and indexes those notes. A
+`recall` skill for Claude Code and Codex puts the search in the agent's hands.
+
+- **Plain files.** One note per topic in `<root>/notes/`, named
+  `<kind>-<topic>.md`, with a small YAML frontmatter. Read, edit, grep or
+  version them like any other file.
+- **Keyword search out of the box, meaning search with an embedder.** Point
+  bilbo at Ollama, OpenAI or any OpenAI-compatible URL, or let it run a local
+  model, and `recall` finds notes that share no word with the query.
+- **Agent plugin.** `bilbo setup` installs the plugin in Claude Code and Codex
+  and a timer that keeps the index current.
+
+## Contents
+
+- [Install](#install)
+- [Quick start](#quick-start)
+- [Usage](#usage)
+- [Set up](#set-up)
+- [Configuration](#configuration)
+- [Contributing](#contributing)
+- [License](#license)
 
 ## Install
 
@@ -43,11 +66,100 @@ inputs.bilbo = {
 `inputs.nixpkgs-unstable.follows` is optional: only the dev shell reads that
 input.
 
-## Set up
+## Quick start
 
 ```sh
 curl --proto '=https' --tlsv1.2 -LsSf https://github.com/delucca/bilbo/releases/latest/download/bilbo-installer.sh | sh && bilbo setup
 ```
+
+In a terminal, `bilbo setup` asks which embedder to use, then creates the
+store and installs the plugin. Ask your agent to "recall" something, or try the
+command yourself:
+
+```sh
+bilbo new gotcha sqlite-busy-timeout --title "SQLite needs a busy timeout"
+# edit the file it prints, then:
+bilbo recall busy timeout
+```
+
+## Usage
+
+### Notes
+
+A note is one Markdown file in `<root>/notes/`, named `<kind>-<topic>.md`. The
+kind is one of `plan`, `spec`, `design`, `decision`, `gotcha`, `research`,
+`review`, `report` or `reference`; the topic is lowercase kebab-case, and a
+topic has at most one note whatever its kind. `bilbo new` writes the
+frontmatter and the title; the agent writes the rest:
+
+```markdown
+---
+id: 01M419P9SCTSHK92P636TZR72R
+created: 2026-10-03T13:31-03:00
+sources:
+  - "url: https://www.sqlite.org/c3ref/busy_timeout.html"
+---
+
+# SQLite needs a busy timeout
+
+Two writers on the same database file fail with `SQLITE_BUSY` unless each
+connection sets `PRAGMA busy_timeout`.
+
+## Fix
+
+Set `busy_timeout = 5000` right after opening the connection.
+```
+
+`id` is a ULID and `created` the local time to the minute. `sources` is
+optional, each item a quoted `<type>: <value>` with the type `url`, `code`,
+`doc` or `search`. No other key is allowed. The store root is `$BILBO_HOME`,
+else `$XDG_DATA_HOME/bilbo`, else `~/.local/share/bilbo`, on macOS too.
+
+### Commands
+
+| Command | What it does |
+| --- | --- |
+| `bilbo new <kind> <topic> [--title <text>]` | Creates the note and prints its path. Exits 1 when the topic already has a note. |
+| `bilbo check` | Prints every problem in the store, one per line, and changes nothing. Exits 1 when it finds any. |
+| `bilbo recall <query>... [--kind <kind>]... [--limit <n>]` | Prints the notes that best match, best first, 10 by default. Exits 1 when nothing matches. |
+| `bilbo index` | Embeds the passages the vector cache lacks and drops the ones no note holds any more. |
+| `bilbo setup` | See [Set up](#set-up). |
+
+`recall` prints one block per note: the path and line of the best passage, the
+kind and `created` (tab-separated), then the passage's heading path, then the
+first 300 characters of its text:
+
+```console
+$ bilbo recall busy timeout
+/Users/me/.local/share/bilbo/notes/gotcha-sqlite-busy-timeout.md:13	gotcha	2026-10-03T13:31-03:00
+SQLite needs a busy timeout > Fix
+Set `busy_timeout = 5000` right after opening the connection.
+```
+
+Without an embedder, `recall` matches whole words, ignoring case and accents.
+With one, it fuses that order with a ranking by meaning. When the embedder is
+down it falls back to keywords and says so on stderr; passages written since
+the last `bilbo index` rank by keywords only, and `recall` says that too.
+
+`check` lints the whole store against the note rules, so mistakes an agent
+makes while editing files by hand surface without bilbo blocking anything:
+
+```console
+$ bilbo check
+notes/plan-broken.md: created: missing
+notes/plan-broken.md: title: missing; add one '# <title>' line after the frontmatter
+```
+
+`bilbo --help` prints the full usage.
+
+### From an agent
+
+The bilbo plugin gives Claude Code and Codex a `recall` skill. It runs
+`bilbo recall` with the user's words, retries twice in the note's likely
+wording when nothing matches, and offers to open a hit. It searches through
+`bilbo` only: when the binary is missing, it says so and stops.
+
+## Set up
 
 `bilbo setup` plans every step, shows the plan, asks once, then applies it and
 prints one line per step (`created`, `written`, `kept`, `installed`, `failed`,
@@ -101,8 +213,6 @@ bilbo setup --yes \
 | `--plugin-source <folder\|owner/repo#ref>` | Install the plugin from here instead of the default source. |
 | `--no-timer` | Skip the index timer. |
 | `--index-every <minutes>` | Timer interval, 1 to 1440. |
-
-`bilbo --help` lists them all.
 
 The timer does not inherit your shell's environment, so it cannot read a key
 from a variable. Keep the key in a file (`--embedder-token-file`, or paste it
@@ -182,11 +292,10 @@ inputs.bilbo = {
 }
 ```
 
-`settings` takes `embedder.url`, `embedder.model`, `embedder.token_file`,
-`embedder.token_env`, `embedder.query_prefix` and `embedder.min_similarity`.
-Combining `index.enable` with `embedder.token_env` fails evaluation, for the
-reason above: use `embedder.token_file`. `package` defaults to this flake's
-`bilbo` for the system.
+`settings` takes the keys in [Configuration](#configuration). Combining
+`index.enable` with `embedder.token_env` fails evaluation, for the reason
+above: use `embedder.token_file`. `package` defaults to this flake's `bilbo`
+for the system.
 
 To run the [local embedder](#local-embedder) instead, leave `embedder.url` and
 `embedder.model` unset and enable it:
@@ -198,3 +307,43 @@ programs.bilbo.localEmbedder.enable = true;
 It writes the local URL, the model and the Qwen query prefix into the config
 itself. It also takes `port` (default 8737) and `llamaServer` (default nixpkgs'
 `llama-server`). Setting another `embedder.url` or `embedder.model` alongside it fails evaluation.
+
+## Configuration
+
+`bilbo setup` writes the config, and you can edit it by hand. It lives at
+`$BILBO_CONFIG`, else `$XDG_CONFIG_HOME/bilbo/config`, else
+`~/.config/bilbo/config`. It holds one `<key> = <value>` per line; blank lines
+and lines starting with `#` are ignored:
+
+```
+embedder.url = http://localhost:11434
+embedder.model = nomic-embed-text
+```
+
+| Key | Meaning |
+| --- | --- |
+| `embedder.url` | An `http` or `https` URL serving `/v1/embeddings`. Without it, bilbo is keyword-only. |
+| `embedder.model` | The model name. Required with a URL. |
+| `embedder.token_file`, `embedder.token_env` | Where the bearer token lives: a file (absolute or `~/`) or a variable. At most one. |
+| `embedder.query_prefix` | Text put before every query. Empty by default. |
+| `embedder.min_similarity` | How close a passage must be to enter the meaning ranking, 0 to 1. Default 0.5. |
+
+bilbo never prints the token. The vector cache lives under
+`$XDG_CACHE_HOME/bilbo`, else `~/.cache/bilbo`; deleting it loses nothing that
+`bilbo index` cannot rebuild.
+
+## Contributing
+
+Pull requests are welcome. Behavior changes start as an
+[OpenSpec](https://github.com/Fission-AI/OpenSpec) change under
+[`openspec/changes/`](openspec/changes/), and [`openspec/specs/`](openspec/specs/)
+holds the current contract for each command. [`AGENTS.md`](AGENTS.md) has the
+commands CI runs and the rules the code follows. In short, with Nix:
+
+```sh
+nix develop -c cargo test --locked
+```
+
+## License
+
+[Apache-2.0](LICENSE)
