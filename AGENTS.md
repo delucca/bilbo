@@ -166,7 +166,9 @@ pins the build.
   elsewhere.
 - `.github/workflows/ci.yml`: the `verify` job runs the Verification line on
   every PR and every push to main, and the `main pull requests` ruleset requires
-  it and the `nix` job. It runs Rust 1.95.0, the `rust-version` floor, and so
+  it and the `nix` job. It then runs the tests again with the version bumped to
+  99.99.99, so a test that hardcodes the current version fails before a release
+  bump does. It runs Rust 1.95.0, the `rust-version` floor, and so
   does the dev shell, from the nixpkgs 26.05 pinned in `flake.lock`; a lock bump
   can bring a newer clippy that flags lints CI does not. Bump the toolchain with
   `rust-version`. The `nix` job runs `nix flake check -L` and evaluates the
