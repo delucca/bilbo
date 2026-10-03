@@ -1768,6 +1768,26 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// Writes an executable through a child `sh`, so this process never holds it open for
+    /// writing: a test forking at that moment would inherit the descriptor, and running the
+    /// file would fail with "Text file busy" on Linux (rust-lang/rust#114554).
+    fn write_script(path: &Path, text: &str) {
+        use std::io::Write;
+        let mut child = std::process::Command::new("/bin/sh")
+            .args(["-c", r#"cat > "$1" && chmod 755 "$1""#, "sh"])
+            .arg(path)
+            .stdin(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(text.as_bytes())
+            .unwrap();
+        assert!(child.wait().unwrap().success());
+    }
+
     fn scratch(name: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("bilbo-setup-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
@@ -1990,23 +2010,18 @@ mod tests {
 
     #[test]
     fn first_index_runs_the_binary_with_the_verb() {
-        use std::os::unix::fs::PermissionsExt;
         let dir = scratch("run-index");
         let exe = dir.join("fake");
-        std::fs::write(
+        write_script(
             &exe,
             "#!/bin/sh\nif [ \"$1\" = index ]; then echo 'embedded 2, kept 0, dropped 0'; echo second; else exit 3; fi\n",
-        )
-        .unwrap();
-        std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();
+        );
         assert_eq!(run_index(&exe).unwrap(), "embedded 2, kept 0, dropped 0");
         let failing = dir.join("failing");
-        std::fs::write(
+        write_script(
             &failing,
             "#!/bin/sh\necho 'bilbo: no embedder' >&2\necho 'bilbo: more' >&2\nexit 1\n",
-        )
-        .unwrap();
-        std::fs::set_permissions(&failing, std::fs::Permissions::from_mode(0o755)).unwrap();
+        );
         assert_eq!(run_index(&failing).unwrap_err(), "no embedder\nmore");
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -2209,10 +2224,7 @@ mod tests {
             }
             /// An executable that does nothing, on this box's PATH.
             fn tool(&self, name: &str) {
-                use std::os::unix::fs::PermissionsExt;
-                let file = self.bin.join(name);
-                std::fs::write(&file, "#!/bin/sh\nexit 0\n").unwrap();
-                std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o755)).unwrap();
+                super::write_script(&self.bin.join(name), "#!/bin/sh\nexit 0\n");
             }
             fn manager(&self) -> &'static str {
                 let name = if cfg!(target_os = "macos") {
