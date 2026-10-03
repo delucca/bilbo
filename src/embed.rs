@@ -43,7 +43,16 @@ impl Client {
             Some(token) => Some(read_token(token, var)?),
             None => None,
         };
-        Ok(Client {
+        Ok(Client::with_token(embedder, token, timeout))
+    }
+
+    /// For a key already in memory, such as one pasted into the wizard.
+    pub fn with_token(
+        embedder: &config::Embedder,
+        token: Option<String>,
+        timeout: Duration,
+    ) -> Client {
+        Client {
             agent: ureq::Agent::config_builder()
                 .timeout_global(Some(timeout))
                 .build()
@@ -53,7 +62,7 @@ impl Client {
             model: embedder.model.clone(),
             token,
             timeout,
-        })
+        }
     }
 
     /// One request for 1 to `BATCH` inputs: one unit vector per input, all of one length, in input order.
@@ -134,6 +143,30 @@ impl Client {
     fn timeout(&self) -> Option<Duration> {
         self.agent.config().timeouts().global
     }
+}
+
+#[derive(serde::Deserialize)]
+struct Tags {
+    models: Vec<Model>,
+}
+
+#[derive(serde::Deserialize)]
+struct Model {
+    name: String,
+}
+
+/// The model names of the Ollama at `url` (`GET <url>/api/tags`, `{"models":[{"name":…}]}`), or None when it does not answer in `timeout` or answers something else.
+pub fn ollama_models(url: &str, timeout: Duration) -> Option<Vec<String>> {
+    let agent: ureq::Agent = ureq::Agent::config_builder()
+        .timeout_global(Some(timeout))
+        .build()
+        .into();
+    let mut response = agent
+        .get(format!("{}/api/tags", url.trim_end_matches('/')))
+        .call()
+        .ok()?;
+    let tags = response.body_mut().read_json::<Tags>().ok()?;
+    Some(tags.models.into_iter().map(|m| m.name).collect())
 }
 
 /// The unit vector, or all zeros for a zero vector; `None` when the norm is not finite.
@@ -568,5 +601,55 @@ mod tests {
         })
         .unwrap_err();
         assert!(!leaks(&message), "{message}");
+    }
+
+    #[test]
+    fn with_token_sends_the_bearer() {
+        let (url, handle) = serve_once(&ok(r#"{"data":[{"embedding":[1,0]}]}"#));
+        let client = Client::with_token(
+            &embedder(&url, None),
+            Some(TOKEN.to_string()),
+            Duration::from_secs(5),
+        );
+        client.embed(&texts(1)).unwrap();
+        let raw = handle.join().unwrap();
+        assert!(
+            raw.to_ascii_lowercase()
+                .contains(&format!("authorization: bearer {TOKEN}").to_ascii_lowercase())
+        );
+    }
+
+    #[test]
+    fn ollama_models_lists_names() {
+        let body = r#"{"models":[{"name":"llama3","size":1},{"name":"nomic-embed-text:latest"}]}"#;
+        let (url, handle) = serve_once(&ok(body));
+        let names = ollama_models(&url, Duration::from_secs(5));
+        let raw = handle.join().unwrap();
+        assert!(raw.starts_with("GET /api/tags HTTP/1.1\r\n"), "{raw}");
+        assert_eq!(
+            names,
+            Some(vec![
+                "llama3".to_string(),
+                "nomic-embed-text:latest".to_string()
+            ])
+        );
+    }
+
+    #[test]
+    fn ollama_models_none_when_dead() {
+        let port = TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        let url = format!("http://127.0.0.1:{port}");
+        assert_eq!(ollama_models(&url, Duration::from_secs(1)), None);
+    }
+
+    #[test]
+    fn ollama_models_none_on_bad_body() {
+        let (url, handle) = serve_once(&ok(r#"{"data":[]}"#));
+        assert_eq!(ollama_models(&url, Duration::from_secs(5)), None);
+        handle.join().unwrap();
     }
 }

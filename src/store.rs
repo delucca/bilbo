@@ -11,6 +11,7 @@ pub struct Env {
     pub bilbo_config: Option<OsString>,
     pub xdg_config_home: Option<OsString>,
     pub xdg_cache_home: Option<OsString>,
+    pub xdg_state_home: Option<OsString>,
 }
 
 impl Env {
@@ -27,6 +28,7 @@ impl Env {
             bilbo_config: var("BILBO_CONFIG"),
             xdg_config_home: var("XDG_CONFIG_HOME"),
             xdg_cache_home: var("XDG_CACHE_HOME"),
+            xdg_state_home: var("XDG_STATE_HOME"),
         }
     }
 }
@@ -60,6 +62,16 @@ pub fn root(env: &Env) -> Result<PathBuf, String> {
         return Ok(home.join(".local/share/bilbo"));
     }
     Err("cannot find the store root: set BILBO_HOME, or HOME, to an absolute path".into())
+}
+
+/// `$XDG_STATE_HOME` when absolute, else `$HOME/.local/state`; `None` without either.
+pub fn state_dir(env: &Env) -> Option<PathBuf> {
+    absolute(&env.xdg_state_home).or_else(|| absolute(&env.home).map(|h| h.join(".local/state")))
+}
+
+/// `$XDG_CONFIG_HOME` when absolute, else `$HOME/.config`; `None` without either.
+pub fn config_home(env: &Env) -> Option<PathBuf> {
+    absolute(&env.xdg_config_home).or_else(|| absolute(&env.home).map(|h| h.join(".config")))
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -159,6 +171,7 @@ mod tests {
             bilbo_config: None,
             xdg_config_home: None,
             xdg_cache_home: None,
+            xdg_state_home: None,
         }
     }
 
@@ -171,6 +184,7 @@ mod tests {
             ("BILBO_CONFIG", "/d"),
             ("XDG_CONFIG_HOME", "/e"),
             ("XDG_CACHE_HOME", "/f"),
+            ("XDG_STATE_HOME", "/g"),
         ];
         let lookup = |name: &str| {
             table
@@ -185,6 +199,7 @@ mod tests {
         assert_eq!(e.bilbo_config, Some(OsString::from("/d")));
         assert_eq!(e.xdg_config_home, Some(OsString::from("/e")));
         assert_eq!(e.xdg_cache_home, Some(OsString::from("/f")));
+        assert_eq!(e.xdg_state_home, Some(OsString::from("/g")));
         let none = Env::from_vars(|_| None);
         assert!(none.bilbo_config.is_none() && none.xdg_cache_home.is_none());
     }
@@ -237,6 +252,33 @@ mod tests {
     fn no_home_is_an_error() {
         assert!(root(&env(None, None, None)).is_err());
         assert!(root(&env(None, Some(""), Some("home"))).is_err());
+    }
+
+    #[test]
+    fn state_dir_prefers_absolute_xdg_state_home() {
+        let mut e = env(None, None, Some("/home/a"));
+        e.xdg_state_home = Some(OsString::from("/s"));
+        assert_eq!(state_dir(&e), Some(PathBuf::from("/s")));
+        e.xdg_state_home = Some(OsString::from("rel"));
+        assert_eq!(state_dir(&e), Some(PathBuf::from("/home/a/.local/state")));
+    }
+
+    #[test]
+    fn state_dir_falls_back_to_home() {
+        let e = env(None, None, Some("/home/a"));
+        assert_eq!(state_dir(&e), Some(PathBuf::from("/home/a/.local/state")));
+        assert_eq!(state_dir(&env(None, None, None)), None);
+    }
+
+    #[test]
+    fn config_home_rules() {
+        let mut e = env(None, None, Some("/home/a"));
+        assert_eq!(config_home(&e), Some(PathBuf::from("/home/a/.config")));
+        e.xdg_config_home = Some(OsString::from("/c"));
+        assert_eq!(config_home(&e), Some(PathBuf::from("/c")));
+        e.xdg_config_home = Some(OsString::from("rel"));
+        assert_eq!(config_home(&e), Some(PathBuf::from("/home/a/.config")));
+        assert_eq!(config_home(&env(None, None, None)), None);
     }
 
     struct Scratch(PathBuf);

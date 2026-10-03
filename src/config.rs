@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 
 pub const DEFAULT_MIN_SIMILARITY: f64 = 0.5;
 
-const KEYS: [&str; 6] = [
+pub const KEYS: [&str; 6] = [
     "embedder.url",
     "embedder.model",
     "embedder.token_file",
@@ -11,6 +11,8 @@ const KEYS: [&str; 6] = [
     "embedder.query_prefix",
     "embedder.min_similarity",
 ];
+
+pub const QWEN_PREFIX: &str = "Instruct: Given a question, retrieve notes that answer it\nQuery: ";
 
 #[derive(Debug)]
 pub struct Settings {
@@ -37,10 +39,9 @@ pub enum Token {
     Var(String),
 }
 
-/// The settings, or the message for a config error, without the `bilbo: ` prefix.
-pub fn load(env: &Env) -> Result<Settings, String> {
-    let (path, explicit) = if let Some(value) = env.bilbo_config.as_ref().filter(|v| !v.is_empty())
-    {
+/// The config file and whether BILBO_CONFIG named it; Ok(None) without BILBO_CONFIG, XDG_CONFIG_HOME or HOME.
+pub fn path(env: &Env) -> Result<Option<(PathBuf, bool)>, String> {
+    if let Some(value) = env.bilbo_config.as_ref().filter(|v| !v.is_empty()) {
         let path = PathBuf::from(value);
         if !path.is_absolute() {
             return Err(format!(
@@ -48,12 +49,14 @@ pub fn load(env: &Env) -> Result<Settings, String> {
                 path.display()
             ));
         }
-        (path, true)
-    } else if let Some(xdg) = store::absolute(&env.xdg_config_home) {
-        (xdg.join("bilbo/config"), false)
-    } else if let Some(home) = store::absolute(&env.home) {
-        (home.join(".config/bilbo/config"), false)
-    } else {
+        return Ok(Some((path, true)));
+    }
+    Ok(store::config_home(env).map(|home| (home.join("bilbo/config"), false)))
+}
+
+/// The settings, or the message for a config error, without the `bilbo: ` prefix.
+pub fn load(env: &Env) -> Result<Settings, String> {
+    let Some((path, explicit)) = path(env)? else {
         return Ok(Settings {
             path: None,
             embedder: None,
@@ -254,20 +257,26 @@ enum UrlError {
     Shape,
 }
 
-fn check_url(url: &str) -> Result<(), UrlError> {
+const URL_CREDENTIALS: &str = "must not hold a user name or password";
+const URL_SHAPE: &str = "must be an http:// or https:// URL with a host";
+
+/// Why `url` is not a valid embedder.url, or None: "must not hold a user name or password" | "must be an http:// or https:// URL with a host"
+pub fn url_problem(url: &str) -> Option<&'static str> {
     let authority = match url.split_once("://") {
         Some((_, rest)) => rest.split(['/', '?', '#']).next().unwrap_or(""),
         None => url,
     };
     if authority.contains('@') {
-        return Err(UrlError::Credentials);
+        return Some(URL_CREDENTIALS);
     }
-    let rest = url
+    let Some(rest) = url
         .strip_prefix("http://")
         .or_else(|| url.strip_prefix("https://"))
-        .ok_or(UrlError::Shape)?;
+    else {
+        return Some(URL_SHAPE);
+    };
     if url.chars().any(|c| c.is_whitespace() || c.is_control()) {
-        return Err(UrlError::Shape);
+        return Some(URL_SHAPE);
     }
     let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
     let host = match authority.rfind(':') {
@@ -275,12 +284,109 @@ fn check_url(url: &str) -> Result<(), UrlError> {
         None => authority,
     };
     if host.is_empty() {
-        return Err(UrlError::Shape);
+        return Some(URL_SHAPE);
     }
-    Ok(())
+    None
 }
 
-fn is_variable_name(name: &str) -> bool {
+fn check_url(url: &str) -> Result<(), UrlError> {
+    match url_problem(url) {
+        None => Ok(()),
+        Some(URL_CREDENTIALS) => Err(UrlError::Credentials),
+        Some(_) => Err(UrlError::Shape),
+    }
+}
+
+/// The URL's host (lowercased, [ ] stripped) is localhost, 127.0.0.1 or ::1.
+pub fn is_local(url: &str) -> bool {
+    let Some((_, rest)) = url.split_once("://") else {
+        return false;
+    };
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
+    let host = match authority.strip_prefix('[') {
+        Some(inner) => inner.split(']').next().unwrap_or(""),
+        None => match authority.rfind(':') {
+            Some(at) => &authority[..at],
+            None => authority,
+        },
+    };
+    matches!(
+        host.to_ascii_lowercase().as_str(),
+        "localhost" | "127.0.0.1" | "::1"
+    )
+}
+
+/// QWEN_PREFIX when the model, lowercased, holds "qwen3-embedding"; "" otherwise.
+pub fn default_query_prefix(model: &str) -> &'static str {
+    if model.to_lowercase().contains("qwen3-embedding") {
+        QWEN_PREFIX
+    } else {
+        ""
+    }
+}
+
+/// The value as written in the file (design.md's quoting rule).
+pub fn quote(value: &str) -> String {
+    let edge = |c: char| c == ' ' || c == '\t';
+    let quoted = value.is_empty()
+        || value.starts_with(edge)
+        || value.ends_with(edge)
+        || value.starts_with('"')
+        || value.contains(['\n', '\r']);
+    if !quoted {
+        return value.replace('\\', "\\\\");
+    }
+    let mut out = String::from("\"");
+    for c in value.chars() {
+        match c {
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '"' => out.push_str("\\\""),
+            _ => out.push(c),
+        }
+    }
+    out.push('"');
+    out
+}
+
+/// (key, value) pairs of `e` in KEYS order: url, model, token_file (absolute path) or token_env, query_prefix if not empty, min_similarity if != 0.5 (written with `{}`).
+pub fn settings(e: &Embedder) -> Vec<(&'static str, String)> {
+    let mut out = vec![
+        ("embedder.url", e.url.clone()),
+        ("embedder.model", e.model.clone()),
+    ];
+    match &e.token {
+        Some(Token::File(path)) => out.push(("embedder.token_file", path.display().to_string())),
+        Some(Token::Var(name)) => out.push(("embedder.token_env", name.clone())),
+        None => {}
+    }
+    if !e.query_prefix.is_empty() {
+        out.push(("embedder.query_prefix", e.query_prefix.clone()));
+    }
+    if e.min_similarity != DEFAULT_MIN_SIMILARITY {
+        out.push(("embedder.min_similarity", format!("{}", e.min_similarity)));
+    }
+    out
+}
+
+/// `header` (one comment line, no newline), then `key = quote(value)` lines, or the example block when `settings` is empty.
+pub fn render(header: &str, settings: &[(&'static str, String)]) -> String {
+    let mut out = format!("{header}\n");
+    if settings.is_empty() {
+        out.push_str(
+            "# One <key> = <value> per line; the keys are in bilbo's config spec.\n\
+             # To search by meaning as well as by keywords, set an embedder:\n\
+             # embedder.url = http://localhost:11434\n\
+             # embedder.model = nomic-embed-text\n",
+        );
+    }
+    for (key, value) in settings {
+        out.push_str(&format!("{key} = {}\n", quote(value)));
+    }
+    out
+}
+
+pub fn is_variable_name(name: &str) -> bool {
     let mut chars = name.chars();
     chars
         .next()
@@ -777,5 +883,108 @@ mod tests {
         assert_eq!(e.query_prefix, "");
         assert_eq!(e.min_similarity, 0.5);
         assert_eq!(e.token, None);
+    }
+
+    #[test]
+    fn quote_round_trips() {
+        for value in [
+            "http://bagend:8081",
+            "  spaced  ",
+            "C:\\x\\y",
+            "\"starts with quote",
+            "a \"middle\" quote",
+            "#hash",
+            "a=b",
+            QWEN_PREFIX,
+        ] {
+            let text = format!(
+                "embedder.url = http://x\nembedder.model = m\nembedder.query_prefix = {}\n",
+                quote(value)
+            );
+            assert_eq!(embedder(&text).query_prefix, value, "{value:?}");
+        }
+    }
+
+    #[test]
+    fn render_empty_is_comments_only() {
+        let text = render("# bilbo config", &[]);
+        assert!(text.starts_with("# bilbo config\n# One <key> = <value> per line"));
+        assert!(text.ends_with("# embedder.model = nomic-embed-text\n"));
+        assert_eq!(parsed(&text), Ok(None));
+    }
+
+    #[test]
+    fn render_settings_parse_back() {
+        let e = Embedder {
+            url: "http://bagend:8081".into(),
+            model: "qwen3-embedding-0.6b".into(),
+            token: Some(Token::File(PathBuf::from("/home/a/.config/bilbo/token"))),
+            query_prefix: QWEN_PREFIX.into(),
+            min_similarity: 0.6,
+        };
+        let pairs = settings(&e);
+        assert_eq!(pairs[0].0, "embedder.url");
+        assert_eq!(pairs.last().unwrap().0, "embedder.min_similarity");
+        let text = render("# h", &pairs);
+        assert_eq!(embedder(&text), e);
+    }
+
+    #[test]
+    fn default_query_prefix_cases() {
+        assert_eq!(default_query_prefix("Qwen3-Embedding-0.6B"), QWEN_PREFIX);
+        assert_eq!(default_query_prefix("qwen3-embedding-0.6b"), QWEN_PREFIX);
+        assert_eq!(default_query_prefix("text-embedding-3-small"), "");
+    }
+
+    #[test]
+    fn is_local_cases() {
+        for yes in [
+            "http://localhost:11434",
+            "http://127.0.0.1:1",
+            "http://[::1]:1",
+            "HTTP://LocalHost",
+        ] {
+            assert!(is_local(yes), "{yes}");
+        }
+        for no in [
+            "http://bagend:8081",
+            "https://api.openai.com",
+            "http://localhost.evil.com",
+        ] {
+            assert!(!is_local(no), "{no}");
+        }
+    }
+
+    #[test]
+    fn path_rules() {
+        let explicit = Env {
+            bilbo_config: os("/etc/b"),
+            home: os("/home/a"),
+            ..env()
+        };
+        assert_eq!(path(&explicit), Ok(Some((PathBuf::from("/etc/b"), true))));
+        let xdg = Env {
+            xdg_config_home: os("/x"),
+            home: os("/home/a"),
+            ..env()
+        };
+        assert_eq!(
+            path(&xdg),
+            Ok(Some((PathBuf::from("/x/bilbo/config"), false)))
+        );
+        let home = Env {
+            home: os("/home/a"),
+            ..env()
+        };
+        assert_eq!(
+            path(&home),
+            Ok(Some((PathBuf::from("/home/a/.config/bilbo/config"), false)))
+        );
+        assert_eq!(path(&env()), Ok(None));
+        let relative = Env {
+            bilbo_config: os("conf"),
+            ..env()
+        };
+        assert!(path(&relative).is_err());
     }
 }
