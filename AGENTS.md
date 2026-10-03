@@ -43,8 +43,11 @@ of sources they cite. The product frame and vocabulary live in
 ## Architecture
 
 One crate, binary `bilbo`. Dependencies: `jiff`, `ureq` (HTTP and TLS, with
-its `json` feature) and `serde`; `serde_json` is a dev-dependency for the fake
-embedder. `Cargo.lock` is committed and pins the build.
+its `json` feature), `serde`, `serde_json` (the agent CLIs' JSON and the fake
+embedder), `cliclack` (the wizard, only in `src/wizard.rs`), `libc` (the
+wizard's guard that keeps the tty from echoing a pasted key, only in
+`src/wizard.rs`) and `zeroize` (the pasted key). `Cargo.lock` is committed and
+pins the build.
 
 - `Cargo.toml`: manifest.
 - `flake.nix` and `flake.lock`: the Nix flake (`distribution` spec), for
@@ -52,7 +55,13 @@ embedder. `Cargo.lock` is committed and pins the build.
   `bilbo` from `Cargo.lock` and runs the tests in its check phase. Its `src`
   is a `lib.fileset`, so a new file the build or the tests read must join it.
   It copies `plugins/bilbo/` and both marketplaces into `share/bilbo/`, which
-  is a local marketplace either tool can add by path. `devShells.default`
+  is a local marketplace either tool can add by path. `homeManagerModules.default`
+  (`programs.bilbo`; `setup` spec) is a thin wrapper: it writes the config from
+  `settings` and runs `bilbo setup --yes` on activation, passing the store root
+  and home-manager's XDG folders itself, because activation reads no session
+  variables. The `home-manager` input is read only by the `home-manager-module`
+  check, which evaluates the module with sample settings without building
+  bilbo; a consumer sets `bilbo.inputs.home-manager.follows`. `devShells.default`
   holds cargo, rustc, clippy and rustfmt from `nixpkgs` (26.05, rustc 1.95.0)
   and cargo-dist from `nixpkgs-unstable`. The check phase skips
   `every_action_is_pinned_by_sha`, because `.github` is not in `src`.
@@ -65,7 +74,8 @@ embedder. `Cargo.lock` is committed and pins the build.
   commit SHA; local `./` actions are exempt.
 - `src/main.rs`: verb dispatch, `--help`, `--version`, `Failure`, exit codes 0,
   1, 2 and the only writer of stdout and stderr (every stderr line gets
-  `bilbo: `) (`cli` spec).
+  `bilbo: `), except the wizard's prompts, which cliclack draws on stderr
+  (`cli` spec).
 - `src/store.rs`: store root resolution, listing `notes/` and reading the notes
   `recall` and `index` search (`note-store` spec). Root, config and cache
   resolution take `Env` as a value, built once in `main`.
@@ -100,9 +110,29 @@ embedder. `Cargo.lock` is committed and pins the build.
 - `.claude-plugin/marketplace.json` and `.agents/plugins/marketplace.json`: the
   Claude Code and Codex marketplaces, one `bilbo` entry each with the source
   `./plugins/bilbo`.
-- `store`, `note`, `rank`, `config`, `embed` and `vectors` never print and
-  never return `Failure`; they return plain values and `String` messages. Verbs
-  build on them, never on each other, return `crate::Failure` and never print.
+- `src/command.rs`: the `Runner` trait and `System`, which runs another
+  program with stdin closed and bilbo's environment, plus the PATH lookup.
+  Shared by `agents` and `timer`.
+- `src/agents.rs`: the `claude` and `codex` plugin commands, their JSON, the
+  same-source rule (a marketplace from another source is removed before the
+  add) and the plugin source: the package's `share/bilbo/`, else
+  `delucca/bilbo` at `v<version>` (`setup` spec).
+- `src/timer.rs`: the launchd plist and the systemd units as pure text with
+  the carried store, config and XDG locations, and their load and unload
+  (`setup` spec). Removal fails and keeps the files when `launchctl` or
+  `systemctl` is missing.
+- `src/wizard.rs`: the wizard behind the `Prompter` trait; the only user of
+  cliclack. It draws on stderr without the `bilbo: ` prefix (the `cli` spec's
+  exception). Its `Terminal` adapter is the only code the unit tests cannot
+  reach.
+- `src/setup.rs`: `bilbo setup`, plan then apply, and `--remove`
+  (`setup` spec). The wizard path and `--remove` take `&mut impl Prompter`;
+  `setup::tests::driven` runs them end to end with a scripted one. A config of
+  only comments takes embedder flags (`config updated`, `config.bak`).
+- `store`, `note`, `rank`, `config`, `embed`, `vectors`, `command`, `agents`
+  and `timer` never print and never return `Failure`; they return plain values
+  and `String` messages. Verbs (`setup` included) build on them, never on each
+  other, return `crate::Failure` and never print.
 - A new verb is `src/<verb>.rs`, its `mod` line, dispatch arm and USAGE line
   in `src/main.rs`, `tests/<verb>.rs`, its own capability spec, and a MODIFIED
   `cli` spec (its Verb dispatch requirement lists the verbs).
@@ -113,6 +143,17 @@ embedder. `Cargo.lock` is committed and pins the build.
   embedder (a `TcpListener` on `127.0.0.1` serving vectors from a substring
   table). The `#[ignore]` speed test in `tests/recall.rs` runs with
   `cargo test --release --test recall -- --ignored`.
+- `tests/setup.rs` runs `bilbo setup` through the built binary.
+  `tests/common/fakes.rs` writes fake `claude`, `codex`, `launchctl` and
+  `systemctl` scripts into a temp folder that is the whole PATH, so they use
+  only shell builtins. `tests/fixtures/agents/` holds recorded real outputs,
+  the first line being the command; refresh them against throwaway
+  `CLAUDE_CONFIG_DIR` and `CODEX_HOME` when a tool's JSON moves. The timer
+  tests are per platform, and CI runs the Linux ones. The macOS suite takes
+  about 11 s, because macOS scans each freshly written script; Linux takes
+  under a second. The wizard's `Terminal` adapter is covered only by the
+  recorded expect run in the add-setup change's `smoke.md`
+  (under `openspec/changes/archive/` once archived).
 - `tests/plugin.rs`: the plugin's files, skill frontmatter and versions,
   checked in CI. Locally, also run `claude plugin validate .` and
   `claude plugin validate plugins/bilbo` (one missing-version warning each is
