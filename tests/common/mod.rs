@@ -4,6 +4,7 @@ use std::collections::BTreeMap;
 use std::ffi::OsStr;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
+use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -128,11 +129,14 @@ struct State {
     status: Option<u16>,
     too_few: bool,
     stall: bool,
+    loading: usize,
+    health_checks: usize,
     answered: usize,
     requests: Vec<Request>,
 }
 
-/// An embedder on 127.0.0.1 answering `POST /v1/embeddings`, one request per connection.
+/// An embedder on 127.0.0.1 answering `POST /v1/embeddings` and `GET /health`, one request per
+/// connection.
 pub struct Fake {
     /// `http://127.0.0.1:<port>`, no trailing slash.
     pub url: String,
@@ -147,6 +151,24 @@ impl Fake {
     pub fn start(dims: usize) -> Fake {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();
+        Fake::spawn(dims, addr, Socket::Listening(listener), None)
+    }
+
+    /// Like `start`, but listens only once `trigger` exists, the way a server the service manager
+    /// starts comes up. The port is bound from the start and never released, so no other test can
+    /// take it; connecting fails until the trigger appears. Stops at drop even if never
+    /// triggered.
+    pub fn start_when(dims: usize, trigger: &Path) -> Fake {
+        let (fd, addr) = reserve();
+        Fake::spawn(
+            dims,
+            addr,
+            Socket::Reserved(fd),
+            Some(trigger.to_path_buf()),
+        )
+    }
+
+    fn spawn(dims: usize, addr: SocketAddr, socket: Socket, trigger: Option<PathBuf>) -> Fake {
         let state = Arc::new(Mutex::new(State {
             dims,
             table: Vec::new(),
@@ -154,6 +176,8 @@ impl Fake {
             status: None,
             too_few: false,
             stall: false,
+            loading: 0,
+            health_checks: 0,
             answered: 0,
             requests: Vec::new(),
         }));
@@ -162,6 +186,18 @@ impl Fake {
             let state = Arc::clone(&state);
             let stop = Arc::clone(&stop);
             std::thread::spawn(move || {
+                if let Some(trigger) = trigger {
+                    while !trigger.exists() {
+                        if stop.load(Ordering::SeqCst) {
+                            return;
+                        }
+                        std::thread::sleep(Duration::from_millis(10));
+                    }
+                    if stop.load(Ordering::SeqCst) {
+                        return;
+                    }
+                }
+                let listener = socket.listen();
                 for stream in listener.incoming() {
                     if stop.load(Ordering::SeqCst) {
                         break;
@@ -179,6 +215,21 @@ impl Fake {
             stop,
             thread: Some(thread),
         }
+    }
+
+    /// The port of `url`.
+    pub fn port(&self) -> u16 {
+        self.addr.port()
+    }
+
+    /// Answer the next `n` `GET /health` requests with 503 (llama-server loading).
+    pub fn loading(&self, n: usize) {
+        self.state.lock().unwrap().loading = n;
+    }
+
+    /// How many `GET /health` requests came.
+    pub fn health_checks(&self) -> usize {
+        self.state.lock().unwrap().health_checks
     }
 
     /// Inputs holding `substring` get `vector`; the first matching entry wins, in the order added.
@@ -230,10 +281,58 @@ impl Fake {
 impl Drop for Fake {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::SeqCst);
-        let _ = TcpStream::connect(self.addr);
         if let Some(thread) = self.thread.take() {
+            // The thread may not listen yet: poke until it has seen `stop` and left.
+            while !thread.is_finished() {
+                let _ = TcpStream::connect_timeout(&self.addr, Duration::from_millis(50));
+                std::thread::sleep(Duration::from_millis(5));
+            }
             let _ = thread.join();
         }
+    }
+}
+
+enum Socket {
+    Listening(TcpListener),
+    /// Bound but not yet `listen`ing: connecting is refused, and the port stays ours.
+    Reserved(OwnedFd),
+}
+
+impl Socket {
+    fn listen(self) -> TcpListener {
+        match self {
+            Socket::Listening(listener) => listener,
+            Socket::Reserved(fd) => {
+                let rc = unsafe { libc::listen(fd.as_raw_fd(), 128) };
+                assert_eq!(
+                    rc,
+                    0,
+                    "fake embedder cannot listen: {}",
+                    std::io::Error::last_os_error()
+                );
+                TcpListener::from(fd)
+            }
+        }
+    }
+}
+
+/// A TCP socket bound to a free port on 127.0.0.1 that does not listen.
+fn reserve() -> (OwnedFd, SocketAddr) {
+    unsafe {
+        let raw = libc::socket(libc::AF_INET, libc::SOCK_STREAM, 0);
+        assert!(raw >= 0, "{}", std::io::Error::last_os_error());
+        let fd = OwnedFd::from_raw_fd(raw);
+        let mut sin: libc::sockaddr_in = std::mem::zeroed();
+        sin.sin_family = libc::AF_INET as libc::sa_family_t;
+        sin.sin_addr.s_addr = u32::from_ne_bytes([127, 0, 0, 1]);
+        let size = std::mem::size_of::<libc::sockaddr_in>() as libc::socklen_t;
+        let rc = libc::bind(raw, &sin as *const _ as *const libc::sockaddr, size);
+        assert_eq!(rc, 0, "{}", std::io::Error::last_os_error());
+        let mut len = size;
+        let rc = libc::getsockname(raw, &mut sin as *mut _ as *mut libc::sockaddr, &mut len);
+        assert_eq!(rc, 0, "{}", std::io::Error::last_os_error());
+        let addr = SocketAddr::from(([127, 0, 0, 1], u16::from_be(sin.sin_port)));
+        (fd, addr)
     }
 }
 
@@ -259,6 +358,23 @@ fn serve(stream: TcpStream, shared: &Mutex<State>, stop: &AtomicBool) {
         if let Some((name, value)) = line.split_once(':') {
             headers.push((name.to_ascii_lowercase(), value.trim().to_string()));
         }
+    }
+    if method == "GET" && path == "/health" {
+        let (code, text) = {
+            let mut state = shared.lock().unwrap();
+            state.health_checks += 1;
+            if state.loading > 0 {
+                state.loading -= 1;
+                (
+                    503,
+                    r#"{"error":{"message":"Loading model","type":"unavailable_error","code":503}}"#,
+                )
+            } else {
+                (200, r#"{"status":"ok"}"#)
+            }
+        };
+        respond(stream, code, text);
+        return;
     }
     let length = headers
         .iter()
@@ -345,14 +461,18 @@ fn serve(stream: TcpStream, shared: &Mutex<State>, stop: &AtomicBool) {
             (code, r#"{"error":{"message":"fake"}}"#.to_string())
         }
     };
+    respond(stream, code, &text);
+}
+
+fn respond(mut stream: TcpStream, code: u16, text: &str) {
     let reason = match code {
         200 => "OK",
         401 => "Unauthorized",
         404 => "Not Found",
         500 => "Internal Server Error",
+        503 => "Service Unavailable",
         _ => "Error",
     };
-    let mut stream = stream;
     let _ = write!(
         stream,
         "HTTP/1.1 {code} {reason}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{text}",
@@ -379,7 +499,18 @@ fn vector_for(state: &State, input: &str) -> Vec<f32> {
     }
 }
 
-/// A URL nothing listens on: bind 127.0.0.1:0, keep the port, drop the listener.
+static UNUSED: Mutex<Vec<OwnedFd>> = Mutex::new(Vec::new());
+
+/// A port on 127.0.0.1 that nothing listens on and that no other test or process can take: the
+/// socket is bound and kept for the rest of the process, but never listens. A connect to it fails
+/// (refused on Linux, silently dropped on macOS, so it only times out there).
+pub fn unused_port() -> u16 {
+    let (fd, addr) = reserve();
+    UNUSED.lock().unwrap().push(fd);
+    addr.port()
+}
+
+/// A URL that refuses at once: bind 127.0.0.1:0, keep the port, drop the listener.
 pub fn dead_url() -> String {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     format!("http://{}", listener.local_addr().unwrap())

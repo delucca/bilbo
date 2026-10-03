@@ -3,7 +3,7 @@ mod common;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
-use common::{Fake, Run, TempDir, bilbo, fakes, snapshot};
+use common::{Fake, Run, TempDir, bilbo, fakes, snapshot, unused_port};
 
 struct Machine {
     dir: TempDir,
@@ -105,6 +105,8 @@ fn modes_a_pipe_runs_without_the_wizard() {
             format!("store created: {}/notes", root(&m).display()),
             format!("config written: {}", config_path(&m).display()),
             "key skipped: no embedder".to_string(),
+            "model skipped: not local".to_string(),
+            "server skipped: not local".to_string(),
             "embedder skipped: none configured".to_string(),
             "claude skipped: not found".to_string(),
             "codex skipped: not found".to_string(),
@@ -398,6 +400,111 @@ fn flags_remove_takes_only_four_flags() {
     );
 }
 
+#[test]
+fn flags_local_with_an_embedder_flag_conflicts() {
+    let m = machine("setup-flags-local-conflict");
+    for (flag, value) in [
+        ("--embedder-url", "http://a:1"),
+        ("--embedder-model", "m"),
+        ("--embedder-token-env", "KEY"),
+        ("--embedder-token-file", "/k"),
+        ("--embedder-query-prefix", "p"),
+    ] {
+        usage_error(
+            &m,
+            &["--yes", "--embedder-local", flag, value],
+            &format!("--embedder-local and {flag} cannot be used together"),
+        );
+    }
+}
+
+#[test]
+fn flags_port_without_local() {
+    let m = machine("setup-flags-port");
+    usage_error(
+        &m,
+        &["--yes", "--embedder-port", "9000"],
+        "--embedder-port needs --embedder-local",
+    );
+}
+
+#[test]
+fn flags_llama_server_without_local() {
+    let m = machine("setup-flags-llama");
+    usage_error(
+        &m,
+        &["--yes", "--llama-server", "/x/llama-server"],
+        "--llama-server needs --embedder-local",
+    );
+}
+
+#[test]
+fn flags_port_out_of_range() {
+    let m = machine("setup-flags-port-range");
+    for value in ["80", "70000", "x", "-1"] {
+        usage_error(
+            &m,
+            &[
+                "--yes",
+                "--embedder-local",
+                &format!("--embedder-port={value}"),
+            ],
+            &format!("--embedder-port takes 1024 to 65535, got '{value}'"),
+        );
+    }
+}
+
+#[test]
+fn flags_llama_server_not_executable() {
+    let m = machine("setup-flags-llama-path");
+    usage_error(
+        &m,
+        &[
+            "--yes",
+            "--embedder-local",
+            "--llama-server",
+            "/nope/llama-server",
+        ],
+        "--llama-server /nope/llama-server is not an executable file",
+    );
+    let plain = m.bin.join("plain");
+    std::fs::write(&plain, "x").unwrap();
+    std::fs::set_permissions(&plain, std::fs::Permissions::from_mode(0o644)).unwrap();
+    usage_error(
+        &m,
+        &[
+            "--yes",
+            "--embedder-local",
+            "--llama-server",
+            plain.to_str().unwrap(),
+        ],
+        &format!(
+            "--llama-server {} is not an executable file",
+            plain.display()
+        ),
+    );
+}
+
+#[test]
+fn flags_local_answers_the_wizard() {
+    let m = machine("setup-flags-local-wizard");
+    usage_error(
+        &m,
+        &["--interactive", "--embedder-local"],
+        "--interactive cannot be used with --embedder-local; it answers a wizard question",
+    );
+}
+
+#[test]
+fn flags_remove_rejects_local() {
+    let m = machine("setup-flags-local-remove");
+    usage_error(
+        &m,
+        &["--remove", "--embedder-local"],
+        "--remove cannot be used with --embedder-local",
+    );
+}
+
 // ---------------------------------------------------------------------------
 // 2.2 store and config
 
@@ -413,6 +520,8 @@ fn report_fresh_run() {
             format!("store created: {}/notes", root(&m).display()),
             format!("config written: {}", config_path(&m).display()),
             "key skipped: no embedder".to_string(),
+            "model skipped: not local".to_string(),
+            "server skipped: not local".to_string(),
             "embedder skipped: none configured".to_string(),
             "claude skipped: --no-plugin".to_string(),
             "codex skipped: --no-plugin".to_string(),
@@ -449,7 +558,7 @@ fn store_root_cannot_be_created() {
         report[0].starts_with(&format!("store failed: cannot create {home}/notes: ")),
         "{report:?}"
     );
-    assert_eq!(report.len(), 7, "a failed step stops nothing: {report:?}");
+    assert_eq!(report.len(), 9, "a failed step stops nothing: {report:?}");
     assert!(report[1].starts_with("config written: "));
 }
 
@@ -568,7 +677,7 @@ fn config_empty_gets_the_embedder_from_flags() {
         report[1],
         format!("config updated: {}", config_path(&m).display())
     );
-    assert_eq!(report[3], "embedder ok: 8 dimensions");
+    assert_eq!(report[5], "embedder ok: 8 dimensions");
     assert_eq!(fake.requests().len(), 1);
     let backup = config_path(&m).with_file_name("config.bak");
     assert_eq!(std::fs::read_to_string(backup).unwrap(), old);
@@ -610,7 +719,7 @@ fn config_same_flags_again_are_kept() {
         report[1],
         format!("config kept: {}", config_path(&m).display())
     );
-    assert_eq!(report[3], "embedder skipped: config kept");
+    assert_eq!(report[5], "embedder skipped: config kept");
     assert_eq!(fake.requests().len(), 1);
 }
 
@@ -633,7 +742,7 @@ fn config_managed_link_is_kept() {
         format!("config kept: managed elsewhere ({})", target.display())
     );
     assert_eq!(report[2], "key skipped: local embedder");
-    assert_eq!(report[3], "embedder skipped: config kept");
+    assert_eq!(report[5], "embedder skipped: config kept");
     assert_eq!(
         std::fs::read_link(config_path(&m)).unwrap(),
         target,
@@ -833,7 +942,7 @@ fn embedder_ok_reports_dimensions() {
     assert_eq!(run.code, 0, "{}", run.stderr);
     let report = lines(&run);
     assert_eq!(report[2], "key skipped: local embedder");
-    assert_eq!(report[3], "embedder ok: 1024 dimensions");
+    assert_eq!(report[5], "embedder ok: 1024 dimensions");
     assert_eq!(fake.inputs(), ["bilbo setup check"]);
     assert_eq!(fake.requests()[0].model, "qwen3-embedding-0.6b");
 }
@@ -866,7 +975,7 @@ fn embedder_existing_config_is_not_checked() {
     );
     let run = setup(&m, &[], &["--yes", "--no-plugin", "--no-timer"]);
     assert_eq!(run.code, 0, "{}", run.stderr);
-    assert_eq!(lines(&run)[3], "embedder skipped: config kept");
+    assert_eq!(lines(&run)[5], "embedder skipped: config kept");
     assert!(fake.requests().is_empty());
 }
 
@@ -1363,7 +1472,7 @@ fn uid() -> String {
 fn install_calls(m: &Machine) -> Vec<String> {
     let uid = uid();
     vec![
-        format!("bootout gui/{uid}/io.github.delucca.bilbo.index"),
+        format!("bootout --wait gui/{uid}/io.github.delucca.bilbo.index"),
         format!("bootstrap gui/{uid} {}", timer_files(m)[0].display()),
     ]
 }
@@ -1701,6 +1810,8 @@ fn remove_an_install() {
             format!("store skipped: kept {}/notes", root(&m).display()),
             format!("config skipped: kept {}", config_path(&m).display()),
             format!("key skipped: kept {}", token_path(&m).display()),
+            "model skipped: no model".to_string(),
+            "server skipped: not installed".to_string(),
             "claude removed".to_string(),
             "codex removed".to_string(),
             "timer removed".to_string(),
@@ -1729,6 +1840,8 @@ fn remove_nothing_installed() {
             "store skipped: no store",
             "config skipped: no config",
             "key skipped: no key file",
+            "model skipped: no model",
+            "server skipped: not installed",
             "claude skipped: not installed",
             "codex skipped: not installed",
             "timer skipped: not installed",
@@ -1744,7 +1857,7 @@ fn remove_nothing_installed() {
     let run = setup(&bare, &[], &["--remove", "--yes"]);
     assert_eq!(run.code, 0, "{}", run.stderr);
     assert_eq!(
-        lines(&run)[3..5],
+        lines(&run)[5..7],
         ["claude skipped: not found", "codex skipped: not found"]
     );
 }
@@ -1881,4 +1994,731 @@ fn config_dangling_link_is_managed_elsewhere_at_both_paths() {
         assert_eq!(run.code, 0, "{env:?}: {}", run.stderr);
         assert_eq!(lines(&run)[1], expected, "{env:?}");
     }
+}
+
+// ---------------------------------------------------------------------------
+// 4.2 the local embedder's plan
+
+/// A machine with the manager fake and, when `llama`, a `llama-server` fake on PATH.
+fn local_plan_machine(name: &str, llama: bool) -> Machine {
+    let m = machine(name);
+    let mut tools = vec![TIMER_TOOL];
+    if llama {
+        tools.push("llama-server");
+    }
+    fakes::install(&m.bin, &m.state, &tools);
+    m
+}
+
+/// `setup --yes --embedder-local` on `port`, expecting a refusal that leaves HOME as it was.
+fn local_plan_refused(m: &Machine, port: u16, code: i32, message: &str) -> Run {
+    let before = snapshot(&m.home);
+    let port = port.to_string();
+    let run = setup(
+        m,
+        &[],
+        &[
+            "--yes",
+            "--no-plugin",
+            "--no-timer",
+            "--embedder-local",
+            "--embedder-port",
+            &port,
+        ],
+    );
+    assert_eq!(run.code, code, "{}", run.stderr);
+    assert!(run.stdout.is_empty(), "{}", run.stdout);
+    assert!(run.stderr.contains(message), "{}", run.stderr);
+    assert_eq!(snapshot(&m.home), before, "the refusal wrote something");
+    run
+}
+
+#[test]
+fn local_plan_llama_server_not_found() {
+    let m = local_plan_machine("setup-local-plan-no-llama", false);
+    let run = local_plan_refused(&m, unused_port(), 1, "llama-server not found on PATH");
+    assert!(run.stderr.contains("brew install llama.cpp"));
+    assert!(run.stderr.contains("--llama-server"));
+}
+
+#[test]
+fn local_plan_port_in_use() {
+    let m = local_plan_machine("setup-local-plan-port", true);
+    let fake = Fake::start(1024);
+    let port = fake.port();
+    let run = local_plan_refused(
+        &m,
+        port,
+        1,
+        &format!("127.0.0.1:{port} is already in use; pick another port with --embedder-port"),
+    );
+    assert!(!run.stderr.contains("llama-server not found"));
+}
+
+#[test]
+fn local_plan_managed_config_elsewhere_is_refused() {
+    let m = local_plan_machine("setup-local-plan-managed", true);
+    let target = m.dir.path().join("managed-config");
+    std::fs::write(
+        &target,
+        "embedder.url = http://bagend:8081\nembedder.model = qwen3-embedding-0.6b\n",
+    )
+    .unwrap();
+    std::fs::create_dir_all(config_path(&m).parent().unwrap()).unwrap();
+    std::os::unix::fs::symlink(&target, config_path(&m)).unwrap();
+    local_plan_refused(
+        &m,
+        unused_port(),
+        2,
+        &format!(
+            "{} is managed elsewhere; change the embedder there, not with --embedder-local",
+            config_path(&m).display()
+        ),
+    );
+}
+
+#[test]
+fn local_plan_present_config_with_another_embedder_is_refused() {
+    let m = local_plan_machine("setup-local-plan-present", true);
+    write_config(
+        &m,
+        &[
+            "embedder.url = http://bagend:8081",
+            "embedder.model = qwen3-embedding-0.6b",
+        ],
+    );
+    local_plan_refused(
+        &m,
+        unused_port(),
+        1,
+        &format!(
+            "{} already sets other embedder settings",
+            config_path(&m).display()
+        ),
+    );
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn local_plan_launchctl_missing() {
+    let m = machine("setup-local-plan-no-launchctl");
+    fakes::install(&m.bin, &m.state, &["llama-server"]);
+    local_plan_refused(
+        &m,
+        unused_port(),
+        1,
+        "the local embedder needs launchctl, which is not on PATH",
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn local_plan_no_user_session() {
+    let m = local_plan_machine("setup-local-plan-no-session", true);
+    fakes::set(&m.state, "systemctl", "state", "offline");
+    local_plan_refused(
+        &m,
+        unused_port(),
+        1,
+        "the local embedder needs a systemd user session",
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn local_plan_systemctl_missing() {
+    let m = machine("setup-local-plan-no-systemctl");
+    fakes::install(&m.bin, &m.state, &["llama-server"]);
+    local_plan_refused(
+        &m,
+        unused_port(),
+        1,
+        "the local embedder needs a systemd user session",
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 4.3 prepare: download, service, readiness, check
+
+const LOCAL_MODEL: &str = "qwen3-embedding-0.6b";
+
+/// Where the pinned model goes under the machine's cache folder.
+fn model_file(m: &Machine) -> PathBuf {
+    m.home
+        .join(".cache/bilbo/models/Qwen3-Embedding-0.6B-Q8_0.gguf")
+}
+
+/// A sparse file of the pinned size, so planning finds the model and nothing downloads.
+fn place_model(m: &Machine) {
+    let path = model_file(m);
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::File::create(path)
+        .unwrap()
+        .set_len(639_150_592)
+        .unwrap();
+}
+
+/// The fake `llama-server` in `folder`; returns its path.
+fn llama(m: &Machine, folder: &Path) -> PathBuf {
+    fakes::install(folder, &m.state, &["llama-server"]);
+    folder.join("llama-server")
+}
+
+/// The embedder's service file on this platform.
+fn service_file(m: &Machine) -> PathBuf {
+    if cfg!(target_os = "macos") {
+        m.home
+            .join("Library/LaunchAgents/io.github.delucca.bilbo.embedder.plist")
+    } else {
+        m.home.join(".config/systemd/user/bilbo-embedder.service")
+    }
+}
+
+/// The manager fake, a fake `llama-server` on PATH, the model in place and a fake embedder that
+/// comes up when the manager starts the service.
+fn local_machine(name: &str) -> (Machine, Fake) {
+    let m = machine(name);
+    fakes::install(&m.bin, &m.state, &[TIMER_TOOL]);
+    llama(&m, &m.bin);
+    place_model(&m);
+    let fake = Fake::start_when(1024, &m.state.join("embedder.started"));
+    (m, fake)
+}
+
+/// `setup --yes --no-plugin --no-timer --embedder-local` on the fake's port, then `extra`.
+fn local_setup(m: &Machine, fake: &Fake, extra: &[&str]) -> Run {
+    let port = fake.port().to_string();
+    let mut args = vec![
+        "--yes",
+        "--no-plugin",
+        "--no-timer",
+        "--embedder-local",
+        "--embedder-port",
+        &port,
+    ];
+    args.extend(extra);
+    setup(m, &[], &args)
+}
+
+#[test]
+fn a_triggered_fake_refuses_until_the_trigger_and_drops_cleanly() {
+    let dir = TempDir::new("fake-trigger");
+    let trigger = dir.path().join("started");
+    let fake = Fake::start_when(4, &trigger);
+    let addr = format!("127.0.0.1:{}", fake.port()).parse().unwrap();
+    let probe = || std::net::TcpStream::connect_timeout(&addr, std::time::Duration::from_secs(1));
+    assert!(probe().is_err());
+    std::fs::write(&trigger, "").unwrap();
+    let mut up = false;
+    for _ in 0..500 {
+        if probe().is_ok() {
+            up = true;
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    assert!(up);
+    drop(fake);
+    // Dropped between the trigger and the bind used to hang the join forever.
+    for _ in 0..20 {
+        let trigger = dir.path().join("again");
+        let fake = Fake::start_when(4, &trigger);
+        std::fs::write(&trigger, "").unwrap();
+        drop(fake);
+        std::fs::remove_file(&trigger).unwrap();
+    }
+}
+
+/// The manager calls that change something: everything but the session probe.
+fn changing_calls(m: &Machine) -> Vec<String> {
+    manager_log(m)
+        .into_iter()
+        .filter(|call| call != "--user is-system-running")
+        .collect()
+}
+
+fn embed_requests(fake: &Fake) -> usize {
+    fake.requests()
+        .iter()
+        .filter(|r| r.path == "/v1/embeddings")
+        .count()
+}
+
+#[test]
+fn local_fresh_run_reports_every_step() {
+    let (m, fake) = local_machine("setup-local-fresh");
+    let port = fake.port().to_string();
+    let run = setup(
+        &m,
+        &[],
+        &[
+            "--yes",
+            "--no-plugin",
+            "--embedder-local",
+            "--embedder-port",
+            &port,
+        ],
+    );
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    assert!(run.stderr.is_empty(), "nothing downloads: {}", run.stderr);
+    assert_eq!(
+        lines(&run),
+        [
+            format!("store created: {}/notes", root(&m).display()),
+            format!("config written: {}", config_path(&m).display()),
+            "key skipped: local embedder".to_string(),
+            format!("model kept: {}", model_file(&m).display()),
+            format!("server installed: 127.0.0.1:{port}"),
+            "embedder ok: 1024 dimensions".to_string(),
+            "claude skipped: --no-plugin".to_string(),
+            "codex skipped: --no-plugin".to_string(),
+            "timer installed: every 15 min".to_string(),
+        ]
+    );
+    let text = std::fs::read_to_string(config_path(&m)).unwrap();
+    assert!(
+        text.contains(&format!("embedder.url = http://127.0.0.1:{port}\n")),
+        "{text}"
+    );
+    assert!(
+        text.contains(&format!("embedder.model = {LOCAL_MODEL}\n")),
+        "{text}"
+    );
+    assert!(
+        text.contains(
+            "embedder.query_prefix = \"Instruct: Given a question, retrieve notes that answer it\\nQuery: \"\n"
+        ),
+        "{text}"
+    );
+    assert!(service_file(&m).exists());
+}
+
+#[test]
+fn local_service_file_runs_llama_server_on_loopback() {
+    let (m, fake) = local_machine("setup-local-service-file");
+    let run = local_setup(&m, &fake, &[]);
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    let text = std::fs::read_to_string(service_file(&m)).unwrap();
+    let port = fake.port().to_string();
+    let log = m.home.join(".local/state/bilbo/embedder.log");
+    for needle in [
+        m.bin.join("llama-server").display().to_string(),
+        model_file(&m).display().to_string(),
+        "127.0.0.1".to_string(),
+        port.clone(),
+        log.display().to_string(),
+    ] {
+        assert!(text.contains(&needle), "{needle} is not in {text}");
+    }
+    #[cfg(target_os = "macos")]
+    {
+        assert!(text.contains("<key>KeepAlive</key>\n\t<true/>"), "{text}");
+        assert!(text.contains("<key>RunAtLoad</key>\n\t<true/>"), "{text}");
+        let uid = uid();
+        assert_eq!(
+            manager_log(&m),
+            [
+                format!("bootout --wait gui/{uid}/io.github.delucca.bilbo.embedder"),
+                format!("bootstrap gui/{uid} {}", service_file(&m).display()),
+            ]
+        );
+    }
+    #[cfg(target_os = "linux")]
+    {
+        assert!(text.contains("Restart=on-failure"), "{text}");
+        assert!(text.contains("WantedBy=default.target"), "{text}");
+        assert_eq!(
+            changing_calls(&m),
+            [
+                "--user daemon-reload",
+                "--user enable bilbo-embedder.service",
+                "--user restart bilbo-embedder.service",
+            ]
+        );
+    }
+}
+
+#[test]
+fn local_chosen_port() {
+    let (m, fake) = local_machine("setup-local-port");
+    let run = local_setup(&m, &fake, &[]);
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    let text = std::fs::read_to_string(config_path(&m)).unwrap();
+    assert!(
+        text.contains(&format!(
+            "embedder.url = http://127.0.0.1:{}\n",
+            fake.port()
+        )),
+        "{text}"
+    );
+    assert_ne!(fake.port(), 8737);
+}
+
+#[test]
+fn local_waits_while_the_model_loads() {
+    let (m, fake) = local_machine("setup-local-loading");
+    fake.loading(3);
+    let run = local_setup(&m, &fake, &[]);
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    assert!(fake.health_checks() >= 4, "{}", fake.health_checks());
+    assert_eq!(embed_requests(&fake), 1);
+    assert!(lines(&run).contains(&"embedder ok: 1024 dimensions"));
+}
+
+#[test]
+fn local_failed_check_writes_nothing_else() {
+    let (m, fake) = local_machine("setup-local-check-fails");
+    fake.status(500);
+    let run = local_setup(&m, &fake, &[]);
+    assert_eq!(run.code, 1, "{}", run.stderr);
+    assert!(run.stderr.contains(&fake.url), "{}", run.stderr);
+    assert!(run.stderr.contains("500"), "{}", run.stderr);
+    assert!(run.stderr.contains("setup changed nothing else"));
+    assert_eq!(
+        lines(&run),
+        [
+            format!("model kept: {}", model_file(&m).display()),
+            format!(
+                "server failed: {}; the service was removed; see {}",
+                run.stderr
+                    .lines()
+                    .next()
+                    .unwrap()
+                    .trim_start_matches("bilbo: ")
+                    .trim_end_matches("; setup changed nothing else"),
+                m.home.join(".local/state/bilbo/embedder.log").display()
+            ),
+        ]
+    );
+    assert!(model_file(&m).exists());
+    assert!(!service_file(&m).exists());
+    assert!(!root(&m).exists());
+    assert!(!config_path(&m).exists());
+    let calls = manager_log(&m);
+    if cfg!(target_os = "macos") {
+        let last = calls.last().unwrap();
+        assert!(
+            last.starts_with("bootout ") && last.ends_with("io.github.delucca.bilbo.embedder"),
+            "{calls:?}"
+        );
+    } else {
+        assert!(
+            calls.contains(&"--user disable --now bilbo-embedder.service".to_string()),
+            "{calls:?}"
+        );
+    }
+}
+
+#[test]
+fn local_failed_load_writes_nothing_else() {
+    let (m, fake) = local_machine("setup-local-load-fails");
+    if cfg!(target_os = "macos") {
+        fakes::set(
+            &m.state,
+            "launchctl",
+            "fail-bootstrap-embedder",
+            "Bootstrap failed: 5: Input/output error",
+        );
+    } else {
+        fakes::set(
+            &m.state,
+            "systemctl",
+            "fail-restart-bilbo-embedder.service",
+            "Failed to restart bilbo-embedder.service",
+        );
+    }
+    let run = local_setup(&m, &fake, &[]);
+    assert_eq!(run.code, 1, "{}", run.stderr);
+    let report = lines(&run);
+    assert_eq!(report.len(), 2, "{report:?}");
+    assert_eq!(
+        report[0],
+        format!("model kept: {}", model_file(&m).display())
+    );
+    assert!(report[1].starts_with("server failed: "), "{}", report[1]);
+    assert!(
+        report[1].ends_with(&format!(
+            "; see {}",
+            m.home.join(".local/state/bilbo/embedder.log").display()
+        )),
+        "{}",
+        report[1]
+    );
+    assert!(run.stderr.contains("setup changed nothing else"));
+    assert!(!service_file(&m).exists());
+    assert!(!root(&m).exists());
+    assert!(!config_path(&m).exists());
+    assert_eq!(embed_requests(&fake), 0);
+}
+
+#[test]
+fn local_rerun_keeps_everything() {
+    let (m, fake) = local_machine("setup-local-rerun");
+    let first = local_setup(&m, &fake, &[]);
+    assert_eq!(first.code, 0, "{}", first.stderr);
+    let mtime = std::fs::metadata(service_file(&m))
+        .unwrap()
+        .modified()
+        .unwrap();
+    let calls = changing_calls(&m);
+    let embeds = embed_requests(&fake);
+    let second = local_setup(&m, &fake, &[]);
+    assert_eq!(second.code, 0, "{}", second.stderr);
+    let report = lines(&second);
+    assert_eq!(
+        report[3],
+        format!("model kept: {}", model_file(&m).display())
+    );
+    assert_eq!(report[4], format!("server kept: 127.0.0.1:{}", fake.port()));
+    assert_eq!(
+        std::fs::metadata(service_file(&m))
+            .unwrap()
+            .modified()
+            .unwrap(),
+        mtime
+    );
+    assert_eq!(changing_calls(&m), calls, "no state-changing command");
+    assert_eq!(embed_requests(&fake), embeds, "no embed request");
+}
+
+#[test]
+fn local_moved_llama_server_updates_the_service() {
+    let (m, fake) = local_machine("setup-local-moved");
+    let first = local_setup(&m, &fake, &[]);
+    assert_eq!(first.code, 0, "{}", first.stderr);
+    let before = changing_calls(&m).len();
+    let other = llama(&m, &m.dir.path().join("elsewhere"));
+    let second = local_setup(&m, &fake, &["--llama-server", other.to_str().unwrap()]);
+    assert_eq!(second.code, 0, "{}", second.stderr);
+    assert_eq!(
+        lines(&second)[4],
+        format!("server updated: 127.0.0.1:{}", fake.port())
+    );
+    let text = std::fs::read_to_string(service_file(&m)).unwrap();
+    assert!(text.contains(&other.display().to_string()), "{text}");
+    assert!(
+        !text.contains(&m.bin.join("llama-server").display().to_string()),
+        "{text}"
+    );
+    let after = changing_calls(&m);
+    assert!(after.len() > before, "{after:?}");
+    if cfg!(target_os = "macos") {
+        assert!(after[before].starts_with("bootout "), "{after:?}");
+        assert!(after[before + 1].starts_with("bootstrap "), "{after:?}");
+    } else {
+        assert!(
+            after[before..].contains(&"--user restart bilbo-embedder.service".to_string()),
+            "{after:?}"
+        );
+    }
+}
+
+#[test]
+fn local_found_on_path_keeps_the_path() {
+    let (m, fake) = local_machine("setup-local-symlink");
+    let real = llama(&m, &m.dir.path().join("real"));
+    std::fs::remove_file(m.bin.join("llama-server")).unwrap();
+    std::os::unix::fs::symlink(&real, m.bin.join("llama-server")).unwrap();
+    let run = local_setup(&m, &fake, &[]);
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    let text = std::fs::read_to_string(service_file(&m)).unwrap();
+    assert!(
+        text.contains(&m.bin.join("llama-server").display().to_string()),
+        "{text}"
+    );
+    assert!(!text.contains(&real.display().to_string()), "{text}");
+}
+
+#[test]
+fn local_managed_config_installs_model_and_server() {
+    let (m, fake) = local_machine("setup-local-managed");
+    let target = m.dir.path().join("managed-config");
+    std::fs::write(
+        &target,
+        format!(
+            "embedder.url = http://127.0.0.1:{}\nembedder.model = {LOCAL_MODEL}\n",
+            fake.port()
+        ),
+    )
+    .unwrap();
+    std::fs::create_dir_all(config_path(&m).parent().unwrap()).unwrap();
+    std::os::unix::fs::symlink(&target, config_path(&m)).unwrap();
+    let run = local_setup(&m, &fake, &[]);
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    let report = lines(&run);
+    assert_eq!(
+        report[1],
+        format!("config kept: managed elsewhere ({})", target.display())
+    );
+    assert_eq!(
+        report[3],
+        format!("model kept: {}", model_file(&m).display())
+    );
+    assert_eq!(
+        report[4],
+        format!("server installed: 127.0.0.1:{}", fake.port())
+    );
+    assert_eq!(report[5], "embedder ok: 1024 dimensions");
+    assert!(service_file(&m).exists());
+    assert_eq!(std::fs::read_link(config_path(&m)).unwrap(), target);
+}
+
+#[test]
+fn local_bilbos_own_server_is_not_a_conflict() {
+    let (m, fake) = local_machine("setup-local-own-server");
+    let first = local_setup(&m, &fake, &[]);
+    assert_eq!(first.code, 0, "{}", first.stderr);
+    let second = local_setup(&m, &fake, &[]);
+    assert_eq!(second.code, 0, "{}", second.stderr);
+    assert!(
+        !second.stderr.contains("already in use"),
+        "{}",
+        second.stderr
+    );
+    assert_eq!(
+        lines(&second)[4],
+        format!("server kept: 127.0.0.1:{}", fake.port())
+    );
+}
+
+#[test]
+fn remove_the_local_embedder() {
+    let (m, fake) = local_machine("remove-local");
+    let run = local_setup(&m, &fake, &[]);
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    assert!(service_file(&m).exists());
+    let before = changing_calls(&m).len();
+    let removed = setup(&m, &[], &["--remove", "--yes"]);
+    assert_eq!(removed.code, 0, "{}", removed.stderr);
+    let report = lines(&removed);
+    assert_eq!(
+        report[3],
+        format!("model skipped: kept {}", model_file(&m).display())
+    );
+    assert_eq!(report[4], "server removed");
+    assert!(!service_file(&m).exists());
+    assert!(model_file(&m).exists());
+    assert!(
+        changing_calls(&m)[before..]
+            .iter()
+            .any(|call| call.contains("embedder")),
+        "{:?}",
+        manager_log(&m)
+    );
+    if cfg!(target_os = "macos") {
+        assert_eq!(fakes::get(&m.state, "launchctl", "loaded-embedder"), "");
+    } else {
+        assert_eq!(fakes::get(&m.state, "systemctl", "embedder-enabled"), "");
+    }
+}
+
+/// Points the config at a file that sets `embedder.url = http://bagend:8081` and the local model.
+fn move_config_elsewhere(m: &Machine) {
+    let target = m.dir.path().join("managed-config");
+    std::fs::write(
+        &target,
+        "embedder.url = http://bagend:8081\nembedder.model = qwen3-embedding-0.6b\n",
+    )
+    .unwrap();
+    std::fs::remove_file(config_path(m)).unwrap();
+    std::os::unix::fs::symlink(&target, config_path(m)).unwrap();
+}
+
+#[test]
+fn remove_unused_service_when_the_config_moves() {
+    let (m, fake) = local_machine("remove-unused-moves");
+    let first = local_setup(&m, &fake, &[]);
+    assert_eq!(first.code, 0, "{}", first.stderr);
+    assert!(service_file(&m).exists());
+    move_config_elsewhere(&m);
+    let before = changing_calls(&m).len();
+    let run = setup(&m, &[], &["--yes", "--no-plugin", "--no-timer"]);
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    let report = lines(&run);
+    assert_eq!(report[3], "model skipped: not local");
+    assert_eq!(report[4], "server removed: not local");
+    assert!(!service_file(&m).exists());
+    assert!(model_file(&m).exists());
+    assert!(
+        changing_calls(&m)[before..]
+            .iter()
+            .any(|call| call.contains("embedder")),
+        "{:?}",
+        manager_log(&m)
+    );
+    let again = setup(&m, &[], &["--yes", "--no-plugin", "--no-timer"]);
+    assert_eq!(again.code, 0, "{}", again.stderr);
+    assert_eq!(lines(&again)[4], "server skipped: not local");
+}
+
+#[test]
+fn remove_unused_service_not_for_a_local_config() {
+    let (m, fake) = local_machine("remove-unused-local-config");
+    let first = local_setup(&m, &fake, &[]);
+    assert_eq!(first.code, 0, "{}", first.stderr);
+    let mtime = std::fs::metadata(service_file(&m))
+        .unwrap()
+        .modified()
+        .unwrap();
+    let calls = changing_calls(&m);
+    let run = setup(&m, &[], &["--yes", "--no-plugin", "--no-timer"]);
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    let report = lines(&run);
+    assert_eq!(report[3], "model skipped: not asked");
+    assert_eq!(report[4], "server skipped: not asked");
+    assert_eq!(
+        std::fs::metadata(service_file(&m))
+            .unwrap()
+            .modified()
+            .unwrap(),
+        mtime
+    );
+    assert_eq!(changing_calls(&m), calls, "no state-changing command");
+}
+
+#[test]
+fn remove_unused_service_without_the_manager_fails() {
+    let (m, fake) = local_machine("remove-unused-no-manager");
+    let first = local_setup(&m, &fake, &[]);
+    assert_eq!(first.code, 0, "{}", first.stderr);
+    move_config_elsewhere(&m);
+    let run = setup(
+        &m,
+        &[("PATH", m.dir.path().join("empty").to_str().unwrap())],
+        &["--yes", "--no-plugin", "--no-timer"],
+    );
+    let manager = if cfg!(target_os = "macos") {
+        "launchctl"
+    } else {
+        "systemctl"
+    };
+    assert_eq!(run.code, 1, "{}", run.stderr);
+    assert_eq!(
+        lines(&run)[4],
+        format!("server failed: {manager} not found on PATH")
+    );
+    assert!(service_file(&m).exists());
+}
+
+#[test]
+fn remove_without_the_manager_keeps_the_service() {
+    let (m, fake) = local_machine("remove-no-manager");
+    let first = local_setup(&m, &fake, &[]);
+    assert_eq!(first.code, 0, "{}", first.stderr);
+    let run = setup(
+        &m,
+        &[("PATH", m.dir.path().join("empty").to_str().unwrap())],
+        &["--remove", "--yes"],
+    );
+    let manager = if cfg!(target_os = "macos") {
+        "launchctl"
+    } else {
+        "systemctl"
+    };
+    assert_eq!(run.code, 1, "{}", run.stderr);
+    assert_eq!(
+        lines(&run)[4],
+        format!("server failed: {manager} not found on PATH")
+    );
+    assert!(service_file(&m).exists());
 }

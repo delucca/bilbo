@@ -6,21 +6,23 @@ use std::time::Duration;
 use zeroize::Zeroizing;
 
 use crate::config::{self, Embedder, Token};
-use crate::{Failure, agents, command, embed, store, timer, wizard};
+use crate::{Failure, agents, command, embed, model, store, timer, vectors, wizard};
 use wizard::Prompter;
 
 const CHECK: Duration = Duration::from_secs(15);
+const READY: Duration = Duration::from_secs(120);
 const OLLAMA: &str = "http://localhost:11434";
 const DEFAULT_MINUTES: u32 = 15;
 
-const BOOL_FLAGS: [&str; 5] = [
+const BOOL_FLAGS: [&str; 6] = [
     "--yes",
     "--interactive",
     "--remove",
     "--no-plugin",
     "--no-timer",
+    "--embedder-local",
 ];
-const VALUE_FLAGS: [&str; 9] = [
+const VALUE_FLAGS: [&str; 11] = [
     "--embedder-url",
     "--embedder-model",
     "--embedder-token-env",
@@ -30,6 +32,8 @@ const VALUE_FLAGS: [&str; 9] = [
     "--codex",
     "--plugin-source",
     "--index-every",
+    "--embedder-port",
+    "--llama-server",
 ];
 const EMBEDDER_FLAGS: [&str; 5] = [
     "--embedder-url",
@@ -38,7 +42,7 @@ const EMBEDDER_FLAGS: [&str; 5] = [
     "--embedder-token-file",
     "--embedder-query-prefix",
 ];
-const ANSWER_FLAGS: [&str; 8] = [
+const ANSWER_FLAGS: [&str; 11] = [
     "--embedder-url",
     "--embedder-model",
     "--embedder-token-env",
@@ -47,6 +51,9 @@ const ANSWER_FLAGS: [&str; 8] = [
     "--no-plugin",
     "--no-timer",
     "--index-every",
+    "--embedder-local",
+    "--embedder-port",
+    "--llama-server",
 ];
 const REMOVE_FLAGS: [&str; 4] = ["--yes", "--interactive", "--claude", "--codex"];
 
@@ -56,7 +63,11 @@ pub struct Outcome {
     pub failed: bool,
 }
 
-pub fn run(args: &[String], env: &store::Env) -> Result<Outcome, Failure> {
+pub fn run(
+    args: &[String],
+    env: &store::Env,
+    say: &mut dyn FnMut(&str),
+) -> Result<Outcome, Failure> {
     let flags = settle(args, env)?;
     let path = std::env::var_os("PATH");
     match flags.mode {
@@ -65,7 +76,35 @@ pub fn run(args: &[String], env: &store::Env) -> Result<Outcome, Failure> {
         Mode::Batch => {}
     }
     let facts = gather(&flags, env, path)?;
-    let plan = answer_batch(&flags, facts)?;
+    let mut plan = answer_batch(&flags, facts, &mut Net)?;
+    if let (Some(local), Some(embedder)) = (&plan.local, &plan.embedder)
+        && local.prepares()
+    {
+        if local.download {
+            say(&format!(
+                "downloading {} ({} MB) to {}",
+                model::FILE,
+                model::PINNED.size / 1_000_000,
+                local.model.display()
+            ));
+        }
+        match prepare(local, embedder, &mut Net) {
+            Ok((lines, dims)) => {
+                plan.local_lines = Some(lines);
+                plan.check = EmbedderPlan::Checked(dims);
+            }
+            Err((lines, message)) => {
+                say(&format!("{message}; setup changed nothing else"));
+                let mut report = Report::default();
+                report.line("model", lines.model.status, Some(lines.model.detail));
+                report.line("server", lines.server.status, Some(lines.server.detail));
+                return Ok(Outcome {
+                    lines: report.lines,
+                    failed: true,
+                });
+            }
+        }
+    }
     Ok(apply(&plan))
 }
 
@@ -75,11 +114,11 @@ fn run_wizard(
     env: &store::Env,
     path: Option<std::ffi::OsString>,
 ) -> Result<Outcome, Failure> {
+    let facts = gather(flags, env, path)?;
     wizard_with(
-        flags,
-        env,
-        path,
+        facts,
         &mut wizard::Terminal,
+        &mut Net,
         || embed::ollama_models(OLLAMA, Duration::from_secs(1)),
         |embedder, pasted| match pasted {
             Some(key) => {
@@ -92,19 +131,18 @@ fn run_wizard(
     )
 }
 
-/// The wizard: ask, plan, confirm, apply, then offer the first index. `probe` finds the Ollama
-/// models, `check` tries an embedder and `index` runs the first index; all three are the caller's
-/// so a test can run the wizard without a terminal, a network or the real tools.
+/// The wizard: ask, plan, confirm, apply, then offer the first index. `outside` reaches the model
+/// host, the local server and the port; `probe` finds the Ollama models, `check` tries an embedder
+/// and `index` runs the first index; all four are the caller's so a test can run the wizard
+/// without a terminal, a network or the real tools.
 fn wizard_with<P: Prompter>(
-    flags: &Flags,
-    env: &store::Env,
-    path: Option<std::ffi::OsString>,
+    facts: Facts,
     p: &mut P,
+    outside: &mut impl Outside,
     probe: impl FnOnce() -> Option<Vec<String>>,
     check: impl FnMut(&Embedder, Option<&str>) -> Result<usize, String>,
     index: impl FnOnce(&Path) -> Result<String, String>,
 ) -> Result<Outcome, Failure> {
-    let facts = gather(flags, env, path)?;
     let managed = match &facts.config {
         ConfigState::Managed { target } => Some(target.clone()),
         _ => None,
@@ -112,6 +150,16 @@ fn wizard_with<P: Prompter>(
     let ollama = match managed {
         Some(_) => None,
         None => probe(),
+    };
+    let local = wizard::Local {
+        url: format!("http://127.0.0.1:{}", model::PORT),
+        model_name: model::NAME.to_string(),
+        download_mb: model::PINNED.size / 1_000_000,
+        llama_server: facts.llama_server.clone(),
+        unavailable: match managed {
+            Some(_) => None,
+            None => local_unavailable(&facts, model::PORT, outside),
+        },
     };
     let seen = wizard::Facts {
         root: facts.root.clone(),
@@ -129,18 +177,34 @@ fn wizard_with<P: Prompter>(
             .platform
             .zip(timer_place(&facts.timer))
             .and_then(|(platform, place)| timer::minutes(platform, &place)),
+        local,
     };
     let answers = wizard::ask(p, &seen, check, |name| {
         std::env::var_os(name).is_some_and(|value| !value.is_empty())
     })
     .map_err(|e| stopped(p, e))?;
     let exe = facts.exe.clone();
-    let plan = answer_wizard(facts, answers);
+    let plugins = (answers.claude, answers.codex);
+    let local = match &answers.local {
+        Some(llama_server) => {
+            match plan_local(&facts, model::PORT, Some(llama_server.clone()), outside) {
+                Ok(local) => Some(local),
+                Err(message) => {
+                    let _ = p.warn(&message);
+                    wizard::cancelled(p);
+                    return Err(Failure::Refused(message));
+                }
+            }
+        }
+        None => None,
+    };
+    let mut plan = answer_wizard(&facts, answers, local);
     match wizard::confirm(p, &summary(&plan)) {
         Ok(true) => {}
         Ok(false) => return Err(declined(p)),
         Err(e) => return Err(stopped(p, e)),
     }
+    settle_local(p, outside, &facts, &mut plan, plugins)?;
     let outcome = apply(&plan);
     if !outcome.failed && plan.embedder.is_some() {
         let notes = store::read_notes(&plan.notes).map_or(0, |notes| notes.len());
@@ -189,6 +253,7 @@ struct Args {
     remove: bool,
     no_plugin: bool,
     no_timer: bool,
+    embedder_local: bool,
     embedder_url: Option<String>,
     embedder_model: Option<String>,
     token_env: Option<String>,
@@ -198,6 +263,8 @@ struct Args {
     codex: Option<String>,
     plugin_source: Option<String>,
     index_every: Option<String>,
+    embedder_port: Option<String>,
+    llama_server: Option<String>,
 }
 
 impl Args {
@@ -240,6 +307,7 @@ fn parse(args: &[String]) -> Result<Args, Failure> {
                 "--interactive" => out.interactive = true,
                 "--remove" => out.remove = true,
                 "--no-plugin" => out.no_plugin = true,
+                "--embedder-local" => out.embedder_local = true,
                 _ => out.no_timer = true,
             }
         } else if let Some(flag) = VALUE_FLAGS.iter().find(|f| **f == name) {
@@ -274,6 +342,8 @@ fn parse(args: &[String]) -> Result<Args, Failure> {
                 "--claude" => &mut out.claude,
                 "--codex" => &mut out.codex,
                 "--plugin-source" => &mut out.plugin_source,
+                "--embedder-port" => &mut out.embedder_port,
+                "--llama-server" => &mut out.llama_server,
                 _ => &mut out.index_every,
             };
             *slot = Some(value);
@@ -314,6 +384,12 @@ impl EmbedderFlags {
     }
 }
 
+/// What `--embedder-local` asks for.
+struct LocalFlags {
+    port: u16,
+    llama_server: Option<PathBuf>,
+}
+
 /// Every flag, checked and typed.
 struct Flags {
     mode: Mode,
@@ -323,6 +399,7 @@ struct Flags {
     no_timer: bool,
     minutes: Option<u32>,
     embedder: Option<EmbedderFlags>,
+    local: Option<LocalFlags>,
     /// The first embedder flag on the command line, for messages.
     embedder_flag: Option<&'static str>,
     claude: Option<PathBuf>,
@@ -350,6 +427,22 @@ fn settle(args: &[String], env: &store::Env) -> Result<Flags, Failure> {
     {
         return usage(format!("--remove cannot be used with {flag}"));
     }
+    if args.embedder_local
+        && let Some(flag) = args.first(&EMBEDDER_FLAGS)
+    {
+        return usage(format!(
+            "--embedder-local and {flag} cannot be used together"
+        ));
+    }
+    if !args.embedder_local
+        && let Some(flag) = args.first(&["--embedder-port", "--llama-server"])
+    {
+        return usage(format!("{flag} needs --embedder-local"));
+    }
+    let port = match &args.embedder_port {
+        Some(value) => parse_port(value)?,
+        None => model::PORT,
+    };
     if args.embedder_url.is_none()
         && let Some(flag) = args.first(&EMBEDDER_FLAGS)
     {
@@ -375,12 +468,26 @@ fn settle(args: &[String], env: &store::Env) -> Result<Flags, Failure> {
         None => None,
     };
     let home = store::absolute(&env.home);
-    let embedder = match (&args.embedder_url, &args.embedder_model) {
+    let mut embedder = match (&args.embedder_url, &args.embedder_model) {
         (Some(url), Some(model)) => Some(embedder_flags(&args, url, model, home.as_deref())?),
         _ => None,
     };
     let cwd = std::env::current_dir()
         .map_err(|e| Failure::Refused(format!("cannot read the working directory: {e}")))?;
+    let local = if args.embedder_local {
+        embedder = Some(EmbedderFlags {
+            url: format!("http://127.0.0.1:{port}"),
+            model: model::NAME.to_string(),
+            token: None,
+            query_prefix: None,
+        });
+        Some(LocalFlags {
+            port,
+            llama_server: tool_flag("--llama-server", &args.llama_server, &cwd)?,
+        })
+    } else {
+        None
+    };
     let claude = tool_flag("--claude", &args.claude, &cwd)?;
     let codex = tool_flag("--codex", &args.codex, &cwd)?;
     let source = match &args.plugin_source {
@@ -412,7 +519,12 @@ fn settle(args: &[String], env: &store::Env) -> Result<Flags, Failure> {
         no_timer: args.no_timer,
         minutes,
         embedder,
-        embedder_flag: args.first(&EMBEDDER_FLAGS),
+        local,
+        embedder_flag: if args.embedder_local {
+            Some("--embedder-local")
+        } else {
+            args.first(&EMBEDDER_FLAGS)
+        },
         claude,
         codex,
         source,
@@ -425,6 +537,16 @@ fn parse_minutes(value: &str) -> Result<u32, Failure> {
         Ok(n) if digits && (1..=1440).contains(&n) => Ok(n),
         _ => usage(format!(
             "--index-every takes 1 to 1440 minutes, got '{value}'"
+        )),
+    }
+}
+
+fn parse_port(value: &str) -> Result<u16, Failure> {
+    let digits = !value.is_empty() && value.bytes().all(|b| b.is_ascii_digit());
+    match value.parse::<u16>() {
+        Ok(n) if digits && n >= 1024 => Ok(n),
+        _ => usage(format!(
+            "--embedder-port takes 1024 to 65535, got '{value}'"
         )),
     }
 }
@@ -518,6 +640,10 @@ struct Facts {
     claude: Option<PathBuf>,
     codex: Option<PathBuf>,
     timer: TimerFacts,
+    /// `llama-server` from `--llama-server` or PATH, as given: links are not resolved.
+    llama_server: Option<PathBuf>,
+    /// Where the model file goes, under the cache folder.
+    model: Option<PathBuf>,
 }
 
 /// What the timer step reads from the machine and the environment.
@@ -610,6 +736,11 @@ fn gather(
     };
     let claude = tool(&flags.claude, "claude");
     let codex = tool(&flags.codex, "codex");
+    let llama_server = flags
+        .local
+        .as_ref()
+        .and_then(|local| local.llama_server.clone())
+        .or_else(|| command::find("llama-server", path.as_deref()));
     Ok(Facts {
         root,
         notes,
@@ -623,6 +754,8 @@ fn gather(
         claude,
         codex,
         timer: timer_facts(env, path.as_deref()),
+        llama_server,
+        model: vectors::dir(env).map(|cache| model::path(&cache)),
     })
 }
 
@@ -732,6 +865,83 @@ enum TimerPlan {
     },
 }
 
+/// One step's report line: its status and detail.
+struct Line {
+    status: &'static str,
+    detail: String,
+}
+
+/// The model and server lines of the local embedder.
+struct LocalLines {
+    model: Line,
+    server: Line,
+}
+
+/// What the local embedder needs, settled before anything is written.
+struct LocalPlan {
+    port: u16,
+    /// `http://127.0.0.1:<port>`
+    url: String,
+    llama_server: PathBuf,
+    model: PathBuf,
+    /// The model file is not there with the pinned size.
+    download: bool,
+    platform: timer::Platform,
+    tool: PathBuf,
+    place: timer::Place,
+    job: timer::Job,
+    files: Vec<(PathBuf, String)>,
+    service: timer::Current,
+}
+
+impl LocalPlan {
+    fn log(&self) -> &Path {
+        &self.job.log
+    }
+
+    fn address(&self) -> String {
+        format!("127.0.0.1:{}", self.port)
+    }
+
+    /// The prepare stage has work: a download, or service files to write or reload.
+    fn prepares(&self) -> bool {
+        self.download || self.service != timer::Current::Same
+    }
+}
+
+/// What the prepare stage and planning reach outside the process; `Net` for real, a script in tests.
+trait Outside {
+    /// Downloads the pinned model to `path`; `progress` gets (bytes done, total).
+    fn fetch(&mut self, path: &Path, progress: &mut dyn FnMut(u64, u64)) -> Result<(), String>;
+    /// Waits for the server at `url` to report ready.
+    fn ready(&mut self, url: &str) -> Result<(), String>;
+    /// One embed request; the vector length.
+    fn check(&mut self, embedder: &Embedder) -> Result<usize, String>;
+    /// Whether something accepts a connection on 127.0.0.1:`port` within 1 s.
+    fn listening(&mut self, port: u16) -> bool;
+}
+
+struct Net;
+
+impl Outside for Net {
+    fn fetch(&mut self, path: &Path, progress: &mut dyn FnMut(u64, u64)) -> Result<(), String> {
+        model::download(path, &model::PINNED, model::WINDOW, progress)
+    }
+
+    fn ready(&mut self, url: &str) -> Result<(), String> {
+        embed::ready(url, READY)
+    }
+
+    fn check(&mut self, embedder: &Embedder) -> Result<usize, String> {
+        check_embedder(embedder)
+    }
+
+    fn listening(&mut self, port: u16) -> bool {
+        let address = std::net::SocketAddr::from(([127, 0, 0, 1], port));
+        std::net::TcpStream::connect_timeout(&address, Duration::from_secs(1)).is_ok()
+    }
+}
+
 struct Plan {
     notes: PathBuf,
     store_exists: bool,
@@ -743,6 +953,12 @@ struct Plan {
     /// The key the wizard was given; written to the token file and never shown.
     pasted: Option<Zeroizing<String>>,
     check: EmbedderPlan,
+    /// What the local embedder needs; `None` when it is not asked for.
+    local: Option<LocalPlan>,
+    /// The model and server lines; `None` when the local embedder is not asked for.
+    local_lines: Option<LocalLines>,
+    /// An installed embedder service the config setup leaves has no use for.
+    unused_service: Option<TimerRemoval>,
     source: agents::Source,
     claude: PluginPlan,
     codex: PluginPlan,
@@ -750,10 +966,37 @@ struct Plan {
 }
 
 /// Non-interactive answers: the flags over the config that is there, the embedder checked when a new config gets one.
-fn answer_batch(flags: &Flags, facts: Facts) -> Result<Plan, Failure> {
+fn answer_batch(flags: &Flags, facts: Facts, outside: &mut impl Outside) -> Result<Plan, Failure> {
     let path = facts.config_path.display();
     let mut check = EmbedderPlan::None;
+    let local_embedder = flags.embedder.as_ref().filter(|_| flags.local.is_some());
+    let local_managed = matches!(facts.config, ConfigState::Managed { .. })
+        && local_embedder.is_some_and(|given| {
+            facts
+                .existing
+                .as_ref()
+                .is_some_and(|e| e.url == given.url && e.model == given.model)
+        });
+    if local_embedder.is_some()
+        && matches!(facts.config, ConfigState::Managed { .. })
+        && !local_managed
+    {
+        return Err(Failure::Config(format!(
+            "{path} is managed elsewhere; change the embedder there, not with --embedder-local"
+        )));
+    }
+    let local = match &flags.local {
+        Some(asked) => Some(
+            plan_local(&facts, asked.port, facts.llama_server.clone(), outside)
+                .map_err(Failure::Refused)?,
+        ),
+        None => None,
+    };
+    let prepares = local.as_ref().is_some_and(LocalPlan::prepares);
     let (config, embedder) = match (&facts.config, &flags.embedder) {
+        (ConfigState::Managed { target }, Some(_)) if local_managed => {
+            (ConfigPlan::Managed(target.clone()), facts.existing.clone())
+        }
         (ConfigState::Managed { .. }, Some(_)) => {
             let flag = flags.embedder_flag.unwrap_or("--embedder-url");
             return Err(Failure::Config(format!(
@@ -765,8 +1008,11 @@ fn answer_batch(flags: &Flags, facts: Facts) -> Result<Plan, Failure> {
         }
         (ConfigState::Present, Some(given)) if facts.config_empty => {
             let planned = given.embedder();
-            let dims = check_embedder(&planned).map_err(Failure::Refused)?;
-            check = EmbedderPlan::Checked(dims);
+            if !prepares {
+                let dims =
+                    check_planned(local.as_ref(), &planned, outside).map_err(Failure::Refused)?;
+                check = EmbedderPlan::Checked(dims);
+            }
             (ConfigPlan::Update(Some(planned.clone())), Some(planned))
         }
         (ConfigState::Present, Some(given)) => {
@@ -786,8 +1032,11 @@ fn answer_batch(flags: &Flags, facts: Facts) -> Result<Plan, Failure> {
         (ConfigState::Present, None) => (ConfigPlan::Keep, facts.existing.clone()),
         (ConfigState::Absent, Some(given)) => {
             let planned = given.embedder();
-            let dims = check_embedder(&planned).map_err(Failure::Refused)?;
-            check = EmbedderPlan::Checked(dims);
+            if !prepares {
+                let dims =
+                    check_planned(local.as_ref(), &planned, outside).map_err(Failure::Refused)?;
+                check = EmbedderPlan::Checked(dims);
+            }
             (ConfigPlan::Create(Some(planned.clone())), Some(planned))
         }
         (ConfigState::Absent, None) => (ConfigPlan::Create(None), None),
@@ -820,6 +1069,11 @@ fn answer_batch(flags: &Flags, facts: Facts) -> Result<Plan, Failure> {
         flags.no_timer.then_some("--no-timer"),
         flags.minutes.unwrap_or(DEFAULT_MINUTES),
     );
+    let mut local_lines = local.as_ref().filter(|l| !l.prepares()).map(kept_lines);
+    let mut unused_service = None;
+    if local.is_none() {
+        (local_lines, unused_service) = unused_local(&facts, embedder.as_ref());
+    }
     Ok(Plan {
         store_exists: facts.notes.is_dir(),
         notes: facts.notes,
@@ -829,6 +1083,9 @@ fn answer_batch(flags: &Flags, facts: Facts) -> Result<Plan, Failure> {
         key,
         pasted: None,
         check,
+        local,
+        local_lines,
+        unused_service,
         source: facts.source,
         claude,
         codex,
@@ -836,8 +1093,63 @@ fn answer_batch(flags: &Flags, facts: Facts) -> Result<Plan, Failure> {
     })
 }
 
-/// The wizard's answers over what the machine holds, as the same plan the batch builds.
-fn answer_wizard(facts: Facts, answers: wizard::Answers) -> Plan {
+/// The model and server lines of a local embedder that needs no preparing.
+fn kept_lines(local: &LocalPlan) -> LocalLines {
+    LocalLines {
+        model: Line {
+            status: "kept",
+            detail: local.model.display().to_string(),
+        },
+        server: Line {
+            status: "kept",
+            detail: local.address(),
+        },
+    }
+}
+
+/// Whether the embedder is the local one: its model and a loopback URL with a numeric port.
+fn is_local_embedder(embedder: &Embedder) -> bool {
+    embedder.model == model::NAME
+        && embedder
+            .url
+            .strip_prefix("http://127.0.0.1:")
+            .is_some_and(|port| !port.is_empty() && port.bytes().all(|b| b.is_ascii_digit()))
+}
+
+/// The embedder service as a removal, when its files are installed. Reads files only.
+fn installed_service(t: &TimerFacts) -> Option<TimerRemoval> {
+    let platform = t.platform?;
+    let place = timer_place(t)?;
+    timer::installed(platform, &place, timer::Name::Embedder).then(|| TimerRemoval::Run {
+        platform,
+        tool: t.tool.clone(),
+        place,
+    })
+}
+
+/// For a run that is not asked for the local embedder: the config it leaves is a local one, so the
+/// service stays (`not asked`), or it is not, so an installed service goes. Runs no command.
+fn unused_local(
+    facts: &Facts,
+    embedder: Option<&Embedder>,
+) -> (Option<LocalLines>, Option<TimerRemoval>) {
+    if embedder.is_some_and(is_local_embedder) {
+        let skipped = || Line {
+            status: "skipped",
+            detail: "not asked".into(),
+        };
+        let lines = LocalLines {
+            model: skipped(),
+            server: skipped(),
+        };
+        return (Some(lines), None);
+    }
+    (None, installed_service(&facts.timer))
+}
+
+/// The wizard's answers over what the machine holds, as the same plan the batch builds. `local`
+/// is the plan of the local embedder when the answers chose it.
+fn answer_wizard(facts: &Facts, answers: wizard::Answers, local: Option<LocalPlan>) -> Plan {
     let embedder = answers.embedder;
     let config = match &facts.config {
         ConfigState::Managed { target } => ConfigPlan::Managed(target.clone()),
@@ -885,25 +1197,424 @@ fn answer_wizard(facts: Facts, answers: wizard::Answers) -> Plan {
     let codex = plugin(agents::Tool::Codex, &facts.codex, answers.codex);
     let asked = embedder.is_some() && facts.timer.platform.is_some();
     let timer = plan_timer(
-        &facts,
+        facts,
         embedder.as_ref(),
         (asked && answers.timer.is_none()).then_some("not chosen"),
         answers.timer.unwrap_or(DEFAULT_MINUTES),
     );
+    let (local_lines, unused_service) = match &local {
+        Some(l) => (Some(l).filter(|l| !l.prepares()).map(kept_lines), None),
+        None => unused_local(facts, embedder.as_ref()),
+    };
     Plan {
         store_exists: facts.notes.is_dir(),
-        notes: facts.notes,
-        config_path: facts.config_path,
+        notes: facts.notes.clone(),
+        config_path: facts.config_path.clone(),
         config,
         embedder,
         key,
         pasted: answers.pasted,
         check,
-        source: facts.source,
+        local,
+        local_lines,
+        unused_service,
+        source: facts.source.clone(),
         claude,
         codex,
         timer,
     }
+}
+
+/// The wizard's outside work, run with progress bars and spinners.
+struct Shown<'a, P, O> {
+    p: &'a mut P,
+    outside: &'a mut O,
+}
+
+impl<P: Prompter, O: Outside> Outside for Shown<'_, P, O> {
+    fn fetch(&mut self, path: &Path, progress: &mut dyn FnMut(u64, u64)) -> Result<(), String> {
+        let outside = &mut *self.outside;
+        self.p.progress(
+            &format!(
+                "Downloading {} ({} MB)",
+                model::FILE,
+                model::PINNED.size / 1_000_000
+            ),
+            model::PINNED.size,
+            |report| {
+                outside.fetch(path, &mut |done, total| {
+                    report(done);
+                    progress(done, total);
+                })
+            },
+            |_| format!("Downloaded {}", path.display()),
+        )
+    }
+
+    fn ready(&mut self, url: &str) -> Result<(), String> {
+        let outside = &mut *self.outside;
+        self.p.spin(
+            "Starting llama-server and loading the model",
+            || outside.ready(url),
+            |_| "llama-server is ready".to_string(),
+        )
+    }
+
+    fn check(&mut self, embedder: &Embedder) -> Result<usize, String> {
+        let outside = &mut *self.outside;
+        self.p.spin(
+            &format!("Checking {} at {}", embedder.model, embedder.url),
+            || outside.check(embedder),
+            |dims| format!("{} answered with {dims}-dimensional vectors", embedder.url),
+        )
+    }
+
+    fn listening(&mut self, port: u16) -> bool {
+        self.outside.listening(port)
+    }
+}
+
+/// An embed request to a local server that needs no preparing, once it reports ready.
+fn check_kept(
+    local: &LocalPlan,
+    embedder: &Embedder,
+    outside: &mut impl Outside,
+) -> Result<(LocalLines, usize), (LocalLines, String)> {
+    match outside
+        .ready(&local.url)
+        .and_then(|()| outside.check(embedder))
+    {
+        Ok(dims) => Ok((kept_lines(local), dims)),
+        Err(message) => Err((kept_lines(local), message)),
+    }
+}
+
+/// After the confirmation: prepares the local embedder (or only checks it, when a new config
+/// would name it), offering a retry or keyword search only when that fails. `plugins` are the
+/// wizard's claude and codex answers, which the keyword-only plan keeps.
+fn settle_local<P: Prompter>(
+    p: &mut P,
+    outside: &mut impl Outside,
+    facts: &Facts,
+    plan: &mut Plan,
+    plugins: (bool, bool),
+) -> Result<(), Failure> {
+    let Some(mut local) = plan.local.take() else {
+        return Ok(());
+    };
+    let Some(embedder) = plan.embedder.clone() else {
+        plan.local = Some(local);
+        return Ok(());
+    };
+    let heavy = local.prepares();
+    let check_only = !heavy
+        && matches!(
+            plan.config,
+            ConfigPlan::Create(Some(_)) | ConfigPlan::Update(Some(_))
+        );
+    if !heavy && !check_only {
+        plan.local = Some(local);
+        return Ok(());
+    }
+    let mut downloaded = false;
+    loop {
+        let result = {
+            let mut shown = Shown {
+                p: &mut *p,
+                outside: &mut *outside,
+            };
+            if heavy {
+                prepare(&local, &embedder, &mut shown)
+            } else {
+                check_kept(&local, &embedder, &mut shown)
+            }
+        };
+        match result {
+            Ok((mut lines, dims)) => {
+                if downloaded {
+                    lines.model.status = "installed";
+                }
+                plan.local_lines = Some(lines);
+                plan.check = EmbedderPlan::Checked(dims);
+                plan.local = Some(local);
+                return Ok(());
+            }
+            Err((lines, message)) => {
+                downloaded |= lines.model.status == "installed";
+                let again = wizard::local_failed(p, &message, local.log()).map_err(|e| {
+                    if downloaded && e.kind() == std::io::ErrorKind::Interrupted {
+                        let _ = p.cancel(&format!(
+                            "Cancelled. Only the model was kept, at {}.",
+                            local.model.display()
+                        ));
+                        return Failure::Refused(format!(
+                            "setup cancelled; only the model was kept, at {}",
+                            local.model.display()
+                        ));
+                    }
+                    stopped(p, e)
+                })?;
+                if again {
+                    local.download = !model::kept(&local.model, model::PINNED.size);
+                    local.service = timer::current(&local.files);
+                    continue;
+                }
+                let model = match lines.model.status {
+                    "failed" => Line {
+                        status: "skipped",
+                        detail: "keyword search only".into(),
+                    },
+                    _ if downloaded => Line {
+                        status: "installed",
+                        detail: lines.model.detail,
+                    },
+                    _ => lines.model,
+                };
+                let server =
+                    if timer::installed(local.platform, &local.place, timer::Name::Embedder) {
+                        match timer::uninstall(
+                            local.platform,
+                            &command::System,
+                            Some(&local.tool),
+                            &local.place,
+                            timer::Name::Embedder,
+                        ) {
+                            Ok(()) => Line {
+                                status: "removed",
+                                detail: "keyword search only".into(),
+                            },
+                            Err(message) => Line {
+                                status: "failed",
+                                detail: message,
+                            },
+                        }
+                    } else {
+                        Line {
+                            status: "skipped",
+                            detail: "keyword search only".into(),
+                        }
+                    };
+                let keyword = wizard::Answers {
+                    embedder: None,
+                    pasted: None,
+                    dims: None,
+                    claude: plugins.0,
+                    codex: plugins.1,
+                    timer: None,
+                    local: None,
+                };
+                *plan = answer_wizard(facts, keyword, None);
+                plan.unused_service = None;
+                plan.local_lines = Some(LocalLines { model, server });
+                return Ok(());
+            }
+        }
+    }
+}
+
+/// The platform and its service manager; on Linux a live user session too.
+fn local_manager(facts: &Facts) -> Result<(timer::Platform, PathBuf), String> {
+    let t = &facts.timer;
+    let Some(platform) = t.platform else {
+        return Err("the local embedder runs only on macOS and Linux".into());
+    };
+    let no_session = "the local embedder needs a systemd user session; none answers here";
+    match (platform, &t.tool) {
+        (timer::Platform::Launchd, None) => {
+            Err("the local embedder needs launchctl, which is not on PATH".into())
+        }
+        (timer::Platform::Systemd, None) => Err(no_session.into()),
+        (timer::Platform::Systemd, Some(tool)) if !timer::session(&command::System, tool) => {
+            Err(no_session.into())
+        }
+        (_, Some(tool)) => Ok((platform, tool.clone())),
+    }
+}
+
+/// The service files' place, the state folder and the model path.
+fn local_folders(facts: &Facts) -> Result<(timer::Place, PathBuf, PathBuf), String> {
+    let Some(model) = &facts.model else {
+        return Err(
+            "cannot find the cache folder: set XDG_CACHE_HOME, or HOME, to an absolute path".into(),
+        );
+    };
+    let Some(state_dir) = &facts.timer.state_dir else {
+        return Err(
+            "cannot find the state folder: set XDG_STATE_HOME, or HOME, to an absolute path".into(),
+        );
+    };
+    let Some(place) = timer_place(&facts.timer) else {
+        return Err(match facts.timer.platform {
+            Some(timer::Platform::Systemd) => {
+                "cannot find the config folder: set XDG_CONFIG_HOME, or HOME, to an absolute path"
+            }
+            _ => "cannot find the home folder: set HOME to an absolute path",
+        }
+        .into());
+    };
+    Ok((place, state_dir.clone(), model.clone()))
+}
+
+/// Something answers on the port and no embedder service of ours is installed.
+fn port_busy(
+    platform: timer::Platform,
+    place: &timer::Place,
+    port: u16,
+    outside: &mut impl Outside,
+) -> Option<String> {
+    (!timer::installed(platform, place, timer::Name::Embedder) && outside.listening(port)).then(
+        || format!("127.0.0.1:{port} is already in use; pick another port with --embedder-port"),
+    )
+}
+
+/// Why the local embedder cannot run here, or None: platform, service manager (on Linux a live user
+/// session), state and home or config folders, and the port (busy and no embedder service file).
+fn local_unavailable(facts: &Facts, port: u16, outside: &mut impl Outside) -> Option<String> {
+    let (platform, _) = match local_manager(facts) {
+        Ok(found) => found,
+        Err(message) => return Some(message),
+    };
+    let (place, _, _) = match local_folders(facts) {
+        Ok(found) => found,
+        Err(message) => return Some(message),
+    };
+    port_busy(platform, &place, port, outside)
+}
+
+/// Settles the local embedder. Reads files, may run `systemctl --user is-system-running`, connects to the port; writes nothing.
+fn plan_local(
+    facts: &Facts,
+    port: u16,
+    llama_server: Option<PathBuf>,
+    outside: &mut impl Outside,
+) -> Result<LocalPlan, String> {
+    let (platform, tool) = local_manager(facts)?;
+    let Some(llama_server) = llama_server else {
+        return Err("llama-server not found on PATH; install it (brew install llama.cpp, your distribution's llama.cpp package, or Nix's llama-cpp) or pass --llama-server <path>".into());
+    };
+    let (place, state_dir, model) = local_folders(facts)?;
+    let job = timer::Job {
+        kind: timer::Kind::Service,
+        program: llama_server.clone(),
+        args: model::server_args(&model, port),
+        log: state_dir.join("bilbo/embedder.log"),
+        env: Vec::new(),
+    };
+    let files = timer::files(platform, &place, &job)?;
+    if let Some(message) = port_busy(platform, &place, port, outside) {
+        return Err(message);
+    }
+    Ok(LocalPlan {
+        port,
+        url: format!("http://127.0.0.1:{port}"),
+        llama_server,
+        download: !model::kept(&model, model::PINNED.size),
+        model,
+        platform,
+        tool,
+        place,
+        service: timer::current(&files),
+        job,
+        files,
+    })
+}
+
+/// Download, service, readiness, check, in that order. On failure, unloads and deletes a service
+/// this call wrote and returns the two report lines and the message for stderr.
+fn prepare(
+    local: &LocalPlan,
+    embedder: &Embedder,
+    outside: &mut impl Outside,
+) -> Result<(LocalLines, usize), (LocalLines, String)> {
+    let line = |status, detail: String| Line { status, detail };
+    let model_line = if local.download {
+        if let Err(message) = outside.fetch(&local.model, &mut |_, _| {}) {
+            return Err((
+                LocalLines {
+                    model: line("failed", message.clone()),
+                    server: line("skipped", "no model".into()),
+                },
+                message,
+            ));
+        }
+        line("installed", local.model.display().to_string())
+    } else {
+        line("kept", local.model.display().to_string())
+    };
+    let wrote = local.service != timer::Current::Same;
+    let log = local.log().display();
+    let failed = |model: Line, detail: String, message: String| {
+        Err((
+            LocalLines {
+                model,
+                server: line("failed", detail),
+            },
+            message,
+        ))
+    };
+    let loaded = if wrote {
+        timer::install(
+            local.platform,
+            &command::System,
+            &local.tool,
+            &local.job,
+            &local.files,
+        )
+    } else {
+        timer::reload(
+            local.platform,
+            &command::System,
+            &local.tool,
+            &local.place,
+            timer::Name::Embedder,
+        )
+    };
+    if let Err(message) = loaded {
+        return failed(model_line, format!("{message}; see {log}"), message);
+    }
+    let unload = || {
+        if wrote {
+            let _ = timer::uninstall(
+                local.platform,
+                &command::System,
+                Some(&local.tool),
+                &local.place,
+                timer::Name::Embedder,
+            );
+        }
+    };
+    if let Err(message) = outside.ready(&local.url) {
+        unload();
+        return failed(model_line, format!("{message}; see {log}"), message);
+    }
+    let dims = match outside.check(embedder) {
+        Ok(dims) => dims,
+        Err(message) => {
+            unload();
+            let removed = if wrote {
+                "; the service was removed"
+            } else {
+                ""
+            };
+            return failed(
+                model_line,
+                format!("{message}{removed}; see {log}"),
+                message,
+            );
+        }
+    };
+    let status = match local.service {
+        timer::Current::Missing => "installed",
+        timer::Current::Different => "updated",
+        timer::Current::Same => "kept",
+    };
+    Ok((
+        LocalLines {
+            model: model_line,
+            server: line(status, local.address()),
+        },
+        dims,
+    ))
 }
 
 /// Where the timer's files live, when the folders it needs are known.
@@ -945,7 +1656,8 @@ fn plan_timer(
     let embedder = match wanted {
         Ok(embedder) => embedder,
         Err(reason) => {
-            return match place.filter(|place| timer::installed(platform, place)) {
+            return match place.filter(|place| timer::installed(platform, place, timer::Name::Index))
+            {
                 Some(_) if t.tool.is_none() => TimerPlan::Failed(format!(
                     "{} not found on PATH",
                     match platform {
@@ -995,8 +1707,9 @@ fn plan_timer(
         .into());
     };
     let job = timer::Job {
-        exe: facts.exe.clone(),
-        minutes,
+        kind: timer::Kind::Periodic { minutes },
+        program: facts.exe.clone(),
+        args: vec!["index".into()],
         log: state_dir.join("bilbo/index.log"),
         env,
     };
@@ -1035,6 +1748,22 @@ fn same_embedder(existing: Option<&Embedder>, planned: &Embedder) -> bool {
             && e.token == planned.token
             && e.query_prefix == planned.query_prefix
     })
+}
+
+/// The planned embedder's check at plan time. A kept local server may still be loading its
+/// model (after a login or a restart), so it is waited for first.
+fn check_planned(
+    local: Option<&LocalPlan>,
+    planned: &Embedder,
+    outside: &mut impl Outside,
+) -> Result<usize, String> {
+    match local {
+        Some(local) => {
+            outside.ready(&local.url)?;
+            outside.check(planned)
+        }
+        None => check_embedder(planned),
+    }
 }
 
 /// One embed request, with the 15 s limit; the vector length, or the message.
@@ -1088,6 +1817,39 @@ fn summary(plan: &Plan) -> Vec<String> {
         }
         (Some(e), _) => format!("Embed with {} at {}", e.model, e.url),
     });
+    if let Some(local) = &plan.local {
+        lines.push(if local.download {
+            format!(
+                "Download {} ({} MB) to {}",
+                model::FILE,
+                model::PINNED.size / 1_000_000,
+                local.model.display()
+            )
+        } else {
+            format!("Keep the model {}", local.model.display())
+        });
+        let server = local.llama_server.display();
+        let address = local.address();
+        lines.push(match (&local.service, local.platform) {
+            (timer::Current::Missing, timer::Platform::Launchd) => format!(
+                "Run {server} on {address} as the launchd agent {}",
+                timer::EMBEDDER_LABEL
+            ),
+            (timer::Current::Missing, timer::Platform::Systemd) => format!(
+                "Run {server} on {address} as the systemd user service {}",
+                timer::Name::Embedder.unit()
+            ),
+            (timer::Current::Different, _) => {
+                format!("Update the local embedder service to run {server} on {address}")
+            }
+            (timer::Current::Same, _) => format!("Keep the local embedder service on {address}"),
+        });
+        lines.push("llama-server keeps about 1 GB of memory in use".to_string());
+        lines.push("The first index of a large store takes a while".to_string());
+    }
+    if matches!(plan.unused_service, Some(TimerRemoval::Run { .. })) {
+        lines.push("Remove the local embedder service".to_string());
+    }
     for (tool, plugin) in plugins(plan) {
         let label = tool.label();
         let change = match plugin {
@@ -1121,7 +1883,7 @@ fn summary(plan: &Plan) -> Vec<String> {
         TimerPlan::Keep => lines.push("Keep the index timer".to_string()),
         TimerPlan::Install { platform, job, .. } => lines.push(format!(
             "Run bilbo index every {} min ({})",
-            job.minutes,
+            job.minutes(),
             match platform {
                 timer::Platform::Launchd => format!("launchd agent {}", timer::LABEL),
                 timer::Platform::Systemd => "systemd timer bilbo-index.timer".to_string(),
@@ -1162,6 +1924,8 @@ fn apply(plan: &Plan) -> Outcome {
     store_step(plan, &mut report);
     config_step(plan, &mut report);
     key_step(plan, &mut report);
+    model_step(plan, &mut report);
+    server_step(plan, &mut report);
     embedder_step(plan, &mut report);
     for (tool, plugin) in plugins(plan) {
         plugin_step(tool, plugin, &plan.source, &mut report);
@@ -1190,7 +1954,7 @@ fn timer_step(plan: &TimerPlan, report: &mut Report) {
             platform,
             tool,
             place,
-        } => match timer::uninstall(*platform, &command::System, tool.as_deref(), place) {
+        } => match timer::uninstall(*platform, &command::System, tool.as_deref(), place, timer::Name::Index) {
             Ok(()) => report.line("timer", "removed", Some((*reason).into())),
             Err(message) => report.line("timer", "failed", Some(message)),
         },
@@ -1204,7 +1968,7 @@ fn timer_step(plan: &TimerPlan, report: &mut Report) {
             Ok(()) => report.line(
                 "timer",
                 if *update { "updated" } else { "installed" },
-                Some(format!("every {} min", job.minutes)),
+                Some(format!("every {} min", job.minutes())),
             ),
             Err(message) => report.line("timer", "failed", Some(message)),
         },
@@ -1277,6 +2041,9 @@ struct RemovePlan {
     store: Option<PathBuf>,
     config: Option<PathBuf>,
     key: Option<PathBuf>,
+    /// The model file, when it exists.
+    model: Option<PathBuf>,
+    server: TimerRemoval,
     claude: ToolRemoval,
     codex: ToolRemoval,
     timer: TimerRemoval,
@@ -1359,6 +2126,7 @@ fn plan_remove(flags: &Flags, env: &store::Env, path: Option<std::ffi::OsString>
         }
     };
     let facts = timer_facts(env, path.as_deref());
+    let server = installed_service(&facts).unwrap_or(TimerRemoval::Skipped("not installed"));
     let timer = match facts.platform {
         None => TimerRemoval::Skipped("unsupported platform"),
         Some(platform) => {
@@ -1374,7 +2142,7 @@ fn plan_remove(flags: &Flags, env: &store::Env, path: Option<std::ffi::OsString>
                     })
                 }
             };
-            match place.filter(|place| timer::installed(platform, place)) {
+            match place.filter(|place| timer::installed(platform, place, timer::Name::Index)) {
                 Some(place) => TimerRemoval::Run {
                     platform,
                     tool: facts.tool,
@@ -1384,10 +2152,15 @@ fn plan_remove(flags: &Flags, env: &store::Env, path: Option<std::ffi::OsString>
             }
         }
     };
+    let model = vectors::dir(env)
+        .map(|cache| model::path(&cache))
+        .filter(|path| path.exists());
     RemovePlan {
         store: notes,
         config,
         key,
+        model,
+        server,
         claude: tool(agents::Tool::Claude, &flags.claude),
         codex: tool(agents::Tool::Codex, &flags.codex),
         timer,
@@ -1405,11 +2178,14 @@ fn remove_summary(plan: &RemovePlan) -> Vec<String> {
             lines.push(format!("Remove the bilbo plugin from {}", tool.label()));
         }
     }
+    if matches!(plan.server, TimerRemoval::Run { .. }) {
+        lines.push("Remove the local embedder service".to_string());
+    }
     if matches!(plan.timer, TimerRemoval::Run { .. }) {
         lines.push("Remove the index timer".to_string());
     }
     if !lines.is_empty() {
-        lines.push("Keep the store, the config and the key file".to_string());
+        lines.push("Keep the store, the config, the key file and the model".to_string());
     }
     lines
 }
@@ -1429,6 +2205,24 @@ fn apply_remove(plan: &RemovePlan) -> Outcome {
     kept("store", &plan.store, "no store", &mut report);
     kept("config", &plan.config, "no config", &mut report);
     kept("key", &plan.key, "no key file", &mut report);
+    kept("model", &plan.model, "no model", &mut report);
+    match &plan.server {
+        TimerRemoval::Skipped(reason) => report.line("server", "skipped", Some((*reason).into())),
+        TimerRemoval::Run {
+            platform,
+            tool,
+            place,
+        } => match timer::uninstall(
+            *platform,
+            &command::System,
+            tool.as_deref(),
+            place,
+            timer::Name::Embedder,
+        ) {
+            Ok(()) => report.line("server", "removed", None),
+            Err(message) => report.line("server", "failed", Some(message)),
+        },
+    }
     for (tool, removal) in [
         (agents::Tool::Claude, &plan.claude),
         (agents::Tool::Codex, &plan.codex),
@@ -1451,7 +2245,13 @@ fn apply_remove(plan: &RemovePlan) -> Outcome {
             platform,
             tool,
             place,
-        } => match timer::uninstall(*platform, &command::System, tool.as_deref(), place) {
+        } => match timer::uninstall(
+            *platform,
+            &command::System,
+            tool.as_deref(),
+            place,
+            timer::Name::Index,
+        ) {
             Ok(()) => report.line("timer", "removed", None),
             Err(message) => report.line("timer", "failed", Some(message)),
         },
@@ -1529,6 +2329,44 @@ fn key_step(plan: &Plan, report: &mut Report) {
         }
         KeyPlan::Local => report.line("key", "skipped", Some("local embedder".into())),
         KeyPlan::NoKey => report.line("key", "skipped", Some("no key".into())),
+    }
+}
+
+fn model_step(plan: &Plan, report: &mut Report) {
+    match &plan.local_lines {
+        Some(lines) => report.line(
+            "model",
+            lines.model.status,
+            Some(lines.model.detail.clone()),
+        ),
+        None => report.line("model", "skipped", Some("not local".into())),
+    }
+}
+
+fn server_step(plan: &Plan, report: &mut Report) {
+    match &plan.local_lines {
+        Some(lines) => report.line(
+            "server",
+            lines.server.status,
+            Some(lines.server.detail.clone()),
+        ),
+        None => match &plan.unused_service {
+            Some(TimerRemoval::Run {
+                platform,
+                tool,
+                place,
+            }) => match timer::uninstall(
+                *platform,
+                &command::System,
+                tool.as_deref(),
+                place,
+                timer::Name::Embedder,
+            ) {
+                Ok(()) => report.line("server", "removed", Some("not local".into())),
+                Err(message) => report.line("server", "failed", Some(message)),
+            },
+            _ => report.line("server", "skipped", Some("not local".into())),
+        },
     }
 }
 
@@ -1622,6 +2460,9 @@ mod tests {
             key: KeyPlan::NoEmbedder,
             pasted: None,
             check,
+            local: None,
+            local_lines: None,
+            unused_service: None,
             source: agents::Source::GitHub {
                 repo: "delucca/bilbo".into(),
                 git_ref: "v1.2.3".into(),
@@ -1939,7 +2780,324 @@ mod tests {
                 tool: None,
                 locations: Ok(Vec::new()),
             },
+            llama_server: None,
+            model: None,
         }
+    }
+
+    /// An `Outside` that only answers whether a port is taken.
+    struct Taken(bool);
+
+    impl Outside for Taken {
+        fn fetch(&mut self, _: &Path, _: &mut dyn FnMut(u64, u64)) -> Result<(), String> {
+            Err("fetch is not scripted".into())
+        }
+        fn ready(&mut self, _: &str) -> Result<(), String> {
+            Err("ready is not scripted".into())
+        }
+        fn check(&mut self, _: &Embedder) -> Result<usize, String> {
+            Err("check is not scripted".into())
+        }
+        fn listening(&mut self, _: u16) -> bool {
+            self.0
+        }
+    }
+
+    /// Facts for a box whose manager answers: a script that exits 0 stands in for `launchctl` or `systemctl`.
+    fn local_facts(dir: &Path) -> Facts {
+        let tool = dir.join("manager");
+        write_script(&tool, "#!/bin/sh\nexit 0\n");
+        let mut facts = seen(dir, None, ConfigState::Absent);
+        facts.timer = TimerFacts {
+            platform: timer::platform(),
+            home: Some(dir.join("home")),
+            config_home: Some(dir.join("home/.config")),
+            state_dir: Some(dir.join("state")),
+            tool: Some(tool),
+            locations: Ok(Vec::new()),
+        };
+        facts.llama_server = Some(dir.join("llama-server"));
+        facts.model = Some(dir.join("cache").join(model::FILE));
+        facts
+    }
+
+    fn place_model(facts: &Facts, size: u64) {
+        let path = facts.model.as_ref().unwrap();
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::File::create(path).unwrap().set_len(size).unwrap();
+    }
+
+    #[test]
+    fn local_plan_states() {
+        let dir = scratch("local-plan");
+        let facts = local_facts(&dir);
+        let plan = plan_local(&facts, 9100, facts.llama_server.clone(), &mut Taken(false))
+            .ok()
+            .unwrap();
+        assert!(plan.download);
+        assert_eq!(plan.service, timer::Current::Missing);
+        assert!(plan.prepares());
+        assert_eq!(plan.url, "http://127.0.0.1:9100");
+        assert_eq!(plan.address(), "127.0.0.1:9100");
+        assert_eq!(plan.log(), dir.join("state/bilbo/embedder.log"));
+        assert_eq!(plan.job.args, model::server_args(&plan.model, 9100));
+
+        place_model(&facts, model::PINNED.size - 1);
+        let short = plan_local(&facts, 9100, facts.llama_server.clone(), &mut Taken(false))
+            .ok()
+            .unwrap();
+        assert!(short.download, "a file of another size is not the model");
+
+        place_model(&facts, model::PINNED.size);
+        let placed = plan_local(&facts, 9100, facts.llama_server.clone(), &mut Taken(false))
+            .ok()
+            .unwrap();
+        assert!(!placed.download);
+        assert!(placed.prepares(), "the service is missing");
+
+        for (path, text) in &placed.files {
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, text).unwrap();
+        }
+        let same = plan_local(&facts, 9100, facts.llama_server.clone(), &mut Taken(true))
+            .ok()
+            .unwrap();
+        assert_eq!(same.service, timer::Current::Same);
+        assert!(
+            !same.prepares(),
+            "bilbo's own server on the port is no conflict"
+        );
+
+        std::fs::write(&placed.files[0].0, "changed").unwrap();
+        let moved = plan_local(&facts, 9100, facts.llama_server.clone(), &mut Taken(false))
+            .ok()
+            .unwrap();
+        assert_eq!(moved.service, timer::Current::Different);
+        assert!(moved.prepares());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// An `Outside` that answers from a script and records its calls.
+    struct Script {
+        fetch: Result<(), String>,
+        ready: Result<(), String>,
+        check: Result<usize, String>,
+        /// Check answers that fail before `check` takes over, first to last.
+        failures: Vec<String>,
+        calls: Vec<&'static str>,
+    }
+
+    impl Script {
+        fn working() -> Script {
+            Script {
+                fetch: Ok(()),
+                ready: Ok(()),
+                check: Ok(1024),
+                failures: Vec::new(),
+                calls: Vec::new(),
+            }
+        }
+    }
+
+    impl Outside for Script {
+        fn fetch(&mut self, path: &Path, _: &mut dyn FnMut(u64, u64)) -> Result<(), String> {
+            self.calls.push("fetch");
+            if self.fetch.is_ok() {
+                std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+                std::fs::File::create(path)
+                    .unwrap()
+                    .set_len(model::PINNED.size)
+                    .unwrap();
+            }
+            self.fetch.clone()
+        }
+        fn ready(&mut self, _: &str) -> Result<(), String> {
+            self.calls.push("ready");
+            self.ready.clone()
+        }
+        fn check(&mut self, _: &Embedder) -> Result<usize, String> {
+            self.calls.push("check");
+            if !self.failures.is_empty() {
+                return Err(self.failures.remove(0));
+            }
+            self.check.clone()
+        }
+        fn listening(&mut self, _: u16) -> bool {
+            false
+        }
+    }
+
+    fn local_plan_of(facts: &Facts) -> LocalPlan {
+        plan_local(facts, 9100, facts.llama_server.clone(), &mut Taken(false))
+            .ok()
+            .unwrap()
+    }
+
+    fn write_service(plan: &LocalPlan) {
+        for (path, text) in &plan.files {
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, text).unwrap();
+        }
+    }
+
+    fn lines_of(lines: &LocalLines) -> [String; 2] {
+        [
+            format!("{}: {}", lines.model.status, lines.model.detail),
+            format!("{}: {}", lines.server.status, lines.server.detail),
+        ]
+    }
+
+    #[test]
+    fn local_prepare_downloads_then_installs() {
+        let dir = scratch("local-prepare-fresh");
+        let facts = local_facts(&dir);
+        let plan = local_plan_of(&facts);
+        let mut outside = Script::working();
+        let (lines, dims) = prepare(&plan, &embedder("m"), &mut outside).ok().unwrap();
+        assert_eq!(dims, 1024);
+        assert_eq!(outside.calls, ["fetch", "ready", "check"]);
+        assert_eq!(
+            lines_of(&lines),
+            [
+                format!("installed: {}", plan.model.display()),
+                "installed: 127.0.0.1:9100".to_string()
+            ]
+        );
+        assert!(plan.files.iter().all(|(path, _)| path.exists()));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn local_prepare_model_failure() {
+        let dir = scratch("local-prepare-model");
+        let facts = local_facts(&dir);
+        let plan = local_plan_of(&facts);
+        let mut outside = Script::working();
+        let sha = "the download's SHA-256 is aa, expected bb";
+        outside.fetch = Err(sha.into());
+        let (lines, message) = prepare(&plan, &embedder("m"), &mut outside).err().unwrap();
+        assert_eq!(message, sha);
+        assert_eq!(
+            lines_of(&lines),
+            [format!("failed: {sha}"), "skipped: no model".to_string()]
+        );
+        assert_eq!(outside.calls, ["fetch"]);
+        assert!(plan.files.iter().all(|(path, _)| !path.exists()));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn local_prepare_not_ready_removes_the_service() {
+        let dir = scratch("local-prepare-not-ready");
+        let facts = local_facts(&dir);
+        place_model(&facts, model::PINNED.size);
+        let plan = local_plan_of(&facts);
+        let mut outside = Script::working();
+        outside.ready = Err("embedder http://127.0.0.1:9100 was not ready within 120 s".into());
+        let (lines, message) = prepare(&plan, &embedder("m"), &mut outside).err().unwrap();
+        assert!(message.contains("was not ready"));
+        let [model_line, server] = lines_of(&lines);
+        assert_eq!(model_line, format!("kept: {}", plan.model.display()));
+        assert!(server.starts_with("failed: embedder http://127.0.0.1:9100 was not ready"));
+        assert!(server.ends_with(&format!("; see {}", plan.log().display())));
+        assert_eq!(outside.calls, ["ready"]);
+        assert!(plan.files.iter().all(|(path, _)| !path.exists()));
+        assert!(plan.model.exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn local_prepare_check_failure_removes_the_service() {
+        let dir = scratch("local-prepare-check");
+        let facts = local_facts(&dir);
+        place_model(&facts, model::PINNED.size);
+        let plan = local_plan_of(&facts);
+        let mut outside = Script::working();
+        outside.check = Err("http://127.0.0.1:9100 answered 500".into());
+        let (lines, message) = prepare(&plan, &embedder("m"), &mut outside).err().unwrap();
+        assert_eq!(message, "http://127.0.0.1:9100 answered 500");
+        assert_eq!(
+            lines_of(&lines)[1],
+            format!(
+                "failed: http://127.0.0.1:9100 answered 500; the service was removed; see {}",
+                plan.log().display()
+            )
+        );
+        assert!(plan.files.iter().all(|(path, _)| !path.exists()));
+        assert!(plan.model.exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn local_prepare_kept_service_is_reloaded_after_a_download() {
+        let dir = scratch("local-prepare-kept");
+        let facts = local_facts(&dir);
+        write_service(&local_plan_of(&facts));
+        let plan = local_plan_of(&facts);
+        assert!(plan.download);
+        assert_eq!(plan.service, timer::Current::Same);
+        let mut outside = Script::working();
+        let (lines, _) = prepare(&plan, &embedder("m"), &mut outside).ok().unwrap();
+        assert_eq!(
+            lines_of(&lines),
+            [
+                format!("installed: {}", plan.model.display()),
+                "kept: 127.0.0.1:9100".to_string()
+            ]
+        );
+        assert_eq!(outside.calls, ["fetch", "ready", "check"]);
+
+        let mut outside = Script::working();
+        outside.check = Err("http://127.0.0.1:9100 answered 500".into());
+        let (lines, _) = prepare(&plan, &embedder("m"), &mut outside).err().unwrap();
+        assert_eq!(
+            lines_of(&lines)[1],
+            format!(
+                "failed: http://127.0.0.1:9100 answered 500; see {}",
+                plan.log().display()
+            )
+        );
+        assert!(
+            plan.files.iter().all(|(path, _)| path.exists()),
+            "a service this run did not write stays"
+        );
+        assert_eq!(timer::current(&plan.files), timer::Current::Same);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn local_plan_refusals() {
+        let dir = scratch("local-plan-refusals");
+        let facts = local_facts(&dir);
+        let busy = plan_local(&facts, 9100, facts.llama_server.clone(), &mut Taken(true));
+        assert_eq!(
+            busy.err().unwrap(),
+            "127.0.0.1:9100 is already in use; pick another port with --embedder-port"
+        );
+        let missing = plan_local(&facts, 9100, None, &mut Taken(false));
+        assert!(
+            missing
+                .err()
+                .unwrap()
+                .starts_with("llama-server not found on PATH;")
+        );
+        let mut no_cache = local_facts(&dir);
+        no_cache.model = None;
+        let message = plan_local(
+            &no_cache,
+            9100,
+            no_cache.llama_server.clone(),
+            &mut Taken(false),
+        );
+        assert!(
+            message
+                .err()
+                .unwrap()
+                .starts_with("cannot find the cache folder")
+        );
+        assert!(local_unavailable(&facts, 9100, &mut Taken(true)).is_some());
+        assert!(local_unavailable(&facts, 9100, &mut Taken(false)).is_none());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     fn answered(embedder: Option<Embedder>, pasted: Option<&str>) -> wizard::Answers {
@@ -1950,6 +3108,7 @@ mod tests {
             claude: true,
             codex: true,
             timer: None,
+            local: None,
         }
     }
 
@@ -1958,20 +3117,30 @@ mod tests {
         let dir = scratch("wizard-config");
         let stored = embedder("m");
         let same = answer_wizard(
-            seen(&dir, Some(stored.clone()), ConfigState::Present),
+            &seen(&dir, Some(stored.clone()), ConfigState::Present),
             answered(Some(stored.clone()), None),
+            None,
         );
         assert!(matches!(same.config, ConfigPlan::Keep));
         assert!(matches!(same.check, EmbedderPlan::Checked(1024)));
         let other = answer_wizard(
-            seen(&dir, Some(stored), ConfigState::Present),
+            &seen(&dir, Some(stored), ConfigState::Present),
             answered(Some(embedder("n")), None),
+            None,
         );
         assert!(matches!(other.config, ConfigPlan::Update(Some(_))));
-        let keyword = answer_wizard(seen(&dir, None, ConfigState::Present), answered(None, None));
+        let keyword = answer_wizard(
+            &seen(&dir, None, ConfigState::Present),
+            answered(None, None),
+            None,
+        );
         assert!(matches!(keyword.config, ConfigPlan::Keep));
         assert!(matches!(keyword.key, KeyPlan::NoEmbedder));
-        let fresh = answer_wizard(seen(&dir, None, ConfigState::Absent), answered(None, None));
+        let fresh = answer_wizard(
+            &seen(&dir, None, ConfigState::Absent),
+            answered(None, None),
+            None,
+        );
         assert!(matches!(fresh.config, ConfigPlan::Create(None)));
         assert!(matches!(fresh.codex, PluginPlan::Skipped("not found")));
         let _ = std::fs::remove_dir_all(&dir);
@@ -1984,8 +3153,9 @@ mod tests {
         chosen.url = "https://api.example.com".into();
         chosen.token = Some(Token::File(dir.join("cfg/token")));
         let plan = answer_wizard(
-            seen(&dir, None, ConfigState::Absent),
+            &seen(&dir, None, ConfigState::Absent),
             answered(Some(chosen), Some("sk-secret-9")),
+            None,
         );
         assert!(matches!(&plan.key, KeyPlan::Pasted { path } if *path == dir.join("cfg/token")));
         assert!(summary(&plan).iter().all(|l| !l.contains("sk-secret")));
@@ -2001,8 +3171,9 @@ mod tests {
         chosen.url = "https://api.example.com".into();
         chosen.token = Some(Token::File(dir.join("cfg/token")));
         let plan = answer_wizard(
-            seen(&dir, None, ConfigState::Absent),
+            &seen(&dir, None, ConfigState::Absent),
             answered(Some(chosen), None),
+            None,
         );
         assert!(matches!(plan.key, KeyPlan::Token { kept: true, .. }));
         let _ = std::fs::remove_dir_all(&dir);
@@ -2173,6 +3344,16 @@ mod tests {
                 self.shown.push(format!("spin: {message}"));
                 work()
             }
+            fn progress<T>(
+                &mut self,
+                message: &str,
+                _: u64,
+                work: impl FnOnce(&mut dyn FnMut(u64)) -> Result<T, String>,
+                _: impl FnOnce(&T) -> String,
+            ) -> Result<T, String> {
+                self.shown.push(format!("progress: {message}"));
+                work(&mut |_| {})
+            }
             fn outro(&mut self, text: &str) -> io::Result<()> {
                 self.shown.push(format!("outro: {text}"));
                 Ok(())
@@ -2274,7 +3455,11 @@ mod tests {
                 }
             }
             fn timer_files(&self) -> Vec<PathBuf> {
-                timer::paths(timer::platform().unwrap(), &self.place())
+                timer::paths(
+                    timer::platform().unwrap(),
+                    &self.place(),
+                    timer::Name::Index,
+                )
             }
             fn install_timer_files(&self) {
                 for file in self.timer_files() {
@@ -2299,28 +3484,33 @@ mod tests {
         }
 
         fn wizard_run(b: &Sandbox, p: &mut Scripted) -> Run {
+            wizard_outside(b, p, &mut Script::working())
+        }
+
+        fn wizard_outside(b: &Sandbox, p: &mut Scripted, outside: &mut Script) -> Run {
             let probed = Cell::new(false);
             let checked = Cell::new(0);
             let indexed = Cell::new(false);
             let flags = flags(&["--yes"], Mode::Wizard, &b.env);
-            let result = wizard_with(
-                &flags,
-                &b.env,
-                b.path(),
-                p,
-                || {
-                    probed.set(true);
-                    None
-                },
-                |_, _| {
-                    checked.set(checked.get() + 1);
-                    Ok(8)
-                },
-                |_| {
-                    indexed.set(true);
-                    Ok("indexed".into())
-                },
-            );
+            let result = gather(&flags, &b.env, b.path()).and_then(|facts| {
+                wizard_with(
+                    facts,
+                    p,
+                    outside,
+                    || {
+                        probed.set(true);
+                        None
+                    },
+                    |_, _| {
+                        checked.set(checked.get() + 1);
+                        Ok(8)
+                    },
+                    |_| {
+                        indexed.set(true);
+                        Ok("indexed".into())
+                    },
+                )
+            });
             Run {
                 result,
                 probed,
@@ -2377,7 +3567,7 @@ mod tests {
             let b = boxed("interrupt-count");
             b.manager();
             let mut counting = Scripted {
-                selects: vec![("embedder should", 3), ("Which embedder", 3)],
+                selects: vec![("embedder should", 4), ("Which embedder", 4)],
                 inputs: vec![
                     ("Embedder URL", "http://127.0.0.1:8081"),
                     ("Model name", "m"),
@@ -2505,6 +3695,326 @@ mod tests {
             );
             assert!(b.timer_files().iter().all(|f| !f.exists()));
             assert!(!run.result.as_ref().ok().unwrap().failed);
+        }
+
+        /// A box whose manager and `llama-server` answer, with the local embedder's files in its home.
+        fn local_box(name: &str) -> Sandbox {
+            let b = boxed(name);
+            b.manager();
+            b.tool("llama-server");
+            b
+        }
+
+        impl Sandbox {
+            fn model(&self) -> PathBuf {
+                model::path(&vectors::dir(&self.env).unwrap())
+            }
+            fn service_files(&self) -> Vec<PathBuf> {
+                timer::paths(
+                    timer::platform().unwrap(),
+                    &self.place(),
+                    timer::Name::Embedder,
+                )
+            }
+        }
+
+        const LOCAL: (&str, usize) = ("Which embedder", 1);
+
+        fn lines_hold(run: &Run, line: &str) -> bool {
+            report(run).iter().any(|l| l == line)
+        }
+
+        #[test]
+        fn local_declined_downloads_nothing() {
+            let b = local_box("local-declined");
+            let before = b.snapshot();
+            let mut p = Scripted {
+                confirms: vec![("Apply these changes?", false)],
+                selects: vec![LOCAL, NO_TIMER],
+                ..Scripted::default()
+            };
+            let mut outside = Script::working();
+            let run = wizard_outside(&b, &mut p, &mut outside);
+            assert_eq!(refused(run), "setup cancelled; nothing changed");
+            assert!(outside.calls.is_empty(), "{:?}", outside.calls);
+            assert_eq!(b.snapshot(), before);
+            assert!(!b.model().exists());
+            assert!(b.service_files().iter().all(|f| !f.exists()));
+        }
+
+        #[test]
+        fn local_summary_names_download_service_memory_and_first_index() {
+            let b = local_box("local-summary");
+            let mut p = Scripted {
+                confirms: vec![("Apply these changes?", false)],
+                selects: vec![LOCAL, NO_TIMER],
+                ..Scripted::default()
+            };
+            wizard_run(&b, &mut p);
+            let summary = p
+                .shown
+                .iter()
+                .find(|s| s.starts_with("note: Setup will"))
+                .expect("the summary was shown");
+            let server = b.bin.join("llama-server");
+            let manager = match timer::platform().unwrap() {
+                timer::Platform::Launchd => "the launchd agent io.github.delucca.bilbo.embedder",
+                timer::Platform::Systemd => "the systemd user service bilbo-embedder.service",
+            };
+            for line in [
+                format!(
+                    "Download Qwen3-Embedding-0.6B-Q8_0.gguf (639 MB) to {}",
+                    b.model().display()
+                ),
+                format!("Run {} on 127.0.0.1:8737 as {manager}", server.display()),
+                "llama-server keeps about 1 GB of memory in use".to_string(),
+                "The first index of a large store takes a while".to_string(),
+                "Embed with qwen3-embedding-0.6b at http://127.0.0.1:8737".to_string(),
+            ] {
+                assert!(summary.contains(&line), "{line}\n{summary}");
+            }
+        }
+
+        #[test]
+        fn local_progress_bar_runs_the_download() {
+            let b = local_box("local-progress");
+            let mut p = Scripted {
+                selects: vec![LOCAL, NO_TIMER],
+                ..Scripted::default()
+            };
+            let mut outside = Script::working();
+            let run = wizard_outside(&b, &mut p, &mut outside);
+            assert_eq!(outside.calls, ["fetch", "ready", "check"]);
+            let shown = &p.shown;
+            let at = |text: &str| {
+                shown
+                    .iter()
+                    .position(|s| s == text)
+                    .unwrap_or_else(|| panic!("{text}: {shown:?}"))
+            };
+            let bar = at("progress: Downloading Qwen3-Embedding-0.6B-Q8_0.gguf (639 MB)");
+            let ready = at("spin: Starting llama-server and loading the model");
+            let check = at("spin: Checking qwen3-embedding-0.6b at http://127.0.0.1:8737");
+            assert!(bar < ready && ready < check);
+            assert!(lines_hold(
+                &run,
+                &format!("model installed: {}", b.model().display())
+            ));
+            assert!(lines_hold(&run, "server installed: 127.0.0.1:8737"));
+            assert!(lines_hold(&run, "embedder ok: 1024 dimensions"));
+            assert_eq!(run.checked.get(), 0, "the local check runs through Outside");
+            assert!(run.indexed.get());
+            assert!(b.service_files().iter().all(|f| f.exists()));
+        }
+
+        #[test]
+        fn local_failure_then_keyword_only() {
+            let b = local_box("local-keyword-only");
+            let mut p = Scripted {
+                selects: vec![LOCAL, ("local embedder failed", 1), NO_TIMER],
+                ..Scripted::default()
+            };
+            let mut outside = Script::working();
+            outside.failures = vec!["http://127.0.0.1:8737 answered 500".into()];
+            let run = wizard_outside(&b, &mut p, &mut outside);
+            let log = b.home().join(".local/state/bilbo/embedder.log");
+            assert!(
+                p.shown.iter().any(
+                    |s| s.starts_with("warn: http://127.0.0.1:8737 answered 500")
+                        && s.contains(&format!("The server's log is {}", log.display()))
+                ),
+                "{:?}",
+                p.shown
+            );
+            assert_eq!(outside.calls, ["fetch", "ready", "check"]);
+            assert!(b.service_files().iter().all(|f| !f.exists()));
+            assert!(b.model().exists());
+            assert!(
+                !std::fs::read_to_string(b.config())
+                    .unwrap()
+                    .lines()
+                    .any(|l| l.starts_with("embedder."))
+            );
+            assert!(lines_hold(
+                &run,
+                &format!("model installed: {}", b.model().display())
+            ));
+            assert!(lines_hold(&run, "server skipped: keyword search only"));
+            assert!(lines_hold(&run, "embedder skipped: none configured"));
+            assert!(!run.result.as_ref().ok().unwrap().failed);
+            assert!(!run.indexed.get());
+        }
+
+        #[test]
+        fn local_failure_then_retry() {
+            let b = local_box("local-retry");
+            let mut p = Scripted {
+                selects: vec![LOCAL, NO_TIMER],
+                ..Scripted::default()
+            };
+            let mut outside = Script::working();
+            outside.failures = vec!["http://127.0.0.1:8737 answered 500".into()];
+            let run = wizard_outside(&b, &mut p, &mut outside);
+            assert_eq!(
+                outside.calls,
+                ["fetch", "ready", "check", "ready", "check"],
+                "the model stays; the service is written again"
+            );
+            assert!(lines_hold(
+                &run,
+                &format!("model installed: {}", b.model().display())
+            ));
+            assert!(lines_hold(&run, "server installed: 127.0.0.1:8737"));
+            assert!(lines_hold(&run, "embedder ok: 1024 dimensions"));
+            assert!(b.service_files().iter().all(|f| f.exists()));
+        }
+
+        #[test]
+        fn local_retry_reports_the_service_as_installed_after_a_removal() {
+            let b = local_box("local-retry-state");
+            let mut first = Scripted {
+                selects: vec![LOCAL, NO_TIMER],
+                ..Scripted::default()
+            };
+            wizard_run(&b, &mut first);
+            std::fs::write(&b.service_files()[0], "changed").unwrap();
+            let mut p = Scripted {
+                selects: vec![LOCAL, NO_TIMER],
+                ..Scripted::default()
+            };
+            let mut outside = Script::working();
+            outside.failures = vec!["http://127.0.0.1:8737 answered 500".into()];
+            let run = wizard_outside(&b, &mut p, &mut outside);
+            assert_eq!(outside.calls, ["ready", "check", "ready", "check"]);
+            assert!(lines_hold(&run, "server installed: 127.0.0.1:8737"));
+            assert!(!lines_hold(&run, "server updated: 127.0.0.1:8737"));
+        }
+
+        #[test]
+        fn local_rerun_preselects_and_keeps() {
+            let b = local_box("local-rerun");
+            let mut first = Scripted {
+                selects: vec![LOCAL, NO_TIMER],
+                ..Scripted::default()
+            };
+            wizard_run(&b, &mut first);
+            let mut p = Scripted {
+                selects: vec![NO_TIMER],
+                ..Scripted::default()
+            };
+            let mut outside = Script::working();
+            let run = wizard_outside(&b, &mut p, &mut outside);
+            assert!(outside.calls.is_empty(), "{:?}", outside.calls);
+            assert!(lines_hold(
+                &run,
+                &format!("model kept: {}", b.model().display())
+            ));
+            assert!(lines_hold(&run, "server kept: 127.0.0.1:8737"));
+            assert!(lines_hold(&run, "embedder skipped: config kept"));
+            assert!(
+                p.shown
+                    .iter()
+                    .any(|s| s.starts_with("note: Setup will") && s.contains("Keep the model")),
+                "{:?}",
+                p.shown
+            );
+        }
+
+        #[test]
+        fn local_keyword_only_removes_the_installed_service() {
+            let b = local_box("local-removes-service");
+            let mut first = Scripted {
+                selects: vec![LOCAL, NO_TIMER],
+                ..Scripted::default()
+            };
+            wizard_run(&b, &mut first);
+            assert!(b.service_files().iter().all(|f| f.exists()));
+            let mut p = Scripted {
+                selects: vec![("Which embedder", 0)],
+                ..Scripted::default()
+            };
+            let run = wizard_run(&b, &mut p);
+            assert!(
+                p.shown.iter().any(|s| s.starts_with("note: Setup will")
+                    && s.contains("Remove the local embedder service")),
+                "{:?}",
+                p.shown
+            );
+            assert!(b.service_files().iter().all(|f| !f.exists()));
+            assert!(lines_hold(&run, "server removed: not local"));
+            assert!(b.model().exists());
+        }
+
+        /// A box with the model and service kept and no config, so the check is all setup does.
+        fn local_kept_without_config(name: &str) -> Sandbox {
+            let b = local_box(name);
+            let mut first = Scripted {
+                selects: vec![LOCAL, NO_TIMER],
+                ..Scripted::default()
+            };
+            wizard_run(&b, &mut first);
+            std::fs::remove_file(b.config()).unwrap();
+            b
+        }
+
+        #[test]
+        fn local_kept_server_is_waited_for_before_the_check() {
+            let b = local_kept_without_config("local-kept-ready");
+            let mut p = Scripted {
+                selects: vec![LOCAL, NO_TIMER],
+                ..Scripted::default()
+            };
+            let mut outside = Script::working();
+            let run = wizard_outside(&b, &mut p, &mut outside);
+            assert_eq!(outside.calls, ["ready", "check"]);
+            assert!(lines_hold(&run, "server kept: 127.0.0.1:8737"));
+            assert!(lines_hold(&run, "embedder ok: 1024 dimensions"));
+        }
+
+        #[test]
+        fn local_kept_server_that_never_gets_ready_is_not_checked() {
+            let b = local_kept_without_config("local-kept-not-ready");
+            let mut p = Scripted {
+                selects: vec![LOCAL, ("local embedder failed", 1), NO_TIMER],
+                ..Scripted::default()
+            };
+            let mut outside = Script::working();
+            outside.ready = Err("http://127.0.0.1:8737 did not become ready".into());
+            wizard_outside(&b, &mut p, &mut outside);
+            assert_eq!(outside.calls, ["ready"]);
+            assert!(
+                p.shown.iter().any(|s| s.contains("did not become ready")),
+                "{:?}",
+                p.shown
+            );
+        }
+
+        #[test]
+        fn local_batch_waits_for_a_kept_server_before_the_check() {
+            for ready in [Ok(()), Err("not ready".to_string())] {
+                let b = local_kept_without_config("local-batch-kept-ready");
+                let flags = flags(&["--yes", "--embedder-local"], Mode::Batch, &b.env);
+                let facts = gather(&flags, &b.env, b.path()).ok().unwrap();
+                let mut outside = Script::working();
+                outside.ready = ready.clone();
+                let plan = answer_batch(&flags, facts, &mut outside);
+                match ready {
+                    Ok(()) => {
+                        assert_eq!(outside.calls, ["ready", "check"]);
+                        assert!(matches!(
+                            plan.ok().unwrap().check,
+                            EmbedderPlan::Checked(1024)
+                        ));
+                    }
+                    Err(message) => {
+                        assert_eq!(outside.calls, ["ready"]);
+                        match plan {
+                            Err(Failure::Refused(m)) => assert_eq!(m, message),
+                            _ => panic!("expected a refusal"),
+                        }
+                    }
+                }
+            }
         }
 
         fn remove_run(b: &Sandbox, p: &mut Scripted) -> Result<Outcome, Failure> {
