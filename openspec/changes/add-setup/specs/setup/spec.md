@@ -7,7 +7,7 @@ How `bilbo setup` turns a `bilbo` binary on PATH into a working install: the sto
 ## ADDED Requirements
 
 ### Requirement: Modes
-`bilbo setup` SHALL run the interactive wizard when stdin and stderr are both terminals, and run non-interactively otherwise. `--yes` SHALL force non-interactive mode. `--interactive` SHALL force the wizard and SHALL be a usage error when stdin or stderr is not a terminal. `--yes` together with `--interactive` SHALL be a usage error.
+`bilbo setup` SHALL run the interactive wizard when stdin and stderr are both terminals and no flag that answers a wizard question is given, and run non-interactively otherwise. The answer flags are `--embedder-url`, `--embedder-model`, `--embedder-token-env`, `--embedder-token-file`, `--embedder-query-prefix`, `--no-plugin`, `--no-timer` and `--index-every`. `--yes` SHALL force non-interactive mode. `--interactive` SHALL force the wizard and SHALL be a usage error when stdin or stderr is not a terminal. `--interactive` together with `--yes` or with an answer flag SHALL be a usage error.
 
 #### Scenario: A terminal gets the wizard
 - **WHEN** a user runs `bilbo setup` in a terminal
@@ -24,6 +24,10 @@ How `bilbo setup` turns a `bilbo` binary on PATH into a working install: the sto
 #### Scenario: Conflicting mode flags
 - **WHEN** a user runs `bilbo setup --yes --interactive`
 - **THEN** bilbo prints a message naming both flags to stderr, exits 2, and writes nothing
+
+#### Scenario: Answer flags skip the wizard
+- **WHEN** a user runs `bilbo setup --no-plugin` in a terminal
+- **THEN** bilbo asks nothing, applies the defaults with the plugin steps skipped, and prints the step report
 
 ### Requirement: Setup flags
 `setup` SHALL accept `--yes`, `--interactive`, `--remove`, `--embedder-url <url>`, `--embedder-model <name>`, `--embedder-token-env <var>`, `--embedder-token-file <path>`, `--embedder-query-prefix <text>`, `--no-plugin`, `--claude <path>`, `--codex <path>`, `--plugin-source <source>`, `--no-timer` and `--index-every <minutes>`. Values SHALL obey the `config` spec's rules for the matching key. Any other argument SHALL be a usage error. No flag SHALL take an API key's value.
@@ -104,11 +108,19 @@ When no config file exists, the config step SHALL write one, at the path the `co
 - **THEN** the config holds only comments and blank lines, and `bilbo recall` runs keyword-only with nothing about the config on stderr
 
 ### Requirement: Existing config file
-An existing config SHALL be kept. Non-interactive `setup` given embedder flags while a config exists SHALL exit 1 before writing anything. The wizard SHALL show the current embedder settings as defaults and SHALL rewrite the file only when the user changes one, renaming the old file to `config.bak` first and reporting `updated`.
+An existing config SHALL be kept. Non-interactive `setup` given embedder flags SHALL rewrite a config that sets no key at all (only comments and blank lines, as `bilbo setup --yes` writes with no embedder): the old file becomes `config.bak`, the config line says `updated`, and the embedder check runs as for a new config. Against a config that sets any key, embedder or not, it SHALL exit 1 before writing anything when the flags differ from the embedder settings in the file, and SHALL keep the file when they are equal. The wizard SHALL show the current embedder settings as defaults and SHALL rewrite the file only when the user changes one, renaming the old file to `config.bak` first and reporting `updated`.
 
 #### Scenario: Flags against an existing config
 - **WHEN** a config exists and a user runs `bilbo setup --yes --embedder-url http://x:1 --embedder-model m`
-- **THEN** bilbo prints a message saying the config already exists, naming its path, to stderr, exits 1, and changes no file
+- **THEN** bilbo prints a message naming the config path and saying it already sets other settings, to stderr, exits 1, and changes no file
+
+#### Scenario: Adding an embedder to an empty config
+- **WHEN** `bilbo setup --yes` wrote a config with only comments, and the user runs `bilbo setup --yes --embedder-url http://127.0.0.1:8081 --embedder-model m` against a working embedder
+- **THEN** `config.bak` holds the old file, the config sets the embedder, the config line says `updated`, and the exit code is 0
+
+#### Scenario: The same flags again
+- **WHEN** `bilbo setup --yes --embedder-url http://127.0.0.1:8081 --embedder-model m` wrote the config and the user runs the same command again
+- **THEN** the config line says `kept`, the embedder line says `skipped: config kept`, and the exit code is 0
 
 #### Scenario: The wizard changes the model
 - **WHEN** the config sets `embedder.model = a` and the user picks model `b` in the wizard and confirms
@@ -150,7 +162,7 @@ The wizard SHALL offer, in this order: no embedder (keyword search only), Ollama
 - **THEN** no key, model or interval is asked, and the summary says recall will use keywords only
 
 ### Requirement: Query prefix default
-The wizard SHALL default the query prefix to `Instruct: Given a question, retrieve notes that answer it\nQuery: ` when the model name holds `qwen3-embedding` in any case, and to empty otherwise, and SHALL show it for editing only when the user asks for advanced settings.
+`setup` SHALL default the query prefix to `Instruct: Given a question, retrieve notes that answer it\nQuery: ` when the model name holds `qwen3-embedding` in any case, and to empty otherwise, in both modes. `--embedder-query-prefix` SHALL replace that default. The wizard SHALL show the prefix for editing only when the user asks for advanced settings.
 
 #### Scenario: A Qwen model gets the prefix
 - **WHEN** the user picks the model `Qwen3-Embedding-0.6B` and accepts the defaults
@@ -159,6 +171,10 @@ The wizard SHALL default the query prefix to `Instruct: Given a question, retrie
 #### Scenario: Other models get none
 - **WHEN** the user picks `text-embedding-3-small`
 - **THEN** the config holds no `embedder.query_prefix` line
+
+#### Scenario: A Qwen model from flags
+- **WHEN** a user runs `bilbo setup --yes --embedder-url http://127.0.0.1:8081 --embedder-model qwen3-embedding-0.6b` against a working embedder, with no config file
+- **THEN** the config sets `embedder.query_prefix` to that text, quoted, with `\n` for the newline
 
 ### Requirement: Embedder key
 For a URL other than one on `localhost` or `127.0.0.1`, the wizard SHALL ask where the key comes from: an environment variable (default `OPENAI_API_KEY` for OpenAI), a file, pasting it now, or no key. A pasted key SHALL be read with hidden input and written to `<config folder>/token`, created with mode 0600 before any byte is written. The config SHALL then reference it through `embedder.token_file`.
@@ -237,7 +253,9 @@ For each of Claude Code and Codex, `setup` SHALL use the `--claude` or `--codex`
 - **THEN** the codex line says `skipped: not chosen` and no codex command runs
 
 ### Requirement: Index timer
-When the resulting config has an `embedder.url`, `setup` SHALL install a job that runs `<absolute path of this bilbo> index` every `--index-every` minutes (15 by default), appending its output to `<state>/bilbo/index.log`. On macOS this SHALL be the launchd agent `io.github.delucca.bilbo.index`. On Linux it SHALL be the systemd user units `bilbo-index.service` and `bilbo-index.timer`.
+When the resulting config has an `embedder.url`, `setup` SHALL install a job that runs `<absolute path of this bilbo, links resolved> index` every `--index-every` minutes (15 by default), the first time that many minutes after it is loaded, appending its output to `<state>/bilbo/index.log`. On macOS this SHALL be the launchd agent `io.github.delucca.bilbo.index`. On Linux it SHALL be the systemd user units `bilbo-index.service` and `bilbo-index.timer`.
+
+A timer does not inherit the shell's environment, so the job SHALL carry as its environment each of `BILBO_HOME`, `BILBO_CONFIG`, `XDG_DATA_HOME`, `XDG_CONFIG_HOME`, `XDG_CACHE_HOME` and `XDG_STATE_HOME` that `setup` itself saw set to an absolute path, and no other variable. When the key comes from an environment variable (`embedder.token_env`, from a flag, the wizard, or an existing or managed config), the timer step SHALL fail with a message naming the variable, `--embedder-token-file` and `--no-timer`, and SHALL leave the timer files as they were. No timer file SHALL hold a key. When no timer is wanted (`--no-timer`, the wizard's choice, or no embedder) and a bilbo timer exists, `setup` SHALL unload and delete it and report `removed`. When a bilbo timer exists but `launchctl` or `systemctl` is not on PATH, removing it SHALL fail with a message naming the tool and SHALL leave its files in place, so a later run with the tool can unload it.
 
 #### Scenario: macOS
 - **WHEN** a user on macOS with an embedder configured runs `bilbo setup --yes`
@@ -255,6 +273,22 @@ When the resulting config has an `embedder.url`, `setup` SHALL install a job tha
 - **WHEN** a user on Linux runs `bilbo setup --yes` and `systemctl --user` cannot reach a user manager
 - **THEN** the timer line says `skipped: no systemd user session` and the exit code is 0
 
+#### Scenario: The timer sees setup's locations
+- **WHEN** a user runs `bilbo setup --yes` with `BILBO_HOME=/data/bilbo` and `XDG_CACHE_HOME=/data/cache` set, `XDG_STATE_HOME` unset, and an embedder configured
+- **THEN** the timer file sets `BILBO_HOME` to `/data/bilbo` and `XDG_CACHE_HOME` to `/data/cache`, and sets no `XDG_STATE_HOME`
+
+#### Scenario: A key in a variable
+- **WHEN** the config sets `embedder.token_env = OPENAI_API_KEY` and a user runs `bilbo setup --yes`
+- **THEN** the timer line says `failed` and names `OPENAI_API_KEY`, `--embedder-token-file` and `--no-timer`, no timer file is written, and the exit code is 1
+
+#### Scenario: Turning the timer off
+- **WHEN** a timer is installed and the user runs `bilbo setup --yes --no-timer`
+- **THEN** the timer is unloaded, its files are deleted, and the timer line says `removed: --no-timer`
+
+#### Scenario: Removing without the service manager
+- **WHEN** a timer is installed on macOS and a user runs `bilbo setup --yes --no-timer` with no `launchctl` on PATH
+- **THEN** the timer line says `failed: launchctl not found on PATH`, the plist is still there, and the exit code is 1
+
 #### Scenario: The binary moved
 - **WHEN** a timer exists for `/nix/store/old/bin/bilbo` and setup runs from `/nix/store/new/bin/bilbo`
 - **THEN** the timer file is rewritten to the new path, reloaded, and the timer line says `updated`
@@ -271,7 +305,7 @@ After a successful apply that leaves an embedder configured, the wizard SHALL of
 - **THEN** no embed request is sent beyond the embedder check
 
 ### Requirement: Remove
-`bilbo setup --remove` SHALL unload and delete the timer, and in each tool found, uninstall `bilbo@bilbo` and remove the `bilbo` marketplace, reporting `removed` or `skipped` per step. It SHALL keep the store, the config and the key file and print their paths. In a terminal it SHALL ask for confirmation first. With nothing installed it SHALL exit 0.
+`bilbo setup --remove` SHALL unload and delete the timer, and in each tool found, uninstall `bilbo@bilbo` and remove the `bilbo` marketplace, printing one line per step in the order `store`, `config`, `key`, `claude`, `codex`, `timer`, each `removed`, `skipped` or `failed`. It SHALL keep the store, the config and the key file, and their lines SHALL say `skipped: kept <path>`. `--remove` SHALL accept only `--yes`, `--interactive`, `--claude` and `--codex` beside it. In a terminal it SHALL ask for confirmation first. With nothing installed it SHALL exit 0.
 
 #### Scenario: Removing an install
 - **WHEN** setup installed the timer and both plugins and the user runs `bilbo setup --remove --yes`
@@ -293,7 +327,7 @@ After a successful apply that leaves an embedder configured, the wizard SHALL of
 - **THEN** the summary says the key will be saved to `<config folder>/token` and holds no part of the key
 
 ### Requirement: Home-manager module
-The flake SHALL export `homeManagerModules.default` with `programs.bilbo.enable`, `package`, `settings` (embedder keys to values), `index.enable`, `index.every`, `claude` and `codex` (a path, or null for PATH). When enabled, it SHALL install the package, write `settings` as the config file, and on activation run `bilbo setup --yes` with the matching flags.
+The flake SHALL export `homeManagerModules.default` with `programs.bilbo.enable`, `package`, `storeRoot` (a path exported as `BILBO_HOME`, or null for the default root), `settings` (embedder keys to values), `index.enable`, `index.every`, `claude` and `codex` (a path, or null for PATH). When enabled, it SHALL install the package, write `settings` as the config file, and on activation run `bilbo setup --yes` with the matching flags. Activation does not read session variables, so the module SHALL pass the locations explicitly: `BILBO_HOME` from `storeRoot` (unset when null), `BILBO_CONFIG` unset, and `XDG_CONFIG_HOME`, `XDG_DATA_HOME`, `XDG_CACHE_HOME` and `XDG_STATE_HOME` from home-manager's `xdg` folders. It SHALL also put `launchctl` (macOS) or `systemctl` (Linux) on the PATH it gives `setup`. A key in `embedder.token_env` with `index.enable` SHALL fail evaluation. The module SHALL work without the flake's `home-manager` input, which only its flake check reads.
 
 #### Scenario: Settings become the config
 - **WHEN** a configuration sets `programs.bilbo.settings."embedder.url" = "http://bagend:8081"` and `"embedder.model" = "qwen3"`
@@ -306,6 +340,14 @@ The flake SHALL export `homeManagerModules.default` with `programs.bilbo.enable`
 #### Scenario: An unknown setting fails evaluation
 - **WHEN** a configuration sets `programs.bilbo.settings."embeder.url"`
 - **THEN** evaluation fails with a message naming `embeder.url`
+
+#### Scenario: A key variable fails evaluation
+- **WHEN** a configuration sets `programs.bilbo.settings."embedder.token_env"` and leaves `index.enable` true
+- **THEN** evaluation fails with a message naming `embedder.token_file`
+
+#### Scenario: Activation passes the locations
+- **WHEN** a configuration sets `programs.bilbo.storeRoot = "/Users/a/notes"`
+- **THEN** the session exports `BILBO_HOME=/Users/a/notes`, activation runs `bilbo setup` with that `BILBO_HOME` and the four `XDG_*_HOME` folders of the configuration, and the timer carries the same values
 
 #### Scenario: Disabled does nothing
 - **WHEN** `programs.bilbo.enable` is false
