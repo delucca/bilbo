@@ -1,6 +1,6 @@
 //! launchd and systemd jobs: the index timer and the embedder service.
 
-use crate::command::{Output, Runner, first_line};
+use crate::host::command::{Output, Runner, first_line};
 use std::path::{Path, PathBuf};
 
 pub const LABEL: &str = "io.github.delucca.bilbo.index";

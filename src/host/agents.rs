@@ -1,6 +1,6 @@
 //! The claude and codex plugin commands.
 
-use crate::command::{Output, Runner, first_line};
+use crate::host::command::{Output, Runner, first_line};
 use serde_json::Value;
 use std::path::{Path, PathBuf};
 
@@ -426,10 +426,13 @@ pub enum Trust {
 }
 
 /// Opens Codex's app-server and says hello.
-pub fn app_server(program: &Path) -> Result<crate::command::Rpc, String> {
-    use crate::command::Calls;
-    let mut rpc =
-        crate::command::Rpc::start(program, &["app-server"], std::time::Duration::from_secs(30))?;
+pub fn app_server(program: &Path) -> Result<crate::host::command::Rpc, String> {
+    use crate::host::command::Calls;
+    let mut rpc = crate::host::command::Rpc::start(
+        program,
+        &["app-server"],
+        std::time::Duration::from_secs(30),
+    )?;
     rpc.call(
         "initialize",
         serde_json::json!({"clientInfo": {"name": "bilbo", "version": env!("CARGO_PKG_VERSION")}}),
@@ -439,7 +442,7 @@ pub fn app_server(program: &Path) -> Result<crate::command::Rpc, String> {
 }
 
 /// Lists Codex's hooks for `cwd` and trusts every bilbo one that is untrusted or changed.
-pub fn trust_hooks(rpc: &mut dyn crate::command::Calls, cwd: &Path) -> Result<Trust, String> {
+pub fn trust_hooks(rpc: &mut dyn crate::host::command::Calls, cwd: &Path) -> Result<Trust, String> {
     let listed = rpc.call("hooks/list", serde_json::json!({ "cwds": [cwd] }))?;
     let hooks: Vec<&Value> = listed["data"]
         .as_array()
@@ -485,7 +488,7 @@ pub fn trust_hooks(rpc: &mut dyn crate::command::Calls, cwd: &Path) -> Result<Tr
 }
 
 /// Deletes every trust entry of a bilbo hook from Codex's config; how many there were.
-pub fn forget_hooks(rpc: &mut dyn crate::command::Calls) -> Result<usize, String> {
+pub fn forget_hooks(rpc: &mut dyn crate::host::command::Calls) -> Result<usize, String> {
     let read = rpc.call("config/read", serde_json::json!({ "includeLayers": false }))?;
     let keys: Vec<String> = read["config"]["hooks"]["state"]
         .as_object()
@@ -1159,7 +1162,7 @@ mod tests {
         seen: Vec<(String, Value)>,
     }
 
-    impl crate::command::Calls for Scripted {
+    impl crate::host::command::Calls for Scripted {
         fn call(&mut self, method: &str, params: Value) -> Result<Value, String> {
             self.seen.push((method.to_string(), params));
             self.replies
