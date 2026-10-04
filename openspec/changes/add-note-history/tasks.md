@@ -1,0 +1,60 @@
+# Tasks
+
+Run every command below from the repo root as `nix develop -c sh -c '<command>'`, with `CARGO_TARGET_DIR` set to the checkout's `target`. A new file under `src/` or `tests/` needs `git add -N` before any Nix command can see it.
+
+## 1. Library modules
+
+- [ ] 1.1 Add `notify = "8.2.0"` and `sha2 = "0.11.0"` to `Cargo.toml`, update `Cargo.lock`, and confirm the Nix package still builds on macOS with `fsevent-sys` linked (both new crates are unused until 1.3 and 2.1, so gate the check on a build, not a test). Verify with `cargo build --locked && nix build --no-link .#default`
+- [ ] 1.2 Add `src/diff.rs`: a Myers longest-common-subsequence over two slices of any `Eq` type, and a unified line diff with 3 lines of context and caller-given header names. Unit-test empty sides, identical input, an insertion, a deletion, a change at either end, hunks merging when their context overlaps, and a 10,000-line input with one changed line finishing in under 50 ms. Verify with `cargo test --locked --bin bilbo diff::`
+- [ ] 1.3 Add `src/versions.rs` with the layout from design.md (`<root>/.bilbo/history/`, blobs by SHA-256, one JSON-lines log per note) and `history/lock`. Unit-test each of these:
+  - the version id rule (`bilbo-version-1`, the note's ULID, sorted parents, an empty line, file name, blob or `deleted`), that two identical records of one note produce one id, and that the same record under two ULIDs produces two;
+  - reading a record with unknown fields and an unknown event;
+  - re-creating missing history folders before a write;
+  - the last line of a log: a complete line without its newline is kept and gets the newline, an unparsable one is cut, both on append and in memory on read;
+  - resolving a note by id or by topic (current file first, then the most recently deleted by the last line of each log), and the two-notes-one-topic refusal;
+  - version-prefix matching (6 to 64 hex characters, ambiguous and missing cases) and a version whose blob is gone;
+  - the id scan of `notes/` shared by `watch` and `restore` (note names only, the skip reasons, shared ids);
+  - the sweep of `.bilbo-restore-<id>` leftovers, recording bytes no version holds and deleting the rest;
+  - the sweep of `.tmp-*` files left under `history/` by an interrupted blob write or prune;
+  - the retention rule with blob mark-and-sweep, including the three `Retention` scenarios with versions dated by hand, and an unreadable middle line that stops every blob removal.
+  Add `store::history_dir` and a `note` helper that reads only the frontmatter id. Verify with `cargo test --locked --bin bilbo versions:: && cargo test --locked --bin bilbo store:: && cargo test --locked --bin bilbo note::`
+- [ ] 1.4 Add `src/swap.rs` with `exchange` and `rename_new` on `libc` (`renamex_np` with `RENAME_SWAP` and `RENAME_EXCL` on macOS, `renameat2` with `RENAME_EXCHANGE` and `RENAME_NOREPLACE` on Linux), returning a message that names the filesystem limitation on `EINVAL` or `ENOTSUP`. Unit-test a swap of two files, `rename_new` onto a free name and onto a taken one, and a swap with a missing side. Verify with `cargo test --locked --bin bilbo swap::`
+- [ ] 1.5 Add `history.keep_days` (1 to 3650, default 90) to `src/config.rs`, valid without an embedder, with `Settings.history_lines` kept in `config::KEYS` order like the digest lines. Unit-test the `History settings` scenarios, and extend the pinned key lists in `tests/index.rs` and `tests/recall.rs`. Verify with `cargo test --locked --bin bilbo config:: && cargo test --locked --test recall --test index`
+
+## 2. `bilbo watch` (`note-watch` spec)
+
+- [ ] 2.1 Add `src/watch.rs`, its `mod` line, dispatch arm and USAGE line, and update the USAGE copies in `tests/cli.rs` and `tests/recall.rs`. `watch::run` takes a `&mut dyn FnMut(&str)` for its progress lines, and `main` prints them with the `bilbo: ` prefix. Implement, as design.md describes:
+  - the start checks (no store, an argument), the `watch.lock` retries and the standby wait, and the lock-file identity check;
+  - the two-pass scan (an unlocked pass with a stat map of length, mtime, ctime and inode; a locked pass that sweeps leftovers, re-lists, re-stats and re-hashes before recording);
+  - the missing-folder and empty-folder guards, with the 10-second check for the folder's return;
+  - printing each skipped file once until it changes;
+  - the event loop on `notify` (a per-folder 2-second quiet, a 10-second cap, rescan on `need_rescan` and on watcher errors, a 10-minute backstop);
+  - the removal of `.tmp-*` leftovers under `history/` at start, and the prune at start and every 24 hours.
+  Cover every `note-watch` scenario in `tests/watch.rs` by running the built `bilbo watch` as a child with a temporary `BILBO_HOME`, polling `bilbo history` until a deadline instead of sleeping fixed times, and stopping the child at the end of each test. Back-date versions in a log by hand for the pruning scenarios. Cover the `cli` delta's scenarios in `tests/cli.rs`. Verify with `cargo test --locked --test watch && cargo test --locked --test cli`
+
+## 3. `bilbo history` (`note-history` spec)
+
+- [ ] 3.1 Add `src/history.rs`, its `mod` line, dispatch arm and USAGE line, with the three forms (list, print a version, `--diff <a> [<b>]`), argument errors, the `no history`, `no store`, two-notes-one-topic and pruned-content refusals, and the watcher warning through one `try_lock` on `watch.lock` without creating it. Cover every `note-history` scenario in `tests/history.rs`, building histories by running `bilbo watch` as in 2.1, and check `History is read-only` against a snapshot of every entry's bytes and modification time. Run the listing test under a `TZ` other than the one the versions were recorded in. Cover `History ignores the config` from the `config` delta. Verify with `cargo test --locked --test history`
+
+## 4. `bilbo restore` (`note-restore` spec)
+
+- [ ] 4.1 Add `src/restore.rs`, its `mod` line, dispatch arm and USAGE line. Expose the sequence from design.md as `restore::apply` with a step hook, and have `run` call it with a hook that does nothing. Under `history/lock`, it sweeps leftovers, finds the current file by the id scan, refuses a deletion, a taken name and a missing store, reports a version that already matches, records unrecorded bytes first, exchanges and then renames (or `rename_new` with no current file), inspects what came out, and records `restored`. In `src/restore.rs`'s unit tests, cover `A write during the restore` with a hook that writes the note's file before the swap, and `Killed between the swap and the rename` and the other crash points with a hook that returns an error at each step, then check what the folder holds. Cover the other `note-restore` scenarios in `tests/restore.rs` through the built binary, placing a leftover file by hand for the `An interrupted restore` scenarios. Verify with `cargo test --locked --bin bilbo restore:: && cargo test --locked --test restore`
+
+## 5. Setup, the service and the module (`setup` delta)
+
+- [ ] 5.1 Add `Name::Watch` and `Kind::Watch` to `src/timer.rs`, and move the per-job text that `Job::name()` and `service()` now derive from the embedder (the unit description, the program named in messages) behind the kind. The watch job is a keep-alive launchd agent `io.github.delucca.bilbo.watch` and systemd user service `bilbo-watch.service` running `<bilbo> watch`, logging to `<state>/bilbo/watch.log`, with the index timer's six locations and no key rule. Unit-test the plist and unit text on both platforms, and that the embedder's text is unchanged. Verify with `cargo test --locked --bin bilbo timer::`
+- [ ] 5.2 Extend the fakes in `tests/common/fakes.rs` for a third job. The fake `launchctl` gains a `*.watch` branch with its own `launchctl.loaded-watch` and `launchctl.fail-<verb>-watch` files and a `watch.started` marker. The fake `systemctl` gains `--user enable`, `--user restart` and `--user disable --now` cases for `bilbo-watch.service`, writing `systemctl.watch-enabled` and `watch.started`. The existing setup tests must pass unchanged. Verify with `cargo test --locked --test setup`
+- [ ] 5.3 Add the `watch` step to `src/setup.rs` after `timer` (install, keep, update, remove on `--no-watch`, skip without a systemd user session, no failure on a key variable), `--no-watch` as an answer flag, the `watch` line in `--remove`, and the history key kept on a config rewrite. Add the wizard's yes/no question and the watcher in its summary to `src/wizard.rs`. Cover the `Watch service` scenarios and the modified `Modes`, `Setup flags`, `Plan before writing`, `Step report`, `Existing config file` and `Remove` scenarios in `src/setup.rs` and `tests/setup.rs`, with the fakes from 5.2. Verify with `cargo test --locked --bin bilbo setup:: && cargo test --locked --bin bilbo wizard:: && cargo test --locked --test setup`
+- [ ] 5.4 Add `watch.enable` (default true, passing `--no-watch` when false) and `history.keep_days` in `settings` to the home-manager module in `flake.nix`. The key stays a string like every other `settings` key. Add a flake check whose configuration sets `watch.enable = false` and `"history.keep_days" = "30"`. The build's `lib.fileset` takes `./src` and `./tests` whole, so the new modules and tests need no edit there; the flake check confirms they build and pass in the sandbox. Verify with `nix flake check -L`
+- [ ] 5.5 On macOS, repeat the wizard expect run recorded in `openspec/changes/archive/2026-10-02-add-setup/smoke.md` with the new question, and run the macOS-only setup tests. Record both in `openspec/changes/add-note-history/smoke.md`. Verify with `cargo test --locked --test setup && test -s openspec/changes/add-note-history/smoke.md`
+
+## 6. Docs
+
+- [ ] 6.1 Update `AGENTS.md`: `libc` lives in `src/wizard.rs` and `src/swap.rs`, `notify` in `src/watch.rs`, `sha2` in `src/versions.rs`; add `versions`, `swap` and `diff` to the library modules; note that tests of `bilbo watch` run it as a child and poll with a deadline, and that restore's crash points are tested through its step hook. Verify with `rg -q 'src/swap.rs' AGENTS.md && rg -q 'notify' AGENTS.md && rg -q 'sha2' AGENTS.md`
+- [ ] 6.2 Update `README.md`: what the watcher records and where history lives, `bilbo history` and `bilbo restore` with examples, `history.keep_days` and the retention rule, `--no-watch`, and how to remove a pasted secret from history by hand. Verify with `rg -q 'bilbo restore' README.md && rg -q 'history.keep_days' README.md`
+
+## 7. Integration
+
+- [ ] 7.1 Smoke test on rivendell, appended to `smoke.md`: in a scratch `BILBO_HOME`, install the watcher with the built `bilbo setup --yes --no-plugin`, create a note with `bilbo new`, edit it with Claude Code and then with a shell redirect, rename it, list and diff its history, restore the first version, start a second `bilbo watch` by hand and check that it waits, and remove the watcher with `bilbo setup --remove --yes`. Verify with `rg -q 'restored' openspec/changes/add-note-history/smoke.md`
+- [ ] 7.2 Run the suite on Linux (CI's platform) in OrbStack's Docker, so the inotify backend and `renameat2` run. Use the `nixos/nix` image with the checkout mounted, flakes enabled, and `CARGO_TARGET_DIR` inside the container so the macOS `target` is not touched. Docker's default overlayfs storage needs Linux 4.9 or later for `RENAME_EXCHANGE`, so this run is also what proves `swap.rs` there. Verify with `docker run --rm -v "$PWD":/src -w /src nixos/nix sh -c 'nix --extra-experimental-features "nix-command flakes" develop -c sh -c "export CARGO_TARGET_DIR=/tmp/target && cargo fmt --check && cargo clippy --locked --all-targets -- -D warnings && cargo test --locked"'`
+- [ ] 7.3 Run the full suite and the package check. Verify with `cargo fmt --check && cargo clippy --locked --all-targets -- -D warnings && cargo test --locked && nix flake check -L`
