@@ -90,7 +90,7 @@ A stage is `<state>/bilbo/staging/<stage>/`, holding `capture.md` and `stage.jso
 - `land` refuses a stage whose `capture.md` no longer hashes to the recorded value. Without that, an agent could Edit the staged text and then keep it, which brings back typed text by another door.
 - `land` copies every file of the stage folder except `stage.json` into the capture folder. `add-library-fetch` adds `raw` and `fetch.json` to the stage, and they reach the capture with no change to `land`.
 - `stage` prints only level-1 and level-2 headings. A full outline of a lint catalog is hundreds of rows, more than a Bash call shows. The agent reads `capture.md` itself to choose its ranges.
-- The suggested `keep` drops the title line, because `land` writes the title, and drops trailing blank lines. It is a starting point: the agent still cuts navigation and footers.
+- The suggested `keep` starts after the title line, because `land` writes the title, or at the first non-blank line when there is no title, and ends at the last non-blank line. It is a starting point: the agent still cuts navigation and footers.
 
 ### Captures and the `landed` file
 

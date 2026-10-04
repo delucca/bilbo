@@ -50,15 +50,15 @@ PYTHONDONTWRITEBYTECODE=1 python3 ~/.codex/skills/.system/plugin-creator/scripts
   `vectors`, `command`, `agents`, `timer`, `source`, `corpus`, `hash`) return
   plain values and `String` messages: they never print and never return
   `Failure`. Verbs build on them, never on each other, return `crate::Failure`
-  and never print. `digest` is the exception: it returns a `digest::Outcome` (lines and one diagnostic)
-  and `main` always exits 0 for it, because a prompt hook that exits 2 blocks
-  the prompt.
+  and never print. `digest` is the exception: it returns a `digest::Outcome`
+  (lines and one diagnostic) and `main` always exits 0 for it, because a prompt
+  hook that exits 2 blocks the prompt.
 - A new verb is `src/<verb>.rs`, its `mod` line, dispatch arm and USAGE line
   in `src/main.rs`, `tests/<verb>.rs`, its own capability spec, and a
   MODIFIED `cli` spec (its Verb dispatch requirement lists the verbs).
 - Keep each dependency in its one user: `cliclack` and `libc` in
-  `src/wizard.rs`, `ring` in `src/model.rs`, `sha2` in `src/hash.rs`. Justify a new one
-  in the change's `design.md`.
+  `src/wizard.rs`, `ring` in `src/model.rs`, `sha2` in
+  `src/hash.rs`. Justify a new one in the change's `design.md`.
 - Unit tests live in the module they test. CLI behavior is tested through
   the built binary with a clean environment, using the fakes in
   `tests/common/` (a fake embedder, and fake `claude`, `codex`, `launchctl`,
