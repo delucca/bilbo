@@ -49,8 +49,10 @@ PYTHONDONTWRITEBYTECODE=1 python3 ~/.codex/skills/.system/plugin-creator/scripts
 - `src/` is one folder per domain, each verb inside the domain it serves:
   `note/`, `search/`, `library/`, `citation/`, `setup/` and `host/`. A
   domain's `mod.rs` holds its `//!` summary and its `mod` lines; `note/` and
-  `citation/` also keep their model there. `src/main.rs` parses arguments,
-  owns `Failure`, dispatches to `<domain>::<verb>::run` and prints.
+  `citation/` also keep their model there, and `setup/`, which is itself a
+  verb, keeps the verb's root. `src/main.rs` parses arguments, owns
+  `Failure`, dispatches to `<domain>::<verb>::run` (except `setup::run` and
+  `check::run`) and prints.
 - `src/shared/` is the Shared Kernel: `store`, `markdown`, `frontmatter`,
   `text` and `config`. A module joins it only when two domains use
   it, and `shared/` never imports a domain. Callers keep module-qualified
@@ -68,8 +70,8 @@ PYTHONDONTWRITEBYTECODE=1 python3 ~/.codex/skills/.system/plugin-creator/scripts
 - A module with children is `foo/mod.rs`, never `foo.rs` beside `foo/`
   (clippy's `self_named_module_files`, enabled in `src/main.rs`). Items are
   `pub` or private, never `pub(crate)`. Name modules by absolute `crate::`
-  paths; only the files inside a verb's folder reach its `mod.rs` through
-  `super::`. No re-exports, and no glob imports outside test code.
+  paths; only the files inside a verb's folder reach its `mod.rs` and their
+  siblings through `super::`. No re-exports, and no glob imports outside test code.
 - `tests/layout.rs` checks these rules, and its `PLACEMENT` table keeps each
   listed crate in its one user (`tests/common` also uses `sha2`, to write
   library files with a correct digest). A change that adds a crate, a
