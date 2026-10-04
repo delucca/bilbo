@@ -27,7 +27,7 @@ Run every command below from the repo root as `nix develop -c sh -c '<command>'`
 ## 2. `bilbo watch` (`note-watch` spec)
 
 - [ ] 2.1 Add `src/note/watch.rs`, its `pub mod` line in `src/note/mod.rs`, `note/watch.rs` in `VERBS` in `tests/layout.rs`, `notify` in `PLACEMENT` for `note/watch.rs` alone, and its dispatch arm and USAGE line in `src/main.rs`, and update the USAGE copies in `tests/cli.rs` and `tests/recall.rs`. `watch::run` takes a `&mut dyn FnMut(&str)` for its progress lines, and `main` prints them with the `bilbo: ` prefix. Implement, as design.md describes:
-  - the start checks (no store, an argument), the `watch.lock` retries and the standby wait, and the lock-file identity check;
+  - the start checks (a missing root, an argument; a root without `notes/` waits), the `watch.lock` retries and the standby wait, and the lock-file identity check;
   - the two-pass scan (an unlocked pass with a stat map of length, mtime, ctime and inode; a locked pass that sweeps leftovers, re-lists, re-stats and re-hashes before recording through `note::versions`);
   - the missing-folder and empty-folder guards, with the 10-second check for the folder's return;
   - printing each skipped file once until it changes;
