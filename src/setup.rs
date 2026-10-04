@@ -6,10 +6,10 @@ use std::time::Duration;
 use zeroize::Zeroizing;
 
 use crate::config::{self, Embedder, Token};
+use crate::host::prompt::{self, Prompter};
 use crate::host::{agents, command, model, timer};
 use crate::search::{documents, embed};
 use crate::{Failure, store, wizard};
-use wizard::Prompter;
 
 const CHECK: Duration = Duration::from_secs(15);
 const READY: Duration = Duration::from_secs(120);
@@ -74,7 +74,7 @@ pub fn run(
     let path = std::env::var_os("PATH");
     match flags.mode {
         Mode::Wizard => return run_wizard(&flags, env, path),
-        Mode::Remove => return remove(&flags, env, path, &mut wizard::Terminal),
+        Mode::Remove => return remove(&flags, env, path, &mut prompt::Terminal),
         Mode::Batch => {}
     }
     let facts = gather(&flags, env, path)?;
@@ -119,7 +119,7 @@ fn run_wizard(
     let facts = gather(flags, env, path)?;
     wizard_with(
         facts,
-        &mut wizard::Terminal,
+        &mut prompt::Terminal,
         &mut Net,
         || embed::ollama_models(OLLAMA, Duration::from_secs(1)),
         |embedder, pasted| match pasted {
@@ -3408,7 +3408,7 @@ mod tests {
             fn select(
                 &mut self,
                 prompt: &str,
-                choices: &[wizard::Choice],
+                choices: &[prompt::Choice],
                 initial: usize,
             ) -> io::Result<usize> {
                 self.prompt(prompt)?;
@@ -3421,7 +3421,7 @@ mod tests {
             fn multiselect(
                 &mut self,
                 prompt: &str,
-                _: &[wizard::Choice],
+                _: &[prompt::Choice],
                 initial: &[usize],
             ) -> io::Result<Vec<usize>> {
                 self.prompt(prompt)?;
