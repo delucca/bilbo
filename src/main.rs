@@ -1,6 +1,5 @@
 mod check;
 mod citation;
-mod cite;
 mod config;
 mod frontmatter;
 mod hash;
@@ -131,7 +130,7 @@ fn run() -> Result<ExitCode, Failure> {
             Ok(ExitCode::SUCCESS)
         }
         Some("cite") => {
-            let output = cite::run(&args[1..], &mut std::io::stdin().lock(), &env)?;
+            let output = citation::cite::run(&args[1..], &mut std::io::stdin().lock(), &env)?;
             output.warnings.iter().for_each(|line| print_stderr(line));
             output.lines.iter().for_each(|line| print_stdout(line));
             Ok(if output.failed {
