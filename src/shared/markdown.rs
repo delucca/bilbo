@@ -1,4 +1,5 @@
-//! Markdown as bilbo reads it: physical lines, code fences, ATX headings and the sections they open.
+//! Markdown as bilbo reads it: physical lines, code fences, ATX headings and the sections they
+//! open.
 
 use crate::shared::text;
 

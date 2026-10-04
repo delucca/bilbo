@@ -1,5 +1,5 @@
-//! The terminal port: the `Prompter` trait the wizard asks through, and `Terminal`, which cliclack draws on
-//! stderr.
+//! The terminal port: the `Prompter` trait the wizard asks through, and `Terminal`, which cliclack
+//! draws on stderr.
 
 use std::io;
 use zeroize::Zeroizing;

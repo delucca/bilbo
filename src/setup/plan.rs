@@ -1,4 +1,5 @@
-//! Setup's plan: what each step will do, built from the flags or the wizard's answers, and its summary.
+//! Setup's plan: what each step will do, built from the flags or the wizard's answers, and its
+//! summary.
 
 use std::path::{Path, PathBuf};
 use zeroize::Zeroizing;

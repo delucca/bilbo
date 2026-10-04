@@ -1,5 +1,5 @@
-//! The library: sources kept verbatim in corpora, their guides, capture from the web, reading plans, and the
-//! `library` verb in `cli`.
+//! The library: sources kept verbatim in corpora, their guides, capture from the web, reading
+//! plans, and the `library` verb in `cli`.
 
 pub mod cli;
 pub mod corpus;
