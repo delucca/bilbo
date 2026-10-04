@@ -243,12 +243,11 @@ fn show_corpus(name: &str, env: &store::Env) -> Result<Output, Failure> {
         .ok()
         .and_then(|bytes| String::from_utf8(bytes).ok());
     if let Some(text) = &text {
-        let front = source::split_front(text, &["id", "created"]);
         let guide = corpus::read_guide(text);
         for (i, line) in note::lines(text)
             .iter()
             .enumerate()
-            .skip(front.body_start - 1)
+            .skip(guide.body_start - 1)
         {
             lines.push(line.to_string());
             for entry in guide.entries.iter().filter(|e| e.line == i + 1) {
@@ -814,15 +813,16 @@ fn land(args: &Args, env: &store::Env) -> Result<Output, Failure> {
     }
 
     let today = today();
-    let folder = keep_capture(&root, &staged, &id, &digest, &today)?;
+    let folder = keep_capture(&root, &staged)?;
     fs::create_dir_all(&dir).map_err(io_failure("create", &dir))?;
-    write_source(&dir, &target, &id, &text, plan.replace)?;
+    write_source(&dir, &target, &text, plan.replace)?;
+    record_landing(&folder, &id, &digest, &today)?;
 
     let guide = dir.join("guide.md");
     let changed = old
         .as_ref()
         .is_none_or(|(_, old_digest)| old_digest.as_deref() != Some(&digest));
-    if changed && let Err(failure) = update_guide(&guide, &plan, &id, &today) {
+    if changed && let Err(failure) = update_guide(&guide, &plan, &today) {
         let Failure::Refused(message) = failure else {
             return Err(failure);
         };
@@ -867,13 +867,7 @@ fn duplicate_origins(root: &Path, origin: &str, target: &Path) -> Result<Vec<Str
 
 /// Keeps the staged files under `<root>/.bilbo/captures/<sha256>/` unless that folder exists, and records the
 /// landing in its `landed` file.
-fn keep_capture(
-    root: &Path,
-    staged: &Staged,
-    id: &str,
-    digest: &str,
-    today: &str,
-) -> Result<PathBuf, Failure> {
+fn keep_capture(root: &Path, staged: &Staged) -> Result<PathBuf, Failure> {
     let captures = store::captures_dir(root);
     let folder = captures.join(&staged.sha256);
     if !folder.exists() {
@@ -889,14 +883,26 @@ fn keep_capture(
             return Err(failure);
         }
     }
+    Ok(folder)
+}
+
+/// Appends the source's id, digest and date to the capture folder's `landed` file, unless a line with that id
+/// and digest is there already.
+fn record_landing(folder: &Path, id: &str, digest: &str, today: &str) -> Result<(), Failure> {
     let landed = folder.join("landed");
+    let known = fs::read_to_string(&landed).is_ok_and(|text| {
+        text.lines()
+            .any(|line| line.starts_with(&format!("{id}\t{digest}\t")))
+    });
+    if known {
+        return Ok(());
+    }
     OpenOptions::new()
         .create(true)
         .append(true)
         .open(&landed)
         .and_then(|mut file| writeln!(file, "{id}\t{digest}\t{today}"))
-        .map_err(io_failure("write", &landed))?;
-    Ok(folder)
+        .map_err(io_failure("write", &landed))
 }
 
 /// Every file of the stage folder but bilbo's own `stage.json`.
@@ -911,18 +917,21 @@ fn copy_stage(from: &Path, to: &Path) -> io::Result<()> {
     Ok(())
 }
 
-/// Writes `text` to a hidden temp file in `dir` and fsyncs it.
-fn write_temp(dir: &Path, name: &str, text: &str) -> Result<PathBuf, Failure> {
-    let tmp = dir.join(name);
-    let written = OpenOptions::new()
+/// Writes `text` to a hidden `.<prefix>-<random>.tmp` file in `dir` and fsyncs it. A temp file that already exists
+/// belongs to another run and is never touched.
+fn write_temp(dir: &Path, prefix: &str, text: &str) -> Result<PathBuf, Failure> {
+    let random =
+        note::mint_ulid().map_err(|e| refused(format!("cannot read /dev/urandom: {e}")))?;
+    let tmp = dir.join(format!(".{prefix}-{random}.tmp"));
+    let mut file = OpenOptions::new()
         .write(true)
         .create_new(true)
         .open(&tmp)
-        .and_then(|mut file| {
-            file.write_all(text.as_bytes())?;
-            file.sync_all()
-        });
-    match written {
+        .map_err(io_failure("write", &tmp))?;
+    match file
+        .write_all(text.as_bytes())
+        .and_then(|()| file.sync_all())
+    {
         Ok(()) => Ok(tmp),
         Err(e) => {
             let _ = fs::remove_file(&tmp);
@@ -933,14 +942,8 @@ fn write_temp(dir: &Path, name: &str, text: &str) -> Result<PathBuf, Failure> {
 
 /// A new source is hard-linked into place, as `bilbo new` does, so a name taken meanwhile fails; a replaced one
 /// is renamed over the old file.
-fn write_source(
-    dir: &Path,
-    target: &Path,
-    id: &str,
-    text: &str,
-    replace: bool,
-) -> Result<(), Failure> {
-    let tmp = write_temp(dir, &format!(".land-{id}.tmp"), text)?;
+fn write_source(dir: &Path, target: &Path, text: &str, replace: bool) -> Result<(), Failure> {
+    let tmp = write_temp(dir, "land", text)?;
     let placed = if replace {
         fs::rename(&tmp, target)
     } else {
@@ -962,7 +965,7 @@ fn write_source(
 }
 
 /// Creates the guide when missing, then adds the entry or marks it stale.
-fn update_guide(guide: &Path, plan: &Plan, id: &str, today: &str) -> Result<(), Failure> {
+fn update_guide(guide: &Path, plan: &Plan, today: &str) -> Result<(), Failure> {
     let current = match fs::read(guide) {
         Ok(bytes) => String::from_utf8(bytes)
             .map_err(|_| refused(format!("{} is not valid UTF-8", guide.display())))?,
@@ -983,7 +986,7 @@ fn update_guide(guide: &Path, plan: &Plan, id: &str, today: &str) -> Result<(), 
         corpus::add_entry(&current, &plan.name)
     };
     let dir = guide.parent().unwrap_or(Path::new("."));
-    let tmp = write_temp(dir, &format!(".land-guide-{id}.tmp"), &updated)?;
+    let tmp = write_temp(dir, "land-guide", &updated)?;
     fs::rename(&tmp, guide).map_err(|e| {
         let _ = fs::remove_file(&tmp);
         refused(format!("cannot write {}: {e}", guide.display()))

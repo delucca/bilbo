@@ -167,9 +167,6 @@ pub struct Source {
     pub capture: Option<String>,
     /// Every allowed key the frontmatter holds, whatever its value.
     pub keys: Vec<String>,
-    /// Set when every key is present and holds a valid value.
-    #[cfg_attr(not(test), allow(dead_code))]
-    pub front: Option<Frontmatter>,
     /// Byte offset in the text of the body's first byte.
     pub body_offset: usize,
     /// Physical line the body starts on: the title's line.
@@ -190,25 +187,22 @@ pub fn read(text: &str) -> Source {
     let mut front = split_front(text, &KEYS);
     front.missing(&REQUIRED);
     let mut problems = std::mem::take(&mut front.problems);
-    let mut ok = REQUIRED.iter().all(|k| front.seen.iter().any(|s| s == k));
 
-    let mut valid = |key: &str, test: &dyn Fn(&str) -> Option<String>, bad: &mut Vec<Problem>| {
+    let valid = |key: &str, test: &dyn Fn(&str) -> Option<String>, bad: &mut Vec<Problem>| {
         let pair = front.get(key)?;
         match test(&pair.value) {
             Some(message) => {
                 bad.push(Problem::at(pair.line, message));
-                ok = false;
                 None
             }
             None => Some(pair.value.clone()),
         }
     };
-    let id_value = valid(
+    let id = valid(
         "id",
         &|v| (!note::is_ulid(v)).then(|| note::bad_id(v)),
         &mut problems,
     );
-    let id = id_value.clone();
     let fetched = valid(
         "fetched",
         &|v| (!is_date(v)).then(|| format!("fetched: '{v}' is not YYYY-MM-DD, a real date")),
@@ -264,18 +258,6 @@ pub fn read(text: &str) -> Source {
     problems.sort_by_key(|p| p.line.unwrap_or(usize::MAX));
 
     let origin = origin.and_then(|o| origin_value(&o).map(str::to_string));
-    let front_ok = ok
-        .then(|| {
-            Some(Frontmatter {
-                id: id_value?,
-                fetched: fetched.clone()?,
-                origin: origin.clone()?,
-                digest: digest.clone()?,
-                kept: kept.clone(),
-                capture: capture.clone(),
-            })
-        })
-        .flatten();
     Source {
         id,
         fetched,
@@ -284,7 +266,6 @@ pub fn read(text: &str) -> Source {
         kept,
         capture,
         keys: front.seen,
-        front: front_ok,
         body_offset: front.body_offset,
         body_start: front.body_start,
         problems,
@@ -352,19 +333,8 @@ fn title_problems(body: &[&str], first_line: usize) -> Vec<Problem> {
             "title: the body must open with a '# <title>' line",
         ));
     }
-    let titles: Vec<usize> = outside_fences(body)
-        .into_iter()
-        .filter(|i| body[*i].starts_with("# "))
-        .collect();
-    if titles.len() > 1 {
-        problems.push(Problem::at(
-            first_line + titles[1],
-            format!(
-                "title: found {} '# ' headings outside code fences, expected one",
-                titles.len()
-            ),
-        ));
-    }
+    // `note::title_problem` also reports a missing title; the rule above already did.
+    problems.extend(note::title_problem(body, first_line).filter(|p| p.line.is_some()));
     problems
 }
 
@@ -588,10 +558,11 @@ mod tests {
         let text = with_lines(&["kept: 12-1904,1910-1950", "capture: external"], BODY);
         let read = read(&text);
         assert!(read.problems.is_empty());
-        let front = read.front.as_ref().unwrap();
-        assert_eq!(front.kept.as_deref(), Some("12-1904,1910-1950"));
-        assert_eq!(front.capture.as_deref(), Some("external"));
-        assert_eq!(front.origin, "url: https://go.dev");
+        assert_eq!(read.kept.as_deref(), Some("12-1904,1910-1950"));
+        assert_eq!(read.capture.as_deref(), Some("external"));
+        assert_eq!(read.origin.as_deref(), Some("url: https://go.dev"));
+        assert_eq!(read.digest, Some(digest(BODY)));
+        assert_eq!(read.fetched.as_deref(), Some("2026-08-23"));
         assert_eq!(read.id.as_deref(), Some(ID));
         assert_eq!(read.body_start, 9);
         assert_eq!(read.body(&text), BODY);
@@ -631,7 +602,6 @@ mod tests {
         let read = read(&text);
         assert_eq!(read.problems.len(), 1);
         assert_eq!(read.problems[0].to_string(), "digest: missing");
-        assert!(read.front.is_none());
     }
 
     #[test]
@@ -694,7 +664,6 @@ mod tests {
         let text =
             with_lines(&["kept: 3-5", "capture: legacy"], BODY).replace("2026-08-23", "yesterday");
         let read = read(&text);
-        assert!(read.front.is_none());
         assert_eq!(read.fetched, None);
         assert_eq!(read.origin.as_deref(), Some("url: https://go.dev"));
         assert_eq!(read.digest, Some(digest(BODY)));
@@ -837,7 +806,11 @@ mod tests {
                 digest(BODY)
             )
         );
-        assert_eq!(read(&text).front, Some(full));
+        let back = read(&text);
+        assert_eq!(back.id.as_deref(), Some(ID));
+        assert_eq!(back.kept, full.kept);
+        assert_eq!(back.capture, full.capture);
+        assert_eq!(back.digest, Some(full.digest));
         let bare = render(&front(BODY), BODY);
         assert!(!bare.contains("kept") && !bare.contains("capture"));
         assert!(read(&bare).problems.is_empty());

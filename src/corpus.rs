@@ -37,6 +37,8 @@ pub struct GuideEntry {
 }
 
 pub struct Guide {
+    /// Physical line the text after the frontmatter starts on; 1 when the frontmatter is missing or unclosed.
+    pub body_start: usize,
     pub id: Option<String>,
     pub created: Option<String>,
     pub title: Option<String>,
@@ -53,6 +55,7 @@ pub fn read_guide(text: &str) -> Guide {
     front.missing(&GUIDE_KEYS);
     let mut problems = std::mem::take(&mut front.problems);
     let mut guide = Guide {
+        body_start: front.body_start,
         id: None,
         created: None,
         title: None,
@@ -86,7 +89,8 @@ pub fn read_guide(text: &str) -> Guide {
 
     let mut title_line = None;
     let mut entry_starts: Vec<(usize, String)> = Vec::new();
-    for (i, line) in fenced_free(body) {
+    for i in source::outside_fences(body) {
+        let line = body[i];
         match rank::heading(line) {
             Some((1, text)) if title_line.is_none() && entry_starts.is_empty() => {
                 title_line = Some(i);
@@ -167,26 +171,6 @@ fn is_stale(line: &str) -> bool {
     line.starts_with(STALE_PREFIX)
 }
 
-/// The lines outside fenced code blocks, with their index, fence lines excluded.
-fn fenced_free<'a>(lines: &[&'a str]) -> Vec<(usize, &'a str)> {
-    let mut fence: Option<(char, usize)> = None;
-    let mut out = Vec::new();
-    for (i, line) in lines.iter().enumerate() {
-        let run = note::fence_run(line);
-        match (fence, run) {
-            (Some((ch, len)), Some((c, l, rest)))
-                if c == ch && l >= len && rest.trim().is_empty() =>
-            {
-                fence = None;
-            }
-            (Some(_), _) => {}
-            (None, Some((c, l, _))) => fence = Some((c, l)),
-            (None, None) => out.push((i, *line)),
-        }
-    }
-    out
-}
-
 /// A new guide for `corpus`: frontmatter, the corpus name as the title, and the corpus stub.
 pub fn new_guide(id: &str, created: &str, corpus: &str) -> String {
     format!("---\nid: {id}\ncreated: {created}\n---\n\n# {corpus}\n\n{STUB_CORPUS}\n")
@@ -209,9 +193,9 @@ pub fn add_entry(text: &str, name: &str) -> String {
 /// holds; unchanged when the guide has no such entry.
 pub fn mark_stale(text: &str, name: &str, date: &str) -> String {
     let mut lines: Vec<&str> = text.split('\n').collect();
-    let heads: Vec<(usize, String)> = fenced_free(&lines)
+    let heads: Vec<(usize, String)> = source::outside_fences(&lines)
         .into_iter()
-        .filter_map(|(i, line)| match rank::heading(line) {
+        .filter_map(|i| match rank::heading(lines[i]) {
             Some((2, text)) => Some((i, text)),
             _ => None,
         })

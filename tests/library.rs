@@ -1054,6 +1054,12 @@ fn a_reingest_with_the_same_text_leaves_the_guide() {
     let run = lab.land(&stage, "go/effective-go", &["--keep", "3-3", "--replace"]);
     assert_eq!(run.code, 0, "{}", run.stderr);
     assert_eq!(lab.read("go/guide.md"), guide);
+    let landed = lab
+        .root
+        .join(".bilbo/captures")
+        .join(CAPTURE_SHA)
+        .join("landed");
+    assert_eq!(std::fs::read_to_string(landed).unwrap().lines().count(), 1);
     assert!(
         lab.read("go/effective-go.md")
             .contains(&format!("id: {id}\nfetched: 2026-08-23\n"))
@@ -1334,4 +1340,69 @@ fn two_lands_of_one_name_have_one_winner() {
             "{leftovers:?}"
         );
     }
+}
+
+#[test]
+fn a_same_text_replace_adds_no_landed_line() {
+    let lab = Lab::new("land-landed-once");
+    land_with_prose(&lab, CAPTURE, "2026-08-01");
+    let landed = lab
+        .root
+        .join(".bilbo/captures")
+        .join(CAPTURE_SHA)
+        .join("landed");
+    let before = std::fs::read_to_string(&landed).unwrap();
+    let stage = lab.stage(CAPTURE, ORIGIN, &["--fetched", "2026-08-23"]);
+    let run = lab.land(&stage, "go/effective-go", &["--keep", "3-3", "--replace"]);
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    assert_eq!(std::fs::read_to_string(&landed).unwrap(), before);
+}
+
+#[cfg(unix)]
+#[test]
+fn a_failed_source_write_records_no_landing() {
+    use std::os::unix::fs::PermissionsExt;
+    let lab = Lab::new("land-landed-failed");
+    lab.put("go/guide.md", &guide("Go", "Lead.", &[]));
+    let corpus = lab.root.join("library/go");
+    std::fs::set_permissions(&corpus, std::fs::Permissions::from_mode(0o555)).unwrap();
+    let probe = corpus.join(".probe");
+    if std::fs::write(&probe, "").is_ok() {
+        let _ = std::fs::remove_file(&probe);
+        eprintln!("skipped: the folder is writable despite 0o555 (running as root?)");
+        return;
+    }
+    let stage = lab.stage(CAPTURE, ORIGIN, &[]);
+    let run = lab.land(&stage, "go/errors", &["--keep", "3-3"]);
+    std::fs::set_permissions(&corpus, std::fs::Permissions::from_mode(0o755)).unwrap();
+    assert_eq!(run.code, 1);
+    assert!(!corpus.join("errors.md").exists());
+    let folder = lab.root.join(".bilbo/captures").join(CAPTURE_SHA);
+    assert!(!folder.join("landed").exists());
+}
+
+#[test]
+fn a_leftover_temp_file_neither_stops_a_land_nor_is_touched() {
+    let lab = Lab::new("land-leftover-tmp");
+    lab.put("go/.land-01M3EZ8NVEC2KJQNGK5DTK349R.tmp", "killed run");
+    lab.put(
+        "go/.land-guide-01M3EZ8NVEC2KJQNGK5DTK349R.tmp",
+        "killed run",
+    );
+    lab.land_text(CAPTURE, "go/errors", "3-3", &[]);
+    for name in [
+        "go/.land-01M3EZ8NVEC2KJQNGK5DTK349R.tmp",
+        "go/.land-guide-01M3EZ8NVEC2KJQNGK5DTK349R.tmp",
+    ] {
+        assert_eq!(lab.read(name), "killed run");
+    }
+}
+
+#[test]
+fn show_prints_the_kept_and_capture_headers_of_a_landed_source() {
+    let lab = Lab::new("land-show-kept");
+    lab.land_text(CAPTURE, "go/errors", "3-3", &[]);
+    let run = lab.library(&["show", "go/errors"]);
+    assert_eq!(field(&run.stdout, "kept"), "3-3");
+    assert_eq!(field(&run.stdout, "capture"), "external");
 }
