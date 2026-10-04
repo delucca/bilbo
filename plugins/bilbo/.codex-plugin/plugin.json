@@ -1,6 +1,6 @@
 {
   "name": "bilbo",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "description": "Write and recall the notes agent sessions keep, through the bilbo CLI.",
   "author": {
     "name": "delucca"
