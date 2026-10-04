@@ -101,7 +101,7 @@ fn base(c: char) -> Option<&'static str> {
 }
 
 /// An ATX heading outside a fence: its level and its text with the closing sequence removed and whitespace collapsed.
-fn heading(line: &str) -> Option<(usize, String)> {
+pub(crate) fn heading(line: &str) -> Option<(usize, String)> {
     let level = line.bytes().take_while(|b| *b == b'#').count();
     if !(1..=6).contains(&level) {
         return None;

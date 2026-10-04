@@ -117,14 +117,14 @@ pub struct Problem {
 }
 
 impl Problem {
-    fn at(line: usize, message: impl Into<String>) -> Problem {
+    pub(crate) fn at(line: usize, message: impl Into<String>) -> Problem {
         Problem {
             line: Some(line),
             message: message.into(),
         }
     }
 
-    fn whole(message: impl Into<String>) -> Problem {
+    pub(crate) fn whole(message: impl Into<String>) -> Problem {
         Problem {
             line: None,
             message: message.into(),
@@ -264,12 +264,7 @@ impl Keys {
                 repeated(first, n, key, problems);
                 if let Some(value) = value(n, key, rest, problems) {
                     if !is_ulid(value) {
-                        problems.push(Problem::at(
-                            n,
-                            format!(
-                                "id: '{value}' is not a canonical ULID: 26 characters of 0-9 and A-Z without I, L, O, U, the first 0-7"
-                            ),
-                        ));
+                        problems.push(Problem::at(n, bad_id(value)));
                     } else if first {
                         self.id = Some(value.to_string());
                     }
@@ -280,12 +275,7 @@ impl Keys {
                 repeated(first, n, key, problems);
                 if let Some(value) = value(n, key, rest, problems) {
                     if !is_created(value) {
-                        problems.push(Problem::at(
-                            n,
-                            format!(
-                                "created: '{value}' is not YYYY-MM-DDTHH:MM±HH:MM, a real local time to the minute"
-                            ),
-                        ));
+                        problems.push(Problem::at(n, bad_created(value)));
                     } else if first {
                         self.created = Some(value.to_string());
                     }
@@ -322,6 +312,16 @@ impl Keys {
     }
 }
 
+pub(crate) fn bad_id(value: &str) -> String {
+    format!(
+        "id: '{value}' is not a canonical ULID: 26 characters of 0-9 and A-Z without I, L, O, U, the first 0-7"
+    )
+}
+
+pub(crate) fn bad_created(value: &str) -> String {
+    format!("created: '{value}' is not YYYY-MM-DDTHH:MM±HH:MM, a real local time to the minute")
+}
+
 fn repeated(first: bool, n: usize, key: &str, problems: &mut Vec<Problem>) {
     if !first {
         problems.push(Problem::at(n, format!("{key}: given more than once")));
@@ -344,7 +344,7 @@ fn unexpected_line(n: usize) -> Problem {
     )
 }
 
-fn split_key(line: &str) -> Option<(&str, &str)> {
+pub(crate) fn split_key(line: &str) -> Option<(&str, &str)> {
     let (key, rest) = line.split_once(':')?;
     let valid = !key.is_empty()
         && key
@@ -379,7 +379,7 @@ fn check_item(n: usize, line: &str, problems: &mut Vec<Problem>) {
 }
 
 /// `body` starts at physical line `first_line`.
-fn title_problem(body: &[&str], first_line: usize) -> Option<Problem> {
+pub(crate) fn title_problem(body: &[&str], first_line: usize) -> Option<Problem> {
     let mut fence: Option<(char, usize)> = None;
     let mut titles = Vec::new();
     for (i, line) in body.iter().enumerate() {

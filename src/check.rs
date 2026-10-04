@@ -1,7 +1,7 @@
 use std::path::Path;
 
 use crate::store::{self, Entry, EntryKind};
-use crate::{Failure, note};
+use crate::{Failure, corpus, note};
 
 /// Problems as `(path, message)`; a key shared by files is kept as `(key, path)`.
 #[derive(Default)]
@@ -22,14 +22,18 @@ pub fn run(args: &[String], env: &store::Env) -> Result<Vec<String>, Failure> {
     }
     let root = store::root(env).map_err(Failure::Config)?;
     let notes = root.join("notes");
-    if !notes.is_dir() {
+    if !notes.is_dir() && !store::library_dir(&root).is_dir() {
         return Err(Failure::Refused(format!("no store at {}", root.display())));
     }
-    let entries = store::entries(&notes)
-        .map_err(|e| Failure::Refused(format!("cannot read {}: {e}", notes.display())))?;
-
     let mut scan = Scan::default();
-    entries.iter().for_each(|entry| scan.entry(entry));
+    if notes.is_dir() {
+        let entries = store::entries(&notes)
+            .map_err(|e| Failure::Refused(format!("cannot read {}: {e}", notes.display())))?;
+        entries.iter().for_each(|entry| scan.entry(entry));
+    }
+    let library = corpus::problems(&root);
+    scan.found.extend(library.problems);
+    scan.ids.extend(library.ids);
     scan.found.extend(shared(&scan.topics, |key, others| {
         format!("topic: '{key}' is also the topic of {others}")
     }));
