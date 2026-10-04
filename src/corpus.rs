@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 
+use crate::frontmatter;
 use crate::markdown;
-use crate::note;
 use crate::source::{self, Source};
 use crate::store::{self, Entry, EntryKind, Problem, is_topic};
 
@@ -64,17 +64,20 @@ pub fn read_guide(text: &str) -> Guide {
         problems: Vec::new(),
     };
     if let Some(pair) = front.get("id") {
-        if note::is_ulid(&pair.value) {
+        if frontmatter::is_ulid(&pair.value) {
             guide.id = Some(pair.value.clone());
         } else {
-            problems.push(Problem::at(pair.line, note::bad_id(&pair.value)));
+            problems.push(Problem::at(pair.line, frontmatter::bad_id(&pair.value)));
         }
     }
     if let Some(pair) = front.get("created") {
-        if note::is_created(&pair.value) {
+        if frontmatter::is_created(&pair.value) {
             guide.created = Some(pair.value.clone());
         } else {
-            problems.push(Problem::at(pair.line, note::bad_created(&pair.value)));
+            problems.push(Problem::at(
+                pair.line,
+                frontmatter::bad_created(&pair.value),
+            ));
         }
     }
     if !front.body_known {

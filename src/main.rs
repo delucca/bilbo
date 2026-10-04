@@ -8,6 +8,7 @@ mod corpus;
 mod digest;
 mod embed;
 mod fetch;
+mod frontmatter;
 mod hash;
 mod html;
 mod index;

@@ -2,8 +2,8 @@ use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::path::{Path, PathBuf};
 
+use crate::frontmatter;
 use crate::markdown::{self, Resolved, Section};
-use crate::note;
 use crate::store::{self, EntryKind};
 use crate::text::{self, Body};
 
@@ -351,10 +351,10 @@ fn front_id(text: &str) -> Option<String> {
     let close = lines[1..].iter().position(|l| *l == "---")?;
     let (_, value) = lines[1..=close]
         .iter()
-        .filter_map(|l| note::split_key(l))
+        .filter_map(|l| frontmatter::split_key(l))
         .find(|(key, _)| *key == "id")?;
     let value = value.strip_prefix(' ')?;
-    note::is_ulid(value).then(|| value.to_string())
+    frontmatter::is_ulid(value).then(|| value.to_string())
 }
 
 /// The body of a file's text, after its frontmatter, and the physical line it starts on. A file with no closed

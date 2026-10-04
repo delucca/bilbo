@@ -7,7 +7,7 @@ use crate::corpus::{self, SourceFile};
 use crate::markdown::{self, Resolved, Section};
 use crate::source::{self, Frontmatter};
 use crate::store::{self, EntryKind};
-use crate::{Failure, hash, note, plan as reading};
+use crate::{Failure, frontmatter, hash, note, plan as reading};
 
 const VALUE_OPTIONS: [&str; 9] = [
     "--depth",
@@ -317,7 +317,7 @@ fn parse_reference(reference: &str) -> Result<Reference, Failure> {
                 name: name.into(),
             })
         }
-        None if note::is_ulid(reference) => Ok(Reference::Id(reference.into())),
+        None if frontmatter::is_ulid(reference) => Ok(Reference::Id(reference.into())),
         _ => Err(malformed()),
     }
 }
@@ -654,7 +654,8 @@ fn plan_picks(args: &Args, env: &store::Env) -> Result<Output, Failure> {
         .zip(&outlines)
         .map(|(lines, sections)| reading::Material { lines, sections })
         .collect();
-    let id = note::mint_ulid().map_err(|e| refused(format!("cannot read /dev/urandom: {e}")))?;
+    let id =
+        frontmatter::mint_ulid().map_err(|e| refused(format!("cannot read /dev/urandom: {e}")))?;
     let plan = reading::build(
         id,
         root.display().to_string(),
@@ -724,7 +725,7 @@ fn read_slices(args: &Args, env: &store::Env) -> Result<Output, Failure> {
     let Some(plan_id) = operands.first() else {
         return Err(usage("missing <plan>"));
     };
-    if !note::is_ulid(plan_id) {
+    if !frontmatter::is_ulid(plan_id) {
         return Err(usage(format!("'{plan_id}' is not a plan id")));
     }
     if operands.len() == 1 {
@@ -1102,7 +1103,8 @@ fn stage(args: &Args, env: &store::Env) -> Result<Output, Failure> {
         (None, None) => lines.iter().position(|l| !blank(l)).map_or(1, |i| i + 1),
     };
 
-    let id = note::mint_ulid().map_err(|e| refused(format!("cannot read /dev/urandom: {e}")))?;
+    let id =
+        frontmatter::mint_ulid().map_err(|e| refused(format!("cannot read /dev/urandom: {e}")))?;
     let folder = staging.join(&id);
     fs::create_dir_all(&staging).map_err(io_failure("create", &staging))?;
     fs::create_dir(&folder).map_err(io_failure("create", &folder))?;
@@ -1233,7 +1235,7 @@ struct Plan {
 
 fn plan(args: &Args) -> Result<(String, Plan), Failure> {
     let [stage, target] = args.operands(["<stage>", "<corpus>/<name>"])?;
-    if !note::is_ulid(stage) {
+    if !frontmatter::is_ulid(stage) {
         return Err(usage(format!("'{stage}' is not a stage id")));
     }
     let (corpus, name) = match target.split_once('/') {
@@ -1375,7 +1377,8 @@ fn land(args: &Args, env: &store::Env) -> Result<Output, Failure> {
     let old = check_target(&target, plan.replace)?;
     let id = match &old {
         Some((id, _)) => id.clone(),
-        None => note::mint_ulid().map_err(|e| refused(format!("cannot read /dev/urandom: {e}")))?,
+        None => frontmatter::mint_ulid()
+            .map_err(|e| refused(format!("cannot read /dev/urandom: {e}")))?,
     };
     let mut warnings = Vec::new();
     if demoted {
@@ -1525,8 +1528,8 @@ fn keep_capture(root: &Path, staged: &Staged) -> Result<PathBuf, Failure> {
     let folder = captures.join(&staged.sha256);
     if !folder.exists() {
         fs::create_dir_all(&captures).map_err(io_failure("create", &captures))?;
-        let random =
-            note::mint_ulid().map_err(|e| refused(format!("cannot read /dev/urandom: {e}")))?;
+        let random = frontmatter::mint_ulid()
+            .map_err(|e| refused(format!("cannot read /dev/urandom: {e}")))?;
         let tmp = captures.join(format!(".tmp-{random}"));
         let copied = copy_stage(&staged.dir, &tmp)
             .map_err(io_failure("write", &tmp))
@@ -1574,7 +1577,7 @@ fn copy_stage(from: &Path, to: &Path) -> io::Result<()> {
 /// belongs to another run and is never touched.
 fn write_temp(dir: &Path, prefix: &str, text: &str) -> Result<PathBuf, Failure> {
     let random =
-        note::mint_ulid().map_err(|e| refused(format!("cannot read /dev/urandom: {e}")))?;
+        frontmatter::mint_ulid().map_err(|e| refused(format!("cannot read /dev/urandom: {e}")))?;
     let tmp = dir.join(format!(".{prefix}-{random}.tmp"));
     let mut file = OpenOptions::new()
         .write(true)
@@ -1623,9 +1626,9 @@ fn update_guide(guide: &Path, plan: &Plan, today: &str) -> Result<(), Failure> {
         Ok(bytes) => String::from_utf8(bytes)
             .map_err(|_| refused(format!("{} is not valid UTF-8", guide.display())))?,
         Err(e) if e.kind() == io::ErrorKind::NotFound => {
-            let guide_id =
-                note::mint_ulid().map_err(|e| refused(format!("cannot read /dev/urandom: {e}")))?;
-            corpus::new_guide(&guide_id, &note::now_created(), &plan.corpus)
+            let guide_id = frontmatter::mint_ulid()
+                .map_err(|e| refused(format!("cannot read /dev/urandom: {e}")))?;
+            corpus::new_guide(&guide_id, &frontmatter::now_created(), &plan.corpus)
         }
         Err(e) => return Err(refused(format!("cannot read {}: {e}", guide.display()))),
     };
