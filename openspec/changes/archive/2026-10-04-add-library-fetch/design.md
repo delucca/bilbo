@@ -36,7 +36,7 @@ Alternative: every new rule as an ADDED requirement in `library-fetch`. Stage ou
 
 - `src/library.rs` (the verb, from `add-library-store`) is extended. `stage` tells a URL from a file by its first argument. It refuses `--origin` and `--fetched` with a URL, takes `--html` with a file, and prints the new header lines and the warnings.
 - `src/source.rs` (a library module from `add-library-store`) gains `capture_warnings(lines) -> Vec<String>` for the unclosed fence and the navigation runs. They are line rules over any capture and share the outline's fence logic.
-- `src/fetch.rs`, a new library module, holds `get(url, limits) -> Result<Answer, String>`. `Answer` carries the final URL, the status, the media type and the bytes. It is the third `ureq` user, after `embed` and `model`, each with its own agent settings, so it gets its own module instead of joining either.
+- `src/fetch.rs`, a new library module, holds `get(url) -> Result<Answer, String>`. `Answer` carries the final URL, whether a redirect was followed, the status, the media type and the bytes. It is the third `ureq` user, after `embed` and `model`, each with its own agent settings, so it gets its own module instead of joining either.
 - `src/html.rs`, a new library module, holds `convert(html) -> Conversion`: the Markdown, the page headings for the lost-heading check, and the content element's Markdown. It is the only user of `htmd` and `markup5ever_rcdom`.
 
 Why not extend `source.rs` with the conversion: the converter is the one place that touches an HTML tree and two new crates. Kept apart, the dependency rule in AGENTS.md ("each dependency in its one user") reads as one line.
@@ -47,7 +47,7 @@ std has no HTML parser, and none of bilbo's dependencies parses HTML. Converting
 
 | Crate | Licence | Maintenance | Crates in its tree | Output |
 |---|---|---|---|---|
-| `htmd` 0.5.5 | Apache-2.0 | 5.3 M downloads; releases 2026-03 to 2026-07 | 30 with `markup5ever_rcdom`, 20 new to bilbo | Good lists, links, escapes and fence lengths. Stock defects: a bare `<pre>` loses its fence (0 of 153 fenced on Effective Go); a heading keeps link markup (27 of 29 on Cargo); a heading with a block child splits from its text (52 of 62 on Claude Code); a header-less table is flattened into paragraphs |
+| `htmd` 0.5.5 | Apache-2.0 | 5.3 M downloads; releases 2026-03 to 2026-07 | 30 with `markup5ever_rcdom`, 20 new to bilbo | Good lists, links, escapes and fence lengths. Stock defects: a bare `<pre>` loses its fence (0 of 153 fenced on Effective Go); a heading keeps link markup (27 of 29 on Cargo); a heading with a block child splits from its text (52 of 62 on Claude Code); a header-less table is flattened into paragraphs; a table with header cells keeps only `<th>` cells in its first row and only `<td>` cells in the others, so row headers vanish |
 | `html-to-markdown-rs` 3.16.0 | MIT | 1.5 M downloads; 3.x weekly (3.14.3 on 09-19 to 3.16.0 on 10-02) | 83, among them `regex`, `url`, ICU and `tracing` | Fences bare `<pre>` and promotes a header row. Headings keep link and alt text (`[​ SVG Image](#bundled-skills) Bundled skills`). It drops `<nav>` by its own rule, adds YAML frontmatter by default, and leaves `1. not a list` unescaped, so a paragraph becomes a list |
 | `mdka` 3.2.0 | Apache-2.0 | 3.0.0 to 3.2.0 within one week | 51, with `rayon` | Puts `<a id>` into heading text, does not lengthen a fence around backticks (an unclosed fence on the hand page), duplicates a `colspan` cell |
 | `fast_html2md` 0.0.63 | MIT | 0.0.x | 85, async `futures` and `lol_html` | Not tried further |
@@ -56,10 +56,10 @@ std has no HTML parser, and none of bilbo's dependencies parses HTML. Converting
 
 **Pick `htmd`.** It has the smallest tree, the same licence as bilbo, and the standard `html5ever` parser underneath. Its defects are local to four element types, and its builder takes custom handlers for them (`HtmlToMarkdownBuilder::add_handler`, with `Handlers::fallback` to reach the stock handler). The four handlers, in `src/html.rs`:
 
-1. `pre`: when the element's only element child is `<code>`, fall back to `htmd`, which fences it with a fence longer than any backtick run inside and takes `language-*`. Otherwise walk the children with whitespace kept and fence the text the same way.
+1. `pre`: walk the children with whitespace kept, and fence the text with a backtick fence one longer than any backtick run inside (at least three), taking `language-*` from the `<code>` child, else from the `<pre>`. The first draft fell back to `htmd` for a `<pre>` whose only child is `<code>`; review found `htmd`'s span handler drops newlines inside highlighted code, so bilbo fences every `<pre>` itself.
 2. `h1` to `h6`: walk the children, drop zero-width characters, collapse all whitespace to single spaces, and emit `#` times the level, a space and the text on one line. Emit nothing when the text is empty.
 3. `a` and `img` inside a heading: an `a` yields its children's text, and an `img` yields nothing. Outside headings they fall back. Finding the heading takes a walk up the `parent` links of `markup5ever_rcdom::Node`.
-4. `table` with no `<th>` cell: render the rows as a pipe table with the first row as header. Each cell is walked, collapsed to one line, and has `|` written as `&#124;`, as `htmd` does in its own tables. A table with a header cell falls back to `htmd`.
+4. `table`: render the rows as a pipe table with the first row as header, the cells (`<td>` and `<th>`) in document order and a `<caption>` as a paragraph above it. Each cell is walked, collapsed to one line, and has `|` written as `&#124;`, as `htmd` does in its own tables. Only a table nested in a cell falls back to `htmd`, and its output is collapsed into the outer cell. An earlier draft let a table with a header cell fall back to `htmd`, until review found it dropped every `<th>` outside the first row (`<th scope="row">` key-value tables) and every `<td>` in it.
 
 Measured with handlers 1 to 3 in the scratch crate, every `<pre>` on all four pages came out fenced (153 of 153 on Effective Go). Every heading came out as a heading with its text, except one Claude Code heading inside a `<blockquote>`. The lost-heading check reports exactly that one. Handler 4 is specified (`library-fetch`, HTML tables) and tested on the fixtures. Clippy's 1.67 MB page converts in 24 ms in release mode.
 
@@ -77,7 +77,7 @@ Options: `skip_tags` for `head`, `script`, `style`, `noscript`, `template` and `
 - **Redirects:** 10 at most, `ureq`'s default; more is an error. `http` to `https` and back are both followed.
 - **Headers:** `User-Agent: bilbo/<version>`. `Accept: text/html, application/xhtml+xml, text/markdown;q=0.9, text/plain;q=0.8, */*;q=0.1`, so a site that negotiates gives the page a browser would see. `Accept-Encoding` stays `ureq`'s `gzip`.
 - **Statuses:** `ureq` turns 4xx and 5xx into `Error::StatusCode`, which becomes the refusal naming the status. A 1xx or 3xx left after redirects is refused the same way.
-- **Body:** read with `with_config().limit(16 MiB)`, enough for Clippy's 1.67 MB page ten times over. A longer body is refused rather than cut, since a cut page is not the page.
+- **Body:** read through the decoded reader and cut at 16 MiB plus one byte, so the limit counts bytes after gzip decoding and a body of exactly 16 MiB passes; enough for Clippy's 1.67 MB page ten times over. A longer body is refused rather than cut, since a cut page is not the page.
 - **Encoding:** UTF-8 only, checked on the bytes, whatever `charset` says. A page that is ASCII under another label passes. A Latin-1 page with accents is refused. The alternative, `ureq`'s `charset` feature, brings `encoding_rs` and its encoding tables, for pages docs sites rarely serve now. All four test pages were UTF-8.
 - **Media type:** the `Content-Type` essence decides (`library-fetch`, What an answer becomes). With no header, a short prefix test tells HTML from text. Sniffing a typed answer was rejected: a site that labels Markdown `text/plain` is still served as text.
 
@@ -160,7 +160,7 @@ allowed-tools: Bash(command -v bilbo), Bash(command -v pdftotext), Bash(bilbo li
    | 0 | empty or warnings | step 5 |
    | 1 | says it is a PDF | step 4 |
    | 1 | anything else (status, unreachable, not UTF-8, no text) | say bilbo could not fetch it, ask the user to save the page with a tool of their own and give the file, then stage it with `--html` or as text |
-   | 2 | anything | fix the argument once, then print the first stderr line and stop |
+   | 2 | anything | fix the argument and run it once more; on a second exit 2, print the first stderr line and stop |
 
    When many headings are lost, or the capture is mostly navigation, and the site offers a Markdown rendition of the page (`<url>.md` on many docs sites), stage that URL once. Keep it only when `media type:` is `text/markdown` or `text/plain`. go.dev answers `text/html` for `effective_go.md`, so a 200 alone proves nothing.
 4. **PDF.** `command -v pdftotext`, then `mktemp -d`, then `curl -fsSL -o '<dir>/source.pdf' '<url>'` (skipped for a local PDF), then `pdftotext -layout '<pdf>' '<dir>/source.txt'`, then stage that file with `--origin`. Without `pdftotext`, stop and say what is needed.
@@ -174,9 +174,9 @@ allowed-tools: Bash(command -v bilbo), Bash(command -v pdftotext), Bash(bilbo li
    | 1 | names `--replace` | the name is taken: re-ingest or another name, as the user decides |
    | 1 | lists citations that would degrade | show them and ask before adding `--force` |
    | 1 | anything else | print the first stderr line and stop |
-   | 2 | names `--keep`, `--title` or the target | fix it once, then print the first stderr line and stop |
+   | 2 | names `--keep`, `--title` or the target | fix it and run it once more; on a second exit 2, print the first stderr line and stop |
 
-8. **Write the entry.** Run `bilbo library show <corpus>/<name>` for the outline. Read the body only through `bilbo library plan <corpus>/<name>` and `bilbo library read <plan> <slice>...`, every slice when `tokens:` is at most 60,000. Above that, or for a catalog, which `plan` refuses whole, plan the opening and the main sections by anchor up to 60,000 tokens, and say in the entry that it is a reference to look things up in. Base the entry on what was read. Read stays for `capture.md`. Edit the `guide.md` that `land` printed: replace `TODO: describe this source.` or the stale line with two or three sentences of your own, and replace a new corpus's `TODO: describe this corpus.` with a lead on what the corpus grounds.
+8. **Write the entry.** Run `bilbo library show <corpus>/<name>` for the outline. Read the body only through `bilbo library plan <corpus>/<name>` and `bilbo library read <plan> <slice>...`, every slice when `tokens:` is at most 60,000. Above that, or for a catalog, which `plan` refuses whole, plan the opening and the main sections by anchor up to 60,000 tokens, and say in the entry that it is a reference to look things up in. Base the entry on what was read. Read stays for `capture.md` and the `guide.md` the entry goes into, never a source. Edit the `guide.md` that `land` printed: replace `TODO: describe this source.` or the stale line with two or three sentences of your own, and replace a new corpus's `TODO: describe this corpus.` with a lead on what the corpus grounds.
 9. **Check** with `bilbo check`. Fix lines naming `library/<corpus>/`, at most three runs, and leave and count the others. On `no store at <root>` or exit 2, print the first stderr line and stop.
 10. **Report** as the Report the ingest requirement says.
 
@@ -215,7 +215,7 @@ Not tested offline: TLS, gzip decoding and a real timeout. They are `ureq`'s own
 
 ## Decisions to confirm
 
-1. `htmd` 0.5.5 plus `markup5ever_rcdom` 0.38.0 as a direct dependency, with four bilbo handlers (`pre`, headings, links and images in headings, header-less tables), over `html-to-markdown-rs`, which needs no handlers but brings 83 crates.
+1. `htmd` 0.5.5 plus `markup5ever_rcdom` 0.38.0 as a direct dependency, with four bilbo handlers (`pre`, headings, links and images in headings, tables), over `html-to-markdown-rs`, which needs no handlers but brings 83 crates.
 2. A header-less table gets its first row as header, instead of being flattened or kept as raw HTML.
 3. UTF-8 only; no `charset` feature.
 4. 60-second timeout and 16 MiB body limit, fixed, with no setting.

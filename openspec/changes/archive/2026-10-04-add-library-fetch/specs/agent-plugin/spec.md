@@ -95,7 +95,7 @@ The ingest skill SHALL land with `bilbo library land <stage> <corpus>/<name> --k
 - **THEN** the agent asks the user whether to replace `go/effective-go` before running `land`, and runs no `land --replace` without a yes
 
 ### Requirement: The guide entry after ingest
-After a land, the ingest skill SHALL read the source and write its guide entry with Edit in the `guide.md` that `land` printed. It reads the outline with `bilbo library show <corpus>/<name>`, and the body only through `bilbo library plan <corpus>/<name>` and `bilbo library read`, up to 60,000 tokens; Read is for `capture.md` only. The entry is two or three sentences of the agent's own words, based on what was read, on what the source covers, when to consult it, and what it gets wrong or leaves out, replacing the `TODO` or stale line. A new corpus's lead replaces its `TODO` line. The skill SHALL then run `bilbo check` as the scenarios say.
+After a land, the ingest skill SHALL read the source and write its guide entry with Edit in the `guide.md` that `land` printed. It reads the outline with `bilbo library show <corpus>/<name>`, and the body only through `bilbo library plan <corpus>/<name>` and `bilbo library read`, up to 60,000 tokens; Read is for `capture.md` and the `guide.md` it edits, never for a source. The entry is two or three sentences of the agent's own words, based on what was read, on what the source covers, when to consult it, and what it gets wrong or leaves out, replacing the `TODO` or stale line. A new corpus's lead replaces its `TODO` line. The skill SHALL then run `bilbo check` as the scenarios say.
 
 #### Scenario: A new entry
 - **WHEN** `land` added `## effective-go` with `TODO: describe this source.`

@@ -62,7 +62,7 @@ Content lines are those holding the conversion of the page's only `<main>` eleme
 - **THEN** stdout holds no `raw:`, `media type:`, `final url:` or `content:` line
 
 ### Requirement: Land a source
-`bilbo library land <stage> <corpus>/<name> --keep <ranges> [--title <text>]` SHALL write the source `<root>/library/<corpus>/<name>.md`, creating `<root>/library/` and the corpus folder when missing. The source SHALL have a fresh `id`, the `fetched` and `origin` the stage recorded, the `digest` of the body it builds, `kept` unless the ranges cover every line of the capture, `capture: external` for a staged file, with or without `--html`, and no `capture` key for a staged URL. On success, `land` SHALL print `source: <absolute path>`, `id: <id>`, `guide: <absolute path>` and `capture: <absolute path of the capture folder>` to stdout, remove the stage folder, and exit 0.
+`bilbo library land <stage> <corpus>/<name> --keep <ranges> [--title <text>]` SHALL write the source `<root>/library/<corpus>/<name>.md`, creating `<root>/library/` and the corpus folder when missing. The source SHALL have a fresh `id`, the `fetched` and `origin` the stage recorded, the `digest` of the body it builds, `kept` unless the ranges cover every line of the capture, `capture: external` for a staged file, with or without `--html`, and no `capture` key for a staged URL. On success, `land` SHALL print `source: <absolute path>`, `id: <id>`, `guide: <absolute path>` and `capture folder: <absolute path>` to stdout, remove the stage folder, and exit 0.
 
 #### Scenario: A first source in a new corpus
 - **WHEN** an agent stages a 900-line file and runs `bilbo library land <stage> go/effective-go --keep 6-900`
