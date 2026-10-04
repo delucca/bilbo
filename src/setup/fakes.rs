@@ -4,10 +4,8 @@ use super::facts::{ConfigState, Facts, TimerFacts};
 use super::local::Outside;
 use super::plan::{ConfigPlan, EmbedderPlan, KeyPlan, Plan, PluginPlan, TimerPlan};
 use crate::host::{agents, model};
-use crate::shared::config;
-use crate::shared::config::Embedder;
+use crate::shared::config::{self, Embedder};
 use std::path::{Path, PathBuf};
-
 pub fn strings(args: &[&str]) -> Vec<String> {
     args.iter().map(|a| a.to_string()).collect()
 }
