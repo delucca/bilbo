@@ -33,6 +33,10 @@ Unless `--no-watch` is given or the wizard's answer declines it, `setup` SHALL i
 - **WHEN** a user runs `bilbo setup --yes` with `BILBO_HOME=/data/bilbo` set
 - **THEN** the service file sets `BILBO_HOME` to `/data/bilbo`
 
+#### Scenario: Installing the watcher without the service manager
+- **WHEN** a user on macOS runs `bilbo setup --yes` with no `launchctl` on PATH
+- **THEN** the watch line says `failed: launchctl not found on PATH`, no plist is written, and the exit code is 1
+
 ## MODIFIED Requirements
 
 ### Requirement: Modes
