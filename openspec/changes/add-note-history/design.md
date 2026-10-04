@@ -3,8 +3,10 @@
 ## Context
 
 - Agents write notes in `<root>/notes/` with their own tools (Claude Code's Edit, Codex patches, shell redirects), and with `bilbo new`. bilbo sees none of these writes, and no verb keeps a past version.
-- bilbo has no long-running process of its own. `src/timer.rs` installs two kinds of job: the periodic `bilbo index` (launchd `StartInterval`, systemd timer) and the local embedder, a keep-alive service (launchd `KeepAlive` + `RunAtLoad`, systemd `Restart=on-failure`). `bilbo watch` is a third job of the second kind.
-- `note.rs` already reads frontmatter, validates ULIDs and parses note names (`note::read`, `note::is_ulid`, `note::parse_name`). `store.rs` resolves the root and lists entries, skipping hidden ones (`store::entries`).
+- bilbo has no long-running process of its own. `src/host/timer.rs` installs two kinds of job: the periodic `bilbo index` (launchd `StartInterval`, systemd timer) and the local embedder, a keep-alive service (launchd `KeepAlive` + `RunAtLoad`, systemd `Restart=on-failure`). `bilbo watch` is a third job of the second kind.
+- `src/note/mod.rs` already reads a note's frontmatter and parses note names (`note::read`, `note::parse_name`), and `src/shared/frontmatter.rs` validates ULIDs (`frontmatter::is_ulid`). `src/shared/store.rs` resolves the root and lists entries, skipping hidden ones (`store::entries`).
+- `<root>/.bilbo/` already exists: the library keeps its captures in `<root>/.bilbo/captures/`, which `bilbo check` and library recall do not read. History goes beside them, in `<root>/.bilbo/history/`.
+- `src/` is one folder per domain, and AGENTS.md's Architecture rules, checked by `tests/layout.rs`, say where each piece goes: verbs in their domain, reached only from `main`; a module in `src/shared/` only when two domains use it; each listed crate in its own files.
 - The sync design (planning notebook, `design-bilbo-remote-sync.md`, and the decisions the user took on 2026-10-03) needs, per note:
   - a graph of full-snapshot versions keyed by the ULID;
   - version ids derived from the parents and the content, never from the device or the time, so two devices that merge the same heads into the same text get the same id;
@@ -59,25 +61,26 @@ Watch records a file only when its name is a note name, `<kind>-<topic>.md` unde
 - **What it buys the id rule:** a note name holds only lowercase letters, digits, hyphens and `.md`, never a newline. The version id's preimage below can then separate its fields with newlines without ambiguity.
 - Alternative: record any name and escape the file name in the preimage. It keeps files that the store already calls invalid.
 
-### `notify` 8.2.0, in `src/watch.rs` only
+### `notify` 8.2.0, in `src/note/watch.rs` only
 
 - **Why a crate:** std has no file-event API. Writing FSEvents and inotify bindings by hand would mean more `unsafe` FFI than the whole crate's surface.
-- **What it brings:** on macOS, `notify-types`, `bitflags`, `fsevent-sys`, `walkdir`, `same-file`, `log` and `libc`. On Linux, `inotify`, `inotify-sys` and `mio` replace `fsevent-sys`. Measured with `cargo tree` on 2026-10-03.
-- **How it is used:** non-recursive, on `notes/` only (subfolders are not notes), with the recommended backend for each platform. `fsevent-sys` links CoreServices, which the nixpkgs darwin stdenv provides. Task 1.1 checks that `nix flake check` builds it.
+- **Which release:** 8.2.0 is the newest stable release on 2026-10-04; 9.0.0 is still a release candidate. A scratch crate built it with Rust 1.95.0 on macOS and received a create event from a non-recursive watch.
+- **What it brings:** on macOS, `notify-types`, `bitflags`, `fsevent-sys`, `walkdir`, `same-file`, `log` and `libc`. On Linux, `inotify`, `inotify-sys` and `mio` replace `fsevent-sys`. Measured with `cargo tree` on 2026-10-03 and again on 2026-10-04.
+- **How it is used:** non-recursive, on `notes/` only (subfolders are not notes), with the recommended backend for each platform. `fsevent-sys` links CoreServices, which the nixpkgs darwin stdenv provides. Task 1.2 checks that the Nix package builds it.
 
-### `sha2` 0.11.0, through `src/hash.rs`
+### `sha2` 0.11.0, through `src/shared/hash.rs`
 
-- **What it is for:** content and version ids. `src/versions.rs` calls `hash::sha256_hex` and never uses `sha2` directly.
-- **Where it lives:** `add-library-store` made `src/hash.rs` the one user of `sha2`, with `pub fn sha256_hex(bytes: &[u8]) -> String`. If this change ships first, its implementation creates that module with that one function.
-- **Why not `ring`:** ring already has SHA-256, but the AGENTS.md rule keeps `ring` in `src/model.rs`.
-- **Why it costs nothing extra:** the sync changes bring RustCrypto in anyway, since `ed25519-dalek` depends on `sha2`.
-- **What it adds:** `digest`, `block-buffer`, `crypto-common`, `hybrid-array`, `typenum`, `const-oid`, `cpufeatures` and `cfg-if`, all RustCrypto or already common in the tree.
-- **Follow-up, out of scope:** moving `model.rs`'s download hash to `sha2` would drop `ring`.
+- **What it is for:** content and version ids. `src/note/versions.rs` calls `hash::sha256_hex` and never uses `sha2` directly.
+- **Where it lives:** `add-library-store` added `sha2` with `src/library/hash.rs`, `pub fn sha256_hex(bytes: &[u8]) -> String`, as its one user. Now that the note domain hashes content too, the module moves unchanged to `src/shared/hash.rs`, since the Shared Kernel admits a module two domains use. `PLACEMENT` in `tests/layout.rs` moves `sha2` with it.
+- **Why not `ring`:** ring already has SHA-256, but `PLACEMENT` keeps `ring` in `src/host/model.rs`.
+- **What it adds:** nothing. `sha2` 0.11.0 and its RustCrypto dependencies are already in `Cargo.lock`, and the sync changes need them anyway, since `ed25519-dalek` depends on `sha2`.
+- **Follow-up, out of scope:** moving `src/host/model.rs`'s download hash to `sha2` would drop `ring`.
 
 ### Storage layout
 
 ```
 <root>/.bilbo/
+  captures/                  the library's captures, from add-library-store
   watch.lock                 held by the running watcher for its lifetime
   history/
     lock                     held while anything writes history
@@ -127,13 +130,13 @@ A version line:
 
 ### Restore uses an atomic exchange
 
-`src/swap.rs` is a new library module. It wraps two system calls that std does not expose:
+`src/host/swap.rs` is a new host adapter. It wraps two system calls that std does not expose:
 
 - `exchange(a, b)` swaps two paths atomically. macOS: `renamex_np(a, b, RENAME_SWAP)`. Linux: `renameat2(AT_FDCWD, a, AT_FDCWD, b, RENAME_EXCHANGE)`. Both are in `libc` 0.2.190, for both release OSes, and glibc has `renameat2` since 2.28.
 - `rename_new(a, b)` renames only if `b` does not exist. macOS: `RENAME_EXCL`. Linux: `RENAME_NOREPLACE`.
 - When the filesystem refuses (`EINVAL`, `ENOTSUP`), it returns a message, and restore refuses. Silently falling back to a plain rename would bring back the race this module exists to close.
 
-`libc` stays the dependency. `rustix` would wrap the same calls more safely, but it is a second crate for two calls. AGENTS.md's rule becomes "`libc` in `src/wizard.rs` and `src/swap.rs`".
+`libc` stays the dependency. `rustix` would wrap the same calls more safely, but it is a second crate for two calls. `PLACEMENT` in `tests/layout.rs` gives `libc` to `host/prompt.rs` and `host/swap.rs`.
 
 The restore sequence, all under `history/lock`, so a running watcher's locked pass waits and then finds the head already matching the file:
 
@@ -163,7 +166,7 @@ When the `rename_new` of step 6 finds the version's name taken, because another 
 - An agent that writes the old file name after the rename of step 6 creates a second file holding the id. The watcher prints a `shared id` line naming both files and records neither. The fix is to delete the file under the old name. Nothing is lost, and the problem is reported.
 - A process that opened the note's file before the exchange and writes after it writes into the swapped-out inode, now at the temporary name. When the write lands before step 7, it is recorded. When it lands after step 8, it goes to a deleted file. This is a window of microseconds, real only for a long-running writer such as a shell `>>` in a slow script, and accepted. Moving the swapped-out file into `blobs/` instead of deleting it would not help: the same late write would then corrupt a blob.
 
-### A hand-written Myers diff in `src/diff.rs`
+### A hand-written Myers diff in `src/note/diff.rs`
 
 - **What it is:** `bilbo history --diff` needs a line diff. Myers' O((N+M)·D) algorithm is about 100 lines, and fast when the two versions are close, which is the usual case. The output is a unified diff with 3 lines of context.
 - **Why not a plain LCS table:** an O(N·M) table on a 1 MiB file of 10,000 lines needs 100 million cells.
@@ -185,13 +188,15 @@ When the `rename_new` of step 6 finds the version's name taken, because another 
 
 - `watch::run` prints nothing itself. Like `setup::run`, it takes a `&mut dyn FnMut(&str)` for its progress lines (watching, skipped files, pruned, waiting), and `main` prints each with the `bilbo: ` prefix. It returns a `Failure` only for a start error.
 - `restore` exposes its sequence as `restore::apply(root, note, version, hook: &mut dyn FnMut(Step) -> Result<(), String>)`, which `run` calls with a closure that returns `Ok`. The behavior is the same in every build profile, so `nix flake check`, which runs the tests in release, exercises it too.
-- Naming a note, the id scan of `notes/`, the sweep and the version store live in `src/versions.rs`, so `watch`, `history` and `restore` share them without depending on each other.
+- Naming a note, the id scan of `notes/`, the sweep, the version store, pruning and the probe of `watch.lock` that `history` makes live in `src/note/versions.rs`, so `watch`, `history` and `restore` share them without depending on each other. AGENTS.md lets only `main` use a verb's module.
+- `bilbo history <note> <version>` prints a version's bytes exactly. `history::run` returns them as bytes, and `main` writes them to stdout unchanged: its line printer adds a newline, which would change a version that does not end in one.
+- A note file's id alone is read by a new function in `src/note/mod.rs`, beside `note::read`, and follows the same rule (the first `id:` value of a closed frontmatter, when it is a canonical ULID), so `watch` and `bilbo check` agree on which id a file holds. It stays in the note domain because `src/shared/frontmatter.rs` leaves splitting the block to each kind of file, and only the note domain uses it.
 
 ### Setup and the service
 
-- **How the service is built:** `timer.rs` gets `Name::Watch` and a `Kind::Watch`, since today `Job::name()` derives the job from its kind and `service()` hardcodes the embedder's description and the `llama-server` path in its messages. Task 5.1 moves the per-job text (description, program name in messages) behind the kind. The watch job writes `ExecStart` or `ProgramArguments` as `<bilbo> watch`, with the keep-alive shape of the embedder service.
+- **How the service is built:** `src/host/timer.rs` gets `Name::Watch` and a `Kind::Watch`, since today `Job::name()` derives the job from its kind and `service()` hardcodes the embedder's description and the `llama-server` path in its messages. Task 5.1 moves the per-job text (description, program name in messages) behind the kind. The watch job writes `ExecStart` or `ProgramArguments` as `<bilbo> watch`, with the keep-alive shape of the embedder service.
 - **Its environment:** the same six locations the index timer carries. The index timer's key rule does not apply: the watcher reads no key, so `embedder.token_env` does not fail the watch step.
-- **Where the step goes:** setup adds the `watch` step after `timer`. Adding it at the end leaves every existing line's position alone.
+- **Where the step goes:** setup adds the `watch` step after `timer`. Adding it at the end leaves every existing line's position alone. The flag goes in `src/setup/flags.rs`, the installed state in `facts.rs`, the plan and summary in `plan.rs`, the step in `apply.rs`, the remove line in `remove.rs` and the question in `wizard.rs`.
 - **What the wizard asks:** one yes/no question, "Record note history in the background?", defaulting to yes, after the timer's question.
 - **The home-manager module:** it passes `--no-watch` when `watch.enable` is false. `history.keep_days` is a string in `settings`, like every other key there (`"30"`), so the module's `nullOr str` type stays as it is.
 - **Why the watcher is installed by default:** it needs no embedder and no network, and it is what makes history exist.

@@ -32,7 +32,7 @@ Agents edit notes in place with their own tools, and bilbo keeps no record of wh
 
 - Sync, merging and conflicts. Without sync, a note has only one line of versions. The merge engine and the stale-base rule belong to the sync change, which extends `bilbo watch`.
 - Reindexing on save. `bilbo index` keeps its timer.
-- History for anything outside `<root>/notes/`. bilbo has no library yet.
+- History for anything outside `<root>/notes/`. Library sources are verbatim copies that `land` replaces only on request, and their captures already sit under `<root>/.bilbo/captures/`.
 - A history browser, blame, or a diff between two different notes.
 - Redacting a secret from history. A pasted token stays in history until pruning drops it, and design.md says how to remove it by hand.
 - Encrypting history at rest. It holds the same text as `notes/`, under the same disk protection.
@@ -40,11 +40,12 @@ Agents edit notes in place with their own tools, and bilbo keeps no record of wh
 
 ## Impact
 
-- New verbs `src/watch.rs`, `src/history.rs` and `src/restore.rs`. The version store and pruning are a new library module, `src/versions.rs`. The line diff is another, `src/diff.rs`, which the sync change reuses for the section merge. `store.rs` gains the `.bilbo/history` path, and `note.rs` reads the id out of a file.
-- An atomic file exchange, used by `restore` and later by sync's inbound writes, goes in a new library module, `src/swap.rs`.
-- `src/timer.rs` gains a third job, `watch`, built like the local embedder's keep-alive service. `src/setup.rs` and `src/wizard.rs` gain the `watch` step, its flag and its prompt. `flake.nix`'s module gains `watch.enable` and the history key.
-- `src/config.rs` gains `history.keep_days`.
+- New verbs in the note domain: `src/note/watch.rs`, `src/note/history.rs` and `src/note/restore.rs`, each with its `pub mod` line in `src/note/mod.rs`, its path in `VERBS` in `tests/layout.rs`, and its dispatch arm and USAGE line in `src/main.rs`. The version store, the id scan and pruning are a new note module, `src/note/versions.rs`. The line diff is another, `src/note/diff.rs`, which the sync change reuses for the section merge. `src/shared/store.rs` gains the `.bilbo/history` path, and `src/note/mod.rs` gains a reader of a note file's id alone.
+- An atomic file exchange, used by `restore` and later by sync's inbound writes, goes in a new host adapter, `src/host/swap.rs`.
+- `src/host/timer.rs` gains a third job, `watch`, built like the local embedder's keep-alive service. The setup verb gains the `watch` step, its flag, its remove line and its wizard question, in `src/setup/flags.rs`, `facts.rs`, `plan.rs`, `apply.rs`, `remove.rs` and `wizard.rs`. `flake.nix`'s module gains `watch.enable` and the history key.
+- `src/shared/config.rs` gains `history.keep_days`.
 - A version's id is a hash of the note's id, its parents, its file name and its content, so the sync changes can add fields without rewriting ids.
-- New dependencies: `notify` 8.2 (file events) and `sha2` 0.11 (content hashes, through `src/hash.rs`, which `add-library-store` also uses). `libc` gains a second user, `src/swap.rs`. The AGENTS.md dependency rule changes to match.
+- `src/library/hash.rs` moves to `src/shared/hash.rs`, since the library and the note domain now both hash content. `sha2` 0.11.0 is already a dependency there.
+- New dependency: `notify` 8.2.0 (file events), used only in `src/note/watch.rs`. `libc` gains a second user, `src/host/swap.rs`. `PLACEMENT` in `tests/layout.rs` and the Architecture rules in AGENTS.md change to match.
 - Tests: `tests/watch.rs`, `tests/history.rs` and `tests/restore.rs`, which run `bilbo watch` as a child process against a temporary store. The fake `launchctl` and `systemctl` in `tests/common/fakes.rs` know only the index timer and the embedder service, so both gain a branch for the watcher.
 - Migration: none. The first `bilbo watch` run records every note as `added`.
