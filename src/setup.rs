@@ -6,7 +6,8 @@ use std::time::Duration;
 use zeroize::Zeroizing;
 
 use crate::config::{self, Embedder, Token};
-use crate::{Failure, agents, command, embed, model, store, timer, wizard};
+use crate::host::{agents, command, model, timer};
+use crate::{Failure, embed, store, wizard};
 use wizard::Prompter;
 
 const CHECK: Duration = Duration::from_secs(15);

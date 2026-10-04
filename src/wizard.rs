@@ -802,7 +802,7 @@ fn check_program(text: &str) -> Result<(), String> {
         None
     };
     match path {
-        Some(path) if crate::command::is_executable(&path) => Ok(()),
+        Some(path) if crate::host::command::is_executable(&path) => Ok(()),
         _ => Err(
             "Enter the path of an executable llama-server, or leave it empty to go back"
                 .to_string(),
