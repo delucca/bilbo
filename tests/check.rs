@@ -1,6 +1,6 @@
 mod common;
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use common::{IDS, Run, TempDir, bilbo, note_text, snapshot, store, write};
 
@@ -282,4 +282,238 @@ fn dangling_symlink_still_holds_its_topic() {
         lines[2],
         "notes/plan-release.md: topic: 'release' is also the topic of notes/decision-release.md"
     );
+}
+
+const DIGEST: &str = "9b312fd3a9d5203944d60e7b319c7703e53785ac2b7721b2975cba4dd758526d";
+const GUIDE_ID: &str = "01M3EZ8NBEVNHZRTQ6T60171J2";
+
+fn source_text(id: &str) -> String {
+    format!(
+        "---\nid: {id}\nfetched: 2026-08-23\norigin: \"url: https://go.dev/doc/effective_go\"\ndigest: sha256:{DIGEST}\n---\n# Effective Go\n\ntext\n"
+    )
+}
+
+fn guide_text(entries: &[(&str, &str)]) -> String {
+    let mut text = format!(
+        "---\nid: {GUIDE_ID}\ncreated: 2026-09-26T13:16-03:00\n---\n\n# Go\n\nWhat it grounds.\n"
+    );
+    for (name, prose) in entries {
+        text.push_str(&format!("\n## {name}\n\n{prose}\n"));
+    }
+    text
+}
+
+fn put(root: &Path, path: &str, text: &str) {
+    let real = root.join(path);
+    std::fs::create_dir_all(real.parent().unwrap()).unwrap();
+    std::fs::write(real, text).unwrap();
+}
+
+/// A store with `notes/` and a `go` corpus holding `effective-go`.
+fn library_store(dir: &TempDir) -> PathBuf {
+    let root = store(dir);
+    put(
+        &root,
+        "library/go/guide.md",
+        &guide_text(&[("effective-go", "Prose.")]),
+    );
+    put(&root, "library/go/effective-go.md", &source_text(IDS[1]));
+    root
+}
+
+#[test]
+fn clean_store_with_a_library_prints_nothing() {
+    let dir = TempDir::new("check-lib-clean");
+    let root = library_store(&dir);
+    write(&root, "plan-a.md", &note_text(IDS[0], "A"));
+    put(&root, "library/.lock", "");
+    put(&root, "library/go/.DS_Store", "x");
+    let run = check(&dir, &root);
+    assert_eq!(run.code, 0, "{}", run.stdout);
+    assert!(run.stdout.is_empty() && run.stderr.is_empty());
+}
+
+#[test]
+fn an_edited_source_names_the_digest() {
+    let dir = TempDir::new("check-lib-digest");
+    let root = library_store(&dir);
+    let edited = source_text(IDS[1]).replace("text", "tent");
+    put(&root, "library/go/effective-go.md", &edited);
+    let run = check(&dir, &root);
+    assert_eq!(run.code, 1);
+    let lines = stdout_lines(&run);
+    assert_eq!(lines.len(), 1, "{lines:?}");
+    assert!(
+        lines[0].starts_with("library/go/effective-go.md: digest: does not match the body"),
+        "{lines:?}"
+    );
+    put(
+        &root,
+        "library/go/effective-go.md",
+        &format!("{}\n", source_text(IDS[1])),
+    );
+    assert_eq!(check(&dir, &root).code, 1);
+}
+
+#[test]
+fn a_stub_entry_names_the_entry() {
+    let dir = TempDir::new("check-lib-stub");
+    let root = library_store(&dir);
+    put(
+        &root,
+        "library/go/guide.md",
+        &guide_text(&[("effective-go", "TODO: describe this source.")]),
+    );
+    let run = check(&dir, &root);
+    assert_eq!(run.code, 1);
+    assert_eq!(
+        run.stdout,
+        "library/go/guide.md: entry 'effective-go': TODO stub; write the entry and remove the TODO line (line 12)\n"
+    );
+}
+
+#[test]
+fn a_stale_entry_is_reported() {
+    let dir = TempDir::new("check-lib-stale");
+    let root = library_store(&dir);
+    let stale = "stale: re-ingested 2026-10-03; re-read the source and revise this entry.";
+    put(
+        &root,
+        "library/go/guide.md",
+        &guide_text(&[("effective-go", stale)]),
+    );
+    let run = check(&dir, &root);
+    assert_eq!(run.code, 1);
+    assert!(
+        run.stdout.contains("entry 'effective-go': stale;"),
+        "{}",
+        run.stdout
+    );
+}
+
+#[test]
+fn a_source_with_no_entry_and_an_entry_with_no_source() {
+    let dir = TempDir::new("check-lib-entries");
+    let root = library_store(&dir);
+    put(
+        &root,
+        "library/go/inspecting-errors.md",
+        &source_text(IDS[2]),
+    );
+    put(
+        &root,
+        "library/go/guide.md",
+        &guide_text(&[("effective-go", "Prose."), ("Reading order", "Prose.")]),
+    );
+    let run = check(&dir, &root);
+    assert_eq!(run.code, 1);
+    assert_eq!(
+        run.stdout,
+        "library/go/guide.md: entry 'Reading order': no source Reading order.md in this corpus (line 14)\n\
+         library/go/inspecting-errors.md: guide: no '## inspecting-errors' entry in guide.md\n"
+    );
+}
+
+#[test]
+fn a_reserved_corpus_and_a_loose_file() {
+    let dir = TempDir::new("check-lib-layout");
+    let root = library_store(&dir);
+    put(&root, "library/plan/guide.md", "x");
+    put(&root, "library/effective-go.md", "x");
+    let run = check(&dir, &root);
+    assert_eq!(run.code, 1);
+    assert_eq!(
+        run.stdout,
+        "library/effective-go.md: entry: library/ holds only corpus folders\n\
+         library/plan: corpus: 'plan' is reserved for a library subcommand\n"
+    );
+}
+
+#[test]
+fn a_note_and_a_source_share_an_id() {
+    let dir = TempDir::new("check-lib-shared-id");
+    let root = library_store(&dir);
+    write(&root, "plan-a.md", &note_text(IDS[1], "A"));
+    let run = check(&dir, &root);
+    assert_eq!(run.code, 1);
+    assert_eq!(
+        run.stdout,
+        format!(
+            "library/go/effective-go.md: id: {id} is also the id of notes/plan-a.md\n\
+             notes/plan-a.md: id: {id} is also the id of library/go/effective-go.md\n",
+            id = IDS[1]
+        )
+    );
+}
+
+#[test]
+fn a_guide_and_a_source_share_an_id() {
+    let dir = TempDir::new("check-lib-guide-id");
+    let root = library_store(&dir);
+    put(
+        &root,
+        "library/go/guide.md",
+        &guide_text(&[("effective-go", "Prose.")]).replace(GUIDE_ID, IDS[1]),
+    );
+    let run = check(&dir, &root);
+    assert_eq!(run.code, 1);
+    assert_eq!(run.stdout.lines().count(), 2, "{}", run.stdout);
+    assert!(run.stdout.contains("library/go/guide.md: id: "));
+}
+
+#[test]
+fn a_library_without_notes_is_a_store() {
+    let dir = TempDir::new("check-lib-only");
+    let root = dir.path().join("store");
+    put(
+        &root,
+        "library/go/guide.md",
+        &guide_text(&[("effective-go", "Prose.")]),
+    );
+    put(&root, "library/go/effective-go.md", &source_text(IDS[1]));
+    assert!(!root.join("notes").exists());
+    let run = check(&dir, &root);
+    assert_eq!(run.code, 0, "{}{}", run.stdout, run.stderr);
+    assert!(run.stdout.is_empty() && run.stderr.is_empty());
+}
+
+#[test]
+fn neither_folder_is_no_store() {
+    let dir = TempDir::new("check-neither");
+    let root = dir.path().join("store");
+    std::fs::create_dir_all(&root).unwrap();
+    let run = check(&dir, &root);
+    assert_eq!(run.code, 1);
+    assert!(run.stdout.is_empty());
+    assert_eq!(
+        run.stderr,
+        format!("bilbo: no store at {}\n", root.display())
+    );
+}
+
+#[test]
+fn captures_are_not_checked() {
+    let dir = TempDir::new("check-captures");
+    let root = library_store(&dir);
+    put(&root, ".bilbo/captures/not-the-hash/capture.md", "text");
+    std::fs::create_dir_all(root.join(".bilbo/captures/0000/")).unwrap();
+    put(&root, ".bilbo/captures/stray.txt", "x");
+    let run = check(&dir, &root);
+    assert_eq!(run.code, 0, "{}", run.stdout);
+    assert!(run.stdout.is_empty());
+}
+
+#[test]
+fn library_check_leaves_the_store_as_found() {
+    let dir = TempDir::new("check-lib-readonly");
+    let root = library_store(&dir);
+    put(
+        &root,
+        "library/go/effective-go.md",
+        &source_text(IDS[1]).replace("text", "tent"),
+    );
+    put(&root, "library/plan/guide.md", "x");
+    let before = snapshot(&root);
+    assert_eq!(check(&dir, &root).code, 1);
+    assert_eq!(snapshot(&root), before);
 }

@@ -4,12 +4,12 @@ Run every `cargo` command below from the repo root as `nix develop -c sh -c '<co
 
 ## 1. Hashing
 
-- [ ] 1.1 Add `sha2 = "0.11.0"` to `Cargo.toml`, run `cargo build` once so `Cargo.lock` records it (with `cargo update -p sha2 --precise 0.11.0` if the lock resolves another version), and write `src/hash.rs` with `pub fn sha256_hex(bytes: &[u8]) -> String` (lowercase hex) and its `mod` line. Unit tests: the empty input and `abc` against the FIPS 180-2 vectors (`e3b0c442…b855`, `ba7816bf…15ad`). Add `sha2` to the dependency list of the Stack line in `openspec/config.yaml`. Verify with `cargo tree -i sha2 --locked && cargo test --locked --bin bilbo hash::` and `rg -q 'sha2' openspec/config.yaml`
+- [x] 1.1 Add `sha2 = "0.11.0"` to `Cargo.toml`, run `cargo build` once so `Cargo.lock` records it (with `cargo update -p sha2 --precise 0.11.0` if the lock resolves another version), and write `src/hash.rs` with `pub fn sha256_hex(bytes: &[u8]) -> String` (lowercase hex) and its `mod` line. Unit tests: the empty input and `abc` against the FIPS 180-2 vectors (`e3b0c442…b855`, `ba7816bf…15ad`). Add `sha2` to the dependency list of the Stack line in `openspec/config.yaml`. Verify with `cargo tree -i sha2 --locked && cargo test --locked --bin bilbo hash::` and `rg -q 'sha2' openspec/config.yaml`
 
 ## 2. Sources (`library-store`: Source frontmatter, Fetched and origin, Kept ranges and capture label, Body digest, Source title, Outline, Derived sizes, Catalog, Anchors)
 
-- [ ] 2.1 Make `rank::heading` `pub(crate)`, with no change in behavior. Verify with `cargo test --locked --bin bilbo rank::`
-- [ ] 2.2 Write `src/source.rs`, a library module that never prints:
+- [x] 2.1 Make `rank::heading` `pub(crate)`, with no change in behavior. Verify with `cargo test --locked --bin bilbo rank::`
+- [x] 2.2 Write `src/source.rs`, a library module that never prints:
   - `read(text) -> Source`: the frontmatter keys and values, the body's byte offset and first physical line, and every problem with its line, in the messages of design.md's "The library check problems" table. It reuses `note::lines`, `note::fence_run`, `note::is_ulid` and the `Problem` type.
   - `render(&Frontmatter, body) -> String` in the key order `id`, `fetched`, `origin`, `digest`, `kept`, `capture`, with `# <title>` right after the closing `---`.
   - `digest(body) -> String` as `sha256:<hex>` through `hash::sha256_hex`.
@@ -21,7 +21,7 @@ Run every `cargo` command below from the repo root as `nix develop -c sh -c '<co
 
 ## 3. Guides (`library-store`: Library layout, Corpus and source names, The guide, Guide entries, Stub and stale lines)
 
-- [ ] 3.1 Write `src/corpus.rs`, a library module that never prints:
+- [x] 3.1 Write `src/corpus.rs`, a library module that never prints:
   - `is_corpus_name`, which rejects `show`, `stage`, `land`, `plan` and `read`; and `is_source_name`, which rejects `guide`.
   - `read_guide(text) -> Guide`: frontmatter (`id` and `created` by the `note-store` rules, any other key unknown), title, lead lines, and entries with their heading line and prose lines. Every `##` outside fences is an entry.
   - `new_guide(id, created, corpus)`, `add_entry(text, name)` and `mark_stale(text, name, date)`. `mark_stale` replaces a stale line already under the heading.
@@ -31,7 +31,7 @@ Run every `cargo` command below from the repo root as `nix develop -c sh -c '<co
 
 ## 4. Check (`store-check`: Report problems, Report every problem in one run, A missing store is a problem; `library-store`: Ids across notes and library, Captures)
 
-- [ ] 4.1 In `src/check.rs`, scan `<root>/library/` through `corpus::problems`, run `shared` over the note and library ids together, and refuse with `no store at <root>` only when both `notes/` and `library/` are missing. `check` never opens `<root>/.bilbo/captures/`. Add `store::library_dir`, `store::captures_dir` and `store::staging_dir`. In `tests/check.rs`, add tests for: a clean store with a library, an edited source (a `digest` line), a stub entry, a source with no entry, an entry with no source, a reserved corpus, a loose file in `library/`, a note and a source sharing an id (a line on each), a library-only store, neither folder, and a capture folder with a wrong name and one with no `capture.md` (no line). Keep the existing tests passing. Verify with `cargo test --locked --test check && cargo test --locked --bin bilbo check::`
+- [x] 4.1 In `src/check.rs`, scan `<root>/library/` through `corpus::problems`, run `shared` over the note and library ids together, and refuse with `no store at <root>` only when both `notes/` and `library/` are missing. `check` never opens `<root>/.bilbo/captures/`. Add `store::library_dir`, `store::captures_dir` and `store::staging_dir`. In `tests/check.rs`, add tests for: a clean store with a library, an edited source (a `digest` line), a stub entry, a source with no entry, an entry with no source, a reserved corpus, a loose file in `library/`, a note and a source sharing an id (a line on each), a library-only store, neither folder, and a capture folder with a wrong name and one with no `capture.md` (no line). Keep the existing tests passing. Verify with `cargo test --locked --test check && cargo test --locked --bin bilbo check::`
 
 ## 5. Browsing (`library-browse`; `cli`: Verb dispatch; `config`: Config location)
 

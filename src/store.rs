@@ -69,6 +69,23 @@ pub fn state_dir(env: &Env) -> Option<PathBuf> {
     absolute(&env.xdg_state_home).or_else(|| absolute(&env.home).map(|h| h.join(".local/state")))
 }
 
+/// `<root>/library`, where sources live.
+pub fn library_dir(root: &Path) -> PathBuf {
+    root.join("library")
+}
+
+/// `<root>/.bilbo/captures`, the local evidence of what each source was cut from.
+#[allow(dead_code)]
+pub fn captures_dir(root: &Path) -> PathBuf {
+    root.join(".bilbo/captures")
+}
+
+/// `<state>/bilbo/staging`, where staged text waits for `library land`; `None` without a state folder.
+#[allow(dead_code)]
+pub fn staging_dir(env: &Env) -> Option<PathBuf> {
+    state_dir(env).map(|s| s.join("bilbo/staging"))
+}
+
 /// `$XDG_CONFIG_HOME` when absolute, else `$HOME/.config`; `None` without either.
 pub fn config_home(env: &Env) -> Option<PathBuf> {
     absolute(&env.xdg_config_home).or_else(|| absolute(&env.home).map(|h| h.join(".config")))
