@@ -162,15 +162,31 @@ fn note_skill_description_says_when() {
 #[test]
 fn recall_skill_drives_bilbo() {
     let text = read(RECALL_SKILL);
-    for needle in [
+    let commands = bash_lines(&text);
+    for command in [
         "command -v bilbo",
-        "bilbo recall [--kind K]... [--limit N] -- '",
+        "bilbo recall [--kind K]... [--limit N] -- '<the user's words>'",
+        "bilbo recall --library [--corpus C]... [--limit N] -- '<the user's words>'",
+    ] {
+        assert!(
+            commands.iter().any(|c| c == command),
+            "no bash line {command:?}"
+        );
+    }
+    for needle in [
         "bilbo: no notes match",
         "Judge exit 1 by the last stderr line",
         "keyword results only",
         "at most two more queries",
         "say which query produced the hits",
         "recall: bilbo is not on PATH; install the bilbo CLI first",
+        "bilbo: no sources match",
+        "bilbo: no library at",
+        "Run the `reference` skill",
+        "`<reference>/<first part of the heading path>`",
+        "names no source: leave it out",
+        "<corpus>/<name>#<heading path>",
+        "never answer from the snippets",
     ] {
         assert!(text.contains(needle), "the skill lacks {needle:?}");
     }
@@ -351,7 +367,7 @@ fn reference_skill_frontmatter() {
     assert_eq!(folder(REFERENCE_SKILL), "reference");
     assert_eq!(
         front[3].1,
-        "Bash(command -v bilbo), Bash(bilbo library *), Bash(bilbo cite *), Read, Agent(general-purpose), SendMessage"
+        "Bash(command -v bilbo), Bash(bilbo library *), Bash(bilbo cite *), Bash(bilbo recall *), Read, Agent(general-purpose), SendMessage"
     );
 }
 
@@ -391,7 +407,11 @@ fn reference_skill_drives_bilbo() {
         "bilbo: no store at <root>",
         "picks from <corpus> (<k> of <n> sources):",
         "-- end slice",
-        "lookup only, not searched",
+        "bilbo recall --library --corpus <corpus>... -- '<term>'",
+        "bilbo: no sources match",
+        "<corpus>/<name>#<heading path>",
+        "`<reference>/<first part of the heading path>`",
+        "names no source: leave it out",
         "general-purpose",
         "references/reader.md",
         "100,000",
@@ -406,6 +426,10 @@ fn reference_skill_drives_bilbo() {
     ] {
         assert!(text.contains(needle), "the skill lacks {needle:?}");
     }
+    assert!(
+        !text.contains("lookup only, not searched"),
+        "the skill keeps the old catalog wording"
+    );
     for banned in LEGACY_STRINGS {
         assert!(!text.contains(banned), "the skill holds {banned:?}");
     }
