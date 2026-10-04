@@ -2,24 +2,19 @@ mod check;
 mod citation;
 mod cite;
 mod config;
-mod corpus;
 mod digest;
 mod embed;
-mod fetch;
 mod frontmatter;
 mod hash;
 mod host;
-mod html;
 mod index;
 mod library;
 mod markdown;
 mod new;
 mod note;
-mod plan;
 mod rank;
 mod recall;
 mod setup;
-mod source;
 mod store;
 mod text;
 mod vectors;
@@ -135,7 +130,7 @@ fn run() -> Result<ExitCode, Failure> {
             Ok(ExitCode::SUCCESS)
         }
         Some("library") => {
-            let output = library::run(&args[1..], &env)?;
+            let output = library::cli::run(&args[1..], &env)?;
             output.warnings.iter().for_each(|line| print_stderr(line));
             output.lines.iter().for_each(|line| print_stdout(line));
             Ok(ExitCode::SUCCESS)

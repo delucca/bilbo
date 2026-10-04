@@ -1,7 +1,8 @@
 use std::path::Path;
 
+use crate::library::corpus;
 use crate::store::{self, Entry, EntryKind};
-use crate::{Failure, corpus, note};
+use crate::{Failure, note};
 
 /// Problems as `(path, message)`; a key shared by files is kept as `(key, path)`.
 #[derive(Default)]

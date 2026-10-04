@@ -3,11 +3,12 @@ use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
 use crate::citation::{self, Document, Verdict};
-use crate::corpus::{self, SourceFile};
+use crate::library::corpus::{self, SourceFile};
+use crate::library::reading;
+use crate::library::source::{self, Frontmatter};
 use crate::markdown::{self, Resolved, Section};
-use crate::source::{self, Frontmatter};
 use crate::store::{self, EntryKind};
-use crate::{Failure, frontmatter, hash, note, plan as reading};
+use crate::{Failure, frontmatter, hash, note};
 
 const VALUE_OPTIONS: [&str; 9] = [
     "--depth",
@@ -906,7 +907,7 @@ struct Capture {
     fetch: Option<serde_json::Value>,
     /// `media type:` and `final url:` lines, for a URL.
     fetch_lines: Vec<String>,
-    page: Option<crate::html::Conversion>,
+    page: Option<crate::library::html::Conversion>,
 }
 
 fn utf8_text(bytes: &[u8]) -> Option<&str> {
@@ -915,7 +916,7 @@ fn utf8_text(bytes: &[u8]) -> Option<&str> {
 }
 
 fn capture_url(url: &str) -> Result<Capture, Failure> {
-    use crate::fetch::{self, Kind};
+    use crate::library::fetch::{self, Kind};
     let answer = fetch::get(url).map_err(refused)?;
     let fetched_at = jiff::Zoned::now();
     let media = answer.media_type.clone();
@@ -935,7 +936,7 @@ fn capture_url(url: &str) -> Result<Capture, Failure> {
             let text = utf8_text(&answer.bytes)
                 .ok_or_else(|| refused(format!("{url} is not valid UTF-8, so it is not text")))?;
             if kind == Kind::Html {
-                let page = crate::html::convert(text);
+                let page = crate::library::html::convert(text);
                 if page.markdown.trim().is_empty() {
                     return Err(refused(format!("{url} converted to no text")));
                 }
@@ -1000,7 +1001,7 @@ fn capture_file(args: &Args, file: &str) -> Result<Capture, Failure> {
         return Err(refused(format!("{file} holds only whitespace")));
     }
     let (text, page) = if args.html {
-        let page = crate::html::convert(text);
+        let page = crate::library::html::convert(text);
         if page.markdown.trim().is_empty() {
             return Err(refused(format!("{file} converted to no text")));
         }
@@ -1036,8 +1037,8 @@ fn existing_sources(root: &Path, origin: &str) -> Result<Vec<String>, Failure> {
 
 const LOST_LINES: usize = 10;
 
-fn lost_heading_warnings(page: &crate::html::Conversion) -> Vec<String> {
-    let lost = crate::html::lost_headings(page);
+fn lost_heading_warnings(page: &crate::library::html::Conversion) -> Vec<String> {
+    let lost = crate::library::html::lost_headings(page);
     let mut out: Vec<String> = lost
         .iter()
         .take(LOST_LINES)
@@ -1076,7 +1077,7 @@ fn stage(args: &Args, env: &store::Env) -> Result<Output, Failure> {
         .page
         .as_ref()
         .and_then(|p| p.content.as_deref())
-        .and_then(|c| crate::html::content_lines(capture, c));
+        .and_then(|c| crate::library::html::content_lines(capture, c));
     let title = content
         .and_then(|(a, b)| {
             markdown::outside_fences(&lines)

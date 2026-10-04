@@ -1,8 +1,8 @@
 use std::path::{Path, PathBuf};
 
 use crate::frontmatter;
+use crate::library::source::{self, Source};
 use crate::markdown;
-use crate::source::{self, Source};
 use crate::store::{self, Entry, EntryKind, Problem, is_topic};
 
 pub const RESERVED: [&str; 5] = ["show", "stage", "land", "plan", "read"];
