@@ -55,7 +55,7 @@ A facts line SHALL be `` `<name>.md` ``, then ` · <id>`, ` · <KB> KB`, ` · <t
 - **THEN** its facts line holds ` · fetched -`
 
 ### Requirement: Corpus argument errors
-`bilbo library <corpus>` SHALL exit 1 with `bilbo: no corpus '<corpus>' in <root>/library` on stderr when no such corpus folder exists. A corpus argument that breaks the name grammar, or is the reserved `plan` or `read`, SHALL be a usage error. `show`, `stage` and `land` run their subcommands before any corpus check, which is why only `plan` and `read` reach it.
+`bilbo library <corpus>` SHALL exit 1 with `bilbo: no corpus '<corpus>' in <root>/library` on stderr when no such corpus folder exists. A corpus argument that breaks the name grammar SHALL be a usage error. `plan` and `read` are subcommands, so no corpus can take those names, and `bilbo library plan` and `bilbo library read` with no other argument SHALL be usage errors naming what is missing.
 
 #### Scenario: An unknown corpus
 - **WHEN** an agent runs `bilbo library haskell` and `<root>/library/haskell/` does not exist
@@ -67,7 +67,7 @@ A facts line SHALL be `` `<name>.md` ``, then ` · <id>`, ` · <KB> KB`, ` · <t
 
 #### Scenario: A reserved word
 - **WHEN** an agent runs `bilbo library plan`
-- **THEN** bilbo prints a message naming `plan` as reserved to stderr and exits 2
+- **THEN** bilbo prints a message naming the missing reference to stderr, exits 2, and writes no plan
 
 ### Requirement: Source references
 A source reference SHALL be `<corpus>/<name>` or a source's id, optionally followed by `#<anchor>`. An id SHALL resolve among the ids of every source in the library. A reference in neither form SHALL be a usage error. A reference that names no source SHALL exit 1 with a message saying so; when the id is a note's, the message SHALL name that note's absolute path. When two sources share the id, the run SHALL exit 1 naming both.
