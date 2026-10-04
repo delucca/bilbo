@@ -1,5 +1,6 @@
 //! The interactive setup wizard.
 
+use crate::Failure;
 use crate::config::{self, Embedder, Token};
 use crate::host::prompt::{Choice, Prompter};
 use std::io;
@@ -630,6 +631,20 @@ fn check_key(text: &str) -> Result<(), String> {
     } else {
         Err("the key must be printable ASCII with no spaces".to_string())
     }
+}
+
+/// A wizard error: Ctrl-C or Esc cancels, anything else stops it; nothing was changed either way.
+pub fn stopped<P: Prompter>(p: &mut P, e: std::io::Error) -> Failure {
+    if e.kind() == std::io::ErrorKind::Interrupted {
+        return declined(p);
+    }
+    cancelled(p);
+    Failure::Refused(format!("the wizard stopped: {e}; nothing changed"))
+}
+
+pub fn declined<P: Prompter>(p: &mut P) -> Failure {
+    cancelled(p);
+    Failure::Refused("setup cancelled; nothing changed".into())
 }
 
 #[cfg(test)]

@@ -11,7 +11,6 @@ mod search;
 mod setup;
 mod store;
 mod text;
-mod wizard;
 
 use std::io::Write;
 use std::process::ExitCode;
