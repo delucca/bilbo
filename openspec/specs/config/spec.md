@@ -6,7 +6,7 @@ Where bilbo reads its settings and the exact shape of the settings file, so a hu
 ## Requirements
 
 ### Requirement: Config location
-bilbo SHALL read its settings from `BILBO_CONFIG` when it is set and not empty, then `$XDG_CONFIG_HOME/bilbo/config` when `XDG_CONFIG_HOME` is an absolute path, then `$HOME/.config/bilbo/config`. A relative `BILBO_CONFIG` SHALL be a usage error. A missing file SHALL mean every setting takes its default; a `BILBO_CONFIG` that names a missing file SHALL be an error, except for `setup`, which creates the file there. Only `recall`, `index`, `setup` and `digest` SHALL read settings; `new`, `check`, `library` and `cite` SHALL run whatever the config holds. Where this spec has a verb exit 2 on a config error, `digest` instead exits 0 and prints nothing to stdout, as the `cli` spec's exit codes require; it still names the error on stderr.
+bilbo SHALL read its settings from `BILBO_CONFIG` when it is set and not empty, then `$XDG_CONFIG_HOME/bilbo/config` when `XDG_CONFIG_HOME` is an absolute path, then `$HOME/.config/bilbo/config`. A relative `BILBO_CONFIG` SHALL be a usage error. A missing file SHALL mean every setting takes its default; a `BILBO_CONFIG` that names a missing file SHALL be an error, except for `setup`, which creates the file there. Only `recall`, `index`, `setup`, `digest` and `watch` SHALL read settings; `new`, `check`, `library`, `cite`, `history` and `restore` SHALL run whatever the config holds. Where this spec has a verb exit 2 on a config error, `digest` instead exits 0 and prints nothing to stdout, as the `cli` spec's exit codes require; it still names the error on stderr.
 
 #### Scenario: The default location
 - **WHEN** neither `BILBO_CONFIG` nor `XDG_CONFIG_HOME` is set and `HOME` is `/Users/a`
@@ -18,7 +18,7 @@ bilbo SHALL read its settings from `BILBO_CONFIG` when it is set and not empty, 
 
 #### Scenario: An explicit file that does not exist
 - **WHEN** `BILBO_CONFIG` is `/tmp/nope` and that file does not exist
-- **THEN** `recall` and `index` print a message naming `/tmp/nope` to stderr and exit 2
+- **THEN** `recall`, `index` and `watch` print a message naming `/tmp/nope` to stderr and exit 2
 
 #### Scenario: Digest with an explicit file that does not exist
 - **WHEN** `BILBO_CONFIG` is `/tmp/nope`, that file does not exist, and a hook runs `bilbo digest`
@@ -39,6 +39,10 @@ bilbo SHALL read its settings from `BILBO_CONFIG` when it is set and not empty, 
 #### Scenario: Cite ignores the config
 - **WHEN** `BILBO_CONFIG` names a missing file and an agent runs `bilbo cite` on a draft whose citations all resolve
 - **THEN** stderr is empty and the exit code is 0
+
+#### Scenario: History ignores the config
+- **WHEN** `BILBO_CONFIG` names a missing file and an agent runs `bilbo history release` on a note with history
+- **THEN** stdout lists the versions and the exit code is 0
 
 ### Requirement: Config format
 The config file SHALL hold one setting per line as `<key> = <value>`, with blank lines and lines starting with `#` ignored. Keys are known names, each at most once. A value runs to the end of the line with surrounding spaces trimmed. A value wrapped in double quotes keeps its spaces, and inside it `\"` is a quote. In any value, `\n` stands for a newline and `\\` for a backslash. A `#` after the key is part of the value. Any other line, an unknown key, a repeated key, an empty value for any key but `embedder.query_prefix`, or text after a closing quote SHALL be an error naming the file and line.
@@ -115,3 +119,18 @@ The digest keys SHALL be `digest.enable` (`on` or `off`, `on` by default; `off` 
 #### Scenario: A similarity out of range
 - **WHEN** the config file holds `digest.min_similarity = 1.5`
 - **THEN** every verb that reads settings reports an error naming `digest.min_similarity`, and `bilbo index` exits 2
+
+### Requirement: History settings
+The history key SHALL be `history.keep_days`: a whole number of days from 1 to 3650, 90 by default, the age past which pruning drops versions under the `note-history` spec's retention rule. Any other value SHALL be an error naming the key. It SHALL be valid with or without an embedder.
+
+#### Scenario: The default
+- **WHEN** the config file sets no history key
+- **THEN** watch prunes versions older than 90 days
+
+#### Scenario: A shorter window
+- **WHEN** the config file holds `history.keep_days = 30`
+- **THEN** watch prunes versions older than 30 days
+
+#### Scenario: Not a number of days
+- **WHEN** the config file holds `history.keep_days = 0`, `history.keep_days = 3651` or `history.keep_days = 2w`
+- **THEN** every verb that reads settings reports an error naming `history.keep_days`, and `bilbo watch` exits 2
