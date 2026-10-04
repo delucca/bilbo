@@ -2,6 +2,7 @@
 //! `recall`, `index` and `digest` verbs.
 
 pub mod digest;
+pub mod documents;
 pub mod embed;
 pub mod index;
 pub mod rank;

@@ -2,9 +2,9 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use crate::library::corpus;
+use crate::search::documents::{self, Shelf};
 use crate::search::rank::{self, Document, Hit};
 use crate::search::{embed, vectors};
-use crate::store::Shelf;
 use crate::{Failure, config, note, store};
 
 const DEFAULT_LIMIT: usize = 10;
@@ -50,7 +50,7 @@ pub fn run(args: &[String], env: &store::Env) -> Result<Output, Failure> {
     if !notes.is_dir() {
         return Err(Failure::Refused(format!("no store at {}", root.display())));
     }
-    let stored = store::read_notes(&notes)
+    let stored = documents::read_notes(&notes)
         .map_err(|e| Failure::Refused(format!("cannot read {}: {e}", notes.display())))?;
 
     let (documents, found): (Vec<Document>, Vec<Found>) = stored
@@ -136,7 +136,7 @@ fn library(request: &Request, root: &Path) -> Result<Output, Failure> {
             library.display()
         )));
     }
-    let mut shelved = store::read_library(root, &request.corpora)
+    let mut shelved = documents::read_library(root, &request.corpora)
         .map_err(|e| Failure::Refused(format!("cannot read {}: {e}", library.display())))?;
     let documents: Vec<Document> = shelved
         .iter_mut()

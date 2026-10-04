@@ -3,7 +3,7 @@ use std::path::Path;
 use std::time::{Duration, Instant};
 
 use crate::search::vectors::{self, Cache};
-use crate::search::{embed, rank};
+use crate::search::{documents, embed, rank};
 use crate::{Failure, config, store};
 
 const SAVE_EVERY: Duration = Duration::from_secs(30);
@@ -40,7 +40,7 @@ pub fn run(args: &[String], env: &store::Env) -> Result<String, Failure> {
         )
     })?;
     let file = vectors::path(&dir, &root);
-    let stored = store::read_notes(&notes)
+    let stored = documents::read_notes(&notes)
         .map_err(|e| Failure::Refused(format!("cannot read {}: {e}", notes.display())))?;
 
     let mut needed: Vec<(u64, String)> = Vec::new();

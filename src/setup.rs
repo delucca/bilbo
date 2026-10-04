@@ -7,7 +7,7 @@ use zeroize::Zeroizing;
 
 use crate::config::{self, Embedder, Token};
 use crate::host::{agents, command, model, timer};
-use crate::search::embed;
+use crate::search::{documents, embed};
 use crate::{Failure, store, wizard};
 use wizard::Prompter;
 
@@ -209,7 +209,7 @@ fn wizard_with<P: Prompter>(
     settle_local(p, outside, &facts, &mut plan, plugins)?;
     let outcome = apply(&plan);
     if !outcome.failed && plan.embedder.is_some() {
-        let notes = store::read_notes(&plan.notes).map_or(0, |notes| notes.len());
+        let notes = documents::read_notes(&plan.notes).map_or(0, |notes| notes.len());
         let _ = wizard::first_index(p, notes, || index(&exe));
     }
     let _ = wizard::finish(p, outcome.failed);
