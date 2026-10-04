@@ -61,4 +61,4 @@ Run every `cargo` command below from the repo root as `nix develop -c sh -c '<co
 
 ## 8. Integration
 
-- [ ] 8.1 Run the full suite and the package check. Verify with `cargo fmt --check && cargo clippy --locked --all-targets -- -D warnings && cargo test --locked && nix flake check -L`
+- [x] 8.1 Run the full suite and the package check. Verify with `cargo fmt --check && cargo clippy --locked --all-targets -- -D warnings && cargo test --locked && nix flake check -L`
