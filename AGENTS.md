@@ -44,31 +44,54 @@ PYTHONDONTWRITEBYTECODE=1 python3 ~/.codex/skills/.system/plugin-creator/scripts
 ## Architecture rules
 
 - `src/main.rs` is the only writer of stdout and stderr, and prefixes every
-  stderr line with `bilbo: `. The one exception is the setup wizard, which
-  cliclack draws on stderr without the prefix.
-- Library modules (`store`, `note`, `rank`, `config`, `embed`, `model`,
-  `vectors`, `command`, `agents`, `timer`, `source`, `corpus`, `hash`, `text`,
-  `citation`, `plan`, `fetch`, `html`) return plain values and `String`
-  messages: they never print and never return `Failure`. Verbs build on them,
-  never on each other, return `crate::Failure` and never print. `digest` is
-  the exception: it returns a `digest::Outcome` (lines and one diagnostic) and
-  `main` always exits 0 for it, because a prompt hook that exits 2 blocks the
-  prompt.
-- A new verb is `src/<verb>.rs`, its `mod` line, dispatch arm and USAGE line
-  in `src/main.rs`, `tests/<verb>.rs`, its own capability spec, and a
-  MODIFIED `cli` spec (its Verb dispatch requirement lists the verbs).
-- Keep each dependency in its one user: `cliclack` and `libc` in
-  `src/wizard.rs`, `ring` in `src/model.rs`, `sha2` in `src/hash.rs` (and
-  in `tests/common`, to write library files with a correct digest),
-  `unicode-normalization` in `src/text.rs`, `htmd` and `markup5ever_rcdom` in
-  `src/html.rs`. Justify a new one in the change's `design.md`.
-- Unit tests live in the module they test. CLI behavior is tested through
+  stderr line with `bilbo: `. The one exception is `Terminal` in
+  `src/host/prompt.rs`, which cliclack draws on stderr without the prefix.
+- `src/` is one folder per domain, each verb inside the domain it serves:
+  `note/`, `search/`, `library/`, `citation/`, `setup/` and `host/`. A
+  domain's `mod.rs` holds its `//!` summary and its `mod` lines; `note/` and
+  `citation/` also keep their model there. `src/main.rs` parses arguments,
+  owns `Failure`, dispatches to `<domain>::<verb>::run` and prints.
+- `src/shared/` is the Shared Kernel: `store`, `markdown`, `frontmatter`,
+  `text` and `config`. A module joins it only when two domains use
+  it, and `shared/` never imports a domain. Callers keep module-qualified
+  calls: `use crate::shared::store;`, then `store::root(..)`.
+- The verbs are `note/new.rs`, `search/recall.rs`, `search/index.rs`,
+  `search/digest.rs`, `library/cli/`, `citation/cite.rs`, `setup/` and
+  `src/check.rs`, which spans note and library and so stays at the root. A
+  verb parses its own arguments, returns `crate::Failure` and never prints,
+  and only `main` uses a verb's module. `digest` is the exception: it returns
+  a `digest::Outcome` (lines and one diagnostic) and `main` always exits 0
+  for it, because a prompt hook that exits 2 blocks the prompt. Code outside
+  the verbs returns plain values and `String` messages and never names
+  `Failure`; it may use other domains without forming a cycle (today
+  `search` uses `note` and `library`).
+- A module with children is `foo/mod.rs`, never `foo.rs` beside `foo/`
+  (clippy's `self_named_module_files`, enabled in `src/main.rs`). Items are
+  `pub` or private, never `pub(crate)`. Name modules by absolute `crate::`
+  paths; only the files inside a verb's folder reach its `mod.rs` through
+  `super::`. No re-exports, and no glob imports outside test code.
+- `tests/layout.rs` checks these rules, and its `PLACEMENT` table keeps each
+  listed crate in its one user (`tests/common` also uses `sha2`, to write
+  library files with a correct digest). A change that adds a crate, a
+  domain, a verb or a shared module edits that file, and justifies a new
+  crate in its `design.md`.
+- A new verb is a file in its domain (`src/<domain>/<verb>.rs`, or a folder
+  with a `mod.rs` once it outgrows one file; never a module named like its
+  domain, which clippy's `module_inception` rejects), its `pub mod` line in
+  the domain's `mod.rs`, its path in `VERBS` in `tests/layout.rs`, its
+  dispatch arm and USAGE line in `src/main.rs`, `tests/<verb>.rs`, its own
+  capability spec, and a MODIFIED `cli` spec (its Verb dispatch requirement
+  lists the verbs).
+- Unit tests live in the module they test and move with it. A unit test
+  reads a fixture under `tests/fixtures/` through
+  `concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/...")`, never a path
+  relative to its source file. CLI behavior is tested through
   the built binary with a clean environment, using the fakes in
   `tests/common/` (a fake embedder, and fake `claude`, `codex`, `launchctl`,
   `systemctl` and `llama-server` scripts that use only shell builtins).
 - Tests stay offline. A test that gets past planning with `--embedder-local`
   calls `place_model` first; only the `#[ignore]`
-  `model::tests::pinned_url_honors_a_range` reaches Hugging Face.
+  `host::model::tests::pinned_url_honors_a_range` reaches Hugging Face.
 - Plugin skill frontmatter uses only `name`, `description`, `license` and
   `allowed-tools`, the keys both Claude Code and Codex accept.
 - Pin every dependency exactly: Cargo through the committed `Cargo.lock`,
@@ -100,11 +123,11 @@ PYTHONDONTWRITEBYTECODE=1 python3 ~/.codex/skills/.system/plugin-creator/scripts
 - CI and the dev shell run Rust 1.95.0, the `rust-version` floor. Bump the
   toolchain together with `rust-version`. A `flake.lock` bump can bring a
   newer clippy that flags lints CI does not.
-- CI runs on Linux, so it skips the macOS-only tests in `src/timer.rs`,
-  `src/setup.rs` and `tests/setup.rs`. After touching launchd code, run them
-  on macOS. `tests/setup.rs` runs several times slower there, because macOS
+- CI runs on Linux, so it skips the macOS-only tests in `src/host/timer.rs`,
+  `src/setup/` and `tests/setup.rs`. After touching launchd code, run them on
+  macOS. `tests/setup.rs` runs several times slower there, because macOS
   scans each freshly written script.
-- The wizard's `Terminal` adapter is the only code the unit tests cannot
+- `Terminal` in `src/host/prompt.rs` is the only code the unit tests cannot
   reach. After changing it, repeat the expect runs recorded in the
   `smoke.md` of `openspec/changes/archive/2026-10-02-add-setup/` and
   `2026-10-03-add-local-embedder/`.
