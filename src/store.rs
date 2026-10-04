@@ -75,13 +75,11 @@ pub fn library_dir(root: &Path) -> PathBuf {
 }
 
 /// `<root>/.bilbo/captures`, the local evidence of what each source was cut from.
-#[allow(dead_code)]
 pub fn captures_dir(root: &Path) -> PathBuf {
     root.join(".bilbo/captures")
 }
 
 /// `<state>/bilbo/staging`, where staged text waits for `library land`; `None` without a state folder.
-#[allow(dead_code)]
 pub fn staging_dir(env: &Env) -> Option<PathBuf> {
     state_dir(env).map(|s| s.join("bilbo/staging"))
 }

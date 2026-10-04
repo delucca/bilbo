@@ -47,18 +47,18 @@ PYTHONDONTWRITEBYTECODE=1 python3 ~/.codex/skills/.system/plugin-creator/scripts
   stderr line with `bilbo: `. The one exception is the setup wizard, which
   cliclack draws on stderr without the prefix.
 - Library modules (`store`, `note`, `rank`, `config`, `embed`, `model`,
-  `vectors`, `command`, `agents`, `timer`) return plain values and `String`
-  messages: they never print and never return `Failure`. Verbs build on
-  them, never on each other, return `crate::Failure` and never print. `digest`
-  is the exception: it returns a `digest::Outcome` (lines and one diagnostic)
+  `vectors`, `command`, `agents`, `timer`, `source`, `corpus`, `hash`) return
+  plain values and `String` messages: they never print and never return
+  `Failure`. Verbs build on them, never on each other, return `crate::Failure`
+  and never print. `digest` is the exception: it returns a `digest::Outcome` (lines and one diagnostic)
   and `main` always exits 0 for it, because a prompt hook that exits 2 blocks
   the prompt.
 - A new verb is `src/<verb>.rs`, its `mod` line, dispatch arm and USAGE line
   in `src/main.rs`, `tests/<verb>.rs`, its own capability spec, and a
   MODIFIED `cli` spec (its Verb dispatch requirement lists the verbs).
 - Keep each dependency in its one user: `cliclack` and `libc` in
-  `src/wizard.rs`, `ring` in `src/model.rs`. Justify a new one in the
-  change's `design.md`.
+  `src/wizard.rs`, `ring` in `src/model.rs`, `sha2` in `src/hash.rs`. Justify a new one
+  in the change's `design.md`.
 - Unit tests live in the module they test. CLI behavior is tested through
   the built binary with a clean environment, using the fakes in
   `tests/common/` (a fake embedder, and fake `claude`, `codex`, `launchctl`,
@@ -87,6 +87,9 @@ PYTHONDONTWRITEBYTECODE=1 python3 ~/.codex/skills/.system/plugin-creator/scripts
 
 ## Gotchas
 
+- `land` and `check` treat any hidden entry in `<root>/library/` as absent, and
+  the `land` lock, `<root>/library/.lock`, is one: never list or remove it as a
+  stray file.
 - `flake.nix` builds from a `lib.fileset`: a new file the build or the
   tests read must join it, or `nix flake check` fails while cargo passes.
 - CI reruns the tests with the version bumped to 99.99.99. Read the version

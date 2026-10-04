@@ -1,6 +1,3 @@
-// The library verb, which uses the rest of this module, comes in a later task group.
-#![allow(dead_code)]
-
 use crate::note::{self, Problem};
 use crate::{hash, rank};
 
@@ -162,7 +159,16 @@ pub struct Frontmatter {
 pub struct Source {
     /// The first `id:` value when it is a canonical ULID (used for the shared-id rule).
     pub id: Option<String>,
+    /// The value of each key that holds a valid one; `origin` without its quotes.
+    pub fetched: Option<String>,
+    pub origin: Option<String>,
+    pub digest: Option<String>,
+    pub kept: Option<String>,
+    pub capture: Option<String>,
+    /// Every allowed key the frontmatter holds, whatever its value.
+    pub keys: Vec<String>,
     /// Set when every key is present and holds a valid value.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub front: Option<Frontmatter>,
     /// Byte offset in the text of the body's first byte.
     pub body_offset: usize,
@@ -257,25 +263,37 @@ pub fn read(text: &str) -> Source {
     }
     problems.sort_by_key(|p| p.line.unwrap_or(usize::MAX));
 
+    let origin = origin.and_then(|o| origin_value(&o).map(str::to_string));
     let front_ok = ok
         .then(|| {
             Some(Frontmatter {
                 id: id_value?,
-                fetched: fetched?,
-                origin: origin_value(&origin?)?.to_string(),
-                digest: digest?,
-                kept,
-                capture,
+                fetched: fetched.clone()?,
+                origin: origin.clone()?,
+                digest: digest.clone()?,
+                kept: kept.clone(),
+                capture: capture.clone(),
             })
         })
         .flatten();
     Source {
         id,
+        fetched,
+        origin,
+        digest,
+        kept,
+        capture,
+        keys: front.seen,
         front: front_ok,
         body_offset: front.body_offset,
         body_start: front.body_start,
         problems,
     }
+}
+
+/// Whether `item` is a valid origin without its quotes: `<type>: <value>`.
+pub fn valid_origin(item: &str) -> bool {
+    origin_value(&format!("\"{item}\"")) == Some(item)
 }
 
 /// The `<type>: <value>` inside the quotes of an origin value, when it is valid.
@@ -288,7 +306,7 @@ fn origin_value(v: &str) -> Option<&str> {
     (ORIGIN_TYPES.contains(&kind) && !value.trim().is_empty()).then_some(inner)
 }
 
-fn is_date(v: &str) -> bool {
+pub fn is_date(v: &str) -> bool {
     const SHAPE: &[u8; 10] = b"dddd-dd-dd";
     let b = v.as_bytes();
     b.len() == 10
@@ -306,7 +324,7 @@ fn is_digest(v: &str) -> bool {
 }
 
 /// Indexes of the lines outside fenced code blocks, fence lines excluded.
-fn outside_fences(lines: &[&str]) -> Vec<usize> {
+pub fn outside_fences(lines: &[&str]) -> Vec<usize> {
     let mut fence: Option<(char, usize)> = None;
     let mut out = Vec::new();
     for (i, line) in lines.iter().enumerate() {
@@ -668,6 +686,35 @@ mod tests {
         ] {
             let text = with_lines(&[], BODY).replace("\"url: https://go.dev\"", bad);
             only(&text, "origin: write it as");
+        }
+    }
+
+    #[test]
+    fn each_valid_value_is_kept_beside_the_invalid_ones() {
+        let text =
+            with_lines(&["kept: 3-5", "capture: legacy"], BODY).replace("2026-08-23", "yesterday");
+        let read = read(&text);
+        assert!(read.front.is_none());
+        assert_eq!(read.fetched, None);
+        assert_eq!(read.origin.as_deref(), Some("url: https://go.dev"));
+        assert_eq!(read.digest, Some(digest(BODY)));
+        assert_eq!(read.kept.as_deref(), Some("3-5"));
+        assert_eq!(read.capture.as_deref(), Some("legacy"));
+        assert!(read.keys.iter().any(|k| k == "fetched"));
+    }
+
+    #[test]
+    fn origin_items() {
+        assert!(valid_origin("url: https://go.dev"));
+        assert!(valid_origin("doc: The Go Programming Language, chapter 8"));
+        for bad in [
+            "web: https://go.dev",
+            "url: ",
+            "https://go.dev",
+            "url: a\"b",
+            "url: a\\b",
+        ] {
+            assert!(!valid_origin(bad), "{bad}");
         }
     }
 

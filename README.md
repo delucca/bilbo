@@ -127,6 +127,7 @@ else `$XDG_DATA_HOME/bilbo`, else `~/.local/share/bilbo`, on macOS too.
 | `bilbo recall <query>... [--kind <kind>]... [--limit <n>]` | Prints the notes that best match, best first, 10 by default. Exits 1 when nothing matches. |
 | `bilbo index` | Embeds the passages the vector cache lacks and drops the ones no note holds any more. |
 | `bilbo digest` | Run by the plugin's prompt hook; see [The digest](#the-digest). |
+| `bilbo library` | Lists and shows the library, and stages and lands its sources; see [Library](#library). |
 | `bilbo setup` | See [Set up](#set-up). |
 
 `recall` prints one block per note: the path and line of the best passage, the
@@ -145,8 +146,9 @@ With one, it fuses that order with a ranking by meaning. When the embedder is
 down it falls back to keywords and says so on stderr; passages written since
 the last `bilbo index` rank by keywords only, and `recall` says that too.
 
-`check` lints the whole store against the note rules, so mistakes an agent
-makes while editing files by hand surface without bilbo blocking anything:
+`check` lints the whole store, the notes and the library, against their rules, so
+mistakes an agent makes while editing files by hand surface without bilbo
+blocking anything:
 
 ```console
 $ bilbo check
@@ -155,6 +157,61 @@ notes/plan-broken.md: title: missing; add one '# <title>' line after the frontma
 ```
 
 `bilbo --help` prints the full usage.
+
+### Library
+
+The library holds sources: pages and documents an agent reads and cites, kept
+as text. A **corpus** is a folder of sources on one subject,
+`<root>/library/<corpus>/`, and a **source** is one Markdown file in it,
+`<name>.md`, whatever its size. Corpus and source names are lowercase
+kebab-case; a corpus is never called `show`, `stage`, `land`, `plan` or `read`,
+and no source is called `guide`.
+
+A source is not written by hand. Its frontmatter holds `id`, `fetched` (the
+day the text was taken), `origin` (a quoted `url: ...` or `doc: ...`), and
+`digest`, the SHA-256 of everything after the frontmatter, so `bilbo check`
+sees any later edit. `kept` and `capture` are optional. The body opens with
+one `# ` title:
+
+```markdown
+---
+id: 01M3EZ8NVEC2KJQNGK5DTK349R
+fetched: 2026-08-23
+origin: "url: https://go.dev/doc/effective_go"
+digest: sha256:3c422834eb609821025bad23ee69ff3eec51facaa35dc7f6663d4304e1fcc34f
+kept: 6-900
+capture: external
+---
+# Effective Go
+
+...
+```
+
+Each corpus also has a `guide.md`, the one file in it that agents edit: a
+title, a lead on what the corpus grounds, and one `## <name>` entry of prose
+per source. Sizes, token counts, dates and the catalog mark are never written
+there; bilbo derives them when it prints the guide.
+
+| Command | What it does |
+| --- | --- |
+| `bilbo library` | One row per corpus: its sources, size and guide title. |
+| `bilbo library <corpus>` | The guide's path, then the guide with a facts line under each entry: id, size, tokens, `fetched`, headings. |
+| `bilbo library show <corpus>/<name>\|<id>[#<anchor>] [--depth <n>]` | A source's header and one row per section: its lines, tokens and heading path. An anchor or `--depth` narrows the rows. |
+| `bilbo library stage <file> --origin "<url\|doc>: <value>" [--fetched <YYYY-MM-DD>]` | Copies a text file, with LF line endings, into the state folder and prints its lines, title and headings. Changes nothing in the store. |
+| `bilbo library land <stage> <corpus>/<name> --keep <a>-<b>[,<c>-<d>]... [--title <text>] [--replace]` | Writes the source from the staged lines the ranges keep, adds its guide entry, and keeps the staged text under `<root>/.bilbo/captures/`. |
+
+An agent adds a source in two steps, and never types its text. `stage` keeps
+the text and shows where its headings are; the agent picks the line ranges
+that are the page itself, not its navigation or footer, and `land` copies them.
+`land` writes a source `bilbo check` accepts, but it asks for prose in the
+guide: a new entry holds the line `TODO: describe this source.`, a new guide
+`TODO: describe this corpus.`, and a source landed again with `--replace`
+gets `stale: re-ingested <date>; ...` under its entry. `check` fails on every
+one of those lines until the agent writes the entry and removes the line.
+
+To move or delete a source by hand, use `mv` or `rm` on the file, then edit the
+guide: rename the entry's heading to match, or remove the entry. Then run
+`bilbo check`, which says what is still out of step.
 
 ### From an agent
 
