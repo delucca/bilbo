@@ -1,3 +1,5 @@
+#![warn(clippy::self_named_module_files)]
+
 mod check;
 mod citation;
 mod host;
