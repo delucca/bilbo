@@ -33,7 +33,7 @@ pub fn run(args: &[String], env: &store::Env) -> Result<String, Failure> {
     if !notes.is_dir() {
         return Err(Failure::Refused(format!("no store at {}", root.display())));
     }
-    let dir = vectors::dir(env).ok_or_else(|| {
+    let dir = store::cache_dir(env).ok_or_else(|| {
         Failure::Config(
             "cannot find the cache folder: set XDG_CACHE_HOME, or HOME, to an absolute path".into(),
         )

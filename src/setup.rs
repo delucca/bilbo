@@ -6,7 +6,7 @@ use std::time::Duration;
 use zeroize::Zeroizing;
 
 use crate::config::{self, Embedder, Token};
-use crate::{Failure, agents, command, embed, model, store, timer, vectors, wizard};
+use crate::{Failure, agents, command, embed, model, store, timer, wizard};
 use wizard::Prompter;
 
 const CHECK: Duration = Duration::from_secs(15);
@@ -761,7 +761,7 @@ fn gather(
         codex,
         timer: timer_facts(env, path.as_deref()),
         llama_server,
-        model: vectors::dir(env).map(|cache| model::path(&cache)),
+        model: store::cache_dir(env).map(|cache| model::path(&cache)),
     })
 }
 
@@ -2238,7 +2238,7 @@ fn plan_remove(flags: &Flags, env: &store::Env, path: Option<std::ffi::OsString>
             }
         }
     };
-    let model = vectors::dir(env)
+    let model = store::cache_dir(env)
         .map(|cache| model::path(&cache))
         .filter(|path| path.exists());
     RemovePlan {
@@ -3860,7 +3860,7 @@ mod tests {
 
         impl Sandbox {
             fn model(&self) -> PathBuf {
-                model::path(&vectors::dir(&self.env).unwrap())
+                model::path(&store::cache_dir(&self.env).unwrap())
             }
             fn service_files(&self) -> Vec<PathBuf> {
                 timer::paths(
