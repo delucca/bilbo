@@ -1,6 +1,6 @@
 {
   "name": "bilbo",
-  "description": "Write and recall the notes agent sessions keep, through the bilbo CLI.",
+  "description": "Write and recall the notes agent sessions keep, and answer from the library's sources with checked citations, through the bilbo CLI.",
   "author": {
     "name": "delucca"
   },

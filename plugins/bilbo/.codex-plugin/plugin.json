@@ -1,7 +1,7 @@
 {
   "name": "bilbo",
   "version": "0.6.0",
-  "description": "Write and recall the notes agent sessions keep, through the bilbo CLI.",
+  "description": "Write and recall the notes agent sessions keep, and answer from the library's sources with checked citations, through the bilbo CLI.",
   "author": {
     "name": "delucca"
   },
@@ -11,7 +11,7 @@
   "interface": {
     "displayName": "bilbo",
     "shortDescription": "Write and recall notes across sessions",
-    "longDescription": "Write Markdown notes that later agent sessions find again, and search them best passage first, with the bilbo CLI. Install the bilbo binary separately.",
+    "longDescription": "Write Markdown notes that later agent sessions find again, search them best passage first, and answer from the library's sources with citations checked against the text, with the bilbo CLI. Install the bilbo binary separately.",
     "developerName": "delucca",
     "category": "Developer Tools",
     "capabilities": [
@@ -20,7 +20,8 @@
     ],
     "defaultPrompt": [
       "Recall what we decided about the release steps",
-      "Keep this decision as a note for later sessions"
+      "Keep this decision as a note for later sessions",
+      "What do the Go sources say about goroutine leaks?"
     ]
   }
 }

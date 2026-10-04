@@ -29,6 +29,8 @@ const CLAUDE_MARKETPLACE: &str = ".claude-plugin/marketplace.json";
 const CODEX_MARKETPLACE: &str = ".agents/plugins/marketplace.json";
 const RECALL_SKILL: &str = "plugins/bilbo/skills/recall/SKILL.md";
 const NOTE_SKILL: &str = "plugins/bilbo/skills/note/SKILL.md";
+const REFERENCE_SKILL: &str = "plugins/bilbo/skills/reference/SKILL.md";
+const READER_BRIEF: &str = "plugins/bilbo/skills/reference/references/reader.md";
 const HOOKS: &str = "plugins/bilbo/hooks/hooks.json";
 const COMPACT_COMMAND: &str = "command -v bilbo >/dev/null 2>&1 || exit 0; echo 'Context was compacted. If this session settled something later sessions should know, such as a decision, a gotcha or a plan, save it with the bilbo note skill once the current task allows.'";
 const DIGEST_COMMAND: &str = "command -v bilbo >/dev/null 2>&1 || exit 0; bilbo digest; exit 0";
@@ -42,6 +44,8 @@ fn plugin_files_exist() {
         CODEX_MARKETPLACE,
         RECALL_SKILL,
         NOTE_SKILL,
+        REFERENCE_SKILL,
+        READER_BRIEF,
         HOOKS,
     ] {
         assert!(path(file).is_file(), "{file} is not a file");
@@ -55,7 +59,7 @@ fn plugin_files_exist() {
         .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
         .collect();
     skills.sort();
-    assert_eq!(skills, ["note", "recall"]);
+    assert_eq!(skills, ["note", "recall", "reference"]);
 }
 
 #[test]
@@ -174,15 +178,19 @@ fn recall_skill_drives_bilbo() {
     );
 }
 
-/// The trimmed non-empty lines inside the ```` ```bash ```` fences of a skill.
+/// The trimmed non-empty lines inside the ```` ```bash ```` fences of a skill, a heredoc's body left out.
 fn bash_lines(text: &str) -> Vec<String> {
     let mut in_bash = false;
+    let mut in_heredoc = false;
     let mut lines = Vec::new();
     for line in text.lines() {
         let trimmed = line.trim();
-        if trimmed.starts_with("```") {
+        if in_heredoc {
+            in_heredoc = trimmed != "EOF";
+        } else if trimmed.starts_with("```") {
             in_bash = trimmed == "```bash";
         } else if in_bash && !trimmed.is_empty() {
+            in_heredoc = trimmed.ends_with("<<'EOF'");
             lines.push(trimmed.to_string());
         }
     }
@@ -232,10 +240,114 @@ fn note_skill_drives_bilbo() {
     );
 }
 
+const LEGACY_STRINGS: [&str; 9] = [
+    "nbrecall",
+    "check_citations",
+    "plan_reads",
+    "source-reader",
+    "uv run",
+    "Notebooks",
+    "index.md",
+    "argument-hint",
+    "note: <",
+];
+
+#[test]
+fn reference_skill_frontmatter() {
+    let front = frontmatter(REFERENCE_SKILL);
+    let keys: Vec<&str> = front.iter().map(|(k, _)| k.as_str()).collect();
+    assert_eq!(keys, ["name", "description", "license", "allowed-tools"]);
+    assert_eq!(front[0].1, "reference");
+    assert_eq!(front[2].1, "Apache-2.0");
+    assert_eq!(folder(REFERENCE_SKILL), "reference");
+    assert_eq!(
+        front[3].1,
+        "Bash(command -v bilbo), Bash(bilbo library *), Bash(bilbo cite *), Read, Agent(general-purpose), SendMessage"
+    );
+}
+
+#[test]
+fn reference_skill_description_says_when() {
+    let front = frontmatter(REFERENCE_SKILL);
+    let description = &front[1].1;
+    for needle in ["sources", "NOT for", "recall"] {
+        assert!(
+            description.contains(needle),
+            "the description lacks {needle:?}"
+        );
+    }
+}
+
+#[test]
+fn reference_skill_drives_bilbo() {
+    let text = read(REFERENCE_SKILL);
+    let commands = bash_lines(&text);
+    for command in [
+        "command -v bilbo",
+        "bilbo library",
+        "bilbo library <corpus>",
+        "bilbo library show '<corpus>/<name>#<anchor>'",
+        "bilbo library plan '<ref>'...",
+        "bilbo library read <plan> <slice>",
+        "bilbo library read <plan> <slice> --part 1/2",
+        "bilbo cite --plan <plan> <<'EOF'",
+    ] {
+        assert!(
+            commands.iter().any(|c| c == command),
+            "no bash line {command:?}"
+        );
+    }
+    for needle in [
+        "reference: bilbo is not on PATH; install the bilbo CLI first",
+        "bilbo: no store at <root>",
+        "picks from <corpus> (<k> of <n> sources):",
+        "-- end slice",
+        "lookup only, not searched",
+        "general-purpose",
+        "references/reader.md",
+        "100,000",
+        "`ok`",
+        "`quote_elsewhere`",
+        "`ambiguous`",
+        "`too_short`",
+        "`quote_missing`",
+        "`anchor_missing`",
+        "`unread`",
+        "`id_missing`",
+    ] {
+        assert!(text.contains(needle), "the skill lacks {needle:?}");
+    }
+    for banned in LEGACY_STRINGS {
+        assert!(!text.contains(banned), "the skill holds {banned:?}");
+    }
+}
+
+#[test]
+fn reader_brief_holds_its_sections() {
+    let text = read(READER_BRIEF);
+    for needle in [
+        "## Reading rules",
+        "## Citation rules",
+        "## Support judgment",
+        "## Output contract",
+        "## Boundaries",
+        "bilbo library read",
+        "--part",
+        "bilbo cite --plan",
+        "read:",
+        "not read:",
+    ] {
+        assert!(text.contains(needle), "the brief lacks {needle:?}");
+    }
+    for banned in LEGACY_STRINGS {
+        assert!(!text.contains(banned), "the brief holds {banned:?}");
+    }
+}
+
 /// Every command line in a skill's `bash` fences is one command that `allowed-tools` lets through.
 #[test]
 fn skills_allow_every_command_they_run() {
-    for file in [RECALL_SKILL, NOTE_SKILL] {
+    for file in [RECALL_SKILL, NOTE_SKILL, REFERENCE_SKILL] {
         let front = frontmatter(file);
         let allowed: Vec<String> = front[3]
             .1
@@ -255,7 +367,7 @@ fn skills_allow_every_command_they_run() {
             let ok = allowed
                 .iter()
                 .any(|pattern| match pattern.strip_suffix('*') {
-                    Some(prefix) => trimmed.starts_with(prefix),
+                    Some(prefix) => trimmed.starts_with(prefix) || trimmed == prefix.trim_end(),
                     None => trimmed == pattern,
                 });
             assert!(ok, "{file}: {trimmed:?} is outside allowed-tools");
@@ -275,7 +387,9 @@ fn plugin_descriptions_agree() {
     assert_eq!(claude, codex);
     assert_eq!(claude, market);
     let text = claude.as_str().expect("a string description");
-    assert!(text.contains("Write") && text.contains("recall"), "{text}");
+    for needle in ["Write", "recall", "sources"] {
+        assert!(text.contains(needle), "{text}");
+    }
 }
 
 #[test]
@@ -287,7 +401,7 @@ fn codex_interface_names_write() {
         serde_json::json!(["Read", "Write"])
     );
     let prompts = interface["defaultPrompt"].as_array().unwrap();
-    assert_eq!(prompts.len(), 2);
+    assert_eq!(prompts.len(), 3);
     for prompt in prompts {
         assert!(prompt.as_str().unwrap().chars().count() <= 128);
     }
