@@ -65,9 +65,10 @@ Watch records a file only when its name is a note name, `<kind>-<topic>.md` unde
 - **What it brings:** on macOS, `notify-types`, `bitflags`, `fsevent-sys`, `walkdir`, `same-file`, `log` and `libc`. On Linux, `inotify`, `inotify-sys` and `mio` replace `fsevent-sys`. Measured with `cargo tree` on 2026-10-03.
 - **How it is used:** non-recursive, on `notes/` only (subfolders are not notes), with the recommended backend for each platform. `fsevent-sys` links CoreServices, which the nixpkgs darwin stdenv provides. Task 1.1 checks that `nix flake check` builds it.
 
-### `sha2` 0.11.0, in `src/versions.rs` only
+### `sha2` 0.11.0, through `src/hash.rs`
 
-- **What it is for:** content and version ids.
+- **What it is for:** content and version ids. `src/versions.rs` calls `hash::sha256_hex` and never uses `sha2` directly.
+- **Where it lives:** `add-library-store` made `src/hash.rs` the one user of `sha2`, with `pub fn sha256_hex(bytes: &[u8]) -> String`. If this change ships first, its implementation creates that module with that one function.
 - **Why not `ring`:** ring already has SHA-256, but the AGENTS.md rule keeps `ring` in `src/model.rs`.
 - **Why it costs nothing extra:** the sync changes bring RustCrypto in anyway, since `ed25519-dalek` depends on `sha2`.
 - **What it adds:** `digest`, `block-buffer`, `crypto-common`, `hybrid-array`, `typenum`, `const-oid`, `cpufeatures` and `cfg-if`, all RustCrypto or already common in the tree.

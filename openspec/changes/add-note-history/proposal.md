@@ -45,6 +45,6 @@ Agents edit notes in place with their own tools, and bilbo keeps no record of wh
 - `src/timer.rs` gains a third job, `watch`, built like the local embedder's keep-alive service. `src/setup.rs` and `src/wizard.rs` gain the `watch` step, its flag and its prompt. `flake.nix`'s module gains `watch.enable` and the history key.
 - `src/config.rs` gains `history.keep_days`.
 - A version's id is a hash of the note's id, its parents, its file name and its content, so the sync changes can add fields without rewriting ids.
-- New dependencies: `notify` 8.2 (file events) and `sha2` 0.11 (content hashes). `libc` gains a second user, `src/swap.rs`. The AGENTS.md dependency rule changes to match.
+- New dependencies: `notify` 8.2 (file events) and `sha2` 0.11 (content hashes, through `src/hash.rs`, which `add-library-store` also uses). `libc` gains a second user, `src/swap.rs`. The AGENTS.md dependency rule changes to match.
 - Tests: `tests/watch.rs`, `tests/history.rs` and `tests/restore.rs`, which run `bilbo watch` as a child process against a temporary store. The fake `launchctl` and `systemctl` in `tests/common/fakes.rs` know only the index timer and the embedder service, so both gain a branch for the watcher.
 - Migration: none. The first `bilbo watch` run records every note as `added`.

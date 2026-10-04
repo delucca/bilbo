@@ -4,7 +4,7 @@ Run every command below from the repo root as `nix develop -c sh -c '<command>'`
 
 ## 1. Library modules
 
-- [ ] 1.1 Add `notify = "8.2.0"` and `sha2 = "0.11.0"` to `Cargo.toml`, update `Cargo.lock`, and confirm the Nix package still builds on macOS with `fsevent-sys` linked (both new crates are unused until 1.3 and 2.1, so gate the check on a build, not a test). Verify with `cargo build --locked && nix build --no-link .#default`
+- [ ] 1.1 Add `notify = "8.2.0"` and `sha2 = "0.11.0"` to `Cargo.toml`, update `Cargo.lock`, and confirm the Nix package still builds on macOS with `fsevent-sys` linked (both new crates are unused until 1.3 and 2.1, so gate the check on a build, not a test). If `src/hash.rs` does not exist yet (`add-library-store` not shipped), write it with `pub fn sha256_hex(bytes: &[u8]) -> String` and its `mod` line; `sha2` is used nowhere else. Verify with `cargo build --locked && nix build --no-link .#default`
 - [ ] 1.2 Add `src/diff.rs`: a Myers longest-common-subsequence over two slices of any `Eq` type, and a unified line diff with 3 lines of context and caller-given header names. Unit-test empty sides, identical input, an insertion, a deletion, a change at either end, hunks merging when their context overlaps, and a 10,000-line input with one changed line finishing in under 50 ms. Verify with `cargo test --locked --bin bilbo diff::`
 - [ ] 1.3 Add `src/versions.rs` with the layout from design.md (`<root>/.bilbo/history/`, blobs by SHA-256, one JSON-lines log per note) and `history/lock`. Unit-test each of these:
   - the version id rule (`bilbo-version-1`, the note's ULID, sorted parents, an empty line, file name, blob or `deleted`), that two identical records of one note produce one id, and that the same record under two ULIDs produces two;
@@ -50,7 +50,7 @@ Run every command below from the repo root as `nix develop -c sh -c '<command>'`
 
 ## 6. Docs
 
-- [ ] 6.1 Update `AGENTS.md`: `libc` lives in `src/wizard.rs` and `src/swap.rs`, `notify` in `src/watch.rs`, `sha2` in `src/versions.rs`; add `versions`, `swap` and `diff` to the library modules; note that tests of `bilbo watch` run it as a child and poll with a deadline, and that restore's crash points are tested through its step hook. Verify with `rg -q 'src/swap.rs' AGENTS.md && rg -q 'notify' AGENTS.md && rg -q 'sha2' AGENTS.md`
+- [ ] 6.1 Update `AGENTS.md`: `libc` lives in `src/wizard.rs` and `src/swap.rs`, `notify` in `src/watch.rs`, `sha2` in `src/hash.rs` (which `src/versions.rs` calls); add `versions`, `swap` and `diff` to the library modules; note that tests of `bilbo watch` run it as a child and poll with a deadline, and that restore's crash points are tested through its step hook. Verify with `rg -q 'src/swap.rs' AGENTS.md && rg -q 'notify' AGENTS.md && rg -q 'sha2' AGENTS.md`
 - [ ] 6.2 Update `README.md`: what the watcher records and where history lives, `bilbo history` and `bilbo restore` with examples, `history.keep_days` and the retention rule, `--no-watch`, and how to remove a pasted secret from history by hand. Verify with `rg -q 'bilbo restore' README.md && rg -q 'history.keep_days' README.md`
 
 ## 7. Integration
