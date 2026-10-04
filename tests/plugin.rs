@@ -30,6 +30,7 @@ const CODEX_MARKETPLACE: &str = ".agents/plugins/marketplace.json";
 const RECALL_SKILL: &str = "plugins/bilbo/skills/recall/SKILL.md";
 const NOTE_SKILL: &str = "plugins/bilbo/skills/note/SKILL.md";
 const REFERENCE_SKILL: &str = "plugins/bilbo/skills/reference/SKILL.md";
+const INGEST_SKILL: &str = "plugins/bilbo/skills/ingest/SKILL.md";
 const READER_BRIEF: &str = "plugins/bilbo/skills/reference/references/reader.md";
 const HOOKS: &str = "plugins/bilbo/hooks/hooks.json";
 const COMPACT_COMMAND: &str = "command -v bilbo >/dev/null 2>&1 || exit 0; echo 'Context was compacted. If this session settled something later sessions should know, such as a decision, a gotcha or a plan, save it with the bilbo note skill once the current task allows.'";
@@ -45,6 +46,7 @@ fn plugin_files_exist() {
         RECALL_SKILL,
         NOTE_SKILL,
         REFERENCE_SKILL,
+        INGEST_SKILL,
         READER_BRIEF,
         HOOKS,
     ] {
@@ -59,7 +61,7 @@ fn plugin_files_exist() {
         .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
         .collect();
     skills.sort();
-    assert_eq!(skills, ["note", "recall", "reference"]);
+    assert_eq!(skills, ["ingest", "note", "recall", "reference"]);
 }
 
 #[test]
@@ -240,6 +242,93 @@ fn note_skill_drives_bilbo() {
     );
 }
 
+#[test]
+fn ingest_skill_frontmatter() {
+    let front = frontmatter(INGEST_SKILL);
+    let keys: Vec<&str> = front.iter().map(|(k, _)| k.as_str()).collect();
+    assert_eq!(keys, ["name", "description", "license", "allowed-tools"]);
+    assert_eq!(front[0].1, "ingest");
+    assert_eq!(front[2].1, "Apache-2.0");
+    assert_eq!(folder(INGEST_SKILL), "ingest");
+    assert_eq!(
+        front[3].1,
+        "Bash(command -v bilbo), Bash(command -v pdftotext), Bash(bilbo library), Bash(bilbo library *), Bash(bilbo check), Bash(mktemp -d), Bash(curl -fsSL -o *), Bash(pdftotext -layout *), Read, Edit"
+    );
+}
+
+#[test]
+fn ingest_skill_description_says_when() {
+    let front = frontmatter(INGEST_SKILL);
+    let description = &front[1].1;
+    for needle in ["library", "source", "ingest this", "NOT for"] {
+        assert!(
+            description.contains(needle),
+            "the description lacks {needle:?}"
+        );
+    }
+}
+
+#[test]
+fn ingest_skill_drives_bilbo() {
+    let text = read(INGEST_SKILL);
+    let commands = bash_lines(&text);
+    for command in [
+        "command -v bilbo",
+        "bilbo library stage '<url>'",
+        "bilbo library land <stage> <corpus>/<name> --keep <ranges> --title '<title>'",
+        "bilbo library show <corpus>/<name>",
+        "bilbo library plan <corpus>/<name>",
+        "bilbo library read <plan> <slice>",
+        "pdftotext -layout '<pdf>' '<dir>/source.txt'",
+        "bilbo check",
+    ] {
+        assert!(
+            commands.iter().any(|c| c == command),
+            "no bash line {command:?}"
+        );
+    }
+    for needle in [
+        "command -v bilbo",
+        "ingest: bilbo is not on PATH; install the bilbo CLI first",
+        "bilbo library stage '<url>'",
+        "--html",
+        "capture: external",
+        "pdftotext -layout",
+        "bilbo library land <stage> <corpus>/<name> --keep <ranges> --title '<title>'",
+        "--replace",
+        "existing:",
+        "bilbo library show <corpus>/<name>",
+        "bilbo library plan <corpus>/<name>",
+        "TODO: describe this source.",
+        "bilbo check",
+        "navigation suspect",
+        "unclosed fence",
+        "never inside a code fence",
+        "claim no source",
+    ] {
+        assert!(text.contains(needle), "the skill lacks {needle:?}");
+    }
+    let (before, never) = text
+        .split_once("## Never")
+        .expect("the skill has a Never list");
+    assert!(never.contains("WebFetch"), "the Never list lacks WebFetch");
+    for banned in [
+        "WebFetch",
+        "write_note.py",
+        "index_corpus.py",
+        "split_source.py",
+        "uv run",
+        "pandoc",
+        "Notebooks",
+        "argument-hint",
+    ] {
+        assert!(!before.contains(banned), "the skill holds {banned:?}");
+        if banned != "WebFetch" {
+            assert!(!never.contains(banned), "the skill holds {banned:?}");
+        }
+    }
+}
+
 const LEGACY_STRINGS: [&str; 9] = [
     "nbrecall",
     "check_citations",
@@ -347,7 +436,7 @@ fn reader_brief_holds_its_sections() {
 /// Every command line in a skill's `bash` fences is one command that `allowed-tools` lets through.
 #[test]
 fn skills_allow_every_command_they_run() {
-    for file in [RECALL_SKILL, NOTE_SKILL, REFERENCE_SKILL] {
+    for file in [RECALL_SKILL, NOTE_SKILL, REFERENCE_SKILL, INGEST_SKILL] {
         let front = frontmatter(file);
         let allowed: Vec<String> = front[3]
             .1
