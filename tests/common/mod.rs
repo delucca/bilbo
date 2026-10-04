@@ -6,7 +6,7 @@ use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
@@ -1062,4 +1062,235 @@ impl Drop for Locked {
         use std::os::unix::fs::PermissionsExt;
         let _ = std::fs::set_permissions(&self.path, std::fs::Permissions::from_mode(self.mode));
     }
+}
+
+pub fn sha256_hex(bytes: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    Sha256::digest(bytes)
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
+}
+
+/// Polls `read` every 50 ms until it returns `want`, for at most 40 seconds, so a test waits for a recording
+/// without a fixed sleep.
+pub fn poll_eq<T: PartialEq + std::fmt::Debug>(what: &str, mut read: impl FnMut() -> T, want: T) {
+    let deadline = std::time::Instant::now() + Duration::from_secs(40);
+    loop {
+        let got = read();
+        if got == want {
+            return;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "{what}: wanted {want:?}, last saw {got:?}"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+/// Like `bilbo`, with stdout as bytes.
+pub fn bilbo_bytes(cwd: &Path, env: &[(&str, &str)], args: &[&str]) -> (i32, Vec<u8>, String) {
+    let output = Command::new(env!("CARGO_BIN_EXE_bilbo"))
+        .env_clear()
+        .envs(env.iter().copied())
+        .current_dir(cwd)
+        .args(args)
+        .output()
+        .unwrap();
+    (
+        output.status.code().unwrap(),
+        output.stdout,
+        String::from_utf8(output.stderr).unwrap(),
+    )
+}
+
+/// A running `bilbo watch`, killed when dropped, with its stderr lines collected by a thread.
+pub struct Watcher {
+    child: Child,
+    lines: Arc<Mutex<Vec<String>>>,
+    reader: Option<JoinHandle<()>>,
+}
+
+impl Watcher {
+    pub fn start(env: &[(&str, &str)]) -> Watcher {
+        let mut child = Command::new(env!("CARGO_BIN_EXE_bilbo"))
+            .env_clear()
+            .envs(env.iter().copied())
+            .arg("watch")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let stderr = child.stderr.take().unwrap();
+        let lines = Arc::new(Mutex::new(Vec::new()));
+        let sink = Arc::clone(&lines);
+        let reader = std::thread::spawn(move || {
+            for line in BufReader::new(stderr).lines().map_while(Result::ok) {
+                sink.lock().unwrap().push(line);
+            }
+        });
+        Watcher {
+            child,
+            lines,
+            reader: Some(reader),
+        }
+    }
+
+    /// Starts a watcher on the store at `root` and waits for its watching line.
+    pub fn on(root: &Path) -> Watcher {
+        let watcher = Watcher::start(&[("BILBO_HOME", root.to_str().unwrap())]);
+        watcher.wait_for(&format!("bilbo: watching {}", root.join("notes").display()));
+        watcher
+    }
+
+    pub fn lines(&self) -> Vec<String> {
+        let lines = self.lines.lock().unwrap().clone();
+        for line in &lines {
+            assert!(
+                line.starts_with("bilbo: "),
+                "stderr line without the prefix: {line:?}"
+            );
+        }
+        lines
+    }
+
+    pub fn count(&self, needle: &str) -> usize {
+        self.lines().iter().filter(|l| l.contains(needle)).count()
+    }
+
+    /// Waits until a stderr line contains `needle`.
+    pub fn wait_for(&self, needle: &str) {
+        self.wait_count(needle, 1);
+    }
+
+    pub fn wait_count(&self, needle: &str, n: usize) {
+        let deadline = std::time::Instant::now() + Duration::from_secs(40);
+        while self.count(needle) < n {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "no stderr line with {needle:?} (wanted {n}); stderr: {:#?}",
+                self.lines()
+            );
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+
+    pub fn pid(&self) -> u32 {
+        self.child.id()
+    }
+
+    pub fn running(&mut self) -> bool {
+        self.child.try_wait().unwrap().is_none()
+    }
+
+    pub fn stop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+impl Drop for Watcher {
+    fn drop(&mut self) {
+        self.stop();
+        if let Some(reader) = self.reader.take() {
+            let _ = reader.join();
+        }
+    }
+}
+
+/// `At` as the log writes it, `days` days before now.
+pub fn days_ago(days: i64) -> String {
+    let at = jiff::Zoned::now()
+        .checked_sub(jiff::Span::new().days(days))
+        .unwrap();
+    at.strftime("%Y-%m-%dT%H:%M:%S%:z").to_string()
+}
+
+/// One version for `seed`.
+pub struct Seed<'a> {
+    pub file: &'a str,
+    /// `None` is a deletion.
+    pub text: Option<&'a [u8]>,
+    pub event: &'a str,
+    pub at: String,
+    pub version: Option<String>,
+}
+
+impl<'a> Seed<'a> {
+    pub fn new(file: &'a str, text: Option<&'a str>, event: &'a str, at: &str) -> Seed<'a> {
+        Seed {
+            file,
+            text: text.map(str::as_bytes),
+            event,
+            at: at.to_string(),
+            version: None,
+        }
+    }
+
+    pub fn id(mut self, version: &str) -> Seed<'a> {
+        self.version = Some(version.to_string());
+        self
+    }
+}
+
+/// Writes a note's log and the blobs it names under `<root>/.bilbo/history/`, one version after another, and returns
+/// the version ids. The ids are made up (the reader only checks that they are hex), each one's parent the one before.
+pub fn seed(root: &Path, note_id: &str, versions: &[Seed]) -> Vec<String> {
+    let history = root.join(".bilbo/history");
+    std::fs::create_dir_all(history.join("notes")).unwrap();
+    let mut ids: Vec<String> = Vec::new();
+    let mut log = String::new();
+    for (n, seed) in versions.iter().enumerate() {
+        let version = seed
+            .version
+            .clone()
+            .unwrap_or_else(|| sha256_hex(format!("{note_id}:{n}").as_bytes()));
+        let blob = match seed.text {
+            Some(text) => {
+                let blob = sha256_hex(text);
+                let dir = history.join("blobs").join(&blob[..2]);
+                std::fs::create_dir_all(&dir).unwrap();
+                std::fs::write(dir.join(&blob[2..]), text).unwrap();
+                blob
+            }
+            None => "deleted".to_string(),
+        };
+        let parents: Vec<&String> = ids.last().into_iter().collect();
+        log.push_str(
+            &serde_json::json!({
+                "version": version,
+                "parents": parents,
+                "file": seed.file,
+                "blob": blob,
+                "event": seed.event,
+                "at": seed.at,
+            })
+            .to_string(),
+        );
+        log.push('\n');
+        ids.push(version);
+    }
+    std::fs::write(history.join("notes").join(format!("{note_id}.jsonl")), log).unwrap();
+    ids
+}
+
+/// The CPU time a process has used, in seconds: `/proc/<pid>/stat` on Linux, `ps -o cputime=` elsewhere. `None`
+/// where neither answers, as in the macOS build sandbox, which hides `ps`.
+pub fn cpu_seconds(pid: u32) -> Option<f64> {
+    if let Ok(stat) = std::fs::read_to_string(format!("/proc/{pid}/stat")) {
+        let after = &stat[stat.rfind(')')? + 2..];
+        let fields: Vec<&str> = after.split(' ').collect();
+        let ticks = fields[11].parse::<f64>().ok()? + fields[12].parse::<f64>().ok()?;
+        return Some(ticks / 100.0);
+    }
+    let out = Command::new("ps")
+        .args(["-o", "cputime=", "-p", &pid.to_string()])
+        .output()
+        .ok()?;
+    let text = String::from_utf8(out.stdout).ok()?;
+    text.trim().split(':').try_fold(0.0, |total, part| {
+        Some(total * 60.0 + part.parse::<f64>().ok()?)
+    })
 }

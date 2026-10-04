@@ -37,6 +37,8 @@ usage: bilbo new <kind> <topic> [--title <text>]
        bilbo library plan <ref>... [--budget-tokens <n>] [--slice-bytes <n>] [--slice-lines <n>]
        bilbo library read <plan> <slice>... [--part <k>/<n>]
        bilbo cite [--plan <plan>]... [<file> | -]
+       bilbo watch
+       bilbo history <note> [<version> | --diff <a> [<b>]]
        bilbo --help
        bilbo --version
 new creates <root>/notes/<kind>-<topic>.md and prints its path.
@@ -47,6 +49,8 @@ index embeds the passages the vector cache lacks and drops the ones no note hold
 digest reads a prompt hook's JSON on stdin and prints the notes that bear on the prompt; it always exits 0.
 library lists the corpora, prints a corpus's guide with the facts of each source, or a source's outline; stage and land add a source; plan cuts picks into slices and partitions; read prints slices and logs them.
 cite checks every bilbo: citation in a draft, and with --plan prints the coverage of the plans' reads.
+watch records a version of each note when it changes, until it is stopped.
+history lists the versions of a note, newest first, prints one, or shows what changed between two versions, or between one and the note's file now.
 setup creates the store and the config and installs the agent plugin, the index timer, the note watcher and, when asked, the local embedder; in a terminal it asks first.
 setup options: --embedder-url <url>, --embedder-model <name>, --embedder-token-env <var>, --embedder-token-file <path>, --embedder-query-prefix <text>, --embedder-local, --embedder-port <port>, --llama-server <path>, --no-plugin, --claude <path>, --codex <path>, --plugin-source <folder|owner/repo#ref>, --no-timer, --index-every <minutes>, --no-watch
 kinds: plan, spec, design, decision, gotcha, research, review, report, reference
@@ -134,6 +138,17 @@ fn run() -> Result<ExitCode, Failure> {
                 ExitCode::SUCCESS
             })
         }
+        Some("watch") => {
+            note::watch::run(&args[1..], &env, &mut |line: &str| print_stderr(line))?;
+            Ok(ExitCode::SUCCESS)
+        }
+        Some("history") => {
+            let output = note::history::run(&args[1..], &env)?;
+            output.warnings.iter().for_each(|line| print_stderr(line));
+            output.lines.iter().for_each(|line| print_stdout(line));
+            write_stdout(&output.bytes);
+            Ok(ExitCode::SUCCESS)
+        }
         Some(arg) if arg.starts_with('-') => Err(Failure::Usage(format!("unknown option '{arg}'"))),
         Some(arg) => Err(Failure::Usage(format!("unknown verb '{arg}'"))),
     }
@@ -170,6 +185,12 @@ fn wants_help(args: &[String]) -> bool {
 /// Write errors are ignored: a closed pipe must not panic.
 fn print_stdout(line: &str) {
     let _ = writeln!(std::io::stdout().lock(), "{line}");
+}
+
+/// Writes bytes as they are, with no newline added: a printed version may not end in one.
+fn write_stdout(bytes: &[u8]) {
+    let mut out = std::io::stdout().lock();
+    let _ = out.write_all(bytes).and_then(|()| out.flush());
 }
 
 /// The one writer of stderr: every physical line gets the prefix, even inside an echoed argument.

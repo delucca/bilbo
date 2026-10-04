@@ -430,7 +430,7 @@ pub fn record_difference(
 }
 
 /// A note file the scan accepted.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct Found {
     pub name: String,
     pub id: String,
@@ -439,7 +439,7 @@ pub struct Found {
 
 /// A note file the scan did not accept. `id` is its id when the scan could read one: a note whose only file is
 /// skipped is not deleted.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Skip {
     pub name: String,
     pub reason: String,
@@ -467,7 +467,12 @@ pub fn list(notes_dir: &Path) -> Result<Vec<(String, PathBuf)>, String> {
     let items = fs::read_dir(notes_dir).map_err(|e| e.to_string())?;
     let mut files: Vec<(String, PathBuf)> = items
         .filter_map(Result::ok)
-        .filter(|item| item.file_type().is_ok_and(|t| t.is_file()))
+        .filter(|item| {
+            item.file_type().is_ok_and(|t| {
+                t.is_file()
+                    || (t.is_symlink() && fs::metadata(item.path()).is_ok_and(|m| m.is_file()))
+            })
+        })
         .map(|item| (item.file_name().to_string_lossy().into_owned(), item.path()))
         .filter(|(name, _)| !name.starts_with('.'))
         .collect();
@@ -516,10 +521,19 @@ pub fn classify(name: &str, path: &Path) -> Result<Found, Skip> {
 
 /// Reads every file of `notes/` and sorts them into notes and skips. Files that share an id are all skipped.
 pub fn scan(notes_dir: &Path) -> Result<Scan, String> {
+    let items = list(notes_dir)?
+        .into_iter()
+        .map(|(name, path)| classify(&name, &path))
+        .collect();
+    Ok(group(items))
+}
+
+/// Sorts classified files into notes and skips. Files that share an id are all skipped.
+pub fn group(items: Vec<Result<Found, Skip>>) -> Scan {
     let mut by_id: BTreeMap<String, Vec<Found>> = BTreeMap::new();
     let mut skipped = Vec::new();
-    for (name, path) in list(notes_dir)? {
-        match classify(&name, &path) {
+    for item in items {
+        match item {
             Ok(found) => by_id.entry(found.id.clone()).or_default().push(found),
             Err(skip) => skipped.push(skip),
         }
@@ -545,7 +559,7 @@ pub fn scan(notes_dir: &Path) -> Result<Scan, String> {
         }
     }
     skipped.sort_by(|a, b| a.name.cmp(&b.name));
-    Ok(Scan { notes, skipped })
+    Scan { notes, skipped }
 }
 
 /// Records every `.bilbo-restore-<id>` file an interrupted restore left in `notes/`: as an `edited` version under

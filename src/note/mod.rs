@@ -1,8 +1,10 @@
-//! Notes: kinds, names, the strict reader and the renderer, and the `new` verb.
+//! Notes: kinds, names, the strict reader and the renderer, the `new`, `watch` and `history` verbs, and the version store they share.
 
 pub mod diff;
+pub mod history;
 pub mod new;
 pub mod versions;
+pub mod watch;
 
 use crate::shared::frontmatter::{bad_created, bad_id, is_created, is_ulid, split_key};
 use crate::shared::markdown::split_lines;

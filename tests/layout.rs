@@ -9,11 +9,13 @@ use std::path::{Path, PathBuf};
 const DOMAINS: [&str; 6] = ["citation", "host", "library", "note", "search", "setup"];
 
 /// The verbs, by path below `src/`: a file, or a folder (ending in `/`) whose files are all the verb's.
-const VERBS: [&str; 8] = [
+const VERBS: [&str; 10] = [
     "check.rs",
     "citation/cite.rs",
     "library/cli/",
+    "note/history.rs",
     "note/new.rs",
+    "note/watch.rs",
     "search/digest.rs",
     "search/index.rs",
     "search/recall.rs",
@@ -22,9 +24,10 @@ const VERBS: [&str; 8] = [
 
 /// Each crate and the only files under `src/` that may name it. `tests/common` also uses `sha2`, to write library
 /// files with a correct digest.
-const PLACEMENT: [(&str, &[&str]); 7] = [
+const PLACEMENT: [(&str, &[&str]); 8] = [
     ("cliclack", &["host/prompt.rs"]),
     ("libc", &["host/prompt.rs", "host/swap.rs"]),
+    ("notify", &["note/watch.rs"]),
     ("ring", &["host/model.rs"]),
     ("sha2", &["shared/hash.rs"]),
     ("unicode_normalization", &["shared/text.rs"]),
