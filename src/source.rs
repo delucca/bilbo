@@ -1,6 +1,6 @@
+use crate::frontmatter;
 use crate::hash;
 use crate::markdown::{self, Section};
-use crate::note;
 use crate::store::{self, Problem};
 
 pub const CAPTURES: [&str; 2] = ["external", "legacy"];
@@ -103,7 +103,7 @@ pub fn split_front(text: &str, keys: &[&str]) -> Front {
             continue;
         }
         in_list = false;
-        let Some((key, rest)) = note::split_key(line) else {
+        let Some((key, rest)) = frontmatter::split_key(line) else {
             front.problems.push(unexpected(n, keys));
             continue;
         };
@@ -202,7 +202,7 @@ pub fn read(text: &str) -> Source {
     };
     let id = valid(
         "id",
-        &|v| (!note::is_ulid(v)).then(|| note::bad_id(v)),
+        &|v| (!frontmatter::is_ulid(v)).then(|| frontmatter::bad_id(v)),
         &mut problems,
     );
     let fetched = valid(

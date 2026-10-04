@@ -3,7 +3,7 @@ use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
 use crate::store::{self, EntryKind};
-use crate::{Failure, note};
+use crate::{Failure, frontmatter, note};
 
 struct Request {
     kind: String,
@@ -20,9 +20,9 @@ pub fn run(args: &[String], env: &store::Env) -> Result<PathBuf, Failure> {
     fs::create_dir_all(&notes)
         .map_err(|e| Failure::Refused(format!("cannot create {}: {e}", notes.display())))?;
 
-    let id = note::mint_ulid()
+    let id = frontmatter::mint_ulid()
         .map_err(|e| Failure::Refused(format!("cannot read /dev/urandom: {e}")))?;
-    let text = note::render(&id, &note::now_created(), &request.title);
+    let text = note::render(&id, &frontmatter::now_created(), &request.title);
     if let Some(problem) = note::read(&text).problems.first() {
         return Err(Failure::Refused(format!(
             "internal error: the rendered note has problems: {problem}"

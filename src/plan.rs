@@ -5,8 +5,8 @@ use std::time::{Duration, SystemTime};
 
 use serde::{Deserialize, Serialize};
 
+use crate::frontmatter;
 use crate::markdown::{self, Section};
-use crate::note;
 
 pub const BUDGET_TOKENS: usize = 60_000;
 pub const MIN_BUDGET_TOKENS: usize = 1_000;
@@ -554,7 +554,7 @@ pub fn prune(dir: &Path, now: SystemTime) -> usize {
         let Some(stem) = name
             .strip_suffix(".json")
             .or_else(|| name.strip_suffix(".log"))
-            .filter(|stem| note::is_ulid(stem))
+            .filter(|stem| frontmatter::is_ulid(stem))
         else {
             continue;
         };

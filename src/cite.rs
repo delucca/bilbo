@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 
 use crate::citation::{self, Citation, Document, Ids, Kind, Outcome, Verdict};
 use crate::plan::{self as reading, LogEntry, Plan};
-use crate::{Failure, corpus, note, source, store};
+use crate::{Failure, corpus, frontmatter, source, store};
 
 pub struct Output {
     /// stderr lines (without "bilbo: "), printed before stdout.
@@ -166,7 +166,7 @@ fn load_plans(ids: &[String], dir: &Path, root: &Path) -> Result<Vec<Loaded>, Fa
     ids.iter()
         .map(|id| {
             let missing = || refused(format!("no plan '{id}' in {}", dir.display()));
-            if !note::is_ulid(id) {
+            if !frontmatter::is_ulid(id) {
                 return Err(missing());
             }
             let plan = reading::load(dir, id)
