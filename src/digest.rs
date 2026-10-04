@@ -82,7 +82,7 @@ pub fn run(args: &[String], input: &mut dyn Read, env: &store::Env) -> Outcome {
             Vec::new()
         }
     };
-    if let Some(dir) = vectors::dir(env) {
+    if let Some(dir) = store::cache_dir(env) {
         sweep(&dir.join("sessions"), SystemTime::now());
     }
     if settings.digest.log
@@ -212,7 +212,7 @@ fn digest(
         return Ok(Vec::new());
     }
 
-    let sessions = vectors::dir(env)
+    let sessions = store::cache_dir(env)
         .ok_or("cannot find the cache folder: set XDG_CACHE_HOME, or HOME, to an absolute path")?
         .join("sessions");
     let memory = sessions.join(session);
@@ -265,7 +265,7 @@ fn meaning(
     min_similarity: f64,
     start: Instant,
 ) -> Result<Vec<(f32, Hit)>, String> {
-    let cache = vectors::dir(env)
+    let cache = store::cache_dir(env)
         .map(|dir| vectors::load(&vectors::path(&dir, root)))
         .unwrap_or_default();
     let (found, _) = vectors::lookup(&cache, &embedder.model, documents);

@@ -30,7 +30,7 @@ pub const PORT: u16 = 8737;
 
 const CHUNK: usize = 1 << 20;
 
-/// `<cache>/models/<FILE>`, where `cache` is the folder `vectors::dir` resolves.
+/// `<cache>/models/<FILE>`, where `cache` is the folder `store::cache_dir` resolves.
 pub fn path(cache: &Path) -> PathBuf {
     cache.join("models").join(FILE)
 }

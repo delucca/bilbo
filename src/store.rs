@@ -96,6 +96,14 @@ pub fn config_home(env: &Env) -> Option<PathBuf> {
     absolute(&env.xdg_config_home).or_else(|| absolute(&env.home).map(|h| h.join(".config")))
 }
 
+/// `$XDG_CACHE_HOME/bilbo` when that is absolute, else `$HOME/.cache/bilbo`.
+pub fn cache_dir(env: &Env) -> Option<PathBuf> {
+    if let Some(xdg) = absolute(&env.xdg_cache_home) {
+        return Some(xdg.join("bilbo"));
+    }
+    absolute(&env.home).map(|home| home.join(".cache/bilbo"))
+}
+
 #[derive(Debug, PartialEq, Eq)]
 pub enum EntryKind {
     File,
@@ -763,5 +771,27 @@ mod tests {
         assert_eq!(s.section(6), (6, 9));
         assert_eq!(s.section(10), (10, 13));
         assert_eq!(s.section(14), (14, 16));
+    }
+
+    fn cache_env(xdg: Option<&str>, home: Option<&str>) -> Env {
+        Env::from_vars(|name| match name {
+            "XDG_CACHE_HOME" => xdg.map(Into::into),
+            "HOME" => home.map(Into::into),
+            _ => None,
+        })
+    }
+
+    #[test]
+    fn cache_dir_prefers_absolute_xdg_cache_home() {
+        assert_eq!(
+            cache_dir(&cache_env(Some("/x"), Some("/h"))),
+            Some(PathBuf::from("/x/bilbo"))
+        );
+        assert_eq!(
+            cache_dir(&cache_env(Some("x"), Some("/h"))),
+            Some(PathBuf::from("/h/.cache/bilbo"))
+        );
+        assert_eq!(cache_dir(&cache_env(Some("x"), None)), None);
+        assert_eq!(cache_dir(&cache_env(None, Some("h"))), None);
     }
 }

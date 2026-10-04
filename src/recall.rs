@@ -194,7 +194,7 @@ fn meaning(
     documents: &[Document],
     allowed: &[bool],
 ) -> (Vec<Hit>, Vec<String>) {
-    let cache = vectors::dir(env)
+    let cache = store::cache_dir(env)
         .map(|dir| vectors::load(&vectors::path(&dir, root)))
         .unwrap_or_default();
     let (found, missing) = vectors::lookup(&cache, &embedder.model, documents);

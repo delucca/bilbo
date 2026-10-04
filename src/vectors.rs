@@ -4,7 +4,6 @@ use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 
 use crate::rank::{self, Document};
-use crate::store::{self, Env};
 
 pub const MAGIC: &[u8; 10] = b"BILBOVEC1\n";
 
@@ -67,14 +66,6 @@ fn fnv(bytes: &[u8]) -> u64 {
         h = h.wrapping_mul(0x0000_0100_0000_01b3);
     }
     h
-}
-
-/// `$XDG_CACHE_HOME/bilbo` when that is absolute, else `$HOME/.cache/bilbo`.
-pub fn dir(env: &Env) -> Option<PathBuf> {
-    if let Some(xdg) = store::absolute(&env.xdg_cache_home) {
-        return Some(xdg.join("bilbo"));
-    }
-    store::absolute(&env.home).map(|home| home.join(".cache/bilbo"))
 }
 
 /// `<dir>/<16 lowercase hex digits of FNV-1a 64 of the normalized root>.vectors`.
@@ -200,14 +191,6 @@ mod tests {
 
     fn two() -> Cache {
         cache(&[(7, [0.5, -1.0, 2.0]), (3, [1.0, 0.0, 0.25])])
-    }
-
-    fn env(xdg: Option<&str>, home: Option<&str>) -> Env {
-        Env::from_vars(|name| match name {
-            "XDG_CACHE_HOME" => xdg.map(Into::into),
-            "HOME" => home.map(Into::into),
-            _ => None,
-        })
     }
 
     fn doc(texts: &[&str]) -> Document {
@@ -371,19 +354,5 @@ mod tests {
         let file = scratch.0.join("deep/er/c.vectors");
         save(&file, &two()).unwrap();
         assert_eq!(load(&file), two());
-    }
-
-    #[test]
-    fn dir_prefers_absolute_xdg_cache_home() {
-        assert_eq!(
-            dir(&env(Some("/x"), Some("/h"))),
-            Some(PathBuf::from("/x/bilbo"))
-        );
-        assert_eq!(
-            dir(&env(Some("x"), Some("/h"))),
-            Some(PathBuf::from("/h/.cache/bilbo"))
-        );
-        assert_eq!(dir(&env(Some("x"), None)), None);
-        assert_eq!(dir(&env(None, Some("h"))), None);
     }
 }
