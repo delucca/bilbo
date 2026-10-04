@@ -4,7 +4,8 @@ use std::path::{Path, PathBuf};
 
 use crate::library::corpus;
 use crate::markdown::fence_run;
-use crate::{markdown, note, rank};
+use crate::search::rank;
+use crate::{markdown, note};
 
 /// The environment variables root, config and cache resolution read; tests build it by hand.
 pub struct Env {

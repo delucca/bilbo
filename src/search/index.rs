@@ -2,8 +2,9 @@ use std::collections::HashSet;
 use std::path::Path;
 use std::time::{Duration, Instant};
 
-use crate::vectors::{self, Cache};
-use crate::{Failure, config, embed, rank, store};
+use crate::search::vectors::{self, Cache};
+use crate::search::{embed, rank};
+use crate::{Failure, config, store};
 
 const SAVE_EVERY: Duration = Duration::from_secs(30);
 const TIMEOUT: Duration = Duration::from_secs(600);

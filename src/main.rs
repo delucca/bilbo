@@ -2,22 +2,17 @@ mod check;
 mod citation;
 mod cite;
 mod config;
-mod digest;
-mod embed;
 mod frontmatter;
 mod hash;
 mod host;
-mod index;
 mod library;
 mod markdown;
 mod new;
 mod note;
-mod rank;
-mod recall;
+mod search;
 mod setup;
 mod store;
 mod text;
-mod vectors;
 mod wizard;
 
 use std::io::Write;
@@ -102,13 +97,13 @@ fn run() -> Result<ExitCode, Failure> {
             })
         }
         Some("recall") => {
-            let found = recall::run(&args[1..], &env)?;
+            let found = search::recall::run(&args[1..], &env)?;
             found.warnings.iter().for_each(|line| print_stderr(line));
             found.lines.iter().for_each(|line| print_stdout(line));
             Ok(ExitCode::SUCCESS)
         }
         Some("index") => {
-            let line = index::run(&args[1..], &env)?;
+            let line = search::index::run(&args[1..], &env)?;
             print_stdout(&line);
             Ok(ExitCode::SUCCESS)
         }
@@ -122,7 +117,7 @@ fn run() -> Result<ExitCode, Failure> {
             })
         }
         Some("digest") => {
-            let outcome = digest::run(&args[1..], &mut std::io::stdin().lock(), &env);
+            let outcome = search::digest::run(&args[1..], &mut std::io::stdin().lock(), &env);
             outcome.lines.iter().for_each(|line| print_stdout(line));
             if let Some(line) = &outcome.diagnostic {
                 print_stderr(line);
