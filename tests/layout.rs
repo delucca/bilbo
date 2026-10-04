@@ -330,6 +330,61 @@ fn only_main_prints() {
 }
 
 #[test]
+fn items_are_pub_or_private() {
+    for file in files() {
+        for banned in ["pub(crate)", "pub(super)"] {
+            assert!(
+                !file.code.contains(banned),
+                "src/{}: `{banned}`; items are `pub` or private",
+                file.rel
+            );
+        }
+        assert!(
+            !names(&file.code, "pub use "),
+            "src/{}: `pub use`; no re-exports",
+            file.rel
+        );
+        let test_only = ["setup/driven.rs", "setup/fakes.rs"].contains(&file.rel.as_str());
+        assert!(
+            test_only || !file.code.lines().any(|l| l.trim_end().ends_with("::*;")),
+            "src/{}: a glob import outside test code",
+            file.rel
+        );
+    }
+}
+
+#[test]
+fn a_domain_root_never_calls_its_own_verb() {
+    let files = files();
+    for verb in VERBS {
+        let Some((domain, leaf)) = verb
+            .trim_end_matches('/')
+            .trim_end_matches(".rs")
+            .split_once('/')
+        else {
+            continue;
+        };
+        let root = format!("{domain}/mod.rs");
+        let file = files
+            .iter()
+            .find(|f| f.rel == root)
+            .unwrap_or_else(|| panic!("src/{root} is missing"));
+        let code: String = file
+            .code
+            .lines()
+            .filter(|l| {
+                !l.trim_start().starts_with("pub mod ") && !l.trim_start().starts_with("mod ")
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            !names(&code, &format!("{leaf}::")),
+            "src/{root}: calls `{leaf}::`; only main uses a verb's module"
+        );
+    }
+}
+
+#[test]
 fn verbs_are_reached_only_from_main() {
     let files = files();
     assert!(
