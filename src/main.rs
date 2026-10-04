@@ -6,7 +6,6 @@ mod hash;
 mod host;
 mod library;
 mod markdown;
-mod new;
 mod note;
 mod search;
 mod setup;
@@ -82,7 +81,7 @@ fn run() -> Result<ExitCode, Failure> {
     match args.first().map(String::as_str) {
         None => Err(Failure::Usage("missing verb".into())),
         Some("new") => {
-            let path = new::run(&args[1..], &env)?;
+            let path = note::new::run(&args[1..], &env)?;
             print_stdout(&path.display().to_string());
             Ok(ExitCode::SUCCESS)
         }
