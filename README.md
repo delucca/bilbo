@@ -131,6 +131,7 @@ else `$XDG_DATA_HOME/bilbo`, else `~/.local/share/bilbo`, on macOS too.
 | `bilbo new <kind> <topic> [--title <text>]` | Creates the note and prints its path. Exits 1 when the topic already has a note. |
 | `bilbo check` | Prints every problem in the store, one per line, and changes nothing. Exits 1 when it finds any. |
 | `bilbo recall <query>... [--kind <kind>]... [--limit <n>]` | Prints the notes that best match, best first, 10 by default. Exits 1 when nothing matches. |
+| `bilbo recall <query>... --library [--corpus <corpus>]... [--limit <n>]` | Prints the sources and guides of the library that best match, by keyword, one block per file. Exits 1 when nothing matches. |
 | `bilbo index` | Embeds the passages the vector cache lacks and drops the ones no note holds any more. |
 | `bilbo digest` | Run by the plugin's prompt hook; see [The digest](#the-digest). |
 | `bilbo library` | Lists and shows the library, and stages and lands its sources; see [Library](#library). |
@@ -152,6 +153,25 @@ Without an embedder, `recall` matches whole words, ignoring case and accents.
 With one, it fuses that order with a ranking by meaning. When the embedder is
 down it falls back to keywords and says so on stderr; passages written since
 the last `bilbo index` rank by keywords only, and `recall` says that too.
+
+`recall --library` searches the sources and guides of the library by keyword
+instead of the notes; `--corpus` narrows it to a corpus and repeats. A block
+holds the path and line of the best passage, `source` or `guide`, the
+reference `bilbo library` takes to show the file (`<corpus>/<name>` for a
+source, `<corpus>` for a guide) and the lines of the passage's section
+(tab-separated), then the heading path below the title (`-` for the title
+passage), then the snippet:
+
+```console
+$ bilbo recall --library --corpus go goroutine leak
+/Users/me/.local/share/bilbo/library/go/effective-go.md:340	source	go/effective-go	340-380
+Concurrency > Goroutines
+They're called *goroutines* because the existing terms ...
+```
+
+It refuses with `bilbo: no sources match` when nothing matches and with
+`bilbo: no library at <root>` when the store has no corpus. Plain `recall`,
+`index` and the digest never read the library.
 
 `check` lints the whole store, the notes and the library, against their rules, so
 mistakes an agent makes while editing files by hand surface without bilbo
@@ -355,12 +375,17 @@ prints nothing without `bilbo` on `PATH`.
 wording when nothing matches, and offers to open a hit. It searches through
 `bilbo` only: when the binary is missing, it says so and stops.
 
+When the user asks what the library says or names a corpus, `recall` searches
+the library instead. It only locates sources: it hands each hit to `reference`
+as a pick, and never answers from the snippets.
+
 `reference` answers a question from the library ("what does the Go book say
 about X"). It lists the corpora with `bilbo library`, reads the guides, and
 posts its picks, the sources or sections that answer the question, before it
-reads anything; a catalog is only ever picked by section. It plans the picks
-with `bilbo library plan` and reads every slice through `bilbo library read`,
-never with a file tool. In Claude Code a plan of two to six partitions goes to
+reads anything; a catalog is only ever picked by section, and a catalog, a bare
+name or a question no guide entry covers is looked up with
+`bilbo recall --library`. It plans the picks with `bilbo library plan` and
+reads every slice through `bilbo library read`, never with a file tool. In Claude Code a plan of two to six partitions goes to
 one `general-purpose` reader each, briefed by the skill's
 `references/reader.md`; without the Agent tool, as in Codex, it plans smaller
 slices and reads up to 100,000 tokens itself. It drafts one `bilbo:` citation

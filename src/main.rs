@@ -43,6 +43,7 @@ const USAGE: &str = "\
 usage: bilbo new <kind> <topic> [--title <text>]
        bilbo check
        bilbo recall <query>... [--kind <kind>]... [--limit <n>]
+       bilbo recall <query>... --library [--corpus <corpus>]... [--limit <n>]
        bilbo index
        bilbo setup [--yes | --interactive] [--remove] [<setup option>]...
        bilbo digest
@@ -58,6 +59,7 @@ usage: bilbo new <kind> <topic> [--title <text>]
 new creates <root>/notes/<kind>-<topic>.md and prints its path.
 check prints every problem in the store and changes nothing.
 recall prints the notes that best match the query, best first, 10 unless --limit says otherwise.
+recall --library searches the sources and guides of the library by keyword instead of the notes; --corpus narrows it.
 index embeds the passages the vector cache lacks and drops the ones no note holds any more.
 digest reads a prompt hook's JSON on stdin and prints the notes that bear on the prompt; it always exits 0.
 library lists the corpora, prints a corpus's guide with the facts of each source, or a source's outline; stage and land add a source; plan cuts picks into slices and partitions; read prints slices and logs them.

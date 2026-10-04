@@ -2,7 +2,10 @@ mod common;
 
 use std::path::{Path, PathBuf};
 
-use common::{Fake, IDS, Run, TempDir, bilbo, config, dead_url, note_text, snapshot, store, write};
+use common::{
+    Fake, IDS, Locked, Run, TempDir, bilbo, config, dead_url, guide, library, note_text, snapshot,
+    store, write,
+};
 
 struct Setup {
     dir: TempDir,
@@ -781,4 +784,44 @@ fn digest_similarity_out_of_range() {
         run.stderr
     );
     assert!(fake.requests().is_empty());
+}
+
+#[test]
+fn index_embeds_no_library_text() {
+    let fake = Fake::start(4);
+    let s = setup("index-no-library", &fake, &[]);
+    write(&s.root, "plan-rollback.md", &note("Rollback", "Undo it.\n"));
+    for n in 0..20 {
+        library(
+            &s.root,
+            "go",
+            &format!("source-{n:02}"),
+            "# Goroutines\n\nA goroutine leak.\n",
+        );
+    }
+    guide(
+        &s.root,
+        "go",
+        "About go.",
+        &[("source-00", "goroutine notes")],
+    );
+    let before = snapshot(&s.root.join("library"));
+    let run = index(&s, &[], &[]);
+    ok(&run);
+    assert_eq!(run.stdout, "embedded 1, kept 0, dropped 0\n");
+    let inputs = fake.inputs();
+    assert_eq!(inputs.len(), 1, "{inputs:?}");
+    assert!(inputs[0].contains("Undo it."), "{inputs:?}");
+    assert!(
+        inputs.iter().all(|i| !i.contains("goroutine")),
+        "{inputs:?}"
+    );
+    assert_eq!(snapshot(&s.root.join("library")), before);
+
+    let locked = Locked::new(&s.root.join("library"), 0o755);
+    let again = index(&s, &[], &[]);
+    drop(locked);
+    ok(&again);
+    assert_eq!(again.stdout, "embedded 0, kept 1, dropped 0\n");
+    assert_eq!(fake.inputs().len(), 1);
 }
