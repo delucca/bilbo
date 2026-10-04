@@ -58,7 +58,8 @@ PYTHONDONTWRITEBYTECODE=1 python3 ~/.codex/skills/.system/plugin-creator/scripts
   in `src/main.rs`, `tests/<verb>.rs`, its own capability spec, and a
   MODIFIED `cli` spec (its Verb dispatch requirement lists the verbs).
 - Keep each dependency in its one user: `cliclack` and `libc` in
-  `src/wizard.rs`, `ring` in `src/model.rs`, `sha2` in `src/hash.rs`,
+  `src/wizard.rs`, `ring` in `src/model.rs`, `sha2` in `src/hash.rs` (and
+  in `tests/common`, to write library files with a correct digest),
   `unicode-normalization` in `src/text.rs`, `htmd` and `markup5ever_rcdom` in
   `src/html.rs`. Justify a new one in the change's `design.md`.
 - Unit tests live in the module they test. CLI behavior is tested through

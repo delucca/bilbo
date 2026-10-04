@@ -3,14 +3,15 @@ mod common;
 use std::path::{Path, PathBuf};
 
 use common::{
-    Fake, IDS, Run, TempDir, bench_store, bilbo, config, dead_url, note_text, snapshot, store,
-    write,
+    Fake, IDS, Locked, Run, TempDir, bench_library, bench_store, bilbo, config, dead_url, guide,
+    library, note_text, snapshot, store, write,
 };
 
 const USAGE: &str = "\
 usage: bilbo new <kind> <topic> [--title <text>]
        bilbo check
        bilbo recall <query>... [--kind <kind>]... [--limit <n>]
+       bilbo recall <query>... --library [--corpus <corpus>]... [--limit <n>]
        bilbo index
        bilbo setup [--yes | --interactive] [--remove] [<setup option>]...
        bilbo digest
@@ -26,6 +27,7 @@ usage: bilbo new <kind> <topic> [--title <text>]
 new creates <root>/notes/<kind>-<topic>.md and prints its path.
 check prints every problem in the store and changes nothing.
 recall prints the notes that best match the query, best first, 10 unless --limit says otherwise.
+recall --library searches the sources and guides of the library by keyword instead of the notes; --corpus narrows it.
 index embeds the passages the vector cache lacks and drops the ones no note holds any more.
 digest reads a prompt hook's JSON on stdin and prints the notes that bear on the prompt; it always exits 0.
 library lists the corpora, prints a corpus's guide with the facts of each source, or a source's outline; stage and land add a source; plan cuts picks into slices and partitions; read prints slices and logs them.
@@ -666,15 +668,39 @@ fn recall_leaves_store_as_found() {
 fn recall_over_a_6_mib_store_is_fast() {
     let dir = TempDir::new("recall-speed");
     let (root, mib) = bench_store(&dir);
+    let library_mib = bench_library(&root);
 
     let args = ["embedder", "timeout", "decisao"];
     assert_eq!(recall(&dir, &root, &args).code, 0);
     let start = std::time::Instant::now();
     let run = recall(&dir, &root, &args);
     let elapsed = start.elapsed();
-    eprintln!("store {mib:.1} MiB, recall took {} ms", elapsed.as_millis());
+    eprintln!(
+        "store {mib:.1} MiB beside a {library_mib:.1} MiB library, recall took {} ms",
+        elapsed.as_millis()
+    );
     assert_eq!(run.code, 0);
     assert!(elapsed.as_millis() < 250, "{elapsed:?}");
+}
+
+#[test]
+#[ignore = "timing; run with --release -- --ignored"]
+fn recall_library_over_14_mib_is_fast() {
+    let dir = TempDir::new("recall-library-speed");
+    let root = store(&dir);
+    let mib = bench_library(&root);
+
+    let args = ["embedder", "timeout", "decisao", "--library"];
+    assert_eq!(recall(&dir, &root, &args).code, 0);
+    let start = std::time::Instant::now();
+    let run = recall(&dir, &root, &args);
+    let elapsed = start.elapsed();
+    eprintln!(
+        "library {mib:.1} MiB, recall --library took {} ms",
+        elapsed.as_millis()
+    );
+    assert_eq!(run.code, 0);
+    assert!(elapsed.as_millis() < 500, "{elapsed:?}");
 }
 
 /// A store and a config for the embedder at `url`, with `extra` config lines after the standard two.
@@ -1234,4 +1260,678 @@ fn digest_keys_alone_are_keyword_only() {
     assert_eq!(run.code, 0, "{}", run.stderr);
     assert!(run.stdout.contains("plan-a.md"), "{}", run.stdout);
     assert!(run.stderr.is_empty(), "{}", run.stderr);
+}
+
+// Library recall.
+
+/// The title is line 7. Headings: Concurrency 11, Goroutines 15, Channels 19, Errors 23.
+const EFFECTIVE_GO: &str = "# Effective Go\n\nIntro text.\n\n## Concurrency\n\nShare memory by communicating.\n\n### Goroutines\n\nA goroutine is cheap.\n\n### Channels\n\nChannels sync.\n\n## Errors\n\nReturn errors.\n";
+
+fn go_root(dir: &TempDir) -> PathBuf {
+    let root = store(dir);
+    library(&root, "go", "effective-go", EFFECTIVE_GO);
+    root
+}
+
+fn path_of(root: &Path, file: &str) -> String {
+    root.join("library").join(file).display().to_string()
+}
+
+fn first_lines(run: &Run) -> Vec<&str> {
+    run.stdout
+        .trim_end()
+        .split("\n\n")
+        .filter(|b| !b.is_empty())
+        .map(|b| b.lines().next().unwrap())
+        .collect()
+}
+
+fn recall_lib(dir: &TempDir, root: &Path, args: &[&str]) -> Run {
+    let mut full = args.to_vec();
+    full.push("--library");
+    recall(dir, root, &full)
+}
+
+#[test]
+fn a_source_block() {
+    let dir = TempDir::new("recall-lib-source");
+    let root = go_root(&dir);
+    let run = recall_lib(&dir, &root, &["goroutine"]);
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    assert!(run.stderr.is_empty());
+    assert_eq!(
+        run.stdout,
+        format!(
+            "{}:15\tsource\tgo/effective-go\t15-18\nConcurrency > Goroutines\nA goroutine is cheap.\n",
+            path_of(&root, "go/effective-go.md")
+        )
+    );
+}
+
+#[test]
+fn a_guide_block() {
+    let dir = TempDir::new("recall-lib-guide");
+    let root = store(&dir);
+    library(&root, "go", "effective-go", EFFECTIVE_GO);
+    guide(
+        &root,
+        "go",
+        "About go.",
+        &[
+            ("effective-go", "Idioms for writing clear Go."),
+            ("errors", "Wrap them."),
+        ],
+    );
+    let run = recall_lib(&dir, &root, &["idioms"]);
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    assert_eq!(
+        run.stdout,
+        format!(
+            "{}:10\tguide\tgo\t10-13\neffective-go\nIdioms for writing clear Go.\n",
+            path_of(&root, "go/guide.md")
+        )
+    );
+}
+
+#[test]
+fn a_hit_under_the_title() {
+    let dir = TempDir::new("recall-lib-title");
+    let root = go_root(&dir);
+    let run = recall_lib(&dir, &root, &["intro"]);
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    let mut lines = run.stdout.lines();
+    assert_eq!(
+        lines.next().unwrap(),
+        format!(
+            "{}:7\tsource\tgo/effective-go\t7-10",
+            path_of(&root, "go/effective-go.md")
+        )
+    );
+    assert_eq!(lines.next(), Some("-"));
+}
+
+#[test]
+fn a_source_with_no_heading_below_its_title() {
+    let dir = TempDir::new("recall-lib-flat");
+    let root = store(&dir);
+    library(&root, "go", "flat", "# Flat\n\nOne\nTwo\nThree wumpus\n");
+    let run = recall_lib(&dir, &root, &["wumpus"]);
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    assert!(
+        run.stdout.lines().next().unwrap().ends_with("\t7-11"),
+        "{}",
+        run.stdout
+    );
+    assert_eq!(run.stdout.lines().nth(1), Some("-"));
+}
+
+#[test]
+fn a_section_holds_its_subsections() {
+    let dir = TempDir::new("recall-lib-subsections");
+    let root = go_root(&dir);
+    let run = recall_lib(&dir, &root, &["memory"]);
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    let mut lines = run.stdout.lines();
+    assert_eq!(
+        lines.next().unwrap(),
+        format!(
+            "{}:11\tsource\tgo/effective-go\t11-22",
+            path_of(&root, "go/effective-go.md")
+        )
+    );
+    assert_eq!(lines.next(), Some("Concurrency"));
+}
+
+#[test]
+fn a_later_part_has_its_own_line_and_the_same_section() {
+    let dir = TempDir::new("recall-lib-part");
+    let root = store(&dir);
+    let first = "alpha ".repeat(600);
+    let second = format!("zebra {}", "beta ".repeat(600));
+    let body = format!("# T\n\n## Big\n\n{first}\n\n{second}\n\n## Next\n\nx\n");
+    library(&root, "go", "big", &body);
+    let run = recall_lib(&dir, &root, &["zebra"]);
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    assert_eq!(
+        first_lines(&run),
+        [format!(
+            "{}:13\tsource\tgo/big\t9-14",
+            path_of(&root, "go/big.md")
+        )]
+    );
+    assert_eq!(run.stdout.lines().nth(1), Some("Big"));
+}
+
+#[test]
+fn a_fenced_heading_does_not_end_a_section() {
+    let dir = TempDir::new("recall-lib-fenced");
+    let root = store(&dir);
+    let body = "# T\n\n### Goroutines\n\nA goroutine.\n\n```\n## not a heading\n```\n\nmore\n\n## Next\n\nx\n";
+    library(&root, "go", "fence", body);
+    let run = recall_lib(&dir, &root, &["goroutine"]);
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    assert!(
+        run.stdout.lines().next().unwrap().ends_with("\t9-18"),
+        "{}",
+        run.stdout
+    );
+}
+
+#[test]
+fn the_section_is_what_library_show_prints() {
+    let dir = TempDir::new("recall-lib-show");
+    let root = go_root(&dir);
+    let run = recall_lib(&dir, &root, &["goroutine"]);
+    let first = run.stdout.lines().next().unwrap();
+    let range = first.rsplit('\t').next().unwrap();
+    let anchor = run.stdout.lines().nth(1).unwrap();
+    let show = bilbo(
+        dir.path(),
+        &[("BILBO_HOME", root.to_str().unwrap())],
+        &["library", "show", &format!("go/effective-go#{anchor}")],
+    );
+    assert_eq!(show.code, 0, "{}", show.stderr);
+    let row = show.stdout.lines().find(|l| l.contains(anchor)).unwrap();
+    assert!(row.starts_with(&format!("{range}\t")), "{row} vs {range}");
+}
+
+#[test]
+fn notes_are_not_searched() {
+    let dir = TempDir::new("recall-lib-notes");
+    let root = go_root(&dir);
+    write(
+        &root,
+        "gotcha-goroutines.md",
+        &note("Goroutines", "wumpus goroutine\n"),
+    );
+    let run = recall_lib(&dir, &root, &["wumpus"]);
+    failed(&run, 1, "bilbo: no sources match\n");
+    assert_eq!(run.stderr, "bilbo: no sources match\n");
+}
+
+#[test]
+fn a_note_block_is_not_printed() {
+    let dir = TempDir::new("recall-lib-no-note-block");
+    let root = go_root(&dir);
+    write(
+        &root,
+        "gotcha-goroutines.md",
+        &note("Goroutines", "A goroutine.\n"),
+    );
+    let run = recall_lib(&dir, &root, &["goroutine"]);
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    assert!(!run.stdout.contains("/notes/"), "{}", run.stdout);
+    assert!(!run.stdout.contains("2026-10-02"), "{}", run.stdout);
+    assert_eq!(blocks(&run), 1);
+}
+
+#[test]
+fn the_embedder_is_never_asked() {
+    let dir = TempDir::new("recall-lib-embedder");
+    let fake = Fake::start(4);
+    let (root, config) = embedded(&dir, &fake, &[], &rollback_notes());
+    write(&root, "plan-fresh.md", &note("Fresh", "fresh text\n"));
+    library(&root, "go", "effective-go", EFFECTIVE_GO);
+    let sent = fake.requests().len();
+    let before = snapshot(&dir.path().join("cache"));
+    for args in [
+        vec!["goroutine", "--library"],
+        vec!["goroutine", "--corpus", "go"],
+    ] {
+        let run = recall_with(&dir, &root, &config, &[], &args);
+        assert_eq!(run.code, 0, "{}", run.stderr);
+        assert!(run.stderr.is_empty(), "{}", run.stderr);
+    }
+    assert_eq!(fake.requests().len(), sent);
+    assert_eq!(snapshot(&dir.path().join("cache")), before);
+}
+
+#[test]
+fn a_paraphrase_is_not_a_hit() {
+    let dir = TempDir::new("recall-lib-paraphrase");
+    let fake = Fake::start(4);
+    fake.vector("thread", &[1.0, 0.0, 0.0, 0.0]);
+    fake.vector("goroutine", &[1.0, 0.0, 0.0, 0.0]);
+    let (root, config) = embedded(&dir, &fake, &[], &rollback_notes());
+    library(&root, "go", "effective-go", EFFECTIVE_GO);
+    let run = recall_with(&dir, &root, &config, &[], &["thread", "--library"]);
+    failed(&run, 1, "bilbo: no sources match\n");
+    assert_eq!(run.stderr, "bilbo: no sources match\n");
+}
+
+#[test]
+fn library_frontmatter_is_not_searched() {
+    let dir = TempDir::new("recall-lib-front");
+    let root = store(&dir);
+    library(&root, "go", "a", "# A\n\ntext\n");
+    let path = root.join("library/go/a.md");
+    let text = std::fs::read_to_string(&path).unwrap();
+    std::fs::write(
+        &path,
+        text.replace("example.com/doc", "golang.org/doc/effective_go"),
+    )
+    .unwrap();
+    assert!(std::fs::read_to_string(&path).unwrap().contains("golang"));
+    let run = recall_lib(&dir, &root, &["golang"]);
+    failed(&run, 1, "bilbo: no sources match\n");
+}
+
+#[test]
+fn an_edited_source_is_still_found() {
+    let dir = TempDir::new("recall-lib-edited");
+    let root = go_root(&dir);
+    let path = root.join("library/go/effective-go.md");
+    let mut text = std::fs::read_to_string(&path).unwrap();
+    text.push_str("\nA goroutine leak, added by hand.\n");
+    std::fs::write(&path, text).unwrap();
+    let run = recall_lib(&dir, &root, &["leak"]);
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    assert!(run.stdout.contains("effective-go.md"), "{}", run.stdout);
+}
+
+#[test]
+fn invalid_entries_are_skipped() {
+    let dir = TempDir::new("recall-lib-invalid");
+    let root = store(&dir);
+    library(&root, "go", "ok", "# Ok\n\nnothing here\n");
+    for file in [
+        "go/Effective_Go.md",
+        "Go-Old/errors.md",
+        "go/.draft.md",
+        "go/sub/deep.md",
+        "plan/errors.md",
+    ] {
+        let path = root.join("library").join(file);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, "---\n---\n# T\n\nA goroutine.\n").unwrap();
+    }
+    let run = recall_lib(&dir, &root, &["goroutine"]);
+    failed(&run, 1, "bilbo: no sources match\n");
+    assert_eq!(run.stderr, "bilbo: no sources match\n");
+}
+
+#[test]
+fn captures_are_not_searched() {
+    let dir = TempDir::new("recall-lib-captures");
+    let root = store(&dir);
+    library(&root, "go", "ok", "# Ok\n\nnothing here\n");
+    let captures = root.join(".bilbo/captures/01M3YJ7R6HK6NQ30DCDB1P4DYB");
+    std::fs::create_dir_all(&captures).unwrap();
+    std::fs::write(captures.join("capture.md"), "A goroutine.\n").unwrap();
+    let run = recall_lib(&dir, &root, &["goroutine"]);
+    failed(&run, 1, "bilbo: no sources match\n");
+}
+
+#[test]
+fn library_more_query_words_rank_higher() {
+    let dir = TempDir::new("recall-lib-words");
+    let root = store(&dir);
+    library(&root, "go", "effective-go", "# A\n\ngoroutine leak\n");
+    library(&root, "go", "errors", "# B\n\nleak only\n");
+    let run = recall_lib(&dir, &root, &["goroutine", "leak"]);
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    let firsts = first_lines(&run);
+    assert_eq!(firsts.len(), 2);
+    assert!(firsts[0].contains("effective-go.md"), "{firsts:?}");
+    assert!(firsts[1].contains("errors.md"), "{firsts:?}");
+}
+
+#[test]
+fn one_block_per_source() {
+    let dir = TempDir::new("recall-lib-one-block");
+    let root = store(&dir);
+    let mut body = String::from("# Clippy lints\n");
+    for n in 0..30 {
+        body.push_str(&format!("\n## lint_{n}\n\nreturn value {n}\n"));
+    }
+    library(&root, "rust", "clippy-lints", &body);
+    library(&root, "rust", "book", "# Book\n\nreturn early\n");
+    library(&root, "go", "errors", "# Errors\n\nreturn an error\n");
+    let run = recall_lib(&dir, &root, &["return"]);
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    assert_eq!(blocks(&run), 3);
+    let catalog = first_lines(&run)
+        .iter()
+        .filter(|l| l.contains("clippy-lints.md"))
+        .count();
+    assert_eq!(catalog, 1);
+}
+
+#[test]
+fn sources_and_guides_share_one_order() {
+    let dir = TempDir::new("recall-lib-shared-order");
+    let root = store(&dir);
+    library(&root, "go", "effective-go", "# A\n\nidioms and errors\n");
+    guide(
+        &root,
+        "go",
+        "About go.",
+        &[("effective-go", "idioms for go")],
+    );
+    let run = recall_lib(&dir, &root, &["idioms", "errors"]);
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    let firsts = first_lines(&run);
+    assert_eq!(firsts.len(), 2);
+    assert!(firsts[0].contains("\tsource\t"), "{firsts:?}");
+    assert!(firsts[1].contains("\tguide\tgo\t"), "{firsts:?}");
+}
+
+#[test]
+fn the_default_limit_is_10() {
+    let dir = TempDir::new("recall-lib-limit");
+    let root = store(&dir);
+    for n in 0..15 {
+        library(
+            &root,
+            "go",
+            &format!("source-{n:02}"),
+            "# S\n\nA goroutine.\n",
+        );
+    }
+    assert_eq!(blocks(&recall_lib(&dir, &root, &["goroutine"])), 10);
+    assert_eq!(
+        blocks(&recall_lib(&dir, &root, &["goroutine", "--limit", "3"])),
+        3
+    );
+}
+
+#[test]
+fn library_ties_fall_back_to_path_order() {
+    let dir = TempDir::new("recall-lib-ties");
+    let root = store(&dir);
+    library(&root, "rust", "same", "# S\n\nA goroutine.\n");
+    library(&root, "go", "same", "# S\n\nA goroutine.\n");
+    let run = recall_lib(&dir, &root, &["goroutine"]);
+    let firsts = first_lines(&run);
+    assert!(firsts[0].contains("/go/same.md"), "{firsts:?}");
+    assert!(firsts[1].contains("/rust/same.md"), "{firsts:?}");
+}
+
+fn errors_library(dir: &TempDir) -> PathBuf {
+    let root = store(dir);
+    for corpus in ["go", "rust", "haskell"] {
+        library(&root, corpus, "errors", "# Errors\n\nWrapping errors.\n");
+    }
+    root
+}
+
+#[test]
+fn one_corpus() {
+    let dir = TempDir::new("recall-lib-one-corpus");
+    let root = errors_library(&dir);
+    let run = recall(&dir, &root, &["wrapping", "--corpus", "go"]);
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    assert_eq!(blocks(&run), 1);
+    assert!(run.stdout.contains("/go/errors.md"), "{}", run.stdout);
+}
+
+#[test]
+fn two_corpora() {
+    let dir = TempDir::new("recall-lib-two-corpora");
+    let root = errors_library(&dir);
+    let run = recall(
+        &dir,
+        &root,
+        &["errors", "--corpus", "go", "--corpus", "rust"],
+    );
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    assert_eq!(blocks(&run), 2);
+    assert!(!run.stdout.contains("haskell"), "{}", run.stdout);
+}
+
+#[test]
+fn a_corpus_named_with_no_library() {
+    let dir = TempDir::new("recall-lib-corpus-no-library");
+    let root = store(&dir);
+    let run = recall(&dir, &root, &["errors", "--corpus", "lisp"]);
+    failed(&run, 1, "bilbo: no library at ");
+    assert_eq!(
+        run.stderr,
+        format!("bilbo: no library at {}\n", root.display())
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn an_unreadable_corpus_or_source_is_skipped() {
+    let dir = TempDir::new("recall-lib-unreadable");
+    let root = store(&dir);
+    library(&root, "go", "ok", "# Ok\n\nA goroutine.\n");
+    let locked_file = library(&root, "go", "locked", "# Locked\n\nA goroutine.\n");
+    library(&root, "rust", "a", "# A\n\nA goroutine.\n");
+    let _file = Locked::new(&locked_file, 0o644);
+    let _folder = Locked::new(&root.join("library/rust"), 0o755);
+    if std::fs::read(&locked_file).is_ok() || std::fs::read_dir(root.join("library/rust")).is_ok() {
+        eprintln!("skipped: the entries are readable despite mode 000 (running as root?)");
+        return;
+    }
+    let run = recall_lib(&dir, &root, &["goroutine"]);
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    assert!(run.stderr.is_empty(), "{}", run.stderr);
+    assert_eq!(blocks(&run), 1);
+    assert!(run.stdout.contains("/go/ok.md"), "{}", run.stdout);
+}
+
+#[test]
+fn an_unknown_corpus() {
+    let dir = TempDir::new("recall-lib-unknown-corpus");
+    let root = errors_library(&dir);
+    let run = recall(&dir, &root, &["errors", "--corpus", "lisp"]);
+    assert_eq!(run.code, 1);
+    assert!(run.stdout.is_empty());
+    assert_eq!(
+        run.stderr,
+        format!(
+            "bilbo: no corpus 'lisp' in {}\n",
+            root.join("library").display()
+        )
+    );
+}
+
+#[test]
+fn a_bad_or_reserved_corpus_is_a_usage_error() {
+    let dir = TempDir::new("recall-lib-bad-corpus");
+    let root = errors_library(&dir);
+    for name in ["Go", "plan", "go--x"] {
+        let run = recall(&dir, &root, &["errors", "--corpus", name]);
+        failed(&run, 2, "bilbo: ");
+        assert!(run.stderr.contains(&format!("'{name}'")), "{}", run.stderr);
+    }
+    let run = recall(&dir, &root, &["errors", "--corpus"]);
+    failed(&run, 2, "bilbo: --corpus needs a value");
+}
+
+#[test]
+fn kind_with_the_library_is_a_usage_error() {
+    let dir = TempDir::new("recall-lib-kind");
+    let root = errors_library(&dir);
+    for args in [
+        &["goroutine", "--library", "--kind", "reference"][..],
+        &["goroutine", "--corpus", "go", "--kind", "reference"][..],
+    ] {
+        let run = recall(&dir, &root, args);
+        failed(&run, 2, "bilbo: ");
+        assert!(
+            run.stderr.contains("--kind") && run.stderr.contains("--library"),
+            "{}",
+            run.stderr
+        );
+    }
+}
+
+#[test]
+fn library_takes_no_value() {
+    let dir = TempDir::new("recall-lib-value");
+    let root = errors_library(&dir);
+    let run = recall(&dir, &root, &["wrapping", "--library=go"]);
+    failed(&run, 2, "bilbo: ");
+    assert!(run.stderr.contains("--library"), "{}", run.stderr);
+}
+
+#[test]
+fn library_options_go_anywhere() {
+    let dir = TempDir::new("recall-lib-anywhere");
+    let root = errors_library(&dir);
+    let a = recall(
+        &dir,
+        &root,
+        &["--library", "--corpus=go", "wrapping", "errors"],
+    );
+    let b = recall(&dir, &root, &["wrapping", "errors", "--corpus", "go"]);
+    assert_eq!(a.code, 0, "{}", a.stderr);
+    assert_eq!(a.stdout, b.stdout);
+    assert_eq!(blocks(&a), 1);
+}
+
+#[test]
+fn double_dash_makes_library_a_word() {
+    let dir = TempDir::new("recall-lib-dashdash");
+    let root = store(&dir);
+    write(&root, "plan-a.md", &note("A", "the --library flag\n"));
+    let run = recall(&dir, &root, &["--", "--library", "flag"]);
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    assert!(run.stdout.contains("plan-a.md"), "{}", run.stdout);
+}
+
+#[test]
+fn nothing_matches() {
+    let dir = TempDir::new("recall-lib-nothing");
+    let root = go_root(&dir);
+    let run = recall_lib(&dir, &root, &["wumpus"]);
+    failed(&run, 1, "bilbo: no sources match\n");
+    assert_eq!(run.stderr, "bilbo: no sources match\n");
+}
+
+#[test]
+fn no_library() {
+    let dir = TempDir::new("recall-lib-none");
+    let root = store(&dir);
+    write(&root, "plan-a.md", &note("A", "goroutine\n"));
+    let run = recall_lib(&dir, &root, &["goroutine"]);
+    failed(&run, 1, "bilbo: no library at ");
+    assert_eq!(
+        run.stderr,
+        format!("bilbo: no library at {}\n", root.display())
+    );
+
+    std::fs::create_dir_all(root.join("library/Not-Valid")).unwrap();
+    std::fs::create_dir_all(root.join("library/plan")).unwrap();
+    std::fs::write(root.join("library/loose.md"), "x").unwrap();
+    let run = recall_lib(&dir, &root, &["goroutine"]);
+    assert_eq!(
+        run.stderr,
+        format!("bilbo: no library at {}\n", root.display())
+    );
+    assert_eq!(run.code, 1);
+}
+
+#[test]
+fn a_library_without_notes() {
+    let dir = TempDir::new("recall-lib-no-notes");
+    let root = dir.path().join("store");
+    library(&root, "go", "effective-go", EFFECTIVE_GO);
+    assert!(!root.join("notes").exists());
+    let run = recall_lib(&dir, &root, &["goroutine"]);
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    assert!(run.stderr.is_empty(), "{}", run.stderr);
+    assert!(run.stdout.contains("effective-go.md"), "{}", run.stdout);
+
+    let none = dir.path().join("empty");
+    let run = recall_lib(&dir, &none, &["goroutine"]);
+    failed(&run, 1, "bilbo: no library at ");
+    assert!(!run.stderr.contains("no store"), "{}", run.stderr);
+}
+
+#[test]
+fn plain_recall_without_notes_still_needs_a_store() {
+    let dir = TempDir::new("recall-lib-plain-no-notes");
+    let root = dir.path().join("store");
+    library(&root, "go", "effective-go", EFFECTIVE_GO);
+    let run = recall(&dir, &root, &["goroutine"]);
+    failed(&run, 1, &format!("bilbo: no store at {}\n", root.display()));
+}
+
+#[test]
+fn library_recall_still_loads_the_settings() {
+    let dir = TempDir::new("recall-lib-config");
+    let root = go_root(&dir);
+    let config_path = config(&dir, &["digest.log = yes"]);
+    let run = recall_with(&dir, &root, &config_path, &[], &["goroutine", "--library"]);
+    failed(&run, 2, "bilbo: ");
+    assert!(run.stderr.contains("digest.log"), "{}", run.stderr);
+}
+
+#[test]
+fn library_recall_leaves_the_store_as_found() {
+    let dir = TempDir::new("recall-lib-readonly");
+    let root = go_root(&dir);
+    write(&root, "plan-a.md", &note("A", "goroutine\n"));
+    let before = snapshot(&root);
+    let run = recall_lib(&dir, &root, &["goroutine"]);
+    assert_eq!(run.code, 0);
+    assert_eq!(snapshot(&root), before);
+}
+
+// Plain search leaves the library alone.
+
+fn library_with_goroutines(root: &Path) {
+    for n in 0..20 {
+        library(
+            root,
+            "go",
+            &format!("source-{n:02}"),
+            "# S\n\nA goroutine leak.\n",
+        );
+    }
+    guide(root, "go", "About go.", &[("source-00", "goroutine notes")]);
+}
+
+#[test]
+fn plain_recall_ignores_sources() {
+    let dir = TempDir::new("recall-plain-ignores");
+    let root = store(&dir);
+    write(
+        &root,
+        "gotcha-goroutines.md",
+        &note("Goroutines", "A goroutine leak.\n"),
+    );
+    library_with_goroutines(&root);
+    let library_before = snapshot(&root.join("library"));
+    let run = recall(&dir, &root, &["goroutine"]);
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    assert!(run.stderr.is_empty(), "{}", run.stderr);
+    assert_eq!(blocks(&run), 1);
+    assert!(
+        run.stdout.contains("gotcha-goroutines.md"),
+        "{}",
+        run.stdout
+    );
+    assert!(!run.stdout.contains("library"), "{}", run.stdout);
+    assert_eq!(snapshot(&root.join("library")), library_before);
+
+    let locked = Locked::new(&root.join("library"), 0o755);
+    let again = recall(&dir, &root, &["goroutine"]);
+    drop(locked);
+    assert_eq!(again.code, 0, "{}", again.stderr);
+    assert!(again.stderr.is_empty(), "{}", again.stderr);
+    assert_eq!(again.stdout, run.stdout);
+}
+
+#[test]
+fn plain_recall_gives_no_hint_when_only_the_library_matches() {
+    let dir = TempDir::new("recall-plain-no-hint");
+    let root = store(&dir);
+    write(&root, "plan-a.md", &note("A", "rollback\n"));
+    library_with_goroutines(&root);
+    let library_before = snapshot(&root.join("library"));
+    let run = recall(&dir, &root, &["goroutine"]);
+    failed(&run, 1, "bilbo: no notes match\n");
+    assert_eq!(run.stderr, "bilbo: no notes match\n");
+    assert_eq!(snapshot(&root.join("library")), library_before);
+
+    let locked = Locked::new(&root.join("library"), 0o755);
+    let again = recall(&dir, &root, &["goroutine"]);
+    drop(locked);
+    failed(&again, 1, "bilbo: no notes match\n");
+    assert_eq!(again.stderr, "bilbo: no notes match\n");
 }

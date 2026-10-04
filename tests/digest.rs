@@ -5,7 +5,8 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime};
 
 use common::{
-    Fake, IDS, Run, TempDir, bench_store, bilbo, bilbo_input, config, snapshot, store, write,
+    Fake, IDS, Locked, Run, TempDir, bench_store, bilbo, bilbo_input, config, guide, library,
+    snapshot, store, write,
 };
 
 const CREATED: &str = "2026-10-02T14:23-03:00";
@@ -810,4 +811,39 @@ fn digest_over_a_6_mib_store_is_fast() {
         assert!(elapsed < Duration::from_millis(1500), "{elapsed:?}");
         assert!(elapsed < Duration::from_millis(400), "{elapsed:?}");
     }
+}
+
+#[test]
+fn a_source_holding_every_word_is_not_a_digest_hit() {
+    let rig = Rig::new("digest-library", &[]);
+    write(
+        &rig.root,
+        "plan-a.md",
+        &note("Plan a", "Nothing relevant.\n"),
+    );
+    for n in 0..5 {
+        library(
+            &rig.root,
+            "go",
+            &format!("source-{n}"),
+            "# Slots\n\nWhy does the embedder livelock on long chunks, a livelock on chunks.\n",
+        );
+    }
+    guide(
+        &rig.root,
+        "go",
+        "About go.",
+        &[("source-0", "the embedder livelock on long chunks")],
+    );
+    let before = snapshot(&rig.root.join("library"));
+    let run = rig.digest("abc", PROMPT);
+    assert!(run.stdout.is_empty(), "{}", run.stdout);
+    assert!(run.stderr.is_empty(), "{}", run.stderr);
+    assert_eq!(snapshot(&rig.root.join("library")), before);
+
+    let locked = Locked::new(&rig.root.join("library"), 0o755);
+    let again = rig.digest("def", PROMPT);
+    drop(locked);
+    assert!(again.stdout.is_empty(), "{}", again.stdout);
+    assert!(again.stderr.is_empty(), "{}", again.stderr);
 }

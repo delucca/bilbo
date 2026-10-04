@@ -923,3 +923,143 @@ pub fn bench_store(dir: &TempDir) -> (PathBuf, f64) {
     assert!((5.5..=6.5).contains(&mib), "{mib} MiB");
     (root, mib)
 }
+
+const LIBRARY_ORIGIN: &str = "url: https://example.com/doc";
+
+/// Writes `<root>/library/<corpus>/<name>.md` in the library-store format with a correct digest. `body` opens
+/// with its `# <title>` line, so the title is line 7: the frontmatter takes lines 1 to 6.
+pub fn library(root: &Path, corpus: &str, name: &str, body: &str) -> PathBuf {
+    let digest = format!("sha256:{}", sha256(body));
+    let text = format!(
+        "---\nid: {}\nfetched: 2026-10-03\norigin: \"{LIBRARY_ORIGIN}\"\ndigest: {digest}\n---\n{body}",
+        IDS[0]
+    );
+    let path = root.join("library").join(corpus).join(format!("{name}.md"));
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(&path, text).unwrap();
+    path
+}
+
+/// Writes `<root>/library/<corpus>/guide.md`. Lines: the title is 6, `lead` is 8, and entry `i` is
+/// `\n## <name>\n\n<prose>\n`, a heading on line 10 for the first and 4 lines further for each next one when its
+/// prose is one line.
+pub fn guide(root: &Path, corpus: &str, lead: &str, entries: &[(&str, &str)]) -> PathBuf {
+    let mut text = format!(
+        "---\nid: {}\ncreated: 2026-10-03T10:00-03:00\n---\n\n# {corpus}\n\n{lead}\n",
+        IDS[1]
+    );
+    for (name, prose) in entries {
+        text.push_str(&format!("\n## {name}\n\n{prose}\n"));
+    }
+    let path = root.join("library").join(corpus).join("guide.md");
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(&path, text).unwrap();
+    path
+}
+
+fn sha256(text: &str) -> String {
+    use sha2::{Digest, Sha256};
+    Sha256::digest(text.as_bytes())
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
+}
+
+/// A book: `chapters` level-2 sections of a paragraph and `parts` level-3 sections each, with a code fence in every
+/// third chapter.
+fn bench_book(seed: &mut u64, title: &str, chapters: usize, parts: usize) -> String {
+    let mut text = format!("# {title}\n\n{}\n", paragraph(seed));
+    for chapter in 0..chapters {
+        text.push_str(&format!("\n## Chapter {chapter}\n\n{}\n", paragraph(seed)));
+        for part in 0..parts {
+            text.push_str(&format!("\n### Part {part}\n\n{}\n", paragraph(seed)));
+        }
+        if chapter % 3 == 0 {
+            text.push_str("\n```\nfn main() {}\n# not a heading\n```\n");
+        }
+    }
+    text
+}
+
+/// A catalog: `entries` short level-2 sections.
+fn bench_catalog(seed: &mut u64, title: &str, entries: usize) -> String {
+    let mut text = format!("# {title}\n\n{}\n", paragraph(seed));
+    for entry in 0..entries {
+        let words = 30 + (xorshift(seed) % 40) as usize;
+        text.push_str(&format!(
+            "\n## entry_{entry}\n\n{}\n",
+            bench_text(seed, words)
+        ));
+    }
+    text
+}
+
+/// A generated library of 8 corpora, about 14 MiB, under `<root>/library/`: two corpora of large books with three
+/// heading levels, one catalog of hundreds of short sections beside a book, and five of many short sources, each
+/// with a guide. Returns its size in MiB.
+pub fn bench_library(root: &Path) -> f64 {
+    let mut seed = 0xD1B5_4A32_D192_ED03u64;
+    let mut total = 0usize;
+    let mut put = |root: &Path, corpus: &str, name: &str, body: &str| {
+        let path = library(root, corpus, name, body);
+        total += std::fs::metadata(path).unwrap().len() as usize;
+    };
+    for corpus in ["books-a", "books-b"] {
+        for book in 0..3 {
+            let body = bench_book(&mut seed, &format!("Book {book}"), 265, 3);
+            put(root, corpus, &format!("book-{book}"), &body);
+        }
+    }
+    let catalog = bench_catalog(&mut seed, "Lints", 3800);
+    put(root, "catalog", "lints", &catalog);
+    let body = bench_book(&mut seed, "Handbook", 265, 3);
+    put(root, "catalog", "handbook", &body);
+    for corpus in ["short-a", "short-b", "short-c", "short-d", "short-e"] {
+        for n in 0..215 {
+            let body = bench_book(&mut seed, &format!("Page {n}"), 4, 2);
+            put(root, corpus, &format!("page-{n}"), &body);
+        }
+    }
+    for corpus in std::fs::read_dir(root.join("library")).unwrap() {
+        let corpus = corpus.unwrap().file_name().into_string().unwrap();
+        guide(
+            root,
+            &corpus,
+            "Bench corpus.",
+            &[("page-0", "A source about timeouts and decisions.")],
+        );
+        total += std::fs::metadata(root.join("library").join(&corpus).join("guide.md"))
+            .unwrap()
+            .len() as usize;
+    }
+    let mib = total as f64 / (1024.0 * 1024.0);
+    assert!((13.5..=14.5).contains(&mib), "{mib} MiB");
+    mib
+}
+
+/// Sets `path` to mode 000 and restores `mode` when dropped, so a failed assertion still lets the `TempDir` clean up.
+#[cfg(unix)]
+pub struct Locked {
+    path: PathBuf,
+    mode: u32,
+}
+
+#[cfg(unix)]
+impl Locked {
+    pub fn new(path: &Path, mode: u32) -> Locked {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o000)).unwrap();
+        Locked {
+            path: path.to_path_buf(),
+            mode,
+        }
+    }
+}
+
+#[cfg(unix)]
+impl Drop for Locked {
+    fn drop(&mut self) {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&self.path, std::fs::Permissions::from_mode(self.mode));
+    }
+}
