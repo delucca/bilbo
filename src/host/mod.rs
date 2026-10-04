@@ -1,4 +1,5 @@
-//! Adapters to what bilbo runs beside: other programs, claude and codex, launchd and systemd, the local model, and the terminal.
+//! Adapters to what bilbo runs beside: other programs, claude and codex, launchd and systemd, the
+//! local model, and the terminal.
 
 pub mod agents;
 pub mod command;

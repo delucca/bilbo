@@ -1,5 +1,12 @@
 //! End-to-end runs of setup's wizard against a scripted terminal.
 
+use std::cell::Cell;
+use std::ffi::OsString;
+use std::io;
+use std::path::{Path, PathBuf};
+
+use zeroize::Zeroizing;
+
 use super::facts::gather;
 use super::fakes::*;
 use super::flags::{Flags, Mode, settle};
@@ -11,11 +18,6 @@ use crate::Failure;
 use crate::host::prompt::{self, Prompter};
 use crate::host::{model, timer};
 use crate::shared::store;
-use std::cell::Cell;
-use std::ffi::OsString;
-use std::io;
-use std::path::{Path, PathBuf};
-use zeroize::Zeroizing;
 
 /// Answers by prompt text; anything not listed takes the prompt's own initial value.
 #[derive(Default)]

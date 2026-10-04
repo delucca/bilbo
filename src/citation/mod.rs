@@ -1,4 +1,5 @@
-//! Citations: parsing `bilbo:` citations and checking them against notes and sources, and the `cite` verb.
+//! Citations: parsing `bilbo:` citations and checking them against notes and sources, and the
+//! `cite` verb.
 
 pub mod cite;
 

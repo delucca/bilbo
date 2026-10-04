@@ -1,5 +1,5 @@
-//! The frontmatter values every store file shares: the `<key>: <value>` line, ULID ids and `created` times. Each
-//! kind of file splits its own block (`note::read`, `source::split_front`).
+//! The frontmatter values every store file shares: the `<key>: <value>` line, ULID ids and
+//! `created` times. Each kind of file splits its own block (`note::read`, `source::split_front`).
 
 use std::io::Read;
 

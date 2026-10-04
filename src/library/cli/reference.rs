@@ -109,7 +109,7 @@ pub fn source_by_id(ids: &citation::Ids, id: &str) -> Result<SourceFile, Failure
         .ok_or_else(|| refused(format!("cannot read {}", target.path.display())))
 }
 
-pub fn note_with_id(root: &Path, id: &str) -> Option<PathBuf> {
+fn note_with_id(root: &Path, id: &str) -> Option<PathBuf> {
     store::entries(&root.join("notes"))
         .ok()?
         .into_iter()
