@@ -91,7 +91,7 @@ fn parse(args: &[String]) -> Result<Request, Failure> {
             note::kinds_list()
         )));
     }
-    if !note::is_topic(topic) {
+    if !store::is_topic(topic) {
         return Err(usage(format!(
             "invalid topic '{topic}': use segments of a-z and 0-9 joined by single hyphens"
         )));

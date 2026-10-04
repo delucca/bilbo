@@ -189,7 +189,7 @@ pub fn run(args: &[String], env: &store::Env) -> Result<Output, Failure> {
             if let Some(extra) = args.positional.get(1) {
                 return Err(usage(format!("unexpected argument '{extra}'")));
             }
-            if !note::is_topic(name) {
+            if !store::is_topic(name) {
                 return Err(usage(format!(
                     "invalid corpus '{name}': use segments of a-z and 0-9 joined by single hyphens"
                 )));
