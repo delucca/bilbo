@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime};
 
 use crate::search::rank::{self, Document, Hit};
-use crate::search::{embed, vectors};
+use crate::search::{documents, embed, vectors};
 use crate::{config, store};
 
 const QUERY_BYTES: usize = 2000;
@@ -147,8 +147,8 @@ fn digest(
     if !notes.is_dir() {
         return Err(format!("no store at {}", root.display()));
     }
-    let stored =
-        store::read_notes(&notes).map_err(|e| format!("cannot read {}: {e}", notes.display()))?;
+    let stored = documents::read_notes(&notes)
+        .map_err(|e| format!("cannot read {}: {e}", notes.display()))?;
     let mut documents = Vec::with_capacity(stored.len());
     let mut found = Vec::with_capacity(stored.len());
     for n in stored {
