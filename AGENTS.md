@@ -82,6 +82,9 @@ PYTHONDONTWRITEBYTECODE=1 python3 ~/.codex/skills/.system/plugin-creator/scripts
   dispatch arm and USAGE line in `src/main.rs`, `tests/<verb>.rs`, its own
   capability spec, and a MODIFIED `cli` spec (its Verb dispatch requirement
   lists the verbs).
+- A new `library` subcommand is `src/library/cli/<word>.rs`, its arm in
+  `run` in `src/library/cli/mod.rs`, and its word in
+  `library::corpus::RESERVED`, or a corpus of that name shadows it.
 - Unit tests live in the module they test and move with it. A unit test
   reads a fixture under `tests/fixtures/` through
   `concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/...")`, never a path
