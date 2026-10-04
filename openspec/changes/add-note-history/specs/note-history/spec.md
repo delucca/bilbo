@@ -6,7 +6,7 @@ Where bilbo keeps the past versions of each note, which of them it keeps, and `b
 ## ADDED Requirements
 
 ### Requirement: Where history lives
-bilbo SHALL keep note history under `<root>/.bilbo/history/` and nowhere else. Each version SHALL hold the note's id, the file name and full bytes at that time, the time it was recorded, its event (`added`, `edited`, `renamed`, `deleted` or `restored`) and the version it followed. A version's id SHALL be derived from the note's id, the version it followed, the file name and the bytes, and from nothing else, so two identical records of the same note produce the same id and two notes never share one. Removing `<root>/.bilbo/` SHALL lose the history and nothing else, and the next `bilbo watch` SHALL start over with `added` versions.
+bilbo SHALL keep note history under `<root>/.bilbo/history/` and nowhere else. Each version SHALL hold the note's id, the file name and full bytes at that time, the time it was recorded, its event (`added`, `edited`, `renamed`, `deleted` or `restored`) and the version it followed. A version's id SHALL be derived from the note's id, the version it followed, the file name and the bytes, and from nothing else, so two identical records of the same note produce the same id and two notes never share one. Removing `<root>/.bilbo/history/` SHALL lose the history and nothing else, and the next `bilbo watch` SHALL start over with `added` versions.
 
 #### Scenario: History sits beside the notes
 - **WHEN** watch has recorded a version of `decision-release.md`
@@ -17,7 +17,7 @@ bilbo SHALL keep note history under `<root>/.bilbo/history/` and nowhere else. E
 - **THEN** their version ids differ
 
 #### Scenario: Losing the history folder
-- **WHEN** a user deletes `<root>/.bilbo/` and watch starts
+- **WHEN** a user deletes `<root>/.bilbo/history/` and watch starts
 - **THEN** every note has one `added` version, and every note in `notes/` is unchanged
 
 ### Requirement: Retention
