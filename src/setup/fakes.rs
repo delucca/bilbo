@@ -1,5 +1,6 @@
 //! Test helpers that several of setup's modules use.
 
+use super::facts::{ConfigState, Facts, TimerFacts};
 use super::*;
 
 pub fn strings(args: &[&str]) -> Vec<String> {
