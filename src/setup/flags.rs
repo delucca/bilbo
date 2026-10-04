@@ -8,12 +8,13 @@ use crate::host::{agents, command, model};
 use crate::shared::config::{self, Embedder, Token};
 use crate::shared::store;
 
-const BOOL_FLAGS: [&str; 6] = [
+const BOOL_FLAGS: [&str; 7] = [
     "--yes",
     "--interactive",
     "--remove",
     "--no-plugin",
     "--no-timer",
+    "--no-watch",
     "--embedder-local",
 ];
 
@@ -39,7 +40,7 @@ const EMBEDDER_FLAGS: [&str; 5] = [
     "--embedder-query-prefix",
 ];
 
-const ANSWER_FLAGS: [&str; 11] = [
+const ANSWER_FLAGS: [&str; 12] = [
     "--embedder-url",
     "--embedder-model",
     "--embedder-token-env",
@@ -48,6 +49,7 @@ const ANSWER_FLAGS: [&str; 11] = [
     "--no-plugin",
     "--no-timer",
     "--index-every",
+    "--no-watch",
     "--embedder-local",
     "--embedder-port",
     "--llama-server",
@@ -68,6 +70,7 @@ struct Args {
     remove: bool,
     no_plugin: bool,
     no_timer: bool,
+    no_watch: bool,
     embedder_local: bool,
     embedder_url: Option<String>,
     embedder_model: Option<String>,
@@ -123,6 +126,7 @@ fn parse(args: &[String]) -> Result<Args, Failure> {
                 "--remove" => out.remove = true,
                 "--no-plugin" => out.no_plugin = true,
                 "--embedder-local" => out.embedder_local = true,
+                "--no-watch" => out.no_watch = true,
                 _ => out.no_timer = true,
             }
         } else if let Some(flag) = VALUE_FLAGS.iter().find(|f| **f == name) {
@@ -212,6 +216,7 @@ pub struct Flags {
     pub confirm: bool,
     pub no_plugin: bool,
     pub no_timer: bool,
+    pub no_watch: bool,
     pub minutes: Option<u32>,
     pub embedder: Option<EmbedderFlags>,
     pub local: Option<LocalFlags>,
@@ -332,6 +337,7 @@ pub fn settle(args: &[String], env: &store::Env) -> Result<Flags, Failure> {
         confirm: args.remove && (args.interactive || (!args.yes && terminals)),
         no_plugin: args.no_plugin,
         no_timer: args.no_timer,
+        no_watch: args.no_watch,
         minutes,
         embedder,
         local,
@@ -466,6 +472,27 @@ mod tests {
         assert_eq!(message(&["--claude="]), "--claude needs a value");
         assert_eq!(message(&["--yes", "--yes"]), "--yes given more than once");
         assert_eq!(message(&["--yes=1"]), "--yes takes no value");
+    }
+
+    #[test]
+    fn no_watch_is_an_answer_flag_that_takes_no_value() {
+        let env = store::Env::from_vars(|_| None);
+        let flags = |args: &[&str]| settle(&strings(args), &env);
+        assert!(flags(&["--yes", "--no-watch"]).ok().unwrap().no_watch);
+        assert!(!flags(&["--yes"]).ok().unwrap().no_watch);
+        assert!(flags(&["--no-watch"]).ok().unwrap().mode == Mode::Batch);
+        assert!(matches!(
+            flags(&["--yes", "--no-watch=true"]),
+            Err(Failure::Usage(m)) if m == "--no-watch takes no value"
+        ));
+        assert!(matches!(
+            flags(&["--remove", "--no-watch"]),
+            Err(Failure::Usage(m)) if m == "--remove cannot be used with --no-watch"
+        ));
+        assert!(matches!(
+            flags(&["--interactive", "--no-watch"]),
+            Err(Failure::Usage(m)) if m.starts_with("--interactive cannot be used with --no-watch")
+        ));
     }
 
     #[test]

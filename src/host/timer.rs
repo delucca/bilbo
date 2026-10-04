@@ -1,10 +1,11 @@
-//! launchd and systemd jobs: the index timer and the embedder service.
+//! launchd and systemd jobs: the index timer, the embedder service and the note watcher.
 
 use crate::host::command::{Output, Runner, first_line};
 use std::path::{Path, PathBuf};
 
 pub const LABEL: &str = "io.github.delucca.bilbo.index";
 pub const EMBEDDER_LABEL: &str = "io.github.delucca.bilbo.embedder";
+pub const WATCH_LABEL: &str = "io.github.delucca.bilbo.watch";
 
 const ID: &str = "/usr/bin/id";
 
@@ -13,6 +14,7 @@ const ID: &str = "/usr/bin/id";
 pub enum Name {
     Index,
     Embedder,
+    Watch,
 }
 
 impl Name {
@@ -20,6 +22,7 @@ impl Name {
         match self {
             Name::Index => LABEL,
             Name::Embedder => EMBEDDER_LABEL,
+            Name::Watch => WATCH_LABEL,
         }
     }
 
@@ -28,13 +31,14 @@ impl Name {
         match self {
             Name::Index => "bilbo-index.timer",
             Name::Embedder => "bilbo-embedder.service",
+            Name::Watch => "bilbo-watch.service",
         }
     }
 
     fn target(self) -> &'static str {
         match self {
             Name::Index => "timers.target.wants",
-            Name::Embedder => "default.target.wants",
+            Name::Embedder | Name::Watch => "default.target.wants",
         }
     }
 }
@@ -62,6 +66,28 @@ pub enum Kind {
     Periodic { minutes: u32 },
     /// Starts at login and is restarted when it exits: the embedder.
     Service,
+    /// Starts at login and is restarted when it exits: `bilbo watch`.
+    Watch,
+}
+
+impl Kind {
+    /// The program named in messages, and the `[Unit]` head and `[Service]` start of its unit.
+    fn text(self) -> (&'static str, &'static str) {
+        match self {
+            Kind::Periodic { .. } => (
+                "the bilbo path",
+                "[Unit]\nDescription=Index the bilbo store\n\n[Service]\nType=oneshot\n",
+            ),
+            Kind::Service => (
+                "the llama-server path",
+                "[Unit]\nDescription=bilbo's local embedder\nStartLimitIntervalSec=0\n\n[Service]\n",
+            ),
+            Kind::Watch => (
+                "the bilbo path",
+                "[Unit]\nDescription=Record bilbo note history\nStartLimitIntervalSec=0\n\n[Service]\n",
+            ),
+        }
+    }
 }
 
 pub struct Job {
@@ -77,14 +103,15 @@ impl Job {
         match self.kind {
             Kind::Periodic { .. } => Name::Index,
             Kind::Service => Name::Embedder,
+            Kind::Watch => Name::Watch,
         }
     }
 
-    /// The interval of a periodic job, 0 for a service.
+    /// The interval of a periodic job, 0 for a service or the watcher.
     pub fn minutes(&self) -> u32 {
         match self.kind {
             Kind::Periodic { minutes } => minutes,
-            Kind::Service => 0,
+            Kind::Service | Kind::Watch => 0,
         }
     }
 }
@@ -150,7 +177,7 @@ pub fn plist(job: &Job) -> String {
                 u64::from(minutes) * 60
             ),
         ),
-        Kind::Service => (
+        Kind::Service | Kind::Watch => (
             "\t<key>KeepAlive</key>\n\t<true/>\n".into(),
             "true",
             String::new(),
@@ -170,16 +197,7 @@ pub fn plist(job: &Job) -> String {
 pub fn service(job: &Job) -> Result<String, String> {
     let program = job.program.to_string_lossy();
     let log = job.log.to_string_lossy();
-    let (what, head) = match job.kind {
-        Kind::Periodic { .. } => (
-            "the bilbo path",
-            "[Unit]\nDescription=Index the bilbo store\n\n[Service]\nType=oneshot\n",
-        ),
-        Kind::Service => (
-            "the llama-server path",
-            "[Unit]\nDescription=bilbo's local embedder\nStartLimitIntervalSec=0\n\n[Service]\n",
-        ),
-    };
+    let (what, head) = job.kind.text();
     if program.contains(['\n', '\r']) {
         return Err(format!("{what} holds a newline"));
     }
@@ -209,7 +227,7 @@ pub fn service(job: &Job) -> Result<String, String> {
             }
             exec
         }
-        Kind::Service => std::iter::once(program.as_ref())
+        Kind::Service | Kind::Watch => std::iter::once(program.as_ref())
             .chain(job.args.iter().map(String::as_str))
             .map(|part| quoted(part, true))
             .collect::<Vec<_>>()
@@ -218,7 +236,7 @@ pub fn service(job: &Job) -> Result<String, String> {
     out.push_str(&format!(
         "ExecStart={exec}\nStandardOutput=append:{append}\nStandardError=append:{append}\n"
     ));
-    if job.kind == Kind::Service {
+    if !matches!(job.kind, Kind::Periodic { .. }) {
         out.push_str("Restart=on-failure\nRestartSec=10\n\n[Install]\nWantedBy=default.target\n");
     }
     Ok(out)
@@ -251,7 +269,9 @@ pub fn paths(platform: Platform, place: &Place, name: Name) -> Vec<PathBuf> {
             units(place).join("bilbo-index.service"),
             units(place).join(Name::Index.unit()),
         ],
-        (Platform::Systemd, Name::Embedder) => vec![units(place).join(Name::Embedder.unit())],
+        (Platform::Systemd, name @ (Name::Embedder | Name::Watch)) => {
+            vec![units(place).join(name.unit())]
+        }
     }
 }
 
@@ -263,7 +283,7 @@ pub fn files(
     let texts = match (platform, job.kind) {
         (Platform::Launchd, _) => vec![plist(job)],
         (Platform::Systemd, Kind::Periodic { .. }) => vec![service(job)?, timer(job)],
-        (Platform::Systemd, Kind::Service) => vec![service(job)?],
+        (Platform::Systemd, Kind::Service | Kind::Watch) => vec![service(job)?],
     };
     Ok(paths(platform, place, job.name())
         .into_iter()
@@ -1276,6 +1296,131 @@ WantedBy=default.target\n";
             service(&bad).unwrap_err(),
             "the llama-server path holds a newline"
         );
+    }
+
+    fn watch_job(env: Vec<(&'static str, String)>) -> Job {
+        Job {
+            kind: Kind::Watch,
+            program: "/opt/bilbo/bin/bilbo".into(),
+            args: vec!["watch".into()],
+            log: "/Users/a/.local/state/bilbo/watch.log".into(),
+            env,
+        }
+    }
+
+    #[test]
+    fn watch_plist_keeps_alive_and_runs_at_load() {
+        let expected = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
+<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n\
+<plist version=\"1.0\">\n\
+<dict>\n\
+\t<key>EnvironmentVariables</key>\n\
+\t<dict>\n\
+\t\t<key>BILBO_HOME</key>\n\
+\t\t<string>/data/bilbo</string>\n\
+\t</dict>\n\
+\t<key>KeepAlive</key>\n\
+\t<true/>\n\
+\t<key>Label</key>\n\
+\t<string>io.github.delucca.bilbo.watch</string>\n\
+\t<key>ProgramArguments</key>\n\
+\t<array>\n\
+\t\t<string>/opt/bilbo/bin/bilbo</string>\n\
+\t\t<string>watch</string>\n\
+\t</array>\n\
+\t<key>RunAtLoad</key>\n\
+\t<true/>\n\
+\t<key>StandardErrorPath</key>\n\
+\t<string>/Users/a/.local/state/bilbo/watch.log</string>\n\
+\t<key>StandardOutPath</key>\n\
+\t<string>/Users/a/.local/state/bilbo/watch.log</string>\n\
+</dict>\n\
+</plist>\n";
+        let j = watch_job(vec![("BILBO_HOME", "/data/bilbo".to_string())]);
+        assert_eq!(plist(&j), expected);
+        assert_eq!(j.name(), Name::Watch);
+        assert_eq!(j.minutes(), 0);
+    }
+
+    #[test]
+    fn watch_unit_restarts_on_failure() {
+        let expected = "[Unit]\n\
+Description=Record bilbo note history\n\
+StartLimitIntervalSec=0\n\
+\n\
+[Service]\n\
+Environment=\"BILBO_HOME=/data/bilbo\"\n\
+ExecStart=\"/opt/bilbo/bin/bilbo\" \"watch\"\n\
+StandardOutput=append:/Users/a/.local/state/bilbo/watch.log\n\
+StandardError=append:/Users/a/.local/state/bilbo/watch.log\n\
+Restart=on-failure\n\
+RestartSec=10\n\
+\n\
+[Install]\n\
+WantedBy=default.target\n";
+        let j = watch_job(vec![("BILBO_HOME", "/data/bilbo".to_string())]);
+        assert_eq!(service(&j).unwrap(), expected);
+
+        let mut bad = watch_job(vec![]);
+        bad.program = "/a\nb".into();
+        assert_eq!(service(&bad).unwrap_err(), "the bilbo path holds a newline");
+    }
+
+    #[test]
+    fn watch_paths_per_platform() {
+        let root = scratch("watch-paths");
+        let p = place(&root.0);
+        assert_eq!(
+            paths(Platform::Launchd, &p, Name::Watch),
+            [p.home
+                .join("Library/LaunchAgents/io.github.delucca.bilbo.watch.plist")]
+        );
+        assert_eq!(
+            paths(Platform::Systemd, &p, Name::Watch),
+            [p.config_home.join("systemd/user/bilbo-watch.service")]
+        );
+        assert_eq!(
+            wants(&p, Name::Watch),
+            p.config_home
+                .join("systemd/user/default.target.wants/bilbo-watch.service")
+        );
+        let j = watch_job(vec![]);
+        assert_eq!(files(Platform::Systemd, &p, &j).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn install_watch_systemd_commands() {
+        let root = scratch("watch-install");
+        let p = place(&root.0);
+        let mut j = watch_job(vec![]);
+        j.log = root.0.join("state/bilbo/watch.log");
+        let f = files(Platform::Systemd, &p, &j).unwrap();
+        let runner = script(vec![]);
+        install(
+            Platform::Systemd,
+            &runner,
+            Path::new("/s/systemctl"),
+            &j,
+            &f,
+        )
+        .unwrap();
+        assert_eq!(
+            *runner.calls.borrow(),
+            [
+                "/s/systemctl --user daemon-reload",
+                "/s/systemctl --user enable bilbo-watch.service",
+                "/s/systemctl --user restart bilbo-watch.service",
+            ]
+        );
+        assert!(installed(Platform::Systemd, &p, Name::Watch));
+    }
+
+    #[test]
+    fn the_embedder_keeps_its_text_beside_the_watcher() {
+        let service = service(&embedder_job(Path::new("/s"))).unwrap();
+        assert!(service.starts_with("[Unit]\nDescription=bilbo's local embedder\n"));
+        assert!(!service.contains("watch"));
+        assert_eq!(embedder_job(Path::new("/s")).name(), Name::Embedder);
     }
 
     #[test]

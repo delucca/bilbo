@@ -43,7 +43,7 @@ pub struct Facts {
     pub ollama: Option<Vec<String>>,
     pub claude: Option<PathBuf>,
     pub codex: Option<PathBuf>,
-    /// This platform has a timer.
+    /// This platform has a timer and a watcher service.
     pub timer: bool,
     /// The interval of the installed timer, if one is installed.
     pub timer_minutes: Option<u32>,
@@ -60,6 +60,8 @@ pub struct Answers {
     pub codex: bool,
     /// `None`: not chosen, or no embedder.
     pub timer: Option<u32>,
+    /// Whether to record note history in the background.
+    pub watch: bool,
     /// Some(llama-server) when the local embedder was chosen; `embedder` is then the local one and `dims` None.
     pub local: Option<PathBuf>,
 }
@@ -109,6 +111,7 @@ pub fn ask<P: Prompter>(
         Some(e) if facts.timer => ask_timer(p, e, facts.timer_minutes)?,
         _ => None,
     };
+    let watch = !facts.timer || p.confirm("Record note history in the background?", true)?;
     Ok(Answers {
         embedder,
         pasted,
@@ -116,6 +119,7 @@ pub fn ask<P: Prompter>(
         claude,
         codex,
         timer,
+        watch,
         local,
     })
 }
@@ -886,9 +890,9 @@ mod tests {
         (result, script)
     }
 
-    /// The tail of every run that ends with an embedder: plugins and timer.
+    /// The tail of every run that ends with an embedder: plugins, timer and watcher.
     fn tail() -> Vec<Answer> {
-        vec![Answer::Multi(vec![0, 1]), Answer::Select(0)]
+        vec![Answer::Multi(vec![0, 1]), Answer::Select(0), Answer::Yes]
     }
 
     fn with_tail(mut head: Vec<Answer>) -> Vec<Answer> {
@@ -910,12 +914,13 @@ mod tests {
     fn keyword_only_asks_nothing_more() {
         let (r, s) = run(
             &facts(),
-            vec![Answer::Select(NONE), Answer::Multi(vec![0, 1])],
+            vec![Answer::Select(NONE), Answer::Multi(vec![0, 1]), Answer::Yes],
         );
         let a = r.unwrap();
         assert!(a.embedder.is_none() && a.timer.is_none() && a.dims.is_none());
-        assert!(a.claude && a.codex);
-        assert!(!s.saw("input:") && !s.saw("confirm:") && !s.saw("Keep the index fresh"));
+        assert!(a.claude && a.codex && a.watch);
+        assert!(!s.saw("input:") && !s.saw("Keep the index fresh"));
+        assert!(s.saw("confirm: Record note history in the background? initial=true"));
     }
 
     #[test]
@@ -1102,6 +1107,7 @@ mod tests {
                 text(""),
                 Answer::Select(NONE),
                 Answer::Multi(vec![0, 1]),
+                Answer::Yes,
             ],
         );
         let a = r.unwrap();
@@ -1132,6 +1138,7 @@ mod tests {
                 Answer::Select(LOCAL),
                 Answer::Select(NONE),
                 Answer::Multi(vec![0, 1]),
+                Answer::Yes,
             ],
         );
         assert!(r.unwrap().embedder.is_none());
@@ -1183,6 +1190,7 @@ mod tests {
             vec![
                 Answer::Select(LOCAL),
                 Answer::Multi(vec![]),
+                Answer::Default,
                 Answer::Default,
                 Answer::Default,
             ],
@@ -1342,6 +1350,7 @@ mod tests {
             Answer::Select(1),
             Answer::Select(0),
             Answer::Multi(vec![]),
+            Answer::Yes,
         ]));
         let a = ask(
             &mut script,
@@ -1374,6 +1383,7 @@ mod tests {
             Answer::Select(3),
             Answer::Select(2),
             Answer::Multi(vec![0]),
+            Answer::Yes,
         ]);
         let a = ask(
             &mut script,
@@ -1398,6 +1408,7 @@ mod tests {
             Answer::Secret("sk-very-secret".to_string()),
             Answer::Select(2),
             Answer::Multi(vec![]),
+            Answer::Yes,
         ]);
         let a = ask(
             &mut script,
@@ -1415,7 +1426,10 @@ mod tests {
 
     #[test]
     fn untick_codex() {
-        let (r, _) = run(&facts(), vec![Answer::Select(NONE), Answer::Multi(vec![0])]);
+        let (r, _) = run(
+            &facts(),
+            vec![Answer::Select(NONE), Answer::Multi(vec![0]), Answer::Yes],
+        );
         let a = r.unwrap();
         assert!(a.claude && !a.codex);
     }
@@ -1424,7 +1438,10 @@ mod tests {
     fn only_codex_found_maps_the_tick_back() {
         let mut f = facts();
         f.claude = None;
-        let (r, s) = run(&f, vec![Answer::Select(NONE), Answer::Multi(vec![0])]);
+        let (r, s) = run(
+            &f,
+            vec![Answer::Select(NONE), Answer::Multi(vec![0]), Answer::Yes],
+        );
         let a = r.unwrap();
         assert!(!a.claude && a.codex);
         assert!(s.saw("Codex / /bin/codex") && !s.saw("Claude Code / "));
@@ -1435,7 +1452,7 @@ mod tests {
         let mut f = facts();
         f.claude = None;
         f.codex = None;
-        let (r, s) = run(&f, vec![Answer::Select(NONE)]);
+        let (r, s) = run(&f, vec![Answer::Select(NONE), Answer::Yes]);
         let a = r.unwrap();
         assert!(!a.claude && !a.codex);
         assert!(s.saw("info: Neither claude nor codex was found, so the plugin is skipped."));
@@ -1454,19 +1471,19 @@ mod tests {
             ]
         };
         let mut a15 = head();
-        a15.push(Answer::Select(0));
+        a15.extend([Answer::Select(0), Answer::Yes]);
         assert_eq!(run(&facts(), a15).0.unwrap().timer, Some(15));
 
         let mut a30 = head();
-        a30.extend([Answer::Select(1), text("30")]);
+        a30.extend([Answer::Select(1), text("30"), Answer::Yes]);
         assert_eq!(run(&facts(), a30).0.unwrap().timer, Some(30));
 
         let mut none = head();
-        none.push(Answer::Select(2));
+        none.extend([Answer::Select(2), Answer::Yes]);
         assert_eq!(run(&facts(), none).0.unwrap().timer, None);
 
         let mut dflt = head();
-        dflt.extend([Answer::Select(1), text("")]);
+        dflt.extend([Answer::Select(1), text(""), Answer::Yes]);
         assert_eq!(run(&facts(), dflt).0.unwrap().timer, Some(15));
     }
 
@@ -1508,7 +1525,7 @@ mod tests {
             min_similarity: 0.7,
         };
         f.existing = Some(existing.clone());
-        let (r, _) = run(&f, (0..8).map(|_| Answer::Default).collect());
+        let (r, _) = run(&f, (0..9).map(|_| Answer::Default).collect());
         let a = r.unwrap();
         assert_eq!(a.embedder, Some(existing));
         assert!(a.pasted.is_none());
@@ -1542,6 +1559,7 @@ mod tests {
                 Answer::Multi(vec![]),
                 Answer::Default,
                 Answer::Default,
+                Answer::Default,
             ],
         );
         assert_eq!(r.unwrap().timer, Some(30));
@@ -1568,7 +1586,7 @@ mod tests {
     #[test]
     fn interrupt_at_every_prompt_aborts() {
         let prompts = openai_paste_script().len();
-        assert_eq!(prompts, 7);
+        assert_eq!(prompts, 8);
         for i in 0..prompts {
             let mut answers = openai_paste_script();
             answers[i] = Answer::Interrupt;

@@ -29,7 +29,7 @@ pub fn plan(config: ConfigPlan, embedder: Option<Embedder>, check: EmbedderPlan)
         config_path: "/c/bilbo/config".into(),
         config,
         embedder,
-        digest: Vec::new(),
+        kept: Vec::new(),
         key: KeyPlan::NoEmbedder,
         pasted: None,
         check,
@@ -43,6 +43,7 @@ pub fn plan(config: ConfigPlan, embedder: Option<Embedder>, check: EmbedderPlan)
         claude: PluginPlan::Skipped("--no-plugin"),
         codex: PluginPlan::Skipped("--no-plugin"),
         timer: TimerPlan::Skipped("no embedder"),
+        watch: TimerPlan::Skipped("--no-watch"),
     }
 }
 
@@ -80,7 +81,7 @@ pub fn seen(dir: &Path, existing: Option<Embedder>, config: ConfigState) -> Fact
         config_path: dir.join("cfg/config"),
         config,
         existing,
-        digest: Vec::new(),
+        kept: Vec::new(),
         config_empty: false,
         token_path: dir.join("cfg/token"),
         exe: "/bin/bilbo".into(),

@@ -4,7 +4,7 @@ use std::path::PathBuf;
 
 use super::Outcome;
 use super::apply::{Report, short};
-use super::facts::timer_facts;
+use super::facts::{TimerFacts, timer_facts, timer_place};
 use super::flags::Flags;
 use super::plan::{TimerRemoval, installed_service};
 use super::wizard::{self, declined, stopped};
@@ -55,6 +55,7 @@ struct RemovePlan {
     /// The `codex` whose app-server forgets the hook trust; `None` when there is none.
     hook: Option<PathBuf>,
     timer: TimerRemoval,
+    watch: TimerRemoval,
 }
 
 pub fn remove<P: Prompter>(
@@ -125,31 +126,8 @@ fn plan_remove(flags: &Flags, env: &store::Env, path: Option<std::ffi::OsString>
         .or_else(|| command::find("codex", path.as_deref()));
     let facts = timer_facts(env, path.as_deref());
     let server = installed_service(&facts).unwrap_or(TimerRemoval::Skipped("not installed"));
-    let timer = match facts.platform {
-        None => TimerRemoval::Skipped("unsupported platform"),
-        Some(platform) => {
-            let place = match platform {
-                timer::Platform::Launchd => facts.home.clone().map(|home| timer::Place {
-                    home,
-                    config_home: facts.config_home.clone().unwrap_or_default(),
-                }),
-                timer::Platform::Systemd => {
-                    facts.config_home.clone().map(|config_home| timer::Place {
-                        home: facts.home.clone().unwrap_or_default(),
-                        config_home,
-                    })
-                }
-            };
-            match place.filter(|place| timer::installed(platform, place, timer::Name::Index)) {
-                Some(place) => TimerRemoval::Run {
-                    platform,
-                    tool: facts.tool,
-                    place,
-                },
-                None => TimerRemoval::Skipped("not installed"),
-            }
-        }
-    };
+    let timer = job_removal(&facts, timer::Name::Index);
+    let watch = job_removal(&facts, timer::Name::Watch);
     let model = store::cache_dir(env)
         .map(|cache| model::path(&cache))
         .filter(|path| path.exists());
@@ -163,6 +141,22 @@ fn plan_remove(flags: &Flags, env: &store::Env, path: Option<std::ffi::OsString>
         codex: tool(agents::Tool::Codex, &flags.codex),
         hook,
         timer,
+        watch,
+    }
+}
+
+/// The job's removal: its files are installed, or it is skipped.
+fn job_removal(facts: &TimerFacts, name: timer::Name) -> TimerRemoval {
+    let Some(platform) = facts.platform else {
+        return TimerRemoval::Skipped("unsupported platform");
+    };
+    match timer_place(facts).filter(|place| timer::installed(platform, place, name)) {
+        Some(place) => TimerRemoval::Run {
+            platform,
+            tool: facts.tool.clone(),
+            place,
+        },
+        None => TimerRemoval::Skipped("not installed"),
     }
 }
 
@@ -182,6 +176,9 @@ fn remove_summary(plan: &RemovePlan) -> Vec<String> {
     }
     if matches!(plan.timer, TimerRemoval::Run { .. }) {
         lines.push("Remove the index timer".to_string());
+    }
+    if matches!(plan.watch, TimerRemoval::Run { .. }) {
+        lines.push("Remove the note watcher".to_string());
     }
     if !lines.is_empty() {
         lines.push("Keep the store, the config, the key file and the model".to_string());
@@ -254,6 +251,23 @@ fn apply_remove(plan: &RemovePlan) -> Outcome {
         ) {
             Ok(()) => report.line("timer", "removed", None),
             Err(message) => report.line("timer", "failed", Some(message)),
+        },
+    }
+    match &plan.watch {
+        TimerRemoval::Skipped(reason) => report.line("watch", "skipped", Some((*reason).into())),
+        TimerRemoval::Run {
+            platform,
+            tool,
+            place,
+        } => match timer::uninstall(
+            *platform,
+            &command::System,
+            tool.as_deref(),
+            place,
+            timer::Name::Watch,
+        ) {
+            Ok(()) => report.line("watch", "removed", None),
+            Err(message) => report.line("watch", "failed", Some(message)),
         },
     }
     Outcome {

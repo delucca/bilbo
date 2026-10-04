@@ -254,6 +254,10 @@ case "$label" in
   f="$D/launchctl.loaded-embedder"
   fail="$D/launchctl.fail-$1-embedder"
   ;;
+*.watch)
+  f="$D/launchctl.loaded-watch"
+  fail="$D/launchctl.fail-$1-watch"
+  ;;
 *)
   f="$D/launchctl.loaded"
   fail="$D/launchctl.fail-$1"
@@ -280,7 +284,10 @@ bootstrap)
     exit 5
   fi
   printf '%s\n' "$3" >"$f"
-  case "$label" in *.embedder) : >"$D/embedder.started" ;; esac
+  case "$label" in
+  *.embedder) : >"$D/embedder.started" ;;
+  *.watch) : >"$D/watch.started" ;;
+  esac
   ;;
 *)
   printf 'fake launchctl: unexpected arguments: %s\n' "$*" >&2
@@ -313,6 +320,9 @@ case "$*" in
 "--user enable bilbo-embedder.service") printf 'enabled\n' >"$D/systemctl.embedder-enabled" ;;
 "--user restart bilbo-embedder.service") : >"$D/embedder.started" ;;
 "--user disable --now bilbo-embedder.service") : >"$D/systemctl.embedder-enabled" ;;
+"--user enable bilbo-watch.service") printf 'enabled\n' >"$D/systemctl.watch-enabled" ;;
+"--user restart bilbo-watch.service") : >"$D/watch.started" ;;
+"--user disable --now bilbo-watch.service") : >"$D/systemctl.watch-enabled" ;;
 *)
   printf 'fake systemctl: unexpected arguments: %s\n' "$*" >&2
   exit 64
