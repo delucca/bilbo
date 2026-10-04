@@ -1,3 +1,7 @@
+//! Notes: kinds, names, the strict reader and the renderer, and the `new` verb.
+
+pub mod new;
+
 use crate::frontmatter::{bad_created, bad_id, is_created, is_ulid, split_key};
 use crate::markdown::split_lines;
 use crate::store::{Problem, TOPIC_RULE, is_topic, title_problem};
