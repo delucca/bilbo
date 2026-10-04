@@ -1,5 +1,5 @@
-use crate::library::hash;
 use crate::shared::frontmatter;
+use crate::shared::hash;
 use crate::shared::markdown::{self, Section};
 use crate::shared::store::{self, Problem};
 

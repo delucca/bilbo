@@ -1,6 +1,8 @@
 //! Notes: kinds, names, the strict reader and the renderer, and the `new` verb.
 
+pub mod diff;
 pub mod new;
+pub mod versions;
 
 use crate::shared::frontmatter::{bad_created, bad_id, is_created, is_ulid, split_key};
 use crate::shared::markdown::split_lines;
@@ -106,6 +108,22 @@ pub fn read(text: &str) -> Note {
         body_start,
         problems,
     }
+}
+
+/// The id `read` reports for `text`, without reading the rest: the first `id:` value of a closed frontmatter, when it
+/// is a canonical ULID.
+pub fn read_id(text: &str) -> Option<String> {
+    let lines = split_lines(text.strip_prefix('\u{feff}').unwrap_or(text));
+    if lines.first() != Some(&"---") {
+        return None;
+    }
+    let close = lines[1..].iter().position(|l| *l == "---")? + 1;
+    let (_, rest) = lines[1..close]
+        .iter()
+        .filter(|line| !line.starts_with([' ', '-']))
+        .filter_map(|line| split_key(line))
+        .find(|(key, _)| *key == "id")?;
+    Some(rest.strip_prefix(' ')?.to_string()).filter(|value| is_ulid(value))
 }
 
 /// "---\nid: <id>\ncreated: <created>\n---\n\n# <title>\n"
@@ -299,6 +317,31 @@ mod tests {
         ];
         all.extend(body);
         joined(&all)
+    }
+
+    #[test]
+    fn read_id_agrees_with_read() {
+        const OTHER: &str = "01M3YJ7R6HK6NQ30DCDB1P4DYC";
+        let cases = [
+            with_front(&[]),
+            with_body(&["text"]),
+            "---\ncreated: 2026-10-02T14:23-03:00\n---\n\n# T\n".to_string(),
+            format!("---\nid: {ID}\nid: {OTHER}\n---\n"),
+            format!("---\nid: bad\nid: {ID}\n---\n"),
+            format!("---\nid: {ID}\ncreated: {CREATED}\n"),
+            format!("---\nid:{ID}\n---\n"),
+            format!("---\nid:  {ID}\n---\n"),
+            format!("---\nsources:\n  - \"url: id: {OTHER}\"\nid: {ID}\n---\n"),
+            format!("---\r\nid: {ID}\r\n---\r\n"),
+            format!("\u{feff}---\nid: {ID}\n---\n"),
+            format!("\n---\nid: {ID}\n---\n"),
+            format!("# T\n\nid: {ID}\n"),
+            String::new(),
+        ];
+        for text in cases {
+            assert_eq!(read_id(&text), read(&text).id, "{text:?}");
+        }
+        assert_eq!(read_id(&with_front(&[])).as_deref(), Some(ID));
     }
 
     #[test]

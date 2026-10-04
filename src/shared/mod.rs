@@ -2,6 +2,7 @@
 
 pub mod config;
 pub mod frontmatter;
+pub mod hash;
 pub mod markdown;
 pub mod store;
 pub mod text;
