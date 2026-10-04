@@ -7,7 +7,8 @@ Agents re-derive what an earlier session already worked out. bilbo gives them
 a store of plain Markdown notes they write with their own file tools, and a
 `bilbo` command that starts, checks, searches and indexes those notes. A
 `note` skill and a `recall` skill for Claude Code and Codex put the writing and
-the search in the agent's hands.
+the search in the agent's hands, and a `reference` skill answers from the
+library's sources, read in full and cited by id.
 
 - **Plain files.** One note per topic in `<root>/notes/`, named
   `<kind>-<topic>.md`, with a small YAML frontmatter. Read, edit, grep or
@@ -18,7 +19,10 @@ the search in the agent's hands.
 - **Agent plugin.** `bilbo setup` installs the plugin in Claude Code and Codex
   and a timer that keeps the index current. The plugin also hands the agent the
   notes that bear on each prompt, before it starts, and reminds it to write
-  down what a session settled once its context is compacted.
+  down what a session settled once its context is compacted. Its `reference`
+  skill reads sources through `bilbo library plan` and `read`, and checks every
+  citation with `bilbo cite`, so the coverage it reports is counted by bilbo,
+  not by the agent.
 
 ## Contents
 
@@ -128,6 +132,7 @@ else `$XDG_DATA_HOME/bilbo`, else `~/.local/share/bilbo`, on macOS too.
 | `bilbo index` | Embeds the passages the vector cache lacks and drops the ones no note holds any more. |
 | `bilbo digest` | Run by the plugin's prompt hook; see [The digest](#the-digest). |
 | `bilbo library` | Lists and shows the library, and stages and lands its sources; see [Library](#library). |
+| `bilbo cite [--plan <plan>]... [<file> \| -]` | Checks every `bilbo:` citation in a draft; see [Citations](#citations). |
 | `bilbo setup` | See [Set up](#set-up). |
 
 `recall` prints one block per note: the path and line of the best passage, the
@@ -198,7 +203,9 @@ there; bilbo derives them when it prints the guide.
 | `bilbo library <corpus>` | The guide's path, then the guide with a facts line under each entry: id, size, tokens, `fetched`, headings. |
 | `bilbo library show <corpus>/<name>\|<id>[#<anchor>] [--depth <n>]` | A source's header and one row per section: its lines, tokens and heading path. An anchor or `--depth` narrows the rows. |
 | `bilbo library stage <file> --origin "<url\|doc>: <value>" [--fetched <YYYY-MM-DD>]` | Copies a text file, with LF line endings, into the state folder and prints its lines, title and headings. Changes nothing in the store. |
-| `bilbo library land <stage> <corpus>/<name> --keep <a>-<b>[,<c>-<d>]... [--title <text>] [--replace]` | Writes the source from the staged lines the ranges keep, adds its guide entry, and keeps the staged text under `<root>/.bilbo/captures/`. |
+| `bilbo library land <stage> <corpus>/<name> --keep <a>-<b>[,<c>-<d>]... [--title <text>] [--replace [--force]]` | Writes the source from the staged lines the ranges keep, adds its guide entry, and keeps the staged text under `<root>/.bilbo/captures/`. |
+| `bilbo library plan <ref>... [--budget-tokens <n>] [--slice-bytes <n>] [--slice-lines <n>]` | Cuts the picks into slices and partitions, writes the plan under the state folder, and prints its id, the partitions and one row per slice. |
+| `bilbo library read <plan> <slice>... [--part <k>/<n>]` | Prints the named slices with their line numbers, and logs the lines it printed. |
 
 An agent adds a source in two steps, and never types its text. `stage` keeps
 the text and shows where its headings are; the agent picks the line ranges
@@ -209,13 +216,98 @@ guide: a new entry holds the line `TODO: describe this source.`, a new guide
 gets `stale: re-ingested <date>; ...` under its entry. `check` fails on every
 one of those lines until the agent writes the entry and removes the line.
 
+Before `land --replace` writes a source whose text changed, it checks every
+`bilbo:` citation of that source in `<root>/notes/` against the old text and
+the new one. A citation whose verdict changes to anything but `ok` (for
+example `ok` to `quote_missing`, `anchor_missing` or `quote_elsewhere`) stops
+the replace: nothing is written
+and the stage is kept, and stderr gives the count and one
+`notes/<file>:<line>: <old> -> <new>` line per citation. Fix the notes, or run
+the same `land` with `--force` to replace anyway and keep those lines as
+warnings. `--force` without `--replace` is a usage error. A citation that
+already failed, and a citation in a guide, never blocks.
+
+A source is read through a plan, so no tool's read cap decides where it ends.
+`bilbo library plan` takes one or more picks, each `<corpus>/<name>` or an id,
+with an optional `#<anchor>` that picks one section instead of the whole
+source (the anchor is the heading path, or its tail, as `show` takes it). A
+catalog is picked by section only, and two picks of one source may not share a
+line. The plan cuts each pick at its section starts into **slices**, each sized
+for one shell call: at most 24,000 bytes as `read` prints them, `--slice-bytes`
+moves that between 1,000 and 30,000, and `--slice-lines` caps the lines too.
+It then groups consecutive slices into **partitions** of at most
+`--budget-tokens` (60,000 by default), each sized for one reader. The plan
+file, `<plan>.json`, and the read log, `<plan>.log`, sit in `plans/` under the
+state folder; a plan nothing has touched for 30 days is removed by the next
+`library plan`.
+
+`bilbo library read <plan> <slice>...` prints each slice under a header line
+with the source's id and line range and an `in:` line with the heading path at
+its first line, then every line as `<line>\t<text>`, then an end marker:
+
+```text
+-- slice 3/9: go/effective-go 01M3EZ8NVEC2KJQNGK5DTK349R lines 820-1104 --
+-- in: Concurrency --
+820	## Concurrency
+...
+1104	...
+-- end slice 3/9 --
+```
+
+A read with no end marker, or with a gap in its line numbers, was cut by the
+tool that ran it; read the slice again in parts with `--part 1/2` and
+`--part 2/2` (up to `--part 8/8`), which print runs of nearly equal bytes. One
+call that names several slices may not print more than the plan's slice size.
+`read` appends the lines it printed to the plan's log, and refuses a slice
+whose source was re-ingested after the plan, so make a new plan then.
+
 To move or delete a source by hand, use `mv` or `rm` on the file, then edit the
 guide: rename the entry's heading to match, or remove the entry. Then run
 `bilbo check`, which says what is still out of step.
 
+#### Citations
+
+A claim from a note or a source is cited as
+`bilbo:<id>#<anchor> "<quote>"`: `bilbo:`, the file's id, an optional `#` and
+the heading path (or its tail) of the section, a space, then the quote in
+double quotes. The quote is at least six words, copied from the text; markup,
+spacing and curly quotes may differ, and `...` splits it into fragments that
+must appear in order. A file with sections needs an anchor, and the title is
+not one.
+
+`bilbo cite [--plan <plan>]... [<file> | -]` reads a draft from the file or
+stdin and prints one tab-separated row per citation (its line, the verdict,
+the id with its anchor, the file's path or `-`, and a detail), then
+`citations: <n> checked, <k> ok`. It reads no settings and writes nothing.
+
+| Verdict | Meaning | Exit |
+| --- | --- | --- |
+| `ok` | The quote is in the anchored section. | 0 |
+| `quote_elsewhere` | The quote is in the file, under other sections the detail names. | 0 |
+| `ambiguous` | The anchor matches several sections and one holds the quote. | 0 |
+| `too_short` | The quote has fewer than six words. | 0 |
+| `quote_missing` | The quote is not in the file; the detail gives the nearest passage. | 1 |
+| `anchor_missing` | No section matches the anchor. | 1 |
+| `id_missing` | No note or source has the id, or two share it. | 1 |
+| `unread` | With `--plan`: no match of the quote lies in lines the plan's log records as read. | 1 |
+
+With `--plan <plan>`, given once or more, a citation of a source is `unread`
+unless its quote sits in lines that `library read` printed for the source's
+current text; notes and guides are never `unread`. Each plan then adds two
+lines after the summary:
+
+```text
+coverage: plan <plan>: read 7 of 9 slices (<t> of <T> tokens); not read: go/effective-go lines 1200-1500 (slices 8-9)
+picked: plan <plan>: go 2 of 14 sources (effective-go, errors#Wrapping)
+```
+
+`not read:` is `none` when every slice was read, and `picked:` counts the
+sources each corpus holds now.
+
 ### From an agent
 
-The bilbo plugin gives Claude Code and Codex two skills, `note` and `recall`.
+The bilbo plugin gives Claude Code and Codex three skills, `note`, `recall`
+and `reference`.
 
 `note` writes what a later session should know. The agent runs it when you ask
 to keep something ("note this", "save this as a decision"), or when the session
@@ -233,6 +325,19 @@ prints nothing without `bilbo` on `PATH`.
 `recall` runs `bilbo recall` with the user's words, retries twice in the note's likely
 wording when nothing matches, and offers to open a hit. It searches through
 `bilbo` only: when the binary is missing, it says so and stops.
+
+`reference` answers a question from the library ("what does the Go book say
+about X"). It lists the corpora with `bilbo library`, reads the guides, and
+posts its picks, the sources or sections that answer the question, before it
+reads anything; a catalog is only ever picked by section. It plans the picks
+with `bilbo library plan` and reads every slice through `bilbo library read`,
+never with a file tool. In Claude Code a plan of two to six partitions goes to
+one `general-purpose` reader each, briefed by the skill's
+`references/reader.md`; without the Agent tool, as in Codex, it plans smaller
+slices and reads up to 100,000 tokens itself. It drafts one `bilbo:` citation
+per claim, runs `bilbo cite --plan` until every verdict is `ok`, drops or
+narrows any claim its quote does not support, and ends with the picks and
+cite's `citations:`, `coverage:` and `picked:` lines, copied as printed.
 
 ### The digest
 

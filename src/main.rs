@@ -1,5 +1,7 @@
 mod agents;
 mod check;
+mod citation;
+mod cite;
 mod command;
 mod config;
 mod corpus;
@@ -11,11 +13,13 @@ mod library;
 mod model;
 mod new;
 mod note;
+mod plan;
 mod rank;
 mod recall;
 mod setup;
 mod source;
 mod store;
+mod text;
 mod timer;
 mod vectors;
 mod wizard;
@@ -43,7 +47,10 @@ usage: bilbo new <kind> <topic> [--title <text>]
        bilbo library [<corpus>]
        bilbo library show <corpus>/<name>|<id>[#<anchor>] [--depth <n>]
        bilbo library stage <file> --origin \"<url|doc>: <value>\" [--fetched <YYYY-MM-DD>]
-       bilbo library land <stage> <corpus>/<name> --keep <a>-<b>[,<c>-<d>]... [--title <text>] [--replace]
+       bilbo library land <stage> <corpus>/<name> --keep <a>-<b>[,<c>-<d>]... [--title <text>] [--replace [--force]]
+       bilbo library plan <ref>... [--budget-tokens <n>] [--slice-bytes <n>] [--slice-lines <n>]
+       bilbo library read <plan> <slice>... [--part <k>/<n>]
+       bilbo cite [--plan <plan>]... [<file> | -]
        bilbo --help
        bilbo --version
 new creates <root>/notes/<kind>-<topic>.md and prints its path.
@@ -51,7 +58,8 @@ check prints every problem in the store and changes nothing.
 recall prints the notes that best match the query, best first, 10 unless --limit says otherwise.
 index embeds the passages the vector cache lacks and drops the ones no note holds any more.
 digest reads a prompt hook's JSON on stdin and prints the notes that bear on the prompt; it always exits 0.
-library lists the corpora, prints a corpus's guide with the facts of each source, or a source's outline; stage and land add a source.
+library lists the corpora, prints a corpus's guide with the facts of each source, or a source's outline; stage and land add a source; plan cuts picks into slices and partitions; read prints slices and logs them.
+cite checks every bilbo: citation in a draft, and with --plan prints the coverage of the plans' reads.
 setup creates the store and the config and installs the agent plugin, the index timer and, when asked, the local embedder; in a terminal it asks first.
 setup options: --embedder-url <url>, --embedder-model <name>, --embedder-token-env <var>, --embedder-token-file <path>, --embedder-query-prefix <text>, --embedder-local, --embedder-port <port>, --llama-server <path>, --no-plugin, --claude <path>, --codex <path>, --plugin-source <folder|owner/repo#ref>, --no-timer, --index-every <minutes>
 kinds: plan, spec, design, decision, gotcha, research, review, report, reference
@@ -128,6 +136,16 @@ fn run() -> Result<ExitCode, Failure> {
             output.warnings.iter().for_each(|line| print_stderr(line));
             output.lines.iter().for_each(|line| print_stdout(line));
             Ok(ExitCode::SUCCESS)
+        }
+        Some("cite") => {
+            let output = cite::run(&args[1..], &mut std::io::stdin().lock(), &env)?;
+            output.warnings.iter().for_each(|line| print_stderr(line));
+            output.lines.iter().for_each(|line| print_stdout(line));
+            Ok(if output.failed {
+                ExitCode::FAILURE
+            } else {
+                ExitCode::SUCCESS
+            })
         }
         Some(arg) if arg.starts_with('-') => Err(Failure::Usage(format!("unknown option '{arg}'"))),
         Some(arg) => Err(Failure::Usage(format!("unknown verb '{arg}'"))),

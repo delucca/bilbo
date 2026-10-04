@@ -3,7 +3,7 @@ mod common;
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 
-use common::{Run, TempDir, bilbo, note_text, snapshot};
+use common::{Run, TempDir, bilbo, bilbo_input, note_text, snapshot};
 
 const ID_A: &str = "01M3EZ8NVEC2KJQNGK5DTK349R";
 const ID_B: &str = "01M3EZ8NVEC2KJQNGK5DTK3400";
@@ -161,7 +161,15 @@ fn source(id: &str, extra: &[&str], body: &str) -> String {
 
 /// A body of exactly `bytes` bytes with no section.
 fn sized(bytes: usize) -> String {
-    format!("# T\n{}\n", "a".repeat(bytes - 5))
+    let mut body = String::from("# T\n");
+    let mut left = bytes - 4;
+    while left > 0 {
+        let width = left.min(80);
+        body.push_str(&"a".repeat(width - 1));
+        body.push('\n');
+        left -= width;
+    }
+    body
 }
 
 fn guide(title: &str, lead: &str, entries: &[(&str, &str)]) -> String {
@@ -390,16 +398,18 @@ fn corpus_argument_errors() {
     assert_eq!(run.code, 2);
     assert!(run.stderr.contains("bilbo: invalid corpus 'Go'"));
 
-    for reserved in ["plan", "read"] {
-        let run = lab.library(&[reserved]);
+    for (subcommand, missing) in [("plan", "<ref>"), ("read", "<plan>")] {
+        let run = lab.library(&[subcommand]);
         assert_eq!(run.code, 2);
+        assert!(run.stdout.is_empty());
         assert!(
             run.stderr
-                .contains(&format!("bilbo: '{reserved}' is reserved")),
+                .starts_with(&format!("bilbo: missing {missing}\n")),
             "{}",
             run.stderr
         );
     }
+    assert!(!lab.state.join("bilbo/plans").exists());
 }
 
 fn errors_lab(name: &str) -> Lab {
@@ -499,6 +509,26 @@ fn an_anchor_narrows_the_outline() {
         .skip(1)
         .collect();
     assert_eq!(rows, ["14-20\t18 tokens\tWrapping > Is and As"]);
+}
+
+#[test]
+fn show_resolves_a_backticked_heading_through_a_plain_anchor() {
+    let lab = Lab::new("lib-show-markup");
+    lab.put(
+        "rust/book.md",
+        &source(
+            ID_A,
+            &[],
+            "# Book\n\n## The `Option` type\n\ntext\n\n## Other\n\nmore\n",
+        ),
+    );
+    let run = lab.library(&["show", "rust/book#The Option type"]);
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    assert!(run.stdout.contains("The `Option` type"), "{}", run.stdout);
+    assert!(!run.stdout.contains("Other"));
+    let run = lab.library(&["show", "rust/book#The Options type"]);
+    assert_eq!(run.code, 1);
+    assert!(run.stdout.is_empty());
 }
 
 #[test]
@@ -1405,4 +1435,1098 @@ fn show_prints_the_kept_and_capture_headers_of_a_landed_source() {
     let run = lab.library(&["show", "go/errors"]);
     assert_eq!(field(&run.stdout, "kept"), "3-3");
     assert_eq!(field(&run.stdout, "capture"), "external");
+}
+
+// Plan and read
+
+const ID_C: &str = "01M3EZ8NVEC2KJQNGK5DTK3401";
+
+/// Frontmatter takes 6 lines, so a body's title sits on line 7.
+fn plain_lab(name: &str) -> Lab {
+    let lab = Lab::new(name);
+    lab.put("go/guide.md", &guide("Go", "Lead.", &[]));
+    lab.put("go/errors.md", &source(ID_B, &[], ERRORS_BODY));
+    lab
+}
+
+/// A body of `count` lines of `width` letters under its title.
+fn filler(title: &str, count: usize, width: usize) -> String {
+    let mut body = format!("# {title}\n");
+    for _ in 0..count {
+        body.push_str(&"a".repeat(width));
+        body.push('\n');
+    }
+    body
+}
+
+/// Nine sources, `go/s1` to `go/s9`, of 19,000 bytes each.
+fn nine_lab(name: &str) -> Lab {
+    let lab = Lab::new(name);
+    lab.put("go/guide.md", &guide("Go", "Lead.", &[]));
+    for i in 1..=9 {
+        lab.put(
+            &format!("go/s{i}.md"),
+            &source(
+                &format!("01M3EZ8NVEC2KJQNGK5DTK35{i}A"),
+                &[],
+                &sized(19_000),
+            ),
+        );
+    }
+    lab
+}
+
+fn nine_refs() -> Vec<String> {
+    (1..=9).map(|i| format!("go/s{i}")).collect()
+}
+
+impl Lab {
+    fn plan(&self, args: &[&str]) -> Run {
+        let mut full = vec!["plan"];
+        full.extend(args);
+        self.library(&full)
+    }
+
+    fn read_slices(&self, plan: &str, args: &[&str]) -> Run {
+        let mut full = vec!["read", plan];
+        full.extend(args);
+        self.library(&full)
+    }
+
+    fn plans(&self) -> PathBuf {
+        self.state.join("bilbo/plans")
+    }
+
+    fn plan_files(&self) -> Vec<String> {
+        let Ok(entries) = std::fs::read_dir(self.plans()) else {
+            return Vec::new();
+        };
+        let mut names: Vec<String> = entries
+            .map(|e| e.unwrap().file_name().into_string().unwrap())
+            .collect();
+        names.sort();
+        names
+    }
+
+    /// The plan's read log, one entry per line, without the time.
+    fn log(&self, plan: &str) -> Vec<String> {
+        let Ok(text) = std::fs::read_to_string(self.plans().join(format!("{plan}.log"))) else {
+            return Vec::new();
+        };
+        text.lines()
+            .map(|l| l.rsplit_once('\t').unwrap().0.to_string())
+            .collect()
+    }
+
+    fn cite(&self, args: &[&str], draft: &str) -> Run {
+        let mut full = vec!["cite"];
+        full.extend(args);
+        bilbo_input(self.dir.path(), &self.env(), &full, draft)
+    }
+
+    /// The `coverage:` line `bilbo cite --plan` prints for the plan, from an empty draft.
+    fn coverage(&self, plan: &str) -> String {
+        let run = self.cite(&["--plan", plan], "");
+        assert_eq!(run.code, 0, "{}", run.stderr);
+        run.stdout
+            .lines()
+            .find(|l| l.starts_with("coverage: "))
+            .unwrap_or_else(|| panic!("no coverage line in {:?}", run.stdout))
+            .to_string()
+    }
+
+    fn spawn(&self, args: &[&str]) -> Child {
+        Command::new(env!("CARGO_BIN_EXE_bilbo"))
+            .env_clear()
+            .envs(self.env())
+            .current_dir(self.dir.path())
+            .args(args)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap()
+    }
+}
+
+fn plan_id(run: &Run) -> String {
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    field(&run.stdout, "plan").to_string()
+}
+
+/// The slice rows of a plan's output, each split at its tabs.
+fn rows(stdout: &str) -> Vec<Vec<&str>> {
+    stdout
+        .split_once("\n\n")
+        .map_or("", |(_, rows)| rows)
+        .lines()
+        .map(|row| row.split('\t').collect())
+        .collect()
+}
+
+/// The numbered lines of a read's stdout as `(line, text)`.
+fn numbered_lines(stdout: &str) -> Vec<(usize, &str)> {
+    stdout
+        .lines()
+        .filter(|l| !l.starts_with("-- "))
+        .map(|l| {
+            let (n, text) = l.split_once('\t').unwrap();
+            (n.parse().unwrap(), text)
+        })
+        .collect()
+}
+
+#[test]
+fn plan_picks_a_whole_source_and_a_section() {
+    let lab = plain_lab("lib-plan-picks");
+    lab.put(
+        "go/effective-go.md",
+        &source(ID_A, &[], &filler("Effective Go", 3, 10)),
+    );
+    let run = lab.plan(&["go/effective-go", "go/errors#Wrapping"]);
+    let id = plan_id(&run);
+    assert_eq!(field(&run.stdout, "picks"), "2");
+    assert_eq!(
+        rows(&run.stdout),
+        [
+            vec!["1", "1", "go/effective-go", "7-10", "20 tokens", "-"],
+            vec!["2", "1", "go/errors", "9-20", "31 tokens", "Wrapping"],
+        ]
+    );
+    assert_eq!(lab.plan_files(), [format!("{id}.json")]);
+}
+
+#[test]
+fn plan_picks_by_id_as_by_name() {
+    let lab = plain_lab("lib-plan-id");
+    let by_name = lab.plan(&["go/errors"]);
+    let by_id = lab.plan(&[ID_B]);
+    assert_eq!(rows(&by_name.stdout), rows(&by_id.stdout));
+    let anchored = lab.plan(&[&format!("{ID_B}#Wrapping > Is and As")]);
+    assert_eq!(rows(&anchored.stdout)[0][3], "14-20");
+}
+
+#[test]
+fn a_notes_id_is_not_a_pick() {
+    let lab = plain_lab("lib-plan-note-id");
+    std::fs::create_dir_all(lab.root.join("notes")).unwrap();
+    let note = lab.root.join("notes/decision-note-store.md");
+    std::fs::write(&note, note_text(ID_C, "Note store")).unwrap();
+    let run = lab.plan(&[ID_C]);
+    assert_eq!(run.code, 1);
+    assert!(run.stdout.is_empty());
+    assert!(
+        run.stderr.contains(&note.display().to_string()),
+        "{}",
+        run.stderr
+    );
+    assert!(!lab.plans().exists());
+}
+
+fn catalog_lab(name: &str) -> Lab {
+    let lab = Lab::new(name);
+    let mut body = String::from("# Lints\n");
+    for i in 0..41 {
+        body.push_str(&format!("\n## lint{i}\n{}\n", "a".repeat(1400)));
+    }
+    lab.put(
+        "rust/guide.md",
+        &guide("Rust", "Lead.", &[("clippy-lints", "x")]),
+    );
+    lab.put("rust/clippy-lints.md", &source(ID_A, &[], &body));
+    lab
+}
+
+#[test]
+fn a_catalog_is_refused_whole_and_accepted_by_anchor() {
+    let lab = catalog_lab("lib-plan-catalog");
+    let run = lab.plan(&["rust/clippy-lints"]);
+    assert_eq!(run.code, 1);
+    assert!(run.stdout.is_empty());
+    assert!(
+        run.stderr.contains("rust/clippy-lints is a catalog"),
+        "{}",
+        run.stderr
+    );
+    assert!(run.stderr.contains("bilbo library show"));
+    assert!(!lab.plans().exists());
+
+    let run = lab.plan(&["rust/clippy-lints#lint3"]);
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    assert_eq!(rows(&run.stdout)[0][3], "18-20");
+    assert_eq!(rows(&run.stdout)[0][5], "lint3");
+}
+
+#[test]
+fn overlapping_picks_are_a_usage_error() {
+    let lab = plain_lab("lib-plan-overlap");
+    for refs in [
+        ["go/errors", "go/errors#Wrapping"],
+        [ID_B, "go/errors#Wrapping"],
+        ["go/errors#Wrapping", "go/errors#Wrapping > Is and As"],
+    ] {
+        let run = lab.plan(&refs);
+        assert_eq!(run.code, 2, "{refs:?}");
+        assert!(run.stdout.is_empty());
+        assert!(
+            run.stderr.contains(refs[0]) && run.stderr.contains(refs[1]),
+            "{}",
+            run.stderr
+        );
+    }
+    assert!(!lab.plans().exists());
+    let run = lab.plan(&["go/errors#Wrapping > Is and As", "go/errors#Wrapping"]);
+    assert_eq!(run.code, 2);
+    let run = lab.plan(&["go/errors#Wrapping", "go/errors"]);
+    assert_eq!(run.code, 2);
+}
+
+#[test]
+fn two_sections_of_one_source_do_not_overlap() {
+    let lab = Lab::new("lib-plan-siblings");
+    lab.put(
+        "go/lints.md",
+        &source(ID_A, &[], "# L\n\n## One\naaaa\n## Two\nbbbb\n"),
+    );
+    let run = lab.plan(&["go/lints#One", "go/lints#Two"]);
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    assert_eq!(rows(&run.stdout).len(), 2);
+}
+
+#[test]
+fn an_ambiguous_anchor_is_refused_with_its_matches() {
+    let lab = Lab::new("lib-plan-ambiguous");
+    lab.put(
+        "rust/lints.md",
+        &source(
+            ID_A,
+            &[],
+            "# Lints\n\n## needless_return\n### What it does\ntext\n## needless_range_loop\n### What it does\ntext\n",
+        ),
+    );
+    let run = lab.plan(&["rust/lints#What it does"]);
+    assert_eq!(run.code, 1);
+    assert!(run.stdout.is_empty());
+    assert!(
+        run.stderr
+            .contains("bilbo: needless_return > What it does (line 10)\n")
+    );
+    assert!(
+        run.stderr
+            .contains("bilbo: needless_range_loop > What it does (line 13)\n")
+    );
+    assert!(!lab.plans().exists());
+}
+
+#[test]
+fn plan_reference_errors_match_show() {
+    let lab = plain_lab("lib-plan-refs");
+    for (args, code) in [
+        (vec!["go/missing"], 1),
+        (vec!["go/errors#nothing"], 1),
+        (vec!["go/errors", "go/missing"], 1),
+        (vec!["errors"], 2),
+        (vec!["go/errors#"], 2),
+        (vec!["go/errors", "--depth", "1"], 2),
+        (vec!["go/errors", "--part", "1/2"], 2),
+        (vec!["go/errors", "--json"], 2),
+    ] {
+        let run = lab.plan(&args);
+        assert_eq!(run.code, code, "{args:?}: {}", run.stderr);
+        assert!(run.stdout.is_empty());
+    }
+    assert!(!lab.plans().exists());
+}
+
+#[test]
+fn plan_option_limits_are_usage_errors_that_write_nothing() {
+    let lab = plain_lab("lib-plan-limits");
+    for (args, named) in [
+        (vec!["--slice-bytes", "500"], "--slice-bytes"),
+        (vec!["--slice-bytes", "999"], "--slice-bytes"),
+        (vec!["--slice-bytes", "30001"], "--slice-bytes"),
+        (vec!["--slice-bytes", "5000000"], "--slice-bytes"),
+        (vec!["--slice-bytes", "many"], "--slice-bytes"),
+        (vec!["--slice-lines", "9"], "--slice-lines"),
+        (vec!["--budget-tokens", "999"], "--budget-tokens"),
+        (vec!["--budget-tokens", "-5"], "--budget-tokens"),
+    ] {
+        let mut full = vec!["go/errors"];
+        full.extend(&args);
+        let run = lab.plan(&full);
+        assert_eq!(run.code, 2, "{args:?}");
+        assert!(run.stdout.is_empty());
+        assert!(run.stderr.contains(named), "{}", run.stderr);
+    }
+    let run = lab.plan(&["go/errors", "--slice-bytes", "5000000"]);
+    assert!(run.stderr.contains("30,000"), "{}", run.stderr);
+    assert!(!lab.plans().exists());
+    for ok in [
+        ["--slice-bytes", "1000"],
+        ["--slice-bytes", "30000"],
+        ["--slice-lines", "10"],
+        ["--budget-tokens", "1000"],
+    ] {
+        assert_eq!(lab.plan(&["go/errors", ok[0], ok[1]]).code, 0, "{ok:?}");
+    }
+    assert_eq!(lab.plan(&["go/errors", "--slice-bytes=30000"]).code, 0);
+    assert_eq!(lab.plan(&["--budget-tokens", "1000", "go/errors"]).code, 0);
+}
+
+#[test]
+fn a_one_slice_plan_prints_its_header_and_row() {
+    let lab = Lab::new("lib-plan-one");
+    let mut body = String::from("# T\n");
+    for _ in 0..12 {
+        body.push_str(&format!("{}\n", "a".repeat(76)));
+    }
+    body.push_str(&format!("{}\n", "a".repeat(71)));
+    assert_eq!(body.len(), 1000);
+    lab.put("go/errors.md", &source(ID_A, &[], &body));
+    let run = lab.plan(&["go/errors"]);
+    let id = plan_id(&run);
+    assert_eq!(
+        run.stdout,
+        format!(
+            "plan: {id}\npicks: 1\nslices: 1\ntokens: 400\npartitions: 1\npartition 1: slices 1-1, 400 tokens\n\n1\t1\tgo/errors\t7-20\t400 tokens\t-\n"
+        )
+    );
+}
+
+#[test]
+fn plans_cut_sections_into_slices_and_partitions() {
+    let lab = Lab::new("lib-plan-cuts");
+    let mut body = String::from("# T\n");
+    for name in ["A", "B", "C"] {
+        body.push_str(&format!("## {name}\n"));
+        body.push_str(&("a".repeat(99) + "\n").repeat(99));
+    }
+    lab.put("go/book.md", &source(ID_A, &[], &body));
+    let run = lab.plan(&["go/book"]);
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    let table = rows(&run.stdout);
+    assert_eq!(table.len(), 2);
+    assert_eq!((table[0][3], table[1][3]), ("7-207", "208-307"));
+    assert_eq!(table[1][5], "C");
+    assert_eq!(field(&run.stdout, "partitions"), "1");
+
+    let run = lab.plan(&["go/book", "--budget-tokens", "1000"]);
+    assert_eq!(field(&run.stdout, "partitions"), "2");
+    assert!(run.stdout.contains("partition 2: slices 2-2, "));
+}
+
+#[test]
+fn a_line_cap_bounds_every_slice_of_a_plan() {
+    let lab = Lab::new("lib-plan-lines");
+    lab.put("go/long.md", &source(ID_A, &[], &filler("L", 600, 10)));
+    let run = lab.plan(&["go/long", "--slice-lines", "250"]);
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    let table = rows(&run.stdout);
+    assert!(table.len() >= 3);
+    for row in table {
+        let (a, b) = row[3].split_once('-').unwrap();
+        assert!(
+            b.parse::<usize>().unwrap() - a.parse::<usize>().unwrap() < 250,
+            "{row:?}"
+        );
+    }
+}
+
+#[test]
+fn a_slice_that_starts_inside_a_section_names_its_path() {
+    let lab = Lab::new("lib-plan-in");
+    let body = format!(
+        "# T\n## Concurrency\n### Goroutines\n{}",
+        ("a".repeat(99) + "\n").repeat(299)
+    );
+    lab.put("go/book.md", &source(ID_A, &[], &body));
+    let run = lab.plan(&["go/book", "--slice-bytes", "10000"]);
+    let table = rows(&run.stdout);
+    assert!(table.len() >= 3, "{}", run.stdout);
+    assert_eq!(table[0][5], "-");
+    assert_eq!(table[1][5], "Concurrency > Goroutines");
+    let plan = plan_id(&run);
+    let read = lab.read_slices(&plan, &["2"]);
+    assert!(
+        read.stdout.lines().nth(1) == Some("-- in: Concurrency > Goroutines --"),
+        "{}",
+        read.stdout
+    );
+}
+
+#[test]
+fn nine_sources_make_two_partitions() {
+    let lab = nine_lab("lib-plan-nine");
+    let refs = nine_refs();
+    let run = lab.plan(&refs.iter().map(String::as_str).collect::<Vec<_>>());
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    assert_eq!(field(&run.stdout, "slices"), "9");
+    assert_eq!(field(&run.stdout, "tokens"), "68400");
+    assert!(run.stdout.contains("\npartitions: 2\npartition 1: slices 1-7, 53200 tokens\npartition 2: slices 8-9, 15200 tokens\n"), "{}", run.stdout);
+    let table = rows(&run.stdout);
+    assert_eq!(table[6][1], "1");
+    assert_eq!(table[7][1], "2");
+}
+
+#[test]
+fn planning_and_reading_leave_the_store_alone() {
+    let lab = plain_lab("lib-plan-readonly");
+    let before = snapshot(&lab.root);
+    let id = plan_id(&lab.plan(&["go/errors"]));
+    assert_eq!(lab.read_slices(&id, &["1"]).code, 0);
+    assert_eq!(lab.read_slices(&id, &["1", "--part", "1/2"]).code, 0);
+    assert_eq!(snapshot(&lab.root), before);
+    assert_eq!(
+        lab.plan_files(),
+        [format!("{id}.json"), format!("{id}.log")]
+    );
+}
+
+#[test]
+fn plan_needs_a_state_folder() {
+    let lab = plain_lab("lib-plan-state");
+    let env = vec![
+        ("BILBO_HOME", lab.root.to_str().unwrap()),
+        ("HOME", "relative/home"),
+    ];
+    for args in [
+        vec!["library", "plan", "go/errors"],
+        vec!["library", "read", ID_C, "1"],
+    ] {
+        let run = bilbo(lab.dir.path(), &env, &args);
+        assert_eq!(run.code, 2, "{args:?}");
+        assert!(run.stdout.is_empty());
+        assert!(run.stderr.contains("XDG_STATE_HOME") && run.stderr.contains("HOME"));
+    }
+    assert!(!lab.plans().exists());
+}
+
+fn set_age(path: &std::path::Path, days: u64) {
+    let when = std::time::SystemTime::now() - std::time::Duration::from_secs(days * 24 * 60 * 60);
+    std::fs::File::options()
+        .write(true)
+        .open(path)
+        .unwrap()
+        .set_modified(when)
+        .unwrap();
+}
+
+#[test]
+fn an_old_plan_is_removed_and_a_recent_one_kept() {
+    let lab = plain_lab("lib-plan-prune");
+    let old = plan_id(&lab.plan(&["go/errors"]));
+    assert_eq!(lab.read_slices(&old, &["1"]).code, 0);
+    let recent = plan_id(&lab.plan(&["go/errors"]));
+    set_age(&lab.plans().join(format!("{old}.json")), 31);
+    set_age(&lab.plans().join(format!("{old}.log")), 31);
+    set_age(&lab.plans().join(format!("{recent}.json")), 1);
+    let fresh = plan_id(&lab.plan(&["go/errors"]));
+    let mut expected = vec![format!("{recent}.json"), format!("{fresh}.json")];
+    expected.sort();
+    assert_eq!(lab.plan_files(), expected);
+}
+
+#[test]
+fn a_refused_plan_prunes_nothing() {
+    let lab = plain_lab("lib-plan-prune-refused");
+    let old = plan_id(&lab.plan(&["go/errors"]));
+    set_age(&lab.plans().join(format!("{old}.json")), 40);
+    assert_eq!(lab.plan(&["go/missing"]).code, 1);
+    assert_eq!(lab.plan_files(), [format!("{old}.json")]);
+}
+
+#[test]
+fn read_prints_a_slice_with_its_header_numbers_and_end_marker() {
+    let lab = plain_lab("lib-read-one");
+    let id = plan_id(&lab.plan(&["go/errors"]));
+    let run = lab.read_slices(&id, &["1"]);
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    let mut expected = format!("-- slice 1/1: go/errors {ID_B} lines 7-20 --\n-- in: - --\n");
+    for (i, line) in ERRORS_BODY.lines().enumerate() {
+        expected.push_str(&format!("{}\t{line}\n", i + 7));
+    }
+    expected.push_str("-- end slice 1/1 --\n");
+    assert_eq!(run.stdout, expected);
+    assert!(run.stderr.is_empty());
+    assert!(!run.stdout.contains("id: "));
+    assert_eq!(numbered_lines(&run.stdout)[0], (7, "# Errors"));
+    assert_eq!(lab.log(&id), [format!("1\t{ID_B}\t{ZERO}\t7-20")]);
+}
+
+#[test]
+fn read_prints_lines_as_they_are() {
+    let lab = Lab::new("lib-read-bytes");
+    let body = "# T\n\n## Code\n\tindented\ttab  \n```go\n# not a heading\n  x := 1  \n```\n\n";
+    lab.put("go/code.md", &source(ID_A, &[], body));
+    let id = plan_id(&lab.plan(&["go/code"]));
+    let run = lab.read_slices(&id, &["1"]);
+    let got: Vec<&str> = numbered_lines(&run.stdout)
+        .into_iter()
+        .map(|(_, t)| t)
+        .collect();
+    let want: Vec<&str> = body.lines().collect();
+    assert_eq!(got, want);
+}
+
+#[test]
+fn read_prints_two_small_slices_in_one_call() {
+    let lab = plain_lab("lib-read-two");
+    lab.put("go/small.md", &source(ID_A, &[], &filler("Small", 3, 20)));
+    let id = plan_id(&lab.plan(&["go/errors", "go/small"]));
+    let run = lab.read_slices(&id, &["2", "1"]);
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    let headers: Vec<&str> = run
+        .stdout
+        .lines()
+        .filter(|l| l.starts_with("-- "))
+        .collect();
+    assert_eq!(
+        headers,
+        [
+            format!("-- slice 2/2: go/small {ID_A} lines 7-10 --").as_str(),
+            "-- in: - --",
+            "-- end slice 2/2 --",
+            format!("-- slice 1/2: go/errors {ID_B} lines 7-20 --").as_str(),
+            "-- in: - --",
+            "-- end slice 1/2 --",
+        ]
+    );
+    assert_eq!(lab.log(&id).len(), 2);
+}
+
+#[test]
+fn one_read_of_too_much_is_refused_and_logged_nowhere() {
+    let lab = nine_lab("lib-read-toomuch");
+    let refs = nine_refs();
+    let id = plan_id(&lab.plan(&refs.iter().map(String::as_str).collect::<Vec<_>>()));
+    let run = lab.read_slices(&id, &["1", "2", "3", "4", "5", "6", "7", "8", "9"]);
+    assert_eq!(run.code, 2);
+    assert!(run.stdout.is_empty());
+    assert!(
+        run.stderr.contains("slices 1, 2, 3, 4, 5, 6, 7, 8, 9"),
+        "{}",
+        run.stderr
+    );
+    assert!(run.stderr.contains("24,000 bytes"), "{}", run.stderr);
+    assert!(!lab.plans().join(format!("{id}.log")).exists());
+    assert!(lab.coverage(&id).contains("read 0 of 9 slices"));
+    assert_eq!(lab.read_slices(&id, &["1", "2"]).code, 2);
+    assert_eq!(lab.read_slices(&id, &["9"]).code, 0);
+    assert!(lab.coverage(&id).contains("read 1 of 9 slices"));
+}
+
+#[test]
+fn the_limit_of_one_read_is_the_plans_slice_size() {
+    let lab = nine_lab("lib-read-limit");
+    let id = plan_id(&lab.plan(&["go/s1", "go/s2", "--slice-bytes", "30000"]));
+    assert_eq!(lab.read_slices(&id, &["1", "2"]).code, 2);
+    assert_eq!(lab.read_slices(&id, &["1", "2", "--part", "1/2"]).code, 0);
+    assert_eq!(lab.read_slices(&id, &["1", "2", "--part", "2/2"]).code, 0);
+    assert_eq!(lab.read_slices(&id, &["1", "2", "--part", "1/8"]).code, 0);
+}
+
+#[test]
+fn parts_of_several_slices_still_count_against_the_limit() {
+    let lab = nine_lab("lib-read-parts-limit");
+    let refs = nine_refs();
+    let id = plan_id(&lab.plan(&refs.iter().map(String::as_str).collect::<Vec<_>>()));
+    let run = lab.read_slices(&id, &["1", "2", "3", "4", "--part", "1/2"]);
+    assert_eq!(run.code, 2, "{}", run.stderr);
+    assert!(run.stdout.is_empty());
+    assert!(run.stderr.contains("slices 1, 2, 3, 4"), "{}", run.stderr);
+    assert!(run.stderr.contains("24,000 bytes"), "{}", run.stderr);
+    assert!(lab.coverage(&id).contains("read 0 of 9 slices"));
+}
+
+#[test]
+fn a_plan_without_body_start_counts_as_changed() {
+    let lab = book_lab("lib-read-nobody");
+    let id = plan_id(&lab.plan(&["go/book"]));
+    let path = lab.plans().join(format!("{id}.json"));
+    let mut plan: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    for pick in plan["picks"].as_array_mut().unwrap() {
+        pick.as_object_mut().unwrap().remove("body_start").unwrap();
+    }
+    std::fs::write(&path, plan.to_string()).unwrap();
+    let run = lab.read_slices(&id, &["1"]);
+    assert_eq!(run.code, 1, "{}", run.stdout);
+    assert!(run.stdout.is_empty());
+    assert!(run.stderr.contains("changed since plan"), "{}", run.stderr);
+    let run = lab.cite(&["--plan", &id], &quote_of(3));
+    assert_eq!(run.code, 1, "{}", run.stdout);
+    assert!(run.stdout.contains("\tunread\t"), "{}", run.stdout);
+    assert!(
+        run.stdout.contains("changed since its plan"),
+        "{}",
+        run.stdout
+    );
+}
+
+#[test]
+fn one_oversized_slice_still_prints() {
+    let lab = Lab::new("lib-read-huge");
+    let body = format!("# T\n{}\n", "a".repeat(30_000));
+    lab.put("go/huge.md", &source(ID_A, &[], &body));
+    let run = lab.plan(&["go/huge"]);
+    let id = plan_id(&run);
+    assert_eq!(rows(&run.stdout).len(), 2);
+    let read = lab.read_slices(&id, &["2"]);
+    assert_eq!(read.code, 0, "{}", read.stderr);
+    assert!(read.stdout.len() > 30_000);
+    assert!(read.stdout.ends_with("-- end slice 2/2 --\n"));
+}
+
+#[test]
+fn parts_print_every_line_once() {
+    let lab = Lab::new("lib-read-parts");
+    lab.put("go/book.md", &source(ID_A, &[], &filler("B", 40, 30)));
+    let id = plan_id(&lab.plan(&["go/book"]));
+    let whole = lab.read_slices(&id, &["1"]);
+    let one = lab.read_slices(&id, &["1", "--part", "1/2"]);
+    let two = lab.read_slices(&id, &["1", "--part=2/2"]);
+    assert_eq!((one.code, two.code), (0, 0), "{}{}", one.stderr, two.stderr);
+    assert!(
+        one.stdout
+            .starts_with(&format!("-- slice 1/1 part 1/2: go/book {ID_A} lines 7-"))
+    );
+    assert!(one.stdout.ends_with("-- end slice 1/1 part 1/2 --\n"));
+    assert!(two.stdout.ends_with("-- end slice 1/1 part 2/2 --\n"));
+    let mut together = numbered_lines(&one.stdout);
+    together.extend(numbered_lines(&two.stdout));
+    assert_eq!(together, numbered_lines(&whole.stdout));
+    let (a, b) = (numbered_lines(&one.stdout), numbered_lines(&two.stdout));
+    assert!(!a.is_empty() && !b.is_empty());
+    assert_eq!(lab.log(&id).len(), 3);
+    assert!(lab.log(&id)[1].ends_with(&format!("{}-{}", a[0].0, a.last().unwrap().0)));
+}
+
+#[test]
+fn a_bad_part_is_a_usage_error_that_logs_nothing() {
+    let lab = plain_lab("lib-read-badpart");
+    lab.put("go/tiny.md", &source(ID_A, &[], "# T\nx\nyy\n"));
+    let id = plan_id(&lab.plan(&["go/errors", "go/tiny"]));
+    for part in ["3/2", "0/2", "1/1", "1/9", "2", "a/b", "1/2/3", "-1/2"] {
+        let run = lab.read_slices(&id, &["1", "--part", part]);
+        assert_eq!(run.code, 2, "{part}");
+        assert!(run.stdout.is_empty());
+        assert!(run.stderr.contains("--part"), "{}", run.stderr);
+    }
+    let run = lab.read_slices(&id, &["2", "--part", "1/4"]);
+    assert_eq!(run.code, 2);
+    assert!(run.stdout.is_empty());
+    assert!(run.stderr.contains("--part"));
+    assert!(lab.coverage(&id).contains("read 0 of 2 slices"));
+    assert_eq!(lab.read_slices(&id, &["2", "--part", "3/3"]).code, 0);
+}
+
+#[test]
+fn six_readers_at_once_log_all_six() {
+    let lab = Lab::new("lib-read-six");
+    lab.put("go/guide.md", &guide("Go", "Lead.", &[]));
+    for i in 1..=6 {
+        lab.put(
+            &format!("go/s{i}.md"),
+            &source(
+                &format!("01M3EZ8NVEC2KJQNGK5DTK35{i}A"),
+                &[],
+                &sentence_body(i),
+            ),
+        );
+    }
+    let refs: Vec<String> = (1..=6).map(|i| format!("go/s{i}")).collect();
+    let id = plan_id(&lab.plan(&refs.iter().map(String::as_str).collect::<Vec<_>>()));
+    let children: Vec<Child> = (1..=6)
+        .map(|i| lab.spawn(&["library", "read", &id, &i.to_string()]))
+        .collect();
+    for child in children {
+        let run = finish(child);
+        assert_eq!(run.code, 0, "{}", run.stderr);
+    }
+    let draft: String = (1..=6)
+        .map(|i| {
+            format!(
+                "bilbo:01M3EZ8NVEC2KJQNGK5DTK35{i}A \"{}\"\n",
+                sentence(i, 100)
+            )
+        })
+        .collect();
+    let run = lab.cite(&["--plan", &id], &draft);
+    assert_eq!(run.code, 0, "{}{}", run.stdout, run.stderr);
+    assert_eq!(run.stdout.matches("\tok\t").count(), 6, "{}", run.stdout);
+    assert!(run.stdout.contains("citations: 6 checked, 6 ok"));
+    assert!(run.stdout.contains("read 6 of 6 slices"), "{}", run.stdout);
+    assert!(run.stdout.contains("not read: none"));
+}
+
+/// The sentence on line `n` of source `i`.
+fn sentence(i: usize, n: usize) -> String {
+    format!("Reader {i} holds the line {n} with a quick brown fox")
+}
+
+/// A title and 200 sentences of about 90 bytes.
+fn sentence_body(i: usize) -> String {
+    let mut body = String::from("# S\n");
+    for n in 1..=200 {
+        body.push_str(&format!("{} and some padding.\n", sentence(i, n)));
+    }
+    body
+}
+
+fn book_lab(name: &str) -> Lab {
+    let lab = Lab::new(name);
+    lab.put("go/guide.md", &guide("Go", "Lead.", &[]));
+    let mut body = String::from("# Book\n");
+    for n in 1..=60 {
+        body.push_str(&format!("Line {n} says the quick brown fox jumps over.\n"));
+    }
+    lab.put("go/book.md", &source(ID_A, &[], &body));
+    lab
+}
+
+fn quote_of(n: usize) -> String {
+    format!("bilbo:{ID_A} \"Line {n} says the quick brown fox jumps over\"\n")
+}
+
+#[test]
+fn a_read_is_logged_and_counts_for_cite() {
+    let lab = book_lab("lib-read-logged");
+    let planned = lab.plan(&["go/book", "--slice-lines", "20"]);
+    let id = plan_id(&planned);
+    let slices = rows(&planned.stdout).len();
+    assert!(slices >= 3, "{}", planned.stdout);
+    let read = lab.read_slices(&id, &["3"]);
+    assert_eq!(read.code, 0, "{}", read.stderr);
+    let (last, text) = *numbered_lines(&read.stdout).last().unwrap();
+    assert!(last > 7, "{last}");
+    let n: usize = text.split(' ').nth(1).unwrap().parse().unwrap();
+    let run = lab.cite(&["--plan", &id], &quote_of(n));
+    assert_eq!(run.code, 0, "{}{}", run.stdout, run.stderr);
+    assert!(run.stdout.contains("\tok\t"), "{}", run.stdout);
+    assert!(
+        run.stdout.contains(&format!("read 1 of {slices} slices")),
+        "{}",
+        run.stdout
+    );
+    let run = lab.cite(&["--plan", &id], &quote_of(1));
+    assert_eq!(run.code, 1, "{}", run.stdout);
+    assert!(run.stdout.contains("\tunread\t"), "{}", run.stdout);
+    assert!(run.stdout.contains("(slice 1)"), "{}", run.stdout);
+}
+
+#[test]
+fn parts_add_up_to_lines_not_to_a_slice() {
+    let lab = book_lab("lib-read-partial");
+    let id = plan_id(&lab.plan(&["go/book"]));
+    let read = lab.read_slices(&id, &["1", "--part", "1/2"]);
+    assert_eq!(read.code, 0, "{}", read.stderr);
+    assert!(lab.coverage(&id).contains("read 0 of 1 slices"));
+    let run = lab.cite(&["--plan", &id], &quote_of(1));
+    assert_eq!(run.code, 0, "{}{}", run.stdout, run.stderr);
+    assert!(run.stdout.contains("\tok\t"), "{}", run.stdout);
+    let run = lab.cite(&["--plan", &id], &quote_of(60));
+    assert_eq!(run.code, 1, "{}", run.stdout);
+    assert!(run.stdout.contains("\tunread\t"), "{}", run.stdout);
+    let rest = lab.read_slices(&id, &["1", "--part", "2/2"]);
+    assert_eq!(rest.code, 0, "{}", rest.stderr);
+    assert!(lab.coverage(&id).contains("read 1 of 1 slices"));
+    assert_eq!(lab.cite(&["--plan", &id], &quote_of(60)).code, 0);
+}
+
+#[test]
+fn a_frontmatter_of_another_length_is_a_changed_source() {
+    let lab = book_lab("lib-read-frontlen");
+    let id = plan_id(&lab.plan(&["go/book"]));
+    let text = lab.read("go/book.md");
+    let moved = text.replacen("digest: ", "kept: 1-61\ndigest: ", 1);
+    lab.put("go/book.md", &moved);
+    let run = lab.read_slices(&id, &["1"]);
+    assert_eq!(run.code, 1, "{}", run.stdout);
+    assert!(run.stdout.is_empty());
+    assert!(run.stderr.contains("changed since plan"), "{}", run.stderr);
+    assert!(lab.coverage(&id).contains("read 0 of 1 slices"));
+    let run = lab.cite(&["--plan", &id], &quote_of(3));
+    assert_eq!(run.code, 1, "{}", run.stdout);
+    assert!(run.stdout.contains("\tunread\t"), "{}", run.stdout);
+    assert!(
+        run.stdout.contains("changed since its plan"),
+        "{}",
+        run.stdout
+    );
+}
+
+#[test]
+fn a_root_with_a_trailing_slash_is_the_same_root() {
+    let lab = book_lab("lib-read-slash");
+    let id = plan_id(&lab.plan(&["go/book"]));
+    let slashed = format!("{}/", lab.root.display());
+    let mut env = lab.env();
+    env.retain(|(name, _)| *name != "BILBO_HOME");
+    env.push(("BILBO_HOME", slashed.as_str()));
+    let run = bilbo(lab.dir.path(), &env, &["library", "read", &id, "1"]);
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    let run = bilbo_input(lab.dir.path(), &env, &["cite", "--plan", &id], &quote_of(3));
+    assert_eq!(run.code, 0, "{}{}", run.stdout, run.stderr);
+}
+
+#[test]
+fn a_reingested_source_is_refused_and_nothing_is_logged() {
+    let lab = Lab::new("lib-read-reingest");
+    lab.land_text(CAPTURE, "go/errors", "1-3", &[]);
+    let id = plan_id(&lab.plan(&["go/errors"]));
+    lab.land_text(
+        "# Errors\n\nWrap them more.\n",
+        "go/errors",
+        "1-3",
+        &["--replace"],
+    );
+    let run = lab.read_slices(&id, &["1"]);
+    assert_eq!(run.code, 1);
+    assert!(run.stdout.is_empty());
+    assert!(run.stderr.contains("go/errors"), "{}", run.stderr);
+    assert!(run.stderr.contains("new plan"), "{}", run.stderr);
+    assert!(lab.coverage(&id).contains("read 0 of 1 slices"));
+}
+
+#[test]
+fn a_deleted_source_is_refused_too() {
+    let lab = plain_lab("lib-read-deleted");
+    let id = plan_id(&lab.plan(&["go/errors"]));
+    std::fs::remove_file(lab.root.join("library/go/errors.md")).unwrap();
+    let run = lab.read_slices(&id, &["1"]);
+    assert_eq!(run.code, 1);
+    assert!(run.stdout.is_empty());
+    assert!(run.stderr.contains("go/errors") && run.stderr.contains("new plan"));
+    assert!(lab.log(&id).is_empty());
+}
+
+#[test]
+fn a_moved_source_is_still_read_under_its_new_name() {
+    let lab = plain_lab("lib-read-moved");
+    let id = plan_id(&lab.plan(&["go/errors"]));
+    std::fs::rename(
+        lab.root.join("library/go/errors.md"),
+        lab.root.join("library/go/errors-2009.md"),
+    )
+    .unwrap();
+    let run = lab.read_slices(&id, &["1"]);
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    assert!(run.stdout.starts_with(&format!(
+        "-- slice 1/1: go/errors-2009 {ID_B} lines 7-20 --\n"
+    )));
+    assert_eq!(lab.log(&id).len(), 1);
+}
+
+#[test]
+fn read_usage_errors() {
+    let lab = nine_lab("lib-read-usage");
+    let refs = nine_refs();
+    let id = plan_id(&lab.plan(&refs.iter().map(String::as_str).collect::<Vec<_>>()));
+    for args in [
+        vec!["read", &id, "10"],
+        vec!["read", &id, "0"],
+        vec!["read", &id, "x"],
+        vec!["read", &id, "-1"],
+        vec!["read", &id],
+        vec!["read", "not-a-plan", "1"],
+        vec!["read", &id, "1", "--depth", "1"],
+        vec!["read", &id, "1", "--part"],
+    ] {
+        let run = lab.library(&args);
+        assert_eq!(run.code, 2, "{args:?}: {}", run.stderr);
+        assert!(run.stdout.is_empty());
+    }
+    let run = lab.read_slices(&id, &["10"]);
+    assert!(
+        run.stderr.contains("slice 10") && run.stderr.contains("9 slices"),
+        "{}",
+        run.stderr
+    );
+    assert!(lab.log(&id).is_empty());
+}
+
+#[test]
+fn an_unknown_plan_exits_1() {
+    let lab = plain_lab("lib-read-unknown");
+    let run = lab.read_slices(ID_C, &["1"]);
+    assert_eq!(run.code, 1);
+    assert!(run.stdout.is_empty());
+    assert!(run.stderr.contains(ID_C), "{}", run.stderr);
+    assert!(!lab.plans().exists());
+}
+
+#[test]
+fn a_plan_is_read_only_under_the_store_that_made_it() {
+    let lab = plain_lab("lib-read-other-store");
+    let id = plan_id(&lab.plan(&["go/errors"]));
+    let other = lab.dir.path().join("other");
+    std::fs::create_dir_all(&other).unwrap();
+    let mut env = lab.env();
+    env.retain(|(name, _)| *name != "BILBO_HOME");
+    env.push(("BILBO_HOME", other.to_str().unwrap()));
+    let run = bilbo(lab.dir.path(), &env, &["library", "read", &id, "1"]);
+    assert_eq!(run.code, 1);
+    assert!(run.stdout.is_empty());
+    assert!(
+        run.stderr.contains(lab.root.to_str().unwrap()),
+        "{}",
+        run.stderr
+    );
+    assert!(lab.coverage(&id).contains("read 0 of 1 slices"));
+}
+
+// The citation pre-check
+
+const WRAPPED: &str = "Always wrap errors with context before returning them";
+const OLD_ERRORS: &str = "# Errors\n\n## Wrapping\n\nAlways wrap errors with context before returning them.\n\n## Is\n\nUse errors.Is to compare against sentinel values reliably.\n";
+
+/// `go/errors` landed from `OLD_ERRORS`, and its id.
+fn cited_lab(name: &str) -> (Lab, String) {
+    let lab = Lab::new(name);
+    let run = lab.land_text(OLD_ERRORS, "go/errors", "3-9", &[]);
+    let id = field(&run.stdout, "id").to_string();
+    (lab, id)
+}
+
+/// A note whose line 8 is `citation`.
+fn cite_in_note(lab: &Lab, id: &str, citation: &str) {
+    let text = format!("{}\n{citation}\n", note_text(ID_C, "Errors"));
+    let notes = lab.root.join("notes");
+    std::fs::create_dir_all(&notes).unwrap();
+    std::fs::write(notes.join("gotcha-errors.md"), text).unwrap();
+    assert!(!id.is_empty());
+}
+
+fn wrapping(id: &str) -> String {
+    format!("bilbo:{id}#Wrapping \"{WRAPPED}\"")
+}
+
+/// Stages `text` and runs `land --replace` over `go/errors`.
+fn replace_errors(lab: &Lab, text: &str, extra: &[&str]) -> (Run, String) {
+    let stage = lab.stage(text, ORIGIN, &[]);
+    let keep = format!("3-{}", text.lines().count());
+    let mut args = vec!["--keep", keep.as_str(), "--replace"];
+    args.extend(extra);
+    (lab.land(&stage, "go/errors", &args), stage)
+}
+
+#[test]
+fn a_replace_with_no_citing_note_lands() {
+    let (lab, _) = cited_lab("pre-none");
+    let (run, _) = replace_errors(&lab, "# Errors\n\nWrap them.\n", &[]);
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    assert!(run.stderr.is_empty());
+}
+
+#[test]
+fn a_citation_that_keeps_resolving_does_not_block() {
+    let (lab, id) = cited_lab("pre-keeps");
+    cite_in_note(&lab, &id, &wrapping(&id));
+    let text = OLD_ERRORS.replace("Use errors.Is", "Call errors.Is");
+    let (run, _) = replace_errors(&lab, &text, &[]);
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    assert!(run.stderr.is_empty(), "{}", run.stderr);
+}
+
+#[test]
+fn a_citation_that_already_failed_does_not_block() {
+    let (lab, id) = cited_lab("pre-failing");
+    cite_in_note(
+        &lab,
+        &id,
+        &format!("bilbo:{id}#Wrapping \"this quote was never in the source\""),
+    );
+    let (run, _) = replace_errors(&lab, "# Errors\n\n## Wrapping\n\nWrap them.\n", &[]);
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    assert!(run.stderr.is_empty(), "{}", run.stderr);
+}
+
+#[test]
+fn a_citation_in_a_guide_is_not_checked() {
+    let (lab, id) = cited_lab("pre-guide");
+    let guide = format!("{}\n{}\n", lab.read("go/guide.md"), wrapping(&id));
+    lab.put("go/guide.md", &guide);
+    let (run, _) = replace_errors(&lab, "# Errors\n\nWrap them.\n", &[]);
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    assert!(run.stderr.is_empty(), "{}", run.stderr);
+}
+
+#[test]
+fn a_quote_the_new_text_dropped_blocks_the_replace() {
+    let (lab, id) = cited_lab("pre-dropped");
+    cite_in_note(&lab, &id, &wrapping(&id));
+    let before = snapshot(&lab.root);
+    let (run, stage) = replace_errors(
+        &lab,
+        "# Errors\n\n## Wrapping\n\nWrap them.\n\n## Is\n\nUse errors.Is to compare against sentinel values reliably.\n",
+        &[],
+    );
+    assert_eq!(run.code, 1);
+    assert!(run.stdout.is_empty());
+    assert!(run.stderr.contains("1 citation"), "{}", run.stderr);
+    assert!(run.stderr.contains("--force"), "{}", run.stderr);
+    assert!(
+        run.stderr
+            .contains("bilbo: notes/gotcha-errors.md:8: ok -> quote_missing"),
+        "{}",
+        run.stderr
+    );
+    assert_eq!(snapshot(&lab.root), before);
+    assert!(lab.staged().contains(&stage));
+    assert!(lab.captures().len() == 1, "{:?}", lab.captures());
+}
+
+#[test]
+fn a_renamed_heading_blocks_the_replace() {
+    let (lab, id) = cited_lab("pre-renamed");
+    cite_in_note(&lab, &id, &wrapping(&id));
+    let before = snapshot(&lab.root);
+    let (run, _) = replace_errors(&lab, &OLD_ERRORS.replace("## Wrapping", "## Wrap"), &[]);
+    assert_eq!(run.code, 1);
+    assert!(
+        run.stderr
+            .contains("notes/gotcha-errors.md:8: ok -> anchor_missing"),
+        "{}",
+        run.stderr
+    );
+    assert_eq!(snapshot(&lab.root), before);
+}
+
+#[test]
+fn force_replaces_and_keeps_the_lines_as_warnings() {
+    let (lab, id) = cited_lab("pre-force");
+    cite_in_note(&lab, &id, &wrapping(&id));
+    let (run, stage) = replace_errors(
+        &lab,
+        &OLD_ERRORS.replace("## Wrapping", "## Wrap"),
+        &["--force"],
+    );
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    assert!(
+        run.stderr
+            .contains("bilbo: notes/gotcha-errors.md:8: ok -> anchor_missing"),
+        "{}",
+        run.stderr
+    );
+    assert_eq!(run.stdout.lines().count(), 4, "{}", run.stdout);
+    assert_eq!(field(&run.stdout, "id"), id);
+    assert!(lab.read("go/errors.md").contains("## Wrap\n"));
+    assert!(!lab.staged().contains(&stage));
+    assert_eq!(lab.captures().len(), 2);
+}
+
+#[test]
+fn force_without_replace_is_a_usage_error() {
+    let lab = Lab::new("pre-force-alone");
+    let stage = lab.stage(CAPTURE, ORIGIN, &[]);
+    let before = snapshot(&lab.root);
+    let run = lab.land(&stage, "go/effective-go", &["--keep", "1-3", "--force"]);
+    assert_eq!(run.code, 2);
+    assert!(run.stdout.is_empty());
+    assert!(
+        run.stderr.contains("--force") && run.stderr.contains("--replace"),
+        "{}",
+        run.stderr
+    );
+    assert_eq!(snapshot(&lab.root), before);
+    assert!(lab.staged().contains(&stage));
 }
