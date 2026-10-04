@@ -152,7 +152,7 @@ The restore sequence, all under `history/lock`, so a running watcher's locked pa
 7. Read what came out. When its bytes differ from what step 3 saw, something wrote during the restore, so record them as `edited`.
 8. Delete the temporary file, then record `restored`, whose parent is the latest version.
 
-When the `rename_new` of step 6 finds the version's name taken, because another note's file appeared there after step 2, the restored text stays under the current name. Restore still runs steps 7 and 8, recording `restored` under that name, then prints the taken message and exits 1.
+When the `rename_new` of step 6 finds the version's name taken, because another note's file appeared there after step 2, the restored text stays under the current name. Restore still runs steps 7 and 8, recording `restored` under that name, then exits 1 with a message that says both, `restored <current name> to <version>; <version name> is taken by another note`, so the agent knows the file's text changed. Any other failure after the exchange reads the same way: `restored <file> to <version>, but <error>`.
 
 **Why the exchange comes before the rename.** The exchange puts the restored text at the current name in one step. The rename then moves that one file. At every moment exactly one file holds the id, so a crash never leaves two files that the watcher refuses to record. The earlier draft renamed the new file in first and the old one out second, which left both in place between the two calls.
 
