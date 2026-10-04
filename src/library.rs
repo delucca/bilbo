@@ -4,9 +4,10 @@ use std::path::{Path, PathBuf};
 
 use crate::citation::{self, Document, Verdict};
 use crate::corpus::{self, SourceFile};
-use crate::source::{self, Frontmatter, Resolved, Section};
+use crate::markdown::{self, Resolved, Section};
+use crate::source::{self, Frontmatter};
 use crate::store::{self, EntryKind};
-use crate::{Failure, hash, note, plan as reading, rank};
+use crate::{Failure, hash, note, plan as reading};
 
 const VALUE_OPTIONS: [&str; 9] = [
     "--depth",
@@ -227,7 +228,7 @@ fn list(env: &store::Env) -> Result<Output, Failure> {
 }
 
 fn sections(file: &SourceFile) -> Vec<Section> {
-    source::outline(&note::lines(&file.text), file.source.body_start)
+    markdown::outline(&markdown::lines(&file.text), file.source.body_start)
 }
 
 fn or_dash(value: &Option<String>) -> &str {
@@ -243,7 +244,7 @@ fn facts(file: &SourceFile) -> String {
         file.name,
         or_dash(&s.id),
         source::kb(bytes),
-        source::tokens(bytes),
+        markdown::tokens(bytes),
         or_dash(&s.fetched),
         sections.len()
     );
@@ -275,7 +276,7 @@ fn show_corpus(name: &str, env: &store::Env) -> Result<Output, Failure> {
         .and_then(|bytes| String::from_utf8(bytes).ok());
     if let Some(text) = &text {
         let guide = corpus::read_guide(text);
-        for (i, line) in note::lines(text)
+        for (i, line) in markdown::lines(text)
             .iter()
             .enumerate()
             .skip(guide.body_start - 1)
@@ -438,7 +439,7 @@ fn split_anchor(reference: &str) -> Result<(&str, Option<&str>), Failure> {
 
 /// The section the anchor names, or the refusal that lists the sections it matches or says it matches none.
 fn section_for(sections: &[Section], reference: &str, anchor: &str) -> Result<usize, Failure> {
-    match source::resolve(sections, anchor) {
+    match markdown::resolve(sections, anchor) {
         Resolved::One(i) => Ok(i),
         Resolved::Ambiguous(found) => {
             let mut message = format!("'{anchor}' matches several sections of {reference}:");
@@ -479,7 +480,7 @@ fn show(args: &Args, env: &store::Env) -> Result<Output, Failure> {
     let file = find(&root, &parsed)?;
 
     let s = &file.source;
-    let lines = note::lines(&file.text);
+    let lines = markdown::lines(&file.text);
     let sections = sections(&file);
     let bytes = file.body().len();
     let mut shown: Vec<&Section> = sections.iter().collect();
@@ -517,7 +518,7 @@ fn show(args: &Args, env: &store::Env) -> Result<Output, Failure> {
         s.body_start,
         lines.len().max(s.body_start)
     ));
-    out.push(format!("tokens: {}", source::tokens(bytes)));
+    out.push(format!("tokens: {}", markdown::tokens(bytes)));
     out.push(format!("headings: {}", sections.len()));
     let catalog = source::is_catalog(bytes, &sections);
     out.push(format!("catalog: {}", if catalog { "yes" } else { "no" }));
@@ -605,7 +606,7 @@ fn plan_picks(args: &Args, env: &store::Env) -> Result<Output, Failure> {
         let (name, anchor) = split_anchor(reference)?;
         let file = find(&root, &parse_reference(name)?)?;
         let label = label(&file);
-        let lines = note::lines(&file.text);
+        let lines = markdown::lines(&file.text);
         let sections = sections(&file);
         let (Some(id), Some(digest)) = (&file.source.id, &file.source.digest) else {
             return Err(refused(format!(
@@ -646,7 +647,7 @@ fn plan_picks(args: &Args, env: &store::Env) -> Result<Output, Failure> {
         )));
     }
 
-    let lines: Vec<Vec<&str>> = files.iter().map(|f| note::lines(&f.text)).collect();
+    let lines: Vec<Vec<&str>> = files.iter().map(|f| markdown::lines(&f.text)).collect();
     let outlines: Vec<Vec<Section>> = files.iter().map(sections).collect();
     let materials: Vec<reading::Material> = lines
         .iter()
@@ -786,7 +787,7 @@ fn read_slices(args: &Args, env: &store::Env) -> Result<Output, Failure> {
             sources.push((pick_index, file));
         }
         let file = &sources.iter().find(|(i, _)| *i == pick_index).unwrap().1;
-        let lines = note::lines(&file.text);
+        let lines = markdown::lines(&file.text);
         let outline = sections(file);
         let material = reading::Material {
             lines: &lines,
@@ -838,9 +839,9 @@ fn state_failure() -> Failure {
 
 /// The line of the first level-1 heading outside fences and its text.
 fn capture_title(lines: &[&str]) -> Option<(usize, String)> {
-    source::outside_fences(lines)
+    markdown::outside_fences(lines)
         .into_iter()
-        .find_map(|i| match rank::heading(lines[i]) {
+        .find_map(|i| match markdown::heading(lines[i]) {
             Some((1, text)) => Some((i + 1, text)),
             _ => None,
         })
@@ -1068,7 +1069,7 @@ fn stage(args: &Args, env: &store::Env) -> Result<Output, Failure> {
     let root = root(env)?;
     let existing = existing_sources(&root, &captured.origin)?;
     let capture = &captured.text;
-    let lines = note::lines(capture);
+    let lines = markdown::lines(capture);
 
     let content = captured
         .page
@@ -1077,10 +1078,10 @@ fn stage(args: &Args, env: &store::Env) -> Result<Output, Failure> {
         .and_then(|c| crate::html::content_lines(capture, c));
     let title = content
         .and_then(|(a, b)| {
-            source::outside_fences(&lines)
+            markdown::outside_fences(&lines)
                 .into_iter()
                 .filter(|i| (a..=b).contains(&(i + 1)))
-                .find_map(|i| match rank::heading(lines[i]) {
+                .find_map(|i| match markdown::heading(lines[i]) {
                     Some((1, text)) => Some((i + 1, text)),
                     _ => None,
                 })
@@ -1146,7 +1147,7 @@ fn stage(args: &Args, env: &store::Env) -> Result<Output, Failure> {
     }
     out.extend(existing);
     out.push(format!("lines: {}", lines.len()));
-    out.push(format!("tokens: {}", source::tokens(capture.len())));
+    out.push(format!("tokens: {}", markdown::tokens(capture.len())));
     out.push(format!(
         "title: {}",
         title.as_ref().map_or("-", |(_, text)| text)
@@ -1157,8 +1158,8 @@ fn stage(args: &Args, env: &store::Env) -> Result<Output, Failure> {
         "keep: -".into()
     });
     out.push(String::new());
-    for i in source::outside_fences(&lines) {
-        if rank::heading(lines[i]).is_some_and(|(level, _)| level <= 2) {
+    for i in markdown::outside_fences(&lines) {
+        if markdown::heading(lines[i]).is_some_and(|(level, _)| level <= 2) {
             out.push(format!("{}\t{}", i + 1, lines[i]));
         }
     }
@@ -1218,7 +1219,7 @@ fn read_stage(env: &store::Env, id: &str) -> Result<Staged, Failure> {
 
 /// A `# ` line is a title to `check` even when it has no text, which is no heading to the outline.
 fn is_heading(line: &str) -> bool {
-    rank::heading(line).is_some() || line.starts_with("# ")
+    markdown::heading(line).is_some() || line.starts_with("# ")
 }
 
 struct Plan {
@@ -1277,7 +1278,7 @@ fn plan(args: &Args) -> Result<(String, Plan), Failure> {
 
 /// The body for the kept lines, and whether their headings were demoted.
 fn build_body(title: &str, kept: &[&str]) -> (String, bool) {
-    let outside = source::outside_fences(kept);
+    let outside = markdown::outside_fences(kept);
     let demote = outside.iter().any(|&i| kept[i].starts_with("# "));
     let mut body = format!("# {title}\n\n");
     for (i, line) in kept.iter().enumerate() {
@@ -1325,7 +1326,7 @@ fn land(args: &Args, env: &store::Env) -> Result<Output, Failure> {
     let root = root(env)?;
     let staged = read_stage(env, &stage_id)?;
 
-    let lines = note::lines(&staged.capture);
+    let lines = markdown::lines(&staged.capture);
     if let Some(&(_, end)) = plan.ranges.last()
         && end > lines.len()
     {

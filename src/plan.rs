@@ -5,8 +5,8 @@ use std::time::{Duration, SystemTime};
 
 use serde::{Deserialize, Serialize};
 
+use crate::markdown::{self, Section};
 use crate::note;
-use crate::source::{self, Section};
 
 pub const BUDGET_TOKENS: usize = 60_000;
 pub const MIN_BUDGET_TOKENS: usize = 1_000;
@@ -93,7 +93,7 @@ pub struct Plan {
 
 /// What a pick's source holds, for cutting and printing.
 pub struct Material<'a> {
-    /// Physical lines, as `note::lines` numbers them.
+    /// Physical lines, as `markdown::lines` numbers them.
     pub lines: &'a [&'a str],
     pub sections: &'a [Section],
 }
@@ -265,7 +265,7 @@ pub fn build(
                     start: a,
                     end: b,
                     bytes: walk.size(a, b, walk.in_len(a)),
-                    tokens: source::tokens(walk.raw[b] - walk.raw[a - 1]),
+                    tokens: markdown::tokens(walk.raw[b] - walk.raw[a - 1]),
                     partition: 0,
                 });
             }
@@ -795,8 +795,8 @@ mod tests {
     }
 
     fn plan_of_all(texts: &[&str], options: Options) -> Plan {
-        let lines: Vec<Vec<&str>> = texts.iter().map(|t| note::lines(t)).collect();
-        let sections: Vec<Vec<Section>> = lines.iter().map(|l| source::outline(l, 1)).collect();
+        let lines: Vec<Vec<&str>> = texts.iter().map(|t| markdown::lines(t)).collect();
+        let sections: Vec<Vec<Section>> = lines.iter().map(|l| markdown::outline(l, 1)).collect();
         let materials: Vec<Material> = lines
             .iter()
             .zip(&sections)
@@ -824,8 +824,8 @@ mod tests {
     }
 
     fn printed(plan: &Plan, text: &str, number: usize) -> usize {
-        let lines = note::lines(text);
-        let sections = source::outline(&lines, 1);
+        let lines = markdown::lines(text);
+        let sections = markdown::outline(&lines, 1);
         let m = Material {
             lines: &lines,
             sections: &sections,
@@ -881,7 +881,7 @@ mod tests {
         let paragraph = format!("{}\n", block(19, 99));
         let text = format!("# T\n## Long\n{}", paragraph.repeat(30));
         let plan = plan_of(&text, Options::default());
-        let lines = note::lines(&text);
+        let lines = markdown::lines(&text);
         assert_eq!((plan.slices[0].start, plan.slices[0].end), (1, 1));
         let long: Vec<_> = plan.slices[1..].iter().collect();
         assert_eq!(long.len(), 3, "{:?}", ranges(&plan));
@@ -904,7 +904,7 @@ mod tests {
             assert!(s.bytes <= SLICE_BYTES);
             next = s.end + 1;
         }
-        assert_eq!(next, note::lines(&text).len() + 1);
+        assert_eq!(next, markdown::lines(&text).len() + 1);
     }
 
     #[test]
@@ -945,8 +945,8 @@ mod tests {
     #[test]
     fn a_slice_that_starts_inside_a_section_names_its_path() {
         let text = format!("# T\n## Concurrency\n### Goroutines\n{}", block(300, 99));
-        let lines = note::lines(&text);
-        let sections = source::outline(&lines, 1);
+        let lines = markdown::lines(&text);
+        let sections = markdown::outline(&lines, 1);
         assert_eq!(heading_path(&sections, 1), None);
         assert_eq!(
             heading_path(&sections, 3).as_deref(),
@@ -1046,12 +1046,12 @@ mod tests {
     fn slice_tokens_follow_the_derived_sizes() {
         let text = "# T\nabc\n";
         let plan = plan_of(text, Options::default());
-        assert_eq!(plan.slices[0].tokens, source::tokens(8));
+        assert_eq!(plan.slices[0].tokens, markdown::tokens(8));
     }
 
     fn material_of(text: &str) -> (Vec<String>, Vec<Section>) {
-        let lines = note::lines(text);
-        let sections = source::outline(&lines, 1);
+        let lines = markdown::lines(text);
+        let sections = markdown::outline(&lines, 1);
         (lines.iter().map(|l| l.to_string()).collect(), sections)
     }
 

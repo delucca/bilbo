@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 
+use crate::markdown;
 use crate::note::{self, Problem, is_topic};
-use crate::rank;
 use crate::source::{self, Source};
 use crate::store::{self, Entry, EntryKind};
 
@@ -82,16 +82,16 @@ pub fn read_guide(text: &str) -> Guide {
         return guide;
     }
 
-    let lines = note::lines(text);
+    let lines = markdown::lines(text);
     let first = front.body_start;
     let body = lines.get(first - 1..).unwrap_or(&[]);
     problems.extend(note::title_problem(body, first));
 
     let mut title_line = None;
     let mut entry_starts: Vec<(usize, String)> = Vec::new();
-    for i in source::outside_fences(body) {
+    for i in markdown::outside_fences(body) {
         let line = body[i];
-        match rank::heading(line) {
+        match markdown::heading(line) {
             Some((1, text)) if title_line.is_none() && entry_starts.is_empty() => {
                 title_line = Some(i);
                 guide.title = Some(text);
@@ -193,9 +193,9 @@ pub fn add_entry(text: &str, name: &str) -> String {
 /// holds; unchanged when the guide has no such entry.
 pub fn mark_stale(text: &str, name: &str, date: &str) -> String {
     let mut lines: Vec<&str> = text.split('\n').collect();
-    let heads: Vec<(usize, String)> = source::outside_fences(&lines)
+    let heads: Vec<(usize, String)> = markdown::outside_fences(&lines)
         .into_iter()
-        .filter_map(|i| match rank::heading(lines[i]) {
+        .filter_map(|i| match markdown::heading(lines[i]) {
             Some((2, text)) => Some((i, text)),
             _ => None,
         })
@@ -332,7 +332,10 @@ pub fn listing(root: &Path) -> std::io::Result<Vec<Listing>> {
             name,
             sources: sources.len(),
             bytes: sources.iter().map(|s| s.body().len()).sum(),
-            tokens: sources.iter().map(|s| source::tokens(s.body().len())).sum(),
+            tokens: sources
+                .iter()
+                .map(|s| markdown::tokens(s.body().len()))
+                .sum(),
             title,
         });
     }
@@ -912,7 +915,7 @@ mod tests {
         assert_eq!(rows[0].sources, 2);
         let body = "# Effective Go\n\ntext\n".len() + "# Inspecting errors\n\ntext\n".len();
         assert_eq!(rows[0].bytes, body);
-        assert_eq!(rows[0].tokens, source::tokens(22) + source::tokens(26));
+        assert_eq!(rows[0].tokens, markdown::tokens(22) + markdown::tokens(26));
         assert_eq!(rows[0].title.as_deref(), Some("Go"));
         assert_eq!((rows[1].sources, rows[1].bytes), (0, 0));
     }

@@ -1,6 +1,6 @@
 use std::collections::HashSet;
 
-use crate::note::fence_run;
+use crate::markdown::{fence_run, heading};
 
 pub const PART_BYTES: usize = 4000;
 pub const INPUT_BYTES: usize = 4000;
@@ -98,23 +98,6 @@ fn base(c: char) -> Option<&'static str> {
         'ź' | 'ż' | 'ž' => "z",
         _ => return None,
     })
-}
-
-/// An ATX heading outside a fence: its level and its text with the closing sequence removed and whitespace collapsed.
-pub(crate) fn heading(line: &str) -> Option<(usize, String)> {
-    let level = line.bytes().take_while(|b| *b == b'#').count();
-    if !(1..=6).contains(&level) {
-        return None;
-    }
-    let mut text = line[level..].strip_prefix(' ')?.trim_end();
-    if text.ends_with('#') {
-        let stripped = text.trim_end_matches('#');
-        if stripped.is_empty() || stripped.ends_with(char::is_whitespace) {
-            text = stripped;
-        }
-    }
-    let text = text.split_whitespace().collect::<Vec<_>>().join(" ");
-    (!text.is_empty()).then_some((level, text))
 }
 
 /// `lines` is a note's body, whose first line is physical line `first_line`. `fallback_title` is the title when the
@@ -574,14 +557,7 @@ mod tests {
     }
 
     #[test]
-    fn heading_line_rules() {
-        for line in ["#", "# ", "#tag", "####### x", " ## x", "#\tx", "## ##"] {
-            assert_eq!(heading(line), None, "{line:?}");
-        }
-        assert_eq!(heading("## Foo ##"), Some((2, "Foo".into())));
-        assert_eq!(heading("## C#"), Some((2, "C#".into())));
-        assert_eq!(heading("##   a   b"), Some((2, "a b".into())));
-        assert_eq!(heading("## Foo ##   "), Some((2, "Foo".into())));
+    fn a_hash_tag_line_is_text() {
         let body = passages(&["#tag", "text"], 1, "fb");
         assert_eq!(texts(&body), [(vec!["fb"], 1, "#tag\ntext")]);
     }
