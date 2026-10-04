@@ -99,7 +99,7 @@ Unless `--no-watch` is given or the wizard's answer declines it, `setup` SHALL i
 
 #### Scenario: No watch with a value
 - **WHEN** a user runs `bilbo setup --yes --no-watch=true`
-- **THEN** bilbo prints a message naming `--no-watch=true` as unknown to stderr, exits 2, and writes nothing
+- **THEN** bilbo prints a message saying `--no-watch` takes no value to stderr, exits 2, and writes nothing
 
 ### Requirement: Plan before writing
 `setup` SHALL settle every answer, read the current state and run the embedder check before it creates, changes or deletes any file. The one exception is the local embedder: its download, its service and its embedder check SHALL run after the plan is settled (in the wizard, after the confirmation) and before any other step writes. When one of them fails, setup SHALL unload and delete the service it installed, keep the model file, write nothing else and exit 1. The wizard SHALL then show a summary of the actions and ask for one confirmation. Declining, pressing Ctrl-C or Esc at any prompt, or reaching end of input SHALL exit 1 and write nothing.
