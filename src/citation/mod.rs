@@ -1,3 +1,7 @@
+//! Citations: parsing `bilbo:` citations and checking them against notes and sources, and the `cite` verb.
+
+pub mod cite;
+
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::path::{Path, PathBuf};
