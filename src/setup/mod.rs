@@ -1,4 +1,7 @@
 //! The setup verb.
+
+mod wizard;
+
 use std::io::{IsTerminal, Write};
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
@@ -9,7 +12,8 @@ use crate::config::{self, Embedder, Token};
 use crate::host::prompt::{self, Prompter};
 use crate::host::{agents, command, model, timer};
 use crate::search::{documents, embed};
-use crate::{Failure, store, wizard};
+use crate::{Failure, store};
+use wizard::{declined, stopped};
 
 const CHECK: Duration = Duration::from_secs(15);
 const READY: Duration = Duration::from_secs(120);
@@ -2157,20 +2161,6 @@ fn remove<P: Prompter>(
     let outcome = apply_remove(&plan);
     let _ = wizard::finish(p, outcome.failed);
     Ok(outcome)
-}
-
-/// A wizard error: Ctrl-C or Esc cancels, anything else stops it; nothing was changed either way.
-fn stopped<P: Prompter>(p: &mut P, e: std::io::Error) -> Failure {
-    if e.kind() == std::io::ErrorKind::Interrupted {
-        return declined(p);
-    }
-    wizard::cancelled(p);
-    Failure::Refused(format!("the wizard stopped: {e}; nothing changed"))
-}
-
-fn declined<P: Prompter>(p: &mut P) -> Failure {
-    wizard::cancelled(p);
-    Failure::Refused("setup cancelled; nothing changed".into())
 }
 
 fn plan_remove(flags: &Flags, env: &store::Env, path: Option<std::ffi::OsString>) -> RemovePlan {
