@@ -5,8 +5,8 @@ use std::time::{Duration, SystemTime};
 
 use serde::{Deserialize, Serialize};
 
-use crate::frontmatter;
-use crate::markdown::{self, Section};
+use crate::shared::frontmatter;
+use crate::shared::markdown::{self, Section};
 
 pub const BUDGET_TOKENS: usize = 60_000;
 pub const MIN_BUDGET_TOKENS: usize = 1_000;

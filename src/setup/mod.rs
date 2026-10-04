@@ -8,11 +8,12 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 use zeroize::Zeroizing;
 
-use crate::config::{self, Embedder, Token};
+use crate::Failure;
 use crate::host::prompt::{self, Prompter};
 use crate::host::{agents, command, model, timer};
 use crate::search::{documents, embed};
-use crate::{Failure, store};
+use crate::shared::config::{self, Embedder, Token};
+use crate::shared::store;
 use wizard::{declined, stopped};
 
 const CHECK: Duration = Duration::from_secs(15);

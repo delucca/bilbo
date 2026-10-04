@@ -4,11 +4,13 @@ use std::path::{Path, PathBuf};
 
 use crate::citation::{self, Document, Verdict};
 use crate::library::corpus::{self, SourceFile};
+use crate::library::hash;
 use crate::library::reading;
 use crate::library::source::{self, Frontmatter};
-use crate::markdown::{self, Resolved, Section};
-use crate::store::{self, EntryKind};
-use crate::{Failure, frontmatter, hash, note};
+use crate::shared::frontmatter;
+use crate::shared::markdown::{self, Resolved, Section};
+use crate::shared::store::{self, EntryKind};
+use crate::{Failure, note};
 
 const VALUE_OPTIONS: [&str; 9] = [
     "--depth",

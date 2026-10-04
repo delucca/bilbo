@@ -2,9 +2,9 @@
 
 pub mod new;
 
-use crate::frontmatter::{bad_created, bad_id, is_created, is_ulid, split_key};
-use crate::markdown::split_lines;
-use crate::store::{Problem, TOPIC_RULE, is_topic, title_problem};
+use crate::shared::frontmatter::{bad_created, bad_id, is_created, is_ulid, split_key};
+use crate::shared::markdown::split_lines;
+use crate::shared::store::{Problem, TOPIC_RULE, is_topic, title_problem};
 
 pub const KINDS: [&str; 9] = [
     "plan",
@@ -264,8 +264,8 @@ fn check_item(n: usize, line: &str, problems: &mut Vec<Problem>) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::frontmatter::{mint_ulid, now_created};
-    use crate::markdown::lines;
+    use crate::shared::frontmatter::{mint_ulid, now_created};
+    use crate::shared::markdown::lines;
 
     const ID: &str = "01M3YJ7R6HK6NQ30DCDB1P4DYB";
     const CREATED: &str = "2026-10-02T14:23-03:00";

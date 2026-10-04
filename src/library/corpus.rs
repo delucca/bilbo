@@ -1,9 +1,9 @@
 use std::path::{Path, PathBuf};
 
-use crate::frontmatter;
 use crate::library::source::{self, Source};
-use crate::markdown;
-use crate::store::{self, Entry, EntryKind, Problem, is_topic};
+use crate::shared::frontmatter;
+use crate::shared::markdown;
+use crate::shared::store::{self, Entry, EntryKind, Problem, is_topic};
 
 pub const RESERVED: [&str; 5] = ["show", "stage", "land", "plan", "read"];
 pub const STUB_SOURCE: &str = "TODO: describe this source.";

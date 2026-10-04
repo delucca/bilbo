@@ -1,4 +1,4 @@
-use crate::config::{self, Token};
+use crate::shared::config::{self, Token};
 use std::ffi::OsString;
 use std::time::{Duration, Instant};
 

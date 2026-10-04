@@ -1,7 +1,7 @@
-use crate::frontmatter;
-use crate::hash;
-use crate::markdown::{self, Section};
-use crate::store::{self, Problem};
+use crate::library::hash;
+use crate::shared::frontmatter;
+use crate::shared::markdown::{self, Section};
+use crate::shared::store::{self, Problem};
 
 pub const CAPTURES: [&str; 2] = ["external", "legacy"];
 pub const ORIGIN_TYPES: [&str; 2] = ["url", "doc"];

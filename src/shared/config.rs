@@ -1,4 +1,4 @@
-use crate::store::{self, Env};
+use crate::shared::store::{self, Env};
 use std::path::{Path, PathBuf};
 
 pub const DEFAULT_MIN_SIMILARITY: f64 = 0.5;

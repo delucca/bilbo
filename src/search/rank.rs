@@ -1,6 +1,6 @@
 use std::collections::HashSet;
 
-use crate::markdown::{fence_run, heading};
+use crate::shared::markdown::{fence_run, heading};
 
 pub const PART_BYTES: usize = 4000;
 pub const INPUT_BYTES: usize = 4000;

@@ -2,10 +2,11 @@ use std::collections::HashMap;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
+use crate::Failure;
 use crate::citation::{self, Citation, Document, Ids, Kind, Outcome, Verdict};
 use crate::library::reading::{self, LogEntry, Plan};
 use crate::library::{corpus, source};
-use crate::{Failure, frontmatter, store};
+use crate::shared::{frontmatter, store};
 
 pub struct Output {
     /// stderr lines (without "bilbo: "), printed before stdout.

@@ -5,7 +5,8 @@ use crate::library::corpus;
 use crate::search::documents::{self, Shelf};
 use crate::search::rank::{self, Document, Hit};
 use crate::search::{embed, vectors};
-use crate::{Failure, config, note, store};
+use crate::shared::{config, store};
+use crate::{Failure, note};
 
 const DEFAULT_LIMIT: usize = 10;
 const QUERY_BYTES: usize = 2000;
