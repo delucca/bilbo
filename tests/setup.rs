@@ -29,8 +29,21 @@ fn machine(name: &str) -> Machine {
     }
 }
 
-/// `bilbo setup <args>` with `HOME` and `PATH` of the machine, then `env`, a later name replacing an earlier one.
+/// `watch_setup` with `--no-watch`, so a test of another step needs no service manager and sees
+/// the watch line as skipped; `--remove` and `--interactive` take no such flag.
 fn setup(m: &Machine, env: &[(&str, &str)], args: &[&str]) -> Run {
+    let mut full = args.to_vec();
+    if !args
+        .iter()
+        .any(|a| matches!(*a, "--remove" | "--interactive" | "--no-watch"))
+    {
+        full.push("--no-watch");
+    }
+    watch_setup(m, env, &full)
+}
+
+/// `bilbo setup <args>` with `HOME` and `PATH` of the machine, then `env`, a later name replacing an earlier one.
+fn watch_setup(m: &Machine, env: &[(&str, &str)], args: &[&str]) -> Run {
     let mut vars = vec![
         ("HOME", m.home.to_str().unwrap()),
         ("PATH", m.bin.to_str().unwrap()),
@@ -42,6 +55,13 @@ fn setup(m: &Machine, env: &[(&str, &str)], args: &[&str]) -> Run {
     let mut full = vec!["setup"];
     full.extend(args);
     bilbo(&m.home, &vars, &full)
+}
+
+/// The report line of `step`.
+fn step<'a>(run: &'a Run, step: &str) -> Option<&'a str> {
+    run.stdout
+        .lines()
+        .find(|line| line.starts_with(&format!("{step} ")))
 }
 
 fn root(m: &Machine) -> PathBuf {
@@ -65,7 +85,7 @@ fn write_config(m: &Machine, lines: &[&str]) {
 /// Runs `setup` with `args`, expects a usage error that starts with `message`, and that nothing on the machine changed.
 fn usage_error(m: &Machine, args: &[&str], message: &str) -> Run {
     let before = snapshot(m.dir.path());
-    let run = setup(m, &[], args);
+    let run = watch_setup(m, &[], args);
     assert_eq!(run.code, 2, "{args:?}: {}", run.stderr);
     assert!(run.stdout.is_empty(), "{args:?}: {}", run.stdout);
     assert!(
@@ -96,7 +116,8 @@ fn embedder_args<'a>(fake: &'a Fake, model: &'a str) -> Vec<&'a str> {
 #[test]
 fn modes_a_pipe_runs_without_the_wizard() {
     let m = machine("setup-modes-pipe");
-    let run = setup(&m, &[], &[]);
+    fakes::install(&m.bin, &m.state, &[TIMER_TOOL]);
+    let run = watch_setup(&m, &[], &[]);
     assert_eq!(run.code, 0, "{}", run.stderr);
     assert!(run.stderr.is_empty());
     assert_eq!(
@@ -112,6 +133,7 @@ fn modes_a_pipe_runs_without_the_wizard() {
             "codex skipped: not found".to_string(),
             "hook skipped: no codex plugin".to_string(),
             "timer skipped: no embedder".to_string(),
+            format!("watch installed: watching {}/notes", root(&m).display()),
         ]
     );
 }
@@ -142,6 +164,7 @@ fn modes_interactive_with_an_answer_flag_conflicts() {
     for flag in [
         ["--no-plugin"].as_slice(),
         &["--no-timer"],
+        &["--no-watch"],
         &["--index-every", "5"],
         &["--embedder-url", "http://x:1", "--embedder-model", "m"],
     ] {
@@ -512,7 +535,8 @@ fn flags_remove_rejects_local() {
 #[test]
 fn report_fresh_run() {
     let m = machine("setup-report");
-    let run = setup(&m, &[], &["--yes", "--no-plugin"]);
+    fakes::install(&m.bin, &m.state, &[TIMER_TOOL]);
+    let run = watch_setup(&m, &[], &["--yes", "--no-plugin"]);
     assert_eq!(run.code, 0, "{}", run.stderr);
     assert!(run.stderr.is_empty());
     assert_eq!(
@@ -528,6 +552,7 @@ fn report_fresh_run() {
             "codex skipped: --no-plugin".to_string(),
             "hook skipped: no codex plugin".to_string(),
             "timer skipped: no embedder".to_string(),
+            format!("watch installed: watching {}/notes", root(&m).display()),
         ]
     );
     assert!(root(&m).join("notes").is_dir());
@@ -560,7 +585,7 @@ fn store_root_cannot_be_created() {
         report[0].starts_with(&format!("store failed: cannot create {home}/notes: ")),
         "{report:?}"
     );
-    assert_eq!(report.len(), 10, "a failed step stops nothing: {report:?}");
+    assert_eq!(report.len(), 11, "a failed step stops nothing: {report:?}");
     assert!(report[1].starts_with("config written: "));
 }
 
@@ -1249,19 +1274,21 @@ fn plugin_no_plugin_runs_nothing() {
 
 #[test]
 fn plugin_failing_install_does_not_stop_later_steps() {
-    let m = agents_machine("plugin-fail", &["claude", "codex"]);
+    let m = agents_machine("plugin-fail", &["claude", "codex", TIMER_TOOL]);
     fakes::set(
         &m.state,
         "claude",
         "fail-install",
         r#"{"command":"install","outcome":"failed","message":"boom","failureCode":"x"}"#,
     );
-    let run = setup(&m, &[], &["--yes"]);
+    let run = watch_setup(&m, &[], &["--yes"]);
     assert_eq!(run.code, 1, "{}", run.stderr);
     let lines = lines(&run);
     assert!(lines.contains(&format!("claude failed: delucca/bilbo#v{VERSION}: boom").as_str()));
     assert!(lines.contains(&format!("codex installed: delucca/bilbo#v{VERSION}").as_str()));
     assert!(lines.contains(&"timer skipped: no embedder"));
+    assert_eq!(lines.last(), Some(&watching(&m).as_str()));
+    assert!(watch_exists(&m));
 }
 
 #[test]
@@ -1333,7 +1360,7 @@ fn plugin_package_folder_is_the_source() {
     let m = agents_machine("plugin-package", &["claude", "codex"]);
     let (exe, share) = packaged_binary(&m);
     fakes::set(&m.state, "codex", "local-version", VERSION);
-    let run = setup_with(&exe, &m, &["--yes", "--no-timer"]);
+    let run = setup_with(&exe, &m, &["--yes", "--no-timer", "--no-watch"]);
     assert_eq!(run.code, 0, "{}", run.stderr);
     let share = share.display();
     let lines = lines(&run);
@@ -1354,7 +1381,11 @@ fn plugin_symlinked_binary_finds_the_package() {
     let link = m.dir.path().join("link");
     std::fs::create_dir_all(&link).unwrap();
     std::os::unix::fs::symlink(&exe, link.join("bilbo")).unwrap();
-    let run = setup_with(&link.join("bilbo"), &m, &["--yes", "--no-timer"]);
+    let run = setup_with(
+        &link.join("bilbo"),
+        &m,
+        &["--yes", "--no-timer", "--no-watch"],
+    );
     assert_eq!(run.code, 0, "{}", run.stderr);
     assert!(lines(&run).contains(&format!("claude installed: {}", share.display()).as_str()));
 }
@@ -1520,7 +1551,10 @@ fn hook_unwritable_config_fails() {
         .unwrap();
     assert!(hook.contains("failed to persist config.toml"), "{hook}");
     assert!(!hook.contains('\n') && hook.chars().count() < 260);
-    assert_eq!(report.last(), Some(&"timer skipped: --no-timer"));
+    assert_eq!(
+        report.iter().find(|l| l.starts_with("timer ")),
+        Some(&"timer skipped: --no-timer")
+    );
     assert_eq!(fakes::get(&m.state, "codex", "trust"), "");
 }
 
@@ -1537,7 +1571,10 @@ fn hook_app_server_missing_fails() {
             .any(|l| l.starts_with("hook failed: ") && l.ends_with("no app-server here")),
         "{report:?}"
     );
-    assert_eq!(report.last(), Some(&"timer skipped: --no-timer"));
+    assert_eq!(
+        report.iter().find(|l| l.starts_with("timer ")),
+        Some(&"timer skipped: --no-timer")
+    );
 }
 
 #[test]
@@ -1648,6 +1685,33 @@ fn install_calls(_m: &Machine) -> Vec<String> {
     .to_vec()
 }
 
+/// The watcher's files on this platform, whether or not they exist.
+fn watch_files(m: &Machine) -> Vec<PathBuf> {
+    if cfg!(target_os = "macos") {
+        vec![
+            m.home
+                .join("Library/LaunchAgents/io.github.delucca.bilbo.watch.plist"),
+        ]
+    } else {
+        vec![m.home.join(".config/systemd/user/bilbo-watch.service")]
+    }
+}
+
+fn watch_text(m: &Machine) -> String {
+    watch_files(m)
+        .iter()
+        .map(|file| std::fs::read_to_string(file).unwrap())
+        .collect()
+}
+
+fn watch_exists(m: &Machine) -> bool {
+    watch_files(m).iter().all(|file| file.exists())
+}
+
+fn watch_gone(m: &Machine) -> bool {
+    watch_files(m).iter().all(|file| !file.exists())
+}
+
 /// The text that sets the job's interval.
 fn interval_text(minutes: u32) -> String {
     if cfg!(target_os = "macos") {
@@ -1701,7 +1765,7 @@ fn timer_installed_every_15() {
         ],
     );
     assert_eq!(run.code, 0, "{}", run.stderr);
-    assert_eq!(lines(&run).last(), Some(&"timer installed: every 15 min"));
+    assert_eq!(step(&run, "timer"), Some("timer installed: every 15 min"));
     assert!(timer_exists(&m));
     let text = timer_text(&m);
     assert!(text.contains(&interval_text(15)), "{text}");
@@ -1716,7 +1780,7 @@ fn timer_every_30() {
     timer_config(&m);
     let run = timer_setup(&m, &["--index-every", "30"]);
     assert_eq!(run.code, 0, "{}", run.stderr);
-    assert_eq!(lines(&run).last(), Some(&"timer installed: every 30 min"));
+    assert_eq!(step(&run, "timer"), Some("timer installed: every 30 min"));
     assert!(timer_text(&m).contains(&interval_text(30)));
 }
 
@@ -1733,7 +1797,7 @@ fn timer_carries_locations() {
         &["--yes", "--no-plugin"],
     );
     assert_eq!(run.code, 0, "{}", run.stderr);
-    assert_eq!(lines(&run).last(), Some(&"timer installed: every 15 min"));
+    assert_eq!(step(&run, "timer"), Some("timer installed: every 15 min"));
     let text = timer_text(&m);
     assert!(text.contains(&variable_text("BILBO_HOME", data)), "{text}");
     assert!(
@@ -1759,9 +1823,9 @@ fn timer_key_in_a_variable_fails() {
     let run = setup(&m, &[("MY_KEY", "s3cr3t-value")], &["--yes", "--no-plugin"]);
     assert_eq!(run.code, 1, "{}", run.stderr);
     assert_eq!(
-        lines(&run).last(),
+        step(&run, "timer"),
         Some(
-            &"timer failed: the index timer cannot read the key variable MY_KEY; keep the key in a file (--embedder-token-file) or pass --no-timer"
+            "timer failed: the index timer cannot read the key variable MY_KEY; keep the key in a file (--embedder-token-file) or pass --no-timer"
         )
     );
     assert!(timer_gone(&m));
@@ -1774,7 +1838,7 @@ fn timer_no_embedder_is_skipped() {
     let m = timer_machine("timer-no-embedder");
     let run = timer_setup(&m, &[]);
     assert_eq!(run.code, 0, "{}", run.stderr);
-    assert_eq!(lines(&run).last(), Some(&"timer skipped: no embedder"));
+    assert_eq!(step(&run, "timer"), Some("timer skipped: no embedder"));
     assert!(timer_gone(&m));
     assert!(manager_log(&m).is_empty());
 }
@@ -1785,7 +1849,7 @@ fn timer_turned_off_is_removed() {
     timer_config(&m);
     let skipped = timer_setup(&m, &["--no-timer"]);
     assert_eq!(skipped.code, 0, "{}", skipped.stderr);
-    assert_eq!(lines(&skipped).last(), Some(&"timer skipped: --no-timer"));
+    assert_eq!(step(&skipped, "timer"), Some("timer skipped: --no-timer"));
     assert!(manager_log(&m).is_empty());
 
     let installed = timer_setup(&m, &[]);
@@ -1794,7 +1858,7 @@ fn timer_turned_off_is_removed() {
 
     let removed = timer_setup(&m, &["--no-timer"]);
     assert_eq!(removed.code, 0, "{}", removed.stderr);
-    assert_eq!(lines(&removed).last(), Some(&"timer removed: --no-timer"));
+    assert_eq!(step(&removed, "timer"), Some("timer removed: --no-timer"));
     assert!(timer_gone(&m));
     if cfg!(target_os = "macos") {
         assert_eq!(fakes::get(&m.state, "launchctl", "loaded"), "");
@@ -1813,7 +1877,7 @@ fn timer_turned_off_is_removed() {
     write_config(&m, &["# keywords only"]);
     let none = timer_setup(&m, &[]);
     assert_eq!(none.code, 0, "{}", none.stderr);
-    assert_eq!(lines(&none).last(), Some(&"timer removed: no embedder"));
+    assert_eq!(step(&none, "timer"), Some("timer removed: no embedder"));
     assert!(timer_gone(&m));
 }
 
@@ -1828,7 +1892,7 @@ fn timer_moved_binary_is_updated() {
     let (exe, _share) = packaged_binary(&m);
     let run = setup_with(&exe, &m, &["--yes", "--no-plugin"]);
     assert_eq!(run.code, 0, "{}", run.stderr);
-    assert_eq!(lines(&run).last(), Some(&"timer updated: every 15 min"));
+    assert_eq!(step(&run, "timer"), Some("timer updated: every 15 min"));
     let text = timer_text(&m);
     assert!(text.contains(&exe.display().to_string()), "{text}");
     assert!(!text.contains(&binary().display().to_string()), "{text}");
@@ -1850,7 +1914,7 @@ fn timer_rerun_is_kept() {
     let before = stamps(&m);
     let second = timer_setup(&m, &[]);
     assert_eq!(second.code, 0, "{}", second.stderr);
-    assert_eq!(lines(&second).last(), Some(&"timer kept"));
+    assert_eq!(step(&second, "timer"), Some("timer kept"));
     assert_eq!(stamps(&m), before);
     let log = manager_log(&m);
     let changing = &log[calls..];
@@ -1870,8 +1934,8 @@ fn timer_launchctl_missing_fails() {
     let run = timer_setup(&m, &[]);
     assert_eq!(run.code, 1, "{}", run.stderr);
     assert_eq!(
-        lines(&run).last(),
-        Some(&"timer failed: launchctl not found on PATH")
+        step(&run, "timer"),
+        Some("timer failed: launchctl not found on PATH")
     );
     assert!(timer_gone(&m));
 }
@@ -1890,7 +1954,7 @@ fn timer_bootstrap_failure_fails_the_step() {
     let run = timer_setup(&m, &[]);
     assert_eq!(run.code, 1, "{}", run.stderr);
     assert_eq!(
-        lines(&run).last().copied(),
+        step(&run, "timer"),
         Some(
             format!(
                 "timer failed: launchctl bootstrap gui/{} {} failed: Bootstrap failed: 5: Input/output error",
@@ -1911,8 +1975,8 @@ fn timer_no_user_session_is_skipped() {
     let run = timer_setup(&m, &[]);
     assert_eq!(run.code, 0, "{}", run.stderr);
     assert_eq!(
-        lines(&run).last(),
-        Some(&"timer skipped: no systemd user session")
+        step(&run, "timer"),
+        Some("timer skipped: no systemd user session")
     );
     assert!(timer_gone(&m));
     assert_eq!(manager_log(&m), ["--user is-system-running"]);
@@ -1926,10 +1990,277 @@ fn timer_systemctl_missing_is_skipped() {
     let run = timer_setup(&m, &[]);
     assert_eq!(run.code, 0, "{}", run.stderr);
     assert_eq!(
-        lines(&run).last(),
-        Some(&"timer skipped: no systemd user session")
+        step(&run, "timer"),
+        Some("timer skipped: no systemd user session")
     );
     assert!(timer_gone(&m));
+}
+
+// ---------------------------------------------------------------------------
+// watch step
+
+/// `setup --yes --no-plugin` with the watcher wanted, then `extra`.
+fn watch_run(m: &Machine, env: &[(&str, &str)], extra: &[&str]) -> Run {
+    let mut args = vec!["--yes", "--no-plugin"];
+    args.extend(extra);
+    watch_setup(m, env, &args)
+}
+
+fn watching(m: &Machine) -> String {
+    format!("watch installed: watching {}/notes", root(m).display())
+}
+
+#[test]
+fn watch_is_installed_without_an_embedder() {
+    let m = timer_machine("watch-fresh");
+    let run = watch_run(&m, &[], &[]);
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    assert_eq!(step(&run, "timer"), Some("timer skipped: no embedder"));
+    assert_eq!(step(&run, "watch"), Some(watching(&m).as_str()));
+    assert!(timer_gone(&m));
+    assert!(watch_exists(&m));
+    let text = watch_text(&m);
+    let program = binary().display().to_string();
+    assert!(text.contains(&program), "{text}");
+    assert!(text.contains("watch"), "{text}");
+    assert!(
+        text.contains(
+            &m.home
+                .join(".local/state/bilbo/watch.log")
+                .display()
+                .to_string()
+        ),
+        "{text}"
+    );
+    assert!(m.state.join("watch.started").exists());
+    assert!(m.home.join(".local/state/bilbo").is_dir());
+}
+
+#[test]
+fn watch_rerun_is_kept_and_a_moved_binary_updates_it() {
+    let m = timer_machine("watch-rerun");
+    assert_eq!(watch_run(&m, &[], &[]).code, 0);
+    let calls = manager_log(&m).len();
+    let second = watch_run(&m, &[], &[]);
+    assert_eq!(second.code, 0, "{}", second.stderr);
+    assert_eq!(step(&second, "watch"), Some("watch kept"));
+    assert!(
+        manager_log(&m)[calls..]
+            .iter()
+            .all(|call| call.ends_with("is-system-running")),
+        "{:?}",
+        manager_log(&m)
+    );
+
+    let (exe, _share) = packaged_binary(&m);
+    let run = setup_with(&exe, &m, &["--yes", "--no-plugin", "--no-timer"]);
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    assert_eq!(
+        step(&run, "watch"),
+        Some(format!("watch updated: watching {}/notes", root(&m).display()).as_str())
+    );
+    let text = watch_text(&m);
+    assert!(text.contains(&exe.display().to_string()), "{text}");
+}
+
+#[test]
+fn watch_no_watch_is_skipped_and_removes_an_installed_one() {
+    let m = timer_machine("watch-off");
+    let skipped = watch_run(&m, &[], &["--no-watch"]);
+    assert_eq!(skipped.code, 0, "{}", skipped.stderr);
+    assert_eq!(step(&skipped, "watch"), Some("watch skipped: --no-watch"));
+    assert!(watch_gone(&m));
+    assert!(manager_log(&m).is_empty());
+
+    assert_eq!(watch_run(&m, &[], &[]).code, 0);
+    assert!(watch_exists(&m));
+    let removed = watch_run(&m, &[], &["--no-watch"]);
+    assert_eq!(removed.code, 0, "{}", removed.stderr);
+    assert_eq!(step(&removed, "watch"), Some("watch removed: --no-watch"));
+    assert!(watch_gone(&m));
+    if cfg!(target_os = "macos") {
+        assert_eq!(fakes::get(&m.state, "launchctl", "loaded-watch"), "");
+    } else {
+        assert!(
+            manager_log(&m)
+                .iter()
+                .any(|call| call == "--user disable --now bilbo-watch.service")
+        );
+        assert_eq!(fakes::get(&m.state, "systemctl", "watch-enabled"), "");
+    }
+}
+
+#[test]
+fn watch_loads_and_unloads_without_touching_the_timer() {
+    let m = timer_machine("watch-loaded");
+    timer_config(&m);
+    assert_eq!(watch_run(&m, &[], &[]).code, 0);
+    assert!(timer_exists(&m) && watch_exists(&m));
+    if cfg!(target_os = "macos") {
+        assert_ne!(fakes::get(&m.state, "launchctl", "loaded"), "");
+        assert_ne!(fakes::get(&m.state, "launchctl", "loaded-watch"), "");
+    } else {
+        assert_eq!(fakes::get(&m.state, "systemctl", "enabled"), "enabled");
+        assert_eq!(
+            fakes::get(&m.state, "systemctl", "watch-enabled"),
+            "enabled"
+        );
+    }
+    let removed = watch_run(&m, &[], &["--no-watch"]);
+    assert_eq!(removed.code, 0, "{}", removed.stderr);
+    assert!(timer_exists(&m));
+    assert!(watch_gone(&m));
+}
+
+#[test]
+fn watch_a_key_variable_does_not_stop_it() {
+    let m = timer_machine("watch-key-variable");
+    write_config(
+        &m,
+        &[
+            "embedder.url = https://embed.example.com",
+            "embedder.model = m",
+            "embedder.token_env = MY_KEY",
+        ],
+    );
+    let run = watch_run(&m, &[("MY_KEY", "s3cr3t-value")], &[]);
+    assert_eq!(run.code, 1, "{}", run.stderr);
+    assert!(
+        step(&run, "timer").is_some_and(|l| l.starts_with("timer failed:") && l.contains("MY_KEY")),
+        "{}",
+        run.stdout
+    );
+    assert_eq!(step(&run, "watch"), Some(watching(&m).as_str()));
+    assert!(timer_gone(&m));
+    let text = watch_text(&m);
+    assert!(
+        !text.contains("MY_KEY") && !text.contains("s3cr3t-value"),
+        "{text}"
+    );
+}
+
+#[test]
+fn watch_carries_setups_locations() {
+    let m = timer_machine("watch-locations");
+    let data = m.dir.path().join("data");
+    let cache = m.dir.path().join("cache");
+    let (data, cache) = (data.to_str().unwrap(), cache.to_str().unwrap());
+    let run = watch_run(&m, &[("BILBO_HOME", data), ("XDG_CACHE_HOME", cache)], &[]);
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    assert_eq!(
+        step(&run, "watch"),
+        Some(format!("watch installed: watching {data}/notes").as_str())
+    );
+    let text = watch_text(&m);
+    assert!(text.contains(&variable_text("BILBO_HOME", data)), "{text}");
+    assert!(
+        text.contains(&variable_text("XDG_CACHE_HOME", cache)),
+        "{text}"
+    );
+    assert!(!text.contains("XDG_STATE_HOME"), "{text}");
+    assert!(!text.contains("PATH"), "{text}");
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn watch_installing_without_the_service_manager_fails() {
+    let m = machine("watch-no-launchctl");
+    let run = watch_run(&m, &[], &[]);
+    assert_eq!(run.code, 1, "{}", run.stderr);
+    assert_eq!(
+        step(&run, "watch"),
+        Some("watch failed: launchctl not found on PATH")
+    );
+    assert!(watch_gone(&m));
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn watch_without_a_user_session_is_skipped() {
+    let m = timer_machine("watch-no-session");
+    fakes::set(&m.state, "systemctl", "state", "offline");
+    let run = watch_run(&m, &[], &[]);
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    assert_eq!(
+        step(&run, "watch"),
+        Some("watch skipped: no systemd user session")
+    );
+    assert!(watch_gone(&m));
+}
+
+#[test]
+fn watch_bootstrap_failure_fails_the_step() {
+    let m = timer_machine("watch-load-fails");
+    if cfg!(target_os = "macos") {
+        fakes::set(
+            &m.state,
+            "launchctl",
+            "fail-bootstrap-watch",
+            "Bootstrap failed: 5: Input/output error",
+        );
+    } else {
+        fakes::set(
+            &m.state,
+            "systemctl",
+            "fail-enable",
+            "Failed to enable unit: boom",
+        );
+    }
+    let run = watch_run(&m, &[], &[]);
+    assert_eq!(run.code, 1, "{}", run.stderr);
+    assert!(
+        step(&run, "watch").is_some_and(|l| l.starts_with("watch failed: ")),
+        "{}",
+        run.stdout
+    );
+    assert!(watch_gone(&m), "a failed load leaves no files");
+}
+
+#[test]
+fn watch_removal_without_the_manager_fails_and_keeps_the_files() {
+    let m = timer_machine("watch-remove-no-manager");
+    assert_eq!(watch_run(&m, &[], &[]).code, 0);
+    let manager = if cfg!(target_os = "macos") {
+        "launchctl"
+    } else {
+        "systemctl"
+    };
+    let empty = m.dir.path().join("empty");
+    let env = [("PATH", empty.to_str().unwrap())];
+    let remove = setup(&m, &env, &["--remove", "--yes"]);
+    assert_eq!(remove.code, 1, "{}", remove.stderr);
+    assert_eq!(
+        step(&remove, "watch"),
+        Some(format!("watch failed: {manager} not found on PATH").as_str())
+    );
+    assert!(watch_exists(&m));
+    let off = watch_run(&m, &env, &["--no-watch"]);
+    assert_eq!(off.code, 1, "{}", off.stderr);
+    assert_eq!(
+        step(&off, "watch"),
+        Some(format!("watch failed: {manager} not found on PATH").as_str())
+    );
+    assert!(watch_exists(&m));
+}
+
+#[test]
+fn watch_flag_takes_no_value_and_no_remove() {
+    let m = machine("watch-flag-usage");
+    usage_error(
+        &m,
+        &["--yes", "--no-watch=true"],
+        "--no-watch takes no value",
+    );
+    usage_error(
+        &m,
+        &["--remove", "--no-watch"],
+        "--remove cannot be used with --no-watch",
+    );
+    usage_error(
+        &m,
+        &["--interactive", "--no-watch"],
+        "--interactive cannot be used with --no-watch; it answers a wizard question",
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -1952,9 +2283,10 @@ fn installed_machine(name: &str) -> Machine {
             &format!("embedder.token_file = {}", token_path(&m).display()),
         ],
     );
-    let run = setup(&m, &[], &["--yes"]);
+    let run = watch_setup(&m, &[], &["--yes"]);
     assert_eq!(run.code, 0, "{}", run.stderr);
     assert!(timer_exists(&m));
+    assert!(watch_exists(&m));
     m
 }
 
@@ -1975,9 +2307,11 @@ fn remove_an_install() {
             "codex removed".to_string(),
             "hook removed".to_string(),
             "timer removed".to_string(),
+            "watch removed".to_string(),
         ]
     );
     assert!(timer_gone(&m));
+    assert!(watch_gone(&m));
     for tool in ["claude", "codex"] {
         assert_eq!(fakes::get(&m.state, tool, "marketplace"), "");
         assert_eq!(fakes::get(&m.state, tool, "plugin"), "");
@@ -2006,6 +2340,7 @@ fn remove_nothing_installed() {
             "codex skipped: not installed",
             "hook skipped: not trusted",
             "timer skipped: not installed",
+            "watch skipped: not installed",
         ]
     );
     assert!(
@@ -2102,7 +2437,7 @@ fn timer_removal_without_the_manager_fails_and_keeps_the_files() {
     };
     assert_eq!(run.code, 1, "{}", run.stderr);
     assert_eq!(
-        lines(&run).last().copied(),
+        step(&run, "timer"),
         Some(format!("timer failed: {manager} not found on PATH").as_str())
     );
     assert!(timer_exists(&m), "a rerun with the tool can finish");
@@ -2114,7 +2449,7 @@ fn timer_removal_without_the_manager_fails_and_keeps_the_files() {
     );
     assert_eq!(remove.code, 1, "{}", remove.stderr);
     assert_eq!(
-        lines(&remove).last().copied(),
+        step(&remove, "timer"),
         Some(format!("timer failed: {manager} not found on PATH").as_str())
     );
     assert!(timer_exists(&m));
@@ -2413,7 +2748,7 @@ fn embed_requests(fake: &Fake) -> usize {
 fn local_fresh_run_reports_every_step() {
     let (m, fake) = local_machine("setup-local-fresh");
     let port = fake.port().to_string();
-    let run = setup(
+    let run = watch_setup(
         &m,
         &[],
         &[
@@ -2439,6 +2774,7 @@ fn local_fresh_run_reports_every_step() {
             "codex skipped: --no-plugin".to_string(),
             "hook skipped: no codex plugin".to_string(),
             "timer installed: every 15 min".to_string(),
+            format!("watch installed: watching {}/notes", root(&m).display()),
         ]
     );
     let text = std::fs::read_to_string(config_path(&m)).unwrap();

@@ -4,7 +4,9 @@ use std::path::{Path, PathBuf};
 pub const DEFAULT_MIN_SIMILARITY: f64 = 0.5;
 pub const DEFAULT_DIGEST_SIMILARITY: f64 = 0.55;
 
-pub const KEYS: [&str; 9] = [
+pub const DEFAULT_KEEP_DAYS: u32 = 90;
+
+pub const KEYS: [&str; 10] = [
     "embedder.url",
     "embedder.model",
     "embedder.token_file",
@@ -14,6 +16,7 @@ pub const KEYS: [&str; 9] = [
     "digest.enable",
     "digest.min_similarity",
     "digest.log",
+    "history.keep_days",
 ];
 
 pub const QWEN_PREFIX: &str = "Instruct: Given a question, retrieve notes that answer it\nQuery: ";
@@ -25,8 +28,23 @@ pub struct Settings {
     /// `None` without `embedder.url`: bilbo is keyword-only.
     pub embedder: Option<Embedder>,
     pub digest: Digest,
-    /// The digest lines the file held, as written (unquoted), in `KEYS` order; a rewrite keeps them.
-    pub digest_lines: Vec<(&'static str, String)>,
+    pub history: History,
+    /// The digest and history lines the file held, as written (unquoted), in `KEYS` order; a rewrite keeps them.
+    pub kept_lines: Vec<(&'static str, String)>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct History {
+    /// The age in days past which `bilbo watch` prunes versions.
+    pub keep_days: u32,
+}
+
+impl Default for History {
+    fn default() -> History {
+        History {
+            keep_days: DEFAULT_KEEP_DAYS,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -88,7 +106,8 @@ pub fn load(env: &Env) -> Result<Settings, String> {
             path: None,
             embedder: None,
             digest: Digest::default(),
-            digest_lines: Vec::new(),
+            history: History::default(),
+            kept_lines: Vec::new(),
         });
     };
     let bytes = match std::fs::read(&path) {
@@ -104,7 +123,8 @@ pub fn load(env: &Env) -> Result<Settings, String> {
                 path: Some(path),
                 embedder: None,
                 digest: Digest::default(),
-                digest_lines: Vec::new(),
+                history: History::default(),
+                kept_lines: Vec::new(),
             });
         }
         Err(e) => return Err(format!("cannot read {}: {e}", path.display())),
@@ -112,23 +132,32 @@ pub fn load(env: &Env) -> Result<Settings, String> {
     let text =
         String::from_utf8(bytes).map_err(|_| format!("{}: not valid UTF-8", path.display()))?;
     let home = store::absolute(&env.home);
-    let (embedder, digest, digest_lines) = parse(&path, &text, home.as_deref())?;
+    let (embedder, digest, history, kept_lines) = parse(&path, &text, home.as_deref())?;
     Ok(Settings {
         path: Some(path),
         embedder,
         digest,
-        digest_lines,
+        history,
+        kept_lines,
     })
 }
 
-/// The embedder and digest settings of the file `path` holding `text`, and the digest lines as
-/// written in `KEYS` order; `home` expands `~/`.
+/// The embedder, digest and history settings of the file `path` holding `text`, and the digest and
+/// history lines as written in `KEYS` order; `home` expands `~/`.
 #[allow(clippy::type_complexity)]
 fn parse(
     path: &Path,
     text: &str,
     home: Option<&Path>,
-) -> Result<(Option<Embedder>, Digest, Vec<(&'static str, String)>), String> {
+) -> Result<
+    (
+        Option<Embedder>,
+        Digest,
+        History,
+        Vec<(&'static str, String)>,
+    ),
+    String,
+> {
     let at = path.display();
     let text = text.strip_prefix('\u{feff}').unwrap_or(text);
     let mut seen: Vec<(&str, usize)> = Vec::new();
@@ -139,7 +168,8 @@ fn parse(
     let mut query_prefix = String::new();
     let mut min_similarity = DEFAULT_MIN_SIMILARITY;
     let mut digest = Digest::default();
-    let mut digest_lines: Vec<(&'static str, String)> = Vec::new();
+    let mut history = History::default();
+    let mut kept_lines: Vec<(&'static str, String)> = Vec::new();
     for (index, line) in text.split('\n').enumerate() {
         let n = index + 1;
         let line = line.strip_suffix('\r').unwrap_or(line);
@@ -174,8 +204,8 @@ fn parse(
         if value.is_empty() && key != "embedder.query_prefix" {
             return Err(format!("{at}:{n}: {key} needs a value"));
         }
-        if key.starts_with("digest.") {
-            digest_lines.push((key, value.clone()));
+        if key.starts_with("digest.") || key.starts_with("history.") {
+            kept_lines.push((key, value.clone()));
         }
         match key {
             "embedder.url" => {
@@ -253,17 +283,24 @@ fn parse(
                     }
                 };
             }
+            "history.keep_days" => {
+                history.keep_days = parse_days(&value).ok_or_else(|| {
+                    format!(
+                        "{at}:{n}: history.keep_days must be a whole number of days from 1 to 3650, got '{value}'"
+                    )
+                })?;
+            }
             _ => query_prefix = value,
         }
     }
-    digest_lines.sort_by_key(|(key, _)| KEYS.iter().position(|k| k == key));
+    kept_lines.sort_by_key(|(key, _)| KEYS.iter().position(|k| k == key));
     if token_file.is_some() && token_env.is_some() {
         return Err(format!(
             "{at}: set embedder.token_file or embedder.token_env, not both"
         ));
     }
     let Some(url) = url else {
-        return Ok((None, digest, digest_lines));
+        return Ok((None, digest, history, kept_lines));
     };
     let Some(model) = model else {
         return Err(format!(
@@ -282,7 +319,8 @@ fn parse(
             min_similarity,
         }),
         digest,
-        digest_lines,
+        history,
+        kept_lines,
     ))
 }
 
@@ -472,6 +510,14 @@ pub fn is_variable_name(name: &str) -> bool {
         && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
 }
 
+/// A whole number of days from 1 to 3650 written as digits.
+fn parse_days(value: &str) -> Option<u32> {
+    if value.is_empty() || !value.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    value.parse::<u32>().ok().filter(|d| (1..=3650).contains(d))
+}
+
 /// A number from 0 to 1 written as digits with an optional `.` and digits.
 fn parse_similarity(value: &str) -> Option<f64> {
     let (whole, fraction) = match value.split_once('.') {
@@ -516,11 +562,11 @@ mod tests {
     const BASE: &str = "embedder.url = http://bagend:8081\nembedder.model = m\n";
 
     fn parsed(text: &str) -> Result<Option<Embedder>, String> {
-        parse(Path::new("/c"), text, Some(Path::new("/home/a"))).map(|(e, _, _)| e)
+        parse(Path::new("/c"), text, Some(Path::new("/home/a"))).map(|(e, ..)| e)
     }
 
     fn digest(text: &str) -> Result<Digest, String> {
-        parse(Path::new("/c"), text, Some(Path::new("/home/a"))).map(|(_, d, _)| d)
+        parse(Path::new("/c"), text, Some(Path::new("/home/a"))).map(|(_, d, ..)| d)
     }
 
     #[test]
@@ -553,7 +599,7 @@ mod tests {
     #[test]
     fn digest_lines_keep_what_the_file_wrote_in_keys_order() {
         let text = "digest.log = \"off\"\nembedder.url = http://h\nembedder.model = m\ndigest.enable = on\ndigest.min_similarity = 0.55\n";
-        let (_, _, lines) = parse(Path::new("/c"), text, None).unwrap();
+        let (.., lines) = parse(Path::new("/c"), text, None).unwrap();
         assert_eq!(
             lines,
             [
@@ -569,8 +615,52 @@ mod tests {
                 None
             )
             .unwrap()
-            .2
+            .3
             .is_empty()
+        );
+    }
+
+    #[test]
+    fn history_defaults_and_values() {
+        let history = |text: &str| parse(Path::new("/c"), text, None).map(|(_, _, h, _)| h);
+        assert_eq!(history("").unwrap().keep_days, 90);
+        assert_eq!(history(BASE).unwrap().keep_days, 90);
+        assert_eq!(history("history.keep_days = 30\n").unwrap().keep_days, 30);
+        assert_eq!(history("history.keep_days = 1\n").unwrap().keep_days, 1);
+        assert_eq!(
+            history("history.keep_days = 3650\n").unwrap().keep_days,
+            3650
+        );
+    }
+
+    #[test]
+    fn history_bad_values() {
+        for value in ["0", "3651", "2w", "-5", "+5", "1.5", "99999999999"] {
+            let message = parse(
+                Path::new("/c"),
+                &format!("\nhistory.keep_days = {value}\n"),
+                None,
+            )
+            .unwrap_err();
+            assert_eq!(
+                message,
+                format!(
+                    "/c:2: history.keep_days must be a whole number of days from 1 to 3650, got '{value}'"
+                )
+            );
+        }
+    }
+
+    #[test]
+    fn history_lines_are_kept_beside_the_digest_lines() {
+        let text = "history.keep_days = 30\ndigest.log = on\nembedder.url = http://h\nembedder.model = m\n";
+        let (.., lines) = parse(Path::new("/c"), text, None).unwrap();
+        assert_eq!(
+            lines,
+            [
+                ("digest.log", "on".to_string()),
+                ("history.keep_days", "30".to_string())
+            ]
         );
     }
 
@@ -772,7 +862,7 @@ mod tests {
     fn unknown_key_names_file_and_line() {
         assert_eq!(
             err("# c\n\nembeder.url = http://x\n"),
-            "/c:3: unknown key 'embeder.url'; keys: embedder.url, embedder.model, embedder.token_file, embedder.token_env, embedder.query_prefix, embedder.min_similarity, digest.enable, digest.min_similarity, digest.log"
+            "/c:3: unknown key 'embeder.url'; keys: embedder.url, embedder.model, embedder.token_file, embedder.token_env, embedder.query_prefix, embedder.min_similarity, digest.enable, digest.min_similarity, digest.log, history.keep_days"
         );
     }
 

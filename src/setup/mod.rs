@@ -161,7 +161,7 @@ fn wizard_with<P: Prompter>(
     })
     .map_err(|e| stopped(p, e))?;
     let exe = facts.exe.clone();
-    let plugins = (answers.claude, answers.codex);
+    let kept = (answers.claude, answers.codex, answers.watch);
     let local = match &answers.local {
         Some(llama_server) => {
             match plan_local(&facts, model::PORT, Some(llama_server.clone()), outside) {
@@ -181,7 +181,7 @@ fn wizard_with<P: Prompter>(
         Ok(false) => return Err(declined(p)),
         Err(e) => return Err(stopped(p, e)),
     }
-    settle_local(p, outside, &facts, &mut plan, plugins)?;
+    settle_local(p, outside, &facts, &mut plan, kept)?;
     let outcome = apply(&plan);
     if !outcome.failed && plan.embedder.is_some() {
         let notes = documents::read_notes(&plan.notes).map_or(0, |notes| notes.len());
@@ -264,14 +264,14 @@ impl<P: Prompter, O: Outside> Outside for Shown<'_, P, O> {
 }
 
 /// After the confirmation: prepares the local embedder (or only checks it, when a new config
-/// would name it), offering a retry or keyword search only when that fails. `plugins` are the
-/// wizard's claude and codex answers, which the keyword-only plan keeps.
+/// would name it), offering a retry or keyword search only when that fails. `kept` are the
+/// wizard's claude, codex and watch answers, which the keyword-only plan keeps.
 fn settle_local<P: Prompter>(
     p: &mut P,
     outside: &mut impl Outside,
     facts: &Facts,
     plan: &mut Plan,
-    plugins: (bool, bool),
+    kept: (bool, bool, bool),
 ) -> Result<(), Failure> {
     let Some(mut local) = plan.local.take() else {
         return Ok(());
@@ -372,9 +372,10 @@ fn settle_local<P: Prompter>(
                     embedder: None,
                     pasted: None,
                     dims: None,
-                    claude: plugins.0,
-                    codex: plugins.1,
+                    claude: kept.0,
+                    codex: kept.1,
                     timer: None,
+                    watch: kept.2,
                     local: None,
                 };
                 *plan = answer_wizard(facts, keyword, None);

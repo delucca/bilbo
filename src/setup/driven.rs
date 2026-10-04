@@ -257,10 +257,17 @@ impl Sandbox {
         )
     }
     fn install_timer_files(&self) {
-        for file in self.timer_files() {
+        for file in self.timer_files().into_iter().chain(self.watch_files()) {
             std::fs::create_dir_all(file.parent().unwrap()).unwrap();
             std::fs::write(file, "old\n").unwrap();
         }
+    }
+    fn watch_files(&self) -> Vec<PathBuf> {
+        timer::paths(
+            timer::platform().unwrap(),
+            &self.place(),
+            timer::Name::Watch,
+        )
     }
 }
 
@@ -397,6 +404,7 @@ fn interrupting_at_any_prompt_writes_nothing() {
 #[test]
 fn changing_the_model_updates_the_config_and_keeps_the_old_one() {
     let b = boxed("change-model");
+    b.manager();
     b.write_config("a");
     let old = std::fs::read_to_string(b.config()).unwrap();
     let mut p = Scripted {
@@ -444,6 +452,71 @@ fn the_wizard_keeps_the_digest_settings() {
     assert!(at("embedder.model = b") < at("digest.enable = on"));
     assert!(at("digest.enable = on") < at("digest.min_similarity = 0.6"));
     assert!(at("digest.min_similarity = 0.6") < at("digest.log = on"));
+}
+
+#[test]
+fn the_wizard_keeps_the_history_setting() {
+    let b = boxed("keep-history");
+    b.write_config("a");
+    let mut text = std::fs::read_to_string(b.config()).unwrap();
+    text.push_str("history.keep_days = 30\n");
+    std::fs::write(b.config(), text).unwrap();
+    let mut p = Scripted {
+        inputs: vec![("Model name", "b")],
+        selects: vec![NO_TIMER],
+        ..Scripted::default()
+    };
+    let run = wizard_run(&b, &mut p);
+    assert!(run.result.is_ok());
+    let text = std::fs::read_to_string(b.config()).unwrap();
+    assert!(text.contains("embedder.model = b"), "{text}");
+    assert!(text.contains("history.keep_days = 30"), "{text}");
+}
+
+#[test]
+fn the_wizard_asks_about_the_watcher_and_installs_it_by_default() {
+    let b = boxed("watch-default");
+    b.manager();
+    let mut p = Scripted::default();
+    let run = wizard_run(&b, &mut p);
+    let notes = b.home().join(".local/share/bilbo/notes");
+    assert!(
+        report(&run).contains(&format!("watch installed: watching {}", notes.display())),
+        "{:?}",
+        report(&run)
+    );
+    assert!(b.watch_files().iter().all(|f| f.exists()));
+    assert!(
+        p.shown
+            .contains(&"Record note history in the background?".to_string())
+    );
+    let summary = p
+        .shown
+        .iter()
+        .find(|s| s.starts_with("note: Setup will"))
+        .unwrap();
+    assert!(
+        summary.contains("Record note history in the background ("),
+        "{summary}"
+    );
+}
+
+#[test]
+fn declining_the_watcher_removes_the_old_one() {
+    let b = boxed("watch-declined");
+    let manager = b.manager();
+    b.install_timer_files();
+    let mut p = Scripted {
+        confirms: vec![("Record note history", false)],
+        ..Scripted::default()
+    };
+    let run = wizard_run(&b, &mut p);
+    assert!(
+        report(&run).contains(&"watch removed: not chosen".to_string()),
+        "{manager}: {:?}",
+        report(&run)
+    );
+    assert!(b.watch_files().iter().all(|f| !f.exists()));
 }
 
 #[test]
@@ -897,4 +970,10 @@ fn remove_confirmed_removes_the_timer() {
         outcome.lines
     );
     assert!(b.timer_files().iter().all(|f| !f.exists()));
+    assert!(
+        outcome.lines.contains(&"watch removed".to_string()),
+        "{:?}",
+        outcome.lines
+    );
+    assert!(b.watch_files().iter().all(|f| !f.exists()));
 }

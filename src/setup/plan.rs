@@ -52,6 +52,7 @@ pub enum PluginPlan {
     },
 }
 
+/// A job's plan: the index timer, or the watcher, which never gets `KeyVariable`.
 pub enum TimerPlan {
     Skipped(&'static str),
     Failed(String),
@@ -91,8 +92,8 @@ pub struct Plan {
     pub config: ConfigPlan,
     /// The embedder the config holds once setup is done.
     pub embedder: Option<Embedder>,
-    /// The digest lines a rewritten config keeps.
-    pub digest: Vec<(&'static str, String)>,
+    /// The digest and history lines a rewritten config keeps.
+    pub kept: Vec<(&'static str, String)>,
     pub key: KeyPlan,
     /// The key the wizard was given; written to the token file and never shown.
     pub pasted: Option<Zeroizing<String>>,
@@ -107,6 +108,7 @@ pub struct Plan {
     pub claude: PluginPlan,
     pub codex: PluginPlan,
     pub timer: TimerPlan,
+    pub watch: TimerPlan,
 }
 
 /// Non-interactive answers: the flags over the config that is there, the embedder checked when a new config gets one.
@@ -217,6 +219,7 @@ pub fn answer_batch(
         flags.no_timer.then_some("--no-timer"),
         flags.minutes.unwrap_or(DEFAULT_MINUTES),
     );
+    let watch = plan_watch(&facts, flags.no_watch.then_some("--no-watch"));
     let mut local_lines = local.as_ref().filter(|l| !l.prepares()).map(kept_lines);
     let mut unused_service = None;
     if local.is_none() {
@@ -228,7 +231,7 @@ pub fn answer_batch(
         config_path: facts.config_path,
         config,
         embedder,
-        digest: facts.digest,
+        kept: facts.kept,
         key,
         pasted: None,
         check,
@@ -239,6 +242,7 @@ pub fn answer_batch(
         claude,
         codex,
         timer,
+        watch,
     })
 }
 
@@ -337,6 +341,7 @@ pub fn answer_wizard(facts: &Facts, answers: wizard::Answers, local: Option<Loca
         (asked && answers.timer.is_none()).then_some("not chosen"),
         answers.timer.unwrap_or(DEFAULT_MINUTES),
     );
+    let watch = plan_watch(facts, (!answers.watch).then_some("not chosen"));
     let (local_lines, unused_service) = match &local {
         Some(l) => (Some(l).filter(|l| !l.prepares()).map(kept_lines), None),
         None => unused_local(facts, embedder.as_ref()),
@@ -347,7 +352,7 @@ pub fn answer_wizard(facts: &Facts, answers: wizard::Answers, local: Option<Loca
         config_path: facts.config_path.clone(),
         config,
         embedder,
-        digest: facts.digest.clone(),
+        kept: facts.kept.clone(),
         key,
         pasted: answers.pasted,
         check,
@@ -358,6 +363,7 @@ pub fn answer_wizard(facts: &Facts, answers: wizard::Answers, local: Option<Loca
         claude,
         codex,
         timer,
+        watch,
     }
 }
 
@@ -385,39 +391,102 @@ fn plan_timer(
     };
     let embedder = match wanted {
         Ok(embedder) => embedder,
-        Err(reason) => {
-            return match place.filter(|place| timer::installed(platform, place, timer::Name::Index))
-            {
-                Some(_) if t.tool.is_none() => TimerPlan::Failed(format!(
-                    "{} not found on PATH",
-                    match platform {
-                        timer::Platform::Launchd => "launchctl",
-                        timer::Platform::Systemd => "systemctl",
-                    }
-                )),
-                Some(place) => TimerPlan::Remove {
-                    reason,
-                    platform,
-                    tool: t.tool.clone(),
-                    place,
-                },
-                None => TimerPlan::Skipped(reason),
-            };
-        }
+        Err(reason) => return plan_off(t, platform, place, timer::Name::Index, reason),
     };
-    let tool = match (platform, &t.tool) {
-        (timer::Platform::Launchd, None) => {
-            return TimerPlan::Failed("launchctl not found on PATH".into());
-        }
-        (timer::Platform::Systemd, Some(tool)) if !timer::session(&command::System, tool) => {
-            return TimerPlan::Skipped("no systemd user session");
-        }
-        (timer::Platform::Systemd, None) => return TimerPlan::Skipped("no systemd user session"),
-        (_, Some(tool)) => tool.clone(),
+    let tool = match plan_tool(platform, t) {
+        Ok(tool) => tool,
+        Err(plan) => return *plan,
     };
     if let Some(Token::Var(name)) = &embedder.token {
         return TimerPlan::KeyVariable(name.clone());
     }
+    plan_job(
+        facts,
+        platform,
+        place,
+        tool,
+        timer::Kind::Periodic { minutes },
+        ("index", "bilbo/index.log"),
+    )
+}
+
+/// Decides the watch step. `off` is why the user wants no watcher. It needs no embedder and reads
+/// no key, so a key variable does not stop it.
+fn plan_watch(facts: &Facts, off: Option<&'static str>) -> TimerPlan {
+    let t = &facts.timer;
+    let Some(platform) = t.platform else {
+        return TimerPlan::Skipped(off.unwrap_or("unsupported platform"));
+    };
+    let place = timer_place(t);
+    if let Some(reason) = off {
+        return plan_off(t, platform, place, timer::Name::Watch, reason);
+    }
+    let tool = match plan_tool(platform, t) {
+        Ok(tool) => tool,
+        Err(plan) => return *plan,
+    };
+    plan_job(
+        facts,
+        platform,
+        place,
+        tool,
+        timer::Kind::Watch,
+        ("watch", "bilbo/watch.log"),
+    )
+}
+
+/// A job that is not wanted: removed when its files are installed, else skipped for `reason`.
+fn plan_off(
+    t: &TimerFacts,
+    platform: timer::Platform,
+    place: Option<timer::Place>,
+    name: timer::Name,
+    reason: &'static str,
+) -> TimerPlan {
+    match place.filter(|place| timer::installed(platform, place, name)) {
+        Some(_) if t.tool.is_none() => TimerPlan::Failed(format!(
+            "{} not found on PATH",
+            match platform {
+                timer::Platform::Launchd => "launchctl",
+                timer::Platform::Systemd => "systemctl",
+            }
+        )),
+        Some(place) => TimerPlan::Remove {
+            reason,
+            platform,
+            tool: t.tool.clone(),
+            place,
+        },
+        None => TimerPlan::Skipped(reason),
+    }
+}
+
+/// The service manager's tool, or the plan when there is none to use.
+fn plan_tool(platform: timer::Platform, t: &TimerFacts) -> Result<PathBuf, Box<TimerPlan>> {
+    match (platform, &t.tool) {
+        (timer::Platform::Launchd, None) => Err(Box::new(TimerPlan::Failed(
+            "launchctl not found on PATH".into(),
+        ))),
+        (timer::Platform::Systemd, Some(tool)) if !timer::session(&command::System, tool) => {
+            Err(Box::new(TimerPlan::Skipped("no systemd user session")))
+        }
+        (timer::Platform::Systemd, None) => {
+            Err(Box::new(TimerPlan::Skipped("no systemd user session")))
+        }
+        (_, Some(tool)) => Ok(tool.clone()),
+    }
+}
+
+/// The job `bilbo <verb>` with its files, as keep or install; `log` is under the state folder.
+fn plan_job(
+    facts: &Facts,
+    platform: timer::Platform,
+    place: Option<timer::Place>,
+    tool: PathBuf,
+    kind: timer::Kind,
+    (verb, log): (&str, &str),
+) -> TimerPlan {
+    let t = &facts.timer;
     let env = match &t.locations {
         Ok(env) => env.clone(),
         Err(message) => return TimerPlan::Failed(message.clone()),
@@ -437,10 +506,10 @@ fn plan_timer(
         .into());
     };
     let job = timer::Job {
-        kind: timer::Kind::Periodic { minutes },
+        kind,
         program: facts.exe.clone(),
-        args: vec!["index".into()],
-        log: state_dir.join("bilbo/index.log"),
+        args: vec![verb.into()],
+        log: state_dir.join(log),
         env,
     };
     let files = match timer::files(platform, &place, &job) {
@@ -614,6 +683,22 @@ pub fn summary(plan: &Plan) -> Vec<String> {
             }
         )),
     }
+    match &plan.watch {
+        TimerPlan::Skipped("--no-watch" | "not chosen") => {}
+        TimerPlan::Skipped(reason) => lines.push(format!("Watcher: skipped, {reason}")),
+        TimerPlan::Failed(message) => lines.push(format!("Watcher: failed, {message}")),
+        TimerPlan::KeyVariable(_) => {}
+        TimerPlan::Remove { .. } => lines.push("Remove the note watcher".to_string()),
+        TimerPlan::Keep => lines.push("Keep the note watcher".to_string()),
+        TimerPlan::Install { platform, .. } => lines.push(format!(
+            "Record note history in the background ({})",
+            match platform {
+                timer::Platform::Launchd => format!("launchd agent {}", timer::WATCH_LABEL),
+                timer::Platform::Systemd =>
+                    format!("systemd user service {}", timer::Name::Watch.unit()),
+            }
+        )),
+    }
     lines
 }
 
@@ -637,6 +722,7 @@ mod tests {
             claude: true,
             codex: true,
             timer: None,
+            watch: true,
             local: None,
         }
     }
@@ -694,6 +780,72 @@ mod tests {
                 "Keep the bilbo plugin in Codex",
             ]
         );
+    }
+
+    #[test]
+    fn summary_names_the_watcher() {
+        let mut p = plan(ConfigPlan::Keep, None, EmbedderPlan::None);
+        let platform = timer::Platform::Launchd;
+        p.watch = TimerPlan::Install {
+            platform,
+            tool: "/bin/launchctl".into(),
+            job: timer::Job {
+                kind: timer::Kind::Watch,
+                program: "/bin/bilbo".into(),
+                args: vec!["watch".into()],
+                log: "/s/bilbo/watch.log".into(),
+                env: Vec::new(),
+            },
+            files: Vec::new(),
+            update: false,
+        };
+        assert_eq!(
+            summary(&p).last().unwrap(),
+            "Record note history in the background (launchd agent io.github.delucca.bilbo.watch)"
+        );
+        p.watch = TimerPlan::Keep;
+        assert_eq!(summary(&p).last().unwrap(), "Keep the note watcher");
+        p.watch = TimerPlan::Skipped("--no-watch");
+        assert_eq!(summary(&p).last().unwrap(), "Search by keywords only");
+        p.watch = TimerPlan::Skipped("no systemd user session");
+        assert_eq!(
+            summary(&p).last().unwrap(),
+            "Watcher: skipped, no systemd user session"
+        );
+    }
+
+    #[test]
+    fn the_watcher_needs_no_embedder_and_ignores_a_key_variable() {
+        let dir = scratch("plan-watch");
+        let mut facts = seen(&dir, None, ConfigState::Absent);
+        facts.timer.platform = Some(timer::Platform::Launchd);
+        facts.timer.home = Some(dir.join("home"));
+        facts.timer.state_dir = Some(dir.join("state"));
+        facts.timer.tool = Some("/bin/launchctl".into());
+        let planned = plan_watch(&facts, None);
+        let TimerPlan::Install { job, update, .. } = planned else {
+            panic!("expected an install");
+        };
+        assert!(!update);
+        assert_eq!(job.kind, timer::Kind::Watch);
+        assert_eq!(job.args, ["watch"]);
+        assert_eq!(job.log, dir.join("state/bilbo/watch.log"));
+        let mut keyed = embedder("m");
+        keyed.token = Some(Token::Var("OPENAI_API_KEY".into()));
+        assert!(matches!(
+            plan_timer(&facts, Some(&keyed), None, 15),
+            TimerPlan::KeyVariable(_)
+        ));
+        assert!(matches!(
+            plan_watch(&facts, Some("--no-watch")),
+            TimerPlan::Skipped("--no-watch")
+        ));
+        facts.timer.tool = None;
+        assert!(matches!(
+            plan_watch(&facts, None),
+            TimerPlan::Failed(m) if m == "launchctl not found on PATH"
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

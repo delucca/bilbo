@@ -97,6 +97,7 @@
             "digest.enable"
             "digest.min_similarity"
             "digest.log"
+            "history.keep_days"
           ];
           # The same quoting rule as config::render in src/shared/config.rs.
           quote =
@@ -139,6 +140,7 @@
               else
                 [ "--no-timer" ]
             )
+            ++ lib.optionals (!cfg.watch.enable) [ "--no-watch" ]
             ++ lib.optionals cfg.localEmbedder.enable [
               "--embedder-local"
               "--embedder-port"
@@ -191,6 +193,13 @@
                 type = lib.types.ints.between 1 1440;
                 default = 15;
                 description = "Minutes between two runs of bilbo index.";
+              };
+            };
+            watch = {
+              enable = lib.mkOption {
+                type = lib.types.bool;
+                default = true;
+                description = "Whether bilbo setup installs the watcher, the login service that records note history.";
               };
             };
             claude = lib.mkOption {
@@ -328,8 +337,11 @@
             enable = true;
             storeRoot = "/data/my notes/bilbo";
             index.enable = false;
+            watch.enable = false;
+            settings."history.keep_days" = "30";
           };
           rootedActivation = rooted.config.home.activation.bilboSetup.data;
+          rootedConfig = rooted.config.xdg.configFile."bilbo/config".text;
           configText = sample.config.xdg.configFile."bilbo/config".text;
           activation = sample.config.home.activation.bilboSetup.data;
           fails = c: !(builtins.tryEval c.activationPackage.drvPath).success;
@@ -347,7 +359,13 @@
             assert lib.hasInfix "/bin/bilbo setup --yes --claude /opt/claude/bin/claude --index-every 15"
               activation;
             assert lib.hasInfix "BILBO_HOME=${lib.escapeShellArg "/data/my notes/bilbo"} " rootedActivation;
-            assert lib.hasInfix " --no-timer" rootedActivation;
+            assert lib.hasInfix " --no-timer --no-watch" rootedActivation;
+            assert !(lib.hasInfix "--no-watch" activation);
+            assert
+              rootedConfig == ''
+                # bilbo config, written by home-manager from programs.bilbo.settings
+                history.keep_days = 30
+              '';
             assert rooted.config.home.sessionVariables.BILBO_HOME == "/data/my notes/bilbo";
             assert (builtins.tryEval sample.activationPackage.drvPath).success;
             assert fails misspelled;

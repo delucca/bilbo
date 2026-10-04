@@ -42,6 +42,7 @@ pub fn apply(plan: &Plan) -> Outcome {
     }
     hook_step(&plan.codex, codex_installed, &mut report);
     timer_step(&plan.timer, &mut report);
+    watch_step(&plan.watch, &plan.notes, &mut report);
     Outcome {
         lines: report.lines,
         failed: report.failed,
@@ -49,25 +50,44 @@ pub fn apply(plan: &Plan) -> Outcome {
 }
 
 fn timer_step(plan: &TimerPlan, report: &mut Report) {
+    job_step("timer", timer::Name::Index, plan, report, |job| {
+        format!("every {} min", job.minutes())
+    });
+}
+
+fn watch_step(plan: &TimerPlan, notes: &Path, report: &mut Report) {
+    job_step("watch", timer::Name::Watch, plan, report, |_| {
+        format!("watching {}", notes.display())
+    });
+}
+
+/// A background job's step; `detail` is what an install says about the job.
+fn job_step(
+    step: &str,
+    name: timer::Name,
+    plan: &TimerPlan,
+    report: &mut Report,
+    detail: impl Fn(&timer::Job) -> String,
+) {
     match plan {
-        TimerPlan::Skipped(reason) => report.line("timer", "skipped", Some((*reason).into())),
-        TimerPlan::Failed(message) => report.line("timer", "failed", Some(message.clone())),
+        TimerPlan::Skipped(reason) => report.line(step, "skipped", Some((*reason).into())),
+        TimerPlan::Failed(message) => report.line(step, "failed", Some(message.clone())),
         TimerPlan::KeyVariable(name) => report.line(
-            "timer",
+            step,
             "failed",
             Some(format!(
                 "the index timer cannot read the key variable {name}; keep the key in a file (--embedder-token-file) or pass --no-timer"
             )),
         ),
-        TimerPlan::Keep => report.line("timer", "kept", None),
+        TimerPlan::Keep => report.line(step, "kept", None),
         TimerPlan::Remove {
             reason,
             platform,
             tool,
             place,
-        } => match timer::uninstall(*platform, &command::System, tool.as_deref(), place, timer::Name::Index) {
-            Ok(()) => report.line("timer", "removed", Some((*reason).into())),
-            Err(message) => report.line("timer", "failed", Some(message)),
+        } => match timer::uninstall(*platform, &command::System, tool.as_deref(), place, name) {
+            Ok(()) => report.line(step, "removed", Some((*reason).into())),
+            Err(message) => report.line(step, "failed", Some(message)),
         },
         TimerPlan::Install {
             platform,
@@ -77,11 +97,11 @@ fn timer_step(plan: &TimerPlan, report: &mut Report) {
             update,
         } => match timer::install(*platform, &command::System, tool, job, files) {
             Ok(()) => report.line(
-                "timer",
+                step,
                 if *update { "updated" } else { "installed" },
-                Some(format!("every {} min", job.minutes())),
+                Some(detail(job)),
             ),
-            Err(message) => report.line("timer", "failed", Some(message)),
+            Err(message) => report.line(step, "failed", Some(message)),
         },
     }
 }
@@ -199,7 +219,7 @@ fn config_step(plan: &Plan, report: &mut Report) {
         ConfigPlan::Update(embedder) => (embedder, true),
     };
     let mut settings = embedder.as_ref().map(config::settings).unwrap_or_default();
-    settings.extend(plan.digest.iter().cloned());
+    settings.extend(plan.kept.iter().cloned());
     let header = format!(
         "# bilbo config, written by bilbo setup {} on {}",
         env!("CARGO_PKG_VERSION"),
