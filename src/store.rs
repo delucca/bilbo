@@ -1,7 +1,7 @@
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
-use crate::{corpus, note, rank, source};
+use crate::{corpus, markdown, note, rank};
 
 /// The environment variables root, config and cache resolution read; tests build it by hand.
 pub struct Env {
@@ -164,7 +164,7 @@ pub fn read_notes(notes: &Path) -> std::io::Result<Vec<Stored>> {
             continue;
         };
         let text = String::from_utf8_lossy(&bytes);
-        let lines = note::lines(&text);
+        let lines = markdown::lines(&text);
         let read = note::read(&text);
         let stem = entry.name.strip_suffix(".md").unwrap_or(&entry.name);
         stored.push(Stored {
@@ -247,7 +247,7 @@ pub fn read_library(root: &Path, corpora: &[String]) -> std::io::Result<Vec<Shel
                 continue;
             };
             let text = String::from_utf8_lossy(&bytes);
-            let lines = note::lines(&text);
+            let lines = markdown::lines(&text);
             let body_start = note::read(&text).body_start;
             let title_line = (body_start..=lines.len())
                 .find(|n| !lines[n - 1].trim().is_empty())
@@ -265,7 +265,7 @@ pub fn read_library(root: &Path, corpora: &[String]) -> std::io::Result<Vec<Shel
                 },
                 title_line,
                 last_line: lines.len(),
-                sections: source::outline(&lines, title_line)
+                sections: markdown::outline(&lines, title_line)
                     .into_iter()
                     .map(|s| (s.start, s.end))
                     .collect(),

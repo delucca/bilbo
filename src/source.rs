@@ -1,5 +1,6 @@
+use crate::hash;
+use crate::markdown::{self, Section};
 use crate::note::{self, Problem};
-use crate::{hash, rank, text};
 
 pub const CAPTURES: [&str; 2] = ["external", "legacy"];
 pub const ORIGIN_TYPES: [&str; 2] = ["url", "doc"];
@@ -251,7 +252,7 @@ pub fn read(text: &str) -> Source {
                 "digest: does not match the body; only bilbo library land writes a source",
             ));
         }
-        let lines = note::lines(text);
+        let lines = markdown::lines(text);
         let body_lines = lines.get(front.body_start - 1..).unwrap_or(&[]);
         problems.extend(title_problems(body_lines, front.body_start));
     }
@@ -304,26 +305,6 @@ fn is_digest(v: &str) -> bool {
     })
 }
 
-/// Indexes of the lines outside fenced code blocks, fence lines excluded.
-pub fn outside_fences(lines: &[&str]) -> Vec<usize> {
-    let mut fence: Option<(char, usize)> = None;
-    let mut out = Vec::new();
-    for (i, line) in lines.iter().enumerate() {
-        let run = note::fence_run(line);
-        match (fence, run) {
-            (Some((ch, len)), Some((c, l, rest)))
-                if c == ch && l >= len && rest.trim().is_empty() =>
-            {
-                fence = None;
-            }
-            (Some(_), _) => {}
-            (None, Some((c, l, _))) => fence = Some((c, l)),
-            (None, None) => out.push(i),
-        }
-    }
-    out
-}
-
 /// What a capture shows `stage` on stderr, without the `bilbo: ` prefix: the fence never closed, then
 /// each run of five or more link-only lines (a menu the converter kept). Lines are 1-based in
 /// the messages.
@@ -332,7 +313,7 @@ pub fn capture_warnings(lines: &[&str]) -> Vec<String> {
     let mut run: Vec<usize> = Vec::new();
     let mut runs: Vec<Vec<usize>> = Vec::new();
     for (i, line) in lines.iter().enumerate() {
-        let fence_line = note::fence_run(line);
+        let fence_line = markdown::fence_run(line);
         match (fence, fence_line) {
             (Some((ch, len, _)), Some((c, l, rest)))
                 if c == ch && l >= len && rest.trim().is_empty() =>
@@ -483,71 +464,6 @@ pub fn render(front: &Frontmatter, body: &str) -> String {
     out
 }
 
-/// A heading below the title and the lines it spans.
-#[derive(Debug, PartialEq, Eq)]
-pub struct Section {
-    /// Physical line of the heading.
-    pub start: usize,
-    /// Physical line of the last line, inclusive.
-    pub end: usize,
-    pub level: usize,
-    /// The enclosing headings below the title, then this one.
-    pub path: Vec<String>,
-    /// Bytes of the section's lines, each counted with its newline.
-    pub bytes: usize,
-    pub tokens: usize,
-}
-
-impl Section {
-    pub fn path_text(&self) -> String {
-        self.path.join(" > ")
-    }
-}
-
-/// The sections of a file whose `lines` come from `note::lines`; its body, and so its title, starts on physical
-/// line `body_start`.
-pub fn outline(lines: &[&str], body_start: usize) -> Vec<Section> {
-    let body = lines.get(body_start - 1..).unwrap_or(&[]);
-    let mut headings: Vec<(usize, usize, String)> = outside_fences(body)
-        .into_iter()
-        .filter_map(|i| rank::heading(body[i]).map(|(level, text)| (i, level, text)))
-        .collect();
-    if headings
-        .first()
-        .is_some_and(|(i, level, _)| *i == 0 && *level == 1)
-    {
-        headings.remove(0);
-    }
-
-    let mut stack: Vec<(usize, &str)> = Vec::new();
-    let mut sections = Vec::new();
-    for (h, (i, level, text)) in headings.iter().enumerate() {
-        while stack.last().is_some_and(|(top, _)| top >= level) {
-            stack.pop();
-        }
-        stack.push((*level, text));
-        let next = headings[h + 1..]
-            .iter()
-            .find(|(_, other, _)| other <= level)
-            .map_or(body.len(), |(j, _, _)| *j);
-        let bytes = body[*i..next].iter().map(|l| l.len() + 1).sum();
-        sections.push(Section {
-            start: body_start + i,
-            end: body_start + next - 1,
-            level: *level,
-            path: stack.iter().map(|(_, t)| t.to_string()).collect(),
-            bytes,
-            tokens: tokens(bytes),
-        });
-    }
-    sections
-}
-
-/// Bytes divided by 2.5, rounded up.
-pub fn tokens(bytes: usize) -> usize {
-    (bytes * 2).div_ceil(5)
-}
-
 /// Bytes divided by 1,000, rounded up.
 pub fn kb(bytes: usize) -> usize {
     bytes.div_ceil(1000)
@@ -563,41 +479,6 @@ pub fn cut(sections: &[Section]) -> Option<(usize, usize)> {
 
 pub fn is_catalog(body_bytes: usize, sections: &[Section]) -> bool {
     body_bytes > CATALOG_BYTES && cut(sections).is_some_and(|(_, count)| count > CATALOG_SECTIONS)
-}
-
-#[derive(Debug, PartialEq, Eq)]
-pub enum Resolved {
-    One(usize),
-    Ambiguous(Vec<usize>),
-    Missing,
-}
-
-/// The sections whose heading path ends with the anchor's parts, each compared after the Text normalization, with case.
-pub fn resolve(sections: &[Section], anchor: &str) -> Resolved {
-    let anchor = text::normalize(anchor);
-    if anchor.is_empty() {
-        return Resolved::Missing;
-    }
-    let tail = format!(" > {anchor}");
-    let found: Vec<usize> = sections
-        .iter()
-        .enumerate()
-        .filter(|(_, s)| {
-            let path = s
-                .path
-                .iter()
-                .map(|part| text::normalize(part))
-                .collect::<Vec<_>>()
-                .join(" > ");
-            path == anchor || path.ends_with(&tail)
-        })
-        .map(|(i, _)| i)
-        .collect();
-    match found.as_slice() {
-        [] => Resolved::Missing,
-        [one] => Resolved::One(*one),
-        _ => Resolved::Ambiguous(found),
-    }
 }
 
 /// Inclusive 1-based line ranges from `3-120,130-130`; the error is the rule the value breaks.
@@ -943,78 +824,12 @@ mod tests {
         assert!(read(&bare).problems.is_empty());
     }
 
-    fn outline_of(body: &str) -> Vec<Section> {
-        let text = with_lines(&[], body);
-        let read = read(&text);
-        outline(&note::lines(&text), read.body_start)
-    }
-
-    fn summary(sections: &[Section]) -> Vec<(usize, usize, String)> {
-        sections
-            .iter()
-            .map(|s| (s.start, s.end, s.path_text()))
-            .collect()
-    }
-
-    #[test]
-    fn nested_heading_path() {
-        let sections = outline_of(
-            "# Effective Go\n\n## Concurrency\n\nx\n\n### Goroutines\n\ny\n\n## Errors\n\nz\n",
-        );
-        assert_eq!(
-            summary(&sections),
-            [
-                (9, 16, "Concurrency".to_string()),
-                (13, 16, "Concurrency > Goroutines".to_string()),
-                (17, 19, "Errors".to_string()),
-            ]
-        );
-        assert_eq!(sections[0].level, 2);
-        assert_eq!(sections[1].level, 3);
-    }
-
-    #[test]
-    fn section_bytes_count_each_newline() {
-        let sections = outline_of("# T\n\n## A\n\nxy\n");
-        assert_eq!(sections[0].bytes, "## A\n\nxy\n".len());
-        assert_eq!(sections[0].tokens, tokens(sections[0].bytes));
-    }
-
-    #[test]
-    fn fenced_heading_opens_no_section() {
-        let sections = outline_of("# T\n\n```\n## not a heading\n```\n\n## Real\n");
-        assert_eq!(summary(&sections).len(), 1);
-        assert_eq!(sections[0].path_text(), "Real");
-    }
-
-    #[test]
-    fn headingless_source_has_no_sections() {
-        assert!(outline_of("# T\n\nparagraph\n\nmore\n").is_empty());
-    }
-
-    #[test]
-    fn seven_hashes_are_plain_text_and_six_are_a_section() {
-        let sections = outline_of("# T\n\n####### seven\n\n###### six\n");
-        assert_eq!(summary(&sections).len(), 1);
-        assert_eq!(sections[0].path_text(), "six");
-        assert_eq!(sections[0].level, 6);
-    }
-
-    #[test]
-    fn a_skipped_level_nests_under_the_last_shallower_heading() {
-        let sections = outline_of("# T\n\n## A\n\n#### Deep\n\n## B\n");
-        assert_eq!(sections[1].path_text(), "A > Deep");
-    }
-
     #[test]
     fn sizes_round_up() {
-        assert_eq!((tokens(1000), kb(1000)), (400, 1));
-        assert_eq!((tokens(1001), kb(1001)), (401, 2));
-        assert_eq!((tokens(0), kb(0)), (0, 0));
-        assert_eq!(tokens(96211), 38485);
-        let corpus = 1001 + 1001;
-        assert_eq!((tokens(1001) * 2, kb(corpus)), (802, 3));
-        assert_eq!(tokens(1001) + tokens(1001), 802);
+        assert_eq!(kb(1000), 1);
+        assert_eq!(kb(1001), 2);
+        assert_eq!(kb(0), 0);
+        assert_eq!(kb(1001 + 1001), 3);
     }
 
     fn sections_at(levels: &[(usize, usize)]) -> Vec<Section> {
@@ -1070,56 +885,6 @@ mod tests {
         assert!(!is_catalog(80_000, &sections_at(&[(2, 1)])));
     }
 
-    fn lint_sections() -> Vec<Section> {
-        let body = "# Lints\n\n## needless_return\n\n### What it does\n\n## needless_range_loop\n\n### What it does\n";
-        outline_of(body)
-    }
-
-    #[test]
-    fn a_trailing_part_resolves() {
-        let sections = lint_sections();
-        assert_eq!(
-            resolve(&sections, "needless_return > What it does"),
-            Resolved::One(1)
-        );
-        assert_eq!(resolve(&sections, "needless_range_loop"), Resolved::One(2));
-        assert_eq!(
-            resolve(&sections, "needless_return  >   What   it does"),
-            Resolved::One(1)
-        );
-    }
-
-    #[test]
-    fn a_bare_heading_that_repeats_is_ambiguous() {
-        assert_eq!(
-            resolve(&lint_sections(), "What it does"),
-            Resolved::Ambiguous(vec![1, 3])
-        );
-    }
-
-    #[test]
-    fn case_counts() {
-        let sections = lint_sections();
-        assert_eq!(resolve(&sections, "what it does"), Resolved::Missing);
-        assert_eq!(resolve(&sections, ""), Resolved::Missing);
-        assert_eq!(resolve(&sections, "it does"), Resolved::Missing);
-    }
-
-    #[test]
-    fn markup_in_a_heading_resolves_through_a_plain_anchor() {
-        let sections =
-            outline_of("# Book\n\n## The `Option` type\n\n### A **bold** [link](x)\n\n## Other\n");
-        assert_eq!(resolve(&sections, "The Option type"), Resolved::One(0));
-        assert_eq!(resolve(&sections, "The `Option` type"), Resolved::One(0));
-        assert_eq!(
-            resolve(&sections, "The Option type > A bold link"),
-            Resolved::One(1)
-        );
-        assert_eq!(resolve(&sections, "The Options type"), Resolved::Missing);
-        assert_eq!(resolve(&sections, "the option type"), Resolved::Missing);
-        assert_eq!(resolve(&sections, "**"), Resolved::Missing);
-    }
-
     #[test]
     fn kept_parses_and_merges_touching_ranges() {
         assert_eq!(parse_kept("6-400,420-900"), Ok(vec![(6, 400), (420, 900)]));
@@ -1133,7 +898,7 @@ mod tests {
     }
 
     fn warnings(text: &str) -> Vec<String> {
-        capture_warnings(&note::lines(text))
+        capture_warnings(&markdown::lines(text))
     }
 
     fn menu(n: usize) -> String {

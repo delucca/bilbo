@@ -1,6 +1,8 @@
 use std::fmt;
 use std::io::Read;
 
+use crate::markdown::{fence_run, split_lines};
+
 pub const KINDS: [&str; 9] = [
     "plan",
     "spec",
@@ -187,23 +189,6 @@ pub fn read(text: &str) -> Note {
         body_start,
         problems,
     }
-}
-
-/// Physical lines as `read` numbers them: one leading byte order mark dropped, split on '\n', no empty line after a
-/// final '\n', one trailing '\r' removed from each.
-pub fn lines(text: &str) -> Vec<&str> {
-    split_lines(text.strip_prefix('\u{feff}').unwrap_or(text))
-}
-
-fn split_lines(text: &str) -> Vec<&str> {
-    let mut lines: Vec<&str> = text.split('\n').collect();
-    if lines.last() == Some(&"") {
-        lines.pop();
-    }
-    for line in &mut lines {
-        *line = line.strip_suffix('\r').unwrap_or(line);
-    }
-    lines
 }
 
 /// "---\nid: <id>\ncreated: <created>\n---\n\n# <title>\n"
@@ -411,22 +396,10 @@ pub(crate) fn title_problem(body: &[&str], first_line: usize) -> Option<Problem>
     }
 }
 
-/// The fence character, its run length and the rest of the line, when `line` is a fence line.
-pub fn fence_run(line: &str) -> Option<(char, usize, &str)> {
-    let stripped = line.trim_start_matches(' ');
-    if line.len() - stripped.len() > 3 {
-        return None;
-    }
-    let ch = stripped.chars().next().filter(|c| matches!(c, '`' | '~'))?;
-    let len = stripped.chars().take_while(|c| *c == ch).count();
-    let rest = &stripped[len..];
-    let is_fence = len >= 3 && !(ch == '`' && rest.contains('`'));
-    is_fence.then_some((ch, len, rest))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::markdown::lines;
 
     const ID: &str = "01M3YJ7R6HK6NQ30DCDB1P4DYB";
     const CREATED: &str = "2026-10-02T14:23-03:00";
@@ -822,13 +795,6 @@ mod tests {
         ]);
         assert_eq!(read(&text).body_start, 5);
         assert_eq!(lines(&text).len(), 4);
-    }
-
-    #[test]
-    fn lines_match_read_numbering() {
-        assert_eq!(lines("\u{feff}a\r\nb\r\n"), ["a", "b"]);
-        assert_eq!(lines("a\n\nb"), ["a", "", "b"]);
-        assert_eq!(lines(""), Vec::<&str>::new());
     }
 
     #[test]

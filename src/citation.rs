@@ -2,8 +2,8 @@ use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::path::{Path, PathBuf};
 
+use crate::markdown::{self, Resolved, Section};
 use crate::note;
-use crate::source::{self, Resolved, Section};
 use crate::store::{self, EntryKind};
 use crate::text::{self, Body};
 
@@ -344,7 +344,7 @@ fn front_text(path: &Path) -> Option<String> {
 
 /// The first `id:` value of the frontmatter when it is a canonical ULID.
 fn front_id(text: &str) -> Option<String> {
-    let lines = note::lines(text);
+    let lines = markdown::lines(text);
     if lines.first() != Some(&"---") {
         return None;
     }
@@ -443,9 +443,9 @@ pub struct Document {
 impl Document {
     /// `body` is the text after the frontmatter, whose first line is physical line `first_line`.
     pub fn new(body: &str, first_line: usize) -> Document {
-        let lines = note::lines(body);
+        let lines = markdown::lines(body);
         let blank = lines.iter().take_while(|l| l.trim().is_empty()).count();
-        let mut sections = source::outline(&lines, blank + 1);
+        let mut sections = markdown::outline(&lines, blank + 1);
         for s in &mut sections {
             s.start += first_line - 1;
             s.end += first_line - 1;
@@ -463,7 +463,7 @@ impl Document {
         let resolved = citation
             .anchor
             .as_deref()
-            .map(|anchor| source::resolve(&self.sections, anchor));
+            .map(|anchor| markdown::resolve(&self.sections, anchor));
         let mut hint_over = None;
         let outcome = match resolved {
             Some(Resolved::Missing) => {

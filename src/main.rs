@@ -12,6 +12,7 @@ mod hash;
 mod html;
 mod index;
 mod library;
+mod markdown;
 mod model;
 mod new;
 mod note;

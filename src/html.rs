@@ -7,7 +7,7 @@ use htmd::options::{BulletListMarker, Options};
 use htmd::{Element, HtmlToMarkdown, Node};
 use markup5ever_rcdom::NodeData;
 
-use crate::{note, rank, source};
+use crate::markdown;
 
 const DROPPED: [&str; 6] = ["head", "script", "style", "noscript", "template", "svg"];
 const ZERO_WIDTH: [char; 5] = ['\u{200B}', '\u{200C}', '\u{200D}', '\u{2060}', '\u{FEFF}'];
@@ -359,10 +359,10 @@ fn alnum(text: &str) -> String {
 
 /// The letters-and-digits keys of the heading lines the outline sees in `markdown`.
 fn heading_keys(markdown: &str) -> Vec<String> {
-    let lines = note::lines(markdown);
-    source::outside_fences(&lines)
+    let lines = markdown::lines(markdown);
+    markdown::outside_fences(&lines)
         .into_iter()
-        .filter_map(|i| rank::heading(lines[i]))
+        .filter_map(|i| markdown::heading(lines[i]))
         .map(|(_, text)| alnum(&text))
         .collect()
 }
