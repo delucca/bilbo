@@ -2293,6 +2293,9 @@ fn installed_machine(name: &str) -> Machine {
 #[test]
 fn remove_an_install() {
     let m = installed_machine("remove-install");
+    let history = root(&m).join(".bilbo/history/notes");
+    std::fs::create_dir_all(&history).unwrap();
+    std::fs::write(history.join("x.jsonl"), "{}\n").unwrap();
     let run = setup(&m, &[], &["--remove", "--yes"]);
     assert_eq!(run.code, 0, "{}", run.stderr);
     assert_eq!(
@@ -2309,6 +2312,10 @@ fn remove_an_install() {
             "timer removed".to_string(),
             "watch removed".to_string(),
         ]
+    );
+    assert!(
+        history.join("x.jsonl").is_file(),
+        "history survives --remove"
     );
     assert!(timer_gone(&m));
     assert!(watch_gone(&m));

@@ -474,6 +474,10 @@ fn a_shared_id_is_named_and_not_deleted() {
     ));
     barrier(&root);
     assert_eq!(events(&root, "release"), ["added"]);
+    // Recording resumes once one copy is gone and the note changes.
+    fs::remove_file(root.join("notes/plan-release-copy.md")).unwrap();
+    write(&root, "decision-release.md", &format!("{text}\nAfter.\n"));
+    wait_events(&root, "release", &["edited", "added"]);
 }
 
 #[test]
