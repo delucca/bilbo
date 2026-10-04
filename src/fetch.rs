@@ -259,7 +259,10 @@ mod tests {
 
     #[test]
     fn a_gzip_body_is_limited_after_decoding() {
-        let gz: &[u8] = include_bytes!("../tests/fixtures/gzip-over-limit.gz");
+        let gz: &[u8] = include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/gzip-over-limit.gz"
+        ));
         let base = serve(vec![reply(
             "200 OK\r\nContent-Type: text/plain\r\nContent-Encoding: gzip",
             gz,
