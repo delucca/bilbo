@@ -54,26 +54,28 @@ PYTHONDONTWRITEBYTECODE=1 python3 ~/.codex/skills/.system/plugin-creator/scripts
   `Failure`, dispatches to `<domain>::<verb>::run` (except `setup::run` and
   `check::run`) and prints.
 - `src/shared/` is the Shared Kernel: `store`, `markdown`, `frontmatter`,
-  `text` and `config`. A module joins it only when two domains use
+  `text`, `config` and `hash`. A module joins it only when two domains use
   it, and `shared/` never imports a domain. Callers keep module-qualified
   calls: `use crate::shared::store;`, then `store::root(..)`.
-- The verbs are `note/new.rs`, `search/recall.rs`, `search/index.rs`,
+- The verbs are `note/new.rs`, `note/watch.rs`, `note/history.rs`,
+  `note/restore.rs`, `search/recall.rs`, `search/index.rs`,
   `search/digest.rs`, `library/cli/`, `citation/cite.rs`, `setup/` and
   `src/check.rs`, which spans note and library and so stays at the root. A
   verb parses its own arguments, returns `crate::Failure` and never prints,
-  and only `main` uses a verb's module. `digest` is the exception: it returns
-  a `digest::Outcome` (lines and one diagnostic) and `main` always exits 0
-  for it, because a prompt hook that exits 2 blocks the prompt. Code outside
-  the verbs returns plain values and `String` messages and never names
-  `Failure`; it may use other domains without forming a cycle (today
-  `search` uses `note` and `library`).
+  and only `main` uses a verb's module. `watch`, like `setup`, takes a
+  callback for its progress lines and `main` prints each one. `digest` is the
+  exception: it returns a `digest::Outcome` (lines and one diagnostic) and
+  `main` always exits 0 for it, because a prompt hook that exits 2 blocks the
+  prompt. Code outside the verbs returns plain values and `String` messages
+  and never names `Failure`; it may use other domains without forming a
+  cycle (today `search` uses `note` and `library`).
 - A module with children is `foo/mod.rs`, never `foo.rs` beside `foo/`
   (clippy's `self_named_module_files`, enabled in `src/main.rs`). Items are
   `pub` or private, never `pub(crate)`. Name modules by absolute `crate::`
   paths; only the files inside a verb's folder reach its `mod.rs` and their
   siblings through `super::`. No re-exports, and no glob imports outside test code.
 - `tests/layout.rs` checks these rules, and its `PLACEMENT` table keeps each
-  listed crate in its one user (`tests/common` also uses `sha2`, to write
+  listed crate in its listed files (`tests/common` also uses `sha2`, to write
   library files with a correct digest). A change that adds a crate, a
   domain, a verb or a shared module edits that file, and justifies a new
   crate in its `design.md`.
@@ -132,6 +134,13 @@ PYTHONDONTWRITEBYTECODE=1 python3 ~/.codex/skills/.system/plugin-creator/scripts
   `src/setup/` and `tests/setup.rs`. After touching launchd code, run them on
   macOS. `tests/setup.rs` runs several times slower there, because macOS
   scans each freshly written script.
+- Tests of `bilbo watch` run it as a child process and poll with a deadline.
+  A check that nothing was recorded waits on a barrier, a later edit to another
+  note that it polls for, never a fixed sleep.
+- Restore's crash points are tested through its step hook, which stops it where
+  a kill would. Do not test them by killing a child.
+- CI runs only the Linux branch of `src/host/swap.rs`. After touching it, run
+  its tests on macOS.
 - `Terminal` in `src/host/prompt.rs` is the only code the unit tests cannot
   reach. After changing it, repeat the expect runs recorded in the
   `smoke.md` of `openspec/changes/archive/2026-10-02-add-setup/` and

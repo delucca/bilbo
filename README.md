@@ -17,6 +17,9 @@ sources: a page, a file or a PDF's text.
 - **Keyword search out of the box, meaning search with an embedder.** Point
   bilbo at Ollama, OpenAI or any OpenAI-compatible URL, or let it run a local
   model, and `recall` finds notes that share no word with the query.
+- **History for every note.** A background watcher records each version of a
+  note as an agent or an editor changes it, so a careless rewrite is one
+  `bilbo restore` away from undone.
 - **Agent plugin.** `bilbo setup` installs the plugin in Claude Code and Codex
   and a timer that keeps the index current. The plugin also hands the agent the
   notes that bear on each prompt, before it starts, and reminds it to write
@@ -136,6 +139,9 @@ else `$XDG_DATA_HOME/bilbo`, else `~/.local/share/bilbo`, on macOS too.
 | `bilbo digest` | Run by the plugin's prompt hook; see [The digest](#the-digest). |
 | `bilbo library` | Lists and shows the library, and stages and lands its sources; see [Library](#library). |
 | `bilbo cite [--plan <plan>]... [<file> \| -]` | Checks every `bilbo:` citation in a draft; see [Citations](#citations). |
+| `bilbo watch` | Records each change to a note; see [History](#history). |
+| `bilbo history <note> [<version> \| --diff <version> [<version>]]` | Lists a note's versions, prints one, or diffs two; see [History](#history). |
+| `bilbo restore <note> <version>` | Writes a past version back as the note's newest; see [History](#history). |
 | `bilbo setup` | See [Set up](#set-up). |
 
 `recall` prints one block per note: the path and line of the best passage, the
@@ -353,6 +359,98 @@ picked: plan <plan>: go 2 of 14 sources (effective-go, errors#Wrapping)
 `not read:` is `none` when every slice was read, and `picked:` counts the
 sources each corpus holds now.
 
+### History
+
+Agents edit notes in place with their own tools, so bilbo sees no write. The
+watcher, `bilbo watch`, runs in the background and records a version of a note
+each time `<root>/notes/` has been quiet for 2 seconds after a change, or 10
+seconds after the first change while edits keep coming. A burst of saves is one
+version. It records a creation (`added`), an edit (`edited`), a rename
+(`renamed`) and a deletion (`deleted`), keyed by the note's `id`, so a renamed
+note is the same note. A change made while the watcher was not running is
+recorded when it starts. It never touches `notes/`, apart from sweeping the
+leftover of an interrupted restore (below). `bilbo setup` installs it as a
+login service; see [Set up](#set-up).
+
+History lives in `<root>/.bilbo/history/`, beside the notes. A version is a full
+copy of the note, and identical content is stored once. Deleting
+`<root>/.bilbo/history/` loses the history and nothing else: the next
+`bilbo watch` starts over with every note `added`. Leave the rest of
+`<root>/.bilbo/` alone, since it also holds the library's captures.
+
+The watcher records only a regular, non-hidden file directly in `notes/`, named
+`<kind>-<topic>.md`, no larger than 1 MiB, whose frontmatter has an `id`, and
+which no other file shares. For a file skipped for its name, id, size or a
+shared id it prints one line to stderr,
+`bilbo: notes/<name>: not recorded: <reason>`. When `notes/`
+cannot be listed, as when a sync tool swaps the folder, it records nothing and
+waits; when it holds no note at all, it records no deletions. A second watcher
+for the same store waits for the first to stop.
+
+`bilbo history <note>` lists a note's versions, newest first, one per line as
+`<version> <time> <event> <file name>`. `<note>` is its topic or its id; a
+deleted note is still named by its last topic. A version is named by 6 or more
+characters of the start of its id, and the list shows 12:
+
+```console
+$ bilbo history release
+8f3c2a91d0b7 2026-10-03T16:02-03:00 edited decision-release.md
+a1b2c3d4e5f6 2026-10-03T14:23-03:00 added decision-release.md
+```
+
+```sh
+bilbo history release a1b2c3          # print that version's exact text
+bilbo history release --diff a1b2c3   # diff it against the file on disk now
+bilbo history release --diff a1b2c3 8f3c2a   # diff two versions
+```
+
+A diff is unified, with 3 lines of context, and its header lines are
+`--- <file name>@<version>` and `+++ <file name>@<version>`, or
+`+++ <file name>@now` against the file on disk. `bilbo history` changes nothing,
+and when no watcher runs it adds `bilbo: bilbo watch is not running; recent
+edits may not be recorded` on stderr.
+
+`bilbo restore <note> <version>` writes a past version back to
+`<root>/notes/<the version's file name>` and records it as a `restored` version:
+
+```console
+$ bilbo restore release a1b2c3
+restored decision-release.md to a1b2c3d4e5f6
+```
+
+Nothing is lost on the way. Restore first records what the file holds now when
+history does not, swaps the file in atomically, and records what came out of the
+swap too, in case an agent wrote to the file meanwhile. If the version's file
+name differs from the current one, the current file is removed, and restore
+refuses with `<file name> is taken by another note` when another note holds that
+name. It refuses a `deleted` version, and writes nothing when the file already
+holds the version. It needs a filesystem that can swap two files atomically
+(APFS, ext4, btrfs and xfs can). A restore that is killed leaves one hidden file,
+`notes/.bilbo-restore-<id>`; the next restore or watcher scan records its bytes
+if no version holds them, and deletes it. It works with or without a running
+watcher.
+
+Versions older than `history.keep_days` (90 by default) are dropped when the
+watcher starts and every 24 hours after. The watcher reads the setting when it
+starts, so after editing it, restart the watcher: `launchctl kickstart -k
+gui/$(id -u)/io.github.delucca.bilbo.watch` on macOS, `systemctl --user restart
+bilbo-watch.service` on Linux. Rerunning `bilbo setup` does not restart a watcher
+it keeps. Kept are every newer version, each
+note's newest version from before the cutoff, so the note as it stood then stays
+readable, and for a deleted note its deletion and the version before it, however
+old. Content that no kept version holds is removed from disk.
+
+A secret pasted into a note stays in its history until pruning drops it. To
+remove it sooner by hand:
+
+1. Stop the watcher. `bilbo setup --yes --no-watch` removes its service, and
+   `bilbo setup --yes` installs it again.
+2. Delete `<root>/.bilbo/history/notes/<id>.jsonl`, with the note's `id` from its
+   frontmatter. This drops every past version of that note.
+3. Remove the secret from the note itself.
+4. Start the watcher. It records the note as `added`, and its next prune removes
+   the old content that no version holds.
+
 ### From an agent
 
 The bilbo plugin gives Claude Code and Codex four skills, `note`, `recall`,
@@ -443,7 +541,7 @@ plain text on disk, so the file is mode 0600 and off by default.
 
 `bilbo setup` plans every step, shows the plan, asks once, then applies it and
 prints one line per step (`created`, `written`, `kept`, `installed`, `failed`,
-and so on). It does five things:
+and so on). It does six things:
 
 - creates the store, `<root>/notes/`;
 - writes the config, after checking the embedder with one real request;
@@ -454,7 +552,9 @@ and so on). It does five things:
   review step is left, and a release that changes the hook is trusted again on
   the next run;
 - installs a timer that runs `bilbo index` every 15 minutes (a launchd agent on
-  macOS, a systemd user timer on Linux), when an embedder is configured.
+  macOS, a systemd user timer on Linux), when an embedder is configured;
+- installs a login service that runs `bilbo watch`, which records
+  [note history](#history).
 
 With the local embedder (below), setup also downloads a model and installs a
 login service that runs it. Their steps, `model` and `server`, are always in
@@ -497,10 +597,22 @@ bilbo setup --yes \
 | `--plugin-source <folder\|owner/repo#ref>` | Install the plugin from here instead of the default source. |
 | `--no-timer` | Skip the index timer. |
 | `--index-every <minutes>` | Timer interval, 1 to 1440. |
+| `--no-watch` | Skip the history watcher, and remove it when installed. |
 
 The timer does not inherit your shell's environment, so it cannot read a key
 from a variable. Keep the key in a file (`--embedder-token-file`, or paste it
 in the wizard); with `--embedder-token-env` the timer step fails and says so.
+
+### Watch service
+
+Unless `--no-watch` is given or the wizard's answer declines it, setup installs
+a login service that runs `bilbo watch`, restarts it when it exits and appends
+its output to `watch.log` under bilbo's state folder: the launchd agent
+`io.github.delucca.bilbo.watch` on macOS, the systemd user service
+`bilbo-watch.service` on Linux. It needs no embedder and no network, and a key in
+an environment variable does not fail it. The step is the `watch` line of the
+report, after `timer`. In the wizard it is one question, "Record note history in
+the background?", defaulting to yes.
 
 ### Local embedder
 
@@ -536,10 +648,10 @@ the service.
 bilbo setup --remove
 ```
 
-This unloads the timer and the local embedder's service, removes the plugin
+This unloads the timer, the watcher and the local embedder's service, removes the plugin
 and its marketplace from Claude Code and Codex, and takes away Codex's trust of
-the hooks. It keeps the store, the config,
-the key file and the downloaded model, and prints their paths. In a terminal
+the hooks. It keeps the store and its history, the
+config, the key file and the downloaded model, and prints their paths. In a terminal
 it asks first; `--yes` skips the question.
 
 ### home-manager
@@ -567,6 +679,7 @@ inputs.bilbo = {
       "embedder.url" = "http://localhost:11434";
       "embedder.model" = "nomic-embed-text";
       "digest.log" = "on";
+      "history.keep_days" = "30";
     };
     claude = "/Users/me/.local/bin/claude"; # null: look on the activation PATH
     codex = null;
@@ -574,6 +687,7 @@ inputs.bilbo = {
       enable = true; # the timer needs embedder.url
       every = 15;
     };
+    watch.enable = true; # default; false passes --no-watch
   };
 }
 ```
@@ -616,6 +730,7 @@ embedder.model = nomic-embed-text
 | `digest.enable` | `off` turns [the digest](#the-digest) off: the hook prints nothing and writes nothing. `on` by default. |
 | `digest.min_similarity` | How close a passage must be to enter the digest when an embedder answers, 0 to 1. Default 0.55. |
 | `digest.log` | `on` appends each digest run to the digest log. `off` by default. |
+| `history.keep_days` | A whole number of days, 1 to 3650: the age past which `bilbo watch` prunes versions, under [the retention rule](#history). 90 by default. |
 
 bilbo never prints the token. The vector cache lives under
 `$XDG_CACHE_HOME/bilbo`, else `~/.cache/bilbo`; deleting it loses nothing that
