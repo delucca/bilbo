@@ -3,7 +3,7 @@
 ## MODIFIED Requirements
 
 ### Requirement: Config location
-bilbo SHALL read its settings from `BILBO_CONFIG` when it is set and not empty, then `$XDG_CONFIG_HOME/bilbo/config` when `XDG_CONFIG_HOME` is an absolute path, then `$HOME/.config/bilbo/config`. A relative `BILBO_CONFIG` SHALL be a usage error. A missing file SHALL mean every setting takes its default; a `BILBO_CONFIG` that names a missing file SHALL be an error, except for `setup`, which creates the file there. Only `recall`, `index`, `setup`, `digest` and `watch` SHALL read settings; `new`, `check`, `history` and `restore` SHALL run whatever the config holds. Where this spec has a verb exit 2 on a config error, `digest` instead exits 0 and prints nothing to stdout, as the `cli` spec's exit codes require; it still names the error on stderr.
+bilbo SHALL read its settings from `BILBO_CONFIG` when it is set and not empty, then `$XDG_CONFIG_HOME/bilbo/config` when `XDG_CONFIG_HOME` is an absolute path, then `$HOME/.config/bilbo/config`. A relative `BILBO_CONFIG` SHALL be a usage error. A missing file SHALL mean every setting takes its default; a `BILBO_CONFIG` that names a missing file SHALL be an error, except for `setup`, which creates the file there. Only `recall`, `index`, `setup`, `digest` and `watch` SHALL read settings; `new`, `check`, `library`, `cite`, `history` and `restore` SHALL run whatever the config holds. Where this spec has a verb exit 2 on a config error, `digest` instead exits 0 and prints nothing to stdout, as the `cli` spec's exit codes require; it still names the error on stderr.
 
 #### Scenario: The default location
 - **WHEN** neither `BILBO_CONFIG` nor `XDG_CONFIG_HOME` is set and `HOME` is `/Users/a`
@@ -27,6 +27,14 @@ bilbo SHALL read its settings from `BILBO_CONFIG` when it is set and not empty, 
 
 #### Scenario: Check ignores the config
 - **WHEN** `BILBO_CONFIG` names a missing file and an agent runs `bilbo check` on a clean store
+- **THEN** stderr is empty and the exit code is 0
+
+#### Scenario: Library ignores the config
+- **WHEN** the config file holds `embeder.url = http://bagend:8081`, an unknown key, and an agent runs `bilbo library`
+- **THEN** stderr is empty and the exit code is 0
+
+#### Scenario: Cite ignores the config
+- **WHEN** `BILBO_CONFIG` names a missing file and an agent runs `bilbo cite` on a draft whose citations all resolve
 - **THEN** stderr is empty and the exit code is 0
 
 #### Scenario: History ignores the config
