@@ -80,6 +80,11 @@ pub fn captures_dir(root: &Path) -> PathBuf {
     root.join(".bilbo/captures")
 }
 
+/// `<root>/.bilbo/history`, where note versions and their content are kept.
+pub fn history_dir(root: &Path) -> PathBuf {
+    root.join(".bilbo/history")
+}
+
 /// `<state>/bilbo/staging`, where staged text waits for `library land`; `None` without a state folder.
 pub fn staging_dir(env: &Env) -> Option<PathBuf> {
     state_dir(env).map(|s| s.join("bilbo/staging"))
@@ -240,6 +245,11 @@ mod tests {
             xdg_cache_home: None,
             xdg_state_home: None,
         }
+    }
+
+    #[test]
+    fn history_lives_under_the_bilbo_folder() {
+        assert_eq!(history_dir(Path::new("/r")), Path::new("/r/.bilbo/history"));
     }
 
     #[test]

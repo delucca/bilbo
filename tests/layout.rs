@@ -24,9 +24,9 @@ const VERBS: [&str; 8] = [
 /// files with a correct digest.
 const PLACEMENT: [(&str, &[&str]); 7] = [
     ("cliclack", &["host/prompt.rs"]),
-    ("libc", &["host/prompt.rs"]),
+    ("libc", &["host/prompt.rs", "host/swap.rs"]),
     ("ring", &["host/model.rs"]),
-    ("sha2", &["library/hash.rs"]),
+    ("sha2", &["shared/hash.rs"]),
     ("unicode_normalization", &["shared/text.rs"]),
     ("htmd", &["library/html.rs"]),
     ("markup5ever_rcdom", &["library/html.rs"]),

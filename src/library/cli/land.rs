@@ -8,9 +8,9 @@ use super::{Args, Output, capture_title, io_failure, refused, root, state_failur
 use crate::Failure;
 use crate::citation::{self, Document, Verdict};
 use crate::library::corpus;
-use crate::library::hash;
 use crate::library::source::{self, Frontmatter};
 use crate::shared::frontmatter;
+use crate::shared::hash;
 use crate::shared::markdown;
 use crate::shared::store::{self, EntryKind};
 

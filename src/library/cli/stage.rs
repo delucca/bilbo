@@ -6,9 +6,9 @@ use std::path::Path;
 use super::{Args, Output, capture_title, io_failure, refused, root, state_failure, today, usage};
 use crate::Failure;
 use crate::library::corpus;
-use crate::library::hash;
 use crate::library::source;
 use crate::shared::frontmatter;
+use crate::shared::hash;
 use crate::shared::markdown;
 use crate::shared::store;
 
