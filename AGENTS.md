@@ -47,9 +47,9 @@ PYTHONDONTWRITEBYTECODE=1 python3 ~/.codex/skills/.system/plugin-creator/scripts
   stderr line with `bilbo: `. The one exception is the setup wizard, which
   cliclack draws on stderr without the prefix.
 - Library modules (`store`, `note`, `rank`, `config`, `embed`, `model`,
-  `vectors`, `command`, `agents`, `timer`, `source`, `corpus`, `hash`) return
-  plain values and `String` messages: they never print and never return
-  `Failure`. Verbs build on them, never on each other, return `crate::Failure`
+  `vectors`, `command`, `agents`, `timer`, `source`, `corpus`, `hash`, `text`,
+  `citation`, `plan`) return plain values and `String` messages: they never
+  print and never return `Failure`. Verbs build on them, never on each other, return `crate::Failure`
   and never print. `digest` is the exception: it returns a `digest::Outcome`
   (lines and one diagnostic) and `main` always exits 0 for it, because a prompt
   hook that exits 2 blocks the prompt.
@@ -58,7 +58,8 @@ PYTHONDONTWRITEBYTECODE=1 python3 ~/.codex/skills/.system/plugin-creator/scripts
   MODIFIED `cli` spec (its Verb dispatch requirement lists the verbs).
 - Keep each dependency in its one user: `cliclack` and `libc` in
   `src/wizard.rs`, `ring` in `src/model.rs`, `sha2` in
-  `src/hash.rs`. Justify a new one in the change's `design.md`.
+  `src/hash.rs`, `unicode-normalization` in `src/text.rs`. Justify a new one
+  in the change's `design.md`.
 - Unit tests live in the module they test. CLI behavior is tested through
   the built binary with a clean environment, using the fakes in
   `tests/common/` (a fake embedder, and fake `claude`, `codex`, `launchctl`,
@@ -108,6 +109,9 @@ PYTHONDONTWRITEBYTECODE=1 python3 ~/.codex/skills/.system/plugin-creator/scripts
 - `tests/fixtures/agents/` holds recorded `claude` and `codex` output, the
   first line being the command. When a tool's JSON moves, re-record them
   against throwaway `CLAUDE_CONFIG_DIR` and `CODEX_HOME`.
+- A skill's heredoc body is data, not commands: `tests/plugin.rs` skips the
+  lines from one ending in `<<'EOF'` to the line `EOF` when it checks each
+  `bash` line against `allowed-tools`. Use that exact delimiter.
 - Every command in `plugins/bilbo/hooks/hooks.json` must never pass on
   bilbo's exit code (`; exit 0`: an older `bilbo` exits 2 on the unknown verb)
   and must stay quiet without `bilbo` on `PATH`.

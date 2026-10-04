@@ -84,6 +84,11 @@ pub fn staging_dir(env: &Env) -> Option<PathBuf> {
     state_dir(env).map(|s| s.join("bilbo/staging"))
 }
 
+/// `<state>/bilbo/plans`, where `library plan` writes plans and `library read` logs; `None` without a state folder.
+pub fn plans_dir(env: &Env) -> Option<PathBuf> {
+    state_dir(env).map(|s| s.join("bilbo/plans"))
+}
+
 /// `$XDG_CONFIG_HOME` when absolute, else `$HOME/.config`; `None` without either.
 pub fn config_home(env: &Env) -> Option<PathBuf> {
     absolute(&env.xdg_config_home).or_else(|| absolute(&env.home).map(|h| h.join(".config")))
@@ -283,6 +288,18 @@ mod tests {
         let e = env(None, None, Some("/home/a"));
         assert_eq!(state_dir(&e), Some(PathBuf::from("/home/a/.local/state")));
         assert_eq!(state_dir(&env(None, None, None)), None);
+    }
+
+    #[test]
+    fn plans_live_under_the_state_folder() {
+        let mut e = env(None, None, Some("/home/a"));
+        assert_eq!(
+            plans_dir(&e),
+            Some(PathBuf::from("/home/a/.local/state/bilbo/plans"))
+        );
+        e.xdg_state_home = Some(OsString::from("/s"));
+        assert_eq!(plans_dir(&e), Some(PathBuf::from("/s/bilbo/plans")));
+        assert_eq!(plans_dir(&env(None, None, None)), None);
     }
 
     #[test]

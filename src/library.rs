@@ -2,12 +2,23 @@ use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
+use crate::citation::{self, Document, Verdict};
 use crate::corpus::{self, SourceFile};
 use crate::source::{self, Frontmatter, Resolved, Section};
 use crate::store::{self, EntryKind};
-use crate::{Failure, hash, note, rank};
+use crate::{Failure, hash, note, plan as reading, rank};
 
-const VALUE_OPTIONS: [&str; 5] = ["--depth", "--origin", "--fetched", "--keep", "--title"];
+const VALUE_OPTIONS: [&str; 9] = [
+    "--depth",
+    "--origin",
+    "--fetched",
+    "--keep",
+    "--title",
+    "--budget-tokens",
+    "--slice-bytes",
+    "--slice-lines",
+    "--part",
+];
 
 pub struct Output {
     /// stderr lines (without "bilbo: "), printed before stdout.
@@ -41,6 +52,7 @@ struct Args {
     positional: Vec<String>,
     options: Vec<(String, String)>,
     replace: bool,
+    force: bool,
 }
 
 impl Args {
@@ -49,6 +61,7 @@ impl Args {
             positional: Vec::new(),
             options: Vec::new(),
             replace: false,
+            force: false,
         };
         let mut options_ended = false;
         let mut iter = args.iter();
@@ -71,6 +84,11 @@ impl Args {
                     return Err(usage("--replace takes no value"));
                 }
                 parsed.replace = true;
+            } else if name == "--force" {
+                if inline.is_some() {
+                    return Err(usage("--force takes no value"));
+                }
+                parsed.force = true;
             } else if VALUE_OPTIONS.contains(&name) {
                 let value = match inline {
                     Some(value) => value,
@@ -105,7 +123,9 @@ impl Args {
     /// Refuses every option that is not in `taken`.
     fn only(&self, taken: &[&str]) -> Result<(), Failure> {
         let given = self.options.iter().map(|(n, _)| n.as_str());
-        let given = given.chain(self.replace.then_some("--replace"));
+        let given = given
+            .chain(self.replace.then_some("--replace"))
+            .chain(self.force.then_some("--force"));
         match given.into_iter().find(|name| !taken.contains(name)) {
             Some(name) => Err(usage(format!("option '{name}' does not apply here"))),
             None => Ok(()),
@@ -144,8 +164,16 @@ pub fn run(args: &[String], env: &store::Env) -> Result<Output, Failure> {
             stage(&args, env)
         }
         Some("land") => {
-            args.only(&["--keep", "--title", "--replace"])?;
+            args.only(&["--keep", "--title", "--replace", "--force"])?;
             land(&args, env)
+        }
+        Some("plan") => {
+            args.only(&["--budget-tokens", "--slice-bytes", "--slice-lines"])?;
+            plan_picks(&args, env)
+        }
+        Some("read") => {
+            args.only(&["--part"])?;
+            read_slices(&args, env)
         }
         Some(name) => {
             args.only(&[])?;
@@ -155,11 +183,6 @@ pub fn run(args: &[String], env: &store::Env) -> Result<Output, Failure> {
             if !note::is_topic(name) {
                 return Err(usage(format!(
                     "invalid corpus '{name}': use segments of a-z and 0-9 joined by single hyphens"
-                )));
-            }
-            if !corpus::is_corpus_name(name) {
-                return Err(usage(format!(
-                    "'{name}' is reserved for a library subcommand"
                 )));
             }
             show_corpus(name, env)
@@ -346,6 +369,25 @@ fn find(root: &Path, reference: &Reference) -> Result<SourceFile, Failure> {
     }
 }
 
+/// The source with this id, found through the frontmatter scan, and read whole.
+fn source_by_id(ids: &citation::Ids, id: &str) -> Result<SourceFile, Failure> {
+    let target = ids
+        .resolve(id)
+        .map_err(|message| refused(format!("{id}: {message}")))?;
+    if target.kind != citation::Kind::Source {
+        return Err(refused(format!(
+            "{id} is the id of {}, not of a source",
+            target.path.display()
+        )));
+    }
+    let name = target
+        .name
+        .rsplit_once('/')
+        .map_or(&*target.name, |(_, n)| n);
+    corpus::read_source(&target.path, name.to_string())
+        .ok_or_else(|| refused(format!("cannot read {}", target.path.display())))
+}
+
 fn note_with_id(root: &Path, id: &str) -> Option<PathBuf> {
     store::entries(&root.join("notes"))
         .ok()?
@@ -377,6 +419,35 @@ fn capture_folder(root: &Path, id: &str, digest: &str) -> Option<PathBuf> {
         .map(|e| e.path)
 }
 
+/// The reference and the anchor after its `#`, if any.
+fn split_anchor(reference: &str) -> Result<(&str, Option<&str>), Failure> {
+    match reference.split_once('#') {
+        Some((_, "")) => Err(usage("the anchor after '#' is empty")),
+        Some((reference, anchor)) => Ok((reference, Some(anchor))),
+        None => Ok((reference, None)),
+    }
+}
+
+/// The section the anchor names, or the refusal that lists the sections it matches or says it matches none.
+fn section_for(sections: &[Section], reference: &str, anchor: &str) -> Result<usize, Failure> {
+    match source::resolve(sections, anchor) {
+        Resolved::One(i) => Ok(i),
+        Resolved::Ambiguous(found) => {
+            let mut message = format!("'{anchor}' matches several sections of {reference}:");
+            for i in found {
+                let section = &sections[i];
+                message.push_str(&format!(
+                    "\n{} (line {})",
+                    section.path_text(),
+                    section.start
+                ));
+            }
+            Err(refused(message))
+        }
+        Resolved::Missing => Err(refused(format!("no section '{anchor}' in {reference}"))),
+    }
+}
+
 fn show(args: &Args, env: &store::Env) -> Result<Output, Failure> {
     let [reference] = args.operands(["<reference>"])?;
     let depth = args
@@ -394,11 +465,7 @@ fn show(args: &Args, env: &store::Env) -> Result<Output, Failure> {
                 })
         })
         .transpose()?;
-    let (reference, anchor) = match reference.split_once('#') {
-        Some((_, "")) => return Err(usage("the anchor after '#' is empty")),
-        Some((reference, anchor)) => (reference, Some(anchor)),
-        None => (reference, None),
-    };
+    let (reference, anchor) = split_anchor(reference)?;
     let parsed = parse_reference(reference)?;
     let root = root(env)?;
     let file = find(&root, &parsed)?;
@@ -409,31 +476,13 @@ fn show(args: &Args, env: &store::Env) -> Result<Output, Failure> {
     let bytes = file.body().len();
     let mut shown: Vec<&Section> = sections.iter().collect();
     if let Some(anchor) = anchor {
-        match source::resolve(&sections, anchor) {
-            Resolved::One(i) => {
-                let level = sections[i].level;
-                let inside = sections[i + 1..]
-                    .iter()
-                    .take_while(|s| s.level > level)
-                    .count();
-                shown = sections[i..=i + inside].iter().collect();
-            }
-            Resolved::Ambiguous(found) => {
-                let mut message = format!("'{anchor}' matches several sections of {reference}:");
-                for i in found {
-                    let section = &sections[i];
-                    message.push_str(&format!(
-                        "\n{} (line {})",
-                        section.path_text(),
-                        section.start
-                    ));
-                }
-                return Err(refused(message));
-            }
-            Resolved::Missing => {
-                return Err(refused(format!("no section '{anchor}' in {reference}")));
-            }
-        }
+        let i = section_for(&sections, reference, anchor)?;
+        let level = sections[i].level;
+        let inside = sections[i + 1..]
+            .iter()
+            .take_while(|s| s.level > level)
+            .count();
+        shown = sections[i..=i + inside].iter().collect();
     }
     if let Some(depth) = depth {
         shown.retain(|section| section.path.len() <= depth);
@@ -480,6 +529,293 @@ fn show(args: &Args, env: &store::Env) -> Result<Output, Failure> {
         )
     }));
     Ok(Output::lines(out))
+}
+
+fn grouped(n: usize) -> String {
+    let digits = n.to_string();
+    let mut out = String::new();
+    for (i, c) in digits.chars().enumerate() {
+        if i > 0 && (digits.len() - i).is_multiple_of(3) {
+            out.push(',');
+        }
+        out.push(c);
+    }
+    out
+}
+
+/// A whole number of `min` or more, and of `max` or less when there is a limit.
+fn whole(name: &str, value: &str, min: usize, max: Option<usize>) -> Result<usize, Failure> {
+    let rule = match max {
+        Some(max) => format!("from {} to {}", grouped(min), grouped(max)),
+        None => format!("of {} or more", grouped(min)),
+    };
+    value
+        .bytes()
+        .all(|b| b.is_ascii_digit())
+        .then(|| value.parse::<usize>().ok())
+        .flatten()
+        .filter(|n| *n >= min && max.is_none_or(|max| *n <= max))
+        .ok_or_else(|| usage(format!("{name} '{value}' is not a whole number {rule}")))
+}
+
+fn plan_options(args: &Args) -> Result<reading::Options, Failure> {
+    let mut options = reading::Options::default();
+    if let Some(value) = args.one("--budget-tokens") {
+        options.budget_tokens = whole("--budget-tokens", value, reading::MIN_BUDGET_TOKENS, None)?;
+    }
+    if let Some(value) = args.one("--slice-bytes") {
+        options.slice_bytes = whole(
+            "--slice-bytes",
+            value,
+            reading::MIN_SLICE_BYTES,
+            Some(reading::MAX_SLICE_BYTES),
+        )?;
+    }
+    if let Some(value) = args.one("--slice-lines") {
+        options.slice_lines = Some(whole(
+            "--slice-lines",
+            value,
+            reading::MIN_SLICE_LINES,
+            None,
+        )?);
+    }
+    Ok(options)
+}
+
+fn plan_picks(args: &Args, env: &store::Env) -> Result<Output, Failure> {
+    let references = &args.positional[1..];
+    if references.is_empty() {
+        return Err(usage("missing <ref>"));
+    }
+    let options = plan_options(args)?;
+    let root = root(env)?;
+    let plans = store::plans_dir(env).ok_or_else(state_failure)?;
+
+    let mut files: Vec<SourceFile> = Vec::new();
+    let mut picks: Vec<reading::Pick> = Vec::new();
+    for reference in references {
+        let (name, anchor) = split_anchor(reference)?;
+        let file = find(&root, &parse_reference(name)?)?;
+        let label = label(&file);
+        let lines = note::lines(&file.text);
+        let sections = sections(&file);
+        let (Some(id), Some(digest)) = (&file.source.id, &file.source.digest) else {
+            return Err(refused(format!(
+                "{label} has no valid id or digest; run bilbo check"
+            )));
+        };
+        let (start, end) = match anchor {
+            Some(anchor) => {
+                let section = &sections[section_for(&sections, name, anchor)?];
+                (section.start, section.end)
+            }
+            None if source::is_catalog(file.body().len(), &sections) => {
+                return Err(refused(format!(
+                    "{label} is a catalog, too big to read whole: pick a section as '{label}#<anchor>'; bilbo library show {label} lists them"
+                )));
+            }
+            None => (
+                file.source.body_start,
+                lines.len().max(file.source.body_start),
+            ),
+        };
+        picks.push(reading::Pick {
+            reference: reference.clone(),
+            id: id.clone(),
+            corpus: label.split('/').next().unwrap_or_default().into(),
+            name: file.name.clone(),
+            start,
+            end,
+            digest: digest.clone(),
+            body_start: file.source.body_start,
+        });
+        files.push(file);
+    }
+    if let Some((first, second)) = reading::overlap(&picks) {
+        return Err(usage(format!(
+            "'{}' and '{}' overlap: pick each line once",
+            picks[first].reference, picks[second].reference
+        )));
+    }
+
+    let lines: Vec<Vec<&str>> = files.iter().map(|f| note::lines(&f.text)).collect();
+    let outlines: Vec<Vec<Section>> = files.iter().map(sections).collect();
+    let materials: Vec<reading::Material> = lines
+        .iter()
+        .zip(&outlines)
+        .map(|(lines, sections)| reading::Material { lines, sections })
+        .collect();
+    let id = note::mint_ulid().map_err(|e| refused(format!("cannot read /dev/urandom: {e}")))?;
+    let plan = reading::build(
+        id,
+        root.display().to_string(),
+        jiff::Timestamp::now().to_string(),
+        options,
+        picks,
+        &materials,
+    );
+
+    reading::prune(&plans, std::time::SystemTime::now());
+    reading::save(&plans, &plan).map_err(io_failure("write", &plans))?;
+
+    let partitions = plan.partitions();
+    let mut out = vec![
+        format!("plan: {}", plan.id),
+        format!("picks: {}", plan.picks.len()),
+        format!("slices: {}", plan.slices.len()),
+        format!("tokens: {}", plan.tokens()),
+        format!("partitions: {}", partitions.len()),
+    ];
+    out.extend(partitions.iter().map(|p| {
+        format!(
+            "partition {}: slices {}-{}, {} tokens",
+            p.number, p.first, p.last, p.tokens
+        )
+    }));
+    out.push(String::new());
+    for (i, slice) in plan.slices.iter().enumerate() {
+        let pick = &plan.picks[slice.pick];
+        let path = reading::heading_path(&outlines[slice.pick], slice.start);
+        out.push(format!(
+            "{}\t{}\t{}\t{}-{}\t{} tokens\t{}",
+            i + 1,
+            slice.partition,
+            pick.label(),
+            slice.start,
+            slice.end,
+            slice.tokens,
+            path.as_deref().unwrap_or("-")
+        ));
+    }
+    Ok(Output::lines(out))
+}
+
+/// `<k>/<n>` with `n` from 2 to the most parts and `k` from 1 to `n`.
+fn parse_part(value: &str) -> Result<(usize, usize), Failure> {
+    let number = |s: &str| {
+        s.bytes()
+            .all(|b| b.is_ascii_digit())
+            .then(|| s.parse::<usize>().ok())
+            .flatten()
+    };
+    value
+        .split_once('/')
+        .and_then(|(k, n)| Some((number(k)?, number(n)?)))
+        .filter(|&(k, n)| (2..=reading::MAX_PARTS).contains(&n) && (1..=n).contains(&k))
+        .ok_or_else(|| {
+            usage(format!(
+                "--part '{value}' is not <k>/<n> with n from 2 to {} and k from 1 to n",
+                reading::MAX_PARTS
+            ))
+        })
+}
+
+fn read_slices(args: &Args, env: &store::Env) -> Result<Output, Failure> {
+    let operands = &args.positional[1..];
+    let Some(plan_id) = operands.first() else {
+        return Err(usage("missing <plan>"));
+    };
+    if !note::is_ulid(plan_id) {
+        return Err(usage(format!("'{plan_id}' is not a plan id")));
+    }
+    if operands.len() == 1 {
+        return Err(usage("missing <slice>"));
+    }
+    let numbers = operands[1..]
+        .iter()
+        .map(|value| {
+            value
+                .bytes()
+                .all(|b| b.is_ascii_digit())
+                .then(|| value.parse::<usize>().ok().filter(|n| *n >= 1))
+                .flatten()
+                .ok_or_else(|| usage(format!("'{value}' is not a slice number")))
+        })
+        .collect::<Result<Vec<usize>, Failure>>()?;
+    let part = args.one("--part").map(parse_part).transpose()?;
+
+    let root = root(env)?;
+    let plans = store::plans_dir(env).ok_or_else(state_failure)?;
+    let plan = reading::load(&plans, plan_id)
+        .map_err(refused)?
+        .ok_or_else(|| refused(format!("no plan '{plan_id}' in {}", plans.display())))?;
+    if Path::new(&plan.root) != root {
+        return Err(refused(format!(
+            "plan {plan_id} was made for the store {}, not {}",
+            plan.root,
+            root.display()
+        )));
+    }
+    if let Some(n) = numbers.iter().find(|n| **n > plan.slices.len()) {
+        return Err(usage(format!(
+            "slice {n} is not in plan {plan_id}, which has {} slices",
+            plan.slices.len()
+        )));
+    }
+
+    let ids = citation::Ids::scan(&root);
+    let mut sources: Vec<(usize, SourceFile)> = Vec::new();
+    let mut rendered = Vec::new();
+    for &number in &numbers {
+        let pick_index = plan.slices[number - 1].pick;
+        let pick = &plan.picks[pick_index];
+        if !sources.iter().any(|(i, _)| *i == pick_index) {
+            let file = source_by_id(&ids, &pick.id).map_err(|failure| match failure {
+                Failure::Refused(message) => refused(format!(
+                    "{}: {message}; make a new plan with bilbo library plan",
+                    pick.label()
+                )),
+                other => other,
+            })?;
+            if file.source.digest.as_deref() != Some(pick.digest.as_str())
+                || file.source.body_start != pick.body_start
+            {
+                return Err(refused(format!(
+                    "{} changed since plan {plan_id}; make a new plan with bilbo library plan",
+                    pick.label()
+                )));
+            }
+            sources.push((pick_index, file));
+        }
+        let file = &sources.iter().find(|(i, _)| *i == pick_index).unwrap().1;
+        let lines = note::lines(&file.text);
+        let outline = sections(file);
+        let material = reading::Material {
+            lines: &lines,
+            sections: &outline,
+        };
+        rendered
+            .push(reading::render(&plan, number, part, &label(file), &material).map_err(usage)?);
+    }
+
+    let bytes: usize = rendered.iter().map(reading::Rendered::bytes).sum();
+    if numbers.len() > 1 && bytes > plan.options.slice_bytes {
+        let named: Vec<String> = numbers.iter().map(usize::to_string).collect();
+        return Err(usage(format!(
+            "slices {} print {} bytes together, over the limit of {} bytes for one read; read fewer slices per call",
+            named.join(", "),
+            grouped(bytes),
+            grouped(plan.options.slice_bytes)
+        )));
+    }
+
+    let entries: Vec<reading::LogEntry> = numbers
+        .iter()
+        .zip(&rendered)
+        .map(|(&number, run)| {
+            reading::entry(
+                number,
+                &plan.picks[plan.slices[number - 1].pick],
+                run.start,
+                run.end,
+            )
+        })
+        .collect();
+    reading::append_log(&plans, plan_id, &entries)
+        .map_err(io_failure("write", &reading::log_path(&plans, plan_id)))?;
+    Ok(Output::lines(
+        rendered.into_iter().flat_map(|run| run.lines).collect(),
+    ))
 }
 
 fn today() -> String {
@@ -642,6 +978,7 @@ struct Plan {
     ranges: Vec<(usize, usize)>,
     title: Option<String>,
     replace: bool,
+    force: bool,
 }
 
 fn plan(args: &Args) -> Result<(String, Plan), Failure> {
@@ -675,12 +1012,16 @@ fn plan(args: &Args) -> Result<(String, Plan), Failure> {
             return Err(usage("--title must be one line"));
         }
     }
+    if args.force && !args.replace {
+        return Err(usage("--force applies to --replace; pass both or neither"));
+    }
     let plan = Plan {
         corpus: corpus.into(),
         name: name.into(),
         ranges,
         title,
         replace: args.replace,
+        force: args.force,
     };
     Ok((stage.into(), plan))
 }
@@ -812,6 +1153,24 @@ fn land(args: &Args, env: &store::Env) -> Result<Output, Failure> {
         )));
     }
 
+    if let Some((_, old_digest)) = &old
+        && old_digest.as_deref() != Some(&digest)
+        && let Ok(old_text) = fs::read_to_string(&target)
+    {
+        let degraded = degraded_citations(&root, &id, &old_text, &text);
+        if !degraded.is_empty() && !plan.force {
+            return Err(refused(format!(
+                "{} would degrade; nothing was written and the stage is kept; pass --force to replace anyway\n{}",
+                match degraded.len() {
+                    1 => "1 citation".to_string(),
+                    n => format!("{n} citations"),
+                },
+                degraded.join("\n")
+            )));
+        }
+        warnings.extend(degraded);
+    }
+
     let today = today();
     let folder = keep_capture(&root, &staged)?;
     fs::create_dir_all(&dir).map_err(io_failure("create", &dir))?;
@@ -847,6 +1206,50 @@ fn land(args: &Args, env: &store::Env) -> Result<Output, Failure> {
             format!("capture folder: {}", folder.display()),
         ],
     })
+}
+
+/// `notes/<file>:<line>: <old> -> <new>` for each citation of source `id` in the notes whose verdict changes to
+/// anything but `ok` between the old text of the source and the new one.
+fn degraded_citations(root: &Path, id: &str, old_text: &str, new_text: &str) -> Vec<String> {
+    let mut degraded = Vec::new();
+    let Ok(entries) = store::entries(&root.join("notes")) else {
+        return degraded;
+    };
+    let needle = format!("bilbo:{id}");
+    let mut documents: Option<(Document, Document)> = None;
+    for entry in entries {
+        if entry.kind != EntryKind::File || !entry.utf8 || !entry.name.ends_with(".md") {
+            continue;
+        }
+        let Some(text) = fs::read(&entry.path)
+            .ok()
+            .and_then(|bytes| String::from_utf8(bytes).ok())
+            .filter(|text| text.contains(&needle))
+        else {
+            continue;
+        };
+        for c in citation::parse(&text).0.iter().filter(|c| c.id == id) {
+            let (old, new) = documents.get_or_insert_with(|| {
+                let (old_body, old_first) = citation::body_of(old_text);
+                let (new_body, new_first) = citation::body_of(new_text);
+                (
+                    Document::new(old_body, old_first),
+                    Document::new(new_body, new_first),
+                )
+            });
+            let (before, after) = (old.check(c).verdict, new.check(c).verdict);
+            if before != after && after != Verdict::Ok {
+                degraded.push(format!(
+                    "notes/{}:{}: {} -> {}",
+                    entry.name,
+                    c.line,
+                    before.name(),
+                    after.name()
+                ));
+            }
+        }
+    }
+    degraded
 }
 
 /// A warning for each other source with the same origin.

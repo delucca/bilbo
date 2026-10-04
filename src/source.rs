@@ -1,5 +1,5 @@
 use crate::note::{self, Problem};
-use crate::{hash, rank};
+use crate::{hash, rank, text};
 
 pub const CAPTURES: [&str; 2] = ["external", "legacy"];
 pub const ORIGIN_TYPES: [&str; 2] = ["url", "doc"];
@@ -450,9 +450,9 @@ pub enum Resolved {
     Missing,
 }
 
-/// The sections whose heading path ends with the anchor's parts, compared with whitespace collapsed and case kept.
+/// The sections whose heading path ends with the anchor's parts, each compared after the Text normalization, with case.
 pub fn resolve(sections: &[Section], anchor: &str) -> Resolved {
-    let anchor = anchor.split_whitespace().collect::<Vec<_>>().join(" ");
+    let anchor = text::normalize(anchor);
     if anchor.is_empty() {
         return Resolved::Missing;
     }
@@ -461,7 +461,12 @@ pub fn resolve(sections: &[Section], anchor: &str) -> Resolved {
         .iter()
         .enumerate()
         .filter(|(_, s)| {
-            let path = s.path_text();
+            let path = s
+                .path
+                .iter()
+                .map(|part| text::normalize(part))
+                .collect::<Vec<_>>()
+                .join(" > ");
             path == anchor || path.ends_with(&tail)
         })
         .map(|(i, _)| i)
@@ -976,6 +981,21 @@ mod tests {
         assert_eq!(resolve(&sections, "what it does"), Resolved::Missing);
         assert_eq!(resolve(&sections, ""), Resolved::Missing);
         assert_eq!(resolve(&sections, "it does"), Resolved::Missing);
+    }
+
+    #[test]
+    fn markup_in_a_heading_resolves_through_a_plain_anchor() {
+        let sections =
+            outline_of("# Book\n\n## The `Option` type\n\n### A **bold** [link](x)\n\n## Other\n");
+        assert_eq!(resolve(&sections, "The Option type"), Resolved::One(0));
+        assert_eq!(resolve(&sections, "The `Option` type"), Resolved::One(0));
+        assert_eq!(
+            resolve(&sections, "The Option type > A bold link"),
+            Resolved::One(1)
+        );
+        assert_eq!(resolve(&sections, "The Options type"), Resolved::Missing);
+        assert_eq!(resolve(&sections, "the option type"), Resolved::Missing);
+        assert_eq!(resolve(&sections, "**"), Resolved::Missing);
     }
 
     #[test]
