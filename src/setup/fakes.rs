@@ -2,6 +2,7 @@
 
 use super::facts::{ConfigState, Facts, TimerFacts};
 use super::local::Outside;
+use super::plan::{ConfigPlan, EmbedderPlan, KeyPlan, Plan, PluginPlan, TimerPlan};
 use super::*;
 
 pub fn strings(args: &[&str]) -> Vec<String> {
