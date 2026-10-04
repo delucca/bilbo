@@ -106,7 +106,7 @@ Library hits SHALL be ordered by how well their best passage matches: a passage 
 - **THEN** stdout has 10 blocks
 
 ### Requirement: Narrow to corpora
-`--corpus <corpus>` SHALL limit library recall to that corpus and SHALL imply `--library`. It MAY be given several times to search several corpora. A corpus with no folder in `<root>/library/` SHALL make recall print `bilbo: no corpus '<corpus>' in <root>/library` to stderr and exit 1. A corpus name that breaks the `library-store` spec's name grammar, or is reserved, SHALL be a usage error. `--corpus` without a value SHALL be a usage error.
+`--corpus <corpus>` SHALL limit library recall to that corpus and SHALL imply `--library`. It MAY be given several times to search several corpora. When `<root>/library/` holds a valid corpus folder, a corpus with no folder in it SHALL make recall print `bilbo: no corpus '<corpus>' in <root>/library` to stderr and exit 1; otherwise the Nothing in the library requirement applies. A corpus name that breaks the `library-store` spec's name grammar, or is reserved, SHALL be a usage error. `--corpus` without a value SHALL be a usage error.
 
 #### Scenario: One corpus
 - **WHEN** `go/errors.md` and `rust/errors.md` both hold `wrapping`, and an agent runs `bilbo recall wrapping --corpus go`
@@ -119,6 +119,10 @@ Library hits SHALL be ordered by how well their best passage matches: a passage 
 #### Scenario: An unknown corpus
 - **WHEN** an agent runs `bilbo recall errors --corpus lisp` and `<root>/library/lisp/` does not exist
 - **THEN** stderr is `bilbo: no corpus 'lisp' in <root>/library`, stdout is empty and the exit code is 1
+
+#### Scenario: A corpus named with no library
+- **WHEN** `<root>/library/` does not exist and an agent runs `bilbo recall errors --corpus lisp`
+- **THEN** stderr is `bilbo: no library at <root>`, stdout is empty and the exit code is 1
 
 #### Scenario: A bad corpus name
 - **WHEN** an agent runs `bilbo recall errors --corpus Go` or `bilbo recall errors --corpus plan`

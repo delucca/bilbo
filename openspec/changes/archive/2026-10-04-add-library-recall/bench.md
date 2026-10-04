@@ -56,3 +56,14 @@ Lower bounds for any scan of the library: `cat` of the 1,172 files to `/dev/null
 - `recall --library` over today's library costs about 140 ms, three times plain `recall` over today's notes. Time is linear in bytes: 46.5 ms for 5.0 MB, 137 ms for 13.6 MB.
 - A hint in plain `recall` that reuses this path would take plain `recall` from 46.5 ms to about 182 ms on every call. A dedicated presence scan would still read 13.6 MB, at least the 39 ms `cat` takes.
 - The 500 ms budget for a generated 14 MiB library leaves more than three times the measured time, close to the room plain `recall`'s 250 ms budget leaves over its 6 MiB store (about 5 times). At this rate the library reaches 500 ms near 50 MB.
+
+## The ignored speed tests
+
+Measured 2026-10-04 on rivendell (Apple M5, macOS), release build, `nix develop -c cargo test --release --locked --test recall -- --ignored --nocapture`, three runs. `common::bench_library` writes a 14.0 MiB generated library: 8 corpora, each with a guide (books-a and books-b hold three books each, catalog holds a 3,800-section lint catalog and a handbook, short-a to short-e hold 215 short sources each).
+
+| Test | Store | Query | Times | Budget |
+|---|---|---|---|---|
+| `recall_library_over_14_mib_is_fast` | 14.0 MiB library | `embedder timeout decisao --library` | 145, 157, 154 ms | 500 ms |
+| `recall_over_a_6_mib_store_is_fast` | 6.3 MiB notes beside the 14.0 MiB library | `embedder timeout decisao` | 63, 66, 69 ms | 250 ms |
+
+The library test is on the line of the real library's 137 ms for 13.6 MB above, and plain `recall` never reads the library beside it.
