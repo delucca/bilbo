@@ -1,9 +1,10 @@
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use crate::library::corpus;
 use crate::rank::{self, Document, Hit};
 use crate::store::Shelf;
-use crate::{Failure, config, corpus, embed, note, store, vectors};
+use crate::{Failure, config, embed, note, store, vectors};
 
 const DEFAULT_LIMIT: usize = 10;
 const QUERY_BYTES: usize = 2000;

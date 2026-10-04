@@ -2,8 +2,9 @@ use std::ffi::OsString;
 use std::fmt;
 use std::path::{Path, PathBuf};
 
+use crate::library::corpus;
 use crate::markdown::fence_run;
-use crate::{corpus, markdown, note, rank};
+use crate::{markdown, note, rank};
 
 /// The environment variables root, config and cache resolution read; tests build it by hand.
 pub struct Env {
