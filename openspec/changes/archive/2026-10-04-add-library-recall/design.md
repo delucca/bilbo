@@ -104,7 +104,7 @@ Alternatives: `--kind source|guide` (overloads the note filter); ignoring `--kin
 
 ### The speed test
 
-`tests/common/mod.rs` gains `bench_library(dir, root)`, which writes 8 corpora of generated sources into `<root>/library/` with valid frontmatter and guides: a few large books with three heading levels, one catalog with hundreds of short level-2 sections, and many short sources, about 14 MiB in all, asserted between 13.5 and 14.5 MiB. The ignored `recall_library_over_14_mib_is_fast` asserts under 500 ms for `recall --library`. The ignored `recall_over_a_6_mib_store_is_fast` gains that library beside the notes and keeps its 250 ms. Both run with the existing `cargo test --release --test recall -- --ignored`, so `AGENTS.md` needs no new command.
+`tests/common/mod.rs` gains `bench_library(root)`, which writes 8 corpora of generated sources into `<root>/library/` with valid frontmatter and guides: a few large books with three heading levels, one catalog with hundreds of short level-2 sections, and many short sources, about 14 MiB in all, asserted between 13.5 and 14.5 MiB. The ignored `recall_library_over_14_mib_is_fast` asserts under 500 ms for `recall --library`. The ignored `recall_over_a_6_mib_store_is_fast` gains that library beside the notes and keeps its 250 ms. Both run with the existing `cargo test --release --test recall -- --ignored`, so `AGENTS.md` needs no new command.
 
 ## Risks / Trade-offs
 

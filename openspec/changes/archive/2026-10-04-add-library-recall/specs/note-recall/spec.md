@@ -3,7 +3,7 @@
 ## MODIFIED Requirements
 
 ### Requirement: What recall searches
-Without `--library` and `--corpus`, recall SHALL search every entry of `<root>/notes/` that is a regular file, not hidden, with a valid `<kind>-<topic>.md` name, skipping other entries and files it cannot read in silence, and SHALL NOT read `<root>/library/`. Frontmatter is not searched. A note that breaks other `note-store` rules SHALL still be searched; when its `created` is not valid, the block shows `-` in its place. A note with no `#` title uses its filename without `.md` as the title. With `--library` or `--corpus`, recall SHALL search the library instead, as the `library-recall` spec says, and of this spec only the Passages, Query words, Limit, Options and the query, Snippet and Recall is read-only requirements apply to it.
+Without `--library` and `--corpus`, recall SHALL search every entry of `<root>/notes/` that is a regular file, not hidden, with a valid `<kind>-<topic>.md` name, skipping other entries and files it cannot read in silence, and SHALL NOT read `<root>/library/`. Frontmatter is not searched. A note that breaks other `note-store` rules SHALL still be searched; when its `created` is not valid, the block shows `-` in its place. A note with no `#` title uses its filename without `.md` as the title. With `--library` or `--corpus`, recall SHALL search the library instead, as the `library-recall` spec says, and of this spec only the Passages, Query words, Limit, Options and the query, Snippet and Recall is read-only requirements apply to it, besides what Kind filter and A missing store say about those options.
 
 #### Scenario: Frontmatter is not searched
 - **WHEN** the only occurrence of `github` in the store is a `sources` item
