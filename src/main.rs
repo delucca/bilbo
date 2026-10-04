@@ -39,6 +39,7 @@ usage: bilbo new <kind> <topic> [--title <text>]
        bilbo cite [--plan <plan>]... [<file> | -]
        bilbo watch
        bilbo history <note> [<version> | --diff <a> [<b>]]
+       bilbo restore <note> <version>
        bilbo --help
        bilbo --version
 new creates <root>/notes/<kind>-<topic>.md and prints its path.
@@ -51,6 +52,7 @@ library lists the corpora, prints a corpus's guide with the facts of each source
 cite checks every bilbo: citation in a draft, and with --plan prints the coverage of the plans' reads.
 watch records a version of each note when it changes, until it is stopped.
 history lists the versions of a note, newest first, prints one, or shows what changed between two versions, or between one and the note's file now.
+restore writes a past version of a note back as its newest version, keeping what the note held before.
 setup creates the store and the config and installs the agent plugin, the index timer, the note watcher and, when asked, the local embedder; in a terminal it asks first.
 setup options: --embedder-url <url>, --embedder-model <name>, --embedder-token-env <var>, --embedder-token-file <path>, --embedder-query-prefix <text>, --embedder-local, --embedder-port <port>, --llama-server <path>, --no-plugin, --claude <path>, --codex <path>, --plugin-source <folder|owner/repo#ref>, --no-timer, --index-every <minutes>, --no-watch
 kinds: plan, spec, design, decision, gotcha, research, review, report, reference
@@ -147,6 +149,12 @@ fn run() -> Result<ExitCode, Failure> {
             output.warnings.iter().for_each(|line| print_stderr(line));
             output.lines.iter().for_each(|line| print_stdout(line));
             write_stdout(&output.bytes);
+            Ok(ExitCode::SUCCESS)
+        }
+        Some("restore") => {
+            let output = note::restore::run(&args[1..], &env)?;
+            output.warnings.iter().for_each(|line| print_stderr(line));
+            output.lines.iter().for_each(|line| print_stdout(line));
             Ok(ExitCode::SUCCESS)
         }
         Some(arg) if arg.starts_with('-') => Err(Failure::Usage(format!("unknown option '{arg}'"))),

@@ -1,8 +1,9 @@
-//! Notes: kinds, names, the strict reader and the renderer, the `new`, `watch` and `history` verbs, and the version store they share.
+//! Notes: kinds, names, the strict reader and the renderer, the `new`, `watch`, `history` and `restore` verbs, and the version store they share.
 
 pub mod diff;
 pub mod history;
 pub mod new;
+pub mod restore;
 pub mod versions;
 pub mod watch;
 
