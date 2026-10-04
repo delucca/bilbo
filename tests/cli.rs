@@ -19,6 +19,7 @@ usage: bilbo new <kind> <topic> [--title <text>]
        bilbo cite [--plan <plan>]... [<file> | -]
        bilbo watch
        bilbo history <note> [<version> | --diff <a> [<b>]]
+       bilbo restore <note> <version>
        bilbo --help
        bilbo --version
 new creates <root>/notes/<kind>-<topic>.md and prints its path.
@@ -31,6 +32,7 @@ library lists the corpora, prints a corpus's guide with the facts of each source
 cite checks every bilbo: citation in a draft, and with --plan prints the coverage of the plans' reads.
 watch records a version of each note when it changes, until it is stopped.
 history lists the versions of a note, newest first, prints one, or shows what changed between two versions, or between one and the note's file now.
+restore writes a past version of a note back as its newest version, keeping what the note held before.
 setup creates the store and the config and installs the agent plugin, the index timer, the note watcher and, when asked, the local embedder; in a terminal it asks first.
 setup options: --embedder-url <url>, --embedder-model <name>, --embedder-token-env <var>, --embedder-token-file <path>, --embedder-query-prefix <text>, --embedder-local, --embedder-port <port>, --llama-server <path>, --no-plugin, --claude <path>, --codex <path>, --plugin-source <folder|owner/repo#ref>, --no-timer, --index-every <minutes>, --no-watch
 kinds: plan, spec, design, decision, gotcha, research, review, report, reference
@@ -79,6 +81,7 @@ fn unknown_verb_is_usage_error() {
             && run.stderr.contains("bilbo cite")
             && run.stderr.contains("bilbo watch")
             && run.stderr.contains("bilbo history")
+            && run.stderr.contains("bilbo restore")
     );
     assert!(!home.exists());
     assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
@@ -439,6 +442,24 @@ fn history_is_a_verb() {
         dir.path(),
         &[("BILBO_HOME", home.to_str().unwrap())],
         &["history", "release"],
+    );
+    assert_eq!(run.code, 1);
+    assert!(run.stdout.is_empty());
+    assert_eq!(
+        run.stderr,
+        format!("bilbo: no store at {}\n", home.display())
+    );
+    assert!(!home.exists());
+}
+
+#[test]
+fn restore_is_a_verb() {
+    let dir = TempDir::new("cli-restore");
+    let home = dir.path().join("home");
+    let run = bilbo(
+        dir.path(),
+        &[("BILBO_HOME", home.to_str().unwrap())],
+        &["restore", "release", "a1b2c3"],
     );
     assert_eq!(run.code, 1);
     assert!(run.stdout.is_empty());
