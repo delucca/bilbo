@@ -6,10 +6,10 @@ use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::path::{Path, PathBuf};
 
-use crate::frontmatter;
-use crate::markdown::{self, Resolved, Section};
-use crate::store::{self, EntryKind};
-use crate::text::{self, Body};
+use crate::shared::frontmatter;
+use crate::shared::markdown::{self, Resolved, Section};
+use crate::shared::store::{self, EntryKind};
+use crate::shared::text::{self, Body};
 
 const PREFIX: &str = "bilbo:";
 const ID_LEN: usize = 26;

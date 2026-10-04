@@ -1,16 +1,11 @@
 mod check;
 mod citation;
-mod config;
-mod frontmatter;
-mod hash;
 mod host;
 mod library;
-mod markdown;
 mod note;
 mod search;
 mod setup;
-mod store;
-mod text;
+mod shared;
 
 use std::io::Write;
 use std::process::ExitCode;
@@ -76,7 +71,7 @@ fn run() -> Result<ExitCode, Failure> {
         print_stdout(concat!("bilbo ", env!("CARGO_PKG_VERSION")));
         return Ok(ExitCode::SUCCESS);
     }
-    let env = store::Env::from_process();
+    let env = shared::store::Env::from_process();
     match args.first().map(String::as_str) {
         None => Err(Failure::Usage("missing verb".into())),
         Some("new") => {

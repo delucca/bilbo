@@ -98,7 +98,7 @@
             "digest.min_similarity"
             "digest.log"
           ];
-          # The same quoting rule as config::render in src/config.rs.
+          # The same quoting rule as config::render in src/shared/config.rs.
           quote =
             value:
             let

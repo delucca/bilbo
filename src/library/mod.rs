@@ -4,6 +4,7 @@
 pub mod cli;
 pub mod corpus;
 pub mod fetch;
+pub mod hash;
 pub mod html;
 pub mod reading;
 pub mod source;

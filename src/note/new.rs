@@ -2,8 +2,9 @@ use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
-use crate::store::{self, EntryKind};
-use crate::{Failure, frontmatter, note};
+use crate::shared::frontmatter;
+use crate::shared::store::{self, EntryKind};
+use crate::{Failure, note};
 
 struct Request {
     kind: String,

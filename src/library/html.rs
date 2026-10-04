@@ -7,7 +7,7 @@ use htmd::options::{BulletListMarker, Options};
 use htmd::{Element, HtmlToMarkdown, Node};
 use markup5ever_rcdom::NodeData;
 
-use crate::markdown;
+use crate::shared::markdown;
 
 const DROPPED: [&str; 6] = ["head", "script", "style", "noscript", "template", "svg"];
 const ZERO_WIDTH: [char; 5] = ['\u{200B}', '\u{200C}', '\u{200D}', '\u{2060}', '\u{FEFF}'];

@@ -1,8 +1,8 @@
 //! The interactive setup wizard.
 
 use crate::Failure;
-use crate::config::{self, Embedder, Token};
 use crate::host::prompt::{Choice, Prompter};
+use crate::shared::config::{self, Embedder, Token};
 use std::io;
 use std::path::PathBuf;
 use zeroize::Zeroizing;

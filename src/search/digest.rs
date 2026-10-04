@@ -6,7 +6,7 @@ use std::time::{Duration, Instant, SystemTime};
 
 use crate::search::rank::{self, Document, Hit};
 use crate::search::{documents, embed, vectors};
-use crate::{config, store};
+use crate::shared::{config, store};
 
 const QUERY_BYTES: usize = 2000;
 const EMBED_BYTES: usize = 1000;

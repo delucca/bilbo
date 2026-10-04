@@ -3,9 +3,10 @@
 use std::path::{Path, PathBuf};
 
 use crate::library::corpus;
+use crate::note;
 use crate::search::rank;
-use crate::store::{EntryKind, entries};
-use crate::{markdown, note};
+use crate::shared::markdown;
+use crate::shared::store::{EntryKind, entries};
 
 /// A note recall and index read, with its passages.
 pub struct Stored {

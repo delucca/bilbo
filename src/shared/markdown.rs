@@ -1,6 +1,6 @@
 //! Markdown as bilbo reads it: physical lines, code fences, ATX headings and the sections they open.
 
-use crate::text;
+use crate::shared::text;
 
 /// Physical lines as `read` numbers them: one leading byte order mark dropped, split on '\n', no empty line after a
 /// final '\n', one trailing '\r' removed from each.
