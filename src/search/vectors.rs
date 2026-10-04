@@ -3,7 +3,7 @@ use std::io::Write;
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 
-use crate::rank::{self, Document};
+use crate::search::rank::{self, Document};
 
 pub const MAGIC: &[u8; 10] = b"BILBOVEC1\n";
 

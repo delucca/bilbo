@@ -7,7 +7,8 @@ use zeroize::Zeroizing;
 
 use crate::config::{self, Embedder, Token};
 use crate::host::{agents, command, model, timer};
-use crate::{Failure, embed, store, wizard};
+use crate::search::embed;
+use crate::{Failure, store, wizard};
 use wizard::Prompter;
 
 const CHECK: Duration = Duration::from_secs(15);

@@ -4,8 +4,9 @@ use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime};
 
-use crate::rank::{self, Document, Hit};
-use crate::{config, embed, store, vectors};
+use crate::search::rank::{self, Document, Hit};
+use crate::search::{embed, vectors};
+use crate::{config, store};
 
 const QUERY_BYTES: usize = 2000;
 const EMBED_BYTES: usize = 1000;
