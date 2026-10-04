@@ -59,20 +59,6 @@ Run every `cargo` command below from the repo root as `nix develop -c sh -c '<co
 - [ ] 7.1 Update `README.md`: a "Library" section under "Usage" that describes a corpus, a source, the guide, the five forms of `bilbo library`, the `TODO` and `stale` lines `check` fails on, and how to move or delete a source by hand (`mv` or `rm`, then the guide edit, then `bilbo check`). The `check` text says it covers the library too. Verify with `rg -q 'bilbo library land' README.md && rg -q 'guide.md' README.md`
 - [ ] 7.2 Update `AGENTS.md`: add `source`, `corpus` and `hash` to the library modules, and "`sha2` in `src/hash.rs`" to the dependency rule. Add a gotcha: `land` and `check` treat any hidden entry in `<root>/library/` as absent, which is where the `land` lock lives. Verify with `rg -q 'src/hash.rs' AGENTS.md && rg -q 'corpus' AGENTS.md`
 
-## 8. Migration
+## 8. Integration
 
-- [ ] 8.1 Write `openspec/changes/add-library-store/migrate.py` as design.md's "The migration script" section gives it, standard library only, with every self-check it lists, counting headings with bilbo's rule and listing each heading the old Python regex saw that bilbo will not. It writes nothing when a self-check fails. Verify with `python3 -m py_compile openspec/changes/add-library-store/migrate.py`
-- [ ] 8.2 Run it against a copy, never against `~/Notebooks` in place and never into the real store. `$T` is a fresh folder under the session's scratchpad. Copy each `~/Notebooks/*/library/` into `$T/notebooks/<notebook folder>/library/` with `cp -R`, then run `BILBO_HOME=$T/store python3 openspec/changes/add-library-store/migrate.py --notebooks $T/notebooks --report $T/report`. Then, with the built binary and `BILBO_HOME=$T/store`:
-  - `bilbo check` prints nothing and exits 0;
-  - `bilbo library` lists 8 corpora, `ai-tooling`, `cognition`, `go`, `haskell`, `lisp`, `rust`, `software-architecture` and `writing`, whose source counts add up to 441;
-  - `bilbo library show ai-tooling/extend-claude-with-skills-claude-code-docs --depth 1` shows `Extend Claude with skills` as a section, and its id is the old split folder's `index.md` id;
-  - `bilbo library show cognition/cognition-eval-grading-model` has no `**Source**` line in the body (`rg -l '^\*\*Source\*\*' $T/store/library/cognition/ -g '!guide.md'` prints nothing), and its guide entry holds the moved header;
-  - `bilbo library show rust/clippy-lints` says `catalog: yes`, and the only facts lines ending in ` · catalog` across `bilbo library <corpus>` for all 8 corpora are those of `clippy-lints`, `revive-rules-descriptions`, `clj-kondo-linters` and `tutorial-on-good-lisp-programming-style`, so no rejoined book is a catalog;
-  - `$T/report/map.tsv` has 1,172 rows, one per old file, and maps `ai-tooling__shared/library/extend-claude-with-skills-claude-code-docs/01-extend-claude-with-skills.md` to `<id>#Extend Claude with skills`;
-  - `find ~/Notebooks/*/library -newer $T/started` prints nothing, where `$T/started` was touched before the copy.
-
-  Record the commands, the counts, the list of headings bilbo will not see, and any finding in `openspec/changes/add-library-store/migration.md`. Verify with `test -s openspec/changes/add-library-store/migration.md`
-
-## 9. Integration
-
-- [ ] 9.1 Run the full suite and the package check. Verify with `cargo fmt --check && cargo clippy --locked --all-targets -- -D warnings && cargo test --locked && nix flake check -L`
+- [ ] 8.1 Run the full suite and the package check. Verify with `cargo fmt --check && cargo clippy --locked --all-targets -- -D warnings && cargo test --locked && nix flake check -L`

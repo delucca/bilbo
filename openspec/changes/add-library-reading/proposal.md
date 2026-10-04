@@ -41,7 +41,7 @@ After `add-library-store`, bilbo holds sources but gives an agent no way to show
 - Checking citations in guides or outside the store, such as review evidence under a notebook's `work/`.
 - A `--json` output for `plan`, `read` or `cite`.
 - Shipping a `source-reader` subagent. Readers are `general-purpose` agents given `references/reader.md`.
-- The cutover itself: running `migrate.py` against the real notebooks, rewriting the 3 note citations and 2 `doc:` sources, and the dnix edits below. They happen outside this repository, after this change is archived.
+- The cutover itself: running the one-off migration tool in the planning notebook's `work/library-migrate/` against the real notebooks, rewriting the 3 note citations and 2 `doc:` sources, and the dnix edits below. They happen outside this repository, after this change is archived.
 
 ## Impact
 
@@ -53,7 +53,7 @@ After `add-library-store`, bilbo holds sources but gives an agent no way to show
 - `README.md`, `AGENTS.md`, and `openspec/config.yaml`'s Stack line.
 - On disk: `<state>/bilbo/plans/<plan>.json` and `<plan>.log`.
 - **The cutover** (after archive, outside this repo, the user's run):
-  1. Run `add-library-store`'s `migrate.py` into the real `BILBO_HOME` and check it with `bilbo check`.
+  1. Run the migration tool in the planning notebook's `work/library-migrate/` into the real `BILBO_HOME` and check it with `bilbo check`.
   2. Rewrite the 3 citations in `estate__shared/notes/gotcha-claude-code-skill-frontmatter.md` to `bilbo:<id>#<anchor> "<quote>"` from `map.tsv`, and the 2 `doc:` sources that point into a notebook library to `"doc: bilbo:<id>"`. `bilbo cite` on the note gives 3 `ok`.
   3. The dnix edits below, in one commit, then `just switch` on each host.
 - **dnix edits** (`modules/ai/`, `modules/notebooks/`):
