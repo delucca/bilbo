@@ -88,7 +88,7 @@ fn history_sits_beside_the_notes() {
 fn losing_the_history_folder_starts_over() {
     let dir = TempDir::new("history-lost");
     let (root, _, second) = recorded(&dir);
-    fs::remove_dir_all(root.join(".bilbo")).unwrap();
+    fs::remove_dir_all(root.join(".bilbo/history")).unwrap();
     let notes = snapshot(&root.join("notes"));
     let _watcher = Watcher::on(&root);
     wait_events(&root, "release", &["added"]);

@@ -7,7 +7,6 @@ mod common;
 
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
 
 use common::{
     IDS, Seed, TempDir, Watcher, bilbo, days_ago, note_text, poll_eq, seed, snapshot, store, write,
@@ -59,6 +58,43 @@ fn state(root: &Path) -> String {
         String::new()
     };
     format!("{:?}{logs}", snapshot(&root.join("notes")))
+}
+
+/// Starts a watcher on a store that also holds `plan-other.md`, and waits until it is recorded.
+fn watch_with_other(root: &Path) -> Watcher {
+    write(root, "plan-other.md", &note_text(IDS[1], "Other"));
+    let watcher = Watcher::on(root);
+    wait_other(root, &["added plan-other.md"]);
+    watcher
+}
+
+fn wait_other(root: &Path, want: &[&str]) {
+    let want: Vec<String> = want.iter().map(|e| e.to_string()).collect();
+    poll_eq(
+        "events of other",
+        || {
+            let run = history(root, &["other"]);
+            run.stdout
+                .lines()
+                .map(|line| {
+                    let parts: Vec<&str> = line.split(' ').collect();
+                    format!("{} {}", parts[2], parts[3])
+                })
+                .collect::<Vec<String>>()
+        },
+        want,
+    );
+}
+
+/// A later change to `plan-other.md`, waited for: a scan that records it has read everything written before it, so
+/// a check made after it cannot pass because the watcher had not looked yet.
+fn barrier(root: &Path) {
+    write(
+        root,
+        "plan-other.md",
+        &format!("{}\nBarrier.\n", note_text(IDS[1], "Other")),
+    );
+    wait_other(root, &["edited plan-other.md", "added plan-other.md"]);
 }
 
 fn text(body: &str) -> String {
@@ -509,7 +545,7 @@ fn works_without_a_watcher() {
 fn a_running_watcher_does_not_record_it_again() {
     let dir = TempDir::new("restore-watcher");
     let root = edited(&dir);
-    let watcher = Watcher::on(&root);
+    let watcher = watch_with_other(&root);
     let first = shorts(&root, "release")[1].clone();
     let run = restore(&root, &["release", &first]);
     assert_eq!(run.code, 0, "{}", run.stderr);
@@ -518,8 +554,7 @@ fn a_running_watcher_does_not_record_it_again() {
         || events(&root, "release")[0].clone(),
         "restored decision-release.md".to_string(),
     );
-    // Past the watcher's 2 s debounce and a scan.
-    std::thread::sleep(Duration::from_secs(5));
+    barrier(&root);
     assert_eq!(
         events(&root, "release"),
         [
@@ -535,12 +570,12 @@ fn a_running_watcher_does_not_record_it_again() {
 fn a_restore_races_an_unrecorded_edit_with_a_watcher_running() {
     let dir = TempDir::new("restore-watcher-edit");
     let root = edited(&dir);
-    let _watcher = Watcher::on(&root);
+    let _watcher = watch_with_other(&root);
     write(&root, "decision-release.md", &text("three"));
     let first = shorts(&root, "release")[1].clone();
     let run = restore(&root, &["release", &first]);
     assert_eq!(run.code, 0, "{}", run.stderr);
-    std::thread::sleep(Duration::from_secs(5));
+    barrier(&root);
     let list = events(&root, "release");
     assert_eq!(list[0], "restored decision-release.md");
     assert_eq!(list.iter().filter(|e| e.starts_with("restored")).count(), 1);
