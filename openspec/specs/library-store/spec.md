@@ -228,7 +228,7 @@ A source SHALL be a catalog when its body is over 55,000 bytes and more than 40 
 - **THEN** it is not a catalog
 
 ### Requirement: Anchors
-An anchor SHALL name a section by its heading path, or by any trailing part of it, parts joined by ` > `. It matches a section when its parts equal the last parts of that section's heading path, each compared with runs of whitespace collapsed to one space and with case. One matching section resolves the anchor; several make it ambiguous; none make it missing.
+An anchor SHALL name a section by its heading path, or by any trailing part of it, parts joined by ` > `. It matches a section when its parts equal the last parts of that section's heading path, each part and each heading compared after the Text normalization, with case. This one rule serves every verb that takes an anchor. One matching section resolves the anchor; several make it ambiguous; none make it missing.
 
 #### Scenario: A trailing part resolves
 - **WHEN** a source has the sections `needless_return > What it does` and `needless_range_loop > What it does`, and the anchor is `needless_return > What it does`
@@ -242,6 +242,14 @@ An anchor SHALL name a section by its heading path, or by any trailing part of i
 - **WHEN** the anchor is `what it does` in that source
 - **THEN** the anchor is missing
 
+#### Scenario: Markup in a heading
+- **WHEN** a source has the heading `` ## The `Option` type `` and an agent runs `bilbo library show 'rust/book#The Option type'`
+- **THEN** the anchor resolves to that section, as the anchor `` The `Option` type `` does
+
+#### Scenario: Different words stay different
+- **WHEN** the anchor is `The Options type` in that source
+- **THEN** the anchor is missing
+
 ### Requirement: Captures
 The text a source was cut from SHALL be kept as `<root>/.bilbo/captures/<sha256>/capture.md`, the folder named by the SHA-256, in lowercase hex, of that file. Captures are local evidence: a source SHALL be valid whether or not its capture exists, and `bilbo check` SHALL NOT read `<root>/.bilbo/captures/`.
 
@@ -252,3 +260,18 @@ The text a source was cut from SHALL be kept as `<root>/.bilbo/captures/<sha256>
 #### Scenario: Captures are not checked
 - **WHEN** `<root>/.bilbo/captures/` holds a folder whose name does not match its `capture.md`, and a folder with no `capture.md`
 - **THEN** `bilbo check` reports nothing about either
+
+### Requirement: Text normalization
+Where a spec compares text after the Text normalization, bilbo SHALL apply Unicode NFKC, decode `&amp;`, `&lt;`, `&gt;`, `&quot;`, `&#39;` and `&#124;`, make curly quotes straight, reduce links and images to their text and autolinks to their target, drop backslash escapes, `*`, `_`, backticks and `~~`, and collapse runs of whitespace to one space, trimmed. Case is kept.
+
+#### Scenario: An entity in a table cell
+- **WHEN** a source's table cell holds `a &#124; b` and the compared text is `a | b`
+- **THEN** both normalize to `a | b`
+
+#### Scenario: Emphasis and spacing
+- **WHEN** one text is `the **zero  value**` and the other is `the zero value`
+- **THEN** both normalize to `the zero value`
+
+#### Scenario: Case is not folded
+- **WHEN** one text is `Option` and the other is `option`
+- **THEN** they normalize to different text
