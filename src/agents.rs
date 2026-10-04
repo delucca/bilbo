@@ -582,7 +582,8 @@ mod tests {
     macro_rules! fixture {
         ($name:literal) => {
             recorded(include_str!(concat!(
-                "../tests/fixtures/agents/",
+                env!("CARGO_MANIFEST_DIR"),
+                "/tests/fixtures/agents/",
                 $name,
                 ".txt"
             )))
