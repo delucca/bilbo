@@ -1,7 +1,7 @@
-use std::fmt;
 use std::io::Read;
 
-use crate::markdown::{fence_run, split_lines};
+use crate::markdown::split_lines;
+use crate::store::{Problem, TOPIC_RULE, is_topic, title_problem};
 
 pub const KINDS: [&str; 9] = [
     "plan",
@@ -18,20 +18,9 @@ pub const SOURCE_TYPES: [&str; 4] = ["url", "code", "doc", "search"];
 pub const CREATED_FORMAT: &str = "%Y-%m-%dT%H:%M%:z";
 
 const ULID_ALPHABET: &[u8; 32] = b"0123456789ABCDEFGHJKMNPQRSTVWXYZ";
-const TOPIC_RULE: &str = "use segments of a-z and 0-9 joined by single hyphens";
 
 pub fn kinds_list() -> String {
     KINDS.join(", ")
-}
-
-pub fn is_topic(s: &str) -> bool {
-    !s.is_empty()
-        && s.split('-').all(|segment| {
-            !segment.is_empty()
-                && segment
-                    .bytes()
-                    .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit())
-        })
 }
 
 #[derive(Debug)]
@@ -111,36 +100,6 @@ pub fn is_created(s: &str) -> bool {
         && jiff::fmt::strtime::parse(CREATED_FORMAT, s)
             .and_then(|t| t.to_datetime())
             .is_ok()
-}
-
-pub struct Problem {
-    pub line: Option<usize>,
-    pub message: String,
-}
-
-impl Problem {
-    pub(crate) fn at(line: usize, message: impl Into<String>) -> Problem {
-        Problem {
-            line: Some(line),
-            message: message.into(),
-        }
-    }
-
-    pub(crate) fn whole(message: impl Into<String>) -> Problem {
-        Problem {
-            line: None,
-            message: message.into(),
-        }
-    }
-}
-
-impl fmt::Display for Problem {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self.line {
-            Some(n) => write!(f, "{} (line {n})", self.message),
-            None => f.write_str(&self.message),
-        }
-    }
 }
 
 pub struct Note {
@@ -360,39 +319,6 @@ fn check_item(n: usize, line: &str, problems: &mut Vec<Problem>) {
         ));
     } else if value.trim().is_empty() {
         problems.push(Problem::at(n, format!("sources: empty value for '{kind}'")));
-    }
-}
-
-/// `body` starts at physical line `first_line`.
-pub(crate) fn title_problem(body: &[&str], first_line: usize) -> Option<Problem> {
-    let mut fence: Option<(char, usize)> = None;
-    let mut titles = Vec::new();
-    for (i, line) in body.iter().enumerate() {
-        let run = fence_run(line);
-        match (fence, run) {
-            (Some((ch, len)), Some((c, l, rest)))
-                if c == ch && l >= len && rest.trim().is_empty() =>
-            {
-                fence = None;
-            }
-            (Some(_), _) => {}
-            (None, Some((c, l, _))) => fence = Some((c, l)),
-            (None, None) if line.starts_with("# ") => titles.push(first_line + i),
-            (None, None) => {}
-        }
-    }
-    match titles.as_slice() {
-        [] => Some(Problem::whole(
-            "title: missing; add one '# <title>' line after the frontmatter",
-        )),
-        [_] => None,
-        [_, second, ..] => Some(Problem::at(
-            *second,
-            format!(
-                "title: found {} '# ' headings outside code fences, expected one",
-                titles.len()
-            ),
-        )),
     }
 }
 

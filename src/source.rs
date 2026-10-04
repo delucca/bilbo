@@ -1,6 +1,7 @@
 use crate::hash;
 use crate::markdown::{self, Section};
-use crate::note::{self, Problem};
+use crate::note;
+use crate::store::{self, Problem};
 
 pub const CAPTURES: [&str; 2] = ["external", "legacy"];
 pub const ORIGIN_TYPES: [&str; 2] = ["url", "doc"];
@@ -436,8 +437,8 @@ fn title_problems(body: &[&str], first_line: usize) -> Vec<Problem> {
             "title: the body must open with a '# <title>' line",
         ));
     }
-    // `note::title_problem` also reports a missing title; the rule above already did.
-    problems.extend(note::title_problem(body, first_line).filter(|p| p.line.is_some()));
+    // `store::title_problem` also reports a missing title; the rule above already did.
+    problems.extend(store::title_problem(body, first_line).filter(|p| p.line.is_some()));
     problems
 }
 

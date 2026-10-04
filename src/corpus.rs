@@ -1,9 +1,9 @@
 use std::path::{Path, PathBuf};
 
 use crate::markdown;
-use crate::note::{self, Problem, is_topic};
+use crate::note;
 use crate::source::{self, Source};
-use crate::store::{self, Entry, EntryKind};
+use crate::store::{self, Entry, EntryKind, Problem, is_topic};
 
 pub const RESERVED: [&str; 5] = ["show", "stage", "land", "plan", "read"];
 pub const STUB_SOURCE: &str = "TODO: describe this source.";
@@ -85,7 +85,7 @@ pub fn read_guide(text: &str) -> Guide {
     let lines = markdown::lines(text);
     let first = front.body_start;
     let body = lines.get(first - 1..).unwrap_or(&[]);
-    problems.extend(note::title_problem(body, first));
+    problems.extend(store::title_problem(body, first));
 
     let mut title_line = None;
     let mut entry_starts: Vec<(usize, String)> = Vec::new();
