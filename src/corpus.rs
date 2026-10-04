@@ -1,6 +1,3 @@
-// The library verb, which uses the rest of this module, comes in a later task group.
-#![allow(dead_code)]
-
 use std::path::{Path, PathBuf};
 
 use crate::note::{self, Problem, is_topic};
@@ -190,12 +187,9 @@ fn fenced_free<'a>(lines: &[&'a str]) -> Vec<(usize, &'a str)> {
     out
 }
 
-/// A new guide for `corpus`: frontmatter, a title made from the name, and the corpus stub.
+/// A new guide for `corpus`: frontmatter, the corpus name as the title, and the corpus stub.
 pub fn new_guide(id: &str, created: &str, corpus: &str) -> String {
-    format!(
-        "---\nid: {id}\ncreated: {created}\n---\n\n# {}\n\n{STUB_CORPUS}\n",
-        note::default_title(corpus)
-    )
+    format!("---\nid: {id}\ncreated: {created}\n---\n\n# {corpus}\n\n{STUB_CORPUS}\n")
 }
 
 /// `text` with a `## <name>` entry and its stub appended.
@@ -273,20 +267,22 @@ pub fn read_sources(dir: &Path) -> std::io::Result<Vec<SourceFile>> {
         if entry.kind != EntryKind::File {
             continue;
         }
-        let Some(text) = std::fs::read(&entry.path)
-            .ok()
-            .and_then(|b| String::from_utf8(b).ok())
-        else {
-            continue;
-        };
-        out.push(SourceFile {
-            name,
-            source: source::read(&text),
-            path: entry.path,
-            text,
-        });
+        out.extend(read_source(&entry.path, name));
     }
     Ok(out)
+}
+
+/// The source file at `path`, `None` when it cannot be read as UTF-8 text.
+pub fn read_source(path: &Path, name: String) -> Option<SourceFile> {
+    let text = std::fs::read(path)
+        .ok()
+        .and_then(|b| String::from_utf8(b).ok())?;
+    Some(SourceFile {
+        name,
+        source: source::read(&text),
+        path: path.to_path_buf(),
+        text,
+    })
 }
 
 fn source_stem(entry: &Entry) -> Option<String> {
@@ -692,7 +688,7 @@ mod tests {
     fn a_new_guide_is_a_valid_stub() {
         let text = new_guide(GID, CREATED, "software-architecture");
         let read = read_guide(&text);
-        assert_eq!(read.title.as_deref(), Some("Software architecture"));
+        assert_eq!(read.title.as_deref(), Some("software-architecture"));
         assert_eq!(messages(&text).len(), 1);
         assert!(messages(&text)[0].starts_with("lead: TODO stub"));
         assert!(text.ends_with(&format!("{STUB_CORPUS}\n")));

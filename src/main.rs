@@ -7,6 +7,7 @@ mod digest;
 mod embed;
 mod hash;
 mod index;
+mod library;
 mod model;
 mod new;
 mod note;
@@ -39,6 +40,10 @@ usage: bilbo new <kind> <topic> [--title <text>]
        bilbo index
        bilbo setup [--yes | --interactive] [--remove] [<setup option>]...
        bilbo digest
+       bilbo library [<corpus>]
+       bilbo library show <corpus>/<name>|<id>[#<anchor>] [--depth <n>]
+       bilbo library stage <file> --origin \"<url|doc>: <value>\" [--fetched <YYYY-MM-DD>]
+       bilbo library land <stage> <corpus>/<name> --keep <a>-<b>[,<c>-<d>]... [--title <text>] [--replace]
        bilbo --help
        bilbo --version
 new creates <root>/notes/<kind>-<topic>.md and prints its path.
@@ -46,6 +51,7 @@ check prints every problem in the store and changes nothing.
 recall prints the notes that best match the query, best first, 10 unless --limit says otherwise.
 index embeds the passages the vector cache lacks and drops the ones no note holds any more.
 digest reads a prompt hook's JSON on stdin and prints the notes that bear on the prompt; it always exits 0.
+library lists the corpora, prints a corpus's guide with the facts of each source, or a source's outline; stage and land add a source.
 setup creates the store and the config and installs the agent plugin, the index timer and, when asked, the local embedder; in a terminal it asks first.
 setup options: --embedder-url <url>, --embedder-model <name>, --embedder-token-env <var>, --embedder-token-file <path>, --embedder-query-prefix <text>, --embedder-local, --embedder-port <port>, --llama-server <path>, --no-plugin, --claude <path>, --codex <path>, --plugin-source <folder|owner/repo#ref>, --no-timer, --index-every <minutes>
 kinds: plan, spec, design, decision, gotcha, research, review, report, reference
@@ -117,6 +123,12 @@ fn run() -> Result<ExitCode, Failure> {
             }
             Ok(ExitCode::SUCCESS)
         }
+        Some("library") => {
+            let output = library::run(&args[1..], &env)?;
+            output.warnings.iter().for_each(|line| print_stderr(line));
+            output.lines.iter().for_each(|line| print_stdout(line));
+            Ok(ExitCode::SUCCESS)
+        }
         Some(arg) if arg.starts_with('-') => Err(Failure::Usage(format!("unknown option '{arg}'"))),
         Some(arg) => Err(Failure::Usage(format!("unknown verb '{arg}'"))),
     }
@@ -132,15 +144,17 @@ fn collect_args() -> Result<Vec<String>, Failure> {
         .collect()
 }
 
-/// `-h` or `--help` before a bare `--`, except as the value of `new`'s `--title`.
+/// `-h` or `--help` before a bare `--`, except as the value of `--title` of `new` and `library`.
 fn wants_help(args: &[String]) -> bool {
-    let is_new = args.first().is_some_and(|verb| verb == "new");
+    let has_title = args
+        .first()
+        .is_some_and(|verb| verb == "new" || verb == "library");
     let mut title_value = false;
     for arg in args.iter().take_while(|arg| *arg != "--") {
         if std::mem::take(&mut title_value) {
             continue;
         }
-        title_value = is_new && arg == "--title";
+        title_value = has_title && arg == "--title";
         if arg == "-h" || arg == "--help" {
             return true;
         }
