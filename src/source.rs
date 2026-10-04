@@ -324,6 +324,128 @@ pub fn outside_fences(lines: &[&str]) -> Vec<usize> {
     out
 }
 
+/// What a capture shows `stage` on stderr, without the `bilbo: ` prefix: the fence never closed, then
+/// each run of five or more link-only lines (a menu the converter kept). Lines are 1-based in
+/// the messages.
+pub fn capture_warnings(lines: &[&str]) -> Vec<String> {
+    let mut fence: Option<(char, usize, usize)> = None;
+    let mut run: Vec<usize> = Vec::new();
+    let mut runs: Vec<Vec<usize>> = Vec::new();
+    for (i, line) in lines.iter().enumerate() {
+        let fence_line = note::fence_run(line);
+        match (fence, fence_line) {
+            (Some((ch, len, _)), Some((c, l, rest)))
+                if c == ch && l >= len && rest.trim().is_empty() =>
+            {
+                fence = None;
+                close_run(&mut run, &mut runs);
+            }
+            (Some(_), _) => {}
+            (None, Some((c, l, _))) => {
+                fence = Some((c, l, i + 1));
+                close_run(&mut run, &mut runs);
+            }
+            (None, None) if line.trim().is_empty() => {}
+            (None, None) if links_only(line) => run.push(i + 1),
+            (None, None) => close_run(&mut run, &mut runs),
+        }
+    }
+    close_run(&mut run, &mut runs);
+    let mut out = Vec::new();
+    if let Some((_, _, line)) = fence {
+        out.push(format!(
+            "unclosed fence: the code fence on line {line} is never closed"
+        ));
+    }
+    for run in runs {
+        out.push(format!(
+            "navigation suspect: lines {}-{}, {} lines of links only",
+            run[0],
+            run[run.len() - 1],
+            run.len()
+        ));
+    }
+    out
+}
+
+fn close_run(run: &mut Vec<usize>, runs: &mut Vec<Vec<usize>>) {
+    let done = std::mem::take(run);
+    if done.len() >= 5 {
+        runs.push(done);
+    }
+}
+
+/// A line of nothing but links or images, after an optional list marker, apart from the separators.
+fn links_only(line: &str) -> bool {
+    let mut rest = strip_marker(line.trim()).trim_start();
+    let Some(n) = link_len(rest) else {
+        return false;
+    };
+    rest = &rest[n..];
+    loop {
+        if rest.is_empty() {
+            return true;
+        }
+        rest = rest
+            .trim_start_matches(|c: char| c.is_whitespace() || matches!(c, '|' | '·' | '•' | ','));
+        match link_len(rest) {
+            Some(n) => rest = &rest[n..],
+            None => return false,
+        }
+    }
+}
+
+fn strip_marker(line: &str) -> &str {
+    if let Some(rest) = ["- ", "* ", "+ "].iter().find_map(|m| line.strip_prefix(m)) {
+        return rest;
+    }
+    let digits = line.chars().take_while(char::is_ascii_digit).count();
+    if (1..=9).contains(&digits)
+        && let Some(rest) = line[digits..].strip_prefix(['.', ')'])
+        && rest.starts_with(' ')
+    {
+        return rest;
+    }
+    line
+}
+
+/// The byte length of the `[text](target)` or `![alt](src)` that opens `s`, brackets and
+/// parentheses nested and backslash escapes skipped.
+fn link_len(s: &str) -> Option<usize> {
+    let open = if s.starts_with("![") { 1 } else { 0 };
+    let mut i = open + balanced(&s[open..], '[', ']')?;
+    if !s[i..].starts_with('(') {
+        return None;
+    }
+    i += balanced(&s[i..], '(', ')')?;
+    Some(i)
+}
+
+/// The length of the group that opens `s` with `open`, through its matching `close`.
+fn balanced(s: &str, open: char, close: char) -> Option<usize> {
+    if !s.starts_with(open) {
+        return None;
+    }
+    let mut depth = 0usize;
+    let mut chars = s.char_indices();
+    while let Some((i, c)) = chars.next() {
+        match c {
+            '\\' => {
+                chars.next();
+            }
+            c if c == open => depth += 1,
+            c if c == close => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(i + c.len_utf8());
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
 /// `body` starts at physical line `first_line`.
 fn title_problems(body: &[&str], first_line: usize) -> Vec<Problem> {
     let mut problems = Vec::new();
@@ -1008,5 +1130,119 @@ mod tests {
             "1-9,11-12"
         );
         assert!(parse_kept("99999999999999999999999-1").is_err());
+    }
+
+    fn warnings(text: &str) -> Vec<String> {
+        capture_warnings(&note::lines(text))
+    }
+
+    fn menu(n: usize) -> String {
+        (0..n).map(|i| format!("- [Page {i}](/p/{i})\n")).collect()
+    }
+
+    #[test]
+    fn a_fence_left_open_is_reported_at_its_line() {
+        let text = format!("{}```rust\nfn main() {{}}\n", "x\n".repeat(11));
+        assert_eq!(
+            warnings(&text),
+            ["unclosed fence: the code fence on line 12 is never closed"]
+        );
+    }
+
+    #[test]
+    fn balanced_fences_are_quiet() {
+        assert!(warnings("````\n```\nx\n````\n\n~~~\ny\n~~~\n").is_empty());
+    }
+
+    #[test]
+    fn a_tilde_fence_closed_by_backticks_stays_open() {
+        assert_eq!(
+            warnings("~~~\ncode\n```\n"),
+            ["unclosed fence: the code fence on line 1 is never closed"]
+        );
+    }
+
+    #[test]
+    fn a_shorter_or_annotated_closing_run_does_not_close() {
+        assert_eq!(warnings("````\n```\n").len(), 1);
+        assert_eq!(warnings("```\n``` rust\n").len(), 1);
+    }
+
+    #[test]
+    fn four_spaces_make_no_fence() {
+        assert!(warnings("    ```\ncode\n").is_empty());
+        assert!(warnings("   ```\ncode\n```\n").is_empty());
+    }
+
+    #[test]
+    fn a_site_menu_is_a_suspect() {
+        let spaced: String = (0..9).map(|i| format!("- [P{i}](/{i})\n\n")).collect();
+        let text = format!("# T\n\n{spaced}");
+        assert_eq!(
+            warnings(&text),
+            ["navigation suspect: lines 3-19, 9 lines of links only"]
+        );
+    }
+
+    #[test]
+    fn four_link_lines_are_not_enough() {
+        assert!(warnings(&menu(4)).is_empty());
+        assert_eq!(warnings(&menu(5)).len(), 1);
+    }
+
+    #[test]
+    fn a_sentence_breaks_the_run() {
+        let text = "- [a](/a)\n- [b](/b)\n- [c](/c)\nSee [the spec](/ref/spec) for details.\n- [d](/d)\n- [e](/e)\n- [f](/f)\n";
+        assert!(warnings(text).is_empty());
+    }
+
+    #[test]
+    fn a_heading_breaks_the_run() {
+        let text = "- [a](/a)\n- [b](/b)\n- [c](/c)\n## More\n- [d](/d)\n- [e](/e)\n- [f](/f)\n";
+        assert!(warnings(text).is_empty());
+    }
+
+    #[test]
+    fn links_images_and_separators() {
+        let text = "[a](/a) | [b](/b)\n[![logo](/l.png)](/home) · [c](/c)\n* ![i](/i.png) • [d](/d), [e](/e)\n1. [`x`](/x)\n\n[f [g]](/f)\n";
+        assert_eq!(
+            warnings(text),
+            ["navigation suspect: lines 1-6, 5 lines of links only"]
+        );
+    }
+
+    #[test]
+    fn text_beside_a_link_is_not_link_only() {
+        assert!(!links_only("[a](/a) and [b](/b)"));
+        assert!(!links_only("[a](/a"));
+        assert!(!links_only("[a] (/a)"));
+        assert!(!links_only("- "));
+        assert!(links_only("[a](/a(1))"));
+        assert!(!links_only("\\a[b](/c)"));
+        assert!(!links_only("\\* [a](/a)"));
+        assert!(!links_only("| [a](/a) | [b](/b) |"));
+        assert!(!links_only("[a](/a),"));
+        assert!(!links_only(", [a](/a)"));
+        assert!(links_only("[a](/a) | [b](/b) · [c](/c)"));
+    }
+
+    #[test]
+    fn a_pipe_table_of_links_is_not_a_menu() {
+        let rows: String = (0..6)
+            .map(|i| format!("| [a](/{i}) | [b](/{i}) |\n"))
+            .collect();
+        assert!(warnings(&rows).is_empty());
+    }
+
+    #[test]
+    fn links_in_a_fence_are_not_a_run() {
+        let text = format!("```\n{}```\n", menu(6));
+        assert!(warnings(&text).is_empty());
+    }
+
+    #[test]
+    fn a_fence_ends_a_run() {
+        let text = format!("{}```\nx\n```\n{}", menu(3), menu(3));
+        assert!(warnings(&text).is_empty());
     }
 }

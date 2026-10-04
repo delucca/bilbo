@@ -256,6 +256,41 @@ pub fn read_sources(dir: &Path) -> std::io::Result<Vec<SourceFile>> {
     Ok(out)
 }
 
+/// The `origin` of each source of a corpus folder, in name order, reading only up to the closing line of its
+/// frontmatter. A file that cannot be read as text is skipped.
+pub fn read_origins(dir: &Path) -> std::io::Result<Vec<(String, Option<String>)>> {
+    use std::io::BufRead;
+    let mut out = Vec::new();
+    for entry in store::entries(dir)? {
+        let Some(name) = source_stem(&entry) else {
+            continue;
+        };
+        if entry.kind != EntryKind::File {
+            continue;
+        }
+        let Ok(file) = std::fs::File::open(&entry.path) else {
+            continue;
+        };
+        let mut head = String::new();
+        let mut closed = false;
+        for (i, line) in std::io::BufReader::new(file).lines().enumerate() {
+            let Ok(line) = line else {
+                break;
+            };
+            closed = i > 0 && line == "---";
+            head.push_str(&line);
+            head.push('\n');
+            if closed || i > 200 {
+                break;
+            }
+        }
+        if closed {
+            out.push((name, source::read(&head).origin));
+        }
+    }
+    Ok(out)
+}
+
 /// The source file at `path`, `None` when it cannot be read as UTF-8 text.
 pub fn read_source(path: &Path, name: String) -> Option<SourceFile> {
     let text = std::fs::read(path)

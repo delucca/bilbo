@@ -11,7 +11,7 @@ usage: bilbo new <kind> <topic> [--title <text>]
        bilbo digest
        bilbo library [<corpus>]
        bilbo library show <corpus>/<name>|<id>[#<anchor>] [--depth <n>]
-       bilbo library stage <file> --origin \"<url|doc>: <value>\" [--fetched <YYYY-MM-DD>]
+       bilbo library stage <url> | <file> --origin \"<url|doc>: <value>\" [--fetched <YYYY-MM-DD>] [--html]
        bilbo library land <stage> <corpus>/<name> --keep <a>-<b>[,<c>-<d>]... [--title <text>] [--replace [--force]]
        bilbo library plan <ref>... [--budget-tokens <n>] [--slice-bytes <n>] [--slice-lines <n>]
        bilbo library read <plan> <slice>... [--part <k>/<n>]

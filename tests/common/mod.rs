@@ -533,6 +533,162 @@ fn vector_for(state: &State, input: &str) -> Vec<f32> {
     }
 }
 
+/// One answer of the page server: a status, headers and body bytes. `Content-Length` and
+/// `Connection: close` are added when it is sent.
+#[derive(Clone, Debug)]
+pub struct Route {
+    pub status: u16,
+    pub headers: Vec<(String, String)>,
+    pub body: Vec<u8>,
+}
+
+impl Route {
+    /// A 200 answer with `content_type` and `body`.
+    pub fn ok(content_type: &str, body: impl Into<Vec<u8>>) -> Route {
+        Route::status(200)
+            .header("Content-Type", content_type)
+            .body(body)
+    }
+
+    /// An answer with `status` and no headers or body.
+    pub fn status(status: u16) -> Route {
+        Route {
+            status,
+            headers: Vec::new(),
+            body: Vec::new(),
+        }
+    }
+
+    /// A 301 answer to `location`.
+    pub fn redirect(location: &str) -> Route {
+        Route::status(301).header("Location", location)
+    }
+
+    pub fn header(mut self, name: &str, value: &str) -> Route {
+        self.headers.push((name.to_string(), value.to_string()));
+        self
+    }
+
+    pub fn body(mut self, body: impl Into<Vec<u8>>) -> Route {
+        self.body = body.into();
+        self
+    }
+}
+
+/// A page server on 127.0.0.1 answering `GET` from a table of paths, one request per connection.
+/// A path not in the table gets a 404.
+pub struct Pages {
+    /// `http://127.0.0.1:<port>`, no trailing slash.
+    pub url: String,
+    addr: SocketAddr,
+    seen: Arc<Mutex<Vec<String>>>,
+    stop: Arc<AtomicBool>,
+    thread: Option<JoinHandle<()>>,
+}
+
+impl Pages {
+    /// Serves `routes`, each a path (with its query, as sent) and its answer, from a thread.
+    pub fn start(routes: Vec<(&str, Route)>) -> Pages {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let routes: Vec<(String, Route)> = routes
+            .into_iter()
+            .map(|(path, route)| (path.to_string(), route))
+            .collect();
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let stop = Arc::new(AtomicBool::new(false));
+        let thread = {
+            let seen = Arc::clone(&seen);
+            let stop = Arc::clone(&stop);
+            std::thread::spawn(move || {
+                for stream in listener.incoming() {
+                    if stop.load(Ordering::SeqCst) {
+                        break;
+                    }
+                    if let Ok(stream) = stream {
+                        serve_page(stream, &routes, &seen);
+                    }
+                }
+            })
+        };
+        Pages {
+            url: format!("http://{addr}"),
+            addr,
+            seen,
+            stop,
+            thread: Some(thread),
+        }
+    }
+
+    /// The URL of `path`, which starts with `/`.
+    pub fn url(&self, path: &str) -> String {
+        format!("{}{path}", self.url)
+    }
+
+    /// The paths asked for, in order.
+    pub fn requests(&self) -> Vec<String> {
+        self.seen.lock().unwrap().clone()
+    }
+}
+
+impl Drop for Pages {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::SeqCst);
+        if let Some(thread) = self.thread.take() {
+            // Poke the blocked accept so the thread sees `stop` and leaves.
+            while !thread.is_finished() {
+                let _ = TcpStream::connect_timeout(&self.addr, Duration::from_millis(50));
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            let _ = thread.join();
+        }
+    }
+}
+
+fn serve_page(mut stream: TcpStream, routes: &[(String, Route)], seen: &Mutex<Vec<String>>) {
+    let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
+    let Ok(clone) = stream.try_clone() else {
+        return;
+    };
+    let mut reader = BufReader::new(clone);
+    let mut line = String::new();
+    if reader.read_line(&mut line).unwrap_or(0) == 0 {
+        return;
+    }
+    let path = line.split_whitespace().nth(1).unwrap_or("").to_string();
+    loop {
+        let mut header = String::new();
+        if reader.read_line(&mut header).unwrap_or(0) == 0 || header == "\r\n" {
+            break;
+        }
+    }
+    seen.lock().unwrap().push(path.clone());
+    let missing = Route::status(404);
+    let route = routes
+        .iter()
+        .find(|(p, _)| *p == path)
+        .map_or(&missing, |(_, route)| route);
+    let reason = match route.status {
+        200 => "OK",
+        301 => "Moved Permanently",
+        302 => "Found",
+        404 => "Not Found",
+        500 => "Internal Server Error",
+        _ => "Status",
+    };
+    let mut head = format!("HTTP/1.1 {} {reason}\r\n", route.status);
+    for (name, value) in &route.headers {
+        head.push_str(&format!("{name}: {value}\r\n"));
+    }
+    head.push_str(&format!(
+        "Content-Length: {}\r\nConnection: close\r\n\r\n",
+        route.body.len()
+    ));
+    let _ = stream.write_all(head.as_bytes());
+    let _ = stream.write_all(&route.body);
+    let _ = stream.flush();
+}
+
 static UNUSED: Mutex<Vec<OwnedFd>> = Mutex::new(Vec::new());
 
 /// A port on 127.0.0.1 that nothing listens on and that no other test or process can take: the

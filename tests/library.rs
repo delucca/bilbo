@@ -3,7 +3,7 @@ mod common;
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 
-use common::{Run, TempDir, bilbo, bilbo_input, note_text, snapshot};
+use common::{Pages, Route, Run, TempDir, bilbo, bilbo_input, dead_url, note_text, snapshot};
 
 const ID_A: &str = "01M3EZ8NVEC2KJQNGK5DTK349R";
 const ID_B: &str = "01M3EZ8NVEC2KJQNGK5DTK3400";
@@ -2529,4 +2529,555 @@ fn force_without_replace_is_a_usage_error() {
     );
     assert_eq!(snapshot(&lab.root), before);
     assert!(lab.staged().contains(&stage));
+}
+
+// --- stage <url> and --html ---
+
+const PAGES: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/pages");
+
+fn fixture(name: &str, ext: &str) -> Vec<u8> {
+    std::fs::read(format!("{PAGES}/{name}.{ext}")).unwrap()
+}
+
+fn html_route(name: &str) -> Route {
+    Route::ok("text/html; charset=utf-8", fixture(name, "html"))
+}
+
+fn capture_of(run: &Run) -> Vec<u8> {
+    std::fs::read(field(&run.stdout, "capture")).unwrap()
+}
+
+fn stage_folder(run: &Run) -> PathBuf {
+    PathBuf::from(field(&run.stdout, "capture"))
+        .parent()
+        .unwrap()
+        .to_path_buf()
+}
+
+fn fetch_json(run: &Run) -> serde_json::Value {
+    let text = std::fs::read_to_string(stage_folder(run).join("fetch.json")).unwrap();
+    serde_json::from_str(&text).unwrap()
+}
+
+/// Stages `url` and expects a refusal that names it, leaves no stage folder and changes nothing.
+fn refusal(lab: &Lab, url: &str) -> Run {
+    let before = snapshot(&lab.root);
+    let run = lab.library(&["stage", url]);
+    assert_eq!(run.code, 1, "{}", run.stderr);
+    assert!(run.stderr.contains(url), "{}", run.stderr);
+    assert!(lab.staged().is_empty());
+    assert_eq!(snapshot(&lab.root), before);
+    run
+}
+
+fn served(route: Route) -> (Pages, String) {
+    let pages = Pages::start(vec![("/p", route)]);
+    let url = pages.url("/p");
+    (pages, url)
+}
+
+#[test]
+fn each_fixture_page_stages_to_its_markdown() {
+    for name in ["headings", "code", "tables", "main", "escapes"] {
+        let lab = Lab::new(&format!("fetch-{name}"));
+        let pages = Pages::start(vec![("/p", html_route(name))]);
+        let before = snapshot(&lab.root);
+        let run = lab.library(&["stage", &pages.url("/p")]);
+        assert_eq!(run.code, 0, "{name}: {}", run.stderr);
+        assert_eq!(
+            String::from_utf8(capture_of(&run)).unwrap(),
+            String::from_utf8(fixture(name, "md")).unwrap(),
+            "{name}"
+        );
+        assert_eq!(snapshot(&lab.root), before);
+    }
+}
+
+#[test]
+fn raw_is_the_served_bytes_and_fetch_json_records_a_200() {
+    let lab = Lab::new("fetch-200");
+    let pages = Pages::start(vec![("/p", html_route("main"))]);
+    let url = pages.url("/p");
+    let run = lab.library(&["stage", &url]);
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    assert_eq!(
+        std::fs::read(field(&run.stdout, "raw")).unwrap(),
+        fixture("main", "html")
+    );
+    let fetch = fetch_json(&run);
+    assert_eq!(fetch["url"], url);
+    assert_eq!(fetch["final_url"], url);
+    assert_eq!(fetch["status"], 200);
+    assert_eq!(fetch["media_type"], "text/html");
+    assert_eq!(
+        fetch["converter"],
+        format!("bilbo {}", env!("CARGO_PKG_VERSION"))
+    );
+    let at = fetch["fetched_at"].as_str().unwrap();
+    assert!(at.ends_with("-03:00"), "{at}");
+    assert!(at.parse::<jiff::Timestamp>().is_ok(), "{at}");
+    assert_eq!(fetch.as_object().unwrap().len(), 6);
+    assert!(!run.stdout.contains("final url:"));
+}
+
+#[test]
+fn a_redirect_is_recorded_and_the_origin_stays_as_given() {
+    let lab = Lab::new("fetch-301");
+    let pages = Pages::start(vec![
+        ("/old", Route::redirect("/new")),
+        ("/new", html_route("main")),
+    ]);
+    let (old, new) = (pages.url("/old"), pages.url("/new"));
+    let run = lab.library(&["stage", &old]);
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    let fetch = fetch_json(&run);
+    assert_eq!(fetch["url"], old);
+    assert_eq!(fetch["final_url"], new);
+    assert_eq!(fetch["status"], 200);
+    assert_eq!(fetch["media_type"], "text/html");
+    assert_eq!(
+        fetch["converter"],
+        format!("bilbo {}", env!("CARGO_PKG_VERSION"))
+    );
+    assert_eq!(
+        std::fs::read(field(&run.stdout, "raw")).unwrap(),
+        fixture("main", "html")
+    );
+    assert_eq!(field(&run.stdout, "final url"), new);
+
+    let land = lab.land(field(&run.stdout, "stage"), "go/main", &["--keep", "1-3"]);
+    assert_eq!(land.code, 0, "{}", land.stderr);
+    let source = lab.read("go/main.md");
+    assert!(
+        source.contains(&format!("origin: \"url: {old}\"")),
+        "{source}"
+    );
+    assert!(
+        source.contains(&format!("fetched: {}", today())),
+        "{source}"
+    );
+}
+
+#[test]
+fn stage_prints_the_fetch_lines_for_a_page_with_a_main() {
+    let lab = Lab::new("fetch-lines");
+    let pages = Pages::start(vec![("/p", html_route("main"))]);
+    let run = lab.library(&["stage", &pages.url("/p")]);
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    let md = String::from_utf8(fixture("main", "md")).unwrap();
+    let lines: Vec<&str> = md.lines().collect();
+    let manifest = lines.iter().position(|l| *l == "# The Manifest").unwrap() + 1;
+    let out: Vec<&str> = run.stdout.lines().collect();
+    assert!(out[0].starts_with("stage: "));
+    assert!(out[1].starts_with("capture: "));
+    assert!(out[2].starts_with("raw: "));
+    assert_eq!(out[3], "media type: text/html");
+    assert_eq!(out[4], "content: 13-19");
+    assert_eq!(manifest, 13);
+    assert_eq!(out[5], format!("lines: {}", lines.len()));
+    assert!(out[6].starts_with("tokens: "));
+    assert_eq!(out[7], "title: The Manifest");
+    assert_eq!(out[8], "keep: 14-19");
+    assert!(out[9].is_empty());
+}
+
+fn source_with(origin: &str) -> String {
+    format!(
+        "---\nid: {ID_B}\nfetched: 2026-01-01\norigin: \"{origin}\"\ndigest: {ZERO}\n---\n# T\n\nText.\n"
+    )
+}
+
+#[test]
+fn stage_reports_an_existing_source_with_the_same_origin() {
+    let lab = Lab::new("fetch-existing");
+    let pages = Pages::start(vec![("/p", html_route("main"))]);
+    let url = pages.url("/p");
+    let first = lab.library(&["stage", &url]);
+    assert!(!first.stdout.contains("existing:"));
+    let land = lab.land(field(&first.stdout, "stage"), "go/page", &["--keep", "1-3"]);
+    assert_eq!(land.code, 0, "{}", land.stderr);
+    let origin = format!("url: {url}");
+    lab.put("aa/z.md", &source_with(&origin));
+    lab.put("go/b.md", &source_with(&origin));
+    lab.put("zz/prefix.md", &source_with(&format!("{origin}/more")));
+    let again = lab.library(&["stage", &url]);
+    assert_eq!(again.code, 0, "{}", again.stderr);
+    let existing: Vec<&str> = again
+        .stdout
+        .lines()
+        .filter(|l| l.starts_with("existing:"))
+        .collect();
+    assert_eq!(
+        existing,
+        ["existing: aa/z", "existing: go/b", "existing: go/page"],
+        "{}",
+        again.stdout
+    );
+}
+
+#[test]
+fn a_landed_url_source_has_no_capture_key_and_keeps_the_record() {
+    let lab = Lab::new("fetch-land");
+    let pages = Pages::start(vec![("/p", html_route("main"))]);
+    let run = lab.library(&["stage", &pages.url("/p")]);
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    let land = lab.land(field(&run.stdout, "stage"), "go/page", &["--keep", "1-3"]);
+    assert_eq!(land.code, 0, "{}", land.stderr);
+    assert!(!lab.read("go/page.md").contains("capture:"));
+    let facts = lab.library(&["go"]);
+    assert!(!facts.stdout.contains(" · capture "), "{}", facts.stdout);
+    let folder = PathBuf::from(field(&land.stdout, "capture folder"));
+    let mut names: Vec<String> = std::fs::read_dir(&folder)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().into_string().unwrap())
+        .collect();
+    names.sort();
+    assert_eq!(names, ["capture.md", "fetch.json", "landed", "raw"]);
+    let guide = lab
+        .read("go/guide.md")
+        .replace("TODO: describe this source.", "The example manifest page.")
+        .replace("TODO: describe this corpus.", "Example pages.");
+    lab.put("go/guide.md", &guide);
+    let check = lab.run(&["check"]);
+    assert_eq!(check.code, 0, "{}{}", check.stdout, check.stderr);
+}
+
+#[test]
+fn text_markdown_keeps_crlf_as_text_and_plain_text_has_no_converter() {
+    let lab = Lab::new("fetch-text");
+    let pages = Pages::start(vec![
+        (
+            "/md",
+            Route::ok(
+                "text/markdown; charset=utf-8",
+                "# Errors\r\n\r\nWrap them.\r\n",
+            ),
+        ),
+        ("/txt", Route::ok("text/plain", "# Errors\n\nWrap them.\n")),
+    ]);
+    let md = lab.library(&["stage", &pages.url("/md")]);
+    assert_eq!(md.code, 0, "{}", md.stderr);
+    assert_eq!(capture_of(&md), b"# Errors\n\nWrap them.\n");
+    assert_eq!(fetch_json(&md)["converter"], serde_json::Value::Null);
+    assert_eq!(fetch_json(&md)["media_type"], "text/markdown");
+    assert!(!md.stdout.lines().any(|l| l.starts_with("content:")));
+    let txt = lab.library(&["stage", &pages.url("/txt")]);
+    assert_eq!(txt.code, 0, "{}", txt.stderr);
+    assert_eq!(fetch_json(&txt)["converter"], serde_json::Value::Null);
+    assert_eq!(
+        std::fs::read(field(&txt.stdout, "raw")).unwrap(),
+        capture_of(&txt)
+    );
+}
+
+#[test]
+fn not_found_and_server_errors_are_refused_with_the_status() {
+    let lab = Lab::new("fetch-status");
+    let pages = Pages::start(vec![("/boom", Route::status(500))]);
+    let missing = refusal(&lab, &pages.url("/missing"));
+    assert!(missing.stderr.contains("404"), "{}", missing.stderr);
+    let boom = refusal(&lab, &pages.url("/boom"));
+    assert!(boom.stderr.contains("500"), "{}", boom.stderr);
+}
+
+#[test]
+fn a_pdf_is_refused_with_the_route() {
+    let lab = Lab::new("fetch-pdf");
+    let (_pages, url) = served(Route::ok("application/pdf", "%PDF-1.7 x"));
+    let run = refusal(&lab, &url);
+    assert!(run.stderr.contains("PDF"), "{}", run.stderr);
+    assert!(
+        run.stderr.contains(&format!("--origin \"url: {url}\"")),
+        "{}",
+        run.stderr
+    );
+}
+
+#[test]
+fn an_image_is_refused_naming_its_media_type() {
+    let lab = Lab::new("fetch-png");
+    let (_pages, url) = served(Route::ok("image/png", vec![0x89, b'P', b'N', b'G']));
+    let run = refusal(&lab, &url);
+    assert!(run.stderr.contains("image/png"), "{}", run.stderr);
+}
+
+#[test]
+fn a_body_that_is_not_utf8_is_refused() {
+    let lab = Lab::new("fetch-latin1");
+    let (_pages, url) = served(Route::ok(
+        "text/html; charset=iso-8859-1",
+        b"<p>caf\xE9</p>".to_vec(),
+    ));
+    let run = refusal(&lab, &url);
+    assert!(run.stderr.contains("UTF-8"), "{}", run.stderr);
+}
+
+#[test]
+fn a_page_of_scripts_only_is_refused() {
+    let lab = Lab::new("fetch-empty");
+    let (_pages, url) = served(Route::ok(
+        "text/html",
+        "<html><body><script>var a = 1;</script><div id=\"root\"></div></body></html>",
+    ));
+    let run = refusal(&lab, &url);
+    assert!(run.stderr.contains("no text"), "{}", run.stderr);
+}
+
+#[test]
+fn a_body_over_16_mib_is_refused() {
+    let lab = Lab::new("fetch-big");
+    let (_pages, url) = served(Route::ok("text/plain", vec![b'a'; 16 * 1024 * 1024 + 1]));
+    let run = refusal(&lab, &url);
+    assert!(run.stderr.contains("16 MiB"), "{}", run.stderr);
+}
+
+#[test]
+fn eleven_redirects_are_refused() {
+    let lab = Lab::new("fetch-redirects");
+    let paths: Vec<String> = (0..=11).map(|i| format!("/r{i}")).collect();
+    let mut routes: Vec<(&str, Route)> = (0..11)
+        .map(|i| (paths[i].as_str(), Route::redirect(&paths[i + 1])))
+        .collect();
+    routes.push((paths[11].as_str(), Route::ok("text/plain", "end\n")));
+    let pages = Pages::start(routes);
+    let run = refusal(&lab, &pages.url("/r0"));
+    assert!(run.stderr.contains("10 redirects"), "{}", run.stderr);
+}
+
+#[test]
+fn a_dead_port_is_unreachable() {
+    let lab = Lab::new("fetch-dead");
+    let url = format!("{}/p", dead_url());
+    let run = refusal(&lab, &url);
+    assert!(run.stderr.contains("unreachable"), "{}", run.stderr);
+}
+
+#[test]
+fn url_arguments_that_are_usage_errors_send_no_request() {
+    let lab = Lab::new("fetch-usage");
+    let pages = Pages::start(vec![("/p", html_route("main"))]);
+    let url = pages.url("/p");
+    let cases: Vec<(Vec<String>, &str)> = vec![
+        (
+            vec![url.clone(), "--origin".into(), "url: https://go.dev".into()],
+            "--origin",
+        ),
+        (
+            vec![url.clone(), "--fetched".into(), "2026-01-02".into()],
+            "--fetched",
+        ),
+        (vec![url.clone(), "--html".into()], "--html"),
+        (vec![format!("{url}#names")], "#names"),
+        (vec![format!("{url}\"x")], "\""),
+        (vec![format!("{url}/a b")], "whitespace"),
+        (vec![format!("{url}/a\\b")], "\\"),
+        (vec!["ftp://example.org/spec.txt".into()], "https"),
+    ];
+    for (extra, needle) in cases {
+        let mut args = vec!["stage"];
+        args.extend(extra.iter().map(String::as_str));
+        let run = lab.library(&args);
+        assert_eq!(run.code, 2, "{extra:?}: {}", run.stderr);
+        assert!(run.stderr.contains(needle), "{extra:?}: {}", run.stderr);
+        assert!(lab.staged().is_empty());
+    }
+    assert!(pages.requests().is_empty());
+}
+
+#[test]
+fn a_url_without_a_scheme_is_a_missing_file() {
+    let lab = Lab::new("fetch-noscheme");
+    let run = lab.library(&[
+        "stage",
+        "go.dev/doc/effective_go",
+        "--origin",
+        "url: https://go.dev/doc/effective_go",
+    ]);
+    assert_eq!(run.code, 1, "{}", run.stderr);
+    assert!(
+        run.stderr.contains("go.dev/doc/effective_go"),
+        "{}",
+        run.stderr
+    );
+    assert!(lab.staged().is_empty());
+}
+
+#[test]
+fn an_unclosed_fence_warns_and_still_stages() {
+    let lab = Lab::new("fetch-fence");
+    let file = lab.input("fence.md", b"# Title\n\nText.\n\n```go\nfunc main() {}\n");
+    let run = lab.library(&["stage", file.to_str().unwrap(), "--origin", ORIGIN]);
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    assert!(
+        run.stderr
+            .lines()
+            .any(|l| l == "bilbo: unclosed fence: the code fence on line 5 is never closed"),
+        "{}",
+        run.stderr
+    );
+    assert_eq!(lab.staged().len(), 1);
+}
+
+#[test]
+fn a_blockquoted_heading_is_a_lost_heading() {
+    let lab = Lab::new("fetch-lost");
+    let pages = Pages::start(vec![("/p", html_route("headings"))]);
+    let run = lab.library(&["stage", &pages.url("/p")]);
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    let lost: Vec<&str> = run
+        .stderr
+        .lines()
+        .filter(|l| l.contains("heading lost:"))
+        .collect();
+    assert_eq!(
+        lost,
+        ["bilbo: heading lost: <h2> 'Documentation Index' is not a heading in the capture"],
+        "{}",
+        run.stderr
+    );
+}
+
+#[test]
+fn fourteen_lost_headings_print_ten_lines_and_a_count() {
+    let lab = Lab::new("fetch-many-lost");
+    let body: String = (1..=14)
+        .map(|i| format!("<blockquote><h2>Lost heading {i}</h2></blockquote>"))
+        .collect();
+    let (_pages, url) = served(Route::ok("text/html", format!("<body>{body}</body>")));
+    let run = lab.library(&["stage", &url]);
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    let lost: Vec<&str> = run
+        .stderr
+        .lines()
+        .filter(|l| l.contains("heading lost:"))
+        .collect();
+    assert_eq!(lost.len(), 11, "{}", run.stderr);
+    assert_eq!(
+        lost.iter()
+            .filter(|l| l.starts_with("bilbo: heading lost: <h2> "))
+            .count(),
+        10
+    );
+    assert_eq!(lost[10], "bilbo: heading lost: 4 more");
+}
+
+#[test]
+fn a_menu_of_links_is_a_navigation_suspect() {
+    let lab = Lab::new("fetch-nav");
+    let pages = Pages::start(vec![("/p", html_route("main"))]);
+    let run = lab.library(&["stage", &pages.url("/p")]);
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    let md = String::from_utf8(fixture("main", "md")).unwrap();
+    let at = |text: &str| md.lines().position(|l| l == text).unwrap() + 1;
+    let (a, b) = (at("- [Home](/)"), at("- [Contact](/contact)"));
+    assert!(
+        run.stderr.lines().any(
+            |l| l == format!("bilbo: navigation suspect: lines {a}-{b}, 9 lines of links only")
+        ),
+        "{}",
+        run.stderr
+    );
+}
+
+#[test]
+fn a_saved_page_is_converted_with_html_and_kept_raw() {
+    let lab = Lab::new("fetch-html-flag");
+    let file = lab.input("page.html", &fixture("main", "html"));
+    let before = snapshot(&lab.root);
+    let run = lab.library(&[
+        "stage",
+        file.to_str().unwrap(),
+        "--html",
+        "--origin",
+        "url: https://platform.example.com/docs/agents",
+    ]);
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    assert_eq!(snapshot(&lab.root), before);
+    assert_eq!(capture_of(&run), fixture("main", "md"));
+    assert_eq!(
+        std::fs::read(field(&run.stdout, "raw")).unwrap(),
+        fixture("main", "html")
+    );
+    assert!(!stage_folder(&run).join("fetch.json").exists());
+    assert!(run.stdout.lines().any(|l| l.starts_with("content: ")));
+    assert!(!run.stdout.lines().any(|l| l.starts_with("media type:")));
+    let land = lab.land(field(&run.stdout, "stage"), "go/saved", &["--keep", "1-3"]);
+    assert_eq!(land.code, 0, "{}", land.stderr);
+    assert!(lab.read("go/saved.md").contains("capture: external"));
+}
+
+#[test]
+fn the_same_file_without_html_stays_html_with_no_raw() {
+    let lab = Lab::new("fetch-no-html-flag");
+    let file = lab.input("page.html", &fixture("main", "html"));
+    let run = lab.library(&[
+        "stage",
+        file.to_str().unwrap(),
+        "--origin",
+        "url: https://platform.example.com/docs/agents",
+    ]);
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    assert_eq!(capture_of(&run), fixture("main", "html"));
+    assert!(!stage_folder(&run).join("raw").exists());
+    assert!(
+        !run.stdout
+            .lines()
+            .any(|l| l.starts_with("raw:") || l.starts_with("content:"))
+    );
+}
+
+#[test]
+fn a_redirect_to_the_same_path_with_a_slash_prints_the_final_url() {
+    let lab = Lab::new("fetch-slash");
+    let pages = Pages::start(vec![
+        ("/dir", Route::redirect("/dir/")),
+        ("/dir/", html_route("main")),
+    ]);
+    let run = lab.library(&["stage", &pages.url("/dir")]);
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    assert_eq!(field(&run.stdout, "final url"), pages.url("/dir/"));
+}
+
+#[test]
+fn a_bare_host_prints_no_final_url() {
+    let lab = Lab::new("fetch-bare");
+    let pages = Pages::start(vec![("/", Route::ok("text/plain", "# T\n\ntext\n"))]);
+    let run = lab.library(&["stage", &pages.url.clone()]);
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    assert!(!run.stdout.contains("final url:"), "{}", run.stdout);
+}
+
+#[test]
+fn a_page_without_a_main_has_no_content_lines() {
+    let lab = Lab::new("fetch-nomain");
+    let (_pages, url) = served(Route::ok(
+        "text/html",
+        "<h1>Site</h1><article><h2>One</h2><p>a</p></article><article><h2>Two</h2><p>b</p></article>",
+    ));
+    let run = lab.library(&["stage", &url]);
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    assert_eq!(field(&run.stdout, "content"), "-");
+    assert_eq!(field(&run.stdout, "title"), "Site");
+}
+
+#[test]
+fn an_unreadable_library_leaves_no_stage_folder() {
+    use std::os::unix::fs::PermissionsExt;
+    let lab = Lab::new("fetch-library-locked");
+    let library = lab.root.join("library");
+    std::fs::create_dir_all(library.join("go")).unwrap();
+    std::fs::set_permissions(&library, std::fs::Permissions::from_mode(0o000)).unwrap();
+    let (_pages, url) = served(Route::ok("text/plain", "# T\n\ntext\n"));
+    let run = lab.library(&["stage", &url]);
+    std::fs::set_permissions(&library, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let readable = run.code == 0;
+    if !readable {
+        assert_eq!(run.code, 1, "{}", run.stderr);
+        assert!(
+            run.stderr.contains(&library.display().to_string()),
+            "{}",
+            run.stderr
+        );
+    }
+    assert_eq!(lab.staged().len(), usize::from(readable));
 }

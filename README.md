@@ -8,7 +8,8 @@ a store of plain Markdown notes they write with their own file tools, and a
 `bilbo` command that starts, checks, searches and indexes those notes. A
 `note` skill and a `recall` skill for Claude Code and Codex put the writing and
 the search in the agent's hands, and a `reference` skill answers from the
-library's sources, read in full and cited by id.
+library's sources, read in full and cited by id. An `ingest` skill adds those
+sources: a page, a file or a PDF's text.
 
 - **Plain files.** One note per topic in `<root>/notes/`, named
   `<kind>-<topic>.md`, with a small YAML frontmatter. Read, edit, grep or
@@ -19,10 +20,11 @@ library's sources, read in full and cited by id.
 - **Agent plugin.** `bilbo setup` installs the plugin in Claude Code and Codex
   and a timer that keeps the index current. The plugin also hands the agent the
   notes that bear on each prompt, before it starts, and reminds it to write
-  down what a session settled once its context is compacted. Its `reference`
-  skill reads sources through `bilbo library plan` and `read`, and checks every
-  citation with `bilbo cite`, so the coverage it reports is counted by bilbo,
-  not by the agent.
+  down what a session settled once its context is compacted. Its `ingest`
+  skill stages a URL, cuts the capture to the document and lands it as a
+  source. Its `reference` skill reads sources through `bilbo library plan` and
+  `read`, and checks every citation with `bilbo cite`, so the coverage it
+  reports is counted by bilbo, not by the agent.
 
 ## Contents
 
@@ -175,7 +177,8 @@ and no source is called `guide`.
 A source is not written by hand. Its frontmatter holds `id`, `fetched` (the
 day the text was taken), `origin` (a quoted `url: ...` or `doc: ...`), and
 `digest`, the SHA-256 of everything after the frontmatter, so `bilbo check`
-sees any later edit. `kept` and `capture` are optional. The body opens with
+sees any later edit. `kept` and `capture` are optional; a source fetched
+from a URL carries no `capture` key. The body opens with
 one `# ` title:
 
 ```markdown
@@ -202,10 +205,36 @@ there; bilbo derives them when it prints the guide.
 | `bilbo library` | One row per corpus: its sources, size and guide title. |
 | `bilbo library <corpus>` | The guide's path, then the guide with a facts line under each entry: id, size, tokens, `fetched`, headings. |
 | `bilbo library show <corpus>/<name>\|<id>[#<anchor>] [--depth <n>]` | A source's header and one row per section: its lines, tokens and heading path. An anchor or `--depth` narrows the rows. |
-| `bilbo library stage <file> --origin "<url\|doc>: <value>" [--fetched <YYYY-MM-DD>]` | Copies a text file, with LF line endings, into the state folder and prints its lines, title and headings. Changes nothing in the store. |
+| `bilbo library stage <url>` | Fetches the page, keeps what it answered, and prints the same as for a file. Changes nothing in the store. |
+| `bilbo library stage <file> --origin "<url\|doc>: <value>" [--fetched <YYYY-MM-DD>] [--html]` | Copies a text file, with LF line endings, into the state folder and prints its lines, title and headings. `--html` converts a saved page. Changes nothing in the store. |
 | `bilbo library land <stage> <corpus>/<name> --keep <a>-<b>[,<c>-<d>]... [--title <text>] [--replace [--force]]` | Writes the source from the staged lines the ranges keep, adds its guide entry, and keeps the staged text under `<root>/.bilbo/captures/`. |
 | `bilbo library plan <ref>... [--budget-tokens <n>] [--slice-bytes <n>] [--slice-lines <n>]` | Cuts the picks into slices and partitions, writes the plan under the state folder, and prints its id, the partitions and one row per slice. |
 | `bilbo library read <plan> <slice>... [--part <k>/<n>]` | Prints the named slices with their line numbers, and logs the lines it printed. |
+
+`bilbo library stage <url>` makes one GET request (at most 10 redirects, 60
+seconds, 16 MiB) and sets the origin to `url: <url>` itself, so `--origin`,
+`--fetched` and `--html` are usage errors with a URL. What the answer becomes
+depends on its media type: `text/html` is converted to Markdown, any other
+`text/*` is kept as text, and a PDF, an image or any other type is refused. For
+a PDF the message gives the route: extract its text with a PDF tool, then stage
+that file with `--origin "url: <url>"`. An unreachable server, a non-2xx
+answer, a body that is not UTF-8 and a page that converts to no text are refused
+too, and leave no stage. The conversion keeps navigation and footers; the agent
+cuts them with the line ranges. A page saved from a browser is staged as a file
+with `--html`, and a source landed from it still has `capture: external`.
+
+A URL stage also keeps `raw`, the body as received, and `fetch.json`, the
+request and answer (`url`, `final_url`, `status`, `media_type`, `fetched_at`,
+`converter`), beside `capture.md`. `land` copies both into the capture folder
+under `<root>/.bilbo/captures/`. Besides `stage:`, `capture:`, `lines:`,
+`tokens:`, `title:` and `keep:`, a URL stage prints `raw:`, `media type:`,
+`final url:` after a redirect, and `content:`, the lines of the page's one
+`<main>` or `<article>` (`-` when it has no single one), which `title` and
+`keep` then follow. `existing: <corpus>/<name>` names each source with the same
+origin, so the agent can land with `--replace`. A capture that converts badly
+warns on stderr and never refuses: `unclosed fence` (a code fence with no end),
+`heading lost` (a page heading with no heading line in the capture, ten at
+most) and `navigation suspect` (five or more lines of only links).
 
 An agent adds a source in two steps, and never types its text. `stage` keeps
 the text and shows where its headings are; the agent picks the line ranges
@@ -306,8 +335,8 @@ sources each corpus holds now.
 
 ### From an agent
 
-The bilbo plugin gives Claude Code and Codex three skills, `note`, `recall`
-and `reference`.
+The bilbo plugin gives Claude Code and Codex four skills, `note`, `recall`,
+`reference` and `ingest`.
 
 `note` writes what a later session should know. The agent runs it when you ask
 to keep something ("note this", "save this as a decision"), or when the session
@@ -338,6 +367,16 @@ slices and reads up to 100,000 tokens itself. It drafts one `bilbo:` citation
 per claim, runs `bilbo cite --plan` until every verdict is `ok`, drops or
 narrows any claim its quote does not support, and ends with the picks and
 cite's `citations:`, `coverage:` and `picked:` lines, copied as printed.
+
+`ingest` adds a source to the library ("ingest this page"). It stages the URL
+with `bilbo library stage`, reads the capture around the suggested `keep` and
+every navigation suspect, cuts the document out with `--keep` ranges and lands
+it with `bilbo library land`. It then reads the landed source through
+`bilbo library plan` and `read`, writes its guide entry, and runs `bilbo check`.
+It reports the source's path, id and kept ranges. It never uses WebFetch: a page
+bilbo cannot fetch is saved by the user and staged as a file, and a PDF goes
+through `pdftotext -layout`. Files and PDF text are labelled `capture: external`.
+It replaces an existing source only when you say so.
 
 ### The digest
 
