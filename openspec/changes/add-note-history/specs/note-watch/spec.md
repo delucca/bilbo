@@ -6,15 +6,19 @@
 ## ADDED Requirements
 
 ### Requirement: Watch runs until stopped
-`bilbo watch` SHALL take no arguments, run until it is stopped by a signal, and watch `<root>/notes/`. When it starts, it SHALL print `bilbo: watching <root>/notes` to stderr. When `<root>/notes/` does not exist, it SHALL print `bilbo: no store at <root>` to stderr and exit 1. An argument SHALL be a usage error.
+`bilbo watch` SHALL take no arguments, run until it is stopped by a signal, and watch `<root>/notes/`. When it starts, it SHALL print `bilbo: watching <root>/notes` to stderr. When `<root>` does not exist, it SHALL print `bilbo: no store at <root>` to stderr and exit 1. When `<root>` exists and `<root>/notes/` cannot be listed, it SHALL start and wait for the folder, as `A missing notes folder` says. An argument SHALL be a usage error.
 
 #### Scenario: Watch starts
 - **WHEN** an agent runs `bilbo watch` against a store
 - **THEN** stderr holds `bilbo: watching <root>/notes` and the process keeps running
 
 #### Scenario: No store
-- **WHEN** `BILBO_HOME` names a folder with no `notes/` inside it and a user runs `bilbo watch`
-- **THEN** stderr is `bilbo: no store at <that folder>`, nothing is created under it, and the exit code is 1
+- **WHEN** `BILBO_HOME` names a folder that does not exist and a user runs `bilbo watch`
+- **THEN** stderr is `bilbo: no store at <that folder>`, nothing is created, and the exit code is 1
+
+#### Scenario: A store without notes
+- **WHEN** `BILBO_HOME` names a folder that holds `library/` and no `notes/`, and a user runs `bilbo watch`
+- **THEN** stderr holds `bilbo: cannot read <root>/notes: <reason>; waiting`, the process keeps running, and once `notes/` is created holding a note, stderr holds `bilbo: watching <root>/notes` and that note has an `added` version
 
 #### Scenario: An argument
 - **WHEN** a user runs `bilbo watch --now`
@@ -82,7 +86,7 @@ Versions SHALL be recorded once `<root>/notes/` has had no change for 2 seconds,
 - **THEN** within 10 seconds `bilbo history release` lists an `edited` version holding the new bytes
 
 ### Requirement: A missing notes folder
-When watch cannot list `<root>/notes/` while it runs, it SHALL record nothing, print `bilbo: cannot read <root>/notes: <reason>; waiting` to stderr once, and keep running. Once the folder can be listed again, it SHALL print `bilbo: watching <root>/notes` and record what changed, under the rules above. When the folder lists no file that holds a note id while history holds a note whose latest version is not `deleted`, watch SHALL record nothing and print `bilbo: <root>/notes holds no notes; not recording deletions` to stderr once.
+When watch cannot list `<root>/notes/`, at start or while it runs, it SHALL record nothing, print `bilbo: cannot read <root>/notes: <reason>; waiting` to stderr once, and keep running. Once the folder can be listed again, it SHALL print `bilbo: watching <root>/notes` and record what changed, under the rules above. When the folder lists no file that holds a note id while history holds a note whose latest version is not `deleted`, watch SHALL record nothing and print `bilbo: <root>/notes holds no notes; not recording deletions` to stderr once.
 
 #### Scenario: The folder is moved away and back
 - **WHEN** watch is running against a store of 3 notes, and a user moves `notes/` to `notes.bak`, waits 15 seconds, and moves it back
