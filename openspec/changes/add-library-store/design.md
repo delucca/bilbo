@@ -9,7 +9,7 @@ See proposal.md for why. What exists today and constrains the approach:
 - **Headings.** `rank::passages` (`src/rank.rs`) finds headings outside fences with a private `heading` function: one to six `#` at column 0, a space, and text with its closing `#` run removed and whitespace collapsed. The `note-recall` spec's Passages requirement fixes that behavior. The outline reuses it, so a section and a recall passage start on the same lines.
 - **Check.** `check::run` (`src/check.rs`) scans `notes/`, collects `(path, message)` pairs, reports shared ids and topics on every file involved with the `shared` helper, sorts, and exits 1 on any line. It refuses with `no store at <root>` when `notes/` is missing.
 - **Writes.** `bilbo new` writes a temp file, fsyncs it and hard-links it into place, so a name race has one winner (`src/new.rs`, `write_new`). `src/swap.rs` exists only in the unshipped `add-note-history` draft.
-- **Dependencies.** `Cargo.toml` has no hash crate except `ring`, which AGENTS.md keeps in `src/model.rs`. The `add-note-history` draft adds `sha2` 0.11.0 in `src/versions.rs` (its design.md, "`sha2` 0.11.0, in `src/versions.rs` only").
+- **Dependencies.** `Cargo.toml` has no hash crate except `ring`, which AGENTS.md keeps in `src/model.rs`. The `add-note-history` draft also uses `sha2` 0.11.0, through `src/hash.rs` (its design.md, "`sha2` 0.11.0, through `src/hash.rs`").
 - **Rust.** The dev shell runs Rust 1.95.0, so `std::fs::File::lock` (stable since 1.89) is available. A scratch crate locked a file with it on 2026-10-03.
 - **The data to migrate.** 8 notebook libraries, 441 sources, 1,172 files (`libaudit.json` in the planning notebook). A scan on 2026-10-03 found: every file has frontmatter and one `sources` item of type `url`; every body opens with its `# ` title; every body has exactly one level-1 heading outside fences (the audit's "multi_h1" file counted fences naively); 5 files hold CR characters; 5 bodies end inside an open fence, and only one of them is a chapter (the last chapter of its source); no name breaks the topic grammar and none is `guide`; no corpus name is reserved; 26 cognition bodies open with a provenance header in one of two shapes.
 
@@ -50,7 +50,7 @@ Why new modules instead of extending `note.rs`: a note and a source share the fr
 - **The version:** 0.11.0, the latest stable release (2026-03-25 on crates.io), MIT or Apache-2.0, `rust-version` 1.85. It is the version `add-note-history` pins, so both changes resolve to one copy.
 - **What it adds** (`cargo tree` on 2026-10-03, in a scratch crate): `digest` 0.11.3, `block-buffer`, `crypto-common`, `hybrid-array`, `typenum`, `const-oid`, `cpufeatures` (which uses the `libc` 0.2.190 already in the tree) and `cfg-if`.
 - **Why `src/hash.rs` and not `src/source.rs`:** the history change needs the same function. A module of its own lets both call it while the dependency keeps one user, as AGENTS.md asks.
-- **`src/hash.rs` is the home of `sha2`, whatever the archive order.** This is a cross-series dependency: `add-note-history`'s design line "`sha2` 0.11.0, in `src/versions.rs` only" must change so that `versions.rs` calls `hash::sha256_hex` and never uses `sha2` directly. If `add-note-history` ships first, its implementation creates `src/hash.rs` with that one function. AGENTS.md's dependency rule says "`sha2` in `src/hash.rs`", and `openspec/config.yaml`'s Stack line names `sha2`.
+- **`src/hash.rs` is the home of `sha2`, whatever the archive order.** This is a cross-series dependency: `add-note-history`'s design has `versions.rs` call `hash::sha256_hex` and never use `sha2` directly. If `add-note-history` ships first, its implementation creates `src/hash.rs` with that one function. AGENTS.md's dependency rule says "`sha2` in `src/hash.rs`", and `openspec/config.yaml`'s Stack line names `sha2`.
 
 ### The source file as written
 
@@ -164,29 +164,13 @@ The duplicate-origin rule is a `land` warning, not a check problem. Two sources 
 
 `check` refuses only when both folders are missing. A user whose first act is `library land` gets a store `check` accepts, and the migration does not need to create an empty `notes/`. `recall`, `index` and `digest` keep their own `no store` rule on `notes/`, since they never read the library.
 
-### The migration script
+### The migration is outside this change
 
-`migrate.py`, in this change folder, Python 3 standard library only. It writes the files itself instead of calling `stage` and `land`, because `land` mints new ids and labels everything `external`, while migration must keep every old id and say `legacy`. A `land --id` flag for one run would stay in the product forever.
-
-```
-BILBO_HOME=<absolute folder> python3 migrate.py --notebooks <folder> --report <folder>
-```
-
-1. **Refuse** when `BILBO_HOME` is unset or relative, or `$BILBO_HOME/library` exists and is not empty.
-2. **Corpora.** For each `<notebooks>/*/library/`, the corpus name is the notebook folder's topic: `20260926T131632Z--go__shared` gives `go`. A name that breaks the grammar, is reserved, or repeats stops the run.
-3. **Entries.** In the old `library/index.md`, each `## <Title>` entry starts with the script line `` `<file>` · … <!-- sha256:… --> ``. The file names the source: `<name>.md`, or `<name>/index.md` for a split source. The prose is every line after the script line up to the next `## `, with leading and trailing blank lines dropped. An entry without a script line, or a source without an entry, stops the run.
-4. **Flat sources.** `<name>.md` keeps its `id` and `fetched`. `origin` is its one `sources` item. The body is the old body with CRLF and lone CR turned into LF. `capture: legacy`, no `kept`, and the digest of the new body.
-5. **Split sources.** `<name>/index.md` gives the `id`, `fetched`, `origin` and the title (its `# ` line). The chapter files, in file-name order, each open with `# <title>: <chapter>`. The body is `# <title>`, then the front-matter chapter's lines without its heading, then for each other chapter `## <chapter>` and its lines. Every chapter becomes a level-2 heading: `split_source.py` cut at every heading at or above its cut level, so no chapter body holds a level-2 heading, and the result never inverts nesting. A chapter whose title does not start with `<title>: `, or whose `fetched` or `sources` differ from the index's, stops the run.
-6. **Cognition headers.** In a body whose third line starts with `**Source**`, the lines from there through the next line that is exactly `---`, and the blank line after it, leave the body. They are appended to that source's guide entry, after a blank line, as they were. The original files stay in the notebook untouched.
-7. **Guides.** `guide.md` keeps the old corpus index's `id`. `created` is the old index's date at `00:00` with the local UTC offset of that day. The title is the old title without a trailing ` index`. The lead is copied as it is, then one `## <name>` entry per source in the old order, each with its prose.
-8. **Self-checks.** Before writing anything: each flat body equals the old body after line-ending normalization and header removal; each split body, with its `##` chapter lines removed, equals the old chapters' bodies joined in order; every id is unique; and every chapter heading is a heading in the rejoined body, so no open fence swallows one. Headings are counted with bilbo's rule (`rank::heading`: one to six `#` at column 0, then a space), ported to the script. The script lists, without stopping, every line the old Python `HEADING` regex took for a heading and bilbo will not, such as one indented by up to three spaces or followed by a tab, with its file and line. Those sections and their anchors disappear, and the cutover sees the list.
-9. **Output.** It writes the library, then `<report>/map.tsv`, one row per old file: the path relative to `--notebooks`, a tab, the new reference (`<id>` for a source or a guide, `<source id>#<chapter>` for a chapter), a tab, and `<corpus>/<name>`, or `<corpus>/guide` for a guide. It prints the counts of corpora, sources, rejoined sources, moved headers and map rows.
+The eight notebook libraries move into this format through a one-off Rust tool in the planning notebook's `work/library-migrate/`, never through a product verb. It writes the files itself instead of calling `stage` and `land`, because `land` mints new ids and labels everything `external`, while migration must keep every old id and say `legacy`. A `land --id` flag for one run would stay in the product forever. Its own `DESIGN.md` holds the steps: corpora named by notebook topic, the 54 split sources rejoined with every chapter at `##` under their folder ids, `capture: legacy`, the entry prose copied, the 26 cognition provenance headers moved word for word into their guide entries, and an old-path to id map. The cutover runs it.
 
 Rejected:
 - A product import verb (`library import`). The notebook layout is this user's, not the product's.
-- Keeping the cognition headers in the bodies. They are text the capture tool wrote, not the page.
-- Putting them only in the notebook. The `Format` line explains the `[[page]]` and `[[file]]` markers that readers meet in those bodies, so it belongs where a reader looks first.
-- Chapters at their original levels. `split_source.py` did not record them, and level 2 is always safe.
+- A script in this change folder. Nothing in the repository runs it after the cutover, and bilbo's tooling is Rust.
 
 ## Risks / Trade-offs
 
@@ -202,7 +186,7 @@ Rejected:
 ## Migration Plan
 
 - The product: the library is new, so nothing on an existing store changes. A store with notes and no library checks as before.
-- The user's library: tasks run `migrate.py` from a copy of the notebook libraries into a temporary `BILBO_HOME` and check the result. The real run, the rewrite of the 3 note citations and 2 `doc:` sources, and the dnix switch happen at the cutover that `add-library-reading` names. Until then, the notebook libraries and their skills keep working.
+- The user's library: the cutover runs the one-off tool in the planning notebook's `work/library-migrate/`, first into a scratch `BILBO_HOME`, then into the real one. That run, the rewrite of the 3 note citations and 2 `doc:` sources, and the dnix switch happen at the cutover that `add-library-reading` names. Until then, the notebook libraries and their skills keep working.
 - Rollback: remove `<root>/library/` and `<root>/.bilbo/captures/`. No other file changes.
 
 ## Decisions to confirm
@@ -218,4 +202,4 @@ Rejected:
 9. No `--json` in this change.
 10. `stage` lists only level-1 and level-2 headings, and suggests a keep range and a title.
 11. The catalog test counts sections at the cut level, not at the most common level, which differs from the contract's wording.
-12. Migration: files written by the script, not through `land`; chapters rejoined at level 2; the cognition headers moved verbatim into their guide entries; guide `created` set to the old date at `00:00` local time.
+12. Migration: a one-off Rust tool in the planning notebook, run at the cutover, not a script in this change; files written by the tool, not through `land`; chapters rejoined at level 2; the cognition headers moved verbatim into their guide entries; guide `created` set to the old date at `00:00` local time.

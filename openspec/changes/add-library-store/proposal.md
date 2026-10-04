@@ -9,7 +9,7 @@ bilbo's vocabulary has sources and a library, but the store holds only notes. Th
 - A library in the store: `<root>/library/<corpus>/<name>.md`, one file per source whatever its size, and one authored `guide.md` per corpus. There are no subfolders and no split files.
 - A source file format. The frontmatter holds `id`, `fetched`, `origin`, `digest`, and optionally `kept` and `capture`. The body opens with one `# ` title. `digest` is the SHA-256 of the body, so any later edit shows up in `bilbo check`.
 - A guide format. The frontmatter holds `id` and `created`. Then a `# ` title, a lead, and one `## <name>` entry per source with authored prose. Sizes, token counts, dates and the catalog mark are derived when printed, never written.
-- An outline rule shared by every library verb: a source's sections are its headings below the title, outside code fences, as `recall` reads them. Sections are addressed by heading-path anchors (`needless_return > What it does`). A source over 55,000 bytes whose most common heading level holds more than 40 sections is a catalog.
+- An outline rule shared by every library verb: a source's sections are its headings below the title, outside code fences, as `recall` reads them. Sections are addressed by heading-path anchors (`needless_return > What it does`). A source over 55,000 bytes with more than 40 sections at or above its cut level (the shallowest heading level that holds at least two sections) is a catalog.
 - A new verb, `bilbo library`:
   - `bilbo library` lists the corpora with source counts and sizes.
   - `bilbo library <corpus>` prints the guide with a facts line under each entry (file, id, size, tokens, fetched, headings, catalog).
@@ -18,7 +18,6 @@ bilbo's vocabulary has sources and a library, but the store holds only notes. Th
   - `bilbo library land <stage> <corpus>/<name> --keep <ranges> [--title <text>] [--replace]` builds the body from the kept lines, mints the id, writes the digest, keeps the staged text as a local capture, and adds or marks the guide entry.
 - `bilbo check` also checks `<root>/library/`: names, frontmatter, digests, titles, guides, entries against sources, `TODO` stubs, stale lines, and ids shared across notes and library. A store with a library and no `notes/` folder is a store.
 - `sha2` 0.11.0 as a new dependency, kept in one module.
-- A one-off migration script in this change folder, `migrate.py`. It turns the eight notebook libraries into a library under a given `BILBO_HOME`: corpora named by notebook topic, the 54 split sources rejoined under their folder ids, `capture: legacy`, the entry prose copied, the cognition provenance headers moved into the guide entries, and an old-path to id map. It is not a product verb.
 
 ## Capabilities
 
@@ -47,7 +46,7 @@ bilbo's vocabulary has sources and a library, but the store holds only notes. Th
 - A `--json` output for the `library` verb.
 - Moving a source between corpora or deleting one through a verb. Both are a `mv` or `rm` and a guide edit, which `bilbo check` then verifies.
 - Rewriting the 3 note citations and 2 `doc:` sources that point into notebook libraries, switching the dnix skills, and dropping nbrecall's library globs. They belong to the cutover, which `add-library-reading` names.
-- Running the migration against the real store. Tasks run it only into a temporary `BILBO_HOME`.
+- Migrating the eight notebook libraries. A one-off Rust tool outside this repository, in the planning notebook's `work/library-migrate/`, writes them in this change's format (old ids kept, `capture: legacy`, split sources rejoined), and the cutover runs it. It is not a product verb, and nothing in this change runs it.
 
 ## Impact
 
@@ -58,4 +57,4 @@ bilbo's vocabulary has sources and a library, but the store holds only notes. Th
 - Tests: `tests/library.rs` (new), `tests/check.rs` extended, unit tests in the new modules.
 - `README.md` gains a Library section. `AGENTS.md` names the new modules and the `sha2` rule.
 - On disk: `<root>/library/`, `<root>/library/.lock`, `<root>/.bilbo/captures/`, and `<state>/bilbo/staging/`.
-- Cross-series dependency: `add-note-history` adds `sha2` 0.11.0 "in `src/versions.rs` only". That line must change so `versions.rs` calls `hash::sha256_hex`, because `src/hash.rs` is the one home of `sha2` (design.md).
+- Cross-series dependency: `add-note-history` uses `sha2` too. Its design now has `versions.rs` call `hash::sha256_hex`, because `src/hash.rs` is the one home of `sha2` (design.md).

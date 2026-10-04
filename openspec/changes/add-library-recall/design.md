@@ -111,7 +111,7 @@ Alternatives: `--kind source|guide` (overloads the note filter); ignoring `--kin
 - [The library grows past the budget] → Time is linear in bytes; the ignored test catches it at 14 MiB, and a postings cache is the known next step.
 - [A word in a source's title matches every passage of that source] → Inherited from note recall, where the title is part of each heading path. One block per file keeps it to one block, and the other words decide which passage it shows.
 - [A short guide entry outranks the source it describes] → BM25 favors short passages, so a topic word in an entry can come first. The entry names the source, so the hit still leads to it, and the skill hands guide hits on as their source.
-- [Split sources before migration] → Until `migrate.py` runs, the user's library lives in the notebooks and `--library` finds nothing there. The cutover (`add-library-reading`) moves it.
+- [Split sources before migration] → Until the cutover runs the migration tool, the user's library lives in the notebooks and `--library` finds nothing there. The cutover (`add-library-reading`) moves it.
 - [`add-library-reading` changes the reference skill's text again before archiving] → The two MODIFIED requirements copy its current text and every scenario. Re-read it before archiving this change.
 - [The dnix edits lag] → Until they land, the dnix `recall` skill still passes `--include-library` to nbrecall and `review`'s variant B still reads nbrecall. Both keep working on the notebook libraries until the cutover removes them, so nothing breaks in silence; it only stays on the old path.
 
