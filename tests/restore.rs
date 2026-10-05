@@ -606,3 +606,228 @@ fn a_missing_store_creates_nothing() {
     );
     assert!(!home_dir.exists());
 }
+
+/// `decision-release.md` added with `old`, then edited to `new`, which the file holds; returns the store root.
+fn with_scopes(dir: &TempDir, old: &str, new: &str) -> PathBuf {
+    let root = store(dir);
+    write(&root, "decision-release.md", new);
+    seed(
+        &root,
+        IDS[0],
+        &[
+            Seed::new("decision-release.md", Some(old), "added", &days_ago(2)),
+            Seed::new("decision-release.md", Some(new), "edited", &days_ago(1)),
+        ],
+    );
+    root
+}
+
+fn leaves(file: &str, flag: &str, name: &str) -> String {
+    format!(
+        "bilbo: {file} leaves scope '{name}' with this version; keep it with bilbo scope set {flag}{name} notes/{file}\n"
+    )
+}
+
+#[test]
+fn a_version_from_before_the_scope_names_the_scope_it_leaves() {
+    let dir = TempDir::new("restore-before-scope");
+    let root = with_scopes(
+        &dir,
+        &text("one"),
+        &common::in_scope(&text("two"), "personal"),
+    );
+    let first = shorts(&root, "release")[1].clone();
+    let run = restore(&root, &["release", &first]);
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    assert_eq!(run.stderr, leaves("decision-release.md", "", "personal"));
+    assert_eq!(file(&root, "decision-release.md"), text("one"));
+}
+
+#[test]
+fn a_version_in_another_scope_names_force() {
+    let dir = TempDir::new("restore-other-scope");
+    let old = common::in_scope(&text("one"), "work");
+    let root = with_scopes(&dir, &old, &common::in_scope(&text("two"), "personal"));
+    let first = shorts(&root, "release")[1].clone();
+    let run = restore(&root, &["release", &first]);
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    assert_eq!(
+        run.stderr,
+        leaves("decision-release.md", "--force ", "personal")
+    );
+    assert_eq!(file(&root, "decision-release.md"), old);
+}
+
+#[test]
+fn the_same_scope_prints_no_leaves_line() {
+    let dir = TempDir::new("restore-same-scope");
+    let root = with_scopes(
+        &dir,
+        &common::in_scope(&text("one"), "personal"),
+        &common::in_scope(&text("two"), "personal"),
+    );
+    let first = shorts(&root, "release")[1].clone();
+    let run = restore(&root, &["release", &first]);
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    assert_eq!(run.stderr, "");
+}
+
+fn sync_dir(root: &Path) -> PathBuf {
+    let dir = root.join(".bilbo/sync");
+    fs::create_dir_all(&dir).unwrap();
+    dir
+}
+
+fn entry(root: &Path) -> serde_json::Value {
+    let bytes = fs::read(root.join(".bilbo/sync/stale-base.json")).unwrap();
+    serde_json::from_slice::<serde_json::Value>(&bytes).unwrap()[IDS[0]].clone()
+}
+
+#[test]
+fn a_stale_base_entry_keeps_its_base_and_takes_the_restored_version() {
+    let dir = TempDir::new("restore-entry");
+    let root = store(&dir);
+    write(&root, "decision-release.md", &text("two"));
+    let ids = seed(
+        &root,
+        IDS[0],
+        &[
+            Seed::new(
+                "decision-release.md",
+                Some(&text("one")),
+                "added",
+                &days_ago(2),
+            ),
+            Seed::new(
+                "decision-release.md",
+                Some(&text("two")),
+                "edited",
+                &days_ago(1),
+            ),
+        ],
+    );
+    let entry_line = serde_json::json!({ IDS[0]: { "base": ids[0], "written": ids[1] } });
+    fs::write(
+        sync_dir(&root).join("stale-base.json"),
+        entry_line.to_string(),
+    )
+    .unwrap();
+
+    let run = restore(&root, &["release", &ids[0][..12]]);
+
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    assert_eq!(
+        events(&root, "release"),
+        [
+            "restored decision-release.md",
+            "edited decision-release.md",
+            "added decision-release.md"
+        ]
+    );
+    let newest = shorts(&root, "release")[0].clone();
+    let kept = entry(&root);
+    assert_eq!(kept["base"], ids[0]);
+    assert!(kept["written"].as_str().unwrap().starts_with(&newest));
+}
+
+#[test]
+fn an_unrecorded_save_with_an_entry_is_merged_before_the_swap() {
+    let dir = TempDir::new("restore-entry-save");
+    let root = store(&dir);
+    let passages = |setup: &str, rollout: &str| {
+        format!(
+            "{}\n## Setup\n{setup}\n\n## Rollout\n{rollout}\n",
+            note_text(IDS[0], "Release")
+        )
+    };
+    write(
+        &root,
+        "decision-release.md",
+        &passages("B setup", "base rollout"),
+    );
+    let ids = seed(
+        &root,
+        IDS[0],
+        &[
+            Seed::new(
+                "decision-release.md",
+                Some(&passages("base setup", "base rollout")),
+                "added",
+                &days_ago(2),
+            ),
+            Seed::new(
+                "decision-release.md",
+                Some(&passages("B setup", "base rollout")),
+                "edited",
+                &days_ago(1),
+            ),
+        ],
+    );
+    let entry_line = serde_json::json!({ IDS[0]: { "base": ids[0], "written": ids[1] } });
+    fs::write(
+        sync_dir(&root).join("stale-base.json"),
+        entry_line.to_string(),
+    )
+    .unwrap();
+    write(
+        &root,
+        "decision-release.md",
+        &passages("base setup", "agent rollout"),
+    );
+
+    let run = restore(&root, &["release", &ids[0][..12]]);
+
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    assert_eq!(
+        events(&root, "release"),
+        [
+            "restored decision-release.md",
+            "merged decision-release.md",
+            "edited decision-release.md",
+            "edited decision-release.md",
+            "added decision-release.md"
+        ]
+    );
+    let merged = shorts(&root, "release")[1].clone();
+    assert_eq!(
+        history(&root, &["release", &merged]).stdout,
+        passages("B setup", "agent rollout")
+    );
+    assert_eq!(
+        file(&root, "decision-release.md"),
+        passages("base setup", "base rollout")
+    );
+    assert_eq!(names(&root), ["decision-release.md"]);
+}
+
+#[test]
+fn a_leftover_holding_a_staged_version_is_left_for_the_watcher() {
+    let dir = TempDir::new("restore-staged");
+    let root = edited(&dir);
+    let inbound = text("inbound");
+    let hidden = leftover(&root, &inbound);
+    let line = serde_json::json!({
+        "seen": "2026-10-04T12:00:00-03:00",
+        "scope": "personal",
+        "record": {
+            "note": IDS[0],
+            "version": "f".repeat(64),
+            "parents": [],
+            "file": "decision-release.md",
+            "blob": common::sha256_hex(inbound.as_bytes()),
+            "event": "edited",
+            "at": "2026-10-04T12:00:00-03:00",
+        },
+    });
+    fs::write(sync_dir(&root).join("inbox.jsonl"), format!("{line}\n")).unwrap();
+    let before = events(&root, "release");
+    let first = shorts(&root, "release")[1].clone();
+
+    let run = restore(&root, &["release", &first]);
+
+    assert_eq!(run.code, 1);
+    assert!(run.stderr.contains("bilbo watch"), "{}", run.stderr);
+    assert!(!run.stderr.contains("recorded"), "{}", run.stderr);
+    assert_eq!(fs::read_to_string(&hidden).unwrap(), inbound);
+    assert_eq!(events(&root, "release"), before);
+}

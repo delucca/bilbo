@@ -7,10 +7,12 @@ use std::path::Path;
 
 use crate::Failure;
 use crate::host::swap;
-use crate::note::parse_name;
 use crate::note::versions::{self, ContentError, Lock, NameError, Scan, Version, VersionError};
+use crate::note::{self, ScopeKey, parse_name};
+use crate::shared::config;
 use crate::shared::hash;
 use crate::shared::store;
+use crate::sync::integrate::{self, Params};
 
 /// What `apply` is about to do when it calls its hook.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -57,8 +59,15 @@ pub struct Output {
 
 pub fn run(args: &[String], env: &store::Env) -> Result<Output, Failure> {
     let (note, version) = parse(args)?;
+    let settings = config::load(env).map_err(Failure::Config)?;
     let root = store::root(env).map_err(Failure::Config)?;
-    let done = apply(&root, &note, &version, &mut |_| Ok(())).map_err(|e| match e {
+    let syncs = |name: &str| settings.scope(name).is_some_and(|s| s.sync != "off");
+    let params = Params {
+        syncs: &syncs,
+        now: jiff::Timestamp::now(),
+        stale_days: settings.sync.stale_days,
+    };
+    let done = apply(&root, &note, &version, &params, &mut |_| Ok(())).map_err(|e| match e {
         Error::Usage(message) => Failure::Usage(message),
         Error::Refused(message) => Failure::Refused(message),
     })?;
@@ -83,12 +92,14 @@ fn parse(args: &[String]) -> Result<(String, String), Failure> {
     }
 }
 
-/// Restores `version` (a prefix of its id) of `note` (an id or a topic). `hook` is called before each `Step`; an
-/// error from it stops the restore where it is, without cleanup, as a kill would.
+/// Restores `version` (a prefix of its id) of `note` (an id or a topic). `p` is what `integrate::record_local` needs
+/// when a stale-base entry exists. `hook` is called before each `Step`; an error from it stops the restore where it
+/// is, without cleanup, as a kill would.
 pub fn apply(
     root: &Path,
     note: &str,
     version: &str,
+    p: &Params,
     hook: &mut dyn FnMut(Step) -> Result<(), String>,
 ) -> Result<Done, Error> {
     if !root.join("notes").is_dir() {
@@ -99,9 +110,10 @@ pub fn apply(
     }
     let lock = versions::lock(root).map_err(Error::Refused)?;
     let at = versions::now_at();
-    let mut messages = versions::sweep_restore_leftovers(&lock, &at, &Default::default())
-        .map_err(Error::Refused)?;
-    match restore(&lock, note, version, &at, hook) {
+    let staged = integrate::staged(root).map_err(Error::Refused)?;
+    let mut messages =
+        versions::sweep_restore_leftovers(&lock, &at, &staged).map_err(Error::Refused)?;
+    match restore(&lock, p, note, version, &at, &mut messages, hook) {
         Ok(outcome) => Ok(Done { messages, outcome }),
         Err(Error::Refused(message)) => {
             messages.push(message);
@@ -132,9 +144,11 @@ fn swap_error(message: String) -> Error {
 
 fn restore(
     lock: &Lock,
+    p: &Params,
     note: &str,
     prefix: &str,
     at: &str,
+    messages: &mut Vec<String>,
     hook: &mut dyn FnMut(Step) -> Result<(), String>,
 ) -> Result<Outcome, Error> {
     let root = lock.root();
@@ -183,15 +197,33 @@ fn restore(
     {
         return refused(format!("{} is taken by another note", picked.file));
     }
-    versions::record_difference(
-        lock,
-        &named.id,
-        current.map(|f| (f.name.as_str(), f.bytes.as_slice())),
-        at,
-    )
-    .map_err(Error::Refused)?;
-
     let temp = versions::restore_path(root, &named.id);
+    if fs::symlink_metadata(&temp).is_ok() {
+        return refused(format!(
+            "notes/{} holds a version from another device that bilbo watch has yet to write; run restore again after it has",
+            restore_name(&temp)
+        ));
+    }
+    // A save the watcher has not recorded is recorded first, through `record_local`: with a stale-base entry it is
+    // merged against the entry's base, which may rewrite the file.
+    let scan = match current {
+        Some(found) => {
+            let lines =
+                integrate::record_local(lock, p, &named.id, &found.name, Some(&found.bytes), at)
+                    .map_err(Error::Refused)?;
+            messages.extend(lines);
+            versions::scan(&notes)
+                .or_else(|e| refused(format!("cannot read {}: {e}", notes.display())))?
+        }
+        None => {
+            versions::record_difference(lock, &named.id, None, at).map_err(Error::Refused)?;
+            scan
+        }
+    };
+    let current = scan.notes.get(&named.id);
+    let leaves = current.and_then(|found| leaves_scope(&found.bytes, &bytes));
+    let held = current.map(|f| (f.name.as_str(), f.bytes.as_slice()));
+    let mut parents = parents_for(root, &named.id, held).map_err(Error::Refused)?;
     let target = notes.join(&picked.file);
     hook(Step::Write).map_err(Error::Refused)?;
     versions::write_temp(&temp, &bytes, current.map(|f| f.name.as_str()))
@@ -207,8 +239,18 @@ fn restore(
             }
         })?;
         let lead = format!("restored {} to {short}", picked.file);
-        finish(lock, &named.id, &picked.file, &bytes, &temp, at, hook)
-            .map_err(|s| s.error(&lead))?;
+        finish(
+            lock,
+            p,
+            &named.id,
+            &parents,
+            &picked.file,
+            &bytes,
+            &temp,
+            at,
+            hook,
+        )
+        .map_err(|s| s.error(&lead))?;
         return Ok(restored(&picked.file, &short));
     };
     let old = notes.join(&found.name);
@@ -234,14 +276,60 @@ fn restore(
     let out = fs::read(&temp)
         .map_err(|e| Error::Refused(format!("{lead}, but cannot read {}: {e}", temp.display())))?;
     if out != found.bytes {
-        versions::record_difference(lock, &named.id, Some((&found.name, &out)), at)
+        let saved = record_after(lock, &named.id, &parents, &found.name, &out, at)
             .map_err(|e| Error::Refused(format!("{lead}, but {e}")))?;
+        if let Some(version) = saved {
+            parents = vec![version.version];
+        }
     }
-    finish(lock, &named.id, file, &bytes, &temp, at, hook).map_err(|s| s.error(&lead))?;
+    finish(lock, p, &named.id, &parents, file, &bytes, &temp, at, hook)
+        .map_err(|s| s.error(&lead))?;
     match late {
         Some(tail) => refused(format!("{lead}{tail}")),
-        None => Ok(restored(file, &short)),
+        None => {
+            if let Some(line) = leaves {
+                messages.push(line.line(file));
+            }
+            Ok(restored(file, &short))
+        }
     }
+}
+
+/// The scope a restore leaves, and whether keeping it needs `--force`.
+struct Leaves {
+    scope: String,
+    force: bool,
+}
+
+impl Leaves {
+    fn line(&self, file: &str) -> String {
+        let force = if self.force { "--force " } else { "" };
+        format!(
+            "{file} leaves scope '{scope}' with this version; keep it with bilbo scope set {force}{scope} notes/{file}",
+            scope = self.scope
+        )
+    }
+}
+
+/// The scope of the file a restore replaces when the restored bytes hold another `scope` value or none.
+fn leaves_scope(current: &[u8], restored: &[u8]) -> Option<Leaves> {
+    let scope = |bytes: &[u8]| match note::read(&String::from_utf8_lossy(bytes)).scope {
+        ScopeKey::Valid(name) => Some(name),
+        ScopeKey::Absent | ScopeKey::Invalid => None,
+    };
+    let from = scope(current)?;
+    let to = scope(restored);
+    (to.as_deref() != Some(&from)).then(|| Leaves {
+        scope: from,
+        force: to.is_some(),
+    })
+}
+
+fn restore_name(temp: &Path) -> String {
+    temp.file_name()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .into_owned()
 }
 
 fn restored(file: &str, version: &str) -> Outcome {
@@ -266,10 +354,53 @@ impl Stop {
     }
 }
 
-/// Deletes the hidden file and records `restored`.
-fn finish(
+/// The versions the restore's own version follows: the head group that holds what the file held (the deletion when
+/// there is no file), else the only head group, else the last line.
+fn parents_for(root: &Path, id: &str, held: Option<(&str, &[u8])>) -> Result<Vec<String>, String> {
+    let log = versions::load(root, id)?;
+    let groups = versions::heads(&log.versions);
+    let group = match held {
+        Some((file, bytes)) => integrate::held_group(&log.versions, file, &hash::sha256_hex(bytes)),
+        None => groups
+            .iter()
+            .find(|g| g[0].is_deleted())
+            .map(|g| g.iter().map(|v| v.version.clone()).collect()),
+    };
+    match (group, groups.as_slice()) {
+        (Some(group), _) => Ok(group),
+        (None, [only]) => Ok(only.iter().map(|v| v.version.clone()).collect()),
+        _ => versions::last_parents(root, id),
+    }
+}
+
+/// Records the bytes an exchange took out as the version that follows `parents`, unless they are what those hold.
+fn record_after(
     lock: &Lock,
     id: &str,
+    parents: &[String],
+    file: &str,
+    bytes: &[u8],
+    at: &str,
+) -> Result<Option<Version>, String> {
+    let log = versions::load(lock.root(), id)?;
+    let latest = log
+        .versions
+        .iter()
+        .find(|v| parents.first() == Some(&v.version));
+    let digest = hash::sha256_hex(bytes);
+    let Some(event) = versions::event_for(latest, Some((file, &digest))) else {
+        return Ok(None);
+    };
+    versions::record(lock, id, parents, file, Some(bytes), event, at).map(Some)
+}
+
+/// Deletes the hidden file, records `restored` and refreshes the open-conflict summary.
+#[expect(clippy::too_many_arguments, reason = "the steps of one restore")]
+fn finish(
+    lock: &Lock,
+    p: &Params,
+    id: &str,
+    parents: &[String],
     file: &str,
     bytes: &[u8],
     temp: &Path,
@@ -287,18 +418,10 @@ fn finish(
         _ => {}
     }
     hook(Step::Record).map_err(Stop::Hook)?;
-    let parents = versions::last_parents(lock.root(), id).map_err(Stop::Failed)?;
-    versions::record(
-        lock,
-        id,
-        &parents,
-        file,
-        Some(bytes),
-        versions::RESTORED,
-        at,
-    )
-    .map_err(Stop::Failed)?;
-    Ok(())
+    let restored = versions::record(lock, id, parents, file, Some(bytes), versions::RESTORED, at)
+        .map_err(Stop::Failed)?;
+    integrate::keep_base(lock, id, &restored.version).map_err(Stop::Failed)?;
+    integrate::refresh_open(lock, p, &[id.to_string()]).map_err(Stop::Failed)
 }
 
 fn pick<'a>(versions: &'a [Version], prefix: &str, note: &str) -> Result<&'a Version, Error> {
@@ -421,8 +544,20 @@ mod tests {
         fs::read(root.join("notes").join(name)).unwrap()
     }
 
+    fn no_sync(_: &str) -> bool {
+        false
+    }
+
+    fn params() -> Params<'static> {
+        Params {
+            syncs: &no_sync,
+            now: "2026-10-04T15:00:00Z".parse().unwrap(),
+            stale_days: 180,
+        }
+    }
+
     fn go(root: &Path, version: &str) -> Result<Done, Error> {
-        apply(root, "release", version, &mut |_| Ok(()))
+        apply(root, "release", version, &params(), &mut |_| Ok(()))
     }
 
     fn crash_at(at: Step) -> impl FnMut(Step) -> Result<(), String> {
@@ -528,7 +663,7 @@ mod tests {
             }
             Ok(())
         };
-        apply(&root, "release", &first, &mut hook).unwrap();
+        apply(&root, "release", &first, &params(), &mut hook).unwrap();
         assert_eq!(read(&root, "decision-release.md"), text(ID, "one"));
         assert_eq!(files(&root), ["decision-release.md"]);
         let log = load(&root, ID).unwrap();
@@ -544,7 +679,14 @@ mod tests {
     fn a_kill_before_the_hidden_file_changes_nothing() {
         let s = scratch("kill-write");
         let (root, first) = fixture(&s);
-        let err = apply(&root, "release", &first, &mut crash_at(Step::Write)).unwrap_err();
+        let err = apply(
+            &root,
+            "release",
+            &first,
+            &params(),
+            &mut crash_at(Step::Write),
+        )
+        .unwrap_err();
         assert_eq!(err, Error::Refused("killed before Write".into()));
         assert_eq!(files(&root), ["decision-release.md"]);
         assert_eq!(read(&root, "decision-release.md"), text(ID, "two"));
@@ -556,7 +698,14 @@ mod tests {
     fn a_kill_before_the_swap_leaves_the_note_untouched() {
         let s = scratch("kill-swap");
         let (root, first) = fixture(&s);
-        apply(&root, "release", &first, &mut crash_at(Step::Swap)).unwrap_err();
+        apply(
+            &root,
+            "release",
+            &first,
+            &params(),
+            &mut crash_at(Step::Swap),
+        )
+        .unwrap_err();
         assert_eq!(
             files(&root),
             [restore_file(ID), "decision-release.md".to_string()]
@@ -576,7 +725,14 @@ mod tests {
     fn a_kill_between_the_swap_and_the_rename_leaves_one_visible_file() {
         let s = scratch("kill-rename");
         let (root, first) = renamed_fixture(&s);
-        apply(&root, "release", &first, &mut crash_at(Step::Rename)).unwrap_err();
+        apply(
+            &root,
+            "release",
+            &first,
+            &params(),
+            &mut crash_at(Step::Rename),
+        )
+        .unwrap_err();
         assert_eq!(
             files(&root),
             [restore_file(ID), "plan-release.md".to_string()]
@@ -613,7 +769,7 @@ mod tests {
                 }
                 crash_at(step)(at)
             };
-            apply(&root, "release", &first, &mut hook).unwrap_err();
+            apply(&root, "release", &first, &params(), &mut hook).unwrap_err();
             assert_eq!(read(&root, "decision-release.md"), text(ID, "one"));
             let hidden = files(&root).contains(&restore_file(ID));
             assert_eq!(hidden, step != Step::Record, "{step:?}");
@@ -646,7 +802,14 @@ mod tests {
     fn a_kill_after_the_remove_is_picked_up_by_the_next_scan() {
         let s = scratch("kill-record");
         let (root, first) = fixture(&s);
-        apply(&root, "release", &first, &mut crash_at(Step::Record)).unwrap_err();
+        apply(
+            &root,
+            "release",
+            &first,
+            &params(),
+            &mut crash_at(Step::Record),
+        )
+        .unwrap_err();
         assert_eq!(files(&root), ["decision-release.md"]);
         let done = go(&root, &first).unwrap();
         assert!(matches!(done.outcome, Outcome::Matches { .. }));
@@ -665,7 +828,7 @@ mod tests {
         let s = scratch("usage-sweep");
         let (root, first) = fixture(&s);
         fs::write(root.join("notes").join(restore_file(ID)), text(ID, "lost")).unwrap();
-        let err = apply(&root, "Not A Topic", &first, &mut |_| Ok(())).unwrap_err();
+        let err = apply(&root, "Not A Topic", &first, &params(), &mut |_| Ok(())).unwrap_err();
         let Error::Usage(message) = err else {
             panic!("not a usage error");
         };
@@ -684,7 +847,7 @@ mod tests {
         let s = scratch("taken-no-id");
         let (root, first) = renamed_fixture(&s);
         fs::write(root.join("notes/report-release.md"), "no frontmatter\n").unwrap();
-        let err = apply(&root, ID, &first, &mut |_| Ok(())).unwrap_err();
+        let err = apply(&root, ID, &first, &params(), &mut |_| Ok(())).unwrap_err();
         assert_eq!(
             err,
             Error::Refused("decision-release.md is taken by another note".into())
@@ -752,7 +915,7 @@ mod tests {
         let s = scratch("unrecorded-delete");
         let (root, first) = fixture(&s);
         fs::remove_file(root.join("notes/decision-release.md")).unwrap();
-        apply(&root, ID, &first, &mut |_| Ok(())).unwrap();
+        apply(&root, ID, &first, &params(), &mut |_| Ok(())).unwrap();
         let log = load(&root, ID).unwrap();
         let kinds: Vec<&str> = log.versions.iter().map(|v| v.event.as_str()).collect();
         assert_eq!(kinds, [ADDED, EDITED, "deleted", "restored"]);
@@ -764,7 +927,7 @@ mod tests {
         let (root, first) = renamed_fixture(&s);
         put(&root, "report-release.md", OTHER, "other");
         let before = events(&root);
-        let err = apply(&root, ID, &first, &mut |_| Ok(())).unwrap_err();
+        let err = apply(&root, ID, &first, &params(), &mut |_| Ok(())).unwrap_err();
         assert_eq!(
             err,
             Error::Refused("decision-release.md is taken by another note".into())
@@ -779,7 +942,7 @@ mod tests {
         let s = scratch("taken-name");
         let (root, first) = renamed_fixture(&s);
         put(&root, "decision-release.md", OTHER, "other");
-        let err = apply(&root, ID, &first, &mut |_| Ok(())).unwrap_err();
+        let err = apply(&root, ID, &first, &params(), &mut |_| Ok(())).unwrap_err();
         assert_eq!(
             err,
             Error::Refused("decision-release.md is taken by another note".into())
@@ -799,7 +962,7 @@ mod tests {
             }
             Ok(())
         };
-        let err = apply(&root, "release", &first, &mut hook).unwrap_err();
+        let err = apply(&root, "release", &first, &params(), &mut hook).unwrap_err();
         assert_eq!(
             err,
             Error::Refused(format!(
@@ -846,7 +1009,7 @@ mod tests {
             "{message}"
         );
         assert_eq!(files(&root), before);
-        let name = apply(&root, ID, &first, &mut |_| Ok(())).unwrap_err();
+        let name = apply(&root, ID, &first, &params(), &mut |_| Ok(())).unwrap_err();
         assert!(matches!(name, Error::Refused(_)));
     }
 
@@ -891,7 +1054,7 @@ mod tests {
         let dir =
             std::env::temp_dir().join(format!("bilbo-restore-nostore-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
-        let err = apply(&dir, "release", "abcdef", &mut |_| Ok(())).unwrap_err();
+        let err = apply(&dir, "release", "abcdef", &params(), &mut |_| Ok(())).unwrap_err();
         assert_eq!(
             err,
             Error::Refused(format!("no store at {}", dir.display()))
@@ -905,7 +1068,7 @@ mod tests {
         let (root, _) = fixture(&s);
         assert!(matches!(go(&root, "xyz"), Err(Error::Usage(_))));
         assert!(matches!(
-            apply(&root, "Not A Topic", "abcdef", &mut |_| Ok(())),
+            apply(&root, "Not A Topic", "abcdef", &params(), &mut |_| Ok(())),
             Err(Error::Usage(_))
         ));
         assert_eq!(
@@ -920,7 +1083,7 @@ mod tests {
         let s = scratch("order");
         let (root, first) = renamed_fixture(&s);
         let mut seen = Vec::new();
-        apply(&root, "release", &first, &mut |step| {
+        apply(&root, "release", &first, &params(), &mut |step| {
             seen.push(step);
             Ok(())
         })
@@ -936,5 +1099,217 @@ mod tests {
                 Step::Record
             ]
         );
+    }
+
+    /// A note of two passages, in `personal`, for the sync scenarios.
+    fn passages(setup: &str, rollout: &str) -> String {
+        format!(
+            "---\nid: {ID}\ncreated: 2026-10-02T14:23-03:00\nscope: personal\n---\n\n# T\n\n## Setup\n{setup}\n\n## Rollout\n{rollout}\n"
+        )
+    }
+
+    fn with_extra(text: &str) -> String {
+        text.replace("## Rollout", "## Extra\nC\n\n## Rollout")
+    }
+
+    fn set_entry(root: &Path, base: &str, written: &str) {
+        let dir = store::sync_dir(root);
+        fs::create_dir_all(&dir).unwrap();
+        let entry = serde_json::json!({ ID: { "base": base, "written": written } });
+        fs::write(dir.join("stale-base.json"), entry.to_string()).unwrap();
+    }
+
+    fn entry(root: &Path) -> Option<integrate::Base> {
+        integrate::stale_base(root, ID).unwrap()
+    }
+
+    /// H, then two edits sync wrote (B's `## Setup`, then an `## Extra` passage); the stale-base entry holds H and
+    /// the second write, which the file holds. Returns the root and the three versions' ids.
+    fn synced(scratch: &Scratch) -> (PathBuf, Vec<String>) {
+        let root = scratch.0.clone();
+        let file = "decision-release.md";
+        let notes = root.join("notes");
+        fs::write(notes.join(file), passages("base setup", "base rollout")).unwrap();
+        watch(&root, file, ID);
+        fs::write(notes.join(file), passages("B setup", "base rollout")).unwrap();
+        watch(&root, file, ID);
+        let extra = with_extra(&passages("B setup", "base rollout"));
+        fs::write(notes.join(file), extra).unwrap();
+        watch(&root, file, ID);
+        let ids: Vec<String> = load(&root, ID)
+            .unwrap()
+            .versions
+            .iter()
+            .map(|v| v.version.clone())
+            .collect();
+        set_entry(&root, &ids[0], &ids[2]);
+        (root, ids)
+    }
+
+    #[test]
+    fn a_stale_save_after_a_restore_is_still_merged() {
+        let s = scratch("stale-after");
+        let (root, ids) = synced(&s);
+
+        go(&root, &ids[1][..12]).unwrap();
+
+        let log = load(&root, ID).unwrap();
+        let restored = log.versions.last().unwrap();
+        assert_eq!(restored.event, versions::RESTORED);
+        assert_eq!(
+            entry(&root),
+            Some(integrate::Base {
+                base: ids[0].clone(),
+                written: restored.version.clone()
+            })
+        );
+        let lock = versions::lock(&root).unwrap();
+        integrate::record_local(
+            &lock,
+            &params(),
+            ID,
+            "decision-release.md",
+            Some(passages("base setup", "agent rollout").as_bytes()),
+            &versions::now_at(),
+        )
+        .unwrap();
+        assert_eq!(
+            read(&root, "decision-release.md"),
+            passages("B setup", "agent rollout").into_bytes()
+        );
+        let log = load(&root, ID).unwrap();
+        let last = log.versions.last().unwrap();
+        assert_eq!(last.event, "merged");
+        assert_eq!(last.flags, ["stale-base"]);
+    }
+
+    #[test]
+    fn an_unrecorded_save_is_merged_against_the_base_before_the_swap() {
+        let s = scratch("stale-before");
+        let (root, ids) = synced(&s);
+        let stale = passages("base setup", "agent rollout");
+        fs::write(root.join("notes/decision-release.md"), &stale).unwrap();
+
+        let done = go(&root, &ids[1][..12]).unwrap();
+
+        assert!(done.messages.is_empty(), "{:?}", done.messages);
+        let events: Vec<String> = events(&root);
+        assert_eq!(
+            &events[3..],
+            [
+                "edited decision-release.md",
+                "merged decision-release.md",
+                "restored decision-release.md"
+            ]
+        );
+        let log = load(&root, ID).unwrap();
+        assert_eq!(log.versions[4].flags, ["stale-base"]);
+        assert_eq!(
+            String::from_utf8(versions::content(&root, &log.versions[4]).unwrap()).unwrap(),
+            with_extra(&passages("B setup", "agent rollout"))
+        );
+        assert_eq!(
+            read(&root, "decision-release.md"),
+            passages("B setup", "base rollout").into_bytes()
+        );
+        assert_eq!(
+            files(&root),
+            ["decision-release.md"],
+            "no hidden file is left"
+        );
+        let restored = log.versions.last().unwrap();
+        assert_eq!(entry(&root).unwrap().written, restored.version);
+    }
+
+    #[test]
+    fn a_restore_without_an_entry_makes_none() {
+        let s = scratch("no-entry");
+        let (root, first) = fixture(&s);
+        go(&root, &first).unwrap();
+        assert_eq!(entry(&root), None);
+    }
+
+    #[test]
+    fn a_version_waiting_to_be_written_is_left_for_the_watcher() {
+        let s = scratch("staged-leftover");
+        let (root, first) = fixture(&s);
+        let inbound = text(ID, "inbound");
+        let leftover = versions::restore_path(&root, ID);
+        fs::write(&leftover, &inbound).unwrap();
+        let dir = store::sync_dir(&root);
+        fs::create_dir_all(&dir).unwrap();
+        let line = serde_json::json!({
+            "seen": "2026-10-04T12:00:00-03:00",
+            "scope": "personal",
+            "record": {
+                "note": ID,
+                "version": "f".repeat(64),
+                "parents": [],
+                "file": "decision-release.md",
+                "blob": hash::sha256_hex(&inbound),
+                "event": "edited",
+                "at": "2026-10-04T12:00:00-03:00",
+            },
+        });
+        fs::write(dir.join("inbox.jsonl"), format!("{line}\n")).unwrap();
+        let before = events(&root);
+
+        let err = go(&root, &first).unwrap_err();
+
+        let Error::Refused(message) = err else {
+            panic!("not refused");
+        };
+        assert!(message.contains("bilbo watch"), "{message}");
+        assert_eq!(fs::read(&leftover).unwrap(), inbound);
+        assert_eq!(events(&root), before);
+        assert_eq!(read(&root, "decision-release.md"), text(ID, "two"));
+    }
+
+    #[test]
+    fn the_scope_a_restore_leaves_is_named_with_force_only_for_another_scope() {
+        let personal = passages("a", "b").into_bytes();
+        let bare = text(ID, "x");
+        let work = String::from_utf8(personal.clone())
+            .unwrap()
+            .replace("scope: personal", "scope: work");
+        let line = |current: &[u8], restored: &[u8]| {
+            leaves_scope(current, restored).map(|l| l.line("decision-release.md"))
+        };
+        assert_eq!(
+            line(&personal, &bare),
+            Some("decision-release.md leaves scope 'personal' with this version; keep it with bilbo scope set personal notes/decision-release.md".into())
+        );
+        assert_eq!(
+            line(&personal, work.as_bytes()),
+            Some("decision-release.md leaves scope 'personal' with this version; keep it with bilbo scope set --force personal notes/decision-release.md".into())
+        );
+        assert_eq!(line(&personal, &personal), None);
+        assert_eq!(line(&bare, &personal), None);
+    }
+
+    #[test]
+    fn the_restored_version_follows_the_head_the_file_held_not_the_last_line() {
+        let s = scratch("two-heads");
+        let root = s.0.clone();
+        let file = "decision-release.md";
+        let lock = versions::lock(&root).unwrap();
+        let at = versions::now_at();
+        let record = |parents: &[String], body: &str, event: &str| {
+            let bytes = text(ID, body);
+            versions::record(&lock, ID, parents, file, Some(&bytes), event, &at).unwrap()
+        };
+        let first = record(&[], "one", ADDED);
+        let mine = record(std::slice::from_ref(&first.version), "two", EDITED);
+        let theirs = record(std::slice::from_ref(&first.version), "three", EDITED);
+        drop(lock);
+        put(&root, file, ID, "two");
+
+        go(&root, first.short()).unwrap();
+
+        let log = load(&root, ID).unwrap();
+        let restored = log.versions.last().unwrap();
+        assert_eq!(restored.event, versions::RESTORED);
+        assert_eq!(restored.parents, [mine.version]);
+        assert_ne!(restored.parents, [theirs.version]);
     }
 }
