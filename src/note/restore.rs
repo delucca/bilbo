@@ -2,16 +2,13 @@
 //! `history/lock` and replaces the file with an atomic exchange, so no edit is lost and no two visible files ever
 //! hold the note's id.
 
-use std::fs::{self, OpenOptions};
-use std::io::Write;
+use std::fs;
 use std::path::Path;
 
 use crate::Failure;
 use crate::host::swap;
 use crate::note::parse_name;
-use crate::note::versions::{
-    self, ContentError, Found, Lock, NameError, Scan, Version, VersionError,
-};
+use crate::note::versions::{self, ContentError, Lock, NameError, Scan, Version, VersionError};
 use crate::shared::hash;
 use crate::shared::store;
 
@@ -196,7 +193,8 @@ fn restore(
     let temp = versions::restore_path(root, &named.id);
     let target = notes.join(&picked.file);
     hook(Step::Write).map_err(Error::Refused)?;
-    write_temp(&temp, &bytes, current).map_err(Error::Refused)?;
+    versions::write_temp(&temp, &bytes, current.map(|f| f.name.as_str()))
+        .map_err(Error::Refused)?;
     hook(Step::Swap).map_err(Error::Refused)?;
     let Some(found) = current else {
         swap::rename_new(&temp, &target).map_err(|e| {
@@ -323,30 +321,6 @@ fn is_taken(notes: &Path, scan: &Scan, id: &str, name: &str) -> bool {
     found.chain(skipped).any(|(other, other_id)| {
         other_id.map(String::as_str) != Some(id)
             && parse_name(other).is_ok_and(|n| n.topic == topic)
-    })
-}
-
-/// Writes the version's bytes to the hidden file, with the permissions of the file it will replace.
-fn write_temp(temp: &Path, bytes: &[u8], current: Option<&Found>) -> Result<(), String> {
-    let fail = |e: std::io::Error| format!("cannot write {}: {e}", temp.display());
-    let mut file = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(temp)
-        .map_err(fail)?;
-    // The file is ours from here on, so a failure removes it.
-    let filled = (|| {
-        file.write_all(bytes)?;
-        if let Some(found) = current
-            && let Ok(meta) = fs::metadata(temp.with_file_name(&found.name))
-        {
-            file.set_permissions(meta.permissions())?;
-        }
-        file.sync_all()
-    })();
-    filled.map_err(|e| {
-        let _ = fs::remove_file(temp);
-        fail(e)
     })
 }
 

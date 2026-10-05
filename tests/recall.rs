@@ -8,7 +8,7 @@ use common::{
 };
 
 const USAGE: &str = "\
-usage: bilbo new <kind> <topic> [--title <text>]
+usage: bilbo new <kind> <topic> [--title <text>] [--scope <name>]
        bilbo check
        bilbo recall <query>... [--kind <kind>]... [--limit <n>]
        bilbo recall <query>... --library [--corpus <corpus>]... [--limit <n>]
@@ -25,6 +25,8 @@ usage: bilbo new <kind> <topic> [--title <text>]
        bilbo watch
        bilbo history <note> [<version> | --diff <a> [<b>]]
        bilbo restore <note> <version>
+       bilbo scope
+       bilbo scope set [--force] <name> <file>...
        bilbo --help
        bilbo --version
 new creates <root>/notes/<kind>-<topic>.md and prints its path.
@@ -38,6 +40,7 @@ cite checks every bilbo: citation in a draft, and with --plan prints the coverag
 watch records a version of each note when it changes, until it is stopped.
 history lists the versions of a note, newest first, prints one, or shows what changed between two versions, or between one and the note's file now.
 restore writes a past version of a note back as its newest version, keeping what the note held before.
+scope lists the scopes this device declares with their note counts; scope set gives notes a scope.
 setup creates the store and the config and installs the agent plugin, the index timer, the note watcher and, when asked, the local embedder; in a terminal it asks first.
 setup options: --embedder-url <url>, --embedder-model <name>, --embedder-token-env <var>, --embedder-token-file <path>, --embedder-query-prefix <text>, --embedder-local, --embedder-port <port>, --llama-server <path>, --no-plugin, --claude <path>, --codex <path>, --plugin-source <folder|owner/repo#ref>, --no-timer, --index-every <minutes>, --no-watch
 kinds: plan, spec, design, decision, gotcha, research, review, report, reference

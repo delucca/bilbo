@@ -9,13 +9,14 @@ use std::path::{Path, PathBuf};
 const DOMAINS: [&str; 6] = ["citation", "host", "library", "note", "search", "setup"];
 
 /// The verbs, by path below `src/`: a file, or a folder (ending in `/`) whose files are all the verb's.
-const VERBS: [&str; 11] = [
+const VERBS: [&str; 12] = [
     "check.rs",
     "citation/cite.rs",
     "library/cli/",
     "note/history.rs",
     "note/new.rs",
     "note/restore.rs",
+    "note/scope.rs",
     "note/watch.rs",
     "search/digest.rs",
     "search/index.rs",

@@ -868,6 +868,30 @@ pub fn restore_path(root: &Path, note_id: &str) -> PathBuf {
     notes_dir(root).join(format!("{RESTORE_PREFIX}{note_id}"))
 }
 
+/// Writes the version's bytes to the hidden file, with the permissions of the file it will replace.
+pub fn write_temp(temp: &Path, bytes: &[u8], current: Option<&str>) -> Result<(), String> {
+    let fail = |e: std::io::Error| format!("cannot write {}: {e}", temp.display());
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(temp)
+        .map_err(fail)?;
+    // The file is ours from here on, so a failure removes it.
+    let filled = (|| {
+        file.write_all(bytes)?;
+        if let Some(name) = current
+            && let Ok(meta) = fs::metadata(temp.with_file_name(name))
+        {
+            file.set_permissions(meta.permissions())?;
+        }
+        file.sync_all()
+    })();
+    filled.map_err(|e| {
+        let _ = fs::remove_file(temp);
+        fail(e)
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
