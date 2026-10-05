@@ -63,9 +63,11 @@ pub trait Transport: Send {
     /// Removes this device's temporary files older than an hour at `now`.
     fn sweep(&self, now: SystemTime) -> Result<(), String>;
 
-    /// Removes `pair/<nameplate>/`, the one deletion the layout allows. Pairing (change 5) calls it.
-    #[cfg_attr(not(test), expect(dead_code))]
+    /// Removes `pair/<nameplate>/`, the one deletion the layout allows.
     fn remove_mailbox(&self, nameplate: &str) -> Result<(), String>;
+
+    /// Removes each `pair/<nameplate>/` whose `a.msg` was last modified more than `age` before `now`.
+    fn sweep_mailboxes(&self, now: SystemTime, age: Duration) -> Result<(), String>;
 }
 
 /// The transport for `url`, for the device `device`.
@@ -91,7 +93,6 @@ pub fn segment_path(scope: &str, device: &str, seq: u64) -> String {
     format!("scopes/{scope}/devices/{device}/{seq:020}.seg")
 }
 
-#[cfg_attr(not(test), expect(dead_code))]
 pub fn message_path(nameplate: &str, msg: &str) -> String {
     format!("pair/{nameplate}/{msg}.msg")
 }
@@ -506,6 +507,24 @@ impl Transport for Folder {
             _ => Ok(()),
         }
     }
+
+    fn sweep_mailboxes(&self, now: SystemTime, age: Duration) -> Result<(), String> {
+        for nameplate in self.names("pair", |k| k.is_dir())? {
+            if !is_mailbox_name(&nameplate, 64) {
+                continue;
+            }
+            let first = self.root.join("pair").join(&nameplate).join("a.msg");
+            let stale = fs::symlink_metadata(&first)
+                .and_then(|m| m.modified())
+                .ok()
+                .and_then(|modified| now.duration_since(modified).ok())
+                .is_some_and(|old| old > age);
+            if stale {
+                self.remove_mailbox(&nameplate)?;
+            }
+        }
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -731,6 +750,46 @@ mod tests {
         t.remove_mailbox("7").unwrap();
         assert!(t.remove_mailbox("../scopes").is_err());
         assert!(d.0.join("scopes").exists());
+    }
+
+    #[test]
+    fn a_sweep_of_mailboxes_removes_only_the_stale_ones() {
+        let d = dir("sweep_mailboxes");
+        let t = folder(&d, A);
+        let age = Duration::from_secs(30 * 60);
+        let now = SystemTime::now();
+        let back = |path: &str, by: Duration| {
+            File::options()
+                .write(true)
+                .open(d.0.join(path))
+                .unwrap()
+                .set_modified(now - by)
+                .unwrap();
+        };
+        for nameplate in ["7", "8", "9"] {
+            assert_eq!(t.create(&message_path(nameplate, "a"), b"x"), Put::Created);
+        }
+        assert_eq!(t.create(&message_path("9", "b"), b"x"), Put::Created);
+        assert_eq!(t.create(&manifest_path(SCOPE, 1), b"m"), Put::Created);
+        back("pair/7/a.msg", age + Duration::from_secs(1));
+        back("pair/8/a.msg", age - Duration::from_secs(60));
+        back("pair/9/b.msg", age + Duration::from_secs(60));
+        back(&manifest_path(SCOPE, 1), age * 4);
+        fs::create_dir_all(d.0.join("pair/no-a-msg")).unwrap();
+        fs::write(d.0.join("pair/no-a-msg/b.msg"), "x").unwrap();
+        back("pair/no-a-msg/b.msg", age * 4);
+        fs::create_dir_all(d.0.join("pair/Not_A_Name")).unwrap();
+        fs::write(d.0.join("pair/Not_A_Name/a.msg"), "x").unwrap();
+        back("pair/Not_A_Name/a.msg", age * 4);
+        t.sweep_mailboxes(now, age).unwrap();
+        assert!(!d.0.join("pair/7").exists());
+        assert!(d.0.join("pair/8/a.msg").exists());
+        assert!(d.0.join("pair/9/a.msg").exists());
+        assert!(d.0.join("pair/no-a-msg/b.msg").exists());
+        assert!(d.0.join("pair/Not_A_Name/a.msg").exists());
+        assert_eq!(t.get(&manifest_path(SCOPE, 1)).unwrap().unwrap(), b"m");
+        let none = dir("sweep_mailboxes_none");
+        folder(&none, A).sweep_mailboxes(now, age).unwrap();
     }
 
     #[test]

@@ -2446,6 +2446,9 @@ mod tests {
         fn remove_mailbox(&self, nameplate: &str) -> Result<(), String> {
             self.inner.remove_mailbox(nameplate)
         }
+        fn sweep_mailboxes(&self, now: SystemTime, age: std::time::Duration) -> Result<(), String> {
+            self.inner.sweep_mailboxes(now, age)
+        }
     }
 
     #[test]

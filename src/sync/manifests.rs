@@ -234,11 +234,11 @@ fn run(t: &dyn Transport, input: &Input, who: &Recipient, one: &mut One) -> Resu
     Ok(())
 }
 
-fn not_in_scope(name: &str) -> Stop {
+fn not_in_scope(name: &str, url: &str) -> Stop {
     Stop {
         reason: Reason::NotInScope,
         line: format!(
-            "sync {name}: this device is not in the scope; run bilbo device recover on this device"
+            "sync {name}: this device is not in the scope; run bilbo pair with a device that syncs {url}, or bilbo device recover on this device"
         ),
     }
 }
@@ -395,7 +395,7 @@ fn blocked(t: &dyn Transport, input: &Input, who: &Recipient) -> Result<Option<S
     let owner = input.identity.owner.sign.public();
     let listing = scopes::list(t, &owner, who)?;
     if listing.outsider() || scopes::pick(&listing.found, input.name).is_some() {
-        return Ok(Some(not_in_scope(input.name)));
+        return Ok(Some(not_in_scope(input.name, input.url)));
     }
     Ok(unattributed(input, &listing))
 }
@@ -605,7 +605,7 @@ fn restore_scope(
         }
     }
     let candidate = match candidates.as_slice() {
-        [] => return Ok(Restored::Stop(not_in_scope(name))),
+        [] => return Ok(Restored::Stop(not_in_scope(name, input.url))),
         [candidate] => candidate,
         _ => {
             return Ok(Restored::Stop(Stop {
@@ -1287,7 +1287,10 @@ mod tests {
         assert_eq!(stop.reason, Reason::NotInScope);
         assert_eq!(
             stop.line,
-            "sync personal: this device is not in the scope; run bilbo device recover on this device"
+            format!(
+                "sync personal: this device is not in the scope; run bilbo pair with a device that syncs {}, or bilbo device recover on this device",
+                url_of(&folder_path(&d))
+            )
         );
         assert!(manifest::scope_ids(&rb).unwrap().is_empty());
         assert!(!rb.join(format!(".bilbo/scopes/{id}")).exists());
@@ -1519,6 +1522,9 @@ mod tests {
         }
         fn remove_mailbox(&self, nameplate: &str) -> Result<(), String> {
             self.0.remove_mailbox(nameplate)
+        }
+        fn sweep_mailboxes(&self, now: SystemTime, age: std::time::Duration) -> Result<(), String> {
+            self.0.sweep_mailboxes(now, age)
         }
     }
 
