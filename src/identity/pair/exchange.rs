@@ -507,6 +507,9 @@ struct Answer {
     gate: Option<Box<dyn FnOnce() + Send>>,
 }
 
+/// When `a` printed its code.
+type Shown = Arc<Mutex<Option<Instant>>>;
+
 impl Answer {
     fn none() -> Answer {
         Answer {
@@ -524,8 +527,9 @@ impl Answer {
         }
     }
 
-    /// `confirm`, typed once `b` has printed its fingerprint, and not before `not_before`.
-    fn typed(confirm: Confirm, b: Arc<Log>, not_before: Option<Instant>) -> Answer {
+    /// `confirm`, typed once `b` has printed its fingerprint. A late `y` waits until `late` is past
+    /// the instant `a` showed its code, by the window it holds.
+    fn typed(confirm: Confirm, b: Arc<Log>, late: Option<(Shown, Duration)>) -> Answer {
         let text = match confirm {
             Confirm::Yes | Confirm::Late => "y\n",
             Confirm::No => "n\n",
@@ -533,8 +537,11 @@ impl Answer {
         };
         Answer::after(text, move || {
             b.wait_for("fingerprint ");
-            while not_before.is_some_and(|t| Instant::now() < t) {
-                std::thread::sleep(Duration::from_millis(5));
+            if let Some((shown, window)) = late {
+                let since = shown.lock().unwrap().expect("the code was shown");
+                while since.elapsed() < window + Duration::from_millis(100) {
+                    std::thread::sleep(Duration::from_millis(5));
+                }
             }
         })
     }
@@ -763,11 +770,12 @@ fn exchange(w: &World, plan: Plan) -> Done {
     let copier = Copier::start(a.sync(), b.sync(), plan.rules);
     let mut a_side = Side::new();
     let mut b_side = Side::new();
-    let not_before = (plan.confirm == Confirm::Late)
-        .then(|| Instant::now() + plan.a.window + Duration::from_millis(100));
-    let answer = Answer::typed(plan.confirm, b_side.err.clone(), not_before);
+    let shown = Shown::default();
+    let late = (plan.confirm == Confirm::Late).then(|| (shown.clone(), plan.a.window));
+    let answer = Answer::typed(plan.confirm, b_side.err.clone(), late);
     a_side.start(&a, &plan.a_args, true, plan.a, answer);
     let code = a_side.code();
+    *shown.lock().unwrap() = Some(Instant::now());
     let mut args = vec![(plan.typed)(&code), "--via".into(), b.url()];
     if let Some(name) = plan.name {
         args.extend(["--name".into(), name.into()]);

@@ -140,9 +140,11 @@ pub fn run(cx: &mut Cx, code: &str, via: &str, name: Option<&str>) -> Result<(),
     let payload = match reply {
         Reply::Enrolled(payload) => payload,
         Reply::OtherOwner(theirs) => {
-            let own = me
-                .owner
-                .map_or_else(String::new, |o| keys::owner_fingerprint(&o));
+            let Some(own) = me.owner.map(|o| keys::owner_fingerprint(&o)) else {
+                return Err(refused(Refusal::Malformed(
+                    "an other-owner reply to a device with no owner".into(),
+                )));
+            };
             return Err(Failure::Refused(format!(
                 "this device belongs to owner {own}, the other device to {}",
                 keys::owner_fingerprint(&theirs)
@@ -919,6 +921,22 @@ mod tests {
         );
         assert!(!f.w.sync().join("pair/42").exists());
         assert!(manifest::scope_ids(&f.w.root()).unwrap().is_empty());
+    }
+
+    #[test]
+    fn an_other_owner_reply_to_a_device_without_an_owner_is_malformed() {
+        let f = fresh("no-owner-reply");
+        let ours = f.a.owner.sign.public();
+        let run = pair(&f.w, CODE, None, &limits(), |h| {
+            let (session, _) = h.unwrap();
+            let bytes = pake::reply(&session, Outcome::OtherOwner, None, Some(&ours)).unwrap();
+            send(&f.w, &bytes);
+        });
+        assert_eq!(
+            run.refused(),
+            "the message of the other device is not valid: an other-owner reply to a device with no owner"
+        );
+        nothing_written(&f.w, None);
     }
 
     #[test]
