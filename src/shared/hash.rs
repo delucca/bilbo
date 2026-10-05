@@ -1,11 +1,13 @@
 use sha2::{Digest, Sha256};
 
+/// The SHA-256 of `bytes`.
+pub fn sha256(bytes: &[u8]) -> [u8; 32] {
+    Sha256::digest(bytes).into()
+}
+
 /// The SHA-256 of `bytes` in lowercase hex.
 pub fn sha256_hex(bytes: &[u8]) -> String {
-    Sha256::digest(bytes)
-        .iter()
-        .map(|b| format!("{b:02x}"))
-        .collect()
+    sha256(bytes).iter().map(|b| format!("{b:02x}")).collect()
 }
 
 #[cfg(test)]

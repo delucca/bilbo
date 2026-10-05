@@ -3,6 +3,7 @@
 mod check;
 mod citation;
 mod host;
+mod identity;
 mod library;
 mod note;
 mod search;
