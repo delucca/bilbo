@@ -2,7 +2,7 @@ mod common;
 
 use std::path::{Path, PathBuf};
 
-use common::{IDS, Run, TempDir, bilbo, note_text, snapshot, store, write};
+use common::{IDS, Run, TempDir, bilbo, bilbo_scoped, note_text, scoped, snapshot, store, write};
 
 fn check(dir: &TempDir, root: &Path) -> Run {
     bilbo(
@@ -516,4 +516,469 @@ fn library_check_leaves_the_store_as_found() {
     let before = snapshot(&root);
     assert_eq!(check(&dir, &root).code, 1);
     assert_eq!(snapshot(&root), before);
+}
+
+/// A note with `extra` lines after `created` and `body` after the title.
+fn scoped_note(id: &str, extra: &str, body: &str) -> String {
+    format!("---\nid: {id}\ncreated: 2026-10-02T14:23-03:00\n{extra}---\n\n# T\n\n{body}")
+}
+
+fn check_scoped(dir: &TempDir, lines: &[&str], notes: &[(&str, String)]) -> Run {
+    let s = scoped(dir, lines);
+    for (name, text) in notes {
+        std::fs::create_dir_all(s.root.join("notes")).unwrap();
+        write(&s.root, name, text);
+    }
+    bilbo_scoped(&s, &s.home, &["check"])
+}
+
+#[test]
+fn no_scopes_and_no_scope_lines_print_nothing_about_scope() {
+    let dir = TempDir::new("check-scope-none");
+    let run = check_scoped(
+        &dir,
+        &["digest.log = off"],
+        &[("plan-a.md", scoped_note(IDS[0], "", "text\n"))],
+    );
+    assert_eq!((run.code, run.stdout.as_str()), (0, ""), "{}", run.stderr);
+}
+
+#[test]
+fn a_missing_scope_is_a_problem() {
+    let dir = TempDir::new("check-scope-missing");
+    let run = check_scoped(
+        &dir,
+        &["scope.personal.sync = off", "scope.work.sync = off"],
+        &[("plan-release.md", scoped_note(IDS[0], "", "text\n"))],
+    );
+    assert_eq!(run.code, 1);
+    assert_eq!(
+        run.stdout,
+        "notes/plan-release.md: scope: missing; scopes: personal, work\n"
+    );
+}
+
+#[test]
+fn an_undeclared_scope_is_a_problem() {
+    let dir = TempDir::new("check-scope-undeclared");
+    let s = scoped(&dir, &["scope.work.sync = off"]);
+    std::fs::create_dir_all(s.root.join("notes")).unwrap();
+    write(
+        &s.root,
+        "plan-release.md",
+        &scoped_note(IDS[0], "scope: acme\n", "x\n"),
+    );
+    let run = bilbo_scoped(&s, &s.home, &["check"]);
+    assert_eq!(run.code, 1);
+    assert_eq!(
+        run.stdout,
+        format!(
+            "notes/plan-release.md: scope: 'acme' is not declared in {}; scopes: work\n",
+            s.config.display()
+        )
+    );
+}
+
+#[test]
+fn a_scope_with_no_scopes_declared_is_a_problem() {
+    let dir = TempDir::new("check-scope-none-declared");
+    let s = scoped(&dir, &["digest.log = off"]);
+    std::fs::create_dir_all(s.root.join("notes")).unwrap();
+    write(
+        &s.root,
+        "plan-release.md",
+        &scoped_note(IDS[0], "scope: work\n", "x\n"),
+    );
+    let run = bilbo_scoped(&s, &s.home, &["check"]);
+    assert_eq!(run.code, 1);
+    assert_eq!(
+        run.stdout,
+        format!(
+            "notes/plan-release.md: scope: 'work' is not declared in {}\n",
+            s.config.display()
+        )
+    );
+}
+
+#[test]
+fn an_invalid_scope_value_is_reported_once() {
+    let dir = TempDir::new("check-scope-invalid");
+    let run = check_scoped(
+        &dir,
+        &["scope.work.sync = off"],
+        &[
+            ("plan-a.md", scoped_note(IDS[0], "scope: Work\n", "x\n")),
+            (
+                "plan-b.md",
+                scoped_note(IDS[1], "scope: work\nscope: work\n", "x\n"),
+            ),
+        ],
+    );
+    assert_eq!(run.code, 1);
+    let lines = stdout_lines(&run);
+    assert_eq!(lines.len(), 2, "{lines:?}");
+    for line in lines {
+        assert!(line.contains("scope"), "{line}");
+        assert!(
+            !line.contains("is not declared") && !line.contains("missing"),
+            "{line}"
+        );
+    }
+}
+
+#[test]
+fn a_broken_config_stops_check() {
+    let dir = TempDir::new("check-scope-broken");
+    let run = check_scoped(
+        &dir,
+        &["scope.work.embedder = remote"],
+        &[("plan-a.md", scoped_note(IDS[0], "", "x\n"))],
+    );
+    assert_eq!(run.code, 2);
+    assert!(run.stderr.contains("scope.work.embedder"), "{}", run.stderr);
+    assert!(run.stdout.is_empty());
+}
+
+#[test]
+fn check_ignores_what_the_config_does_not_say_about_scopes() {
+    let dir = TempDir::new("check-config-ignored");
+    let root = store(&dir);
+    write(&root, "plan-a.md", &note_text(IDS[0], "A"));
+    let home = dir.path().join("home");
+    std::fs::create_dir_all(&home).unwrap();
+    let run = bilbo(
+        dir.path(),
+        &[
+            ("BILBO_HOME", root.to_str().unwrap()),
+            ("HOME", home.to_str().unwrap()),
+        ],
+        &["check"],
+    );
+    assert_eq!(
+        (run.code, run.stdout.as_str(), run.stderr.as_str()),
+        (0, "", "")
+    );
+
+    let url = common::dead_url();
+    let config = common::config(
+        &dir,
+        &[&format!("embedder.url = {url}"), "embedder.model = m"],
+    );
+    let run = bilbo(
+        dir.path(),
+        &[
+            ("BILBO_HOME", root.to_str().unwrap()),
+            ("BILBO_CONFIG", config.to_str().unwrap()),
+        ],
+        &["check"],
+    );
+    assert_eq!(
+        (run.code, run.stdout.as_str(), run.stderr.as_str()),
+        (0, "", "")
+    );
+}
+
+#[test]
+fn check_reads_the_config() {
+    let dir = TempDir::new("check-config-read");
+    let root = store(&dir);
+    write(&root, "plan-a.md", &note_text(IDS[0], "A"));
+    let missing = dir.path().join("nope");
+    let run = bilbo(
+        dir.path(),
+        &[
+            ("BILBO_HOME", root.to_str().unwrap()),
+            ("BILBO_CONFIG", missing.to_str().unwrap()),
+        ],
+        &["check"],
+    );
+    assert_eq!(run.code, 2);
+    assert!(
+        run.stderr.contains(missing.to_str().unwrap()),
+        "{}",
+        run.stderr
+    );
+    assert!(run.stdout.is_empty());
+}
+
+#[test]
+fn a_mark_of_another_scope_warns_and_leaves_the_exit_at_zero() {
+    let dir = TempDir::new("check-mark-line");
+    let run = check_scoped(
+        &dir,
+        &["scope.work.marks = acme", "scope.personal.sync = off"],
+        &[(
+            "gotcha-deploy.md",
+            scoped_note(
+                IDS[0],
+                "scope: personal\n",
+                "one\ntwo\nAcme's deploy\nacme again\n",
+            ),
+        )],
+    );
+    assert_eq!(run.code, 0, "{}", run.stdout);
+    assert_eq!(
+        run.stdout,
+        "notes/gotcha-deploy.md: scope: 'personal' but line 11 holds 'acme', a mark of 'work' (warning)\n"
+    );
+}
+
+#[test]
+fn a_mark_in_the_file_name_warns() {
+    let dir = TempDir::new("check-mark-name");
+    let run = check_scoped(
+        &dir,
+        &["scope.work.marks = acme", "scope.personal.sync = off"],
+        &[(
+            "gotcha-acme-deploy.md",
+            scoped_note(IDS[0], "scope: personal\n", "nothing\n"),
+        )],
+    );
+    assert_eq!(run.code, 0);
+    assert_eq!(
+        run.stdout,
+        "notes/gotcha-acme-deploy.md: scope: 'personal' but the file name holds 'acme', a mark of 'work' (warning)\n"
+    );
+}
+
+#[test]
+fn a_mark_of_the_notes_own_scope_is_silent() {
+    let dir = TempDir::new("check-mark-own");
+    let run = check_scoped(
+        &dir,
+        &["scope.work.marks = acme"],
+        &[("plan-a.md", scoped_note(IDS[0], "scope: work\n", "acme\n"))],
+    );
+    assert_eq!((run.code, run.stdout.as_str()), (0, ""));
+}
+
+#[test]
+fn an_unassigned_note_lists_the_marks_it_holds() {
+    let dir = TempDir::new("check-mark-unassigned");
+    let s = scoped(
+        &dir,
+        &["scope.personal.sync = off", "scope.work.marks = acme"],
+    );
+    std::fs::create_dir_all(s.root.join("notes")).unwrap();
+    write(&s.root, "plan-x.md", &scoped_note(IDS[0], "", "see acme\n"));
+    write(
+        &s.root,
+        "plan-y.md",
+        &scoped_note(IDS[1], "scope: gone\n", "see acme\n"),
+    );
+    let run = bilbo_scoped(&s, &s.home, &["check"]);
+    assert_eq!(run.code, 1);
+    assert_eq!(
+        run.stdout,
+        format!(
+            "notes/plan-x.md: scope: missing; scopes: personal, work; holds marks of work\n\
+             notes/plan-y.md: scope: 'gone' is not declared in {}; scopes: personal, work; holds marks of work\n",
+            s.config.display()
+        )
+    );
+}
+
+#[test]
+fn warnings_and_problems_sort_together_by_path() {
+    let dir = TempDir::new("check-mark-sort");
+    let run = check_scoped(
+        &dir,
+        &["scope.work.marks = acme", "scope.personal.sync = off"],
+        &[
+            (
+                "plan-b.md",
+                scoped_note(IDS[0], "scope: personal\n", "acme\n"),
+            ),
+            ("plan-a.md", scoped_note(IDS[1], "", "x\n")),
+            ("plan-c.md", scoped_note(IDS[2], "scope: work\n", "x\n")),
+        ],
+    );
+    assert_eq!(run.code, 1);
+    let lines = stdout_lines(&run);
+    assert_eq!(lines.len(), 2, "{lines:?}");
+    assert!(lines[0].starts_with("notes/plan-a.md: scope: missing"));
+    assert!(lines[1].starts_with("notes/plan-b.md: ") && lines[1].ends_with("(warning)"));
+}
+
+#[test]
+fn marks_match_in_sources_but_not_inside_words() {
+    let dir = TempDir::new("check-mark-matching");
+    let sources = "sources:\n  - \"url: https://wiki.acme.example/deploy\"\n";
+    let run = check_scoped(
+        &dir,
+        &["scope.work.marks = acme", "scope.personal.sync = off"],
+        &[
+            (
+                "plan-a.md",
+                scoped_note(IDS[0], &format!("scope: personal\n{sources}"), "x\n"),
+            ),
+            (
+                "plan-b.md",
+                scoped_note(IDS[1], "scope: personal\n", "acmeish\n"),
+            ),
+        ],
+    );
+    assert_eq!(run.code, 0);
+    let lines = stdout_lines(&run);
+    assert_eq!(lines.len(), 1, "{lines:?}");
+    assert!(
+        lines[0].starts_with("notes/plan-a.md: scope: 'personal' but line 6 holds 'acme'"),
+        "{}",
+        lines[0]
+    );
+}
+
+#[test]
+fn a_path_mark_matches_in_either_form_and_not_a_sibling() {
+    let dir = TempDir::new("check-mark-path");
+    let s = scoped(
+        &dir,
+        &[
+            "scope.work.marks = ~/Developer/acme",
+            "scope.personal.sync = off",
+        ],
+    );
+    std::fs::create_dir_all(s.root.join("notes")).unwrap();
+    let absolute = format!("see {}/Developer/acme/api/main.go\n", s.home.display());
+    write(
+        &s.root,
+        "plan-a.md",
+        &scoped_note(IDS[0], "scope: personal\n", &absolute),
+    );
+    write(
+        &s.root,
+        "plan-b.md",
+        &scoped_note(IDS[1], "scope: personal\n", "see ~/Developer/acme/x\n"),
+    );
+    write(
+        &s.root,
+        "plan-c.md",
+        &scoped_note(IDS[2], "scope: personal\n", "see ~/Developer/acme-tools\n"),
+    );
+    let run = bilbo_scoped(&s, &s.home, &["check"]);
+    assert_eq!(run.code, 0);
+    let lines = stdout_lines(&run);
+    assert_eq!(lines.len(), 2, "{lines:?}");
+    assert!(lines[0].starts_with("notes/plan-a.md: ") && lines[1].starts_with("notes/plan-b.md: "));
+}
+
+#[test]
+fn a_warning_prints_the_mark_as_written() {
+    let dir = TempDir::new("check-mark-written");
+    let run = check_scoped(
+        &dir,
+        &[
+            "scope.work.marks = ~/Developer/acme, Ação",
+            "scope.personal.sync = off",
+        ],
+        &[(
+            "plan-a.md",
+            scoped_note(IDS[0], "scope: personal\n", "see ~/Developer/acme/x\n"),
+        )],
+    );
+    assert_eq!(run.code, 0);
+    assert_eq!(
+        run.stdout,
+        "notes/plan-a.md: scope: 'personal' but line 9 holds '~/Developer/acme', a mark of 'work' (warning)\n"
+    );
+}
+
+#[test]
+fn a_note_holding_marks_of_two_scopes_gets_a_warning_for_each() {
+    let dir = TempDir::new("check-mark-two");
+    let run = check_scoped(
+        &dir,
+        &[
+            "scope.personal.marks = Ação",
+            "scope.work.marks = acme",
+            "scope.beta.sync = off",
+        ],
+        &[(
+            "gotcha-acme-deploy.md",
+            scoped_note(IDS[0], "scope: beta\n", "AÇÃO\n"),
+        )],
+    );
+    assert_eq!(run.code, 0, "{}", run.stdout);
+    assert_eq!(
+        run.stdout,
+        "notes/gotcha-acme-deploy.md: scope: 'beta' but line 9 holds 'Ação', a mark of 'personal' (warning)\n\
+         notes/gotcha-acme-deploy.md: scope: 'beta' but the file name holds 'acme', a mark of 'work' (warning)\n"
+    );
+}
+
+#[test]
+fn holds_marks_of_lists_the_scopes_sorted() {
+    let dir = TempDir::new("check-mark-sorted");
+    let run = check_scoped(
+        &dir,
+        &["scope.work.marks = acme", "scope.personal.marks = Ação"],
+        &[("plan-x.md", scoped_note(IDS[0], "", "acao and acme\n"))],
+    );
+    assert_eq!(run.code, 1);
+    assert_eq!(
+        run.stdout,
+        "notes/plan-x.md: scope: missing; scopes: personal, work; holds marks of personal, work\n"
+    );
+}
+
+#[test]
+fn the_earliest_place_of_a_scopes_marks_is_reported() {
+    let dir = TempDir::new("check-mark-earliest");
+    let run = check_scoped(
+        &dir,
+        &[
+            "scope.work.marks = acme, ~/Developer/zeta",
+            "scope.beta.sync = off",
+        ],
+        &[(
+            "plan-a.md",
+            scoped_note(IDS[0], "scope: beta\n", "x ~/Developer/zeta/y\nacme\n"),
+        )],
+    );
+    assert_eq!(run.code, 0);
+    assert_eq!(
+        run.stdout,
+        "notes/plan-a.md: scope: 'beta' but line 9 holds '~/Developer/zeta', a mark of 'work' (warning)\n"
+    );
+}
+
+#[test]
+fn a_problem_and_a_warning_on_one_file_sort_by_message() {
+    let dir = TempDir::new("check-mark-same-file");
+    let text = scoped_note(IDS[0], "scope: beta\n", "acme\n").replace("T14:23-03:00", "");
+    let run = check_scoped(
+        &dir,
+        &["scope.work.marks = acme", "scope.beta.sync = off"],
+        &[("plan-a.md", text)],
+    );
+    assert_eq!(run.code, 1);
+    let lines = stdout_lines(&run);
+    assert_eq!(lines.len(), 2, "{lines:?}");
+    assert!(
+        lines[0].starts_with("notes/plan-a.md: created:"),
+        "{lines:?}"
+    );
+    assert!(lines[1].ends_with("(warning)"), "{lines:?}");
+}
+
+#[test]
+fn arguments_are_checked_before_the_config() {
+    let dir = TempDir::new("check-args-before-config");
+    let root = store(&dir);
+    let missing = dir.path().join("nope");
+    let run = bilbo(
+        dir.path(),
+        &[
+            ("BILBO_HOME", root.to_str().unwrap()),
+            ("BILBO_CONFIG", missing.to_str().unwrap()),
+        ],
+        &["check", "extra"],
+    );
+    assert_eq!(run.code, 2);
+    assert!(run.stderr.contains("unexpected argument"), "{}", run.stderr);
+    assert!(
+        !run.stderr.contains(missing.to_str().unwrap()),
+        "{}",
+        run.stderr
+    );
 }

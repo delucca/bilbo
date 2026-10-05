@@ -143,9 +143,10 @@ pub fn read_id(text: &str) -> Option<String> {
     Some(rest.strip_prefix(' ')?.to_string()).filter(|value| is_ulid(value))
 }
 
-/// "---\nid: <id>\ncreated: <created>\n---\n\n# <title>\n"
-pub fn render(id: &str, created: &str, title: &str) -> String {
-    format!("---\nid: {id}\ncreated: {created}\n---\n\n# {title}\n")
+/// "---\nid: <id>\ncreated: <created>\n[scope: <scope>\n]---\n\n# <title>\n"
+pub fn render(id: &str, created: &str, scope: Option<&str>, title: &str) -> String {
+    let scope = scope.map_or_else(String::new, |name| format!("scope: {name}\n"));
+    format!("---\nid: {id}\ncreated: {created}\n{scope}---\n\n# {title}\n")
 }
 
 #[derive(Default)]
@@ -737,7 +738,7 @@ mod tests {
 
     #[test]
     fn rendered_note_reads_back_clean() {
-        let text = render(&mint_ulid().unwrap(), &now_created(), "Note store");
+        let text = render(&mint_ulid().unwrap(), &now_created(), None, "Note store");
         let note = read(&text);
         assert!(note.problems.is_empty());
         assert!(note.id.is_some());
@@ -746,9 +747,19 @@ mod tests {
     #[test]
     fn render_is_exact() {
         assert_eq!(
-            render(ID, CREATED, "Note store"),
+            render(ID, CREATED, None, "Note store"),
             "---\nid: 01M3YJ7R6HK6NQ30DCDB1P4DYB\ncreated: 2026-10-02T14:23-03:00\n---\n\n# Note store\n"
         );
+    }
+
+    #[test]
+    fn render_puts_the_scope_after_created() {
+        let text = render(ID, CREATED, Some("work"), "Note store");
+        assert_eq!(
+            text,
+            "---\nid: 01M3YJ7R6HK6NQ30DCDB1P4DYB\ncreated: 2026-10-02T14:23-03:00\nscope: work\n---\n\n# Note store\n"
+        );
+        assert!(read(&text).problems.is_empty());
     }
 
     #[test]

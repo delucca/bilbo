@@ -1294,3 +1294,34 @@ pub fn cpu_seconds(pid: u32) -> Option<f64> {
         Some(total * 60.0 + part.parse::<f64>().ok()?)
     })
 }
+
+/// Scope tests: HOME, the working folders, the store and the config share one temporary tree.
+pub struct Scoped {
+    pub home: PathBuf,
+    pub root: PathBuf,
+    pub config: PathBuf,
+}
+
+/// `<dir>/home`, `<dir>/store` and a config holding `lines`; `~/` in a scope path means `<dir>/home`.
+pub fn scoped(dir: &TempDir, lines: &[&str]) -> Scoped {
+    let home = dir.path().join("home");
+    std::fs::create_dir_all(&home).unwrap();
+    Scoped {
+        home,
+        root: dir.path().join("store"),
+        config: config(dir, lines),
+    }
+}
+
+/// Runs bilbo in `cwd` with `scoped`'s HOME, store and config.
+pub fn bilbo_scoped(scoped: &Scoped, cwd: &Path, args: &[&str]) -> Run {
+    bilbo(
+        cwd,
+        &[
+            ("HOME", scoped.home.to_str().unwrap()),
+            ("BILBO_HOME", scoped.root.to_str().unwrap()),
+            ("BILBO_CONFIG", scoped.config.to_str().unwrap()),
+        ],
+        args,
+    )
+}
