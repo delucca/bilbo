@@ -50,7 +50,7 @@ A new version SHALL build on the latest local version, pending or not. No note d
 - **THEN** the epoch bilbo would encrypt note data under for `personal` is still 1, and a version 4 written now builds on version 3
 
 ### Requirement: A pending version that loses
-When a transport holds a different version `n` than this device's pending one, the pending file SHALL move to `manifest/lost/<n>.json`, never to be deleted, and its change SHALL be applied again as a pending `n+1` on the winner. This move is the one exception to versions never being rewritten, renamed or deleted. Files in `lost/` SHALL be neither checked nor counted as versions.
+When a transport holds a different version `n` than this device's pending one, the pending files from `n` up SHALL move to `manifest/lost/<k>.json`, or `manifest/lost/<k>.<i>.json` with the first free `i` from 2 when that name is taken, never to be deleted, and their changes SHALL be applied again as pending versions on the winner. This move is the one exception to versions never being rewritten, renamed or deleted. Files in `lost/` SHALL be neither checked nor counted as versions.
 
 #### Scenario: Another device's version wins
 - **WHEN** version 3 is pending here and bilbo is given a different, valid version 3 as the transport's (in this change, by the library's caller in a test; `add-sync` brings the transport)
@@ -94,7 +94,19 @@ A manifest SHALL be one JSON object with exactly these members, in this order: `
 - **THEN** `bilbo device` reports it as invalid and exits 1
 
 ### Requirement: Manifest validity
-A version SHALL also be invalid unless: `scope` equals its folder's name; `n` equals its file name; `owner` equals version 1's; `prev` is the SHA-256 of version `n-1`'s file; `devices` is sorted by id with no id twice, each id derived from its `sign` key; `sealed`'s keys are exactly the listed ids and `owner`; and `chain` holds one entry for each epoch from 1 to `epoch`-1, in order, every entry of version `n-1` unchanged. These checks SHALL need no secret.
+A version SHALL also be invalid unless: `scope` equals its folder's name; `n` equals its file name; `owner` and `owner_box` equal version 1's; `prev` is the SHA-256 of version `n-1`'s file; `devices` is sorted by id with no id twice, each id derived from its `sign` key, and each id also listed by version `n-1` with the same `box`; `epoch` is greater than version `n-1`'s when an id of version `n-1` is no longer listed; `sealed`'s keys are exactly the listed ids and `owner`; and `chain` holds one entry for each epoch from 1 to `epoch`-1, in order, every entry of version `n-1` unchanged. These checks SHALL need no secret.
+
+#### Scenario: A device's box key changed
+- **WHEN** a correctly signed version 3 lists `rivendell` with another `box` than version 2 gave it
+- **THEN** version 3 is invalid for every reader, and an honest `revoke` seals nothing to that key
+
+#### Scenario: The owner box changed
+- **WHEN** a correctly signed version 3 holds another `owner_box` than version 1
+- **THEN** version 3 is invalid for every reader
+
+#### Scenario: A device dropped without a new epoch
+- **WHEN** a correctly signed version 3 lists `rivendell` but not `bagend`, which version 2 listed, at version 2's epoch
+- **THEN** version 3 is invalid for every reader
 
 #### Scenario: A manifest in the wrong folder
 - **WHEN** a valid `manifest/1.json` of one scope is copied into another scope's folder
@@ -173,7 +185,7 @@ A device that opens a version's epoch key SHALL treat the version as invalid whe
 - **THEN** its name stays unread and its scope line shows `-`
 
 ### Requirement: Versions that init writes
-`init` SHALL write version 1 for a scope with a sync URL and no manifest, listing this device and every device the owner's other latest manifests list. When the config's URL differs from `transport`, comparing `https://` and `http://` URLs whole and a `file://` URL by its scheme only, it SHALL write a new version with the same epoch, in a terminal only, as the `device-identity` spec's Terminal-only forms says. It SHALL NOT add this device to a manifest that does not list it. It SHALL match a config name through the newest version that lists this device, so a scope whose latest version dropped this device is never created again, and while a local manifest of its owner has never listed this device it SHALL create no scope id for a syncing scope it matched to no manifest, reporting that scope `unsealed`, as recover does.
+`init` SHALL write version 1 for a scope with a sync URL and no manifest, listing this device and every device listed by the latest version of another manifest of its owner that this device opens, except a device that any of those manifests listed once and no longer lists. When the config's URL differs from `transport`, comparing `https://` and `http://` URLs whole and a `file://` URL by its scheme only, it SHALL write a new version with the same epoch, in a terminal only, as the `device-identity` spec's Terminal-only forms says. It SHALL NOT add this device to a manifest that does not list it. It SHALL match a config name through the newest version that lists this device, so a scope whose latest version dropped this device is never created again, and while a local manifest of its owner has never listed this device it SHALL create no scope id for a syncing scope it matched to no manifest, reporting that scope `unsealed`, as recover does.
 
 #### Scenario: A changed URL
 - **WHEN** `personal` is at manifest 1 pinned to `file://`, the config now says `https://relay.example.net`, and the user runs `bilbo device init` in a terminal
