@@ -1035,7 +1035,6 @@ pub fn revoke(
     publish(lock, manifest, &opened.name, &scope.versions, id)
 }
 
-#[cfg_attr(not(test), expect(dead_code, reason = "add-sync calls it"))]
 /// Copies version `n`, as a transport holds it, into the store as confirmed: no marker. It must be the next version
 /// and pass the secret-free checks against the versions here.
 pub fn adopt(lock: &Lock, scope: &str, n: u64, bytes: &[u8]) -> Result<(), String> {
@@ -1070,6 +1069,30 @@ pub fn confirm(lock: &Lock, scope: &str, n: u64, bytes: &[u8]) -> Result<bool, S
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(true),
         Err(e) => Err(io_message("remove", &marker, &e)),
     }
+}
+
+/// Moves every version of a scope whose versions are all pending under `manifest/lost/`, clearing their markers, and
+/// returns their numbers. It refuses a scope with a confirmed version, which a transport may hold. A step that fails
+/// after the first move leaves the versions below it in place, still a valid chain.
+pub fn set_aside(lock: &Lock, scope: &str) -> Result<Vec<u64>, String> {
+    let root = lock.root();
+    let local = read_scope(root, scope)?;
+    if let Some(invalid) = &local.invalid {
+        return Err(invalid.to_string());
+    }
+    let last = local.versions.len() as u64;
+    if last == 0 || (1..=last).any(|k| !local.pending.contains(&k)) {
+        return Err(format!("scope {scope} holds no version or a confirmed one"));
+    }
+    let graveyard = manifest_dir(root, scope).join("lost");
+    fs::create_dir_all(&graveyard).map_err(|e| io_message("create", &graveyard, &e))?;
+    let names: Vec<PathBuf> = (1..=last).map(|k| lost_path(&graveyard, k)).collect();
+    for k in (1..=last).rev() {
+        swap::rename_new(&version_path(root, scope, k), &names[(k - 1) as usize])?;
+        let marker = pending_path(root, scope, k);
+        fs::remove_file(&marker).map_err(|e| io_message("remove", &marker, &e))?;
+    }
+    Ok((1..=last).collect())
 }
 
 /// What one version changed over the one before it.
@@ -1267,12 +1290,22 @@ fn stale(lock: &Lock, scope: &Scope) -> Option<String> {
     }
 }
 
+/// What `init` knows about where it runs.
+pub struct Context {
+    /// Stdin and stderr are terminals and no agent marker is set.
+    pub terminal: bool,
+    /// Why the scope's transport forbids a version 1 now: it holds a scope this device must join through `recover`,
+    /// or one that cannot be attributed, or it cannot be read.
+    pub blocked: Option<String>,
+}
+
 /// `init`'s step for the scope the config names `name` with `url`. The name matches through the newest version of the
 /// owner's scopes that lists this device: a scope whose latest version dropped it is kept and never created again.
 /// A scope this device opens is kept, or gets a version with the new pin when `url` differs from its `transport` and a
 /// terminal is there. With no match a new scope is created, listing `others` too, unless a manifest of the owner has
 /// never listed this device, or is invalid for it before any version it can read: that one may be the scope, so the step is `Unsealed` and mints no id. `off` keeps
-/// whatever exists. It never adds this device to a manifest that does not list it.
+/// whatever exists. It never adds this device to a manifest that does not list it. With `ctx.blocked` no version 1 is
+/// written.
 pub fn init_step(
     lock: &Lock,
     id: &Identity,
@@ -1280,7 +1313,7 @@ pub fn init_step(
     url: &str,
     known: &[Known],
     others: &[Member],
-    terminal: bool,
+    ctx: Context,
 ) -> Outcome {
     if url == "off" {
         return Outcome::Kept;
@@ -1296,6 +1329,7 @@ pub fn init_step(
         {
             Outcome::Unsealed
         }
+        [] if ctx.blocked.is_some() => Outcome::Failed(ctx.blocked.unwrap_or_default()),
         [] => written(create(lock, id, name, url, others), true),
         [k] => {
             if let Some(problem) = &k.problem {
@@ -1306,7 +1340,7 @@ pub fn init_step(
             };
             if transport_matches(&latest.manifest.transport, url) {
                 Outcome::Kept
-            } else if !terminal {
+            } else if !ctx.terminal {
                 Outcome::Failed("changing the URL needs a terminal".into())
             } else if let Some(why) = stale(lock, &k.scope) {
                 Outcome::Failed(why)
@@ -1397,6 +1431,13 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         Scratch(dir)
+    }
+
+    fn ctx(terminal: bool) -> Context {
+        Context {
+            terminal,
+            blocked: None,
+        }
     }
 
     fn owner() -> Owner {
@@ -1564,13 +1605,13 @@ mod tests {
             "off",
             &known,
             &[],
-            true,
+            ctx(true),
         );
         assert!(matches!(step, Outcome::Kept));
         assert_eq!(bytes_of(&w.scope()), before);
         let none = scratch("off_none");
         let lock = lock(&none.0).unwrap();
-        let step = init_step(&lock, &w.rivendell, "personal", "off", &[], &[], true);
+        let step = init_step(&lock, &w.rivendell, "personal", "off", &[], &[], ctx(true));
         assert!(matches!(step, Outcome::Kept));
         assert!(scope_ids(&none.0).unwrap().is_empty());
     }
@@ -1587,7 +1628,7 @@ mod tests {
             "file:///Users/a/Sync/bilbo",
             &known,
             &others,
-            true,
+            ctx(true),
         );
         let created = written(step);
         assert_ne!(created.scope, w.id);
@@ -2239,7 +2280,7 @@ mod tests {
             "https://relay.example.net",
             &known,
             &[],
-            true,
+            ctx(true),
         );
         let done = written(step);
         assert_eq!((done.n, done.epoch, done.name.as_str()), (3, 1, "personal"));
@@ -2256,7 +2297,7 @@ mod tests {
             "https://relay.example.net",
             &known,
             &[],
-            true,
+            ctx(true),
         );
         assert!(matches!(again, Outcome::Kept));
     }
@@ -2273,7 +2314,7 @@ mod tests {
             moved,
             &known,
             &[],
-            false,
+            ctx(false),
         );
         assert!(matches!(step, Outcome::Kept));
         let step = init_step(
@@ -2283,7 +2324,7 @@ mod tests {
             "https://relay.example.net",
             &known,
             &[],
-            false,
+            ctx(false),
         );
         let Outcome::Failed(why) = step else {
             panic!("wrote without a terminal");
@@ -2305,7 +2346,7 @@ mod tests {
             "file:///x",
             &known,
             &others,
-            false,
+            ctx(false),
         );
         let created = written(step);
         let scope = read_scope(w.path(), &created.scope).unwrap();
@@ -2373,11 +2414,87 @@ mod tests {
             "file:///x",
             &known,
             &[],
-            true,
+            ctx(true),
         );
         assert!(matches!(step, Outcome::Kept));
         assert_eq!(scope_ids(w.path()).unwrap(), std::slice::from_ref(&w.id));
         assert_eq!(w.scope().versions.len(), 3);
+    }
+
+    #[test]
+    fn init_writes_no_version_1_for_an_outsider_and_keeps_every_other_rule() {
+        let root = scratch("init_outsider");
+        let me = ident("rivendell", 1);
+        let lock = lock(&root.0).unwrap();
+        let blocked = || Context {
+            terminal: true,
+            blocked: Some("run bilbo device recover on this device".into()),
+        };
+        let step = init_step(&lock, &me, "personal", "file:///x", &[], &[], blocked());
+        let Outcome::Failed(why) = step else {
+            panic!("created");
+        };
+        assert_eq!(why, "run bilbo device recover on this device");
+        assert!(scope_ids(&root.0).unwrap().is_empty());
+        let step = init_step(&lock, &me, "personal", "off", &[], &[], blocked());
+        assert!(matches!(step, Outcome::Kept));
+        let step = init_step(&lock, &me, "personal", "file:///x", &[], &[], ctx(true));
+        assert!(matches!(step, Outcome::Created(_)));
+    }
+
+    #[test]
+    fn a_pending_scope_is_set_aside_whole_and_a_confirmed_one_is_refused() {
+        let w = world("set_aside");
+        let before = w.scope();
+        assert_eq!(before.pending, BTreeSet::from([1, 2]));
+        let moved = set_aside(&w.lock(), &w.id).unwrap();
+        assert_eq!(moved, [1, 2]);
+        let dir = manifest_dir(w.path(), &w.id);
+        for n in [1u64, 2] {
+            assert_eq!(
+                fs::read(dir.join(format!("lost/{n}.json"))).unwrap(),
+                before.versions[(n - 1) as usize].bytes
+            );
+            assert!(!dir.join(format!("{n}.json")).exists());
+            assert!(!dir.join(format!("{n}.pending")).exists());
+        }
+        assert!(survey_as(w.path(), &w.rivendell).is_empty());
+        assert!(set_aside(&w.lock(), &w.id).is_err());
+        let damaged = world("set_aside_damaged");
+        write_raw(damaged.path(), &damaged.id, 3, b"junk");
+        let why = set_aside(&damaged.lock(), &damaged.id).unwrap_err();
+        assert!(why.contains("manifest/3.json"), "{why}");
+        assert_eq!(damaged.scope().versions.len(), 2);
+        let other = world("set_aside_confirmed");
+        other.confirm_all();
+        let bytes = other.scope().versions[1].bytes.clone();
+        assert!(set_aside(&other.lock(), &other.id).is_err());
+        assert_eq!(other.scope().versions[1].bytes, bytes);
+        assert!(!manifest_dir(other.path(), &other.id).join("lost").exists());
+    }
+
+    #[test]
+    fn a_second_set_aside_of_the_same_number_keeps_the_first() {
+        let w = world("set_aside_twice");
+        let first = w.scope();
+        set_aside(&w.lock(), &w.id).unwrap();
+        for v in &first.versions {
+            let n = v.manifest.n;
+            write_raw(w.path(), &w.id, n, &v.bytes);
+            fs::write(pending_path(w.path(), &w.id, n), "").unwrap();
+        }
+        set_aside(&w.lock(), &w.id).unwrap();
+        let dir = manifest_dir(w.path(), &w.id);
+        for (n, v) in (1..).zip(&first.versions) {
+            assert_eq!(
+                fs::read(dir.join(format!("lost/{n}.json"))).unwrap(),
+                v.bytes
+            );
+            assert_eq!(
+                fs::read(dir.join(format!("lost/{n}.2.json"))).unwrap(),
+                v.bytes
+            );
+        }
     }
 
     #[test]
@@ -2387,7 +2504,7 @@ mod tests {
         let known = survey_as(w.path(), &carol);
         assert!(!known[0].ever_listed && known[0].last_name.is_none());
         for name in ["personal", "shared"] {
-            let step = init_step(&w.lock(), &carol, name, "file:///x", &known, &[], true);
+            let step = init_step(&w.lock(), &carol, name, "file:///x", &known, &[], ctx(true));
             assert!(matches!(step, Outcome::Unsealed), "{name}");
         }
         assert_eq!(scope_ids(w.path()).unwrap(), std::slice::from_ref(&w.id));
@@ -2515,7 +2632,7 @@ mod tests {
             "https://x.example.net",
             &known,
             &[],
-            true,
+            ctx(true),
         );
         assert!(matches!(step, Outcome::Failed(_)));
         assert!(!version_path(w.path(), &w.id, 3).exists());
@@ -2714,7 +2831,7 @@ mod tests {
             "file:///x",
             &known,
             &owner_devices(&known),
-            true,
+            ctx(true),
         ));
         w.confirm_all();
         let known = survey_as(w.path(), &w.rivendell);
@@ -2745,7 +2862,7 @@ mod tests {
             "file:///x",
             &known,
             &others,
-            true,
+            ctx(true),
         );
         assert!(matches!(step, Outcome::Unsealed));
     }
@@ -2834,7 +2951,7 @@ mod tests {
             "file:///x",
             &known,
             &[],
-            true,
+            ctx(true),
         );
         assert!(matches!(step, Outcome::Failed(_)));
         assert_eq!(scope_ids(w.path()).unwrap().len(), 1);
@@ -2884,7 +3001,7 @@ mod tests {
             "https://b.example.net",
             &known,
             &[],
-            true,
+            ctx(true),
         );
         assert!(matches!(step, Outcome::Failed(_)));
         assert_eq!(w.scope().versions.len(), 3);
@@ -3165,7 +3282,7 @@ mod tests {
             "file:///x",
             &known,
             &others,
-            true,
+            ctx(true),
         );
         assert!(matches!(step, Outcome::Created(_) | Outcome::Unsealed));
         if let Outcome::Created(made) = step {
@@ -3196,7 +3313,7 @@ mod tests {
             "file:///x",
             &known,
             &[],
-            true,
+            ctx(true),
         );
         assert!(matches!(step, Outcome::Unsealed));
         assert_eq!(scope_ids(w.path()).unwrap().len(), 1);

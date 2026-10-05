@@ -13,10 +13,11 @@ use crate::Failure;
 use crate::host::prompt::Prompter;
 use crate::identity::ceremony;
 use crate::identity::keys::{self, Device, Identity, Owner};
-use crate::identity::manifest::{self, Known, Outcome, Recipient, Written};
+use crate::identity::manifest::{self, Context, Known, Outcome, Recipient, Written};
 use crate::identity::phrase;
 use crate::shared::config::{self, Settings};
 use crate::shared::store;
+use crate::sync::{scopes, transport};
 
 pub struct Output {
     /// stderr lines, without "bilbo: ".
@@ -25,7 +26,8 @@ pub struct Output {
     pub failed: bool,
 }
 
-/// What a syncing scope with no manifest is told, by `init` and `recover` alike: a fresh id here could fork it.
+/// What a syncing scope with no manifest is told, by `init` and `recover` alike, when its URL has no client here: a
+/// fresh id here could fork it.
 const UNSEALED: &str =
     "copy the store from an enrolled device, then run bilbo device recover again";
 
@@ -510,7 +512,15 @@ fn init_scopes(cx: &Cx, id: &Identity) -> Result<(Vec<String>, bool), Failure> {
             ));
             continue;
         }
-        match manifest::init_step(lock, id, &s.name, &s.sync, &known, &others, cx.human) {
+        let blocked = match found {
+            None => minting_blocked(id, &s.sync, &s.name),
+            Some(_) => None,
+        };
+        let ctx = Context {
+            terminal: cx.human,
+            blocked,
+        };
+        match manifest::init_step(lock, id, &s.name, &s.sync, &known, &others, ctx) {
             Outcome::Created(w) => {
                 handled.insert(w.scope.clone());
                 rows.push(Row::of(&s.name, w, true));
@@ -547,6 +557,27 @@ fn init_scopes(cx: &Cx, id: &Identity) -> Result<(Vec<String>, bool), Failure> {
         }
     }
     Ok((report(rows), failed))
+}
+
+/// Why no version 1 of the scope `name` may be written on the transport of `url`: it holds a scope of this owner that
+/// this device cannot open while being in none there, or one named `name` that it opens (`recover` copies it in), or
+/// a scope that cannot be attributed, or it answers but cannot be listed. A transport that cannot be reached says
+/// nothing, so a scope can still be created before it is.
+fn minting_blocked(id: &Identity, url: &str, name: &str) -> Option<String> {
+    let t = transport::open(url, &id.device.id()).ok()?;
+    t.reachable().ok()?;
+    let owner = id.owner.sign.public();
+    let listing = match scopes::list(&*t, &owner, &Recipient::device(&id.device)) {
+        Ok(listing) => listing,
+        Err(why) => return Some(why),
+    };
+    if listing.outsider() || listing.found.iter().any(|f| f.name == name) {
+        return Some("run bilbo device recover on this device".into());
+    }
+    let (scope, why) = listing.unattributed.first()?;
+    Some(format!(
+        "{url} holds scope {scope} that does not verify: {why}"
+    ))
 }
 
 /// The rows as `scope <name> <status>: <detail>` lines, sorted by name.
@@ -644,15 +675,27 @@ fn recover<P: Prompter>(
             }
         }
     };
-    let lock = store::scopes_dir(&cx.root)
+    let mut lock = store::scopes_dir(&cx.root)
         .is_dir()
         .then(|| manifest::lock(&cx.root))
         .transpose()
         .map_err(Failure::Refused)?;
+    let mut warnings = Vec::new();
+    let mut fetched = fetch(
+        cx,
+        &id,
+        &owner,
+        &mut lock,
+        &survey(&cx.root, Some(&id))?,
+        &mut warnings,
+    )?;
     let known = survey(&cx.root, Some(&id))?;
     let mut outcomes: BTreeMap<String, Outcome> = BTreeMap::new();
     if let Some(lock) = &lock {
-        for k in &known {
+        for k in known
+            .iter()
+            .filter(|k| !fetched.partial.contains(&k.scope.id))
+        {
             let outcome = manifest::recover_step(lock, &id, &owner.box_secret, k);
             outcomes.insert(k.scope.id.clone(), outcome);
         }
@@ -661,6 +704,9 @@ fn recover<P: Prompter>(
     let mut failed = false;
     let mut rows = Vec::new();
     for k in survey(&cx.root, Some(&id))? {
+        if fetched.partial.contains(&k.scope.id) {
+            continue;
+        }
         let name = k.name().unwrap_or("-");
         rows.push(match outcomes.remove(&k.scope.id) {
             Some(Outcome::Updated(w)) | Some(Outcome::Created(w)) => Row::of(name, w, false),
@@ -677,14 +723,158 @@ fn recover<P: Prompter>(
     }
     let named: BTreeSet<String> = rows.iter().map(|r| r.name.clone()).collect();
     for s in syncing(&cx.settings).filter(|s| !named.contains(&s.name)) {
-        rows.push(Row::new(&s.name, "unsealed", UNSEALED.into()));
+        let row = fetched
+            .rows
+            .remove(&s.name)
+            .unwrap_or_else(|| Row::new(&s.name, "unsealed", UNSEALED.into()));
+        failed |= row.status == "failed";
+        rows.push(row);
     }
     lines.extend(report(rows));
     Ok(Output {
-        warnings: Vec::new(),
+        warnings,
         lines,
         failed,
     })
+}
+
+/// What `recover` took from the folders of its syncing scopes.
+struct Fetched {
+    /// The row of each scope it fetched nothing for, by config name.
+    rows: BTreeMap<String, Row>,
+    /// Scopes no step runs on: a copy stopped part way, or the folder could not be read for them.
+    partial: BTreeSet<String>,
+}
+
+/// The name of `k` as its owner reads it.
+fn named_by(k: &Known, owner: &Owner) -> Option<String> {
+    let read = manifest::open(&k.scope, &Recipient::Owner(&owner.box_secret));
+    read.ok().flatten().map(|opened| opened.name)
+}
+
+/// Whether every version of `k` is pending.
+fn all_pending(k: &Known) -> bool {
+    let last = k.scope.versions.len() as u64;
+    last > 0 && (1..=last).all(|n| k.scope.pending.contains(&n))
+}
+
+/// For each syncing scope with a `file://` URL and no local manifest, or only pending versions the folder does not
+/// hold, copies in the chain of the owner's scope of that name from the folder, moving the pending versions aside.
+/// `warnings` gets the stderr lines.
+fn fetch(
+    cx: &Cx,
+    id: &Identity,
+    owner: &Owner,
+    lock: &mut Option<manifest::Lock>,
+    known: &[Known],
+    warnings: &mut Vec<String>,
+) -> Result<Fetched, Failure> {
+    let mut fetched = Fetched {
+        rows: BTreeMap::new(),
+        partial: BTreeSet::new(),
+    };
+    let mut listings: BTreeMap<String, Result<scopes::Listing, String>> = BTreeMap::new();
+    for s in syncing(&cx.settings).filter(|s| s.sync.starts_with("file://")) {
+        let local: Vec<&Known> = known
+            .iter()
+            .filter(|k| k.mine && named_by(k, owner).as_deref() == Some(&s.name))
+            .collect();
+        if !local.iter().all(|k| all_pending(k)) {
+            continue;
+        }
+        let listing = listings.entry(s.sync.clone()).or_insert_with(|| {
+            let read = transport::open(&s.sync, &id.device.id()).and_then(|t| {
+                scopes::list(
+                    &*t,
+                    &owner.sign.public(),
+                    &Recipient::Owner(&owner.box_secret),
+                )
+            });
+            for (scope, why) in read.iter().flat_map(|l| &l.broken) {
+                warnings.push(format!(
+                    "scope {scope} on {} does not verify, so nothing of it was copied: {why}",
+                    s.sync
+                ));
+            }
+            read
+        });
+        let listing = match listing {
+            Ok(listing) => listing,
+            Err(why) => {
+                let detail = format!("{} is not reachable: {why}", s.sync);
+                fetched
+                    .rows
+                    .insert(s.name.clone(), Row::new(&s.name, "failed", detail));
+                fetched
+                    .partial
+                    .extend(local.iter().map(|k| k.scope.id.clone()));
+                continue;
+            }
+        };
+        if local.iter().any(|k| listing.ids.contains(&k.scope.id)) {
+            continue;
+        }
+        let Some(pick) = scopes::pick(&listing.found, &s.name) else {
+            if local.is_empty() {
+                let row = match listing.broken.first() {
+                    Some((scope, why)) => Row::new(
+                        &s.name,
+                        "failed",
+                        format!("{} holds scope {scope} that does not verify: {why}", s.sync),
+                    ),
+                    None => Row::new(
+                        &s.name,
+                        "unsealed",
+                        format!(
+                            "{} holds no scope {} of this owner; run bilbo device init to create it",
+                            s.sync, s.name
+                        ),
+                    ),
+                };
+                fetched.rows.insert(s.name.clone(), row);
+            }
+            continue;
+        };
+        if !pick.rivals.is_empty() {
+            let others: Vec<&str> = pick.rivals.iter().map(|f| f.id.as_str()).collect();
+            warnings.push(format!(
+                "scope {}: {} holds {} scopes named {}; took {} ({} devices), not {}",
+                s.name,
+                s.sync,
+                pick.rivals.len() + 1,
+                s.name,
+                pick.chosen.id,
+                pick.chosen.devices,
+                others.join(", ")
+            ));
+        }
+        if lock.is_none() {
+            *lock = Some(manifest::lock(&cx.root).map_err(Failure::Refused)?);
+        }
+        let held = lock.as_ref().expect("the lock was taken above");
+        let aside = local
+            .iter()
+            .try_for_each(|k| manifest::set_aside(held, &k.scope.id).map(drop));
+        let copied = match aside {
+            Ok(()) => pick.chosen.scope.versions.iter().try_for_each(|v| {
+                manifest::adopt(held, &pick.chosen.id, v.manifest.n, &v.bytes).inspect_err(|_| {
+                    fetched.partial.insert(pick.chosen.id.clone());
+                })
+            }),
+            Err(why) => {
+                fetched
+                    .partial
+                    .extend(local.iter().map(|k| k.scope.id.clone()));
+                Err(why)
+            }
+        };
+        if let Err(why) = copied {
+            fetched
+                .rows
+                .insert(s.name.clone(), Row::new(&s.name, "failed", why));
+        }
+    }
+    Ok(fetched)
 }
 
 fn revoke(cx: &Cx, id: Option<Identity>, target: &str) -> Result<Output, Failure> {
@@ -768,6 +958,7 @@ mod tests {
     use crate::identity::keys::{self, Owner};
     use crate::identity::manifest::{self, Known, Outcome, Recipient};
     use crate::identity::script::{Answer, Script, text};
+    use crate::sync::transport::Transport;
     use std::fs;
     use std::os::unix::fs::PermissionsExt;
     use std::path::PathBuf;
@@ -1985,6 +2176,7 @@ mod tests {
         let w = world("wiped");
         w.config(PERSONAL);
         let sid = scope(&w, &rivendell(), "personal", "file:///Users/a/Sync/bilbo");
+        confirm_all(&w, &sid);
         let (out, _) = w.ok(&["recover", "--name", "rivendell-2"], true, answers_of(0));
         let id = keys::read_identity(&w.keys()).unwrap().unwrap();
         assert_eq!(out.lines[0], format!("owner recovered: {ABANDON_FP}"));
@@ -2002,18 +2194,340 @@ mod tests {
         assert!(list.lines[1].starts_with("rivendell-2\t") && list.lines[1].ends_with("\tthis"));
     }
 
+    /// An empty folder under the world, named by a `file://` URL in the config.
+    fn folder(w: &World) -> (PathBuf, String) {
+        let dir = w.0.join("folder");
+        fs::create_dir_all(&dir).unwrap();
+        let url = format!("file://{}", dir.display());
+        (dir, url)
+    }
+
+    /// Copies the versions of scope `sid` of `from`'s store into the folder, as a device that synced it would.
+    fn publish(from: &World, sid: &str, dir: &Path) {
+        let t = transport::Folder::new(dir.to_path_buf(), &bagend().device.id());
+        let read = manifest::read_scope(&from.root(), sid).unwrap();
+        for v in &read.versions {
+            let path = transport::manifest_path(sid, v.manifest.n);
+            assert_eq!(t.create(&path, &v.bytes), transport::Put::Created);
+        }
+    }
+
+    /// Marks every version of `sid` as confirmed, as a transport that holds them would.
+    fn confirm_all(w: &World, sid: &str) {
+        let lock = manifest::lock(&w.root()).unwrap();
+        for v in &manifest::read_scope(&w.root(), sid).unwrap().versions {
+            assert!(manifest::confirm(&lock, sid, v.manifest.n, &v.bytes).unwrap());
+        }
+    }
+
+    /// A store of its own with `name` created by `who`, listing `more`, published to the folder.
+    fn published(dir: &Path, who: &Identity, name: &str, more: &[Identity]) -> String {
+        let w = world("published");
+        let lock = manifest::lock(&w.root()).unwrap();
+        let members: Vec<manifest::Member> = more
+            .iter()
+            .map(|m| manifest::Member::of(&m.device))
+            .collect();
+        let sid = manifest::create(&lock, who, name, "file://", &members)
+            .unwrap()
+            .scope;
+        publish(&w, &sid, dir);
+        sid
+    }
+
+    fn recovered(w: &World, name: &str) -> (Output, Script) {
+        w.ok(&["recover", "--name", name], true, {
+            let mut answers = answers_of(0);
+            answers.push(Answer::Yes);
+            answers
+        })
+    }
+
     #[test]
     fn a_fresh_machine_reports_its_scope_unsealed_and_makes_no_id() {
         let w = world("fresh");
-        w.config(PERSONAL);
-        let mut answers = answers_of(0);
-        answers.push(Answer::Yes);
-        let (out, _) = w.ok(&["recover", "--name", "bagend"], true, answers);
+        let (_, url) = folder(&w);
+        w.config(&format!("scope.personal.sync = {url}\n"));
+        let (out, _) = recovered(&w, "bagend");
         assert_eq!(out.lines.len(), 3);
-        assert_eq!(out.lines[2], format!("scope personal unsealed: {UNSEALED}"));
-        assert!(!out.lines[2].contains("init"));
+        assert_eq!(
+            out.lines[2],
+            format!(
+                "scope personal unsealed: {url} holds no scope personal of this owner; run bilbo device init to create it"
+            )
+        );
         assert!(!store::scopes_dir(&w.root()).exists());
         assert!(!out.failed);
+    }
+
+    #[test]
+    fn a_relay_url_is_told_to_bring_the_manifest() {
+        let w = world("relay");
+        w.config(&format!("scope.personal.sync = {RELAY}\n"));
+        let (out, _) = recovered(&w, "bagend");
+        assert_eq!(out.lines[2], format!("scope personal unsealed: {UNSEALED}"));
+        assert!(!store::scopes_dir(&w.root()).exists());
+        assert!(!out.failed);
+    }
+
+    #[test]
+    fn every_device_lost_the_folders_chain_is_copied_and_extended() {
+        let w = world("every_lost");
+        let (dir, url) = folder(&w);
+        w.config(&format!("scope.personal.sync = {url}\n"));
+        let src = world("every_lost_src");
+        let sid = scope(&src, &bagend(), "personal", "file:///Users/a/Sync/bilbo");
+        join(&src, &rivendell());
+        publish(&src, &sid, &dir);
+        let (out, _) = recovered(&w, "rivendell-2");
+        assert_eq!(
+            out.lines[2],
+            format!("scope personal updated: {sid} manifest 3 epoch 1")
+        );
+        assert!(!out.failed && out.warnings.is_empty(), "{:?}", out.warnings);
+        assert_eq!(w.scope_ids(), std::slice::from_ref(&sid));
+        let read = manifest::read_scope(&w.root(), &sid).unwrap();
+        assert_eq!(read.versions.len(), 3);
+        assert_eq!(read.pending, BTreeSet::from([3]));
+        for n in 1..=2u64 {
+            let theirs = fs::read(dir.join(transport::manifest_path(&sid, n))).unwrap();
+            assert_eq!(read.versions[(n - 1) as usize].bytes, theirs);
+        }
+    }
+
+    #[test]
+    fn a_dead_end_fork_moves_aside_and_the_folders_scope_is_joined() {
+        let w = world("dead_end");
+        let (dir, url) = folder(&w);
+        w.config(&format!("scope.personal.sync = {url}\n"));
+        let fork = scope(&w, &rivendell(), "personal", &url);
+        w.enroll(&rivendell());
+        let sid = published(&dir, &bagend(), "personal", &[]);
+        let before = fs::read(
+            w.root()
+                .join(format!(".bilbo/scopes/{fork}/manifest/1.json")),
+        )
+        .unwrap();
+        let (out, _) = w.ok(&["recover"], true, answers_of(0));
+        assert!(
+            out.lines
+                .contains(&format!("scope personal updated: {sid} manifest 2 epoch 1"))
+        );
+        let lost = w
+            .root()
+            .join(format!(".bilbo/scopes/{fork}/manifest/lost/1.json"));
+        assert_eq!(fs::read(lost).unwrap(), before);
+        let manifests = w.root().join(format!(".bilbo/scopes/{fork}/manifest"));
+        assert!(!manifests.join("1.json").exists() && !manifests.join("1.pending").exists());
+        assert!(!out.failed);
+    }
+
+    #[test]
+    fn a_published_version_is_not_a_dead_end() {
+        let w = world("not_dead");
+        let (dir, url) = folder(&w);
+        w.config(&format!("scope.personal.sync = {url}\n"));
+        let fork = scope(&w, &rivendell(), "personal", &url);
+        publish(&w, &fork, &dir);
+        published(&dir, &bagend(), "personal", &[]);
+        w.enroll(&rivendell());
+        let (out, _) = w.ok(&["recover"], true, answers_of(0));
+        assert_eq!(w.scope_ids(), std::slice::from_ref(&fork));
+        assert!(out.lines.contains(&format!("scope personal kept: {fork}")));
+    }
+
+    #[test]
+    fn only_the_scopes_the_config_names_are_copied() {
+        let w = world("only_named");
+        let (dir, url) = folder(&w);
+        w.config(&format!("scope.personal.sync = {url}\n"));
+        let personal = published(&dir, &bagend(), "personal", &[]);
+        published(&dir, &bagend(), "shared", &[]);
+        let (out, _) = recovered(&w, "rivendell-2");
+        assert_eq!(w.scope_ids(), std::slice::from_ref(&personal));
+        assert_eq!(out.lines.len(), 3);
+        assert!(out.lines[2].starts_with(&format!("scope personal updated: {personal}")));
+    }
+
+    #[test]
+    fn of_two_scopes_with_one_name_the_one_with_more_devices_is_copied() {
+        let w = world("two_names");
+        let (dir, url) = folder(&w);
+        w.config(&format!("scope.personal.sync = {url}\n"));
+        let big = published(
+            &dir,
+            &bagend(),
+            "personal",
+            &[rivendell(), identity(0, "frodo", 9)],
+        );
+        let small = published(&dir, &bagend(), "personal", &[]);
+        let (out, _) = recovered(&w, "rivendell-3");
+        assert_eq!(w.scope_ids(), std::slice::from_ref(&big));
+        assert!(out.lines[2].starts_with(&format!("scope personal updated: {big}")));
+        assert_eq!(out.warnings.len(), 1);
+        assert!(out.warnings[0].contains(&big) && out.warnings[0].contains(&small));
+        assert!(out.warnings[0].contains(&format!("took {big}")));
+    }
+
+    #[test]
+    fn a_folder_that_does_not_answer_fails_the_scope_and_a_rerun_finishes_it() {
+        let w = world("unreachable");
+        let missing = w.0.join("usb/bilbo");
+        let url = format!("file://{}", missing.display());
+        w.config(&format!("scope.personal.sync = {url}\n"));
+        let (out, _) = recovered(&w, "rivendell-2");
+        assert_eq!(
+            out.lines[2],
+            format!("scope personal failed: {url} is not reachable: the folder does not exist")
+        );
+        assert!(out.failed);
+        assert!(keys::read_identity(&w.keys()).unwrap().is_some());
+        assert!(!store::scopes_dir(&w.root()).exists());
+        assert!(!missing.exists());
+        fs::create_dir_all(&missing).unwrap();
+        let sid = published(&missing, &bagend(), "personal", &[]);
+        let (out, _) = w.ok(&["recover"], true, answers_of(0));
+        assert!(out.lines[1].starts_with("device kept: rivendell-2 "));
+        assert!(
+            out.lines
+                .contains(&format!("scope personal updated: {sid} manifest 2 epoch 1"))
+        );
+        assert!(!out.failed);
+    }
+
+    #[test]
+    fn a_chain_that_does_not_verify_is_named_and_the_others_are_copied() {
+        let w = world("bad_chain");
+        let (dir, url) = folder(&w);
+        w.config(&format!(
+            "scope.personal.sync = {url}\nscope.shared.sync = {url}\n"
+        ));
+        let personal = published(&dir, &bagend(), "personal", &[]);
+        let shared = published(&dir, &bagend(), "shared", &[]);
+        let path = dir.join(transport::manifest_path(&shared, 1));
+        let mut bytes = fs::read(&path).unwrap();
+        let at = bytes.len() / 2;
+        bytes[at] ^= 1;
+        fs::write(&path, bytes).unwrap();
+        let (out, _) = recovered(&w, "rivendell-2");
+        assert_eq!(w.scope_ids(), std::slice::from_ref(&personal));
+        assert!(
+            out.lines
+                .iter()
+                .any(|l| l.starts_with(&format!("scope personal updated: {personal}")))
+        );
+        assert!(out.warnings.iter().any(|l| l.contains(&shared)));
+        assert!(!out.warnings.iter().any(|l| l.contains(&personal)));
+        let line = out
+            .lines
+            .iter()
+            .find(|l| l.starts_with("scope shared "))
+            .unwrap();
+        assert!(
+            line.starts_with(&format!(
+                "scope shared failed: {url} holds scope {shared} that does not verify: manifest/1.json"
+            )) && !line.contains("init"),
+            "{line}"
+        );
+        assert!(out.failed);
+    }
+
+    #[test]
+    fn a_pending_scope_on_an_unreadable_folder_is_failed_and_gets_no_step() {
+        let w = world("pending_unreachable");
+        let missing = w.0.join("usb/bilbo");
+        let url = format!("file://{}", missing.display());
+        w.config(&format!("scope.personal.sync = {url}\n"));
+        let sid = scope(&w, &rivendell(), "personal", &url);
+        w.enroll(&bagend());
+        let (out, _) = w.ok(&["recover"], true, answers_of(0));
+        assert!(out.failed);
+        assert_eq!(
+            out.lines
+                .iter()
+                .filter(|l| l.starts_with("scope personal"))
+                .collect::<Vec<_>>(),
+            [&format!(
+                "scope personal failed: {url} is not reachable: the folder does not exist"
+            )]
+        );
+        assert_eq!(
+            manifest::read_scope(&w.root(), &sid)
+                .unwrap()
+                .versions
+                .len(),
+            1
+        );
+    }
+
+    fn init_row(w: &World, name: &str) -> (String, bool) {
+        let (out, _) = w.ok(&["init"], true, vec![]);
+        let line = out
+            .lines
+            .iter()
+            .find(|l| l.starts_with(&format!("scope {name} ")))
+            .unwrap()
+            .clone();
+        (line, out.failed)
+    }
+
+    #[test]
+    fn init_fails_beside_a_scope_still_arriving() {
+        let w = world("init_arriving");
+        let (dir, url) = folder(&w);
+        w.config(&format!("scope.personal.sync = {url}\n"));
+        w.enroll(&rivendell());
+        let sid = published(&dir, &bagend(), "personal", &[]);
+        let bytes = fs::read(dir.join(transport::manifest_path(&sid, 1))).unwrap();
+        fs::rename(
+            dir.join(transport::manifest_path(&sid, 1)),
+            dir.join(transport::manifest_path(&sid, 2)),
+        )
+        .unwrap();
+        drop(bytes);
+        let (line, failed) = init_row(&w, "personal");
+        assert!(
+            line.starts_with(&format!(
+                "scope personal failed: {url} holds scope {sid} that does not verify: "
+            )),
+            "{line}"
+        );
+        assert!(failed);
+        assert!(w.scope_ids().is_empty());
+    }
+
+    #[test]
+    fn init_fails_for_a_member_whose_store_lacks_the_scope() {
+        let w = world("init_member_no_store");
+        let (dir, url) = folder(&w);
+        w.config(&format!("scope.personal.sync = {url}\n"));
+        w.enroll(&rivendell());
+        published(&dir, &bagend(), "personal", &[rivendell()]);
+        let (line, failed) = init_row(&w, "personal");
+        assert_eq!(
+            line,
+            "scope personal failed: run bilbo device recover on this device"
+        );
+        assert!(failed);
+        assert!(w.scope_ids().is_empty());
+    }
+
+    #[test]
+    fn init_fails_on_a_folder_that_answers_but_cannot_be_listed() {
+        let w = world("init_unlistable");
+        let (dir, url) = folder(&w);
+        w.config(&format!("scope.personal.sync = {url}\n"));
+        w.enroll(&rivendell());
+        fs::create_dir_all(dir.join("scopes")).unwrap();
+        fs::set_permissions(dir.join("scopes"), fs::Permissions::from_mode(0o000)).unwrap();
+        let (line, failed) = init_row(&w, "personal");
+        fs::set_permissions(dir.join("scopes"), fs::Permissions::from_mode(0o700)).unwrap();
+        assert!(
+            line.starts_with("scope personal failed: cannot read "),
+            "{line}"
+        );
+        assert!(failed);
+        assert!(w.scope_ids().is_empty());
     }
 
     #[test]
@@ -2029,6 +2543,8 @@ mod tests {
         let out = manifest::recover_step(&lock, &bagend(), &owner.box_secret, first);
         assert!(matches!(out, Outcome::Updated(_)));
         drop(lock);
+        confirm_all(&w, &personal);
+        confirm_all(&w, &shared);
         w.enroll(&bagend());
         let (out, _) = w.ok(&["recover"], true, answers_of(0));
         assert_eq!(out.lines[0], format!("owner kept: {ABANDON_FP}"));
