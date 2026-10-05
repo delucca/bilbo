@@ -13,6 +13,8 @@ pub struct Stored {
     pub path: PathBuf,
     pub kind: String,
     pub created: Option<String>,
+    /// The note's `scope` value when the key is valid; an invalid or absent key leaves the note unassigned.
+    pub scope: Option<String>,
     pub document: rank::Document,
 }
 
@@ -37,6 +39,10 @@ pub fn read_notes(notes: &Path) -> std::io::Result<Vec<Stored>> {
             path: entry.path,
             kind: name.kind,
             created: read.created,
+            scope: match read.scope {
+                note::ScopeKey::Valid(name) => Some(name),
+                _ => None,
+            },
             document: rank::Document {
                 passages: rank::passages(&lines[read.body_start - 1..], read.body_start, stem),
             },
@@ -176,6 +182,28 @@ mod tests {
     fn only(root: &Path, text: &str) -> Shelved {
         put(root, "go/s.md", text);
         read_library(root, &[]).unwrap().remove(0)
+    }
+
+    #[test]
+    fn a_note_carries_only_a_valid_scope() {
+        let scratch = shelf("scope");
+        let notes = scratch.0.join("notes");
+        std::fs::create_dir_all(&notes).unwrap();
+        let note = |scope: &str| {
+            format!(
+                "---\nid: 01M3YJ7R6HK6NQ30DCDB1P4DYB\ncreated: 2026-10-02T14:23-03:00\n{scope}---\n\n# T\n\ntext\n"
+            )
+        };
+        std::fs::write(notes.join("plan-a.md"), note("scope: work\n")).unwrap();
+        std::fs::write(notes.join("plan-b.md"), note("")).unwrap();
+        std::fs::write(notes.join("plan-c.md"), note("scope: Work\n")).unwrap();
+        std::fs::write(notes.join("plan-d.md"), note("scope: a\nscope: b\n")).unwrap();
+        let scopes: Vec<Option<String>> = read_notes(&notes)
+            .unwrap()
+            .into_iter()
+            .map(|n| n.scope)
+            .collect();
+        assert_eq!(scopes, [Some("work".to_string()), None, None, None]);
     }
 
     #[test]

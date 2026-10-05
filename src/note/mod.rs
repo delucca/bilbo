@@ -2,6 +2,7 @@
 
 pub mod diff;
 pub mod history;
+pub mod marks;
 pub mod new;
 pub mod restore;
 pub mod versions;
@@ -65,12 +66,22 @@ pub fn default_title(topic: &str) -> String {
     }
 }
 
+/// What a note's `scope` key says.
+#[derive(Debug, PartialEq, Eq)]
+pub enum ScopeKey {
+    Absent,
+    Valid(String),
+    /// The key broke a rule: a bad value or a repeated key.
+    Invalid,
+}
+
 pub struct Note {
     pub id: Option<String>,
     /// The first `created:` value when it passes `is_created`.
     pub created: Option<String>,
     /// Physical line the body starts on: the line after the closing `---`, or 1 when there is no closed frontmatter.
     pub body_start: usize,
+    pub scope: ScopeKey,
     pub problems: Vec<Problem>,
 }
 
@@ -92,13 +103,14 @@ pub fn read(text: &str) -> Note {
 
     let mut id = None;
     let mut created = None;
+    let mut scope = ScopeKey::Absent;
     let mut body_start = 1;
     if lines.first() != Some(&"---") {
         problems.push(Problem::at(1, "frontmatter: missing; line 1 must be '---'"));
         problems.extend(title_problem(&lines, 1));
     } else if let Some(close) = lines[1..].iter().position(|l| *l == "---") {
         let close = close + 1;
-        (id, created) = read_keys(&lines[1..close], &mut problems);
+        (id, created, scope) = read_keys(&lines[1..close], &mut problems);
         body_start = close + 2;
         problems.extend(title_problem(&lines[close + 1..], close + 2));
     } else {
@@ -109,6 +121,7 @@ pub fn read(text: &str) -> Note {
         id,
         created,
         body_start,
+        scope,
         problems,
     }
 }
@@ -139,15 +152,21 @@ struct Keys {
     seen_id: bool,
     seen_created: bool,
     seen_sources: bool,
+    seen_scope: bool,
+    scope_broke: bool,
     in_sources: bool,
     sources_line: Option<usize>,
     items: usize,
     id: Option<String>,
     created: Option<String>,
+    scope: Option<String>,
 }
 
 /// `lines` are the ones between the delimiters; the first is physical line 2.
-fn read_keys(lines: &[&str], problems: &mut Vec<Problem>) -> (Option<String>, Option<String>) {
+fn read_keys(
+    lines: &[&str],
+    problems: &mut Vec<Problem>,
+) -> (Option<String>, Option<String>, ScopeKey) {
     let mut keys = Keys::default();
     for (i, line) in lines.iter().enumerate() {
         keys.line(i + 2, line, problems);
@@ -159,7 +178,12 @@ fn read_keys(lines: &[&str], problems: &mut Vec<Problem>) -> (Option<String>, Op
     if !keys.seen_created {
         problems.push(Problem::whole("created: missing"));
     }
-    (keys.id, keys.created)
+    let scope = if keys.scope_broke {
+        ScopeKey::Invalid
+    } else {
+        keys.scope.map_or(ScopeKey::Absent, ScopeKey::Valid)
+    };
+    (keys.id, keys.created, scope)
 }
 
 impl Keys {
@@ -202,6 +226,26 @@ impl Keys {
                     } else if first {
                         self.created = Some(value.to_string());
                     }
+                }
+            }
+            "scope" => {
+                let first = !std::mem::replace(&mut self.seen_scope, true);
+                repeated(first, n, key, problems);
+                self.scope_broke |= !first;
+                match value(n, key, rest, problems) {
+                    Some(value) if is_topic(value) => {
+                        if first {
+                            self.scope = Some(value.to_string());
+                        }
+                    }
+                    Some(value) => {
+                        self.scope_broke = true;
+                        problems.push(Problem::at(
+                            n,
+                            format!("scope: invalid name '{value}': {TOPIC_RULE}"),
+                        ));
+                    }
+                    None => self.scope_broke = true,
                 }
             }
             "sources" => {
@@ -253,7 +297,7 @@ fn value<'a>(n: usize, key: &str, rest: &'a str, problems: &mut Vec<Problem>) ->
 fn unexpected_line(n: usize) -> Problem {
     Problem::at(
         n,
-        "frontmatter: unexpected line; expected 'id: ', 'created: ' or 'sources:'",
+        "frontmatter: unexpected line; expected 'id: ', 'created: ', 'scope: ' or 'sources:'",
     )
 }
 
@@ -406,6 +450,39 @@ mod tests {
                 "{found:?}"
             );
         }
+    }
+
+    #[test]
+    fn a_scope_key_is_allowed() {
+        let text = with_front(&["scope: client-x"]);
+        assert!(messages(&text).is_empty());
+        assert_eq!(read(&text).scope, ScopeKey::Valid("client-x".into()));
+        assert_eq!(read(&with_front(&[])).scope, ScopeKey::Absent);
+    }
+
+    #[test]
+    fn other_scope_forms_are_invalid() {
+        for value in [
+            "scope: Work",
+            "scope: a b",
+            "scope: [work, personal]",
+            "scope:",
+            "scope: ",
+            "scope: work-",
+        ] {
+            let text = with_front(&[value]);
+            let found = messages(&text);
+            assert_eq!(found.len(), 1, "{value}: {found:?}");
+            assert!(found[0].starts_with("scope:"), "{value}: {found:?}");
+            assert_eq!(read(&text).scope, ScopeKey::Invalid, "{value}");
+        }
+    }
+
+    #[test]
+    fn two_scope_lines_are_invalid() {
+        let text = with_front(&["scope: work", "scope: personal"]);
+        assert_eq!(messages(&text), ["scope: given more than once (line 5)"]);
+        assert_eq!(read(&text).scope, ScopeKey::Invalid);
     }
 
     #[test]
