@@ -1,13 +1,16 @@
 use std::path::Path;
 
 use crate::library::corpus;
+use crate::note::marks::{self, Place};
+use crate::shared::config::{self, Settings};
 use crate::shared::store::{self, Entry, EntryKind};
 use crate::{Failure, note};
 
 /// Problems as `(path, message)`; a key shared by files is kept as `(key, path)`.
-#[derive(Default)]
-struct Scan {
+struct Scan<'a> {
+    settings: &'a Settings,
     found: Vec<(String, String)>,
+    warnings: Vec<(String, String)>,
     topics: Vec<(String, String)>,
     ids: Vec<(String, String)>,
 }
@@ -27,12 +30,19 @@ pub fn run(args: &[String], env: &store::Env) -> Result<Output, Failure> {
             format!("unexpected argument '{arg}'")
         }));
     }
+    let settings = config::load(env).map_err(Failure::Config)?;
     let root = store::root(env).map_err(Failure::Config)?;
     let notes = root.join("notes");
     if !notes.is_dir() && !store::library_dir(&root).is_dir() {
         return Err(Failure::Refused(format!("no store at {}", root.display())));
     }
-    let mut scan = Scan::default();
+    let mut scan = Scan {
+        settings: &settings,
+        found: Vec::new(),
+        warnings: Vec::new(),
+        topics: Vec::new(),
+        ids: Vec::new(),
+    };
     if notes.is_dir() {
         let entries = store::entries(&notes)
             .map_err(|e| Failure::Refused(format!("cannot read {}: {e}", notes.display())))?;
@@ -48,19 +58,18 @@ pub fn run(args: &[String], env: &store::Env) -> Result<Output, Failure> {
         format!("id: {key} is also the id of {others}")
     }));
 
-    scan.found.sort();
-    let lines: Vec<String> = scan
-        .found
+    let failed = !scan.found.is_empty();
+    let mut all = scan.found;
+    all.extend(scan.warnings);
+    all.sort();
+    let lines = all
         .into_iter()
         .map(|(path, message)| single_line(&format!("{path}: {message}")))
         .collect();
-    Ok(Output {
-        failed: !lines.is_empty(),
-        lines,
-    })
+    Ok(Output { lines, failed })
 }
 
-impl Scan {
+impl Scan<'_> {
     fn add(&mut self, path: &str, message: impl Into<String>) {
         self.found.push((path.to_string(), message.into()));
     }
@@ -107,7 +116,90 @@ impl Scan {
         if let Some(id) = read.id {
             self.ids.push((id, path.to_string()));
         }
+        self.scope(&read.scope, name, &text, path);
     }
+
+    /// The Scope problems and Scope marks rules for one note.
+    fn scope(&mut self, key: &note::ScopeKey, name: &str, text: &str, path: &str) {
+        let settings = self.settings;
+        let topic = note::parse_name(name).map(|n| n.topic).unwrap_or_default();
+        let names = settings.scope_names();
+        let own = match key {
+            note::ScopeKey::Invalid => return,
+            note::ScopeKey::Absent if names.is_empty() => return,
+            note::ScopeKey::Absent => {
+                return self.unassigned(path, "scope: missing".into(), &topic, text);
+            }
+            note::ScopeKey::Valid(own) => own,
+        };
+        if settings.scope(own).is_none() {
+            let config = settings.path.as_ref().map_or_else(
+                || "$HOME/.config/bilbo/config".to_string(),
+                |p| p.display().to_string(),
+            );
+            let message = format!("scope: '{own}' is not declared in {config}");
+            return self.unassigned(path, message, &topic, text);
+        }
+        for other in settings.scopes.iter().filter(|s| s.name != *own) {
+            if let Some((place, mark)) = first_mark(other, &topic, text) {
+                self.warnings.push((
+                    path.to_string(),
+                    format!(
+                        "scope: '{own}' but {place} holds '{mark}', a mark of '{}' (warning)",
+                        other.name
+                    ),
+                ));
+            }
+        }
+    }
+
+    /// A problem for a note with no declared scope, ending with the scopes whose marks it holds.
+    fn unassigned(&mut self, path: &str, message: String, topic: &str, text: &str) {
+        let names = self.settings.scope_names();
+        let listed = if names.is_empty() {
+            String::new()
+        } else {
+            format!("; scopes: {}", names.join(", "))
+        };
+        let holds: Vec<&str> = self
+            .settings
+            .scopes
+            .iter()
+            .filter(|s| first_mark(s, topic, text).is_some())
+            .map(|s| s.name.as_str())
+            .collect();
+        let suffix = if holds.is_empty() {
+            String::new()
+        } else {
+            format!("; holds marks of {}", holds.join(", "))
+        };
+        self.add(path, format!("{message}{listed}{suffix}"));
+    }
+}
+
+/// The earliest place in the note that holds a mark of `scope`, as text, and the mark.
+fn first_mark(scope: &config::Scope, topic: &str, text: &str) -> Option<(String, String)> {
+    scope
+        .marks
+        .iter()
+        .filter_map(|(mark, shown)| {
+            let found = match mark {
+                config::Mark::Word(word) => marks::Mark::Word(word),
+                config::Mark::Path(forms) => marks::Mark::Path(forms),
+            };
+            Some((marks::find(topic, text, &found)?, shown.as_str()))
+        })
+        .min_by_key(|(place, _)| match place {
+            Place::FileName => 0,
+            Place::Line(n) => *n,
+        })
+        .map(|(place, shown)| {
+            let place = match place {
+                Place::FileName => "the file name".to_string(),
+                Place::Line(n) => format!("line {n}"),
+            };
+            (place, shown.to_string())
+        })
 }
 
 /// One problem per file that shares its key with another file, naming every other file.

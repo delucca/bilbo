@@ -1,9 +1,9 @@
 mod common;
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
-use common::{Run, TempDir, bilbo, store, write};
+use common::{Run, Scoped, TempDir, bilbo, bilbo_scoped, scoped, store, write};
 
 fn new(dir: &TempDir, root: &Path, args: &[&str]) -> Run {
     let mut full = vec!["new"];
@@ -392,4 +392,313 @@ fn title_value_may_look_like_help() {
     assert_eq!(run.code, 0, "{}", run.stderr);
     let text = std::fs::read_to_string(root.join("notes/plan-x.md")).unwrap();
     assert!(text.ends_with("# -h\n"), "{text:?}");
+}
+
+#[test]
+fn scope_value_may_look_like_help() {
+    let dir = TempDir::new("new-scope-help");
+    let root = dir.path().join("store");
+    let run = new(&dir, &root, &["plan", "x", "--scope", "-h"]);
+    assert_eq!(run.code, 2, "{}", run.stderr);
+    assert!(run.stdout.is_empty());
+    assert!(
+        run.stderr.starts_with("bilbo: scope '-h' is not declared"),
+        "{}",
+        run.stderr
+    );
+    assert!(!root.exists());
+}
+
+fn folder(s: &Scoped, rel: &str) -> PathBuf {
+    let path = s.home.join(rel);
+    std::fs::create_dir_all(&path).unwrap();
+    path
+}
+
+fn note_text(s: &Scoped, topic: &str, kind: &str) -> String {
+    std::fs::read_to_string(s.root.join(format!("notes/{kind}-{topic}.md"))).unwrap()
+}
+
+fn scope_line(text: &str) -> Option<&str> {
+    text.lines().find(|l| l.starts_with("scope:"))
+}
+
+#[test]
+fn a_scope_line_follows_created() {
+    let dir = TempDir::new("new-scope-line");
+    let s = scoped(&dir, &["scope.work.paths = ~/acme"]);
+    let cwd = folder(&s, "other");
+    let run = bilbo_scoped(
+        &s,
+        &cwd,
+        &["new", "decision", "note-store", "--scope", "work"],
+    );
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    assert!(run.stderr.is_empty());
+    let text = note_text(&s, "note-store", "decision");
+    let lines: Vec<&str> = text.lines().collect();
+    assert_eq!(lines.len(), 7, "{text:?}");
+    assert!(lines[2].starts_with("created: "));
+    assert_eq!(lines[3], "scope: work");
+    assert_eq!(&lines[4..], ["---", "", "# Note store"]);
+}
+
+#[test]
+fn the_scope_after_equals_is_the_same() {
+    let dir = TempDir::new("new-scope-equals");
+    let s = scoped(&dir, &["scope.work.paths = ~/acme"]);
+    let cwd = folder(&s, "other");
+    let run = bilbo_scoped(&s, &cwd, &["new", "plan", "release", "--scope=work"]);
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    assert_eq!(
+        scope_line(&note_text(&s, "release", "plan")),
+        Some("scope: work")
+    );
+}
+
+#[test]
+fn the_flag_wins() {
+    let dir = TempDir::new("new-scope-flag");
+    let s = scoped(
+        &dir,
+        &["scope.work.paths = ~/acme", "scope.personal.paths = ~/me"],
+    );
+    let cwd = folder(&s, "acme/api");
+    let run = bilbo_scoped(&s, &cwd, &["new", "plan", "release", "--scope", "personal"]);
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    assert_eq!(
+        scope_line(&note_text(&s, "release", "plan")),
+        Some("scope: personal")
+    );
+}
+
+#[test]
+fn the_working_directory_picks_the_scope() {
+    let dir = TempDir::new("new-scope-cwd");
+    let s = scoped(
+        &dir,
+        &["scope.work.paths = ~/acme", "scope.personal.paths = ~/me"],
+    );
+    let cwd = folder(&s, "acme/api");
+    let run = bilbo_scoped(&s, &cwd, &["new", "plan", "release"]);
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    assert!(run.stderr.is_empty());
+    assert_eq!(
+        scope_line(&note_text(&s, "release", "plan")),
+        Some("scope: work")
+    );
+}
+
+#[test]
+fn the_longest_path_wins() {
+    let dir = TempDir::new("new-scope-longest");
+    let s = scoped(
+        &dir,
+        &[
+            "scope.personal.paths = ~/Developer",
+            "scope.work.paths = ~/Developer/acme",
+        ],
+    );
+    let cwd = folder(&s, "Developer/acme");
+    let run = bilbo_scoped(&s, &cwd, &["new", "plan", "release"]);
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    assert_eq!(
+        scope_line(&note_text(&s, "release", "plan")),
+        Some("scope: work")
+    );
+}
+
+#[test]
+fn a_sibling_folder_does_not_match() {
+    let dir = TempDir::new("new-scope-sibling");
+    let s = scoped(&dir, &["scope.work.paths = ~/Developer/acme"]);
+    folder(&s, "Developer/acme");
+    let cwd = folder(&s, "Developer/acme-tools");
+    let run = bilbo_scoped(&s, &cwd, &["new", "plan", "release"]);
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    assert_eq!(scope_line(&note_text(&s, "release", "plan")), None);
+}
+
+#[test]
+fn the_default_applies_when_no_path_matches() {
+    let dir = TempDir::new("new-scope-default");
+    let s = scoped(
+        &dir,
+        &[
+            "scope.personal.sync = off",
+            "scope.work.paths = ~/acme",
+            "scope.default = personal",
+        ],
+    );
+    let cwd = folder(&s, "elsewhere");
+    let run = bilbo_scoped(&s, &cwd, &["new", "plan", "release"]);
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    assert!(run.stderr.is_empty());
+    assert_eq!(
+        scope_line(&note_text(&s, "release", "plan")),
+        Some("scope: personal")
+    );
+}
+
+#[test]
+fn nothing_matching_warns_and_exits_zero() {
+    let dir = TempDir::new("new-scope-nothing");
+    let s = scoped(
+        &dir,
+        &["scope.work.paths = ~/acme", "scope.personal.paths = ~/me"],
+    );
+    let cwd = folder(&s, "elsewhere");
+    let run = bilbo_scoped(&s, &cwd, &["new", "plan", "release"]);
+    let path = s.root.join("notes/plan-release.md");
+    assert_eq!(run.code, 0);
+    assert_eq!(run.stdout, format!("{}\n", path.display()));
+    assert_eq!(
+        run.stderr,
+        format!(
+            "bilbo: no scope for {}; scopes: personal, work; set one with bilbo scope set <name> {}\n",
+            path.display(),
+            path.display()
+        )
+    );
+    assert_eq!(scope_line(&note_text(&s, "release", "plan")), None);
+}
+
+#[test]
+fn no_scope_declared_is_silent() {
+    let dir = TempDir::new("new-scope-none");
+    let s = scoped(&dir, &["digest.log = off"]);
+    let run = bilbo_scoped(&s, &s.home, &["new", "plan", "release"]);
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    assert!(run.stderr.is_empty());
+    assert_eq!(scope_line(&note_text(&s, "release", "plan")), None);
+}
+
+#[test]
+fn a_new_note_with_no_config_file_has_no_scope() {
+    let dir = TempDir::new("new-no-config");
+    let home = dir.path().join("home");
+    std::fs::create_dir_all(&home).unwrap();
+    let root = dir.path().join("store");
+    let run = bilbo(
+        &home,
+        &[
+            ("HOME", home.to_str().unwrap()),
+            ("BILBO_HOME", root.to_str().unwrap()),
+        ],
+        &["new", "plan", "release"],
+    );
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    assert!(run.stderr.is_empty());
+    let text = std::fs::read_to_string(root.join("notes/plan-release.md")).unwrap();
+    assert_eq!(scope_line(&text), None);
+}
+
+#[test]
+fn an_unknown_scope_lists_the_declared_ones() {
+    let dir = TempDir::new("new-scope-unknown");
+    let s = scoped(
+        &dir,
+        &["scope.personal.sync = off", "scope.work.sync = off"],
+    );
+    let run = bilbo_scoped(&s, &s.home, &["new", "plan", "release", "--scope", "acme"]);
+    assert_eq!(run.code, 2);
+    assert!(
+        run.stderr.contains("'acme'") && run.stderr.contains("personal, work"),
+        "{}",
+        run.stderr
+    );
+    assert!(!s.root.exists());
+}
+
+#[test]
+fn no_scope_declared_names_the_config_path() {
+    let dir = TempDir::new("new-scope-undeclared");
+    let s = scoped(&dir, &["digest.log = off"]);
+    let run = bilbo_scoped(&s, &s.home, &["new", "plan", "release", "--scope", "work"]);
+    assert_eq!(run.code, 2);
+    assert!(run.stderr.contains("'work'"), "{}", run.stderr);
+    assert!(
+        run.stderr.contains("no scope is declared"),
+        "{}",
+        run.stderr
+    );
+    assert!(
+        run.stderr.contains(s.config.to_str().unwrap()),
+        "{}",
+        run.stderr
+    );
+    assert!(!s.root.exists());
+}
+
+#[test]
+fn no_config_path_names_the_literal_one() {
+    let dir = TempDir::new("new-scope-no-path");
+    let root = dir.path().join("store");
+    let run = new(&dir, &root, &["plan", "release", "--scope", "work"]);
+    assert_eq!(run.code, 2);
+    assert!(
+        run.stderr.contains("$HOME/.config/bilbo/config"),
+        "{}",
+        run.stderr
+    );
+    assert!(!root.exists());
+}
+
+#[test]
+fn scope_given_twice_or_without_a_value_is_refused() {
+    let dir = TempDir::new("new-scope-twice");
+    let s = scoped(&dir, &["scope.work.sync = off"]);
+    for args in [
+        &[
+            "new", "plan", "release", "--scope", "work", "--scope", "work",
+        ][..],
+        &["new", "plan", "release", "--scope", "work", "--scope=work"],
+        &["new", "plan", "release", "--scope"],
+        &["new", "plan", "release", "--scope="],
+        &["new", "plan", "release", "--scope", ""],
+    ] {
+        let run = bilbo_scoped(&s, &s.home, args);
+        assert_eq!(run.code, 2, "{args:?}");
+        assert!(run.stderr.contains("--scope"), "{}", run.stderr);
+        assert!(!s.root.exists());
+    }
+}
+
+#[test]
+fn a_broken_config_stops_new() {
+    let dir = TempDir::new("new-scope-broken");
+    let s = scoped(&dir, &["scope.work.embedder = remote"]);
+    let run = bilbo_scoped(&s, &s.home, &["new", "plan", "release"]);
+    assert_eq!(run.code, 2);
+    assert!(run.stderr.contains("scope.work.embedder"), "{}", run.stderr);
+    assert!(!s.root.exists());
+}
+
+#[test]
+fn scoped_notes_pass_check_and_unassigned_ones_fail_by_design() {
+    let dir = TempDir::new("new-scope-check");
+    let s = scoped(&dir, &["scope.work.paths = ~/acme"]);
+    let inside = folder(&s, "acme");
+    let outside = folder(&s, "elsewhere");
+    assert_eq!(
+        bilbo_scoped(&s, &inside, &["new", "plan", "release"]).code,
+        0
+    );
+    assert_eq!(
+        bilbo_scoped(&s, &outside, &["new", "plan", "other", "--scope", "work"]).code,
+        0
+    );
+    let run = bilbo_scoped(&s, &outside, &["check"]);
+    assert_eq!((run.code, run.stdout.as_str()), (0, ""), "{}", run.stdout);
+
+    assert_eq!(
+        bilbo_scoped(&s, &outside, &["new", "plan", "loose"]).code,
+        0
+    );
+    let run = bilbo_scoped(&s, &outside, &["check"]);
+    assert_eq!(run.code, 1);
+    assert_eq!(
+        run.stdout,
+        "notes/plan-loose.md: scope: missing; scopes: work\n"
+    );
 }

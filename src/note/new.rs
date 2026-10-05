@@ -2,6 +2,7 @@ use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
+use crate::shared::config::{self, Settings};
 use crate::shared::frontmatter;
 use crate::shared::store::{self, EntryKind};
 use crate::{Failure, note};
@@ -10,6 +11,8 @@ struct Request {
     kind: String,
     topic: String,
     title: String,
+    /// The `--scope` value, not yet checked against the config.
+    scope: Option<String>,
 }
 
 /// The created note's absolute path, and a stderr line when there is one to print.
@@ -21,6 +24,11 @@ pub struct Output {
 /// Parses and validates args, creates the note.
 pub fn run(args: &[String], env: &store::Env) -> Result<Output, Failure> {
     let request = parse(args)?;
+    let settings = config::load(env).map_err(Failure::Config)?;
+    let scope = match &request.scope {
+        Some(name) => Some(declared(&settings, name)?.to_string()),
+        None => by_place(&settings),
+    };
     let root = store::root(env).map_err(Failure::Config)?;
     let notes = root.join("notes");
     refuse_taken_topic(&notes, &request.topic)?;
@@ -29,7 +37,12 @@ pub fn run(args: &[String], env: &store::Env) -> Result<Output, Failure> {
 
     let id = frontmatter::mint_ulid()
         .map_err(|e| Failure::Refused(format!("cannot read /dev/urandom: {e}")))?;
-    let text = note::render(&id, &frontmatter::now_created(), &request.title);
+    let text = note::render(
+        &id,
+        &frontmatter::now_created(),
+        scope.as_deref(),
+        &request.title,
+    );
     if let Some(problem) = note::read(&text).problems.first() {
         return Err(Failure::Refused(format!(
             "internal error: the rendered note has problems: {problem}"
@@ -46,10 +59,43 @@ pub fn run(args: &[String], env: &store::Env) -> Result<Output, Failure> {
             Failure::Refused(format!("cannot write {}: {source}", path.display()))
         }
     })?;
-    Ok(Output {
-        path: notes.join(file_name),
-        warning: None,
-    })
+    let path = notes.join(file_name);
+    let warning = (scope.is_none() && !settings.scopes.is_empty()).then(|| {
+        format!(
+            "no scope for {path}; scopes: {names}; set one with bilbo scope set <name> {path}",
+            names = settings.scope_names().join(", "),
+            path = path.display()
+        )
+    });
+    Ok(Output { path, warning })
+}
+
+/// `name` when the config declares it.
+fn declared<'a>(settings: &Settings, name: &'a str) -> Result<&'a str, Failure> {
+    if settings.scope(name).is_some() {
+        return Ok(name);
+    }
+    let names = settings.scope_names();
+    Err(usage(if names.is_empty() {
+        let path = settings.path.as_ref().map_or_else(
+            || "$HOME/.config/bilbo/config".to_string(),
+            |p| p.display().to_string(),
+        );
+        format!("scope '{name}' is not declared: no scope is declared in {path}")
+    } else {
+        format!(
+            "scope '{name}' is not declared; scopes: {}",
+            names.join(", ")
+        )
+    }))
+}
+
+/// The scope of the working directory by `paths`, else `scope.default`.
+fn by_place(settings: &Settings) -> Option<String> {
+    std::env::current_dir()
+        .ok()
+        .and_then(|cwd| settings.scope_for(&cwd).map(str::to_string))
+        .or_else(|| settings.default_scope.clone())
 }
 
 fn taken(topic: &str, existing: &Path) -> Failure {
@@ -66,6 +112,7 @@ fn usage(message: impl Into<String>) -> Failure {
 fn parse(args: &[String]) -> Result<Request, Failure> {
     let mut positional: Vec<&str> = Vec::new();
     let mut title: Option<String> = None;
+    let mut scope: Option<String> = None;
     let mut options_ended = false;
     let mut iter = args.iter();
     while let Some(arg) = iter.next() {
@@ -74,21 +121,32 @@ fn parse(args: &[String]) -> Result<Request, Failure> {
         } else if arg == "--" {
             options_ended = true;
         } else {
-            let value = if arg == "--title" {
-                iter.next()
-                    .ok_or_else(|| usage("--title needs a value"))?
-                    .clone()
+            let (option, value) = if arg == "--title" || arg == "--scope" {
+                let value = iter
+                    .next()
+                    .ok_or_else(|| usage(format!("{arg} needs a value")))?;
+                (arg.as_str(), value.clone())
             } else if let Some(value) = arg.strip_prefix("--title=") {
-                value.to_string()
+                ("--title", value.to_string())
+            } else if let Some(value) = arg.strip_prefix("--scope=") {
+                ("--scope", value.to_string())
             } else {
                 return Err(usage(format!("unknown option '{arg}'")));
             };
-            if title.replace(value).is_some() {
-                return Err(usage("--title given more than once"));
+            let slot = if option == "--title" {
+                &mut title
+            } else {
+                &mut scope
+            };
+            if slot.replace(value).is_some() {
+                return Err(usage(format!("{option} given more than once")));
             }
         }
     }
 
+    if scope.as_deref().is_some_and(|s| s.trim().is_empty()) {
+        return Err(usage("--scope must not be empty"));
+    }
     let (kind, topic) = match positional.as_slice() {
         [] => return Err(usage("missing <kind> and <topic>")),
         [_] => return Err(usage("missing <topic>")),
@@ -116,6 +174,7 @@ fn parse(args: &[String]) -> Result<Request, Failure> {
         kind: kind.into(),
         topic: topic.into(),
         title,
+        scope,
     })
 }
 

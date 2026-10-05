@@ -75,7 +75,8 @@ pub struct Scope {
     pub embedder: Rule,
     /// Each item as written, trimmed.
     pub paths: Vec<String>,
-    pub marks: Vec<Mark>,
+    /// Each mark with its text as written, trimmed.
+    pub marks: Vec<(Mark, String)>,
 }
 
 /// A mark, in the form the mark finder compares.
@@ -515,7 +516,7 @@ impl Declared {
                         ));
                     }
                     self.marks.push((name.to_string(), mark.clone(), n));
-                    self.scope(name).marks.push(mark);
+                    self.scope(name).marks.push((mark, item));
                 }
             }
         }
@@ -1593,11 +1594,14 @@ mod tests {
         assert_eq!(
             work.marks,
             [
-                Mark::Word("acme".to_string()),
-                Mark::Path(vec![
-                    "/home/a/Developer/acme".to_string(),
+                (Mark::Word("acme".to_string()), "acme".to_string()),
+                (
+                    Mark::Path(vec![
+                        "/home/a/Developer/acme".to_string(),
+                        "~/Developer/acme".to_string()
+                    ]),
                     "~/Developer/acme".to_string()
-                ])
+                )
             ]
         );
         assert_eq!(s.scope("personal").unwrap().embedder, Rule::Any);
@@ -1776,9 +1780,12 @@ mod tests {
         assert_eq!(
             s.scope("work").unwrap().marks,
             [
-                Mark::Word("acao".to_string()),
-                Mark::Word("acme2".to_string()),
-                Mark::Path(vec!["/srv/acme".to_string()])
+                (Mark::Word("acao".to_string()), "Ação".to_string()),
+                (Mark::Word("acme2".to_string()), "acme2".to_string()),
+                (
+                    Mark::Path(vec!["/srv/acme".to_string()]),
+                    "/srv/acme/".to_string()
+                )
             ]
         );
         assert_eq!(
@@ -1797,7 +1804,7 @@ mod tests {
     fn path_marks_come_with_their_forms() {
         let forms = |item: &str| {
             let s = scopes(&format!("scope.w.marks = {item}\n")).unwrap();
-            match s.scope("w").unwrap().marks[0].clone() {
+            match s.scope("w").unwrap().marks[0].0.clone() {
                 Mark::Path(forms) => forms,
                 other => panic!("{other:?}"),
             }

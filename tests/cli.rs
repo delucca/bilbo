@@ -350,8 +350,8 @@ fn fake_embedder_answers() {
 }
 
 #[test]
-fn check_and_new_ignore_the_config() {
-    let dir = TempDir::new("cli-ignore-config");
+fn check_and_new_read_the_config() {
+    let dir = TempDir::new("cli-read-config");
     let home = home(&dir);
     std::fs::create_dir_all(dir.path().join("store/notes")).unwrap();
     let missing = dir.path().join("no-such-config");
@@ -359,11 +359,22 @@ fn check_and_new_ignore_the_config() {
         ("BILBO_HOME", home.as_str()),
         ("BILBO_CONFIG", missing.to_str().unwrap()),
     ];
-    let check = bilbo(dir.path(), &env, &["check"]);
-    assert_eq!(check.code, 0);
-    assert!(check.stdout.is_empty() && check.stderr.is_empty());
-    let new = bilbo(dir.path(), &env, &["new", "plan", "x"]);
-    assert_eq!(new.code, 0, "{}", new.stderr);
+    for args in [&["check"][..], &["new", "plan", "x"]] {
+        let run = bilbo(dir.path(), &env, args);
+        assert_eq!(run.code, 2, "{args:?}: {}", run.stderr);
+        assert!(run.stdout.is_empty(), "{args:?}");
+        assert!(
+            run.stderr.contains(missing.to_str().unwrap()),
+            "{}",
+            run.stderr
+        );
+    }
+    assert_eq!(
+        std::fs::read_dir(dir.path().join("store/notes"))
+            .unwrap()
+            .count(),
+        0
+    );
 }
 
 #[test]
