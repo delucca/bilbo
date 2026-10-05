@@ -5,8 +5,8 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime};
 
 use common::{
-    Fake, IDS, Locked, Run, TempDir, bench_store, bilbo, bilbo_input, config, guide, library,
-    snapshot, store, write,
+    Fake, IDS, Locked, Run, TempDir, bench_store, bilbo, bilbo_input, config, guide, in_scope,
+    library, snapshot, store, write,
 };
 
 const CREATED: &str = "2026-10-02T14:23-03:00";
@@ -868,11 +868,6 @@ fn remote_rig(name: &str, fake: &Fake, scopes: &[&str]) -> Rig {
     Rig::new(name, &lines)
 }
 
-/// A note of `scope`, titled `title`, with `body` below.
-fn scoped(scope: &str, title: &str, body: &str) -> String {
-    note(title, body).replacen("\n---\n\n#", &format!("\nscope: {scope}\n---\n\n#"), 1)
-}
-
 /// A store whose one `any` note is embedded, so the digest's meaning gate is in charge, and a query vector
 /// that is far from it.
 fn anchored(name: &str, fake: &Fake, scopes: &[&str]) -> Rig {
@@ -882,7 +877,7 @@ fn anchored(name: &str, fake: &Fake, scopes: &[&str]) -> Rig {
     write(
         &rig.root,
         "plan-anchor.md",
-        &scoped("personal", "Anchor", "Nothing to see here.\n"),
+        &in_scope(&note("Anchor", "Nothing to see here.\n"), "personal"),
     );
     rig
 }
@@ -899,7 +894,10 @@ fn gate_withheld_note_passes_on_keywords() {
     write(
         &rig.root,
         "plan-deploy.md",
-        &scoped("work", "Deploy", "The deploy pipeline runs on staging.\n"),
+        &in_scope(
+            &note("Deploy", "The deploy pipeline runs on staging.\n"),
+            "work",
+        ),
     );
     rig.index();
     let run = rig.digest("abc", DEPLOY_PROMPT);
@@ -921,7 +919,7 @@ fn gate_withheld_note_needs_three_words() {
     write(
         &rig.root,
         "plan-deploy.md",
-        &scoped("work", "Deploy", "A deploy waits on staging.\n"),
+        &in_scope(&note("Deploy", "A deploy waits on staging.\n"), "work"),
     );
     rig.index();
     silent(&rig.digest("abc", DEPLOY_PROMPT));
@@ -940,10 +938,9 @@ fn gate_unembedded_note_in_no_local_scope_still_needs_meaning() {
     write(
         &rig.root,
         "plan-deploy.md",
-        &scoped(
+        &in_scope(
+            &note("Deploy", "The deploy pipeline runs on staging.\n"),
             "personal",
-            "Deploy",
-            "The deploy pipeline runs on staging.\n",
         ),
     );
     silent(&rig.digest("abc", DEPLOY_PROMPT));
@@ -964,12 +961,12 @@ fn gate_ignores_the_cached_vector_of_a_withheld_note() {
     write(
         &rig.root,
         "plan-anchor.md",
-        &scoped("personal", "Anchor", "Nothing to see here.\n"),
+        &in_scope(&note("Anchor", "Nothing to see here.\n"), "personal"),
     );
     write(
         &rig.root,
         "plan-deploy.md",
-        &scoped("work", "Deploy", "A deploy waits on staging.\n"),
+        &in_scope(&note("Deploy", "A deploy waits on staging.\n"), "work"),
     );
     rig.index();
     let run = rig.digest("abc", DEPLOY_PROMPT);
@@ -993,7 +990,10 @@ fn gate_an_all_withheld_store_ranks_by_keywords_and_asks_nothing() {
     write(
         &rig.root,
         "plan-deploy.md",
-        &scoped("work", "Deploy", "The deploy pipeline runs on staging.\n"),
+        &in_scope(
+            &note("Deploy", "The deploy pipeline runs on staging.\n"),
+            "work",
+        ),
     );
     rig.index();
     let run = rig.digest("abc", DEPLOY_PROMPT);

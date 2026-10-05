@@ -133,11 +133,10 @@ impl Scan<'_> {
             note::ScopeKey::Valid(own) => own,
         };
         if settings.scope(own).is_none() {
-            let config = settings.path.as_ref().map_or_else(
-                || "$HOME/.config/bilbo/config".to_string(),
-                |p| p.display().to_string(),
+            let message = format!(
+                "scope: '{own}' is not declared in {}",
+                settings.shown_path()
             );
-            let message = format!("scope: '{own}' is not declared in {config}");
             return self.unassigned(path, message, &topic, text);
         }
         for other in settings.scopes.iter().filter(|s| s.name != *own) {

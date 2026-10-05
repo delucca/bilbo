@@ -32,6 +32,17 @@ struct Item {
     index: Option<usize>,
 }
 
+/// The agent for `url`; a loopback URL is reached directly, whatever the proxy variables say, because a
+/// loopback embedder is what lets a `local` passage be sent.
+fn agent(url: &str, timeout: Duration) -> ureq::Agent {
+    let builder = ureq::Agent::config_builder().timeout_global(Some(timeout));
+    if config::is_local(url) {
+        builder.proxy(None).build().into()
+    } else {
+        builder.build().into()
+    }
+}
+
 impl Client {
     /// Reads the token (`var` looks a variable up) and builds the agent with `timeout` as its global timeout.
     pub fn new(
@@ -53,10 +64,7 @@ impl Client {
         timeout: Duration,
     ) -> Client {
         Client {
-            agent: ureq::Agent::config_builder()
-                .timeout_global(Some(timeout))
-                .build()
-                .into(),
+            agent: agent(&embedder.url, timeout),
             endpoint: format!("{}/v1/embeddings", embedder.url.trim_end_matches('/')),
             url: embedder.url.clone(),
             model: embedder.model.clone(),

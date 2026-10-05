@@ -27,13 +27,9 @@ pub fn run(args: &[String], env: &store::Env) -> Result<Output, Failure> {
     }
     let settings = config::load(env).map_err(Failure::Config)?;
     let Some(embedder) = &settings.embedder else {
-        let path = settings
-            .path
-            .map_or("$HOME/.config/bilbo/config".into(), |p| {
-                p.display().to_string()
-            });
         return Err(Failure::Refused(format!(
-            "no embedder configured; set embedder.url in {path}"
+            "no embedder configured; set embedder.url in {}",
+            settings.shown_path()
         )));
     };
     let root = store::root(env).map_err(Failure::Config)?;

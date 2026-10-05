@@ -77,11 +77,10 @@ fn declared<'a>(settings: &Settings, name: &'a str) -> Result<&'a str, Failure> 
     }
     let names = settings.scope_names();
     Err(usage(if names.is_empty() {
-        let path = settings.path.as_ref().map_or_else(
-            || "$HOME/.config/bilbo/config".to_string(),
-            |p| p.display().to_string(),
-        );
-        format!("scope '{name}' is not declared: no scope is declared in {path}")
+        format!(
+            "scope '{name}' is not declared: no scope is declared in {}",
+            settings.shown_path()
+        )
     } else {
         format!(
             "scope '{name}' is not declared; scopes: {}",

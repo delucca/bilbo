@@ -1295,6 +1295,11 @@ pub fn cpu_seconds(pid: u32) -> Option<f64> {
     })
 }
 
+/// `text`, a note, with `scope: <scope>` as its last frontmatter line.
+pub fn in_scope(text: &str, scope: &str) -> String {
+    text.replacen("\n---\n\n#", &format!("\nscope: {scope}\n---\n\n#"), 1)
+}
+
 /// Scope tests: HOME, the working folders, the store and the config share one temporary tree.
 pub struct Scoped {
     pub home: PathBuf,
