@@ -109,7 +109,7 @@ Run every command below from the repo root as `nix develop -c sh -c '<command>'`
   - `recover`'s `unsealed` hint in `src/identity/device.rs` (`device-identity` delta), leaving `init`'s hint as the `scope-manifest` spec words it.
 
   Update their unit tests and `tests/sync.rs`. Verify with `cargo test --locked --bin bilbo sync::manifests:: && cargo test --locked --bin bilbo identity::device:: && cargo test --locked --test sync`
-- [ ] 2.7 Smoke test on two machines with real terminals, recorded in `openspec/changes/add-device-pairing/smoke.md`:
+- [x] 2.7 Smoke test on two machines with real terminals, recorded in `openspec/changes/add-device-pairing/smoke.md`:
   - pair bagend from rivendell through a folder a cloud service syncs, with a different path on each machine;
   - check the fingerprints, names and ids by eye;
   - decline once, then use a wrong word once and retry the right code;
@@ -149,4 +149,4 @@ Run every command below from the repo root as `nix develop -c sh -c '<command>'`
   - the sweep's back-dated modification times.
 
   Verify with `docker run --rm -m 8g -v "$PWD":/src -w /src nixos/nix sh -c 'nix --extra-experimental-features "nix-command flakes" develop -c sh -c "export CARGO_TARGET_DIR=/tmp/target && cargo fmt --check && cargo clippy --locked --all-targets -- -D warnings && cargo test --locked --no-fail-fast"'`
-- [ ] 4.2 Run the full suite and the package check. Verify with `cargo fmt --check && cargo clippy --locked --all-targets -- -D warnings && cargo test --locked && nix flake check -L`
+- [x] 4.2 Run the full suite and the package check. Verify with `cargo fmt --check && cargo clippy --locked --all-targets -- -D warnings && cargo test --locked && nix flake check -L`
