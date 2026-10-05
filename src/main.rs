@@ -49,6 +49,8 @@ usage: bilbo new <kind> <topic> [--title <text>] [--scope <name>]
        bilbo device init [--name <name>]
        bilbo device recover [--name <name>]
        bilbo device revoke <device>
+       bilbo sync
+       bilbo sync declare <note> <reason>
        bilbo --help
        bilbo --version
 new creates <root>/notes/<kind>-<topic>.md and prints its path.
@@ -64,6 +66,7 @@ history lists the versions of a note, newest first, prints one, or shows what ch
 restore writes a past version of a note back as its newest version, keeping what the note held before.
 scope lists the scopes this device declares with their note counts; scope set gives notes a scope.
 device shows this device, its owner and each scope's manifest; device list prints the owner's devices; device init makes this device's keys, with a recovery phrase to write down, and each syncing scope's manifest; device recover reads that phrase on another device and adds it to the manifests; device revoke removes a device from them; init, for a new phrase, recover and revoke need a terminal.
+sync prints each syncing scope's state, its devices, the open conflicts and the dropped text nobody declared, and exits 1 when something needs attention; sync declare records that a note's dropped text was dropped on purpose.
 setup creates the store and the config and installs the agent plugin, the index timer, the note watcher and, when asked, the local embedder; in a terminal it asks first.
 setup options: --embedder-url <url>, --embedder-model <name>, --embedder-token-env <var>, --embedder-token-file <path>, --embedder-query-prefix <text>, --embedder-local, --embedder-port <port>, --llama-server <path>, --no-plugin, --claude <path>, --codex <path>, --plugin-source <folder|owner/repo#ref>, --no-timer, --index-every <minutes>, --no-watch
 kinds: plan, spec, design, decision, gotcha, research, review, report, reference
@@ -184,6 +187,16 @@ fn run() -> Result<ExitCode, Failure> {
             let terminal = std::io::stdin().is_terminal() && std::io::stderr().is_terminal();
             let output =
                 identity::device::run(&args[1..], &env, terminal, &mut host::prompt::Terminal)?;
+            output.warnings.iter().for_each(|line| print_stderr(line));
+            output.lines.iter().for_each(|line| print_stdout(line));
+            Ok(if output.failed {
+                ExitCode::FAILURE
+            } else {
+                ExitCode::SUCCESS
+            })
+        }
+        Some("sync") => {
+            let output = sync::cli::run(&args[1..], &env)?;
             output.warnings.iter().for_each(|line| print_stderr(line));
             output.lines.iter().for_each(|line| print_stdout(line));
             Ok(if output.failed {
