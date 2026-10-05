@@ -47,6 +47,8 @@ pub enum Reason {
     NotInScope,
     /// A folder that holds none of this device's confirmed versions.
     NoScopes,
+    /// A scope to restore whose epoch change has not stood long enough on the folder.
+    Settling,
 }
 
 /// A scope that may not sync, with the line to print when it changes.
@@ -88,19 +90,27 @@ pub fn step(t: &dyn Transport, input: &Input) -> Result<Outcome, String> {
         .filter(|k| k.mine && k.last_name.as_deref() == Some(input.name))
         .collect();
     let mut ids: Vec<String> = mine.iter().map(|k| k.scope.id.clone()).collect();
+    let mut outcome = Outcome::default();
     if ids.is_empty() {
-        match restore(t, input, &owner, &who)? {
-            Restored::Scope(id) => ids.push(id),
+        match restore(t, input, &owner, &who) {
+            Restored::Scope { id, devices } => {
+                outcome.events.push(format!(
+                    "sync {}: resumed scope {id} from the folder ({devices} devices)",
+                    input.name
+                ));
+                ids.push(id);
+            }
             Restored::Stop(stop) => {
-                return Ok(Outcome {
-                    stop: Some(stop),
-                    ..Outcome::default()
-                });
+                outcome.stop = Some(stop);
+                return Ok(outcome);
+            }
+            Restored::Error(why) => {
+                outcome.error = Some(why);
+                return Ok(outcome);
             }
         }
     }
     let mut ones: Vec<One> = ids.iter().map(|id| one(t, input, &who, id)).collect();
-    let mut outcome = Outcome::default();
     let live: Vec<usize> = (0..ones.len())
         .filter(|i| ones[*i].stop.is_none() && ones[*i].error.is_none())
         .collect();
@@ -387,11 +397,16 @@ fn blocked(t: &dyn Transport, input: &Input, who: &Recipient) -> Result<Option<S
     if listing.outsider() || scopes::pick(&listing.found, input.name).is_some() {
         return Ok(Some(not_in_scope(input.name)));
     }
+    Ok(unattributed(input, &listing))
+}
+
+/// The stop for the first scope of the listing whose version 1 is missing or does not verify.
+fn unattributed(input: &Input, listing: &scopes::Listing) -> Option<Stop> {
     let (name, path) = (input.name, folder_path(input));
-    Ok(listing.unattributed.first().map(|(id, why)| Stop {
+    listing.unattributed.first().map(|(id, why)| Stop {
         reason: Reason::NotInScope,
         line: format!("sync {name}: {path} holds scope {id} that does not verify: {why}"),
-    }))
+    })
 }
 
 /// The transport holds `bytes` as version `n`, not this device's pending one.
@@ -536,30 +551,62 @@ fn settle(input: &Input, one: &mut One) -> Result<Vec<String>, String> {
 
 /// What `restore` decided.
 enum Restored {
-    Scope(String),
+    Scope { id: String, devices: usize },
     Stop(Stop),
+    Error(String),
 }
 
-/// The store holds no manifest of this name: copies in the one scope of that name on the transport whose latest
-/// version lists this device, as far as the epoch rule allows now (the rest comes through `adopt`). With several, it
-/// copies none.
-fn restore(
+/// A scope of the owner on the transport that opens to the config name for this device on its member-valid prefix.
+struct Candidate {
+    id: String,
+    chain: Scope,
+    /// How many versions the prefix holds.
+    limit: u64,
+}
+
+/// The store holds no manifest of this name: copies in the one scope of that name on the transport that lists this
+/// device, as the epoch rule allows now (the rest comes through `adopt`). Every scope of the owner counts, whether or
+/// not its whole chain verifies, since a scope with a bad version is still the scope; with several candidates it
+/// copies none, and it copies nothing while a scope whose version 1 does not verify may be the one meant.
+fn restore(t: &dyn Transport, input: &Input, owner: &[u8; 32], who: &Recipient) -> Restored {
+    match restore_scope(t, input, owner, who) {
+        Ok(restored) => restored,
+        Err(why) => Restored::Error(why),
+    }
+}
+
+fn restore_scope(
     t: &dyn Transport,
     input: &Input,
     owner: &[u8; 32],
     who: &Recipient,
 ) -> Result<Restored, String> {
     t.reachable()?;
-    let listing = scopes::list(t, owner, who)?;
-    let named: Vec<&scopes::Found> = listing
-        .found
-        .iter()
-        .filter(|f| f.name == input.name)
-        .collect();
     let name = input.name;
-    let found = match named.as_slice() {
+    let listing = scopes::list(t, owner, who)?;
+    if let Some(stop) = unattributed(input, &listing) {
+        return Ok(Restored::Stop(stop));
+    }
+    let ids = listing.found.iter().map(|f| &f.id).chain(&listing.closed);
+    let mut candidates = Vec::new();
+    for id in ids {
+        let chain = scopes::chain(t, id)?;
+        let mut limit = chain.versions.len() as u64;
+        if let Err(invalid) = manifest::read(&chain, who) {
+            limit = invalid.n.saturating_sub(1);
+        }
+        let opened = manifest::open(&prefix(id, &chain, limit), who);
+        if opened.ok().flatten().is_some_and(|o| o.name == name) {
+            candidates.push(Candidate {
+                id: id.clone(),
+                chain,
+                limit,
+            });
+        }
+    }
+    let candidate = match candidates.as_slice() {
         [] => return Ok(Restored::Stop(not_in_scope(name))),
-        [found] => found,
+        [candidate] => candidate,
         _ => {
             return Ok(Restored::Stop(Stop {
                 reason: Reason::NotInScope,
@@ -569,19 +616,41 @@ fn restore(
             }));
         }
     };
-    let epoch = |n: usize| found.scope.versions[n].manifest.epoch;
-    let count = (1..found.scope.versions.len())
-        .find(|n| epoch(*n) != epoch(n - 1))
-        .unwrap_or(found.scope.versions.len());
-    let copied = prefix(&found.id, &found.scope, count as u64);
+    let (id, chain) = (&candidate.id, &candidate.chain);
+    let mut state = read_state(input.root, id);
+    let mut allowed = candidate.limit;
+    for n in 2..=candidate.limit {
+        if !ready(t, input, &mut state, chain, n) {
+            allowed = n - 1;
+            break;
+        }
+    }
+    let copied = prefix(id, chain, allowed);
     if manifest::open(&copied, who).ok().flatten().is_none() {
-        return Ok(Restored::Stop(not_in_scope(name)));
+        fs::create_dir_all(scope_dir(input.root, id))
+            .map_err(|e| format!("cannot create {}: {e}", scope_dir(input.root, id).display()))?;
+        write_state(input.root, id, &state)?;
+        return Ok(Restored::Stop(Stop {
+            reason: Reason::Settling,
+            line: format!("sync {name}: waiting for the folder to settle scope {id}"),
+        }));
     }
     let lock = manifest::lock(input.root)?;
-    for v in &copied.versions {
-        manifest::adopt(&lock, &found.id, v.manifest.n, &v.bytes)?;
+    let held = manifest::read_scope(input.root, id)?;
+    if let Some(invalid) = &held.invalid {
+        return Err(invalid.to_string());
     }
-    Ok(Restored::Scope(found.id.clone()))
+    for v in copied.versions.iter().skip(held.versions.len()) {
+        manifest::adopt(&lock, id, v.manifest.n, &v.bytes)?;
+    }
+    drop(lock);
+    state.seen.retain(|k, _| *k > allowed);
+    write_state(input.root, id, &state)?;
+    let devices = copied.latest().map_or(0, |v| v.manifest.devices.len());
+    Ok(Restored::Scope {
+        id: id.clone(),
+        devices,
+    })
 }
 
 /// What this step keeps beside `state.json`, in `manifests.json`.
@@ -1582,6 +1651,15 @@ mod tests {
                 .exists()
         );
         assert!(go(&d, &rb, &b(), "personal", 1400).events.is_empty());
+        let past = go(&d, &rb, &b(), "personal", 1300 + 600);
+        assert!(past.error.is_none() && past.events.is_empty());
+        let now = local(&rb, &id);
+        assert_eq!((now.versions.len(), now.pending.contains(&3)), (3, true));
+        assert_ne!(now.versions[2].bytes, forged);
+        assert!(
+            !rb.join(format!(".bilbo/scopes/{id}/manifest/lost"))
+                .exists()
+        );
     }
 
     #[test]
@@ -1692,5 +1770,173 @@ mod tests {
         let out = go(&d, &root, &a(), "personal", 1);
         assert_eq!(out.stop.unwrap().reason, Reason::NoScopes);
         assert!(on_folder(&d, &id, 1).is_none());
+    }
+
+    /// A thief holding the owner seed makes its own `personal` listing B and publishes it.
+    fn thief_scope(d: &Scratch, target: &Identity) -> String {
+        let rt = store(d, "thief");
+        let id = make(&rt, &c(), "personal", &[target]);
+        put(d, &rt, &c(), &id);
+        id
+    }
+
+    const SEVERAL: &str = "sync personal: the folder holds several scopes named personal; run bilbo device recover on this device";
+
+    #[test]
+    fn a_real_scope_with_trailing_garbage_is_still_a_candidate_beside_a_thiefs() {
+        let d = scratch("rr-garbage-tail");
+        let (ra, rb) = (store(&d, "a"), store(&d, "b"));
+        let real = make(&ra, &a(), "personal", &[&b()]);
+        go(&d, &ra, &a(), "personal", 0);
+        thief_scope(&d, &b());
+        fs::write(
+            folder_path(&d).join(transport::manifest_path(&real, 2)),
+            b"not a manifest",
+        )
+        .unwrap();
+        let out = go(&d, &rb, &b(), "personal", 1);
+        assert!(out.scope.is_none());
+        assert_eq!(out.stop.unwrap().line, SEVERAL);
+        assert!(manifest::scope_ids(&rb).unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_real_scope_with_a_forged_rotation_is_still_a_candidate_beside_a_thiefs() {
+        let d = scratch("rr-forged-tail");
+        let (ra, rb) = (store(&d, "a"), store(&d, "b"));
+        let real = make(&ra, &a(), "personal", &[&b(), &c()]);
+        go(&d, &ra, &a(), "personal", 0);
+        revoke(&ra, &a(), &real, &c());
+        go(&d, &ra, &a(), "personal", 10);
+        go(&d, &ra, &a(), "personal", 610);
+        let forged = forge_rotation(&ra, &real, &c());
+        fs::write(
+            folder_path(&d).join(transport::manifest_path(&real, 3)),
+            &forged,
+        )
+        .unwrap();
+        thief_scope(&d, &b());
+        let out = go(&d, &rb, &b(), "personal", 611);
+        assert_eq!(out.stop.unwrap().line, SEVERAL);
+        assert!(manifest::scope_ids(&rb).unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_scope_without_its_version_1_blocks_the_restore() {
+        let d = scratch("rr-no-v1");
+        let (ra, rb) = (store(&d, "a"), store(&d, "b"));
+        let real = make(&ra, &a(), "personal", &[&b()]);
+        add(&ra, &a(), &real, &moria());
+        go(&d, &ra, &a(), "personal", 0);
+        thief_scope(&d, &b());
+        fs::remove_file(folder_path(&d).join(transport::manifest_path(&real, 1))).unwrap();
+        let out = go(&d, &rb, &b(), "personal", 1);
+        assert!(out.scope.is_none());
+        let stop = out.stop.unwrap();
+        assert!(stop.line.starts_with(&format!(
+            "sync personal: {} holds scope {real} that does not verify: ",
+            folder_path_of(&d)
+        )));
+        assert!(manifest::scope_ids(&rb).unwrap().is_empty());
+    }
+
+    #[test]
+    fn an_honest_scope_with_trailing_garbage_restores_its_prefix() {
+        let d = scratch("rr-honest-garbage");
+        let (ra, rb) = (store(&d, "a"), store(&d, "b"));
+        let real = make(&ra, &a(), "personal", &[&b()]);
+        go(&d, &ra, &a(), "personal", 0);
+        fs::write(
+            folder_path(&d).join(transport::manifest_path(&real, 2)),
+            b"not a manifest",
+        )
+        .unwrap();
+        let out = go(&d, &rb, &b(), "personal", 1);
+        assert_eq!(out.scope.as_deref(), Some(real.as_str()));
+        assert!(out.error.is_none() && out.stop.is_none());
+        assert!(out.events[0].starts_with("sync personal: resumed scope"));
+        let invalid: Vec<_> = out
+            .events
+            .iter()
+            .filter(|e| e.contains("manifest/2.json is invalid"))
+            .collect();
+        assert_eq!(invalid.len(), 1);
+        assert_eq!(local(&rb, &real).versions.len(), 1);
+        assert!(go(&d, &rb, &b(), "personal", 2).events.is_empty());
+    }
+
+    #[test]
+    fn a_device_listed_after_a_rotation_is_resumed_once_the_epoch_settled() {
+        let d = scratch("rr-after-rotation");
+        let (ra, rb) = (store(&d, "a"), store(&d, "b"));
+        let id = make(&ra, &a(), "personal", &[&c()]);
+        go(&d, &ra, &a(), "personal", 0);
+        revoke(&ra, &a(), &id, &c());
+        go(&d, &ra, &a(), "personal", 10);
+        go(&d, &ra, &a(), "personal", 610);
+        add(&ra, &a(), &id, &b());
+        go(&d, &ra, &a(), "personal", 611);
+        assert_eq!(local(&ra, &id).versions.len(), 3);
+
+        let waiting = go(&d, &rb, &b(), "personal", 612);
+        assert!(waiting.scope.is_none());
+        let stop = waiting.stop.unwrap();
+        assert_eq!(stop.reason, Reason::Settling);
+        assert_eq!(
+            stop.line,
+            format!("sync personal: waiting for the folder to settle scope {id}")
+        );
+        assert!(local_versions(&rb, &id).is_empty());
+        let still = go(&d, &rb, &b(), "personal", 612 + 599);
+        assert_eq!(still.stop.unwrap().reason, Reason::Settling);
+        let out = go(&d, &rb, &b(), "personal", 612 + 600);
+        assert_eq!(out.scope.as_deref(), Some(id.as_str()));
+        assert!(out.stop.is_none() && out.error.is_none());
+        assert_eq!(
+            out.events[0],
+            format!("sync personal: resumed scope {id} from the folder (2 devices)")
+        );
+        assert_eq!(local(&rb, &id).versions.len(), 3);
+    }
+
+    fn local_versions(root: &Path, id: &str) -> Vec<u64> {
+        manifest::read_scope(root, id)
+            .map(|s| s.versions.iter().map(|v| v.manifest.n).collect())
+            .unwrap_or_default()
+    }
+
+    #[test]
+    fn a_damaged_local_scope_is_an_error_not_a_failed_step() {
+        let d = scratch("rr-damaged-local");
+        let (ra, rb) = (store(&d, "a"), store(&d, "b"));
+        let id = make(&ra, &a(), "personal", &[&b()]);
+        go(&d, &ra, &a(), "personal", 0);
+        copy_in(&rb, &ra, &id);
+        let path = rb.join(format!(".bilbo/scopes/{id}/manifest/1.json"));
+        let mut bytes = fs::read(&path).unwrap();
+        let middle = bytes.len() / 2;
+        bytes[middle] ^= 1;
+        fs::write(&path, bytes).unwrap();
+        let out = go(&d, &rb, &b(), "personal", 1);
+        assert!(out.scope.is_none());
+        assert!(out.error.unwrap().contains("manifest/1.json is invalid"));
+    }
+
+    #[test]
+    fn a_folder_that_is_not_there_is_an_error_without_a_local_manifest_too() {
+        let d = scratch("rr-gone-restore");
+        let rb = store(&d, "b");
+        let missing = d.0.join("missing");
+        let url = url_of(&missing);
+        let input = Input {
+            root: &rb,
+            name: "personal",
+            url: &url,
+            identity: &b(),
+            now: at(0),
+        };
+        let out = step(&Folder::new(missing, &b().device.id()), &input).unwrap();
+        assert_eq!(out.error.as_deref(), Some("the folder does not exist"));
+        assert!(out.scope.is_none() && out.stop.is_none());
     }
 }
