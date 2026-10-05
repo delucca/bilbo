@@ -2527,6 +2527,11 @@ mod tests {
         w.enroll(&rivendell());
         fs::create_dir_all(dir.join("scopes")).unwrap();
         fs::set_permissions(dir.join("scopes"), fs::Permissions::from_mode(0o000)).unwrap();
+        if fs::read_dir(dir.join("scopes")).is_ok() {
+            fs::set_permissions(dir.join("scopes"), fs::Permissions::from_mode(0o700)).unwrap();
+            eprintln!("skipped: the folder is readable despite mode 000 (running as root?)");
+            return;
+        }
         let (line, failed) = init_row(&w, "personal");
         fs::set_permissions(dir.join("scopes"), fs::Permissions::from_mode(0o700)).unwrap();
         assert!(
