@@ -27,6 +27,8 @@ usage: bilbo new <kind> <topic> [--title <text>] [--scope <name>]
        bilbo device init [--name <name>]
        bilbo device recover [--name <name>]
        bilbo device revoke <device>
+       bilbo sync
+       bilbo sync declare <note> <reason>
        bilbo --help
        bilbo --version
 new creates <root>/notes/<kind>-<topic>.md and prints its path.
@@ -42,6 +44,7 @@ history lists the versions of a note, newest first, prints one, or shows what ch
 restore writes a past version of a note back as its newest version, keeping what the note held before.
 scope lists the scopes this device declares with their note counts; scope set gives notes a scope.
 device shows this device, its owner and each scope's manifest; device list prints the owner's devices; device init makes this device's keys, with a recovery phrase to write down, and each syncing scope's manifest; device recover reads that phrase on another device and adds it to the manifests; device revoke removes a device from them; init, for a new phrase, recover and revoke need a terminal.
+sync prints each syncing scope's state, its devices, the open conflicts and the dropped text nobody declared, and exits 1 when something needs attention; sync declare records that a note's dropped text was dropped on purpose.
 setup creates the store and the config and installs the agent plugin, the index timer, the note watcher and, when asked, the local embedder; in a terminal it asks first.
 setup options: --embedder-url <url>, --embedder-model <name>, --embedder-token-env <var>, --embedder-token-file <path>, --embedder-query-prefix <text>, --embedder-local, --embedder-port <port>, --llama-server <path>, --no-plugin, --claude <path>, --codex <path>, --plugin-source <folder|owner/repo#ref>, --no-timer, --index-every <minutes>, --no-watch
 kinds: plan, spec, design, decision, gotcha, research, review, report, reference
@@ -93,6 +96,7 @@ fn unknown_verb_is_usage_error() {
             && run.stderr.contains("bilbo restore")
             && run.stderr.contains("bilbo scope")
             && run.stderr.contains("bilbo device")
+            && run.stderr.contains("bilbo sync")
     );
     assert!(!home.exists());
     assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
@@ -532,4 +536,59 @@ fn device_is_a_verb() {
     assert!(run.stdout.is_empty());
     assert!(!state.exists());
     assert!(!home.exists());
+}
+
+#[test]
+fn sync_is_a_verb() {
+    let dir = TempDir::new("cli-sync");
+    let home = dir.path().join("home");
+    let state = dir.path().join("state");
+    let config = dir.path().join("config");
+    let env = [
+        ("BILBO_HOME", home.to_str().unwrap()),
+        ("BILBO_CONFIG", config.to_str().unwrap()),
+        ("XDG_STATE_HOME", state.to_str().unwrap()),
+    ];
+    let run = bilbo(dir.path(), &env, &["sync", "now"]);
+    assert_eq!(run.code, 2);
+    assert!(run.stdout.is_empty());
+    assert!(run.stderr.contains("bilbo: unexpected argument 'now'\n"));
+    let run = bilbo(dir.path(), &env, &["sync"]);
+    assert_eq!(run.code, 1);
+    assert!(run.stdout.is_empty());
+    assert_eq!(
+        run.stderr,
+        format!("bilbo: no store at {}\n", home.display())
+    );
+    std::fs::create_dir_all(home.join("notes")).unwrap();
+    std::fs::write(&config, "").unwrap();
+    let run = bilbo(dir.path(), &env, &["sync"]);
+    assert_eq!(run.code, 1);
+    assert!(run.stdout.is_empty());
+    assert_eq!(
+        run.stderr,
+        format!(
+            "bilbo: no scope syncs; set scope.<name>.sync in {}\n",
+            config.display()
+        )
+    );
+    std::fs::write(&config, "scope.personal.sync = file:///srv/bilbo\n").unwrap();
+    let run = bilbo(dir.path(), &env, &["sync"]);
+    assert_eq!(run.code, 1);
+    assert_eq!(
+        run.stdout,
+        "scope personal file:///srv/bilbo: 0 notes, pushed never, pulled never\nlocal: 0 notes sync nowhere\n"
+    );
+    assert_eq!(
+        run.stderr,
+        "bilbo: bilbo watch is not running; nothing syncs\n"
+    );
+    let run = bilbo(dir.path(), &env, &["sync", "declare", "release", "a\nb"]);
+    assert_eq!(run.code, 2);
+    assert!(run.stdout.is_empty());
+    assert!(
+        run.stderr
+            .starts_with("bilbo: the reason must be one line\n")
+    );
+    assert!(!state.exists());
 }

@@ -390,6 +390,8 @@ pub struct Status {
     pub stops: BTreeMap<String, Stop>,
     /// The transport problem watch last reported.
     pub error: Option<Problem>,
+    /// Unix seconds when each device was first seen listed.
+    pub since: BTreeMap<String, i64>,
 }
 
 /// The state of scope `id` as `bilbo sync` reads it, `None` when the store holds none.
@@ -412,6 +414,7 @@ pub fn status(root: &Path, id: &str) -> Result<Option<Status>, String> {
         pulled_at: state.pulled_at,
         pushed_at: state.pushed_at,
         stops: state.stops,
+        since: state.since,
         error: state.error,
     }))
 }
