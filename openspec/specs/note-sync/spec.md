@@ -176,7 +176,7 @@ Once every device of a scope has pulled every segment, all of them SHALL hold th
 - **THEN** within 15 seconds B holds the note with `scope: work` and A no longer holds the file, and in the 30 seconds after that neither history gains a version and no segment holding a version is written
 
 ### Requirement: Joining and leaving a scope
-A device SHALL sync a scope only while the latest valid manifest version lists it and seals the epoch key to it; it gets there through `bilbo device recover` with the phrase, or a version another member writes, never through watch alone. Watch SHALL publish no version 1 of a scope while this device is in no scope on that transport and the transport holds a scope of this owner that it cannot open, or while the transport holds a scope of this owner by that name, and print the not-in-the-scope line instead; nor while it holds a scope whose version 1 is missing or does not verify, printing `bilbo: sync <name>: <folder> holds scope <scope id> that does not verify: <reason>`. Watch SHALL NOT seal an epoch key to any device, nor write a version that lists a device, except when re-applying a version this device wrote. A device that a newer version no longer lists SHALL stop syncing that scope, print `bilbo: sync <name>: this device was removed from the scope`, and keep its notes.
+A device SHALL sync a scope only while the latest valid manifest version lists it and seals the epoch key to it; it gets there through `bilbo pair` with a member, through `bilbo device recover` with the phrase, or a version another member writes, never through watch alone. Watch SHALL publish no version 1 of a scope while this device is in no scope on that transport and the transport holds a scope of this owner that it cannot open, or while the transport holds a scope of this owner by that name, and print the not-in-the-scope line instead; nor while it holds a scope whose version 1 is missing or does not verify, printing `bilbo: sync <name>: <folder> holds scope <scope id> that does not verify: <reason>`. Watch SHALL NOT seal an epoch key to any device, nor write a version that lists a device, except when re-applying a version this device wrote. A device that a newer version no longer lists SHALL stop syncing that scope, print `bilbo: sync <name>: this device was removed from the scope`, and keep its notes.
 
 #### Scenario: A second device set up through the wizard
 - **WHEN** device B turns sync on for `personal` in the wizard with A's folder and A's recovery phrase
@@ -200,7 +200,11 @@ A device SHALL sync a scope only while the latest valid manifest version lists i
 
 #### Scenario: Recovered before the folder was read
 - **WHEN** device B ran `bilbo device recover` by hand on a store with no manifests while A's folder had not reached B yet, so it enrolled into no scope, and B's config syncs `personal` through A's folder
-- **THEN** B's watch publishes no manifest, syncs nothing for `personal`, and prints `bilbo: sync personal: this device is not in the scope; run bilbo device recover on this device`
+- **THEN** B's watch publishes no manifest, syncs nothing for `personal`, and prints `bilbo: sync personal: this device is not in the scope; run bilbo pair with a device that syncs <url>, or bilbo device recover on this device`
+
+#### Scenario: Paired into the scope afterwards
+- **WHEN** that device B then answers a code from A with `bilbo pair <code> --via <url>` and the user confirms on A
+- **THEN** B's keys are unchanged, the latest `personal` version lists B, and B's watch syncs `personal` within one cycle
 
 ### Requirement: Manifest changes are shown
 When watch adopts a manifest version this device did not write and that is valid under the `scope-manifest` spec, including its Chain check by a member, it SHALL do so, and for each device the version adds print `bilbo: sync <name>: device <device name> added by <signer> (manifest <n>)` once, and for a new epoch `bilbo: sync <name>: epoch changed (manifest <n>)` once. `<signer>` is the writing device's name when the version names it, else `owner key`. It SHALL keep these changes for `bilbo sync` to list for 30 days.

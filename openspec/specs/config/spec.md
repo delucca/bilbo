@@ -6,7 +6,7 @@ Where bilbo reads its settings and the exact shape of the settings file, so a hu
 ## Requirements
 
 ### Requirement: Config location
-bilbo SHALL read its settings from `BILBO_CONFIG` when it is set and not empty, then `$XDG_CONFIG_HOME/bilbo/config` when `XDG_CONFIG_HOME` is an absolute path, then `$HOME/.config/bilbo/config`. A relative `BILBO_CONFIG` SHALL be a usage error. A missing file SHALL mean every setting takes its default; a `BILBO_CONFIG` that names a missing file SHALL be an error, except for `setup`, which creates the file there. Only `recall`, `index`, `setup`, `digest`, `watch`, `new`, `check`, `scope`, `device` and `sync` SHALL read settings; `library`, `cite`, `history` and `restore` SHALL run whatever the config holds. Where this spec has a verb exit 2 on a config error, `digest` instead exits 0 and prints nothing to stdout, as the `cli` spec's exit codes require; it still names the error on stderr.
+bilbo SHALL read its settings from `BILBO_CONFIG` when it is set and not empty, then `$XDG_CONFIG_HOME/bilbo/config` when `XDG_CONFIG_HOME` is an absolute path, then `$HOME/.config/bilbo/config`. A relative `BILBO_CONFIG` SHALL be a usage error. A missing file SHALL mean every setting takes its default; a `BILBO_CONFIG` that names a missing file SHALL be an error, except for `setup`, which creates the file there. Only `recall`, `index`, `setup`, `digest`, `watch`, `new`, `check`, `scope`, `device`, `sync` and `pair` SHALL read settings; `library`, `cite`, `history` and `restore` SHALL run whatever the config holds. Where this spec has a verb exit 2 on a config error, `digest` instead exits 0 and prints nothing to stdout, as the `cli` spec's exit codes require; it still names the error on stderr.
 
 #### Scenario: The default location
 - **WHEN** neither `BILBO_CONFIG` nor `XDG_CONFIG_HOME` is set and `HOME` is `/Users/a`
@@ -51,6 +51,10 @@ bilbo SHALL read its settings from `BILBO_CONFIG` when it is set and not empty, 
 #### Scenario: History ignores the config
 - **WHEN** `BILBO_CONFIG` names a missing file and an agent runs `bilbo history release` on a note with history
 - **THEN** stdout lists the versions and the exit code is 0
+
+#### Scenario: Pair reads the config
+- **WHEN** `BILBO_CONFIG` names a missing file and a user runs `bilbo pair` or `bilbo pair <code> --via <url>`
+- **THEN** bilbo prints a message naming the file to stderr, exits 2, and creates no mailbox
 
 ### Requirement: Config format
 The config file SHALL hold one setting per line as `<key> = <value>`, with blank lines and lines starting with `#` ignored. Keys are known names, each at most once. A value runs to the end of the line with surrounding spaces trimmed. A value wrapped in double quotes keeps its spaces, and inside it `\"` is a quote. In any value, `\n` stands for a newline and `\\` for a backslash. A `#` after the key is part of the value. Any other line, an unknown key, a repeated key, an empty value for any key but `embedder.query_prefix`, or text after a closing quote SHALL be an error naming the file and line.
