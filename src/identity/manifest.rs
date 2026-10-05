@@ -1356,6 +1356,9 @@ pub fn revoke_step(lock: &Lock, id: &Identity, known: &Known, target: &str) -> O
     if target == id.device.id() {
         return Outcome::Failed("a device cannot revoke itself".into());
     }
+    if !known.mine && known.scope.owner().is_some() {
+        return Outcome::Kept;
+    }
     if let Some(problem) = &known.problem {
         return Outcome::Failed(problem.clone());
     }
@@ -2213,6 +2216,16 @@ mod tests {
         let step = recover_step(&lock, &w.rivendell, &owner().box_secret, theirs);
         assert!(matches!(step, Outcome::Kept));
         assert!(!owner_devices(&known).iter().any(|m| m.name == "mordor"));
+        let broken = crate::shared::store::scopes_dir(w.path())
+            .join(&foreign.scope)
+            .join("manifest")
+            .join("2.json");
+        std::fs::write(broken, "{}\n").unwrap();
+        let known = survey_as(w.path(), &w.rivendell);
+        let theirs = known.iter().find(|k| k.scope.id == foreign.scope).unwrap();
+        assert!(theirs.problem.is_some());
+        let step = revoke_step(&lock, &w.rivendell, theirs, &w.bagend.device.id());
+        assert!(matches!(step, Outcome::Kept));
     }
 
     #[test]
@@ -2691,8 +2704,8 @@ mod tests {
     }
 
     #[test]
-    fn the_union_leaves_out_unopened_manifests_and_every_revoked_device() {
-        let w = world("union");
+    fn the_intersection_leaves_out_unopened_manifests_and_every_revoked_device() {
+        let w = world("intersection");
         let known = survey_as(w.path(), &w.rivendell);
         let shared = written(init_step(
             &w.lock(),
