@@ -161,6 +161,7 @@ All under `history/lock`, so scans and `restore` wait.
 
 - A version goes into scope S's log when its own bytes say `scope: S` and S syncs on this device. It is pushed with the versions it needs: its ancestors whose bytes also say S and that are not yet in S's log, as far as this device knows. Parents whose bytes say anything else, and parents this device can no longer push because pruning dropped them, are listed in `outside`, so no receiver waits for them.
 - So assigning an old note pushes one version, its current text. The unassigned versions before it never leave, and neither do versions from another scope.
+- A note joins S's log only while its live head says S, or once some version of it is already in S's log. So a note that said S before S synced and has since moved to a scope that does not sync pushes nothing to S, not even a `left`: its earlier text never leaves the device.
 - A receiver applies a version once every parent not in `outside` is known. A version whose parent has not arrived waits, for instance while a cloud folder is still downloading another device's segment. `bilbo sync` lists waiting versions. After `sync.stale_days` a waiting version is applied with what is known, falling back to an empty base if needed.
 - Blobs are pushed once per scope log, as far as this device knows.
 
