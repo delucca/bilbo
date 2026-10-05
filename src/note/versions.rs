@@ -40,7 +40,8 @@ pub const RESTORED: &str = "restored";
 const AT_FORMAT: &str = "%Y-%m-%dT%H:%M:%S%:z";
 
 /// One line of a note's log. Fields a reader does not know are ignored, and an event it does not know is kept as is.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// The fields after `at` stay out of the id and are written only when set, so a local version's line is as before.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Version {
     pub version: String,
     #[serde(default)]
@@ -51,6 +52,34 @@ pub struct Version {
     pub event: String,
     /// When it was recorded, with the UTC offset it was recorded under.
     pub at: String,
+    /// The device that recorded it, on a version that came through sync.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub device: Option<String>,
+    /// Parents a receiver must not wait for.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub outside: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub flags: Vec<String>,
+    /// Each conflicting passage of a merge.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub conflict: Vec<Conflict>,
+    /// The lines a resolution dropped, per passage.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub dropped: Vec<Dropped>,
+}
+
+/// A passage a merge left in conflict: its heading path and the versions of its sides.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Conflict {
+    pub passage: String,
+    pub sides: Vec<String>,
+}
+
+/// The lines of a conflict's sides that the first version without its blocks no longer holds, for one passage.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Dropped {
+    pub passage: String,
+    pub lines: Vec<String>,
 }
 
 impl Version {
@@ -379,6 +408,7 @@ pub fn record(
         blob,
         event: event.to_string(),
         at: at.to_string(),
+        ..Version::default()
     };
     append(lock, note_id, &version)?;
     Ok(version)
@@ -1163,6 +1193,7 @@ mod tests {
                 blob: "c".repeat(64),
                 event: EDITED.into(),
                 at: NOW.into(),
+                ..Version::default()
             })
             .collect()
     }
@@ -1274,6 +1305,7 @@ mod tests {
             blob,
             event: EDITED.into(),
             at: NOW.into(),
+            ..Version::default()
         };
         let live = version("plan-x.md", blob('a'));
         let gone = version("plan-x.md", DELETED.into());
@@ -1524,7 +1556,7 @@ mod tests {
         let text = fs::read_to_string(&path).unwrap();
         let mut lines: Vec<String> = text.lines().map(String::from).collect();
         lines[1] = format!(
-            "{},  \"device\":\"d1\",\"flags\":[1, 2] }}",
+            "{},  \"device\":\"d1\",\"later\":[1, 2] }}",
             lines[1].trim_end_matches('}')
         );
         fs::write(&path, lines.join("\n") + "\n").unwrap();

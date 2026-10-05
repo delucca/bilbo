@@ -1,8 +1,10 @@
 //! Notes: kinds, names, the strict reader and the renderer, the `new`, `watch`, `history` and `restore` verbs, and the version store they share.
 
+pub mod conflicts;
 pub mod diff;
 pub mod history;
 pub mod marks;
+pub mod merge;
 pub mod new;
 pub mod restore;
 pub mod scope;
