@@ -239,7 +239,7 @@ fn config_step(plan: &Plan, report: &mut Report) {
         jiff::Zoned::now().date()
     );
     let text = config::render(&header, &settings);
-    match write_config(&plan.config_path, &text, backup) {
+    match config::write_config(&plan.config_path, &text, backup) {
         Ok(()) => report.line(
             "config",
             if backup { "updated" } else { "written" },
@@ -321,34 +321,6 @@ fn embedder_step(plan: &Plan, report: &mut Report) {
     }
 }
 
-/// Writes `text` to a temporary file in the folder, then renames it over `path`, after moving an old file to `<name>.bak` when `backup`.
-pub fn write_config(path: &Path, text: &str, backup: bool) -> Result<(), String> {
-    let fail = |e: std::io::Error| format!("cannot write {}: {e}", path.display());
-    let dir = path.parent().unwrap_or(Path::new("/"));
-    std::fs::create_dir_all(dir).map_err(fail)?;
-    let temp = dir.join(format!(".config.tmp-{}", std::process::id()));
-    let _ = std::fs::remove_file(&temp);
-    let written = (|| {
-        let mut file = std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&temp)?;
-        file.write_all(text.as_bytes())?;
-        file.sync_all()?;
-        if backup {
-            let name = path
-                .file_name()
-                .map_or(String::new(), |n| n.to_string_lossy().into_owned());
-            std::fs::rename(path, dir.join(format!("{name}.bak")))?;
-        }
-        std::fs::rename(&temp, path)
-    })();
-    if written.is_err() {
-        let _ = std::fs::remove_file(&temp);
-    }
-    written.map_err(fail)
-}
-
 /// Writes the key and a newline to `path` through a temporary file that is created with mode 0600 before any byte goes in, then renamed over `path`.
 fn write_token(path: &Path, key: &str) -> Result<(), String> {
     let fail = |e: std::io::Error| format!("cannot write {}: {e}", path.display());
@@ -379,31 +351,6 @@ mod tests {
     use super::super::plan::summary;
     use super::*;
     use zeroize::Zeroizing;
-
-    #[test]
-    fn write_config_replaces_atomically_and_keeps_a_backup() {
-        let dir = std::env::temp_dir().join(format!("bilbo-setup-unit-{}", std::process::id()));
-        let path = dir.join("nested/config");
-        write_config(&path, "one\n", false).unwrap();
-        write_config(&path, "two\n", true).unwrap();
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), "two\n");
-        assert_eq!(
-            std::fs::read_to_string(dir.join("nested/config.bak")).unwrap(),
-            "one\n"
-        );
-        let leftovers = std::fs::read_dir(dir.join("nested"))
-            .unwrap()
-            .filter(|e| {
-                e.as_ref()
-                    .unwrap()
-                    .file_name()
-                    .to_string_lossy()
-                    .contains(".tmp-")
-            })
-            .count();
-        assert_eq!(leftovers, 0);
-        let _ = std::fs::remove_dir_all(&dir);
-    }
 
     #[test]
     fn key_file_is_mode_0600() {
