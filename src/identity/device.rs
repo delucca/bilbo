@@ -1251,12 +1251,19 @@ mod tests {
                 }
             }
             if path == "<stdout>" {
+                // Ids and the fingerprint are random base32 that can spell a short word, and the
+                // report's own vocabulary holds list words such as `device`: neither is a leak.
+                const REPORT: [&str; 6] =
+                    ["owner", "device", "scope", "manifest", "epoch", "created"];
                 let text = String::from_utf8_lossy(&bytes);
+                let tokens: Vec<&str> = text
+                    .split_whitespace()
+                    .map(|t| t.trim_matches(|c: char| !c.is_ascii_alphanumeric()))
+                    .filter(|t| !t.bytes().any(|b| b.is_ascii_digit()) && !REPORT.contains(t))
+                    .collect();
                 for word in &words {
                     assert!(
-                        !text
-                            .split(|c: char| !c.is_ascii_alphabetic())
-                            .any(|t| t == *word),
+                        !tokens.contains(&word.as_str()),
                         "{path} holds the word {word}"
                     );
                 }
