@@ -209,15 +209,9 @@ pub fn transport_matches(pinned: &str, url: &str) -> bool {
     pinned == transport_of(url)
 }
 
-/// Every check that needs no secret, on the file of version `n` of scope `id`. `prev` is version `n-1` and `first`
-/// version 1.
-fn check(
-    id: &str,
-    n: u64,
-    bytes: &[u8],
-    prev: Option<&Version>,
-    first: Option<&Manifest>,
-) -> Result<Manifest, String> {
+/// Every check that needs no secret, on the file of version `n` of scope `id`, given the valid versions before it.
+fn check(id: &str, n: u64, bytes: &[u8], earlier: &[Version]) -> Result<Manifest, String> {
+    let (prev, first) = (earlier.last(), earlier.first().map(|v| &v.manifest));
     let m: Manifest =
         serde_json::from_slice(bytes).map_err(|e| format!("it is not a manifest: {e}"))?;
     if file_bytes(&m) != bytes {
@@ -252,7 +246,7 @@ fn check(
     if m.prev != want_prev {
         return Err("prev is not the SHA-256 of the previous version".into());
     }
-    check_devices(&m, prev)?;
+    check_devices(&m, earlier)?;
     check_sealed(&m)?;
     check_chain(&m, prev)?;
     if m.name.is_empty() || unhex_vec(&m.name).is_none_or(|b| b.len() < NAME_MIN_BYTES) {
@@ -261,7 +255,7 @@ fn check(
     Ok(m)
 }
 
-fn check_devices(m: &Manifest, prev: Option<&Version>) -> Result<(), String> {
+fn check_devices(m: &Manifest, earlier: &[Version]) -> Result<(), String> {
     for entry in &m.devices {
         let sign: [u8; 32] = keys::unhex(&entry.sign).ok_or("a device's sign is not a key")?;
         keys::unhex::<32>(&entry.box_key).ok_or("a device's box is not a key")?;
@@ -278,16 +272,20 @@ fn check_devices(m: &Manifest, prev: Option<&Version>) -> Result<(), String> {
     if !m.devices.windows(2).all(|pair| pair[0].id < pair[1].id) {
         return Err("devices are not sorted by id, or an id is listed twice".into());
     }
-    if let Some(prev) = prev.map(|p| &p.manifest) {
-        for entry in &m.devices {
-            let before = prev.devices.iter().find(|d| d.id == entry.id);
-            if before.is_some_and(|d| d.box_key != entry.box_key) {
-                return Err(format!("device {} has another box than before", entry.id));
-            }
+    for entry in &m.devices {
+        let before = earlier
+            .iter()
+            .flat_map(|v| &v.manifest.devices)
+            .find(|d| d.id == entry.id);
+        if before.is_some_and(|d| d.box_key != entry.box_key) {
+            return Err(format!("device {} has another box than before", entry.id));
         }
-        if prev.devices.iter().any(|d| !m.lists(&d.id)) && m.epoch <= prev.epoch {
-            return Err("a device is dropped without a new epoch".into());
-        }
+    }
+    if let Some(prev) = earlier.last().map(|v| &v.manifest)
+        && prev.devices.iter().any(|d| !m.lists(&d.id))
+        && m.epoch <= prev.epoch
+    {
+        return Err("a device is dropped without a new epoch".into());
     }
     Ok(())
 }
@@ -349,8 +347,7 @@ pub fn verify_scope(id: &str, files: &[Vec<u8>]) -> Scope {
         pending: BTreeSet::new(),
     };
     for (bytes, n) in files.iter().zip(1u64..) {
-        let first = scope.versions.first().map(|v| &v.manifest);
-        match check(id, n, bytes, scope.latest(), first) {
+        match check(id, n, bytes, &scope.versions) {
             Ok(manifest) => scope.versions.push(Version {
                 manifest,
                 bytes: bytes.clone(),
@@ -445,7 +442,8 @@ fn open_version(
         }
     }
     let name = unhex_vec(&m.name).ok_or("name is not hex")?;
-    let name = keys::decrypt(&opened[&m.epoch], &keys::name_aad(&m.scope, m.epoch), &name)
+    let aad = keys::name_aad(&m.scope, m.epoch, m.n);
+    let name = keys::decrypt(&opened[&m.epoch], &aad, &name)
         .map_err(|_| "the name does not open".to_string())?;
     let name = String::from_utf8(name.to_vec())
         .ok()
@@ -499,6 +497,7 @@ pub fn open(scope: &Scope, who: &Recipient) -> Result<Option<Opened>, Invalid> {
     read(scope, who).map(|r| r.opened)
 }
 
+#[cfg_attr(not(test), expect(dead_code, reason = "add-sync calls it"))]
 /// The newest epoch a confirmed version introduces that this device holds the key of, the one note data may be
 /// encrypted under. It takes what the device opened, so an epoch of a version invalid for it is never named.
 pub fn usable_epoch(scope: &Scope, opened: &Opened) -> Option<u64> {
@@ -671,40 +670,41 @@ pub fn survey(
     Ok(all)
 }
 
-/// Every device the latest version of the owner's scopes that this device opened lists, sorted by id, without any
-/// device one of those scopes listed once and no longer lists: a revoked device does not come back through the union.
-/// A manifest this device cannot open vouches for nothing.
+/// The devices a new scope lists besides this one, sorted by id: those the latest version of every scope of the owner
+/// that this device opened lists, without any device one of those scopes listed once and no longer lists. A manifest
+/// this device cannot open vouches for nothing, and a device only some scopes list is not yet the owner's: a thief's
+/// scope lists a device `personal` does not, and a revoked device does not come back.
 pub fn owner_devices(known: &[Known]) -> Vec<Member> {
-    let opened: Vec<&Version> = known
+    let opened: Vec<&Known> = known
         .iter()
         .filter(|k| k.mine && k.opened.is_some())
-        .filter_map(|k| k.scope.latest())
         .collect();
-    let mut revoked = BTreeSet::new();
-    for k in known.iter().filter(|k| k.mine && k.opened.is_some()) {
-        let Some(latest) = k.scope.latest() else {
-            continue;
-        };
-        for entry in k.scope.versions.iter().flat_map(|v| &v.manifest.devices) {
-            if !latest.manifest.lists(&entry.id) {
-                revoked.insert(entry.id.clone());
-            }
-        }
+    let Some((first, rest)) = opened.split_first() else {
+        return Vec::new();
+    };
+    let latest = |k: &Known| k.scope.latest().map(|v| v.manifest.clone());
+    let mut common: Vec<Entry> = latest(first).map(|m| m.devices).unwrap_or_default();
+    for k in rest {
+        let Some(m) = latest(k) else { continue };
+        common.retain(|d| m.lists(&d.id));
     }
-    let mut members = BTreeMap::new();
-    for latest in opened {
-        for entry in latest
-            .manifest
-            .devices
-            .iter()
-            .filter(|d| !revoked.contains(&d.id))
-        {
-            if let Some(member) = Member::from_entry(entry) {
-                members.entry(member.id.clone()).or_insert(member);
-            }
-        }
-    }
-    members.into_values().collect()
+    let revoked: BTreeSet<&str> = opened
+        .iter()
+        .filter_map(|k| k.scope.latest().map(|latest| (k, latest)))
+        .flat_map(|(k, latest)| {
+            k.scope
+                .versions
+                .iter()
+                .flat_map(|v| &v.manifest.devices)
+                .filter(|d| !latest.manifest.lists(&d.id))
+                .map(|d| d.id.as_str())
+        })
+        .collect();
+    common
+        .iter()
+        .filter(|d| !revoked.contains(d.id.as_str()))
+        .filter_map(Member::from_entry)
+        .collect()
 }
 
 /// `<root>/.bilbo/scopes/lock`, held exclusively: every write to a manifest folder goes through a function that
@@ -822,13 +822,13 @@ pub struct Written {
     pub epoch: u64,
 }
 
-/// Signs `manifest` as the next version after `base` (or version 1), checks it as a reader would, and writes it as
+/// Signs `manifest` as the next version after `earlier` (or version 1), checks it as a reader would, and writes it as
 /// pending.
 fn publish(
     lock: &Lock,
     manifest: Manifest,
     name: &str,
-    base: Option<&Version>,
+    earlier: &[Version],
     id: &Identity,
 ) -> Result<Written, String> {
     if manifest.owner != keys::hex(&id.owner.sign.public()) {
@@ -838,8 +838,7 @@ fn publish(
         return Err("the scope's owner_box is not this device's owner's".into());
     }
     let (manifest, bytes) = signed(manifest, &id.owner.sign);
-    let first = base.map(|b| &b.manifest);
-    check(&manifest.scope, manifest.n, &bytes, base, first)
+    check(&manifest.scope, manifest.n, &bytes, earlier)
         .map_err(|why| format!("the next version would be invalid: {why}"))?;
     put(lock, &manifest.scope, manifest.n, &bytes, true)?;
     Ok(Written {
@@ -867,8 +866,10 @@ fn seal_all(
     Ok(sealed)
 }
 
-fn seal_name(key: &[u8; 32], scope: &str, epoch: u64, name: &str) -> Result<String, String> {
-    let sealed = keys::encrypt(key, &keys::name_aad(scope, epoch), name.as_bytes())?;
+/// The sealed name of version `n`, encrypted afresh in every version.
+fn seal_name(key: &[u8; 32], m: &Manifest, name: &str) -> Result<String, String> {
+    let aad = keys::name_aad(&m.scope, m.epoch, m.n);
+    let sealed = keys::encrypt(key, &aad, name.as_bytes())?;
     Ok(keys::hex(&sealed))
 }
 
@@ -908,7 +909,7 @@ pub fn create(
     let this = Member::of(&id.device);
     members.insert(this.id.clone(), this);
     let members: Vec<Member> = members.into_values().collect();
-    let manifest = Manifest {
+    let mut manifest = Manifest {
         format: FORMAT,
         scope: scope.clone(),
         n: 1,
@@ -920,13 +921,15 @@ pub fn create(
         epoch: 1,
         sealed: seal_all(&scope, 1, &key, &members, &id.owner.box_public)?,
         chain: Vec::new(),
-        name: seal_name(&key, &scope, 1, name)?,
+        name: String::new(),
         sig: String::new(),
     };
-    publish(lock, manifest, name, None, id)
+    manifest.name = seal_name(&key, &manifest, name)?;
+    publish(lock, manifest, name, &[], id)
 }
 
-/// A new version with `url`'s pin and everything else as it was: same epoch, same sealed values.
+/// A new version with `url`'s pin and everything else as it was: same epoch, same sealed values, the name encrypted
+/// again.
 pub fn change_url(
     lock: &Lock,
     scope: &Scope,
@@ -937,7 +940,12 @@ pub fn change_url(
     let base = base(scope, Some(opened))?;
     let mut manifest = next(base);
     manifest.transport = transport_of(url);
-    publish(lock, manifest, &opened.name, Some(base), id)
+    let key = opened
+        .keys
+        .get(&manifest.epoch)
+        .ok_or("this device holds no key for the latest epoch")?;
+    manifest.name = seal_name(key, &manifest, &opened.name)?;
+    publish(lock, manifest, &opened.name, &scope.versions, id)
 }
 
 /// A new version with `member` added at the same epoch, its entry sealing `key`, the scope's latest epoch key as the
@@ -956,12 +964,9 @@ pub fn add_device(
         return Err(format!("the scope already lists {}", member.name));
     }
     let sealed_name = unhex_vec(&manifest.name).ok_or("name is not hex")?;
-    let name = keys::decrypt(
-        key,
-        &keys::name_aad(&manifest.scope, manifest.epoch),
-        &sealed_name,
-    )
-    .map_err(|_| "that is not the scope's epoch key".to_string())?;
+    let old_aad = keys::name_aad(&manifest.scope, manifest.epoch, base.manifest.n);
+    let name = keys::decrypt(key, &old_aad, &sealed_name)
+        .map_err(|_| "that is not the scope's epoch key".to_string())?;
     let name = String::from_utf8(name.to_vec())
         .ok()
         .filter(|n| store::is_topic(n))
@@ -976,7 +981,8 @@ pub fn add_device(
         key,
     )?;
     manifest.sealed.insert(member.id.clone(), keys::hex(&value));
-    publish(lock, manifest, &name, Some(base), id)
+    manifest.name = seal_name(key, &manifest, &name)?;
+    publish(lock, manifest, &name, &scope.versions, id)
 }
 
 /// A new version without `target`, under a new random epoch key sealed to the remaining devices and the owner, with
@@ -1025,10 +1031,11 @@ pub fn revoke(
         &members,
         &owner_box,
     )?;
-    manifest.name = seal_name(&fresh, &manifest.scope, manifest.epoch, &opened.name)?;
-    publish(lock, manifest, &opened.name, Some(base), id)
+    manifest.name = seal_name(&fresh, &manifest, &opened.name)?;
+    publish(lock, manifest, &opened.name, &scope.versions, id)
 }
 
+#[cfg_attr(not(test), expect(dead_code, reason = "add-sync calls it"))]
 /// Copies version `n`, as a transport holds it, into the store as confirmed: no marker. It must be the next version
 /// and pass the secret-free checks against the versions here.
 pub fn adopt(lock: &Lock, scope: &str, n: u64, bytes: &[u8]) -> Result<(), String> {
@@ -1042,11 +1049,11 @@ pub fn adopt(lock: &Lock, scope: &str, n: u64, bytes: &[u8]) -> Result<(), Strin
             known.versions.len()
         ));
     }
-    let first = known.versions.first().map(|v| &v.manifest);
-    check(scope, n, bytes, known.latest(), first)?;
+    check(scope, n, bytes, &known.versions)?;
     put(lock, scope, n, bytes, false)
 }
 
+#[cfg_attr(not(test), expect(dead_code, reason = "add-sync calls it"))]
 /// Clears the marker of version `n` when its bytes are the transport's. `false` when this device holds another
 /// version `n`, or none.
 pub fn confirm(lock: &Lock, scope: &str, n: u64, bytes: &[u8]) -> Result<bool, String> {
@@ -1094,6 +1101,9 @@ pub struct Lost {
     pub written: Vec<Written>,
     /// Changes that were not applied again, with the reason.
     pub skipped: Vec<String>,
+    /// A step that failed after the first move, which the moves and writes above stop at. The store stays valid, and a
+    /// new `lose` or `adopt` of the same number finishes it.
+    pub problem: Option<String>,
 }
 
 /// The first free name for lost version `k`: `<k>.json`, then `<k>.2.json`, `<k>.3.json`, … so no loss collides with an
@@ -1109,6 +1119,7 @@ fn lost_path(graveyard: &Path, k: u64) -> PathBuf {
         .expect("a free name")
 }
 
+#[cfg_attr(not(test), expect(dead_code, reason = "add-sync calls it"))]
 /// A transport holds `winner` as version `n`, different from this device's pending one. The pending versions from `n`
 /// on move under `manifest/lost/`, `winner` becomes `<n>.json` as confirmed, and each lost change is written again, in
 /// order, as a pending version on the winner, as `id`'s device. Everything that can be refused is checked, and every
@@ -1138,13 +1149,7 @@ pub fn lose(
             "the transport holds this device's version {n}; confirm it"
         ));
     }
-    let before = index.checked_sub(1).map(|i| &local.versions[i]);
-    let first = if n > 1 {
-        local.versions.first().map(|v| &v.manifest)
-    } else {
-        None
-    };
-    check(scope, n, winner, before, first)?;
+    check(scope, n, winner, &local.versions[..index])?;
 
     let mut lost = Vec::new();
     for k in n..=last {
@@ -1157,7 +1162,12 @@ pub fn lose(
     fs::create_dir_all(&graveyard).map_err(|e| io_message("create", &graveyard, &e))?;
     let names: Vec<PathBuf> = (n..=last).map(|k| lost_path(&graveyard, k)).collect();
     let staged = stage(&dir, n, winner)?;
-    let mut moved = Vec::new();
+    let mut report = Lost {
+        moved: Vec::new(),
+        written: Vec::new(),
+        skipped: Vec::new(),
+        problem: None,
+    };
     for (i, to) in names.iter().enumerate().rev() {
         let k = n + i as u64;
         let step = swap::rename_new(&version_path(root, scope, k), to).and_then(|()| {
@@ -1166,25 +1176,42 @@ pub fn lose(
         });
         if let Err(why) = step {
             let _ = fs::remove_file(&staged);
-            return Err(why);
+            if report.moved.is_empty() {
+                return Err(why);
+            }
+            report.moved.reverse();
+            report.problem = Some(why);
+            return Ok(report);
         }
-        moved.push(k);
+        report.moved.push(k);
     }
-    moved.reverse();
-    install(&dir, &staged, &version_path(root, scope, n))?;
+    report.moved.reverse();
+    if let Err(why) = install(&dir, &staged, &version_path(root, scope, n)) {
+        report.problem = Some(why);
+        return Ok(report);
+    }
 
-    let (mut written, mut skipped) = (Vec::new(), Vec::new());
     let me = Recipient::device(&id.device);
     for change in lost {
-        let latest = read_scope(root, scope)?;
+        let latest = match read_scope(root, scope) {
+            Ok(latest) => latest,
+            Err(why) => {
+                report.problem = Some(why);
+                break;
+            }
+        };
         let opened = match open(&latest, &me) {
             Ok(Some(opened)) => opened,
             Ok(None) => {
-                skipped.push("the winning version does not list this device".to_string());
+                report.skipped.push(
+                    "the winning version does not list this device, so its lost changes need the phrase: \
+                     run bilbo device recover again"
+                        .to_string(),
+                );
                 break;
             }
             Err(invalid) => {
-                skipped.push(invalid.to_string());
+                report.skipped.push(invalid.to_string());
                 break;
             }
         };
@@ -1200,15 +1227,11 @@ pub fn lose(
             Change::Url(pin) => change_url(lock, &latest, &opened, id, &pin),
         };
         match result {
-            Ok(w) => written.push(w),
-            Err(why) => skipped.push(why),
+            Ok(w) => report.written.push(w),
+            Err(why) => report.skipped.push(why),
         }
     }
-    Ok(Lost {
-        moved,
-        written,
-        skipped,
-    })
+    Ok(report)
 }
 
 /// What one scope's step of `init`, `recover` or `revoke` did.
@@ -1248,7 +1271,7 @@ fn stale(lock: &Lock, scope: &Scope) -> Option<String> {
 /// owner's scopes that lists this device: a scope whose latest version dropped it is kept and never created again.
 /// A scope this device opens is kept, or gets a version with the new pin when `url` differs from its `transport` and a
 /// terminal is there. With no match a new scope is created, listing `others` too, unless a manifest of the owner has
-/// never listed this device: that one may be the scope, so the step is `Unsealed` and mints no id. `off` keeps
+/// never listed this device, or is invalid for it before any version it can read: that one may be the scope, so the step is `Unsealed` and mints no id. `off` keeps
 /// whatever exists. It never adds this device to a manifest that does not list it.
 pub fn init_step(
     lock: &Lock,
@@ -1267,7 +1290,12 @@ pub fn init_step(
         .filter(|k| k.mine && k.last_name.as_deref() == Some(name))
         .collect();
     match matching.as_slice() {
-        [] if known.iter().any(|k| k.mine && !k.ever_listed) => Outcome::Unsealed,
+        [] if known.iter().any(|k| {
+            k.mine && (!k.ever_listed || (k.problem.is_some() && k.last_name.is_none()))
+        }) =>
+        {
+            Outcome::Unsealed
+        }
         [] => written(create(lock, id, name, url, others), true),
         [k] => {
             if let Some(problem) = &k.problem {
@@ -1660,6 +1688,7 @@ mod tests {
             m.n = 3;
             m.prev = Some(hash::sha256_hex(&scope.versions[1].bytes));
             m.transport = "https://relay.example.net".into();
+            reseal(&w, m);
         });
         let lost = lose(&w.lock(), &w.id, 3, &winner, &w.rivendell).unwrap();
         assert_eq!(lost.moved, [3]);
@@ -1689,6 +1718,7 @@ mod tests {
         winner = forge_from(&winner, |m| {
             m.prev = Some(hash::sha256_hex(&scope.versions[1].bytes));
             m.transport = "https://other.example.net".into();
+            reseal(&w, m);
         });
         let lost = lose(&w.lock(), &w.id, 3, &winner, &w.rivendell).unwrap();
         assert_eq!(lost.moved, [3]);
@@ -2041,7 +2071,7 @@ mod tests {
                 key: key_hex(&k3, &id, 2, &wrong[..]),
             });
             m.sealed = seal_all(&id, 3, &k3, &members_of(m), &owner_box).unwrap();
-            m.name = seal_name(&k3, &id, 3, "personal").unwrap();
+            m.name = seal_name(&k3, m, "personal").unwrap();
         });
         write_raw(w.path(), &w.id, 4, &bytes);
         let scope = w.scope();
@@ -2079,7 +2109,7 @@ mod tests {
                 key: key_hex(&wrong, &id, 1, &old.keys[&1][..]),
             }];
             m.sealed = seal_all(&id, 2, &k2, &members_of(m), &owner_box).unwrap();
-            m.name = seal_name(&k2, &id, 2, "personal").unwrap();
+            m.name = seal_name(&k2, m, "personal").unwrap();
         });
         let files = [scope.versions[0].bytes.clone(), bytes];
         let forged = verify_scope(&w.id, &files);
@@ -2105,7 +2135,7 @@ mod tests {
                 key: key_hex(&k2, &id, 1, &wrong[..]),
             }];
             m.sealed = seal_all(&id, 2, &k2, &members_of(m), &owner_box).unwrap();
-            m.name = seal_name(&k2, &id, 2, "personal").unwrap();
+            m.name = seal_name(&k2, m, "personal").unwrap();
         });
         let files = [scope.versions[0].bytes.clone(), bytes];
         let forged = verify_scope(&w.id, &files);
@@ -2128,7 +2158,7 @@ mod tests {
             m.n = 3;
             m.prev = Some(hash::sha256_hex(&scope.versions[1].bytes));
             m.sealed = seal_all(&id, 1, &fresh, &members_of(m), &owner_box).unwrap();
-            m.name = seal_name(&fresh, &id, 1, "personal").unwrap();
+            m.name = seal_name(&fresh, m, "personal").unwrap();
         });
         let mut files = bytes_of(&scope);
         files.push(bytes);
@@ -2147,14 +2177,14 @@ mod tests {
         let m = &scope.versions[2].manifest;
         assert_eq!(m.epoch, 2);
         let name = unhex_vec(&m.name).unwrap();
-        let aad = keys::name_aad(&w.id, 2);
+        let aad = keys::name_aad(&w.id, 2, 3);
         assert_eq!(
             keys::decrypt(&opened.keys[&2], &aad, &name).unwrap()[..],
             b"personal"[..]
         );
         assert!(keys::decrypt(&opened.keys[&1], &aad, &name).is_err());
         let old = unhex_vec(&scope.versions[0].manifest.name).unwrap();
-        assert!(keys::decrypt(&opened.keys[&1], &keys::name_aad(&w.id, 1), &old).is_ok());
+        assert!(keys::decrypt(&opened.keys[&1], &keys::name_aad(&w.id, 1, 1), &old).is_ok());
     }
 
     #[test]
@@ -2203,10 +2233,8 @@ mod tests {
         let scope = w.scope();
         let (old, new) = (&scope.versions[1].manifest, &scope.versions[2].manifest);
         assert_eq!(new.transport, "https://relay.example.net");
-        assert_eq!(
-            (&new.sealed, &new.devices, &new.name),
-            (&old.sealed, &old.devices, &old.name)
-        );
+        assert_eq!((&new.sealed, &new.devices), (&old.sealed, &old.devices));
+        assert_ne!(new.name, old.name);
         let known = survey_as(w.path(), &w.rivendell);
         let again = init_step(
             &w.lock(),
@@ -2528,11 +2556,18 @@ mod tests {
         let w = world("bad_name");
         let scope = w.scope();
         let key = open_as(&scope, &w.rivendell).unwrap().unwrap();
-        let name = seal_name(&key.keys[&1], &w.id, 1, "Not A Name").unwrap();
-        let files = [forge(&scope, 1, |m| m.name = name)];
+        let files = [forge(&scope, 1, |m| {
+            m.name = seal_name(&key.keys[&1], m, "Not A Name").unwrap()
+        })];
         let forged = verify_scope(&w.id, &files);
         assert!(forged.invalid.is_none());
         assert!(open_as(&forged, &w.rivendell).is_err());
+    }
+
+    /// The name of version `m` encrypted again under the epoch key rivendell holds, as an honest writer would.
+    fn reseal(w: &World, m: &mut Manifest) {
+        let key = open_as(&w.scope(), &w.rivendell).unwrap().unwrap().keys[&m.epoch].clone();
+        m.name = seal_name(&key, m, "personal").unwrap();
     }
 
     fn forged_rotation(w: &World, scope: &Scope) -> Vec<u8> {
@@ -2552,7 +2587,7 @@ mod tests {
                 key: key_hex(&k3, &id, 2, &wrong[..]),
             });
             m.sealed = seal_all(&id, 3, &k3, &members_of(m), &owner_box).unwrap();
-            m.name = seal_name(&k3, &id, 3, "personal").unwrap();
+            m.name = seal_name(&k3, m, "personal").unwrap();
         })
     }
 
@@ -2717,6 +2752,7 @@ mod tests {
             m.n = 3;
             m.prev = Some(hash::sha256_hex(&scope.versions[1].bytes));
             m.transport = "https://relay.example.net".into();
+            reseal(&w, m);
         });
         let first = lose(&w.lock(), &w.id, 3, &winner3, &w.rivendell).unwrap();
         assert_eq!((first.moved, first.written.len()), (vec![3, 4], 2));
@@ -2726,6 +2762,7 @@ mod tests {
             m.n = 4;
             m.prev = Some(hash::sha256_hex(&scope.versions[2].bytes));
             m.transport = "https://other.example.net".into();
+            reseal(&w, m);
         });
         let second = lose(&w.lock(), &w.id, 4, &winner4, &w.rivendell).unwrap();
         assert_eq!((second.moved, second.written.len()), (vec![4, 5], 2));
@@ -2751,6 +2788,7 @@ mod tests {
             m.n = 2;
             m.prev = Some(hash::sha256_hex(&scope.versions[0].bytes));
             m.transport = "https://x.example.net".into();
+            reseal(&w, m);
         });
         let confirmed = lose(&w.lock(), &w.id, 2, &other, &w.rivendell);
         assert!(confirmed.is_err(), "a confirmed version cannot lose");
@@ -2844,8 +2882,9 @@ mod tests {
         let w = world("add_bad_name");
         let scope = w.scope();
         let key = open_as(&scope, &w.rivendell).unwrap().unwrap();
-        let bad = seal_name(&key.keys[&1], &w.id, 1, "Not A Name").unwrap();
-        let files = [forge(&scope, 1, |m| m.name = bad)];
+        let files = [forge(&scope, 1, |m| {
+            m.name = seal_name(&key.keys[&1], m, "Not A Name").unwrap()
+        })];
         let forged = verify_scope(&w.id, &files);
         let carol = Member::of(&ident("carol", 5).device);
         let err = add_device(&w.lock(), &forged, &key.keys[&1], &carol, &w.rivendell).unwrap_err();
@@ -2990,5 +3029,194 @@ mod tests {
         .unwrap_err();
         assert!(err.contains("latest"), "{err}");
         assert_eq!(w.scope().versions.len(), 3);
+    }
+
+    #[test]
+    fn a_version_written_without_the_epoch_key_is_invalid_for_every_member() {
+        let w = world("name_copied");
+        let scope = w.scope();
+        let carol = Member::of(&ident("carol", 5).device);
+        let readd = forge(&scope, 2, |m| {
+            m.n = 3;
+            m.prev = Some(hash::sha256_hex(&scope.versions[1].bytes));
+            m.devices.push(carol.entry());
+            m.devices.sort_by(|a, b| a.id.cmp(&b.id));
+            m.sealed.insert(carol.id.clone(), "00".repeat(SEALED_BYTES));
+        });
+        let repoint = forge(&scope, 2, |m| {
+            m.n = 3;
+            m.prev = Some(hash::sha256_hex(&scope.versions[1].bytes));
+            m.transport = "https://thief.example.net".into();
+        });
+        for bytes in [readd, repoint] {
+            let mut files = bytes_of(&scope);
+            files.push(bytes);
+            let forged = verify_scope(&w.id, &files);
+            assert!(forged.invalid.is_none());
+            for who in [&w.rivendell, &w.bagend] {
+                let invalid = open_as(&forged, who).err().unwrap();
+                assert_eq!(invalid.n, 3);
+                assert!(invalid.why.contains("name"), "{}", invalid.why);
+            }
+        }
+    }
+
+    #[test]
+    fn every_honest_writer_encrypts_the_name_again() {
+        let w = world("name_again");
+        let before = w.scope().versions[1].manifest.name.clone();
+        let carol = ident("carol", 5);
+        let known = survey_as(w.path(), &carol);
+        written(recover_step(
+            &w.lock(),
+            &carol,
+            &owner().box_secret,
+            &known[0],
+        ));
+        let after = w.scope().versions[2].manifest.name.clone();
+        assert_ne!(before, after);
+        assert_eq!(
+            open_as(&w.scope(), &carol).unwrap().unwrap().name,
+            "personal"
+        );
+    }
+
+    #[test]
+    fn an_id_keeps_its_box_for_life() {
+        let w = world("box_for_life");
+        w.confirm_all();
+        written(w.revoke_bagend());
+        let scope = w.scope();
+        let gone = w.bagend.device.id();
+        let thief = keys::hex(&w.rivendell.device.box_secret.public());
+        let forged = forge(&scope, 3, |m| {
+            m.n = 4;
+            m.prev = Some(hash::sha256_hex(&scope.versions[2].bytes));
+            let mut entry = Member::of(&w.bagend.device).entry();
+            entry.box_key = thief;
+            m.devices.push(entry);
+            m.devices.sort_by(|a, b| a.id.cmp(&b.id));
+            m.sealed.insert(gone.clone(), "00".repeat(SEALED_BYTES));
+        });
+        let mut files = bytes_of(&scope);
+        files.push(forged);
+        let checked = verify_scope(&w.id, &files);
+        assert!(checked.invalid.unwrap().why.contains("another box"));
+        let known = survey_as(w.path(), &w.bagend);
+        let step = recover_step(&w.lock(), &w.bagend, &owner().box_secret, &known[0]);
+        assert_eq!(written(step).n, 4);
+        let scope = w.scope();
+        assert!(scope.invalid.is_none());
+        let back = scope.versions[3]
+            .manifest
+            .devices
+            .iter()
+            .find(|d| d.id == gone);
+        assert_eq!(
+            back.unwrap().box_key,
+            keys::hex(&w.bagend.device.box_secret.public())
+        );
+        assert!(open_as(&scope, &w.bagend).unwrap().is_some());
+    }
+
+    #[test]
+    fn a_new_scope_lists_only_what_every_opened_scope_lists() {
+        let w = world("intersection");
+        let known = survey_as(w.path(), &w.rivendell);
+        let both = BTreeSet::from([w.rivendell.device.id(), w.bagend.device.id()]);
+        let ids = |known: &[Known]| -> BTreeSet<String> {
+            owner_devices(known).into_iter().map(|m| m.id).collect()
+        };
+        assert_eq!(ids(&known), both);
+        let lock = w.lock();
+        let thief = ident("thief", 11);
+        create(&lock, &thief, "unopened", "file://", &[]).unwrap();
+        let fresh = create(
+            &lock,
+            &thief,
+            "work",
+            "file://",
+            &[Member::of(&w.rivendell.device)],
+        )
+        .unwrap();
+        drop(lock);
+        let known = survey_as(w.path(), &w.rivendell);
+        let theirs = known.iter().find(|k| k.scope.id == fresh.scope).unwrap();
+        assert!(theirs.opened.is_some());
+        assert_eq!(ids(&known), BTreeSet::from([w.rivendell.device.id()]));
+        let others = owner_devices(&known);
+        let step = init_step(
+            &w.lock(),
+            &w.rivendell,
+            "shared",
+            "file:///x",
+            &known,
+            &others,
+            true,
+        );
+        assert!(matches!(step, Outcome::Created(_) | Outcome::Unsealed));
+        if let Outcome::Created(made) = step {
+            let scope = read_scope(w.path(), &made.scope).unwrap();
+            assert!(open_as(&scope, &thief).unwrap().is_none());
+        }
+        assert!(owner_devices(&[]).is_empty());
+    }
+
+    #[test]
+    fn a_manifest_invalid_for_this_device_before_any_readable_version_blocks_minting() {
+        let w = world("invalid_v1");
+        let scope = w.scope();
+        let riv = w.rivendell.device.id();
+        let bytes = forge(&scope, 1, |m| {
+            m.sealed.insert(riv, "00".repeat(SEALED_BYTES));
+        });
+        let files = [bytes.clone()];
+        fs::write(version_path(w.path(), &w.id, 1), &bytes).unwrap();
+        fs::remove_file(version_path(w.path(), &w.id, 2)).unwrap();
+        assert!(verify_scope(&w.id, &files).invalid.is_none());
+        let known = survey_as(w.path(), &w.rivendell);
+        assert!(known[0].ever_listed && known[0].problem.is_some() && known[0].last_name.is_none());
+        let step = init_step(
+            &w.lock(),
+            &w.rivendell,
+            "shared",
+            "file:///x",
+            &known,
+            &[],
+            true,
+        );
+        assert!(matches!(step, Outcome::Unsealed));
+        assert_eq!(scope_ids(w.path()).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn a_lost_recover_is_reported_for_the_user_to_run_again() {
+        let w = world("lost_recover");
+        w.confirm_all();
+        let carol = ident("carol", 5);
+        let known = survey_as(w.path(), &carol);
+        written(recover_step(
+            &w.lock(),
+            &carol,
+            &owner().box_secret,
+            &known[0],
+        ));
+        let scope = w.scope();
+        let winner = forge(&scope, 2, |m| {
+            m.n = 3;
+            m.prev = Some(hash::sha256_hex(&scope.versions[1].bytes));
+            m.transport = "https://relay.example.net".into();
+            reseal(&w, m);
+        });
+        let lost = lose(&w.lock(), &w.id, 3, &winner, &carol).unwrap();
+        assert_eq!(lost.moved, [3]);
+        assert!(lost.written.is_empty() && lost.problem.is_none());
+        assert_eq!(lost.skipped.len(), 1);
+        assert!(
+            lost.skipped[0].contains("bilbo device recover"),
+            "{:?}",
+            lost.skipped
+        );
+        assert!(w.scope().invalid.is_none());
     }
 }
