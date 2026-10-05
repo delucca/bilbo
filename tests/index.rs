@@ -673,7 +673,7 @@ fn config_errors_exit_2() {
     three(&s);
     let path = s.config.display().to_string();
     let url = format!("embedder.url = {}", fake.url);
-    let keys = "keys: embedder.url, embedder.model, embedder.token_file, embedder.token_env, embedder.query_prefix, embedder.min_similarity, digest.enable, digest.min_similarity, digest.log, history.keep_days, scope.<name>.sync, scope.<name>.embedder, scope.<name>.paths, scope.<name>.marks, scope.default";
+    let keys = "keys: embedder.url, embedder.model, embedder.token_file, embedder.token_env, embedder.query_prefix, embedder.min_similarity, digest.enable, digest.min_similarity, digest.log, history.keep_days, sync.poll_seconds, sync.stale_days, scope.<name>.sync, scope.<name>.embedder, scope.<name>.paths, scope.<name>.marks, scope.default";
     let cases: Vec<(Vec<&str>, String)> = vec![
         (
             vec!["# c", "embedder.model = x", "embeder.url = http://h"],
