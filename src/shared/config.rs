@@ -1,5 +1,6 @@
 use crate::shared::store::{self, Env};
 use crate::shared::text;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
 pub const DEFAULT_MIN_SIMILARITY: f64 = 0.5;
@@ -886,6 +887,65 @@ pub fn default_query_prefix(model: &str) -> &'static str {
     }
 }
 
+/// Writes `text` to a temporary file in the folder, then renames it over `path`, after moving an old file to `<name>.bak` when `backup`.
+pub fn write_config(path: &Path, text: &str, backup: bool) -> Result<(), String> {
+    let fail = |e: std::io::Error| format!("cannot write {}: {e}", path.display());
+    let dir = path.parent().unwrap_or(Path::new("/"));
+    std::fs::create_dir_all(dir).map_err(fail)?;
+    let temp = dir.join(format!(".config.tmp-{}", std::process::id()));
+    let _ = std::fs::remove_file(&temp);
+    let written = (|| {
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temp)?;
+        file.write_all(text.as_bytes())?;
+        file.sync_all()?;
+        if backup {
+            let name = path
+                .file_name()
+                .map_or(String::new(), |n| n.to_string_lossy().into_owned());
+            std::fs::rename(path, dir.join(format!("{name}.bak")))?;
+        }
+        std::fs::rename(&temp, path)
+    })();
+    if written.is_err() {
+        let _ = std::fs::remove_file(&temp);
+    }
+    written.map_err(fail)
+}
+
+/// Sets each key in the file at `path`: the first line that assigns it is replaced in place, else a line is appended; every other line stays as written, and an old file is kept as `<name>.bak`.
+pub fn set_keys(path: &Path, keys: &[(String, String)]) -> Result<(), String> {
+    let (old, existed) = match std::fs::read_to_string(path) {
+        Ok(text) => (text, true),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => (String::new(), false),
+        Err(e) => return Err(format!("cannot write {}: {e}", path.display())),
+    };
+    let mut lines: Vec<String> = old.split_inclusive('\n').map(String::from).collect();
+    for (key, value) in keys {
+        let line = format!("{key} = {}", quote(value));
+        let found = lines
+            .iter()
+            .position(|l| l.split_once('=').is_some_and(|(k, _)| k.trim() == key));
+        match found {
+            Some(i) => {
+                let ending = &lines[i][lines[i].trim_end_matches(['\r', '\n']).len()..];
+                lines[i] = format!("{line}{ending}");
+            }
+            None => {
+                if let Some(last) = lines.last_mut()
+                    && !last.ends_with('\n')
+                {
+                    last.push('\n');
+                }
+                lines.push(format!("{line}\n"));
+            }
+        }
+    }
+    write_config(path, &lines.concat(), existed)
+}
+
 /// The value as written in the file (design.md's quoting rule).
 pub fn quote(value: &str) -> String {
     let edge = |c: char| c == ' ' || c == '\t';
@@ -1636,6 +1696,101 @@ mod tests {
         assert_eq!(e.query_prefix, "");
         assert_eq!(e.min_similarity, 0.5);
         assert_eq!(e.token, None);
+    }
+
+    #[test]
+    fn write_config_replaces_atomically_and_keeps_a_backup() {
+        let dir = std::env::temp_dir().join(format!("bilbo-setup-unit-{}", std::process::id()));
+        let path = dir.join("nested/config");
+        write_config(&path, "one\n", false).unwrap();
+        write_config(&path, "two\n", true).unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "two\n");
+        assert_eq!(
+            std::fs::read_to_string(dir.join("nested/config.bak")).unwrap(),
+            "one\n"
+        );
+        let leftovers = std::fs::read_dir(dir.join("nested"))
+            .unwrap()
+            .filter(|e| {
+                e.as_ref()
+                    .unwrap()
+                    .file_name()
+                    .to_string_lossy()
+                    .contains(".tmp-")
+            })
+            .count();
+        assert_eq!(leftovers, 0);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn keys(pairs: &[(&str, &str)]) -> Vec<(String, String)> {
+        pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect()
+    }
+
+    #[test]
+    fn set_keys_replaces_a_line_in_place() {
+        let dir = scratch("set-replace");
+        let path = dir.0.join("config");
+        std::fs::write(&path, "a = 1\nscope.x.sync = off\nb = 2\n").unwrap();
+        set_keys(&path, &keys(&[("scope.x.sync", "file:///f")])).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "a = 1\nscope.x.sync = file:///f\nb = 2\n"
+        );
+        assert_eq!(
+            std::fs::read_to_string(dir.0.join("config.bak")).unwrap(),
+            "a = 1\nscope.x.sync = off\nb = 2\n"
+        );
+    }
+
+    #[test]
+    fn set_keys_appends_a_missing_key() {
+        let dir = scratch("set-append");
+        let path = dir.0.join("config");
+        std::fs::write(&path, "a = 1").unwrap();
+        set_keys(&path, &keys(&[("b", " pad "), ("c", "3")])).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "a = 1\nb = \" pad \"\nc = 3\n"
+        );
+    }
+
+    #[test]
+    fn set_keys_keeps_comments_and_blank_lines() {
+        let dir = scratch("set-keep");
+        let path = dir.0.join("config");
+        let old = "# a = 9\n\n  a = 1  \r\n\n# end\n";
+        std::fs::write(&path, old).unwrap();
+        set_keys(&path, &keys(&[("a", "2")])).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "# a = 9\n\na = 2\r\n\n# end\n"
+        );
+    }
+
+    #[test]
+    fn set_keys_creates_a_missing_file_without_a_backup() {
+        let dir = scratch("set-new");
+        let path = dir.0.join("nested/config");
+        set_keys(&path, &keys(&[("a", "1")])).unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "a = 1\n");
+        assert!(!dir.0.join("nested/config.bak").exists());
+    }
+
+    #[test]
+    fn set_keys_names_a_path_it_cannot_write() {
+        let dir = scratch("set-fail");
+        let blocker = dir.0.join("blocker");
+        std::fs::write(&blocker, "").unwrap();
+        let path = blocker.join("config");
+        let err = set_keys(&path, &keys(&[("a", "1")])).unwrap_err();
+        assert!(
+            err.starts_with(&format!("cannot write {}:", path.display())),
+            "{err}"
+        );
     }
 
     #[test]
