@@ -474,16 +474,8 @@ pub fn write_identity(keys: &Path, owner: &OwnerFile, device: &Device) -> Result
     owner_text.push_str("\",\"box_public\":\"");
     push_hex(&mut owner_text, &owner.box_public);
     owner_text.push_str("\"}\n");
-    let mut device_text = Zeroizing::new(format!(
-        "{{\"format\":1,\"name\":\"{}\",\"sign\":\"",
-        device.name
-    ));
-    push_hex(&mut device_text, &device.sign.seed()[..]);
-    device_text.push_str("\",\"box\":\"");
-    push_hex(&mut device_text, device.box_secret.bytes());
-    device_text.push_str("\"}\n");
     write_file(&staging.join("owner.key"), &owner_text)?;
-    write_file(&staging.join("device.key"), &device_text)?;
+    write_file(&staging.join("device.key"), &device_text(device))?;
     File::open(&staging)
         .and_then(|dir| dir.sync_all())
         .map_err(|e| format!("cannot sync {}: {e}", staging.display()))?;
@@ -491,6 +483,19 @@ pub fn write_identity(keys: &Path, owner: &OwnerFile, device: &Device) -> Result
     File::open(parent)
         .and_then(|dir| dir.sync_all())
         .map_err(|e| format!("cannot sync {}: {e}", parent.display()))
+}
+
+/// The contents of `device.key`.
+fn device_text(device: &Device) -> Zeroizing<String> {
+    let mut text = Zeroizing::new(format!(
+        "{{\"format\":1,\"name\":\"{}\",\"sign\":\"",
+        device.name
+    ));
+    push_hex(&mut text, &device.sign.seed()[..]);
+    text.push_str("\",\"box\":\"");
+    push_hex(&mut text, device.box_secret.bytes());
+    text.push_str("\"}\n");
+    text
 }
 
 /// Appends lowercase hex to a wiped string, so a secret never passes through a plain one.
@@ -628,6 +633,68 @@ pub fn read_identity(keys: &Path) -> Result<Option<Identity>, String> {
         },
         device: Device::from_seeds(&device.name, &device.sign.0, &device.boxed.0),
     }))
+}
+
+/// `<state>/bilbo/pair`, beside `keys`: where a device that is not enrolled yet keeps its key pair while it pairs.
+pub fn pending_path(keys: &Path) -> PathBuf {
+    keys.with_file_name("pair")
+}
+
+fn read_pending(dir: &Path, name: &str) -> Result<Device, String> {
+    let path = dir.join("device.key");
+    let damaged = |why: &str| {
+        format!(
+            "{} is damaged: {why}; remove {} and run bilbo pair again",
+            path.display(),
+            dir.display()
+        )
+    };
+    loose(dir, 0o700, "folder")?;
+    let text = read_secret(&path)?;
+    let stored: DeviceJson = serde_json::from_str(&text).map_err(|e| damaged(&e.to_string()))?;
+    if stored.format != 1 {
+        return Err(damaged("it is not format 1"));
+    }
+    if !valid_name(&stored.name) {
+        return Err(damaged("the name breaks the device name rule"));
+    }
+    Ok(Device::from_seeds(name, &stored.sign.0, &stored.boxed.0))
+}
+
+/// The key pair of a device that pairs, kept in `dir` as `device.key` and created there on the first call, so a retry
+/// answers with the same id. The device carries `name`, this run's, whatever name the file was created under.
+pub fn pending_device(dir: &Path, name: &str) -> Result<Device, String> {
+    if !valid_name(name) {
+        return Err(format!("'{name}' is not a device name"));
+    }
+    let path = dir.join("device.key");
+    match path.symlink_metadata() {
+        Ok(_) => return read_pending(dir, name),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(format!("cannot read {}: {e}", path.display())),
+    }
+    let mut builder = std::fs::DirBuilder::new();
+    std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
+    builder
+        .recursive(true)
+        .create(dir)
+        .map_err(|e| format!("cannot create {}: {e}", dir.display()))?;
+    loose(dir, 0o700, "folder")?;
+    let device = Device::generate(name)?;
+    match write_file(&path, &device_text(&device)) {
+        Err(_) if path.symlink_metadata().is_ok() => read_pending(dir, name),
+        written => written.map(|()| device),
+    }
+}
+
+/// Removes the pending key's folder; one that is not there is removed already.
+pub fn remove_pending(dir: &Path) -> Result<(), String> {
+    match std::fs::remove_dir_all(dir) {
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
+            Err(format!("cannot remove {}: {e}", dir.display()))
+        }
+        _ => Ok(()),
+    }
 }
 
 #[cfg(test)]
@@ -1165,5 +1232,101 @@ mod tests {
             err.contains(&format!("move {} aside", keys.display())),
             "{err}"
         );
+    }
+
+    #[test]
+    fn the_pending_folder_sits_beside_keys() {
+        assert_eq!(
+            pending_path(Path::new("/state/bilbo/keys")),
+            PathBuf::from("/state/bilbo/pair")
+        );
+    }
+
+    #[test]
+    fn a_pending_device_is_created_private_and_reused_under_each_runs_name() {
+        let dir = scratch("pending");
+        let pending = pending_path(&keys_path(&dir));
+        let first = pending_device(&pending, "bagend").unwrap();
+        assert_eq!(first.name, "bagend");
+        assert_eq!(mode(&pending), 0o700);
+        assert_eq!(mode(&pending.join("device.key")), 0o600);
+        let again = pending_device(&pending, "mirkwood").unwrap();
+        assert_eq!(again.name, "mirkwood");
+        assert_eq!(again.id(), first.id());
+        assert_eq!(again.box_secret.public(), first.box_secret.public());
+        let stored = std::fs::read_to_string(pending.join("device.key")).unwrap();
+        assert!(stored.contains("\"name\":\"bagend\""), "{stored}");
+    }
+
+    #[test]
+    fn a_pending_key_is_in_the_format_of_device_key() {
+        let dir = scratch("pending-format");
+        let keys = keys_path(&dir);
+        let pending = pending_path(&keys);
+        let device = pending_device(&pending, "bagend").unwrap();
+        write_identity(
+            &keys,
+            &owner().file(),
+            &Device::from_seeds("x", &[1; 32], &[2; 32]),
+        )
+        .unwrap();
+        std::fs::copy(pending.join("device.key"), keys.join("device.key")).unwrap();
+        chmod(&keys.join("device.key"), 0o600);
+        let read = read_identity(&keys).unwrap().unwrap();
+        assert_eq!(read.device.id(), device.id());
+        assert_eq!(read.device.name, "bagend");
+    }
+
+    #[test]
+    fn a_pending_key_with_loose_modes_or_damage_is_refused() {
+        let dir = scratch("pending-loose");
+        let pending = pending_path(&keys_path(&dir));
+        pending_device(&pending, "bagend").unwrap();
+        let file = pending.join("device.key");
+        chmod(&file, 0o644);
+        let err = pending_device(&pending, "bagend").err().unwrap();
+        assert!(err.contains("open to other users"), "{err}");
+        chmod(&file, 0o600);
+        chmod(&pending, 0o755);
+        let err = pending_device(&pending, "bagend").err().unwrap();
+        assert!(err.contains("open to other users"), "{err}");
+        chmod(&pending, 0o700);
+        std::fs::write(&file, "not json").unwrap();
+        chmod(&file, 0o600);
+        let err = pending_device(&pending, "bagend").err().unwrap();
+        assert!(
+            err.contains("is damaged") && err.contains("bilbo pair again"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn a_bad_name_creates_no_pending_key() {
+        let dir = scratch("pending-name");
+        let pending = pending_path(&keys_path(&dir));
+        assert!(pending_device(&pending, "Bag_End").is_err());
+        assert!(!pending.exists());
+    }
+
+    #[test]
+    fn a_pending_key_that_cannot_be_created_says_so() {
+        let dir = scratch("pending-blocked");
+        std::fs::create_dir_all(dir.0.join("bilbo")).unwrap();
+        std::fs::write(dir.0.join("bilbo/pair"), "a file").unwrap();
+        let err = pending_device(&dir.0.join("bilbo/pair"), "bagend")
+            .err()
+            .unwrap();
+        assert!(err.contains("bilbo/pair"), "{err}");
+    }
+
+    #[test]
+    fn removing_the_pending_key_is_idempotent() {
+        let dir = scratch("pending-remove");
+        let pending = pending_path(&keys_path(&dir));
+        remove_pending(&pending).unwrap();
+        pending_device(&pending, "bagend").unwrap();
+        remove_pending(&pending).unwrap();
+        assert!(!pending.exists());
+        remove_pending(&pending).unwrap();
     }
 }
