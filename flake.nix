@@ -98,6 +98,8 @@
             "digest.min_similarity"
             "digest.log"
             "history.keep_days"
+            "sync.poll_seconds"
+            "sync.stale_days"
           ];
           # A scope key: scope.default, or scope.<name>.<sub> with the topic's grammar for <name>.
           isScopeKey =
@@ -194,7 +196,7 @@
                 "embedder.url" = "http://localhost:11434";
                 "embedder.model" = "nomic-embed-text";
               };
-              description = "Settings written to the bilbo config file: the fixed keys, and scope.<name>.sync|embedder|paths|marks and scope.default.";
+              description = "Settings written to the bilbo config file: the fixed keys (embedder, digest, history and sync), and scope.<name>.sync|embedder|paths|marks and scope.default.";
             };
             index = {
               enable = lib.mkOption {
@@ -342,6 +344,13 @@
               "history.keep_days" = "30";
             };
           };
+          synced = hm {
+            enable = true;
+            settings = {
+              "scope.personal.sync" = "file:///Users/a/Sync/bilbo";
+              "sync.poll_seconds" = "60";
+            };
+          };
           badScope = hm {
             enable = true;
             settings."scope.work.colour" = "red";
@@ -414,6 +423,13 @@
                 scope.work.paths = ~/Developer/acme
               '';
             assert (builtins.tryEval scoped.activationPackage.drvPath).success;
+            assert
+              synced.config.xdg.configFile."bilbo/config".text == ''
+                # bilbo config, written by home-manager from programs.bilbo.settings
+                sync.poll_seconds = 60
+                scope.personal.sync = file:///Users/a/Sync/bilbo
+              '';
+            assert (builtins.tryEval synced.activationPackage.drvPath).success;
             assert fails tokenEnv;
             assert !(disabled.config.home.activation ? bilboSetup);
             assert

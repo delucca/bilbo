@@ -6,8 +6,10 @@ pub const DEFAULT_MIN_SIMILARITY: f64 = 0.5;
 pub const DEFAULT_DIGEST_SIMILARITY: f64 = 0.55;
 
 pub const DEFAULT_KEEP_DAYS: u32 = 90;
+pub const DEFAULT_POLL_SECONDS: u32 = 30;
+pub const DEFAULT_STALE_DAYS: u32 = 180;
 
-pub const KEYS: [&str; 10] = [
+pub const KEYS: [&str; 12] = [
     "embedder.url",
     "embedder.model",
     "embedder.token_file",
@@ -18,6 +20,8 @@ pub const KEYS: [&str; 10] = [
     "digest.min_similarity",
     "digest.log",
     "history.keep_days",
+    "sync.poll_seconds",
+    "sync.stale_days",
 ];
 
 /// The keys of the scope pattern, for messages.
@@ -39,7 +43,8 @@ pub struct Settings {
     pub embedder: Option<Embedder>,
     pub digest: Digest,
     pub history: History,
-    /// The digest and history lines the file held, as written (unquoted), in `KEYS` order; a rewrite keeps them.
+    pub sync: Sync,
+    /// The digest, history and sync lines the file held, as written (unquoted), in `KEYS` order; a rewrite keeps them.
     pub kept_lines: Vec<(&'static str, String)>,
     /// The scope lines the file held, as written (unquoted), in file order; a rewrite keeps them.
     pub scope_lines: Vec<(String, String)>,
@@ -98,6 +103,23 @@ impl Default for History {
     fn default() -> History {
         History {
             keep_days: DEFAULT_KEEP_DAYS,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Sync {
+    /// How often `bilbo watch` looks for other devices' segments.
+    pub poll_seconds: u32,
+    /// How long a device may leave a segment unacknowledged before it is stale.
+    pub stale_days: u32,
+}
+
+impl Default for Sync {
+    fn default() -> Sync {
+        Sync {
+            poll_seconds: DEFAULT_POLL_SECONDS,
+            stale_days: DEFAULT_STALE_DAYS,
         }
     }
 }
@@ -184,6 +206,7 @@ fn defaults(path: Option<PathBuf>) -> Settings {
         embedder: None,
         digest: Digest::default(),
         history: History::default(),
+        sync: Sync::default(),
         kept_lines: Vec::new(),
         scope_lines: Vec::new(),
         scopes: Vec::new(),
@@ -205,6 +228,7 @@ fn parse(path: &Path, text: &str, home: Option<&Path>) -> Result<Settings, Strin
     let mut min_similarity = DEFAULT_MIN_SIMILARITY;
     let mut digest = Digest::default();
     let mut history = History::default();
+    let mut sync = Sync::default();
     let mut kept_lines: Vec<(&'static str, String)> = Vec::new();
     let mut scope_lines: Vec<(String, String)> = Vec::new();
     let mut declared = Declared::default();
@@ -251,7 +275,7 @@ fn parse(path: &Path, text: &str, home: Option<&Path>) -> Result<Settings, Strin
                 continue;
             }
         };
-        if key.starts_with("digest.") || key.starts_with("history.") {
+        if key.starts_with("digest.") || key.starts_with("history.") || key.starts_with("sync.") {
             kept_lines.push((key, value.clone()));
         }
         match key {
@@ -337,6 +361,20 @@ fn parse(path: &Path, text: &str, home: Option<&Path>) -> Result<Settings, Strin
                     )
                 })?;
             }
+            "sync.poll_seconds" => {
+                sync.poll_seconds = parse_whole(&value, 3600).ok_or_else(|| {
+                    format!(
+                        "{at}:{n}: sync.poll_seconds must be a whole number of seconds from 1 to 3600, got '{value}'"
+                    )
+                })?;
+            }
+            "sync.stale_days" => {
+                sync.stale_days = parse_whole(&value, 3650).ok_or_else(|| {
+                    format!(
+                        "{at}:{n}: sync.stale_days must be a whole number of days from 1 to 3650, got '{value}'"
+                    )
+                })?;
+            }
             _ => query_prefix = value,
         }
     }
@@ -374,6 +412,7 @@ fn parse(path: &Path, text: &str, home: Option<&Path>) -> Result<Settings, Strin
         embedder,
         digest,
         history,
+        sync,
         kept_lines,
         scope_lines,
         scopes,
@@ -918,10 +957,15 @@ pub fn is_variable_name(name: &str) -> bool {
 
 /// A whole number of days from 1 to 3650 written as digits.
 fn parse_days(value: &str) -> Option<u32> {
+    parse_whole(value, 3650)
+}
+
+/// A whole number from 1 to `max` written as digits.
+fn parse_whole(value: &str, max: u32) -> Option<u32> {
     if value.is_empty() || !value.bytes().all(|b| b.is_ascii_digit()) {
         return None;
     }
-    value.parse::<u32>().ok().filter(|d| (1..=3650).contains(d))
+    value.parse::<u32>().ok().filter(|d| (1..=max).contains(d))
 }
 
 /// A number from 0 to 1 written as digits with an optional `.` and digits.
@@ -1066,6 +1110,70 @@ mod tests {
             [
                 ("digest.log", "on".to_string()),
                 ("history.keep_days", "30".to_string())
+            ]
+        );
+    }
+
+    #[test]
+    fn sync_defaults_and_values() {
+        let sync = |text: &str| parse(Path::new("/c"), text, None).map(|s| s.sync);
+        assert_eq!(sync("").unwrap(), Sync::default());
+        assert_eq!(sync(BASE).unwrap().poll_seconds, 30);
+        assert_eq!(sync(BASE).unwrap().stale_days, 180);
+        let both = sync("sync.poll_seconds = 1\nsync.stale_days = 3650\n").unwrap();
+        assert_eq!((both.poll_seconds, both.stale_days), (1, 3650));
+        assert_eq!(
+            sync("sync.poll_seconds = 3600\n").unwrap().poll_seconds,
+            3600
+        );
+        assert_eq!(sync("sync.stale_days = 1\n").unwrap().stale_days, 1);
+    }
+
+    #[test]
+    fn sync_keys_need_no_embedder_or_scope() {
+        let settings = parse(Path::new("/c"), "sync.poll_seconds = 60\n", None).unwrap();
+        assert!(settings.embedder.is_none());
+        assert!(settings.scopes.is_empty());
+        assert_eq!(settings.sync.poll_seconds, 60);
+    }
+
+    #[test]
+    fn sync_bad_values() {
+        for (key, max, values) in [
+            (
+                "sync.poll_seconds",
+                "seconds from 1 to 3600",
+                ["0", "3601", "1y", "-5", "1.5"],
+            ),
+            (
+                "sync.stale_days",
+                "days from 1 to 3650",
+                ["0", "3651", "1y", "+5", "99999999999"],
+            ),
+        ] {
+            for value in values {
+                let message =
+                    parse(Path::new("/c"), &format!("\n{key} = {value}\n"), None).unwrap_err();
+                assert_eq!(
+                    message,
+                    format!("/c:2: {key} must be a whole number of {max}, got '{value}'")
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn sync_lines_are_kept_after_the_history_lines() {
+        let text =
+            "sync.stale_days = 9\nsync.poll_seconds = 5\nhistory.keep_days = 30\ndigest.log = on\n";
+        let lines = parse(Path::new("/c"), text, None).unwrap().kept_lines;
+        assert_eq!(
+            lines,
+            [
+                ("digest.log", "on".to_string()),
+                ("history.keep_days", "30".to_string()),
+                ("sync.poll_seconds", "5".to_string()),
+                ("sync.stale_days", "9".to_string())
             ]
         );
     }
@@ -1268,7 +1376,7 @@ mod tests {
     fn unknown_key_names_file_and_line() {
         assert_eq!(
             err("# c\n\nembeder.url = http://x\n"),
-            "/c:3: unknown key 'embeder.url'; keys: embedder.url, embedder.model, embedder.token_file, embedder.token_env, embedder.query_prefix, embedder.min_similarity, digest.enable, digest.min_similarity, digest.log, history.keep_days, scope.<name>.sync, scope.<name>.embedder, scope.<name>.paths, scope.<name>.marks, scope.default"
+            "/c:3: unknown key 'embeder.url'; keys: embedder.url, embedder.model, embedder.token_file, embedder.token_env, embedder.query_prefix, embedder.min_similarity, digest.enable, digest.min_similarity, digest.log, history.keep_days, sync.poll_seconds, sync.stale_days, scope.<name>.sync, scope.<name>.embedder, scope.<name>.paths, scope.<name>.marks, scope.default"
         );
     }
 
