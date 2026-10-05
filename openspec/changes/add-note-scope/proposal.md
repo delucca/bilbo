@@ -49,13 +49,14 @@ Remote sync (the planning notebook's `design-bilbo-remote-sync.md`, "Decisions t
 
 ## Impact
 
-- `src/note.rs` reads and validates the `scope` key, and finds marks in a note's topic and text.
-- `src/config.rs` parses the `scope.*` keys, which are a pattern rather than fixed names, resolves a working directory against `paths`, and gives each note its embedder rule.
-- New verb `src/scope.rs`, its `mod` line, dispatch arm and USAGE line. `scope set` writes through change 1's `swap::exchange`, `history/lock` and `.bilbo-restore-<id>` sweep in `src/versions.rs`.
-- `src/new.rs` and `src/check.rs` start reading the config. A broken config now stops them with exit 2.
-- `src/index.rs`, `src/recall.rs` and `src/digest.rs` apply the embedder rule. `store::Stored` carries each note's raw `scope` value.
-- `src/setup.rs` keeps the scope lines on a rewrite. `flake.nix`'s module accepts `scope.*` keys in `settings`.
+- `src/shared/text.rs` takes recall's word rule (`words` and its folding) from `src/search/rank.rs`, unchanged, because the config check and the mark finder need it and neither may use the search domain.
+- `src/note/mod.rs` reads and validates the `scope` key, and renders it in a new note. A new module, `src/note/marks.rs`, finds marks in a note's topic and text.
+- `src/shared/config.rs` parses the `scope.*` keys, which are a pattern rather than fixed names, resolves a working directory against `paths`, and gives each note its embedder rule.
+- New verb `src/note/scope.rs`, its `pub mod` line, its path in `VERBS` in `tests/layout.rs`, its dispatch arm and USAGE line. `scope set` writes through `host::swap::exchange`, and through `history/lock`, the `.bilbo-restore-<id>` sweep and the hidden-file writer in `src/note/versions.rs` (the writer moves there from `src/note/restore.rs`, so a verb uses no other verb's module).
+- `src/note/new.rs` and `src/check.rs` start reading the config. A broken config now stops them with exit 2. `check` returns its warnings apart from its problems, and `main` takes the exit code from the problems.
+- `src/search/index.rs`, `src/search/recall.rs` and `src/search/digest.rs` apply the embedder rule through one function in `src/search/vectors.rs`. `documents::Stored` carries each note's `scope` value.
+- `src/setup/` keeps the scope lines on a config rewrite (`facts.rs`, `plan.rs`, `apply.rs`). `flake.nix`'s module accepts `scope.*` keys in `settings`.
 - `plugins/bilbo/skills/note/SKILL.md` gains the scope steps and `Bash(bilbo scope)` and `Bash(bilbo scope set *)` in `allowed-tools`.
-- Tests: `tests/scope.rs` for the new verb, and new cases in `tests/new.rs`, `tests/check.rs`, `tests/index.rs`, `tests/recall.rs`, `tests/digest.rs`, `tests/plugin.rs` and `src/config.rs`. Remote-embedder tests reach the loopback fake through `http://0.0.0.0:<port>`.
+- Tests: `tests/scope.rs` for the new verb, and new cases in `tests/new.rs`, `tests/check.rs`, `tests/index.rs`, `tests/recall.rs`, `tests/digest.rs`, `tests/cli.rs`, `tests/plugin.rs`, `src/shared/config.rs`, `src/note/` and `src/setup/driven.rs`. Remote-embedder tests reach the loopback fake through `http://0.0.0.0:<port>`.
 - No new dependency.
 - Migration: none. With no `scope.*` key in the config, every verb behaves as before, except that `new` and `check` now fail on a broken config.
