@@ -474,7 +474,11 @@ impl Replica {
     /// The replica of scope `id`, named `name` in the config, for the device `device`.
     pub fn open(root: &Path, id: &str, name: &str, device: &str) -> Result<Replica, String> {
         let (mut state, resuming) = match State::read(root, id)? {
-            Some(state) if state.device == device => (state, false),
+            // A state no pull committed, such as a stop line alone, has read nothing, so the store still resumes.
+            Some(state) if state.device == device => {
+                let resuming = state.pulled_at.is_none();
+                (state, resuming)
+            }
             Some(_) => {
                 set_aside(root, id)?;
                 (State::default(), true)
@@ -906,11 +910,8 @@ impl Replica {
         let key: [u8; 32] = **opened.keys.get(&epoch).ok_or("no key for the epoch")?;
         let sealing = Sealing {
             t,
-            identity,
             scope: &scope,
             opened: &opened,
-            epoch,
-            key,
             now,
         };
         if !self.finish_outbox(&sealing, &mut out)? {
@@ -1171,11 +1172,8 @@ impl Replica {
 /// What a push seals and writes with.
 struct Sealing<'a> {
     t: &'a dyn Transport,
-    identity: &'a Identity,
     scope: &'a manifest::Scope,
     opened: &'a Opened,
-    epoch: u64,
-    key: [u8; 32],
     now: Timestamp,
 }
 
@@ -1456,7 +1454,7 @@ pub fn known_heads(
 
 impl Replica {
     /// Drops the `seen.jsonl` lines of versions no log holds any more, of blobs and declarations that only they
-    /// named. The watcher runs it after `apply` in a cycle, so a version still waiting in the inbox keeps its line.
+    /// named. A version still waiting in the inbox keeps its line.
     /// Returns how many lines it dropped.
     pub fn trim_seen(&self) -> Result<usize, String> {
         let path = seen_path(&self.root, &self.id);
@@ -1468,6 +1466,26 @@ impl Replica {
         let mut held_versions: HashSet<String> = HashSet::new();
         let mut held_blobs: HashSet<String> = HashSet::new();
         let mut held_declarations: HashSet<String> = HashSet::new();
+        // A version waiting in the inbox is held too: no log names it yet, and a dropped line would push it again.
+        let inbox = store::sync_dir(&self.root).join("inbox.jsonl");
+        match fs::read(&inbox) {
+            Ok(bytes) => {
+                for line in bytes.split(|b| *b == b'\n') {
+                    let Ok(entry) = serde_json::from_slice::<serde_json::Value>(line) else {
+                        continue;
+                    };
+                    let record = &entry["record"];
+                    if let Some(v) = record["version"].as_str() {
+                        held_versions.insert(v.to_string());
+                    }
+                    if let Some(b) = record["blob"].as_str() {
+                        held_blobs.insert(b.to_string());
+                    }
+                }
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(io_message("read", &inbox, &e)),
+        }
         for note_id in versions::note_ids(&self.root)? {
             let log = versions::load(&self.root, &note_id)?;
             for v in &log.versions {
@@ -2549,6 +2567,27 @@ mod tests {
     }
 
     #[test]
+    fn the_seen_file_keeps_what_waits_in_the_inbox() {
+        let w = World::new("trim-inbox");
+        let note = ulid(1);
+        let v = save(&w.root('a'), &note, "plan-x.md", Some("personal"), "one");
+        let mut a = w.replica('a');
+        w.pull(&mut a, &w.a, 0);
+        w.push(&mut a, &w.a, 1);
+        fs::remove_file(versions::log_path(&w.root('a'), &note)).unwrap();
+        let sync = store::sync_dir(&w.root('a'));
+        fs::create_dir_all(&sync).unwrap();
+        let line = format!(
+            "{{\"seen\":\"x\",\"scope\":\"personal\",\"record\":{{\"note\":\"{note}\",\"version\":\"{}\",\"blob\":\"{}\"}}}}\n",
+            v.version, v.blob
+        );
+        fs::write(sync.join("inbox.jsonl"), line).unwrap();
+        assert_eq!(a.trim_seen().unwrap(), 0);
+        fs::write(sync.join("inbox.jsonl"), "").unwrap();
+        assert_eq!(a.trim_seen().unwrap(), 2);
+    }
+
+    #[test]
     fn the_outbox_waits_for_every_live_device_and_a_stale_one_does_not_hold_it() {
         let w = World::three("outbox");
         save(&w.root('a'), &ulid(1), "plan-x.md", Some("personal"), "one");
@@ -2640,6 +2679,22 @@ mod tests {
     fn blob_file(root: &Path, blob: &str) -> PathBuf {
         let dir = store::history_dir(root).join("blobs").join(&blob[..2]);
         dir.join(&blob[2..])
+    }
+
+    #[test]
+    fn a_state_that_holds_only_a_stop_line_still_resumes() {
+        let w = World::new("stoponly");
+        let mut a = w.replica('a');
+        a.set_stopped(Some("sync personal: waiting".to_string()))
+            .unwrap();
+        let again = Replica::open(&w.root('a'), &w.scope, "personal", &w.a.device.id()).unwrap();
+        assert!(again.resuming);
+        assert_eq!(again.stopped(), Some("sync personal: waiting"));
+        let mut settled = w.replica('a');
+        settled.set_stopped(None).unwrap();
+        w.pull(&mut settled, &w.a, 0);
+        let kept = Replica::open(&w.root('a'), &w.scope, "personal", &w.a.device.id()).unwrap();
+        assert!(!kept.resuming);
     }
 
     #[test]

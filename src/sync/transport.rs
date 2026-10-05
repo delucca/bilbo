@@ -63,7 +63,8 @@ pub trait Transport: Send {
     /// Removes this device's temporary files older than an hour at `now`.
     fn sweep(&self, now: SystemTime) -> Result<(), String>;
 
-    /// Removes `pair/<nameplate>/`, the one deletion the layout allows.
+    /// Removes `pair/<nameplate>/`, the one deletion the layout allows. Pairing (change 5) calls it.
+    #[cfg_attr(not(test), expect(dead_code))]
     fn remove_mailbox(&self, nameplate: &str) -> Result<(), String>;
 }
 
@@ -90,6 +91,7 @@ pub fn segment_path(scope: &str, device: &str, seq: u64) -> String {
     format!("scopes/{scope}/devices/{device}/{seq:020}.seg")
 }
 
+#[cfg_attr(not(test), expect(dead_code))]
 pub fn message_path(nameplate: &str, msg: &str) -> String {
     format!("pair/{nameplate}/{msg}.msg")
 }

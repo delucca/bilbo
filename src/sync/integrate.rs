@@ -222,6 +222,7 @@ fn is_false(b: &bool) -> bool {
 }
 
 /// The stale-base entry of a note, if a sync write left one.
+#[cfg(test)]
 pub fn stale_base(root: &Path, note: &str) -> Result<Option<Base>, String> {
     Ok(read_bases(root)?.remove(note))
 }

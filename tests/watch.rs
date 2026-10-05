@@ -721,3 +721,57 @@ fn a_watcher_idles_while_the_folder_is_away() {
     let used = common::cpu_seconds(watcher.pid()).unwrap() - before;
     assert!(used < 1.0, "{used} s of CPU in 8 s with notes/ away");
 }
+
+/// With no scope that syncs, watch is the watcher the `note-watch` spec describes: it says nothing about sync and
+/// writes nothing under `.bilbo/scopes/`.
+#[test]
+fn a_scope_that_does_not_sync_leaves_watch_alone() {
+    let dir = TempDir::new("watch-nosync");
+    let root = three(&dir);
+    let file = config(
+        &dir,
+        &["scope.personal.sync = off", "sync.poll_seconds = 1"],
+    );
+    let env = [
+        ("BILBO_HOME", root.to_str().unwrap()),
+        ("BILBO_CONFIG", file.to_str().unwrap()),
+    ];
+    let watcher = Watcher::start(&env);
+    watcher.wait_for("bilbo: watching ");
+    wait_added(&root, &["release", "other", "old"]);
+    barrier(&root);
+    assert_eq!(
+        watcher.lines(),
+        [format!("bilbo: watching {}", root.join("notes").display())]
+    );
+    assert!(!root.join(".bilbo/scopes").exists());
+}
+
+/// The start-up sweep covers the temporaries a crash left under `.bilbo/sync/` and each scope's folder, `out/` too.
+#[test]
+fn start_removes_the_temporaries_of_the_sync_state() {
+    let dir = TempDir::new("watch-sweep");
+    let root = three(&dir);
+    let scope = root.join(".bilbo/scopes/ho5qmsdzujmpbxetyxwzdgqz64");
+    fs::create_dir_all(scope.join("out")).unwrap();
+    fs::create_dir_all(root.join(".bilbo/sync")).unwrap();
+    let leftovers = [
+        root.join(".bilbo/sync/.tmp-aaaa"),
+        scope.join(".tmp-bbbb"),
+        scope.join("out/.tmp-cccc"),
+    ];
+    let kept = [
+        scope.join("state.json"),
+        scope.join("out/00000000000000000001.seg"),
+    ];
+    for path in leftovers.iter().chain(&kept) {
+        fs::write(path, b"x").unwrap();
+    }
+    let _watcher = Watcher::on(&root);
+    for path in &leftovers {
+        assert!(!path.exists(), "{} was not swept", path.display());
+    }
+    for path in &kept {
+        assert!(path.exists(), "{} was swept", path.display());
+    }
+}
