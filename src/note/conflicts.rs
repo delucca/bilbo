@@ -90,6 +90,15 @@ impl Entry {
         !self.conflict.is_empty() || !self.dropped.is_empty()
     }
 
+    /// The digest's label for the note: `conflict` while something waits, else `auto-merged`.
+    pub fn label(&self) -> Option<&'static str> {
+        if self.waits() {
+            Some("conflict")
+        } else {
+            self.merged.then_some("auto-merged")
+        }
+    }
+
     /// Whether it says nothing, so the summary holds no entry for the note.
     pub fn is_empty(&self) -> bool {
         !self.waits() && !self.merged && self.notices.is_empty() && self.left.is_empty()
