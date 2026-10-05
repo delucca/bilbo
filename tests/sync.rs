@@ -311,10 +311,17 @@ fn note(id: &str, setup: &str, rollout: &str) -> String {
 
 /// Starts both devices on a new folder, with `decision-release.md` written on `rivendell` and arrived on `bagend`.
 fn synced(name: &str) -> (TempDir, PathBuf, Site, Site, String) {
+    synced_with(name, &[])
+}
+
+/// Like `synced`, with `extra` config lines on both devices.
+fn synced_with(name: &str, extra: &[&str]) -> (TempDir, PathBuf, Site, Site, String) {
     let dir = TempDir::new(name);
     let folder = folder(&dir, &[1, 2]);
-    let mut a = Site::new("rivendell", &folder);
-    let mut b = Site::new("bagend", &folder);
+    let mut lines = Site::syncing(&folder);
+    lines.extend(extra.iter().map(|l| l.to_string()));
+    let mut a = Site::build("rivendell", true, &[1, 2], &lines);
+    let mut b = Site::build("bagend", true, &[1, 2], &lines);
     let text = note(ID, "Install it.", "Ship on Monday.");
     a.write(FILE, &text);
     a.start();
@@ -1017,4 +1024,848 @@ fn a_version_waits_while_the_notes_folder_is_gone() {
     assert!(!b.notes().exists(), "watch created notes/");
     fs::rename(&away, b.notes()).unwrap();
     b.wait_text(FILE, &edited);
+}
+
+const YOUNG: &str = "01M3YJ7R6HK6NQ30DCDB1PQ2X7";
+
+/// The history lines of a note on a device, newest first.
+fn history_holds(site: &Site, topic: &str, needle: &str) -> bool {
+    site.history(topic).iter().any(|l| l.contains(needle))
+}
+
+#[test]
+fn a_deletion_travels() {
+    let (_dir, _folder, a, b, _text) = synced("deletion");
+    // Watch records no deletion while `notes/` holds no note at all, so another note stays.
+    a.write("plan-keep.md", &common::note_text(OTHER, "Keep"));
+    a.wait_events("keep", &["added"]);
+    fs::remove_file(a.notes().join(FILE)).unwrap();
+    poll_eq("the file is gone from bagend", || b.read(FILE), None);
+    b.wait_events(ID, &["deleted", "added"]);
+    assert!(
+        b.history(ID)[0].contains("deleted decision-release.md from rivendell"),
+        "{:?}",
+        b.history(ID)
+    );
+    assert_eq!(a.read(FILE), None);
+}
+
+/// A deletes the note while B, offline, edits it; both start again and hold the edit.
+fn edit_beats_delete(name: &str) -> (TempDir, PathBuf, Site, Site) {
+    let (dir, folder, mut a, mut b, _text) = synced(name);
+    a.stop();
+    b.stop();
+    fs::remove_file(a.notes().join(FILE)).unwrap();
+    let edited = note(ID, "Install it.", "Ship on Friday.");
+    b.write(FILE, &edited);
+    a.start();
+    b.start();
+    a.wait_text(FILE, &edited);
+    b.wait_text(FILE, &edited);
+    poll_eq(
+        "one history with the flagged merge",
+        || {
+            let flagged = |s: &Site| history_holds(s, TOPIC, "edit-beat-delete");
+            flagged(&a) && flagged(&b) && ids(&a, TOPIC) == ids(&b, TOPIC)
+        },
+        true,
+    );
+    (dir, folder, a, b)
+}
+
+#[test]
+fn an_edit_beats_a_delete_on_both_devices() {
+    let (_dir, _folder, a, b) = edit_beats_delete("edit-beats-delete");
+    for site in [&a, &b] {
+        assert!(
+            site.events(TOPIC).iter().any(|e| e == "merged"),
+            "{:?}",
+            site.history(TOPIC)
+        );
+        let flagged: Vec<String> = site
+            .history(TOPIC)
+            .into_iter()
+            .filter(|l| l.contains("edit-beat-delete"))
+            .collect();
+        assert_eq!(flagged.len(), 1, "{flagged:?}");
+        assert!(flagged[0].contains(" merged "), "{flagged:?}");
+    }
+    // Both devices settle: nothing more is recorded after a round trip.
+    let settled = ids(&a, TOPIC);
+    barrier(&a, &b);
+    assert_eq!(ids(&a, TOPIC), settled);
+    assert_eq!(ids(&b, TOPIC), settled);
+}
+
+/// One topic made on both devices while they are apart, `old` on `rivendell`, `young` on `bagend` or the reverse.
+fn collision(name: &str, a_holds: &str, b_holds: &str) {
+    let dir = TempDir::new(name);
+    let folder = folder(&dir, &[1, 2]);
+    let mut a = Site::new("rivendell", &folder);
+    let mut b = Site::new("bagend", &folder);
+    let old = note(ID, "The older note.", "Ship on Monday.");
+    let young = note(YOUNG, "The younger note.", "Ship on Friday.");
+    let text = |id: &str| if id == ID { &old } else { &young };
+    a.write(FILE, text(a_holds));
+    b.write(FILE, text(b_holds));
+    a.start();
+    b.start();
+    for site in [&a, &b] {
+        site.wait_text(FILE, &old);
+        site.wait_text("decision-release-q2x7.md", &young);
+    }
+    for site in [&a, &b] {
+        let mut names: Vec<String> = fs::read_dir(site.notes())
+            .unwrap()
+            .map(|e| e.unwrap().file_name().into_string().unwrap())
+            .collect();
+        names.sort();
+        assert_eq!(
+            names,
+            ["decision-release-q2x7.md", "decision-release.md"],
+            "{}",
+            site.name
+        );
+        let check = site.bilbo(&["check"]);
+        assert!(
+            !check.stdout.contains("topic"),
+            "check on {}: {}{}",
+            site.name,
+            check.stdout,
+            check.stderr
+        );
+    }
+    // The renames are one version, recorded the same on both devices.
+    poll_eq(
+        "one history for the renamed note",
+        || {
+            ids(&a, "release-q2x7") == ids(&b, "release-q2x7")
+                && !ids(&a, "release-q2x7").is_empty()
+        },
+        true,
+    );
+    let settled = (ids(&a, "release-q2x7"), ids(&a, TOPIC));
+    barrier(&a, &b);
+    assert_eq!((ids(&a, "release-q2x7"), ids(&a, TOPIC)), settled);
+    assert_eq!((ids(&b, "release-q2x7"), ids(&b, TOPIC)), settled);
+}
+
+#[test]
+fn a_topic_made_on_two_devices_keeps_the_older_note_when_it_is_on_rivendell() {
+    collision("collision-a", ID, YOUNG);
+}
+
+#[test]
+fn a_topic_made_on_two_devices_keeps_the_older_note_when_it_is_on_bagend() {
+    collision("collision-b", YOUNG, ID);
+}
+
+#[test]
+fn a_rename_onto_a_taken_topic_converges() {
+    let (_dir, _folder, mut a, mut b, _text) = synced("rename-onto");
+    let young = note(YOUNG, "The younger note.", "Ship on Friday.");
+    a.write("plan-x.md", &young);
+    b.wait_text("plan-x.md", &young);
+    a.stop();
+    b.stop();
+    // A renames `plan-x.md` onto the topic `release` while B, apart, has the older note under it: it is the
+    // younger note that gives way.
+    fs::rename(
+        a.notes().join("plan-x.md"),
+        a.notes().join("plan-release.md"),
+    )
+    .unwrap();
+    a.start();
+    b.start();
+    let old = note(ID, "Install it.", "Ship on Monday.");
+    for site in [&a, &b] {
+        site.wait_text(FILE, &old);
+        site.wait_text("plan-release-q2x7.md", &young);
+        poll_eq(
+            &format!("{} lists only the renamed files", site.name),
+            || {
+                let mut names: Vec<String> = fs::read_dir(site.notes())
+                    .unwrap()
+                    .map(|e| e.unwrap().file_name().into_string().unwrap())
+                    .collect();
+                names.sort();
+                names
+            },
+            vec![
+                "decision-release.md".to_string(),
+                "plan-release-q2x7.md".to_string(),
+            ],
+        );
+    }
+    poll_eq(
+        "one history for the renamed note",
+        || ids(&a, "release-q2x7") == ids(&b, "release-q2x7"),
+        true,
+    );
+}
+
+const LOCAL_WORK: &[&str] = &["scope.work.sync = off"];
+
+fn in_work(text: &str) -> String {
+    text.replacen("scope: personal", "scope: work", 1)
+}
+
+#[test]
+fn a_note_that_moves_to_a_local_scope_leaves_the_other_device_and_can_come_back() {
+    let (_dir, folder, a, b, text) = synced_with("moves", LOCAL_WORK);
+    let sent = segments(&folder, RIVENDELL).len();
+    a.write(FILE, &in_work(&text));
+    poll_eq("the left file", || b.read(FILE), None);
+    b.wait_events(ID, &["left", "added"]);
+    b.wait_for("bilbo: sync personal: notes/decision-release.md left the scope; its history stays");
+    assert_eq!(b.count("left the scope"), 1);
+    // A keeps the note, in `work`, and what it pushed after the move is one more segment with no text in it.
+    assert_eq!(a.read(FILE), Some(in_work(&text)));
+    poll_eq(
+        "the marker",
+        || segments(&folder, RIVENDELL).len(),
+        sent + 1,
+    );
+    assert!(!holds(&folder, "Ship on"));
+    // It moves back: B writes the file with that version, and nothing is flagged.
+    let back = format!("{text}\nBack in personal.\n");
+    a.write(FILE, &back);
+    b.wait_text(FILE, &back);
+    assert!(!history_holds(&b, TOPIC, "edit-beat-delete"));
+    assert!(!history_holds(&a, TOPIC, "edit-beat-delete"));
+    assert_eq!(b.events(ID)[0], "edited");
+}
+
+#[test]
+fn a_note_that_loses_its_scope_key_leaves_the_other_device_and_stays_here() {
+    let (_dir, _folder, a, b, text) = synced("loses-key");
+    let keyless = text.replacen("scope: personal\n", "", 1);
+    a.write(FILE, &keyless);
+    poll_eq("the left file", || b.read(FILE), None);
+    b.wait_events(ID, &["left", "added"]);
+    assert_eq!(a.read(FILE), Some(keyless));
+}
+
+#[test]
+fn a_left_marker_against_a_local_edit_waits_for_the_merge_that_follows_the_edit() {
+    let (_dir, _folder, mut a, mut b, text) = synced_with("left-vs-edit", LOCAL_WORK);
+    a.stop();
+    b.stop();
+    a.write(FILE, &in_work(&text));
+    let edited = note(ID, "Install it.", "Ship on Friday.");
+    b.write(FILE, &edited);
+    a.start();
+    b.start();
+    // B's edit reaches A through `personal` next to A's own marker. A's merge follows the edit and comes back as
+    // a `left`, and only then does B remove the file: it said nothing about the first marker, which it held back.
+    poll_eq("B removes the file", || b.read(FILE), None);
+    b.wait_for("bilbo: sync personal: notes/decision-release.md left the scope; its history stays");
+    b.wait_events(ID, &["left", "left", "edited", "added"]);
+    a.wait_events(ID, &["merged", "edited", "edited", "added"]);
+    assert_eq!(b.count("left the scope"), 1, "{:?}", b.lines());
+    assert_eq!(a.read(FILE), Some(in_work(&edited)));
+}
+
+// `bilbo sync`: the status report and `declare` through the binary.
+
+/// The state of `scope()`'s `state.json` with every field of a fresh one, `fields` over it.
+fn write_state(site: &Site, fields: serde_json::Value) {
+    let mut state = serde_json::json!({
+        "name": "personal", "device": RIVENDELL, "own": 0, "cursors": {}, "acks": {}, "sent": {},
+        "owed": false, "last_ack": null, "listed": [], "cutoffs": {}, "marked": [], "since": {},
+        "pulled_at": null, "pushed_at": null, "stops": {}, "error": null, "stopped": null, "halted": null,
+    });
+    for (key, value) in fields.as_object().unwrap() {
+        state[key] = value.clone();
+    }
+    let dir = site.root().join(format!(".bilbo/scopes/{}", scope()));
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(dir.join("state.json"), state.to_string()).unwrap();
+}
+
+/// Holds the watcher's lock, as a running `bilbo watch` does, until dropped.
+fn watching(site: &Site) -> fs::File {
+    let path = site.root().join(".bilbo/watch.lock");
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    let file = fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(false)
+        .open(path)
+        .unwrap();
+    file.lock().unwrap();
+    file
+}
+
+fn now() -> i64 {
+    jiff::Timestamp::now().as_second()
+}
+
+const DAY: i64 = 86_400;
+
+/// A second as the report writes it, to the minute in UTC.
+fn minute(secs: i64) -> String {
+    jiff::Timestamp::from_second(secs)
+        .unwrap()
+        .to_zoned(jiff::tz::TimeZone::UTC)
+        .strftime("%Y-%m-%dT%H:%M%:z")
+        .to_string()
+}
+
+fn sent(at: i64) -> serde_json::Value {
+    serde_json::json!({"at": at, "versions": true})
+}
+
+impl Site {
+    /// `bilbo sync <args>`, in UTC so the times of the report are known.
+    fn sync(&self, args: &[&str]) -> Run {
+        let mut env = self.pairs();
+        env.push(("TZ", "UTC"));
+        let mut all = vec!["sync"];
+        all.extend_from_slice(args);
+        bilbo(self.dir.path(), &env, &all)
+    }
+
+    /// Waits until a run of `bilbo sync` is one that `want` accepts, and returns that run.
+    fn wait_status(&self, what: &str, want: impl Fn(&Run) -> bool) -> Run {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(40);
+        loop {
+            let run = self.sync(&[]);
+            if want(&run) {
+                return run;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "{what} on {}: last run {} stdout {:?} stderr {:?}",
+                self.name,
+                run.code,
+                run.stdout,
+                run.stderr
+            );
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+    }
+}
+
+fn has_line(run: &Run, line: &str) -> bool {
+    run.stdout.lines().any(|l| l == line)
+}
+
+fn has_prefix(run: &Run, prefix: &str) -> bool {
+    run.stdout.lines().any(|l| l.starts_with(prefix))
+}
+
+fn stderr_has(run: &Run, line: &str) -> bool {
+    run.stderr.lines().any(|l| l == line)
+}
+
+/// A site that no watcher runs on: keys, the fixture manifests and a syncing `personal`.
+fn quiet(name: &str) -> (TempDir, PathBuf, Site) {
+    let dir = TempDir::new(name);
+    let folder = folder(&dir, &[1, 2]);
+    let site = Site::new("rivendell", &folder);
+    (dir, folder, site)
+}
+
+#[test]
+fn status_of_two_devices_in_step() {
+    let (_dir, folder, a, b, _text) = synced("status-step");
+    a.write(
+        "plan-unassigned.md",
+        &common::note_text(OTHER, "Unassigned"),
+    );
+    a.write(
+        "plan-work.md",
+        &common::in_scope(
+            &common::note_text("01M3YJ7R6HK6NQ30DCDB1P4D00", "Work"),
+            "work",
+        ),
+    );
+    a.wait_events("unassigned", &["added"]);
+    a.wait_events("work", &["added"]);
+    let run = a.wait_status("in step", |run| {
+        has_line(run, "device personal bagend: up to date")
+            && has_prefix(run, "scope ")
+            && !run.stdout.contains("never")
+    });
+    let lines: Vec<&str> = run.stdout.lines().collect();
+    let head = format!("scope personal {}: 1 notes, pushed 20", url(&folder));
+    assert!(
+        lines[0].starts_with(&head) && lines[0].contains(", pulled 20"),
+        "{lines:?}"
+    );
+    assert_eq!(
+        lines[1..],
+        [
+            "device personal rivendell: this device",
+            "device personal bagend: up to date",
+            "local: 2 notes sync nowhere"
+        ],
+        "{lines:?}"
+    );
+    assert_eq!((run.code, run.stderr.as_str()), (0, ""));
+    // The other device sees the same.
+    let run = b.wait_status("in step", |run| {
+        has_line(run, "device personal rivendell: up to date")
+    });
+    assert!(has_line(&run, "device personal bagend: this device"));
+    assert_eq!((run.code, run.stderr.as_str()), (0, ""));
+}
+
+#[test]
+fn an_open_conflict_is_listed_and_fails_on_both_devices() {
+    let (_dir, folder, mut a, mut b, _text) = synced("status-conflict");
+    a.stop();
+    b.stop();
+    let sent_by_b = segments(&folder, BAGEND).len();
+    b.write(FILE, &note(ID, "Install it.", "Ship on Tuesday."));
+    b.start();
+    poll_eq(
+        "B's edit",
+        || segments(&folder, BAGEND).len(),
+        sent_by_b + 1,
+    );
+    b.stop();
+    a.write(FILE, &note(ID, "Install it.", "Ship on Friday."));
+    a.start();
+    let text = a.wait_holding(FILE, "<<<<<<< bilbo");
+    b.start();
+    b.wait_text(FILE, &text);
+    for site in [&a, &b] {
+        let run = site.wait_status("a conflict", |run| {
+            has_line(run, "conflict notes/decision-release.md: 1 passage")
+        });
+        assert_eq!(run.code, 1, "{}", run.stdout);
+        assert_eq!(run.stderr, "", "a watcher runs");
+    }
+}
+
+/// An open conflict on both devices, where A has already removed the markers by keeping its own side.
+fn resolved_by_dropping(name: &str) -> (TempDir, PathBuf, Site, Site, String) {
+    let (dir, folder, mut a, mut b, _text) = synced(name);
+    a.stop();
+    b.stop();
+    let sent_by_b = segments(&folder, BAGEND).len();
+    b.write(FILE, &note(ID, "Install it.", "Ship on Tuesday."));
+    b.start();
+    poll_eq(
+        "B's edit",
+        || segments(&folder, BAGEND).len(),
+        sent_by_b + 1,
+    );
+    b.stop();
+    a.write(FILE, &note(ID, "Install it.", "Ship on Friday."));
+    a.start();
+    let conflicted = a.wait_holding(FILE, "<<<<<<< bilbo");
+    b.start();
+    b.wait_text(FILE, &conflicted);
+    let resolved = note(ID, "Install it.", "Ship on Friday.");
+    (dir, folder, a, b, resolved)
+}
+
+#[test]
+fn dropped_text_is_counted_until_it_is_declared_and_the_declaration_syncs() {
+    let (_dir, _folder, a, b, resolved) = resolved_by_dropping("status-dropped");
+    a.write(FILE, &resolved);
+    let dropped = "dropped notes/decision-release.md: 1 line not declared";
+    let run = a.wait_status("the dropped line", |run| has_line(run, dropped));
+    assert_eq!(run.code, 1);
+    assert!(!run.stdout.contains("conflict notes"), "{}", run.stdout);
+    b.wait_text(FILE, &resolved);
+    b.wait_status("the dropped line", |run| has_line(run, dropped));
+    assert!(b.bilbo(&["check"]).stdout.contains("dropped 1 lines"));
+    let declared = a.sync(&["declare", "release", "Tuesday was superseded"]);
+    assert_eq!(
+        declared.stdout,
+        "declared decision-release.md: 1 lines dropped on purpose\n"
+    );
+    assert_eq!((declared.code, declared.stderr.as_str()), (0, ""));
+    assert!(!a.bilbo(&["check"]).stdout.contains("dropped"));
+    let run = a.wait_status("no dropped line", |run| !has_prefix(run, "dropped "));
+    assert_eq!(run.code, 0);
+    // The declaration syncs with the note.
+    poll_eq(
+        "the declaration reaches bagend",
+        || b.bilbo(&["check"]).stdout.contains("dropped"),
+        false,
+    );
+    b.wait_status("no dropped line", |run| !has_prefix(run, "dropped "));
+}
+
+#[test]
+fn declaring_before_the_watcher_records_the_resolution_applies_to_that_conflict() {
+    let (_dir, _folder, mut a, _b, resolved) = resolved_by_dropping("status-declare-early");
+    a.stop();
+    a.write(FILE, &resolved);
+    let declared = a.sync(&["declare", "release", "B's date was superseded"]);
+    assert_eq!(
+        declared.stdout,
+        "declared decision-release.md: 1 lines dropped on purpose\n"
+    );
+    assert_eq!(declared.code, 0, "{}", declared.stderr);
+    a.start();
+    a.wait_events(TOPIC, &["edited", "merged", "edited", "edited", "added"]);
+    assert!(!a.bilbo(&["check"]).stdout.contains("dropped"));
+    let run = a.wait_status("no dropped line", |run| !has_prefix(run, "dropped "));
+    assert_eq!(run.code, 0);
+}
+
+#[test]
+fn declare_without_dropped_text_and_with_a_bad_reason() {
+    let (_dir, _folder, a, _b, _text) = synced("status-nothing");
+    let run = a.sync(&["declare", "release", "x"]);
+    assert_eq!(
+        (run.code, run.stdout.as_str(), run.stderr.as_str()),
+        (1, "", "bilbo: release has no dropped text to declare\n")
+    );
+    let run = a.sync(&["declare", "release", "one\ntwo"]);
+    assert_eq!((run.code, run.stdout.as_str()), (2, ""));
+    assert!(run.stderr.starts_with("bilbo: "), "{}", run.stderr);
+}
+
+#[test]
+fn an_edit_that_beat_a_delete_is_a_notice_on_both_devices() {
+    let (_dir, _folder, a, b) = edit_beats_delete("status-notice");
+    for site in [&a, &b] {
+        let run = site.wait_status("the notice", |run| {
+            run.stdout.lines().any(|l| {
+                l.starts_with("notice 20")
+                    && l.ends_with(" notes/decision-release.md: edit-beat-delete")
+            })
+        });
+        assert_eq!(run.code, 0, "{}{}", run.stdout, run.stderr);
+    }
+}
+
+#[test]
+fn a_device_added_elsewhere_is_listed_as_a_change() {
+    let dir = TempDir::new("status-added");
+    let folder = folder(&dir, &[1]);
+    let mut b = Site::build("bagend", true, &[1], &Site::syncing(&folder));
+    b.start();
+    b.wait_for("bilbo: syncing personal through");
+    put_manifests(&folder, &[1, 2]);
+    b.wait_for("bilbo: sync personal: device rivendell added by owner key (manifest 2)");
+    let run = b.wait_status("the change", |run| has_prefix(run, "change "));
+    let change = run
+        .stdout
+        .lines()
+        .find(|l| l.starts_with("change "))
+        .unwrap();
+    assert!(
+        change.starts_with("change 20")
+            && change.ends_with(" personal: device rivendell added by owner key (manifest 2)"),
+        "{change}"
+    );
+    assert!(
+        run.stdout.contains("device personal rivendell: "),
+        "{}",
+        run.stdout
+    );
+}
+
+#[test]
+fn changes_of_the_last_thirty_days_are_listed_and_older_ones_are_not() {
+    let (_dir, _folder, a) = quiet("status-changes");
+    let _lock = watching(&a);
+    let moria = common::days_ago(3);
+    let epoch = common::days_ago(1);
+    let old = common::days_ago(31);
+    let lines = [
+        serde_json::json!({"at": moria, "n": 4, "kind": "device", "device": "moria", "signer": "owner key"}),
+        serde_json::json!({"at": epoch, "n": 5, "kind": "epoch", "signer": "owner key"}),
+        serde_json::json!({"at": old, "n": 3, "kind": "device", "device": "gone", "signer": "owner key"}),
+    ];
+    let text: Vec<String> = lines.iter().map(|l| l.to_string()).collect();
+    fs::write(
+        a.root()
+            .join(format!(".bilbo/scopes/{}/changes.jsonl", scope())),
+        text.join("\n") + "\n",
+    )
+    .unwrap();
+    let run = a.sync(&[]);
+    // The time is kept in the offset it was written with, to the minute.
+    let created = |at: &str| format!("{}{}", &at[..16], &at[19..]);
+    let changes: Vec<&str> = run
+        .stdout
+        .lines()
+        .filter(|l| l.starts_with("change "))
+        .collect();
+    assert_eq!(
+        changes,
+        [
+            format!(
+                "change {} personal: device moria added by owner key (manifest 4)",
+                created(&moria)
+            ),
+            format!(
+                "change {} personal: epoch changed (manifest 5)",
+                created(&epoch)
+            ),
+        ],
+        "{}",
+        run.stdout
+    );
+    assert_eq!((run.code, run.stderr.as_str()), (0, ""));
+}
+
+#[test]
+fn a_flag_from_yesterday_is_a_notice_and_an_old_one_is_not() {
+    let (_dir, _folder, a) = quiet("status-notices");
+    let _lock = watching(&a);
+    a.write(FILE, &note(ID, "Install it.", "Ship on Monday."));
+    let yesterday = common::days_ago(1);
+    let old = common::days_ago(8);
+    let open = serde_json::json!({"notes": {ID: {"file": FILE, "notices": [
+        {"at": yesterday, "flag": "edit-beat-delete"},
+        {"at": old, "flag": "stale-base"},
+    ]}}});
+    let dir = a.root().join(".bilbo/sync");
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(dir.join("open.json"), open.to_string()).unwrap();
+    let run = a.sync(&[]);
+    let notices: Vec<&str> = run
+        .stdout
+        .lines()
+        .filter(|l| l.starts_with("notice "))
+        .collect();
+    assert_eq!(
+        notices,
+        [format!(
+            "notice {}{} notes/decision-release.md: edit-beat-delete",
+            &yesterday[..16],
+            &yesterday[19..]
+        )],
+        "{}",
+        run.stdout
+    );
+    assert_eq!(run.code, 0, "{}", run.stderr);
+}
+
+#[test]
+fn a_device_behind_a_week_a_device_gone_for_good_and_a_wrong_clock() {
+    let (_dir, _folder, a) = quiet("status-devices");
+    let _lock = watching(&a);
+    a.configure(&[
+        format!("scope.personal.sync = {}", "file:///srv/bilbo"),
+        "sync.stale_days = 180".to_string(),
+    ]);
+    let t = now();
+    // bagend took nothing of the last 4 segments, the oldest from 7 days ago.
+    write_state(
+        &a,
+        serde_json::json!({
+            "own": 4,
+            "sent": {"1": sent(t - 7 * DAY), "2": sent(t - 6 * DAY), "3": sent(t - 5 * DAY), "4": sent(t - 4 * DAY)},
+            "acks": {BAGEND: {RIVENDELL: 0}},
+        }),
+    );
+    let run = a.sync(&[]);
+    assert!(
+        has_line(&run, "device personal bagend: behind by 4 segments"),
+        "{}",
+        run.stdout
+    );
+    assert!(has_line(&run, "device personal rivendell: this device"));
+    assert_eq!((run.code, run.stderr.as_str()), (0, ""));
+    // A segment from 200 days ago that it never took.
+    let long_ago = t - 200 * DAY;
+    write_state(
+        &a,
+        serde_json::json!({
+            "own": 1, "sent": {"1": sent(long_ago)}, "acks": {BAGEND: {RIVENDELL: 0}},
+            "since": {BAGEND: long_ago - DAY},
+        }),
+    );
+    let run = a.sync(&[]);
+    let stale = format!("device personal bagend: stale since {}", minute(long_ago));
+    assert!(has_line(&run, &stale), "{}", run.stdout);
+    // A clock a year behind acknowledges every segment within minutes: only the acknowledgements count.
+    write_state(
+        &a,
+        serde_json::json!({
+            "own": 2, "sent": {"1": sent(t - 3600), "2": sent(t - 3000)},
+            "acks": {BAGEND: {RIVENDELL: 2}},
+        }),
+    );
+    let run = a.sync(&[]);
+    assert!(
+        has_line(&run, "device personal bagend: up to date"),
+        "{}",
+        run.stdout
+    );
+}
+
+#[test]
+fn versions_held_back_for_a_version_that_never_arrived_are_listed() {
+    let (_dir, _folder, a) = quiet("status-waiting");
+    let _lock = watching(&a);
+    a.write(FILE, &note(ID, "Install it.", "Ship on Monday."));
+    let staged = |version: &str, parent: &str| {
+        serde_json::json!({
+            "seen": "2027-01-15T07:00:00Z", "scope": "personal",
+            "record": {
+                "note": ID, "version": version.repeat(64), "parents": [parent.repeat(64)],
+                "file": FILE, "blob": "d".repeat(64), "event": "edited",
+                "at": "2027-01-15T07:00:00+00:00", "device": BAGEND,
+            },
+        })
+        .to_string()
+    };
+    // Version 1 follows 0, which never arrived; 2 follows 1.
+    let lines = [staged("1", "0"), staged("2", "1")];
+    let dir = a.root().join(".bilbo/sync");
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(dir.join("inbox.jsonl"), lines.join("\n") + "\n").unwrap();
+    let run = a.sync(&[]);
+    assert!(
+        has_line(&run, "waiting personal bagend: 2 versions"),
+        "{}",
+        run.stdout
+    );
+}
+
+#[test]
+fn an_unreachable_folder_is_named_on_stderr_and_still_listed() {
+    let (dir, folder, a, _b, _text) = synced("status-unmounted");
+    let away = dir.path().join("folder.away");
+    fs::rename(&folder, &away).unwrap();
+    a.wait_for(&format!(
+        "bilbo: sync personal: {} is not reachable:",
+        url(&folder)
+    ));
+    let run = a.wait_status("the error", |run| {
+        run.stderr.contains("not reachable since")
+    });
+    assert_eq!(run.code, 1);
+    assert!(
+        has_prefix(&run, &format!("scope personal {}: ", url(&folder))),
+        "{}",
+        run.stdout
+    );
+    let line = run
+        .stderr
+        .lines()
+        .find(|l| l.contains("not reachable since"))
+        .unwrap();
+    assert!(
+        line.starts_with(&format!(
+            "bilbo: sync personal: {} not reachable since 20",
+            url(&folder)
+        )) && line.ends_with(": the folder does not exist"),
+        "{line}"
+    );
+    assert!(!folder.exists(), "status or watch created the folder");
+    // It comes back: the error leaves the report.
+    fs::rename(&away, &folder).unwrap();
+    let run = a.wait_status("no error", |run| !run.stderr.contains("not reachable"));
+    assert_eq!((run.code, run.stderr.as_str()), (0, ""));
+}
+
+#[test]
+fn a_reader_stuck_at_a_missing_segment_is_named_on_stderr() {
+    let dir = TempDir::new("status-gap");
+    let folder = folder(&dir, &[1, 2]);
+    let mut a = Site::new("rivendell", &folder);
+    let mut b = Site::new("bagend", &folder);
+    // B writes four segments while A is not running, then loses its third.
+    b.start();
+    for n in 1..=4 {
+        b.write(FILE, &note(ID, "Install it.", &format!("Ship on day {n}.")));
+        poll_eq("B's segment", || segments(&folder, BAGEND).len(), n);
+    }
+    b.stop();
+    fs::remove_file(&segments(&folder, BAGEND)[2]).unwrap();
+    a.start();
+    let line = "bilbo: sync personal: bagend stopped at segment 3: missing";
+    let run = a.wait_status("the stop", |run| stderr_has(run, line));
+    assert_eq!(run.code, 1);
+    assert!(has_prefix(&run, "scope personal "), "{}", run.stdout);
+}
+
+#[test]
+fn a_scope_the_manifest_pins_elsewhere_is_named_on_stderr() {
+    let (_dir, _folder, a) = quiet("status-pin");
+    let _lock = watching(&a);
+    let pin = "sync personal: the manifest pins file://, the config says file:///srv/bilbo; run bilbo device init to move the scope, or set the config back";
+    write_state(&a, serde_json::json!({"stopped": pin}));
+    let run = a.sync(&[]);
+    assert_eq!(run.code, 1);
+    assert_eq!(run.stderr, format!("bilbo: {pin}\n"));
+    assert!(has_prefix(&run, "scope personal "), "{}", run.stdout);
+}
+
+#[test]
+fn without_a_watcher_status_says_so_and_fails() {
+    let (_dir, _folder, a) = quiet("status-no-watcher");
+    let run = a.sync(&[]);
+    assert_eq!(run.code, 1);
+    assert_eq!(
+        run.stderr,
+        "bilbo: bilbo watch is not running; nothing syncs\n"
+    );
+    assert!(has_prefix(&run, "scope personal "), "{}", run.stdout);
+}
+
+#[test]
+fn sync_that_was_never_turned_on_is_a_refusal() {
+    let (_dir, _folder, a) = quiet("status-off");
+    a.configure(&["scope.personal.sync = off".to_string()]);
+    let run = a.sync(&[]);
+    assert_eq!(run.code, 1);
+    assert_eq!(run.stdout, "");
+    assert_eq!(
+        run.stderr,
+        format!(
+            "bilbo: no scope syncs; set scope.<name>.sync in {}\n",
+            a.dir.path().join("config").display()
+        )
+    );
+}
+
+#[test]
+fn an_unknown_argument_is_a_usage_error_and_a_wrong_home_has_no_store() {
+    let (dir, _folder, a) = quiet("status-args");
+    let run = a.sync(&["now"]);
+    assert_eq!((run.code, run.stdout.as_str()), (2, ""));
+    assert!(
+        run.stderr.starts_with("bilbo: ") && run.stderr.contains("now"),
+        "{}",
+        run.stderr
+    );
+    let empty = dir.path().join("empty");
+    fs::create_dir_all(&empty).unwrap();
+    let mut env = a.pairs();
+    env.retain(|(k, _)| *k != "BILBO_HOME");
+    env.push(("BILBO_HOME", empty.to_str().unwrap()));
+    let run = bilbo(dir.path(), &env, &["sync"]);
+    assert_eq!(run.code, 1);
+    assert_eq!(
+        run.stderr,
+        format!("bilbo: no store at {}\n", empty.display())
+    );
+}
+
+/// The metadata of every entry under `dir`: bytes and modification times.
+fn stamps(dir: &Path) -> Vec<(PathBuf, Option<Vec<u8>>, std::time::SystemTime)> {
+    common::snapshot(dir)
+        .into_iter()
+        .map(|(path, (bytes, at))| (path, bytes, at))
+        .collect()
+}
+
+#[test]
+fn status_changes_nothing_in_the_root_or_the_folder() {
+    let (_dir, folder, mut a, mut b, _text) = resolved_by_dropping("status-readonly");
+    a.write(FILE, &note(ID, "Install it.", "Ship on Friday."));
+    a.wait_status("the dropped line", |run| has_prefix(run, "dropped "));
+    // Both devices stop, so nothing but `bilbo sync` can touch what is compared.
+    a.stop();
+    b.stop();
+    let (root, shared) = (stamps(&a.root()), stamps(&folder));
+    let run = a.sync(&[]);
+    assert_eq!(run.code, 1, "{}{}", run.stdout, run.stderr);
+    assert!(run.stdout.contains("dropped notes/"), "{}", run.stdout);
+    assert_eq!(stamps(&a.root()), root, "the root changed");
+    assert_eq!(stamps(&folder), shared, "the folder changed");
 }
