@@ -519,6 +519,11 @@ impl Replica {
         self.state.save(&self.root, &self.id)
     }
 
+    /// The transport problem watch last recorded.
+    pub fn error(&self) -> Option<&Problem> {
+        self.state.error.as_ref()
+    }
+
     /// Records the transport problem watch is reporting, or that there is none, for `bilbo sync`.
     pub fn set_error(&mut self, error: Option<Problem>) -> Result<(), String> {
         if self.state.error == error {
@@ -1204,6 +1209,17 @@ impl Replica {
                 .collect();
             let known = |id: &str| seen.versions.contains_key(id);
             let in_scope = |id: &str| known(id) && !seen.lefts.contains(id);
+            // A note joins this scope's log while a live head says the scope, or once a version of it is there.
+            if !log.versions.iter().any(|v| known(&v.version)) {
+                let mut says = false;
+                for head in versions::heads(&log.versions).into_iter().flatten() {
+                    says |= scope_of(&self.root, &mut self.scopes, &by_id, head)
+                        .is_some_and(|scope| scope.as_deref() == Some(name.as_str()));
+                }
+                if !says {
+                    continue;
+                }
+            }
             let mut fresh: Vec<&Version> = Vec::new();
             let mut left: Vec<&Version> = Vec::new();
             let mut listed: HashSet<&str> = HashSet::new();
@@ -1838,6 +1854,45 @@ mod tests {
         save(&w.root('a'), &ulid(1), "plan-x.md", Some("work"), "two");
         let pushed = w.push(&mut a, &w.a, 3);
         assert!(pushed.segments.is_empty());
+    }
+
+    #[test]
+    fn a_note_that_left_the_scope_before_any_version_reached_it_pushes_nothing() {
+        let w = World::new("left-before");
+        save(&w.root('a'), &ulid(1), "plan-x.md", Some("personal"), "one");
+        save(&w.root('a'), &ulid(1), "plan-x.md", Some("work"), "one");
+        let mut a = w.replica('a');
+        w.pull(&mut a, &w.a, 0);
+        let pushed = w.push(&mut a, &w.a, 1);
+        assert!(pushed.segments.is_empty());
+        assert!(!w.segment_file(&w.a, 1).exists());
+        assert!(read_seen(&w.root('a'), &a.id).unwrap().versions.is_empty());
+    }
+
+    #[test]
+    fn a_note_that_comes_back_to_the_scope_pushes_its_ancestors_that_say_it() {
+        let w = World::new("back-before");
+        let first = save(&w.root('a'), &ulid(1), "plan-x.md", Some("personal"), "one");
+        save(&w.root('a'), &ulid(1), "plan-x.md", Some("work"), "one");
+        let third = save(
+            &w.root('a'),
+            &ulid(1),
+            "plan-x.md",
+            Some("personal"),
+            "three",
+        );
+        let mut a = w.replica('a');
+        let mut b = w.replica('b');
+        w.pull(&mut a, &w.a, 0);
+        w.push(&mut a, &w.a, 1);
+        let pulled = w.pull(&mut b, &w.b, 2);
+        let versions = versions_of(&pulled);
+        assert_eq!(versions.len(), 3);
+        assert_eq!(
+            [versions[0], versions[1]],
+            [first.version.as_str(), third.version.as_str()]
+        );
+        assert!(pulled.records[2].version.is_left());
     }
 
     #[test]
