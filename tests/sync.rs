@@ -719,7 +719,11 @@ fn a_device_recovered_before_the_folder_was_read_syncs_nothing_until_it_is() {
     let folder = folder(&dir, &[]);
     let mut b = Site::build("bagend", true, &[], &Site::syncing(&folder));
     b.start();
-    let line = "bilbo: sync personal: this device is not in the scope; run bilbo device recover on this device";
+    let line = format!(
+        "bilbo: sync personal: this device is not in the scope; run bilbo pair with a device that syncs {}, or bilbo device recover on this device",
+        url(&folder)
+    );
+    let line = line.as_str();
     b.wait_for(line);
     assert!(
         !folder.join("scopes").exists(),

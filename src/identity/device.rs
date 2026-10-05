@@ -26,10 +26,13 @@ pub struct Output {
     pub failed: bool,
 }
 
-/// What a syncing scope with no manifest is told, by `init` and `recover` alike, when its URL has no client here: a
-/// fresh id here could fork it.
+/// What a syncing scope with no manifest is told by `init` when its URL has no client here: a fresh id here could
+/// fork it.
 const UNSEALED: &str =
     "copy the store from an enrolled device, then run bilbo device recover again";
+
+/// What `recover` tells it: the same, or pairing with a device that syncs the scope.
+const UNSEALED_RECOVER: &str = "copy the store from an enrolled device, then run bilbo device recover again, or run bilbo pair with a device that syncs it";
 
 enum Form {
     Show,
@@ -726,7 +729,7 @@ fn recover<P: Prompter>(
         let row = fetched
             .rows
             .remove(&s.name)
-            .unwrap_or_else(|| Row::new(&s.name, "unsealed", UNSEALED.into()));
+            .unwrap_or_else(|| Row::new(&s.name, "unsealed", UNSEALED_RECOVER.into()));
         failed |= row.status == "failed";
         rows.push(row);
     }
@@ -2272,7 +2275,10 @@ mod tests {
         let w = world("relay");
         w.config(&format!("scope.personal.sync = {RELAY}\n"));
         let (out, _) = recovered(&w, "bagend");
-        assert_eq!(out.lines[2], format!("scope personal unsealed: {UNSEALED}"));
+        assert_eq!(
+            out.lines[2],
+            format!("scope personal unsealed: {UNSEALED_RECOVER}")
+        );
         assert!(!store::scopes_dir(&w.root()).exists());
         assert!(!out.failed);
     }
