@@ -192,7 +192,13 @@ pub fn run(cx: &mut Cx, scopes: &[String], via: Option<&str>) -> Result<(), Fail
         pake::reply(&session, Outcome::Enrolled, Some(&payload), None).map_err(Failure::Refused)?;
     mailbox
         .put("c", &c_msg)
-        .map_err(|why| Failure::Refused(format!("cannot answer the other device: {why}")))?;
+        .map_err(|why| {
+            Failure::Refused(format!(
+                "cannot answer the other device: {why}; {name} is listed in {scopes}: pair again to finish, or bilbo device revoke {name} to undo",
+                name = hello.name,
+                scopes = names.join(", ")
+            ))
+        })?;
     (cx.out)(&format!(
         "paired {} {}: {}",
         hello.name,
@@ -276,10 +282,14 @@ fn check(cx: &mut Cx, scopes: &[String], via: Option<&str>) -> Result<Plan, Fail
             paired[0].sync.clone()
         }
     };
-    if !url.starts_with("file://") || paired.iter().any(|s| !s.sync.starts_with("file://")) {
-        return Err(Failure::Refused(
-            "this bilbo cannot reach https:// transports yet".into(),
-        ));
+    if let Some(far) = std::iter::once(&url)
+        .chain(paired.iter().map(|s| &s.sync))
+        .find(|u| !u.starts_with("file://"))
+    {
+        let scheme = far.split("://").next().unwrap_or(far);
+        return Err(Failure::Refused(format!(
+            "this bilbo cannot reach {scheme}:// transports yet"
+        )));
     }
     if !cx.human {
         return Err(Failure::Refused(
@@ -601,6 +611,8 @@ mod tests {
         Newer,
         /// Never answers.
         Silent,
+        /// Answers, then plants its own `c.msg` before A can.
+        Forged,
     }
 
     struct B {
@@ -687,6 +699,10 @@ mod tests {
         let (session, b_msg) = pake::answer(&typed, &a_msg, &hello, &b.who.device.sign).unwrap();
         assert_eq!(t.create(&b_path, &b_msg), Put::Created);
         let c_path = transport::message_path(&typed.nameplate(), "c");
+        if b.mode == Mode::Forged {
+            assert_eq!(t.create(&c_path, b"forged"), Put::Created);
+            return None;
+        }
         for _ in 0..400 {
             if let Some(c_msg) = t.get(&c_path).unwrap() {
                 return Some(pake::read_reply(&session, &c_msg).unwrap());
@@ -1054,6 +1070,22 @@ mod tests {
     }
 
     #[test]
+    fn a_c_msg_that_already_exists_says_b_is_listed() {
+        let w = world("forged");
+        let (_, scope) = w.enrolled();
+        let mut b = new_device("mirkwood", 20);
+        b.mode = Mode::Forged;
+        let ran = go(&w, &[], &b, "y\n");
+        assert_eq!(
+            ran.refused(),
+            format!(
+                "cannot answer the other device: c.msg already exists; mirkwood is listed in personal: pair again to finish, or bilbo device revoke mirkwood to undo"
+            )
+        );
+        assert_eq!(w.versions(&scope), 2);
+    }
+
+    #[test]
     fn a_stale_mailbox_is_swept_and_a_fresh_one_stays() {
         let w = world("sweep");
         w.enrolled();
@@ -1174,6 +1206,15 @@ mod tests {
             (
                 true,
                 "this bilbo cannot reach https:// transports yet".into()
+            )
+        );
+        // A loopback relay names its own scheme.
+        w.config("scope.personal.sync = http://127.0.0.1:8081\n");
+        assert_eq!(
+            refusal(&w, &[]),
+            (
+                true,
+                "this bilbo cannot reach http:// transports yet".into()
             )
         );
         // A scope with no manifest this device can extend.
