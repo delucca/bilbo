@@ -272,9 +272,9 @@ pub fn open_epoch(
         .map_err(|_| fail())
 }
 
-/// The aad of a scope name's ciphertext.
-pub fn name_aad(scope: &str, epoch: u64) -> Vec<u8> {
-    format!("bilbo-name-1\n{scope}\n{epoch}").into_bytes()
+/// The aad of a scope name's ciphertext in version `n`.
+pub fn name_aad(scope: &str, epoch: u64, n: u64) -> Vec<u8> {
+    format!("bilbo-name-1\n{scope}\n{epoch}\n{n}").into_bytes()
 }
 
 /// The aad of chain entry `epoch`'s ciphertext.
@@ -738,16 +738,17 @@ mod tests {
     #[test]
     fn symmetric_encryption_round_trips_and_binds_its_aad() {
         let key = random_secret().unwrap();
-        let aad = name_aad("scope", 1);
+        let aad = name_aad("scope", 1, 1);
         let sealed = encrypt(&key, &aad, b"personal").unwrap();
         assert_ne!(sealed, encrypt(&key, &aad, b"personal").unwrap());
         assert_eq!(&decrypt(&key, &aad, &sealed).unwrap()[..], b"personal");
-        assert!(decrypt(&key, &name_aad("scope", 2), &sealed).is_err());
+        assert!(decrypt(&key, &name_aad("scope", 2, 1), &sealed).is_err());
+        assert!(decrypt(&key, &name_aad("scope", 1, 2), &sealed).is_err());
         assert!(decrypt(&key, &chain_aad("scope", 1), &sealed).is_err());
         assert!(decrypt(&[0; 32], &aad, &sealed).is_err());
         assert!(decrypt(&key, &aad, &sealed[..20]).is_err());
         assert_eq!(chain_aad("s", 3), b"bilbo-chain-1\ns\n3");
-        assert_eq!(name_aad("s", 3), b"bilbo-name-1\ns\n3");
+        assert_eq!(name_aad("s", 3, 4), b"bilbo-name-1\ns\n3\n4");
     }
 
     #[test]
@@ -970,11 +971,11 @@ mod tests {
         assert_eq!(*key, [7; 32]);
         let name = unhex::<48>(concat!(
             "51cf4dd4e3c6dcbd2be4bb9e16bf056c1af8a085e5b9382ac37b7445d6b283ea",
-            "b71b2f3c71fca77297284e545e45d852"
+            "c119589eecc12093e1a11e1dcc6e329f"
         ))
         .unwrap();
         assert_eq!(
-            &decrypt(&[7; 32], &name_aad("s", 1), &name).unwrap()[..],
+            &decrypt(&[7; 32], &name_aad("s", 1, 1), &name).unwrap()[..],
             b"personal"
         );
         assert_eq!(
