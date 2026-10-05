@@ -443,9 +443,9 @@ code. `--via` is the folder's path on the new device, which differs from the
 path on the first one, and bilbo writes it to the new device's config as the
 scope's `sync`. The first device pairs every syncing scope, or only the ones
 `--scope <name>` names, up to 12; `--scope` picks which scopes the new device
-can read. Scopes on different folders need one `bilbo pair` each, with `--via`
-or `--scope` choosing the folder; bilbo refuses and names both URLs when it
-cannot tell.
+can read. Scopes on different folders need one `bilbo pair --scope <name>...`
+each, naming the scopes of one folder; bilbo refuses and names both URLs when
+it cannot tell.
 
 Both devices then print the same fingerprint, twelve digits in three groups of
 four, and the new one adds its name and device id. The first device names the
