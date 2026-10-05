@@ -144,12 +144,52 @@ impl Machine {
     }
 }
 
+/// Every file under `dir`, with its bytes.
+fn tree_of(dir: &Path) -> BTreeMap<PathBuf, Vec<u8>> {
+    fn walk(dir: &Path, files: &mut BTreeMap<PathBuf, Vec<u8>>) {
+        for entry in fs::read_dir(dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                walk(&path, files);
+            } else {
+                files.insert(path.clone(), fs::read(&path).unwrap());
+            }
+        }
+    }
+    let mut files = BTreeMap::new();
+    walk(dir, &mut files);
+    files
+}
+
 fn lines(text: &str) -> Vec<&str> {
     text.lines().collect()
 }
 
 fn scope_line(id: &str) -> String {
     format!("scope\tpersonal\t{id}\tmanifest 2\tepoch 1\t2 devices\tfile://")
+}
+
+/// A folder transport at `dir` holding the fixture scope's versions 1 to `upto`, as its URL. Version 1 lists `bagend`
+/// only; version 2 lists both devices.
+fn folder_with(dir: &Path, upto: u64) -> String {
+    let store = Path::new(FIXTURES).join("store/.bilbo/scopes");
+    let id = fs::read_dir(&store)
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap()
+        .file_name();
+    let manifests = dir.join("scopes").join(&id).join("manifest");
+    fs::create_dir_all(&manifests).unwrap();
+    for n in 1..=upto {
+        let name = format!("{n}.json");
+        fs::copy(
+            store.join(&id).join("manifest").join(&name),
+            manifests.join(&name),
+        )
+        .unwrap();
+    }
+    format!("file://{}", dir.display())
 }
 
 /// A refusal: exit 1, nothing on stdout, one `bilbo: ` line holding `needle`.
@@ -344,6 +384,122 @@ fn a_new_scope_is_sealed_without_a_terminal_and_lists_both_devices() {
             .filter(|l| l.starts_with("scope\t"))
             .count(),
         2
+    );
+}
+
+#[test]
+fn a_device_in_no_scope_on_the_folder_creates_none() {
+    let folder = TempDir::new("device-outsider-folder");
+    let url = folder_with(folder.path(), 1);
+    let line = format!("scope.personal.sync = {url}");
+    let m = Machine::new("device-outsider", Some("rivendell"), false, &[&line]);
+    let held = tree_of(folder.path());
+    let run = m.device(&["init"]);
+    assert_eq!(run.code, 1, "{}", run.stderr);
+    assert!(
+        run.stdout
+            .lines()
+            .any(|l| l == "scope personal failed: run bilbo device recover on this device"),
+        "{}",
+        run.stdout
+    );
+    let made: Vec<String> = fs::read_dir(m.scopes())
+        .unwrap()
+        .map(|e| e.unwrap().file_name().into_string().unwrap())
+        .filter(|name| name != "lock")
+        .collect();
+    assert!(made.is_empty(), "{made:?}");
+    assert_eq!(tree_of(folder.path()), held);
+}
+
+/// Runs `init` on rivendell's keys with an empty store and `personal` on `url`; the scope folders it made.
+fn init_on(name: &str, url: &str) -> (Run, Vec<String>) {
+    let line = format!("scope.personal.sync = {url}");
+    let m = Machine::new(name, Some("rivendell"), false, &[&line]);
+    let run = m.device(&["init"]);
+    let made = fs::read_dir(m.scopes())
+        .map(|entries| {
+            entries
+                .map(|e| e.unwrap().file_name().into_string().unwrap())
+                .filter(|name| name != "lock")
+                .collect()
+        })
+        .unwrap_or_default();
+    (run, made)
+}
+
+#[test]
+fn a_member_whose_store_lacks_the_scope_creates_none() {
+    let folder = TempDir::new("device-member-no-store-folder");
+    let url = folder_with(folder.path(), 2);
+    let (run, made) = init_on("device-member-no-store", &url);
+    assert_eq!(run.code, 1, "{}", run.stderr);
+    assert!(
+        run.stdout
+            .lines()
+            .any(|l| l == "scope personal failed: run bilbo device recover on this device"),
+        "{}",
+        run.stdout
+    );
+    assert!(made.is_empty(), "{made:?}");
+}
+
+#[test]
+fn a_scope_still_arriving_blocks_version_1() {
+    let folder = TempDir::new("device-arriving-folder");
+    let url = folder_with(folder.path(), 2);
+    let id = fs::read_dir(folder.path().join("scopes"))
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap()
+        .file_name()
+        .into_string()
+        .unwrap();
+    fs::remove_file(folder.path().join(format!("scopes/{id}/manifest/1.json"))).unwrap();
+    let (run, made) = init_on("device-arriving", &url);
+    assert_eq!(run.code, 1, "{}", run.stderr);
+    let prefix = format!("scope personal failed: {url} holds scope {id} that does not verify: ");
+    assert!(
+        run.stdout.lines().any(|l| l.starts_with(&prefix)),
+        "{}",
+        run.stdout
+    );
+    assert!(made.is_empty(), "{made:?}");
+}
+
+#[test]
+fn a_member_of_a_scope_on_the_folder_creates_another() {
+    let folder = TempDir::new("device-member-folder");
+    let url = folder_with(folder.path(), 2);
+    let lines = [
+        format!("scope.personal.sync = {url}"),
+        format!("scope.shared.sync = {url}"),
+    ];
+    let m = Machine::new(
+        "device-member",
+        Some("rivendell"),
+        true,
+        &[&lines[0], &lines[1]],
+    );
+    let run = m.device(&["init"]);
+    assert_eq!(run.code, 0, "{}{}", run.stdout, run.stderr);
+    assert!(
+        run.stdout
+            .lines()
+            .any(|l| l.starts_with("scope shared created: ")),
+        "{}",
+        run.stdout
+    );
+    let shown = m.device(&[]);
+    let shared = shown
+        .stdout
+        .lines()
+        .find(|l| l.starts_with("scope\tshared\t"))
+        .unwrap();
+    assert!(
+        shared.contains("\tmanifest 1") && shared.contains("\t2 devices\t"),
+        "{shared}"
     );
 }
 
