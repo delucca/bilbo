@@ -702,12 +702,20 @@ fn config_errors_exit_2() {
             vec![&url, "embedder.model ="],
             format!("bilbo: {path}:2: embedder.model needs a value\n"),
         ),
+        (
+            vec![&url, "embedder.model = m", "scope.work.embedder = remote"],
+            String::new(),
+        ),
     ];
     for (lines, stderr) in cases {
         common::config(&s.dir, &lines);
         let run = index(&s, &[], &[]);
         failed(&run, 2);
-        assert_eq!(run.stderr, stderr);
+        if stderr.is_empty() {
+            assert!(run.stderr.contains("scope.work.embedder"), "{}", run.stderr);
+        } else {
+            assert_eq!(run.stderr, stderr);
+        }
     }
 
     common::config(

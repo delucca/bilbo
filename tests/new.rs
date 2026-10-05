@@ -415,7 +415,7 @@ fn folder(s: &Scoped, rel: &str) -> PathBuf {
     path
 }
 
-fn note_text(s: &Scoped, topic: &str, kind: &str) -> String {
+fn written_note(s: &Scoped, topic: &str, kind: &str) -> String {
     std::fs::read_to_string(s.root.join(format!("notes/{kind}-{topic}.md"))).unwrap()
 }
 
@@ -435,7 +435,7 @@ fn a_scope_line_follows_created() {
     );
     assert_eq!(run.code, 0, "{}", run.stderr);
     assert!(run.stderr.is_empty());
-    let text = note_text(&s, "note-store", "decision");
+    let text = written_note(&s, "note-store", "decision");
     let lines: Vec<&str> = text.lines().collect();
     assert_eq!(lines.len(), 7, "{text:?}");
     assert!(lines[2].starts_with("created: "));
@@ -451,7 +451,7 @@ fn the_scope_after_equals_is_the_same() {
     let run = bilbo_scoped(&s, &cwd, &["new", "plan", "release", "--scope=work"]);
     assert_eq!(run.code, 0, "{}", run.stderr);
     assert_eq!(
-        scope_line(&note_text(&s, "release", "plan")),
+        scope_line(&written_note(&s, "release", "plan")),
         Some("scope: work")
     );
 }
@@ -467,7 +467,7 @@ fn the_flag_wins() {
     let run = bilbo_scoped(&s, &cwd, &["new", "plan", "release", "--scope", "personal"]);
     assert_eq!(run.code, 0, "{}", run.stderr);
     assert_eq!(
-        scope_line(&note_text(&s, "release", "plan")),
+        scope_line(&written_note(&s, "release", "plan")),
         Some("scope: personal")
     );
 }
@@ -484,7 +484,7 @@ fn the_working_directory_picks_the_scope() {
     assert_eq!(run.code, 0, "{}", run.stderr);
     assert!(run.stderr.is_empty());
     assert_eq!(
-        scope_line(&note_text(&s, "release", "plan")),
+        scope_line(&written_note(&s, "release", "plan")),
         Some("scope: work")
     );
 }
@@ -503,7 +503,7 @@ fn the_longest_path_wins() {
     let run = bilbo_scoped(&s, &cwd, &["new", "plan", "release"]);
     assert_eq!(run.code, 0, "{}", run.stderr);
     assert_eq!(
-        scope_line(&note_text(&s, "release", "plan")),
+        scope_line(&written_note(&s, "release", "plan")),
         Some("scope: work")
     );
 }
@@ -516,7 +516,7 @@ fn a_sibling_folder_does_not_match() {
     let cwd = folder(&s, "Developer/acme-tools");
     let run = bilbo_scoped(&s, &cwd, &["new", "plan", "release"]);
     assert_eq!(run.code, 0, "{}", run.stderr);
-    assert_eq!(scope_line(&note_text(&s, "release", "plan")), None);
+    assert_eq!(scope_line(&written_note(&s, "release", "plan")), None);
 }
 
 #[test]
@@ -535,7 +535,7 @@ fn the_default_applies_when_no_path_matches() {
     assert_eq!(run.code, 0, "{}", run.stderr);
     assert!(run.stderr.is_empty());
     assert_eq!(
-        scope_line(&note_text(&s, "release", "plan")),
+        scope_line(&written_note(&s, "release", "plan")),
         Some("scope: personal")
     );
 }
@@ -560,7 +560,7 @@ fn nothing_matching_warns_and_exits_zero() {
             path.display()
         )
     );
-    assert_eq!(scope_line(&note_text(&s, "release", "plan")), None);
+    assert_eq!(scope_line(&written_note(&s, "release", "plan")), None);
 }
 
 #[test]
@@ -570,7 +570,7 @@ fn no_scope_declared_is_silent() {
     let run = bilbo_scoped(&s, &s.home, &["new", "plan", "release"]);
     assert_eq!(run.code, 0, "{}", run.stderr);
     assert!(run.stderr.is_empty());
-    assert_eq!(scope_line(&note_text(&s, "release", "plan")), None);
+    assert_eq!(scope_line(&written_note(&s, "release", "plan")), None);
 }
 
 #[test]

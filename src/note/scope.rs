@@ -531,6 +531,18 @@ mod tests {
     }
 
     #[test]
+    fn a_note_that_is_not_utf8_is_refused_untouched() {
+        let s = scratch("utf8");
+        let mut bytes = note("").into_bytes();
+        bytes.extend_from_slice(&[0xff, 0xfe]);
+        fs::write(s.0.join("notes/plan-a.md"), &bytes).unwrap();
+        let err = go(&s.0, false, &mut |_| Ok(())).unwrap_err();
+        assert_eq!(err, Fail::File("not valid UTF-8".into()));
+        assert_eq!(fs::read(s.0.join("notes/plan-a.md")).unwrap(), bytes);
+        assert_eq!(files(&s.0), ["plan-a.md"]);
+    }
+
+    #[test]
     fn a_kept_note_is_not_touched_and_creates_no_hidden_file() {
         let s = scratch("kept");
         put(&s.0, &note("scope: work\n"));
