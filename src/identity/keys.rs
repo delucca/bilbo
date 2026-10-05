@@ -405,11 +405,8 @@ fn write_file(path: &Path, text: &str) -> Result<(), String> {
     file.sync_all().map_err(fail)
 }
 
-/// Writes `owner.key` and `device.key` into `keys`, whole or not at all, never over an existing identity.
-pub fn write_identity(keys: &Path, owner: &OwnerFile, device: &Device) -> Result<(), String> {
-    if !valid_name(&device.name) {
-        return Err(format!("'{}' is not a device name", device.name));
-    }
+/// Takes `keys.lock`, creating it (and the folder beside `keys`) when absent; held until the file drops.
+fn take_lock(keys: &Path) -> Result<std::fs::File, String> {
     let parent = keys.parent().ok_or("the key folder has no parent")?;
     std::fs::create_dir_all(parent)
         .map_err(|e| format!("cannot create {}: {e}", parent.display()))?;
@@ -422,18 +419,42 @@ pub fn write_identity(keys: &Path, owner: &OwnerFile, device: &Device) -> Result
         .map_err(|e| format!("cannot open {}: {e}", lock_path(keys).display()))?;
     lock.lock()
         .map_err(|e| format!("cannot lock {}: {e}", lock_path(keys).display()))?;
+    Ok(lock)
+}
+
+fn clear_staging(staging: &Path) -> Result<(), String> {
+    let Ok(meta) = staging.symlink_metadata() else {
+        return Ok(());
+    };
+    let removed = if meta.is_dir() {
+        std::fs::remove_dir_all(staging)
+    } else {
+        std::fs::remove_file(staging)
+    };
+    removed.map_err(|e| format!("cannot remove {}: {e}", staging.display()))
+}
+
+/// Removes a leftover `keys.new` under `keys.lock`, so it cannot empty the folder of a writer that holds the lock.
+pub fn remove_leftover(keys: &Path) -> Result<(), String> {
+    if staging_path(keys).symlink_metadata().is_err() {
+        return Ok(());
+    }
+    let _lock = take_lock(keys)?;
+    clear_staging(&staging_path(keys))
+}
+
+/// Writes `owner.key` and `device.key` into `keys`, whole or not at all, never over an existing identity.
+pub fn write_identity(keys: &Path, owner: &OwnerFile, device: &Device) -> Result<(), String> {
+    if !valid_name(&device.name) {
+        return Err(format!("'{}' is not a device name", device.name));
+    }
+    let parent = keys.parent().ok_or("the key folder has no parent")?;
+    let _lock = take_lock(keys)?;
     if keys.symlink_metadata().is_ok() {
         return Err(format!("{} already holds an identity", keys.display()));
     }
     let staging = staging_path(keys);
-    if let Ok(meta) = staging.symlink_metadata() {
-        let removed = if meta.is_dir() {
-            std::fs::remove_dir_all(&staging)
-        } else {
-            std::fs::remove_file(&staging)
-        };
-        removed.map_err(|e| format!("cannot remove {}: {e}", staging.display()))?;
-    }
+    clear_staging(&staging)?;
     let mut builder = std::fs::DirBuilder::new();
     std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
     builder
@@ -876,6 +897,19 @@ mod tests {
         write_identity(&keys, &owner().file(), &device(7)).unwrap();
         assert!(leftover(&keys).is_none());
         assert!(read_identity(&keys).unwrap().is_some());
+    }
+
+    #[test]
+    fn remove_leftover_clears_keys_new_and_writes_nothing_else() {
+        let dir = scratch("remove_leftover");
+        let keys = keys_path(&dir);
+        remove_leftover(&keys).unwrap();
+        assert!(leftover(&keys).is_none() && !keys.exists());
+        let staging = staging_path(&keys);
+        std::fs::create_dir_all(&staging).unwrap();
+        std::fs::write(staging.join("stale.key"), "x").unwrap();
+        remove_leftover(&keys).unwrap();
+        assert!(leftover(&keys).is_none() && !keys.exists());
     }
 
     #[test]
