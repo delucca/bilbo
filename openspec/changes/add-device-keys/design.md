@@ -2,10 +2,11 @@
 
 ## Context
 
-- bilbo has no identity today. Nothing signs or encrypts, and the only crypto is `ring`'s SHA-256 for the model download, kept in `src/model.rs` by the AGENTS.md rule.
-- Change 1 (`add-note-history`) brings `sha2` 0.11 (in `src/versions.rs`), the `src/swap.rs` module with `rename_new` (a rename that refuses to replace), and the habit of locking with std's `File::lock`. Change 2 (`add-note-scope`) brings the `scope.<name>.*` keys, with `sync = off` the only value, and `bilbo scope`, which prints each scope's `sync` value as a column.
-- `src/wizard.rs` is the only `cliclack` user. Its `Prompter` trait (`input`, `password`, `confirm`, `select`, `note`, ...) has two implementations: `Terminal`, drawn by cliclack on stderr, and the scripted `Script` in its unit tests. `setup.rs` decides whether to run the wizard from `stdin().is_terminal() && stderr().is_terminal()` (`src/setup.rs:501`).
-- `store::state_dir` already resolves `<state>` (`$XDG_STATE_HOME`, else `$HOME/.local/state`). `config::url_problem` and `config::is_local` already validate an embedder URL and tell a loopback host.
+- bilbo has no identity today. Nothing signs or encrypts. The only hashing is `ring`'s SHA-256 for the model download, kept in `src/host/model.rs`, and `sha2` behind `src/shared/hash.rs` (`sha256_hex`, for history ids and library digests). `tests/layout.rs`'s `PLACEMENT` table keeps each crate in its files.
+- `src/` is one folder per domain (`note/`, `search/`, `library/`, `citation/`, `setup/`, `host/`) with each verb inside the domain it serves, and `src/shared/` is the Shared Kernel, which admits a module only when two domains use it. Verbs never use each other, only `main` reaches a verb, and the domains' non-verb code forms no cycle. `tests/layout.rs` checks all of it, and clippy's `module_inception` rejects a module named like its domain (AGENTS.md, Architecture rules).
+- `add-note-history` brought `src/host/swap.rs` with `rename_new` (a rename that refuses to replace) and the habit of locking with std's `File::lock` (`note::versions::lock`). `add-note-scope` brought the `scope.<name>.*` keys in `src/shared/config.rs`, with `sync = off` the only value (`config::Scope.sync` is a `&'static str`), and `bilbo scope` (`src/note/scope.rs`), which prints each scope's `sync` value as a column.
+- `src/host/prompt.rs` is the only `cliclack` user. It holds the terminal port: the `Prompter` trait (`input`, `password`, `confirm`, `select`, `note`, ...) and `Terminal`, drawn by cliclack on stderr. The setup wizard (`src/setup/wizard.rs`) asks through it, and setup's unit tests have their own scripted prompters (`Script` in `src/setup/wizard.rs`, `Scripted` in `src/setup/driven.rs`). Setup decides whether to run the wizard from `stdin().is_terminal() && stderr().is_terminal()` (`src/setup/flags.rs`).
+- `store::state_dir` (`src/shared/store.rs`) already resolves `<state>` (`$XDG_STATE_HOME`, else `$HOME/.local/state`). `config::url_problem` and `config::is_local` (`src/shared/config.rs`) already validate an embedder URL and tell a loopback host. `zeroize` 1.9.0 is already a dependency, for `Zeroizing`.
 - `flake.nix` builds from a fileset that takes `./src` and `./tests` whole, and `buildRustPackage` in the pinned nixpkgs runs the tests with the release profile (`checkType ? buildType`, `buildType ? "release"`). A test hook gated on `debug_assertions` is therefore off under `nix flake check`.
 - The contract for changes 3 to 6 is `work/sync-spec/CONTRACT.md` in the planning notebook, section "Identity and keys". This design fixes what it leaves open. The review of the first draft is `work/sync-spec/review-add-device-keys.md`, and its decisions are folded in here.
 
@@ -24,11 +25,12 @@
 
 ## Decisions
 
-### Modules: three library modules and one verb
+### Modules: a new `identity` domain
 
-No existing module does crypto, and `ring` must stay in `model.rs`, so the primitives get a new home. Each piece goes where it is cohesive:
+No existing module does crypto, and `ring` must stay in `host/model.rs`, so the primitives get a new home: a new domain, `src/identity/`, holding four library modules and the verb.
 
-- **`src/keys.rs` (new, library).** The device's identity and every secret it touches. It is the only user of `ed25519-dalek`, `hpke`, `chacha20poly1305`, `hkdf` and `getrandom`, the second user of `sha2`, and a third user of `libc`. It holds:
+- **Why a domain of its own.** `shared/` admits a module only when two domains use it, and in this change only `device` uses these. `host/` holds adapters to what bilbo runs beside, not bilbo's own formats. The verb cannot be `device/device.rs` (`module_inception`), and a `device/` folder that is itself the verb, as `setup/` is, would put keys, phrase and manifest inside a verb, which no other code may use. `add-sync` (segments, the transport, the watcher), `add-device-pairing` (`bilbo pair`) and `add-relay` (manifest checks on the relay) all use them, so they must sit outside every verb. In a domain, each later verb uses `identity::keys` and `identity::manifest` as a verb may use any domain, and nothing moves.
+- **`src/identity/keys.rs` (new, library).** The device's identity and every secret it touches. It is the only user of `ed25519-dalek`, `hpke`, `chacha20poly1305`, `hkdf` and `getrandom`, the second user of `sha2`, and a third user of `libc`. It holds:
   - random bytes, hex and base32, the fingerprint and device id;
   - the owner derivation and device key generation;
   - sign and verify, HPKE seal and open, XChaCha20-Poly1305 encrypt and decrypt;
@@ -36,20 +38,22 @@ No existing module does crypto, and `ring` must stay in `model.rs`, so the primi
   - the host name and turning core files off.
 
   It returns plain values and `String` messages.
-- **`src/phrase.rs` (new, library).** The embedded word list, entropy to words, words to entropy with the checksum, the 4-letter prefix rule, and picking the 3 positions. It hashes through `keys::sha256`, so it uses no crypto crate.
-- **`src/manifest.rs` (new, library).** The manifest struct, its canonical bytes, the validity checks that need no secret, the checks that need the epoch key, finding a scope by its sealed name, and writing the next version under the lock.
-- **`src/device.rs` (new, verb).** Argument parsing, the order of checks, and the step report. It builds on `keys`, `phrase`, `manifest`, `config`, `store` and `wizard`.
+- **`src/identity/phrase.rs` (new, library).** The embedded word list (`src/identity/bip39-english.txt`), entropy to words, words to entropy with the checksum, the 4-letter prefix rule, and picking the 3 positions. It hashes through `shared::hash::sha256`, so it uses no crypto crate and does not depend on `keys`.
+- **`src/identity/manifest.rs` (new, library).** The manifest struct, its canonical bytes, the validity checks that need no secret, the checks that need the epoch key, finding a scope by its sealed name, and writing the next version under the lock.
+- **`src/identity/ceremony.rs` (new, library).** The phrase ceremony: showing and confirming a new phrase, reading a typed one, and the fingerprint question, all through the `Prompter`. It is not in the verb because `add-sync`'s setup `sync` step runs the same ceremony, and verbs never build on each other.
+- **`src/identity/device.rs` (new, verb).** Argument parsing, the terminal rule, the order of checks, and the step report. It builds on `keys`, `phrase`, `manifest`, `ceremony`, `config`, `store` and `host::prompt`. What `add-sync`'s setup step must also run (the ceremony, writing keys, building each scope's next version) lives in the library modules, not here.
+- **`src/identity/script.rs` (new, test-only).** The scripted `Prompter` that the unit tests of `ceremony` and `device` share.
 - **Extended modules:**
-  - `config.rs`: sync URLs;
-  - `store.rs`: `scopes_dir`, `keys_dir`, and `claudecode` and `codex_thread_id` in `Env`;
-  - `wizard.rs`: the ceremony and the alternate screen;
+  - `shared/config.rs`: sync URLs, and `Scope.sync` becomes an owned `String`, which `note/scope.rs` prints;
+  - `shared/store.rs`: `scopes_dir`, `keys_dir`, and `claudecode` and `codex_thread_id` in `Env`;
+  - `shared/hash.rs`: `sha256`, the bytes that `sha256_hex` prints, for ids, fingerprints and the phrase checksum;
+  - `host/prompt.rs`: `Prompter::screen` and the alternate screen in `Terminal`;
   - `main.rs`: dispatch.
-
-`wizard.rs` is not a verb, so `device.rs` using it keeps the rule that verbs never build on each other, as `setup.rs` already does.
+- **Domain edges.** `identity`'s library modules use only `shared` and `host` (`prompt`, `swap`). Later domains that use `identity` (the sync domain of `add-sync`, the relay) must never be used by `identity`'s library modules, or `domains_form_no_cycle` fails. Where a transport meets an identity, as in `add-sync`'s fetch before `recover` and its setup `sync` step, a verb joins the two.
 
 ### Crates, versions and why each
 
-Resolved on 2026-10-03 in a scratch crate holding bilbo's `Cargo.toml` and `Cargo.lock` plus change 1's `notify` 8.2.0 and `sha2` 0.11.0 (scratchpad `add-device-keys-full`). With the five crates below, `cargo tree -d -e normal` adds one duplicate, `getrandom` 0.2.17 (from `ring`) beside 0.4.3. The other, `syn` 2 beside 3, is already in bilbo's lock. There is one `digest` (0.11.3), one `rand_core` (0.10.1) and one `x25519-dalek` (3.0.0, inside `hpke`). A second scratch program derived an owner key, signed and verified, sealed and opened an epoch key with HPKE to a random and to a derived box key, and encrypted a name with XChaCha20-Poly1305, all on Rust 1.95. Every crate's `rust-version` is 1.85 or lower.
+Resolved on 2026-10-03 in a scratch crate holding bilbo's `Cargo.toml` and `Cargo.lock` plus `add-note-history`'s `notify` 8.2.0 and `sha2` 0.11.0 (scratchpad `add-device-keys-full`), and again on 2026-10-05 against bilbo 0.11.0's own `Cargo.toml` and `Cargo.lock`, with the same result: the same 24 new lock entries and the same duplicate set, the five being the newest releases on crates.io. That second pass also built the Nix package with them, tests included, and its probe reproduced the three values of the `Owner key` scenario with `from_bytes`. With the five crates below, `cargo tree -d -e normal` adds one duplicate, `getrandom` 0.2.17 (from `ring`) beside 0.4.3. The other, `syn` 2 beside 3, is already in bilbo's lock. There is one `digest` (0.11.3), one `rand_core` (0.10.1) and one `x25519-dalek` (3.0.0, inside `hpke`). A second scratch program derived an owner key, signed and verified, sealed and opened an epoch key with HPKE to a random and to a derived box key, and encrypted a name with XChaCha20-Poly1305, all on Rust 1.95. Every crate's `rust-version` is 1.85 or lower.
 
 | Crate | Version | For | Why not std or an existing dependency |
 |---|---|---|---|
@@ -57,20 +61,21 @@ Resolved on 2026-10-03 in a scratch crate holding bilbo's `Cargo.toml` and `Carg
 | `hpke` | 0.14.1, `default-features = false`, features `x25519`, `chacha`, `alloc`, `getrandom` | sealing epoch keys (RFC 9180) | Hand-rolling X25519, HKDF and an AEAD into a sealed box is the code an RFC exists to replace. Default features would add ML-KEM, X-Wing, SHA-3 and the NIST curves. Its key types wrap `x25519-dalek` and clamp on `from_bytes`, so `x25519-dalek` needs no direct entry. |
 | `chacha20poly1305` | 0.11.0, feature `zeroize` | the sealed name, the epoch chain, and change 4's segments (XChaCha20-Poly1305) | Already inside `hpke`. |
 | `hkdf` | 0.13.0 | the owner derivation | Already inside `hpke`. |
-| `getrandom` | 0.4.3 | every random byte | std has no stable OS randomness API in Rust 1.95. Already in the tree through `crypto-common`. |
-| `sha2` | 0.11.0 (change 1) | ids, fingerprints, `prev`, the phrase checksum | `Hkdf::<Sha256>` names the hash type, so `keys.rs` must import it. |
+| `getrandom` | 0.4.3 | every random byte | std has no stable OS randomness API in Rust 1.95. `hpke` and `crypto-common` use the same version. |
+| `sha2` | 0.11.0 (already a dependency) | the HKDF hash | `Hkdf::<Sha256>` names the hash type, so `keys.rs` must import it. Plain SHA-256 (ids, fingerprints, `prev`, the phrase checksum) goes through `shared::hash`. |
 
-New lock entries beyond change 1: 24, namely `aead`, `chacha20`, `chacha20poly1305`, `cipher`, `cmov`, `ctutils`, `curve25519-dalek`, `curve25519-dalek-derive`, `ed25519`, `ed25519-dalek`, `fiat-crypto`, `getrandom` 0.4, `hkdf`, `hmac`, `hpke`, `inout`, `poly1305`, `r-efi` (UEFI only), `rand_core`, `rustc_version` and `semver` (build script), `signature`, `universal-hash` and `x25519-dalek`. Licences are BSD-3-Clause (dalek) or MIT/Apache-2.0, all compatible with bilbo's Apache-2.0.
+New lock entries: 24, namely `aead`, `chacha20`, `chacha20poly1305`, `cipher`, `cmov`, `ctutils`, `curve25519-dalek`, `curve25519-dalek-derive`, `ed25519`, `ed25519-dalek`, `fiat-crypto`, `getrandom` 0.4, `hkdf`, `hmac`, `hpke`, `inout`, `poly1305`, `r-efi` (UEFI only), `rand_core`, `rustc_version` and `semver` (build script), `signature`, `universal-hash` and `x25519-dalek`. Licences are BSD-3-Clause (dalek) or MIT/Apache-2.0, all compatible with bilbo's Apache-2.0.
 
-**`bip39` 3.0.0 rejected; the list is embedded.** bilbo needs the 2048 words and the 4-bit checksum, about 60 lines over `sha2`. The crate adds `bitcoin_hashes`, `hex-conservative`, `arrayvec`, `unicode-normalization` and `tinyvec`, and its main job, the PBKDF2 wallet seed, is unused. The list is `src/bip39-english.txt` (13,116 bytes, `include_str!`), copied from `bitcoin/bips` `bip-0039/english.txt`, whose BIP header says `License: MIT`. A unit test pins its SHA-256, `2f5eed53a4727b4bf8880d8f3f199efc90e58503646d9ff8eff3a2ed3b24dbda`.
+**`bip39` 3.0.0 rejected; the list is embedded.** bilbo needs the 2048 words and the 4-bit checksum, about 60 lines over `sha2`. The crate adds `bitcoin_hashes`, `hex-conservative`, `arrayvec`, `unicode-normalization` and `tinyvec`, and its main job, the PBKDF2 wallet seed, is unused. The list is `src/identity/bip39-english.txt` (13,116 bytes, `include_str!`), copied from `bitcoin/bips` `bip-0039/english.txt`, whose BIP header says `License: MIT`. A unit test pins its SHA-256, `2f5eed53a4727b4bf8880d8f3f199efc90e58503646d9ff8eff3a2ed3b24dbda`.
 
-AGENTS.md's rule becomes:
-- `cliclack` in `src/wizard.rs`;
-- `libc` in `src/wizard.rs`, `src/swap.rs` and `src/keys.rs`;
-- `ring` in `src/model.rs`;
-- `notify` in `src/watch.rs`;
-- `sha2` in `src/versions.rs` and `src/keys.rs`;
-- the five crates above in `src/keys.rs`.
+`PLACEMENT` in `tests/layout.rs` becomes (paths below `src/`; AGENTS.md names no crate and points to the table):
+- `cliclack` in `host/prompt.rs`;
+- `libc` in `host/prompt.rs`, `host/swap.rs` and `identity/keys.rs`;
+- `notify` in `note/watch.rs`;
+- `ring` in `host/model.rs`;
+- `sha2` in `shared/hash.rs` and `identity/keys.rs`;
+- `unicode_normalization` in `shared/text.rs`, and `htmd` and `markup5ever_rcdom` in `library/html.rs`, as today;
+- `ed25519_dalek`, `hpke`, `chacha20poly1305`, `hkdf` and `getrandom` in `identity/keys.rs`.
 
 ### The phrase and the owner key
 
@@ -130,7 +135,7 @@ The same sentence goes in the README and in changes 4 to 6: "After a confirmed r
 
 ### The terminal rule, and keeping the phrase away from agents
 
-`device::run(args, env, terminal: bool, p: &mut impl Prompter)` returns the step lines. `main` passes `wizard::Terminal` and `terminal = stdin().is_terminal() && stderr().is_terminal()`. Unit tests pass the scripted prompter with `terminal = true`.
+`identity::device::run(args, env, terminal: bool, p: &mut impl Prompter)` returns the step lines. `main` passes `host::prompt::Terminal` and `terminal = stdin().is_terminal() && stderr().is_terminal()`. Unit tests pass the scripted prompter with `terminal = true`.
 
 - **What needs a terminal:**
   - `init` when it creates a phrase or would change a scope's `transport`;
@@ -145,11 +150,11 @@ The same sentence goes in the README and in changes 4 to 6: "After a confirmed r
   - A `codex exec` probe (codex-cli 0.155.1, throwaway `CODEX_HOME`, `-s read-only`) showed tool commands getting `CODEX_THREAD_ID`, `CODEX_SESSION_ID`, `CODEX_CI`, `CODEX_VERSION`, `CODEX_SANDBOX` and `CODEX_SANDBOX_NETWORK_DISABLED`, with no terminal on stdin or stderr. `CODEX_THREAD_ID` is the marker, because `CODEX_SANDBOX` is absent when Codex runs without a sandbox.
 
   The markers matter when an agent is given a pty, and for a user's `!` command whose output lands in a transcript. `Env` gains both fields so tests can set them.
-- **Where the phrase is drawn.** The `Prompter` trait gains one method, `screen(work)`.
+- **Where the phrase is drawn.** The `Prompter` trait gains one method, `screen(work)`, whose default runs `work` directly, so setup's scripted prompters need no change.
   - `Terminal` writes `ESC[?1049h` to stderr (the alternate screen), runs `work`, and writes `ESC[?1049l` from a drop guard, so an error or a cancel also leaves it.
   - Inside, `init` shows the words numbered in three columns and the owner fingerprint with `note`, then asks "Written down?" with `confirm`, then three `input` prompts ("Word 7").
   - On the main screen, after it, only "Recovery phrase confirmed" remains, so the words are not in the scrollback.
-  - `Script` runs `work` directly.
+  - The scripted prompter of `src/identity/script.rs` keeps the default.
 - **A wrong word.** A `warn` and a `select`: try again, show the phrase again, or cancel.
 - **Recover's entry.** Twelve `input` prompts on the alternate screen, each checked by `phrase::check_word` (a plain `fn`, as `Prompter::input` wants). A failed checksum asks for the twelve again, with the typed words as defaults. Then comes the fingerprint step above, a `confirm` that defaults to no. Echo is on: the screen is cleared afterwards, and typing twelve words blind is worse.
 - **No core file.** Before the screen opens, `keys::no_core_dump` sets `RLIMIT_CORE` to 0 with `setrlimit`, and on Linux also calls `prctl(PR_SET_DUMPABLE, 0)`, so a crash cannot write the phrase to `systemd-coredump` or a `core` file.
@@ -211,7 +216,7 @@ Example version 2 (hex shortened):
   - chain entry `k` under aad `bilbo-chain-1\n<scope id>\n<k>`, encrypted with epoch `k+1`'s key.
 
   Base mode suffices because the owner signature over the whole manifest says who sealed it. Random 192-bit XChaCha nonces make reuse negligible, and distinct aads keep one purpose's ciphertext from passing as another's.
-- **Hex, not base64:** change 1's history ids are hex, manifests are a few kilobytes, and hex needs no decoder table. Change 4 picks the segment encoding.
+- **Hex, not base64:** note history's ids are hex, manifests are a few kilobytes, and hex needs no decoder table. Change 4 picks the segment encoding.
 - **Device names in the clear.** A relay sees host-like names such as `rivendell`. The contract lists `name` among the device fields. Encrypting it under the epoch is the alternative, at the price of the relay and an unenrolled device seeing only ids.
 
 ### The pinned transport
@@ -232,7 +237,7 @@ A device opens the `name` of each local manifest that lists it, through its own 
 - **Only `init` mints scope ids.** `recover` never does. On a machine whose store has no manifest for a syncing scope, it reports `unsealed` and tells the user to bring in the scope's manifest (copy the store from an enrolled device) and run `recover` again. It never suggests `init`. Without a transport, a fresh id there would fork the scope the other device already has, and change 4 would have to reconcile two ids for one name. The way to join in change 3 is to copy the store from an enrolled device first, or to run `init` deliberately afterwards.
 - **`recover` is also how a stopped recover is finished.** On an enrolled device it reads the phrase, checks it derives the stored owner, keeps the device key, and adds this device to each local manifest of its owner that does not list it. That includes one whose latest version dropped this device: with the phrase in hand, re-adding is the owner's decision. `init` never re-adds.
 - **`revoke` acts on manifests that list both devices.** It needs the current epoch key to extend the chain, and opens it through its own entry. A manifest listing the target but not this device is reported `failed`.
-- **Writes.** Writers hold `<root>/.bilbo/scopes/lock` (std `File::lock`, as change 1's history lock). A version is written to a hidden temporary file in the same folder and moved with `swap::rename_new`, so an existing version is never replaced. Under the lock, a writer first removes any hidden temporary left in the `manifest/` folders by a crash: no other writer can be mid-write while it holds the lock, so every one it finds is stale. That is the same create-only rule change 4's transport applies, and the conflict two devices will meet when both write `n+1`.
+- **Writes.** Writers hold `<root>/.bilbo/scopes/lock` (std `File::lock`, as `note::versions::lock` does for history). A version is written to a hidden temporary file in the same folder and moved with `swap::rename_new`, so an existing version is never replaced. Under the lock, a writer first removes any hidden temporary left in the `manifest/` folders by a crash: no other writer can be mid-write while it holds the lock, so every one it finds is stale. That is the same create-only rule change 4's transport applies, and the conflict two devices will meet when both write `n+1`.
 - **Several scopes are not atomic.** A crash midway leaves some scopes updated. A rerun of `init`, `revoke` or `recover` finishes the rest, because each step checks the latest version first.
 - **Every refusal comes before the phrase.** No store when a scope syncs, another owner's manifests, a taken name, bad permissions and an invalid manifest are all checked before anything is drawn.
 
@@ -260,7 +265,7 @@ It exits 1 when a scope line got a problem line: an invalid version, another own
 ### The host name
 
 `keys::host_name` calls `libc::gethostname`. It sits in `keys.rs` because the name is part of the device identity, and `keys.rs` already holds the other `libc` call, `no_core_dump`. Alternatives:
-- Running `hostname` through `command.rs`: it is absent from the clean `PATH` the tests use, and from some minimal Linux images.
+- Running `hostname` through `host::command`: it is absent from the clean `PATH` the tests use, and from some minimal Linux images.
 - Reading `/etc/hostname`: Linux only.
 - `$HOSTNAME`: zsh and bash do not export it.
 
@@ -272,26 +277,26 @@ The sanitizing rule is pure and unit-tested apart from the call.
   - in `phrase.rs`: the word list hash; the BIP39 vectors (16 bytes of `00` to `abandon` ×11 `about`, `7f` to `legal winner thank year wave sausage worth useful legal winner thank yellow`, `80` to `letter advice cage absurd amount doctor acoustic avoid letter advice cage above`, `ff` to `zoo` ×11 `wrong`); prefixes; checksum failure;
   - in `keys.rs`: the derivation pinned for the all-`abandon` phrase (`owner`, `owner_box` and the fingerprint); base32 vectors; seal, open and wrong-key failure; the modes of written files; `keys.new`; no box secret in `owner.key`;
   - in `manifest.rs`: canonical round trip, every validity check, the chain over three epochs, and a revoked device's two key files opening nothing in the new version;
-  - in `wizard.rs`: the ceremony with `Script`;
+  - in `ceremony.rs`: the ceremony with the scripted prompter;
   - in `device.rs`: every form with temporary roots and state folders, including "the phrase is kept nowhere", which scans every written file for the words and the entropy hex.
 - **Golden fixtures** carry the binary tests.
   - `tests/fixtures/device/` holds two key folders, `rivendell` and `bagend`, under the all-`abandon` owner with fixed device seeds, and a store whose `personal` scope has versions 1 and 2.
   - `tests/device.rs` copies them into temporary folders and sets modes 0700 and 0600, since git keeps only the execute bit. It then runs show, `list`, `init` on an enrolled device, and the refusals of every terminal-only form without a terminal, with `CLAUDECODE` and with `CODEX_THREAD_ID`. It also covers loose modes, `keys.new`, tampered, misplaced and foreign manifests, and the exit codes.
-  - The `#[ignore]` test `device::tests::write_fixtures` regenerates them, and `device::tests::fixtures_open` fails when a format change leaves them stale. The fixture keys are test keys, documented as such.
-- **Why not a debug-only environment hook** as change 1's restore test uses: `nix flake check` runs tests in release, where it would be off, and a hidden way to feed the phrase is the thing this change refuses agents.
+  - The `#[ignore]` test `identity::device::tests::write_fixtures` regenerates them, and `identity::device::tests::fixtures_open` fails when a format change leaves them stale. The fixture keys are test keys, documented as such.
+- **Why not a test hook in the binary:** `nix flake check` runs tests in release, where a `debug_assertions` hook would be off. Restore's and `scope set`'s hooks are function parameters that only unit tests pass, and the ceremony's unit tests do the same through the scripted prompter. A hidden way to feed the phrase to the binary is the thing this change refuses agents.
 - **The deliberate gap.** Spec scenarios that need a real terminal cannot run in the suites:
   - the drawn phrase and its fingerprint;
   - the cleared scrollback;
   - `bilbo device init > out.txt`;
   - `revoke` and a URL change succeeding in a terminal.
 
-  `Script` covers their logic. The `Terminal` adapter itself is smoke-tested by hand with `expect` on macOS, as AGENTS.md asks after any adapter change, and task 5.3 records each of these runs in `smoke.md`.
+  The scripted prompter covers their logic. The `Terminal` adapter itself is smoke-tested by hand with `expect` on macOS, as AGENTS.md asks after any adapter change, and task 5.3 records each of these runs in `smoke.md`.
 
 ### What later changes rely on
 
 - **Change 4:**
   - It relies on `keys::{sign, verify, encrypt, decrypt, random}`, `manifest::{latest, verify_scope, open, write_next}`, the epoch numbering and the chain, and the create-only write.
-  - It runs the ceremony from setup's `sync` step through the same `wizard` functions, so the `device-identity` Recovery phrase requirement and the `cli` Output streams exception go on its shared-MODIFIED list.
+  - It runs the ceremony from setup's `sync` step through the same `identity::ceremony` functions, so the `device-identity` Recovery phrase requirement and the `cli` Output streams exception go on its shared-MODIFIED list.
   - A device that holds the owner seed but is not listed cannot open a scope. Joining therefore takes `recover` (the phrase) or pairing, never the owner key alone.
   - It announces every adopted version that adds a device or changes the epoch, and treats a version that fails Manifest validity or Chain check by a member as invalid (see "What revocation guarantees").
   - It syncs a scope only while the config URL matches the pinned `transport` under "The pinned transport", and owns the transport-aware rule for an unsealed scope: whether `init` may mint an id once it can list the transport.
