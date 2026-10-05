@@ -1,4 +1,5 @@
 use crate::shared::store::{self, Env};
+use crate::shared::text;
 use std::path::{Path, PathBuf};
 
 pub const DEFAULT_MIN_SIMILARITY: f64 = 0.5;
@@ -19,6 +20,15 @@ pub const KEYS: [&str; 10] = [
     "history.keep_days",
 ];
 
+/// The keys of the scope pattern, for messages.
+const SCOPE_KEYS: [&str; 5] = [
+    "scope.<name>.sync",
+    "scope.<name>.embedder",
+    "scope.<name>.paths",
+    "scope.<name>.marks",
+    "scope.default",
+];
+
 pub const QWEN_PREFIX: &str = "Instruct: Given a question, retrieve notes that answer it\nQuery: ";
 
 #[derive(Debug)]
@@ -31,6 +41,50 @@ pub struct Settings {
     pub history: History,
     /// The digest and history lines the file held, as written (unquoted), in `KEYS` order; a rewrite keeps them.
     pub kept_lines: Vec<(&'static str, String)>,
+    /// The scope lines the file held, as written (unquoted), in file order; a rewrite keeps them.
+    pub scope_lines: Vec<(String, String)>,
+    /// The declared scopes, sorted by name.
+    pub scopes: Vec<Scope>,
+    /// The scope `scope.default` names, always declared.
+    pub default_scope: Option<String>,
+    /// The absolute `HOME`, which `~/` in a scope path expands to.
+    home: Option<PathBuf>,
+}
+
+/// Whether a note's text may go to a remote embedder.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Rule {
+    Any,
+    Local,
+}
+
+impl Rule {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Rule::Any => "any",
+            Rule::Local => "local",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Scope {
+    pub name: String,
+    /// `off`, the only value there is.
+    pub sync: &'static str,
+    pub embedder: Rule,
+    /// Each item as written, trimmed.
+    pub paths: Vec<String>,
+    pub marks: Vec<Mark>,
+}
+
+/// A mark, in the form the mark finder compares.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Mark {
+    /// One folded word.
+    Word(String),
+    /// Every spelling of a path: the absolute one, then `~/...` when it lies in the home folder.
+    Path(Vec<String>),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -102,13 +156,7 @@ pub fn path(env: &Env) -> Result<Option<(PathBuf, bool)>, String> {
 /// The settings, or the message for a config error, without the `bilbo: ` prefix.
 pub fn load(env: &Env) -> Result<Settings, String> {
     let Some((path, explicit)) = path(env)? else {
-        return Ok(Settings {
-            path: None,
-            embedder: None,
-            digest: Digest::default(),
-            history: History::default(),
-            kept_lines: Vec::new(),
-        });
+        return Ok(defaults(None));
     };
     let bytes = match std::fs::read(&path) {
         Ok(bytes) => bytes,
@@ -119,45 +167,32 @@ pub fn load(env: &Env) -> Result<Settings, String> {
                     std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
                 ) =>
         {
-            return Ok(Settings {
-                path: Some(path),
-                embedder: None,
-                digest: Digest::default(),
-                history: History::default(),
-                kept_lines: Vec::new(),
-            });
+            return Ok(defaults(Some(path)));
         }
         Err(e) => return Err(format!("cannot read {}: {e}", path.display())),
     };
     let text =
         String::from_utf8(bytes).map_err(|_| format!("{}: not valid UTF-8", path.display()))?;
     let home = store::absolute(&env.home);
-    let (embedder, digest, history, kept_lines) = parse(&path, &text, home.as_deref())?;
-    Ok(Settings {
-        path: Some(path),
-        embedder,
-        digest,
-        history,
-        kept_lines,
-    })
+    parse(&path, &text, home.as_deref())
 }
 
-/// The embedder, digest and history settings of the file `path` holding `text`, and the digest and
-/// history lines as written in `KEYS` order; `home` expands `~/`.
-#[allow(clippy::type_complexity)]
-fn parse(
-    path: &Path,
-    text: &str,
-    home: Option<&Path>,
-) -> Result<
-    (
-        Option<Embedder>,
-        Digest,
-        History,
-        Vec<(&'static str, String)>,
-    ),
-    String,
-> {
+fn defaults(path: Option<PathBuf>) -> Settings {
+    Settings {
+        path,
+        embedder: None,
+        digest: Digest::default(),
+        history: History::default(),
+        kept_lines: Vec::new(),
+        scope_lines: Vec::new(),
+        scopes: Vec::new(),
+        default_scope: None,
+        home: None,
+    }
+}
+
+/// The settings of the file `path` holding `text`; `home` expands `~/`.
+fn parse(path: &Path, text: &str, home: Option<&Path>) -> Result<Settings, String> {
     let at = path.display();
     let text = text.strip_prefix('\u{feff}').unwrap_or(text);
     let mut seen: Vec<(&str, usize)> = Vec::new();
@@ -170,6 +205,8 @@ fn parse(
     let mut digest = Digest::default();
     let mut history = History::default();
     let mut kept_lines: Vec<(&'static str, String)> = Vec::new();
+    let mut scope_lines: Vec<(String, String)> = Vec::new();
+    let mut declared = Declared::default();
     for (index, line) in text.split('\n').enumerate() {
         let n = index + 1;
         let line = line.strip_suffix('\r').unwrap_or(line);
@@ -181,11 +218,10 @@ fn parse(
             return Err(format!("{at}:{n}: expected <key> = <value>"));
         };
         let key = trim(key);
-        let Some(key) = KEYS.iter().find(|k| **k == key).copied() else {
-            return Err(format!(
-                "{at}:{n}: unknown key '{key}'; keys: {}",
-                KEYS.join(", ")
-            ));
+        let fixed = KEYS.iter().find(|k| **k == key).copied();
+        let kind = match fixed {
+            Some(fixed) => Key::Fixed(fixed),
+            None => Key::Scope(scope_key(key).map_err(|e| format!("{at}:{n}: {e}"))?),
         };
         if let Some((_, first)) = seen.iter().find(|(k, _)| *k == key) {
             return Err(format!(
@@ -204,6 +240,16 @@ fn parse(
         if value.is_empty() && key != "embedder.query_prefix" {
             return Err(format!("{at}:{n}: {key} needs a value"));
         }
+        let key = match kind {
+            Key::Fixed(key) => key,
+            Key::Scope(scope_key) => {
+                scope_lines.push((key.to_string(), value.clone()));
+                declared
+                    .set(scope_key, &value, n, home)
+                    .map_err(|e| format!("{at}:{n}: {e}"))?;
+                continue;
+            }
+        };
         if key.starts_with("digest.") || key.starts_with("history.") {
             kept_lines.push((key, value.clone()));
         }
@@ -299,29 +345,323 @@ fn parse(
             "{at}: set embedder.token_file or embedder.token_env, not both"
         ));
     }
-    let Some(url) = url else {
-        return Ok((None, digest, history, kept_lines));
+    let (scopes, default_scope) = declared
+        .finish()
+        .map_err(|(message, n)| format!("{at}:{n}: {message}"))?;
+    let embedder = match url {
+        None => None,
+        Some(url) => {
+            let Some(model) = model else {
+                return Err(format!(
+                    "{at}: embedder.url is set but embedder.model is not"
+                ));
+            };
+            let token = token_file
+                .map(Token::File)
+                .or_else(|| token_env.map(Token::Var));
+            Some(Embedder {
+                url,
+                model,
+                token,
+                query_prefix,
+                min_similarity,
+            })
+        }
     };
-    let Some(model) = model else {
-        return Err(format!(
-            "{at}: embedder.url is set but embedder.model is not"
-        ));
-    };
-    let token = token_file
-        .map(Token::File)
-        .or_else(|| token_env.map(Token::Var));
-    Ok((
-        Some(Embedder {
-            url,
-            model,
-            token,
-            query_prefix,
-            min_similarity,
-        }),
+    Ok(Settings {
+        path: Some(path.to_path_buf()),
+        embedder,
         digest,
         history,
         kept_lines,
-    ))
+        scope_lines,
+        scopes,
+        default_scope,
+        home: home.map(Path::to_path_buf),
+    })
+}
+
+enum Key<'a> {
+    Fixed(&'static str),
+    Scope(ScopeKey<'a>),
+}
+
+enum ScopeKey<'a> {
+    Default,
+    Field(&'a str, &'static str),
+}
+
+/// What a `scope.` key names, or the message for a key that is not one.
+fn scope_key(key: &str) -> Result<ScopeKey<'_>, String> {
+    let unknown = || {
+        format!(
+            "unknown key '{key}'; keys: {}, {}",
+            KEYS.join(", "),
+            SCOPE_KEYS.join(", ")
+        )
+    };
+    let Some(rest) = key.strip_prefix("scope.") else {
+        return Err(unknown());
+    };
+    if rest == "default" {
+        return Ok(ScopeKey::Default);
+    }
+    let Some((name, field)) = rest.rsplit_once('.') else {
+        return Err(unknown());
+    };
+    let Some(field) = ["sync", "embedder", "paths", "marks"]
+        .into_iter()
+        .find(|f| *f == field)
+    else {
+        return Err(unknown());
+    };
+    if name == "default" {
+        return Err(format!(
+            "{key}: 'default' is not a scope name; use scope.default"
+        ));
+    }
+    if !store::is_topic(name) {
+        return Err(format!(
+            "{key}: scope name '{name}' must be lowercase letters and digits, joined by single hyphens"
+        ));
+    }
+    Ok(ScopeKey::Field(name, field))
+}
+
+/// The scope keys read so far.
+#[derive(Default)]
+struct Declared {
+    scopes: Vec<Scope>,
+    default: Option<(String, usize)>,
+    /// Each `paths` item, resolved, with its scope and line.
+    folders: Vec<(String, PathBuf, usize)>,
+    marks: Vec<(String, Mark, usize)>,
+}
+
+impl Declared {
+    fn scope(&mut self, name: &str) -> &mut Scope {
+        let at = match self.scopes.iter().position(|s| s.name == name) {
+            Some(at) => at,
+            None => {
+                self.scopes.push(Scope {
+                    name: name.to_string(),
+                    sync: "off",
+                    embedder: Rule::Any,
+                    paths: Vec::new(),
+                    marks: Vec::new(),
+                });
+                self.scopes.len() - 1
+            }
+        };
+        &mut self.scopes[at]
+    }
+
+    /// Takes one scope line; the message of an error does not say where the line is.
+    fn set(
+        &mut self,
+        key: ScopeKey<'_>,
+        value: &str,
+        n: usize,
+        home: Option<&Path>,
+    ) -> Result<(), String> {
+        let (name, field) = match key {
+            ScopeKey::Default => {
+                self.default = Some((value.to_string(), n));
+                return Ok(());
+            }
+            ScopeKey::Field(name, field) => (name, field),
+        };
+        let key = format!("scope.{name}.{field}");
+        match field {
+            "sync" => {
+                self.scope(name);
+                if value != "off" {
+                    return Err(format!("{key} must be off, got '{value}'"));
+                }
+            }
+            "embedder" => {
+                self.scope(name).embedder = match value {
+                    "any" => Rule::Any,
+                    "local" => Rule::Local,
+                    _ => return Err(format!("{key} must be any or local, got '{value}'")),
+                };
+            }
+            "paths" => {
+                for item in list(&key, value)? {
+                    let folder = folder(&key, &item, home)?;
+                    self.scope(name).paths.push(item);
+                    if let Some((other, _, line)) = self
+                        .folders
+                        .iter()
+                        .find(|(other, f, _)| other != name && *f == folder)
+                    {
+                        return Err(format!(
+                            "{key} names the same folder as scope.{other}.paths (line {line})"
+                        ));
+                    }
+                    self.folders.push((name.to_string(), folder, n));
+                }
+            }
+            _ => {
+                for item in list(&key, value)? {
+                    let mark = mark(&key, &item, home)?;
+                    if let Some((other, _, line)) = self
+                        .marks
+                        .iter()
+                        .find(|(other, m, _)| other != name && *m == mark)
+                    {
+                        return Err(format!(
+                            "{key} holds '{item}', which scope.{other}.marks holds too (line {line})"
+                        ));
+                    }
+                    self.marks.push((name.to_string(), mark.clone(), n));
+                    self.scope(name).marks.push(mark);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// The scopes sorted by name and the default, or the message and line of the default's error.
+    fn finish(mut self) -> Result<(Vec<Scope>, Option<String>), (String, usize)> {
+        if let Some((name, n)) = &self.default
+            && !self.scopes.iter().any(|s| s.name == *name)
+        {
+            return Err((
+                format!("scope.default names '{name}', which no scope.{name}.* key declares"),
+                *n,
+            ));
+        }
+        self.scopes.sort_by(|a, b| a.name.cmp(&b.name));
+        Ok((self.scopes, self.default.map(|(name, _)| name)))
+    }
+}
+
+/// The trimmed items of a comma-separated list; none may be empty.
+fn list(key: &str, value: &str) -> Result<Vec<String>, String> {
+    value
+        .split(',')
+        .map(|item| match trim(item) {
+            "" => Err(format!("{key} has an empty item")),
+            item => Ok(item.to_string()),
+        })
+        .collect()
+}
+
+enum Unexpandable {
+    NoHome,
+    Relative,
+}
+
+/// `item` as an absolute path, with `~/` expanded.
+fn expand(item: &str, home: Option<&Path>) -> Result<PathBuf, Unexpandable> {
+    if let Some(rest) = item.strip_prefix("~/") {
+        return home
+            .map(|home| home.join(rest.trim_start_matches('/')))
+            .ok_or(Unexpandable::NoHome);
+    }
+    if item.starts_with('/') {
+        return Ok(PathBuf::from(item));
+    }
+    Err(Unexpandable::Relative)
+}
+
+fn expand_or_say(key: &str, item: &str, home: Option<&Path>) -> Result<PathBuf, String> {
+    expand(item, home).map_err(|e| match e {
+        Unexpandable::NoHome => {
+            format!("{key} item '{item}' starts with ~/ but HOME is not an absolute path")
+        }
+        Unexpandable::Relative => {
+            format!("{key} item '{item}' must be an absolute path or start with ~/")
+        }
+    })
+}
+
+/// The folder a `paths` item names, with links resolved when it exists.
+fn folder(key: &str, item: &str, home: Option<&Path>) -> Result<PathBuf, String> {
+    expand_or_say(key, item, home).map(|path| resolve(&path))
+}
+
+fn resolve(path: &Path) -> PathBuf {
+    std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+}
+
+fn mark(key: &str, item: &str, home: Option<&Path>) -> Result<Mark, String> {
+    if item.starts_with('/') || item.starts_with("~/") {
+        let path: PathBuf = expand_or_say(key, item, home)?.components().collect();
+        let mut forms = vec![path.display().to_string()];
+        if let Some(rest) = home.and_then(|home| path.strip_prefix(home).ok()) {
+            forms.push(if rest.as_os_str().is_empty() {
+                "~".to_string()
+            } else {
+                format!("~/{}", rest.display())
+            });
+        }
+        return Ok(Mark::Path(forms));
+    }
+    let words = text::words(item);
+    let one_word = item
+        .chars()
+        .all(|c| c.is_alphanumeric() || text::is_mark(c));
+    match (words.as_slice(), one_word) {
+        ([word], true) => Ok(Mark::Word(word.clone())),
+        _ => Err(format!(
+            "{key} item '{item}' must be one word of letters and digits, or a path"
+        )),
+    }
+}
+
+impl Settings {
+    /// The names of the declared scopes, sorted.
+    pub fn scope_names(&self) -> Vec<&str> {
+        self.scopes.iter().map(|s| s.name.as_str()).collect()
+    }
+
+    pub fn scope(&self, name: &str) -> Option<&Scope> {
+        self.scopes.iter().find(|s| s.name == name)
+    }
+
+    /// The embedder rule of a note whose `scope` key holds `scope` (`None` without the key).
+    /// A scope that is not declared counts as unassigned, as do all notes while none is declared.
+    pub fn rule(&self, scope: Option<&str>) -> Rule {
+        if let Some(scope) = scope.and_then(|name| self.scope(name)) {
+            return scope.embedder;
+        }
+        if self.scopes.iter().any(|s| s.embedder == Rule::Local) {
+            Rule::Local
+        } else {
+            Rule::Any
+        }
+    }
+
+    /// The scope whose `paths` hold the working directory `cwd` most deeply, comparing whole folder
+    /// names with links resolved on both sides; `None` when no entry holds it, two scopes tie,
+    /// or `cwd` cannot be resolved.
+    pub fn scope_for(&self, cwd: &Path) -> Option<&str> {
+        let cwd = std::fs::canonicalize(cwd).ok()?;
+        let mut best: Option<(usize, &str)> = None;
+        let mut tied = false;
+        for scope in &self.scopes {
+            for item in &scope.paths {
+                let Ok(folder) = expand(item, self.home.as_deref()).map(|p| resolve(&p)) else {
+                    continue;
+                };
+                if !cwd.starts_with(&folder) {
+                    continue;
+                }
+                let depth = folder.components().count();
+                match best {
+                    Some((d, name)) if d == depth => tied |= name != scope.name,
+                    Some((d, _)) if d > depth => {}
+                    _ => {
+                        best = Some((depth, scope.name.as_str()));
+                        tied = false;
+                    }
+                }
+            }
+        }
+        best.filter(|_| !tied).map(|(_, name)| name)
+    }
 }
 
 fn trim(text: &str) -> &str {
@@ -562,11 +902,11 @@ mod tests {
     const BASE: &str = "embedder.url = http://bagend:8081\nembedder.model = m\n";
 
     fn parsed(text: &str) -> Result<Option<Embedder>, String> {
-        parse(Path::new("/c"), text, Some(Path::new("/home/a"))).map(|(e, ..)| e)
+        parse(Path::new("/c"), text, Some(Path::new("/home/a"))).map(|s| s.embedder)
     }
 
     fn digest(text: &str) -> Result<Digest, String> {
-        parse(Path::new("/c"), text, Some(Path::new("/home/a"))).map(|(_, d, ..)| d)
+        parse(Path::new("/c"), text, Some(Path::new("/home/a"))).map(|s| s.digest)
     }
 
     #[test]
@@ -599,7 +939,7 @@ mod tests {
     #[test]
     fn digest_lines_keep_what_the_file_wrote_in_keys_order() {
         let text = "digest.log = \"off\"\nembedder.url = http://h\nembedder.model = m\ndigest.enable = on\ndigest.min_similarity = 0.55\n";
-        let (.., lines) = parse(Path::new("/c"), text, None).unwrap();
+        let lines = parse(Path::new("/c"), text, None).unwrap().kept_lines;
         assert_eq!(
             lines,
             [
@@ -615,14 +955,14 @@ mod tests {
                 None
             )
             .unwrap()
-            .3
+            .kept_lines
             .is_empty()
         );
     }
 
     #[test]
     fn history_defaults_and_values() {
-        let history = |text: &str| parse(Path::new("/c"), text, None).map(|(_, _, h, _)| h);
+        let history = |text: &str| parse(Path::new("/c"), text, None).map(|s| s.history);
         assert_eq!(history("").unwrap().keep_days, 90);
         assert_eq!(history(BASE).unwrap().keep_days, 90);
         assert_eq!(history("history.keep_days = 30\n").unwrap().keep_days, 30);
@@ -654,7 +994,7 @@ mod tests {
     #[test]
     fn history_lines_are_kept_beside_the_digest_lines() {
         let text = "history.keep_days = 30\ndigest.log = on\nembedder.url = http://h\nembedder.model = m\n";
-        let (.., lines) = parse(Path::new("/c"), text, None).unwrap();
+        let lines = parse(Path::new("/c"), text, None).unwrap().kept_lines;
         assert_eq!(
             lines,
             [
@@ -862,7 +1202,7 @@ mod tests {
     fn unknown_key_names_file_and_line() {
         assert_eq!(
             err("# c\n\nembeder.url = http://x\n"),
-            "/c:3: unknown key 'embeder.url'; keys: embedder.url, embedder.model, embedder.token_file, embedder.token_env, embedder.query_prefix, embedder.min_similarity, digest.enable, digest.min_similarity, digest.log, history.keep_days"
+            "/c:3: unknown key 'embeder.url'; keys: embedder.url, embedder.model, embedder.token_file, embedder.token_env, embedder.query_prefix, embedder.min_similarity, digest.enable, digest.min_similarity, digest.log, history.keep_days, scope.<name>.sync, scope.<name>.embedder, scope.<name>.paths, scope.<name>.marks, scope.default"
         );
     }
 
@@ -1189,6 +1529,7 @@ mod tests {
             "http://bagend:8081",
             "https://api.openai.com",
             "http://localhost.evil.com",
+            "http://0.0.0.0:8081",
         ] {
             assert!(!is_local(no), "{no}");
         }
@@ -1225,5 +1566,326 @@ mod tests {
             ..env()
         };
         assert!(path(&relative).is_err());
+    }
+
+    fn scopes(text: &str) -> Result<Settings, String> {
+        parse(Path::new("/c"), text, Some(Path::new("/home/a")))
+    }
+
+    fn scope_err(text: &str) -> String {
+        scopes(text).unwrap_err()
+    }
+
+    #[test]
+    fn a_full_declaration() {
+        let text = "scope.personal.sync = off\nscope.work.embedder = local\nscope.work.paths = ~/Developer/acme\nscope.work.marks = acme, ~/Developer/acme\nscope.default = personal\n";
+        let s = scopes(text).unwrap();
+        assert_eq!(s.scope_names(), ["personal", "work"]);
+        assert_eq!(s.default_scope.as_deref(), Some("personal"));
+        let work = s.scope("work").unwrap();
+        assert_eq!(work.embedder, Rule::Local);
+        assert_eq!(work.sync, "off");
+        assert_eq!(work.paths, ["~/Developer/acme"]);
+        assert_eq!(
+            work.marks,
+            [
+                Mark::Word("acme".to_string()),
+                Mark::Path(vec![
+                    "/home/a/Developer/acme".to_string(),
+                    "~/Developer/acme".to_string()
+                ])
+            ]
+        );
+        assert_eq!(s.scope("personal").unwrap().embedder, Rule::Any);
+        assert_eq!(s.scope_lines.len(), 5);
+    }
+
+    #[test]
+    fn one_key_declares_a_scope() {
+        let s = scopes("scope.work.marks = acme\n").unwrap();
+        let work = s.scope("work").unwrap();
+        assert_eq!((work.sync, work.embedder), ("off", Rule::Any));
+        assert!(work.paths.is_empty());
+        assert_eq!(s.default_scope, None);
+    }
+
+    #[test]
+    fn scopes_need_no_embedder() {
+        assert!(
+            scopes("scope.work.embedder = local\n")
+                .unwrap()
+                .embedder
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn scope_lines_keep_file_order_unquoted() {
+        let text = "scope.work.paths = \"~/a\"\ndigest.log = on\nscope.default = work\nscope.work.marks = acme\n";
+        let s = scopes(text).unwrap();
+        assert_eq!(
+            s.scope_lines,
+            [
+                ("scope.work.paths".to_string(), "~/a".to_string()),
+                ("scope.default".to_string(), "work".to_string()),
+                ("scope.work.marks".to_string(), "acme".to_string())
+            ]
+        );
+        assert_eq!(s.kept_lines, [("digest.log", "on".to_string())]);
+    }
+
+    #[test]
+    fn scope_value_errors_name_the_key() {
+        assert_eq!(
+            scope_err("scope.personal.sync = https://relay.example.net\n"),
+            "/c:1: scope.personal.sync must be off, got 'https://relay.example.net'"
+        );
+        assert_eq!(
+            scope_err("\nscope.work.embedder = remote\n"),
+            "/c:2: scope.work.embedder must be any or local, got 'remote'"
+        );
+        assert!(scope_err("scope.work.sync =\n").contains("scope.work.sync needs a value"));
+    }
+
+    #[test]
+    fn bad_scope_names_and_sub_keys() {
+        assert!(scope_err("scope.Work.sync = off\n").starts_with("/c:1: scope.Work.sync: "));
+        assert!(scope_err("scope.a--b.sync = off\n").contains("scope.a--b.sync"));
+        assert_eq!(
+            scope_err("scope.default.sync = off\n"),
+            "/c:1: scope.default.sync: 'default' is not a scope name; use scope.default"
+        );
+        for key in ["scope.work.colour", "scope.work", "scope.sync", "scope."] {
+            let message = scope_err(&format!("{key} = red\n"));
+            assert!(
+                message.starts_with(&format!("/c:1: unknown key '{key}'; keys: embedder.url")),
+                "{message}"
+            );
+            assert!(
+                message.ends_with("scope.<name>.marks, scope.default"),
+                "{message}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_default_that_is_not_declared() {
+        assert_eq!(
+            scope_err("\nscope.default = acme\n"),
+            "/c:2: scope.default names 'acme', which no scope.acme.* key declares"
+        );
+        assert!(scopes("scope.default = acme\nscope.acme.sync = off\n").is_ok());
+    }
+
+    #[test]
+    fn scope_keys_repeat_like_any_key() {
+        assert_eq!(
+            scope_err("scope.work.sync = off\nscope.work.sync = off\n"),
+            "/c:2: scope.work.sync is set twice; first on line 1"
+        );
+    }
+
+    #[test]
+    fn path_and_mark_lists() {
+        let s = scopes("scope.work.paths = ~/Developer/acme, /srv/acme/\n").unwrap();
+        assert_eq!(
+            s.scope("work").unwrap().paths,
+            ["~/Developer/acme", "/srv/acme/"]
+        );
+        assert_eq!(
+            scope_err("scope.work.paths = /a,,/b\n"),
+            "/c:1: scope.work.paths has an empty item"
+        );
+        assert_eq!(
+            scope_err("scope.work.marks = acme,,beta\n"),
+            "/c:1: scope.work.marks has an empty item"
+        );
+        assert_eq!(
+            scope_err("scope.work.paths = Developer/acme\n"),
+            "/c:1: scope.work.paths item 'Developer/acme' must be an absolute path or start with ~/"
+        );
+        assert!(scopes("scope.a.paths = ~/\nscope.b.paths = /\n").is_ok());
+        let message = parse(Path::new("/c"), "scope.a.paths = ~/x\n", None).unwrap_err();
+        assert!(
+            message.contains("HOME is not an absolute path"),
+            "{message}"
+        );
+    }
+
+    #[test]
+    fn a_mark_is_one_word_or_a_path() {
+        for item in [
+            "acme corp",
+            "acme.",
+            "Acme's",
+            "a",
+            "ac-me",
+            "~acme",
+            "acme_corp",
+        ] {
+            let message = scope_err(&format!("scope.work.marks = {item}\n"));
+            assert!(
+                message.starts_with(&format!(
+                    "/c:1: scope.work.marks item '{item}' must be one word"
+                )),
+                "{message}"
+            );
+        }
+        let s = scopes("scope.work.marks = Ação, acme2, /srv/acme/\n").unwrap();
+        assert_eq!(
+            s.scope("work").unwrap().marks,
+            [
+                Mark::Word("acao".to_string()),
+                Mark::Word("acme2".to_string()),
+                Mark::Path(vec!["/srv/acme".to_string()])
+            ]
+        );
+        assert_eq!(
+            scope_err("scope.work.marks = /srv/acme, acme\nscope.x.marks = Acme\n"),
+            "/c:2: scope.x.marks holds 'Acme', which scope.work.marks holds too (line 1)"
+        );
+        assert!(scopes("scope.work.marks = acme, acme\n").is_ok());
+        let message = scope_err("scope.a.marks = ~/x\nscope.b.marks = /home/a/x\n");
+        assert!(
+            message.starts_with("/c:2: scope.b.marks holds '/home/a/x'"),
+            "{message}"
+        );
+    }
+
+    #[test]
+    fn path_marks_come_with_their_forms() {
+        let forms = |item: &str| {
+            let s = scopes(&format!("scope.w.marks = {item}\n")).unwrap();
+            match s.scope("w").unwrap().marks[0].clone() {
+                Mark::Path(forms) => forms,
+                other => panic!("{other:?}"),
+            }
+        };
+        assert_eq!(
+            forms("~/Developer/acme"),
+            ["/home/a/Developer/acme", "~/Developer/acme"]
+        );
+        assert_eq!(
+            forms("/home/a/Developer/acme/"),
+            ["/home/a/Developer/acme", "~/Developer/acme"]
+        );
+        assert_eq!(forms("~/"), ["/home/a", "~"]);
+        assert_eq!(forms("~//x"), ["/home/a/x", "~/x"]);
+        assert_eq!(forms("/srv/acme"), ["/srv/acme"]);
+        assert_eq!(forms("/home/ab/x"), ["/home/ab/x"]);
+        assert_eq!(forms("/"), ["/"]);
+    }
+
+    #[test]
+    fn one_path_in_two_scopes() {
+        assert_eq!(
+            scope_err(
+                "scope.work.paths = ~/Developer/acme\nscope.personal.paths = ~/Developer/acme/\n"
+            ),
+            "/c:2: scope.personal.paths names the same folder as scope.work.paths (line 1)"
+        );
+        assert!(scopes("scope.work.paths = /a, /a/\n").is_ok());
+    }
+
+    #[test]
+    fn one_folder_under_two_spellings() {
+        let dir = scratch("spellings");
+        let home = dir.0.join("home");
+        std::fs::create_dir_all(home.join("Developer/acme")).unwrap();
+        std::os::unix::fs::symlink(home.join("Developer/acme"), home.join("src")).unwrap();
+        let text = format!(
+            "scope.work.paths = ~/Developer/acme\nscope.personal.paths = {}\n",
+            home.join("src").display()
+        );
+        let message = parse(Path::new("/c"), &text, Some(&home)).unwrap_err();
+        assert_eq!(
+            message,
+            "/c:2: scope.personal.paths names the same folder as scope.work.paths (line 1)"
+        );
+    }
+
+    fn tree(name: &str, text: &str) -> (Scratch, Settings) {
+        let dir = scratch(name);
+        for folder in ["acme/api", "acme-tools", "other"] {
+            std::fs::create_dir_all(dir.0.join("home").join(folder)).unwrap();
+        }
+        let home = dir.0.join("home");
+        let settings = parse(Path::new("/c"), text, Some(&home)).unwrap();
+        (dir, settings)
+    }
+
+    #[test]
+    fn the_longest_path_wins_by_whole_folder_names() {
+        let text = "scope.personal.paths = ~/\nscope.work.paths = ~/acme, /nonexistent-bilbo-x/\n";
+        let (dir, s) = tree("longest", text);
+        let at = |p: &str| s.scope_for(&dir.0.join("home").join(p)).map(str::to_string);
+        assert_eq!(at("acme/api").as_deref(), Some("work"));
+        assert_eq!(at("acme").as_deref(), Some("work"));
+        assert_eq!(at("acme-tools").as_deref(), Some("personal"));
+        assert_eq!(at("other").as_deref(), Some("personal"));
+        assert_eq!(s.scope_for(&dir.0), None);
+        assert_eq!(s.scope_for(&dir.0.join("gone")), None);
+    }
+
+    #[test]
+    fn a_root_entry_and_a_trailing_slash_match() {
+        let (dir, s) = tree(
+            "root-slash",
+            "scope.all.paths = /\nscope.work.paths = ~/acme/\n",
+        );
+        let home = dir.0.join("home");
+        assert_eq!(s.scope_for(&home.join("acme/api")), Some("work"));
+        assert_eq!(s.scope_for(&home.join("other")), Some("all"));
+        assert_eq!(s.scope_for(&dir.0), Some("all"));
+    }
+
+    #[test]
+    fn a_double_slash_after_the_tilde_is_one() {
+        let s = scopes("scope.a.paths = ~//etc\n").unwrap();
+        assert_eq!(s.scope("a").unwrap().paths, ["~//etc"]);
+        assert!(scopes("scope.a.paths = ~//etc\nscope.b.paths = /home/a/etc\n").is_err());
+    }
+
+    #[test]
+    fn a_working_directory_through_a_link_matches() {
+        let (dir, s) = tree("through-link", "scope.work.paths = ~/acme\n");
+        let link = dir.0.join("link");
+        std::os::unix::fs::symlink(dir.0.join("home/acme/api"), &link).unwrap();
+        assert_eq!(s.scope_for(&link), Some("work"));
+    }
+
+    #[test]
+    fn a_tie_through_a_link_made_after_load_matches_nothing() {
+        let text = "scope.x.paths = ~/acme\nscope.y.paths = ~/later\n";
+        let (dir, s) = tree("late-link", text);
+        let acme = dir.0.join("home/acme");
+        assert_eq!(s.scope_for(&acme), Some("x"));
+        std::os::unix::fs::symlink(&acme, dir.0.join("home/later")).unwrap();
+        assert_eq!(s.scope_for(&acme), None);
+        assert_eq!(s.scope_for(&acme.join("api")), None);
+    }
+
+    #[test]
+    fn the_home_folder_as_a_path() {
+        let text = "scope.personal.paths = ~/\nscope.work.paths = ~/acme\n";
+        let (dir, s) = tree("home-path", text);
+        let home = dir.0.join("home");
+        assert_eq!(s.scope_for(&home.join("acme/api")), Some("work"));
+        assert_eq!(s.scope_for(&home.join("other")), Some("personal"));
+    }
+
+    #[test]
+    fn the_rule_of_a_scope_value() {
+        let s = scopes("scope.work.embedder = local\nscope.personal.sync = off\n").unwrap();
+        assert_eq!(s.rule(Some("work")), Rule::Local);
+        assert_eq!(s.rule(Some("personal")), Rule::Any);
+        assert_eq!(s.rule(None), Rule::Local);
+        assert_eq!(s.rule(Some("acme")), Rule::Local);
+        let s = scopes("scope.personal.sync = off\n").unwrap();
+        assert_eq!(s.rule(None), Rule::Any);
+        let s = scopes("").unwrap();
+        assert_eq!(s.rule(None), Rule::Any);
+        assert_eq!(s.rule(Some("work")), Rule::Any);
+        assert_eq!(Rule::Local.as_str(), "local");
     }
 }
