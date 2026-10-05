@@ -3,7 +3,9 @@ use std::io::Write;
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 
+use crate::search::documents::Stored;
 use crate::search::rank::{self, Document};
+use crate::shared::config::{self, Rule};
 
 pub const MAGIC: &[u8; 10] = b"BILBOVEC1\n";
 
@@ -26,12 +28,39 @@ impl Cache {
     }
 }
 
-/// The cached vector of each passage of `documents` (`None` without text or vector), and how many
-/// distinct passage inputs have no vector made by `model`.
+/// The keys of the inputs `bilbo index` withholds from the embedder: those only notes whose rule is `local` hold,
+/// while the embedder's host is not loopback. Empty without an embedder. Its size is the withheld count.
+pub fn withheld(stored: &[Stored], settings: &config::Settings) -> HashSet<u64> {
+    let Some(embedder) = &settings.embedder else {
+        return HashSet::new();
+    };
+    if config::is_local(&embedder.url) || settings.scopes.iter().all(|s| s.embedder == Rule::Any) {
+        return HashSet::new();
+    }
+    let mut local = HashSet::new();
+    let mut open = HashSet::new();
+    for note in stored {
+        let keys = note
+            .document
+            .passages
+            .iter()
+            .filter_map(|p| rank::input(p).map(|input| key(&input)));
+        match settings.rule(note.scope.as_deref()) {
+            Rule::Local => local.extend(keys),
+            Rule::Any => open.extend(keys),
+        }
+    }
+    local.retain(|key| !open.contains(key));
+    local
+}
+
+/// The cached vector of each passage of `documents` (`None` without text, vector or when `withheld` holds its input),
+/// and how many distinct passage inputs have no vector made by `model`, withheld ones excepted.
 pub fn lookup<'a>(
     cache: &'a Cache,
     model: &str,
     documents: &[Document],
+    withheld: &HashSet<u64>,
 ) -> (Vec<Vec<Option<&'a [f32]>>>, usize) {
     let mut seen = HashSet::new();
     let mut missing = 0;
@@ -42,6 +71,9 @@ pub fn lookup<'a>(
                 .iter()
                 .map(|p| {
                     let key = key(&rank::input(p)?);
+                    if withheld.contains(&key) {
+                        return None;
+                    }
                     let vector = cache.get(model, key);
                     if vector.is_none() && seen.insert(key) {
                         missing += 1;
@@ -212,7 +244,7 @@ mod tests {
         let known = key(&rank::input(&docs[0].passages[0]).unwrap());
         let mut c = cache(&[]);
         c.vectors.insert(known, vec![1.0, 0.0, 0.0]);
-        let (found, missing) = lookup(&c, "m", &docs);
+        let (found, missing) = lookup(&c, "m", &docs, &HashSet::new());
         assert_eq!(found[0][0], Some([1.0, 0.0, 0.0].as_slice()));
         assert_eq!(found[0][1], None);
         assert_eq!(found[0][2], None);
@@ -221,12 +253,23 @@ mod tests {
     }
 
     #[test]
+    fn lookup_ignores_a_withheld_vector_and_does_not_count_it() {
+        let docs = [doc(&["known", "other"])];
+        let known = key(&rank::input(&docs[0].passages[0]).unwrap());
+        let mut c = cache(&[]);
+        c.vectors.insert(known, vec![1.0, 0.0, 0.0]);
+        let (found, missing) = lookup(&c, "m", &docs, &HashSet::from([known]));
+        assert_eq!(found[0], [None, None]);
+        assert_eq!(missing, 1);
+    }
+
+    #[test]
     fn lookup_misses_everything_for_another_model() {
         let docs = [doc(&["known", "other"])];
         let k = key(&rank::input(&docs[0].passages[0]).unwrap());
         let mut c = cache(&[]);
         c.vectors.insert(k, vec![1.0, 0.0, 0.0]);
-        let (found, missing) = lookup(&c, "another", &docs);
+        let (found, missing) = lookup(&c, "another", &docs, &HashSet::new());
         assert_eq!(found[0], [None, None]);
         assert_eq!(missing, 2);
     }

@@ -839,3 +839,165 @@ fn index_embeds_no_library_text() {
     assert_eq!(again.stdout, "embedded 0, kept 1, dropped 0\n");
     assert_eq!(fake.inputs().len(), 1);
 }
+
+/// A note of `scope`, titled `title`, with `body` below.
+fn scoped(scope: &str, title: &str, body: &str) -> String {
+    note(title, body).replacen("\n---\n\n#", &format!("\nscope: {scope}\n---\n\n#"), 1)
+}
+
+/// The vectors in the cache file, 4 dimensions each.
+fn cached(s: &Setup) -> usize {
+    let bytes = std::fs::read(cache_file(s)).unwrap();
+    (bytes.len() - (10 + 4 + 10 + 4 + 4)) / 24
+}
+
+fn withheld_line(url: &str, n: usize) -> String {
+    format!(
+        "bilbo: withheld {n} passages from {url}: their scope allows only a loopback embedder\n"
+    )
+}
+
+const LOCAL_WORK: &[&str] = &[
+    "scope.work.embedder = local",
+    "scope.personal.embedder = any",
+];
+
+#[test]
+fn a_local_scope_withholds_its_passages_from_a_remote_embedder() {
+    let fake = Fake::start(4);
+    let url = format!("http://0.0.0.0:{}", fake.port());
+    let s = setup_in(TempDir::new("index-withheld"), &url, LOCAL_WORK);
+    let body = "Where notes live.\n## Layout\n\nOne flat folder.\n";
+    write(&s.root, "plan-a.md", &scoped("work", "Secret", body));
+    write(
+        &s.root,
+        "plan-b.md",
+        &scoped("personal", "Open", "Free text.\n"),
+    );
+    let run = index(&s, &[], &[]);
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    assert_eq!(run.stdout, "embedded 1, kept 0, dropped 0\n");
+    assert_eq!(run.stderr, withheld_line(&url, 2));
+    assert_eq!(fake.inputs(), ["Open\nFree text."]);
+    assert_eq!(cached(&s), 1);
+}
+
+#[test]
+fn unassigned_notes_take_the_strictest_rule() {
+    let fake = Fake::start(4);
+    let url = format!("http://0.0.0.0:{}", fake.port());
+    let s = setup_in(TempDir::new("index-withheld-unassigned"), &url, LOCAL_WORK);
+    write(&s.root, "plan-a.md", &note("Loose", "No scope.\n"));
+    let run = index(&s, &[], &[]);
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    assert_eq!(run.stdout, "embedded 0, kept 0, dropped 0\n");
+    assert_eq!(run.stderr, withheld_line(&url, 1));
+    assert!(fake.requests().is_empty());
+}
+
+#[test]
+fn the_withheld_count_is_distinct_inputs() {
+    let fake = Fake::start(4);
+    let url = format!("http://0.0.0.0:{}", fake.port());
+    let s = setup_in(TempDir::new("index-withheld-distinct"), &url, LOCAL_WORK);
+    write(&s.root, "plan-a.md", &scoped("work", "Same", "Twice.\n"));
+    write(&s.root, "plan-b.md", &scoped("work", "Same", "Twice.\n"));
+    let run = index(&s, &[], &[]);
+    assert_eq!(run.stderr, withheld_line(&url, 1));
+}
+
+#[test]
+fn text_shared_with_an_any_note_is_sent_once() {
+    let fake = Fake::start(4);
+    let url = format!("http://0.0.0.0:{}", fake.port());
+    let s = setup_in(TempDir::new("index-withheld-shared"), &url, LOCAL_WORK);
+    write(
+        &s.root,
+        "plan-a.md",
+        &scoped("work", "Deploy", "Push it.\n"),
+    );
+    write(
+        &s.root,
+        "plan-b.md",
+        &scoped("personal", "Deploy", "Push it.\n"),
+    );
+    let run = index(&s, &[], &[]);
+    ok(&run);
+    assert_eq!(run.stdout, "embedded 1, kept 0, dropped 0\n");
+    assert_eq!(fake.inputs(), ["Deploy\nPush it."]);
+}
+
+#[test]
+fn a_loopback_embedder_gets_everything() {
+    let fake = Fake::start(4);
+    let s = setup("index-withheld-loopback", &fake, LOCAL_WORK);
+    write(&s.root, "plan-a.md", &scoped("work", "One", "First.\n"));
+    write(
+        &s.root,
+        "plan-b.md",
+        &scoped("personal", "Two", "Second.\n"),
+    );
+    write(&s.root, "plan-c.md", &note("Three", "Third.\n"));
+    let run = index(&s, &[], &[]);
+    ok(&run);
+    assert_eq!(run.stdout, "embedded 3, kept 0, dropped 0\n");
+    assert_eq!(fake.inputs().len(), 3);
+}
+
+#[test]
+fn no_scope_asking_for_local_withholds_nothing() {
+    let fake = Fake::start(4);
+    let url = format!("http://0.0.0.0:{}", fake.port());
+    let s = setup_in(
+        TempDir::new("index-withheld-none"),
+        &url,
+        &["scope.work.embedder = any"],
+    );
+    write(&s.root, "plan-a.md", &scoped("work", "One", "First.\n"));
+    write(&s.root, "plan-b.md", &note("Two", "Unassigned.\n"));
+    let run = index(&s, &[], &[]);
+    ok(&run);
+    assert_eq!(run.stdout, "embedded 2, kept 0, dropped 0\n");
+}
+
+#[test]
+fn a_note_moving_into_a_local_scope_loses_its_vectors() {
+    let fake = Fake::start(4);
+    let url = format!("http://0.0.0.0:{}", fake.port());
+    let dir = TempDir::new("index-withheld-moved");
+    let s = setup_in(dir, &url, &["scope.work.embedder = any"]);
+    let body = "Where notes live.\n## Layout\n\nOne flat folder.\n";
+    write(&s.root, "plan-a.md", &scoped("work", "Moved", body));
+    let run = index(&s, &[], &[]);
+    ok(&run);
+    assert_eq!(run.stdout, "embedded 2, kept 0, dropped 0\n");
+    assert_eq!(cached(&s), 2);
+
+    let path = config_for(&s.dir, &url, &["scope.work.embedder = local"]);
+    assert_eq!(path, s.config);
+    let sent = fake.requests().len();
+    let run = index(&s, &[], &[]);
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    assert_eq!(run.stdout, "embedded 0, kept 0, dropped 2\n");
+    assert_eq!(run.stderr, withheld_line(&url, 2));
+    assert_eq!(fake.requests().len(), sent);
+    assert_eq!(cached(&s), 0);
+}
+
+#[test]
+fn the_withheld_line_comes_before_an_embedder_error() {
+    let fake = Fake::start(4);
+    let url = format!("http://0.0.0.0:{}", fake.port());
+    let s = setup_in(TempDir::new("index-withheld-error"), &url, LOCAL_WORK);
+    write(&s.root, "plan-a.md", &scoped("work", "Secret", "Hidden.\n"));
+    write(&s.root, "plan-b.md", &scoped("personal", "Open", "Free.\n"));
+    fake.status(500);
+    let run = index(&s, &[], &[]);
+    failed(&run, 1);
+    assert!(
+        run.stderr.starts_with(&withheld_line(&url, 1)),
+        "{}",
+        run.stderr
+    );
+    assert_eq!(run.stderr.lines().count(), 2, "{}", run.stderr);
+}

@@ -847,3 +847,160 @@ fn a_source_holding_every_word_is_not_a_digest_hit() {
     assert!(again.stdout.is_empty(), "{}", again.stdout);
     assert!(again.stderr.is_empty(), "{}", again.stderr);
 }
+
+const DEPLOY_PROMPT: &str = "why does the deploy pipeline stall on staging";
+
+/// The config lines for a remote embedder at the fake's `0.0.0.0` address, `scopes` after the standard ones.
+fn remote_lines(fake: &Fake, scopes: &[&str]) -> Vec<String> {
+    let mut lines = vec![
+        format!("embedder.url = http://0.0.0.0:{}", fake.port()),
+        "embedder.model = test-model".to_string(),
+        "embedder.query_prefix = \"search: \"".to_string(),
+        "digest.log = on".to_string(),
+    ];
+    lines.extend(scopes.iter().map(|s| s.to_string()));
+    lines
+}
+
+fn remote_rig(name: &str, fake: &Fake, scopes: &[&str]) -> Rig {
+    let lines = remote_lines(fake, scopes);
+    let lines: Vec<&str> = lines.iter().map(String::as_str).collect();
+    Rig::new(name, &lines)
+}
+
+/// A note of `scope`, titled `title`, with `body` below.
+fn scoped(scope: &str, title: &str, body: &str) -> String {
+    note(title, body).replacen("\n---\n\n#", &format!("\nscope: {scope}\n---\n\n#"), 1)
+}
+
+/// A store whose one `any` note is embedded, so the digest's meaning gate is in charge, and a query vector
+/// that is far from it.
+fn anchored(name: &str, fake: &Fake, scopes: &[&str]) -> Rig {
+    fake.vector("why does", &[1.0, 0.0, 0.0]);
+    fake.vector("Anchor", &[0.0, 1.0, 0.0]);
+    let rig = remote_rig(name, fake, scopes);
+    write(
+        &rig.root,
+        "plan-anchor.md",
+        &scoped("personal", "Anchor", "Nothing to see here.\n"),
+    );
+    rig
+}
+
+const WORK_LOCAL: &[&str] = &[
+    "scope.work.embedder = local",
+    "scope.personal.embedder = any",
+];
+
+#[test]
+fn gate_withheld_note_passes_on_keywords() {
+    let fake = Fake::start(3);
+    let rig = anchored("digest-withheld-pass", &fake, WORK_LOCAL);
+    write(
+        &rig.root,
+        "plan-deploy.md",
+        &scoped("work", "Deploy", "The deploy pipeline runs on staging.\n"),
+    );
+    rig.index();
+    let run = rig.digest("abc", DEPLOY_PROMPT);
+    assert!(run.stderr.is_empty(), "{}", run.stderr);
+    assert!(run.stdout.contains("plan-deploy.md"), "{}", run.stdout);
+    assert!(!run.stdout.contains("plan-anchor.md"), "{}", run.stdout);
+    assert_eq!(rig.log().pop().unwrap()["ranking"], "meaning");
+    assert!(
+        fake.inputs().iter().all(|i| !i.contains("runs on staging")),
+        "{:?}",
+        fake.inputs()
+    );
+}
+
+#[test]
+fn gate_withheld_note_needs_three_words() {
+    let fake = Fake::start(3);
+    let rig = anchored("digest-withheld-two", &fake, WORK_LOCAL);
+    write(
+        &rig.root,
+        "plan-deploy.md",
+        &scoped("work", "Deploy", "A deploy waits on staging.\n"),
+    );
+    rig.index();
+    silent(&rig.digest("abc", DEPLOY_PROMPT));
+    assert_eq!(rig.log().pop().unwrap()["ranking"], "meaning");
+}
+
+#[test]
+fn gate_unembedded_note_in_no_local_scope_still_needs_meaning() {
+    let fake = Fake::start(3);
+    let rig = anchored(
+        "digest-unembedded",
+        &fake,
+        &["scope.personal.embedder = any"],
+    );
+    rig.index();
+    write(
+        &rig.root,
+        "plan-deploy.md",
+        &scoped(
+            "personal",
+            "Deploy",
+            "The deploy pipeline runs on staging.\n",
+        ),
+    );
+    silent(&rig.digest("abc", DEPLOY_PROMPT));
+    assert_eq!(rig.log().pop().unwrap()["ranking"], "meaning");
+}
+
+#[test]
+fn gate_ignores_the_cached_vector_of_a_withheld_note() {
+    let fake = Fake::start(3);
+    fake.vector("why does", &[1.0, 0.0, 0.0]);
+    fake.vector("Anchor", &[0.0, 1.0, 0.0]);
+    fake.vector("Deploy", &[1.0, 0.0, 0.0]);
+    let rig = remote_rig(
+        "digest-stale-vector",
+        &fake,
+        &["scope.personal.embedder = any"],
+    );
+    write(
+        &rig.root,
+        "plan-anchor.md",
+        &scoped("personal", "Anchor", "Nothing to see here.\n"),
+    );
+    write(
+        &rig.root,
+        "plan-deploy.md",
+        &scoped("work", "Deploy", "A deploy waits on staging.\n"),
+    );
+    rig.index();
+    let run = rig.digest("abc", DEPLOY_PROMPT);
+    assert!(run.stdout.contains("plan-deploy.md"), "{}", run.stdout);
+
+    let lines = remote_lines(&fake, WORK_LOCAL);
+    let lines: Vec<&str> = lines.iter().map(String::as_str).collect();
+    config(&rig.dir, &lines);
+    silent(&rig.digest("def", DEPLOY_PROMPT));
+    assert_eq!(rig.log().pop().unwrap()["ranking"], "meaning");
+}
+
+#[test]
+fn gate_an_all_withheld_store_ranks_by_keywords_and_asks_nothing() {
+    let fake = Fake::start(3);
+    let rig = remote_rig(
+        "digest-all-withheld",
+        &fake,
+        &["scope.work.embedder = local"],
+    );
+    write(
+        &rig.root,
+        "plan-deploy.md",
+        &scoped("work", "Deploy", "The deploy pipeline runs on staging.\n"),
+    );
+    rig.index();
+    let run = rig.digest("abc", DEPLOY_PROMPT);
+    assert!(run.stderr.is_empty(), "{}", run.stderr);
+    assert!(run.stdout.contains("plan-deploy.md"), "{}", run.stdout);
+    let last = rig.log().pop().unwrap();
+    assert_eq!(last["ranking"], "keywords");
+    assert!(last.get("error").is_none_or(|e| e.is_null()), "{last}");
+    assert!(fake.requests().is_empty());
+}

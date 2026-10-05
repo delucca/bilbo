@@ -26,7 +26,7 @@ pub fn run(args: &[String], env: &store::Env) -> Result<Output, Failure> {
         }));
     }
     let settings = config::load(env).map_err(Failure::Config)?;
-    let Some(embedder) = settings.embedder else {
+    let Some(embedder) = &settings.embedder else {
         let path = settings
             .path
             .map_or("$HOME/.config/bilbo/config".into(), |p| {
@@ -50,6 +50,14 @@ pub fn run(args: &[String], env: &store::Env) -> Result<Output, Failure> {
     let stored = documents::read_notes(&notes)
         .map_err(|e| Failure::Refused(format!("cannot read {}: {e}", notes.display())))?;
 
+    let withheld = vectors::withheld(&stored, &settings);
+    let withheld_line = (!withheld.is_empty()).then(|| {
+        format!(
+            "withheld {} passages from {}: their scope allows only a loopback embedder",
+            withheld.len(),
+            embedder.url
+        )
+    });
     let mut needed: Vec<(u64, String)> = Vec::new();
     let mut seen = HashSet::new();
     for passage in stored.iter().flat_map(|n| &n.document.passages) {
@@ -57,7 +65,7 @@ pub fn run(args: &[String], env: &store::Env) -> Result<Output, Failure> {
             continue;
         };
         let key = vectors::key(&input);
-        if seen.insert(key) {
+        if !withheld.contains(&key) && seen.insert(key) {
             needed.push((key, input));
         }
     }
@@ -90,13 +98,16 @@ pub fn run(args: &[String], env: &store::Env) -> Result<Output, Failure> {
         .filter(|(key, _)| cache.get(&embedder.model, *key).is_none())
         .collect();
     if missing.is_empty() {
-        save_if(changed, &file, &cache).map_err(Failure::Refused)?;
-        return Ok(output(line(0)));
+        save_if(changed, &file, &cache).map_err(|e| refused(e, Ok(()), &withheld_line))?;
+        return Ok(output(line(0), withheld_line));
     }
 
-    let client = match embed::Client::new(&embedder, |name| std::env::var_os(name), TIMEOUT) {
+    let client = match embed::Client::new(embedder, |name| std::env::var_os(name), TIMEOUT) {
         Ok(client) => client,
-        Err(message) => return Err(refused(message, save_if(changed, &file, &cache))),
+        Err(message) => {
+            let saved = save_if(changed, &file, &cache);
+            return Err(refused(message, saved, &withheld_line));
+        }
     };
     let mut expected = (!cache.vectors.is_empty()).then_some(cache.dims);
     let embed_batch = |batch: &[String]| -> Result<Vec<Vec<f32>>, String> {
@@ -123,18 +134,18 @@ pub fn run(args: &[String], env: &store::Env) -> Result<Output, Failure> {
     );
     let saved = save_if(changed || added > 0, &file, &cache);
     match result {
-        Err(message) => Err(refused(message, saved)),
+        Err(message) => Err(refused(message, saved, &withheld_line)),
         Ok(()) => {
-            saved.map_err(Failure::Refused)?;
-            Ok(output(line(added)))
+            saved.map_err(|e| refused(e, Ok(()), &withheld_line))?;
+            Ok(output(line(added), withheld_line))
         }
     }
 }
 
-fn output(line: String) -> Output {
+fn output(line: String, withheld: Option<String>) -> Output {
     Output {
         line,
-        warnings: Vec::new(),
+        warnings: withheld.into_iter().collect(),
     }
 }
 
@@ -146,11 +157,16 @@ fn save_if(changed: bool, file: &Path, cache: &Cache) -> Result<(), String> {
     }
 }
 
-/// The failure for `message`, with the error of the save that followed it when that failed differently.
-fn refused(message: String, saved: Result<(), String>) -> Failure {
-    Failure::Refused(match saved {
+/// The failure for `message`, with the error of the save that followed it when that failed differently, under the
+/// withheld line, which came first.
+fn refused(message: String, saved: Result<(), String>, withheld: &Option<String>) -> Failure {
+    let message = match saved {
         Err(save_error) if save_error != message => format!("{message}\n{save_error}"),
         _ => message,
+    };
+    Failure::Refused(match withheld {
+        Some(line) => format!("{line}\n{message}"),
+        None => message,
     })
 }
 
@@ -256,11 +272,12 @@ mod tests {
         let same = refused(
             "cannot write x: no".into(),
             Err("cannot write x: no".into()),
+            &None,
         );
         assert_eq!(text(same), "cannot write x: no");
-        let other = refused("down".into(), Err("cannot write x: no".into()));
+        let other = refused("down".into(), Err("cannot write x: no".into()), &None);
         assert_eq!(text(other), "down\ncannot write x: no");
-        assert_eq!(text(refused("down".into(), Ok(()))), "down");
+        assert_eq!(text(refused("down".into(), Ok(()), &None)), "down");
     }
 
     #[test]

@@ -149,6 +149,7 @@ fn digest(
     }
     let stored = documents::read_notes(&notes)
         .map_err(|e| format!("cannot read {}: {e}", notes.display()))?;
+    let withheld = vectors::withheld(&stored, settings);
     let mut documents = Vec::with_capacity(stored.len());
     let mut found = Vec::with_capacity(stored.len());
     for n in stored {
@@ -159,13 +160,21 @@ fn digest(
     let keyword = rank::keyword(&words, &documents);
     let mut scored = Vec::new();
     record.ranking = "keywords";
-    if let Some(embedder) = &settings.embedder {
+    let embeddable = documents
+        .iter()
+        .flat_map(|d| &d.passages)
+        .filter_map(rank::input)
+        .any(|input| !withheld.contains(&vectors::key(&input)));
+    if let Some(embedder) = settings.embedder.as_ref().filter(|_| embeddable) {
+        let cache = store::cache_dir(env)
+            .map(|dir| vectors::load(&vectors::path(&dir, &root)))
+            .unwrap_or_default();
         match meaning(
             embedder,
-            env,
-            &root,
+            &cache,
             &query,
             &documents,
+            &withheld,
             settings.digest.min_similarity,
             start,
         ) {
@@ -176,27 +185,33 @@ fn digest(
             Err(e) => record.error = Some(e),
         }
     }
+    let mut long: Vec<String> = Vec::new();
+    for word in &words {
+        if word.chars().count() >= LONG_WORD_CHARS && !long.contains(word) {
+            long.push(word.clone());
+        }
+    }
+    let by_keywords =
+        |p: &rank::Passage| long.len() >= KEYWORD_GATE && rank::shared(p, &long) >= KEYWORD_GATE;
     let gated: Vec<bool> = if record.ranking == "meaning" {
         let mut gated = vec![false; documents.len()];
         for (_, hit) in &scored {
             gated[hit.document] = true;
         }
-        gated
-    } else {
-        let mut long: Vec<String> = Vec::new();
-        for word in &words {
-            if word.chars().count() >= LONG_WORD_CHARS && !long.contains(word) {
-                long.push(word.clone());
+        if !withheld.is_empty() {
+            for (gate, d) in gated.iter_mut().zip(&documents) {
+                *gate = *gate
+                    || d.passages.iter().any(|p| {
+                        rank::input(p).is_some_and(|input| withheld.contains(&vectors::key(&input)))
+                            && by_keywords(p)
+                    });
             }
         }
+        gated
+    } else {
         documents
             .iter()
-            .map(|d| {
-                long.len() >= KEYWORD_GATE
-                    && d.passages
-                        .iter()
-                        .any(|p| rank::shared(p, &long) >= KEYWORD_GATE)
-            })
+            .map(|d| d.passages.iter().any(by_keywords))
             .collect()
     };
     let keyword: Vec<Hit> = keyword.into_iter().filter(|h| gated[h.document]).collect();
@@ -259,17 +274,14 @@ fn digest(
 /// The passages that pass the meaning gate, best first, or why the embedder gave no answer.
 fn meaning(
     embedder: &config::Embedder,
-    env: &store::Env,
-    root: &Path,
+    cache: &vectors::Cache,
     query: &str,
     documents: &[Document],
+    withheld: &HashSet<u64>,
     min_similarity: f64,
     start: Instant,
 ) -> Result<Vec<(f32, Hit)>, String> {
-    let cache = store::cache_dir(env)
-        .map(|dir| vectors::load(&vectors::path(&dir, root)))
-        .unwrap_or_default();
-    let (found, _) = vectors::lookup(&cache, &embedder.model, documents);
+    let (found, _) = vectors::lookup(cache, &embedder.model, documents, withheld);
     if !found.iter().flatten().any(Option::is_some) {
         return Err("no passage is indexed; run bilbo index".into());
     }
