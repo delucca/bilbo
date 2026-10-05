@@ -56,7 +56,7 @@ Run every command below from the repo root as `nix develop -c sh -c '<command>'`
 ## 6. Setup and the home-manager module (`setup` delta)
 
 - [ ] 6.1 Keep `Settings.scope_lines` on a config rewrite, after the digest and history lines: `Facts.kept` in `src/setup/facts.rs`, `Plan.kept` in `src/setup/plan.rs`, `config_step` in `src/setup/apply.rs` and `config::render` take owned key strings, and `src/setup/fakes.rs` follows. Cover the `setup` delta's `The wizard keeps the scope settings` in `src/setup/driven.rs`, beside `the_wizard_keeps_the_history_setting`. Verify with `cargo test --locked --bin bilbo setup:: && cargo test --locked --bin bilbo shared::config::`
-- [ ] 6.2 In `flake.nix`, give `programs.bilbo.settings` a freeform type. Add an assertion that rejects, by name, every key that is neither in `keys` nor a well-formed `scope.<name>.sync|embedder|paths|marks` or `scope.default`, so `embeder.url` still fails. Write the scope keys after the fixed keys, in sorted order. Add flake checks for `Scope settings from Nix` and `A bad scope key fails evaluation` to the existing module check, and keep `An unknown setting fails evaluation` passing. Verify with `nix flake check -L`
+- [x] 6.2 In `flake.nix`, give `programs.bilbo.settings` a freeform type. Add an assertion that rejects, by name, every key that is neither in `keys` nor a well-formed `scope.<name>.sync|embedder|paths|marks` or `scope.default`, so `embeder.url` still fails. Write the scope keys after the fixed keys, in sorted order. Add flake checks for `Scope settings from Nix` and `A bad scope key fails evaluation` to the existing module check, and keep `An unknown setting fails evaluation` passing. Verify with `nix flake check -L`
 
 ## 7. The note skill (`agent-plugin` delta)
 

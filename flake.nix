@@ -99,6 +99,16 @@
             "digest.log"
             "history.keep_days"
           ];
+          # A scope key: scope.default, or scope.<name>.<sub> with the topic's grammar for <name>.
+          isScopeKey =
+            key:
+            key == "scope.default"
+            || (
+              let
+                parts = builtins.match "scope\\.([a-z0-9]+(-[a-z0-9]+)*)\\.(sync|embedder|paths|marks)" key;
+              in
+              parts != null && builtins.head parts != "default"
+            );
           # The same quoting rule as config::render in src/shared/config.rs.
           quote =
             value:
@@ -117,7 +127,9 @@
               "\"" + builtins.replaceStrings [ "\\" "\n" "\"" ] [ "\\\\" "\\n" "\\\"" ] value + "\""
             else
               builtins.replaceStrings [ "\\" ] [ "\\\\" ] value;
-          present = lib.filter (key: cfg.settings.${key} != null) keys;
+          badKeys = lib.filter (key: !(lib.elem key keys) && !isScopeKey key) (lib.attrNames cfg.settings);
+          scopeKeys = lib.sort builtins.lessThan (lib.filter isScopeKey (lib.attrNames cfg.settings));
+          present = lib.filter (key: cfg.settings.${key} != null) (keys ++ scopeKeys);
           text = lib.concatMapStrings (key: "${key} = ${quote cfg.settings.${key}}\n") (
             lib.filter (key: key != "embedder.query_prefix" || cfg.settings.${key} != "") present
           );
@@ -167,6 +179,7 @@
             };
             settings = lib.mkOption {
               type = lib.types.submodule {
+                freeformType = lib.types.attrsOf (lib.types.nullOr lib.types.str);
                 options = lib.genAttrs keys (
                   key:
                   lib.mkOption {
@@ -181,7 +194,7 @@
                 "embedder.url" = "http://localhost:11434";
                 "embedder.model" = "nomic-embed-text";
               };
-              description = "Settings written to the bilbo config file.";
+              description = "Settings written to the bilbo config file: the fixed keys, and scope.<name>.sync|embedder|paths|marks and scope.default.";
             };
             index = {
               enable = lib.mkOption {
@@ -236,6 +249,10 @@
                 lib.mkDefault "Instruct: Given a question, retrieve notes that answer it\nQuery: ";
             };
             assertions = [
+              {
+                assertion = badKeys == [ ];
+                message = "programs.bilbo: unknown settings ${lib.concatStringsSep ", " badKeys}; a key is one of ${lib.concatStringsSep ", " keys}, scope.default or scope.<name>.sync|embedder|paths|marks.";
+              }
               {
                 assertion =
                   !cfg.localEmbedder.enable
@@ -316,6 +333,23 @@
             settings."digest.enable" = "off";
             settings."digest.log" = "on";
           };
+          scoped = hm {
+            enable = true;
+            settings = {
+              "scope.work.paths" = "~/Developer/acme";
+              "scope.work.embedder" = "local";
+              "scope.default" = "work";
+              "history.keep_days" = "30";
+            };
+          };
+          badScope = hm {
+            enable = true;
+            settings."scope.work.colour" = "red";
+          };
+          badScopeName = hm {
+            enable = true;
+            settings."scope.default.sync" = "off";
+          };
           local = hm {
             enable = true;
             localEmbedder.enable = true;
@@ -369,6 +403,17 @@
             assert rooted.config.home.sessionVariables.BILBO_HOME == "/data/my notes/bilbo";
             assert (builtins.tryEval sample.activationPackage.drvPath).success;
             assert fails misspelled;
+            assert fails badScope;
+            assert fails badScopeName;
+            assert
+              scoped.config.xdg.configFile."bilbo/config".text == ''
+                # bilbo config, written by home-manager from programs.bilbo.settings
+                history.keep_days = 30
+                scope.default = work
+                scope.work.embedder = local
+                scope.work.paths = ~/Developer/acme
+              '';
+            assert (builtins.tryEval scoped.activationPackage.drvPath).success;
             assert fails tokenEnv;
             assert !(disabled.config.home.activation ? bilboSetup);
             assert
