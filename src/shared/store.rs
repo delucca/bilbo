@@ -84,6 +84,11 @@ pub fn scopes_dir(root: &Path) -> PathBuf {
     root.join(".bilbo/scopes")
 }
 
+/// `<root>/.bilbo/sync`, where the inbox of staged versions and the stale-base entries live.
+pub fn sync_dir(root: &Path) -> PathBuf {
+    root.join(".bilbo/sync")
+}
+
 /// `<root>/.bilbo/captures`, the local evidence of what each source was cut from.
 pub fn captures_dir(root: &Path) -> PathBuf {
     root.join(".bilbo/captures")
@@ -266,6 +271,7 @@ mod tests {
     #[test]
     fn identity_paths() {
         assert_eq!(scopes_dir(Path::new("/r")), Path::new("/r/.bilbo/scopes"));
+        assert_eq!(sync_dir(Path::new("/r")), Path::new("/r/.bilbo/sync"));
         let e = Env::from_vars(|name| (name == "XDG_STATE_HOME").then(|| "/s".into()));
         assert_eq!(keys_dir(&e), Some(PathBuf::from("/s/bilbo/keys")));
         assert_eq!(keys_dir(&Env::from_vars(|_| None)), None);

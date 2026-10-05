@@ -701,16 +701,16 @@ pub fn sweep_restore_leftovers(
         let id = &name[RESTORE_PREFIX.len()..];
         let bytes = fs::read(&path).map_err(|e| io_message("read", &path, &e))?;
         let log = load(lock.root(), id)?;
+        let digest = hash::sha256_hex(&bytes);
+        if staged.contains(&(id.to_string(), digest.clone())) {
+            continue;
+        }
         let Some(latest) = log.latest() else {
             messages.push(format!(
                 "notes/{name} left in place: no history for its note"
             ));
             continue;
         };
-        let digest = hash::sha256_hex(&bytes);
-        if staged.contains(&(id.to_string(), digest.clone())) {
-            continue;
-        }
         if log.versions.iter().all(|v| v.blob != digest) {
             let parents = [latest.version.clone()];
             record(lock, id, &parents, &latest.file, Some(&bytes), EDITED, at)?;
@@ -1027,12 +1027,14 @@ fn kept(versions: &[Version], cutoff: jiff::Timestamp, hold: Option<&Hold>) -> V
 
 /// Drops the versions older than `keep_days` days before `now`, then removes the content no kept version names. A
 /// log with an unreadable line is left as it is and blocks every content removal. A declaration goes with the
-/// version it names.
+/// version it names. `staged` holds the blobs of versions that arrived and wait to reach a log, which no log names
+/// yet and a removal must keep.
 pub fn prune(
     lock: &Lock,
     keep_days: u32,
     now: jiff::Timestamp,
     guard: &Guard,
+    staged: &BTreeSet<String>,
 ) -> Result<Pruned, String> {
     let root = lock.root();
     let span = jiff::SignedDuration::from_hours(24 * i64::from(keep_days));
@@ -1089,7 +1091,7 @@ pub fn prune(
         pruned.versions += dropped;
     }
     if !blocked {
-        remove_unnamed_blobs(root)?;
+        remove_unnamed_blobs(root, staged)?;
     }
     Ok(pruned)
 }
@@ -1114,11 +1116,12 @@ fn rewrite(root: &Path, id: &str, lines: &[&[u8]]) -> Result<(), String> {
         })
 }
 
-fn remove_unnamed_blobs(root: &Path) -> Result<(), String> {
+fn remove_unnamed_blobs(root: &Path, staged: &BTreeSet<String>) -> Result<(), String> {
     let mut named: HashSet<String> = HashSet::new();
     for id in note_ids(root)? {
         named.extend(load(root, &id)?.versions.into_iter().map(|v| v.blob));
     }
+    named.extend(staged.iter().cloned());
     let dir = blobs_dir(root);
     let Ok(folders) = fs::read_dir(&dir) else {
         return Ok(());
@@ -1693,7 +1696,7 @@ mod tests {
         }
         assert_eq!(blob_files(root), 4);
 
-        let pruned = prune(&lock, 90, now(), &Guard::new()).unwrap();
+        let pruned = prune(&lock, 90, now(), &Guard::new(), &BTreeSet::new()).unwrap();
 
         assert_eq!(pruned.versions, 2);
         assert!(pruned.warnings.is_empty());
@@ -1705,7 +1708,12 @@ mod tests {
             .collect();
         assert_eq!(blobs, [b"c".to_vec(), b"d".to_vec()]);
         assert_eq!(blob_files(root), 2);
-        assert_eq!(prune(&lock, 90, now(), &Guard::new()).unwrap().versions, 0);
+        assert_eq!(
+            prune(&lock, 90, now(), &Guard::new(), &BTreeSet::new())
+                .unwrap()
+                .versions,
+            0
+        );
     }
 
     #[test]
@@ -1714,7 +1722,12 @@ mod tests {
         let root = &scratch.0;
         let lock = lock(root).unwrap();
         record_at(&lock, 1, "plan-x.md", "old", ADDED, 400);
-        assert_eq!(prune(&lock, 90, now(), &Guard::new()).unwrap().versions, 0);
+        assert_eq!(
+            prune(&lock, 90, now(), &Guard::new(), &BTreeSet::new())
+                .unwrap()
+                .versions,
+            0
+        );
         assert_eq!(events(root, &id(1)), ["added plan-x.md"]);
         assert_eq!(blob_files(root), 1);
     }
@@ -1728,7 +1741,7 @@ mod tests {
         record_at(&lock, 1, "plan-x.md", "last", EDITED, 300);
         record_at(&lock, 1, "plan-x.md", "", DELETED, 200);
 
-        let pruned = prune(&lock, 90, now(), &Guard::new()).unwrap();
+        let pruned = prune(&lock, 90, now(), &Guard::new(), &BTreeSet::new()).unwrap();
 
         assert_eq!(pruned.versions, 1);
         let log = load(root, &id(1)).unwrap();
@@ -1760,7 +1773,7 @@ mod tests {
         }
         let before = blob_files(root);
 
-        let pruned = prune(&lock, 90, now(), &Guard::new()).unwrap();
+        let pruned = prune(&lock, 90, now(), &Guard::new(), &BTreeSet::new()).unwrap();
 
         assert_eq!(
             pruned.warnings,
@@ -1778,7 +1791,7 @@ mod tests {
     fn the_cutoff_is_a_local_date() {
         let scratch = scratch("retention-date");
         let lock = lock(&scratch.0).unwrap();
-        let pruned = prune(&lock, 30, now(), &Guard::new()).unwrap();
+        let pruned = prune(&lock, 30, now(), &Guard::new(), &BTreeSet::new()).unwrap();
         assert_eq!(pruned.cutoff.len(), 10);
         assert!(pruned.cutoff.starts_with("2026-09-"), "{}", pruned.cutoff);
     }
@@ -1827,7 +1840,12 @@ mod tests {
         );
         fs::write(&path, lines.join("\n") + "\n").unwrap();
 
-        assert_eq!(prune(&lock, 90, now(), &Guard::new()).unwrap().versions, 1);
+        assert_eq!(
+            prune(&lock, 90, now(), &Guard::new(), &BTreeSet::new())
+                .unwrap()
+                .versions,
+            1
+        );
 
         let after = fs::read_to_string(&path).unwrap();
         assert_eq!(after, format!("{}\n{}\n", lines[1], lines[2]));
@@ -2247,7 +2265,7 @@ mod tests {
         let log = load(root, &id(1)).unwrap();
         assert!(log.unreadable.is_empty());
         assert!(log.versions[0].is_left());
-        let pruned = prune(&lock, 90, now(), &Guard::new()).unwrap();
+        let pruned = prune(&lock, 90, now(), &Guard::new(), &BTreeSet::new()).unwrap();
 
         assert!(pruned.warnings.is_empty(), "{:?}", pruned.warnings);
         assert!(!blob_path(root, &first.blob).exists());
@@ -2330,6 +2348,22 @@ mod tests {
     }
 
     #[test]
+    fn the_restore_sweep_leaves_a_staged_version_of_a_note_with_no_history() {
+        let scratch = scratch("sweep-staged-new");
+        let root = &scratch.0;
+        let lock = lock(root).unwrap();
+        fs::write(restore_path(root, &id(1)), "inbound").unwrap();
+        fs::write(restore_path(root, &id(2)), "other").unwrap();
+        let staged = BTreeSet::from([(id(1), hash::sha256_hex(b"inbound"))]);
+
+        let messages = sweep_restore_leftovers(&lock, NOW, &staged).unwrap();
+
+        assert!(restore_path(root, &id(1)).exists());
+        assert_eq!(messages.len(), 1, "{messages:?}");
+        assert!(messages[0].contains("no history"), "{messages:?}");
+    }
+
+    #[test]
     fn a_prune_keeps_a_declaration_with_its_conflict_version_only() {
         let scratch = scratch("prune-declare");
         let root = &scratch.0;
@@ -2354,7 +2388,7 @@ mod tests {
         append_declaration(&lock, &id(1), &declare("d")).unwrap();
         append_declaration(&lock, &id(1), &declare("b")).unwrap();
 
-        let pruned = prune(&lock, 90, now(), &Guard::new()).unwrap();
+        let pruned = prune(&lock, 90, now(), &Guard::new(), &BTreeSet::new()).unwrap();
 
         assert_eq!(pruned.versions, 2);
         let log = load(root, &id(1)).unwrap();
@@ -2379,7 +2413,7 @@ mod tests {
         );
         let guard = Guard::from([(id(1), Hold::After(BTreeSet::from([ids["a"].clone()])))]);
 
-        prune(&lock, 90, now(), &guard).unwrap();
+        prune(&lock, 90, now(), &guard, &BTreeSet::new()).unwrap();
 
         assert_eq!(held(root, 1, &ids), ["a", "b", "c"]);
     }
@@ -2403,7 +2437,7 @@ mod tests {
         );
         let guard = Guard::from([(id(1), Hold::After(BTreeSet::from([ids["c"].clone()])))]);
 
-        prune(&lock, 90, now(), &guard).unwrap();
+        prune(&lock, 90, now(), &guard, &BTreeSet::new()).unwrap();
 
         assert_eq!(held(root, 1, &ids), ["c", "d", "e", "f"]);
     }
@@ -2433,7 +2467,7 @@ mod tests {
         );
         let guard = Guard::from([(id(1), Hold::All)]);
 
-        prune(&lock, 90, now(), &guard).unwrap();
+        prune(&lock, 90, now(), &guard, &BTreeSet::new()).unwrap();
 
         assert_eq!(held(root, 1, &ids), ["a", "b", "c"]);
         assert_eq!(held(root, 2, &other), ["b", "c"]);
@@ -2456,7 +2490,14 @@ mod tests {
             ],
         );
 
-        prune(&lock, 90, now(), &Guard::from([(id(9), Hold::All)])).unwrap();
+        prune(
+            &lock,
+            90,
+            now(),
+            &Guard::from([(id(9), Hold::All)]),
+            &BTreeSet::new(),
+        )
+        .unwrap();
 
         assert_eq!(held(root, 1, &ids), ["c", "d"]);
     }
