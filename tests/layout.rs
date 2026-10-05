@@ -6,7 +6,9 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 /// The domains, one folder each under `src/`.
-const DOMAINS: [&str; 6] = ["citation", "host", "library", "note", "search", "setup"];
+const DOMAINS: [&str; 7] = [
+    "citation", "host", "identity", "library", "note", "search", "setup",
+];
 
 /// The verbs, by path below `src/`: a file, or a folder (ending in `/`) whose files are all the verb's.
 const VERBS: [&str; 12] = [
