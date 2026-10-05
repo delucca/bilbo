@@ -94,7 +94,7 @@ A manifest SHALL be one JSON object with exactly these members, in this order: `
 - **THEN** `bilbo device` reports it as invalid and exits 1
 
 ### Requirement: Manifest validity
-A version SHALL also be invalid unless: `scope` equals its folder's name; `n` equals its file name; `owner` and `owner_box` equal version 1's; `prev` is the SHA-256 of version `n-1`'s file; `devices` is sorted by id with no id twice, each id derived from its `sign` key, and each id also listed by version `n-1` with the same `box`; `epoch` is greater than version `n-1`'s when an id of version `n-1` is no longer listed; `sealed`'s keys are exactly the listed ids and `owner`; and `chain` holds one entry for each epoch from 1 to `epoch`-1, in order, every entry of version `n-1` unchanged. These checks SHALL need no secret.
+A version SHALL also be invalid unless: `scope` equals its folder's name; `n` equals its file name; `owner` and `owner_box` equal version 1's; `prev` is the SHA-256 of version `n-1`'s file; `devices` is sorted by id with no id twice, each id derived from its `sign` key, and an id that version `n-1` also lists keeping the `box` it had there; `epoch` is greater than version `n-1`'s when an id of version `n-1` is no longer listed; `sealed`'s keys are exactly the listed ids and `owner`; and `chain` holds one entry for each epoch from 1 to `epoch`-1, in order, every entry of version `n-1` unchanged. These checks SHALL need no secret.
 
 #### Scenario: A device's box key changed
 - **WHEN** a correctly signed version 3 lists `rivendell` with another `box` than version 2 gave it
