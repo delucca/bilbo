@@ -167,9 +167,12 @@ fn history_does_not_block_a_starting_watcher() {
         })
     };
     let watcher = Watcher::on(&root);
+    let waited = watcher.count("already running");
+    // Killed before the join: on macOS the watcher can inherit the pipe of a `bilbo history` run and keep it open.
+    drop(watcher);
     stop.store(true, std::sync::atomic::Ordering::Relaxed);
     looping.join().unwrap();
-    assert_eq!(watcher.count("already running"), 0);
+    assert_eq!(waited, 0);
 }
 
 #[test]
