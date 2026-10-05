@@ -135,7 +135,7 @@ fn note_skill_frontmatter() {
     assert_eq!(folder(NOTE_SKILL), "note");
     assert_eq!(
         front[3].1,
-        "Bash(command -v bilbo), Bash(bilbo recall *), Bash(bilbo new *), Bash(bilbo check), Bash(mv -n *), Read, Edit"
+        "Bash(command -v bilbo), Bash(bilbo recall *), Bash(bilbo new *), Bash(bilbo scope), Bash(bilbo scope set *), Bash(bilbo check), Bash(mv -n *), Read, Edit"
     );
 }
 
@@ -223,7 +223,9 @@ fn note_skill_drives_bilbo() {
     for command in [
         "command -v bilbo",
         "bilbo recall --limit 5 -- '<words that name the subject>'",
-        "bilbo new <kind> <topic> [--title '<title>']",
+        "bilbo scope",
+        "bilbo new <kind> <topic> [--title '<title>'] [--scope <name>]",
+        "bilbo scope set <name> '<path>'",
         "bilbo check",
         "mv -n '<root>/notes/<old kind>-<topic>.md' '<root>/notes/<new kind>-<topic>.md'",
     ] {
@@ -237,6 +239,19 @@ fn note_skill_drives_bilbo() {
         "bilbo: no notes match",
         "bilbo: no store at <root>",
         "already has a note",
+        "bilbo: no scope for <path>; scopes:",
+        "create (step 4)",
+        "once per run",
+        "never pass one the user did not name",
+        "`codex exec`",
+        "kept <old>; --force replaces it",
+        "changed while bilbo scope set ran",
+        "holds marks of <names>",
+        "scope: missing",
+        "is not declared",
+        "(warning)",
+        "unassigned",
+        "bilbo scope set --force <name>",
         "sources:\n     - \"code: src/new.rs\"\n     - \"url: https://example.org/page\"",
     ] {
         assert!(text.contains(needle), "the skill lacks {needle:?}");
