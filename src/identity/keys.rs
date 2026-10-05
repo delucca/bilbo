@@ -90,6 +90,14 @@ pub fn device_id(sign_public: &[u8; 32]) -> String {
     base32(&hash::sha256(sign_public))[..26].to_string()
 }
 
+/// Whether `text` is an id: 26 characters of lowercase base32.
+pub fn is_id(text: &str) -> bool {
+    text.len() == 26
+        && text
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || (b'2'..=b'7').contains(&b))
+}
+
 /// A new scope id: 128 random bits as 26 base32 characters.
 pub fn new_scope_id() -> Result<String, String> {
     Ok(base32(&random::<16>()?))
@@ -710,6 +718,17 @@ mod tests {
             hex(&*okm),
             "3cb25f25faacd57a90434f64d0362f2a2d2d0a90cf1a5a4c5db02d56ecc4c5bf"
         );
+    }
+
+    #[test]
+    fn an_id_is_26_characters_of_lowercase_base32() {
+        assert!(is_id(&device_id(&[1u8; 32])));
+        assert!(is_id(&"a2".repeat(13)));
+        assert!(!is_id(&"a".repeat(25)));
+        assert!(!is_id(&"a".repeat(27)));
+        assert!(!is_id(&format!("{}1", "a".repeat(25))));
+        assert!(!is_id(&format!("{}A", "a".repeat(25))));
+        assert!(!is_id("../../../etc/passwd/aaaaaaaaa"));
     }
 
     struct Scratch(PathBuf);

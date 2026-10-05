@@ -23,6 +23,7 @@ pub const SCOPES_MAX: usize = 12;
 
 const PROTOCOL: &str = "bilbo-pair-1";
 const NONCE_LEN: usize = 24;
+const TAG_LEN: usize = 16;
 /// The prefix of what B signs, so a signature over T cannot stand for any other message of the device key.
 const SIGNED: &[u8] = b"bilbo-pair-1 b\n";
 
@@ -85,7 +86,7 @@ impl Code {
         let [number, words @ ..] = parts.as_slice() else {
             return Err(shape());
         };
-        if words.len() != 3 || !number.bytes().all(|b| b.is_ascii_digit()) || number.len() > 3 {
+        if words.len() != 3 || !number.bytes().all(|b| b.is_ascii_digit()) {
             return Err(shape());
         }
         let nameplate: u16 = number.parse().map_err(|_| shape())?;
@@ -410,20 +411,23 @@ fn signed(transcript: &[u8; 32]) -> Vec<u8> {
     text
 }
 
+/// What a box is bound to: its role, then T.
+fn aad(role: &str, transcript: &[u8; 32]) -> Vec<u8> {
+    let mut text = format!("{PROTOCOL} {role}\n").into_bytes();
+    text.extend_from_slice(transcript);
+    text
+}
+
 /// A box as its base64 nonce and base64 ciphertext.
-fn seal(
-    key: &[u8; 32],
-    transcript: &[u8; 32],
-    plaintext: &[u8],
-) -> Result<(String, String), String> {
-    let sealed = keys::encrypt(key, transcript, plaintext)?;
+fn seal(key: &[u8; 32], aad: &[u8], plaintext: &[u8]) -> Result<(String, String), String> {
+    let sealed = keys::encrypt(key, aad, plaintext)?;
     let (nonce, ciphertext) = sealed.split_at(NONCE_LEN);
     Ok((STANDARD.encode(nonce), STANDARD.encode(ciphertext)))
 }
 
 fn open(
     key: &[u8; 32],
-    transcript: &[u8; 32],
+    aad: &[u8],
     nonce: &str,
     sealed: &str,
 ) -> Result<Zeroizing<Vec<u8>>, Refusal> {
@@ -434,10 +438,12 @@ fn open(
         .ok_or_else(|| malformed("the nonce is not base64 of 24 bytes"))?;
     let ciphertext = STANDARD
         .decode(sealed)
-        .map_err(|_| malformed("the box is not base64"))?;
+        .ok()
+        .filter(|c| c.len() >= TAG_LEN)
+        .ok_or_else(|| malformed("the box is not base64 or is shorter than its tag"))?;
     let mut data = nonce;
     data.extend_from_slice(&ciphertext);
-    keys::decrypt(key, transcript, &data).map_err(|_| Refusal::WrongCode)
+    keys::decrypt(key, aad, &data).map_err(|_| Refusal::WrongCode)
 }
 
 fn show_with<R: CryptoRng>(code: &Code, rng: R) -> (Shown, Vec<u8>) {
@@ -480,7 +486,7 @@ pub fn receive(shown: Shown, b_msg: &[u8]) -> Result<(Session, Hello), Refusal> 
     let schedule = schedule(&shown.nameplate, &shown.msg_a, &msg_b, &key);
     let plaintext = open(
         &schedule.b,
-        &schedule.transcript,
+        &aad("b", &schedule.transcript),
         &message.nonce,
         &message.sealed,
     )?;
@@ -556,8 +562,8 @@ fn answer_with<R: CryptoRng>(
         sig: keys::hex(&sign(&signed(&schedule.transcript))),
     };
     let plaintext = serde_json::to_vec(&wire).map_err(|e| Refusal::Malformed(e.to_string()))?;
-    let (nonce, sealed) =
-        seal(&schedule.b, &schedule.transcript, &plaintext).map_err(Refusal::Malformed)?;
+    let (nonce, sealed) = seal(&schedule.b, &aad("b", &schedule.transcript), &plaintext)
+        .map_err(Refusal::Malformed)?;
     let bytes = write(&BMsg {
         format: FORMAT,
         spake: keys::hex(&msg_b),
@@ -603,7 +609,11 @@ pub fn reply(
         (_, None, None) => return plain_reply(outcome),
         _ => return Err(format!("a {} reply carries no box", outcome.as_str())),
     };
-    let (nonce, sealed) = seal(&session.c, &session.transcript, &plaintext)?;
+    let (nonce, sealed) = seal(
+        &session.c,
+        &aad(&format!("c {}", outcome.as_str()), &session.transcript),
+        &plaintext,
+    )?;
     write(&CMsg {
         format: FORMAT,
         result: outcome.as_str().to_string(),
@@ -641,10 +651,15 @@ fn payload_bytes(payload: &Payload) -> Result<Zeroizing<Vec<u8>>, String> {
         .map_err(|e| format!("cannot write a message: {e}"))
 }
 
+/// An `https://` URL with no whitespace or control character.
+fn is_https_url(url: &str) -> bool {
+    url.starts_with("https://") && !url.chars().any(|c| c.is_whitespace() || c.is_control())
+}
+
 fn payload_from(bytes: &[u8]) -> Result<Payload, Refusal> {
     let wire: PayloadWire = serde_json::from_slice(bytes)
         .map_err(|_| malformed("the payload does not have the fields of its format"))?;
-    if wire.scopes.len() > SCOPES_MAX || !keys::valid_name(&wire.name) {
+    if wire.scopes.len() > SCOPES_MAX || !keys::valid_name(&wire.name) || !keys::is_id(&wire.id) {
         return Err(malformed("the payload is not valid"));
     }
     let seed = match &wire.seed {
@@ -661,7 +676,10 @@ fn payload_from(bytes: &[u8]) -> Result<Payload, Refusal> {
             match hash {
                 Some(hash)
                     if store::is_topic(&g.name)
-                        && matches!(g.embedder.as_str(), "any" | "local") =>
+                        && matches!(g.embedder.as_str(), "any" | "local")
+                        && g.n >= 1
+                        && keys::is_id(&g.id)
+                        && g.url.as_deref().is_none_or(is_https_url) =>
                 {
                     Ok(Grant {
                         name: g.name,
@@ -676,6 +694,17 @@ fn payload_from(bytes: &[u8]) -> Result<Payload, Refusal> {
             }
         })
         .collect::<Result<Vec<_>, _>>()?;
+    let distinct = |each: fn(&Grant) -> &str| {
+        scopes
+            .iter()
+            .map(each)
+            .collect::<std::collections::HashSet<_>>()
+            .len()
+            == scopes.len()
+    };
+    if !distinct(|g| &g.id) || !distinct(|g| &g.name) {
+        return Err(malformed("the payload is not valid"));
+    }
     Ok(Payload {
         name: wire.name,
         id: wire.id,
@@ -696,11 +725,21 @@ pub fn read_reply(session: &Session, c_msg: &[u8]) -> Result<Reply, Refusal> {
     };
     match (outcome, boxed) {
         (Outcome::Enrolled, Some((nonce, sealed))) => {
-            let plaintext = open(&session.c, &session.transcript, nonce, sealed)?;
+            let plaintext = open(
+                &session.c,
+                &aad(&format!("c {}", outcome.as_str()), &session.transcript),
+                nonce,
+                sealed,
+            )?;
             payload_from(&plaintext).map(Reply::Enrolled)
         }
         (Outcome::OtherOwner, Some((nonce, sealed))) => {
-            let plaintext = open(&session.c, &session.transcript, nonce, sealed)?;
+            let plaintext = open(
+                &session.c,
+                &aad(&format!("c {}", outcome.as_str()), &session.transcript),
+                nonce,
+                sealed,
+            )?;
             let owner: [u8; 32] = plaintext
                 .as_slice()
                 .try_into()
@@ -833,7 +872,7 @@ mod tests {
             scopes: (0..scopes)
                 .map(|i| Grant {
                     name: format!("{:x<name_len$}", format!("s{i}")),
-                    id: "b".repeat(26),
+                    id: char::from(b'b' + i as u8).to_string().repeat(26),
                     embedder: "local".to_string(),
                     n: 3,
                     hash: [i as u8; 32],
@@ -1052,6 +1091,55 @@ mod tests {
     }
 
     #[test]
+    fn a_flipped_result_does_not_open_the_box() {
+        let (a, _, b, _, _) = exchange(None);
+        let tiny = Payload {
+            name: "a".to_string(),
+            id: String::new(),
+            seed: None,
+            scopes: Vec::new(),
+        };
+        assert_eq!(payload_bytes(&tiny).unwrap().len(), 32);
+        let c = reply(&a, Outcome::Enrolled, Some(&tiny), None).unwrap();
+        let flipped = with_field(&c, "result", serde_json::json!("other-owner"));
+        assert_eq!(read_reply(&b, &flipped).err(), Some(Refusal::WrongCode));
+    }
+
+    #[test]
+    fn a_box_shorter_than_its_tag_is_malformed() {
+        for short in ["", "AAAA"] {
+            let (shown, a_msg) = show(&code(CODE)).unwrap();
+            let (_, b_msg) = answer(&code(CODE), &a_msg, &hello(None), &device()).unwrap();
+            let cut = with_field(&b_msg, "box", serde_json::json!(short));
+            assert!(matches!(receive(shown, &cut), Err(Refusal::Malformed(_))));
+        }
+    }
+
+    #[test]
+    fn a_payload_with_unusable_ids_urls_or_repeats_is_malformed() {
+        let (a, _, b, _, _) = exchange(None);
+        let bad: [fn(&mut Payload); 7] = [
+            |p| p.scopes[0].n = 0,
+            |p| p.id = "../../etc".to_string(),
+            |p| p.scopes[0].id = "../x".to_string(),
+            |p| p.scopes[0].url = Some("file:///etc".to_string()),
+            |p| p.scopes[0].url = Some("https://x/\n[evil]".to_string()),
+            |p| p.scopes[1].id = p.scopes[0].id.clone(),
+            |p| p.scopes[1].name = p.scopes[0].name.clone(),
+        ];
+        for edit in bad {
+            let mut p = payload(2, 8);
+            edit(&mut p);
+            let c = reply(&a, Outcome::Enrolled, Some(&p), None).unwrap();
+            assert!(matches!(read_reply(&b, &c), Err(Refusal::Malformed(_))));
+        }
+        let mut ok = payload(1, 8);
+        ok.scopes[0].url = Some("https://relay.example/x".to_string());
+        let c = reply(&a, Outcome::Enrolled, Some(&ok), None).unwrap();
+        assert!(matches!(read_reply(&b, &c).unwrap(), Reply::Enrolled(_)));
+    }
+
+    #[test]
     fn a_reply_with_the_wrong_box_is_refused() {
         let (a, _, b, _, _) = exchange(None);
         let p = payload(1, 8);
@@ -1116,6 +1204,7 @@ mod tests {
             "42 ORBI tunn velvet",
             " 42-Orbit  tunnel-VELV ",
             "042-orbit-tunnel-velvet",
+            "0042-orbit-tunnel-velvet",
         ] {
             assert_eq!(code(typed).text(), CODE, "{typed}");
         }
