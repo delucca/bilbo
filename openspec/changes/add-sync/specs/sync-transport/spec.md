@@ -50,7 +50,7 @@ A device SHALL write segments only in its own device folder, so no segment has t
 - **THEN** the second one to push prints the other-content line and stops pushing `personal`, and no segment is overwritten
 
 ### Requirement: Resuming after lost state
-When a store has no sync state for a scope, as after `<root>/.bilbo/` was removed, watch SHALL read every segment of the scope from seq 1, its own device folder included, and push from the highest seq of its own folder plus one. When the store holds no manifest of a syncing scope's name, watch SHALL copy in the one scope of that name on the transport whose latest version lists this device, valid as Manifests on the transport says, and resume it; when several do, it SHALL copy none and print `bilbo: sync <name>: the folder holds several scopes named <name>; run bilbo device recover on this device`.
+When a store has no sync state for a scope, as after `<root>/.bilbo/` was removed, watch SHALL read every segment of the scope from seq 1, its own device folder included, and push from the highest seq of its own folder plus one. A store whose device id changed since it wrote its sync state SHALL count as having none. When the store holds no manifest of a syncing scope's name, watch SHALL copy in the one scope of that name on the transport whose latest version lists this device, valid as Manifests on the transport says, and resume it; when several do, it SHALL copy none and print `bilbo: sync <name>: the folder holds several scopes named <name>; run bilbo device recover on this device`.
 
 #### Scenario: The history folder was deleted
 - **WHEN** A had pushed 40 segments to `personal`, the user deletes A's `<root>/.bilbo/` and A's watch starts
@@ -61,7 +61,7 @@ When a store has no sync state for a scope, as after `<root>/.bilbo/` was remove
 - **THEN** A copies that scope's versions in and resumes it; with a second scope named `personal` listing A in the folder, A copies neither and prints the several-scopes line
 
 ### Requirement: Damaged own segments
-On a `file://` transport, when a file in its own device folder does not verify as a segment this device signed, the device SHALL replace it with the copy it kept, and when it kept none, print `bilbo: sync <name>: segment <seq> of this device is damaged and no copy is left` and keep pushing after it.
+On a `file://` transport, when a file in its own device folder does not verify as a segment this device signed, the device SHALL replace it with the copy it kept, checking the segments it keeps a copy of at each push and every segment when it resumes, and when it kept none, print `bilbo: sync <name>: segment <seq> of this device is damaged and no copy is left` and keep pushing after it.
 
 #### Scenario: A truncated segment
 - **WHEN** a cloud tool truncates A's segment 7 before B applied it
@@ -90,7 +90,7 @@ A segment file SHALL be at most 8 MiB. Versions that do not fit one segment SHAL
 - **THEN** the device writes one segment for it
 
 ### Requirement: Reading segments in order
-A device SHALL apply each other device's segments in seq order, and only when the signature verifies against a device that some confirmed version at the segment's epoch lists and that the latest confirmed version lists, and it decrypts. A device the latest manifest dropped SHALL be read no further than the seq applied when that version was adopted. On a missing seq, a failing segment or an unknown `format`, it SHALL stop reading that device, print a line naming the device and seq, and retry each poll.
+A device SHALL apply each other device's segments in seq order, and only when the signature verifies against a device that some confirmed version at the segment's epoch lists and that the latest confirmed version lists, and it decrypts. A device the latest manifest dropped SHALL be read no further than the seq applied when that version was adopted; a store with no record of the adoption SHALL read it no further than the highest seq that a device the latest confirmed version lists acknowledged. On a missing seq, a failing segment or an unknown `format`, it SHALL stop reading that device, print a line naming the device and seq, and retry each poll.
 
 #### Scenario: A gap
 - **WHEN** B's folder holds segments 1, 2 and 4
