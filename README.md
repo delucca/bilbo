@@ -124,17 +124,20 @@ Set `busy_timeout = 5000` right after opening the connection.
 
 `id` is a ULID and `created` the local time to the minute. `sources` is
 optional, each item a quoted `<type>: <value>` with the type `url`, `code`,
-`doc` or `search`. No other key is allowed. The store root is `$BILBO_HOME`,
+`doc` or `search`. `scope` is optional too, a name from [Scopes](#scopes). No
+other key is allowed. The store root is `$BILBO_HOME`,
 else `$XDG_DATA_HOME/bilbo`, else `~/.local/share/bilbo`, on macOS too.
 
 ### Commands
 
 | Command | What it does |
 | --- | --- |
-| `bilbo new <kind> <topic> [--title <text>]` | Creates the note and prints its path. Exits 1 when the topic already has a note. |
+| `bilbo new <kind> <topic> [--title <text>] [--scope <name>]` | Creates the note and prints its path. Exits 1 when the topic already has a note. See [Scopes](#scopes). |
 | `bilbo check` | Prints every problem in the store, one per line, and changes nothing. Exits 1 when it finds any. |
 | `bilbo recall <query>... [--kind <kind>]... [--limit <n>]` | Prints the notes that best match, best first, 10 by default. Exits 1 when nothing matches. |
 | `bilbo recall <query>... --library [--corpus <corpus>]... [--limit <n>]` | Prints the sources and guides of the library that best match, by keyword, one block per file. Exits 1 when nothing matches. |
+| `bilbo scope` | Lists the declared scopes and the notes in each; see [Scopes](#scopes). |
+| `bilbo scope set [--force] <name> <file>...` | Gives each note the scope; see [Scopes](#scopes). |
 | `bilbo index` | Embeds the passages the vector cache lacks and drops the ones no note holds any more. |
 | `bilbo digest` | Run by the plugin's prompt hook; see [The digest](#the-digest). |
 | `bilbo library` | Lists and shows the library, and stages and lands its sources; see [Library](#library). |
@@ -190,6 +193,120 @@ notes/plan-broken.md: title: missing; add one '# <title>' line after the frontma
 ```
 
 `bilbo --help` prints the full usage.
+
+### Scopes
+
+A scope is a name for a part of your work, such as `work` or `personal`. A note
+says which one it belongs to with a `scope: <name>` line in its frontmatter.
+The name follows the topic's grammar: lowercase words joined by single hyphens.
+What a scope means is set per device in the [config](#configuration), so the
+same note can sit in `work` on one machine and be unassigned on another.
+
+A scope exists on a device when its config holds at least one `scope.<name>.*`
+key. A note is unassigned when it has no `scope` line, or names a scope the
+config does not declare. A scope has four settings:
+
+```
+scope.personal.sync = off
+scope.work.embedder = local
+scope.work.paths = ~/Developer/acme
+scope.work.marks = acme, ~/Developer/acme
+scope.default = personal
+```
+
+- `sync` is `off`, the only value in this release and the default.
+- `embedder` is `any` (default) or `local`. A `local` scope's notes are never
+  sent to an embedder outside this machine; see [The embedder
+  rule](#the-embedder-rule).
+- `paths` lists folders, comma-separated. `bilbo new` gives a note the scope
+  whose entry is the working directory or a folder above it, the longest entry
+  winning, compared by whole folder names. `~/` and `/` are valid entries, so
+  `scope.personal.paths = ~/` makes `personal` the scope of everything under
+  home that no longer entry claims. A worktree outside every listed folder is
+  not covered: list the folder that holds the clones and `.worktrees/`, not
+  each clone.
+- `marks` lists what only this scope's notes should mention, for `check`.
+- `scope.default` names the scope for a working directory no `paths` entry
+  holds.
+
+`bilbo new` picks the scope from `--scope`, else `paths`, else `scope.default`.
+`--scope` must name a declared scope, or it exits 2. When nothing matches and
+any scope is declared, the note is created without a `scope` line and stderr
+says so:
+
+```console
+$ bilbo new plan release
+/Users/me/.local/share/bilbo/notes/plan-release.md
+bilbo: no scope for /Users/me/.local/share/bilbo/notes/plan-release.md; scopes: personal, work; set one with bilbo scope set <name> /Users/me/.local/share/bilbo/notes/plan-release.md
+```
+
+A mark is either one word (letters and digits only, so `acme.`, `Acme's` and
+`ac-me` are config errors) or a path starting with `/` or `~/`. A word matches
+a whole word of the note's file name topic, `sources` or body, fenced code
+included, ignoring case and accents. A path matches where the next character
+ends a path segment: not a letter, a digit, `-`, `_` or `.`. A path inside home
+matches as `~/...` and as the absolute path, so `~/Developer/acme` finds
+`/Users/me/Developer/acme/api/main.go` but not `~/Developer/acme-tools`. List
+words first: the employer, its products and its repo names. Path marks catch
+the absolute paths that end up in bodies and code blocks. Two scopes cannot
+share a path or a mark.
+
+`bilbo check` reads the config and reports a note that has no `scope` line
+(once any scope is declared) or names a scope the config does not declare, and
+lists the declared scopes:
+
+```console
+$ bilbo check
+notes/gotcha-acme-deploy.md: scope: 'acme' is not declared in /Users/me/.config/bilbo/config; scopes: personal, work
+notes/gotcha-deploy.md: scope: 'personal' but line 9 holds 'acme', a mark of 'work' (warning)
+notes/plan-release.md: scope: missing; scopes: personal, work
+notes/plan-x.md: scope: missing; scopes: personal, work; holds marks of work
+```
+
+An unassigned note that holds a mark gets `; holds marks of <scopes>` on its
+problem, to say where to put it. A note in a scope that holds another scope's
+mark gets one `(warning)` line per other scope: the first place is `the file
+name` or `line <n>`. A warning leaves the exit code alone, and a mark never
+holds anything back. A mark of `~/` warns on every path under home.
+
+`bilbo scope` prints one line per declared scope, sorted by name, with tab-separated
+fields: the name, the note count, `sync`, `embedder`, `paths` as written (`-`
+when unset) and `default` for the default scope. The last line is the
+unassigned notes:
+
+```console
+$ bilbo scope
+personal	3 notes	sync off	embedder any	paths -	default
+work	1 notes	sync off	embedder local	paths ~/Developer/acme
+(unassigned)	2 notes	embedder local
+```
+
+With no scope declared it prints only the `(unassigned)` line and says on
+stderr, `bilbo: no scopes declared; add scope.<name>.* keys to <config path>`.
+
+`bilbo scope set [--force] <name> <file>...` gives each note the scope. A note
+with no `scope` line gains one as the last line of its frontmatter and prints
+`notes/<file>: set <name>`. A note already in `<name>` prints `kept <name>`. A
+note in another scope prints `kept <old>; --force replaces it`, and with
+`--force` `replaced <old> with <name>`. A key line not written as
+`scope: <value>`, such as `scope:work`, prints `kept 'scope:work' as written;
+--force rewrites it`, and with `--force` `rewrote 'scope:work' as scope: work`.
+No other byte of the file changes. A file that is not a note directly in
+`<root>/notes/`, whose text is not UTF-8 or whose frontmatter is broken, is refused on stderr and the run exits 1 after handling every file; an
+undeclared name or missing files exit 2. It works under the history lock and
+swaps the file in atomically, so a write by an agent in the same instant is
+never lost: the run reports `changed while bilbo scope set ran; run it again`
+and leaves the agent's text. A filesystem that cannot swap files atomically is
+refused.
+
+To triage the notes a store already holds, run two passes, the specific glob
+first. Notes that already have a scope are kept:
+
+```sh
+bilbo scope set work ~/.local/share/bilbo/notes/*acme*.md
+bilbo scope set personal ~/.local/share/bilbo/notes/*.md
+bilbo check
+```
 
 ### Library
 
@@ -680,6 +797,8 @@ inputs.bilbo = {
       "embedder.model" = "nomic-embed-text";
       "digest.log" = "on";
       "history.keep_days" = "30";
+      "scope.work.paths" = "~/Developer/acme";
+      "scope.work.embedder" = "local";
     };
     claude = "/Users/me/.local/bin/claude"; # null: look on the activation PATH
     codex = null;
@@ -692,7 +811,8 @@ inputs.bilbo = {
 }
 ```
 
-`settings` takes the keys in [Configuration](#configuration). Combining
+`settings` takes the keys in [Configuration](#configuration); scope keys are
+quoted attribute names, as above. Combining
 `index.enable` with `embedder.token_env` fails evaluation, for the reason
 above: use `embedder.token_file`. `package` defaults to this flake's `bilbo`
 for the system.
@@ -730,11 +850,42 @@ embedder.model = nomic-embed-text
 | `digest.enable` | `off` turns [the digest](#the-digest) off: the hook prints nothing and writes nothing. `on` by default. |
 | `digest.min_similarity` | How close a passage must be to enter the digest when an embedder answers, 0 to 1. Default 0.55. |
 | `digest.log` | `on` appends each digest run to the digest log. `off` by default. |
+| `scope.<name>.sync`, `scope.<name>.embedder`, `scope.<name>.paths`, `scope.<name>.marks` | Declare the scope `<name>`; see [Scopes](#scopes). `sync` is `off`, `embedder` is `any` or `local`, the others comma-separated lists. |
+| `scope.default` | The declared scope `bilbo new` falls back on. |
 | `history.keep_days` | A whole number of days, 1 to 3650: the age past which `bilbo watch` prunes versions, under [the retention rule](#history). 90 by default. |
 
 bilbo never prints the token. The vector cache lives under
 `$XDG_CACHE_HOME/bilbo`, else `~/.cache/bilbo`; deleting it loses nothing that
 `bilbo index` cannot rebuild.
+
+### The embedder rule
+
+A note whose scope sets `embedder = local` must not reach a remote embedder. An
+unassigned note takes `local` as soon as any declared scope sets it, and
+every note takes `any` when none does. When `embedder.url` is not on
+`localhost`, `127.0.0.1` or `::1`, `bilbo index` sends no passage of a `local`
+note, unless a note whose rule is `any` holds an identical passage, and drops
+the vectors it already cached for them. It says so on stderr, counting distinct
+inputs:
+
+```console
+$ bilbo index
+embedded 1, kept 0, dropped 0
+bilbo: withheld 2 passages from http://bagend:8081: their scope allows only a loopback embedder
+```
+
+`recall` and the digest still reach withheld notes, by keywords, and `recall`
+does not count them as not indexed. The digest admits a withheld passage on its
+keyword gate, so a store withheld whole still reaches the digest without a
+request to the embedder.
+
+Declaring the first `embedder = local` scope withholds every note not yet in a
+scope. Triage the store first, as in [Scopes](#scopes), or run
+[`--embedder-local`](#local-embedder), under which nothing is withheld. The
+rule trusts the URL's host as written: an ssh tunnel on `localhost` counts as
+local, and the text leaves the machine through it. A loopback embedder is
+reached directly: bilbo ignores the proxy variables (`HTTP_PROXY`,
+`HTTPS_PROXY`, `ALL_PROXY` and their lowercase forms) for it.
 
 ## Contributing
 
