@@ -447,19 +447,20 @@ can read. Scopes on different folders need one `bilbo pair` each, with `--via`
 or `--scope` choosing the folder; bilbo refuses and names both URLs when it
 cannot tell.
 
-Both devices then print the same fingerprint, three groups of four digits,
-and the new one adds its name and device id. The first device names the new
-one and the scopes it will join, and asks:
+Both devices then print the same fingerprint, twelve digits in three groups of
+four, and the new one adds its name and device id. The first device names the
+new one and the scopes it will join, and asks:
 
 ```console
-fingerprint 5812-0934-7761
+fingerprint 5812 0934 7761
+pair bagend 7f3a9c0e1b2d into personal? compare the fingerprint on that device, then type y to confirm
 ```
 
-The new device prints `fingerprint 5812-0934-7761 for bagend 7f3a9c0e1b2d;
+The new device prints `fingerprint 5812 0934 7761 for bagend 7f3a9c0e1b2d;
 confirm on the device that showed the code`.
 
 Compare the fingerprint, the name and the id on the two screens, and answer
-`y` only when they match. Anything else, or the end of input, sends nothing.
+`y` only when they match. Anything else, or the end of input, sends no secret and both devices exit 1.
 The new device then waits up to 2 minutes for the manifests to reach it
 through the folder, checks the whole chain, and only then writes its config
 and keys. It prints `paired with rivendell: personal`, and `bilbo watch` starts
@@ -482,9 +483,13 @@ with `bilbo pair <code> --via <url>`. Its keys do not change, and it must
 belong to the same owner. When no enrolled device is left, the
 [phrase](#a-second-device) is the way in, with `bilbo device recover`.
 
-What a device in a scope can do is what [revoking](#revoking-a-device) says: a
-revoked or stolen device keeps the notes and keys it held, and cannot read
-anything written under later epochs. Whoever can write the shared folder can
+`--scope` decides what the new device can read: a stolen paired device reads
+only the scopes it was paired into. What a revoked or stolen device can and
+cannot do is what [revoking](#revoking-a-device) says: "After a confirmed
+revocation a revoked device, even one using the owner signing seed, cannot read
+anything written under later epochs; it can still disrupt by signing versions
+that members reject or that change the device list, which watch announces." It
+keeps the notes and keys it already held. Whoever can write the shared folder can
 stop a pairing, by removing the mailbox or answering first, but cannot read
 it: the code never crosses the folder, and the mailbox holds no key, scope
 name or URL in the clear. A wrong guess gets one attempt, which uses the code
