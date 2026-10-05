@@ -25,8 +25,8 @@ pub struct Facts {
     pub config: ConfigState,
     /// The embedder of the file read; `None` for an absent file or one without `embedder.url`.
     pub existing: Option<Embedder>,
-    /// The digest and history lines of the file read, as written, which a rewrite keeps.
-    pub kept: Vec<(&'static str, String)>,
+    /// The digest, history and scope lines of the file read, as written, which a rewrite keeps.
+    pub kept: Vec<(String, String)>,
     /// The file is there and sets no key: only comments and blank lines.
     pub config_empty: bool,
     pub token_path: PathBuf,
@@ -112,7 +112,13 @@ pub fn gather(
         ConfigState::Managed { .. } if !config_path.exists() => (None, Vec::new()),
         _ => {
             let settings = config::load(env).map_err(Failure::Config)?;
-            (settings.embedder, settings.kept_lines)
+            let kept = settings
+                .kept_lines
+                .into_iter()
+                .map(|(key, value)| (key.to_string(), value))
+                .chain(settings.scope_lines)
+                .collect();
+            (settings.embedder, kept)
         }
     };
     let config_empty = matches!(config, ConfigState::Present) && sets_no_key(&config_path);

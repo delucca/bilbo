@@ -17,7 +17,7 @@ use super::*;
 use crate::Failure;
 use crate::host::prompt::{self, Prompter};
 use crate::host::{model, timer};
-use crate::shared::store;
+use crate::shared::{config, store};
 
 /// Answers by prompt text; anything not listed takes the prompt's own initial value.
 #[derive(Default)]
@@ -471,6 +471,57 @@ fn the_wizard_keeps_the_history_setting() {
     let text = std::fs::read_to_string(b.config()).unwrap();
     assert!(text.contains("embedder.model = b"), "{text}");
     assert!(text.contains("history.keep_days = 30"), "{text}");
+}
+
+#[test]
+fn the_wizard_keeps_the_scope_settings() {
+    let b = boxed("keep-scope");
+    b.write_config("a");
+    let lines = [
+        "digest.log = on",
+        "history.keep_days = 30",
+        "scope.work.paths = ~/Developer/acme, /srv/acme",
+        "scope.work.marks = \"  acme, beta\"",
+        "scope.work.embedder = local",
+        "scope.home.sync = off",
+        "scope.default = home",
+    ];
+    let mut text = std::fs::read_to_string(b.config()).unwrap();
+    for line in lines {
+        text.push_str(line);
+        text.push('\n');
+    }
+    std::fs::write(b.config(), text).unwrap();
+    let before = config::load(&b.env).unwrap();
+    let mut p = Scripted {
+        inputs: vec![("Model name", "b")],
+        selects: vec![NO_TIMER],
+        ..Scripted::default()
+    };
+    let run = wizard_run(&b, &mut p);
+    assert!(run.result.is_ok());
+    let text = std::fs::read_to_string(b.config()).unwrap();
+    assert!(text.contains("embedder.model = b"), "{text}");
+    let kept: Vec<&str> = text
+        .lines()
+        .filter(|l| !l.starts_with('#') && !l.starts_with("embedder."))
+        .collect();
+    assert_eq!(
+        kept,
+        [
+            "digest.log = on",
+            "history.keep_days = 30",
+            "scope.work.paths = ~/Developer/acme, /srv/acme",
+            "scope.work.marks = \"  acme, beta\"",
+            "scope.work.embedder = local",
+            "scope.home.sync = off",
+            "scope.default = home",
+        ],
+        "{text}"
+    );
+    let after = config::load(&b.env).unwrap();
+    assert_eq!(after.scope_lines, before.scope_lines);
+    assert_eq!(after.scope_names(), before.scope_names());
 }
 
 #[test]
