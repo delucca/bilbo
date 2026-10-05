@@ -15,6 +15,7 @@ pub struct Found {
 }
 
 /// The owner's scopes on a transport, as one reader sees them.
+#[derive(Default)]
 pub struct Listing {
     /// The scopes the reader opens.
     pub found: Vec<Found>,
@@ -37,6 +38,42 @@ impl Listing {
     }
 }
 
+/// The versions of scope `id` as the transport holds them: the valid prefix, and why the next one is not valid, if it
+/// is not. A scope with no manifest has neither.
+pub fn chain(t: &dyn Transport, id: &str) -> Result<Scope, String> {
+    let Some(highest) = t.highest_manifest(id)? else {
+        return Ok(manifest::verify_scope(id, &[]));
+    };
+    let mut files = Vec::new();
+    let mut unreadable = None;
+    for n in 1..=highest {
+        match t.get(&transport::manifest_path(id, n)) {
+            Ok(Some(bytes)) => files.push(bytes),
+            Ok(None) => break,
+            Err(why) => {
+                unreadable = Some(why);
+                break;
+            }
+        }
+        if manifest::verify_scope(id, &files).invalid.is_some() {
+            break;
+        }
+    }
+    let mut scope = manifest::verify_scope(id, &files);
+    if let (None, Some(why)) = (&scope.invalid, unreadable) {
+        scope.invalid = Some(manifest::Invalid {
+            n: files.len() as u64 + 1,
+            why,
+        });
+    } else if scope.invalid.is_none() && (files.len() as u64) < highest {
+        scope.invalid = Some(manifest::Invalid {
+            n: files.len() as u64 + 1,
+            why: "it is missing, and a later version is there".into(),
+        });
+    }
+    Ok(scope)
+}
+
 /// The scopes of `owner` on `t`, each chain verified and each name opened by `who`. A scope of another owner is
 /// left out.
 pub fn list(t: &dyn Transport, owner: &[u8; 32], who: &Recipient) -> Result<Listing, String> {
@@ -49,25 +86,9 @@ pub fn list(t: &dyn Transport, owner: &[u8; 32], who: &Recipient) -> Result<List
     };
     for id in t.scopes()? {
         listing.ids.insert(id.clone());
-        let Some(highest) = t.highest_manifest(&id)? else {
+        let scope = chain(t, &id)?;
+        if scope.versions.is_empty() && scope.invalid.is_none() {
             continue;
-        };
-        let mut files = Vec::new();
-        for n in 1..=highest {
-            match t.get(&transport::manifest_path(&id, n))? {
-                Some(bytes) => files.push(bytes),
-                None => break,
-            }
-            if manifest::verify_scope(&id, &files).invalid.is_some() {
-                break;
-            }
-        }
-        let mut scope = manifest::verify_scope(&id, &files);
-        if scope.invalid.is_none() && (files.len() as u64) < highest {
-            scope.invalid = Some(manifest::Invalid {
-                n: files.len() as u64 + 1,
-                why: "it is missing, and a later version is there".into(),
-            });
         }
         match scope.owner() {
             Some(signer) if signer != *owner => continue,
@@ -355,5 +376,17 @@ mod tests {
         }
         let listing = as_device(&d, &a);
         assert!(listing.broken[0].1.starts_with("manifest/2.json"));
+    }
+
+    #[test]
+    fn a_manifest_that_cannot_be_read_ends_the_chain_there() {
+        let d = scratch("too-big");
+        let a = identity(0, "a", 1);
+        let sid = publish(&d, &a, "personal", &[]);
+        let file = fs::File::create(manifest_file(&d, &sid, 2)).unwrap();
+        file.set_len(transport::OBJECT_MAX + 1).unwrap();
+        let scope = chain(&folder(&d), &sid).unwrap();
+        assert_eq!(scope.versions.len(), 1);
+        assert_eq!(scope.invalid.map(|i| i.n), Some(2));
     }
 }
