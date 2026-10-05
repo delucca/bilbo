@@ -145,6 +145,8 @@ else `$XDG_DATA_HOME/bilbo`, else `~/.local/share/bilbo`, on macOS too.
 | `bilbo watch` | Records each change to a note; see [History](#history). |
 | `bilbo history <note> [<version> \| --diff <version> [<version>]]` | Lists a note's versions, prints one, or diffs two; see [History](#history). |
 | `bilbo restore <note> <version>` | Writes a past version back as the note's newest; see [History](#history). |
+| `bilbo sync` | Prints how each syncing scope is doing and what waits; see [Sync](#sync). Exits 1 when something needs you. |
+| `bilbo sync declare <note> <reason>` | Records that text a resolution dropped was dropped on purpose; see [Sync](#sync). |
 | `bilbo device [list \| init \| recover \| revoke <device>]` | Shows and manages this device's identity; see [Devices](#devices). |
 | `bilbo setup` | See [Set up](#set-up). |
 
@@ -315,8 +317,7 @@ bilbo check
 
 A device is one machine's copy of bilbo, and an owner is you: one identity
 that every device of yours shares. `bilbo device` creates and shows these
-identities. Nothing is uploaded or fetched yet: a scope's sync URL is recorded,
-and the transports come later.
+identities. They are what [Sync](#sync) signs and encrypts with.
 
 | Command | What it does |
 | --- | --- |
@@ -398,14 +399,19 @@ terminal emulator, swap and the prompt library's line buffers are not covered.
 #### A second device
 
 `bilbo device init` on a second machine would make a second owner, so it
-refuses once the store holds another owner's manifests. Instead, copy the store
-to the new machine first, with the sync tool you already use or a plain copy,
-then run `bilbo device recover` and type the phrase. recover shows the
+refuses once the store holds another owner's manifests. Instead, when the
+scope's `sync` is a `file://` folder, set it in the config and run
+`bilbo device recover`: it copies the owner's scope from the folder, as
+[Sync](#a-second-device) describes. Otherwise copy the store to the new machine
+first, with the sync tool you already use or a plain copy, then run
+`bilbo device recover` and type the phrase. recover shows the
 fingerprint it derived; when a manifest in the store vouches for the phrase it
 asks nothing more, and otherwise it asks you to compare the fingerprint with
 the one you wrote down. It then writes this device's keys and adds the device
 to every scope of yours the store holds. A syncing scope with no manifest in the copied
-store is reported `unsealed`: bring its manifest over and run `recover` again.
+store or the folder is reported `unsealed`: bring its manifest over and run
+`recover` again, or, when the folder holds none of this owner's `personal`,
+run `bilbo device init`.
 Never run `init` for it, which would fork the scope.
 
 #### Revoking a device
@@ -433,6 +439,205 @@ hand:
    ids.
 3. Recover the other devices from the new phrase, and give any relay the new
    fingerprint.
+
+### Sync
+
+`bilbo watch` keeps the notes of a scope the same on all your devices. It
+needs a folder that a tool you already use syncs between them, such as
+Dropbox, iCloud Drive or Syncthing. bilbo writes into that folder only
+encrypted, signed files, and each device writes only its own, so the tool never
+sees two writers on one file. The folder is the whole transport: bilbo runs no
+server, and an `https://` URL waits for the relay, reported as
+`<scheme> transports are not supported yet; use a file:// folder`.
+
+#### Turning sync on
+
+1. Declare the scope's folder in the [config](#configuration):
+
+   ```
+   scope.personal.sync = file:///Users/me/Dropbox/bilbo
+   ```
+
+2. Create the keys with `bilbo device init`, in a terminal, and write down
+   the phrase; see [The ceremony](#the-ceremony). It writes the scope's
+   manifest.
+3. Make sure `bilbo watch` runs, which `bilbo setup` installs. It syncs the
+   scope from then on. The wizard asks for the scope, the folder and the keys
+   in one go, and writes the config line.
+4. Give the notes the scope. A note syncs only when its `scope:` line names a
+   scope whose `sync` is a URL, so turning sync on uploads nothing until you
+   assign notes; triage the store as in [Scopes](#scopes).
+
+`bilbo setup` creates the folder's last component when it is missing and its
+parent exists. Watch never creates a folder: one that vanishes is reported as
+not reachable.
+
+`bilbo sync` then shows how it goes.
+
+#### A second device
+
+Copy nothing. Install bilbo, point the same scope at the same folder once the
+cloud tool has synced it, run `bilbo device recover`, type the phrase, and
+start `bilbo watch`:
+
+```
+scope.personal.sync = file:///Users/me/Dropbox/bilbo
+```
+
+`recover` reads the owner's scopes in the folder, finds the one named
+`personal` and adds this device to it, so the phrase alone is enough, even when
+every other device is lost. Watch then reads every segment of every device
+from the first and writes each note once. A device joins a scope only through
+`recover` or a version another device wrote, never through watch alone.
+
+#### What syncs
+
+Only the notes in a scope that syncs, and only their text and frontmatter:
+
+- A note with no `scope`, a scope the config does not declare, or a scope whose
+  `sync` is `off` never leaves the device, in any form. `bilbo sync` counts
+  them: `local: 188 notes sync nowhere`.
+- Nothing outside `<root>/notes/` syncs: not the library, the vector cache, the
+  config or the keys.
+- A deletion syncs. A note deleted on one device while another edits it comes
+  back with the edit, flagged `edit-beat-delete`.
+- Two notes created offline with one topic keep both: the one with the later id
+  is renamed to `<kind>-<topic>-<4 id characters>.md` on every device, flagged
+  `topic-taken`.
+- Moving a note out of a scope pushes none of its text into the old scope,
+  only a marker. The other devices of that scope remove their copy, keep its
+  history and print `notes/<file> left the scope; its history stays`. Until 30
+  days pass, `bilbo check` warns on the device that moved it.
+- A note's text is encrypted under a key only your devices hold. The folder's
+  tool and anyone with access to the folder still see the file names (device
+  ids and sequence numbers, not notes) and their sizes and times.
+
+A version is pushed when watch records it. Other devices' files are polled
+every `sync.poll_seconds`, 30 by default. A device that is offline, or whose
+folder is not reachable or full, keeps recording history and retries: watch
+says so once on stderr, and `bilbo sync` shows it.
+
+#### Conflicts
+
+Two devices that edit one note concurrently are merged three-way against the
+last version they share, passage by passage, a passage being what
+[recall](#commands) cuts at a heading. A passage changed on one side takes
+that side. Frontmatter merges key by key: `id` and `created` never change,
+`sources` merges as a set, and when the two sides gave the note different
+scopes the one that shares less wins, flagged `scope-clash`. Each merge is
+recorded in [history](#history) as `merged`, so an automatic one is always
+labelled, and two devices that merge the same versions write the same bytes.
+
+When one passage was changed differently on both sides, bilbo keeps both in
+the file:
+
+```
+<<<<<<< bilbo 01JAB... 2026-10-05T09:12-03:00
+Ship on Monday.
+======= bilbo 01JAC... 2026-10-05T09:40-03:00
+Ship on Friday.
+>>>>>>> bilbo
+```
+
+Watch prints `notes/<file>: conflict in <n> passages; run bilbo check`.
+`bilbo check` keeps reporting the conflict until the markers are gone, and the
+digest labels a conflicted note `conflict`, an auto-merged one `auto-merged`,
+and names open conflicts in a session's first digest. The `note` skill
+resolves a conflict in the note it touches: one passage that keeps every fact
+of both sides, and when the user said which side holds, only that side.
+
+A resolution that leaves out a line one side held is reported by
+`bilbo check` as `conflict: dropped <n> lines of '<heading path>', first
+"<line>"; restore them or run bilbo sync declare <topic> "<why>"` until the
+line is put back or declared dropped on purpose; a marker line that belongs to
+no open conflict is `line <n>: stray conflict marker`:
+
+```sh
+bilbo sync declare release "Monday was superseded"
+```
+
+`<note>` is named as in `bilbo history`, and the reason is one line of up to
+500 characters. It prints `declared plan-release.md: 3 lines dropped on
+purpose`, writes only under `<root>/.bilbo/`, and syncs with the note. With
+nothing to declare it exits 1. An agent that saves a note it read long ago
+cannot revert a synced change in silence either: the first save after watch
+wrote a note from another device is merged against the version from before
+that write, and a merge that keeps both is flagged `stale-base`.
+
+#### Status
+
+`bilbo sync` prints, per syncing scope, where it syncs and which devices keep
+up, then the notes that sync nowhere, the open conflicts and undeclared drops,
+recent flags and changes of the device list:
+
+```console
+$ bilbo sync
+scope personal file:///Users/me/Dropbox/bilbo: 212 notes, pushed 2026-10-05T09:12-03:00, pulled 2026-10-05T09:13-03:00
+device personal rivendell: this device
+device personal bagend: up to date
+local: 188 notes sync nowhere
+conflict notes/gotcha-nix.md: 1 passage
+notice 2026-10-04T18:02-03:00 notes/plan-release.md: edit-beat-delete
+change 2026-10-02T11:30-03:00 personal: device moria added by owner key (manifest 4)
+```
+
+A device's state is `up to date`, `behind by <n> segments`, or `stale since
+<time>` once it left a segment of this device unacknowledged for
+`sync.stale_days`, 180 by default. A `change` line is a device or an epoch
+another device added: if you do not know the device, run `bilbo device revoke`.
+`bilbo sync` reads only local state, so it works offline and changes nothing.
+It exits 1 when a conflict or undeclared drop is open, a scope's folder was
+unreachable or full, a scope or a device is stopped (its line goes to stderr,
+and a segment that fails to verify names the copy to restore), or no
+`bilbo watch` runs. Without a syncing scope it says
+`no scope syncs; set scope.<name>.sync in <config path>` and exits 1.
+
+#### The folder only grows
+
+bilbo deletes nothing from the folder, and a new device reads every segment
+from the first, so the folder and a new device's first sync grow with your
+history. Trimming `history.keep_days` shortens only the local history. A
+device that has left the scope's segments unacknowledged for `sync.stale_days`
+stops holding back pruning of the versions it might still need as a merge
+base.
+
+Removing `<root>/.bilbo/` loses the local history and any manifest version not
+yet on the folder (one this device wrote and no folder holds yet). Watch then
+copies back the one scope of that name whose latest version lists this device,
+reads the folder from the first segment and resumes where this device's own
+files end. When the folder holds several scopes of that name it copies none and
+says `run bilbo device recover on this device`. Two machines that share one device key are not supported: watch
+stops pushing when it finds a segment of this device that its store did not
+write.
+
+#### Moving or ending sync
+
+A scope's manifest pins the scheme of its URL, not a folder's path. To move a
+synced folder, let the tool finish moving it, then change `scope.<name>.sync`
+on every device at once; a device whose config still names the old path finds
+no manifest of its scope there, and watch syncs nothing for that scope and
+says `holds none of this device's scopes; if the folder moved, change
+scope.<name>.sync on every device`.
+
+To turn sync off for a scope, set `scope.<name>.sync = off` on each device. Each
+keeps its notes and history; the folder keeps what it holds, which you can
+delete once no device syncs through it. Delete the folder first, and the other
+devices report it as holding none of their scopes.
+
+#### What sync does not protect
+
+- A stolen or lost device keeps every note and key it held. After
+  [revoking it](#revoking-a-device), remove it from the cloud account that
+  syncs the folder too: its sync client can still write there, and a version
+  it signs that changes the device list shows up as a `change` line in
+  `bilbo sync`.
+- On a `file://` folder a revocation's new epoch is adopted only after the
+  version has been read back unchanged for 10 minutes, so it takes effect up to
+  10 minutes late.
+- A device that holds the owner key can write a second scope named like one of
+  yours. When `bilbo device recover` on an empty store names two scope ids,
+  run `bilbo device list` afterwards and revoke a device you do not recognise.
+- The folder shows file sizes, times and device ids, not names, topics or text.
 
 ### Library
 
@@ -612,14 +817,16 @@ version. It records a creation (`added`), an edit (`edited`), a rename
 (`renamed`) and a deletion (`deleted`), keyed by the note's `id`, so a renamed
 note is the same note. A change made while the watcher was not running is
 recorded when it starts. It never touches `notes/`, apart from sweeping the
-leftover of an interrupted restore (below). `bilbo setup` installs it as a
+leftover of an interrupted restore (below) and writing what other devices
+synced, when a scope [syncs](#sync). `bilbo setup` installs it as a
 login service; see [Set up](#set-up).
 
 History lives in `<root>/.bilbo/history/`, beside the notes. A version is a full
 copy of the note, and identical content is stored once. Deleting
 `<root>/.bilbo/history/` loses the history and nothing else: the next
 `bilbo watch` starts over with every note `added`. Leave the rest of
-`<root>/.bilbo/` alone, since it also holds the library's captures.
+`<root>/.bilbo/` alone, since it also holds the library's captures and the
+state of [sync](#sync).
 
 The watcher records only a regular, non-hidden file directly in `notes/`, named
 `<kind>-<topic>.md`, no larger than 1 MiB, whose frontmatter has an `id`, and
@@ -705,7 +912,11 @@ settled something a later one would otherwise work out again. It looks for the
 note on the subject first with `bilbo recall`, and updates that note instead of
 adding a second one. A new note comes from `bilbo new`; a note whose kind
 changes is renamed with `mv -n`. It then runs `bilbo check`, fixes the lines
-that name its own note, and reports the note's absolute path. It never invents
+that name its own note, and reports the note's absolute path. When `check`
+reports a [sync conflict](#conflicts) in that note, it replaces each block with
+one passage that keeps every fact of both sides, unless you said which side
+holds. Lines it dropped on purpose it declares with `bilbo sync declare`, and
+the report names them. A conflict in a note it did not touch is left alone. It never invents
 a source, and when `bilbo` is missing it says so and stops.
 
 After each compaction, the plugin's `SessionStart` hook adds one line asking
@@ -784,7 +995,7 @@ plain text on disk, so the file is mode 0600 and off by default.
 
 `bilbo setup` plans every step, shows the plan, asks once, then applies it and
 prints one line per step (`created`, `written`, `kept`, `installed`, `failed`,
-and so on). It does six things:
+and so on). It does these things:
 
 - creates the store, `<root>/notes/`;
 - writes the config, after checking the embedder with one real request;
@@ -797,7 +1008,8 @@ and so on). It does six things:
 - installs a timer that runs `bilbo index` every 15 minutes (a launchd agent on
   macOS, a systemd user timer on Linux), when an embedder is configured;
 - installs a login service that runs `bilbo watch`, which records
-  [note history](#history).
+  [note history](#history) and [syncs](#sync) the scopes that sync;
+- checks each syncing scope's folder, and in the wizard can turn sync on.
 
 With the local embedder (below), setup also downloads a model and installs a
 login service that runs it. Their steps, `model` and `server`, are always in
@@ -856,6 +1068,24 @@ its output to `watch.log` under bilbo's state folder: the launchd agent
 an environment variable does not fail it. The step is the `watch` line of the
 report, after `timer`. In the wizard it is one question, "Record note history in
 the background?", defaulting to yes.
+
+### Sync step
+
+The `sync` line of the report, after `watch`, checks each scope whose `sync` is
+a URL: that this device has a key, that the watcher is wanted and that the
+folder exists and is writable. It reports `ok: personal through
+file:///Users/me/Dropbox/bilbo (212 notes)`, `failed: sync needs the watcher;
+drop --no-watch`, `failed: <url> is not reachable: <reason>`, `skipped: no
+device key; run bilbo device init in a terminal` or `skipped: no scope syncs`.
+It writes nothing. In the wizard, after the watcher's question, one more asks
+whether to sync notes between devices. On yes it asks for the scope and the
+folder (absolute or starting with `~/`, its parent existing), and, when the
+device has no key, whether you already have a recovery phrase: yes runs
+`bilbo device recover`, no runs `bilbo device init`, with the same terminal
+rules as [The ceremony](#the-ceremony). Nothing is written until you confirm
+the summary. It then writes `scope.<name>.sync`, creates the folder's last
+component when missing and writes the keys. Against a config that a module
+manages, the wizard only shows the syncing scopes.
 
 ### Local embedder
 
@@ -937,8 +1167,8 @@ inputs.bilbo = {
 }
 ```
 
-`settings` takes the keys in [Configuration](#configuration); scope keys are
-quoted attribute names, as above. Combining
+`settings` takes the keys in [Configuration](#configuration), the `sync.*` ones
+included; scope keys are quoted attribute names, as above. Combining
 `index.enable` with `embedder.token_env` fails evaluation, for the reason
 above: use `embedder.token_file`. `package` defaults to this flake's `bilbo`
 for the system.
@@ -978,6 +1208,8 @@ embedder.model = nomic-embed-text
 | `digest.log` | `on` appends each digest run to the digest log. `off` by default. |
 | `scope.<name>.sync`, `scope.<name>.embedder`, `scope.<name>.paths`, `scope.<name>.marks` | Declare the scope `<name>`; see [Scopes](#scopes). `sync` is `off` or a [URL](#sync-urls), `embedder` is `any` or `local`, the others comma-separated lists. |
 | `scope.default` | The declared scope `bilbo new` falls back on. |
+| `sync.poll_seconds` | A whole number of seconds, 1 to 3600: how often `bilbo watch` looks for other devices' files; see [Sync](#sync). 30 by default. |
+| `sync.stale_days` | A whole number of days, 1 to 3650: how long a device may leave a segment unacknowledged before `bilbo sync` calls it stale and pruning stops waiting for it. 180 by default. |
 | `history.keep_days` | A whole number of days, 1 to 3650: the age past which `bilbo watch` prunes versions, under [the retention rule](#history). 90 by default. |
 
 bilbo never prints the token. The vector cache lives under

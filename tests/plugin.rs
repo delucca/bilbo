@@ -135,7 +135,7 @@ fn note_skill_frontmatter() {
     assert_eq!(folder(NOTE_SKILL), "note");
     assert_eq!(
         front[3].1,
-        "Bash(command -v bilbo), Bash(bilbo recall *), Bash(bilbo new *), Bash(bilbo scope), Bash(bilbo scope set *), Bash(bilbo check), Bash(mv -n *), Read, Edit"
+        "Bash(command -v bilbo), Bash(bilbo recall *), Bash(bilbo new *), Bash(bilbo scope), Bash(bilbo scope set *), Bash(bilbo check), Bash(bilbo sync declare *), Bash(mv -n *), Read, Edit"
     );
 }
 
@@ -227,6 +227,7 @@ fn note_skill_drives_bilbo() {
         "bilbo new <kind> <topic> [--title '<title>'] [--scope <name>]",
         "bilbo scope set <name> '<path>'",
         "bilbo check",
+        "bilbo sync declare <topic> '<why>'",
         "mv -n '<root>/notes/<old kind>-<topic>.md' '<root>/notes/<new kind>-<topic>.md'",
     ] {
         assert!(
@@ -252,6 +253,8 @@ fn note_skill_drives_bilbo() {
         "(warning)",
         "unassigned",
         "bilbo scope set --force <name>",
+        "stray conflict marker",
+        "has no dropped text to declare",
         "sources:\n     - \"code: src/new.rs\"\n     - \"url: https://example.org/page\"",
     ] {
         assert!(text.contains(needle), "the skill lacks {needle:?}");
