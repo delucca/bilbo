@@ -70,8 +70,8 @@ impl Rule {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Scope {
     pub name: String,
-    /// `off`, the only value there is.
-    pub sync: &'static str,
+    /// `off` or a sync URL, as written.
+    pub sync: String,
     pub embedder: Rule,
     /// Each item as written, trimmed.
     pub paths: Vec<String>,
@@ -446,7 +446,7 @@ impl Declared {
             None => {
                 self.scopes.push(Scope {
                     name: name.to_string(),
-                    sync: "off",
+                    sync: "off".to_string(),
                     embedder: Rule::Any,
                     paths: Vec::new(),
                     marks: Vec::new(),
@@ -475,10 +475,15 @@ impl Declared {
         let key = format!("scope.{name}.{field}");
         match field {
             "sync" => {
-                self.scope(name);
-                if value != "off" {
-                    return Err(format!("{key} must be off, got '{value}'"));
+                if let Err(why) = sync_problem(value) {
+                    return Err(match why {
+                        UrlError::Credentials => format!("{key} {URL_CREDENTIALS}"),
+                        UrlError::Shape => {
+                            format!("{key} must be off or a sync URL, got '{value}'")
+                        }
+                    });
                 }
+                self.scope(name).sync = value.to_string();
             }
             "embedder" => {
                 self.scope(name).embedder = match value {
@@ -759,6 +764,58 @@ fn check_url(url: &str) -> Result<(), UrlError> {
         None => Ok(()),
         Some(URL_CREDENTIALS) => Err(UrlError::Credentials),
         Some(_) => Err(UrlError::Shape),
+    }
+}
+
+/// `off`, `file://` and an absolute path taken literally, or an `https://` URL (`http://` only when local) with a
+/// valid port and no query or fragment. Credentials are tested first, so no other error repeats a password.
+fn sync_problem(value: &str) -> Result<(), UrlError> {
+    if value == "off" {
+        return Ok(());
+    }
+    let problem = url_problem(value);
+    if problem == Some(URL_CREDENTIALS) {
+        return Err(UrlError::Credentials);
+    }
+    if value.chars().any(char::is_control) || value.contains(['?', '#']) {
+        return Err(UrlError::Shape);
+    }
+    if let Some(path) = value.strip_prefix("file://") {
+        return if path.starts_with('/') {
+            Ok(())
+        } else {
+            Err(UrlError::Shape)
+        };
+    }
+    if problem.is_some() || (value.starts_with("http://") && !is_local(value)) {
+        return Err(UrlError::Shape);
+    }
+    let authority = value
+        .split_once("://")
+        .and_then(|(_, rest)| rest.split('/').next())
+        .unwrap_or("");
+    let tail = match authority.strip_prefix('[') {
+        Some(inner) => match inner.split_once(']') {
+            Some((host, tail)) if !host.is_empty() => tail,
+            _ => return Err(UrlError::Shape),
+        },
+        None => {
+            if authority.matches(':').count() > 1 {
+                return Err(UrlError::Shape);
+            }
+            authority.find(':').map_or("", |at| &authority[at..])
+        }
+    };
+    match tail.strip_prefix(':') {
+        None if tail.is_empty() => Ok(()),
+        Some(digits)
+            if !digits.is_empty()
+                && digits.bytes().all(|b| b.is_ascii_digit())
+                && digits.parse::<u16>().is_ok_and(|p| p != 0) =>
+        {
+            Ok(())
+        }
+        _ => Err(UrlError::Shape),
     }
 }
 
@@ -1620,7 +1677,7 @@ mod tests {
     fn one_key_declares_a_scope() {
         let s = scopes("scope.work.marks = acme\n").unwrap();
         let work = s.scope("work").unwrap();
-        assert_eq!((work.sync, work.embedder), ("off", Rule::Any));
+        assert_eq!((work.sync.as_str(), work.embedder), ("off", Rule::Any));
         assert!(work.paths.is_empty());
         assert_eq!(s.default_scope, None);
     }
@@ -1687,11 +1744,85 @@ mod tests {
         );
     }
 
+    fn sync_of(value: &str) -> Result<String, String> {
+        let s = scopes(&format!("scope.personal.sync = {value}\n"))?;
+        Ok(s.scope("personal").unwrap().sync.clone())
+    }
+
+    #[test]
+    fn sync_takes_a_url() {
+        for ok in [
+            "off",
+            "https://relay.example.net",
+            "https://relay.example.net:8443/bilbo",
+            "http://127.0.0.1:8740",
+            "http://localhost",
+            "http://LOCALHOST:8740",
+            "http://[::1]:8740",
+            "https://[::1]",
+            "https://relay.example.net/",
+            "file:///Users/a/Library/Mobile Documents/bilbo",
+            "file:///a%20b",
+        ] {
+            assert_eq!(sync_of(ok).as_deref(), Ok(ok), "{ok}");
+        }
+    }
+
+    #[test]
+    fn sync_refuses_what_is_not_a_url() {
+        for bad in [
+            "http://relay.example.net",
+            "file://Sync/bilbo",
+            "~/Sync/bilbo",
+            "ftp://relay.example.net",
+            "https://relay.example.net/?token=1",
+            "https://relay.example.net/a#b",
+            "https://relay.example.net:0",
+            "https://relay.example.net:65536",
+            "https://relay.example.net:",
+            "https://relay.example.net:80a",
+            "https://relay .example.net",
+            "https://",
+            "file:///a?b",
+            "https://[]",
+            "https://[::1]x",
+            "https://[::1",
+            "https://::1",
+            "http://::1",
+            "http://localhost.evil.com",
+            "HTTPS://relay.example.net",
+            "FILE:///x",
+            "https://:8443",
+        ] {
+            let err = sync_of(bad).unwrap_err();
+            assert!(
+                err.starts_with("/c:1: scope.personal.sync "),
+                "{bad}: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn sync_credentials_are_not_echoed() {
+        for bad in [
+            "https://u:sekrit@relay.example.net",
+            "https://u:sekrit@relay.example.net/?token=1",
+            "https://u:sekrit@relay.example.net/a#b",
+            "\"https://u:sekrit@relay.example.net\\n\"",
+        ] {
+            assert_eq!(
+                sync_of(bad).unwrap_err(),
+                "/c:1: scope.personal.sync must not hold a user name or password",
+                "{bad}"
+            );
+        }
+    }
+
     #[test]
     fn scope_value_errors_name_the_key() {
         assert_eq!(
-            scope_err("scope.personal.sync = https://relay.example.net\n"),
-            "/c:1: scope.personal.sync must be off, got 'https://relay.example.net'"
+            scope_err("scope.personal.sync = on\n"),
+            "/c:1: scope.personal.sync must be off or a sync URL, got 'on'"
         );
         assert_eq!(
             scope_err("\nscope.work.embedder = remote\n"),

@@ -85,6 +85,36 @@ fn lists_two_scopes_and_the_unassigned_notes() {
 }
 
 #[test]
+fn sync_takes_a_url() {
+    let dir = TempDir::new("scope-sync-url");
+    let root = store(&dir);
+    let conf = config(&dir, &["scope.personal.sync = https://relay.example.net"]);
+    let run = scope(&root, &conf, &[]);
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    assert!(
+        run.stdout
+            .contains("personal\t0 notes\tsync https://relay.example.net\tembedder any"),
+        "{}",
+        run.stdout
+    );
+    assert!(run.stderr.is_empty());
+}
+
+#[test]
+fn a_sync_password_is_not_echoed() {
+    let dir = TempDir::new("scope-sync-secret");
+    let root = store(&dir);
+    let conf = config(
+        &dir,
+        &["scope.personal.sync = https://u:sekrit@relay.example.net"],
+    );
+    let run = scope(&root, &conf, &[]);
+    assert_eq!(run.code, 2);
+    assert!(run.stderr.contains("scope.personal.sync"), "{}", run.stderr);
+    assert!(!run.stderr.contains("sekrit"), "{}", run.stderr);
+}
+
+#[test]
 fn says_so_when_no_scope_is_declared() {
     let dir = TempDir::new("scope-none");
     let root = store(&dir);

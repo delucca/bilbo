@@ -83,7 +83,7 @@ The scope keys SHALL be `scope.<name>.sync`, `scope.<name>.embedder`, `scope.<na
 ## ADDED Requirements
 
 ### Requirement: Scope sync URLs
-A sync URL SHALL be `file://` followed by an absolute path, taken literally with no percent-decoding, or `https://<host>[:<port>][/<prefix>]`, or `http://` of that shape only when the host is `localhost`, `127.0.0.1` or `::1`. It SHALL hold no user name, password, query, fragment, whitespace or control character, and a port SHALL be 1 to 65535. Any other value SHALL be an error naming the key, and an error about a user name or password SHALL NOT repeat the URL.
+A sync URL SHALL be `file://` followed by an absolute path, taken literally with no percent-decoding, or `https://<host>[:<port>][/<prefix>]`, or `http://` of that shape only when the host is `localhost`, `127.0.0.1` or `::1`. It SHALL hold no user name, password, query, fragment or control character, an `https://` or `http://` URL SHALL hold no whitespace (a `file://` path may), and a port SHALL be 1 to 65535. Any other value SHALL be an error naming the key, and an error about a user name or password SHALL NOT repeat the URL.
 
 #### Scenario: A folder
 - **WHEN** the config file holds `scope.personal.sync = file:///Users/a/Library/Mobile Documents/bilbo`
