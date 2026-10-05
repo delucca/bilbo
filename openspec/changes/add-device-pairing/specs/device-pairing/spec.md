@@ -238,7 +238,7 @@ Every mailbox message SHALL carry a format number. A device that reads a format 
 - **THEN** B prints that message, exits 1, and writes no answer
 
 ### Requirement: The mailbox
-A mailbox SHALL be `pair/<nameplate>/` of the transport, laid out as the `sync-transport` spec says: `a.msg` and `c.msg` from A, `b.msg` from B, each created once and at most 4 KiB. `c.msg` SHALL carry one result: `enrolled` with the sealed payload, else `wrong-code`, `declined`, `expired`, `name-taken` or `other-owner` with no secret. On `file://`, B SHALL remove it after any result but `wrong-code`, A when its code expires unanswered, and any `bilbo pair` when `a.msg` is over 30 minutes old.
+A mailbox SHALL be `pair/<nameplate>/` of the transport, laid out as the `sync-transport` spec says: `a.msg` and `c.msg` from A, `b.msg` from B, each created once and at most 4 KiB. `c.msg` SHALL carry one result: `enrolled` with the sealed payload, else `wrong-code`, `declined`, `expired`, `name-taken` or `other-owner` with no secret; `other-owner` SHALL carry A's owner signing public key sealed under the session, so the transport never sees it. On `file://`, B SHALL remove it after any result but `wrong-code`, A when its code expires unanswered, and any `bilbo pair` when `a.msg` is over 30 minutes old.
 
 #### Scenario: Cleaned up after success
 - **WHEN** pairing over `file:///srv/sync` succeeds

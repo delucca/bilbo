@@ -98,10 +98,10 @@ A: writes the new manifests, then creates c.msg {format, result, nonce, box(payl
 B: reads c.msg, fetches and checks the manifests, writes manifests, config, then keys
 ```
 
-- **Keys:** SPAKE2 gives K. The transcript hash T is SHA-256 over `bilbo-pair-1`, the nameplate and both SPAKE2 messages. HKDF-SHA256 with salt T and input K gives three outputs, with info `b`, `c` and `fingerprint`. Each box is XChaCha20-Poly1305 with a random nonce, and T as associated data.
+- **Keys:** SPAKE2 gives K. The transcript hash T is SHA-256 over `bilbo-pair-1`, the nameplate and both SPAKE2 messages. HKDF-SHA256 with salt T and input K gives three outputs, with info `b`, `c` and `fingerprint`. Each box is XChaCha20-Poly1305 with a random nonce. Its associated data is `bilbo-pair-1 <role>`, a newline, then T, where the role is `b` for `b.msg`'s box and `c <result>` for `c.msg`'s, so the plain `result` that picks the reader is under the AEAD.
 - **`b.msg`'s box:** B's name, its Ed25519 and X25519 public keys, B's signature over T, which proves B holds the signing key it names, and, when B is enrolled, its owner's signing public key.
 - **Wrong code:** A's key differs from B's, and B's box does not open. A then creates `c.msg` with the plain result `wrong-code`, and no secret.
-- **`c.msg`:** its plain `result` is one of `enrolled`, `wrong-code`, `declined`, `expired`, `name-taken` or `other-owner`. Only `enrolled` carries a box.
+- **`c.msg`:** its plain `result` is one of `enrolled`, `wrong-code`, `declined`, `expired`, `name-taken` or `other-owner`. Only `enrolled` and `other-owner` carry a box: `other-owner`'s holds A's owner signing public key, which is no secret, so B can print A's owner fingerprint while the folder does not learn which owner the mailbox belongs to.
   - On the relay, only A's key can create `c.msg`.
   - On a folder, whoever can write the folder could forge a plain result. That can only end a pairing, never change what B stores.
 - **Why three messages, not two:** with two (B first, then A answers with the payload), A would send the owner key before learning whether the code was right. SPAKE2 keeps that ciphertext safe from an offline search, but the user would confirm on A without knowing whether B typed the code correctly, and nobody would claim the nameplate. A third message costs one more poll.
