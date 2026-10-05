@@ -143,7 +143,7 @@ When no config file exists, the config step SHALL write one, at the path the `co
 - **THEN** the config holds only comments and blank lines, and `bilbo recall` runs keyword-only with nothing about the config on stderr
 
 ### Requirement: Existing config file
-An existing config SHALL be kept. Non-interactive `setup` given embedder flags SHALL rewrite a config that sets no key at all (only comments and blank lines, as `bilbo setup --yes` writes with no embedder): the old file becomes `config.bak`, the config line says `updated`, and the embedder check runs as for a new config. Against a config that sets any key, embedder or not, it SHALL exit 1 before writing anything when the flags differ from the embedder settings in the file, and SHALL keep the file when they are equal. The wizard SHALL show the current embedder settings as defaults and SHALL rewrite the file only when the user changes one, renaming the old file to `config.bak` first and reporting `updated`. A rewrite SHALL keep every digest and history setting the old file held.
+An existing config SHALL be kept. Non-interactive `setup` given embedder flags SHALL rewrite a config that sets no key at all (only comments and blank lines, as `bilbo setup --yes` writes with no embedder): the old file becomes `config.bak`, the config line says `updated`, and the embedder check runs as for a new config. Against a config that sets any key, embedder or not, it SHALL exit 1 before writing anything when the flags differ from the embedder settings in the file, and SHALL keep the file when they are equal. The wizard SHALL show the current embedder settings as defaults and SHALL rewrite the file only when the user changes one, renaming the old file to `config.bak` first and reporting `updated`. A rewrite SHALL keep every digest, history and scope setting the old file held.
 
 #### Scenario: Flags against an existing config
 - **WHEN** a config exists and a user runs `bilbo setup --yes --embedder-url http://x:1 --embedder-model m`
@@ -168,6 +168,10 @@ An existing config SHALL be kept. Non-interactive `setup` given embedder flags S
 #### Scenario: The wizard keeps the history setting
 - **WHEN** the config sets `embedder.model = a` and `history.keep_days = 30`, and the user picks model `b` in the wizard and confirms
 - **THEN** the new config sets `embedder.model = b` and `history.keep_days = 30`
+
+#### Scenario: The wizard keeps the scope settings
+- **WHEN** the config sets `embedder.model = a`, `scope.work.embedder = local`, `scope.work.paths = ~/Developer/acme` and `scope.default = work`, and the user picks model `b` in the wizard and confirms
+- **THEN** the new config sets `embedder.model = b` and holds the three scope lines as they were
 
 #### Scenario: The wizard keeps everything
 - **WHEN** a config exists and the user accepts every default in the wizard
@@ -407,7 +411,7 @@ After a successful apply that leaves an embedder configured, the wizard SHALL of
 - **THEN** the summary says the key will be saved to `<config folder>/token` and holds no part of the key
 
 ### Requirement: Home-manager module
-The flake SHALL export `homeManagerModules.default` with `programs.bilbo.enable`, `package`, `storeRoot` (a path exported as `BILBO_HOME`, or null for the default root), `settings` (embedder, digest and history keys to string values), `index.enable`, `index.every`, `watch.enable` (true by default), `claude` and `codex` (a path, or null for PATH), and `localEmbedder.enable`, `localEmbedder.port` and `localEmbedder.llamaServer` (nixpkgs' `llama-server` by default). When enabled, it SHALL install the package, write `settings` as the config file, and on activation run `bilbo setup --yes` with the matching flags, `--no-watch` among them when `watch.enable` is false. With `localEmbedder.enable`, the settings' URL and model SHALL default to the local embedder's, and activation SHALL pass `--embedder-local`, `--embedder-port` and `--llama-server`; an `embedder.url` other than the local one SHALL fail evaluation. Activation does not read session variables, so the module SHALL pass the locations explicitly: `BILBO_HOME` from `storeRoot` (unset when null), `BILBO_CONFIG` unset, and `XDG_CONFIG_HOME`, `XDG_DATA_HOME`, `XDG_CACHE_HOME` and `XDG_STATE_HOME` from home-manager's `xdg` folders. It SHALL also put `launchctl` (macOS) or `systemctl` (Linux) on the PATH it gives `setup`. A key in `embedder.token_env` with `index.enable` SHALL fail evaluation. The module SHALL work without the flake's `home-manager` input, which only its flake check reads.
+The flake SHALL export `homeManagerModules.default` with `programs.bilbo.enable`, `package`, `storeRoot` (a path exported as `BILBO_HOME`, or null for the default root), `settings` (embedder, digest, history and scope keys to string values; a scope key is accepted only in the shape the `config` spec's Scope settings allow), `index.enable`, `index.every`, `watch.enable` (true by default), `claude` and `codex` (a path, or null for PATH), and `localEmbedder.enable`, `localEmbedder.port` and `localEmbedder.llamaServer` (nixpkgs' `llama-server` by default). When enabled, it SHALL install the package, write `settings` as the config file, and on activation run `bilbo setup --yes` with the matching flags, `--no-watch` among them when `watch.enable` is false. With `localEmbedder.enable`, the settings' URL and model SHALL default to the local embedder's, and activation SHALL pass `--embedder-local`, `--embedder-port` and `--llama-server`; an `embedder.url` other than the local one SHALL fail evaluation. Activation does not read session variables, so the module SHALL pass the locations explicitly: `BILBO_HOME` from `storeRoot` (unset when null), `BILBO_CONFIG` unset, and `XDG_CONFIG_HOME`, `XDG_DATA_HOME`, `XDG_CACHE_HOME` and `XDG_STATE_HOME` from home-manager's `xdg` folders. It SHALL also put `launchctl` (macOS) or `systemctl` (Linux) on the PATH it gives `setup`. A key in `embedder.token_env` with `index.enable` SHALL fail evaluation. The module SHALL work without the flake's `home-manager` input, which only its flake check reads.
 
 #### Scenario: Settings become the config
 - **WHEN** a configuration sets `programs.bilbo.settings."embedder.url" = "http://bagend:8081"` and `"embedder.model" = "qwen3"`
@@ -420,6 +424,14 @@ The flake SHALL export `homeManagerModules.default` with `programs.bilbo.enable`
 #### Scenario: History setting from Nix
 - **WHEN** a configuration sets `programs.bilbo.settings."history.keep_days" = "30"`
 - **THEN** the config file holds `history.keep_days = 30`, and evaluation succeeds
+
+#### Scenario: Scope settings from Nix
+- **WHEN** a configuration sets `programs.bilbo.settings."scope.work.embedder" = "local"` and `"scope.work.paths" = "~/Developer/acme"`
+- **THEN** the config file holds `scope.work.embedder = local` and `scope.work.paths = ~/Developer/acme`, and evaluation succeeds
+
+#### Scenario: A bad scope key fails evaluation
+- **WHEN** a configuration sets `programs.bilbo.settings."scope.work.colour" = "red"`
+- **THEN** evaluation fails with a message naming `scope.work.colour`
 
 #### Scenario: Watcher off from Nix
 - **WHEN** a configuration sets `programs.bilbo.watch.enable = false`
