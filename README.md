@@ -480,7 +480,10 @@ are the last line.
 An enrolled device pairs too, to join a scope it is not in: run
 `bilbo pair --scope shared` on a device in `shared` and answer on the other
 with `bilbo pair <code> --via <url>`. Its keys do not change, and it must
-belong to the same owner. When no enrolled device is left, the
+belong to the same owner. A new device that stops after checking the
+manifests, for example on a config it cannot write, keeps those manifests but
+no keys: pairing it again with the same owner finishes, and pairing it with
+another owner is refused until its store is cleared. When no enrolled device is left, the
 [phrase](#a-second-device) is the way in, with `bilbo device recover`.
 
 `--scope` decides what the new device can read: a stolen paired device reads
