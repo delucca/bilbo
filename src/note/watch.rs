@@ -1,7 +1,8 @@
-//! `bilbo watch`: records a version of each note when it changes. `notify` only says when to look; every decision
-//! comes from a scan of `<root>/notes/` against history, so a missed event costs time, never content.
+//! `bilbo watch`: records a version of each note when it changes, and runs the sync cycle of each syncing scope.
+//! `notify` only says when to look; every decision comes from a scan of `<root>/notes/` against history, so a missed
+//! event costs time, never content.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::fs::{self, File, OpenOptions, TryLockError};
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
@@ -12,8 +13,14 @@ use notify::event::AccessKind;
 use notify::{EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 
 use crate::Failure;
+use crate::host::swap;
+use crate::identity::keys::{self, Identity};
+use crate::identity::manifest::{self, Recipient};
 use crate::note::versions::{self, Found, Lock, Scan, Skip};
 use crate::shared::{config, hash, store};
+use crate::sync::replica::{self, Problem, Replica};
+use crate::sync::transport::{self, Transport};
+use crate::sync::{integrate, manifests};
 
 /// How long `notes/` stays quiet before a scan, and the longest a scan waits while events keep coming.
 const QUIET: Duration = Duration::from_secs(2);
@@ -22,6 +29,8 @@ const CAP: Duration = Duration::from_secs(10);
 const CHECK: Duration = Duration::from_secs(10);
 const BACKSTOP: Duration = Duration::from_secs(600);
 const PRUNE_EVERY: Duration = Duration::from_secs(24 * 3600);
+/// The longest a failing sync cycle waits for the next one.
+const POLL_CAP: Duration = Duration::from_secs(600);
 const LOCK_TRIES: u32 = 10;
 const LOCK_WAIT: Duration = Duration::from_millis(100);
 /// A file written this recently may be written again within the clock's resolution, so its stat proves nothing.
@@ -46,7 +55,17 @@ pub fn run(args: &[String], env: &store::Env, say: &mut dyn FnMut(&str)) -> Resu
     let mut watch = Watch {
         notes: root.join("notes"),
         root,
-        keep_days: settings.history.keep_days,
+        env,
+        settings,
+        config_error: None,
+        syncing: BTreeSet::new(),
+        scopes: HashMap::new(),
+        held: HashMap::new(),
+        inbound: Vec::new(),
+        cycle_lines: HashSet::new(),
+        wait: Duration::ZERO,
+        more: false,
+        trim: false,
         lock,
         say,
         tx,
@@ -160,10 +179,55 @@ struct Entry {
 
 type Classified = Result<Entry, Skip>;
 
+/// What the watcher keeps of one syncing scope between cycles.
+struct Active {
+    /// The scope id the replica is of, and the device it was opened for.
+    id: String,
+    device: String,
+    replica: Replica,
+    /// The transport problem being reported, kept for the time it began.
+    problem: Option<Problem>,
+}
+
+/// A scope whose manifests let it sync this cycle.
+struct Ready {
+    name: String,
+    url: String,
+    t: Box<dyn Transport>,
+    /// Every step of the cycle so far worked.
+    ok: bool,
+    /// The transport's message when it refused a write as full.
+    full: Option<String>,
+}
+
+/// What one sync cycle did: how its scan went, when it ran one, and how long until the next cycle.
+struct Tick {
+    scanned: Option<Result<usize, String>>,
+    wait: Duration,
+}
+
 struct Watch<'a> {
     root: PathBuf,
     notes: PathBuf,
-    keep_days: u32,
+    env: &'a store::Env,
+    /// The settings of the last config that parsed, read again at the start of every sync cycle.
+    settings: config::Settings,
+    config_error: Option<String>,
+    /// The scopes that sync on this device: declared with a URL, with a device key held.
+    syncing: BTreeSet<String>,
+    /// What the watcher keeps of each syncing scope between cycles, by name.
+    scopes: HashMap<String, Active>,
+    /// Lines that hold while a condition does, by scope and channel, printed once until it ends.
+    held: HashMap<String, String>,
+    /// The lines this cycle's staging and applying returned, printed when the last cycle did not return them.
+    inbound: Vec<String>,
+    cycle_lines: HashSet<String>,
+    /// The wait before the next sync cycle: the poll interval, doubled while a cycle fails.
+    wait: Duration,
+    /// A pull stopped at its size limit with segments left: the next cycle comes at once.
+    more: bool,
+    /// A prune ran: the next cycle trims `seen.jsonl` once it has applied what it pulled.
+    trim: bool,
     lock: File,
     say: &'a mut dyn FnMut(&str),
     tx: Sender<notify::Result<notify::Event>>,
@@ -190,10 +254,17 @@ impl Watch<'_> {
         (self.say)(message);
     }
 
-    /// The `.tmp-*` leftovers under `history/` go, and the first prune runs.
+    /// The `.tmp-*` leftovers under `history/`, `sync/` and `scopes/` go, and the first prune runs.
     fn housekeeping(&mut self) {
+        // The first cycle has not read the keys yet, so the config alone says which scopes sync.
+        self.syncing = (self.settings.scopes.iter())
+            .filter(|s| s.sync != "off")
+            .map(|s| s.name.clone())
+            .collect();
         let result = versions::lock(&self.root).and_then(|lock| {
             versions::sweep_temporaries(&lock)?;
+            integrate::sweep_temporaries(&self.root)?;
+            self.with_params(|params| integrate::rebuild_open(&lock, params))?;
             self.prune_under(&lock)
         });
         if let Err(e) = result {
@@ -202,13 +273,11 @@ impl Watch<'_> {
     }
 
     fn prune_under(&mut self, lock: &Lock) -> Result<(), String> {
-        let pruned = versions::prune(
-            lock,
-            self.keep_days,
-            jiff::Timestamp::now(),
-            &versions::Guard::new(),
-            &Default::default(),
-        )?;
+        let now = jiff::Timestamp::now();
+        let guard = replica::known_heads(&self.root, &self.settings, now)?;
+        let staged = integrate::staged_blobs(&self.root)?;
+        let pruned = versions::prune(lock, self.settings.history.keep_days, now, &guard, &staged)?;
+        self.trim = true;
         for warning in &pruned.warnings {
             self.say(warning);
         }
@@ -233,23 +302,48 @@ impl Watch<'_> {
             (start + CHECK, start + BACKSTOP, start + PRUNE_EVERY);
         let mut pending: Option<(Instant, Instant)> = None;
         let mut retry: Option<Instant> = None;
+        let mut next_poll = start;
         let mut scan = self.connect(true);
         loop {
+            if Instant::now() >= next_poll {
+                self.check_lock()?;
+                let tick = self.tick();
+                next_poll = Instant::now() + tick.wait;
+                if let Some(result) = tick.scanned {
+                    scan = false;
+                    pending = None;
+                    retry = None;
+                    next_backstop = Instant::now() + BACKSTOP;
+                    if let Err(e) = result {
+                        self.report(&e);
+                        retry = Some(Instant::now() + CHECK);
+                    }
+                }
+            }
             if scan {
                 scan = false;
                 pending = None;
                 retry = None;
                 next_backstop = Instant::now() + BACKSTOP;
                 self.check_lock()?;
-                if let Err(e) = self.scan() {
-                    self.report(&e);
-                    retry = Some(Instant::now() + CHECK);
+                match self.scan(false) {
+                    // What a save recorded is pushed at once, unless the last cycle failed and is waiting out its backoff.
+                    Ok(recorded) => {
+                        if recorded > 0 && !self.syncing.is_empty() && self.wait <= self.poll() {
+                            next_poll = Instant::now();
+                        }
+                    }
+                    Err(e) => {
+                        self.report(&e);
+                        retry = Some(Instant::now() + CHECK);
+                    }
                 }
             }
             let settled = pending.map(|(first, last)| (last + QUIET).min(first + CAP));
             let deadline = [
                 settled,
                 retry,
+                Some(next_poll),
                 Some(next_check),
                 Some(next_backstop),
                 Some(next_prune),
@@ -430,26 +524,32 @@ impl Watch<'_> {
         Ok(items)
     }
 
-    /// One scan: an unlocked pass that does the slow reading, then a locked one that sweeps, reads what changed since
-    /// and records the differences.
-    fn scan(&mut self) -> Result<(), String> {
+    /// One scan: an unlocked pass that does the slow reading, then a locked one that applies what other devices
+    /// wrote (when `apply`), sweeps, reads what changed since and records the differences. Returns how many notes it
+    /// recorded a change of.
+    fn scan(&mut self, apply: bool) -> Result<usize, String> {
         if let Err(reason) = self.refresh() {
-            return self.lost(&reason);
+            return self.lost(&reason).map(|()| 0);
         }
         let lock = versions::lock(&self.root)?;
         let at = versions::now_at();
-        match versions::sweep_restore_leftovers(&lock, &at, &Default::default()) {
+        if apply {
+            let lines = self.apply(&lock)?;
+            self.inbound.extend(lines);
+        }
+        let staged = integrate::staged(&self.root)?;
+        match versions::sweep_restore_leftovers(&lock, &at, &staged) {
             Ok(messages) => self.announce_sweep(messages),
             Err(e) => {
                 return match fs::read_dir(&self.notes) {
-                    Err(reason) => self.lost(&reason.to_string()),
+                    Err(reason) => self.lost(&reason.to_string()).map(|()| 0),
                     Ok(_) => Err(e),
                 };
             }
         }
         let items = match self.refresh() {
             Ok(items) => items,
-            Err(reason) => return self.lost(&reason),
+            Err(reason) => return self.lost(&reason).map(|()| 0),
         };
         // The scan names the notes; their bytes stay on disk until one needs a new blob.
         let scan = versions::group(
@@ -465,9 +565,28 @@ impl Watch<'_> {
                 .collect(),
         );
         self.announce_skips(&scan);
-        self.record(&lock, &scan, &at)?;
+        let recorded = self.record(&lock, &scan, &at)?;
         self.last_error = None;
-        Ok(())
+        Ok(recorded)
+    }
+
+    /// What `integrate` needs besides the store, for the cycle it runs in.
+    fn with_params<T>(&self, run: impl FnOnce(&integrate::Params) -> T) -> T {
+        let syncing = self.syncing.clone();
+        let syncs = |name: &str| syncing.contains(name);
+        let params = integrate::Params {
+            syncs: &syncs,
+            now: jiff::Timestamp::now(),
+            stale_days: self.settings.sync.stale_days,
+        };
+        run(&params)
+    }
+
+    /// Writes the versions other devices sent into the notes. Nothing is written while `notes/` cannot be listed.
+    fn apply(&mut self, lock: &Lock) -> Result<Vec<String>, String> {
+        self.with_params(|params| {
+            integrate::apply(lock, params, &mut |_| Ok(()), &mut swap::exchange)
+        })
     }
 
     /// The folder cannot be listed: nothing is recorded, and the scan is not a failure.
@@ -507,28 +626,32 @@ impl Watch<'_> {
         }
     }
 
-    fn record(&mut self, lock: &Lock, scan: &Scan, at: &str) -> Result<(), String> {
+    /// Records each note whose file differs from its latest version, through `integrate::record_local`, the one path
+    /// of a local save. Returns how many it recorded.
+    fn record(&mut self, lock: &Lock, scan: &Scan, at: &str) -> Result<usize, String> {
         let mut heads = HashMap::new();
         for id in versions::note_ids(&self.root)? {
             if let Some(head) = versions::load(&self.root, &id)?.versions.pop() {
                 heads.insert(id, head);
             }
         }
+        let mut recorded = 0;
         for (id, found) in &scan.notes {
             let digest = &self.digests[&found.name];
             let current = Some((found.name.as_str(), digest.as_str()));
-            let Some(event) = versions::event_for(heads.get(id), current) else {
+            if versions::event_for(heads.get(id), current).is_none() {
                 continue;
-            };
+            }
             let path = self.notes.join(&found.name);
             match fs::read(&path) {
                 Ok(bytes) => {
-                    let parents: Vec<String> = heads
-                        .get(id)
-                        .map(|h| h.version.clone())
-                        .into_iter()
-                        .collect();
-                    versions::record(lock, id, &parents, &found.name, Some(&bytes), event, at)?;
+                    let lines = self.with_params(|params| {
+                        integrate::record_local(lock, params, id, &found.name, Some(&bytes), at)
+                    })?;
+                    recorded += 1;
+                    for line in lines {
+                        self.say(&line);
+                    }
                 }
                 // Gone since the scan: the next one sees it.
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
@@ -536,7 +659,7 @@ impl Watch<'_> {
             }
         }
         if scan.has_unreadable() {
-            return Ok(());
+            return Ok(recorded);
         }
         let present = versions::present_ids(scan);
         let live: Vec<&String> = heads
@@ -553,21 +676,434 @@ impl Watch<'_> {
                 );
                 self.say(&message);
             }
-            return Ok(());
+            return Ok(recorded);
         }
         self.empty = false;
         for id in live.into_iter().filter(|id| !present.contains(id.as_str())) {
-            let parents = [heads[id].version.clone()];
-            versions::record(
-                lock,
-                id,
-                &parents,
-                &heads[id].file,
-                None,
-                versions::DELETED,
-                at,
-            )?;
+            let lines = self.with_params(|params| {
+                integrate::record_local(lock, params, id, &heads[id].file, None, at)
+            })?;
+            recorded += 1;
+            for line in lines {
+                self.say(&line);
+            }
         }
-        Ok(())
+        Ok(recorded)
+    }
+}
+
+/// The sync cycle: manifests, pull, apply, push, per syncing scope.
+impl Watch<'_> {
+    fn poll(&self) -> Duration {
+        Duration::from_secs(u64::from(self.settings.sync.poll_seconds))
+    }
+
+    /// Reads the config again; one that no longer parses leaves the last good settings, and is said once.
+    fn reload(&mut self) {
+        match config::load(self.env) {
+            Ok(settings) => {
+                self.settings = settings;
+                self.config_error = None;
+            }
+            Err(e) => {
+                if self.config_error.as_deref() != Some(&e) {
+                    self.say(&e);
+                    self.config_error = Some(e);
+                }
+            }
+        }
+    }
+
+    fn identity(&self) -> Result<Option<Identity>, String> {
+        match store::keys_dir(self.env) {
+            Some(dir) => keys::read_identity(&dir),
+            None => Ok(None),
+        }
+    }
+
+    /// Says `line` when it differs from the last one held for this scope and channel, and returns whether it did. `None`
+    /// ends the condition, so a later `Some` is said again.
+    fn hold(&mut self, name: &str, channel: &str, line: Option<String>) -> bool {
+        let key = format!("{name}/{channel}");
+        if self.held.get(&key) == line.as_ref() {
+            return false;
+        }
+        match line {
+            Some(line) => {
+                self.say(&line);
+                self.held.insert(key, line);
+            }
+            None => {
+                self.held.remove(&key);
+            }
+        }
+        true
+    }
+
+    /// Forgets the scopes the config no longer syncs, so one that comes back says its lines again.
+    fn release(&mut self, wanted: &[(String, String)]) {
+        let named = |name: &str| wanted.iter().any(|(n, _)| n == name);
+        self.scopes.retain(|name, _| named(name));
+        self.held
+            .retain(|key, _| key.split_once('/').is_some_and(|(name, _)| named(name)));
+    }
+
+    /// One sync cycle, when the config names a syncing scope: for each, the manifest step, a pull and its staging,
+    /// then one locked pass that applies what was staged, sweeps and scans, and a push. A cycle that fails doubles
+    /// the wait before the next, up to ten minutes.
+    fn tick(&mut self) -> Tick {
+        self.more = false;
+        self.reload();
+        let poll = self.poll();
+        let wanted: Vec<(String, String)> = self
+            .settings
+            .scopes
+            .iter()
+            .filter(|s| s.sync != "off")
+            .map(|s| (s.name.clone(), s.sync.clone()))
+            .collect();
+        self.release(&wanted);
+        let identity = self.identity();
+        let keyed = matches!(identity, Ok(Some(_)));
+        self.syncing = wanted
+            .iter()
+            .filter(|_| keyed)
+            .map(|(name, _)| name.clone())
+            .collect();
+        if wanted.is_empty() {
+            self.wait = poll;
+            return Tick {
+                scanned: None,
+                wait: poll,
+            };
+        }
+        let now = jiff::Timestamp::now();
+        let mut failed = false;
+        let mut ready = Vec::new();
+        for (name, url) in &wanted {
+            self.hold(name, "start", Some(format!("syncing {name} through {url}")));
+            match &identity {
+                Ok(Some(identity)) => {
+                    self.hold(name, "keys", None);
+                    if let Some(scope) = self.prepare(name, url, identity, now, &mut failed) {
+                        ready.push(scope);
+                    }
+                }
+                Ok(None) => {
+                    let line = format!(
+                        "sync {name}: no device key; run bilbo device init or bilbo device recover"
+                    );
+                    self.hold(name, "keys", Some(line));
+                }
+                Err(e) => {
+                    self.hold(name, "keys", Some(format!("sync {name}: {e}")));
+                }
+            }
+        }
+        let (Ok(Some(identity)), false) = (&identity, ready.is_empty()) else {
+            return Tick {
+                scanned: None,
+                wait: self.backoff(failed),
+            };
+        };
+        for scope in &mut ready {
+            self.pull(scope, identity, now, &mut failed);
+        }
+        let scanned = self.scan(true);
+        self.announce_inbound();
+        self.trim_seen();
+        for scope in &mut ready {
+            if scope.ok {
+                self.push(scope, identity, now, &mut failed);
+            }
+            self.settle(scope);
+        }
+        Tick {
+            scanned: Some(scanned),
+            wait: self.backoff(failed),
+        }
+    }
+
+    fn backoff(&mut self, failed: bool) -> Duration {
+        let poll = self.poll();
+        self.wait = if failed {
+            (self.wait.max(poll) * 2).min(POLL_CAP.max(poll))
+        } else {
+            poll
+        };
+        if self.more { Duration::ZERO } else { self.wait }
+    }
+
+    /// The scope's step: its manifests, and whether it may sync. Returns the scope when it may.
+    fn prepare(
+        &mut self,
+        name: &str,
+        url: &str,
+        identity: &Identity,
+        now: jiff::Timestamp,
+        failed: &mut bool,
+    ) -> Option<Ready> {
+        let device = identity.device.id();
+        let t = match transport::open(url, &device) {
+            Ok(t) => t,
+            Err(e) => {
+                self.hold(name, "transport", Some(format!("sync {name}: {e}")));
+                return None;
+            }
+        };
+        self.hold(name, "transport", None);
+        let root = self.root.clone();
+        let input = manifests::Input {
+            root: &root,
+            name,
+            url,
+            identity,
+            now,
+        };
+        let out = match manifests::step(&*t, &input) {
+            Ok(out) => out,
+            Err(e) => {
+                self.unreachable(name, url, &e);
+                *failed = true;
+                return None;
+            }
+        };
+        for line in &out.events {
+            self.say(line);
+        }
+        if let Some(why) = &out.error {
+            self.unreachable(name, url, why);
+            *failed = true;
+            return None;
+        }
+        let Some(id) = out.scope else {
+            let stop = out.stop.map(|stop| stop.line);
+            if self.hold(name, "stop", stop.clone()) {
+                self.mark_stopped(name, identity, stop.as_deref());
+            }
+            return None;
+        };
+        self.hold(name, "stop", None);
+        let ours = self
+            .scopes
+            .get(name)
+            .is_some_and(|a| a.id == id && a.device == device);
+        if !ours {
+            match Replica::open(&root, &id, name, &device) {
+                Ok(replica) => {
+                    self.scopes.insert(
+                        name.to_string(),
+                        Active {
+                            id,
+                            device,
+                            replica,
+                            problem: None,
+                        },
+                    );
+                }
+                Err(e) => {
+                    self.hold(name, "replica", Some(format!("sync {name}: {e}")));
+                    return None;
+                }
+            }
+        }
+        self.hold(name, "replica", None);
+        let active = self.scopes.get_mut(name).expect("the scope is open");
+        if let Err(e) = active.replica.set_stopped(None) {
+            self.say(&e);
+        }
+        Some(Ready {
+            name: name.to_string(),
+            url: url.to_string(),
+            t,
+            ok: true,
+            full: out.full,
+        })
+    }
+
+    /// Writes the line that stops the scope into the state of each scope of this name the store holds, for `bilbo sync`.
+    fn mark_stopped(&mut self, name: &str, identity: &Identity, line: Option<&str>) {
+        let owner = identity.owner.sign.public();
+        let who = Recipient::device(&identity.device);
+        let ids: Vec<String> = match manifest::survey(&self.root, Some(&owner), Some(&who)) {
+            Ok(known) => known
+                .into_iter()
+                .filter(|k| k.mine && k.last_name.as_deref() == Some(name))
+                .map(|k| k.scope.id)
+                .collect(),
+            Err(e) => {
+                self.say(&e);
+                return;
+            }
+        };
+        let device = identity.device.id();
+        for id in ids {
+            let line = line.map(str::to_string);
+            let result = match self.scopes.get_mut(name).filter(|a| a.id == id) {
+                Some(active) => active.replica.set_stopped(line),
+                None => Replica::open(&self.root, &id, name, &device)
+                    .and_then(|mut replica| replica.set_stopped(line)),
+            };
+            if let Err(e) = result {
+                self.say(&e);
+            }
+        }
+    }
+
+    /// Reads what other devices wrote, stages it for `apply` and then books it as read.
+    fn pull(
+        &mut self,
+        scope: &mut Ready,
+        identity: &Identity,
+        now: jiff::Timestamp,
+        failed: &mut bool,
+    ) {
+        let Some(active) = self.scopes.get_mut(&scope.name) else {
+            return;
+        };
+        let pulled = match active.replica.pull(&*scope.t, identity, now) {
+            Ok(pulled) => pulled,
+            Err(e) => {
+                self.unreachable(&scope.name, &scope.url, &e);
+                scope.ok = false;
+                *failed = true;
+                return;
+            }
+        };
+        for line in &pulled.events {
+            self.say(line);
+        }
+        let staged = versions::lock(&self.root).and_then(|lock| {
+            integrate::stage(
+                &lock,
+                &scope.name,
+                &pulled.records,
+                &pulled.blobs,
+                &pulled.declarations,
+                now,
+            )
+        });
+        match staged {
+            Ok(lines) => self.inbound.extend(lines),
+            Err(e) => {
+                self.say(&e);
+                scope.ok = false;
+                return;
+            }
+        }
+        let active = self.scopes.get_mut(&scope.name).expect("the scope is open");
+        if let Err(e) = active.replica.commit(&pulled) {
+            self.say(&e);
+            scope.ok = false;
+        }
+        self.more |= pulled.more;
+    }
+
+    /// Pushes what the scope's log holds that the transport lacks, or an acknowledgement.
+    fn push(
+        &mut self,
+        scope: &mut Ready,
+        identity: &Identity,
+        now: jiff::Timestamp,
+        failed: &mut bool,
+    ) {
+        let Some(active) = self.scopes.get_mut(&scope.name) else {
+            return;
+        };
+        match active
+            .replica
+            .push(&*scope.t, identity, &self.settings, now)
+        {
+            Ok(pushed) => {
+                for line in &pushed.events {
+                    self.say(line);
+                }
+                scope.full = pushed.full.or(scope.full.take());
+            }
+            Err(e) => {
+                self.unreachable(&scope.name, &scope.url, &e);
+                scope.ok = false;
+                *failed = true;
+            }
+        }
+    }
+
+    /// What a cycle that reached the transport leaves: no unreachable line, and a full one while it holds.
+    fn settle(&mut self, scope: &Ready) {
+        if !scope.ok {
+            return;
+        }
+        let name = &scope.name;
+        self.hold(name, "reach", None);
+        let line = scope.full.as_ref().map(|m| format!("sync {name}: {m}"));
+        self.hold(name, "full", line);
+        match &scope.full {
+            Some(message) => self.problem(name, "full", message),
+            None => self.clear_problem(name),
+        }
+    }
+
+    /// The transport cannot be read or written: said once until it can.
+    fn unreachable(&mut self, name: &str, url: &str, why: &str) {
+        let line = format!("sync {name}: {url} is not reachable: {why}");
+        self.hold(name, "reach", Some(line));
+        self.problem(name, "unreachable", why);
+    }
+
+    fn problem(&mut self, name: &str, kind: &str, message: &str) {
+        let Some(active) = self.scopes.get_mut(name) else {
+            return;
+        };
+        let since = match &active.problem {
+            Some(p) if p.kind == kind => p.since,
+            _ => jiff::Timestamp::now().as_second(),
+        };
+        let problem = Problem {
+            kind: kind.to_string(),
+            since,
+            message: message.to_string(),
+        };
+        let result = active.replica.set_error(Some(problem.clone()));
+        active.problem = Some(problem);
+        if let Err(e) = result {
+            self.say(&e);
+        }
+    }
+
+    fn clear_problem(&mut self, name: &str) {
+        let Some(active) = self.scopes.get_mut(name) else {
+            return;
+        };
+        active.problem = None;
+        if let Err(e) = active.replica.set_error(None) {
+            self.say(&e);
+        }
+    }
+
+    /// The lines staging and applying returned: each said once until a cycle goes by without it.
+    fn announce_inbound(&mut self) {
+        let mut lines = HashSet::new();
+        for line in std::mem::take(&mut self.inbound) {
+            if lines.insert(line.clone()) && !self.cycle_lines.contains(&line) {
+                self.say(&line);
+            }
+        }
+        self.cycle_lines = lines;
+    }
+
+    /// After a prune and an apply, `seen.jsonl` drops the versions no log holds.
+    fn trim_seen(&mut self) {
+        if !std::mem::take(&mut self.trim) {
+            return;
+        }
+        let mut errors = Vec::new();
+        for active in self.scopes.values() {
+            if let Err(e) = active.replica.trim_seen() {
+                errors.push(e);
+            }
+        }
+        for e in errors {
+            self.say(&e);
+        }
     }
 }

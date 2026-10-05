@@ -497,7 +497,6 @@ pub fn open(scope: &Scope, who: &Recipient) -> Result<Option<Opened>, Invalid> {
     read(scope, who).map(|r| r.opened)
 }
 
-#[cfg_attr(not(test), expect(dead_code, reason = "add-sync calls it"))]
 /// The newest epoch a confirmed version introduces that this device holds the key of, the one note data may be
 /// encrypted under. It takes what the device opened, so an epoch of a version invalid for it is never named.
 pub fn usable_epoch(scope: &Scope, opened: &Opened) -> Option<u64> {
@@ -1052,7 +1051,6 @@ pub fn adopt(lock: &Lock, scope: &str, n: u64, bytes: &[u8]) -> Result<(), Strin
     put(lock, scope, n, bytes, false)
 }
 
-#[cfg_attr(not(test), expect(dead_code, reason = "add-sync calls it"))]
 /// Clears the marker of version `n` when its bytes are the transport's. `false` when this device holds another
 /// version `n`, or none.
 pub fn confirm(lock: &Lock, scope: &str, n: u64, bytes: &[u8]) -> Result<bool, String> {
@@ -1142,7 +1140,6 @@ fn lost_path(graveyard: &Path, k: u64) -> PathBuf {
         .expect("a free name")
 }
 
-#[cfg_attr(not(test), expect(dead_code, reason = "add-sync calls it"))]
 /// A transport holds `winner` as version `n`, different from this device's pending one. The pending versions from `n`
 /// on move under `manifest/lost/`, `winner` becomes `<n>.json` as confirmed, and each lost change is written again, in
 /// order, as a pending version on the winner, as `id`'s device. Everything that can be refused is checked, and every

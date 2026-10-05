@@ -865,11 +865,19 @@ pub fn find_version<'a>(
 /// and of all the `merged` versions with the same parents only the first id is a head, even after a version follows
 /// it, so devices that hold the same versions compute the same heads.
 pub fn heads(versions: &[Version]) -> Vec<Vec<&Version>> {
-    let mut seen: HashSet<&str> = HashSet::new();
-    let unique: Vec<&Version> = versions
-        .iter()
-        .filter(|v| seen.insert(v.version.as_str()))
-        .collect();
+    let mut place: HashMap<&str, usize> = HashMap::new();
+    let mut unique: Vec<&Version> = Vec::new();
+    for v in versions {
+        match place.get(v.version.as_str()) {
+            // The full record of an id outranks a `left` of the same id, wherever it sits in the log.
+            Some(at) if unique[*at].is_left() && !v.is_left() => unique[*at] = v,
+            Some(_) => {}
+            None => {
+                place.insert(v.version.as_str(), unique.len());
+                unique.push(v);
+            }
+        }
+    }
     let followed: HashSet<&str> = unique
         .iter()
         .flat_map(|v| v.parents.iter().map(String::as_str))
@@ -2088,6 +2096,29 @@ mod tests {
         assert_eq!(found, [["b"], ["c"]]);
         assert_eq!(head_labels(&ids, &heads(&versions[..2])), [["b"]]);
         assert!(heads(&[]).is_empty());
+    }
+
+    #[test]
+    fn a_full_record_outranks_a_left_of_the_same_id_in_either_order() {
+        let full = Version {
+            version: "m".repeat(64),
+            file: "plan-x.md".into(),
+            blob: "b".repeat(64),
+            event: EDITED.into(),
+            ..Version::default()
+        };
+        let left = Version {
+            file: String::new(),
+            blob: DELETED.into(),
+            event: LEFT.into(),
+            ..full.clone()
+        };
+        for log in [[left.clone(), full.clone()], [full.clone(), left.clone()]] {
+            let found = heads(&log);
+            assert_eq!(found.len(), 1);
+            assert_eq!(found[0].len(), 1);
+            assert!(!found[0][0].is_left());
+        }
     }
 
     #[test]
