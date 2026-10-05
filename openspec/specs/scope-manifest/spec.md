@@ -189,7 +189,7 @@ A device that opens a version's epoch key SHALL treat the version as invalid whe
 - **THEN** its name stays unread and its scope line shows `-`
 
 ### Requirement: Versions that init writes
-`init` SHALL write version 1 for a scope with a sync URL and no manifest, listing this device and every device that the latest version of every other manifest of its owner that this device opens lists, except a device that any of those manifests listed once and no longer lists. When the config's URL differs from `transport`, comparing `https://` and `http://` URLs whole and a `file://` URL by its scheme only, it SHALL write a new version with the same epoch, in a terminal only, as the `device-identity` spec's Terminal-only forms says. It SHALL NOT add this device to a manifest that does not list it. It SHALL match a config name through the newest version that lists this device, so a scope whose latest version dropped this device is never created again, and while a local manifest of its owner has never listed this device, or is invalid for this device before any version it can read, it SHALL create no scope id for a syncing scope it matched to no manifest, reporting that scope `unsealed`, as recover does.
+`init` SHALL write version 1 for a scope with a sync URL and no manifest, listing this device and every device that the latest version of every other manifest of its owner that this device opens lists, except a device that any of those manifests listed once and no longer lists. When the config's URL differs from `transport`, comparing `https://` and `http://` URLs whole and a `file://` URL by its scheme only, it SHALL write a new version with the same epoch, in a terminal only, as the `device-identity` spec's Terminal-only forms says. It SHALL NOT add this device to a manifest that does not list it. It SHALL match a config name through the newest version that lists this device, so a scope whose latest version dropped this device is never created again, and while a local manifest of its owner has never listed this device, or is invalid for this device before any version it can read, it SHALL create no scope id for a syncing scope it matched to no manifest, reporting that scope `unsealed`, as recover does. Before writing version 1 for a scope whose transport it can reach, it SHALL read the transport, and SHALL NOT write it while the transport holds a scope of this owner and this device is in no scope there; that scope SHALL then fail with `run bilbo device recover on this device`, as it SHALL when the transport holds a scope of this owner by the same name, even one that lists this device. A scope on the transport whose version 1 is missing or does not verify, which may be one still arriving, SHALL likewise block version 1 for every scope of that URL, failing it with `<url> holds scope <scope id> that does not verify: <reason>`. A transport that answers but cannot be listed SHALL fail the scope with the reason.
 
 #### Scenario: A changed URL
 - **WHEN** `personal` is at manifest 1 pinned to `file://`, the config now says `https://relay.example.net`, and the user runs `bilbo device init` in a terminal
@@ -214,6 +214,22 @@ A device that opens a version's epoch key SHALL treat the version as invalid whe
 #### Scenario: A manifest this device never read
 - **WHEN** the store holds a manifest of this owner that has never listed this device, the config sets `scope.personal.sync` to a URL, no manifest this device can open is named `personal`, and the user runs `bilbo device init`
 - **THEN** init reports `scope - kept: <scope id>` for that manifest and `scope personal unsealed: copy the store from an enrolled device, then run bilbo device recover again`, and `<root>/.bilbo/scopes/` holds no new folder
+
+#### Scenario: The transport already holds this owner's scope
+- **WHEN** an enrolled device that is in no scope on `file:///Users/a/Dropbox/bilbo` runs `bilbo device init` for `personal`, and that folder holds a scope of the same owner
+- **THEN** stdout has `scope personal failed: run bilbo device recover on this device`, no version 1 is written for it, and the exit code is 1
+
+#### Scenario: A member creates a scope
+- **WHEN** a device listed in `personal` on that folder runs `bilbo device init` for a new scope `shared`
+- **THEN** `shared`'s version 1 is written as before
+
+#### Scenario: A member whose store lacks the scope
+- **WHEN** the folder's `personal` lists this device, the store holds no manifest of `personal`, and the user runs `bilbo device init`
+- **THEN** stdout has `scope personal failed: run bilbo device recover on this device`, no new scope folder exists, and the exit code is 1
+
+#### Scenario: A scope still arriving
+- **WHEN** the folder holds `scopes/<id>/manifest/2.json` of a scope whose `1.json` has not arrived yet, and the user runs `bilbo device init` for `personal`
+- **THEN** stdout has `scope personal failed: <url> holds scope <id> that does not verify: <reason>`, no version 1 is written, and the exit code is 1
 
 ### Requirement: Versions that recover writes
 `recover` SHALL write, for each local manifest of its owner whose latest version does not list this device, a new version with the same epoch that adds this device and seals the epoch key to it, opening the key through the `owner` entry. It SHALL write nothing for a manifest that already lists this device.
