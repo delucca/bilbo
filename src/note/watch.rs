@@ -202,7 +202,12 @@ impl Watch<'_> {
     }
 
     fn prune_under(&mut self, lock: &Lock) -> Result<(), String> {
-        let pruned = versions::prune(lock, self.keep_days, jiff::Timestamp::now())?;
+        let pruned = versions::prune(
+            lock,
+            self.keep_days,
+            jiff::Timestamp::now(),
+            &versions::Guard::new(),
+        )?;
         for warning in &pruned.warnings {
             self.say(warning);
         }
@@ -432,7 +437,7 @@ impl Watch<'_> {
         }
         let lock = versions::lock(&self.root)?;
         let at = versions::now_at();
-        match versions::sweep_restore_leftovers(&lock, &at) {
+        match versions::sweep_restore_leftovers(&lock, &at, &Default::default()) {
             Ok(messages) => self.announce_sweep(messages),
             Err(e) => {
                 return match fs::read_dir(&self.notes) {
@@ -517,7 +522,12 @@ impl Watch<'_> {
             let path = self.notes.join(&found.name);
             match fs::read(&path) {
                 Ok(bytes) => {
-                    versions::record(lock, id, &found.name, Some(&bytes), event, at)?;
+                    let parents: Vec<String> = heads
+                        .get(id)
+                        .map(|h| h.version.clone())
+                        .into_iter()
+                        .collect();
+                    versions::record(lock, id, &parents, &found.name, Some(&bytes), event, at)?;
                 }
                 // Gone since the scan: the next one sees it.
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
@@ -546,7 +556,16 @@ impl Watch<'_> {
         }
         self.empty = false;
         for id in live.into_iter().filter(|id| !present.contains(id.as_str())) {
-            versions::record(lock, id, &heads[id].file, None, versions::DELETED, at)?;
+            let parents = [heads[id].version.clone()];
+            versions::record(
+                lock,
+                id,
+                &parents,
+                &heads[id].file,
+                None,
+                versions::DELETED,
+                at,
+            )?;
         }
         Ok(())
     }

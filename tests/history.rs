@@ -729,3 +729,306 @@ fn history_ignores_the_config() {
     assert_eq!(run.code, 0);
     assert_eq!(run.stdout.lines().count(), 2);
 }
+
+const RIVENDELL: &str = "gr2q7gf5lh6pzfdnurnkvputhp";
+const BAGEND: &str = "wyxim75c6m5p4ywv22ywilqweh";
+
+fn hex(c: char) -> String {
+    c.to_string().repeat(64)
+}
+
+/// Copies the fixture store's scope folder, which lists `rivendell` and `bagend`, under `<root>/.bilbo/scopes/`.
+fn with_manifest(root: &Path) {
+    let scope = "ho5qmsdzujmpbxetyxwzdgqz64";
+    let from = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/device/store/.bilbo/scopes")
+        .join(scope)
+        .join("manifest");
+    let to = root.join(".bilbo/scopes").join(scope).join("manifest");
+    fs::create_dir_all(&to).unwrap();
+    for n in ["1.json", "2.json"] {
+        fs::copy(from.join(n), to.join(n)).unwrap();
+    }
+}
+
+/// A hand-written version line: version, parents, event, file, blob and extra fields.
+type Row = (
+    String,
+    Vec<String>,
+    &'static str,
+    &'static str,
+    String,
+    serde_json::Value,
+);
+
+/// Appends hand-written version lines to a note's log.
+fn log_lines(root: &Path, note: &str, lines: &[Row]) {
+    write(root, "decision-release.md", &note_text(IDS[0], "Release"));
+    let path = root.join(format!(".bilbo/history/notes/{note}.jsonl"));
+    let mut text = fs::read_to_string(&path).unwrap_or_default();
+    for (n, (version, parents, event, file, blob, extra)) in lines.iter().enumerate() {
+        let mut line = serde_json::json!({
+            "version": version,
+            "parents": parents,
+            "file": file,
+            "blob": blob,
+            "event": event,
+            "at": format!("2026-10-04T12:0{n}:00-03:00"),
+        });
+        for (key, value) in extra.as_object().unwrap() {
+            line[key] = value.clone();
+        }
+        text.push_str(&line.to_string());
+        text.push('\n');
+    }
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    fs::write(path, text).unwrap();
+}
+
+fn plain() -> serde_json::Value {
+    serde_json::json!({})
+}
+
+#[test]
+fn a_version_from_another_device_names_it() {
+    let dir = TempDir::new("history-from");
+    let root = store(&dir);
+    with_manifest(&root);
+    log_lines(
+        &root,
+        IDS[0],
+        &[
+            (
+                hex('a'),
+                vec![],
+                "added",
+                "decision-release.md",
+                hex('1'),
+                plain(),
+            ),
+            (
+                hex('b'),
+                vec![hex('a')],
+                "edited",
+                "decision-release.md",
+                hex('2'),
+                serde_json::json!({"device": BAGEND}),
+            ),
+            (
+                hex('c'),
+                vec![hex('b')],
+                "edited",
+                "decision-release.md",
+                hex('3'),
+                serde_json::json!({"device": "unlistedunlistedunlisted0"}),
+            ),
+        ],
+    );
+    let lines: Vec<String> = history(&root, &["release"])
+        .stdout
+        .lines()
+        .map(str::to_string)
+        .collect();
+    assert_eq!(lines.len(), 3);
+    assert!(
+        lines[0].ends_with(" edited decision-release.md from unlistedunlistedunlisted0"),
+        "{lines:?}"
+    );
+    assert!(
+        lines[1].ends_with(" edited decision-release.md from bagend"),
+        "{lines:?}"
+    );
+    assert!(
+        lines[2].ends_with(" added decision-release.md"),
+        "{lines:?}"
+    );
+    assert!(!lines[2].contains(" from "));
+}
+
+#[test]
+fn a_device_shows_as_its_id_without_a_manifest() {
+    let dir = TempDir::new("history-from-id");
+    let root = store(&dir);
+    log_lines(
+        &root,
+        IDS[0],
+        &[(
+            hex('a'),
+            vec![],
+            "edited",
+            "decision-release.md",
+            hex('1'),
+            serde_json::json!({"device": RIVENDELL}),
+        )],
+    );
+    let run = history(&root, &["release"]);
+    assert!(
+        run.stdout
+            .trim_end()
+            .ends_with(&format!("edited decision-release.md from {RIVENDELL}")),
+        "{}",
+        run.stdout
+    );
+}
+
+#[test]
+fn a_merge_with_a_conflict_is_flagged() {
+    let dir = TempDir::new("history-merge");
+    let root = store(&dir);
+    with_manifest(&root);
+    log_lines(
+        &root,
+        IDS[0],
+        &[
+            (
+                hex('a'),
+                vec![],
+                "added",
+                "decision-release.md",
+                hex('1'),
+                plain(),
+            ),
+            (
+                hex('b'),
+                vec![hex('a')],
+                "edited",
+                "decision-release.md",
+                hex('2'),
+                serde_json::json!({"device": BAGEND}),
+            ),
+            (
+                hex('c'),
+                vec![hex('a'), hex('b')],
+                "merged",
+                "decision-release.md",
+                hex('3'),
+                serde_json::json!({"conflict": [{"passage": "# Release", "sides": [hex('a')[..12], hex('b')[..12]]}]}),
+            ),
+        ],
+    );
+    let lines: Vec<String> = history(&root, &["release"])
+        .stdout
+        .lines()
+        .map(str::to_string)
+        .collect();
+    assert!(
+        lines[0].ends_with(" merged decision-release.md [conflict]"),
+        "{lines:?}"
+    );
+    assert!(
+        lines[1].ends_with(" edited decision-release.md from bagend"),
+        "{lines:?}"
+    );
+}
+
+#[test]
+fn flags_and_dropped_text_are_listed_together() {
+    let dir = TempDir::new("history-flags");
+    let root = store(&dir);
+    log_lines(
+        &root,
+        IDS[0],
+        &[
+            (
+                hex('a'),
+                vec![],
+                "added",
+                "decision-release.md",
+                hex('1'),
+                plain(),
+            ),
+            (
+                hex('b'),
+                vec![hex('a')],
+                "merged",
+                "decision-release.md",
+                hex('2'),
+                serde_json::json!({
+                    "device": RIVENDELL,
+                    "flags": ["stale-base", "key-kept"],
+                    "dropped": [{"passage": "# Release", "lines": ["x"]}],
+                }),
+            ),
+        ],
+    );
+    let first = history(&root, &["release"])
+        .stdout
+        .lines()
+        .next()
+        .unwrap()
+        .to_string();
+    assert!(
+        first.ends_with(&format!(
+            " merged decision-release.md from {RIVENDELL} [stale-base, key-kept, dropped]"
+        )),
+        "{first}"
+    );
+}
+
+#[test]
+fn a_left_version_shows_the_followed_file_and_has_no_text() {
+    let dir = TempDir::new("history-left");
+    let root = store(&dir);
+    let ids = seed(
+        &root,
+        IDS[0],
+        &[Seed::new(
+            "decision-release.md",
+            Some("one\n"),
+            "added",
+            &days_ago(2),
+        )],
+    );
+    log_lines(
+        &root,
+        IDS[0],
+        &[(
+            hex('9'),
+            vec![ids[0].clone()],
+            "left",
+            "decision-release.md",
+            "deleted".into(),
+            plain(),
+        )],
+    );
+    let list = history(&root, &["release"]);
+    assert_eq!(list.code, 0);
+    let first = list.stdout.lines().next().unwrap().to_string();
+    assert!(first.ends_with(" left decision-release.md"), "{first}");
+    let printed = history(&root, &["release", &hex('9')[..12]]);
+    assert_eq!(printed.code, 1);
+    assert!(printed.stdout.is_empty());
+    let diff = history(
+        &root,
+        &["release", "--diff", &ids[0][..12], &hex('9')[..12]],
+    );
+    assert_eq!(diff.code, 0);
+    assert!(diff.stdout.contains("-one"), "{}", diff.stdout);
+}
+
+#[test]
+fn a_declaration_line_is_not_a_version() {
+    let dir = TempDir::new("history-declare");
+    let root = store(&dir);
+    let ids = seed(
+        &root,
+        IDS[0],
+        &[Seed::new(
+            "decision-release.md",
+            Some("one\n"),
+            "added",
+            &days_ago(2),
+        )],
+    );
+    write(&root, "decision-release.md", &note_text(IDS[0], "Release"));
+    let path = root.join(format!(".bilbo/history/notes/{}.jsonl", IDS[0]));
+    let mut log = fs::read_to_string(&path).unwrap();
+    log.push_str(&format!(
+        "{{\"declare\":\"{}\",\"reason\":\"tidy-up\",\"at\":\"2026-10-04T12:00:00-03:00\"}}\n",
+        ids[0]
+    ));
+    fs::write(&path, log).unwrap();
+    let run = history(&root, &["release"]);
+    assert_eq!(run.code, 0);
+    assert_eq!(run.stdout.lines().count(), 1);
+}

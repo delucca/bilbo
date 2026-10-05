@@ -99,7 +99,8 @@ pub fn apply(
     }
     let lock = versions::lock(root).map_err(Error::Refused)?;
     let at = versions::now_at();
-    let mut messages = versions::sweep_restore_leftovers(&lock, &at).map_err(Error::Refused)?;
+    let mut messages = versions::sweep_restore_leftovers(&lock, &at, &Default::default())
+        .map_err(Error::Refused)?;
     match restore(&lock, note, version, &at, hook) {
         Ok(outcome) => Ok(Done { messages, outcome }),
         Err(Error::Refused(message)) => {
@@ -286,7 +287,17 @@ fn finish(
         _ => {}
     }
     hook(Step::Record).map_err(Stop::Hook)?;
-    versions::record(lock, id, file, Some(bytes), versions::RESTORED, at).map_err(Stop::Failed)?;
+    let parents = versions::last_parents(lock.root(), id).map_err(Stop::Failed)?;
+    versions::record(
+        lock,
+        id,
+        &parents,
+        file,
+        Some(bytes),
+        versions::RESTORED,
+        at,
+    )
+    .map_err(Stop::Failed)?;
     Ok(())
 }
 
@@ -577,7 +588,9 @@ mod tests {
         assert_eq!(scan.notes[ID].name, "plan-release.md");
         // The watcher's sweep deletes the hidden file silently, then records the file as an edit.
         let lock = versions::lock(&root).unwrap();
-        let messages = versions::sweep_restore_leftovers(&lock, &versions::now_at()).unwrap();
+        let messages =
+            versions::sweep_restore_leftovers(&lock, &versions::now_at(), &Default::default())
+                .unwrap();
         assert!(messages.is_empty());
         drop(lock);
         assert_eq!(files(&root), ["plan-release.md"]);
@@ -609,7 +622,9 @@ mod tests {
             }
             // The next restore (or watcher) finds the agent's bytes in a version.
             let lock = versions::lock(&root).unwrap();
-            let messages = versions::sweep_restore_leftovers(&lock, &versions::now_at()).unwrap();
+            let messages =
+                versions::sweep_restore_leftovers(&lock, &versions::now_at(), &Default::default())
+                    .unwrap();
             drop(lock);
             // Only a kill before the inspection leaves the agent's bytes unrecorded.
             assert_eq!(

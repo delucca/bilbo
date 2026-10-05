@@ -1,6 +1,10 @@
 //! `bilbo history`: lists a note's recorded versions, prints one, or diffs two. It reads history and takes no lock.
 
+use std::collections::HashMap;
+use std::path::Path;
+
 use crate::Failure;
+use crate::identity::manifest;
 use crate::note::diff;
 use crate::note::versions::{self, ContentError, NameError, Named, Scan, Version, VersionError};
 use crate::shared::store;
@@ -48,25 +52,21 @@ pub fn run(args: &[String], env: &store::Env) -> Result<Output, Failure> {
         bytes: Vec::new(),
     };
     let note = &parsed.note;
+    let names = Names::of(&root, &log.versions);
     match &parsed.request {
         Request::List => {
-            output.lines = log
-                .versions
-                .iter()
-                .rev()
-                .map(|v| format!("{} {} {} {}", v.short(), v.minute(), v.event, v.file))
-                .collect();
+            output.lines = log.versions.iter().rev().map(|v| line(v, &names)).collect();
         }
         Request::Print(prefix) => {
-            let version = pick(&log.versions, prefix, note)?;
+            let version = pick(&log.versions, prefix, note, &names)?;
             output.bytes = text(&root, version, prefix, note)?;
         }
         Request::Diff(a, b) => {
-            let first = pick(&log.versions, a, note)?;
+            let first = pick(&log.versions, a, note, &names)?;
             let old = text_or_empty(&root, first, a, note)?;
             let (new_name, new) = match b {
                 Some(b) => {
-                    let second = pick(&log.versions, b, note)?;
+                    let second = pick(&log.versions, b, note, &names)?;
                     let bytes = text_or_empty(&root, second, b, note)?;
                     (format!("{}@{b}", second.file), bytes)
                 }
@@ -121,16 +121,65 @@ fn parse(args: &[String]) -> Result<Parsed, Failure> {
     Ok(Parsed { note, request })
 }
 
-fn pick<'a>(versions: &'a [Version], prefix: &str, note: &str) -> Result<&'a Version, Failure> {
+/// The names the local manifests give device ids.
+struct Names(HashMap<String, String>);
+
+impl Names {
+    /// Reads the manifests only when some version came from another device. A manifest that cannot be read names no
+    /// one.
+    fn of(root: &Path, versions: &[Version]) -> Names {
+        let mut names = HashMap::new();
+        if versions.iter().any(|v| v.device.is_some()) {
+            for id in manifest::scope_ids(root).unwrap_or_default() {
+                let Ok(scope) = manifest::read_scope(root, &id) else {
+                    continue;
+                };
+                for version in scope.versions.iter().rev() {
+                    for entry in &version.manifest.devices {
+                        names
+                            .entry(entry.id.clone())
+                            .or_insert_with(|| entry.name.clone());
+                    }
+                }
+            }
+        }
+        Names(names)
+    }
+}
+
+/// `<version> <time> <event> <file>`, then ` from <device>` and ` [<flags>]` when the version has them. A device no
+/// manifest names shows as its id.
+fn line(v: &Version, names: &Names) -> String {
+    let mut line = format!("{} {} {} {}", v.short(), v.minute(), v.event, v.file);
+    if let Some(device) = &v.device {
+        line.push_str(" from ");
+        line.push_str(names.0.get(device).unwrap_or(device));
+    }
+    let mut flags: Vec<&str> = v.flags.iter().map(String::as_str).collect();
+    if !v.conflict.is_empty() {
+        flags.push("conflict");
+    }
+    if !v.dropped.is_empty() {
+        flags.push("dropped");
+    }
+    if !flags.is_empty() {
+        line.push_str(&format!(" [{}]", flags.join(", ")));
+    }
+    line
+}
+
+fn pick<'a>(
+    versions: &'a [Version],
+    prefix: &str,
+    note: &str,
+    names: &Names,
+) -> Result<&'a Version, Failure> {
     versions::find_version(versions, prefix).map_err(|e| match e {
         VersionError::Invalid => usage(format!(
             "'{prefix}' is not a version: use 6 to 64 hexadecimal characters of its id"
         )),
         VersionError::Ambiguous(found) => {
-            let lines: Vec<String> = found
-                .iter()
-                .map(|v| format!("{} {} {} {}", v.short(), v.minute(), v.event, v.file))
-                .collect();
+            let lines: Vec<String> = found.iter().map(|v| line(v, names)).collect();
             usage(format!(
                 "version {prefix} of {note} matches more than one version:\n{}",
                 lines.join("\n")
