@@ -224,7 +224,7 @@ pub fn each_word(text: &str, mut f: impl FnMut(&str)) {
 }
 
 /// Combining diacritical marks: part of the word they follow, and dropped.
-fn is_mark(c: char) -> bool {
+pub fn is_mark(c: char) -> bool {
     ('\u{300}'..='\u{36f}').contains(&c)
 }
 

@@ -141,6 +141,9 @@ PYTHONDONTWRITEBYTECODE=1 python3 ~/.codex/skills/.system/plugin-creator/scripts
   a kill would. Do not test them by killing a child.
 - CI runs only the Linux branch of `src/host/swap.rs`. After touching it, run
   its tests on macOS.
+- `config::is_local` calls `0.0.0.0` remote, and a connect to it lands on
+  `common::Fake`'s `127.0.0.1` listener, so a test that needs a remote embedder
+  uses `http://0.0.0.0:<fake.port()>`. `zero_address` in `tests/index.rs` proves it.
 - `Terminal` in `src/host/prompt.rs` is the only code the unit tests cannot
   reach. After changing it, repeat the expect runs recorded in the
   `smoke.md` of `openspec/changes/archive/2026-10-02-add-setup/` and

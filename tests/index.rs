@@ -193,6 +193,20 @@ fn extra_argument_is_usage_error() {
     assert!(!s.dir.path().join("cache").exists());
 }
 
+/// `config::is_local` calls `0.0.0.0` remote, and a connect to it reaches the fake's `127.0.0.1`
+/// listener, so tests of remote-only behavior point the embedder there.
+#[test]
+fn zero_address() {
+    let fake = Fake::start(4);
+    let url = format!("http://0.0.0.0:{}", fake.port());
+    let s = setup_in(TempDir::new("index-zero-address"), &url, &[]);
+    write(&s.root, "plan-rollback.md", &note("Rollback", "Undo it.\n"));
+    let run = index(&s, &[], &[]);
+    ok(&run);
+    assert_eq!(run.stdout, "embedded 1, kept 0, dropped 0\n");
+    assert_eq!(fake.inputs(), ["Rollback\nUndo it."]);
+}
+
 #[test]
 fn input_carries_the_heading_path() {
     let fake = Fake::start(4);
@@ -659,7 +673,7 @@ fn config_errors_exit_2() {
     three(&s);
     let path = s.config.display().to_string();
     let url = format!("embedder.url = {}", fake.url);
-    let keys = "keys: embedder.url, embedder.model, embedder.token_file, embedder.token_env, embedder.query_prefix, embedder.min_similarity, digest.enable, digest.min_similarity, digest.log, history.keep_days";
+    let keys = "keys: embedder.url, embedder.model, embedder.token_file, embedder.token_env, embedder.query_prefix, embedder.min_similarity, digest.enable, digest.min_similarity, digest.log, history.keep_days, scope.<name>.sync, scope.<name>.embedder, scope.<name>.paths, scope.<name>.marks, scope.default";
     let cases: Vec<(Vec<&str>, String)> = vec![
         (
             vec!["# c", "embedder.model = x", "embeder.url = http://h"],
