@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -54,6 +55,7 @@ pub fn run(args: &[String], env: &store::Env) -> Result<Output, Failure> {
     let stored = documents::read_notes(&notes)
         .map_err(|e| Failure::Refused(format!("cannot read {}: {e}", notes.display())))?;
 
+    let withheld = vectors::withheld(&stored, &settings);
     let (documents, found): (Vec<Document>, Vec<Found>) = stored
         .into_iter()
         .map(|n| {
@@ -78,7 +80,15 @@ pub fn run(args: &[String], env: &store::Env) -> Result<Output, Failure> {
         .filter(|hit| allowed[hit.document])
         .collect();
     let (meaning, mut warnings) = match &settings.embedder {
-        Some(embedder) => meaning(embedder, env, &root, &request.query, &documents, &allowed),
+        Some(embedder) => meaning(
+            embedder,
+            env,
+            &root,
+            &request.query,
+            &documents,
+            &allowed,
+            &withheld,
+        ),
         None => (Vec::new(), Vec::new()),
     };
     let hits: Vec<Hit> = rank::fuse(&keyword, &meaning)
@@ -196,11 +206,12 @@ fn meaning(
     query: &str,
     documents: &[Document],
     allowed: &[bool],
+    withheld: &HashSet<u64>,
 ) -> (Vec<Hit>, Vec<String>) {
     let cache = store::cache_dir(env)
         .map(|dir| vectors::load(&vectors::path(&dir, root)))
         .unwrap_or_default();
-    let (found, missing) = vectors::lookup(&cache, &embedder.model, documents);
+    let (found, missing) = vectors::lookup(&cache, &embedder.model, documents, withheld);
     let indexed_any = found.iter().flatten().any(Option::is_some);
 
     let mut warnings = Vec::new();

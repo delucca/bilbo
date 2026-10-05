@@ -1944,3 +1944,84 @@ fn plain_recall_gives_no_hint_when_only_the_library_matches() {
     failed(&again, 1, "bilbo: no notes match\n");
     assert_eq!(again.stderr, "bilbo: no notes match\n");
 }
+
+/// A note of `scope`, titled `title`, with `body` below.
+fn scoped(scope: &str, title: &str, body: &str) -> String {
+    note(title, body).replacen("\n---\n\n#", &format!("\nscope: {scope}\n---\n\n#"), 1)
+}
+
+#[test]
+fn withheld_passages_are_not_reported() {
+    let dir = TempDir::new("recall-withheld");
+    let fake = Fake::start(4);
+    let url = format!("http://0.0.0.0:{}", fake.port());
+    let (root, config) = prepare(
+        &dir,
+        &url,
+        &[
+            "scope.work.embedder = local",
+            "scope.personal.embedder = any",
+        ],
+    );
+    write(
+        &root,
+        "plan-anchor.md",
+        &scoped("personal", "Anchor", "Nothing to see here.\n"),
+    );
+    write(
+        &root,
+        "plan-secret.md",
+        &scoped("work", "Secret", "rollback steps\n"),
+    );
+    index_now(&dir, &root, &config, &[]);
+    assert!(
+        fake.inputs().iter().all(|i| !i.contains("rollback")),
+        "{:?}",
+        fake.inputs()
+    );
+    let sent = fake.requests().len();
+    let run = recall_with(&dir, &root, &config, &[], &["rollback"]);
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    assert!(run.stderr.is_empty(), "{}", run.stderr);
+    assert!(run.stdout.contains("plan-secret.md"), "{}", run.stdout);
+    assert!(
+        fake.requests().len() > sent,
+        "the query reaches the embedder"
+    );
+}
+
+#[test]
+fn a_cached_vector_of_a_withheld_passage_is_not_used() {
+    let dir = TempDir::new("recall-withheld-stale");
+    let fake = Fake::start(4);
+    fake.vector("rollback", &[1.0, 0.0, 0.0, 0.0]);
+    fake.vector("Secret", &[1.0, 0.0, 0.0, 0.0]);
+    fake.vector("Anchor", &[0.0, 1.0, 0.0, 0.0]);
+    let url = format!("http://0.0.0.0:{}", fake.port());
+    let (root, config) = prepare(&dir, &url, &["scope.personal.embedder = any"]);
+    write(
+        &root,
+        "plan-anchor.md",
+        &scoped("personal", "Anchor", "Nothing to see here.\n"),
+    );
+    write(
+        &root,
+        "plan-secret.md",
+        &scoped("work", "Secret", "undo the release\n"),
+    );
+    index_now(&dir, &root, &config, &[]);
+    let found = recall_with(&dir, &root, &config, &[], &["rollback"]);
+    assert!(found.stdout.contains("plan-secret.md"), "{}", found.stdout);
+
+    let lines = [
+        format!("embedder.url = {url}"),
+        "embedder.model = test-model".to_string(),
+        "scope.work.embedder = local".to_string(),
+        "scope.personal.embedder = any".to_string(),
+    ];
+    let lines: Vec<&str> = lines.iter().map(String::as_str).collect();
+    common::config(&dir, &lines);
+    let run = recall_with(&dir, &root, &config, &[], &["rollback"]);
+    assert_eq!(run.code, 1, "{}", run.stderr);
+    assert_eq!(run.stderr, "bilbo: no notes match\n");
+}
