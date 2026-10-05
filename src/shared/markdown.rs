@@ -70,6 +70,14 @@ pub fn outside_fences(lines: &[&str]) -> Vec<usize> {
     out
 }
 
+/// The ATX headings outside fenced code blocks: each one's line index, level and text.
+pub fn headings(lines: &[&str]) -> Vec<(usize, usize, String)> {
+    outside_fences(lines)
+        .into_iter()
+        .filter_map(|i| heading(lines[i]).map(|(level, text)| (i, level, text)))
+        .collect()
+}
+
 /// A heading below the title and the lines it spans.
 #[derive(Debug, PartialEq, Eq)]
 pub struct Section {
@@ -95,10 +103,7 @@ impl Section {
 /// line `body_start`.
 pub fn outline(lines: &[&str], body_start: usize) -> Vec<Section> {
     let body = lines.get(body_start - 1..).unwrap_or(&[]);
-    let mut headings: Vec<(usize, usize, String)> = outside_fences(body)
-        .into_iter()
-        .filter_map(|i| heading(body[i]).map(|(level, text)| (i, level, text)))
-        .collect();
+    let mut headings = headings(body);
     if headings
         .first()
         .is_some_and(|(i, level, _)| *i == 0 && *level == 1)

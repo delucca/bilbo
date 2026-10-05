@@ -1,6 +1,6 @@
 use std::collections::HashSet;
 
-use crate::shared::markdown::{fence_run, heading};
+use crate::shared::markdown;
 use crate::shared::text;
 
 pub const PART_BYTES: usize = 4000;
@@ -38,26 +38,7 @@ pub struct Hit {
 /// `lines` is a note's body, whose first line is physical line `first_line`. `fallback_title` is the title when the
 /// body has no `# ` heading.
 pub fn passages(lines: &[&str], first_line: usize, fallback_title: &str) -> Vec<Passage> {
-    let mut fence: Option<(char, usize)> = None;
-    let mut headings = Vec::new();
-    for (i, line) in lines.iter().enumerate() {
-        let run = fence_run(line);
-        match (fence, run) {
-            (Some((ch, len)), Some((c, l, rest)))
-                if c == ch && l >= len && rest.trim().is_empty() =>
-            {
-                fence = None;
-            }
-            (Some(_), _) => {}
-            (None, Some((c, l, _))) => fence = Some((c, l)),
-            (None, None) => {
-                if let Some((level, text)) = heading(line) {
-                    headings.push((i, level, text));
-                }
-            }
-        }
-    }
-
+    let headings = markdown::headings(lines);
     let title_at = headings.iter().position(|(_, level, _)| *level == 1);
     let title = title_at.map_or(fallback_title, |t| headings[t].2.as_str());
     let mut stack: Vec<(usize, &str)> = Vec::new();

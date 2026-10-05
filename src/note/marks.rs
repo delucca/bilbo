@@ -1,5 +1,6 @@
 //! Finds a scope's mark in a note: the topic of its file name, its `sources` items and its body.
 
+use crate::shared::config;
 use crate::shared::markdown::split_lines;
 use crate::shared::text;
 
@@ -35,6 +36,31 @@ pub fn find(topic: &str, text: &str, mark: &Mark) -> Option<Place> {
         let skipped = in_front && !line.starts_with([' ', '-']);
         (!skipped && holds(line, mark)).then_some(Place::Line(i + 1))
     })
+}
+
+/// The earliest place in the note that holds a mark of `scope`, as text, and the mark.
+pub fn first_mark(scope: &config::Scope, topic: &str, text: &str) -> Option<(String, String)> {
+    scope
+        .marks
+        .iter()
+        .filter_map(|(mark, shown)| {
+            let found = match mark {
+                config::Mark::Word(word) => Mark::Word(word),
+                config::Mark::Path(forms) => Mark::Path(forms),
+            };
+            Some((find(topic, text, &found)?, shown.as_str()))
+        })
+        .min_by_key(|(place, _)| match place {
+            Place::FileName => 0,
+            Place::Line(n) => *n,
+        })
+        .map(|(place, shown)| {
+            let place = match place {
+                Place::FileName => "the file name".to_string(),
+                Place::Line(n) => format!("line {n}"),
+            };
+            (place, shown.to_string())
+        })
 }
 
 fn holds(line: &str, mark: &Mark) -> bool {

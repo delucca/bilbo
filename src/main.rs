@@ -9,6 +9,7 @@ mod note;
 mod search;
 mod setup;
 mod shared;
+mod sync;
 
 use std::io::{IsTerminal, Write};
 use std::process::ExitCode;

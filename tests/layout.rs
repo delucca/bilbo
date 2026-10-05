@@ -6,12 +6,12 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 /// The domains, one folder each under `src/`.
-const DOMAINS: [&str; 7] = [
-    "citation", "host", "identity", "library", "note", "search", "setup",
+const DOMAINS: [&str; 8] = [
+    "citation", "host", "identity", "library", "note", "search", "setup", "sync",
 ];
 
 /// The verbs, by path below `src/`: a file, or a folder (ending in `/`) whose files are all the verb's.
-const VERBS: [&str; 13] = [
+const VERBS: [&str; 14] = [
     "check.rs",
     "citation/cite.rs",
     "identity/device.rs",
@@ -25,6 +25,7 @@ const VERBS: [&str; 13] = [
     "search/index.rs",
     "search/recall.rs",
     "setup/",
+    "sync/cli.rs",
 ];
 
 /// Each crate and the only files under `src/` that may name it. `tests/common` also uses `sha2`, to write library

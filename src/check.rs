@@ -1,7 +1,7 @@
 use std::path::Path;
 
 use crate::library::corpus;
-use crate::note::marks::{self, Place};
+use crate::note::marks;
 use crate::shared::config::{self, Settings};
 use crate::shared::store::{self, Entry, EntryKind};
 use crate::{Failure, note};
@@ -140,7 +140,7 @@ impl Scan<'_> {
             return self.unassigned(path, message, &topic, text);
         }
         for other in settings.scopes.iter().filter(|s| s.name != *own) {
-            if let Some((place, mark)) = first_mark(other, &topic, text) {
+            if let Some((place, mark)) = marks::first_mark(other, &topic, text) {
                 self.warnings.push((
                     path.to_string(),
                     format!(
@@ -164,7 +164,7 @@ impl Scan<'_> {
             .settings
             .scopes
             .iter()
-            .filter(|s| first_mark(s, topic, text).is_some())
+            .filter(|s| marks::first_mark(s, topic, text).is_some())
             .map(|s| s.name.as_str())
             .collect();
         let suffix = if holds.is_empty() {
@@ -174,31 +174,6 @@ impl Scan<'_> {
         };
         self.add(path, format!("{message}{listed}{suffix}"));
     }
-}
-
-/// The earliest place in the note that holds a mark of `scope`, as text, and the mark.
-fn first_mark(scope: &config::Scope, topic: &str, text: &str) -> Option<(String, String)> {
-    scope
-        .marks
-        .iter()
-        .filter_map(|(mark, shown)| {
-            let found = match mark {
-                config::Mark::Word(word) => marks::Mark::Word(word),
-                config::Mark::Path(forms) => marks::Mark::Path(forms),
-            };
-            Some((marks::find(topic, text, &found)?, shown.as_str()))
-        })
-        .min_by_key(|(place, _)| match place {
-            Place::FileName => 0,
-            Place::Line(n) => *n,
-        })
-        .map(|(place, shown)| {
-            let place = match place {
-                Place::FileName => "the file name".to_string(),
-                Place::Line(n) => format!("line {n}"),
-            };
-            (place, shown.to_string())
-        })
 }
 
 /// One problem per file that shares its key with another file, naming every other file.
