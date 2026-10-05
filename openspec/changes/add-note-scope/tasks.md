@@ -53,6 +53,8 @@ Run every command below from the repo root as `nix develop -c sh -c '<command>'`
 
   Verify with `rg -q 'withheld' README.md && rg -q 'tunnel' README.md`
 
+- [ ] 5.5 In `src/search/embed.rs`, build the ureq agent with no proxy when `config::is_local(embedder.url)`, so a loopback embedder is reached directly whatever `HTTP_PROXY`, `HTTPS_PROXY` or `ALL_PROXY` say; a remote URL keeps ureq's proxy handling. Cover `A proxy variable does not reroute a loopback embedder` in `tests/index.rs` with a second fake standing for the proxy, counting that it receives nothing. Say in `README.md`, beside the tunnel line, that a loopback embedder ignores proxy variables. Verify with `cargo test --locked --test index proxy`
+
 ## 6. Setup and the home-manager module (`setup` delta)
 
 - [x] 6.1 Keep `Settings.scope_lines` on a config rewrite, after the digest and history lines: `Facts.kept` in `src/setup/facts.rs`, `Plan.kept` in `src/setup/plan.rs`, `config_step` in `src/setup/apply.rs` and `config::render` take owned key strings, and `src/setup/fakes.rs` follows. Cover the `setup` delta's `The wizard keeps the scope settings` in `src/setup/driven.rs`, beside `the_wizard_keeps_the_history_setting`. Verify with `cargo test --locked --bin bilbo setup:: && cargo test --locked --bin bilbo shared::config::`

@@ -140,6 +140,7 @@ Everything uses std, recall's word rule, `config::is_local` and change 1's `host
 - **[Marks are noisy]** A common word as a mark warns on unrelated notes. → Marks are the user's own list. A warning costs one line and never fails `check`.
 - **[A parked write in `scope set`]** A second write between the two exchanges waits at `notes/.bilbo-restore-<id>` until a sweep records it. With no watcher running, it waits for the next restore or `scope set`. → It is named on stderr, and it is never deleted unrecorded.
 - **[A tunnel on `localhost`]** `embedder = local` trusts the URL's host literally. An ssh tunnel on `localhost` counts as local, and the text leaves the machine through it. → The README says so beside the embedder settings.
+- **[A proxy variable on a loopback URL]** ureq reads `HTTP_PROXY`, `HTTPS_PROXY` and `ALL_PROXY` by default and skips them only for hosts `NO_PROXY` lists, so a `localhost` embedder could be reached through a proxy while `index` withholds nothing. → The embedder client takes no proxy for a loopback URL, so the rule's premise, that a loopback request stays on the machine, holds whatever the environment says.
 
 ## Migration Plan
 

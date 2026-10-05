@@ -12,7 +12,7 @@ Remote sync (the planning notebook's `design-bilbo-remote-sync.md`, "Decisions t
 - `bilbo new <kind> <topic> --scope <name>` writes the key. Without the flag, `new` takes the scope whose `paths` holds its own working directory (the longest match), else `scope.default`, else it creates the note unassigned and prints one stderr line listing the scopes. It never refuses to create a note for want of a scope.
 - `bilbo check` reads the config. Once any scope is declared, a note without a scope is a problem. A note naming an undeclared scope is always a problem. A note holding a mark of another scope (`scope.<name>.marks`: path prefixes and words found in its sources or body) gets a warning line, which does not change the exit code.
 - New verb `bilbo scope`: lists the declared scopes with their policy and note counts, then the unassigned count. `bilbo scope set <name> <file>...` adds a missing `scope` key; `--force` replaces one that is there.
-- `bilbo index` withholds from a non-loopback embedder the passages of notes whose rule is `local`. `bilbo recall` ranks them by keywords and does not count them as "not indexed". The digest admits them on its keyword gate, so they never drop out of it.
+- `bilbo index` withholds from a non-loopback embedder the passages of notes whose rule is `local`. `bilbo recall` ranks them by keywords and does not count them as "not indexed". The digest admits them on its keyword gate, so they never drop out of it. A loopback embedder is reached directly, never through a proxy that an environment variable names.
 - The note skill learns the scope names through `bilbo scope`, passes `--scope` when the user named one, asks the user once when the note ends up unassigned or the scope looks wrong, keeps `scope:` as found when it edits a note, and reports the note's scope or `unassigned`.
 - `bilbo setup` keeps the scope keys when it rewrites the config, and the home-manager module accepts them in `settings`.
 
@@ -28,7 +28,7 @@ Remote sync (the planning notebook's `design-bilbo-remote-sync.md`, "Decisions t
 - `note-create`: Create a note, New note content and Reject invalid arguments gain `--scope`. A new requirement, Scope of a new note, gives the resolution order.
 - `store-check`: Report problems gains warning lines, which leave the exit code alone. New requirements: Scope problems, Scope marks and Matching a mark.
 - `config`: Config location adds `new`, `check` and `scope` to the verbs that read settings, so its "Check ignores the config" scenario becomes "Check reads the config". New requirements: Scope settings and Scope paths and marks.
-- `note-index`: Index the store excludes withheld passages. A new requirement, Withheld passages, says which.
+- `note-index`: Index the store excludes withheld passages. A new requirement, Withheld passages, says which, and that a loopback embedder is never reached through a proxy.
 - `note-recall`: Keyword fallback leaves withheld passages out of the "not indexed" count.
 - `note-digest`: The gate admits a withheld passage on the keyword gate while the embedder answers.
 - `cli`: Verb dispatch adds `scope`.
@@ -55,6 +55,7 @@ Remote sync (the planning notebook's `design-bilbo-remote-sync.md`, "Decisions t
 - New verb `src/note/scope.rs`, its `pub mod` line, its path in `VERBS` in `tests/layout.rs`, its dispatch arm and USAGE line. `scope set` writes through `host::swap::exchange`, and through `history/lock`, the `.bilbo-restore-<id>` sweep and the hidden-file writer in `src/note/versions.rs` (the writer moves there from `src/note/restore.rs`, so a verb uses no other verb's module).
 - `src/note/new.rs` and `src/check.rs` start reading the config. A broken config now stops them with exit 2. `check` returns its warnings apart from its problems, and `main` takes the exit code from the problems.
 - `src/search/index.rs`, `src/search/recall.rs` and `src/search/digest.rs` apply the embedder rule through one function in `src/search/vectors.rs`. `documents::Stored` carries each note's `scope` value.
+- `src/search/embed.rs` builds its client without a proxy for a loopback `embedder.url`.
 - `src/setup/` keeps the scope lines on a config rewrite (`facts.rs`, `plan.rs`, `apply.rs`). `flake.nix`'s module accepts `scope.*` keys in `settings`.
 - `plugins/bilbo/skills/note/SKILL.md` gains the scope steps and `Bash(bilbo scope)` and `Bash(bilbo scope set *)` in `allowed-tools`.
 - Tests: `tests/scope.rs` for the new verb, and new cases in `tests/new.rs`, `tests/check.rs`, `tests/index.rs`, `tests/recall.rs`, `tests/digest.rs`, `tests/cli.rs`, `tests/plugin.rs`, `src/shared/config.rs`, `src/note/` and `src/setup/driven.rs`. Remote-embedder tests reach the loopback fake through `http://0.0.0.0:<port>`.
