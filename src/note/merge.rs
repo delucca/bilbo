@@ -162,6 +162,24 @@ pub fn blocks(text: &str) -> Vec<Block> {
     found
 }
 
+/// The lines, counted from 1, of full-form marker lines in a note's body outside fenced code: an opening or separator
+/// line with a version label and a time, or a closing line. Nothing above the closing `---` of the frontmatter counts.
+pub fn marker_lines(text: &str) -> Vec<usize> {
+    let all = markdown::lines(text);
+    let close = (all.first() == Some(&"---"))
+        .then(|| all[1..].iter().position(|l| *l == "---").map(|i| i + 1))
+        .flatten();
+    let from = close.map_or(0, |close| close + 1);
+    markdown::outside_fences(&all[from..])
+        .into_iter()
+        .filter(|&i| {
+            let line = all[from + i];
+            line == CLOSE || label(line, OPEN).is_some() || label(line, SEP).is_some()
+        })
+        .map(|i| from + i + 1)
+        .collect()
+}
+
 /// The non-blank lines of the blocks' sides, whitespace collapsed, that `now` holds nowhere, per passage.
 pub fn dropped(blocks: &[Block], now: &str) -> Vec<Dropped> {
     let held: BTreeSet<String> = markdown::lines(now).iter().map(|l| collapse(l)).collect();
@@ -2118,5 +2136,12 @@ mod tests {
                 "seed {seed}: {problems:?} flags={flags:?}\n--- a:\n{ta}--- b:\n{tb}--- merged:\n{out}"
             );
         }
+    }
+
+    #[test]
+    fn marker_lines_are_full_form_outside_fences_below_the_frontmatter() {
+        let text = "---\nid: x\n>>>>>>> bilbo\n---\n\n<<<<<<< bilbo 3f9a2c1b0d4e 2026-10-03T14:23-03:00\nx\n======= bilbo 9c8d7e6f5a4b t\n```\n>>>>>>> bilbo\n```\n>>>>>>> bilbo was here\n======= bilbo nothex t\n>>>>>>> bilbo\n";
+        assert_eq!(marker_lines(text), [6, 8, 14]);
+        assert_eq!(marker_lines(">>>>>>> bilbo\n"), [1]);
     }
 }
