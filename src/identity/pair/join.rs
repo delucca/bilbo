@@ -262,14 +262,6 @@ fn mismatch(name: &str) -> Failure {
     ))
 }
 
-/// A scope id as `keys::new_scope_id` makes one: 26 lowercase base32 characters.
-fn is_scope_id(text: &str) -> bool {
-    text.len() == 26
-        && text
-            .bytes()
-            .all(|b| b.is_ascii_lowercase() || (b'2'..=b'7').contains(&b))
-}
-
 /// Fetches and checks each scope of `payload`, and returns them with the owner's signing and box public keys.
 fn fetch(
     cx: &Cx,
@@ -303,7 +295,7 @@ fn fetch(
             ));
         }
         let unique = seen.insert(grant.name.as_str()) & seen.insert(grant.id.as_str());
-        if !unique || !is_scope_id(&grant.id) || grant.n == 0 {
+        if !unique || !keys::is_id(&grant.id) || grant.n == 0 {
             return Err(mismatch(&grant.name));
         }
     }
@@ -1012,7 +1004,10 @@ mod tests {
         assert_eq!(run.refused(), mismatch);
         nothing_written(&f.w, None);
         let (f, run) = tampered("id", |_, sent| sent.scopes[0].id = "../x".into());
-        assert_eq!(run.refused(), mismatch);
+        assert_eq!(
+            run.refused(),
+            "the message of the other device is not valid: the payload is not valid"
+        );
         nothing_written(&f.w, None);
         let (f, run) = tampered("version", |_, sent| sent.scopes[0].n = 3);
         assert_eq!(
