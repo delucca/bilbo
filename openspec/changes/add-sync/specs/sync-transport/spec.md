@@ -50,11 +50,15 @@ A device SHALL write segments only in its own device folder, so no segment has t
 - **THEN** the second one to push prints the other-content line and stops pushing `personal`, and no segment is overwritten
 
 ### Requirement: Resuming after lost state
-When a store has no sync state for a scope, as after `<root>/.bilbo/` was removed, watch SHALL read every segment of the scope from seq 1, its own device folder included, and push from the highest seq of its own folder plus one.
+When a store has no sync state for a scope, as after `<root>/.bilbo/` was removed, watch SHALL read every segment of the scope from seq 1, its own device folder included, and push from the highest seq of its own folder plus one. When the store holds no manifest of a syncing scope's name, watch SHALL copy in the one scope of that name on the transport whose latest version lists this device, valid as Manifests on the transport says, and resume it; when several do, it SHALL copy none and print `bilbo: sync <name>: the folder holds several scopes named <name>; run bilbo device recover on this device`.
 
 #### Scenario: The history folder was deleted
 - **WHEN** A had pushed 40 segments to `personal`, the user deletes A's `<root>/.bilbo/` and A's watch starts
 - **THEN** A reads its 40 segments, pushes its next versions as segment 41, and prints no other-content line
+
+#### Scenario: The manifests went with it
+- **WHEN** A's `<root>/.bilbo/` held the only local manifest of `personal`, the folder holds that scope and it lists A, and A's watch starts after the folder was deleted
+- **THEN** A copies that scope's versions in and resumes it; with a second scope named `personal` listing A in the folder, A copies neither and prints the several-scopes line
 
 ### Requirement: Damaged own segments
 On a `file://` transport, when a file in its own device folder does not verify as a segment this device signed, the device SHALL replace it with the copy it kept, and when it kept none, print `bilbo: sync <name>: segment <seq> of this device is damaged and no copy is left` and keep pushing after it.
@@ -123,7 +127,7 @@ A device SHALL keep a copy of each segment it wrote until every device of the sc
 - **THEN** A does not create it again
 
 ### Requirement: Manifests on the transport
-A device SHALL publish each pending manifest version of its store, as the `scope-manifest` spec's Pending versions requirement defines it, and copy in each version of its scopes that is valid there, chain included. Watch SHALL confirm a pending version, clearing `manifest/<n>.pending`, once it reads identical bytes back; a `file://` version after version 1 that changes the epoch only after 10 minutes. It SHALL seal only under an epoch the `scope-manifest` spec's Pending epochs allows, push nothing while a pending version introduces a newer one, and on a different version `n` apply A pending version that loses.
+A device SHALL publish each pending manifest version of its store, as the `scope-manifest` spec's Pending versions requirement defines it, and copy in each version of its scopes that is valid there, chain included. Watch SHALL confirm a pending version, clearing `manifest/<n>.pending`, once it reads identical bytes back; a `file://` version after version 1 that changes the epoch only after 10 minutes. It SHALL seal only under an epoch the `scope-manifest` spec's Pending epochs allows, push nothing while a pending version introduces a newer one, and on a different version `n` apply A pending version that loses. On a `file://` transport it SHALL copy in a version written elsewhere that changes the epoch only once it has read that version unchanged for 10 minutes, and no version above it before then, and never above a pending version of its own, so no device seals under an epoch the folder has not settled. When a `file://` folder lacks a confirmed version of a scope while it holds another, watch SHALL write it back, create-only.
 
 #### Scenario: A forged manifest
 - **WHEN** a file `manifest/3.json` appears that the owner key did not sign
