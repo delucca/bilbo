@@ -28,15 +28,23 @@ const VERBS: [&str; 12] = [
 
 /// Each crate and the only files under `src/` that may name it. `tests/common` also uses `sha2`, to write library
 /// files with a correct digest.
-const PLACEMENT: [(&str, &[&str]); 8] = [
+const PLACEMENT: [(&str, &[&str]); 13] = [
     ("cliclack", &["host/prompt.rs"]),
-    ("libc", &["host/prompt.rs", "host/swap.rs"]),
+    (
+        "libc",
+        &["host/prompt.rs", "host/swap.rs", "identity/keys.rs"],
+    ),
     ("notify", &["note/watch.rs"]),
     ("ring", &["host/model.rs"]),
-    ("sha2", &["shared/hash.rs"]),
+    ("sha2", &["identity/keys.rs", "shared/hash.rs"]),
     ("unicode_normalization", &["shared/text.rs"]),
     ("htmd", &["library/html.rs"]),
     ("markup5ever_rcdom", &["library/html.rs"]),
+    ("ed25519_dalek", &["identity/keys.rs"]),
+    ("hpke", &["identity/keys.rs"]),
+    ("chacha20poly1305", &["identity/keys.rs"]),
+    ("hkdf", &["identity/keys.rs"]),
+    ("getrandom", &["identity/keys.rs"]),
 ];
 
 const PRINTS: [&str; 5] = ["print!(", "println!(", "eprint!(", "eprintln!(", "dbg!("];

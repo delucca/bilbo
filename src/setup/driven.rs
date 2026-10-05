@@ -182,6 +182,8 @@ fn boxed(name: &str) -> Sandbox {
         xdg_config_home: None,
         xdg_cache_home: None,
         xdg_state_home: None,
+        claudecode: None,
+        codex_thread_id: None,
     };
     std::fs::create_dir_all(dir.join("home")).unwrap();
     Sandbox { dir, bin, env }
