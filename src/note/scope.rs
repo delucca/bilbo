@@ -12,7 +12,9 @@ use crate::note::{parse_name, read_id};
 use crate::search::documents;
 use crate::shared::config;
 use crate::shared::frontmatter::split_key;
+use crate::shared::hash;
 use crate::shared::store;
+use crate::sync::integrate::{self, Params};
 
 /// What `apply` is about to exchange when it calls its hook.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -128,6 +130,12 @@ fn set(args: &[String], env: &store::Env) -> Result<Output, Failure> {
         lines: Vec::new(),
         failed: false,
     };
+    let syncs = |name: &str| settings.scope(name).is_some_and(|s| s.sync != "off");
+    let params = Params {
+        syncs: &syncs,
+        now: jiff::Timestamp::now(),
+        stale_days: settings.sync.stale_days,
+    };
     let mut lock: Option<Lock> = None;
     for file in &files {
         let shown = match locate(file, &notes) {
@@ -140,11 +148,8 @@ fn set(args: &[String], env: &store::Env) -> Result<Output, Failure> {
         };
         if lock.is_none() {
             let held = versions::lock(&root).and_then(|held| {
-                let swept = versions::sweep_restore_leftovers(
-                    &held,
-                    &versions::now_at(),
-                    &Default::default(),
-                )?;
+                let staged = integrate::staged(&root)?;
+                let swept = versions::sweep_restore_leftovers(&held, &versions::now_at(), &staged)?;
                 Ok((held, swept))
             });
             match held {
@@ -160,7 +165,7 @@ fn set(args: &[String], env: &store::Env) -> Result<Output, Failure> {
             }
         }
         let Some(held) = &lock else { continue };
-        match apply(held, &shown, &name, force, &mut |_| Ok(())) {
+        match apply(held, &params, &shown, &name, force, &mut |_| Ok(())) {
             Ok(done) => out.lines.push(format!("notes/{shown}: {done}")),
             Err(Fail::File(reason)) => {
                 out.failed = true;
@@ -232,10 +237,12 @@ enum Edit {
     Write(Vec<u8>, String),
 }
 
-/// Gives the note `name` the scope `scope` and returns the line to print after `notes/<name>: `. `hook` is called
-/// before each exchange; an error from it stands for a failed exchange.
+/// Gives the note `name` the scope `scope` and returns the line to print after `notes/<name>: `. `p` is what
+/// `integrate::record_local` needs for a save the watcher has not recorded. `hook` is called before each exchange; an
+/// error from it stands for a failed exchange.
 pub fn apply(
     lock: &Lock,
+    p: &Params,
     name: &str,
     scope: &str,
     force: bool,
@@ -243,14 +250,12 @@ pub fn apply(
 ) -> Result<String, Fail> {
     let root = lock.root();
     let path = root.join("notes").join(name);
-    let read = fs::read(&path).map_err(|e| Fail::File(format!("cannot read: {e}")))?;
-    let text = std::str::from_utf8(&read).map_err(|_| Fail::File("not valid UTF-8".into()))?;
-    let edited = edit(text, scope, force).map_err(Fail::File)?;
-    let id = read_id(text).ok_or_else(|| Fail::File("id: missing or not a canonical id".into()))?;
-    let (written, done) = match edited {
+    let mut read = fs::read(&path).map_err(|e| Fail::File(format!("cannot read: {e}")))?;
+    let (mut written, mut done) = match plan(&read, scope, force)? {
         Edit::Keep(done) => return Ok(done),
-        Edit::Write(bytes, done) => (bytes, done),
+        Edit::Write(written, done) => (written, done),
     };
+    let id = id_of(&read)?;
     let temp = versions::restore_path(root, &id);
     let hidden = format!(
         "notes/{}",
@@ -260,6 +265,18 @@ pub fn apply(
         return Err(Fail::File(format!(
             "{hidden} is left from an earlier run; bilbo watch records it once it has seen the note"
         )));
+    }
+    // A save the watcher has not recorded is recorded first; with a stale-base entry it is merged against the base,
+    // which may rewrite the file.
+    integrate::record_local(lock, p, &id, name, Some(&read), &versions::now_at())
+        .map_err(Fail::File)?;
+    let now = fs::read(&path).map_err(|e| Fail::File(format!("cannot read: {e}")))?;
+    if now != read {
+        read = now;
+        match plan(&read, scope, force)? {
+            Edit::Keep(kept) => return Ok(kept),
+            Edit::Write(bytes, line) => (written, done) = (bytes, line),
+        }
     }
     versions::write_temp(&temp, &written, Some(name)).map_err(Fail::File)?;
     if let Err(e) = hook(Exchange::First).and_then(|()| swap::exchange(&path, &temp)) {
@@ -276,7 +293,11 @@ pub fn apply(
         ))
     })?;
     if out == read {
-        return remove(&temp, &hidden, "set").map(|()| done);
+        remove(&temp, &hidden, "set")?;
+        return match record(lock, p, &id, name, &read, &written) {
+            Ok(()) => Ok(done),
+            Err(e) => Err(Fail::File(format!("{done}, but {e}"))),
+        };
     }
     if let Err(e) = hook(Exchange::Back).and_then(|()| swap::exchange(&path, &temp)) {
         return Err(Fail::File(format!(
@@ -303,6 +324,59 @@ pub fn apply(
     Err(Fail::File(
         "changed while bilbo scope set ran; run it again".into(),
     ))
+}
+
+/// Records the text `apply` wrote as a version that follows the head group holding `read`, the bytes it replaced, so
+/// the watcher does not take it for a save, and makes it the written version of a stale-base entry, which keeps its
+/// base.
+fn record(
+    lock: &Lock,
+    p: &Params,
+    id: &str,
+    name: &str,
+    read: &[u8],
+    written: &[u8],
+) -> Result<(), String> {
+    let log = versions::load(lock.root(), id)?;
+    let parents = match integrate::held_group(&log.versions, name, &hash::sha256_hex(read)) {
+        Some(group) => group,
+        None => match versions::heads(&log.versions).as_slice() {
+            [only] => only.iter().map(|v| v.version.clone()).collect(),
+            _ => versions::last_parents(lock.root(), id)?,
+        },
+    };
+    let digest = hash::sha256_hex(written);
+    let latest = log
+        .versions
+        .iter()
+        .find(|v| parents.first() == Some(&v.version));
+    let Some(event) = versions::event_for(latest, Some((name, &digest))) else {
+        return Ok(());
+    };
+    let version = versions::record(
+        lock,
+        id,
+        &parents,
+        name,
+        Some(written),
+        event,
+        &versions::now_at(),
+    )?;
+    integrate::keep_base(lock, id, &version.version)?;
+    integrate::refresh_open(lock, p, &[id.to_string()])
+}
+
+/// What `edit` decides for the bytes `read`.
+fn plan(read: &[u8], scope: &str, force: bool) -> Result<Edit, Fail> {
+    let text = std::str::from_utf8(read).map_err(|_| Fail::File("not valid UTF-8".into()))?;
+    edit(text, scope, force).map_err(Fail::File)
+}
+
+fn id_of(read: &[u8]) -> Result<String, Fail> {
+    std::str::from_utf8(read)
+        .ok()
+        .and_then(read_id)
+        .ok_or_else(|| Fail::File("id: missing or not a canonical id".into()))
 }
 
 fn remove(temp: &Path, hidden: &str, lead: &str) -> Result<(), Fail> {
@@ -429,13 +503,34 @@ mod tests {
         record_difference(&lock, ID, Some(("plan-a.md", &bytes)), &versions::now_at()).unwrap();
     }
 
+    fn no_sync(_: &str) -> bool {
+        false
+    }
+
+    fn params() -> Params<'static> {
+        Params {
+            syncs: &no_sync,
+            now: "2026-10-04T15:00:00Z".parse().unwrap(),
+            stale_days: 180,
+        }
+    }
+
+    fn go_to(
+        root: &Path,
+        scope: &str,
+        hook: &mut dyn FnMut(Exchange) -> Result<(), String>,
+    ) -> Result<String, Fail> {
+        let lock = versions::lock(root).unwrap();
+        apply(&lock, &params(), "plan-a.md", scope, false, hook)
+    }
+
     fn go(
         root: &Path,
         force: bool,
         hook: &mut dyn FnMut(Exchange) -> Result<(), String>,
     ) -> Result<String, Fail> {
         let lock = versions::lock(root).unwrap();
-        apply(&lock, "plan-a.md", "work", force, hook)
+        apply(&lock, &params(), "plan-a.md", "work", force, hook)
     }
 
     fn written(edit: Result<Edit, String>) -> (String, String) {
@@ -647,5 +742,189 @@ mod tests {
         );
         assert!(message.contains("bilbo watch records it"), "{message}");
         assert_eq!(read(&s.0), note(""));
+    }
+
+    fn events(root: &Path) -> Vec<String> {
+        load(root, ID)
+            .unwrap()
+            .versions
+            .iter()
+            .map(|v| v.event.clone())
+            .collect()
+    }
+
+    #[test]
+    fn the_version_it_wrote_is_recorded_so_the_watcher_adds_none() {
+        let s = scratch("recorded");
+        put(&s.0, &note(""));
+        watch(&s.0);
+        go(&s.0, false, &mut |_| Ok(())).unwrap();
+        assert_eq!(events(&s.0), ["added", "edited"]);
+        let log = load(&s.0, ID).unwrap();
+        let latest = log.latest().unwrap();
+        assert_eq!(
+            versions::content(&s.0, latest).unwrap(),
+            note("scope: work\n").as_bytes()
+        );
+        assert_eq!(latest.parents, [log.versions[0].version.clone()]);
+        watch(&s.0);
+        assert_eq!(events(&s.0), ["added", "edited"]);
+    }
+
+    #[test]
+    fn a_kept_or_raced_note_records_nothing() {
+        let s = scratch("not-recorded");
+        put(&s.0, &note("scope: work\n"));
+        watch(&s.0);
+        let agent = note("scope: work\n") + "agent\n";
+        go(&s.0, false, &mut |_| Ok(())).unwrap();
+        go(&s.0, true, &mut |_| Ok(())).unwrap();
+        assert_eq!(events(&s.0), ["added"]);
+        put(&s.0, &note("scope: personal\n"));
+        watch(&s.0);
+        let err = go(&s.0, true, &mut |step| {
+            if step == Exchange::First {
+                put(&s.0, &agent);
+            }
+            Ok(())
+        });
+        assert!(err.is_err());
+        assert_eq!(events(&s.0), ["added", "edited"]);
+    }
+
+    fn two_passages(setup: &str, rollout: &str) -> String {
+        format!("{HEAD}---\n\n# A\n\n## Setup\n{setup}\n\n## Rollout\n{rollout}\n")
+    }
+
+    /// H, then the edit sync wrote (B's `## Setup`), which the file holds, with its stale-base entry.
+    fn synced(root: &Path) -> Vec<String> {
+        put(root, &two_passages("base setup", "base rollout"));
+        watch(root);
+        put(root, &two_passages("B setup", "base rollout"));
+        watch(root);
+        let ids: Vec<String> = load(root, ID)
+            .unwrap()
+            .versions
+            .iter()
+            .map(|v| v.version.clone())
+            .collect();
+        let dir = store::sync_dir(root);
+        fs::create_dir_all(&dir).unwrap();
+        let entry = serde_json::json!({ ID: { "base": ids[0], "written": ids[1] } });
+        fs::write(dir.join("stale-base.json"), entry.to_string()).unwrap();
+        ids
+    }
+
+    #[test]
+    fn a_stale_save_after_scope_set_is_still_merged() {
+        let s = scratch("stale-after");
+        let ids = synced(&s.0);
+
+        let done = go_to(&s.0, "personal", &mut |_| Ok(())).unwrap();
+
+        assert_eq!(done, "set personal");
+        let log = load(&s.0, ID).unwrap();
+        let wrote = log.latest().unwrap();
+        assert_eq!(wrote.event, EDITED);
+        assert_eq!(
+            integrate::stale_base(&s.0, ID).unwrap(),
+            Some(integrate::Base {
+                base: ids[0].clone(),
+                written: wrote.version.clone()
+            })
+        );
+        let lock = versions::lock(&s.0).unwrap();
+        integrate::record_local(
+            &lock,
+            &params(),
+            ID,
+            "plan-a.md",
+            Some(two_passages("base setup", "agent rollout").as_bytes()),
+            &versions::now_at(),
+        )
+        .unwrap();
+        assert_eq!(
+            read(&s.0),
+            format!(
+                "{HEAD}scope: personal\n---\n\n# A\n\n## Setup\nB setup\n\n## Rollout\nagent rollout\n"
+            )
+        );
+        let log = load(&s.0, ID).unwrap();
+        let last = log.latest().unwrap();
+        assert_eq!(last.event, "merged");
+        assert_eq!(last.flags, ["stale-base"]);
+        assert!(log.versions.iter().any(|v| v.version == wrote.version));
+    }
+
+    #[test]
+    fn a_staged_version_is_left_at_its_hidden_name_by_the_sweep() {
+        let s = scratch("staged");
+        put(&s.0, &note(""));
+        watch(&s.0);
+        let inbound = note("scope: work\n") + "inbound\n";
+        fs::write(s.0.join(format!("notes/.bilbo-restore-{ID}")), &inbound).unwrap();
+        let dir = store::sync_dir(&s.0);
+        fs::create_dir_all(&dir).unwrap();
+        let line = serde_json::json!({
+            "seen": "2026-10-04T12:00:00-03:00",
+            "scope": "work",
+            "record": {
+                "note": ID,
+                "version": "f".repeat(64),
+                "parents": [],
+                "file": "plan-a.md",
+                "blob": hash::sha256_hex(inbound.as_bytes()),
+                "event": "edited",
+                "at": "2026-10-04T12:00:00-03:00",
+            },
+        });
+        fs::write(dir.join("inbox.jsonl"), format!("{line}\n")).unwrap();
+        let staged = integrate::staged(&s.0).unwrap();
+        let lock = versions::lock(&s.0).unwrap();
+
+        let messages =
+            versions::sweep_restore_leftovers(&lock, &versions::now_at(), &staged).unwrap();
+
+        assert!(messages.is_empty(), "{messages:?}");
+        assert!(s.0.join(format!("notes/.bilbo-restore-{ID}")).exists());
+        assert_eq!(events(&s.0), ["added"]);
+    }
+
+    #[test]
+    fn the_version_it_wrote_follows_the_head_the_file_held_not_the_last_line() {
+        let s = scratch("two-heads");
+        let lock = versions::lock(&s.0).unwrap();
+        let at = versions::now_at();
+        let record = |parents: &[String], text: &str| {
+            let event = if parents.is_empty() { "added" } else { EDITED };
+            versions::record(
+                &lock,
+                ID,
+                parents,
+                "plan-a.md",
+                Some(text.as_bytes()),
+                event,
+                &at,
+            )
+            .unwrap()
+        };
+        let first = record(&[], &note(""));
+        let mine = record(
+            std::slice::from_ref(&first.version),
+            &note("").replace("body", "mine"),
+        );
+        let theirs = record(
+            std::slice::from_ref(&first.version),
+            &note("").replace("body", "theirs"),
+        );
+        drop(lock);
+        put(&s.0, &note("").replace("body", "mine"));
+
+        go(&s.0, false, &mut |_| Ok(())).unwrap();
+
+        let log = load(&s.0, ID).unwrap();
+        let wrote = log.versions.last().unwrap();
+        assert_eq!(wrote.parents, [mine.version]);
+        assert_ne!(wrote.parents, [theirs.version]);
     }
 }

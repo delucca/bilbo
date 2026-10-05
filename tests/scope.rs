@@ -6,7 +6,10 @@ mod common;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use common::{IDS, TempDir, Watcher, bilbo, config, note_text, poll_eq, snapshot, store, write};
+use common::{
+    IDS, Seed, TempDir, Watcher, bilbo, config, days_ago, note_text, poll_eq, seed, snapshot,
+    store, write,
+};
 
 fn cwd() -> PathBuf {
     std::env::temp_dir()
@@ -581,4 +584,118 @@ fn a_missing_config_file_stops_the_verb() {
         "{}",
         run.stderr
     );
+}
+
+fn sync_dir(root: &Path) -> PathBuf {
+    let dir = root.join(".bilbo/sync");
+    fs::create_dir_all(&dir).unwrap();
+    dir
+}
+
+fn history(root: &Path, conf: &Path, args: &[&str]) -> common::Run {
+    let mut all = vec!["history"];
+    all.extend(args);
+    bilbo(
+        &cwd(),
+        &[
+            ("BILBO_HOME", root.to_str().unwrap()),
+            ("BILBO_CONFIG", conf.to_str().unwrap()),
+        ],
+        &all,
+    )
+}
+
+#[test]
+fn the_version_it_wrote_is_recorded_without_a_watcher() {
+    let dir = TempDir::new("scope-recorded");
+    let root = store(&dir);
+    let conf = config(&dir, &["scope.work.embedder = local"]);
+    let before = note_text(IDS[0], "T");
+    write(&root, "plan-a.md", &before);
+    seed(
+        &root,
+        IDS[0],
+        &[Seed::new("plan-a.md", Some(&before), "added", &days_ago(1))],
+    );
+    let run = scope(&root, &conf, &["set", "work", &path(&root, "plan-a.md")]);
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    let listed = history(&root, &conf, &["a"]).stdout;
+    let events: Vec<&str> = listed
+        .lines()
+        .map(|l| l.split(' ').nth(2).unwrap())
+        .collect();
+    assert_eq!(events, ["edited", "added"]);
+    let short = listed.split(' ').next().unwrap();
+    let shown = history(&root, &conf, &["a", short]).stdout;
+    assert_eq!(shown, text(&root, "plan-a.md"));
+}
+
+#[test]
+fn a_stale_base_entry_keeps_its_base_and_takes_the_version_it_wrote() {
+    let dir = TempDir::new("scope-entry");
+    let root = store(&dir);
+    let conf = config(&dir, &["scope.work.embedder = local"]);
+    let one = note_text(IDS[0], "T");
+    let two = format!("{one}\nsync wrote this\n");
+    write(&root, "plan-a.md", &two);
+    let ids = seed(
+        &root,
+        IDS[0],
+        &[
+            Seed::new("plan-a.md", Some(&one), "added", &days_ago(2)),
+            Seed::new("plan-a.md", Some(&two), "edited", &days_ago(1)),
+        ],
+    );
+    let entry = serde_json::json!({ IDS[0]: { "base": ids[0], "written": ids[1] } });
+    fs::write(sync_dir(&root).join("stale-base.json"), entry.to_string()).unwrap();
+
+    let run = scope(&root, &conf, &["set", "work", &path(&root, "plan-a.md")]);
+
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    let listed = history(&root, &conf, &["a"]).stdout;
+    let newest = listed.split(' ').next().unwrap();
+    assert_eq!(listed.lines().count(), 3, "{listed}");
+    let bytes = fs::read(root.join(".bilbo/sync/stale-base.json")).unwrap();
+    let kept = &serde_json::from_slice::<serde_json::Value>(&bytes).unwrap()[IDS[0]];
+    assert_eq!(kept["base"], ids[0]);
+    assert!(kept["written"].as_str().unwrap().starts_with(newest));
+}
+
+#[test]
+fn a_leftover_holding_a_staged_version_stays_for_the_watcher() {
+    let dir = TempDir::new("scope-staged");
+    let root = store(&dir);
+    let conf = config(&dir, &["scope.work.embedder = local"]);
+    let before = note_text(IDS[0], "T");
+    write(&root, "plan-a.md", &before);
+    seed(
+        &root,
+        IDS[0],
+        &[Seed::new("plan-a.md", Some(&before), "added", &days_ago(1))],
+    );
+    let inbound = format!("{before}\ninbound\n");
+    let hidden = format!(".bilbo-restore-{}", IDS[0]);
+    write(&root, &hidden, &inbound);
+    let line = serde_json::json!({
+        "seen": "2026-10-04T12:00:00-03:00",
+        "scope": "work",
+        "record": {
+            "note": IDS[0],
+            "version": "f".repeat(64),
+            "parents": [],
+            "file": "plan-a.md",
+            "blob": common::sha256_hex(inbound.as_bytes()),
+            "event": "edited",
+            "at": "2026-10-04T12:00:00-03:00",
+        },
+    });
+    fs::write(sync_dir(&root).join("inbox.jsonl"), format!("{line}\n")).unwrap();
+
+    let run = scope(&root, &conf, &["set", "work", &path(&root, "plan-a.md")]);
+
+    assert_eq!(run.code, 1);
+    assert!(!run.stderr.contains("recorded"), "{}", run.stderr);
+    assert_eq!(text(&root, &hidden), inbound);
+    assert_eq!(text(&root, "plan-a.md"), before);
+    assert_eq!(history(&root, &conf, &["a"]).stdout.lines().count(), 1);
 }
