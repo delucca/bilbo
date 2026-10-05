@@ -53,7 +53,7 @@ Run every command below from the repo root as `nix develop -c sh -c '<command>'`
 
   Verify with `rg -q 'withheld' README.md && rg -q 'tunnel' README.md`
 
-- [ ] 5.5 In `src/search/embed.rs`, build the ureq agent with no proxy when `config::is_local(embedder.url)`, so a loopback embedder is reached directly whatever `HTTP_PROXY`, `HTTPS_PROXY` or `ALL_PROXY` say; a remote URL keeps ureq's proxy handling. Cover `A proxy variable does not reroute a loopback embedder` in `tests/index.rs` with a second fake standing for the proxy, counting that it receives nothing. Say in `README.md`, beside the tunnel line, that a loopback embedder ignores proxy variables. Verify with `cargo test --locked --test index proxy`
+- [x] 5.5 In `src/search/embed.rs`, build the ureq agent with no proxy when `config::is_local(embedder.url)`, so a loopback embedder is reached directly whatever `HTTP_PROXY`, `HTTPS_PROXY` or `ALL_PROXY` say; a remote URL keeps ureq's proxy handling. Cover `A proxy variable does not reroute a loopback embedder` in `tests/index.rs` with a second fake standing for the proxy, counting that it receives nothing. Say in `README.md`, beside the tunnel line, that a loopback embedder ignores proxy variables. Verify with `cargo test --locked --test index proxy`
 
 ## 6. Setup and the home-manager module (`setup` delta)
 

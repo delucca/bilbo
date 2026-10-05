@@ -96,7 +96,7 @@ fn list(env: &store::Env) -> Result<Output, Failure> {
     if settings.scopes.is_empty() {
         warnings.push(format!(
             "no scopes declared; add scope.<name>.* keys to {}",
-            config_path(&settings)
+            settings.shown_path()
         ));
     }
     Ok(Output {
@@ -106,15 +106,6 @@ fn list(env: &store::Env) -> Result<Output, Failure> {
     })
 }
 
-fn config_path(settings: &config::Settings) -> String {
-    settings
-        .path
-        .as_ref()
-        .map_or("$HOME/.config/bilbo/config".into(), |p| {
-            p.display().to_string()
-        })
-}
-
 fn set(args: &[String], env: &store::Env) -> Result<Output, Failure> {
     let (force, name, files) = parse_set(args)?;
     let settings = config::load(env).map_err(Failure::Config)?;
@@ -122,7 +113,7 @@ fn set(args: &[String], env: &store::Env) -> Result<Output, Failure> {
         let declared = settings.scope_names();
         return Err(Failure::Usage(format!(
             "scope '{name}' is not declared in {}; declared scopes: {}",
-            config_path(&settings),
+            settings.shown_path(),
             if declared.is_empty() {
                 "none".to_string()
             } else {

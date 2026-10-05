@@ -622,6 +622,14 @@ impl Settings {
         self.scopes.iter().find(|s| s.name == name)
     }
 
+    /// The config path for a message: the file, or the default spelling when none can be formed.
+    pub fn shown_path(&self) -> String {
+        self.path.as_ref().map_or_else(
+            || "$HOME/.config/bilbo/config".to_string(),
+            |p| p.display().to_string(),
+        )
+    }
+
     /// The embedder rule of a note whose `scope` key holds `scope` (`None` without the key).
     /// A scope that is not declared counts as unassigned, as do all notes while none is declared.
     pub fn rule(&self, scope: Option<&str>) -> Rule {

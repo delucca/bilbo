@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 
 use common::{
     Fake, IDS, Locked, Run, TempDir, bench_library, bench_store, bilbo, config, dead_url, guide,
-    library, note_text, snapshot, store, write,
+    in_scope, library, note_text, snapshot, store, write,
 };
 
 const USAGE: &str = "\
@@ -1945,11 +1945,6 @@ fn plain_recall_gives_no_hint_when_only_the_library_matches() {
     assert_eq!(again.stderr, "bilbo: no notes match\n");
 }
 
-/// A note of `scope`, titled `title`, with `body` below.
-fn scoped(scope: &str, title: &str, body: &str) -> String {
-    note(title, body).replacen("\n---\n\n#", &format!("\nscope: {scope}\n---\n\n#"), 1)
-}
-
 #[test]
 fn withheld_passages_are_not_reported() {
     let dir = TempDir::new("recall-withheld");
@@ -1966,12 +1961,12 @@ fn withheld_passages_are_not_reported() {
     write(
         &root,
         "plan-anchor.md",
-        &scoped("personal", "Anchor", "Nothing to see here.\n"),
+        &in_scope(&note("Anchor", "Nothing to see here.\n"), "personal"),
     );
     write(
         &root,
         "plan-secret.md",
-        &scoped("work", "Secret", "rollback steps\n"),
+        &in_scope(&note("Secret", "rollback steps\n"), "work"),
     );
     index_now(&dir, &root, &config, &[]);
     assert!(
@@ -2002,12 +1997,12 @@ fn a_cached_vector_of_a_withheld_passage_is_not_used() {
     write(
         &root,
         "plan-anchor.md",
-        &scoped("personal", "Anchor", "Nothing to see here.\n"),
+        &in_scope(&note("Anchor", "Nothing to see here.\n"), "personal"),
     );
     write(
         &root,
         "plan-secret.md",
-        &scoped("work", "Secret", "undo the release\n"),
+        &in_scope(&note("Secret", "undo the release\n"), "work"),
     );
     index_now(&dir, &root, &config, &[]);
     let found = recall_with(&dir, &root, &config, &[], &["rollback"]);
