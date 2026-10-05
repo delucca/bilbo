@@ -2155,4 +2155,101 @@ mod tests {
         assert!(cloud[0].contains("write access"));
         assert!(!out.warnings.iter().any(|l| l.contains("shared")));
     }
+    // Golden fixtures for tests/device.rs
+
+    /// Test keys: the all-`abandon` owner and two devices with fixed seeds. They guard nothing; never enroll them.
+    const FIXTURES: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/device");
+
+    /// Copies `from/*.json` to `to`, leaving the pending markers and anything hidden behind.
+    fn copy_versions(from: &Path, to: &Path) {
+        fs::create_dir_all(to).unwrap();
+        for entry in fs::read_dir(from).unwrap() {
+            let path = entry.unwrap().path();
+            if path.extension().is_some_and(|e| e == "json") {
+                fs::copy(&path, to.join(path.file_name().unwrap())).unwrap();
+            }
+        }
+    }
+
+    /// Rebuilds `tests/fixtures/device/`: `rivendell/` and `bagend/` (key folders), `store/` (a `personal` scope pinned
+    /// to `file://`, versions 1 and 2) and `foreign/` (a store with a scope of another owner). Ids and nonces are random, so a run
+    /// replaces every file.
+    #[test]
+    #[ignore]
+    fn write_fixtures() {
+        let out = PathBuf::from(FIXTURES);
+        let _ = fs::remove_dir_all(&out);
+        let (w, sid) = pair();
+        for who in [rivendell(), bagend()] {
+            let k = world("fixture_keys");
+            k.enroll(&who);
+            let to = out.join(&who.device.name);
+            fs::create_dir_all(&to).unwrap();
+            for file in ["owner.key", "device.key"] {
+                fs::copy(k.keys().join(file), to.join(file)).unwrap();
+            }
+        }
+        copy_versions(
+            &w.root().join(format!(".bilbo/scopes/{sid}/manifest")),
+            &out.join(format!("store/.bilbo/scopes/{sid}/manifest")),
+        );
+        let other = world("fixture_foreign");
+        let fid = scope(
+            &other,
+            &identity(1, "gandalf", 5),
+            "grey",
+            "file:///srv/grey",
+        );
+        copy_versions(
+            &other.root().join(format!(".bilbo/scopes/{fid}/manifest")),
+            &out.join(format!("foreign/.bilbo/scopes/{fid}/manifest")),
+        );
+    }
+
+    fn fixture_scopes(dir: &Path) -> Vec<String> {
+        manifest::scope_ids(dir).unwrap()
+    }
+
+    #[test]
+    fn fixtures_open() {
+        let store = PathBuf::from(FIXTURES).join("store");
+        let ids = fixture_scopes(&store);
+        assert_eq!(ids.len(), 1);
+        let abandon = Owner::derive(&[0; 16]).sign.public();
+        for (name, seed) in [("rivendell", 1), ("bagend", 3)] {
+            let w = world("fixtures");
+            let state = w.keys();
+            fs::create_dir_all(&state).unwrap();
+            fs::set_permissions(&state, fs::Permissions::from_mode(0o700)).unwrap();
+            for file in ["owner.key", "device.key"] {
+                let to = state.join(file);
+                fs::copy(PathBuf::from(FIXTURES).join(name).join(file), &to).unwrap();
+                fs::set_permissions(&to, fs::Permissions::from_mode(0o600)).unwrap();
+            }
+            let id = keys::read_identity(&state).unwrap().unwrap();
+            assert_eq!(id.device.name, name);
+            assert_eq!(id.device.id(), identity(0, name, seed).device.id());
+            assert_eq!(id.owner.sign.public(), abandon);
+            copy_versions(
+                &store.join(format!(".bilbo/scopes/{}/manifest", ids[0])),
+                &w.root().join(format!(".bilbo/scopes/{}/manifest", ids[0])),
+            );
+            let known = known_as(&w, &id);
+            assert_eq!(known.len(), 1);
+            let k = &known[0];
+            assert!(k.problem.is_none(), "{:?}", k.problem);
+            assert!(k.mine && k.opened.is_some());
+            assert_eq!(k.name(), Some("personal"));
+            let latest = k.scope.latest().unwrap();
+            assert_eq!(latest.manifest.n, 2);
+            assert_eq!(latest.manifest.devices.len(), 2);
+            assert_eq!(latest.manifest.transport, "file://");
+        }
+        let foreign = PathBuf::from(FIXTURES).join("foreign");
+        let ids = fixture_scopes(&foreign);
+        assert_eq!(ids.len(), 1);
+        let scope = manifest::read_scope(&foreign, &ids[0]).unwrap();
+        assert_eq!(scope.versions.len(), 1);
+        assert_eq!(scope.owner(), Some(Owner::derive(&[1; 16]).sign.public()));
+    }
 }
