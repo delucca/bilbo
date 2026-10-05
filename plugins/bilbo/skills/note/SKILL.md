@@ -79,8 +79,8 @@ Writes what a later session should know into the bilbo store, through `bilbo new
 
    | Exit | output | What to do |
    |---|---|---|
-   | 0 | stdout `notes/<file>: set <name>`, `replaced <old> with <name>` or `kept <name>` | done |
-   | 0 | stdout `notes/<file>: kept <old>; --force replaces it` | the user already answered: run it once more with `--force` |
+   | 0 | stdout `notes/<file>: set <name>`, `replaced <old> with <name>`, `rewrote '<line>' as scope: <name>` or `kept <name>` | done |
+   | 0 | stdout `notes/<file>: kept <old>; --force replaces it` or `kept '<line>' as written; --force rewrites it` | the user already answered: run it once more with `--force` |
    | 1 | stderr `bilbo: notes/<file>: changed while bilbo scope set ran; run it again` | run it once more. A second exit 1: report the line and leave the scope |
    | 1 or 2 | anything else, such as `cannot set scopes on this filesystem` | report bilbo's first stderr line, leave the scope, report the note `unassigned` |
 

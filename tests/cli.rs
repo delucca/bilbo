@@ -3,7 +3,7 @@ mod common;
 use common::{TempDir, bilbo, bilbo_input};
 
 const USAGE: &str = "\
-usage: bilbo new <kind> <topic> [--title <text>]
+usage: bilbo new <kind> <topic> [--title <text>] [--scope <name>]
        bilbo check
        bilbo recall <query>... [--kind <kind>]... [--limit <n>]
        bilbo recall <query>... --library [--corpus <corpus>]... [--limit <n>]
@@ -20,6 +20,8 @@ usage: bilbo new <kind> <topic> [--title <text>]
        bilbo watch
        bilbo history <note> [<version> | --diff <a> [<b>]]
        bilbo restore <note> <version>
+       bilbo scope
+       bilbo scope set [--force] <name> <file>...
        bilbo --help
        bilbo --version
 new creates <root>/notes/<kind>-<topic>.md and prints its path.
@@ -33,6 +35,7 @@ cite checks every bilbo: citation in a draft, and with --plan prints the coverag
 watch records a version of each note when it changes, until it is stopped.
 history lists the versions of a note, newest first, prints one, or shows what changed between two versions, or between one and the note's file now.
 restore writes a past version of a note back as its newest version, keeping what the note held before.
+scope lists the scopes this device declares with their note counts; scope set gives notes a scope.
 setup creates the store and the config and installs the agent plugin, the index timer, the note watcher and, when asked, the local embedder; in a terminal it asks first.
 setup options: --embedder-url <url>, --embedder-model <name>, --embedder-token-env <var>, --embedder-token-file <path>, --embedder-query-prefix <text>, --embedder-local, --embedder-port <port>, --llama-server <path>, --no-plugin, --claude <path>, --codex <path>, --plugin-source <folder|owner/repo#ref>, --no-timer, --index-every <minutes>, --no-watch
 kinds: plan, spec, design, decision, gotcha, research, review, report, reference
@@ -82,6 +85,7 @@ fn unknown_verb_is_usage_error() {
             && run.stderr.contains("bilbo watch")
             && run.stderr.contains("bilbo history")
             && run.stderr.contains("bilbo restore")
+            && run.stderr.contains("bilbo scope")
     );
     assert!(!home.exists());
     assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
@@ -467,5 +471,24 @@ fn restore_is_a_verb() {
         run.stderr,
         format!("bilbo: no store at {}\n", home.display())
     );
+    assert!(!home.exists());
+}
+
+#[test]
+fn scope_is_a_verb() {
+    let dir = TempDir::new("cli-scope");
+    let home = dir.path().join("home");
+    let env = [("BILBO_HOME", home.to_str().unwrap())];
+    let run = bilbo(dir.path(), &env, &["scope"]);
+    assert_eq!(run.code, 0);
+    assert_eq!(run.stdout, "(unassigned)\t0 notes\tembedder any\n");
+    assert_eq!(
+        run.stderr,
+        "bilbo: no scopes declared; add scope.<name>.* keys to $HOME/.config/bilbo/config\n"
+    );
+    let run = bilbo(dir.path(), &env, &["scope", "set", "work", "x.md"]);
+    assert_eq!(run.code, 2);
+    assert!(run.stdout.is_empty());
+    assert!(run.stderr.contains("bilbo: scope 'work' is not declared"));
     assert!(!home.exists());
 }

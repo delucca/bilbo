@@ -93,6 +93,10 @@ Each note SHALL have an embedder rule, `any` or `local`. A note in a declared sc
 - **WHEN** the file has `scope: Work` and a user runs `bilbo scope set --force work <file>`
 - **THEN** that line becomes `scope: work`, and `bilbo check` reports no `scope` problem for the file
 
+#### Scenario: A key not written as `scope: <value>`
+- **WHEN** the file's key line is `scope:work` and a user runs `bilbo scope set work <file>`, then `bilbo scope set --force work <file>`
+- **THEN** the first run leaves the file unchanged and prints `notes/<file name>: kept 'scope:work' as written; --force rewrites it` with exit 0, and the second turns the line into `scope: work` and prints `notes/<file name>: rewrote 'scope:work' as scope: work`
+
 #### Scenario: Several files, one bad
 - **WHEN** a user runs `bilbo scope set work <root>/notes/plan-a.md /tmp/x.md <root>/notes/plan-b.md`, and neither note has a `scope` key
 - **THEN** both notes get `scope: work`, stderr names `/tmp/x.md` as not a note in `<root>/notes`, and the exit code is 1
@@ -110,7 +114,7 @@ Each note SHALL have an embedder rule, `any` or `local`. A note in a declared sc
 - **THEN** `bilbo history a` lists a new `edited` version whose text holds `scope: work`
 
 ### Requirement: Files scope set refuses
-`bilbo scope set` SHALL refuse, unchanged, a path that is not a regular file directly in `<root>/notes/` with a note's name, and a note whose frontmatter has no closing `---`, no canonical `id`, or more than one `scope` line. Each refusal SHALL print `bilbo: <path>: <reason>` to stderr and count as failed. A run with any failed file SHALL exit 1, after handling every file.
+`bilbo scope set` SHALL refuse, unchanged, a path that is not a regular file directly in `<root>/notes/` with a note's name, a note whose text is not UTF-8, and a note whose frontmatter has no closing `---`, no canonical `id`, or more than one `scope` line. Each refusal SHALL print `bilbo: <path>: <reason>` to stderr and count as failed. A run with any failed file SHALL exit 1, after handling every file.
 
 #### Scenario: A file with broken frontmatter
 - **WHEN** `plan-a.md` starts with `# Title` and a user runs `bilbo scope set work <root>/notes/plan-a.md`

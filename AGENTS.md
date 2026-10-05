@@ -58,7 +58,7 @@ PYTHONDONTWRITEBYTECODE=1 python3 ~/.codex/skills/.system/plugin-creator/scripts
   it, and `shared/` never imports a domain. Callers keep module-qualified
   calls: `use crate::shared::store;`, then `store::root(..)`.
 - The verbs are `note/new.rs`, `note/watch.rs`, `note/history.rs`,
-  `note/restore.rs`, `search/recall.rs`, `search/index.rs`,
+  `note/restore.rs`, `note/scope.rs`, `search/recall.rs`, `search/index.rs`,
   `search/digest.rs`, `library/cli/`, `citation/cite.rs`, `setup/` and
   `src/check.rs`, which spans note and library and so stays at the root. A
   verb parses its own arguments, returns `crate::Failure` and never prints,
@@ -138,7 +138,8 @@ PYTHONDONTWRITEBYTECODE=1 python3 ~/.codex/skills/.system/plugin-creator/scripts
   A check that nothing was recorded waits on a barrier, a later edit to another
   note that it polls for, never a fixed sleep.
 - Restore's crash points are tested through its step hook, which stops it where
-  a kill would. Do not test them by killing a child.
+  a kill would, and `scope set`'s races through its exchange hook. Do not test
+  them by killing a child.
 - CI runs only the Linux branch of `src/host/swap.rs`. After touching it, run
   its tests on macOS.
 - `config::is_local` calls `0.0.0.0` remote, and a connect to it lands on

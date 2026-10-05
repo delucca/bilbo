@@ -5,6 +5,7 @@ pub mod history;
 pub mod marks;
 pub mod new;
 pub mod restore;
+pub mod scope;
 pub mod versions;
 pub mod watch;
 
