@@ -153,6 +153,15 @@ impl BoxSecret {
     }
 }
 
+/// HKDF-SHA256 with `salt` over `input`, 32 bytes for `info`.
+pub fn hkdf(salt: &[u8], input: &[u8], info: &[u8]) -> Zeroizing<[u8; 32]> {
+    let mut out = Zeroizing::new([0u8; 32]);
+    Hkdf::<Sha256>::new(Some(salt), input)
+        .expand(info, &mut out[..])
+        .expect("32 bytes");
+    out
+}
+
 /// The owner's keys, derived from the phrase's entropy and held only while a verb runs.
 pub struct Owner {
     pub sign: SignKey,
@@ -624,6 +633,17 @@ pub fn read_identity(keys: &Path) -> Result<Option<Identity>, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn hkdf_matches_rfc_5869_test_case_1() {
+        let salt: Vec<u8> = (0x00..=0x0c).collect();
+        let info: Vec<u8> = (0xf0..=0xf9).collect();
+        let okm = hkdf(&salt, &[0x0b; 22], &info);
+        assert_eq!(
+            hex(&*okm),
+            "3cb25f25faacd57a90434f64d0362f2a2d2d0a90cf1a5a4c5db02d56ecc4c5bf"
+        );
+    }
 
     struct Scratch(PathBuf);
 
