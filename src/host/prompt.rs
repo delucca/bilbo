@@ -61,6 +61,37 @@ pub trait Prompter {
     ) -> Result<T, String>;
     fn outro(&mut self, text: &str) -> io::Result<()>;
     fn cancel(&mut self, text: &str) -> io::Result<()>;
+    /// Runs `work` on a screen that is gone when it ends. The default
+    /// runs it in place.
+    fn screen<T>(&mut self, work: impl FnOnce(&mut Self) -> T) -> T
+    where
+        Self: Sized,
+    {
+        work(self)
+    }
+}
+
+/// Holds the terminal's alternate screen on stderr while it lives, so what `work` drew is gone
+/// from the screen and the scrollback, on every way out.
+struct AlternateScreen;
+
+impl AlternateScreen {
+    fn enter() -> AlternateScreen {
+        use std::io::Write;
+        let mut err = io::stderr();
+        let _ = err.write_all(b"\x1b[?1049h\x1b[H\x1b[2J");
+        let _ = err.flush();
+        AlternateScreen
+    }
+}
+
+impl Drop for AlternateScreen {
+    fn drop(&mut self) {
+        use std::io::Write;
+        let mut err = io::stderr();
+        let _ = err.write_all(b"\x1b[2J\x1b[?1049l");
+        let _ = err.flush();
+    }
 }
 
 /// Keeps the terminal from echoing while it lives. `console` only goes raw
@@ -223,5 +254,10 @@ impl Prompter for Terminal {
 
     fn cancel(&mut self, text: &str) -> io::Result<()> {
         cliclack::outro_cancel(text)
+    }
+
+    fn screen<T>(&mut self, work: impl FnOnce(&mut Self) -> T) -> T {
+        let _screen = AlternateScreen::enter();
+        work(self)
     }
 }
