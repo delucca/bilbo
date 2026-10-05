@@ -60,20 +60,20 @@ PYTHONDONTWRITEBYTECODE=1 python3 ~/.codex/skills/.system/plugin-creator/scripts
 - The verbs are `note/new.rs`, `note/watch.rs`, `note/history.rs`,
   `note/restore.rs`, `note/scope.rs`, `search/recall.rs`, `search/index.rs`,
   `search/digest.rs`, `library/cli/`, `citation/cite.rs`,
-  `identity/device.rs`, `sync/cli.rs`, `setup/` and `src/check.rs`, which spans note and
+  `identity/device.rs`, `identity/pair/`, `sync/cli.rs`, `setup/` and `src/check.rs`, which spans note and
   library and so stays at the root. A verb parses its own arguments, returns `crate::Failure` and never prints,
-  and only `main` uses a verb's module. `watch`, like `setup`, takes a
-  callback for its progress lines and `main` prints each one. `digest` is the
+  and only `main` uses a verb's module. `watch` and `pair`, like `setup`, take
+  callbacks for their lines and `main` prints each one. `digest` is the
   exception: it returns a `digest::Outcome` (lines and one diagnostic) and
   `main` always exits 0 for it, because a prompt hook that exits 2 blocks the
   prompt. Code outside the verbs returns plain values and `String` messages
   and never names `Failure`; it may use other domains without forming a
   cycle (today `search` uses `note` and `library`, `identity` uses `host`, and
   `sync` uses `note`, `identity` and `host`). The library modules of `identity`
-  (`keys`, `phrase`, `manifest`, `ceremony`) never use a domain that uses
+  (`keys`, `phrase`, `manifest`, `ceremony`, `pake`) never use a domain that uses
   `identity`, so later domains can build on them. Only verbs call into
   `sync` from `note` and `identity` (`note/restore.rs`, `note/scope.rs`,
-  `identity/device.rs`); `tests/layout.rs` skips verb files in its cycle
+  `identity/device.rs`, `identity/pair/`); `tests/layout.rs` skips verb files in its cycle
   check, so a non-verb file of `note` or `identity` that uses `sync` closes a
   cycle and fails it.
   `identity/script.rs`, the scripted `Prompter`, is test-only.
@@ -175,6 +175,10 @@ PYTHONDONTWRITEBYTECODE=1 python3 ~/.codex/skills/.system/plugin-creator/scripts
   tests run without a terminal and never feed the phrase through a hook; the
   ceremony is tested in `identity/ceremony.rs` and `identity/device.rs` with the
   scripted prompter.
+- The pairing exchange is tested in one process, through `pair::run`'s injected
+  terminal flag, answer and limits, never through a hook. `tests/pair.rs` runs
+  the binary without a terminal, so it reaches only the refusals before the
+  mailbox.
 - `tests/fixtures/agents/` holds recorded `claude` and `codex` output, the
   first line being the command. When a tool's JSON moves, re-record them
   against throwaway `CLAUDE_CONFIG_DIR` and `CODEX_HOME`.
