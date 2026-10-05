@@ -198,7 +198,7 @@ fn write_bases(root: &Path, bases: &BTreeMap<String, Base>) -> Result<(), String
 
 /// What this device has not recorded yet for a note, kept until the write that records it commits:
 /// - the file name and blob it put into the file (empty when the file does not hold them), written before each swap, so
-///   a kill in between never turns the bytes into a save;
+///   a kill in between never turns the bytes into a save, and whether the write created the file (`fresh`);
 /// - the local saves held back for that write, so a kill after the swap still records them, after the version they
 ///   were made against, with the `stale-base` flag.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -207,6 +207,8 @@ struct Written {
     file: String,
     #[serde(default)]
     blob: String,
+    #[serde(default, skip_serializing_if = "is_false")]
+    fresh: bool,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     extras: Vec<Version>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -307,7 +309,7 @@ fn scope_of(bytes: &[u8]) -> Option<String> {
 
 /// A log's versions without the `left` records a full version of the same id supersedes: a device that syncs both
 /// the scope a note left and the one it moved to gets the moving version whole through the second log.
-fn effective(versions: Vec<Version>) -> Vec<Version> {
+pub fn effective(versions: Vec<Version>) -> Vec<Version> {
     let whole: HashSet<String> = versions
         .iter()
         .filter(|v| !v.is_left())
@@ -763,6 +765,7 @@ impl Engine<'_> {
         self.update_written(id, |w| {
             w.file.clear();
             w.blob.clear();
+            w.fresh = false;
         })
     }
 
@@ -1407,6 +1410,21 @@ impl Engine<'_> {
                 }
                 Cur::Blocked => false,
             };
+            if !known
+                && let Cur::File(f) = &r.cur
+                && blob.is_some()
+                && read_map::<Written>(self.root(), WRITTEN)?
+                    .get(id)
+                    .is_some_and(|w| w.fresh && w.file == f.name && Some(&w.blob) == blob.as_ref())
+            {
+                // This device renamed the planned bytes into place and was killed before it recorded them, and the
+                // agent saved since: the file held the round's versions, so they come first, then the save.
+                let (file, bytes) = (f.name.clone(), f.bytes.clone());
+                self.commit(id, &r, &view, &pending, done)?;
+                self.drop_entry(id)?;
+                self.local(id, &file, Some(&bytes), &[])?;
+                return Ok(());
+            }
             if !known {
                 let (file, bytes) = match &r.cur {
                     Cur::File(f) => (f.name.clone(), Some(f.bytes.clone())),
@@ -1656,9 +1674,15 @@ impl Engine<'_> {
                 }
                 (self.hook)(Step::Write)?;
                 versions::write_temp(&temp, bytes, None)?;
+                self.update_written(id, |w| {
+                    w.file = plan.file.clone();
+                    w.blob = digest(bytes);
+                    w.fresh = true;
+                })?;
                 (self.hook)(Step::Swap)?;
                 if let Err(e) = swap::rename_new(&temp, &target) {
                     let _ = fs::remove_file(&temp);
+                    self.clear_marker(id)?;
                     return Ok(if target.exists() {
                         Wrote::Retry
                     } else {
@@ -2072,8 +2096,12 @@ pub fn record_local_with(
     };
     let saved = (|| -> Result<(), String> {
         let held = engine.held(note)?;
-        if !held.extras.is_empty() {
-            // A killed write held saves back: finish it first, which records whatever the file holds too.
+        let fresh = read_map::<Written>(lock.root(), WRITTEN)?
+            .get(note)
+            .is_some_and(|w| w.fresh);
+        if !held.extras.is_empty() || fresh {
+            // A killed write held saves back, or created the file: finish it first, which records whatever the file
+            // holds too.
             return engine.settle(note, held, &mut HashSet::new());
         }
         let pending = engine.local(note, file, bytes, &[])?;
@@ -4643,5 +4671,97 @@ mod tests {
                 assert_eq!(log(&t).len(), 3, "variant {n}");
             }
         }
+    }
+
+    // ---- a kill after the rename of a new note, then an agent edit ----
+
+    fn version_rows(t: &T) -> Vec<(String, Vec<String>, usize, Vec<String>)> {
+        log(t)
+            .into_iter()
+            .map(|v| {
+                (
+                    v.event.clone(),
+                    v.parents.iter().map(|p| p[..12].to_string()).collect(),
+                    v.conflict.len(),
+                    v.flags.clone(),
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_new_note_killed_after_rename_then_edited_before_restart_apply() {
+        let t = store("kill-record-apply");
+        let theirs = incoming(&[], FILE, Some(&base()));
+        stage_all(&t, std::slice::from_ref(&theirs));
+        let p = params(&syncs_personal);
+        let killed = apply(&t.lock, &p, &mut kill_at(Step::Record), &mut swap::exchange);
+        assert_eq!(killed, Err("killed".to_string()));
+        assert_eq!(read(&t, FILE), base(), "the file holds the inbound bytes");
+        assert!(log(&t).is_empty(), "nothing recorded yet");
+        assert_eq!(inbox_len(&t), 1);
+        // The agent edits one passage of the note it now sees, before the watcher comes back.
+        let edit = text("base setup", "my rollout");
+        write(&t, FILE, &edit);
+        run(&t);
+        let rows = version_rows(&t);
+        let save = rows.last().unwrap();
+        assert_eq!(rows.len(), 2, "the inbound version, then the save");
+        assert_eq!(
+            save.1,
+            vec![theirs.0.version.version[..12].to_string()],
+            "the save follows the version the file held"
+        );
+        assert!(
+            rows.iter().all(|r| r.2 == 0),
+            "an edit of one passage over a written version is no conflict"
+        );
+        assert_eq!(read(&t, FILE), edit);
+    }
+
+    #[test]
+    fn a_new_note_killed_after_rename_then_edited_before_restart_scan() {
+        // The restart's transport step fails (folder unmounted), so the event scan records before apply runs.
+        let t = store("kill-record-scan");
+        let theirs = incoming(&[], FILE, Some(&base()));
+        stage_all(&t, std::slice::from_ref(&theirs));
+        let p = params(&syncs_personal);
+        let killed = apply(&t.lock, &p, &mut kill_at(Step::Record), &mut swap::exchange);
+        assert_eq!(killed, Err("killed".to_string()));
+        let edit = text("base setup", "my rollout");
+        write(&t, FILE, &edit);
+        record_local(&t.lock, &p, ID, FILE, Some(edit.as_bytes()), AT).unwrap();
+        run(&t);
+        let rows = version_rows(&t);
+        assert_eq!(rows.len(), 2, "the inbound version, then the save");
+        assert_eq!(
+            rows[1].1,
+            vec![theirs.0.version.version[..12].to_string()],
+            "the save follows the version the file held"
+        );
+        assert!(rows.iter().all(|r| r.2 == 0), "no conflict");
+        assert_eq!(read(&t, FILE), edit);
+    }
+
+    #[test]
+    fn a_new_note_with_outside_parent_killed_after_rename_then_scanned_untouched() {
+        // An assigned old note arrives with its parent listed outside; the kill lands after the rename; the restart's
+        // transport fails, so the scan sees a file no version names.
+        let t = store("kill-record-outside");
+        let (mut record, blob) = incoming(&[], FILE, Some(&base()));
+        let outside = "f".repeat(64);
+        record.version.parents = vec![outside.clone()];
+        record.version.outside = vec![outside];
+        record.version.version =
+            versions::version_id(ID, &record.version.parents, FILE, &record.version.blob);
+        let theirs = (record, blob);
+        stage_all(&t, std::slice::from_ref(&theirs));
+        let p = params(&syncs_personal);
+        let killed = apply(&t.lock, &p, &mut kill_at(Step::Record), &mut swap::exchange);
+        assert_eq!(killed, Err("killed".to_string()));
+        record_local(&t.lock, &p, ID, FILE, Some(base().as_bytes()), AT).unwrap();
+        run(&t);
+        let rows = version_rows(&t);
+        assert_eq!(rows.len(), 1, "one version, the inbound one, not a twin");
     }
 }

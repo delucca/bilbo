@@ -629,17 +629,21 @@ impl Watch<'_> {
     /// Records each note whose file differs from its latest version, through `integrate::record_local`, the one path
     /// of a local save. Returns how many it recorded.
     fn record(&mut self, lock: &Lock, scan: &Scan, at: &str) -> Result<usize, String> {
-        let mut heads = HashMap::new();
+        let mut views = HashMap::new();
         for id in versions::note_ids(&self.root)? {
-            if let Some(head) = versions::load(&self.root, &id)?.versions.pop() {
-                heads.insert(id, head);
+            let view = integrate::effective(versions::load(&self.root, &id)?.versions);
+            if !view.is_empty() {
+                views.insert(id, view);
             }
         }
         let mut recorded = 0;
         for (id, found) in &scan.notes {
             let digest = &self.digests[&found.name];
-            let current = Some((found.name.as_str(), digest.as_str()));
-            if versions::event_for(heads.get(id), current).is_none() {
+            // The file is a head group's text, whichever group that is: nothing changed.
+            if views
+                .get(id)
+                .is_some_and(|view| integrate::held_group(view, &found.name, digest).is_some())
+            {
                 continue;
             }
             let path = self.notes.join(&found.name);
@@ -662,10 +666,15 @@ impl Watch<'_> {
             return Ok(recorded);
         }
         let present = versions::present_ids(scan);
-        let live: Vec<&String> = heads
+        // A note is live while a head group is neither a `left` nor a deletion; the file name is that group's.
+        let live: Vec<(&String, String)> = views
             .iter()
-            .filter(|(_, head)| !head.is_deleted())
-            .map(|(id, _)| id)
+            .filter_map(|(id, view)| {
+                let head = versions::heads(view)
+                    .into_iter()
+                    .find(|g| !g[0].is_left() && !g[0].is_deleted())?;
+                Some((id, head[0].file.clone()))
+            })
             .collect();
         if present.is_empty() && !live.is_empty() {
             if !self.empty {
@@ -679,10 +688,12 @@ impl Watch<'_> {
             return Ok(recorded);
         }
         self.empty = false;
-        for id in live.into_iter().filter(|id| !present.contains(id.as_str())) {
-            let lines = self.with_params(|params| {
-                integrate::record_local(lock, params, id, &heads[id].file, None, at)
-            })?;
+        for (id, file) in live
+            .into_iter()
+            .filter(|(id, _)| !present.contains(id.as_str()))
+        {
+            let lines = self
+                .with_params(|params| integrate::record_local(lock, params, id, &file, None, at))?;
             recorded += 1;
             for line in lines {
                 self.say(&line);
@@ -764,13 +775,8 @@ impl Watch<'_> {
             .collect();
         self.release(&wanted);
         let identity = self.identity();
-        let keyed = matches!(identity, Ok(Some(_)));
-        self.syncing = wanted
-            .iter()
-            .filter(|_| keyed)
-            .map(|(name, _)| name.clone())
-            .collect();
         if wanted.is_empty() {
+            self.syncing.clear();
             self.wait = poll;
             return Tick {
                 scanned: None,
@@ -800,6 +806,8 @@ impl Watch<'_> {
                 }
             }
         }
+        // A scope stopped this cycle does not sync: only the ready ones count for the scope-clash rule.
+        self.syncing = ready.iter().map(|scope| scope.name.clone()).collect();
         let (Ok(Some(identity)), false) = (&identity, ready.is_empty()) else {
             return Tick {
                 scanned: None,
@@ -864,6 +872,7 @@ impl Watch<'_> {
             Ok(out) => out,
             Err(e) => {
                 self.unreachable(name, url, &e);
+                self.keep_unreachable(name, identity, &e);
                 *failed = true;
                 return None;
             }
@@ -873,6 +882,7 @@ impl Watch<'_> {
         }
         if let Some(why) = &out.error {
             self.unreachable(name, url, why);
+            self.keep_unreachable(name, identity, why);
             *failed = true;
             return None;
         }
@@ -921,20 +931,29 @@ impl Watch<'_> {
         })
     }
 
-    /// Writes the line that stops the scope into the state of each scope of this name the store holds, for `bilbo sync`.
-    fn mark_stopped(&mut self, name: &str, identity: &Identity, line: Option<&str>) {
+    /// The ids of the scopes of this name the store holds a manifest of that this device is a member of.
+    fn scope_ids(&mut self, name: &str, identity: &Identity) -> Option<Vec<String>> {
         let owner = identity.owner.sign.public();
         let who = Recipient::device(&identity.device);
-        let ids: Vec<String> = match manifest::survey(&self.root, Some(&owner), Some(&who)) {
-            Ok(known) => known
-                .into_iter()
-                .filter(|k| k.mine && k.last_name.as_deref() == Some(name))
-                .map(|k| k.scope.id)
-                .collect(),
+        match manifest::survey(&self.root, Some(&owner), Some(&who)) {
+            Ok(known) => Some(
+                known
+                    .into_iter()
+                    .filter(|k| k.mine && k.last_name.as_deref() == Some(name))
+                    .map(|k| k.scope.id)
+                    .collect(),
+            ),
             Err(e) => {
                 self.say(&e);
-                return;
+                None
             }
+        }
+    }
+
+    /// Writes the line that stops the scope into the state of each scope of this name the store holds, for `bilbo sync`.
+    fn mark_stopped(&mut self, name: &str, identity: &Identity, line: Option<&str>) {
+        let Some(ids) = self.scope_ids(name, identity) else {
+            return;
         };
         let device = identity.device.id();
         for id in ids {
@@ -1048,6 +1067,34 @@ impl Watch<'_> {
         let line = format!("sync {name}: {url} is not reachable: {why}");
         self.hold(name, "reach", Some(line));
         self.problem(name, "unreachable", why);
+    }
+
+    /// A folder unreachable before any replica of the scope opened leaves its error in the state of each scope of
+    /// this name the store holds, where `bilbo sync` reads it; the first cycle that reaches the folder clears it.
+    fn keep_unreachable(&mut self, name: &str, identity: &Identity, why: &str) {
+        if self.scopes.contains_key(name) {
+            return;
+        }
+        let Some(ids) = self.scope_ids(name, identity) else {
+            return;
+        };
+        let device = identity.device.id();
+        for id in ids {
+            let result = Replica::open(&self.root, &id, name, &device).and_then(|mut replica| {
+                let since = match replica.error() {
+                    Some(p) if p.kind == "unreachable" => p.since,
+                    _ => jiff::Timestamp::now().as_second(),
+                };
+                replica.set_error(Some(Problem {
+                    kind: "unreachable".to_string(),
+                    since,
+                    message: why.to_string(),
+                }))
+            });
+            if let Err(e) = result {
+                self.say(&e);
+            }
+        }
     }
 
     fn problem(&mut self, name: &str, kind: &str, message: &str) {

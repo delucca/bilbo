@@ -775,3 +775,43 @@ fn start_removes_the_temporaries_of_the_sync_state() {
         assert!(path.exists(), "{} was swept", path.display());
     }
 }
+
+#[test]
+fn a_deletion_after_a_concurrent_left_is_recorded() {
+    let (_dir, root) = three_store("delete-after-left");
+    {
+        let _watcher = Watcher::on(&root);
+        wait_added(&root, &["release", "other", "old"]);
+    }
+    // A `left` of another device that is concurrent with the local head: recorded, never merged, the file kept.
+    let log = root.join(format!(".bilbo/history/notes/{}.jsonl", IDS[2]));
+    let mut text = fs::read_to_string(&log).unwrap();
+    let left = format!(
+        "{{\"version\":\"{}\",\"parents\":[],\"file\":\"\",\"blob\":\"deleted\",\"event\":\"left\",\"at\":\"2026-10-05T12:00:00-03:00\",\"device\":\"wyxim75c6m5p4ywv22ywilqweh\"}}\n",
+        "e".repeat(64)
+    );
+    text.push_str(&left);
+    fs::write(&log, text).unwrap();
+    let _watcher = Watcher::on(&root);
+    wait_added(&root, &["release", "other"]);
+    assert_eq!(events(&root, "old"), ["left", "added"]);
+    fs::remove_file(root.join("notes/plan-old.md")).unwrap();
+    // Barrier: a later save of another note crosses a scan.
+    write(
+        &root,
+        "plan-other.md",
+        &format!("{}\nMore.\n", note_text(IDS[1], "Other")),
+    );
+    wait_events(&root, "other", &["edited", "added"]);
+    write(
+        &root,
+        "decision-release.md",
+        &format!("{}\nMore.\n", note_text(IDS[0], "Release")),
+    );
+    wait_events(&root, "release", &["edited", "added"]);
+    let raw = fs::read_to_string(&log).unwrap();
+    assert!(
+        raw.contains("\"event\":\"deleted\""),
+        "the deletion was not recorded:\n{raw}"
+    );
+}

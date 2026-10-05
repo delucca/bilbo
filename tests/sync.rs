@@ -510,8 +510,19 @@ fn turning_a_scope_off_stops_the_cycle_and_a_bad_config_keeps_the_last_good() {
         "bilbo: syncing personal through {}",
         url(&elsewhere)
     ));
-    assert_eq!(segments(&folder, RIVENDELL).len(), before + 1);
-    assert_eq!(b.read(FILE), Some(edited));
+    // A cycle that had already reread the still-syncing config when the scope went off may push the first local edit
+    // (its scan runs after its pull); no later cycle does, so at most one segment follows the broken-config edit.
+    let sent = segments(&folder, RIVENDELL).len();
+    assert!(
+        (before + 1..=before + 2).contains(&sent),
+        "{sent} segments after {before}"
+    );
+    let pushed = b.read(FILE).unwrap();
+    assert!(
+        pushed == edited || pushed == local,
+        "bagend holds neither edit: {pushed}"
+    );
+    assert!(sent == before + 2 || pushed == edited);
     assert!(!elsewhere.exists(), "watch created a transport folder");
     assert!(a.read(FILE).unwrap().contains("While the scope is off."));
 }
@@ -693,7 +704,12 @@ fn a_passage_edited_on_both_sides_is_a_conflict_on_pull() {
     assert!(text.contains("Ship on Friday.") && text.contains("Ship on Tuesday."));
     b.start();
     b.wait_text(FILE, &text);
-    assert_eq!(ids(&a, TOPIC), ids(&b, TOPIC));
+    // B's text arrives before its log commits the merge, so the ids are polled.
+    poll_eq(
+        "the same history",
+        || ids(&a, TOPIC) == ids(&b, TOPIC),
+        true,
+    );
     assert_eq!(a.count(line), 1);
 }
 
@@ -1208,6 +1224,64 @@ const LOCAL_WORK: &[&str] = &["scope.work.sync = off"];
 
 fn in_work(text: &str) -> String {
     text.replacen("scope: personal", "scope: work", 1)
+}
+
+#[test]
+fn a_note_that_left_a_scope_before_it_synced_never_reaches_the_transport() {
+    let dir = TempDir::new("prior");
+    let folder = folder(&dir, &[1, 2]);
+    let off = vec![
+        "scope.personal.sync = off".to_string(),
+        "scope.work.sync = off".to_string(),
+        "sync.poll_seconds = 1".to_string(),
+    ];
+    let mut a = Site::build("rivendell", true, &[1, 2], &off);
+    let secret = note(ID, "Secret setup.", "Secret rollout.");
+    a.write(FILE, &secret);
+    a.start();
+    a.wait_events(TOPIC, &["added"]);
+    // The note moves to `work`, a scope that never syncs, while sync is off everywhere.
+    a.write(FILE, &secret.replace("scope: personal", "scope: work"));
+    a.wait_events(TOPIC, &["edited", "added"]);
+    // `personal` starts to sync; `work` stays local.
+    let mut on = Site::syncing(&folder);
+    on.push("scope.work.sync = off".to_string());
+    a.configure(&on);
+    a.wait_for("bilbo: syncing personal through");
+    let mut b = Site::new("bagend", &folder);
+    b.start();
+    // Barriers: another personal note crosses to B and back, so any version of the first one has had its cycles.
+    let other = note(OTHER, "From rivendell.", "To bagend.");
+    a.write("plan-other.md", &other);
+    b.wait_text("plan-other.md", &other);
+    let back = note(OTHER, "From bagend.", "To rivendell.");
+    b.write("plan-other.md", &back);
+    a.wait_text("plan-other.md", &back);
+    let log =
+        fs::read_to_string(a.root().join(format!(".bilbo/history/notes/{ID}.jsonl"))).unwrap();
+    let ids: Vec<String> = log
+        .lines()
+        .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
+        .filter_map(|v| v["version"].as_str().map(str::to_string))
+        .collect();
+    assert_eq!(ids.len(), 2, "the note has its two versions here: {log}");
+    for id in &ids {
+        assert!(
+            !holds(&a.root().join(".bilbo/scopes"), id),
+            "rivendell's seen.jsonl names {id}"
+        );
+        assert!(
+            !holds(&b.root().join(".bilbo/scopes"), id),
+            "bagend's scope state names {id}"
+        );
+    }
+    assert!(
+        !b.root()
+            .join(format!(".bilbo/history/notes/{ID}.jsonl"))
+            .exists(),
+        "a note of a local scope reached bagend"
+    );
+    assert_eq!(b.read(FILE), None);
 }
 
 #[test]
@@ -1760,6 +1834,43 @@ fn an_unreachable_folder_is_named_on_stderr_and_still_listed() {
     fs::rename(&away, &folder).unwrap();
     let run = a.wait_status("no error", |run| !run.stderr.contains("not reachable"));
     assert_eq!((run.code, run.stderr.as_str()), (0, ""));
+}
+
+#[test]
+fn a_folder_that_was_never_reachable_is_named_on_stderr() {
+    let dir = TempDir::new("status-never");
+    let folder = dir.path().join("volume/bilbo");
+    let mut a = Site::build("rivendell", true, &[1, 2], &Site::syncing(&folder));
+    a.write(FILE, &note(ID, "Install it.", "Ship on Monday."));
+    a.start();
+    a.wait_for(&format!(
+        "bilbo: sync personal: {} is not reachable:",
+        url(&folder)
+    ));
+    let run = a.wait_status("the error", |run| {
+        run.stderr.contains("not reachable since")
+    });
+    assert_eq!(run.code, 1);
+    let line = run
+        .stderr
+        .lines()
+        .find(|l| l.contains("not reachable since"))
+        .unwrap();
+    assert!(
+        line.starts_with(&format!(
+            "bilbo: sync personal: {} not reachable since 20",
+            url(&folder)
+        )) && line.ends_with(": the folder does not exist"),
+        "{line}"
+    );
+    assert!(
+        !dir.path().join("volume").exists(),
+        "watch created the folder"
+    );
+    // The volume comes back: the error leaves the report.
+    put_manifests(&folder, &[1, 2]);
+    let run = a.wait_status("no error", |run| !run.stderr.contains("not reachable"));
+    assert_eq!(run.code, 0, "{}", run.stderr);
 }
 
 #[test]
