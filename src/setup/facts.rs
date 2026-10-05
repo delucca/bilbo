@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 use super::flags::Flags;
 use crate::Failure;
 use crate::host::{agents, command, model, timer};
+use crate::identity::keys;
 use crate::shared::config::{self, Embedder};
 use crate::shared::store;
 
@@ -39,6 +40,14 @@ pub struct Facts {
     pub llama_server: Option<PathBuf>,
     /// Where the model file goes, under the cache folder.
     pub model: Option<PathBuf>,
+    /// The folder of the device keys; `None` without a state folder.
+    pub keys: Option<PathBuf>,
+    /// The scopes the file read declares, each with its `sync` value as written.
+    pub scopes: Vec<(String, String)>,
+    /// `CLAUDECODE` or `CODEX_THREAD_ID` is set and not empty.
+    pub agent: bool,
+    /// The host name as a device name, when it holds a letter or a digit.
+    pub host: Option<String>,
 }
 
 /// What the timer step reads from the machine and the environment.
@@ -106,10 +115,10 @@ pub fn gather(
         )
     })?;
     let config = config_state(&config_path);
-    let (existing, kept) = match config {
-        ConfigState::Absent => (None, Vec::new()),
-        _ if std::fs::symlink_metadata(&config_path).is_err() => (None, Vec::new()),
-        ConfigState::Managed { .. } if !config_path.exists() => (None, Vec::new()),
+    let (existing, kept, scopes) = match config {
+        ConfigState::Absent => (None, Vec::new(), Vec::new()),
+        _ if std::fs::symlink_metadata(&config_path).is_err() => (None, Vec::new(), Vec::new()),
+        ConfigState::Managed { .. } if !config_path.exists() => (None, Vec::new(), Vec::new()),
         _ => {
             let settings = config::load(env).map_err(Failure::Config)?;
             let kept = settings
@@ -118,7 +127,12 @@ pub fn gather(
                 .map(|(key, value)| (key.to_string(), value))
                 .chain(settings.scope_lines)
                 .collect();
-            (settings.embedder, kept)
+            let scopes = settings
+                .scopes
+                .into_iter()
+                .map(|scope| (scope.name, scope.sync))
+                .collect();
+            (settings.embedder, kept, scopes)
         }
     };
     let config_empty = matches!(config, ConfigState::Present) && sets_no_key(&config_path);
@@ -161,7 +175,15 @@ pub fn gather(
         timer: timer_facts(env, path.as_deref()),
         llama_server,
         model: store::cache_dir(env).map(|cache| model::path(&cache)),
+        keys: store::keys_dir(env),
+        scopes,
+        agent: marked(&env.claudecode) || marked(&env.codex_thread_id),
+        host: keys::host_name(),
     })
+}
+
+fn marked(var: &Option<std::ffi::OsString>) -> bool {
+    var.as_ref().is_some_and(|v| !v.is_empty())
 }
 
 /// Whether the file holds only comments and blank lines.

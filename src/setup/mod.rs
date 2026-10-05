@@ -10,6 +10,7 @@ mod flags;
 mod local;
 mod plan;
 mod remove;
+mod syncing;
 mod wizard;
 
 use std::path::Path;
@@ -155,11 +156,23 @@ fn wizard_with<P: Prompter>(
             .zip(timer_place(&facts.timer))
             .and_then(|(platform, place)| timer::minutes(platform, &place)),
         local,
+        scopes: facts.scopes.clone(),
     };
-    let answers = wizard::ask(p, &seen, check, |name| {
+    let mut answers = wizard::ask(p, &seen, check, |name| {
         std::env::var_os(name).is_some_and(|value| !value.is_empty())
     })
     .map_err(|e| stopped(p, e))?;
+    if seen.managed.is_none() {
+        let sync = wizard::SyncFacts {
+            root: facts.root.clone(),
+            keys: facts.keys.clone(),
+            home: facts.timer.home.clone(),
+            agent: facts.agent,
+            host: facts.host.clone(),
+            scopes: facts.scopes.clone(),
+        };
+        answers.sync = wizard::ask_sync(p, &sync, answers.watch)?;
+    }
     let exe = facts.exe.clone();
     let kept = (answers.claude, answers.codex, answers.watch);
     let local = match &answers.local {
@@ -376,6 +389,7 @@ fn settle_local<P: Prompter>(
                     codex: kept.1,
                     timer: None,
                     watch: kept.2,
+                    sync: std::mem::take(&mut plan.sync.choice),
                     local: None,
                 };
                 *plan = answer_wizard(facts, keyword, None);

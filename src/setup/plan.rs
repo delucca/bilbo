@@ -7,6 +7,7 @@ use zeroize::Zeroizing;
 use super::facts::{ConfigState, Facts, TimerFacts, timer_place};
 use super::flags::Flags;
 use super::local::{Line, LocalLines, LocalPlan, Outside, check_embedder, kept_lines, plan_local};
+use super::syncing::{self, SyncPlan, Turn};
 use super::wizard;
 use crate::Failure;
 use crate::host::{agents, command, model, timer};
@@ -109,6 +110,7 @@ pub struct Plan {
     pub codex: PluginPlan,
     pub timer: TimerPlan,
     pub watch: TimerPlan,
+    pub sync: SyncPlan,
 }
 
 /// Non-interactive answers: the flags over the config that is there, the embedder checked when a new config gets one.
@@ -220,6 +222,7 @@ pub fn answer_batch(
         flags.minutes.unwrap_or(DEFAULT_MINUTES),
     );
     let watch = plan_watch(&facts, flags.no_watch.then_some("--no-watch"));
+    let sync = syncing::plan(&facts, !flags.no_watch, Turn::Unchanged);
     let mut local_lines = local.as_ref().filter(|l| !l.prepares()).map(kept_lines);
     let mut unused_service = None;
     if local.is_none() {
@@ -243,6 +246,7 @@ pub fn answer_batch(
         codex,
         timer,
         watch,
+        sync,
     })
 }
 
@@ -290,6 +294,13 @@ fn unused_local(
 /// is the plan of the local embedder when the answers chose it.
 pub fn answer_wizard(facts: &Facts, answers: wizard::Answers, local: Option<LocalPlan>) -> Plan {
     let embedder = answers.embedder;
+    let mut kept = facts.kept.clone();
+    let mut turned_on = false;
+    if let Turn::On(turned) = &answers.sync {
+        let current = facts.scopes.iter().find(|(name, _)| *name == turned.name);
+        turned_on = current.is_none_or(|(_, sync)| *sync != turned.url);
+        syncing::put_line(&mut kept, &turned.name, &turned.url);
+    }
     let config = match &facts.config {
         ConfigState::Managed { target } => ConfigPlan::Managed(target.clone()),
         ConfigState::Absent => ConfigPlan::Create(embedder.clone()),
@@ -298,7 +309,7 @@ pub fn answer_wizard(facts: &Facts, answers: wizard::Answers, local: Option<Loca
                 Some(planned) => same_embedder(facts.existing.as_ref(), planned),
                 None => facts.existing.is_none(),
             };
-            if unchanged {
+            if unchanged && !turned_on {
                 ConfigPlan::Keep
             } else {
                 ConfigPlan::Update(embedder.clone())
@@ -342,6 +353,7 @@ pub fn answer_wizard(facts: &Facts, answers: wizard::Answers, local: Option<Loca
         answers.timer.unwrap_or(DEFAULT_MINUTES),
     );
     let watch = plan_watch(facts, (!answers.watch).then_some("not chosen"));
+    let sync = syncing::plan(facts, answers.watch, answers.sync);
     let (local_lines, unused_service) = match &local {
         Some(l) => (Some(l).filter(|l| !l.prepares()).map(kept_lines), None),
         None => unused_local(facts, embedder.as_ref()),
@@ -352,7 +364,7 @@ pub fn answer_wizard(facts: &Facts, answers: wizard::Answers, local: Option<Loca
         config_path: facts.config_path.clone(),
         config,
         embedder,
-        kept: facts.kept.clone(),
+        kept,
         key,
         pasted: answers.pasted,
         check,
@@ -364,6 +376,7 @@ pub fn answer_wizard(facts: &Facts, answers: wizard::Answers, local: Option<Loca
         codex,
         timer,
         watch,
+        sync,
     }
 }
 
@@ -699,6 +712,34 @@ pub fn summary(plan: &Plan) -> Vec<String> {
             }
         )),
     }
+    if let Turn::On(turned) = &plan.sync.choice {
+        lines.push(format!("Sync {} through {}", turned.name, turned.url));
+        if !turned.folder.exists() {
+            lines.push(format!("Create the folder {}", turned.folder.display()));
+        }
+        let keys = plan.sync.keys.as_deref().map(|keys| keys.display());
+        match (&turned.enrol, keys) {
+            (syncing::Enrol::New { .. }, Some(keys)) => {
+                lines.push(format!("Create the device keys in {keys}"));
+            }
+            (syncing::Enrol::Phrase { .. }, Some(keys)) => {
+                lines.push(format!(
+                    "Create the device keys in {keys} from your recovery phrase"
+                ));
+            }
+            _ => {}
+        }
+        if turned.take.is_some() {
+            lines.push(format!(
+                "Copy the manifest of {} from the folder, and add this device to it",
+                turned.name
+            ));
+        } else if turned.mint {
+            lines.push(format!("Create the scope {}", turned.name));
+        } else if matches!(turned.enrol, syncing::Enrol::Phrase { .. }) {
+            lines.push(format!("Add this device to the scope {}", turned.name));
+        }
+    }
     lines
 }
 
@@ -724,6 +765,7 @@ mod tests {
             timer: None,
             watch: true,
             local: None,
+            sync: Turn::Unchanged,
         }
     }
 
