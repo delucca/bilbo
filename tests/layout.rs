@@ -11,10 +11,11 @@ const DOMAINS: [&str; 8] = [
 ];
 
 /// The verbs, by path below `src/`: a file, or a folder (ending in `/`) whose files are all the verb's.
-const VERBS: [&str; 14] = [
+const VERBS: [&str; 15] = [
     "check.rs",
     "citation/cite.rs",
     "identity/device.rs",
+    "identity/pair/",
     "library/cli/",
     "note/history.rs",
     "note/new.rs",
@@ -30,7 +31,7 @@ const VERBS: [&str; 14] = [
 
 /// Each crate and the only files under `src/` that may name it. `tests/common` also uses `sha2`, to write library
 /// files with a correct digest.
-const PLACEMENT: [(&str, &[&str]); 14] = [
+const PLACEMENT: [(&str, &[&str]); 16] = [
     ("cliclack", &["host/prompt.rs"]),
     (
         "libc",
@@ -47,7 +48,9 @@ const PLACEMENT: [(&str, &[&str]); 14] = [
     ("chacha20poly1305", &["identity/keys.rs"]),
     ("hkdf", &["identity/keys.rs"]),
     ("getrandom", &["identity/keys.rs"]),
-    ("base64", &["sync/segment.rs"]),
+    ("base64", &["identity/pake.rs", "sync/segment.rs"]),
+    ("spake2", &["identity/pake.rs"]),
+    ("rand_core", &["identity/pake.rs"]),
 ];
 
 const PRINTS: [&str; 5] = ["print!(", "println!(", "eprint!(", "eprintln!(", "dbg!("];
@@ -362,7 +365,12 @@ fn items_are_pub_or_private() {
             "src/{}: `pub use`; no re-exports",
             file.rel
         );
-        let test_only = ["setup/driven.rs", "setup/fakes.rs"].contains(&file.rel.as_str());
+        let test_only = [
+            "identity/pair/exchange.rs",
+            "setup/driven.rs",
+            "setup/fakes.rs",
+        ]
+        .contains(&file.rel.as_str());
         assert!(
             test_only || !file.code.lines().any(|l| l.trim_end().ends_with("::*;")),
             "src/{}: a glob import outside test code",

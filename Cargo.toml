@@ -27,6 +27,7 @@ chacha20poly1305 = { version = "0.11.0", features = ["zeroize"] }
 hkdf = "0.13.0"
 getrandom = "0.4.3"
 base64 = "0.23.1"
+spake2 = { version = "0.5.0-pre.0", default-features = false }
 
 # The profile that 'dist' will build with
 [profile.dist]
