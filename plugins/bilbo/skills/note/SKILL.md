@@ -49,7 +49,7 @@ Writes what a later session should know into the bilbo store, through `bilbo new
    bilbo scope
    ```
 
-   It prints one line per declared scope, with the name first, then a last `(unassigned)` line, and exits 0. When stdout is only the `(unassigned)` line (stderr says no scopes are declared), skip every scope question and pass no `--scope`. Otherwise note the names. When the user named a scope for this note, pass it as `--scope <name>` in step 5; never pass one the user did not name, since `bilbo new` resolves one from the working directory. Run `bilbo scope` once per run, and ask the scope question (step 5) once per run. On exit 2, print bilbo's first stderr line and stop.
+   It prints one line per declared scope, with the name first, then a last `(unassigned)` line, and exits 0. When stdout is only the `(unassigned)` line (stderr says no scopes are declared), skip every scope question and pass no `--scope`. Otherwise note the names. When the user named a scope for this note, pass it as `--scope <name>` in step 5; never pass one the user did not name, since `bilbo new` resolves one from the working directory. Run `bilbo scope` once per run, and ask the scope question (step 5) once per run. On exit 1 or 2, print bilbo's first stderr line and stop.
 
 5. Then create the note:
 
@@ -61,21 +61,21 @@ Writes what a later session should know into the bilbo store, through `bilbo new
 
    | Exit | stderr | What to do |
    |---|---|---|
-   | 0 | empty | stdout is the new file's absolute path: Read it; when its `scope:` line names a scope that looks wrong for the subject, ask the scope question (below); then write the body (step 7) |
-   | 0 | `bilbo: no scope for <path>; scopes: ...` | the note is unassigned: ask the scope question (below), then write the body (step 7) |
+   | 0 | empty | stdout is the new file's absolute path: Read it; when its `scope:` line names a scope that looks wrong for the subject, ask the scope question (below) now, as your next action; then write the body (step 7) |
+   | 0 | `bilbo: no scope for <path>; scopes: ...` | the note is unassigned: ask the scope question (below) now, as your next action, before any Edit; then write the body (step 7) |
    | 1 | `bilbo: topic '<topic>' already has a note: <path>` | that note is the one on the subject: update it (step 6) |
    | 1 | anything else | print bilbo's first stderr line and stop |
    | 2 | names the kind, the topic or `--title` | fix that argument and run `bilbo new` once more. A second exit 2: print the first stderr line and stop |
    | 2 | names a scope the config does not declare | ask the scope question with the names `bilbo scope` listed, never picking one silently, then run `bilbo new` once more with the answer, or without `--scope` when there is none. A second exit 2: print the first stderr line and stop |
    | 2 | anything else, such as `BILBO_HOME` | print bilbo's first stderr line and stop |
 
-   The scope question: ask the user once per run, naming the declared scopes, which one the note belongs to. Ask it when the note is unassigned, when the scope `bilbo new` resolved looks wrong for the subject (for example `personal` for a note about the user's employer), or when the user named an undeclared scope. When `bilbo check` printed `holds marks of <names>`, name those scopes as the likely answer. Apply an answer before writing the body:
+   The scope question: ask the user once per run, naming the declared scopes, which one the note belongs to. Ask it when the note is unassigned, when the scope `bilbo new` resolved looks wrong for the subject (for example `personal` for a note about the user's employer), or when the user named an undeclared scope. When `bilbo check` printed `holds marks of <names>`, name those scopes as the likely answer. Ask it, and apply the answer, before you write the body:
 
    ```bash
    bilbo scope set <name> '<path>'
    ```
 
-   Use `--force` (`bilbo scope set --force <name> '<path>'`) only to replace a scope the note already has, and only after the user's answer. Without an answer, or in a run that cannot ask the user (such as `codex exec`), set nothing, write the note, and report it `unassigned`.
+   Use `--force` (`bilbo scope set --force <name> '<path>'`) only to replace a scope the note already has, and only after the user's answer. In a run that cannot ask the user (such as `codex exec`), do not try. Without an answer, or when the question cannot be delivered (no question tool, or it fails), set nothing, write the body (step 7) and report the note `unassigned`.
 
    | Exit | output | What to do |
    |---|---|---|
