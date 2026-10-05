@@ -12,8 +12,14 @@ struct Request {
     title: String,
 }
 
-/// Parses and validates args, creates the note, returns its absolute path.
-pub fn run(args: &[String], env: &store::Env) -> Result<PathBuf, Failure> {
+/// The created note's absolute path, and a stderr line when there is one to print.
+pub struct Output {
+    pub path: PathBuf,
+    pub warning: Option<String>,
+}
+
+/// Parses and validates args, creates the note.
+pub fn run(args: &[String], env: &store::Env) -> Result<Output, Failure> {
     let request = parse(args)?;
     let root = store::root(env).map_err(Failure::Config)?;
     let notes = root.join("notes");
@@ -40,7 +46,10 @@ pub fn run(args: &[String], env: &store::Env) -> Result<PathBuf, Failure> {
             Failure::Refused(format!("cannot write {}: {source}", path.display()))
         }
     })?;
-    Ok(notes.join(file_name))
+    Ok(Output {
+        path: notes.join(file_name),
+        warning: None,
+    })
 }
 
 fn taken(topic: &str, existing: &Path) -> Failure {

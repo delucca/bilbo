@@ -10,8 +10,14 @@ use crate::shared::{config, store};
 const SAVE_EVERY: Duration = Duration::from_secs(30);
 const TIMEOUT: Duration = Duration::from_secs(600);
 
-/// The stdout line `embedded <n>, kept <n>, dropped <n>`.
-pub fn run(args: &[String], env: &store::Env) -> Result<String, Failure> {
+/// The stdout line `embedded <n>, kept <n>, dropped <n>`, and the lines for stderr.
+pub struct Output {
+    pub line: String,
+    pub warnings: Vec<String>,
+}
+
+/// Embeds what the cache lacks and drops what no note holds; see `Output`.
+pub fn run(args: &[String], env: &store::Env) -> Result<Output, Failure> {
     if let Some(arg) = args.first() {
         return Err(Failure::Usage(if arg.starts_with('-') && arg != "-" {
             format!("unknown option '{arg}'")
@@ -85,7 +91,7 @@ pub fn run(args: &[String], env: &store::Env) -> Result<String, Failure> {
         .collect();
     if missing.is_empty() {
         save_if(changed, &file, &cache).map_err(Failure::Refused)?;
-        return Ok(line(0));
+        return Ok(output(line(0)));
     }
 
     let client = match embed::Client::new(&embedder, |name| std::env::var_os(name), TIMEOUT) {
@@ -120,8 +126,15 @@ pub fn run(args: &[String], env: &store::Env) -> Result<String, Failure> {
         Err(message) => Err(refused(message, saved)),
         Ok(()) => {
             saved.map_err(Failure::Refused)?;
-            Ok(line(added))
+            Ok(output(line(added)))
         }
+    }
+}
+
+fn output(line: String) -> Output {
+    Output {
+        line,
+        warnings: Vec::new(),
     }
 }
 

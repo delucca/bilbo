@@ -12,8 +12,14 @@ struct Scan {
     ids: Vec<(String, String)>,
 }
 
-/// Problem lines "<path relative to root>: <message>", sorted; empty means a clean store.
-pub fn run(args: &[String], env: &store::Env) -> Result<Vec<String>, Failure> {
+/// What `check` prints, and whether any of it is a problem.
+pub struct Output {
+    pub lines: Vec<String>,
+    pub failed: bool,
+}
+
+/// Problem lines "<path relative to root>: <message>", sorted; no lines means a clean store.
+pub fn run(args: &[String], env: &store::Env) -> Result<Output, Failure> {
     if let Some(arg) = args.first() {
         return Err(Failure::Usage(if arg.starts_with('-') && arg != "-" {
             format!("unknown option '{arg}'")
@@ -43,11 +49,15 @@ pub fn run(args: &[String], env: &store::Env) -> Result<Vec<String>, Failure> {
     }));
 
     scan.found.sort();
-    Ok(scan
+    let lines: Vec<String> = scan
         .found
         .into_iter()
         .map(|(path, message)| single_line(&format!("{path}: {message}")))
-        .collect())
+        .collect();
+    Ok(Output {
+        failed: !lines.is_empty(),
+        lines,
+    })
 }
 
 impl Scan {

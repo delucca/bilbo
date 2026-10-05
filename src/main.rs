@@ -83,17 +83,18 @@ fn run() -> Result<ExitCode, Failure> {
     match args.first().map(String::as_str) {
         None => Err(Failure::Usage("missing verb".into())),
         Some("new") => {
-            let path = note::new::run(&args[1..], &env)?;
-            print_stdout(&path.display().to_string());
+            let output = note::new::run(&args[1..], &env)?;
+            output.warning.iter().for_each(|line| print_stderr(line));
+            print_stdout(&output.path.display().to_string());
             Ok(ExitCode::SUCCESS)
         }
         Some("check") => {
-            let problems = check::run(&args[1..], &env)?;
-            problems.iter().for_each(|line| print_stdout(line));
-            Ok(if problems.is_empty() {
-                ExitCode::SUCCESS
-            } else {
+            let output = check::run(&args[1..], &env)?;
+            output.lines.iter().for_each(|line| print_stdout(line));
+            Ok(if output.failed {
                 ExitCode::FAILURE
+            } else {
+                ExitCode::SUCCESS
             })
         }
         Some("recall") => {
@@ -103,8 +104,9 @@ fn run() -> Result<ExitCode, Failure> {
             Ok(ExitCode::SUCCESS)
         }
         Some("index") => {
-            let line = search::index::run(&args[1..], &env)?;
-            print_stdout(&line);
+            let output = search::index::run(&args[1..], &env)?;
+            output.warnings.iter().for_each(|line| print_stderr(line));
+            print_stdout(&output.line);
             Ok(ExitCode::SUCCESS)
         }
         Some("setup") => {
@@ -172,17 +174,17 @@ fn collect_args() -> Result<Vec<String>, Failure> {
         .collect()
 }
 
-/// `-h` or `--help` before a bare `--`, except as the value of `--title` of `new` and `library`.
+/// `-h` or `--help` before a bare `--`, except as the value of `--title` of `new` and `library`, or of `--scope` of `new`.
 fn wants_help(args: &[String]) -> bool {
-    let has_title = args
-        .first()
-        .is_some_and(|verb| verb == "new" || verb == "library");
-    let mut title_value = false;
+    let verb = args.first().map(String::as_str);
+    let has_title = matches!(verb, Some("new" | "library"));
+    let has_scope = verb == Some("new");
+    let mut skip_value = false;
     for arg in args.iter().take_while(|arg| *arg != "--") {
-        if std::mem::take(&mut title_value) {
+        if std::mem::take(&mut skip_value) {
             continue;
         }
-        title_value = has_title && arg == "--title";
+        skip_value = (has_title && arg == "--title") || (has_scope && arg == "--scope");
         if arg == "-h" || arg == "--help" {
             return true;
         }
