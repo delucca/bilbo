@@ -30,8 +30,8 @@ What a user can observe after this change: the ceremony, the key files and their
 
 ### Modified Capabilities
 
-- `config`: Config location adds `device` to the verbs that read settings (on top of `add-note-scope`'s copy). Scope settings (added by `add-note-scope`) lets `scope.<name>.sync` be a URL, gains the "Sync takes a URL" scenario, and its "An unknown sync value" scenario now uses a value that is neither `off` nor a URL. A new requirement, Scope sync URLs, gives the URL forms.
-- `cli`: Verb dispatch adds `device` (on top of `add-note-scope`'s copy). Output streams extends the wizard's exception to the phrase prompts of `device init` and `device recover`.
+- `config`: Config location adds `device` to the verbs that read settings. Scope settings lets `scope.<name>.sync` be a URL, gains the "Sync takes a URL" scenario, and its "An unknown sync value" scenario now uses a value that is neither `off` nor a URL. A new requirement, Scope sync URLs, gives the URL forms.
+- `cli`: Verb dispatch adds `device`. Output streams extends the wizard's exception to the phrase prompts of `device init` and `device recover`.
 
 ## Non-goals
 
@@ -46,11 +46,11 @@ What a user can observe after this change: the ceremony, the key files and their
 
 ## Impact
 
-- New library modules: `src/keys.rs` (every crypto primitive, random bytes, key files and their modes, the host name, core files off), `src/phrase.rs` (the embedded BIP39 list, encoding, checksum and prefixes) and `src/manifest.rs` (format, canonical bytes, verification, sealing, the chain, and writing versions under a lock).
-- New verb `src/device.rs`, its `mod` line, dispatch arm and USAGE line.
-- `src/wizard.rs` gains the phrase ceremony on the existing `Prompter` trait, and the `Terminal` adapter gains the alternate screen it is drawn on.
-- `src/config.rs` widens `scope.<name>.sync`. `src/store.rs` gains the scopes and keys paths, and the `CLAUDECODE` and `CODEX_THREAD_ID` variables in `Env`.
-- New dependencies: `ed25519-dalek` 3.0.0, `hpke` 0.14.1 (X25519 and ChaCha20-Poly1305 only), `chacha20poly1305` 0.11.0, `hkdf` 0.13.0 and `getrandom` 0.4.3, all in `src/keys.rs`. `sha2` gains a second user, `src/keys.rs`, and `libc` a third, also `src/keys.rs`. No `bip39` crate: the 2048-word list is embedded as `src/bip39-english.txt`.
-- Tests: `tests/device.rs` through the built binary, with golden key and manifest fixtures in `tests/fixtures/device/`; the ceremony is unit-tested in `src/device.rs` and `src/wizard.rs` with the scripted prompter, and smoke-tested by hand in a terminal.
+- A new domain, `src/identity/`, with its `mod.rs` and its place in `DOMAINS` in `tests/layout.rs`. Its library modules: `keys.rs` (every crypto primitive, random bytes, key files and their modes, the host name, core files off), `phrase.rs` (the embedded BIP39 list, encoding, checksum and prefixes), `manifest.rs` (format, canonical bytes, verification, sealing, the chain, and writing versions under a lock) and `ceremony.rs` (the phrase screens, drawn through the `Prompter`).
+- New verb `src/identity/device.rs`: its `pub mod` line, its path in `VERBS` in `tests/layout.rs`, its dispatch arm and USAGE line in `src/main.rs`.
+- `src/host/prompt.rs`: the `Prompter` trait gains `screen`, and the `Terminal` adapter draws it on the alternate screen.
+- `src/shared/config.rs` widens `scope.<name>.sync`, so `bilbo scope` (`src/note/scope.rs`) prints a URL as written. `src/shared/store.rs` gains the scopes and keys paths, and the `CLAUDECODE` and `CODEX_THREAD_ID` variables in `Env`. `src/shared/hash.rs` gains `sha256`, the bytes `sha256_hex` already prints.
+- New dependencies: `ed25519-dalek` 3.0.0, `hpke` 0.14.1 (X25519 and ChaCha20-Poly1305 only), `chacha20poly1305` 0.11.0, `hkdf` 0.13.0 and `getrandom` 0.4.3, all in `src/identity/keys.rs`. `sha2` gains a second file, `src/identity/keys.rs` (HKDF names its hash), and `libc` a third, also `src/identity/keys.rs`. `PLACEMENT` in `tests/layout.rs` lists them. No `bip39` crate: the 2048-word list is embedded as `src/identity/bip39-english.txt`.
+- Tests: `tests/device.rs` through the built binary, with golden key and manifest fixtures in `tests/fixtures/device/`; the ceremony is unit-tested in `src/identity/ceremony.rs` and the verb in `src/identity/device.rs`, both with a scripted prompter (`src/identity/script.rs`, test-only), and the `Terminal` adapter is smoke-tested by hand in a terminal.
 - `flake.nix`'s `lib.fileset` already takes `./src` and `./tests` whole, so the word list and the fixtures join the build without an edit.
 - Migration: none. A config without a sync URL behaves exactly as before.
