@@ -826,7 +826,7 @@ pub fn settings(e: &Embedder) -> Vec<(&'static str, String)> {
 }
 
 /// `header` (one comment line, no newline), then `key = quote(value)` lines, or the example block when `settings` is empty.
-pub fn render(header: &str, settings: &[(&'static str, String)]) -> String {
+pub fn render(header: &str, settings: &[(String, String)]) -> String {
     let mut out = format!("{header}\n");
     if settings.is_empty() {
         out.push_str(
@@ -1504,7 +1504,11 @@ mod tests {
         let pairs = settings(&e);
         assert_eq!(pairs[0].0, "embedder.url");
         assert_eq!(pairs.last().unwrap().0, "embedder.min_similarity");
-        let text = render("# h", &pairs);
+        let owned: Vec<(String, String)> = pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.clone()))
+            .collect();
+        let text = render("# h", &owned);
         assert_eq!(embedder(&text), e);
     }
 
@@ -1632,6 +1636,43 @@ mod tests {
             ]
         );
         assert_eq!(s.kept_lines, [("digest.log", "on".to_string())]);
+    }
+
+    #[test]
+    fn rendered_scope_lines_parse_back_to_the_same_settings() {
+        let text = "embedder.model = a\nembedder.url = http://x:1\ndigest.log = on\nscope.work.paths = ~/a, /srv/b\nscope.default = work\nscope.work.marks = \"  acme, ~/Developer/acme\"\nscope.home.sync = off\n";
+        let old = scopes(text).unwrap();
+        let mut lines: Vec<(String, String)> = old
+            .kept_lines
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.clone()))
+            .collect();
+        lines.extend(old.scope_lines.iter().cloned());
+        let rendered = render("# h", &lines);
+        assert!(
+            rendered.contains("scope.work.marks = \"  acme, ~/Developer/acme\"\n"),
+            "{rendered}"
+        );
+        let new = scopes(&rendered).unwrap();
+        assert_eq!(new.scope_lines, old.scope_lines);
+        assert_eq!(new.kept_lines, old.kept_lines);
+        assert_eq!(new.scope_names(), old.scope_names());
+        assert_eq!(new.default_scope, old.default_scope);
+        let order: Vec<&str> = rendered
+            .lines()
+            .filter(|l| !l.starts_with('#'))
+            .map(|l| l.split(" =").next().unwrap())
+            .collect();
+        assert_eq!(
+            order,
+            [
+                "digest.log",
+                "scope.work.paths",
+                "scope.default",
+                "scope.work.marks",
+                "scope.home.sync"
+            ]
+        );
     }
 
     #[test]

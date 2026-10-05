@@ -218,7 +218,13 @@ fn config_step(plan: &Plan, report: &mut Report) {
         ConfigPlan::Create(embedder) => (embedder, false),
         ConfigPlan::Update(embedder) => (embedder, true),
     };
-    let mut settings = embedder.as_ref().map(config::settings).unwrap_or_default();
+    let mut settings: Vec<(String, String)> = embedder
+        .as_ref()
+        .map(config::settings)
+        .unwrap_or_default()
+        .into_iter()
+        .map(|(key, value)| (key.to_string(), value))
+        .collect();
     settings.extend(plan.kept.iter().cloned());
     let header = format!(
         "# bilbo config, written by bilbo setup {} on {}",

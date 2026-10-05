@@ -92,8 +92,8 @@ pub struct Plan {
     pub config: ConfigPlan,
     /// The embedder the config holds once setup is done.
     pub embedder: Option<Embedder>,
-    /// The digest and history lines a rewritten config keeps.
-    pub kept: Vec<(&'static str, String)>,
+    /// The digest, history and scope lines a rewritten config keeps.
+    pub kept: Vec<(String, String)>,
     pub key: KeyPlan,
     /// The key the wizard was given; written to the token file and never shown.
     pub pasted: Option<Zeroizing<String>>,
