@@ -3,10 +3,10 @@
 ## MODIFIED Requirements
 
 ### Requirement: Report problems
-`bilbo check` SHALL check every entry in `<root>/notes/` against every `note-store` rule and the scope rules below. It SHALL print one line per problem and per warning to stdout as `<path relative to the root>: <message>`, sorted by path and then by message, and exit 1 when there is at least one problem. A warning SHALL NOT change the exit code. With no problems and no warnings, it SHALL print nothing and exit 0.
+`bilbo check` SHALL check every entry in `<root>/notes/` against every `note-store` rule and the scope rules below, and every entry in `<root>/library/` against every `library-store` rule. It SHALL print one line per problem and per warning to stdout as `<path relative to the root>: <message>`, sorted by path and then by message, and exit 1 when there is at least one problem. A warning SHALL NOT change the exit code. With no problems and no warnings, it SHALL print nothing and exit 0.
 
 #### Scenario: A clean store
-- **WHEN** every note in the store follows the contract
+- **WHEN** every note and every library file in the store follows its contract
 - **THEN** stdout is empty and the exit code is 0
 
 #### Scenario: A note with a bad timestamp
@@ -14,8 +14,16 @@
 - **THEN** stdout has a line that starts with `notes/plan-release.md: ` and names `created`, and the exit code is 1
 
 #### Scenario: An empty store
-- **WHEN** `<root>/notes/` exists and holds no notes
+- **WHEN** `<root>/notes/` exists and holds no notes, and `<root>/library/` does not exist
 - **THEN** stdout is empty and the exit code is 0
+
+#### Scenario: An edited source
+- **WHEN** an agent changed a word in the body of `library/go/effective-go.md`
+- **THEN** stdout has a line that starts with `library/go/effective-go.md: ` and names `digest`, and the exit code is 1
+
+#### Scenario: A stub entry
+- **WHEN** `library/go/guide.md` still holds `TODO: describe this source.` under `## errors`
+- **THEN** stdout has a line that starts with `library/go/guide.md: ` and names the entry `errors`, and the exit code is 1
 
 #### Scenario: Warnings alone
 - **WHEN** the only line `bilbo check` prints is a Scope marks warning

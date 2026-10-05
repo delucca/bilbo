@@ -2,14 +2,15 @@
 
 ## Context
 
-- Today's frontmatter allows only `id`, `created` and `sources`. `note::read` reports any other key as `frontmatter: unknown key` (`src/note.rs`, `Keys::key`), and the `note-store` spec's Frontmatter shape says so.
-- The config is a fixed list of nine keys, `config::KEYS` in `src/config.rs`. An unknown key is an error that lists them. `parse` keeps the digest lines as written so `setup` can rewrite the file (`Settings.digest_lines`). Change 1 adds `history.keep_days` the same way.
-- `new` and `check` never read the config today (`src/new.rs`, `src/check.rs`; the `config` spec's Config location).
+- Today's frontmatter allows only `id`, `created` and `sources`. `note::read` reports any other key as `frontmatter: unknown key` (`src/note/mod.rs`, `Keys::key`), and the `note-store` spec's Frontmatter shape says so.
+- The config is a fixed list of ten keys, `config::KEYS` in `src/shared/config.rs`. An unknown key is an error that lists them. `parse` keeps the digest and history lines as written, in `KEYS` order, so `setup` can rewrite the file (`Settings.kept_lines`, read in `src/setup/facts.rs` and written back in `src/setup/apply.rs`). Their keys are `&'static str`, the fixed names.
+- `new` and `check` never read the config today (`src/note/new.rs`, `src/check.rs`; the `config` spec's Config location). `check` returns its lines and `main` exits 1 when there is any.
 - `config::is_local` already tells a loopback embedder URL (`localhost`, `127.0.0.1`, `::1`) from any other.
-- `bilbo index` embeds every passage of every note `recall` searches (`src/index.rs`). `recall` counts passages with no vector as "not indexed" (`src/recall.rs`, `meaning`). The digest ignores that count (`src/digest.rs`, `vectors::lookup(...).0`), and its gate lets no unembedded passage pass on meaning (`note-digest` spec, The gate).
-- `rank::words` is recall's word rule: runs of letters and digits, case and Latin accents folded.
-- Change 1 (`add-note-history`) gives `src/swap.rs` (`exchange`), `bilbo watch`, which records every settled edit, and `src/versions.rs` with `history/lock` and the sweep of `notes/.bilbo-restore-<id>` leftovers. A leftover present while a process holds the lock is recorded as an `edited` version when history lacks its bytes, then deleted. `bilbo restore` and every locked watcher pass sweep (`note-restore` spec).
-- `index`, `recall` and the digest all read notes through `store::read_notes`, whose `Stored` carries path, kind, created and passages (`src/store.rs`), but not frontmatter keys.
+- `bilbo index` embeds every passage of every note `recall` searches (`src/search/index.rs`). `recall` counts passages with no vector as "not indexed" (`src/search/recall.rs`, `meaning`, through `vectors::lookup`). The digest ignores that count (`src/search/digest.rs`, `meaning`), and its gate lets no unembedded passage pass on meaning (`note-digest` spec, The gate).
+- Recall's word rule is `rank::words` in `src/search/rank.rs`: runs of letters and digits, case and Latin accents folded.
+- Change 1 (`add-note-history`) gives `host::swap::exchange` (`src/host/swap.rs`, which returns `swap::UNSUPPORTED` on a filesystem without the call), `bilbo watch`, which records every settled edit, and `src/note/versions.rs` with `lock` (`history/lock`), `restore_path` (`notes/.bilbo-restore-<id>`) and `sweep_restore_leftovers`. A leftover present while a process holds the lock is recorded as an `edited` version when history lacks its bytes, then deleted; a leftover whose note has no history is left in place. `bilbo restore` and every locked watcher pass sweep (`note-restore` spec). Restore writes its hidden file through `write_temp`, private to `src/note/restore.rs`, and takes a step hook so its tests stop it where a kill would.
+- `index`, `recall` and the digest all read notes through `documents::read_notes` (`src/search/documents.rs`), whose `Stored` carries path, kind, created and the passages, but not frontmatter keys.
+- The Architecture rules in `AGENTS.md`, checked by `tests/layout.rs`, decide where code goes: only `main` uses a verb's module, `shared/` imports no domain and holds only what two domains use, and the domains form no cycle. `search` already uses `note`.
 - The user's decisions are binding: the notebook's `design-bilbo-remote-sync.md`, "Decisions taken (2026-10-03)", and the three scope designs in `work/sync-design-panel/scope-assignment/`. Where the designs differ, those decisions win.
 
 ## Goals / Non-Goals
@@ -37,13 +38,13 @@ Alternatives: requiring `sync` on every scope (one more line, nothing gained whi
 
 ### Unassigned takes the strictest embedder rule
 
-This was decided by the user. In code it is a function of the parsed settings and the note's `scope` value: the scope's rule when declared; else `local` when any declared scope says `local`; else `any`. `config.rs` owns it, beside the settings it reads.
+This was decided by the user. In code it is a function of the parsed settings and the note's `scope` value: the scope's rule when declared; else `local` when any declared scope says `local`; else `any`. `src/shared/config.rs` owns it, beside the settings it reads.
 
 ### Resolution in `bilbo new`
 
 The order is the user's: `--scope`, then the longest `paths` match on `bilbo new`'s own working directory, then `scope.default`, then unassigned. Details I settled:
 - **Comparing paths.** Paths are compared by whole folder names, never by string prefix, so `~/Developer/acme` does not hold `~/Developer/acme-tools`. Both sides have links resolved when they exist. macOS reports `/private/tmp` for `/tmp`, and a session started through a link would otherwise miss.
-- **Ties.** "Longest" means the most folder names. Two scopes naming one folder, after `~/` expansion and link resolution at load, is a config error. A link created after load can still make two entries resolve alike; such a tie matches nothing, and the note stays unassigned, the safe side.
+- **Ties.** "Longest" means the most folder names. Two scopes naming one folder, after `~/` expansion and link resolution at load, is a config error. A link created after load can still make two entries resolve alike, so the match resolves each entry again; such a tie matches nothing, and the note stays unassigned, the safe side.
 - **`~/` and `/`.** Both are allowed as `paths` entries and mean the home folder and the root. `~/` is how a user says "everything under home is personal unless a longer path says otherwise".
 - **The working directory.** It is `std::env::current_dir`. When that fails, as for a deleted folder, it matches nothing.
 - **The stderr line.** It is printed only when a scope is declared and none applied. It names the note's path and the exact `bilbo scope set` command, so the agent can act on it without reading the spec.
@@ -67,7 +68,7 @@ Alternatives:
 
 - **Where.** In the topic of the file name, `sources` items and the whole body, fenced code included. Design A excluded fenced code. I did not, because a missed mark costs more than a noisy one, and a mark only warns. The topic is searched because a note like `gotcha-acme-deploy.md` may never repeat `acme` in its text.
 - **Words carry the load.** The note skill writes `code:` sources as repo-relative paths (`code: src/new.rs`), so a path mark rarely matches a source. Path marks catch absolute paths in bodies and code blocks. The README tells users to list words first: the employer, its products, its repo names.
-- **Words.** A word mark uses `rank::words`, so it matches as recall matches.
+- **Words.** A word mark uses recall's word rule, `text::words`, so it matches as recall matches.
 - **Paths.** A path mark matches when the next character ends a path segment. Inside the home folder it matches with `~/` or with the absolute home path, because agents write both.
 - **The `scope:` line.** It is not searched. It always names the note's own scope, and that never warns.
 
@@ -79,7 +80,7 @@ Alternatives:
 - **Counting.** The withheld count is distinct embedder inputs, the unit `recall`'s "not indexed" uses. An input shared with an `any` note counts as sent.
 - **Recall.** `recall` computes the same set and leaves it out of "not indexed". Otherwise every `recall` would say `run bilbo index` forever, and the recall skill passes that warning on to the user. Withheld passages rank by keywords in the fusion, as unindexed ones already do.
 - **The digest.** Its gate admits a note only on meaning while the embedder answers, so withheld notes would vanish from it, and the moment the first `embedder = local` scope is declared, that is every untriaged note. The gate now admits a withheld passage on the keyword gate (3 distinct query words of 4 or more letters) while embedded passages keep the meaning gate. That is the split `recall` already makes. It shows every scope, reads no `cwd`, adds no line, and keeps withheld text off the remote embedder. The panel's "no digest change" was about the digest as a channel for assigning scopes, a different question, and the user's decisions say nothing against this.
-- **Sharing the set.** `store::Stored` gains the note's raw `scope` value, and `config` gives the rule, so the three verbs compute one set without depending on each other.
+- **Sharing the set.** `documents::Stored` gains the note's `scope` value, `config` gives the rule, and one function beside `vectors::lookup` computes the set, so the three verbs share it without using each other. `recall` and the digest also ignore a cached vector of a withheld input, which `index` has not dropped yet: such a passage ranks by keywords alone.
 
 Alternatives:
 - Keep the old vectors. Recall would go on using the remote embedder's view of a note that now asks for a local one.
@@ -88,11 +89,11 @@ Alternatives:
 
 ### `bilbo scope` and `scope set`
 
-- **The verb.** `src/scope.rs` is a verb, so it builds on `config` and `note` and on no other verb.
+- **The verb.** `src/note/scope.rs` is a verb, so it builds on `config`, `note` and `host::swap`, and on no other verb.
 - **Listing.** It uses fixed tab-separated columns per row kind, plus an optional trailing `default` on a scope row, so an agent can cut it. The unassigned row is `(unassigned)`, which no scope name can be. A missing store counts as empty, so the skill can learn the names before the first note exists. With no scope declared, it still exits 0 and prints one stderr hint. "No scopes" is a normal state, not a refusal.
 - **`set` changes one line.** It inserts `scope: <name>` before the closing `---`, or replaces the value in place with `--force`, and changes no other byte.
-- **`set` reuses restore's machinery.** One file is changed at a time, under `history/lock`, through change 1's hidden name `notes/.bilbo-restore-<id>`. A second name for the same job would need its own sweep. The lock matters: change 1's sweep treats any `.bilbo-restore-<id>` present while a process holds the lock as a leftover, so `set` must hold it while its file exists. The sequence per run, then per file:
-  1. Take `history/lock` and sweep leftovers through `versions.rs`, as restore's step 1 does.
+- **`set` reuses restore's machinery.** Restore's hidden-file writer moves from `restore.rs` to `versions.rs`, so both verbs call it. One file is changed at a time, under `history/lock`, through change 1's hidden name `notes/.bilbo-restore-<id>`. A second name for the same job would need its own sweep. The lock matters: change 1's sweep treats any `.bilbo-restore-<id>` present while a process holds the lock as a leftover, so `set` must hold it while its file exists. The sequence per run, then per file:
+  1. Take `history/lock` and sweep leftovers through `src/note/versions.rs`, as restore does.
   2. Read the note's bytes `R` and render `W`, with one line changed.
   3. Write `W` to `notes/.bilbo-restore-<id>` and `exchange` it with the note's file. Call what came out `O`.
   4. When `O` equals `R`, delete it: those are the bytes bilbo read, and the note now holds them with one line changed. Report the file as `set`, `kept` or `replaced`.
@@ -109,7 +110,7 @@ Alternatives:
 
 ### No setup step or wizard question
 
-Design B proposed a wizard question for `scope.default`. A fresh setup has no scopes, so the question has nothing to offer, and the contract fixes setup's steps. Setup only keeps the scope lines on a rewrite: `Settings` gains `scope_lines`, kept as written, like `digest_lines`. The home-manager module accepts `scope.*` keys by shape: a freeform attribute set, checked by an assertion against the name grammar and the four sub-keys. The module stays declarative and adds no option per scope.
+Design B proposed a wizard question for `scope.default`. A fresh setup has no scopes, so the question has nothing to offer, and the contract fixes setup's steps. Setup only keeps the scope lines on a rewrite: `Settings` gains `scope_lines`, kept as written in file order, and setup writes them after the digest and history lines of `kept_lines`. A scope key is not a fixed name, so the lines setup carries and `config::render` writes take owned key strings. The home-manager module accepts `scope.*` keys by shape: a freeform attribute set, checked by an assertion against the name grammar and the four sub-keys. The module stays declarative and adds no option per scope.
 
 Alternative: a structured `programs.bilbo.scopes.<name>` option. It is nicer in Nix, but a second spelling of the same keys.
 
@@ -117,9 +118,18 @@ Alternative: a structured `programs.bilbo.scopes.<name>` option. It is nicer in 
 
 The skill runs `bilbo scope` before `bilbo new`. Its output is short, and it is the only way the agent learns the names and paths. The skill passes `--scope` only for a scope the user named, and otherwise lets `new` resolve one. It asks once when the result is unassigned, or when the resolved scope contradicts the subject, for example a note about an employer's deploy written from a personal repo. It applies the answer with `bilbo scope set`, never by Edit, so the name is checked. With nobody to ask, as in `codex exec`, it leaves the note unassigned and says so. Leaving it is the safe outcome, and it costs nothing. `allowed-tools` gains `Bash(bilbo scope)` and `Bash(bilbo scope set *)`.
 
+### Where the code lives
+
+- **The word rule moves to `src/shared/text.rs`.** The config check, a mark being one word as recall defines words, sits in `shared/`, which imports no domain. The mark finder sits in `note`, which cannot use `search` without a cycle. `words` and the folding it uses move unchanged, with their unit tests, and `rank`, `recall` and the digest call `text::words` and `text::each_word`. `text.rs` already serves two domains, so the layout test holds.
+- **The mark finder is `src/note/marks.rs`.** Only `check` uses it in this change, and `add-sync` will warn on marks too, so it is note code outside any verb. It takes the marks as text and returns the first place that holds one, so it needs no config type.
+- **The `scope` key is read in `src/note/mod.rs`**, beside the other keys, and `note::render` writes it.
+- **The config owns the scope settings, the embedder rule and the `paths` match**, because `new`, `check`, `scope` and the three search verbs all read them.
+- **The withheld set is one function in `src/search/vectors.rs`**, beside `lookup`.
+- **`bilbo scope` is `src/note/scope.rs`.** It counts "the notes `recall` searches" through `documents::read_notes`, the one definition of that set; a verb may use another domain. It reaches change 1's machinery through `note::versions` and `host::swap`, never through `note::restore`.
+
 ### No new dependency
 
-Everything uses std, `rank::words`, `config::is_local` and change 1's `swap.rs` and `versions.rs`.
+Everything uses std, recall's word rule, `config::is_local` and change 1's `host::swap` and `note::versions`.
 
 ## Risks / Trade-offs
 
