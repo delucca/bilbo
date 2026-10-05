@@ -67,6 +67,20 @@ pub fn lookup(typed: &str) -> Option<u16> {
     Some(index as u16)
 }
 
+/// The index of a word typed in full or by its first 4 or more letters, ignoring case and surrounding spaces.
+/// The list's 4-letter prefixes are unique, so a longer prefix names at most one word.
+pub fn complete(typed: &str) -> Option<u16> {
+    let typed = Zeroizing::new(typed.trim().to_ascii_lowercase());
+    let index = list().position(|w| w == *typed).or_else(|| {
+        if typed.len() >= 4 {
+            list().position(|w| w.starts_with(typed.as_str()))
+        } else {
+            None
+        }
+    })?;
+    Some(index as u16)
+}
+
 /// For `Prompter::input`; the message names no word, and the caller adds the position.
 pub fn check_word(typed: &str) -> Result<(), String> {
     lookup(typed)
@@ -142,6 +156,19 @@ mod tests {
         assert_eq!(lookup("abando"), None);
         assert_eq!(lookup("abandons"), None);
         assert_eq!(lookup(""), None);
+    }
+
+    #[test]
+    fn complete_takes_a_word_or_four_or_more_letters() {
+        assert_eq!(complete("abandon"), Some(0));
+        assert_eq!(complete(" ABAN "), Some(0));
+        assert_eq!(complete("abando"), Some(0));
+        assert_eq!(complete("zoo"), Some(2047));
+        assert_eq!(complete("aba"), None);
+        assert_eq!(complete("abxy"), None);
+        assert_eq!(complete("abandons"), None);
+        assert_eq!(complete("qwertyuiop"), None);
+        assert_eq!(complete(""), None);
     }
 
     #[test]
