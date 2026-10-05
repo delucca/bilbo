@@ -186,7 +186,7 @@ fn file_bytes(manifest: &Manifest) -> Vec<u8> {
 }
 
 /// The manifest signed by `key`, with the bytes of its file.
-fn signed(mut manifest: Manifest, key: &SignKey) -> (Manifest, Vec<u8>) {
+pub fn signed(mut manifest: Manifest, key: &SignKey) -> (Manifest, Vec<u8>) {
     let mut message = PREFIX.to_vec();
     message.extend(body(&manifest));
     manifest.sig = keys::hex(&key.sign(&message));
@@ -849,7 +849,7 @@ fn publish(
     })
 }
 
-fn seal_all(
+pub fn seal_all(
     scope: &str,
     epoch: u64,
     key: &[u8; 32],
@@ -867,7 +867,7 @@ fn seal_all(
 }
 
 /// The sealed name of version `n`, encrypted afresh in every version.
-fn seal_name(key: &[u8; 32], m: &Manifest, name: &str) -> Result<String, String> {
+pub fn seal_name(key: &[u8; 32], m: &Manifest, name: &str) -> Result<String, String> {
     let aad = keys::name_aad(&m.scope, m.epoch, m.n);
     let sealed = keys::encrypt(key, &aad, name.as_bytes())?;
     Ok(keys::hex(&sealed))
