@@ -193,6 +193,72 @@ fn decode_entities(text: &str) -> String {
     out
 }
 
+/// The folded words of `text`, in order.
+pub fn words(text: &str) -> Vec<String> {
+    let mut found = Vec::new();
+    each_word(text, |word| found.push(word.to_string()));
+    found
+}
+
+/// Runs of alphanumeric chars, lowercased and accent-folded, of 2 or more chars once folded.
+pub fn each_word(text: &str, mut f: impl FnMut(&str)) {
+    let mut word = String::new();
+    for c in text.chars().chain([' ']) {
+        if is_mark(c) {
+            continue;
+        }
+        if c.is_alphanumeric() {
+            for lower in c.to_lowercase().filter(|l| !is_mark(*l)) {
+                match base(lower) {
+                    Some(b) => word.push_str(b),
+                    None => word.push(lower),
+                }
+            }
+        } else {
+            if word.chars().count() >= 2 {
+                f(&word);
+            }
+            word.clear();
+        }
+    }
+}
+
+/// Combining diacritical marks: part of the word they follow, and dropped.
+fn is_mark(c: char) -> bool {
+    ('\u{300}'..='\u{36f}').contains(&c)
+}
+
+/// The base letters of a lowercase Latin-1 Supplement or Latin Extended-A letter.
+fn base(c: char) -> Option<&'static str> {
+    Some(match c {
+        'à' | 'á' | 'â' | 'ã' | 'ä' | 'å' | 'ā' | 'ă' | 'ą' => "a",
+        'æ' => "ae",
+        'ç' | 'ć' | 'ĉ' | 'ċ' | 'č' => "c",
+        'ð' | 'ď' | 'đ' => "d",
+        'è' | 'é' | 'ê' | 'ë' | 'ē' | 'ĕ' | 'ė' | 'ę' | 'ě' => "e",
+        'ĝ' | 'ğ' | 'ġ' | 'ģ' => "g",
+        'ĥ' | 'ħ' => "h",
+        'ì' | 'í' | 'î' | 'ï' | 'ĩ' | 'ī' | 'ĭ' | 'į' | 'ı' => "i",
+        'ĳ' => "ij",
+        'ĵ' => "j",
+        'ķ' | 'ĸ' => "k",
+        'ĺ' | 'ļ' | 'ľ' | 'ŀ' | 'ł' => "l",
+        'ñ' | 'ń' | 'ņ' | 'ň' | 'ŉ' | 'ŋ' => "n",
+        'ò' | 'ó' | 'ô' | 'õ' | 'ö' | 'ø' | 'ō' | 'ŏ' | 'ő' => "o",
+        'œ' => "oe",
+        'ŕ' | 'ŗ' | 'ř' => "r",
+        'ś' | 'ŝ' | 'ş' | 'š' | 'ſ' => "s",
+        'ß' => "ss",
+        'ţ' | 'ť' | 'ŧ' => "t",
+        'þ' => "th",
+        'ù' | 'ú' | 'û' | 'ü' | 'ũ' | 'ū' | 'ŭ' | 'ů' | 'ű' | 'ų' => "u",
+        'ŵ' => "w",
+        'ý' | 'ÿ' | 'ŷ' => "y",
+        'ź' | 'ż' | 'ž' => "z",
+        _ => return None,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -317,5 +383,57 @@ mod tests {
         let body = body_form(&["", "  ", "***"], 1);
         assert_eq!(body.text, "");
         assert!(body.lines.is_empty());
+    }
+
+    #[test]
+    fn words_fold_case_and_accents() {
+        assert_eq!(words("Decisão tomada"), ["decisao", "tomada"]);
+        assert_eq!(words("DECISAO"), ["decisao"]);
+    }
+
+    #[test]
+    fn words_expand_letters_without_a_base() {
+        assert_eq!(words("ß"), ["ss"]);
+        assert_eq!(words("Straße ẞ"), ["strasse", "ss"]);
+        assert_eq!(words("Æon Œuvre þ"), ["aeon", "oeuvre", "th"]);
+    }
+
+    #[test]
+    fn words_split_on_underscore_and_punctuation() {
+        assert_eq!(words("snake_case"), ["snake", "case"]);
+        assert_eq!(words("foo-bar.baz 2x 9"), ["foo", "bar", "baz", "2x"]);
+    }
+
+    #[test]
+    fn words_drop_one_char_words() {
+        assert_eq!(words("a b cd"), ["cd"]);
+        assert!(words("é").is_empty());
+    }
+
+    #[test]
+    fn letters_outside_the_table_pass_through() {
+        assert_eq!(words("Ωμέγα"), ["ωμέγα"]);
+        assert_eq!(words("Ștefan"), ["ștefan"]);
+    }
+
+    #[test]
+    fn every_table_letter_folds_to_ascii() {
+        for c in '\u{c0}'..='\u{17f}' {
+            if !c.is_alphanumeric() {
+                continue;
+            }
+            let found = words(&format!("{c}{c}"));
+            assert_eq!(found.len(), 1, "{c}: {found:?}");
+            assert!(
+                found[0].bytes().all(|b| b.is_ascii_lowercase()),
+                "{c}: {found:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn marks_join_and_vanish() {
+        assert_eq!(words("İstanbul İ"), ["istanbul"]);
+        assert_eq!(words("decisa\u{303}o"), ["decisao"]);
     }
 }

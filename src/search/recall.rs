@@ -5,7 +5,7 @@ use crate::library::corpus;
 use crate::search::documents::{self, Shelf};
 use crate::search::rank::{self, Document, Hit};
 use crate::search::{embed, vectors};
-use crate::shared::{config, store};
+use crate::shared::{config, store, text};
 use crate::{Failure, note};
 
 const DEFAULT_LIMIT: usize = 10;
@@ -15,7 +15,7 @@ const QUERY_TIMEOUT: Duration = Duration::from_secs(5);
 struct Request {
     /// The query arguments joined by single spaces.
     query: String,
-    /// `rank::words(&query)`, never empty.
+    /// `text::words(&query)`, never empty.
     words: Vec<String>,
     /// Empty means every kind.
     kinds: Vec<String>,
@@ -285,7 +285,7 @@ fn parse(args: &[String]) -> Result<Request, Failure> {
         return Err(Failure::Usage("missing <query>".into()));
     }
     let query = query.join(" ");
-    let words = rank::words(&query);
+    let words = text::words(&query);
     if words.is_empty() {
         return Err(Failure::Usage(format!(
             "query '{query}' has no words of 2 or more letters or digits"

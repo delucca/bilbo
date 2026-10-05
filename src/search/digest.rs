@@ -6,7 +6,7 @@ use std::time::{Duration, Instant, SystemTime};
 
 use crate::search::rank::{self, Document, Hit};
 use crate::search::{documents, embed, vectors};
-use crate::shared::{config, store};
+use crate::shared::{config, store, text};
 
 const QUERY_BYTES: usize = 2000;
 const EMBED_BYTES: usize = 1000;
@@ -140,7 +140,7 @@ fn digest(
     let Some(query) = query(prompt) else {
         return Ok(Vec::new());
     };
-    let words = rank::words(&query);
+    let words = text::words(&query);
 
     let root = store::root(env)?;
     let notes = root.join("notes");
