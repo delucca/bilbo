@@ -2,26 +2,29 @@
 
 ## Context
 
-- **Change 3 (`add-device-keys`)** gives every enrolled device the owner signing seed and its own device key in `<state>/bilbo/keys/` (`owner.key`, `device.key`). No device holds the owner X25519 box secret, which only the phrase derives.
+- **`add-device-keys`** (archived) gives every enrolled device the owner signing seed and its own device key in `<state>/bilbo/keys/` (`owner.key`, `device.key`). No device holds the owner X25519 box secret, which only the phrase derives; `owner.key` keeps the owner's box public key beside the seed, and every manifest version names it as `owner_box`.
   - It writes per-scope manifests under `<root>/.bilbo/scopes/<scope_id>/`, numbered from 1 with no gap and verified as a chain.
   - Without pairing, a device joins a scope only through `bilbo device recover`, which needs the 12-word phrase. `recover` also runs on an enrolled device, to add it to local manifests that do not list it yet.
   - A device opens only its own `sealed` entry. An enrolled device that a scope does not list therefore cannot read that scope, and cannot add itself either: a valid version's `chain` needs an entry for the current epoch, which members check against the key they hold (Manifest validity, Chain check by a member).
   - Manifests pin only the scheme `file://` for a folder, so each device keeps its own path to the folder in its config.
-  - Its library modules are `src/keys.rs` (every crypto primitive, `keys::random` over `getrandom::fill`, key files), `src/phrase.rs` (the embedded BIP39 list and its 4-letter prefixes) and `src/manifest.rs` (format, verification, sealing, writing versions).
-  - It writes an identity whole, under `<state>/bilbo/keys.lock`: both key files go into `<state>/bilbo/keys.new/`, which `swap::rename_new` moves to `keys`. Every verb that writes an identity under the lock, `pair` included, removes a leftover `keys.new/` first. A `keys` folder holding one file is a damaged identity.
-  - Its verb takes the terminal test as a parameter, `device::run(args, env, terminal, prompter)`, so its tests need no terminal and no hook.
-- **Change 4 (`add-sync`)** adds `src/transport.rs`: create-only objects, get, list, and the `file://` folder transport.
-  - Its `sync-transport` spec owns the mailbox layout: `pair/<nameplate>/<name>.msg`, with names of 1 to 16 characters from `[a-z0-9-]`.
-  - It also owns `remove_mailbox(nameplate)`, the one deletion the `file://` transport makes, only under `pair/`.
-  - `bilbo watch` rereads the config, keys and manifests every sync cycle.
-- **Change 6 (`add-relay`)** adds the `https://` client and a relay that serves `pair/<nameplate>/<name>.msg`:
+  - Its library modules live in the `identity` domain: `identity/keys.rs` (every crypto primitive: `random` over `getrandom::fill`, `encrypt` and `decrypt` (XChaCha20-Poly1305 with a random nonce), `SignKey::sign` and `verify` (Ed25519), `seal_epoch` and `open_epoch` (HPKE), the key files), `identity/phrase.rs` (the embedded BIP39 list, `word`, and `lookup` of a word or its first 4 letters), `identity/manifest.rs` (format, verification, sealing, writing versions: `add_device`, `adopt`, `verify_scope`, `open`, `survey`) and `identity/ceremony.rs` (the phrase screens). SHA-256 is `shared::hash::sha256`.
+  - It writes an identity whole, under `<state>/bilbo/keys.lock`: `keys::write_identity` puts both key files into `<state>/bilbo/keys.new/`, removing a leftover first, and `host::swap::rename_new` moves that folder to `keys`. A `keys` folder holding one file is a damaged identity.
+  - Its verb, `identity/device.rs`, takes the terminal test as a parameter, `device::run(args, env, terminal, prompter)`, so its tests need no terminal and no hook. It turns the terminal off when `CLAUDECODE` or `CODEX_THREAD_ID` is set and not empty.
+- **`add-sync`** (archived) adds the `sync` domain. `sync/transport.rs` holds the `Transport` trait (create-only objects, get, the listings of scopes, devices and seqs, `highest_manifest`, `remove_mailbox`) and its `file://` folder; `transport::open(url, device)` picks it by scheme and refuses any other.
+  - Its `sync-transport` spec owns the mailbox layout: `pair/<nameplate>/<name>.msg`, with nameplates of 1 to 64 and names of 1 to 16 characters from `[a-z0-9-]` (`transport::message_path`).
+  - It also owns `remove_mailbox(nameplate)`, the one deletion the `file://` transport makes, only under `pair/`. It carries `expect(dead_code)` until pairing calls it.
+  - `sync/scopes.rs::chain` fetches a scope's versions from a transport and verifies their chain; `bilbo device recover` uses it.
+  - `bilbo watch` rereads the config, keys and manifests every sync cycle, publishes the local manifest versions the transport lacks, and confirms its own pending ones on reading them back.
+  - Its advice to a device outside a scope (`sync/manifests.rs`'s not-in-the-scope line) and `recover`'s `unsealed` hint name only `bilbo device recover` so far.
+- **`add-relay`** (not yet applied) adds the `https://` client and a relay that serves `pair/<nameplate>/<name>.msg`:
   - the first message of a nameplate must be signed by a listed device;
   - every later one must be signed by the same key, except one unsigned message per nameplate;
   - each message is at most 4 KiB, a nameplate holds at most 8 and at most 32 are open;
   - a nameplate is deleted 30 minutes after its first message;
   - unsigned mailbox requests are limited to 60 a minute and 4 distinct nameplates in 10 minutes per address.
-- **I/O today:** `src/main.rs` is the only writer of stdout and stderr. `setup` gets a line printer as a callback and `digest` gets stdin as a reader. `pair` needs both: it prints the code, waits, then asks a question.
-- **The config file** is written only by `setup`, through `write_config` in `src/setup.rs:2473`: a temporary file, then a rename, with the old file kept as `<name>.bak`.
+- **I/O today:** `src/main.rs` is the only writer of stdout and stderr. `setup` and `watch` get a line printer as a callback and `digest` and `cite` get stdin as a reader. `pair` needs both: it prints the code, waits, then asks a question.
+- **The config file** is written only by `setup`, through `write_config` in `src/setup/apply.rs`: a temporary file, then a rename, with the old file kept as `<name>.bak`. `shared/config.rs` parses it.
+- **The layout rules** (AGENTS.md, checked by `tests/layout.rs`): a verb lives in the domain it serves and only `main` uses it; a verb that outgrows one file is a folder whose files reach each other through `super::`; domain library code forms no cycle, and of `identity` and `note` only verbs use `sync`; each crate stays in the files `PLACEMENT` lists.
 - **A new device** has neither of the places where scope names, ids and URLs live: the config (`scope.<name>.sync`) and the manifests.
 
 ## Goals / Non-Goals
@@ -38,40 +41,40 @@
 
 ## Decisions
 
-### SPAKE2 through `spake2` 0.5.0-pre.0, in `src/pake.rs` only
+### SPAKE2 through `spake2` 0.5.0-pre.0, in `src/identity/pake.rs` only
 
 - **Why a PAKE:** the code has 33 bits of entropy. Anything that turns it into a key directly (a KDF over the code, then a box) gives whoever reads the mailbox an offline search over 2^33 codes, which takes minutes. SPAKE2 gives an active attacker one guess per run and a passive one nothing. The crate's README says the same: "An active attacker (man-in-the-middle) gets exactly one guess at the password".
-- **Why this crate and version:** measured on 2026-10-03 in a scratch crate next to the crates change 3 adds (`ed25519-dalek` 3.0.0, `x25519-dalek` 3.0.0, `hpke` 0.14.1, `chacha20poly1305` 0.11.0, `hkdf` 0.13.0, `sha2` 0.11.0):
-  - **0.5.0-pre.0** (January 2026) depends on `curve25519-dalek` 5, `hkdf` 0.13, `sha2` 0.11 and `rand_core` 0.10. Its requirements resolve to the stable releases change 3 pins. `cargo tree -d` shows it adds no duplicate crate. MSRV 1.85.
-  - **0.4.0**, the last stable release (July 2023), depends on `curve25519-dalek` 4, `hkdf` 0.12, `sha2` 0.10 and `rand_core` 0.6. Beside change 3's crates it duplicates nine crates, eleven counting two that depend on the target: among them a second `curve25519-dalek`. Two copies of the curve code in a security binary is the cost that decides it.
+- **Why this crate and version:** measured on 2026-10-03 in a scratch crate next to the crates `add-device-keys` adds (`ed25519-dalek` 3.0.0, `x25519-dalek` 3.0.0, `hpke` 0.14.1, `chacha20poly1305` 0.11.0, `hkdf` 0.13.0, `sha2` 0.11.0):
+  - **0.5.0-pre.0** (January 2026) depends on `curve25519-dalek` 5, `hkdf` 0.13, `sha2` 0.11 and `rand_core` 0.10. Its requirements resolve to the stable releases `add-device-keys` pins. Re-measured on 2026-10-05 against release 0.13.0: adding the line locks one package, `spake2` itself; `curve25519-dalek` 5.0.0 gains its `rand_core` dependency (`rand_core` 0.10.1 is already in the lock); `cargo tree -d -e normal` still lists only `getrandom` 0.2 and 0.4 and `syn` 2 and 3; 0.5.0-pre.0 is still the newest release. `cargo tree -d` shows it adds no duplicate crate. MSRV 1.85.
+  - **0.4.0**, the last stable release (July 2023), depends on `curve25519-dalek` 4, `hkdf` 0.12, `sha2` 0.10 and `rand_core` 0.6. Beside `add-device-keys`' crates it duplicates nine crates, eleven counting two that depend on the target: among them a second `curve25519-dalek`. Two copies of the curve code in a security binary is the cost that decides it.
   - **The protocol is the same in both.** The review diffed the two tarballs' `src/`: the 110 changed lines are the `rand_core` 0.10 trait rename, visibility and doc changes. The protocol code is the 2023 code.
 - **How it is used:** default features off.
   - The asymmetric mode stops two A sides from pairing with each other.
   - The password is `bilbo-pair-1:` followed by the canonical code. The identities are `bilbo-pair-1 a` and `bilbo-pair-1 b`.
-- **The random source:** `start_a_with_rng` and `start_b_with_rng` want `rand_core` 0.10's `CryptoRng`, and `keys::random` is a fill function, not an RNG object.
-  - `src/pake.rs` holds `KeysRng`, a ten-line adapter that implements `rand_core::TryRng` (with `Error = Infallible`, as `keys::random` does) and `TryCryptoRng` over `keys::random`. `rand_core`'s blanket impls then make it `Rng + CryptoRng`.
-  - So `getrandom` keeps its one user, `src/keys.rs`. `rand_core` gets a direct user, `src/pake.rs`, through the `spake2::rand_core` re-export, with no `Cargo.toml` entry.
-  - A scratch crate built this adapter shape on 2026-10-03.
+- **The random source:** `start_a_with_rng` and `start_b_with_rng` want `rand_core` 0.10's `CryptoRng`, which is `TryCryptoRng<Error = Infallible>`, and `keys::random` is a fill function that returns `Result<[u8; N], String>`, not an RNG object.
+  - `src/identity/pake.rs` holds `KeysRng`, an adapter that implements `rand_core::TryRng` with `Error = Infallible` and `TryCryptoRng` over `keys::random`, filling in 32-byte chunks. `rand_core`'s blanket impls then make it `Rng + CryptoRng`. A failure of the system random source cannot be returned through `Infallible`, so the adapter treats it as fatal, as `rand_core`'s own `UnwrapErr` does.
+  - So `getrandom` keeps its one user, `src/identity/keys.rs`. `rand_core` gets a direct user, `src/identity/pake.rs`, through the `spake2::rand_core` re-export, with no `Cargo.toml` entry.
+  - A scratch crate built this adapter shape on 2026-10-03, and a scratch copy of release 0.13.0 built it inside `identity/pake.rs` on 2026-10-05, with clippy and `tests/layout.rs` passing.
 - **Pinning:** `spake2 = "0.5.0-pre.0"` in `Cargo.toml` (the caret idiom), held by `Cargo.lock`. `cargo update` would move it to 0.5.0 when that is released. Two unit tests guard the protocol:
-  - **The crate's own vector:** `test_asymmetric`, password `password`, identities `idA` and `idB`, key `712295de7219c675ddd31942184aa26e0a957cf216bc230d165b215047b520c1`. Through the public API, a fixed-bytes `TryRng` feeds each side its scalar's 32 little-endian bytes, then 32 zero bytes. `Scalar::random` reduces 64 bytes modulo the group order, so the scalar comes out unchanged. The scratch crate reproduced the key this way.
+  - **The crate's own vector:** `test_asymmetric`, password `password`, identities `idA` and `idB`, key `712295de7219c675ddd31942184aa26e0a957cf216bc230d165b215047b520c1`. Through the public API, a fixed-bytes `TryRng` feeds each side its scalar's 32 little-endian bytes, then 32 zero bytes. `Scalar::random` reduces 64 bytes modulo the group order, so the scalar comes out unchanged. The scratch crate reproduced the key this way, and so did the 0.13.0 scratch copy (2026-10-05), with the crate's `msg1` `416fc960…1f2af9` as well.
   - **bilbo's golden key:** two fixed seeds through `KeysRng`'s shape, with bilbo's password and identities.
   - A crate update that changes the protocol fails the first test, on a vector nobody in bilbo chose.
-- **The rest of the crypto:** HKDF-SHA256, SHA-256, XChaCha20-Poly1305 and Ed25519 come through `src/keys.rs`'s helpers, so each crate keeps its one user, as AGENTS.md asks.
+- **The rest of the crypto:** HKDF-SHA256, XChaCha20-Poly1305 and Ed25519 come through `identity/keys.rs`'s helpers, and SHA-256 through `shared::hash`, so each crate keeps its files, as AGENTS.md asks. `keys.rs` gains `hkdf(salt, input, info)`, HKDF-SHA256 to 32 bytes; today its only HKDF is inside `Owner::derive`.
 
 Alternatives considered:
 - **`spake2` 0.4.0.** Stable, but the duplicates above, for the same protocol.
 - **CPace.** The only crate, `pake-cpace`, was last released in December 2023 (planning notebook, `tools-survey.md`).
 - **`magic-wormhole` 0.8.** A whole working flow, but EUPL-1.2, a copyleft that sits badly in an Apache-2.0 binary, and it expects the wormhole project's mailbox server.
 - **SPAKE2 written by hand on `curve25519-dalek`.** About 200 lines of the kind of code that should not be written by hand.
-- **Neither crate is audited.** The README warns of it in both versions, so the pre-release label adds no gap the stable one lacks. The surface bilbo uses is small (start, finish), and swapping the crate later only changes `src/pake.rs`.
+- **Neither crate is audited.** The README warns of it in both versions, so the pre-release label adds no gap the stable one lacks. The surface bilbo uses is small (start, finish), and swapping the crate later only changes `src/identity/pake.rs`.
 
 ### The code: a nameplate and three BIP39 words
 
-- **Format:** `<nameplate>-<w1>-<w2>-<w3>`, for example `42-orbit-tunnel-velvet`. The nameplate is a random number from 1 to 999. The words are random from the BIP39 English list that change 3 embeds in `src/phrase.rs`.
+- **Format:** `<nameplate>-<w1>-<w2>-<w3>`, for example `42-orbit-tunnel-velvet`. The nameplate is a random number from 1 to 999. The words are random from the BIP39 English list that `add-device-keys` embeds in `src/identity/phrase.rs`.
 - **Entropy:** the nameplate is not secret, since anyone who can read the transport can list mailboxes. The words carry 3 × 11 = 33 bits.
 - **One attempt per code:** `b.msg` is create-only, and A uses the code up after the first answer, whatever it holds. So an attacker gets one guess, at odds of 1 in 8.6 billion, and a wrong guess shows on A as a wrong code. The fingerprint check below stands behind that.
 - **Typing:**
-  - Case does not matter, spaces or hyphens separate the parts, and a word can be given by its first four or more letters, the rule `bilbo device recover` uses.
+  - Case does not matter, spaces or hyphens separate the parts, and a word can be given by its first four or more letters, which extends the rule `bilbo device recover` uses (`phrase::lookup` takes a word or exactly its first four letters); `phrase.rs` gains the lookup by four or more, since the list's four-letter prefixes are unique.
   - A word not in the list is refused before the mailbox is read, so a typo that is not a word does not use the code up. Only a valid wrong word does.
 - **Nameplates:**
   - A picks a random number and claims it by creating `a.msg`. When the object exists, it tries another, up to 20 times.
@@ -102,22 +105,23 @@ B: reads c.msg, fetches and checks the manifests, writes manifests, config, then
   - On the relay, only A's key can create `c.msg`.
   - On a folder, whoever can write the folder could forge a plain result. That can only end a pairing, never change what B stores.
 - **Why three messages, not two:** with two (B first, then A answers with the payload), A would send the owner key before learning whether the code was right. SPAKE2 keeps that ciphertext safe from an offline search, but the user would confirm on A without knowing whether B typed the code correctly, and nobody would claim the nameplate. A third message costs one more poll.
+- **Encoding:** each message is JSON with its `format` first; the SPAKE2 messages in hex, the nonces and boxes in base64 (`base64`, already a dependency through segments), since hex would double a 12-scope `c.msg` to the 4 KiB limit.
 - **Sizes:**
   - `a.msg` is about 100 bytes and `b.msg` about 400.
-  - `c.msg` carries no manifest, so it stays near 200 bytes per scope, and change 6's 4 KiB limit holds 12 scopes with room to spare.
+  - `c.msg` carries no manifest, so it stays near 200 bytes per scope, and `add-relay`'s 4 KiB limit holds 12 scopes with room to spare.
   - A refuses a 13th scope before creating a mailbox, naming `--scope`, so the limit is a rule the spec states, not a size check that fails late.
 
 ### The fingerprint, the confirmation, and the terminal rule
 
-- **The fingerprint:** the first 8 bytes of the `fingerprint` output, read as a number modulo 10^12, are printed as twelve digits in groups of four, for example `4829 1307 5521`. The digits keep it from looking like change 3's owner fingerprint (`xxxx-xxxx-…` in base32).
+- **The fingerprint:** the first 8 bytes of the `fingerprint` output, read as a number modulo 10^12, are printed as twelve digits in groups of four, for example `4829 1307 5521`. The digits keep it from looking like `add-device-keys`' owner fingerprint (`xxxx-xxxx-…` in base32).
 - **What it catches:** a transport operator who saw the code can run SPAKE2 with A and with B separately. That gives two keys, and so two fingerprints. The operator could grind its own messages until the two match, but at about 2^40 scalar multiplications per success inside the window, that takes a large machine. The check is a second line behind the code, not a substitute for it.
 - **What B shows:** B prints the fingerprint with its own name and id, so everything A's question names can be compared on B's screen.
 - **Confirmation on A only:** A is the device that gives something away. A stranger who raced the real device shows up on A as an unexpected name and id, while the real device reports `code … was already used`.
-- **Names:** before asking, A checks B's name against A's own name and against every device that any of the owner's local manifests lists, not only the scopes being paired. Change 3 makes names unique among all the owner's devices, and unions them into every new scope.
-- **Terminals only on A:** A runs only when stdin and stderr are terminals and neither `CLAUDECODE` nor `CODEX_THREAD_ID` is set and not empty, the rule change 3 applies to the phrase.
+- **Names:** before asking, A checks B's name against A's own name and against every device that any of the owner's local manifests lists, not only the scopes being paired. `add-device-keys` makes names unique among all the owner's devices, and unions them into every new scope. A device already listed under the same id, as after an interrupted pairing, does not take its own name.
+- **Terminals only on A:** A runs only when stdin and stderr are terminals and neither `CLAUDECODE` nor `CODEX_THREAD_ID` is set and not empty, the rule `add-device-keys` applies to the phrase.
   - The agent markers only stop an agent that runs `bilbo pair` by accident: `env -u CLAUDECODE -u CODEX_THREAD_ID` removes them.
   - The terminal requirement is the boundary this change relies on. An agent's tool calls get no terminal, so an agent cannot answer A's question in the normal course.
-  - Neither rule stops a program that runs as the user and sets out to get around it. Such a program can read `owner.key` and `device.key` directly, which change 3 names as its own limit.
+  - Neither rule stops a program that runs as the user and sets out to get around it. Such a program can read `owner.key` and `device.key` directly, which `add-device-keys` names as its own limit.
   - B needs no such rule, because B gives nothing away.
 - **No `--yes` and no hidden way in:** no flag, variable or build mode lets A take an answer without a terminal. A debug-only hook would ship in every `cargo build` without `--release` and reopen this door, and `nix flake check` runs the tests in release, where the hook would be off.
 
@@ -131,13 +135,13 @@ B: reads c.msg, fetches and checks the manifests, writes manifests, config, then
   - URLs are compared as written, so `file:///srv/sync/` and `file:///srv/sync` differ, and the usage error names both.
   - The mapping touches only B's config. A manifest pins only `file://` for a folder, so a path that differs between the devices writes no manifest version, and both devices see the scope as valid.
   - A `--via` that no paired scope uses is a usage error too.
-- **`https://` before change 6:** there is no client yet, so a `--via https://…`, or a scope on a relay, is refused with `this bilbo cannot reach https:// transports yet`. Change 6 lifts that refusal.
+- **`https://` before `add-relay`:** there is no client yet, so a `--via https://…`, or a scope on a relay, is refused with `this bilbo cannot reach https:// transports yet`. `add-relay` lifts that refusal.
 
 ### What A sends, and what B checks
 
-- **On A:** for each scope, A uses `src/manifest.rs`'s add-device operation, the one `bilbo device recover` uses, given the epoch key A opens through its own `sealed` entry. It writes version n+1 on the latest local version, pending or not, as the `scope-manifest` spec's Pending epochs says. That version lists B, with the epoch key sealed to B's box key, and A writes it locally and to the transport, create-only. When the newest version already lists B's id (a pairing that stopped after this step), it writes nothing. Only then does it create `c.msg`, so no secret leaves A without a record of who received it.
+- **On A:** for each scope, A uses `manifest::add_device`, the operation `bilbo device recover` uses, given the epoch key A opens through its own `sealed` entry. It writes version n+1 on the latest local version, pending or not, as the `scope-manifest` spec's Pending epochs says. That version lists B, with the epoch key sealed to B's box key, and A writes it locally and to the transport, create-only. When the newest version already lists B's id (a pairing that stopped after this step), it writes nothing. Only then does it create `c.msg`, so no secret leaves A without a record of who received it.
 - **An enrolled B:** when `b.msg` carries an owner key, A compares it with its own. Another owner ends the pairing with `other-owner`. The same owner gets the payload without the seed, since B holds it.
-- **The payload:** A's name and id, and, for a B without keys, the owner signing seed as `owner.key` holds it (32 bytes), the only owner secret a device keeps. B gets each scope's epoch key only as A sealed it to B's box key in the new manifest, and older epochs through that manifest's chain. Per scope the payload carries:
+- **The payload:** A's name and id, and, for a B without keys, the owner signing seed as `owner.key` holds it (32 bytes), the only owner secret a device keeps. The owner's box public key, which `owner.key` also holds, B takes from the verified manifests' `owner_box`. B gets each scope's epoch key only as A sealed it to B's box key in the new manifest, and older epochs through that manifest's chain. Per scope the payload carries:
   - its name, id and `embedder` setting;
   - the newest manifest version and that version's SHA-256;
   - for an `https://` scope, its URL.
@@ -150,30 +154,30 @@ B: reads c.msg, fetches and checks the manifests, writes manifests, config, then
   - the newest version lists B's id and keys;
   - B's sealed epoch key opens.
 
-  A missing or failing version refuses the whole pairing before anything is written. B then holds every version change 3's verification walks. The cost is a few small files, read once.
+  A missing or failing version refuses the whole pairing before anything is written. B then holds every version `manifest::verify_scope` walks. B fetches them through `sync::scopes::chain`. The cost is a few small files, read once.
 - **Why fetch rather than carry the manifests:** a manifest grows with its device list and epoch chain, and can pass 4 KiB. The transport holds every version anyway, and the hash sent over the authenticated channel anchors the chain.
 - **Scope selection is a boundary.**
   - B can open only the epoch keys A sealed to it, so it reads only the scopes paired. It cannot open a scope's owner copy, since no device holds the owner box secret.
   - Holding the signing seed does not let B add itself to another scope. A version under a new epoch needs a correct `chain` entry for the current one, and members check that entry against the key they hold.
-  - What B can do with the seed is disrupt: sign versions that members reject, or that change the device list. Change 3 states the guarantee, and this change repeats it: "After a confirmed revocation a revoked device, even one using the owner signing seed, cannot read anything written under later epochs; it can still disrupt by signing versions that members reject or that change the device list, which watch announces."
+  - What B can do with the seed is disrupt: sign versions that members reject, or that change the device list. `add-device-keys` states the guarantee, and this change repeats it: "After a confirmed revocation a revoked device, even one using the owner signing seed, cannot read anything written under later epochs; it can still disrupt by signing versions that members reject or that change the device list, which watch announces."
   - The same holds for a device paired into some scopes: it reads only epochs sealed to it, of the scopes it was paired into.
 
 ### Where B writes, and in what order
 
 0. **Before the exchange**, a B without keys loads or creates its pending device key in `<state>/bilbo/pair/device.key` (folder 0700, file 0600, created with `create_new`), and uses it for this run and any retry. An enrolled B answers with the device key in `keys/`, and skips step 4.
-   - It sits outside `keys/`, so change 3's rule that a `keys` folder holding one file is damaged stands.
+   - It sits outside `keys/`, so `add-device-keys`' rule that a `keys` folder holding one file is damaged stands.
    - B's checks for an enrolled device look only at `keys/`.
 1. **Verify everything:** the checks above, and that any manifest already in B's store has the same owner. A store of another owner is refused, naming both fingerprints.
-2. **Write the manifests** under `<root>/.bilbo/scopes/<scope_id>/`, through `src/manifest.rs`'s locked, create-only writer.
+2. **Write the manifests** under `<root>/.bilbo/scopes/<scope_id>/`, through `manifest::adopt` under `manifest::lock`, which writes each version as a confirmed copy, with no `.pending` marker.
 3. **Rewrite the config.**
-4. **Write the keys:** under `<state>/bilbo/keys.lock`, B removes a leftover `keys.new/` as `init` and `recover` do. `owner.key` and a copy of the pending device key go into `keys.new/`, and `swap::rename_new` moves that folder to `keys`. This is change 3's writer, so the identity appears whole. Then B removes `<state>/bilbo/pair/`. Change 3's Writing keys requirement gives that duty to every verb that writes an identity under `keys.lock`, so it covers `pair`.
+4. **Write the keys:** through `keys::write_identity`, which under `<state>/bilbo/keys.lock` removes a leftover `keys.new/` as `init` and `recover` do, writes `owner.key` and a copy of the pending device key into `keys.new/`, and moves that folder to `keys` with `host::swap::rename_new`. This is `add-device-keys`' writer, so the identity appears whole. Then B removes `<state>/bilbo/pair/`. `add-device-keys`' Writing keys requirement gives that duty to every verb that writes an identity under `keys.lock`, so it covers `pair`.
 
 - **Holding keys is what makes a device enrolled**, so a crash or a refusal before step 4 leaves B unenrolled.
   - The next `bilbo pair` reuses the pending key and so answers with the same id.
   - A finds that id already listed and writes no new version.
   - B accepts manifests of the same owner that it already holds.
   - No ghost device is left in the manifests.
-- **The config edit:** `src/config.rs` gains `set_keys(path, &[(key, value)])`. It replaces a key's line in place or appends it, keeps every other line and comment as written, and writes through `write_config`, which moves from `src/setup.rs` to `src/config.rs` unchanged, `.bak` included.
+- **The config edit:** `src/shared/config.rs` gains `set_keys(path, &[(key, value)])`. It replaces a key's line in place or appends it, keeps every other line and comment as written, writes each value through `config::quote`, and writes through `write_config`, which moves from `src/setup/apply.rs` to `src/shared/config.rs` unchanged, `.bak` included. A file that does not exist yet is created, with no `.bak`.
 - **Which keys B sets:**
   - `scope.<name>.sync`;
   - `scope.<name>.embedder = local` when either device says `local`. A stricter choice on B stays: remote embedders are where note text leaves the device, so pairing never loosens it.
@@ -197,13 +201,13 @@ B: reads c.msg, fetches and checks the manifests, writes manifests, config, then
 
 ### The mailbox on each transport
 
-- **Layout:** `pair/<nameplate>/a.msg`, `b.msg` and `c.msg`, within the layout and removal rule that add-sync's `sync-transport` spec owns. This change adds no transport spec of its own.
+- **Layout:** `pair/<nameplate>/a.msg`, `b.msg` and `c.msg`, within the layout and removal rule that add-sync's `sync-transport` spec owns. This change adds no transport spec of its own. The `Transport` trait gains one method, `sweep_mailboxes(now, age)`, which removes on `file://` each `pair/<nameplate>/` whose `a.msg` was last modified more than `age` before `now`, and does nothing on `https://`; the trait has no listing of `pair/`, and the age is a file time only the folder knows.
 - **`file://`:**
   - B removes the mailbox after reading any result but `wrong-code`. After a wrong code it leaves the mailbox in place, so a retry of the right code finds `b.msg` and says `code … was already used` at once, instead of waiting 2 minutes and reporting a missing mailbox.
   - A removes an unanswered mailbox when its code expires.
   - Every `bilbo pair` removes mailboxes whose `a.msg` was last modified more than 30 minutes ago. That covers a killed side and a mailbox left after a wrong code.
 - **`https://`:** `remove_mailbox` does nothing, and the relay deletes a nameplate 30 minutes after its first message. That is well past the 10-minute window plus B's reading of `c.msg`, and it matches the folder sweep.
-- **What pairing relies on from the relay (change 6), all in its current draft:**
+- **What pairing relies on from the relay (`add-relay`), all in its current draft:**
   - `a.msg` signed by a listed device;
   - `b.msg` as the nameplate's one unsigned message;
   - `c.msg` signed by `a.msg`'s key, so a stranger gets at most one write per nameplate and cannot create `c.msg` before A does;
@@ -212,15 +216,16 @@ B: reads c.msg, fetches and checks the manifests, writes manifests, config, then
 
 ### The verb's shape, and how it is tested
 
-- **The signature:** `pair::run(args, env, terminal: bool, answer: &mut impl BufRead, limits: &Limits, out, err)`, the shape of change 3's `device::run`.
+- **The signature:** `identity::pair::run(args, env, terminal: bool, answer: &mut dyn BufRead, limits: &Limits, out: &mut dyn FnMut(&str), err: &mut dyn FnMut(&str)) -> Result<(), Failure>`, the shape of `device::run` with the line printers `setup` and `watch` take.
   - `main` passes `stdin().is_terminal() && stderr().is_terminal()`, the locked stdin, `Limits::default()`, and two line printers, stdout and stderr with the `bilbo: ` prefix.
   - `Limits` holds the window (10 minutes), the appear and manifest waits (2 minutes each), the two poll intervals and the sweep age (30 minutes).
   - No environment variable or build mode changes any of them.
 - **Order of A's checks:** usage and config errors first, then no owner key, no syncing scope and the scope and `--via` rules, then the terminal rule, all before the sweep and the mailbox. So the binary tests reach each refusal without a terminal.
 - **Streams:** stdout carries only the result: `paired …` on A; `paired with …` and the line saying `bilbo watch` starts syncing within one cycle on B. The code, the instructions, the fingerprint and the question go to stderr. So `bilbo pair > out` hides nothing from the user, and a failed pairing leaves stdout empty, as the `cli` spec's output streams ask.
-- **Library and verb:** `src/pake.rs` is a library module with no I/O. It covers parsing and canonicalizing a code, `KeysRng`, the three message formats, the key schedule, the boxes and the fingerprint. `src/pair.rs` is the verb.
+- **Library and verb:** `src/identity/pake.rs` is a library module with no I/O. It covers parsing and canonicalizing a code, `KeysRng`, the three message formats, the key schedule, the boxes and the fingerprint. The verb is the folder `src/identity/pair/`: `mod.rs` (arguments, the checks before the mailbox, `Limits`, polling), `show.rs` (A), `join.rs` (B) and the test-only `exchange.rs`.
+- **Why `identity`:** pairing enrolls a device, writing keys and manifest versions as `bilbo device` does, and `device-pairing` is that capability's sibling. A verb may use any domain, so the verb reaches `sync::transport` and `sync::scopes` as `identity/device.rs` does, while `pake`, a library module, uses only `keys`, `phrase` and `shared::hash`, so `identity`'s library code still never uses `sync`. `sync/pair/` would also pass the cycle check, but `sync` is the replication engine `watch` drives, and the verb would then write identities from it. A folder, because A, B and the one-process exchange tests are each several hundred lines.
 - **Usage:** `bilbo pair [--scope <name>]... [--via <url>]` shows a code, and `bilbo pair <code> --via <url> [--name <name>]` joins. A first argument that does not start with `-` is a code.
-- **The exchange is tested in one process**, in `src/pair.rs`'s unit tests:
+- **The exchange is tested in one process**, in `src/identity/pair/exchange.rs`, a test-only module of the verb:
   - two threads run A and B with two `Env`s;
   - A gets `terminal = true` and a scripted answer;
   - both get millisecond `Limits`.
@@ -253,4 +258,4 @@ B: reads c.msg, fetches and checks the manifests, writes manifests, config, then
 
 ## Migration Plan
 
-Nothing to migrate. Devices enrolled through `bilbo device recover` and through `bilbo pair` hold the same files. Rolling back removes the verb. Paired devices stay enrolled, because their keys and manifests are change 3's formats.
+Nothing to migrate. Devices enrolled through `bilbo device recover` and through `bilbo pair` hold the same files. Rolling back removes the verb. Paired devices stay enrolled, because their keys and manifests are `add-device-keys`' formats.
