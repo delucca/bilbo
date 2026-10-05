@@ -9,7 +9,7 @@
 //! <root>/.bilbo/history/notes/<ULID>.jsonl   one JSON line per version, oldest first
 //! ```
 
-use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fs::{self, File, OpenOptions, TryLockError};
 use std::io::{Read, Write};
 use std::os::unix::fs::MetadataExt;
@@ -36,6 +36,11 @@ pub const ADDED: &str = "added";
 pub const EDITED: &str = "edited";
 pub const RENAMED: &str = "renamed";
 pub const RESTORED: &str = "restored";
+pub const MERGED: &str = "merged";
+/// A scope's record that a note moved out of it: its blob is `DELETED`, its file the followed version's (the writer
+/// fills it from the log, and leaves it empty when that version is not held, which stays readable), and its id the
+/// moving version's.
+pub const LEFT: &str = "left";
 
 const AT_FORMAT: &str = "%Y-%m-%dT%H:%M:%S%:z";
 
@@ -87,6 +92,11 @@ impl Version {
         self.blob == DELETED
     }
 
+    /// Whether it is a `left` record, which `is_deleted` covers too.
+    pub fn is_left(&self) -> bool {
+        self.event == LEFT
+    }
+
     /// The first 12 characters of the id, as `bilbo history` lists it.
     pub fn short(&self) -> &str {
         self.version.get(..12).unwrap_or(&self.version)
@@ -105,14 +115,29 @@ impl Version {
     }
 }
 
+/// The second line type of a note's log: the conflict version a `bilbo sync declare` named, and why its drops are
+/// intended.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Declaration {
+    pub declare: String,
+    pub reason: String,
+    pub at: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub device: Option<String>,
+}
+
+fn is_hex(s: &str) -> bool {
+    s.len() == 64 && s.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+}
+
 /// A record is readable when its hashes are hex, so a blob never names a path outside `blobs/`, and its file name is
-/// a note name, so a restore never writes a stray one.
+/// a note name, so a restore never writes a stray one. A `left` record's id is the moving version's, so nothing
+/// re-derives an id here.
 fn readable(v: &Version) -> bool {
-    let hex = |s: &str| s.len() == 64 && s.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'));
-    hex(&v.version)
-        && v.parents.iter().all(|p| hex(p))
-        && (hex(&v.blob) || v.is_deleted())
-        && parse_name(&v.file).is_ok()
+    is_hex(&v.version)
+        && v.parents.iter().all(|p| is_hex(p))
+        && (is_hex(&v.blob) || v.is_deleted())
+        && (parse_name(&v.file).is_ok() || (v.is_left() && v.file.is_empty()))
 }
 
 /// The SHA-256 over the format line, the note's id, the sorted parents, an empty line, the file name and the blob,
@@ -278,25 +303,37 @@ pub fn content(root: &Path, version: &Version) -> Result<Vec<u8>, ContentError> 
     }
 }
 
-/// A note's log as read: its versions with the bytes of each one's line, and the numbers of the complete lines that
-/// did not parse.
+/// A note's log as read: its versions with the bytes of each one's line, its declarations, and the numbers of the
+/// complete lines that did not parse.
 #[derive(Debug, Default)]
 pub struct Log {
     pub versions: Vec<Version>,
     /// `raw[i]` is the line `versions[i]` was read from, so a rewrite never re-encodes a record.
     pub raw: Vec<Vec<u8>>,
+    pub declarations: Vec<Declaration>,
+    /// `declaration_raw[i]` is the line `declarations[i]` was read from, with the number of versions before it.
+    pub declaration_raw: Vec<(usize, Vec<u8>)>,
     pub unreadable: Vec<usize>,
 }
 
 impl Log {
+    /// The last line, which is not the head the file holds once a log has several.
     pub fn latest(&self) -> Option<&Version> {
         self.versions.last()
     }
 }
 
-fn parse_line(line: &[u8]) -> Option<Version> {
-    let version: Version = serde_json::from_slice(line).ok()?;
-    readable(&version).then_some(version)
+enum Line {
+    Version(Version),
+    Declaration(Declaration),
+}
+
+fn parse_line(line: &[u8]) -> Option<Line> {
+    if let Ok(version) = serde_json::from_slice::<Version>(line) {
+        return readable(&version).then_some(Line::Version(version));
+    }
+    let declaration: Declaration = serde_json::from_slice(line).ok()?;
+    is_hex(&declaration.declare).then_some(Line::Declaration(declaration))
 }
 
 /// A last line without its newline counts when it parses and is cut when it does not.
@@ -309,9 +346,14 @@ fn parse_log(bytes: &[u8]) -> Log {
             continue;
         }
         match parse_line(line) {
-            Some(version) => {
+            Some(Line::Version(version)) => {
                 log.versions.push(version);
                 log.raw.push(line.to_vec());
+            }
+            Some(Line::Declaration(declaration)) => {
+                log.declarations.push(declaration);
+                log.declaration_raw
+                    .push((log.versions.len(), line.to_vec()));
             }
             None if !last => log.unreadable.push(n + 1),
             None => {}
@@ -353,6 +395,19 @@ pub fn note_ids(root: &Path) -> Result<Vec<String>, String> {
 /// Appends one complete line. A last line left without its newline is finished when it parses and cut when it does
 /// not, so the new line never joins a half-written one.
 pub fn append(lock: &Lock, note_id: &str, version: &Version) -> Result<(), String> {
+    append_line(lock, note_id, version)
+}
+
+/// Appends a declaration under the same rules as `append`.
+pub fn append_declaration(
+    lock: &Lock,
+    note_id: &str,
+    declaration: &Declaration,
+) -> Result<(), String> {
+    append_line(lock, note_id, declaration)
+}
+
+fn append_line(lock: &Lock, note_id: &str, entry: &impl Serialize) -> Result<(), String> {
     ensure_dirs(lock.root())?;
     let path = log_path(lock.root(), note_id);
     let existing = match fs::read(&path) {
@@ -379,31 +434,42 @@ pub fn append(lock: &Lock, note_id: &str, version: &Version) -> Result<(), Strin
                 .map_err(|e| io_message("truncate", &path, &e))?;
         }
     }
-    line.extend(serde_json::to_vec(version).map_err(|e| format!("cannot encode a version: {e}"))?);
+    line.extend(serde_json::to_vec(entry).map_err(|e| format!("cannot encode a record: {e}"))?);
     line.push(b'\n');
     file.write_all(&line)
         .and_then(|()| file.sync_all())
         .map_err(|e| io_message("append to", &path, &e))
 }
 
-/// Records `file` with `bytes` (`None` for a deletion) as the note's next version.
+/// The parent a change 1 log gives its next version: the id of the last line, none for an empty log. A log that
+/// holds several heads has no such parent, so a caller that knows the head the file held passes that instead.
+pub fn last_parents(root: &Path, note_id: &str) -> Result<Vec<String>, String> {
+    Ok(load(root, note_id)?
+        .versions
+        .pop()
+        .map(|v| v.version)
+        .into_iter()
+        .collect())
+}
+
+/// Records `file` with `bytes` (`None` for a deletion) as a version that follows `parents`: the versions the file
+/// held before this change, none for a first version, every member of a head group for a version that follows it.
 pub fn record(
     lock: &Lock,
     note_id: &str,
+    parents: &[String],
     file: &str,
     bytes: Option<&[u8]>,
     event: &str,
     at: &str,
 ) -> Result<Version, String> {
-    let latest = load(lock.root(), note_id)?.versions.pop();
     let blob = match bytes {
         Some(bytes) => write_blob(lock, bytes)?,
         None => DELETED.to_string(),
     };
-    let parents: Vec<String> = latest.iter().map(|v| v.version.clone()).collect();
     let version = Version {
-        version: version_id(note_id, &parents, file, &blob),
-        parents,
+        version: version_id(note_id, parents, file, &blob),
+        parents: parents.to_vec(),
         file: file.to_string(),
         blob,
         event: event.to_string(),
@@ -433,7 +499,8 @@ pub fn event_for(latest: Option<&Version>, current: Option<(&str, &str)>) -> Opt
     }
 }
 
-/// Compares the note's current `(file name, bytes)` with its latest version and records the difference, if any.
+/// Compares the note's current `(file name, bytes)` with the log's last line and records the difference, if any.
+/// `record_difference_after` names the version the file held instead.
 pub fn record_difference(
     lock: &Lock,
     note_id: &str,
@@ -441,17 +508,31 @@ pub fn record_difference(
     at: &str,
 ) -> Result<Option<Version>, String> {
     let latest = load(lock.root(), note_id)?.versions.pop();
+    record_difference_after(lock, note_id, latest.as_ref(), current, at)
+}
+
+/// Compares the note's current `(file name, bytes)` with `latest`, the version the file held last, and records the
+/// difference after it, if any.
+pub fn record_difference_after(
+    lock: &Lock,
+    note_id: &str,
+    latest: Option<&Version>,
+    current: Option<(&str, &[u8])>,
+    at: &str,
+) -> Result<Option<Version>, String> {
     let digest = current.map(|(_, bytes)| hash::sha256_hex(bytes));
     let seen = current
         .zip(digest.as_deref())
         .map(|((file, _), digest)| (file, digest));
-    let Some(event) = event_for(latest.as_ref(), seen) else {
+    let Some(event) = event_for(latest, seen) else {
         return Ok(None);
     };
+    let parents: Vec<String> = latest.iter().map(|v| v.version.clone()).collect();
     let version = record(
         lock,
         note_id,
-        current.map_or_else(|| latest.as_ref().map_or("", |v| &v.file), |(file, _)| file),
+        &parents,
+        current.map_or_else(|| latest.map_or("", |v| &v.file), |(file, _)| file),
         current.map(|(_, bytes)| bytes),
         event,
         at,
@@ -594,8 +675,13 @@ pub fn group(items: Vec<Result<Found, Skip>>) -> Scan {
 
 /// Records every `.bilbo-restore-<id>` file an interrupted restore left in `notes/`: as an `edited` version under
 /// the note's latest file name when no version holds its bytes, then deletes it. A file whose note has no history is
-/// left in place. Returns the messages to print.
-pub fn sweep_restore_leftovers(lock: &Lock, at: &str) -> Result<Vec<String>, String> {
+/// left in place, and so is one whose bytes are a staged version of its note (`staged` holds note id and blob hash
+/// pairs): the watcher's inbound write is still to land. Returns the messages to print.
+pub fn sweep_restore_leftovers(
+    lock: &Lock,
+    at: &str,
+    staged: &BTreeSet<(String, String)>,
+) -> Result<Vec<String>, String> {
     let dir = notes_dir(lock.root());
     let items = fs::read_dir(&dir).map_err(|e| io_message("read", &dir, &e))?;
     let mut leftovers: Vec<(String, PathBuf)> = items
@@ -617,8 +703,12 @@ pub fn sweep_restore_leftovers(lock: &Lock, at: &str) -> Result<Vec<String>, Str
             continue;
         };
         let digest = hash::sha256_hex(&bytes);
+        if staged.contains(&(id.to_string(), digest.clone())) {
+            continue;
+        }
         if log.versions.iter().all(|v| v.blob != digest) {
-            record(lock, id, &latest.file, Some(&bytes), EDITED, at)?;
+            let parents = [latest.version.clone()];
+            record(lock, id, &parents, &latest.file, Some(&bytes), EDITED, at)?;
             messages.push(format!("recorded notes/{name} from an interrupted restore"));
         }
         fs::remove_file(&path).map_err(|e| io_message("remove", &path, &e))?;
@@ -764,6 +854,114 @@ pub fn find_version<'a>(
     }
 }
 
+/// The heads of `versions`: the versions no other version lists as a parent, grouped by what they hold. A group is
+/// the heads with one file and one blob (a `left` apart from a `deleted`), sorted by id, and counts as one head: the
+/// next version follows every member. Groups are sorted by their first id. A record repeated in the log counts once,
+/// and of all the `merged` versions with the same parents only the first id is a head, even after a version follows
+/// it, so devices that hold the same versions compute the same heads.
+pub fn heads(versions: &[Version]) -> Vec<Vec<&Version>> {
+    let mut seen: HashSet<&str> = HashSet::new();
+    let unique: Vec<&Version> = versions
+        .iter()
+        .filter(|v| seen.insert(v.version.as_str()))
+        .collect();
+    let followed: HashSet<&str> = unique
+        .iter()
+        .flat_map(|v| v.parents.iter().map(String::as_str))
+        .collect();
+    fn parent_set(v: &Version) -> Vec<&str> {
+        let mut parents: Vec<&str> = v.parents.iter().map(String::as_str).collect();
+        parents.sort_unstable();
+        parents
+    }
+    let mut first_merge: HashMap<Vec<&str>, &str> = HashMap::new();
+    for v in unique.iter().filter(|v| v.event == MERGED) {
+        let first = first_merge.entry(parent_set(v)).or_insert(&v.version);
+        *first = (*first).min(v.version.as_str());
+    }
+    let mut groups: BTreeMap<(&str, &str, bool), Vec<&Version>> = BTreeMap::new();
+    for v in &unique {
+        let loser = v.event == MERGED && first_merge[&parent_set(v)] != v.version;
+        if !followed.contains(v.version.as_str()) && !loser {
+            groups
+                .entry((v.file.as_str(), v.blob.as_str(), v.is_left()))
+                .or_default()
+                .push(v);
+        }
+    }
+    let mut groups: Vec<Vec<&Version>> = groups.into_values().collect();
+    for group in &mut groups {
+        group.sort_by(|a, b| a.version.cmp(&b.version));
+    }
+    groups.sort_by(|a, b| a[0].version.cmp(&b[0].version));
+    groups
+}
+
+/// The lowest common versions of `a` and `b` (each counts as its own ancestor): the common ancestors no other common
+/// ancestor follows. A criss-cross merge has several, and versions that share none, or an id `versions` lacks, have
+/// none. Sorted by id.
+pub fn lowest_common<'a>(versions: &'a [Version], a: &str, b: &str) -> Vec<&'a Version> {
+    let by_id: HashMap<&str, &Version> = versions.iter().map(|v| (v.version.as_str(), v)).collect();
+    let ancestors = |start: &str| -> HashSet<&'a str> {
+        let mut seen = HashSet::new();
+        let mut stack: Vec<&str> = by_id
+            .get_key_value(start)
+            .map(|(id, _)| *id)
+            .into_iter()
+            .collect();
+        while let Some(id) = stack.pop() {
+            if seen.insert(id) {
+                stack.extend(
+                    by_id[id]
+                        .parents
+                        .iter()
+                        .map(String::as_str)
+                        .filter(|p| by_id.contains_key(p)),
+                );
+            }
+        }
+        seen
+    };
+    let (of_a, of_b) = (ancestors(a), ancestors(b));
+    let common: Vec<&str> = of_a.intersection(&of_b).copied().collect();
+    let mut below: HashSet<&str> = HashSet::new();
+    let mut stack: Vec<&str> = common
+        .iter()
+        .flat_map(|id| by_id[id].parents.iter().map(String::as_str))
+        .filter(|p| by_id.contains_key(p))
+        .collect();
+    while let Some(id) = stack.pop() {
+        if below.insert(id) {
+            stack.extend(
+                by_id[id]
+                    .parents
+                    .iter()
+                    .map(String::as_str)
+                    .filter(|p| by_id.contains_key(p)),
+            );
+        }
+    }
+    let mut lowest: Vec<&Version> = common
+        .into_iter()
+        .filter(|id| !below.contains(id))
+        .map(|id| by_id[id])
+        .collect();
+    lowest.sort_by(|x, y| x.version.cmp(&y.version));
+    lowest
+}
+
+/// What a prune must keep of one note on top of retention's own rules.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Hold {
+    /// These versions and every version that follows any of them: the newest versions known devices hold.
+    After(BTreeSet<String>),
+    /// The whole log: a device that holds no known version yet.
+    All,
+}
+
+/// The holds per note id. A note with no entry, like an empty guard, is pruned by retention's rules alone.
+pub type Guard = BTreeMap<String, Hold>;
+
 /// What a prune did.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct Pruned {
@@ -776,8 +974,9 @@ pub struct Pruned {
 }
 
 /// The indexes of the versions retention keeps: those at or after `cutoff`, the newest one before it, and, for a
-/// deleted note, the tombstone and the version before it. A version with an unreadable time stays.
-fn kept(versions: &[Version], cutoff: jiff::Timestamp) -> Vec<bool> {
+/// deleted note, the tombstone and the version before it, and what the note's `hold` names. A version with an
+/// unreadable time stays.
+fn kept(versions: &[Version], cutoff: jiff::Timestamp, hold: Option<&Hold>) -> Vec<bool> {
     let old = |v: &Version| v.time().is_some_and(|t| t < cutoff);
     let mut keep: Vec<bool> = versions.iter().map(|v| !old(v)).collect();
     if let Some(newest) = versions.iter().rposition(old) {
@@ -793,12 +992,43 @@ fn kept(versions: &[Version], cutoff: jiff::Timestamp) -> Vec<bool> {
             keep[last - 1] = true;
         }
     }
+    match hold {
+        None => {}
+        Some(Hold::All) => keep.fill(true),
+        Some(Hold::After(heads)) => {
+            let mut held: HashSet<&str> = versions
+                .iter()
+                .map(|v| v.version.as_str())
+                .filter(|id| heads.contains(*id))
+                .collect();
+            loop {
+                let before = held.len();
+                for v in versions {
+                    if v.parents.iter().any(|p| held.contains(p.as_str())) {
+                        held.insert(&v.version);
+                    }
+                }
+                if held.len() == before {
+                    break;
+                }
+            }
+            for (k, v) in keep.iter_mut().zip(versions) {
+                *k |= held.contains(v.version.as_str());
+            }
+        }
+    }
     keep
 }
 
 /// Drops the versions older than `keep_days` days before `now`, then removes the content no kept version names. A
-/// log with an unreadable line is left as it is and blocks every content removal.
-pub fn prune(lock: &Lock, keep_days: u32, now: jiff::Timestamp) -> Result<Pruned, String> {
+/// log with an unreadable line is left as it is and blocks every content removal. A declaration goes with the
+/// version it names.
+pub fn prune(
+    lock: &Lock,
+    keep_days: u32,
+    now: jiff::Timestamp,
+    guard: &Guard,
+) -> Result<Pruned, String> {
     let root = lock.root();
     let span = jiff::SignedDuration::from_hours(24 * i64::from(keep_days));
     let cutoff = now
@@ -821,17 +1051,35 @@ pub fn prune(lock: &Lock, keep_days: u32, now: jiff::Timestamp) -> Result<Pruned
             blocked = true;
             continue;
         }
-        let keep = kept(&log.versions, cutoff);
+        let keep = kept(&log.versions, cutoff, guard.get(&id));
         let dropped = keep.iter().filter(|k| !**k).count();
         if dropped == 0 {
             continue;
         }
-        let kept_lines: Vec<&[u8]> = log
-            .raw
+        let gone: HashSet<&str> = log
+            .versions
             .iter()
             .zip(&keep)
-            .filter_map(|(line, k)| k.then_some(line.as_slice()))
+            .filter(|(_, k)| !**k)
+            .map(|(v, _)| v.version.as_str())
             .collect();
+        let mut kept_lines: Vec<&[u8]> = Vec::new();
+        let mut declarations = log.declarations.iter().zip(&log.declaration_raw).peekable();
+        for (n, line) in log.raw.iter().enumerate() {
+            while let Some((d, (_, raw))) = declarations.next_if(|(_, (after, _))| *after <= n) {
+                if !gone.contains(d.declare.as_str()) {
+                    kept_lines.push(raw);
+                }
+            }
+            if keep[n] {
+                kept_lines.push(line);
+            }
+        }
+        for (d, (_, raw)) in declarations {
+            if !gone.contains(d.declare.as_str()) {
+                kept_lines.push(raw);
+            }
+        }
         rewrite(root, &id, &kept_lines)?;
         pruned.versions += dropped;
     }
@@ -949,6 +1197,19 @@ mod tests {
         resolve(root, arg, &scan(&root.join("notes")).unwrap())
     }
 
+    /// `record` after the log's last line, as change 1's linear logs did.
+    fn rec(
+        lock: &Lock,
+        note_id: &str,
+        file: &str,
+        bytes: Option<&[u8]>,
+        event: &str,
+        at: &str,
+    ) -> Version {
+        let parents = last_parents(lock.root(), note_id).unwrap();
+        record(lock, note_id, &parents, file, bytes, event, at).unwrap()
+    }
+
     fn id(n: u8) -> String {
         format!("01M3YJ7R6HK6NQ30DCDB1P4D{n:02}")
     }
@@ -1053,7 +1314,7 @@ mod tests {
         let root = &scratch.0;
         let lock = lock(root).unwrap();
         fs::remove_dir_all(store::history_dir(root)).unwrap();
-        record(&lock, &id(1), "plan-x.md", Some(b"text"), ADDED, NOW).unwrap();
+        rec(&lock, &id(1), "plan-x.md", Some(b"text"), ADDED, NOW);
         assert_eq!(events(root, &id(1)), ["added plan-x.md"]);
         assert_eq!(blob_files(root), 1);
     }
@@ -1063,13 +1324,13 @@ mod tests {
         let scratch = scratch("tail-kept");
         let root = &scratch.0;
         let lock = lock(root).unwrap();
-        record(&lock, &id(1), "plan-x.md", Some(b"one"), ADDED, NOW).unwrap();
+        rec(&lock, &id(1), "plan-x.md", Some(b"one"), ADDED, NOW);
         let path = log_path(root, &id(1));
         let text = fs::read_to_string(&path).unwrap();
         fs::write(&path, text.trim_end_matches('\n')).unwrap();
         assert_eq!(load(root, &id(1)).unwrap().versions.len(), 1);
 
-        record(&lock, &id(1), "plan-x.md", Some(b"two"), EDITED, NOW).unwrap();
+        rec(&lock, &id(1), "plan-x.md", Some(b"two"), EDITED, NOW);
 
         let text = fs::read_to_string(&path).unwrap();
         assert_eq!(text.lines().count(), 2);
@@ -1082,7 +1343,7 @@ mod tests {
         let scratch = scratch("tail-cut");
         let root = &scratch.0;
         let lock = lock(root).unwrap();
-        record(&lock, &id(1), "plan-x.md", Some(b"one"), ADDED, NOW).unwrap();
+        rec(&lock, &id(1), "plan-x.md", Some(b"one"), ADDED, NOW);
         let path = log_path(root, &id(1));
         let mut text = fs::read_to_string(&path).unwrap();
         text.push_str(r#"{"version":"abc"#);
@@ -1091,7 +1352,7 @@ mod tests {
         assert_eq!(log.versions.len(), 1);
         assert!(log.unreadable.is_empty());
 
-        record(&lock, &id(1), "plan-x.md", Some(b"two"), EDITED, NOW).unwrap();
+        rec(&lock, &id(1), "plan-x.md", Some(b"two"), EDITED, NOW);
 
         let log = load(root, &id(1)).unwrap();
         assert_eq!(log.versions.len(), 2);
@@ -1104,8 +1365,8 @@ mod tests {
         let scratch = scratch("chain");
         let root = &scratch.0;
         let lock = lock(root).unwrap();
-        let first = record(&lock, &id(1), "plan-x.md", Some(b"one"), ADDED, NOW).unwrap();
-        let second = record(&lock, &id(1), "plan-x.md", Some(b"two"), EDITED, NOW).unwrap();
+        let first = rec(&lock, &id(1), "plan-x.md", Some(b"one"), ADDED, NOW);
+        let second = rec(&lock, &id(1), "plan-x.md", Some(b"two"), EDITED, NOW);
         assert!(first.parents.is_empty());
         assert_eq!(second.parents, std::slice::from_ref(&first.version));
         assert_eq!(
@@ -1121,9 +1382,9 @@ mod tests {
         let root = &scratch.0;
         put(root, "decision-release.md", &id(1), "now");
         let lock = lock(root).unwrap();
-        record(&lock, &id(1), "decision-release.md", Some(b"x"), ADDED, NOW).unwrap();
-        record(&lock, &id(2), "plan-release.md", Some(b"y"), ADDED, NOW).unwrap();
-        record(&lock, &id(2), "plan-release.md", None, DELETED, NOW).unwrap();
+        rec(&lock, &id(1), "decision-release.md", Some(b"x"), ADDED, NOW);
+        rec(&lock, &id(2), "plan-release.md", Some(b"y"), ADDED, NOW);
+        rec(&lock, &id(2), "plan-release.md", None, DELETED, NOW);
 
         let named = resolved(root, "release").unwrap();
 
@@ -1142,8 +1403,8 @@ mod tests {
             } else {
                 "plan-release.md"
             };
-            record(&lock, &id(n), file, Some(b"x"), ADDED, &at).unwrap();
-            record(&lock, &id(n), file, None, DELETED, &at).unwrap();
+            rec(&lock, &id(n), file, Some(b"x"), ADDED, &at);
+            rec(&lock, &id(n), file, None, DELETED, &at);
         }
         assert_eq!(resolved(root, "release").unwrap().id, id(2));
         assert_eq!(resolved(root, "wumpus"), Err(NameError::NoHistory));
@@ -1155,7 +1416,7 @@ mod tests {
         let root = &scratch.0;
         put(root, "plan-renamed.md", &id(1), "x");
         let lock = lock(root).unwrap();
-        record(&lock, &id(1), "plan-renamed.md", Some(b"x"), ADDED, NOW).unwrap();
+        rec(&lock, &id(1), "plan-renamed.md", Some(b"x"), ADDED, NOW);
         let named = resolved(root, &id(1)).unwrap();
         assert_eq!(named.file.as_deref(), Some("plan-renamed.md"));
         assert_eq!(resolved(root, &id(2)), Err(NameError::NoHistory));
@@ -1242,10 +1503,10 @@ mod tests {
         let scratch = scratch("gone");
         let root = &scratch.0;
         let lock = lock(root).unwrap();
-        let v = record(&lock, &id(1), "plan-x.md", Some(b"text"), ADDED, NOW).unwrap();
+        let v = rec(&lock, &id(1), "plan-x.md", Some(b"text"), ADDED, NOW);
         fs::remove_file(blob_path(root, &v.blob)).unwrap();
         assert_eq!(content(root, &v), Err(ContentError::Pruned));
-        let gone = record(&lock, &id(1), "plan-x.md", None, DELETED, NOW).unwrap();
+        let gone = rec(&lock, &id(1), "plan-x.md", None, DELETED, NOW);
         assert_eq!(content(root, &gone), Err(ContentError::Deleted));
     }
 
@@ -1362,14 +1623,14 @@ mod tests {
         let scratch = scratch("sweep");
         let root = &scratch.0;
         let lock = lock(root).unwrap();
-        record(&lock, &id(1), "decision-x.md", Some(b"known"), ADDED, NOW).unwrap();
-        record(&lock, &id(2), "plan-y.md", Some(b"known"), ADDED, NOW).unwrap();
+        rec(&lock, &id(1), "decision-x.md", Some(b"known"), ADDED, NOW);
+        rec(&lock, &id(2), "plan-y.md", Some(b"known"), ADDED, NOW);
         fs::write(restore_path(root, &id(1)), "unrecorded").unwrap();
         fs::write(restore_path(root, &id(2)), "known").unwrap();
         fs::write(restore_path(root, &id(3)), "orphan").unwrap();
         fs::write(root.join("notes/.bilbo-restore-nope"), "not ours").unwrap();
 
-        let messages = sweep_restore_leftovers(&lock, NOW).unwrap();
+        let messages = sweep_restore_leftovers(&lock, NOW, &BTreeSet::new()).unwrap();
 
         assert_eq!(
             messages[0],
@@ -1396,7 +1657,7 @@ mod tests {
         let scratch = scratch("tmp");
         let root = &scratch.0;
         let lock = lock(root).unwrap();
-        let v = record(&lock, &id(1), "plan-x.md", Some(b"text"), ADDED, NOW).unwrap();
+        let v = rec(&lock, &id(1), "plan-x.md", Some(b"text"), ADDED, NOW);
         let blob_dir = blob_path(root, &v.blob).parent().unwrap().to_path_buf();
         let strays = [
             blob_dir.join(".tmp-AAA"),
@@ -1414,7 +1675,7 @@ mod tests {
 
     fn record_at(lock: &Lock, note: u8, file: &str, body: &str, event: &str, days: i64) {
         let bytes = (event != DELETED).then_some(body.as_bytes());
-        record(lock, &id(note), file, bytes, event, &days_ago(days)).unwrap();
+        rec(lock, &id(note), file, bytes, event, &days_ago(days));
     }
 
     #[test]
@@ -1427,7 +1688,7 @@ mod tests {
         }
         assert_eq!(blob_files(root), 4);
 
-        let pruned = prune(&lock, 90, now()).unwrap();
+        let pruned = prune(&lock, 90, now(), &Guard::new()).unwrap();
 
         assert_eq!(pruned.versions, 2);
         assert!(pruned.warnings.is_empty());
@@ -1439,7 +1700,7 @@ mod tests {
             .collect();
         assert_eq!(blobs, [b"c".to_vec(), b"d".to_vec()]);
         assert_eq!(blob_files(root), 2);
-        assert_eq!(prune(&lock, 90, now()).unwrap().versions, 0);
+        assert_eq!(prune(&lock, 90, now(), &Guard::new()).unwrap().versions, 0);
     }
 
     #[test]
@@ -1448,7 +1709,7 @@ mod tests {
         let root = &scratch.0;
         let lock = lock(root).unwrap();
         record_at(&lock, 1, "plan-x.md", "old", ADDED, 400);
-        assert_eq!(prune(&lock, 90, now()).unwrap().versions, 0);
+        assert_eq!(prune(&lock, 90, now(), &Guard::new()).unwrap().versions, 0);
         assert_eq!(events(root, &id(1)), ["added plan-x.md"]);
         assert_eq!(blob_files(root), 1);
     }
@@ -1462,7 +1723,7 @@ mod tests {
         record_at(&lock, 1, "plan-x.md", "last", EDITED, 300);
         record_at(&lock, 1, "plan-x.md", "", DELETED, 200);
 
-        let pruned = prune(&lock, 90, now()).unwrap();
+        let pruned = prune(&lock, 90, now(), &Guard::new()).unwrap();
 
         assert_eq!(pruned.versions, 1);
         let log = load(root, &id(1)).unwrap();
@@ -1494,7 +1755,7 @@ mod tests {
         }
         let before = blob_files(root);
 
-        let pruned = prune(&lock, 90, now()).unwrap();
+        let pruned = prune(&lock, 90, now(), &Guard::new()).unwrap();
 
         assert_eq!(
             pruned.warnings,
@@ -1512,7 +1773,7 @@ mod tests {
     fn the_cutoff_is_a_local_date() {
         let scratch = scratch("retention-date");
         let lock = lock(&scratch.0).unwrap();
-        let pruned = prune(&lock, 30, now()).unwrap();
+        let pruned = prune(&lock, 30, now(), &Guard::new()).unwrap();
         assert_eq!(pruned.cutoff.len(), 10);
         assert!(pruned.cutoff.starts_with("2026-09-"), "{}", pruned.cutoff);
     }
@@ -1561,7 +1822,7 @@ mod tests {
         );
         fs::write(&path, lines.join("\n") + "\n").unwrap();
 
-        assert_eq!(prune(&lock, 90, now()).unwrap().versions, 1);
+        assert_eq!(prune(&lock, 90, now(), &Guard::new()).unwrap().versions, 1);
 
         let after = fs::read_to_string(&path).unwrap();
         assert_eq!(after, format!("{}\n{}\n", lines[1], lines[2]));
@@ -1601,7 +1862,7 @@ mod tests {
         )
         .unwrap();
         let lock = lock(root).unwrap();
-        record(&lock, &id(1), name, Some(b"small"), ADDED, NOW).unwrap();
+        rec(&lock, &id(1), name, Some(b"small"), ADDED, NOW);
 
         for arg in ["release".to_string(), id(1)] {
             let named = resolved(root, &arg).unwrap();
@@ -1609,5 +1870,589 @@ mod tests {
             assert_eq!(named.file, None);
             assert_eq!(named.skipped, [name]);
         }
+    }
+
+    /// Writes a log of versions, each `(label, parent labels, event, days ago)`, with the label as its text, and
+    /// returns the id of each label.
+    fn dag(lock: &Lock, note: u8, specs: &[(&str, &[&str], &str, i64)]) -> HashMap<String, String> {
+        let mut ids: HashMap<String, String> = HashMap::new();
+        for (label, parents, event, days) in specs {
+            let blob = write_blob(lock, label.as_bytes()).unwrap();
+            let parents: Vec<String> = parents.iter().map(|p| ids[*p].clone()).collect();
+            let version = Version {
+                version: version_id(&id(note), &parents, "plan-x.md", &blob),
+                parents,
+                file: "plan-x.md".into(),
+                blob,
+                event: (*event).into(),
+                at: days_ago(*days),
+                ..Version::default()
+            };
+            append(lock, &id(note), &version).unwrap();
+            ids.insert((*label).into(), version.version);
+        }
+        ids
+    }
+
+    fn labels(ids: &HashMap<String, String>, versions: &[&Version]) -> Vec<String> {
+        let mut found: Vec<String> = versions
+            .iter()
+            .map(|v| {
+                ids.iter()
+                    .find(|(_, id)| **id == v.version)
+                    .unwrap()
+                    .0
+                    .clone()
+            })
+            .collect();
+        found.sort();
+        found
+    }
+
+    fn logged(root: &Path, note: u8) -> Vec<Version> {
+        load(root, &id(note)).unwrap().versions
+    }
+
+    fn held(root: &Path, note: u8, ids: &HashMap<String, String>) -> Vec<String> {
+        let versions = logged(root, note);
+        let mut found: Vec<String> = ids
+            .iter()
+            .filter(|(_, id)| versions.iter().any(|v| &v.version == *id))
+            .map(|(label, _)| label.clone())
+            .collect();
+        found.sort();
+        found
+    }
+
+    #[test]
+    fn a_record_with_and_without_the_new_fields_has_one_id() {
+        let blob = "c".repeat(64);
+        let parents = ["a".repeat(64), "b".repeat(64)];
+        let plain = Version {
+            version: version_id(&id(1), &parents, "plan-x.md", &blob),
+            parents: parents.to_vec(),
+            file: "plan-x.md".into(),
+            blob: blob.clone(),
+            event: MERGED.into(),
+            at: NOW.into(),
+            ..Version::default()
+        };
+        let full = Version {
+            device: Some("d1".into()),
+            outside: vec!["e".repeat(64)],
+            flags: vec!["stale-base".into()],
+            conflict: vec![Conflict {
+                passage: "# A".into(),
+                sides: vec!["a".repeat(12)],
+            }],
+            dropped: vec![Dropped {
+                passage: "# A".into(),
+                lines: vec!["x".into()],
+            }],
+            ..plain.clone()
+        };
+        assert_eq!(
+            version_id(&id(1), &full.parents, &full.file, &full.blob),
+            plain.version
+        );
+        let line = serde_json::to_string(&plain).unwrap();
+        for key in ["device", "outside", "flags", "conflict", "dropped"] {
+            assert!(!line.contains(key), "{line}");
+        }
+        let back: Version = serde_json::from_str(&serde_json::to_string(&full).unwrap()).unwrap();
+        assert_eq!(back, full);
+    }
+
+    #[test]
+    fn a_left_record_is_read_as_a_deletion_and_keeps_its_id() {
+        let scratch = scratch("left");
+        let root = &scratch.0;
+        let (moving, parent) = ("a".repeat(64), "b".repeat(64));
+        fs::create_dir_all(log_dir(root)).unwrap();
+        let line = format!(
+            r#"{{"version":"{moving}","parents":["{parent}"],"file":"plan-x.md","blob":"deleted","event":"left","at":"{NOW}"}}"#
+        );
+        fs::write(log_path(root, &id(1)), format!("{line}\n")).unwrap();
+
+        let log = load(root, &id(1)).unwrap();
+
+        assert!(log.unreadable.is_empty());
+        let left = &log.versions[0];
+        assert_eq!(left.version, moving);
+        assert!(left.is_left() && left.is_deleted());
+        assert_ne!(
+            version_id(&id(1), &left.parents, &left.file, &left.blob),
+            moving
+        );
+        assert_eq!(content(root, left), Err(ContentError::Deleted));
+        assert_eq!(event_for(Some(left), None), None);
+        assert_eq!(
+            event_for(Some(left), Some(("plan-x.md", &"c".repeat(64)))),
+            Some(EDITED)
+        );
+    }
+
+    #[test]
+    fn declarations_are_read_beside_versions_and_never_unreadable() {
+        let scratch = scratch("declare");
+        let root = &scratch.0;
+        let lock = lock(root).unwrap();
+        let first = rec(&lock, &id(1), "plan-x.md", Some(b"one"), ADDED, NOW);
+        let declaration = Declaration {
+            declare: first.version.clone(),
+            reason: "tidy-up".into(),
+            at: NOW.into(),
+            device: Some("d1".into()),
+        };
+        append_declaration(&lock, &id(1), &declaration).unwrap();
+        rec(&lock, &id(1), "plan-x.md", Some(b"two"), EDITED, NOW);
+
+        let log = load(root, &id(1)).unwrap();
+
+        assert!(log.unreadable.is_empty());
+        assert_eq!(log.versions.len(), 2);
+        assert_eq!(log.declarations, std::slice::from_ref(&declaration));
+        assert_eq!(log.declaration_raw[0].0, 1);
+        assert_eq!(
+            log.declaration_raw[0].1,
+            serde_json::to_vec(&declaration).unwrap()
+        );
+        assert_eq!(log.latest().unwrap().event, EDITED);
+    }
+
+    #[test]
+    fn a_declaration_with_an_unknown_field_is_read_and_one_naming_no_version_is_not() {
+        let scratch = scratch("declare-shape");
+        let root = &scratch.0;
+        let v = "a".repeat(64);
+        fs::create_dir_all(log_dir(root)).unwrap();
+        let good =
+            format!(r#"{{"declare":"{v}","reason":"r","at":"{NOW}","device":"d","sig":"zz"}}"#);
+        let bad = format!(r#"{{"declare":"nope","reason":"r","at":"{NOW}"}}"#);
+        fs::write(log_path(root, &id(1)), format!("{good}\n{bad}\n{good}\n")).unwrap();
+        let log = load(root, &id(1)).unwrap();
+        assert_eq!(log.declarations.len(), 2);
+        assert_eq!(log.unreadable, [2]);
+    }
+
+    fn head_labels(ids: &HashMap<String, String>, groups: &[Vec<&Version>]) -> Vec<Vec<String>> {
+        groups
+            .iter()
+            .map(|group| {
+                let mut found = labels(ids, group);
+                found.sort();
+                found
+            })
+            .collect()
+    }
+
+    #[test]
+    fn heads_are_the_versions_nobody_follows() {
+        let scratch = scratch("heads");
+        let lock = lock(&scratch.0).unwrap();
+        let ids = dag(
+            &lock,
+            1,
+            &[
+                ("a", &[], ADDED, 5),
+                ("b", &["a"], EDITED, 4),
+                ("c", &["a"], EDITED, 3),
+            ],
+        );
+        let versions = logged(&scratch.0, 1);
+        let mut found = head_labels(&ids, &heads(&versions));
+        found.sort();
+        assert_eq!(found, [["b"], ["c"]]);
+        assert_eq!(head_labels(&ids, &heads(&versions[..2])), [["b"]]);
+        assert!(heads(&[]).is_empty());
+    }
+
+    #[test]
+    fn heads_with_one_content_form_one_group_that_the_next_version_follows() {
+        let scratch = scratch("heads-content");
+        let root = &scratch.0;
+        let lock = lock(root).unwrap();
+        let ids = dag(
+            &lock,
+            1,
+            &[
+                ("a", &[], ADDED, 5),
+                ("t", &["a"], EDITED, 4),
+                ("u", &["a"], EDITED, 4),
+            ],
+        );
+        let mut versions = logged(root, 1);
+        let blob = versions[1].blob.clone();
+        let twin = Version {
+            version: version_id(&id(1), &[ids["u"].clone()], "plan-x.md", &blob),
+            parents: vec![ids["u"].clone()],
+            blob,
+            ..versions[1].clone()
+        };
+        versions.push(twin);
+
+        let found = heads(&versions);
+
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].len(), 2);
+        assert!(found[0][0].version < found[0][1].version);
+        let parents: Vec<String> = found[0].iter().map(|v| v.version.clone()).collect();
+        let next = Version {
+            version: version_id(&id(1), &parents, "plan-x.md", &"d".repeat(64)),
+            parents,
+            blob: "d".repeat(64),
+            ..versions[1].clone()
+        };
+        versions.push(next.clone());
+        let found = heads(&versions);
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].len(), 1);
+        assert_eq!(found[0][0].version, next.version);
+    }
+
+    #[test]
+    fn of_two_merges_with_the_same_parents_the_first_id_stays() {
+        let scratch = scratch("heads-merged");
+        let lock = lock(&scratch.0).unwrap();
+        let ids = dag(
+            &lock,
+            1,
+            &[
+                ("a", &[], ADDED, 5),
+                ("b", &["a"], EDITED, 4),
+                ("c", &["a"], EDITED, 4),
+                ("m1", &["b", "c"], MERGED, 3),
+                ("m2", &["c", "b"], MERGED, 3),
+            ],
+        );
+        let versions = logged(&scratch.0, 1);
+        let found = heads(&versions);
+        assert_eq!(found.len(), 1);
+        assert_eq!(
+            found[0][0].version,
+            ids["m1"].clone().min(ids["m2"].clone())
+        );
+    }
+
+    #[test]
+    fn the_losing_merge_stays_out_after_a_version_follows_the_winner() {
+        let scratch = scratch("heads-loser");
+        let lock = lock(&scratch.0).unwrap();
+        let ids = dag(
+            &lock,
+            1,
+            &[
+                ("a", &[], ADDED, 5),
+                ("b", &["a"], EDITED, 4),
+                ("c", &["a"], EDITED, 4),
+                ("m1", &["b", "c"], MERGED, 3),
+                ("m2", &["c", "b"], MERGED, 3),
+            ],
+        );
+        let (winner, loser) = if ids["m1"] < ids["m2"] {
+            ("m1", "m2")
+        } else {
+            ("m2", "m1")
+        };
+        let x = record(
+            &lock,
+            &id(1),
+            &[ids[winner].clone()],
+            "plan-x.md",
+            Some(b"x"),
+            EDITED,
+            NOW,
+        )
+        .unwrap();
+
+        let versions = logged(&scratch.0, 1);
+        let found = heads(&versions);
+
+        assert_eq!(found.len(), 1, "{loser} must not come back as a head");
+        assert_eq!(found[0][0].version, x.version);
+    }
+
+    #[test]
+    fn a_record_repeated_in_a_log_counts_once() {
+        let scratch = scratch("heads-dup");
+        let lock = lock(&scratch.0).unwrap();
+        let ids = dag(&lock, 1, &[("a", &[], ADDED, 5), ("b", &["a"], EDITED, 4)]);
+        let mut versions = logged(&scratch.0, 1);
+        let again = Version {
+            event: LEFT.into(),
+            blob: DELETED.into(),
+            ..versions[1].clone()
+        };
+        versions.push(again);
+        assert_eq!(head_labels(&ids, &heads(&versions)), [["b"]]);
+    }
+
+    #[test]
+    fn a_left_head_is_not_grouped_with_a_deletion() {
+        let v = |n: u8, event: &str| Version {
+            version: format!("{n:02x}").repeat(32),
+            parents: vec!["aa".repeat(32)],
+            file: "plan-x.md".into(),
+            blob: DELETED.into(),
+            event: event.into(),
+            at: NOW.into(),
+            ..Version::default()
+        };
+        let versions = [
+            Version {
+                parents: vec![],
+                ..v(0xaa, ADDED)
+            },
+            v(0xb1, DELETED),
+            v(0xb2, LEFT),
+        ];
+        assert_eq!(heads(&versions).len(), 2);
+    }
+
+    #[test]
+    fn a_left_whose_followed_version_is_unknown_stays_readable() {
+        let scratch = scratch("left-nofile");
+        let root = &scratch.0;
+        let lock = lock(root).unwrap();
+        let first = rec(
+            &lock,
+            &id(2),
+            "plan-y.md",
+            Some(b"x"),
+            ADDED,
+            &days_ago(200),
+        );
+        rec(
+            &lock,
+            &id(2),
+            "plan-y.md",
+            Some(b"z"),
+            EDITED,
+            &days_ago(150),
+        );
+        rec(&lock, &id(2), "plan-y.md", Some(b"y"), EDITED, &days_ago(1));
+        fs::create_dir_all(log_dir(root)).unwrap();
+        let line = format!(
+            r#"{{"version":"{}","parents":["{}"],"file":"","blob":"deleted","event":"left","at":"{NOW}"}}"#,
+            "a".repeat(64),
+            "b".repeat(64)
+        );
+        fs::write(log_path(root, &id(1)), format!("{line}\n")).unwrap();
+
+        let log = load(root, &id(1)).unwrap();
+        assert!(log.unreadable.is_empty());
+        assert!(log.versions[0].is_left());
+        let pruned = prune(&lock, 90, now(), &Guard::new()).unwrap();
+
+        assert!(pruned.warnings.is_empty(), "{:?}", pruned.warnings);
+        assert!(!blob_path(root, &first.blob).exists());
+    }
+
+    #[test]
+    fn the_lowest_common_version_of_a_fork_is_its_root() {
+        let scratch = scratch("lca-fork");
+        let lock = lock(&scratch.0).unwrap();
+        let ids = dag(
+            &lock,
+            1,
+            &[
+                ("a", &[], ADDED, 5),
+                ("b", &["a"], EDITED, 4),
+                ("c", &["b"], EDITED, 3),
+                ("d", &["b"], EDITED, 3),
+            ],
+        );
+        let versions = logged(&scratch.0, 1);
+        let found = lowest_common(&versions, &ids["c"], &ids["d"]);
+        assert_eq!(labels(&ids, &found), ["b"]);
+        let found = lowest_common(&versions, &ids["c"], &ids["b"]);
+        assert_eq!(labels(&ids, &found), ["b"]);
+    }
+
+    #[test]
+    fn a_criss_cross_has_several_lowest_common_versions() {
+        let scratch = scratch("lca-criss");
+        let lock = lock(&scratch.0).unwrap();
+        let ids = dag(
+            &lock,
+            1,
+            &[
+                ("a", &[], ADDED, 9),
+                ("b", &["a"], EDITED, 8),
+                ("c", &["a"], EDITED, 8),
+                ("m1", &["b", "c"], MERGED, 7),
+                ("m2", &["c", "b"], MERGED, 7),
+                ("x", &["m1"], EDITED, 6),
+                ("y", &["m2"], EDITED, 6),
+            ],
+        );
+        let versions = logged(&scratch.0, 1);
+        let found = lowest_common(&versions, &ids["x"], &ids["y"]);
+        assert_eq!(labels(&ids, &found), ["b", "c"]);
+    }
+
+    #[test]
+    fn versions_with_no_common_ancestor_have_no_lowest_common() {
+        let scratch = scratch("lca-none");
+        let lock = lock(&scratch.0).unwrap();
+        let ids = dag(&lock, 1, &[("a", &[], ADDED, 5), ("b", &[], ADDED, 5)]);
+        let versions = logged(&scratch.0, 1);
+        assert!(lowest_common(&versions, &ids["a"], &ids["b"]).is_empty());
+        assert!(lowest_common(&versions, &ids["a"], &"9".repeat(64)).is_empty());
+    }
+
+    #[test]
+    fn the_restore_sweep_leaves_a_staged_version() {
+        let scratch = scratch("sweep-staged");
+        let root = &scratch.0;
+        let lock = lock(root).unwrap();
+        rec(&lock, &id(1), "decision-x.md", Some(b"known"), ADDED, NOW);
+        rec(&lock, &id(2), "plan-y.md", Some(b"known"), ADDED, NOW);
+        fs::write(restore_path(root, &id(1)), "inbound").unwrap();
+        fs::write(restore_path(root, &id(2)), "inbound").unwrap();
+        let staged = BTreeSet::from([(id(1), hash::sha256_hex(b"inbound"))]);
+
+        let messages = sweep_restore_leftovers(&lock, NOW, &staged).unwrap();
+
+        assert!(restore_path(root, &id(1)).exists());
+        assert_eq!(events(root, &id(1)), ["added decision-x.md"]);
+        assert!(!restore_path(root, &id(2)).exists());
+        assert_eq!(
+            events(root, &id(2)),
+            ["added plan-y.md", "edited plan-y.md"]
+        );
+        assert_eq!(messages.len(), 1, "{messages:?}");
+    }
+
+    #[test]
+    fn a_prune_keeps_a_declaration_with_its_conflict_version_only() {
+        let scratch = scratch("prune-declare");
+        let root = &scratch.0;
+        let lock = lock(root).unwrap();
+        let ids = dag(
+            &lock,
+            1,
+            &[
+                ("a", &[], ADDED, 300),
+                ("b", &["a"], EDITED, 250),
+                ("c", &["b"], EDITED, 100),
+                ("d", &["c"], EDITED, 10),
+            ],
+        );
+        let declare = |label: &str| Declaration {
+            declare: ids[label].clone(),
+            reason: label.into(),
+            at: NOW.into(),
+            device: None,
+        };
+        append_declaration(&lock, &id(1), &declare("a")).unwrap();
+        append_declaration(&lock, &id(1), &declare("d")).unwrap();
+        append_declaration(&lock, &id(1), &declare("b")).unwrap();
+
+        let pruned = prune(&lock, 90, now(), &Guard::new()).unwrap();
+
+        assert_eq!(pruned.versions, 2);
+        let log = load(root, &id(1)).unwrap();
+        let reasons: Vec<&str> = log.declarations.iter().map(|d| d.reason.as_str()).collect();
+        assert_eq!(reasons, ["d"]);
+        assert!(log.unreadable.is_empty());
+    }
+
+    #[test]
+    fn a_device_away_for_longer_than_the_window_holds_its_versions() {
+        let scratch = scratch("guard-after");
+        let root = &scratch.0;
+        let lock = lock(root).unwrap();
+        let ids = dag(
+            &lock,
+            1,
+            &[
+                ("a", &[], ADDED, 120),
+                ("b", &["a"], EDITED, 100),
+                ("c", &["b"], EDITED, 10),
+            ],
+        );
+        let guard = Guard::from([(id(1), Hold::After(BTreeSet::from([ids["a"].clone()])))]);
+
+        prune(&lock, 90, now(), &guard).unwrap();
+
+        assert_eq!(held(root, 1, &ids), ["a", "b", "c"]);
+    }
+
+    #[test]
+    fn a_hold_keeps_what_follows_a_head_and_not_what_came_before() {
+        let scratch = scratch("guard-between");
+        let root = &scratch.0;
+        let lock = lock(root).unwrap();
+        let ids = dag(
+            &lock,
+            1,
+            &[
+                ("a", &[], ADDED, 300),
+                ("b", &["a"], EDITED, 250),
+                ("c", &["b"], EDITED, 200),
+                ("d", &["c"], EDITED, 150),
+                ("e", &["d"], EDITED, 100),
+                ("f", &["e"], EDITED, 10),
+            ],
+        );
+        let guard = Guard::from([(id(1), Hold::After(BTreeSet::from([ids["c"].clone()])))]);
+
+        prune(&lock, 90, now(), &guard).unwrap();
+
+        assert_eq!(held(root, 1, &ids), ["c", "d", "e", "f"]);
+    }
+
+    #[test]
+    fn a_device_that_never_acknowledged_holds_back_every_version() {
+        let scratch = scratch("guard-all");
+        let root = &scratch.0;
+        let lock = lock(root).unwrap();
+        let ids = dag(
+            &lock,
+            1,
+            &[
+                ("a", &[], ADDED, 200),
+                ("b", &["a"], EDITED, 150),
+                ("c", &["b"], EDITED, 10),
+            ],
+        );
+        let other = dag(
+            &lock,
+            2,
+            &[
+                ("a", &[], ADDED, 200),
+                ("b", &["a"], EDITED, 150),
+                ("c", &["b"], EDITED, 10),
+            ],
+        );
+        let guard = Guard::from([(id(1), Hold::All)]);
+
+        prune(&lock, 90, now(), &guard).unwrap();
+
+        assert_eq!(held(root, 1, &ids), ["a", "b", "c"]);
+        assert_eq!(held(root, 2, &other), ["b", "c"]);
+        assert_eq!(blob_files(root), 3);
+    }
+
+    #[test]
+    fn a_stale_device_holds_nothing_back() {
+        let scratch = scratch("guard-none");
+        let root = &scratch.0;
+        let lock = lock(root).unwrap();
+        let ids = dag(
+            &lock,
+            1,
+            &[
+                ("a", &[], ADDED, 200),
+                ("b", &["a"], EDITED, 150),
+                ("c", &["b"], EDITED, 100),
+                ("d", &["c"], EDITED, 10),
+            ],
+        );
+
+        prune(&lock, 90, now(), &Guard::from([(id(9), Hold::All)])).unwrap();
+
+        assert_eq!(held(root, 1, &ids), ["c", "d"]);
     }
 }

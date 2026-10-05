@@ -140,7 +140,11 @@ fn set(args: &[String], env: &store::Env) -> Result<Output, Failure> {
         };
         if lock.is_none() {
             let held = versions::lock(&root).and_then(|held| {
-                let swept = versions::sweep_restore_leftovers(&held, &versions::now_at())?;
+                let swept = versions::sweep_restore_leftovers(
+                    &held,
+                    &versions::now_at(),
+                    &Default::default(),
+                )?;
                 Ok((held, swept))
             });
             match held {
@@ -602,7 +606,9 @@ mod tests {
             "the later write stays at the hidden name"
         );
         let lock = versions::lock(&s.0).unwrap();
-        let messages = versions::sweep_restore_leftovers(&lock, &versions::now_at()).unwrap();
+        let messages =
+            versions::sweep_restore_leftovers(&lock, &versions::now_at(), &Default::default())
+                .unwrap();
         assert_eq!(messages.len(), 1);
         drop(lock);
         assert_eq!(files(&s.0), ["plan-a.md"]);
