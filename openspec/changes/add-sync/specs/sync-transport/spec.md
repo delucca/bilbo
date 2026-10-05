@@ -64,7 +64,7 @@ On a `file://` transport, when a file in its own device folder does not verify a
 - **THEN** at A's next poll the file holds its full bytes again, and B applies it
 
 ### Requirement: Segment envelope
-A segment SHALL be one JSON object with exactly the keys `format` (1), `scope`, `device`, `seq`, `epoch` (its manifest epoch), `nonce`, `ciphertext` and `sig`, the last three in padded standard base64. `ciphertext` SHALL be XChaCha20-Poly1305 under the epoch's key and the 24-byte nonce, with associated data `bilbo-segment-1`, scope, device, seq and epoch, each ending in a newline. `sig` SHALL be the device's Ed25519 signature over that data, then `nonce` and `ciphertext`, each ending in a newline.
+A segment SHALL be one JSON object with exactly the keys `format` (1), `scope`, `device`, `seq`, `epoch` (its manifest epoch), `nonce`, `ciphertext` and `sig`, the last three in padded standard base64. `ciphertext` SHALL be XChaCha20-Poly1305 under the epoch's key and the 24-byte nonce, with associated data `bilbo-segment-1`, scope, device, seq and epoch, each ending in a newline. `sig` SHALL be the device's Ed25519 signature over that data, then the decoded `nonce` and `ciphertext` bytes, each followed by a newline.
 
 #### Scenario: Nothing readable in the clear
 - **WHEN** a note with topic `release-plan` and text `ship on friday` syncs in scope `personal`
