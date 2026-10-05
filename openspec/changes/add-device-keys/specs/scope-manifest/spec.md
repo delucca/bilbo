@@ -147,7 +147,7 @@ Each scope SHALL have a random 32-byte epoch key per epoch, epochs counting from
 - **THEN** it does not open there, because its aad names the first scope's id
 
 ### Requirement: Chain check by a member
-A device that opens a version's epoch key SHALL treat the version as invalid when a `chain` entry does not open, or when the entry for an epoch whose key it opened from an earlier valid version decrypts to another key. An entry for an epoch the device never held SHALL be accepted unchecked.
+A device that opens a version's epoch key SHALL treat the version as invalid when a `chain` entry does not open, when the entry for an epoch whose key it opened from an earlier valid version decrypts to another key, or when its own `sealed` entry opens to another key for an epoch whose key it already holds. An entry for an epoch the device never held SHALL be accepted unchecked.
 
 #### Scenario: A rotation by a device that never held the current key
 - **WHEN** `personal` is at epoch 2 after `bagend` was revoked, and a correctly signed version 4 at epoch 3, sealed to every device, holds a chain entry for epoch 2 that does not decrypt to the epoch 2 key `rivendell` holds
@@ -156,6 +156,10 @@ A device that opens a version's epoch key SHALL treat the version as invalid whe
 #### Scenario: A chain entry that does not open
 - **WHEN** a correctly signed version's chain entry for epoch 1 was encrypted under the wrong key
 - **THEN** a device listed in it reports the version as invalid, and `bilbo device` exits 1
+
+#### Scenario: Another key for the current epoch
+- **WHEN** `personal` is at epoch 2, and a correctly signed version at epoch 2, sealed to every device and to the owner, seals a key other than the epoch 2 key `rivendell` holds
+- **THEN** `rivendell` reports that version as invalid, never uses its key, and `bilbo device` exits 1
 
 ### Requirement: Sealed scope name
 `name` SHALL be the scope's config name encrypted with XChaCha20-Poly1305 under the version's epoch key, with aad `bilbo-name-1`, newline, `<scope id>`, newline, `<epoch>` in decimal, as the 24-byte nonce followed by the ciphertext. bilbo SHALL find a scope's manifest by opening the names of the local manifests that list this device.
@@ -169,7 +173,7 @@ A device that opens a version's epoch key SHALL treat the version as invalid whe
 - **THEN** its name stays unread and its scope line shows `-`
 
 ### Requirement: Versions that init writes
-`init` SHALL write version 1 for a scope with a sync URL and no manifest, listing this device and every device the owner's other latest manifests list. When the config's URL differs from `transport`, comparing `https://` and `http://` URLs whole and a `file://` URL by its scheme only, it SHALL write a new version with the same epoch, in a terminal only, as the `device-identity` spec's Terminal-only forms says. It SHALL NOT add this device to a manifest that does not list it.
+`init` SHALL write version 1 for a scope with a sync URL and no manifest, listing this device and every device the owner's other latest manifests list. When the config's URL differs from `transport`, comparing `https://` and `http://` URLs whole and a `file://` URL by its scheme only, it SHALL write a new version with the same epoch, in a terminal only, as the `device-identity` spec's Terminal-only forms says. It SHALL NOT add this device to a manifest that does not list it. It SHALL match a config name through the newest version that lists this device, so a scope whose latest version dropped this device is never created again, and while a local manifest of its owner has never listed this device it SHALL create no scope id for a syncing scope it matched to no manifest, reporting that scope `unsealed`, as recover does.
 
 #### Scenario: A changed URL
 - **WHEN** `personal` is at manifest 1 pinned to `file://`, the config now says `https://relay.example.net`, and the user runs `bilbo device init` in a terminal
@@ -190,6 +194,10 @@ A device that opens a version's epoch key SHALL treat the version as invalid whe
 #### Scenario: A device a manifest dropped
 - **WHEN** an earlier version of `personal` listed this device and the latest does not, and the user runs `bilbo device init`
 - **THEN** init reports `scope - kept: <scope id>` and writes no version
+
+#### Scenario: A manifest this device never read
+- **WHEN** the store holds a manifest of this owner that has never listed this device, the config sets `scope.personal.sync` to a URL, no manifest this device can open is named `personal`, and the user runs `bilbo device init`
+- **THEN** init reports `scope - kept: <scope id>` for that manifest and `scope personal unsealed: copy the store from an enrolled device, then run bilbo device recover again`, and `<root>/.bilbo/scopes/` holds no new folder
 
 ### Requirement: Versions that recover writes
 `recover` SHALL write, for each local manifest of its owner whose latest version does not list this device, a new version with the same epoch that adds this device and seals the epoch key to it, opening the key through the `owner` entry. It SHALL write nothing for a manifest that already lists this device.
