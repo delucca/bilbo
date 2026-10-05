@@ -13,6 +13,8 @@ pub struct Env {
     pub xdg_config_home: Option<OsString>,
     pub xdg_cache_home: Option<OsString>,
     pub xdg_state_home: Option<OsString>,
+    pub claudecode: Option<OsString>,
+    pub codex_thread_id: Option<OsString>,
 }
 
 impl Env {
@@ -30,6 +32,8 @@ impl Env {
             xdg_config_home: var("XDG_CONFIG_HOME"),
             xdg_cache_home: var("XDG_CACHE_HOME"),
             xdg_state_home: var("XDG_STATE_HOME"),
+            claudecode: var("CLAUDECODE"),
+            codex_thread_id: var("CODEX_THREAD_ID"),
         }
     }
 }
@@ -75,6 +79,11 @@ pub fn library_dir(root: &Path) -> PathBuf {
     root.join("library")
 }
 
+/// `<root>/.bilbo/scopes`, where each syncing scope's signed manifests live.
+pub fn scopes_dir(root: &Path) -> PathBuf {
+    root.join(".bilbo/scopes")
+}
+
 /// `<root>/.bilbo/captures`, the local evidence of what each source was cut from.
 pub fn captures_dir(root: &Path) -> PathBuf {
     root.join(".bilbo/captures")
@@ -88,6 +97,11 @@ pub fn history_dir(root: &Path) -> PathBuf {
 /// `<state>/bilbo/staging`, where staged text waits for `library land`; `None` without a state folder.
 pub fn staging_dir(env: &Env) -> Option<PathBuf> {
     state_dir(env).map(|s| s.join("bilbo/staging"))
+}
+
+/// `<state>/bilbo/keys`, where the owner and device secrets live; `None` without a state folder.
+pub fn keys_dir(env: &Env) -> Option<PathBuf> {
+    state_dir(env).map(|s| s.join("bilbo/keys"))
 }
 
 /// `<state>/bilbo/plans`, where `library plan` writes plans and `library read` logs; `None` without a state folder.
@@ -244,7 +258,28 @@ mod tests {
             xdg_config_home: None,
             xdg_cache_home: None,
             xdg_state_home: None,
+            claudecode: None,
+            codex_thread_id: None,
         }
+    }
+
+    #[test]
+    fn identity_paths() {
+        assert_eq!(scopes_dir(Path::new("/r")), Path::new("/r/.bilbo/scopes"));
+        let e = Env::from_vars(|name| (name == "XDG_STATE_HOME").then(|| "/s".into()));
+        assert_eq!(keys_dir(&e), Some(PathBuf::from("/s/bilbo/keys")));
+        assert_eq!(keys_dir(&Env::from_vars(|_| None)), None);
+    }
+
+    #[test]
+    fn agent_markers_are_read() {
+        let e = Env::from_vars(|name| match name {
+            "CLAUDECODE" => Some("1".into()),
+            "CODEX_THREAD_ID" => Some("t".into()),
+            _ => None,
+        });
+        assert_eq!(e.claudecode.as_deref(), Some("1".as_ref()));
+        assert_eq!(e.codex_thread_id.as_deref(), Some("t".as_ref()));
     }
 
     #[test]
