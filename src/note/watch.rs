@@ -207,6 +207,7 @@ impl Watch<'_> {
             self.keep_days,
             jiff::Timestamp::now(),
             &versions::Guard::new(),
+            &Default::default(),
         )?;
         for warning in &pruned.warnings {
             self.say(warning);
