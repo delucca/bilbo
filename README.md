@@ -145,6 +145,7 @@ else `$XDG_DATA_HOME/bilbo`, else `~/.local/share/bilbo`, on macOS too.
 | `bilbo watch` | Records each change to a note; see [History](#history). |
 | `bilbo history <note> [<version> \| --diff <version> [<version>]]` | Lists a note's versions, prints one, or diffs two; see [History](#history). |
 | `bilbo restore <note> <version>` | Writes a past version back as the note's newest; see [History](#history). |
+| `bilbo device [list \| init \| recover \| revoke <device>]` | Shows and manages this device's identity; see [Devices](#devices). |
 | `bilbo setup` | See [Set up](#set-up). |
 
 `recall` prints one block per note: the path and line of the best passage, the
@@ -214,7 +215,9 @@ scope.work.marks = acme, ~/Developer/acme
 scope.default = personal
 ```
 
-- `sync` is `off`, the only value in this release and the default.
+- `sync` is `off`, the default, or a URL; see [Sync URLs](#sync-urls). A URL
+  only records where the scope will sync; `bilbo device init` makes its
+  manifest.
 - `embedder` is `any` (default) or `local`. A `local` scope's notes are never
   sent to an embedder outside this machine; see [The embedder
   rule](#the-embedder-rule).
@@ -307,6 +310,129 @@ bilbo scope set work ~/.local/share/bilbo/notes/*acme*.md
 bilbo scope set personal ~/.local/share/bilbo/notes/*.md
 bilbo check
 ```
+
+### Devices
+
+A device is one machine's copy of bilbo, and an owner is you: one identity
+that every device of yours shares. `bilbo device` creates and shows these
+identities. Nothing is uploaded or fetched yet: a scope's sync URL is recorded,
+and the transports come later.
+
+| Command | What it does |
+| --- | --- |
+| `bilbo device` | Prints this device, the owner fingerprint and one line per syncing scope. Exits 1 when it prints a problem line for a scope. |
+| `bilbo device list` | Lists the enrolled devices: name, id, and `this` for this one. |
+| `bilbo device init [--name <name>]` | Creates the recovery phrase, the owner key and this device's key, then a manifest for each scope with a sync URL. Run again, it brings the manifests in line with the config. |
+| `bilbo device recover [--name <name>]` | Rebuilds the owner key from the typed phrase on a new or wiped device and adds the device to the scopes the store holds. |
+| `bilbo device revoke <device>` | Removes a device, by name or id, from every scope that lists both it and this device, and starts a new epoch key. |
+
+The device name is the host name up to its first `.`, lowercased, unless
+`--name` gives one: lowercase words joined by single hyphens, at most 32
+characters. A device's id is derived from its key.
+
+#### Sync URLs
+
+`scope.<name>.sync` is `off`, the default, or a URL that says where the scope
+will sync:
+
+```
+scope.personal.sync = file:///Users/me/Library/Mobile Documents/bilbo
+scope.work.sync = https://relay.example.net:8443/bilbo
+scope.dev.sync = http://127.0.0.1:8740
+```
+
+- `file://` and an absolute path, taken literally: a space stays a space, and
+  `%20` is a folder named with `%20`. Put the folder a cloud service syncs here.
+- `https://<host>[:<port>][/<prefix>]`, or `http://` only to `localhost`,
+  `127.0.0.1` or `::1`.
+- No user name, password, query or fragment. A bad value is a config error
+  that names the key and exits 2.
+
+#### The ceremony
+
+`bilbo device init` on a device with no keys shows 12 words, the recovery
+phrase, and the owner fingerprint, six groups like `yb4b-5aju-v6zb-x2nm-nc5x-ompf`.
+Write both down, the fingerprint beside the words. It then asks for 3 of the
+words back, and writes nothing until they match. The phrase is the only way to
+get back into your scopes when every device is lost: lose it and every device,
+and the encrypted scopes are gone. bilbo keeps it in no file and never prints
+it to stdout.
+
+The words are drawn on the terminal's alternate screen, and when the ceremony
+ends or you cancel, they are gone from the screen and the scrollback. Before
+drawing them, bilbo stops the process from writing a core file. A recording of
+the terminal, `tmux capture-pane` while the words are up, or a person behind
+you still sees them, as they would a sheet of paper.
+
+`recover`, `revoke` and any `init` that creates a phrase or changes a scope's
+pinned URL (a folder's path is not pinned) run only in a terminal: stdin and stderr must both be one,
+and `CLAUDECODE` and `CODEX_THREAD_ID` must be unset or empty. An agent that
+runs them gets one line asking you to run the form yourself. This stops
+accidental and low-effort misuse, such as an agent that reaches for a
+one-line verb. It does not stop a hostile agent, which can unset the
+variables, fake a terminal, or copy the key files. The key files are the real
+boundary. Running `bilbo device init` again on an enrolled device needs no
+terminal, so an agent can create the manifest of a scope whose URL you added.
+
+#### Where keys live
+
+```
+<state>/bilbo/keys/
+  owner.key     0600
+  device.key    0600
+```
+
+`<state>` is `$XDG_STATE_HOME`, else `~/.local/state`. The folder is 0700. The
+keys live outside the store, so copying or backing up the store never clones
+an identity. `owner.key` holds the owner's signing seed and public key, never
+the phrase and never the owner's private box key; `device.key` holds this
+device's own keys and name. They are as safe as `~/.ssh/id_ed25519`: any
+program that runs as you can read them. A command that reads the keys refuses
+when the folder or a file grants anything to group or others, and names the
+`chmod` that fixes it. Secrets are zeroed in memory as far as bilbo can; the
+terminal emulator, swap and the prompt library's line buffers are not covered.
+
+`bilbo setup --remove` leaves the keys. To forget an identity, delete
+`<state>/bilbo/keys/` and `<root>/.bilbo/scopes/` by hand.
+
+#### A second device
+
+`bilbo device init` on a second machine would make a second owner, so it
+refuses once the store holds another owner's manifests. Instead, copy the store
+to the new machine first, with the sync tool you already use or a plain copy,
+then run `bilbo device recover` and type the phrase. recover shows the
+fingerprint it derived; when a manifest in the store vouches for the phrase it
+asks nothing more, and otherwise it asks you to compare the fingerprint with
+the one you wrote down. It then writes this device's keys and adds the device
+to every scope of yours the store holds. A syncing scope with no manifest in the copied
+store is reported `unsealed`: bring its manifest over and run `recover` again.
+Never run `init` for it, which would fork the scope.
+
+#### Revoking a device
+
+`bilbo device revoke bagend`, in a terminal on another device, writes a new
+version of each scope that lists both `bagend` and this device, under a new epoch key sealed only to
+the remaining devices and to you. After a confirmed revocation a revoked device, even one using the owner signing seed, cannot read anything written under later epochs; it can still disrupt by signing versions that members reject or that change the device list, which watch announces.
+
+That holds for the revoked device's own keys. Until the revocation is confirmed it still holds the current epoch key and can add a device of its own, which the new epoch is then sealed to, so run `bilbo device list` after revoking and revoke any device you do not recognise.
+
+What it does not do: the revoked device keeps every note and key it already
+had, and until the revoking version is confirmed writers keep using the old
+epoch. A scope that syncs through a `file://` folder also leaves the revoked
+device with write access to the folder, so `revoke` prints a line telling you
+to remove it from the cloud account that syncs the folder. Holding the owner
+seed, it can also create scopes of its own, one of them named like a scope you
+have not added yet; check the devices `bilbo device` shows for a new scope.
+
+When a revoked device keeps disrupting, the remedy is a new owner, done by
+hand:
+
+1. On a trusted device, move `<state>/bilbo/keys/` and `<root>/.bilbo/scopes/`
+   aside.
+2. Run `bilbo device init`, which makes a new phrase, a new owner and new scope
+   ids.
+3. Recover the other devices from the new phrase, and give any relay the new
+   fingerprint.
 
 ### Library
 
@@ -850,7 +976,7 @@ embedder.model = nomic-embed-text
 | `digest.enable` | `off` turns [the digest](#the-digest) off: the hook prints nothing and writes nothing. `on` by default. |
 | `digest.min_similarity` | How close a passage must be to enter the digest when an embedder answers, 0 to 1. Default 0.55. |
 | `digest.log` | `on` appends each digest run to the digest log. `off` by default. |
-| `scope.<name>.sync`, `scope.<name>.embedder`, `scope.<name>.paths`, `scope.<name>.marks` | Declare the scope `<name>`; see [Scopes](#scopes). `sync` is `off`, `embedder` is `any` or `local`, the others comma-separated lists. |
+| `scope.<name>.sync`, `scope.<name>.embedder`, `scope.<name>.paths`, `scope.<name>.marks` | Declare the scope `<name>`; see [Scopes](#scopes). `sync` is `off` or a [URL](#sync-urls), `embedder` is `any` or `local`, the others comma-separated lists. |
 | `scope.default` | The declared scope `bilbo new` falls back on. |
 | `history.keep_days` | A whole number of days, 1 to 3650: the age past which `bilbo watch` prunes versions, under [the retention rule](#history). 90 by default. |
 
