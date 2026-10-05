@@ -5,6 +5,8 @@ pub mod ceremony;
 pub mod device;
 pub mod keys;
 pub mod manifest;
+pub mod pair;
+pub mod pake;
 pub mod phrase;
 #[cfg(test)]
 pub mod script;
