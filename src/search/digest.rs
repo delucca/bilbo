@@ -1,9 +1,11 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::io::{Read, Write};
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime};
 
+use crate::note;
+use crate::note::conflicts::{self, Entry};
 use crate::search::rank::{self, Document, Hit};
 use crate::search::{documents, embed, vectors};
 use crate::shared::{config, store, text};
@@ -22,6 +24,9 @@ const SESSION_AGE: Duration = Duration::from_secs(30 * 24 * 60 * 60);
 const LONG_WORD_CHARS: usize = 4;
 const KEYWORD_GATE: usize = 3;
 const SESSION_MAX: usize = 128;
+const LISTED_WAITING: usize = 3;
+/// The line of a session's memory that says the sync conflicts were raised; a path never reads like it.
+const RAISED: &str = "sync conflicts raised";
 
 pub struct Outcome {
     /// stdout lines; empty means no digest.
@@ -45,6 +50,8 @@ struct Passed<'a> {
     path: &'a Path,
     kind: &'a str,
     created: Option<&'a str>,
+    /// `conflict` or `auto-merged`, from the open-conflict summary.
+    label: Option<&'static str>,
     hit: Hit,
 }
 
@@ -137,10 +144,111 @@ fn digest(
         );
     }
     record.session = Some(session.to_string());
-    let Some(query) = query(prompt) else {
-        return Ok(Vec::new());
+    let ranked = match query(prompt) {
+        Some(query) => ranked(&query, env, settings, start, record)?,
+        None => {
+            let Ok(root) = store::root(env) else {
+                return Ok(Vec::new());
+            };
+            Ranked {
+                root,
+                documents: Vec::new(),
+                found: Vec::new(),
+                order: Vec::new(),
+            }
+        }
     };
-    let words = text::words(&query);
+    let Ranked {
+        root,
+        documents,
+        found,
+        order,
+    } = ranked;
+    record.passed = order.len();
+    let by_path = match sync_state(&root, &found) {
+        Ok(state) => state,
+        Err(e) => {
+            record.error.get_or_insert(e);
+            Default::default()
+        }
+    };
+    let mut waiting: Vec<&Path> = by_path
+        .iter()
+        .filter(|(_, entry)| entry.waits())
+        .map(|(path, _)| path.as_path())
+        .collect();
+    waiting.sort();
+    if order.is_empty() && waiting.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let sessions = store::cache_dir(env)
+        .ok_or("cannot find the cache folder: set XDG_CACHE_HOME, or HOME, to an absolute path")?
+        .join("sessions");
+    let memory = sessions.join(session);
+    let (first, before) = match std::fs::read_to_string(&memory) {
+        Ok(text) => (false, text.lines().map(str::to_string).collect()),
+        Err(e)
+            if matches!(
+                e.kind(),
+                std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
+            ) =>
+        {
+            (true, Vec::<String>::new())
+        }
+        Err(e) => return Err(format!("cannot read {}: {e}", memory.display())),
+    };
+    let fresh: Vec<Passed> = order
+        .into_iter()
+        .map(|hit| {
+            let (path, kind, created) = &found[hit.document];
+            Passed {
+                path,
+                kind,
+                created: created.as_deref(),
+                label: by_path.get(path.as_path()).and_then(Entry::label),
+                hit,
+            }
+        })
+        .filter(|p| !before.iter().any(|b| Path::new(b) == p.path))
+        .collect();
+    let cap = if first { FIRST } else { LATER };
+    let raise = first && !waiting.is_empty();
+    let (lines, shown) = block(&fresh, cap, &documents, raise.then_some(&waiting[..]));
+    if shown.is_empty() && !raise {
+        return Ok(Vec::new());
+    }
+    let mut text: String = before.iter().map(|line| format!("{line}\n")).collect();
+    for path in &shown {
+        text.push_str(path);
+        text.push('\n');
+    }
+    if raise {
+        text.push_str(RAISED);
+        text.push('\n');
+    }
+    remember(&sessions, &memory, &text)?;
+    record.shown = shown;
+    Ok(lines)
+}
+
+/// What ranking found: the store, its notes and the ones that passed the gate, best first.
+struct Ranked {
+    root: PathBuf,
+    documents: Vec<Document>,
+    found: Vec<(PathBuf, String, Option<String>)>,
+    order: Vec<Hit>,
+}
+
+/// Ranks the notes for `query`. An embedder that fails is only noted in `record.error`.
+fn ranked(
+    query: &str,
+    env: &store::Env,
+    settings: &config::Settings,
+    start: Instant,
+    record: &mut Record,
+) -> Result<Ranked, String> {
+    let words = text::words(query);
 
     let root = store::root(env)?;
     let notes = root.join("notes");
@@ -172,7 +280,7 @@ fn digest(
         match meaning(
             embedder,
             &cache,
-            &query,
+            query,
             &documents,
             &withheld,
             settings.digest.min_similarity,
@@ -223,52 +331,12 @@ fn digest(
             order.push(*hit);
         }
     }
-    record.passed = order.len();
-    if order.is_empty() {
-        return Ok(Vec::new());
-    }
-
-    let sessions = store::cache_dir(env)
-        .ok_or("cannot find the cache folder: set XDG_CACHE_HOME, or HOME, to an absolute path")?
-        .join("sessions");
-    let memory = sessions.join(session);
-    let (first, before) = match std::fs::read_to_string(&memory) {
-        Ok(text) => (false, text.lines().map(str::to_string).collect()),
-        Err(e)
-            if matches!(
-                e.kind(),
-                std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
-            ) =>
-        {
-            (true, Vec::<String>::new())
-        }
-        Err(e) => return Err(format!("cannot read {}: {e}", memory.display())),
-    };
-    let fresh: Vec<Passed> = order
-        .into_iter()
-        .map(|hit| {
-            let (path, kind, created) = &found[hit.document];
-            Passed {
-                path,
-                kind,
-                created: created.as_deref(),
-                hit,
-            }
-        })
-        .filter(|p| !before.iter().any(|b| Path::new(b) == p.path))
-        .collect();
-    let (lines, shown) = block(&fresh, if first { FIRST } else { LATER }, &documents);
-    if shown.is_empty() {
-        return Ok(Vec::new());
-    }
-    let mut text: String = before.iter().map(|line| format!("{line}\n")).collect();
-    for path in &shown {
-        text.push_str(path);
-        text.push('\n');
-    }
-    remember(&sessions, &memory, &text)?;
-    record.shown = shown;
-    Ok(lines)
+    Ok(Ranked {
+        root,
+        documents,
+        found,
+        order,
+    })
 }
 
 /// The passages that pass the meaning gate, best first, or why the embedder gave no answer.
@@ -330,23 +398,33 @@ fn is_session(id: &str) -> bool {
 }
 
 /// The block for at most `cap` of `fresh`, dropping notes from the end until it fits
-/// `BLOCK_BYTES`, and the paths it lists.
-fn block(fresh: &[Passed], cap: usize, documents: &[Document]) -> (Vec<String>, Vec<String>) {
+/// `BLOCK_BYTES`, and the paths it lists. `waiting` adds the `Sync conflicts` line; with no note
+/// shown the block is then the header and that line.
+fn block(
+    fresh: &[Passed],
+    cap: usize,
+    documents: &[Document],
+    waiting: Option<&[&Path]>,
+) -> (Vec<String>, Vec<String>) {
     let left = fresh.len();
     let mut shown = cap.min(left);
-    while shown > 0 {
-        let mut lines = vec![
-            format!("<!-- bilbo digest: {shown} of {left} notes -->"),
-            "Notes that may bear on this prompt (open the file to read more):".to_string(),
-        ];
+    loop {
+        let mut lines = vec![format!("<!-- bilbo digest: {shown} of {left} notes -->")];
+        if shown > 0 {
+            lines.push(
+                "Notes that may bear on this prompt (open the file to read more):".to_string(),
+            );
+        }
         for note in &fresh[..shown] {
             let passage = &documents[note.hit.document].passages[note.hit.passage];
+            let label = note.label.map(|l| format!(", {l}")).unwrap_or_default();
             lines.push(format!(
-                "- {}:{} ({}, {}) {}: {}",
+                "- {}:{} ({}, {}{}) {}: {}",
                 note.path.display(),
                 passage.line,
                 note.kind,
                 note.created.unwrap_or("-"),
+                label,
                 passage.path.join(" > "),
                 rank::snippet(passage)
             ));
@@ -357,6 +435,9 @@ fn block(fresh: &[Passed], cap: usize, documents: &[Document]) -> (Vec<String>, 
                 left - shown
             ));
         }
+        if let Some(waiting) = waiting {
+            lines.push(waiting_line(waiting));
+        }
         if lines.iter().map(|line| line.len() + 1).sum::<usize>() <= BLOCK_BYTES {
             let paths = fresh[..shown]
                 .iter()
@@ -364,9 +445,56 @@ fn block(fresh: &[Passed], cap: usize, documents: &[Document]) -> (Vec<String>, 
                 .collect();
             return (lines, paths);
         }
+        if shown == 0 {
+            return (Vec::new(), Vec::new());
+        }
         shown -= 1;
     }
-    (Vec::new(), Vec::new())
+}
+
+/// `Sync conflicts wait in: <path>, ... (run bilbo check)`, naming `LISTED_WAITING` paths.
+fn waiting_line(waiting: &[&Path]) -> String {
+    let mut names: Vec<String> = waiting
+        .iter()
+        .take(LISTED_WAITING)
+        .map(|path| path.display().to_string())
+        .collect();
+    if waiting.len() > LISTED_WAITING {
+        names.push(format!("and {} more", waiting.len() - LISTED_WAITING));
+    }
+    format!(
+        "Sync conflicts wait in: {} (run bilbo check)",
+        names.join(", ")
+    )
+}
+
+/// The notes of the store that the open-conflict summary has an entry for, by their path now. Only
+/// the entries that label or raise are kept, and the summary is read only when it exists. A note
+/// is matched by its id, because an entry's file name is stale after a rename.
+fn sync_state(
+    root: &Path,
+    found: &[(PathBuf, String, Option<String>)],
+) -> Result<HashMap<PathBuf, Entry>, String> {
+    let path = conflicts::path(root);
+    let mut summary =
+        conflicts::read(root).map_err(|e| format!("cannot read {}: {e}", path.display()))?;
+    summary
+        .notes
+        .retain(|_, entry| entry.waits() || entry.merged);
+    let mut by_path = HashMap::new();
+    if summary.notes.is_empty() {
+        return Ok(by_path);
+    }
+    for (note, _, _) in found {
+        let Ok(bytes) = std::fs::read(note) else {
+            continue;
+        };
+        let id = note::read(&String::from_utf8_lossy(&bytes)).id;
+        if let Some(entry) = id.and_then(|id| summary.notes.remove(&id)) {
+            by_path.insert(note.clone(), entry);
+        }
+    }
+    Ok(by_path)
 }
 
 /// Writes the session's memory through a temporary file and a rename.
@@ -507,6 +635,7 @@ mod tests {
                 path,
                 kind: "note",
                 created: None,
+                label: None,
                 hit: Hit {
                     document,
                     passage: 0,
@@ -516,9 +645,42 @@ mod tests {
     }
 
     #[test]
+    fn waiting_line_names_three_paths_and_counts_the_rest() {
+        let paths: Vec<PathBuf> = (1..=5)
+            .map(|n| PathBuf::from(format!("/n/{n}.md")))
+            .collect();
+        let all: Vec<&Path> = paths.iter().map(PathBuf::as_path).collect();
+        assert_eq!(
+            waiting_line(&all[..3]),
+            "Sync conflicts wait in: /n/1.md, /n/2.md, /n/3.md (run bilbo check)"
+        );
+        assert_eq!(
+            waiting_line(&all),
+            "Sync conflicts wait in: /n/1.md, /n/2.md, /n/3.md, and 2 more (run bilbo check)"
+        );
+    }
+
+    #[test]
+    fn labelled_note_and_waiting_line_stay_within_the_block_limit() {
+        let (documents, paths) = fixture(6, &"x".repeat(2000));
+        let waiting = [Path::new("/n/1.md")];
+        let (lines, shown) = block(&passed(&paths), FIRST, &documents, Some(&waiting));
+        assert_eq!(shown.len(), 4);
+        assert_eq!(
+            lines.last().unwrap(),
+            "Sync conflicts wait in: /n/1.md (run bilbo check)"
+        );
+        assert!(lines.iter().map(|l| l.len() + 1).sum::<usize>() <= BLOCK_BYTES);
+        let (lines, shown) = block(&[], FIRST, &documents, Some(&waiting));
+        assert!(shown.is_empty());
+        assert_eq!(lines[0], "<!-- bilbo digest: 0 of 0 notes -->");
+        assert_eq!(lines.len(), 2);
+    }
+
+    #[test]
     fn block_drops_notes_from_the_end_to_fit() {
         let (documents, paths) = fixture(6, &"x".repeat(2000));
-        let (lines, shown) = block(&passed(&paths), FIRST, &documents);
+        let (lines, shown) = block(&passed(&paths), FIRST, &documents, None);
         assert_eq!(
             shown,
             [
@@ -539,7 +701,7 @@ mod tests {
     #[test]
     fn block_has_no_overflow_line_when_all_fit() {
         let (documents, paths) = fixture(2, "Title");
-        let (lines, shown) = block(&passed(&paths), FIRST, &documents);
+        let (lines, shown) = block(&passed(&paths), FIRST, &documents, None);
         assert_eq!(shown.len(), 2);
         assert_eq!(lines.len(), 4);
         assert!(!lines.iter().any(|l| l.contains("more passed")));

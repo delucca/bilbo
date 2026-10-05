@@ -131,6 +131,50 @@ fn backdate(path: &Path, days: u64) {
         .unwrap();
 }
 
+/// A note of its own id that holds three of `PROMPT`'s long words.
+fn sync_note(rig: &Rig, name: &str, id: &str) {
+    write(
+        &rig.root,
+        name,
+        &format!(
+            "---\nid: {id}\ncreated: {CREATED}\n---\n\n# Slots\n\nThe embedder livelocks, a livelock on chunks.\n"
+        ),
+    );
+}
+
+fn id(n: usize) -> String {
+    format!("01M3YJ7R6HK6NQ30DCDB1P{n:04}")
+}
+
+/// An `open.json` entry with one open conflict.
+fn conflict(file: &str) -> serde_json::Value {
+    serde_json::json!({
+        "file": file,
+        "conflict": [{"version": "v1", "passage": "Slots", "sides": ["v2", "v3"]}],
+    })
+}
+
+fn open_json(rig: &Rig, entries: serde_json::Value) {
+    let dir = rig.root.join(".bilbo/sync");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("open.json"),
+        serde_json::json!({"notes": entries}).to_string(),
+    )
+    .unwrap();
+}
+
+fn waits(rig: &Rig, names: &[&str]) -> String {
+    let paths: Vec<String> = names
+        .iter()
+        .map(|n| format!("{}/notes/{n}", rig.root.display()))
+        .collect();
+    format!(
+        "Sync conflicts wait in: {} (run bilbo check)",
+        paths.join(", ")
+    )
+}
+
 #[test]
 fn input_claude_payload() {
     let rig = Rig::new("digest-claude", &[]);
@@ -791,6 +835,17 @@ fn digest_over_a_6_mib_store_is_fast() {
     let config = config(&dir, &[url.as_str(), "embedder.model = test-model"]);
     let rig = Rig { dir, root, config };
     rig.index();
+    let mut entries = serde_json::Map::new();
+    for n in 0..400 {
+        let mut entry = conflict(&format!("gotcha-bench-{n}.md"));
+        entry["dropped"] = serde_json::json!([{
+            "conflict": "v1",
+            "passage": "Section 0 > Part 1",
+            "lines": vec!["a dropped line of about eighty characters, kept in the summary as is"; 120],
+        }]);
+        entries.insert(if n == 0 { IDS[0].to_string() } else { id(n) }, entry);
+    }
+    open_json(&rig, entries.into());
     fake.delay(Duration::from_millis(100));
     let prompt = "embedder timeout decisao";
     rig.digest("warm", prompt);
@@ -1003,4 +1058,298 @@ fn gate_an_all_withheld_store_ranks_by_keywords_and_asks_nothing() {
     assert_eq!(last["ranking"], "keywords");
     assert!(last.get("error").is_none_or(|e| e.is_null()), "{last}");
     assert!(fake.requests().is_empty());
+}
+
+#[test]
+fn sync_a_conflicted_note_is_labelled() {
+    let rig = Rig::new("digest-sync-conflict", &[]);
+    sync_note(&rig, "gotcha-nix.md", &id(1));
+    open_json(
+        &rig,
+        serde_json::json!({ id(1): conflict("gotcha-nix.md") }),
+    );
+    let run = rig.digest("abc", PROMPT);
+    let lines: Vec<&str> = run.stdout.lines().collect();
+    assert_eq!(lines.len(), 4, "{}", run.stdout);
+    assert_eq!(lines[0], "<!-- bilbo digest: 1 of 1 notes -->");
+    assert_eq!(
+        lines[2],
+        format!(
+            "- {}/notes/gotcha-nix.md:6 (gotcha, {CREATED}, conflict) Slots: The embedder livelocks, a livelock on chunks.",
+            rig.root.display()
+        )
+    );
+    assert_eq!(lines[3], waits(&rig, &["gotcha-nix.md"]));
+}
+
+#[test]
+fn sync_undeclared_dropped_text_is_a_conflict_too() {
+    let rig = Rig::new("digest-sync-dropped", &[]);
+    sync_note(&rig, "gotcha-nix.md", &id(1));
+    open_json(
+        &rig,
+        serde_json::json!({ id(1): {
+            "file": "gotcha-nix.md",
+            "dropped": [{"conflict": "v1", "passage": "Slots", "lines": ["a line"]}],
+        }}),
+    );
+    let run = rig.digest("abc", PROMPT);
+    assert!(
+        run.stdout
+            .contains(&format!("(gotcha, {CREATED}, conflict)")),
+        "{}",
+        run.stdout
+    );
+    assert!(
+        run.stdout.contains("Sync conflicts wait in:"),
+        "{}",
+        run.stdout
+    );
+}
+
+#[test]
+fn sync_an_auto_merged_note_is_labelled_and_raises_nothing() {
+    let rig = Rig::new("digest-sync-merged", &[]);
+    sync_note(&rig, "plan-release.md", &id(1));
+    open_json(
+        &rig,
+        serde_json::json!({ id(1): {"file": "plan-release.md", "merged": true} }),
+    );
+    let run = rig.digest("abc", PROMPT);
+    assert!(
+        run.stdout
+            .contains(&format!("(plan, {CREATED}, auto-merged)")),
+        "{}",
+        run.stdout
+    );
+    assert!(!run.stdout.contains("Sync conflicts"), "{}", run.stdout);
+}
+
+#[test]
+fn sync_a_waiting_note_that_was_also_merged_reads_conflict() {
+    let rig = Rig::new("digest-sync-both", &[]);
+    sync_note(&rig, "gotcha-nix.md", &id(1));
+    let mut entry = conflict("gotcha-nix.md");
+    entry["merged"] = true.into();
+    open_json(&rig, serde_json::json!({ id(1): entry }));
+    let run = rig.digest("abc", PROMPT);
+    assert!(run.stdout.contains(", conflict)"), "{}", run.stdout);
+    assert!(!run.stdout.contains("auto-merged"), "{}", run.stdout);
+}
+
+#[test]
+fn sync_a_notice_alone_labels_nothing() {
+    let rig = Rig::new("digest-sync-notice", &[]);
+    sync_note(&rig, "gotcha-nix.md", &id(1));
+    open_json(
+        &rig,
+        serde_json::json!({ id(1): {
+            "file": "gotcha-nix.md",
+            "notices": [{"at": "2026-10-04T10:00:00Z", "flag": "a flag"}],
+            "left": [{"scope": "work", "at": "2026-10-01T10:00:00Z"}],
+        }}),
+    );
+    let run = rig.digest("abc", PROMPT);
+    assert!(
+        run.stdout.contains(&format!("(gotcha, {CREATED}) ")),
+        "{}",
+        run.stdout
+    );
+    assert!(!run.stdout.contains("Sync conflicts"), "{}", run.stdout);
+}
+
+#[test]
+fn sync_conflicts_alone_follow_the_empty_header() {
+    let rig = Rig::new("digest-sync-alone", &[]);
+    write(&rig.root, "gotcha-nix.md", &note("Nix", "Unrelated.\n"));
+    open_json(
+        &rig,
+        serde_json::json!({ IDS[0]: conflict("gotcha-nix.md") }),
+    );
+    let run = rig.digest("abc", PROMPT);
+    assert!(run.stderr.is_empty(), "{}", run.stderr);
+    assert_eq!(
+        run.stdout,
+        format!(
+            "<!-- bilbo digest: 0 of 0 notes -->\n{}\n",
+            waits(&rig, &["gotcha-nix.md"])
+        )
+    );
+}
+
+#[test]
+fn sync_conflicts_are_raised_once_per_session() {
+    let rig = Rig::new("digest-sync-once", &[]);
+    sync_note(&rig, "gotcha-nix.md", &id(1));
+    open_json(
+        &rig,
+        serde_json::json!({ id(1): conflict("gotcha-nix.md") }),
+    );
+    let first = rig.digest("abc", PROMPT);
+    assert!(
+        first.stdout.contains("Sync conflicts wait in"),
+        "{}",
+        first.stdout
+    );
+    sync_note(&rig, "gotcha-other.md", &id(2));
+    let later = rig.digest("abc", PROMPT);
+    assert!(later.stdout.contains("gotcha-other.md"), "{}", later.stdout);
+    assert!(!later.stdout.contains("Sync conflicts"), "{}", later.stdout);
+    assert!(!later.stdout.contains("gotcha-nix.md"), "{}", later.stdout);
+    let other = rig.digest("def", PROMPT);
+    assert!(
+        other.stdout.contains("Sync conflicts wait in"),
+        "{}",
+        other.stdout
+    );
+}
+
+#[test]
+fn sync_raised_conflicts_are_remembered() {
+    let rig = Rig::new("digest-sync-remembered", &[]);
+    write(&rig.root, "gotcha-nix.md", &note("Nix", "Unrelated.\n"));
+    open_json(
+        &rig,
+        serde_json::json!({ IDS[0]: conflict("gotcha-nix.md") }),
+    );
+    let first = rig.digest("abc", PROMPT);
+    assert!(
+        first.stdout.contains("Sync conflicts wait in"),
+        "{}",
+        first.stdout
+    );
+    assert!(rig.sessions().join("abc").is_file());
+    silent(&rig.digest("abc", PROMPT));
+    sync_note(&rig, "gotcha-slots.md", &id(2));
+    let later = rig.digest("abc", PROMPT);
+    assert!(later.stdout.contains("gotcha-slots.md"), "{}", later.stdout);
+    assert!(!later.stdout.contains("Sync conflicts"), "{}", later.stdout);
+}
+
+#[test]
+fn sync_a_prompt_without_a_query_still_raises_in_a_first_digest() {
+    let rig = Rig::new("digest-sync-command", &[]);
+    write(&rig.root, "gotcha-nix.md", &note("Nix", "Unrelated.\n"));
+    open_json(
+        &rig,
+        serde_json::json!({ IDS[0]: conflict("gotcha-nix.md") }),
+    );
+    let run = rig.digest("abc", "/commit");
+    assert_eq!(
+        run.stdout,
+        format!(
+            "<!-- bilbo digest: 0 of 0 notes -->\n{}\n",
+            waits(&rig, &["gotcha-nix.md"])
+        )
+    );
+}
+
+#[test]
+fn sync_names_three_conflicts_and_counts_the_rest() {
+    let rig = Rig::new("digest-sync-many", &[]);
+    let names: Vec<String> = (1..=5).map(|n| format!("gotcha-nix-{n}.md")).collect();
+    let mut entries = serde_json::Map::new();
+    for (n, name) in names.iter().enumerate() {
+        write(
+            &rig.root,
+            name,
+            &note("Nix", "Unrelated.\n").replace(IDS[0], &id(n + 1)),
+        );
+        entries.insert(id(n + 1), conflict(name));
+    }
+    open_json(&rig, entries.into());
+    let run = rig.digest("abc", PROMPT);
+    let refs: Vec<&str> = names.iter().map(String::as_str).collect();
+    let line = run.stdout.lines().nth(1).unwrap().to_string();
+    assert_eq!(run.stdout.lines().count(), 2, "{}", run.stdout);
+    assert_eq!(
+        line,
+        format!(
+            "{}, and 2 more (run bilbo check)",
+            waits(&rig, &refs[..3]).trim_end_matches(" (run bilbo check)")
+        )
+    );
+}
+
+#[test]
+fn sync_a_renamed_note_is_found_by_its_id() {
+    let rig = Rig::new("digest-sync-renamed", &[]);
+    sync_note(&rig, "gotcha-flakes.md", &id(1));
+    open_json(
+        &rig,
+        serde_json::json!({ id(1): conflict("gotcha-nix.md") }),
+    );
+    let run = rig.digest("abc", PROMPT);
+    assert!(
+        run.stdout.contains(&format!(
+            "/notes/gotcha-flakes.md:6 (gotcha, {CREATED}, conflict)"
+        )),
+        "{}",
+        run.stdout
+    );
+    assert_eq!(
+        run.stdout.lines().last().unwrap(),
+        waits(&rig, &["gotcha-flakes.md"])
+    );
+}
+
+#[test]
+fn sync_an_entry_of_a_note_that_is_gone_is_ignored() {
+    let rig = Rig::new("digest-sync-gone", &[]);
+    write(&rig.root, "gotcha-slots.md", &note("Slots", "Unrelated.\n"));
+    open_json(
+        &rig,
+        serde_json::json!({ id(9): conflict("gotcha-gone.md") }),
+    );
+    silent(&rig.digest("abc", PROMPT));
+    assert!(!rig.sessions().join("abc").exists());
+}
+
+#[test]
+fn sync_without_a_summary_labels_nothing() {
+    let rig = Rig::new("digest-sync-none", &[]);
+    hit(&rig, "gotcha-slots.md");
+    let run = rig.digest("abc", PROMPT);
+    assert!(!run.stdout.contains("conflict"), "{}", run.stdout);
+    assert!(!run.stdout.contains("auto-merged"), "{}", run.stdout);
+    assert!(!run.stdout.contains("Sync"), "{}", run.stdout);
+}
+
+#[test]
+fn sync_an_unreadable_summary_is_noted_and_the_notes_still_show() {
+    let rig = Rig::new("digest-sync-garbled", &[]);
+    hit(&rig, "gotcha-slots.md");
+    let dir = rig.root.join(".bilbo/sync");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("open.json"), "{not json").unwrap();
+    let run = rig.digest("abc", PROMPT);
+    assert!(run.stdout.contains("gotcha-slots.md"), "{}", run.stdout);
+    assert!(
+        run.stderr.starts_with("bilbo: ") && run.stderr.contains("open.json"),
+        "{}",
+        run.stderr
+    );
+}
+
+#[test]
+fn sync_the_block_with_its_conflicts_line_stays_within_9000_bytes() {
+    let rig = Rig::new("digest-sync-size", &[]);
+    let body = "The embedder livelocks, a livelock on chunks. ".repeat(60);
+    let mut entries = serde_json::Map::new();
+    for n in 0..6 {
+        write(
+            &rig.root,
+            &format!("gotcha-big-{n}.md"),
+            &note("Big", &body).replace(IDS[0], &id(n + 1)),
+        );
+        entries.insert(id(n + 1), conflict(&format!("gotcha-big-{n}.md")));
+    }
+    open_json(&rig, entries.into());
+    let run = rig.digest("abc", PROMPT);
+    assert!(run.stdout.len() <= 9000, "{}", run.stdout.len());
+    assert!(
+        run.stdout.contains("Sync conflicts wait in"),
+        "{}",
+        run.stdout
+    );
 }
