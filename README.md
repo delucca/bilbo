@@ -532,10 +532,16 @@ When one passage was changed differently on both sides, bilbo keeps both in
 the file:
 
 ```
-<<<<<<< bilbo 01JAB... 2026-10-05T09:12-03:00
+<<<<<<< bilbo 9b46cd969c2b 2026-10-05T09:12-03:00
+## Rollout
+
 Ship on Monday.
-======= bilbo 01JAC... 2026-10-05T09:40-03:00
+
+======= bilbo b1fb38126e5c 2026-10-05T09:40-03:00
+## Rollout
+
 Ship on Friday.
+
 >>>>>>> bilbo
 ```
 
@@ -622,7 +628,7 @@ scope.<name>.sync on every device`.
 To turn sync off for a scope, set `scope.<name>.sync = off` on each device. Each
 keeps its notes and history; the folder keeps what it holds, which you can
 delete once no device syncs through it. Delete the folder first, and the other
-devices report it as holding none of their scopes.
+devices report it as not reachable.
 
 #### What sync does not protect
 
