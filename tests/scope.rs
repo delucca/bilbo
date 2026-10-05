@@ -27,7 +27,10 @@ fn scope(root: &Path, config: &Path, args: &[&str]) -> common::Run {
 }
 
 fn scoped(id: &str, key: &str) -> String {
-    note_text(id, "T").replacen("---\n\n", &format!("{key}\n---\n\n"), 1)
+    match key.strip_prefix("scope: ") {
+        Some(value) if !value.contains('\n') => common::in_scope(&note_text(id, "T"), value),
+        _ => note_text(id, "T").replacen("---\n\n", &format!("{key}\n---\n\n"), 1),
+    }
 }
 
 fn path(root: &Path, name: &str) -> String {
@@ -532,4 +535,20 @@ fn a_failed_lock_keeps_the_earlier_refusals_and_exits_1() {
     );
     assert!(run.stderr.lines().count() >= 2, "{}", run.stderr);
     assert_eq!(text(&root, "plan-a.md"), note_text(IDS[0], "T"));
+}
+
+#[test]
+fn a_missing_config_file_stops_the_verb() {
+    let dir = TempDir::new("scope-missing-config");
+    let root = store(&dir);
+    let missing = dir.path().join("no-such-config");
+    let run = scope(&root, &missing, &[]);
+    assert_eq!(run.code, 2);
+    assert!(run.stdout.is_empty());
+    assert!(
+        run.stderr
+            .starts_with(&format!("bilbo: cannot read {}: ", missing.display())),
+        "{}",
+        run.stderr
+    );
 }
