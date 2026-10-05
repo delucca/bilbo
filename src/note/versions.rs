@@ -270,6 +270,11 @@ pub fn write_blob(lock: &Lock, bytes: &[u8]) -> Result<String, String> {
     Ok(blob)
 }
 
+/// A fresh `.tmp-<random>` path beside the files of `dir`, the form the watcher's start-up sweep removes.
+pub fn temp_path(dir: &Path) -> Result<PathBuf, String> {
+    Ok(dir.join(format!("{TMP_PREFIX}{}", temp_name()?)))
+}
+
 fn temp_name() -> Result<String, String> {
     mint_ulid().map_err(|e| format!("cannot mint a name: {e}"))
 }

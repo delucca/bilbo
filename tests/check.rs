@@ -2,7 +2,9 @@ mod common;
 
 use std::path::{Path, PathBuf};
 
-use common::{IDS, Run, TempDir, bilbo, bilbo_scoped, note_text, scoped, snapshot, store, write};
+use common::{
+    IDS, Run, TempDir, bilbo, bilbo_scoped, note_text, scoped, sha256_hex, snapshot, store, write,
+};
 
 fn check(dir: &TempDir, root: &Path) -> Run {
     bilbo(
@@ -981,4 +983,433 @@ fn arguments_are_checked_before_the_config() {
         "{}",
         run.stderr
     );
+}
+
+// Sync conflicts and A note that left its scope, from hand-written logs and `open.json`.
+
+const SIDE_A: &str = "<<<<<<< bilbo 3f9a2c1b0d4e 2026-10-03T14:23-03:00";
+const SIDE_B: &str = "======= bilbo 9c8d7e6f5a4b 2026-10-03T14:25-03:00";
+const END: &str = ">>>>>>> bilbo";
+
+/// The version ids the labels of `block()` start.
+fn side_ids() -> [String; 2] {
+    ["3f9a2c1b0d4e", "9c8d7e6f5a4b"].map(|label| format!("{label}{}", "0".repeat(52)))
+}
+
+fn sha(label: &str) -> String {
+    sha256_hex(label.as_bytes())
+}
+
+/// A note with a `### Flakes` passage under `## Nix`, holding `passage`.
+fn flakes(passage: &str) -> String {
+    format!(
+        "---\nid: {}\ncreated: 2026-10-02T14:23-03:00\n---\n\n# T\n\n## Nix\n\n### Flakes\n\n{passage}\n## After\n\nkept\n",
+        IDS[0]
+    )
+}
+
+fn block() -> String {
+    format!("{SIDE_A}\nuse A\nand B\n{SIDE_B}\nuse C\n{END}\n")
+}
+
+fn at_ago(hours: i64) -> String {
+    let at = jiff::Timestamp::now() - jiff::SignedDuration::from_hours(hours);
+    at.to_zoned(jiff::tz::TimeZone::system())
+        .strftime("%Y-%m-%dT%H:%M:%S%:z")
+        .to_string()
+}
+
+/// Writes `bytes` as a blob of the store's history and returns its hash.
+fn blob(root: &Path, bytes: &str) -> String {
+    let hash = sha256_hex(bytes.as_bytes());
+    let path = root.join(format!(
+        ".bilbo/history/blobs/{}/{}",
+        &hash[..2],
+        &hash[2..]
+    ));
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(path, bytes).unwrap();
+    hash
+}
+
+/// Appends one JSON line to the log of the note `IDS[0]`.
+fn log_line(root: &Path, line: serde_json::Value) {
+    use std::io::Write;
+    let dir = root.join(".bilbo/history/notes");
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut file = std::fs::OpenOptions::new()
+        .append(true)
+        .create(true)
+        .open(dir.join(format!("{}.jsonl", IDS[0])))
+        .unwrap();
+    writeln!(file, "{line}").unwrap();
+}
+
+/// The merged version of the conflicted note, recorded with its blocks.
+fn conflict_version(root: &Path, text: &str) -> String {
+    let id = sha("conflict");
+    let hash = blob(root, text);
+    log_line(
+        root,
+        serde_json::json!({"version": id, "parents": [], "file": "gotcha-nix.md", "blob": hash,
+            "event": "merged", "at": at_ago(48),
+            "conflict": [{"passage": "Nix > Flakes", "sides": side_ids()}]}),
+    );
+    id
+}
+
+fn open_json(root: &Path, entry: serde_json::Value) {
+    let dir = root.join(".bilbo/sync");
+    std::fs::create_dir_all(&dir).unwrap();
+    let summary = serde_json::json!({"notes": {IDS[0]: entry}});
+    std::fs::write(dir.join("open.json"), summary.to_string()).unwrap();
+}
+
+fn open_conflict(root: &Path, version: &str) {
+    open_json(
+        root,
+        serde_json::json!({"file": "gotcha-nix.md",
+            "conflict": [{"version": version, "passage": "Nix > Flakes", "sides": side_ids()}]}),
+    );
+}
+
+/// A store whose `notes/gotcha-nix.md` is `text`, with its conflict recorded and summarised.
+fn conflicted(name: &str, text: &str) -> (TempDir, PathBuf) {
+    conflicted_from(name, text, &flakes(&block()))
+}
+
+/// The same, with the conflict version holding `recorded`.
+fn conflicted_from(name: &str, text: &str, recorded: &str) -> (TempDir, PathBuf) {
+    let dir = TempDir::new(name);
+    let root = store(&dir);
+    write(&root, "gotcha-nix.md", text);
+    let version = conflict_version(&root, recorded);
+    open_conflict(&root, &version);
+    (dir, root)
+}
+
+#[test]
+fn an_open_conflict_is_reported() {
+    let (dir, root) = conflicted("check-conflict-open", &flakes(&block()));
+    let run = check(&dir, &root);
+    assert_eq!(run.code, 1, "{}", run.stderr);
+    assert_eq!(
+        run.stdout,
+        "notes/gotcha-nix.md: conflict: 'Nix > Flakes' holds 2 sides; keep what is right, remove the markers\n"
+    );
+}
+
+#[test]
+fn a_third_side_is_counted_from_the_file() {
+    let third = format!(
+        "{SIDE_A}\nx\n{SIDE_B}\ny\n======= bilbo 1a2b3c4d5e6f 2026-10-03T14:27-03:00\nz\n{END}\n"
+    );
+    let (dir, root) = conflicted("check-conflict-three", &flakes(&third));
+    let run = check(&dir, &root);
+    assert_eq!(
+        run.stdout,
+        "notes/gotcha-nix.md: conflict: 'Nix > Flakes' holds 3 sides; keep what is right, remove the markers\n"
+    );
+}
+
+#[test]
+fn markers_left_in_place_beside_an_edit_keep_the_conflict_open() {
+    let edited = flakes(&block()).replace("kept", "kept, and more");
+    let (dir, root) = conflicted("check-conflict-edit-elsewhere", &edited);
+    let run = check(&dir, &root);
+    assert_eq!(run.code, 1);
+    assert!(run.stdout.contains("holds 2 sides"), "{}", run.stdout);
+    assert_eq!(run.stdout.lines().count(), 1);
+}
+
+#[test]
+fn a_resolution_watch_has_not_recorded_reports_the_drops_not_the_conflict() {
+    let (dir, root) = conflicted("check-conflict-resolved-unrecorded", &flakes("use A\n"));
+    let run = check(&dir, &root);
+    assert_eq!(run.code, 1, "{}", run.stderr);
+    assert_eq!(
+        run.stdout,
+        "notes/gotcha-nix.md: conflict: dropped 2 lines of 'Nix > Flakes', first \"and B\"; restore them or run bilbo sync declare nix \"<why>\"\n"
+    );
+}
+
+#[test]
+fn keeping_every_line_of_both_sides_reports_nothing() {
+    let (dir, root) = conflicted("check-conflict-kept-all", &flakes("use C\nuse A\nand B\n"));
+    let run = check(&dir, &root);
+    assert_eq!((run.code, run.stdout.as_str()), (0, ""), "{}", run.stderr);
+}
+
+#[test]
+fn a_dropped_line_is_cut_to_80_characters() {
+    let long = "w".repeat(100);
+    let recorded = flakes(&format!("{SIDE_A}\n{long}\n{SIDE_B}\nshort\n{END}\n"));
+    let (dir, root) = conflicted_from("check-conflict-cut", &flakes("short\n"), &recorded);
+    let run = check(&dir, &root);
+    assert_eq!(
+        run.stdout,
+        format!(
+            "notes/gotcha-nix.md: conflict: dropped 1 lines of 'Nix > Flakes', first \"{}\"; restore them or run bilbo sync declare nix \"<why>\"\n",
+            "w".repeat(80)
+        )
+    );
+}
+
+#[test]
+fn a_recorded_resolution_keeps_reporting_until_the_lines_return_or_are_declared() {
+    let dir = TempDir::new("check-conflict-recorded");
+    let root = store(&dir);
+    let conflict = conflict_version(&root, &flakes(&block()));
+    let resolved = flakes("use A\n");
+    let hash = blob(&root, &resolved);
+    log_line(
+        &root,
+        serde_json::json!({"version": sha("resolved"), "parents": [conflict], "file": "gotcha-nix.md",
+            "blob": hash, "event": "edited", "at": at_ago(24),
+            "dropped": [{"passage": "Nix > Flakes", "lines": ["and B", "use C"]}]}),
+    );
+    open_json(
+        &root,
+        serde_json::json!({"file": "gotcha-nix.md",
+            "dropped": [{"conflict": conflict, "passage": "Nix > Flakes", "lines": ["and B", "use C"]}]}),
+    );
+    write(&root, "gotcha-nix.md", &resolved);
+    let run = check(&dir, &root);
+    assert_eq!(run.code, 1);
+    assert!(
+        run.stdout
+            .contains("dropped 2 lines of 'Nix > Flakes', first \"and B\"")
+    );
+
+    write(&root, "gotcha-nix.md", &flakes("use A\nand B\n"));
+    let run = check(&dir, &root);
+    assert!(
+        run.stdout
+            .contains("dropped 1 lines of 'Nix > Flakes', first \"use C\"")
+    );
+
+    write(&root, "gotcha-nix.md", &flakes("use A\nand B\nuse C\n"));
+    assert_eq!(check(&dir, &root).stdout, "");
+
+    write(&root, "gotcha-nix.md", &resolved);
+    log_line(
+        &root,
+        serde_json::json!({"declare": conflict, "reason": "B was superseded", "at": at_ago(1)}),
+    );
+    let run = check(&dir, &root);
+    assert_eq!((run.code, run.stdout.as_str()), (0, ""), "{}", run.stderr);
+}
+
+#[test]
+fn a_declaration_before_watch_records_the_save_clears_the_drops() {
+    let (dir, root) = conflicted("check-conflict-declared-early", &flakes("use A\n"));
+    log_line(
+        &root,
+        serde_json::json!({"declare": sha("conflict"), "reason": "B was superseded", "at": at_ago(1)}),
+    );
+    let run = check(&dir, &root);
+    assert_eq!((run.code, run.stdout.as_str()), (0, ""), "{}", run.stderr);
+}
+
+#[test]
+fn a_stray_marker_is_reported_with_its_line() {
+    let dir = TempDir::new("check-stray");
+    let root = store(&dir);
+    let mut text = String::from("---\nid: ");
+    text.push_str(&format!(
+        "{}\ncreated: 2026-10-02T14:23-03:00\n---\n\n# T\n\n",
+        IDS[0]
+    ));
+    text.push_str("a\nb\nc\nd\ne\nf\n>>>>>>> bilbo\n");
+    write(&root, "plan-x.md", &text);
+    assert_eq!(text.lines().position(|l| l == END), Some(13));
+    let run = check(&dir, &root);
+    assert_eq!(run.code, 1);
+    assert_eq!(
+        run.stdout,
+        "notes/plan-x.md: line 14: stray conflict marker\n"
+    );
+}
+
+#[test]
+fn a_pasted_block_without_a_record_is_stray_not_a_conflict() {
+    let dir = TempDir::new("check-stray-pasted");
+    let root = store(&dir);
+    write(&root, "gotcha-nix.md", &flakes(&block()));
+    let run = check(&dir, &root);
+    assert_eq!(run.code, 1);
+    assert_eq!(
+        run.stdout,
+        "notes/gotcha-nix.md: line 12: stray conflict marker\n\
+         notes/gotcha-nix.md: line 15: stray conflict marker\n\
+         notes/gotcha-nix.md: line 17: stray conflict marker\n"
+    );
+}
+
+#[test]
+fn quoted_markers_are_not_stray() {
+    let dir = TempDir::new("check-stray-quoted");
+    let root = store(&dir);
+    let text = format!(
+        "{}\n```\n{END}\n```\n\n{END} was here\n",
+        flakes("").trim_end()
+    );
+    write(&root, "gotcha-nix.md", &text);
+    let run = check(&dir, &root);
+    assert_eq!((run.code, run.stdout.as_str()), (0, ""), "{}", run.stderr);
+}
+
+#[test]
+fn check_leaves_the_root_as_found_with_a_conflict() {
+    let (dir, root) = conflicted("check-conflict-readonly", &flakes(&block()));
+    write(&root, "plan-x.md", "# no frontmatter\n");
+    let before = snapshot(&root);
+    let run = check(&dir, &root);
+    assert_eq!(run.code, 1);
+    assert!(run.stdout.contains("conflict:"));
+    assert_eq!(snapshot(&root), before);
+    assert!(!root.join(".bilbo/history/lock").exists());
+}
+
+#[test]
+fn an_unreadable_summary_is_a_problem_beside_the_stray_markers() {
+    let dir = TempDir::new("check-summary-garbled");
+    let root = store(&dir);
+    std::fs::create_dir_all(root.join(".bilbo/sync")).unwrap();
+    std::fs::write(root.join(".bilbo/sync/open.json"), "{").unwrap();
+    write(&root, "gotcha-nix.md", &flakes(&block()));
+    let run = check(&dir, &root);
+    assert_eq!(run.code, 1);
+    let lines = stdout_lines(&run);
+    assert_eq!(lines.len(), 4, "{lines:?}");
+    assert!(
+        lines[0].starts_with(".bilbo/sync/open.json: read: "),
+        "{lines:?}"
+    );
+    assert!(
+        lines[1..]
+            .iter()
+            .all(|l| l.ends_with("stray conflict marker"))
+    );
+}
+
+#[test]
+fn an_unreadable_log_is_a_problem() {
+    let (dir, root) = conflicted("check-log-unreadable", &flakes(&block()));
+    let log = root.join(format!(".bilbo/history/notes/{}.jsonl", IDS[0]));
+    std::fs::remove_file(&log).unwrap();
+    std::fs::create_dir(&log).unwrap();
+    let run = check(&dir, &root);
+    assert_eq!(run.code, 1);
+    assert!(
+        run.stdout.contains("notes/gotcha-nix.md: history: read: "),
+        "{}",
+        run.stdout
+    );
+}
+
+#[test]
+fn an_edit_that_leaves_the_block_keeps_the_conflict_open_from_the_log() {
+    // The entry is what `summarize` writes for a head that is an edited version holding the block: the
+    // conflict names the nearest carrier, which is not the head.
+    let dir = TempDir::new("check-conflict-edited-head");
+    let root = store(&dir);
+    let edited = flakes(&block()).replace("kept", "kept more");
+    write(&root, "gotcha-nix.md", &edited);
+    let carrier = conflict_version(&root, &flakes(&block()));
+    let hash = blob(&root, &edited);
+    log_line(
+        &root,
+        serde_json::json!({"version": sha("edit"), "parents": [carrier], "file": "gotcha-nix.md",
+            "blob": hash, "event": "edited", "at": at_ago(1)}),
+    );
+    open_conflict(&root, &carrier);
+    let run = check(&dir, &root);
+    assert_eq!(run.code, 1, "{}", run.stderr);
+    assert_eq!(
+        run.stdout,
+        "notes/gotcha-nix.md: conflict: 'Nix > Flakes' holds 2 sides; keep what is right, remove the markers\n"
+    );
+}
+
+#[test]
+fn a_heading_renamed_above_a_kept_block_keeps_the_conflict_open() {
+    let text = flakes(&block()).replace("### Flakes", "### Flake inputs");
+    let (dir, root) = conflicted("check-conflict-renamed", &text);
+    let run = check(&dir, &root);
+    assert_eq!(
+        run.stdout,
+        "notes/gotcha-nix.md: conflict: 'Nix > Flake inputs' holds 2 sides; keep what is right, remove the markers\n"
+    );
+}
+
+fn left_note(scope: Option<&str>) -> String {
+    let key = scope.map(|s| format!("scope: {s}\n")).unwrap_or_default();
+    scoped_note(IDS[0], &key, "text\n")
+}
+
+fn left_summary(root: &Path, hours: i64) {
+    open_json(
+        root,
+        serde_json::json!({"file": "plan-release.md", "left": [{"scope": "personal", "at": at_ago(hours)}]}),
+    );
+}
+
+fn check_left(name: &str, lines: &[&str], text: &str, hours: i64) -> Run {
+    let dir = TempDir::new(name);
+    let s = scoped(&dir, lines);
+    std::fs::create_dir_all(s.root.join("notes")).unwrap();
+    write(&s.root, "plan-release.md", text);
+    left_summary(&s.root, hours);
+    bilbo_scoped(&s, &s.home, &["check"])
+}
+
+#[test]
+fn a_dropped_scope_key_warns_beside_the_missing_scope_line() {
+    let run = check_left(
+        "check-left-dropped",
+        &["scope.personal.sync = off", "scope.work.sync = off"],
+        &left_note(None),
+        24,
+    );
+    assert_eq!(run.code, 1);
+    assert_eq!(
+        run.stdout,
+        "notes/plan-release.md: scope: left 'personal'; other devices of 'personal' no longer hold this note\n\
+         notes/plan-release.md: scope: missing; scopes: personal, work\n"
+    );
+}
+
+#[test]
+fn the_left_warning_alone_keeps_the_exit_code_at_zero() {
+    let run = check_left(
+        "check-left-warning",
+        &["digest.log = off"],
+        &left_note(None),
+        24,
+    );
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    assert_eq!(
+        run.stdout,
+        "notes/plan-release.md: scope: left 'personal'; other devices of 'personal' no longer hold this note\n"
+    );
+}
+
+#[test]
+fn the_left_warning_is_gone_when_the_note_is_back_or_after_30_days() {
+    let lines = ["scope.personal.sync = off"];
+    let back = check_left("check-left-back", &lines, &left_note(Some("personal")), 24);
+    assert_eq!(
+        (back.code, back.stdout.as_str()),
+        (0, ""),
+        "{}",
+        back.stderr
+    );
+    let old = check_left(
+        "check-left-old",
+        &["digest.log = off"],
+        &left_note(None),
+        24 * 31,
+    );
+    assert_eq!((old.code, old.stdout.as_str()), (0, ""), "{}", old.stderr);
 }
