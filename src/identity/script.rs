@@ -13,6 +13,12 @@ pub enum Answer {
     /// The prompt's own initial value or default.
     Default,
     Interrupt,
+    /// The word the prompt (`Word 7`) asks for, read off the phrase the last `Recovery phrase` note showed.
+    Shown,
+    /// That word as its first 4 letters, in capitals, between spaces.
+    ShownShort,
+    /// A list word that is not that word.
+    Wrong,
 }
 
 pub fn text(s: &str) -> Answer {
@@ -49,6 +55,42 @@ impl Script {
             Some(answer) => Ok(answer),
             None => Err(io::ErrorKind::UnexpectedEof.into()),
         }
+    }
+
+    /// The 12 words of the last `Recovery phrase` note shown, in order.
+    pub fn phrase(&self) -> Option<Vec<String>> {
+        let body = self
+            .shown
+            .iter()
+            .rev()
+            .find_map(|s| s.strip_prefix("note: Recovery phrase\n"))?;
+        let mut words = vec![String::new(); 12];
+        for line in body.lines().take_while(|l| !l.is_empty()) {
+            let mut tokens = line.split_whitespace();
+            while let (Some(n), Some(word)) = (tokens.next(), tokens.next()) {
+                let n: usize = n.trim_end_matches('.').parse().ok()?;
+                *words.get_mut(n.checked_sub(1)?)? = word.to_string();
+            }
+        }
+        Some(words)
+    }
+
+    /// What the answer `kind` types at the prompt `Word <n>`.
+    fn typed(&self, kind: &Answer, prompt: &str) -> io::Result<String> {
+        let n: usize = prompt
+            .strip_prefix("Word ")
+            .and_then(|n| n.parse().ok())
+            .ok_or_else(Script::wrong)?;
+        let word = self
+            .phrase()
+            .and_then(|words| words.get(n.checked_sub(1)?).cloned())
+            .ok_or_else(Script::wrong)?;
+        Ok(match kind {
+            Answer::ShownShort => format!(" {} ", word[..4.min(word.len())].to_uppercase()),
+            Answer::Wrong if word == "abandon" => "ability".to_string(),
+            Answer::Wrong => "abandon".to_string(),
+            _ => word,
+        })
     }
 
     fn wrong() -> io::Error {
@@ -114,6 +156,9 @@ impl Prompter for Script {
                 Answer::Text(s) if s.is_empty() => default.to_string(),
                 Answer::Text(s) => s,
                 Answer::Default => default.to_string(),
+                kind @ (Answer::Shown | Answer::ShownShort | Answer::Wrong) => {
+                    self.typed(&kind, prompt)?
+                }
                 _ => return Err(Script::wrong()),
             };
             match check(&value) {

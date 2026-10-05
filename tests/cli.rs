@@ -22,6 +22,11 @@ usage: bilbo new <kind> <topic> [--title <text>] [--scope <name>]
        bilbo restore <note> <version>
        bilbo scope
        bilbo scope set [--force] <name> <file>...
+       bilbo device
+       bilbo device list
+       bilbo device init [--name <name>]
+       bilbo device recover [--name <name>]
+       bilbo device revoke <device>
        bilbo --help
        bilbo --version
 new creates <root>/notes/<kind>-<topic>.md and prints its path.
@@ -36,6 +41,7 @@ watch records a version of each note when it changes, until it is stopped.
 history lists the versions of a note, newest first, prints one, or shows what changed between two versions, or between one and the note's file now.
 restore writes a past version of a note back as its newest version, keeping what the note held before.
 scope lists the scopes this device declares with their note counts; scope set gives notes a scope.
+device shows this device, its owner and each scope's manifest; device list prints the owner's devices; device init makes this device's keys, with a recovery phrase to write down, and each syncing scope's manifest; device recover reads that phrase on another device and adds it to the manifests; device revoke removes a device from them; init, for a new phrase, recover and revoke need a terminal.
 setup creates the store and the config and installs the agent plugin, the index timer, the note watcher and, when asked, the local embedder; in a terminal it asks first.
 setup options: --embedder-url <url>, --embedder-model <name>, --embedder-token-env <var>, --embedder-token-file <path>, --embedder-query-prefix <text>, --embedder-local, --embedder-port <port>, --llama-server <path>, --no-plugin, --claude <path>, --codex <path>, --plugin-source <folder|owner/repo#ref>, --no-timer, --index-every <minutes>, --no-watch
 kinds: plan, spec, design, decision, gotcha, research, review, report, reference
@@ -86,6 +92,7 @@ fn unknown_verb_is_usage_error() {
             && run.stderr.contains("bilbo history")
             && run.stderr.contains("bilbo restore")
             && run.stderr.contains("bilbo scope")
+            && run.stderr.contains("bilbo device")
     );
     assert!(!home.exists());
     assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
@@ -501,5 +508,28 @@ fn scope_is_a_verb() {
     assert_eq!(run.code, 2);
     assert!(run.stdout.is_empty());
     assert!(run.stderr.contains("bilbo: scope 'work' is not declared"));
+    assert!(!home.exists());
+}
+
+#[test]
+fn device_is_a_verb() {
+    let dir = TempDir::new("cli-device");
+    let home = dir.path().join("home");
+    let state = dir.path().join("state");
+    let env = [
+        ("BILBO_HOME", home.to_str().unwrap()),
+        ("XDG_STATE_HOME", state.to_str().unwrap()),
+    ];
+    let run = bilbo(dir.path(), &env, &["device"]);
+    assert_eq!(run.code, 0);
+    assert_eq!(run.stdout, "device\tnone\nowner\tnone\n");
+    let run = bilbo(dir.path(), &env, &["device", "now"]);
+    assert_eq!(run.code, 2);
+    assert!(run.stdout.is_empty());
+    assert!(run.stderr.contains("bilbo: unexpected argument 'now'\n"));
+    let run = bilbo(dir.path(), &env, &["device", "revoke", "bagend"]);
+    assert_eq!(run.code, 1);
+    assert!(run.stdout.is_empty());
+    assert!(!state.exists());
     assert!(!home.exists());
 }

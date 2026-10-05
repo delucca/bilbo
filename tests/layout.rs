@@ -11,9 +11,10 @@ const DOMAINS: [&str; 7] = [
 ];
 
 /// The verbs, by path below `src/`: a file, or a folder (ending in `/`) whose files are all the verb's.
-const VERBS: [&str; 12] = [
+const VERBS: [&str; 13] = [
     "check.rs",
     "citation/cite.rs",
+    "identity/device.rs",
     "library/cli/",
     "note/history.rs",
     "note/new.rs",
