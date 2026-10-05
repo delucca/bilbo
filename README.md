@@ -148,6 +148,8 @@ else `$XDG_DATA_HOME/bilbo`, else `~/.local/share/bilbo`, on macOS too.
 | `bilbo sync` | Prints how each syncing scope is doing and what waits; see [Sync](#sync). Exits 1 when something needs you. |
 | `bilbo sync declare <note> <reason>` | Records that text a resolution dropped was dropped on purpose; see [Sync](#sync). |
 | `bilbo device [list \| init \| recover \| revoke <device>]` | Shows and manages this device's identity; see [Devices](#devices). |
+| `bilbo pair [--scope <name>]... [--via <url>]` | Shows a one-time code and adds the device that answers it to your scopes; see [Pairing a device](#pairing-a-device). |
+| `bilbo pair <code> --via <url> [--name <name>]` | Joins the scopes of the device that showed the code; see [Pairing a device](#pairing-a-device). |
 | `bilbo setup` | See [Set up](#set-up). |
 
 `recall` prints one block per note: the path and line of the best passage, the
@@ -399,7 +401,9 @@ terminal emulator, swap and the prompt library's line buffers are not covered.
 #### A second device
 
 `bilbo device init` on a second machine would make a second owner, so it
-refuses once the store holds another owner's manifests. Instead, when the
+refuses once the store holds another owner's manifests. For everyday use,
+[pair](#pairing-a-device) the machine with one that is enrolled; the phrase
+below is for when none is left. When the
 scope's `sync` is a `file://` folder, set it in the config and run
 `bilbo device recover`: it copies the owner's scope from the folder, as
 [Sync](#a-second-device) describes. Otherwise copy the store to the new machine
@@ -413,6 +417,78 @@ store or the folder is reported `unsealed`: bring its manifest over and run
 `recover` again, or, when the folder holds none of this owner's `personal`,
 run `bilbo device init`.
 Never run `init` for it, which would fork the scope.
+
+#### Pairing a device
+
+`bilbo pair` adds a device with a short code typed from one you already have,
+so the recovery phrase stays put away. On the enrolled device, in a terminal:
+
+```console
+$ bilbo pair
+pairing code 42-orbit-tunnel-velvet
+on the new device, run: bilbo pair 42-orbit-tunnel-velvet --via file:///Users/me/Dropbox/bilbo
+the code works once, for 10 minutes
+```
+
+On the new device, install bilbo, run `bilbo setup` so the store exists, and
+type the code with the folder as that machine sees it:
+
+```sh
+bilbo pair 42-orbit-tunnel-velvet --via file:///home/me/Dropbox/bilbo
+```
+
+The code is a number and three words. Case, spaces for hyphens and the first
+four letters of a word are all accepted: `"42 ORBI tunn velvet"` is the same
+code. `--via` is the folder's path on the new device, which differs from the
+path on the first one, and bilbo writes it to the new device's config as the
+scope's `sync`. The first device pairs every syncing scope, or only the ones
+`--scope <name>` names, up to 12; `--scope` picks which scopes the new device
+can read. Scopes on different folders need one `bilbo pair` each, with `--via`
+or `--scope` choosing the folder; bilbo refuses and names both URLs when it
+cannot tell.
+
+Both devices then print the same fingerprint, three groups of four digits,
+and the new one adds its name and device id. The first device names the new
+one and the scopes it will join, and asks:
+
+```console
+fingerprint 5812-0934-7761
+```
+
+The new device prints `fingerprint 5812-0934-7761 for bagend 7f3a9c0e1b2d;
+confirm on the device that showed the code`.
+
+Compare the fingerprint, the name and the id on the two screens, and answer
+`y` only when they match. Anything else, or the end of input, sends nothing.
+The new device then waits up to 2 minutes for the manifests to reach it
+through the folder, checks the whole chain, and only then writes its config
+and keys. It prints `paired with rivendell: personal`, and `bilbo watch` starts
+syncing the scope within one cycle.
+
+A code works for one answer and for 10 minutes. A wrong word uses it up, and
+both devices say so; run `bilbo pair` again for a new code. A mailbox nobody
+answered is removed when the code expires, and any `bilbo pair` removes one
+whose first message is more than 30 minutes old.
+
+Showing a code needs a terminal, as [the ceremony](#the-ceremony) does: stdin
+and stderr must be one, and `CLAUDECODE` and `CODEX_THREAD_ID` must be unset or
+empty. The confirmation is yours to give, not an agent's. As there, the rule
+stops accidental and low-effort misuse and nothing more; the key files' modes
+are the last line.
+
+An enrolled device pairs too, to join a scope it is not in: run
+`bilbo pair --scope shared` on a device in `shared` and answer on the other
+with `bilbo pair <code> --via <url>`. Its keys do not change, and it must
+belong to the same owner. When no enrolled device is left, the
+[phrase](#a-second-device) is the way in, with `bilbo device recover`.
+
+What a device in a scope can do is what [revoking](#revoking-a-device) says: a
+revoked or stolen device keeps the notes and keys it held, and cannot read
+anything written under later epochs. Whoever can write the shared folder can
+stop a pairing, by removing the mailbox or answering first, but cannot read
+it: the code never crosses the folder, and the mailbox holds no key, scope
+name or URL in the clear. A wrong guess gets one attempt, which uses the code
+up and shows on both screens.
 
 #### Revoking a device
 
