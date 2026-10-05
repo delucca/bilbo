@@ -212,7 +212,7 @@ bilbo SHALL build a new identity in `<state>/bilbo/keys.new/` and move that fold
 - **THEN** bilbo prints a usage message naming `--name` to stderr and exits 2
 
 ### Requirement: Fingerprint check on recover
-After reading the phrase, `recover` SHALL show the owner fingerprint it derives. When no local manifest is signed by that owner, it SHALL ask the user to confirm that the fingerprint matches the one written down with the phrase or shown by `bilbo device` on another device, and SHALL write nothing and exit 1 when the user does not confirm.
+After reading the phrase, `recover` SHALL show the owner fingerprint it derives. When no local manifest is signed by that owner and this device holds no owner key, it SHALL ask the user to confirm that the fingerprint matches the one written down with the phrase or shown by `bilbo device` on another device, and SHALL write nothing and exit 1 when the user does not confirm.
 
 #### Scenario: Nothing to check against
 - **WHEN** the store holds no manifest and the user types a phrase
