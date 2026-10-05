@@ -60,7 +60,7 @@ Run every command below from the repo root as `nix develop -c sh -c '<command>'`
 
 ## 7. The note skill (`agent-plugin` delta)
 
-- [ ] 7.1 Update `plugins/bilbo/skills/note/SKILL.md`:
+- [x] 7.1 Update `plugins/bilbo/skills/note/SKILL.md`:
   - a step that runs `bilbo scope` before `bilbo new`;
   - `--scope` only for a scope the user named;
   - the unassigned stderr line and the one question;
