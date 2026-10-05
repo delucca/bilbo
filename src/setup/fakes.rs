@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 use super::facts::{ConfigState, Facts, TimerFacts};
 use super::local::Outside;
 use super::plan::{ConfigPlan, EmbedderPlan, KeyPlan, Plan, PluginPlan, TimerPlan};
+use super::syncing::SyncPlan;
 use crate::host::{agents, model};
 use crate::shared::config::{self, Embedder};
 
@@ -44,6 +45,7 @@ pub fn plan(config: ConfigPlan, embedder: Option<Embedder>, check: EmbedderPlan)
         codex: PluginPlan::Skipped("--no-plugin"),
         timer: TimerPlan::Skipped("no embedder"),
         watch: TimerPlan::Skipped("--no-watch"),
+        sync: SyncPlan::default(),
     }
 }
 
@@ -101,6 +103,10 @@ pub fn seen(dir: &Path, existing: Option<Embedder>, config: ConfigState) -> Fact
         },
         llama_server: None,
         model: None,
+        keys: None,
+        scopes: Vec::new(),
+        agent: false,
+        host: None,
     }
 }
 

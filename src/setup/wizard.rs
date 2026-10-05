@@ -1,10 +1,15 @@
 //! The interactive setup wizard.
 
+use super::syncing::{self, Enrol, Turn, Turned};
 use crate::Failure;
 use crate::host::prompt::{Choice, Prompter};
+use crate::host::swap;
+use crate::identity::keys::{self, Device, Owner};
+use crate::identity::manifest::{self, Recipient};
+use crate::identity::{ceremony, phrase};
 use crate::shared::config::{self, Embedder, Token};
 use std::io;
-use std::path::PathBuf;
+use std::path::{Component, Path, PathBuf};
 use zeroize::Zeroizing;
 
 const OLLAMA_URL: &str = "http://localhost:11434";
@@ -48,6 +53,22 @@ pub struct Facts {
     /// The interval of the installed timer, if one is installed.
     pub timer_minutes: Option<u32>,
     pub local: Local,
+    /// The declared scopes, each with its `sync` value as written.
+    pub scopes: Vec<(String, String)>,
+}
+
+/// What the sync questions need to know.
+pub struct SyncFacts {
+    pub root: PathBuf,
+    /// The folder of the device keys; `None` without a state folder.
+    pub keys: Option<PathBuf>,
+    pub home: Option<PathBuf>,
+    /// An agent marker is set.
+    pub agent: bool,
+    /// The host name as a device name.
+    pub host: Option<String>,
+    /// The declared scopes, each with its `sync` value as written.
+    pub scopes: Vec<(String, String)>,
 }
 
 pub struct Answers {
@@ -62,6 +83,8 @@ pub struct Answers {
     pub timer: Option<u32>,
     /// Whether to record note history in the background.
     pub watch: bool,
+    /// What `ask_sync` decided; `ask` leaves it `Unchanged`.
+    pub sync: Turn,
     /// Some(llama-server) when the local embedder was chosen; `embedder` is then the local one and `dims` None.
     pub local: Option<PathBuf>,
 }
@@ -88,10 +111,13 @@ pub fn ask<P: Prompter>(
 
     let (embedder, pasted, dims, local) = match &facts.managed {
         Some(target) => {
-            let lines = match &facts.existing {
+            let mut lines = match &facts.existing {
                 Some(e) => format!("embedder.url = {}\nembedder.model = {}", e.url, e.model),
                 None => "No embedder: recall uses keywords only.".to_string(),
             };
+            for (name, sync) in facts.scopes.iter().filter(|(_, sync)| sync != "off") {
+                lines.push_str(&format!("\nscope.{name}.sync = {sync}"));
+            }
             p.note(
                 "Config managed elsewhere",
                 &format!(
@@ -120,8 +146,320 @@ pub fn ask<P: Prompter>(
         codex,
         timer,
         watch,
+        sync: Turn::Unchanged,
         local,
     })
+}
+
+/// A refusal or a failed read of an answer inside the sync questions.
+enum Asked {
+    Io(io::Error),
+    Refused(String),
+}
+
+impl From<io::Error> for Asked {
+    fn from(e: io::Error) -> Asked {
+        Asked::Io(e)
+    }
+}
+
+/// The sync questions, after the watcher's: whether to sync, which scope, which folder, and the phrase ceremony
+/// of `bilbo device init` or `recover` when the device has no key. It writes nothing: the keys wait in the answer
+/// until the summary is confirmed.
+pub fn ask_sync<P: Prompter>(p: &mut P, facts: &SyncFacts, watch: bool) -> Result<Turn, Failure> {
+    match sync_questions(p, facts, watch) {
+        Ok(turn) => Ok(turn),
+        Err(Asked::Io(e)) => Err(stopped(p, e)),
+        Err(Asked::Refused(message)) => {
+            cancelled(p);
+            Err(Failure::Refused(format!("{message}; nothing was written")))
+        }
+    }
+}
+
+fn sync_questions<P: Prompter>(p: &mut P, facts: &SyncFacts, watch: bool) -> Result<Turn, Asked> {
+    let syncing = facts.scopes.iter().any(|(_, sync)| sync != "off");
+    if !p.confirm("Sync notes between your devices?", syncing)? {
+        return Ok(Turn::Unchanged);
+    }
+    if !watch {
+        let why = "sync needs the watcher; answer yes to the watcher question";
+        p.warn("Sync needs the watcher, so sync stays off for this run. Start over and answer yes to the watcher.")?;
+        return Ok(off(None, why));
+    }
+    let identity = match facts.keys.as_deref().map(keys::read_identity) {
+        Some(Err(why)) => {
+            p.warn(&why)?;
+            return Ok(Turn::Failed(why));
+        }
+        Some(Ok(identity)) => identity,
+        None => None,
+    };
+    if identity.is_none() && (facts.agent || facts.keys.is_none()) {
+        p.warn(if facts.agent {
+            "The recovery phrase is shown only in a terminal outside an agent, so sync stays off for this run."
+        } else {
+            "There is no state folder for the device keys, so sync stays off for this run. Set XDG_STATE_HOME or HOME."
+        })?;
+        return Ok(off(None, syncing::NO_KEY));
+    }
+    let name = ask_scope(p, facts)?;
+    let folder = ask_folder(p, facts, &name)?;
+    let url = format!("file://{}", folder.display());
+    let turned = |enrol, take, mint| {
+        Turn::On(Box::new(Turned {
+            name: name.clone(),
+            url: url.clone(),
+            folder: folder.clone(),
+            enrol,
+            take,
+            mint,
+        }))
+    };
+    match identity {
+        Some(id) => {
+            let public = id.owner.sign.public();
+            let who = Recipient::device(&id.device);
+            let known =
+                manifest::survey(&facts.root, Some(&public), Some(&who)).map_err(Asked::Refused)?;
+            let held = syncing::holds(&known, None, &name);
+            let seen = syncing::inspect(&url, &id.device.id(), &public, &who, &name);
+            let take = seen.take.filter(|_| !held);
+            if let Some(line) = seen.rivals.filter(|_| take.is_some()) {
+                p.warn(&line)?;
+            }
+            let mint = !held && take.is_none();
+            if mint
+                && let Some(why) = seen
+                    .blocked
+                    .or_else(|| syncing::unsealed(&known, &name).then(|| syncing::UNSEALED.into()))
+            {
+                p.warn(&why)?;
+                return Ok(off(Some(&name), &why));
+            }
+            Ok(turned(Enrol::Held, take, mint))
+        }
+        None => {
+            let known = manifest::survey(&facts.root, None, None).map_err(Asked::Refused)?;
+            let Some(device_name) = facts.host.clone() else {
+                let why = "the host name holds no letter or digit to name this device; run bilbo device init --name <name> in a terminal";
+                p.warn(why)?;
+                return Ok(off(Some(&name), why));
+            };
+            let phrased = if known.is_empty() {
+                p.confirm(
+                    "Do you already have a recovery phrase from another device?",
+                    false,
+                )?
+            } else {
+                let owners: Vec<String> = syncing::owners_of(&known).into_iter().collect();
+                p.warn(&format!(
+                    "{} holds manifests of owner {}: type that owner's recovery phrase.",
+                    facts.root.display(),
+                    owners.join(", ")
+                ))?;
+                true
+            };
+            keys::no_core_dump().map_err(Asked::Refused)?;
+            if phrased {
+                recovered(p, facts, known, device_name, (&name, &url), turned)
+            } else {
+                created(p, device_name, (&name, &url), turned)
+            }
+        }
+    }
+}
+
+fn off(scope: Option<&str>, why: &str) -> Turn {
+    Turn::Off {
+        scope: scope.map(str::to_string),
+        why: why.to_string(),
+    }
+}
+
+/// `bilbo device init`'s ceremony: a new phrase, shown and typed back in part. The folder is inspected first, so
+/// no phrase is shown for a scope that cannot be created.
+fn created<P: Prompter>(
+    p: &mut P,
+    device_name: String,
+    (name, url): (&str, &str),
+    turned: impl FnOnce(Enrol, Option<String>, bool) -> Turn,
+) -> Result<Turn, Asked> {
+    let entropy = Zeroizing::new(keys::random::<16>().map_err(Asked::Refused)?);
+    let words = phrase::encode(&entropy);
+    let owner = Owner::derive(&entropy);
+    let public = owner.sign.public();
+    let print = keys::owner_fingerprint(&public);
+    let positions = phrase::positions(keys::random::<3>().map_err(Asked::Refused)?);
+    let device = Device::generate(&device_name).map_err(Asked::Refused)?;
+    let seen = syncing::inspect(
+        url,
+        &device.id(),
+        &public,
+        &Recipient::device(&device),
+        name,
+    );
+    if let Some(why) = seen.blocked {
+        p.warn(&why)?;
+        return Ok(off(Some(name), &why));
+    }
+    if !ceremony::confirm_written(p, &words, &print, positions)? {
+        return Err(Asked::Refused("cancelled".into()));
+    }
+    Ok(turned(Enrol::New { entropy, device }, None, true))
+}
+
+/// `bilbo device recover`'s ceremony: the 12 words typed in, the owner checked against the store's manifests and
+/// confirmed by its fingerprint. What the store holds is read as the owner, as `recover` does.
+fn recovered<P: Prompter>(
+    p: &mut P,
+    facts: &SyncFacts,
+    known: Vec<manifest::Known>,
+    device_name: String,
+    (name, url): (&str, &str),
+    turned: impl FnOnce(Enrol, Option<String>, bool) -> Turn,
+) -> Result<Turn, Asked> {
+    let listed = known
+        .iter()
+        .filter_map(|k| k.scope.latest())
+        .flat_map(|v| &v.manifest.devices)
+        .any(|d| d.name == device_name);
+    if listed {
+        return Err(Asked::Refused(format!(
+            "a device named {device_name} is already listed in the store: run bilbo device recover --name <another name> in a terminal"
+        )));
+    }
+    let entropy = ceremony::read_phrase(p)?;
+    let owner = Owner::derive(&entropy);
+    let public = owner.sign.public();
+    let print = keys::owner_fingerprint(&public);
+    let signed = syncing::owners_of(&known);
+    if !signed.is_empty() && !signed.contains(&print) {
+        return Err(Asked::Refused(format!(
+            "the phrase derives owner {print}, but the manifests in {} are signed by {}",
+            facts.root.display(),
+            signed.iter().cloned().collect::<Vec<_>>().join(", ")
+        )));
+    }
+    if !ceremony::confirm_fingerprint(p, &print, !signed.contains(&print))? {
+        return Err(Asked::Refused("the fingerprint does not match".into()));
+    }
+    let device = Device::generate(&device_name).map_err(Asked::Refused)?;
+    let who = Recipient::Owner(&owner.box_secret);
+    let as_owner =
+        manifest::survey(&facts.root, Some(&public), Some(&who)).map_err(Asked::Refused)?;
+    let locals: Vec<&manifest::Known> = as_owner
+        .iter()
+        .filter(|k| k.mine && syncing::named_by(k, &owner).as_deref() == Some(name))
+        .collect();
+    let seen = syncing::inspect(url, &device.id(), &public, &who, name);
+    let take = seen.take.filter(|chosen| {
+        locals.iter().all(|k| syncing::all_pending(k))
+            && locals.iter().all(|k| k.scope.id != *chosen)
+    });
+    if let Some(line) = seen.rivals.filter(|_| take.is_some()) {
+        p.warn(&line)?;
+    }
+    let mint = locals.is_empty() && take.is_none();
+    if mint {
+        let as_device = manifest::survey(
+            &facts.root,
+            Some(&public),
+            Some(&Recipient::device(&device)),
+        )
+        .map_err(Asked::Refused)?;
+        let why = seen
+            .blocked
+            .or_else(|| syncing::unsealed(&as_device, name).then(|| syncing::UNSEALED.into()));
+        if let Some(why) = why {
+            p.warn(&why)?;
+            return Ok(off(Some(name), &why));
+        }
+    }
+    Ok(turned(Enrol::Phrase { entropy, device }, take, mint))
+}
+
+/// The scope to sync: a declared one, or `personal`.
+fn ask_scope<P: Prompter>(p: &mut P, facts: &SyncFacts) -> io::Result<String> {
+    let mut names: Vec<(String, String)> = facts.scopes.clone();
+    if !names.iter().any(|(name, _)| name == "personal") {
+        names.push(("personal".into(), "not declared".into()));
+    }
+    names.sort();
+    let initial = names
+        .iter()
+        .position(|(_, sync)| sync != "off" && sync != "not declared")
+        .or_else(|| names.iter().position(|(name, _)| name == "personal"))
+        .unwrap_or(0);
+    let choices: Vec<Choice> = names
+        .iter()
+        .map(|(name, sync)| Choice::new(name.as_str(), sync.as_str()))
+        .collect();
+    let picked = p.select("Which scope should sync?", &choices, initial)?;
+    Ok(names[picked].0.clone())
+}
+
+/// The folder to sync through, asked again until it can be used.
+fn ask_folder<P: Prompter>(p: &mut P, facts: &SyncFacts, name: &str) -> io::Result<PathBuf> {
+    let current = facts
+        .scopes
+        .iter()
+        .find(|(scope, _)| scope == name)
+        .and_then(|(_, sync)| sync.strip_prefix("file://"))
+        .unwrap_or("");
+    loop {
+        let typed = p.input("Folder to sync through", current, check_folder)?;
+        let path = expand_home(typed.trim(), facts.home.as_deref());
+        match folder_problem(&path) {
+            None => return Ok(path.components().collect()),
+            Some(problem) => p.warn(&problem)?,
+        }
+    }
+}
+
+/// Why `path` cannot be the sync folder, if it cannot: it is absolute, spelled in a way a URL keeps, and either a
+/// folder bilbo can write or one that can be created, its parent being there.
+fn folder_problem(path: &Path) -> Option<String> {
+    if !path.is_absolute() {
+        return Some("Enter an absolute path, or one starting with ~/".into());
+    }
+    let shown = path.display().to_string();
+    if path.components().any(|c| c == Component::ParentDir)
+        || path
+            .to_str()
+            .is_none_or(|text| text.contains(['?', '#']) || text.chars().any(char::is_control))
+    {
+        return Some(format!(
+            "{shown} cannot be a sync folder: it holds .., ?, # or a control character"
+        ));
+    }
+    if path.exists() {
+        return if !path.is_dir() {
+            Some(format!("{shown} is not a folder"))
+        } else if !swap::writable(path) {
+            Some(format!("{shown} is not writable"))
+        } else {
+            None
+        };
+    }
+    let parent = path.parent()?;
+    if !parent.is_dir() {
+        Some(format!(
+            "The parent folder {} does not exist",
+            parent.display()
+        ))
+    } else if !swap::writable(parent) {
+        Some(format!(
+            "The parent folder {} is not writable",
+            parent.display()
+        ))
+    } else {
+        None
+    }
+}
+
+fn check_folder(text: &str) -> Result<(), String> {
+    check_file(text)
 }
 
 fn ask_embedder<P: Prompter>(
@@ -867,7 +1205,41 @@ mod tests {
                 llama_server: Some(PathBuf::from("/bin/llama-server")),
                 unavailable: None,
             },
+            scopes: Vec::new(),
         }
+    }
+
+    #[test]
+    fn the_sync_folder_must_be_absolute_a_folder_and_creatable() {
+        let dir = std::env::temp_dir().join(format!("bilbo-folder-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("held")).unwrap();
+        std::fs::write(dir.join("file"), "x").unwrap();
+        assert_eq!(folder_problem(&dir.join("held")), None);
+        assert_eq!(folder_problem(&dir.join("new")), None);
+        assert_eq!(
+            folder_problem(Path::new("relative")).unwrap(),
+            "Enter an absolute path, or one starting with ~/"
+        );
+        assert_eq!(
+            folder_problem(&dir.join("a/b")).unwrap(),
+            format!(
+                "The parent folder {} does not exist",
+                dir.join("a").display()
+            )
+        );
+        assert_eq!(
+            folder_problem(&dir.join("file")).unwrap(),
+            format!("{} is not a folder", dir.join("file").display())
+        );
+        for bad in ["held/x?y", "held/x#y", "held/../held"] {
+            assert!(
+                folder_problem(&dir.join(bad))
+                    .is_some_and(|m| m.contains("cannot be a sync folder")),
+                "{bad}"
+            );
+        }
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     fn embedder(url: &str, model: &str) -> Embedder {

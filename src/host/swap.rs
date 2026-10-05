@@ -1,4 +1,4 @@
-//! Atomic file exchange and no-replace rename, the two calls std does not expose.
+//! Atomic file exchange, no-replace rename and the access check, the calls std does not expose.
 
 #[cfg(not(any(target_os = "macos", target_os = "linux")))]
 compile_error!("swap needs renamex_np (macOS) or renameat2 (Linux)");
@@ -66,6 +66,16 @@ fn call(a: &Path, b: &Path, flag: Flag) -> Result<(), String> {
             Flag::NoReplace => format!("cannot move {} to {}: {err}", a.display(), b.display()),
         }),
     }
+}
+
+/// Whether this process may write to `path`, by `access(2)`: ownership, ACLs and read-only mounts count, and
+/// nothing is created.
+pub fn writable(path: &Path) -> bool {
+    let Ok(path) = c_path(path) else {
+        return false;
+    };
+    // SAFETY: path is NUL-terminated and outlives the call.
+    unsafe { libc::access(path.as_ptr(), libc::W_OK) == 0 }
 }
 
 fn c_path(path: &Path) -> Result<CString, String> {
@@ -143,5 +153,21 @@ mod tests {
         assert!(message.ends_with(&format!("(os error {})", libc::EEXIST)));
         assert_eq!(fs::read_to_string(&a).unwrap(), "one");
         assert_eq!(fs::read_to_string(&b).unwrap(), "two");
+    }
+
+    #[test]
+    fn writable_asks_the_system_and_creates_nothing() {
+        use std::os::unix::fs::PermissionsExt;
+        let d = dir("writable_asks_the_s");
+        assert!(writable(&d.0));
+        assert!(!writable(&d.0.join("missing")));
+        assert!(!d.0.join("missing").exists());
+        let locked = d.0.join("locked");
+        fs::create_dir(&locked).unwrap();
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o500)).unwrap();
+        // SAFETY: geteuid takes no arguments and cannot fail.
+        let root = unsafe { libc::geteuid() } == 0;
+        assert_eq!(writable(&locked), root);
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o700)).unwrap();
     }
 }

@@ -8,6 +8,7 @@ use super::Outcome;
 use super::plan::{
     ConfigPlan, EmbedderPlan, KeyPlan, Plan, PluginPlan, TimerPlan, TimerRemoval, plugins,
 };
+use super::syncing;
 use crate::host::{agents, command, timer};
 use crate::shared::config::{self, Token};
 
@@ -43,10 +44,16 @@ pub fn apply(plan: &Plan) -> Outcome {
     hook_step(&plan.codex, codex_installed, &mut report);
     timer_step(&plan.timer, &mut report);
     watch_step(&plan.watch, &plan.notes, &mut report);
+    sync_step(plan, &mut report);
     Outcome {
         lines: report.lines,
         failed: report.failed,
     }
+}
+
+fn sync_step(plan: &Plan, report: &mut Report) {
+    let (status, detail) = syncing::step(&plan.sync, &plan.notes);
+    report.line("sync", status, Some(detail));
 }
 
 fn timer_step(plan: &TimerPlan, report: &mut Report) {

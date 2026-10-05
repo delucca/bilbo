@@ -33,9 +33,33 @@ struct Scripted {
     /// The prompt count when "Apply these changes?" or "Remove these?" came up.
     at_confirm: Option<usize>,
     shown: Vec<String>,
+    /// Answers to prompts that hold the text, each used once, before `inputs`.
+    entered: Vec<(&'static str, String)>,
+    /// The words typed at `Word 1` to `Word 12`.
+    typed: Vec<String>,
+    /// `Word n` is answered from the last recovery phrase shown.
+    reads_phrase: bool,
 }
 
 impl Scripted {
+    /// The 12 words of the last recovery phrase shown.
+    fn phrase(&self) -> Option<Vec<String>> {
+        let body = self
+            .shown
+            .iter()
+            .rev()
+            .find_map(|s| s.strip_prefix("note: Recovery phrase\n"))?;
+        let mut words = vec![String::new(); 12];
+        for line in body.lines().take_while(|l| !l.is_empty()) {
+            let mut tokens = line.split_whitespace();
+            while let (Some(n), Some(word)) = (tokens.next(), tokens.next()) {
+                let n: usize = n.trim_end_matches('.').parse().ok()?;
+                *words.get_mut(n.checked_sub(1)?)? = word.to_string();
+            }
+        }
+        Some(words)
+    }
+
     fn prompt(&mut self, text: &str) -> io::Result<()> {
         assert!(
             self.asked < 100,
@@ -106,6 +130,26 @@ impl Prompter for Scripted {
         _: fn(&str) -> Result<(), String>,
     ) -> io::Result<String> {
         self.prompt(prompt)?;
+        if let Some(at) = self
+            .entered
+            .iter()
+            .position(|(text, _)| prompt.contains(text))
+        {
+            return Ok(self.entered.remove(at).1);
+        }
+        if let Some(n) = prompt
+            .strip_prefix("Word ")
+            .and_then(|n| n.parse::<usize>().ok())
+        {
+            let word = match self.typed.get(n - 1) {
+                Some(word) => Some(word.clone()),
+                None if self.reads_phrase => self.phrase().map(|words| words[n - 1].clone()),
+                None => None,
+            };
+            if let Some(word) = word {
+                return Ok(word);
+            }
+        }
         Ok(self
             .inputs
             .iter()
@@ -292,11 +336,19 @@ fn wizard_run(b: &Sandbox, p: &mut Scripted) -> Run {
 }
 
 fn wizard_outside(b: &Sandbox, p: &mut Scripted, outside: &mut Script) -> Run {
+    wizard_as(b, p, outside, None)
+}
+
+/// The wizard on a machine whose host name is `host`, when given.
+fn wizard_as(b: &Sandbox, p: &mut Scripted, outside: &mut Script, host: Option<&str>) -> Run {
     let probed = Cell::new(false);
     let checked = Cell::new(0);
     let indexed = Cell::new(false);
     let flags = flags(&["--yes"], Mode::Wizard, &b.env);
-    let result = gather(&flags, &b.env, b.path()).and_then(|facts| {
+    let result = gather(&flags, &b.env, b.path()).and_then(|mut facts| {
+        if let Some(host) = host {
+            facts.host = Some(host.to_string());
+        }
         wizard_with(
             facts,
             p,
@@ -329,6 +381,10 @@ fn refused(run: Run) -> String {
         Err(_) => panic!("expected Refused"),
         Ok(_) => panic!("expected a refusal"),
     }
+}
+
+fn outcome(run: &Run) -> &Outcome {
+    run.result.as_ref().ok().expect("an outcome")
 }
 
 fn report(run: &Run) -> &[String] {
@@ -1029,4 +1085,1002 @@ fn remove_confirmed_removes_the_timer() {
         outcome.lines
     );
     assert!(b.watch_files().iter().all(|f| !f.exists()));
+}
+
+// ---------------------------------------------------------------------------
+// The sync questions and what applying them writes
+
+use crate::identity::keys::{self, Identity};
+use crate::identity::manifest;
+use crate::identity::phrase;
+
+const SYNC_ON: (&str, bool) = ("Sync notes between", true);
+const WRITTEN: (&str, bool) = ("Written down?", true);
+const MATCHES: (&str, bool) = ("Does it match", true);
+
+impl Sandbox {
+    fn keys(&self) -> PathBuf {
+        self.home().join(".local/state/bilbo/keys")
+    }
+    fn store(&self) -> PathBuf {
+        self.home().join(".local/share/bilbo")
+    }
+    fn folder(&self, name: &str) -> PathBuf {
+        self.dir.join(name)
+    }
+    fn identity(&self) -> Option<Identity> {
+        keys::read_identity(&self.keys()).unwrap()
+    }
+    /// Every scope the store holds, as `survey` reads it for this box's device.
+    fn known(&self) -> Vec<manifest::Known> {
+        let id = self.identity().unwrap();
+        let public = id.owner.sign.public();
+        manifest::survey(
+            &self.store(),
+            Some(&public),
+            Some(&manifest::Recipient::device(&id.device)),
+        )
+        .unwrap()
+    }
+    fn scope_ids(&self) -> Vec<String> {
+        manifest::scope_ids(&self.store()).unwrap()
+    }
+    /// The text of the config.
+    fn config_text(&self) -> String {
+        std::fs::read_to_string(self.config()).unwrap_or_default()
+    }
+}
+
+/// Copies each scope's versions from `from`'s store into `folder`, as a watcher would push them.
+fn publish(from: &Sandbox, folder: &Path) {
+    let scopes = from.store().join(".bilbo/scopes");
+    for id in from.scope_ids() {
+        let target = folder.join("scopes").join(&id).join("manifest");
+        std::fs::create_dir_all(&target).unwrap();
+        for entry in std::fs::read_dir(scopes.join(&id).join("manifest")).unwrap() {
+            let path = entry.unwrap().path();
+            if path.extension().is_some_and(|ext| ext == "json") {
+                std::fs::copy(&path, target.join(path.file_name().unwrap())).unwrap();
+            }
+        }
+    }
+}
+
+/// The answers of a person with no key who sets `scope` up through `folder`: no phrase yet, a new one written down.
+fn new_owner(folder: &Path) -> Scripted {
+    Scripted {
+        confirms: vec![
+            SYNC_ON,
+            WRITTEN,
+            ("recovery phrase from another", false),
+            ("Apply these changes?", true),
+        ],
+        entered: vec![("Folder to sync", folder.display().to_string())],
+        reads_phrase: true,
+        ..Scripted::default()
+    }
+}
+
+fn ok_line(name: &str, folder: &Path, notes: usize) -> String {
+    format!(
+        "sync ok: {name} through file://{} ({notes} notes)",
+        folder.display()
+    )
+}
+
+#[test]
+fn a_first_device_syncs_through_a_new_folder() {
+    let b = boxed("sync-first");
+    b.manager();
+    let folder = b.folder("bilbo-sync");
+    let mut p = new_owner(&folder);
+    let run = wizard_as(&b, &mut p, &mut Script::working(), Some("rivendell"));
+    assert!(
+        report(&run).contains(&ok_line("personal", &folder, 0)),
+        "{:?}",
+        report(&run)
+    );
+    assert!(!outcome(&run).failed);
+    assert!(folder.is_dir());
+    assert!(b.identity().is_some());
+    assert!(
+        b.config_text().contains(&format!(
+            "scope.personal.sync = file://{}\n",
+            folder.display()
+        )),
+        "{}",
+        b.config_text()
+    );
+    let known = b.known();
+    assert_eq!(known.len(), 1);
+    assert_eq!(known[0].name(), Some("personal"));
+    let summary = p
+        .shown
+        .iter()
+        .find(|s| s.starts_with("note: Setup will"))
+        .unwrap();
+    assert!(
+        summary.contains(&format!(
+            "Sync personal through file://{}",
+            folder.display()
+        )),
+        "{summary}"
+    );
+    assert!(summary.contains(&format!("Create the folder {}", folder.display())));
+    assert!(summary.contains("Create the device keys in"));
+    assert!(summary.contains("Create the scope personal"));
+    assert!(
+        !summary.contains("Owner fingerprint"),
+        "the phrase is not in the summary"
+    );
+    assert!(
+        p.shown
+            .iter()
+            .any(|s| s.starts_with("note: Recovery phrase\n"))
+    );
+}
+
+#[test]
+fn the_phrase_is_asked_for_three_words_and_never_reaches_the_summary() {
+    let b = boxed("sync-first-words");
+    b.manager();
+    let mut p = new_owner(&b.folder("f"));
+    let run = wizard_as(&b, &mut p, &mut Script::working(), Some("rivendell"));
+    assert!(run.result.is_ok());
+    let words = p.phrase().unwrap();
+    let asked = p.shown.iter().filter(|s| s.starts_with("Word ")).count();
+    assert_eq!(asked, 3, "three words are asked");
+    let summary = p
+        .shown
+        .iter()
+        .find(|s| s.starts_with("note: Setup will"))
+        .unwrap();
+    assert!(!summary.contains("Owner fingerprint"), "{summary}");
+    for (i, word) in words.iter().enumerate() {
+        assert!(
+            !summary.contains(&format!("{}. {word}", i + 1)),
+            "{word} in {summary}"
+        );
+    }
+}
+
+#[test]
+fn declining_after_the_phrase_writes_no_key_no_folder_and_no_config() {
+    let b = boxed("sync-declined");
+    b.manager();
+    let before = b.snapshot();
+    let folder = b.folder("never");
+    let mut p = new_owner(&folder);
+    p.confirms
+        .retain(|(text, _)| *text != "Apply these changes?");
+    p.confirms.push(("Apply these changes?", false));
+    let run = wizard_as(&b, &mut p, &mut Script::working(), Some("rivendell"));
+    assert_eq!(refused(run), "setup cancelled; nothing changed");
+    assert!(
+        p.shown
+            .iter()
+            .any(|s| s.starts_with("note: Recovery phrase\n"))
+    );
+    assert_eq!(b.snapshot(), before);
+    assert!(b.identity().is_none());
+    assert!(!folder.exists());
+    assert!(!b.config().exists());
+}
+
+#[test]
+fn interrupting_at_the_summary_after_the_phrase_writes_nothing() {
+    let b = boxed("sync-interrupt");
+    b.manager();
+    let before = b.snapshot();
+    let folder = b.folder("never");
+    let mut counting = new_owner(&folder);
+    let counted = wizard_as(&b, &mut counting, &mut Script::working(), Some("rivendell"));
+    assert!(counted.result.is_ok());
+    let last = counting.at_confirm.unwrap();
+    let b = boxed("sync-interrupt-run");
+    b.manager();
+    let mut p = new_owner(&folder);
+    p.interrupt_at = Some(last);
+    let run = wizard_as(&b, &mut p, &mut Script::working(), Some("rivendell"));
+    assert_eq!(refused(run), "setup cancelled; nothing changed");
+    assert!(b.identity().is_none());
+    assert!(!b.config().exists());
+    let _ = before;
+}
+
+#[test]
+fn a_second_device_joins_the_scope_with_the_first_ones_phrase() {
+    let first = boxed("sync-second-a");
+    first.manager();
+    let folder = first.folder("shared-folder");
+    let mut p = new_owner(&folder);
+    assert!(
+        wizard_as(&first, &mut p, &mut Script::working(), Some("rivendell"))
+            .result
+            .is_ok()
+    );
+    publish(&first, &folder);
+    let words = p.phrase().unwrap();
+
+    let second = boxed("sync-second-b");
+    second.manager();
+    let mut q = Scripted {
+        confirms: vec![
+            SYNC_ON,
+            ("recovery phrase from another", true),
+            MATCHES,
+            ("Apply these changes?", true),
+        ],
+        entered: vec![("Folder to sync", folder.display().to_string())],
+        typed: words,
+        ..Scripted::default()
+    };
+    let run = wizard_as(&second, &mut q, &mut Script::working(), Some("bagend"));
+    assert!(
+        report(&run).contains(&ok_line("personal", &folder, 0)),
+        "{:?}",
+        report(&run)
+    );
+    let a = first.identity().unwrap();
+    let b = second.identity().unwrap();
+    assert_eq!(a.owner.sign.public(), b.owner.sign.public());
+    assert_ne!(a.device.id(), b.device.id());
+    assert_eq!(second.scope_ids(), first.scope_ids());
+    let known = second.known();
+    let latest = known[0].scope.latest().unwrap();
+    assert!(latest.manifest.lists(&a.device.id()));
+    assert!(latest.manifest.lists(&b.device.id()));
+    let summary = q
+        .shown
+        .iter()
+        .find(|s| s.starts_with("note: Setup will"))
+        .unwrap();
+    assert!(
+        summary.contains("Copy the manifest of personal from the folder"),
+        "{summary}"
+    );
+    assert!(!summary.contains("Create the scope"), "{summary}");
+}
+
+#[test]
+fn only_the_picked_scope_is_copied_and_joined() {
+    let first = boxed("sync-only-a");
+    first.manager();
+    let folder = first.folder("f");
+    let mut p = new_owner(&folder);
+    assert!(
+        wizard_as(&first, &mut p, &mut Script::working(), Some("rivendell"))
+            .result
+            .is_ok()
+    );
+    let mut text = first.config_text();
+    text.push_str("scope.shared.sync = off\n");
+    std::fs::write(first.config(), text).unwrap();
+    let mut again = Scripted {
+        confirms: vec![SYNC_ON, ("Apply these changes?", true)],
+        entered: vec![("Folder to sync", folder.display().to_string())],
+        selects: vec![("Which scope", 1)],
+        ..Scripted::default()
+    };
+    let run = wizard_as(
+        &first,
+        &mut again,
+        &mut Script::working(),
+        Some("rivendell"),
+    );
+    assert!(run.result.is_ok(), "{:?}", again.shown);
+    assert_eq!(first.scope_ids().len(), 2, "personal and the second scope");
+    let personal = first.config_text();
+    assert!(personal.contains("scope.personal.sync = "), "{personal}");
+    publish(&first, &folder);
+
+    let second = boxed("sync-only-b");
+    second.manager();
+    let mut q = Scripted {
+        confirms: vec![
+            SYNC_ON,
+            ("recovery phrase from another", true),
+            MATCHES,
+            ("Apply these changes?", true),
+        ],
+        entered: vec![("Folder to sync", folder.display().to_string())],
+        typed: p.phrase().unwrap(),
+        ..Scripted::default()
+    };
+    let run = wizard_as(&second, &mut q, &mut Script::working(), Some("bagend"));
+    assert!(run.result.is_ok(), "{:?}", q.shown);
+    assert_eq!(second.scope_ids().len(), 1);
+    let known = second.known();
+    assert_eq!(known[0].name(), Some("personal"));
+    let id = second.identity().unwrap();
+    for scope in first.scope_ids() {
+        let listed = manifest::read_scope(&second.store(), &scope)
+            .ok()
+            .and_then(|s| s.latest().map(|v| v.manifest.lists(&id.device.id())));
+        assert_eq!(
+            listed.unwrap_or(false),
+            scope == known[0].scope.id,
+            "{scope}"
+        );
+    }
+}
+
+#[test]
+fn a_phrase_of_another_owner_is_refused_against_the_stores_manifests() {
+    let first = boxed("sync-owner-a");
+    first.manager();
+    let folder = first.folder("f");
+    let mut p = new_owner(&folder);
+    assert!(
+        wizard_as(&first, &mut p, &mut Script::working(), Some("rivendell"))
+            .result
+            .is_ok()
+    );
+    let second = boxed("sync-owner-b");
+    second.manager();
+    publish(&first, &second.store().join("copy"));
+    let scopes = first.store().join(".bilbo/scopes");
+    let target = second.store().join(".bilbo/scopes");
+    std::fs::create_dir_all(second.store().join("notes")).unwrap();
+    copy_dir(&scopes, &target);
+    let before = second.snapshot();
+    let other: Vec<String> = (0..12)
+        .map(|i| phrase::word(phrase::encode(&[0u8; 16])[i]).to_string())
+        .collect();
+    let mut q = Scripted {
+        confirms: vec![SYNC_ON, MATCHES],
+        entered: vec![("Folder to sync", folder.display().to_string())],
+        typed: other,
+        ..Scripted::default()
+    };
+    let run = wizard_as(&second, &mut q, &mut Script::working(), Some("bagend"));
+    let message = refused(run);
+    assert!(message.contains("the phrase derives owner"), "{message}");
+    assert!(message.ends_with("; nothing was written"), "{message}");
+    assert_eq!(second.snapshot(), before);
+    assert!(second.identity().is_none());
+}
+
+fn copy_dir(from: &Path, to: &Path) {
+    std::fs::create_dir_all(to).unwrap();
+    for entry in std::fs::read_dir(from).unwrap() {
+        let path = entry.unwrap().path();
+        let target = to.join(path.file_name().unwrap());
+        if path.is_dir() {
+            copy_dir(&path, &target);
+        } else {
+            std::fs::copy(&path, &target).unwrap();
+        }
+    }
+}
+
+#[test]
+fn under_an_agent_sync_stays_off_and_the_line_says_why() {
+    let mut b = boxed("sync-agent");
+    b.manager();
+    b.env.claudecode = Some("1".into());
+    let mut p = Scripted {
+        confirms: vec![SYNC_ON, ("Apply these changes?", true)],
+        ..Scripted::default()
+    };
+    let run = wizard_as(&b, &mut p, &mut Script::working(), Some("rivendell"));
+    assert!(
+        report(&run).contains(
+            &"sync skipped: no device key; run bilbo device init in a terminal".to_string()
+        ),
+        "{:?}",
+        report(&run)
+    );
+    assert!(!outcome(&run).failed);
+    assert!(
+        p.shown.iter().any(|s| s == "warn: The recovery phrase is shown only in a terminal outside an agent, so sync stays off for this run."),
+        "{:?}",
+        p.shown
+    );
+    assert!(!p.shown.iter().any(|s| s.contains("Which scope")));
+    assert!(!b.config_text().contains("sync"));
+    assert!(b.identity().is_none());
+}
+
+#[test]
+fn a_folder_without_a_parent_is_asked_again() {
+    let b = boxed("sync-parent");
+    b.manager();
+    let folder = b.folder("good");
+    let mut p = new_owner(&folder);
+    p.entered = vec![
+        ("Folder to sync", "/nope/bilbo".to_string()),
+        ("Folder to sync", folder.display().to_string()),
+    ];
+    let run = wizard_as(&b, &mut p, &mut Script::working(), Some("rivendell"));
+    assert!(run.result.is_ok(), "{:?}", p.shown);
+    assert!(
+        p.shown
+            .contains(&"warn: The parent folder /nope does not exist".to_string()),
+        "{:?}",
+        p.shown
+    );
+    assert_eq!(
+        p.shown
+            .iter()
+            .filter(|s| s.starts_with("Folder to sync"))
+            .count(),
+        2
+    );
+    assert!(!Path::new("/nope").exists());
+}
+
+#[test]
+fn a_relative_folder_is_refused_by_the_question_and_by_the_check() {
+    let b = boxed("sync-relative");
+    b.manager();
+    let folder = b.folder("good");
+    let mut p = new_owner(&folder);
+    p.entered = vec![
+        ("Folder to sync", "relative/bilbo".to_string()),
+        ("Folder to sync", folder.display().to_string()),
+    ];
+    let run = wizard_as(&b, &mut p, &mut Script::working(), Some("rivendell"));
+    assert!(run.result.is_ok());
+    assert!(
+        p.shown
+            .contains(&"warn: Enter an absolute path, or one starting with ~/".to_string()),
+        "{:?}",
+        p.shown
+    );
+}
+
+#[test]
+fn declining_sync_adds_no_setting_and_the_line_says_no_scope_syncs() {
+    let b = boxed("sync-no");
+    b.manager();
+    let mut p = Scripted::default();
+    let run = wizard_as(&b, &mut p, &mut Script::working(), Some("rivendell"));
+    assert!(report(&run).contains(&"sync skipped: no scope syncs".to_string()));
+    assert!(
+        p.shown
+            .contains(&"Sync notes between your devices?".to_string())
+    );
+    assert!(!b.config_text().contains("sync"));
+    assert!(!p.shown.iter().any(|s| s.contains("Which scope")));
+}
+
+#[test]
+fn the_sync_question_defaults_to_yes_only_when_a_scope_syncs() {
+    let initial = |config: &str| {
+        let b = boxed("sync-default");
+        b.manager();
+        b.write_config("a");
+        let mut text = b.config_text();
+        text.push_str(config);
+        std::fs::write(b.config(), text).unwrap();
+        let mut p = Scripted::default();
+        wizard_as(&b, &mut p, &mut Script::working(), Some("rivendell"));
+        p.shown.iter().any(|s| s == "Which scope should sync?")
+    };
+    let folder = std::env::temp_dir();
+    assert!(!initial("scope.work.sync = off\n"));
+    assert!(initial(&format!(
+        "scope.work.sync = file://{}\n",
+        folder.display()
+    )));
+}
+
+#[test]
+fn turning_sync_on_keeps_the_other_settings_and_the_old_config() {
+    let b = boxed("sync-keeps");
+    b.manager();
+    b.write_config("a");
+    let mut text = b.config_text();
+    text.push_str("scope.work.sync = off\nsync.poll_seconds = 60\n");
+    std::fs::write(b.config(), &text).unwrap();
+    let folder = b.folder("bilbo");
+    let mut p = new_owner(&folder);
+    let run = wizard_as(&b, &mut p, &mut Script::working(), Some("rivendell"));
+    assert!(run.result.is_ok(), "{:?}", p.shown);
+    let new = b.config_text();
+    for line in [
+        "embedder.model = a",
+        "scope.work.sync = off",
+        "sync.poll_seconds = 60",
+    ] {
+        assert!(new.contains(line), "{line} in {new}");
+    }
+    assert!(
+        new.contains(&format!(
+            "scope.personal.sync = file://{}",
+            folder.display()
+        )),
+        "{new}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(b.config().with_file_name("config.bak")).unwrap(),
+        text
+    );
+    assert_eq!(
+        report(&run)
+            .iter()
+            .find(|l| l.starts_with("config "))
+            .map(String::as_str),
+        Some(format!("config updated: {}", b.config().display()).as_str())
+    );
+}
+
+#[test]
+fn a_config_that_already_syncs_there_is_kept() {
+    let b = boxed("sync-same");
+    b.manager();
+    let folder = b.folder("bilbo");
+    let mut p = new_owner(&folder);
+    assert!(
+        wizard_as(&b, &mut p, &mut Script::working(), Some("rivendell"))
+            .result
+            .is_ok()
+    );
+    let mut again = Scripted {
+        confirms: vec![SYNC_ON, ("Apply these changes?", true)],
+        entered: vec![("Folder to sync", folder.display().to_string())],
+        ..Scripted::default()
+    };
+    let before = b.config_text();
+    let run = wizard_as(&b, &mut again, &mut Script::working(), Some("rivendell"));
+    assert!(
+        report(&run).contains(&format!("config kept: {}", b.config().display())),
+        "{:?}",
+        report(&run)
+    );
+    assert_eq!(b.config_text(), before);
+    assert!(report(&run).contains(&ok_line("personal", &folder, 0)));
+}
+
+#[test]
+fn a_managed_config_shows_the_syncing_scopes_and_asks_nothing_about_sync() {
+    let b = boxed("sync-managed");
+    b.manager();
+    let target = b.dir.join("managed-config");
+    std::fs::write(
+        &target,
+        "scope.personal.sync = file:///srv/bilbo\nscope.work.sync = off\n",
+    )
+    .unwrap();
+    std::fs::create_dir_all(b.config().parent().unwrap()).unwrap();
+    std::os::unix::fs::symlink(&target, b.config()).unwrap();
+    let mut p = Scripted::default();
+    let run = wizard_as(&b, &mut p, &mut Script::working(), Some("rivendell"));
+    assert!(run.result.is_ok());
+    let note = p
+        .shown
+        .iter()
+        .find(|s| s.starts_with("note: Config managed elsewhere"))
+        .unwrap();
+    assert!(
+        note.contains("scope.personal.sync = file:///srv/bilbo"),
+        "{note}"
+    );
+    assert!(!note.contains("scope.work"), "{note}");
+    assert!(
+        !p.shown
+            .contains(&"Sync notes between your devices?".to_string())
+    );
+}
+
+/// The fixture owner's keys and a folder holding the fixture `personal` scope, version 1 only, which lists
+/// `bagend` and not `rivendell`.
+fn outsider(b: &Sandbox, folder: &Path) {
+    use std::os::unix::fs::PermissionsExt;
+    let fixtures = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/device");
+    copy_dir(&Path::new(fixtures).join("rivendell"), &b.keys());
+    std::fs::set_permissions(b.keys(), std::fs::Permissions::from_mode(0o700)).unwrap();
+    for file in ["owner.key", "device.key"] {
+        std::fs::set_permissions(b.keys().join(file), std::fs::Permissions::from_mode(0o600))
+            .unwrap();
+    }
+    let store = Path::new(fixtures).join("store/.bilbo/scopes");
+    let id = std::fs::read_dir(&store)
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap()
+        .file_name();
+    let target = folder.join("scopes").join(&id).join("manifest");
+    std::fs::create_dir_all(&target).unwrap();
+    std::fs::copy(
+        store.join(&id).join("manifest/1.json"),
+        target.join("1.json"),
+    )
+    .unwrap();
+}
+
+#[test]
+fn an_enrolled_device_outside_a_scope_of_its_owner_mints_nothing() {
+    let b = boxed("sync-outsider");
+    b.manager();
+    let folder = b.folder("held");
+    outsider(&b, &folder);
+    let before = snapshot_of(&folder);
+    let mut p = Scripted {
+        confirms: vec![SYNC_ON, ("Apply these changes?", true)],
+        entered: vec![("Folder to sync", folder.display().to_string())],
+        ..Scripted::default()
+    };
+    let run = wizard_as(&b, &mut p, &mut Script::working(), Some("rivendell"));
+    let line = format!("warn: {}", crate::setup::syncing::BLOCKED);
+    assert!(p.shown.contains(&line), "{:?}", p.shown);
+    assert_eq!(
+        report(&run)
+            .iter()
+            .find(|l| l.starts_with("sync "))
+            .map(String::as_str),
+        Some(format!("sync skipped: {}", crate::setup::syncing::BLOCKED).as_str())
+    );
+    assert!(!outcome(&run).failed);
+    assert!(b.scope_ids().is_empty());
+    assert!(!b.config_text().contains("sync"));
+    assert_eq!(snapshot_of(&folder), before);
+}
+
+fn snapshot_of(dir: &Path) -> Vec<(PathBuf, String)> {
+    let mut out = Vec::new();
+    fn walk(dir: &Path, out: &mut Vec<(PathBuf, String)>) {
+        let mut entries: Vec<_> = std::fs::read_dir(dir)
+            .unwrap()
+            .map(|e| e.unwrap().path())
+            .collect();
+        entries.sort();
+        for path in entries {
+            if path.is_dir() {
+                walk(&path, out);
+            } else {
+                out.push((
+                    path.clone(),
+                    std::fs::read_to_string(&path).unwrap_or_default(),
+                ));
+            }
+        }
+    }
+    walk(dir, &mut out);
+    out
+}
+
+#[test]
+fn an_enrolled_device_with_no_keys_to_ask_for_asks_no_phrase() {
+    let b = boxed("sync-enrolled");
+    b.manager();
+    let folder = b.folder("empty");
+    std::fs::create_dir_all(&folder).unwrap();
+    let fixtures = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/device");
+    use std::os::unix::fs::PermissionsExt;
+    copy_dir(&Path::new(fixtures).join("rivendell"), &b.keys());
+    std::fs::set_permissions(b.keys(), std::fs::Permissions::from_mode(0o700)).unwrap();
+    for file in ["owner.key", "device.key"] {
+        std::fs::set_permissions(b.keys().join(file), std::fs::Permissions::from_mode(0o600))
+            .unwrap();
+    }
+    let mut p = Scripted {
+        confirms: vec![SYNC_ON, ("Apply these changes?", true)],
+        entered: vec![("Folder to sync", folder.display().to_string())],
+        ..Scripted::default()
+    };
+    let run = wizard_as(&b, &mut p, &mut Script::working(), Some("rivendell"));
+    assert!(
+        report(&run).contains(&ok_line("personal", &folder, 0)),
+        "{:?}",
+        report(&run)
+    );
+    assert!(!p.shown.iter().any(|s| s.contains("recovery phrase")));
+    assert_eq!(b.known().len(), 1);
+}
+
+#[test]
+fn sync_with_the_watcher_declined_stays_off_before_any_question() {
+    let b = boxed("sync-no-watcher");
+    b.manager();
+    let before = b.snapshot();
+    let folder = b.folder("f");
+    let mut p = new_owner(&folder);
+    p.confirms.push(("Record note history", false));
+    let run = wizard_as(&b, &mut p, &mut Script::working(), Some("rivendell"));
+    assert!(
+        report(&run)
+            .iter()
+            .any(|l| l.starts_with("sync skipped: sync needs the watcher")),
+        "{:?}",
+        report(&run)
+    );
+    assert!(!outcome(&run).failed);
+    assert!(
+        p.shown
+            .iter()
+            .any(|s| s.starts_with("warn: Sync needs the watcher"))
+    );
+    assert!(
+        !p.shown
+            .iter()
+            .any(|s| s.contains("Which scope") || s.starts_with("note: Recovery"))
+    );
+    assert!(b.identity().is_none());
+    assert!(!folder.exists());
+    assert!(!b.config_text().contains("sync"));
+    let _ = before;
+}
+
+/// The phrase owner's store as a copy of `first`'s, with no keys.
+fn copied_store(first: &Sandbox, name: &str) -> Sandbox {
+    let second = boxed(name);
+    second.manager();
+    std::fs::create_dir_all(second.store().join("notes")).unwrap();
+    copy_dir(
+        &first.store().join(".bilbo/scopes"),
+        &second.store().join(".bilbo/scopes"),
+    );
+    second
+}
+
+fn phrase_answers(folder: &Path, words: Vec<String>) -> Scripted {
+    Scripted {
+        confirms: vec![SYNC_ON, MATCHES, ("Apply these changes?", true)],
+        entered: vec![("Folder to sync", folder.display().to_string())],
+        typed: words,
+        ..Scripted::default()
+    }
+}
+
+fn summary_of(p: &Scripted) -> String {
+    p.shown
+        .iter()
+        .find(|s| s.starts_with("note: Setup will"))
+        .cloned()
+        .unwrap_or_default()
+}
+
+#[test]
+fn a_wiped_laptop_whose_store_and_folder_hold_the_scope_joins_it() {
+    let first = boxed("sync-wiped-a");
+    first.manager();
+    let folder = first.folder("f");
+    let mut p = new_owner(&folder);
+    assert!(
+        wizard_as(&first, &mut p, &mut Script::working(), Some("rivendell"))
+            .result
+            .is_ok()
+    );
+    publish(&first, &folder);
+    let second = copied_store(&first, "sync-wiped-b");
+    let mut q = phrase_answers(&folder, p.phrase().unwrap());
+    let run = wizard_as(&second, &mut q, &mut Script::working(), Some("bagend"));
+    assert!(
+        report(&run).contains(&ok_line("personal", &folder, 0)),
+        "{:?}",
+        report(&run)
+    );
+    let summary = summary_of(&q);
+    assert!(
+        !summary.contains("Copy the manifest") && !summary.contains("Create the scope"),
+        "{summary}"
+    );
+    assert!(
+        summary.contains("Add this device to the scope personal"),
+        "{summary}"
+    );
+    let id = second.identity().unwrap();
+    let latest = second.known()[0].scope.latest().unwrap().manifest.clone();
+    assert!(latest.lists(&id.device.id()));
+}
+
+#[test]
+fn a_store_that_holds_the_scope_and_an_empty_folder_creates_nothing() {
+    let first = boxed("sync-held-a");
+    first.manager();
+    let mut p = new_owner(&first.folder("f1"));
+    assert!(
+        wizard_as(&first, &mut p, &mut Script::working(), Some("rivendell"))
+            .result
+            .is_ok()
+    );
+    let second = copied_store(&first, "sync-held-b");
+    let mut q = phrase_answers(&second.folder("f2"), p.phrase().unwrap());
+    let run = wizard_as(&second, &mut q, &mut Script::working(), Some("bagend"));
+    assert!(run.result.is_ok(), "{:?}", q.shown);
+    assert!(
+        !summary_of(&q).contains("Create the scope"),
+        "{}",
+        summary_of(&q)
+    );
+    assert_eq!(second.scope_ids(), first.scope_ids());
+}
+
+#[test]
+fn a_dead_end_fork_is_set_aside_before_the_folders_scope_is_joined() {
+    let one = boxed("sync-fork-1");
+    one.manager();
+    let mut p = new_owner(&one.folder("f1"));
+    assert!(
+        wizard_as(&one, &mut p, &mut Script::working(), Some("rivendell"))
+            .result
+            .is_ok()
+    );
+    let a = one.scope_ids()[0].clone();
+    let two = boxed("sync-fork-2");
+    two.manager();
+    let f2 = two.folder("f2");
+    let mut q = phrase_answers(&f2, p.phrase().unwrap());
+    q.confirms.push(("recovery phrase from another", true));
+    assert!(
+        wizard_as(&two, &mut q, &mut Script::working(), Some("bagend"))
+            .result
+            .is_ok(),
+        "{:?}",
+        q.shown
+    );
+    let b = two.scope_ids()[0].clone();
+    assert_ne!(a, b);
+    publish(&two, &f2);
+    let three = copied_store(&one, "sync-fork-3");
+    let mut r = phrase_answers(&f2, p.phrase().unwrap());
+    let run = wizard_as(&three, &mut r, &mut Script::working(), Some("gondor"));
+    assert!(
+        report(&run).contains(&ok_line("personal", &f2, 0)),
+        "{:?}",
+        report(&run)
+    );
+    assert!(
+        summary_of(&r).contains("Copy the manifest of personal"),
+        "{}",
+        summary_of(&r)
+    );
+    let known = three.known();
+    assert_eq!(known.len(), 1, "the fork holds no version any more");
+    assert_eq!(known[0].scope.id, b);
+    let lost = three
+        .store()
+        .join(".bilbo/scopes")
+        .join(&a)
+        .join("manifest/lost");
+    assert!(lost.is_dir(), "the fork's version moved to lost/");
+    let id = three.identity().unwrap();
+    assert!(
+        three.known()[0]
+            .scope
+            .latest()
+            .unwrap()
+            .manifest
+            .lists(&id.device.id())
+    );
+}
+
+#[test]
+fn a_new_scope_beside_a_manifest_that_never_listed_the_device_is_refused_up_front() {
+    let first = boxed("sync-unsealed-a");
+    first.manager();
+    let mut p = new_owner(&first.folder("f1"));
+    assert!(
+        wizard_as(&first, &mut p, &mut Script::working(), Some("rivendell"))
+            .result
+            .is_ok()
+    );
+    let second = copied_store(&first, "sync-unsealed-b");
+    second.write_config("a");
+    let mut text = second.config_text();
+    text.push_str("scope.work.sync = off\n");
+    std::fs::write(second.config(), text).unwrap();
+    let mut q = phrase_answers(&second.folder("f2"), p.phrase().unwrap());
+    q.selects = vec![("Which scope", 1)];
+    let run = wizard_as(&second, &mut q, &mut Script::working(), Some("bagend"));
+    assert!(
+        report(&run).contains(&format!(
+            "sync skipped: {}",
+            crate::setup::syncing::UNSEALED
+        )),
+        "{:?}",
+        report(&run)
+    );
+    assert!(second.identity().is_none());
+    assert!(!second.folder("f2").exists());
+    assert!(!outcome(&run).failed);
+}
+
+#[test]
+fn a_host_name_with_no_letter_turns_sync_off_instead_of_ending_the_wizard() {
+    let b = boxed("sync-no-host");
+    b.manager();
+    let mut p = new_owner(&b.folder("f"));
+    let mut facts = gather(&flags(&["--yes"], Mode::Wizard, &b.env), &b.env, b.path())
+        .ok()
+        .unwrap();
+    facts.host = None;
+    let run = wizard_with(
+        facts,
+        &mut p,
+        &mut Script::working(),
+        || None,
+        |_, _| Ok(8),
+        |_| Ok("indexed".into()),
+    );
+    let lines = &run.ok().unwrap().lines;
+    let line = lines.iter().find(|l| l.starts_with("sync ")).unwrap();
+    assert!(line.contains("bilbo device init --name <name>"), "{line}");
+    assert!(b.identity().is_none());
+}
+
+#[test]
+fn a_folder_that_cannot_hold_a_scope_is_found_before_the_phrase_is_shown() {
+    let b = boxed("sync-blocked-first");
+    b.manager();
+    let folder = b.folder("f");
+    let arriving = folder.join("scopes/6bfzzv5eukiswvtgipvo5mx7ze/manifest");
+    std::fs::create_dir_all(&arriving).unwrap();
+    std::fs::write(arriving.join("2.json"), "{}").unwrap();
+    let mut p = new_owner(&folder);
+    let run = wizard_as(&b, &mut p, &mut Script::working(), Some("rivendell"));
+    assert!(
+        report(&run).iter().any(|l| l.starts_with("sync skipped: ")),
+        "{:?}",
+        report(&run)
+    );
+    assert!(
+        !p.shown
+            .iter()
+            .any(|s| s.starts_with("note: Recovery phrase"))
+    );
+    assert!(b.identity().is_none());
+}
+
+#[test]
+fn a_damaged_key_fails_the_step_in_the_wizard_as_it_does_under_yes() {
+    let b = boxed("sync-damaged-wizard");
+    b.manager();
+    let folder = b.folder("held");
+    outsider(&b, &folder);
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(
+        b.keys().join("device.key"),
+        std::fs::Permissions::from_mode(0o644),
+    )
+    .unwrap();
+    let mut p = Scripted {
+        confirms: vec![SYNC_ON, ("Apply these changes?", true)],
+        ..Scripted::default()
+    };
+    let run = wizard_as(&b, &mut p, &mut Script::working(), Some("rivendell"));
+    let line = report(&run)
+        .iter()
+        .find(|l| l.starts_with("sync "))
+        .unwrap()
+        .clone();
+    assert!(line.starts_with("sync failed: "), "{line}");
+    assert!(outcome(&run).failed);
+}
+
+#[test]
+fn a_scope_turned_off_is_named_after_the_scopes_that_still_sync() {
+    let b = boxed("sync-off-named");
+    b.manager();
+    let held = b.folder("held");
+    outsider(&b, &held);
+    let work = b.folder("work");
+    std::fs::create_dir_all(&work).unwrap();
+    b.write_config("a");
+    let mut text = b.config_text();
+    text.push_str(&format!("scope.work.sync = file://{}\n", work.display()));
+    std::fs::write(b.config(), text).unwrap();
+    let mut p = Scripted {
+        confirms: vec![SYNC_ON, ("Apply these changes?", true)],
+        entered: vec![("Folder to sync", held.display().to_string())],
+        selects: vec![("Which scope", 0)],
+        ..Scripted::default()
+    };
+    let run = wizard_as(&b, &mut p, &mut Script::working(), Some("rivendell"));
+    let line = report(&run)
+        .iter()
+        .find(|l| l.starts_with("sync "))
+        .unwrap()
+        .clone();
+    assert!(line.starts_with("sync ok: work through "), "{line}");
+    assert!(
+        line.ends_with(&format!(
+            "; personal skipped: {}",
+            crate::setup::syncing::BLOCKED
+        )),
+        "{line}"
+    );
 }

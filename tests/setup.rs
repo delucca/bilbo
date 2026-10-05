@@ -134,6 +134,7 @@ fn modes_a_pipe_runs_without_the_wizard() {
             "hook skipped: no codex plugin".to_string(),
             "timer skipped: no embedder".to_string(),
             format!("watch installed: watching {}/notes", root(&m).display()),
+            "sync skipped: no scope syncs".to_string(),
         ]
     );
 }
@@ -553,6 +554,7 @@ fn report_fresh_run() {
             "hook skipped: no codex plugin".to_string(),
             "timer skipped: no embedder".to_string(),
             format!("watch installed: watching {}/notes", root(&m).display()),
+            "sync skipped: no scope syncs".to_string(),
         ]
     );
     assert!(root(&m).join("notes").is_dir());
@@ -585,7 +587,7 @@ fn store_root_cannot_be_created() {
         report[0].starts_with(&format!("store failed: cannot create {home}/notes: ")),
         "{report:?}"
     );
-    assert_eq!(report.len(), 11, "a failed step stops nothing: {report:?}");
+    assert_eq!(report.len(), 12, "a failed step stops nothing: {report:?}");
     assert!(report[1].starts_with("config written: "));
 }
 
@@ -1287,7 +1289,7 @@ fn plugin_failing_install_does_not_stop_later_steps() {
     assert!(lines.contains(&format!("claude failed: delucca/bilbo#v{VERSION}: boom").as_str()));
     assert!(lines.contains(&format!("codex installed: delucca/bilbo#v{VERSION}").as_str()));
     assert!(lines.contains(&"timer skipped: no embedder"));
-    assert_eq!(lines.last(), Some(&watching(&m).as_str()));
+    assert_eq!(lines.last(), Some(&"sync skipped: no scope syncs"));
     assert!(watch_exists(&m));
 }
 
@@ -2782,6 +2784,7 @@ fn local_fresh_run_reports_every_step() {
             "hook skipped: no codex plugin".to_string(),
             "timer installed: every 15 min".to_string(),
             format!("watch installed: watching {}/notes", root(&m).display()),
+            "sync skipped: no scope syncs".to_string(),
         ]
     );
     let text = std::fs::read_to_string(config_path(&m)).unwrap();
@@ -3230,4 +3233,219 @@ fn remove_without_the_manager_keeps_the_service() {
         format!("server failed: {manager} not found on PATH")
     );
     assert!(service_file(&m).exists());
+}
+
+// ---------------------------------------------------------------------------
+// 8.1 sync step
+
+const DEVICE_FIXTURES: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/device");
+
+/// Puts the fixture keys of `who` where setup looks for them, with the modes git does not keep.
+fn enrol(m: &Machine, who: &str) {
+    let keys = m.home.join(".local/state/bilbo/keys");
+    std::fs::create_dir_all(&keys).unwrap();
+    std::fs::set_permissions(&keys, std::fs::Permissions::from_mode(0o700)).unwrap();
+    for file in ["owner.key", "device.key"] {
+        let target = keys.join(file);
+        std::fs::copy(Path::new(DEVICE_FIXTURES).join(who).join(file), &target).unwrap();
+        std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o600)).unwrap();
+    }
+}
+
+fn scope_note(m: &Machine, name: &str, scope: Option<&str>) {
+    let notes = root(m).join("notes");
+    std::fs::create_dir_all(&notes).unwrap();
+    let scope = scope.map_or(String::new(), |s| format!("scope: {s}\n"));
+    std::fs::write(
+        notes.join(format!("plan-{name}.md")),
+        format!(
+            "---\nid: 01M3YJ7R6HK6NQ30DCDB1P4DYB\ncreated: 2026-10-02T14:23-03:00\n{scope}---\n\n# T\n\ntext\n"
+        ),
+    )
+    .unwrap();
+}
+
+fn syncing_machine(name: &str, url: &str) -> Machine {
+    let m = timer_machine(name);
+    write_config(&m, &[&format!("scope.personal.sync = {url}")]);
+    m
+}
+
+#[test]
+fn sync_nothing_syncs() {
+    let m = timer_machine("sync-none");
+    write_config(&m, &["scope.personal.sync = off"]);
+    let run = watch_run(&m, &[], &[]);
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    assert_eq!(step(&run, "sync"), Some("sync skipped: no scope syncs"));
+}
+
+#[test]
+fn sync_a_scope_reports_its_note_count() {
+    let m = timer_machine("sync-ok");
+    let folder = m.dir.path().join("bilbo");
+    std::fs::create_dir_all(&folder).unwrap();
+    let url = format!("file://{}", folder.display());
+    write_config(&m, &[&format!("scope.personal.sync = {url}")]);
+    enrol(&m, "rivendell");
+    for i in 0..12 {
+        scope_note(&m, &format!("n{i}"), Some("personal"));
+    }
+    scope_note(&m, "other", Some("work"));
+    scope_note(&m, "bare", None);
+    let before = snapshot(&folder);
+    let run = watch_run(&m, &[], &[]);
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    assert_eq!(
+        step(&run, "sync"),
+        Some(format!("sync ok: personal through {url} (12 notes)").as_str())
+    );
+    assert_eq!(snapshot(&folder), before, "the step wrote to the folder");
+}
+
+#[test]
+fn sync_joins_the_scopes_with_a_comma() {
+    let m = timer_machine("sync-two");
+    let (a, b) = (m.dir.path().join("a"), m.dir.path().join("b"));
+    std::fs::create_dir_all(&a).unwrap();
+    std::fs::create_dir_all(&b).unwrap();
+    write_config(
+        &m,
+        &[
+            &format!("scope.personal.sync = file://{}", a.display()),
+            &format!("scope.work.sync = file://{}", b.display()),
+        ],
+    );
+    enrol(&m, "rivendell");
+    scope_note(&m, "w", Some("work"));
+    let run = watch_run(&m, &[], &[]);
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    assert_eq!(
+        step(&run, "sync"),
+        Some(
+            format!(
+                "sync ok: personal through file://{} (0 notes), work through file://{} (1 notes)",
+                a.display(),
+                b.display()
+            )
+            .as_str()
+        )
+    );
+}
+
+#[test]
+fn sync_without_a_device_key_is_skipped_and_exits_0() {
+    let m = syncing_machine("sync-no-key", "file:///srv/bilbo");
+    let run = watch_run(&m, &[], &[]);
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    assert_eq!(
+        step(&run, "sync"),
+        Some("sync skipped: no device key; run bilbo device init in a terminal")
+    );
+}
+
+#[test]
+fn sync_without_the_watcher_fails() {
+    let m = timer_machine("sync-no-watch");
+    let folder = m.dir.path().join("bilbo");
+    std::fs::create_dir_all(&folder).unwrap();
+    write_config(
+        &m,
+        &[&format!(
+            "scope.personal.sync = file://{}",
+            folder.display()
+        )],
+    );
+    enrol(&m, "rivendell");
+    let run = watch_setup(&m, &[], &["--yes", "--no-plugin", "--no-watch"]);
+    assert_eq!(run.code, 1, "{}", run.stderr);
+    assert_eq!(
+        step(&run, "sync"),
+        Some("sync failed: sync needs the watcher; drop --no-watch")
+    );
+}
+
+#[test]
+fn sync_through_a_relay_fails_with_its_scheme() {
+    let m = syncing_machine("sync-relay", "https://relay.example");
+    enrol(&m, "rivendell");
+    let run = watch_run(&m, &[], &[]);
+    assert_eq!(run.code, 1, "{}", run.stderr);
+    assert_eq!(
+        step(&run, "sync"),
+        Some("sync failed: https transports are not supported yet; use a file:// folder")
+    );
+}
+
+#[test]
+fn sync_into_a_missing_folder_fails_and_creates_nothing() {
+    let m = syncing_machine("sync-missing", "file:///Volumes/usb/bilbo");
+    enrol(&m, "rivendell");
+    let run = watch_run(&m, &[], &[]);
+    assert_eq!(run.code, 1, "{}", run.stderr);
+    let line = step(&run, "sync").unwrap();
+    assert!(
+        line.starts_with("sync failed: file:///Volumes/usb/bilbo is not reachable: "),
+        "{line}"
+    );
+    assert!(!Path::new("/Volumes/usb/bilbo").exists());
+}
+
+#[test]
+fn sync_into_a_folder_that_takes_no_writes_fails() {
+    let m = timer_machine("sync-readonly");
+    let folder = m.dir.path().join("locked");
+    std::fs::create_dir_all(&folder).unwrap();
+    std::fs::set_permissions(&folder, std::fs::Permissions::from_mode(0o500)).unwrap();
+    let url = format!("file://{}", folder.display());
+    write_config(&m, &[&format!("scope.personal.sync = {url}")]);
+    enrol(&m, "rivendell");
+    let run = watch_run(&m, &[], &[]);
+    std::fs::set_permissions(&folder, std::fs::Permissions::from_mode(0o700)).unwrap();
+    // SAFETY: geteuid takes no arguments and cannot fail.
+    if unsafe { libc::geteuid() } == 0 {
+        return;
+    }
+    assert_eq!(run.code, 1, "{}", run.stderr);
+    assert_eq!(
+        step(&run, "sync"),
+        Some(format!("sync failed: {url} is not reachable: the folder is not writable").as_str())
+    );
+}
+
+#[test]
+fn sync_with_a_damaged_key_fails_with_its_message() {
+    let m = syncing_machine("sync-damaged", "file:///srv/bilbo");
+    enrol(&m, "rivendell");
+    let keys = m.home.join(".local/state/bilbo/keys");
+    std::fs::set_permissions(
+        keys.join("device.key"),
+        std::fs::Permissions::from_mode(0o644),
+    )
+    .unwrap();
+    let run = watch_run(&m, &[], &[]);
+    assert_eq!(run.code, 1, "{}", run.stderr);
+    assert!(
+        step(&run, "sync").unwrap().starts_with("sync failed: "),
+        "{}",
+        run.stdout
+    );
+}
+
+#[test]
+fn sync_a_failed_step_does_not_stop_the_rest() {
+    let m = syncing_machine("sync-last", "https://relay.example");
+    enrol(&m, "rivendell");
+    let run = watch_run(&m, &[], &[]);
+    let names: Vec<&str> = lines(&run)
+        .iter()
+        .map(|l| l.split(' ').next().unwrap())
+        .collect();
+    assert_eq!(
+        names,
+        [
+            "store", "config", "key", "model", "server", "embedder", "claude", "codex", "hook",
+            "timer", "watch", "sync"
+        ]
+    );
 }
