@@ -133,7 +133,7 @@ fn is_hex(s: &str) -> bool {
 /// A record is readable when its hashes are hex, so a blob never names a path outside `blobs/`, and its file name is
 /// a note name, so a restore never writes a stray one. A `left` record's id is the moving version's, so nothing
 /// re-derives an id here.
-fn readable(v: &Version) -> bool {
+pub fn readable(v: &Version) -> bool {
     is_hex(&v.version)
         && v.parents.iter().all(|p| is_hex(p))
         && (is_hex(&v.blob) || v.is_deleted())
