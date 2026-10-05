@@ -62,7 +62,7 @@ Resolved on 2026-10-03 in a scratch crate holding bilbo's `Cargo.toml` and `Carg
 | `chacha20poly1305` | 0.11.0, feature `zeroize` | the sealed name, the epoch chain, and change 4's segments (XChaCha20-Poly1305) | Already inside `hpke`. |
 | `hkdf` | 0.13.0 | the owner derivation | Already inside `hpke`. |
 | `getrandom` | 0.4.3 | every random byte | std has no stable OS randomness API in Rust 1.95. `hpke` and `crypto-common` use the same version. |
-| `sha2` | 0.11.0 (already a dependency) | the HKDF hash | `Hkdf::<Sha256>` names the hash type, so `keys.rs` must import it. Plain SHA-256 (ids, fingerprints, `prev`, the phrase checksum) goes through `shared::hash`. |
+| `sha2` | 0.11.0 (already a dependency), now with feature `zeroize` | the HKDF hash | The `zeroize` feature wipes its block buffers, which hold the entropy while hashing. `Hkdf::<Sha256>` names the hash type, so `keys.rs` must import it. Plain SHA-256 (ids, fingerprints, `prev`, the phrase checksum) goes through `shared::hash`. |
 
 New lock entries: 24, namely `aead`, `chacha20`, `chacha20poly1305`, `cipher`, `cmov`, `ctutils`, `curve25519-dalek`, `curve25519-dalek-derive`, `ed25519`, `ed25519-dalek`, `fiat-crypto`, `getrandom` 0.4, `hkdf`, `hmac`, `hpke`, `inout`, `poly1305`, `r-efi` (UEFI only), `rand_core`, `rustc_version` and `semver` (build script), `signature`, `universal-hash` and `x25519-dalek`. Licences are BSD-3-Clause (dalek) or MIT/Apache-2.0, all compatible with bilbo's Apache-2.0.
 
@@ -111,7 +111,7 @@ New lock entries: 24, namely `aead`, `chacha20`, `chacha20poly1305`, `cipher`, `
 
 ### What revocation guarantees
 
-**Guaranteed.** Once the revoking version is confirmed on the transport (see "Pending versions"), the revoked device cannot read anything written under a later epoch. That holds even for an active thief who kept `<state>/bilbo/keys/` whole and uses the owner signing seed:
+**Guaranteed.** Once the revoking version is confirmed on the transport (see "Pending versions"), the revoked device cannot read anything written under a later epoch, provided every device listed after the revocation is the user's. That holds even for an active thief who kept `<state>/bilbo/keys/` whole and uses the owner signing seed. The proviso matters because, until the revocation is confirmed, the thief still holds the current epoch key and can add a device of its own, which the rotation then seals to; the README tells the user to run `bilbo device list` after revoking (final review, MEDIUM-1):
 - `owner.key` holds no box secret, and the new epoch is sealed only to the remaining devices' box keys and to `owner_box`.
 - The thief cannot seal a later epoch's key to itself, because it never learns it.
 - It cannot mint an epoch of its own that a member accepts. A valid version's `chain` must hold an entry for every epoch from 1 to `epoch`-1 (Manifest validity, checked without secrets, so the relay enforces it too). Every member checks that each entry for an epoch whose key it already holds decrypts to that key (Chain check by a member). A rotation needs a correct entry for the current epoch, which only a holder of the current key can write. Secret-free validity also pins `owner_box` to version 1, keeps each listed device's `box` across versions, and makes dropping a device require a new epoch, so a thief can neither re-key a member or the owner entry for the next honest rotation to seal to, nor drop a device silently. A version that keeps the epoch but seals another key to a member is invalid for that member too, since it already holds that epoch's key (found in the stream review: without it a thief could re-seal the current epoch with a key of its own).
@@ -160,7 +160,7 @@ The same sentence goes in the README and in changes 4 to 6: "After a confirmed r
 - **Recover's entry.** Twelve `input` prompts on the alternate screen, each checked by `phrase::check_word` (a plain `fn`, as `Prompter::input` wants). A failed checksum asks for the twelve again, with the typed words as defaults. Then comes the fingerprint step above, a `confirm` that defaults to no. Echo is on: the screen is cleared afterwards, and typing twelve words blind is worse.
 - **No core file.** Before the screen opens, `keys::no_core_dump` sets `RLIMIT_CORE` to 0 with `setrlimit`, and on Linux also calls `prctl(PR_SET_DUMPABLE, 0)`, so a crash cannot write the phrase to `systemd-coredump` or a `core` file.
 - **Never in output.** No step line, error or log names a word: errors give positions only. bilbo writes no log for `device`.
-- **What remains.** A terminal recorder, `tmux capture-pane` while the screen is up, a screen reader, or a person behind the user. These are the same exposure as writing the phrase down.
+- **What remains.** A terminal recorder, `tmux capture-pane` while the screen is up, a screen reader, a person behind the user, or a signal that kills bilbo between two prompts, which leaves the alternate screen up until the user leaves it. These are the same exposure as writing the phrase down.
 
 ### Zeroizing
 
@@ -283,7 +283,7 @@ The sanitizing rule is pure and unit-tested apart from the call.
   - in `ceremony.rs`: the ceremony with the scripted prompter;
   - in `device.rs`: every form with temporary roots and state folders, including "the phrase is kept nowhere", which scans every written file for the words and the entropy hex.
 - **Golden fixtures** carry the binary tests.
-  - `tests/fixtures/device/` holds two key folders, `rivendell` and `bagend`, under the all-`abandon` owner with fixed device seeds, and a store whose `personal` scope has versions 1 and 2.
+  - `tests/fixtures/device/` holds two key folders, `rivendell` and `bagend`, under the all-`abandon` owner with fixed device seeds, and a store whose `personal` scope has versions 1 and 2, plus `foreign/`, a store holding one scope of another owner for the foreign-manifest test.
   - `tests/device.rs` copies them into temporary folders and sets modes 0700 and 0600, since git keeps only the execute bit. It then runs show, `list`, `init` on an enrolled device, and the refusals of every terminal-only form without a terminal, with `CLAUDECODE` and with `CODEX_THREAD_ID`. It also covers loose modes, `keys.new`, tampered, misplaced and foreign manifests, and the exit codes.
   - The `#[ignore]` test `identity::device::tests::write_fixtures` regenerates them, and `identity::device::tests::fixtures_open` fails when a format change leaves them stale. The fixture keys are test keys, documented as such.
 - **Why not a test hook in the binary:** `nix flake check` runs tests in release, where a `debug_assertions` hook would be off. Restore's and `scope set`'s hooks are function parameters that only unit tests pass, and the ceremony's unit tests do the same through the scripted prompter. A hidden way to feed the phrase to the binary is the thing this change refuses agents.

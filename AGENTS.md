@@ -47,10 +47,10 @@ PYTHONDONTWRITEBYTECODE=1 python3 ~/.codex/skills/.system/plugin-creator/scripts
   stderr line with `bilbo: `. The one exception is `Terminal` in
   `src/host/prompt.rs`, which cliclack draws on stderr without the prefix.
 - `src/` is one folder per domain, each verb inside the domain it serves:
-  `note/`, `search/`, `library/`, `citation/`, `setup/` and `host/`. A
-  domain's `mod.rs` holds its `//!` summary and its `mod` lines; `note/` and
-  `citation/` also keep their model there, and `setup/`, which is itself a
-  verb, keeps the verb's root. `src/main.rs` parses arguments, owns
+  `note/`, `search/`, `library/`, `citation/`, `identity/`, `setup/` and
+  `host/`. A domain's `mod.rs` holds its `//!` summary and its `mod` lines;
+  `note/` and `citation/` also keep their model there, and `setup/`, which is
+  itself a verb, keeps the verb's root. `src/main.rs` parses arguments, owns
   `Failure`, dispatches to `<domain>::<verb>::run` (except `setup::run` and
   `check::run`) and prints.
 - `src/shared/` is the Shared Kernel: `store`, `markdown`, `frontmatter`,
@@ -59,16 +59,19 @@ PYTHONDONTWRITEBYTECODE=1 python3 ~/.codex/skills/.system/plugin-creator/scripts
   calls: `use crate::shared::store;`, then `store::root(..)`.
 - The verbs are `note/new.rs`, `note/watch.rs`, `note/history.rs`,
   `note/restore.rs`, `note/scope.rs`, `search/recall.rs`, `search/index.rs`,
-  `search/digest.rs`, `library/cli/`, `citation/cite.rs`, `setup/` and
-  `src/check.rs`, which spans note and library and so stays at the root. A
-  verb parses its own arguments, returns `crate::Failure` and never prints,
+  `search/digest.rs`, `library/cli/`, `citation/cite.rs`,
+  `identity/device.rs`, `setup/` and `src/check.rs`, which spans note and
+  library and so stays at the root. A verb parses its own arguments, returns `crate::Failure` and never prints,
   and only `main` uses a verb's module. `watch`, like `setup`, takes a
   callback for its progress lines and `main` prints each one. `digest` is the
   exception: it returns a `digest::Outcome` (lines and one diagnostic) and
   `main` always exits 0 for it, because a prompt hook that exits 2 blocks the
   prompt. Code outside the verbs returns plain values and `String` messages
   and never names `Failure`; it may use other domains without forming a
-  cycle (today `search` uses `note` and `library`).
+  cycle (today `search` uses `note` and `library`, and `identity` uses `host`).
+  The library modules of `identity` (`keys`, `phrase`, `manifest`, `ceremony`)
+  never use a domain that uses `identity`, so later domains can build on them.
+  `identity/script.rs`, the scripted `Prompter`, is test-only.
 - A module with children is `foo/mod.rs`, never `foo.rs` beside `foo/`
   (clippy's `self_named_module_files`, enabled in `src/main.rs`). Items are
   `pub` or private, never `pub(crate)`. Name modules by absolute `crate::`
@@ -137,6 +140,10 @@ PYTHONDONTWRITEBYTECODE=1 python3 ~/.codex/skills/.system/plugin-creator/scripts
 - Tests of `bilbo watch` run it as a child process and poll with a deadline.
   A check that nothing was recorded waits on a barrier, a later edit to another
   note that it polls for, never a fixed sleep.
+- On macOS a child spawned while another thread is creating a pipe inherits
+  that pipe (std has no `pipe2` there). A test that runs `bilbo` from a second
+  thread drops its `Watcher` before joining that thread, or the join waits
+  forever (`history_does_not_block_a_starting_watcher`).
 - Restore's crash points are tested through its step hook, which stops it where
   a kill would, and `scope set`'s races through its exchange hook. Do not test
   them by killing a child.
@@ -147,8 +154,16 @@ PYTHONDONTWRITEBYTECODE=1 python3 ~/.codex/skills/.system/plugin-creator/scripts
   uses `http://0.0.0.0:<fake.port()>`. `zero_address` in `tests/index.rs` proves it.
 - `Terminal` in `src/host/prompt.rs` is the only code the unit tests cannot
   reach. After changing it, repeat the expect runs recorded in the
-  `smoke.md` of `openspec/changes/archive/2026-10-02-add-setup/` and
-  `2026-10-03-add-local-embedder/`.
+  `smoke.md` of `openspec/changes/archive/2026-10-02-add-setup/`,
+  `2026-10-03-add-local-embedder/` and `2026-10-05-add-device-keys/` (run
+  the last under `env -u CLAUDECODE -u CODEX_THREAD_ID`).
+- `tests/fixtures/device/` holds golden key and manifest files for fixed test
+  seeds. Regenerate them with the ignored
+  `identity::device::tests::write_fixtures`, never by hand. Git keeps only the
+  execute bit, so `tests/device.rs` sets the 0700 and 0600 modes itself. Binary
+  tests run without a terminal and never feed the phrase through a hook; the
+  ceremony is tested in `identity/ceremony.rs` and `identity/device.rs` with the
+  scripted prompter.
 - `tests/fixtures/agents/` holds recorded `claude` and `codex` output, the
   first line being the command. When a tool's JSON moves, re-record them
   against throwaway `CLAUDE_CONFIG_DIR` and `CODEX_HOME`.
