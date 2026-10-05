@@ -2,7 +2,7 @@
 name: note
 description: Keeps what a later session should know as a bilbo note, such as a decision, gotcha, plan or finding. Use for "note this", "save this as a decision/gotcha/plan", "keep this for later sessions", or when this session settled something durable. NOT for a passing "note that..." in conversation, or for searching notes (recall).
 license: Apache-2.0
-allowed-tools: Bash(command -v bilbo), Bash(bilbo recall *), Bash(bilbo new *), Bash(bilbo scope), Bash(bilbo scope set *), Bash(bilbo check), Bash(mv -n *), Read, Edit
+allowed-tools: Bash(command -v bilbo), Bash(bilbo recall *), Bash(bilbo new *), Bash(bilbo scope), Bash(bilbo scope set *), Bash(bilbo check), Bash(bilbo sync declare *), Bash(mv -n *), Read, Edit
 ---
 
 # note
@@ -113,18 +113,34 @@ Writes what a later session should know into the bilbo store, through `bilbo new
 
    | Exit | output | What to do |
    |---|---|---|
-   | 0 | empty, or only `(warning)` lines | report (step 9); report the note's warning lines unfixed and count the others |
-   | 1 | stdout lines | fix every line that starts with `notes/<the note's file name>: `, except a `topic:` or `id:` line naming another file, a `scope: '<name>' is not declared` line and a `(warning)` line, which go in the report unfixed. A `scope: missing` line is the scope question of step 5, asked once: apply the answer with `bilbo scope set`; with no answer it goes in the report unfixed and the note is `unassigned`. Run `bilbo check` again only after a fix, at most three runs in all. Leave lines for other notes alone and count them |
+   | 0 | empty, or only `(warning)` lines | report (step 10); report the note's warning lines unfixed and count the others |
+   | 1 | stdout lines | fix every line that starts with `notes/<the note's file name>: `, except a `topic:` or `id:` line naming another file, a `scope: '<name>' is not declared` line and a `(warning)` line, which go in the report unfixed, and a `conflict:` line, which is step 9. A `scope: missing` line is the scope question of step 5, asked once: apply the answer with `bilbo scope set`; with no answer it goes in the report unfixed and the note is `unassigned`. Run `bilbo check` again only after a fix, at most three runs in all. Leave lines for other notes alone, a conflict in one included, and count them |
    | 1 | stderr `bilbo: no store at <root>` | print it and stop |
    | 2 | anything | print bilbo's first stderr line and stop |
 
    If lines still name the note after the third run, report them.
 
-9. Report. Say `created`, `updated` or `renamed`, give the absolute path (both paths for a rename), name the note's scope or say `unassigned` when it has none or one this device does not declare, and say how many `bilbo check` lines were left for other notes. When you stopped before writing, say what stopped you and claim no note.
+9. Resolve a conflict. A `conflict:` line for the note you touched means a sync merged two edits of one passage and kept both between `<<<<<<< bilbo`, `=======` and `>>>>>>> bilbo` lines. Read the file, and for each block Edit in one passage that keeps every fact of every side, saying so where the sides disagree (two dates for one release stay as both dates, marked as disagreeing), with the marker lines removed. When the user said which side holds, keep only that side. Then run `bilbo check` again:
+
+   | Output | What to do |
+   |---|---|
+   | no `conflict:` line for the note | done |
+   | `notes/<file>: conflict: dropped <n> lines of '<heading path>', first "<line>"; ...` | each dropped line is text a side held and your passage lacks. Put back every one that still holds. For lines that are wrong or superseded (the side the user overruled, for one), declare them once for the note, after the user's word or your own reason, in one line of at most 500 characters |
+   | `stray conflict marker` | remove that marker line |
+
+   ```bash
+   bilbo sync declare <topic> '<why>'
+   ```
+
+   `<topic>` is the note's topic, as in `bilbo history`. Write the reason's `'` as `'\''`. Declare only lines you chose to drop, never to silence the report of lines you have not read. On exit 1 with `has no dropped text to declare`, there is nothing to declare: go on. Name the dropped lines in the report. Run `bilbo check` again after the edit or the declaration, at most three runs in all. A conflict in a note you did not touch is not yours to resolve: leave that note as it is and count its line among the lines for other notes.
+
+10. Report. Say `created`, `updated` or `renamed` (add `resolved a conflict` and name the dropped lines, declared or restored, when step 9 ran), give the absolute path (both paths for a rename), name the note's scope or say `unassigned` when it has none or one this device does not declare, and say how many `bilbo check` lines were left for other notes. When you stopped before writing, say what stopped you and claim no note.
 
 ## Never
 
 - Write any file but the note's own.
+- Resolve a conflict by keeping one side unless the user said which side holds.
+- Declare dropped text you have not chosen to drop.
 - Edit a `scope:` line by hand: `bilbo scope set` is the only way to change it.
 - Create a note without `bilbo new`.
 - Create a second note on a subject that has one.
