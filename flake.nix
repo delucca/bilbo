@@ -187,7 +187,7 @@
                   lib.mkOption {
                     type = lib.types.nullOr lib.types.str;
                     default = null;
-                    description = "The config key ${key}, as the Configuration section of bilbo's README describes it.";
+                    description = "The config key ${key}; see https://github.com/delucca/bilbo/blob/main/docs/reference/configuration.md.";
                   }
                 );
               };

@@ -995,7 +995,7 @@ pub fn render(header: &str, settings: &[(String, String)]) -> String {
     let mut out = format!("{header}\n");
     if settings.is_empty() {
         out.push_str(
-            "# One <key> = <value> per line; the keys are under Configuration in bilbo's README.\n\
+            "# One <key> = <value> per line; the keys are listed at https://github.com/delucca/bilbo/blob/main/docs/reference/configuration.md\n\
              # To search by meaning as well as by keywords, set an embedder:\n\
              # embedder.url = http://localhost:11434\n\
              # embedder.model = nomic-embed-text\n",
