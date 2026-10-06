@@ -48,12 +48,14 @@ After `add-sync`, two devices sync a scope only through a folder they both see (
 
 ## Impact
 
-- New verb `src/relay.rs`, with its `mod` line, dispatch arm and USAGE line in `src/main.rs`.
-- New library modules: `src/http.rs` (HTTP/1.1 framing on std `TcpListener`) and `src/remote.rs` (the `https://` transport client and the request-signature rule both sides share). `remote.rs` implements the transport interface of `add-sync`'s `src/transport.rs` and is selected by URL scheme where `add-sync` selects `file://`.
-- The relay stores objects through its own create path, `hard_link` with flushes in `<data>/.tmp/`. The `file://` writer in `src/transport.rs` (`add-sync`) keeps `swap::rename_new` and its `.<device id>-<16 lowercase hexadecimal characters>.tmp` temporaries, because hard links fail on exFAT, FAT and some SMB shares that users sync from. The owner-scope fetch that `add-sync` adds to `src/transport.rs`, called by `src/device.rs` (recover) and `src/wizard.rs` with `src/setup.rs`, gains the relay listing.
-- Manifest and signature checks reuse `add-device-keys`' `src/manifest.rs` (verification, the chain) and `src/keys.rs` (Ed25519, the owner fingerprint, random bytes).
-- New direct dependency: `httparse` 1.10.1, already in `Cargo.lock` through `ureq-proto`, so no new crate is built.
-- `flake.nix`: `nixosModules.relay` and an evaluation check of it on the Linux systems.
-- Tests: protocol tests as unit tests in `src/relay.rs` and `src/remote.rs` against a relay on `127.0.0.1:0`; `tests/relay.rs` runs the built `bilbo relay` as a child and syncs two stores through it.
+- New domain and verb `src/relay/` (`mod.rs`, `http.rs`, `store.rs`, `route.rs`, `admit.rs`, `mailbox.rs`, `walk.rs`), the way `src/setup/` is both; its `mod` line, dispatch arm (`relay::run`) and USAGE line in `src/main.rs`; `relay` in `tests/layout.rs`' `DOMAINS` and `VERBS`.
+- New library module of `sync`: `src/sync/remote/` (`mod.rs`, the `https://` and loopback `http://` client; `sign.rs`, the request-signature rule both sides share). `transport::open` in `src/sync/transport.rs` picks it by URL scheme where it picks `file://`, and takes `transport::Keys` (the device, the owner key when held, and whether mailbox requests are signed) instead of a device id, so every caller changes: `note/watch.rs`, `identity/device.rs`, `identity/pair/show.rs` and `join.rs`, `setup/syncing.rs` and `setup/wizard.rs`.
+- The relay stores objects through its own create path in `src/relay/store.rs`, `hard_link` with flushes in `<data>/.tmp/`. The `file://` writer in `src/sync/transport.rs` keeps `swap::rename_new` and its `.<device id>-<16 lowercase hexadecimal characters>.tmp` temporaries, because hard links fail on exFAT, FAT and some SMB shares that users sync from.
+- The owner-scope fetch `add-sync` built on `Transport::scopes` (`sync::scopes::list`, `chain`, `pick`) reaches relays through the client. `bilbo device recover` (`src/identity/device.rs`) drops its `file://` filter; the wizard (`src/setup/wizard.rs`, `src/setup/syncing.rs`) takes a relay URL; setup's sync step checks a relay with `GET /v1/`.
+- `bilbo pair` (`src/identity/pair/show.rs`, `join.rs`) drops its `cannot reach https:// transports yet` refusals.
+- Manifest and signature checks reuse `src/identity/manifest.rs` (`verify_scope`, and a new `verify_next` for one version after the valid ones) and `src/identity/keys.rs` (Ed25519, `owner_fingerprint`, and a new `parse_fingerprint` for `--owner`).
+- New direct dependency: `httparse` 1.10.1, already in `Cargo.lock` through `ureq-proto`, so no new crate is built; `tests/layout.rs` keeps it in `src/relay/http.rs`.
+- `flake.nix`: `nixosModules.relay` and an evaluation check of it.
+- Tests: protocol tests as unit tests in `src/relay/` and `src/sync/remote/` against a relay on `127.0.0.1:0`; `tests/relay.rs` runs the built `bilbo relay` as a child and syncs two stores through it; `tests/device.rs`, `tests/pair.rs` and setup's tests gain relay cases.
 - `AGENTS.md` and `README.md`: the relay, its deployment behind `tailscale serve` or Caddy, and the `httparse` rule.
 - Migration: none. Nothing changes for a user who does not run a relay.

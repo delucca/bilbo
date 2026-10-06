@@ -3,7 +3,7 @@
 ## MODIFIED Requirements
 
 ### Requirement: Recover fetches scopes from the transport
-Before adding the device, `recover` SHALL, for each scope with a sync URL and no local manifest, or whose every local version is pending and absent from the transport, list the owner's scopes on that transport (a relay: owner-signed `GET /v1/scopes/`; a folder: `scopes/`), verify each chain, open its sealed name with the phrase's box key, and copy the versions of the one named like the config's scope into the store as confirmed. When several match, it SHALL take the one listing more devices, on a tie the lower id, and say so on stderr. Pending local versions it replaces SHALL move to `manifest/lost/<n>.json`, never deleted. A transport it cannot read SHALL make that scope `failed`, naming the URL and the reason, and the exit code 1.
+Before adding the device, `recover` SHALL, for each scope with a sync URL and no local manifest, or whose every local version is pending and absent from the transport, list the owner's scopes on that transport (a relay: owner-signed `GET /v1/scopes/`; a folder: `scopes/`), verify each chain, open its sealed name with the phrase's box key, and copy the versions of the one named like the config's scope into the store as confirmed. When several match, it SHALL take the one listing more devices, on a tie the lower id, and say so on stderr. Pending local versions it replaces SHALL move to `manifest/lost/<n>.json`, never deleted. A transport it cannot read SHALL make that scope `failed`, naming the URL and the reason, and the exit code 1. When no scope opens to the config's name and a scope on the transport does not verify, it cannot tell that the name is free: that scope SHALL be `failed` with `<url> holds scope <scope id> that does not verify: <reason>`, never naming `init`.
 
 #### Scenario: Every device lost, relay
 - **WHEN** every device is lost, `personal` lives on `https://relay.example` at manifest 5, and on a new machine with an empty store and `scope.personal.sync = https://relay.example` the user runs `bilbo device recover` with the phrase
@@ -32,6 +32,10 @@ Before adding the device, `recover` SHALL, for each scope with a sync URL and no
 #### Scenario: A chain that does not verify
 - **WHEN** one scope in the folder has a manifest whose signature does not verify
 - **THEN** recover copies nothing of that scope, names its id on stderr, and treats the other scopes as usual
+
+#### Scenario: A chain that does not verify, and no other by that name
+- **WHEN** the only scope in the folder that could be `personal` has a manifest that does not verify, and the store holds no manifest of `personal`
+- **THEN** stdout has `scope personal failed: <url> holds scope <id> that does not verify: <reason>` and does not name `bilbo device init`, and the exit code is 1
 
 #### Scenario: A relay that does not answer
 - **WHEN** the relay is down while the user recovers
