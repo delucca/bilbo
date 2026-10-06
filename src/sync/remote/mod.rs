@@ -356,10 +356,11 @@ impl Relay {
         let url = &self.url;
         match (reply.status, reply.reason()) {
             (403, "not-admitted") => {
-                let owner = self
-                    .owner
-                    .as_ref()
-                    .filter(|_| who == Who::Owner || is_manifest(path));
+                let owner = self.owner.as_ref().filter(|_| {
+                    who == Who::Owner
+                        || is_manifest(path)
+                        || (who == Who::Device && self.owner_refused())
+                });
                 match (who, owner) {
                     (_, Some(owner)) => format!(
                         "relay {url} does not admit this owner; start it with --owner {}",
@@ -381,6 +382,14 @@ impl Relay {
             (status, "") => format!("relay {url} answered {status}"),
             (status, reason) => format!("relay {url} answered {status}: {reason}"),
         }
+    }
+
+    /// Whether the relay refuses the owner key itself: the owner's scope listing, asked once, is answered 403.
+    fn owner_refused(&self) -> bool {
+        self.owner.is_some()
+            && self
+                .call("GET", "scopes/", None, Who::Owner)
+                .is_ok_and(|reply| reply.is(403, "not-admitted"))
     }
 
     /// Whether a refusal of a manifest read by the owner key means the relay holds no such scope of this owner.
@@ -1088,7 +1097,10 @@ mod tests {
         let status = Arc::new(AtomicUsize::new(201));
         let reason = Arc::new(Mutex::new(String::new()));
         let (s, r) = (status.clone(), reason.clone());
-        let fake = Fake::start(move |_| {
+        let fake = Fake::start(move |request| {
+            if request.target == "/v1/scopes/" {
+                return answer(200, "{\"scopes\":[]}");
+            }
             let status = s.load(Ordering::SeqCst) as u16;
             let reason = r.lock().unwrap().clone();
             if reason.is_empty() {
@@ -1158,9 +1170,23 @@ mod tests {
         let owner_client = client(&fake, true, false);
         assert_eq!(owner_client.get(&manifest(1)).unwrap(), None);
         assert_eq!(owner_client.highest_manifest(SCOPE).unwrap(), None);
+        let admitted = Fake::start(|request| {
+            if request.target == "/v1/scopes/" {
+                answer(200, "{\"scopes\":[]}")
+            } else {
+                refuse(403, "not-admitted")
+            }
+        });
+        assert_eq!(
+            client(&admitted, true, false).get(&segment(1)).unwrap_err(),
+            format!("relay {} does not admit this device", admitted.url())
+        );
         assert_eq!(
             owner_client.get(&segment(1)).unwrap_err(),
-            format!("relay {url} does not admit this device")
+            format!(
+                "relay {url} does not admit this owner; start it with --owner {}",
+                keys::owner_fingerprint(&owner().public())
+            )
         );
         assert_eq!(
             owner_client.scopes().unwrap_err(),
@@ -1345,6 +1371,64 @@ mod tests {
                 format!("{this} 2"),
                 format!("{this} 3")
             ]
+        );
+        drop(relay);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_device_refusal_names_the_owner_only_when_the_relay_refuses_the_owner() {
+        use crate::identity::keys::{Identity, Owner};
+        use crate::identity::manifest;
+
+        let dir = std::env::temp_dir().join(format!("bilbo-remote-owner-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let owner = Owner::derive(&[0; 16]);
+        let who = |name: &str, seed: u8| Identity {
+            owner: owner.file(),
+            device: Device::from_seeds(name, &[seed; 32], &[seed + 1; 32]),
+        };
+        let (bagend, carol) = (who("bagend", 3), who("carol", 5));
+        let lock = manifest::lock(&dir).unwrap();
+        let id = manifest::create(&lock, &bagend, "personal", "file:///x", &[])
+            .unwrap()
+            .scope;
+        let first = manifest::read_scope(&dir, &id).unwrap().versions.remove(0);
+        let serve = |admitted: &Owner| {
+            let flags = crate::relay::Flags {
+                data: dir.join("relay"),
+                owners: vec![keys::owner_fingerprint(&admitted.sign.public())],
+                listen: "127.0.0.1:0".parse().unwrap(),
+                max_scopes: 16,
+                max_scope_mb: 1024,
+                max_object_mb: 16,
+            };
+            crate::relay::start(flags, crate::relay::system_clock(), Arc::new(|_: &str| {}))
+                .unwrap()
+        };
+        let relay = serve(&owner);
+        let t = transport::open(&relay.url(), &Keys::of(&bagend)).unwrap();
+        let path = transport::manifest_path(&id, 1);
+        assert_eq!(t.create(&path, &first.bytes), Put::Created);
+        assert_eq!(t.devices(&id).unwrap(), Vec::<String>::new());
+        let url = relay.url();
+        let stranger = transport::open(&url, &Keys::of(&carol)).unwrap();
+        assert_eq!(
+            stranger.devices(&id).unwrap_err(),
+            format!("relay {url} does not admit this device")
+        );
+        drop((relay, t, stranger));
+
+        let relay = serve(&Owner::derive(&[1; 16]));
+        let url = relay.url();
+        let t = transport::open(&url, &Keys::of(&bagend)).unwrap();
+        assert_eq!(
+            t.devices(&id).unwrap_err(),
+            format!(
+                "relay {url} does not admit this owner; start it with --owner {}",
+                keys::owner_fingerprint(&owner.sign.public())
+            )
         );
         drop(relay);
         let _ = std::fs::remove_dir_all(&dir);
