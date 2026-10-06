@@ -15,6 +15,7 @@ use crate::identity::keys::{self, Device, Owner};
 use crate::identity::manifest::{self, Recipient};
 use crate::identity::phrase;
 use crate::shared::store;
+use crate::sync::transport::{self, Put, Transport};
 
 const FIXTURES: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/device");
 
@@ -1817,4 +1818,86 @@ fn the_base64_needle_matches_the_standard_alphabet() {
     assert_eq!(base64(b"Ma"), "TWE=");
     assert_eq!(base64(b"M"), "TQ==");
     assert_eq!(base64(&[0xfb, 0xff, 0xbf]), "+/+/");
+}
+
+/// The exchange through a relay.
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pair_through_relay() {
+        let w = world("relay");
+        let (a, b) = (w.a(), w.b());
+        let owner = keys::owner_fingerprint(&a.identity().owner.sign.public());
+        let data = w.0.join("relay");
+        fs::create_dir_all(&data).unwrap();
+        let held = transport::Folder::new(data.clone(), "relay");
+        for version in &a.scope(&personal()).versions {
+            let path = transport::manifest_path(&personal(), version.manifest.n);
+            assert!(matches!(held.create(&path, &version.bytes), Put::Created));
+        }
+        let lines = Arc::new(Mutex::new(Vec::<String>::new()));
+        let sink = lines.clone();
+        let relay = crate::relay::start(
+            crate::relay::Flags {
+                data,
+                owners: vec![owner],
+                listen: "127.0.0.1:0".parse().unwrap(),
+                max_scopes: 16,
+                max_scope_mb: 1024,
+                max_object_mb: 16,
+            },
+            crate::relay::system_clock(),
+            Arc::new(move |line: &str| sink.lock().unwrap().push(line.to_string())),
+        )
+        .unwrap();
+        let url = relay.url();
+        a.config(&format!("scope.personal.sync = {url}\n"));
+        let mut a_side = Side::new();
+        let mut b_side = Side::new();
+        let answer = Answer::typed(Confirm::Yes, b_side.err.clone(), None);
+        a_side.start(&a, &[], true, limits(), answer);
+        let code = a_side.code();
+        let args = strings(&[&code, "--via", &url, "--name", "mirkwood"]);
+        b_side.start(&b, &args, false, limits(), Answer::none());
+        let (a_run, b_run) = (a_side.finish(), b_side.finish());
+        a_run.ok();
+        b_run.ok();
+        assert!(a_run.has_err(&format!(
+            "on the new device, run: bilbo pair {code} --via {url}"
+        )));
+        assert_eq!(
+            b_run.out,
+            [
+                "paired with rivendell: personal",
+                "bilbo watch starts syncing them within one cycle"
+            ]
+        );
+        assert_eq!(b.identity().device.name, "mirkwood");
+        assert_eq!(owner_of(&b), owner_of(&a));
+        assert!(
+            b.config_text()
+                .unwrap()
+                .contains(&format!("scope.personal.sync = {url}"))
+        );
+        assert_eq!(b.scope(&personal()).versions.len(), 3);
+        assert!(
+            held.get(&transport::manifest_path(&personal(), 3))
+                .unwrap()
+                .is_some()
+        );
+        let logged = lines.lock().unwrap().clone();
+        let plate = nameplate(&code);
+        assert!(
+            logged.iter().all(|l| !l.contains(&format!("pair/{plate}"))),
+            "{logged:?}"
+        );
+        assert!(
+            logged.iter().all(|l| !l.starts_with("refused")),
+            "{logged:?}"
+        );
+        let sizes = logged.iter().filter(|l| l.starts_with("mailbox ")).count();
+        assert_eq!(sizes, 3, "{logged:?}");
+    }
 }

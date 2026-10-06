@@ -27,6 +27,8 @@ struct Checked {
     name: String,
     id: String,
     embedder: String,
+    /// The transport the scope syncs through: the grant's own URL, else `--via`.
+    url: String,
     files: Vec<Vec<u8>>,
 }
 
@@ -53,7 +55,9 @@ pub fn run(cx: &mut Cx, code: &str, via: &str, name: Option<&str>) -> Result<(),
     if !root.join("notes").is_dir() {
         return Err(Failure::Refused(format!("no store at {}", root.display())));
     }
-    if !Path::new(folder).is_dir() {
+    if let Some(folder) = folder
+        && !Path::new(folder).is_dir()
+    {
         return Err(Failure::Refused(format!("no folder at {folder}")));
     }
     let keys = store::keys_dir(cx.env)
@@ -174,7 +178,7 @@ pub fn run(cx: &mut Cx, code: &str, via: &str, name: Option<&str>) -> Result<(),
         }
     }
     drop(lock);
-    let lines = lines(&checked, via, &settings);
+    let lines = lines(&checked, &settings);
     config::set_keys(&config_path, &lines).map_err(Failure::Refused)?;
     if me.owner.is_none() {
         let seed = payload.seed.as_ref().expect("fetch checked the seed");
@@ -210,14 +214,14 @@ pub fn run(cx: &mut Cx, code: &str, via: &str, name: Option<&str>) -> Result<(),
     Ok(())
 }
 
-/// The folder `via` names. A URL this bilbo cannot reach, or one a config line could not hold, is refused.
-fn folder_of(via: &str) -> Result<&str, Failure> {
+/// The folder `via` names, or `None` for a relay. A URL this bilbo cannot reach, or one a config line could not hold, is refused.
+fn folder_of(via: &str) -> Result<Option<&str>, Failure> {
     if let Some(path) = via.strip_prefix("file://") {
         let plain = path.starts_with('/')
             && !path.contains(['?', '#'])
             && !path.chars().any(char::is_control);
         return if plain {
-            Ok(path)
+            Ok(Some(path))
         } else {
             Err(Failure::Usage(format!(
                 "{via} is not a file:// URL with an absolute path"
@@ -225,10 +229,7 @@ fn folder_of(via: &str) -> Result<&str, Failure> {
         };
     }
     if via.starts_with("https://") || (via.starts_with("http://") && config::is_local(via)) {
-        let scheme = via.split("://").next().unwrap_or(via);
-        return Err(Failure::Refused(format!(
-            "this bilbo cannot reach {scheme}:// transports yet"
-        )));
+        return Ok(None);
     }
     if via.starts_with("http://") {
         return Err(Failure::Usage(format!(
@@ -296,20 +297,29 @@ fn fetch(
     }
     let mut seen = BTreeSet::new();
     for grant in &payload.scopes {
-        if grant.url.is_some() {
-            return Err(Failure::Refused(
-                "this bilbo cannot reach https:// transports yet".into(),
-            ));
-        }
         let unique = seen.insert(grant.name.as_str()) & seen.insert(grant.id.as_str());
         if !unique || !keys::is_id(&grant.id) || grant.n == 0 {
             return Err(mismatch(&grant.name));
         }
     }
-    let every = interval(via, cx.limits);
     let mut checked = Vec::new();
     let mut owner_box = None;
     for grant in &payload.scopes {
+        let url = grant.url.as_deref().unwrap_or(via);
+        let own;
+        let t: &dyn Transport = match &grant.url {
+            Some(url) => {
+                let keys = transport::Keys {
+                    device: &me.device,
+                    owner: None,
+                    opener: false,
+                };
+                own = transport::open(url, &keys).map_err(Failure::Refused)?;
+                &*own
+            }
+            None => t,
+        };
+        let every = interval(url, cx.limits);
         let found = wait(received, cx.limits.manifests, every, || {
             let scope = scopes::chain(t, &grant.id)?;
             Ok((scope.versions.len() as u64 >= grant.n).then_some(scope))
@@ -324,7 +334,7 @@ fn fetch(
                 mismatch(&grant.name)
             } else {
                 Failure::Refused(format!(
-                    "the {} manifest did not reach {via} in time; run bilbo pair again",
+                    "the {} manifest did not reach {url} in time; run bilbo pair again",
                     grant.name
                 ))
             });
@@ -353,6 +363,7 @@ fn fetch(
             name: grant.name.clone(),
             id: grant.id.clone(),
             embedder: grant.embedder.clone(),
+            url: url.to_string(),
             files: scope.versions.iter().map(|v| v.bytes.clone()).collect(),
         });
     }
@@ -396,10 +407,10 @@ fn agree_with_store(root: &Path, owner: &[u8; 32], checked: &[Checked]) -> Resul
 }
 
 /// The config lines pairing sets: each scope's transport, and `local` where either device asks for it.
-fn lines(checked: &[Checked], via: &str, settings: &config::Settings) -> Vec<(String, String)> {
+fn lines(checked: &[Checked], settings: &config::Settings) -> Vec<(String, String)> {
     let mut lines = Vec::new();
     for scope in checked {
-        lines.push((format!("scope.{}.sync", scope.name), via.to_string()));
+        lines.push((format!("scope.{}.sync", scope.name), scope.url.clone()));
         let local = settings
             .scope(&scope.name)
             .is_some_and(|s| s.embedder == config::Rule::Local);
@@ -795,14 +806,6 @@ mod tests {
         assert!(run.usage().contains("'tunel' is not a pairing word"));
         let run = go(CODE, "http://bagend:8090", Some("mirkwood"));
         assert!(run.usage().contains("http://bagend:8090"));
-        for url in ["https://relay.example", "http://127.0.0.1:8090"] {
-            let run = go(CODE, url, Some("mirkwood"));
-            let scheme = url.split("://").next().unwrap();
-            assert_eq!(
-                run.refused(),
-                format!("this bilbo cannot reach {scheme}:// transports yet")
-            );
-        }
         for url in ["ftp://relay", "file://relative/path", "file:///a?b"] {
             let run = go(CODE, url, Some("mirkwood"));
             assert!(run.usage().contains(url), "{url}");
@@ -1074,18 +1077,6 @@ mod tests {
         });
         assert_eq!(run.refused(), mismatch_text("personal"));
         nothing_written(&w, None);
-    }
-
-    #[test]
-    fn a_relay_url_in_the_payload_is_refused_before_anything_is_written() {
-        let (f, run) = tampered("relay", |_, sent| {
-            sent.scopes[0].url = Some("https://relay.example".into());
-        });
-        assert_eq!(
-            run.refused(),
-            "this bilbo cannot reach https:// transports yet"
-        );
-        nothing_written(&f.w, None);
     }
 
     #[test]

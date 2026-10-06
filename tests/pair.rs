@@ -323,7 +323,7 @@ fn more_than_twelve_scopes_need_scope_flags() {
 }
 
 #[test]
-fn a_relay_scope_cannot_be_shown_yet() {
+fn a_relay_scope_is_checked_like_a_folder_scope() {
     let m = Machine::enrolled("pair-relay-show", Path::new("/placeholder"));
     let sync = m.sync();
     fs::write(
@@ -333,7 +333,7 @@ fn a_relay_scope_cannot_be_shown_yet() {
     .unwrap();
     let before = Unchanged::of(&m, &sync);
     let run = m.pair(&[]);
-    refused(&run, 1, "this bilbo cannot reach https:// transports yet");
+    refused(&run, 1, "pairing is confirmed only in a terminal");
     before.check();
 }
 
@@ -392,14 +392,17 @@ fn a_remote_plain_http_url_is_a_usage_error_naming_it() {
 }
 
 #[test]
-fn a_relay_url_cannot_be_reached_yet() {
+fn a_relay_that_is_down_is_refused_naming_it() {
     let (m, sync) = joiner("pair-relay-join");
-    let before = Unchanged::of(&m, &sync);
-    for via in ["https://relay.example", "http://127.0.0.1:8090"] {
-        let run = m.pair(&[CODE, "--via", via]);
-        refused(&run, 1, "this bilbo cannot reach");
-    }
-    before.check();
+    let port = std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port();
+    let via = format!("http://127.0.0.1:{port}");
+    let run = m.pair(&[CODE, "--via", &via]);
+    refused(&run, 1, &via);
+    assert!(sync.join("keep").exists());
 }
 
 #[test]
@@ -424,11 +427,7 @@ fn no_store_is_refused() {
 #[test]
 fn a_refused_join_leaves_no_pending_key_or_state_folder() {
     let (m, sync) = joiner("pair-no-state");
-    for via in [
-        "file:///nope",
-        "http://bagend:8090",
-        "https://relay.example",
-    ] {
+    for via in ["file:///nope", "http://bagend:8090"] {
         m.pair(&[CODE, "--via", via]);
     }
     assert!(!m.state().exists(), "a refusal wrote the state folder");
