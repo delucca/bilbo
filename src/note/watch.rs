@@ -852,7 +852,7 @@ impl Watch<'_> {
         failed: &mut bool,
     ) -> Option<Ready> {
         let device = identity.device.id();
-        let t = match transport::open(url, &device) {
+        let t = match transport::open(url, &transport::Keys::of(identity)) {
             Ok(t) => t,
             Err(e) => {
                 self.hold(name, "transport", Some(format!("sync {name}: {e}")));
