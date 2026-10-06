@@ -1,6 +1,6 @@
 //! The interactive setup wizard.
 
-use super::syncing::{self, Enrol, Turn, Turned};
+use super::syncing::{self, Enrol, Inspected, Turn, Turned};
 use crate::Failure;
 use crate::host::prompt::{Choice, Prompter};
 use crate::host::swap;
@@ -8,6 +8,7 @@ use crate::identity::keys::{self, Device, Owner};
 use crate::identity::manifest::{self, Recipient};
 use crate::identity::{ceremony, phrase};
 use crate::shared::config::{self, Embedder, Token};
+use crate::sync::remote::{self, Probe};
 use crate::sync::transport::Keys;
 use std::io;
 use std::path::{Component, Path, PathBuf};
@@ -205,8 +206,10 @@ fn sync_questions<P: Prompter>(p: &mut P, facts: &SyncFacts, watch: bool) -> Res
         return Ok(off(None, syncing::NO_KEY));
     }
     let name = ask_scope(p, facts)?;
-    let folder = ask_folder(p, facts, &name)?;
-    let url = format!("file://{}", folder.display());
+    let (url, folder) = match ask_where(p, facts, &name)? {
+        Spot::Folder(folder) => (format!("file://{}", folder.display()), Some(folder)),
+        Spot::Relay(url) => (url, None),
+    };
     let turned = |enrol, take, mint| {
         Turn::On(Box::new(Turned {
             name: name.clone(),
@@ -279,7 +282,8 @@ fn off(scope: Option<&str>, why: &str) -> Turn {
 }
 
 /// `bilbo device init`'s ceremony: a new phrase, shown and typed back in part. The folder is inspected first, so
-/// no phrase is shown for a scope that cannot be created.
+/// no phrase is shown for a scope that cannot be created. A relay is not asked: it cannot hold a scope of an owner
+/// that has only now been derived, and it learns the owner from the fingerprint the phrase shows.
 fn created<P: Prompter>(
     p: &mut P,
     device_name: String,
@@ -298,7 +302,11 @@ fn created<P: Prompter>(
         owner: Some(&owner.sign),
         opener: false,
     };
-    let seen = syncing::inspect(url, &keys, &public, &Recipient::device(&device), name);
+    let seen = if syncing::is_relay(url) {
+        Inspected::default()
+    } else {
+        syncing::inspect(url, &keys, &public, &Recipient::device(&device), name)
+    };
     if let Some(why) = seen.blocked {
         p.warn(&why)?;
         return Ok(off(Some(name), &why));
@@ -404,22 +412,51 @@ fn ask_scope<P: Prompter>(p: &mut P, facts: &SyncFacts) -> io::Result<String> {
     Ok(names[picked].0.clone())
 }
 
-/// The folder to sync through, asked again until it can be used.
-fn ask_folder<P: Prompter>(p: &mut P, facts: &SyncFacts, name: &str) -> io::Result<PathBuf> {
+/// Where a scope syncs.
+enum Spot {
+    Folder(PathBuf),
+    Relay(String),
+}
+
+/// The folder or relay to sync through, asked again until it can be used.
+fn ask_where<P: Prompter>(p: &mut P, facts: &SyncFacts, name: &str) -> io::Result<Spot> {
     let current = facts
         .scopes
         .iter()
         .find(|(scope, _)| scope == name)
-        .and_then(|(_, sync)| sync.strip_prefix("file://"))
+        .map(|(_, sync)| sync.strip_prefix("file://").unwrap_or(sync))
+        .filter(|sync| *sync != "off")
         .unwrap_or("");
     loop {
-        let typed = p.input("Folder to sync through", current, check_folder)?;
-        let path = expand_home(typed.trim(), facts.home.as_deref());
+        let typed = p.input("Folder or relay URL to sync through", current, check_where)?;
+        let typed = typed.trim();
+        if syncing::is_relay(typed) {
+            match relay_problem(typed) {
+                None => return Ok(Spot::Relay(typed.to_string())),
+                Some(problem) => p.warn(&problem)?,
+            }
+            continue;
+        }
+        let path = expand_home(typed, facts.home.as_deref());
         match folder_problem(&path) {
-            None => return Ok(path.components().collect()),
+            None => return Ok(Spot::Folder(path.components().collect())),
             Some(problem) => p.warn(&problem)?,
         }
     }
+}
+
+/// Why `url` cannot be the relay to sync through, if it cannot: plain `http://` reaches only a loopback host, and
+/// the root must answer as a bilbo relay's does. A refused scheme sends no request.
+fn relay_problem(url: &str) -> Option<String> {
+    if url.starts_with("http://") && !config::is_local(url) {
+        return Some(format!(
+            "{url} cannot be a relay: plain http:// reaches only a loopback host; use https://"
+        ));
+    }
+    remote::identify(url).err().map(|probe| match probe {
+        Probe::NotRelay => format!("{url} is not a bilbo relay"),
+        Probe::Unreachable(why) => format!("{url} is not reachable: {why}"),
+    })
 }
 
 /// Why `path` cannot be the sync folder, if it cannot: it is absolute, spelled in a way a URL keeps, and either a
@@ -463,8 +500,13 @@ fn folder_problem(path: &Path) -> Option<String> {
     }
 }
 
-fn check_folder(text: &str) -> Result<(), String> {
-    check_file(text)
+fn check_where(text: &str) -> Result<(), String> {
+    if syncing::is_relay(text.trim()) {
+        return Ok(());
+    }
+    check_file(text).map_err(|_| {
+        "Enter an absolute path, one starting with ~/, or a relay's https:// URL".to_string()
+    })
 }
 
 fn ask_embedder<P: Prompter>(

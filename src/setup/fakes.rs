@@ -163,3 +163,86 @@ impl Outside for Script {
         false
     }
 }
+
+/// A relay on loopback that admits the owners with these fingerprints, on `port` or any free one; its data is under
+/// the scratch folder `name`.
+pub fn relay(name: &str, owners: &[String], port: u16) -> crate::relay::Running {
+    use crate::relay::{self, Flags};
+    let data = scratch(name).join("data");
+    relay::start(
+        Flags {
+            data,
+            owners: owners.to_vec(),
+            listen: std::net::SocketAddr::from(([127, 0, 0, 1], port)),
+            max_scopes: 16,
+            max_scope_mb: 1024,
+            max_object_mb: 16,
+        },
+        relay::system_clock(),
+        std::sync::Arc::new(|_: &str| {}),
+    )
+    .unwrap()
+}
+
+/// A loopback server that answers every request with a status and an empty JSON object, and keeps each request's
+/// head.
+pub struct Answering {
+    port: u16,
+    seen: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+    stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl Answering {
+    pub fn start(status: u16) -> Answering {
+        use std::io::{BufRead, BufReader, Write};
+        use std::sync::atomic::Ordering;
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let (record, halt) = (seen.clone(), stop.clone());
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                if halt.load(Ordering::SeqCst) {
+                    return;
+                }
+                let Ok(mut stream) = stream else { continue };
+                let mut head = String::new();
+                let mut lines = BufReader::new(&stream);
+                loop {
+                    let mut line = String::new();
+                    if lines.read_line(&mut line).unwrap_or(0) == 0 || line == "\r\n" {
+                        break;
+                    }
+                    head.push_str(&line);
+                }
+                record.lock().unwrap().push(head);
+                let _ = write!(
+                    stream,
+                    "HTTP/1.1 {status} X\r\nContent-Type: application/json\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{{}}"
+                );
+            }
+        });
+        Answering { port, seen, stop }
+    }
+
+    pub fn port(&self) -> u16 {
+        self.port
+    }
+
+    pub fn url(&self) -> String {
+        format!("http://127.0.0.1:{}", self.port)
+    }
+
+    /// The request lines and headers received so far.
+    pub fn heads(&self) -> Vec<String> {
+        self.seen.lock().unwrap().clone()
+    }
+}
+
+impl Drop for Answering {
+    fn drop(&mut self) {
+        self.stop.store(true, std::sync::atomic::Ordering::SeqCst);
+        let _ = std::net::TcpStream::connect(("127.0.0.1", self.port));
+    }
+}
