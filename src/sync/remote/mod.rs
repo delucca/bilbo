@@ -127,7 +127,7 @@ fn agent(url: &str) -> ureq::Agent {
 
 /// The URL as the config spells it, without a trailing slash, when a relay may be reached at it.
 fn base(url: &str) -> Result<String, String> {
-    if url.starts_with("https://") || (url.starts_with("http://") && config::is_local(url)) {
+    if transport::is_relay_url(url) {
         Ok(url.trim_end_matches('/').to_string())
     } else {
         let scheme = url.split("://").next().unwrap_or(url);
@@ -355,23 +355,7 @@ impl Relay {
     fn refusal(&self, reply: &Reply, who: Who, path: &str) -> String {
         let url = &self.url;
         match (reply.status, reply.reason()) {
-            (403, "not-admitted") => {
-                let owner = self.owner.as_ref().filter(|_| {
-                    who == Who::Owner
-                        || is_manifest(path)
-                        || (who == Who::Device && self.owner_refused())
-                });
-                match (who, owner) {
-                    (_, Some(owner)) => format!(
-                        "relay {url} does not admit this owner; start it with --owner {}",
-                        keys::owner_fingerprint(&owner.public())
-                    ),
-                    (Who::Nobody, _) => {
-                        format!("relay {url} does not accept this pairing message")
-                    }
-                    _ => format!("relay {url} does not admit this device"),
-                }
-            }
+            (403, "not-admitted") => self.not_admitted(who, path),
             (403, "invalid") => format!(
                 "relay {url} holds an invalid copy of this scope; repair the relay's data folder"
             ),
@@ -379,8 +363,50 @@ impl Relay {
                 format!("relay {url} has no room for a pairing now; try again later")
             }
             (507, "quota") => format!("relay {url} is full"),
+            (409, "not-next") if path.contains("/devices/") => format!(
+                "relay {url} is missing this device's earlier segments; restore its data folder"
+            ),
             (status, "") => format!("relay {url} answered {status}"),
             (status, reason) => format!("relay {url} answered {status}: {reason}"),
+        }
+    }
+
+    /// The message for a 403 `not-admitted` on `path`. With the owner key held, the relay is asked what it holds
+    /// before a refusal is blamed on the device: whether it admits the owner at all, and for a manifest above
+    /// version 1, whether it holds the scope.
+    fn not_admitted(&self, who: Who, path: &str) -> String {
+        let url = &self.url;
+        if path.starts_with("pair/") {
+            return format!(
+                "relay {url} does not accept this pairing message; run bilbo pair again"
+            );
+        }
+        let Some(owner) = &self.owner else {
+            return format!("relay {url} does not admit this device");
+        };
+        let owner_message = format!(
+            "relay {url} does not admit this owner; start it with --owner {}",
+            keys::owner_fingerprint(&owner.public())
+        );
+        if path == "scopes/" || path.ends_with("/manifest/1.json") || self.owner_refused() {
+            return owner_message;
+        }
+        let parts: Vec<&str> = path.split('/').collect();
+        if let ["scopes", scope, "manifest", name] = parts.as_slice()
+            && *name != "1.json"
+        {
+            let first = format!("scopes/{scope}/manifest/1.json");
+            let held = self.call("GET", &first, None, Who::Owner);
+            if held.is_ok_and(|reply| reply.is(403, "not-admitted")) {
+                return format!(
+                    "relay {url} holds no scope {scope} of this owner; copy the folder it synced through into the relay's data folder"
+                );
+            }
+        }
+        if who == Who::Owner {
+            owner_message
+        } else {
+            format!("relay {url} does not admit this device")
         }
     }
 
@@ -1143,19 +1169,30 @@ mod tests {
         assert_eq!(
             put(403, "not-admitted", &manifest(4)),
             Put::Unreachable(format!(
-                "relay {url} does not admit this owner; start it with --owner {}",
-                keys::owner_fingerprint(&owner().public())
+                "relay {url} holds no scope {SCOPE} of this owner; copy the folder it synced through into the relay's data folder"
             ))
+        );
+        assert_eq!(
+            put(403, "not-admitted", &transport::message_path("42", "c")),
+            Put::Unreachable(format!(
+                "relay {url} does not accept this pairing message; run bilbo pair again"
+            ))
+        );
+        assert_eq!(
+            put(409, "not-next", &segment(9)),
+            Put::Unreachable(format!(
+                "relay {url} is missing this device's earlier segments; restore its data folder"
+            ))
+        );
+        assert_eq!(
+            put(409, "not-next", &manifest(9)),
+            Put::Unreachable(format!("relay {url} answered 409: not-next"))
         );
         assert_eq!(
             put(403, "invalid", &segment(1)),
             Put::Unreachable(format!(
                 "relay {url} holds an invalid copy of this scope; repair the relay's data folder"
             ))
-        );
-        assert_eq!(
-            put(409, "not-next", &segment(1)),
-            Put::Unreachable(format!("relay {url} answered 409: not-next"))
         );
         assert_eq!(
             put(429, "rate", &segment(1)),
@@ -1431,6 +1468,66 @@ mod tests {
             )
         );
         drop(relay);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_scope_moved_to_a_relay_that_does_not_hold_it_says_so() {
+        use crate::identity::keys::{Identity, Owner};
+        use crate::identity::manifest::{self, Member, Recipient};
+
+        let dir = std::env::temp_dir().join(format!("bilbo-remote-moved-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let owner = Owner::derive(&[0; 16]);
+        let who = |name: &str, seed: u8| Identity {
+            owner: owner.file(),
+            device: Device::from_seeds(name, &[seed; 32], &[seed + 1; 32]),
+        };
+        let (bagend, carol) = (who("bagend", 3), who("carol", 5));
+        let lock = manifest::lock(&dir).unwrap();
+        let id = manifest::create(&lock, &bagend, "personal", "file:///x", &[])
+            .unwrap()
+            .scope;
+        let scope = manifest::read_scope(&dir, &id).unwrap();
+        let opened = manifest::open(&scope, &Recipient::Owner(&owner.box_secret))
+            .unwrap()
+            .unwrap();
+        let member = Member::of(&carol.device);
+        manifest::add_device(&lock, &scope, &opened.keys[&opened.epoch], &member, &bagend).unwrap();
+        let versions = manifest::read_scope(&dir, &id).unwrap().versions;
+        let flags = crate::relay::Flags {
+            data: dir.join("relay"),
+            owners: vec![keys::owner_fingerprint(&owner.sign.public())],
+            listen: "127.0.0.1:0".parse().unwrap(),
+            max_scopes: 16,
+            max_scope_mb: 1024,
+            max_object_mb: 16,
+        };
+        let relay =
+            crate::relay::start(flags, crate::relay::system_clock(), Arc::new(|_: &str| {}))
+                .unwrap();
+        let url = relay.url();
+        let second = transport::manifest_path(&id, 2);
+        let t = transport::open(&url, &Keys::of(&bagend)).unwrap();
+        assert_eq!(
+            t.create(&second, &versions[1].bytes),
+            Put::Unreachable(format!(
+                "relay {url} holds no scope {id} of this owner; copy the folder it synced through into the relay's data folder"
+            ))
+        );
+        drop((relay, t));
+        let held = Fake::start(|request| {
+            if request.method == "PUT" {
+                refuse(403, "not-admitted")
+            } else {
+                answer(200, "{\"scopes\":[]}")
+            }
+        });
+        assert_eq!(
+            client(&held, true, false).create(&manifest(2), &listing(true)),
+            Put::Unreachable(format!("relay {} does not admit this device", held.url()))
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

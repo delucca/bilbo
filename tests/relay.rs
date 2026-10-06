@@ -925,7 +925,8 @@ fn a_copied_file_transport_is_served_as_if_created_through_the_relay() {
         b"three",
     );
     assert_eq!(next.status, 201, "{}", next.text());
-    assert_eq!(relay.lines().len() - 1, 1);
+    relay.wait_for(&format!("segment {id} {RIVENDELL} 3 5"));
+    assert_eq!(relay.lines().len() - 1, 1, "{:?}", relay.lines());
 }
 
 // What the relay logs
@@ -1384,13 +1385,22 @@ fn a_relay_that_refuses_the_owner_reaches_the_watch_log_and_sync() {
         fingerprint()
     );
     a.wait_for(&refusal);
-    // `bilbo sync` words it as the sync-status spec does: the relay's message is the reason.
-    let run = bilbo(a.dir.path(), &a.pairs(), &["sync"]);
-    let line = run
-        .stderr
-        .lines()
-        .find(|l| l.starts_with(&format!("bilbo: sync personal: {url} not reachable since ")))
-        .unwrap_or_else(|| panic!("stderr: {}", run.stderr));
+    // `bilbo sync` words it as the sync-status spec does: the relay's message is the reason. The
+    // watcher saves its state after it prints the line, so `bilbo sync` is asked until it reports.
+    let start = format!("bilbo: sync personal: {url} not reachable since ");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(40);
+    let line = loop {
+        let run = bilbo(a.dir.path(), &a.pairs(), &["sync"]);
+        if let Some(line) = run.stderr.lines().find(|l| l.starts_with(&start)) {
+            break line.to_string();
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "stderr: {}",
+            run.stderr
+        );
+        std::thread::sleep(std::time::Duration::from_millis(200));
+    };
     assert!(
         line.ends_with(&refusal[PREFIX.len() + "sync personal: ".len()..]),
         "{line}"

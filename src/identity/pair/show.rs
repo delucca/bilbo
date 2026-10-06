@@ -265,7 +265,10 @@ fn check(cx: &mut Cx, scopes: &[String], via: Option<&str>) -> Result<Plan, Fail
                     "no scope paired syncs through {via}"
                 )));
             }
-            if let Some(other) = paired.iter().find(|s| s.sync != via && !is_relay(&s.sync)) {
+            if let Some(other) = paired
+                .iter()
+                .find(|s| s.sync != via && !transport::is_relay_url(&s.sync))
+            {
                 return Err(Failure::Usage(format!(
                     "scope {} syncs through {}, not {via}; pair it apart with --scope",
                     other.name, other.sync
@@ -370,11 +373,6 @@ fn fits(id: &Identity, chosen: &[Chosen]) -> Result<(), Failure> {
             "the scopes do not fit one pairing message ({why}); pair fewer with --scope"
         ))
     })
-}
-
-/// Whether `url` names a relay (`https://`, or the loopback `http://` the config allows) rather than a folder.
-fn is_relay(url: &str) -> bool {
-    url.starts_with("https://") || url.starts_with("http://")
 }
 
 /// Claims a mailbox by creating its `a.msg`.

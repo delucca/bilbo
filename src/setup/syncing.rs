@@ -171,15 +171,10 @@ fn checks(plan: &SyncPlan, notes: &Path) -> (&'static str, String) {
     }
 }
 
-/// Whether `url` names a relay rather than a folder.
-pub fn is_relay(url: &str) -> bool {
-    url.starts_with("https://") || url.starts_with("http://")
-}
-
 /// Whether `url` has a client, and its folder exists and takes writes, or its relay answers as one. Nothing is
 /// created and no request is signed.
 fn reach(id: &Identity, url: &str) -> Result<(), String> {
-    if is_relay(url) {
+    if transport::is_relay_url(url) {
         return remote::identify(url).map_err(|probe| match probe {
             Probe::NotRelay => format!("{url} is not a bilbo relay"),
             Probe::Unreachable(why) => format!("{url} is not reachable: {why}"),
@@ -369,7 +364,7 @@ fn create(
     known: &[Known],
 ) -> Result<(), String> {
     let public = id.owner.sign.public();
-    let fresh = matches!(turned.enrol, Enrol::New { .. }) && is_relay(&turned.url);
+    let fresh = matches!(turned.enrol, Enrol::New { .. }) && transport::is_relay_url(&turned.url);
     let blocked = if fresh {
         None
     } else {

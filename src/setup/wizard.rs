@@ -9,7 +9,7 @@ use crate::identity::manifest::{self, Recipient};
 use crate::identity::{ceremony, phrase};
 use crate::shared::config::{self, Embedder, Token};
 use crate::sync::remote::{self, Probe};
-use crate::sync::transport::Keys;
+use crate::sync::transport::{self, Keys};
 use std::io;
 use std::path::{Component, Path, PathBuf};
 use zeroize::Zeroizing;
@@ -302,7 +302,7 @@ fn created<P: Prompter>(
         owner: Some(&owner.sign),
         opener: false,
     };
-    let seen = if syncing::is_relay(url) {
+    let seen = if transport::is_relay_url(url) {
         Inspected::default()
     } else {
         syncing::inspect(url, &keys, &public, &Recipient::device(&device), name)
@@ -430,9 +430,9 @@ fn ask_where<P: Prompter>(p: &mut P, facts: &SyncFacts, name: &str) -> io::Resul
     loop {
         let typed = p.input("Folder or relay URL to sync through", current, check_where)?;
         let typed = typed.trim();
-        if syncing::is_relay(typed) {
+        if typed.starts_with("http://") || transport::is_relay_url(typed) {
             match relay_problem(typed) {
-                None => return Ok(Spot::Relay(typed.to_string())),
+                None => return Ok(Spot::Relay(typed.trim_end_matches('/').to_string())),
                 Some(problem) => p.warn(&problem)?,
             }
             continue;
@@ -448,7 +448,7 @@ fn ask_where<P: Prompter>(p: &mut P, facts: &SyncFacts, name: &str) -> io::Resul
 /// Why `url` cannot be the relay to sync through, if it cannot: plain `http://` reaches only a loopback host, and
 /// the root must answer as a bilbo relay's does. A refused scheme sends no request.
 fn relay_problem(url: &str) -> Option<String> {
-    if url.starts_with("http://") && !config::is_local(url) {
+    if !transport::is_relay_url(url) {
         return Some(format!(
             "{url} cannot be a relay: plain http:// reaches only a loopback host; use https://"
         ));
@@ -501,7 +501,8 @@ fn folder_problem(path: &Path) -> Option<String> {
 }
 
 fn check_where(text: &str) -> Result<(), String> {
-    if syncing::is_relay(text.trim()) {
+    let text = text.trim();
+    if text.starts_with("http://") || transport::is_relay_url(text) {
         return Ok(());
     }
     check_file(text).map_err(|_| {
@@ -2104,5 +2105,21 @@ mod tests {
         assert!(check_minutes("+5").is_err() && check_minutes("x").is_err());
         assert!(check_key("sk-abc").is_ok());
         assert!(check_key("  ").is_err() && check_key("a b").is_err() && check_key("é").is_err());
+    }
+
+    #[test]
+    fn a_relay_url_is_kept_without_its_trailing_slash() {
+        let relay = crate::setup::fakes::relay("wizard-slash", &[], 0);
+        let facts = SyncFacts {
+            root: PathBuf::from("/nowhere"),
+            keys: None,
+            home: None,
+            agent: false,
+            host: None,
+            scopes: Vec::new(),
+        };
+        let mut script = Script::new(vec![text(&format!("{}/", relay.url()))]);
+        let spot = ask_where(&mut script, &facts, "personal").unwrap();
+        assert!(matches!(spot, Spot::Relay(url) if url == relay.url()));
     }
 }
