@@ -54,7 +54,7 @@ Run every command below from the repo root as `nix develop -c sh -c '<command>'`
   Unit-test every mailbox scenario with an injected clock and injected peer addresses. Verify with `cargo test --locked --bin bilbo relay::mailbox::`
 - [ ] 3.6 Add the log lines in `src/relay/route.rs`:
   - one per created object: `manifest` or `segment` with ids, n or seq and size, or `mailbox` with only the size;
-  - one per 4xx refusal (other than 404) of a request whose signature verified;
+  - one per 4xx refusal (other than 404) of a request whose signature verified under a key the relay knows, and one per 500 or 507;
   - one line a minute that counts every other 4xx refusal by reason, written by `route::tick`;
   - one per invalid scope at start (task 3.4);
   - none for reads.
