@@ -592,8 +592,9 @@ impl Transport for Relay {
 mod tests {
     use std::io::{BufRead, BufReader, Read, Write};
     use std::net::{TcpListener, TcpStream};
-    use std::sync::Arc;
+    use std::os::unix::thread::JoinHandleExt;
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use std::sync::{Arc, Once, mpsc};
 
     use super::*;
     use crate::identity::keys::Device;
@@ -769,6 +770,48 @@ mod tests {
 
     fn segment(seq: u64) -> String {
         transport::segment_path(SCOPE, DEVICE, seq)
+    }
+
+    /// Runs `request` on a worker thread and sends it `SIGUSR1` every 10 ms until it hands back its result, with a
+    /// no-op handler installed without `SA_RESTART`, so a blocked socket read returns `EINTR` on Linux and macOS.
+    /// Returns the result and how many signals reached the worker.
+    fn interrupted<T: Send + 'static>(request: impl FnOnce() -> T + Send + 'static) -> (T, usize) {
+        extern "C" fn ignore(_: libc::c_int) {}
+        static HANDLER: Once = Once::new();
+        HANDLER.call_once(|| {
+            // SAFETY: an all-zero sigaction is valid: no flags and an empty mask.
+            let mut action: libc::sigaction = unsafe { std::mem::zeroed() };
+            action.sa_sigaction = ignore as extern "C" fn(libc::c_int) as libc::sighandler_t;
+            // SAFETY: `action` is a valid sigaction that outlives the call, and the old one is not asked for.
+            let rc = unsafe { libc::sigaction(libc::SIGUSR1, &action, std::ptr::null_mut()) };
+            assert_eq!(rc, 0);
+        });
+        let (done, result) = mpsc::channel();
+        let (release, released) = mpsc::channel::<()>();
+        let worker = std::thread::spawn(move || {
+            let _ = done.send(request());
+            // Waits to be released, so no signal reaches a thread that has exited.
+            let _ = released.recv();
+        });
+        let thread = worker.as_pthread_t();
+        let mut signals = 0;
+        let value = loop {
+            match result.recv_timeout(Duration::from_millis(10)) {
+                Ok(value) => break value,
+                Err(mpsc::RecvTimeoutError::Timeout) => {
+                    // SAFETY: the worker is not joined, so its thread id is still valid.
+                    if unsafe { libc::pthread_kill(thread, libc::SIGUSR1) } == 0 {
+                        signals += 1;
+                    }
+                }
+                Err(mpsc::RecvTimeoutError::Disconnected) => {
+                    std::panic::resume_unwind(worker.join().unwrap_err())
+                }
+            }
+        };
+        let _ = release.send(());
+        worker.join().unwrap();
+        (value, signals)
     }
 
     #[test]
@@ -1011,6 +1054,35 @@ mod tests {
             matches!(relay.create(&segment(1), b"x"), Put::Unreachable(m) if m.starts_with("relay "))
         );
         assert!(matches!(identify(&url), Err(Probe::Unreachable(_))));
+    }
+
+    #[test]
+    fn a_signal_does_not_fail_a_request() {
+        let fake = Fake::start(|_| {
+            std::thread::sleep(Duration::from_millis(200));
+            answer(200, "{\"relay\":\"bilbo\",\"api\":1}")
+        });
+        let relay = client(&fake, false, false);
+        let (reached, signals) = interrupted(move || relay.reachable());
+        assert_eq!(reached, Ok(()));
+        assert!(signals > 0);
+    }
+
+    #[test]
+    fn a_signal_leaves_a_closed_connection_unreachable() {
+        let fake = Fake::start(|_| {
+            std::thread::sleep(Duration::from_millis(200));
+            String::new()
+        });
+        let relay = client(&fake, false, false);
+        let (reached, signals) = interrupted(move || relay.reachable());
+        let message = reached.unwrap_err();
+        assert!(
+            message.starts_with(&format!("relay {} unreachable: ", fake.url())),
+            "{message}"
+        );
+        assert!(!message.contains("Interrupted"), "{message}");
+        assert!(signals > 0);
     }
 
     #[test]
