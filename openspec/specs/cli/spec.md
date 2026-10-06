@@ -6,7 +6,7 @@ The `bilbo` command line as a whole: how a verb is picked, how usage and help ar
 ## Requirements
 
 ### Requirement: Verb dispatch
-`bilbo` SHALL read its first argument as a verb and run that verb. The verbs are `new`, `check`, `recall`, `index`, `setup`, `digest`, `library`, `cite`, `watch`, `history`, `restore`, `scope`, `device`, `sync` and `pair`. Any other first argument, or no argument, SHALL be a usage error.
+`bilbo` SHALL read its first argument as a verb and run that verb. The verbs are `new`, `check`, `recall`, `index`, `setup`, `digest`, `library`, `cite`, `watch`, `history`, `restore`, `scope`, `device`, `sync`, `pair` and `relay`. Any other first argument, or no argument, SHALL be a usage error.
 
 #### Scenario: A known verb runs
 - **WHEN** an agent runs `bilbo check`
@@ -48,9 +48,13 @@ The `bilbo` command line as a whole: how a verb is picked, how usage and help ar
 - **WHEN** a user runs `bilbo pair` on an enrolled device, or `bilbo pair <code> --via <url>` on a new one
 - **THEN** bilbo runs the pair verb
 
+#### Scenario: Relay is a verb
+- **WHEN** a user runs `bilbo relay --data /srv/relay --owner <fingerprint>`
+- **THEN** bilbo runs the relay verb
+
 #### Scenario: An unknown verb is a usage error
 - **WHEN** an agent runs `bilbo frobnicate`
-- **THEN** bilbo prints a usage message that names the verbs `new`, `check`, `recall`, `index`, `setup`, `digest`, `library`, `cite`, `watch`, `history`, `restore`, `scope`, `device`, `sync` and `pair` to stderr, exits 2, and creates, changes or deletes no file
+- **THEN** bilbo prints a usage message that names the verbs `new`, `check`, `recall`, `index`, `setup`, `digest`, `library`, `cite`, `watch`, `history`, `restore`, `scope`, `device`, `sync`, `pair` and `relay` to stderr, exits 2, and creates, changes or deletes no file
 
 #### Scenario: No arguments is a usage error
 - **WHEN** an agent runs `bilbo` with no arguments
