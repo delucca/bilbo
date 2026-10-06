@@ -198,6 +198,22 @@ mod tests {
             verify(&signed, "GET", "/v1/a", &digest, NOW),
             Err(Bad::Signature)
         );
+        let queried = read_from(&signed_with("GET", "/v1/a?after=1", NOW, b""))
+            .unwrap()
+            .unwrap();
+        let empty = hash::sha256_hex(b"");
+        assert_eq!(
+            verify(&queried, "GET", "/v1/a?after=1", &empty, NOW),
+            Ok(())
+        );
+        assert_eq!(
+            verify(&queried, "GET", "/v1/a?after=2", &empty, NOW),
+            Err(Bad::Signature)
+        );
+        assert_eq!(
+            verify(&queried, "GET", "/v1/a", &empty, NOW),
+            Err(Bad::Signature)
+        );
     }
 
     #[test]
