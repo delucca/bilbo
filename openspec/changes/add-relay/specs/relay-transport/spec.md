@@ -35,7 +35,7 @@ The transport SHALL NOT follow a redirect. A 3xx answer SHALL be reported as `re
 - **THEN** sync reports the redirect and sends nothing to `other.example`
 
 ### Requirement: Signed requests from the device
-The transport SHALL sign every request under `/v1/scopes/` as the `relay-api` spec describes, with a fresh random nonce per request: with the owner key, when the device holds it, to list the owner's scopes and to read a scope's manifests, and with the device's Ed25519 key for every other request, manifest creates included. On the device that shows a pairing code, it SHALL sign every request to that nameplate with the device key, the first message included; on the device that answers the code, it SHALL sign no mailbox request.
+The transport SHALL sign every request under `/v1/scopes/` as the `relay-api` spec describes, with a fresh random nonce per request: with the owner key, when the device holds it, to list the owner's scopes and to read a scope's manifests, to create a manifest version that does not list the device, and with the device's Ed25519 key for every other request, the creates of versions that list the device included. On the device that shows a pairing code, it SHALL sign every request to that nameplate with the device key, the first message included; on the device that answers the code, it SHALL sign no mailbox request.
 
 #### Scenario: Every segment request is signed
 - **WHEN** the transport creates, lists and reads segments
@@ -48,6 +48,10 @@ The transport SHALL sign every request under `/v1/scopes/` as the `relay-api` sp
 #### Scenario: Manifests are read as the owner
 - **WHEN** the watcher of an enrolled device lists the owner's scopes on a relay and reads their manifests, among them a scope whose latest manifest does not list the device
 - **THEN** each of those requests carries the owner's public key in `Bilbo-Key`, and none is refused 403
+
+#### Scenario: A later device copies the whole chain to an empty relay
+- **WHEN** a device that version 1 of a scope does not list, holding the owner key, publishes the scope's versions 1 to 3 to a relay that holds none of them
+- **THEN** the creates of the versions that do not list the device carry the owner's public key in `Bilbo-Key`, the others carry the device's, and the relay stores all three
 
 #### Scenario: The new device answers unsigned
 - **WHEN** a device answers a pairing code through a relay
