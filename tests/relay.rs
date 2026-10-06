@@ -472,6 +472,7 @@ fn an_owner_is_read_without_regard_to_case_or_hyphens() {
     let plain = fingerprint().replace('-', "").to_uppercase();
     let relay = Relay::start(&data, &[&plain], &[]);
     publish(relay.port, 2);
+    relay.wait_for(&format!("manifest {} {BAGEND} 2", scope()));
     assert_eq!(after_startup(&relay).len(), 2, "{:?}", relay.lines());
 }
 
@@ -947,6 +948,7 @@ fn a_create_is_logged_and_reads_are_not() {
         assert_eq!(reply.status, 201, "{}", reply.text());
     }
     let line = format!("segment {} {RIVENDELL} 12 {}", scope(), last.len());
+    relay.wait_for(&line);
     assert!(after_startup(&relay).contains(&line), "{:?}", relay.lines());
     let before = relay.lines().len();
     for i in 0..500u64 {

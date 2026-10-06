@@ -151,22 +151,44 @@ fn interval(url: &str, limits: &Limits) -> Duration {
     }
 }
 
-/// Calls `look` every `every` until it finds something, or `limit` has passed since `since`: `None` then.
+/// How long a poll rests after a relay answers 429 `rate`.
+const RATE_PAUSE: Duration = Duration::from_secs(5);
+
+/// Whether `why` is a relay's 429 `rate`, as the relay client words it.
+fn is_rate(why: &str) -> bool {
+    why.ends_with(" answered 429: rate")
+}
+
+/// Calls `look` every `every` until it finds something, or `limit` has passed since `since`: `None` then. A relay's
+/// 429 `rate` is a wait of `RATE_PAUSE` (the client's error carries no `Retry-After`), not a failure.
 fn wait<T>(
     since: Instant,
     limit: Duration,
     every: Duration,
+    look: impl FnMut() -> Result<Option<T>, String>,
+) -> Result<Option<T>, String> {
+    wait_pausing(since, limit, every, RATE_PAUSE, look)
+}
+
+fn wait_pausing<T>(
+    since: Instant,
+    limit: Duration,
+    every: Duration,
+    pause: Duration,
     mut look: impl FnMut() -> Result<Option<T>, String>,
 ) -> Result<Option<T>, String> {
     loop {
-        if let Some(found) = look()? {
-            return Ok(Some(found));
-        }
+        let rested = match look() {
+            Ok(Some(found)) => return Ok(Some(found)),
+            Ok(None) => every,
+            Err(why) if is_rate(&why) => pause,
+            Err(why) => return Err(why),
+        };
         let left = limit.saturating_sub(since.elapsed());
         if left.is_zero() {
             return Ok(None);
         }
-        std::thread::sleep(every.min(left));
+        std::thread::sleep(rested.min(left));
     }
 }
 
@@ -184,6 +206,43 @@ mod tests {
             Err(_) => panic!("{text}: not a usage error"),
             Ok(form) => panic!("{text}: parsed as {form:?}"),
         }
+    }
+
+    #[test]
+    fn a_rate_refusal_is_waited_out_and_any_other_error_ends_the_wait() {
+        let mut calls = 0;
+        let found = wait_pausing(
+            Instant::now(),
+            Duration::from_secs(5),
+            Duration::from_millis(1),
+            Duration::from_millis(5),
+            || {
+                calls += 1;
+                match calls {
+                    1 | 2 => Err("relay http://r answered 429: rate".to_string()),
+                    _ => Ok(Some(calls)),
+                }
+            },
+        );
+        assert_eq!(found, Ok(Some(3)));
+        let started = Instant::now();
+        let none: Result<Option<u8>, String> = wait_pausing(
+            started,
+            Duration::from_millis(30),
+            Duration::from_millis(1),
+            Duration::from_secs(60),
+            || Err("relay http://r answered 429: rate".to_string()),
+        );
+        assert_eq!(none, Ok(None));
+        assert!(started.elapsed() < Duration::from_secs(5));
+        let failed: Result<Option<u8>, String> = wait_pausing(
+            Instant::now(),
+            Duration::from_secs(5),
+            Duration::from_millis(1),
+            Duration::from_millis(1),
+            || Err("relay http://r answered 429: busy".to_string()),
+        );
+        assert!(failed.is_err());
     }
 
     #[test]
