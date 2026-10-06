@@ -5,6 +5,8 @@
     nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-26.05-darwin";
     # Only the dev shell reads it, for cargo-dist 0.33.0 (nixpkgs 26.05 ships 0.31.0).
     nixpkgs-unstable.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
+    # Builds the dependencies as their own derivation, which CI caches.
+    crane.url = "github:ipetkov/crane/v0.24.0";
     # Only the flake check that evaluates homeManagerModules.default reads it.
     home-manager = {
       url = "github:nix-community/home-manager/release-26.05";
@@ -17,6 +19,7 @@
       self,
       nixpkgs,
       nixpkgs-unstable,
+      crane,
       home-manager,
     }:
     let
@@ -26,19 +29,14 @@
         "x86_64-linux"
         "aarch64-linux"
       ];
-      version = (lib.importTOML ./Cargo.toml).package.version;
     in
     {
       packages = forAllSystems (
         system:
         let
           pkgs = nixpkgs.legacyPackages.${system};
-        in
-        {
-          default = self.packages.${system}.bilbo;
-          bilbo = pkgs.rustPlatform.buildRustPackage {
-            pname = "bilbo";
-            inherit version;
+          craneLib = crane.mkLib pkgs;
+          common = {
             src = lib.fileset.toSource {
               root = ./.;
               fileset = lib.fileset.unions [
@@ -51,28 +49,34 @@
                 ./.agents/plugins/marketplace.json
               ];
             };
-            cargoLock.lockFile = ./Cargo.lock;
-            cargoLock.outputHashes."ureq-3.4.2" = "sha256-BIj3Wb8r0WG4UPB8hSlHdjBp1u8JbLUHbDRdRNv79bc=";
-            # The fake embedder in tests/common listens on 127.0.0.1.
-            __darwinAllowLocalNetworking = true;
-            # .github is not in src; the verify job runs this test.
-            checkFlags = [
-              "--skip"
-              "every_action_is_pinned_by_sha"
-            ];
-            postInstall = ''
-              mkdir -p $out/share/bilbo/.claude-plugin $out/share/bilbo/.agents/plugins
-              cp -r plugins $out/share/bilbo/plugins
-              cp .claude-plugin/marketplace.json $out/share/bilbo/.claude-plugin/
-              cp .agents/plugins/marketplace.json $out/share/bilbo/.agents/plugins/
-            '';
-            meta = {
-              description = "Durable memory for coding agents";
-              homepage = "https://github.com/delucca/bilbo";
-              license = lib.licenses.asl20;
-              mainProgram = "bilbo";
-            };
+            outputHashes."git+https://github.com/algesten/ureq?rev=0ebb046e1cf269592f9edb3a55f489d508f47a1d#0ebb046e1cf269592f9edb3a55f489d508f47a1d" =
+              "sha256-BIj3Wb8r0WG4UPB8hSlHdjBp1u8JbLUHbDRdRNv79bc=";
           };
+        in
+        {
+          default = self.packages.${system}.bilbo;
+          bilbo = craneLib.buildPackage (
+            common
+            // {
+              cargoArtifacts = craneLib.buildDepsOnly common;
+              # The fake embedder in tests/common listens on 127.0.0.1.
+              __darwinAllowLocalNetworking = true;
+              # .github is not in src; the verify job runs this test.
+              cargoTestExtraArgs = "-- --skip every_action_is_pinned_by_sha";
+              postInstall = ''
+                mkdir -p $out/share/bilbo/.claude-plugin $out/share/bilbo/.agents/plugins
+                cp -r plugins $out/share/bilbo/plugins
+                cp .claude-plugin/marketplace.json $out/share/bilbo/.claude-plugin/
+                cp .agents/plugins/marketplace.json $out/share/bilbo/.agents/plugins/
+              '';
+              meta = {
+                description = "Durable memory for coding agents";
+                homepage = "https://github.com/delucca/bilbo";
+                license = lib.licenses.asl20;
+                mainProgram = "bilbo";
+              };
+            }
+          );
         }
       );
 
