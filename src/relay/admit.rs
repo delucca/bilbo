@@ -267,11 +267,11 @@ impl Scopes {
     ///
     /// Checked under the scope's mutex, in this order: the standing; for an `n` at or below the latest, the key
     /// (listed in that version, in the latest, or the owner) and then the create-only rule (`Same` or `Other` by the
-    /// stored bytes, `link` not called); for the next `n`, the key (listed in the latest version, or the owner), then
-    /// `manifest::verify_next` (`Manifest(why)`), then the key listed in the new version or the owner; for a larger
+    /// stored bytes, `link` not called); for the next `n`, `manifest::verify_next`
+    /// (`Manifest(why)`), then the key listed in the new version or the owner; for a larger
     /// `n`, `NotNext`. Manifest 1 of a scope the relay does not hold goes through the same checks, plus `--max-scopes`
-    /// valid scopes of the owner, with the map held. `link` creates the object and runs with the lock held: on `New` the version is recorded, so the
-    /// next request sees it. Whatever the outcome, `put.reserved` is released.
+    /// valid scopes of the owner, with the map held. `link` creates the object and runs with the lock held: on `New` or `Same` the version is recorded, so
+    /// the next request sees it. Whatever the outcome, `put.reserved` is released.
     pub fn create_manifest(
         &self,
         flags: &Flags,
@@ -282,9 +282,10 @@ impl Scopes {
         match self.get(put.scope) {
             Some(held) => {
                 let mut held = locked(&held);
-                let result = self.manifest_of_held(flags, &mut held, put, bytes, link);
+                let result =
+                    unwinding(|| self.manifest_of_held(flags, &mut held, put, bytes, link));
                 held.reserved = held.reserved.saturating_sub(put.reserved);
-                result
+                result.unwrap_or_else(|panic| std::panic::resume_unwind(panic))
             }
             None => self.manifest_of_new(flags, put, bytes, link),
         }
@@ -327,9 +328,6 @@ impl Scopes {
                 Err(Refusal::NotAdmitted)
             };
         }
-        if !(by_owner || held.lists(put.signer)) {
-            return Err(Refusal::NotAdmitted);
-        }
         if put.length > MANIFEST_MAX {
             return Err(Refusal::TooLarge);
         }
@@ -341,8 +339,10 @@ impl Scopes {
             return Err(Refusal::Quota);
         }
         let created = link();
-        if created == Created::New {
+        if matches!(created, Created::New | Created::Same) {
             held.chain.versions.push(version);
+        }
+        if created == Created::New {
             held.bytes += put.length;
         }
         Ok(created)
@@ -388,7 +388,7 @@ impl Scopes {
             return Err(Refusal::Quota);
         }
         let created = link();
-        if created == Created::New {
+        if matches!(created, Created::New | Created::Same) {
             let mut chain = empty;
             chain.versions.push(version);
             map.insert(
@@ -411,7 +411,7 @@ impl Scopes {
     /// device `device`), `--max-object-mb`, then the create-only rule: at or below the device's highest seq,
     /// `probe` says whether the stored object is there and has the body's bytes (`Some(true)` is `Same`,
     /// `Some(false)` is `Other`, `None` is `NotNext`, since a segment an operator removed stays missing); at the
-    /// next seq, the scope's quota and `link`, which runs with the lock held and records the seq on `New`; above it,
+    /// next seq, the scope's quota and `link`, which runs with the lock held and records the seq on `New` or `Same`; above it,
     /// `NotNext`. Whatever the outcome, `put.reserved` is released.
     pub fn create_segment(
         &self,
@@ -425,10 +425,15 @@ impl Scopes {
             return Err(Refusal::NotAdmitted);
         };
         let mut held = locked(&held);
-        let result = segment_of_held(flags, &mut held, put, device, probe, link);
+        let result = unwinding(|| segment_of_held(flags, &mut held, put, device, probe, link));
         held.reserved = held.reserved.saturating_sub(put.reserved);
-        result
+        result.unwrap_or_else(|panic| std::panic::resume_unwind(panic))
     }
+}
+
+/// Runs `f`, catching a panic so the caller can give back its reservation before it goes on unwinding.
+fn unwinding<T>(f: impl FnOnce() -> T) -> std::thread::Result<T> {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(f))
 }
 
 fn segment_of_held(
@@ -459,8 +464,10 @@ fn segment_of_held(
         return Err(Refusal::Quota);
     }
     let created = link();
-    if created == Created::New {
+    if matches!(created, Created::New | Created::Same) {
         held.highest.insert(device.to_string(), put.number);
+    }
+    if created == Created::New {
         held.bytes += put.length;
     }
     Ok(created)
@@ -973,6 +980,72 @@ mod tests {
     }
 
     #[test]
+    fn a_same_at_the_next_seq_or_version_is_recorded() {
+        let w = world("same_next", 10);
+        let scopes = scopes(&[&w.owner]);
+        admit_to(&scopes, &w, 1);
+        let rivendell = key(&w.rivendell);
+        let link_same = |scopes: &Scopes, seq: u64| {
+            scopes.create_segment(
+                &flags(),
+                &put(&w.id, &rivendell, seq, 10),
+                &w.rivendell.device.id(),
+                &|| Ok(None),
+                &mut || Created::Same,
+            )
+        };
+        assert_eq!(link_same(&scopes, 1), Ok(Created::Same));
+        let held = scopes.get(&w.id).unwrap();
+        let bytes = locked(&held).bytes;
+        assert_eq!(
+            locked(&held).highest.get(&w.rivendell.device.id()),
+            Some(&1)
+        );
+        assert_eq!(
+            segment(&scopes, &flags(), &w, &w.rivendell, 2, None),
+            Ok(Created::New)
+        );
+        let again = scopes.create_manifest(
+            &flags(),
+            &put(&w.id, &rivendell, 2, w.files[1].len() as u64),
+            &w.files[1],
+            &mut || Created::Same,
+        );
+        assert_eq!(again, Ok(Created::Same));
+        assert_eq!(locked(&held).chain.versions.len(), 2);
+        assert_eq!(locked(&held).bytes, bytes + 10);
+        assert_eq!(
+            manifest_n(&scopes, &w, &rivendell, 3, &w.files[2]),
+            Ok(Created::New)
+        );
+    }
+
+    #[test]
+    fn a_panic_in_a_create_gives_its_reservation_back() {
+        let w = world("panic_release", 10);
+        let scopes = scopes(&[&w.owner]);
+        admit_to(&scopes, &w, 1);
+        let rivendell = key(&w.rivendell);
+        let booked = scopes.reserve(&flags(), &w.id, 10).unwrap();
+        assert_eq!(status(&scopes, &w.id).1, 10);
+        let at = Put {
+            reserved: booked,
+            ..put(&w.id, &rivendell, 1, 10)
+        };
+        let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            scopes.create_segment(
+                &flags(),
+                &at,
+                &w.rivendell.device.id(),
+                &|| Ok(None),
+                &mut || panic!("link"),
+            )
+        }));
+        assert!(caught.is_err());
+        assert_eq!(status(&scopes, &w.id).1, 0);
+    }
+
+    #[test]
     fn a_failed_segment_link_records_nothing() {
         let w = world("seg_fail", 10);
         let scopes = scopes(&[&w.owner]);
@@ -1018,23 +1091,33 @@ mod tests {
     }
 
     #[test]
-    fn the_next_manifest_is_judged_by_its_key_before_its_body() {
+    fn the_next_manifest_is_judged_by_its_body_then_its_key() {
         let w = world("next_key", 10);
         let scopes = scopes(&[&w.owner]);
         admit_to(&scopes, &w, 1);
         let stranger = Device::from_seeds("x", &[77; 32], &[78; 32]).sign.public();
         let garbage = b"not a manifest";
+        for signer in [stranger, key(&w.rivendell), w.owner.sign.public()] {
+            let result = manifest_n(&scopes, &w, &signer, 2, garbage);
+            assert!(matches!(result, Err(Refusal::Manifest(_))), "{result:?}");
+        }
         assert_eq!(
-            manifest_n(&scopes, &w, &stranger, 2, garbage),
+            manifest_n(&scopes, &w, &stranger, 2, &w.files[1]),
             Err(Refusal::NotAdmitted)
         );
-        let result = manifest_n(&scopes, &w, &key(&w.rivendell), 2, garbage);
-        assert!(matches!(result, Err(Refusal::Manifest(_))), "{result:?}");
-        let by_owner = manifest_n(&scopes, &w, &w.owner.sign.public(), 2, garbage);
-        assert!(
-            matches!(by_owner, Err(Refusal::Manifest(_))),
-            "{by_owner:?}"
+    }
+
+    #[test]
+    fn a_device_the_next_version_adds_publishes_it() {
+        let w = world("adds_itself", 10);
+        let scopes = scopes(&[&w.owner]);
+        admit_to(&scopes, &w, 1);
+        assert_eq!(
+            manifest_n(&scopes, &w, &key(&w.bagend), 2, &w.files[1]),
+            Ok(Created::New)
         );
+        let held = scopes.get(&w.id).unwrap();
+        assert_eq!(locked(&held).chain.versions.len(), 2);
     }
 
     #[test]
