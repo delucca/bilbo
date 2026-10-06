@@ -308,6 +308,7 @@ fn refusal(why: Refusal) -> Response {
 }
 
 /// The reason in a refusal's body.
+#[cfg(test)]
 fn reason_of(response: &Response) -> String {
     response.reason().to_string()
 }
