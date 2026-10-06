@@ -878,21 +878,23 @@ prefix works, since bilbo signs the path the relay receives; set the scope's
 URL to the prefix, as in [Sync URLs](#sync-urls).
 
 A public relay is exposed to connection exhaustion: enough slow clients can
-hold its 256 connections open for 10 seconds at a time. A relay for one person
+hold its 256 connections open for 300 seconds at a time. A relay for one person
 accepts that. Strangers can store nothing and read nothing: a request that is
 not signed by a key of an owner's scope is refused.
 
 #### Using it
 
-Run `bilbo device` on a device and pass its fingerprint to the relay. Then set
-the URL on each device, as for a folder:
+Run `bilbo device` on a device and pass its fingerprint to the relay. For a
+new scope, set the URL on each device, as for a folder; a scope that already
+syncs through a folder [moves by copy](#moving-a-folder-scope-to-a-relay):
 
 ```
 scope.personal.sync = https://bagend.tail1234.ts.net
 ```
 
 `bilbo setup` takes the URL at its `Folder or relay URL to sync through`
-prompt, and checks that a relay answers there. `bilbo watch` publishes the scope's manifest on its first cycle.
+prompt, and checks that a relay answers there. `bilbo watch` publishes the
+scope's manifest on its first cycle.
 A device whose clock is off by more than 5 minutes is told so on the scope's
 line; fix the clock.
 
@@ -910,13 +912,50 @@ operator of the machine, which is you, and the proxy see exactly this. A relay
 cannot tell a stolen device that signs as the owner from you: see
 [Revoking a device](#revoking-a-device) for what that still allows.
 
+#### Moving a folder scope to a relay
+
+A scope you already sync through a folder moves by copy, not by changing the
+URL alone: a relay started empty refuses a device's later versions of a scope
+it holds nothing of, and the watcher does not seed it. Copying also carries
+every segment, so a device paired later still reads the whole history.
+
+1. Stop `bilbo watch` on every device.
+2. With the relay stopped, copy the synced folder's `scopes/` into the
+   relay's data folder, which is `/var/lib/private/bilbo-relay` under the
+   NixOS module. Under the module, systemd gives the copied files to the
+   service's user when it starts the relay; with the plain unit, `chown -R`
+   them to the user it runs as. The relay checks the copied tree when it
+   starts, as it checks any other.
+3. Start the relay with the owner's fingerprint.
+4. Set `scope.<name>.sync` to the relay's URL on every device.
+5. Run `bilbo device init` in a terminal on each device. It sees that the
+   manifest pins the folder and the config says the relay, and writes a new
+   version that pins the relay. Devices that do this at once race for the same
+   version: the first wins on the relay, and each other moves its own copy
+   aside, takes the relay's and reports it.
+6. Start `bilbo watch` again.
+
+If a device's owner is not among the relay's `--owner` flags yet,
+`bilbo device init` says `scope <name> failed: relay <url> does not admit this
+owner; start it with --owner <fingerprint>`. Restart the relay with the
+fingerprint and run `init` again.
+
+A relay that holds no copy of the scope tells the device so: `relay <url> holds
+no scope <scope id> of this owner; copy the folder it synced through into the
+relay's data folder`. A relay started empty gets only the versions and
+segments written after the move, so a device paired later would miss the older
+notes. Copy the folder first.
+
 #### Dropping or repairing a scope
 
 The relay's data folder is a `file://` tree you can read without the relay.
 Stop the relay before touching it, and start it again after.
 
-- To drop a scope, remove `<data>/scopes/<scope id>`. The scope's id is in
-  `bilbo device`.
+- To drop a scope, remove `<data>/scopes/<scope id>`, and only once no device
+  syncs it any more: set `scope.<name>.sync = off` on each, or run
+  `bilbo device init` after changing its URL. The scope's id is in
+  `bilbo device`. A device that still syncs a dropped scope cannot refill it,
+  and reports `relay <url> does not admit this device`.
 - To repair a damaged segment, copy `<root>/.bilbo/scopes/<scope id>/out/<seq>.seg`
   from the device that wrote it over `<data>/scopes/<scope id>/devices/<device id>/<seq>.seg`
   (the sequence number in 20 digits, as in the file's name there). Readers
@@ -924,6 +963,14 @@ Stop the relay before touching it, and start it again after.
 - A scope that fails the check at start is kept and not served: the relay
   logs it once, naming the scope. A scope whose owner is not among the `--owner`
   flags answers `not-admitted`, so give the relay that owner again.
+
+Back up the data folder. Devices never re-upload what a relay loses: a client
+only appends, so a relay that comes back without a scope or some segments stays
+that way, and a device whose next segment is far past what the relay holds
+reports `relay <url> is missing this device's earlier segments; restore its
+data folder`. Restore the folder from the backup. Without one, the devices
+keep their notes, and a device paired later reads only what the relay holds;
+the old segments are gone.
 
 The relay never edits or deletes a stored object. The data folder grows until
 a scope reaches `--max-scope-mb`; then devices report `relay <url> is full` for the scope.
