@@ -78,6 +78,8 @@ failures say what to change. Beyond it:
 - `.agents/plugins/marketplace.json` is written by hand. `release.yml` comes
   from `dist generate` over `dist-workspace.toml`: edit that and regenerate, or
   the release `plan` job fails.
+- The GitHub wiki is generated from `docs/` by `wiki.yml` and
+  `.github/wiki.py`: never edit it by hand.
 
 ## Gotchas
 

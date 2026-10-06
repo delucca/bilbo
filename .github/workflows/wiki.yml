@@ -1,0 +1,55 @@
+name: wiki
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - docs/**
+      - .github/wiki.py
+      - .github/workflows/wiki.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: wiki
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Convert docs
+        env:
+          REPO: ${{ github.server_url }}/${{ github.repository }}
+        run: python3 .github/wiki.py docs "$RUNNER_TEMP/pages" "$REPO"
+
+      - name: Publish
+        env:
+          TOKEN: ${{ github.token }}
+          WIKI: ${{ github.server_url }}/${{ github.repository }}.wiki.git
+        run: |
+          basic=$(printf 'x-access-token:%s' "$TOKEN" | base64 -w0)
+          # Actions masks the token, not its base64 form.
+          echo "::add-mask::$basic"
+          auth="http.extraheader=AUTHORIZATION: basic $basic"
+          git -c "$auth" clone "$WIKI" "$RUNNER_TEMP/wiki"
+          cd "$RUNNER_TEMP/wiki"
+          git rm -rq --ignore-unmatch .
+          cp "$RUNNER_TEMP"/pages/*.md .
+          git add -A
+          if git diff --cached --quiet; then
+            echo "wiki is up to date"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "Sync docs from ${GITHUB_SHA}"
+          git -c "$auth" push
