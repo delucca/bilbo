@@ -89,7 +89,12 @@ pub fn run(cx: &mut Cx, code: &str, via: &str, name: Option<&str>) -> Result<(),
         }
     };
     let id = me.device.id();
-    let t = transport::open(via, &id).map_err(Failure::Refused)?;
+    let signer = transport::Keys {
+        device: &me.device,
+        owner: None,
+        opener: false,
+    };
+    let t = transport::open(via, &signer).map_err(Failure::Refused)?;
     t.sweep_mailboxes(SystemTime::now(), cx.limits.sweep)
         .map_err(Failure::Refused)?;
     let np = code.nameplate();

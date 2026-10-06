@@ -62,8 +62,11 @@ impl Mailbox {
 /// Shows a code for `scopes` (every syncing scope when empty) over `via` (the one URL they share when `None`).
 pub fn run(cx: &mut Cx, scopes: &[String], via: Option<&str>) -> Result<(), Failure> {
     let plan = check(cx, scopes, via)?;
-    let device = plan.id.device.id();
-    let t = transport::open(&plan.url, &device).map_err(Failure::Refused)?;
+    let keys = transport::Keys {
+        opener: true,
+        ..transport::Keys::of(&plan.id)
+    };
+    let t = transport::open(&plan.url, &keys).map_err(Failure::Refused)?;
     t.reachable()
         .map_err(|why| Failure::Refused(format!("cannot reach {}: {why}", plan.url)))?;
     t.sweep_mailboxes(SystemTime::now(), cx.limits.sweep)
@@ -662,7 +665,7 @@ mod tests {
         if b.mode == Mode::Silent {
             return None;
         }
-        let t = transport::open(&w.url(), "b").unwrap();
+        let t = transport::Folder::new(w.sync(), "b");
         let a_path = transport::message_path(&code.nameplate(), "a");
         let mut a_msg = None;
         for _ in 0..1000 {
@@ -806,7 +809,7 @@ mod tests {
             local.pending.contains(&2),
             "the new version waits for the read-back"
         );
-        let t = transport::open(&w.url(), "x").unwrap();
+        let t = transport::Folder::new(w.sync(), "x");
         for n in [1, 2] {
             let there = t
                 .get(&transport::manifest_path(&scope, n))
@@ -1027,7 +1030,7 @@ mod tests {
     fn local_versions_the_transport_lacks_are_published_before_the_reply() {
         let w = world("publish");
         let (_, scope) = w.enrolled();
-        let t = transport::open(&w.url(), "x").unwrap();
+        let t = transport::Folder::new(w.sync(), "x");
         assert!(
             t.get(&transport::manifest_path(&scope, 1))
                 .unwrap()
@@ -1051,7 +1054,7 @@ mod tests {
     fn a_manifest_that_moved_on_stops_before_the_reply() {
         let w = world("moved");
         let (_, scope) = w.enrolled();
-        let t = transport::open(&w.url(), "x").unwrap();
+        let t = transport::Folder::new(w.sync(), "x");
         assert_eq!(
             t.create(&transport::manifest_path(&scope, 2), b"another"),
             Put::Created
@@ -1089,7 +1092,7 @@ mod tests {
     fn a_stale_mailbox_is_swept_and_a_fresh_one_stays() {
         let w = world("sweep");
         w.enrolled();
-        let t = transport::open(&w.url(), "x").unwrap();
+        let t = transport::Folder::new(w.sync(), "x");
         for np in ["7", "8"] {
             assert_eq!(
                 t.create(&transport::message_path(np, "a"), b"x"),
@@ -1254,7 +1257,7 @@ mod tests {
     fn all_nameplates_taken_is_refused_without_a_new_mailbox() {
         let w = world("full");
         w.enrolled();
-        let t = transport::open(&w.url(), "x").unwrap();
+        let t = transport::Folder::new(w.sync(), "x");
         for np in 1..=999 {
             assert_eq!(
                 t.create(&transport::message_path(&np.to_string(), "a"), b"x"),

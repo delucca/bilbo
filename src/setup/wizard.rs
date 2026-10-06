@@ -8,6 +8,7 @@ use crate::identity::keys::{self, Device, Owner};
 use crate::identity::manifest::{self, Recipient};
 use crate::identity::{ceremony, phrase};
 use crate::shared::config::{self, Embedder, Token};
+use crate::sync::transport::Keys;
 use std::io;
 use std::path::{Component, Path, PathBuf};
 use zeroize::Zeroizing;
@@ -223,7 +224,7 @@ fn sync_questions<P: Prompter>(p: &mut P, facts: &SyncFacts, watch: bool) -> Res
             let known =
                 manifest::survey(&facts.root, Some(&public), Some(&who)).map_err(Asked::Refused)?;
             let held = syncing::holds(&known, None, &name);
-            let seen = syncing::inspect(&url, &id.device.id(), &public, &who, &name);
+            let seen = syncing::inspect(&url, &Keys::of(&id), &public, &who, &name);
             let take = seen.take.filter(|_| !held);
             if let Some(line) = seen.rivals.filter(|_| take.is_some()) {
                 p.warn(&line)?;
@@ -292,13 +293,12 @@ fn created<P: Prompter>(
     let print = keys::owner_fingerprint(&public);
     let positions = phrase::positions(keys::random::<3>().map_err(Asked::Refused)?);
     let device = Device::generate(&device_name).map_err(Asked::Refused)?;
-    let seen = syncing::inspect(
-        url,
-        &device.id(),
-        &public,
-        &Recipient::device(&device),
-        name,
-    );
+    let keys = Keys {
+        device: &device,
+        owner: Some(&owner.sign),
+        opener: false,
+    };
+    let seen = syncing::inspect(url, &keys, &public, &Recipient::device(&device), name);
     if let Some(why) = seen.blocked {
         p.warn(&why)?;
         return Ok(off(Some(name), &why));
@@ -352,7 +352,12 @@ fn recovered<P: Prompter>(
         .iter()
         .filter(|k| k.mine && syncing::named_by(k, &owner).as_deref() == Some(name))
         .collect();
-    let seen = syncing::inspect(url, &device.id(), &public, &who, name);
+    let keys = Keys {
+        device: &device,
+        owner: Some(&owner.sign),
+        opener: false,
+    };
+    let seen = syncing::inspect(url, &keys, &public, &who, name);
     let take = seen.take.filter(|chosen| {
         locals.iter().all(|k| syncing::all_pending(k))
             && locals.iter().all(|k| k.scope.id != *chosen)

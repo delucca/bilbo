@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
 use crate::host::swap;
-use crate::identity::keys;
+use crate::identity::keys::{self, Device, Identity, SignKey};
 
 /// The largest object `get` reads: a segment is at most 8 MiB and a manifest is far smaller.
 pub const OBJECT_MAX: u64 = 16 * 1024 * 1024;
@@ -70,11 +70,34 @@ pub trait Transport: Send {
     fn sweep_mailboxes(&self, now: SystemTime, age: Duration) -> Result<(), String>;
 }
 
-/// The transport for `url`, for the device `device`.
-pub fn open(url: &str, device: &str) -> Result<Box<dyn Transport>, String> {
+/// Who a transport acts for. A folder uses only the device's id; a relay signs its requests with these keys.
+pub struct Keys<'a> {
+    pub device: &'a Device,
+    /// Signs a relay's scope listing and manifest reads when present; the device key signs everything else.
+    pub owner: Option<&'a SignKey>,
+    /// Whether mailbox requests are signed: on the device that shows a pairing code, never on the one that answers.
+    pub opener: bool,
+}
+
+impl<'a> Keys<'a> {
+    /// An enrolled device's keys: its own and its owner's.
+    pub fn of(id: &'a Identity) -> Keys<'a> {
+        Keys {
+            device: &id.device,
+            owner: Some(&id.owner.sign),
+            opener: false,
+        }
+    }
+}
+
+/// The transport for `url`, acting for `keys`.
+pub fn open(url: &str, keys: &Keys) -> Result<Box<dyn Transport>, String> {
     if let Some(path) = url.strip_prefix("file://") {
         return if path.starts_with('/') {
-            Ok(Box::new(Folder::new(PathBuf::from(path), device)))
+            Ok(Box::new(Folder::new(
+                PathBuf::from(path),
+                &keys.device.id(),
+            )))
         } else {
             Err(format!("{url} is not an absolute path"))
         };
@@ -119,7 +142,7 @@ fn is_id(text: &str) -> bool {
 }
 
 /// A mailbox name: 1 to `max` characters of `[a-z0-9-]`.
-fn is_mailbox_name(text: &str, max: usize) -> bool {
+pub fn is_mailbox_name(text: &str, max: usize) -> bool {
     (1..=max).contains(&text.len())
         && text
             .bytes()
@@ -127,13 +150,13 @@ fn is_mailbox_name(text: &str, max: usize) -> bool {
 }
 
 /// A manifest number as its file name spells it: decimal from 1, no leading zero.
-fn manifest_number(name: &str) -> Option<u64> {
+pub fn manifest_number(name: &str) -> Option<u64> {
     let n = name.strip_suffix(".json")?.parse::<u64>().ok()?;
     (n > 0 && format!("{n}.json") == name).then_some(n)
 }
 
 /// A seq as its file name spells it: 20 digits from 1.
-fn segment_seq(name: &str) -> Option<u64> {
+pub fn segment_seq(name: &str) -> Option<u64> {
     let digits = name.strip_suffix(".seg")?;
     if digits.len() != 20 || !digits.bytes().all(|b| b.is_ascii_digit()) {
         return None;
@@ -899,19 +922,25 @@ mod tests {
     fn a_url_picks_its_transport_by_scheme() {
         let d = dir("open");
         let url = format!("file://{}", d.0.display());
-        let t = open(&url, A).unwrap();
+        let device = Device::from_seeds("a", &[1; 32], &[2; 32]);
+        let keys = Keys {
+            device: &device,
+            owner: None,
+            opener: false,
+        };
+        let t = open(&url, &keys).unwrap();
         assert!(!t.keeps());
         assert_eq!(t.create(&manifest_path(SCOPE, 1), b"m"), Put::Created);
         assert!(d.0.join(manifest_path(SCOPE, 1)).exists());
         let spaced = d.0.join("My Drive");
         fs::create_dir_all(&spaced).unwrap();
-        let t = open(&format!("file://{}", spaced.display()), A).unwrap();
+        let t = open(&format!("file://{}", spaced.display()), &keys).unwrap();
         assert_eq!(t.create(&manifest_path(SCOPE, 1), b"m"), Put::Created);
-        let relay = open("https://relay.example", A).err().unwrap();
+        let relay = open("https://relay.example", &keys).err().unwrap();
         assert_eq!(
             relay,
             "https transports are not supported yet; use a file:// folder"
         );
-        assert!(open("file://relative/path", A).is_err());
+        assert!(open("file://relative/path", &keys).is_err());
     }
 }

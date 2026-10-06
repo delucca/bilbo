@@ -361,6 +361,16 @@ pub fn verify_scope(id: &str, files: &[Vec<u8>]) -> Scope {
     scope
 }
 
+/// The secret-free checks on `bytes` as the version after `scope`'s valid ones, as `verify_scope` runs them on each
+/// version: what a relay checks before it takes a new version.
+pub fn verify_next(scope: &Scope, bytes: &[u8]) -> Result<Version, String> {
+    let n = scope.versions.len() as u64 + 1;
+    check(&scope.id, n, bytes, &scope.versions).map(|manifest| Version {
+        manifest,
+        bytes: bytes.to_vec(),
+    })
+}
+
 /// Who opens a version: a listed device through its entry, or the owner through the `owner` entry.
 pub enum Recipient<'a> {
     Device { id: String, secret: &'a BoxSecret },
@@ -1892,6 +1902,34 @@ mod tests {
         );
         let first = forge(&scope, 1, |m| m.prev = Some(hash::sha256_hex(b"other")));
         assert_eq!(invalid_n(&w.id, &[first]), Some(1));
+    }
+
+    #[test]
+    fn the_next_version_is_checked_as_verify_scope_checks_it() {
+        let w = world("verify_next");
+        let scope = w.scope();
+        let files = bytes_of(&scope);
+        for n in 1..files.len() {
+            let before = verify_scope(&w.id, &files[..n]);
+            let next = verify_next(&before, &files[n]).unwrap();
+            assert_eq!(next.bytes, files[n]);
+            assert_eq!(next.manifest.n, n as u64 + 1);
+        }
+        let none = verify_scope(&w.id, &[]);
+        assert_eq!(
+            verify_next(&none, &files[1]).err().as_deref(),
+            Some("n is 2, not the file's 1")
+        );
+        let first = verify_scope(&w.id, &files[..1]);
+        let other = Owner::derive(&[1; 16]);
+        let mut m = scope.versions[1].manifest.clone();
+        m.owner = keys::hex(&other.sign.public());
+        m.owner_box = keys::hex(&other.box_secret.public());
+        let (_, bytes) = signed(m, &other.sign);
+        assert_eq!(
+            verify_next(&first, &bytes).err().as_deref(),
+            Some("its owner is not version 1's")
+        );
     }
 
     #[test]

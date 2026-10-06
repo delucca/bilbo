@@ -10,7 +10,8 @@ use crate::host::swap;
 use crate::identity::keys::{self, Device, Identity, Owner};
 use crate::identity::manifest::{self, Context, Known, Outcome, Recipient};
 use crate::search::documents;
-use crate::sync::{scopes, transport};
+use crate::sync::scopes;
+use crate::sync::transport::{self, Keys};
 
 /// The step's detail when the device has no key.
 pub const NO_KEY: &str = "no device key; run bilbo device init in a terminal";
@@ -150,7 +151,7 @@ fn checks(plan: &SyncPlan, notes: &Path) -> (&'static str, String) {
     let mut lines = Vec::new();
     let mut failures = Vec::new();
     for (name, url) in &plan.scopes {
-        match reach(&id.device.id(), url) {
+        match reach(&id, url) {
             Ok(()) => {
                 let count = stored
                     .iter()
@@ -169,8 +170,8 @@ fn checks(plan: &SyncPlan, notes: &Path) -> (&'static str, String) {
 }
 
 /// Whether `url` has a client, and its folder exists and takes writes. Nothing is created.
-fn reach(device: &str, url: &str) -> Result<(), String> {
-    let transport = transport::open(url, device)?;
+fn reach(id: &Identity, url: &str) -> Result<(), String> {
+    let transport = transport::open(url, &Keys::of(id))?;
     let unreachable = |why: &str| format!("{url} is not reachable: {why}");
     transport.reachable().map_err(|why| unreachable(&why))?;
     match url.strip_prefix("file://") {
@@ -193,15 +194,9 @@ pub struct Inspected {
 }
 
 /// Lists the owner's scopes on `url`, for a folder that exists and answers; a folder that does not says nothing.
-pub fn inspect(
-    url: &str,
-    device: &str,
-    owner: &[u8; 32],
-    who: &Recipient,
-    name: &str,
-) -> Inspected {
+pub fn inspect(url: &str, keys: &Keys, owner: &[u8; 32], who: &Recipient, name: &str) -> Inspected {
     let mut seen = Inspected::default();
-    let Ok(transport) = transport::open(url, device) else {
+    let Ok(transport) = transport::open(url, keys) else {
         return seen;
     };
     if transport.reachable().is_err() {
@@ -360,7 +355,7 @@ fn create(
     let public = id.owner.sign.public();
     let blocked = inspect(
         &turned.url,
-        &id.device.id(),
+        &Keys::of(id),
         &public,
         &Recipient::device(&id.device),
         &turned.name,
@@ -386,7 +381,12 @@ fn copy(
     owner: Option<&Owner>,
     scope: &str,
 ) -> Result<(), String> {
-    let transport = transport::open(&turned.url, &id.device.id())?;
+    let keys = Keys {
+        device: &id.device,
+        owner: Some(owner.map_or(&id.owner.sign, |o| &o.sign)),
+        opener: false,
+    };
+    let transport = transport::open(&turned.url, &keys)?;
     let public = id.owner.sign.public();
     let who = match owner {
         Some(owner) => Recipient::Owner(&owner.box_secret),

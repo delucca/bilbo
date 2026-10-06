@@ -6,12 +6,12 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 /// The domains, one folder each under `src/`.
-const DOMAINS: [&str; 8] = [
-    "citation", "host", "identity", "library", "note", "search", "setup", "sync",
+const DOMAINS: [&str; 9] = [
+    "citation", "host", "identity", "library", "note", "relay", "search", "setup", "sync",
 ];
 
 /// The verbs, by path below `src/`: a file, or a folder (ending in `/`) whose files are all the verb's.
-const VERBS: [&str; 15] = [
+const VERBS: [&str; 16] = [
     "check.rs",
     "citation/cite.rs",
     "identity/device.rs",
@@ -22,6 +22,7 @@ const VERBS: [&str; 15] = [
     "note/restore.rs",
     "note/scope.rs",
     "note/watch.rs",
+    "relay/",
     "search/digest.rs",
     "search/index.rs",
     "search/recall.rs",
@@ -31,7 +32,7 @@ const VERBS: [&str; 15] = [
 
 /// Each crate and the only files under `src/` that may name it. `tests/common` also uses `sha2`, to write library
 /// files with a correct digest.
-const PLACEMENT: [(&str, &[&str]); 16] = [
+const PLACEMENT: [(&str, &[&str]); 17] = [
     ("cliclack", &["host/prompt.rs"]),
     (
         "libc",
@@ -51,6 +52,7 @@ const PLACEMENT: [(&str, &[&str]); 16] = [
     ("base64", &["identity/pake.rs", "sync/segment.rs"]),
     ("spake2", &["identity/pake.rs"]),
     ("rand_core", &["identity/pake.rs"]),
+    ("httparse", &["relay/http.rs"]),
 ];
 
 const PRINTS: [&str; 5] = ["print!(", "println!(", "eprint!(", "eprintln!(", "dbg!("];

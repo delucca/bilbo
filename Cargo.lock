@@ -36,6 +36,7 @@ dependencies = [
  "hkdf",
  "hpke",
  "htmd",
+ "httparse",
  "jiff",
  "libc",
  "markup5ever_rcdom",

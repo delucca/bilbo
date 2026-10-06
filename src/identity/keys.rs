@@ -113,6 +113,27 @@ pub fn owner_fingerprint(sign_public: &[u8; 32]) -> String {
         .join("-")
 }
 
+/// An owner fingerprint as a user types it, in any case and with or without its hyphens, in the form
+/// `owner_fingerprint` gives; `None` when it is not 24 base32 characters.
+pub fn parse_fingerprint(typed: &str) -> Option<String> {
+    let plain: Vec<u8> = typed
+        .bytes()
+        .filter(|b| *b != b'-')
+        .map(|b| b.to_ascii_lowercase())
+        .collect();
+    let base32 = plain.len() == 24
+        && plain
+            .iter()
+            .all(|b| b.is_ascii_lowercase() || (b'2'..=b'7').contains(b));
+    base32.then(|| {
+        plain
+            .chunks(4)
+            .map(|group| std::str::from_utf8(group).unwrap())
+            .collect::<Vec<_>>()
+            .join("-")
+    })
+}
+
 /// An Ed25519 signing key, wiped on drop.
 pub struct SignKey(SigningKey);
 
@@ -795,6 +816,32 @@ mod tests {
             owner_fingerprint(&owner.sign.public()),
             "yb4b-5aju-v6zb-x2nm-nc5x-ompf"
         );
+    }
+
+    #[test]
+    fn a_typed_fingerprint_reads_in_any_case_with_or_without_hyphens() {
+        let print = owner_fingerprint(&owner().sign.public());
+        for typed in [
+            print.clone(),
+            print.to_uppercase(),
+            print.replace('-', ""),
+            format!("-{}-", print.replace('-', "").to_uppercase()),
+        ] {
+            assert_eq!(
+                parse_fingerprint(&typed).as_deref(),
+                Some(print.as_str()),
+                "{typed}"
+            );
+        }
+        for bad in [
+            "",
+            "yb4b-5aju-v6zb-x2nm-nc5x-omp",
+            "yb4b-5aju-v6zb-x2nm-nc5x-ompff",
+            "yb4b-5aju-v6zb-x2nm-nc5x-omp1",
+            "yb4b 5aju v6zb x2nm nc5x ompf",
+        ] {
+            assert_eq!(parse_fingerprint(bad), None, "{bad}");
+        }
     }
 
     #[test]

@@ -1200,6 +1200,114 @@ impl Drop for Watcher {
     }
 }
 
+/// A `bilbo relay` child on `127.0.0.1:0` with a clean environment, its stderr lines collected.
+pub struct Relay {
+    child: Child,
+    lines: Arc<Mutex<Vec<String>>>,
+    reader: Option<JoinHandle<()>>,
+    pub port: u16,
+}
+
+impl Relay {
+    /// Starts `bilbo relay --data <data> --owner <owner>... --listen 127.0.0.1:0 <extra>` and waits for its startup
+    /// line, which names the port.
+    pub fn start(data: &Path, owners: &[&str], extra: &[&str]) -> Relay {
+        let mut args = vec![
+            "relay".to_string(),
+            "--data".into(),
+            data.display().to_string(),
+        ];
+        for owner in owners {
+            args.extend(["--owner".to_string(), owner.to_string()]);
+        }
+        args.extend(["--listen".to_string(), "127.0.0.1:0".into()]);
+        args.extend(extra.iter().map(|a| a.to_string()));
+        let mut child = Command::new(env!("CARGO_BIN_EXE_bilbo"))
+            .env_clear()
+            .args(&args)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let stderr = child.stderr.take().unwrap();
+        let lines = Arc::new(Mutex::new(Vec::new()));
+        let sink = Arc::clone(&lines);
+        let reader = std::thread::spawn(move || {
+            for line in BufReader::new(stderr).lines().map_while(Result::ok) {
+                sink.lock().unwrap().push(line);
+            }
+        });
+        let mut relay = Relay {
+            child,
+            lines,
+            reader: Some(reader),
+            port: 0,
+        };
+        let prefix = "bilbo: relay listening on http://127.0.0.1:";
+        let deadline = std::time::Instant::now() + Duration::from_secs(40);
+        relay.port = loop {
+            if let Some(port) = relay
+                .lines()
+                .first()
+                .and_then(|l| l.strip_prefix(prefix))
+                .and_then(|p| p.parse().ok())
+            {
+                break port;
+            }
+            assert!(
+                relay.child.try_wait().unwrap().is_none(),
+                "the relay exited; stderr: {:#?}",
+                relay.lines()
+            );
+            assert!(
+                std::time::Instant::now() < deadline,
+                "no startup line; stderr: {:#?}",
+                relay.lines()
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        };
+        relay
+    }
+
+    /// `http://127.0.0.1:<port>`.
+    pub fn url(&self) -> String {
+        format!("http://127.0.0.1:{}", self.port)
+    }
+
+    pub fn lines(&self) -> Vec<String> {
+        self.lines.lock().unwrap().clone()
+    }
+
+    /// Waits until a stderr line contains `needle`.
+    pub fn wait_for(&self, needle: &str) {
+        let deadline = std::time::Instant::now() + Duration::from_secs(40);
+        while !self.lines().iter().any(|l| l.contains(needle)) {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "no stderr line with {needle:?}; stderr: {:#?}",
+                self.lines()
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    /// Sends SIGKILL and reaps the child.
+    pub fn kill(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+impl Drop for Relay {
+    fn drop(&mut self) {
+        self.kill();
+        if let Some(reader) = self.reader.take() {
+            let _ = reader.join();
+        }
+    }
+}
+
 /// `At` as the log writes it, `days` days before now.
 pub fn days_ago(days: i64) -> String {
     let at = jiff::Zoned::now()

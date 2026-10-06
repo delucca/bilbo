@@ -567,7 +567,7 @@ fn init_scopes(cx: &Cx, id: &Identity) -> Result<(Vec<String>, bool), Failure> {
 /// a scope that cannot be attributed, or it answers but cannot be listed. A transport that cannot be reached says
 /// nothing, so a scope can still be created before it is.
 fn minting_blocked(id: &Identity, url: &str, name: &str) -> Option<String> {
-    let t = transport::open(url, &id.device.id()).ok()?;
+    let t = transport::open(url, &transport::Keys::of(id)).ok()?;
     t.reachable().ok()?;
     let owner = id.owner.sign.public();
     let listing = match scopes::list(&*t, &owner, &Recipient::device(&id.device)) {
@@ -786,7 +786,12 @@ fn fetch(
             continue;
         }
         let listing = listings.entry(s.sync.clone()).or_insert_with(|| {
-            let read = transport::open(&s.sync, &id.device.id()).and_then(|t| {
+            let keys = transport::Keys {
+                device: &id.device,
+                owner: Some(&owner.sign),
+                opener: false,
+            };
+            let read = transport::open(&s.sync, &keys).and_then(|t| {
                 scopes::list(
                     &*t,
                     &owner.sign.public(),
