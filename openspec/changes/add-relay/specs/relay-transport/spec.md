@@ -35,7 +35,7 @@ The transport SHALL NOT follow a redirect. A 3xx answer SHALL be reported as `re
 - **THEN** sync reports the redirect and sends nothing to `other.example`
 
 ### Requirement: Signed requests from the device
-The transport SHALL sign every request under `/v1/scopes/` with the device's Ed25519 key as the `relay-api` spec describes, with a fresh random nonce per request, and the first message of a pairing nameplate the same way. It SHALL sign with the owner key only to list the owner's scopes, to read a scope's manifests during recovery, or to create a manifest that does not list the device yet.
+The transport SHALL sign every request under `/v1/scopes/` as the `relay-api` spec describes, with a fresh random nonce per request: with the owner key, when the device holds it, to list the owner's scopes and to read a scope's manifests, and with the device's Ed25519 key for every other request, manifest creates included. On the device that shows a pairing code, it SHALL sign every request to that nameplate with the device key, the first message included; on the device that answers the code, it SHALL sign no mailbox request.
 
 #### Scenario: Every segment request is signed
 - **WHEN** the transport creates, lists and reads segments
@@ -44,6 +44,14 @@ The transport SHALL sign every request under `/v1/scopes/` with the device's Ed2
 #### Scenario: Two identical reads
 - **WHEN** the transport reads the same segment twice
 - **THEN** the two requests carry different nonces, and neither is refused as a replay
+
+#### Scenario: Manifests are read as the owner
+- **WHEN** the watcher of an enrolled device lists the owner's scopes on a relay and reads their manifests, among them a scope whose latest manifest does not list the device
+- **THEN** each of those requests carries the owner's public key in `Bilbo-Key`, and none is refused 403
+
+#### Scenario: The new device answers unsigned
+- **WHEN** a device answers a pairing code through a relay
+- **THEN** its `b.msg` and its polls of the nameplate carry no `Bilbo-Signature`, while every request of the device that showed the code to that nameplate carries one
 
 ### Requirement: Clock skew
 When the relay answers 401 `clock`, the transport SHALL retry the request once with a fresh nonce, signed with the relay's time from the answer's `Bilbo-Time`, and SHALL keep that offset for its later requests to the relay in the same process. When the retry is refused too, it SHALL report `this device's clock is <n> s off the relay's; fix the clock`.
@@ -57,7 +65,7 @@ When the relay answers 401 `clock`, the transport SHALL retry the request once w
 - **THEN** sync reports the clock message with the measured offset
 
 ### Requirement: Refusals reach the user
-The transport SHALL turn every failed request into one message naming the relay URL, and for a scope its name, which `bilbo sync` and the watch log show. A 200 to a create of an existing identical object SHALL count as created. A 502, 503 or 504 without `Bilbo-Time` SHALL be reported as `relay <url> unreachable: the proxy answered <status>`, and any other response without `Bilbo-Time` as `<url> is not a bilbo relay`. A failure SHALL leave the local store unchanged.
+The transport SHALL turn every failed request into one message naming the relay URL. The watch log SHALL print it after `sync <name>: `, which names the scope, and `bilbo sync` SHALL show it for the scope. A 200 to a create of an existing identical object SHALL count as created. A 502, 503 or 504 without `Bilbo-Time` SHALL be reported as `relay <url> unreachable: the proxy answered <status>`, and any other response without `Bilbo-Time` as `<url> is not a bilbo relay`. A failure SHALL leave the local store unchanged.
 
 #### Scenario: The relay does not admit the owner
 - **WHEN** a device creates manifest 1 of `personal` and the relay answers 403 `not-admitted`
@@ -65,15 +73,15 @@ The transport SHALL turn every failed request into one message naming the relay 
 
 #### Scenario: A revoked device
 - **WHEN** a device's requests on `personal` are answered 403 `not-admitted` after a manifest dropped it
-- **THEN** sync reports `relay <url> does not admit this device for scope personal`
+- **THEN** the watch log prints `sync personal: relay <url> does not admit this device`
 
 #### Scenario: A scope the relay found invalid
 - **WHEN** the relay answers 403 `invalid` on `personal`
-- **THEN** sync reports `relay <url> holds an invalid copy of scope personal; repair the relay's data folder`
+- **THEN** the watch log prints `sync personal: relay <url> holds an invalid copy of this scope; repair the relay's data folder`
 
 #### Scenario: A full scope
 - **WHEN** the relay answers 507 `quota` to a segment of `personal`
-- **THEN** sync reports `relay <url> is full for scope personal`, and retries later
+- **THEN** the watch log prints `sync personal: relay <url> is full`, and the push is retried later
 
 #### Scenario: The relay is down behind its proxy
 - **WHEN** `tailscale serve` answers 502 because the relay process is stopped
