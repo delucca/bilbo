@@ -2405,6 +2405,28 @@ mod tests {
     }
 
     #[test]
+    fn of_two_relay_scopes_with_one_name_the_one_with_more_devices_is_copied() {
+        let w = world("relay_two_names");
+        let relay = relay_for(&w);
+        let url = relay.url();
+        w.config(&format!("scope.personal.sync = {url}\n"));
+        let src = world("relay_two_names_src");
+        let big = scope(&src, &bagend(), "personal", &url);
+        join(&src, &rivendell());
+        join(&src, &identity(0, "frodo", 9));
+        let small_src = world("relay_two_names_small");
+        let small = scope(&small_src, &bagend(), "personal", &url);
+        publish_to_relay(&src, &big, &url);
+        publish_to_relay(&small_src, &small, &url);
+        let (out, _) = recovered(&w, "rivendell-3");
+        assert_eq!(w.scope_ids(), std::slice::from_ref(&big));
+        assert!(out.lines[2].starts_with(&format!("scope personal updated: {big}")));
+        assert_eq!(out.warnings.len(), 1);
+        assert!(out.warnings[0].contains(&big) && out.warnings[0].contains(&small));
+        assert!(out.warnings[0].contains(&format!("took {big}")));
+    }
+
+    #[test]
     fn only_the_relay_scopes_the_config_names_are_copied() {
         let w = world("relay_only_named");
         let relay = relay_for(&w);
