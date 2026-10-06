@@ -82,11 +82,7 @@ impl Data {
             }
             Ok(_) => {}
             Err(e) if e.kind() == io::ErrorKind::NotFound => {
-                DirBuilder::new()
-                    .recursive(true)
-                    .mode(FOLDER_MODE)
-                    .create(root)
-                    .map_err(|e| format!("cannot create {}: {e}", root.display()))?;
+                make_root(root)?;
             }
             Err(e) => return Err(format!("cannot read {}: {e}", root.display())),
         }
@@ -255,7 +251,7 @@ impl Staged {
     }
 
     /// Links the body to `path` of the layout in `data`: creates and flushes each missing folder, refuses a name that
-    /// is taken (`Same` or `Other` by its bytes), and flushes the parent before it returns `New`.
+    /// is taken (`Same` or `Other` by its bytes, with nothing flushed), and flushes the parent before it returns `New`.
     pub fn link(self, data: &Data, path: &str) -> Created {
         if !is_layout(path) {
             return Created::Failed(format!("{path} is not in the layout"));
@@ -270,19 +266,20 @@ impl Staged {
         data.make_folders(parent)?;
         let folder = target.parent().unwrap_or(&data.root);
         data.step(Step::Link)?;
-        let created = match fs::hard_link(&self.path, target) {
-            Ok(()) => Created::New,
+        match fs::hard_link(&self.path, target) {
+            Ok(()) => {
+                data.sync_folder(Step::SyncParent, folder)?;
+                Ok(Created::New)
+            }
             Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {
-                if fs::read(target)? == self.bytes()? {
+                Ok(if fs::read(target)? == self.bytes()? {
                     Created::Same
                 } else {
                     Created::Other
-                }
+                })
             }
-            Err(e) => return Err(e),
-        };
-        data.sync_folder(Step::SyncParent, folder)?;
-        Ok(created)
+            Err(e) => Err(e),
+        }
     }
 }
 
@@ -290,6 +287,25 @@ impl Drop for Staged {
     fn drop(&mut self) {
         let _ = std::fs::remove_file(&self.path);
     }
+}
+
+/// Creates `root` and every missing folder above it with mode 0700, top down, flushing each with its parent.
+fn make_root(root: &Path) -> Result<(), String> {
+    let mut missing: Vec<&Path> = root
+        .ancestors()
+        .take_while(|dir| !dir.as_os_str().is_empty() && !dir.exists())
+        .collect();
+    missing.reverse();
+    for dir in missing {
+        let made = || -> io::Result<()> {
+            DirBuilder::new().mode(FOLDER_MODE).create(dir)?;
+            File::open(dir)?.sync_all()?;
+            let up = dir.parent().filter(|up| !up.as_os_str().is_empty());
+            File::open(up.unwrap_or(Path::new(".")))?.sync_all()
+        };
+        made().map_err(|e| format!("cannot create {}: {e}", dir.display()))?;
+    }
+    Ok(())
 }
 
 /// Whether `path` is an object of the transport layout.
@@ -489,6 +505,28 @@ mod tests {
     }
 
     /// Every failing step leaves nothing under `.tmp/` and no object, and `Full` kinds are told apart.
+    #[test]
+    fn a_taken_name_flushes_nothing() {
+        let d = dir("taken");
+        let data = open(&d);
+        assert_eq!(stage(&data, b"body").link(&data, SEGMENT), Created::New);
+        let seen = fail_at(&data, Step::SyncParent, 1, io::ErrorKind::PermissionDenied);
+        assert_eq!(stage(&data, b"body").link(&data, SEGMENT), Created::Same);
+        assert_eq!(stage(&data, b"other").link(&data, SEGMENT), Created::Other);
+        assert!(!seen.lock().unwrap().contains(&Step::SyncParent));
+    }
+
+    #[test]
+    fn a_missing_data_folder_is_made_with_each_missing_parent_at_0700() {
+        let d = dir("nested");
+        let root = d.0.join("a").join("b").join("data");
+        drop(Data::open(&root).unwrap());
+        for folder in [d.0.join("a"), d.0.join("a").join("b"), root] {
+            let mode = fs::metadata(&folder).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o700, "{}", folder.display());
+        }
+    }
+
     #[test]
     fn a_failure_at_any_step_cleans_up() {
         let steps = [

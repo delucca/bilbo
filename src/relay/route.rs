@@ -271,6 +271,14 @@ impl Drop for Booked<'_> {
     }
 }
 
+/// What a request showed of its key: whether the key it claims is one the relay knows, and whether its signature
+/// verified under such a key.
+#[derive(Default)]
+struct Shown {
+    claimed: bool,
+    verified: bool,
+}
+
 fn bad_request() -> Response {
     Response::error(400, "bad-request")
 }
@@ -343,7 +351,10 @@ impl State<'_> {
             return Ok(());
         }
         let length = request.length.unwrap_or(0);
-        let claimed = signed.as_ref().map(|s| &s.key);
+        let claimed = signed
+            .as_ref()
+            .map(|s| &s.key)
+            .filter(|key| self.knows(key));
         let scope = match route {
             Route::Manifest { scope, .. } => {
                 if length > admit::MANIFEST_MAX {
@@ -370,7 +381,11 @@ impl State<'_> {
             }
             _ => return Ok(()),
         };
-        // Whether the key may write is judged after its signature: a refusal for the scope's standing waits too.
+        // Only a key the relay knows books room before its signature is checked, and a refusal for the scope's
+        // standing waits for the signature too.
+        if claimed.is_none() {
+            return Ok(());
+        }
         match self.scopes.reserve(&self.flags, scope, length) {
             Ok(booked) => BOOKED.set(Some((scope.to_string(), booked))),
             Err(Refusal::Quota) => return Err(refusal(Refusal::Quota)),
@@ -379,20 +394,21 @@ impl State<'_> {
         Ok(())
     }
 
-    /// Logs a 500 or 507, and a 4xx other than 404 when a key the relay knows verified, or counts the 4xx.
-    fn settle(&self, response: Response, request: &Request, known: bool) -> Response {
+    /// Logs a 500, a 507 of a key the relay knows and a 4xx other than 404 of one that verified; counts the rest.
+    fn settle(&self, response: Response, request: &Request, seen: &Shown) -> Response {
         let status = response.status;
-        let counted = (400..500).contains(&status) && status != 404;
-        if counted && !known {
-            self.refusals.count(response.reason(), self.now());
-        } else if counted || status == 500 || status == 507 {
+        let refused = (400..500).contains(&status) && status != 404;
+        let logged = status == 500 || (status == 507 && seen.claimed) || (refused && seen.verified);
+        if logged {
             let what = Route::parse(&request.target).map_or_else(|| "request".into(), |r| r.what());
-            let word = if counted { "refused" } else { "failed" };
+            let word = if refused { "refused" } else { "failed" };
             (self.log)(&format!(
                 "{word} {status} {} {} {what}",
                 response.reason(),
                 request.method
             ));
+        } else if refused || status == 507 {
+            self.refusals.count(response.reason(), self.now());
         }
         response
     }
@@ -406,7 +422,7 @@ impl State<'_> {
         &self,
         request: &Request,
         body: &mut dyn Read,
-        known: &mut bool,
+        seen: &mut Shown,
     ) -> Result<Response, Response> {
         let now = self.now();
         let route = Route::parse(&request.target).ok_or_else(bad_request)?;
@@ -422,6 +438,9 @@ impl State<'_> {
             return Ok(json("{\"relay\":\"bilbo\",\"api\":1}".into()));
         }
         let signed = signature(request)?;
+        if let Some(signed) = &signed {
+            seen.claimed = self.knows(&signed.key);
+        }
         let staged = if put {
             Some(
                 self.data
@@ -445,14 +464,16 @@ impl State<'_> {
                         sign::Bad::Signature => unsigned(),
                     },
                 )?;
-                match self.nonces.accept(&signed.key, &signed.nonce, now) {
-                    Ok(()) => {}
-                    Err(Reject::Replayed) => return Err(Response::error(401, "replay")),
-                    Err(Reject::Full) => {
-                        return Err(Response::error(503, "busy").with("Retry-After", BUSY));
+                if seen.claimed {
+                    match self.nonces.accept(&signed.key, &signed.nonce, now) {
+                        Ok(()) => {}
+                        Err(Reject::Replayed) => return Err(Response::error(401, "replay")),
+                        Err(Reject::Full) => {
+                            return Err(Response::error(503, "busy").with("Retry-After", BUSY));
+                        }
                     }
                 }
-                *known = self.knows(&signed.key);
+                seen.verified = seen.claimed;
                 Some(signed.key)
             }
             None => None,
@@ -606,12 +627,13 @@ impl State<'_> {
             }
             Route::Message { nameplate, name } => {
                 let at = Message { nameplate, name };
+                let signer = key.filter(|_| seen.verified);
                 match staged {
                     None => {
                         self.mailbox.head(
                             &self.scopes,
                             &at,
-                            key.as_ref(),
+                            signer.as_ref(),
                             request.peer,
                             None,
                             now,
@@ -620,7 +642,9 @@ impl State<'_> {
                     }
                     Some(staged) => {
                         let size = staged.length();
-                        let response = self.mailbox.put(&self.data, &at, key.as_ref(), staged, now);
+                        let response =
+                            self.mailbox
+                                .put(&self.data, &at, signer.as_ref(), staged, now);
                         if response.status == 201 {
                             (self.log)(&format!("mailbox {size}"));
                         }
@@ -694,16 +718,22 @@ impl Handler for State<'_> {
     fn head(&self, request: &Request) -> Head {
         match self.check_head(request, self.now()) {
             Ok(()) => Head::Read,
-            Err(response) => Head::Refuse(self.settle(response, request, false)),
+            Err(response) => {
+                let seen = Shown {
+                    claimed: response.status == 507,
+                    verified: false,
+                };
+                Head::Refuse(self.settle(response, request, &seen))
+            }
         }
     }
 
     fn answer(&self, request: &Request, body: &mut dyn Read) -> Response {
-        let mut known = false;
+        let mut seen = Shown::default();
         let response = self
-            .respond(request, body, &mut known)
+            .respond(request, body, &mut seen)
             .unwrap_or_else(|refusal| refusal);
-        self.settle(response, request, known)
+        self.settle(response, request, &seen)
     }
 
     fn refused(&self, status: u16, reason: &str) {
@@ -1424,9 +1454,14 @@ mod tests {
         let target = "/v1/pair/42/a.msg";
         let headers = own(sign::headers(key, "PUT", target, rig.now(), b"hello").unwrap());
         assert_eq!(rig.send("PUT", target, &headers, b"hello").status, 201);
+        rig.advance(10);
+        let again = rig.send("PUT", target, &headers, b"hello");
+        assert_eq!((again.status, again.error().as_str()), (401, "replay"));
+        assert_eq!(rig.send("GET", target, &[], b"").body, b"hello");
         rig.advance(31 * 60);
         let again = rig.send("PUT", target, &headers, b"hello");
         assert_eq!((again.status, again.error().as_str()), (401, "clock"));
+        assert_eq!(rig.send("GET", target, &[], b"").status, 404);
     }
 
     #[test]
@@ -1634,10 +1669,14 @@ mod tests {
         let reply = rig.put(&w.rivendell.device.sign, &w.target(2), &bytes);
         assert_eq!((reply.status, reply.error().as_str()), (422, "manifest"));
         let reply = rig.put(&nobody(), &w.target(2), &bytes);
+        assert_eq!((reply.status, reply.error().as_str()), (422, "manifest"));
+        let reply = rig.put(&nobody(), &w.target(2), &w.files[1]);
         assert_eq!(
             (reply.status, reply.error().as_str()),
             (403, "not-admitted")
         );
+        let reply = rig.put(&w.bagend.device.sign, &w.target(2), &w.files[1]);
+        assert_eq!(reply.status, 201);
     }
 
     #[test]
@@ -1949,6 +1988,98 @@ mod tests {
 
     fn json_of(response: &Response) -> Value {
         serde_json::from_slice(&response.body).unwrap()
+    }
+
+    #[test]
+    fn a_strangers_valid_signature_records_no_nonce() {
+        let w = world("stranger_nonce", 10, 20);
+        let held = BTreeMap::from([(w.id.clone(), w.held(1, &[]))]);
+        let relay = Direct::new("stranger_nonce", &[&w.owner], held);
+        for seed in 1..=5u8 {
+            let key = SignKey::from_seed(&[seed; 32]);
+            let reply = relay.get(Some(&key), &url(&w, "devices/"), "127.0.0.1");
+            assert_eq!(reply.status, 403);
+        }
+        let recorded = |relay: &Direct| relay.state.nonces.seen.lock().unwrap().at.len();
+        assert_eq!(recorded(&relay), 0);
+        let key = &w.rivendell.device.sign;
+        assert_eq!(
+            relay
+                .get(Some(key), &url(&w, "devices/"), "127.0.0.1")
+                .status,
+            200
+        );
+        assert_eq!(recorded(&relay), 1);
+    }
+
+    #[test]
+    fn a_stranger_signing_its_mailbox_polls_is_counted() {
+        let w = world("signed_polls", 10, 20);
+        let held = BTreeMap::from([(w.id.clone(), w.held(1, &[]))]);
+        let relay = Direct::new("signed_polls", &[&w.owner], held);
+        let stranger = nobody();
+        for nameplate in 1..=4 {
+            let target = format!("/v1/pair/{nameplate}/b.msg");
+            assert_eq!(relay.get(Some(&stranger), &target, "10.0.0.3").status, 404);
+        }
+        let fifth = relay.get(Some(&stranger), "/v1/pair/5/b.msg", "10.0.0.3");
+        assert_eq!((fifth.status, reason_of(&fifth).as_str()), (429, "rate"));
+        let key = &w.rivendell.device.sign;
+        for nameplate in 1..=8 {
+            let target = format!("/v1/pair/{nameplate}/b.msg");
+            assert_eq!(relay.get(Some(key), &target, "10.0.0.3").status, 404);
+        }
+    }
+
+    #[test]
+    fn an_unverified_put_books_nothing_and_a_strangers_507_is_counted() {
+        let w = world("unverified_put", 10, 20);
+        let held = BTreeMap::from([(w.id.clone(), w.held(1, &[]))]);
+        let relay = Direct::with("unverified_put", &[&w.owner], held, |f| f.max_scope_mb = 1);
+        let body = vec![1u8; 600_000];
+        let target = w.segment(&w.rivendell, 1);
+        let reserved = || {
+            relay
+                .state
+                .scopes
+                .get(&w.id)
+                .unwrap()
+                .lock()
+                .unwrap()
+                .reserved
+        };
+        let stranger = nobody();
+        for _ in 0..3 {
+            let request = relay.request("PUT", &target, Some(&stranger), &body, "127.0.0.1");
+            assert!(matches!(relay.state.head(&request), Head::Read));
+            assert_eq!(reserved(), 0);
+            relay.state.finish();
+        }
+        let request = relay.request("PUT", &target, Some(&stranger), &body, "127.0.0.1");
+        let shown = Shown::default();
+        relay
+            .state
+            .settle(Response::error(507, "quota"), &request, &shown);
+        assert!(relay.lines().is_empty());
+        tick(&relay.state, T0 + 60);
+        assert_eq!(
+            relay.lines(),
+            ["refused 1 other requests in the last minute: quota 1"]
+        );
+        let shown = Shown {
+            claimed: true,
+            verified: false,
+        };
+        relay
+            .state
+            .settle(Response::error(507, "quota"), &request, &shown);
+        assert_eq!(relay.lines().len(), 2);
+        assert!(relay.lines()[1].starts_with("failed 507 quota PUT segment"));
+        let key = &w.rivendell.device.sign;
+        let own = relay.request("PUT", &target, Some(key), &body, "127.0.0.1");
+        assert!(matches!(relay.state.head(&own), Head::Read));
+        assert_eq!(reserved(), 600_000);
+        relay.state.finish();
     }
 
     #[test]
