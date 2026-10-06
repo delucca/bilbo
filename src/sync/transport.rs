@@ -147,6 +147,12 @@ fn is_id(text: &str) -> bool {
             .all(|b| b.is_ascii_lowercase() || (b'2'..=b'7').contains(&b))
 }
 
+/// The longest nameplate of the layout.
+pub const NAMEPLATE_MAX: usize = 64;
+
+/// The longest message name of the layout.
+pub const MESSAGE_NAME_MAX: usize = 16;
+
 /// A mailbox name: 1 to `max` characters of `[a-z0-9-]`.
 pub fn is_mailbox_name(text: &str, max: usize) -> bool {
     (1..=max).contains(&text.len())
@@ -185,9 +191,9 @@ fn parse(path: &str) -> Option<Object<'_>> {
         ["scopes", scope, "devices", device, name] if is_id(scope) && is_id(device) => {
             segment_seq(name).map(|_| Object::Segment(device))
         }
-        ["pair", nameplate, name] if is_mailbox_name(nameplate, 64) => name
+        ["pair", nameplate, name] if is_mailbox_name(nameplate, NAMEPLATE_MAX) => name
             .strip_suffix(".msg")
-            .filter(|msg| is_mailbox_name(msg, 16))
+            .filter(|msg| is_mailbox_name(msg, MESSAGE_NAME_MAX))
             .map(|_| Object::Message),
         _ => None,
     }
@@ -497,7 +503,7 @@ impl Transport for Folder {
         self.check_root()?;
         let mut folders = Vec::new();
         for nameplate in self.names("pair", |k| k.is_dir())? {
-            if is_mailbox_name(&nameplate, 64) {
+            if is_mailbox_name(&nameplate, NAMEPLATE_MAX) {
                 folders.push(format!("pair/{nameplate}"));
             }
         }
@@ -529,7 +535,7 @@ impl Transport for Folder {
     }
 
     fn remove_mailbox(&self, nameplate: &str) -> Result<(), String> {
-        if !is_mailbox_name(nameplate, 64) {
+        if !is_mailbox_name(nameplate, NAMEPLATE_MAX) {
             return Err(format!("{nameplate} is not a nameplate"));
         }
         self.check_root()?;
@@ -544,7 +550,7 @@ impl Transport for Folder {
 
     fn sweep_mailboxes(&self, now: SystemTime, age: Duration) -> Result<(), String> {
         for nameplate in self.names("pair", |k| k.is_dir())? {
-            if !is_mailbox_name(&nameplate, 64) {
+            if !is_mailbox_name(&nameplate, NAMEPLATE_MAX) {
                 continue;
             }
             let first = self.root.join("pair").join(&nameplate).join("a.msg");

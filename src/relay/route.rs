@@ -31,10 +31,6 @@ const BUSY: &str = "5";
 /// How long the 4xx refusals counted by `Refusals` wait for their line, in seconds.
 const MINUTE: u64 = 60;
 
-/// The longest nameplate and message name of the layout.
-const NAMEPLATE_MAX: usize = 64;
-const MESSAGE_MAX: usize = 16;
-
 /// The nonces of signed requests accepted in the last 600 seconds, per key, at most 100,000.
 #[derive(Default)]
 pub struct Nonces {
@@ -173,7 +169,7 @@ impl<'a> Route<'a> {
             }
             let after = match query {
                 None => 0,
-                Some(query) => decimal(query.strip_prefix("after=")?)?,
+                Some(query) => sign::decimal(query.strip_prefix("after=")?)?,
             };
             return Some(Route::Folder {
                 scope,
@@ -203,9 +199,11 @@ impl<'a> Route<'a> {
                 let seq = transport::segment_seq(name)?;
                 Some(Route::Segment { scope, device, seq })
             }
-            ["pair", nameplate, file] if transport::is_mailbox_name(nameplate, NAMEPLATE_MAX) => {
+            ["pair", nameplate, file]
+                if transport::is_mailbox_name(nameplate, transport::NAMEPLATE_MAX) =>
+            {
                 let name = file.strip_suffix(".msg")?;
-                transport::is_mailbox_name(name, MESSAGE_MAX)
+                transport::is_mailbox_name(name, transport::MESSAGE_NAME_MAX)
                     .then_some(Route::Message { nameplate, name })
             }
             _ => None,
@@ -236,17 +234,6 @@ impl<'a> Route<'a> {
             Route::Message { .. } => "mailbox".into(),
         }
     }
-}
-
-/// Plain decimal digits with no sign and no leading zero.
-fn decimal(text: &str) -> Option<u64> {
-    if text.is_empty()
-        || !text.bytes().all(|b| b.is_ascii_digit())
-        || (text.len() > 1 && text.starts_with('0'))
-    {
-        return None;
-    }
-    text.parse().ok()
 }
 
 /// A body booked against its scope's cap by `head`, given back unless a create took it over.
@@ -313,7 +300,8 @@ fn reason_of(response: &Response) -> String {
     response.reason().to_string()
 }
 
-/// A request's signature headers. A header given twice is a bad signature.
+/// A request's signature headers. A header given twice is a bad signature, which `http` already answers 400; the
+/// check backs the tests that call the handler directly.
 fn signature(request: &Request) -> Result<Option<sign::Signed>, Response> {
     let names = [sign::KEY, sign::TIME, sign::NONCE, sign::SIGNATURE];
     let twice = names
@@ -327,7 +315,7 @@ fn signature(request: &Request) -> Result<Option<sign::Signed>, Response> {
 
 impl State<'_> {
     /// The checks that need no body.
-    fn check_head(&self, request: &Request, now: u64) -> Result<(), Response> {
+    fn check_head(&self, request: &Request, now: u64, seen: &mut Shown) -> Result<(), Response> {
         BOOKED.take();
         let route = Route::parse(&request.target).ok_or_else(bad_request)?;
         let put = match request.method.as_str() {
@@ -356,6 +344,7 @@ impl State<'_> {
             .as_ref()
             .map(|s| &s.key)
             .filter(|key| self.knows(key));
+        seen.claimed = claimed.is_some();
         let scope = match route {
             Route::Manifest { scope, .. } => {
                 if length > admit::MANIFEST_MAX {
@@ -465,6 +454,7 @@ impl State<'_> {
                         sign::Bad::Signature => unsigned(),
                     },
                 )?;
+                seen.verified = seen.claimed;
                 if seen.claimed {
                     match self.nonces.accept(&signed.key, &signed.nonce, now) {
                         Ok(()) => {}
@@ -474,7 +464,6 @@ impl State<'_> {
                         }
                     }
                 }
-                seen.verified = seen.claimed;
                 Some(signed.key)
             }
             None => None,
@@ -717,15 +706,10 @@ impl Handler for State<'_> {
     }
 
     fn head(&self, request: &Request) -> Head {
-        match self.check_head(request, self.now()) {
+        let mut seen = Shown::default();
+        match self.check_head(request, self.now(), &mut seen) {
             Ok(()) => Head::Read,
-            Err(response) => {
-                let seen = Shown {
-                    claimed: response.status == 507,
-                    verified: false,
-                };
-                Head::Refuse(self.settle(response, request, &seen))
-            }
+            Err(response) => Head::Refuse(self.settle(response, request, &seen)),
         }
     }
 
@@ -2081,6 +2065,60 @@ mod tests {
         assert!(matches!(relay.state.head(&own), Head::Read));
         assert_eq!(reserved(), 600_000);
         relay.state.finish();
+    }
+
+    #[test]
+    fn a_replay_of_a_known_key_gets_its_own_line() {
+        let w = world("replay_line", 10, 20);
+        let held = BTreeMap::from([(w.id.clone(), w.held(1, &[]))]);
+        let relay = Direct::new("replay_line", &[&w.owner], held);
+        let target = url(&w, "devices/");
+        let request = relay.request(
+            "GET",
+            &target,
+            Some(&w.rivendell.device.sign),
+            b"",
+            "127.0.0.1",
+        );
+        assert_eq!(relay.send(&request, b"").status, 200);
+        assert_eq!(relay.send(&request, b"").status, 401);
+        assert_eq!(
+            relay.lines(),
+            [format!("refused 401 replay GET devices {}", w.id)]
+        );
+        let stranger = relay.request("GET", &target, Some(&nobody()), b"", "127.0.0.1");
+        assert_eq!(relay.send(&stranger, b"").status, 403);
+        assert_eq!(relay.send(&stranger, b"").status, 403);
+        assert_eq!(relay.lines().len(), 1);
+    }
+
+    #[test]
+    fn a_strangers_mailbox_507_is_counted_not_logged() {
+        let w = world("mailbox_507", 10, 20);
+        let held = BTreeMap::from([(w.id.clone(), w.held(1, &[]))]);
+        let relay = Direct::new("mailbox_507", &[&w.owner], held);
+        let key = &w.rivendell.device.sign;
+        for name in ["a", "b", "c", "d", "e", "f", "g", "h"] {
+            let target = format!("/v1/pair/np-zzqx/{name}.msg");
+            let request = relay.request("PUT", &target, Some(key), b"x", "127.0.0.1");
+            assert_eq!(relay.send(&request, b"x").status, 201, "{name}");
+        }
+        let target = "/v1/pair/np-zzqx/i.msg";
+        let stranger = relay.request("PUT", target, None, b"x", "10.0.0.4");
+        let full = relay.send(&stranger, b"x");
+        assert_eq!((full.status, reason_of(&full).as_str()), (507, "quota"));
+        assert!(relay.lines().iter().all(|l| !l.starts_with("failed")));
+        tick(&relay.state, T0 + 60);
+        assert_eq!(
+            relay.lines().last().unwrap(),
+            "refused 1 other requests in the last minute: quota 1"
+        );
+        let own = relay.request("PUT", target, Some(key), b"x", "127.0.0.1");
+        assert_eq!(relay.send(&own, b"x").status, 507);
+        assert_eq!(
+            relay.lines().last().unwrap(),
+            "failed 507 quota PUT mailbox"
+        );
     }
 
     #[test]

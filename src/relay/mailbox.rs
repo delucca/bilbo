@@ -12,11 +12,8 @@ use super::http::Response;
 use super::store::{Created, Data, Staged};
 use crate::sync::transport;
 
-/// The longest nameplate of the layout.
-const NAMEPLATE_MAX: usize = 64;
-
 /// The largest message, in bytes.
-const MESSAGE_MAX: u64 = 4096;
+const MESSAGE_BYTES: u64 = 4096;
 
 /// The most messages a nameplate holds.
 const MESSAGES: usize = 8;
@@ -181,7 +178,7 @@ impl Mailbox {
             let Some(name) = entry.file_name().to_str().map(str::to_string) else {
                 continue;
             };
-            if !transport::is_mailbox_name(&name, NAMEPLATE_MAX)
+            if !transport::is_mailbox_name(&name, transport::NAMEPLATE_MAX)
                 || !entry.file_type().is_ok_and(|t| t.is_dir())
             {
                 continue;
@@ -235,7 +232,7 @@ impl Mailbox {
             return Ok(());
         };
         state.admit(at.nameplate, signer, |key| scopes.enrolled(key), now)?;
-        if length > MESSAGE_MAX {
+        if length > MESSAGE_BYTES {
             return Err(Response::error(413, "too-large"));
         }
         Ok(())
