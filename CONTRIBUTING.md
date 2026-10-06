@@ -3,6 +3,8 @@
 bilbo is durable memory for coding agents: notes they write and recall, and a
 library of sources they cite. To use it, start at [docs/](docs/README.md).
 This page is for changing it; agents read [AGENTS.md](AGENTS.md) for the traps.
+The GitHub wiki is a generated copy of `docs/` on main: edit the docs, never
+the wiki.
 
 ## Set up
 
