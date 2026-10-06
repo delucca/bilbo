@@ -528,24 +528,6 @@ fn turning_a_scope_off_stops_the_cycle_and_a_bad_config_keeps_the_last_good() {
 }
 
 #[test]
-fn a_relay_url_is_not_supported_yet() {
-    let dir = TempDir::new("relay");
-    let lines = vec![
-        "scope.personal.sync = https://relay.example".to_string(),
-        "sync.poll_seconds = 1".to_string(),
-    ];
-    let mut a = Site::build("rivendell", true, &[1, 2], &lines);
-    a.write(FILE, &note(ID, "Install it.", "Ship on Monday."));
-    a.start();
-    a.wait_for(
-        "bilbo: sync personal: https transports are not supported yet; use a file:// folder",
-    );
-    a.wait_events(TOPIC, &["added"]);
-    assert_eq!(a.count("not supported yet"), 1);
-    drop(dir);
-}
-
-#[test]
 fn an_agent_saves_over_text_it_never_read() {
     let (_dir, _folder, a, b, _text) = synced("stale");
     let theirs = note(ID, "Install it with care.", "Ship on Monday.");

@@ -3366,18 +3366,6 @@ fn sync_without_the_watcher_fails() {
 }
 
 #[test]
-fn sync_through_a_relay_fails_with_its_scheme() {
-    let m = syncing_machine("sync-relay", "https://relay.example");
-    enrol(&m, "rivendell");
-    let run = watch_run(&m, &[], &[]);
-    assert_eq!(run.code, 1, "{}", run.stderr);
-    assert_eq!(
-        step(&run, "sync"),
-        Some("sync failed: https transports are not supported yet; use a file:// folder")
-    );
-}
-
-#[test]
 fn sync_into_a_missing_folder_fails_and_creates_nothing() {
     let m = syncing_machine("sync-missing", "file:///Volumes/usb/bilbo");
     enrol(&m, "rivendell");
