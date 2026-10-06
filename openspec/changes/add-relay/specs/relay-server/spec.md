@@ -131,7 +131,7 @@ The relay SHALL serve one request per connection and at most 256 connections at 
 - **THEN** it is answered 503 `busy` with `Retry-After` at once, and served once a connection closes
 
 ### Requirement: What the relay logs
-The relay SHALL print to stderr one line per created object: `manifest` or `segment` with the scope id, device id, n or seq and size, or `mailbox` with only the size. It SHALL print one line per 4xx refusal of a request whose signature verified, other than 404, and one line a minute counting all other 4xx refusals. No line after the startup line SHALL hold a peer address; no line SHALL hold object bytes, headers or a nameplate.
+The relay SHALL print to stderr one line per created object: `manifest` or `segment` with the scope id, device id, n or seq and size, or `mailbox` with only the size. It SHALL print one line per 4xx refusal, other than 404, of a request whose signature verified under a key it knows (a device a held scope's latest manifest lists, an admitted owner, or the nameplate's opener), one line per 500 or 507 it answers, naming the status, reason, method and kind of object, and one line a minute counting all other 4xx refusals. No line after the startup line SHALL hold a peer address; no line SHALL hold object bytes, headers or a nameplate.
 
 #### Scenario: A create is logged
 - **WHEN** a device creates segment 12 of a scope

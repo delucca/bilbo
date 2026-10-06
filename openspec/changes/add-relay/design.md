@@ -193,7 +193,7 @@ Signed requests are not rate-limited. Only the owner's devices can get past the 
 
 ### What the relay logs
 
-The relay logs one line per create: kind, scope id, device id, seq or n, and bytes, or only `mailbox <bytes>` for a mailbox message, which has no scope or device to name. It logs one line per 4xx refusal (other than 404) of a request whose signature verified, with its reason. Every other 4xx refusal, unsigned or forged, is folded into one line a minute with counts by reason, so a flood cannot fill the journal. It also logs its start-up lines and each invalid scope found at start. It logs nothing for reads: a new device's bootstrap reads thousands of objects.
+The relay logs one line per create: kind, scope id, device id, seq or n, and bytes, or only `mailbox <bytes>` for a mailbox message, which has no scope or device to name. It logs one line per 4xx refusal (other than 404) of a request whose signature verified under a key it knows (a listed device, an admitted owner or a nameplate's opener), with its reason, and one line per 500 or 507 with its reason and no error text. Every other 4xx refusal, unsigned, forged or signed by a fresh key a stranger made, is folded into one line a minute with counts by reason, so a flood cannot fill the journal. It also logs its start-up lines and each invalid scope found at start. It logs nothing for reads: a new device's bootstrap reads thousands of objects.
 
 - **Never logged:** bodies, headers and signatures; peer addresses, which are personal data and are kept only in the rate limiter's memory (the startup line names only the listen address); nameplates, which are half of a pairing code.
 - **Ids are logged:** scope and device ids are random, and the operator is their owner.
