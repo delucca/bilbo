@@ -28,7 +28,7 @@
 
 ### A hand-written HTTP/1.1 server on std, with `httparse`
 
-`src/relay/http.rs`, in the relay's own folder, is new: it accepts on a std `TcpListener`, parses the request line and headers with `httparse`, reads a `Content-Length` body, and writes a response with `Content-Length` and `Connection: close`. It handles one request per connection. The surface the relay needs is small: `GET` and `PUT`, `Content-Length` bodies only, no keep-alive, no TLS, no compression. That is about 300 lines.
+`src/relay/http.rs`, in the relay's own folder, is new: it accepts on a std `TcpListener`, parses the request line and headers with `httparse`, reads a `Content-Length` body, and writes a response with `Content-Length` and `Connection: close`. It handles one request per connection. The surface the relay needs is small: `GET` and `PUT`, `Content-Length` bodies only, no keep-alive, no TLS, no compression. That is about 600 lines.
 
 Framing is strict, because smuggling and desync bugs live there (`relay-api` spec, Request framing and Request bodies):
 
@@ -165,7 +165,7 @@ Why `hard_link`: it is atomic and refuses an existing name on every POSIX filesy
 
 Start-up walk: the relay reads its data folder as a `file://` transport (`transport::Folder`) and verifies each chain with `sync::scopes::chain`, the code a device runs on a folder. It walks `scopes/` once and builds, per scope, the latest manifest, the byte total and each device's highest seq, and keeps them in memory. A scope of 1 GiB holds tens of thousands of files, which takes well under a second to walk.
 
-The walk trusts nothing on disk, because a copied `file://` folder is a documented way in. It verifies every chain with `manifest::verify_scope`: signatures, `n` against the file name, `prev`, an unchanged owner, and device ids derived from keys. It also checks that each device's seqs run from 1 with no gap, and that the owner was passed with `--owner`. A scope that fails is logged once with its id and reason. It answers 403 `invalid` (or `not-admitted` when only its owner is missing), does not count toward `--max-scopes`, and its devices cannot open nameplates. Its folder is left alone for the operator to repair. Files outside the tree's grammar are ignored. The walk also counts the open nameplates under `pair/` and deletes the expired ones, so the 32-nameplate limit holds across a restart.
+The walk trusts nothing on disk, because a copied `file://` folder is a documented way in. It verifies every chain with `manifest::verify_scope`: signatures, `n` against the file name, `prev`, an unchanged owner, and device ids derived from keys. It also checks that each device's seqs run from 1 with no gap, and that the owner was passed with `--owner`. A scope that fails is logged once with its id and reason. It answers 403 `invalid` (or `not-admitted` when only its owner is missing), does not count toward `--max-scopes`, and its devices cannot open nameplates. Its folder is left alone for the operator to repair. Files outside the tree's grammar are ignored. `Mailbox::open` counts the open nameplates under `pair/` at start and deletes the expired ones, so the 32-nameplate limit holds across a restart.
 
 ### The mailbox: only an enrolled device opens a nameplate
 
