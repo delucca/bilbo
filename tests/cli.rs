@@ -102,6 +102,8 @@ fn unknown_verb_is_usage_error() {
             && run.stderr.contains("bilbo scope")
             && run.stderr.contains("bilbo device")
             && run.stderr.contains("bilbo sync")
+            && run.stderr.contains("bilbo pair")
+            && run.stderr.contains("bilbo relay")
     );
     assert!(!home.exists());
     assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
@@ -596,4 +598,26 @@ fn sync_is_a_verb() {
             .starts_with("bilbo: the reason must be one line\n")
     );
     assert!(!state.exists());
+}
+
+#[test]
+fn relay_is_a_verb() {
+    let dir = TempDir::new("cli-relay");
+    let data = dir.path().join("data");
+    let missing = dir.path().join("config");
+    let env = [("BILBO_CONFIG", missing.to_str().unwrap())];
+    let run = bilbo(dir.path(), &env, &["relay"]);
+    assert_eq!(run.code, 2);
+    assert!(run.stdout.is_empty());
+    assert!(run.stderr.starts_with("bilbo: missing --data <dir>\n"));
+    let run = bilbo(
+        dir.path(),
+        &env,
+        &["relay", "--data", data.to_str().unwrap(), "--bogus"],
+    );
+    assert_eq!(run.code, 2);
+    assert!(run.stdout.is_empty());
+    assert!(run.stderr.contains("bilbo: unknown option '--bogus'\n"));
+    assert!(!data.exists());
+    assert!(!missing.exists());
 }

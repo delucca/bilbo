@@ -1212,6 +1212,17 @@ impl Relay {
     /// Starts `bilbo relay --data <data> --owner <owner>... --listen 127.0.0.1:0 <extra>` and waits for its startup
     /// line, which names the port.
     pub fn start(data: &Path, owners: &[&str], extra: &[&str]) -> Relay {
+        Relay::start_with(data, owners, "127.0.0.1:0", extra, &[])
+    }
+
+    /// Like `start`, listening on `listen` (an address of this machine) with `env` as its whole environment.
+    pub fn start_with(
+        data: &Path,
+        owners: &[&str],
+        listen: &str,
+        extra: &[&str],
+        env: &[(&str, &str)],
+    ) -> Relay {
         let mut args = vec![
             "relay".to_string(),
             "--data".into(),
@@ -1220,10 +1231,11 @@ impl Relay {
         for owner in owners {
             args.extend(["--owner".to_string(), owner.to_string()]);
         }
-        args.extend(["--listen".to_string(), "127.0.0.1:0".into()]);
+        args.extend(["--listen".to_string(), listen.to_string()]);
         args.extend(extra.iter().map(|a| a.to_string()));
         let mut child = Command::new(env!("CARGO_BIN_EXE_bilbo"))
             .env_clear()
+            .envs(env.iter().copied())
             .args(&args)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
@@ -1244,13 +1256,14 @@ impl Relay {
             reader: Some(reader),
             port: 0,
         };
-        let prefix = "bilbo: relay listening on http://127.0.0.1:";
+        let host = listen.rsplit_once(':').map_or(listen, |(host, _)| host);
+        let prefix = format!("bilbo: relay listening on http://{host}:");
         let deadline = std::time::Instant::now() + Duration::from_secs(40);
         relay.port = loop {
             if let Some(port) = relay
                 .lines()
                 .first()
-                .and_then(|l| l.strip_prefix(prefix))
+                .and_then(|l| l.strip_prefix(prefix.as_str()))
                 .and_then(|p| p.parse().ok())
             {
                 break port;
