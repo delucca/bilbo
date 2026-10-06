@@ -367,12 +367,7 @@ fn items_are_pub_or_private() {
             "src/{}: `pub use`; no re-exports",
             file.rel
         );
-        let test_only = [
-            "identity/pair/exchange.rs",
-            "setup/driven.rs",
-            "setup/fakes.rs",
-        ]
-        .contains(&file.rel.as_str());
+        let test_only = TEST_ONLY.contains(&file.rel.as_str());
         assert!(
             test_only || !file.code.lines().any(|l| l.trim_end().ends_with("::*;")),
             "src/{}: a glob import outside test code",
@@ -412,6 +407,13 @@ fn a_domain_root_never_calls_its_own_verb() {
     }
 }
 
+/// Files compiled only into the tests, as a `#[cfg(test)] mod` line declares them.
+const TEST_ONLY: [&str; 3] = [
+    "identity/pair/exchange.rs",
+    "setup/driven.rs",
+    "setup/fakes.rs",
+];
+
 #[test]
 fn verbs_are_reached_only_from_main() {
     let files = files();
@@ -423,7 +425,11 @@ fn verbs_are_reached_only_from_main() {
     );
     for file in files.iter().filter(|f| f.rel != "main.rs") {
         let paths = file.paths();
-        for verb in VERBS.into_iter().filter(|v| file.verb() != Some(*v)) {
+        // Test-only files may start a verb, as the unit tests of `setup` start a relay.
+        for verb in VERBS
+            .into_iter()
+            .filter(|v| file.verb() != Some(*v) && !TEST_ONLY.contains(&file.rel.as_str()))
+        {
             let module = module_of(verb);
             if let Some(path) = paths.iter().find(|p| within(p, &module)) {
                 panic!(
