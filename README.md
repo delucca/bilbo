@@ -1,15 +1,60 @@
 # bilbo
 
-Durable memory for coding agents: Markdown notes an agent writes in one session
-and finds again in the next.
+Durable memory for coding agents.
 
-Agents re-derive what an earlier session already worked out. bilbo gives them a
-store of plain Markdown notes they write with their own file tools, and a
-`bilbo` command that starts, checks, searches and indexes those notes. A plugin
-for Claude Code and Codex puts the writing and the search in the agent's hands,
-so you rarely type a `bilbo` command yourself.
+![A librarian hands a saved note to a coding robot asking, "Didn't we fix this?"](docs/assets/bilbo-readme.png)
+
+**Your agent has been here before. bilbo kept the notes.**
+
+You fix a bug, settle a design decision, and finally figure out that strange
+test failure. Then a new session begins, ready to rediscover all three.
+
+bilbo gives your agent a notebook: plain Markdown notes it writes in one session
+and finds again in the next, plus a library of sources it can cite. Its plugin
+for Claude Code and Codex helps your agent save decisions and gotchas, and
+brings relevant notes into later conversations. You rarely need to type a
+`bilbo` command yourself.
+
+<details>
+<summary>Contents</summary>
+
+- [See it work](#see-it-work)
+- [Install](#install)
+- [Quick start](#quick-start)
+- [What you get](#what-you-get)
+- [What you do and what your agent does](#what-you-do-and-what-your-agent-does)
+- [Common commands](#common-commands)
+- [Documentation](#documentation)
+- [Contributing](#contributing)
+- [License](#license)
+
+</details>
 
 ## See it work
+
+One debugging adventure is plenty. Here's an illustrative conversation across
+two sessions:
+
+```text
+Session 1
+
+You:   The tests deadlock when two writers share one SQLite file. Fixed it
+       with a busy timeout. Note this as a gotcha.
+Agent: Saved a note: SQLite needs a busy timeout.
+
+Session 2, a day later
+
+You:   Why does our SQLite test suite fail with "database is locked"?
+Agent: We ran into this before. The note says to set busy_timeout = 5000
+       on each connection. Let me check your setup.
+```
+
+The plugin brings relevant notes into the new session before the agent starts.
+You can also ask "What did we decide about the database layer?" and have it
+search the notes.
+
+<details>
+<summary>See the commands and the note the agent receives</summary>
 
 Lines starting with `You:` are what you type, `Hook:` is what the plugin's
 prompt hook adds before the agent sees your prompt, and `Agent:` is what the
@@ -42,6 +87,8 @@ Agent: Last time this was a missing busy timeout. Let me check your setup.
 You:   What else did we decide about the database layer?
 Agent: (recall skill) Runs `bilbo recall database layer` and shows the hits.
 ```
+
+</details>
 
 ## Install
 
