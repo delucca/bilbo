@@ -263,13 +263,13 @@ mod tests {
         );
         assert_eq!(
             parse(&args(
-                "42-orbit-tunnel-velvet --via file:///srv/sync --name bagend"
+                "42-orbit-tunnel-velvet --via file:///srv/sync --name bywater"
             ))
             .ok(),
             Some(Form::Join {
                 code: "42-orbit-tunnel-velvet".into(),
                 via: "file:///srv/sync".into(),
-                name: Some("bagend".into())
+                name: Some("bywater".into())
             })
         );
         let spaced = vec![
@@ -292,7 +292,7 @@ mod tests {
         assert!(usage("42-orbit-tunnel-velvet --via a --via b").contains("twice"));
         assert!(usage("42-orbit-tunnel-velvet extra --via a").contains("extra"));
         assert!(usage("42-orbit-tunnel-velvet --via a --scope s").contains("--scope"));
-        assert!(usage("--name bagend").contains("--name"));
+        assert!(usage("--name bywater").contains("--name"));
         assert!(usage("--via a 42-orbit-tunnel-velvet").contains("42-orbit-tunnel-velvet"));
     }
 

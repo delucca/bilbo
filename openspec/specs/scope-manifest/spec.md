@@ -53,7 +53,7 @@ A new version SHALL build on the latest local version, pending or not. No note d
 When a transport holds a different version `n` than this device's pending one, the pending files from `n` up SHALL move to `manifest/lost/<k>.json`, or `manifest/lost/<k>.<i>.json` with the first free `i` from 2 when that name is taken, never to be deleted, and their changes SHALL be applied again as pending versions on the winner. A change this device cannot apply again, such as its own addition by `recover` when the winner does not list it, SHALL be reported so that the user runs `recover` again. This move is the one exception to versions never being rewritten, renamed or deleted. Files in `lost/` SHALL be neither checked nor counted as versions.
 
 #### Scenario: Another device's version wins
-- **WHEN** version 3 is pending here and bilbo is given a different, valid version 3 as the transport's (in this change, by the library's caller in a test; `add-sync` brings the transport)
+- **WHEN** version 3 is pending here and bilbo is given a different, valid version 3 as the transport's
 - **THEN** this device's version 3 moves to `manifest/lost/3.json`, the given version 3 becomes `manifest/3.json`, and the lost change is written again as a pending version 4
 
 #### Scenario: Lost versions are kept
@@ -97,7 +97,7 @@ A manifest SHALL be one JSON object with exactly these members, in this order: `
 A version SHALL also be invalid unless: `scope` equals its folder's name; `n` equals its file name; `owner` and `owner_box` equal version 1's; `prev` is the SHA-256 of version `n-1`'s file; `devices` is sorted by id with no id twice, each id derived from its `sign` key, and an id that an earlier version lists keeping the `box` it had there; `epoch` is greater than version `n-1`'s when an id of version `n-1` is no longer listed; `sealed`'s keys are exactly the listed ids and `owner`; and `chain` holds one entry for each epoch from 1 to `epoch`-1, in order, every entry of version `n-1` unchanged. These checks SHALL need no secret.
 
 #### Scenario: A device's box key changed
-- **WHEN** a correctly signed version 3 lists `rivendell` with another `box` than version 2 gave it
+- **WHEN** a correctly signed version 3 lists `rhosgobel` with another `box` than version 2 gave it
 - **THEN** version 3 is invalid for every reader, and an honest `revoke` seals nothing to that key
 
 #### Scenario: The owner box changed
@@ -105,7 +105,7 @@ A version SHALL also be invalid unless: `scope` equals its folder's name; `n` eq
 - **THEN** version 3 is invalid for every reader
 
 #### Scenario: A device dropped without a new epoch
-- **WHEN** a correctly signed version 3 lists `rivendell` but not `bagend`, which version 2 listed, at version 2's epoch
+- **WHEN** a correctly signed version 3 lists `rhosgobel` but not `bywater`, which version 2 listed, at version 2's epoch
 - **THEN** version 3 is invalid for every reader
 
 #### Scenario: A manifest in the wrong folder
@@ -132,8 +132,8 @@ A version SHALL also be invalid unless: `scope` equals its folder's name; `n` eq
 Each scope SHALL have a random 32-byte epoch key per epoch, epochs counting from 1. `sealed` SHALL map each listed device's id, and `owner`, to the epoch key sealed with HPKE base mode (DHKEM X25519 HKDF-SHA256, HKDF-SHA256, ChaCha20-Poly1305) to that device's `box` key or to `owner_box`, with info `bilbo-epoch-1` and aad `<scope id>`, newline, `<epoch>` in decimal, newline, and the device id or `owner`. The value SHALL be the 32-byte encapsulated key followed by the ciphertext.
 
 #### Scenario: Every listed device can open it
-- **WHEN** `personal`'s latest manifest lists `rivendell` and `bagend`
-- **THEN** `sealed` has exactly three entries, `rivendell`'s id, `bagend`'s id and `owner`, and each opens to the same epoch key with its box key
+- **WHEN** `personal`'s latest manifest lists `rhosgobel` and `bywater`
+- **THEN** `sealed` has exactly three entries, `rhosgobel`'s id, `bywater`'s id and `owner`, and each opens to the same epoch key with its box key
 
 #### Scenario: The phrase alone
 - **WHEN** a user recovers from the phrase on a device with no other key
@@ -162,16 +162,16 @@ Each scope SHALL have a random 32-byte epoch key per epoch, epochs counting from
 A device that opens a version's epoch key SHALL treat the version as invalid when a `chain` entry does not open, when the entry for an epoch whose key it opened from an earlier valid version decrypts to another key, or when its own `sealed` entry opens to another key for an epoch whose key it already holds. An entry for an epoch the device never held SHALL be accepted unchecked.
 
 #### Scenario: A rotation by a device that never held the current key
-- **WHEN** `personal` is at epoch 2 after `bagend` was revoked, and a correctly signed version 4 at epoch 3, sealed to every device, holds a chain entry for epoch 2 that does not decrypt to the epoch 2 key `rivendell` holds
-- **THEN** `rivendell` reports version 4 as invalid, never uses epoch 3, and `bilbo device` exits 1
+- **WHEN** `personal` is at epoch 2 after `bywater` was revoked, and a correctly signed version 4 at epoch 3, sealed to every device, holds a chain entry for epoch 2 that does not decrypt to the epoch 2 key `rhosgobel` holds
+- **THEN** `rhosgobel` reports version 4 as invalid, never uses epoch 3, and `bilbo device` exits 1
 
 #### Scenario: A chain entry that does not open
 - **WHEN** a correctly signed version's chain entry for epoch 1 was encrypted under the wrong key
 - **THEN** a device listed in it reports the version as invalid, and `bilbo device` exits 1
 
 #### Scenario: Another key for the current epoch
-- **WHEN** `personal` is at epoch 2, and a correctly signed version at epoch 2, sealed to every device and to the owner, seals a key other than the epoch 2 key `rivendell` holds
-- **THEN** `rivendell` reports that version as invalid, never uses its key, and `bilbo device` exits 1
+- **WHEN** `personal` is at epoch 2, and a correctly signed version at epoch 2, sealed to every device and to the owner, seals a key other than the epoch 2 key `rhosgobel` holds
+- **THEN** `rhosgobel` reports that version as invalid, never uses its key, and `bilbo device` exits 1
 
 ### Requirement: Sealed scope name
 `name` SHALL be the scope's config name encrypted with XChaCha20-Poly1305 under the version's epoch key, with aad `bilbo-name-1`, newline, `<scope id>`, newline, `<epoch>` in decimal, newline, `<n>` in decimal, as the 24-byte nonce followed by the ciphertext, encrypted again in every version. A device that opens a version's epoch key SHALL treat the version as invalid when its `name` does not open. bilbo SHALL find a scope's manifest by opening the names of the local manifests that list this device.
@@ -204,7 +204,7 @@ A device that opens a version's epoch key SHALL treat the version as invalid whe
 - **THEN** stdout has `scope personal failed: changing the URL needs a terminal`, no version is written for it, other scopes are still created, and the exit code is 1
 
 #### Scenario: A second syncing scope
-- **WHEN** `personal`'s manifest lists `rivendell` and `bagend`, and the user adds `scope.shared.sync` on `rivendell` and runs `bilbo device init`
+- **WHEN** `personal`'s manifest lists `rhosgobel` and `bywater`, and the user adds `scope.shared.sync` on `rhosgobel` and runs `bilbo device init`
 - **THEN** `shared`'s manifest 1 lists both devices and seals its key to both and to the owner
 
 #### Scenario: A device a manifest dropped
@@ -221,7 +221,7 @@ A device that opens a version's epoch key SHALL treat the version as invalid whe
 
 #### Scenario: A member creates a scope
 - **WHEN** a device listed in `personal` on that folder runs `bilbo device init` for a new scope `shared`
-- **THEN** `shared`'s version 1 is written as before
+- **THEN** `shared`'s version 1 is written
 
 #### Scenario: A member whose store lacks the scope
 - **WHEN** the folder's `personal` lists this device, the store holds no manifest of `personal`, and the user runs `bilbo device init`
@@ -235,7 +235,7 @@ A device that opens a version's epoch key SHALL treat the version as invalid whe
 `recover` SHALL write, for each local manifest of its owner whose latest version does not list this device, a new version with the same epoch that adds this device and seals the epoch key to it, opening the key through the `owner` entry. It SHALL write nothing for a manifest that already lists this device.
 
 #### Scenario: Recovered into a scope
-- **WHEN** `personal` is at manifest 1, epoch 1, listing `rivendell`, and `rivendell-2` recovers
+- **WHEN** `personal` is at manifest 1, epoch 1, listing `rhosgobel`, and `rhosgobel-2` recovers
 - **THEN** manifest 2 lists both devices, its `epoch` is 1, and its `sealed` has entries for both and for `owner`
 
 #### Scenario: Already listed
@@ -246,8 +246,8 @@ A device that opens a version's epoch key SHALL treat the version as invalid whe
 `revoke` SHALL write a new version without the revoked device, under a new random epoch key sealed to the remaining devices and to the owner, with the previous epoch's key appended to `chain`. No key the revoked device holds SHALL open the new epoch key from that version.
 
 #### Scenario: Revocation seals nothing to the revoked device
-- **WHEN** `bagend` is revoked from `personal` at epoch 1
-- **THEN** the new version's `sealed` has no `bagend` entry, its `epoch` is 2, its `chain` holds epoch 1's key, and neither `bagend`'s `device.key` nor its `owner.key` opens any entry of it
+- **WHEN** `bywater` is revoked from `personal` at epoch 1
+- **THEN** the new version's `sealed` has no `bywater` entry, its `epoch` is 2, its `chain` holds epoch 1's key, and neither `bywater`'s `device.key` nor its `owner.key` opens any entry of it
 
 ### Requirement: Scope line
 `bilbo device` SHALL print each scope as tab-separated fields: `scope`, the name (`-` if unreadable), the id, `manifest <n>` (plus ` pending` while pending), `epoch <e>`, `<k> devices` and the latest valid version's `transport`. A syncing scope with no manifest SHALL print `scope`, the name, `unsealed` and the URL. An invalid latest version, another owner's manifest, or a `transport` that differs from the config's URL as `init` compares them SHALL each add a stderr problem line; `off` adds none.

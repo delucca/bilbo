@@ -2,7 +2,7 @@
 
 Loaded by the reference skill on every run for Support judgment, and, when a plan has two to six partitions and the Agent tool is available, for the reader prompt. The block under "Reader prompt" is a complete prompt: fill the `<...>` placeholders, paste the common block where it is named, and send it as a `general-purpose` agent's prompt, named `reader-<k>` so a follow-up can continue it. Spawn every reader of one plan in one turn.
 
-A reader shares nothing with the calling session. Give each reader exactly its own partition's slices: two readers on the same slices are one expensive reader. Other skills paste only the sections they need, such as Reading rules and Citation rules, or Support judgment for a verifier, and keep their own output contract.
+A reader shares nothing with the calling session. Give each reader exactly its own partition's slices: two readers on the same slices are one expensive reader.
 
 ## Common block
 

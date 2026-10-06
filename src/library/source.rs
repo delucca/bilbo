@@ -3,7 +3,7 @@ use crate::shared::hash;
 use crate::shared::markdown::{self, Section};
 use crate::shared::store::{self, Problem};
 
-pub const CAPTURES: [&str; 2] = ["external", "legacy"];
+pub const CAPTURE: &str = "external";
 pub const ORIGIN_TYPES: [&str; 2] = ["url", "doc"];
 const KEYS: [&str; 6] = ["id", "fetched", "origin", "digest", "kept", "capture"];
 const REQUIRED: [&str; 4] = ["id", "fetched", "origin", "digest"];
@@ -238,7 +238,7 @@ pub fn read(text: &str) -> Source {
     );
     let capture = valid(
         "capture",
-        &|v| (!CAPTURES.contains(&v)).then(|| format!("capture: '{v}' is not external or legacy")),
+        &|v| (v != CAPTURE).then(|| format!("capture: '{v}' is not {CAPTURE}")),
         &mut problems,
     );
     let digest_at = front.get("digest").map(|p| p.line);
@@ -616,7 +616,7 @@ mod tests {
     #[test]
     fn repeated_keys_and_bad_ids() {
         only(
-            &with_lines(&["capture: legacy", "capture: legacy"], BODY),
+            &with_lines(&["capture: external", "capture: external"], BODY),
             "capture: given more than once",
         );
         let text = with_lines(&[], BODY).replace(ID, "01m3ez8nvec2kjqngk5dtk349r");
@@ -670,14 +670,14 @@ mod tests {
 
     #[test]
     fn each_valid_value_is_kept_beside_the_invalid_ones() {
-        let text =
-            with_lines(&["kept: 3-5", "capture: legacy"], BODY).replace("2026-08-23", "yesterday");
+        let text = with_lines(&["kept: 3-5", "capture: external"], BODY)
+            .replace("2026-08-23", "yesterday");
         let read = read(&text);
         assert_eq!(read.fetched, None);
         assert_eq!(read.origin.as_deref(), Some("url: https://go.dev"));
         assert_eq!(read.digest, Some(digest(BODY)));
         assert_eq!(read.kept.as_deref(), Some("3-5"));
-        assert_eq!(read.capture.as_deref(), Some("legacy"));
+        assert_eq!(read.capture.as_deref(), Some("external"));
         assert!(read.keys.iter().any(|k| k == "fetched"));
     }
 
@@ -726,12 +726,10 @@ mod tests {
 
     #[test]
     fn capture_labels() {
-        for good in ["external", "legacy"] {
-            assert!(messages(&with_lines(&[&format!("capture: {good}")], BODY)).is_empty());
-        }
+        assert!(messages(&with_lines(&["capture: external"], BODY)).is_empty());
         only(
             &with_lines(&["capture: webfetch"], BODY),
-            "capture: 'webfetch' is not external or legacy",
+            "capture: 'webfetch' is not external",
         );
     }
 
@@ -806,12 +804,12 @@ mod tests {
     fn render_writes_keys_in_contract_order() {
         let mut full = front(BODY);
         full.kept = Some("3-9".into());
-        full.capture = Some("legacy".into());
+        full.capture = Some("external".into());
         let text = render(&full, BODY);
         assert_eq!(
             text,
             format!(
-                "---\nid: {ID}\nfetched: 2026-08-23\norigin: \"url: https://go.dev/doc/effective_go\"\ndigest: {}\nkept: 3-9\ncapture: legacy\n---\n{BODY}",
+                "---\nid: {ID}\nfetched: 2026-08-23\norigin: \"url: https://go.dev/doc/effective_go\"\ndigest: {}\nkept: 3-9\ncapture: external\n---\n{BODY}",
                 digest(BODY)
             )
         );

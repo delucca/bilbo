@@ -2,7 +2,7 @@
 //! all-`abandon` owner and two devices with fixed seeds) and a store whose `personal` scope has versions 1 and 2.
 //! Git keeps only the execute bit, so each test copies them into a temporary folder and sets the modes. No test has
 //! a terminal, so the phrase forms are tested as refusals; the passing paths are unit tests of `identity::device`
-//! and the smoke runs of `Terminal`. Regenerate the fixtures with
+//! and the manual tests of `Terminal` in `docs/manual-tests.md`. Regenerate the fixtures with
 //! `cargo test --bin bilbo identity::device::tests::write_fixtures -- --ignored`.
 
 mod common;
@@ -17,8 +17,8 @@ use common::{Relay, Run, TempDir, bilbo, config};
 const FIXTURES: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/device");
 const PERSONAL: &str = "scope.personal.sync = file:///Users/a/Sync/bilbo";
 const FINGERPRINT: &str = "yb4b-5aju-v6zb-x2nm-nc5x-ompf";
-const RIVENDELL: &str = "gr2q7gf5lh6pzfdnurnkvputhp";
-const BAGEND: &str = "wyxim75c6m5p4ywv22ywilqweh";
+const RHOSGOBEL: &str = "gr2q7gf5lh6pzfdnurnkvputhp";
+const BYWATER: &str = "wyxim75c6m5p4ywv22ywilqweh";
 const RELAY: &str = "scope.personal.sync = https://relay.example.net";
 
 /// The three ways a run can be an agent's or a person's, each as the extra environment it sets.
@@ -69,9 +69,9 @@ impl Machine {
         machine
     }
 
-    /// The enrolled `rivendell` with the fixture store and `personal` pinned to `file://`.
+    /// The enrolled `rhosgobel` with the fixture store and `personal` pinned to `file://`.
     fn enrolled(name: &str) -> Machine {
-        Machine::new(name, Some("rivendell"), true, &[PERSONAL])
+        Machine::new(name, Some("rhosgobel"), true, &[PERSONAL])
     }
 
     fn root(&self) -> PathBuf {
@@ -169,7 +169,7 @@ fn scope_line(id: &str) -> String {
     format!("scope\tpersonal\t{id}\tmanifest 2\tepoch 1\t2 devices\tfile://")
 }
 
-/// A folder transport at `dir` holding the fixture scope's versions 1 to `upto`, as its URL. Version 1 lists `bagend`
+/// A folder transport at `dir` holding the fixture scope's versions 1 to `upto`, as its URL. Version 1 lists `bywater`
 /// only; version 2 lists both devices.
 fn folder_with(dir: &Path, upto: u64) -> String {
     let store = Path::new(FIXTURES).join("store/.bilbo/scopes");
@@ -209,7 +209,7 @@ fn show_prints_this_device_its_owner_and_the_scope() {
     assert_eq!(
         lines(&run.stdout),
         [
-            format!("device\trivendell\t{RIVENDELL}"),
+            format!("device\trhosgobel\t{RHOSGOBEL}"),
             format!("owner\t{FINGERPRINT}"),
             scope_line(&m.scope()),
         ]
@@ -219,13 +219,13 @@ fn show_prints_this_device_its_owner_and_the_scope() {
 
 #[test]
 fn the_other_device_shows_its_own_id_and_the_same_owner() {
-    let m = Machine::new("device-show-bagend", Some("bagend"), true, &[PERSONAL]);
+    let m = Machine::new("device-show-bywater", Some("bywater"), true, &[PERSONAL]);
     let run = m.device(&[]);
     assert_eq!(run.code, 0, "{}", run.stderr);
     assert_eq!(
         lines(&run.stdout)[..2],
         [
-            format!("device\tbagend\t{BAGEND}"),
+            format!("device\tbywater\t{BYWATER}"),
             format!("owner\t{FINGERPRINT}")
         ]
     );
@@ -289,8 +289,8 @@ fn list_prints_every_device_and_marks_this_one() {
     assert_eq!(
         lines(&run.stdout),
         [
-            format!("bagend\t{BAGEND}"),
-            format!("rivendell\t{RIVENDELL}\tthis")
+            format!("bywater\t{BYWATER}"),
+            format!("rhosgobel\t{RHOSGOBEL}\tthis")
         ]
     );
     assert!(run.stderr.is_empty(), "{}", run.stderr);
@@ -298,14 +298,14 @@ fn list_prints_every_device_and_marks_this_one() {
 
 #[test]
 fn list_marks_the_other_device_on_the_other_machine() {
-    let m = Machine::new("device-list-bagend", Some("bagend"), true, &[PERSONAL]);
+    let m = Machine::new("device-list-bywater", Some("bywater"), true, &[PERSONAL]);
     let run = m.device(&["list"]);
     assert_eq!(run.code, 0, "{}", run.stderr);
     assert_eq!(
         lines(&run.stdout),
         [
-            format!("bagend\t{BAGEND}\tthis"),
-            format!("rivendell\t{RIVENDELL}")
+            format!("bywater\t{BYWATER}\tthis"),
+            format!("rhosgobel\t{RHOSGOBEL}")
         ]
     );
 }
@@ -348,7 +348,7 @@ fn a_rerun_of_init_keeps_everything_and_changes_no_file() {
 fn a_new_scope_is_sealed_without_a_terminal_and_lists_both_devices() {
     let m = Machine::new(
         "device-init-scope",
-        Some("rivendell"),
+        Some("rhosgobel"),
         true,
         &[PERSONAL, "scope.shared.sync = file:///Users/a/Sync/shared"],
     );
@@ -392,7 +392,7 @@ fn a_device_in_no_scope_on_the_folder_creates_none() {
     let folder = TempDir::new("device-outsider-folder");
     let url = folder_with(folder.path(), 1);
     let line = format!("scope.personal.sync = {url}");
-    let m = Machine::new("device-outsider", Some("rivendell"), false, &[&line]);
+    let m = Machine::new("device-outsider", Some("rhosgobel"), false, &[&line]);
     let held = tree_of(folder.path());
     let run = m.device(&["init"]);
     assert_eq!(run.code, 1, "{}", run.stderr);
@@ -412,10 +412,10 @@ fn a_device_in_no_scope_on_the_folder_creates_none() {
     assert_eq!(tree_of(folder.path()), held);
 }
 
-/// Runs `init` on rivendell's keys with an empty store and `personal` on `url`; the scope folders it made.
+/// Runs `init` on rhosgobel's keys with an empty store and `personal` on `url`; the scope folders it made.
 fn init_on(name: &str, url: &str) -> (Run, Vec<String>) {
     let line = format!("scope.personal.sync = {url}");
-    let m = Machine::new(name, Some("rivendell"), false, &[&line]);
+    let m = Machine::new(name, Some("rhosgobel"), false, &[&line]);
     let run = m.device(&["init"]);
     let made = fs::read_dir(m.scopes())
         .map(|entries| {
@@ -478,7 +478,7 @@ fn a_member_of_a_scope_on_the_folder_creates_another() {
     ];
     let m = Machine::new(
         "device-member",
-        Some("rivendell"),
+        Some("rhosgobel"),
         true,
         &[&lines[0], &lines[1]],
     );
@@ -507,7 +507,7 @@ fn a_member_of_a_scope_on_the_folder_creates_another() {
 fn changing_the_url_needs_a_terminal_and_leaves_the_manifest_alone() {
     let m = Machine::new(
         "device-init-url",
-        Some("rivendell"),
+        Some("rhosgobel"),
         true,
         &[RELAY, "scope.shared.sync = file:///Users/a/Sync/shared"],
     );
@@ -534,7 +534,7 @@ fn changing_the_url_needs_a_terminal_and_leaves_the_manifest_alone() {
 
 #[test]
 fn show_reports_a_url_the_manifest_does_not_pin() {
-    let m = Machine::new("device-show-url", Some("rivendell"), true, &[RELAY]);
+    let m = Machine::new("device-show-url", Some("rhosgobel"), true, &[RELAY]);
     let run = m.device(&[]);
     assert_eq!(run.code, 1, "{}", run.stdout);
     assert!(run.stderr.contains("file://"), "{}", run.stderr);
@@ -570,9 +570,9 @@ fn init_recover_and_revoke_need_a_terminal_without_keys() {
     let before = m.tree();
     for marks in MARKS {
         for args in [
-            &["init", "--name", "rivendell"][..],
-            &["recover", "--name", "rivendell"],
-            &["revoke", "bagend"],
+            &["init", "--name", "rhosgobel"][..],
+            &["recover", "--name", "rhosgobel"],
+            &["revoke", "bywater"],
         ] {
             let run = m.device_with(marks, args);
             refused(&run, &format!("bilbo device {} needs a terminal", args[0]));
@@ -588,7 +588,7 @@ fn recover_and_revoke_need_a_terminal_on_an_enrolled_device() {
     let m = Machine::enrolled("device-refuse-enrolled");
     let before = m.tree();
     for marks in MARKS {
-        for args in [&["recover"][..], &["revoke", "bagend"]] {
+        for args in [&["recover"][..], &["revoke", "bywater"]] {
             let run = m.device_with(marks, args);
             refused(&run, &format!("bilbo device {} needs a terminal", args[0]));
         }
@@ -603,12 +603,12 @@ fn recover_through_a_relay_url_needs_a_terminal_and_asks_the_relay_nothing() {
     let line = format!("scope.personal.sync = {}", relay.url());
     for (name, who, store) in [
         ("device-refuse-relay-bare", None, false),
-        ("device-refuse-relay-enrolled", Some("rivendell"), true),
+        ("device-refuse-relay-enrolled", Some("rhosgobel"), true),
     ] {
         let m = Machine::new(name, who, store, &[&line]);
         let before = m.tree();
         for marks in MARKS {
-            let run = m.device_with(marks, &["recover", "--name", "rivendell"]);
+            let run = m.device_with(marks, &["recover", "--name", "rhosgobel"]);
             if who.is_some() {
                 assert_eq!(run.code, 2, "{}", run.stderr);
                 assert!(run.stderr.contains("--name"), "{}", run.stderr);
@@ -803,7 +803,7 @@ fn revoke_refuses_a_tampered_scope_without_a_terminal_first() {
     let m = Machine::enrolled("device-tampered-revoke");
     fs::write(m.version(2), "{}\n").unwrap();
     let before = m.tree();
-    let run = m.device(&["revoke", "bagend"]);
+    let run = m.device(&["revoke", "bywater"]);
     refused(&run, "needs a terminal");
     assert_eq!(m.tree(), before);
 }
@@ -838,7 +838,7 @@ fn an_explicit_config_that_does_not_exist_is_exit_2() {
 fn plain_http_to_another_host_is_exit_2() {
     let m = Machine::new(
         "device-config-http",
-        Some("rivendell"),
+        Some("rhosgobel"),
         true,
         &["scope.personal.sync = http://relay.example.net"],
     );
@@ -852,7 +852,7 @@ fn plain_http_to_another_host_is_exit_2() {
 fn a_password_in_the_url_is_not_echoed() {
     let m = Machine::new(
         "device-config-secret",
-        Some("rivendell"),
+        Some("rhosgobel"),
         true,
         &["scope.personal.sync = https://u:sekrit@relay.example.net"],
     );

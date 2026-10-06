@@ -110,7 +110,7 @@ When the installed service names another `llama-server` path, model path or port
 When the local embedder's service is installed and the config setup leaves has no embedder, or one whose model is not `qwen3-embedding-0.6b` or whose URL is not `http://127.0.0.1:<port>`, setup SHALL unload and delete the service, keep the model file, and report `server removed: not local`. A run that was not asked for the local embedder and leaves a local config SHALL leave the service alone and report `server skipped: not asked`. When `launchctl` or `systemctl` is missing, the server line SHALL say `failed` and the service files SHALL stay.
 
 #### Scenario: The config moves to another embedder
-- **WHEN** the local embedder is installed, the config path is a link to a file setting `embedder.url = http://bagend:8081`, and a user runs `bilbo setup --yes`
+- **WHEN** the local embedder is installed, the config path is a link to a file setting `embedder.url = http://embedder.example:8081`, and a user runs `bilbo setup --yes`
 - **THEN** the service file is gone and unloaded, the server line says `removed: not local`, the model file still exists, and the exit code is 0
 
 #### Scenario: Keyword search only in the wizard

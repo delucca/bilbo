@@ -1,7 +1,7 @@
 # store-check Specification
 
 ## Purpose
-`bilbo check` lints the whole store against the `note-store` contract. Mistakes agents make while editing files directly then surface, without bilbo blocking or changing anything.
+`bilbo check` lints the whole store: the notes against the `note-store` contract and the scope rules, and the library against the `library-store` contract. Mistakes agents make while editing files directly then surface, without bilbo blocking or changing anything.
 
 ## Requirements
 

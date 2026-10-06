@@ -1991,14 +1991,17 @@ mod tests {
     fn managed_config_asks_no_embedder_question() {
         let mut f = facts();
         f.managed = Some("/nix/store/x-config".to_string());
-        f.existing = Some(embedder("http://bagend:8081", "qwen3-embedding-0.6b"));
+        f.existing = Some(embedder(
+            "http://embedder.example:8081",
+            "qwen3-embedding-0.6b",
+        ));
         let (r, s) = run(&f, tail());
         let a = r.unwrap();
         assert_eq!(a.embedder, f.existing);
         assert!(a.dims.is_none());
         assert!(s.saw("note: Config managed elsewhere"));
         assert!(s.saw("/c/bilbo/config links to /nix/store/x-config."));
-        assert!(s.saw("embedder.url = http://bagend:8081"));
+        assert!(s.saw("embedder.url = http://embedder.example:8081"));
         assert!(!s.saw("Which embedder"));
         assert_eq!(a.timer, Some(15));
     }

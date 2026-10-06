@@ -355,12 +355,12 @@ mod tests {
         }
     }
 
-    /// A relay holding one valid scope, owned by an admitted owner, that lists `rivendell` and `bagend`.
+    /// A relay holding one valid scope, owned by an admitted owner, that lists `rhosgobel` and `bywater`.
     struct World {
         data: Data,
         scopes: admit::Scopes,
-        rivendell: [u8; 32],
-        bagend: [u8; 32],
+        rhosgobel: [u8; 32],
+        bywater: [u8; 32],
         stranger: [u8; 32],
         _manifests: Scratch,
         _root: Scratch,
@@ -370,12 +370,12 @@ mod tests {
         let manifests = scratch(&format!("{name}-manifests"));
         let root = scratch(name);
         let owner = Owner::derive(&[7; 16]);
-        let rivendell = identity(&owner, "rivendell", 11);
-        let bagend = identity(&owner, "bagend", 21);
+        let rhosgobel = identity(&owner, "rhosgobel", 11);
+        let bywater = identity(&owner, "bywater", 21);
         let stranger = identity(&owner, "stranger", 31);
         let lock = manifest::lock(&manifests.0).unwrap();
-        let others = [manifest::Member::of(&bagend.device)];
-        let id = manifest::create(&lock, &rivendell, "personal", "file:///x", &others)
+        let others = [manifest::Member::of(&bywater.device)];
+        let id = manifest::create(&lock, &rhosgobel, "personal", "file:///x", &others)
             .unwrap()
             .scope;
         drop(lock);
@@ -390,8 +390,8 @@ mod tests {
         World {
             data: Data::open(&root.0.join("data")).unwrap(),
             scopes: admit::Scopes::new(&[print], BTreeMap::from([(id, held)])),
-            rivendell: rivendell.device.sign.public(),
-            bagend: bagend.device.sign.public(),
+            rhosgobel: rhosgobel.device.sign.public(),
+            bywater: bywater.device.sign.public(),
             stranger: stranger.device.sign.public(),
             _manifests: manifests,
             _root: root,
@@ -453,7 +453,7 @@ mod tests {
         let status = w.put(
             &m,
             &at("42", "a"),
-            Some(&w.rivendell),
+            Some(&w.rhosgobel),
             peer(1),
             b"one",
             START,
@@ -467,13 +467,13 @@ mod tests {
         let w = world("answers");
         let m = w.open(START);
         assert_eq!(
-            w.put(&m, &at("42", "a"), Some(&w.rivendell), peer(1), b"a", START),
+            w.put(&m, &at("42", "a"), Some(&w.rhosgobel), peer(1), b"a", START),
             201
         );
         assert_eq!(w.put(&m, &at("42", "b"), None, peer(2), b"b", START), 201);
         assert_eq!(m.get(&w.data, &at("42", "c"), START).status, 404);
         assert_eq!(
-            w.put(&m, &at("42", "c"), Some(&w.rivendell), peer(1), b"c", START),
+            w.put(&m, &at("42", "c"), Some(&w.rhosgobel), peer(1), b"c", START),
             201
         );
         assert_eq!(m.get(&w.data, &at("42", "c"), START).status, 200);
@@ -495,13 +495,13 @@ mod tests {
         let w = world("second");
         let m = w.open(START);
         assert_eq!(
-            w.put(&m, &at("42", "a"), Some(&w.rivendell), peer(1), b"a", START),
+            w.put(&m, &at("42", "a"), Some(&w.rhosgobel), peer(1), b"a", START),
             201
         );
         assert_eq!(w.put(&m, &at("42", "b"), None, peer(2), b"b", START), 201);
         assert_eq!(w.put(&m, &at("42", "c"), None, peer(2), b"x", START), 403);
         assert_eq!(
-            w.put(&m, &at("42", "c"), Some(&w.rivendell), peer(1), b"c", START),
+            w.put(&m, &at("42", "c"), Some(&w.rhosgobel), peer(1), b"c", START),
             201
         );
     }
@@ -511,11 +511,11 @@ mod tests {
         let w = world("other");
         let m = w.open(START);
         assert_eq!(
-            w.put(&m, &at("42", "a"), Some(&w.rivendell), peer(1), b"a", START),
+            w.put(&m, &at("42", "a"), Some(&w.rhosgobel), peer(1), b"a", START),
             201
         );
         assert_eq!(
-            w.put(&m, &at("42", "c"), Some(&w.bagend), peer(3), b"c", START),
+            w.put(&m, &at("42", "c"), Some(&w.bywater), peer(3), b"c", START),
             403
         );
     }
@@ -525,7 +525,7 @@ mod tests {
         let w = world("junk");
         let m = w.open(START);
         assert_eq!(
-            w.put(&m, &at("42", "a"), Some(&w.rivendell), peer(1), b"a", START),
+            w.put(&m, &at("42", "a"), Some(&w.rhosgobel), peer(1), b"a", START),
             201
         );
         assert_eq!(w.put(&m, &at("42", "b"), None, peer(2), b"b", START), 201);
@@ -536,14 +536,14 @@ mod tests {
             let status = w.put(
                 &m,
                 &at("42", name),
-                Some(&w.rivendell),
+                Some(&w.rhosgobel),
                 peer(1),
                 b"m",
                 START,
             );
             assert_eq!(status, 201, "{name}");
         }
-        let ninth = w.put(&m, &at("42", "i"), Some(&w.rivendell), peer(1), b"m", START);
+        let ninth = w.put(&m, &at("42", "i"), Some(&w.rhosgobel), peer(1), b"m", START);
         assert_eq!(ninth, 507);
     }
 
@@ -555,7 +555,7 @@ mod tests {
             w.put(
                 &m,
                 &at("42", "a"),
-                Some(&w.rivendell),
+                Some(&w.rhosgobel),
                 peer(1),
                 b"one",
                 START
@@ -565,7 +565,7 @@ mod tests {
         let same = w.put(
             &m,
             &at("42", "a"),
-            Some(&w.rivendell),
+            Some(&w.rhosgobel),
             peer(1),
             b"one",
             START,
@@ -574,7 +574,7 @@ mod tests {
         let other = w.put(
             &m,
             &at("42", "a"),
-            Some(&w.rivendell),
+            Some(&w.rhosgobel),
             peer(1),
             b"two",
             START,
@@ -589,7 +589,7 @@ mod tests {
         let m = w.open(START);
         let big = vec![0u8; 5000];
         assert_eq!(
-            w.put(&m, &at("42", "a"), Some(&w.rivendell), peer(1), &big, START),
+            w.put(&m, &at("42", "a"), Some(&w.rhosgobel), peer(1), &big, START),
             413
         );
         let edge = vec![0u8; 4096];
@@ -597,7 +597,7 @@ mod tests {
             w.put(
                 &m,
                 &at("42", "a"),
-                Some(&w.rivendell),
+                Some(&w.rhosgobel),
                 peer(1),
                 &edge,
                 START
@@ -616,23 +616,23 @@ mod tests {
             let status = w.put(
                 &m,
                 &at(&plate, "a"),
-                Some(&w.rivendell),
+                Some(&w.rhosgobel),
                 peer(1),
                 b"a",
                 START,
             );
             assert_eq!(status, 201, "{n}");
         }
-        let status = w.put(&m, &at("33", "a"), Some(&w.rivendell), peer(1), b"a", START);
+        let status = w.put(&m, &at("33", "a"), Some(&w.rhosgobel), peer(1), b"a", START);
         assert_eq!(status, 507);
         assert_eq!(
-            w.put(&m, &at("32", "c"), Some(&w.rivendell), peer(1), b"c", START),
+            w.put(&m, &at("32", "c"), Some(&w.rhosgobel), peer(1), b"c", START),
             201
         );
         // An expired nameplate frees its place.
         let later = START + EXPIRY;
         assert_eq!(
-            w.put(&m, &at("33", "a"), Some(&w.rivendell), peer(1), b"a", later),
+            w.put(&m, &at("33", "a"), Some(&w.rhosgobel), peer(1), b"a", later),
             201
         );
     }
@@ -642,7 +642,7 @@ mod tests {
         let w = world("expired");
         let m = w.open(START);
         assert_eq!(
-            w.put(&m, &at("42", "a"), Some(&w.rivendell), peer(1), b"a", START),
+            w.put(&m, &at("42", "a"), Some(&w.rhosgobel), peer(1), b"a", START),
             201
         );
         let almost = START + EXPIRY - 1;
@@ -657,12 +657,12 @@ mod tests {
         let w = world("first");
         let m = w.open(START);
         assert_eq!(
-            w.put(&m, &at("42", "a"), Some(&w.rivendell), peer(1), b"a", START),
+            w.put(&m, &at("42", "a"), Some(&w.rhosgobel), peer(1), b"a", START),
             201
         );
         let late = START + EXPIRY - 5;
         assert_eq!(
-            w.put(&m, &at("42", "c"), Some(&w.rivendell), peer(1), b"c", late),
+            w.put(&m, &at("42", "c"), Some(&w.rhosgobel), peer(1), b"c", late),
             201
         );
         assert_eq!(m.get(&w.data, &at("42", "c"), START + EXPIRY).status, 404);
@@ -676,7 +676,7 @@ mod tests {
             w.put(
                 &m,
                 &at("42", "a"),
-                Some(&w.rivendell),
+                Some(&w.rhosgobel),
                 peer(1),
                 b"old",
                 START
@@ -684,11 +684,11 @@ mod tests {
             201
         );
         let later = START + EXPIRY;
-        let status = w.put(&m, &at("42", "a"), Some(&w.bagend), peer(1), b"new", later);
+        let status = w.put(&m, &at("42", "a"), Some(&w.bywater), peer(1), b"new", later);
         assert_eq!(status, 201);
         assert_eq!(m.get(&w.data, &at("42", "a"), later).body, b"new");
         assert_eq!(
-            w.put(&m, &at("42", "c"), Some(&w.rivendell), peer(1), b"c", later),
+            w.put(&m, &at("42", "c"), Some(&w.rhosgobel), peer(1), b"c", later),
             403
         );
     }
@@ -698,7 +698,7 @@ mod tests {
         let w = world("sweep");
         let m = w.open(START);
         assert_eq!(
-            w.put(&m, &at("42", "a"), Some(&w.rivendell), peer(1), b"a", START),
+            w.put(&m, &at("42", "a"), Some(&w.rhosgobel), peer(1), b"a", START),
             201
         );
         assert_eq!(
@@ -775,13 +775,13 @@ mod tests {
         let w = world("opener");
         let m = w.open(START);
         assert_eq!(
-            w.put(&m, &at("42", "a"), Some(&w.rivendell), peer(1), b"a", START),
+            w.put(&m, &at("42", "a"), Some(&w.rhosgobel), peer(1), b"a", START),
             201
         );
         let to = at("42", "b");
         for i in 0..300 {
             let now = START + i * 2;
-            let status = w.head(&m, &to, Some(&w.rivendell), peer(1), None, now);
+            let status = w.head(&m, &to, Some(&w.rhosgobel), peer(1), None, now);
             assert_eq!(status, Ok(()), "poll {i}");
         }
         assert!(m.lock().peers.is_empty());
@@ -816,7 +816,7 @@ mod tests {
             w.put(
                 &first,
                 &at("1", "a"),
-                Some(&w.rivendell),
+                Some(&w.rhosgobel),
                 peer(1),
                 b"a",
                 START
@@ -827,7 +827,7 @@ mod tests {
             w.put(
                 &first,
                 &at("2", "a"),
-                Some(&w.rivendell),
+                Some(&w.rhosgobel),
                 peer(1),
                 b"a",
                 START
@@ -849,7 +849,7 @@ mod tests {
         let status = w.put(
             &second,
             &at("2", "c"),
-            Some(&w.rivendell),
+            Some(&w.rhosgobel),
             peer(1),
             b"c",
             now,

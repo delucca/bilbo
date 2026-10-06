@@ -789,12 +789,12 @@ mod tests {
         keys::owner_fingerprint(&owner.sign.public())
     }
 
-    /// A scope of three versions made as a device would: `rivendell` alone, then `bagend` added, then `bagend`
+    /// A scope of three versions made as a device would: `rhosgobel` alone, then `bywater` added, then `bywater`
     /// revoked at epoch 2.
     struct World {
         owner: Owner,
-        rivendell: Identity,
-        bagend: Identity,
+        rhosgobel: Identity,
+        bywater: Identity,
         id: String,
         files: Vec<Vec<u8>>,
         root: Scratch,
@@ -839,10 +839,10 @@ mod tests {
     fn world(name: &str, owner_seed: u8, device_seed: u8) -> World {
         let root = scratch(name);
         let owner = Owner::derive(&[owner_seed; 16]);
-        let rivendell = identity(&owner, "rivendell", device_seed + 1);
-        let bagend = identity(&owner, "bagend", device_seed + 3);
+        let rhosgobel = identity(&owner, "rhosgobel", device_seed + 1);
+        let bywater = identity(&owner, "bywater", device_seed + 3);
         let lock = manifest::lock(&root.0).unwrap();
-        let id = manifest::create(&lock, &rivendell, "personal", "file:///x", &[])
+        let id = manifest::create(&lock, &rhosgobel, "personal", "file:///x", &[])
             .unwrap()
             .scope;
         let survey = |who: &Identity| {
@@ -854,17 +854,17 @@ mod tests {
             )
             .unwrap()
         };
-        let known = survey(&bagend);
+        let known = survey(&bywater);
         let manifest::Outcome::Updated(_) =
-            manifest::recover_step(&lock, &bagend, &owner.box_secret, &known[0])
+            manifest::recover_step(&lock, &bywater, &owner.box_secret, &known[0])
         else {
-            panic!("bagend was not added");
+            panic!("bywater was not added");
         };
-        let known = survey(&rivendell);
+        let known = survey(&rhosgobel);
         let manifest::Outcome::Updated(w) =
-            manifest::revoke_step(&lock, &rivendell, &known[0], &bagend.device.id())
+            manifest::revoke_step(&lock, &rhosgobel, &known[0], &bywater.device.id())
         else {
-            panic!("bagend was not revoked");
+            panic!("bywater was not revoked");
         };
         assert_eq!((w.n, w.epoch), (3, 2));
         drop(lock);
@@ -876,8 +876,8 @@ mod tests {
             .collect();
         World {
             owner,
-            rivendell,
-            bagend,
+            rhosgobel,
+            bywater,
             id,
             files,
             root,
@@ -1092,11 +1092,11 @@ mod tests {
             self.call(who, "PUT", target, body)
         }
 
-        /// Creates manifests 1 to `upto` of `w` as `rivendell`.
+        /// Creates manifests 1 to `upto` of `w` as `rhosgobel`.
         fn publish(&self, w: &World, upto: usize) {
             for n in 1..=upto {
                 let reply = self.put(
-                    &w.rivendell.device.sign,
+                    &w.rhosgobel.device.sign,
                     &w.target(n as u64),
                     &w.files[n - 1],
                 );
@@ -1132,8 +1132,8 @@ mod tests {
         let w = world("methods", 10, 20);
         let rig = Rig::new("methods", &[&w.owner]);
         rig.publish(&w, 1);
-        let key = &w.rivendell.device.sign;
-        let seg = w.segment(&w.rivendell, 1);
+        let key = &w.rhosgobel.device.sign;
+        let seg = w.segment(&w.rhosgobel, 1);
         assert_eq!(rig.put(key, &seg, b"one").status, 201);
         let reply = rig.call(key, "DELETE", &seg, b"");
         assert_eq!(reply.status, 405);
@@ -1157,8 +1157,8 @@ mod tests {
         let rig = Rig::new("no_body", &[&w.owner]);
         rig.publish(&w, 1);
         let reply = rig.put(
-            &w.rivendell.device.sign,
-            &w.segment(&w.rivendell, 1),
+            &w.rhosgobel.device.sign,
+            &w.segment(&w.rhosgobel, 1),
             b"one",
         );
         assert_eq!(reply.status, 201);
@@ -1183,9 +1183,9 @@ mod tests {
                 "{target}"
             );
         }
-        let key = &w.rivendell.device.sign;
+        let key = &w.rhosgobel.device.sign;
         let id = &w.id;
-        let device = w.rivendell.device.id();
+        let device = w.rhosgobel.device.id();
         for target in [
             "/v1/scopes/not-an-id/devices/".to_string(),
             "/v1/scopes".to_string(),
@@ -1221,8 +1221,8 @@ mod tests {
         let w = world("cursor", 10, 20);
         let rig = Rig::new("cursor", &[&w.owner]);
         rig.publish(&w, 1);
-        let key = &w.rivendell.device.sign;
-        let device = w.rivendell.device.id();
+        let key = &w.rhosgobel.device.sign;
+        let device = w.rhosgobel.device.id();
         for after in ["-1", "x", "01", "+1", "", "18446744073709551616"] {
             let target = url(&w, &format!("devices/{device}/?after={after}"));
             let reply = rig.get(key, &target);
@@ -1270,9 +1270,9 @@ mod tests {
     fn a_proxy_that_expects_continue_gets_it() {
         let w = world("expect", 10, 20);
         let rig = Rig::new("expect", &[&w.owner]);
-        let key = &w.rivendell.device.sign;
+        let key = &w.rhosgobel.device.sign;
         rig.publish(&w, 1);
-        let target = w.segment(&w.rivendell, 1);
+        let target = w.segment(&w.rhosgobel, 1);
         let mut headers = own(sign::headers(key, "PUT", &target, rig.now(), b"one").unwrap());
         headers.push(("Expect".into(), "100-continue".into()));
         let mut stream = connect(rig.relay.port);
@@ -1291,8 +1291,8 @@ mod tests {
         let w = world("too_large", 10, 20);
         let rig = Rig::new("too_large", &[&w.owner]);
         rig.publish(&w, 1);
-        let key = &w.rivendell.device.sign;
-        let target = w.segment(&w.rivendell, 1);
+        let key = &w.rhosgobel.device.sign;
+        let target = w.segment(&w.rhosgobel, 1);
         let headers = own(sign::headers(key, "PUT", &target, rig.now(), b"x").unwrap());
         let mut stream = connect(rig.relay.port);
         let length = 17 * 1024 * 1024;
@@ -1305,7 +1305,7 @@ mod tests {
         assert!(rig.tmp_is_empty());
         assert!(
             !rig.data
-                .join(transport::segment_path(&w.id, &w.rivendell.device.id(), 1))
+                .join(transport::segment_path(&w.id, &w.rhosgobel.device.id(), 1))
                 .exists()
         );
     }
@@ -1330,7 +1330,7 @@ mod tests {
         let rig = Rig::new("forged_nonce", &[&w.owner]);
         rig.publish(&w, 1);
         let target = url(&w, "devices/");
-        let key = &w.rivendell.device.sign;
+        let key = &w.rhosgobel.device.sign;
         let good = own(sign::headers(key, "GET", &target, rig.now(), b"").unwrap());
         let mut forged = good.clone();
         forged[3].1 = "0".repeat(128);
@@ -1354,7 +1354,7 @@ mod tests {
         let w = world("valid", 10, 20);
         let rig = Rig::new("valid", &[&w.owner]);
         rig.publish(&w, 1);
-        let reply = rig.get(&w.rivendell.device.sign, &url(&w, "devices/"));
+        let reply = rig.get(&w.rhosgobel.device.sign, &url(&w, "devices/"));
         assert_eq!(reply.status, 200);
         assert_eq!(reply.json(), json!({"devices": []}));
     }
@@ -1364,14 +1364,14 @@ mod tests {
         let w = world("changed", 10, 20);
         let rig = Rig::new("changed", &[&w.owner]);
         rig.publish(&w, 1);
-        let key = &w.rivendell.device.sign;
-        let target = w.segment(&w.rivendell, 1);
+        let key = &w.rhosgobel.device.sign;
+        let target = w.segment(&w.rhosgobel, 1);
         let headers = own(sign::headers(key, "PUT", &target, rig.now(), b"aaaa").unwrap());
         let reply = rig.send("PUT", &target, &headers, b"aaab");
         assert_eq!((reply.status, reply.error().as_str()), (401, "signature"));
         assert!(
             !rig.data
-                .join(transport::segment_path(&w.id, &w.rivendell.device.id(), 1))
+                .join(transport::segment_path(&w.id, &w.rhosgobel.device.id(), 1))
                 .exists()
         );
         assert!(rig.tmp_is_empty());
@@ -1403,7 +1403,7 @@ mod tests {
         let w = world("clock", 10, 20);
         let rig = Rig::new("clock", &[&w.owner]);
         rig.publish(&w, 1);
-        let key = &w.rivendell.device.sign;
+        let key = &w.rhosgobel.device.sign;
         let target = url(&w, "devices/");
         let late = rig.signed_at(T0 - 301, key, "GET", &target, b"");
         assert_eq!((late.status, late.error().as_str()), (401, "clock"));
@@ -1423,7 +1423,7 @@ mod tests {
         rig.publish(&w, 1);
         let target = url(&w, "devices/");
         let headers =
-            own(sign::headers(&w.rivendell.device.sign, "GET", &target, rig.now(), b"").unwrap());
+            own(sign::headers(&w.rhosgobel.device.sign, "GET", &target, rig.now(), b"").unwrap());
         assert_eq!(rig.send("GET", &target, &headers, b"").status, 200);
         rig.advance(10);
         let again = rig.send("GET", &target, &headers, b"");
@@ -1435,7 +1435,7 @@ mod tests {
         let w = world("opener", 10, 20);
         let rig = Rig::new("opener", &[&w.owner]);
         rig.publish(&w, 1);
-        let key = &w.rivendell.device.sign;
+        let key = &w.rhosgobel.device.sign;
         let target = "/v1/pair/42/a.msg";
         let headers = own(sign::headers(key, "PUT", target, rig.now(), b"hello").unwrap());
         assert_eq!(rig.send("PUT", target, &headers, b"hello").status, 201);
@@ -1474,9 +1474,9 @@ mod tests {
         let w = world("revoked", 10, 20);
         let rig = Rig::new("revoked", &[&w.owner]);
         rig.publish(&w, 3);
-        let seg = w.segment(&w.rivendell, 1);
-        assert_eq!(rig.put(&w.rivendell.device.sign, &seg, b"one").status, 201);
-        let reply = rig.get(&w.bagend.device.sign, &seg);
+        let seg = w.segment(&w.rhosgobel, 1);
+        assert_eq!(rig.put(&w.rhosgobel.device.sign, &seg, b"one").status, 201);
+        let reply = rig.get(&w.bywater.device.sign, &seg);
         assert_eq!(
             (reply.status, reply.error().as_str()),
             (403, "not-admitted")
@@ -1488,14 +1488,14 @@ mod tests {
         let w = world("own_folder", 10, 20);
         let rig = Rig::new("own_folder", &[&w.owner]);
         rig.publish(&w, 2);
-        let reply = rig.put(&w.rivendell.device.sign, &w.segment(&w.bagend, 1), b"one");
+        let reply = rig.put(&w.rhosgobel.device.sign, &w.segment(&w.bywater, 1), b"one");
         assert_eq!(
             (reply.status, reply.error().as_str()),
             (403, "not-admitted")
         );
         assert!(
             !rig.data
-                .join(transport::segment_path(&w.id, &w.bagend.device.id(), 1))
+                .join(transport::segment_path(&w.id, &w.bywater.device.id(), 1))
                 .exists()
         );
         assert!(rig.tmp_is_empty());
@@ -1506,14 +1506,14 @@ mod tests {
         let w = world("owner_reads", 10, 20);
         let rig = Rig::new("owner_reads", &[&w.owner]);
         rig.publish(&w, 3);
-        let seg = w.segment(&w.rivendell, 1);
-        assert_eq!(rig.put(&w.rivendell.device.sign, &seg, b"one").status, 201);
+        let seg = w.segment(&w.rhosgobel, 1);
+        assert_eq!(rig.put(&w.rhosgobel.device.sign, &seg, b"one").status, 201);
         let owner = &w.owner.sign;
         let latest = rig.get(owner, &url(&w, "manifest/latest"));
         assert_eq!(latest.status, 200);
         assert_eq!(latest.body, w.files[2]);
         assert_eq!(rig.get(owner, &w.target(1)).body, w.files[0]);
-        let device = w.rivendell.device.id();
+        let device = w.rhosgobel.device.id();
         for target in [
             url(&w, "devices/"),
             url(&w, &format!("devices/{device}/")),
@@ -1552,8 +1552,8 @@ mod tests {
         rig.publish(&w, 1);
         assert!(rig.data.join(transport::manifest_path(&w.id, 1)).exists());
         let reply = rig.put(
-            &w.rivendell.device.sign,
-            &w.segment(&w.rivendell, 1),
+            &w.rhosgobel.device.sign,
+            &w.segment(&w.rhosgobel, 1),
             b"one",
         );
         assert_eq!(reply.status, 201);
@@ -1564,7 +1564,7 @@ mod tests {
         let w = world("other_owner", 10, 20);
         let other = Owner::derive(&[99; 16]);
         let rig = Rig::new("other_owner", &[&other]);
-        let reply = rig.put(&w.rivendell.device.sign, &w.target(1), &w.files[0]);
+        let reply = rig.put(&w.rhosgobel.device.sign, &w.target(1), &w.files[0]);
         assert_eq!(
             (reply.status, reply.error().as_str()),
             (403, "not-admitted")
@@ -1581,7 +1581,7 @@ mod tests {
         m.sig = "0".repeat(128);
         let mut bytes = serde_json::to_vec(&m).unwrap();
         bytes.push(b'\n');
-        let reply = rig.put(&w.rivendell.device.sign, &w.target(1), &bytes);
+        let reply = rig.put(&w.rhosgobel.device.sign, &w.target(1), &bytes);
         assert_eq!((reply.status, reply.error().as_str()), (422, "manifest"));
         assert!(!rig.data.join("scopes").join(&w.id).exists());
     }
@@ -1603,11 +1603,11 @@ mod tests {
         let w = world("enroll", 10, 20);
         let rig = Rig::new("enroll", &[&w.owner]);
         rig.publish(&w, 1);
-        let bagend = &w.bagend.device.sign;
-        assert_eq!(rig.get(bagend, &url(&w, "devices/")).status, 403);
-        let reply = rig.put(&w.rivendell.device.sign, &w.target(2), &w.files[1]);
+        let bywater = &w.bywater.device.sign;
+        assert_eq!(rig.get(bywater, &url(&w, "devices/")).status, 403);
+        let reply = rig.put(&w.rhosgobel.device.sign, &w.target(2), &w.files[1]);
         assert_eq!(reply.status, 201);
-        assert_eq!(rig.get(bagend, &url(&w, "devices/")).status, 200);
+        assert_eq!(rig.get(bywater, &url(&w, "devices/")).status, 200);
     }
 
     #[test]
@@ -1615,7 +1615,7 @@ mod tests {
         let w = world("skipped", 10, 20);
         let rig = Rig::new("skipped", &[&w.owner]);
         rig.publish(&w, 1);
-        let reply = rig.put(&w.rivendell.device.sign, &w.target(3), &w.files[2]);
+        let reply = rig.put(&w.rhosgobel.device.sign, &w.target(3), &w.files[2]);
         assert_eq!((reply.status, reply.error().as_str()), (409, "not-next"));
         assert!(!rig.data.join(transport::manifest_path(&w.id, 3)).exists());
     }
@@ -1625,7 +1625,7 @@ mod tests {
         let w = world("race", 10, 20);
         let rig = Rig::new("race", &[&w.owner]);
         rig.publish(&w, 1);
-        let key = &w.rivendell.device.sign;
+        let key = &w.rhosgobel.device.sign;
         assert_eq!(rig.put(key, &w.target(2), &w.files[1]).status, 201);
         let other = w.forged(1, |m| m.name.push_str("00"));
         let reply = rig.put(key, &w.target(2), &other);
@@ -1641,7 +1641,7 @@ mod tests {
         let rig = Rig::new("older", &[&w.owner]);
         rig.publish(&w, 3);
         let other = w.forged(1, |m| m.name.push_str("00"));
-        let reply = rig.put(&w.rivendell.device.sign, &w.target(2), &other);
+        let reply = rig.put(&w.rhosgobel.device.sign, &w.target(2), &other);
         assert_eq!((reply.status, reply.error().as_str()), (409, "exists"));
     }
 
@@ -1651,7 +1651,7 @@ mod tests {
         let rig = Rig::new("wrong_prev", &[&w.owner]);
         rig.publish(&w, 1);
         let bytes = w.forged(1, |m| m.prev = Some("0".repeat(64)));
-        let reply = rig.put(&w.rivendell.device.sign, &w.target(2), &bytes);
+        let reply = rig.put(&w.rhosgobel.device.sign, &w.target(2), &bytes);
         assert_eq!((reply.status, reply.error().as_str()), (422, "manifest"));
         let reply = rig.put(&nobody(), &w.target(2), &bytes);
         assert_eq!((reply.status, reply.error().as_str()), (422, "manifest"));
@@ -1660,7 +1660,7 @@ mod tests {
             (reply.status, reply.error().as_str()),
             (403, "not-admitted")
         );
-        let reply = rig.put(&w.bagend.device.sign, &w.target(2), &w.files[1]);
+        let reply = rig.put(&w.bywater.device.sign, &w.target(2), &w.files[1]);
         assert_eq!(reply.status, 201);
     }
 
@@ -1672,7 +1672,7 @@ mod tests {
         let reply = rig.put(&w.owner.sign, &w.target(2), &w.files[1]);
         assert_eq!(reply.status, 201);
         assert_eq!(
-            rig.get(&w.bagend.device.sign, &url(&w, "devices/")).status,
+            rig.get(&w.bywater.device.sign, &url(&w, "devices/")).status,
             200
         );
     }
@@ -1684,8 +1684,8 @@ mod tests {
         let w = world("segments", 10, 20);
         let rig = Rig::new("segments", &[&w.owner]);
         rig.publish(&w, 1);
-        let key = &w.rivendell.device.sign;
-        let (one, two) = (w.segment(&w.rivendell, 1), w.segment(&w.rivendell, 2));
+        let key = &w.rhosgobel.device.sign;
+        let (one, two) = (w.segment(&w.rhosgobel, 1), w.segment(&w.rhosgobel, 2));
         assert_eq!(rig.put(key, &one, b"one").status, 201);
         assert_eq!(rig.get(key, &one).body, b"one");
         assert_eq!(rig.put(key, &one, b"one").status, 200);
@@ -1695,7 +1695,7 @@ mod tests {
             (409, "exists")
         );
         assert_eq!(rig.get(key, &one).body, b"one");
-        let gap = rig.put(key, &w.segment(&w.rivendell, 3), b"three");
+        let gap = rig.put(key, &w.segment(&w.rhosgobel, 3), b"three");
         assert_eq!((gap.status, gap.error().as_str()), (409, "not-next"));
         assert_eq!(rig.put(key, &two, &[0xff, 0x00, b'{']).status, 201);
         assert_eq!(rig.get(key, &two).body, [0xff, 0x00, b'{']);
@@ -1707,12 +1707,12 @@ mod tests {
         let w = world("reads", 10, 20);
         let rig = Rig::new("reads", &[&w.owner]);
         rig.publish(&w, 3);
-        let key = &w.rivendell.device.sign;
+        let key = &w.rhosgobel.device.sign;
         let latest = rig.get(key, &url(&w, "manifest/latest"));
         assert_eq!(latest.body, w.files[2]);
         assert_eq!(latest.header("bilbo-manifest"), Some("3"));
         assert_eq!(rig.get(key, &w.target(2)).body, w.files[1]);
-        for target in [w.target(4), w.segment(&w.rivendell, 1)] {
+        for target in [w.target(4), w.segment(&w.rhosgobel, 1)] {
             let reply = rig.get(key, &target);
             assert_eq!(
                 (reply.status, reply.error().as_str()),
@@ -1721,10 +1721,10 @@ mod tests {
             );
         }
         assert_eq!(
-            rig.put(key, &w.segment(&w.rivendell, 1), b"one").status,
+            rig.put(key, &w.segment(&w.rhosgobel, 1), b"one").status,
             201
         );
-        let past = rig.get(key, &w.segment(&w.rivendell, 2));
+        let past = rig.get(key, &w.segment(&w.rhosgobel, 2));
         assert_eq!(past.status, 404);
     }
 
@@ -1733,7 +1733,7 @@ mod tests {
         let w = world("listings", 10, 20);
         let rig = Rig::new("listings", &[&w.owner]);
         rig.publish(&w, 2);
-        let (a, b) = (&w.rivendell, &w.bagend);
+        let (a, b) = (&w.rhosgobel, &w.bywater);
         for seq in 1..=3 {
             assert_eq!(
                 rig.put(&a.device.sign, &w.segment(a, seq), b"a").status,
@@ -1779,7 +1779,7 @@ mod tests {
         assert_eq!(reply.json(), json!({ "scopes": mine }));
         let theirs = rig.get(&second.owner.sign, "/v1/scopes/");
         assert_eq!(theirs.json(), json!({"scopes": [second.id]}));
-        let device = rig.get(&first.rivendell.device.sign, "/v1/scopes/");
+        let device = rig.get(&first.rhosgobel.device.sign, "/v1/scopes/");
         assert_eq!(
             (device.status, device.error().as_str()),
             (403, "not-admitted")
@@ -1793,14 +1793,14 @@ mod tests {
         let w = world("full", 10, 20);
         let rig = Rig::with("full", &[&w.owner], |f| f.max_scope_mb = 1);
         rig.publish(&w, 1);
-        let key = &w.rivendell.device.sign;
+        let key = &w.rhosgobel.device.sign;
         let big = vec![7u8; 1024 * 1024];
-        let reply = rig.put(key, &w.segment(&w.rivendell, 1), &big);
+        let reply = rig.put(key, &w.segment(&w.rhosgobel, 1), &big);
         assert_eq!((reply.status, reply.error().as_str()), (507, "quota"));
         assert!(rig.tmp_is_empty());
         assert_eq!(rig.get(key, &w.target(1)).body, w.files[0]);
         assert_eq!(
-            rig.put(key, &w.segment(&w.rivendell, 1), &big[..1000])
+            rig.put(key, &w.segment(&w.rhosgobel, 1), &big[..1000])
                 .status,
             201
         );
@@ -1811,8 +1811,8 @@ mod tests {
         let w = world("object_cap", 10, 20);
         let rig = Rig::with("object_cap", &[&w.owner], |f| f.max_object_mb = 1);
         rig.publish(&w, 1);
-        let key = &w.rivendell.device.sign;
-        let target = w.segment(&w.rivendell, 1);
+        let key = &w.rhosgobel.device.sign;
+        let target = w.segment(&w.rhosgobel, 1);
         let headers = own(sign::headers(key, "PUT", &target, rig.now(), b"x").unwrap());
         let mut stream = connect(rig.relay.port);
         stream
@@ -1830,7 +1830,7 @@ mod tests {
         let w = world("manifest_cap", 10, 20);
         let rig = Rig::new("manifest_cap", &[&w.owner]);
         let big = vec![b' '; 1024 * 1024 + 1];
-        let reply = rig.put(&w.rivendell.device.sign, &w.target(1), &big);
+        let reply = rig.put(&w.rhosgobel.device.sign, &w.target(1), &big);
         assert_eq!((reply.status, reply.error().as_str()), (413, "too-large"));
     }
 
@@ -1841,7 +1841,7 @@ mod tests {
         let rig = Rig::with("count", &[&first.owner], |f| f.max_scopes = 1);
         rig.publish(&first, 1);
         let reply = rig.put(
-            &second.rivendell.device.sign,
+            &second.rhosgobel.device.sign,
             &second.target(1),
             &second.files[0],
         );
@@ -1856,7 +1856,7 @@ mod tests {
         let w = world("mailbox", 10, 20);
         let rig = Rig::new("mailbox", &[&w.owner]);
         rig.publish(&w, 1);
-        let key = &w.rivendell.device.sign;
+        let key = &w.rhosgobel.device.sign;
         assert_eq!(rig.put(key, "/v1/pair/42/a.msg", b"hello").status, 201);
         assert_eq!(
             rig.send("PUT", "/v1/pair/42/b.msg", &[], b"reply").status,
@@ -1987,7 +1987,7 @@ mod tests {
         }
         let recorded = |relay: &Direct| relay.state.nonces.seen.lock().unwrap().at.len();
         assert_eq!(recorded(&relay), 0);
-        let key = &w.rivendell.device.sign;
+        let key = &w.rhosgobel.device.sign;
         assert_eq!(
             relay
                 .get(Some(key), &url(&w, "devices/"), "127.0.0.1")
@@ -2009,7 +2009,7 @@ mod tests {
         }
         let fifth = relay.get(Some(&stranger), "/v1/pair/5/b.msg", "10.0.0.3");
         assert_eq!((fifth.status, reason_of(&fifth).as_str()), (429, "rate"));
-        let key = &w.rivendell.device.sign;
+        let key = &w.rhosgobel.device.sign;
         for nameplate in 1..=8 {
             let target = format!("/v1/pair/{nameplate}/b.msg");
             assert_eq!(relay.get(Some(key), &target, "10.0.0.3").status, 404);
@@ -2022,7 +2022,7 @@ mod tests {
         let held = BTreeMap::from([(w.id.clone(), w.held(1, &[]))]);
         let relay = Direct::with("unverified_put", &[&w.owner], held, |f| f.max_scope_mb = 1);
         let body = vec![1u8; 600_000];
-        let target = w.segment(&w.rivendell, 1);
+        let target = w.segment(&w.rhosgobel, 1);
         let reserved = || {
             relay
                 .state
@@ -2060,7 +2060,7 @@ mod tests {
             .settle(Response::error(507, "quota"), &request, &shown);
         assert_eq!(relay.lines().len(), 2);
         assert!(relay.lines()[1].starts_with("failed 507 quota PUT segment"));
-        let key = &w.rivendell.device.sign;
+        let key = &w.rhosgobel.device.sign;
         let own = relay.request("PUT", &target, Some(key), &body, "127.0.0.1");
         assert!(matches!(relay.state.head(&own), Head::Read));
         assert_eq!(reserved(), 600_000);
@@ -2076,7 +2076,7 @@ mod tests {
         let request = relay.request(
             "GET",
             &target,
-            Some(&w.rivendell.device.sign),
+            Some(&w.rhosgobel.device.sign),
             b"",
             "127.0.0.1",
         );
@@ -2097,7 +2097,7 @@ mod tests {
         let w = world("mailbox_507", 10, 20);
         let held = BTreeMap::from([(w.id.clone(), w.held(1, &[]))]);
         let relay = Direct::new("mailbox_507", &[&w.owner], held);
-        let key = &w.rivendell.device.sign;
+        let key = &w.rhosgobel.device.sign;
         for name in ["a", "b", "c", "d", "e", "f", "g", "h"] {
             let target = format!("/v1/pair/np-zzqx/{name}.msg");
             let request = relay.request("PUT", &target, Some(key), b"x", "127.0.0.1");
@@ -2135,10 +2135,10 @@ mod tests {
     #[test]
     fn a_long_folder_is_listed_a_page_at_a_time() {
         let w = world("page", 10, 20);
-        let held = BTreeMap::from([(w.id.clone(), w.held(1, &[(&w.rivendell, 2500)]))]);
+        let held = BTreeMap::from([(w.id.clone(), w.held(1, &[(&w.rhosgobel, 2500)]))]);
         let relay = Direct::new("page", &[&w.owner], held);
-        let key = &w.rivendell.device.sign;
-        let device = w.rivendell.device.id();
+        let key = &w.rhosgobel.device.sign;
+        let device = w.rhosgobel.device.id();
         let page = |after: u64| {
             let target = url(&w, &format!("devices/{device}/?after={after}"));
             json_of(&relay.get(Some(key), &target, "127.0.0.1"))
@@ -2188,15 +2188,15 @@ mod tests {
         let body = vec![1u8; 600_000];
         let first = relay.request(
             "PUT",
-            &w.segment(&w.rivendell, 1),
-            Some(&w.rivendell.device.sign),
+            &w.segment(&w.rhosgobel, 1),
+            Some(&w.rhosgobel.device.sign),
             &body,
             "127.0.0.1",
         );
         let second = relay.request(
             "PUT",
-            &w.segment(&w.bagend, 1),
-            Some(&w.bagend.device.sign),
+            &w.segment(&w.bywater, 1),
+            Some(&w.bywater.device.sign),
             &body,
             "127.0.0.1",
         );
@@ -2239,7 +2239,7 @@ mod tests {
         let stranger = nobody();
         let request = relay.request(
             "PUT",
-            &w.segment(&w.rivendell, 1),
+            &w.segment(&w.rhosgobel, 1),
             Some(&stranger),
             &body,
             "127.0.0.1",
@@ -2251,7 +2251,7 @@ mod tests {
         );
         let mut forged = relay.request(
             "PUT",
-            &w.segment(&w.rivendell, 1),
+            &w.segment(&w.rhosgobel, 1),
             Some(&stranger),
             &body,
             "127.0.0.1",
@@ -2277,7 +2277,7 @@ mod tests {
             nonce[..8].copy_from_slice(&i.to_le_bytes());
             relay.state.nonces.accept(&[1; 32], &nonce, T0).unwrap();
         }
-        let key = &w.rivendell.device.sign;
+        let key = &w.rhosgobel.device.sign;
         let target = url(&w, "devices/");
         let busy = relay.get(Some(key), &target, "127.0.0.1");
         assert_eq!((busy.status, reason_of(&busy).as_str()), (503, "busy"));
@@ -2309,15 +2309,15 @@ mod tests {
         let w = world("log_creates", 10, 20);
         let rig = Rig::new("log_creates", &[&w.owner]);
         rig.publish(&w, 1);
-        let device = w.rivendell.device.id();
+        let device = w.rhosgobel.device.id();
         let size = w.files[0].len();
         assert_eq!(
             rig.lines(),
             vec![format!("manifest {} {device} 1 {size}", w.id)]
         );
-        let key = &w.rivendell.device.sign;
+        let key = &w.rhosgobel.device.sign;
         assert_eq!(
-            rig.put(key, &w.segment(&w.rivendell, 1), b"seg-bytes")
+            rig.put(key, &w.segment(&w.rhosgobel, 1), b"seg-bytes")
                 .status,
             201
         );
@@ -2346,8 +2346,8 @@ mod tests {
         let w = world("log_quiet", 10, 20);
         let rig = Rig::new("log_quiet", &[&w.owner]);
         rig.publish(&w, 1);
-        let key = &w.rivendell.device.sign;
-        let seg = w.segment(&w.rivendell, 1);
+        let key = &w.rhosgobel.device.sign;
+        let seg = w.segment(&w.rhosgobel, 1);
         assert_eq!(rig.put(key, &seg, b"one").status, 201);
         let before = rig.lines().len();
         assert_eq!(rig.put(key, &seg, b"one").status, 200);
@@ -2356,7 +2356,7 @@ mod tests {
             assert_eq!(rig.get(key, &url(&w, "devices/")).status, 200);
             assert_eq!(rig.get(key, &url(&w, "manifest/latest")).status, 200);
         }
-        assert_eq!(rig.get(key, &w.segment(&w.rivendell, 2)).status, 404);
+        assert_eq!(rig.get(key, &w.segment(&w.rhosgobel, 2)).status, 404);
         assert_eq!(rig.lines().len(), before);
     }
 
@@ -2366,16 +2366,16 @@ mod tests {
         let rig = Rig::new("log_refusals", &[&w.owner]);
         rig.publish(&w, 3);
         let before = rig.lines().len();
-        let key = &w.rivendell.device.sign;
-        let theirs = w.segment(&w.bagend, 1);
+        let key = &w.rhosgobel.device.sign;
+        let theirs = w.segment(&w.bywater, 1);
         assert_eq!(rig.put(key, &theirs, b"x").status, 403);
         assert_eq!(rig.get(&nobody(), &url(&w, "devices/")).status, 403);
         assert_eq!(
-            rig.get(&w.bagend.device.sign, &url(&w, "devices/")).status,
+            rig.get(&w.bywater.device.sign, &url(&w, "devices/")).status,
             403
         );
         assert_eq!(rig.put(key, &w.target(5), &w.files[2]).status, 409);
-        assert_eq!(rig.get(key, &w.segment(&w.rivendell, 5)).status, 404);
+        assert_eq!(rig.get(key, &w.segment(&w.rhosgobel, 5)).status, 404);
         assert_eq!(rig.get(&w.owner.sign, &url(&w, "devices/")).status, 403);
         let lines = rig.lines();
         assert_eq!(
@@ -2384,7 +2384,7 @@ mod tests {
                 format!(
                     "refused 403 not-admitted PUT segment {} {}",
                     w.id,
-                    w.bagend.device.id()
+                    w.bywater.device.id()
                 ),
                 format!("refused 409 not-next PUT manifest {}", w.id),
                 format!("refused 403 not-admitted GET devices {}", w.id),
@@ -2398,15 +2398,15 @@ mod tests {
         let rig = Rig::with("log_failed", &[&w.owner], |f| f.max_scope_mb = 1);
         rig.publish(&w, 1);
         let big = vec![7u8; 1024 * 1024];
-        let key = &w.rivendell.device.sign;
-        assert_eq!(rig.put(key, &w.segment(&w.rivendell, 1), &big).status, 507);
+        let key = &w.rhosgobel.device.sign;
+        assert_eq!(rig.put(key, &w.segment(&w.rhosgobel, 1), &big).status, 507);
         let lines = rig.lines();
         assert_eq!(
             lines.last().unwrap(),
             &format!(
                 "failed 507 quota PUT segment {} {}",
                 w.id,
-                w.rivendell.device.id()
+                w.rhosgobel.device.id()
             )
         );
     }
@@ -2430,10 +2430,10 @@ mod tests {
         let held = BTreeMap::from([(w.id.clone(), w.held(1, &[]))]);
         let relay = Direct::new("finish", &[&w.owner], held);
         let body = vec![1u8; 1000];
-        let key = &w.rivendell.device.sign;
+        let key = &w.rhosgobel.device.sign;
         let request = relay.request(
             "PUT",
-            &w.segment(&w.rivendell, 1),
+            &w.segment(&w.rhosgobel, 1),
             Some(key),
             &body,
             "127.0.0.1",
@@ -2500,7 +2500,7 @@ mod tests {
         let w = world("log_private", 10, 20);
         let rig = Rig::new("log_private", &[&w.owner]);
         rig.publish(&w, 1);
-        let key = &w.rivendell.device.sign;
+        let key = &w.rhosgobel.device.sign;
         assert_eq!(
             rig.put(key, "/v1/pair/np-zzqx/a.msg", b"SECRETBYTES")
                 .status,
@@ -2527,7 +2527,7 @@ mod tests {
             403
         );
         assert_eq!(
-            rig.put(key, &w.segment(&w.rivendell, 1), b"SECRETSEGMENT")
+            rig.put(key, &w.segment(&w.rhosgobel, 1), b"SECRETSEGMENT")
                 .status,
             201
         );

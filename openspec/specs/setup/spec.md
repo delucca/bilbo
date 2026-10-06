@@ -1,7 +1,7 @@
 # setup Specification
 
 ## Purpose
-How `bilbo setup` turns a `bilbo` binary on PATH into a working install: the store folder, the config and embedder key, the agent plugin at the binary's own version, and the index timer. It covers both the interactive wizard and the non-interactive mode that scripts and the home-manager module use.
+How `bilbo setup` turns a `bilbo` binary on PATH into a working install: the store folder, the config and embedder key, the local embedder when asked, the agent plugin at the binary's own version with its Codex hook trust, the index timer, the watch service, and the check of each syncing scope, which the wizard can also turn on. It covers `--remove`, and both the interactive wizard and the non-interactive mode that scripts and the home-manager module use.
 
 ## Requirements
 
@@ -201,7 +201,7 @@ When the config path is a symbolic link, or its folder is not writable, `setup` 
 - **THEN** the config line says `kept: managed elsewhere (<target>)`, the model and server lines say `installed`, and the exit code is 0
 
 #### Scenario: A managed config that points elsewhere
-- **WHEN** the config path is a link to a file setting `embedder.url = http://bagend:8081`, and a user runs `bilbo setup --yes --embedder-local`
+- **WHEN** the config path is a link to a file setting `embedder.url = http://embedder.example:8081`, and a user runs `bilbo setup --yes --embedder-local`
 - **THEN** bilbo prints a message naming the config path to stderr, exits 2, and writes nothing
 
 ### Requirement: Embedder choices
@@ -422,7 +422,7 @@ After a successful apply that leaves an embedder configured, the wizard SHALL of
 The flake SHALL export `homeManagerModules.default` with `programs.bilbo.enable`, `package`, `storeRoot` (a path exported as `BILBO_HOME`, or null for the default root), `settings` (embedder, digest, history, scope and sync keys to string values; a scope key is accepted only in the shape the `config` spec's Scope settings allow), `index.enable`, `index.every`, `watch.enable` (true by default), `claude` and `codex` (a path, or null for PATH), and `localEmbedder.enable`, `localEmbedder.port` and `localEmbedder.llamaServer` (nixpkgs' `llama-server` by default). When enabled, it SHALL install the package, write `settings` as the config file, and on activation run `bilbo setup --yes` with the matching flags, `--no-watch` among them when `watch.enable` is false. With `localEmbedder.enable`, the settings' URL and model SHALL default to the local embedder's, and activation SHALL pass `--embedder-local`, `--embedder-port` and `--llama-server`; an `embedder.url` other than the local one SHALL fail evaluation. Activation does not read session variables, so the module SHALL pass the locations explicitly: `BILBO_HOME` from `storeRoot` (unset when null), `BILBO_CONFIG` unset, and `XDG_CONFIG_HOME`, `XDG_DATA_HOME`, `XDG_CACHE_HOME` and `XDG_STATE_HOME` from home-manager's `xdg` folders. It SHALL also put `launchctl` (macOS) or `systemctl` (Linux) on the PATH it gives `setup`. A key in `embedder.token_env` with `index.enable` SHALL fail evaluation. The module SHALL work without the flake's `home-manager` input, which only its flake check reads.
 
 #### Scenario: Settings become the config
-- **WHEN** a configuration sets `programs.bilbo.settings."embedder.url" = "http://bagend:8081"` and `"embedder.model" = "qwen3"`
+- **WHEN** a configuration sets `programs.bilbo.settings."embedder.url" = "http://embedder.example:8081"` and `"embedder.model" = "qwen3"`
 - **THEN** after activation `~/.config/bilbo/config` is a link whose file holds those two lines, and `bilbo setup` reports it as managed elsewhere
 
 #### Scenario: Digest settings from Nix
@@ -474,7 +474,7 @@ The flake SHALL export `homeManagerModules.default` with `programs.bilbo.enable`
 - **THEN** the config holds `embedder.url = http://127.0.0.1:8737`, `embedder.model = qwen3-embedding-0.6b` and the Qwen `embedder.query_prefix` (`"Instruct: Given a question, retrieve notes that answer it\nQuery: "`), and activation runs `bilbo setup --yes --embedder-local --embedder-port 8737 --llama-server <nixpkgs llama-server>`
 
 #### Scenario: The local embedder with another URL fails evaluation
-- **WHEN** a configuration sets `programs.bilbo.localEmbedder.enable = true` and `programs.bilbo.settings."embedder.url" = "http://bagend:8081"`
+- **WHEN** a configuration sets `programs.bilbo.localEmbedder.enable = true` and `programs.bilbo.settings."embedder.url" = "http://embedder.example:8081"`
 - **THEN** evaluation fails with a message naming `localEmbedder.enable` and `embedder.url`
 
 ### Requirement: Codex hook trust
@@ -492,8 +492,8 @@ When the codex step leaves `bilbo@bilbo` installed (`installed`, `updated` or `k
 - **WHEN** a new bilbo release changes the hook's command, so Codex lists it as changed since it was trusted
 - **THEN** setup writes the new trust and the hook line says `updated: trusted in Codex`
 
-#### Scenario: A release that adds a hook
-- **WHEN** setup trusted the digest hook for an earlier release, and the installed release adds the compaction hook, which Codex lists as untrusted
+#### Scenario: One hook is untrusted
+- **WHEN** Codex lists the digest hook as trusted and the compaction hook as untrusted
 - **THEN** setup writes trust for the compaction hook only, leaves the digest hook's trust as it was, and the hook line says `installed: trusted in Codex`
 
 #### Scenario: An unknown trust status is not trusted
@@ -618,7 +618,7 @@ After the watcher's question, the wizard SHALL ask whether to sync notes between
 - **THEN** the wizard says `https://example.org is not a bilbo relay` and asks again
 
 #### Scenario: Plain HTTP to another host
-- **WHEN** the user enters `http://bree:8738`
+- **WHEN** the user enters `http://relay.example:8738`
 - **THEN** the wizard says plain `http://` reaches only a loopback host, sends no request, and asks again
 
 ### Requirement: Applying sync from the wizard

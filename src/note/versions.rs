@@ -45,11 +45,10 @@ pub const LEFT: &str = "left";
 const AT_FORMAT: &str = "%Y-%m-%dT%H:%M:%S%:z";
 
 /// One line of a note's log. Fields a reader does not know are ignored, and an event it does not know is kept as is.
-/// The fields after `at` stay out of the id and are written only when set, so a local version's line is as before.
+/// The fields after `at` stay out of the id and are written only when set.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Version {
     pub version: String,
-    #[serde(default)]
     pub parents: Vec<String>,
     pub file: String,
     /// The SHA-256 of the content, or `DELETED`.
@@ -446,7 +445,7 @@ fn append_line(lock: &Lock, note_id: &str, entry: &impl Serialize) -> Result<(),
         .map_err(|e| io_message("append to", &path, &e))
 }
 
-/// The parent a change 1 log gives its next version: the id of the last line, none for an empty log. A log that
+/// The parent a linear log gives its next version: the id of the last line, none for an empty log. A log that
 /// holds several heads has no such parent, so a caller that knows the head the file held passes that instead.
 pub fn last_parents(root: &Path, note_id: &str) -> Result<Vec<String>, String> {
     Ok(load(root, note_id)?
@@ -1213,7 +1212,7 @@ mod tests {
         resolve(root, arg, &scan(&root.join("notes")).unwrap())
     }
 
-    /// `record` after the log's last line, as change 1's linear logs did.
+    /// `record` after the log's last line, as in a linear log.
     fn rec(
         lock: &Lock,
         note_id: &str,

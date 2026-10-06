@@ -1,3 +1,5 @@
+//! `bilbo check`: every problem in the store's notes and library, one line each; it changes nothing.
+
 use std::collections::BTreeMap;
 use std::path::Path;
 

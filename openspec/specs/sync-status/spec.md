@@ -9,35 +9,35 @@
 `bilbo sync` SHALL print, in order: per syncing scope by name, `scope <name> <url>: <n> notes, pushed <time>, pulled <time>` and a `device <scope name> <device name>: <state>` line per device of its latest manifest; `local: <n> notes sync nowhere`; by file, `conflict notes/<file>: <n> passages` and `dropped notes/<file>: <n> lines not declared` (`passage`, `line` for one); `notice <time> notes/<file>: <flag>` per flag of the last 7 days; and `change <time> <name>: device <device name> added by <signer> (manifest <n>)` or `change <time> <name>: epoch changed (manifest <n>)` per manifest change of the last 30 days that this device did not write. `<time>` is in the `created` form, or `never`.
 
 #### Scenario: Two devices, in step
-- **WHEN** this device and `bagend` sync `personal` with 212 notes, 188 notes have no scope, and nothing is open
-- **THEN** stdout is `scope personal file:///srv/bilbo: 212 notes, pushed <time>, pulled <time>`, `device personal rivendell: this device`, `device personal bagend: up to date` and `local: 188 notes sync nowhere`, and the exit code is 0
+- **WHEN** this device and `bywater` sync `personal` with 42 notes, 17 notes have no scope, and nothing is open
+- **THEN** stdout is `scope personal file:///srv/bilbo: 42 notes, pushed <time>, pulled <time>`, `device personal rhosgobel: this device`, `device personal bywater: up to date` and `local: 17 notes sync nowhere`, and the exit code is 0
 
 #### Scenario: An open conflict
 - **WHEN** `notes/gotcha-nix.md` holds an open conflict in one passage
 - **THEN** stdout holds `conflict notes/gotcha-nix.md: 1 passage` and the exit code is 1
 
 #### Scenario: A device added on another machine
-- **WHEN** `moria` was added to `personal` by `bilbo device recover` on `moria` 3 days ago
-- **THEN** stdout holds `change <that time> personal: device moria added by owner key (manifest 4)`, so the user can revoke `moria` if they do not know it
+- **WHEN** `morthond` was added to `personal` by `bilbo device recover` on `morthond` 3 days ago
+- **THEN** stdout holds `change <that time> personal: device morthond added by owner key (manifest 4)`, so the user can revoke `morthond` if they do not know it
 
 #### Scenario: A flag from yesterday
-- **WHEN** an edit from `bagend` brought back a note deleted here yesterday
+- **WHEN** an edit from `bywater` brought back a note deleted here yesterday
 - **THEN** stdout holds a `notice` line naming the file and `edit-beat-delete`
 
 ### Requirement: Device states
 A device's state SHALL be `this device`; `up to date` when it acknowledged every segment of this device that holds versions; `behind by <n> segments` when it did not; or `stale since <time>` when one of them was written more than `sync.stale_days` ago by this device's clock, `<time>` being when this device wrote the oldest. Versions held back because a version they follow has not arrived SHALL add `waiting <scope name> <device name>: <n> versions`.
 
 #### Scenario: A laptop that was closed for a week
-- **WHEN** `moria` has not acknowledged this device's last 4 segments, the oldest from 7 days ago, and `sync.stale_days` is 180
-- **THEN** its line is `device personal moria: behind by 4 segments`
+- **WHEN** `morthond` has not acknowledged this device's last 4 segments, the oldest from 7 days ago, and `sync.stale_days` is 180
+- **THEN** its line is `device personal morthond: behind by 4 segments`
 
 #### Scenario: A device gone for good
-- **WHEN** `moria` has not acknowledged a segment from 200 days ago and `sync.stale_days` is 180
+- **WHEN** `morthond` has not acknowledged a segment from 200 days ago and `sync.stale_days` is 180
 - **THEN** its line ends with `stale since <the time this device wrote that segment>`
 
 #### Scenario: A device with a wrong clock
-- **WHEN** `moria`'s clock runs a year behind and it acknowledges every segment within minutes
-- **THEN** its line is `device personal moria: up to date`
+- **WHEN** `morthond`'s clock runs a year behind and it acknowledges every segment within minutes
+- **THEN** its line is `device personal morthond: up to date`
 
 ### Requirement: Status exit code and problems
 `bilbo sync` SHALL exit 1 when a conflict or undeclared dropped text is open, a scope's transport failed or was full at its last attempt, watch stopped a scope (a pinned transport that differs from the config, a replaced confirmed manifest, a removed device), reading a device stopped at a missing or failing segment, or no `bilbo watch` runs against the store, and 0 otherwise. A stopped scope SHALL add watch's line for it to stderr. A stopped device SHALL add `bilbo: sync <name>: <device name> stopped at segment <seq>: <reason>` to stderr; when the segment fails to verify on a transport where its writer cannot replace it, the line SHALL end `; on <device name>, copy <root>/.bilbo/scopes/<scope id>/out/<seq>.seg over it`. A failed transport SHALL add `bilbo: sync <name>: <url> not reachable since <time>: <reason>` to stderr, and a full one `bilbo: sync <name>: full since <time>: <the transport's message>`. No running watcher SHALL add `bilbo: bilbo watch is not running; nothing syncs` to stderr.
@@ -47,8 +47,8 @@ A device's state SHALL be `this device`; `up to date` when it acknowledged every
 - **THEN** stderr names the URL and the reason, stdout still lists the scope, and the exit code is 1
 
 #### Scenario: A reader stuck at a gap
-- **WHEN** this device's last poll stopped reading `bagend` at a missing segment 3
-- **THEN** stderr holds `bilbo: sync personal: bagend stopped at segment 3: missing`, and the exit code is 1
+- **WHEN** this device's last poll stopped reading `bywater` at a missing segment 3
+- **THEN** stderr holds `bilbo: sync personal: bywater stopped at segment 3: missing`, and the exit code is 1
 
 #### Scenario: A pinned transport that differs
 - **WHEN** watch stopped `personal` because its manifest pins another URL than the config

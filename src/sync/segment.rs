@@ -965,7 +965,7 @@ mod tests {
     #[test]
     fn a_left_record_reads_back_with_the_placeholders() {
         let left = serde_json::json!({
-            "note": ulid(1), "version": "c".repeat(64), "event": "left", "at": "t",
+            "note": ulid(1), "version": "c".repeat(64), "parents": [], "event": "left", "at": "t",
             "file": "../../left.md", "blob": "zz"
         });
         let record = Record::try_from(left).unwrap();

@@ -22,7 +22,7 @@ A note SHALL sync in scope `<name>` when its file's frontmatter holds `scope: <n
 
 #### Scenario: No device key
 - **WHEN** `scope.personal.sync` is a URL and the device has no key
-- **THEN** watch prints `bilbo: sync personal: no device key; run bilbo device init or bilbo device recover` once, records history as before, and pushes nothing
+- **THEN** watch prints `bilbo: sync personal: no device key; run bilbo device init or bilbo device recover` once, keeps recording history, and pushes nothing
 
 ### Requirement: Sync runs inside watch
 `bilbo watch` SHALL sync every syncing scope while it runs, printing `bilbo: syncing <name> through <url>` per scope at start. It SHALL push a version as soon as it records it, and look for other devices' segments every `sync.poll_seconds`. It SHALL sync a scope only while the config URL matches the latest manifest's `transport` under the `scope-manifest` spec's Pinned transport requirement, and else print the pin line below and sync nothing for it. At the start of every sync cycle it SHALL read the config, the device keys and the local manifests again, so a config edit or a `bilbo device` command takes effect without a restart. Without a syncing scope, watch SHALL behave as the `note-watch` spec says and touch no transport.
@@ -207,18 +207,18 @@ A device SHALL sync a scope only while the latest valid manifest version lists i
 - **THEN** B's keys are unchanged, the latest `personal` version lists B, and B's watch syncs `personal` within one cycle
 
 ### Requirement: Manifest changes are shown
-When watch adopts a manifest version this device did not write and that is valid under the `scope-manifest` spec, including its Chain check by a member, it SHALL do so, and for each device the version adds print `bilbo: sync <name>: device <device name> added by <signer> (manifest <n>)` once, and for a new epoch `bilbo: sync <name>: epoch changed (manifest <n>)` once. `<signer>` is the writing device's name when the version names it, else `owner key`. It SHALL keep these changes for `bilbo sync` to list for 30 days.
+When watch adopts a manifest version this device did not write and that is valid under the `scope-manifest` spec, including its Chain check by a member, it SHALL do so, and for each device the version adds print `bilbo: sync <name>: device <device name> added by <signer> (manifest <n>)` once, and for a new epoch `bilbo: sync <name>: epoch changed (manifest <n>)` once. `<signer>` is `owner key`, because a manifest version does not name the device that wrote it. It SHALL keep these changes for `bilbo sync` to list for 30 days.
 
 #### Scenario: A device added elsewhere
-- **WHEN** a new device `moria` runs `bilbo device recover` with the phrase, writing manifest 4 of `personal` that adds it, and A's watch adopts it
-- **THEN** A's stderr holds `bilbo: sync personal: device moria added by owner key (manifest 4)` once, A syncs with `moria`, and `bilbo sync` on A lists the change for 30 days
+- **WHEN** a new device `morthond` runs `bilbo device recover` with the phrase, writing manifest 4 of `personal` that adds it, and A's watch adopts it
+- **THEN** A's stderr holds `bilbo: sync personal: device morthond added by owner key (manifest 4)` once, A syncs with `morthond`, and `bilbo sync` on A lists the change for 30 days
 
 #### Scenario: An epoch nobody here revoked for
 - **WHEN** a version this device did not write moves `personal` to a new epoch
 - **THEN** watch adopts it, prints `bilbo: sync personal: epoch changed (manifest <n>)` once, and `bilbo sync` lists it
 
 #### Scenario: Own versions are not reported
-- **WHEN** this device runs `bilbo device revoke bagend`, writing manifest 5 with a new epoch
+- **WHEN** this device runs `bilbo device revoke bywater`, writing manifest 5 with a new epoch
 - **THEN** watch publishes it and prints no added or epoch line for it
 
 ### Requirement: One scope per name

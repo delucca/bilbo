@@ -730,16 +730,16 @@ fn history_ignores_the_config() {
     assert_eq!(run.stdout.lines().count(), 2);
 }
 
-const RIVENDELL: &str = "gr2q7gf5lh6pzfdnurnkvputhp";
-const BAGEND: &str = "wyxim75c6m5p4ywv22ywilqweh";
+const RHOSGOBEL: &str = "gr2q7gf5lh6pzfdnurnkvputhp";
+const BYWATER: &str = "wyxim75c6m5p4ywv22ywilqweh";
 
 fn hex(c: char) -> String {
     c.to_string().repeat(64)
 }
 
-/// Copies the fixture store's scope folder, which lists `rivendell` and `bagend`, under `<root>/.bilbo/scopes/`.
+/// Copies the fixture store's scope folder, which lists `rhosgobel` and `bywater`, under `<root>/.bilbo/scopes/`.
 fn with_manifest(root: &Path) {
-    let scope = "ho5qmsdzujmpbxetyxwzdgqz64";
+    let scope = "5wdimrj6nm6qlhvdto4qvgz5qy";
     let from = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("tests/fixtures/device/store/.bilbo/scopes")
         .join(scope)
@@ -812,7 +812,7 @@ fn a_version_from_another_device_names_it() {
                 "edited",
                 "decision-release.md",
                 hex('2'),
-                serde_json::json!({"device": BAGEND}),
+                serde_json::json!({"device": BYWATER}),
             ),
             (
                 hex('c'),
@@ -835,7 +835,7 @@ fn a_version_from_another_device_names_it() {
         "{lines:?}"
     );
     assert!(
-        lines[1].ends_with(" edited decision-release.md from bagend"),
+        lines[1].ends_with(" edited decision-release.md from bywater"),
         "{lines:?}"
     );
     assert!(
@@ -858,14 +858,14 @@ fn a_device_shows_as_its_id_without_a_manifest() {
             "edited",
             "decision-release.md",
             hex('1'),
-            serde_json::json!({"device": RIVENDELL}),
+            serde_json::json!({"device": RHOSGOBEL}),
         )],
     );
     let run = history(&root, &["release"]);
     assert!(
         run.stdout
             .trim_end()
-            .ends_with(&format!("edited decision-release.md from {RIVENDELL}")),
+            .ends_with(&format!("edited decision-release.md from {RHOSGOBEL}")),
         "{}",
         run.stdout
     );
@@ -894,7 +894,7 @@ fn a_merge_with_a_conflict_is_flagged() {
                 "edited",
                 "decision-release.md",
                 hex('2'),
-                serde_json::json!({"device": BAGEND}),
+                serde_json::json!({"device": BYWATER}),
             ),
             (
                 hex('c'),
@@ -916,7 +916,7 @@ fn a_merge_with_a_conflict_is_flagged() {
         "{lines:?}"
     );
     assert!(
-        lines[1].ends_with(" edited decision-release.md from bagend"),
+        lines[1].ends_with(" edited decision-release.md from bywater"),
         "{lines:?}"
     );
 }
@@ -944,7 +944,7 @@ fn flags_and_dropped_text_are_listed_together() {
                 "decision-release.md",
                 hex('2'),
                 serde_json::json!({
-                    "device": RIVENDELL,
+                    "device": RHOSGOBEL,
                     "flags": ["stale-base", "key-kept"],
                     "dropped": [{"passage": "# Release", "lines": ["x"]}],
                 }),
@@ -959,7 +959,7 @@ fn flags_and_dropped_text_are_listed_together() {
         .to_string();
     assert!(
         first.ends_with(&format!(
-            " merged decision-release.md from {RIVENDELL} [stale-base, key-kept, dropped]"
+            " merged decision-release.md from {RHOSGOBEL} [stale-base, key-kept, dropped]"
         )),
         "{first}"
     );

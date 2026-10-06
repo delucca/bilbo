@@ -73,8 +73,8 @@ A note SHALL open with a line holding exactly `---`, then its keys, then a secon
 - **WHEN** a note's frontmatter holds `id`, `created` and `scope: work`
 - **THEN** the frontmatter is valid
 
-#### Scenario: A removed key is invalid
-- **WHEN** a note's frontmatter also holds `kind: decision`, `supersedes: ...` or `project: bilbo`
+#### Scenario: An unknown key is invalid
+- **WHEN** a note's frontmatter also holds `kind: decision`, `tags: [a]` or `project: bilbo`
 - **THEN** the note is invalid, and the problem names that key
 
 #### Scenario: Two scope lines are invalid

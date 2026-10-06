@@ -1174,7 +1174,7 @@ fn a_first_device_syncs_through_a_new_folder() {
     b.manager();
     let folder = b.folder("bilbo-sync");
     let mut p = new_owner(&folder);
-    let run = wizard_as(&b, &mut p, &mut Script::working(), Some("rivendell"));
+    let run = wizard_as(&b, &mut p, &mut Script::working(), Some("rhosgobel"));
     assert!(
         report(&run).contains(&ok_line("personal", &folder, 0)),
         "{:?}",
@@ -1225,7 +1225,7 @@ fn the_phrase_is_asked_for_three_words_and_never_reaches_the_summary() {
     let b = boxed("sync-first-words");
     b.manager();
     let mut p = new_owner(&b.folder("f"));
-    let run = wizard_as(&b, &mut p, &mut Script::working(), Some("rivendell"));
+    let run = wizard_as(&b, &mut p, &mut Script::working(), Some("rhosgobel"));
     assert!(run.result.is_ok());
     let words = p.phrase().unwrap();
     let asked = p.shown.iter().filter(|s| s.starts_with("Word ")).count();
@@ -1254,7 +1254,7 @@ fn declining_after_the_phrase_writes_no_key_no_folder_and_no_config() {
     p.confirms
         .retain(|(text, _)| *text != "Apply these changes?");
     p.confirms.push(("Apply these changes?", false));
-    let run = wizard_as(&b, &mut p, &mut Script::working(), Some("rivendell"));
+    let run = wizard_as(&b, &mut p, &mut Script::working(), Some("rhosgobel"));
     assert_eq!(refused(run), "setup cancelled; nothing changed");
     assert!(
         p.shown
@@ -1274,14 +1274,14 @@ fn interrupting_at_the_summary_after_the_phrase_writes_nothing() {
     let before = b.snapshot();
     let folder = b.folder("never");
     let mut counting = new_owner(&folder);
-    let counted = wizard_as(&b, &mut counting, &mut Script::working(), Some("rivendell"));
+    let counted = wizard_as(&b, &mut counting, &mut Script::working(), Some("rhosgobel"));
     assert!(counted.result.is_ok());
     let last = counting.at_confirm.unwrap();
     let b = boxed("sync-interrupt-run");
     b.manager();
     let mut p = new_owner(&folder);
     p.interrupt_at = Some(last);
-    let run = wizard_as(&b, &mut p, &mut Script::working(), Some("rivendell"));
+    let run = wizard_as(&b, &mut p, &mut Script::working(), Some("rhosgobel"));
     assert_eq!(refused(run), "setup cancelled; nothing changed");
     assert!(b.identity().is_none());
     assert!(!b.config().exists());
@@ -1295,7 +1295,7 @@ fn a_second_device_joins_the_scope_with_the_first_ones_phrase() {
     let folder = first.folder("shared-folder");
     let mut p = new_owner(&folder);
     assert!(
-        wizard_as(&first, &mut p, &mut Script::working(), Some("rivendell"))
+        wizard_as(&first, &mut p, &mut Script::working(), Some("rhosgobel"))
             .result
             .is_ok()
     );
@@ -1315,7 +1315,7 @@ fn a_second_device_joins_the_scope_with_the_first_ones_phrase() {
         typed: words,
         ..Scripted::default()
     };
-    let run = wizard_as(&second, &mut q, &mut Script::working(), Some("bagend"));
+    let run = wizard_as(&second, &mut q, &mut Script::working(), Some("bywater"));
     assert!(
         report(&run).contains(&ok_line("personal", &folder, 0)),
         "{:?}",
@@ -1349,7 +1349,7 @@ fn only_the_picked_scope_is_copied_and_joined() {
     let folder = first.folder("f");
     let mut p = new_owner(&folder);
     assert!(
-        wizard_as(&first, &mut p, &mut Script::working(), Some("rivendell"))
+        wizard_as(&first, &mut p, &mut Script::working(), Some("rhosgobel"))
             .result
             .is_ok()
     );
@@ -1366,7 +1366,7 @@ fn only_the_picked_scope_is_copied_and_joined() {
         &first,
         &mut again,
         &mut Script::working(),
-        Some("rivendell"),
+        Some("rhosgobel"),
     );
     assert!(run.result.is_ok(), "{:?}", again.shown);
     assert_eq!(first.scope_ids().len(), 2, "personal and the second scope");
@@ -1387,7 +1387,7 @@ fn only_the_picked_scope_is_copied_and_joined() {
         typed: p.phrase().unwrap(),
         ..Scripted::default()
     };
-    let run = wizard_as(&second, &mut q, &mut Script::working(), Some("bagend"));
+    let run = wizard_as(&second, &mut q, &mut Script::working(), Some("bywater"));
     assert!(run.result.is_ok(), "{:?}", q.shown);
     assert_eq!(second.scope_ids().len(), 1);
     let known = second.known();
@@ -1412,7 +1412,7 @@ fn a_phrase_of_another_owner_is_refused_against_the_stores_manifests() {
     let folder = first.folder("f");
     let mut p = new_owner(&folder);
     assert!(
-        wizard_as(&first, &mut p, &mut Script::working(), Some("rivendell"))
+        wizard_as(&first, &mut p, &mut Script::working(), Some("rhosgobel"))
             .result
             .is_ok()
     );
@@ -1433,7 +1433,7 @@ fn a_phrase_of_another_owner_is_refused_against_the_stores_manifests() {
         typed: other,
         ..Scripted::default()
     };
-    let run = wizard_as(&second, &mut q, &mut Script::working(), Some("bagend"));
+    let run = wizard_as(&second, &mut q, &mut Script::working(), Some("bywater"));
     let message = refused(run);
     assert!(message.contains("the phrase derives owner"), "{message}");
     assert!(message.ends_with("; nothing was written"), "{message}");
@@ -1463,7 +1463,7 @@ fn under_an_agent_sync_stays_off_and_the_line_says_why() {
         confirms: vec![SYNC_ON, ("Apply these changes?", true)],
         ..Scripted::default()
     };
-    let run = wizard_as(&b, &mut p, &mut Script::working(), Some("rivendell"));
+    let run = wizard_as(&b, &mut p, &mut Script::working(), Some("rhosgobel"));
     assert!(
         report(&run).contains(
             &"sync skipped: no device key; run bilbo device init in a terminal".to_string()
@@ -1492,7 +1492,7 @@ fn a_folder_without_a_parent_is_asked_again() {
         ("Folder or relay URL to sync", "/nope/bilbo".to_string()),
         ("Folder or relay URL to sync", folder.display().to_string()),
     ];
-    let run = wizard_as(&b, &mut p, &mut Script::working(), Some("rivendell"));
+    let run = wizard_as(&b, &mut p, &mut Script::working(), Some("rhosgobel"));
     assert!(run.result.is_ok(), "{:?}", p.shown);
     assert!(
         p.shown
@@ -1520,7 +1520,7 @@ fn a_relative_folder_is_refused_by_the_question_and_by_the_check() {
         ("Folder or relay URL to sync", "relative/bilbo".to_string()),
         ("Folder or relay URL to sync", folder.display().to_string()),
     ];
-    let run = wizard_as(&b, &mut p, &mut Script::working(), Some("rivendell"));
+    let run = wizard_as(&b, &mut p, &mut Script::working(), Some("rhosgobel"));
     assert!(run.result.is_ok());
     assert!(
         p.shown
@@ -1535,7 +1535,7 @@ fn declining_sync_adds_no_setting_and_the_line_says_no_scope_syncs() {
     let b = boxed("sync-no");
     b.manager();
     let mut p = Scripted::default();
-    let run = wizard_as(&b, &mut p, &mut Script::working(), Some("rivendell"));
+    let run = wizard_as(&b, &mut p, &mut Script::working(), Some("rhosgobel"));
     assert!(report(&run).contains(&"sync skipped: no scope syncs".to_string()));
     assert!(
         p.shown
@@ -1555,7 +1555,7 @@ fn the_sync_question_defaults_to_yes_only_when_a_scope_syncs() {
         text.push_str(config);
         std::fs::write(b.config(), text).unwrap();
         let mut p = Scripted::default();
-        wizard_as(&b, &mut p, &mut Script::working(), Some("rivendell"));
+        wizard_as(&b, &mut p, &mut Script::working(), Some("rhosgobel"));
         p.shown.iter().any(|s| s == "Which scope should sync?")
     };
     let folder = std::env::temp_dir();
@@ -1576,7 +1576,7 @@ fn turning_sync_on_keeps_the_other_settings_and_the_old_config() {
     std::fs::write(b.config(), &text).unwrap();
     let folder = b.folder("bilbo");
     let mut p = new_owner(&folder);
-    let run = wizard_as(&b, &mut p, &mut Script::working(), Some("rivendell"));
+    let run = wizard_as(&b, &mut p, &mut Script::working(), Some("rhosgobel"));
     assert!(run.result.is_ok(), "{:?}", p.shown);
     let new = b.config_text();
     for line in [
@@ -1613,7 +1613,7 @@ fn a_config_that_already_syncs_there_is_kept() {
     let folder = b.folder("bilbo");
     let mut p = new_owner(&folder);
     assert!(
-        wizard_as(&b, &mut p, &mut Script::working(), Some("rivendell"))
+        wizard_as(&b, &mut p, &mut Script::working(), Some("rhosgobel"))
             .result
             .is_ok()
     );
@@ -1623,7 +1623,7 @@ fn a_config_that_already_syncs_there_is_kept() {
         ..Scripted::default()
     };
     let before = b.config_text();
-    let run = wizard_as(&b, &mut again, &mut Script::working(), Some("rivendell"));
+    let run = wizard_as(&b, &mut again, &mut Script::working(), Some("rhosgobel"));
     assert!(
         report(&run).contains(&format!("config kept: {}", b.config().display())),
         "{:?}",
@@ -1646,7 +1646,7 @@ fn a_managed_config_shows_the_syncing_scopes_and_asks_nothing_about_sync() {
     std::fs::create_dir_all(b.config().parent().unwrap()).unwrap();
     std::os::unix::fs::symlink(&target, b.config()).unwrap();
     let mut p = Scripted::default();
-    let run = wizard_as(&b, &mut p, &mut Script::working(), Some("rivendell"));
+    let run = wizard_as(&b, &mut p, &mut Script::working(), Some("rhosgobel"));
     assert!(run.result.is_ok());
     let note = p
         .shown
@@ -1665,11 +1665,11 @@ fn a_managed_config_shows_the_syncing_scopes_and_asks_nothing_about_sync() {
 }
 
 /// The fixture owner's keys and a folder holding the fixture `personal` scope, version 1 only, which lists
-/// `bagend` and not `rivendell`.
+/// `bywater` and not `rhosgobel`.
 fn outsider(b: &Sandbox, folder: &Path) {
     use std::os::unix::fs::PermissionsExt;
     let fixtures = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/device");
-    copy_dir(&Path::new(fixtures).join("rivendell"), &b.keys());
+    copy_dir(&Path::new(fixtures).join("rhosgobel"), &b.keys());
     std::fs::set_permissions(b.keys(), std::fs::Permissions::from_mode(0o700)).unwrap();
     for file in ["owner.key", "device.key"] {
         std::fs::set_permissions(b.keys().join(file), std::fs::Permissions::from_mode(0o600))
@@ -1703,7 +1703,7 @@ fn an_enrolled_device_outside_a_scope_of_its_owner_mints_nothing() {
         entered: vec![("Folder or relay URL to sync", folder.display().to_string())],
         ..Scripted::default()
     };
-    let run = wizard_as(&b, &mut p, &mut Script::working(), Some("rivendell"));
+    let run = wizard_as(&b, &mut p, &mut Script::working(), Some("rhosgobel"));
     let line = format!("warn: {}", crate::setup::syncing::BLOCKED);
     assert!(p.shown.contains(&line), "{:?}", p.shown);
     assert_eq!(
@@ -1750,7 +1750,7 @@ fn an_enrolled_device_with_no_keys_to_ask_for_asks_no_phrase() {
     std::fs::create_dir_all(&folder).unwrap();
     let fixtures = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/device");
     use std::os::unix::fs::PermissionsExt;
-    copy_dir(&Path::new(fixtures).join("rivendell"), &b.keys());
+    copy_dir(&Path::new(fixtures).join("rhosgobel"), &b.keys());
     std::fs::set_permissions(b.keys(), std::fs::Permissions::from_mode(0o700)).unwrap();
     for file in ["owner.key", "device.key"] {
         std::fs::set_permissions(b.keys().join(file), std::fs::Permissions::from_mode(0o600))
@@ -1761,7 +1761,7 @@ fn an_enrolled_device_with_no_keys_to_ask_for_asks_no_phrase() {
         entered: vec![("Folder or relay URL to sync", folder.display().to_string())],
         ..Scripted::default()
     };
-    let run = wizard_as(&b, &mut p, &mut Script::working(), Some("rivendell"));
+    let run = wizard_as(&b, &mut p, &mut Script::working(), Some("rhosgobel"));
     assert!(
         report(&run).contains(&ok_line("personal", &folder, 0)),
         "{:?}",
@@ -1779,7 +1779,7 @@ fn sync_with_the_watcher_declined_stays_off_before_any_question() {
     let folder = b.folder("f");
     let mut p = new_owner(&folder);
     p.confirms.push(("Record note history", false));
-    let run = wizard_as(&b, &mut p, &mut Script::working(), Some("rivendell"));
+    let run = wizard_as(&b, &mut p, &mut Script::working(), Some("rhosgobel"));
     assert!(
         report(&run)
             .iter()
@@ -1845,14 +1845,14 @@ fn a_wiped_laptop_whose_store_and_folder_hold_the_scope_joins_it() {
     let folder = first.folder("f");
     let mut p = new_owner(&folder);
     assert!(
-        wizard_as(&first, &mut p, &mut Script::working(), Some("rivendell"))
+        wizard_as(&first, &mut p, &mut Script::working(), Some("rhosgobel"))
             .result
             .is_ok()
     );
     publish(&first, &folder);
     let second = copied_store(&first, "sync-wiped-b");
     let mut q = phrase_answers(&folder, p.phrase().unwrap());
-    let run = wizard_as(&second, &mut q, &mut Script::working(), Some("bagend"));
+    let run = wizard_as(&second, &mut q, &mut Script::working(), Some("bywater"));
     assert!(
         report(&run).contains(&ok_line("personal", &folder, 0)),
         "{:?}",
@@ -1878,13 +1878,13 @@ fn a_store_that_holds_the_scope_and_an_empty_folder_creates_nothing() {
     first.manager();
     let mut p = new_owner(&first.folder("f1"));
     assert!(
-        wizard_as(&first, &mut p, &mut Script::working(), Some("rivendell"))
+        wizard_as(&first, &mut p, &mut Script::working(), Some("rhosgobel"))
             .result
             .is_ok()
     );
     let second = copied_store(&first, "sync-held-b");
     let mut q = phrase_answers(&second.folder("f2"), p.phrase().unwrap());
-    let run = wizard_as(&second, &mut q, &mut Script::working(), Some("bagend"));
+    let run = wizard_as(&second, &mut q, &mut Script::working(), Some("bywater"));
     assert!(run.result.is_ok(), "{:?}", q.shown);
     assert!(
         !summary_of(&q).contains("Create the scope"),
@@ -1900,7 +1900,7 @@ fn a_dead_end_fork_is_set_aside_before_the_folders_scope_is_joined() {
     one.manager();
     let mut p = new_owner(&one.folder("f1"));
     assert!(
-        wizard_as(&one, &mut p, &mut Script::working(), Some("rivendell"))
+        wizard_as(&one, &mut p, &mut Script::working(), Some("rhosgobel"))
             .result
             .is_ok()
     );
@@ -1911,7 +1911,7 @@ fn a_dead_end_fork_is_set_aside_before_the_folders_scope_is_joined() {
     let mut q = phrase_answers(&f2, p.phrase().unwrap());
     q.confirms.push(("recovery phrase from another", true));
     assert!(
-        wizard_as(&two, &mut q, &mut Script::working(), Some("bagend"))
+        wizard_as(&two, &mut q, &mut Script::working(), Some("bywater"))
             .result
             .is_ok(),
         "{:?}",
@@ -1959,7 +1959,7 @@ fn a_new_scope_beside_a_manifest_that_never_listed_the_device_is_refused_up_fron
     first.manager();
     let mut p = new_owner(&first.folder("f1"));
     assert!(
-        wizard_as(&first, &mut p, &mut Script::working(), Some("rivendell"))
+        wizard_as(&first, &mut p, &mut Script::working(), Some("rhosgobel"))
             .result
             .is_ok()
     );
@@ -1970,7 +1970,7 @@ fn a_new_scope_beside_a_manifest_that_never_listed_the_device_is_refused_up_fron
     std::fs::write(second.config(), text).unwrap();
     let mut q = phrase_answers(&second.folder("f2"), p.phrase().unwrap());
     q.selects = vec![("Which scope", 1)];
-    let run = wizard_as(&second, &mut q, &mut Script::working(), Some("bagend"));
+    let run = wizard_as(&second, &mut q, &mut Script::working(), Some("bywater"));
     assert!(
         report(&run).contains(&format!(
             "sync skipped: {}",
@@ -2012,11 +2012,11 @@ fn a_folder_that_cannot_hold_a_scope_is_found_before_the_phrase_is_shown() {
     let b = boxed("sync-blocked-first");
     b.manager();
     let folder = b.folder("f");
-    let arriving = folder.join("scopes/6bfzzv5eukiswvtgipvo5mx7ze/manifest");
+    let arriving = folder.join("scopes/xkzaipif56q2g5zasm5qa4wr2q/manifest");
     std::fs::create_dir_all(&arriving).unwrap();
     std::fs::write(arriving.join("2.json"), "{}").unwrap();
     let mut p = new_owner(&folder);
-    let run = wizard_as(&b, &mut p, &mut Script::working(), Some("rivendell"));
+    let run = wizard_as(&b, &mut p, &mut Script::working(), Some("rhosgobel"));
     assert!(
         report(&run).iter().any(|l| l.starts_with("sync skipped: ")),
         "{:?}",
@@ -2046,7 +2046,7 @@ fn a_damaged_key_fails_the_step_in_the_wizard_as_it_does_under_yes() {
         confirms: vec![SYNC_ON, ("Apply these changes?", true)],
         ..Scripted::default()
     };
-    let run = wizard_as(&b, &mut p, &mut Script::working(), Some("rivendell"));
+    let run = wizard_as(&b, &mut p, &mut Script::working(), Some("rhosgobel"));
     let line = report(&run)
         .iter()
         .find(|l| l.starts_with("sync "))
@@ -2074,7 +2074,7 @@ fn a_scope_turned_off_is_named_after_the_scopes_that_still_sync() {
         selects: vec![("Which scope", 0)],
         ..Scripted::default()
     };
-    let run = wizard_as(&b, &mut p, &mut Script::working(), Some("rivendell"));
+    let run = wizard_as(&b, &mut p, &mut Script::working(), Some("rhosgobel"));
     let line = report(&run)
         .iter()
         .find(|l| l.starts_with("sync "))
@@ -2142,7 +2142,7 @@ fn a_first_device_on_a_relay_writes_the_url_and_the_watcher_publishes_the_scope(
     let before = relay("driven-relay-a", &[], 0);
     let (url, port) = (before.url(), before.port);
     let mut p = new_owner_at(&url);
-    let run = wizard_as(&first, &mut p, &mut Script::working(), Some("rivendell"));
+    let run = wizard_as(&first, &mut p, &mut Script::working(), Some("rhosgobel"));
     assert!(
         report(&run).contains(&format!("sync ok: personal through {url} (0 notes)")),
         "{:?}",
@@ -2187,7 +2187,7 @@ fn every_device_lost_the_wizard_fetches_the_scope_from_the_relay_with_the_owner_
     let (url, port) = (before.url(), before.port);
     let mut p = new_owner_at(&url);
     assert!(
-        wizard_as(&first, &mut p, &mut Script::working(), Some("rivendell"))
+        wizard_as(&first, &mut p, &mut Script::working(), Some("rhosgobel"))
             .result
             .is_ok()
     );
@@ -2197,7 +2197,7 @@ fn every_device_lost_the_wizard_fetches_the_scope_from_the_relay_with_the_owner_
     second.manager();
     let mut q = phrase_at(url.clone(), p.phrase().unwrap());
     q.confirms.push(("recovery phrase from another", true));
-    let run = wizard_as(&second, &mut q, &mut Script::working(), Some("bagend"));
+    let run = wizard_as(&second, &mut q, &mut Script::working(), Some("bywater"));
     assert!(
         report(&run).contains(&format!("sync ok: personal through {url} (0 notes)")),
         "{:?} {:?}",
@@ -2262,7 +2262,7 @@ fn an_enrolled_device_is_told_when_the_relay_does_not_admit_its_owner() {
     first.manager();
     let mut p = new_owner(&first.folder("f"));
     assert!(
-        wizard_as(&first, &mut p, &mut Script::working(), Some("rivendell"))
+        wizard_as(&first, &mut p, &mut Script::working(), Some("rhosgobel"))
             .result
             .is_ok()
     );
@@ -2277,7 +2277,7 @@ fn an_enrolled_device_is_told_when_the_relay_does_not_admit_its_owner() {
         selects: vec![("Which scope", 1)],
         ..Scripted::default()
     };
-    let run = wizard_as(&first, &mut q, &mut Script::working(), Some("rivendell"));
+    let run = wizard_as(&first, &mut q, &mut Script::working(), Some("rhosgobel"));
     let why = q
         .shown
         .iter()
@@ -2302,7 +2302,7 @@ fn a_url_that_is_not_a_relay_is_asked_again() {
         ("Folder or relay URL to sync", other.url()),
         ("Folder or relay URL to sync", folder.display().to_string()),
     ];
-    let run = wizard_as(&b, &mut p, &mut Script::working(), Some("rivendell"));
+    let run = wizard_as(&b, &mut p, &mut Script::working(), Some("rhosgobel"));
     assert!(run.result.is_ok(), "{:?}", p.shown);
     assert!(
         p.shown
@@ -2335,7 +2335,7 @@ fn a_relay_that_is_down_is_asked_again() {
         ("Folder or relay URL to sync", down.clone()),
         ("Folder or relay URL to sync", folder.display().to_string()),
     ];
-    let run = wizard_as(&b, &mut p, &mut Script::working(), Some("rivendell"));
+    let run = wizard_as(&b, &mut p, &mut Script::working(), Some("rhosgobel"));
     assert!(run.result.is_ok(), "{:?}", p.shown);
     assert!(
         p.shown
@@ -2358,7 +2358,7 @@ fn plain_http_to_another_host_is_refused_and_no_request_is_sent() {
         ("Folder or relay URL to sync", remote.clone()),
         ("Folder or relay URL to sync", folder.display().to_string()),
     ];
-    let run = wizard_as(&b, &mut p, &mut Script::working(), Some("rivendell"));
+    let run = wizard_as(&b, &mut p, &mut Script::working(), Some("rhosgobel"));
     assert!(run.result.is_ok(), "{:?}", p.shown);
     assert!(
         p.shown.iter().any(|s| s.starts_with(&format!(

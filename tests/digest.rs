@@ -284,11 +284,11 @@ fn query_command_prompt() {
     let rig = Rig::with_embedder("digest-command", &fake);
     hit(&rig, "gotcha-slots.md");
     rig.index();
-    let run = rig.digest("abc", "/opsx:apply add-note-recall");
+    let run = rig.digest("abc", "/deploy:run release-notes");
     assert_eq!(run.code, 0);
     assert_eq!(
         fake.inputs().last().unwrap(),
-        "search: opsx:apply add-note-recall"
+        "search: deploy:run release-notes"
     );
 }
 

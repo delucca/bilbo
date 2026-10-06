@@ -1,4 +1,5 @@
-//! The setup verb.
+//! `bilbo setup`: the flags or the wizard's answers, the plan they make, applying it, the local embedder, the sync
+//! step, and `--remove`.
 
 mod apply;
 #[cfg(test)]

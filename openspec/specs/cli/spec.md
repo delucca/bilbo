@@ -37,7 +37,7 @@ The `bilbo` command line as a whole: how a verb is picked, how usage and help ar
 - **THEN** bilbo runs the scope verb
 
 #### Scenario: Device is a verb
-- **WHEN** a user runs `bilbo device` or `bilbo device revoke bagend`
+- **WHEN** a user runs `bilbo device` or `bilbo device revoke bywater`
 - **THEN** bilbo runs the device verb
 
 #### Scenario: Sync is a verb

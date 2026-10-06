@@ -59,7 +59,7 @@ The new device SHALL take its transport only from `--via`: a `file:///<absolute 
 - **THEN** stderr says `no folder at /nope`, the exit code is 1, and the code still works
 
 #### Scenario: A remote plain-HTTP URL
-- **WHEN** B runs `bilbo pair <code> --via http://bagend:8090`
+- **WHEN** B runs `bilbo pair <code> --via http://relay.example:8090`
 - **THEN** bilbo prints a message naming the URL to stderr, exits 2, and touches no mailbox
 
 #### Scenario: A relay URL
@@ -176,8 +176,8 @@ A SHALL pair every scope whose `scope.<name>.sync` is a URL, or only those named
 - **THEN** A names only `shared` before the confirmation, and after pairing B's config sets only `scope.shared.sync`
 
 #### Scenario: A scope that does not sync
-- **WHEN** A runs `bilbo pair --scope uber` and `scope.uber.sync` is `off`
-- **THEN** stderr says `scope uber does not sync`, the exit code is 2, and no mailbox is created
+- **WHEN** A runs `bilbo pair --scope client` and `scope.client.sync` is `off`
+- **THEN** stderr says `scope client does not sync`, the exit code is 2, and no mailbox is created
 
 #### Scenario: Scopes in two folders
 - **WHEN** `personal` syncs through `file:///srv/a` and `shared` through `file:///srv/b`, and A runs `bilbo pair`
@@ -203,8 +203,8 @@ A SHALL refuse, before creating a mailbox, when it holds no owner key, when no s
 - **THEN** stderr says `this device has no owner key; turn on sync for a scope first, which sets the recovery phrase`, the exit code is 1, and nothing is written
 
 #### Scenario: An enrolled device joins another scope
-- **WHEN** `bagend` is enrolled and listed in `personal`, A runs `bilbo pair --scope shared`, and `bagend` answers
-- **THEN** A adds `bagend` to `shared` only, the reply carries no owner seed, `bagend`'s keys folder is unchanged, and its config gains `scope.shared.sync`
+- **WHEN** `bywater` is enrolled and listed in `personal`, A runs `bilbo pair --scope shared`, and `bywater` answers
+- **THEN** A adds `bywater` to `shared` only, the reply carries no owner seed, `bywater`'s keys folder is unchanged, and its config gains `scope.shared.sync`
 
 #### Scenario: Enrolled with another owner
 - **WHEN** the answering device is enrolled with another owner
@@ -215,15 +215,15 @@ A SHALL refuse, before creating a mailbox, when it holds no owner key, when no s
 - **THEN** stderr says `pairing is confirmed only in a terminal, by the user`, no mailbox is created, and the exit code is 1
 
 #### Scenario: A taken name
-- **WHEN** `personal` lists a device named `bagend` and a new device named `bagend` answers
-- **THEN** A says `a device named bagend is already enrolled; pair again with --name on the new device`, B says `the name bagend is taken; run bilbo pair again with --name`, nothing is sent, and both exit 1
+- **WHEN** `personal` lists a device named `bywater` and a new device named `bywater` answers
+- **THEN** A says `a device named bywater is already enrolled; pair again with --name on the new device`, B says `the name bywater is taken; run bilbo pair again with --name`, nothing is sent, and both exit 1
 
 #### Scenario: A name taken in a scope not being paired
-- **WHEN** `personal` lists a device named `bagend`, A runs `bilbo pair --scope shared`, and a new device named `bagend` answers
+- **WHEN** `personal` lists a device named `bywater`, A runs `bilbo pair --scope shared`, and a new device named `bywater` answers
 - **THEN** A refuses it as a taken name, and no manifest changes
 
 #### Scenario: The showing device's own name
-- **WHEN** A is named `rivendell` and the new device answers as `rivendell`
+- **WHEN** A is named `rhosgobel` and the new device answers as `rhosgobel`
 - **THEN** A refuses it as a taken name
 
 #### Scenario: A store of another owner

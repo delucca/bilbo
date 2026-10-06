@@ -51,7 +51,7 @@ After showing the phrase, `bilbo device init` SHALL ask for the words at 3 disti
 - **THEN** it reads nothing, writes nothing and exits 1
 
 #### Scenario: Under Codex
-- **WHEN** `CODEX_THREAD_ID` is set and `bilbo device revoke bagend` runs
+- **WHEN** `CODEX_THREAD_ID` is set and `bilbo device revoke bywater` runs
 - **THEN** no manifest is written, stderr names a terminal, and the exit code is 1
 
 #### Scenario: An enrolled device needs no terminal to seal a new scope
@@ -121,11 +121,11 @@ Each device SHALL have its own Ed25519 and X25519 key pair from 64 random bytes,
 A device name SHALL follow the topic grammar (`[a-z0-9]+` segments joined by single hyphens) and be at most 32 characters. Without `--name`, the name SHALL be the host name up to its first `.`, lowercased, with each run of other characters turned into one hyphen and the ends trimmed.
 
 #### Scenario: The default name
-- **WHEN** the host name is `Daniels-MacBook-Pro.local` and init runs without `--name`
-- **THEN** the device is named `daniels-macbook-pro`
+- **WHEN** the host name is `Bilbos-MacBook-Pro.local` and init runs without `--name`
+- **THEN** the device is named `bilbos-macbook-pro`
 
 #### Scenario: A bad name
-- **WHEN** a user runs `bilbo device init --name Bag_End`
+- **WHEN** a user runs `bilbo device init --name Green_Dragon`
 - **THEN** bilbo prints a usage message naming `--name` to stderr, writes nothing and exits 2
 
 #### Scenario: No usable host name
@@ -162,8 +162,8 @@ bilbo SHALL build a new identity in `<state>/bilbo/keys.new/` and move that fold
 `bilbo device` with no other argument SHALL print, tab-separated: `device`, the name and the id, or `device` and `none`; then `owner` and the fingerprint, or `owner` and `none`; then one line per scope with a sync URL or a local manifest, as the `scope-manifest` spec's Scope line gives. It SHALL change no file. It SHALL exit 1 when it printed a problem line for a scope, and 0 otherwise. Any other argument SHALL be a usage error.
 
 #### Scenario: An enrolled device
-- **WHEN** a device named `rivendell` is enrolled and `personal` syncs to `file:///Users/a/Sync/bilbo`
-- **THEN** stdout is the `device` line with `rivendell` and its id, the `owner` line with its fingerprint, and the `scope` line for `personal`, and the exit code is 0
+- **WHEN** a device named `rhosgobel` is enrolled and `personal` syncs to `file:///Users/a/Sync/bilbo`
+- **THEN** stdout is the `device` line with `rhosgobel` and its id, the `owner` line with its fingerprint, and the `scope` line for `personal`, and the exit code is 0
 
 #### Scenario: A device with no keys
 - **WHEN** no keys exist and the config declares no sync URL
@@ -181,15 +181,15 @@ bilbo SHALL build a new identity in `<state>/bilbo/keys.new/` and move that fold
 `bilbo device init [--name <name>]` SHALL, on a device without keys, run the phrase ceremony and write the owner and device keys, then create or update the manifests the config asks for, as the `scope-manifest` spec says. Without keys, it SHALL refuse when local manifests exist, naming their owner's fingerprint and `bilbo device recover`. Every refusal SHALL come before the phrase is shown. On an enrolled device, `--name` SHALL be a usage error.
 
 #### Scenario: A first init
-- **WHEN** a user runs `bilbo device init --name rivendell` in a terminal with `personal` syncing to a URL, and confirms the phrase
-- **THEN** stdout is `owner created: <fingerprint>`, `device created: rivendell <id>` and `scope personal created: <scope id> manifest 1 epoch 1`, and the exit code is 0
+- **WHEN** a user runs `bilbo device init --name rhosgobel` in a terminal with `personal` syncing to a URL, and confirms the phrase
+- **THEN** stdout is `owner created: <fingerprint>`, `device created: rhosgobel <id>` and `scope personal created: <scope id> manifest 1 epoch 1`, and the exit code is 0
 
 #### Scenario: A rerun
 - **WHEN** init succeeded and runs again with the same config
 - **THEN** every line says `kept`, no file changes, and the exit code is 0
 
 #### Scenario: A name on an enrolled device
-- **WHEN** the device holds its keys and a user runs `bilbo device init --name bagend`
+- **WHEN** the device holds its keys and a user runs `bilbo device init --name bywater`
 - **THEN** bilbo prints a usage message naming `--name` to stderr, changes no file and exits 2
 
 #### Scenario: A store owned by someone else
@@ -208,11 +208,11 @@ bilbo SHALL build a new identity in `<state>/bilbo/keys.new/` and move that fold
 - **THEN** stderr names both fingerprints, no key or manifest is written, and the exit code is 1
 
 #### Scenario: A taken name
-- **WHEN** a local manifest lists a device named `rivendell` and the user runs `bilbo device recover` on a host named `rivendell`
-- **THEN** before any word is asked, stderr names `rivendell` and `--name`, and the exit code is 1
+- **WHEN** a local manifest lists a device named `rhosgobel` and the user runs `bilbo device recover` on a host named `rhosgobel`
+- **THEN** before any word is asked, stderr names `rhosgobel` and `--name`, and the exit code is 1
 
 #### Scenario: A name on an enrolled device
-- **WHEN** the device holds its keys and the user runs `bilbo device recover --name bagend`
+- **WHEN** the device holds its keys and the user runs `bilbo device recover --name bywater`
 - **THEN** bilbo prints a usage message naming `--name` to stderr and exits 2
 
 ### Requirement: Fingerprint check on recover
@@ -234,8 +234,8 @@ After reading the phrase, `recover` SHALL show the owner fingerprint it derives.
 On a device without keys, `recover` SHALL write the owner and device keys. On an enrolled device it SHALL keep its device key. Either way, after fetching scopes from the transport as the Recover fetches scopes from the transport requirement says, it SHALL add this device to every local manifest of its owner whose latest version does not list it, as the `scope-manifest` spec says. It SHALL NOT create a scope id: a syncing scope that neither the store nor its transport holds SHALL be reported `unsealed`, naming `bilbo device init`.
 
 #### Scenario: A wiped laptop
-- **WHEN** the store holds `personal`'s manifest listing `rivendell`, the keys were lost, and the user runs `bilbo device recover --name rivendell-2` with the right phrase
-- **THEN** stdout has `owner recovered: <fingerprint>`, `device created: rivendell-2 <id>` and `scope personal updated: <scope id> manifest 2 epoch 1`, and `bilbo device list` shows both devices
+- **WHEN** the store holds `personal`'s manifest listing `rhosgobel`, the keys were lost, and the user runs `bilbo device recover --name rhosgobel-2` with the right phrase
+- **THEN** stdout has `owner recovered: <fingerprint>`, `device created: rhosgobel-2 <id>` and `scope personal updated: <scope id> manifest 2 epoch 1`, and `bilbo device list` shows both devices
 
 #### Scenario: A fresh machine
 - **WHEN** the store holds no manifest, the config gives `personal` a sync URL whose transport holds no scope of this owner named `personal`, and the user recovers and confirms the fingerprint
@@ -264,8 +264,8 @@ On a device without keys, `recover` SHALL write the owner and device keys. On an
 `bilbo device list` SHALL print one tab-separated line per device listed in the latest manifest of any scope this owner signed, plus this device, sorted by name: the name, the id, and `this` for this device. It SHALL change no file and exit 0. On a device without keys it SHALL refuse with a line naming `bilbo device init` and exit 1.
 
 #### Scenario: Two devices
-- **WHEN** `personal`'s manifest lists `rivendell`, this device, and `bagend`
-- **THEN** stdout is `bagend`, tab, its id, then `rivendell`, tab, its id, tab, `this`
+- **WHEN** `personal`'s manifest lists `rhosgobel`, this device, and `bywater`
+- **THEN** stdout is `bywater`, tab, its id, then `rhosgobel`, tab, its id, tab, `this`
 
 #### Scenario: Not enrolled
 - **WHEN** no keys exist and an agent runs `bilbo device list`
@@ -275,11 +275,11 @@ On a device without keys, `recover` SHALL write the owner and device keys. On an
 `bilbo device revoke <device>` SHALL take a device id or name, and write a new version of every manifest that lists both that device and this one, as the `scope-manifest` spec says, printing `scope <name> updated: <scope id> manifest <n> epoch <e>` for each. It SHALL refuse, writing nothing and exiting 1, on a device without keys, for this device, and for a device no manifest lists. A name two listed devices share SHALL be a usage error listing their ids.
 
 #### Scenario: Revoking a lost laptop
-- **WHEN** `personal` at manifest 2, epoch 1, lists `rivendell` and `bagend`, and the user runs `bilbo device revoke bagend` in a terminal on `rivendell`
-- **THEN** stdout is `scope personal updated: <scope id> manifest 3 epoch 2`, and `bilbo device list` no longer shows `bagend`
+- **WHEN** `personal` at manifest 2, epoch 1, lists `rhosgobel` and `bywater`, and the user runs `bilbo device revoke bywater` in a terminal on `rhosgobel`
+- **THEN** stdout is `scope personal updated: <scope id> manifest 3 epoch 2`, and `bilbo device list` no longer shows `bywater`
 
 #### Scenario: This device
-- **WHEN** the user runs `bilbo device revoke rivendell` on `rivendell`
+- **WHEN** the user runs `bilbo device revoke rhosgobel` on `rhosgobel`
 - **THEN** stderr says a device cannot revoke itself, no file changes, and the exit code is 1
 
 #### Scenario: An unknown device
@@ -294,11 +294,11 @@ On a device without keys, `recover` SHALL write the owner and device keys. On an
 For each scope whose `transport` is `file://`, `revoke` SHALL also print a stderr line telling the user to remove the revoked device from the account that syncs the folder, because revocation does not take away its write access there.
 
 #### Scenario: A folder scope
-- **WHEN** `personal` pins `file://` and the user revokes `bagend`
-- **THEN** stderr has a line naming `personal` and telling the user to remove `bagend` from the account that syncs the folder, because revocation does not take away its write access there
+- **WHEN** `personal` pins `file://` and the user revokes `bywater`
+- **THEN** stderr has a line naming `personal` and telling the user to remove `bywater` from the account that syncs the folder, because revocation does not take away its write access there
 
 #### Scenario: A relay scope
-- **WHEN** `personal` pins `https://relay.example.net` and the user revokes `bagend`
+- **WHEN** `personal` pins `https://relay.example.net` and the user revokes `bywater`
 - **THEN** stderr has no cloud-account line for `personal`
 
 ### Requirement: Recover fetches scopes from the transport

@@ -190,10 +190,6 @@ fn recall_skill_drives_bilbo() {
     ] {
         assert!(text.contains(needle), "the skill lacks {needle:?}");
     }
-    assert!(
-        !text.contains("nbrecall"),
-        "the skill names the legacy tool"
-    );
 }
 
 /// The trimmed non-empty lines inside the ```` ```bash ```` fences of a skill, a heredoc's body left out.
@@ -255,19 +251,11 @@ fn note_skill_drives_bilbo() {
         "bilbo scope set --force <name>",
         "stray conflict marker",
         "has no dropped text to declare",
-        "sources:\n     - \"code: src/new.rs\"\n     - \"url: https://example.org/page\"",
+        "sources:\n     - \"code: src/server.rs\"\n     - \"url: https://example.org/page\"",
     ] {
         assert!(text.contains(needle), "the skill lacks {needle:?}");
     }
-    for banned in [
-        "nbrecall",
-        "mint-ulid",
-        "date +%F",
-        "Notebooks",
-        "notebook.org",
-        "argument-hint",
-        "supersedes:",
-    ] {
+    for banned in ["date +%F", "supersedes:"] {
         assert!(!text.contains(banned), "the skill holds {banned:?}");
     }
     assert!(
@@ -346,34 +334,14 @@ fn ingest_skill_drives_bilbo() {
         .split_once("## Never")
         .expect("the skill has a Never list");
     assert!(never.contains("WebFetch"), "the Never list lacks WebFetch");
-    for banned in [
-        "WebFetch",
-        "write_note.py",
-        "index_corpus.py",
-        "split_source.py",
-        "uv run",
-        "pandoc",
-        "Notebooks",
-        "argument-hint",
-    ] {
-        assert!(!before.contains(banned), "the skill holds {banned:?}");
-        if banned != "WebFetch" {
-            assert!(!never.contains(banned), "the skill holds {banned:?}");
-        }
-    }
+    assert!(
+        !before.contains("WebFetch"),
+        "the skill fetches with WebFetch"
+    );
 }
 
-const LEGACY_STRINGS: [&str; 9] = [
-    "nbrecall",
-    "check_citations",
-    "plan_reads",
-    "source-reader",
-    "uv run",
-    "Notebooks",
-    "index.md",
-    "argument-hint",
-    "note: <",
-];
+/// The one citation form the reference skill and its readers write.
+const CITATION: &str = "bilbo:<id>#<anchor> \"<quote>\"";
 
 #[test]
 fn reference_skill_frontmatter() {
@@ -441,15 +409,9 @@ fn reference_skill_drives_bilbo() {
         "`anchor_missing`",
         "`unread`",
         "`id_missing`",
+        CITATION,
     ] {
         assert!(text.contains(needle), "the skill lacks {needle:?}");
-    }
-    assert!(
-        !text.contains("lookup only, not searched"),
-        "the skill keeps the old catalog wording"
-    );
-    for banned in LEGACY_STRINGS {
-        assert!(!text.contains(banned), "the skill holds {banned:?}");
     }
 }
 
@@ -467,11 +429,9 @@ fn reader_brief_holds_its_sections() {
         "bilbo cite --plan",
         "read:",
         "not read:",
+        CITATION,
     ] {
         assert!(text.contains(needle), "the brief lacks {needle:?}");
-    }
-    for banned in LEGACY_STRINGS {
-        assert!(!text.contains(banned), "the brief holds {banned:?}");
     }
 }
 
@@ -602,13 +562,13 @@ fn digest_hook_is_silent_without_bilbo() {
 
 #[test]
 fn digest_hook_exits_zero_when_bilbo_fails() {
-    let dir = TempDir::new("hook-old");
+    let dir = TempDir::new("hook-fail");
     let fake = dir.path().join("bilbo");
     // Written by a child process: a write fd held here can make the exec fail with ETXTBSY.
     let made = Command::new("/bin/sh")
         .args([
             "-c",
-            r#"printf '%s\n' '#!/bin/sh' 'echo old >&2' 'exit 2' > "$1" && chmod 755 "$1""#,
+            r#"printf '%s\n' '#!/bin/sh' 'echo failed >&2' 'exit 2' > "$1" && chmod 755 "$1""#,
             "sh",
         ])
         .arg(&fake)
@@ -618,7 +578,7 @@ fn digest_hook_exits_zero_when_bilbo_fails() {
     let out = run_hook("UserPromptSubmit", dir.path());
     assert_eq!(out.status.code(), Some(0));
     assert!(out.stdout.is_empty());
-    assert_eq!(out.stderr, b"old\n");
+    assert_eq!(out.stderr, b"failed\n");
 }
 
 #[test]

@@ -39,8 +39,8 @@ When `digest.enable` is `off`, `bilbo digest` SHALL read and ignore stdin, print
 The query SHALL be the prompt with surrounding whitespace trimmed, cut to its first 2,000 bytes at a character boundary. When the prompt starts with `/` or `$` and the rest of its first word is 1 or more characters of `A-Z`, `a-z`, `0-9`, `.`, `_`, `:` and `-`, the sigil SHALL be dropped and the query is that name and the rest of the prompt. When the first word starts with `/` or `$` and is not such a name, there SHALL be no digest.
 
 #### Scenario: A command prompt
-- **WHEN** the prompt is `/opsx:apply add-note-recall`
-- **THEN** the query is `opsx:apply add-note-recall`
+- **WHEN** the prompt is `/review:pr fix-login-timeout`
+- **THEN** the query is `review:pr fix-login-timeout`
 
 #### Scenario: A path is not a command
 - **WHEN** the prompt is `/Users/a/notes/plan.md what is this?`
@@ -70,7 +70,7 @@ With an embedder answering within the budget, a note SHALL pass the gate when on
 - **THEN** that note passes the gate, and no request reaches the embedder
 
 #### Scenario: A withheld note passes on keywords
-- **WHEN** `embedder.url = http://bagend:8081` answers, `scope.work.embedder = local`, `scope.personal.embedder = any`, a note with `scope: personal` is embedded, `bilbo index` ran after the last change, the prompt is `why does the deploy pipeline stall on staging`, and a note with `scope: work` has a passage holding `deploy`, `pipeline` and `staging`
+- **WHEN** `embedder.url = http://embedder.example:8081` answers, `scope.work.embedder = local`, `scope.personal.embedder = any`, a note with `scope: personal` is embedded, `bilbo index` ran after the last change, the prompt is `why does the deploy pipeline stall on staging`, and a note with `scope: work` has a passage holding `deploy`, `pipeline` and `staging`
 - **THEN** that note passes the gate
 
 #### Scenario: A withheld note needs three words
@@ -78,11 +78,11 @@ With an embedder answering within the budget, a note SHALL pass the gate when on
 - **THEN** that note does not pass the gate
 
 #### Scenario: Every passage withheld
-- **WHEN** `embedder.url = http://bagend:8081`, `scope.work.embedder = local`, every note has `scope: work`, and one passage holds 3 of the query's 4-letter words
+- **WHEN** `embedder.url = http://embedder.example:8081`, `scope.work.embedder = local`, every note has `scope: work`, and one passage holds 3 of the query's 4-letter words
 - **THEN** that note passes the gate, no request reaches the embedder, and stderr is empty
 
 #### Scenario: An unembedded note in no local scope still needs meaning
-- **WHEN** `embedder.url = http://bagend:8081` answers, no scope sets `embedder = local`, some passages are embedded, and a note written after the last `bilbo index` has a passage holding 3 of the query's 4-letter words
+- **WHEN** `embedder.url = http://embedder.example:8081` answers, no scope sets `embedder = local`, some passages are embedded, and a note written after the last `bilbo index` has a passage holding 3 of the query's 4-letter words
 - **THEN** that note does not pass the gate
 
 ### Requirement: How many notes

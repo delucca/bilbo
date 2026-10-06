@@ -4,30 +4,46 @@ context: |
   bilbo gives coding agents a durable memory: notes they write and recall
   across sessions, and a library of fetched sources they can cite. Agents
   are the only readers and writers of the store; humans install, configure
-  and occasionally inspect it.
+  and occasionally inspect it. Notes in a scope can sync between one
+  owner's devices, end-to-end encrypted, through a folder or a relay.
 
   Parts:
   - a CLI, the one interface to everything below
-  - a store of Markdown files with YAML frontmatter
-  - a search index (keyword and vector), rebuilt from the store
-  - a daemon that keeps the index current and serves queries
-  - skills, agents and hooks for Claude Code and Codex that drive the CLI
+  - a store of Markdown files with YAML frontmatter: notes, and the library
+    of sources
+  - a search index (keyword and vector), rebuilt from the store, which a
+    timer keeps current by running `bilbo index`
+  - a watcher (`bilbo watch`), run as a login service, that records each
+    note's history and syncs the scopes that sync
+  - device keys, scope manifests and pairing, which decide which devices
+    read a scope
+  - a relay (`bilbo relay`), a server a user can run to sync without a
+    shared folder
+  - a plugin for Claude Code and Codex, with skills and hooks that drive
+    the CLI
 
   Vocabulary (use these words, do not coin synonyms):
   - note: an authored Markdown file of one kind, on one topic
   - kind: a note's type (plan, decision, gotcha, ...)
   - source: fetched text kept verbatim; the library is the set of sources
+  - corpus: a folder of sources on one subject, with its guide
   - store: where notes and sources live; the index is derived from it
   - embedder: the external service that turns text into vectors
   - digest: the short list of relevant notes a hook injects into a prompt
   - citation: a reference from an answer to a passage in a note or source
+  - scope: a named part of a user's notes, declared per device in the config
+  - device: one machine's copy of bilbo, with its own key
+  - owner: the user, one identity that every device of theirs shares
+  - manifest: the signed record of which devices may read a syncing scope
+  - transport: where a scope syncs, a `file://` folder or a relay
+  - relay: the `bilbo relay` server, a transport over `https://`
 
   Product language:
   - Specs describe what a user or an agent can observe: CLI output and exit
     codes, files on disk, what a hook injects
   - Internal mechanisms go in design.md unless they are the contract itself
 
-  Stack: Rust, one crate, binary `bilbo`; dependencies `jiff`, `ureq`, `serde`, `serde_json`, `cliclack`, `libc`, `ring`, `sha2`, `unicode-normalization`, `zeroize`, `htmd`, `markup5ever_rcdom`, `notify`, `hpke`, `base64`, `spake2` and `httparse`
+  Stack: Rust, one crate, binary `bilbo`; dependencies `jiff`, `ureq`, `serde`, `serde_json`, `cliclack`, `libc`, `notify`, `ring`, `sha2`, `unicode-normalization`, `zeroize`, `htmd`, `markup5ever_rcdom`, `ed25519-dalek`, `hpke`, `chacha20poly1305`, `hkdf`, `getrandom`, `base64`, `spake2` and `httparse`
   Verification: `cargo fmt --check && cargo clippy --locked --all-targets -- -D warnings && cargo test --locked`
 
 rules:

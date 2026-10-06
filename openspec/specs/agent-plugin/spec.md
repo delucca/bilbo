@@ -24,7 +24,7 @@ The plugin SHALL hold a skill named `recall` in `skills/recall/SKILL.md`, whose 
 - **THEN** the agent says the hits came from `flat layout`, shows each hit's path, line, kind, created, heading path and snippet, and offers to open one
 
 #### Scenario: Hits with a warning
-- **WHEN** `bilbo recall` exits 0 and stderr is `bilbo: embedder unavailable (embedder http://bagend:8081 unreachable: Connection refused (os error 61)); keyword results only`
+- **WHEN** `bilbo recall` exits 0 and stderr is `bilbo: embedder unavailable (embedder http://embedder.example:8081 unreachable: Connection refused (os error 61)); keyword results only`
 - **THEN** the agent shows the hits and says the results came from keywords alone because the embedder was unavailable
 
 #### Scenario: Nothing matches
@@ -116,8 +116,8 @@ The plugin SHALL hold `hooks/hooks.json`, which both tools read without a manife
 - **WHEN** `bilbo` is not on the PATH the tool gives its hooks
 - **THEN** the hook prints nothing, exits 0, and the tool shows no hook error
 
-#### Scenario: An older bilbo
-- **WHEN** the `bilbo` on PATH has no `digest` verb and exits 2 with a usage message
+#### Scenario: bilbo fails
+- **WHEN** the `bilbo` on PATH exits 2 with a usage message
 - **THEN** the hook exits 0 and the prompt is not blocked
 
 ### Requirement: The note skill
@@ -173,16 +173,16 @@ The note skill SHALL create a note only with `bilbo new <kind> <topic>`, adding 
 The note skill SHALL keep the frontmatter to `id`, `created` and, when present, `scope` and `sources`. It SHALL never change `id` or `created`, and SHALL keep `scope` as found unless Choosing a scope says otherwise. It SHALL add to `sources` only what was read or run in the session, each as a `note-store` item, and SHALL never invent a source. It SHALL write only the file of the note it creates or updates.
 
 #### Scenario: Sources from the session
-- **WHEN** the agent read `src/new.rs` and fetched `https://example.org/spec` in this session, and the note rests on both
-- **THEN** the note's `sources` lists `  - "code: src/new.rs"` and `  - "url: https://example.org/spec"`
+- **WHEN** the agent read `src/server.rs` and fetched `https://example.org/spec` in this session, and the note rests on both
+- **THEN** the note's `sources` lists `  - "code: src/server.rs"` and `  - "url: https://example.org/spec"`
 
 #### Scenario: Nothing was read
 - **WHEN** the note records a decision the user stated, and nothing was read or run for it
 - **THEN** the note has no `sources` key
 
-#### Scenario: No legacy keys
+#### Scenario: Only note keys
 - **WHEN** the agent writes or updates any note
-- **THEN** its frontmatter has no `kind`, `supersedes` or other key beyond `id`, `created`, `scope` and `sources`
+- **THEN** its frontmatter has no `kind` or other key beyond `id`, `created`, `scope` and `sources`
 
 #### Scenario: An update keeps the scope
 - **WHEN** the agent updates `decision-release-tags.md`, which has `scope: work`, and the user said nothing about its scope
@@ -333,7 +333,7 @@ The reference skill SHALL answer only from what was read, each claim with one `b
 - **THEN** its `coverage:` lines are those of its last `bilbo cite` run, word for word
 
 ### Requirement: Support judgment
-After `bilbo cite` passes, the reference skill SHALL judge whether each quote supports its claim as written, and SHALL rewrite a claim the quote supports only in part to what the quote says, and drop a claim it does not support. `references/reader.md` SHALL hold this judgment as a section of its own that a verifier in another skill can paste whole.
+After `bilbo cite` passes, the reference skill SHALL judge whether each quote supports its claim as written, and SHALL rewrite a claim the quote supports only in part to what the quote says, and drop a claim it does not support. `references/reader.md` SHALL hold this judgment as a section of its own.
 
 #### Scenario: A lost qualifier
 - **WHEN** a claim says "Go always reuses the loop variable" and its `ok` quote says the variable is reused "before Go 1.22"

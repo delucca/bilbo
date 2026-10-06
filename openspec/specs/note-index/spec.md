@@ -86,15 +86,15 @@ When `<root>/notes/` does not exist, `bilbo index` SHALL print `bilbo: no store 
 When the host of `embedder.url` is not `localhost`, `127.0.0.1` or `::1`, `bilbo index` SHALL NOT send a passage of a note whose embedder rule (the `note-scope` spec) is `local`, unless a note whose rule is `any` holds an identical passage. It SHALL drop the cached vectors of the passages it withholds. When it withholds any, stderr SHALL be `bilbo: withheld <n> passages from <embedder.url>: their scope allows only a loopback embedder`, where `<n>` counts distinct embedder inputs, an input also held by a note whose rule is `any` counting as sent. The stdout line and exit code SHALL be as without them. A request to a loopback `embedder.url`, from any verb, SHALL connect to it directly and never through a proxy that `HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY` or their lowercase forms name, since a loopback embedder is what lets a `local` passage be sent.
 
 #### Scenario: A local scope and a remote embedder
-- **WHEN** `embedder.url = http://bagend:8081`, `scope.work.embedder = local`, `scope.personal.embedder = any`, the store holds one note with `scope: work` and two passages, and one note with `scope: personal` and one passage, and the cache is empty
-- **THEN** the embedder receives one input, stdout is `embedded 1, kept 0, dropped 0`, stderr is `bilbo: withheld 2 passages from http://bagend:8081: their scope allows only a loopback embedder`, and the exit code is 0
+- **WHEN** `embedder.url = http://embedder.example:8081`, `scope.work.embedder = local`, `scope.personal.embedder = any`, the store holds one note with `scope: work` and two passages, and one note with `scope: personal` and one passage, and the cache is empty
+- **THEN** the embedder receives one input, stdout is `embedded 1, kept 0, dropped 0`, stderr is `bilbo: withheld 2 passages from http://embedder.example:8081: their scope allows only a loopback embedder`, and the exit code is 0
 
 #### Scenario: Unassigned notes follow the strictest scope
-- **WHEN** `embedder.url = http://bagend:8081`, `scope.work.embedder = local`, and a note with no `scope` key holds one passage
+- **WHEN** `embedder.url = http://embedder.example:8081`, `scope.work.embedder = local`, and a note with no `scope` key holds one passage
 - **THEN** that passage is not sent and is counted in the withheld line
 
 #### Scenario: Text shared with an `any` note is sent once
-- **WHEN** `embedder.url = http://bagend:8081`, `scope.work.embedder = local`, `scope.personal.embedder = any`, and the store holds only two notes, one with `scope: work` and one with `scope: personal`, both titled `# Deploy` with the same one paragraph below the title
+- **WHEN** `embedder.url = http://embedder.example:8081`, `scope.work.embedder = local`, `scope.personal.embedder = any`, and the store holds only two notes, one with `scope: work` and one with `scope: personal`, both titled `# Deploy` with the same one paragraph below the title
 - **THEN** the embedder receives that input once, stdout is `embedded 1, kept 0, dropped 0`, and stderr is empty
 
 #### Scenario: A loopback embedder gets everything
@@ -106,9 +106,9 @@ When the host of `embedder.url` is not `localhost`, `127.0.0.1` or `::1`, `bilbo
 - **THEN** every input reaches the embedder at `127.0.0.1:8737` and the proxy receives no request
 
 #### Scenario: No scope asks for local
-- **WHEN** `embedder.url = http://bagend:8081` and no scope sets `embedder = local`
+- **WHEN** `embedder.url = http://embedder.example:8081` and no scope sets `embedder = local`
 - **THEN** every passage that holds text is sent, and stderr is empty
 
 #### Scenario: A note moves into a local scope
-- **WHEN** a note's two passages were embedded by `http://bagend:8081`, then its `scope` became `work`, which sets `embedder = local`, and an agent runs `bilbo index`
+- **WHEN** a note's two passages were embedded by `http://embedder.example:8081`, then its `scope` became `work`, which sets `embedder = local`, and an agent runs `bilbo index`
 - **THEN** stdout reports `dropped 2`, and the cache holds no vector for those passages

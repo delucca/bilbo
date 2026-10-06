@@ -1,12 +1,12 @@
 # sync-transport Specification
 
 ## Purpose
-The transport is where devices leave each other their notes: a tree of encrypted, signed objects that each device only ever adds to. This spec fixes the tree, the write rule and the segment envelope, which the `file://` folder serves here and the relay serves later.
+The transport is where devices leave each other their notes: a tree of encrypted, signed objects that each device only ever adds to. This spec fixes the tree, the write rule and the segment envelope, which a `file://` folder and a relay both serve.
 
 ## Requirements
 
 ### Requirement: Transport URLs
-A scope's transport SHALL be named by its `scope.<name>.sync` URL. A `file:///<absolute path>` URL SHALL name a folder that holds the tree. An `https://` URL, or an `http://` URL to a loopback host, SHALL name a relay that serves the tree, reached as the `relay-transport` spec says. For a URL of any other scheme, watch SHALL print `bilbo: sync <name>: <scheme> transports are not supported yet; use a file:// folder` once and sync nothing for that scope.
+A scope's transport SHALL be named by its `scope.<name>.sync` URL. A `file:///<absolute path>` URL SHALL name a folder that holds the tree. An `https://` URL, or an `http://` URL to a loopback host, SHALL name a relay that serves the tree, reached as the `relay-transport` spec says. An `http://` URL to any other host, or a URL of any other scheme, SHALL be the config error that the `config` spec's Scope sync URLs requirement gives, naming the key, so no verb opens a transport for it.
 
 #### Scenario: A folder transport
 - **WHEN** the config holds `scope.personal.sync = file:///Users/a/Dropbox/bilbo`
@@ -14,7 +14,11 @@ A scope's transport SHALL be named by its `scope.<name>.sync` URL. A `file:///<a
 
 #### Scenario: A relay URL
 - **WHEN** the config holds `scope.personal.sync = https://relay.example`
-- **THEN** watch reads and writes the tree for `personal` through the relay at `https://relay.example/v1/`, and prints no not-supported line
+- **THEN** watch reads and writes the tree for `personal` through the relay at `https://relay.example/v1/`
+
+#### Scenario: An unknown scheme
+- **WHEN** the config holds `scope.personal.sync = ftp://relay.example`
+- **THEN** `bilbo watch` reports an error naming `scope.personal.sync`, exits 2 and syncs nothing
 
 ### Requirement: Transport layout
 The transport SHALL hold only these objects: `scopes/<scope id>/manifest/<n>.json`, the manifest versions; `scopes/<scope id>/devices/<device id>/<seq>.seg`, each device's segments; and `pair/<nameplate>/<msg>.msg`, the short-lived pairing mailbox, `<nameplate>` being 1 to 64 and `<msg>` 1 to 16 of `[a-z0-9-]`. Scope and device ids are the 26-character base32 ids of the `scope-manifest` and `device-identity` specs. `<n>` is a decimal number from 1; `<seq>` one from 1, zero-padded to 20 digits. bilbo SHALL ignore any other name.

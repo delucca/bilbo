@@ -721,7 +721,7 @@ fn config_errors_exit_2() {
     common::config(
         &s.dir,
         &[
-            "embedder.url = http://u:sekrit@bagend:8081",
+            "embedder.url = http://u:sekrit@embedder.example:8081",
             "embedder.model = m",
         ],
     );

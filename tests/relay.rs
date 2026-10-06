@@ -26,8 +26,8 @@ type Seal = hpke::aead::ChaCha20Poly1305;
 type Kdf = hpke::kdf::HkdfSha256;
 
 const FIXTURES: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/device");
-const RIVENDELL: &str = "gr2q7gf5lh6pzfdnurnkvputhp";
-const BAGEND: &str = "wyxim75c6m5p4ywv22ywilqweh";
+const RHOSGOBEL: &str = "gr2q7gf5lh6pzfdnurnkvputhp";
+const BYWATER: &str = "wyxim75c6m5p4ywv22ywilqweh";
 const ID: &str = "01M3YJ7R6HK6NQ30DCDB1P4DYB";
 const OTHER: &str = "01M3YE296FMNXYZS89787DMY0A";
 const FILE: &str = "decision-release.md";
@@ -39,17 +39,17 @@ fn key(seed: u8) -> SigningKey {
     SigningKey::from_bytes(&[seed; 32])
 }
 
-fn rivendell() -> SigningKey {
+fn rhosgobel() -> SigningKey {
     key(1)
 }
 
-fn bagend() -> SigningKey {
+fn bywater() -> SigningKey {
     key(3)
 }
 
 /// The fixture owner's key, read from the fixture file.
 fn owner() -> SigningKey {
-    let text = fs::read_to_string(Path::new(FIXTURES).join("rivendell/owner.key")).unwrap();
+    let text = fs::read_to_string(Path::new(FIXTURES).join("rhosgobel/owner.key")).unwrap();
     let value: serde_json::Value = serde_json::from_str(&text).unwrap();
     let seed = unhex(value["sign"].as_str().unwrap());
     SigningKey::from_bytes(&seed.try_into().unwrap())
@@ -115,7 +115,7 @@ fn fingerprint() -> &'static str {
     FINGERPRINT.get_or_init(|| {
         let dir = TempDir::new("relay-fingerprint");
         let keys = dir.path().join("state/bilbo/keys");
-        copy_tree(&Path::new(FIXTURES).join("rivendell"), &keys);
+        copy_tree(&Path::new(FIXTURES).join("rhosgobel"), &keys);
         chmod(&keys, 0o700);
         for file in ["owner.key", "device.key"] {
             chmod(&keys.join(file), 0o600);
@@ -356,10 +356,10 @@ fn segment_target(device: &str, seq: u64) -> String {
     format!("/v1/scopes/{}/devices/{device}/{}", scope(), seg_name(seq))
 }
 
-/// Creates manifests 1 and `up_to` through the API, as `bagend`, which both list.
+/// Creates manifests 1 and `up_to` through the API, as `bywater`, which both list.
 fn publish(port: u16, up_to: u64) {
     for n in 1..=up_to {
-        let reply = put(port, &bagend(), &manifest_target(n), &manifest_bytes(n));
+        let reply = put(port, &bywater(), &manifest_target(n), &manifest_bytes(n));
         assert_eq!(reply.status, 201, "manifest {n}: {}", reply.text());
     }
 }
@@ -472,7 +472,7 @@ fn an_owner_is_read_without_regard_to_case_or_hyphens() {
     let plain = fingerprint().replace('-', "").to_uppercase();
     let relay = Relay::start(&data, &[&plain], &[]);
     publish(relay.port, 2);
-    relay.wait_for(&format!("manifest {} {BAGEND} 2", scope()));
+    relay.wait_for(&format!("manifest {} {BYWATER} 2", scope()));
     assert_eq!(after_startup(&relay).len(), 2, "{:?}", relay.lines());
 }
 
@@ -592,13 +592,13 @@ fn objects_are_kept_at_the_paths_of_the_transport_tree() {
     let body = b"segment one";
     let reply = put(
         relay.port,
-        &rivendell(),
-        &segment_target(RIVENDELL, 1),
+        &rhosgobel(),
+        &segment_target(RHOSGOBEL, 1),
         body,
     );
     assert_eq!(reply.status, 201, "{}", reply.text());
     assert_eq!(reply.header("Content-Length"), Some("0"));
-    assert_eq!(fs::read(segment_path(&data, RIVENDELL, 1)).unwrap(), body);
+    assert_eq!(fs::read(segment_path(&data, RHOSGOBEL, 1)).unwrap(), body);
     for n in [1, 2] {
         let path = data.join(format!("scopes/{}/manifest/{n}.json", scope()));
         assert_eq!(fs::read(path).unwrap(), manifest_bytes(n));
@@ -663,7 +663,7 @@ fn data_that_is_a_file_is_refused_and_left_alone() {
 /// Sends the head of a `PUT` of `body` and the first `sent` bytes, then waits until the relay has a file under
 /// `.tmp/`: the write has started.
 fn start_a_put(port: u16, data: &Path, target: &str, body: &[u8], sent: usize) -> TcpStream {
-    let headers = signature(&rivendell(), "PUT", target, body);
+    let headers = signature(&rhosgobel(), "PUT", target, body);
     let mut stream = connect(port);
     stream
         .write_all(head("PUT", target, &headers, Some(body.len())).as_bytes())
@@ -679,7 +679,7 @@ fn a_relay_killed_mid_body_keeps_nothing_and_the_retry_is_created() {
     let dir = TempDir::new("relay-kill-body");
     let data = data_in(&dir);
     let body = vec![7u8; 256 * 1024];
-    let target = segment_target(RIVENDELL, 1);
+    let target = segment_target(RHOSGOBEL, 1);
     let mut relay = start(&data);
     publish(relay.port, 2);
     let stream = start_a_put(relay.port, &data, &target, &body, body.len() / 2);
@@ -687,10 +687,10 @@ fn a_relay_killed_mid_body_keeps_nothing_and_the_retry_is_created() {
     drop(stream);
     let relay = start(&data);
     assert!(tmp_entries(&data).is_empty());
-    assert!(!segment_path(&data, RIVENDELL, 1).exists());
-    assert_eq!(get(relay.port, &rivendell(), &target).status, 404);
-    assert_eq!(put(relay.port, &rivendell(), &target, &body).status, 201);
-    assert_eq!(fs::read(segment_path(&data, RIVENDELL, 1)).unwrap(), body);
+    assert!(!segment_path(&data, RHOSGOBEL, 1).exists());
+    assert_eq!(get(relay.port, &rhosgobel(), &target).status, 404);
+    assert_eq!(put(relay.port, &rhosgobel(), &target, &body).status, 201);
+    assert_eq!(fs::read(segment_path(&data, RHOSGOBEL, 1)).unwrap(), body);
 }
 
 #[test]
@@ -698,7 +698,7 @@ fn a_created_object_survives_a_kill_after_the_answer() {
     let dir = TempDir::new("relay-kill-after");
     let data = data_in(&dir);
     let body: Vec<u8> = (0..200_000u32).map(|i| (i % 251) as u8).collect();
-    let target = segment_target(RIVENDELL, 1);
+    let target = segment_target(RHOSGOBEL, 1);
     let mut relay = start(&data);
     publish(relay.port, 2);
     let mut stream = start_a_put(relay.port, &data, &target, &body, body.len() / 2);
@@ -707,7 +707,7 @@ fn a_created_object_survives_a_kill_after_the_answer() {
     assert_eq!(reply.status, 201, "{}", reply.text());
     relay.kill();
     let relay = start(&data);
-    let reply = get(relay.port, &rivendell(), &target);
+    let reply = get(relay.port, &rhosgobel(), &target);
     assert_eq!(reply.status, 200);
     assert_eq!(reply.body, body);
     assert!(tmp_entries(&data).is_empty());
@@ -738,16 +738,16 @@ fn a_full_disk_answers_507_and_keeps_serving_reads() {
         let chunk = vec![0u8; 64 * 1024];
         while file.write_all(&chunk).is_ok() {}
     }
-    let target = segment_target(RIVENDELL, 1);
-    let reply = put(relay.port, &rivendell(), &target, &vec![9u8; 512 * 1024]);
+    let target = segment_target(RHOSGOBEL, 1);
+    let reply = put(relay.port, &rhosgobel(), &target, &vec![9u8; 512 * 1024]);
     assert_eq!(reply.status, 507, "{}", reply.text());
     assert_eq!(reply.text(), r#"{"error":"quota"}"#);
-    assert!(!segment_path(&data, RIVENDELL, 1).exists());
+    assert!(!segment_path(&data, RHOSGOBEL, 1).exists());
     assert!(tmp_entries(&data).is_empty());
     let latest = format!("/v1/scopes/{}/manifest/latest", scope());
-    assert_eq!(get(relay.port, &rivendell(), &latest).status, 200);
+    assert_eq!(get(relay.port, &rhosgobel(), &latest).status, 200);
     relay.wait_for(&format!(
-        "failed 507 quota PUT segment {} {RIVENDELL}",
+        "failed 507 quota PUT segment {} {RHOSGOBEL}",
         scope()
     ));
     let _ = fs::remove_dir_all(&data);
@@ -771,10 +771,10 @@ fn a_hand_edited_manifest_marks_its_scope_invalid() {
     preload(&data, &[1, 2]);
     let path = data.join(format!("scopes/{}/manifest/2.json", scope()));
     let text = fs::read_to_string(&path).unwrap();
-    assert!(text.contains("\"name\":\"bagend\""));
+    assert!(text.contains("\"name\":\"bywater\""));
     fs::write(
         &path,
-        text.replacen("\"name\":\"bagend\"", "\"name\":\"bagenx\"", 1),
+        text.replacen("\"name\":\"bywater\"", "\"name\":\"bagenx\"", 1),
     )
     .unwrap();
     let before = tree(&data.join("scopes"));
@@ -782,12 +782,12 @@ fn a_hand_edited_manifest_marks_its_scope_invalid() {
     let id = scope();
     // Every request below is answered after the walk, so the one line it prints is already there.
     let devices = format!("/v1/scopes/{id}/devices/");
-    for key in [rivendell(), bagend()] {
+    for key in [rhosgobel(), bywater()] {
         let reply = get(relay.port, &key, &devices);
         assert_eq!(reply.status, 403, "{}", reply.text());
         assert_eq!(reply.text(), r#"{"error":"invalid"}"#);
     }
-    let reply = put(relay.port, &rivendell(), "/v1/pair/42/a.msg", b"hello");
+    let reply = put(relay.port, &rhosgobel(), "/v1/pair/42/a.msg", b"hello");
     assert_eq!(reply.status, 403, "{}", reply.text());
     assert_eq!(
         mentioning(&relay, &format!("scope {id} is invalid")).len(),
@@ -801,13 +801,13 @@ fn a_gap_in_a_devices_seqs_marks_its_scope_invalid() {
     let dir = TempDir::new("relay-gap");
     let data = data_in(&dir);
     preload(&data, &[1, 2]);
-    preload_segment(&data, RIVENDELL, 1, b"one");
-    preload_segment(&data, RIVENDELL, 3, b"three");
+    preload_segment(&data, RHOSGOBEL, 1, b"one");
+    preload_segment(&data, RHOSGOBEL, 3, b"three");
     let before = tree(&data.join("scopes"));
     let relay = start(&data);
     let reply = get(
         relay.port,
-        &rivendell(),
+        &rhosgobel(),
         &format!("/v1/scopes/{}/devices/", scope()),
     );
     assert_eq!(reply.status, 403, "{}", reply.text());
@@ -824,7 +824,7 @@ fn an_owner_dropped_from_the_flags_is_not_admitted_and_its_folder_is_unchanged()
     let dir = TempDir::new("relay-dropped");
     let data = data_in(&dir);
     preload(&data, &[1, 2]);
-    preload_segment(&data, RIVENDELL, 1, b"one");
+    preload_segment(&data, RHOSGOBEL, 1, b"one");
     let before = tree(&data.join("scopes"));
     let other = foreign_fingerprint();
     let relay = Relay::start(&data, &[&other], &[]);
@@ -833,7 +833,7 @@ fn an_owner_dropped_from_the_flags_is_not_admitted_and_its_folder_is_unchanged()
         format!("/v1/scopes/{id}/devices/"),
         format!("/v1/scopes/{id}/manifest/latest"),
     ] {
-        let reply = get(relay.port, &rivendell(), &target);
+        let reply = get(relay.port, &rhosgobel(), &target);
         assert_eq!(reply.status, 403, "{}", reply.text());
         assert_eq!(reply.text(), r#"{"error":"not-admitted"}"#);
     }
@@ -852,7 +852,7 @@ fn an_owner_dropped_from_the_flags_is_not_admitted_and_its_folder_is_unchanged()
     let relay = start(&data);
     let reply = get(
         relay.port,
-        &rivendell(),
+        &rhosgobel(),
         &format!("/v1/scopes/{id}/devices/"),
     );
     assert_eq!(reply.status, 200, "{}", reply.text());
@@ -891,8 +891,8 @@ fn a_copied_file_transport_is_served_as_if_created_through_the_relay() {
     let dir = TempDir::new("relay-copied");
     let transport = dir.path().join("transport");
     preload(&transport, &[1, 2]);
-    preload_segment(&transport, RIVENDELL, 1, b"one");
-    preload_segment(&transport, RIVENDELL, 2, b"two");
+    preload_segment(&transport, RHOSGOBEL, 1, b"one");
+    preload_segment(&transport, RHOSGOBEL, 2, b"two");
     let data = data_in(&dir);
     copy_tree(&transport, &data);
     chmod(&data, 0o700);
@@ -900,19 +900,19 @@ fn a_copied_file_transport_is_served_as_if_created_through_the_relay() {
     let id = scope();
     let listing = get(
         relay.port,
-        &rivendell(),
+        &rhosgobel(),
         &format!("/v1/scopes/{id}/devices/"),
     );
     assert_eq!(listing.status, 200, "{}", listing.text());
     assert_eq!(
         listing.text(),
-        format!("{{\"devices\":[{{\"id\":\"{RIVENDELL}\",\"last\":2}}]}}")
+        format!("{{\"devices\":[{{\"id\":\"{RHOSGOBEL}\",\"last\":2}}]}}")
     );
-    let segment = get(relay.port, &bagend(), &segment_target(RIVENDELL, 2));
+    let segment = get(relay.port, &bywater(), &segment_target(RHOSGOBEL, 2));
     assert_eq!(segment.body, b"two");
     let latest = get(
         relay.port,
-        &bagend(),
+        &bywater(),
         &format!("/v1/scopes/{id}/manifest/latest"),
     );
     assert_eq!(latest.header("Bilbo-Manifest"), Some("2"));
@@ -920,12 +920,12 @@ fn a_copied_file_transport_is_served_as_if_created_through_the_relay() {
     // A device continues the folder where it left off, as on a relay that created it.
     let next = put(
         relay.port,
-        &rivendell(),
-        &segment_target(RIVENDELL, 3),
+        &rhosgobel(),
+        &segment_target(RHOSGOBEL, 3),
         b"three",
     );
     assert_eq!(next.status, 201, "{}", next.text());
-    relay.wait_for(&format!("segment {id} {RIVENDELL} 3 5"));
+    relay.wait_for(&format!("segment {id} {RHOSGOBEL} 3 5"));
     assert_eq!(relay.lines().len() - 1, 1, "{:?}", relay.lines());
 }
 
@@ -942,30 +942,30 @@ fn a_create_is_logged_and_reads_are_not() {
         last = vec![seq as u8; 100 + seq as usize];
         let reply = put(
             relay.port,
-            &rivendell(),
-            &segment_target(RIVENDELL, seq),
+            &rhosgobel(),
+            &segment_target(RHOSGOBEL, seq),
             &last,
         );
         assert_eq!(reply.status, 201, "{}", reply.text());
     }
-    let line = format!("segment {} {RIVENDELL} 12 {}", scope(), last.len());
+    let line = format!("segment {} {RHOSGOBEL} 12 {}", scope(), last.len());
     relay.wait_for(&line);
     assert!(after_startup(&relay).contains(&line), "{:?}", relay.lines());
     let before = relay.lines().len();
     for i in 0..500u64 {
         let seq = i % 12 + 1;
-        let reply = get(relay.port, &bagend(), &segment_target(RIVENDELL, seq));
+        let reply = get(relay.port, &bywater(), &segment_target(RHOSGOBEL, seq));
         assert_eq!(reply.status, 200);
     }
     // A create is logged, so its line is the barrier behind which any line for the reads would stand.
     let reply = put(
         relay.port,
-        &rivendell(),
-        &segment_target(RIVENDELL, 13),
+        &rhosgobel(),
+        &segment_target(RHOSGOBEL, 13),
         b"x",
     );
     assert_eq!(reply.status, 201);
-    relay.wait_for(&format!("segment {} {RIVENDELL} 13 1", scope()));
+    relay.wait_for(&format!("segment {} {RHOSGOBEL} 13 1", scope()));
     assert_eq!(relay.lines().len(), before + 1, "{:?}", relay.lines());
 }
 
@@ -979,7 +979,7 @@ fn nothing_personal_reaches_the_log() {
     let message = b"payload-plover-secret";
     let opener = put(
         relay.port,
-        &rivendell(),
+        &rhosgobel(),
         &format!("/v1/pair/{plate}/a.msg"),
         message,
     );
@@ -995,7 +995,7 @@ fn nothing_personal_reaches_the_log() {
     // A listed device that did not open the nameplate is refused before its body is read, which counts the refusal.
     let refused = put(
         relay.port,
-        &bagend(),
+        &bywater(),
         &format!("/v1/pair/{plate}/c.msg"),
         b"intruder",
     );
@@ -1009,7 +1009,7 @@ fn nothing_personal_reaches_the_log() {
         lines.contains(&format!("mailbox {}", message.len())),
         "{lines:?}"
     );
-    let key = hex(rivendell().verifying_key().as_bytes().as_slice());
+    let key = hex(rhosgobel().verifying_key().as_bytes().as_slice());
     for line in &lines {
         for secret in [
             plate,
@@ -1072,7 +1072,7 @@ fn a_flood_of_refusals_is_one_counting_line() {
     }
     // A create is logged at once, so its line is the barrier behind which any further refusal line would stand.
     publish(relay.port, 1);
-    relay.wait_for(&format!("manifest {} {BAGEND} 1", scope()));
+    relay.wait_for(&format!("manifest {} {BYWATER} 1", scope()));
     let lines = after_startup(&relay);
     assert_eq!(lines.len(), 2, "{lines:?}");
     assert_eq!(
@@ -1187,13 +1187,13 @@ fn note(id: &str, setup: &str, rollout: &str) -> String {
     )
 }
 
-/// The epoch key of a fixture manifest, opened with rivendell's box key.
+/// The epoch key of a fixture manifest, opened with rhosgobel's box key.
 fn epoch_key(m: &serde_json::Value) -> [u8; 32] {
-    let sealed = unhex(m["sealed"][RIVENDELL].as_str().unwrap());
+    let sealed = unhex(m["sealed"][RHOSGOBEL].as_str().unwrap());
     let secret = <Kem as hpke::Kem>::PrivateKey::from_bytes(&[2u8; 32]).unwrap();
     let enc = <Kem as hpke::Kem>::EncappedKey::from_bytes(&sealed[..32]).unwrap();
     let aad = format!(
-        "{}\n{}\n{RIVENDELL}",
+        "{}\n{}\n{RHOSGOBEL}",
         m["scope"].as_str().unwrap(),
         m["epoch"]
     );
@@ -1294,10 +1294,10 @@ fn sync_through_relay() {
     let relay = start(&data);
     let url = relay.url();
     let manifests = pinned(&url);
-    let reply = put(relay.port, &rivendell(), &manifest_target(3), &manifests[2]);
+    let reply = put(relay.port, &rhosgobel(), &manifest_target(3), &manifests[2]);
     assert_eq!(reply.status, 201, "{}", reply.text());
-    let mut a = Site::new("rivendell", &url, &manifests);
-    let mut b = Site::new("bagend", &url, &manifests);
+    let mut a = Site::new("rhosgobel", &url, &manifests);
+    let mut b = Site::new("bywater", &url, &manifests);
     a.start();
     b.start();
     for site in [&a, &b] {
@@ -1306,7 +1306,7 @@ fn sync_through_relay() {
     let text = note(ID, "Install it.", "Ship on Monday.");
     a.write(FILE, &text);
     b.wait_text(FILE, &text);
-    let edited = format!("{text}\nA paragraph from rivendell.\n");
+    let edited = format!("{text}\nA paragraph from rhosgobel.\n");
     a.write(FILE, &edited);
     b.wait_text(FILE, &edited);
     // A note of the other device travels the other way.
@@ -1320,10 +1320,10 @@ fn sync_through_relay() {
         }
     }
     // Every object the devices made went through the relay.
-    assert!(segment_path(&data, RIVENDELL, 1).exists());
-    assert!(segment_path(&data, BAGEND, 1).exists());
+    assert!(segment_path(&data, RHOSGOBEL, 1).exists());
+    assert!(segment_path(&data, BYWATER, 1).exists());
     assert_eq!(
-        mentioning(&relay, &format!("segment {} {RIVENDELL} 1 ", scope())).len(),
+        mentioning(&relay, &format!("segment {} {RHOSGOBEL} 1 ", scope())).len(),
         1,
         "{:?}",
         relay.lines()
@@ -1338,14 +1338,14 @@ fn data_folder_is_a_file_transport() {
     let mut relay = start(&data);
     let url = relay.url();
     let manifests = pinned(&url);
-    let reply = put(relay.port, &rivendell(), &manifest_target(3), &manifests[2]);
+    let reply = put(relay.port, &rhosgobel(), &manifest_target(3), &manifests[2]);
     assert_eq!(reply.status, 201, "{}", reply.text());
-    let mut a = Site::new("rivendell", &url, &manifests);
+    let mut a = Site::new("rhosgobel", &url, &manifests);
     a.start();
     a.wait_for(&format!("bilbo: syncing personal through {url}"));
     let text = note(ID, "Install it.", "Ship on Monday.");
     a.write(FILE, &text);
-    relay.wait_for(&format!("segment {} {RIVENDELL} 1 ", scope()));
+    relay.wait_for(&format!("segment {} {RHOSGOBEL} 1 ", scope()));
     a.stop();
     relay.kill();
     // Only objects of the tree's grammar are left under scopes/.
@@ -1366,7 +1366,7 @@ fn data_folder_is_a_file_transport() {
     fs::write(into, &four).unwrap();
     let mut all = manifests.clone();
     all.push(four);
-    let mut b = Site::new("bagend", &folder, &all);
+    let mut b = Site::new("bywater", &folder, &all);
     b.start();
     b.wait_text(FILE, &text);
 }
@@ -1378,7 +1378,7 @@ fn a_relay_that_refuses_the_owner_reaches_the_watch_log_and_sync() {
     let other = foreign_fingerprint();
     let relay = Relay::start(&data, &[&other], &[]);
     let url = relay.url();
-    let mut a = Site::new("rivendell", &url, &pinned(&url));
+    let mut a = Site::new("rhosgobel", &url, &pinned(&url));
     a.start();
     let refusal = format!(
         "bilbo: sync personal: relay {url} does not admit this owner; start it with --owner {}",
@@ -1415,9 +1415,9 @@ fn a_relay_that_goes_down_reaches_the_watch_log() {
     let mut relay = start(&data);
     let url = relay.url();
     let manifests = pinned(&url);
-    let reply = put(relay.port, &rivendell(), &manifest_target(3), &manifests[2]);
+    let reply = put(relay.port, &rhosgobel(), &manifest_target(3), &manifests[2]);
     assert_eq!(reply.status, 201, "{}", reply.text());
-    let mut a = Site::new("rivendell", &url, &manifests);
+    let mut a = Site::new("rhosgobel", &url, &manifests);
     a.start();
     a.wait_for(&format!("bilbo: syncing personal through {url}"));
     relay.kill();

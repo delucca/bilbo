@@ -867,7 +867,7 @@ mod tests {
 
     fn payload(scopes: usize, name_len: usize) -> Payload {
         Payload {
-            name: "rivendell".to_string(),
+            name: "rhosgobel".to_string(),
             id: "a".repeat(26),
             seed: Some(Zeroizing::new([5u8; 32])),
             scopes: (0..scopes)
@@ -1076,7 +1076,7 @@ mod tests {
         };
         assert_eq!(
             (got.name.as_str(), got.id.as_str()),
-            ("rivendell", sent.id.as_str())
+            ("rhosgobel", sent.id.as_str())
         );
         assert_eq!(got.scopes, sent.scopes);
         assert_eq!(got.seed.as_deref(), sent.seed.as_deref());

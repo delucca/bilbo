@@ -40,12 +40,10 @@ impl fmt::Display for Notice {
     }
 }
 
-/// Every citation of `text` in order, and a notice for each `bilbo:<id>` with no quote and each old `note:` form
-/// (`note:` then `/`, `~` or `.`), in line order.
+/// Every citation of `text` in order, and a notice for each `bilbo:<id>` with no quote, in line order.
 pub fn parse(text: &str) -> (Vec<Citation>, Vec<Notice>) {
     let mut citations = Vec::new();
     let mut notices = Vec::new();
-    let mut spans = Vec::new();
     let mut at = 0;
     while let Some(found) = text[at..].find(PREFIX) {
         let start = at + found;
@@ -59,7 +57,6 @@ pub fn parse(text: &str) -> (Vec<Citation>, Vec<Notice>) {
                     anchor,
                     quote,
                 });
-                spans.push((start, end));
                 at = end;
             }
             Scan::NoQuote => {
@@ -75,8 +72,6 @@ pub fn parse(text: &str) -> (Vec<Citation>, Vec<Notice>) {
             Scan::Skip => at = id_at,
         }
     }
-    notices.extend(old_form(text, &spans));
-    notices.sort_by_key(|n| n.line);
     (citations, notices)
 }
 
@@ -194,35 +189,6 @@ fn blank_line_at(s: &str) -> bool {
 
 fn line_of(text: &str, at: usize) -> usize {
     text[..at].bytes().filter(|b| *b == b'\n').count() + 1
-}
-
-fn old_form(text: &str, spans: &[(usize, usize)]) -> Vec<Notice> {
-    const LABEL: &str = "note:";
-    let mut notices = Vec::new();
-    let mut at = 0;
-    while let Some(found) = text[at..].find(LABEL) {
-        let start = at + found;
-        at = start + LABEL.len();
-        let after = &text[at..];
-        let rest = after.trim_start_matches([' ', '\t']);
-        let bounded = !text[..start]
-            .chars()
-            .next_back()
-            .is_some_and(char::is_alphanumeric);
-        if bounded
-            && rest.len() < after.len()
-            && rest.starts_with(['/', '~', '.'])
-            && !spans.iter().any(|(a, b)| (*a..*b).contains(&start))
-        {
-            notices.push(Notice {
-                line: line_of(text, start),
-                message:
-                    "the old note: form is not checked; cite with bilbo:<id>#<anchor> \"<quote>\""
-                        .to_string(),
-            });
-        }
-    }
-    notices
 }
 
 /// What a file's id names.
@@ -959,22 +925,13 @@ The second examples section shows a config loader that merges environment variab
     }
 
     #[test]
-    fn the_old_note_form_is_a_notice() {
-        for path in ["/Users/a/Notebooks/x/library/go.md", "~/x.md", "./x.md"] {
-            let text = format!("a\nnote: {path}#Errors \"some quoted words here\"\n");
-            let (citations, notices) = parse(&text);
-            assert!(citations.is_empty());
-            assert_eq!(notices.len(), 1, "{path}");
-            assert_eq!(notices[0].line, 2);
-            assert!(notices[0].message.contains("old note:"));
-        }
+    fn other_text_with_a_path_and_a_quote_is_quiet() {
         for text in [
-            "note: see below",
-            "footnote: /x",
-            "note:/x",
-            &format!("bilbo:{SID} \"say note: /x here ok\""),
+            "a\nsee: ./library/go.md#Errors \"some quoted words here\"\n",
+            "source: /x/library/go.md#Errors \"some quoted words here\"",
+            "~/x.md \"some quoted words here\"",
         ] {
-            assert!(parse(text).1.is_empty(), "{text}");
+            assert_eq!(parse(text), (Vec::new(), Vec::new()), "{text}");
         }
     }
 
