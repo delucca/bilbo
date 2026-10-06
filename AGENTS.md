@@ -47,12 +47,12 @@ PYTHONDONTWRITEBYTECODE=1 python3 ~/.codex/skills/.system/plugin-creator/scripts
   stderr line with `bilbo: `. The one exception is `Terminal` in
   `src/host/prompt.rs`, which cliclack draws on stderr without the prefix.
 - `src/` is one folder per domain, each verb inside the domain it serves:
-  `note/`, `search/`, `library/`, `citation/`, `identity/`, `sync/`, `setup/`
-  and `host/`. A domain's `mod.rs` holds its `//!` summary and its `mod` lines;
-  `note/` and `citation/` also keep their model there, and `setup/`, which is
-  itself a verb, keeps the verb's root. `src/main.rs` parses arguments, owns
-  `Failure`, dispatches to `<domain>::<verb>::run` (except `setup::run` and
-  `check::run`) and prints.
+  `note/`, `search/`, `library/`, `citation/`, `identity/`, `sync/`, `relay/`,
+  `setup/` and `host/`. A domain's `mod.rs` holds its `//!` summary and its
+  `mod` lines; `note/` and `citation/` also keep their model there, and
+  `setup/` and `relay/`, which are themselves verbs, keep the verb's root. `src/main.rs` parses arguments, owns
+  `Failure`, dispatches to `<domain>::<verb>::run` (except `setup::run`,
+  `relay::run` and `check::run`) and prints.
 - `src/shared/` is the Shared Kernel: `store`, `markdown`, `frontmatter`,
   `text`, `config` and `hash`. A module joins it only when two domains use
   it, and `shared/` never imports a domain. Callers keep module-qualified
@@ -60,23 +60,27 @@ PYTHONDONTWRITEBYTECODE=1 python3 ~/.codex/skills/.system/plugin-creator/scripts
 - The verbs are `note/new.rs`, `note/watch.rs`, `note/history.rs`,
   `note/restore.rs`, `note/scope.rs`, `search/recall.rs`, `search/index.rs`,
   `search/digest.rs`, `library/cli/`, `citation/cite.rs`,
-  `identity/device.rs`, `identity/pair/`, `sync/cli.rs`, `setup/` and `src/check.rs`, which spans note and
+  `identity/device.rs`, `identity/pair/`, `sync/cli.rs`, `relay/`, `setup/` and `src/check.rs`, which spans note and
   library and so stays at the root. A verb parses its own arguments, returns `crate::Failure` and never prints,
-  and only `main` uses a verb's module. `watch` and `pair`, like `setup`, take
+  and only `main` uses a verb's module. `watch`, `pair` and `relay`, like `setup`, take
   callbacks for their lines and `main` prints each one. `digest` is the
   exception: it returns a `digest::Outcome` (lines and one diagnostic) and
   `main` always exits 0 for it, because a prompt hook that exits 2 blocks the
   prompt. Code outside the verbs returns plain values and `String` messages
   and never names `Failure`; it may use other domains without forming a
   cycle (today `search` uses `note` and `library`, `identity` uses `host`, and
-  `sync` uses `note`, `identity` and `host`). The library modules of `identity`
+  `sync` uses `note`, `identity` and `host`, and `relay` uses `sync` and
+  `identity`). The library modules of `identity`
   (`keys`, `phrase`, `manifest`, `ceremony`, `pake`) never use a domain that uses
   `identity`, so later domains can build on them. Only verbs call into
   `sync` from `note` and `identity` (`note/restore.rs`, `note/scope.rs`,
   `identity/device.rs`, `identity/pair/`); `tests/layout.rs` skips verb files in its cycle
   check, so a non-verb file of `note` or `identity` that uses `sync` closes a
   cycle and fails it.
-  `identity/script.rs`, the scripted `Prompter`, is test-only.
+  `identity/script.rs`, the scripted `Prompter`, is test-only. Nothing outside
+  `main` uses `relay/` except test code: the unit tests of `sync/remote/` start
+  a relay with the test-only `relay::start`, and `tests/layout.rs` reads only
+  the code before `mod tests`. `httparse` is used in `relay/http.rs` alone.
 - A module with children is `foo/mod.rs`, never `foo.rs` beside `foo/`
   (clippy's `self_named_module_files`, enabled in `src/main.rs`). Items are
   `pub` or private, never `pub(crate)`. Name modules by absolute `crate::`
@@ -152,6 +156,12 @@ PYTHONDONTWRITEBYTECODE=1 python3 ~/.codex/skills/.system/plugin-creator/scripts
 - `tests/sync.rs` runs two `bilbo watch` children over one temporary folder
   and polls with a deadline, never a fixed sleep; a check that nothing
   arrived waits on a barrier, a later note that it polls for.
+- `tests/relay.rs` runs the built `bilbo relay --listen 127.0.0.1:0` through
+  `tests/common::Relay` and reads the port from its first stderr line. Its
+  durability tests (a SIGKILL mid-body, a SIGKILL after the answer) also run
+  on macOS, where `sync_all` is `F_FULLFSYNC`. The full-disk test runs only
+  where `BILBO_TEST_TMPFS` names a size-limited tmpfs, and skips otherwise;
+  run it in a Linux container with `--tmpfs`.
 - `sync::integrate`'s crash points and races are tested through its `Step`
   hook, which stops an inbound write where a kill would, never by killing a
   child.
