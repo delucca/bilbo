@@ -46,7 +46,6 @@ pub struct Pick {
     pub end: usize,
     pub digest: String,
     /// The physical line the source's body started on; a frontmatter of another length shifts every line.
-    #[serde(default)]
     pub body_start: usize,
 }
 

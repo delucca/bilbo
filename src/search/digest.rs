@@ -581,8 +581,8 @@ mod tests {
     #[test]
     fn command_loses_its_sigil() {
         assert_eq!(
-            query("/opsx:apply add-note-recall").as_deref(),
-            Some("opsx:apply add-note-recall")
+            query("/review:pr fix-login-timeout").as_deref(),
+            Some("review:pr fix-login-timeout")
         );
         assert_eq!(
             query("$recall the store").as_deref(),

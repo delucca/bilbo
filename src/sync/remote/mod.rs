@@ -132,7 +132,7 @@ fn base(url: &str) -> Result<String, String> {
     } else {
         let scheme = url.split("://").next().unwrap_or(url);
         Err(format!(
-            "{scheme} transports are not supported yet; use a file:// folder"
+            "{scheme} transports are not supported; use a file:// folder or an https:// relay"
         ))
     }
 }
@@ -1343,23 +1343,29 @@ mod tests {
             owner: owner.file(),
             device: Device::from_seeds(name, &[seed; 32], &[seed + 1; 32]),
         };
-        let (bagend, rivendell, carol) = (who("bagend", 3), who("rivendell", 1), who("carol", 5));
+        let (bywater, rhosgobel, carol) = (who("bywater", 3), who("rhosgobel", 1), who("carol", 5));
         let lock = manifest::lock(&dir).unwrap();
-        let id = manifest::create(&lock, &bagend, "personal", "file:///x", &[])
+        let id = manifest::create(&lock, &bywater, "personal", "file:///x", &[])
             .unwrap()
             .scope;
-        for joining in [&rivendell, &carol] {
+        for joining in [&rhosgobel, &carol] {
             let scope = manifest::read_scope(&dir, &id).unwrap();
             let opened = manifest::open(&scope, &Recipient::Owner(&owner.box_secret))
                 .unwrap()
                 .unwrap();
             let member = Member::of(&joining.device);
-            manifest::add_device(&lock, &scope, &opened.keys[&opened.epoch], &member, &bagend)
-                .unwrap();
+            manifest::add_device(
+                &lock,
+                &scope,
+                &opened.keys[&opened.epoch],
+                &member,
+                &bywater,
+            )
+            .unwrap();
         }
         let versions = manifest::read_scope(&dir, &id).unwrap().versions;
         assert_eq!(versions.len(), 3);
-        assert!(!versions[0].manifest.lists(&rivendell.device.id()));
+        assert!(!versions[0].manifest.lists(&rhosgobel.device.id()));
 
         let log = Arc::new(Mutex::new(Vec::<String>::new()));
         let sink = log.clone();
@@ -1377,7 +1383,7 @@ mod tests {
             Arc::new(move |line: &str| sink.lock().unwrap().push(line.to_string())),
         )
         .unwrap();
-        let keys = Keys::of(&rivendell);
+        let keys = Keys::of(&rhosgobel);
         let t = transport::open(&relay.url(), &keys).unwrap();
         for v in &versions {
             let path = transport::manifest_path(&id, v.manifest.n);
@@ -1393,7 +1399,7 @@ mod tests {
             let path = transport::manifest_path(&id, v.manifest.n);
             assert_eq!(t.get(&path).unwrap(), Some(v.bytes.clone()));
         }
-        let this = rivendell.device.id();
+        let this = rhosgobel.device.id();
         let lines: Vec<String> = log
             .lock()
             .unwrap()
@@ -1426,9 +1432,9 @@ mod tests {
             owner: owner.file(),
             device: Device::from_seeds(name, &[seed; 32], &[seed + 1; 32]),
         };
-        let (bagend, carol) = (who("bagend", 3), who("carol", 5));
+        let (bywater, carol) = (who("bywater", 3), who("carol", 5));
         let lock = manifest::lock(&dir).unwrap();
-        let id = manifest::create(&lock, &bagend, "personal", "file:///x", &[])
+        let id = manifest::create(&lock, &bywater, "personal", "file:///x", &[])
             .unwrap()
             .scope;
         let first = manifest::read_scope(&dir, &id).unwrap().versions.remove(0);
@@ -1445,7 +1451,7 @@ mod tests {
                 .unwrap()
         };
         let relay = serve(&owner);
-        let t = transport::open(&relay.url(), &Keys::of(&bagend)).unwrap();
+        let t = transport::open(&relay.url(), &Keys::of(&bywater)).unwrap();
         let path = transport::manifest_path(&id, 1);
         assert_eq!(t.create(&path, &first.bytes), Put::Created);
         assert_eq!(t.devices(&id).unwrap(), Vec::<String>::new());
@@ -1459,7 +1465,7 @@ mod tests {
 
         let relay = serve(&Owner::derive(&[1; 16]));
         let url = relay.url();
-        let t = transport::open(&url, &Keys::of(&bagend)).unwrap();
+        let t = transport::open(&url, &Keys::of(&bywater)).unwrap();
         assert_eq!(
             t.devices(&id).unwrap_err(),
             format!(
@@ -1484,9 +1490,9 @@ mod tests {
             owner: owner.file(),
             device: Device::from_seeds(name, &[seed; 32], &[seed + 1; 32]),
         };
-        let (bagend, carol) = (who("bagend", 3), who("carol", 5));
+        let (bywater, carol) = (who("bywater", 3), who("carol", 5));
         let lock = manifest::lock(&dir).unwrap();
-        let id = manifest::create(&lock, &bagend, "personal", "file:///x", &[])
+        let id = manifest::create(&lock, &bywater, "personal", "file:///x", &[])
             .unwrap()
             .scope;
         let scope = manifest::read_scope(&dir, &id).unwrap();
@@ -1494,7 +1500,14 @@ mod tests {
             .unwrap()
             .unwrap();
         let member = Member::of(&carol.device);
-        manifest::add_device(&lock, &scope, &opened.keys[&opened.epoch], &member, &bagend).unwrap();
+        manifest::add_device(
+            &lock,
+            &scope,
+            &opened.keys[&opened.epoch],
+            &member,
+            &bywater,
+        )
+        .unwrap();
         let versions = manifest::read_scope(&dir, &id).unwrap().versions;
         let flags = crate::relay::Flags {
             data: dir.join("relay"),
@@ -1509,7 +1522,7 @@ mod tests {
                 .unwrap();
         let url = relay.url();
         let second = transport::manifest_path(&id, 2);
-        let t = transport::open(&url, &Keys::of(&bagend)).unwrap();
+        let t = transport::open(&url, &Keys::of(&bywater)).unwrap();
         assert_eq!(
             t.create(&second, &versions[1].bytes),
             Put::Unreachable(format!(

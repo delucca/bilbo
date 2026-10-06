@@ -620,15 +620,15 @@ mod tests {
     }
 
     fn me() -> Identity {
-        identity("rivendell", 1)
+        identity("rhosgobel", 1)
     }
 
-    fn bagend() -> Identity {
-        identity("bagend", 3)
+    fn bywater() -> Identity {
+        identity("bywater", 3)
     }
 
-    fn moria() -> Identity {
-        identity("moria", 5)
+    fn morthond() -> Identity {
+        identity("morthond", 5)
     }
 
     impl World {
@@ -787,7 +787,7 @@ mod tests {
     #[test]
     fn two_devices_in_step() {
         let mut w = world("step");
-        let id = w.personal(&[&bagend()]);
+        let id = w.personal(&[&bywater()]);
         for n in 0..3u8 {
             w.note(
                 &format!("plan-p{n}.md"),
@@ -808,14 +808,14 @@ mod tests {
             json!({
                 "pulled_at": T0 - 60, "pushed_at": T0 - 120, "own": 2,
                 "sent": {"1": sent(T0 - 300, true), "2": sent(T0 - 200, true)},
-                "acks": {bagend().device.id(): {me().device.id(): 2}},
+                "acks": {bywater().device.id(): {me().device.id(): 2}},
             }),
         );
         w.watching();
         let out = w.out(0);
         let mut devices = [
-            (me().device.id(), "rivendell", "this device"),
-            (bagend().device.id(), "bagend", "up to date"),
+            (me().device.id(), "rhosgobel", "this device"),
+            (bywater().device.id(), "bywater", "up to date"),
         ];
         devices.sort();
         let mut expected = vec![
@@ -840,14 +840,14 @@ mod tests {
             out.lines[0],
             "scope personal file:///srv/bilbo: 0 notes, pushed never, pulled never"
         );
-        assert_eq!(out.lines[1], "device personal rivendell: this device");
+        assert_eq!(out.lines[1], "device personal rhosgobel: this device");
     }
 
     #[test]
     fn a_device_behind_by_segments_and_one_gone_for_good() {
         let w = world("behind");
-        let id = w.personal(&[&bagend(), &moria()]);
-        let (b, m) = (bagend().device.id(), moria().device.id());
+        let id = w.personal(&[&bywater(), &morthond()]);
+        let (b, m) = (bywater().device.id(), morthond().device.id());
         let now = 200 * DAY;
         w.state(
             &id,
@@ -863,9 +863,9 @@ mod tests {
         );
         let out = w.out(now);
         let lines = device_lines(&out);
-        assert!(lines.contains(&"device personal bagend: behind by 2 segments"));
-        assert!(lines.contains(&"device personal moria: behind by 2 segments"));
-        // the segment bagend never took, 200 days old, makes it stale
+        assert!(lines.contains(&"device personal bywater: behind by 2 segments"));
+        assert!(lines.contains(&"device personal morthond: behind by 2 segments"));
+        // the segment bywater never took, 200 days old, makes it stale
         w.state(
             &id,
             json!({
@@ -875,15 +875,17 @@ mod tests {
         );
         let out = w.out(now);
         let lines = device_lines(&out);
-        assert!(lines.contains(&"device personal bagend: up to date"));
-        assert!(lines.contains(&format!("device personal moria: stale since {T0_TEXT}").as_str()));
+        assert!(lines.contains(&"device personal bywater: up to date"));
+        assert!(
+            lines.contains(&format!("device personal morthond: stale since {T0_TEXT}").as_str())
+        );
     }
 
     #[test]
     fn a_device_listed_only_recently_is_not_stale_for_an_old_segment() {
         let w = world("since");
-        let id = w.personal(&[&moria()]);
-        let m = moria().device.id();
+        let id = w.personal(&[&morthond()]);
+        let m = morthond().device.id();
         w.state(
             &id,
             json!({
@@ -893,7 +895,7 @@ mod tests {
             }),
         );
         let out = w.out(200 * DAY);
-        assert!(device_lines(&out).contains(&"device personal moria: behind by 1 segments"));
+        assert!(device_lines(&out).contains(&"device personal morthond: behind by 1 segments"));
     }
 
     #[test]
@@ -910,16 +912,16 @@ mod tests {
     #[test]
     fn a_wrong_clock_on_the_acknowledging_device_changes_nothing() {
         let w = world("clock");
-        let id = w.personal(&[&moria()]);
+        let id = w.personal(&[&morthond()]);
         w.state(
             &id,
             json!({
                 "own": 2, "sent": {"1": sent(T0, true), "2": sent(T0 + 60, true)},
-                "acks": {moria().device.id(): {me().device.id(): 2}},
+                "acks": {morthond().device.id(): {me().device.id(): 2}},
             }),
         );
         let out = w.out(3600);
-        assert!(device_lines(&out).contains(&"device personal moria: up to date"));
+        assert!(device_lines(&out).contains(&"device personal morthond: up to date"));
     }
 
     #[test]
@@ -991,7 +993,7 @@ mod tests {
         let id = w.personal(&[]);
         let changes = format!(
             "{}\n{}\n{}\n",
-            json!({"at": "2027-01-12T08:00:00+00:00", "n": 4, "kind": "device", "device": "moria", "signer": "owner key"}),
+            json!({"at": "2027-01-12T08:00:00+00:00", "n": 4, "kind": "device", "device": "morthond", "signer": "owner key"}),
             json!({"at": "2027-01-13T08:00:00+00:00", "n": 5, "kind": "epoch", "signer": "owner key"}),
             json!({"at": "2026-11-01T08:00:00+00:00", "n": 3, "kind": "device", "device": "old", "signer": "owner key"}),
         );
@@ -1024,7 +1026,7 @@ mod tests {
             tail,
             [
                 "notice 2027-01-14T10:00-03:00 notes/plan-x.md: edit-beat-delete",
-                "change 2027-01-12T08:00+00:00 personal: device moria added by owner key (manifest 4)",
+                "change 2027-01-12T08:00+00:00 personal: device morthond added by owner key (manifest 4)",
                 "change 2027-01-13T08:00+00:00 personal: epoch changed (manifest 5)",
             ]
         );
@@ -1033,7 +1035,7 @@ mod tests {
     #[test]
     fn versions_held_back_for_a_parent_are_listed_per_device() {
         let w = world("waiting");
-        w.personal(&[&bagend()]);
+        w.personal(&[&bywater()]);
         let staged = |id: &str, parent: &str| {
             let version = Version {
                 version: id.repeat(64),
@@ -1042,7 +1044,7 @@ mod tests {
                 blob: "d".repeat(64),
                 event: "edited".into(),
                 at: "2027-01-15T07:00:00+00:00".into(),
-                device: Some(bagend().device.id()),
+                device: Some(bywater().device.id()),
                 ..Version::default()
             };
             let mut record = serde_json::to_value(&version).unwrap();
@@ -1058,15 +1060,15 @@ mod tests {
         let out = w.out(0);
         assert!(
             out.lines
-                .contains(&"waiting personal bagend: 3 versions".to_string())
+                .contains(&"waiting personal bywater: 3 versions".to_string())
         );
     }
 
     #[test]
     fn problems_go_to_stderr_and_fail() {
         let mut w = world("problems");
-        let id = w.personal(&[&bagend()]);
-        let b = bagend().device.id();
+        let id = w.personal(&[&bywater()]);
+        let b = bywater().device.id();
         w.state(
             &id,
             json!({
@@ -1081,7 +1083,7 @@ mod tests {
             out.warnings,
             [
                 "sync personal: the manifest pins file:///other, not file:///srv/bilbo; fix scope.personal.sync",
-                "sync personal: bagend stopped at segment 3: missing",
+                "sync personal: bywater stopped at segment 3: missing",
                 "sync personal: file:///srv/bilbo not reachable since 2027-01-15T07:00+00:00: the folder does not exist",
             ]
         );
@@ -1099,7 +1101,7 @@ mod tests {
             out.warnings,
             [
                 format!(
-                    "sync personal: bagend stopped at segment 3: it does not verify; on bagend, copy <root>/.bilbo/scopes/{id}/out/00000000000000000003.seg over it"
+                    "sync personal: bywater stopped at segment 3: it does not verify; on bywater, copy <root>/.bilbo/scopes/{id}/out/00000000000000000003.seg over it"
                 ),
                 "sync personal: full since 2027-01-15T07:59+00:00: the relay is full".to_string(),
             ]
@@ -1109,8 +1111,8 @@ mod tests {
     #[test]
     fn a_read_failure_and_a_replaceable_segment_add_no_copy_advice() {
         let mut w = world("advice");
-        let id = w.personal(&[&bagend()]);
-        let b = bagend().device.id();
+        let id = w.personal(&[&bywater()]);
+        let b = bywater().device.id();
         for (why, replaceable) in [
             ("cannot read it: denied", false),
             ("it does not verify", true),
@@ -1123,7 +1125,9 @@ mod tests {
             let out = w.out(0);
             assert_eq!(
                 out.warnings,
-                [format!("sync personal: bagend stopped at segment 2: {why}")]
+                [format!(
+                    "sync personal: bywater stopped at segment 2: {why}"
+                )]
             );
         }
     }
@@ -1143,7 +1147,7 @@ mod tests {
     #[test]
     fn nothing_changes_under_the_root() {
         let w = world("readonly");
-        let id = w.personal(&[&bagend()]);
+        let id = w.personal(&[&bywater()]);
         w.note(
             "plan-x.md",
             NOTE,

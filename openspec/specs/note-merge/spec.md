@@ -55,7 +55,7 @@ A passage added on either side SHALL be kept, after the passage that precedes it
 Frontmatter SHALL merge key by key. `id` SHALL never change. `created` SHALL keep the base's value, and a side that changed it SHALL flag the merge `created-kept`. `sources` SHALL merge as a set: an item either side added is kept, an item one side removed and the other kept is removed, and the order is the base's order followed by added items in sorted order. `scope` SHALL follow the `note-sync` spec's Scope clash requirement. Any other key changed on both sides SHALL take the value of the side whose version id sorts first, flagged `key-kept`. No marker SHALL be written above the frontmatter's closing `---`.
 
 #### Scenario: Sources from both sides
-- **WHEN** A adds the source `url: https://a.example` and B adds `code: src/watch.rs:12`
+- **WHEN** A adds the source `url: https://a.example` and B adds `code: src/lib.rs:12`
 - **THEN** the merged frontmatter lists both, after the base's sources
 
 #### Scenario: A removed source

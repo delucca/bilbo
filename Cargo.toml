@@ -3,8 +3,13 @@ name = "bilbo"
 version = "0.15.0"
 edition = "2024"
 rust-version = "1.95"
+description = "Durable memory for coding agents: Markdown notes they write and recall, and a library of sources they cite"
 license = "Apache-2.0"
 repository = "https://github.com/delucca/bilbo"
+homepage = "https://github.com/delucca/bilbo"
+readme = "README.md"
+keywords = ["agents", "memory", "notes", "search", "sync"]
+categories = ["command-line-utilities", "development-tools"]
 publish = false
 
 [dependencies]

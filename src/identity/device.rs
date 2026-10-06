@@ -1117,12 +1117,12 @@ mod tests {
         }
     }
 
-    fn rivendell() -> Identity {
-        identity(0, "rivendell", 1)
+    fn rhosgobel() -> Identity {
+        identity(0, "rhosgobel", 1)
     }
 
-    fn bagend() -> Identity {
-        identity(0, "bagend", 3)
+    fn bywater() -> Identity {
+        identity(0, "bywater", 3)
     }
 
     /// A scope `name` created by `who` in the store.
@@ -1151,12 +1151,12 @@ mod tests {
         }
     }
 
-    /// `rivendell` enrolled here, with `personal` pinned to `file://` listing it and `bagend`.
+    /// `rhosgobel` enrolled here, with `personal` pinned to `file://` listing it and `bywater`.
     fn pair() -> (World, String) {
         let w = world("pair");
-        let sid = scope(&w, &bagend(), "personal", "file:///Users/a/Sync/bilbo");
-        join(&w, &rivendell());
-        w.enroll(&rivendell());
+        let sid = scope(&w, &bywater(), "personal", "file:///Users/a/Sync/bilbo");
+        join(&w, &rhosgobel());
+        w.enroll(&rhosgobel());
         w.config(PERSONAL);
         (w, sid)
     }
@@ -1208,7 +1208,7 @@ mod tests {
     #[test]
     fn a_new_phrase_is_twelve_checked_words_and_its_fingerprint() {
         let w = world("new_phrase");
-        let (out, p) = w.ok(&["init", "--name", "rivendell"], true, init_answers());
+        let (out, p) = w.ok(&["init", "--name", "rhosgobel"], true, init_answers());
         let words = p.phrase().unwrap();
         assert_eq!(words.len(), 12);
         let entropy = entropy_of(&p);
@@ -1225,7 +1225,7 @@ mod tests {
     fn the_phrase_is_kept_nowhere() {
         let w = world("kept_nowhere");
         w.config(PERSONAL);
-        let (out, p) = w.ok(&["init", "--name", "rivendell"], true, init_answers());
+        let (out, p) = w.ok(&["init", "--name", "rhosgobel"], true, init_answers());
         let words = p.phrase().unwrap();
         let entropy = entropy_of(&p);
         let hex = keys::hex(&entropy);
@@ -1286,7 +1286,7 @@ mod tests {
     fn a_confirmed_phrase_writes_the_keys_and_reports_them() {
         let w = world("confirmed");
         w.config(PERSONAL);
-        let (out, p) = w.ok(&["init", "--name", "rivendell"], true, init_answers());
+        let (out, p) = w.ok(&["init", "--name", "rhosgobel"], true, init_answers());
         let id = keys::read_identity(&w.keys()).unwrap().unwrap();
         assert_eq!(out.lines.len(), 3);
         assert_eq!(
@@ -1295,7 +1295,7 @@ mod tests {
         );
         assert_eq!(
             out.lines[1],
-            format!("device created: rivendell {}", id.device.id())
+            format!("device created: rhosgobel {}", id.device.id())
         );
         let sid = &w.scope_ids()[0];
         assert_eq!(
@@ -1315,7 +1315,7 @@ mod tests {
             Answer::ShownShort,
             Answer::ShownShort,
         ];
-        let (out, _) = w.ok(&["init", "--name", "rivendell"], true, answers);
+        let (out, _) = w.ok(&["init", "--name", "rhosgobel"], true, answers);
         assert!(out.lines[0].starts_with("owner created: "));
         assert!(w.keys().is_dir());
     }
@@ -1331,7 +1331,7 @@ mod tests {
             Answer::Shown,
             Answer::Shown,
         ];
-        let (_, p) = w.ok(&["init", "--name", "rivendell"], true, answers);
+        let (_, p) = w.ok(&["init", "--name", "rhosgobel"], true, answers);
         assert!(p.saw("does not match"));
         let asked: Vec<&String> = p
             .shown
@@ -1342,7 +1342,7 @@ mod tests {
         assert_eq!(asked[0], asked[1]);
         let w = world("wrong_cancel");
         let (code, m, p) = refusal(w.go(
-            &["init", "--name", "rivendell"],
+            &["init", "--name", "rhosgobel"],
             true,
             vec![Answer::Yes, Answer::Wrong, Answer::Select(2)],
         ));
@@ -1360,7 +1360,7 @@ mod tests {
             vec![Answer::Interrupt],
         ] {
             let w = world("cancel");
-            let (code, m, p) = refusal(w.go(&["init", "--name", "rivendell"], true, answers));
+            let (code, m, p) = refusal(w.go(&["init", "--name", "rhosgobel"], true, answers));
             assert_eq!(code, 1);
             assert!(m.contains("nothing was written"), "{m}");
             assert!(!w.keys().exists());
@@ -1374,7 +1374,7 @@ mod tests {
     #[test]
     fn an_agent_gets_one_stderr_line_and_no_file() {
         let w = world("agent_init");
-        let (code, m, p) = refusal(w.go(&["init", "--name", "rivendell"], false, vec![]));
+        let (code, m, p) = refusal(w.go(&["init", "--name", "rhosgobel"], false, vec![]));
         assert_eq!(code, 1);
         assert!(m.contains("bilbo device init") && m.contains("terminal"));
         assert!(!m.contains('\n'));
@@ -1410,13 +1410,25 @@ mod tests {
             assert!(p.shown.is_empty());
         }
         assert_eq!(w.tree(), before);
-        let r = w.go_as(&["revoke", "bagend"], true, vec![], None, (None, Some("x")));
+        let r = w.go_as(
+            &["revoke", "bywater"],
+            true,
+            vec![],
+            None,
+            (None, Some("x")),
+        );
         let (code, m, _) = refusal(r);
         assert_eq!(code, 1);
         assert!(m.contains("terminal"), "{m}");
         let (w, _) = pair();
         let before = w.tree();
-        let r = w.go_as(&["revoke", "bagend"], true, vec![], None, (None, Some("x")));
+        let r = w.go_as(
+            &["revoke", "bywater"],
+            true,
+            vec![],
+            None,
+            (None, Some("x")),
+        );
         let (code, m, _) = refusal(r);
         assert_eq!(code, 1);
         assert!(m.contains("terminal"));
@@ -1426,9 +1438,9 @@ mod tests {
     #[test]
     fn the_terminal_rule_comes_before_name_refusals() {
         let w = world("terminal_first");
-        scope(&w, &rivendell(), "personal", "file://");
+        scope(&w, &rhosgobel(), "personal", "file://");
         for form in ["recover", "init"] {
-            let r = w.go_as(&[form], false, vec![], Some("rivendell"), (None, None));
+            let r = w.go_as(&[form], false, vec![], Some("rhosgobel"), (None, None));
             let (_, m, _) = refusal(r);
             assert!(m.contains("terminal"), "{m}");
             let r = w.go_as(&[form], true, vec![], None, (Some("1"), None));
@@ -1441,7 +1453,7 @@ mod tests {
     fn an_empty_marker_does_not_count() {
         let w = world("empty_marker");
         let r = w.go_as(
-            &["init", "--name", "rivendell"],
+            &["init", "--name", "rhosgobel"],
             true,
             init_answers(),
             None,
@@ -1467,7 +1479,7 @@ mod tests {
     #[test]
     fn the_phrase_is_only_inside_the_screen() {
         let w = world("screen");
-        let (out, p) = w.ok(&["init", "--name", "rivendell"], true, init_answers());
+        let (out, p) = w.ok(&["init", "--name", "rhosgobel"], true, init_answers());
         let at = |needle: &str| p.shown.iter().position(|l| l.contains(needle)).unwrap();
         let (begin, end) = (at("screen: begin"), at("screen: end"));
         assert!(begin < at("note: Recovery phrase") && at("note: Recovery phrase") < end);
@@ -1490,7 +1502,7 @@ mod tests {
     fn a_cancel_leaves_the_screen_with_no_word_outside_it() {
         let w = world("screen_cancel");
         let (_, m, p) = refusal(w.go(
-            &["init", "--name", "rivendell"],
+            &["init", "--name", "rhosgobel"],
             true,
             vec![Answer::Yes, Answer::Interrupt],
         ));
@@ -1510,19 +1522,19 @@ mod tests {
         let w = world("known_phrase");
         let mut answers = answers_of(0);
         answers.push(Answer::Yes);
-        let (out, _) = w.ok(&["recover", "--name", "bagend"], true, answers);
+        let (out, _) = w.ok(&["recover", "--name", "bywater"], true, answers);
         assert_eq!(out.lines[0], format!("owner recovered: {ABANDON_FP}"));
     }
 
     #[test]
     fn the_same_phrase_gives_the_same_owner_on_two_devices() {
         let a = world("same_a");
-        let (_, p) = a.ok(&["init", "--name", "rivendell"], true, init_answers());
+        let (_, p) = a.ok(&["init", "--name", "rhosgobel"], true, init_answers());
         let words = p.phrase().unwrap();
         let b = world("same_b");
         let mut answers: Vec<Answer> = words.iter().map(|w| text(w)).collect();
         answers.push(Answer::Yes);
-        b.ok(&["recover", "--name", "bagend"], true, answers);
+        b.ok(&["recover", "--name", "bywater"], true, answers);
         let owner_of = |w: &World| w.ok(&[], false, vec![]).0.lines[1].clone();
         assert_eq!(owner_of(&a), owner_of(&b));
         assert_ne!(owner_of(&a), format!("owner\t{ABANDON_FP}"));
@@ -1534,7 +1546,7 @@ mod tests {
         for (w, entropy) in [(&a, 0u8), (&b, 0x7f)] {
             let mut answers = answers_of(entropy);
             answers.push(Answer::Yes);
-            w.ok(&["recover", "--name", "bagend"], true, answers);
+            w.ok(&["recover", "--name", "bywater"], true, answers);
         }
         let owner_of = |w: &World| w.ok(&[], false, vec![]).0.lines[1].clone();
         assert_ne!(owner_of(&a), owner_of(&b));
@@ -1546,7 +1558,7 @@ mod tests {
     fn owner_key_holds_the_seed_and_the_public_key_only() {
         let w = world("owner_file");
         w.config(PERSONAL);
-        let (_, p) = w.ok(&["init", "--name", "rivendell"], true, init_answers());
+        let (_, p) = w.ok(&["init", "--name", "rhosgobel"], true, init_answers());
         let entropy: [u8; 16] = entropy_of(&p).try_into().unwrap();
         let owner = Owner::derive(&entropy);
         let text = fs::read_to_string(w.keys().join("owner.key")).unwrap();
@@ -1567,8 +1579,8 @@ mod tests {
     #[test]
     fn a_manifest_that_does_not_list_this_device_shows_a_dash() {
         let w = world("dash");
-        let sid = scope(&w, &bagend(), "personal", "file:///Users/a/Sync/bilbo");
-        w.enroll(&rivendell());
+        let sid = scope(&w, &bywater(), "personal", "file:///Users/a/Sync/bilbo");
+        w.enroll(&rhosgobel());
         let (out, _) = w.ok(&[], false, vec![]);
         assert_eq!(
             out.lines[2],
@@ -1593,7 +1605,7 @@ mod tests {
                 .all(|g| g.len() == 4 && g.bytes().all(|b| matches!(b, b'a'..=b'z' | b'2'..=b'7')))
         );
         let device: Vec<&str> = out.lines[0].split('\t').collect();
-        assert_eq!(device[1], "rivendell");
+        assert_eq!(device[1], "rhosgobel");
         assert_eq!(device[2].len(), 26);
         let scope = manifest::read_scope(&w.root(), &sid).unwrap();
         let entry = scope
@@ -1602,7 +1614,7 @@ mod tests {
             .manifest
             .devices
             .iter()
-            .find(|d| d.name == "rivendell")
+            .find(|d| d.name == "rhosgobel")
             .unwrap();
         assert_eq!(
             device[2],
@@ -1622,11 +1634,11 @@ mod tests {
     #[test]
     fn a_damaged_key_file_is_refused_by_every_form() {
         let w = world("damaged");
-        w.enroll(&rivendell());
+        w.enroll(&rhosgobel());
         let device = w.keys().join("device.key");
         fs::write(
             &device,
-            r#"{"format":1,"name":"Bag_End","sign":"00","box":"00"}"#,
+            r#"{"format":1,"name":"Green_Dragon","sign":"00","box":"00"}"#,
         )
         .unwrap();
         let before = w.tree();
@@ -1650,7 +1662,7 @@ mod tests {
     #[test]
     fn the_default_name_is_the_host_name() {
         let w = world("default_name");
-        let host = keys::sanitize_name("Daniels-MacBook-Pro.local");
+        let host = keys::sanitize_name("Bilbos-MacBook-Pro.local");
         let r = w.go_as(
             &["init"],
             true,
@@ -1659,14 +1671,14 @@ mod tests {
             (None, None),
         );
         let out = r.0.ok().unwrap();
-        assert!(out.lines[1].starts_with("device created: daniels-macbook-pro "));
+        assert!(out.lines[1].starts_with("device created: bilbos-macbook-pro "));
     }
 
     #[test]
     fn a_bad_name_is_a_usage_error_naming_the_option() {
         let w = world("bad_name");
         for form in ["init", "recover"] {
-            let (code, m, p) = refusal(w.go(&[form, "--name", "Bag_End"], true, vec![]));
+            let (code, m, p) = refusal(w.go(&[form, "--name", "Green_Dragon"], true, vec![]));
             assert_eq!(code, 2);
             assert!(m.contains("--name"));
             assert!(p.shown.is_empty());
@@ -1692,7 +1704,7 @@ mod tests {
     #[test]
     fn keys_are_written_with_closed_modes() {
         let w = world("modes");
-        w.ok(&["init", "--name", "rivendell"], true, init_answers());
+        w.ok(&["init", "--name", "rhosgobel"], true, init_answers());
         assert_eq!(mode(&w.keys()), 0o700);
         assert_eq!(mode(&w.keys().join("owner.key")), 0o600);
         assert_eq!(mode(&w.keys().join("device.key")), 0o600);
@@ -1751,10 +1763,10 @@ mod tests {
         let left = w.0.join("state/bilbo/keys.new");
         fs::create_dir_all(&left).unwrap();
         fs::write(left.join("stale"), "x").unwrap();
-        refusal(w.go(&["init", "--name", "rivendell"], true, vec![Answer::No]));
+        refusal(w.go(&["init", "--name", "rhosgobel"], true, vec![Answer::No]));
         assert!(!left.exists() && !w.keys().exists());
         fs::create_dir_all(&left).unwrap();
-        w.ok(&["init", "--name", "rivendell"], true, init_answers());
+        w.ok(&["init", "--name", "rhosgobel"], true, init_answers());
         assert!(!left.exists());
         assert!(w.keys().join("owner.key").is_file());
     }
@@ -1771,7 +1783,7 @@ mod tests {
             format!("scope\tpersonal\t{sid}\tmanifest 2 pending\tepoch 1\t2 devices\tfile://")
         );
         assert!(out.warnings.is_empty() && !out.failed);
-        assert!(out.lines[0].starts_with("device\trivendell\t"));
+        assert!(out.lines[0].starts_with("device\trhosgobel\t"));
     }
 
     #[test]
@@ -1804,7 +1816,7 @@ mod tests {
     fn another_owners_manifest_is_a_problem() {
         let w = world("foreign");
         let sid = scope(&w, &identity(1, "gandalf", 5), "grey", "file://");
-        w.enroll(&rivendell());
+        w.enroll(&rhosgobel());
         let (out, _) = w.ok(&[], false, vec![]);
         assert!(out.failed);
         assert!(out.lines[2].starts_with(&format!("scope\t-\t{sid}\t")));
@@ -1833,7 +1845,7 @@ mod tests {
                 .iter()
                 .any(|l| l.contains("manifest/") && l.contains("invalid"))
         );
-        let (out, _) = w.ok(&["revoke", "bagend"], true, vec![]);
+        let (out, _) = w.ok(&["revoke", "bywater"], true, vec![]);
         assert!(out.failed);
         assert!(out.lines[0].contains("failed"));
         assert_eq!(fs::read(&path).unwrap(), bytes);
@@ -1869,7 +1881,7 @@ mod tests {
     fn a_rerun_keeps_everything_and_changes_no_file() {
         let w = world("rerun");
         w.config(PERSONAL);
-        w.ok(&["init", "--name", "rivendell"], true, init_answers());
+        w.ok(&["init", "--name", "rhosgobel"], true, init_answers());
         let before = w.tree();
         let (out, p) = w.ok(&["init"], true, vec![]);
         assert!(
@@ -1887,7 +1899,7 @@ mod tests {
         let (w, _) = pair();
         let before = w.tree();
         for form in ["init", "recover"] {
-            let (code, m, p) = refusal(w.go(&[form, "--name", "bagend"], true, vec![]));
+            let (code, m, p) = refusal(w.go(&[form, "--name", "bywater"], true, vec![]));
             assert_eq!(code, 2);
             assert!(m.contains("--name"));
             assert!(p.shown.is_empty());
@@ -1900,7 +1912,7 @@ mod tests {
         let w = world("someone_else");
         scope(&w, &identity(1, "gandalf", 5), "grey", "file://");
         let before = w.tree();
-        let (code, m, p) = refusal(w.go(&["init", "--name", "rivendell"], true, init_answers()));
+        let (code, m, p) = refusal(w.go(&["init", "--name", "rhosgobel"], true, init_answers()));
         assert_eq!(code, 1);
         let owner = fingerprint(&Owner::derive(&[1; 16]).sign.public());
         assert!(m.contains(&owner) && m.contains("bilbo device recover"));
@@ -1913,7 +1925,7 @@ mod tests {
         let w = world("no_store");
         fs::remove_dir_all(w.root()).unwrap();
         w.config(PERSONAL);
-        let (code, m, p) = refusal(w.go(&["init", "--name", "rivendell"], true, init_answers()));
+        let (code, m, p) = refusal(w.go(&["init", "--name", "rhosgobel"], true, init_answers()));
         assert_eq!(code, 1);
         assert!(m.contains(&w.root().display().to_string()) && m.contains("bilbo setup"));
         assert!(p.shown.is_empty());
@@ -2003,8 +2015,8 @@ mod tests {
     fn a_device_a_manifest_dropped_is_not_added_again() {
         let (w, sid) = pair();
         let lock = manifest::lock(&w.root()).unwrap();
-        let known = known_as(&w, &bagend());
-        let out = manifest::revoke_step(&lock, &bagend(), &known[0], &rivendell().device.id());
+        let known = known_as(&w, &bywater());
+        let out = manifest::revoke_step(&lock, &bywater(), &known[0], &rhosgobel().device.id());
         assert!(matches!(out, Outcome::Updated(_)));
         drop(lock);
         let before = w.tree();
@@ -2017,8 +2029,8 @@ mod tests {
     #[test]
     fn a_manifest_this_device_never_read_leaves_its_scope_unsealed() {
         let w = world("never_read");
-        let sid = scope(&w, &bagend(), "personal", "file:///x");
-        w.enroll(&rivendell());
+        let sid = scope(&w, &bywater(), "personal", "file:///x");
+        w.enroll(&rhosgobel());
         w.config(PERSONAL);
         let (out, _) = w.ok(&["init"], true, vec![]);
         assert!(out.lines.contains(&format!("scope - kept: {sid}")));
@@ -2072,13 +2084,13 @@ mod tests {
     #[test]
     fn a_scope_made_while_init_waits_is_not_made_again() {
         let w = world("race");
-        w.enroll(&rivendell());
+        w.enroll(&rhosgobel());
         w.config(PERSONAL);
         let lock = manifest::lock(&w.root()).unwrap();
         let racer = std::thread::scope(|t| {
             let run = t.spawn(|| w.ok(&["init"], false, vec![]).0);
             std::thread::sleep(std::time::Duration::from_millis(300));
-            manifest::create(&lock, &rivendell(), "personal", "file:///x", &[]).unwrap();
+            manifest::create(&lock, &rhosgobel(), "personal", "file:///x", &[]).unwrap();
             drop(lock);
             run.join().unwrap()
         });
@@ -2097,20 +2109,20 @@ mod tests {
     #[test]
     fn a_manifest_invalid_before_any_readable_version_leaves_the_scope_unsealed() {
         let w = world("unreadable_v1");
-        let sid = scope(&w, &rivendell(), "personal", "file:///x");
-        w.enroll(&rivendell());
+        let sid = scope(&w, &rhosgobel(), "personal", "file:///x");
+        w.enroll(&rhosgobel());
         w.config(PERSONAL);
         let path = w
             .root()
             .join(format!(".bilbo/scopes/{sid}/manifest/1.json"));
         let mut m: manifest::Manifest = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
-        let own = rivendell().device.id();
+        let own = rhosgobel().device.id();
         let len = m.sealed[&own].len();
         m.sealed.insert(own, "00".repeat(len / 2));
         m.sig.clear();
         let mut message = b"bilbo-manifest-1\n".to_vec();
         message.extend(serde_json::to_vec(&m).unwrap());
-        m.sig = keys::hex(&rivendell().owner.sign.sign(&message));
+        m.sig = keys::hex(&rhosgobel().owner.sign.sign(&message));
         let mut bytes = serde_json::to_vec(&m).unwrap();
         bytes.push(b'\n');
         fs::write(&path, bytes).unwrap();
@@ -2129,9 +2141,9 @@ mod tests {
     #[test]
     fn the_wrong_phrase_names_both_owners_and_writes_nothing() {
         let w = world("wrong_phrase");
-        scope(&w, &rivendell(), "personal", "file://");
+        scope(&w, &rhosgobel(), "personal", "file://");
         let before = w.tree();
-        let (code, m, _) = refusal(w.go(&["recover", "--name", "bagend"], true, answers_of(0x7f)));
+        let (code, m, _) = refusal(w.go(&["recover", "--name", "bywater"], true, answers_of(0x7f)));
         assert_eq!(code, 1);
         let other = fingerprint(&Owner::derive(&[0x7f; 16]).sign.public());
         assert!(m.contains(&other) && m.contains(ABANDON_FP));
@@ -2142,17 +2154,17 @@ mod tests {
     #[test]
     fn a_taken_name_is_refused_before_any_word() {
         let w = world("taken");
-        scope(&w, &rivendell(), "personal", "file://");
+        scope(&w, &rhosgobel(), "personal", "file://");
         let r = w.go_as(
             &["recover"],
             true,
             answers_of(0),
-            Some("rivendell"),
+            Some("rhosgobel"),
             (None, None),
         );
         let (code, m, p) = refusal(r);
         assert_eq!(code, 1);
-        assert!(m.contains("rivendell") && m.contains("--name"));
+        assert!(m.contains("rhosgobel") && m.contains("--name"));
         assert!(p.shown.is_empty());
     }
 
@@ -2161,7 +2173,7 @@ mod tests {
         let w = world("ask");
         let mut answers = answers_of(0);
         answers.push(Answer::Yes);
-        let (out, p) = w.ok(&["recover", "--name", "bagend"], true, answers);
+        let (out, p) = w.ok(&["recover", "--name", "bywater"], true, answers);
         assert!(p.saw("note: Owner fingerprint\nyb4b-5aju-v6zb-x2nm-nc5x-ompf"));
         assert!(p.saw("confirm: Does it match"));
         assert!(out.lines[0].starts_with("owner recovered: "));
@@ -2172,7 +2184,7 @@ mod tests {
         let w = world("mismatch");
         let mut answers = answers_of(0);
         answers.push(Answer::No);
-        let (code, m, _) = refusal(w.go(&["recover", "--name", "bagend"], true, answers));
+        let (code, m, _) = refusal(w.go(&["recover", "--name", "bywater"], true, answers));
         assert_eq!(code, 1);
         assert!(m.contains("nothing was written"));
         assert!(!w.keys().exists());
@@ -2181,8 +2193,8 @@ mod tests {
     #[test]
     fn a_manifest_vouches_for_the_phrase() {
         let w = world("vouched");
-        scope(&w, &rivendell(), "personal", "file://");
-        let (out, p) = w.ok(&["recover", "--name", "bagend"], true, answers_of(0));
+        scope(&w, &rhosgobel(), "personal", "file://");
+        let (out, p) = w.ok(&["recover", "--name", "bywater"], true, answers_of(0));
         assert!(p.saw("note: Owner fingerprint") && !p.saw("confirm:"));
         assert!(!out.failed);
     }
@@ -2191,14 +2203,14 @@ mod tests {
     fn a_wiped_laptop_recovers_into_its_scope() {
         let w = world("wiped");
         w.config(PERSONAL);
-        let sid = scope(&w, &rivendell(), "personal", "file:///Users/a/Sync/bilbo");
+        let sid = scope(&w, &rhosgobel(), "personal", "file:///Users/a/Sync/bilbo");
         confirm_all(&w, &sid);
-        let (out, _) = w.ok(&["recover", "--name", "rivendell-2"], true, answers_of(0));
+        let (out, _) = w.ok(&["recover", "--name", "rhosgobel-2"], true, answers_of(0));
         let id = keys::read_identity(&w.keys()).unwrap().unwrap();
         assert_eq!(out.lines[0], format!("owner recovered: {ABANDON_FP}"));
         assert_eq!(
             out.lines[1],
-            format!("device created: rivendell-2 {}", id.device.id())
+            format!("device created: rhosgobel-2 {}", id.device.id())
         );
         assert_eq!(
             out.lines[2],
@@ -2206,8 +2218,8 @@ mod tests {
         );
         let (list, _) = w.ok(&["list"], false, vec![]);
         assert_eq!(list.lines.len(), 2);
-        assert!(list.lines[0].starts_with("rivendell\t") && !list.lines[0].ends_with("this"));
-        assert!(list.lines[1].starts_with("rivendell-2\t") && list.lines[1].ends_with("\tthis"));
+        assert!(list.lines[0].starts_with("rhosgobel\t") && !list.lines[0].ends_with("this"));
+        assert!(list.lines[1].starts_with("rhosgobel-2\t") && list.lines[1].ends_with("\tthis"));
     }
 
     /// An empty folder under the world, named by a `file://` URL in the config.
@@ -2220,7 +2232,7 @@ mod tests {
 
     /// Copies the versions of scope `sid` of `from`'s store into the folder, as a device that synced it would.
     fn publish(from: &World, sid: &str, dir: &Path) {
-        let t = transport::Folder::new(dir.to_path_buf(), &bagend().device.id());
+        let t = transport::Folder::new(dir.to_path_buf(), &bywater().device.id());
         let read = manifest::read_scope(&from.root(), sid).unwrap();
         for v in &read.versions {
             let path = transport::manifest_path(sid, v.manifest.n);
@@ -2264,7 +2276,7 @@ mod tests {
         let w = world("fresh");
         let (_, url) = folder(&w);
         w.config(&format!("scope.personal.sync = {url}\n"));
-        let (out, _) = recovered(&w, "bagend");
+        let (out, _) = recovered(&w, "bywater");
         assert_eq!(out.lines.len(), 3);
         assert_eq!(
             out.lines[2],
@@ -2309,7 +2321,7 @@ mod tests {
     /// Copies the versions of scope `sid` of `from`'s store onto the relay, as a device that synced it would.
     fn publish_to_relay(from: &World, sid: &str, url: &str) {
         let keys = transport::Keys {
-            device: &bagend().device,
+            device: &bywater().device,
             owner: None,
             opener: false,
         };
@@ -2326,7 +2338,7 @@ mod tests {
         let relay = relay_for(&w);
         let url = relay.url();
         w.config(&format!("scope.personal.sync = {url}\n"));
-        let (out, _) = recovered(&w, "bagend");
+        let (out, _) = recovered(&w, "bywater");
         assert_eq!(out.lines.len(), 3);
         assert_eq!(
             out.lines[2],
@@ -2346,10 +2358,10 @@ mod tests {
         let url = relay.url();
         w.config(&format!("scope.personal.sync = {url}\n"));
         let src = world("relay_every_lost_src");
-        let sid = scope(&src, &bagend(), "personal", &url);
-        join(&src, &rivendell());
+        let sid = scope(&src, &bywater(), "personal", &url);
+        join(&src, &rhosgobel());
         publish_to_relay(&src, &sid, &url);
-        let (out, _) = recovered(&w, "rivendell-2");
+        let (out, _) = recovered(&w, "rhosgobel-2");
         assert_eq!(
             out.lines[2],
             format!("scope personal updated: {sid} manifest 3 epoch 1")
@@ -2403,10 +2415,10 @@ mod tests {
         let relay = relay_for(&w);
         let url = relay.url();
         w.config(&format!("scope.personal.sync = {url}\n"));
-        let fork = scope(&w, &rivendell(), "personal", &url);
-        w.enroll(&rivendell());
+        let fork = scope(&w, &rhosgobel(), "personal", &url);
+        w.enroll(&rhosgobel());
         let src = world("relay_dead_end_src");
-        let sid = scope(&src, &bagend(), "personal", &url);
+        let sid = scope(&src, &bywater(), "personal", &url);
         publish_to_relay(&src, &sid, &url);
         let (out, _) = w.ok(&["recover"], true, answers_of(0));
         assert!(
@@ -2427,10 +2439,10 @@ mod tests {
         let (url, port) = (relay.url(), relay.port);
         w.config(&format!("scope.personal.sync = {url}\n"));
         let src = world("relay_down_src");
-        let sid = scope(&src, &bagend(), "personal", &url);
+        let sid = scope(&src, &bywater(), "personal", &url);
         publish_to_relay(&src, &sid, &url);
         drop(relay);
-        let (out, _) = recovered(&w, "rivendell-2");
+        let (out, _) = recovered(&w, "rhosgobel-2");
         assert!(out.failed);
         assert!(
             out.lines[2].starts_with(&format!("scope personal failed: relay {url} unreachable: ")),
@@ -2441,7 +2453,7 @@ mod tests {
         assert!(!store::scopes_dir(&w.root()).exists());
         let _relay = relay_at(&w, &format!("127.0.0.1:{port}"));
         let (out, _) = w.ok(&["recover"], true, answers_of(0));
-        assert!(out.lines[1].starts_with("device kept: rivendell-2 "));
+        assert!(out.lines[1].starts_with("device kept: rhosgobel-2 "));
         assert!(
             out.lines
                 .contains(&format!("scope personal updated: {sid} manifest 2 epoch 1"))
@@ -2456,14 +2468,14 @@ mod tests {
         let url = relay.url();
         w.config(&format!("scope.personal.sync = {url}\n"));
         let src = world("relay_two_names_src");
-        let big = scope(&src, &bagend(), "personal", &url);
-        join(&src, &rivendell());
+        let big = scope(&src, &bywater(), "personal", &url);
+        join(&src, &rhosgobel());
         join(&src, &identity(0, "frodo", 9));
         let small_src = world("relay_two_names_small");
-        let small = scope(&small_src, &bagend(), "personal", &url);
+        let small = scope(&small_src, &bywater(), "personal", &url);
         publish_to_relay(&src, &big, &url);
         publish_to_relay(&small_src, &small, &url);
-        let (out, _) = recovered(&w, "rivendell-3");
+        let (out, _) = recovered(&w, "rhosgobel-3");
         assert_eq!(w.scope_ids(), std::slice::from_ref(&big));
         assert!(out.lines[2].starts_with(&format!("scope personal updated: {big}")));
         assert_eq!(out.warnings.len(), 1);
@@ -2477,7 +2489,7 @@ mod tests {
         let relay = relay_with(&w, "127.0.0.1:0", 5, Arc::default());
         let url = relay.url();
         w.config(&format!("scope.personal.sync = {url}\n"));
-        let (out, _) = recovered(&w, "rivendell-2");
+        let (out, _) = recovered(&w, "rhosgobel-2");
         let print = keys::owner_fingerprint(&Owner::derive(&[0; 16]).sign.public());
         assert_eq!(
             out.lines[2],
@@ -2496,11 +2508,11 @@ mod tests {
         let url = relay.url();
         w.config(&format!("scope.personal.sync = {url}\n"));
         let src = world("relay_only_named_src");
-        let personal = scope(&src, &bagend(), "personal", &url);
-        let shared = scope(&src, &bagend(), "shared", &url);
+        let personal = scope(&src, &bywater(), "personal", &url);
+        let shared = scope(&src, &bywater(), "shared", &url);
         publish_to_relay(&src, &personal, &url);
         publish_to_relay(&src, &shared, &url);
-        recovered(&w, "rivendell-2");
+        recovered(&w, "rhosgobel-2");
         assert_eq!(w.scope_ids(), std::slice::from_ref(&personal));
     }
 
@@ -2510,10 +2522,10 @@ mod tests {
         let (dir, url) = folder(&w);
         w.config(&format!("scope.personal.sync = {url}\n"));
         let src = world("every_lost_src");
-        let sid = scope(&src, &bagend(), "personal", "file:///Users/a/Sync/bilbo");
-        join(&src, &rivendell());
+        let sid = scope(&src, &bywater(), "personal", "file:///Users/a/Sync/bilbo");
+        join(&src, &rhosgobel());
         publish(&src, &sid, &dir);
-        let (out, _) = recovered(&w, "rivendell-2");
+        let (out, _) = recovered(&w, "rhosgobel-2");
         assert_eq!(
             out.lines[2],
             format!("scope personal updated: {sid} manifest 3 epoch 1")
@@ -2534,9 +2546,9 @@ mod tests {
         let w = world("dead_end");
         let (dir, url) = folder(&w);
         w.config(&format!("scope.personal.sync = {url}\n"));
-        let fork = scope(&w, &rivendell(), "personal", &url);
-        w.enroll(&rivendell());
-        let sid = published(&dir, &bagend(), "personal", &[]);
+        let fork = scope(&w, &rhosgobel(), "personal", &url);
+        w.enroll(&rhosgobel());
+        let sid = published(&dir, &bywater(), "personal", &[]);
         let before = fs::read(
             w.root()
                 .join(format!(".bilbo/scopes/{fork}/manifest/1.json")),
@@ -2561,10 +2573,10 @@ mod tests {
         let w = world("not_dead");
         let (dir, url) = folder(&w);
         w.config(&format!("scope.personal.sync = {url}\n"));
-        let fork = scope(&w, &rivendell(), "personal", &url);
+        let fork = scope(&w, &rhosgobel(), "personal", &url);
         publish(&w, &fork, &dir);
-        published(&dir, &bagend(), "personal", &[]);
-        w.enroll(&rivendell());
+        published(&dir, &bywater(), "personal", &[]);
+        w.enroll(&rhosgobel());
         let (out, _) = w.ok(&["recover"], true, answers_of(0));
         assert_eq!(w.scope_ids(), std::slice::from_ref(&fork));
         assert!(out.lines.contains(&format!("scope personal kept: {fork}")));
@@ -2575,9 +2587,9 @@ mod tests {
         let w = world("only_named");
         let (dir, url) = folder(&w);
         w.config(&format!("scope.personal.sync = {url}\n"));
-        let personal = published(&dir, &bagend(), "personal", &[]);
-        published(&dir, &bagend(), "shared", &[]);
-        let (out, _) = recovered(&w, "rivendell-2");
+        let personal = published(&dir, &bywater(), "personal", &[]);
+        published(&dir, &bywater(), "shared", &[]);
+        let (out, _) = recovered(&w, "rhosgobel-2");
         assert_eq!(w.scope_ids(), std::slice::from_ref(&personal));
         assert_eq!(out.lines.len(), 3);
         assert!(out.lines[2].starts_with(&format!("scope personal updated: {personal}")));
@@ -2590,12 +2602,12 @@ mod tests {
         w.config(&format!("scope.personal.sync = {url}\n"));
         let big = published(
             &dir,
-            &bagend(),
+            &bywater(),
             "personal",
-            &[rivendell(), identity(0, "frodo", 9)],
+            &[rhosgobel(), identity(0, "frodo", 9)],
         );
-        let small = published(&dir, &bagend(), "personal", &[]);
-        let (out, _) = recovered(&w, "rivendell-3");
+        let small = published(&dir, &bywater(), "personal", &[]);
+        let (out, _) = recovered(&w, "rhosgobel-3");
         assert_eq!(w.scope_ids(), std::slice::from_ref(&big));
         assert!(out.lines[2].starts_with(&format!("scope personal updated: {big}")));
         assert_eq!(out.warnings.len(), 1);
@@ -2609,7 +2621,7 @@ mod tests {
         let missing = w.0.join("usb/bilbo");
         let url = format!("file://{}", missing.display());
         w.config(&format!("scope.personal.sync = {url}\n"));
-        let (out, _) = recovered(&w, "rivendell-2");
+        let (out, _) = recovered(&w, "rhosgobel-2");
         assert_eq!(
             out.lines[2],
             format!("scope personal failed: {url} is not reachable: the folder does not exist")
@@ -2619,9 +2631,9 @@ mod tests {
         assert!(!store::scopes_dir(&w.root()).exists());
         assert!(!missing.exists());
         fs::create_dir_all(&missing).unwrap();
-        let sid = published(&missing, &bagend(), "personal", &[]);
+        let sid = published(&missing, &bywater(), "personal", &[]);
         let (out, _) = w.ok(&["recover"], true, answers_of(0));
-        assert!(out.lines[1].starts_with("device kept: rivendell-2 "));
+        assert!(out.lines[1].starts_with("device kept: rhosgobel-2 "));
         assert!(
             out.lines
                 .contains(&format!("scope personal updated: {sid} manifest 2 epoch 1"))
@@ -2636,14 +2648,14 @@ mod tests {
         w.config(&format!(
             "scope.personal.sync = {url}\nscope.shared.sync = {url}\n"
         ));
-        let personal = published(&dir, &bagend(), "personal", &[]);
-        let shared = published(&dir, &bagend(), "shared", &[]);
+        let personal = published(&dir, &bywater(), "personal", &[]);
+        let shared = published(&dir, &bywater(), "shared", &[]);
         let path = dir.join(transport::manifest_path(&shared, 1));
         let mut bytes = fs::read(&path).unwrap();
         let at = bytes.len() / 2;
         bytes[at] ^= 1;
         fs::write(&path, bytes).unwrap();
-        let (out, _) = recovered(&w, "rivendell-2");
+        let (out, _) = recovered(&w, "rhosgobel-2");
         assert_eq!(w.scope_ids(), std::slice::from_ref(&personal));
         assert!(
             out.lines
@@ -2672,8 +2684,8 @@ mod tests {
         let missing = w.0.join("usb/bilbo");
         let url = format!("file://{}", missing.display());
         w.config(&format!("scope.personal.sync = {url}\n"));
-        let sid = scope(&w, &rivendell(), "personal", &url);
-        w.enroll(&bagend());
+        let sid = scope(&w, &rhosgobel(), "personal", &url);
+        w.enroll(&bywater());
         let (out, _) = w.ok(&["recover"], true, answers_of(0));
         assert!(out.failed);
         assert_eq!(
@@ -2710,8 +2722,8 @@ mod tests {
         let w = world("init_arriving");
         let (dir, url) = folder(&w);
         w.config(&format!("scope.personal.sync = {url}\n"));
-        w.enroll(&rivendell());
-        let sid = published(&dir, &bagend(), "personal", &[]);
+        w.enroll(&rhosgobel());
+        let sid = published(&dir, &bywater(), "personal", &[]);
         let bytes = fs::read(dir.join(transport::manifest_path(&sid, 1))).unwrap();
         fs::rename(
             dir.join(transport::manifest_path(&sid, 1)),
@@ -2735,8 +2747,8 @@ mod tests {
         let w = world("init_member_no_store");
         let (dir, url) = folder(&w);
         w.config(&format!("scope.personal.sync = {url}\n"));
-        w.enroll(&rivendell());
-        published(&dir, &bagend(), "personal", &[rivendell()]);
+        w.enroll(&rhosgobel());
+        published(&dir, &bywater(), "personal", &[rhosgobel()]);
         let (line, failed) = init_row(&w, "personal");
         assert_eq!(
             line,
@@ -2751,7 +2763,7 @@ mod tests {
         let w = world("init_unlistable");
         let (dir, url) = folder(&w);
         w.config(&format!("scope.personal.sync = {url}\n"));
-        w.enroll(&rivendell());
+        w.enroll(&rhosgobel());
         fs::create_dir_all(dir.join("scopes")).unwrap();
         fs::set_permissions(dir.join("scopes"), fs::Permissions::from_mode(0o000)).unwrap();
         if fs::read_dir(dir.join("scopes")).is_ok() {
@@ -2773,21 +2785,21 @@ mod tests {
     fn an_interrupted_recover_is_finished() {
         let w = world("interrupted");
         w.config(&format!("{PERSONAL}scope.shared.sync = file:///x\n"));
-        let personal = scope(&w, &rivendell(), "personal", "file:///Users/a/Sync/bilbo");
-        let shared = scope(&w, &rivendell(), "shared", "file:///x");
+        let personal = scope(&w, &rhosgobel(), "personal", "file:///Users/a/Sync/bilbo");
+        let shared = scope(&w, &rhosgobel(), "shared", "file:///x");
         let lock = manifest::lock(&w.root()).unwrap();
         let owner = Owner::derive(&[0; 16]);
-        let known = known_as(&w, &bagend());
+        let known = known_as(&w, &bywater());
         let first = known.iter().find(|k| k.scope.id == personal).unwrap();
-        let out = manifest::recover_step(&lock, &bagend(), &owner.box_secret, first);
+        let out = manifest::recover_step(&lock, &bywater(), &owner.box_secret, first);
         assert!(matches!(out, Outcome::Updated(_)));
         drop(lock);
         confirm_all(&w, &personal);
         confirm_all(&w, &shared);
-        w.enroll(&bagend());
+        w.enroll(&bywater());
         let (out, _) = w.ok(&["recover"], true, answers_of(0));
         assert_eq!(out.lines[0], format!("owner kept: {ABANDON_FP}"));
-        assert!(out.lines[1].starts_with("device kept: bagend "));
+        assert!(out.lines[1].starts_with("device kept: bywater "));
         assert!(
             out.lines
                 .contains(&format!("scope personal kept: {personal}"))
@@ -2819,8 +2831,8 @@ mod tests {
         assert_eq!(
             out.lines,
             [
-                format!("bagend\t{}", bagend().device.id()),
-                format!("rivendell\t{}\tthis", rivendell().device.id()),
+                format!("bywater\t{}", bywater().device.id()),
+                format!("rhosgobel\t{}\tthis", rhosgobel().device.id()),
             ]
         );
     }
@@ -2836,7 +2848,7 @@ mod tests {
     #[test]
     fn revoking_a_lost_laptop_writes_a_new_epoch() {
         let (w, sid) = pair();
-        let (out, _) = w.ok(&["revoke", "bagend"], true, vec![]);
+        let (out, _) = w.ok(&["revoke", "bywater"], true, vec![]);
         assert_eq!(
             out.lines,
             [format!("scope personal updated: {sid} manifest 3 epoch 2")]
@@ -2844,8 +2856,8 @@ mod tests {
         assert!(!out.failed);
         let (list, _) = w.ok(&["list"], false, vec![]);
         assert_eq!(list.lines.len(), 1);
-        assert!(list.lines[0].starts_with("rivendell\t"));
-        let by_id = bagend().device.id();
+        assert!(list.lines[0].starts_with("rhosgobel\t"));
+        let by_id = bywater().device.id();
         let (code, m, _) = refusal(w.go(&["revoke", &by_id], true, vec![]));
         assert_eq!((code, m), (1, format!("no device named {by_id}")));
     }
@@ -2854,7 +2866,7 @@ mod tests {
     fn a_device_cannot_revoke_itself() {
         let (w, _) = pair();
         let before = w.tree();
-        let (code, m, _) = refusal(w.go(&["revoke", "rivendell"], true, vec![]));
+        let (code, m, _) = refusal(w.go(&["revoke", "rhosgobel"], true, vec![]));
         assert_eq!(code, 1);
         assert!(m.contains("cannot revoke itself"));
         assert_eq!(w.tree(), before);
@@ -2877,7 +2889,7 @@ mod tests {
         let (code, _, _) = refusal(w.go(&["revoke", "a", "b"], true, vec![]));
         assert_eq!(code, 2);
         let none = world("revoke_none");
-        let (code, m, _) = refusal(none.go(&["revoke", "bagend"], true, vec![]));
+        let (code, m, _) = refusal(none.go(&["revoke", "bywater"], true, vec![]));
         assert_eq!(code, 1);
         assert!(m.contains("no keys"));
     }
@@ -2885,20 +2897,20 @@ mod tests {
     #[test]
     fn a_name_two_devices_share_is_a_usage_error_listing_their_ids() {
         let (w, _) = pair();
-        let twin = identity(0, "bagend", 7);
+        let twin = identity(0, "bywater", 7);
         scope(&w, &twin, "shared", "file://");
-        join(&w, &rivendell());
-        let (code, m, _) = refusal(w.go(&["revoke", "bagend"], true, vec![]));
+        join(&w, &rhosgobel());
+        let (code, m, _) = refusal(w.go(&["revoke", "bywater"], true, vec![]));
         assert_eq!(code, 2);
-        assert!(m.contains(&bagend().device.id()) && m.contains(&twin.device.id()));
+        assert!(m.contains(&bywater().device.id()) && m.contains(&twin.device.id()));
     }
 
     #[test]
     fn a_folder_scope_gets_a_cloud_account_line_and_a_relay_scope_does_not() {
         let (w, _) = pair();
-        scope(&w, &bagend(), "shared", RELAY);
-        join(&w, &rivendell());
-        let (out, _) = w.ok(&["revoke", "bagend"], true, vec![]);
+        scope(&w, &bywater(), "shared", RELAY);
+        join(&w, &rhosgobel());
+        let (out, _) = w.ok(&["revoke", "bywater"], true, vec![]);
         assert_eq!(out.lines.len(), 2);
         let cloud: Vec<&String> = out
             .warnings
@@ -2906,7 +2918,7 @@ mod tests {
             .filter(|l| l.contains("account"))
             .collect();
         assert_eq!(cloud.len(), 1);
-        assert!(cloud[0].contains("personal") && cloud[0].contains("bagend"));
+        assert!(cloud[0].contains("personal") && cloud[0].contains("bywater"));
         assert!(cloud[0].contains("write access"));
         assert!(!out.warnings.iter().any(|l| l.contains("shared")));
     }
@@ -2926,7 +2938,7 @@ mod tests {
         }
     }
 
-    /// Rebuilds `tests/fixtures/device/`: `rivendell/` and `bagend/` (key folders), `store/` (a `personal` scope pinned
+    /// Rebuilds `tests/fixtures/device/`: `rhosgobel/` and `bywater/` (key folders), `store/` (a `personal` scope pinned
     /// to `file://`, versions 1 and 2) and `foreign/` (a store with a scope of another owner). Ids and nonces are random, so a run
     /// replaces every file.
     #[test]
@@ -2935,7 +2947,7 @@ mod tests {
         let out = PathBuf::from(FIXTURES);
         let _ = fs::remove_dir_all(&out);
         let (w, sid) = pair();
-        for who in [rivendell(), bagend()] {
+        for who in [rhosgobel(), bywater()] {
             let k = world("fixture_keys");
             k.enroll(&who);
             let to = out.join(&who.device.name);
@@ -2971,7 +2983,7 @@ mod tests {
         let ids = fixture_scopes(&store);
         assert_eq!(ids.len(), 1);
         let abandon = Owner::derive(&[0; 16]).sign.public();
-        for (name, seed) in [("rivendell", 1), ("bagend", 3)] {
+        for (name, seed) in [("rhosgobel", 1), ("bywater", 3)] {
             let w = world("fixtures");
             let state = w.keys();
             fs::create_dir_all(&state).unwrap();

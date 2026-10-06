@@ -774,7 +774,7 @@ mod tests {
     }
 
     fn device(seed: u8) -> Device {
-        Device::from_seeds("rivendell", &[seed; 32], &[seed.wrapping_add(1); 32])
+        Device::from_seeds("rhosgobel", &[seed; 32], &[seed.wrapping_add(1); 32])
     }
 
     #[test]
@@ -928,10 +928,10 @@ mod tests {
     #[test]
     fn host_names_are_sanitized() {
         for (raw, name) in [
-            ("Daniels-MacBook-Pro.local", Some("daniels-macbook-pro")),
-            ("Bag_End", Some("bag-end")),
+            ("Bilbos-MacBook-Pro.local", Some("bilbos-macbook-pro")),
+            ("Green_Dragon", Some("green-dragon")),
             ("a  b__c", Some("a-b-c")),
-            ("--rivendell--", Some("rivendell")),
+            ("--rhosgobel--", Some("rhosgobel")),
             ("Frodo's Mac.example.org", Some("frodo-s-mac")),
             ("ünï", Some("n")),
             ("___", None),
@@ -947,9 +947,9 @@ mod tests {
 
     #[test]
     fn the_name_rule() {
-        assert!(valid_name("rivendell"));
+        assert!(valid_name("rhosgobel"));
         assert!(valid_name("a-b-2"));
-        assert!(!valid_name("Bag_End"));
+        assert!(!valid_name("Green_Dragon"));
         assert!(!valid_name("a--b"));
         assert!(!valid_name(""));
         assert!(!valid_name(&"a".repeat(33)));
@@ -998,7 +998,7 @@ mod tests {
         assert_eq!(mode(&keys.join("device.key")), 0o600);
         assert!(leftover(&keys).is_none());
         let identity = read_identity(&keys).unwrap().unwrap();
-        assert_eq!(identity.device.name, "rivendell");
+        assert_eq!(identity.device.name, "rhosgobel");
         assert_eq!(identity.device.id(), device(7).id());
         assert_eq!(identity.owner.sign.public(), owner().sign.public());
         assert_eq!(identity.owner.box_public, owner().box_secret.public());
@@ -1032,7 +1032,7 @@ mod tests {
     fn a_bad_name_writes_nothing() {
         let dir = scratch("badname");
         let keys = keys_path(&dir);
-        let bad = Device::from_seeds("Bag_End", &[1; 32], &[2; 32]);
+        let bad = Device::from_seeds("Green_Dragon", &[1; 32], &[2; 32]);
         assert!(write_identity(&keys, &owner().file(), &bad).is_err());
         assert!(!dir.0.join("bilbo").exists());
     }
@@ -1106,7 +1106,7 @@ mod tests {
         assert!(err.contains("both owner.key and device.key"), "{err}");
 
         for broken in [
-            good.replace("rivendell", "Bag_End"),
+            good.replace("rhosgobel", "Green_Dragon"),
             good.replacen("\"sign\":\"", "\"sign\":\"0", 1),
             good.replace("\"name\"", "\"nom\""),
             "not json".to_string(),
@@ -1176,7 +1176,7 @@ mod tests {
 
     #[test]
     fn the_device_id_is_pinned_for_fixed_seeds() {
-        let device = Device::from_seeds("rivendell", &[1; 32], &[2; 32]);
+        let device = Device::from_seeds("rhosgobel", &[1; 32], &[2; 32]);
         assert_eq!(
             hex(&device.sign.public()),
             "8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c"
@@ -1312,8 +1312,8 @@ mod tests {
     fn a_pending_device_is_created_private_and_reused_under_each_runs_name() {
         let dir = scratch("pending");
         let pending = pending_path(&keys_path(&dir));
-        let first = pending_device(&pending, "bagend").unwrap();
-        assert_eq!(first.name, "bagend");
+        let first = pending_device(&pending, "bywater").unwrap();
+        assert_eq!(first.name, "bywater");
         assert_eq!(mode(&pending), 0o700);
         assert_eq!(mode(&pending.join("device.key")), 0o600);
         let again = pending_device(&pending, "mirkwood").unwrap();
@@ -1321,7 +1321,7 @@ mod tests {
         assert_eq!(again.id(), first.id());
         assert_eq!(again.box_secret.public(), first.box_secret.public());
         let stored = std::fs::read_to_string(pending.join("device.key")).unwrap();
-        assert!(stored.contains("\"name\":\"bagend\""), "{stored}");
+        assert!(stored.contains("\"name\":\"bywater\""), "{stored}");
     }
 
     #[test]
@@ -1329,7 +1329,7 @@ mod tests {
         let dir = scratch("pending-format");
         let keys = keys_path(&dir);
         let pending = pending_path(&keys);
-        let device = pending_device(&pending, "bagend").unwrap();
+        let device = pending_device(&pending, "bywater").unwrap();
         write_identity(
             &keys,
             &owner().file(),
@@ -1340,26 +1340,26 @@ mod tests {
         chmod(&keys.join("device.key"), 0o600);
         let read = read_identity(&keys).unwrap().unwrap();
         assert_eq!(read.device.id(), device.id());
-        assert_eq!(read.device.name, "bagend");
+        assert_eq!(read.device.name, "bywater");
     }
 
     #[test]
     fn a_pending_key_with_loose_modes_or_damage_is_refused() {
         let dir = scratch("pending-loose");
         let pending = pending_path(&keys_path(&dir));
-        pending_device(&pending, "bagend").unwrap();
+        pending_device(&pending, "bywater").unwrap();
         let file = pending.join("device.key");
         chmod(&file, 0o644);
-        let err = pending_device(&pending, "bagend").err().unwrap();
+        let err = pending_device(&pending, "bywater").err().unwrap();
         assert!(err.contains("open to other users"), "{err}");
         chmod(&file, 0o600);
         chmod(&pending, 0o755);
-        let err = pending_device(&pending, "bagend").err().unwrap();
+        let err = pending_device(&pending, "bywater").err().unwrap();
         assert!(err.contains("open to other users"), "{err}");
         chmod(&pending, 0o700);
         std::fs::write(&file, "not json").unwrap();
         chmod(&file, 0o600);
-        let err = pending_device(&pending, "bagend").err().unwrap();
+        let err = pending_device(&pending, "bywater").err().unwrap();
         assert!(
             err.contains("is damaged") && err.contains("bilbo pair again"),
             "{err}"
@@ -1370,7 +1370,7 @@ mod tests {
     fn a_bad_name_creates_no_pending_key() {
         let dir = scratch("pending-name");
         let pending = pending_path(&keys_path(&dir));
-        assert!(pending_device(&pending, "Bag_End").is_err());
+        assert!(pending_device(&pending, "Green_Dragon").is_err());
         assert!(!pending.exists());
     }
 
@@ -1379,7 +1379,7 @@ mod tests {
         let dir = scratch("pending-blocked");
         std::fs::create_dir_all(dir.0.join("bilbo")).unwrap();
         std::fs::write(dir.0.join("bilbo/pair"), "a file").unwrap();
-        let err = pending_device(&dir.0.join("bilbo/pair"), "bagend")
+        let err = pending_device(&dir.0.join("bilbo/pair"), "bywater")
             .err()
             .unwrap();
         assert!(err.contains("bilbo/pair"), "{err}");
@@ -1390,7 +1390,7 @@ mod tests {
         let dir = scratch("pending-remove");
         let pending = pending_path(&keys_path(&dir));
         remove_pending(&pending).unwrap();
-        pending_device(&pending, "bagend").unwrap();
+        pending_device(&pending, "bywater").unwrap();
         remove_pending(&pending).unwrap();
         assert!(!pending.exists());
         remove_pending(&pending).unwrap();

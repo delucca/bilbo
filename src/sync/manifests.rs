@@ -18,7 +18,7 @@ use crate::sync::transport::{self, Put, Transport};
 const EPOCH_WAIT: jiff::SignedDuration = jiff::SignedDuration::from_mins(10);
 /// How long a change stays listed.
 const KEEP_DAYS: i64 = 24 * 30;
-/// Who signed a version, while manifests name no writer.
+/// Who a change line says signed a version: a manifest does not name the device that wrote it.
 const SIGNER: &str = "owner key";
 /// How many times a cycle moves a lost version aside and goes on.
 const ROUNDS: usize = 4;
@@ -876,8 +876,8 @@ mod tests {
         identity(0, "c", 5)
     }
 
-    fn moria() -> Identity {
-        identity(0, "moria", 7)
+    fn morthond() -> Identity {
+        identity(0, "morthond", 7)
     }
 
     fn member(who: &Identity) -> Member {
@@ -1049,7 +1049,7 @@ mod tests {
         let root = store(&d, "a");
         let id = make(&root, &a(), "personal", &[&b()]);
         go(&d, &root, &a(), "personal", 0);
-        add(&root, &a(), &id, &moria());
+        add(&root, &a(), &id, &morthond());
         let out = go(&d, &root, &a(), "personal", 1);
         assert!(out.events.is_empty());
         assert!(local(&root, &id).pending.is_empty());
@@ -1063,7 +1063,7 @@ mod tests {
         let id = make(&ra, &a(), "personal", &[&b()]);
         go(&d, &ra, &a(), "personal", 0);
         copy_in(&rb, &ra, &id);
-        add(&rb, &b(), &id, &moria());
+        add(&rb, &b(), &id, &morthond());
         let mut forged = local(&rb, &id).versions[1].bytes.clone();
         let middle = forged.len() / 2;
         forged[middle] ^= 1;
@@ -1090,7 +1090,7 @@ mod tests {
         go(&d, &ra, &a(), "personal", 0);
         copy_in(&rb, &ra, &id);
         revoke(&ra, &a(), &id, &c());
-        add(&rb, &b(), &id, &moria());
+        add(&rb, &b(), &id, &morthond());
         go(&d, &ra, &a(), "personal", 10);
         let mine = local(&rb, &id).versions[1].bytes.clone();
         assert_ne!(on_folder(&d, &id, 2).unwrap(), mine);
@@ -1126,16 +1126,16 @@ mod tests {
             on_folder(&d, &id, 3).as_deref(),
             Some(&now.versions[2].bytes[..])
         );
-        assert!(lists(&rb, &id, &moria()) && !lists(&rb, &id, &c()));
+        assert!(lists(&rb, &id, &morthond()) && !lists(&rb, &id, &c()));
 
         let out = go(&d, &ra, &a(), "personal", 700);
         assert!(
             out.events
                 .iter()
-                .any(|e| e == "sync personal: device moria added by owner key (manifest 3)")
+                .any(|e| e == "sync personal: device morthond added by owner key (manifest 3)")
         );
         assert!(local(&ra, &id).pending.is_empty());
-        assert!(lists(&ra, &id, &moria()) && !lists(&ra, &id, &c()));
+        assert!(lists(&ra, &id, &morthond()) && !lists(&ra, &id, &c()));
     }
 
     #[test]
@@ -1143,7 +1143,7 @@ mod tests {
         let d = scratch("replaced");
         let (ra, rb) = (store(&d, "a"), store(&d, "b"));
         let id = make(&ra, &a(), "personal", &[&b()]);
-        add(&ra, &a(), &id, &moria());
+        add(&ra, &a(), &id, &morthond());
         go(&d, &ra, &a(), "personal", 0);
         assert!(local(&ra, &id).pending.is_empty());
         let unchanged = go(&d, &ra, &a(), "personal", 1);
@@ -1181,13 +1181,13 @@ mod tests {
         let id = make(&ra, &a(), "personal", &[&b()]);
         go(&d, &ra, &a(), "personal", 0);
         copy_in(&rb, &ra, &id);
-        add(&rb, &b(), &id, &moria());
+        add(&rb, &b(), &id, &morthond());
         go(&d, &rb, &b(), "personal", 1);
 
         let out = go(&d, &ra, &a(), "personal", 2);
         assert_eq!(
             out.events,
-            ["sync personal: device moria added by owner key (manifest 2)"]
+            ["sync personal: device morthond added by owner key (manifest 2)"]
         );
         assert_eq!(out.scope.as_deref(), Some(id.as_str()));
         let now = local(&ra, &id);
@@ -1208,7 +1208,7 @@ mod tests {
                 listed[0].device.as_deref(),
                 listed[0].signer.as_str()
             ),
-            (2, Kind::Device, Some("moria"), "owner key")
+            (2, Kind::Device, Some("morthond"), "owner key")
         );
         let later = 31 * 24 * 3600;
         assert!(recent(&ra, &id, at(later)).unwrap().is_empty());
@@ -1347,7 +1347,7 @@ mod tests {
         let (ra, rb) = (store(&d, "a"), store(&d, "b"));
         let own = make(&rb, &b(), "personal", &[]);
         go(&d, &rb, &b(), "personal", 0);
-        let sibling = make(&ra, &a(), "personal", &[&b(), &c(), &moria()]);
+        let sibling = make(&ra, &a(), "personal", &[&b(), &c(), &morthond()]);
         put(&d, &ra, &a(), &sibling);
         assert!(on_folder(&d, &sibling, 1).is_some());
 
@@ -1632,7 +1632,7 @@ mod tests {
     fn a_rotation_the_member_chain_check_rejects_is_not_adopted_through_a_fork() {
         let d = scratch("forged-rotation");
         let (ra, rb, id) = rotated(&d);
-        add(&rb, &b(), &id, &moria());
+        add(&rb, &b(), &id, &morthond());
         assert!(local(&rb, &id).pending.contains(&3));
         let forged = forge_rotation(&ra, &id, &c());
         fs::write(
@@ -1690,10 +1690,10 @@ mod tests {
     fn nothing_is_adopted_above_an_own_unsettled_version() {
         let d = scratch("cap");
         let (rb, rc) = (store(&d, "b"), store(&d, "c"));
-        let id = make(&rb, &b(), "personal", &[&c(), &moria()]);
+        let id = make(&rb, &b(), "personal", &[&c(), &morthond()]);
         go(&d, &rb, &b(), "personal", 0);
         copy_in(&rc, &rb, &id);
-        revoke(&rb, &b(), &id, &moria());
+        revoke(&rb, &b(), &id, &morthond());
         go(&d, &rb, &b(), "personal", 1);
         let mine = local(&rb, &id).versions[1].bytes.clone();
         let lock = manifest::lock(&rc).unwrap();
@@ -1718,7 +1718,7 @@ mod tests {
         let d = scratch("arriving");
         let (ra, rb) = (store(&d, "a"), store(&d, "b"));
         let theirs = make(&ra, &a(), "personal", &[&b()]);
-        add(&ra, &a(), &theirs, &moria());
+        add(&ra, &a(), &theirs, &morthond());
         let t = folder_of(&d, &a());
         let second = local(&ra, &theirs).versions[1].bytes.clone();
         assert_eq!(
@@ -1753,7 +1753,7 @@ mod tests {
         let root = store(&d, "a");
         let id = make(&root, &a(), "personal", &[&b()]);
         go(&d, &root, &a(), "personal", 0);
-        add(&root, &a(), &id, &moria());
+        add(&root, &a(), &id, &morthond());
         go(&d, &root, &a(), "personal", 1);
         add(&root, &a(), &id, &c());
         go(&d, &root, &a(), "personal", 2);
@@ -1832,7 +1832,7 @@ mod tests {
         let d = scratch("rr-no-v1");
         let (ra, rb) = (store(&d, "a"), store(&d, "b"));
         let real = make(&ra, &a(), "personal", &[&b()]);
-        add(&ra, &a(), &real, &moria());
+        add(&ra, &a(), &real, &morthond());
         go(&d, &ra, &a(), "personal", 0);
         thief_scope(&d, &b());
         fs::remove_file(folder_path(&d).join(transport::manifest_path(&real, 1))).unwrap();

@@ -258,12 +258,12 @@ fn a_corpus_prints_its_guide_with_facts() {
     );
     lab.put(
         "go/effective-go.md",
-        &source(ID_A, &["capture: legacy"], &sized(1000)),
+        &source(ID_A, &["capture: external"], &sized(1000)),
     );
     let run = lab.library(&["go"]);
     assert_eq!(run.code, 0);
     let facts = format!(
-        "`effective-go.md` · {ID_A} · 1 KB · 400 tokens · fetched 2026-08-23 · 0 headings · capture legacy"
+        "`effective-go.md` · {ID_A} · 1 KB · 400 tokens · fetched 2026-08-23 · 0 headings · capture external"
     );
     let expected = [
         &lab.path("go/guide.md"),
@@ -451,14 +451,14 @@ fn a_headingless_source_has_no_rows() {
 }
 
 #[test]
-fn a_legacy_source_has_no_capture_folder() {
-    let lab = Lab::new("lib-show-legacy");
+fn a_source_whose_capture_is_not_held_has_no_capture_folder() {
+    let lab = Lab::new("lib-show-no-capture");
     lab.put(
-        "go/old.md",
-        &source(ID_A, &["capture: legacy"], "# Old\n\ntext\n"),
+        "go/saved.md",
+        &source(ID_A, &["capture: external"], "# Saved\n\ntext\n"),
     );
-    let run = lab.library(&["show", "go/old"]);
-    assert!(run.stdout.contains("\ncapture: legacy\n"));
+    let run = lab.library(&["show", "go/saved"]);
+    assert!(run.stdout.contains("\ncapture: external\n"));
     assert!(!run.stdout.contains("capture folder:"));
 }
 
@@ -657,7 +657,7 @@ fn option_rules() {
 #[test]
 fn library_ignores_the_config() {
     let lab = errors_lab("lib-config");
-    let config = lab.input("config", b"embeder.url = http://bagend:8081\n");
+    let config = lab.input("config", b"embeder.url = http://embedder.example:8081\n");
     let mut env = lab.env();
     env.push(("BILBO_CONFIG", config.to_str().unwrap()));
     for args in [
@@ -2038,7 +2038,7 @@ fn parts_of_several_slices_still_count_against_the_limit() {
 }
 
 #[test]
-fn a_plan_without_body_start_counts_as_changed() {
+fn a_plan_without_body_start_is_refused() {
     let lab = book_lab("lib-read-nobody");
     let id = plan_id(&lab.plan(&["go/book"]));
     let path = lab.plans().join(format!("{id}.json"));
@@ -2051,15 +2051,7 @@ fn a_plan_without_body_start_counts_as_changed() {
     let run = lab.read_slices(&id, &["1"]);
     assert_eq!(run.code, 1, "{}", run.stdout);
     assert!(run.stdout.is_empty());
-    assert!(run.stderr.contains("changed since plan"), "{}", run.stderr);
-    let run = lab.cite(&["--plan", &id], &quote_of(3));
-    assert_eq!(run.code, 1, "{}", run.stdout);
-    assert!(run.stdout.contains("\tunread\t"), "{}", run.stdout);
-    assert!(
-        run.stdout.contains("changed since its plan"),
-        "{}",
-        run.stdout
-    );
+    assert!(run.stderr.contains("body_start"), "{}", run.stderr);
 }
 
 #[test]

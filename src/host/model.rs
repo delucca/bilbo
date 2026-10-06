@@ -204,7 +204,8 @@ fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
-/// llama-server's arguments: bagend's flags with the micro-batch raised to 4096, on loopback only.
+/// llama-server's arguments: the model under its alias as an embedding server with last-token pooling, and one slot
+/// whose context, batch and micro-batch are 4096 tokens, since an input to embed must fit one micro-batch; loopback only.
 pub fn server_args(model: &Path, port: u16) -> Vec<String> {
     let model = model.to_string_lossy().into_owned();
     let port = port.to_string();
@@ -238,7 +239,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn server_args_are_bagends_with_the_bigger_micro_batch() {
+    fn server_args_use_a_4096_micro_batch_on_loopback() {
         let args = server_args(Path::new("/c/m.gguf"), 9100);
         assert_eq!(
             args,

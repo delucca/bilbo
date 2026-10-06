@@ -28,7 +28,7 @@ bilbo SHALL read its settings from `BILBO_CONFIG` when it is set and not empty, 
 - **WHEN** `BILBO_CONFIG` is `/tmp/b/config`, that file does not exist, and a user runs `bilbo setup --yes --embedder-url http://127.0.0.1:8081 --embedder-model m` against a working embedder
 - **THEN** `/tmp/b/config` exists, holds those two settings, and the exit code is 0
 
-#### Scenario: Check ignores the config
+#### Scenario: Check never reaches the embedder
 - **WHEN** no config file exists at the default location, or the file sets only embedder and digest keys with an embedder that does not answer, and an agent runs `bilbo check` on a clean store
 - **THEN** stderr is empty, no request reaches the embedder, and the exit code is 0
 
@@ -41,7 +41,7 @@ bilbo SHALL read its settings from `BILBO_CONFIG` when it is set and not empty, 
 - **THEN** the note is created with no `scope` key, stderr is empty, and the exit code is 0
 
 #### Scenario: Library ignores the config
-- **WHEN** the config file holds `embeder.url = http://bagend:8081`, an unknown key, and an agent runs `bilbo library`
+- **WHEN** the config file holds `embeder.url = http://embedder.example:8081`, an unknown key, and an agent runs `bilbo library`
 - **THEN** stderr is empty and the exit code is 0
 
 #### Scenario: Cite ignores the config
@@ -64,8 +64,8 @@ bilbo SHALL read its settings from `BILBO_CONFIG` when it is set and not empty, 
 The config file SHALL hold one setting per line as `<key> = <value>`, with blank lines and lines starting with `#` ignored. Keys are known names, each at most once. A value runs to the end of the line with surrounding spaces trimmed. A value wrapped in double quotes keeps its spaces, and inside it `\"` is a quote. In any value, `\n` stands for a newline and `\\` for a backslash. A `#` after the key is part of the value. Any other line, an unknown key, a repeated key, an empty value for any key but `embedder.query_prefix`, or text after a closing quote SHALL be an error naming the file and line.
 
 #### Scenario: A valid file
-- **WHEN** the file holds `# embedder on bagend`, a blank line and `embedder.url = http://bagend:8081`
-- **THEN** the embedder URL is `http://bagend:8081`
+- **WHEN** the file holds `# embedder on another machine`, a blank line and `embedder.url = http://embedder.example:8081`
+- **THEN** the embedder URL is `http://embedder.example:8081`
 
 #### Scenario: An escaped newline
 - **WHEN** the file holds `embedder.query_prefix = "Instruct: find notes\nQuery: "`
@@ -80,7 +80,7 @@ The config file SHALL hold one setting per line as `<key> = <value>`, with blank
 - **THEN** every verb that reads settings prints a message naming the file, line 2 and `embedder.model` to stderr and exits 2
 
 #### Scenario: An unknown key
-- **WHEN** the file holds `embeder.url = http://bagend:8081` on line 3
+- **WHEN** the file holds `embeder.url = http://embedder.example:8081` on line 3
 - **THEN** every verb that reads settings prints a message naming the file, line 3 and `embeder.url` to stderr and exits 2
 
 ### Requirement: Embedder settings
@@ -106,7 +106,7 @@ bilbo SHALL NOT print an embedder token, in full or in part, on stdout or stderr
 - **THEN** stderr names `EMBED_TOKEN` and the exit code is 1
 
 #### Scenario: A password in the URL is not echoed
-- **WHEN** the file holds `embedder.url = http://u:sekrit@bagend:8081`
+- **WHEN** the file holds `embedder.url = http://u:sekrit@embedder.example:8081`
 - **THEN** every verb that reads settings prints a message naming `embedder.url` to stderr, holds no part of `sekrit`, and exits 2
 
 #### Scenario: A rejected token is not echoed

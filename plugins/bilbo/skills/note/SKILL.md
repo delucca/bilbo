@@ -92,13 +92,13 @@ Writes what a later session should know into the bilbo store, through `bilbo new
 
    `mv -n` never overwrites. Do not trust its exit code: step 8 runs `bilbo check`, which names both files when the move did not happen. When the file of the new kind already exists beside the old one, there is nothing to rename: update the note of the new kind, leave the other file's bytes alone, never delete or rename either, and report the shared-topic lines from `bilbo check` so the user can decide.
 
-7. Write the body. Read the file, then Edit below the `# ` title line. Keep the prose short: what was found or decided and why, then pointers (paths, commands, URLs) that show it. Use `##` sections and never a second `# ` line outside a code fence. The frontmatter keys are only `id`, `created`, `scope` and `sources`, so never add `kind`, `supersedes` or another key, and never edit `id`, `created` or `scope`.
+7. Write the body. Read the file, then Edit below the `# ` title line. Keep the prose short: what was found or decided and why, then pointers (paths, commands, URLs) that show it. Use `##` sections and never a second `# ` line outside a code fence. The frontmatter keys are only `id`, `created`, `scope` and `sources`: add no other key, not even `kind` (the file name holds it), and never edit `id`, `created` or `scope`.
 
    Sources go after the last key, before the closing `---`:
 
    ```
    sources:
-     - "code: src/new.rs"
+     - "code: src/server.rs"
      - "url: https://example.org/page"
    ```
 

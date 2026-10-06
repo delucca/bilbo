@@ -65,8 +65,10 @@ Try it without installing:
 nix run github:delucca/bilbo -- --version
 ```
 
-Or add it as a flake input and use `bilbo.packages.${system}.default`. With
-home-manager, see [home-manager](#home-manager):
+The flake builds for `aarch64-darwin`, `x86_64-linux` and `aarch64-linux`; on
+an Intel Mac, use the installer. Or add it as a flake input and use
+`bilbo.packages.${system}.default`. With home-manager, see
+[home-manager](#home-manager):
 
 ```nix
 inputs.bilbo = {
@@ -150,7 +152,8 @@ else `$XDG_DATA_HOME/bilbo`, else `~/.local/share/bilbo`, on macOS too.
 | `bilbo device [list \| init \| recover \| revoke <device>]` | Shows and manages this device's identity; see [Devices](#devices). |
 | `bilbo pair [--scope <name>]... [--via <url>]` | Shows a one-time code and adds the device that answers it to your scopes; see [Pairing a device](#pairing-a-device). |
 | `bilbo pair <code> --via <url> [--name <name>]` | Joins the scopes of the device that showed the code; see [Pairing a device](#pairing-a-device). |
-| `bilbo setup` | See [Set up](#set-up). |
+| `bilbo relay --data <dir> --owner <fingerprint>... [--listen <address:port>] [--max-scopes <n>] [--max-scope-mb <n>] [--max-object-mb <n>]` | Serves sync to your devices from a machine you control, until it is stopped; see [Relay](#relay). |
+| `bilbo setup [--yes \| --interactive] [--remove] [<setup option>]...` | Creates the store and the config and installs the plugin, the timer and the watcher; see [Set up](#set-up). |
 
 `recall` prints one block per note: the path and line of the best passage, the
 kind and `created` (tab-separated), then the passage's heading path, then the
@@ -229,9 +232,9 @@ scope.default = personal
   whose entry is the working directory or a folder above it, the longest entry
   winning, compared by whole folder names. `~/` and `/` are valid entries, so
   `scope.personal.paths = ~/` makes `personal` the scope of everything under
-  home that no longer entry claims. A worktree outside every listed folder is
-  not covered: list the folder that holds the clones and `.worktrees/`, not
-  each clone.
+  home that no more specific entry claims. A worktree outside every listed
+  folder is not covered: list the parent folder that also holds your
+  worktrees, not each clone.
 - `marks` lists what only this scope's notes should mention, for `check`.
 - `scope.default` names the scope for a working directory no `paths` entry
   holds.
@@ -412,11 +415,12 @@ first, with the sync tool you already use or a plain copy, then run
 fingerprint it derived; when a manifest in the store vouches for the phrase it
 asks nothing more, and otherwise it asks you to compare the fingerprint with
 the one you wrote down. It then writes this device's keys and adds the device
-to every scope of yours the store holds. A syncing scope with no manifest in the copied
-store or the folder is reported `unsealed`: bring its manifest over and run
-`recover` again, or, when the folder holds none of this owner's `personal`,
-run `bilbo device init`.
-Never run `init` for it, which would fork the scope.
+to every scope of yours the store holds. A syncing scope with no manifest in the
+copied store or the folder is reported `unsealed`. When another device holds
+that scope, bring its manifest over (copy the store again, or let the folder
+finish syncing) and run `recover` again; `bilbo device init` would create a
+second scope of the same name beside it. Run `init` only for a scope that no
+device holds yet, which it then creates.
 
 #### Pairing a device
 
@@ -425,9 +429,9 @@ so the recovery phrase stays put away. On the enrolled device, in a terminal:
 
 ```console
 $ bilbo pair
-pairing code 42-orbit-tunnel-velvet
-on the new device, run: bilbo pair 42-orbit-tunnel-velvet --via file:///Users/me/Dropbox/bilbo
-the code works once, for 10 minutes
+bilbo: pairing code 42-orbit-tunnel-velvet
+bilbo: on the new device, run: bilbo pair 42-orbit-tunnel-velvet --via file:///Users/me/Dropbox/bilbo
+bilbo: the code works once, for 10 minutes
 ```
 
 On the new device, install bilbo, run `bilbo setup` so the store exists, and
@@ -453,18 +457,18 @@ four, and the new one adds its name and device id. The first device names the
 new one and the scopes it will join, and asks:
 
 ```console
-fingerprint 5812 0934 7761
-pair bagend 7f3a9c0e1b2d into personal? compare the fingerprint on that device, then type y to confirm
+bilbo: fingerprint 5812 0934 7761
+bilbo: pair bywater q4n7rj2dxwmk5ta3hz6pyce4lu into personal? compare the fingerprint on that device, then type y to confirm
 ```
 
-The new device prints `fingerprint 5812 0934 7761 for bagend 7f3a9c0e1b2d;
-confirm on the device that showed the code`.
+The new device prints `bilbo: fingerprint 5812 0934 7761 for bywater
+q4n7rj2dxwmk5ta3hz6pyce4lu; confirm on the device that showed the code`.
 
 Compare the fingerprint, the name and the id on the two screens, and answer
 `y` only when they match. Anything else, or the end of input, sends no secret and both devices exit 1.
 The new device then waits up to 2 minutes for the manifests to reach it
 through the folder, checks the whole chain, and only then writes its config
-and keys. It prints `paired with rivendell: personal`, and `bilbo watch` starts
+and keys. It prints `paired with rhosgobel: personal`, and `bilbo watch` starts
 syncing the scope within one cycle.
 
 A code works for one answer and for 10 minutes. A wrong word uses it up, and
@@ -501,8 +505,8 @@ up and shows on both screens.
 
 #### Revoking a device
 
-`bilbo device revoke bagend`, in a terminal on another device, writes a new
-version of each scope that lists both `bagend` and this device, under a new epoch key sealed only to
+`bilbo device revoke bywater`, in a terminal on another device, writes a new
+version of each scope that lists both `bywater` and this device, under a new epoch key sealed only to
 the remaining devices and to you. After a confirmed revocation a revoked device, even one using the owner signing seed, cannot read anything written under later epochs; it can still disrupt by signing versions that members reject or that change the device list, which watch announces.
 
 That holds for the revoked device's own keys. Until the revocation is confirmed it still holds the current epoch key and can add a device of its own, which the new epoch is then sealed to, so run `bilbo device list` after revoking and revoke any device you do not recognise.
@@ -536,6 +540,10 @@ server, unless you run a [relay](#relay) and sync through its `https://` URL.
 
 #### Turning sync on
 
+In a terminal, the `bilbo setup` wizard does steps 1 to 3 in one go: it asks
+for the scope, the folder or [relay](#relay) URL and the keys, and writes the
+config line. By hand:
+
 1. Declare the scope's folder in the [config](#configuration):
 
    ```
@@ -546,8 +554,7 @@ server, unless you run a [relay](#relay) and sync through its `https://` URL.
    the phrase; see [The ceremony](#the-ceremony). It writes the scope's
    manifest.
 3. Make sure `bilbo watch` runs, which `bilbo setup` installs. It syncs the
-   scope from then on. The wizard asks for the scope, the folder or [relay](#relay)
-   URL and the keys in one go, and writes the config line.
+   scope from then on.
 4. Give the notes the scope. A note syncs only when its `scope:` line names a
    scope whose `sync` is a URL, so turning sync on uploads nothing until you
    assign notes; triage the store as in [Scopes](#scopes).
@@ -580,7 +587,7 @@ Only the notes in a scope that syncs, and only their text and frontmatter:
 
 - A note with no `scope`, a scope the config does not declare, or a scope whose
   `sync` is `off` never leaves the device, in any form. `bilbo sync` counts
-  them: `local: 188 notes sync nowhere`.
+  them: `local: 17 notes sync nowhere`.
 - Nothing outside `<root>/notes/` syncs: not the library, the vector cache, the
   config or the keys.
 - A deletion syncs. A note deleted on one device while another edits it comes
@@ -662,13 +669,13 @@ recent flags and changes of the device list:
 
 ```console
 $ bilbo sync
-scope personal file:///Users/me/Dropbox/bilbo: 212 notes, pushed 2026-10-05T09:12-03:00, pulled 2026-10-05T09:13-03:00
-device personal rivendell: this device
-device personal bagend: up to date
-local: 188 notes sync nowhere
+scope personal file:///Users/me/Dropbox/bilbo: 42 notes, pushed 2026-10-05T09:12-03:00, pulled 2026-10-05T09:13-03:00
+device personal rhosgobel: this device
+device personal bywater: up to date
+local: 17 notes sync nowhere
 conflict notes/gotcha-nix.md: 1 passage
 notice 2026-10-04T18:02-03:00 notes/plan-release.md: edit-beat-delete
-change 2026-10-02T11:30-03:00 personal: device moria added by owner key (manifest 4)
+change 2026-10-02T11:30-03:00 personal: device morthond added by owner key (manifest 4)
 ```
 
 A device's state is `up to date`, `behind by <n> segments`, or `stale since
@@ -889,7 +896,7 @@ new scope, set the URL on each device, as for a folder; a scope that already
 syncs through a folder [moves by copy](#moving-a-folder-scope-to-a-relay):
 
 ```
-scope.personal.sync = https://bagend.tail1234.ts.net
+scope.personal.sync = https://relay.example.ts.net
 ```
 
 `bilbo setup` takes the URL at its `Folder or relay URL to sync through`
@@ -979,7 +986,7 @@ a scope reaches `--max-scope-mb`; then devices report `relay <url> is full` for 
 
 [Pairing](#pairing-a-device) works through a relay, with its URL where the
 folder was: `bilbo pair` on the enrolled device shows a code, and on the new
-one `bilbo pair <code> --via https://bagend.tail1234.ts.net` pairs it. The
+one `bilbo pair <code> --via https://relay.example.ts.net` pairs it. The
 relay keeps the mailbox for 30 minutes at most and sees only sealed messages. A
 stranger gets at most one write into a mailbox, and behind a proxy the
 limits on unsigned requests are shared by everyone using it, so an abuser can
@@ -1434,14 +1441,16 @@ the background?", defaulting to yes.
 
 The `sync` line of the report, after `watch`, checks each scope whose `sync` is
 a URL: that this device has a key, that the watcher is wanted and that the
-folder exists and is writable. It reports `ok: personal through
-file:///Users/me/Dropbox/bilbo (212 notes)`, `failed: sync needs the watcher;
-drop --no-watch`, `failed: <url> is not reachable: <reason>`, `skipped: no
-device key; run bilbo device init in a terminal` or `skipped: no scope syncs`.
-It writes nothing. In the wizard, after the watcher's question, one more asks
-whether to sync notes between devices. On yes it asks for the scope and the
-folder (absolute or starting with `~/`, its parent existing), and, when the
-device has no key, whether you already have a recovery phrase: yes runs
+transport answers (a folder exists and is writable, a [relay](#relay) URL
+answers as a bilbo relay). It reports `ok: personal through
+file:///Users/me/Dropbox/bilbo (42 notes)`, `failed: sync needs the watcher;
+drop --no-watch`, `failed: <url> is not reachable: <reason>`, `failed: <url>
+is not a bilbo relay`, `skipped: no device key; run bilbo device init in a
+terminal` or `skipped: no scope syncs`. It writes nothing. In the wizard,
+after the watcher's question, one more asks whether to sync notes between
+devices. On yes it asks for the scope and where to sync: a folder (absolute or
+starting with `~/`, its parent existing) or a relay URL. Then, when the
+device has no key, it asks whether you already have a recovery phrase: yes runs
 `bilbo device recover`, no runs `bilbo device init`, with the same terminal
 rules as [The ceremony](#the-ceremony). Nothing is written until you confirm
 the summary. It then writes `scope.<name>.sync`, creates the folder's last
@@ -1590,7 +1599,7 @@ inputs:
 ```console
 $ bilbo index
 embedded 1, kept 0, dropped 0
-bilbo: withheld 2 passages from http://bagend:8081: their scope allows only a loopback embedder
+bilbo: withheld 2 passages from http://embedder.example:8081: their scope allows only a loopback embedder
 ```
 
 `recall` and the digest still reach withheld notes, by keywords, and `recall`
@@ -1610,8 +1619,8 @@ reached directly: bilbo ignores the proxy variables (`HTTP_PROXY`,
 
 Pull requests are welcome. Behavior changes start as an
 [OpenSpec](https://github.com/Fission-AI/OpenSpec) change under
-[`openspec/changes/`](openspec/changes/), and [`openspec/specs/`](openspec/specs/)
-holds the current contract for each command. [`AGENTS.md`](AGENTS.md) has the
+`openspec/changes/`, and [`openspec/specs/`](openspec/specs/) holds the
+current contract for each command. [`AGENTS.md`](AGENTS.md) has the
 commands CI runs and the rules the code follows. In short, with Nix:
 
 ```sh

@@ -1,4 +1,4 @@
-//! Sync through the built binary: two stores, `rivendell` and `bagend`, built from the golden keys and manifests of
+//! Sync through the built binary: two stores, `rhosgobel` and `bywater`, built from the golden keys and manifests of
 //! `tests/fixtures/device/`, each with its own `bilbo watch` over one temporary `file://` folder. Every wait is a
 //! poll with a deadline. A check that something did not happen waits on a barrier: a later change that has to travel
 //! through the same cycles. No test feeds a phrase, and the race, the filesystem that cannot swap and the hour-long
@@ -14,8 +14,8 @@ use std::path::{Path, PathBuf};
 use common::{Run, TempDir, Watcher, bilbo, config, poll_eq};
 
 const FIXTURES: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/device");
-const RIVENDELL: &str = "gr2q7gf5lh6pzfdnurnkvputhp";
-const BAGEND: &str = "wyxim75c6m5p4ywv22ywilqweh";
+const RHOSGOBEL: &str = "gr2q7gf5lh6pzfdnurnkvputhp";
+const BYWATER: &str = "wyxim75c6m5p4ywv22ywilqweh";
 const ID: &str = "01M3YJ7R6HK6NQ30DCDB1P4DYB";
 const OTHER: &str = "01M3YE296FMNXYZS89787DMY0A";
 const FILE: &str = "decision-release.md";
@@ -309,7 +309,7 @@ fn note(id: &str, setup: &str, rollout: &str) -> String {
     )
 }
 
-/// Starts both devices on a new folder, with `decision-release.md` written on `rivendell` and arrived on `bagend`.
+/// Starts both devices on a new folder, with `decision-release.md` written on `rhosgobel` and arrived on `bywater`.
 fn synced(name: &str) -> (TempDir, PathBuf, Site, Site, String) {
     synced_with(name, &[])
 }
@@ -320,15 +320,19 @@ fn synced_with(name: &str, extra: &[&str]) -> (TempDir, PathBuf, Site, Site, Str
     let folder = folder(&dir, &[1, 2]);
     let mut lines = Site::syncing(&folder);
     lines.extend(extra.iter().map(|l| l.to_string()));
-    let mut a = Site::build("rivendell", true, &[1, 2], &lines);
-    let mut b = Site::build("bagend", true, &[1, 2], &lines);
+    let mut a = Site::build("rhosgobel", true, &[1, 2], &lines);
+    let mut b = Site::build("bywater", true, &[1, 2], &lines);
     let text = note(ID, "Install it.", "Ship on Monday.");
     a.write(FILE, &text);
     a.start();
     b.start();
     b.wait_text(FILE, &text);
     // B's acknowledgement of what it applied is written once, so a later count of its segments starts from there.
-    poll_eq("B's acknowledgement", || segments(&folder, BAGEND).len(), 1);
+    poll_eq(
+        "B's acknowledgement",
+        || segments(&folder, BYWATER).len(),
+        1,
+    );
     (dir, folder, a, b, text)
 }
 
@@ -336,8 +340,8 @@ fn synced_with(name: &str, extra: &[&str]) -> (TempDir, PathBuf, Site, Site, Str
 fn an_assigned_note_syncs_and_an_edit_follows() {
     let dir = TempDir::new("assigned");
     let folder = folder(&dir, &[1, 2]);
-    let mut a = Site::new("rivendell", &folder);
-    let mut b = Site::new("bagend", &folder);
+    let mut a = Site::new("rhosgobel", &folder);
+    let mut b = Site::new("bywater", &folder);
     a.start();
     b.start();
     for site in [&a, &b] {
@@ -346,12 +350,12 @@ fn an_assigned_note_syncs_and_an_edit_follows() {
     let text = note(ID, "Install it.", "Ship on Monday.");
     a.write(FILE, &text);
     b.wait_text(FILE, &text);
-    let edited = format!("{text}\nA paragraph from rivendell.\n");
+    let edited = format!("{text}\nA paragraph from rhosgobel.\n");
     a.write(FILE, &edited);
     b.wait_text(FILE, &edited);
     let history = b.history(TOPIC);
     assert!(
-        history[0].ends_with(&format!("edited {FILE} from rivendell")),
+        history[0].ends_with(&format!("edited {FILE} from rhosgobel")),
         "{history:?}"
     );
     for site in [&a, &b] {
@@ -373,8 +377,8 @@ fn the_first_sync_uploads_nothing_and_a_local_scope_stays_local() {
     let folder = folder(&dir, &[1, 2]);
     let mut lines = Site::syncing(&folder);
     lines.push("scope.work.sync = off".to_string());
-    let mut a = Site::build("rivendell", true, &[1, 2], &lines);
-    let mut b = Site::new("bagend", &folder);
+    let mut a = Site::build("rhosgobel", true, &[1, 2], &lines);
+    let mut b = Site::new("bywater", &folder);
     a.write(
         "plan-unassigned.md",
         &common::note_text(OTHER, "Unassigned"),
@@ -405,8 +409,8 @@ fn the_first_sync_uploads_nothing_and_a_local_scope_stays_local() {
 fn nothing_readable_leaves_the_device() {
     let dir = TempDir::new("clear");
     let folder = folder(&dir, &[1, 2]);
-    let mut a = Site::new("rivendell", &folder);
-    let mut b = Site::new("bagend", &folder);
+    let mut a = Site::new("rhosgobel", &folder);
+    let mut b = Site::new("bywater", &folder);
     let text = note(ID, "Install it.", "Ship on friday.").replace("# Release", "# Release plan");
     a.write("plan-release-plan.md", &text);
     a.start();
@@ -426,22 +430,22 @@ fn nothing_readable_leaves_the_device() {
 fn the_layout_ignores_names_it_does_not_know_and_a_small_push_is_one_segment() {
     let dir = TempDir::new("layout");
     let folder = folder(&dir, &[1, 2]);
-    let mut a = Site::new("rivendell", &folder);
-    let mut b = Site::new("bagend", &folder);
+    let mut a = Site::new("rhosgobel", &folder);
+    let mut b = Site::new("bywater", &folder);
     let text = note(ID, "Install it.", "Ship on Monday.");
     a.write(FILE, &text);
     a.start();
     poll_eq(
         "the first segment",
-        || segments(&folder, RIVENDELL).len(),
+        || segments(&folder, RHOSGOBEL).len(),
         1,
     );
-    let first = &segments(&folder, RIVENDELL)[0];
+    let first = &segments(&folder, RHOSGOBEL)[0];
     assert_eq!(
         first.file_name().unwrap().to_str().unwrap(),
         "00000000000000000001.seg"
     );
-    let devices = a.device_dir(&folder, RIVENDELL);
+    let devices = a.device_dir(&folder, RHOSGOBEL);
     fs::write(
         devices.join("00000000000000000003 (conflicted copy).seg"),
         b"not a segment",
@@ -453,7 +457,7 @@ fn the_layout_ignores_names_it_does_not_know_and_a_small_push_is_one_segment() {
     let edited = format!("{text}\nMore.\n");
     a.write(FILE, &edited);
     b.wait_text(FILE, &edited);
-    assert_eq!(segments(&folder, RIVENDELL).len(), 2);
+    assert_eq!(segments(&folder, RHOSGOBEL).len(), 2);
     assert_eq!(b.count("segment"), 0, "{:?}", b.lines());
 }
 
@@ -461,8 +465,8 @@ fn the_layout_ignores_names_it_does_not_know_and_a_small_push_is_one_segment() {
 fn without_a_device_key_nothing_is_pushed_until_one_appears() {
     let dir = TempDir::new("nokey");
     let folder = folder(&dir, &[1, 2]);
-    let mut a = Site::build("rivendell", false, &[1, 2], &Site::syncing(&folder));
-    let mut b = Site::new("bagend", &folder);
+    let mut a = Site::build("rhosgobel", false, &[1, 2], &Site::syncing(&folder));
+    let mut b = Site::new("bywater", &folder);
     let line = "bilbo: sync personal: no device key; run bilbo device init or bilbo device recover";
     let text = note(ID, "Install it.", "Ship on Monday.");
     a.write(FILE, &text);
@@ -470,7 +474,7 @@ fn without_a_device_key_nothing_is_pushed_until_one_appears() {
     b.start();
     a.wait_for(line);
     a.wait_events(TOPIC, &["added"]);
-    assert!(segments(&folder, RIVENDELL).is_empty());
+    assert!(segments(&folder, RHOSGOBEL).is_empty());
     assert_eq!(b.read(FILE), None);
     // The user enrols the device while watch runs: its next cycle syncs, without a restart.
     a.install_keys();
@@ -482,7 +486,7 @@ fn without_a_device_key_nothing_is_pushed_until_one_appears() {
 #[test]
 fn turning_a_scope_off_stops_the_cycle_and_a_bad_config_keeps_the_last_good() {
     let (dir, folder, a, b, text) = synced("off");
-    let before = segments(&folder, RIVENDELL).len();
+    let before = segments(&folder, RHOSGOBEL).len();
     // A config that no longer parses keeps the settings that worked, and says so once.
     a.configure(&["sync.poll_seconds = 0".to_string()]);
     a.wait_for("sync.poll_seconds");
@@ -512,7 +516,7 @@ fn turning_a_scope_off_stops_the_cycle_and_a_bad_config_keeps_the_last_good() {
     ));
     // A cycle that had already reread the still-syncing config when the scope went off may push the first local edit
     // (its scan runs after its pull); no later cycle does, so at most one segment follows the broken-config edit.
-    let sent = segments(&folder, RIVENDELL).len();
+    let sent = segments(&folder, RHOSGOBEL).len();
     assert!(
         (before + 1..=before + 2).contains(&sent),
         "{sent} segments after {before}"
@@ -520,7 +524,7 @@ fn turning_a_scope_off_stops_the_cycle_and_a_bad_config_keeps_the_last_good() {
     let pushed = b.read(FILE).unwrap();
     assert!(
         pushed == edited || pushed == local,
-        "bagend holds neither edit: {pushed}"
+        "bywater holds neither edit: {pushed}"
     );
     assert!(sent == before + 2 || pushed == edited);
     assert!(!elsewhere.exists(), "watch created a transport folder");
@@ -559,7 +563,7 @@ fn an_agent_that_read_the_new_text_is_recorded_as_following_it() {
     assert_eq!(a.read(FILE), Some(mine));
     let history = a.history(TOPIC);
     assert!(!history[0].contains(" from "), "{history:?}");
-    assert!(history[1].ends_with("from bagend"), "{history:?}");
+    assert!(history[1].ends_with("from bywater"), "{history:?}");
     assert!(history.iter().all(|l| !l.contains("stale-base")));
 }
 
@@ -570,8 +574,8 @@ fn the_first_push_of_a_marked_note_says_so_once() {
     let mut lines = Site::syncing(&folder);
     lines.push("scope.work.sync = off".to_string());
     lines.push("scope.work.marks = acme".to_string());
-    let mut a = Site::build("rivendell", true, &[1, 2], &lines);
-    let mut b = Site::new("bagend", &folder);
+    let mut a = Site::build("rhosgobel", true, &[1, 2], &lines);
+    let mut b = Site::new("bywater", &folder);
     let marked = note(ID, "Install it for acme.", "Ship on Monday.");
     a.write(FILE, &marked);
     a.start();
@@ -613,10 +617,10 @@ fn ids(site: &Site, topic: &str) -> Vec<String> {
 
 /// Both devices send each other a note and read it, so each has run cycles since the last thing worth checking.
 fn barrier(a: &Site, b: &Site) {
-    let to_b = note(OTHER, "From rivendell.", "To bagend.");
+    let to_b = note(OTHER, "From rhosgobel.", "To bywater.");
     a.write("plan-other.md", &to_b);
     b.wait_text("plan-other.md", &to_b);
-    let to_a = note(OTHER, "From bagend.", "To rivendell.");
+    let to_a = note(OTHER, "From bywater.", "To rhosgobel.");
     b.write("plan-other.md", &to_a);
     a.wait_text("plan-other.md", &to_a);
 }
@@ -640,10 +644,10 @@ fn edits_to_different_passages_merge_clean_and_the_devices_go_quiet() {
         true,
     );
     let settled = ids(&a, TOPIC);
-    let own = segments_with_bytes(&folder, RIVENDELL);
+    let own = segments_with_bytes(&folder, RHOSGOBEL);
     barrier(&a, &b);
-    assert_eq!(ids(&a, TOPIC), settled, "a merge storm on rivendell");
-    assert_eq!(ids(&b, TOPIC), settled, "a merge storm on bagend");
+    assert_eq!(ids(&a, TOPIC), settled, "a merge storm on rhosgobel");
+    assert_eq!(ids(&b, TOPIC), settled, "a merge storm on bywater");
     for site in [&a, &b] {
         assert_eq!(site.count("conflict in"), 0, "{:?}", site.lines());
         assert_eq!(
@@ -652,7 +656,7 @@ fn edits_to_different_passages_merge_clean_and_the_devices_go_quiet() {
         );
     }
     // A segment is created once and never changed.
-    let later = segments_with_bytes(&folder, RIVENDELL);
+    let later = segments_with_bytes(&folder, RHOSGOBEL);
     for (path, bytes) in own {
         assert!(
             later.get(&path) == Some(&bytes),
@@ -669,12 +673,12 @@ fn a_passage_edited_on_both_sides_is_a_conflict_on_pull() {
     b.stop();
     // B edits `## Rollout` and pushes it while A is down. A then edits the same passage offline and comes up alone,
     // so it is A that merges: the device that makes the merge prints the line.
-    let sent = segments(&folder, BAGEND).len();
+    let sent = segments(&folder, BYWATER).len();
     b.write(FILE, &note(ID, "Install it.", "Ship on Tuesday."));
     b.start();
     poll_eq(
         "B's edit pushed",
-        || segments(&folder, BAGEND).len(),
+        || segments(&folder, BYWATER).len(),
         sent + 1,
     );
     b.stop();
@@ -699,7 +703,7 @@ fn a_passage_edited_on_both_sides_is_a_conflict_on_pull() {
 fn a_device_recovered_before_the_folder_was_read_syncs_nothing_until_it_is() {
     let dir = TempDir::new("unread");
     let folder = folder(&dir, &[]);
-    let mut b = Site::build("bagend", true, &[], &Site::syncing(&folder));
+    let mut b = Site::build("bywater", true, &[], &Site::syncing(&folder));
     b.start();
     let line = format!(
         "bilbo: sync personal: this device is not in the scope; run bilbo pair with a device that syncs {}, or bilbo device recover on this device",
@@ -713,7 +717,7 @@ fn a_device_recovered_before_the_folder_was_read_syncs_nothing_until_it_is() {
     );
     // The folder reaches the device: the watcher restores the one scope that lists it, and syncs.
     put_manifests(&folder, &[1, 2]);
-    let mut a = Site::new("rivendell", &folder);
+    let mut a = Site::new("rhosgobel", &folder);
     let text = note(ID, "Install it.", "Ship on Monday.");
     a.write(FILE, &text);
     a.start();
@@ -728,7 +732,7 @@ fn a_device_recovered_before_the_folder_was_read_syncs_nothing_until_it_is() {
 #[test]
 fn the_history_folder_was_deleted() {
     let (_dir, folder, mut a, b, text) = synced("lost");
-    poll_eq("a segment", || segments(&folder, RIVENDELL).len(), 1);
+    poll_eq("a segment", || segments(&folder, RHOSGOBEL).len(), 1);
     a.stop();
     fs::remove_dir_all(a.root().join(".bilbo")).unwrap();
     a.start();
@@ -741,7 +745,7 @@ fn the_history_folder_was_deleted() {
     let edited = format!("{text}\nAfter the loss.\n");
     a.write(FILE, &edited);
     b.wait_text(FILE, &edited);
-    let names: Vec<String> = segments(&folder, RIVENDELL)
+    let names: Vec<String> = segments(&folder, RHOSGOBEL)
         .iter()
         .map(|p| p.file_name().unwrap().to_str().unwrap().to_string())
         .collect();
@@ -757,7 +761,7 @@ fn a_folder_without_this_devices_scopes_is_said_once_and_gets_nothing() {
     let dir = TempDir::new("moved");
     let moved = dir.path().join("moved");
     fs::create_dir_all(&moved).unwrap();
-    let mut a = Site::build("rivendell", true, &[1, 2], &Site::syncing(&moved));
+    let mut a = Site::build("rhosgobel", true, &[1, 2], &Site::syncing(&moved));
     a.write(FILE, &note(ID, "Install it.", "Ship on Monday."));
     a.start();
     let line = format!(
@@ -777,7 +781,7 @@ fn a_folder_without_this_devices_scopes_is_said_once_and_gets_nothing() {
 fn an_unreachable_folder_is_said_once_and_the_versions_wait() {
     let dir = TempDir::new("unmounted");
     let folder = dir.path().join("volume/bilbo");
-    let mut a = Site::build("rivendell", true, &[1, 2], &Site::syncing(&folder));
+    let mut a = Site::build("rhosgobel", true, &[1, 2], &Site::syncing(&folder));
     let text = note(ID, "Install it.", "Ship on Monday.");
     a.write(FILE, &text);
     a.start();
@@ -792,9 +796,9 @@ fn an_unreachable_folder_is_said_once_and_the_versions_wait() {
     );
     // The volume comes back: the waiting version is pushed.
     put_manifests(&folder, &[1, 2]);
-    poll_eq("the push", || segments(&folder, RIVENDELL).len(), 1);
+    poll_eq("the push", || segments(&folder, RHOSGOBEL).len(), 1);
     assert_eq!(a.count("is not reachable"), 1, "{:?}", a.lines());
-    let mut b = Site::new("bagend", &folder);
+    let mut b = Site::new("bywater", &folder);
     b.start();
     b.wait_text(FILE, &text);
 }
@@ -803,26 +807,26 @@ fn an_unreachable_folder_is_said_once_and_the_versions_wait() {
 fn a_device_added_elsewhere_is_shown_once_and_listed() {
     let dir = TempDir::new("added");
     let folder = folder(&dir, &[1]);
-    // The fixture's version 1 lists `bagend` alone; version 2 adds `rivendell`.
-    let mut b = Site::build("bagend", true, &[1], &Site::syncing(&folder));
+    // The fixture's version 1 lists `bywater` alone; version 2 adds `rhosgobel`.
+    let mut b = Site::build("bywater", true, &[1], &Site::syncing(&folder));
     b.start();
     b.wait_for("bilbo: syncing personal through");
     put_manifests(&folder, &[1, 2]);
-    let line = "bilbo: sync personal: device rivendell added by owner key (manifest 2)";
+    let line = "bilbo: sync personal: device rhosgobel added by owner key (manifest 2)";
     b.wait_for(line);
     let changes = b
         .root()
         .join(format!(".bilbo/scopes/{}/changes.jsonl", scope()));
     poll_eq("changes.jsonl", || changes.exists(), true);
-    assert!(fs::read_to_string(&changes).unwrap().contains("rivendell"));
-    // Watch wrote no manifest of its own, and the new device reads what `bagend` pushes under the same epoch.
-    let mut a = Site::new("rivendell", &folder);
+    assert!(fs::read_to_string(&changes).unwrap().contains("rhosgobel"));
+    // Watch wrote no manifest of its own, and the new device reads what `bywater` pushes under the same epoch.
+    let mut a = Site::new("rhosgobel", &folder);
     let text = note(ID, "Install it.", "Ship on Monday.");
     b.write(FILE, &text);
     a.start();
     a.wait_text(FILE, &text);
     assert_eq!(b.count(line), 1);
-    assert_eq!(segments(&folder, BAGEND).len(), 1);
+    assert_eq!(segments(&folder, BYWATER).len(), 1);
     assert_eq!(
         tree(&folder.join(format!("scopes/{}/manifest", scope()))).len(),
         2
@@ -833,12 +837,12 @@ fn a_device_added_elsewhere_is_shown_once_and_listed() {
 fn a_damaged_or_deleted_own_segment_comes_back_before_anyone_reads_it() {
     let dir = TempDir::new("damaged");
     let folder = folder(&dir, &[1, 2]);
-    let mut a = Site::new("rivendell", &folder);
+    let mut a = Site::new("rhosgobel", &folder);
     let text = note(ID, "Install it.", "Ship on Monday.");
     a.write(FILE, &text);
     a.start();
-    poll_eq("a segment", || segments(&folder, RIVENDELL).len(), 1);
-    let path = segments(&folder, RIVENDELL).remove(0);
+    poll_eq("a segment", || segments(&folder, RHOSGOBEL).len(), 1);
+    let path = segments(&folder, RHOSGOBEL).remove(0);
     let whole = fs::read(&path).unwrap();
     fs::write(&path, &whole[..whole.len() / 2]).unwrap();
     poll_eq(
@@ -848,7 +852,7 @@ fn a_damaged_or_deleted_own_segment_comes_back_before_anyone_reads_it() {
     );
     fs::remove_file(&path).unwrap();
     poll_eq("the recreated file", || fs::read(&path).ok(), Some(whole));
-    let mut b = Site::new("bagend", &folder);
+    let mut b = Site::new("bywater", &folder);
     b.start();
     b.wait_text(FILE, &text);
 }
@@ -857,13 +861,13 @@ fn a_damaged_or_deleted_own_segment_comes_back_before_anyone_reads_it() {
 fn a_tampered_segment_is_refused_by_name() {
     let dir = TempDir::new("tampered");
     let folder = folder(&dir, &[1, 2]);
-    let mut a = Site::new("rivendell", &folder);
-    let mut b = Site::new("bagend", &folder);
+    let mut a = Site::new("rhosgobel", &folder);
+    let mut b = Site::new("bywater", &folder);
     a.write(FILE, &note(ID, "Install it.", "Ship on Monday."));
     a.start();
-    poll_eq("a segment", || segments(&folder, RIVENDELL).len(), 1);
+    poll_eq("a segment", || segments(&folder, RHOSGOBEL).len(), 1);
     a.stop();
-    let path = segments(&folder, RIVENDELL).remove(0);
+    let path = segments(&folder, RHOSGOBEL).remove(0);
     let mut bytes = fs::read(&path).unwrap();
     let at = bytes
         .windows(14)
@@ -873,7 +877,7 @@ fn a_tampered_segment_is_refused_by_name() {
     bytes[at] = if bytes[at] == b'A' { b'B' } else { b'A' };
     fs::write(&path, bytes).unwrap();
     b.start();
-    b.wait_for("bilbo: sync personal: segment 1 of rivendell");
+    b.wait_for("bilbo: sync personal: segment 1 of rhosgobel");
     b.wait_for("segment 1");
     assert_eq!(b.read(FILE), None);
 }
@@ -882,12 +886,12 @@ fn a_tampered_segment_is_refused_by_name() {
 fn two_stores_with_one_device_key_stop_the_established_one() {
     let dir = TempDir::new("twins");
     let folder = folder(&dir, &[1, 2]);
-    let mut a = Site::new("rivendell", &folder);
-    let mut twin = Site::new("rivendell", &folder);
+    let mut a = Site::new("rhosgobel", &folder);
+    let mut twin = Site::new("rhosgobel", &folder);
     a.write(FILE, &note(ID, "Install it.", "Ship on Monday."));
     a.start();
-    poll_eq("a segment", || segments(&folder, RIVENDELL).len(), 1);
-    let first = segments_with_bytes(&folder, RIVENDELL);
+    poll_eq("a segment", || segments(&folder, RHOSGOBEL).len(), 1);
+    let first = segments_with_bytes(&folder, RHOSGOBEL);
     twin.write(
         "plan-other.md",
         &note(OTHER, "From the twin.", "Never alone."),
@@ -897,7 +901,7 @@ fn two_stores_with_one_device_key_stop_the_established_one() {
         "bilbo: sync personal: segment 2 of this device holds other content; another store writes as this device",
     );
     // No segment is overwritten: the first is as it was, and the twin's is the second.
-    let later = segments_with_bytes(&folder, RIVENDELL);
+    let later = segments_with_bytes(&folder, RHOSGOBEL);
     assert_eq!(later.len(), 2);
     for (path, bytes) in first {
         assert!(
@@ -927,8 +931,8 @@ fn big(n: usize) -> String {
 fn a_large_first_push_splits_into_segments_of_at_most_eight_mebibytes() {
     let dir = TempDir::new("large");
     let folder = folder(&dir, &[1, 2]);
-    let mut a = Site::new("rivendell", &folder);
-    let mut b = Site::new("bagend", &folder);
+    let mut a = Site::new("rhosgobel", &folder);
+    let mut b = Site::new("bywater", &folder);
     for n in 0..20 {
         a.write(&format!("plan-big{n:02}.md"), &big(n));
     }
@@ -939,7 +943,7 @@ fn a_large_first_push_splits_into_segments_of_at_most_eight_mebibytes() {
         || fs::read_dir(b.notes()).unwrap().count(),
         20,
     );
-    let sizes: Vec<u64> = segments(&folder, RIVENDELL)
+    let sizes: Vec<u64> = segments(&folder, RHOSGOBEL)
         .iter()
         .map(|p| fs::metadata(p).unwrap().len())
         .collect();
@@ -955,7 +959,7 @@ fn idle_devices_go_quiet() {
     a.write(FILE, &edited);
     b.wait_text(FILE, &edited);
     // B acknowledges once. A reads that acknowledgement, which is the cycle after which any chatter would show.
-    poll_eq("an acknowledgement", || segments(&folder, BAGEND).len(), 1);
+    poll_eq("an acknowledgement", || segments(&folder, BYWATER).len(), 1);
     let state = a
         .root()
         .join(format!(".bilbo/scopes/{}/state.json", scope()));
@@ -964,19 +968,19 @@ fn idle_devices_go_quiet() {
         || {
             let json: serde_json::Value =
                 serde_json::from_str(&fs::read_to_string(&state).unwrap()).unwrap();
-            json["cursors"][BAGEND].as_u64()
+            json["cursors"][BYWATER].as_u64()
         },
         Some(1),
     );
-    assert_eq!(segments(&folder, RIVENDELL).len(), 2);
-    assert_eq!(segments(&folder, BAGEND).len(), 1);
+    assert_eq!(segments(&folder, RHOSGOBEL).len(), 2);
+    assert_eq!(segments(&folder, BYWATER).len(), 1);
 }
 
 #[test]
 fn a_forged_manifest_is_ignored_and_named_once() {
     let dir = TempDir::new("forged");
     let folder = folder(&dir, &[1]);
-    let mut b = Site::build("bagend", true, &[1], &Site::syncing(&folder));
+    let mut b = Site::build("bywater", true, &[1], &Site::syncing(&folder));
     b.start();
     b.wait_for("bilbo: syncing personal through");
     let mut forged = manifests(&[2]).remove(&2).unwrap();
@@ -988,7 +992,7 @@ fn a_forged_manifest_is_ignored_and_named_once() {
     // A note that has to travel is the barrier: the cycles that read it have read the forgery again.
     let text = note(ID, "Install it.", "Ship on Monday.");
     b.write(FILE, &text);
-    poll_eq("a segment", || segments(&folder, BAGEND).len(), 1);
+    poll_eq("a segment", || segments(&folder, BYWATER).len(), 1);
     assert_eq!(b.count("manifest/2.json"), 1, "{:?}", b.lines());
     let held = b.root().join(format!(".bilbo/scopes/{}/manifest", scope()));
     assert!(held.join("1.json").exists() && !held.join("2.json").exists());
@@ -998,12 +1002,12 @@ fn a_forged_manifest_is_ignored_and_named_once() {
 fn a_new_scope_syncs_at_once() {
     let dir = TempDir::new("fresh-scope");
     let folder = folder(&dir, &[]);
-    let mut b = Site::build("bagend", true, &[1], &Site::syncing(&folder));
+    let mut b = Site::build("bywater", true, &[1], &Site::syncing(&folder));
     let held = b.root().join(format!(".bilbo/scopes/{}/manifest", scope()));
     fs::write(held.join("1.pending"), b"").unwrap();
     b.write(FILE, &note(ID, "Install it.", "Ship on Monday."));
     b.start();
-    poll_eq("a segment", || segments(&folder, BAGEND).len(), 1);
+    poll_eq("a segment", || segments(&folder, BYWATER).len(), 1);
     let published = folder.join(format!("scopes/{}/manifest/1.json", scope()));
     assert_eq!(fs::read(published).unwrap(), manifests(&[1])[&1]);
     assert!(!held.join("1.pending").exists());
@@ -1042,10 +1046,10 @@ fn a_deletion_travels() {
     a.write("plan-keep.md", &common::note_text(OTHER, "Keep"));
     a.wait_events("keep", &["added"]);
     fs::remove_file(a.notes().join(FILE)).unwrap();
-    poll_eq("the file is gone from bagend", || b.read(FILE), None);
+    poll_eq("the file is gone from bywater", || b.read(FILE), None);
     b.wait_events(ID, &["deleted", "added"]);
     assert!(
-        b.history(ID)[0].contains("deleted decision-release.md from rivendell"),
+        b.history(ID)[0].contains("deleted decision-release.md from rhosgobel"),
         "{:?}",
         b.history(ID)
     );
@@ -1099,12 +1103,12 @@ fn an_edit_beats_a_delete_on_both_devices() {
     assert_eq!(ids(&b, TOPIC), settled);
 }
 
-/// One topic made on both devices while they are apart, `old` on `rivendell`, `young` on `bagend` or the reverse.
+/// One topic made on both devices while they are apart, `old` on `rhosgobel`, `young` on `bywater` or the reverse.
 fn collision(name: &str, a_holds: &str, b_holds: &str) {
     let dir = TempDir::new(name);
     let folder = folder(&dir, &[1, 2]);
-    let mut a = Site::new("rivendell", &folder);
-    let mut b = Site::new("bagend", &folder);
+    let mut a = Site::new("rhosgobel", &folder);
+    let mut b = Site::new("bywater", &folder);
     let old = note(ID, "The older note.", "Ship on Monday.");
     let young = note(YOUNG, "The younger note.", "Ship on Friday.");
     let text = |id: &str| if id == ID { &old } else { &young };
@@ -1153,12 +1157,12 @@ fn collision(name: &str, a_holds: &str, b_holds: &str) {
 }
 
 #[test]
-fn a_topic_made_on_two_devices_keeps_the_older_note_when_it_is_on_rivendell() {
+fn a_topic_made_on_two_devices_keeps_the_older_note_when_it_is_on_rhosgobel() {
     collision("collision-a", ID, YOUNG);
 }
 
 #[test]
-fn a_topic_made_on_two_devices_keeps_the_older_note_when_it_is_on_bagend() {
+fn a_topic_made_on_two_devices_keeps_the_older_note_when_it_is_on_bywater() {
     collision("collision-b", YOUNG, ID);
 }
 
@@ -1221,7 +1225,7 @@ fn a_note_that_left_a_scope_before_it_synced_never_reaches_the_transport() {
         "scope.work.sync = off".to_string(),
         "sync.poll_seconds = 1".to_string(),
     ];
-    let mut a = Site::build("rivendell", true, &[1, 2], &off);
+    let mut a = Site::build("rhosgobel", true, &[1, 2], &off);
     let secret = note(ID, "Secret setup.", "Secret rollout.");
     a.write(FILE, &secret);
     a.start();
@@ -1234,13 +1238,13 @@ fn a_note_that_left_a_scope_before_it_synced_never_reaches_the_transport() {
     on.push("scope.work.sync = off".to_string());
     a.configure(&on);
     a.wait_for("bilbo: syncing personal through");
-    let mut b = Site::new("bagend", &folder);
+    let mut b = Site::new("bywater", &folder);
     b.start();
     // Barriers: another personal note crosses to B and back, so any version of the first one has had its cycles.
-    let other = note(OTHER, "From rivendell.", "To bagend.");
+    let other = note(OTHER, "From rhosgobel.", "To bywater.");
     a.write("plan-other.md", &other);
     b.wait_text("plan-other.md", &other);
-    let back = note(OTHER, "From bagend.", "To rivendell.");
+    let back = note(OTHER, "From bywater.", "To rhosgobel.");
     b.write("plan-other.md", &back);
     a.wait_text("plan-other.md", &back);
     let log =
@@ -1254,18 +1258,18 @@ fn a_note_that_left_a_scope_before_it_synced_never_reaches_the_transport() {
     for id in &ids {
         assert!(
             !holds(&a.root().join(".bilbo/scopes"), id),
-            "rivendell's seen.jsonl names {id}"
+            "rhosgobel's seen.jsonl names {id}"
         );
         assert!(
             !holds(&b.root().join(".bilbo/scopes"), id),
-            "bagend's scope state names {id}"
+            "bywater's scope state names {id}"
         );
     }
     assert!(
         !b.root()
             .join(format!(".bilbo/history/notes/{ID}.jsonl"))
             .exists(),
-        "a note of a local scope reached bagend"
+        "a note of a local scope reached bywater"
     );
     assert_eq!(b.read(FILE), None);
 }
@@ -1273,7 +1277,7 @@ fn a_note_that_left_a_scope_before_it_synced_never_reaches_the_transport() {
 #[test]
 fn a_note_that_moves_to_a_local_scope_leaves_the_other_device_and_can_come_back() {
     let (_dir, folder, a, b, text) = synced_with("moves", LOCAL_WORK);
-    let sent = segments(&folder, RIVENDELL).len();
+    let sent = segments(&folder, RHOSGOBEL).len();
     a.write(FILE, &in_work(&text));
     poll_eq("the left file", || b.read(FILE), None);
     b.wait_events(ID, &["left", "added"]);
@@ -1283,7 +1287,7 @@ fn a_note_that_moves_to_a_local_scope_leaves_the_other_device_and_can_come_back(
     assert_eq!(a.read(FILE), Some(in_work(&text)));
     poll_eq(
         "the marker",
-        || segments(&folder, RIVENDELL).len(),
+        || segments(&folder, RHOSGOBEL).len(),
         sent + 1,
     );
     assert!(!holds(&folder, "Ship on"));
@@ -1331,7 +1335,7 @@ fn a_left_marker_against_a_local_edit_waits_for_the_merge_that_follows_the_edit(
 /// The state of `scope()`'s `state.json` with every field of a fresh one, `fields` over it.
 fn write_state(site: &Site, fields: serde_json::Value) {
     let mut state = serde_json::json!({
-        "name": "personal", "device": RIVENDELL, "own": 0, "cursors": {}, "acks": {}, "sent": {},
+        "name": "personal", "device": RHOSGOBEL, "own": 0, "cursors": {}, "acks": {}, "sent": {},
         "owed": false, "last_ack": null, "listed": [], "cutoffs": {}, "marked": [], "since": {},
         "pulled_at": null, "pushed_at": null, "stops": {}, "error": null, "stopped": null, "halted": null,
     });
@@ -1423,7 +1427,7 @@ fn stderr_has(run: &Run, line: &str) -> bool {
 fn quiet(name: &str) -> (TempDir, PathBuf, Site) {
     let dir = TempDir::new(name);
     let folder = folder(&dir, &[1, 2]);
-    let site = Site::new("rivendell", &folder);
+    let site = Site::new("rhosgobel", &folder);
     (dir, folder, site)
 }
 
@@ -1444,7 +1448,7 @@ fn status_of_two_devices_in_step() {
     a.wait_events("unassigned", &["added"]);
     a.wait_events("work", &["added"]);
     let run = a.wait_status("in step", |run| {
-        has_line(run, "device personal bagend: up to date")
+        has_line(run, "device personal bywater: up to date")
             && has_prefix(run, "scope ")
             && !run.stdout.contains("never")
     });
@@ -1457,8 +1461,8 @@ fn status_of_two_devices_in_step() {
     assert_eq!(
         lines[1..],
         [
-            "device personal rivendell: this device",
-            "device personal bagend: up to date",
+            "device personal rhosgobel: this device",
+            "device personal bywater: up to date",
             "local: 2 notes sync nowhere"
         ],
         "{lines:?}"
@@ -1466,9 +1470,9 @@ fn status_of_two_devices_in_step() {
     assert_eq!((run.code, run.stderr.as_str()), (0, ""));
     // The other device sees the same.
     let run = b.wait_status("in step", |run| {
-        has_line(run, "device personal rivendell: up to date")
+        has_line(run, "device personal rhosgobel: up to date")
     });
-    assert!(has_line(&run, "device personal bagend: this device"));
+    assert!(has_line(&run, "device personal bywater: this device"));
     assert_eq!((run.code, run.stderr.as_str()), (0, ""));
 }
 
@@ -1477,12 +1481,12 @@ fn an_open_conflict_is_listed_and_fails_on_both_devices() {
     let (_dir, folder, mut a, mut b, _text) = synced("status-conflict");
     a.stop();
     b.stop();
-    let sent_by_b = segments(&folder, BAGEND).len();
+    let sent_by_b = segments(&folder, BYWATER).len();
     b.write(FILE, &note(ID, "Install it.", "Ship on Tuesday."));
     b.start();
     poll_eq(
         "B's edit",
-        || segments(&folder, BAGEND).len(),
+        || segments(&folder, BYWATER).len(),
         sent_by_b + 1,
     );
     b.stop();
@@ -1505,12 +1509,12 @@ fn resolved_by_dropping(name: &str) -> (TempDir, PathBuf, Site, Site, String) {
     let (dir, folder, mut a, mut b, _text) = synced(name);
     a.stop();
     b.stop();
-    let sent_by_b = segments(&folder, BAGEND).len();
+    let sent_by_b = segments(&folder, BYWATER).len();
     b.write(FILE, &note(ID, "Install it.", "Ship on Tuesday."));
     b.start();
     poll_eq(
         "B's edit",
-        || segments(&folder, BAGEND).len(),
+        || segments(&folder, BYWATER).len(),
         sent_by_b + 1,
     );
     b.stop();
@@ -1545,7 +1549,7 @@ fn dropped_text_is_counted_until_it_is_declared_and_the_declaration_syncs() {
     assert_eq!(run.code, 0);
     // The declaration syncs with the note.
     poll_eq(
-        "the declaration reaches bagend",
+        "the declaration reaches bywater",
         || b.bilbo(&["check"]).stdout.contains("dropped"),
         false,
     );
@@ -1601,11 +1605,11 @@ fn an_edit_that_beat_a_delete_is_a_notice_on_both_devices() {
 fn a_device_added_elsewhere_is_listed_as_a_change() {
     let dir = TempDir::new("status-added");
     let folder = folder(&dir, &[1]);
-    let mut b = Site::build("bagend", true, &[1], &Site::syncing(&folder));
+    let mut b = Site::build("bywater", true, &[1], &Site::syncing(&folder));
     b.start();
     b.wait_for("bilbo: syncing personal through");
     put_manifests(&folder, &[1, 2]);
-    b.wait_for("bilbo: sync personal: device rivendell added by owner key (manifest 2)");
+    b.wait_for("bilbo: sync personal: device rhosgobel added by owner key (manifest 2)");
     let run = b.wait_status("the change", |run| has_prefix(run, "change "));
     let change = run
         .stdout
@@ -1614,11 +1618,11 @@ fn a_device_added_elsewhere_is_listed_as_a_change() {
         .unwrap();
     assert!(
         change.starts_with("change 20")
-            && change.ends_with(" personal: device rivendell added by owner key (manifest 2)"),
+            && change.ends_with(" personal: device rhosgobel added by owner key (manifest 2)"),
         "{change}"
     );
     assert!(
-        run.stdout.contains("device personal rivendell: "),
+        run.stdout.contains("device personal rhosgobel: "),
         "{}",
         run.stdout
     );
@@ -1628,11 +1632,11 @@ fn a_device_added_elsewhere_is_listed_as_a_change() {
 fn changes_of_the_last_thirty_days_are_listed_and_older_ones_are_not() {
     let (_dir, _folder, a) = quiet("status-changes");
     let _lock = watching(&a);
-    let moria = common::days_ago(3);
+    let morthond = common::days_ago(3);
     let epoch = common::days_ago(1);
     let old = common::days_ago(31);
     let lines = [
-        serde_json::json!({"at": moria, "n": 4, "kind": "device", "device": "moria", "signer": "owner key"}),
+        serde_json::json!({"at": morthond, "n": 4, "kind": "device", "device": "morthond", "signer": "owner key"}),
         serde_json::json!({"at": epoch, "n": 5, "kind": "epoch", "signer": "owner key"}),
         serde_json::json!({"at": old, "n": 3, "kind": "device", "device": "gone", "signer": "owner key"}),
     ];
@@ -1655,8 +1659,8 @@ fn changes_of_the_last_thirty_days_are_listed_and_older_ones_are_not() {
         changes,
         [
             format!(
-                "change {} personal: device moria added by owner key (manifest 4)",
-                created(&moria)
+                "change {} personal: device morthond added by owner key (manifest 4)",
+                created(&morthond)
             ),
             format!(
                 "change {} personal: epoch changed (manifest 5)",
@@ -1711,46 +1715,46 @@ fn a_device_behind_a_week_a_device_gone_for_good_and_a_wrong_clock() {
         "sync.stale_days = 180".to_string(),
     ]);
     let t = now();
-    // bagend took nothing of the last 4 segments, the oldest from 7 days ago.
+    // bywater took nothing of the last 4 segments, the oldest from 7 days ago.
     write_state(
         &a,
         serde_json::json!({
             "own": 4,
             "sent": {"1": sent(t - 7 * DAY), "2": sent(t - 6 * DAY), "3": sent(t - 5 * DAY), "4": sent(t - 4 * DAY)},
-            "acks": {BAGEND: {RIVENDELL: 0}},
+            "acks": {BYWATER: {RHOSGOBEL: 0}},
         }),
     );
     let run = a.sync(&[]);
     assert!(
-        has_line(&run, "device personal bagend: behind by 4 segments"),
+        has_line(&run, "device personal bywater: behind by 4 segments"),
         "{}",
         run.stdout
     );
-    assert!(has_line(&run, "device personal rivendell: this device"));
+    assert!(has_line(&run, "device personal rhosgobel: this device"));
     assert_eq!((run.code, run.stderr.as_str()), (0, ""));
     // A segment from 200 days ago that it never took.
     let long_ago = t - 200 * DAY;
     write_state(
         &a,
         serde_json::json!({
-            "own": 1, "sent": {"1": sent(long_ago)}, "acks": {BAGEND: {RIVENDELL: 0}},
-            "since": {BAGEND: long_ago - DAY},
+            "own": 1, "sent": {"1": sent(long_ago)}, "acks": {BYWATER: {RHOSGOBEL: 0}},
+            "since": {BYWATER: long_ago - DAY},
         }),
     );
     let run = a.sync(&[]);
-    let stale = format!("device personal bagend: stale since {}", minute(long_ago));
+    let stale = format!("device personal bywater: stale since {}", minute(long_ago));
     assert!(has_line(&run, &stale), "{}", run.stdout);
     // A clock a year behind acknowledges every segment within minutes: only the acknowledgements count.
     write_state(
         &a,
         serde_json::json!({
             "own": 2, "sent": {"1": sent(t - 3600), "2": sent(t - 3000)},
-            "acks": {BAGEND: {RIVENDELL: 2}},
+            "acks": {BYWATER: {RHOSGOBEL: 2}},
         }),
     );
     let run = a.sync(&[]);
     assert!(
-        has_line(&run, "device personal bagend: up to date"),
+        has_line(&run, "device personal bywater: up to date"),
         "{}",
         run.stdout
     );
@@ -1767,7 +1771,7 @@ fn versions_held_back_for_a_version_that_never_arrived_are_listed() {
             "record": {
                 "note": ID, "version": version.repeat(64), "parents": [parent.repeat(64)],
                 "file": FILE, "blob": "d".repeat(64), "event": "edited",
-                "at": "2027-01-15T07:00:00+00:00", "device": BAGEND,
+                "at": "2027-01-15T07:00:00+00:00", "device": BYWATER,
             },
         })
         .to_string()
@@ -1779,7 +1783,7 @@ fn versions_held_back_for_a_version_that_never_arrived_are_listed() {
     fs::write(dir.join("inbox.jsonl"), lines.join("\n") + "\n").unwrap();
     let run = a.sync(&[]);
     assert!(
-        has_line(&run, "waiting personal bagend: 2 versions"),
+        has_line(&run, "waiting personal bywater: 2 versions"),
         "{}",
         run.stdout
     );
@@ -1826,7 +1830,7 @@ fn an_unreachable_folder_is_named_on_stderr_and_still_listed() {
 fn a_folder_that_was_never_reachable_is_named_on_stderr() {
     let dir = TempDir::new("status-never");
     let folder = dir.path().join("volume/bilbo");
-    let mut a = Site::build("rivendell", true, &[1, 2], &Site::syncing(&folder));
+    let mut a = Site::build("rhosgobel", true, &[1, 2], &Site::syncing(&folder));
     a.write(FILE, &note(ID, "Install it.", "Ship on Monday."));
     a.start();
     a.wait_for(&format!(
@@ -1863,18 +1867,18 @@ fn a_folder_that_was_never_reachable_is_named_on_stderr() {
 fn a_reader_stuck_at_a_missing_segment_is_named_on_stderr() {
     let dir = TempDir::new("status-gap");
     let folder = folder(&dir, &[1, 2]);
-    let mut a = Site::new("rivendell", &folder);
-    let mut b = Site::new("bagend", &folder);
+    let mut a = Site::new("rhosgobel", &folder);
+    let mut b = Site::new("bywater", &folder);
     // B writes four segments while A is not running, then loses its third.
     b.start();
     for n in 1..=4 {
         b.write(FILE, &note(ID, "Install it.", &format!("Ship on day {n}.")));
-        poll_eq("B's segment", || segments(&folder, BAGEND).len(), n);
+        poll_eq("B's segment", || segments(&folder, BYWATER).len(), n);
     }
     b.stop();
-    fs::remove_file(&segments(&folder, BAGEND)[2]).unwrap();
+    fs::remove_file(&segments(&folder, BYWATER)[2]).unwrap();
     a.start();
-    let line = "bilbo: sync personal: bagend stopped at segment 3: missing";
+    let line = "bilbo: sync personal: bywater stopped at segment 3: missing";
     let run = a.wait_status("the stop", |run| stderr_has(run, line));
     assert_eq!(run.code, 1);
     assert!(has_prefix(&run, "scope personal "), "{}", run.stdout);

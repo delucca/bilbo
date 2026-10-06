@@ -752,7 +752,7 @@ fn a_scope_that_does_not_sync_leaves_watch_alone() {
 fn start_removes_the_temporaries_of_the_sync_state() {
     let dir = TempDir::new("watch-sweep");
     let root = three(&dir);
-    let scope = root.join(".bilbo/scopes/ho5qmsdzujmpbxetyxwzdgqz64");
+    let scope = root.join(".bilbo/scopes/5wdimrj6nm6qlhvdto4qvgz5qy");
     fs::create_dir_all(scope.join("out")).unwrap();
     fs::create_dir_all(root.join(".bilbo/sync")).unwrap();
     let leftovers = [

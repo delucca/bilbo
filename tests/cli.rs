@@ -538,7 +538,7 @@ fn device_is_a_verb() {
     assert_eq!(run.code, 2);
     assert!(run.stdout.is_empty());
     assert!(run.stderr.contains("bilbo: unexpected argument 'now'\n"));
-    let run = bilbo(dir.path(), &env, &["device", "revoke", "bagend"]);
+    let run = bilbo(dir.path(), &env, &["device", "revoke", "bywater"]);
     assert_eq!(run.code, 1);
     assert!(run.stdout.is_empty());
     assert!(!state.exists());

@@ -6,22 +6,24 @@ of sources they cite. Product frame, vocabulary and stack live in
 
 ## Commands
 
-Run everything in the dev shell, with the target folder in this checkout: a
-global `CARGO_TARGET_DIR` moves `./target/debug/bilbo` elsewhere.
+Run everything in the dev shell. If your environment sets a global
+`CARGO_TARGET_DIR`, point it at this checkout first, or `./target/debug/bilbo`
+lands elsewhere.
 
 ```sh
-export CARGO_TARGET_DIR="$PWD/target"
+export CARGO_TARGET_DIR="$PWD/target"   # only when a global CARGO_TARGET_DIR is set
 # Verification (the `Verification` line of openspec/config.yaml; CI's verify job)
 nix develop -c cargo fmt --check
 nix develop -c cargo clippy --locked --all-targets -- -D warnings
 nix develop -c cargo test --locked
-# The package with its tests in the Nix sandbox, and the home-manager module check (CI's nix job)
+# The package with its tests in the Nix sandbox, and the home-manager and NixOS relay module checks (CI's nix job)
 nix flake check -L
 # Recall and digest speed tests, ignored by default
 nix develop -c cargo test --release --test recall -- --ignored
 nix develop -c cargo test --release --test digest -- --ignored
 # After touching plugins/ (one missing-version warning each is expected; never --strict)
 claude plugin validate . && claude plugin validate plugins/bilbo
+# Needs Codex installed, for its plugin-creator validator
 PYTHONDONTWRITEBYTECODE=1 python3 ~/.codex/skills/.system/plugin-creator/scripts/validate_plugin.py plugins/bilbo
 ```
 
@@ -35,6 +37,9 @@ PYTHONDONTWRITEBYTECODE=1 python3 ~/.codex/skills/.system/plugin-creator/scripts
 - `openspec/specs/` is the current contract. Change it only through
   `/opsx:archive` or `/opsx:sync`, so every spec edit traces back to a
   reviewed change.
+- Git ignores the archive folder `/opsx:archive` moves a shipped change
+  into: the synced specs and the pull request are what the repo keeps.
+  Proposals, designs and specs name no host, person or other change.
 - Make fixes that leave behavior unchanged (typos, refactors, test-only
   edits) directly, without a change.
 - Update this file when a change adds a command, a generated file or a rule
@@ -69,10 +74,10 @@ PYTHONDONTWRITEBYTECODE=1 python3 ~/.codex/skills/.system/plugin-creator/scripts
   `main` always exits 0 for it, because a prompt hook that exits 2 blocks the
   prompt. Code outside the verbs returns plain values and `String` messages
   and never names `Failure`; it may use other domains without forming a
-  cycle (today `search` uses `note` and `library`, `identity` uses `host`, and
+  cycle (`search` uses `note` and `library`, `identity` uses `host`, and
   `sync` uses `note`, `identity` and `host`, and `relay` uses `sync` and
   `identity`). The library modules of `identity` (`keys`, `phrase`, `manifest`,
-  `ceremony`, `pake`) never use a domain that uses `identity`, so later domains can build on them. Only verbs call into
+  `ceremony`, `pake`) never use a domain that uses `identity`, so other domains can build on them. Only verbs call into
   `sync` from `note` and `identity` (`note/restore.rs`, `note/scope.rs`,
   `identity/device.rs`, `identity/pair/`); `tests/layout.rs` skips verb files
   in its cycle check, so a non-verb file of `note` or `identity` that uses `sync` closes a
@@ -175,10 +180,8 @@ PYTHONDONTWRITEBYTECODE=1 python3 ~/.codex/skills/.system/plugin-creator/scripts
   `common::Fake`'s `127.0.0.1` listener, so a test that needs a remote embedder
   uses `http://0.0.0.0:<fake.port()>`. `zero_address` in `tests/index.rs` proves it.
 - `Terminal` in `src/host/prompt.rs` is the only code the unit tests cannot
-  reach. After changing it, repeat the expect runs recorded in the
-  `smoke.md` of `openspec/changes/archive/2026-10-02-add-setup/`,
-  `2026-10-03-add-local-embedder/` and `2026-10-05-add-device-keys/` (run
-  the last under `env -u CLAUDECODE -u CODEX_THREAD_ID`).
+  reach. After changing it, run the expect procedures in
+  `docs/manual-tests.md`, under `env -u CLAUDECODE -u CODEX_THREAD_ID`.
 - `tests/fixtures/device/` holds golden key and manifest files for fixed test
   seeds. Regenerate them with the ignored
   `identity::device::tests::write_fixtures`, never by hand. Git keeps only the
@@ -193,16 +196,20 @@ PYTHONDONTWRITEBYTECODE=1 python3 ~/.codex/skills/.system/plugin-creator/scripts
 - `tests/fixtures/agents/` holds recorded `claude` and `codex` output, the
   first line being the command. When a tool's JSON moves, re-record them
   against throwaway `CLAUDE_CONFIG_DIR` and `CODEX_HOME`.
+  `codex-app-server-config-read.txt` is the one reduced recording: its reply
+  keeps only `marketplaces`, `plugins`, `hooks.state` and their `origins`,
+  because Codex also returns every key and layer of the recording machine's
+  managed config. Trim a new recording the same way.
 - A skill's heredoc body is data, not commands: `tests/plugin.rs` skips the
   lines from one ending in `<<'EOF'` to the line `EOF` when it checks each
   `bash` line against `allowed-tools`. Use that exact delimiter.
 - Every command in `plugins/bilbo/hooks/hooks.json` must never pass on
-  bilbo's exit code (`; exit 0`: an older `bilbo` exits 2 on the unknown verb)
-  and must stay quiet without `bilbo` on `PATH`.
+  bilbo's exit code (`; exit 0`: exit 2 blocks the prompt, and a failing or
+  mismatched `bilbo` must never block one) and must stay quiet without
+  `bilbo` on `PATH`.
 - On an auto-compaction, neither Claude Code nor Codex passes PreCompact or
   PostCompact output to the model. SessionStart with the matcher `compact` is
-  the event that does, in both (`openspec/changes/archive/2026-10-03-add-note-skill/probe.md`,
-  the path the archive gives it).
+  the event that does, in both.
 - Codex runs a plugin hook only once it is trusted, and `codex exec` skips an
   untrusted one in silence. `bilbo setup` trusts it through `codex app-server`
   (the fake `codex` imitates it), never by editing `config.toml`. Changing
@@ -219,8 +226,9 @@ PYTHONDONTWRITEBYTECODE=1 python3 ~/.codex/skills/.system/plugin-creator/scripts
 
 1. Bump `version` in `Cargo.toml` and `plugins/bilbo/.codex-plugin/plugin.json`
    together (`tests/plugin.rs` fails when they differ), then run
-   `nix develop -c cargo update --workspace`. `.claude-plugin/plugin.json`
-   sets no version, so Claude Code follows commits.
+   `nix develop -c cargo update --workspace`.
+   `plugins/bilbo/.claude-plugin/plugin.json` sets no version, so Claude Code
+   follows commits.
 2. Merge through a pull request.
 3. Tag the commit on `main` that carries the bump `v<version>` and push the
    tag; the release workflow publishes the GitHub Release. Push only

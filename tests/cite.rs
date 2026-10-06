@@ -435,25 +435,18 @@ fn no_citations_is_a_warning_and_exit_0() {
 }
 
 #[test]
-fn a_citation_without_a_quote_and_the_old_form_are_noticed() {
+fn a_citation_without_a_quote_is_noticed_and_other_text_is_not() {
     let lab = Lab::new("cite-notices");
     let draft = format!(
-        "intro\n\n\n\nbilbo:{ID_BOOK}#Concurrency\nnote: /Users/a/Notebooks/x/library/go.md#Errors \"some quoted words here\"\nnote: ~/Notebooks/x/library/go.md#Errors \"some quoted words here\"\nnote: ./library/go.md#Errors \"some quoted words here\"\n{}",
+        "intro\n\n\n\nbilbo:{ID_BOOK}#Concurrency\nsee: ./library/go.md#Errors \"some quoted words here\"\n{}",
         cited(ID_PLAIN, None, GOROUTINE)
     );
     let run = lab.cite(&[], &draft);
     assert_eq!(run.code, 0, "{}", run.stderr);
     assert_eq!(rows(&run.stdout).len(), 1);
-    assert!(run.stderr.contains("line 5: "), "{}", run.stderr);
+    assert_eq!(run.stderr.lines().count(), 1, "{}", run.stderr);
+    assert!(run.stderr.starts_with("bilbo: line 5: "), "{}", run.stderr);
     assert!(run.stderr.contains("has no quote"), "{}", run.stderr);
-    for n in [6, 7, 8] {
-        assert!(
-            run.stderr.contains(&format!("line {n}: ")) && run.stderr.contains("note:"),
-            "{}",
-            run.stderr
-        );
-    }
-    assert!(run.stderr.lines().all(|l| l.starts_with("bilbo: ")));
 }
 
 #[test]

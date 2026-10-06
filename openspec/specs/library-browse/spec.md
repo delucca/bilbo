@@ -39,8 +39,8 @@
 A facts line SHALL be `` `<name>.md` ``, then ` · <id>`, ` · <KB> KB`, ` · <tokens> tokens`, ` · fetched <fetched>`, ` · <n> headings`, where `<n>` counts the source's sections, then ` · catalog` when the source is a catalog and ` · capture <label>` when it has a `capture` key. A value the frontmatter lacks, or holds in an invalid form, SHALL be printed as `-`. An entry whose source does not exist SHALL get `` `<name>.md` · missing ``.
 
 #### Scenario: A full facts line
-- **WHEN** `effective-go.md` has id `01M3EZ8NVEC2KJQNGK5DTK349R`, a body of 96,211 bytes with 74 sections that is not a catalog, `fetched: 2026-08-23` and `capture: legacy`
-- **THEN** its facts line is `` `effective-go.md` · 01M3EZ8NVEC2KJQNGK5DTK349R · 97 KB · 38485 tokens · fetched 2026-08-23 · 74 headings · capture legacy ``
+- **WHEN** `effective-go.md` has id `01M3EZ8NVEC2KJQNGK5DTK349R`, a body of 96,211 bytes with 74 sections that is not a catalog, `fetched: 2026-08-23` and `capture: external`
+- **THEN** its facts line is `` `effective-go.md` · 01M3EZ8NVEC2KJQNGK5DTK349R · 97 KB · 38485 tokens · fetched 2026-08-23 · 74 headings · capture external ``
 
 #### Scenario: A catalog is marked
 - **WHEN** `clippy-lints.md` is a catalog with no `capture` key
@@ -55,7 +55,7 @@ A facts line SHALL be `` `<name>.md` ``, then ` · <id>`, ` · <KB> KB`, ` · <t
 - **THEN** its facts line holds ` · fetched -`
 
 ### Requirement: Corpus argument errors
-`bilbo library <corpus>` SHALL exit 1 with `bilbo: no corpus '<corpus>' in <root>/library` on stderr when no such corpus folder exists. A corpus argument that breaks the name grammar SHALL be a usage error. `plan` and `read` are subcommands, so no corpus can take those names, and `bilbo library plan` and `bilbo library read` with no other argument SHALL be usage errors naming what is missing.
+`bilbo library <corpus>` SHALL exit 1 with `bilbo: no corpus '<corpus>' in <root>/library` on stderr when no such corpus folder exists. A corpus argument that breaks the name grammar SHALL be a usage error. The reserved corpus names of the `library-store` spec are the subcommands, so no corpus can take one, and each of them given with no other argument SHALL be a usage error naming what is missing.
 
 #### Scenario: An unknown corpus
 - **WHEN** an agent runs `bilbo library haskell` and `<root>/library/haskell/` does not exist
@@ -99,9 +99,9 @@ A source reference SHALL be `<corpus>/<name>` or a source's id, optionally follo
 - **WHEN** the source has no heading below its title
 - **THEN** stdout holds the header lines, `headings: 0`, a blank line and no row
 
-#### Scenario: A legacy source has no capture folder
-- **WHEN** the source has `capture: legacy` and no capture records it
-- **THEN** the header holds `capture: legacy` and no `capture folder:` line
+#### Scenario: A source whose capture is not held
+- **WHEN** the source has `capture: external` and no capture records it, as on a fresh copy of the library
+- **THEN** the header holds `capture: external` and no `capture folder:` line
 
 ### Requirement: Narrow the outline
 With `#<anchor>` in the reference, `library show` SHALL print only the row of the section the anchor resolves to and the rows of the sections inside it. An ambiguous anchor SHALL exit 1 and list each matching heading path with its start line on stderr. A missing anchor SHALL exit 1 naming it. `--depth <n>` SHALL print only the rows whose heading path has at most `n` parts; `n` is a whole number of 1 or more, or the run is a usage error.

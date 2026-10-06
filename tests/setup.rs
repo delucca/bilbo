@@ -111,7 +111,7 @@ fn embedder_args<'a>(fake: &'a Fake, model: &'a str) -> Vec<&'a str> {
 }
 
 // ---------------------------------------------------------------------------
-// 2.1 modes and flags
+// Modes and flags
 
 #[test]
 fn modes_a_pipe_runs_without_the_wizard() {
@@ -531,7 +531,7 @@ fn flags_remove_rejects_local() {
 }
 
 // ---------------------------------------------------------------------------
-// 2.2 store and config
+// Store and config
 
 #[test]
 fn report_fresh_run() {
@@ -961,7 +961,7 @@ fn rerun_changes_nothing() {
 }
 
 // ---------------------------------------------------------------------------
-// 2.3 embedder check and key
+// Embedder check and key
 
 #[test]
 fn embedder_ok_reports_dimensions() {
@@ -1112,7 +1112,7 @@ fn key_local_embedder_is_skipped() {
 }
 
 // ---------------------------------------------------------------------------
-// 3.2 plugin step
+// Plugin step
 
 const CLAUDE_STATE_OLD: &str = "github delucca/bilbo v0.0.9";
 const CODEX_STATE_OLD: &str = "git https://github.com/delucca/bilbo.git v0.0.9";
@@ -1608,7 +1608,7 @@ fn hook_remove_without_trust() {
 }
 
 // ---------------------------------------------------------------------------
-// 4.2 timer step
+// Timer step
 
 const TIMER_TOOL: &str = if cfg!(target_os = "macos") {
     "launchctl"
@@ -2266,7 +2266,7 @@ fn watch_flag_takes_no_value_and_no_remove() {
 }
 
 // ---------------------------------------------------------------------------
-// 5.1 remove
+// Remove
 
 fn token_path(m: &Machine) -> PathBuf {
     m.home.join(".config/bilbo/token")
@@ -2506,7 +2506,7 @@ fn config_dangling_link_is_managed_elsewhere_at_both_paths() {
 }
 
 // ---------------------------------------------------------------------------
-// 4.2 the local embedder's plan
+// The local embedder's plan
 
 /// A machine with the manager fake and, when `llama`, a `llama-server` fake on PATH.
 fn local_plan_machine(name: &str, llama: bool) -> Machine {
@@ -2570,7 +2570,7 @@ fn local_plan_managed_config_elsewhere_is_refused() {
     let target = m.dir.path().join("managed-config");
     std::fs::write(
         &target,
-        "embedder.url = http://bagend:8081\nembedder.model = qwen3-embedding-0.6b\n",
+        "embedder.url = http://embedder.example:8081\nembedder.model = qwen3-embedding-0.6b\n",
     )
     .unwrap();
     std::fs::create_dir_all(config_path(&m).parent().unwrap()).unwrap();
@@ -2592,7 +2592,7 @@ fn local_plan_present_config_with_another_embedder_is_refused() {
     write_config(
         &m,
         &[
-            "embedder.url = http://bagend:8081",
+            "embedder.url = http://embedder.example:8081",
             "embedder.model = qwen3-embedding-0.6b",
         ],
     );
@@ -2647,7 +2647,7 @@ fn local_plan_systemctl_missing() {
 }
 
 // ---------------------------------------------------------------------------
-// 4.3 prepare: download, service, readiness, check
+// Prepare: download, service, readiness, check
 
 const LOCAL_MODEL: &str = "qwen3-embedding-0.6b";
 
@@ -2728,7 +2728,7 @@ fn a_triggered_fake_refuses_until_the_trigger_and_drops_cleanly() {
     }
     assert!(up);
     drop(fake);
-    // Dropped between the trigger and the bind used to hang the join forever.
+    // A fake dropped between the trigger and the bind still joins.
     for _ in 0..20 {
         let trigger = dir.path().join("again");
         let fake = Fake::start_when(4, &trigger);
@@ -3124,12 +3124,12 @@ fn remove_the_local_embedder() {
     }
 }
 
-/// Points the config at a file that sets `embedder.url = http://bagend:8081` and the local model.
+/// Points the config at a file that sets `embedder.url = http://embedder.example:8081` and the local model.
 fn move_config_elsewhere(m: &Machine) {
     let target = m.dir.path().join("managed-config");
     std::fs::write(
         &target,
-        "embedder.url = http://bagend:8081\nembedder.model = qwen3-embedding-0.6b\n",
+        "embedder.url = http://embedder.example:8081\nembedder.model = qwen3-embedding-0.6b\n",
     )
     .unwrap();
     std::fs::remove_file(config_path(m)).unwrap();
@@ -3236,7 +3236,7 @@ fn remove_without_the_manager_keeps_the_service() {
 }
 
 // ---------------------------------------------------------------------------
-// 8.1 sync step
+// Sync step
 
 const DEVICE_FIXTURES: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/device");
 
@@ -3287,7 +3287,7 @@ fn sync_a_scope_reports_its_note_count() {
     std::fs::create_dir_all(&folder).unwrap();
     let url = format!("file://{}", folder.display());
     write_config(&m, &[&format!("scope.personal.sync = {url}")]);
-    enrol(&m, "rivendell");
+    enrol(&m, "rhosgobel");
     for i in 0..12 {
         scope_note(&m, &format!("n{i}"), Some("personal"));
     }
@@ -3316,7 +3316,7 @@ fn sync_joins_the_scopes_with_a_comma() {
             &format!("scope.work.sync = file://{}", b.display()),
         ],
     );
-    enrol(&m, "rivendell");
+    enrol(&m, "rhosgobel");
     scope_note(&m, "w", Some("work"));
     let run = watch_run(&m, &[], &[]);
     assert_eq!(run.code, 0, "{}", run.stderr);
@@ -3356,7 +3356,7 @@ fn sync_without_the_watcher_fails() {
             folder.display()
         )],
     );
-    enrol(&m, "rivendell");
+    enrol(&m, "rhosgobel");
     let run = watch_setup(&m, &[], &["--yes", "--no-plugin", "--no-watch"]);
     assert_eq!(run.code, 1, "{}", run.stderr);
     assert_eq!(
@@ -3368,7 +3368,7 @@ fn sync_without_the_watcher_fails() {
 #[test]
 fn sync_into_a_missing_folder_fails_and_creates_nothing() {
     let m = syncing_machine("sync-missing", "file:///Volumes/usb/bilbo");
-    enrol(&m, "rivendell");
+    enrol(&m, "rhosgobel");
     let run = watch_run(&m, &[], &[]);
     assert_eq!(run.code, 1, "{}", run.stderr);
     let line = step(&run, "sync").unwrap();
@@ -3387,7 +3387,7 @@ fn sync_into_a_folder_that_takes_no_writes_fails() {
     std::fs::set_permissions(&folder, std::fs::Permissions::from_mode(0o500)).unwrap();
     let url = format!("file://{}", folder.display());
     write_config(&m, &[&format!("scope.personal.sync = {url}")]);
-    enrol(&m, "rivendell");
+    enrol(&m, "rhosgobel");
     let run = watch_run(&m, &[], &[]);
     std::fs::set_permissions(&folder, std::fs::Permissions::from_mode(0o700)).unwrap();
     // SAFETY: geteuid takes no arguments and cannot fail.
@@ -3404,7 +3404,7 @@ fn sync_into_a_folder_that_takes_no_writes_fails() {
 #[test]
 fn sync_with_a_damaged_key_fails_with_its_message() {
     let m = syncing_machine("sync-damaged", "file:///srv/bilbo");
-    enrol(&m, "rivendell");
+    enrol(&m, "rhosgobel");
     let keys = m.home.join(".local/state/bilbo/keys");
     std::fs::set_permissions(
         keys.join("device.key"),
@@ -3423,7 +3423,7 @@ fn sync_with_a_damaged_key_fails_with_its_message() {
 #[test]
 fn sync_a_failed_step_does_not_stop_the_rest() {
     let m = syncing_machine("sync-last", "https://relay.example");
-    enrol(&m, "rivendell");
+    enrol(&m, "rhosgobel");
     let run = watch_run(&m, &[], &[]);
     let names: Vec<&str> = lines(&run)
         .iter()

@@ -115,7 +115,7 @@ pub fn open(url: &str, keys: &Keys) -> Result<Box<dyn Transport>, String> {
     }
     let scheme = url.split("://").next().unwrap_or(url);
     Err(format!(
-        "{scheme} transports are not supported yet; use a file:// folder"
+        "{scheme} transports are not supported; use a file:// folder or an https:// relay"
     ))
 }
 
@@ -958,11 +958,13 @@ mod tests {
         fs::create_dir_all(&spaced).unwrap();
         let t = open(&format!("file://{}", spaced.display()), &keys).unwrap();
         assert_eq!(t.create(&manifest_path(SCOPE, 1), b"m"), Put::Created);
-        for url in ["ftp://relay.example", "http://bree:8738"] {
+        for url in ["ftp://relay.example", "http://relay.example:8738"] {
             let scheme = url.split("://").next().unwrap();
             assert_eq!(
                 open(url, &keys).err().unwrap(),
-                format!("{scheme} transports are not supported yet; use a file:// folder")
+                format!(
+                    "{scheme} transports are not supported; use a file:// folder or an https:// relay"
+                )
             );
         }
         assert!(open("file://relative/path", &keys).is_err());

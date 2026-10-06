@@ -429,14 +429,14 @@ mod tests {
 
     const FIXTURES: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/device");
 
-    /// A plan whose keys are the fixture `rivendell` in a folder of `dir`.
+    /// A plan whose keys are the fixture `rhosgobel` in a folder of `dir`.
     fn keyed(dir: &Path, scopes: &[(&str, String)], watch: bool) -> SyncPlan {
         let keys = dir.join("keys");
         std::fs::create_dir_all(&keys).unwrap();
         std::fs::set_permissions(&keys, std::fs::Permissions::from_mode(0o700)).unwrap();
         for file in ["owner.key", "device.key"] {
             let target = keys.join(file);
-            std::fs::copy(Path::new(FIXTURES).join("rivendell").join(file), &target).unwrap();
+            std::fs::copy(Path::new(FIXTURES).join("rhosgobel").join(file), &target).unwrap();
             std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o600)).unwrap();
         }
         SyncPlan {

@@ -9,16 +9,16 @@ The `https://` transport: how a device syncs a scope and pairs through a `bilbo 
 A scope whose `scope.<name>.sync` is `https://<host>[:port][/prefix]`, or `http://` to `localhost`, `127.0.0.1` or `::1`, SHALL sync through the relay at that URL, with the API at `<url>/v1/`. The transport SHALL send no request to an `http://` URL whose host is not a loopback host.
 
 #### Scenario: A relay behind tailscale serve
-- **WHEN** `scope.personal.sync = https://bree.tail1234.ts.net` and `bilbo watch` runs
-- **THEN** the device's segments for `personal` are created under `https://bree.tail1234.ts.net/v1/scopes/<scope_id>/`
+- **WHEN** `scope.personal.sync = https://relay.example.ts.net` and `bilbo watch` runs
+- **THEN** the device's segments for `personal` are created under `https://relay.example.ts.net/v1/scopes/<scope_id>/`
 
 #### Scenario: A relay under a path
 - **WHEN** the URL is `https://example.org/bilbo`
 - **THEN** requests go to `https://example.org/bilbo/v1/...`
 
 #### Scenario: Plain HTTP to another host
-- **WHEN** the URL is `http://bree:8738`
-- **THEN** bilbo sends no request to `bree`, and the config error names `scope.personal.sync`
+- **WHEN** the URL is `http://relay.example:8738`
+- **THEN** bilbo sends no request to `relay.example`, and the config error names `scope.personal.sync`
 
 ### Requirement: Certificates
 The transport SHALL verify the relay's certificate and host name against the web PKI roots built into bilbo, and SHALL NOT fall back to an unverified connection. A failed verification SHALL be reported as `relay <url>: certificate not trusted: <reason>`.

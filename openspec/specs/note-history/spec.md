@@ -6,7 +6,7 @@ Where bilbo keeps the past versions of each note, which of them it keeps, and `b
 ## Requirements
 
 ### Requirement: Where history lives
-bilbo SHALL keep note history under `<root>/.bilbo/history/` and nowhere else. Each version SHALL hold the note's id, the file name and full bytes at that time, the time it was recorded, its event (`added`, `edited`, `renamed`, `deleted`, `restored`, `merged` or `left`), the versions it followed (two or more for `merged`), and, for a version that came through sync, the device that recorded it. A version's id SHALL be derived from the note's id, the versions it followed, the file name and the bytes, and from nothing else, never the device or the time, so two identical records of the same note produce the same id on any device and two notes never share one. A `left` version holds no bytes, and every rule for a `deleted` version applies to it. Removing `<root>/.bilbo/` SHALL lose the history and the sync state and nothing else: the next `bilbo watch` SHALL start over with `added` versions, and rebuild the sync state from the transport as the `sync-transport` spec's Resuming after lost state says.
+bilbo SHALL keep note history under `<root>/.bilbo/history/` and nowhere else. Each version SHALL hold the note's id, the file name and full bytes at that time, the time it was recorded, its event (`added`, `edited`, `renamed`, `deleted`, `restored`, `merged` or `left`), the versions it followed (two or more for `merged`), and, for a version that came through sync, the device that recorded it. A version's id SHALL be derived from the note's id, the versions it followed, the file name and the bytes, and from nothing else, never the device or the time, so two identical records of the same note produce the same id on any device and two notes never share one. A `left` version holds no bytes, and every rule for a `deleted` version applies to it. Removing `<root>/.bilbo/` SHALL lose the history, the sync state and the library's captures, and nothing else: the next `bilbo watch` SHALL start over with `added` versions, and rebuild the sync state from the transport as the `sync-transport` spec's Resuming after lost state says.
 
 #### Scenario: History sits beside the notes
 - **WHEN** watch has recorded a version of `decision-release.md`
@@ -53,16 +53,16 @@ Content no kept version holds SHALL be removed from disk. When a note's history 
 - **THEN** after pruning stderr names that log and line, and every content file that existed before still exists
 
 #### Scenario: A device away for longer than the window
-- **WHEN** `history.keep_days` is 90, `sync.stale_days` is 180, device `moria` last applied a note's version from 120 days ago, and the note has versions from 120, 100 and 10 days ago
-- **THEN** after pruning all three remain, and `moria`'s edit made from the 120-day-old version merges without a conflict once it syncs
+- **WHEN** `history.keep_days` is 90, `sync.stale_days` is 180, device `morthond` last applied a note's version from 120 days ago, and the note has versions from 120, 100 and 10 days ago
+- **THEN** after pruning all three remain, and `morthond`'s edit made from the 120-day-old version merges without a conflict once it syncs
 
 #### Scenario: A device that never acknowledged
-- **WHEN** device `moria` joined 100 days ago, has acknowledged no segment and is not stale, and a note has versions from 150 and 10 days ago
+- **WHEN** device `morthond` joined 100 days ago, has acknowledged no segment and is not stale, and a note has versions from 150 and 10 days ago
 - **THEN** after pruning both remain
 
 #### Scenario: A stale device holds nothing back
-- **WHEN** `moria` has been stale since 200 days ago with `sync.stale_days` at 180
-- **THEN** pruning keeps versions as if `moria` did not exist
+- **WHEN** `morthond` has been stale since 200 days ago with `sync.stale_days` at 180
+- **THEN** pruning keeps versions as if `morthond` did not exist
 
 ### Requirement: Naming a note
 `<note>` SHALL be either a canonical ULID, naming the note with that id, or a topic. A topic SHALL name the note whose file in `<root>/notes/` has that topic. When no file has it, it SHALL name the most recently deleted note whose last file had that topic. When files of two or more notes have that topic under different kinds, it SHALL be a usage error that lists each file with its note's id. Anything else SHALL be a usage error. When the named note has no history, bilbo SHALL print `bilbo: no history for <note>` to stderr and exit 1.
@@ -99,8 +99,8 @@ Content no kept version holds SHALL be removed from disk. When a note's history 
 - **THEN** stdout is two lines, the first ending in `edited decision-release.md` and the second in `added decision-release.md`, each starting with 12 hexadecimal characters and a time like `2026-10-03T14:23-03:00`
 
 #### Scenario: A merge with a conflict
-- **WHEN** an edit from `bagend` merged here with a local edit and left one passage in conflict
-- **THEN** the first line ends in `merged decision-release.md [conflict]`, and a line below it ends in `edited decision-release.md from bagend`
+- **WHEN** an edit from `bywater` merged here with a local edit and left one passage in conflict
+- **THEN** the first line ends in `merged decision-release.md [conflict]`, and a line below it ends in `edited decision-release.md from bywater`
 
 ### Requirement: Naming a version
 A `<version>` argument SHALL be 6 to 64 hexadecimal characters, matched as a prefix of the ids of the named note's kept versions. A prefix that matches more than one SHALL be a usage error that lists the matching versions. A prefix that matches none SHALL print `bilbo: no version <version> of <note>` to stderr and exit 1.

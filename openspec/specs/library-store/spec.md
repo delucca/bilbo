@@ -74,7 +74,7 @@ A source SHALL open with a line holding exactly `---`, then its keys, then a sec
 - **THEN** the source is invalid, and the problem names `origin`
 
 ### Requirement: Kept ranges and capture label
-`kept`, when present, SHALL be 1-based inclusive line ranges `<a>-<b>` joined by commas, with `a` not above `b` and each range starting after the previous one ends. It names the lines of the capture that the body holds, and is absent when the whole capture was kept. `capture`, when present, SHALL be `external` (text bilbo did not fetch) or `legacy` (text migrated from before bilbo had a library); it is absent for text bilbo fetched itself.
+`kept`, when present, SHALL be 1-based inclusive line ranges `<a>-<b>` joined by commas, with `a` not above `b` and each range starting after the previous one ends. It names the lines of the capture that the body holds, and is absent when the whole capture was kept. `capture`, when present, SHALL be `external`: text bilbo did not fetch. It is absent for text bilbo fetched itself.
 
 #### Scenario: Valid ranges
 - **WHEN** a source has `kept: 3-120,130-130,140-200`
@@ -84,9 +84,13 @@ A source SHALL open with a line holding exactly `---`, then its keys, then a sec
 - **WHEN** a source has `kept: 130-200,3-120`, `kept: 3-120,100-200`, `kept: 0-10` or `kept: 20-10`
 - **THEN** the source is invalid, and the problem names `kept`
 
+#### Scenario: An external capture
+- **WHEN** a source has `capture: external`
+- **THEN** `capture` is valid
+
 #### Scenario: An unknown capture label
 - **WHEN** a source has `capture: webfetch`
-- **THEN** the source is invalid, and the problem names `capture`
+- **THEN** the source is invalid, and the problem names `capture` and says it is not `external`
 
 ### Requirement: Body digest
 `digest` SHALL be `sha256:` followed by the SHA-256, in lowercase hex, of every byte after the line that closes the frontmatter. A source whose body does not hash to its `digest` is invalid. Only `bilbo library land` writes a source file.
@@ -254,7 +258,7 @@ An anchor SHALL name a section by its heading path, or by any trailing part of i
 The text a source was cut from SHALL be kept as `<root>/.bilbo/captures/<sha256>/capture.md`, the folder named by the SHA-256, in lowercase hex, of that file. Captures are local evidence: a source SHALL be valid whether or not its capture exists, and `bilbo check` SHALL NOT read `<root>/.bilbo/captures/`.
 
 #### Scenario: A source without its capture
-- **WHEN** a store holds a valid source and `<root>/.bilbo/captures/` is missing, as on a fresh copy of the library or after a migration
+- **WHEN** a store holds a valid source and `<root>/.bilbo/captures/` is missing, as on a fresh copy of the library
 - **THEN** the source is valid
 
 #### Scenario: Captures are not checked

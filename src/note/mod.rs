@@ -1,4 +1,5 @@
-//! Notes: kinds, names, the strict reader and the renderer, the `new`, `watch`, `history` and `restore` verbs, and the version store they share.
+//! Notes: kinds, names, the strict reader and the renderer, the version store, merges and conflicts, scope marks, and
+//! the `new`, `watch`, `history`, `restore` and `scope` verbs.
 
 pub mod conflicts;
 pub mod diff;
@@ -441,12 +442,8 @@ mod tests {
     }
 
     #[test]
-    fn removed_keys_are_named() {
-        for key in [
-            "kind: decision",
-            "supersedes: 01M3YJ7R6HK6NQ30DCDB1P4DYB",
-            "project: bilbo",
-        ] {
+    fn unknown_keys_are_named() {
+        for key in ["kind: decision", "tags: [a]", "project: bilbo"] {
             let found = messages(&with_front(&[key]));
             assert_eq!(found.len(), 1, "{found:?}");
             assert!(

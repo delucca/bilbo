@@ -528,12 +528,12 @@ mod tests {
         }
     }
 
-    /// A scope of three versions made as a device would: `rivendell` alone, then `bagend` added, then `bagend`
+    /// A scope of three versions made as a device would: `rhosgobel` alone, then `bywater` added, then `bywater`
     /// revoked at epoch 2.
     struct World {
         owner: Owner,
-        rivendell: Identity,
-        bagend: Identity,
+        rhosgobel: Identity,
+        bywater: Identity,
         id: String,
         files: Vec<Vec<u8>>,
         root: Scratch,
@@ -554,10 +554,10 @@ mod tests {
     fn world(name: &str, seed: u8) -> World {
         let root = scratch(name);
         let owner = Owner::derive(&[seed; 16]);
-        let rivendell = identity(&owner, "rivendell", seed + 1);
-        let bagend = identity(&owner, "bagend", seed + 3);
+        let rhosgobel = identity(&owner, "rhosgobel", seed + 1);
+        let bywater = identity(&owner, "bywater", seed + 3);
         let lock = manifest::lock(&root.0).unwrap();
-        let id = manifest::create(&lock, &rivendell, "personal", "file:///x", &[])
+        let id = manifest::create(&lock, &rhosgobel, "personal", "file:///x", &[])
             .unwrap()
             .scope;
         let survey = |who: &Identity| {
@@ -569,17 +569,17 @@ mod tests {
             )
             .unwrap()
         };
-        let known = survey(&bagend);
+        let known = survey(&bywater);
         let manifest::Outcome::Updated(_) =
-            manifest::recover_step(&lock, &bagend, &owner.box_secret, &known[0])
+            manifest::recover_step(&lock, &bywater, &owner.box_secret, &known[0])
         else {
-            panic!("bagend was not added");
+            panic!("bywater was not added");
         };
-        let known = survey(&rivendell);
+        let known = survey(&rhosgobel);
         let manifest::Outcome::Updated(w) =
-            manifest::revoke_step(&lock, &rivendell, &known[0], &bagend.device.id())
+            manifest::revoke_step(&lock, &rhosgobel, &known[0], &bywater.device.id())
         else {
-            panic!("bagend was not revoked");
+            panic!("bywater was not revoked");
         };
         assert_eq!((w.n, w.epoch), (3, 2));
         drop(lock);
@@ -591,8 +591,8 @@ mod tests {
             .collect();
         World {
             owner,
-            rivendell,
-            bagend,
+            rhosgobel,
+            bywater,
             id,
             files,
             root,
@@ -629,7 +629,7 @@ mod tests {
 
     fn admit_to(scopes: &Scopes, w: &World, upto: usize) {
         for (i, bytes) in w.files[..upto].iter().enumerate() {
-            let result = manifest_n(scopes, w, &key(&w.rivendell), i as u64 + 1, bytes);
+            let result = manifest_n(scopes, w, &key(&w.rhosgobel), i as u64 + 1, bytes);
             assert_eq!(result, Ok(Created::New), "manifest {}", i + 1);
         }
     }
@@ -645,7 +645,7 @@ mod tests {
         scopes.create_segment(
             flags,
             &put(&w.id, &key(who), seq, 10),
-            &w.rivendell.device.id(),
+            &w.rhosgobel.device.id(),
             &|| Ok(probe),
             &mut || Created::New,
         )
@@ -675,8 +675,8 @@ mod tests {
                 .map(|(_, who)| who)
         };
         assert_eq!(
-            access(&w.rivendell),
-            Ok(Who::Device(w.rivendell.device.id()))
+            access(&w.rhosgobel),
+            Ok(Who::Device(w.rhosgobel.device.id()))
         );
     }
 
@@ -685,7 +685,7 @@ mod tests {
         let w = world("not_passed", 10);
         let other = Owner::derive(&[99; 16]);
         let scopes = scopes(&[&other]);
-        let result = manifest_n(&scopes, &w, &key(&w.rivendell), 1, &w.files[0]);
+        let result = manifest_n(&scopes, &w, &key(&w.rhosgobel), 1, &w.files[0]);
         assert_eq!(result, Err(Refusal::NotAdmitted));
         assert!(scopes.get(&w.id).is_none());
     }
@@ -698,7 +698,7 @@ mod tests {
         m.sig = "0".repeat(128);
         let mut bytes = serde_json::to_vec(&m).unwrap();
         bytes.push(b'\n');
-        let result = manifest_n(&scopes, &w, &key(&w.rivendell), 1, &bytes);
+        let result = manifest_n(&scopes, &w, &key(&w.rhosgobel), 1, &bytes);
         assert!(matches!(result, Err(Refusal::Manifest(_))), "{result:?}");
         assert!(scopes.get(&w.id).is_none());
     }
@@ -728,13 +728,13 @@ mod tests {
         let w = world("chain", 10);
         let scopes = scopes(&[&w.owner]);
         admit_to(&scopes, &w, 1);
-        let rivendell = key(&w.rivendell);
+        let rhosgobel = key(&w.rhosgobel);
         assert_eq!(
-            manifest_n(&scopes, &w, &rivendell, 3, &w.files[2]),
+            manifest_n(&scopes, &w, &rhosgobel, 3, &w.files[2]),
             Err(Refusal::NotNext)
         );
         assert_eq!(
-            manifest_n(&scopes, &w, &rivendell, 2, &w.files[1]),
+            manifest_n(&scopes, &w, &rhosgobel, 2, &w.files[1]),
             Ok(Created::New)
         );
         let held = scopes.get(&w.id).unwrap();
@@ -746,18 +746,18 @@ mod tests {
         let w = world("create_only", 10);
         let scopes = scopes(&[&w.owner]);
         admit_to(&scopes, &w, 3);
-        let rivendell = key(&w.rivendell);
+        let rhosgobel = key(&w.rhosgobel);
         assert_eq!(
-            manifest_n(&scopes, &w, &rivendell, 3, &w.files[2]),
+            manifest_n(&scopes, &w, &rhosgobel, 3, &w.files[2]),
             Ok(Created::Same)
         );
         let other = w.forged(1, |m| m.name.push_str("00"));
         assert_eq!(
-            manifest_n(&scopes, &w, &rivendell, 3, &other),
+            manifest_n(&scopes, &w, &rhosgobel, 3, &other),
             Ok(Created::Other)
         );
         assert_eq!(
-            manifest_n(&scopes, &w, &rivendell, 2, &other),
+            manifest_n(&scopes, &w, &rhosgobel, 2, &other),
             Ok(Created::Other)
         );
         let stranger = Device::from_seeds("x", &[77; 32], &[78; 32]).sign.public();
@@ -772,7 +772,7 @@ mod tests {
         let w = world("link_fails", 10);
         let scopes = scopes(&[&w.owner]);
         admit_to(&scopes, &w, 1);
-        let rivendell = key(&w.rivendell);
+        let rhosgobel = key(&w.rhosgobel);
         let before = status(&scopes, &w.id);
         for failure in [
             Created::Full("disk".into()),
@@ -781,7 +781,7 @@ mod tests {
         ] {
             let result = scopes.create_manifest(
                 &flags(),
-                &put(&w.id, &rivendell, 2, w.files[1].len() as u64),
+                &put(&w.id, &rhosgobel, 2, w.files[1].len() as u64),
                 &w.files[1],
                 &mut || {
                     let held = scopes.get(&w.id).unwrap();
@@ -807,7 +807,7 @@ mod tests {
         m.prev = Some(crate::shared::hash::sha256_hex(&w.files[0]));
         m.owner = keys::hex(&rival.sign.public());
         let bytes = manifest::signed(m, &rival.sign).1;
-        let result = manifest_n(&scopes, &w, &key(&w.rivendell), 2, &bytes);
+        let result = manifest_n(&scopes, &w, &key(&w.rhosgobel), 2, &bytes);
         assert!(matches!(result, Err(Refusal::Manifest(_))), "{result:?}");
     }
 
@@ -817,7 +817,7 @@ mod tests {
         let scopes = scopes(&[&w.owner]);
         admit_to(&scopes, &w, 1);
         let bytes = w.forged(1, |m| m.prev = Some("0".repeat(64)));
-        let result = manifest_n(&scopes, &w, &key(&w.rivendell), 2, &bytes);
+        let result = manifest_n(&scopes, &w, &key(&w.rhosgobel), 2, &bytes);
         assert!(matches!(result, Err(Refusal::Manifest(why)) if why.contains("prev")));
     }
 
@@ -826,7 +826,7 @@ mod tests {
         let w = world("chain_rules", 10);
         let scopes = scopes(&[&w.owner]);
         admit_to(&scopes, &w, 3);
-        let rivendell = key(&w.rivendell);
+        let rhosgobel = key(&w.rhosgobel);
         let fourth = |change: &dyn Fn(&mut manifest::Manifest)| {
             w.forged(2, |m| {
                 m.n = 4;
@@ -835,13 +835,13 @@ mod tests {
             })
         };
         let missing = fourth(&|m| m.epoch = 3);
-        let result = manifest_n(&scopes, &w, &rivendell, 4, &missing);
+        let result = manifest_n(&scopes, &w, &rhosgobel, 4, &missing);
         assert!(matches!(&result, Err(Refusal::Manifest(why)) if why.contains("chain")));
         let rewritten = fourth(&|m| m.chain[0].key = "00".repeat(72));
-        let result = manifest_n(&scopes, &w, &rivendell, 4, &rewritten);
+        let result = manifest_n(&scopes, &w, &rhosgobel, 4, &rewritten);
         assert!(matches!(&result, Err(Refusal::Manifest(why)) if why.contains("chain")));
         assert_eq!(
-            manifest_n(&scopes, &w, &rivendell, 4, &fourth(&|_| ())),
+            manifest_n(&scopes, &w, &rhosgobel, 4, &fourth(&|_| ())),
             Ok(Created::New)
         );
     }
@@ -851,11 +851,11 @@ mod tests {
         let w = world("recovery", 10);
         let scopes = scopes(&[&w.owner]);
         admit_to(&scopes, &w, 2);
-        let bagend = key(&w.bagend);
+        let bywater = key(&w.bywater);
         assert_eq!(
-            manifest_n(&scopes, &w, &bagend, 3, &w.files[2]),
+            manifest_n(&scopes, &w, &bywater, 3, &w.files[2]),
             Err(Refusal::NotAdmitted),
-            "version 3 lists only rivendell"
+            "version 3 lists only rhosgobel"
         );
         assert_eq!(
             manifest_n(&scopes, &w, &w.owner.sign.public(), 3, &w.files[2]),
@@ -869,7 +869,7 @@ mod tests {
         let scopes = scopes(&[&w.owner]);
         admit_to(&scopes, &w, 3);
         for action in [Action::ReadManifests, Action::ReadSegments] {
-            let result = scopes.access(&w.id, &key(&w.bagend), action).map(|r| r.1);
+            let result = scopes.access(&w.id, &key(&w.bywater), action).map(|r| r.1);
             assert_eq!(result, Err(Refusal::NotAdmitted), "{action:?}");
         }
     }
@@ -879,19 +879,19 @@ mod tests {
         let w = world("own_folder", 10);
         let scopes = scopes(&[&w.owner]);
         admit_to(&scopes, &w, 3);
-        let rivendell = key(&w.rivendell);
-        let own = w.rivendell.device.id();
-        let other = w.bagend.device.id();
+        let rhosgobel = key(&w.rhosgobel);
+        let own = w.rhosgobel.device.id();
+        let other = w.bywater.device.id();
         let access = |device: &str| {
             scopes
-                .access(&w.id, &rivendell, Action::WriteSegment { device })
+                .access(&w.id, &rhosgobel, Action::WriteSegment { device })
                 .map(|r| r.1)
         };
         assert_eq!(access(&own), Ok(Who::Device(own.clone())));
         assert_eq!(access(&other), Err(Refusal::NotAdmitted));
         let result = scopes.create_segment(
             &flags(),
-            &put(&w.id, &rivendell, 1, 10),
+            &put(&w.id, &rhosgobel, 1, 10),
             &other,
             &|| Ok(None),
             &mut || panic!("linked another device's folder"),
@@ -908,7 +908,7 @@ mod tests {
         let who = |action| scopes.access(&w.id, &owner, action).map(|r| r.1);
         assert_eq!(who(Action::ReadManifests), Ok(Who::Owner));
         assert_eq!(who(Action::ReadSegments), Err(Refusal::NotAdmitted));
-        let own = w.rivendell.device.id();
+        let own = w.rhosgobel.device.id();
         assert_eq!(
             who(Action::WriteSegment { device: &own }),
             Err(Refusal::NotAdmitted)
@@ -936,21 +936,21 @@ mod tests {
         let w = world("standing", 10);
         let scopes = scopes(&[&w.owner]);
         admit_to(&scopes, &w, 3);
-        let rivendell = key(&w.rivendell);
+        let rhosgobel = key(&w.rhosgobel);
         let held = scopes.get(&w.id).unwrap();
         for (standing, refusal) in [
             (Standing::NotAdmitted, Refusal::NotAdmitted),
             (Standing::Invalid("why".into()), Refusal::Invalid),
         ] {
             locked(&held).standing = standing;
-            let access = scopes.access(&w.id, &rivendell, Action::ReadManifests);
+            let access = scopes.access(&w.id, &rhosgobel, Action::ReadManifests);
             assert_eq!(access.map(|r| r.1), Err(refusal.clone()));
             assert_eq!(scopes.reserve(&flags(), &w.id, 1), Err(refusal.clone()));
-            let created = manifest_n(&scopes, &w, &rivendell, 2, &w.files[1]);
+            let created = manifest_n(&scopes, &w, &rhosgobel, 2, &w.files[1]);
             assert_eq!(created, Err(refusal.clone()));
-            let result = segment(&scopes, &flags(), &w, &w.rivendell, 1, None);
+            let result = segment(&scopes, &flags(), &w, &w.rhosgobel, 1, None);
             assert_eq!(result, Err(refusal));
-            assert!(!scopes.enrolled(&rivendell));
+            assert!(!scopes.enrolled(&rhosgobel));
         }
     }
 
@@ -960,7 +960,7 @@ mod tests {
         let scopes = scopes(&[&w.owner]);
         admit_to(&scopes, &w, 3);
         let flags = flags();
-        let seg = |seq, probe| segment(&scopes, &flags, &w, &w.rivendell, seq, probe);
+        let seg = |seq, probe| segment(&scopes, &flags, &w, &w.rhosgobel, seq, probe);
         assert_eq!(seg(2, None), Err(Refusal::NotNext));
         assert_eq!(seg(0, None), Err(Refusal::NotNext));
         assert_eq!(seg(1, None), Ok(Created::New));
@@ -976,7 +976,7 @@ mod tests {
         );
         let held = scopes.get(&w.id).unwrap();
         let held = locked(&held);
-        assert_eq!(held.highest[&w.rivendell.device.id()], 3);
+        assert_eq!(held.highest[&w.rhosgobel.device.id()], 3);
     }
 
     #[test]
@@ -984,12 +984,12 @@ mod tests {
         let w = world("same_next", 10);
         let scopes = scopes(&[&w.owner]);
         admit_to(&scopes, &w, 1);
-        let rivendell = key(&w.rivendell);
+        let rhosgobel = key(&w.rhosgobel);
         let link_same = |scopes: &Scopes, seq: u64| {
             scopes.create_segment(
                 &flags(),
-                &put(&w.id, &rivendell, seq, 10),
-                &w.rivendell.device.id(),
+                &put(&w.id, &rhosgobel, seq, 10),
+                &w.rhosgobel.device.id(),
                 &|| Ok(None),
                 &mut || Created::Same,
             )
@@ -998,16 +998,16 @@ mod tests {
         let held = scopes.get(&w.id).unwrap();
         let bytes = locked(&held).bytes;
         assert_eq!(
-            locked(&held).highest.get(&w.rivendell.device.id()),
+            locked(&held).highest.get(&w.rhosgobel.device.id()),
             Some(&1)
         );
         assert_eq!(
-            segment(&scopes, &flags(), &w, &w.rivendell, 2, None),
+            segment(&scopes, &flags(), &w, &w.rhosgobel, 2, None),
             Ok(Created::New)
         );
         let again = scopes.create_manifest(
             &flags(),
-            &put(&w.id, &rivendell, 2, w.files[1].len() as u64),
+            &put(&w.id, &rhosgobel, 2, w.files[1].len() as u64),
             &w.files[1],
             &mut || Created::Same,
         );
@@ -1015,7 +1015,7 @@ mod tests {
         assert_eq!(locked(&held).chain.versions.len(), 2);
         assert_eq!(locked(&held).bytes, bytes + 10);
         assert_eq!(
-            manifest_n(&scopes, &w, &rivendell, 3, &w.files[2]),
+            manifest_n(&scopes, &w, &rhosgobel, 3, &w.files[2]),
             Ok(Created::New)
         );
     }
@@ -1025,18 +1025,18 @@ mod tests {
         let w = world("panic_release", 10);
         let scopes = scopes(&[&w.owner]);
         admit_to(&scopes, &w, 1);
-        let rivendell = key(&w.rivendell);
+        let rhosgobel = key(&w.rhosgobel);
         let booked = scopes.reserve(&flags(), &w.id, 10).unwrap();
         assert_eq!(status(&scopes, &w.id).1, 10);
         let at = Put {
             reserved: booked,
-            ..put(&w.id, &rivendell, 1, 10)
+            ..put(&w.id, &rhosgobel, 1, 10)
         };
         let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             scopes.create_segment(
                 &flags(),
                 &at,
-                &w.rivendell.device.id(),
+                &w.rhosgobel.device.id(),
                 &|| Ok(None),
                 &mut || panic!("link"),
             )
@@ -1051,17 +1051,17 @@ mod tests {
         let scopes = scopes(&[&w.owner]);
         admit_to(&scopes, &w, 3);
         let before = status(&scopes, &w.id);
-        let rivendell = key(&w.rivendell);
+        let rhosgobel = key(&w.rhosgobel);
         let result = scopes.create_segment(
             &flags(),
-            &put(&w.id, &rivendell, 1, 10),
-            &w.rivendell.device.id(),
+            &put(&w.id, &rhosgobel, 1, 10),
+            &w.rhosgobel.device.id(),
             &|| Ok(None),
             &mut || Created::Full("disk".into()),
         );
         assert_eq!(result, Ok(Created::Full("disk".into())));
         assert_eq!(status(&scopes, &w.id), before);
-        let seg = segment(&scopes, &flags(), &w, &w.rivendell, 1, None);
+        let seg = segment(&scopes, &flags(), &w, &w.rhosgobel, 1, None);
         assert_eq!(seg, Ok(Created::New));
     }
 
@@ -1074,12 +1074,12 @@ mod tests {
             max_object_mb: 1,
             ..flags()
         };
-        let rivendell = key(&w.rivendell);
-        let id = w.rivendell.device.id();
+        let rhosgobel = key(&w.rhosgobel);
+        let id = w.rhosgobel.device.id();
         let try_length = |length| {
             scopes.create_segment(
                 &flags,
-                &put(&w.id, &rivendell, 1, length),
+                &put(&w.id, &rhosgobel, 1, length),
                 &id,
                 &|| Ok(None),
                 &mut || Created::New,
@@ -1097,7 +1097,7 @@ mod tests {
         admit_to(&scopes, &w, 1);
         let stranger = Device::from_seeds("x", &[77; 32], &[78; 32]).sign.public();
         let garbage = b"not a manifest";
-        for signer in [stranger, key(&w.rivendell), w.owner.sign.public()] {
+        for signer in [stranger, key(&w.rhosgobel), w.owner.sign.public()] {
             let result = manifest_n(&scopes, &w, &signer, 2, garbage);
             assert!(matches!(result, Err(Refusal::Manifest(_))), "{result:?}");
         }
@@ -1113,7 +1113,7 @@ mod tests {
         let scopes = scopes(&[&w.owner]);
         admit_to(&scopes, &w, 1);
         assert_eq!(
-            manifest_n(&scopes, &w, &key(&w.bagend), 2, &w.files[1]),
+            manifest_n(&scopes, &w, &key(&w.bywater), 2, &w.files[1]),
             Ok(Created::New)
         );
         let held = scopes.get(&w.id).unwrap();
@@ -1124,7 +1124,7 @@ mod tests {
     fn a_manifest_above_one_mebibyte_is_too_large() {
         let w = world("manifest_cap", 10);
         let scopes = scopes(&[&w.owner]);
-        let signer = key(&w.rivendell);
+        let signer = key(&w.rhosgobel);
         let big = put(&w.id, &signer, 1, MANIFEST_MAX + 1);
         let result = scopes.create_manifest(&flags(), &big, &w.files[0], &mut || {
             panic!("linked a big manifest")
@@ -1144,7 +1144,7 @@ mod tests {
         let first = |w: &World| {
             scopes.create_manifest(
                 &flags,
-                &put(&w.id, &key(&w.rivendell), 1, w.files[0].len() as u64),
+                &put(&w.id, &key(&w.rhosgobel), 1, w.files[0].len() as u64),
                 &w.files[0],
                 &mut || Created::New,
             )
@@ -1171,7 +1171,7 @@ mod tests {
         let create = |w: &World| {
             scopes.create_manifest(
                 &flags,
-                &put(&w.id, &key(&w.rivendell), 1, w.files[0].len() as u64),
+                &put(&w.id, &key(&w.rhosgobel), 1, w.files[0].len() as u64),
                 &w.files[0],
                 &mut || Created::New,
             )
@@ -1215,8 +1215,8 @@ mod tests {
             ..flags()
         };
         let (stored, _) = status(&scopes, &w.id);
-        let rivendell = key(&w.rivendell);
-        let id = w.rivendell.device.id();
+        let rhosgobel = key(&w.rhosgobel);
+        let id = w.rhosgobel.device.id();
         let body = MIB / 4;
         let reserved = scopes.reserve(&flags, &w.id, body).unwrap();
         let create = |seq, reserved, outcome: Created| {
@@ -1224,7 +1224,7 @@ mod tests {
                 &flags,
                 &Put {
                     reserved,
-                    ..put(&w.id, &rivendell, seq, body)
+                    ..put(&w.id, &rhosgobel, seq, body)
                 },
                 &id,
                 &|| Ok(None),
@@ -1277,7 +1277,7 @@ mod tests {
         let a2 = world("list_a2", 10);
         let scopes = scopes(&[&a.owner, &b.owner]);
         for w in [&a, &b, &a2] {
-            let created = manifest_n(&scopes, w, &key(&w.rivendell), 1, &w.files[0]);
+            let created = manifest_n(&scopes, w, &key(&w.rhosgobel), 1, &w.files[0]);
             assert_eq!(created, Ok(Created::New));
         }
         let mut want = vec![a.id.clone(), a2.id.clone()];
@@ -1293,7 +1293,7 @@ mod tests {
             Ok(vec![a2.id.clone()])
         );
         assert_eq!(
-            scopes.owner_scopes(&key(&a.rivendell)),
+            scopes.owner_scopes(&key(&a.rhosgobel)),
             Err(Refusal::NotAdmitted)
         );
         let unadmitted = Owner::derive(&[1; 16]).sign.public();
@@ -1305,16 +1305,16 @@ mod tests {
         let w = world("enrolled", 10);
         let scopes = scopes(&[&w.owner]);
         admit_to(&scopes, &w, 2);
-        let (rivendell, bagend) = (key(&w.rivendell), key(&w.bagend));
-        assert!(scopes.enrolled(&rivendell));
-        assert!(scopes.enrolled(&bagend));
+        let (rhosgobel, bywater) = (key(&w.rhosgobel), key(&w.bywater));
+        assert!(scopes.enrolled(&rhosgobel));
+        assert!(scopes.enrolled(&bywater));
         assert!(!scopes.enrolled(&w.owner.sign.public()));
         assert!(!scopes.enrolled(&[3; 32]));
-        let created = manifest_n(&scopes, &w, &rivendell, 3, &w.files[2]);
+        let created = manifest_n(&scopes, &w, &rhosgobel, 3, &w.files[2]);
         assert_eq!(created, Ok(Created::New));
-        assert!(!scopes.enrolled(&bagend), "revoked in the latest version");
+        assert!(!scopes.enrolled(&bywater), "revoked in the latest version");
         locked(&scopes.get(&w.id).unwrap()).standing = Standing::NotAdmitted;
-        assert!(!scopes.enrolled(&rivendell));
+        assert!(!scopes.enrolled(&rhosgobel));
     }
 
     #[test]
@@ -1326,7 +1326,7 @@ mod tests {
             owners: Vec::new(),
             held: Mutex::new(scopes.map().clone()),
         };
-        assert!(!none.enrolled(&key(&w.rivendell)));
+        assert!(!none.enrolled(&key(&w.rhosgobel)));
     }
 
     impl Created {

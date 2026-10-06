@@ -85,9 +85,9 @@ impl Machine {
         machine
     }
 
-    /// The enrolled `rivendell`, with the fixture manifests, whose `personal` scope syncs through `sync`.
+    /// The enrolled `rhosgobel`, with the fixture manifests, whose `personal` scope syncs through `sync`.
     fn enrolled(name: &str, sync: &Path) -> Machine {
-        Machine::new(name, Some("rivendell"), true, &[&personal(sync)])
+        Machine::new(name, Some("rhosgobel"), true, &[&personal(sync)])
     }
 
     /// A device with no keys and no manifests, holding a config of `lines`.
@@ -254,11 +254,15 @@ fn a_scope_that_does_not_sync_is_a_usage_error() {
     let sync = m.sync();
     fs::write(
         &m.config,
-        format!("{}\nscope.uber.sync = off\n", personal(&sync)),
+        format!("{}\nscope.client.sync = off\n", personal(&sync)),
     )
     .unwrap();
     let before = Unchanged::of(&m, &sync);
-    refused(&m.pair(&["--scope", "uber"]), 2, "scope uber does not sync");
+    refused(
+        &m.pair(&["--scope", "client"]),
+        2,
+        "scope client does not sync",
+    );
     refused(&m.pair(&["--scope", "nope"]), 2, "scope nope does not sync");
     before.check();
 }
@@ -386,8 +390,8 @@ fn no_transport_given_is_a_usage_error() {
 fn a_remote_plain_http_url_is_a_usage_error_naming_it() {
     let (m, sync) = joiner("pair-http");
     let before = Unchanged::of(&m, &sync);
-    let run = m.pair(&[CODE, "--via", "http://bagend:8090"]);
-    refused(&run, 2, "http://bagend:8090");
+    let run = m.pair(&[CODE, "--via", "http://relay.example:8090"]);
+    refused(&run, 2, "http://relay.example:8090");
     before.check();
 }
 
@@ -427,7 +431,7 @@ fn no_store_is_refused() {
 #[test]
 fn a_refused_join_leaves_no_pending_key_or_state_folder() {
     let (m, sync) = joiner("pair-no-state");
-    for via in ["file:///nope", "http://bagend:8090"] {
+    for via in ["file:///nope", "http://relay.example:8090"] {
         m.pair(&[CODE, "--via", via]);
     }
     assert!(!m.state().exists(), "a refusal wrote the state folder");
@@ -447,7 +451,7 @@ fn stray_arguments_are_usage_errors() {
         &["--scope"][..],
         &["--via"],
         &["--frob"],
-        &["--name", "bagend"],
+        &["--name", "bywater"],
         &[CODE, "--via", "file:///a", "--scope", "personal"],
         &[CODE, "--via", "file:///a", "--via", "file:///b"],
         &[CODE, "extra", "--via", "file:///a"],

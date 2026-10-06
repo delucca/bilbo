@@ -1471,11 +1471,11 @@ mod tests {
         open(scope, &Recipient::device(&who.device))
     }
 
-    /// `personal`, pinned to `file://`, at manifest 2 and epoch 1, listing `rivendell` and `bagend`.
+    /// `personal`, pinned to `file://`, at manifest 2 and epoch 1, listing `rhosgobel` and `bywater`.
     struct World {
         root: Scratch,
-        rivendell: Identity,
-        bagend: Identity,
+        rhosgobel: Identity,
+        bywater: Identity,
         id: String,
     }
 
@@ -1499,41 +1499,41 @@ mod tests {
             }
         }
 
-        fn revoke_bagend(&self) -> Outcome {
-            let known = survey_as(self.path(), &self.rivendell);
+        fn revoke_bywater(&self) -> Outcome {
+            let known = survey_as(self.path(), &self.rhosgobel);
             revoke_step(
                 &self.lock(),
-                &self.rivendell,
+                &self.rhosgobel,
                 &known[0],
-                &self.bagend.device.id(),
+                &self.bywater.device.id(),
             )
         }
     }
 
     fn world(name: &str) -> World {
         let root = scratch(name);
-        let (rivendell, bagend) = (ident("rivendell", 1), ident("bagend", 3));
+        let (rhosgobel, bywater) = (ident("rhosgobel", 1), ident("bywater", 3));
         let lock = lock(&root.0).unwrap();
         let id = create(
             &lock,
-            &rivendell,
+            &rhosgobel,
             "personal",
             "file:///Users/a/Sync/bilbo",
             &[],
         )
         .unwrap()
         .scope;
-        let known = survey_as(&root.0, &bagend);
-        let Outcome::Updated(w) = recover_step(&lock, &bagend, &owner().box_secret, &known[0])
+        let known = survey_as(&root.0, &bywater);
+        let Outcome::Updated(w) = recover_step(&lock, &bywater, &owner().box_secret, &known[0])
         else {
-            panic!("bagend was not added");
+            panic!("bywater was not added");
         };
         assert_eq!((w.n, w.epoch), (2, 1));
         drop(lock);
         World {
             root,
-            rivendell,
-            bagend,
+            rhosgobel,
+            bywater,
             id,
         }
     }
@@ -1544,7 +1544,7 @@ mod tests {
     }
 
     fn usable(w: &World) -> Option<u64> {
-        usable_of(&w.scope(), &w.rivendell)
+        usable_of(&w.scope(), &w.rhosgobel)
     }
 
     fn written(outcome: Outcome) -> Written {
@@ -1585,7 +1585,7 @@ mod tests {
     #[test]
     fn a_first_url_makes_a_scope_folder_of_26_base32_characters() {
         let root = scratch("first_url");
-        let me = ident("rivendell", 1);
+        let me = ident("rhosgobel", 1);
         let lock = lock(&root.0).unwrap();
         let w = create(&lock, &me, "personal", "file:///Users/a/Sync/bilbo", &[]).unwrap();
         let ids = scope_ids(&root.0).unwrap();
@@ -1604,10 +1604,10 @@ mod tests {
     fn off_keeps_the_scope_and_writes_nothing() {
         let w = world("off_keeps");
         let before = bytes_of(&w.scope());
-        let known = survey_as(w.path(), &w.rivendell);
+        let known = survey_as(w.path(), &w.rhosgobel);
         let step = init_step(
             &w.lock(),
-            &w.rivendell,
+            &w.rhosgobel,
             "personal",
             "off",
             &known,
@@ -1618,7 +1618,7 @@ mod tests {
         assert_eq!(bytes_of(&w.scope()), before);
         let none = scratch("off_none");
         let lock = lock(&none.0).unwrap();
-        let step = init_step(&lock, &w.rivendell, "personal", "off", &[], &[], ctx(true));
+        let step = init_step(&lock, &w.rhosgobel, "personal", "off", &[], &[], ctx(true));
         assert!(matches!(step, Outcome::Kept));
         assert!(scope_ids(&none.0).unwrap().is_empty());
     }
@@ -1626,11 +1626,11 @@ mod tests {
     #[test]
     fn a_renamed_scope_gets_a_new_id() {
         let w = world("renamed");
-        let known = survey_as(w.path(), &w.rivendell);
+        let known = survey_as(w.path(), &w.rhosgobel);
         let others = owner_devices(&known);
         let step = init_step(
             &w.lock(),
-            &w.rivendell,
+            &w.rhosgobel,
             "mine",
             "file:///Users/a/Sync/bilbo",
             &known,
@@ -1639,7 +1639,7 @@ mod tests {
         );
         let created = written(step);
         assert_ne!(created.scope, w.id);
-        let names: Vec<_> = survey_as(w.path(), &w.rivendell)
+        let names: Vec<_> = survey_as(w.path(), &w.rhosgobel)
             .iter()
             .map(|k| k.name().unwrap().to_string())
             .collect();
@@ -1651,7 +1651,7 @@ mod tests {
     fn versions_accumulate_and_the_first_is_never_touched() {
         let w = world("accumulate");
         let first = fs::read(version_path(w.path(), &w.id, 1)).unwrap();
-        assert!(matches!(w.revoke_bagend(), Outcome::Updated(_)));
+        assert!(matches!(w.revoke_bywater(), Outcome::Updated(_)));
         let mut files: Vec<_> = fs::read_dir(manifest_dir(w.path(), &w.id))
             .unwrap()
             .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
@@ -1666,15 +1666,15 @@ mod tests {
     #[test]
     fn a_version_that_is_already_there_is_left_alone() {
         let w = world("exists");
-        let known = survey_as(w.path(), &w.rivendell);
+        let known = survey_as(w.path(), &w.rhosgobel);
         let three = version_path(w.path(), &w.id, 3);
         fs::write(&three, b"mine").unwrap();
         let opened = known[0].opened.as_ref().unwrap();
-        let target = w.bagend.device.id();
-        let why = revoke(&w.lock(), &known[0].scope, opened, &w.rivendell, &target).unwrap_err();
+        let target = w.bywater.device.id();
+        let why = revoke(&w.lock(), &known[0].scope, opened, &w.rhosgobel, &target).unwrap_err();
         assert_eq!(why, three.display().to_string());
         assert_eq!(fs::read(&three).unwrap(), b"mine");
-        let step = revoke_step(&w.lock(), &w.rivendell, &known[0], &target);
+        let step = revoke_step(&w.lock(), &w.rhosgobel, &known[0], &target);
         assert!(matches!(step, Outcome::Failed(_)));
     }
 
@@ -1701,13 +1701,13 @@ mod tests {
         let w = world("pending_epoch");
         w.confirm_all();
         assert_eq!(usable(&w), Some(1));
-        let three = written(w.revoke_bagend());
+        let three = written(w.revoke_bywater());
         assert_eq!((three.n, three.epoch), (3, 2));
         let scope = w.scope();
-        assert_eq!(usable_of(&scope, &w.rivendell), Some(1));
-        let opened = open_as(&scope, &w.rivendell).unwrap().unwrap();
+        assert_eq!(usable_of(&scope, &w.rhosgobel), Some(1));
+        let opened = open_as(&scope, &w.rhosgobel).unwrap().unwrap();
         let carol = Member::of(&ident("carol", 5).device);
-        let four = add_device(&w.lock(), &scope, &opened.keys[&2], &carol, &w.rivendell).unwrap();
+        let four = add_device(&w.lock(), &scope, &opened.keys[&2], &carol, &w.rhosgobel).unwrap();
         assert_eq!((four.n, four.epoch), (4, 2));
         let scope = w.scope();
         let v3 = &scope.versions[2];
@@ -1715,7 +1715,7 @@ mod tests {
             scope.versions[3].manifest.prev,
             Some(hash::sha256_hex(&v3.bytes))
         );
-        assert_eq!(usable_of(&scope, &w.rivendell), Some(1));
+        assert_eq!(usable_of(&scope, &w.rhosgobel), Some(1));
         let lock = w.lock();
         assert!(confirm(&lock, &w.id, 3, &v3.bytes).unwrap());
         assert_eq!(usable(&w), Some(2));
@@ -1731,7 +1731,7 @@ mod tests {
     fn another_devices_version_wins() {
         let w = world("lose");
         w.confirm_all();
-        let three = written(w.revoke_bagend());
+        let three = written(w.revoke_bywater());
         assert_eq!(three.n, 3);
         let scope = w.scope();
         let old = scope.versions[2].bytes.clone();
@@ -1741,7 +1741,7 @@ mod tests {
             m.transport = "https://relay.example.net".into();
             reseal(&w, m);
         });
-        let lost = lose(&w.lock(), &w.id, 3, &winner, &w.rivendell).unwrap();
+        let lost = lose(&w.lock(), &w.id, 3, &winner, &w.rhosgobel).unwrap();
         assert_eq!(lost.moved, [3]);
         assert_eq!(lost.written.len(), 1);
         assert!(lost.skipped.is_empty());
@@ -1754,8 +1754,8 @@ mod tests {
         let four = &scope.versions[3].manifest;
         assert_eq!(four.epoch, 2);
         assert_eq!(four.transport, "https://relay.example.net");
-        assert!(!four.lists(&w.bagend.device.id()));
-        let same = lose(&w.lock(), &w.id, 4, &scope.versions[3].bytes, &w.rivendell);
+        assert!(!four.lists(&w.bywater.device.id()));
+        let same = lose(&w.lock(), &w.id, 4, &scope.versions[3].bytes, &w.rhosgobel);
         assert!(same.is_err());
     }
 
@@ -1763,7 +1763,7 @@ mod tests {
     fn a_lost_change_the_winner_already_made_is_not_written_again() {
         let w = world("lose_same");
         w.confirm_all();
-        written(w.revoke_bagend());
+        written(w.revoke_bywater());
         let scope = w.scope();
         let mut winner = forge(&scope, 2, |m| m.n = 3);
         winner = forge_from(&winner, |m| {
@@ -1771,7 +1771,7 @@ mod tests {
             m.transport = "https://other.example.net".into();
             reseal(&w, m);
         });
-        let lost = lose(&w.lock(), &w.id, 3, &winner, &w.rivendell).unwrap();
+        let lost = lose(&w.lock(), &w.id, 3, &winner, &w.rhosgobel).unwrap();
         assert_eq!(lost.moved, [3]);
         assert_eq!(lost.written.len(), 1);
     }
@@ -1822,7 +1822,7 @@ mod tests {
         assert!(text.contains(&w.id) && text.contains("\"transport\":\"file://\""));
         assert!(text.contains(&keys::hex(&owner().sign.public())));
         assert!(text.contains(&keys::hex(&owner().box_secret.public())));
-        assert!(text.contains("\"name\":\"rivendell\"") && !text.contains("personal"));
+        assert!(text.contains("\"name\":\"rhosgobel\"") && !text.contains("personal"));
         assert!(text.contains("\"prev\":null") && text.contains("\"chain\":[]"));
     }
 
@@ -1986,7 +1986,7 @@ mod tests {
     fn a_later_version_may_not_change_an_earlier_chain_entry() {
         let w = world("chain_prefix");
         w.confirm_all();
-        written(w.revoke_bagend());
+        written(w.revoke_bywater());
         let scope = w.scope();
         let files = bytes_of(&scope);
         let v3 = hash::sha256_hex(&files[2]);
@@ -2040,12 +2040,12 @@ mod tests {
                 .collect::<BTreeSet<_>>(),
             BTreeSet::from([
                 OWNER,
-                w.rivendell.device.id().as_str(),
-                w.bagend.device.id().as_str()
+                w.rhosgobel.device.id().as_str(),
+                w.bywater.device.id().as_str()
             ])
         );
-        let a = open_as(&scope, &w.rivendell).unwrap().unwrap();
-        let b = open_as(&scope, &w.bagend).unwrap().unwrap();
+        let a = open_as(&scope, &w.rhosgobel).unwrap().unwrap();
+        let b = open_as(&scope, &w.bywater).unwrap().unwrap();
         let phrase_alone = owner();
         let c = open(&scope, &Recipient::Owner(&phrase_alone.box_secret))
             .unwrap()
@@ -2060,36 +2060,36 @@ mod tests {
     fn an_entry_moved_to_another_recipient_does_not_open() {
         let w = world("moved_entry");
         let scope = w.scope();
-        let mine = scope.versions[1].manifest.sealed[&w.rivendell.device.id()].clone();
+        let mine = scope.versions[1].manifest.sealed[&w.rhosgobel.device.id()].clone();
         let moved = forge(&scope, 2, |m| {
-            m.sealed.insert(w.bagend.device.id(), mine);
+            m.sealed.insert(w.bywater.device.id(), mine);
         });
         let files = [scope.versions[0].bytes.clone(), moved];
         let tampered = verify_scope(&w.id, &files);
         assert!(tampered.invalid.is_none());
-        assert_eq!(open_as(&tampered, &w.bagend).err().map(|i| i.n), Some(2));
-        assert!(open_as(&tampered, &w.rivendell).is_ok());
+        assert_eq!(open_as(&tampered, &w.bywater).err().map(|i| i.n), Some(2));
+        assert!(open_as(&tampered, &w.rhosgobel).is_ok());
     }
 
     #[test]
     fn a_device_enrolled_after_revocations_opens_every_epoch_through_the_chain() {
         let root = scratch("late_device");
-        let (rivendell, bagend, carol, dave) = (
-            ident("rivendell", 1),
-            ident("bagend", 3),
+        let (rhosgobel, bywater, carol, dave) = (
+            ident("rhosgobel", 1),
+            ident("bywater", 3),
             ident("carol", 5),
             ident("dave", 7),
         );
         let lock = lock(&root.0).unwrap();
-        let others = [Member::of(&bagend.device), Member::of(&carol.device)];
-        let id = create(&lock, &rivendell, "personal", "file://", &others)
+        let others = [Member::of(&bywater.device), Member::of(&carol.device)];
+        let id = create(&lock, &rhosgobel, "personal", "file://", &others)
             .unwrap()
             .scope;
-        for target in [&bagend, &carol] {
-            let known = survey_as(&root.0, &rivendell);
+        for target in [&bywater, &carol] {
+            let known = survey_as(&root.0, &rhosgobel);
             written(revoke_step(
                 &lock,
-                &rivendell,
+                &rhosgobel,
                 &known[0],
                 &target.device.id(),
             ));
@@ -2101,7 +2101,7 @@ mod tests {
         assert!(scope.invalid.is_none());
         assert_eq!(scope.versions[3].manifest.chain.len(), 2);
         let (mine, his) = (
-            open_as(&scope, &rivendell).unwrap().unwrap(),
+            open_as(&scope, &rhosgobel).unwrap().unwrap(),
             open_as(&scope, &dave).unwrap().unwrap(),
         );
         assert_eq!(his.keys.keys().copied().collect::<Vec<_>>(), [1, 2, 3]);
@@ -2116,11 +2116,11 @@ mod tests {
         let w = world("chain_scope");
         w.confirm_all();
         assert!(w.scope().versions[0].manifest.chain.is_empty());
-        written(w.revoke_bagend());
+        written(w.revoke_bywater());
         let scope = w.scope();
         let m = &scope.versions[2].manifest;
         assert_eq!(m.chain.len(), 1);
-        let opened = open_as(&scope, &w.rivendell).unwrap().unwrap();
+        let opened = open_as(&scope, &w.rhosgobel).unwrap().unwrap();
         let data = unhex_vec(&m.chain[0].key).unwrap();
         let other = "b".repeat(26);
         assert!(keys::decrypt(&opened.keys[&2], &keys::chain_aad(&other, 1), &data).is_err());
@@ -2132,7 +2132,7 @@ mod tests {
     fn a_rotation_by_a_device_that_never_held_the_current_key_is_invalid_for_a_member() {
         let w = world("rotation");
         w.confirm_all();
-        written(w.revoke_bagend());
+        written(w.revoke_bywater());
         let scope = w.scope();
         let v3 = &scope.versions[2];
         let (k3, wrong) = (
@@ -2155,9 +2155,9 @@ mod tests {
         write_raw(w.path(), &w.id, 4, &bytes);
         let scope = w.scope();
         assert!(scope.invalid.is_none(), "{:?}", scope.invalid);
-        let invalid = open_as(&scope, &w.rivendell).err().unwrap();
+        let invalid = open_as(&scope, &w.rhosgobel).err().unwrap();
         assert_eq!(invalid.n, 4);
-        let known = survey_as(w.path(), &w.rivendell);
+        let known = survey_as(w.path(), &w.rhosgobel);
         assert!(
             known[0]
                 .problem
@@ -2166,7 +2166,7 @@ mod tests {
                 .contains("manifest/4.json")
         );
         assert!(known[0].opened.is_none());
-        let step = revoke_step(&w.lock(), &w.rivendell, &known[0], &w.bagend.device.id());
+        let step = revoke_step(&w.lock(), &w.rhosgobel, &known[0], &w.bywater.device.id());
         assert!(matches!(step, Outcome::Failed(_)));
     }
 
@@ -2179,7 +2179,7 @@ mod tests {
             keys::random_secret().unwrap(),
         );
         let owner_box = owner().box_secret.public();
-        let old = open_as(&scope, &w.rivendell).unwrap().unwrap();
+        let old = open_as(&scope, &w.rhosgobel).unwrap().unwrap();
         let bytes = forge(&scope, 2, |m| {
             let id = m.scope.clone();
             m.epoch = 2;
@@ -2193,7 +2193,7 @@ mod tests {
         let files = [scope.versions[0].bytes.clone(), bytes];
         let forged = verify_scope(&w.id, &files);
         assert!(forged.invalid.is_none());
-        let invalid = open_as(&forged, &w.rivendell).err().unwrap();
+        let invalid = open_as(&forged, &w.rhosgobel).err().unwrap();
         assert!(invalid.why.contains("does not open"), "{}", invalid.why);
     }
 
@@ -2219,7 +2219,7 @@ mod tests {
         let files = [scope.versions[0].bytes.clone(), bytes];
         let forged = verify_scope(&w.id, &files);
         assert!(forged.invalid.is_none());
-        let invalid = open_as(&forged, &w.rivendell).err().unwrap();
+        let invalid = open_as(&forged, &w.rhosgobel).err().unwrap();
         assert_eq!(invalid.n, 2);
         assert!(invalid.why.contains("epoch 1"), "{}", invalid.why);
         let newcomer = ident("carol", 5);
@@ -2243,16 +2243,16 @@ mod tests {
         files.push(bytes);
         let forged = verify_scope(&w.id, &files);
         assert!(forged.invalid.is_none());
-        assert_eq!(open_as(&forged, &w.rivendell).err().map(|i| i.n), Some(3));
+        assert_eq!(open_as(&forged, &w.rhosgobel).err().map(|i| i.n), Some(3));
     }
 
     #[test]
     fn the_name_opens_under_its_own_epoch_only() {
         let w = world("name_epoch");
         w.confirm_all();
-        written(w.revoke_bagend());
+        written(w.revoke_bywater());
         let scope = w.scope();
-        let opened = open_as(&scope, &w.rivendell).unwrap().unwrap();
+        let opened = open_as(&scope, &w.rhosgobel).unwrap().unwrap();
         let m = &scope.versions[2].manifest;
         assert_eq!(m.epoch, 2);
         let name = unhex_vec(&m.name).unwrap();
@@ -2270,8 +2270,8 @@ mod tests {
     fn a_manifest_that_does_not_list_this_device_keeps_its_name_unread() {
         let w = world("unlisted");
         w.confirm_all();
-        written(w.revoke_bagend());
-        let known = survey_as(w.path(), &w.bagend);
+        written(w.revoke_bywater());
+        let known = survey_as(w.path(), &w.bywater);
         assert!(known[0].mine && known[0].opened.is_none() && known[0].problem.is_none());
         assert_eq!(known[0].name(), None);
         let nobody = survey(w.path(), Some(&owner().sign.public()), None).unwrap();
@@ -2285,11 +2285,11 @@ mod tests {
         let stranger = identity_of(&Owner::derive(&[9; 16]), "mordor", 9);
         let lock = lock(w.path()).unwrap();
         let foreign = create(&lock, &stranger, "theirs", "file://", &[]).unwrap();
-        let known = survey_as(w.path(), &w.rivendell);
+        let known = survey_as(w.path(), &w.rhosgobel);
         let theirs = known.iter().find(|k| k.scope.id == foreign.scope).unwrap();
         assert!(!theirs.mine && theirs.opened.is_none() && theirs.problem.is_none());
         assert_eq!(theirs.scope.owner(), Some(stranger.owner.sign.public()));
-        let step = recover_step(&lock, &w.rivendell, &owner().box_secret, theirs);
+        let step = recover_step(&lock, &w.rhosgobel, &owner().box_secret, theirs);
         assert!(matches!(step, Outcome::Kept));
         assert!(!owner_devices(&known).iter().any(|m| m.name == "mordor"));
         let broken = crate::shared::store::scopes_dir(w.path())
@@ -2297,20 +2297,20 @@ mod tests {
             .join("manifest")
             .join("2.json");
         std::fs::write(broken, "{}\n").unwrap();
-        let known = survey_as(w.path(), &w.rivendell);
+        let known = survey_as(w.path(), &w.rhosgobel);
         let theirs = known.iter().find(|k| k.scope.id == foreign.scope).unwrap();
         assert!(theirs.problem.is_some());
-        let step = revoke_step(&lock, &w.rivendell, theirs, &w.bagend.device.id());
+        let step = revoke_step(&lock, &w.rhosgobel, theirs, &w.bywater.device.id());
         assert!(matches!(step, Outcome::Kept));
     }
 
     #[test]
     fn a_changed_url_writes_a_version_with_the_same_epoch() {
         let w = world("url_change");
-        let known = survey_as(w.path(), &w.rivendell);
+        let known = survey_as(w.path(), &w.rhosgobel);
         let step = init_step(
             &w.lock(),
-            &w.rivendell,
+            &w.rhosgobel,
             "personal",
             "https://relay.example.net",
             &known,
@@ -2324,10 +2324,10 @@ mod tests {
         assert_eq!(new.transport, "https://relay.example.net");
         assert_eq!((&new.sealed, &new.devices), (&old.sealed, &old.devices));
         assert_ne!(new.name, old.name);
-        let known = survey_as(w.path(), &w.rivendell);
+        let known = survey_as(w.path(), &w.rhosgobel);
         let again = init_step(
             &w.lock(),
-            &w.rivendell,
+            &w.rhosgobel,
             "personal",
             "https://relay.example.net",
             &known,
@@ -2340,11 +2340,11 @@ mod tests {
     #[test]
     fn another_folder_path_is_kept_and_a_changed_url_needs_a_terminal() {
         let w = world("url_kept");
-        let known = survey_as(w.path(), &w.rivendell);
+        let known = survey_as(w.path(), &w.rhosgobel);
         let moved = "file:///home/a/Sync/bilbo";
         let step = init_step(
             &w.lock(),
-            &w.rivendell,
+            &w.rhosgobel,
             "personal",
             moved,
             &known,
@@ -2354,7 +2354,7 @@ mod tests {
         assert!(matches!(step, Outcome::Kept));
         let step = init_step(
             &w.lock(),
-            &w.rivendell,
+            &w.rhosgobel,
             "personal",
             "https://relay.example.net",
             &known,
@@ -2371,12 +2371,12 @@ mod tests {
     #[test]
     fn a_second_syncing_scope_lists_the_owners_devices_and_seals_to_each() {
         let w = world("second_scope");
-        let known = survey_as(w.path(), &w.rivendell);
+        let known = survey_as(w.path(), &w.rhosgobel);
         let others = owner_devices(&known);
         assert_eq!(others.len(), 2);
         let step = init_step(
             &w.lock(),
-            &w.rivendell,
+            &w.rhosgobel,
             "shared",
             "file:///x",
             &known,
@@ -2389,10 +2389,10 @@ mod tests {
         let ids: BTreeSet<_> = m.devices.iter().map(|d| d.id.clone()).collect();
         assert_eq!(
             ids,
-            BTreeSet::from([w.rivendell.device.id(), w.bagend.device.id()])
+            BTreeSet::from([w.rhosgobel.device.id(), w.bywater.device.id()])
         );
         assert_eq!(m.sealed.len(), 3);
-        for who in [&w.rivendell, &w.bagend] {
+        for who in [&w.rhosgobel, &w.bywater] {
             assert_eq!(open_as(&scope, who).unwrap().unwrap().name, "shared");
         }
     }
@@ -2406,8 +2406,8 @@ mod tests {
             (m.n, m.epoch, m.devices.len(), m.sealed.len()),
             (2, 1, 2, 3)
         );
-        let known = survey_as(w.path(), &w.bagend);
-        let step = recover_step(&w.lock(), &w.bagend, &owner().box_secret, &known[0]);
+        let known = survey_as(w.path(), &w.bywater);
+        let step = recover_step(&w.lock(), &w.bywater, &owner().box_secret, &known[0]);
         assert!(matches!(step, Outcome::Kept));
         assert_eq!(w.scope().versions.len(), 2);
         let c = ident("carol", 5);
@@ -2420,16 +2420,16 @@ mod tests {
     fn a_dropped_device_is_not_added_by_init_or_revoke() {
         let w = world("dropped");
         w.confirm_all();
-        written(w.revoke_bagend());
-        let known = survey_as(w.path(), &w.bagend);
-        let step = revoke_step(&w.lock(), &w.bagend, &known[0], &w.rivendell.device.id());
+        written(w.revoke_bywater());
+        let known = survey_as(w.path(), &w.bywater);
+        let step = revoke_step(&w.lock(), &w.bywater, &known[0], &w.rhosgobel.device.id());
         assert!(matches!(step, Outcome::Failed(_)));
         assert_eq!(w.scope().versions.len(), 3);
         let stale = revoke_step(
             &w.lock(),
-            &w.rivendell,
-            &survey_as(w.path(), &w.rivendell)[0],
-            &w.bagend.device.id(),
+            &w.rhosgobel,
+            &survey_as(w.path(), &w.rhosgobel)[0],
+            &w.bywater.device.id(),
         );
         assert!(matches!(stale, Outcome::Kept));
     }
@@ -2438,13 +2438,13 @@ mod tests {
     fn init_never_creates_a_scope_a_manifest_dropped_this_device_from() {
         let w = world("init_dropped");
         w.confirm_all();
-        written(w.revoke_bagend());
-        let known = survey_as(w.path(), &w.bagend);
+        written(w.revoke_bywater());
+        let known = survey_as(w.path(), &w.bywater);
         assert_eq!(known[0].last_name.as_deref(), Some("personal"));
         assert!(known[0].ever_listed && known[0].name().is_none());
         let step = init_step(
             &w.lock(),
-            &w.bagend,
+            &w.bywater,
             "personal",
             "file:///x",
             &known,
@@ -2459,7 +2459,7 @@ mod tests {
     #[test]
     fn init_writes_no_version_1_for_an_outsider_and_keeps_every_other_rule() {
         let root = scratch("init_outsider");
-        let me = ident("rivendell", 1);
+        let me = ident("rhosgobel", 1);
         let lock = lock(&root.0).unwrap();
         let blocked = || Context {
             terminal: true,
@@ -2493,7 +2493,7 @@ mod tests {
             assert!(!dir.join(format!("{n}.json")).exists());
             assert!(!dir.join(format!("{n}.pending")).exists());
         }
-        assert!(survey_as(w.path(), &w.rivendell).is_empty());
+        assert!(survey_as(w.path(), &w.rhosgobel).is_empty());
         assert!(set_aside(&w.lock(), &w.id).is_err());
         let damaged = world("set_aside_damaged");
         write_raw(damaged.path(), &damaged.id, 3, b"junk");
@@ -2550,20 +2550,20 @@ mod tests {
     fn revocation_seals_nothing_to_the_revoked_device() {
         let w = world("revoke");
         w.confirm_all();
-        let three = written(w.revoke_bagend());
+        let three = written(w.revoke_bywater());
         assert_eq!((three.n, three.epoch), (3, 2));
         let scope = w.scope();
         let m = &scope.versions[2].manifest;
-        let gone = w.bagend.device.id();
+        let gone = w.bywater.device.id();
         assert!(!m.sealed.contains_key(&gone) && !m.lists(&gone));
         assert_eq!(m.sealed.len(), 2);
         assert_eq!(m.chain.len(), 1);
         let (mine, his) = (
-            open_as(&scope, &w.rivendell).unwrap().unwrap(),
-            open_as(&w.scope(), &w.bagend).unwrap(),
+            open_as(&scope, &w.rhosgobel).unwrap().unwrap(),
+            open_as(&w.scope(), &w.bywater).unwrap(),
         );
         assert!(his.is_none());
-        let old = open_as(&scope.versions_up_to(2), &w.bagend)
+        let old = open_as(&scope.versions_up_to(2), &w.bywater)
             .unwrap()
             .unwrap();
         assert_eq!(*old.keys[&1], *mine.keys[&1]);
@@ -2571,7 +2571,7 @@ mod tests {
             let value = unhex_vec(value).unwrap();
             for as_label in [label.as_str(), gone.as_str(), OWNER] {
                 let opened =
-                    keys::open_epoch(&w.bagend.device.box_secret, &w.id, 2, as_label, &value);
+                    keys::open_epoch(&w.bywater.device.box_secret, &w.id, 2, as_label, &value);
                 assert!(opened.is_err(), "{label} as {as_label}");
             }
         }
@@ -2591,14 +2591,14 @@ mod tests {
     #[test]
     fn revoke_needs_a_listed_target_and_a_listed_device() {
         let w = world("revoke_args");
-        let known = survey_as(w.path(), &w.rivendell);
+        let known = survey_as(w.path(), &w.rhosgobel);
         let opened = known[0].opened.as_ref().unwrap();
         let lock = w.lock();
         let nobody = revoke(
             &lock,
             &known[0].scope,
             opened,
-            &w.rivendell,
+            &w.rhosgobel,
             &"c".repeat(26),
         );
         assert!(nobody.is_err());
@@ -2608,7 +2608,7 @@ mod tests {
             &known[0].scope,
             opened,
             &stranger,
-            &w.bagend.device.id(),
+            &w.bywater.device.id(),
         );
         assert!(theirs.is_err());
         assert_eq!(w.scope().versions.len(), 2);
@@ -2619,17 +2619,17 @@ mod tests {
         let w = world("wrong_key");
         let carol = Member::of(&ident("carol", 5).device);
         let wrong = keys::random_secret().unwrap();
-        let err = add_device(&w.lock(), &w.scope(), &wrong, &carol, &w.rivendell).unwrap_err();
+        let err = add_device(&w.lock(), &w.scope(), &wrong, &carol, &w.rhosgobel).unwrap_err();
         assert!(err.contains("epoch key"));
-        let opened = open_as(&w.scope(), &w.rivendell).unwrap().unwrap();
-        let listed = Member::of(&w.bagend.device);
+        let opened = open_as(&w.scope(), &w.rhosgobel).unwrap().unwrap();
+        let listed = Member::of(&w.bywater.device);
         assert!(
             add_device(
                 &w.lock(),
                 &w.scope(),
                 &opened.keys[&1],
                 &listed,
-                &w.rivendell
+                &w.rhosgobel
             )
             .is_err()
         );
@@ -2645,7 +2645,7 @@ mod tests {
         files.truncate(1);
         files.push(bad);
         fs::write(version_path(w.path(), &w.id, 2), &files[1]).unwrap();
-        let known = survey_as(w.path(), &w.rivendell);
+        let known = survey_as(w.path(), &w.rhosgobel);
         assert!(
             known[0]
                 .problem
@@ -2662,7 +2662,7 @@ mod tests {
         assert!(matches!(step, Outcome::Failed(_)));
         let step = init_step(
             &w.lock(),
-            &w.rivendell,
+            &w.rhosgobel,
             "personal",
             "https://x.example.net",
             &known,
@@ -2699,7 +2699,7 @@ mod tests {
     #[test]
     fn two_writers_take_the_lock_in_turn() {
         let w = world("race");
-        let (path, id, me) = (w.path(), &w.id, &w.rivendell);
+        let (path, id, me) = (w.path(), &w.id, &w.rhosgobel);
         std::thread::scope(|s| {
             for url in ["https://a.example.net", "https://b.example.net"] {
                 s.spawn(move || {
@@ -2720,18 +2720,18 @@ mod tests {
     fn a_sealed_scope_name_must_be_a_scope_name() {
         let w = world("bad_name");
         let scope = w.scope();
-        let key = open_as(&scope, &w.rivendell).unwrap().unwrap();
+        let key = open_as(&scope, &w.rhosgobel).unwrap().unwrap();
         let files = [forge(&scope, 1, |m| {
             m.name = seal_name(&key.keys[&1], m, "Not A Name").unwrap()
         })];
         let forged = verify_scope(&w.id, &files);
         assert!(forged.invalid.is_none());
-        assert!(open_as(&forged, &w.rivendell).is_err());
+        assert!(open_as(&forged, &w.rhosgobel).is_err());
     }
 
-    /// The name of version `m` encrypted again under the epoch key rivendell holds, as an honest writer would.
+    /// The name of version `m` encrypted again under the epoch key rhosgobel holds, as an honest writer would.
     fn reseal(w: &World, m: &mut Manifest) {
-        let key = open_as(&w.scope(), &w.rivendell).unwrap().unwrap().keys[&m.epoch].clone();
+        let key = open_as(&w.scope(), &w.rhosgobel).unwrap().unwrap().keys[&m.epoch].clone();
         m.name = seal_name(&key, m, "personal").unwrap();
     }
 
@@ -2760,10 +2760,10 @@ mod tests {
     fn a_changed_box_key_is_invalid_for_every_reader() {
         let w = world("box_swap");
         w.confirm_all();
-        written(w.revoke_bagend());
+        written(w.revoke_bywater());
         let scope = w.scope();
-        let thief = keys::hex(&w.bagend.device.box_secret.public());
-        let riv = w.rivendell.device.id();
+        let thief = keys::hex(&w.bywater.device.box_secret.public());
+        let riv = w.rhosgobel.device.id();
         let forged = forge(&scope, 3, |m| {
             m.n = 4;
             m.prev = Some(hash::sha256_hex(&scope.versions[2].bytes));
@@ -2773,8 +2773,8 @@ mod tests {
         files.push(forged.clone());
         assert_eq!(invalid_n(&w.id, &files), Some(4));
         write_raw(w.path(), &w.id, 4, &forged);
-        let known = survey_as(w.path(), &w.rivendell);
-        let step = revoke_step(&w.lock(), &w.rivendell, &known[0], &w.bagend.device.id());
+        let known = survey_as(w.path(), &w.rhosgobel);
+        let step = revoke_step(&w.lock(), &w.rhosgobel, &known[0], &w.bywater.device.id());
         assert!(matches!(step, Outcome::Failed(_)));
         assert!(!version_path(w.path(), &w.id, 5).exists());
     }
@@ -2783,7 +2783,7 @@ mod tests {
     fn a_device_dropped_without_a_new_epoch_is_invalid() {
         let w = world("dropped_same_epoch");
         let scope = w.scope();
-        let gone = w.bagend.device.id();
+        let gone = w.bywater.device.id();
         let forged = forge(&scope, 2, |m| {
             m.n = 3;
             m.prev = Some(hash::sha256_hex(&scope.versions[1].bytes));
@@ -2799,14 +2799,14 @@ mod tests {
     fn a_listed_box_that_is_not_this_devices_does_not_open() {
         let w = world("own_box");
         let scope = w.scope();
-        let riv = w.rivendell.device.id();
-        let other = keys::hex(&w.bagend.device.box_secret.public());
+        let riv = w.rhosgobel.device.id();
+        let other = keys::hex(&w.bywater.device.box_secret.public());
         let bytes = forge(&scope, 1, |m| {
             m.devices.iter_mut().find(|d| d.id == riv).unwrap().box_key = other;
         });
         let forged = verify_scope(&w.id, &[bytes]);
         assert!(forged.invalid.is_none());
-        let invalid = open_as(&forged, &w.rivendell).err().unwrap();
+        let invalid = open_as(&forged, &w.rhosgobel).err().unwrap();
         assert!(invalid.why.contains("box key"), "{}", invalid.why);
     }
 
@@ -2814,7 +2814,7 @@ mod tests {
     fn a_changed_owner_box_is_invalid_and_no_writer_publishes_one() {
         let w = world("owner_box");
         let scope = w.scope();
-        let thief = keys::hex(&w.bagend.device.box_secret.public());
+        let thief = keys::hex(&w.bywater.device.box_secret.public());
         let forged = forge(&scope, 2, |m| {
             m.n = 3;
             m.prev = Some(hash::sha256_hex(&scope.versions[1].bytes));
@@ -2830,11 +2830,11 @@ mod tests {
         let liar = Identity {
             owner: OwnerFile {
                 sign: SignKey::from_seed(&owner().sign.seed()),
-                box_public: w.bagend.device.box_secret.public(),
+                box_public: w.bywater.device.box_secret.public(),
             },
-            device: Device::from_seeds("rivendell", &[1; 32], &[2; 32]),
+            device: Device::from_seeds("rhosgobel", &[1; 32], &[2; 32]),
         };
-        let opened = open_as(&scope, &w.rivendell).unwrap().unwrap();
+        let opened = open_as(&scope, &w.rhosgobel).unwrap().unwrap();
         let err =
             change_url(&w.lock(), &scope, &opened, &liar, "https://x.example.net").unwrap_err();
         assert!(err.contains("owner_box"), "{err}");
@@ -2844,24 +2844,24 @@ mod tests {
     #[test]
     fn a_revocation_seals_the_owner_entry_to_the_owners_box() {
         let w = world("owner_entry");
-        written(w.revoke_bagend());
+        written(w.revoke_bywater());
         let scope = w.scope();
         let phrase = owner();
         let read = open(&scope, &Recipient::Owner(&phrase.box_secret))
             .unwrap()
             .unwrap();
         assert_eq!(read.epoch, 2);
-        let mine = open_as(&scope, &w.rivendell).unwrap().unwrap();
+        let mine = open_as(&scope, &w.rhosgobel).unwrap().unwrap();
         assert_eq!(*read.keys[&2], *mine.keys[&2]);
     }
 
     #[test]
     fn the_intersection_leaves_out_unopened_manifests_and_every_revoked_device() {
         let w = world("intersection");
-        let known = survey_as(w.path(), &w.rivendell);
+        let known = survey_as(w.path(), &w.rhosgobel);
         let shared = written(init_step(
             &w.lock(),
-            &w.rivendell,
+            &w.rhosgobel,
             "shared",
             "file:///x",
             &known,
@@ -2869,14 +2869,14 @@ mod tests {
             ctx(true),
         ));
         w.confirm_all();
-        let known = survey_as(w.path(), &w.rivendell);
+        let known = survey_as(w.path(), &w.rhosgobel);
         let personal = known.iter().find(|k| k.scope.id == w.id).unwrap();
-        let target = w.bagend.device.id();
-        written(revoke_step(&w.lock(), &w.rivendell, personal, &target));
+        let target = w.bywater.device.id();
+        written(revoke_step(&w.lock(), &w.rhosgobel, personal, &target));
         let lock = w.lock();
-        let evil = create(&lock, &w.bagend, "evil", "file://", &[]).unwrap();
+        let evil = create(&lock, &w.bywater, "evil", "file://", &[]).unwrap();
         drop(lock);
-        let known = survey_as(w.path(), &w.rivendell);
+        let known = survey_as(w.path(), &w.rhosgobel);
         let theirs = known.iter().find(|k| k.scope.id == evil.scope).unwrap();
         assert!(theirs.mine && theirs.opened.is_none());
         let left = known.iter().find(|k| k.scope.id == shared.scope).unwrap();
@@ -2885,14 +2885,14 @@ mod tests {
                 .latest()
                 .unwrap()
                 .manifest
-                .lists(&w.bagend.device.id())
+                .lists(&w.bywater.device.id())
         );
         let ids: Vec<_> = owner_devices(&known).into_iter().map(|m| m.id).collect();
-        assert_eq!(ids, [w.rivendell.device.id()]);
+        assert_eq!(ids, [w.rhosgobel.device.id()]);
         let others = owner_devices(&known);
         let step = init_step(
             &w.lock(),
-            &w.rivendell,
+            &w.rhosgobel,
             "third",
             "file:///x",
             &known,
@@ -2906,11 +2906,11 @@ mod tests {
     fn a_second_loss_of_the_same_number_wedges_nothing() {
         let w = world("lost_names");
         w.confirm_all();
-        written(w.revoke_bagend());
+        written(w.revoke_bywater());
         let carol = Member::of(&ident("carol", 5).device);
         let scope = w.scope();
-        let opened = open_as(&scope, &w.rivendell).unwrap().unwrap();
-        add_device(&w.lock(), &scope, &opened.keys[&2], &carol, &w.rivendell).unwrap();
+        let opened = open_as(&scope, &w.rhosgobel).unwrap().unwrap();
+        add_device(&w.lock(), &scope, &opened.keys[&2], &carol, &w.rhosgobel).unwrap();
         let scope = w.scope();
         assert_eq!(scope.pending, BTreeSet::from([3, 4]));
         let winner3 = forge(&scope, 2, |m| {
@@ -2919,7 +2919,7 @@ mod tests {
             m.transport = "https://relay.example.net".into();
             reseal(&w, m);
         });
-        let first = lose(&w.lock(), &w.id, 3, &winner3, &w.rivendell).unwrap();
+        let first = lose(&w.lock(), &w.id, 3, &winner3, &w.rhosgobel).unwrap();
         assert_eq!((first.moved, first.written.len()), (vec![3, 4], 2));
         let scope = w.scope();
         assert_eq!(scope.pending, BTreeSet::from([4, 5]));
@@ -2929,7 +2929,7 @@ mod tests {
             m.transport = "https://other.example.net".into();
             reseal(&w, m);
         });
-        let second = lose(&w.lock(), &w.id, 4, &winner4, &w.rivendell).unwrap();
+        let second = lose(&w.lock(), &w.id, 4, &winner4, &w.rhosgobel).unwrap();
         assert_eq!((second.moved, second.written.len()), (vec![4, 5], 2));
         let scope = w.scope();
         assert!(scope.invalid.is_none());
@@ -2955,14 +2955,14 @@ mod tests {
             m.transport = "https://x.example.net".into();
             reseal(&w, m);
         });
-        let confirmed = lose(&w.lock(), &w.id, 2, &other, &w.rivendell);
+        let confirmed = lose(&w.lock(), &w.id, 2, &other, &w.rhosgobel);
         assert!(confirmed.is_err(), "a confirmed version cannot lose");
-        written(w.revoke_bagend());
+        written(w.revoke_bywater());
         let three = fs::read(version_path(w.path(), &w.id, 3)).unwrap();
         for bad in [b"not a manifest\n".to_vec(), three.clone()] {
-            assert!(lose(&w.lock(), &w.id, 3, &bad, &w.rivendell).is_err());
+            assert!(lose(&w.lock(), &w.id, 3, &bad, &w.rhosgobel).is_err());
         }
-        assert!(lose(&w.lock(), &w.id, 9, &other, &w.rivendell).is_err());
+        assert!(lose(&w.lock(), &w.id, 9, &other, &w.rhosgobel).is_err());
         assert_eq!(fs::read(version_path(w.path(), &w.id, 3)).unwrap(), three);
         assert!(pending_path(w.path(), &w.id, 3).exists());
         assert!(!manifest_dir(w.path(), &w.id).join("lost/3.json").exists());
@@ -2973,15 +2973,15 @@ mod tests {
     fn a_member_invalid_version_does_not_make_init_fork_the_scope() {
         let w = world("no_fork");
         w.confirm_all();
-        written(w.revoke_bagend());
+        written(w.revoke_bywater());
         let forged = forged_rotation(&w, &w.scope());
         write_raw(w.path(), &w.id, 4, &forged);
-        let known = survey_as(w.path(), &w.rivendell);
+        let known = survey_as(w.path(), &w.rhosgobel);
         assert!(known[0].problem.is_some() && known[0].opened.is_none());
         assert_eq!(known[0].last_name.as_deref(), Some("personal"));
         let step = init_step(
             &w.lock(),
-            &w.rivendell,
+            &w.rhosgobel,
             "personal",
             "file:///x",
             &known,
@@ -2996,17 +2996,17 @@ mod tests {
     fn the_usable_epoch_is_one_this_device_holds_after_reading() {
         let w = world("usable");
         w.confirm_all();
-        written(w.revoke_bagend());
+        written(w.revoke_bywater());
         w.confirm_all();
         let forged = forged_rotation(&w, &w.scope());
         adopt(&w.lock(), &w.id, 4, &forged).unwrap();
         let scope = w.scope();
         assert_eq!(scope.versions[3].manifest.epoch, 3);
-        assert!(open_as(&scope, &w.rivendell).is_err());
+        assert!(open_as(&scope, &w.rhosgobel).is_err());
         let before = scope.versions_up_to(3);
-        let opened = open_as(&before, &w.rivendell).unwrap().unwrap();
+        let opened = open_as(&before, &w.rhosgobel).unwrap().unwrap();
         assert_eq!(usable_epoch(&scope, &opened), Some(2));
-        let mut keyless = open_as(&before, &w.rivendell).unwrap().unwrap();
+        let mut keyless = open_as(&before, &w.rhosgobel).unwrap().unwrap();
         keyless.keys.remove(&2);
         assert_eq!(usable_epoch(&scope, &keyless), Some(1));
     }
@@ -3014,24 +3014,24 @@ mod tests {
     #[test]
     fn a_step_on_a_scope_that_changed_since_the_survey_fails_cleanly() {
         let w = world("stale_known");
-        let known = survey_as(w.path(), &w.rivendell);
+        let known = survey_as(w.path(), &w.rhosgobel);
         let opened = known[0].opened.as_ref().unwrap();
         change_url(
             &w.lock(),
             &known[0].scope,
             opened,
-            &w.rivendell,
+            &w.rhosgobel,
             "https://a.example.net",
         )
         .unwrap();
-        let target = w.bagend.device.id();
-        let Outcome::Failed(why) = revoke_step(&w.lock(), &w.rivendell, &known[0], &target) else {
+        let target = w.bywater.device.id();
+        let Outcome::Failed(why) = revoke_step(&w.lock(), &w.rhosgobel, &known[0], &target) else {
             panic!("wrote on a stale scope");
         };
         assert!(why.contains("changed"), "{why}");
         let step = init_step(
             &w.lock(),
-            &w.rivendell,
+            &w.rhosgobel,
             "personal",
             "https://b.example.net",
             &known,
@@ -3046,13 +3046,13 @@ mod tests {
     fn add_device_wants_a_scope_name() {
         let w = world("add_bad_name");
         let scope = w.scope();
-        let key = open_as(&scope, &w.rivendell).unwrap().unwrap();
+        let key = open_as(&scope, &w.rhosgobel).unwrap().unwrap();
         let files = [forge(&scope, 1, |m| {
             m.name = seal_name(&key.keys[&1], m, "Not A Name").unwrap()
         })];
         let forged = verify_scope(&w.id, &files);
         let carol = Member::of(&ident("carol", 5).device);
-        let err = add_device(&w.lock(), &forged, &key.keys[&1], &carol, &w.rivendell).unwrap_err();
+        let err = add_device(&w.lock(), &forged, &key.keys[&1], &carol, &w.rhosgobel).unwrap_err();
         assert!(err.contains("scope name"), "{err}");
     }
 
@@ -3060,11 +3060,11 @@ mod tests {
     fn a_member_with_a_bad_name_is_never_written() {
         let w = world("bad_member");
         let scope = w.scope();
-        let opened = open_as(&scope, &w.rivendell).unwrap().unwrap();
+        let opened = open_as(&scope, &w.rhosgobel).unwrap().unwrap();
         let mut carol = Member::of(&ident("carol", 5).device);
         carol.name = "Bad_Name".into();
         let err =
-            add_device(&w.lock(), &scope, &opened.keys[&1], &carol, &w.rivendell).unwrap_err();
+            add_device(&w.lock(), &scope, &opened.keys[&1], &carol, &w.rhosgobel).unwrap_err();
         assert!(err.contains("would be invalid"), "{err}");
         assert_eq!(w.scope().versions.len(), 2);
     }
@@ -3072,16 +3072,16 @@ mod tests {
     #[test]
     fn a_device_cannot_revoke_itself() {
         let w = world("self_revoke");
-        let known = survey_as(w.path(), &w.rivendell);
-        let step = revoke_step(&w.lock(), &w.rivendell, &known[0], &w.rivendell.device.id());
+        let known = survey_as(w.path(), &w.rhosgobel);
+        let step = revoke_step(&w.lock(), &w.rhosgobel, &known[0], &w.rhosgobel.device.id());
         assert!(matches!(step, Outcome::Failed(why) if why.contains("itself")));
         let opened = known[0].opened.as_ref().unwrap();
         let direct = revoke(
             &w.lock(),
             &known[0].scope,
             opened,
-            &w.rivendell,
-            &w.rivendell.device.id(),
+            &w.rhosgobel,
+            &w.rhosgobel.device.id(),
         );
         assert!(direct.is_err());
         assert_eq!(w.scope().versions.len(), 2);
@@ -3092,7 +3092,7 @@ mod tests {
         let w = world("unreadable");
         let bad = manifest_dir(w.path(), "unreadablescope").join("1.json");
         fs::create_dir_all(&bad).unwrap();
-        let known = survey_as(w.path(), &w.rivendell);
+        let known = survey_as(w.path(), &w.rhosgobel);
         assert_eq!(known.len(), 2);
         let broken = known
             .iter()
@@ -3107,7 +3107,7 @@ mod tests {
     fn null_prev_wrong_n_and_chain_shapes_are_invalid() {
         let w = world("shapes");
         w.confirm_all();
-        written(w.revoke_bagend());
+        written(w.revoke_bywater());
         let scope = w.scope();
         let files = bytes_of(&scope);
         let two = |bytes: Vec<u8>| vec![files[0].clone(), bytes];
@@ -3174,12 +3174,12 @@ mod tests {
     fn a_stale_reading_cannot_be_built_on() {
         let w = world("stale_opened");
         let old = w.scope();
-        let opened = open_as(&old, &w.rivendell).unwrap().unwrap();
+        let opened = open_as(&old, &w.rhosgobel).unwrap().unwrap();
         change_url(
             &w.lock(),
             &old,
             &opened,
-            &w.rivendell,
+            &w.rhosgobel,
             "https://a.example.net",
         )
         .unwrap();
@@ -3188,7 +3188,7 @@ mod tests {
             &w.lock(),
             &now,
             &opened,
-            &w.rivendell,
+            &w.rhosgobel,
             "https://b.example.net",
         )
         .unwrap_err();
@@ -3218,7 +3218,7 @@ mod tests {
             files.push(bytes);
             let forged = verify_scope(&w.id, &files);
             assert!(forged.invalid.is_none());
-            for who in [&w.rivendell, &w.bagend] {
+            for who in [&w.rhosgobel, &w.bywater] {
                 let invalid = open_as(&forged, who).err().unwrap();
                 assert_eq!(invalid.n, 3);
                 assert!(invalid.why.contains("name"), "{}", invalid.why);
@@ -3250,14 +3250,14 @@ mod tests {
     fn an_id_keeps_its_box_for_life() {
         let w = world("box_for_life");
         w.confirm_all();
-        written(w.revoke_bagend());
+        written(w.revoke_bywater());
         let scope = w.scope();
-        let gone = w.bagend.device.id();
-        let thief = keys::hex(&w.rivendell.device.box_secret.public());
+        let gone = w.bywater.device.id();
+        let thief = keys::hex(&w.rhosgobel.device.box_secret.public());
         let forged = forge(&scope, 3, |m| {
             m.n = 4;
             m.prev = Some(hash::sha256_hex(&scope.versions[2].bytes));
-            let mut entry = Member::of(&w.bagend.device).entry();
+            let mut entry = Member::of(&w.bywater.device).entry();
             entry.box_key = thief;
             m.devices.push(entry);
             m.devices.sort_by(|a, b| a.id.cmp(&b.id));
@@ -3267,8 +3267,8 @@ mod tests {
         files.push(forged);
         let checked = verify_scope(&w.id, &files);
         assert!(checked.invalid.unwrap().why.contains("another box"));
-        let known = survey_as(w.path(), &w.bagend);
-        let step = recover_step(&w.lock(), &w.bagend, &owner().box_secret, &known[0]);
+        let known = survey_as(w.path(), &w.bywater);
+        let step = recover_step(&w.lock(), &w.bywater, &owner().box_secret, &known[0]);
         assert_eq!(written(step).n, 4);
         let scope = w.scope();
         assert!(scope.invalid.is_none());
@@ -3279,16 +3279,16 @@ mod tests {
             .find(|d| d.id == gone);
         assert_eq!(
             back.unwrap().box_key,
-            keys::hex(&w.bagend.device.box_secret.public())
+            keys::hex(&w.bywater.device.box_secret.public())
         );
-        assert!(open_as(&scope, &w.bagend).unwrap().is_some());
+        assert!(open_as(&scope, &w.bywater).unwrap().is_some());
     }
 
     #[test]
     fn a_new_scope_lists_only_what_every_opened_scope_lists() {
         let w = world("intersection");
-        let known = survey_as(w.path(), &w.rivendell);
-        let both = BTreeSet::from([w.rivendell.device.id(), w.bagend.device.id()]);
+        let known = survey_as(w.path(), &w.rhosgobel);
+        let both = BTreeSet::from([w.rhosgobel.device.id(), w.bywater.device.id()]);
         let ids = |known: &[Known]| -> BTreeSet<String> {
             owner_devices(known).into_iter().map(|m| m.id).collect()
         };
@@ -3301,18 +3301,18 @@ mod tests {
             &thief,
             "work",
             "file://",
-            &[Member::of(&w.rivendell.device)],
+            &[Member::of(&w.rhosgobel.device)],
         )
         .unwrap();
         drop(lock);
-        let known = survey_as(w.path(), &w.rivendell);
+        let known = survey_as(w.path(), &w.rhosgobel);
         let theirs = known.iter().find(|k| k.scope.id == fresh.scope).unwrap();
         assert!(theirs.opened.is_some());
-        assert_eq!(ids(&known), BTreeSet::from([w.rivendell.device.id()]));
+        assert_eq!(ids(&known), BTreeSet::from([w.rhosgobel.device.id()]));
         let others = owner_devices(&known);
         let step = init_step(
             &w.lock(),
-            &w.rivendell,
+            &w.rhosgobel,
             "shared",
             "file:///x",
             &known,
@@ -3331,7 +3331,7 @@ mod tests {
     fn a_manifest_invalid_for_this_device_before_any_readable_version_blocks_minting() {
         let w = world("invalid_v1");
         let scope = w.scope();
-        let riv = w.rivendell.device.id();
+        let riv = w.rhosgobel.device.id();
         let bytes = forge(&scope, 1, |m| {
             m.sealed.insert(riv, "00".repeat(SEALED_BYTES));
         });
@@ -3339,11 +3339,11 @@ mod tests {
         fs::write(version_path(w.path(), &w.id, 1), &bytes).unwrap();
         fs::remove_file(version_path(w.path(), &w.id, 2)).unwrap();
         assert!(verify_scope(&w.id, &files).invalid.is_none());
-        let known = survey_as(w.path(), &w.rivendell);
+        let known = survey_as(w.path(), &w.rhosgobel);
         assert!(known[0].ever_listed && known[0].problem.is_some() && known[0].last_name.is_none());
         let step = init_step(
             &w.lock(),
-            &w.rivendell,
+            &w.rhosgobel,
             "shared",
             "file:///x",
             &known,

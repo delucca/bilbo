@@ -141,11 +141,11 @@ impl World {
         Machine { base }
     }
 
-    /// A, the device that shows the code: the fixture `rivendell` with the fixture `personal` scope, syncing through
+    /// A, the device that shows the code: the fixture `rhosgobel` with the fixture `personal` scope, syncing through
     /// its own folder.
     fn a(&self) -> Machine {
         let a = self.machine("a");
-        a.enroll("rivendell");
+        a.enroll("rhosgobel");
         a.config(&format!("scope.personal.sync = {}\n", a.url()));
         a
     }
@@ -837,7 +837,7 @@ fn joining() {
     assert_eq!(
         done.b.out,
         [
-            "paired with rivendell: personal",
+            "paired with rhosgobel: personal",
             "bilbo watch starts syncing them within one cycle"
         ]
     );
@@ -1492,12 +1492,12 @@ fn a_taken_name() {
     w.a();
     w.b();
     let mut plan = Plan::new();
-    plan.name = Some("bagend");
+    plan.name = Some("bywater");
     refused_name(
         &w,
         plan,
-        "a device named bagend is already enrolled; pair again with --name on the new device",
-        "the name bagend is taken; run bilbo pair again with --name",
+        "a device named bywater is already enrolled; pair again with --name on the new device",
+        "the name bywater is taken; run bilbo pair again with --name",
     );
 }
 
@@ -1509,12 +1509,12 @@ fn a_name_taken_in_a_scope_not_being_paired() {
     w.b();
     let mut plan = Plan::new();
     plan.a_args = strings(&["--scope", "shared"]);
-    plan.name = Some("bagend");
+    plan.name = Some("bywater");
     refused_name(
         &w,
         plan,
-        "a device named bagend is already enrolled; pair again with --name on the new device",
-        "the name bagend is taken; run bilbo pair again with --name",
+        "a device named bywater is already enrolled; pair again with --name on the new device",
+        "the name bywater is taken; run bilbo pair again with --name",
     );
     assert_eq!(a.scope(&shared).versions.len(), 1);
 }
@@ -1525,12 +1525,12 @@ fn the_showing_devices_own_name() {
     w.a();
     w.b();
     let mut plan = Plan::new();
-    plan.name = Some("rivendell");
+    plan.name = Some("rhosgobel");
     refused_name(
         &w,
         plan,
-        "a device named rivendell is already enrolled; pair again with --name on the new device",
-        "the name rivendell is taken; run bilbo pair again with --name",
+        "a device named rhosgobel is already enrolled; pair again with --name on the new device",
+        "the name rhosgobel is taken; run bilbo pair again with --name",
     );
 }
 
@@ -1597,10 +1597,10 @@ fn a_newer_device_answers() {
     );
 }
 
-/// B is the enrolled `bagend`, with the fixture store and `personal` in its config.
-fn bagend(w: &World, store: bool) -> Machine {
+/// B is the enrolled `bywater`, with the fixture store and `personal` in its config.
+fn bywater(w: &World, store: bool) -> Machine {
     let b = w.b();
-    b.put_keys("bagend");
+    b.put_keys("bywater");
     if store {
         b.put_store("store");
     }
@@ -1613,7 +1613,7 @@ fn an_enrolled_device_joins_another_scope() {
     let w = world("enrolledother");
     let a = w.a();
     let shared = a.add_scope("shared");
-    let b = bagend(&w, true);
+    let b = bywater(&w, true);
     let before = b.key_files();
     let mut plan = Plan::new();
     plan.a_args = strings(&["--scope", "shared"]);
@@ -1621,8 +1621,8 @@ fn an_enrolled_device_joins_another_scope() {
     let done = exchange(&w, plan);
     paired_ok(&done);
     let id = b_id(&b);
-    assert_eq!(done.a.out, [format!("paired bagend {id}: shared")]);
-    assert_eq!(done.b.out[0], "paired with rivendell: shared");
+    assert_eq!(done.a.out, [format!("paired bywater {id}: shared")]);
+    assert_eq!(done.b.out[0], "paired with rhosgobel: shared");
     assert_eq!(b.key_files(), before);
     assert!(a.scope(&shared).latest().unwrap().manifest.lists(&id));
     assert_eq!(a.scope(&personal()).versions.len(), 2);
@@ -1691,7 +1691,7 @@ fn the_folder_has_another_path() {
 fn paired_into_the_scope_afterwards() {
     let w = world("afterwards");
     let a = w.a();
-    let b = bagend(&w, false);
+    let b = bywater(&w, false);
     let before = b.key_files();
     let mut plan = Plan::new();
     plan.name = None;
@@ -1923,7 +1923,7 @@ mod tests {
         assert_eq!(
             b_run.out,
             [
-                "paired with rivendell: personal",
+                "paired with rhosgobel: personal",
                 "bilbo watch starts syncing them within one cycle"
             ]
         );

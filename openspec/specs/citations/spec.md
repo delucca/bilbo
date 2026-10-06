@@ -6,7 +6,7 @@
 ## Requirements
 
 ### Requirement: Citation form
-A citation SHALL be `bilbo:`, an id, optionally `#` and an anchor, one or more spaces or tabs, then a quote: text in straight double quotes, in which any straight double quote comes in pairs, or text in curly double quotes. A quote spans no blank line, and its closing quote is not followed by a letter or digit. The id is the 26 letters and digits right after `bilbo:`. Text that starts with `bilbo:` in any other shape is not a citation.
+A citation SHALL be `bilbo:`, an id, optionally `#` and an anchor, one or more spaces or tabs, then a quote: text in straight double quotes, in which any straight double quote comes in pairs, or text in curly double quotes. A quote spans no blank line, and its closing quote is not followed by a letter or digit. The id is the 26 letters and digits right after `bilbo:`. Text that starts with `bilbo:` in any other shape is not a citation, and text that does not start with `bilbo:` is never one, whatever path or quote it holds.
 
 #### Scenario: A citation with an anchor
 - **WHEN** a draft holds `bilbo:01M3EZ8NVEC2KJQNGK5DTK349R#Concurrency > Goroutines "A goroutine has a simple model: it is a function executing concurrently"`
@@ -19,6 +19,10 @@ A citation SHALL be `bilbo:`, an id, optionally `#` and an anchor, one or more s
 #### Scenario: Not a citation
 - **WHEN** a draft holds `bilbo: no store at /tmp/x`
 - **THEN** that text is not checked and gets no row
+
+#### Scenario: A path and a quote
+- **WHEN** a draft holds `see: ./library/go.md#Errors "some quoted words here"`
+- **THEN** that text is not checked, gets no row and no stderr line
 
 ### Requirement: Resolving the id
 The id SHALL resolve among the `id` of every file in `<root>/notes/` and `<root>/library/`, guides included. The cited text is that file's body, after its frontmatter. An id that no file has, or that two files share, gives the verdict `id_missing`.
@@ -114,10 +118,6 @@ Each citation SHALL get one verdict: `ok` when the quote is in the anchored sect
 #### Scenario: A citation without a quote
 - **WHEN** line 5 holds `bilbo:01M3EZ8NVEC2KJQNGK5DTK349R#Concurrency` with no quoted text after it
 - **THEN** stderr holds a line saying the citation on line 5 has no quote and was not checked
-
-#### Scenario: The old form
-- **WHEN** a draft holds `note: /Users/a/Notebooks/x/library/go.md#Errors "some quoted words here"`
-- **THEN** stderr holds a line naming its line and saying the old `note:` form is not checked, and the same holds for `note: ~/...` and for a relative `note: ./...`
 
 ### Requirement: Exit code
 `cite` SHALL exit 1 when any verdict is `quote_missing`, `anchor_missing`, `id_missing` or `unread`, and 0 otherwise. A file that is missing or unreadable SHALL exit 1 with the reason. An unknown option or a second file SHALL be a usage error. When neither `<root>/notes/` nor `<root>/library/` exists, `cite` SHALL exit 1 with `bilbo: no store at <root>`. With `--plan`, when neither `XDG_STATE_HOME` nor `HOME` is an absolute path, `cite` SHALL exit 2 naming them.

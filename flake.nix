@@ -187,7 +187,7 @@
                   lib.mkOption {
                     type = lib.types.nullOr lib.types.str;
                     default = null;
-                    description = "The config key ${key}, as the bilbo config spec defines it.";
+                    description = "The config key ${key}, as the Configuration section of bilbo's README describes it.";
                   }
                 );
               };
@@ -312,7 +312,7 @@
             owners = lib.mkOption {
               type = lib.types.listOf lib.types.str;
               default = [ ];
-              example = [ "ABCDEFGH-IJKLMNOP-QRSTUVWX" ];
+              example = [ "yb4b-5aju-v6zb-x2nm-nc5x-ompf" ];
               description = "The owner fingerprints the relay admits, one --owner each. It needs at least one.";
             };
             listen = lib.mkOption {
@@ -428,7 +428,7 @@
           sample = hm {
             enable = true;
             settings = {
-              "embedder.url" = "http://bagend:8081";
+              "embedder.url" = "http://embedder.example:8081";
               "embedder.model" = "qwen3-embedding-0.6b";
               "embedder.query_prefix" = "Instruct: Given a question, retrieve notes that answer it\nQuery: ";
             };
@@ -436,7 +436,7 @@
           };
           misspelled = hm {
             enable = true;
-            settings."embeder.url" = "http://bagend:8081";
+            settings."embeder.url" = "http://embedder.example:8081";
           };
           tokenEnv = hm {
             enable = true;
@@ -483,7 +483,7 @@
           localElsewhere = hm {
             enable = true;
             localEmbedder.enable = true;
-            settings."embedder.url" = "http://bagend:8081";
+            settings."embedder.url" = "http://embedder.example:8081";
           };
           localOtherModel = hm {
             enable = true;
@@ -522,7 +522,7 @@
                 }
               ];
             };
-          relayOwner = "ABCDEFGHIJKLMNOPQRSTUVWX";
+          relayOwner = "yb4b-5aju-v6zb-x2nm-nc5x-ompf";
           relayService =
             (relayHost {
               enable = true;
@@ -547,7 +547,7 @@
             assert
               configText == ''
                 # bilbo config, written by home-manager from programs.bilbo.settings
-                embedder.url = http://bagend:8081
+                embedder.url = http://embedder.example:8081
                 embedder.model = qwen3-embedding-0.6b
                 embedder.query_prefix = "Instruct: Given a question, retrieve notes that answer it\nQuery: "
               '';

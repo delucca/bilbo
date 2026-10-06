@@ -1981,9 +1981,9 @@ fn left_scopes(root: &Path, p: &Params, log: &[Version]) -> Vec<Left> {
     lefts
 }
 
-/// Rewrites the open-conflict summary's entry of each note in `notes` from its log, as the Open-conflict summary
-/// says: the entry of `note::conflicts::summarize`, with the scopes it left, and none when it says nothing. The
-/// caller holds the history lock.
+/// Rewrites the open-conflict summary's entry of each note in `notes` from its log: the entry of
+/// `note::conflicts::summarize`, with the scopes it left, and none when it says nothing. The caller holds the history
+/// lock.
 fn refresh(lock: &Lock, p: &Params, notes: &BTreeSet<String>) -> Result<(), String> {
     if notes.is_empty() {
         return Ok(());
@@ -2271,7 +2271,7 @@ mod tests {
             blob,
             event: if text.is_some() { "edited" } else { "deleted" }.to_string(),
             at: AT.to_string(),
-            device: Some("bagend".into()),
+            device: Some("bywater".into()),
             ..Version::default()
         };
         let record = Record {
@@ -2336,7 +2336,7 @@ mod tests {
         let versions = log(&t);
         assert_eq!(versions.len(), 2);
         assert_eq!(versions[1].version, incoming.0.version.version);
-        assert_eq!(versions[1].device.as_deref(), Some("bagend"));
+        assert_eq!(versions[1].device.as_deref(), Some("bywater"));
         assert_eq!(inbox_len(&t), 0);
         assert!(!hidden(&t));
         let base = stale_base(&t.root, ID).unwrap().unwrap();
@@ -2902,7 +2902,7 @@ mod tests {
             declare: h.version.clone(),
             reason: "intended".into(),
             at: AT.into(),
-            device: Some("bagend".into()),
+            device: Some("bywater".into()),
         };
         let stray = Declaration {
             declare: "cd".repeat(32),
@@ -3549,7 +3549,7 @@ mod tests {
             blob: versions::DELETED.to_string(),
             event: versions::LEFT.to_string(),
             at: AT.to_string(),
-            device: Some("bagend".into()),
+            device: Some("bywater".into()),
             outside: outside.iter().map(|p| p.to_string()).collect(),
             ..Version::default()
         };
@@ -4106,7 +4106,7 @@ mod tests {
             declare: conflict,
             reason: "intended".into(),
             at: AT.into(),
-            device: Some("bagend".into()),
+            device: Some("bywater".into()),
         };
         stage(&t.lock, "personal", &[], &[], &[declaration], now()).unwrap();
         run(&t);
@@ -4209,7 +4209,7 @@ mod tests {
         versions::sweep_restore_leftovers(&t.lock, AT, &staged(&t.root).unwrap()).unwrap()
     }
 
-    /// RR1: a stale save is held back; the write is killed at Inspect. The next cycle (apply, sweep, scan) must not
+    /// A stale save is held back; the write is killed at Inspect. The next cycle (apply, sweep, scan) must not
     /// turn the agent's save into a child of the written version.
     #[test]
     fn crash_at_inspect_during_a_stale_merge() {
@@ -4250,7 +4250,7 @@ mod tests {
         assert!(body.contains("# Plan v2"));
     }
 
-    /// RR2: the same, killed at Record (hidden file already removed).
+    /// The same, killed at Record (hidden file already removed).
     #[test]
     fn crash_at_record_during_a_stale_merge() {
         let (t, h) = started("rr-stale-record");
@@ -4292,7 +4292,7 @@ mod tests {
         );
     }
 
-    /// RR3: a second save lands between the exchange and the put-back of a raced swap.
+    /// A second save lands between the exchange and the put-back of a raced swap.
     #[test]
     fn second_save_between_the_exchange_and_the_put_back() {
         let (t, h) = started("rr-double");
@@ -4342,7 +4342,7 @@ mod tests {
         );
     }
 
-    /// RR4: the written version is a group of two (same text, different parents); a fresh save must follow both.
+    /// The written version is a group of two (same text, different parents); a fresh save must follow both.
     #[test]
     fn a_save_after_a_grouped_written_version_follows_every_member() {
         let (t, h) = started("rr-group");
@@ -4370,7 +4370,7 @@ mod tests {
         assert_eq!(log(&t).last().unwrap().parents.len(), 2);
     }
 
-    /// RR5: killed at Swap with a merge in the hidden file; a new version changes the plan before the next cycle.
+    /// Killed at Swap with a merge in the hidden file; a new version changes the plan before the next cycle.
     #[test]
     fn a_leftover_merge_is_foreign_once_the_plan_changes() {
         let (t, h) = started("rr-plan-changes");
@@ -4396,7 +4396,7 @@ mod tests {
         assert_eq!(log(&t).len(), 5, "H, mine, T1, T2, one merge");
     }
 
-    /// RR6: killed at Rename; the target name is taken at the next cycle, then freed.
+    /// Killed at Rename; the target name is taken at the next cycle, then freed.
     #[test]
     fn a_taken_name_during_the_rename_finish_keeps_the_written_record() {
         let (t, h) = started("rr-rename-taken");
@@ -4420,7 +4420,7 @@ mod tests {
         );
     }
 
-    /// RR7: a local delete while a version waits in the inbox: the edit wins once, then the delete goes through.
+    /// A local delete while a version waits in the inbox: the edit wins once, then the delete goes through.
     #[test]
     fn a_local_delete_against_a_waiting_version_loses_once() {
         let mut failures = Vec::new();
@@ -4455,7 +4455,7 @@ mod tests {
         );
     }
 
-    /// RR8: a merge write killed at Inspect, then the plan changes: the file's bytes are this device's write.
+    /// A merge write killed at Inspect, then the plan changes: the file's bytes are this device's write.
     #[test]
     fn a_crashed_merge_write_is_known_once_the_plan_changes() {
         let (t, h) = started("rr-written-known");
@@ -4496,7 +4496,7 @@ mod tests {
         );
     }
 
-    /// RR9 (M-a's gap): a save with no stale-base entry, after a concurrent `left` whose id sorts first.
+    /// A save with no stale-base entry, after a concurrent `left` whose id sorts first.
     #[test]
     fn a_save_without_an_entry_after_a_concurrent_left_follows_the_local_head() {
         let (t, h) = started("rr-left-noentry");

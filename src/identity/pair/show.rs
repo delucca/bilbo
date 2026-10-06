@@ -221,7 +221,7 @@ fn end(cx: &mut Cx, mailbox: &Mailbox, bytes: Result<Vec<u8>, String>, why: &str
     Failure::Refused(why.into())
 }
 
-/// A's checks before the mailbox, in the spec's order.
+/// A's checks before the mailbox, in the order the device-pairing spec gives them.
 fn check(cx: &mut Cx, scopes: &[String], via: Option<&str>) -> Result<Plan, Failure> {
     let settings = config::load(cx.env).map_err(Failure::Config)?;
     let root = store::root(cx.env).map_err(Failure::Config)?;
@@ -551,9 +551,9 @@ mod tests {
             }
         }
 
-        /// A as `rivendell`, enrolled with the scope `personal` that syncs through the folder.
+        /// A as `rhosgobel`, enrolled with the scope `personal` that syncs through the folder.
         fn enrolled(&self) -> (Identity, String) {
-            let id = rivendell();
+            let id = rhosgobel();
             keys::write_identity(&self.keys(), &id.owner, &id.device).unwrap();
             self.config(&format!("scope.personal.sync = {}\n", self.url()));
             let scope = self.scope(&id, "personal", &[]);
@@ -593,8 +593,8 @@ mod tests {
         }
     }
 
-    fn rivendell() -> Identity {
-        identity(0, "rivendell", 1)
+    fn rhosgobel() -> Identity {
+        identity(0, "rhosgobel", 1)
     }
 
     fn limits() -> Limits {
@@ -795,7 +795,7 @@ mod tests {
         };
         assert_eq!(
             (payload.name.as_str(), payload.id),
-            ("rivendell", a.device.id())
+            ("rhosgobel", a.device.id())
         );
         assert_eq!(payload.seed.as_deref(), Some(&*a.owner.sign.seed()));
         let grant = &payload.scopes[0];
@@ -848,13 +848,13 @@ mod tests {
             w.url()
         ));
         let b = B {
-            who: identity(0, "bagend", 3),
+            who: identity(0, "bywater", 3),
             enrolled: true,
             mode: Mode::Right,
         };
         let ran = go(&w, &["--scope", "shared"], &b, "yes\n");
         assert!(ran.result.is_ok(), "{:?}", ran.refused());
-        assert_eq!(ran.out, [format!("paired bagend {}: shared", ran.b_id)]);
+        assert_eq!(ran.out, [format!("paired bywater {}: shared", ran.b_id)]);
         let Some(Reply::Enrolled(payload)) = ran.reply else {
             panic!("no payload");
         };
@@ -868,7 +868,7 @@ mod tests {
         let w = world("owner");
         let (a, scope) = w.enrolled();
         let b = B {
-            who: identity(7, "bagend", 3),
+            who: identity(7, "bywater", 3),
             enrolled: true,
             mode: Mode::Right,
         };
@@ -876,7 +876,7 @@ mod tests {
         let theirs = keys::owner_fingerprint(&b.who.owner.sign.public());
         assert_eq!(
             ran.refused(),
-            format!("bagend belongs to another owner ({theirs})")
+            format!("bywater belongs to another owner ({theirs})")
         );
         let Some(Reply::OtherOwner(owner)) = ran.reply else {
             panic!("no other-owner reply");
@@ -889,23 +889,23 @@ mod tests {
     fn a_name_in_use_anywhere_is_refused() {
         let w = world("names");
         let (a, scope) = w.enrolled();
-        let bagend = Member::of(&identity(0, "bagend", 3).device);
-        let other = w.scope(&a, "shared", &[bagend]);
-        let own = go(&w, &[], &new_device("rivendell", 20), "y\n");
+        let bywater = Member::of(&identity(0, "bywater", 3).device);
+        let other = w.scope(&a, "shared", &[bywater]);
+        let own = go(&w, &[], &new_device("rhosgobel", 20), "y\n");
         assert!(
             own.refused()
-                .contains("a device named rivendell is already enrolled")
+                .contains("a device named rhosgobel is already enrolled")
         );
         assert!(matches!(own.reply, Some(Reply::Ended(Outcome::NameTaken))));
         let apart = go(
             &w,
             &["--scope", "personal"],
-            &new_device("bagend", 21),
+            &new_device("bywater", 21),
             "y\n",
         );
         assert_eq!(
             apart.refused(),
-            "a device named bagend is already enrolled; pair again with --name on the new device"
+            "a device named bywater is already enrolled; pair again with --name on the new device"
         );
         assert!(matches!(
             apart.reply,
@@ -1143,7 +1143,7 @@ mod tests {
     fn the_checks_before_the_mailbox() {
         let w = world("checks");
         let url = w.url();
-        let id = rivendell();
+        let id = rhosgobel();
         // No owner key.
         w.config(&format!("scope.personal.sync = {url}\n"));
         assert_eq!(
@@ -1166,11 +1166,11 @@ mod tests {
         );
         // A scope that does not sync.
         w.config(&format!(
-            "scope.personal.sync = {url}\nscope.uber.sync = off\n"
+            "scope.personal.sync = {url}\nscope.client.sync = off\n"
         ));
         assert_eq!(
-            refusal(&w, &["--scope", "uber"]),
-            (false, "scope uber does not sync".into())
+            refusal(&w, &["--scope", "client"]),
+            (false, "scope client does not sync".into())
         );
         assert_eq!(
             refusal(&w, &["--scope", "nope"]),

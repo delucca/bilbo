@@ -208,5 +208,5 @@ When the embedder cannot embed the query within 5 seconds, or answers with an er
 - **THEN** `bilbo recall rollback` leaves stderr empty
 
 #### Scenario: Withheld passages are not reported
-- **WHEN** `embedder.url = http://bagend:8081`, `scope.work.embedder = local`, `bilbo index` ran after the last change, and a note with `scope: work` holds `rollback`
+- **WHEN** `embedder.url = http://embedder.example:8081`, `scope.work.embedder = local`, `bilbo index` ran after the last change, and a note with `scope: work` holds `rollback`
 - **THEN** `bilbo recall rollback` prints that note's block and stderr holds no `not indexed` line

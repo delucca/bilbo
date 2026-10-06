@@ -946,7 +946,7 @@ pub fn set_keys(path: &Path, keys: &[(String, String)]) -> Result<(), String> {
     write_config(path, &lines.concat(), existed)
 }
 
-/// The value as written in the file (design.md's quoting rule).
+/// The value as written in the file: quoted when it is empty, starts or ends with a space or tab, starts with `"`, or holds a line break; `\` doubled either way.
 pub fn quote(value: &str) -> String {
     let edge = |c: char| c == ' ' || c == '\t';
     let quoted = value.is_empty()
@@ -995,7 +995,7 @@ pub fn render(header: &str, settings: &[(String, String)]) -> String {
     let mut out = format!("{header}\n");
     if settings.is_empty() {
         out.push_str(
-            "# One <key> = <value> per line; the keys are in bilbo's config spec.\n\
+            "# One <key> = <value> per line; the keys are under Configuration in bilbo's README.\n\
              # To search by meaning as well as by keywords, set an embedder:\n\
              # embedder.url = http://localhost:11434\n\
              # embedder.model = nomic-embed-text\n",
@@ -1069,7 +1069,7 @@ mod tests {
         Some(OsString::from(value))
     }
 
-    const BASE: &str = "embedder.url = http://bagend:8081\nembedder.model = m\n";
+    const BASE: &str = "embedder.url = http://embedder.example:8081\nembedder.model = m\n";
 
     fn parsed(text: &str) -> Result<Option<Embedder>, String> {
         parse(Path::new("/c"), text, Some(Path::new("/home/a"))).map(|s| s.embedder)
@@ -1319,7 +1319,10 @@ mod tests {
         };
         let settings = load(&e).unwrap();
         assert_eq!(settings.path, Some(file));
-        assert_eq!(settings.embedder.unwrap().url, "http://bagend:8081");
+        assert_eq!(
+            settings.embedder.unwrap().url,
+            "http://embedder.example:8081"
+        );
     }
 
     #[test]
@@ -1411,9 +1414,9 @@ mod tests {
     #[test]
     fn valid_file() {
         let e = embedder(
-            "# the home server\n\nembedder.url = http://bagend:8081\nembedder.model = qwen3\n",
+            "# embedder on another machine\n\nembedder.url = http://embedder.example:8081\nembedder.model = qwen3\n",
         );
-        assert_eq!(e.url, "http://bagend:8081");
+        assert_eq!(e.url, "http://embedder.example:8081");
         assert_eq!(e.model, "qwen3");
     }
 
@@ -1796,7 +1799,7 @@ mod tests {
     #[test]
     fn quote_round_trips() {
         for value in [
-            "http://bagend:8081",
+            "http://embedder.example:8081",
             "  spaced  ",
             "C:\\x\\y",
             "\"starts with quote",
@@ -1824,7 +1827,7 @@ mod tests {
     #[test]
     fn render_settings_parse_back() {
         let e = Embedder {
-            url: "http://bagend:8081".into(),
+            url: "http://embedder.example:8081".into(),
             model: "qwen3-embedding-0.6b".into(),
             token: Some(Token::File(PathBuf::from("/home/a/.config/bilbo/token"))),
             query_prefix: QWEN_PREFIX.into(),
@@ -1859,7 +1862,7 @@ mod tests {
             assert!(is_local(yes), "{yes}");
         }
         for no in [
-            "http://bagend:8081",
+            "http://embedder.example:8081",
             "https://api.openai.com",
             "http://localhost.evil.com",
             "http://0.0.0.0:8081",

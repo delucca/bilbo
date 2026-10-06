@@ -513,15 +513,15 @@ mod tests {
         }
     }
 
-    fn rivendell() -> Identity {
+    fn rhosgobel() -> Identity {
         Identity {
             owner: Owner::derive(&[0; 16]).file(),
-            device: Device::from_seeds("rivendell", &[1; 32], &[2; 32]),
+            device: Device::from_seeds("rhosgobel", &[1; 32], &[2; 32]),
         }
     }
 
-    fn bagend() -> Device {
-        Device::from_seeds("bagend", &[3; 32], &[4; 32])
+    fn bywater() -> Device {
+        Device::from_seeds("bywater", &[3; 32], &[4; 32])
     }
 
     /// The scope `personal` as device A holds it: version 1, and version 2 listing `b` when there is one.
@@ -570,7 +570,7 @@ mod tests {
 
     fn payload(a: &Identity, grants: Vec<Grant>, seed: bool) -> Payload {
         Payload {
-            name: "rivendell".into(),
+            name: "rhosgobel".into(),
             id: a.device.id(),
             seed: seed.then(|| a.owner.sign.seed()),
             scopes: grants,
@@ -716,7 +716,7 @@ mod tests {
 
     fn fresh(name: &str) -> Fresh {
         let w = world(name);
-        let a = rivendell();
+        let a = rhosgobel();
         let b = keys::pending_device(&w.pending(), "mirkwood").unwrap();
         let scope = scope_for(&w, &a, Some(&b));
         publish(&w, &scope, 2);
@@ -746,7 +746,7 @@ mod tests {
         assert_eq!(
             run.out,
             [
-                "paired with rivendell: personal",
+                "paired with rhosgobel: personal",
                 "bilbo watch starts syncing them within one cycle"
             ]
         );
@@ -809,16 +809,16 @@ mod tests {
         let go = |code: &str, via: &str, name: Option<&str>| join(&w, code, via, name, &quick());
         let run = go("42-orbit-tunel-velvet", &via, None);
         assert!(run.usage().contains("'tunel' is not a pairing word"));
-        let run = go(CODE, "http://bagend:8090", Some("mirkwood"));
-        assert!(run.usage().contains("http://bagend:8090"));
+        let run = go(CODE, "http://relay.example:8090", Some("mirkwood"));
+        assert!(run.usage().contains("http://relay.example:8090"));
         for url in ["ftp://relay", "file://relative/path", "file:///a?b"] {
             let run = go(CODE, url, Some("mirkwood"));
             assert!(run.usage().contains(url), "{url}");
         }
         let run = go(CODE, "file:///nope", Some("mirkwood"));
         assert_eq!(run.refused(), "no folder at /nope");
-        let run = go(CODE, &via, Some("Bag_End"));
-        assert!(run.usage().contains("'Bag_End' is not a device name"));
+        let run = go(CODE, &via, Some("Green_Dragon"));
+        assert!(run.usage().contains("'Green_Dragon' is not a device name"));
         fs::remove_dir(w.root().join("notes")).unwrap();
         let run = go(CODE, &via, Some("mirkwood"));
         assert_eq!(run.refused(), format!("no store at {}", w.root().display()));
@@ -914,7 +914,7 @@ mod tests {
     fn an_enrolled_device_of_another_owner_sees_both_fingerprints() {
         let f = fresh("other-owner");
         let theirs = Owner::derive(&[1; 16]);
-        keys::write_identity(&f.w.keys(), &theirs.file(), &bagend()).unwrap();
+        keys::write_identity(&f.w.keys(), &theirs.file(), &bywater()).unwrap();
         let ours = f.a.owner.sign.public();
         let mut owner = None;
         let run = pair(&f.w, CODE, None, &limits(), |h| {
@@ -1071,7 +1071,7 @@ mod tests {
     #[test]
     fn a_version_that_does_not_list_this_device_is_refused() {
         let w = world("unlisted");
-        let a = rivendell();
+        let a = rhosgobel();
         keys::pending_device(&w.pending(), "mirkwood").unwrap();
         let scope = scope_for(&w, &a, None);
         publish(&w, &scope, 1);
@@ -1230,8 +1230,8 @@ mod tests {
     #[test]
     fn an_enrolled_device_joins_another_scope_and_keeps_its_keys() {
         let w = world("enrolled");
-        let a = rivendell();
-        let b = bagend();
+        let a = rhosgobel();
+        let b = bywater();
         keys::write_identity(&w.keys(), &Owner::derive(&[0; 16]).file(), &b).unwrap();
         let before = (
             fs::read(w.keys().join("owner.key")).unwrap(),
@@ -1242,7 +1242,7 @@ mod tests {
         let rename = join(&w, CODE, &w.via(), Some("mirkwood"), &quick());
         assert_eq!(rename.usage(), "--name cannot rename an enrolled device");
         let mut owner = None;
-        let run = pair(&w, CODE, Some("bagend"), &limits(), |h| {
+        let run = pair(&w, CODE, Some("bywater"), &limits(), |h| {
             let (session, hello) = h.unwrap();
             owner = hello.owner;
             let grants = vec![grant(&scope, 2, "any")];
@@ -1270,8 +1270,8 @@ mod tests {
     #[test]
     fn an_enrolled_device_refuses_a_seed_that_is_not_its_owner() {
         let w = world("enrolled-seed");
-        let a = rivendell();
-        let b = bagend();
+        let a = rhosgobel();
+        let b = bywater();
         keys::write_identity(&w.keys(), &Owner::derive(&[0; 16]).file(), &b).unwrap();
         let scope = scope_for(&w, &a, Some(&b));
         publish(&w, &scope, 2);
