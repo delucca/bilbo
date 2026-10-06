@@ -290,6 +290,123 @@
           };
         };
 
+      nixosModules.relay =
+        {
+          config,
+          lib,
+          pkgs,
+          ...
+        }:
+        let
+          cfg = config.services.bilbo-relay;
+        in
+        {
+          options.services.bilbo-relay = {
+            enable = lib.mkEnableOption "the bilbo relay, the server that syncs a user's devices";
+            package = lib.mkOption {
+              type = lib.types.package;
+              default = self.packages.${pkgs.stdenv.hostPlatform.system}.default;
+              defaultText = lib.literalExpression "bilbo.packages.\${system}.default";
+              description = "The bilbo package.";
+            };
+            owners = lib.mkOption {
+              type = lib.types.listOf lib.types.str;
+              default = [ ];
+              example = [ "ABCDEFGH-IJKLMNOP-QRSTUVWX" ];
+              description = "The owner fingerprints the relay admits, one --owner each. It needs at least one.";
+            };
+            listen = lib.mkOption {
+              type = lib.types.str;
+              default = "127.0.0.1:8738";
+              description = "The address:port the relay listens on, plain HTTP; put a TLS proxy in front of a non-loopback address.";
+            };
+            maxScopes = lib.mkOption {
+              type = lib.types.nullOr lib.types.ints.positive;
+              default = null;
+              description = "The most valid scopes the relay holds per owner; null keeps the relay's default.";
+            };
+            maxScopeMb = lib.mkOption {
+              type = lib.types.nullOr lib.types.ints.positive;
+              default = null;
+              description = "The most MiB one scope may hold; null keeps the relay's default.";
+            };
+            maxObjectMb = lib.mkOption {
+              type = lib.types.nullOr lib.types.ints.positive;
+              default = null;
+              description = "The most MiB one object may hold; null keeps the relay's default.";
+            };
+          };
+
+          config = lib.mkIf cfg.enable {
+            assertions = [
+              {
+                assertion = cfg.owners != [ ];
+                message = "services.bilbo-relay.owners must hold at least one owner fingerprint; the relay admits no scope without one.";
+              }
+            ];
+            systemd.services.bilbo-relay = {
+              description = "bilbo relay";
+              wantedBy = [ "multi-user.target" ];
+              after = [ "network.target" ];
+              serviceConfig = {
+                ExecStart = lib.escapeShellArgs (
+                  [
+                    (lib.getExe cfg.package)
+                    "relay"
+                    "--data"
+                    "/var/lib/bilbo-relay"
+                  ]
+                  ++ lib.concatMap (owner: [
+                    "--owner"
+                    owner
+                  ]) cfg.owners
+                  ++ [
+                    "--listen"
+                    cfg.listen
+                  ]
+                  ++ lib.optionals (cfg.maxScopes != null) [
+                    "--max-scopes"
+                    (toString cfg.maxScopes)
+                  ]
+                  ++ lib.optionals (cfg.maxScopeMb != null) [
+                    "--max-scope-mb"
+                    (toString cfg.maxScopeMb)
+                  ]
+                  ++ lib.optionals (cfg.maxObjectMb != null) [
+                    "--max-object-mb"
+                    (toString cfg.maxObjectMb)
+                  ]
+                );
+                Restart = "on-failure";
+                RestartSec = 10;
+                DynamicUser = true;
+                StateDirectory = "bilbo-relay";
+                StateDirectoryMode = "0700";
+                UMask = "0077";
+                ProtectSystem = "strict";
+                ProtectHome = true;
+                PrivateTmp = true;
+                NoNewPrivileges = true;
+                RestrictAddressFamilies = [
+                  "AF_INET"
+                  "AF_INET6"
+                ];
+                CapabilityBoundingSet = "";
+                SystemCallFilter = [ "@system-service" ];
+                SystemCallArchitectures = "native";
+                ProtectKernelTunables = true;
+                ProtectKernelModules = true;
+                ProtectControlGroups = true;
+                RestrictNamespaces = true;
+                RestrictRealtime = true;
+                LockPersonality = true;
+                MemoryDenyWriteExecute = true;
+                ProtectProc = "invisible";
+              };
+            };
+          };
+        };
+
       checks = forAllSystems (
         system:
         let
@@ -388,6 +505,41 @@
           configText = sample.config.xdg.configFile."bilbo/config".text;
           activation = sample.config.home.activation.bilboSetup.data;
           fails = c: !(builtins.tryEval c.activationPackage.drvPath).success;
+          relayHost =
+            relay:
+            nixpkgs.lib.nixosSystem {
+              system = "x86_64-linux";
+              modules = [
+                self.nixosModules.relay
+                {
+                  fileSystems."/" = {
+                    device = "none";
+                    fsType = "tmpfs";
+                  };
+                  boot.loader.grub.enable = false;
+                  system.stateVersion = "26.05";
+                  services.bilbo-relay = relay;
+                }
+              ];
+            };
+          relayOwner = "ABCDEFGHIJKLMNOPQRSTUVWX";
+          relayService =
+            (relayHost {
+              enable = true;
+              owners = [ relayOwner ];
+            }).config.systemd.services.bilbo-relay.serviceConfig;
+          relayLimited =
+            (relayHost {
+              enable = true;
+              owners = [ relayOwner ];
+              maxScopes = 4;
+              maxObjectMb = 8;
+            }).config.systemd.services.bilbo-relay.serviceConfig;
+          relayFailed = lib.filter (a: !a.assertion) (relayHost {
+            enable = true;
+            owners = [ ];
+          }).config.assertions;
+          relayBin = builtins.unsafeDiscardStringContext (lib.getExe self.packages.x86_64-linux.default);
         in
         {
           default = self.packages.${system}.bilbo;
@@ -454,6 +606,19 @@
               '';
             assert (builtins.tryEval digestOnly.activationPackage.drvPath).success;
             pkgs.writeText "bilbo-home-manager-module" (builtins.unsafeDiscardStringContext activation);
+          nixos-relay-module =
+            assert
+              builtins.unsafeDiscardStringContext relayService.ExecStart
+              == "${relayBin} relay --data /var/lib/bilbo-relay --owner ${relayOwner} --listen 127.0.0.1:8738";
+            assert relayService.StateDirectoryMode == "0700";
+            assert relayService.UMask == "0077";
+            assert lib.hasInfix " --max-scopes 4 --max-object-mb 8" (
+              builtins.unsafeDiscardStringContext relayLimited.ExecStart
+            );
+            assert !(lib.hasInfix "--max-scope-mb" (builtins.unsafeDiscardStringContext relayLimited.ExecStart));
+            assert lib.length relayFailed == 1;
+            assert lib.hasInfix "services.bilbo-relay.owners" (lib.head relayFailed).message;
+            pkgs.writeText "bilbo-nixos-relay-module" (builtins.unsafeDiscardStringContext relayService.ExecStart);
         }
       );
 
