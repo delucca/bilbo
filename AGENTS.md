@@ -78,8 +78,8 @@ PYTHONDONTWRITEBYTECODE=1 python3 ~/.codex/skills/.system/plugin-creator/scripts
   in its cycle check, so a non-verb file of `note` or `identity` that uses `sync` closes a
   cycle and fails it.
   `identity/script.rs`, the scripted `Prompter`, is test-only. Nothing outside
-  `main` uses `relay/` except test code: the unit tests of `sync/remote/` and
-  `setup/` start a relay with the test-only `relay::start`, and
+  `main` uses `relay/` except test code: unit tests in `sync/remote/`,
+  `identity/` and `setup/` start a relay with the test-only `relay::start`, and
   `tests/layout.rs` reads only the code before `mod tests`. `sync/remote/` is
   the relay's client. `httparse` is used in `relay/http.rs` alone.
 - A module with children is `foo/mod.rs`, never `foo.rs` beside `foo/`
