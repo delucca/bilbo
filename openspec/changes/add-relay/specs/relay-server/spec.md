@@ -112,11 +112,15 @@ The relay SHALL refuse, with 507 `quota`, a manifest 1 beyond `--max-scopes` val
 - **THEN** stderr names `--max-scope-mb`, and the exit code is 2
 
 ### Requirement: Slow connections
-The relay SHALL serve one request per connection and at most 256 connections at once. It SHALL answer 431 to request headers above 16 KiB, close a connection whose request line and headers have not arrived 10 seconds after it was accepted, and close one whose body sends nothing for 30 seconds. At 256 open connections it SHALL answer a new one at once with 503 `busy` and close it.
+The relay SHALL serve one request per connection and at most 256 connections at once. It SHALL answer 431 to request headers above 16 KiB, close a connection whose request line and headers have not arrived 10 seconds after it was accepted, close one whose body sends nothing for 30 seconds, and close one that has not finished its request and response 300 seconds after it was accepted. At 256 open connections it SHALL answer a new one at once with 503 `busy` and close it.
 
 #### Scenario: A stalled client
 - **WHEN** a client opens a connection and sends half a request line, then nothing
 - **THEN** the relay closes the connection 10 seconds after accepting it
+
+#### Scenario: A body that drips
+- **WHEN** a client sends a `PUT` body one byte every 20 seconds
+- **THEN** the relay closes the connection 300 seconds after accepting it, stores nothing and keeps no temporary file
 
 #### Scenario: Stalled clients below the cap
 - **WHEN** 200 clients each hold a connection with half a request line
