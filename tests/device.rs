@@ -12,7 +12,7 @@ use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
-use common::{Run, TempDir, bilbo, config};
+use common::{Relay, Run, TempDir, bilbo, config};
 
 const FIXTURES: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/device");
 const PERSONAL: &str = "scope.personal.sync = file:///Users/a/Sync/bilbo";
@@ -594,6 +594,36 @@ fn recover_and_revoke_need_a_terminal_on_an_enrolled_device() {
         }
     }
     assert_eq!(m.tree(), before);
+}
+
+#[test]
+fn recover_through_a_relay_url_needs_a_terminal_and_asks_the_relay_nothing() {
+    let data = TempDir::new("device-refuse-relay-data");
+    let relay = Relay::start(data.path(), &[FINGERPRINT], &[]);
+    let line = format!("scope.personal.sync = {}", relay.url());
+    for (name, who, store) in [
+        ("device-refuse-relay-bare", None, false),
+        ("device-refuse-relay-enrolled", Some("rivendell"), true),
+    ] {
+        let m = Machine::new(name, who, store, &[&line]);
+        let before = m.tree();
+        for marks in MARKS {
+            let run = m.device_with(marks, &["recover", "--name", "rivendell"]);
+            if who.is_some() {
+                assert_eq!(run.code, 2, "{}", run.stderr);
+                assert!(run.stderr.contains("--name"), "{}", run.stderr);
+            } else {
+                refused(&run, "bilbo device recover needs a terminal");
+            }
+            let run = m.device_with(marks, &["recover"]);
+            if who.is_none() {
+                refused(&run, "bilbo device recover needs a terminal");
+            }
+        }
+        assert_eq!(m.tree(), before);
+    }
+    assert!(!data.path().join("scopes").exists());
+    assert_eq!(relay.lines().len(), 1, "{:?}", relay.lines());
 }
 
 #[test]

@@ -31,9 +31,6 @@ pub struct Output {
 const UNSEALED: &str =
     "copy the store from an enrolled device, then run bilbo device recover again";
 
-/// What `recover` tells it: the same, or pairing with a device that syncs the scope.
-const UNSEALED_RECOVER: &str = "copy the store from an enrolled device, then run bilbo device recover again, or run bilbo pair with a device that syncs it";
-
 enum Form {
     Show,
     List,
@@ -726,10 +723,9 @@ fn recover<P: Prompter>(
     }
     let named: BTreeSet<String> = rows.iter().map(|r| r.name.clone()).collect();
     for s in syncing(&cx.settings).filter(|s| !named.contains(&s.name)) {
-        let row = fetched
-            .rows
-            .remove(&s.name)
-            .unwrap_or_else(|| Row::new(&s.name, "unsealed", UNSEALED_RECOVER.into()));
+        let Some(row) = fetched.rows.remove(&s.name) else {
+            continue;
+        };
         failed |= row.status == "failed";
         rows.push(row);
     }
@@ -761,8 +757,8 @@ fn all_pending(k: &Known) -> bool {
     last > 0 && (1..=last).all(|n| k.scope.pending.contains(&n))
 }
 
-/// For each syncing scope with a `file://` URL and no local manifest, or only pending versions the folder does not
-/// hold, copies in the chain of the owner's scope of that name from the folder, moving the pending versions aside.
+/// For each syncing scope with no local manifest, or only pending versions its transport does not hold, copies in
+/// the chain of the owner's scope of that name from the transport, moving the pending versions aside.
 /// `warnings` gets the stderr lines.
 fn fetch(
     cx: &Cx,
@@ -777,7 +773,7 @@ fn fetch(
         partial: BTreeSet::new(),
     };
     let mut listings: BTreeMap<String, Result<scopes::Listing, String>> = BTreeMap::new();
-    for s in syncing(&cx.settings).filter(|s| s.sync.starts_with("file://")) {
+    for s in syncing(&cx.settings) {
         let local: Vec<&Known> = known
             .iter()
             .filter(|k| k.mine && named_by(k, owner).as_deref() == Some(&s.name))
@@ -970,6 +966,7 @@ mod tests {
     use std::fs;
     use std::os::unix::fs::PermissionsExt;
     use std::path::PathBuf;
+    use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     const PERSONAL: &str = "scope.personal.sync = file:///Users/a/Sync/bilbo\n";
@@ -2275,17 +2272,151 @@ mod tests {
         assert!(!out.failed);
     }
 
+    /// A relay admitting the all-`abandon` owner, on `listen`.
+    fn relay_at(w: &World, listen: &str) -> crate::relay::Running {
+        let flags = crate::relay::Flags {
+            data: w.0.join("relay"),
+            owners: vec![keys::owner_fingerprint(
+                &Owner::derive(&[0; 16]).sign.public(),
+            )],
+            listen: listen.parse().unwrap(),
+            max_scopes: 16,
+            max_scope_mb: 1024,
+            max_object_mb: 16,
+        };
+        crate::relay::start(flags, crate::relay::system_clock(), Arc::new(|_: &str| {})).unwrap()
+    }
+
+    fn relay_for(w: &World) -> crate::relay::Running {
+        relay_at(w, "127.0.0.1:0")
+    }
+
+    /// Copies the versions of scope `sid` of `from`'s store onto the relay, as a device that synced it would.
+    fn publish_to_relay(from: &World, sid: &str, url: &str) {
+        let keys = transport::Keys {
+            device: &bagend().device,
+            owner: None,
+            opener: false,
+        };
+        let t = transport::open(url, &keys).unwrap();
+        for v in &manifest::read_scope(&from.root(), sid).unwrap().versions {
+            let path = transport::manifest_path(sid, v.manifest.n);
+            assert_eq!(t.create(&path, &v.bytes), transport::Put::Created);
+        }
+    }
+
     #[test]
-    fn a_relay_url_is_told_to_bring_the_manifest() {
-        let w = world("relay");
-        w.config(&format!("scope.personal.sync = {RELAY}\n"));
+    fn a_fresh_machine_reports_a_relay_with_no_scope_of_its_owner_unsealed() {
+        let w = world("relay_fresh");
+        let relay = relay_for(&w);
+        let url = relay.url();
+        w.config(&format!("scope.personal.sync = {url}\n"));
         let (out, _) = recovered(&w, "bagend");
+        assert_eq!(out.lines.len(), 3);
         assert_eq!(
             out.lines[2],
-            format!("scope personal unsealed: {UNSEALED_RECOVER}")
+            format!(
+                "scope personal unsealed: {url} holds no scope personal of this owner; run bilbo device init to create it"
+            )
         );
         assert!(!store::scopes_dir(&w.root()).exists());
         assert!(!out.failed);
+    }
+
+    #[test]
+    fn every_device_lost_the_relays_chain_is_copied_and_extended() {
+        let w = world("relay_every_lost");
+        let relay = relay_for(&w);
+        let url = relay.url();
+        w.config(&format!("scope.personal.sync = {url}\n"));
+        let src = world("relay_every_lost_src");
+        let sid = scope(&src, &bagend(), "personal", &url);
+        join(&src, &rivendell());
+        publish_to_relay(&src, &sid, &url);
+        let (out, _) = recovered(&w, "rivendell-2");
+        assert_eq!(
+            out.lines[2],
+            format!("scope personal updated: {sid} manifest 3 epoch 1")
+        );
+        assert!(!out.failed && out.warnings.is_empty(), "{:?}", out.warnings);
+        assert_eq!(w.scope_ids(), std::slice::from_ref(&sid));
+        let read = manifest::read_scope(&w.root(), &sid).unwrap();
+        assert_eq!(read.versions.len(), 3);
+        assert_eq!(read.pending, BTreeSet::from([3]));
+        for n in 1..=2u64 {
+            let theirs = manifest::read_scope(&src.root(), &sid).unwrap().versions
+                [(n - 1) as usize]
+                .bytes
+                .clone();
+            assert_eq!(read.versions[(n - 1) as usize].bytes, theirs);
+        }
+    }
+
+    #[test]
+    fn a_dead_end_fork_moves_aside_and_the_relays_scope_is_joined() {
+        let w = world("relay_dead_end");
+        let relay = relay_for(&w);
+        let url = relay.url();
+        w.config(&format!("scope.personal.sync = {url}\n"));
+        let fork = scope(&w, &rivendell(), "personal", &url);
+        w.enroll(&rivendell());
+        let src = world("relay_dead_end_src");
+        let sid = scope(&src, &bagend(), "personal", &url);
+        publish_to_relay(&src, &sid, &url);
+        let (out, _) = w.ok(&["recover"], true, answers_of(0));
+        assert!(
+            out.lines
+                .contains(&format!("scope personal updated: {sid} manifest 2 epoch 1"))
+        );
+        assert!(
+            w.root()
+                .join(format!(".bilbo/scopes/{fork}/manifest/lost/1.json"))
+                .exists()
+        );
+    }
+
+    #[test]
+    fn a_relay_that_does_not_answer_fails_the_scope_and_a_rerun_finishes_it() {
+        let w = world("relay_down");
+        let relay = relay_for(&w);
+        let (url, port) = (relay.url(), relay.port);
+        w.config(&format!("scope.personal.sync = {url}\n"));
+        let src = world("relay_down_src");
+        let sid = scope(&src, &bagend(), "personal", &url);
+        publish_to_relay(&src, &sid, &url);
+        drop(relay);
+        let (out, _) = recovered(&w, "rivendell-2");
+        assert!(out.failed);
+        assert!(
+            out.lines[2].starts_with(&format!("scope personal failed: {url} is not reachable: ")),
+            "{}",
+            out.lines[2]
+        );
+        assert!(keys::read_identity(&w.keys()).unwrap().is_some());
+        assert!(!store::scopes_dir(&w.root()).exists());
+        let _relay = relay_at(&w, &format!("127.0.0.1:{port}"));
+        let (out, _) = w.ok(&["recover"], true, answers_of(0));
+        assert!(out.lines[1].starts_with("device kept: rivendell-2 "));
+        assert!(
+            out.lines
+                .contains(&format!("scope personal updated: {sid} manifest 2 epoch 1"))
+        );
+        assert!(!out.failed);
+    }
+
+    #[test]
+    fn only_the_relay_scopes_the_config_names_are_copied() {
+        let w = world("relay_only_named");
+        let relay = relay_for(&w);
+        let url = relay.url();
+        w.config(&format!("scope.personal.sync = {url}\n"));
+        let src = world("relay_only_named_src");
+        let personal = scope(&src, &bagend(), "personal", &url);
+        let shared = scope(&src, &bagend(), "shared", &url);
+        publish_to_relay(&src, &personal, &url);
+        publish_to_relay(&src, &shared, &url);
+        recovered(&w, "rivendell-2");
+        assert_eq!(w.scope_ids(), std::slice::from_ref(&personal));
     }
 
     #[test]
