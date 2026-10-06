@@ -93,6 +93,11 @@ impl<'a> Keys<'a> {
     }
 }
 
+/// Whether `url` names a relay: `https://`, or `http://` to a loopback host.
+pub fn is_relay_url(url: &str) -> bool {
+    url.starts_with("https://") || (url.starts_with("http://") && config::is_local(url))
+}
+
 /// The transport for `url`, acting for `keys`.
 pub fn open(url: &str, keys: &Keys) -> Result<Box<dyn Transport>, String> {
     if let Some(path) = url.strip_prefix("file://") {
@@ -105,7 +110,7 @@ pub fn open(url: &str, keys: &Keys) -> Result<Box<dyn Transport>, String> {
             Err(format!("{url} is not an absolute path"))
         };
     }
-    if url.starts_with("https://") || (url.starts_with("http://") && config::is_local(url)) {
+    if is_relay_url(url) {
         return remote::open(url, keys).map(|relay| Box::new(relay) as Box<dyn Transport>);
     }
     let scheme = url.split("://").next().unwrap_or(url);

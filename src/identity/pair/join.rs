@@ -233,7 +233,7 @@ fn folder_of(via: &str) -> Result<Option<&str>, Failure> {
             )))
         };
     }
-    if via.starts_with("https://") || (via.starts_with("http://") && config::is_local(via)) {
+    if transport::is_relay_url(via) {
         return Ok(None);
     }
     if via.starts_with("http://") {
