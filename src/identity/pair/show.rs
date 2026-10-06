@@ -265,10 +265,7 @@ fn check(cx: &mut Cx, scopes: &[String], via: Option<&str>) -> Result<Plan, Fail
                     "no scope paired syncs through {via}"
                 )));
             }
-            if let Some(other) = paired
-                .iter()
-                .find(|s| s.sync != via && !s.sync.starts_with("https://"))
-            {
+            if let Some(other) = paired.iter().find(|s| s.sync != via && !is_relay(&s.sync)) {
                 return Err(Failure::Usage(format!(
                     "scope {} syncs through {}, not {via}; pair it apart with --scope",
                     other.name, other.sync
@@ -375,6 +372,11 @@ fn fits(id: &Identity, chosen: &[Chosen]) -> Result<(), Failure> {
     })
 }
 
+/// Whether `url` names a relay (`https://`, or the loopback `http://` the config allows) rather than a folder.
+fn is_relay(url: &str) -> bool {
+    url.starts_with("https://") || url.starts_with("http://")
+}
+
 /// Claims a mailbox by creating its `a.msg`.
 fn claim(t: &dyn Transport, url: &str) -> Result<(Code, pake::Shown), Failure> {
     for _ in 0..CLAIMS {
@@ -383,7 +385,8 @@ fn claim(t: &dyn Transport, url: &str) -> Result<(Code, pake::Shown), Failure> {
         match t.create(&transport::message_path(&code.nameplate(), "a"), &a_msg) {
             Put::Created => return Ok((code, shown)),
             Put::Exists => {}
-            Put::Full(why) | Put::Unreachable(why) => {
+            Put::Full(why) => return Err(Failure::Refused(why)),
+            Put::Unreachable(why) => {
                 return Err(Failure::Refused(format!(
                     "cannot create a pairing mailbox at {url}: {why}"
                 )));
@@ -1203,13 +1206,6 @@ mod tests {
         w.config(&many);
         let (refused, message) = refusal(&w, &[]);
         assert!(!refused && message.contains("at most 12") && message.contains("--scope"));
-        // A loopback relay beside a folder.
-        w.config(&format!(
-            "scope.personal.sync = {url}\nscope.uber.sync = http://127.0.0.1:8081\n"
-        ));
-        let (refused, message) = refusal(&w, &["--via", &url]);
-        assert!(!refused);
-        assert!(message.contains("scope uber syncs through http://127.0.0.1:8081"));
         // A scope with no manifest this device can extend.
         w.config(&format!("scope.personal.sync = {url}\n"));
         assert_eq!(
@@ -1301,5 +1297,61 @@ mod tests {
             panic!("no payload");
         };
         assert_eq!(payload.scopes[0].embedder, "local");
+    }
+
+    /// A transport whose mailbox is full.
+    struct Full;
+
+    impl Transport for Full {
+        fn create(&self, _: &str, _: &[u8]) -> Put {
+            Put::Full("relay http://r has no room for a pairing now; try again later".into())
+        }
+        fn reachable(&self) -> Result<(), String> {
+            unreachable!()
+        }
+        fn keeps(&self) -> bool {
+            unreachable!()
+        }
+        fn scopes(&self) -> Result<Vec<String>, String> {
+            unreachable!()
+        }
+        fn devices(&self, _: &str) -> Result<Vec<String>, String> {
+            unreachable!()
+        }
+        fn list_after(&self, _: &str, _: &str, _: u64) -> Result<Vec<u64>, String> {
+            unreachable!()
+        }
+        fn probe(&self, _: &str, _: &str, _: u64) -> Result<Vec<u64>, String> {
+            unreachable!()
+        }
+        fn get(&self, _: &str) -> Result<Option<Vec<u8>>, String> {
+            unreachable!()
+        }
+        fn highest_manifest(&self, _: &str) -> Result<Option<u64>, String> {
+            unreachable!()
+        }
+        fn replace(&self, _: &str, _: &[u8]) -> Result<(), String> {
+            unreachable!()
+        }
+        fn sweep(&self, _: SystemTime) -> Result<(), String> {
+            unreachable!()
+        }
+        fn remove_mailbox(&self, _: &str) -> Result<(), String> {
+            unreachable!()
+        }
+        fn sweep_mailboxes(&self, _: SystemTime, _: Duration) -> Result<(), String> {
+            unreachable!()
+        }
+    }
+
+    #[test]
+    fn a_full_mailbox_is_reported_in_the_relays_own_words() {
+        let Err(Failure::Refused(why)) = claim(&Full, "http://r") else {
+            panic!("a full mailbox must refuse");
+        };
+        assert_eq!(
+            why,
+            "relay http://r has no room for a pairing now; try again later"
+        );
     }
 }

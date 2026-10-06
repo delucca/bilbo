@@ -75,7 +75,8 @@ pub trait Transport: Send {
 /// Who a transport acts for. A folder uses only the device's id; a relay signs its requests with these keys.
 pub struct Keys<'a> {
     pub device: &'a Device,
-    /// Signs a relay's scope listing and manifest reads when present; the device key signs everything else.
+    /// Signs a relay's scope listing, its manifest reads and the creates of manifest versions that do not list the
+    /// device, when present; the device key signs everything else.
     pub owner: Option<&'a SignKey>,
     /// Whether mailbox requests are signed: on the device that shows a pairing code, never on the one that answers.
     pub opener: bool,

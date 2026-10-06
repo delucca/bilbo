@@ -137,11 +137,24 @@ fn base(url: &str) -> Result<String, String> {
     }
 }
 
+/// Words for the common certificate failures, whose text rustls prints as the variant's name; the rest stay raw.
+fn certificate_reason(raw: &str) -> &str {
+    if raw.starts_with("NotValidForName") {
+        "not valid for this host name"
+    } else if raw.starts_with("Expired") {
+        "expired"
+    } else if raw.starts_with("UnknownIssuer") {
+        "issuer not trusted"
+    } else {
+        raw
+    }
+}
+
 /// The fault a failed send is: a certificate the roots do not vouch for, or an unreachable relay.
 fn fault(error: &ureq::Error) -> Fault {
     let text = error.to_string();
     if let Some((_, why)) = text.split_once("invalid peer certificate: ") {
-        return Fault::Certificate(why.to_string());
+        return Fault::Certificate(certificate_reason(why).to_string());
     }
     Fault::Unreachable(match error {
         ureq::Error::Io(e) => e.to_string(),
@@ -196,7 +209,8 @@ fn exchange(
     let body = response
         .body_mut()
         .with_config()
-        .limit(OBJECT_MAX)
+        // ureq's limit is exclusive: a body of exactly the limit fails, so one more byte lets `OBJECT_MAX` through.
+        .limit(OBJECT_MAX + 1)
         .read_to_vec()
         .map_err(|e| fault(&e))?;
     Ok(Reply {
@@ -274,7 +288,8 @@ fn is_manifest(path: &str) -> bool {
 
 impl Relay {
     /// The key that signs a request for `path`: the owner's for the scope listing, manifest reads and the create of a
-    /// manifest version that does not list this device, when held; the device's for the rest of `scopes/`, and the device's on a mailbox only for the device that shows the code.
+    /// manifest version that does not list this device, when held; the device's for the rest of `scopes/`, and the
+    /// device's on a mailbox only for the device that shows the code.
     fn who(&self, method: &str, path: &str, body: &[u8]) -> Who {
         if path.starts_with("pair/") {
             return if self.opener {
@@ -341,7 +356,10 @@ impl Relay {
         let url = &self.url;
         match (reply.status, reply.reason()) {
             (403, "not-admitted") => {
-                let owner = self.owner.as_ref().filter(|_| who == Who::Owner);
+                let owner = self
+                    .owner
+                    .as_ref()
+                    .filter(|_| who == Who::Owner || is_manifest(path));
                 match (who, owner) {
                     (_, Some(owner)) => format!(
                         "relay {url} does not admit this owner; start it with --owner {}",
@@ -962,18 +980,65 @@ mod tests {
 
     #[test]
     fn a_certificate_the_roots_do_not_vouch_for_is_named() {
-        let error = ureq::Error::Io(std::io::Error::other(
-            "invalid peer certificate: UnknownIssuer",
-        ));
-        let text = fault(&error).text("https://relay.example");
-        assert_eq!(
-            text,
-            "relay https://relay.example: certificate not trusted: UnknownIssuer"
-        );
+        let text = |raw: &str| {
+            let error = ureq::Error::Io(std::io::Error::other(format!(
+                "invalid peer certificate: {raw}"
+            )));
+            fault(&error).text("https://relay.example")
+        };
+        let prefix = "relay https://relay.example: certificate not trusted: ";
+        for (raw, words) in [
+            ("UnknownIssuer", "issuer not trusted"),
+            ("NotValidForName", "not valid for this host name"),
+            (
+                "NotValidForNameContext { expected: x, presented: [] }",
+                "not valid for this host name",
+            ),
+            ("Expired", "expired"),
+            ("ExpiredContext { time: x, not_after: y }", "expired"),
+            (
+                "Other(OtherError(CaUsedAsEndEntity))",
+                "Other(OtherError(CaUsedAsEndEntity))",
+            ),
+        ] {
+            assert_eq!(text(raw), format!("{prefix}{words}"), "{raw}");
+        }
         let other = fault(&ureq::Error::HostNotFound).text("https://relay.example");
         assert_eq!(
             other,
             "relay https://relay.example unreachable: host not found"
+        );
+    }
+
+    #[test]
+    fn an_object_of_exactly_the_cap_is_read_and_one_more_byte_is_not() {
+        let size = Arc::new(AtomicUsize::new(OBJECT_MAX as usize));
+        let sized = size.clone();
+        let fake = Fake::start(move |_| answer(200, &"x".repeat(sized.load(Ordering::SeqCst))));
+        let relay = client(&fake, false, false);
+        let got = relay.get(&segment(1)).unwrap().unwrap();
+        assert_eq!(got.len() as u64, OBJECT_MAX);
+        size.store(OBJECT_MAX as usize + 1, Ordering::SeqCst);
+        assert!(relay.get(&segment(1)).is_err());
+    }
+
+    #[test]
+    fn a_manifest_refusal_names_the_owner_whoever_signed_when_the_owner_key_is_held() {
+        let fake = Fake::start(|_| refuse(403, "not-admitted"));
+        let url = fake.url();
+        let fingerprint = keys::owner_fingerprint(&owner().public());
+        let with = client(&fake, true, false);
+        for listed in [true, false] {
+            assert_eq!(
+                with.create(&manifest(3), &listing(listed)),
+                Put::Unreachable(format!(
+                    "relay {url} does not admit this owner; start it with --owner {fingerprint}"
+                ))
+            );
+        }
+        assert_eq!(
+            client(&fake, false, false).create(&manifest(3), &listing(true)),
+            Put::Unreachable(format!("relay {url} does not admit this device"))
         );
     }
 
@@ -1065,7 +1130,10 @@ mod tests {
         );
         assert_eq!(
             put(403, "not-admitted", &manifest(4)),
-            Put::Unreachable(format!("relay {url} does not admit this device"))
+            Put::Unreachable(format!(
+                "relay {url} does not admit this owner; start it with --owner {}",
+                keys::owner_fingerprint(&owner().public())
+            ))
         );
         assert_eq!(
             put(403, "invalid", &segment(1)),
