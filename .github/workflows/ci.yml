@@ -26,15 +26,17 @@ jobs:
         with:
           components: clippy, rustfmt
 
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
       - name: Format
         run: cargo fmt --check
 
       - name: Clippy
         run: cargo clippy --locked --all-targets -- -D warnings
 
-      - name: Test
-        run: cargo test --locked
-
+      # The nix job runs the tests at the real version.
       - name: Test at a bumped version
         run: |
           sed -i 's/^version = ".*"$/version = "99.99.99"/' Cargo.toml
@@ -53,8 +55,20 @@ jobs:
 
       - uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31.11.1
 
+      - uses: nix-community/cache-nix-action@7df957e333c1e5da7721f60227dbba6d06080569 # v7.0.2
+        with:
+          primary-key: nix-${{ runner.os }}-${{ hashFiles('flake.nix', 'flake.lock', 'Cargo.toml', 'Cargo.lock') }}
+          restore-prefixes-first-match: nix-${{ runner.os }}-
+          save: ${{ github.ref == 'refs/heads/main' }}
+          gc-max-store-size-linux: 0
+
       - name: Flake check
         run: nix flake check -L
+
+      # The cache keeps only what this root holds after garbage collection.
+      - name: Root the dependencies
+        if: github.ref == 'refs/heads/main'
+        run: nix build --out-link deps .#bilbo.cargoArtifacts
 
       - name: Evaluate aarch64-darwin
         run: nix eval --raw .#packages.aarch64-darwin.default.drvPath

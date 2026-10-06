@@ -87,8 +87,9 @@ failures say what to change. Beyond it:
   the `land` lock, `<root>/library/.lock`, is one: never list or remove it.
 - `flake.nix` builds from a `lib.fileset`: a new file the build or the tests
   read must join it, or `nix flake check` fails while cargo passes.
-- CI reruns the tests with the version bumped to 99.99.99. Read the version
-  from `env!("CARGO_PKG_VERSION")` in tests, never a literal.
+- CI's verify job runs the tests with the version bumped to 99.99.99, and
+  its nix job at the real version. Read the version from
+  `env!("CARGO_PKG_VERSION")` in tests, never a literal.
 - Bump the Rust pin in `ci.yml` (1.95.0) with `rust-version` in `Cargo.toml`.
   A `flake.lock` bump moves the dev shell's toolchain and can bring new lints.
 - CI runs on Linux: it skips the macOS-only tests in `src/host/timer.rs`,
