@@ -404,8 +404,8 @@ terminal emulator, swap and the prompt library's line buffers are not covered.
 refuses once the store holds another owner's manifests. For everyday use,
 [pair](#pairing-a-device) the machine with one that is enrolled; the phrase
 below is for when none is left. When the
-scope's `sync` is a `file://` folder, set it in the config and run
-`bilbo device recover`: it copies the owner's scope from the folder, as
+scope's `sync` is a `file://` folder or a [relay](#relay) URL, set it in the
+config and run `bilbo device recover`: it copies the owner's scope from there, as
 [Sync](#a-second-device) describes. Otherwise copy the store to the new machine
 first, with the sync tool you already use or a plain copy, then run
 `bilbo device recover` and type the phrase. recover shows the
@@ -441,7 +441,8 @@ The code is a number and three words. Case, spaces for hyphens and the first
 four letters of a word are all accepted: `"42 ORBI tunn velvet"` is the same
 code. `--via` is the folder's path on the new device, which differs from the
 path on the first one, and bilbo writes it to the new device's config as the
-scope's `sync`. The first device pairs every syncing scope, or only the ones
+scope's `sync`; with a relay it is the relay's URL, as the first device
+shows it. The first device pairs every syncing scope, or only the ones
 `--scope <name>` names, up to 12; `--scope` picks which scopes the new device
 can read. Scopes on different folders need one `bilbo pair --scope <name>...`
 each, naming the scopes of one folder; bilbo refuses and names both URLs when
@@ -545,8 +546,8 @@ server, unless you run a [relay](#relay) and sync through its `https://` URL.
    the phrase; see [The ceremony](#the-ceremony). It writes the scope's
    manifest.
 3. Make sure `bilbo watch` runs, which `bilbo setup` installs. It syncs the
-   scope from then on. The wizard asks for the scope, the folder and the keys
-   in one go, and writes the config line.
+   scope from then on. The wizard asks for the scope, the folder or [relay](#relay)
+   URL and the keys in one go, and writes the config line.
 4. Give the notes the scope. A note syncs only when its `scope:` line names a
    scope whose `sync` is a URL, so turning sync on uploads nothing until you
    assign notes; triage the store as in [Scopes](#scopes).
@@ -758,8 +759,11 @@ The relay prints `relay listening on http://127.0.0.1:8738` once it is ready.
 A limit is a whole number from 1 to 1,048,576. A request over one is refused
 and the device reports it on the scope's line in `bilbo sync`. The relay allows
 256 connections at once, closes one that has not sent its request line and
-headers 10 seconds after it was accepted, and logs one line per object
-created, never an address, a header, a body or a pairing code.
+headers 10 seconds after it was accepted, one whose body sends nothing for 30
+seconds, and any that is not finished 300 seconds after it was accepted. It
+logs one line per object created and per refusal of a device it knows, and a
+count of the other refusals once a minute, never an address, a header, a body
+or a pairing code.
 
 #### On NixOS
 
@@ -862,7 +866,7 @@ clients before they reach the relay:
 		max_header_size 16KB
 		timeouts {
 			read_header 10s
-			read_body 30s
+			read_body 5m
 		}
 	}
 }
@@ -887,9 +891,9 @@ the URL on each device, as for a folder:
 scope.personal.sync = https://bagend.tail1234.ts.net
 ```
 
-`bilbo setup` takes the URL in its sync step as well, and checks that a relay
-answers there. `bilbo watch` publishes the scope's manifest on its first cycle.
-A device whose clock is off by more than a minute is told so on the scope's
+`bilbo setup` takes the URL at its `Folder or relay URL to sync through`
+prompt, and checks that a relay answers there. `bilbo watch` publishes the scope's manifest on its first cycle.
+A device whose clock is off by more than 5 minutes is told so on the scope's
 line; fix the clock.
 
 A relay that is down only pauses sync: every device keeps working locally,
@@ -922,7 +926,7 @@ Stop the relay before touching it, and start it again after.
   flags answers `not-admitted`, so give the relay that owner again.
 
 The relay never edits or deletes a stored object. The data folder grows until
-a scope reaches `--max-scope-mb`; then devices report the scope as full.
+a scope reaches `--max-scope-mb`; then devices report `relay <url> is full` for the scope.
 
 #### Pairing and recovering through a relay
 
