@@ -601,6 +601,14 @@ mod tests {
         }
     }
 
+    /// `quick`'s deadlines, with `limits`' window for a pairing whose other side answers.
+    fn answered() -> Limits {
+        Limits {
+            window: limits().window,
+            ..quick()
+        }
+    }
+
     struct Run {
         result: Result<(), (u8, String)>,
         out: Vec<String>,
@@ -975,7 +983,7 @@ mod tests {
                 .join(format!("scopes/{}/manifest/2.json", f.scope.id)),
         )
         .unwrap();
-        let run = pair(&f.w, CODE, Some("mirkwood"), &quick(), |h| {
+        let run = pair(&f.w, CODE, Some("mirkwood"), &answered(), |h| {
             let (session, _) = h.unwrap();
             let grants = vec![grant(&f.scope, 2, "any")];
             send(&f.w, &enrolled(&payload(&f.a, grants, true), &session));
@@ -1014,7 +1022,7 @@ mod tests {
     /// Runs a pairing whose payload `tamper` changes, with the transport as `fresh` left it.
     fn tampered(name: &str, tamper: impl FnOnce(&Fresh, &mut Payload)) -> (Fresh, Run) {
         let f = fresh(name);
-        let run = pair(&f.w, CODE, Some("mirkwood"), &quick(), |h| {
+        let run = pair(&f.w, CODE, Some("mirkwood"), &answered(), |h| {
             let (session, _) = h.unwrap();
             let mut sent = payload(&f.a, vec![grant(&f.scope, 2, "any")], true);
             tamper(&f, &mut sent);
@@ -1075,7 +1083,7 @@ mod tests {
         keys::pending_device(&w.pending(), "mirkwood").unwrap();
         let scope = scope_for(&w, &a, None);
         publish(&w, &scope, 1);
-        let run = pair(&w, CODE, Some("mirkwood"), &quick(), |h| {
+        let run = pair(&w, CODE, Some("mirkwood"), &answered(), |h| {
             let (session, _) = h.unwrap();
             let grants = vec![grant(&scope, 1, "any")];
             send(&w, &enrolled(&payload(&a, grants, true), &session));
@@ -1275,7 +1283,7 @@ mod tests {
         keys::write_identity(&w.keys(), &Owner::derive(&[0; 16]).file(), &b).unwrap();
         let scope = scope_for(&w, &a, Some(&b));
         publish(&w, &scope, 2);
-        let run = pair(&w, CODE, None, &quick(), |h| {
+        let run = pair(&w, CODE, None, &answered(), |h| {
             let (session, _) = h.unwrap();
             let mut sent = payload(&a, vec![grant(&scope, 2, "any")], false);
             sent.seed = Some(Zeroizing::new(*Owner::derive(&[1; 16]).sign.seed()));
