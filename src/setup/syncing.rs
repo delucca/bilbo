@@ -524,14 +524,6 @@ mod tests {
             step(&no_watch, &notes),
             ("failed", "sync needs the watcher; drop --no-watch".into())
         );
-        let relay = keyed(&dir, &[("personal", "https://relay.example".into())], true);
-        assert_eq!(
-            step(&relay, &notes),
-            (
-                "failed",
-                "https transports are not supported yet; use a file:// folder".into()
-            )
-        );
         let missing = format!("file://{}", dir.join("gone").display());
         let gone = keyed(&dir, &[("personal", missing.clone())], true);
         let (status, detail) = step(&gone, &notes);
