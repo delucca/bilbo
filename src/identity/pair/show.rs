@@ -28,6 +28,8 @@ struct Chosen {
     /// The newest version A would have once B is listed, and its hash as far as the size of the message goes.
     n: u64,
     hash: [u8; 32],
+    /// The URL the scope syncs through on A, as written.
+    url: String,
 }
 
 /// What the checks before the mailbox settle.
@@ -265,7 +267,7 @@ fn check(cx: &mut Cx, scopes: &[String], via: Option<&str>) -> Result<Plan, Fail
             }
             if let Some(other) = paired
                 .iter()
-                .find(|s| s.sync.starts_with("file://") && s.sync != via)
+                .find(|s| s.sync != via && !s.sync.starts_with("https://"))
             {
                 return Err(Failure::Usage(format!(
                     "scope {} syncs through {}, not {via}; pair it apart with --scope",
@@ -285,15 +287,6 @@ fn check(cx: &mut Cx, scopes: &[String], via: Option<&str>) -> Result<Plan, Fail
             paired[0].sync.clone()
         }
     };
-    if let Some(far) = std::iter::once(&url)
-        .chain(paired.iter().map(|s| &s.sync))
-        .find(|u| !u.starts_with("file://"))
-    {
-        let scheme = far.split("://").next().unwrap_or(far);
-        return Err(Failure::Refused(format!(
-            "this bilbo cannot reach {scheme}:// transports yet"
-        )));
-    }
     if !cx.human {
         return Err(Failure::Refused(
             "pairing is confirmed only in a terminal, by the user".into(),
@@ -318,6 +311,7 @@ fn check(cx: &mut Cx, scopes: &[String], via: Option<&str>) -> Result<Plan, Fail
             embedder: scope.embedder.as_str(),
             n: latest.manifest.n + 1,
             hash: hash::sha256(&latest.bytes),
+            url: scope.sync.clone(),
         });
     }
     fits(&id, &chosen)?;
@@ -450,17 +444,24 @@ fn enroll(plan: &Plan, mailbox: &Mailbox, member: &Member) -> Result<Vec<Grant>,
         if let Some(invalid) = &scope.invalid {
             return Err(format!("scope {} is not valid: {invalid}", chosen.name));
         }
+        let own;
+        let t: &dyn Transport = if chosen.url == mailbox.url {
+            &*mailbox.t
+        } else {
+            own = transport::open(&chosen.url, &transport::Keys::of(&plan.id))?;
+            &*own
+        };
         for version in &scope.versions {
             let path = transport::manifest_path(&scope.id, version.manifest.n);
             let moved = || {
                 format!(
                     "the {} manifest on {} moved on; let bilbo watch catch up, then pair again",
-                    chosen.name, mailbox.url
+                    chosen.name, chosen.url
                 )
             };
-            match mailbox.t.create(&path, &version.bytes) {
+            match t.create(&path, &version.bytes) {
                 Put::Created => {}
-                Put::Exists => match mailbox.t.get(&path)? {
+                Put::Exists => match t.get(&path)? {
                     Some(there) if there == version.bytes => {}
                     _ => return Err(moved()),
                 },
@@ -474,7 +475,7 @@ fn enroll(plan: &Plan, mailbox: &Mailbox, member: &Member) -> Result<Vec<Grant>,
             embedder: chosen.embedder.to_string(),
             n: latest.manifest.n,
             hash: hash::sha256(&latest.bytes),
-            url: None,
+            url: (chosen.url != mailbox.url).then(|| chosen.url.clone()),
         });
     }
     Ok(grants)
@@ -1202,24 +1203,13 @@ mod tests {
         w.config(&many);
         let (refused, message) = refusal(&w, &[]);
         assert!(!refused && message.contains("at most 12") && message.contains("--scope"));
-        // A relay.
-        w.config("scope.personal.sync = https://relay.example\n");
-        assert_eq!(
-            refusal(&w, &[]),
-            (
-                true,
-                "this bilbo cannot reach https:// transports yet".into()
-            )
-        );
-        // A loopback relay names its own scheme.
-        w.config("scope.personal.sync = http://127.0.0.1:8081\n");
-        assert_eq!(
-            refusal(&w, &[]),
-            (
-                true,
-                "this bilbo cannot reach http:// transports yet".into()
-            )
-        );
+        // A loopback relay beside a folder.
+        w.config(&format!(
+            "scope.personal.sync = {url}\nscope.uber.sync = http://127.0.0.1:8081\n"
+        ));
+        let (refused, message) = refusal(&w, &["--via", &url]);
+        assert!(!refused);
+        assert!(message.contains("scope uber syncs through http://127.0.0.1:8081"));
         // A scope with no manifest this device can extend.
         w.config(&format!("scope.personal.sync = {url}\n"));
         assert_eq!(
