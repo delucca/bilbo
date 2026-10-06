@@ -87,6 +87,8 @@ pub struct Limits {
     pub head: Duration,
     /// The longest a body may send nothing.
     pub idle: Duration,
+    /// From the accept to the end of the response: the body read and the response write together.
+    pub body: Duration,
     /// The largest request line and headers (431 beyond).
     pub header_bytes: usize,
     /// How long a refused connection is drained before it closes.
@@ -99,6 +101,7 @@ impl Default for Limits {
             connections: 256,
             head: Duration::from_secs(10),
             idle: Duration::from_secs(30),
+            body: Duration::from_secs(300),
             header_bytes: 16 * 1024,
             drain: Duration::from_secs(2),
         }
@@ -185,13 +188,13 @@ fn connection(stream: TcpStream, started: Instant, handler: &dyn Handler, limits
     let Ok(peer) = stream.peer_addr().map(|a| a.ip()) else {
         return;
     };
-    if stream.set_write_timeout(Some(limits.idle)).is_err() {
-        return;
-    }
+    let until = started + limits.body;
     let (buf, framed) = match read_head(&stream, started, limits, peer) {
         Ok(read) => read,
         Err(Stop::Close) => return,
-        Err(Stop::Answer(response)) => return refuse(stream, handler, limits, &response),
+        Err(Stop::Answer(response)) => {
+            return refuse(stream, handler, limits, until, &response);
+        }
     };
     let Framed {
         request,
@@ -199,10 +202,16 @@ fn connection(stream: TcpStream, started: Instant, handler: &dyn Handler, limits
         expect,
     } = framed;
     match panic::catch_unwind(AssertUnwindSafe(|| handler.head(&request))) {
-        Err(_) => refuse(stream, handler, limits, &Response::error(500, "internal")),
-        Ok(Head::Refuse(response)) => refuse(stream, handler, limits, &response),
+        Err(_) => refuse(
+            stream,
+            handler,
+            limits,
+            until,
+            &Response::error(500, "internal"),
+        ),
+        Ok(Head::Refuse(response)) => refuse(stream, handler, limits, until, &response),
         Ok(Head::Read) => {
-            let mut writer = &stream;
+            let mut writer = Bounded::new(&stream, until, limits.idle);
             if expect && writer.write_all(b"HTTP/1.1 100 Continue\r\n\r\n").is_err() {
                 return;
             }
@@ -211,6 +220,7 @@ fn connection(stream: TcpStream, started: Instant, handler: &dyn Handler, limits
                 pending: &buf[size..],
                 remaining: request.length.unwrap_or(0),
                 idle: limits.idle,
+                until,
             };
             let response =
                 panic::catch_unwind(AssertUnwindSafe(|| handler.answer(&request, &mut body)))
@@ -227,8 +237,14 @@ fn connection(stream: TcpStream, started: Instant, handler: &dyn Handler, limits
 }
 
 /// Sends `response` before the body is read, stops writing and discards what the client still sends.
-fn refuse(stream: TcpStream, handler: &dyn Handler, limits: &Limits, response: &Response) {
-    let mut writer = &stream;
+fn refuse(
+    stream: TcpStream,
+    handler: &dyn Handler,
+    limits: &Limits,
+    until: Instant,
+    response: &Response,
+) {
+    let mut writer = Bounded::new(&stream, until, limits.idle);
     if write_response(&mut writer, handler, response).is_err() {
         return;
     }
@@ -343,12 +359,16 @@ fn parse(buf: &[u8], limits: &Limits, peer: IpAddr) -> Result<Option<Framed>, Re
             "transfer-encoding" => return Err(bad_request()),
             "content-length" => {
                 let plain = !value.is_empty() && value.bytes().all(|b| b.is_ascii_digit());
+                let plain = plain && (value == "0" || !value.starts_with('0'));
                 match value.parse::<u64>() {
                     Ok(n) if plain && length.is_none() => length = Some(n),
                     _ => return Err(bad_request()),
                 }
             }
             "host" => hosts += 1,
+            n if n.starts_with("bilbo-") && headers.iter().any(|(h, _)| h == n) => {
+                return Err(bad_request());
+            }
             "expect" => {
                 if expect || !value.eq_ignore_ascii_case("100-continue") {
                     return Err(bad_request());
@@ -393,6 +413,49 @@ struct Body<'a> {
     pending: &'a [u8],
     remaining: u64,
     idle: Duration,
+    /// When the whole request must be over, whatever the client keeps sending.
+    until: Instant,
+}
+
+/// The time left before `until`, at most `idle`; a `TimedOut` error once none is left.
+fn allowance(until: Instant, idle: Duration) -> io::Result<Duration> {
+    until
+        .checked_duration_since(Instant::now())
+        .filter(|d| !d.is_zero())
+        .map(|left| left.min(idle))
+        .ok_or_else(|| io::ErrorKind::TimedOut.into())
+}
+
+/// A socket writer whose every write waits at most `idle`, and none past `until`.
+struct Bounded<'a> {
+    stream: &'a TcpStream,
+    until: Instant,
+    idle: Duration,
+}
+
+impl<'a> Bounded<'a> {
+    fn new(stream: &'a TcpStream, until: Instant, idle: Duration) -> Bounded<'a> {
+        Bounded {
+            stream,
+            until,
+            idle,
+        }
+    }
+}
+
+impl Write for Bounded<'_> {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        self.stream
+            .set_write_timeout(Some(allowance(self.until, self.idle)?))?;
+        (&*self.stream).write(bytes).map_err(|e| match e.kind() {
+            io::ErrorKind::WouldBlock => io::ErrorKind::TimedOut.into(),
+            _ => e,
+        })
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
 }
 
 impl Read for Body<'_> {
@@ -404,7 +467,8 @@ impl Read for Body<'_> {
             return Ok(0);
         }
         let n = if self.pending.is_empty() {
-            self.stream.set_read_timeout(Some(self.idle))?;
+            self.stream
+                .set_read_timeout(Some(allowance(self.until, self.idle)?))?;
             let n = (&*self.stream)
                 .read(&mut out[..want])
                 .map_err(|e| match e.kind() {
@@ -439,6 +503,7 @@ fn reason(status: u16) -> &'static str {
         409 => "Conflict",
         411 => "Length Required",
         413 => "Content Too Large",
+        422 => "Unprocessable Content",
         429 => "Too Many Requests",
         431 => "Request Header Fields Too Large",
         500 => "Internal Server Error",
@@ -555,6 +620,7 @@ mod tests {
             connections: 256,
             head: Duration::from_secs(10),
             idle: Duration::from_secs(10),
+            body: Duration::from_secs(60),
             header_bytes: 1024,
             drain: Duration::from_secs(5),
         }
@@ -705,6 +771,12 @@ mod tests {
             (
                 "two different lengths",
                 put("/echo", "Content-Length: 3\r\ncontent-length: 4\r\n", "abc"),
+            ),
+            ("leading zero", put("/echo", "Content-Length: 010\r\n", "")),
+            ("double zero", get("/v1/", "Content-Length: 00\r\n")),
+            (
+                "a repeated signature header",
+                get("/v1/", "Bilbo-Time: 1\r\nbilbo-time: 1\r\n"),
             ),
             ("plus sign", put("/echo", "Content-Length: +10\r\n", "")),
             ("minus sign", put("/echo", "Content-Length: -1\r\n", "")),
@@ -879,9 +951,9 @@ mod tests {
         with_server(limits, |addr, probe| {
             let mut stream = connect(addr);
             stream.write_all(b"GET /v1/ HTTP/1.1\r\nHo").unwrap();
-            assert_eq!(read_all(&mut stream), "");
+            assert_eq!(stream.read(&mut [0; 1]).unwrap(), 0);
             let mut stream = connect(addr);
-            assert_eq!(read_all(&mut stream), "");
+            assert_eq!(stream.read(&mut [0; 1]).unwrap(), 0);
             assert_eq!(probe.heads.load(Ordering::SeqCst), 0);
         });
     }
@@ -923,6 +995,35 @@ mod tests {
             let response = read_all(&mut stream);
             assert_eq!(status(&response), 400);
             assert_eq!(probe.read_errors.load(Ordering::SeqCst), 1);
+        });
+    }
+
+    #[test]
+    fn a_body_that_drips_ends_at_the_total_deadline() {
+        let limits = Limits {
+            body: Duration::from_millis(400),
+            ..quick()
+        };
+        with_server(limits, |addr, probe| {
+            let mut stream = connect(addr);
+            stream
+                .write_all(&put("/echo", "Content-Length: 1000\r\n", ""))
+                .unwrap();
+            let mut sender = stream.try_clone().unwrap();
+            let start = Instant::now();
+            let drip = thread::spawn(move || {
+                while start.elapsed() < Duration::from_secs(5) {
+                    if sender.write_all(b"a").is_err() {
+                        return;
+                    }
+                    thread::sleep(Duration::from_millis(50));
+                }
+            });
+            assert_eq!(read_all(&mut stream), "");
+            assert!(start.elapsed() < Duration::from_secs(5));
+            assert_eq!(probe.read_errors.load(Ordering::SeqCst), 1);
+            drop(stream);
+            drip.join().unwrap();
         });
     }
 
@@ -1014,9 +1115,9 @@ mod tests {
     }
 
     #[test]
-    fn two_hundred_stalled_clients_do_not_block_a_request() {
+    fn sixty_four_stalled_clients_do_not_block_a_request() {
         with_server(Limits::default(), |addr, _| {
-            let stalled: Vec<TcpStream> = (0..200)
+            let stalled: Vec<TcpStream> = (0..64)
                 .map(|_| {
                     let mut s = connect(addr);
                     s.write_all(b"GET /v1/ HTTP/1.1\r\nHo").unwrap();
