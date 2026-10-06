@@ -4,7 +4,7 @@
 use std::collections::{BTreeMap, VecDeque};
 use std::fs;
 use std::net::IpAddr;
-use std::sync::{Mutex, MutexGuard};
+use std::sync::{Mutex, MutexGuard, PoisonError};
 use std::time::UNIX_EPOCH;
 
 use super::admit;
@@ -205,7 +205,7 @@ impl Mailbox {
     }
 
     fn lock(&self) -> MutexGuard<'_, State> {
-        self.state.lock().expect("the mailbox is not poisoned")
+        self.state.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
     /// The checks before a mailbox request's body: who may write (`signer` is the key whose signature, time and

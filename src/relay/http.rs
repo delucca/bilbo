@@ -53,6 +53,15 @@ impl Response {
         Response::new(status, format!("{{\"error\":\"{reason}\"}}").into_bytes())
     }
 
+    /// The reason in a refusal's body, `unknown` for any other body.
+    pub fn reason(&self) -> &str {
+        std::str::from_utf8(&self.body)
+            .ok()
+            .and_then(|body| body.strip_prefix("{\"error\":\""))
+            .and_then(|rest| rest.strip_suffix("\"}"))
+            .unwrap_or("unknown")
+    }
+
     pub fn with(mut self, name: &str, value: &str) -> Response {
         self.headers.push((name.to_string(), value.to_string()));
         self
@@ -78,6 +87,22 @@ pub trait Handler: Sync {
 
     /// Answers a request whose head was `Read`; `body` yields exactly its `Content-Length` bytes, none for a `GET`.
     fn answer(&self, request: &Request, body: &mut dyn Read) -> Response;
+
+    /// A 4xx that `serve` wrote itself, before the handler saw the request (400, 411, 431), with its reason.
+    fn refused(&self, _status: u16, _reason: &str) {}
+
+    /// Called once for every request whose `head` answered `Read`, after the body was read or the connection ended,
+    /// whether or not `answer` ran.
+    fn finish(&self) {}
+}
+
+/// Calls `Handler::finish` when a request's connection is done with it.
+struct Finish<'a>(&'a dyn Handler);
+
+impl Drop for Finish<'_> {
+    fn drop(&mut self) {
+        let _ = panic::catch_unwind(AssertUnwindSafe(|| self.0.finish()));
+    }
 }
 
 /// The connection limits.
@@ -193,6 +218,7 @@ fn connection(stream: TcpStream, started: Instant, handler: &dyn Handler, limits
         Ok(read) => read,
         Err(Stop::Close) => return,
         Err(Stop::Answer(response)) => {
+            handler.refused(response.status, response.reason());
             return refuse(stream, handler, limits, until, &response);
         }
     };
@@ -211,6 +237,7 @@ fn connection(stream: TcpStream, started: Instant, handler: &dyn Handler, limits
         ),
         Ok(Head::Refuse(response)) => refuse(stream, handler, limits, until, &response),
         Ok(Head::Read) => {
+            let _finish = Finish(handler);
             let mut writer = Bounded::new(&stream, until, limits.idle);
             if expect && writer.write_all(b"HTTP/1.1 100 Continue\r\n\r\n").is_err() {
                 return;
@@ -567,6 +594,8 @@ mod tests {
         heads: AtomicUsize,
         answers: AtomicUsize,
         read_errors: AtomicUsize,
+        finishes: AtomicUsize,
+        refusals: Mutex<Vec<(u16, String)>>,
         seen: Mutex<Vec<Seen>>,
     }
 
@@ -589,6 +618,17 @@ mod tests {
                 "/panic-head" => panic!("head"),
                 _ => Head::Read,
             }
+        }
+
+        fn refused(&self, status: u16, reason: &str) {
+            self.refusals
+                .lock()
+                .unwrap()
+                .push((status, reason.to_string()));
+        }
+
+        fn finish(&self) {
+            self.finishes.fetch_add(1, Ordering::SeqCst);
         }
 
         fn answer(&self, request: &Request, body: &mut dyn Read) -> Response {
@@ -690,6 +730,41 @@ mod tests {
 
     fn put(path: &str, extra: &str, payload: &str) -> Vec<u8> {
         format!("PUT {path} HTTP/1.1\r\nHost: relay\r\n{extra}\r\n{payload}").into_bytes()
+    }
+
+    #[test]
+    fn the_handler_hears_of_refusals_serve_writes_and_of_every_finished_read() {
+        with_server(quick(), |addr, probe| {
+            assert_eq!(
+                status(&exchange(addr, &put("/echo", "Content-Length: 0\r\n", ""))),
+                200
+            );
+            assert_eq!(
+                status(&exchange(
+                    addr,
+                    &get("/v1/", "Transfer-Encoding: chunked\r\n")
+                )),
+                400
+            );
+            let bytes = "PUT /echo HTTP/1.1\r\nHost: relay\r\n\r\n";
+            let (no_length, big) = (exchange(addr, bytes.as_bytes()), "x".repeat(2000));
+            assert_eq!(status(&no_length), 411);
+            assert_eq!(
+                status(&exchange(addr, &get("/v1/", &format!("X: {big}\r\n")))),
+                431
+            );
+            assert_eq!(status(&exchange(addr, &get("/refuse", ""))), 413);
+            assert_eq!(
+                *probe.refusals.lock().unwrap(),
+                [
+                    (400, "bad-request".to_string()),
+                    (411, "bad-request".to_string()),
+                    (431, "bad-request".to_string()),
+                ]
+            );
+            assert_eq!(probe.finishes.load(Ordering::SeqCst), 1);
+            assert_eq!(probe.answers.load(Ordering::SeqCst), 1);
+        });
     }
 
     #[test]

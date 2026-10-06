@@ -2,7 +2,7 @@
 //! quotas, and each scope's state behind its own mutex.
 
 use std::collections::BTreeMap;
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use super::Flags;
 use super::store::Created;
@@ -149,7 +149,7 @@ fn lists(manifest: &manifest::Manifest, key: &[u8; 32]) -> bool {
 }
 
 fn locked(held: &Mutex<Held>) -> MutexGuard<'_, Held> {
-    held.lock().expect("a scope is not poisoned")
+    held.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
 /// Every scope the relay holds, each behind its own mutex.
@@ -175,7 +175,7 @@ impl Scopes {
     }
 
     fn map(&self) -> MutexGuard<'_, BTreeMap<String, Arc<Mutex<Held>>>> {
-        self.held.lock().expect("the scope map is not poisoned")
+        self.held.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
     /// Scope `id`, when the relay holds it.
@@ -267,10 +267,10 @@ impl Scopes {
     ///
     /// Checked under the scope's mutex, in this order: the standing; for an `n` at or below the latest, the key
     /// (listed in that version, in the latest, or the owner) and then the create-only rule (`Same` or `Other` by the
-    /// stored bytes, `link` not called); for the next `n`, `manifest::verify_next` (`Manifest(why)`), the owner
-    /// admitted, the key listed in the new version or the owner; for a larger `n`, `NotNext`. Manifest 1 of a scope
-    /// the relay does not hold goes through the same checks, plus `--max-scopes` valid scopes of the owner, with the
-    /// map held. `link` creates the object and runs with the lock held: on `New` the version is recorded, so the
+    /// stored bytes, `link` not called); for the next `n`, the key (listed in the latest version, or the owner), then
+    /// `manifest::verify_next` (`Manifest(why)`), then the key listed in the new version or the owner; for a larger
+    /// `n`, `NotNext`. Manifest 1 of a scope the relay does not hold goes through the same checks, plus `--max-scopes`
+    /// valid scopes of the owner, with the map held. `link` creates the object and runs with the lock held: on `New` the version is recorded, so the
     /// next request sees it. Whatever the outcome, `put.reserved` is released.
     pub fn create_manifest(
         &self,
@@ -326,6 +326,9 @@ impl Scopes {
             } else {
                 Err(Refusal::NotAdmitted)
             };
+        }
+        if !(by_owner || held.lists(put.signer)) {
+            return Err(Refusal::NotAdmitted);
         }
         if put.length > MANIFEST_MAX {
             return Err(Refusal::TooLarge);
@@ -1012,6 +1015,26 @@ mod tests {
         assert_eq!(try_length(MIB + 1), Err(Refusal::TooLarge));
         assert_eq!(try_length(MIB), Ok(Created::New));
         assert_eq!(segment_max(&flags), MIB);
+    }
+
+    #[test]
+    fn the_next_manifest_is_judged_by_its_key_before_its_body() {
+        let w = world("next_key", 10);
+        let scopes = scopes(&[&w.owner]);
+        admit_to(&scopes, &w, 1);
+        let stranger = Device::from_seeds("x", &[77; 32], &[78; 32]).sign.public();
+        let garbage = b"not a manifest";
+        assert_eq!(
+            manifest_n(&scopes, &w, &stranger, 2, garbage),
+            Err(Refusal::NotAdmitted)
+        );
+        let result = manifest_n(&scopes, &w, &key(&w.rivendell), 2, garbage);
+        assert!(matches!(result, Err(Refusal::Manifest(_))), "{result:?}");
+        let by_owner = manifest_n(&scopes, &w, &w.owner.sign.public(), 2, garbage);
+        assert!(
+            matches!(by_owner, Err(Refusal::Manifest(_))),
+            "{by_owner:?}"
+        );
     }
 
     #[test]
