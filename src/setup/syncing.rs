@@ -10,6 +10,7 @@ use crate::host::swap;
 use crate::identity::keys::{self, Device, Identity, Owner};
 use crate::identity::manifest::{self, Context, Known, Outcome, Recipient};
 use crate::search::documents;
+use crate::sync::remote::{self, Probe};
 use crate::sync::scopes;
 use crate::sync::transport::{self, Keys};
 
@@ -42,9 +43,10 @@ pub enum Turn {
 /// A scope the wizard turns sync on for.
 pub struct Turned {
     pub name: String,
-    /// `file://<folder>`.
+    /// `file://<folder>`, or a relay's URL.
     pub url: String,
-    pub folder: PathBuf,
+    /// The folder of a `file://` URL.
+    pub folder: Option<PathBuf>,
     pub enrol: Enrol,
     /// The id of the folder's scope of this name to copy into the store.
     pub take: Option<String>,
@@ -169,8 +171,20 @@ fn checks(plan: &SyncPlan, notes: &Path) -> (&'static str, String) {
     }
 }
 
-/// Whether `url` has a client, and its folder exists and takes writes. Nothing is created.
+/// Whether `url` names a relay rather than a folder.
+pub fn is_relay(url: &str) -> bool {
+    url.starts_with("https://") || url.starts_with("http://")
+}
+
+/// Whether `url` has a client, and its folder exists and takes writes, or its relay answers as one. Nothing is
+/// created and no request is signed.
 fn reach(id: &Identity, url: &str) -> Result<(), String> {
+    if is_relay(url) {
+        return remote::identify(url).map_err(|probe| match probe {
+            Probe::NotRelay => format!("{url} is not a bilbo relay"),
+            Probe::Unreachable(why) => format!("{url} is not reachable: {why}"),
+        });
+    }
     let transport = transport::open(url, &Keys::of(id))?;
     let unreachable = |why: &str| format!("{url} is not reachable: {why}");
     transport.reachable().map_err(|why| unreachable(&why))?;
@@ -291,7 +305,9 @@ fn join(plan: &SyncPlan, turned: &Turned) -> Result<(), String> {
         .keys
         .as_deref()
         .ok_or("no state folder: set XDG_STATE_HOME or HOME")?;
-    make_folder(&turned.folder)?;
+    if let Some(folder) = &turned.folder {
+        make_folder(folder)?;
+    }
     let owner = match &turned.enrol {
         Enrol::New { entropy, device } | Enrol::Phrase { entropy, device } => {
             let owner = Owner::derive(entropy);
@@ -353,14 +369,19 @@ fn create(
     known: &[Known],
 ) -> Result<(), String> {
     let public = id.owner.sign.public();
-    let blocked = inspect(
-        &turned.url,
-        &Keys::of(id),
-        &public,
-        &Recipient::device(&id.device),
-        &turned.name,
-    )
-    .blocked;
+    let fresh = matches!(turned.enrol, Enrol::New { .. }) && is_relay(&turned.url);
+    let blocked = if fresh {
+        None
+    } else {
+        inspect(
+            &turned.url,
+            &Keys::of(id),
+            &public,
+            &Recipient::device(&id.device),
+            &turned.name,
+        )
+        .blocked
+    };
     let ctx = Context {
         terminal: plan.terminal,
         blocked,
@@ -474,7 +495,7 @@ mod tests {
         let turned = Turned {
             name: "personal".into(),
             url: "file:///new".into(),
-            folder: "/new".into(),
+            folder: Some("/new".into()),
             enrol: Enrol::Held,
             take: None,
             mint: true,
@@ -541,6 +562,54 @@ mod tests {
         let (status, detail) = step(&both, &notes);
         assert_eq!(status, "failed");
         assert!(!detail.contains("work"), "{detail}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_relay_that_answers_as_one_is_ok() {
+        let dir = scratch("sync-relay-ok");
+        let relay = relay("sync-relay-ok-data", &[], 0);
+        let url = relay.url();
+        let syncing = keyed(&dir, &[("personal", url.clone())], true);
+        assert_eq!(
+            step(&syncing, &dir.join("notes")),
+            ("ok", format!("personal through {url} (0 notes)"))
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_url_that_answers_otherwise_is_not_a_relay() {
+        let dir = scratch("sync-relay-not");
+        let other = Answering::start(404);
+        let url = other.url();
+        let syncing = keyed(&dir, &[("personal", url.clone())], true);
+        assert_eq!(
+            step(&syncing, &dir.join("notes")),
+            ("failed", format!("{url} is not a bilbo relay"))
+        );
+        let heads = other.heads();
+        assert_eq!(heads.len(), 1, "{heads:?}");
+        assert!(heads[0].starts_with("GET /v1/ "), "{heads:?}");
+        assert!(!heads[0].to_lowercase().contains("bilbo-"), "{heads:?}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_relay_that_is_down_is_not_reachable() {
+        let dir = scratch("sync-relay-down");
+        let port = {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            listener.local_addr().unwrap().port()
+        };
+        let url = format!("http://127.0.0.1:{port}");
+        let syncing = keyed(&dir, &[("personal", url.clone())], true);
+        let (status, detail) = step(&syncing, &dir.join("notes"));
+        assert_eq!(status, "failed");
+        assert!(
+            detail.starts_with(&format!("{url} is not reachable: ")),
+            "{detail}"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 

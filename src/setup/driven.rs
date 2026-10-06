@@ -1155,7 +1155,7 @@ fn new_owner(folder: &Path) -> Scripted {
             ("recovery phrase from another", false),
             ("Apply these changes?", true),
         ],
-        entered: vec![("Folder to sync", folder.display().to_string())],
+        entered: vec![("Folder or relay URL to sync", folder.display().to_string())],
         reads_phrase: true,
         ..Scripted::default()
     }
@@ -1311,7 +1311,7 @@ fn a_second_device_joins_the_scope_with_the_first_ones_phrase() {
             MATCHES,
             ("Apply these changes?", true),
         ],
-        entered: vec![("Folder to sync", folder.display().to_string())],
+        entered: vec![("Folder or relay URL to sync", folder.display().to_string())],
         typed: words,
         ..Scripted::default()
     };
@@ -1358,7 +1358,7 @@ fn only_the_picked_scope_is_copied_and_joined() {
     std::fs::write(first.config(), text).unwrap();
     let mut again = Scripted {
         confirms: vec![SYNC_ON, ("Apply these changes?", true)],
-        entered: vec![("Folder to sync", folder.display().to_string())],
+        entered: vec![("Folder or relay URL to sync", folder.display().to_string())],
         selects: vec![("Which scope", 1)],
         ..Scripted::default()
     };
@@ -1383,7 +1383,7 @@ fn only_the_picked_scope_is_copied_and_joined() {
             MATCHES,
             ("Apply these changes?", true),
         ],
-        entered: vec![("Folder to sync", folder.display().to_string())],
+        entered: vec![("Folder or relay URL to sync", folder.display().to_string())],
         typed: p.phrase().unwrap(),
         ..Scripted::default()
     };
@@ -1429,7 +1429,7 @@ fn a_phrase_of_another_owner_is_refused_against_the_stores_manifests() {
         .collect();
     let mut q = Scripted {
         confirms: vec![SYNC_ON, MATCHES],
-        entered: vec![("Folder to sync", folder.display().to_string())],
+        entered: vec![("Folder or relay URL to sync", folder.display().to_string())],
         typed: other,
         ..Scripted::default()
     };
@@ -1489,8 +1489,8 @@ fn a_folder_without_a_parent_is_asked_again() {
     let folder = b.folder("good");
     let mut p = new_owner(&folder);
     p.entered = vec![
-        ("Folder to sync", "/nope/bilbo".to_string()),
-        ("Folder to sync", folder.display().to_string()),
+        ("Folder or relay URL to sync", "/nope/bilbo".to_string()),
+        ("Folder or relay URL to sync", folder.display().to_string()),
     ];
     let run = wizard_as(&b, &mut p, &mut Script::working(), Some("rivendell"));
     assert!(run.result.is_ok(), "{:?}", p.shown);
@@ -1503,7 +1503,7 @@ fn a_folder_without_a_parent_is_asked_again() {
     assert_eq!(
         p.shown
             .iter()
-            .filter(|s| s.starts_with("Folder to sync"))
+            .filter(|s| s.starts_with("Folder or relay URL to sync"))
             .count(),
         2
     );
@@ -1517,8 +1517,8 @@ fn a_relative_folder_is_refused_by_the_question_and_by_the_check() {
     let folder = b.folder("good");
     let mut p = new_owner(&folder);
     p.entered = vec![
-        ("Folder to sync", "relative/bilbo".to_string()),
-        ("Folder to sync", folder.display().to_string()),
+        ("Folder or relay URL to sync", "relative/bilbo".to_string()),
+        ("Folder or relay URL to sync", folder.display().to_string()),
     ];
     let run = wizard_as(&b, &mut p, &mut Script::working(), Some("rivendell"));
     assert!(run.result.is_ok());
@@ -1619,7 +1619,7 @@ fn a_config_that_already_syncs_there_is_kept() {
     );
     let mut again = Scripted {
         confirms: vec![SYNC_ON, ("Apply these changes?", true)],
-        entered: vec![("Folder to sync", folder.display().to_string())],
+        entered: vec![("Folder or relay URL to sync", folder.display().to_string())],
         ..Scripted::default()
     };
     let before = b.config_text();
@@ -1700,7 +1700,7 @@ fn an_enrolled_device_outside_a_scope_of_its_owner_mints_nothing() {
     let before = snapshot_of(&folder);
     let mut p = Scripted {
         confirms: vec![SYNC_ON, ("Apply these changes?", true)],
-        entered: vec![("Folder to sync", folder.display().to_string())],
+        entered: vec![("Folder or relay URL to sync", folder.display().to_string())],
         ..Scripted::default()
     };
     let run = wizard_as(&b, &mut p, &mut Script::working(), Some("rivendell"));
@@ -1758,7 +1758,7 @@ fn an_enrolled_device_with_no_keys_to_ask_for_asks_no_phrase() {
     }
     let mut p = Scripted {
         confirms: vec![SYNC_ON, ("Apply these changes?", true)],
-        entered: vec![("Folder to sync", folder.display().to_string())],
+        entered: vec![("Folder or relay URL to sync", folder.display().to_string())],
         ..Scripted::default()
     };
     let run = wizard_as(&b, &mut p, &mut Script::working(), Some("rivendell"));
@@ -1817,9 +1817,14 @@ fn copied_store(first: &Sandbox, name: &str) -> Sandbox {
 }
 
 fn phrase_answers(folder: &Path, words: Vec<String>) -> Scripted {
+    phrase_at(folder.display().to_string(), words)
+}
+
+/// The answers of a person who types the phrase and names `spot`, a folder or a relay URL.
+fn phrase_at(spot: String, words: Vec<String>) -> Scripted {
     Scripted {
         confirms: vec![SYNC_ON, MATCHES, ("Apply these changes?", true)],
-        entered: vec![("Folder to sync", folder.display().to_string())],
+        entered: vec![("Folder or relay URL to sync", spot)],
         typed: words,
         ..Scripted::default()
     }
@@ -2065,7 +2070,7 @@ fn a_scope_turned_off_is_named_after_the_scopes_that_still_sync() {
     std::fs::write(b.config(), text).unwrap();
     let mut p = Scripted {
         confirms: vec![SYNC_ON, ("Apply these changes?", true)],
-        entered: vec![("Folder to sync", held.display().to_string())],
+        entered: vec![("Folder or relay URL to sync", held.display().to_string())],
         selects: vec![("Which scope", 0)],
         ..Scripted::default()
     };
@@ -2083,4 +2088,243 @@ fn a_scope_turned_off_is_named_after_the_scopes_that_still_sync() {
         )),
         "{line}"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Sync through a relay
+
+use crate::sync::manifests;
+use crate::sync::transport::{self, Keys};
+
+/// The answers of a person with no key who sets `personal` up through the relay at `url`.
+fn new_owner_at(url: &str) -> Scripted {
+    Scripted {
+        entered: vec![("Folder or relay URL to sync", url.to_string())],
+        ..new_owner(Path::new("/unused"))
+    }
+}
+
+/// The relay `first` synced through, restarted on its port with `first`'s owner admitted, and `first`'s scope
+/// published to it as a watcher cycle does.
+fn admitting(first: &Sandbox, url: &str, port: u16) -> crate::relay::Running {
+    let id = first.identity().unwrap();
+    let print = keys::owner_fingerprint(&id.owner.sign.public());
+    let relay = relay("driven-relay-b", &[print], port);
+    let transport = transport::open(url, &Keys::of(&id)).unwrap();
+    let outcome = manifests::step(
+        &*transport,
+        &manifests::Input {
+            root: &first.store(),
+            name: "personal",
+            url,
+            identity: &id,
+            now: jiff::Timestamp::now(),
+        },
+    )
+    .unwrap();
+    assert_eq!(outcome.error, None);
+    assert_eq!(outcome.stop, None);
+    relay
+}
+
+#[test]
+fn a_first_device_on_a_relay_writes_the_url_and_the_watcher_publishes_the_scope() {
+    let first = boxed("relay-first");
+    first.manager();
+    let before = relay("driven-relay-a", &[], 0);
+    let (url, port) = (before.url(), before.port);
+    let mut p = new_owner_at(&url);
+    let run = wizard_as(&first, &mut p, &mut Script::working(), Some("rivendell"));
+    assert!(
+        report(&run).contains(&format!("sync ok: personal through {url} (0 notes)")),
+        "{:?}",
+        report(&run)
+    );
+    assert!(!outcome(&run).failed);
+    assert!(first.identity().is_some());
+    assert!(
+        first
+            .config_text()
+            .contains(&format!("scope.personal.sync = {url}\n")),
+        "{}",
+        first.config_text()
+    );
+    let summary = summary_of(&p);
+    assert!(
+        summary.contains(&format!("Sync personal through {url}")),
+        "{summary}"
+    );
+    assert!(!summary.contains("Create the folder"), "{summary}");
+    assert!(summary.contains("Create the scope personal"), "{summary}");
+    assert!(
+        p.shown
+            .iter()
+            .all(|s| !s.contains("does not admit this owner")),
+        "{:?}",
+        p.shown
+    );
+    drop(before);
+    let relay = admitting(&first, &url, port);
+    let id = first.identity().unwrap();
+    let held = transport::open(&url, &Keys::of(&id)).unwrap();
+    assert_eq!(held.scopes().unwrap(), first.scope_ids());
+    drop(relay);
+}
+
+#[test]
+fn every_device_lost_the_wizard_fetches_the_scope_from_the_relay_with_the_owner_key() {
+    let first = boxed("relay-lost-a");
+    first.manager();
+    let before = relay("driven-relay-a2", &[], 0);
+    let (url, port) = (before.url(), before.port);
+    let mut p = new_owner_at(&url);
+    assert!(
+        wizard_as(&first, &mut p, &mut Script::working(), Some("rivendell"))
+            .result
+            .is_ok()
+    );
+    drop(before);
+    let relay = admitting(&first, &url, port);
+    let second = boxed("relay-lost-b");
+    second.manager();
+    let mut q = phrase_at(url.clone(), p.phrase().unwrap());
+    q.confirms.push(("recovery phrase from another", true));
+    let run = wizard_as(&second, &mut q, &mut Script::working(), Some("bagend"));
+    assert!(
+        report(&run).contains(&format!("sync ok: personal through {url} (0 notes)")),
+        "{:?} {:?}",
+        report(&run),
+        q.shown
+    );
+    let summary = summary_of(&q);
+    assert!(
+        summary.contains("Copy the manifest of personal"),
+        "{summary}"
+    );
+    assert!(!summary.contains("Create the scope"), "{summary}");
+    assert_eq!(second.scope_ids(), first.scope_ids());
+    let id = second.identity().unwrap();
+    assert!(
+        second.known()[0]
+            .scope
+            .latest()
+            .unwrap()
+            .manifest
+            .lists(&id.device.id())
+    );
+    drop(relay);
+}
+
+#[test]
+fn an_enrolled_device_is_told_when_the_relay_does_not_admit_its_owner() {
+    let first = boxed("relay-unadmitted");
+    first.manager();
+    let mut p = new_owner(&first.folder("f"));
+    assert!(
+        wizard_as(&first, &mut p, &mut Script::working(), Some("rivendell"))
+            .result
+            .is_ok()
+    );
+    first.write_config("a");
+    let mut text = first.config_text();
+    text.push_str("scope.work.sync = off\n");
+    std::fs::write(first.config(), text).unwrap();
+    let relay = relay("driven-relay-c", &[], 0);
+    let mut q = Scripted {
+        confirms: vec![SYNC_ON, ("Apply these changes?", true)],
+        entered: vec![("Folder or relay URL to sync", relay.url())],
+        selects: vec![("Which scope", 1)],
+        ..Scripted::default()
+    };
+    let run = wizard_as(&first, &mut q, &mut Script::working(), Some("rivendell"));
+    let why = q
+        .shown
+        .iter()
+        .find(|s| s.contains("does not admit this owner; start it with --owner"))
+        .unwrap_or_else(|| panic!("{:?}", q.shown));
+    assert!(why.starts_with("warn: relay http://127.0.0.1:"), "{why}");
+    assert!(
+        report(&run).iter().any(|l| l.contains("skipped")),
+        "{:?}",
+        report(&run)
+    );
+}
+
+#[test]
+fn a_url_that_is_not_a_relay_is_asked_again() {
+    let b = boxed("relay-not");
+    b.manager();
+    let other = Answering::start(404);
+    let folder = b.folder("good");
+    let mut p = new_owner(&folder);
+    p.entered = vec![
+        ("Folder or relay URL to sync", other.url()),
+        ("Folder or relay URL to sync", folder.display().to_string()),
+    ];
+    let run = wizard_as(&b, &mut p, &mut Script::working(), Some("rivendell"));
+    assert!(run.result.is_ok(), "{:?}", p.shown);
+    assert!(
+        p.shown
+            .contains(&format!("warn: {} is not a bilbo relay", other.url())),
+        "{:?}",
+        p.shown
+    );
+    assert_eq!(
+        p.shown
+            .iter()
+            .filter(|s| s.starts_with("Folder or relay URL to sync"))
+            .count(),
+        2
+    );
+    assert_eq!(other.heads().len(), 1);
+}
+
+#[test]
+fn a_relay_that_is_down_is_asked_again() {
+    let b = boxed("relay-down");
+    b.manager();
+    let port = {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.local_addr().unwrap().port()
+    };
+    let down = format!("http://127.0.0.1:{port}");
+    let folder = b.folder("good");
+    let mut p = new_owner(&folder);
+    p.entered = vec![
+        ("Folder or relay URL to sync", down.clone()),
+        ("Folder or relay URL to sync", folder.display().to_string()),
+    ];
+    let run = wizard_as(&b, &mut p, &mut Script::working(), Some("rivendell"));
+    assert!(run.result.is_ok(), "{:?}", p.shown);
+    assert!(
+        p.shown
+            .iter()
+            .any(|s| s.starts_with(&format!("warn: {down} is not reachable: "))),
+        "{:?}",
+        p.shown
+    );
+}
+
+#[test]
+fn plain_http_to_another_host_is_refused_and_no_request_is_sent() {
+    let b = boxed("relay-plain");
+    b.manager();
+    let listening = Answering::start(200);
+    let remote = format!("http://0.0.0.0:{}", listening.port());
+    let folder = b.folder("good");
+    let mut p = new_owner(&folder);
+    p.entered = vec![
+        ("Folder or relay URL to sync", remote.clone()),
+        ("Folder or relay URL to sync", folder.display().to_string()),
+    ];
+    let run = wizard_as(&b, &mut p, &mut Script::working(), Some("rivendell"));
+    assert!(run.result.is_ok(), "{:?}", p.shown);
+    assert!(
+        p.shown.iter().any(|s| s.starts_with(&format!(
+            "warn: {remote} cannot be a relay: plain http:// reaches only a loopback host"
+        ))),
+        "{:?}",
+        p.shown
+    );
+    assert!(listening.heads().is_empty(), "{:?}", listening.heads());
 }

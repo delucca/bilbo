@@ -714,8 +714,8 @@ pub fn summary(plan: &Plan) -> Vec<String> {
     }
     if let Turn::On(turned) = &plan.sync.choice {
         lines.push(format!("Sync {} through {}", turned.name, turned.url));
-        if !turned.folder.exists() {
-            lines.push(format!("Create the folder {}", turned.folder.display()));
+        if let Some(folder) = turned.folder.as_ref().filter(|f| !f.exists()) {
+            lines.push(format!("Create the folder {}", folder.display()));
         }
         let keys = plan.sync.keys.as_deref().map(|keys| keys.display());
         match (&turned.enrol, keys) {
