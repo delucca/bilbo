@@ -1062,9 +1062,13 @@ impl Watch<'_> {
         }
     }
 
-    /// The transport cannot be read or written: said once until it can.
+    /// The transport cannot be read or written: said once until it can. A relay's message already names its URL.
     fn unreachable(&mut self, name: &str, url: &str, why: &str) {
-        let line = format!("sync {name}: {url} is not reachable: {why}");
+        let line = if url.starts_with("file://") {
+            format!("sync {name}: {url} is not reachable: {why}")
+        } else {
+            format!("sync {name}: {why}")
+        };
         self.hold(name, "reach", Some(line));
         self.problem(name, "unreachable", why);
     }

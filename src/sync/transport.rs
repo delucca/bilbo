@@ -9,6 +9,8 @@ use std::time::{Duration, SystemTime};
 
 use crate::host::swap;
 use crate::identity::keys::{self, Device, Identity, SignKey};
+use crate::shared::config;
+use crate::sync::remote;
 
 /// The largest object `get` reads: a segment is at most 8 MiB and a manifest is far smaller.
 pub const OBJECT_MAX: u64 = 16 * 1024 * 1024;
@@ -102,6 +104,9 @@ pub fn open(url: &str, keys: &Keys) -> Result<Box<dyn Transport>, String> {
             Err(format!("{url} is not an absolute path"))
         };
     }
+    if url.starts_with("https://") || (url.starts_with("http://") && config::is_local(url)) {
+        return remote::open(url, keys).map(|relay| Box::new(relay) as Box<dyn Transport>);
+    }
     let scheme = url.split("://").next().unwrap_or(url);
     Err(format!(
         "{scheme} transports are not supported yet; use a file:// folder"
@@ -162,6 +167,11 @@ pub fn segment_seq(name: &str) -> Option<u64> {
         return None;
     }
     digits.parse::<u64>().ok().filter(|seq| *seq > 0)
+}
+
+/// Whether `path` names an object of the layout.
+pub fn is_object_path(path: &str) -> bool {
+    parse(path).is_some()
 }
 
 /// The layout's object `path` names, `None` for any other path.
@@ -936,11 +946,13 @@ mod tests {
         fs::create_dir_all(&spaced).unwrap();
         let t = open(&format!("file://{}", spaced.display()), &keys).unwrap();
         assert_eq!(t.create(&manifest_path(SCOPE, 1), b"m"), Put::Created);
-        let relay = open("https://relay.example", &keys).err().unwrap();
-        assert_eq!(
-            relay,
-            "https transports are not supported yet; use a file:// folder"
-        );
+        for url in ["ftp://relay.example", "http://bree:8738"] {
+            let scheme = url.split("://").next().unwrap();
+            assert_eq!(
+                open(url, &keys).err().unwrap(),
+                format!("{scheme} transports are not supported yet; use a file:// folder")
+            );
+        }
         assert!(open("file://relative/path", &keys).is_err());
     }
 }
