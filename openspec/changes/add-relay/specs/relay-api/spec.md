@@ -66,7 +66,7 @@ Every response SHALL carry `Bilbo-Time: <the relay's clock in Unix seconds>`. A 
 - **THEN** the status is 401, the body is `{"error":"signature"}`, and the response carries `Bilbo-Time`
 
 ### Requirement: Order of checks
-The relay SHALL check a request in this order and answer the first failure: framing and grammar (400, 411), method (405), then for a signed request the time window (401 `clock`), the signature (401 `signature`) and the nonce (401 `replay`), then admission (403), then the object (404, 409, 413, 507). A nonce SHALL be recorded only after its signature verifies.
+The relay SHALL check a request in this order and answer the first failure: framing and grammar (400, 411), method (405), then for a signed request the time window (401 `clock`), the signature (401 `signature`) and the nonce (401 `replay`), then admission (403), then the object (404, 409, 413, 507). A nonce SHALL be recorded only after its signature verifies, and only for a key the relay knows: a device a held scope's latest manifest lists, or an admitted owner.
 
 #### Scenario: A forged request does not burn a nonce
 - **WHEN** a request with a bad signature uses a nonce, and a valid request then uses the same key and nonce
@@ -283,7 +283,7 @@ A `PUT` SHALL first check whether the object exists: with the same bytes it SHAL
 - **THEN** the relay answers 409 `exists`
 
 ### Requirement: Mailbox limits
-A message SHALL be at most 4 KiB (413 `too-large`). A nameplate SHALL hold at most 8 messages and at most 32 SHALL be open; beyond, 507 `quota`. A nameplate SHALL be deleted 30 minutes after its first message. Per peer address, unsigned mailbox requests SHALL be limited to 60 a minute and to 4 distinct nameplates in 10 minutes, beyond which they get 429 `rate`. The relay SHALL keep peer addresses in memory only.
+A message SHALL be at most 4 KiB (413 `too-large`). A nameplate SHALL hold at most 8 messages and at most 32 SHALL be open; beyond, 507 `quota`. A nameplate SHALL be deleted 30 minutes after its first message. Per peer address, mailbox requests that no key the relay knows signed SHALL be limited to 60 a minute and to 4 distinct nameplates in 10 minutes, beyond which they get 429 `rate`. The relay SHALL keep peer addresses in memory only.
 
 #### Scenario: An expired nameplate
 - **WHEN** a nameplate was opened 31 minutes ago
@@ -304,3 +304,7 @@ A message SHALL be at most 4 KiB (413 `too-large`). A nameplate SHALL hold at mo
 #### Scenario: The opener is not rate-limited as a stranger
 - **WHEN** the opener polls `b.msg` with signed `GET`s every 2 seconds for 10 minutes
 - **THEN** none of its requests is answered 429
+
+#### Scenario: A stranger's signed polls count
+- **WHEN** one peer address sends signed `GET`s for 5 distinct nameplates, signed by a key no held scope lists and no admitted owner holds
+- **THEN** the fifth is answered 429 `rate`
