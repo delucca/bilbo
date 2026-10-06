@@ -237,6 +237,7 @@ pub struct Relay {
     url: String,
     agent: ureq::Agent,
     device: SignKey,
+    device_id: String,
     owner: Option<SignKey>,
     opener: bool,
 }
@@ -247,10 +248,24 @@ pub fn open(url: &str, keys: &Keys) -> Result<Relay, String> {
     Ok(Relay {
         agent: agent(&url),
         device: SignKey::from_seed(&keys.device.sign.seed()),
+        device_id: keys.device.id(),
         owner: keys.owner.map(|owner| SignKey::from_seed(&owner.seed())),
         opener: keys.opener,
         url,
     })
+}
+
+/// Whether the manifest in `body` lists the device `id`; one that cannot be read lists none.
+fn lists(body: &[u8], id: &str) -> bool {
+    #[derive(Deserialize)]
+    struct Entry {
+        id: String,
+    }
+    #[derive(Deserialize)]
+    struct Listed {
+        devices: Vec<Entry>,
+    }
+    serde_json::from_slice::<Listed>(body).is_ok_and(|m| m.devices.iter().any(|d| d.id == id))
 }
 
 fn is_manifest(path: &str) -> bool {
@@ -258,9 +273,9 @@ fn is_manifest(path: &str) -> bool {
 }
 
 impl Relay {
-    /// The key that signs a request for `path`: the owner's for the scope listing and manifest reads when held, the
-    /// device's for the rest of `scopes/`, and the device's on a mailbox only for the device that shows the code.
-    fn who(&self, method: &str, path: &str) -> Who {
+    /// The key that signs a request for `path`: the owner's for the scope listing, manifest reads and the create of a
+    /// manifest version that does not list this device, when held; the device's for the rest of `scopes/`, and the device's on a mailbox only for the device that shows the code.
+    fn who(&self, method: &str, path: &str, body: &[u8]) -> Who {
         if path.starts_with("pair/") {
             return if self.opener {
                 Who::Device
@@ -268,8 +283,11 @@ impl Relay {
                 Who::Nobody
             };
         }
-        let owned =
-            self.owner.is_some() && method == "GET" && (path == "scopes/" || is_manifest(path));
+        let owned = self.owner.is_some()
+            && match method {
+                "GET" => path == "scopes/" || is_manifest(path),
+                _ => is_manifest(path) && !lists(body, &self.device_id),
+            };
         if owned { Who::Owner } else { Who::Device }
     }
 
@@ -319,16 +337,11 @@ impl Relay {
     }
 
     /// The message for a refusal of a request for `path`.
-    fn refusal(&self, reply: &Reply, method: &str, path: &str) -> String {
+    fn refusal(&self, reply: &Reply, who: Who, path: &str) -> String {
         let url = &self.url;
-        let who = self.who(method, path);
-        let first_manifest = method == "PUT" && path.ends_with("/manifest/1.json");
         match (reply.status, reply.reason()) {
             (403, "not-admitted") => {
-                let owner = self
-                    .owner
-                    .as_ref()
-                    .filter(|_| who == Who::Owner || first_manifest);
+                let owner = self.owner.as_ref().filter(|_| who == Who::Owner);
                 match (who, owner) {
                     (_, Some(owner)) => format!(
                         "relay {url} does not admit this owner; start it with --owner {}",
@@ -353,14 +366,15 @@ impl Relay {
     }
 
     /// Whether a refusal of a manifest read by the owner key means the relay holds no such scope of this owner.
-    fn absent(&self, reply: &Reply, method: &str, path: &str) -> bool {
-        reply.is(403, "not-admitted") && is_manifest(path) && self.who(method, path) == Who::Owner
+    fn absent(&self, reply: &Reply, who: Who, path: &str) -> bool {
+        reply.is(403, "not-admitted") && is_manifest(path) && who == Who::Owner
     }
 
     fn page<T: for<'de> Deserialize<'de>>(&self, path: &str) -> Result<T, String> {
-        let reply = self.call("GET", path, None, self.who("GET", path))?;
+        let who = self.who("GET", path, &[]);
+        let reply = self.call("GET", path, None, who)?;
         if reply.status != 200 {
-            return Err(self.refusal(&reply, "GET", path));
+            return Err(self.refusal(&reply, who, path));
         }
         serde_json::from_slice(&reply.body).map_err(|_| {
             format!(
@@ -458,12 +472,13 @@ impl Transport for Relay {
         if !transport::is_object_path(path) {
             return Err(format!("{path} is not in the transport layout"));
         }
-        let reply = self.call("GET", path, None, self.who("GET", path))?;
+        let who = self.who("GET", path, &[]);
+        let reply = self.call("GET", path, None, who)?;
         match reply.status {
             200 => Ok(Some(reply.body)),
             404 => Ok(None),
-            _ if self.absent(&reply, "GET", path) => Ok(None),
-            _ => Err(self.refusal(&reply, "GET", path)),
+            _ if self.absent(&reply, who, path) => Ok(None),
+            _ => Err(self.refusal(&reply, who, path)),
         }
     }
 
@@ -471,30 +486,32 @@ impl Transport for Relay {
         if !transport::is_object_path(path) {
             return Put::Unreachable(format!("{path} is not in the transport layout"));
         }
-        let reply = match self.call("PUT", path, Some(bytes), self.who("PUT", path)) {
+        let who = self.who("PUT", path, bytes);
+        let reply = match self.call("PUT", path, Some(bytes), who) {
             Ok(reply) => reply,
             Err(why) => return Put::Unreachable(why),
         };
         match (reply.status, reply.reason()) {
             (200 | 201, _) => Put::Created,
             (409, "exists") => Put::Exists,
-            (507, "quota") => Put::Full(self.refusal(&reply, "PUT", path)),
-            _ => Put::Unreachable(self.refusal(&reply, "PUT", path)),
+            (507, "quota") => Put::Full(self.refusal(&reply, who, path)),
+            _ => Put::Unreachable(self.refusal(&reply, who, path)),
         }
     }
 
     fn highest_manifest(&self, scope: &str) -> Result<Option<u64>, String> {
         check_ids(&[scope])?;
         let path = format!("scopes/{scope}/manifest/latest");
-        let reply = self.call("GET", &path, None, self.who("GET", &path))?;
+        let who = self.who("GET", &path, &[]);
+        let reply = self.call("GET", &path, None, who)?;
         match reply.status {
             200 => reply
                 .manifest
                 .map(Some)
                 .ok_or_else(|| format!("{} is not a bilbo relay", self.url)),
             404 => Ok(None),
-            _ if self.absent(&reply, "GET", &path) => Ok(None),
-            _ => Err(self.refusal(&reply, "GET", &path)),
+            _ if self.absent(&reply, who, &path) => Ok(None),
+            _ => Err(self.refusal(&reply, who, &path)),
         }
     }
 
@@ -683,6 +700,16 @@ mod tests {
         open(&fake.url(), &keys).unwrap()
     }
 
+    /// A manifest body that lists the test device, or lists no one.
+    fn listing(lists: bool) -> Vec<u8> {
+        let devices = if lists {
+            format!("[{{\"id\":\"{}\"}}]", device().id())
+        } else {
+            "[]".to_string()
+        };
+        format!("{{\"devices\":{devices}}}").into_bytes()
+    }
+
     fn manifest(n: u64) -> String {
         transport::manifest_path(SCOPE, n)
     }
@@ -794,7 +821,8 @@ mod tests {
         relay.devices(SCOPE).unwrap();
         relay.list_after(SCOPE, DEVICE, 0).unwrap();
         relay.get(&segment(1)).unwrap();
-        assert_eq!(relay.create(&manifest(1), b"m"), Put::Created);
+        assert_eq!(relay.create(&manifest(1), &listing(true)), Put::Created);
+        assert_eq!(relay.create(&manifest(2), &listing(false)), Put::Created);
         assert_eq!(relay.create(&segment(1), b"s"), Put::Created);
         let signers: Vec<Option<String>> = fake.seen().iter().map(Seen::signer).collect();
         let (owner, device) = (
@@ -806,11 +834,12 @@ mod tests {
             vec![
                 owner.clone(),
                 owner.clone(),
+                owner.clone(),
+                device.clone(),
+                device.clone(),
+                device.clone(),
+                device.clone(),
                 owner,
-                device.clone(),
-                device.clone(),
-                device.clone(),
-                device.clone(),
                 device
             ]
         );
@@ -1008,7 +1037,7 @@ mod tests {
         let put = |code: usize, why: &str, path: &str| {
             status.store(code, Ordering::SeqCst);
             *reason.lock().unwrap() = why.to_string();
-            relay.create(path, b"x")
+            relay.create(path, &listing(path != manifest(1)))
         };
         assert_eq!(put(201, "", &segment(1)), Put::Created);
         assert_eq!(put(200, "", &segment(1)), Put::Created);
@@ -1168,5 +1197,88 @@ mod tests {
                 .is_ok()
         );
         assert!(fake.seen().is_empty());
+    }
+
+    #[test]
+    fn a_later_device_copies_the_whole_chain_to_an_empty_relay() {
+        use crate::identity::keys::{Identity, Owner};
+        use crate::identity::manifest::{self, Member, Recipient};
+
+        let dir = std::env::temp_dir().join(format!("bilbo-remote-chain-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let owner = Owner::derive(&[0; 16]);
+        let who = |name: &str, seed: u8| Identity {
+            owner: owner.file(),
+            device: Device::from_seeds(name, &[seed; 32], &[seed + 1; 32]),
+        };
+        let (bagend, rivendell, carol) = (who("bagend", 3), who("rivendell", 1), who("carol", 5));
+        let lock = manifest::lock(&dir).unwrap();
+        let id = manifest::create(&lock, &bagend, "personal", "file:///x", &[])
+            .unwrap()
+            .scope;
+        for joining in [&rivendell, &carol] {
+            let scope = manifest::read_scope(&dir, &id).unwrap();
+            let opened = manifest::open(&scope, &Recipient::Owner(&owner.box_secret))
+                .unwrap()
+                .unwrap();
+            let member = Member::of(&joining.device);
+            manifest::add_device(&lock, &scope, &opened.keys[&opened.epoch], &member, &bagend)
+                .unwrap();
+        }
+        let versions = manifest::read_scope(&dir, &id).unwrap().versions;
+        assert_eq!(versions.len(), 3);
+        assert!(!versions[0].manifest.lists(&rivendell.device.id()));
+
+        let log = Arc::new(Mutex::new(Vec::<String>::new()));
+        let sink = log.clone();
+        let flags = crate::relay::Flags {
+            data: dir.join("relay"),
+            owners: vec![keys::owner_fingerprint(&owner.sign.public())],
+            listen: "127.0.0.1:0".parse().unwrap(),
+            max_scopes: 16,
+            max_scope_mb: 1024,
+            max_object_mb: 16,
+        };
+        let relay = crate::relay::start(
+            flags,
+            crate::relay::system_clock(),
+            Arc::new(move |line: &str| sink.lock().unwrap().push(line.to_string())),
+        )
+        .unwrap();
+        let keys = Keys::of(&rivendell);
+        let t = transport::open(&relay.url(), &keys).unwrap();
+        for v in &versions {
+            let path = transport::manifest_path(&id, v.manifest.n);
+            assert_eq!(
+                t.create(&path, &v.bytes),
+                Put::Created,
+                "version {}",
+                v.manifest.n
+            );
+        }
+        assert_eq!(t.highest_manifest(&id).unwrap(), Some(3));
+        for v in &versions {
+            let path = transport::manifest_path(&id, v.manifest.n);
+            assert_eq!(t.get(&path).unwrap(), Some(v.bytes.clone()));
+        }
+        let this = rivendell.device.id();
+        let lines: Vec<String> = log
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|l| l.starts_with("manifest "))
+            .map(|l| l.split(' ').skip(2).take(2).collect::<Vec<_>>().join(" "))
+            .collect();
+        assert_eq!(
+            lines,
+            vec![
+                "owner 1".to_string(),
+                format!("{this} 2"),
+                format!("{this} 3")
+            ]
+        );
+        drop(relay);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
