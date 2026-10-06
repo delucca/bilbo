@@ -69,7 +69,7 @@ When the relay answers 401 `clock`, the transport SHALL retry the request once w
 - **THEN** sync reports the clock message with the measured offset
 
 ### Requirement: Refusals reach the user
-The transport SHALL turn every failed request into one message naming the relay URL. The watch log SHALL print it after `sync <name>: `, which names the scope, and `bilbo sync` SHALL show it for the scope. A 200 to a create of an existing identical object SHALL count as created. A 502, 503 or 504 without `Bilbo-Time` SHALL be reported as `relay <url> unreachable: the proxy answered <status>`, and any other response without `Bilbo-Time` as `<url> is not a bilbo relay`. When a request signed by the device is answered 403 `not-admitted` and the device holds the owner key, the transport SHALL list the owner's scopes with the owner key once, and report the owner as not admitted when that listing is refused too. A failure SHALL leave the local store unchanged.
+The transport SHALL turn every failed request into one message naming the relay URL. The watch log SHALL print it after `sync <name>: `, which names the scope, and `bilbo sync` SHALL show it for the scope. A 200 to a create of an existing identical object SHALL count as created. A 502, 503 or 504 without `Bilbo-Time` SHALL be reported as `relay <url> unreachable: the proxy answered <status>`, and any other response without `Bilbo-Time` as `<url> is not a bilbo relay`. When a request signed by the device is answered 403 `not-admitted` and the device holds the owner key, the transport SHALL list the owner's scopes with the owner key once, and report the owner as not admitted when that listing is refused too. When a manifest create above version 1 is answered 403 `not-admitted` and the owner's read of that scope's `manifest/1.json` is refused too, the transport SHALL report `relay <url> holds no scope <scope id> of this owner; copy the folder it synced through into the relay's data folder`. A segment create answered 409 `not-next` SHALL be reported as `relay <url> is missing this device's earlier segments; restore its data folder`. A failure SHALL leave the local store unchanged.
 
 #### Scenario: The relay does not admit the owner
 - **WHEN** a device creates manifest 1 of `personal` and the relay answers 403 `not-admitted`
@@ -78,6 +78,14 @@ The transport SHALL turn every failed request into one message naming the relay 
 #### Scenario: The relay does not admit the owner, seen by the watcher
 - **WHEN** an enrolled device's watcher syncs `personal`, whose manifests it already holds, through a relay started without its owner's fingerprint
 - **THEN** the watch log prints `sync personal: relay <url> does not admit this owner; start it with --owner <fingerprint>`, and `bilbo sync` shows the same
+
+#### Scenario: A scope moved to a relay that does not hold it
+- **WHEN** a device moves `personal` from a folder to a relay that admits its owner but holds no copy of the scope, and its watcher creates the version that pins the relay
+- **THEN** the watch log prints `sync personal: relay <url> holds no scope <scope id> of this owner; copy the folder it synced through into the relay's data folder`
+
+#### Scenario: A relay that lost a device's segments
+- **WHEN** the relay answers a segment create 409 `not-next`
+- **THEN** sync reports `relay <url> is missing this device's earlier segments; restore its data folder`
 
 #### Scenario: A revoked device
 - **WHEN** a device's requests on `personal` are answered 403 `not-admitted` after a manifest dropped it
