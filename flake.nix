@@ -52,6 +52,7 @@
               ];
             };
             cargoLock.lockFile = ./Cargo.lock;
+            cargoLock.outputHashes."ureq-3.4.2" = "sha256-BIj3Wb8r0WG4UPB8hSlHdjBp1u8JbLUHbDRdRNv79bc=";
             # The fake embedder in tests/common listens on 127.0.0.1.
             __darwinAllowLocalNetworking = true;
             # .github is not in src; the verify job runs this test.
