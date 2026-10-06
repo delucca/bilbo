@@ -225,6 +225,10 @@ fn run() -> Result<ExitCode, Failure> {
             Ok(ExitCode::SUCCESS)
         }
         Some("relay") => {
+            // A panicking request gets a 500 and the relay keeps serving, so the panic is one more line.
+            std::panic::set_hook(Box::new(|info| {
+                print_stderr(&format!("internal error: {info}"));
+            }));
             relay::run(&args[1..], &|line: &str| print_stderr(line))?;
             Ok(ExitCode::SUCCESS)
         }
