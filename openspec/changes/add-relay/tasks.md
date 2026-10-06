@@ -84,7 +84,7 @@ Run every command below from the repo root as `nix develop -c sh -c '<command>'`
   Verify with `nix flake check -L`
 - [ ] 5.2 Update `AGENTS.md`:
   - `relay/` among the domains, as a domain that is itself a verb like `setup/`, `relay::run` beside `setup::run` and `check::run` in the dispatch sentence, `relay/` in the verb list, and `relay` among the verbs that take a callback for their lines;
-  - `remote` among `sync`'s modules where AGENTS.md lists them, and the `sync` sentence on what `relay/` may use;
+  - `sync/remote/` as the relay's client, and the `sync` sentence on what `relay/` may use;
   - the relay tests run the built `bilbo relay` on `127.0.0.1:0` through `tests/common::Relay`, and other domains' unit tests use the test-only `relay::start`;
   - the durability tests also run on macOS, and the full-disk test only where `BILBO_TEST_TMPFS` names a size-limited tmpfs.
 
