@@ -88,7 +88,7 @@ pub fn read(header: &dyn Fn(&str) -> Option<String>) -> Result<Option<Signed>, B
 }
 
 /// Plain decimal digits with no sign and no leading zero.
-fn decimal(text: &str) -> Option<u64> {
+pub fn decimal(text: &str) -> Option<u64> {
     if text.is_empty()
         || !text.bytes().all(|b| b.is_ascii_digit())
         || (text.len() > 1 && text.starts_with('0'))

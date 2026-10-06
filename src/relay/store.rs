@@ -17,10 +17,6 @@ const FOLDER_MODE: u32 = 0o700;
 /// The mode of a file the relay creates.
 const FILE_MODE: u32 = 0o600;
 
-/// The longest nameplate and message name of the layout.
-const NAMEPLATE_MAX: usize = 64;
-const MESSAGE_MAX: usize = 16;
-
 /// What a create is about to do when it calls the hook of a test (`Data::step`, a no-op outside tests). A hook that fails stops the create at that step with
 /// its error.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -187,7 +183,7 @@ impl Data {
 
     /// Removes `pair/<nameplate>/` and what it holds.
     pub fn remove_nameplate(&self, nameplate: &str) -> Result<(), String> {
-        if !transport::is_mailbox_name(nameplate, NAMEPLATE_MAX) {
+        if !transport::is_mailbox_name(nameplate, transport::NAMEPLATE_MAX) {
             return Err(format!("{nameplate} is not a nameplate"));
         }
         let dir = self.root.join("pair").join(nameplate);
@@ -319,10 +315,10 @@ fn is_layout(path: &str) -> bool {
             keys::is_id(scope) && keys::is_id(device) && transport::segment_seq(name).is_some()
         }
         ["pair", nameplate, name] => {
-            transport::is_mailbox_name(nameplate, NAMEPLATE_MAX)
+            transport::is_mailbox_name(nameplate, transport::NAMEPLATE_MAX)
                 && name
                     .strip_suffix(".msg")
-                    .is_some_and(|msg| transport::is_mailbox_name(msg, MESSAGE_MAX))
+                    .is_some_and(|msg| transport::is_mailbox_name(msg, transport::MESSAGE_NAME_MAX))
         }
         _ => false,
     }

@@ -415,6 +415,29 @@ const TEST_ONLY: [&str; 3] = [
 ];
 
 #[test]
+fn every_test_only_file_is_declared_under_cfg_test() {
+    for rel in TEST_ONLY {
+        let (folder, file) = rel.rsplit_once('/').expect("a test-only file has a parent");
+        let module = file.trim_end_matches(".rs");
+        let parent = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("src")
+            .join(folder)
+            .join("mod.rs");
+        let text = std::fs::read_to_string(&parent).expect("the parent's mod.rs");
+        let lines: Vec<&str> = text.lines().map(str::trim).collect();
+        let declared = lines.iter().enumerate().any(|(i, line)| {
+            let named = line.strip_prefix("pub ").unwrap_or(line);
+            named == format!("mod {module};") && i > 0 && lines[i - 1] == "#[cfg(test)]"
+        });
+        assert!(
+            declared,
+            "src/{rel}: no `#[cfg(test)]` above `mod {module};` in {}",
+            parent.display()
+        );
+    }
+}
+
+#[test]
 fn verbs_are_reached_only_from_main() {
     let files = files();
     assert!(
