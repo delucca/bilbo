@@ -805,7 +805,11 @@ fn fetch(
         let listing = match listing {
             Ok(listing) => listing,
             Err(why) => {
-                let detail = format!("{} is not reachable: {why}", s.sync);
+                let detail = if s.sync.starts_with("file://") {
+                    format!("{} is not reachable: {why}", s.sync)
+                } else {
+                    why.clone()
+                };
                 fetched
                     .rows
                     .insert(s.name.clone(), Row::new(&s.name, "failed", detail));
@@ -966,8 +970,8 @@ mod tests {
     use std::fs;
     use std::os::unix::fs::PermissionsExt;
     use std::path::PathBuf;
-    use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{Arc, Mutex};
 
     const PERSONAL: &str = "scope.personal.sync = file:///Users/a/Sync/bilbo\n";
     const RELAY: &str = "https://relay.example.net";
@@ -2272,19 +2276,30 @@ mod tests {
         assert!(!out.failed);
     }
 
-    /// A relay admitting the all-`abandon` owner, on `listen`.
-    fn relay_at(w: &World, listen: &str) -> crate::relay::Running {
+    /// A relay admitting `owner`, on `listen`, its log lines kept in `log`.
+    fn relay_with(
+        w: &World,
+        listen: &str,
+        owner: u8,
+        log: Arc<Mutex<Vec<String>>>,
+    ) -> crate::relay::Running {
         let flags = crate::relay::Flags {
             data: w.0.join("relay"),
             owners: vec![keys::owner_fingerprint(
-                &Owner::derive(&[0; 16]).sign.public(),
+                &Owner::derive(&[owner; 16]).sign.public(),
             )],
             listen: listen.parse().unwrap(),
             max_scopes: 16,
             max_scope_mb: 1024,
             max_object_mb: 16,
         };
-        crate::relay::start(flags, crate::relay::system_clock(), Arc::new(|_: &str| {})).unwrap()
+        let sink = move |line: &str| log.lock().unwrap().push(line.to_string());
+        crate::relay::start(flags, crate::relay::system_clock(), Arc::new(sink)).unwrap()
+    }
+
+    /// A relay admitting the all-`abandon` owner, on `listen`.
+    fn relay_at(w: &World, listen: &str) -> crate::relay::Running {
+        relay_with(w, listen, 0, Arc::default())
     }
 
     fn relay_for(w: &World) -> crate::relay::Running {
@@ -2326,7 +2341,8 @@ mod tests {
     #[test]
     fn every_device_lost_the_relays_chain_is_copied_and_extended() {
         let w = world("relay_every_lost");
-        let relay = relay_for(&w);
+        let log = Arc::default();
+        let relay = relay_with(&w, "127.0.0.1:0", 0, Arc::clone(&log));
         let url = relay.url();
         w.config(&format!("scope.personal.sync = {url}\n"));
         let src = world("relay_every_lost_src");
@@ -2350,6 +2366,35 @@ mod tests {
                 .clone();
             assert_eq!(read.versions[(n - 1) as usize].bytes, theirs);
         }
+        let id = keys::read_identity(&w.keys()).unwrap().unwrap();
+        let t = transport::open(&url, &transport::Keys::of(&id)).unwrap();
+        let step = crate::sync::manifests::step(
+            &*t,
+            &crate::sync::manifests::Input {
+                root: &w.root(),
+                name: "personal",
+                url: &url,
+                identity: &id,
+                now: jiff::Timestamp::now(),
+            },
+        )
+        .unwrap();
+        assert_eq!(step.error, None);
+        assert_eq!(step.scope.as_deref(), Some(sid.as_str()));
+        assert_eq!(t.highest_manifest(&sid), Ok(Some(3)));
+        assert!(
+            manifest::read_scope(&w.root(), &sid)
+                .unwrap()
+                .pending
+                .is_empty()
+        );
+        assert!(t.devices(&sid).is_ok());
+        let signed = format!("manifest {sid} {} 3 ", id.device.id());
+        assert!(
+            log.lock().unwrap().iter().any(|l| l.starts_with(&signed)),
+            "{:?}",
+            log.lock().unwrap()
+        );
     }
 
     #[test]
@@ -2388,7 +2433,7 @@ mod tests {
         let (out, _) = recovered(&w, "rivendell-2");
         assert!(out.failed);
         assert!(
-            out.lines[2].starts_with(&format!("scope personal failed: {url} is not reachable: ")),
+            out.lines[2].starts_with(&format!("scope personal failed: relay {url} unreachable: ")),
             "{}",
             out.lines[2]
         );
@@ -2424,6 +2469,24 @@ mod tests {
         assert_eq!(out.warnings.len(), 1);
         assert!(out.warnings[0].contains(&big) && out.warnings[0].contains(&small));
         assert!(out.warnings[0].contains(&format!("took {big}")));
+    }
+
+    #[test]
+    fn a_relay_that_refuses_the_owner_fails_the_scope_with_its_own_message() {
+        let w = world("relay_refuses");
+        let relay = relay_with(&w, "127.0.0.1:0", 5, Arc::default());
+        let url = relay.url();
+        w.config(&format!("scope.personal.sync = {url}\n"));
+        let (out, _) = recovered(&w, "rivendell-2");
+        let print = keys::owner_fingerprint(&Owner::derive(&[0; 16]).sign.public());
+        assert_eq!(
+            out.lines[2],
+            format!(
+                "scope personal failed: relay {url} does not admit this owner; start it with --owner {print}"
+            )
+        );
+        assert!(out.failed);
+        assert!(!store::scopes_dir(&w.root()).exists());
     }
 
     #[test]

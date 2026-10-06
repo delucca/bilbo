@@ -42,6 +42,11 @@ struct Fetched {
 /// Answers `code` on the transport at `via`, as `name` when this device has no keys yet.
 pub fn run(cx: &mut Cx, code: &str, via: &str, name: Option<&str>) -> Result<(), Failure> {
     let started = Instant::now();
+    let via = if via.starts_with("file://") {
+        via
+    } else {
+        via.trim_end_matches('/')
+    };
     let code = Code::parse(code).map_err(Failure::Usage)?;
     let folder = folder_of(via)?;
     let settings = config::load(cx.env).map_err(Failure::Config)?;

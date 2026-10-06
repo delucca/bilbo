@@ -167,6 +167,16 @@ impl Outside for Script {
 /// A relay on loopback that admits the owners with these fingerprints, on `port` or any free one; its data is under
 /// the scratch folder `name`.
 pub fn relay(name: &str, owners: &[String], port: u16) -> crate::relay::Running {
+    relay_logging(name, owners, port, Default::default())
+}
+
+/// `relay`, with every line the relay logs pushed to `lines`.
+pub fn relay_logging(
+    name: &str,
+    owners: &[String],
+    port: u16,
+    lines: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+) -> crate::relay::Running {
     use crate::relay::{self, Flags};
     let data = scratch(name).join("data");
     relay::start(
@@ -179,7 +189,7 @@ pub fn relay(name: &str, owners: &[String], port: u16) -> crate::relay::Running 
             max_object_mb: 16,
         },
         relay::system_clock(),
-        std::sync::Arc::new(|_: &str| {}),
+        std::sync::Arc::new(move |line: &str| lines.lock().unwrap().push(line.to_string())),
     )
     .unwrap()
 }

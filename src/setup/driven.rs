@@ -2095,6 +2095,7 @@ fn a_scope_turned_off_is_named_after_the_scopes_that_still_sync() {
 
 use crate::sync::manifests;
 use crate::sync::transport::{self, Keys};
+use std::sync::{Arc, Mutex};
 
 /// The answers of a person with no key who sets `personal` up through the relay at `url`.
 fn new_owner_at(url: &str) -> Scripted {
@@ -2106,10 +2107,11 @@ fn new_owner_at(url: &str) -> Scripted {
 
 /// The relay `first` synced through, restarted on its port with `first`'s owner admitted, and `first`'s scope
 /// published to it as a watcher cycle does.
-fn admitting(first: &Sandbox, url: &str, port: u16) -> crate::relay::Running {
+fn admitting(first: &Sandbox, url: &str, port: u16) -> Admitting {
     let id = first.identity().unwrap();
     let print = keys::owner_fingerprint(&id.owner.sign.public());
-    let relay = relay("driven-relay-b", &[print], port);
+    let lines = Arc::default();
+    let relay = relay_logging("driven-relay-b", &[print], port, Arc::clone(&lines));
     let transport = transport::open(url, &Keys::of(&id)).unwrap();
     let outcome = manifests::step(
         &*transport,
@@ -2124,7 +2126,13 @@ fn admitting(first: &Sandbox, url: &str, port: u16) -> crate::relay::Running {
     .unwrap();
     assert_eq!(outcome.error, None);
     assert_eq!(outcome.stop, None);
-    relay
+    Admitting { relay, lines }
+}
+
+/// A relay that admits the owner, and the lines it logs.
+struct Admitting {
+    relay: crate::relay::Running,
+    lines: Arc<Mutex<Vec<String>>>,
 }
 
 #[test]
@@ -2164,7 +2172,7 @@ fn a_first_device_on_a_relay_writes_the_url_and_the_watcher_publishes_the_scope(
         p.shown
     );
     drop(before);
-    let relay = admitting(&first, &url, port);
+    let relay = admitting(&first, &url, port).relay;
     let id = first.identity().unwrap();
     let held = transport::open(&url, &Keys::of(&id)).unwrap();
     assert_eq!(held.scopes().unwrap(), first.scope_ids());
@@ -2184,7 +2192,7 @@ fn every_device_lost_the_wizard_fetches_the_scope_from_the_relay_with_the_owner_
             .is_ok()
     );
     drop(before);
-    let relay = admitting(&first, &url, port);
+    let admitted = admitting(&first, &url, port);
     let second = boxed("relay-lost-b");
     second.manager();
     let mut q = phrase_at(url.clone(), p.phrase().unwrap());
@@ -2212,7 +2220,40 @@ fn every_device_lost_the_wizard_fetches_the_scope_from_the_relay_with_the_owner_
             .manifest
             .lists(&id.device.id())
     );
-    drop(relay);
+    let sid = second.scope_ids()[0].clone();
+    assert_eq!(
+        manifest::read_scope(&second.store(), &sid).unwrap().pending,
+        [2].into()
+    );
+    let transport = transport::open(&url, &Keys::of(&id)).unwrap();
+    let outcome = manifests::step(
+        &*transport,
+        &manifests::Input {
+            root: &second.store(),
+            name: "personal",
+            url: &url,
+            identity: &id,
+            now: jiff::Timestamp::now(),
+        },
+    )
+    .unwrap();
+    assert_eq!(outcome.error, None);
+    assert_eq!(outcome.stop, None);
+    assert_eq!(outcome.scope.as_deref(), Some(sid.as_str()));
+    assert_eq!(transport.highest_manifest(&sid).unwrap(), Some(2));
+    assert!(
+        manifest::read_scope(&second.store(), &sid)
+            .unwrap()
+            .pending
+            .is_empty()
+    );
+    let signed = format!("manifest {sid} {} 2 ", id.device.id());
+    let lines = admitted.lines.lock().unwrap();
+    assert!(
+        lines.iter().any(|line| line.starts_with(&signed)),
+        "{lines:?}"
+    );
+    drop(admitted.relay);
 }
 
 #[test]

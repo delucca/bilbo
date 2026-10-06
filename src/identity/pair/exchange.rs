@@ -1820,50 +1820,103 @@ fn the_base64_needle_matches_the_standard_alphabet() {
     assert_eq!(base64(&[0xfb, 0xff, 0xbf]), "+/+/");
 }
 
-/// The exchange through a relay.
+/// The exchange through relays.
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A relay on loopback admitting `owner`, its data folder, and what it logged.
+    struct Site {
+        relay: crate::relay::Running,
+        data: PathBuf,
+        lines: Arc<Mutex<Vec<String>>>,
+    }
+
+    impl Site {
+        fn start(w: &World, name: &str, owner: &str, seed: &[(&str, &[Vec<u8>])]) -> Site {
+            let data = w.0.join(name);
+            fs::create_dir_all(&data).unwrap();
+            let held = transport::Folder::new(data.clone(), "relay");
+            for (scope, versions) in seed {
+                for (i, bytes) in versions.iter().enumerate() {
+                    let path = transport::manifest_path(scope, i as u64 + 1);
+                    assert!(matches!(held.create(&path, bytes), Put::Created));
+                }
+            }
+            let lines = Arc::new(Mutex::new(Vec::<String>::new()));
+            let sink = lines.clone();
+            let relay = crate::relay::start(
+                crate::relay::Flags {
+                    data: data.clone(),
+                    owners: vec![owner.to_string()],
+                    listen: "127.0.0.1:0".parse().unwrap(),
+                    max_scopes: 16,
+                    max_scope_mb: 1024,
+                    max_object_mb: 16,
+                },
+                crate::relay::system_clock(),
+                Arc::new(move |line: &str| sink.lock().unwrap().push(line.to_string())),
+            )
+            .unwrap();
+            Site { relay, data, lines }
+        }
+
+        fn url(&self) -> String {
+            self.relay.url()
+        }
+
+        fn folder(&self) -> transport::Folder {
+            transport::Folder::new(self.data.clone(), "reader")
+        }
+
+        fn logged(&self) -> Vec<String> {
+            self.lines.lock().unwrap().clone()
+        }
+
+        fn mailbox_lines(&self) -> usize {
+            self.logged()
+                .iter()
+                .filter(|l| l.starts_with("mailbox "))
+                .count()
+        }
+    }
+
+    fn versions_of(m: &Machine, id: &str) -> Vec<Vec<u8>> {
+        m.scope(id)
+            .versions
+            .iter()
+            .map(|v| v.bytes.clone())
+            .collect()
+    }
+
+    fn owner_print(m: &Machine) -> String {
+        keys::owner_fingerprint(&m.identity().owner.sign.public())
+    }
+
+    /// A shows a code, B answers it with `via`, A confirms; both ran to their ends.
+    fn run_pair(a: &Machine, b: &Machine, a_via: &[&str], via: &str) -> (String, Run, Run) {
+        let mut a_side = Side::new();
+        let mut b_side = Side::new();
+        let answer = Answer::typed(Confirm::Yes, b_side.err.clone(), None);
+        a_side.start(a, &strings(a_via), true, limits(), answer);
+        let code = a_side.code();
+        let args = strings(&[&code, "--via", via, "--name", "mirkwood"]);
+        b_side.start(b, &args, false, limits(), Answer::none());
+        let (a_run, b_run) = (a_side.finish(), b_side.finish());
+        a_run.ok();
+        b_run.ok();
+        (code, a_run, b_run)
+    }
 
     #[test]
     fn pair_through_relay() {
         let w = world("relay");
         let (a, b) = (w.a(), w.b());
-        let owner = keys::owner_fingerprint(&a.identity().owner.sign.public());
-        let data = w.0.join("relay");
-        fs::create_dir_all(&data).unwrap();
-        let held = transport::Folder::new(data.clone(), "relay");
-        for version in &a.scope(&personal()).versions {
-            let path = transport::manifest_path(&personal(), version.manifest.n);
-            assert!(matches!(held.create(&path, &version.bytes), Put::Created));
-        }
-        let lines = Arc::new(Mutex::new(Vec::<String>::new()));
-        let sink = lines.clone();
-        let relay = crate::relay::start(
-            crate::relay::Flags {
-                data,
-                owners: vec![owner],
-                listen: "127.0.0.1:0".parse().unwrap(),
-                max_scopes: 16,
-                max_scope_mb: 1024,
-                max_object_mb: 16,
-            },
-            crate::relay::system_clock(),
-            Arc::new(move |line: &str| sink.lock().unwrap().push(line.to_string())),
-        )
-        .unwrap();
-        let url = relay.url();
+        let seed = versions_of(&a, &personal());
+        let site = Site::start(&w, "relay", &owner_print(&a), &[(&personal(), &seed)]);
+        let url = site.url();
         a.config(&format!("scope.personal.sync = {url}\n"));
-        let mut a_side = Side::new();
-        let mut b_side = Side::new();
-        let answer = Answer::typed(Confirm::Yes, b_side.err.clone(), None);
-        a_side.start(&a, &[], true, limits(), answer);
-        let code = a_side.code();
-        let args = strings(&[&code, "--via", &url, "--name", "mirkwood"]);
-        b_side.start(&b, &args, false, limits(), Answer::none());
-        let (a_run, b_run) = (a_side.finish(), b_side.finish());
-        a_run.ok();
-        b_run.ok();
+        let (code, a_run, b_run) = run_pair(&a, &b, &[], &url);
         assert!(a_run.has_err(&format!(
             "on the new device, run: bilbo pair {code} --via {url}"
         )));
@@ -1876,18 +1929,16 @@ mod tests {
         );
         assert_eq!(b.identity().device.name, "mirkwood");
         assert_eq!(owner_of(&b), owner_of(&a));
-        assert!(
-            b.config_text()
-                .unwrap()
-                .contains(&format!("scope.personal.sync = {url}"))
-        );
+        let config = b.config_text().unwrap();
+        assert!(config.contains(&format!("scope.personal.sync = {url}\n")));
         assert_eq!(b.scope(&personal()).versions.len(), 3);
         assert!(
-            held.get(&transport::manifest_path(&personal(), 3))
+            site.folder()
+                .get(&transport::manifest_path(&personal(), 3))
                 .unwrap()
                 .is_some()
         );
-        let logged = lines.lock().unwrap().clone();
+        let logged = site.logged();
         let plate = nameplate(&code);
         assert!(
             logged.iter().all(|l| !l.contains(&format!("pair/{plate}"))),
@@ -1897,7 +1948,70 @@ mod tests {
             logged.iter().all(|l| !l.starts_with("refused")),
             "{logged:?}"
         );
-        let sizes = logged.iter().filter(|l| l.starts_with("mailbox ")).count();
-        assert_eq!(sizes, 3, "{logged:?}");
+        assert_eq!(site.mailbox_lines(), 3, "{logged:?}");
+    }
+
+    #[test]
+    fn a_via_with_a_trailing_slash_is_written_without_it() {
+        let w = world("slash");
+        let (a, b) = (w.a(), w.b());
+        let seed = versions_of(&a, &personal());
+        let site = Site::start(&w, "relay", &owner_print(&a), &[(&personal(), &seed)]);
+        let url = site.url();
+        a.config(&format!("scope.personal.sync = {url}\n"));
+        run_pair(&a, &b, &[], &format!("{url}/"));
+        let config = b.config_text().unwrap();
+        assert!(
+            config.contains(&format!("scope.personal.sync = {url}\n")),
+            "{config}"
+        );
+    }
+
+    #[test]
+    fn pair_through_two_relays() {
+        let w = world("two-relays");
+        let (a, b) = (w.a(), w.b());
+        let owner = owner_print(&a);
+        let seed = versions_of(&a, &personal());
+        let first = Site::start(&w, "relay-1", &owner, &[(&personal(), &seed)]);
+        let second = Site::start(&w, "relay-2", &owner, &[]);
+        let (one, two) = (first.url(), second.url());
+        let identity = a.identity();
+        let work = {
+            let lock = manifest::lock(&a.root()).unwrap();
+            manifest::create(&lock, &identity, "work", &two, &[])
+                .unwrap()
+                .scope
+        };
+        let on_two = transport::open(&two, &transport::Keys::of(&identity)).unwrap();
+        for version in &a.scope(&work).versions {
+            let path = transport::manifest_path(&work, version.manifest.n);
+            let put = on_two.create(&path, &version.bytes);
+            assert!(matches!(put, Put::Created), "{put:?}");
+        }
+        a.config(&format!(
+            "scope.personal.sync = {one}\nscope.work.sync = {two}\n"
+        ));
+        run_pair(&a, &b, &["--via", &one], &one);
+        let config = b.config_text().unwrap();
+        assert!(
+            config.contains(&format!("scope.personal.sync = {one}\n")),
+            "{config}"
+        );
+        assert!(
+            config.contains(&format!("scope.work.sync = {two}\n")),
+            "{config}"
+        );
+        assert_eq!(b.scope(&personal()).versions.len(), 3);
+        assert_eq!(b.scope(&work).versions.len(), 2);
+        assert!(
+            second
+                .folder()
+                .get(&transport::manifest_path(&work, 2))
+                .unwrap()
+                .is_some()
+        );
+        assert_eq!(first.mailbox_lines(), 3, "{:?}", first.logged());
+        assert_eq!(second.mailbox_lines(), 0, "{:?}", second.logged());
     }
 }

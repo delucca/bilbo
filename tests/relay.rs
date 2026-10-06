@@ -1367,3 +1367,43 @@ fn data_folder_is_a_file_transport() {
     b.start();
     b.wait_text(FILE, &text);
 }
+
+#[test]
+fn a_relay_that_refuses_the_owner_reaches_the_watch_log_and_sync() {
+    let dir = TempDir::new("relay-refusal");
+    let data = data_in(&dir);
+    let other = foreign_fingerprint();
+    let relay = Relay::start(&data, &[&other], &[]);
+    let url = relay.url();
+    let mut a = Site::new("rivendell", &url, &pinned(&url));
+    a.start();
+    let refusal = format!(
+        "bilbo: sync personal: relay {url} does not admit this owner; start it with --owner {}",
+        fingerprint()
+    );
+    a.wait_for(&refusal);
+    let run = bilbo(a.dir.path(), &a.pairs(), &["sync"]);
+    assert!(
+        run.stdout.contains(&refusal[PREFIX.len()..]) || run.stderr.contains(&refusal),
+        "stdout: {}\nstderr: {}",
+        run.stdout,
+        run.stderr
+    );
+}
+
+#[test]
+fn a_relay_that_goes_down_reaches_the_watch_log() {
+    let dir = TempDir::new("relay-down");
+    let data = data_in(&dir);
+    preload(&data, &[1, 2]);
+    let mut relay = start(&data);
+    let url = relay.url();
+    let manifests = pinned(&url);
+    let reply = put(relay.port, &rivendell(), &manifest_target(3), &manifests[2]);
+    assert_eq!(reply.status, 201, "{}", reply.text());
+    let mut a = Site::new("rivendell", &url, &manifests);
+    a.start();
+    a.wait_for(&format!("bilbo: syncing personal through {url}"));
+    relay.kill();
+    a.wait_for(&format!("bilbo: sync personal: relay {url} unreachable: "));
+}

@@ -12,7 +12,7 @@ use spake2::{Ed25519Group, Identity, Password, Spake2};
 use zeroize::Zeroizing;
 
 use crate::identity::{keys, phrase};
-use crate::shared::{hash, store};
+use crate::shared::{config, hash, store};
 
 /// The format number of every message.
 pub const FORMAT: u64 = 1;
@@ -651,9 +651,10 @@ fn payload_bytes(payload: &Payload) -> Result<Zeroizing<Vec<u8>>, String> {
         .map_err(|e| format!("cannot write a message: {e}"))
 }
 
-/// An `https://` URL with no whitespace or control character.
-fn is_https_url(url: &str) -> bool {
-    url.starts_with("https://") && !url.chars().any(|c| c.is_whitespace() || c.is_control())
+/// A relay URL, `https://` or loopback `http://`, with no whitespace or control character.
+fn is_relay_url(url: &str) -> bool {
+    (url.starts_with("https://") || (url.starts_with("http://") && config::is_local(url)))
+        && !url.chars().any(|c| c.is_whitespace() || c.is_control())
 }
 
 fn payload_from(bytes: &[u8]) -> Result<Payload, Refusal> {
@@ -679,7 +680,7 @@ fn payload_from(bytes: &[u8]) -> Result<Payload, Refusal> {
                         && matches!(g.embedder.as_str(), "any" | "local")
                         && g.n >= 1
                         && keys::is_id(&g.id)
-                        && g.url.as_deref().is_none_or(is_https_url) =>
+                        && g.url.as_deref().is_none_or(is_relay_url) =>
                 {
                     Ok(Grant {
                         name: g.name,
@@ -1118,12 +1119,13 @@ mod tests {
     #[test]
     fn a_payload_with_unusable_ids_urls_or_repeats_is_malformed() {
         let (a, _, b, _, _) = exchange(None);
-        let bad: [fn(&mut Payload); 7] = [
+        let bad: [fn(&mut Payload); 8] = [
             |p| p.scopes[0].n = 0,
             |p| p.id = "../../etc".to_string(),
             |p| p.scopes[0].id = "../x".to_string(),
             |p| p.scopes[0].url = Some("file:///etc".to_string()),
             |p| p.scopes[0].url = Some("https://x/\n[evil]".to_string()),
+            |p| p.scopes[0].url = Some("http://relay.example".to_string()),
             |p| p.scopes[1].id = p.scopes[0].id.clone(),
             |p| p.scopes[1].name = p.scopes[0].name.clone(),
         ];
@@ -1134,9 +1136,11 @@ mod tests {
             assert!(matches!(read_reply(&b, &c), Err(Refusal::Malformed(_))));
         }
         let mut ok = payload(1, 8);
-        ok.scopes[0].url = Some("https://relay.example/x".to_string());
-        let c = reply(&a, Outcome::Enrolled, Some(&ok), None).unwrap();
-        assert!(matches!(read_reply(&b, &c).unwrap(), Reply::Enrolled(_)));
+        for url in ["https://relay.example/x", "http://127.0.0.1:8738"] {
+            ok.scopes[0].url = Some(url.to_string());
+            let c = reply(&a, Outcome::Enrolled, Some(&ok), None).unwrap();
+            assert!(matches!(read_reply(&b, &c).unwrap(), Reply::Enrolled(_)));
+        }
     }
 
     #[test]
