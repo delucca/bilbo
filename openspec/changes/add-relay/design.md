@@ -45,10 +45,10 @@ Framing is strict, because smuggling and desync bugs live there (`relay-api` spe
 
 Concurrency: one thread per connection, at most 256 at once. A counter in the accept loop enforces the cap, and at the cap the accept loop itself writes 503 `busy` with `Retry-After: 5` and closes, without waiting. Threads are cheap at this load, and a fixed pool of 16 with a queue was easy to exhaust: 16 clients each sending half a request line would hold every worker for the whole idle timeout.
 
-- **Deadlines:** the request line and headers must arrive within 10 seconds of the accept. After that, the body may idle for at most 30 seconds between reads.
+- **Deadlines:** the request line and headers must arrive within 10 seconds of the accept. After that, the body may idle for at most 30 seconds between reads, and the whole request and its response must finish within 300 seconds of the accept, the client's own global timeout. Without that total, a stranger dripping one byte every 29 seconds into a 16 MiB `PUT` would hold a connection, its quota reservation and a temporary file for days, since the signature over the body is checked only once the body is in.
 - **Size caps:** headers are capped at 16 KiB (431). The body is refused before it is read when its `Content-Length` passes the limit for its path (413).
 - **Cheap checks first:** checks that cost nothing run before the Ed25519 verify (`relay-api` spec, Order of checks): framing, grammar, method and the time window. A stranger's junk therefore costs the relay a parse, not a signature check.
-- **What is left:** on a public relay, 256 slow clients can still hold every connection for 10 seconds at a time. A one-person relay accepts that cost. The README tells a public deployment to set Caddy's `timeouts` and `max_header_size` too, so the proxy sheds such clients before they reach the relay.
+- **What is left:** on a public relay, 256 slow clients can still hold every connection for 10 seconds at a time, or for 300 seconds once past the head. A one-person relay accepts that cost. The README tells a public deployment to set Caddy's `timeouts` and `max_header_size` too, so the proxy sheds such clients before they reach the relay.
 
 `src/main.rs` stays the only writer of stderr. `relay::run` takes a log sink from `main`, a `&(dyn Fn(&str) + Sync)` that calls `print_stderr`, the way `setup::run` takes a line callback.
 
