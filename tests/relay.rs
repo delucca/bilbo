@@ -1382,12 +1382,16 @@ fn a_relay_that_refuses_the_owner_reaches_the_watch_log_and_sync() {
         fingerprint()
     );
     a.wait_for(&refusal);
+    // `bilbo sync` words it as the sync-status spec does: the relay's message is the reason.
     let run = bilbo(a.dir.path(), &a.pairs(), &["sync"]);
+    let line = run
+        .stderr
+        .lines()
+        .find(|l| l.starts_with(&format!("bilbo: sync personal: {url} not reachable since ")))
+        .unwrap_or_else(|| panic!("stderr: {}", run.stderr));
     assert!(
-        run.stdout.contains(&refusal[PREFIX.len()..]) || run.stderr.contains(&refusal),
-        "stdout: {}\nstderr: {}",
-        run.stdout,
-        run.stderr
+        line.ends_with(&refusal[PREFIX.len() + "sync personal: ".len()..]),
+        "{line}"
     );
 }
 
