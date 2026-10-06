@@ -69,11 +69,15 @@ When the relay answers 401 `clock`, the transport SHALL retry the request once w
 - **THEN** sync reports the clock message with the measured offset
 
 ### Requirement: Refusals reach the user
-The transport SHALL turn every failed request into one message naming the relay URL. The watch log SHALL print it after `sync <name>: `, which names the scope, and `bilbo sync` SHALL show it for the scope. A 200 to a create of an existing identical object SHALL count as created. A 502, 503 or 504 without `Bilbo-Time` SHALL be reported as `relay <url> unreachable: the proxy answered <status>`, and any other response without `Bilbo-Time` as `<url> is not a bilbo relay`. A failure SHALL leave the local store unchanged.
+The transport SHALL turn every failed request into one message naming the relay URL. The watch log SHALL print it after `sync <name>: `, which names the scope, and `bilbo sync` SHALL show it for the scope. A 200 to a create of an existing identical object SHALL count as created. A 502, 503 or 504 without `Bilbo-Time` SHALL be reported as `relay <url> unreachable: the proxy answered <status>`, and any other response without `Bilbo-Time` as `<url> is not a bilbo relay`. When a request signed by the device is answered 403 `not-admitted` and the device holds the owner key, the transport SHALL list the owner's scopes with the owner key once, and report the owner as not admitted when that listing is refused too. A failure SHALL leave the local store unchanged.
 
 #### Scenario: The relay does not admit the owner
 - **WHEN** a device creates manifest 1 of `personal` and the relay answers 403 `not-admitted`
 - **THEN** sync reports `relay <url> does not admit this owner; start it with --owner <fingerprint>`, with the owner's fingerprint
+
+#### Scenario: The relay does not admit the owner, seen by the watcher
+- **WHEN** an enrolled device's watcher syncs `personal`, whose manifests it already holds, through a relay started without its owner's fingerprint
+- **THEN** the watch log prints `sync personal: relay <url> does not admit this owner; start it with --owner <fingerprint>`, and `bilbo sync` shows the same
 
 #### Scenario: A revoked device
 - **WHEN** a device's requests on `personal` are answered 403 `not-admitted` after a manifest dropped it
