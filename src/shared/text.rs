@@ -25,6 +25,15 @@ impl Body {
 /// NFKC, the six entities decoded, quotes made straight, links and images reduced to their text, autolinks to their
 /// target, backslash escapes, `*`, `_`, backticks and `~~` dropped, whitespace collapsed and trimmed. Case is kept.
 pub fn normalize(text: &str) -> String {
+    normalized(text, false)
+}
+
+/// Like `normalize`, but an `_` between two letters or digits stays, as in `SQLITE_BUSY`: the form a hint shows.
+pub fn readable(text: &str) -> String {
+    normalized(text, true)
+}
+
+fn normalized(text: &str, keep_inner_underscore: bool) -> String {
     let folded: Vec<char> = decode_entities(&text.nfkc().collect::<String>())
         .chars()
         .map(straight)
@@ -33,7 +42,7 @@ pub fn normalize(text: &str) -> String {
     let chars = strip_links(&chars, '[', ']');
     let chars = strip_autolinks(&chars);
     let chars = unescape(&chars);
-    let chars = drop_marks(&chars);
+    let chars = drop_marks(&chars, keep_inner_underscore);
     let text: String = chars.into_iter().collect();
     text.split_whitespace().collect::<Vec<_>>().join(" ")
 }
@@ -148,11 +157,19 @@ fn unescape(chars: &[char]) -> Vec<char> {
     out
 }
 
-fn drop_marks(chars: &[char]) -> Vec<char> {
+fn drop_marks(chars: &[char], keep_inner_underscore: bool) -> Vec<char> {
     let mut out = Vec::with_capacity(chars.len());
     let mut i = 0;
     while i < chars.len() {
         match chars[i] {
+            '_' if keep_inner_underscore
+                && i > 0
+                && chars[i - 1].is_alphanumeric()
+                && chars.get(i + 1).is_some_and(|c| c.is_alphanumeric()) =>
+            {
+                out.push('_');
+                i += 1;
+            }
             '*' | '_' | '`' => i += 1,
             '~' if chars.get(i + 1) == Some(&'~') => i += 2,
             c => {
@@ -262,6 +279,13 @@ fn base(c: char) -> Option<&'static str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_readable_form_keeps_an_underscore_between_letters() {
+        let text = "`SQLITE_BUSY` and _emphasis_ and __init__ and a\\_b";
+        assert_eq!(readable(text), "SQLITE_BUSY and emphasis and init and a_b");
+        assert_eq!(normalize(text), "SQLITEBUSY and emphasis and init and ab");
+    }
 
     #[test]
     fn emphasis_and_spacing() {
