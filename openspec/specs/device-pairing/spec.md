@@ -196,7 +196,7 @@ A SHALL pair every scope whose `scope.<name>.sync` is a URL, or only those named
 - **THEN** stderr says that one pairing carries at most 12 scopes and names `--scope`, the exit code is 2, and no mailbox is created
 
 ### Requirement: Who can pair
-A SHALL refuse, before creating a mailbox, when it holds no owner key, when no scope syncs, or unless stdin and stderr are terminals and neither `CLAUDECODE` nor `CODEX_THREAD_ID` is set and not empty. Before asking, A SHALL refuse a device of another owner, or whose name is A's own or another device's in any manifest of the owner. B SHALL refuse with no `<root>/notes/`, and before writing, a store of another owner. Each refusal SHALL exit 1.
+A SHALL refuse, before creating a mailbox, when it holds no owner key, when no scope syncs, or unless stdin and stderr are terminals and none of the agent markers of the `device-identity` spec's Terminal-only forms is set and not empty. Before asking, A SHALL refuse a device of another owner, or whose name is A's own or another device's in any manifest of the owner. B SHALL refuse with no `<root>/notes/`, and before writing, a store of another owner. Each refusal SHALL exit 1.
 
 #### Scenario: The phrase was never set
 - **WHEN** a device with no owner key runs `bilbo pair`
@@ -211,8 +211,12 @@ A SHALL refuse, before creating a mailbox, when it holds no owner key, when no s
 - **THEN** A says `<B's name> belongs to another owner (<its fingerprint>)`, B says `this device belongs to owner <its fingerprint>, the other device to <A's>`, nothing is sent, and both exit 1
 
 #### Scenario: An agent shows a code
-- **WHEN** an agent runs `bilbo pair` with stdin not a terminal, or with `CLAUDECODE=1` or `CODEX_THREAD_ID` set
+- **WHEN** an agent runs `bilbo pair` with stdin not a terminal, or with `CLAUDE_CODE_CHILD_SESSION=1` or `CODEX_THREAD_ID` set
 - **THEN** stderr says `pairing is confirmed only in a terminal, by the user`, no mailbox is created, and the exit code is 1
+
+#### Scenario: A person in an IDE terminal
+- **WHEN** only `CLAUDECODE=1` is set and a user runs `bilbo pair` in a terminal on an enrolled device whose scope syncs
+- **THEN** A creates the mailbox and shows the code
 
 #### Scenario: A taken name
 - **WHEN** `personal` lists a device named `bywater` and a new device named `bywater` answers
