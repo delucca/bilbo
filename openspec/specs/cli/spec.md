@@ -115,7 +115,7 @@ Every verb except `digest` SHALL exit 0 when it succeeds, 1 when it refuses the 
 - **THEN** stdout is empty, stderr is one line starting with `bilbo: ` that names `--verbose`, and the exit code is 0
 
 ### Requirement: Output streams
-stdout SHALL carry only a verb's result. Every diagnostic SHALL go to stderr. In stderr's plain view every line SHALL start with `bilbo: `. In stderr's human view a diagnostic SHALL instead start with a level mark and two spaces, `■` for an error, `▲` for a warning, `●` for progress and `○` for nothing found, with its later lines indented three columns. When stdout gets the human view, a verb's warnings SHALL follow its result; otherwise they SHALL precede it. The exceptions are the interactive `setup` wizard, its sync step's recovery phrase ceremony included, and the recovery phrase prompts of `device init` and `device recover`, which draw their prompts, choices and progress on stderr without a prefix or level mark; their result, the step report, still goes to stdout.
+stdout SHALL carry only a verb's result. Every diagnostic SHALL go to stderr. In stderr's plain view every line SHALL start with `bilbo: `, after the time the Times in service logs requirement puts before it. In stderr's human view a diagnostic SHALL instead start with a level mark and two spaces, `■` for an error, `▲` for a warning, `●` for progress and `○` for nothing found, with its later lines indented three columns. When stdout gets the human view, a verb's warnings SHALL follow its result; otherwise they SHALL precede it. The exceptions are the interactive `setup` wizard, its sync step's recovery phrase ceremony included, the recovery phrase prompts of `device init` and `device recover`, `pair`'s prompts on a person's terminal, and `recall`'s spinner, which draw on stderr without a prefix or level mark; their result still goes to stdout.
 
 #### Scenario: A failure leaves stdout empty
 - **WHEN** `bilbo new` refuses a taken topic with stderr piped
@@ -156,6 +156,10 @@ stdout SHALL carry only a verb's result. Every diagnostic SHALL go to stderr. In
 #### Scenario: Progress on a terminal
 - **WHEN** a user runs `bilbo setup --yes` in a terminal and a step reports progress
 - **THEN** that stderr line starts with `●` and two spaces, not `bilbo: `
+
+#### Scenario: Pairing draws on stderr
+- **WHEN** a user runs `bilbo pair > out.txt` in a terminal and the pairing succeeds
+- **THEN** the code, the question and the spinner were drawn on stderr, and `out.txt` holds only the `paired` line
 
 ### Requirement: Version
 `bilbo --version`, as the only argument, SHALL print `bilbo <version>` and a newline to stdout and exit 0, where `<version>` is the `version` in `Cargo.toml` the binary was built from. `--version` after a verb SHALL stay an unknown option of that verb.
@@ -200,7 +204,7 @@ Help SHALL be plain text, except that headings and the words of a page's left co
 - **THEN** stdout holds no escape byte
 
 ### Requirement: Usage errors
-A usage error SHALL print to stderr: the reason, as its first line; then `usage: ` and the synopsis forms of the verb that was run, one unwrapped form per line, only those of its subcommand when the argument after the verb names one; then `see 'bilbo <verb> --help'`. With no verb, an unknown one or `help`, the forms and page are `bilbo`'s own. In stderr's plain view each line SHALL start with `bilbo: `; in its human view the reason SHALL follow `■` and the other lines SHALL be indented three columns, by the Output streams levels. It SHALL never print the overview or a page, and SHALL exit 2.
+A usage error SHALL print to stderr: the reason, as its first line; then `usage: ` and the synopsis forms of the verb that was run, one unwrapped form per line, only those of its subcommand when the argument after the verb names one; then `see 'bilbo <verb> --help'`. With no verb, an unknown one or `help`, the forms and page are `bilbo`'s own. In stderr's plain view each line SHALL start with `bilbo: `; in its human view the reason SHALL follow `■` and the other lines SHALL be indented three columns, by the Output streams levels, and a `usage:` or `verbs:` line, or a form after the first, wider than the width SHALL wrap at its spaces, its later lines indented ten columns, under the text after the seven-column label. It SHALL never print the overview or a page, and SHALL exit 2.
 
 #### Scenario: A verb's usage error
 - **WHEN** an agent runs `bilbo recall --bogus`
@@ -217,6 +221,18 @@ A usage error SHALL print to stderr: the reason, as its first line; then `usage:
 #### Scenario: A usage error on a terminal
 - **WHEN** a user runs `bilbo recal x` in a terminal with no agent marker
 - **THEN** the first stderr line is `■`, two spaces and `unknown verb 'recal'; did you mean 'recall'?`, the usage, verbs and see lines follow indented three columns, no line starts with `bilbo: `, and the exit code is 2
+
+#### Scenario: The verbs line wraps on a narrow terminal
+- **WHEN** a user runs `bilbo recal x` in a terminal 60 columns wide with no agent marker
+- **THEN** the verbs line is `   verbs: new, recall, check, history, restore, library,`, the next two lines start with ten spaces and hold the other verbs, and no stderr line is wider than 60 columns
+
+#### Scenario: A long form wraps under its text
+- **WHEN** a user runs `bilbo library land` in a terminal 80 columns wide with no agent marker
+- **THEN** the usage line is `   usage: bilbo library land <stage> <corpus>/<name> --keep <a>-<b>[,<c>-<d>]...` and the next line is ten spaces and `[--title <text>] [--replace [--force]]`
+
+#### Scenario: A pipe keeps one line per form
+- **WHEN** an agent runs `bilbo recal x` with stderr piped
+- **THEN** the verbs line is one line, `bilbo: verbs: ` and every verb, however wide
 
 ### Requirement: Verb suggestions
 For an unknown verb, the reason SHALL end with `; did you mean '<verb>'?` when the name is a prefix of exactly one verb, or, when it is a prefix of none, when exactly one verb is nearest to it by edit distance, that distance being at most 2 and less than the name's length. Otherwise it SHALL suggest nothing.
@@ -294,3 +310,38 @@ The human view SHALL use escapes only when `NO_COLOR` is unset or empty, `CLICOL
 #### Scenario: The wizard follows NO_COLOR
 - **WHEN** a user runs `bilbo setup` in a terminal with `NO_COLOR=1`
 - **THEN** the wizard's drawing on stderr selects no colour, and its marks and boxes are drawn as without `NO_COLOR`
+
+### Requirement: Times in service logs
+Each line that `watch`, `relay` or `index` writes to stdout or stderr SHALL start with the local time, in RFC 3339 form to the second with its UTC offset, and a space, when the stream is a regular file, such as the log files the units `setup` installs write to. A terminal, a pipe and systemd's journal, which receives output through a socket and keeps its own times, SHALL get no time. Where the `note-watch`, `note-index` and `relay-server` requirements state a line, they state the text after that time. Help SHALL never carry a time, and no other verb's lines SHALL.
+
+#### Scenario: The watch log
+- **WHEN** `bilbo watch` starts at 01:02:03 on 2026-10-07 at offset -03:00 with stderr appended to `watch.log`
+- **THEN** `watch.log` gains `2026-10-07T01:02:03-03:00 bilbo: watching <root>/notes`
+
+#### Scenario: The index log keeps both streams in time
+- **WHEN** the timer runs `bilbo index` with stdout and stderr appended to `index.log`, and it embeds 1 passage and withholds 2
+- **THEN** each of the two lines it adds starts with a time and a space, one followed by `embedded 1, kept 0, dropped 0` and the other by `bilbo: withheld 2 passages from <url>: their scope allows only a loopback embedder`
+
+#### Scenario: UTC
+- **WHEN** `bilbo relay` runs with stderr appended to a file and the local time zone is UTC
+- **THEN** its listening line starts with a time ending in `+00:00` and a space
+
+#### Scenario: A pipe gets no time
+- **WHEN** an agent runs `bilbo index` with stdout and stderr piped
+- **THEN** stdout is `embedded <n>, kept <n>, dropped <n>` and every stderr line starts with `bilbo: `
+
+#### Scenario: The journal gets no time
+- **WHEN** systemd runs `bilbo relay` with stderr connected to the journal
+- **THEN** the journal's line is `bilbo: relay listening on http://<address:port>`
+
+#### Scenario: A file redirected by hand gets the time
+- **WHEN** a user runs `bilbo index > index.txt 2>&1`
+- **THEN** each line of `index.txt` starts with a time and a space
+
+#### Scenario: A terminal gets no time
+- **WHEN** a user runs `bilbo watch` in a terminal, or with stderr a terminal and `CODEX_CI=1`
+- **THEN** no stderr line starts with a time
+
+#### Scenario: Another verb in a file
+- **WHEN** a user runs `bilbo recall rollback > hits.txt 2> err.txt`
+- **THEN** neither file holds a time that bilbo added
