@@ -93,7 +93,10 @@ fn usage_error(m: &Machine, args: &[&str], message: &str) -> Run {
         "{args:?}: {}",
         run.stderr
     );
-    assert!(run.stderr.contains("bilbo: usage: bilbo new"));
+    assert!(run.stderr.ends_with(
+        "bilbo: usage: bilbo setup [--yes | --interactive] [--remove] [<option>]...\n\
+         bilbo: see 'bilbo setup --help'\n"
+    ));
     assert_eq!(snapshot(m.dir.path()), before, "{args:?} wrote something");
     run
 }

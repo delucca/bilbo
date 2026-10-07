@@ -1158,3 +1158,24 @@ impl Watch<'_> {
         }
     }
 }
+
+/// `bilbo watch --help`; its Usage block is also the synopsis a usage error shows.
+pub const HELP: &str = r#"bilbo watch: record a version of each note when it changes, and sync the
+scopes that sync, until it is stopped. The login service setup installs runs
+it.
+
+Usage:
+  bilbo watch
+
+One watcher records per store; a second one waits until the first stops. It
+prunes history once a day. Nothing goes to stdout: stderr says what it
+watches, and names each note it cannot record.
+
+Exit: it runs until stopped; 1 no store, or it lost its lock file; 2 usage
+or config error.
+
+Examples:
+  bilbo watch
+
+Docs: https://github.com/delucca/bilbo/wiki/Commands#watch
+"#;

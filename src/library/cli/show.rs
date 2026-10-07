@@ -28,7 +28,7 @@ fn capture_folder(root: &Path, id: &str, digest: &str) -> Option<PathBuf> {
 }
 
 pub fn run(args: &Args, env: &store::Env) -> Result<Output, Failure> {
-    let [reference] = args.operands(["<reference>"])?;
+    let [reference] = args.operands(["<ref>"])?;
     let depth = args
         .one("--depth")
         .map(|value| {

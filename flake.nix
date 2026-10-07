@@ -42,6 +42,7 @@
               fileset = lib.fileset.unions [
                 ./Cargo.toml
                 ./Cargo.lock
+                ./docs
                 ./src
                 ./tests
                 ./plugins

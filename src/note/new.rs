@@ -269,6 +269,42 @@ fn publish(
     })
 }
 
+/// `bilbo new --help`; its Usage block is also the synopsis a usage error shows.
+pub const HELP: &str = r#"bilbo new: create a note of a kind on a topic, and print its path.
+
+Usage:
+  bilbo new <kind> <topic> [--title <text>] [--scope <name>]
+
+Options:
+  --title <text>  The note's title (default: the topic, hyphens as spaces,
+                  first letter in uppercase)
+  --scope <name>  The note's scope, one the config declares (default: the
+                  scope whose paths hold the working directory, else
+                  scope.default)
+  --              End the options: every later argument is an operand
+Options go before or after the operands, and --title=<text> works too.
+Kinds: plan, spec, design, decision, gotcha, research, review, report,
+reference.
+<topic> is segments of a-z and 0-9 joined by single hyphens, and is taken by
+at most one note, whatever its kind.
+
+new writes <root>/notes/<kind>-<topic>.md with a fresh id, the time and the
+title, for the agent to fill in. When scopes are declared and the note gets
+none, stderr says how to give it one.
+
+Output: the absolute path of the new note.
+
+Exit: 0 created; 1 refused (the topic has a note, or the store cannot be
+written); 2 usage or config error, an undeclared scope included.
+
+Examples:
+  bilbo new decision release-tags
+  bilbo new gotcha sqlite-busy --title "SQLite needs a busy timeout"
+  bilbo new plan q3-roadmap --scope work
+
+Docs: https://github.com/delucca/bilbo/wiki/Commands#new
+"#;
+
 #[cfg(test)]
 mod tests {
     use super::*;

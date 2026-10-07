@@ -192,6 +192,40 @@ fn wait_pausing<T>(
     }
 }
 
+/// `bilbo pair --help`; its Usage block is also the synopsis a usage error shows.
+pub const HELP: &str = r#"bilbo pair: join another device to your scopes with a one-time code.
+
+Usage:
+  bilbo pair [--scope <name>]... [--via <url>]
+  bilbo pair <code> --via <url> [--name <name>]
+
+Options:
+  --scope <name>  Pair only this scope; repeat for several (default: every
+                  scope that syncs; more than 12 is refused)
+  --via <url>     The transport to pair over. Showing a code: needed only
+                  when the scopes sync through more than one. Joining:
+                  required, the transport's URL on this device
+  --name <name>   Joining: the name this device takes (default: its own, or
+                  the host name)
+
+The first form runs on an enrolled device, in a terminal. It prints a code on
+stderr, good once for 10 minutes, and waits. The second runs on the new
+device with that code. Both print the same fingerprint, and the first device
+enrolls the new one only when you confirm it there.
+
+Output: on the first device, 'paired <name> <device id>: <scopes>'; on the
+new one, 'paired with <name>: <scopes>'.
+
+Exit: 0 paired; 1 refused, declined, expired, or a wrong code; 2 usage or
+config error.
+
+Examples:
+  bilbo pair
+  bilbo pair 412-ocean-pilot-zebra --via file:///Users/me/Dropbox/bilbo
+
+Docs: https://github.com/delucca/bilbo/wiki/Commands#pair
+"#;
+
 #[cfg(test)]
 mod tests {
     use super::*;

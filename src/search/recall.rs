@@ -340,6 +340,48 @@ fn parse_limit(value: &str) -> Result<usize, Failure> {
     )))
 }
 
+/// `bilbo recall --help`; its Usage block is also the synopsis a usage error shows.
+pub const HELP: &str = r#"bilbo recall: search the notes, or the library's sources, best match first.
+
+Usage:
+  bilbo recall <query>... [--kind <kind>]... [--limit <n>]
+  bilbo recall <query>... --library [--corpus <corpus>]... [--limit <n>]
+
+Options:
+  --kind <kind>      Only notes of this kind; repeat for several kinds
+  --limit <n>        Print at most n hits (default 10)
+  --library          Search the library's sources and guides, by keyword only
+  --corpus <corpus>  Only this corpus; repeat for several; implies --library
+  --                 End the options: every later argument is a query word
+Options go before or after the query words, and --kind=<kind> works too.
+Kinds: plan, spec, design, decision, gotcha, research, review, report,
+reference.
+
+Matching: whole words of 2 or more letters or digits, ignoring case and
+accents, with no stemming ('notes' does not find 'note'). With an embedder,
+notes also match by meaning; when it is down, or a note changed since the
+last 'bilbo index', stderr says so.
+
+Output: one block per hit, best first, a blank line between blocks:
+  <path>:<line> TAB <kind> TAB <created>
+  <heading path>
+  <first 300 characters of the passage, or ->
+With --library the first line is
+  <path>:<line> TAB source|guide TAB <reference> TAB <start>-<end>
+where <reference> is what 'bilbo library show' or 'bilbo library' takes, and
+the heading path starts below the title, or is - for the title's own text.
+
+Exit: 0 hits; 1 nothing matched, or no store, library or corpus; 2 usage or
+config error.
+
+Examples:
+  bilbo recall sqlite busy timeout
+  bilbo recall --kind decision --kind gotcha -- release tags
+  bilbo recall --library --corpus go -- 'goroutine leaks'
+
+Docs: https://github.com/delucca/bilbo/wiki/Commands#recall
+"#;
+
 #[cfg(test)]
 mod tests {
     use super::*;

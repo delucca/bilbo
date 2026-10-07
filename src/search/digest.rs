@@ -566,6 +566,31 @@ fn one_line(message: &str) -> String {
     message.replace('\n', "; ")
 }
 
+/// `bilbo digest --help`; its Usage block is also the synopsis a usage error shows.
+pub const HELP: &str = r#"bilbo digest: read a prompt hook's JSON on stdin and print the notes that bear
+on the prompt. The plugin's prompt hook runs it.
+
+Usage:
+  bilbo digest
+
+Input: one JSON object with the string fields session_id and prompt.
+It shows at most 6 notes the first time in a session and 3 after, never one
+the session saw already. digest.enable = off in the config turns it off.
+
+Output: nothing, or a block for the agent:
+  <!-- bilbo digest: <shown> of <left> notes -->
+  Notes that may bear on this prompt (open the file to read more):
+  - <path>:<line> (<kind>, <created>[, <label>]) <heading path>: <snippet>
+  Sync conflicts wait in: <path>, ... (run bilbo check), when notes wait
+
+Exit: always 0, so a prompt is never blocked; an error is one line on stderr.
+
+Examples:
+  echo '{"session_id":"s1","prompt":"release tags"}' | bilbo digest
+
+Docs: https://github.com/delucca/bilbo/wiki/Commands#digest
+"#;
+
 #[cfg(test)]
 mod tests {
     use super::*;

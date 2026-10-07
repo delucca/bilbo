@@ -294,3 +294,25 @@ fn single_line(line: &str) -> String {
     }
     out
 }
+
+/// `bilbo check --help`; its Usage block is also the synopsis a usage error shows.
+pub const HELP: &str = r#"bilbo check: print every problem in the notes and the library; it changes
+nothing.
+
+Usage:
+  bilbo check
+
+check reads every note and source against the store's rules, and each note's
+scope against the config, and reports every problem it finds in one run.
+
+Output: one line per problem or warning, sorted by path, then by message:
+  <path relative to the root>: <message>
+A warning does not change the exit code.
+
+Exit: 0 no problem; 1 a problem, or no store; 2 usage or config error.
+
+Examples:
+  bilbo check
+
+Docs: https://github.com/delucca/bilbo/wiki/Commands#check
+"#;

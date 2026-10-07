@@ -7,63 +7,6 @@ use common::{
     in_scope, library, note_text, snapshot, store, write,
 };
 
-const USAGE: &str = "\
-usage: bilbo new <kind> <topic> [--title <text>] [--scope <name>]
-       bilbo check
-       bilbo recall <query>... [--kind <kind>]... [--limit <n>]
-       bilbo recall <query>... --library [--corpus <corpus>]... [--limit <n>]
-       bilbo index
-       bilbo setup [--yes | --interactive] [--remove] [<setup option>]...
-       bilbo digest
-       bilbo library [<corpus>]
-       bilbo library show <corpus>/<name>|<id>[#<anchor>] [--depth <n>]
-       bilbo library stage <url> | <file> --origin \"<url|doc>: <value>\" [--fetched <YYYY-MM-DD>] [--html]
-       bilbo library land <stage> <corpus>/<name> --keep <a>-<b>[,<c>-<d>]... [--title <text>] [--replace [--force]]
-       bilbo library plan <ref>... [--budget-tokens <n>] [--slice-bytes <n>] [--slice-lines <n>]
-       bilbo library read <plan> <slice>... [--part <k>/<n>]
-       bilbo cite [--plan <plan>]... [<file> | -]
-       bilbo watch
-       bilbo history <note> [<version> | --diff <a> [<b>]]
-       bilbo restore <note> <version>
-       bilbo scope
-       bilbo scope set [--force] <name> <file>...
-       bilbo device
-       bilbo device list
-       bilbo device init [--name <name>]
-       bilbo device recover [--name <name>]
-       bilbo device revoke <device>
-       bilbo sync
-       bilbo sync declare <note> <reason>
-       bilbo pair [--scope <name>]... [--via <url>]
-       bilbo pair <code> --via <url> [--name <name>]
-       bilbo relay --data <dir> --owner <fingerprint>... [--listen <address:port>] [--max-scopes <n>] [--max-scope-mb <n>] [--max-object-mb <n>]
-       bilbo --help
-       bilbo --version
-new creates <root>/notes/<kind>-<topic>.md and prints its path.
-check prints every problem in the store and changes nothing.
-recall prints the notes that best match the query, best first, 10 unless --limit says otherwise.
-recall --library searches the sources and guides of the library by keyword instead of the notes; --corpus narrows it.
-index embeds the passages the vector cache lacks and drops the ones no note holds any more.
-digest reads a prompt hook's JSON on stdin and prints the notes that bear on the prompt; it always exits 0.
-library lists the corpora, prints a corpus's guide with the facts of each source, or a source's outline; stage and land add a source; plan cuts picks into slices and partitions; read prints slices and logs them.
-cite checks every bilbo: citation in a draft, and with --plan prints the coverage of the plans' reads.
-watch records a version of each note when it changes, until it is stopped.
-history lists the versions of a note, newest first, prints one, or shows what changed between two versions, or between one and the note's file now.
-restore writes a past version of a note back as its newest version, keeping what the note held before.
-scope lists the scopes this device declares with their note counts; scope set gives notes a scope.
-device shows this device, its owner and each scope's manifest; device list prints the owner's devices; device init makes this device's keys, with a recovery phrase to write down, and each syncing scope's manifest; device recover reads that phrase on another device and adds it to the manifests; device revoke removes a device from them; init, for a new phrase, recover and revoke need a terminal.
-sync prints each syncing scope's state, its devices, the open conflicts and the dropped text nobody declared, and exits 1 when something needs attention; sync declare records that a note's dropped text was dropped on purpose.
-pair shows a one-time code on an enrolled device and waits; pair <code> --via <url> on another device joins it to the scopes paired once the user confirms on the first, which needs a terminal.
-relay serves the sync transport to the devices of the --owner fingerprints, over plain HTTP under /v1/ behind a TLS proxy, until it is stopped.
-setup creates the store and the config and installs the agent plugin, the index timer, the note watcher and, when asked, the local embedder; in a terminal it asks first.
-setup options: --embedder-url <url>, --embedder-model <name>, --embedder-token-env <var>, --embedder-token-file <path>, --embedder-query-prefix <text>, --embedder-local, --embedder-port <port>, --llama-server <path>, --no-plugin, --claude <path>, --codex <path>, --plugin-source <folder|owner/repo#ref>, --no-timer, --index-every <minutes>, --no-watch
-kinds: plan, spec, design, decision, gotcha, research, review, report, reference
-root: $BILBO_HOME, else $XDG_DATA_HOME/bilbo, else $HOME/.local/share/bilbo
-config: $BILBO_CONFIG, else $XDG_CONFIG_HOME/bilbo/config, else $HOME/.config/bilbo/config
-cache: $XDG_CACHE_HOME/bilbo, else $HOME/.cache/bilbo
-state: $XDG_STATE_HOME/bilbo, else $HOME/.local/state/bilbo
-";
-
 const CREATED: &str = "2026-10-02T14:23-03:00";
 
 fn recall(dir: &TempDir, root: &Path, args: &[&str]) -> Run {
@@ -585,7 +528,11 @@ fn help_flags_print_help() {
     ] {
         let run = recall(&dir, &dir.path().join("store"), args);
         assert_eq!(run.code, 0);
-        assert_eq!(run.stdout, USAGE);
+        assert!(run.stdout.starts_with("bilbo recall: "), "{}", run.stdout);
+        assert!(
+            run.stdout
+                .contains("\n  bilbo recall <query>... [--kind <kind>]... [--limit <n>]\n")
+        );
         assert!(run.stderr.is_empty());
     }
 }

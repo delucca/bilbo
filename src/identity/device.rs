@@ -960,6 +960,53 @@ fn revoke(cx: &Cx, id: Option<Identity>, target: &str) -> Result<Output, Failure
     })
 }
 
+/// `bilbo device --help`; its Usage block is also the synopsis a usage error shows.
+pub const HELP: &str = r#"bilbo device: show this device and its owner, set up or recover its keys,
+list the owner's devices, or revoke one.
+
+Usage:
+  bilbo device
+  bilbo device list
+  bilbo device init [--name <name>]
+  bilbo device recover [--name <name>]
+  bilbo device revoke <device>
+
+Options:
+  --name <name>  init, recover: this device's name (default: the host name);
+                 lowercase letters and digits joined by single hyphens, at
+                 most 32 characters
+
+Forms:
+  device         Show this device, its owner and each scope's manifest
+  list           List the owner's devices
+  init           Make the owner and device keys, with a recovery phrase to
+                 write down, and each syncing scope's manifest
+  recover        Read the recovery phrase on another device and add it to
+                 the manifests
+  revoke         Remove a device, by id or name, from every manifest
+init, when it makes a phrase, recover and revoke need a terminal and refuse
+to run under an agent.
+
+Output, by form, tab separated:
+  device         device <name> <id>, or device none; owner <fingerprint>,
+                 or owner none; then one line per scope: scope <name> <id>
+                 manifest <n> [pending] epoch <e> <k> devices <transport>;
+                 scope - <id> invalid for a scope whose manifest is invalid
+  list           <name> <id>, and this for this device, sorted by name
+  init, recover  One line per step: <step> <status>: <detail>
+  revoke         scope <name> updated: <scope id> manifest <n> epoch <e>
+
+Exit: 0 success; 1 a refusal, a failed step, or a problem with a scope;
+2 usage or config error.
+
+Examples:
+  bilbo device
+  bilbo device init --name rhosgobel
+  bilbo device revoke bywater
+
+Docs: https://github.com/delucca/bilbo/wiki/Commands#device
+"#;
+
 #[cfg(test)]
 mod tests {
     use super::*;

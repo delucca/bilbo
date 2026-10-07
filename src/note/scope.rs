@@ -452,6 +452,45 @@ fn edit(text: &str, scope: &str, force: bool) -> Result<Edit, String> {
     ))
 }
 
+/// `bilbo scope --help`; its Usage block is also the synopsis a usage error shows.
+pub const HELP: &str = r#"bilbo scope: list this device's scopes, or give notes a scope.
+
+Usage:
+  bilbo scope
+  bilbo scope set [--force] <name> <file>...
+
+Options:
+  --force  set: replace a scope a note already holds
+  --       set: end the options; every later argument is a name or a file
+Scopes are declared in the config as scope.<name>.* keys. set changes only
+the scope line of each note's frontmatter; each <file> is a note in
+<root>/notes/, and set handles every file even when one fails.
+
+Output of scope: one line per declared scope, sorted by name, then one line
+for the notes with no scope:
+  <name> TAB <n> notes TAB sync <value> TAB embedder <rule> TAB paths <list>
+  (unassigned) TAB <n> notes TAB embedder <rule>
+paths is - when unset, and the line of the scope.default scope ends with
+TAB default.
+Output of set, one line per note:
+  notes/<file>: set <name>
+  notes/<file>: kept <name>
+  notes/<file>: kept <other>; --force replaces it
+  notes/<file>: replaced <other> with <name>
+  notes/<file>: kept '<line>' as written; --force rewrites it
+  notes/<file>: rewrote '<line>' as scope: <name>
+A file set refuses is named on stderr instead.
+
+Exit: 0 success; 1 set refused a file; 2 usage or config error, an
+undeclared scope included.
+
+Examples:
+  bilbo scope
+  bilbo scope set work ~/.local/share/bilbo/notes/gotcha-acme-deploy.md
+
+Docs: https://github.com/delucca/bilbo/wiki/Commands#scope
+"#;
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -458,6 +458,30 @@ fn is_taken(notes: &Path, scan: &Scan, id: &str, name: &str) -> bool {
     })
 }
 
+/// `bilbo restore --help`; its Usage block is also the synopsis a usage error shows.
+pub const HELP: &str = r#"bilbo restore: make a past version of a note its newest version.
+
+Usage:
+  bilbo restore <note> <version>
+
+<note> and <version> are named as in 'bilbo history'. restore writes the
+version back under its own file name and records a restored version, so what
+the note held before stays in history. When the version has another scope
+than the file, stderr says how to keep the current one.
+
+Output: 'restored <file name> to <version>', or '<file name> already matches
+<version>' when there was nothing to write.
+
+Exit: 0 restored or already matching; 1 refused (no store, no such version, a
+deletion, or the file name is another note's); 2 usage or config error.
+
+Examples:
+  bilbo history release-tags
+  bilbo restore release-tags 3f2a9c
+
+Docs: https://github.com/delucca/bilbo/wiki/Commands#restore
+"#;
+
 #[cfg(test)]
 mod tests {
     use super::*;

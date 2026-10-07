@@ -402,6 +402,63 @@ fn settle_local<P: Prompter>(
     }
 }
 
+/// `bilbo setup --help`; its Usage block is also the synopsis a usage error shows.
+pub const HELP: &str = r#"bilbo setup: create the store and config, and install the agent plugin, the
+index timer, the note watcher and, when asked, the local embedder.
+
+Usage:
+  bilbo setup [--yes | --interactive] [--remove] [<option>]...
+
+With stdin and stderr on a terminal, setup runs a wizard, unless --yes or an
+option that answers a question is given (every option below but --remove,
+--claude, --codex and --plugin-source). Otherwise it asks nothing and each
+missing answer takes its default. Run it again at any time.
+
+Answers:
+  --yes                           Ask nothing, even in a terminal
+  --interactive                   Run the wizard; needs a terminal
+  --remove                        Unload the services and remove the plugin;
+                                  keep the store, config, key and model.
+                                  Takes only --yes, --interactive, --claude
+                                  and --codex
+Embedder:
+  --embedder-url <url>            An OpenAI-compatible embedder; needs
+                                  --embedder-model
+  --embedder-model <name>         The model to ask it for
+  --embedder-token-env <var>      Read its key from this variable
+  --embedder-token-file <path>    Read its key from this file, absolute or
+                                  under ~/
+  --embedder-query-prefix <text>  Text put before each query
+  --embedder-local                Download a model and run it as a service
+  --embedder-port <port>          Its port on 127.0.0.1 (default 8737)
+  --llama-server <path>           The llama-server it runs (default: on PATH)
+Plugin:
+  --no-plugin                     Skip the Claude Code and Codex plugin
+  --claude <path>                 The claude to use (default: on PATH)
+  --codex <path>                  The codex to use (default: on PATH)
+  --plugin-source <source>        Install from a folder or owner/repo#ref
+Services:
+  --no-timer                      Skip the index timer
+  --index-every <minutes>         Timer interval, 1 to 1440 (default 15)
+  --no-watch                      Skip the watcher; remove it if installed
+
+Output: one line per step, in this order: store, config, key, model, server,
+embedder, claude, codex, hook, timer, watch, sync. A line is
+  <step> <status>[: <detail>]
+where status is created, written, kept, ok, installed, updated, removed,
+skipped or failed.
+
+Exit: 0 no step failed; 1 a step failed; 2 usage or config error.
+
+Examples:
+  bilbo setup
+  bilbo setup --yes --embedder-local
+  bilbo setup --yes --no-plugin --no-timer --no-watch
+  bilbo setup --remove
+
+Docs: https://github.com/delucca/bilbo/wiki/Commands#setup
+"#;
+
 #[cfg(test)]
 mod tests {
     use super::fakes::*;

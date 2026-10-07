@@ -199,6 +199,28 @@ fn fill(
     (added, Ok(()))
 }
 
+/// `bilbo index --help`; its Usage block is also the synopsis a usage error shows.
+pub const HELP: &str = r#"bilbo index: embed the passages the vector cache lacks, and drop the ones no
+note holds any more. The timer setup installs runs it.
+
+Usage:
+  bilbo index
+
+It needs an embedder in the config. A passage whose scope allows only a
+loopback embedder is not sent to a remote one, and stderr counts what was
+withheld. Vectors received before a failure are kept.
+
+Output: embedded <n>, kept <n>, dropped <n>
+
+Exit: 0 success; 1 no embedder configured, no store, or the embedder failed;
+2 usage or config error.
+
+Examples:
+  bilbo index
+
+Docs: https://github.com/delucca/bilbo/wiki/Commands#index
+"#;
+
 #[cfg(test)]
 mod tests {
     use super::*;

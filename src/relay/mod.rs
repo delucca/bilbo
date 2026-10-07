@@ -270,6 +270,40 @@ fn limit(option: &str, typed: &str) -> Result<u64, Failure> {
         })
 }
 
+/// `bilbo relay --help`; its Usage block is also the synopsis a usage error shows.
+pub const HELP: &str = r#"bilbo relay: serve the sync transport to your devices over HTTP, until it is
+stopped.
+
+Usage:
+  bilbo relay --data <dir> --owner <fingerprint> [--owner <fingerprint>]...
+              [--listen <address:port>] [--max-scopes <n>] [--max-scope-mb <n>]
+              [--max-object-mb <n>]
+
+Options:
+  --data <dir>             The folder it keeps objects in, created with mode
+                           0700 when missing
+  --owner <fingerprint>    An owner whose devices it serves; repeat for
+                           several. Case and hyphens do not matter
+  --listen <address:port>  Where to listen (default 127.0.0.1:8738)
+  --max-scopes <n>         Scopes per owner (default 16)
+  --max-scope-mb <n>       MiB per scope (default 1024)
+  --max-object-mb <n>      MiB per segment (default 16)
+Each option takes its value as the next argument. Each limit is a whole
+number from 1 to 1048576.
+
+It speaks plain HTTP under /v1/; put a TLS proxy in front of any address but
+loopback. Nothing goes to stdout: stderr says where it listens, and logs each
+object it stores and each request it refuses.
+
+Exit: it runs until stopped; 1 when it cannot start (the address is taken,
+or another relay serves the folder); 2 usage error.
+
+Examples:
+  bilbo relay --data /srv/bilbo-relay --owner yb4b-5aju-v6zb-x2nm-nc5x-ompf
+
+Docs: https://github.com/delucca/bilbo/wiki/Commands#relay
+"#;
+
 #[cfg(test)]
 mod tests {
     use super::*;
