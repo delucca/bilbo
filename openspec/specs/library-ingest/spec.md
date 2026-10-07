@@ -6,7 +6,7 @@
 ## Requirements
 
 ### Requirement: Stage a file
-`bilbo library stage <file> --origin "<url|doc>: <value>" [--fetched <YYYY-MM-DD>] [--html]` SHALL read the file as UTF-8 text, drop a leading byte order mark, turn every CRLF and every lone CR into LF, add a final newline when it lacks one, and write the result as `capture.md` in a new folder `<state>/bilbo/staging/<stage>/`, where `<state>` is the state folder the usage message names and `<stage>` a fresh ULID. With `--html`, `capture.md` SHALL instead hold the file's text converted by the `library-fetch` HTML conversion rules, then normalized the same way, and the folder SHALL also hold the file's bytes as `raw`. `--fetched` SHALL default to today's local date. Staging SHALL change nothing under the store root.
+`bilbo library stage <file> --origin "<url|doc>: <value>" [--fetched <YYYY-MM-DD>] [--html]` SHALL read the file as UTF-8 text, drop a leading byte order mark, turn every CRLF and every lone CR into LF, add a final newline when it lacks one, and write the result as `capture.md` in a new folder `<state>/bilbo/staging/<stage>/`, where `<state>` is the state folder `bilbo --help` names and `<stage>` a fresh ULID. With `--html`, `capture.md` SHALL instead hold the file's text converted by the `library-fetch` HTML conversion rules, then normalized the same way, and the folder SHALL also hold the file's bytes as `raw`. `--fetched` SHALL default to today's local date. Staging SHALL change nothing under the store root.
 
 #### Scenario: A file is staged
 - **WHEN** an agent runs `bilbo library stage /tmp/spec.txt --origin "url: https://go.dev/ref/spec"` on a file with CRLF line endings
