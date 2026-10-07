@@ -624,6 +624,8 @@ fn an_ide_terminal_gets_the_human_view() {
     );
 }
 
+/// Fails on macOS, where `watch` needs `launchctl`; Linux without a systemd user session skips it.
+#[cfg(target_os = "macos")]
 #[test]
 fn a_failed_step_on_a_terminal() {
     let m = machine("setup-report-tty-failed");
