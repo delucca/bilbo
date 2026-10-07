@@ -408,6 +408,8 @@ impl Outcome {
 /// A body prepared for any number of checks: normalized once, with its sections in physical lines.
 pub struct Document {
     body: Body,
+    /// The words of `body`, in the form a hint shows.
+    readable: Vec<String>,
     sections: Vec<Section>,
 }
 
@@ -421,8 +423,20 @@ impl Document {
             s.start += first_line - 1;
             s.end += first_line - 1;
         }
+        let readable = lines
+            .iter()
+            .filter(|line| !text::normalize(line).is_empty())
+            .flat_map(|line| {
+                text::readable(line)
+                    .split(' ')
+                    .filter(|w| !w.is_empty())
+                    .map(String::from)
+                    .collect::<Vec<_>>()
+            })
+            .collect();
         Document {
             body: text::body_form(&lines, first_line),
+            readable,
             sections,
         }
     }
@@ -509,21 +523,43 @@ impl Document {
                 let detail = if frags.is_empty() {
                     "the quote holds no text".to_string()
                 } else {
-                    let hay = match hint_over {
-                        Some(k) => {
-                            let (a, b) = self.section_bytes(k);
-                            &self.body.text[a..b]
-                        }
-                        None => &self.body.text,
+                    let (from, to) = match hint_over {
+                        Some(k) => self.section_bytes(k),
+                        None => (0, self.body.text.len()),
                     };
-                    match nearest(hay, &frags.join(" ")) {
-                        Some(hint) => format!("nearest passage: {hint}"),
+                    match nearest(&self.body.text[from..to], &frags.join(" ")) {
+                        Some(window) => format!("nearest passage: {}", self.hint(from, window)),
                         None => "the quote is not in the text".to_string(),
                     }
                 };
                 Outcome::new(Verdict::QuoteMissing, detail, Vec::new())
             }
         }
+    }
+
+    /// The words of a `nearest` window as the source writes them, cut to `HINT_CHARS` characters. `from` is the
+    /// byte of the body where the searched text starts.
+    fn hint(&self, from: usize, (start, len): (usize, usize)) -> String {
+        let words: Vec<&str> = self
+            .body
+            .text
+            .split(' ')
+            .filter(|w| !w.is_empty())
+            .collect();
+        let offset = self.body.text[..from]
+            .split(' ')
+            .filter(|w| !w.is_empty())
+            .count()
+            + start;
+        let shown: Vec<&str> = if self.readable.len() == words.len() {
+            self.readable[offset..offset + len]
+                .iter()
+                .map(String::as_str)
+                .collect()
+        } else {
+            words[offset..offset + len].to_vec()
+        };
+        shown.join(" ").chars().take(HINT_CHARS).collect()
     }
 
     /// Where a quote found outside its anchor sits: under the deepest sections that hold it, before the first
@@ -679,9 +715,9 @@ fn one_line(detail: &str) -> String {
         .collect()
 }
 
-/// The window of as many words as the quote has, with the most distinct quote words, first best, cut to 300
-/// characters; `None` when no window shares a word.
-fn nearest(hay: &str, quote: &str) -> Option<String> {
+/// The window of as many words as the quote has, with the most distinct quote words, first best, as its first word
+/// and its length in the words of `hay`; `None` when no window shares a word.
+fn nearest(hay: &str, quote: &str) -> Option<(usize, usize)> {
     let words: Vec<&str> = hay.split(' ').filter(|w| !w.is_empty()).collect();
     let wanted: Vec<&str> = quote.split(' ').filter(|w| !w.is_empty()).collect();
     let n = wanted.len().min(words.len());
@@ -709,13 +745,7 @@ fn nearest(hay: &str, quote: &str) -> Option<String> {
             best = (shared, i + 1 - n);
         }
     }
-    (best.0 > 0).then(|| {
-        words[best.1..best.1 + n]
-            .join(" ")
-            .chars()
-            .take(HINT_CHARS)
-            .collect()
-    })
+    (best.0 > 0).then_some((best.1, n))
 }
 
 #[cfg(test)]
@@ -1424,13 +1454,40 @@ The second examples section shows a config loader that merges environment variab
     }
 
     #[test]
+    fn a_hint_keeps_the_sources_words() {
+        let body = "# T\n\n## Busy\n\nWhen a lock is held, the call returns SQLITE_BUSY at once instead of waiting.\n";
+        let outcome = on(body, 1, None, "the call returns a busy error at once");
+        assert_eq!(outcome.verdict, Verdict::QuoteMissing);
+        assert!(outcome.detail.contains("SQLITE_BUSY"), "{}", outcome.detail);
+        assert!(!outcome.detail.contains("SQLITEBUSY"), "{}", outcome.detail);
+        let outcome = on(
+            body,
+            1,
+            Some("Busy"),
+            "the call returns a busy error at once",
+        );
+        assert!(outcome.detail.contains("SQLITE_BUSY"), "{}", outcome.detail);
+    }
+
+    #[test]
+    fn a_hint_drops_emphasis_marks() {
+        let body = "# T\n\n## Busy\n\nthe _call_ returns **fast** and `code`\n";
+        let outcome = on(body, 1, None, "the call returns fast and code twice");
+        assert!(
+            outcome.detail.contains("the call returns fast and code"),
+            "{}",
+            outcome.detail
+        );
+    }
+
+    #[test]
     fn nearest_picks_the_first_best_window() {
         let hay = "a b c d e f a b x d e f";
-        assert_eq!(nearest(hay, "a b c d").as_deref(), Some("a b c d"));
-        assert_eq!(nearest(hay, "a b x d").as_deref(), Some("a b x d"));
+        assert_eq!(nearest(hay, "a b c d"), Some((0, 4)));
+        assert_eq!(nearest(hay, "a b x d"), Some((6, 4)));
         assert_eq!(nearest("one two", "three four five"), None);
         assert_eq!(nearest("", "a"), None);
-        assert_eq!(nearest("a b", "a b c d e").as_deref(), Some("a b"));
+        assert_eq!(nearest("a b", "a b c d e"), Some((0, 2)));
     }
 
     #[test]
