@@ -768,6 +768,7 @@ fn tty(dir: &TempDir, extra: &[(&str, &str)], args: &[&str]) -> common::Run {
     let home = home(dir);
     let mut env = vec![
         ("TERM", "xterm-256color"),
+        ("LANG", "C.UTF-8"),
         ("HOME", dir.path().to_str().unwrap()),
         ("BILBO_HOME", home.as_str()),
     ];
