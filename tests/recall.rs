@@ -1993,6 +1993,7 @@ fn recall_tty(dir: &TempDir, root: &Path, extra: &[(&str, &str)], args: &[&str],
         ("BILBO_HOME", root.to_str().unwrap()),
         ("HOME", home.to_str().unwrap()),
         ("TERM", "xterm-256color"),
+        ("LANG", "C.UTF-8"),
     ];
     vars.extend_from_slice(extra);
     let mut full = vec!["recall"];
