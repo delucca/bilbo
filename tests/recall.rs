@@ -3,8 +3,8 @@ mod common;
 use std::path::{Path, PathBuf};
 
 use common::{
-    Fake, IDS, Locked, Run, TempDir, bench_library, bench_store, bilbo, config, dead_url, guide,
-    in_scope, library, note_text, snapshot, store, write,
+    Fake, IDS, Locked, Run, TempDir, bench_library, bench_store, bilbo, bilbo_tty, config,
+    dead_url, guide, in_scope, library, note_text, snapshot, store, write,
 };
 
 const CREATED: &str = "2026-10-02T14:23-03:00";
@@ -905,7 +905,7 @@ fn note_written_after_the_index() {
     );
     assert_eq!(
         run.stderr,
-        "bilbo: 1 passages not indexed; run bilbo index\n"
+        "bilbo: 1 passage not indexed; run bilbo index\n"
     );
 }
 
@@ -1186,7 +1186,7 @@ fn not_indexed_count_ignores_textless_passages() {
     assert_eq!(run.code, 0, "{}", run.stderr);
     assert_eq!(
         run.stderr,
-        "bilbo: 1 passages not indexed; run bilbo index\n"
+        "bilbo: 1 passage not indexed; run bilbo index\n"
     );
 }
 
@@ -1980,4 +1980,168 @@ fn a_cached_vector_of_a_withheld_passage_is_not_used() {
     let run = recall_with(&dir, &root, &config, &[], &["rollback"]);
     assert_eq!(run.code, 1, "{}", run.stderr);
     assert_eq!(run.stderr, "bilbo: no notes match\n");
+}
+
+// The terminal view.
+
+const HINT: &str = "bilbo matches whole words without stemming: try another form of a word, or --library for sources";
+
+/// Runs `recall` on a pseudo-terminal of `cols` columns; `extra` adds to a person's terminal environment.
+fn recall_tty(dir: &TempDir, root: &Path, extra: &[(&str, &str)], args: &[&str], cols: u16) -> Run {
+    let home = dir.path().join("home");
+    let mut vars = vec![
+        ("BILBO_HOME", root.to_str().unwrap()),
+        ("HOME", home.to_str().unwrap()),
+        ("TERM", "xterm-256color"),
+    ];
+    vars.extend_from_slice(extra);
+    let mut full = vec!["recall"];
+    full.extend(args);
+    bilbo_tty(dir.path(), &vars, &full, cols)
+}
+
+fn rollback_store(dir: &TempDir) -> PathBuf {
+    let root = store(dir);
+    write(
+        &root,
+        "plan-a.md",
+        &note("Rollback plan", "## Steps\n\nrollback steps first\n"),
+    );
+    write(
+        &root,
+        "plan-b.md",
+        &note("Rollback notes", "## Steps\n\nrollback the release\n"),
+    );
+    root
+}
+
+#[test]
+fn a_terminal_gets_ranked_hits_and_a_count() {
+    let dir = TempDir::new("recall-tty-hits");
+    let root = rollback_store(&dir);
+    let run = recall_tty(&dir, &root, &[("NO_COLOR", "1")], &["rollback"], 100);
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    assert!(run.stderr.is_empty(), "{}", run.stderr);
+    assert!(!run.stdout.contains('\x1b'), "{:?}", run.stdout);
+    assert!(run.stdout.starts_with(" 1  "), "{}", run.stdout);
+    assert_eq!(run.stdout.lines().last(), Some("2 notes, best first"));
+}
+
+#[test]
+fn a_match_in_a_heading_only_is_not_by_meaning() {
+    let dir = TempDir::new("recall-tty-heading");
+    let root = store(&dir);
+    write(
+        &root,
+        "plan-a.md",
+        &note("Release plan", "## Rollback\n\nundo the release\n"),
+    );
+    let run = recall_tty(&dir, &root, &[("NO_COLOR", "1")], &["rollback"], 100);
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    assert!(run.stdout.contains("Rollback"), "{}", run.stdout);
+    assert!(!run.stdout.contains("by meaning"), "{}", run.stdout);
+}
+
+#[test]
+fn a_terminal_is_painted() {
+    let dir = TempDir::new("recall-tty-paint");
+    let root = rollback_store(&dir);
+    let run = recall_tty(&dir, &root, &[], &["rollback"], 100);
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    assert!(run.stdout.contains("\x1b[1m"), "{:?}", run.stdout);
+    let allowed = [
+        "1m", "2m", "22m", "39m", "31m", "32m", "33m", "34m", "35m", "36m",
+    ];
+    for escape in run.stdout.split("\x1b[").skip(1) {
+        let code = escape.split_once('m').map(|(code, _)| format!("{code}m"));
+        assert!(
+            code.as_deref().is_some_and(|c| allowed.contains(&c)),
+            "{escape:?}"
+        );
+    }
+}
+
+#[test]
+fn the_width_is_capped() {
+    let dir = TempDir::new("recall-tty-width");
+    let root = store(&dir);
+    let body = format!(
+        "## Steps\n\nrollback {}\n",
+        "words and more words ".repeat(100)
+    );
+    write(&root, "plan-a.md", &note("Rollback plan", &body));
+    for (cols, widest) in [(200, 100), (60, 60)] {
+        let run = recall_tty(&dir, &root, &[("NO_COLOR", "1")], &["rollback"], cols);
+        assert_eq!(run.code, 0, "{}", run.stderr);
+        let longest = run.stdout.lines().map(|l| l.chars().count()).max().unwrap();
+        assert!(longest <= widest, "{longest} > {widest}\n{}", run.stdout);
+        assert!(longest > widest - 20, "{longest}\n{}", run.stdout);
+    }
+}
+
+#[test]
+fn an_agent_in_a_terminal_gets_the_blocks() {
+    let dir = TempDir::new("recall-tty-agent");
+    let root = rollback_store(&dir);
+    let piped = recall(&dir, &root, &["rollback"]);
+    for markers in [
+        &[("AI_AGENT", "x")][..],
+        &[("CLAUDE_CODE_CHILD_SESSION", "1")],
+        &[("CODEX_CI", "1"), ("TERM", "dumb"), ("NO_COLOR", "1")],
+        &[("CODEX_THREAD_ID", "t")],
+    ] {
+        let run = recall_tty(&dir, &root, markers, &["rollback"], 100);
+        assert_eq!(run.code, 0, "{}", run.stderr);
+        assert_eq!(run.stdout, piped.stdout, "{markers:?}");
+    }
+}
+
+#[test]
+fn nothing_matches_on_a_terminal() {
+    let dir = TempDir::new("recall-tty-nothing");
+    let root = rollback_store(&dir);
+    let run = recall_tty(&dir, &root, &[("NO_COLOR", "1")], &["wumpus"], 100);
+    assert_eq!(run.code, 1);
+    assert!(run.stdout.is_empty(), "{}", run.stdout);
+    assert_eq!(
+        run.stderr,
+        format!("○  no notes match 'wumpus'\n   {HINT}\n")
+    );
+
+    library(&root, "go", "effective-go", EFFECTIVE_GO);
+    let run = recall_tty(
+        &dir,
+        &root,
+        &[("NO_COLOR", "1")],
+        &["wumpus", "--library"],
+        100,
+    );
+    assert_eq!(run.code, 1);
+    assert_eq!(
+        run.stderr,
+        "○  no sources match 'wumpus'\n   the library matches keywords only: try the words and language the source would use\n"
+    );
+}
+
+#[test]
+fn warnings_follow_the_hits_on_a_terminal() {
+    let dir = TempDir::new("recall-tty-warning");
+    let fake = Fake::start(4);
+    let (root, config) = prepare(&dir, &fake.url, &[]);
+    for (name, title, body) in rollback_notes() {
+        write(&root, name, &note(title, body));
+    }
+    let extra = [
+        ("BILBO_CONFIG", config.to_str().unwrap()),
+        ("NO_COLOR", "1"),
+    ];
+    let run = recall_tty(&dir, &root, &extra, &["rollback"], 100);
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    assert_eq!(run.stdout.lines().last(), Some("1 note, best first"));
+    assert_eq!(run.stderr, "▲  2 passages not indexed; run bilbo index\n");
+    let piped = recall_with(&dir, &root, &config, &[], &["rollback"]);
+    assert_eq!(
+        piped.stderr,
+        "bilbo: 2 passages not indexed; run bilbo index\n"
+    );
 }

@@ -1,6 +1,6 @@
 mod common;
 
-use common::{TempDir, bilbo, bilbo_input};
+use common::{TempDir, bilbo, bilbo_input, bilbo_tty};
 
 /// The verbs in the order of the overview and of a usage error's `verbs:` line.
 const VERBS: [&str; 16] = [
@@ -759,4 +759,130 @@ fn relay_is_a_verb() {
     assert!(run.stderr.contains("bilbo: unknown option '--bogus'\n"));
     assert!(!data.exists());
     assert!(!missing.exists());
+}
+
+// Terminal views
+
+/// bilbo on a 100-column terminal of a person: `TERM` set, a throwaway store, plus `extra`.
+fn tty(dir: &TempDir, extra: &[(&str, &str)], args: &[&str]) -> common::Run {
+    let home = home(dir);
+    let mut env = vec![
+        ("TERM", "xterm-256color"),
+        ("HOME", dir.path().to_str().unwrap()),
+        ("BILBO_HOME", home.as_str()),
+    ];
+    env.extend_from_slice(extra);
+    bilbo_tty(dir.path(), &env, args, 100)
+}
+
+#[test]
+fn help_on_a_terminal_is_bold() {
+    let dir = TempDir::new("cli-tty-help");
+    let run = tty(&dir, &[], &["--help"]);
+    assert_eq!(run.code, 0);
+    assert!(
+        run.stdout.contains("\x1b[1mUsage:\x1b[22m"),
+        "{}",
+        run.stdout
+    );
+    assert!(
+        run.stdout
+            .lines()
+            .any(|l| l
+                == "bilbo keeps durable memory for coding agents: notes they write and recall,")
+    );
+}
+
+#[test]
+fn help_is_plain_under_each_agent_marker_and_no_color_rule() {
+    let dir = TempDir::new("cli-tty-help-plain");
+    let home = home(&dir);
+    for extra in [
+        ("AI_AGENT", "x"),
+        ("CLAUDE_CODE_CHILD_SESSION", "1"),
+        ("CODEX_THREAD_ID", "t"),
+        ("CODEX_CI", "1"),
+        ("NO_COLOR", "1"),
+        ("CLICOLOR", "0"),
+        ("TERM", "dumb"),
+    ] {
+        let env = [("TERM", "xterm-256color"), extra];
+        let run = bilbo_tty(dir.path(), &env, &["--help"], 100);
+        assert!(!run.stdout.contains('\x1b'), "{extra:?}: {}", run.stdout);
+    }
+    let env = [("BILBO_HOME", home.as_str())];
+    let run = bilbo_tty(dir.path(), &env, &["--help"], 100);
+    assert!(!run.stdout.contains('\x1b'), "no TERM: {}", run.stdout);
+}
+
+#[test]
+fn claudecode_alone_is_a_person() {
+    let dir = TempDir::new("cli-tty-claudecode");
+    let run = tty(&dir, &[("CLAUDECODE", "1")], &["--help"]);
+    assert!(
+        run.stdout.contains("\x1b[1mUsage:\x1b[22m"),
+        "{}",
+        run.stdout
+    );
+}
+
+#[test]
+fn forced_colour_never_reaches_a_pipe() {
+    let dir = TempDir::new("cli-forced-colour");
+    let env = [
+        ("CLICOLOR_FORCE", "1"),
+        ("FORCE_COLOR", "1"),
+        ("TERM", "xterm-256color"),
+    ];
+    let run = bilbo(dir.path(), &env, &["--help"]);
+    assert!(!run.stdout.contains('\x1b'), "{}", run.stdout);
+}
+
+#[test]
+fn a_usage_error_on_a_terminal_has_marks() {
+    let dir = TempDir::new("cli-tty-usage");
+    let run = tty(&dir, &[], &["recal", "x"]);
+    assert_eq!(run.code, 2);
+    assert!(run.stdout.is_empty());
+    let lines: Vec<&str> = run.stderr.lines().collect();
+    assert_eq!(
+        lines[0],
+        "\x1b[31m■\x1b[39m  unknown verb 'recal'; did you mean 'recall'?"
+    );
+    assert!(lines.iter().all(|l| !l.starts_with("bilbo: ")), "{lines:?}");
+    assert!(lines[1..].iter().all(|l| l.starts_with("   ")), "{lines:?}");
+    let run = tty(&dir, &[("NO_COLOR", "1")], &["recal", "x"]);
+    assert_eq!(
+        run.stderr.lines().next(),
+        Some("■  unknown verb 'recal'; did you mean 'recall'?")
+    );
+    assert!(!run.stderr.contains('\x1b'), "{}", run.stderr);
+}
+
+#[test]
+fn a_refusal_on_a_terminal() {
+    let dir = TempDir::new("cli-tty-refusal");
+    let run = tty(
+        &dir,
+        &[("NO_COLOR", "1")],
+        &["recall", "--library", "--corpus", "nosuch", "--", "busy"],
+    );
+    assert_eq!(run.code, 1);
+    assert!(run.stdout.is_empty());
+    assert_eq!(run.stderr.lines().count(), 1, "{}", run.stderr);
+    assert!(run.stderr.starts_with("■  no "), "{}", run.stderr);
+}
+
+#[test]
+fn an_agent_in_a_terminal_keeps_the_prefix() {
+    let dir = TempDir::new("cli-tty-agent");
+    let run = tty(&dir, &[("CODEX_CI", "1")], &["recal", "x"]);
+    assert_eq!(run.code, 2);
+    assert!(run.stderr.lines().count() >= 3);
+    assert!(
+        run.stderr.lines().all(|l| l.starts_with("bilbo: ")),
+        "{}",
+        run.stderr
+    );
+    assert!(!run.stderr.contains('\x1b'));
 }

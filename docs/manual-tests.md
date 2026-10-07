@@ -21,7 +21,7 @@ export T HOME="$T/home" BILBO_HOME="$T/store" BILBO_CONFIG="$T/conf/config" \
 mkdir -p "$HOME"
 ```
 
-- Start the shell as `env -u CLAUDECODE -u CODEX_THREAD_ID B=... sh`. Under an
+- Start the shell as `env -u AI_AGENT -u CLAUDE_CODE_CHILD_SESSION -u CODEX_THREAD_ID -u CODEX_CI B=... sh`. Under an
   agent marker the wizard keeps sync off and `bilbo device init` refuses to
   show a phrase.
 - The `PATH` above has no `claude` or `codex`, so setup skips the plugin
@@ -74,6 +74,46 @@ proc finish {} {
 - A confirm takes `y` or `n` without Enter.
 - To read a transcript, strip the escapes:
   `perl -pe 's/\e\[[0-9;?]*[A-Za-z]//g; s/\r//g' "$T/<name>.raw"`.
+
+## Terminal views
+
+The unit and binary tests cover the terminal view through a pseudo-terminal, but
+not how it looks in a real terminal. Run this once per release, in a world with
+a store of two notes that hold `<word>`, one corpus, and `scope.personal` and
+`scope.work` declared. Run each command under `script`, which gives it a
+terminal:
+
+```sh
+# macOS
+script -q /dev/null "$B" recall <word>
+# Linux
+script -qc "$B recall <word>" /dev/null
+```
+
+1. `recall <word>`: ranked hits, bold titles, a dim meta line with `~/` paths,
+   then the count line. `recall wumpus`: `○  no notes match 'wumpus'` and its
+   hint, exit 1.
+2. The same with `NO_COLOR=1`, `CLICOLOR=0`, `TERM=dumb` and `env -u TERM`: the
+   same layout, no colour, no bold.
+3. The same with `AI_AGENT=x`, then `CLAUDE_CODE_CHILD_SESSION=1`, `CODEX_CI=1`
+   and `CODEX_THREAD_ID=t`: the plain three-line blocks and `bilbo: ` on
+   stderr. With only `CLAUDECODE=1`: the terminal view.
+4. At 60 columns (`script -q /dev/null sh -c "stty cols 60; $B recall <word>"`):
+   two-line snippets, no line wider than 60, the meta line broken under the
+   path. At 200 columns (`stty cols 200`): no line wider than 100.
+5. `check` clean and broken, `scope`, `library`, `library <corpus>`, `library
+   show <ref>`, `device`, `device list`, `sync`, `history <note>`, `history
+   <note> --diff <a> <b>`, `restore`, `new`, `index` and `setup --yes`: each
+   shows its terminal view as [Terminal
+   output](reference/commands.md#terminal-output) describes it.
+6. `bilbo recal x`: a `■` line and indented usage lines, with `bilbo --help`
+   in cyan after `see`.
+7. The wizard (`bilbo setup`) with and without `NO_COLOR=1`: colour only
+   without it; the boxes and marks are the same.
+8. Dim text is readable in Terminal.app, iTerm2 and Ghostty, on a dark and a
+   light theme. Note any theme where it is not.
+9. Through Claude Code's Bash tool, `bilbo recall <word>` prints the plain
+   blocks, because that tool gives bilbo no terminal.
 
 ## Setup wizard
 
@@ -327,9 +367,11 @@ Steps:
    owner fingerprint is shown, the question defaults to No, and bilbo exits 1
    with `the fingerprint does not match; nothing was written`. The world holds
    no keys and no `keys.lock`.
-7. `CLAUDECODE=1 expect plain.tcl device init --name x`: `bilbo device init
-   needs a terminal: run it yourself, in a terminal, not through an agent`,
-   exit 1, and nothing under `$XDG_STATE_HOME`.
+7. `CLAUDE_CODE_CHILD_SESSION=1 expect plain.tcl device init --name x`: `bilbo
+   device init needs a terminal: run it yourself, in a terminal, not through an
+   agent`, exit 1, and nothing under `$XDG_STATE_HOME`.
+7b. `CLAUDECODE=1 expect ... device init --name x` in a fresh world shows the
+   recovery phrase: an IDE's terminal is a person.
 
 `bilbo setup` runs the same ceremony when you answer yes to `Sync notes
 between your devices?` on a device without keys; the same checks apply to its

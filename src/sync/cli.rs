@@ -9,6 +9,7 @@ use jiff::tz::TimeZone;
 use serde::Deserialize;
 
 use crate::Failure;
+use crate::host::terminal;
 use crate::identity::keys;
 use crate::identity::manifest::{self, Known, Recipient};
 use crate::note::conflicts;
@@ -33,6 +34,99 @@ pub struct Output {
     pub warnings: Vec<String>,
     pub lines: Vec<String>,
     pub failed: bool,
+    /// `lines` hold the status report, not a `declare` result.
+    pub status: bool,
+}
+
+/// One scope of the status report, read back from its plain lines.
+struct Group<'a> {
+    name: &'a str,
+    url: &'a str,
+    /// `<n> notes, pushed <t>, pulled <t>`.
+    times: &'a str,
+    /// Device name and state.
+    devices: Vec<(&'a str, &'a str)>,
+}
+
+impl Output {
+    /// The `sync-status` human view; `lines` is the plain one, and `declare` has no other.
+    pub fn view(&self, term: &terminal::Term, now: jiff::Timestamp) -> Vec<String> {
+        use terminal::{Mark, Tone};
+        if !self.status {
+            return self.lines.clone();
+        }
+        let mut groups: Vec<Group> = Vec::new();
+        let mut local = None;
+        let mut rest = Vec::new();
+        for line in &self.lines {
+            if let Some((head, times)) = line
+                .strip_prefix("scope ")
+                .and_then(|body| body.split_once(": "))
+            {
+                let (name, url) = head.split_once(' ').unwrap_or((head, ""));
+                groups.push(Group {
+                    name,
+                    url,
+                    times,
+                    devices: Vec::new(),
+                });
+            } else if let Some(((scope, name), state)) = line
+                .strip_prefix("device ")
+                .and_then(|body| body.split_once(": "))
+                .and_then(|(head, state)| Some((head.split_once(' ')?, state)))
+            {
+                match groups.iter_mut().find(|g| g.name == scope) {
+                    Some(group) => group.devices.push((name, state)),
+                    None => rest.push(line.as_str()),
+                }
+            } else if let Some(text) = line.strip_prefix("local: ") {
+                local = Some(text);
+            } else {
+                rest.push(line);
+            }
+        }
+        let dim = |text: &str| terminal::paint(term, Tone::Dim, text);
+        let mut blocks: Vec<Vec<String>> = Vec::new();
+        for group in &groups {
+            let mut times = group.times.splitn(3, ", ");
+            let notes = times.next().unwrap_or("");
+            let mut when = |key: &str| {
+                let at = times.next().and_then(|t| t.strip_prefix(key));
+                dim(&terminal::ago(now, at.unwrap_or("never")))
+            };
+            let pushed = when("pushed ");
+            let pulled = when("pulled ");
+            let mut block = vec![
+                format!(
+                    "{}  {}",
+                    terminal::paint(term, Tone::Bold, group.name),
+                    dim(&terminal::tilde_text(term, group.url))
+                ),
+                format!("  {notes} · pushed {pushed} · pulled {pulled}"),
+            ];
+            let width = group.devices.iter().map(|d| terminal::width_of(d.0)).max();
+            for (device, state) in &group.devices {
+                let (lead, tone) = match *state {
+                    "this device" | "up to date" => (Mark::Done, Tone::Green),
+                    _ => (Mark::Warning, Tone::Yellow),
+                };
+                block.push(format!(
+                    "  {}  {}  {}",
+                    terminal::mark(term, lead),
+                    terminal::pad(device, width.unwrap_or(0), terminal::Align::Left),
+                    terminal::paint(term, tone, state)
+                ));
+            }
+            blocks.push(block);
+        }
+        if let Some(text) = local {
+            blocks.push(vec![format!("{}  {text}", dim("local"))]);
+        }
+        if !rest.is_empty() {
+            blocks.push(rest.iter().map(|l| l.to_string()).collect());
+        }
+        blocks.join(&String::new())
+    }
 }
 
 pub fn run(args: &[String], env: &store::Env) -> Result<Output, Failure> {
@@ -107,6 +201,7 @@ fn report(cx: &Cx, stored: &[Stored], known: &[Known], watching: bool) -> Output
         warnings: Vec::new(),
         lines: Vec::new(),
         failed: false,
+        status: true,
     };
     let syncing: BTreeSet<&str> = cx
         .settings
@@ -143,7 +238,7 @@ fn report(cx: &Cx, stored: &[Stored], known: &[Known], watching: bool) -> Output
         }
     };
     for section in &sections {
-        let count = stored
+        let notes = stored
             .iter()
             .filter(|n| n.scope.as_deref() == Some(section.name))
             .count();
@@ -152,9 +247,10 @@ fn report(cx: &Cx, stored: &[Stored], known: &[Known], watching: bool) -> Output
             None => (None, None),
         };
         out.lines.push(format!(
-            "scope {} {}: {count} notes, pushed {}, pulled {}",
+            "scope {} {}: {}, pushed {}, pulled {}",
             section.name,
             section.url,
+            count(notes, "note"),
             at_second(pushed, cx.tz),
             at_second(pulled, cx.tz),
         ));
@@ -184,7 +280,10 @@ fn report(cx: &Cx, stored: &[Stored], known: &[Known], watching: bool) -> Output
         .iter()
         .filter(|n| n.scope.as_deref().is_none_or(|s| !syncing.contains(s)))
         .count();
-    out.lines.push(format!("local: {local} notes sync nowhere"));
+    out.lines.push(match local {
+        1 => "local: 1 note syncs nowhere".to_string(),
+        _ => format!("local: {local} notes sync nowhere"),
+    });
     notes_section(cx, &mut out);
     for section in &sections {
         let Some(k) = section.known else { continue };
@@ -572,6 +671,7 @@ fn declare(args: &[String], env: &store::Env) -> Result<Output, Failure> {
             lost_lines(&judged.dropped)
         )],
         failed: false,
+        status: false,
     })
 }
 
@@ -591,7 +691,7 @@ Output of sync, in this order, each line only when it applies:
   scope <name> <url>: <n> notes, pushed <time>, pulled <time>
   device <scope> <device>: <state>, for each device of the scope
   waiting <scope> <device>: <n> versions whose parents have not arrived
-  local: <n> notes sync nowhere
+  local: <n> notes sync nowhere (1 note syncs)
   conflict notes/<file>: <n> passages
   dropped notes/<file>: <n> lines not declared
   notice <time> notes/<file>: <flag>, for each flag of the last 7 days
@@ -765,12 +865,71 @@ mod tests {
         }
     }
 
+    #[test]
+    fn the_view_groups_by_scope() {
+        let at = "2026-10-07T00:49-03:00";
+        let out = |lines: &[&str], status| Output {
+            warnings: Vec::new(),
+            lines: lines.iter().map(|l| l.to_string()).collect(),
+            failed: false,
+            status,
+        };
+        let now = "2026-10-07T01:00:00-03:00"
+            .parse::<jiff::Timestamp>()
+            .unwrap();
+        let first = out(
+            &[
+                &format!("scope personal file:///home/a/sync: 2 notes, pushed {at}, pulled {at}"),
+                "device personal rhosgobel: this device",
+                "device personal bywater: behind by 2 segments",
+                "local: 0 notes sync nowhere",
+            ],
+            true,
+        );
+        let want = "{b}personal{/b}  {d}file://~/sync{/d}
+  2 notes · pushed {d}11 min ago{/d} · pulled {d}11 min ago{/d}
+  {g}◆{/g}  rhosgobel  {g}this device{/g}
+  {y}▲{/y}  bywater    {y}behind by 2 segments{/y}
+
+{d}local{/d}  0 notes sync nowhere";
+        assert_eq!(
+            first.view(&terminal::fixed(100, true, true), now),
+            terminal::styled(want).lines().collect::<Vec<_>>()
+        );
+        let second = out(
+            &[
+                "scope personal file:///home/a/sync: 2 notes, pushed never, pulled never",
+                "device personal rhosgobel: this device",
+                "local: 1 note syncs nowhere",
+                "conflict notes/gotcha-nix.md: 1 passage",
+            ],
+            true,
+        );
+        assert_eq!(
+            second.view(&terminal::fixed(100, false, true), now),
+            [
+                "personal  file://~/sync",
+                "  2 notes · pushed never · pulled never",
+                "  ◆  rhosgobel  this device",
+                "",
+                "local  1 note syncs nowhere",
+                "",
+                "conflict notes/gotcha-nix.md: 1 passage",
+            ]
+        );
+        let declared = out(&["declared x.md: 1 lines dropped on purpose"], false);
+        assert_eq!(
+            declared.view(&terminal::fixed(100, true, true), now),
+            declared.lines
+        );
+    }
+
     fn refusal(result: Result<Output, Failure>) -> (u8, String) {
         match result {
             Ok(_) => panic!("expected a failure"),
             Err(Failure::Usage(m)) => (2, m),
             Err(Failure::Config(m)) => (2, m),
-            Err(Failure::Refused(m)) => (1, m),
+            Err(Failure::Refused(m) | Failure::Unmatched { message: m, .. }) => (1, m),
         }
     }
 
@@ -864,6 +1023,25 @@ mod tests {
         expected.push("local: 2 notes sync nowhere".into());
         assert_eq!(out.lines, expected);
         assert!(out.warnings.is_empty() && !out.failed);
+    }
+
+    #[test]
+    fn one_note_is_singular() {
+        let w = world("singular");
+        w.personal(&[]);
+        w.note(
+            "plan-p0.md",
+            "01M3YJ7R6HK6NQ30DCDB1P4D0A",
+            Some("personal"),
+            "x\n",
+        );
+        w.note("plan-l1.md", "01M3YJ7R6HK6NQ30DCDB1P4D1B", None, "x\n");
+        let out = w.out(0);
+        assert!(out.lines[0].contains(": 1 note, pushed"), "{:?}", out.lines);
+        assert_eq!(
+            out.lines.last().map(String::as_str),
+            Some("local: 1 note syncs nowhere")
+        );
     }
 
     #[test]

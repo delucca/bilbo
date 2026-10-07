@@ -46,7 +46,7 @@ Finds the notes earlier sessions wrote, or on request the passages of the librar
    | Exit | stderr | What to do |
    |---|---|---|
    | 0 | empty | render the hits (step 5) |
-   | 0 | warning lines | render the hits (step 5), then pass the warnings on in one sentence: `embedder unavailable (...); keyword results only` means the hits come from keywords alone, `<n> passages not indexed; run bilbo index` means the newest notes were matched by keywords only |
+   | 0 | warning lines | render the hits (step 5), then pass the warnings on in one sentence: `embedder unavailable (...); keyword results only` means the hits come from keywords alone, `<n> passage(s) not indexed; run bilbo index` means the newest notes were matched by keywords only |
    | 1 | last line `bilbo: no notes match` or `bilbo: no sources match` | retry (step 4) |
    | 1 | `bilbo: no library at <root>` | print it and stop. Do not search the notes instead |
    | 1 | `bilbo: no store at <root>` | the store root comes from the user's environment: `BILBO_HOME`, else `$XDG_DATA_HOME/bilbo`, else `$HOME/.local/share/bilbo`. Never set `BILBO_HOME` yourself: a `VAR=x bilbo ...` prefix is outside `Bash(bilbo recall *)`. Report the path and stop |

@@ -563,6 +563,89 @@ fn report_fresh_run() {
     assert!(root(&m).join("notes").is_dir());
 }
 
+/// `watch_setup` on a terminal: the same machine, `NO_COLOR` and a UTF-8 locale.
+fn tty_setup(m: &Machine, args: &[&str]) -> Run {
+    let mut full = vec!["setup"];
+    full.extend(args);
+    common::bilbo_tty(
+        &m.home,
+        &[
+            ("HOME", m.home.to_str().unwrap()),
+            ("PATH", m.bin.to_str().unwrap()),
+            ("TERM", "xterm-256color"),
+            ("NO_COLOR", "1"),
+            ("LANG", "C.UTF-8"),
+        ],
+        &full,
+        100,
+    )
+}
+
+#[test]
+fn the_report_on_a_terminal() {
+    let m = machine("setup-report-tty");
+    fakes::install(&m.bin, &m.state, &[TIMER_TOOL]);
+    let run = tty_setup(&m, &["--yes", "--no-plugin"]);
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    let lines = lines(&run);
+    let (last, steps) = lines.split_last().unwrap();
+    assert!(last.starts_with("◆  Setup done: "), "{}", run.stdout);
+    assert_eq!(steps.len(), 13, "{}", run.stdout);
+    assert_eq!(steps[12], "");
+    for line in &steps[..12] {
+        assert!(line.starts_with(['◆', '◇', '○']), "{line}");
+    }
+    assert!(steps[0].starts_with("◆  store"), "{}", run.stdout);
+    assert!(steps[0].contains("created"));
+}
+
+#[test]
+fn an_ide_terminal_gets_the_human_view() {
+    let m = machine("setup-report-tty-ide");
+    fakes::install(&m.bin, &m.state, &[TIMER_TOOL]);
+    let run = common::bilbo_tty(
+        &m.home,
+        &[
+            ("HOME", m.home.to_str().unwrap()),
+            ("PATH", m.bin.to_str().unwrap()),
+            ("TERM", "xterm-256color"),
+            ("NO_COLOR", "1"),
+            ("LANG", "C.UTF-8"),
+            ("CLAUDECODE", "1"),
+        ],
+        &["setup", "--yes", "--no-plugin"],
+        100,
+    );
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    assert!(
+        lines(&run).last().unwrap().starts_with("◆  Setup done: "),
+        "{}",
+        run.stdout
+    );
+}
+
+#[test]
+fn a_failed_step_on_a_terminal() {
+    let m = machine("setup-report-tty-failed");
+    let run = tty_setup(&m, &["--yes", "--no-plugin"]);
+    assert_eq!(run.code, 1, "{}", run.stdout);
+    let lines = lines(&run);
+    assert_eq!(
+        lines.last().unwrap(),
+        &"■  1 of 12 steps failed",
+        "{}",
+        run.stdout
+    );
+    assert!(lines.iter().any(|l| l.starts_with("■  watch")));
+    let piped = watch_setup(&m, &[], &["--yes", "--no-plugin"]);
+    assert!(
+        piped
+            .stdout
+            .lines()
+            .any(|l| l.starts_with("watch failed: "))
+    );
+}
+
 #[test]
 fn store_existing_is_kept() {
     let m = machine("setup-store-kept");
@@ -3327,7 +3410,7 @@ fn sync_joins_the_scopes_with_a_comma() {
         step(&run, "sync"),
         Some(
             format!(
-                "sync ok: personal through file://{} (0 notes), work through file://{} (1 notes)",
+                "sync ok: personal through file://{} (0 notes), work through file://{} (1 note)",
                 a.display(),
                 b.display()
             )

@@ -79,6 +79,64 @@ pub fn bilbo_input(cwd: &Path, env: &[(&str, &str)], args: &[&str], input: &str)
     checked(child.wait_with_output().unwrap())
 }
 
+/// Runs bilbo with stdout and stderr on two pseudo-terminals `cols` columns wide and stdin empty, as a person's
+/// terminal; `\r\n` reads back as `\n`. Unlike `bilbo`, it does not require the `bilbo: ` prefix: a terminal may
+/// get level marks.
+pub fn bilbo_tty(cwd: &Path, env: &[(&str, &str)], args: &[&str], cols: u16) -> Run {
+    let (out_master, out_slave) = pty(cols);
+    let (err_master, err_slave) = pty(cols);
+    let mut child = Command::new(env!("CARGO_BIN_EXE_bilbo"))
+        .env_clear()
+        .envs(env.iter().copied())
+        .current_dir(cwd)
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::from(out_slave))
+        .stderr(Stdio::from(err_slave))
+        .spawn()
+        .unwrap();
+    let read = |master: OwnedFd| {
+        std::thread::spawn(move || {
+            let mut bytes = Vec::new();
+            let _ = std::fs::File::from(master).read_to_end(&mut bytes);
+            String::from_utf8(bytes).unwrap().replace("\r\n", "\n")
+        })
+    };
+    let (out, err) = (read(out_master), read(err_master));
+    let code = child.wait().unwrap().code().unwrap();
+    Run {
+        code,
+        stdout: out.join().unwrap(),
+        stderr: err.join().unwrap(),
+    }
+}
+
+/// A pseudo-terminal `cols` columns wide, as its master and slave. Both are close-on-exec, so a child another
+/// test thread spawns never holds a slave open.
+fn pty(cols: u16) -> (OwnedFd, OwnedFd) {
+    let (mut master, mut slave) = (0, 0);
+    let mut size = libc::winsize {
+        ws_row: 50,
+        ws_col: cols,
+        ws_xpixel: 0,
+        ws_ypixel: 0,
+    };
+    let opened = unsafe {
+        libc::openpty(
+            &mut master,
+            &mut slave,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            &mut size,
+        )
+    };
+    assert_eq!(opened, 0, "openpty failed");
+    for fd in [master, slave] {
+        unsafe { libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC) };
+    }
+    unsafe { (OwnedFd::from_raw_fd(master), OwnedFd::from_raw_fd(slave)) }
+}
+
 fn checked(output: std::process::Output) -> Run {
     let run = Run {
         code: output.status.code().unwrap(),

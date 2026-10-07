@@ -92,7 +92,7 @@ When stdout gets the `cli` spec's human view, the step report SHALL print one li
 - **THEN** each step line starts with `◇` or `○`, the store line shows its path from `~/`, and the last line starts with `◆  Setup done: ` and holds `kept` and `skipped`
 
 #### Scenario: A failed step on a terminal
-- **WHEN** a user runs `bilbo setup --yes` in a terminal and `launchctl` is not on `PATH`
+- **WHEN** a user runs `bilbo setup --yes` in a terminal with an embedder configured and `launchctl` is not on `PATH`
 - **THEN** the timer and watch lines start with `■`, the last line is `■  2 of 12 steps failed`, and the exit code is 1
 
 #### Scenario: The home-manager module reads the plain report

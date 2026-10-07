@@ -154,7 +154,8 @@ and removal.
 
    `check` prints nothing when the store is clean. `recall` prints the path and
    line of the best passage, the kind and `created`, the heading path and the
-   start of the text.
+   start of the text. These are the bytes a pipe or an agent gets; a terminal
+   shows the same facts laid out for a person.
 
 More detail: [docs/getting-started.md](docs/getting-started.md).
 

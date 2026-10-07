@@ -4,7 +4,9 @@ use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
-use super::{Args, Output, capture_title, io_failure, refused, root, state_failure, today, usage};
+use super::{
+    Args, Output, Shape, capture_title, io_failure, refused, root, state_failure, today, usage,
+};
 use crate::Failure;
 use crate::citation::{self, Document, Verdict};
 use crate::library::corpus;
@@ -297,6 +299,7 @@ pub fn run(args: &Args, env: &store::Env) -> Result<Output, Failure> {
             format!("guide: {}", guide.display()),
             format!("capture folder: {}", folder.display()),
         ],
+        shape: Shape::Plain,
     })
 }
 

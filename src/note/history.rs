@@ -4,6 +4,7 @@ use std::collections::HashMap;
 use std::path::Path;
 
 use crate::Failure;
+use crate::host::terminal;
 use crate::identity::manifest;
 use crate::note::diff;
 use crate::note::versions::{self, ContentError, NameError, Named, Scan, Version, VersionError};
@@ -29,6 +30,108 @@ pub struct Output {
     pub lines: Vec<String>,
     /// A printed version or a diff, written to stdout as is.
     pub bytes: Vec<u8>,
+    pub shown: Shown,
+}
+
+/// Which form `bytes` and `lines` hold.
+pub enum Shown {
+    List,
+    Version,
+    /// The 12-character versions a diff compared; `b` is `None` when the second side is the note's file.
+    Diff {
+        a: String,
+        b: Option<String>,
+    },
+}
+
+impl Output {
+    /// The `note-history` human view; a printed version has none, since its bytes are the result.
+    pub fn view(&self, term: &terminal::Term, now: jiff::Timestamp) -> Vec<String> {
+        use terminal::{Mark, Tone};
+        match &self.shown {
+            Shown::Version => self.lines.clone(),
+            Shown::List => self.list_view(term, now),
+            Shown::Diff { a, b } if self.bytes.is_empty() => vec![format!(
+                "{}  no changes between {} and {}",
+                terminal::mark(term, Mark::Kept),
+                terminal::paint(term, Tone::Cyan, a),
+                terminal::paint(term, Tone::Cyan, b.as_deref().unwrap_or("now"))
+            )],
+            Shown::Diff { .. } => String::from_utf8_lossy(&self.bytes)
+                .lines()
+                .map(|line| {
+                    let tone = if line.starts_with("--- ") || line.starts_with("+++ ") {
+                        Some(Tone::Bold)
+                    } else if line.starts_with("@@") {
+                        Some(Tone::Cyan)
+                    } else if line.starts_with('-') {
+                        Some(Tone::Red)
+                    } else if line.starts_with('+') {
+                        Some(Tone::Green)
+                    } else {
+                        None
+                    };
+                    tone.map_or_else(
+                        || line.to_string(),
+                        |tone| terminal::paint(term, tone, line),
+                    )
+                })
+                .collect(),
+        }
+    }
+
+    /// The note's file name, then a table of its versions read back from `lines`.
+    fn list_view(&self, term: &terminal::Term, now: jiff::Timestamp) -> Vec<String> {
+        use terminal::Tone;
+        let mut first = "";
+        let mut rows = Vec::new();
+        for text in &self.lines {
+            let mut words = text.splitn(5, ' ');
+            let (Some(version), Some(time), Some(event), Some(file)) =
+                (words.next(), words.next(), words.next(), words.next())
+            else {
+                continue;
+            };
+            if first.is_empty() {
+                first = file;
+            }
+            let tail = words.next().unwrap_or("");
+            let (from, flags) = match tail.split_once(" [") {
+                Some((from, flags)) => (from, Some(format!("[{flags}"))),
+                None if tail.starts_with('[') => ("", Some(tail.to_string())),
+                None => (tail, None),
+            };
+            let extras: Vec<&str> = [
+                (!from.is_empty()).then_some(from),
+                flags.as_deref(),
+                (file != first).then_some(file),
+            ]
+            .into_iter()
+            .flatten()
+            .collect();
+            let event_tone = match event {
+                "added" => Some(Tone::Green),
+                "restored" => Some(Tone::Cyan),
+                _ => None,
+            };
+            rows.push(vec![
+                terminal::paint(term, Tone::Cyan, version),
+                event_tone.map_or_else(
+                    || event.to_string(),
+                    |tone| terminal::paint(term, tone, event),
+                ),
+                terminal::ago(now, time),
+                terminal::paint(term, Tone::Dim, &extras.join(" ")),
+            ]);
+        }
+        let mut out = vec![terminal::paint(term, Tone::Bold, first)];
+        out.extend(
+            terminal::table(&rows, &[false; 4])
+                .into_iter()
+                .map(|row| format!("  {row}")),
+        );
+        out
+    }
 }
 
 pub fn run(args: &[String], env: &store::Env) -> Result<Output, Failure> {
@@ -50,6 +153,7 @@ pub fn run(args: &[String], env: &store::Env) -> Result<Output, Failure> {
         warnings: Vec::new(),
         lines: Vec::new(),
         bytes: Vec::new(),
+        shown: Shown::List,
     };
     let note = &parsed.note;
     let names = Names::of(&root, &log.versions);
@@ -60,19 +164,24 @@ pub fn run(args: &[String], env: &store::Env) -> Result<Output, Failure> {
         Request::Print(prefix) => {
             let version = pick(&log.versions, prefix, note, &names)?;
             output.bytes = text(&root, version, prefix, note)?;
+            output.shown = Shown::Version;
         }
         Request::Diff(a, b) => {
             let first = pick(&log.versions, a, note, &names)?;
             let old = text_or_empty(&root, first, a, note)?;
-            let (new_name, new) = match b {
+            let (new_name, new, second) = match b {
                 Some(b) => {
                     let second = pick(&log.versions, b, note, &names)?;
                     let bytes = text_or_empty(&root, second, b, note)?;
-                    (format!("{}@{b}", second.file), bytes)
+                    (
+                        format!("{}@{b}", second.file),
+                        bytes,
+                        Some(second.short().to_string()),
+                    )
                 }
                 None => {
                     let (file, bytes) = current(&scan, &named, note)?;
-                    (format!("{file}@now"), bytes)
+                    (format!("{file}@now"), bytes, None)
                 }
             };
             let diff = diff::unified(
@@ -82,6 +191,10 @@ pub fn run(args: &[String], env: &store::Env) -> Result<Output, Failure> {
                 &String::from_utf8_lossy(&new),
             );
             output.bytes = diff.into_bytes();
+            output.shown = Shown::Diff {
+                a: first.short().to_string(),
+                b: second,
+            };
         }
     }
     if !versions::watcher_running(&root) {
@@ -269,3 +382,118 @@ Examples:
 
 Docs: https://github.com/delucca/bilbo/wiki/Commands#history
 "#;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const NOW: &str = "2026-10-07T01:00:00-03:00";
+
+    fn output(lines: &[&str], bytes: &str, shown: Shown) -> Output {
+        Output {
+            warnings: Vec::new(),
+            lines: lines.iter().map(|l| l.to_string()).collect(),
+            bytes: bytes.as_bytes().to_vec(),
+            shown,
+        }
+    }
+
+    fn now() -> jiff::Timestamp {
+        NOW.parse().unwrap()
+    }
+
+    #[test]
+    fn the_list_view() {
+        let out = output(
+            &[
+                "5b71e17cc108 2026-10-07T00:44-03:00 edited gotcha-busy.md",
+                "2c0a8c85acdc 2026-10-07T00:44-03:00 edited gotcha-busy.md",
+                "91e0aa3b17f2 2026-10-05T00:30-03:00 edited gotcha-busy.md from bywater",
+                "0c3f8d2e6a41 2026-10-04T00:30-03:00 restored gotcha-busy.md [conflict]",
+                "d4f94f03789f 2026-10-02T00:30-03:00 added gotcha-sqlite-busy.md",
+            ],
+            "",
+            Shown::List,
+        );
+        let plain = out.view(&terminal::fixed(100, false, true), now());
+        assert_eq!(
+            plain,
+            [
+                "gotcha-busy.md",
+                "  5b71e17cc108  edited    16 min ago",
+                "  2c0a8c85acdc  edited    16 min ago",
+                "  91e0aa3b17f2  edited    2 days ago  from bywater",
+                "  0c3f8d2e6a41  restored  3 days ago  [conflict]",
+                "  d4f94f03789f  added     5 days ago  gotcha-sqlite-busy.md",
+            ]
+        );
+        let painted = out.view(&terminal::fixed(100, true, true), now());
+        assert_eq!(painted[0], terminal::styled("{b}gotcha-busy.md{/b}"));
+        assert_eq!(
+            painted[1],
+            terminal::styled("  {c}5b71e17cc108{/c}  edited    16 min ago")
+        );
+        assert_eq!(
+            painted[5],
+            terminal::styled(
+                "  {c}d4f94f03789f{/c}  {g}added{/g}     5 days ago  {d}gotcha-sqlite-busy.md{/d}"
+            )
+        );
+    }
+
+    #[test]
+    fn equal_versions_say_so() {
+        let term = terminal::fixed(100, true, true);
+        let same = |b: Option<&str>| {
+            output(
+                &[],
+                "",
+                Shown::Diff {
+                    a: "d4f94f03789f".into(),
+                    b: b.map(String::from),
+                },
+            )
+            .view(&term, now())
+        };
+        assert_eq!(
+            same(Some("5b71e17cc108")),
+            [terminal::styled(
+                "{d}◇{/d}  no changes between {c}d4f94f03789f{/c} and {c}5b71e17cc108{/c}"
+            )]
+        );
+        assert_eq!(
+            same(None),
+            [terminal::styled(
+                "{d}◇{/d}  no changes between {c}d4f94f03789f{/c} and {c}now{/c}"
+            )]
+        );
+    }
+
+    #[test]
+    fn a_diff_in_colour() {
+        let out = output(
+            &[],
+            "--- x.md@d4f94f03789f\n+++ x.md@5b71e17cc108\n@@ -8,2 +8,2 @@\n ## Fix\n-Set 5000.\n+Set 10000.\n",
+            Shown::Diff {
+                a: "d4f94f03789f".into(),
+                b: Some("5b71e17cc108".into()),
+            },
+        );
+        let want = "{b}--- x.md@d4f94f03789f{/b}
+{b}+++ x.md@5b71e17cc108{/b}
+{c}@@ -8,2 +8,2 @@{/c}
+ ## Fix
+{r}-Set 5000.{/r}
+{g}+Set 10000.{/g}";
+        assert_eq!(
+            out.view(&terminal::fixed(100, true, true), now()),
+            terminal::styled(want).lines().collect::<Vec<_>>()
+        );
+        assert_eq!(
+            out.view(&terminal::fixed(100, false, true), now()),
+            String::from_utf8_lossy(&out.bytes)
+                .lines()
+                .collect::<Vec<_>>()
+        );
+    }
+}

@@ -702,3 +702,39 @@ fn scoped_notes_pass_check_and_unassigned_ones_fail_by_design() {
         "notes/plan-loose.md: scope: missing; scopes: work\n"
     );
 }
+
+#[test]
+fn a_terminal_gets_the_created_view_and_a_pipe_the_path() {
+    let dir = TempDir::new("new-tty");
+    let home = dir.path().join("home");
+    std::fs::create_dir_all(&home).unwrap();
+    let env = [
+        ("HOME", home.to_str().unwrap()),
+        ("NO_COLOR", "1"),
+        ("LANG", "C.UTF-8"),
+    ];
+    let run = common::bilbo_tty(
+        dir.path(),
+        &env,
+        &["new", "gotcha", "sqlite-busy-timeout"],
+        100,
+    );
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    assert_eq!(
+        run.stdout,
+        "◆  Created gotcha sqlite-busy-timeout\n   ~/.local/share/bilbo/notes/gotcha-sqlite-busy-timeout.md\n"
+    );
+    let piped = bilbo(
+        dir.path(),
+        &[("HOME", home.to_str().unwrap())],
+        &["new", "gotcha", "other-note"],
+    );
+    assert_eq!(
+        piped.stdout,
+        format!(
+            "{}\n",
+            home.join(".local/share/bilbo/notes/gotcha-other-note.md")
+                .display()
+        )
+    );
+}

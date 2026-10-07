@@ -135,6 +135,9 @@ embedded 1, kept 0, dropped 0
 bilbo: withheld 2 passages from http://embedder.example:8081: their scope allows only a loopback embedder
 ```
 
+That is the piped form. A terminal prints `◆  Embedded 1 passage · kept 0 ·
+dropped 0` and, after it, the withheld line as a `▲` warning.
+
 `recall` and the digest still reach withheld notes, by keywords, and `recall`
 does not count them as not indexed. The digest admits a withheld passage on its
 keyword gate, so a store withheld whole still reaches the digest without a

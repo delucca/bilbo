@@ -32,8 +32,9 @@ const VERBS: [&str; 16] = [
 
 /// Each crate and the only files under `src/` that may name it. `tests/common` also uses `sha2`, to write library
 /// files with a correct digest.
-const PLACEMENT: [(&str, &[&str]); 17] = [
+const PLACEMENT: [(&str, &[&str]); 18] = [
     ("cliclack", &["host/prompt.rs"]),
+    ("console", &["host/terminal.rs"]),
     (
         "libc",
         &["host/prompt.rs", "host/swap.rs", "identity/keys.rs"],

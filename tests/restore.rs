@@ -831,3 +831,31 @@ fn a_leftover_holding_a_staged_version_is_left_for_the_watcher() {
     assert_eq!(fs::read_to_string(&hidden).unwrap(), inbound);
     assert_eq!(events(&root, "release"), before);
 }
+
+#[test]
+fn a_terminal_gets_the_marked_line_and_a_pipe_the_plain_one() {
+    let dir = TempDir::new("restore-tty");
+    let root = edited(&dir);
+    let first = shorts(&root, "release")[1].clone();
+    let env = [
+        ("BILBO_HOME", root.to_str().unwrap()),
+        ("NO_COLOR", "1"),
+        ("LANG", "C.UTF-8"),
+    ];
+    let run = common::bilbo_tty(
+        &std::env::temp_dir(),
+        &env,
+        &["restore", "release", &first],
+        100,
+    );
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    assert_eq!(
+        run.stdout,
+        format!("◆  Restored decision-release.md to {first}\n")
+    );
+    let piped = restore(&root, &["release", &first]);
+    assert_eq!(
+        piped.stdout,
+        format!("decision-release.md already matches {first}\n")
+    );
+}

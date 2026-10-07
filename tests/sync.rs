@@ -1453,7 +1453,7 @@ fn status_of_two_devices_in_step() {
             && !run.stdout.contains("never")
     });
     let lines: Vec<&str> = run.stdout.lines().collect();
-    let head = format!("scope personal {}: 1 notes, pushed 20", url(&folder));
+    let head = format!("scope personal {}: 1 note, pushed 20", url(&folder));
     assert!(
         lines[0].starts_with(&head) && lines[0].contains(", pulled 20"),
         "{lines:?}"
@@ -1969,4 +1969,29 @@ fn status_changes_nothing_in_the_root_or_the_folder() {
     assert!(run.stdout.contains("dropped notes/"), "{}", run.stdout);
     assert_eq!(stamps(&a.root()), root, "the root changed");
     assert_eq!(stamps(&folder), shared, "the folder changed");
+}
+
+#[test]
+fn a_terminal_gets_the_scope_view() {
+    let dir = TempDir::new("sync-view");
+    let folder = folder(&dir, &[1, 2]);
+    let site = Site::new("rhosgobel", &folder);
+    let mut env = site.pairs();
+    env.extend([("NO_COLOR", "1"), ("LANG", "C.UTF-8")]);
+    let run = common::bilbo_tty(site.dir.path(), &env, &["sync"], 100);
+    assert_eq!(run.code, 1, "{}", run.stderr);
+    assert!(
+        run.stdout.starts_with("personal  file://"),
+        "{}",
+        run.stdout
+    );
+    assert!(
+        run.stdout
+            .lines()
+            .any(|l| l.contains("◆  rhosgobel  this device")),
+        "{}",
+        run.stdout
+    );
+    assert!(!run.stdout.contains('\x1b'));
+    assert_eq!(run.stderr, "▲  bilbo watch is not running; nothing syncs\n");
 }

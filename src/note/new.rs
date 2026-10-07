@@ -2,6 +2,7 @@ use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
+use crate::host::terminal;
 use crate::shared::config::{self, Settings};
 use crate::shared::frontmatter;
 use crate::shared::store::{self, EntryKind};
@@ -19,6 +20,27 @@ struct Request {
 pub struct Output {
     pub path: PathBuf,
     pub warning: Option<String>,
+    pub kind: String,
+    pub topic: String,
+}
+
+impl Output {
+    /// The `note-create` human view; the plain one is the path alone.
+    pub fn view(&self, term: &terminal::Term) -> Vec<String> {
+        use terminal::{Mark, Tone};
+        vec![
+            format!(
+                "{}  Created {} {}",
+                terminal::mark(term, Mark::Done),
+                terminal::paint(term, Tone::Cyan, &self.kind),
+                terminal::paint(term, Tone::Bold, &self.topic)
+            ),
+            format!(
+                "   {}",
+                terminal::paint(term, Tone::Dim, &terminal::tilde(term, &self.path))
+            ),
+        ]
+    }
 }
 
 /// Parses and validates args, creates the note.
@@ -67,7 +89,12 @@ pub fn run(args: &[String], env: &store::Env) -> Result<Output, Failure> {
             path = path.display()
         )
     });
-    Ok(Output { path, warning })
+    Ok(Output {
+        path,
+        warning,
+        kind: request.kind,
+        topic: request.topic,
+    })
 }
 
 /// `name` when the config declares it.
@@ -308,6 +335,29 @@ Docs: https://github.com/delucca/bilbo/wiki/Commands#new
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_view() {
+        let out = Output {
+            path: "/home/a/.local/share/bilbo/notes/gotcha-sqlite-busy-timeout.md".into(),
+            warning: None,
+            kind: "gotcha".into(),
+            topic: "sqlite-busy-timeout".into(),
+        };
+        let want = "{g}◆{/g}  Created {c}gotcha{/c} {b}sqlite-busy-timeout{/b}
+   {d}~/.local/share/bilbo/notes/gotcha-sqlite-busy-timeout.md{/d}";
+        assert_eq!(
+            out.view(&terminal::fixed(100, true, true)),
+            terminal::styled(want).lines().collect::<Vec<_>>()
+        );
+        assert_eq!(
+            out.view(&terminal::fixed(100, false, true)),
+            [
+                "◆  Created gotcha sqlite-busy-timeout",
+                "   ~/.local/share/bilbo/notes/gotcha-sqlite-busy-timeout.md",
+            ]
+        );
+    }
 
     struct Scratch(PathBuf);
 

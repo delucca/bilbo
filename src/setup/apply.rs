@@ -9,21 +9,28 @@ use super::plan::{
     ConfigPlan, EmbedderPlan, KeyPlan, Plan, PluginPlan, TimerPlan, TimerRemoval, plugins,
 };
 use super::syncing;
+use crate::host::terminal::Step;
 use crate::host::{agents, command, timer};
 use crate::shared::config::{self, Token};
 
 #[derive(Default)]
 pub struct Report {
     pub lines: Vec<String>,
+    pub steps: Vec<Step>,
     pub failed: bool,
 }
 
 impl Report {
     pub fn line(&mut self, step: &str, status: &str, detail: Option<String>) {
         self.failed |= status == "failed";
-        self.lines.push(match detail {
+        self.lines.push(match &detail {
             Some(detail) => format!("{step} {status}: {detail}"),
             None => format!("{step} {status}"),
+        });
+        self.steps.push(Step {
+            step: step.to_string(),
+            status: status.to_string(),
+            detail,
         });
     }
 }
@@ -47,6 +54,7 @@ pub fn apply(plan: &Plan) -> Outcome {
     sync_step(plan, &mut report);
     Outcome {
         lines: report.lines,
+        steps: report.steps,
         failed: report.failed,
     }
 }

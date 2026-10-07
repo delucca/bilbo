@@ -81,10 +81,73 @@ fn lists_two_scopes_and_the_unassigned_notes() {
     assert_eq!(
         run.stdout,
         "personal\t3 notes\tsync off\tembedder any\tpaths -\tdefault\n\
-         work\t1 notes\tsync off\tembedder local\tpaths ~/Developer/acme\n\
+         work\t1 note\tsync off\tembedder local\tpaths ~/Developer/acme\n\
          (unassigned)\t2 notes\tembedder local\n"
     );
     assert!(run.stderr.is_empty());
+}
+
+/// The store and config of `lists_two_scopes_and_the_unassigned_notes`, shortened.
+fn two_scopes(dir: &TempDir) -> (PathBuf, PathBuf) {
+    let root = store(dir);
+    let conf = config(
+        dir,
+        &[
+            "scope.personal.sync = off",
+            "scope.work.embedder = local",
+            "scope.work.paths = ~/Developer/acme",
+            "scope.default = personal",
+        ],
+    );
+    write(&root, "plan-n0.md", &scoped(IDS[0], "scope: personal"));
+    write(&root, "plan-n1.md", &scoped(IDS[1], "scope: work"));
+    write(&root, "plan-n2.md", &note_text(IDS[2], "T"));
+    (root, conf)
+}
+
+#[test]
+fn the_listing_is_a_table_on_a_terminal() {
+    let dir = TempDir::new("scope-tty");
+    let (root, conf) = two_scopes(&dir);
+    let env = [
+        ("BILBO_HOME", root.to_str().unwrap()),
+        ("BILBO_CONFIG", conf.to_str().unwrap()),
+        ("HOME", "/home/tester"),
+        ("TERM", "xterm-256color"),
+        ("NO_COLOR", "1"),
+        ("LANG", "C.UTF-8"),
+    ];
+    let run = common::bilbo_tty(&cwd(), &env, &["scope"], 100);
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    let lines: Vec<&str> = run.stdout.lines().collect();
+    assert!(lines[0].starts_with("SCOPE"), "{}", run.stdout);
+    assert_eq!(lines.iter().filter(|l| l.contains("(default)")).count(), 1);
+    assert!(lines[1].starts_with("personal (default)"), "{}", run.stdout);
+    assert!(lines.last().unwrap().starts_with("unassigned"));
+    assert!(!run.stdout.contains('\t') && !run.stdout.contains('\x1b'));
+}
+
+#[test]
+fn forced_colour_never_reaches_a_pipe() {
+    let dir = TempDir::new("scope-forced");
+    let (root, conf) = two_scopes(&dir);
+    let run = bilbo(
+        &cwd(),
+        &[
+            ("BILBO_HOME", root.to_str().unwrap()),
+            ("BILBO_CONFIG", conf.to_str().unwrap()),
+            ("HOME", "/home/tester"),
+            ("CLICOLOR_FORCE", "1"),
+            ("FORCE_COLOR", "1"),
+        ],
+        &["scope"],
+    );
+    assert_eq!(
+        run.stdout,
+        "personal\t1 note\tsync off\tembedder any\tpaths -\tdefault\n\
+         work\t1 note\tsync off\tembedder local\tpaths ~/Developer/acme\n\
+         (unassigned)\t1 note\tembedder local\n"
+    );
 }
 
 #[test]

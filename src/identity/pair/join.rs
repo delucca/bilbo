@@ -497,14 +497,10 @@ mod tests {
         fn env(&self) -> store::Env {
             store::Env {
                 bilbo_home: Some(self.root().into()),
-                xdg_data_home: None,
                 home: Some(self.0.join("b/home").into()),
-                bilbo_config: None,
                 xdg_config_home: Some(self.0.join("b/config").into()),
-                xdg_cache_home: None,
                 xdg_state_home: Some(self.0.join("b/state").into()),
-                claudecode: None,
-                codex_thread_id: None,
+                ..store::Env::from_vars(|_| None)
             }
         }
 
@@ -634,7 +630,7 @@ mod tests {
     fn failed(failure: Failure) -> (u8, String) {
         match failure {
             Failure::Usage(message) | Failure::Config(message) => (2, message),
-            Failure::Refused(message) => (1, message),
+            Failure::Refused(message) | Failure::Unmatched { message, .. } => (1, message),
         }
     }
 

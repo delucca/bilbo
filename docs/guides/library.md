@@ -14,7 +14,7 @@ formats](../reference/files.md#library-files).
 | Command | What it does |
 | --- | --- |
 | `bilbo library` | One row per corpus: its sources, size and guide title. |
-| `bilbo library <corpus>` | The guide's path, then the guide with a facts line under each entry: id, size, tokens, `fetched`, headings. |
+| `bilbo library <corpus>` | The guide's path, then the guide with a facts line under each entry: id, size, tokens, `fetched`, headings. On a terminal: the lead and each entry with its facts, sizes and tokens grouped. |
 | `bilbo library show <corpus>/<name>\|<id>[#<anchor>] [--depth <n>]` | A source's header and one row per section: its lines, tokens and heading path. An anchor or `--depth` narrows the rows. |
 | `bilbo library stage <url>` | Fetches the page, keeps what it answered, and prints the same as for a file. Changes nothing in the store. |
 | `bilbo library stage <file> --origin "<url\|doc>: <value>" [--fetched <YYYY-MM-DD>] [--html]` | Copies a text file, with LF line endings, into the state folder and prints its lines, title and headings. `--html` converts a saved page. Changes nothing in the store. |

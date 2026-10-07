@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 
 use crate::shared::markdown::fence_run;
 
-/// The environment variables root, config and cache resolution read; tests build it by hand.
+/// The environment variables bilbo reads; tests build it by hand.
 pub struct Env {
     pub bilbo_home: Option<OsString>,
     pub xdg_data_home: Option<OsString>,
@@ -13,8 +13,24 @@ pub struct Env {
     pub xdg_config_home: Option<OsString>,
     pub xdg_cache_home: Option<OsString>,
     pub xdg_state_home: Option<OsString>,
-    pub claudecode: Option<OsString>,
+    /// `AI_AGENT`.
+    pub ai_agent: Option<OsString>,
+    /// `CLAUDE_CODE_CHILD_SESSION`.
+    pub claude_code_child_session: Option<OsString>,
+    /// `CODEX_THREAD_ID`.
     pub codex_thread_id: Option<OsString>,
+    /// `CODEX_CI`.
+    pub codex_ci: Option<OsString>,
+    /// `NO_COLOR`.
+    pub no_color: Option<OsString>,
+    /// `CLICOLOR`.
+    pub clicolor: Option<OsString>,
+    /// `TERM`.
+    pub term: Option<OsString>,
+    /// `COLUMNS`.
+    pub columns: Option<OsString>,
+    /// `LANG`.
+    pub lang: Option<OsString>,
 }
 
 impl Env {
@@ -32,9 +48,29 @@ impl Env {
             xdg_config_home: var("XDG_CONFIG_HOME"),
             xdg_cache_home: var("XDG_CACHE_HOME"),
             xdg_state_home: var("XDG_STATE_HOME"),
-            claudecode: var("CLAUDECODE"),
+            ai_agent: var("AI_AGENT"),
+            claude_code_child_session: var("CLAUDE_CODE_CHILD_SESSION"),
             codex_thread_id: var("CODEX_THREAD_ID"),
+            codex_ci: var("CODEX_CI"),
+            no_color: var("NO_COLOR"),
+            clicolor: var("CLICOLOR"),
+            term: var("TERM"),
+            columns: var("COLUMNS"),
+            lang: var("LANG"),
         }
+    }
+
+    /// An agent runs bilbo: `AI_AGENT`, `CLAUDE_CODE_CHILD_SESSION`, `CODEX_THREAD_ID` or `CODEX_CI` is
+    /// set and not empty. `CLAUDECODE` is not one: IDE extensions set it in the terminals people type in.
+    pub fn agent(&self) -> bool {
+        [
+            &self.ai_agent,
+            &self.claude_code_child_session,
+            &self.codex_thread_id,
+            &self.codex_ci,
+        ]
+        .into_iter()
+        .any(|v| v.as_ref().is_some_and(|v| !v.is_empty()))
     }
 }
 
@@ -262,9 +298,7 @@ mod tests {
             bilbo_config: None,
             xdg_config_home: None,
             xdg_cache_home: None,
-            xdg_state_home: None,
-            claudecode: None,
-            codex_thread_id: None,
+            ..Env::from_vars(|_| None)
         }
     }
 
@@ -278,14 +312,21 @@ mod tests {
     }
 
     #[test]
-    fn agent_markers_are_read() {
-        let e = Env::from_vars(|name| match name {
-            "CLAUDECODE" => Some("1".into()),
-            "CODEX_THREAD_ID" => Some("t".into()),
-            _ => None,
-        });
-        assert_eq!(e.claudecode.as_deref(), Some("1".as_ref()));
-        assert_eq!(e.codex_thread_id.as_deref(), Some("t".as_ref()));
+    fn the_agent_rule() {
+        let with = |name: &'static str, value: &'static str| {
+            Env::from_vars(move |n| (n == name).then(|| value.into()))
+        };
+        for name in [
+            "AI_AGENT",
+            "CLAUDE_CODE_CHILD_SESSION",
+            "CODEX_THREAD_ID",
+            "CODEX_CI",
+        ] {
+            assert!(with(name, "x").agent(), "{name} set");
+            assert!(!with(name, "").agent(), "{name} empty");
+        }
+        assert!(!with("CLAUDECODE", "1").agent());
+        assert!(!Env::from_vars(|_| None).agent());
     }
 
     #[test]
@@ -303,6 +344,15 @@ mod tests {
             ("XDG_CONFIG_HOME", "/e"),
             ("XDG_CACHE_HOME", "/f"),
             ("XDG_STATE_HOME", "/g"),
+            ("AI_AGENT", "/h"),
+            ("CLAUDE_CODE_CHILD_SESSION", "/i"),
+            ("CODEX_THREAD_ID", "/j"),
+            ("CODEX_CI", "/k"),
+            ("NO_COLOR", "/l"),
+            ("CLICOLOR", "/m"),
+            ("TERM", "/n"),
+            ("COLUMNS", "/o"),
+            ("LANG", "/p"),
         ];
         let lookup = |name: &str| {
             table
@@ -318,6 +368,15 @@ mod tests {
         assert_eq!(e.xdg_config_home, Some(OsString::from("/e")));
         assert_eq!(e.xdg_cache_home, Some(OsString::from("/f")));
         assert_eq!(e.xdg_state_home, Some(OsString::from("/g")));
+        assert_eq!(e.ai_agent, Some(OsString::from("/h")));
+        assert_eq!(e.claude_code_child_session, Some(OsString::from("/i")));
+        assert_eq!(e.codex_thread_id, Some(OsString::from("/j")));
+        assert_eq!(e.codex_ci, Some(OsString::from("/k")));
+        assert_eq!(e.no_color, Some(OsString::from("/l")));
+        assert_eq!(e.clicolor, Some(OsString::from("/m")));
+        assert_eq!(e.term, Some(OsString::from("/n")));
+        assert_eq!(e.columns, Some(OsString::from("/o")));
+        assert_eq!(e.lang, Some(OsString::from("/p")));
         let none = Env::from_vars(|_| None);
         assert!(none.bilbo_config.is_none() && none.xdg_cache_home.is_none());
     }

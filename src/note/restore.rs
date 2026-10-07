@@ -6,7 +6,7 @@ use std::fs;
 use std::path::Path;
 
 use crate::Failure;
-use crate::host::swap;
+use crate::host::{swap, terminal};
 use crate::note::versions::{self, ContentError, Lock, NameError, Scan, Version, VersionError};
 use crate::note::{self, ScopeKey, parse_name};
 use crate::shared::config;
@@ -55,6 +55,28 @@ pub struct Done {
 pub struct Output {
     pub warnings: Vec<String>,
     pub lines: Vec<String>,
+    pub outcome: Outcome,
+}
+
+impl Output {
+    /// The `note-restore` human view; `lines` is the plain one.
+    pub fn view(&self, term: &terminal::Term) -> Vec<String> {
+        use terminal::{Mark, Tone};
+        let cyan = |version: &str| terminal::paint(term, Tone::Cyan, version);
+        vec![match &self.outcome {
+            Outcome::Restored { file, version } => format!(
+                "{}  Restored {} to {}",
+                terminal::mark(term, Mark::Done),
+                terminal::paint(term, Tone::Bold, file),
+                cyan(version)
+            ),
+            Outcome::Matches { file, version } => format!(
+                "{}  {file} already matches {}",
+                terminal::mark(term, Mark::Kept),
+                cyan(version)
+            ),
+        }]
+    }
 }
 
 pub fn run(args: &[String], env: &store::Env) -> Result<Output, Failure> {
@@ -71,13 +93,14 @@ pub fn run(args: &[String], env: &store::Env) -> Result<Output, Failure> {
         Error::Usage(message) => Failure::Usage(message),
         Error::Refused(message) => Failure::Refused(message),
     })?;
-    let line = match done.outcome {
+    let line = match &done.outcome {
         Outcome::Restored { file, version } => format!("restored {file} to {version}"),
         Outcome::Matches { file, version } => format!("{file} already matches {version}"),
     };
     Ok(Output {
         warnings: done.messages,
         lines: vec![line],
+        outcome: done.outcome,
     })
 }
 
@@ -487,6 +510,42 @@ mod tests {
     use super::*;
     use crate::note::versions::{ADDED, EDITED, RENAMED, load, record_difference};
     use std::path::PathBuf;
+
+    #[test]
+    fn the_view() {
+        let out = |outcome| Output {
+            warnings: Vec::new(),
+            lines: Vec::new(),
+            outcome,
+        };
+        let file = "decision-release.md".to_string();
+        let version = "d4f94f03789f".to_string();
+        let restored = out(Outcome::Restored {
+            file: file.clone(),
+            version: version.clone(),
+        });
+        assert_eq!(
+            restored.view(&terminal::fixed(100, true, true)),
+            [terminal::styled(
+                "{g}◆{/g}  Restored {b}decision-release.md{/b} to {c}d4f94f03789f{/c}"
+            )]
+        );
+        assert_eq!(
+            restored.view(&terminal::fixed(100, false, true)),
+            ["◆  Restored decision-release.md to d4f94f03789f"]
+        );
+        let matches = out(Outcome::Matches { file, version });
+        assert_eq!(
+            matches.view(&terminal::fixed(100, false, true)),
+            ["◇  decision-release.md already matches d4f94f03789f"]
+        );
+        assert_eq!(
+            matches.view(&terminal::fixed(100, true, true)),
+            [terminal::styled(
+                "{d}◇{/d}  decision-release.md already matches {c}d4f94f03789f{/c}"
+            )]
+        );
+    }
 
     const ID: &str = "01M3YJ7R6HK6NQ30DCDB1P4D01";
     const OTHER: &str = "01M3YJ7R6HK6NQ30DCDB1P4D02";

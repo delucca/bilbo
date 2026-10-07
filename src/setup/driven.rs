@@ -219,15 +219,8 @@ fn boxed(name: &str) -> Sandbox {
     let bin = dir.join("bin");
     std::fs::create_dir_all(&bin).unwrap();
     let env = store::Env {
-        bilbo_home: None,
-        xdg_data_home: None,
         home: Some(dir.join("home").into()),
-        bilbo_config: None,
-        xdg_config_home: None,
-        xdg_cache_home: None,
-        xdg_state_home: None,
-        claudecode: None,
-        codex_thread_id: None,
+        ..store::Env::from_vars(|_| None)
     };
     std::fs::create_dir_all(dir.join("home")).unwrap();
     Sandbox { dir, bin, env }
@@ -384,11 +377,13 @@ fn refused(run: Run) -> String {
 }
 
 fn outcome(run: &Run) -> &Outcome {
-    run.result.as_ref().ok().expect("an outcome")
+    let outcome = run.result.as_ref().ok().expect("an outcome");
+    assert_eq!(outcome.steps.len(), outcome.lines.len());
+    outcome
 }
 
 fn report(run: &Run) -> &[String] {
-    &run.result.as_ref().ok().expect("an outcome").lines
+    &outcome(run).lines
 }
 
 #[test]
@@ -1163,8 +1158,9 @@ fn new_owner(folder: &Path) -> Scripted {
 
 fn ok_line(name: &str, folder: &Path, notes: usize) -> String {
     format!(
-        "sync ok: {name} through file://{} ({notes} notes)",
-        folder.display()
+        "sync ok: {name} through file://{} ({notes} {})",
+        folder.display(),
+        if notes == 1 { "note" } else { "notes" }
     )
 }
 
@@ -1458,7 +1454,7 @@ fn copy_dir(from: &Path, to: &Path) {
 fn under_an_agent_sync_stays_off_and_the_line_says_why() {
     let mut b = boxed("sync-agent");
     b.manager();
-    b.env.claudecode = Some("1".into());
+    b.env.claude_code_child_session = Some("1".into());
     let mut p = Scripted {
         confirms: vec![SYNC_ON, ("Apply these changes?", true)],
         ..Scripted::default()

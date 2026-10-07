@@ -1413,3 +1413,72 @@ fn the_left_warning_is_gone_when_the_note_is_back_or_after_30_days() {
     );
     assert_eq!((old.code, old.stdout.as_str()), (0, ""), "{}", old.stderr);
 }
+
+// Terminal views
+
+fn tty(dir: &TempDir, root: &Path, extra: &[(&str, &str)]) -> Run {
+    let mut env = vec![
+        ("TERM", "xterm-256color"),
+        ("NO_COLOR", "1"),
+        ("HOME", dir.path().to_str().unwrap()),
+        ("BILBO_HOME", root.to_str().unwrap()),
+    ];
+    env.extend_from_slice(extra);
+    common::bilbo_tty(dir.path(), &env, &["check"], 100)
+}
+
+#[test]
+fn a_clean_store_on_a_terminal() {
+    let dir = TempDir::new("check-tty-clean");
+    let root = store(&dir);
+    write(&root, "plan-a.md", &note_text(IDS[0], "A"));
+    write(&root, "decision-b.md", &note_text(IDS[1], "B"));
+    let run = tty(&dir, &root, &[("LANG", "C.UTF-8")]);
+    assert_eq!(run.code, 0);
+    assert_eq!(run.stdout, "◆  No problems in 2 notes and 0 corpora\n");
+    assert!(check(&dir, &root).stdout.is_empty());
+}
+
+#[test]
+fn problems_on_a_terminal() {
+    let dir = TempDir::new("check-tty-problems");
+    let root = store(&dir);
+    write(&root, "plan-a.md", &format!("---\nid: {}\n---\n", IDS[0]));
+    let run = tty(&dir, &root, &[("LANG", "C.UTF-8")]);
+    assert_eq!(run.code, 1);
+    let lines = stdout_lines(&run);
+    assert_eq!(lines[0], "notes/plan-a.md", "{}", run.stdout);
+    assert_eq!(
+        lines.last().unwrap(),
+        &"■  2 problems in 1 file",
+        "{}",
+        run.stdout
+    );
+}
+
+#[test]
+fn dumb_terminal_keeps_the_layout() {
+    let dir = TempDir::new("check-tty-dumb");
+    let root = store(&dir);
+    write(&root, "plan-a.md", &note_text(IDS[0], "A"));
+    let env = [
+        ("TERM", "dumb"),
+        ("LANG", "C.UTF-8"),
+        ("HOME", dir.path().to_str().unwrap()),
+        ("BILBO_HOME", root.to_str().unwrap()),
+    ];
+    let run = common::bilbo_tty(dir.path(), &env, &["check"], 100);
+    assert_eq!(run.code, 0);
+    assert_eq!(run.stdout.lines().count(), 1);
+    assert!(run.stdout.starts_with('◆') && !run.stdout.contains('\x1b'));
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn no_utf8_locale_on_linux() {
+    let dir = TempDir::new("check-tty-ascii");
+    let root = store(&dir);
+    write(&root, "plan-a.md", &note_text(IDS[0], "A"));
+    let run = tty(&dir, &root, &[("LANG", "C")]);
+    assert!(run.stdout.starts_with("*  No problems"), "{}", run.stdout);
+}

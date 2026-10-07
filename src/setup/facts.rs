@@ -44,7 +44,7 @@ pub struct Facts {
     pub keys: Option<PathBuf>,
     /// The scopes the file read declares, each with its `sync` value as written.
     pub scopes: Vec<(String, String)>,
-    /// `CLAUDECODE` or `CODEX_THREAD_ID` is set and not empty.
+    /// An agent runs bilbo, by `store::Env::agent`.
     pub agent: bool,
     /// The host name as a device name, when it holds a letter or a digit.
     pub host: Option<String>,
@@ -177,13 +177,9 @@ pub fn gather(
         model: store::cache_dir(env).map(|cache| model::path(&cache)),
         keys: store::keys_dir(env),
         scopes,
-        agent: marked(&env.claudecode) || marked(&env.codex_thread_id),
+        agent: env.agent(),
         host: keys::host_name(),
     })
-}
-
-fn marked(var: &Option<std::ffi::OsString>) -> bool {
-    var.as_ref().is_some_and(|v| !v.is_empty())
 }
 
 /// Whether the file holds only comments and blank lines.

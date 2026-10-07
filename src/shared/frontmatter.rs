@@ -49,6 +49,16 @@ pub fn is_created(s: &str) -> bool {
             .is_ok()
 }
 
+/// The instant a `created` value names; `None` when it is not one.
+pub fn created_time(s: &str) -> Option<jiff::Timestamp> {
+    if !is_created(s) {
+        return None;
+    }
+    jiff::fmt::strtime::parse(CREATED_FORMAT, s)
+        .and_then(|t| t.to_timestamp())
+        .ok()
+}
+
 pub fn bad_id(value: &str) -> String {
     format!(
         "id: '{value}' is not a canonical ULID: 26 characters of 0-9 and A-Z without I, L, O, U, the first 0-7"
@@ -125,5 +135,19 @@ mod tests {
     fn now_created_is_valid() {
         let now = now_created();
         assert!(is_created(&now), "{now}");
+    }
+
+    #[test]
+    fn created_time_is_the_instant() {
+        assert_eq!(
+            created_time("2026-10-02T14:23-03:00"),
+            Some("2026-10-02T17:23:00Z".parse().unwrap())
+        );
+        assert_eq!(created_time("2026-10-02"), None);
+        assert_eq!(created_time("2026-10-02T14:23-00:00"), None);
+        assert_eq!(
+            created_time("2026-10-02T14:23+00:00"),
+            Some("2026-10-02T14:23:00Z".parse().unwrap())
+        );
     }
 }

@@ -4,7 +4,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use super::reference::{find, parse_reference, section_for, split_anchor};
-use super::{Args, Output, or_dash, root, sections, usage};
+use super::{Args, Output, Shape, Source, or_dash, root, sections, usage};
 use crate::Failure;
 use crate::library::source;
 use crate::shared::markdown::{self, Section};
@@ -107,5 +107,26 @@ pub fn run(args: &Args, env: &store::Env) -> Result<Output, Failure> {
             section.path_text()
         )
     }));
-    Ok(Output::lines(out))
+    let source = Source {
+        reference: reference.to_string(),
+        title: title.to_string(),
+        origin: s.origin.clone(),
+        fetched: s.fetched.clone(),
+        capture: s.capture.clone(),
+        id: s.id.clone(),
+        path: file.path.clone(),
+        start: s.body_start,
+        end: lines.len().max(s.body_start),
+        tokens: markdown::tokens(bytes),
+        headings: sections.len(),
+        catalog,
+        sections: shown
+            .iter()
+            .map(|s| (s.start, s.end, s.tokens, s.path.clone()))
+            .collect(),
+    };
+    Ok(Output {
+        shape: Shape::Source(source),
+        ..Output::lines(out)
+    })
 }

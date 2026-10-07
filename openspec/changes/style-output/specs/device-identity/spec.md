@@ -30,7 +30,7 @@
 ## ADDED Requirements
 
 ### Requirement: Human view of devices
-When stdout gets the `cli` spec's human view, `bilbo device` SHALL print a dim `This device` label, the device's name in bold and its id dim, a dim `Owner` label and the owner fingerprint dim, then, after a blank line, a table of scopes under the dim header `SCOPE`, `SYNC`, `DEVICES`, `MANIFEST`, `EPOCH` and `ID`, with a `▲` row for a scope that is unsealed or invalid. A device with no keys SHALL print one `○` line naming `bilbo setup` and `bilbo device recover`. `bilbo device list` SHALL align names in bold and ids dim, with `this device` in green on this device's row. The `init` and `recover` step report SHALL take the marks and columns of the `setup` spec's Human view of the step report, with `▲` for `unsealed`, and no summary line.
+When stdout gets the `cli` spec's human view, `bilbo device` SHALL print a dim `This device` label, the device's name in bold and its id dim, a dim `Owner` label and the owner fingerprint dim, then, after a blank line, a table of scopes under the dim header `SCOPE`, `SYNC`, `DEVICES`, `MANIFEST`, `EPOCH` and `ID`, with a `▲` row for a scope that is unsealed or invalid. A device with no keys SHALL print a `○` line naming `bilbo setup` and `bilbo device recover`, then the table of scopes under it when there are any. `bilbo device list` SHALL align names in bold and ids dim, with `this device` in green on this device's row. The `init` and `recover` step report SHALL take the marks and columns of the `setup` spec's Human view of the step report, with `▲` for `unsealed`, and no summary line.
 
 #### Scenario: An enrolled device on a terminal
 - **WHEN** `rhosgobel` is enrolled, `personal` syncs to `file:///srv/bilbo` with 2 devices, and a user runs `bilbo device` in a terminal
@@ -38,7 +38,7 @@ When stdout gets the `cli` spec's human view, `bilbo device` SHALL print a dim `
 
 #### Scenario: No keys on a terminal
 - **WHEN** the device has no keys and a user runs `bilbo device` in a terminal
-- **THEN** stdout is one line starting with `○` that names `bilbo setup` and `bilbo device recover`, and the exit code is 0
+- **THEN** stdout starts with a line starting with `○` that names `bilbo setup` and `bilbo device recover`, followed only by the table of scopes when there are any, and the exit code is 0
 
 #### Scenario: A listed device on a terminal
 - **WHEN** a user runs `bilbo device list` in a terminal on `rhosgobel`
