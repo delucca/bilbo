@@ -68,6 +68,14 @@ After changing `Terminal` in `src/host/prompt.rs`, the one piece the unit
 tests cannot reach, follow [docs/manual-tests.md](docs/manual-tests.md) under
 `env -u CLAUDECODE -u CODEX_THREAD_ID`.
 
+To try an edit under `plugins/` in Claude Code or Codex, install the plugin
+from your checkout in a throwaway world from that page, with `claude` and
+`codex` on its `PATH`: `$B setup --yes --no-timer --no-watch --plugin-source
+<checkout>`. Both tools run a cached copy of the plugin, and `setup` keeps it
+while the folder and the version are unchanged, so after each edit run
+`$B setup --remove --yes`, then the same `setup` again. Never run `--remove`
+outside a world: it also unloads your own timer, watcher and embedder.
+
 ## Fixtures
 
 Never edit a fixture by hand.
