@@ -49,10 +49,12 @@ failures say what to change. Beyond it:
 
 - `src/main.rs` writes all stdout and stderr. Off a terminal, or when an agent
   runs bilbo, every stderr line starts with `bilbo: `; on a person's terminal
-  it starts with a level mark (`host::terminal`). The one exception is
-  `Terminal` in `src/host/prompt.rs`, which cliclack draws on stderr. A verb's
+  it starts with a level mark (`host::terminal`). The exception is
+  cliclack in `src/host/prompt.rs` (`Terminal` and `Spinner`), which draws on stderr. A verb's
   human view is a pure `view` beside its `Output`; its `lines` stay the plain
-  bytes.
+  bytes. Lines of `watch`, `relay` and `index` written to a regular file start
+  with the time before `bilbo: ` (`terminal::stamped`); a pipe or a terminal
+  gets none, so binary tests read the time through `common::bilbo_logged`.
 - `digest` returns a `digest::Outcome` and `main` always exits 0 for it: a
   prompt hook that exits 2 blocks the prompt.
 - A non-verb file of `note` or `identity` that uses `sync` closes a cycle
@@ -118,8 +120,8 @@ failures say what to change. Beyond it:
   `http://0.0.0.0:<fake.port()>`.
 - Binary tests have no terminal: the ceremony and the pairing exchange are
   tested in one process, with the scripted prompter and `pair::run`'s
-  injected terminal, never through a hook. `common::bilbo_tty` gives stdout and
-  stderr a terminal, never stdin.
+  injected prompter and terminal width, never through a hook.
+  `common::bilbo_tty` gives stdout and stderr a terminal, never stdin.
 - `console::` lives only in `src/host/terminal.rs`. cliclack's colours follow
   console's stdout flag, not its stderr one: `terminal::init` sets both.
 - Fixtures under `tests/fixtures/device/`, `agents/` and `pages/` are

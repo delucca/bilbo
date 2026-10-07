@@ -108,10 +108,22 @@ the recovery phrase stays put away. On the enrolled device, in a terminal:
 
 ```console
 $ bilbo pair
-bilbo: pairing code 42-orbit-tunnel-velvet
-bilbo: on the new device, run: bilbo pair 42-orbit-tunnel-velvet --via file:///Users/me/Dropbox/bilbo
-bilbo: the code works once, for 10 minutes
+┌  bilbo pair
+│
+◇  On the new device, run ────────────────────────────────────────────────╮
+│                                                                         │
+│  bilbo pair 42-orbit-tunnel-velvet --via file:///Users/me/Dropbox/bilbo  │
+│                                                                         │
+│  The code is 42-orbit-tunnel-velvet. It works once, for 10 minutes.     │
+├─────────────────────────────────────────────────────────────────────────╯
 ```
+
+A spinner, `Waiting for the new device`, runs under the box until the new device
+answers and is erased then. The box holds the command the way you copy it. When
+the command is too wide for the terminal, it prints on its own line above the
+box, which is titled `Pairing code` and holds only the code, so a copy never
+carries a border. An agent never gets this view, or the code: showing one needs
+a person at a terminal.
 
 On the new device, install bilbo, run `bilbo setup` so the store exists, and
 type the code with the folder as that machine sees it:
@@ -134,26 +146,38 @@ names, up to 12. `--scope` picks which scopes the new device can read. Scopes on
 different folders need one `bilbo pair --scope <name>...` each, naming the
 scopes of one folder. bilbo refuses and names both URLs when it cannot tell.
 
-Both devices then print the same fingerprint, twelve digits in three groups of
+Both devices then show the same fingerprint, twelve digits in three groups of
 four, and the new one adds its name and device id. The first device names the
 new one and the scopes it will join, and asks:
 
 ```console
-bilbo: fingerprint 5812 0934 7761
-bilbo: pair bywater q4n7rj2dxwmk5ta3hz6pyce4lu into personal? compare the fingerprint on that device, then type y to confirm
+│
+●  bywater q4n7rj2dxwmk5ta3hz6pyce4lu asks to join personal
+│
+◆  Fingerprint 5812 0934 7761: does bywater show the same?
+│  ○ Yes / ● No
+└
 ```
 
-The new device prints `bilbo: fingerprint 5812 0934 7761 for bywater
+The new device shows a box titled `Fingerprint` with the same digits, its name and
+its id, and the line `Confirm on the device that showed the code`, each wait
+under a spinner (`Looking for pairing 42`, `Waiting for the other device to
+confirm`, `Fetching the scopes`). When an agent runs `bilbo pair <code>` it gets
+the plain line instead: `bilbo: fingerprint 5812 0934 7761 for bywater
 q4n7rj2dxwmk5ta3hz6pyce4lu; confirm on the device that showed the code`.
 
-Compare the fingerprint, the name and the id on the two screens, and answer `y`
-only when they match. Anything else, or the end of input, sends no secret and
-both devices exit 1.
+Compare the fingerprint, the name and the id on the two screens, and answer yes
+only when they match. The question starts on no, so Enter alone declines. No,
+Esc, Ctrl-C and the end of input send no secret, close the drawing with `Not
+paired`, and both devices exit 1; Esc ends the new device at once instead of
+leaving it to wait out the code.
 
 The new device then waits up to 2 minutes for the manifests to reach it through
-the folder, checks the whole chain, and only then writes its config and keys. It
-prints `paired with rhosgobel: personal`, and `bilbo watch` starts syncing the
-scope within one cycle.
+the folder, checks the whole chain, and only then writes its config and keys.
+The first device closes with `Paired` and prints `paired bywater <id>:
+personal`. The new one closes with `Paired with rhosgobel` and prints `paired
+with rhosgobel: personal`, and `bilbo watch` starts syncing the scope within one
+cycle.
 
 ### Codes and terminals
 

@@ -52,6 +52,7 @@ The terminal view is tuned by the environment:
 | `CLICOLOR_FORCE`, `FORCE_COLOR` | Ignored: forcing colour into a pipe would break it. |
 | `COLUMNS` | Used only when the terminal reports no size; 80 when neither is known. The width is kept between 40 and 100 columns. |
 | `LANG` | Outside macOS, the marks fall back to ASCII unless it names UTF-8. |
+| `BILBO_HYPERLINKS` | `1`: `recall` makes its paths and references clickable links in terminals that support OSC 8. Off by default; never in the plain view or without colour. |
 
 The palette is small: bold for titles, a table's first column and matched
 query words; dim for paths, ids, times and separators; cyan for words you type
@@ -63,9 +64,18 @@ has `A > B`. Paths show `~` for the home folder, times read `17 min ago`,
 `yesterday` or `3 days ago` up to 30 days and then the date, and numbers group
 by thousands.
 
+While `recall` waits for the embedder to embed your query, a terminal shows a
+spinner and `Waiting for the embedder` on stderr once the wait passes half a
+second, and erases it when the wait ends. A pipe, an agent and `TERM=dumb` never
+get it. A recalled passage that opens with a code block shows the block's first
+lines as written, dim, instead of flattened text. Control characters in a
+note's or source's text are shown as escapes (`\u{1b}`), never sent to the
+terminal.
+
 These verbs print the plain view everywhere, because a script or an agent reads
 them: `digest`, `cite`, `library plan`, `library read`, `library stage`,
-`library land`, `scope set`, `sync declare`, `pair`, `relay` and `watch`. A
+`library land`, `scope set`, `sync declare`, `relay` and `watch`. `pair` keeps
+its plain stdout; on a terminal it draws on stderr like the setup wizard. A
 printed note version (`history <note> <version>`) is the file's own bytes.
 
 ## new
@@ -145,6 +155,11 @@ $ bilbo recall busy timeout
 1 note, best first
 ```
 
+A passage that opens with a code block shows its first three lines as written
+(two on a narrow terminal), dim and without bold words, with ` …` when more
+follows. With `BILBO_HYPERLINKS=1` the path is a link to the file; see
+[Terminal output](#terminal-output).
+
 When nothing matches, a terminal gets `○  no notes match '<query>'` and a hint
 on the next line; the plain form is the `bilbo: no notes match` line on stderr.
 
@@ -184,7 +199,7 @@ Embeds the passages the vector cache lacks and drops the ones no note holds any
 more. A note that [the embedder rule](../guides/embedders.md#the-embedder-rule)
 withholds is not sent to a remote embedder. On a terminal it prints `◆  Embedded
 <n> passages · kept <k> · dropped <d>`; plain, it prints the same counts as
-today.
+today. Each line starts with the time, `2026-10-07T01:02:03-03:00 embedded ...`, when the output goes to a file, as in the service logs `setup` installs; on a terminal or a pipe it is plain.
 
 ## setup
 
@@ -248,7 +263,7 @@ bilbo watch
 ```
 
 Records a version of each note when it changes, until it is stopped, and syncs
-the scopes that sync. See [Note history](../guides/history.md).
+the scopes that sync. See [Note history](../guides/history.md). Each line starts with the time, `2026-10-07T01:02:03-03:00 bilbo: watching ...`, when the output goes to a file, as in the service logs `setup` installs; on a terminal or a pipe it is plain.
 
 ## history
 
@@ -325,6 +340,11 @@ The first form shows a one-time code on an enrolled device and adds the device
 that answers it to your scopes. The second joins the scopes of the device that
 showed the code. See [Pair a device](../guides/devices.md#pair-a-device).
 
+stdout keeps the plain `paired` lines. On a terminal, with no agent marker set,
+both forms draw on stderr like the setup wizard: an intro, a box with the
+command and the code, spinners for each wait, and the fingerprint question,
+which defaults to no. Anywhere else stderr keeps its plain `bilbo: ` lines.
+
 ## relay
 
 ```sh
@@ -332,7 +352,7 @@ bilbo relay --data <dir> --owner <fingerprint> [--owner <fingerprint>]... [--lis
 ```
 
 Serves sync to your devices from a machine you control, until it is stopped. See
-[Run a relay](../guides/relay.md).
+[Run a relay](../guides/relay.md). Each line starts with the time, `2026-10-07T01:02:03-03:00 bilbo: relay listening on ...`, when the output goes to a file, as in the service logs `setup` installs; on a terminal or a pipe it is plain.
 
 ## See also
 

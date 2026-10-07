@@ -16,7 +16,9 @@ and so on). It does these things:
   trusted: setup asks `codex app-server` to record the trust, so no review step
   is left, and a release that changes the hook is trusted again on the next run;
 - installs a timer that runs `bilbo index` every 15 minutes (a launchd agent on
-  macOS, a systemd user timer on Linux), when an embedder is configured;
+  macOS, a systemd user timer on Linux), when an embedder is configured, and
+  appends its output to `index.log` under bilbo's state folder, each line
+  starting with the time;
 - installs a login service that runs `bilbo watch`, which records [note
   history](history.md) and [syncs](sync.md) the scopes that sync;
 - checks each syncing scope's folder, and in the wizard can turn sync on.
@@ -85,7 +87,8 @@ a login service that runs `bilbo watch`, restarts it when it exits and appends
 its output to `watch.log` under bilbo's state folder: the launchd agent
 `io.github.delucca.bilbo.watch` on macOS, the systemd user service
 `bilbo-watch.service` on Linux. It needs no embedder and no network, and a key
-in an environment variable does not fail it.
+in an environment variable does not fail it. Each line of `watch.log` starts
+with the time, as `2026-10-07T01:02:03-03:00 bilbo: watching ...`.
 
 The step is the `watch` line of the report, after `timer`. In the wizard it is
 one question, "Record note history in the background?", defaulting to yes.

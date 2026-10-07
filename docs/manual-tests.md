@@ -112,7 +112,15 @@ script -qc "$B recall <word>" /dev/null
    without it; the boxes and marks are the same.
 8. Dim text is readable in Terminal.app, iTerm2 and Ghostty, on a dark and a
    light theme. Note any theme where it is not.
-9. Through Claude Code's Bash tool, `bilbo recall <word>` prints the plain
+9. A slow embedder (a fake that answers after 1.5 s, or a stalled one): `recall
+   <word>` shows `Waiting for the embedder` with a spinner after half a second,
+   the line is gone when the hits print and nothing of it stays in the
+   scrollback. A quick embedder shows no flicker.
+10. A note whose section is a fenced code block: `recall` shows its first lines
+    as written, dim. A note holding an ESC byte in its text prints `\u{1b}`.
+11. With `BILBO_HYPERLINKS=1` in iTerm2, Ghostty or WezTerm, the path opens the
+    file; in Terminal.app it shows as plain text with no stray characters.
+12. Through Claude Code's Bash tool, `bilbo recall <word>` prints the plain
    blocks, because that tool gives bilbo no terminal.
 
 ## Setup wizard
@@ -376,3 +384,36 @@ Steps:
 `bilbo setup` runs the same ceremony when you answer yes to `Sync notes
 between your devices?` on a device without keys; the same checks apply to its
 transcript.
+
+## Pairing
+
+`bilbo pair` draws with `Terminal` on both devices, so this needs a person and
+two terminals. Make two worlds as in [A throwaway world](#a-throwaway-world),
+`$A` and `$B`, and run the Device ceremony's steps 1 and 2 in the first so it
+holds keys and a scope that syncs through a folder. In the second, point
+`--via` at the same folder, create `$BILBO_HOME/notes` and leave the config
+empty. Use a terminal at least 100 columns wide unless a step says otherwise.
+
+1. In terminal A, `bilbo pair`: an intro line, a box titled `On the new
+   device, run` holding the command and `The code is <code>. It works once, for
+   10 minutes.`, then a spinner `Waiting for the new device`.
+2. In terminal B, run the command from the box. B shows `Looking for pairing
+   <n>`, then a box titled `Fingerprint` with twelve digits, its name and id.
+   A's spinner is gone and A shows `<name> <id> asks to join personal` and the
+   question with the same digits, answered no at first.
+3. Press `y` on A. A closes with `Paired` and prints `paired ...`; B
+   shows `Waiting for the other device to confirm`, `Fetching the scopes`,
+   `Paired with <A's name>` and prints `paired with ...`. No spinner line stays
+   on either screen.
+4. Repeat from step 1 in fresh worlds and answer no on A, then press Enter alone,
+   then press Esc, then Ctrl-C: A closes with `Not paired` and `not confirmed;
+   nothing was sent`; B closes with `Not paired` and `the other device declined;
+   nothing was received` within a second, not after the 10 minutes. Neither
+   world gains a device.
+5. Narrow A to 60 columns (`stty cols 60`) and run `bilbo pair --via` with a
+   folder path longer than the width: the command prints whole on its own line
+   above a box titled `Pairing code`, with no border inside the command, and
+   copying that line gives a working command.
+6. Run B's command under `CLAUDE_CODE_CHILD_SESSION=1`: no box or spinner, and
+   stderr holds `bilbo: fingerprint <digits> for <name> <id>; confirm on the
+   device that showed the code`.

@@ -127,7 +127,7 @@ const PLAIN: &str = "\x1b[22m";
 
 fn main() -> ExitCode {
     let env = shared::store::Env::from_process();
-    let io = Io {
+    let mut io = Io {
         out: terminal::open(terminal::Stream::Stdout, &env),
         err: terminal::open(terminal::Stream::Stderr, &env),
         now: jiff::Timestamp::now(),
@@ -137,6 +137,13 @@ fn main() -> ExitCode {
         Ok(args) => args,
         Err(failure) => return report(&io, failure, &[]),
     };
+    if matches!(
+        args.first().map(String::as_str),
+        Some("watch" | "relay" | "index")
+    ) {
+        io.out.stamp = terminal::is_file(std::io::stdout());
+        io.err.stamp = terminal::is_file(std::io::stderr());
+    }
     match run(&args, &env, &io) {
         Ok(code) => code,
         Err(failure) => report(&io, failure, &args),
@@ -177,7 +184,13 @@ fn run(args: &[String], env: &shared::store::Env, io: &Io) -> Result<ExitCode, F
             Ok(exit(output.failed))
         }
         Some("recall") => {
-            let found = search::recall::run(&args[1..], env)?;
+            let found = search::recall::run(
+                &args[1..],
+                env,
+                &host::prompt::Spinner {
+                    on: io.err.human && io.err.redraw,
+                },
+            )?;
             emit(io, &found.warnings, &found.lines, || {
                 found.view(&io.out, io.now)
             });
@@ -259,12 +272,13 @@ fn run(args: &[String], env: &shared::store::Env, io: &Io) -> Result<ExitCode, F
             Ok(exit(output.failed))
         }
         Some("pair") => {
-            let terminal = std::io::stdin().is_terminal() && std::io::stderr().is_terminal();
+            let terminal = (std::io::stdin().is_terminal() && std::io::stderr().is_terminal())
+                .then_some(io.err.width);
             identity::pair::run(
                 &args[1..],
                 env,
                 terminal,
-                &mut std::io::stdin().lock(),
+                &mut host::prompt::Terminal,
                 &identity::pair::Limits::default(),
                 &mut |line: &str| print_stdout(line),
                 &mut |line: &str| info(line),
@@ -417,7 +431,11 @@ fn emit(io: &Io, warnings: &[String], lines: &[String], view: impl FnOnce() -> V
     let shown = if io.out.human { view() } else { lines.to_vec() };
     for (stream, line) in order(io.out.human, warnings, &shown) {
         match stream {
-            terminal::Stream::Stdout => print_stdout(line),
+            terminal::Stream::Stdout => {
+                stamp(&io.out, vec![line.to_string()])
+                    .iter()
+                    .for_each(|line| print_stdout(line));
+            }
             terminal::Stream::Stderr => print_stderr(&io.err, Level::Warning, line),
         }
     }
@@ -443,9 +461,21 @@ fn order<'a>(
 /// The one writer of stderr.
 fn print_stderr(err: &terminal::Term, level: Level, message: &str) {
     let mut out = std::io::stderr().lock();
-    for line in stderr_lines(err, level, message) {
+    for line in stamp(err, stderr_lines(err, level, message)) {
         let _ = writeln!(out, "{line}");
     }
+}
+
+/// `lines` each led by the time when `term.stamp`, else as they are.
+fn stamp(term: &terminal::Term, lines: Vec<String>) -> Vec<String> {
+    if !term.stamp {
+        return lines;
+    }
+    let now = jiff::Zoned::now();
+    lines
+        .iter()
+        .map(|line| terminal::stamped(&now, line))
+        .collect()
 }
 
 /// `message` as stderr shows it: off a terminal, or under an agent, every physical line gets the prefix, even
@@ -578,20 +608,39 @@ fn usage_report(err: &terminal::Term, message: &str, args: &[String]) -> Vec<Str
     }
     let mut lines = stderr_lines(err, Level::Error, message);
     for line in &usage {
-        let line = match line
+        match line
             .strip_prefix("see '")
             .and_then(|rest| rest.strip_suffix('\''))
         {
-            Some(command) => format!(
-                "{} {}",
+            Some(command) => lines.push(format!(
+                "   {} {}",
                 terminal::paint(err, terminal::Tone::Dim, "see"),
                 terminal::paint(err, terminal::Tone::Cyan, command)
-            ),
-            None => terminal::paint(err, terminal::Tone::Dim, line),
-        };
-        lines.push(format!("   {line}"));
+            )),
+            None => lines.extend(hang(err, line)),
+        }
     }
     lines
+}
+
+/// A usage line folded under its 7-column label: later pieces indented ten columns, each piece dim.
+fn hang(err: &terminal::Term, line: &str) -> Vec<String> {
+    let (label, body) = line.split_at(7);
+    let pieces = terminal::fold(body, err.width.saturating_sub(10).max(1));
+    pieces
+        .iter()
+        .enumerate()
+        .map(|(i, piece)| match i {
+            0 => format!(
+                "   {}",
+                terminal::paint(err, terminal::Tone::Dim, &format!("{label}{piece}"))
+            ),
+            _ => format!(
+                "          {}",
+                terminal::paint(err, terminal::Tone::Dim, piece)
+            ),
+        })
+        .collect()
 }
 
 /// A search that found nothing as stderr shows it; see `Failure::Unmatched`.
@@ -634,7 +683,7 @@ fn report(io: &Io, failure: Failure, args: &[String]) -> ExitCode {
         } => unmatched_report(&io.err, warnings, message, query, hint),
     };
     let mut err = std::io::stderr().lock();
-    for line in lines {
+    for line in stamp(&io.err, lines) {
         let _ = writeln!(err, "{line}");
     }
     match failure {
@@ -816,13 +865,14 @@ mod tests {
     fn a_usage_error_on_a_terminal() {
         let message = "unknown verb 'recal'; did you mean 'recall'?";
         let plain = terminal::fixed(100, false, true);
-        let verbs = format!("verbs: {}", PAGES.map(|(verb, _)| verb).join(", "));
         assert_eq!(
             usage_report(&plain, message, &args("recal x")),
             [
                 format!("■  {message}"),
                 "   usage: bilbo <verb> [<args>]...".to_string(),
-                format!("   {verbs}"),
+                "   verbs: new, recall, check, history, restore, library, cite, scope, sync, device, pair, relay,"
+                    .to_string(),
+                "          setup, index, watch, digest".to_string(),
                 "   see bilbo --help".to_string(),
             ]
         );
@@ -837,12 +887,81 @@ mod tests {
             terminal::styled("   {d}usage: bilbo <verb> [<args>]...{/d}")
         );
         assert_eq!(
-            lines[3],
+            lines[4],
             terminal::styled("   {d}see{/d} {c}bilbo --help{/c}")
         );
         assert_eq!(
             usage_report(&plain_term(), message, &args("recal x"))[3],
             "bilbo: see 'bilbo --help'"
+        );
+    }
+
+    #[test]
+    fn only_a_stamping_stream_gets_the_time() {
+        let lines = vec!["bilbo: a".to_string(), "b".to_string()];
+        assert_eq!(stamp(&plain_term(), lines.clone()), lines);
+        let stamped = terminal::Term {
+            stamp: true,
+            ..plain_term()
+        };
+        let out = stamp(&stamped, lines);
+        assert_eq!(out.len(), 2);
+        assert!(out[0].ends_with(" bilbo: a") && out[1].ends_with(" b"));
+        assert_eq!(out[0].len(), 25 + " bilbo: a".len());
+    }
+
+    #[test]
+    fn a_usage_line_folds_under_its_label() {
+        let message = "unknown verb 'recal'; did you mean 'recall'?";
+        let report = |width, paint, text: &str| {
+            let term = terminal::fixed(width, paint, true);
+            usage_report(&term, message, &args(text))
+        };
+        assert_eq!(
+            report(60, true, "recal x"),
+            [
+                "{r}■{/r}  unknown verb 'recal'; did you mean 'recall'?",
+                "   {d}usage: bilbo <verb> [<args>]...{/d}",
+                "   {d}verbs: new, recall, check, history, restore, library,{/d}",
+                "          {d}cite, scope, sync, device, pair, relay, setup,{/d}",
+                "          {d}index, watch, digest{/d}",
+                "   {d}see{/d} {c}bilbo --help{/c}",
+            ]
+            .map(terminal::styled)
+        );
+        assert_eq!(
+            report(80, false, "recal x")[2..4],
+            [
+                "   verbs: new, recall, check, history, restore, library, cite, scope, sync,",
+                "          device, pair, relay, setup, index, watch, digest",
+            ]
+        );
+        assert_eq!(
+            report(40, false, "recal x")[3..7],
+            [
+                "   verbs: new, recall, check, history,",
+                "          restore, library, cite, scope,",
+                "          sync, device, pair, relay,",
+                "          setup, index, watch, digest",
+            ]
+        );
+        assert_eq!(
+            report(60, false, "recall --bogus"),
+            [
+                "■  unknown verb 'recal'; did you mean 'recall'?",
+                "   usage: bilbo recall <query>... [--kind <kind>]...",
+                "          [--limit <n>]",
+                "          bilbo recall <query>... --library [--corpus",
+                "          <corpus>]... [--limit <n>]",
+                "   see bilbo recall --help",
+            ]
+        );
+        assert_eq!(
+            report(80, false, "library land")[1..3],
+            [
+                "   usage: bilbo library land <stage> <corpus>/<name> --keep <a>-<b>[,<c>-<d>]...",
+                "          [--title <text>] [--replace [--force]]",
+            ]
         );
     }
 

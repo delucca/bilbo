@@ -69,6 +69,20 @@ embedder](guides/embedders.md#run-the-local-embedder). For a taken port, pass
 `--embedder-port <n>`, 1024 to 65535. See [Run the local
 embedder](guides/embedders.md#run-the-local-embedder).
 
+### Read the service logs
+
+The index timer writes `index.log` and the watch service `watch.log`, both under
+bilbo's state folder (`~/.local/state/bilbo`); the local embedder's server
+writes `embedder.log` there too. Each line of the first two starts with the
+time:
+
+```text
+2026-10-07T01:02:03-03:00 bilbo: watching /Users/a/.local/share/bilbo/notes
+```
+
+A relay under the NixOS module logs to the journal, which has its own times:
+`journalctl -u bilbo-relay`.
+
 ### The server step fails and names `embedder.log`
 
 Cause: the local embedder's server did not report ready within 120 seconds.
@@ -238,6 +252,16 @@ output](reference/commands.md#terminal-output).
 
 Fix: to see exactly what a script gets, run `bilbo <verb> | cat`. To keep the
 terminal view but drop the colour, set `NO_COLOR=1`.
+
+### Paths in recall are not clickable
+
+Cause: recall draws its paths as links only when you ask for it, and only in
+terminals that support OSC 8 (iTerm2, Ghostty, WezTerm, kitty and others).
+Terminal.app shows the text without a link.
+
+Fix: set `BILBO_HYPERLINKS=1`. In tmux, also set `set -as terminal-features
+",*:hyperlinks"`. The view stays plain with `NO_COLOR=1`, in a pipe and under an
+agent.
 
 ### An agent gets the terminal view
 

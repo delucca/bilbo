@@ -79,6 +79,64 @@ pub fn bilbo_input(cwd: &Path, env: &[(&str, &str)], args: &[&str], input: &str)
     checked(child.wait_with_output().unwrap())
 }
 
+/// Runs bilbo with stdout and stderr appended to regular files, as a service unit runs it, and returns the bytes
+/// as written: unlike `bilbo`, it neither requires the `bilbo: ` prefix nor strips anything.
+pub fn bilbo_logged(cwd: &Path, env: &[(&str, &str)], args: &[&str]) -> Run {
+    let out = TempDir::new("raw-out");
+    let (out_path, err_path) = (out.path().join("stdout"), out.path().join("stderr"));
+    let code = Command::new(env!("CARGO_BIN_EXE_bilbo"))
+        .env_clear()
+        .envs(env.iter().copied())
+        .current_dir(cwd)
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(std::fs::File::create(&out_path).unwrap())
+        .stderr(std::fs::File::create(&err_path).unwrap())
+        .status()
+        .unwrap()
+        .code()
+        .unwrap();
+    Run {
+        code,
+        stdout: std::fs::read_to_string(out_path).unwrap(),
+        stderr: std::fs::read_to_string(err_path).unwrap(),
+    }
+}
+
+/// `prefix` is a log time: `2026-10-07T01:02:03-03:00`, 25 bytes.
+pub fn is_log_time(prefix: &str) -> bool {
+    let bytes = prefix.as_bytes();
+    let digits = |range: std::ops::Range<usize>| bytes[range].iter().all(u8::is_ascii_digit);
+    bytes.len() == 25
+        && digits(0..4)
+        && bytes[4] == b'-'
+        && digits(5..7)
+        && bytes[7] == b'-'
+        && digits(8..10)
+        && bytes[10] == b'T'
+        && digits(11..13)
+        && bytes[13] == b':'
+        && digits(14..16)
+        && bytes[16] == b':'
+        && digits(17..19)
+        && matches!(bytes[19], b'+' | b'-')
+        && digits(20..22)
+        && bytes[22] == b':'
+        && digits(23..25)
+}
+
+/// Every line of `text` without its log time; panics on a line that has none.
+pub fn untimed_text(text: &str) -> String {
+    text.lines()
+        .map(|line| match line.split_at_checked(25) {
+            Some((time, rest)) if is_log_time(time) && rest.starts_with(' ') => {
+                format!("{}\n", &rest[1..])
+            }
+            _ => panic!("no log time: {line:?}"),
+        })
+        .collect()
+}
+
 /// Runs bilbo with stdout and stderr on two pseudo-terminals `cols` columns wide and stdin empty, as a person's
 /// terminal; `\r\n` reads back as `\n`. Unlike `bilbo`, it does not require the `bilbo: ` prefix: a terminal may
 /// get level marks.

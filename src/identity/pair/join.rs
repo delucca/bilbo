@@ -6,6 +6,7 @@ use std::time::{Instant, SystemTime};
 
 use super::{Cx, interval, wait};
 use crate::Failure;
+use crate::host::prompt::Prompter;
 use crate::identity::keys::{self, Device, OwnerFile, SignKey};
 use crate::identity::manifest::{self, Recipient};
 use crate::identity::pake::{self, Code, Hello, Outcome, Payload, Refusal, Reply};
@@ -40,7 +41,13 @@ struct Fetched {
 }
 
 /// Answers `code` on the transport at `via`, as `name` when this device has no keys yet.
-pub fn run(cx: &mut Cx, code: &str, via: &str, name: Option<&str>) -> Result<(), Failure> {
+pub fn run(
+    cx: &mut Cx,
+    p: &mut impl Prompter,
+    code: &str,
+    via: &str,
+    name: Option<&str>,
+) -> Result<(), Failure> {
     let started = Instant::now();
     let via = if via.starts_with("file://") {
         via
@@ -106,117 +113,153 @@ pub fn run(cx: &mut Cx, code: &str, via: &str, name: Option<&str>) -> Result<(),
     let t = transport::open(via, &signer).map_err(Failure::Refused)?;
     t.sweep_mailboxes(SystemTime::now(), cx.limits.sweep)
         .map_err(Failure::Refused)?;
-    let np = code.nameplate();
-    let every = interval(via, cx.limits);
-    let a_path = transport::message_path(&np, "a");
-    let a_msg = wait(Instant::now(), cx.limits.appear, every, || t.get(&a_path))
+    let human = cx.human;
+    if human {
+        let _ = p.intro("bilbo pair");
+    }
+    let result = (|| -> Result<(), Failure> {
+        let np = code.nameplate();
+        let every = interval(via, cx.limits);
+        let a_path = transport::message_path(&np, "a");
+        let a_msg = waiting(human, p, &format!("Looking for pairing {np}"), || {
+            wait(Instant::now(), cx.limits.appear, every, || t.get(&a_path))
+        })
         .map_err(Failure::Refused)?
         .ok_or_else(|| Failure::Refused(format!("no pairing {np} at {via}")))?;
-    let hello = Hello {
-        name: me.device.name.clone(),
-        sign: me.device.sign.public(),
-        box_public: me.device.box_secret.public(),
-        owner: me.owner,
-    };
-    let (session, b_msg) = pake::answer(&code, &a_msg, &hello, &me.device.sign).map_err(refused)?;
-    match t.create(&transport::message_path(&np, "b"), &b_msg) {
-        Put::Created => {}
-        Put::Exists => {
-            return Err(Failure::Refused(format!(
-                "code {np} was already used; run bilbo pair again on the other device"
-            )));
+        let hello = Hello {
+            name: me.device.name.clone(),
+            sign: me.device.sign.public(),
+            box_public: me.device.box_secret.public(),
+            owner: me.owner,
+        };
+        let (session, b_msg) =
+            pake::answer(&code, &a_msg, &hello, &me.device.sign).map_err(refused)?;
+        match t.create(&transport::message_path(&np, "b"), &b_msg) {
+            Put::Created => {}
+            Put::Exists => {
+                return Err(Failure::Refused(format!(
+                    "code {np} was already used; run bilbo pair again on the other device"
+                )));
+            }
+            Put::Full(why) | Put::Unreachable(why) => return Err(Failure::Refused(why)),
         }
-        Put::Full(why) | Put::Unreachable(why) => return Err(Failure::Refused(why)),
-    }
-    (cx.err)(&format!(
-        "fingerprint {} for {} {id}; confirm on the device that showed the code",
-        session.fingerprint(),
-        me.device.name
-    ));
-    let c_path = transport::message_path(&np, "c");
-    let c_msg = wait(started, cx.limits.window, every, || t.get(&c_path))
+        if human {
+            let _ = p.note(
+                "Fingerprint",
+                &format!(
+                    "{}\n\nThis device is {} {id}. Confirm on the device that showed the code.",
+                    session.fingerprint(),
+                    me.device.name
+                ),
+            );
+        } else {
+            (cx.err)(&format!(
+                "fingerprint {} for {} {id}; confirm on the device that showed the code",
+                session.fingerprint(),
+                me.device.name
+            ));
+        }
+        let c_path = transport::message_path(&np, "c");
+        let c_msg = waiting(human, p, "Waiting for the other device to confirm", || {
+            wait(started, cx.limits.window, every, || t.get(&c_path))
+        })
         .map_err(Failure::Refused)?
         .ok_or_else(|| Failure::Refused("no answer from the other device".into()))?;
-    let reply = match pake::read_reply(&session, &c_msg) {
-        Ok(reply) => reply,
-        Err(Refusal::WrongCode) => {
-            return Err(Failure::Refused(
+        let reply = match pake::read_reply(&session, &c_msg) {
+            Ok(reply) => reply,
+            Err(Refusal::WrongCode) => {
+                return Err(Failure::Refused(
                 "the reply of the other device does not open; run bilbo pair again on the other device for a new code"
                     .into(),
             ));
-        }
-        Err(refusal) => return Err(refused(refusal)),
-    };
-    if !matches!(reply, Reply::Ended(Outcome::WrongCode)) {
-        let _ = t.remove_mailbox(&np);
-    }
-    let received = Instant::now();
-    let payload = match reply {
-        Reply::Enrolled(payload) => payload,
-        Reply::OtherOwner(theirs) => {
-            let Some(own) = me.owner.map(|o| keys::owner_fingerprint(&o)) else {
-                return Err(refused(Refusal::Malformed(
-                    "an other-owner reply to a device with no owner".into(),
-                )));
-            };
-            return Err(Failure::Refused(format!(
-                "this device belongs to owner {own}, the other device to {}",
-                keys::owner_fingerprint(&theirs)
-            )));
-        }
-        Reply::Ended(outcome) => return Err(Failure::Refused(ended(outcome, &me.device.name))),
-    };
-    let Fetched {
-        scopes: checked,
-        owner,
-        owner_box,
-    } = fetch(cx, &*t, via, &me, &payload, received)?;
-    agree_with_store(&root, &owner, &checked)?;
-    let lock = manifest::lock(&root).map_err(Failure::Refused)?;
-    for scope in &checked {
-        let held = manifest::read_scope(lock.root(), &scope.id)
-            .map_err(Failure::Refused)?
-            .versions
-            .len();
-        for (i, bytes) in scope.files.iter().enumerate().skip(held) {
-            manifest::adopt(&lock, &scope.id, i as u64 + 1, bytes).map_err(Failure::Refused)?;
-        }
-    }
-    drop(lock);
-    let lines = lines(&checked, &settings);
-    config::set_keys(&config_path, &lines).map_err(Failure::Refused)?;
-    if me.owner.is_none() {
-        let seed = payload.seed.as_ref().expect("fetch checked the seed");
-        let file = OwnerFile {
-            sign: SignKey::from_seed(seed),
-            box_public: owner_box,
+            }
+            Err(refusal) => return Err(refused(refusal)),
         };
-        keys::write_identity(&keys, &file, &me.device).map_err(Failure::Refused)?;
-        if let Err(why) = keys::remove_pending(&pending) {
-            (cx.err)(&why);
+        if !matches!(reply, Reply::Ended(Outcome::WrongCode)) {
+            let _ = t.remove_mailbox(&np);
         }
-    }
-    let notes = documents::read_notes(&root.join("notes")).unwrap_or_default();
-    for scope in &checked {
-        let n = notes
-            .iter()
-            .filter(|note| note.scope.as_deref() == Some(scope.name.as_str()))
-            .count();
-        if n > 0 {
-            (cx.err)(&format!(
-                "{n} notes already carry scope: {} and sync from now on",
-                scope.name
-            ));
+        let received = Instant::now();
+        let payload = match reply {
+            Reply::Enrolled(payload) => payload,
+            Reply::OtherOwner(theirs) => {
+                let Some(own) = me.owner.map(|o| keys::owner_fingerprint(&o)) else {
+                    return Err(refused(Refusal::Malformed(
+                        "an other-owner reply to a device with no owner".into(),
+                    )));
+                };
+                return Err(Failure::Refused(format!(
+                    "this device belongs to owner {own}, the other device to {}",
+                    keys::owner_fingerprint(&theirs)
+                )));
+            }
+            Reply::Ended(outcome) => return Err(Failure::Refused(ended(outcome, &me.device.name))),
+        };
+        let Fetched {
+            scopes: checked,
+            owner,
+            owner_box,
+        } = waiting(human, p, "Fetching the scopes", || {
+            fetch(cx, &*t, via, &me, &payload, received)
+        })?;
+        agree_with_store(&root, &owner, &checked)?;
+        let lock = manifest::lock(&root).map_err(Failure::Refused)?;
+        for scope in &checked {
+            let held = manifest::read_scope(lock.root(), &scope.id)
+                .map_err(Failure::Refused)?
+                .versions
+                .len();
+            for (i, bytes) in scope.files.iter().enumerate().skip(held) {
+                manifest::adopt(&lock, &scope.id, i as u64 + 1, bytes).map_err(Failure::Refused)?;
+            }
         }
+        drop(lock);
+        let lines = lines(&checked, &settings);
+        config::set_keys(&config_path, &lines).map_err(Failure::Refused)?;
+        if me.owner.is_none() {
+            let seed = payload.seed.as_ref().expect("fetch checked the seed");
+            let file = OwnerFile {
+                sign: SignKey::from_seed(seed),
+                box_public: owner_box,
+            };
+            keys::write_identity(&keys, &file, &me.device).map_err(Failure::Refused)?;
+            if let Err(why) = keys::remove_pending(&pending) {
+                (cx.err)(&why);
+            }
+        }
+        let notes = documents::read_notes(&root.join("notes")).unwrap_or_default();
+        for scope in &checked {
+            let n = notes
+                .iter()
+                .filter(|note| note.scope.as_deref() == Some(scope.name.as_str()))
+                .count();
+            if n > 0 {
+                (cx.err)(&format!(
+                    "{n} notes already carry scope: {} and sync from now on",
+                    scope.name
+                ));
+            }
+        }
+        let names: Vec<&str> = checked.iter().map(|s| s.name.as_str()).collect();
+        if human {
+            let _ = p.outro(&format!("Paired with {}", payload.name));
+        }
+        (cx.out)(&format!(
+            "paired with {}: {}",
+            payload.name,
+            names.join(", ")
+        ));
+        (cx.out)("bilbo watch starts syncing them within one cycle");
+        Ok(())
+    })();
+    if human && result.is_err() {
+        let _ = p.cancel("Not paired");
     }
-    let names: Vec<&str> = checked.iter().map(|s| s.name.as_str()).collect();
-    (cx.out)(&format!(
-        "paired with {}: {}",
-        payload.name,
-        names.join(", ")
-    ));
-    (cx.out)("bilbo watch starts syncing them within one cycle");
-    Ok(())
+    result
+}
+
+/// Runs `work` under a spinner when a person is at the terminal, else in place: the plain path draws nothing.
+fn waiting<T>(human: bool, p: &mut impl Prompter, message: &str, work: impl FnOnce() -> T) -> T {
+    if human { p.wait(message, work) } else { work() }
 }
 
 /// The folder `via` names, or `None` for a relay. A URL this bilbo cannot reach, or one a config line could not hold, is refused.
@@ -440,6 +483,7 @@ mod tests {
     use crate::identity::manifest::Member;
     use crate::identity::pair::Limits;
     use crate::identity::pake::{Grant, Session};
+    use crate::identity::script::Script;
     use crate::sync::transport::Folder;
 
     const CODE: &str = "42-orbit-tunnel-velvet";
@@ -609,6 +653,8 @@ mod tests {
         result: Result<(), (u8, String)>,
         out: Vec<String>,
         err: Vec<String>,
+        /// What B's prompter showed, one entry per call.
+        shown: Vec<String>,
     }
 
     impl Run {
@@ -635,26 +681,39 @@ mod tests {
     }
 
     fn join(w: &World, code: &str, via: &str, name: Option<&str>, limits: &Limits) -> Run {
+        join_as(w, code, via, name, limits, false)
+    }
+
+    /// B at a terminal when `human`, else as an agent or a pipe has it.
+    fn join_as(
+        w: &World,
+        code: &str,
+        via: &str,
+        name: Option<&str>,
+        limits: &Limits,
+        human: bool,
+    ) -> Run {
         let env = w.env();
-        let mut answer = std::io::empty();
+        let mut prompter = Script::new(Vec::new());
         let (mut out, mut err) = (Vec::new(), Vec::new());
         let result = {
             let mut put_out = |line: &str| out.push(line.to_string());
             let mut put_err = |line: &str| err.push(line.to_string());
             let mut cx = Cx {
                 env: &env,
-                human: false,
-                answer: &mut answer,
+                human,
+                width: 100,
                 limits,
                 out: &mut put_out,
                 err: &mut put_err,
             };
-            run(&mut cx, code, via, name)
+            run(&mut cx, &mut prompter, code, via, name)
         };
         Run {
             result: result.map_err(failed),
             out,
             err,
+            shown: prompter.shown,
         }
     }
 
@@ -684,9 +743,20 @@ mod tests {
         limits: &Limits,
         act: impl FnOnce(Heard),
     ) -> Run {
+        pair_as(w, code, name, limits, false, act)
+    }
+
+    fn pair_as(
+        w: &World,
+        code: &str,
+        name: Option<&str>,
+        limits: &Limits,
+        human: bool,
+        act: impl FnOnce(Heard),
+    ) -> Run {
         let shown = show(w);
         std::thread::scope(|s| {
-            let b = s.spawn(|| join(w, code, &w.via(), name, limits));
+            let b = s.spawn(|| join_as(w, code, &w.via(), name, limits, human));
             let deadline = Instant::now() + Duration::from_secs(10);
             let b_msg = loop {
                 if let Some(b_msg) = w.folder().get(&transport::message_path("42", "b")).unwrap() {
@@ -1287,5 +1357,96 @@ mod tests {
         });
         assert!(run.refused().contains("owner key"), "{:?}", run.result);
         assert!(manifest::scope_ids(&w.root()).unwrap().is_empty());
+    }
+
+    /// B joins `personal` as `mirkwood`, with A's reply `reply` made from what A heard; returns the run and the
+    /// fingerprint A saw.
+    fn joined(f: &Fresh, human: bool, reply: impl FnOnce(&Session) -> Vec<u8>) -> (Run, String) {
+        let mut fingerprint = String::new();
+        let run = pair_as(&f.w, CODE, Some("mirkwood"), &limits(), human, |h| {
+            let (session, _) = h.unwrap();
+            fingerprint = session.fingerprint();
+            send(&f.w, &reply(&session));
+        });
+        (run, fingerprint)
+    }
+
+    fn enrolling(f: &Fresh) -> impl FnOnce(&Session) -> Vec<u8> + '_ {
+        |session| {
+            let grants = vec![grant(&f.scope, 2, "any")];
+            enrolled(&payload(&f.a, grants, true), session)
+        }
+    }
+
+    #[test]
+    fn a_person_at_a_terminal_sees_the_flow_and_err_stays_empty() {
+        let f = fresh("drawn");
+        let (run, fingerprint) = joined(&f, true, enrolling(&f));
+        assert!(run.result.is_ok(), "{:?} {:?}", run.result, run.err);
+        assert!(run.err.is_empty(), "{:?}", run.err);
+        let id = f.b.id();
+        assert_eq!(
+            run.shown,
+            [
+                "intro: bilbo pair".to_string(),
+                "wait: Looking for pairing 42".into(),
+                format!(
+                    "note: Fingerprint\n{fingerprint}\n\nThis device is mirkwood {id}. Confirm on the device that showed the code."
+                ),
+                "wait: Waiting for the other device to confirm".into(),
+                "wait: Fetching the scopes".into(),
+                "outro: Paired with rhosgobel".into(),
+            ]
+        );
+        assert_eq!(
+            run.out,
+            [
+                "paired with rhosgobel: personal",
+                "bilbo watch starts syncing them within one cycle"
+            ]
+        );
+    }
+
+    #[test]
+    fn a_device_off_a_terminal_keeps_its_plain_lines_and_draws_nothing() {
+        let f = fresh("plain");
+        let (run, fingerprint) = joined(&f, false, enrolling(&f));
+        assert!(run.result.is_ok(), "{:?} {:?}", run.result, run.err);
+        assert!(run.shown.is_empty(), "{:?}", run.shown);
+        assert_eq!(
+            run.err,
+            [format!(
+                "fingerprint {fingerprint} for mirkwood {}; confirm on the device that showed the code",
+                f.b.id()
+            )]
+        );
+    }
+
+    #[test]
+    fn a_refusal_after_the_intro_closes_the_drawing() {
+        let f = fresh("declined");
+        let (run, _) = joined(&f, true, |session| {
+            pake::reply(session, Outcome::Declined, None, None).unwrap()
+        });
+        assert_eq!(
+            run.refused(),
+            "the other device declined; nothing was received"
+        );
+        assert_eq!(
+            run.shown.last().map(String::as_str),
+            Some("cancel: Not paired"),
+            "{:?}",
+            run.shown
+        );
+        assert!(run.shown.iter().all(|l| !l.starts_with("outro")));
+        assert!(run.err.is_empty());
+    }
+
+    #[test]
+    fn a_refusal_before_the_network_draws_nothing() {
+        let w = world("early");
+        let run = join_as(&w, CODE, "file:///no/such/folder", None, &quick(), true);
+        assert!(run.refused().contains("no folder at"));
+        assert!(run.shown.is_empty(), "{:?}", run.shown);
     }
 }

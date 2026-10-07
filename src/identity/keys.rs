@@ -16,7 +16,7 @@ use serde::de::{Deserializer, Visitor};
 use sha2::Sha256;
 use zeroize::Zeroizing;
 
-use crate::host::swap;
+use crate::host::{swap, terminal};
 use crate::shared::{hash, store};
 
 type Kem = hpke::kem::X25519HkdfSha256;
@@ -381,14 +381,7 @@ pub fn sanitize_name(raw: &str) -> Option<String> {
 
 /// This host's name as a device name; `None` when the call fails or no letter or digit is left.
 pub fn host_name() -> Option<String> {
-    let mut buffer = [0u8; 256];
-    // SAFETY: the buffer is writable for its whole length, which is what gethostname is told.
-    let rc = unsafe { libc::gethostname(buffer.as_mut_ptr().cast(), buffer.len()) };
-    if rc != 0 {
-        return None;
-    }
-    let end = buffer.iter().position(|b| *b == 0).unwrap_or(buffer.len());
-    sanitize_name(&String::from_utf8_lossy(&buffer[..end]))
+    terminal::machine_name().and_then(|raw| sanitize_name(&raw))
 }
 
 /// Stops this process from writing a core file, so a crash cannot leave a phrase on disk.

@@ -8,6 +8,8 @@ use zeroize::Zeroizing;
 
 use super::{Cx, interval, wait};
 use crate::Failure;
+use crate::host::prompt::Prompter;
+use crate::host::terminal;
 use crate::identity::keys::{self, Identity};
 use crate::identity::manifest::{self, Known, Member, Recipient};
 use crate::identity::pake::{self, Code, Grant, Hello, Outcome, Payload, Refusal};
@@ -62,7 +64,12 @@ impl Mailbox {
 }
 
 /// Shows a code for `scopes` (every syncing scope when empty) over `via` (the one URL they share when `None`).
-pub fn run(cx: &mut Cx, scopes: &[String], via: Option<&str>) -> Result<(), Failure> {
+pub fn run(
+    cx: &mut Cx,
+    p: &mut impl Prompter,
+    scopes: &[String],
+    via: Option<&str>,
+) -> Result<(), Failure> {
     let plan = check(cx, scopes, via)?;
     let keys = transport::Keys {
         opener: true,
@@ -80,25 +87,49 @@ pub fn run(cx: &mut Cx, scopes: &[String], via: Option<&str>) -> Result<(), Fail
         nameplate: code.nameplate(),
         url: plan.url.clone(),
     };
-    (cx.err)(&format!("pairing code {}", code.text()));
-    (cx.err)(&format!(
-        "on the new device, run: bilbo pair {} --via {}",
-        code.text(),
-        plan.url
-    ));
-    (cx.err)("the code works once, for 10 minutes");
+    let _ = p.intro("bilbo pair");
+    let command = format!("bilbo pair {} --via {}", code.text(), plan.url);
+    let line = format!(
+        "The code is {}. It works once, for 10 minutes.",
+        code.text()
+    );
+    // cliclack wraps a note's text, which would put the box border inside a command a person copies.
+    if terminal::width_of(&command) + 6 <= cx.width {
+        let _ = p.note("On the new device, run", &format!("{command}\n\n{line}"));
+    } else {
+        let _ = p.info(&format!("On the new device, run:\n{command}"));
+        let _ = p.note("Pairing code", &line);
+    }
+    let result = converse(cx, p, &plan, &mailbox, shown, shown_at);
+    if result.is_err() {
+        let _ = p.cancel("Not paired");
+    }
+    result
+}
 
-    let found = wait(
-        shown_at,
-        cx.limits.window,
-        interval(&mailbox.url, cx.limits),
-        || {
-            mailbox
-                .t
-                .get(&transport::message_path(&mailbox.nameplate, "b"))
-        },
-    )
-    .map_err(Failure::Refused)?;
+/// What follows the box: waits for the new device, asks the user, and enrolls it.
+fn converse(
+    cx: &mut Cx,
+    p: &mut impl Prompter,
+    plan: &Plan,
+    mailbox: &Mailbox,
+    shown: pake::Shown,
+    shown_at: Instant,
+) -> Result<(), Failure> {
+    let found = p
+        .wait("Waiting for the new device", || {
+            wait(
+                shown_at,
+                cx.limits.window,
+                interval(&mailbox.url, cx.limits),
+                || {
+                    mailbox
+                        .t
+                        .get(&transport::message_path(&mailbox.nameplate, "b"))
+                },
+            )
+        })
+        .map_err(Failure::Refused)?;
     let Some(b_msg) = found else {
         let _ = mailbox.t.remove_mailbox(&mailbox.nameplate);
         return Err(Failure::Refused(EXPIRED.into()));
@@ -114,7 +145,7 @@ pub fn run(cx: &mut Cx, scopes: &[String], via: Option<&str>) -> Result<(), Fail
         Err(Refusal::WrongCode) => {
             return Err(end(
                 cx,
-                &mailbox,
+                mailbox,
                 pake::plain_reply(Outcome::WrongCode),
                 "the other device used a wrong code; this code is used up, run bilbo pair again",
             ));
@@ -129,7 +160,7 @@ pub fn run(cx: &mut Cx, scopes: &[String], via: Option<&str>) -> Result<(), Fail
     if let Some(theirs) = hello.owner.filter(|theirs| *theirs != own) {
         return Err(end(
             cx,
-            &mailbox,
+            mailbox,
             pake::reply(&session, Outcome::OtherOwner, None, Some(&own)),
             &format!(
                 "{} belongs to another owner ({})",
@@ -139,10 +170,10 @@ pub fn run(cx: &mut Cx, scopes: &[String], via: Option<&str>) -> Result<(), Fail
         ));
     }
     let b_id = keys::device_id(&hello.sign);
-    if taken(&plan, &hello, &b_id)? {
+    if taken(plan, &hello, &b_id)? {
         return Err(end(
             cx,
-            &mailbox,
+            mailbox,
             pake::reply(&session, Outcome::NameTaken, None, None),
             &format!(
                 "a device named {} is already enrolled; pair again with --name on the new device",
@@ -152,21 +183,28 @@ pub fn run(cx: &mut Cx, scopes: &[String], via: Option<&str>) -> Result<(), Fail
     }
 
     let names: Vec<&str> = plan.scopes.iter().map(|s| s.name.as_str()).collect();
-    (cx.err)(&format!("fingerprint {}", session.fingerprint()));
-    (cx.err)(&format!(
-        "pair {} {} into {}? compare the fingerprint on that device, then type y to confirm",
+    let _ = p.info(&format!(
+        "{} {} asks to join {}",
         hello.name,
         b_id,
         names.join(", ")
     ));
-    let mut line = String::new();
-    let read = cx.answer.read_line(&mut line);
-    let confirmed = matches!(read, Ok(n) if n > 0)
-        && matches!(line.trim().to_lowercase().as_str(), "y" | "yes");
+    // Esc, Ctrl-C and the end of input decline like no does.
+    let confirmed = matches!(
+        p.confirm(
+            &format!(
+                "Fingerprint {}: does {} show the same?",
+                session.fingerprint(),
+                hello.name
+            ),
+            false
+        ),
+        Ok(true)
+    );
     if shown_at.elapsed() >= cx.limits.window {
         return Err(end(
             cx,
-            &mailbox,
+            mailbox,
             pake::reply(&session, Outcome::Expired, None, None),
             EXPIRED,
         ));
@@ -174,7 +212,7 @@ pub fn run(cx: &mut Cx, scopes: &[String], via: Option<&str>) -> Result<(), Fail
     if !confirmed {
         return Err(end(
             cx,
-            &mailbox,
+            mailbox,
             pake::reply(&session, Outcome::Declined, None, None),
             "not confirmed; nothing was sent",
         ));
@@ -186,7 +224,7 @@ pub fn run(cx: &mut Cx, scopes: &[String], via: Option<&str>) -> Result<(), Fail
         sign: hello.sign,
         box_public: hello.box_public,
     };
-    let grants = enroll(&plan, &mailbox, &member).map_err(Failure::Refused)?;
+    let grants = enroll(plan, mailbox, &member).map_err(Failure::Refused)?;
     let payload = Payload {
         name: plan.id.device.name.clone(),
         id: plan.id.device.id(),
@@ -204,6 +242,7 @@ pub fn run(cx: &mut Cx, scopes: &[String], via: Option<&str>) -> Result<(), Fail
                 scopes = names.join(", ")
             ))
         })?;
+    let _ = p.outro("Paired");
     (cx.out)(&format!(
         "paired {} {}: {}",
         hello.name,
@@ -488,8 +527,8 @@ mod tests {
     use super::*;
     use crate::identity::keys::{Device, Owner};
     use crate::identity::pake::Reply;
+    use crate::identity::script::{Answer, Script};
     use std::fs;
-    use std::io::{BufRead, Cursor, Read};
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::mpsc;
@@ -635,6 +674,8 @@ mod tests {
         result: Result<(), Failure>,
         out: Vec<String>,
         err: Vec<String>,
+        /// What A's prompter showed, one entry per call.
+        shown: Vec<String>,
         /// What B read from `c.msg`, `None` when it answered nothing or no `c.msg` came.
         reply: Option<Reply>,
         b_id: String,
@@ -650,10 +691,11 @@ mod tests {
         }
     }
 
+    /// The code in the command A shows, in its `note:` or, when the command is long, its `info:`.
     fn code_line(lines: &mpsc::Receiver<String>) -> Option<Code> {
         while let Ok(line) = lines.recv_timeout(Duration::from_secs(5)) {
-            if let Some(text) = line.strip_prefix("pairing code ") {
-                return Some(Code::parse(text).unwrap());
+            if let Some((_, rest)) = line.split_once("\nbilbo pair ") {
+                return Some(Code::parse(rest.split(' ').next().unwrap()).unwrap());
             }
         }
         None
@@ -718,55 +760,54 @@ mod tests {
         w: &World,
         args: &[&str],
         b: &B,
-        answer: &mut dyn BufRead,
+        answers: Vec<Answer>,
         limits: &Limits,
-        terminal: bool,
+        terminal: Option<usize>,
         child: Option<&str>,
     ) -> Ran {
         let args: Vec<String> = args.iter().map(|a| a.to_string()).collect();
         let env = w.env(child);
         let (tx, rx) = mpsc::channel();
+        let mut script = Script::tapped(answers, tx);
         let (mut out, mut err) = (Vec::new(), Vec::new());
         let result = std::thread::scope(|s| {
             let player = s.spawn(|| play(w, b, rx));
             let result = {
                 let mut on_out = |l: &str| out.push(l.to_string());
-                let mut on_err = |l: &str| {
-                    err.push(l.to_string());
-                    let _ = tx.send(l.to_string());
-                };
+                let mut on_err = |l: &str| err.push(l.to_string());
                 pair(
                     &args,
                     &env,
                     terminal,
-                    answer,
+                    &mut script,
                     limits,
                     &mut on_out,
                     &mut on_err,
                 )
             };
-            drop(tx);
-            (result, player.join().unwrap())
+            let shown = std::mem::take(&mut script.shown);
+            drop(script);
+            (result, player.join().unwrap(), shown)
         });
         Ran {
             result: result.0,
             out,
             err,
+            shown: result.2,
             reply: result.1,
             b_id: b.who.device.id(),
         }
     }
 
-    fn go(w: &World, args: &[&str], b: &B, answer: &str) -> Ran {
-        go_with(
-            w,
-            args,
-            b,
-            &mut Cursor::new(answer.as_bytes().to_vec()),
-            &limits(),
-            true,
-            None,
-        )
+    fn go(w: &World, args: &[&str], b: &B, answers: Vec<Answer>) -> Ran {
+        go_with(w, args, b, answers, &limits(), Some(WIDE), None)
+    }
+
+    /// Wide enough for any command a test folder makes.
+    const WIDE: usize = 400;
+
+    fn yes() -> Vec<Answer> {
+        vec![Answer::Yes]
     }
 
     #[test]
@@ -774,19 +815,14 @@ mod tests {
         let w = world("happy");
         let (a, scope) = w.enrolled();
         let b = new_device("mirkwood", 20);
-        let ran = go(&w, &[], &b, "y\n");
+        let ran = go(&w, &[], &b, yes());
         assert!(ran.result.is_ok(), "{:?}", ran.refused());
         assert_eq!(ran.out, [format!("paired mirkwood {}: personal", ran.b_id)]);
-        let code = ran
-            .err
-            .iter()
-            .find_map(|l| l.strip_prefix("pairing code "))
-            .unwrap();
-        assert!(ran.err.contains(&format!(
-            "on the new device, run: bilbo pair {code} --via {}",
-            w.url()
-        )));
-        assert!(ran.err.iter().any(|l| l.starts_with("fingerprint ")));
+        assert!(
+            ran.shown
+                .iter()
+                .any(|l| l.starts_with("confirm: Fingerprint "))
+        );
         let Some(Reply::Enrolled(payload)) = ran.reply else {
             panic!("no payload");
         };
@@ -820,10 +856,96 @@ mod tests {
     }
 
     #[test]
+    fn a_pairing_on_a_terminal_is_drawn_in_order() {
+        let w = world("drawn");
+        w.enrolled();
+        let ran = go(&w, &[], &new_device("mirkwood", 20), yes());
+        assert!(ran.result.is_ok(), "{:?}", ran.refused());
+        let code = ran
+            .shown
+            .iter()
+            .find_map(|l| l.split_once("\nbilbo pair ")?.1.split(' ').next())
+            .unwrap();
+        let fingerprint = ran
+            .shown
+            .iter()
+            .find_map(|l| {
+                l.strip_prefix("confirm: Fingerprint ")?
+                    .split(": does")
+                    .next()
+            })
+            .unwrap();
+        assert_eq!(
+            ran.shown,
+            [
+                "intro: bilbo pair".to_string(),
+                format!(
+                    "note: On the new device, run\nbilbo pair {code} --via {}\n\nThe code is {code}. It works once, for 10 minutes.",
+                    w.url()
+                ),
+                "wait: Waiting for the new device".into(),
+                format!("info: mirkwood {} asks to join personal", ran.b_id),
+                format!(
+                    "confirm: Fingerprint {fingerprint}: does mirkwood show the same? initial=false"
+                ),
+                "outro: Paired".into(),
+            ]
+        );
+        assert!(ran.err.is_empty(), "{:?}", ran.err);
+    }
+
+    #[test]
+    fn a_command_too_wide_for_the_box_goes_above_it() {
+        let w = world("narrow");
+        w.enrolled();
+        let ran = go_with(
+            &w,
+            &[],
+            &new_device("mirkwood", 20),
+            yes(),
+            &limits(),
+            Some(40),
+            None,
+        );
+        assert!(ran.result.is_ok(), "{:?}", ran.refused());
+        let code = ran
+            .shown
+            .iter()
+            .find_map(|l| l.split_once("\nbilbo pair ")?.1.split(' ').next())
+            .unwrap();
+        assert_eq!(ran.shown[0], "intro: bilbo pair");
+        assert_eq!(
+            ran.shown[1],
+            format!(
+                "info: On the new device, run:\nbilbo pair {code} --via {}",
+                w.url()
+            )
+        );
+        assert_eq!(
+            ran.shown[2],
+            format!("note: Pairing code\nThe code is {code}. It works once, for 10 minutes.")
+        );
+    }
+
+    #[test]
+    fn a_refusal_after_the_box_closes_the_drawing() {
+        let w = world("closed");
+        w.enrolled();
+        let mut b = new_device("mirkwood", 20);
+        b.mode = Mode::WrongWord;
+        let ran = go(&w, &[], &b, yes());
+        assert!(ran.refused().contains("wrong code"));
+        assert_eq!(
+            ran.shown.last().map(String::as_str),
+            Some("cancel: Not paired")
+        );
+    }
+
+    #[test]
     fn the_mailbox_holds_no_scope_name_url_or_seed() {
         let w = world("opaque");
         let (a, _) = w.enrolled();
-        let ran = go(&w, &[], &new_device("mirkwood", 20), "y\n");
+        let ran = go(&w, &[], &new_device("mirkwood", 20), yes());
         assert!(ran.result.is_ok());
         let seed = keys::hex(&*a.owner.sign.seed());
         let np = &w.mailboxes()[0];
@@ -849,7 +971,7 @@ mod tests {
             enrolled: true,
             mode: Mode::Right,
         };
-        let ran = go(&w, &["--scope", "shared"], &b, "yes\n");
+        let ran = go(&w, &["--scope", "shared"], &b, yes());
         assert!(ran.result.is_ok(), "{:?}", ran.refused());
         assert_eq!(ran.out, [format!("paired bywater {}: shared", ran.b_id)]);
         let Some(Reply::Enrolled(payload)) = ran.reply else {
@@ -869,7 +991,7 @@ mod tests {
             enrolled: true,
             mode: Mode::Right,
         };
-        let ran = go(&w, &[], &b, "y\n");
+        let ran = go(&w, &[], &b, yes());
         let theirs = keys::owner_fingerprint(&b.who.owner.sign.public());
         assert_eq!(
             ran.refused(),
@@ -888,7 +1010,7 @@ mod tests {
         let (a, scope) = w.enrolled();
         let bywater = Member::of(&identity(0, "bywater", 3).device);
         let other = w.scope(&a, "shared", &[bywater]);
-        let own = go(&w, &[], &new_device("rhosgobel", 20), "y\n");
+        let own = go(&w, &[], &new_device("rhosgobel", 20), yes());
         assert!(
             own.refused()
                 .contains("a device named rhosgobel is already enrolled")
@@ -898,7 +1020,7 @@ mod tests {
             &w,
             &["--scope", "personal"],
             &new_device("bywater", 21),
-            "y\n",
+            yes(),
         );
         assert_eq!(
             apart.refused(),
@@ -916,8 +1038,8 @@ mod tests {
         let w = world("again");
         let (_, scope) = w.enrolled();
         let b = new_device("mirkwood", 20);
-        assert!(go(&w, &[], &b, "y\n").result.is_ok());
-        let again = go(&w, &[], &b, "y\n");
+        assert!(go(&w, &[], &b, yes()).result.is_ok());
+        let again = go(&w, &[], &b, yes());
         assert!(again.result.is_ok(), "{:?}", again.refused());
         assert!(matches!(again.reply, Some(Reply::Enrolled(_))));
         assert_eq!(w.versions(&scope), 2);
@@ -929,37 +1051,37 @@ mod tests {
         let (_, scope) = w.enrolled();
         let mut b = new_device("mirkwood", 20);
         b.mode = Mode::WrongWord;
-        let ran = go(&w, &[], &b, "y\n");
+        let ran = go(&w, &[], &b, yes());
         assert_eq!(
             ran.refused(),
             "the other device used a wrong code; this code is used up, run bilbo pair again"
         );
         assert!(matches!(ran.reply, Some(Reply::Ended(Outcome::WrongCode))));
-        assert!(!ran.err.iter().any(|l| l.starts_with("fingerprint ")));
+        assert!(!ran.shown.iter().any(|l| l.starts_with("confirm: ")));
         assert_eq!(w.versions(&scope), 1);
         assert_eq!(w.mailboxes().len(), 1);
     }
 
     #[test]
     fn declining_or_ending_input_sends_nothing() {
-        for (name, answer) in [("no", "n\n"), ("eof", ""), ("other", "maybe\n")] {
+        let cases = [
+            ("no", vec![Answer::No]),
+            ("eof", vec![]),
+            ("esc", vec![Answer::Interrupt]),
+            ("enter", vec![Answer::Default]),
+        ];
+        for (name, answers) in cases {
             let w = world(name);
             let (_, scope) = w.enrolled();
-            let ran = go(&w, &[], &new_device("mirkwood", 20), answer);
+            let ran = go(&w, &[], &new_device("mirkwood", 20), answers);
             assert_eq!(ran.refused(), "not confirmed; nothing was sent", "{name}");
             assert!(matches!(ran.reply, Some(Reply::Ended(Outcome::Declined))));
             assert_eq!(w.versions(&scope), 1);
             assert!(ran.out.is_empty());
-        }
-    }
-
-    /// A reader that answers only after `delay`.
-    struct Late(Duration);
-
-    impl Read for Late {
-        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
-            std::thread::sleep(self.0);
-            Cursor::new(b"y\n").read(buf)
+            assert_eq!(
+                ran.shown.last().map(String::as_str),
+                Some("cancel: Not paired")
+            );
         }
     }
 
@@ -971,14 +1093,13 @@ mod tests {
             window: Duration::from_millis(400),
             ..limits()
         };
-        let mut late = std::io::BufReader::new(Late(Duration::from_millis(600)));
         let ran = go_with(
             &w,
             &[],
             &new_device("mirkwood", 20),
-            &mut late,
+            vec![Answer::Late(Duration::from_millis(600), true)],
             &short,
-            true,
+            Some(WIDE),
             None,
         );
         assert_eq!(ran.refused(), EXPIRED);
@@ -996,15 +1117,7 @@ mod tests {
         };
         let mut b = new_device("mirkwood", 20);
         b.mode = Mode::Silent;
-        let ran = go_with(
-            &w,
-            &[],
-            &b,
-            &mut Cursor::new(Vec::new()),
-            &short,
-            true,
-            None,
-        );
+        let ran = go_with(&w, &[], &b, vec![], &short, Some(WIDE), None);
         assert_eq!(ran.refused(), EXPIRED);
         assert!(w.mailboxes().is_empty());
     }
@@ -1015,7 +1128,7 @@ mod tests {
         let (_, scope) = w.enrolled();
         let mut b = new_device("mirkwood", 20);
         b.mode = Mode::Newer;
-        let ran = go(&w, &[], &b, "y\n");
+        let ran = go(&w, &[], &b, yes());
         assert_eq!(
             ran.refused(),
             "the other device runs a newer bilbo; update this one and pair again"
@@ -1036,7 +1149,7 @@ mod tests {
                 .is_none()
         );
         assert!(
-            go(&w, &[], &new_device("mirkwood", 20), "y\n")
+            go(&w, &[], &new_device("mirkwood", 20), yes())
                 .result
                 .is_ok()
         );
@@ -1058,7 +1171,7 @@ mod tests {
             t.create(&transport::manifest_path(&scope, 2), b"another"),
             Put::Created
         );
-        let ran = go(&w, &[], &new_device("mirkwood", 20), "y\n");
+        let ran = go(&w, &[], &new_device("mirkwood", 20), yes());
         assert_eq!(
             ran.refused(),
             format!(
@@ -1077,7 +1190,7 @@ mod tests {
         let (_, scope) = w.enrolled();
         let mut b = new_device("mirkwood", 20);
         b.mode = Mode::Forged;
-        let ran = go(&w, &[], &b, "y\n");
+        let ran = go(&w, &[], &b, yes());
         assert_eq!(
             ran.refused(),
             format!(
@@ -1111,15 +1224,7 @@ mod tests {
             window: Duration::from_millis(50),
             ..limits()
         };
-        go_with(
-            &w,
-            &[],
-            &b,
-            &mut Cursor::new(Vec::new()),
-            &short,
-            true,
-            None,
-        );
+        go_with(&w, &[], &b, vec![], &short, Some(WIDE), None);
         assert_eq!(w.mailboxes(), ["8"]);
     }
 
@@ -1127,9 +1232,9 @@ mod tests {
     fn refusal(w: &World, args: &[&str]) -> (bool, String) {
         let mut b = new_device("mirkwood", 20);
         b.mode = Mode::Silent;
-        let ran = go(w, args, &b, "y\n");
+        let ran = go(w, args, &b, yes());
         assert!(!w.sync().join("pair").exists(), "{args:?} made a mailbox");
-        assert!(ran.out.is_empty() && ran.err.is_empty());
+        assert!(ran.out.is_empty() && ran.err.is_empty() && ran.shown.is_empty());
         (
             matches!(ran.result, Err(Failure::Refused(_))),
             ran.refused(),
@@ -1219,16 +1324,8 @@ mod tests {
         let message = "pairing is confirmed only in a terminal, by the user";
         let mut b = new_device("mirkwood", 20);
         b.mode = Mode::Silent;
-        for (terminal, marker) in [(false, None), (true, Some("1"))] {
-            let ran = go_with(
-                &w,
-                &[],
-                &b,
-                &mut Cursor::new(Vec::new()),
-                &limits(),
-                terminal,
-                marker,
-            );
+        for (terminal, marker) in [(None, None), (Some(100), Some("1"))] {
+            let ran = go_with(&w, &[], &b, vec![], &limits(), terminal, marker);
             assert_eq!(ran.refused(), message);
             assert!(!w.sync().join("pair").exists());
         }
@@ -1241,15 +1338,7 @@ mod tests {
         let mut b = new_device("mirkwood", 20);
         b.mode = Mode::Silent;
         // `CLAUDECODE` is not an agent marker: the env holds none, and the terminal gets a code.
-        let ran = go_with(
-            &w,
-            &[],
-            &b,
-            &mut Cursor::new(Vec::new()),
-            &limits(),
-            true,
-            None,
-        );
+        let ran = go_with(&w, &[], &b, vec![], &limits(), Some(WIDE), None);
         assert!(
             !matches!(&ran.result, Err(Failure::Refused(m)) if m.contains("only in a terminal"))
         );
@@ -1279,7 +1368,7 @@ mod tests {
     fn refusal_keep(w: &World) -> (bool, String) {
         let mut b = new_device("mirkwood", 20);
         b.mode = Mode::Silent;
-        let ran = go(w, &[], &b, "y\n");
+        let ran = go(w, &[], &b, yes());
         (
             matches!(ran.result, Err(Failure::Refused(_))),
             ran.refused(),
@@ -1309,7 +1398,7 @@ mod tests {
             "scope.personal.sync = {}\nscope.personal.embedder = local\n",
             w.url()
         ));
-        let ran = go(&w, &[], &new_device("mirkwood", 20), "y\n");
+        let ran = go(&w, &[], &new_device("mirkwood", 20), yes());
         let Some(Reply::Enrolled(payload)) = ran.reply else {
             panic!("no payload");
         };

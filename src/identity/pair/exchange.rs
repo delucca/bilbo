@@ -2,7 +2,6 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fs;
-use std::io::{self, BufRead, Read};
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -14,6 +13,7 @@ use super::*;
 use crate::identity::keys::{self, Device, Owner};
 use crate::identity::manifest::{self, Recipient};
 use crate::identity::phrase;
+use crate::identity::script::{self, Script};
 use crate::shared::store;
 use crate::sync::transport::{self, Put, Transport};
 
@@ -497,42 +497,35 @@ enum Confirm {
     Late,
 }
 
-/// A's stdin: blocks on its first read until `gate` returns, then yields `text`.
-struct Answer {
-    text: Vec<u8>,
-    pos: usize,
-    gate: Option<Box<dyn FnOnce() + Send>>,
-}
+/// Runs before A's question is answered.
+type Gate = Box<dyn FnOnce() + Send>;
 
 /// When `a` printed its code.
 type Shown = Arc<Mutex<Option<Instant>>>;
 
-impl Answer {
-    fn none() -> Answer {
-        Answer {
-            text: Vec::new(),
-            pos: 0,
+/// What A's scripted prompter answers, and what holds the first answer back.
+struct Typing {
+    answers: Vec<script::Answer>,
+    gate: Option<Gate>,
+}
+
+impl Typing {
+    fn none() -> Typing {
+        Typing {
+            answers: Vec::new(),
             gate: None,
         }
     }
 
-    fn after(text: &str, gate: impl FnOnce() + Send + 'static) -> Answer {
-        Answer {
-            text: text.as_bytes().to_vec(),
-            pos: 0,
-            gate: Some(Box::new(gate)),
-        }
-    }
-
-    /// `confirm`, typed once `b` has printed its fingerprint. A late `y` waits until `late` is past
-    /// the instant `a` showed its code, by the window it holds.
-    fn typed(confirm: Confirm, b: Arc<Log>, late: Option<(Shown, Duration)>) -> Answer {
-        let text = match confirm {
-            Confirm::Yes | Confirm::Late => "y\n",
-            Confirm::No => "n\n",
-            Confirm::Eof => "",
+    /// `confirm`, answered once `b` has printed its fingerprint. A late yes waits until `late` is past the instant `a`
+    /// showed its code, by the window it holds.
+    fn typed(confirm: Confirm, b: Arc<Log>, late: Option<(Shown, Duration)>) -> Typing {
+        let answers = match confirm {
+            Confirm::Yes | Confirm::Late => vec![script::Answer::Yes],
+            Confirm::No => vec![script::Answer::No],
+            Confirm::Eof => Vec::new(),
         };
-        Answer::after(text, move || {
+        Typing::after(answers, move || {
             b.wait_for("fingerprint ");
             if let Some((shown, window)) = late {
                 let since = shown.lock().unwrap().expect("the code was shown");
@@ -542,31 +535,12 @@ impl Answer {
             }
         })
     }
-}
 
-impl Read for Answer {
-    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        let n = {
-            let have = self.fill_buf()?;
-            let n = have.len().min(buf.len());
-            buf[..n].copy_from_slice(&have[..n]);
-            n
-        };
-        self.consume(n);
-        Ok(n)
-    }
-}
-
-impl BufRead for Answer {
-    fn fill_buf(&mut self) -> io::Result<&[u8]> {
-        if let Some(gate) = self.gate.take() {
-            gate();
+    fn after(answers: Vec<script::Answer>, gate: impl FnOnce() + Send + 'static) -> Typing {
+        Typing {
+            answers,
+            gate: Some(Box::new(gate)),
         }
-        Ok(&self.text[self.pos..])
-    }
-
-    fn consume(&mut self, n: usize) {
-        self.pos = (self.pos + n).min(self.text.len());
     }
 }
 
@@ -577,6 +551,8 @@ struct Run {
     result: Ended,
     out: Vec<String>,
     err: Vec<String>,
+    /// What the side's prompter showed, one entry per call.
+    shown: Vec<String>,
 }
 
 impl Run {
@@ -595,6 +571,10 @@ impl Run {
     fn has_err(&self, line: &str) -> bool {
         self.err.iter().any(|l| l == line)
     }
+
+    fn has_shown(&self, entry: &str) -> bool {
+        self.shown.iter().any(|l| l == entry)
+    }
 }
 
 /// One side, running `pair::run` on a thread of its own.
@@ -603,6 +583,9 @@ struct Side {
     err: Arc<Log>,
     rx: Option<mpsc::Receiver<Ended>>,
     ended: Option<Ended>,
+    /// What the side's prompter showed, as it was shown.
+    tap: (mpsc::Sender<String>, mpsc::Receiver<String>),
+    shown: Vec<String>,
 }
 
 impl Side {
@@ -612,6 +595,8 @@ impl Side {
             err: Arc::default(),
             rx: None,
             ended: None,
+            tap: mpsc::channel(),
+            shown: Vec::new(),
         }
     }
 
@@ -619,14 +604,18 @@ impl Side {
         &mut self,
         machine: &Machine,
         args: &[String],
-        terminal: bool,
+        terminal: Option<usize>,
         limits: Limits,
-        mut answer: Answer,
+        typing: Typing,
     ) {
         let (tx, rx) = mpsc::channel();
         self.rx = Some(rx);
         let (out, err) = (self.out.clone(), self.err.clone());
         let (base, args) = (machine.base.clone(), args.to_vec());
+        let mut prompter = Script::tapped(typing.answers, self.tap.0.clone());
+        if let Some(gate) = typing.gate {
+            prompter = prompter.gated(gate);
+        }
         std::thread::spawn(move || {
             let env = env_at(&base);
             let mut put_out = |line: &str| out.push(line);
@@ -635,7 +624,7 @@ impl Side {
                 &args,
                 &env,
                 terminal,
-                &mut answer,
+                &mut prompter,
                 &limits,
                 &mut put_out,
                 &mut put_err,
@@ -656,22 +645,26 @@ impl Side {
         self.ended.is_some()
     }
 
-    /// The code A shows, waiting for it.
+    /// Takes in what the prompter showed since.
+    fn drain(&mut self) {
+        while let Ok(line) = self.tap.1.try_recv() {
+            self.shown.push(line);
+        }
+    }
+
+    /// The code A shows, waiting for it: the one in the command of its box.
     fn code(&mut self) -> String {
         let limit = Instant::now() + DEADLINE;
         loop {
-            if let Some(line) = self
-                .err
-                .lines()
-                .iter()
-                .find_map(|l| l.strip_prefix("pairing code ").map(String::from))
-            {
-                return line;
+            self.drain();
+            if let Some(code) = self.shown.iter().find_map(|l| code_in(l)) {
+                return code;
             }
             assert!(
                 !self.poll() && Instant::now() < limit,
-                "no code was shown: {:?} {:?}",
+                "no code was shown: {:?} {:?} {:?}",
                 self.ended,
+                self.shown,
                 self.err.lines()
             );
             std::thread::sleep(Duration::from_millis(2));
@@ -689,12 +682,20 @@ impl Side {
             );
             std::thread::sleep(Duration::from_millis(2));
         }
+        self.drain();
         Run {
             result: self.ended.take().unwrap(),
             out: self.out.lines(),
             err: self.err.lines(),
+            shown: self.shown,
         }
     }
+}
+
+/// The code in the command A shows: the word after `bilbo pair ` on a line of its own.
+fn code_in(shown: &str) -> Option<String> {
+    let (_, rest) = shown.split_once("\nbilbo pair ")?;
+    rest.split(' ').next().map(String::from)
 }
 
 fn strings(args: &[&str]) -> Vec<String> {
@@ -769,15 +770,15 @@ fn exchange(w: &World, plan: Plan) -> Done {
     let mut b_side = Side::new();
     let shown = Shown::default();
     let late = (plan.confirm == Confirm::Late).then(|| (shown.clone(), plan.a.window));
-    let answer = Answer::typed(plan.confirm, b_side.err.clone(), late);
-    a_side.start(&a, &plan.a_args, true, plan.a, answer);
+    let answer = Typing::typed(plan.confirm, b_side.err.clone(), late);
+    a_side.start(&a, &plan.a_args, Some(400), plan.a, answer);
     let code = a_side.code();
     *shown.lock().unwrap() = Some(Instant::now());
     let mut args = vec![(plan.typed)(&code), "--via".into(), b.url()];
     if let Some(name) = plan.name {
         args.extend(["--name".into(), name.into()]);
     }
-    b_side.start(&b, &args, false, plan.b, Answer::none());
+    b_side.start(&b, &args, None, plan.b, Typing::none());
     Done {
         code,
         a: a_side.finish(),
@@ -791,7 +792,18 @@ impl Done {
         nameplate(&self.code)
     }
 
-    fn fingerprint(run: &Run) -> String {
+    /// The fingerprint A's question holds.
+    fn asked(run: &Run) -> String {
+        let line = run
+            .shown
+            .iter()
+            .find_map(|l| l.strip_prefix("confirm: Fingerprint "))
+            .unwrap();
+        line.split(": does ").next().unwrap().to_string()
+    }
+
+    /// The fingerprint B prints.
+    fn printed(run: &Run) -> String {
         let line = run
             .err
             .iter()
@@ -839,13 +851,11 @@ fn joining() {
     );
     assert_eq!(b.identity().device.name, "mirkwood");
     assert_eq!(owner_of(&b), owner_of(&a));
-    assert!(done.a.has_err(&format!("pairing code {}", done.code)));
-    assert!(done.a.has_err(&format!(
-        "on the new device, run: bilbo pair {} --via {}",
-        done.code,
-        a.url()
+    assert!(done.a.has_shown(&format!(
+        "note: On the new device, run\nbilbo pair {code} --via {}\n\nThe code is {code}. It works once, for 10 minutes.",
+        a.url(),
+        code = done.code
     )));
-    assert!(done.a.has_err("the code works once, for 10 minutes"));
 }
 
 #[test]
@@ -867,8 +877,8 @@ fn matching_fingerprints() {
     let b = w.b();
     let done = exchange(&w, Plan::new());
     paired_ok(&done);
-    let fp = Done::fingerprint(&done.a);
-    assert_eq!(fp, Done::fingerprint(&done.b));
+    let fp = Done::asked(&done.a);
+    assert_eq!(fp, Done::printed(&done.b));
     let digits: Vec<&str> = fp.split(' ').collect();
     assert!(
         digits.len() == 3
@@ -877,9 +887,10 @@ fn matching_fingerprints() {
                 .all(|g| g.len() == 4 && g.bytes().all(|d| d.is_ascii_digit()))
     );
     let id = b_id(&b);
-    assert!(done.a.has_err(&format!(
-        "pair mirkwood {id} into personal? compare the fingerprint on that device, then type y to confirm"
-    )));
+    assert!(
+        done.a
+            .has_shown(&format!("info: mirkwood {id} asks to join personal"))
+    );
     assert!(done.b.has_err(&format!(
         "fingerprint {fp} for mirkwood {id}; confirm on the device that showed the code"
     )));
@@ -959,7 +970,7 @@ fn retrying_the_right_code_after_a_wrong_one() {
         "--name".into(),
         "mirkwood".into(),
     ];
-    again.start(&b, &args, false, limits(), Answer::none());
+    again.start(&b, &args, None, limits(), Typing::none());
     let run = again.finish();
     assert_eq!(
         run.ended(1),
@@ -981,21 +992,21 @@ fn a_second_answer_while_the_first_is_pending() {
     let second_done = Arc::new(AtomicBool::new(false));
     let answer = {
         let (b_err, flag) = (b_side.err.clone(), second_done.clone());
-        Answer::after("y\n", move || {
+        Typing::after(vec![script::Answer::Yes], move || {
             b_err.wait_for("fingerprint ");
             while !flag.load(Ordering::Relaxed) {
                 std::thread::sleep(Duration::from_millis(2));
             }
         })
     };
-    a_side.start(&a, &[], true, limits(), answer);
+    a_side.start(&a, &[], Some(400), limits(), answer);
     let code = a_side.code();
     let args = strings(&[&code, "--via", &b.url(), "--name", "mirkwood"]);
-    b_side.start(&b, &args, false, limits(), Answer::none());
+    b_side.start(&b, &args, None, limits(), Typing::none());
     b_side.err.wait_for("fingerprint ").unwrap();
     let mut second = Side::new();
     let args = strings(&[&code, "--via", &b.url(), "--name", "dunharrow"]);
-    second.start(&other, &args, false, limits(), Answer::none());
+    second.start(&other, &args, None, limits(), Typing::none());
     let second = second.finish();
     second_done.store(true, Ordering::Relaxed);
     assert_eq!(
@@ -1020,8 +1031,8 @@ fn no_such_mailbox() {
     let (a, b) = (w.a(), w.b());
     let copier = Copier::start(a.sync(), b.sync(), Rules::prompt());
     let (mut a_side, mut b_side) = (Side::new(), Side::new());
-    let answer = Answer::typed(Confirm::Yes, b_side.err.clone(), None);
-    a_side.start(&a, &[], true, limits(), answer);
+    let answer = Typing::typed(Confirm::Yes, b_side.err.clone(), None);
+    a_side.start(&a, &[], Some(400), limits(), answer);
     let code = a_side.code();
     let other = if nameplate(&code) == "43" { "44" } else { "43" };
     let mut lost = Side::new();
@@ -1035,19 +1046,19 @@ fn no_such_mailbox() {
     lost.start(
         &b,
         &args,
-        false,
+        None,
         Limits {
             appear: Duration::from_millis(300),
             ..limits()
         },
-        Answer::none(),
+        Typing::none(),
     );
     assert_eq!(
         lost.finish().ended(1),
         format!("no pairing {other} at {}", b.url())
     );
     let args = strings(&[&code, "--via", &b.url(), "--name", "mirkwood"]);
-    b_side.start(&b, &args, false, limits(), Answer::none());
+    b_side.start(&b, &args, None, limits(), Typing::none());
     a_side.finish().ok();
     b_side.finish().ok();
     drop(copier);
@@ -1062,7 +1073,7 @@ fn nobody_answers() {
         window: Duration::from_millis(400),
         ..limits()
     };
-    side.start(&a, &[], true, a_limits, Answer::none());
+    side.start(&a, &[], Some(400), a_limits, Typing::none());
     let code = side.code();
     assert!(
         a.sync()
@@ -1084,7 +1095,7 @@ fn too_late() {
         window: Duration::from_millis(300),
         ..limits()
     };
-    side.start(&a, &[], true, a_limits, Answer::none());
+    side.start(&a, &[], Some(400), a_limits, Typing::none());
     let code = side.code();
     side.finish().ended(1);
     let mut late = Side::new();
@@ -1093,7 +1104,7 @@ fn too_late() {
         appear: Duration::from_millis(200),
         ..limits()
     };
-    late.start(&b, &args, false, b_limits, Answer::none());
+    late.start(&b, &args, None, b_limits, Typing::none());
     assert_eq!(
         late.finish().ended(1),
         format!("no pairing {} at {}", nameplate(&code), a.url())
@@ -1239,9 +1250,11 @@ fn pairing_again_after_an_interrupted_pairing() {
     assert_eq!(a.scope(&personal()).versions.len(), 3);
     assert_eq!(b_id(&b), id);
     assert_eq!(b.scope(&personal()).versions.len(), 3);
-    assert!(again.a.has_err(&format!(
-        "pair mirkwood {id} into personal? compare the fingerprint on that device, then type y to confirm"
-    )));
+    assert!(
+        again
+            .a
+            .has_shown(&format!("info: mirkwood {id} asks to join personal"))
+    );
 }
 
 #[test]
@@ -1460,9 +1473,10 @@ fn narrowing() {
     let done = exchange(&w, plan);
     paired_ok(&done);
     let id = b_id(&b);
-    assert!(done.a.has_err(&format!(
-        "pair mirkwood {id} into shared? compare the fingerprint on that device, then type y to confirm"
-    )));
+    assert!(
+        done.a
+            .has_shown(&format!("info: mirkwood {id} asks to join shared"))
+    );
     assert_eq!(done.a.out, [format!("paired mirkwood {id}: shared")]);
     let text = b.config_text().unwrap();
     assert!(text.contains("scope.shared.sync") && !text.contains("scope.personal"));
@@ -1748,7 +1762,7 @@ fn kept_after_a_wrong_code() {
         appear: Duration::from_millis(100),
         ..limits()
     };
-    later.start(&b, &args, false, b_limits, Answer::none());
+    later.start(&b, &args, None, b_limits, Typing::none());
     later.finish().ended(1);
     assert!(b.mailboxes().is_empty());
 }
@@ -1771,7 +1785,7 @@ fn a_stale_mailbox() {
         appear: Duration::from_millis(100),
         ..limits()
     };
-    lost.start(&b, &args, false, b_limits, Answer::none());
+    lost.start(&b, &args, None, b_limits, Typing::none());
     lost.finish().ended(1);
     assert!(b.mailboxes().is_empty());
     a.plant("7", Duration::from_secs(31 * 60));
@@ -1780,7 +1794,7 @@ fn a_stale_mailbox() {
         window: Duration::from_millis(200),
         ..limits()
     };
-    side.start(&a, &[], true, a_limits, Answer::none());
+    side.start(&a, &[], Some(400), a_limits, Typing::none());
     let code = side.code();
     side.finish().ended(1);
     assert!(!a.mailboxes().contains(&"7".to_string()), "{code}");
@@ -1803,7 +1817,7 @@ fn a_fresh_mailbox_stays() {
         appear: Duration::from_millis(100),
         ..limits()
     };
-    lost.start(&b, &args, false, b_limits, Answer::none());
+    lost.start(&b, &args, None, b_limits, Typing::none());
     lost.finish().ended(1);
     assert_eq!(b.mailboxes(), ["8"]);
 }
@@ -1893,11 +1907,11 @@ mod tests {
     fn run_pair(a: &Machine, b: &Machine, a_via: &[&str], via: &str) -> (String, Run, Run) {
         let mut a_side = Side::new();
         let mut b_side = Side::new();
-        let answer = Answer::typed(Confirm::Yes, b_side.err.clone(), None);
-        a_side.start(a, &strings(a_via), true, limits(), answer);
+        let answer = Typing::typed(Confirm::Yes, b_side.err.clone(), None);
+        a_side.start(a, &strings(a_via), Some(400), limits(), answer);
         let code = a_side.code();
         let args = strings(&[&code, "--via", via, "--name", "mirkwood"]);
-        b_side.start(b, &args, false, limits(), Answer::none());
+        b_side.start(b, &args, None, limits(), Typing::none());
         let (a_run, b_run) = (a_side.finish(), b_side.finish());
         a_run.ok();
         b_run.ok();
@@ -1913,8 +1927,8 @@ mod tests {
         let url = site.url();
         a.config(&format!("scope.personal.sync = {url}\n"));
         let (code, a_run, b_run) = run_pair(&a, &b, &[], &url);
-        assert!(a_run.has_err(&format!(
-            "on the new device, run: bilbo pair {code} --via {url}"
+        assert!(a_run.has_shown(&format!(
+            "note: On the new device, run\nbilbo pair {code} --via {url}\n\nThe code is {code}. It works once, for 10 minutes."
         )));
         assert_eq!(
             b_run.out,

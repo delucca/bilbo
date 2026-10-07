@@ -17,7 +17,10 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use chacha20poly1305::XChaCha20Poly1305;
 use chacha20poly1305::aead::{Aead, KeyInit, Payload};
-use common::{Relay, Run, TempDir, Watcher, bilbo, config, poll_eq, sha256_hex};
+use common::{
+    Relay, Run, TempDir, Watcher, bilbo, bilbo_logged, bilbo_tty, config, poll_eq, sha256_hex,
+    untimed_text,
+};
 use ed25519_dalek::{Signer, SigningKey};
 use hpke::{Deserializable, OpModeR};
 
@@ -564,6 +567,39 @@ fn a_port_in_use_exits_1_and_leaves_the_folder_unlocked() {
     );
     let relay = start(&data);
     assert_eq!(send(relay.port, "GET", "/v1/", &[], b"").status, 200);
+}
+
+#[test]
+fn a_log_file_gets_the_time_and_a_terminal_does_not() {
+    let dir = TempDir::new("relay-log-time");
+    let data = data_in(&dir);
+    let holder = TcpListener::bind("127.0.0.1:0").unwrap();
+    let listen = format!("127.0.0.1:{}", holder.local_addr().unwrap().port());
+    let args = [
+        "relay",
+        "--data",
+        data.to_str().unwrap(),
+        "--owner",
+        fingerprint(),
+        "--listen",
+        &listen,
+    ];
+    let run = bilbo_logged(dir.path(), &[], &args);
+    assert_eq!(run.code, 1);
+    let text = untimed_text(&run.stderr);
+    assert!(
+        text.starts_with(&format!("bilbo: cannot listen on {listen}")),
+        "{text}"
+    );
+    let run = bilbo_tty(
+        dir.path(),
+        &[("TERM", "xterm"), ("LANG", "C.UTF-8")],
+        &args,
+        100,
+    );
+    assert_eq!(run.code, 1);
+    let shown = console::strip_ansi_codes(&run.stderr).into_owned();
+    assert!(shown.starts_with("■  cannot listen on"), "{shown}");
 }
 
 // The data folder

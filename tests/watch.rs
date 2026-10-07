@@ -9,8 +9,8 @@ use std::path::Path;
 use std::time::Duration;
 
 use common::{
-    IDS, Seed, TempDir, Watcher, bilbo, config, days_ago, note_text, poll_eq, snapshot, store,
-    write,
+    IDS, Seed, TempDir, Watcher, bilbo, bilbo_logged, config, days_ago, note_text, poll_eq,
+    snapshot, store, untimed_text, write,
 };
 
 fn home(root: &Path) -> [(&str, &str); 1] {
@@ -80,6 +80,18 @@ fn no_store() {
         format!("bilbo: no store at {}\n", root.display())
     );
     assert!(!root.exists());
+}
+
+#[test]
+fn a_log_file_gets_the_time_and_a_pipe_does_not() {
+    let dir = TempDir::new("watch-log-time");
+    let root = dir.path().join("missing");
+    let want = format!("bilbo: no store at {}\n", root.display());
+    let run = bilbo_logged(dir.path(), &home(&root), &["watch"]);
+    assert_eq!(run.code, 1);
+    assert!(run.stdout.is_empty());
+    assert_eq!(untimed_text(&run.stderr), want);
+    assert_eq!(bilbo(dir.path(), &home(&root), &["watch"]).stderr, want);
 }
 
 #[test]

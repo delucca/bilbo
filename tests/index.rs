@@ -3,8 +3,8 @@ mod common;
 use std::path::{Path, PathBuf};
 
 use common::{
-    Fake, IDS, Locked, Run, TempDir, bilbo, config, dead_url, guide, in_scope, library, note_text,
-    snapshot, store, write,
+    Fake, IDS, Locked, Run, TempDir, bilbo, bilbo_logged, config, dead_url, guide, in_scope,
+    library, note_text, snapshot, store, untimed_text, write,
 };
 
 struct Setup {
@@ -132,6 +132,39 @@ fn first_run_embeds_every_passage() {
     ok(&run);
     assert_eq!(run.stdout, "embedded 3, kept 0, dropped 0\n");
     assert_eq!(fake.inputs().len(), 3);
+}
+
+#[test]
+fn a_log_file_gets_the_time() {
+    let fake = Fake::start(4);
+    let s = setup("index-log-time", &fake, &[]);
+    three(&s);
+    let vars = env(&s);
+    let all: Vec<(&str, &str)> = vars.iter().map(|(k, v)| (*k, v.as_str())).collect();
+    let run = bilbo_logged(s.dir.path(), &all, &["index"]);
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    assert_eq!(untimed_text(&run.stdout), "embedded 3, kept 0, dropped 0\n");
+    assert!(run.stderr.is_empty());
+
+    let dir = TempDir::new("index-log-time-none");
+    let root = store(&dir);
+    let home = dir.path().join("home");
+    let run = bilbo_logged(
+        dir.path(),
+        &[
+            ("BILBO_HOME", root.to_str().unwrap()),
+            ("HOME", home.to_str().unwrap()),
+        ],
+        &["index"],
+    );
+    assert_eq!(run.code, 1);
+    assert_eq!(
+        untimed_text(&run.stderr),
+        format!(
+            "bilbo: no embedder configured; set embedder.url in {}/.config/bilbo/config\n",
+            home.display()
+        )
+    );
 }
 
 #[test]

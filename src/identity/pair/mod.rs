@@ -6,10 +6,10 @@ mod exchange;
 mod join;
 mod show;
 
-use std::io::BufRead;
 use std::time::{Duration, Instant};
 
 use crate::Failure;
+use crate::host::prompt::Prompter;
 use crate::shared::store;
 
 /// How long each side waits, and how often it polls. `main` passes the defaults; tests shorten them.
@@ -46,7 +46,8 @@ struct Cx<'a> {
     env: &'a store::Env,
     /// Stdin and stderr are terminals and neither agent marker is set.
     human: bool,
-    answer: &'a mut dyn BufRead,
+    /// Stderr's width in columns; 80 when stderr is not a terminal.
+    width: usize,
     limits: &'a Limits,
     out: &'a mut dyn FnMut(&str),
     err: &'a mut dyn FnMut(&str),
@@ -68,13 +69,13 @@ enum Form {
     },
 }
 
-/// Runs the verb. `terminal` says stdin and stderr are both terminals; `answer` is where the showing device reads the
-/// user's confirmation; `out` and `err` take the lines for stdout and stderr.
+/// Runs the verb. `terminal` is stderr's width when stdin and stderr are both terminals; `prompter` draws and asks
+/// there; `out` and `err` take the lines for stdout and stderr.
 pub fn run(
     args: &[String],
     env: &store::Env,
-    terminal: bool,
-    answer: &mut dyn BufRead,
+    terminal: Option<usize>,
+    prompter: &mut impl Prompter,
     limits: &Limits,
     out: &mut dyn FnMut(&str),
     err: &mut dyn FnMut(&str),
@@ -82,15 +83,17 @@ pub fn run(
     let form = parse(args)?;
     let mut cx = Cx {
         env,
-        human: terminal && !env.agent(),
-        answer,
+        human: terminal.is_some() && !env.agent(),
+        width: terminal.unwrap_or(80),
         limits,
         out,
         err,
     };
     match form {
-        Form::Show { scopes, via } => show::run(&mut cx, &scopes, via.as_deref()),
-        Form::Join { code, via, name } => join::run(&mut cx, &code, &via, name.as_deref()),
+        Form::Show { scopes, via } => show::run(&mut cx, prompter, &scopes, via.as_deref()),
+        Form::Join { code, via, name } => {
+            join::run(&mut cx, prompter, &code, &via, name.as_deref())
+        }
     }
 }
 
