@@ -249,3 +249,64 @@ fn capture_title(lines: &[&str]) -> Option<(usize, String)> {
             _ => None,
         })
 }
+
+/// `bilbo library --help`; its Usage block is also the synopsis a usage error shows.
+pub const HELP: &str = r#"bilbo library: browse the library, add a source to it, and read sources in
+full through a plan.
+
+Usage:
+  bilbo library [<corpus>]
+  bilbo library show <ref> [--depth <n>]
+  bilbo library stage <url>
+  bilbo library stage <file> --origin "<url|doc>: <value>"
+                      [--fetched <YYYY-MM-DD>] [--html]
+  bilbo library land <stage> <corpus>/<name> --keep <a>-<b>[,<c>-<d>]...
+                     [--title <text>] [--replace [--force]]
+  bilbo library plan <ref>... [--budget-tokens <n>] [--slice-bytes <n>]
+                     [--slice-lines <n>]
+  bilbo library read <plan> <slice>... [--part <k>/<n>]
+<ref> is <corpus>/<name> or a source id, then optionally #<anchor>.
+Options go before or after the operands, --<option>=<value> works too, and
+-- ends the options.
+
+Browse:
+  library            One row per corpus: its sources, size and guide title
+  library <corpus>   The corpus's guide, with a facts line under each entry
+  show <ref>         A source's header, then one row per section: its lines,
+                     tokens and heading path. #<anchor> narrows the rows to
+                     that section, --depth <n> to n heading levels
+
+Add a source: stage it, pick the line ranges that are the page itself, land:
+  stage <url>        Fetch the page; print the stage id, its lines, title,
+                     a suggested --keep range and its headings
+  stage <file>       Copy a text file instead. --origin is required, --html
+                     converts a saved page, --fetched defaults to today
+  land               Write the source from the --keep ranges of the stage and
+                     add its guide entry. --keep may repeat. --title defaults
+                     to the first '# ' heading. --replace overwrites a source,
+                     keeping its id; --force lets the citations of it degrade
+stage writes only to the state folder; land writes the store.
+
+Read in full:
+  plan <ref>...      Cut the picks into slices and partitions; print the plan
+                     id, the partitions and one row per slice.
+                     --budget-tokens per partition (default 60000),
+                     --slice-bytes (default 24000), --slice-lines (none)
+  read               Print the named slices with line numbers, and log them
+                     for 'bilbo cite --plan'. --part <k>/<n> prints the k-th
+                     of n runs of each slice
+
+Exit: 0 success; 1 refused (no such corpus, source, stage or plan, a failed
+fetch, a source that exists or changed, or citations that would degrade);
+2 usage or config error.
+
+Examples:
+  bilbo library go
+  bilbo library show go/effective-go --depth 2
+  bilbo library stage https://go.dev/doc/effective_go
+  bilbo library land <stage> go/effective-go --keep 12-840
+  bilbo library plan 'go/effective-go#Concurrency' go/errors
+  bilbo library read <plan> 1 2
+
+Docs: https://github.com/delucca/bilbo/wiki/Commands#library
+"#;

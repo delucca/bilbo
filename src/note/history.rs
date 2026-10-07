@@ -234,3 +234,38 @@ fn current(scan: &Scan, named: &Named, note: &str) -> Result<(String, Vec<u8>), 
     };
     Err(Failure::Refused(message))
 }
+
+/// `bilbo history --help`; its Usage block is also the synopsis a usage error shows.
+pub const HELP: &str = r#"bilbo history: list a note's past versions, print one, or diff two.
+
+Usage:
+  bilbo history <note>
+  bilbo history <note> <version>
+  bilbo history <note> --diff <a> [<b>]
+
+<note> is a topic or a note id; a deleted note is found by its last topic.
+<version>, <a> and <b> are 6 to 64 hex characters of a version id.
+history changes nothing. When no 'bilbo watch' runs, stderr says recent edits
+may not be recorded.
+
+Output, by form:
+  list    One line per version, newest first:
+          <version> <time> <event> <file name>
+          then ' from <device>' when another device recorded it, and
+          ' [<flag>, ...]' for its flags: conflict, dropped.
+          Events: added, edited, renamed, deleted, restored, merged, left
+  print   The version's bytes, exactly as recorded
+  --diff  A unified diff from <a> to <b>, or to the note's file now; empty
+          when they hold the same text
+
+Exit: 0 success; 1 no store, no history, no such version, a deletion or a
+pruned version; 2 usage or config error, an ambiguous note or version
+included.
+
+Examples:
+  bilbo history release-tags
+  bilbo history release-tags 3f2a9c
+  bilbo history release-tags --diff 3f2a9c
+
+Docs: https://github.com/delucca/bilbo/wiki/Commands#history
+"#;

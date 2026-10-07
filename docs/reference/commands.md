@@ -1,8 +1,8 @@
 # Commands
 
-Every `bilbo` verb, in the order `bilbo --help` prints them: its synopsis, what
-it does and how it exits. Verbs with a guide give a one-line summary and link to
-it.
+Every `bilbo` verb: its synopsis, what it does and how it exits. Verbs with a
+guide give a one-line summary and link to it. `bilbo <verb> --help` prints the
+same synopsis with every option and its default, the output and the exit codes.
 
 ## Exit codes and streams
 
@@ -16,8 +16,12 @@ stdout carries only a verb's result. Every diagnostic goes to stderr as a line
 starting with `bilbo: `. The wizard of `setup` and the recovery phrase prompts
 of `device init` and `device recover` draw on stderr without that prefix.
 
-`bilbo --help` and `bilbo -h` print the usage to stdout and exit 0. `bilbo
---version` prints `bilbo <version>` and exits 0.
+`bilbo --help`, `bilbo -h` and `bilbo help` print an overview of the verbs to
+stdout and exit 0. `bilbo <verb> --help`, `bilbo <verb> -h` and `bilbo help
+<verb>` print that verb's page: its synopsis, options, output, exit codes and
+examples. A usage error prints its reason, then the synopsis of the verb that
+was run and the page to read, to stderr, and exits 2. `bilbo --version` prints
+`bilbo <version>` and exits 0.
 
 ## new
 
@@ -114,7 +118,7 @@ withholds is not sent to a remote embedder.
 ## setup
 
 ```sh
-bilbo setup [--yes | --interactive] [--remove] [<setup option>]...
+bilbo setup [--yes | --interactive] [--remove] [<option>]...
 ```
 
 Creates the store and the config and installs the agent plugin, the index timer,
@@ -136,12 +140,15 @@ digest](../guides/agents.md#the-digest).
 
 ```sh
 bilbo library [<corpus>]
-bilbo library show <corpus>/<name>|<id>[#<anchor>] [--depth <n>]
-bilbo library stage <url> | <file> --origin "<url|doc>: <value>" [--fetched <YYYY-MM-DD>] [--html]
+bilbo library show <ref> [--depth <n>]
+bilbo library stage <url>
+bilbo library stage <file> --origin "<url|doc>: <value>" [--fetched <YYYY-MM-DD>] [--html]
 bilbo library land <stage> <corpus>/<name> --keep <a>-<b>[,<c>-<d>]... [--title <text>] [--replace [--force]]
 bilbo library plan <ref>... [--budget-tokens <n>] [--slice-bytes <n>] [--slice-lines <n>]
 bilbo library read <plan> <slice>... [--part <k>/<n>]
 ```
+
+`<ref>` is `<corpus>/<name>` or a source id, then optionally `#<anchor>`.
 
 Lists the corpora, prints a corpus's guide or a source's outline, adds a source
 with `stage` and `land`, and reads sources through a plan. See [The
@@ -170,7 +177,9 @@ the scopes that sync. See [Note history](../guides/history.md).
 ## history
 
 ```sh
-bilbo history <note> [<version> | --diff <a> [<b>]]
+bilbo history <note>
+bilbo history <note> <version>
+bilbo history <note> --diff <a> [<b>]
 ```
 
 Lists a note's versions, newest first, prints one, or shows what changed between
@@ -236,7 +245,7 @@ showed the code. See [Pair a device](../guides/devices.md#pair-a-device).
 ## relay
 
 ```sh
-bilbo relay --data <dir> --owner <fingerprint>... [--listen <address:port>] [--max-scopes <n>] [--max-scope-mb <n>] [--max-object-mb <n>]
+bilbo relay --data <dir> --owner <fingerprint> [--owner <fingerprint>]... [--listen <address:port>] [--max-scopes <n>] [--max-scope-mb <n>] [--max-object-mb <n>]
 ```
 
 Serves sync to your devices from a machine you control, until it is stopped. See

@@ -208,7 +208,8 @@ bilbo restore <topic> <version>             # write a past version back
 bilbo setup --remove                        # undo setup, keep your notes
 ```
 
-`bilbo --help` prints the full usage. The rest, with every flag, is in
+`bilbo --help` lists the verbs, and `bilbo <verb> --help` prints a verb's
+options, output and exit codes. The rest is in
 [docs/reference/commands.md](docs/reference/commands.md).
 
 ## Documentation

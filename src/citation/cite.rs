@@ -301,6 +301,37 @@ fn coverage_lines(loaded: &Loaded, ids: &Ids, root: &Path) -> [String; 2] {
     [coverage, plan.picked_line(place, sources_in)]
 }
 
+/// `bilbo cite --help`; its Usage block is also the synopsis a usage error shows.
+pub const HELP: &str = r#"bilbo cite: check the bilbo: citations in a draft against the store.
+
+Usage:
+  bilbo cite [--plan <plan>]... [<file> | -]
+
+Options:
+  --plan <plan>  Also check that each quote of a source lies in lines read
+                 through this plan, and print its coverage; repeat for
+                 several plans
+  --             End the options: the next argument is the file
+The draft is <file>, or stdin when no file or - is given. A citation is
+bilbo:<id>[#<anchor>] "<quote>". cite reads no settings and writes nothing.
+
+Output: one row per citation, in draft order, tab-separated:
+  <line> TAB <verdict> TAB <id>[#<anchor>] TAB <path or -> TAB <detail>
+then 'citations: <n> checked, <k> ok', and with --plan one 'coverage:' and
+one 'picked:' line per plan.
+Verdicts: ok, quote_elsewhere, ambiguous, too_short, quote_missing,
+anchor_missing, id_missing, unread.
+
+Exit: 0 no failing verdict; 1 a quote_missing, anchor_missing, id_missing or
+unread verdict, an unreadable file, or no store; 2 usage or config error.
+
+Examples:
+  bilbo cite answer.md
+  bilbo cite --plan <plan> - < answer.md
+
+Docs: https://github.com/delucca/bilbo/wiki/Commands#cite
+"#;
+
 #[cfg(test)]
 mod tests {
     use super::*;

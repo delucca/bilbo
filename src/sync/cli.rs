@@ -575,6 +575,41 @@ fn declare(args: &[String], env: &store::Env) -> Result<Output, Failure> {
     })
 }
 
+/// `bilbo sync --help`; its Usage block is also the synopsis a usage error shows.
+pub const HELP: &str = r#"bilbo sync: show each syncing scope's state, or declare dropped text.
+
+Usage:
+  bilbo sync
+  bilbo sync declare <note> <reason>
+
+sync reads only local files and changes nothing. declare records that the
+text a conflict's resolution dropped from <note> was dropped on purpose.
+<note> is named as in 'bilbo history'; <reason> is one line of 1 to 500
+characters.
+
+Output of sync, in this order, each line only when it applies:
+  scope <name> <url>: <n> notes, pushed <time>, pulled <time>
+  device <scope> <device>: <state>, for each device of the scope
+  waiting <scope> <device>: <n> versions whose parents have not arrived
+  local: <n> notes sync nowhere
+  conflict notes/<file>: <n> passages
+  dropped notes/<file>: <n> lines not declared
+  notice <time> notes/<file>: <flag>, for each flag of the last 7 days
+  change <time> <scope>: <what changed> (manifest <n>), for the last 30 days
+<time> is in the created form, or never.
+Output of declare: declared <file name>: <n> lines dropped on purpose
+
+Exit: 0 nothing needs you; 1 something needs you (a conflict, undeclared
+dropped text, a failing transport or device, or no running 'bilbo watch'),
+no store, no scope syncs, or nothing to declare; 2 usage or config error.
+
+Examples:
+  bilbo sync
+  bilbo sync declare release-tags "superseded by the v2 tag scheme"
+
+Docs: https://github.com/delucca/bilbo/wiki/Commands#sync
+"#;
+
 #[cfg(test)]
 mod tests {
     use super::*;

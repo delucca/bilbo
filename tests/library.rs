@@ -692,7 +692,7 @@ fn a_title_value_is_not_help() {
     assert!(run.stdout.is_empty());
     let run = lab.library(&["land", "-h"]);
     assert_eq!(run.code, 0);
-    assert!(run.stdout.starts_with("usage: bilbo new"));
+    assert!(run.stdout.starts_with("bilbo library: "));
 }
 
 // Stage

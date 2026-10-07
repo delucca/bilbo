@@ -55,9 +55,11 @@ failures say what to change. Beyond it:
 - A non-verb file of `note` or `identity` that uses `sync` closes a cycle
   (the check skips verb files): call `sync` from the verb.
 - A new crate edits `PLACEMENT` in `tests/layout.rs` and is justified in the
-  change's `design.md`. A new verb also needs its dispatch arm and USAGE line
-  in `src/main.rs`, `tests/<verb>.rs`, its own capability spec and a MODIFIED
-  `cli` spec (its Verb dispatch requirement lists the verbs).
+  change's `design.md`. A new verb also needs its dispatch arm, its `OVERVIEW`
+  line and `PAGES` entry in `src/main.rs`, a `HELP` page beside its parser,
+  its `VERBS` and `PARSERS` entries in `tests/cli.rs`, a `## <verb>` section
+  in `docs/reference/commands.md`, `tests/<verb>.rs`, its own capability spec
+  and a MODIFIED `cli` spec (its Verb dispatch requirement lists the verbs).
 - A new `library` subcommand adds its word to `library::corpus::RESERVED`, or
   a corpus of that name shadows it.
 - Tests stay offline: a test that gets past planning with `--embedder-local`

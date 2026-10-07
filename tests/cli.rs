@@ -2,65 +2,65 @@ mod common;
 
 use common::{TempDir, bilbo, bilbo_input};
 
-const USAGE: &str = "\
-usage: bilbo new <kind> <topic> [--title <text>] [--scope <name>]
-       bilbo check
-       bilbo recall <query>... [--kind <kind>]... [--limit <n>]
-       bilbo recall <query>... --library [--corpus <corpus>]... [--limit <n>]
-       bilbo index
-       bilbo setup [--yes | --interactive] [--remove] [<setup option>]...
-       bilbo digest
-       bilbo library [<corpus>]
-       bilbo library show <corpus>/<name>|<id>[#<anchor>] [--depth <n>]
-       bilbo library stage <url> | <file> --origin \"<url|doc>: <value>\" [--fetched <YYYY-MM-DD>] [--html]
-       bilbo library land <stage> <corpus>/<name> --keep <a>-<b>[,<c>-<d>]... [--title <text>] [--replace [--force]]
-       bilbo library plan <ref>... [--budget-tokens <n>] [--slice-bytes <n>] [--slice-lines <n>]
-       bilbo library read <plan> <slice>... [--part <k>/<n>]
-       bilbo cite [--plan <plan>]... [<file> | -]
-       bilbo watch
-       bilbo history <note> [<version> | --diff <a> [<b>]]
-       bilbo restore <note> <version>
-       bilbo scope
-       bilbo scope set [--force] <name> <file>...
-       bilbo device
-       bilbo device list
-       bilbo device init [--name <name>]
-       bilbo device recover [--name <name>]
-       bilbo device revoke <device>
-       bilbo sync
-       bilbo sync declare <note> <reason>
-       bilbo pair [--scope <name>]... [--via <url>]
-       bilbo pair <code> --via <url> [--name <name>]
-       bilbo relay --data <dir> --owner <fingerprint>... [--listen <address:port>] [--max-scopes <n>] [--max-scope-mb <n>] [--max-object-mb <n>]
-       bilbo --help
-       bilbo --version
-new creates <root>/notes/<kind>-<topic>.md and prints its path.
-check prints every problem in the store and changes nothing.
-recall prints the notes that best match the query, best first, 10 unless --limit says otherwise.
-recall --library searches the sources and guides of the library by keyword instead of the notes; --corpus narrows it.
-index embeds the passages the vector cache lacks and drops the ones no note holds any more.
-digest reads a prompt hook's JSON on stdin and prints the notes that bear on the prompt; it always exits 0.
-library lists the corpora, prints a corpus's guide with the facts of each source, or a source's outline; stage and land add a source; plan cuts picks into slices and partitions; read prints slices and logs them.
-cite checks every bilbo: citation in a draft, and with --plan prints the coverage of the plans' reads.
-watch records a version of each note when it changes, until it is stopped.
-history lists the versions of a note, newest first, prints one, or shows what changed between two versions, or between one and the note's file now.
-restore writes a past version of a note back as its newest version, keeping what the note held before.
-scope lists the scopes this device declares with their note counts; scope set gives notes a scope.
-device shows this device, its owner and each scope's manifest; device list prints the owner's devices; device init makes this device's keys, with a recovery phrase to write down, and each syncing scope's manifest; device recover reads that phrase on another device and adds it to the manifests; device revoke removes a device from them; init, for a new phrase, recover and revoke need a terminal.
-sync prints each syncing scope's state, its devices, the open conflicts and the dropped text nobody declared, and exits 1 when something needs attention; sync declare records that a note's dropped text was dropped on purpose.
-pair shows a one-time code on an enrolled device and waits; pair <code> --via <url> on another device joins it to the scopes paired once the user confirms on the first, which needs a terminal.
-relay serves the sync transport to the devices of the --owner fingerprints, over plain HTTP under /v1/ behind a TLS proxy, until it is stopped.
-setup creates the store and the config and installs the agent plugin, the index timer, the note watcher and, when asked, the local embedder; in a terminal it asks first.
-setup options: --embedder-url <url>, --embedder-model <name>, --embedder-token-env <var>, --embedder-token-file <path>, --embedder-query-prefix <text>, --embedder-local, --embedder-port <port>, --llama-server <path>, --no-plugin, --claude <path>, --codex <path>, --plugin-source <folder|owner/repo#ref>, --no-timer, --index-every <minutes>, --no-watch
-kinds: plan, spec, design, decision, gotcha, research, review, report, reference
-root: $BILBO_HOME, else $XDG_DATA_HOME/bilbo, else $HOME/.local/share/bilbo
-config: $BILBO_CONFIG, else $XDG_CONFIG_HOME/bilbo/config, else $HOME/.config/bilbo/config
-cache: $XDG_CACHE_HOME/bilbo, else $HOME/.cache/bilbo
-state: $XDG_STATE_HOME/bilbo, else $HOME/.local/state/bilbo
-";
+/// The verbs in the order of the overview and of a usage error's `verbs:` line.
+const VERBS: [&str; 16] = [
+    "new", "recall", "check", "history", "restore", "library", "cite", "scope", "sync", "device",
+    "pair", "relay", "setup", "index", "watch", "digest",
+];
 
-fn prefixed_usage() -> String {
-    USAGE.lines().map(|l| format!("bilbo: {l}\n")).collect()
+/// What a usage error prints after its message when no verb was run.
+fn top_usage() -> String {
+    format!(
+        "bilbo: usage: bilbo <verb> [<args>]...\nbilbo: verbs: {}\nbilbo: see 'bilbo --help'\n",
+        VERBS.join(", ")
+    )
+}
+
+/// The parser files of each verb, which hold every option it accepts.
+const PARSERS: [(&str, &[&str]); 16] = [
+    ("new", &["src/note/new.rs"]),
+    ("recall", &["src/search/recall.rs"]),
+    ("check", &["src/check.rs"]),
+    ("history", &["src/note/history.rs"]),
+    ("restore", &["src/note/restore.rs"]),
+    ("library", &["src/library/cli/mod.rs"]),
+    ("cite", &["src/citation/cite.rs"]),
+    ("scope", &["src/note/scope.rs"]),
+    ("sync", &["src/sync/cli.rs"]),
+    ("device", &["src/identity/device.rs"]),
+    ("pair", &["src/identity/pair/mod.rs"]),
+    ("relay", &["src/relay/mod.rs"]),
+    ("setup", &["src/setup/flags.rs"]),
+    ("index", &["src/search/index.rs"]),
+    ("watch", &["src/note/watch.rs"]),
+    ("digest", &["src/search/digest.rs"]),
+];
+
+fn source(rel: &str) -> String {
+    std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(rel))
+        .unwrap_or_else(|e| panic!("{rel}: {e}"))
+}
+
+/// `text` before the `#[cfg(test)]` line that opens `mod tests`.
+fn production(text: &str) -> &str {
+    match text.find("#[cfg(test)]\nmod tests") {
+        Some(at) => &text[..at],
+        None => text,
+    }
+}
+
+/// Every string literal of `code` that is a whole long option, `"--name"` or `"--name="`, as `--name`.
+fn options(code: &str) -> std::collections::BTreeSet<String> {
+    code.match_indices("\"--")
+        .filter_map(|(at, _)| {
+            let literal = code[at + 1..].split('"').next()?;
+            let name = literal.strip_suffix('=').unwrap_or(literal);
+            let word = name.strip_prefix("--")?;
+            (word.starts_with(|c: char| c.is_ascii_lowercase())
+                && word.chars().all(|c| c.is_ascii_lowercase() || c == '-'))
+            .then(|| name.to_string())
+        })
+        .collect()
 }
 
 #[test]
@@ -69,10 +69,7 @@ fn no_arguments_is_usage_error() {
     let run = bilbo(dir.path(), &[], &[]);
     assert_eq!(run.code, 2);
     assert!(run.stdout.is_empty());
-    assert_eq!(
-        run.stderr,
-        format!("bilbo: missing verb\n{}", prefixed_usage())
-    );
+    assert_eq!(run.stderr, format!("bilbo: missing verb\n{}", top_usage()));
 }
 
 #[test]
@@ -86,24 +83,9 @@ fn unknown_verb_is_usage_error() {
     );
     assert_eq!(run.code, 2);
     assert!(run.stdout.is_empty());
-    assert!(run.stderr.contains("bilbo: unknown verb 'frobnicate'\n"));
-    assert!(
-        run.stderr.contains("bilbo new")
-            && run.stderr.contains("bilbo check")
-            && run.stderr.contains("bilbo recall")
-            && run.stderr.contains("bilbo index")
-            && run.stderr.contains("bilbo setup")
-            && run.stderr.contains("bilbo digest")
-            && run.stderr.contains("bilbo library")
-            && run.stderr.contains("bilbo cite")
-            && run.stderr.contains("bilbo watch")
-            && run.stderr.contains("bilbo history")
-            && run.stderr.contains("bilbo restore")
-            && run.stderr.contains("bilbo scope")
-            && run.stderr.contains("bilbo device")
-            && run.stderr.contains("bilbo sync")
-            && run.stderr.contains("bilbo pair")
-            && run.stderr.contains("bilbo relay")
+    assert_eq!(
+        run.stderr,
+        format!("bilbo: unknown verb 'frobnicate'\n{}", top_usage())
     );
     assert!(!home.exists());
     assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
@@ -142,28 +124,185 @@ fn digest_exits_0_on_an_unknown_option() {
 #[test]
 fn help_goes_to_stdout() {
     let dir = TempDir::new("cli-help");
-    for flag in ["--help", "-h"] {
-        let run = bilbo(dir.path(), &[], &[flag]);
-        assert_eq!(run.code, 0);
-        assert_eq!(run.stdout, USAGE);
-        assert!(run.stderr.is_empty());
+    let overview = bilbo(dir.path(), &[], &["--help"]).stdout;
+    assert!(overview.starts_with("bilbo keeps durable memory for coding agents"));
+    assert!(overview.contains("\nUsage: bilbo <verb> [<args>]...\n"));
+    for args in [&["--help"][..], &["-h"], &["help"], &["help", "-h"]] {
+        let run = bilbo(dir.path(), &[], args);
+        assert_eq!(run.code, 0, "{args:?}");
+        assert_eq!(run.stdout, overview, "{args:?}");
+        assert!(run.stderr.is_empty(), "{args:?}");
     }
 }
 
 #[test]
-fn help_after_a_verb_prints_help() {
+fn help_after_a_verb_prints_its_page() {
     let dir = TempDir::new("cli-help-verb");
-    for args in [
-        ["check", "--help"],
-        ["new", "-h"],
-        ["recall", "--help"],
-        ["index", "--help"],
-        ["setup", "--help"],
+    for verb in VERBS {
+        let page = bilbo(dir.path(), &[], &[verb, "--help"]);
+        assert_eq!(page.code, 0, "{verb}");
+        assert!(page.stderr.is_empty(), "{verb}");
+        assert!(
+            page.stdout.starts_with(&format!("bilbo {verb}: ")),
+            "{verb}"
+        );
+        assert!(page.stdout.contains(&format!("\n  bilbo {verb}")), "{verb}");
+        for args in [[verb, "-h"], ["help", verb]] {
+            let run = bilbo(dir.path(), &[], &args);
+            assert_eq!(run.code, 0, "{args:?}");
+            assert_eq!(run.stdout, page.stdout, "{args:?}");
+        }
+    }
+    let recall = bilbo(dir.path(), &[], &["recall", "--help"]).stdout;
+    assert!(recall.contains("bilbo recall <query>") && !recall.contains("bilbo new <kind>"));
+}
+
+#[test]
+fn a_subcommand_help_is_its_verbs_page() {
+    let dir = TempDir::new("cli-help-sub");
+    let library = bilbo(dir.path(), &[], &["library", "--help"]).stdout;
+    for args in [["library", "land", "-h"], ["library", "show", "--help"]] {
+        assert_eq!(bilbo(dir.path(), &[], &args).stdout, library, "{args:?}");
+    }
+}
+
+#[test]
+fn help_for_an_unknown_verb_is_a_usage_error() {
+    let dir = TempDir::new("cli-help-unknown");
+    for args in [&["help", "frobnicate"][..], &["frobnicate", "--help"]] {
+        let run = bilbo(dir.path(), &[], args);
+        assert_eq!(run.code, 2, "{args:?}");
+        assert!(run.stdout.is_empty(), "{args:?}");
+        assert_eq!(
+            run.stderr,
+            format!("bilbo: unknown verb 'frobnicate'\n{}", top_usage())
+        );
+    }
+    let run = bilbo(dir.path(), &[], &["help", "recall", "now"]);
+    assert_eq!(run.code, 2);
+    assert_eq!(
+        run.stderr,
+        format!("bilbo: unexpected argument 'now'\n{}", top_usage())
+    );
+}
+
+#[test]
+fn piped_help_holds_no_escape_byte() {
+    let dir = TempDir::new("cli-help-plain");
+    let env = [("TERM", "xterm-256color")];
+    let mut runs = vec![bilbo(dir.path(), &env, &["--help"])];
+    for verb in VERBS {
+        runs.push(bilbo(dir.path(), &env, &[verb, "--help"]));
+    }
+    for run in runs {
+        assert!(!run.stdout.contains('\x1b'), "{}", run.stdout);
+    }
+}
+
+#[test]
+fn a_usage_error_is_the_reason_the_forms_and_the_page() {
+    let dir = TempDir::new("cli-usage-shape");
+    let run = bilbo(dir.path(), &[], &["recall", "--bogus"]);
+    assert_eq!(run.code, 2);
+    assert!(run.stdout.is_empty());
+    assert_eq!(
+        run.stderr,
+        "bilbo: unknown option '--bogus'\n\
+         bilbo: usage: bilbo recall <query>... [--kind <kind>]... [--limit <n>]\n\
+         bilbo:        bilbo recall <query>... --library [--corpus <corpus>]... [--limit <n>]\n\
+         bilbo: see 'bilbo recall --help'\n"
+    );
+    let run = bilbo(dir.path(), &[], &["library", "land"]);
+    assert_eq!(run.code, 2);
+    assert_eq!(
+        run.stderr,
+        "bilbo: missing <stage>\n\
+         bilbo: usage: bilbo library land <stage> <corpus>/<name> --keep <a>-<b>[,<c>-<d>]... [--title <text>] [--replace [--force]]\n\
+         bilbo: see 'bilbo library --help'\n"
+    );
+}
+
+#[test]
+fn an_unknown_verb_near_a_verb_gets_a_suggestion() {
+    let dir = TempDir::new("cli-suggest");
+    let run = bilbo(dir.path(), &[], &["recal", "x"]);
+    assert_eq!(run.code, 2);
+    assert_eq!(
+        run.stderr,
+        format!(
+            "bilbo: unknown verb 'recal'; did you mean 'recall'?\n{}",
+            top_usage()
+        )
+    );
+    let run = bilbo(dir.path(), &[], &["zzzzzz"]);
+    assert_eq!(
+        run.stderr,
+        format!("bilbo: unknown verb 'zzzzzz'\n{}", top_usage())
+    );
+}
+
+#[test]
+fn every_dispatched_verb_is_in_the_overview() {
+    let main = source("src/main.rs");
+    let dispatched: std::collections::BTreeSet<&str> = production(&main)
+        .split("Some(\"")
+        .skip(1)
+        .filter_map(|rest| rest.split_once("\") =>").map(|(verb, _)| verb))
+        .filter(|verb| !verb.starts_with('-'))
+        .collect();
+    assert_eq!(dispatched, VERBS.into_iter().collect());
+    let dir = TempDir::new("cli-overview-verbs");
+    let overview = bilbo(dir.path(), &[], &["--help"]).stdout;
+    let groups = overview.split("\nExamples:").next().unwrap();
+    let listed: Vec<&str> = groups
+        .lines()
+        .filter_map(|line| line.strip_prefix("  "))
+        .filter_map(|line| line.split_once("  ").map(|(verb, _)| verb))
+        .collect();
+    assert_eq!(listed, VERBS);
+}
+
+#[test]
+fn every_option_a_parser_accepts_is_on_its_page() {
+    let dir = TempDir::new("cli-help-options");
+    assert_eq!(PARSERS.map(|(verb, _)| verb), VERBS);
+    for (verb, files) in PARSERS {
+        let page = bilbo(dir.path(), &[], &[verb, "--help"]).stdout;
+        for file in files {
+            for option in options(production(&source(file))) {
+                let shown = page.match_indices(&option).any(|(at, _)| {
+                    !page[at + option.len()..]
+                        .starts_with(|c: char| c.is_ascii_lowercase() || c == '-')
+                });
+                assert!(shown, "{verb}: {option} from {file} is not on its page");
+            }
+        }
+    }
+    for (file, option) in [
+        ("src/note/new.rs", "--title"),
+        ("src/library/cli/mod.rs", "--depth"),
+        ("src/setup/flags.rs", "--index-every"),
     ] {
-        let run = bilbo(dir.path(), &[], &args);
-        assert_eq!(run.code, 0);
-        assert_eq!(run.stdout, USAGE);
-        assert!(run.stderr.is_empty());
+        assert!(
+            options(production(&source(file))).contains(option),
+            "the scan no longer sees {option} in {file}"
+        );
+    }
+}
+
+#[test]
+fn every_page_links_a_section_of_the_commands_reference() {
+    let commands = source("docs/reference/commands.md");
+    assert!(commands.starts_with("# Commands\n"));
+    let dir = TempDir::new("cli-help-docs");
+    for verb in VERBS {
+        let page = bilbo(dir.path(), &[], &[verb, "--help"]).stdout;
+        let link = format!(
+            "Docs: {}/wiki/Commands#{verb}\n",
+            env!("CARGO_PKG_REPOSITORY")
+        );
+        assert!(page.ends_with(&link), "{verb}");
+        assert!(commands.contains(&format!("\n## {verb}\n")), "{verb}");
     }
 }
 
@@ -205,7 +344,7 @@ fn version_with_more_arguments_is_usage_error() {
     assert!(run.stdout.is_empty());
     assert_eq!(
         run.stderr,
-        format!("bilbo: unknown option '--version'\n{}", prefixed_usage())
+        format!("bilbo: unexpected argument 'now'\n{}", top_usage())
     );
 }
 
