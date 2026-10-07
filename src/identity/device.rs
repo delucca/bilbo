@@ -3,7 +3,6 @@
 //! every refusal comes before a phrase is drawn or read.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::ffi::OsString;
 use std::io;
 use std::path::Path;
 
@@ -11,6 +10,7 @@ use zeroize::Zeroizing;
 
 use crate::Failure;
 use crate::host::prompt::Prompter;
+use crate::host::terminal;
 use crate::identity::ceremony;
 use crate::identity::keys::{self, Device, Identity, Owner};
 use crate::identity::manifest::{self, Context, Known, Outcome, Recipient, Written};
@@ -24,6 +24,150 @@ pub struct Output {
     pub warnings: Vec<String>,
     pub lines: Vec<String>,
     pub failed: bool,
+    pub shape: Shape,
+}
+
+/// What a result holds, for the human view: `revoke` has none.
+#[derive(Clone, Copy)]
+pub enum Shape {
+    Show,
+    List,
+    Steps,
+    Plain,
+}
+
+impl Output {
+    /// The `device-identity` human view; `lines` is the plain one, which this reads back.
+    pub fn view(&self, term: &terminal::Term) -> Vec<String> {
+        match self.shape {
+            Shape::Show => show_view(term, &self.lines),
+            Shape::List => list_view(term, &self.lines),
+            Shape::Steps => terminal::steps(term, &parse_steps(&self.lines)),
+            Shape::Plain => self.lines.clone(),
+        }
+    }
+}
+
+fn show_view(term: &terminal::Term, lines: &[String]) -> Vec<String> {
+    use terminal::{Align, Mark, Tone};
+    let paint = |tone, text: &str| terminal::paint(term, tone, text);
+    let fields: Vec<Vec<&str>> = lines.iter().map(|l| l.split('\t').collect()).collect();
+    let mut out = Vec::new();
+    match fields.as_slice() {
+        [device, owner, ..] if device[1] != "none" => {
+            let label = |text: &str| terminal::pad(&paint(Tone::Dim, text), 11, Align::Left);
+            out.push(format!(
+                "{}  {}  {}",
+                label("This device"),
+                paint(Tone::Bold, device[1]),
+                paint(Tone::Dim, device[2])
+            ));
+            out.push(format!(
+                "{}  {}",
+                label("Owner"),
+                paint(Tone::Dim, owner[1])
+            ));
+        }
+        _ => out.extend(terminal::marked(
+            term,
+            Mark::Skipped,
+            &format!(
+                "This device has no keys. Turn sync on for a scope in {}, or run {}.",
+                paint(Tone::Cyan, "bilbo setup"),
+                paint(Tone::Cyan, "bilbo device recover")
+            ),
+        )),
+    }
+    let mut rows = vec![
+        ["SCOPE", "SYNC", "DEVICES", "MANIFEST", "EPOCH", "ID"]
+            .iter()
+            .map(|h| paint(Tone::Dim, h))
+            .collect::<Vec<_>>(),
+    ];
+    let warning = |text: &str| {
+        paint(
+            Tone::Yellow,
+            &format!("{} {text}", terminal::glyph(term, Mark::Warning)),
+        )
+    };
+    let dash = || "-".to_string();
+    for f in fields.iter().filter(|f| f[0] == "scope") {
+        rows.push(match f.as_slice() {
+            [_, name, "unsealed", url] => vec![
+                paint(Tone::Bold, name),
+                terminal::tilde_text(term, url),
+                dash(),
+                dash(),
+                dash(),
+                warning("unsealed"),
+            ],
+            [_, "-", sid, "invalid"] => vec![
+                dash(),
+                dash(),
+                dash(),
+                dash(),
+                dash(),
+                format!("{} {}", paint(Tone::Dim, sid), warning("invalid")),
+            ],
+            [_, name, sid, manifest, epoch, devices, scheme] => vec![
+                paint(Tone::Bold, name),
+                scheme.to_string(),
+                devices.split(' ').next().unwrap_or("").to_string(),
+                manifest
+                    .strip_prefix("manifest ")
+                    .unwrap_or(manifest)
+                    .to_string(),
+                epoch.strip_prefix("epoch ").unwrap_or(epoch).to_string(),
+                paint(Tone::Dim, sid),
+            ],
+            _ => continue,
+        });
+    }
+    if rows.len() > 1 {
+        if !out.is_empty() && fields.len() > 2 {
+            out.push(String::new());
+        }
+        out.extend(terminal::table(&rows, &[false, false, true, true, true]));
+    }
+    out
+}
+
+fn list_view(term: &terminal::Term, lines: &[String]) -> Vec<String> {
+    use terminal::Tone;
+    let rows: Vec<Vec<String>> = lines
+        .iter()
+        .map(|line| {
+            let f: Vec<&str> = line.split('\t').collect();
+            vec![
+                terminal::paint(term, Tone::Bold, f[0]),
+                terminal::paint(term, Tone::Dim, f[1]),
+                match f.get(2) {
+                    Some(_) => terminal::paint(term, Tone::Green, "this device"),
+                    None => String::new(),
+                },
+            ]
+        })
+        .collect();
+    terminal::table(&rows, &[])
+}
+
+/// A `<step> <status>[: <detail>]` line as a step: the status is the last word before the detail.
+fn parse_steps(lines: &[String]) -> Vec<terminal::Step> {
+    lines
+        .iter()
+        .map(|line| {
+            let (head, detail) = match line.split_once(": ") {
+                Some((head, detail)) => (head, Some(detail.to_string())),
+                None => (line.as_str(), None),
+            };
+            let (step, status) = head.rsplit_once(' ').unwrap_or(("", head));
+            terminal::Step {
+                step: step.to_string(),
+                status: status.to_string(),
+                detail,
+            }
+        })
+        .collect()
 }
 
 /// What a syncing scope with no manifest is told by `init` when its URL has no client here: a fresh id here could
@@ -107,7 +251,7 @@ fn run_on<P: Prompter>(
             left.display()
         ));
     }
-    let human = terminal && !marked(&env.claudecode) && !marked(&env.codex_thread_id);
+    let human = terminal && !env.agent();
     let cx = Cx {
         settings,
         root,
@@ -125,11 +269,6 @@ fn run_on<P: Prompter>(
     warnings.append(&mut out.warnings);
     out.warnings = warnings;
     Ok(out)
-}
-
-/// An agent marker counts when it is set and not empty.
-fn marked(var: &Option<OsString>) -> bool {
-    var.as_ref().is_some_and(|v| !v.is_empty())
 }
 
 fn parse(args: &[String]) -> Result<Form, Failure> {
@@ -342,6 +481,7 @@ fn show(cx: &Cx, id: Option<Identity>) -> Result<Output, Failure> {
         warnings,
         lines,
         failed,
+        shape: Shape::Show,
     })
 }
 
@@ -376,6 +516,7 @@ fn list(cx: &Cx, id: Option<Identity>) -> Result<Output, Failure> {
         warnings: Vec::new(),
         lines,
         failed: false,
+        shape: Shape::List,
     })
 }
 
@@ -450,6 +591,7 @@ fn init<P: Prompter>(
         warnings: Vec::new(),
         lines,
         failed,
+        shape: Shape::Steps,
     })
 }
 
@@ -734,6 +876,7 @@ fn recover<P: Prompter>(
         warnings,
         lines,
         failed,
+        shape: Shape::Steps,
     })
 }
 
@@ -957,6 +1100,7 @@ fn revoke(cx: &Cx, id: Option<Identity>, target: &str) -> Result<Output, Failure
         warnings,
         lines: report(rows),
         failed,
+        shape: Shape::Plain,
     })
 }
 
@@ -1057,17 +1201,15 @@ mod tests {
             fs::write(self.0.join("config"), text).unwrap();
         }
 
-        fn env(&self, claudecode: Option<&str>, codex: Option<&str>) -> store::Env {
+        fn env(&self, child: Option<&str>, codex: Option<&str>) -> store::Env {
             store::Env {
                 bilbo_home: Some(self.root().into()),
-                xdg_data_home: None,
                 home: Some(self.0.join("home").into()),
                 bilbo_config: Some(self.0.join("config").into()),
-                xdg_config_home: None,
-                xdg_cache_home: None,
                 xdg_state_home: Some(self.0.join("state").into()),
-                claudecode: claudecode.map(Into::into),
+                claude_code_child_session: child.map(Into::into),
                 codex_thread_id: codex.map(Into::into),
+                ..store::Env::from_vars(|_| None)
             }
         }
 
@@ -1143,7 +1285,7 @@ mod tests {
     fn message(f: &Failure) -> (i32, String) {
         match f {
             Failure::Usage(m) | Failure::Config(m) => (2, m.clone()),
-            Failure::Refused(m) => (1, m.clone()),
+            Failure::Refused(m) | Failure::Unmatched { message: m, .. } => (1, m.clone()),
         }
     }
 
@@ -1719,6 +1861,27 @@ mod tests {
         );
         let out = r.0.ok().unwrap();
         assert!(out.lines[1].starts_with("device created: bilbos-macbook-pro "));
+    }
+
+    #[test]
+    fn a_person_in_an_ide_terminal_gets_the_ceremony() {
+        let w = world("ide_terminal");
+        let (base, root, config, state) =
+            (w.0.clone(), w.root(), w.0.join("config"), w.0.join("state"));
+        let env = store::Env::from_vars(move |name| match name {
+            "CLAUDECODE" => Some("1".into()),
+            "HOME" => Some(base.join("home").into()),
+            "BILBO_HOME" => Some(root.clone().into()),
+            "BILBO_CONFIG" => Some(config.clone().into()),
+            "XDG_STATE_HOME" => Some(state.clone().into()),
+            _ => None,
+        });
+        let args = ["init".to_string(), "--name".into(), "rhosgobel".into()];
+        let mut p = Script::new(init_answers());
+        let out = run_on(&args, &env, true, &mut p, Some("testhost".into()))
+            .ok()
+            .unwrap();
+        assert!(out.lines.iter().any(|l| l.starts_with("device created: ")));
     }
 
     #[test]
@@ -3065,5 +3228,162 @@ mod tests {
         let scope = manifest::read_scope(&foreign, &ids[0]).unwrap();
         assert_eq!(scope.versions.len(), 1);
         assert_eq!(scope.owner(), Some(Owner::derive(&[1; 16]).sign.public()));
+    }
+}
+
+#[cfg(test)]
+mod views {
+    use super::*;
+    use crate::host::terminal::{fixed, plain, styled};
+
+    fn output(shape: Shape, lines: &[&str]) -> Output {
+        Output {
+            warnings: Vec::new(),
+            lines: lines.iter().map(|l| l.to_string()).collect(),
+            failed: false,
+            shape,
+        }
+    }
+
+    const ENROLLED: [&str; 2] = [
+        "device\trhosgobel\tgr2q7gf5lh6pzfdnurnkvputhp",
+        "owner\tyb4b-5aju-v6zb-x2nm-nc5x-ompf",
+    ];
+
+    fn shown(extra: &[&str]) -> Output {
+        let lines: Vec<&str> = ENROLLED.iter().chain(extra).copied().collect();
+        output(Shape::Show, &lines)
+    }
+
+    #[test]
+    fn show_on_a_terminal() {
+        let out = shown(&[
+            "scope\tpersonal\t5wdimrj6nm6qlhvdto4qvgz5qy\tmanifest 2\tepoch 1\t2 devices\tfile://",
+            "scope\tshared\tq4jh2ynvxk7wq3yb6t5c2l7c4a\tmanifest 3 pending\tepoch 2\t1 devices\thttps://",
+        ]);
+        let want = "This device  rhosgobel  gr2q7gf5lh6pzfdnurnkvputhp
+Owner        yb4b-5aju-v6zb-x2nm-nc5x-ompf
+
+SCOPE     SYNC      DEVICES   MANIFEST  EPOCH  ID
+personal  file://         2          2      1  5wdimrj6nm6qlhvdto4qvgz5qy
+shared    https://        1  3 pending      2  q4jh2ynvxk7wq3yb6t5c2l7c4a";
+        assert_eq!(
+            out.view(&fixed(100, false, true)),
+            want.lines().collect::<Vec<_>>()
+        );
+        assert_eq!(
+            out.view(&fixed(100, true, true))[0],
+            styled("{d}This device{/d}  {b}rhosgobel{/b}  {d}gr2q7gf5lh6pzfdnurnkvputhp{/d}")
+        );
+        let painted: Vec<String> = out
+            .view(&fixed(100, true, true))
+            .iter()
+            .map(|l| terminal::stripped(l))
+            .collect();
+        assert_eq!(painted, want.lines().collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn an_unsealed_scope_row() {
+        let out = shown(&["scope\tpersonal\tunsealed\tfile:///home/a/Sync/bilbo"]);
+        assert_eq!(
+            out.view(&fixed(100, false, true))[3..],
+            [
+                "SCOPE     SYNC                 DEVICES  MANIFEST  EPOCH  ID",
+                "personal  file://~/Sync/bilbo        -         -      -  ▲ unsealed",
+            ]
+        );
+        assert!(out.view(&fixed(100, true, true))[4].ends_with(&styled("{y}▲ unsealed{/y}")));
+    }
+
+    #[test]
+    fn an_invalid_scope_row() {
+        let out = shown(&["scope\t-\t5wdimrj6nm6qlhvdto4qvgz5qy\tinvalid"]);
+        assert_eq!(
+            out.view(&fixed(100, false, true))[4],
+            "-      -           -         -      -  5wdimrj6nm6qlhvdto4qvgz5qy ▲ invalid"
+        );
+    }
+
+    #[test]
+    fn no_keys_on_a_terminal() {
+        let out = output(Shape::Show, &["device\tnone", "owner\tnone"]);
+        let line = "○  This device has no keys. Turn sync on for a scope in bilbo setup, or run bilbo device recover.";
+        assert_eq!(out.view(&fixed(100, false, true)), [line]);
+        assert_eq!(
+            out.view(&fixed(100, true, true)),
+            [styled(
+                "{d}○{/d}  This device has no keys. Turn sync on for a scope in {c}bilbo setup{/c}, or run {c}bilbo device recover{/c}."
+            )]
+        );
+        assert_eq!(
+            out.view(&fixed(60, false, true)),
+            [
+                "○  This device has no keys. Turn sync on for a scope in",
+                "   bilbo setup, or run bilbo device recover."
+            ]
+        );
+    }
+
+    #[test]
+    fn list_on_a_terminal() {
+        let out = output(
+            Shape::List,
+            &[
+                "bywater\twyxim75c6m5p4ywv22ywilqweh",
+                "rhosgobel\tgr2q7gf5lh6pzfdnurnkvputhp\tthis",
+            ],
+        );
+        assert_eq!(
+            out.view(&fixed(100, false, true)),
+            [
+                "bywater    wyxim75c6m5p4ywv22ywilqweh",
+                "rhosgobel  gr2q7gf5lh6pzfdnurnkvputhp  this device"
+            ]
+        );
+        assert_eq!(
+            out.view(&fixed(100, true, true))[1],
+            styled("{b}rhosgobel{/b}  {d}gr2q7gf5lh6pzfdnurnkvputhp{/d}  {g}this device{/g}")
+        );
+    }
+
+    #[test]
+    fn init_steps_on_a_terminal() {
+        let lines = [
+            "owner kept: yb4b-5aju-v6zb-x2nm-nc5x-ompf",
+            "device kept: rhosgobel gr2q7gf5lh6pzfdnurnkvputhp",
+            "scope personal kept: 5wdimrj6nm6qlhvdto4qvgz5qy",
+        ];
+        let out = output(Shape::Steps, &lines);
+        assert_eq!(
+            out.view(&fixed(100, false, true)),
+            [
+                "◇  owner           kept  yb4b-5aju-v6zb-x2nm-nc5x-ompf",
+                "◇  device          kept  rhosgobel gr2q7gf5lh6pzfdnurnkvputhp",
+                "◇  scope personal  kept  5wdimrj6nm6qlhvdto4qvgz5qy",
+            ]
+        );
+        let unsealed = output(Shape::Steps, &["scope work unsealed: copy the store"]);
+        assert_eq!(
+            unsealed.view(&fixed(100, true, true)),
+            [styled(
+                "{y}▲{/y}  scope work  {y}unsealed{/y}  copy the store"
+            )]
+        );
+        let recovered = output(Shape::Steps, &["owner recovered: yb4b-5aju"]);
+        assert_eq!(
+            recovered.view(&fixed(100, true, true)),
+            [styled("{g}◆{/g}  owner  {g}recovered{/g}  yb4b-5aju")]
+        );
+        assert_eq!(plain("{d}x{/d}"), "x");
+    }
+
+    #[test]
+    fn revoke_keeps_its_lines() {
+        let out = output(
+            Shape::Plain,
+            &["scope personal updated: x manifest 3 epoch 2"],
+        );
+        assert_eq!(out.view(&fixed(100, true, true)), out.lines);
     }
 }

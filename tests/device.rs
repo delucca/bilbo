@@ -21,8 +21,14 @@ const RHOSGOBEL: &str = "gr2q7gf5lh6pzfdnurnkvputhp";
 const BYWATER: &str = "wyxim75c6m5p4ywv22ywilqweh";
 const RELAY: &str = "scope.personal.sync = https://relay.example.net";
 
-/// The three ways a run can be an agent's or a person's, each as the extra environment it sets.
-const MARKS: [&[(&str, &str)]; 3] = [&[], &[("CLAUDECODE", "1")], &[("CODEX_THREAD_ID", "x")]];
+/// The ways a run can be an agent's or a person's, each as the extra environment it sets.
+const MARKS: [&[(&str, &str)]; 5] = [
+    &[],
+    &[("CLAUDE_CODE_CHILD_SESSION", "1")],
+    &[("CODEX_THREAD_ID", "x")],
+    &[("AI_AGENT", "x")],
+    &[("CODEX_CI", "1")],
+];
 
 struct Machine {
     dir: TempDir,
@@ -124,6 +130,25 @@ impl Machine {
         let mut all = vec!["device"];
         all.extend(args);
         bilbo(&std::env::temp_dir(), &env, &all)
+    }
+
+    /// `device_with` on a terminal, `NO_COLOR` set: the human view.
+    fn device_tty(&self, extra: &[(&str, &str)], args: &[&str]) -> Run {
+        let root = self.root();
+        let state = self.dir.path().join("state");
+        let mut env = vec![
+            ("BILBO_HOME", root.to_str().unwrap()),
+            ("BILBO_CONFIG", self.config.to_str().unwrap()),
+            ("XDG_STATE_HOME", state.to_str().unwrap()),
+            ("HOME", "/home/tester"),
+            ("TERM", "xterm-256color"),
+            ("NO_COLOR", "1"),
+            ("LANG", "C.UTF-8"),
+        ];
+        env.extend_from_slice(extra);
+        let mut all = vec!["device"];
+        all.extend(args);
+        common::bilbo_tty(&std::env::temp_dir(), &env, &all, 100)
     }
 
     /// Every file under the machine, with its bytes.
@@ -863,4 +888,53 @@ fn a_password_in_the_url_is_not_echoed() {
         assert!(!run.stderr.contains("sekrit"), "{}", run.stderr);
         assert!(!run.stdout.contains("sekrit"), "{}", run.stdout);
     }
+}
+
+// Terminal views
+
+#[test]
+fn show_on_a_terminal() {
+    let m = Machine::enrolled("device-show-tty");
+    let run = m.device_tty(&[], &[]);
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    let lines = lines(&run.stdout);
+    assert!(lines[0].starts_with("This device  rhosgobel"), "{lines:?}");
+    assert!(lines.iter().any(|l| l.starts_with("personal")), "{lines:?}");
+    assert!(!run.stdout.contains('\t'));
+}
+
+#[test]
+fn list_on_a_terminal() {
+    let m = Machine::enrolled("device-list-tty");
+    let run = m.device_tty(&[], &["list"]);
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    let lines = lines(&run.stdout);
+    assert!(lines[0].starts_with("bywater"), "{lines:?}");
+    assert!(
+        lines[1].starts_with("rhosgobel") && lines[1].ends_with("this device"),
+        "{lines:?}"
+    );
+}
+
+#[test]
+fn init_steps_on_a_terminal() {
+    let m = Machine::enrolled("device-init-tty");
+    let run = m.device_tty(&[], &["init"]);
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    assert_eq!(run.stdout.lines().count(), 3, "{}", run.stdout);
+    assert!(
+        run.stdout.lines().all(|l| l.starts_with("◇  ")),
+        "{}",
+        run.stdout
+    );
+}
+
+#[test]
+fn an_agent_on_a_terminal_gets_the_tab_lines() {
+    let m = Machine::enrolled("device-tty-agent");
+    let piped = m.device(&[]);
+    let run = m.device_tty(&[("AI_AGENT", "x")], &[]);
+    assert_eq!(run.stdout, piped.stdout);
+    let list = m.device_tty(&[("AI_AGENT", "x")], &["list"]);
+    assert_eq!(list.stdout, m.device(&["list"]).stdout);
 }

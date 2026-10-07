@@ -67,9 +67,11 @@ the unassigned notes:
 ```console
 $ bilbo scope
 personal	3 notes	sync off	embedder any	paths -	default
-work	1 notes	sync off	embedder local	paths ~/Developer/acme
+work	1 note	sync off	embedder local	paths ~/Developer/acme
 (unassigned)	2 notes	embedder local
 ```
+
+That is the piped form; a terminal shows the same as a table with a header.
 
 With no scope declared it prints only the `(unassigned)` line and says on
 stderr, `bilbo: no scopes declared; add scope.<name>.* keys to <config path>`.

@@ -537,17 +537,14 @@ mod tests {
             fs::write(self.0.join("config"), text).unwrap();
         }
 
-        fn env(&self, claudecode: Option<&str>) -> store::Env {
+        fn env(&self, child: Option<&str>) -> store::Env {
             store::Env {
                 bilbo_home: Some(self.root().into()),
-                xdg_data_home: None,
                 home: Some(self.0.join("home").into()),
                 bilbo_config: Some(self.0.join("config").into()),
-                xdg_config_home: None,
-                xdg_cache_home: None,
                 xdg_state_home: Some(self.0.join("state").into()),
-                claudecode: claudecode.map(Into::into),
-                codex_thread_id: None,
+                claude_code_child_session: child.map(Into::into),
+                ..store::Env::from_vars(|_| None)
             }
         }
 
@@ -646,7 +643,7 @@ mod tests {
     impl Ran {
         fn refused(&self) -> String {
             match &self.result {
-                Err(Failure::Refused(m)) => m.clone(),
+                Err(Failure::Refused(m) | Failure::Unmatched { message: m, .. }) => m.clone(),
                 Err(Failure::Usage(m)) | Err(Failure::Config(m)) => m.clone(),
                 Ok(()) => panic!("did not refuse; stdout {:?}", self.out),
             }
@@ -724,10 +721,10 @@ mod tests {
         answer: &mut dyn BufRead,
         limits: &Limits,
         terminal: bool,
-        claudecode: Option<&str>,
+        child: Option<&str>,
     ) -> Ran {
         let args: Vec<String> = args.iter().map(|a| a.to_string()).collect();
-        let env = w.env(claudecode);
+        let env = w.env(child);
         let (tx, rx) = mpsc::channel();
         let (mut out, mut err) = (Vec::new(), Vec::new());
         let result = std::thread::scope(|s| {
@@ -1235,6 +1232,28 @@ mod tests {
             assert_eq!(ran.refused(), message);
             assert!(!w.sync().join("pair").exists());
         }
+    }
+
+    #[test]
+    fn claudecode_alone_is_a_person_at_a_terminal() {
+        let w = world("ide_terminal");
+        w.enrolled();
+        let mut b = new_device("mirkwood", 20);
+        b.mode = Mode::Silent;
+        // `CLAUDECODE` is not an agent marker: the env holds none, and the terminal gets a code.
+        let ran = go_with(
+            &w,
+            &[],
+            &b,
+            &mut Cursor::new(Vec::new()),
+            &limits(),
+            true,
+            None,
+        );
+        assert!(
+            !matches!(&ran.result, Err(Failure::Refused(m)) if m.contains("only in a terminal"))
+        );
+        assert!(w.sync().join("pair").exists());
     }
 
     #[test]

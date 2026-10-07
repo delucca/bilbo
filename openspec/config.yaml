@@ -43,7 +43,7 @@ context: |
     codes, files on disk, what a hook injects
   - Internal mechanisms go in design.md unless they are the contract itself
 
-  Stack: Rust, one crate, binary `bilbo`; dependencies `jiff`, `ureq`, `serde`, `serde_json`, `cliclack`, `libc`, `notify`, `ring`, `sha2`, `unicode-normalization`, `zeroize`, `htmd`, `markup5ever_rcdom`, `ed25519-dalek`, `hpke`, `chacha20poly1305`, `hkdf`, `getrandom`, `base64`, `spake2` and `httparse`
+  Stack: Rust, one crate, binary `bilbo`; dependencies `jiff`, `ureq`, `serde`, `serde_json`, `cliclack`, `console`, `libc`, `notify`, `ring`, `sha2`, `unicode-normalization`, `zeroize`, `htmd`, `markup5ever_rcdom`, `ed25519-dalek`, `hpke`, `chacha20poly1305`, `hkdf`, `getrandom`, `base64`, `spake2` and `httparse`
   Verification: `cargo fmt --check && cargo clippy --locked --all-targets -- -D warnings && cargo test --locked`
 
 rules:

@@ -210,6 +210,51 @@ fn two_corpora_list_their_rows() {
     assert!(run.stderr.is_empty());
 }
 
+/// `bilbo library` on a terminal, `NO_COLOR` set.
+fn tty_list(lab: &Lab) -> Run {
+    let mut env = lab.env();
+    env.extend([
+        ("TERM", "xterm-256color"),
+        ("NO_COLOR", "1"),
+        ("LANG", "C.UTF-8"),
+    ]);
+    common::bilbo_tty(lab.dir.path(), &env, &["library"], 100)
+}
+
+#[test]
+fn two_corpora_make_a_table_on_a_terminal() {
+    let lab = Lab::new("lib-list-tty");
+    lab.put("go/guide.md", &guide("go", "Lead.", &[]));
+    lab.put("go/a.md", &source(ID_A, &[], &sized(1000)));
+    lab.put("go/b.md", &source(ID_B, &[], &sized(1500)));
+    lab.put("rust/guide.md", &guide("rust", "Lead.", &[]));
+    lab.put(
+        "rust/c.md",
+        &source("01M3EZ8NVEC2KJQNGK5DTK3401", &[], &sized(4000)),
+    );
+    let run = tty_list(&lab);
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    assert_eq!(
+        run.stdout.lines().next().unwrap(),
+        "CORPUS  SOURCES  SIZE  TOKENS"
+    );
+    assert!(!run.stdout.contains("TITLE") && !run.stdout.contains('\t'));
+    assert_eq!(run.stdout.lines().count(), 3);
+}
+
+#[test]
+fn an_empty_library_says_so_on_a_terminal() {
+    let lab = Lab::new("lib-list-empty-tty");
+    let run = tty_list(&lab);
+    assert_eq!(run.code, 0);
+    assert_eq!(
+        run.stdout,
+        "○  No corpora yet; ask your agent to ingest a page\n"
+    );
+    let piped = lab.library(&[]);
+    assert!(piped.stdout.is_empty() && piped.stderr.is_empty());
+}
+
 #[test]
 fn a_corpus_without_a_guide_has_a_dash_for_its_title() {
     let lab = Lab::new("lib-list-dash");
@@ -243,6 +288,27 @@ fn no_library_prints_nothing() {
         assert!(run.stdout.is_empty() && run.stderr.is_empty());
         std::fs::create_dir_all(lab.root.join("library")).unwrap();
     }
+}
+
+#[test]
+fn a_one_heading_source_says_heading() {
+    let lab = Lab::new("lib-one-heading");
+    lab.put(
+        "go/guide.md",
+        &guide(
+            "Go",
+            "Lead line.",
+            &[("effective-go", "Two sentences. Here.")],
+        ),
+    );
+    lab.put(
+        "go/effective-go.md",
+        &source(ID_A, &[], "# T\n\n## Errors\n\nText.\n"),
+    );
+    let run = lab.library(&["go"]);
+    assert_eq!(run.code, 0);
+    assert!(run.stdout.contains(" · 1 heading"), "{}", run.stdout);
+    assert!(!run.stdout.contains("1 headings"), "{}", run.stdout);
 }
 
 #[test]
@@ -3072,4 +3138,75 @@ fn an_unreadable_library_leaves_no_stage_folder() {
         );
     }
     assert_eq!(lab.staged().len(), usize::from(readable));
+}
+
+/// `bilbo library <args>` on a terminal, `NO_COLOR` set.
+fn tty(lab: &Lab, args: &[&str]) -> Run {
+    let mut env = lab.env();
+    env.extend([
+        ("TERM", "xterm-256color"),
+        ("NO_COLOR", "1"),
+        ("LANG", "C.UTF-8"),
+    ]);
+    let mut full = vec!["library"];
+    full.extend(args);
+    common::bilbo_tty(lab.dir.path(), &env, &full, 100)
+}
+
+#[test]
+fn a_guide_on_a_terminal_names_each_entry_and_its_facts() {
+    let lab = Lab::new("lib-guide-tty");
+    lab.put(
+        "go/guide.md",
+        &guide(
+            "Go",
+            "Lead line.",
+            &[("effective-go", "Two sentences. Here.")],
+        ),
+    );
+    lab.put(
+        "go/effective-go.md",
+        &source(ID_A, &["capture: external"], &sized(1000)),
+    );
+    let run = tty(&lab, &["go"]);
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    let lines = lines_of(&run.stdout);
+    assert!(lines.contains(&"effective-go"), "{}", run.stdout);
+    assert!(
+        lines
+            .iter()
+            .any(|l| l.contains("tokens") && l.contains("fetched")),
+        "{}",
+        run.stdout
+    );
+    assert!(!run.stdout.contains('\x1b') && !run.stdout.contains('`'));
+}
+
+#[test]
+fn a_source_on_a_terminal_lists_its_outline_once() {
+    let lab = errors_lab("lib-show-tty");
+    let run = tty(&lab, &["show", "go/errors"]);
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    let rows = lines_of(&run.stdout)
+        .into_iter()
+        .filter(|l| l.trim_end().ends_with("Wrapping"))
+        .count();
+    assert_eq!(rows, 1, "{}", run.stdout);
+    assert!(run.stdout.contains("lines 7-20 · "), "{}", run.stdout);
+}
+
+#[test]
+fn a_plan_is_the_same_on_a_terminal_and_in_a_pipe() {
+    let lab = errors_lab("lib-plan-tty");
+    let terminal = tty(&lab, &["plan", "go/errors"]);
+    assert_eq!(terminal.code, 0, "{}", terminal.stderr);
+    let piped = lab.plan(&["go/errors"]);
+    let body = |out: &str| -> Vec<String> {
+        out.lines()
+            .filter(|l| !l.starts_with("plan: "))
+            .map(str::to_string)
+            .collect()
+    };
+    assert_eq!(body(&terminal.stdout), body(&piped.stdout));
+    assert!(!terminal.stdout.contains('\x1b'));
 }

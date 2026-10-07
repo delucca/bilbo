@@ -1058,3 +1058,16 @@ fn a_proxy_variable_does_not_reroute_a_loopback_embedder() {
     assert_eq!(fake.inputs().len(), 3);
     assert!(proxy.requests().is_empty(), "{:?}", proxy.requests().len());
 }
+
+#[test]
+fn a_terminal_gets_the_marked_line() {
+    let fake = Fake::start(4);
+    let s = setup("index-tty", &fake, &[]);
+    three(&s);
+    let mut vars: Vec<(&str, &str)> = vec![("NO_COLOR", "1"), ("LANG", "C.UTF-8")];
+    let base = env(&s);
+    vars.extend(base.iter().map(|(k, v)| (*k, v.as_str())));
+    let run = common::bilbo_tty(s.dir.path(), &vars, &["index"], 100);
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    assert_eq!(run.stdout, "◆  Embedded 3 passages · kept 0 · dropped 0\n");
+}

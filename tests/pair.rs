@@ -15,8 +15,14 @@ use common::{Run, TempDir, bilbo, config};
 const FIXTURES: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/device");
 const CODE: &str = "42-orbit-tunnel-velvet";
 
-/// The three ways a run can be an agent's or a person's, each as the extra environment it sets.
-const MARKS: [&[(&str, &str)]; 3] = [&[], &[("CLAUDECODE", "1")], &[("CODEX_THREAD_ID", "x")]];
+/// The ways a run can be an agent's or a person's, each as the extra environment it sets.
+const MARKS: [&[(&str, &str)]; 5] = [
+    &[],
+    &[("CLAUDE_CODE_CHILD_SESSION", "1")],
+    &[("CODEX_THREAD_ID", "x")],
+    &[("AI_AGENT", "x")],
+    &[("CODEX_CI", "1")],
+];
 
 struct Machine {
     dir: TempDir,
@@ -213,7 +219,15 @@ fn an_empty_agent_marker_is_still_no_terminal_without_a_tty() {
     let sync = m.sync();
     fs::write(&m.config, format!("{}\n", personal(&sync))).unwrap();
     let before = Unchanged::of(&m, &sync);
-    let run = m.pair_with(&[("CLAUDECODE", ""), ("CODEX_THREAD_ID", "")], &[]);
+    let run = m.pair_with(
+        &[
+            ("AI_AGENT", ""),
+            ("CLAUDE_CODE_CHILD_SESSION", ""),
+            ("CODEX_THREAD_ID", ""),
+            ("CODEX_CI", ""),
+        ],
+        &[],
+    );
     refused(
         &run,
         1,

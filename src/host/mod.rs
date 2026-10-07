@@ -6,4 +6,5 @@ pub mod command;
 pub mod model;
 pub mod prompt;
 pub mod swap;
+pub mod terminal;
 pub mod timer;

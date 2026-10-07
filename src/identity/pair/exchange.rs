@@ -276,14 +276,10 @@ impl Machine {
 fn env_at(base: &Path) -> store::Env {
     store::Env {
         bilbo_home: Some(base.join("root").into()),
-        xdg_data_home: None,
         home: Some(base.join("home").into()),
-        bilbo_config: None,
         xdg_config_home: Some(base.join("xdg").into()),
-        xdg_cache_home: None,
         xdg_state_home: Some(base.join("state").into()),
-        claudecode: None,
-        codex_thread_id: None,
+        ..store::Env::from_vars(|_| None)
     }
 }
 
@@ -646,7 +642,7 @@ impl Side {
             );
             let _ = tx.send(result.map_err(|failure| match failure {
                 Failure::Usage(message) | Failure::Config(message) => (2, message),
-                Failure::Refused(message) => (1, message),
+                Failure::Refused(message) | Failure::Unmatched { message, .. } => (1, message),
             }));
         });
     }

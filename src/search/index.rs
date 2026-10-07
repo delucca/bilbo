@@ -3,6 +3,7 @@ use std::path::Path;
 use std::time::{Duration, Instant};
 
 use crate::Failure;
+use crate::host::terminal;
 use crate::search::vectors::{self, Cache};
 use crate::search::{documents, embed, rank};
 use crate::shared::{config, store};
@@ -14,6 +15,37 @@ const TIMEOUT: Duration = Duration::from_secs(600);
 pub struct Output {
     pub line: String,
     pub warnings: Vec<String>,
+    pub embedded: usize,
+    pub kept: usize,
+    pub dropped: usize,
+}
+
+impl Output {
+    /// The `note-index` human view; `line` is the plain one.
+    pub fn view(&self, term: &terminal::Term) -> Vec<String> {
+        use terminal::{Mark, Tone};
+        let lead = if self.embedded + self.dropped > 0 {
+            Mark::Done
+        } else {
+            Mark::Kept
+        };
+        let tail = format!(
+            " · kept {} · dropped {}",
+            terminal::group(self.kept as u64),
+            terminal::group(self.dropped as u64)
+        );
+        vec![format!(
+            "{}  Embedded {} {}{}",
+            terminal::mark(term, lead),
+            terminal::paint(term, Tone::Bold, &terminal::group(self.embedded as u64)),
+            if self.embedded == 1 {
+                "passage"
+            } else {
+                "passages"
+            },
+            terminal::paint(term, Tone::Dim, &tail)
+        )]
+    }
 }
 
 /// Embeds what the cache lacks and drops what no note holds; see `Output`.
@@ -87,7 +119,13 @@ pub fn run(args: &[String], env: &store::Env) -> Result<Output, Failure> {
         .filter(|(key, _)| cache.get(&embedder.model, *key).is_some())
         .count();
     let changed = dropped > 0;
-    let line = |added: usize| format!("embedded {added}, kept {kept}, dropped {dropped}");
+    let output = |added: usize, withheld: Option<String>| Output {
+        line: format!("embedded {added}, kept {kept}, dropped {dropped}"),
+        warnings: withheld.into_iter().collect(),
+        embedded: added,
+        kept,
+        dropped,
+    };
 
     let missing: Vec<(u64, String)> = needed
         .into_iter()
@@ -95,7 +133,7 @@ pub fn run(args: &[String], env: &store::Env) -> Result<Output, Failure> {
         .collect();
     if missing.is_empty() {
         save_if(changed, &file, &cache).map_err(|e| refused(e, Ok(()), &withheld_line))?;
-        return Ok(output(line(0), withheld_line));
+        return Ok(output(0, withheld_line));
     }
 
     let client = match embed::Client::new(embedder, |name| std::env::var_os(name), TIMEOUT) {
@@ -133,15 +171,8 @@ pub fn run(args: &[String], env: &store::Env) -> Result<Output, Failure> {
         Err(message) => Err(refused(message, saved, &withheld_line)),
         Ok(()) => {
             saved.map_err(|e| refused(e, Ok(()), &withheld_line))?;
-            Ok(output(line(added), withheld_line))
+            Ok(output(added, withheld_line))
         }
-    }
-}
-
-fn output(line: String, withheld: Option<String>) -> Output {
-    Output {
-        line,
-        warnings: withheld.into_iter().collect(),
     }
 }
 
@@ -224,6 +255,34 @@ Docs: https://github.com/delucca/bilbo/wiki/Commands#index
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_view() {
+        let out = |embedded, kept, dropped| Output {
+            line: String::new(),
+            warnings: Vec::new(),
+            embedded,
+            kept,
+            dropped,
+        };
+        let painted = terminal::fixed(100, true, true);
+        assert_eq!(
+            out(49, 4620, 0).view(&painted),
+            [terminal::styled(
+                "{g}◆{/g}  Embedded {b}49{/b} passages{d} · kept 4,620 · dropped 0{/d}"
+            )]
+        );
+        assert_eq!(
+            out(0, 4620, 0).view(&painted),
+            [terminal::styled(
+                "{d}◇{/d}  Embedded {b}0{/b} passages{d} · kept 4,620 · dropped 0{/d}"
+            )]
+        );
+        assert_eq!(
+            out(1, 0, 0).view(&terminal::fixed(100, false, true)),
+            ["◆  Embedded 1 passage · kept 0 · dropped 0"]
+        );
+    }
 
     fn missing(n: usize) -> Vec<(u64, String)> {
         (0..n as u64).map(|k| (k, format!("input {k}"))).collect()

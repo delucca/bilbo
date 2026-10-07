@@ -40,9 +40,10 @@ does and does not protect.
 
 `recover`, `revoke` and any `init` that creates a phrase or changes a scope's
 pinned URL run only in a terminal. A folder's path is not pinned. Both stdin and
-stderr must be a terminal, and `CLAUDECODE` and `CODEX_THREAD_ID` must be unset
-or empty. An agent that runs them gets one line asking you to run the form
-yourself.
+stderr must be a terminal, and no agent marker may be set: `AI_AGENT`,
+`CLAUDE_CODE_CHILD_SESSION`, `CODEX_THREAD_ID` or `CODEX_CI`, each unset or
+empty. `CLAUDECODE` alone, as in an IDE's terminal, does not count. An agent
+that runs them gets one line asking you to run the form yourself.
 
 Running `bilbo device init` again on an enrolled device needs no terminal, so an
 agent can create the manifest of a scope whose URL you added.

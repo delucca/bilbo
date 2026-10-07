@@ -140,6 +140,104 @@ pub fn tokens(bytes: usize) -> usize {
     (bytes * 2).div_ceil(5)
 }
 
+/// A passage as one line of plain text for a terminal: fence lines dropped, list and quote markers removed (later list
+/// items led by `• `), images dropped, then each line through `text::readable`, joined by single spaces.
+pub fn plain(text: &str) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    let mut in_fence = false;
+    for line in lines(text) {
+        if fence_run(line).is_some() {
+            in_fence = !in_fence;
+            continue;
+        }
+        let (body, item) = if in_fence {
+            (line, false)
+        } else {
+            unmarked(line)
+        };
+        let line = text::readable(&without_images(body));
+        if line.is_empty() {
+            continue;
+        }
+        parts.push(if item && !parts.is_empty() {
+            format!("• {line}")
+        } else {
+            line
+        });
+    }
+    unclosed_link(parts.join(" "))
+}
+
+/// `text` with a link whose `)` was cut off (a passage ends mid-link) reduced to its bracket text.
+fn unclosed_link(mut text: String) -> String {
+    if let Some(at) = text.rfind("](")
+        && !text[at..].contains(')')
+    {
+        text.truncate(at);
+        if let Some(open) = text.rfind('[') {
+            text.remove(open);
+        }
+    }
+    text
+}
+
+/// `line` without its quote and list markers, and whether it opened a list item.
+fn unmarked(line: &str) -> (&str, bool) {
+    let mut rest = line.trim_start_matches(' ');
+    if line.len() - rest.len() > 3 {
+        return (line, false);
+    }
+    while let Some(quoted) = rest.strip_prefix('>') {
+        rest = quoted.trim_start_matches(' ');
+    }
+    if let Some(item) = ["- ", "* ", "+ "]
+        .iter()
+        .find_map(|marker| rest.strip_prefix(marker))
+    {
+        return (item, true);
+    }
+    let digits = rest.bytes().take_while(u8::is_ascii_digit).count();
+    if digits > 0
+        && let Some(item) = rest[digits..]
+            .strip_prefix(". ")
+            .or_else(|| rest[digits..].strip_prefix(") "))
+    {
+        return (item, true);
+    }
+    (rest, false)
+}
+
+/// `line` with each `![alt](target)` removed, alt and target both.
+fn without_images(line: &str) -> String {
+    let mut out = String::new();
+    let mut rest = line;
+    while let Some(at) = rest.find("![") {
+        out.push_str(&rest[..at]);
+        let after = &rest[at + 2..];
+        let mut depth = 1;
+        let close = after.char_indices().find(|(_, c)| {
+            match c {
+                '[' => depth += 1,
+                ']' => depth -= 1,
+                _ => {}
+            }
+            depth == 0
+        });
+        let end = close
+            .and_then(|(i, _)| after[i + 1..].strip_prefix('('))
+            .and_then(|target| target.find(')').map(|j| target.len() - j - 1));
+        match end {
+            Some(left) => rest = &rest[rest.len() - left..],
+            None => {
+                out.push_str("![");
+                rest = after;
+            }
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
 #[derive(Debug, PartialEq, Eq)]
 pub enum Resolved {
     One(usize),
@@ -178,6 +276,38 @@ pub fn resolve(sections: &[Section], anchor: &str) -> Resolved {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn plain_reads_a_passage_as_one_line() {
+        for (input, want) in [
+            (
+                "- **A flat vector file, not SQLite with sqlite-vec.** This reverses it.\n- sqlite-vec's `vec0` scans every vector.",
+                "A flat vector file, not SQLite with sqlite-vec. This reverses it. • sqlite-vec's vec0 scans every vector.",
+            ),
+            (
+                "[![License: MIT](https://img.shields.io/x.svg)](https://github.com/x) A collection of [Rust](https://r) lints.",
+                "A collection of Rust lints.",
+            ),
+            ("unnecessary\\_clippy\\_cfg", "unnecessary_clippy_cfg"),
+            (" ```\nsrc/\n├── main.rs\n``` ", "src/ ├── main.rs"),
+            (
+                "> quoted *text*\n1. first\n2. second",
+                "quoted text • first • second",
+            ),
+            (
+                "Set `busy_timeout = 5000` before SQLITE_BUSY.",
+                "Set busy_timeout = 5000 before SQLITE_BUSY.",
+            ),
+            (
+                "See the [unsafe_op_in_unsafe_fn lint](https://doc.rust-l",
+                "See the unsafe_op_in_unsafe_fn lint",
+            ),
+            ("", ""),
+            ("\n\n", ""),
+        ] {
+            assert_eq!(plain(input), want, "{input:?}");
+        }
+    }
 
     #[test]
     fn lines_match_read_numbering() {

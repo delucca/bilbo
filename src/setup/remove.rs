@@ -272,6 +272,7 @@ fn apply_remove(plan: &RemovePlan) -> Outcome {
     }
     Outcome {
         lines: report.lines,
+        steps: report.steps,
         failed: report.failed,
     }
 }

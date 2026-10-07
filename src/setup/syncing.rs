@@ -159,7 +159,8 @@ fn checks(plan: &SyncPlan, notes: &Path) -> (&'static str, String) {
                     .iter()
                     .filter(|note| note.scope.as_deref() == Some(name))
                     .count();
-                lines.push(format!("{name} through {url} ({count} notes)"));
+                let unit = if count == 1 { "note" } else { "notes" };
+                lines.push(format!("{name} through {url} ({count} {unit})"));
             }
             Err(why) => failures.push(why),
         }

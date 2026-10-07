@@ -3,6 +3,7 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 
+use crate::host::terminal;
 use crate::library::corpus;
 use crate::note::{conflicts, marks, versions};
 use crate::shared::config::{self, Settings};
@@ -25,6 +26,12 @@ struct Scan<'a> {
 pub struct Output {
     pub lines: Vec<String>,
     pub failed: bool,
+    /// Each problem and warning as `(path, message, warning)`, in the order of `lines`; a warning's
+    /// message keeps its ` (warning)` suffix.
+    pub problems: Vec<(String, String, bool)>,
+    /// Entries checked in `<root>/notes/`, and corpus folders in `<root>/library/`.
+    pub notes: usize,
+    pub corpora: usize,
 }
 
 /// Problem lines "<path relative to root>: <message>", sorted; no lines means a clean store.
@@ -56,10 +63,12 @@ pub fn run(args: &[String], env: &store::Env) -> Result<Output, Failure> {
         Ok(summary) => scan.summary = summary,
         Err(e) => scan.add(".bilbo/sync/open.json", format!("read: {e}")),
     }
+    let mut checked = 0;
     if notes.is_dir() {
         let entries = store::entries(&notes)
             .map_err(|e| Failure::Refused(format!("cannot read {}: {e}", notes.display())))?;
         entries.iter().for_each(|entry| scan.entry(entry));
+        checked = entries.len();
     }
     let library = corpus::problems(&root);
     scan.found.extend(library.problems);
@@ -72,14 +81,146 @@ pub fn run(args: &[String], env: &store::Env) -> Result<Output, Failure> {
     }));
 
     let failed = !scan.found.is_empty();
-    let mut all = scan.found;
-    all.extend(scan.warnings);
-    all.sort();
-    let lines = all
+    let mut all: Vec<(String, String, bool)> = scan
+        .found
         .into_iter()
-        .map(|(path, message)| single_line(&format!("{path}: {message}")))
+        .map(|(path, message)| (path, message, false))
         .collect();
-    Ok(Output { lines, failed })
+    all.extend(
+        scan.warnings
+            .into_iter()
+            .map(|(path, message)| (path, message, true)),
+    );
+    all.sort();
+    let problems: Vec<(String, String, bool)> = all
+        .into_iter()
+        .map(|(path, message, warning)| (single_line(&path), single_line(&message), warning))
+        .collect();
+    let lines = problems
+        .iter()
+        .map(|(path, message, _)| format!("{path}: {message}"))
+        .collect();
+    let corpora = corpus::corpus_dirs(&root).map_or(0, |c| c.len());
+    Ok(Output {
+        lines,
+        failed,
+        problems,
+        notes: checked,
+        corpora,
+    })
+}
+
+impl Output {
+    /// The `store-check` human view; `lines` is the plain one.
+    pub fn view(&self, term: &terminal::Term) -> Vec<String> {
+        use terminal::{Mark, Tone};
+        if self.problems.is_empty() {
+            return vec![format!(
+                "{}  No problems in {} and {}",
+                terminal::mark(term, Mark::Done),
+                terminal::paint(
+                    term,
+                    Tone::Bold,
+                    &terminal::count(self.notes as u64, "note", "notes")
+                ),
+                terminal::paint(
+                    term,
+                    Tone::Bold,
+                    &terminal::count(self.corpora as u64, "corpus", "corpora")
+                ),
+            )];
+        }
+        let mut out = Vec::new();
+        let mut files = 0;
+        let mut rest = self.problems.as_slice();
+        while let Some((path, _, _)) = rest.first() {
+            let end = rest.iter().take_while(|(p, _, _)| p == path).count();
+            let (file, after) = rest.split_at(end);
+            rest = after;
+            if files > 0 {
+                out.push(String::new());
+            }
+            files += 1;
+            out.push(terminal::paint(term, Tone::Bold, path));
+            out.extend(file_lines(term, file));
+        }
+        let warnings = self.problems.iter().filter(|(_, _, w)| *w).count() as u64;
+        let problems = self.problems.len() as u64 - warnings;
+        let files = terminal::count(files, "file", "files");
+        let bold = |n: u64, one: &str, many: &str| {
+            terminal::paint(term, Tone::Bold, &terminal::count(n, one, many))
+        };
+        out.push(String::new());
+        out.push(match (problems, warnings) {
+            (0, w) => format!(
+                "{}  {} in {files}",
+                terminal::mark(term, Mark::Warning),
+                bold(w, "warning", "warnings")
+            ),
+            (p, 0) => format!(
+                "{}  {} in {files}",
+                terminal::mark(term, Mark::Error),
+                bold(p, "problem", "problems")
+            ),
+            (p, w) => format!(
+                "{}  {}, {} in {files}",
+                terminal::mark(term, Mark::Error),
+                bold(p, "problem", "problems"),
+                bold(w, "warning", "warnings")
+            ),
+        });
+        out
+    }
+}
+
+/// The lines of one file's problems: the mark, the head dim in a column, the rest wrapped.
+fn file_lines(term: &terminal::Term, file: &[(String, String, bool)]) -> Vec<String> {
+    use terminal::{Align, Mark, Tone};
+    let messages: Vec<(String, bool)> = file
+        .iter()
+        .map(|(_, message, warning)| {
+            let message = message.strip_suffix(" (warning)").unwrap_or(message);
+            (terminal::tilde_text(term, message), *warning)
+        })
+        .collect();
+    let split: Vec<(&str, &str, bool)> = messages
+        .iter()
+        .map(|(message, warning)| {
+            let (head, rest) = message.split_once(": ").unwrap_or(("", message));
+            (head, rest, *warning)
+        })
+        .collect();
+    let head_w = split
+        .iter()
+        .map(|(head, _, _)| terminal::width_of(head))
+        .max()
+        .unwrap_or(0);
+    let indent = match head_w {
+        0 => 5,
+        w => w + 7,
+    };
+    let width = term.width.saturating_sub(indent).max(1);
+    let mut out = Vec::new();
+    for (head, rest, warning) in split {
+        let lead = terminal::mark(term, if warning { Mark::Warning } else { Mark::Error });
+        let column = match head_w {
+            0 => String::new(),
+            w => format!(
+                "{}  ",
+                terminal::pad(&terminal::paint(term, Tone::Dim, head), w, Align::Left)
+            ),
+        };
+        for (i, line) in terminal::wrap(term, rest, width, terminal::Long::Split)
+            .into_iter()
+            .enumerate()
+        {
+            out.push(match i {
+                0 => format!("  {lead}  {column}{line}"),
+                _ => format!("{}{line}", " ".repeat(indent)),
+            });
+        }
+    }
+    out
 }
 
 impl Scan<'_> {
@@ -316,3 +457,119 @@ Examples:
 
 Docs: https://github.com/delucca/bilbo/wiki/Commands#check
 "#;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::host::terminal::{fixed, plain, styled};
+
+    fn output(rows: &[(&str, &str, bool)], notes: usize, corpora: usize) -> Output {
+        let problems: Vec<(String, String, bool)> = rows
+            .iter()
+            .map(|(p, m, w)| (p.to_string(), m.to_string(), *w))
+            .collect();
+        Output {
+            lines: problems
+                .iter()
+                .map(|(p, m, _)| format!("{p}: {m}"))
+                .collect(),
+            failed: rows.iter().any(|(_, _, w)| !w),
+            problems,
+            notes,
+            corpora,
+        }
+    }
+
+    const DUP_A: &str = "id: 01M3YJ7R6HK6NQ30DCDB1P4DYB is also the id of notes/gotcha-dup-id.md";
+    const DUP_B: &str =
+        "id: 01M3YJ7R6HK6NQ30DCDB1P4DYB is also the id of notes/decision-bilbo-note-store.md";
+    const SCOPE: &str =
+        "scope: 'nosuch' is not declared in /home/a/.config/bilbo/config; scopes: personal, work";
+    const MARK: &str = "scope: 'personal' but the title holds 'acme', a mark of 'work' (warning)";
+    const ULID: &str = "id: 'nope' is not a canonical ULID: 26 characters of 0-9 and A-Z without I, L, O, U, the first 0-7 (line 2)";
+
+    fn mixed() -> Output {
+        output(
+            &[
+                ("notes/decision-bilbo-note-store.md", DUP_A, false),
+                ("notes/gotcha-dup-id.md", DUP_B, false),
+                (
+                    "notes/gotcha-dup-id.md",
+                    "line 13: stray conflict marker",
+                    false,
+                ),
+                ("notes/gotcha-dup-id.md", SCOPE, false),
+                ("notes/plan-a.md", MARK, true),
+                ("notes/plan-broken.md", "created: missing", false),
+                ("notes/plan-broken.md", ULID, false),
+            ],
+            9,
+            2,
+        )
+    }
+
+    #[test]
+    fn the_view_groups_by_file() {
+        let want = "{b}notes/decision-bilbo-note-store.md{/b}
+  {r}■{/r}  {d}id{/d}  01M3YJ7R6HK6NQ30DCDB1P4DYB is also the id of notes/gotcha-dup-id.md
+
+{b}notes/gotcha-dup-id.md{/b}
+  {r}■{/r}  {d}id{/d}       01M3YJ7R6HK6NQ30DCDB1P4DYB is also the id of notes/decision-bilbo-note-store.md
+  {r}■{/r}  {d}line 13{/d}  stray conflict marker
+  {r}■{/r}  {d}scope{/d}    'nosuch' is not declared in ~/.config/bilbo/config; scopes: personal, work
+
+{b}notes/plan-a.md{/b}
+  {y}▲{/y}  {d}scope{/d}  'personal' but the title holds 'acme', a mark of 'work'
+
+{b}notes/plan-broken.md{/b}
+  {r}■{/r}  {d}created{/d}  missing
+  {r}■{/r}  {d}id{/d}       'nope' is not a canonical ULID: 26 characters of 0-9 and A-Z without I, L, O, U, the
+              first 0-7 (line 2)
+
+{r}■{/r}  {b}6 problems{/b}, {b}1 warning{/b} in 4 files";
+        let painted = mixed().view(&fixed(100, true, true));
+        assert_eq!(painted, styled(want).lines().collect::<Vec<_>>());
+        assert_eq!(
+            mixed().view(&fixed(100, false, true)),
+            plain(want).lines().collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn only_warnings_say_so() {
+        let one = output(&[("notes/plan-a.md", MARK, true)], 3, 0);
+        let view = one.view(&fixed(100, true, true));
+        assert_eq!(
+            view.last().unwrap(),
+            &styled("{y}▲{/y}  {b}1 warning{/b} in 1 file")
+        );
+    }
+
+    #[test]
+    fn a_clean_store_says_so() {
+        let clean = |notes, corpora| output(&[], notes, corpora);
+        assert_eq!(
+            clean(12, 2).view(&fixed(100, true, true)),
+            [styled(
+                "{g}◆{/g}  No problems in {b}12 notes{/b} and {b}2 corpora{/b}"
+            )]
+        );
+        assert_eq!(
+            clean(1, 1).view(&fixed(100, false, true)),
+            ["◆  No problems in 1 note and 1 corpus"]
+        );
+        assert_eq!(
+            clean(12, 2).view(&fixed(100, false, false)),
+            ["*  No problems in 12 notes and 2 corpora"]
+        );
+    }
+
+    #[test]
+    fn a_message_without_a_head() {
+        let one = output(&[("notes/x.md", "stray text", false)], 1, 0);
+        assert_eq!(
+            one.view(&fixed(100, false, true))[..2],
+            ["notes/x.md", "  ■  stray text"]
+        );
+    }
+}

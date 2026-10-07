@@ -66,7 +66,7 @@ each freshly written script.
 
 After changing `Terminal` in `src/host/prompt.rs`, the one piece the unit
 tests cannot reach, follow [docs/manual-tests.md](docs/manual-tests.md) under
-`env -u CLAUDECODE -u CODEX_THREAD_ID`.
+`env -u AI_AGENT -u CLAUDE_CODE_CHILD_SESSION -u CODEX_THREAD_ID -u CODEX_CI`.
 
 To try an edit under `plugins/` in Claude Code or Codex, install the plugin
 from your checkout in a throwaway world from that page, with `claude` and

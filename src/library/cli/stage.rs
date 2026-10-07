@@ -3,7 +3,9 @@
 use std::fs;
 use std::path::Path;
 
-use super::{Args, Output, capture_title, io_failure, refused, root, state_failure, today, usage};
+use super::{
+    Args, Output, Shape, capture_title, io_failure, refused, root, state_failure, today, usage,
+};
 use crate::Failure;
 use crate::library::corpus;
 use crate::library::source;
@@ -336,5 +338,6 @@ pub fn run(args: &Args, env: &store::Env) -> Result<Output, Failure> {
     Ok(Output {
         warnings,
         lines: out,
+        shape: Shape::Plain,
     })
 }

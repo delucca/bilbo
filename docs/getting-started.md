@@ -69,6 +69,11 @@ means it was already right; `failed` means a step went wrong (see
 [Troubleshooting](troubleshooting.md)). Run setup again at any time: with the
 same inputs, every step that did something is `kept`.
 
+The output in this tutorial is the plain form, the bytes a pipe or an agent
+gets. In a terminal bilbo lays the same facts out with marks, tables and a
+little colour: the setup report is a marked step list with a summary, for
+example. See [Terminal output](reference/commands.md#terminal-output).
+
 [Set up](guides/setup.md) lists every step and option.
 
 ## 3. Write your first note
@@ -105,7 +110,8 @@ Your `id` and `created` differ. Check that the store is well formed:
 $ bilbo check
 ```
 
-Nothing printed and exit code 0 means no problems.
+Nothing printed and exit code 0 means no problems; in a terminal, `check` says
+so with a `◆  No problems in ...` line.
 [Files](reference/files.md#note-format) describes the note format and the kinds.
 
 ## 4. Recall it
@@ -119,8 +125,9 @@ Set `busy_timeout = 5000` right after opening the connection.
 
 You see one block per matching note: the path and line of the best passage, the
 kind and `created` (tab-separated), the heading path, then the start of the
-passage. A query that matches nothing prints `bilbo: no notes match` on stderr
-and exits 1.
+passage. In a terminal, `recall` shows the same hits ranked, with the title and
+the age of each note. A query that matches nothing prints `bilbo: no notes
+match` on stderr (`○  no notes match '<query>'` in a terminal) and exits 1.
 
 Without an embedder, `recall` matches whole words, ignoring case and accents.
 

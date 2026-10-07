@@ -1032,3 +1032,40 @@ fn a_declaration_line_is_not_a_version() {
     assert_eq!(run.code, 0);
     assert_eq!(run.stdout.lines().count(), 1);
 }
+
+/// stdout and stderr on terminals, without colour.
+fn on_terminal(root: &Path, args: &[&str]) -> common::Run {
+    let mut all = vec!["history"];
+    all.extend(args);
+    let env = [
+        ("BILBO_HOME", root.to_str().unwrap()),
+        ("NO_COLOR", "1"),
+        ("LANG", "C.UTF-8"),
+    ];
+    common::bilbo_tty(&std::env::temp_dir(), &env, &all, 100)
+}
+
+#[test]
+fn equal_versions_say_so_on_a_terminal_and_nothing_in_a_pipe() {
+    let dir = TempDir::new("history-equal");
+    let (root, _, _) = recorded(&dir);
+    let version = shorts(&root, "release")[0].clone();
+    let run = on_terminal(&root, &["release", "--diff", &version, &version]);
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    assert_eq!(
+        run.stdout,
+        format!("◇  no changes between {version} and {version}\n")
+    );
+    let piped = history(&root, &["release", "--diff", &version, &version]);
+    assert_eq!(piped.stdout, "");
+}
+
+#[test]
+fn a_version_prints_its_bytes_on_a_terminal() {
+    let dir = TempDir::new("history-bytes-tty");
+    let (root, first, _) = recorded(&dir);
+    let version = shorts(&root, "release")[1].clone();
+    let run = on_terminal(&root, &["release", &version]);
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    assert_eq!(run.stdout, first);
+}

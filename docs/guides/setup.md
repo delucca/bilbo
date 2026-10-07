@@ -27,7 +27,8 @@ steps, `model` and `server`, are always in the report, as `skipped` without it.
 
 Run it again at any time. With the same inputs every step that did something is
 `kept`. It exits 1 when any step failed, and a failed step does not stop the
-ones after it.
+ones after it. The report is one line per step, as the tutorial shows; in a
+terminal it is a marked step list with a summary line.
 
 ## Run the wizard in a terminal
 

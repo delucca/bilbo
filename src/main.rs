@@ -15,6 +15,8 @@ mod sync;
 use std::io::{IsTerminal, Write};
 use std::process::ExitCode;
 
+use host::terminal;
+
 /// Why a verb did not succeed; `main` maps it to stderr and an exit code.
 pub enum Failure {
     /// Exit 2: the message, then the synopsis of the verb that was run, or of `bilbo` itself.
@@ -23,6 +25,30 @@ pub enum Failure {
     Config(String),
     /// Exit 1: the message only.
     Refused(String),
+    /// Exit 1: a search that found nothing. Off a terminal stderr gets each warning, then `message`; on one,
+    /// `○  <message> '<query>'`, the hint, then the warnings after `▲`.
+    Unmatched {
+        warnings: Vec<String>,
+        message: String,
+        query: String,
+        hint: String,
+    },
+}
+
+/// The two streams' decisions and the time every view reads.
+struct Io {
+    out: terminal::Term,
+    err: terminal::Term,
+    now: jiff::Timestamp,
+}
+
+/// What a stderr line says about itself: its mark on a terminal.
+#[derive(Clone, Copy)]
+enum Level {
+    Error,
+    Warning,
+    Info,
+    Nothing,
 }
 
 /// `bilbo --help`, `bilbo -h` and `bilbo help`. Its groups list every verb of `PAGES`, in the same order.
@@ -63,7 +89,7 @@ Examples:
 
 Exit codes: 0 success; 1 refused, problems found or nothing matched; 2 usage
 or config error. digest always exits 0.
-Results go to stdout. Diagnostics go to stderr, each line prefixed 'bilbo: '.
+Results go to stdout; diagnostics to stderr, prefixed 'bilbo: ' off a terminal.
 
 Paths, the first that applies:
   root    $BILBO_HOME, $XDG_DATA_HOME/bilbo, ~/.local/share/bilbo
@@ -100,19 +126,26 @@ const BOLD: &str = "\x1b[1m";
 const PLAIN: &str = "\x1b[22m";
 
 fn main() -> ExitCode {
+    let env = shared::store::Env::from_process();
+    let io = Io {
+        out: terminal::open(terminal::Stream::Stdout, &env),
+        err: terminal::open(terminal::Stream::Stderr, &env),
+        now: jiff::Timestamp::now(),
+    };
+    terminal::init(&io.err);
     let args = match collect_args() {
         Ok(args) => args,
-        Err(failure) => return report(failure, &[]),
+        Err(failure) => return report(&io, failure, &[]),
     };
-    match run(&args) {
+    match run(&args, &env, &io) {
         Ok(code) => code,
-        Err(failure) => report(failure, &args),
+        Err(failure) => report(&io, failure, &args),
     }
 }
 
-fn run(args: &[String]) -> Result<ExitCode, Failure> {
+fn run(args: &[String], env: &shared::store::Env, io: &Io) -> Result<ExitCode, Failure> {
     if args.first().is_some_and(|arg| arg == "help") {
-        print_help(help_topic(&args[1..])?);
+        print_help(&io.out, help_topic(&args[1..])?);
         return Ok(ExitCode::SUCCESS);
     }
     if wants_help(args) {
@@ -120,144 +153,131 @@ fn run(args: &[String]) -> Result<ExitCode, Failure> {
             Some(verb) if !verb.starts_with('-') => page(verb).ok_or_else(|| unknown_verb(verb))?,
             _ => OVERVIEW,
         };
-        print_help(text);
+        print_help(&io.out, text);
         return Ok(ExitCode::SUCCESS);
     }
     if args == ["--version"] {
         print_stdout(concat!("bilbo ", env!("CARGO_PKG_VERSION")));
         return Ok(ExitCode::SUCCESS);
     }
-    let env = shared::store::Env::from_process();
+    let info = |line: &str| print_stderr(&io.err, Level::Info, line);
     match args.first().map(String::as_str) {
         None => Err(Failure::Usage("missing verb".into())),
         Some("new") => {
-            let output = note::new::run(&args[1..], &env)?;
-            output.warning.iter().for_each(|line| print_stderr(line));
-            print_stdout(&output.path.display().to_string());
+            let output = note::new::run(&args[1..], env)?;
+            let lines = [output.path.display().to_string()];
+            emit(io, output.warning.as_slice(), &lines, || {
+                output.view(&io.out)
+            });
             Ok(ExitCode::SUCCESS)
         }
         Some("check") => {
-            let output = check::run(&args[1..], &env)?;
-            output.lines.iter().for_each(|line| print_stdout(line));
-            Ok(if output.failed {
-                ExitCode::FAILURE
-            } else {
-                ExitCode::SUCCESS
-            })
+            let output = check::run(&args[1..], env)?;
+            emit(io, &[], &output.lines, || output.view(&io.out));
+            Ok(exit(output.failed))
         }
         Some("recall") => {
-            let found = search::recall::run(&args[1..], &env)?;
-            found.warnings.iter().for_each(|line| print_stderr(line));
-            found.lines.iter().for_each(|line| print_stdout(line));
+            let found = search::recall::run(&args[1..], env)?;
+            emit(io, &found.warnings, &found.lines, || {
+                found.view(&io.out, io.now)
+            });
             Ok(ExitCode::SUCCESS)
         }
         Some("index") => {
-            let output = search::index::run(&args[1..], &env)?;
-            output.warnings.iter().for_each(|line| print_stderr(line));
-            print_stdout(&output.line);
+            let output = search::index::run(&args[1..], env)?;
+            emit(
+                io,
+                &output.warnings,
+                std::slice::from_ref(&output.line),
+                || output.view(&io.out),
+            );
             Ok(ExitCode::SUCCESS)
         }
         Some("setup") => {
-            let outcome = setup::run(&args[1..], &env, &mut |line: &str| print_stderr(line))?;
-            outcome.lines.iter().for_each(|line| print_stdout(line));
-            Ok(if outcome.failed {
-                ExitCode::FAILURE
-            } else {
-                ExitCode::SUCCESS
-            })
+            let outcome = setup::run(&args[1..], env, &mut |line: &str| info(line))?;
+            emit(io, &[], &outcome.lines, || outcome.view(&io.out));
+            Ok(exit(outcome.failed))
         }
         Some("digest") => {
-            let outcome = search::digest::run(&args[1..], &mut std::io::stdin().lock(), &env);
+            let outcome = search::digest::run(&args[1..], &mut std::io::stdin().lock(), env);
             outcome.lines.iter().for_each(|line| print_stdout(line));
             if let Some(line) = &outcome.diagnostic {
-                print_stderr(line);
+                print_stderr(&io.err, Level::Warning, line);
             }
             Ok(ExitCode::SUCCESS)
         }
         Some("library") => {
-            let output = library::cli::run(&args[1..], &env)?;
-            output.warnings.iter().for_each(|line| print_stderr(line));
-            output.lines.iter().for_each(|line| print_stdout(line));
+            let output = library::cli::run(&args[1..], env)?;
+            emit(io, &output.warnings, &output.lines, || output.view(&io.out));
             Ok(ExitCode::SUCCESS)
         }
         Some("cite") => {
-            let output = citation::cite::run(&args[1..], &mut std::io::stdin().lock(), &env)?;
-            output.warnings.iter().for_each(|line| print_stderr(line));
-            output.lines.iter().for_each(|line| print_stdout(line));
-            Ok(if output.failed {
-                ExitCode::FAILURE
-            } else {
-                ExitCode::SUCCESS
-            })
+            let output = citation::cite::run(&args[1..], &mut std::io::stdin().lock(), env)?;
+            emit(io, &output.warnings, &output.lines, || output.lines.clone());
+            Ok(exit(output.failed))
         }
         Some("watch") => {
-            note::watch::run(&args[1..], &env, &mut |line: &str| print_stderr(line))?;
+            note::watch::run(&args[1..], env, &mut |line: &str| info(line))?;
             Ok(ExitCode::SUCCESS)
         }
         Some("history") => {
-            let output = note::history::run(&args[1..], &env)?;
-            output.warnings.iter().for_each(|line| print_stderr(line));
-            output.lines.iter().for_each(|line| print_stdout(line));
-            write_stdout(&output.bytes);
+            let output = note::history::run(&args[1..], env)?;
+            let version = matches!(output.shown, note::history::Shown::Version);
+            if io.out.human && version {
+                write_stdout(&output.bytes);
+            }
+            emit(io, &output.warnings, &output.lines, || {
+                output.view(&io.out, io.now)
+            });
+            if !io.out.human {
+                write_stdout(&output.bytes);
+            }
             Ok(ExitCode::SUCCESS)
         }
         Some("restore") => {
-            let output = note::restore::run(&args[1..], &env)?;
-            output.warnings.iter().for_each(|line| print_stderr(line));
-            output.lines.iter().for_each(|line| print_stdout(line));
+            let output = note::restore::run(&args[1..], env)?;
+            emit(io, &output.warnings, &output.lines, || output.view(&io.out));
             Ok(ExitCode::SUCCESS)
         }
         Some("scope") => {
-            let output = note::scope::run(&args[1..], &env)?;
-            output.warnings.iter().for_each(|line| print_stderr(line));
-            output.lines.iter().for_each(|line| print_stdout(line));
-            Ok(if output.failed {
-                ExitCode::FAILURE
-            } else {
-                ExitCode::SUCCESS
-            })
+            let output = note::scope::run(&args[1..], env)?;
+            emit(io, &output.warnings, &output.lines, || output.view(&io.out));
+            Ok(exit(output.failed))
         }
         Some("device") => {
             let terminal = std::io::stdin().is_terminal() && std::io::stderr().is_terminal();
             let output =
-                identity::device::run(&args[1..], &env, terminal, &mut host::prompt::Terminal)?;
-            output.warnings.iter().for_each(|line| print_stderr(line));
-            output.lines.iter().for_each(|line| print_stdout(line));
-            Ok(if output.failed {
-                ExitCode::FAILURE
-            } else {
-                ExitCode::SUCCESS
-            })
+                identity::device::run(&args[1..], env, terminal, &mut host::prompt::Terminal)?;
+            emit(io, &output.warnings, &output.lines, || output.view(&io.out));
+            Ok(exit(output.failed))
         }
         Some("sync") => {
-            let output = sync::cli::run(&args[1..], &env)?;
-            output.warnings.iter().for_each(|line| print_stderr(line));
-            output.lines.iter().for_each(|line| print_stdout(line));
-            Ok(if output.failed {
-                ExitCode::FAILURE
-            } else {
-                ExitCode::SUCCESS
-            })
+            let output = sync::cli::run(&args[1..], env)?;
+            emit(io, &output.warnings, &output.lines, || {
+                output.view(&io.out, io.now)
+            });
+            Ok(exit(output.failed))
         }
         Some("pair") => {
             let terminal = std::io::stdin().is_terminal() && std::io::stderr().is_terminal();
             identity::pair::run(
                 &args[1..],
-                &env,
+                env,
                 terminal,
                 &mut std::io::stdin().lock(),
                 &identity::pair::Limits::default(),
                 &mut |line: &str| print_stdout(line),
-                &mut |line: &str| print_stderr(line),
+                &mut |line: &str| info(line),
             )?;
             Ok(ExitCode::SUCCESS)
         }
         Some("relay") => {
             // A panicking request gets a 500 and the relay keeps serving, so the panic is one more line.
-            std::panic::set_hook(Box::new(|info| {
-                print_stderr(&format!("internal error: {info}"));
+            let err = io.err.clone();
+            std::panic::set_hook(Box::new(move |panic| {
+                print_stderr(&err, Level::Error, &format!("internal error: {panic}"));
             }));
-            relay::run(&args[1..], &|line: &str| print_stderr(line))?;
+            relay::run(&args[1..], &|line: &str| info(line))?;
             Ok(ExitCode::SUCCESS)
         }
         Some("--version") => Err(Failure::Usage(format!("unexpected argument '{}'", args[1]))),
@@ -372,6 +392,14 @@ fn wants_help(args: &[String]) -> bool {
     false
 }
 
+fn exit(failed: bool) -> ExitCode {
+    if failed {
+        ExitCode::FAILURE
+    } else {
+        ExitCode::SUCCESS
+    }
+}
+
 /// Write errors are ignored: a closed pipe must not panic.
 fn print_stdout(line: &str) {
     let _ = writeln!(std::io::stdout().lock(), "{line}");
@@ -383,21 +411,65 @@ fn write_stdout(bytes: &[u8]) {
     let _ = out.write_all(bytes).and_then(|()| out.flush());
 }
 
-/// The one writer of stderr: every physical line gets the prefix, even inside an echoed argument.
-fn print_stderr(message: &str) {
-    let mut err = std::io::stderr().lock();
-    for line in message.split('\n') {
-        let _ = writeln!(err, "bilbo: {line}");
+/// Prints a verb's result, and its warnings after it on a terminal, before it otherwise. `lines` is the plain
+/// view; `view` makes the human one.
+fn emit(io: &Io, warnings: &[String], lines: &[String], view: impl FnOnce() -> Vec<String>) {
+    let shown = if io.out.human { view() } else { lines.to_vec() };
+    for (stream, line) in order(io.out.human, warnings, &shown) {
+        match stream {
+            terminal::Stream::Stdout => print_stdout(line),
+            terminal::Stream::Stderr => print_stderr(&io.err, Level::Warning, line),
+        }
     }
 }
 
-/// Prints a help text to stdout, in bold where `bold` says when `styled` allows it.
-fn print_help(text: &str) {
-    let styled = styled(
-        std::io::stdout().is_terminal(),
-        std::env::var_os("NO_COLOR"),
-        std::env::var_os("TERM"),
-    );
+/// What `emit` prints, in order: the result then its warnings for a person's terminal, else the warnings first.
+fn order<'a>(
+    human: bool,
+    warnings: &'a [String],
+    lines: &'a [String],
+) -> Vec<(terminal::Stream, &'a str)> {
+    let warnings = warnings
+        .iter()
+        .map(|w| (terminal::Stream::Stderr, w.as_str()));
+    let lines = lines.iter().map(|l| (terminal::Stream::Stdout, l.as_str()));
+    if human {
+        lines.chain(warnings).collect()
+    } else {
+        warnings.chain(lines).collect()
+    }
+}
+
+/// The one writer of stderr.
+fn print_stderr(err: &terminal::Term, level: Level, message: &str) {
+    let mut out = std::io::stderr().lock();
+    for line in stderr_lines(err, level, message) {
+        let _ = writeln!(out, "{line}");
+    }
+}
+
+/// `message` as stderr shows it: off a terminal, or under an agent, every physical line gets the prefix, even
+/// inside an echoed argument; on a person's terminal the first line follows the level's mark and the others are
+/// indented under it.
+fn stderr_lines(err: &terminal::Term, level: Level, message: &str) -> Vec<String> {
+    if !err.human {
+        return message
+            .split('\n')
+            .map(|line| format!("bilbo: {line}"))
+            .collect();
+    }
+    let mark = match level {
+        Level::Error => terminal::Mark::Error,
+        Level::Warning => terminal::Mark::Warning,
+        Level::Info => terminal::Mark::Info,
+        Level::Nothing => terminal::Mark::Skipped,
+    };
+    terminal::marked(err, mark, message)
+}
+
+/// Prints a help text to stdout, in bold on a person's terminal that may paint.
+fn print_help(out: &terminal::Term, text: &str) {
+    let styled = out.human && out.paint;
     for line in text.lines() {
         if styled {
             print_stdout(&bold(line));
@@ -405,15 +477,6 @@ fn print_help(text: &str) {
             print_stdout(line);
         }
     }
-}
-
-/// Bold only for a terminal, with `NO_COLOR` unset or empty and `TERM` not `dumb`.
-fn styled(
-    terminal: bool,
-    no_color: Option<std::ffi::OsString>,
-    term: Option<std::ffi::OsString>,
-) -> bool {
-    terminal && no_color.is_none_or(|v| v.is_empty()) && term.is_none_or(|t| t != "dumb")
 }
 
 /// `line` with its heading or its left column in bold. A heading starts the line with a capital letter and runs to
@@ -503,21 +566,80 @@ fn usage_lines(args: &[String]) -> Vec<String> {
     lines
 }
 
-fn report(failure: Failure, args: &[String]) -> ExitCode {
+/// A usage error as stderr shows it: the reason, then the usage lines, dim and indented under the mark on a
+/// terminal.
+fn usage_report(err: &terminal::Term, message: &str, args: &[String]) -> Vec<String> {
+    let usage = usage_lines(args);
+    if !err.human {
+        return std::iter::once(message.to_string())
+            .chain(usage)
+            .flat_map(|line| stderr_lines(err, Level::Error, &line))
+            .collect();
+    }
+    let mut lines = stderr_lines(err, Level::Error, message);
+    for line in &usage {
+        let line = match line
+            .strip_prefix("see '")
+            .and_then(|rest| rest.strip_suffix('\''))
+        {
+            Some(command) => format!(
+                "{} {}",
+                terminal::paint(err, terminal::Tone::Dim, "see"),
+                terminal::paint(err, terminal::Tone::Cyan, command)
+            ),
+            None => terminal::paint(err, terminal::Tone::Dim, line),
+        };
+        lines.push(format!("   {line}"));
+    }
+    lines
+}
+
+/// A search that found nothing as stderr shows it; see `Failure::Unmatched`.
+fn unmatched_report(
+    err: &terminal::Term,
+    warnings: &[String],
+    message: &str,
+    query: &str,
+    hint: &str,
+) -> Vec<String> {
+    if !err.human {
+        return warnings
+            .iter()
+            .flat_map(|warning| stderr_lines(err, Level::Warning, warning))
+            .chain(stderr_lines(err, Level::Error, message))
+            .collect();
+    }
+    let hint = hint.replace(
+        "--library",
+        &terminal::paint(err, terminal::Tone::Cyan, "--library"),
+    );
+    let mut lines = stderr_lines(err, Level::Nothing, &format!("{message} '{query}'\n{hint}"));
+    for warning in warnings {
+        lines.extend(stderr_lines(err, Level::Warning, warning));
+    }
+    lines
+}
+
+fn report(io: &Io, failure: Failure, args: &[String]) -> ExitCode {
+    let lines = match &failure {
+        Failure::Usage(message) => usage_report(&io.err, message, args),
+        Failure::Config(message) | Failure::Refused(message) => {
+            stderr_lines(&io.err, Level::Error, message)
+        }
+        Failure::Unmatched {
+            warnings,
+            message,
+            query,
+            hint,
+        } => unmatched_report(&io.err, warnings, message, query, hint),
+    };
+    let mut err = std::io::stderr().lock();
+    for line in lines {
+        let _ = writeln!(err, "{line}");
+    }
     match failure {
-        Failure::Usage(message) => {
-            print_stderr(&message);
-            usage_lines(args).iter().for_each(|line| print_stderr(line));
-            ExitCode::from(2)
-        }
-        Failure::Config(message) => {
-            print_stderr(&message);
-            ExitCode::from(2)
-        }
-        Failure::Refused(message) => {
-            print_stderr(&message);
-            ExitCode::FAILURE
-        }
+        Failure::Usage(_) | Failure::Config(_) => ExitCode::from(2),
+        Failure::Refused(_) | Failure::Unmatched { .. } => ExitCode::FAILURE,
     }
 }
 
@@ -653,14 +775,126 @@ mod tests {
         assert_eq!(distance("", "new"), 3);
     }
 
+    fn plain_term() -> terminal::Term {
+        terminal::Term {
+            human: false,
+            ..terminal::fixed(100, false, true)
+        }
+    }
+
     #[test]
-    fn bold_only_for_a_terminal_without_no_color_or_a_dumb_term() {
-        let os = |s: &str| Some(std::ffi::OsString::from(s));
-        assert!(styled(true, None, os("xterm-256color")));
-        assert!(styled(true, os(""), None));
-        assert!(!styled(false, None, os("xterm-256color")));
-        assert!(!styled(true, os("1"), os("xterm-256color")));
-        assert!(!styled(true, None, os("dumb")));
+    fn plain_stderr_prefixes_every_line() {
+        assert_eq!(
+            stderr_lines(&plain_term(), Level::Warning, "a\nb"),
+            ["bilbo: a", "bilbo: b"]
+        );
+    }
+
+    #[test]
+    fn human_stderr_marks_the_level() {
+        let t = terminal::fixed(100, false, true);
+        for (level, mark) in [
+            (Level::Error, "■"),
+            (Level::Warning, "▲"),
+            (Level::Info, "●"),
+            (Level::Nothing, "○"),
+        ] {
+            assert_eq!(
+                stderr_lines(&t, level, "no corpus 'x' in /r/library"),
+                [format!("{mark}  no corpus 'x' in /r/library")]
+            );
+        }
+        let painted = terminal::fixed(100, true, true);
+        assert_eq!(
+            stderr_lines(&painted, Level::Error, "no corpus 'x' in /r/library"),
+            [terminal::styled("{r}■{/r}  no corpus 'x' in /r/library")]
+        );
+        assert_eq!(stderr_lines(&t, Level::Info, "a\nb"), ["●  a", "   b"]);
+    }
+
+    #[test]
+    fn a_usage_error_on_a_terminal() {
+        let message = "unknown verb 'recal'; did you mean 'recall'?";
+        let plain = terminal::fixed(100, false, true);
+        let verbs = format!("verbs: {}", PAGES.map(|(verb, _)| verb).join(", "));
+        assert_eq!(
+            usage_report(&plain, message, &args("recal x")),
+            [
+                format!("■  {message}"),
+                "   usage: bilbo <verb> [<args>]...".to_string(),
+                format!("   {verbs}"),
+                "   see bilbo --help".to_string(),
+            ]
+        );
+        let painted = terminal::fixed(100, true, true);
+        let lines = usage_report(&painted, message, &args("recal x"));
+        assert_eq!(
+            lines[0],
+            terminal::styled(&format!("{{r}}■{{/r}}  {message}"))
+        );
+        assert_eq!(
+            lines[1],
+            terminal::styled("   {d}usage: bilbo <verb> [<args>]...{/d}")
+        );
+        assert_eq!(
+            lines[3],
+            terminal::styled("   {d}see{/d} {c}bilbo --help{/c}")
+        );
+        assert_eq!(
+            usage_report(&plain_term(), message, &args("recal x"))[3],
+            "bilbo: see 'bilbo --help'"
+        );
+    }
+
+    #[test]
+    fn unmatched_is_plain_off_a_terminal() {
+        let warnings = ["1 passage not indexed; run bilbo index".to_string()];
+        let hint = "to search the library, add --library";
+        assert_eq!(
+            unmatched_report(&plain_term(), &warnings, "no notes match", "wumpus", hint),
+            [
+                "bilbo: 1 passage not indexed; run bilbo index",
+                "bilbo: no notes match"
+            ]
+        );
+        assert_eq!(
+            unmatched_report(
+                &terminal::fixed(100, false, true),
+                &warnings,
+                "no notes match",
+                "wumpus",
+                hint
+            ),
+            [
+                "○  no notes match 'wumpus'",
+                "   to search the library, add --library",
+                "▲  1 passage not indexed; run bilbo index"
+            ]
+        );
+        assert_eq!(
+            unmatched_report(
+                &terminal::fixed(100, true, true),
+                &[],
+                "no notes match",
+                "wumpus",
+                hint
+            )[1],
+            terminal::styled("   to search the library, add {c}--library{/c}")
+        );
+    }
+
+    #[test]
+    fn warnings_follow_a_human_stdout() {
+        use terminal::Stream::{Stderr, Stdout};
+        let (warnings, lines) = (["w".to_string()], ["l".to_string()]);
+        assert_eq!(
+            order(true, &warnings, &lines),
+            [(Stdout, "l"), (Stderr, "w")]
+        );
+        assert_eq!(
+            order(false, &warnings, &lines),
+            [(Stderr, "w"), (Stdout, "l")]
+        );
     }
 
     #[test]
@@ -684,7 +918,7 @@ mod tests {
             "  bilbo recall <query>... [--limit <n>]",
             "                     tokens and heading path",
             "The first form runs on an enrolled device, in a terminal: it waits",
-            "Results go to stdout. Diagnostics go to stderr, each line prefixed 'bilbo: '.",
+            "Results go to stdout; diagnostics to stderr, prefixed 'bilbo: ' off a terminal.",
         ] {
             assert_eq!(bold(plain), plain);
         }

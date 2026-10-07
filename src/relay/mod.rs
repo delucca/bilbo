@@ -169,7 +169,12 @@ pub fn start(
             let _ = ready.send(port.map_err(|e| e.to_string()));
             serve(&state, &listener, &stopped);
         }
-        Err(Failure::Usage(why) | Failure::Config(why) | Failure::Refused(why)) => {
+        Err(
+            Failure::Usage(why)
+            | Failure::Config(why)
+            | Failure::Refused(why)
+            | Failure::Unmatched { message: why, .. },
+        ) => {
             let _ = ready.send(Err(why));
         }
     });

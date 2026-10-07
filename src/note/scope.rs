@@ -6,7 +6,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use crate::Failure;
-use crate::host::swap;
+use crate::host::{swap, terminal};
 use crate::note::versions::{self, Lock};
 use crate::note::{parse_name, read_id};
 use crate::search::documents;
@@ -39,6 +39,67 @@ pub struct Output {
     pub warnings: Vec<String>,
     pub lines: Vec<String>,
     pub failed: bool,
+    /// The result of the bare `bilbo scope`, which has a table view.
+    pub listing: bool,
+}
+
+impl Output {
+    /// The `note-scope` human view; `lines` is the plain one, and the result of `scope set` has no other.
+    pub fn view(&self, term: &terminal::Term) -> Vec<String> {
+        use terminal::Tone;
+        if !self.listing {
+            return self.lines.clone();
+        }
+        let head = |name: &str| terminal::paint(term, Tone::Dim, name);
+        let dash = || terminal::paint(term, Tone::Dim, "-");
+        let mut rows = vec![
+            ["SCOPE", "NOTES", "SYNC", "EMBEDDER", "PATHS"]
+                .iter()
+                .map(|h| head(h))
+                .collect::<Vec<_>>(),
+        ];
+        for line in &self.lines {
+            let cells: Vec<&str> = line.split('\t').collect();
+            let field = |i: usize, key: &str| {
+                cells
+                    .get(i)
+                    .map_or("", |c| c.strip_prefix(key).unwrap_or(c))
+                    .to_string()
+            };
+            let count = cells
+                .get(1)
+                .and_then(|c| c.split(' ').next())
+                .unwrap_or("")
+                .to_string();
+            rows.push(match cells.as_slice() {
+                [_, _, _] => vec![
+                    head("unassigned"),
+                    count,
+                    dash(),
+                    field(2, "embedder "),
+                    dash(),
+                ],
+                _ => {
+                    let default = match cells.get(5) {
+                        Some(_) => format!(" {}", head("(default)")),
+                        None => String::new(),
+                    };
+                    let paths = field(4, "paths ");
+                    vec![
+                        format!("{}{default}", terminal::paint(term, Tone::Bold, cells[0])),
+                        count,
+                        terminal::tilde_text(term, &field(2, "sync ")),
+                        field(3, "embedder "),
+                        match paths.as_str() {
+                            "-" => paths,
+                            _ => terminal::tilde_text(term, &paths),
+                        },
+                    ]
+                }
+            });
+        }
+        terminal::table(&rows, &[false, true])
+    }
 }
 
 pub fn run(args: &[String], env: &store::Env) -> Result<Output, Failure> {
@@ -72,8 +133,9 @@ fn list(env: &store::Env) -> Result<Output, Failure> {
             scope.paths.join(", ")
         };
         let mut line = format!(
-            "{}\t{count} notes\tsync {}\tembedder {}\tpaths {paths}",
+            "{}\t{}\tsync {}\tembedder {}\tpaths {paths}",
             scope.name,
+            note_count(count),
             scope.sync,
             scope.embedder.as_str(),
         );
@@ -91,7 +153,8 @@ fn list(env: &store::Env) -> Result<Output, Failure> {
         })
         .count();
     lines.push(format!(
-        "(unassigned)\t{unassigned} notes\tembedder {}",
+        "(unassigned)\t{}\tembedder {}",
+        note_count(unassigned),
         settings.rule(None).as_str()
     ));
     let mut warnings = Vec::new();
@@ -105,7 +168,13 @@ fn list(env: &store::Env) -> Result<Output, Failure> {
         warnings,
         lines,
         failed: false,
+        listing: true,
     })
+}
+
+/// "1 note" or "3 notes".
+fn note_count(n: usize) -> String {
+    format!("{n} {}", if n == 1 { "note" } else { "notes" })
 }
 
 fn set(args: &[String], env: &store::Env) -> Result<Output, Failure> {
@@ -129,6 +198,7 @@ fn set(args: &[String], env: &store::Env) -> Result<Output, Failure> {
         warnings: Vec::new(),
         lines: Vec::new(),
         failed: false,
+        listing: false,
     };
     let syncs = |name: &str| settings.scope(name).is_some_and(|s| s.sync != "off");
     let params = Params {
@@ -498,6 +568,47 @@ mod tests {
 
     const ID: &str = "01M3YJ7R6HK6NQ30DCDB1P4D01";
     const HEAD: &str = "---\nid: 01M3YJ7R6HK6NQ30DCDB1P4D01\ncreated: 2026-10-02T14:23-03:00\n";
+
+    fn listing(lines: &[&str], listing: bool) -> Output {
+        Output {
+            warnings: Vec::new(),
+            lines: lines.iter().map(|l| l.to_string()).collect(),
+            failed: false,
+            listing,
+        }
+    }
+
+    #[test]
+    fn the_view_is_a_table() {
+        let lines = [
+            "personal\t6 notes\tsync off\tembedder any\tpaths -\tdefault",
+            "shared\t1 note\tsync off\tembedder any\tpaths -",
+            "work\t2 notes\tsync file:///home/a/sync\tembedder local\tpaths /home/a/Developer/work",
+            "(unassigned)\t1 note\tembedder any",
+        ];
+        let out = listing(&lines, true);
+        let want = "{d}SCOPE{/d}               {d}NOTES{/d}  {d}SYNC{/d}           {d}EMBEDDER{/d}  {d}PATHS{/d}
+{b}personal{/b} {d}(default){/d}      6  off            any       -
+{b}shared{/b}                  1  off            any       -
+{b}work{/b}                    2  file://~/sync  local     ~/Developer/work
+{d}unassigned{/d}              1  {d}-{/d}              any       {d}-{/d}";
+        assert_eq!(
+            out.view(&terminal::fixed(100, true, true)),
+            terminal::styled(want).lines().collect::<Vec<_>>()
+        );
+        assert_eq!(
+            out.view(&terminal::fixed(100, false, true)),
+            [
+                "SCOPE               NOTES  SYNC           EMBEDDER  PATHS",
+                "personal (default)      6  off            any       -",
+                "shared                  1  off            any       -",
+                "work                    2  file://~/sync  local     ~/Developer/work",
+                "unassigned              1  -              any       -",
+            ]
+        );
+        let set = listing(&lines, false);
+        assert_eq!(set.view(&terminal::fixed(100, true, true)), set.lines);
+    }
 
     struct Scratch(PathBuf);
 

@@ -6,7 +6,6 @@ mod exchange;
 mod join;
 mod show;
 
-use std::ffi::OsString;
 use std::io::BufRead;
 use std::time::{Duration, Instant};
 
@@ -83,7 +82,7 @@ pub fn run(
     let form = parse(args)?;
     let mut cx = Cx {
         env,
-        human: terminal && !marked(&env.claudecode) && !marked(&env.codex_thread_id),
+        human: terminal && !env.agent(),
         answer,
         limits,
         out,
@@ -93,11 +92,6 @@ pub fn run(
         Form::Show { scopes, via } => show::run(&mut cx, &scopes, via.as_deref()),
         Form::Join { code, via, name } => join::run(&mut cx, &code, &via, name.as_deref()),
     }
-}
-
-/// An agent marker counts when it is set and not empty.
-fn marked(var: &Option<OsString>) -> bool {
-    var.as_ref().is_some_and(|v| !v.is_empty())
 }
 
 fn parse(args: &[String]) -> Result<Form, Failure> {
@@ -359,12 +353,5 @@ mod tests {
             || Err("unreachable".to_string()),
         );
         assert_eq!(failed, Err("unreachable".to_string()));
-    }
-
-    #[test]
-    fn an_agent_marker_counts_only_when_not_empty() {
-        assert!(!marked(&None));
-        assert!(!marked(&Some(OsString::new())));
-        assert!(marked(&Some(OsString::from("1"))));
     }
 }

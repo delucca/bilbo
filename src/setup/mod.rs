@@ -19,7 +19,7 @@ use std::time::Duration;
 
 use crate::Failure;
 use crate::host::prompt::{self, Prompter};
-use crate::host::{command, model, timer};
+use crate::host::{command, model, terminal, timer};
 use crate::search::{documents, embed};
 use crate::shared::config::Embedder;
 use crate::shared::store;
@@ -39,7 +39,45 @@ const OLLAMA: &str = "http://localhost:11434";
 /// The report lines for stdout and whether any step failed.
 pub struct Outcome {
     pub lines: Vec<String>,
+    /// The same report, a step per line, for the human view.
+    pub steps: Vec<terminal::Step>,
     pub failed: bool,
+}
+
+impl Outcome {
+    /// The `setup` human view of the step report; `lines` is the plain one.
+    pub fn view(&self, term: &terminal::Term) -> Vec<String> {
+        let mut out = terminal::steps(term, &self.steps);
+        let failed = self.steps.iter().filter(|s| s.status == "failed").count();
+        out.push(String::new());
+        out.push(match failed {
+            0 => {
+                let mut tally: Vec<(&str, usize)> = Vec::new();
+                for step in &self.steps {
+                    match tally.iter_mut().find(|(status, _)| *status == step.status) {
+                        Some((_, n)) => *n += 1,
+                        None => tally.push((&step.status, 1)),
+                    }
+                }
+                let tally: Vec<String> = tally.iter().map(|(s, n)| format!("{n} {s}")).collect();
+                format!(
+                    "{}  Setup done: {}",
+                    terminal::mark(term, terminal::Mark::Done),
+                    tally.join(", ")
+                )
+            }
+            n => format!(
+                "{}  {}",
+                terminal::mark(term, terminal::Mark::Error),
+                terminal::paint(
+                    term,
+                    terminal::Tone::Bold,
+                    &format!("{n} of {} steps failed", self.steps.len())
+                )
+            ),
+        });
+        out
+    }
 }
 
 pub fn run(
@@ -79,6 +117,7 @@ pub fn run(
                 report.line("server", lines.server.status, Some(lines.server.detail));
                 return Ok(Outcome {
                     lines: report.lines,
+                    steps: report.steps,
                     failed: true,
                 });
             }
@@ -480,5 +519,125 @@ mod tests {
         );
         assert_eq!(run_index(&failing).unwrap_err(), "no embedder\nmore");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// An outcome built from report lines, as `apply` builds it.
+    fn outcome_of(lines: &[&str]) -> Outcome {
+        let mut report = Report::default();
+        for line in lines {
+            let (head, detail) = match line.split_once(": ") {
+                Some((head, detail)) => (head, Some(detail.to_string())),
+                None => (*line, None),
+            };
+            let (step, status) = head.split_once(' ').unwrap();
+            report.line(step, status, detail);
+        }
+        Outcome {
+            lines: report.lines,
+            steps: report.steps,
+            failed: report.failed,
+        }
+    }
+
+    #[test]
+    fn a_failed_report() {
+        let outcome = outcome_of(&[
+            "store kept: /home/a/.local/share/bilbo/notes",
+            "config kept: /home/a/.config/bilbo/config",
+            "key skipped: local embedder",
+            "model skipped: not local",
+            "server skipped: not local",
+            "embedder skipped: config kept",
+            "claude skipped: --no-plugin",
+            "codex skipped: --no-plugin",
+            "hook skipped: no codex plugin",
+            "timer failed: launchctl not found on PATH",
+            "watch failed: launchctl not found on PATH",
+            "sync skipped: no scope syncs",
+        ]);
+        let want = "{d}◇{/d}  store     {d}kept{/d}     ~/.local/share/bilbo/notes
+{d}◇{/d}  config    {d}kept{/d}     ~/.config/bilbo/config
+{d}○{/d}  key       {d}skipped{/d}  local embedder
+{d}○{/d}  model     {d}skipped{/d}  not local
+{d}○{/d}  server    {d}skipped{/d}  not local
+{d}○{/d}  embedder  {d}skipped{/d}  config kept
+{d}○{/d}  claude    {d}skipped{/d}  --no-plugin
+{d}○{/d}  codex     {d}skipped{/d}  --no-plugin
+{d}○{/d}  hook      {d}skipped{/d}  no codex plugin
+{r}■{/r}  timer     {r}failed{/r}   launchctl not found on PATH
+{r}■{/r}  watch     {r}failed{/r}   launchctl not found on PATH
+{d}○{/d}  sync      {d}skipped{/d}  no scope syncs
+
+{r}■{/r}  {b}2 of 12 steps failed{/b}";
+        assert_eq!(
+            outcome.view(&terminal::fixed(100, true, true)),
+            terminal::styled(want).lines().collect::<Vec<_>>()
+        );
+        assert_eq!(
+            outcome.view(&terminal::fixed(100, false, true)),
+            terminal::plain(want).lines().collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn a_clean_rerun() {
+        let outcome = outcome_of(&[
+            "store kept: /home/a/.local/share/bilbo/notes",
+            "config kept: /home/a/.config/bilbo/config",
+            "key skipped: local embedder",
+            "model skipped: not local",
+            "server skipped: not local",
+            "embedder skipped: config kept",
+            "claude kept",
+            "codex kept",
+            "hook kept: trusted in Codex",
+            "timer kept",
+            "watch kept",
+            "sync skipped: no scope syncs",
+        ]);
+        let want = "◇  store     kept     ~/.local/share/bilbo/notes
+◇  config    kept     ~/.config/bilbo/config
+○  key       skipped  local embedder
+○  model     skipped  not local
+○  server    skipped  not local
+○  embedder  skipped  config kept
+◇  claude    kept
+◇  codex     kept
+◇  hook      kept     trusted in Codex
+◇  timer     kept
+◇  watch     kept
+○  sync      skipped  no scope syncs
+
+◆  Setup done: 7 kept, 5 skipped";
+        assert_eq!(
+            outcome.view(&terminal::fixed(100, false, true)),
+            want.lines().collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn a_first_install() {
+        let outcome = outcome_of(&[
+            "store created: /home/a/notes",
+            "claude installed: delucca/bilbo#v0.17.0",
+            "codex installed: delucca/bilbo#v0.17.0",
+            "hook installed: trusted in Codex",
+            "sync ok: personal through file:///home/a/sync (1 note)",
+        ]);
+        let view = outcome.view(&terminal::fixed(100, true, true));
+        assert_eq!(
+            view[0],
+            terminal::styled("{g}◆{/g}  store   {g}created{/g}    ~/notes")
+        );
+        assert_eq!(
+            view[4],
+            terminal::styled(
+                "{g}◆{/g}  sync    {g}ok{/g}         personal through file://~/sync (1 note)"
+            )
+        );
+        assert_eq!(
+            view.last().unwrap(),
+            &terminal::styled("{g}◆{/g}  Setup done: 1 created, 3 installed, 1 ok")
+        );
     }
 }

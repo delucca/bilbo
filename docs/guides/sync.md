@@ -186,6 +186,9 @@ notice 2026-10-04T18:02-03:00 notes/plan-release.md: edit-beat-delete
 change 2026-10-02T11:30-03:00 personal: device morthond added by owner key (manifest 4)
 ```
 
+That is the piped form. A terminal shows the same report grouped by scope, with
+times as ages and a mark for each device.
+
 A device's state is `up to date`, `behind by <n> segments`, or
 `stale since <time>` once it left a segment of this device unacknowledged for
 `sync.stale_days`, 180 by default.

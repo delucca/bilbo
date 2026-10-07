@@ -51,6 +51,10 @@ $ bilbo history release
 a1b2c3d4e5f6 2026-10-03T14:23-03:00 added decision-release.md
 ```
 
+This list and the diff below are the piped forms. A terminal shows the list as
+a table with ages and colours the diff; two equal versions print `◇  no changes
+between <a> and <b>`.
+
 Print a version, or compare:
 
 ```sh
@@ -74,6 +78,8 @@ recorded` on stderr.
 $ bilbo restore release a1b2c3
 restored decision-release.md to a1b2c3d4e5f6
 ```
+
+On a terminal it prints `◆  Restored decision-release.md to a1b2c3d4e5f6`.
 
 It works with or without a running watcher. Nothing is lost on the way. Restore
 first records what the file holds now when history does not, swaps the file in

@@ -1,7 +1,9 @@
 # Troubleshooting
 
 This page helps you when bilbo prints a message you do not expect. Find the
-message or the symptom, read the cause, apply the fix.
+message or the symptom, read the cause, apply the fix. The messages are shown as
+a pipe or an agent sees them, with the `bilbo: ` prefix; on a person's terminal
+the line starts with a mark instead, such as `■`, `▲` or `○`, and says the same.
 
 ## Setup
 
@@ -108,7 +110,7 @@ Cause: the embedder did not answer within 5 seconds, or answered with an error.
 Fix: check that the embedder is running and that `embedder.url` is right. For
 the local embedder, read `embedder.log` under bilbo's state folder.
 
-### `bilbo: <n> passages not indexed; run bilbo index`
+### `bilbo: <n> passage(s) not indexed; run bilbo index`
 
 Cause: passages written since the last `bilbo index` have no vector yet, so they
 rank by keywords only.
@@ -224,3 +226,25 @@ Not a problem: no declared scope has a `sync` URL. See
 
 It means something needs you. Read its lines. For a conflict, see
 [Conflicts](guides/sync.md#conflicts).
+
+## Output
+
+### Output looks different in a terminal and in a pipe
+
+Cause: bilbo has two views of a result. A terminal gets the terminal view:
+marks instead of `bilbo: `, tables, ages and colour. A pipe, a file, a hook and
+an agent get the plain view that the docs show. See [Terminal
+output](reference/commands.md#terminal-output).
+
+Fix: to see exactly what a script gets, run `bilbo <verb> | cat`. To keep the
+terminal view but drop the colour, set `NO_COLOR=1`.
+
+### An agent gets the terminal view
+
+Cause: an agent harness that runs bilbo through a terminal has to say so, or
+bilbo cannot tell it from a person. It reads one of `AI_AGENT`,
+`CLAUDE_CODE_CHILD_SESSION`, `CODEX_THREAD_ID` and `CODEX_CI`. `CLAUDECODE`
+does not count.
+
+Fix: set one of the four in the harness's environment; `AI_AGENT=<name>` works
+for any harness. Claude Code and Codex set theirs already.
