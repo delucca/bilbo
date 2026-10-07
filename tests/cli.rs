@@ -1,6 +1,6 @@
 mod common;
 
-use common::{TempDir, bilbo, bilbo_input, bilbo_tty};
+use common::{TempDir, bilbo, bilbo_input, bilbo_logged, bilbo_tty};
 
 /// The verbs in the order of the overview and of a usage error's `verbs:` line.
 const VERBS: [&str; 16] = [
@@ -774,6 +774,50 @@ fn tty(dir: &TempDir, extra: &[(&str, &str)], args: &[&str]) -> common::Run {
     ];
     env.extend_from_slice(extra);
     bilbo_tty(dir.path(), &env, args, 100)
+}
+
+#[test]
+fn a_usage_error_on_a_narrow_terminal_folds_the_verbs() {
+    let dir = TempDir::new("cli-tty-usage-fold");
+    let env = [("TERM", "xterm-256color"), ("LANG", "C.UTF-8")];
+    let run = bilbo_tty(dir.path(), &env, &["recal", "x"], 60);
+    assert_eq!(run.code, 2);
+    let plain = console::strip_ansi_codes(&run.stderr).into_owned();
+    let lines: Vec<&str> = plain.lines().collect();
+    assert_eq!(
+        lines,
+        [
+            "■  unknown verb 'recal'; did you mean 'recall'?",
+            "   usage: bilbo <verb> [<args>]...",
+            "   verbs: new, recall, check, history, restore, library,",
+            "          cite, scope, sync, device, pair, relay, setup,",
+            "          index, watch, digest",
+            "   see bilbo --help",
+        ]
+    );
+    assert!(lines.iter().all(|l| l.chars().count() <= 60), "{plain}");
+    let piped = bilbo(dir.path(), &[], &["recal", "x"]);
+    assert_eq!(piped.code, 2);
+    assert_eq!(
+        piped
+            .stderr
+            .lines()
+            .filter(|l| l.contains("verbs: "))
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn only_service_logs_to_a_file_carry_a_time() {
+    let dir = TempDir::new("cli-log-time-scope");
+    let home = home(&dir);
+    let env = [("BILBO_HOME", home.as_str())];
+    let run = bilbo_logged(dir.path(), &env, &["watch", "--help"]);
+    assert_eq!(run.code, 0);
+    assert!(run.stdout.starts_with("bilbo watch:"), "{}", run.stdout);
+    let run = bilbo_logged(dir.path(), &env, &["recall", "x"]);
+    assert!(run.stderr.starts_with("bilbo: "), "{}", run.stderr);
 }
 
 #[test]

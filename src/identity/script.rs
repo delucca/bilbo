@@ -3,6 +3,8 @@
 use crate::host::prompt::{Choice, Prompter};
 use std::collections::VecDeque;
 use std::io;
+use std::sync::mpsc::Sender;
+use std::time::Duration;
 use zeroize::Zeroizing;
 
 pub enum Answer {
@@ -19,6 +21,8 @@ pub enum Answer {
     ShownShort,
     /// A list word that is not that word.
     Wrong,
+    /// A yes (`true`) or a no that comes after the duration, as from a slow person.
+    Late(Duration, bool),
 }
 
 pub fn text(s: &str) -> Answer {
@@ -30,6 +34,10 @@ pub struct Script {
     answers: VecDeque<Answer>,
     /// Every shown text, one entry per call, led by the method's name.
     pub shown: Vec<String>,
+    /// Gets a copy of every shown text as it is shown.
+    tap: Option<Sender<String>>,
+    /// Runs once, before the first answer to a `confirm` is taken.
+    gate: Option<Box<dyn FnOnce() + Send>>,
 }
 
 impl Script {
@@ -37,7 +45,23 @@ impl Script {
         Script {
             answers: answers.into(),
             shown: Vec::new(),
+            tap: None,
+            gate: None,
         }
+    }
+
+    /// A script whose shown texts also go to `tap`, so another thread can read them while it runs.
+    pub fn tapped(answers: Vec<Answer>, tap: Sender<String>) -> Script {
+        Script {
+            tap: Some(tap),
+            ..Script::new(answers)
+        }
+    }
+
+    /// Holds the first `confirm` until `gate` returns.
+    pub fn gated(mut self, gate: impl FnOnce() + Send + 'static) -> Script {
+        self.gate = Some(Box::new(gate));
+        self
     }
 
     /// How many answers no prompt has taken.
@@ -98,6 +122,9 @@ impl Script {
     }
 
     fn log(&mut self, line: String) {
+        if let Some(tap) = &self.tap {
+            let _ = tap.send(line.clone());
+        }
         self.shown.push(line);
     }
 }
@@ -177,9 +204,16 @@ impl Prompter for Script {
     }
     fn confirm(&mut self, prompt: &str, initial: bool) -> io::Result<bool> {
         self.log(format!("confirm: {prompt} initial={initial}"));
+        if let Some(gate) = self.gate.take() {
+            gate();
+        }
         match self.next()? {
             Answer::Yes => Ok(true),
             Answer::No => Ok(false),
+            Answer::Late(after, yes) => {
+                std::thread::sleep(after);
+                Ok(yes)
+            }
             Answer::Default => Ok(initial),
             _ => Err(Script::wrong()),
         }
@@ -235,5 +269,9 @@ impl Prompter for Script {
         let out = work(self);
         self.log("screen: end".to_string());
         out
+    }
+    fn wait<T>(&mut self, message: &str, work: impl FnOnce() -> T) -> T {
+        self.log(format!("wait: {message}"));
+        work()
     }
 }

@@ -24,6 +24,13 @@ pub struct Term {
     pub width: usize,
     /// `$HOME` when absolute, for `~/` paths.
     pub home: Option<PathBuf>,
+    /// The human view may redraw a line in place (a spinner): human, and `TERM` set, not empty, not `dumb`.
+    pub redraw: bool,
+    /// Each line starts with the time: set by `main` for `watch`, `relay` and `index` when the stream is a
+    /// regular file.
+    pub stamp: bool,
+    /// OSC 8 links are drawn, to `file://` URIs on this host name (empty when unknown).
+    pub links: Option<String>,
 }
 
 /// Probes the stream (a terminal or not, its columns) and decides.
@@ -36,19 +43,35 @@ pub fn open(stream: Stream, env: &store::Env) -> Term {
         .size_checked()
         .map(|(_, columns)| columns as usize)
         .filter(|columns| *columns > 0);
-    decide(term.is_term(), columns, env)
+    let mut term = decide(term.is_term(), columns, env);
+    if let Some(host) = term.links.as_mut() {
+        *host = machine_name().unwrap_or_default();
+    }
+    term
+}
+
+/// This host's name as the system gives it; `None` when the call fails or the name is empty.
+pub fn machine_name() -> Option<String> {
+    let mut buffer = [0u8; 256];
+    // SAFETY: the buffer is writable for its whole length, which is what gethostname is told.
+    let rc = unsafe { libc::gethostname(buffer.as_mut_ptr().cast(), buffer.len()) };
+    if rc != 0 {
+        return None;
+    }
+    let end = buffer.iter().position(|b| *b == 0).unwrap_or(buffer.len());
+    let name = String::from_utf8_lossy(&buffer[..end]).into_owned();
+    (!name.is_empty()).then_some(name)
 }
 
 /// The rule of the `cli` spec's Terminal views and Human view escapes.
 pub fn decide(terminal: bool, columns: Option<usize>, env: &store::Env) -> Term {
     let set = |v: &Option<std::ffi::OsString>| v.as_ref().is_some_and(|v| !v.is_empty());
     let human = terminal && !env.agent();
-    let colour = !set(&env.no_color)
-        && env.clicolor.as_deref() != Some("0".as_ref())
-        && env
-            .term
-            .as_ref()
-            .is_some_and(|t| !t.is_empty() && t != "dumb");
+    let term_ok = env
+        .term
+        .as_ref()
+        .is_some_and(|t| !t.is_empty() && t != "dumb");
+    let colour = !set(&env.no_color) && env.clicolor.as_deref() != Some("0".as_ref()) && term_ok;
     let unicode = cfg!(target_os = "macos")
         || env
             .lang
@@ -71,6 +94,10 @@ pub fn decide(terminal: bool, columns: Option<usize>, env: &store::Env) -> Term 
         unicode,
         width,
         home: store::absolute(&env.home),
+        redraw: human && term_ok,
+        stamp: false,
+        links: (human && colour && env.bilbo_hyperlinks.as_deref() == Some("1".as_ref()))
+            .then(String::new),
     }
 }
 
@@ -79,6 +106,54 @@ pub fn decide(terminal: bool, columns: Option<usize>, env: &store::Env) -> Term 
 pub fn init(stderr: &Term) {
     console::set_colors_enabled(stderr.paint);
     console::set_colors_enabled_stderr(stderr.paint);
+}
+
+/// `fd` is a regular file: the service units append their logs to one, a pipe or a terminal is read live.
+pub fn is_file(fd: impl std::os::fd::AsFd) -> bool {
+    fd.as_fd()
+        .try_clone_to_owned()
+        .map(std::fs::File::from)
+        .and_then(|file| file.metadata())
+        .is_ok_and(|meta| meta.is_file())
+}
+
+/// The time format of a service log line: RFC 3339 to the second.
+pub const LOG_TIME: &str = "%Y-%m-%dT%H:%M:%S%:z";
+
+/// `line` led by the time `now`.
+pub fn stamped(now: &jiff::Zoned, line: &str) -> String {
+    format!("{} {line}", now.strftime(LOG_TIME))
+}
+
+/// The `file://` URI of `path` on `host`, every byte but `A-Za-z0-9-._~/` written `%XX`.
+pub fn file_uri(host: &str, path: &Path) -> String {
+    use std::os::unix::ffi::OsStrExt;
+    fn encode(bytes: &[u8]) -> String {
+        let mut out = String::new();
+        for b in bytes {
+            if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'.' | b'_' | b'~' | b'/') {
+                out.push(*b as char);
+            } else {
+                out.push_str(&format!("%{b:02X}"));
+            }
+        }
+        out
+    }
+    format!(
+        "file://{}{}",
+        encode(host.as_bytes()),
+        encode(path.as_os_str().as_bytes())
+    )
+}
+
+/// `text` as an OSC 8 link to `path` when `term.links` is set; `text` itself otherwise or when empty.
+pub fn link(term: &Term, path: &Path, text: &str) -> String {
+    match term.links.as_deref() {
+        Some(host) if !text.is_empty() => {
+            format!("\x1b]8;;{}\x1b\\{text}\x1b]8;;\x1b\\", file_uri(host, path))
+        }
+        _ => text.to_string(),
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -254,15 +329,27 @@ pub fn wrap(term: &Term, text: &str, width: usize, long: Long) -> Vec<String> {
 /// `head` and `tail` joined by `sep` on one line when they fit `width`; else `head` folded, then
 /// `tail` on its own lines, broken only after a `/` (a tail without one is split by columns).
 pub fn tail_lines(head: &str, tail: &str, sep: &str, width: usize) -> Vec<String> {
+    tail_lines_with(head, tail, sep, width, |p| p.to_string())
+}
+
+/// `tail_lines` with `piece` applied to the tail (or to each of its broken pieces) after the widths
+/// are measured on the plain text: for links.
+pub fn tail_lines_with(
+    head: &str,
+    tail: &str,
+    sep: &str,
+    width: usize,
+    piece: impl Fn(&str) -> String,
+) -> Vec<String> {
     if head.is_empty() {
-        return break_path(tail, width);
+        return break_path(tail, width).iter().map(|p| piece(p)).collect();
     }
     let joined = format!("{head}{sep}{tail}");
     if width_of(&joined) <= width {
-        return vec![joined];
+        return vec![format!("{head}{sep}{}", piece(tail))];
     }
     let mut lines = fold(head, width);
-    lines.extend(break_path(tail, width));
+    lines.extend(break_path(tail, width).iter().map(|p| piece(p)));
     lines
 }
 
@@ -492,6 +579,9 @@ pub fn fixed(width: usize, paint: bool, unicode: bool) -> Term {
         unicode,
         width,
         home: Some("/home/a".into()),
+        redraw: true,
+        stamp: false,
+        links: None,
     }
 }
 
@@ -515,11 +605,16 @@ pub fn styled(notation: &str) -> String {
         ("{u}", "\x1b[34m"),
         ("{/u}", "\x1b[39m"),
     ];
+    let mut notation = notation.to_string();
+    while let Some(at) = notation.find("{l:") {
+        let end = at + notation[at..].find('}').expect("a closed {l:");
+        let uri = notation[at + 3..end].to_string();
+        notation.replace_range(at..=end, &format!("\x1b]8;;{uri}\x1b\\"));
+    }
+    let notation = notation.replace("{/l}", "\x1b]8;;\x1b\\");
     CODES
         .iter()
-        .fold(notation.to_string(), |text, (name, code)| {
-            text.replace(name, code)
-        })
+        .fold(notation, |text, (name, code)| text.replace(name, code))
 }
 
 /// `line` without its escape codes.
@@ -548,6 +643,109 @@ mod tests {
                 .find(|(k, _)| k == name)
                 .map(|(_, v)| v.as_str().into())
         })
+    }
+
+    #[test]
+    fn redraw_and_links_follow_the_terminal_and_the_variable() {
+        let at = |terminal, vars: &[(&str, &str)]| decide(terminal, Some(100), &env(vars));
+        let on = [("TERM", "xterm"), ("BILBO_HYPERLINKS", "1")];
+        assert_eq!(at(true, &on).links, Some(String::new()));
+        for vars in [
+            &[("TERM", "xterm"), ("BILBO_HYPERLINKS", "yes")][..],
+            &[("TERM", "xterm"), ("BILBO_HYPERLINKS", "0")],
+            &[("TERM", "xterm")],
+            &[
+                ("TERM", "xterm"),
+                ("BILBO_HYPERLINKS", "1"),
+                ("NO_COLOR", "1"),
+            ],
+            &[("TERM", "dumb"), ("BILBO_HYPERLINKS", "1")],
+            &[
+                ("TERM", "xterm"),
+                ("BILBO_HYPERLINKS", "1"),
+                ("AI_AGENT", "x"),
+            ],
+        ] {
+            assert_eq!(at(true, vars).links, None, "{vars:?}");
+        }
+        assert_eq!(at(false, &on).links, None);
+        assert!(at(true, &[("TERM", "xterm")]).redraw);
+        assert!(at(true, &[("TERM", "xterm"), ("NO_COLOR", "1")]).redraw);
+        for vars in [
+            &[("TERM", "dumb")][..],
+            &[],
+            &[("TERM", "xterm"), ("AI_AGENT", "x")],
+        ] {
+            assert!(!at(true, vars).redraw, "{vars:?}");
+        }
+        assert!(!at(false, &[("TERM", "xterm")]).redraw);
+        assert!(!at(true, &on).stamp);
+    }
+
+    #[test]
+    fn a_log_line_starts_with_the_time() {
+        let now: jiff::Timestamp = "2026-10-07T04:02:03Z".parse().unwrap();
+        let zoned = now.to_zoned(jiff::tz::TimeZone::fixed(jiff::tz::offset(-3)));
+        assert_eq!(
+            stamped(&zoned, "bilbo: watching /r/notes"),
+            "2026-10-07T01:02:03-03:00 bilbo: watching /r/notes"
+        );
+        assert_eq!(
+            stamped(&now.to_zoned(jiff::tz::TimeZone::UTC), "x"),
+            "2026-10-07T04:02:03+00:00 x"
+        );
+    }
+
+    #[test]
+    fn a_regular_file_is_told_from_a_pipe_and_a_terminal() {
+        let file = std::fs::File::open("/dev/null").unwrap();
+        assert!(!is_file(&file));
+        assert!(is_file(
+            std::fs::File::open(env!("CARGO_MANIFEST_DIR").to_owned() + "/Cargo.toml").unwrap()
+        ));
+    }
+
+    #[test]
+    fn file_uris_escape_all_but_the_safe_bytes() {
+        assert_eq!(
+            file_uri("shire-box", Path::new("/home/a/notes/plan-roll back.md")),
+            "file://shire-box/home/a/notes/plan-roll%20back.md"
+        );
+        assert_eq!(
+            file_uri("", Path::new("/tmp/é#1.md")),
+            "file:///tmp/%C3%A9%231.md"
+        );
+        assert_eq!(file_uri("a b", Path::new("/x")), "file://a%20b/x");
+    }
+
+    #[test]
+    fn a_link_wraps_its_text_only_when_links_are_on() {
+        let path = Path::new("/x");
+        assert_eq!(link(&fixed(100, true, true), path, "t"), "t");
+        let on = Term {
+            links: Some("h".into()),
+            ..fixed(100, true, true)
+        };
+        assert_eq!(
+            link(&on, path, "t"),
+            "\x1b]8;;file://h/x\x1b\\t\x1b]8;;\x1b\\"
+        );
+        assert_eq!(link(&on, path, "t"), styled("{l:file://h/x}t{/l}"));
+        assert_eq!(stripped(&link(&on, path, "t")), "t");
+        assert_eq!(link(&on, path, ""), "");
+    }
+
+    #[test]
+    fn a_tail_is_mapped_after_it_is_measured() {
+        let mark = |p: &str| format!("<{p}>");
+        assert_eq!(
+            tail_lines_with("a", "/b/c", " · ", 20, mark),
+            ["a · </b/c>"]
+        );
+        assert_eq!(
+            tail_lines_with("", "/aaaa/bbbb/cccc", " · ", 10, mark),
+            ["</aaaa/>", "<bbbb/cccc>"]
+        );
     }
 
     #[test]

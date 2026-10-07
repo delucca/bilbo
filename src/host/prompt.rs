@@ -2,6 +2,7 @@
 //! draws on stderr.
 
 use std::io;
+use std::time::Duration;
 use zeroize::Zeroizing;
 
 pub struct Choice {
@@ -68,6 +69,50 @@ pub trait Prompter {
         Self: Sized,
     {
         work(self)
+    }
+    /// Runs `work` under a spinner that is erased when it ends; the default runs it in place.
+    fn wait<T>(&mut self, message: &str, work: impl FnOnce() -> T) -> T {
+        let _ = message;
+        work()
+    }
+}
+
+/// How long a wait runs before `Spinner` shows it.
+const SPIN_AFTER: Duration = Duration::from_millis(500);
+
+/// Runs `work`; once it has run `after`, a cliclack spinner with `message` draws on stderr until it
+/// ends, and is then erased. The spinner lives on a scoped thread, so `work` need not be `Send`.
+fn spinning<T>(message: &str, after: Duration, work: impl FnOnce() -> T) -> T {
+    let (done, wait) = std::sync::mpsc::channel::<()>();
+    // `done` moves in, so a panic in `work` drops it and ends the spinner before the scope joins.
+    std::thread::scope(move |s| {
+        s.spawn(move || {
+            if wait.recv_timeout(after).is_ok() {
+                return;
+            }
+            let spinner = cliclack::spinner();
+            spinner.start(message);
+            let _ = wait.recv();
+            spinner.clear();
+        });
+        let out = work();
+        let _ = done.send(());
+        out
+    })
+}
+
+/// A wait that shows `Waiting ...` on stderr after half a second when `on`, and does nothing
+/// visible otherwise.
+pub struct Spinner {
+    pub on: bool,
+}
+
+impl Spinner {
+    pub fn wait<T>(&self, message: &str, work: impl FnOnce() -> T) -> T {
+        match self.on {
+            true => spinning(message, SPIN_AFTER, work),
+            false => work(),
+        }
     }
 }
 
@@ -204,6 +249,8 @@ impl Prompter for Terminal {
     }
 
     fn confirm(&mut self, prompt: &str, initial: bool) -> io::Result<bool> {
+        // Keys typed before the question was shown, during a wait, must not answer it.
+        unsafe { libc::tcflush(libc::STDIN_FILENO, libc::TCIFLUSH) };
         cliclack::confirm(prompt).initial_value(initial).interact()
     }
 
@@ -259,5 +306,24 @@ impl Prompter for Terminal {
     fn screen<T>(&mut self, work: impl FnOnce(&mut Self) -> T) -> T {
         let _screen = AlternateScreen::enter();
         work(self)
+    }
+
+    fn wait<T>(&mut self, message: &str, work: impl FnOnce() -> T) -> T {
+        spinning(message, Duration::ZERO, work)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_panic_under_a_spinner_ends_the_wait() {
+        let (sent, got) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let out = std::panic::catch_unwind(|| spinning("x", Duration::ZERO, || panic!("boom")));
+            let _ = sent.send(out.is_err());
+        });
+        assert_eq!(got.recv_timeout(Duration::from_secs(5)), Ok(true));
     }
 }

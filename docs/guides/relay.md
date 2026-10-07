@@ -40,7 +40,9 @@ The relay allows 256 connections at once. It closes:
 
 It logs one line per object created and per refusal of a device it knows, and a
 count of the other refusals once a minute, never an address, a header, a body or
-a pairing code.
+a pairing code. Written to a file, each line starts with the time, as
+`2026-10-07T01:02:03-03:00 bilbo: ...`; under systemd's journal, which stamps
+every line itself, bilbo adds none.
 
 ## Run it on NixOS
 

@@ -2146,3 +2146,195 @@ fn warnings_follow_the_hits_on_a_terminal() {
         "bilbo: 2 passages not indexed; run bilbo index\n"
     );
 }
+
+// The embedder wait.
+
+/// `text` without its escape sequences and carriage returns.
+fn visible(text: &str) -> String {
+    let mut out = String::new();
+    let mut chars = text.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '\x1b' => {
+                if chars.next_if_eq(&'[').is_some() {
+                    while chars.next_if(|c| !c.is_ascii_alphabetic()).is_some() {}
+                }
+                chars.next();
+            }
+            '\r' => {}
+            c => out.push(c),
+        }
+    }
+    out
+}
+
+/// A store indexed through a fake that then answers each query after `delay`; the extra variables
+/// that make `recall_tty` find the config and the index.
+fn slow_embedder(dir: &TempDir, fake: &Fake, delay: std::time::Duration) -> (PathBuf, Vec<String>) {
+    let (root, config) = embedded(dir, fake, &[], &rollback_notes());
+    fake.delay(delay);
+    let cache = dir.path().join("cache");
+    (
+        root,
+        vec![
+            config.to_str().unwrap().to_string(),
+            cache.to_str().unwrap().to_string(),
+        ],
+    )
+}
+
+fn waiting(dir: &TempDir, root: &Path, vars: &[String], extra: &[(&str, &str)]) -> Run {
+    let mut env = vec![
+        ("BILBO_CONFIG", vars[0].as_str()),
+        ("XDG_CACHE_HOME", vars[1].as_str()),
+    ];
+    env.extend_from_slice(extra);
+    recall_tty(dir, root, &env, &["rollback"], 100)
+}
+
+#[test]
+fn a_slow_embedder_shows_a_spinner_that_is_erased() {
+    let dir = TempDir::new("recall-spinner");
+    let fake = Fake::start(4);
+    let (root, vars) = slow_embedder(&dir, &fake, std::time::Duration::from_millis(1500));
+    let run = waiting(&dir, &root, &vars, &[("NO_COLOR", "1")]);
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    assert!(run.stdout.contains("plan-a.md") || run.stdout.contains("Rollback plan"));
+    let at = run
+        .stderr
+        .rfind("Waiting for the embedder")
+        .unwrap_or_else(|| panic!("{:?}", run.stderr));
+    let after = &run.stderr[at + "Waiting for the embedder".len()..];
+    assert!(after.contains("\x1b[2K"), "{after:?}");
+    assert!(visible(after).trim().is_empty(), "{:?}", run.stderr);
+    assert!(run.stderr.ends_with("\x1b[2K"), "{:?}", run.stderr);
+}
+
+#[test]
+fn a_quick_embedder_draws_no_spinner() {
+    let dir = TempDir::new("recall-spinner-quick");
+    let fake = Fake::start(4);
+    let (root, vars) = slow_embedder(&dir, &fake, std::time::Duration::ZERO);
+    let run = waiting(&dir, &root, &vars, &[]);
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    assert_eq!(run.stderr, "");
+}
+
+#[test]
+fn no_spinner_for_an_agent_or_a_dumb_terminal() {
+    let dir = TempDir::new("recall-spinner-quiet");
+    let fake = Fake::start(4);
+    let (root, vars) = slow_embedder(&dir, &fake, std::time::Duration::from_millis(1500));
+    let agent = waiting(&dir, &root, &vars, &[("CLAUDE_CODE_CHILD_SESSION", "1")]);
+    assert_eq!(agent.code, 0, "{}", agent.stderr);
+    assert_eq!(agent.stderr, "");
+    assert!(!agent.stdout.contains('\x1b'), "{:?}", agent.stdout);
+    let dumb = waiting(&dir, &root, &vars, &[("TERM", "dumb")]);
+    assert_eq!(dumb.code, 0, "{}", dumb.stderr);
+    assert_eq!(dumb.stderr, "");
+}
+
+// Code passages and links.
+
+fn pragma_store(dir: &TempDir) -> PathBuf {
+    let root = store(dir);
+    write(
+        &root,
+        "plan-a.md",
+        &note(
+            "Sqlite pragmas",
+            "## Setup\n\n```sql\nPRAGMA busy_timeout = 5000;\nPRAGMA journal_mode = WAL;\nPRAGMA synchronous = NORMAL;\nPRAGMA foreign_keys = ON;\n```\n",
+        ),
+    );
+    root
+}
+
+#[test]
+fn a_code_block_shows_as_written_on_a_terminal() {
+    let dir = TempDir::new("recall-tty-code");
+    let root = pragma_store(&dir);
+    let run = recall_tty(&dir, &root, &[("NO_COLOR", "1")], &["busy_timeout"], 100);
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    let lines: Vec<&str> = run.stdout.lines().collect();
+    assert_eq!(
+        lines[1], "    PRAGMA busy_timeout = 5000;",
+        "{}",
+        run.stdout
+    );
+    assert_eq!(lines[2], "    PRAGMA journal_mode = WAL;");
+    assert_eq!(lines[3], "    PRAGMA synchronous = NORMAL; …");
+}
+
+#[test]
+fn a_piped_code_block_keeps_the_collapsed_snippet() {
+    let dir = TempDir::new("recall-piped-code");
+    let root = pragma_store(&dir);
+    let run = recall(&dir, &root, &["busy_timeout"]);
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    let third = run.stdout.lines().nth(2).unwrap();
+    assert!(
+        third.starts_with("PRAGMA busy_timeout = 5000; PRAGMA journal_mode = WAL;")
+            || third.starts_with("```sql PRAGMA busy_timeout = 5000;"),
+        "{third}"
+    );
+    assert!(!run.stdout.contains('\x1b'));
+}
+
+#[test]
+fn hyperlinks_are_opt_in_and_only_for_the_human_view() {
+    let dir = TempDir::new("recall-tty-links");
+    let root = rollback_store(&dir);
+    let on = recall_tty(
+        &dir,
+        &root,
+        &[("BILBO_HYPERLINKS", "1")],
+        &["rollback"],
+        100,
+    );
+    assert_eq!(on.code, 0, "{}", on.stderr);
+    assert!(on.stdout.contains("\x1b]8;;file://"), "{:?}", on.stdout);
+    assert!(on.stdout.contains("\x1b]8;;\x1b\\"), "{:?}", on.stdout);
+    for extra in [
+        &[("BILBO_HYPERLINKS", "yes")][..],
+        &[],
+        &[("BILBO_HYPERLINKS", "1"), ("NO_COLOR", "1")],
+    ] {
+        let run = recall_tty(&dir, &root, extra, &["rollback"], 100);
+        assert_eq!(run.code, 0, "{}", run.stderr);
+        assert!(!run.stdout.contains("\x1b]8"), "{extra:?} {:?}", run.stdout);
+    }
+    let home = dir.path().join("home");
+    let piped = bilbo(
+        dir.path(),
+        &[
+            ("BILBO_HOME", root.to_str().unwrap()),
+            ("HOME", home.to_str().unwrap()),
+            ("BILBO_HYPERLINKS", "1"),
+        ],
+        &["recall", "rollback"],
+    );
+    assert!(!piped.stdout.contains('\x1b'), "{:?}", piped.stdout);
+}
+
+#[test]
+fn a_library_link_surrounds_the_reference_only() {
+    let dir = TempDir::new("recall-tty-library-link");
+    let root = store(&dir);
+    library(&root, "go", "effective-go", EFFECTIVE_GO);
+    let run = recall_tty(
+        &dir,
+        &root,
+        &[("BILBO_HYPERLINKS", "1")],
+        &["goroutine", "--library"],
+        100,
+    );
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    let linked = run
+        .stdout
+        .lines()
+        .find(|l| l.contains("\x1b]8;;file://"))
+        .unwrap_or_else(|| panic!("{:?}", run.stdout));
+    let (_, rest) = linked.split_once("\x1b\\").unwrap();
+    let (text, _) = rest.split_once("\x1b]8;;\x1b\\").unwrap();
+    assert_eq!(text, "go/effective-go");
+}

@@ -2,7 +2,7 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use crate::host::terminal;
+use crate::host::{prompt, terminal};
 use crate::library::corpus;
 use crate::search::documents::{self, Shelf};
 use crate::search::rank::{self, Document, Hit};
@@ -78,6 +78,7 @@ pub enum Meta {
     Library {
         guide: bool,
         reference: String,
+        path: PathBuf,
         start: usize,
         end: usize,
     },
@@ -132,13 +133,17 @@ impl Output {
         let mut line = format!(
             "{}  {}",
             terminal::paint(term, terminal::Tone::Dim, &rank),
-            terminal::paint(term, terminal::Tone::Bold, &markdown::plain(&hit.title))
+            terminal::paint(
+                term,
+                terminal::Tone::Bold,
+                &visible(&markdown::plain(&hit.title))
+            )
         );
         for heading in &hit.headings {
             line.push_str(&format!(
                 " {} {}",
                 terminal::mark(term, terminal::Mark::Path),
-                self.bold_words(term, &markdown::plain(heading))
+                self.bold_words(term, &visible(&markdown::plain(heading)))
             ));
         }
         terminal::cut(term, &line, term.width)
@@ -167,7 +172,10 @@ impl Output {
 
     /// The passage cut down to the lines the view shows, windowed on its first matching word.
     fn snippet(&self, term: &terminal::Term, text: &str, avail: usize) -> Vec<String> {
-        let flat = markdown::plain(text);
+        if let Some(code) = code_lines(text) {
+            return code_snippet(term, &code, avail);
+        }
+        let flat = visible(&markdown::plain(text));
         if flat.is_empty() {
             return Vec::new();
         }
@@ -247,6 +255,82 @@ impl Output {
     }
 }
 
+/// `text` with each control character but a tab written as an escape (`\u{1b}`), so a note's or a
+/// source's text never reaches the terminal as a control sequence.
+fn visible(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for c in text.chars() {
+        if c.is_control() && c != '\t' {
+            out.extend(c.escape_default());
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
+/// The lines inside a fenced block that opens the passage, blank lines left out, and whether
+/// anything follows the lines returned (more block lines or text after the block); `None` when the
+/// passage does not open with a fence.
+fn code_lines(text: &str) -> Option<(Vec<String>, bool)> {
+    let lines = markdown::lines(text);
+    let (ch, len, _) = markdown::fence_run(lines.first()?)?;
+    let close = lines[1..].iter().position(|line| {
+        markdown::fence_run(line)
+            .is_some_and(|(c, l, rest)| c == ch && l >= len && rest.trim().is_empty())
+    });
+    let (inside, after) = match close {
+        Some(at) => (&lines[1..=at], &lines[at + 2..]),
+        None => (&lines[1..], &lines[..0]),
+    };
+    let shown = inside
+        .iter()
+        .filter(|line| !line.trim().is_empty())
+        .map(|line| {
+            let mut out = String::with_capacity(line.len());
+            for c in line.chars() {
+                match c {
+                    '\t' => out.push_str("    "),
+                    c if c.is_control() => out.extend(c.escape_default()),
+                    c => out.push(c),
+                }
+            }
+            out
+        })
+        .collect();
+    Some((shown, after.iter().any(|line| !line.trim().is_empty())))
+}
+
+/// The first lines of a code passage as written, dim; the last one ends with a cut mark when more
+/// follows.
+fn code_snippet(
+    term: &terminal::Term,
+    (lines, follows): &(Vec<String>, bool),
+    avail: usize,
+) -> Vec<String> {
+    let max_lines = if term.width < 60 { 2 } else { 3 };
+    let more = lines.len() > max_lines || *follows;
+    let unpainted = terminal::Term {
+        paint: false,
+        ..term.clone()
+    };
+    let tail = format!(" {}", terminal::glyph(term, terminal::Mark::Cut));
+    let shown = lines.len().min(max_lines);
+    lines
+        .iter()
+        .take(max_lines)
+        .enumerate()
+        .map(|(i, line)| {
+            let room = avail.saturating_sub(terminal::width_of(&tail)).max(1);
+            let text = match more && i + 1 == shown && terminal::width_of(line) <= room {
+                true => format!("{line}{tail}"),
+                false => terminal::cut(&unpainted, line, avail),
+            };
+            terminal::paint(term, terminal::Tone::Dim, &text)
+        })
+        .collect()
+}
+
 /// The byte ranges of the runs of letters and digits in `text`.
 fn runs(text: &str) -> impl Iterator<Item = (usize, usize)> + '_ {
     let mut chars = text.char_indices().peekable();
@@ -315,13 +399,14 @@ fn meta_lines(
             if *meaning {
                 parts.push("by meaning".into());
             }
-            format!("{}:{line}", terminal::tilde(term, path))
+            format!("{}:{line}", visible(&terminal::tilde(term, path)))
         }
         Meta::Library {
             guide,
             reference,
             start,
             end,
+            ..
         } => {
             let shelf = if *guide { "guide" } else { "source" };
             parts.push(shelf.into());
@@ -330,7 +415,20 @@ fn meta_lines(
         }
     };
     let mut next = 0;
-    terminal::tail_lines(&parts.join(&dot), &tail, &dot, avail)
+    let (path, linked) = match meta {
+        Meta::Note { path, .. } => (path, None),
+        Meta::Library {
+            path, reference, ..
+        } => (path, Some(reference.as_str())),
+    };
+    let piece = |piece: &str| match linked {
+        Some(reference) if piece.contains(reference) => {
+            piece.replacen(reference, &terminal::link(term, path, reference), 1)
+        }
+        Some(_) => piece.to_string(),
+        None => terminal::link(term, path, piece),
+    };
+    terminal::tail_lines_with(&parts.join(&dot), &tail, &dot, avail, piece)
         .into_iter()
         .map(|line| {
             let tokens: Vec<String> = line
@@ -348,7 +446,11 @@ fn meta_lines(
         .collect()
 }
 
-pub fn run(args: &[String], env: &store::Env) -> Result<Output, Failure> {
+pub fn run(
+    args: &[String],
+    env: &store::Env,
+    spinner: &prompt::Spinner,
+) -> Result<Output, Failure> {
     let request = parse(args)?;
     let settings = config::load(env).map_err(Failure::Config)?;
     let root = store::root(env).map_err(Failure::Config)?;
@@ -389,7 +491,7 @@ pub fn run(args: &[String], env: &store::Env) -> Result<Output, Failure> {
         .collect();
     let (meaning, warnings) = match &settings.embedder {
         Some(embedder) => meaning(
-            embedder,
+            (embedder, spinner),
             env,
             &root,
             &request.query,
@@ -526,6 +628,7 @@ fn library(request: &Request, root: &Path) -> Result<Output, Failure> {
             meta: Meta::Library {
                 guide,
                 reference: file.reference.clone(),
+                path: file.path.clone(),
                 start,
                 end,
             },
@@ -554,7 +657,7 @@ fn library(request: &Request, root: &Path) -> Result<Output, Failure> {
 
 /// The meaning order (at most `rank::CANDIDATES` hits, only documents whose `allowed` is true) and the warnings.
 fn meaning(
-    embedder: &config::Embedder,
+    (embedder, spinner): (&config::Embedder, &prompt::Spinner),
     env: &store::Env,
     root: &Path,
     query: &str,
@@ -573,7 +676,10 @@ fn meaning(
     if indexed_any {
         let mut text = format!("{}{query}", embedder.query_prefix);
         text.truncate(text.floor_char_boundary(QUERY_BYTES));
-        match embed::query(embedder, &text, QUERY_TIMEOUT, cache.dims) {
+        let answer = spinner.wait("Waiting for the embedder", || {
+            embed::query(embedder, &text, QUERY_TIMEOUT, cache.dims)
+        });
+        match answer {
             Ok(q) => {
                 hits = rank::meaning(&q, &found, embedder.min_similarity)
                     .into_iter()
@@ -1065,6 +1171,7 @@ mod tests {
         let lib = |reference: &str, start, end, guide| Meta::Library {
             guide,
             reference: reference.into(),
+            path: format!("/home/a/.local/share/bilbo/library/{reference}.md").into(),
             start,
             end,
         };
@@ -1111,6 +1218,230 @@ mod tests {
             expect(want)
         );
         same_layout(&out, 100, true);
+    }
+
+    fn pragmas() -> Shown {
+        note(
+            "Sqlite pragmas",
+            &["Setup"],
+            "```sql\nPRAGMA busy_timeout = 5000;\nPRAGMA journal_mode = WAL;\nPRAGMA synchronous = NORMAL;\nPRAGMA foreign_keys = ON;\n```",
+            note_meta(
+                "gotcha",
+                "2026-10-07T00:43-03:00",
+                "gotcha-sqlite-pragmas.md",
+                9,
+            ),
+        )
+    }
+
+    #[test]
+    fn a_code_block_shows_as_written() {
+        let out = output(vec![pragmas()], 1, "busy timeout", 1);
+        let want = "{d} 1{/d}  {b}Sqlite pragmas{/b} {d}›{/d} Setup
+    {d}PRAGMA busy_timeout = 5000;{/d}
+    {d}PRAGMA journal_mode = WAL;{/d}
+    {d}PRAGMA synchronous = NORMAL; …{/d}
+    {d}{c}gotcha{/c} · 17 min ago · ~/.local/share/bilbo/notes/gotcha-sqlite-pragmas.md:9{/d}
+
+{d}1 note, best first{/d}";
+        assert_eq!(
+            out.view(&terminal::fixed(100, true, true), now()),
+            expect(want)
+        );
+        same_layout(&out, 100, true);
+    }
+
+    #[test]
+    fn a_code_block_at_50_columns_and_in_ascii() {
+        let out = output(vec![pragmas()], 1, "busy timeout", 1);
+        let want = " 1  Sqlite pragmas › Setup
+    PRAGMA busy_timeout = 5000;
+    PRAGMA journal_mode = WAL; …
+    gotcha · 17 min ago
+    ~/.local/share/bilbo/notes/
+    gotcha-sqlite-pragmas.md:9
+
+1 note, best first";
+        assert_eq!(
+            out.view(&terminal::fixed(50, false, true), now()),
+            unpainted(want)
+        );
+        same_layout(&out, 50, true);
+        let view = out.view(&terminal::fixed(100, false, false), now());
+        assert_eq!(view[3], "    PRAGMA synchronous = NORMAL; ...");
+        same_layout(&out, 100, false);
+    }
+
+    /// The passage lines of a hit whose passage is `text`, unpainted at 100 columns.
+    fn passage_lines(text: &str) -> Vec<String> {
+        let view = output(vec![passage(text)], 1, "zzz", 1)
+            .view(&terminal::fixed(100, false, true), now());
+        view[1..view.len() - 3].to_vec()
+    }
+
+    #[test]
+    fn code_lines_keep_their_indent_and_end_cleanly() {
+        assert_eq!(
+            passage_lines("```\n\tlet x = 1;\n    let y = 2;\n```"),
+            ["        let x = 1;", "        let y = 2;"]
+        );
+    }
+
+    #[test]
+    fn text_after_a_block_ends_with_a_cut_mark() {
+        assert_eq!(
+            passage_lines("```\nmake test\n```\nThen read the log."),
+            ["    make test …"]
+        );
+    }
+
+    #[test]
+    fn blank_lines_in_a_block_are_left_out() {
+        assert_eq!(
+            passage_lines("```\nfirst\n\nsecond\n```"),
+            ["    first", "    second"]
+        );
+    }
+
+    #[test]
+    fn an_escape_in_a_block_is_written_out() {
+        let lines = passage_lines("```\necho \u{1b}[31mred\n```");
+        assert_eq!(lines, ["    echo \\u{1b}[31mred"]);
+        assert!(lines.iter().all(|l| !l.contains('\u{1b}')));
+    }
+
+    #[test]
+    fn an_empty_block_shows_no_passage() {
+        let view = output(vec![passage("```\n```")], 1, "zzz", 1)
+            .view(&terminal::fixed(100, false, true), now());
+        assert!(view[1].starts_with("    gotcha"), "{view:?}");
+    }
+
+    #[test]
+    fn an_unclosed_block_shows_its_lines() {
+        assert_eq!(passage_lines("```\na\nb"), ["    a", "    b"]);
+    }
+
+    #[test]
+    fn prose_that_holds_a_block_stays_flattened() {
+        assert_eq!(
+            passage_lines("Run this first:\n```\nmake\n```"),
+            ["    Run this first: make"]
+        );
+    }
+
+    #[test]
+    fn a_long_code_line_is_cut() {
+        let long = "a".repeat(120);
+        let lines = passage_lines(&format!("```\n{long}\n```"));
+        assert_eq!(lines, [format!("    {}…", "a".repeat(95))]);
+    }
+
+    #[test]
+    fn a_cut_code_line_with_more_after_it_has_one_mark() {
+        let long = "a".repeat(120);
+        let lines = passage_lines(&format!(
+            "```
+{long}
+```
+Then read the log."
+        ));
+        assert_eq!(lines, [format!("    {}…", "a".repeat(95))]);
+    }
+
+    #[test]
+    fn control_characters_never_reach_the_human_view() {
+        let hit = note(
+            "Bell\u{7}\u{1b}[2Jtitle",
+            &["Head\u{1b}[31ming"],
+            "Prose with \u{1b}[31mred\u{7} and \u{9b}1m.",
+            note_meta("gotcha", "2026-10-07T00:43-03:00", "gotcha-x.md", 9),
+        );
+        let out = output(vec![hit], 1, "prose", 1);
+        for paint in [false, true] {
+            let view = out.view(&terminal::fixed(100, paint, true), now());
+            let all = view.join("\n");
+            let bare = terminal::stripped(&all);
+            assert!(!bare.contains(['\u{7}', '\u{9b}']), "{bare:?}");
+            assert!(!bare.contains('\u{1b}'), "{bare:?}");
+            if !paint {
+                assert!(!all.contains('\u{1b}'));
+            }
+        }
+        let view = out.view(&terminal::fixed(100, false, true), now());
+        assert_eq!(
+            view[0],
+            " 1  Bell\\u{7}\\u{1b}[2Jtitle › Head\\u{1b}[31ming"
+        );
+        assert_eq!(
+            view[1],
+            "    Prose with \\u{1b}[31mred\\u{7} and \\u{9b}1m."
+        );
+        let lines = output(vec![passage("```\nbell\u{7}\n```")], 1, "zzz", 1)
+            .view(&terminal::fixed(100, false, true), now());
+        assert_eq!(lines[1], "    bell\\u{7}");
+    }
+
+    fn linked() -> terminal::Term {
+        terminal::Term {
+            links: Some("shire-box".into()),
+            ..terminal::fixed(100, true, true)
+        }
+    }
+
+    #[test]
+    fn a_note_path_is_linked() {
+        let out = output(vec![busy()], 1, "busy timeout", 1);
+        let view = out.view(&linked(), now());
+        let want = "    {d}{c}gotcha{/c} · 17 min ago · {l:file://shire-box/home/a/.local/share/bilbo/notes/gotcha-sqlite-busy-timeout.md}~/.local/share/bilbo/notes/gotcha-sqlite-busy-timeout.md:9{/l}{/d}";
+        assert_eq!(view[3], terminal::styled(want));
+        let unlinked = out.view(&terminal::fixed(100, true, true), now());
+        let stripped: Vec<String> = view.iter().map(|l| terminal::stripped(l)).collect();
+        let want: Vec<String> = unlinked.iter().map(|l| terminal::stripped(l)).collect();
+        assert_eq!(stripped, want);
+        assert!(!unlinked.join("").contains("\x1b]8"));
+    }
+
+    #[test]
+    fn a_broken_path_carries_the_link_on_each_piece() {
+        let out = output(vec![pragmas()], 1, "busy timeout", 1);
+        let term = terminal::Term {
+            links: Some("shire-box".into()),
+            ..terminal::fixed(50, true, true)
+        };
+        let view = out.view(&term, now());
+        let uri = "file://shire-box/home/a/.local/share/bilbo/notes/gotcha-sqlite-pragmas.md";
+        assert_eq!(
+            view[view.len() - 4],
+            terminal::styled(&format!(
+                "    {{d}}{{l:{uri}}}~/.local/share/bilbo/notes/{{/l}}{{/d}}"
+            ))
+        );
+        assert_eq!(
+            view[view.len() - 3],
+            terminal::styled(&format!(
+                "    {{d}}{{l:{uri}}}gotcha-sqlite-pragmas.md:9{{/l}}{{/d}}"
+            ))
+        );
+    }
+
+    #[test]
+    fn a_library_reference_is_linked() {
+        let hit = note(
+            "Effective Go",
+            &["Concurrency"],
+            "Goroutines run concurrently.",
+            Meta::Library {
+                guide: false,
+                reference: "go/effective-go".into(),
+                path: "/home/a/.local/share/bilbo/library/go/effective-go.md".into(),
+                start: 340,
+                end: 380,
+            },
+        );
+        let view = output(vec![hit], 1, "goroutine", 0).view(&linked(), now());
+        let want = "    {d}{c}source{/c} · {l:file://shire-box/home/a/.local/share/bilbo/library/go/effective-go.md}go/effective-go{/l} · lines 340-380{/d}";
+        assert_eq!(view[2], terminal::styled(want));
     }
 
     #[test]

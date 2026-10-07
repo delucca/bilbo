@@ -31,6 +31,8 @@ pub struct Env {
     pub columns: Option<OsString>,
     /// `LANG`.
     pub lang: Option<OsString>,
+    /// `BILBO_HYPERLINKS`.
+    pub bilbo_hyperlinks: Option<OsString>,
 }
 
 impl Env {
@@ -57,6 +59,7 @@ impl Env {
             term: var("TERM"),
             columns: var("COLUMNS"),
             lang: var("LANG"),
+            bilbo_hyperlinks: var("BILBO_HYPERLINKS"),
         }
     }
 

@@ -61,6 +61,7 @@ Deleting the cache loses nothing that `bilbo index` cannot rebuild. `bilbo
 | `AI_AGENT`, `CLAUDE_CODE_CHILD_SESSION`, `CODEX_THREAD_ID`, `CODEX_CI` | When one is set and not empty, an agent runs bilbo: it prints the plain view on a terminal too, and refuses the steps that need the user at a terminal; see [Commands that need a terminal](../guides/devices.md#commands-that-need-a-terminal). `CLAUDECODE` is not one. |
 | `NO_COLOR`, `CLICOLOR` | No escapes in the terminal view when `NO_COLOR` is set and not empty, or `CLICOLOR` is `0`; `CLICOLOR_FORCE` and `FORCE_COLOR` are ignored. See [Terminal output](commands.md#terminal-output). |
 | `TERM` | Unset or `dumb`: no escapes in the terminal view. |
+| `BILBO_HYPERLINKS` | `1` makes `recall`'s paths and references clickable links (OSC 8) in the terminal view; any other value, or none, leaves them plain. See [Terminal output](commands.md#terminal-output). |
 | `COLUMNS` | The width of the terminal view when the terminal does not report one. |
 | `LANG` | Outside macOS, the terminal view's marks are ASCII unless it ends in `UTF-8`. |
 | The variable `embedder.token_env` names | The embedder's bearer token; the index timer cannot read it, see [Keep the key](../guides/embedders.md#keep-the-key). |

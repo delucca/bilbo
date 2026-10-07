@@ -37,7 +37,12 @@ const PLACEMENT: [(&str, &[&str]); 18] = [
     ("console", &["host/terminal.rs"]),
     (
         "libc",
-        &["host/prompt.rs", "host/swap.rs", "identity/keys.rs"],
+        &[
+            "host/prompt.rs",
+            "host/swap.rs",
+            "host/terminal.rs",
+            "identity/keys.rs",
+        ],
     ),
     ("notify", &["note/watch.rs"]),
     ("ring", &["host/model.rs"]),
