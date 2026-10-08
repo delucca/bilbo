@@ -1,0 +1,66 @@
+#!/usr/bin/env python3
+"""Fake `claude -p`: stream-json shaped like the real one, driven by $FAKE_LLM_SCRIPT."""
+
+import json
+import sys
+
+import fakellm
+
+if "--version" in sys.argv:
+    print("fake 0.0.0")
+    sys.exit(0)
+
+prompt = sys.stdin.read()
+fakellm.log_call(prompt)
+rule = fakellm.pick_rule(prompt)
+if rule is None:
+    print("fake claude: no rule matches the prompt", file=sys.stderr)
+    sys.exit(3)
+
+leak = rule.get("leak")
+plugins = [
+    {"name": f"cc-plugin-{n}", "path": "builtin", "source": f"cc-plugin-{n}@builtin"}
+    for n in ("sec-default", "agents-md", "telemetry", "plugin-authoring")
+]
+if leak == "plugin":
+    plugins.append({"name": "bilbo", "path": "/x/plugins/bilbo", "source": "bilbo@bilbo"})
+init = {
+    "type": "system", "subtype": "init", "cwd": "/tmp/fake", "session_id": "fake-session",
+    "tools": ["StructuredOutput", "Bash"] if leak == "tool_use" else ["StructuredOutput"],
+    "mcp_servers": [{"name": "leaky", "status": "connected"}] if leak == "mcp" else [],
+    "model": "fake", "slash_commands": [], "agents": [], "skills": [], "plugins": plugins,
+}
+events = [
+    {"type": "system", "subtype": "hook_started", "hook_id": "h1", "hook_name": "SessionStart:startup"},
+    {
+        "type": "system", "subtype": "hook_response", "hook_id": "h1", "hook_name": "SessionStart:startup",
+        "output": "bilbo session notes" if leak == "hook" else "",
+        "stdout": "bilbo session notes" if leak == "hook" else "",
+        "stderr": "", "exit_code": 0, "outcome": "success",
+    },
+    init,
+]
+rejected = bool(rule.get("rate_limit"))
+events.append({
+    "type": "rate_limit_event",
+    "rate_limit_info": {
+        "status": "rejected" if rejected else "allowed", "resetsAt": 1791431400,
+        "rateLimitType": "five_hour",
+        "unifiedWindows": {
+            "five_hour": {"utilization": 1.0 if rejected else 0.04, "resetsAt": 1791431400},
+            "seven_day": {"utilization": 0.1, "resetsAt": 1791442800},
+        },
+    },
+})
+code = int(rule.get("exit", 0))
+result = {
+    "type": "result", "subtype": "success" if code == 0 else "error", "is_error": code != 0,
+    "duration_ms": 1, "total_cost_usd": 0.0,
+    "usage": {"input_tokens": 10, "output_tokens": 5},
+}
+if code == 0 and "output" in rule:
+    result["structured_output"] = rule["output"]
+events.append(result)
+for e in events:
+    print(json.dumps(e))
+sys.exit(code)

@@ -1,0 +1,8 @@
+{
+  "type": "object",
+  "properties": {
+    "prompts": {"type": "array", "items": {"type": "string"}}
+  },
+  "required": ["prompts"],
+  "additionalProperties": false
+}

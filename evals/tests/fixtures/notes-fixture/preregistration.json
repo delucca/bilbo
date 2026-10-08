@@ -1,0 +1,39 @@
+{
+  "alpha": 0.05,
+  "correction": "holm (secondary only)",
+  "created": "2026-10-07T00:00:00Z",
+  "design_effect": 1.3,
+  "dev_run": "fixture",
+  "dev_tree_hash": null,
+  "discordance": 0.24,
+  "min_effect": 0.1,
+  "n_iid": 0,
+  "n_test": 0,
+  "per_stratum": {
+    "alias": 0,
+    "kind-filter": 0,
+    "known-item": 0,
+    "library": 20,
+    "multi-hop": 0,
+    "no-answer": 20,
+    "paraphrase": 0,
+    "pt-en": 0,
+    "supersession": 0
+  },
+  "power": 0.8,
+  "primary_metric": "success@5",
+  "principal": [
+    "bilbo-full",
+    "bm25-ref"
+  ],
+  "psi_used": 0.24,
+  "resamples": 10000,
+  "secondary": [
+    "bilbo-keyword",
+    "ripgrep",
+    "dense-ref",
+    "random"
+  ],
+  "seed": 0,
+  "test": "paired sign-flip by fact family, 10000 resamples"
+}
