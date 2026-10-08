@@ -467,28 +467,73 @@ def _gen(ds: Path, cfg, call_id: str, prompt: str) -> dict:
 # ---- the step ------------------------------------------------------------------------------------------------
 
 
-def cmd(args) -> int:
-    from bilbo_evals import dataset, llm
+TOPUP_MAX_ROUNDS = 3
 
-    ds = Path(args.dataset)
-    cfg = llm.load_config(ds)
-    split = args.split
-    llm.require_cli("codex")
-    world = load_world(ds)
-    intents, short = build_intents(world, split, split_counts(ds, cfg, split), cfg.seed)
-    for stratum, n in sorted(short.items()):
-        common.err(f"{split} {stratum}: the facts allow {n} fewer queries than asked")
-    missing = sum(short.values())
 
-    templates = load_sections("queries.md")
-    query_schema = _json(HERE / "schemas/query.json")
-    qpath = ds / "queries.jsonl"
-    rows = {r["id"]: r for r in (common.read_jsonl(qpath) if qpath.exists() else [])}
+def _taken_ids(ds: Path, base: list[Intent]) -> set[str]:
+    """Every id ever used in the dataset: never reused, dropped ones included."""
+    out = {it.id for it in base}
+    for rel in ("queries.jsonl", "generation/drops.jsonl", "generation/topup.jsonl"):
+        if (ds / rel).exists():
+            out |= {r["id" if rel == "queries.jsonl" else "item"] for r in common.read_jsonl(ds / rel)}
+    for p in (ds / "generation/outputs" / STEP).glob("*.json"):
+        out.add(p.name.split(".")[0])
+    return out
+
+
+def _next_id(taken: set[str], it: Intent) -> str:
+    if it.stratum == "library":
+        lo = LIBRARY_BASE[it.split]
+        top = max([int(m.group(1)) for t in taken if (m := re.fullmatch(r"q-lib-(\d{3})", t)) and lo <= int(m.group(1)) < lo + 200] + [lo])
+        return f"q-lib-{top + 1:03d}"
+    if it.stratum == "no-answer":
+        top = max([int(m.group(1)) for t in taken if (m := re.fullmatch(rf"q-{it.project}-na-(\d+)", t))] + [0])
+        return f"q-{it.project}-na-{top + 1:02d}"
+    top = max([int(m.group(1)) for t in taken if (m := re.fullmatch(rf"q-{it.project}-(\d{{3}})", t))] + [0])
+    return f"q-{it.project}-{top + 1:03d}"
+
+
+def extras_for(ds: Path, w: World, split: str, counts: dict[str, int], seed: int, base: list[Intent], need: dict[str, int] | None = None) -> tuple[list[Intent], dict[str, int]]:
+    """Top-up intents already registered in generation/topup.jsonl, plus `need` new ones per stratum.
+
+    The pool of a stratum is drawn with the base's own seed and order, so intent `want + k` uses facts the
+    first `want` never used; each extra gets a fresh id, recorded so a resumed run names it the same way.
+    """
+    path = ds / "generation/topup.jsonl"
+    reg = [r for r in (common.read_jsonl(path) if path.exists() else []) if r["split"] == split]
+    need = {s: n for s, n in (need or {}).items() if n > 0}
+    if not reg and not need:
+        return [], {}
+    wide = {s: counts.get(s, 0) + sum(1 for r in reg if r["stratum"] == s) + need.get(s, 0) for s in set(counts) | set(need)}
+    built, _ = build_intents(w, split, wide, seed)
+    taken = _taken_ids(ds, base)
+    out: list[Intent] = []
+    short: dict[str, int] = {}
+    for s in ORDER:
+        pool = [i for i in built if i.stratum == s][counts.get(s, 0):]
+        mine = sorted((r for r in reg if r["stratum"] == s), key=lambda r: r["index"])
+        for r in mine:
+            if r["index"] < len(pool):
+                pool[r["index"]].id = r["item"]
+                out.append(pool[r["index"]])
+        fresh = pool[len(mine):][: need.get(s, 0)]
+        if len(fresh) < need.get(s, 0):
+            short[s] = need[s] - len(fresh)
+        for k, it in enumerate(fresh, start=len(mine)):
+            it.id = _next_id(taken, it)
+            taken.add(it.id)
+            common.append_jsonl(path, {"item": it.id, "split": split, "stratum": s, "index": k})
+            out.append(it)
+    return out, short
+
+
+def _pass(ds: Path, cfg, intents: list[Intent], rows: dict[str, dict], templates, query_schema, flags: dict) -> tuple[Exception | None, int]:
+    """Generate, read back and row every intent that can be; returns (stop, items left)."""
+    from bilbo_evals import llm
+
     rej = {it.id: rejections(ds, it.id) for it in intents}
-    preflighted = False
     left = 0
     stop: Exception | None = None
-
     for _ in range(MAX_ATTEMPTS + 1):
         settled = settled_items(ds)
         calls = []
@@ -508,9 +553,9 @@ def cmd(args) -> int:
                 rows[it.id] = make_row(it, out, _gen(ds, cfg, call_id, build_prompt(it, templates)))
         if not calls:
             break
-        if not preflighted:
+        if not flags.get("preflighted"):
             llm.preflight("codex", ds, cfg, STEP)
-            preflighted = True
+            flags["preflighted"] = True
         results = llm.run_many(calls, ds, cfg)
         stop = llm.fatal(results)
         if stop or llm.failed(results):
@@ -529,17 +574,66 @@ def cmd(args) -> int:
             common.append_jsonl(ds / "generation/drops.jsonl", {"item": it.id, "reason": arg, "stratum": it.stratum})
         else:
             left += 1
+    return stop, left
+
+
+def _short(ds: Path, intents: list[Intent], rows: dict[str, dict], counts: dict[str, int]) -> dict[str, int]:
+    """Per stratum, how far the intents that are not dropped for good (no row, settled) fall below the target."""
+    settled = settled_items(ds)
+    alive: dict[str, int] = {}
+    for it in intents:
+        if it.id in rows or it.id not in settled:
+            alive[it.stratum] = alive.get(it.stratum, 0) + 1
+    return {s: n - alive.get(s, 0) for s, n in counts.items() if n > alive.get(s, 0)}
+
+
+def cmd(args) -> int:
+    from bilbo_evals import dataset, llm
+
+    ds = Path(args.dataset)
+    cfg = llm.load_config(ds)
+    split = args.split
+    llm.require_cli("codex")
+    world = load_world(ds)
+    counts = split_counts(ds, cfg, split)
+    base, short = build_intents(world, split, counts, cfg.seed)
+    for stratum, n in sorted(short.items()):
+        common.err(f"{split} {stratum}: the facts allow {n} fewer queries than asked")
+
+    templates = load_sections("queries.md")
+    query_schema = _json(HERE / "schemas/query.json")
+    qpath = ds / "queries.jsonl"
+    rows = {r["id"]: r for r in (common.read_jsonl(qpath) if qpath.exists() else [])}
+    flags: dict = {}
+    extras, _ = extras_for(ds, world, split, counts, cfg.seed, base)
+    topup_short: dict[str, int] = {}
+    for round_ in range(TOPUP_MAX_ROUNDS + 1):
+        intents = base + extras
+        stop, left = _pass(ds, cfg, intents, rows, templates, query_schema, flags)
+        if stop is not None or left or round_ == TOPUP_MAX_ROUNDS:
+            break
+        # A stratum below its target after drops gets fresh intents, from facts it has not used.
+        need = _short(ds, intents, rows, counts)
+        if not need:
+            break
+        more, topup_short = extras_for(ds, world, split, counts, cfg.seed, base, need)
+        if not more:
+            break
+        extras += more
 
     common.write_jsonl(qpath, [rows[i] for i in sorted(rows)])
     dataset.build_qrels(ds)
     made = {s: sum(1 for r in rows.values() if r["split"] == split and r["stratum"] == s) for s in ORDER}
     common.out(f"{split}: " + ", ".join(f"{s} {n}" for s, n in made.items() if n))
+    for s, n in sorted(topup_short.items()):
+        common.err(f"{split} {s}: no unused facts left for {n} top-up queries")
     if stop is not None:
         common.err(f"{left} queries left")
         raise stop
     if left:
         common.err(f"{left} queries left")
         return 1
+    missing = sum(max(0, counts.get(s, 0) - n) for s, n in made.items() if counts.get(s, 0))
     if missing:
         common.err(f"{missing} queries short of the asked counts")
         return 1
