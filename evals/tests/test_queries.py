@@ -181,6 +181,33 @@ def test_a_fact_serves_one_query_per_stratum_not_one_per_split(ds):
     assert set(by["known-item"]) & set(by["paraphrase"])
 
 
+def test_multi_hop_joins_exactly_two_notes_even_when_a_fact_joins_three(ds):
+    facts = common.read_jsonl(ds / "world/facts.jsonl")
+    notes = common.read_jsonl(ds / "world/notes.jsonl")
+    for f in facts:
+        if f["id"] == "f-alpha-020":
+            f["joins"] = ["f-alpha-021", "f-alpha-001"]
+        if f["id"] in ("f-alpha-021", "f-alpha-001"):
+            f["joins"] = ["f-alpha-020"] + ([] if f["id"] == "f-alpha-001" else ["f-alpha-001"])
+    common.write_jsonl(ds / "world/facts.jsonl", facts)
+    w = q.load_world(ds)
+    built, short = q.build_intents(w, "dev", {"multi-hop": 3}, 7)
+    assert built and all(len(i.evidence_sets[0]) == 2 == len(i.gold) == len(i.fact_ids) for i in built)
+    assert len({tuple(i.fact_ids) for i in built}) == len(built)
+
+
+def test_list_wide_multihop_prints_ids_per_split(ds, capsys):
+    rows = [
+        {"id": "q-a-001", "stratum": "multi-hop", "split": "dev", "evidence_sets": [["a", "b", "c"]]},
+        {"id": "q-a-002", "stratum": "multi-hop", "split": "dev", "evidence_sets": [["a", "b"]]},
+        {"id": "q-b-001", "stratum": "multi-hop", "split": "test", "evidence_sets": [["a", "b", "c"]]},
+        {"id": "q-b-002", "stratum": "known-item", "split": "test", "evidence_sets": []},
+    ]
+    common.write_jsonl(ds / "queries.jsonl", rows)
+    assert q.cmd(Namespace(dataset=str(ds), list_wide_multihop=True, split=None)) == 0
+    assert capsys.readouterr().out.splitlines() == ["dev: q-a-001", "test: q-b-001"]
+
+
 def test_alias_query_never_uses_an_alias_the_gold_note_holds(ds):
     w, (built, _) = intents(ds)
     alias = next(i for i in built if i.stratum == "alias")

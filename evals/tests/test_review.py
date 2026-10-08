@@ -217,3 +217,44 @@ def test_check_names_a_dropped_item_still_in_the_dataset_until_apply(draft, caps
     assert "open: q-alpha-005 dropped but still in the dataset; run review apply" in capsys.readouterr().out
     assert cli.main(["review", "apply", "--dataset", str(draft)]) == 0
     assert review.evaluate(draft, "all")[1] == []
+
+
+def class_fix_sheet(draft: Path, fixes: int, absent: bool = True) -> list[dict]:
+    rows = mark(cover(draft, 125), 125, 0, None)
+    for r in rows[:fixes]:
+        r.update(verdict="invalid", reason="three notes", resolution=None, class_fix="three-note multi-hop")
+        if absent:
+            r["item"] = f"gone-{r['item']}"
+    return rows
+
+
+def test_class_fix_rows_leave_the_share_and_both_numbers_print(draft, capsys):
+    rows = class_fix_sheet(draft, 6)
+    # 117 valid of 125 raw would need 8 invalid: add two plain invalid-and-dropped ones
+    for r in rows[6:8]:
+        r.update(verdict="invalid", reason="bad", resolution="dropped", item=f"gone-{r['item']}")
+    write_jsonl(draft / SHEET, rows)
+    assert cli.main(["review", "check", "--dataset", str(draft)]) == 0
+    assert capsys.readouterr().out.strip() == (
+        "117/125 valid (93.6%) raw; 117/119 (98.3%) excluding class fixes: three-note multi-hop 6")
+
+
+def test_the_bar_applies_to_the_share_excluding_class_fixes(draft, capsys):
+    rows = class_fix_sheet(draft, 6)
+    for r in rows[6:14]:
+        r.update(verdict="invalid", reason="bad", resolution="dropped", item=f"gone-{r['item']}")
+    write_jsonl(draft / SHEET, rows)
+    assert cli.main(["review", "check", "--dataset", str(draft)]) == 1
+    assert "111/119 (93.3%) excluding class fixes" in capsys.readouterr().out
+
+
+def test_a_class_fix_row_must_be_invalid(draft):
+    rows = class_fix_sheet(draft, 1)
+    rows[0]["verdict"] = "valid"
+    write_jsonl(draft / SHEET, rows)
+    assert any("class_fix" in l and "invalid" in l for l in review.evaluate(draft)[1])
+
+
+def test_a_class_fix_item_must_be_absent_from_the_dataset(draft):
+    write_jsonl(draft / SHEET, class_fix_sheet(draft, 1, absent=False))
+    assert any("class_fix" in l and "still in the dataset" in l for l in review.evaluate(draft)[1])
