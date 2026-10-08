@@ -184,7 +184,13 @@ def call_ids(item: dict, n: int) -> list[str]:
     return [item["id"]] if n == 1 else [f"{item['id']}--b{k}" for k in range(1, n + 1)]
 
 
-def build_prompt(ds: dataset.Dataset, item: dict, cands: list[dict], seed: int, call_id: str | None = None) -> str:
+def local_ids(item: dict, cands: list[dict], seed: int) -> dict[str, str]:
+    """`c01`, `c02`, ... for the candidates in the seeded order: the ids the judge sees instead of 26-character note ids."""
+    return {f"c{n:02d}": c["id"] for n, c in enumerate(_order(item, cands, seed), start=1)}
+
+
+def build_prompt(ds: dataset.Dataset, item: dict, cands: list[dict], seed: int, call_id: str | None = None,
+                 local: bool = True) -> str:
     multi = item["kind"] == "query" and item["row"]["stratum"] == "multi-hop"
     evidence = ""
     if multi:
@@ -193,7 +199,9 @@ def build_prompt(ds: dataset.Dataset, item: dict, cands: list[dict], seed: int, 
             body = "\n".join(f"  [{i}]\n{note_view(ds, i, item['text'])}" for i in ev if i in ds.notes)
             blocks.append(f"Evidence set {n}:\n{body}")
         evidence = "\nEvidence sets so far (each lists notes that together answer the request):\n" + "\n".join(blocks) + "\n"
-    listing = "\n".join(f"=== {c['id']} ===\n{_view(ds, c, item['text'])}\n" for c in _order(item, cands, seed))
+    names = {cid: lid for lid, cid in local_ids(item, cands, seed).items()} if local else {}
+    listing = "\n".join(f"=== {names.get(c['id'], c['id'])} ===\n{_view(ds, c, item['text'])}\n"
+                        for c in _order(item, cands, seed))
     return template(TEMPLATE).substitute(
         item=call_id or item["id"], kind_rule=KIND_RULE[item["kind"]], query=item["text"], evidence=evidence,
         set_rule=SET_RULE_MULTI if multi else SET_RULE_PLAIN, candidates=listing,
@@ -232,7 +240,7 @@ def call_record(ds: dataset.Dataset, item: dict, cands: list[dict], seed: int, c
         "call_id": call_id, "item": item["id"], "kind": item["kind"], "text": item["text"], "text_sha256": text_sha(item["text"]),
         "stratum": row.get("stratum"), "evidence_sets": [list(ev) for ev in row.get("evidence_sets", [])], "evidence_sha256": evidence_shas(ds, row),
         "candidates": [{"id": c["id"], "lines": c.get("lines", {})} for c in cands], "seed": seed,
-        "harness": harness(), "template": TEMPLATE, "template_sha256": _template_sha(TEMPLATE), "prompt_sha256": text_sha(prompt),
+        "ids": "local", "local_ids": local_ids(item, cands, seed), "harness": harness(), "template": TEMPLATE, "template_sha256": _template_sha(TEMPLATE), "prompt_sha256": text_sha(prompt),
     }
 
 
@@ -244,11 +252,17 @@ def rebuild_prompt(ds: dataset.Dataset, record: dict) -> str:
         err(f"{record['call_id']}: the prompt was built by another harness version or commit; the rebuild is exact only under the recorded one")
     item = {"id": record["item"], "kind": record["kind"], "text": record["text"],
             "row": {"stratum": record["stratum"], "evidence_sets": record["evidence_sets"], "gold": []}}
-    return build_prompt(ds, item, record["candidates"], record["seed"], record["call_id"])
+    return build_prompt(ds, item, record["candidates"], record["seed"], record["call_id"], local=record.get("ids") == "local")
 
 
-def valid_output(ids: set[str], n_sets: int):
+def to_notes(value: dict, mapping: dict[str, str]) -> dict:
+    """The output with local ids replaced by note ids; an id that is not local (an output of an older prompt) stays."""
+    return {**value, "judgments": [{**j, "id": mapping.get(j.get("id"), j.get("id"))} for j in value.get("judgments", [])]}
+
+
+def valid_output(ids: set[str], n_sets: int, mapping: dict[str, str] | None = None):
     def check(_item: str, value: dict) -> str | None:
+        value = to_notes(value, mapping or {})
         got = [j.get("id") for j in value.get("judgments", [])]
         if sorted(got) != sorted(ids):
             return f"judgments name {len(got)} ids, expected each of the {len(ids)} candidates once"
@@ -474,7 +488,7 @@ def cmd(args: argparse.Namespace) -> int:
             prompt = build_prompt(ds, it, group, cfg.seed, cid)
             wants[cid] = (prompt, pool_schema)
             records[cid] = call_record(ds, it, group, cfg.seed, cid, prompt)
-            checks[cid] = valid_output({c["id"] for c in group}, n_sets)
+            checks[cid] = valid_output({c["id"] for c in group}, n_sets, records[cid]["local_ids"])
     set_aside_stale_outputs(ds_dir, records)
     if records:
         kept = [r for r in _rows(ds_dir, "records.jsonl") if r["call_id"] not in records]
@@ -484,7 +498,7 @@ def cmd(args: argparse.Namespace) -> int:
     for item, ids in sorted(parts.items()):
         if not all(i in solved.good for i in ids):
             continue
-        merged = {"judgments": [j for i in ids for j in solved.good[i]["judgments"]]}
+        merged = {"judgments": [j for i in ids for j in to_notes(solved.good[i], records[i]["local_ids"])["judgments"]]}
         attempts = [_attempt_of(ds_dir, i, solved.good[i]) for i in ids]
         call_id = ";".join(f"{STEP}/{i}/{a}" for i, a in zip(ids, attempts))
         judged += judgment_rows(ds, by_id[item], cand_rows[item]["candidates"], merged, attempts[0], call_id)
