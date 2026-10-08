@@ -12,16 +12,17 @@ from pathlib import Path
 from bilbo_evals import common, dataset, llm, passages, runner, words
 from bilbo_evals.arms import ARMS
 from bilbo_evals.common import Refused, append_jsonl, err, out, read_jsonl, write_jsonl
-from bilbo_evals.generate import finish, schema, solve, template
+from bilbo_evals.generate import HERE, finish, schema, solve, template
 
 STEP = "pool"
+TEMPLATE = "pool.md"
 TOP = 10
 SOURCE_CHARS = 2000
 PASSAGE_CHARS = 1500
 VIEW_CHARS = 4500
 OUTLINE_CHARS = 500
 OVERLAP_PASSAGES = 2
-PROMPT_CHARS = 100_000  # the candidates of one call; 30 candidates at the old 3,000 characters came to 90,000
+PROMPT_CHARS = 200_000  # the candidates of one call; 30 candidates at VIEW_CHARS come to 135,000, so an item is one call
 AUDIT_SHARE = 0.10
 AUDIT_MIN = 50
 PROMPT_LABELS = ("positive", "near-miss")
@@ -59,6 +60,13 @@ def fold_quote(text: str) -> str:
 
 def text_sha(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def note_sha(ds: dataset.Dataset, cid: str) -> str | None:
+    """SHA-256 of a candidate's text (note or source); None for an id the dataset does not hold."""
+    if cid in ds.notes:
+        return text_sha(ds.notes[cid].text)
+    return text_sha(ds.sources[cid].text) if cid in ds.sources else None
 
 
 def _superseded(ds_dir: Path) -> Path:
@@ -183,10 +191,40 @@ def build_prompt(ds: dataset.Dataset, item: dict, cands: list[dict], seed: int, 
             blocks.append(f"Evidence set {n}:\n{body}")
         evidence = "\nEvidence sets so far (each lists notes that together answer the request):\n" + "\n".join(blocks) + "\n"
     listing = "\n".join(f"=== {c['id']} ===\n{_view(ds, c, item['text'])}\n" for c in _order(item, cands, seed))
-    return template("pool.md").substitute(
+    return template(TEMPLATE).substitute(
         item=call_id or item["id"], kind_rule=KIND_RULE[item["kind"]], query=item["text"], evidence=evidence,
         set_rule=SET_RULE_MULTI if multi else SET_RULE_PLAIN, candidates=listing,
     )
+
+
+def evidence_shas(ds: dataset.Dataset, row: dict) -> dict[str, str]:
+    """Text hash of every note in the item's evidence sets, which the prompt of a multi-hop item shows."""
+    ids = sorted({i for ev in row.get("evidence_sets", []) for i in ev if i in ds.notes})
+    return {i: text_sha(ds.notes[i].text) for i in ids}
+
+
+def _template_sha(name: str) -> str:
+    return text_sha((HERE / "templates" / name).read_text(encoding="utf-8"))
+
+
+def call_record(ds: dataset.Dataset, item: dict, cands: list[dict], seed: int, call_id: str, prompt: str) -> dict:
+    """What `build_prompt` reads for one call, as judged: kept in `pool/records.jsonl` so the prompt can be rebuilt later."""
+    row = item["row"]
+    return {
+        "call_id": call_id, "item": item["id"], "kind": item["kind"], "text": item["text"], "text_sha256": text_sha(item["text"]),
+        "stratum": row.get("stratum"), "evidence_sets": [list(ev) for ev in row.get("evidence_sets", [])], "evidence_sha256": evidence_shas(ds, row),
+        "candidates": [{"id": c["id"], "lines": c.get("lines", {})} for c in cands], "seed": seed,
+        "template": TEMPLATE, "template_sha256": _template_sha(TEMPLATE), "prompt_sha256": text_sha(prompt),
+    }
+
+
+def rebuild_prompt(ds: dataset.Dataset, record: dict) -> str:
+    """The prompt of a recorded call, from its record, the notes and the template; refuses once the template changed."""
+    if record["template_sha256"] != _template_sha(record["template"]):
+        raise Refused(f"{record['call_id']}: the template {record['template']} changed since the call; the prompt cannot be rebuilt")
+    item = {"id": record["item"], "kind": record["kind"], "text": record["text"],
+            "row": {"stratum": record["stratum"], "evidence_sets": record["evidence_sets"], "gold": []}}
+    return build_prompt(ds, item, record["candidates"], record["seed"], record["call_id"])
 
 
 def valid_output(ids: set[str], n_sets: int):
@@ -218,6 +256,7 @@ def judgment_rows(ds: dataset.Dataset, item: dict, cands: list[dict], value: dic
             "item": item["id"], "candidate": j["id"], "answers": bool(j["answers"]), "completes_set": cs,
             "passage": passage, "quote_found": found, "flag": "yes_without_quote" if claimed and not found else None,
             "call_id": call_id or f"{STEP}/{item['id']}/{attempt}", "text_sha256": sha,
+            "note_sha256": note_sha(ds, j["id"]), "evidence_sha256": evidence_shas(ds, item["row"]) if multi else {},
         })
     return rows
 
@@ -241,10 +280,16 @@ def audit_topup(judgments: list[dict], have: list[dict], seed: int, split: str) 
             for i, c in picked]
 
 
-def current_noes(items: list[dict], cands: dict[str, dict], judged: list[dict]) -> list[dict] | None:
-    """Judgments (as no) of the items' listed candidates for the current text; None while one of them is not judged."""
+def is_current(ds: dataset.Dataset, row: dict, shas: dict[str, str]) -> bool:
+    """A judgment still describes the item's text, the candidate's text and the evidence notes it was shown, as they are now."""
+    return (row.get("text_sha256") == shas.get(row["item"]) and row.get("note_sha256") == note_sha(ds, row["candidate"])
+            and all(note_sha(ds, i) == h for i, h in row.get("evidence_sha256", {}).items()))
+
+
+def current_noes(ds: dataset.Dataset, items: list[dict], cands: dict[str, dict], judged: list[dict]) -> list[dict] | None:
+    """Judgments (as no) of the items' listed candidates for the current texts; None while one of them is not judged."""
     shas = {i["id"]: text_sha(i["text"]) for i in items}
-    by = {(r["item"], r["candidate"]): r for r in judged if r.get("text_sha256") == shas.get(r["item"])}
+    by = {(r["item"], r["candidate"]): r for r in judged if is_current(ds, r, shas)}
     noes = []
     for it in items:
         row = cands.get(it["id"])
@@ -278,7 +323,7 @@ def set_aside(ds_dir: Path, items: list[dict]) -> None:
     if not stale:
         return
     gone = set(stale)
-    for name in ("candidates", "judgments", "audit", "resolutions", "applied"):
+    for name in ("candidates", "judgments", "audit", "resolutions", "applied", "records"):
         rows = _rows(ds_dir, f"{name}.jsonl")
         if not any(r["item"] in gone for r in rows):
             continue
@@ -295,6 +340,32 @@ def set_aside(ds_dir: Path, items: list[dict]) -> None:
         err(f"{item}: its text changed since it was pooled; the old rows are in generation/pool/superseded.jsonl")
 
 
+def set_aside_judgments(ds_dir: Path, ds: dataset.Dataset, items: list[dict]) -> None:
+    """Move the judgments, audit rows and records of every item with a judgment whose candidate text changed since."""
+    shas = {it["id"]: text_sha(it["text"]) for it in items}
+    judged = _rows(ds_dir, "judgments.jsonl")
+    stale = sorted({r["item"] for r in judged if r["item"] in shas and r.get("text_sha256") == shas[r["item"]]
+                    and not is_current(ds, r, shas)})
+    if not stale:
+        return
+    gone = set(stale)
+    for name in ("judgments", "audit", "records"):
+        rows = _rows(ds_dir, f"{name}.jsonl")
+        if not any(r["item"] in gone for r in rows):
+            continue
+        for r in rows:
+            if r["item"] in gone:
+                append_jsonl(_superseded(ds_dir), {"file": f"{name}.jsonl", "row": r, "time": common.now()})
+        write_jsonl(_pool(ds_dir, f"{name}.jsonl"), [r for r in rows if r["item"] not in gone])
+    for item in stale:
+        out = llm.output_path(ds_dir, STEP, item, 1).parent
+        for path in sorted([*out.glob(f"{item}.[123].json"), *out.glob(f"{item}--b*.[123].json")]):
+            target = out / "superseded" / f"{path.stem}.{shas[item][:12]}.json"
+            target.parent.mkdir(parents=True, exist_ok=True)
+            path.replace(target)
+        err(f"{item}: a candidate's or evidence note's text changed since it was judged; the old judgments are in generation/pool/superseded.jsonl")
+
+
 def _top_up_audits(ds_dir: Path, ds: dataset.Dataset, seed: int) -> None:
     """Per split whose pooled items are all judged, add audit rows until the sample reaches its size."""
     cands = {r["item"]: r for r in _rows(ds_dir, "candidates.jsonl")}
@@ -304,7 +375,7 @@ def _top_up_audits(ds_dir: Path, ds: dataset.Dataset, seed: int) -> None:
     added: list[dict] = []
     for split in dataset.schema.SPLITS:
         items = [i for i in all_items if i["split"] == split]
-        noes = current_noes(items, cands, judged)
+        noes = current_noes(ds, items, cands, judged)
         if noes is None:
             continue
         ids = {(j["item"], j["candidate"]) for j in noes}
@@ -326,6 +397,7 @@ def cmd(args: argparse.Namespace) -> int:
     if not items:
         raise Refused(f"the {args.split} split has no queries or prompts to pool")
     set_aside(ds_dir, items)
+    set_aside_judgments(ds_dir, ds, items)
     shas = {it["id"]: text_sha(it["text"]) for it in items}
 
     cand_rows = {r["item"]: r for r in _rows(ds_dir, "candidates.jsonl")}
@@ -342,15 +414,20 @@ def cmd(args: argparse.Namespace) -> int:
     judged = _rows(ds_dir, "judgments.jsonl")
     done = {r["item"] for r in judged if r.get("text_sha256") == shas.get(r["item"])}
     todo = [it for it in items if it["id"] not in done and cand_rows[it["id"]]["candidates"]]
-    wants, checks, parts = {}, {}, {}
+    wants, checks, parts, records = {}, {}, {}, {}
     pool_schema = schema("pool.json")
     for it in todo:
         n_sets = len(it["row"].get("evidence_sets", [])) if it["kind"] == "query" and it["row"]["stratum"] == "multi-hop" else 0
         groups = chunks(ds, it, cand_rows[it["id"]]["candidates"], cfg.seed)
         parts[it["id"]] = call_ids(it, len(groups))
         for cid, group in zip(parts[it["id"]], groups):
-            wants[cid] = (build_prompt(ds, it, group, cfg.seed, cid), pool_schema)
+            prompt = build_prompt(ds, it, group, cfg.seed, cid)
+            wants[cid] = (prompt, pool_schema)
+            records[cid] = call_record(ds, it, group, cfg.seed, cid, prompt)
             checks[cid] = valid_output({c["id"] for c in group}, n_sets)
+    if records:
+        kept = [r for r in _rows(ds_dir, "records.jsonl") if r["call_id"] not in records]
+        write_jsonl(_pool(ds_dir, "records.jsonl"), sorted([*kept, *records.values()], key=lambda r: r["call_id"]))
     solved = solve(ds_dir, cfg, STEP, "codex", wants, lambda item, value: checks[item](item, value))
     by_id = {it["id"]: it for it in items}
     for item, ids in sorted(parts.items()):
