@@ -32,17 +32,35 @@ brings relevant notes into later conversations. You rarely need to type a
 
 ## See it work
 
+### Your agent remembers
+
 A new Claude Code session with the bilbo plugin. The prompt hook hands the
 agent a saved note, and the agent answers from it. The notes come from bilbo's
 synthetic eval set.
 
-https://github.com/user-attachments/assets/b8a991bb-c882-419a-aba6-2213f182dec0
+https://github.com/user-attachments/assets/92ab56e4-c1ac-4605-8a27-d61dbad580ff
 
 In your own work, notes like that one come from earlier sessions: you tell the
-agent to note a fix, and it saves one. You can also ask "What did we decide
-about the database layer?" and have it search the notes.
+agent to note a fix, and it saves one.
 [Getting started](docs/getting-started.md#5-see-your-agent-use-it) shows the
 text the hook hands the agent.
+
+### Recall finds notes by meaning
+
+With an embedder, `bilbo recall` matches what you mean, not only the words you
+type, and one query brings back the gotcha, the plan and the decision on the
+same problem. Your agent runs the same search when you ask "What did we decide
+about the database layer?".
+
+https://github.com/user-attachments/assets/9a4f9314-26e4-45f3-bc24-452159524262
+
+### History undoes a bad edit
+
+The watcher records every version of every note. When an agent rewrites a note
+and loses something, `bilbo history` shows what changed and `bilbo restore`
+brings the old version back.
+
+https://github.com/user-attachments/assets/ab2a6316-f645-4b31-b91c-4f263421f5c0
 
 ## Install
 
