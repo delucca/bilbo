@@ -36,7 +36,7 @@ A new Claude Code session with the bilbo plugin. The prompt hook hands the
 agent a saved note, and the agent answers from it. The notes come from bilbo's
 synthetic eval set.
 
-https://github.com/user-attachments/assets/a4969ef2-599c-4aa6-8111-fbcc8b852077
+https://github.com/user-attachments/assets/b8a991bb-c882-419a-aba6-2213f182dec0
 
 In your own work, notes like that one come from earlier sessions: you tell the
 agent to note a fix, and it saves one. You can also ask "What did we decide
