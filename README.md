@@ -38,7 +38,9 @@ A new Claude Code session with the bilbo plugin. The prompt hook hands the
 agent a saved note, and the agent answers from it. The notes come from bilbo's
 synthetic eval set.
 
-https://github.com/user-attachments/assets/92ab56e4-c1ac-4605-8a27-d61dbad580ff
+<p align="center">
+  <img src="docs/assets/see-it-work.gif" width="100%" alt="A new Claude Code session: the bilbo hook hands the agent a saved gotcha, and the agent answers from it">
+</p>
 
 In your own work, notes like that one come from earlier sessions: you tell the
 agent to note a fix, and it saves one.
@@ -52,7 +54,9 @@ type, and one query brings back the gotcha, the plan and the decision on the
 same problem. Your agent runs the same search when you ask "What did we decide
 about the database layer?".
 
-https://github.com/user-attachments/assets/9a4f9314-26e4-45f3-bc24-452159524262
+<p align="center">
+  <img src="docs/assets/recall-by-meaning.gif" width="100%" alt="bilbo recall finds the deadlock gotcha from a query with none of its words, then the gotcha, plan and decision for one problem">
+</p>
 
 ### History undoes a bad edit
 
@@ -60,7 +64,9 @@ The watcher records every version of every note. When an agent rewrites a note
 and loses something, `bilbo history` shows what changed and `bilbo restore`
 brings the old version back.
 
-https://github.com/user-attachments/assets/ab2a6316-f645-4b31-b91c-4f263421f5c0
+<p align="center">
+  <img src="docs/assets/history-restore.gif" width="100%" alt="bilbo history shows the fix an agent rewrite lost, and bilbo restore brings it back">
+</p>
 
 ## Install
 
