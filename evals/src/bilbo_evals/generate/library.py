@@ -92,6 +92,31 @@ def prompt_for(url: str, info: dict, capture: list[str]) -> str:
     )
 
 
+def land_title(capture: list[str], keep: str, name: str) -> str:
+    """The first heading inside the kept ranges, else the source name humanized."""
+    for r in keep.replace(" ", "").split(","):
+        a, b = (int(x) for x in r.split("-"))
+        for line in capture[a - 1: b]:
+            m = re.match(r"#{1,6}\s+(.*?)\s*#*\s*$", line)
+            if m and m.group(1):
+                return m.group(1)
+    return name.replace("-", " ").capitalize()
+
+
+def redo(ds: Path) -> None:
+    """Forget the landed library, keeping the generation record so cached renderer outputs are reused."""
+    if (ds / "queries.jsonl").exists() or (ds / "generation/outputs/queries").exists():
+        raise Refused("--redo is refused: queries exist and were worded from the library")
+    (ds / "world/library.json").unlink(missing_ok=True)
+    path = ds / "world/splits.json"
+    if path.is_file():
+        splits = json.loads(path.read_text(encoding="utf-8"))
+        if splits.pop("library", None) is not None:
+            common.write_json(path, splits)
+    for rel in ("store/library", "store/.bilbo/captures"):
+        shutil.rmtree(ds / rel, ignore_errors=True)
+
+
 def stage(sb, exe: Path, url: str) -> dict | str:
     if url in STAGE_FROM_FILES:
         args = ["library", "stage", STAGE_FROM_FILES[url], "--origin", f"url: {url}",
@@ -153,6 +178,8 @@ def cmd(args) -> int:
     if not args.bilbo:
         raise Refused("generate library needs --bilbo <binary>")
     exe = Path(args.bilbo)
+    if getattr(args, "redo", False):
+        redo(ds)
     target = int(cfg.library["pages"])
     candidates = pages()
     random.Random(f"{cfg.seed}:library-pages").shuffle(candidates)
@@ -192,9 +219,12 @@ def cmd(args) -> int:
                 while name in names:
                     n += 1
                     name = f"{out['name'].strip()}-{n}"
-                p = sandbox.bilbo(sb, exe, ["library", "land", info["stage"], f"{CORPUS}/{name}", "--keep", out["keep"].replace(" ", "")])
+                keep_ranges = out["keep"].replace(" ", "")
+                title = land_title(info["capture_lines"], keep_ranges, name)
+                p = sandbox.bilbo(sb, exe, ["library", "land", info["stage"], f"{CORPUS}/{name}", "--keep", keep_ranges, "--title", title])
                 if p.exit != 0:
-                    common.err(f"skipped {url}: land exited {p.exit}: {p.stderr.strip().splitlines()[-1] if p.stderr.strip() else ''}")
+                    tail = " | ".join(p.stderr.strip().splitlines()[-2:])
+                    common.err(f"skipped {url}: land exited {p.exit}: {tail}")
                     continue
                 names.add(name)
                 landed.append({

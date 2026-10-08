@@ -41,7 +41,7 @@ bilbo-evals dataset verify datasets/notes-synth/v1   # prints the tree hash
 # Generation (calls claude and codex; resumable)
 bilbo-evals generate profile --store ~/.local/share/bilbo   # numbers only, read-only
 bilbo-evals generate world | facts | notes | fidelity
-bilbo-evals generate library --bilbo "$BILBO"    # network: public-domain SQLite pages
+bilbo-evals generate library --bilbo "$BILBO"    # network: public-domain SQLite pages; --redo lands again from cached outputs
 bilbo-evals generate queries --split dev
 bilbo-evals generate filter --split dev          # lexical leakage and alias checks
 bilbo-evals generate prompts --split dev
