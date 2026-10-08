@@ -240,6 +240,20 @@ def test_test_counts_need_a_preregistration(ds):
     assert q.split_counts(ds, cfg, "dev") == COUNTS
 
 
+def test_multi_hop_needs_a_declared_chain_and_the_template_demands_one(ds):
+    _, (built, _) = intents(ds)
+    hop = next(i for i in built if i.stratum == "multi-hop")
+    good = {"query": "q", "lang": hop.lang, "hop_link": "the queue name"}
+    assert q.output_problem(hop, good) is None
+    for link in ("", "NONE", "none", "  "):
+        assert "stitched" in q.output_problem(hop, {**good, "hop_link": link})
+    single = next(i for i in built if i.stratum == "known-item")
+    assert q.output_problem(single, {"query": "q", "lang": single.lang, "hop_link": ""}) is None
+    text = q.build_prompt(hop, q.load_sections("queries.md"))
+    assert "real chain" in text and 'Never join two independent questions with "and"' in text and "Never invent a causal" in text
+    assert q.next_step(hop, {1: {**good, "hop_link": "NONE"}}, {}) == ("call", 2)
+
+
 def test_next_step_walks_attempts_leakage_and_the_cap():
     it = q.Intent("paraphrase", "dev", "alpha", "fam", "en", ["N1"], {}, id="q-alpha-001")
     ok, bad = {"query": "how", "lang": "en"}, {"query": "ainda", "lang": "pt"}
@@ -265,7 +279,7 @@ def step(ds, fake_llm, monkeypatch):
     (Path.home() / ".codex/auth.json").write_text("{}", encoding="utf-8")
     monkeypatch.setattr(dataset, "build_qrels", lambda d: None)
     w, (built, _) = intents(ds)
-    rules = [{"match": f"Item: {it.id}\n", "output": {"query": f"query for {it.id}", "lang": it.lang}} for it in built]
+    rules = [{"match": f"Item: {it.id}\n", "output": {"query": f"query for {it.id}", "lang": it.lang, "hop_link": "carried answer"}} for it in built]
     fake_llm.set_script(rules)
     return Namespace(ds=ds, fake=fake_llm, built=built, run=lambda: q.cmd(Namespace(dataset=str(ds), split="dev")))
 
@@ -298,7 +312,7 @@ def test_cmd_regenerates_a_leaked_query_with_the_tokens_to_avoid(step):
     common.write_jsonl(step.ds / "queries.jsonl", [r for r in rows if r["id"] != target["id"]])
     common.append_jsonl(step.ds / "generation/drops.jsonl", {"item": target["id"], "reason": "leakage", "attempt": 1, "tokens": ["checkpoint", "fsync"]})
     before = len(step.fake.calls())
-    step.fake.set_script([{"match": "checkpoint, fsync", "output": {"query": "second try", "lang": target["lang"]}}])
+    step.fake.set_script([{"match": "checkpoint, fsync", "output": {"query": "second try", "lang": target["lang"], "hop_link": ""}}])
     assert step.run() == 0
     again = next(r for r in common.read_jsonl(step.ds / "queries.jsonl") if r["id"] == target["id"])
     assert again["text"] == "second try" and again["gen"]["call_id"] == f"queries/{target['id']}/2"
@@ -314,7 +328,7 @@ def test_cmd_gives_up_after_three_attempts(step):
     for a in (1, 2, 3):
         common.append_jsonl(step.ds / "generation/drops.jsonl", {"item": target["id"], "reason": "leakage", "attempt": a, "tokens": ["x"]})
     for a in (2, 3):
-        common.write_json(step.ds / f"generation/outputs/queries/{target['id']}.{a}.json", {"query": "q", "lang": target["lang"]})
+        common.write_json(step.ds / f"generation/outputs/queries/{target['id']}.{a}.json", {"query": "q", "lang": target["lang"], "hop_link": ""})
     assert step.run() == 0
     drops = common.read_jsonl(step.ds / "generation/drops.jsonl")
     assert drops[-1] == {"item": target["id"], "reason": "leakage-exhausted", "stratum": "alias"}

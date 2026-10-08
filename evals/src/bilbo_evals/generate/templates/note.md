@@ -1,5 +1,5 @@
 ## common
-You are writing one working note that an engineer or a coding agent keeps about a project, for a synthetic benchmark. The project is fictional; its technologies are real. You cannot run commands or read files; write the note from this brief alone.
+You are writing one working note that an engineer or a coding agent keeps about a project, for a synthetic benchmark. The project is fictional; its technologies are real. You cannot run commands or read files; write the note from what is given below alone.
 
 Style guide, from the skill that agents use to write such notes (sha256 $style_sha). You cannot run its commands: take from it only how to write the body of a note, which is its step 7.
 <style-guide>
@@ -20,6 +20,7 @@ $code_line
 $wiki_line
 - The body starts with prose, not with a heading, and has no title line and no front matter: the title is a separate field.
 - Write as a person or an agent writes in a hurry: plain, concrete, no marketing words, no summary of what you were asked to do.
+- Never mention a brief, instructions, a prompt or a manifest, and never say the note was generated or written from anything: write as someone who knows the project first-hand.
 $extra
 $feedback
 Answer with the JSON object {"title": "...", "body": "..."}, where the body is Markdown.

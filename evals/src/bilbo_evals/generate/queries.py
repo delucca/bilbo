@@ -417,6 +417,8 @@ def output_problem(it: Intent, out: dict) -> str | None:
         return "empty query"
     if out.get("lang") != it.lang:
         return f"language {out.get('lang')!r}, asked {it.lang!r}"
+    if it.stratum == "multi-hop" and str(out.get("hop_link", "")).strip().upper() in ("", "NONE"):
+        return "stitched multi-hop: no chain between the hops"
     return None
 
 

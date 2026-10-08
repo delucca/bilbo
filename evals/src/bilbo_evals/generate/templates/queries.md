@@ -3,7 +3,7 @@ Item: $item
 
 You write the text a person types into the search box of their own notes. You have not seen any note: you work only from what is shown below.
 Write exactly one query, 3 to 20 words, as typed (a question or a few keywords). Write it in $lang_name and set "lang" to "$lang".
-Do not mention that you were given facts, notes or a table. Reply with JSON only: {"query": "...", "lang": "$lang"}.
+Do not mention that you were given facts, notes or a table. Reply with JSON only: {"query": "...", "lang": "$lang", "hop_link": "..."}. Leave "hop_link" empty unless the task below asks for it.
 
 ## known-item
 Project: $project_name ($project_summary)
@@ -50,10 +50,12 @@ Ask for the current value, as someone who does not know it changed. Do not state
 
 ## multi-hop
 Project: $project_name ($project_summary)
-Facts, each kept in a different note:
+Facts, each kept in a different note (not in chain order):
 $facts
 
-Write one question that needs all of these facts together: a note holding only one of them must not be enough to answer it. Do not copy identifiers or error strings.
+Write one question that needs a real chain through these facts: the answer found in one note is the very thing you must name to ask about the other. A person who does not know the first answer could not even phrase the second question.
+Never join two independent questions with "and" or "also". Never invent a causal or temporal link that the facts do not state. Do not copy identifiers or error strings.
+Set "hop_link" to the short phrase that carries the answer of the first hop into the second. If these facts have no such dependency, set "hop_link" to "NONE" and write your best single question anyway.
 
 ## kind-filter
 Project: $project_name ($project_summary)

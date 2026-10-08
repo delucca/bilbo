@@ -6,7 +6,7 @@ Write the messages in $lang_name. Reply with JSON only: {"prompts": ["...", ...]
 
 ## positive
 Project: $project_name ($project_summary)
-Below are $n notes (numbered), each described by the facts it holds. For each one, in order, write a task request the developer would send while working on the project, one that this note bears on. The request must not quote the fact; it asks for work (fix, add, check, explain, change) in the developer's own voice, 1 to 3 sentences.
+Below are $n notes (numbered), each described by the facts it holds. For each one, in order, write a task request the developer would send while working on the project, one that this note bears on. The request concerns the current state of things: never ask for an original, initial or earlier value, or for how something used to be. The request must not quote the fact; it asks for work (fix, add, check, explain, change) in the developer's own voice, 1 to 3 sentences.
 $notes
 
 ## noise
