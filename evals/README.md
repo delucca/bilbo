@@ -68,7 +68,7 @@ appended to `test-runs.jsonl`.
 2. `generate world`, `facts`, `notes`, `fidelity`, `library`.
 3. Dev: `generate queries`, `filter` (repeat until no rewrite is pending), `prompts`, `dataset check`.
 4. `pool`, `review sample`, a review by an agent that generated nothing, `pool --apply`, `review apply`,
-   `review check`.
+   `review check`. Run `pool` again after `review apply` when a review fixed a note, before `review check`.
 5. A draft dev run of `bilbo-full` and `bm25-ref`, then `power` to size the test split.
 6. Test: the same steps as 3 and 4 with `--split test`.
 7. Write the dataset README, `dataset freeze`, `dataset verify`.
@@ -80,6 +80,8 @@ Pooling notes:
   until it has a resolution, like any other yes. `freeze` refuses while one is open.
 - A `rewrite` resolution means editing the item's text and running `pool` again; `pool` sets the old rows aside and
   judges the item anew.
+- A note fixed in review sends every item that lists it back to `pool`: run `pool` again (per split) after `review apply`,
+  and resolve any new yes. The resolutions on the old judgments are set aside.
 - Each split's noes get their own audit sample, so pool the test split too before `freeze`.
 - `dataset check` fails when the test split holds fewer queries than `preregistration.json` asks for a stratum. The fix
   is to rerun generation with more facts.

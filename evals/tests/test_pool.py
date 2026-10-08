@@ -727,3 +727,86 @@ def test_a_multi_hop_judgment_goes_back_to_pending_when_an_evidence_note_changed
     sup = [r for r in read_jsonl(ds / "generation/pool/superseded.jsonl") if r["row"]["item"] == MULTI]
     assert {r["file"] for r in sup} >= {"judgments.jsonl", "records.jsonl"}
     assert not [line for line in dataset.pool_open_items(ds) if line.startswith(f"{MULTI} ") and "not judged" in line]
+
+
+# --- round 3: resolutions, stale outputs, repeated set-asides -----------------------------------------------------
+
+ITEM = "q-alpha-001"
+
+
+def edit_note(ds: Path, cid: str, extra: str) -> None:
+    path = ds / "store/notes" / dataset.load(ds).notes[cid].file
+    path.write_text(path.read_text(encoding="utf-8") + extra, encoding="utf-8")
+
+
+def first_candidate(ranked) -> str:
+    return next(r for r in ranked["rows"] if r["item"] == ITEM)["candidates"][0]["id"]
+
+
+def test_a_resolution_made_on_the_old_judgment_does_not_cover_the_new_one(ds, fake_llm, bilbo_bin, ranked):
+    seed_candidates(ds, ranked)
+    cid = first_candidate(ranked)
+    script(fake_llm, ds, {ITEM: {cid: None}})
+    run(ds, bilbo_bin)
+    audit_done(ds)
+    resolve(ds, (ITEM, cid, "reject", None))
+    assert applied(ds, bilbo_bin) == 0
+    edit_note(ds, cid, "\nThe review added the answer here.\n")
+    script(fake_llm, ds, {ITEM: {cid: None}}, quote={(ITEM, cid): "The review added the answer here."})
+    run(ds, bilbo_bin)
+    audit_done(ds)
+    assert f"{ITEM} {cid}: pooled yes with no resolution" in dataset.pool_open_items(ds)
+    assert [r for r in read_jsonl(ds / "generation/pool/superseded.jsonl") if r["file"] == "resolutions.jsonl"]
+    assert not [r for r in read_jsonl(ds / "generation/pool/resolutions.jsonl") if r["candidate"] == cid and r["item"] == ITEM]
+
+
+def test_an_output_left_by_a_stopped_run_is_not_reused_after_a_note_edit(ds, fake_llm, bilbo_bin, ranked):
+    seed_candidates(ds, ranked)
+    cid = first_candidate(ranked)
+    script(fake_llm, ds)
+    run(ds, bilbo_bin)
+    write_jsonl(ds / "generation/pool/judgments.jsonl", [j for j in judgments(ds) if j["item"] != ITEM])
+    edit_note(ds, cid, "\nThe review added the answer here.\n")
+    script(fake_llm, ds, {ITEM: {cid: None}}, quote={(ITEM, cid): "The review added the answer here."})
+    made = len(fake_llm.calls())
+    run(ds, bilbo_bin)
+    assert [c for c in fake_llm.calls()[made:] if f"Item: {ITEM}\n" in c["prompt"]]
+    rec = next(r for r in read_jsonl(ds / "generation/pool/records.jsonl") if r["call_id"] == ITEM)
+    assert rec["prompt_sha256"] in pool_calls_all(ds, ITEM)
+    assert dataset._yes(next(j for j in judgments(ds) if j["item"] == ITEM and j["candidate"] == cid))
+
+
+def pool_calls_all(ds: Path, item: str) -> list[str]:
+    return [r["prompt_sha256"] for r in read_jsonl(ds / "generation/calls.jsonl") if r["item"] == item and r["status"] == "ok"]
+
+
+def test_a_second_set_aside_keeps_the_first_superseded_output(ds, fake_llm, bilbo_bin, ranked):
+    seed_candidates(ds, ranked)
+    cid = first_candidate(ranked)
+    script(fake_llm, ds)
+    run(ds, bilbo_bin)
+    sup = ds / "generation/outputs/pool/superseded"
+    edit_note(ds, cid, "\nFirst review fix.\n")
+    script(fake_llm, ds, {ITEM: {cid: None}}, quote={(ITEM, cid): "First review fix."})
+    run(ds, bilbo_bin)
+    first = {p.name: p.read_bytes() for p in sup.glob(f"{ITEM}.*")}
+    edit_note(ds, cid, "\nSecond review fix.\n")
+    run(ds, bilbo_bin)
+    second = {p.name: p.read_bytes() for p in sup.glob(f"{ITEM}.*")}
+    assert first and first.items() <= second.items() and len(second) == 2 * len(first)
+
+
+def test_a_record_holds_the_harness_and_a_rebuild_warns_when_it_differs(ds, fake_llm, bilbo_bin, ranked, capsys):
+    seed_candidates(ds, ranked)
+    script(fake_llm, ds)
+    run(ds, bilbo_bin)
+    record = read_jsonl(ds / "generation/pool/records.jsonl")[0]
+    assert set(record["harness"]) == {"package", "commit"} and record["harness"]["package"]
+    assert record["harness"]["commit"] is None or len(record["harness"]["commit"]) == 40
+    assert "/" not in str(record["harness"]["package"])
+    loaded = dataset.load(ds)
+    capsys.readouterr()
+    assert sha(pool.rebuild_prompt(loaded, record)) == record["prompt_sha256"] and capsys.readouterr().err == ""
+    other = {**record, "harness": {"package": "0.0.0", "commit": "0" * 40}}
+    assert sha(pool.rebuild_prompt(loaded, other)) == record["prompt_sha256"]
+    assert "harness" in capsys.readouterr().err
