@@ -82,8 +82,8 @@
         }
       },
       "latency_ms": {
-        "p50": 98,
-        "p95": 106
+        "p50": 103,
+        "p95": 112
       }
     },
     "bilbo-keyword": {
@@ -183,7 +183,7 @@
           "success@5": 0.95
         },
         "all": {
-          "judged@10": 0.9875,
+          "judged@10": 0.9869,
           "n": 160,
           "ndcg@10": 0.7587,
           "r@10": 0.8604,
@@ -191,7 +191,7 @@
           "success@5": 0.8562
         },
         "kind-filter": {
-          "judged@10": 1.0,
+          "judged@10": 0.995,
           "n": 20,
           "ndcg@10": 1.0,
           "r@10": 1.0,
@@ -500,8 +500,8 @@
         }
       },
       "latency_ms": {
-        "p50": 105,
-        "p95": 151
+        "p50": 122,
+        "p95": 372
       }
     }
   },
@@ -512,7 +512,7 @@
   },
   "dataset": {
     "name": "notes-synth/v1",
-    "sha256": "f90f52173ce49514dc6ce74d02b4561bc14406bec2fa3cdc1589504bf6c1b72a"
+    "sha256": "d4f6cea7234c2b6b47d9ae49f88397718a00a15faccfcf5fe5299b7dbfd45aeb"
   },
   "digest": {
     "0.55": {
@@ -559,6 +559,16 @@
   "index": {
     "embedded": 7102,
     "second_pass_embedded": 0
+  },
+  "primary": {
+    "comparison": "bilbo-full minus bm25",
+    "diff": 0.1062,
+    "draws": 100000,
+    "families": 93,
+    "metric": "success@5",
+    "min_effect": 0.1,
+    "n": 160,
+    "p": 6e-05
   },
   "schema": 1,
   "split": "test",
@@ -746,7 +756,7 @@
     "q-labnotebook-sync-008": {"bilbo-full": {"judged@10": 1.0, "ndcg@10": 1.0, "new_above_old": 1.0, "r@10": 1.0, "rr": 1.0, "success@5": 1.0}, "bilbo-keyword": {"judged@10": 1.0, "ndcg@10": 1.0, "new_above_old": 1.0, "r@10": 1.0, "rr": 1.0, "success@5": 1.0}, "bm25": {"judged@10": 1.0, "ndcg@10": 0.6309, "new_above_old": 0.0, "r@10": 1.0, "rr": 0.5, "success@5": 1.0}, "oracle": {"judged@10": 1.0, "ndcg@10": 1.0, "new_above_old": 1.0, "r@10": 1.0, "rr": 1.0, "success@5": 1.0}, "random": {"judged@10": 0.06, "ndcg@10": 0.0, "new_above_old": 0.1, "r@10": 0.0, "rr": 0.0026, "success@5": 0.0}, "ripgrep": {"judged@10": 1.0, "ndcg@10": 1.0, "new_above_old": 1.0, "r@10": 1.0, "rr": 1.0, "success@5": 1.0}},
     "q-labnotebook-sync-009": {"bilbo-full": {"evidence@10": 1.0, "judged@10": 1.0, "ndcg@10": 1.0, "r@10": 1.0, "rr": 1.0, "success@5": 1.0}, "bilbo-keyword": {"evidence@10": 1.0, "judged@10": 1.0, "ndcg@10": 1.0, "r@10": 1.0, "rr": 1.0, "success@5": 1.0}, "bm25": {"evidence@10": 1.0, "judged@10": 1.0, "ndcg@10": 1.0, "r@10": 1.0, "rr": 1.0, "success@5": 1.0}, "oracle": {"evidence@10": 1.0, "judged@10": 1.0, "ndcg@10": 1.0, "r@10": 1.0, "rr": 1.0, "success@5": 1.0}, "random": {"evidence@10": 0.0, "judged@10": 0.105, "ndcg@10": 0.0185, "r@10": 0.05, "rr": 0.0172, "success@5": 0.0}, "ripgrep": {"evidence@10": 1.0, "judged@10": 1.0, "ndcg@10": 1.0, "r@10": 1.0, "rr": 1.0, "success@5": 1.0}},
     "q-labnotebook-sync-010": {"bilbo-full": {"judged@10": 1.0, "ndcg@10": 1.0, "r@10": 1.0, "rr": 1.0, "success@5": 1.0}, "bilbo-keyword": {"judged@10": 1.0, "ndcg@10": 1.0, "r@10": 1.0, "rr": 1.0, "success@5": 1.0}, "bm25": {"judged@10": 1.0, "ndcg@10": 1.0, "r@10": 1.0, "rr": 1.0, "success@5": 1.0}, "oracle": {"judged@10": 1.0, "ndcg@10": 1.0, "r@10": 1.0, "rr": 1.0, "success@5": 1.0}, "random": {"judged@10": 0.37, "ndcg@10": 0.0953, "r@10": 0.25, "rr": 0.0696, "success@5": 0.15}, "ripgrep": {"judged@10": 1.0, "ndcg@10": 0.6309, "r@10": 1.0, "rr": 0.5, "success@5": 1.0}},
-    "q-labnotebook-sync-011": {"bilbo-full": {"judged@10": 1.0, "ndcg@10": 1.0, "r@10": 1.0, "rr": 1.0, "success@5": 1.0}, "bilbo-keyword": {"judged@10": 1.0, "ndcg@10": 1.0, "r@10": 1.0, "rr": 1.0, "success@5": 1.0}, "bm25": {"judged@10": 1.0, "ndcg@10": 1.0, "r@10": 1.0, "rr": 1.0, "success@5": 1.0}, "oracle": {"judged@10": 1.0, "ndcg@10": 1.0, "r@10": 1.0, "rr": 1.0, "success@5": 1.0}, "random": {"judged@10": 0.44, "ndcg@10": 0.0746, "r@10": 0.2, "rr": 0.0641, "success@5": 0.1}, "ripgrep": {"judged@10": 1.0, "ndcg@10": 1.0, "r@10": 1.0, "rr": 1.0, "success@5": 1.0}},
+    "q-labnotebook-sync-011": {"bilbo-full": {"judged@10": 1.0, "ndcg@10": 1.0, "r@10": 1.0, "rr": 1.0, "success@5": 1.0}, "bilbo-keyword": {"judged@10": 1.0, "ndcg@10": 1.0, "r@10": 1.0, "rr": 1.0, "success@5": 1.0}, "bm25": {"judged@10": 0.9, "ndcg@10": 1.0, "r@10": 1.0, "rr": 1.0, "success@5": 1.0}, "oracle": {"judged@10": 1.0, "ndcg@10": 1.0, "r@10": 1.0, "rr": 1.0, "success@5": 1.0}, "random": {"judged@10": 0.44, "ndcg@10": 0.0746, "r@10": 0.2, "rr": 0.0641, "success@5": 0.1}, "ripgrep": {"judged@10": 1.0, "ndcg@10": 1.0, "r@10": 1.0, "rr": 1.0, "success@5": 1.0}},
     "q-labnotebook-sync-012": {"bilbo-full": {"judged@10": 1.0, "ndcg@10": 1.0, "r@10": 1.0, "rr": 1.0, "success@5": 1.0}, "bilbo-keyword": {"judged@10": 1.0, "ndcg@10": 1.0, "r@10": 1.0, "rr": 1.0, "success@5": 1.0}, "bm25": {"judged@10": 1.0, "ndcg@10": 1.0, "r@10": 1.0, "rr": 1.0, "success@5": 1.0}, "oracle": {"judged@10": 1.0, "ndcg@10": 1.0, "r@10": 1.0, "rr": 1.0, "success@5": 1.0}, "random": {"judged@10": 0.51, "ndcg@10": 0.0921, "r@10": 0.25, "rr": 0.0716, "success@5": 0.1}, "ripgrep": {"judged@10": 1.0, "ndcg@10": 1.0, "r@10": 1.0, "rr": 1.0, "success@5": 1.0}},
     "q-labnotebook-sync-013": {"bilbo-full": {"judged@10": 1.0, "ndcg@10": 1.0, "r@10": 1.0, "rr": 1.0, "success@5": 1.0}, "bilbo-keyword": {"judged@10": 1.0, "ndcg@10": 1.0, "r@10": 1.0, "rr": 1.0, "success@5": 1.0}, "bm25": {"judged@10": 1.0, "ndcg@10": 1.0, "r@10": 1.0, "rr": 1.0, "success@5": 1.0}, "oracle": {"judged@10": 1.0, "ndcg@10": 1.0, "r@10": 1.0, "rr": 1.0, "success@5": 1.0}, "random": {"judged@10": 0.07, "ndcg@10": 0.0, "r@10": 0.0, "rr": 0.0012, "success@5": 0.0}, "ripgrep": {"judged@10": 0.8, "ndcg@10": 1.0, "r@10": 1.0, "rr": 1.0, "success@5": 1.0}},
     "q-labnotebook-sync-014": {"bilbo-full": {"judged@10": 1.0, "ndcg@10": 1.0, "r@10": 1.0, "rr": 1.0, "success@5": 1.0}, "bilbo-keyword": {"judged@10": 1.0, "ndcg@10": 1.0, "r@10": 1.0, "rr": 1.0, "success@5": 1.0}, "bm25": {"judged@10": 1.0, "ndcg@10": 1.0, "r@10": 1.0, "rr": 1.0, "success@5": 1.0}, "oracle": {"judged@10": 1.0, "ndcg@10": 1.0, "r@10": 1.0, "rr": 1.0, "success@5": 1.0}, "random": {"judged@10": 0.1, "ndcg@10": 0.0, "r@10": 0.0, "rr": 0.0046, "success@5": 0.0}, "ripgrep": {"judged@10": 0.9, "ndcg@10": 1.0, "r@10": 1.0, "rr": 1.0, "success@5": 1.0}},

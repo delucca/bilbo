@@ -25,9 +25,9 @@ claude plugin validate . && claude plugin validate plugins/bilbo
 PYTHONDONTWRITEBYTECODE=1 python3 ~/.codex/skills/.system/plugin-creator/scripts/validate_plugin.py plugins/bilbo
 # The L1 eval (evals/l1-retrieval/README.md); needs no claude or codex. Smoke run: guards only, no embedder
 nix develop -c uv --directory evals/l1-retrieval sync --locked
-nix develop -c uv --directory evals/l1-retrieval run eval.py run --bilbo "$PWD/target/debug/bilbo" --split dev --arms oracle,bm25,bilbo-keyword --out "$TMPDIR/results.json"
+nix develop -c uv --directory evals/l1-retrieval run eval.py run --bilbo "$PWD/target/debug/bilbo" --split dev --arms oracle,bm25,bilbo-keyword --out "${TMPDIR:-/tmp}/results.json"
 # A baseline: release build, llama-server and the pinned GGUF, test split once per release
-nix develop -c uv --directory evals/l1-retrieval run eval.py run --bilbo "$PWD/target/release/bilbo" --split test --out baseline/<version>.json
+nix shell --inputs-from . nixpkgs#llama-cpp -c nix develop -c uv --directory evals/l1-retrieval run eval.py run --bilbo "$PWD/target/release/bilbo" --split test --out baseline/<version>.json
 nix develop -c uv --directory evals/l1-retrieval run eval.py diff baseline/0.19.0.json baseline/<version>.json
 ```
 
@@ -90,7 +90,8 @@ failures say what to change. Beyond it:
   `openspec update` rewrite them.
 - `evals/l1-retrieval/dataset/` and `evals/l1-retrieval/baseline/` are
   generated, never by hand: a change is a new dataset version (rebuilt from
-  the generator tag `evals/notes-synth-v1-generator`) or a new baseline.
+  the generator tag `evals/notes-synth-v1-generator` and converted to the
+  layout in `evals/l1-retrieval/README.md`) or a new baseline.
 - `.agents/plugins/marketplace.json` is written by hand. `release.yml` comes
   from `dist generate` over `dist-workspace.toml`: edit that and regenerate, or
   the release `plan` job fails.

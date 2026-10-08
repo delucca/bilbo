@@ -9,6 +9,7 @@ A guard that fires aborts the run with exit 1 and writes nothing: scores never g
 from __future__ import annotations
 
 import argparse
+import atexit
 import hashlib
 import json
 import os
@@ -16,6 +17,7 @@ import platform
 import random
 import re
 import shutil
+import signal
 import socket
 import subprocess
 import sys
@@ -45,6 +47,8 @@ GGUF_FILE = "Qwen3-Embedding-0.6B-Q8_0.gguf"
 QUERY_PREFIX = "Instruct: Given a question, retrieve notes that answer it\nQuery: "
 THRESHOLD = 0.55
 LIMIT = 100
+MIN_EFFECT = 0.10  # the preregistered minimum effect of the primary comparison
+EXACT_FAMILIES = 13  # up to this many fact families the sign-flip test enumerates every flip
 MIN_FAMILIES = 10  # fewer fact families than this and a bootstrap interval is not worth printing
 SEEDS = range(20)
 ARMS = ["oracle", "random", "ripgrep", "bm25", "bilbo-keyword", "bilbo-full"]
@@ -109,6 +113,11 @@ class Dataset:
     qrels: dict[str, dict[str, int]]
 
 
+def dataset_id(listed: dict[str, str]) -> str:
+    """Hash of the data files only: the datasheet can be corrected without invalidating a baseline."""
+    return hashlib.sha256("".join(f"{h}  {rel}\n" for rel, h in sorted(listed.items()) if rel != "README.md").encode()).hexdigest()
+
+
 def load_dataset(d: Path) -> Dataset:
     sums = d / "SHA256SUMS"
     if not sums.is_file():
@@ -137,7 +146,7 @@ def load_dataset(d: Path) -> Dataset:
             qid, _, doc, grade = line.split()
             qrels[qid][doc] = int(grade)
     ds = Dataset(d, (d / "README.md").read_text(encoding="utf-8").splitlines()[0].lstrip("# ").strip(),
-                 sha256_file(sums), notes, library, jsonl(d / "queries.jsonl"), jsonl(d / "prompts.jsonl"), dict(qrels))
+                 dataset_id(listed), notes, library, jsonl(d / "queries.jsonl"), jsonl(d / "prompts.jsonl"), dict(qrels))
     ids = set(notes) | set(library)
     refs = [(q["id"], i) for q in ds.queries for i in [*q["decoys"], *(i for s in q["evidence_sets"] for i in s)]]
     refs += [(qid, doc) for qid, docs in qrels.items() for doc in docs] + [(p["id"], i) for p in ds.prompts for i in p["gold"]]
@@ -209,7 +218,11 @@ def make_sandbox(ds: Dataset, exe: Path) -> Sandbox:
     mapping = {str(store / "notes" / n["file"]): i for i, n in ds.notes.items()}
     mapping |= {str(store / "library" / (f"{i}.md" if "/" in i else f"{i}/guide.md")): i for i in ds.library}
     sb = Sandbox(root, store, config, root / "state/bilbo", env, exe, mapping)
-    guard(sb)
+    try:
+        guard(sb)
+    except Abort:
+        shutil.rmtree(root, ignore_errors=True)
+        raise
     return sb
 
 
@@ -298,6 +311,7 @@ def start_server(gguf: Path, llama_server: str) -> Server:
         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
     )  # fmt: skip
     server = Server(f"http://127.0.0.1:{port}", proc, {"model": MODEL, "gguf_sha256": found, "llama_server": version, "backend": backend})
+    atexit.register(server.stop)  # the last resort when the finally in cmd_run cannot run
     deadline = time.monotonic() + 180
     try:
         while True:
@@ -416,7 +430,7 @@ def bm25_arm(ds: Dataset):
         query = tokens([q["text"]], False)
         if not query or not query[0]:
             return [[]], None
-        docs, scores = retriever.retrieve(query, k=min(LIMIT, len(ids)), show_progress=False)
+        docs, scores = retriever.retrieve(query, k=len(ids), show_progress=False)
         return [restrict(ds, q, [ids[int(d)] for d, s in zip(docs[0], scores[0]) if s > 0])], None
 
     return rank
@@ -542,6 +556,23 @@ def paired(qs: list[dict], a: dict, b: dict, clusters: dict[str, str]) -> dict:
     return {"n": len(qs), "diff": round(d, 4), "lo": round(lo, 4), "hi": round(hi, 4)}
 
 
+def signflip(qs: list[dict], a: dict, b: dict, clusters: dict[str, str]) -> dict:
+    """The preregistered test: paired sign-flip permutation over fact families, two-sided on the mean difference."""
+    by_family: dict[str, float] = defaultdict(float)
+    for q in qs:
+        by_family[clusters[q["id"]]] += a[q["id"]] - b[q["id"]]
+    sums = np.array([by_family[k] for k in sorted(by_family)])
+    k, observed = len(sums), abs(sums.sum())
+    if k <= EXACT_FAMILIES:
+        signs = ((np.arange(2**k)[:, None] >> np.arange(k)) & 1) * 2 - 1
+        return {"p": round(float(np.mean(np.abs(signs @ sums) >= observed - 1e-9)), 6), "families": k, "draws": None}
+    rng, hits, draws = np.random.default_rng(0), 0, 100000
+    for _ in range(draws // 10000):
+        flips = rng.integers(0, 2, size=(10000, k), dtype=np.int8) * 2 - 1
+        hits += int(np.sum(np.abs(flips @ sums) >= observed - 1e-9))
+    return {"p": round((hits + 1) / (draws + 1), 6), "families": k, "draws": draws}
+
+
 def strata_of(queries: list[dict]) -> dict[str, list[dict]]:
     scored = [q for q in queries if q["stratum"] != "no-answer"]
     return {"all": scored} | {s: [q for q in scored if q["stratum"] == s] for s in STRATA if s != "no-answer"}
@@ -603,6 +634,11 @@ def interval(c: dict) -> str:
     return f"{c['diff']:+.3f} [{c['lo']:+.3f}, {c['hi']:+.3f}]" + (" *" if c["lo"] > 0 or c["hi"] < 0 else "")
 
 
+def primary_line(p: dict) -> str:
+    how = "exact" if p["draws"] is None else f"{p['draws']} draws"
+    return f"p = {p['p']:.4g} ({how}, {p['families']} families); minimum effect {p['min_effect']:.2f} {'met' if abs(p['diff']) >= p['min_effect'] else 'not met'}"
+
+
 def report(res: dict) -> str:
     arms, vs = res["arms"], res["vs"]
     lines = [f"# L1 retrieval: {res['dataset']['name']} {res['split']}, bilbo {res['bilbo']['version']}", ""]
@@ -610,7 +646,8 @@ def report(res: dict) -> str:
         lines += ["WARNING: bilbo is a debug build; its latencies are about 6x a release build and are not for a baseline.", ""]
     if "bm25" in vs and "all" in vs["bm25"]:
         lines += [f"Headline, success@5 over all {vs['bm25']['all']['n']} scored queries: bilbo-full minus bm25 = {interval(vs['bm25']['all'])}",
-                  "", "`*` marks an interval that excludes 0. Everything below is secondary.", ""]  # fmt: skip
+                  "", f"Preregistered test (paired sign-flip over fact families): {primary_line(res['primary'])}" if "primary" in res else "", "",
+                  "`*` marks an interval that excludes 0, uncorrected across strata. Everything below is secondary.", ""]  # fmt: skip
     strata = [s for s in ["all", *STRATA] if any(s in a["by_stratum"] for a in arms.values())]
     lines += ["## success@5 by stratum", ""] + table(["arm", *strata], [
         [name, *[f"{a['by_stratum'][s]['success@5']:.3f}" if s in a["by_stratum"] and "success@5" in a["by_stratum"][s] else "-" for s in strata]]
@@ -647,7 +684,7 @@ def diff(old: dict, new: dict) -> str:
         raise Abort(f"the runs differ in split: {old['split']} and {new['split']}")
     if old["dataset"]["sha256"] != new["dataset"]["sha256"]:
         raise Abort("the runs used different datasets; their scores do not compare")
-    lines = [f"# diff: bilbo {old['bilbo']['version']} -> {new['bilbo']['version']}, {new['dataset']['name']} {new['split']}", ""]
+    lines = [f"# diff: bilbo {old['bilbo']['version']} -> {new['bilbo']['version']}, {new['dataset']['name']} {new['split']}"]
     for what in ("embedder", "host"):
         if old[what] != new[what]:
             lines += [f"note: {what} differs: {old[what]} -> {new[what]}"]
@@ -658,10 +695,14 @@ def diff(old: dict, new: dict) -> str:
         for s in ["all", *STRATA]:
             qs = [{"id": qid, "stratum": queries[qid]["stratum"]} for qid in both if s in ("all", queries[qid]["stratum"]) and queries[qid]["stratum"] != "no-answer"]
             if qs:
-                c = paired(qs, {q["id"]: new["per_query"][q["id"]][arm]["success@5"] for q in qs},
-                           {q["id"]: old["per_query"][q["id"]][arm]["success@5"] for q in qs}, {k: v["family"] for k, v in queries.items()})  # fmt: skip
-                body.append([arm, s, str(c["n"]), interval(c)])
-    lines += ["", "## success@5, new minus old", ""] + table(["arm", "stratum", "n", "diff"], body)
+                a, b = ({q["id"]: r["per_query"][q["id"]][arm]["success@5"] for q in qs} for r in (new, old))
+                fam = {k: v["family"] for k, v in queries.items()}
+                c = paired(qs, a, b, fam)
+                body.append([arm, s, str(c["n"]), interval(c), f"{signflip(qs, a, b, fam)['p']:.4g}" if s == "all" else "-"])
+    lines += ["", "## success@5, new minus old", ""] + table(["arm", "stratum", "n", "diff", "sign-flip p"], body)
+    for name, r in (("old", old), ("new", new)):
+        if "primary" in r:
+            lines += ["", f"primary, {name}: bilbo-full minus bm25 = {r['primary']['diff']:+.3f}, {primary_line(r['primary'])}"]
     for cfg in [c for c in (new.get("digest") or {}) if c in (old.get("digest") or {})]:
         o, n = old["digest"][cfg], new["digest"][cfg]
         lines += ["", f"digest {cfg}: coverage {o['coverage']} -> {n['coverage']}, hit given inject {o['hit_given_inject']} -> {n['hit_given_inject']}, "
@@ -702,12 +743,16 @@ def cmd_run(a: argparse.Namespace) -> int:
     prompts = [p for p in ds.prompts if p["split"] == a.split]
     if not queries:
         raise Abort(f"the {a.split} split has no queries")
-    sb, server = make_sandbox(ds, exe), None
-    res: dict = {"schema": 1, "dataset": {"name": ds.name, "sha256": ds.sha}, "split": a.split, "bilbo": bilbo_identity(sb),
-                 "embedder": None, "host": {"platform": platform.platform(), "cpu": cpu()}, "index": None, "arms": {}, "vs": {},
-                 "digest": {}, "queries": {q["id"]: {"stratum": q["stratum"], "family": q["family"]} for q in queries},
-                 "per_query": defaultdict(dict), "per_prompt": defaultdict(dict)}  # fmt: skip
+    base = json.loads(Path(a.baseline).read_text(encoding="utf-8")) if a.baseline else None
+    if base and (base["split"], base["dataset"]["sha256"]) != (a.split, ds.sha):
+        raise Abort(f"{a.baseline} is of another split or dataset than this run; nothing was run")
+    sb = server = None
     try:
+        sb = make_sandbox(ds, exe)
+        res: dict = {"schema": 1, "dataset": {"name": ds.name, "sha256": ds.sha}, "split": a.split, "bilbo": bilbo_identity(sb),
+                     "embedder": None, "host": {"platform": platform.platform(), "cpu": cpu()}, "index": None, "arms": {}, "vs": {},
+                     "digest": {}, "queries": {q["id"]: {"stratum": q["stratum"], "family": q["family"]} for q in queries},
+                     "per_query": defaultdict(dict), "per_prompt": defaultdict(dict)}  # fmt: skip
         if "bilbo-full" in names:
             server = start_server(Path(a.model), a.llama_server)
             res["embedder"] = server.info
@@ -736,6 +781,11 @@ def cmd_run(a: argparse.Namespace) -> int:
                 res["vs"][other] = {s: paired(qs, {q["id"]: metrics["bilbo-full"][q["id"]]["success@5"] for q in qs},
                                                {q["id"]: metrics[other][q["id"]]["success@5"] for q in qs}, clusters)
                                     for s, qs in strata_of(queries).items() if qs}  # fmt: skip
+            if "bm25" in metrics:
+                qs = strata_of(queries)["all"]
+                ours, theirs = ({q["id"]: metrics[n][q["id"]]["success@5"] for q in qs} for n in ("bilbo-full", "bm25"))
+                res["primary"] = {"comparison": "bilbo-full minus bm25", "metric": "success@5", "min_effect": MIN_EFFECT,
+                                  "diff": res["vs"]["bm25"]["all"]["diff"], "n": len(qs), **signflip(qs, ours, theirs, clusters)}  # fmt: skip
         if prompts and not a.no_digest:
             configs = ([f"{THRESHOLD:g}"] if server else []) + ["keywords"]
             for cfg in configs:
@@ -749,14 +799,14 @@ def cmd_run(a: argparse.Namespace) -> int:
                 raise Abort(f"the results contain {secret}; refusing to write them")
         Path(a.out).write_text(text, encoding="utf-8")
         print(report(res))
-        if a.baseline:
-            print("\n" + diff(json.loads(Path(a.baseline).read_text(encoding="utf-8")), json.loads(text)))
+        if base:
+            print("\n" + diff(base, json.loads(text)))
     finally:
         if server:
             server.stop()
-        if a.keep_root:
+        if sb and a.keep_root:
             print(f"eval: kept {sb.root}", file=sys.stderr)
-        else:
+        elif sb:
             shutil.rmtree(sb.root, ignore_errors=True)
     return 0
 
@@ -786,6 +836,7 @@ def main() -> int:
     d.add_argument("new")
     d.set_defaults(fn=cmd_diff)
     args = ap.parse_args()
+    signal.signal(signal.SIGTERM, lambda *_: sys.exit(143))  # unwinds through the finally blocks and atexit
     try:
         return args.fn(args)
     except Abort as e:
