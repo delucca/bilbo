@@ -109,21 +109,35 @@ def evaluate(dir: Path, split: str = "all") -> tuple[str, list[str]]:
     """The share line, and the open items; the review passes when there are none."""
     ds = dataset.load(dir)
     rows = [r for r in _sheet(dir) if split == "all" or r["split"] == split or r["type"] == "note"]
+    present = {q["id"] for q in ds.queries} | {p["id"] for p in ds.prompts} | set(ds.notes)
     reviewed = [r for r in rows if r["verdict"] in ("valid", "invalid")]
+    fixed = [r for r in reviewed if r.get("class_fix")]
+    counted = [r for r in reviewed if not r.get("class_fix")]
     valid = len([r for r in reviewed if r["verdict"] == "valid"])
-    pct = 100.0 * valid / len(reviewed) if reviewed else 0.0
-    summary = f"{valid}/{len(reviewed)} valid ({pct:.1f}%)"
-    held = {row["id"] for row in [*ds.queries, *ds.prompts]}
+    pct = 100.0 * valid / len(counted) if counted else 0.0
+    summary = f"{valid}/{len(counted)} valid ({pct:.1f}%)"
+    if fixed:
+        names: dict[str, int] = {}
+        for r in fixed:
+            names[r["class_fix"]] = names.get(r["class_fix"], 0) + 1
+        raw = 100.0 * valid / len(reviewed)
+        summary = (f"{valid}/{len(reviewed)} valid ({raw:.1f}%) raw; {valid}/{len(counted)} ({pct:.1f}%) excluding class fixes: "
+                   + ", ".join(f"{n} {c}" for n, c in names.items()))
     open_items = []
     for r in rows:
         if r["verdict"] is None:
             open_items.append(f"open: {r['item']} not reviewed")
+        elif r.get("class_fix"):
+            if r["verdict"] != "invalid":
+                open_items.append(f"open: {r['item']} class_fix on an item that is not invalid")
+            if r["item"] in present:
+                open_items.append(f"open: {r['item']} class_fix item is still in the dataset")
         elif r["verdict"] == "invalid":
             if not r["reason"]:
                 open_items.append(f"open: {r['item']} invalid with no reason")
             if r["resolution"] not in ("fixed", "dropped"):
                 open_items.append(f"open: {r['item']} invalid and neither fixed nor dropped")
-            elif r["resolution"] == "dropped" and r["item"] in held:
+            elif r["resolution"] == "dropped" and r["item"] in present:
                 open_items.append(f"open: {r['item']} dropped but still in the dataset; run review apply")
     counts: dict[tuple[str, str], int] = {}
     for r in rows:

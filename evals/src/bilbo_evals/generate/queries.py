@@ -208,22 +208,25 @@ def _from_facts(w: World, split: str, stratum: str, want: int, pool: list[dict],
             if len(out) == want:
                 break
     elif stratum == "multi-hop":
+        # Two-note chains only: a third note answers no part of the question.
         seen: set[frozenset] = set()
         for f in pool:
-            ids = sorted({f["id"], *f.get("joins", [])})
-            group = [w.facts.get(i) for i in ids]
-            key = frozenset(ids)
-            if not f.get("joins") or key in seen or any(g is None or not w.usable(g) or g["id"] in used for g in group):
-                continue
-            notes = list(dict.fromkeys(g["note_id"] for g in group))
-            if len(notes) < 2 or len({g["project"] for g in group}) != 1:
-                continue
-            seen.add(key)
-            used |= key
-            first = w.facts[ids[0]]
-            b = _base(w, first, split, stratum)
-            b["slots"]["facts"] = "\n".join(f"- {g['statement']}" for g in group)
-            out.append(Intent(**b, lang=w.fact_lang(first), gold=notes, evidence_sets=[notes], fact_ids=ids))
+            for j in sorted(f.get("joins", [])):
+                ids = sorted({f["id"], j})
+                other = w.facts.get(j)
+                key = frozenset(ids)
+                if len(ids) != 2 or key in seen or other is None or not w.usable(other) or f["id"] in used or j in used:
+                    continue
+                notes = list(dict.fromkeys(g["note_id"] for g in (w.facts[i] for i in ids)))
+                if len(notes) != 2 or other["project"] != f["project"]:
+                    continue
+                seen.add(key)
+                used |= key
+                first = w.facts[ids[0]]
+                b = _base(w, first, split, stratum)
+                b["slots"]["facts"] = "\n".join(f"- {w.facts[i]['statement']}" for i in ids)
+                out.append(Intent(**b, lang=w.fact_lang(first), gold=notes, evidence_sets=[notes], fact_ids=ids))
+                break
             if len(out) == want:
                 break
     elif stratum == "kind-filter":
@@ -587,10 +590,26 @@ def _short(ds: Path, intents: list[Intent], rows: dict[str, dict], counts: dict[
     return {s: n - alive.get(s, 0) for s, n in counts.items() if n > alive.get(s, 0)}
 
 
+def wide_multihop(ds: Path) -> dict[str, list[str]]:
+    """Per split, the multi-hop queries whose evidence sets hold more than two notes."""
+    path = ds / "queries.jsonl"
+    out: dict[str, list[str]] = {}
+    for r in common.read_jsonl(path) if path.exists() else []:
+        if r["stratum"] == "multi-hop" and any(len(s) > 2 for s in r["evidence_sets"]):
+            out.setdefault(r["split"], []).append(r["id"])
+    return out
+
+
 def cmd(args) -> int:
     from bilbo_evals import dataset, llm
 
     ds = Path(args.dataset)
+    if getattr(args, "list_wide_multihop", False):
+        for split, ids in sorted(wide_multihop(ds).items()):
+            common.out(f"{split}: " + " ".join(sorted(ids)))
+        return 0
+    if not getattr(args, "split", None):
+        raise common.UsageError("--split is required")
     cfg = llm.load_config(ds)
     split = args.split
     llm.require_cli("codex")
