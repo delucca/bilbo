@@ -476,6 +476,7 @@ def cmd(args) -> int:
     intents, short = build_intents(world, split, split_counts(ds, cfg, split), cfg.seed)
     for stratum, n in sorted(short.items()):
         common.err(f"{split} {stratum}: the facts allow {n} fewer queries than asked")
+    missing = sum(short.values())
 
     templates = load_sections("queries.md")
     query_schema = _json(HERE / "schemas/query.json")
@@ -536,5 +537,8 @@ def cmd(args) -> int:
         raise stop
     if left:
         common.err(f"{left} queries left")
+        return 1
+    if missing:
+        common.err(f"{missing} queries short of the asked counts")
         return 1
     return 0

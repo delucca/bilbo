@@ -37,6 +37,7 @@ class Result:
     warnings: list[str] = field(default_factory=list)
     fallback: bool = False
     error: str | None = None
+    lines: dict[str, int] = field(default_factory=dict)  # note id -> file line of the passage that ranked it
 
 
 class Arm(Protocol):

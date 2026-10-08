@@ -41,6 +41,7 @@ class DenseRef:
     def __init__(self) -> None:
         self.cache: embedder.VectorCache | None = None
         self.docs: dict[bool, dict[str, np.ndarray]] = {}
+        self.lines: dict[str, list[int]] = {}
 
     def prepare(self, ctx: Context) -> dict:
         index = ensure_index(ctx)
@@ -59,7 +60,9 @@ class DenseRef:
         per_doc: dict[str, list[str]] = {}
         for ident, path in files.items():
             text = path.read_bytes().decode("utf-8", errors="replace")
-            per_doc[ident] = [t for p in passages.passages(text, path.stem) if (t := passages.embed_input(p)) is not None]
+            found = [(p.line, t) for p in passages.passages(text, path.stem) if (t := passages.embed_input(p)) is not None]
+            per_doc[ident] = [t for _, t in found]
+            self.lines[ident] = [n for n, _ in found]
         missing = sorted({t for ts in per_doc.values() for t in ts if self.cache.get(t) is None})
         if missing and strict:
             raise Refused(f"{len(missing)} passage vectors are missing from the cache; the index run did not store them")
@@ -83,9 +86,11 @@ class DenseRef:
         if not docs:
             return Result([])
         q = self._query(item["text"], ctx)
-        best = {ident: float((m @ q).max()) for ident, m in docs.items()}
-        ranking = sorted(best, key=lambda i: (-best[i], i))
-        return Result(restrict(ranking, item, ctx))
+        sims = {ident: m @ q for ident, m in docs.items()}
+        best = {ident: float(s.max()) for ident, s in sims.items()}
+        ranking = restrict(sorted(best, key=lambda i: (-best[i], i)), item, ctx)
+        lines = {} if library_mode(item) else {i: self.lines[i][int(sims[i].argmax())] for i in ranking if i in sims}
+        return Result(ranking, lines=lines)
 
 
 arm = DenseRef()

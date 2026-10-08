@@ -88,8 +88,9 @@ def doc_freq(docs: Iterable[tuple[str, str]]) -> Counter[str]:
 
 
 def distinctive(text: str, lang: str, df: Counter[str], n_docs: int) -> set[str]:
-    """Stems of the words of 4 or more letters, not stopwords, found in at most max(1, floor(2%)) documents."""
-    limit = max(1, math.floor(MAX_DF_SHARE * n_docs))
+    """Stems of the words of 4 or more letters, not stopwords, found in fewer than 2% of the documents
+    (at most one document when 2% is under one, so tiny corpora stay testable)."""
+    limit = max(1, math.ceil(MAX_DF_SHARE * n_docs) - 1)
     return {
         s
         for w in words(text)

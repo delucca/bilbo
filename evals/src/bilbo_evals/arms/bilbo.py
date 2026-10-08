@@ -9,7 +9,7 @@ from bilbo_evals.arms import LIMIT, Context, Result, library_mode
 from bilbo_evals.arms.dense_ref import ensure_index
 from bilbo_evals.common import Refused, tool_version
 
-NOTE_HEADER = re.compile(r"^(?P<path>.+\.md):\d+\t[a-z]+\t")
+NOTE_HEADER = re.compile(r"^(?P<path>.+\.md):(?P<line>\d+)\t[a-z]+\t")
 SOURCE_HEADER = re.compile(r"^(?P<path>.+\.md):\d+\t(?:source|guide)\t(?P<ref>[^\t]+)\t")
 EMPTY = ("no notes match", "no sources match")
 FALLBACK = ("embedder unavailable", "not indexed")
@@ -29,6 +29,17 @@ def parse(stdout: str, ctx: Context, library: bool) -> tuple[list[str], list[str
         elif ident not in ranking:
             ranking.append(ident)
     return ranking, unknown
+
+
+def hit_lines(stdout: str, ctx: Context) -> dict[str, int]:
+    """File line of each note's best passage, from the header line of its recall block."""
+    found: dict[str, int] = {}
+    for line in stdout.splitlines():
+        m = NOTE_HEADER.match(line)
+        ident = ctx.path_to_id.get(m["path"]) if m else None
+        if ident is not None:
+            found.setdefault(ident, int(m["line"]))
+    return found
 
 
 class Bilbo:
@@ -70,7 +81,8 @@ class Bilbo:
             return Result([], p.ms, p.exit, warnings, fallback, error=f"exit {p.exit}: {p.stderr.strip()}")
         ranking, unknown = parse(p.stdout, ctx, library)
         warnings += [f"no id for {path}" for path in unknown]
-        return Result(ranking[:LIMIT], p.ms, p.exit, warnings, fallback)
+        lines = {} if library else {i: n for i, n in hit_lines(p.stdout, ctx).items() if i in ranking[:LIMIT]}
+        return Result(ranking[:LIMIT], p.ms, p.exit, warnings, fallback, lines=lines)
 
 
 keyword = Bilbo("bilbo-keyword", full=False)

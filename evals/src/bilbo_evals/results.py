@@ -115,7 +115,7 @@ def earlier_test_runs(run_id: str, tree_hash: str) -> int:
 def find_dataset(meta: dict) -> dict:
     """Queries and preregistration of the dataset a run records, checked against its tree hash."""
     ds = meta["dataset"]
-    path = common.EVALS_ROOT / "datasets" / ds["name"] / ds["version"]
+    path = common.EVALS_ROOT / ds["path"] if ds.get("path") else common.EVALS_ROOT / "datasets" / ds["name"] / ds["version"]
     if not path.is_dir():
         raise Refused(f"the dataset {ds['name']}/{ds['version']} is not at {path}")
     if ds["tree_hash"] is not None:
@@ -203,7 +203,9 @@ def _statistics(loaded: dict, info: dict, split: str) -> list[str]:
     principal = _principal(info["prereg"], others)
     tag = " exploratory" if split == "dev" else ""
     raw: dict[str, dict] = {n: stats.compare_arms(_rows(full["rows"], None), _rows(arms[n]["rows"], None), families, "success@5") for n in others}  # fmt: skip
-    holm = stats.holm({n: raw[n]["p"] for n in others if n != principal and raw[n]["p"] is not None})
+    family = [n for n in info["prereg"].get("secondary", stats.DEFAULTS["secondary"]) if n != principal]
+    holm = stats.holm({n: raw[n]["p"] if n in raw and raw[n]["p"] is not None else 1.0 for n in family})
+    missing = [n for n in family if n not in raw or raw[n]["p"] is None]
     body = []
     for n in others:
         r = raw[n]
@@ -216,6 +218,8 @@ def _statistics(loaded: dict, info: dict, split: str) -> list[str]:
     lines = ["Primary metric: success@5 over note queries; difference is `bilbo-full` minus the arm, paired by query, "
              "resampled by fact family.", ""]
     lines += _table(["vs", "role", "n", "bilbo-full", "arm", "difference [95% CI]", "p", "p (Holm, secondary)"], body)
+    if missing:
+        lines += ["", f"Holm family: {', '.join(family)}; not in this run (p = 1): {', '.join(missing)}"]
     lines += ["", "Other metrics, same pairing:", ""]
     body = []
     for n in others:

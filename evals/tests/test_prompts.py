@@ -140,3 +140,26 @@ def test_cmd_does_not_resurrect_a_prompt_a_review_dropped(step):
     common.append_jsonl(step.ds / "generation/review/applied.jsonl", {"item": gone, "resolution": "dropped"})
     assert step.run() == 0
     assert gone not in {r["id"] for r in common.read_jsonl(step.ds / "digest/prompts.jsonl")}
+
+
+def test_output_problem_rejects_duplicate_prompts(ds):
+    batches, _ = plan(ds)
+    noise = next(b for b in batches if b.label == "noise")
+    dup = {"prompts": ["ok", " OK ", *[f"w{i}" for i in range(12)]]}
+    assert p.output_problem(noise, dup) == "duplicate prompts"
+    assert p.output_problem(noise, {"prompts": [f"w{i}" for i in range(12)]}) is None
+
+
+def test_cmd_rerolls_a_batch_with_duplicate_prompts(step):
+    pos = next(b for b in step.batches if b.label == "positive" and b.n == 10)
+    dup = {"prompts": ["same task"] * 2 + [f"task {i}" for i in range(8)]}
+    good = {"prompts": [f"task {i}" for i in range(10)]}
+    rules = [{"match": f"Batch: {pos.key}\n", "output": dup, "times": 1},
+             {"match": f"Batch: {pos.key}\n", "output": good}]
+    rules += [{"match": f"Batch: {b.key}\n", "output": {"prompts": [f"{b.key} {i}" for i in range(b.n)]}} for b in step.batches if b is not pos]
+    step.fake.set_script(rules)
+    assert step.run() == 0
+    rows = common.read_jsonl(step.ds / "digest/prompts.jsonl")
+    assert (step.ds / f"generation/outputs/prompts/{pos.key}.2.json").exists()
+    assert "same task" not in {r["prompt"] for r in rows}
+    assert {r["prompt"] for r in rows} >= {"task 0", "task 9"}

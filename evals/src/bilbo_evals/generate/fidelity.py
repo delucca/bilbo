@@ -76,17 +76,22 @@ def settle(ds: Path, cfg: llm.GenConfig, w: notes_mod.World, aliases: list[dict]
     """Check, re-render and drop until every note with facts either passes or has lost its failing facts."""
     stats = {"checked": 0, "rendered": 0, "dropped": 0}
     pending = [n for n in w.notes if n["status"] == "kept" and live(w, n)]
+    failed: dict[str, Exception] = {}
     for _ in range(MAX_ATTEMPTS + 1):
         if not pending:
             break
-        attempts, texts, problems, calls = {}, {}, {}, []
+        attempts, texts, problems, checked, calls = {}, {}, {}, {}, []
         for n in pending:
             attempts[n["id"]], _ = notes_mod.latest(ds, n["id"])
             texts[n["id"]] = body_text(ds, n)
             found = {f["id"]: {"missing": m, "why": None} for f in live(w, n) if (m := missing_strings(texts[n["id"]], f))}
             problems[n["id"]] = found
-            if not found:
-                prompt = check_prompt(texts[n["id"]], live(w, n))
+            # a note that will be re-rendered anyway skips the checker, except on its last attempt
+            checked[n["id"]] = live(w, n) if not found else (
+                [f for f in live(w, n) if f["id"] not in found] if attempts[n["id"]] >= MAX_ATTEMPTS else []
+            )
+            if checked[n["id"]]:
+                prompt = check_prompt(texts[n["id"]], checked[n["id"]])
                 calls.append(llm.Call(STEP, n["id"], "codex", prompt, schema("fidelity.json"), attempts[n["id"]]))
         if calls:
             llm.preflight("codex", ds, cfg, STEP)
@@ -97,12 +102,14 @@ def settle(ds: Path, cfg: llm.GenConfig, w: notes_mod.World, aliases: list[dict]
             for c in calls:
                 answer = results[c.item]
                 if isinstance(answer, Exception):
-                    return common.Refused(f"fidelity: the check of note {c.item} failed: {answer}"), stats
-                n = w.note_by_id(c.item)
-                for fid, why in unreadable(texts[c.item], live(w, n), answer).items():
+                    failed[c.item] = answer
+                    continue
+                for fid, why in unreadable(texts[c.item], checked[c.item], answer).items():
                     problems[c.item][fid] = {"missing": [], "why": why}
         renders, again = [], []
         for n in pending:
+            if n["id"] in failed:
+                continue
             found = problems[n["id"]]
             if not found:
                 continue
@@ -125,9 +132,26 @@ def settle(ds: Path, cfg: llm.GenConfig, w: notes_mod.World, aliases: list[dict]
             if stop:
                 return stop, stats
         pending = again
+    if failed:
+        names = ", ".join(f"{i} ({e})" for i, e in list(failed.items())[:5])
+        return common.Refused(f"fidelity: the check of {len(failed)} notes failed, run it again: {names}"), stats
     if pending:
         return common.Refused(f"fidelity: {len(pending)} notes could not be re-rendered: " + ", ".join(n["id"] for n in pending[:5])), stats
     return None, stats
+
+
+def refresh_noise(ds: Path, w: notes_mod.World) -> None:
+    """Keep the `stale` pairs whose superseding and superseded facts are both still planted."""
+    path = Path(ds) / "world/noise.json"
+    if not path.is_file():
+        return
+    noise = json.loads(path.read_text(encoding="utf-8"))
+    kept = {
+        (w.facts[f["supersedes"]]["note_id"], f["note_id"]) for f in w.facts.values()
+        if f["supersedes"] and f["status"] == "planted" and w.facts[f["supersedes"]]["status"] == "planted"
+    }
+    noise["stale"] = [p for p in noise.get("stale", []) if tuple(p) in kept]
+    common.write_json(path, noise)
 
 
 def cmd(args) -> int:
@@ -148,6 +172,7 @@ def cmd(args) -> int:
     notes_mod.save_notes(ds, w.notes)
     notes_mod.save_facts(ds, w)
     common.write_json(aliases_path, aliases)
+    refresh_noise(ds, w)
     dataset.build_corpus(ds)
     common.out(f"fidelity: {stats['checked']} checks, {stats['rendered']} re-renders, {stats['dropped']} facts dropped")
     if stop is not None:

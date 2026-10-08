@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import shutil
 from collections import Counter
 from pathlib import Path
@@ -42,12 +43,18 @@ class Ripgrep:
             targets = [str(root / "notes")]
         env = ctx.sb.env if ctx.sb is not None else {"PATH": "/usr/bin:/bin"}
         query_words = sorted({w for w in words.words(item["text"]) if w not in words.STOPWORDS})
+        spellings: dict[str, set[str]] = {w: {w} for w in query_words}
+        for token in re.findall(r"\w+", item["text"].lower()):
+            for w in words.words(token):
+                if w in spellings:
+                    spellings[w].add(token)
         found: dict[str, int] = Counter()
         total: dict[str, int] = Counter()
         wall, error = 0.0, None
         for word in query_words:
             p = run([self.exe, "--ignore-case", "--word-regexp", "--fixed-strings", "--count-matches", "--no-ignore",
-                     "--with-filename", "-e", word, "--", *targets], env=env)
+                     "--with-filename",
+                     *[a for s in sorted(spellings[word]) for a in ("-e", s)], "--", *targets], env=env)
             wall += p.ms
             if p.exit not in (0, 1):
                 error = f"exit {p.exit}: {p.stderr.strip()}"

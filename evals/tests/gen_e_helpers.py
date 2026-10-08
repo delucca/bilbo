@@ -77,6 +77,7 @@ def cfg(ds: Path) -> llm.GenConfig:
 
 
 CLEAN_PROBE = {"user_instructions_first_heading": "NONE", "mcp_tools": []}
+CLAUDE_CLEAN = {"user_instructions_first_heading": "NONE"}
 
 
 KINDS = ["plan", "spec", "design", "decision", "gotcha", "research", "review", "report", "reference"]

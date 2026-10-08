@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import json
 import shutil
+from pathlib import Path
 
 import pytest
 
-from bilbo_evals import common, digest, results, runner
+from bilbo_evals import common, dataset, digest, results, runner
 from test_runner import BILBO, digest_args, env, fake_bilbo, live, rows_of, run_args, shared_env  # noqa: F401
 
 
@@ -157,3 +158,59 @@ def test_a_digest_refuses_a_run_of_another_split(live):
     runner.cmd_run(run_args(live, split="test", arms="ripgrep", run_id="t1"))
     with pytest.raises(common.Refused, match="not dev"):
         digest.cmd(digest_args(live, run=live.runs / "t1"))
+
+
+def test_no_expanded_tmpdir_in_a_digest_folder(live, monkeypatch):
+    tmp = live.base / "home/tmp"
+    tmp.mkdir(parents=True)
+    monkeypatch.setenv("TMPDIR", str(tmp))
+    assert digest.cmd(digest_args(live)) == 0
+    run = next(live.runs.iterdir())
+    text = "".join(p.read_text() for p in run.rglob("*") if p.is_file())
+    assert str(Path.home()) not in text
+    assert dataset._home_problems(run) == []
+    meta = json.loads((run / "digest/run.json").read_text())
+    assert meta["root"].startswith("$TMPDIR/bilbo-evals-")
+    assert meta["dataset"]["path"] == "datasets/fixture/v1"
+
+
+def test_a_dataset_outside_evals_is_refused_by_digest(live, tmp_path_factory):
+    outside = tmp_path_factory.mktemp("outside") / "ds"
+    shutil.copytree(live.ds, outside)
+    with pytest.raises(common.Refused, match="inside evals/"):
+        digest.cmd(digest_args(live, dataset=outside))
+    assert not live.runs.exists()
+
+
+def test_a_digest_refuses_a_run_made_by_another_binary(live):
+    runner.cmd_run(run_args(live, arms="ripgrep", run_id="r1"))
+    path = live.runs / "r1/ripgrep/run.json"
+    meta = json.loads(path.read_text())
+    meta["bilbo"]["sha256"] = "00" * 32
+    path.write_text(json.dumps(meta))
+    with pytest.raises(common.Refused, match="ripgrep.*sha256"):
+        digest.cmd(digest_args(live, run=live.runs / "r1"))
+    assert not (live.runs / "r1/digest").exists()
+
+
+def test_a_digest_refuses_a_run_made_with_another_embedder(live):
+    runner.cmd_run(run_args(live, arms="bilbo-full", run_id="r1"))
+    path = live.runs / "r1/bilbo-full/run.json"
+    meta = json.loads(path.read_text())
+    meta["embedder"]["query_prefix"] = "other: "
+    path.write_text(json.dumps(meta))
+    with pytest.raises(common.Refused, match="bilbo-full.*query_prefix"):
+        digest.cmd(digest_args(live, run=live.runs / "r1"))
+    assert not (live.runs / "r1/digest").exists()
+
+
+def test_a_standalone_test_digest_is_logged_and_an_attached_one_is_not(live):
+    log = live.base / "test-runs.jsonl"
+    assert digest.cmd(digest_args(live, split="test")) == 0
+    assert len(common.read_jsonl(log)) == 1
+    runner.cmd_run(run_args(live, split="test", arms="ripgrep", run_id="t1"))
+    assert len(common.read_jsonl(log)) == 2
+    assert digest.cmd(digest_args(live, split="test", run=live.runs / "t1")) == 0
+    assert len(common.read_jsonl(log)) == 2
+    assert digest.cmd(digest_args(live, split="dev")) == 0
+    assert len(common.read_jsonl(log)) == 2

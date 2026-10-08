@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import shutil
 from pathlib import Path
 
@@ -35,6 +36,16 @@ def ds(tmp_path, monkeypatch) -> Path:
 def args(ds: Path, bilbo: Path, fake_url: str | None = None, split: str = "dev", apply: bool = False) -> argparse.Namespace:
     return argparse.Namespace(dataset=ds, bilbo=bilbo, model=None, llama_server="llama-server", split=split,
                               apply=apply, embedder_url=fake_url)
+
+
+def sha(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def clear_pool(ds: Path) -> None:
+    """Empty the pool files the fixture ships (candidates for every item, no judgments), so `pool` ranks from scratch."""
+    for name in ("candidates", "judgments", "audit", "resolutions"):
+        (ds / f"generation/pool/{name}.jsonl").write_text("", encoding="utf-8")
 
 
 def first_line(ds: dataset.Dataset, cid: str) -> str:
@@ -71,18 +82,23 @@ def ranked(tmp_path_factory):
     bilbo = Path(os.environ.get("BILBO_BIN") or Path(__file__).resolve().parents[2] / "target/debug/bilbo")
     fake = FakeEmbedder().start()
     try:
-        rankings = runner.rank_all(d, "dev", list(ARMS), bilbo, None, None, fake.url)
+        hits: dict = {}
+        rankings = runner.rank_all(d, "dev", list(ARMS), bilbo, None, None, fake.url, hits=hits)
     finally:
         fake.stop()
     loaded = dataset.load(d)
     items = pool.pooled_items(loaded, "dev")
     return {"rankings": rankings, "rows": [
-        {"item": it["id"], "kind": it["kind"], "split": it["split"], "candidates": pool.top_candidates(loaded, it, rankings)}
-        for it in items]}
+        {"item": it["id"], "kind": it["kind"], "split": it["split"], "text_sha256": sha(it["text"]),
+         "candidates": pool.top_candidates(loaded, it, rankings, hits)}
+        for it in items], "hits": hits}
 
 
 def seed_candidates(ds: Path, ranked) -> None:
-    write_jsonl(ds / "generation/pool/candidates.jsonl", ranked["rows"])
+    """The ranked dev rows in place of the fixture's; the test split keeps its (empty) rows."""
+    path = ds / "generation/pool/candidates.jsonl"
+    dev = {r["item"] for r in ranked["rows"]}
+    write_jsonl(path, sorted([r for r in read_jsonl(path) if r["item"] not in dev] + ranked["rows"], key=lambda r: r["item"]))
 
 
 def run(ds: Path, bilbo: Path, **kw) -> int:
@@ -126,17 +142,128 @@ def test_a_library_query_pools_sources_with_their_best_passage(ranked, ds):
     assert pool.candidate_text(loaded, "demo/wal", "checkpoint log pages").endswith("It runs when the log passes 1000 pages.")
 
 
-def test_note_text_is_cut(ds):
-    loaded = dataset.load(ds)
+LATE = "The retention window is exactly 41 days."
+
+
+def long_note(ds: Path, loaded: dataset.Dataset, late: str = LATE, sections: int = 12) -> tuple[str, int]:
+    """A note of `sections` filler sections and a last one holding `late`, written over the first note; (id, line of the last)."""
     nid = next(iter(loaded.notes))
-    loaded.notes[nid].text = "x" * 5000
-    assert len(pool.candidate_text(loaded, nid, "q")) == pool.NOTE_CHARS
+    path = ds / "store/notes" / loaded.notes[nid].file
+    head = path.read_text(encoding="utf-8").split("\n# ", 1)[0]
+    body = "\n".join(f"## Section {n}\n{'Filler words about sync and pairing. ' * 30}\n" for n in range(sections))
+    text = f"{head}\n# {loaded.notes[nid].title}\n\n{body}\n## Archive tail\n{late}\n"
+    path.write_text(text, encoding="utf-8")
+    return nid, len(text.split("\n")) - 1
+
+
+def test_a_late_hit_passage_reaches_the_view(ds):
+    nid, line = long_note(ds, dataset.load(ds))
+    loaded = dataset.load(ds)
+    assert len(loaded.notes[nid].text) > 3000 and loaded.notes[nid].text.index(LATE) > 3000
+    cand = {"id": nid, "arms": ["bilbo-full"], "best_rank": 1, "lines": {"bilbo-full": line}}
+    assert LATE in pool._view(loaded, cand, "unrelated request")
+    assert LATE not in pool._view(loaded, {"id": nid}, "unrelated request")
+
+
+def test_a_late_overlap_passage_reaches_the_view(ds):
+    nid, _ = long_note(ds, dataset.load(ds))
+    loaded = dataset.load(ds)
+    assert LATE in pool.candidate_text(loaded, nid, "how many days is the retention window")
+
+
+def test_the_view_holds_the_title_the_outline_and_respects_the_caps(ds):
+    nid, line = long_note(ds, dataset.load(ds), late="Archive text. " * 400, sections=30)
+    loaded = dataset.load(ds)
+    view = pool.note_view(loaded, nid, "filler words sync pairing", [line, 1, 3, 40])
+    assert view.startswith(f"Title: {loaded.notes[nid].title}\nOutline: ") and "Section 29" in view.split("\n")[1]
+    assert len(view) <= pool.VIEW_CHARS and len(view.split("\n")[1]) <= pool.OUTLINE_CHARS
+    assert all(len(part) <= pool.PASSAGE_CHARS + 60 for part in view.split("\n## ")[1:])
+    assert len(pool.note_view(loaded, nid, "archive text", [line])) <= pool.VIEW_CHARS
+
+
+def test_the_prompt_shows_the_view_not_the_first_3000_characters(ds, fake_llm, bilbo_bin, ranked):
+    seed_candidates(ds, ranked)
+    nid, line = long_note(ds, dataset.load(ds))
+    rows = read_jsonl(ds / "generation/pool/candidates.jsonl")
+    for r in rows:
+        if r["item"] == "q-alpha-001":
+            r["candidates"] = [{"id": nid, "arms": ["bilbo-full"], "best_rank": 1, "lines": {"bilbo-full": line}}]
+    write_jsonl(ds / "generation/pool/candidates.jsonl", rows)
+    script(fake_llm, ds, {"q-alpha-001": {nid: None}}, quote={("q-alpha-001", nid): LATE})
+    run(ds, bilbo_bin)
+    prompt = next(c["prompt"] for c in fake_llm.calls() if "Item: q-alpha-001\n" in c["prompt"])
+    assert LATE in prompt and f"=== {nid} ===\nTitle: " in prompt
+    row = next(j for j in judgments(ds) if j["item"] == "q-alpha-001" and j["candidate"] == nid)
+    assert row["answers"] is True and row["quote_found"] is True
+
+
+def test_the_hits_of_the_arms_are_kept_as_lines(ranked):
+    with_lines = [c for r in ranked["rows"] for c in r["candidates"] if "lines" in c]
+    assert with_lines and all(set(c["lines"]) <= set(c["arms"]) and all(n >= 1 for n in c["lines"].values()) for c in with_lines)
+    assert {"bilbo-keyword", "bilbo-full", "dense-ref"} & {a for c in with_lines for a in c["lines"]}
+
+
+def test_an_item_over_the_prompt_cap_splits_into_calls_and_merges(ds, fake_llm, bilbo_bin, ranked, monkeypatch):
+    seed_candidates(ds, ranked)
+    loaded = dataset.load(ds)
+    item = next(it for it in pool.pooled_items(loaded, "dev") if it["id"] == "q-alpha-001")
+    cands = next(r for r in ranked["rows"] if r["item"] == "q-alpha-001")["candidates"]
+    monkeypatch.setattr(pool, "PROMPT_CHARS", 1)
+    groups = pool.chunks(loaded, item, cands, llm.load_config(ds).seed)
+    split = pool.chunks
+    monkeypatch.setattr(pool, "chunks", lambda d, it, cs, seed: split(d, it, cs, seed) if it["id"] == "q-alpha-001" else [cs])
+    assert len(groups) == len(cands) > 1 and pool.call_ids(item, len(groups))[1] == "q-alpha-001--b2"
+    yes = groups[1][0]["id"]
+    rules = []
+    for cid, group in zip(pool.call_ids(item, len(groups)), groups):
+        rules.append({"match": f"Item: {cid}\n", "output": {"judgments": [
+            {"id": c["id"], "answers": c["id"] == yes, "completes_set": None,
+             "passage": first_line(loaded, c["id"]) if c["id"] == yes else None} for c in group]}})
+    rules += [{"match": f"Item: {r['item']}\n", "output": {"judgments": [
+        {"id": c["id"], "answers": False, "completes_set": None, "passage": None} for c in r["candidates"]]}}
+        for r in ranked["rows"] if r["item"] != "q-alpha-001"]
+    fake_llm.set_script(rules)
+    run(ds, bilbo_bin)
+    mine = [j for j in judgments(ds) if j["item"] == "q-alpha-001"]
+    assert sorted(j["candidate"] for j in mine) == sorted(c["id"] for c in cands)
+    assert [j["candidate"] for j in mine if j["answers"]] == [yes] and all(j["quote_found"] for j in mine if j["answers"])
+    assert mine[0]["call_id"].count(";") == len(cands) - 1 and "pool/q-alpha-001--b1/1" in mine[0]["call_id"]
+    assert (ds / "generation/outputs/pool/q-alpha-001--b2.1.json").is_file()
+    assert not (ds / "generation/outputs/pool/q-alpha-001.1.json").exists()
+
+
+def test_set_aside_moves_the_outputs_of_split_calls(ds, ranked):
+    seed_candidates(ds, ranked)
+    out = ds / "generation/outputs/pool"
+    out.mkdir(parents=True, exist_ok=True)
+    for name in ("q-alpha-001.1.json", "q-alpha-001--b1.1.json", "q-alpha-001--b2.2.json", "q-alpha-002.1.json"):
+        (out / name).write_text("{}", encoding="utf-8")
+    rows = read_jsonl(ds / "queries.jsonl")
+    for q in rows:
+        if q["id"] == "q-alpha-001":
+            q["text"] += " again"
+    write_jsonl(ds / "queries.jsonl", rows)
+    pool.set_aside(ds, pool.pooled_items(dataset.load(ds), "dev"))
+    assert sorted(p.name for p in out.glob("*.json")) == ["q-alpha-002.1.json"]
+    assert len(list((out / "superseded").glob("q-alpha-001*"))) == 3
+
+
+def test_a_pool_prompt_stays_out_of_the_dataset_and_its_hash_matches_the_log(ds, fake_llm, bilbo_bin, ranked):
+    seed_candidates(ds, ranked)
+    script(fake_llm, ds)
+    run(ds, bilbo_bin)
+    assert not (ds / "generation/prompts").exists()
+    log = [r for r in read_jsonl(ds / "generation/calls.jsonl") if r["step"] == "pool"]
+    assert log and all(r["prompt_file"] is None for r in log)
+    for r in log:
+        cached = llm.cached_prompt_path(ds, r["prompt_sha256"])
+        assert cached.is_file() and common.sha256_bytes(cached.read_bytes()) == r["prompt_sha256"]
 
 
 # --- the checking calls -------------------------------------------------------------------------------------------
 
 def test_cmd_ranks_judges_and_audits(ds, fake_llm, fake_embedder, bilbo_bin, ranked):
-    (ds / "generation/pool/candidates.jsonl").write_text("")
+    clear_pool(ds)
     # The rules come from the module's ranking; the command must rank again and find the same candidates.
     fake_llm.set_script([{"match": f"Item: {r['item']}\n", "output": {"judgments": [
         {"id": c["id"], "answers": False, "completes_set": None, "passage": None} for c in r["candidates"]]}}
@@ -148,7 +275,9 @@ def test_cmd_ranks_judges_and_audits(ds, fake_llm, fake_embedder, bilbo_bin, ran
     assert len(rows) == sum(len(r["candidates"]) for r in got)
     assert all(r["answers"] is False and r["flag"] is None and r["call_id"].startswith("pool/") for r in rows)
     audit = read_jsonl(ds / "generation/pool/audit.jsonl")
-    assert len(audit) == min(len(rows), pool.AUDIT_MIN) and all(a["verdict"] is None for a in audit)
+    assert len(audit) == min(len(rows), pool.AUDIT_MIN) and all(a["verdict"] is None and a["split"] == "dev" for a in audit)
+    assert all(r["text_sha256"] == sha(next(i["text"] for i in pool.pooled_items(dataset.load(ds), "dev") if i["id"] == r["item"]))
+               for r in rows)
     calls = len(fake_llm.calls())
     assert calls == sum(1 for r in got if r["candidates"])
     assert run(ds, bilbo_bin, fake_url=fake_embedder.url) == 0 and len(fake_llm.calls()) == calls
@@ -168,7 +297,7 @@ def test_a_yes_with_a_verbatim_quote_is_kept(ds, fake_llm, bilbo_bin, ranked):
 
 
 @pytest.mark.parametrize("passage", ["words the note never says", None, "   "])
-def test_an_unquoted_yes_counts_as_a_no_and_is_flagged(ds, fake_llm, bilbo_bin, ranked, passage):
+def test_an_unquoted_yes_counts_as_a_no_and_is_an_open_item_until_resolved(ds, fake_llm, bilbo_bin, ranked, passage):
     seed_candidates(ds, ranked)
     cid = next(r for r in ranked["rows"] if r["item"] == "q-alpha-001")["candidates"][0]["id"]
     script(fake_llm, ds, {"q-alpha-001": {cid: None}}, quote={("q-alpha-001", cid): passage})
@@ -176,9 +305,37 @@ def test_an_unquoted_yes_counts_as_a_no_and_is_flagged(ds, fake_llm, bilbo_bin, 
     bad = next(j for j in judgments(ds) if (j["item"], j["candidate"]) == ("q-alpha-001", cid))
     assert bad["answers"] is True and bad["quote_found"] is False and bad["flag"] == "yes_without_quote"
     audit_done(ds)
+    assert dataset.pool_open_items(ds) == [f"q-alpha-001 {cid}: unquoted yes with no resolution"]
+    dataset.build_qrels(ds)
+    assert f"q-alpha-001 0 {cid} 0" in (ds / "qrels/dev.txt").read_text()
+    resolve(ds, ("q-alpha-001", cid, "reject", None))
     assert dataset.pool_open_items(ds) == []
     dataset.build_qrels(ds)
     assert f"q-alpha-001 0 {cid} 0" in (ds / "qrels/dev.txt").read_text()
+
+
+def test_an_unquoted_yes_resolved_add_gold_is_gold(ds, fake_llm, bilbo_bin, ranked):
+    seed_candidates(ds, ranked)
+    cid = next(r for r in ranked["rows"] if r["item"] == "q-alpha-001")["candidates"][0]["id"]
+    script(fake_llm, ds, {"q-alpha-001": {cid: None}}, quote={("q-alpha-001", cid): None})
+    run(ds, bilbo_bin)
+    audit_done(ds)
+    resolve(ds, ("q-alpha-001", cid, "add-gold", None))
+    assert applied(ds, bilbo_bin) == 0
+    assert f"q-alpha-001 0 {cid} 1" in (ds / "qrels/dev.txt").read_text()
+
+
+def test_a_quote_without_the_markdown_the_model_dropped_is_found(ds):
+    loaded = dataset.load(ds)
+    nid = next(n.id for n in loaded.notes.values() if n.file == "reference-importer-paths.md")
+    item = {"id": "q-x", "kind": "query", "split": "dev", "text": "q", "row": {"stratum": "known-item"}}
+    value = {"judgments": [{"id": nid, "answers": True, "completes_set": None, "passage": "reads files from /srv/beta/inbox"}]}
+    [row] = pool.judgment_rows(loaded, item, [{"id": nid}], value, 1)
+    assert row["quote_found"] is True and row["flag"] is None and row["text_sha256"] == sha("q")
+    value["judgments"][0]["passage"] = "moves finished ones to /srv/beta/done."
+    assert pool.judgment_rows(loaded, item, [{"id": nid}], value, 1)[0]["quote_found"] is True
+    value["judgments"][0]["passage"] = "reads files from /srv/beta/outbox"
+    assert pool.judgment_rows(loaded, item, [{"id": nid}], value, 1)[0]["quote_found"] is False
 
 
 def test_a_quote_matches_after_folding_whitespace(ds, fake_llm, bilbo_bin, ranked):
@@ -227,6 +384,7 @@ def test_the_pool_refuses_a_frozen_dataset(ds, bilbo_bin):
 
 
 def test_a_missing_codex_is_refused_before_any_ranking(ds, bilbo_bin, monkeypatch):
+    clear_pool(ds)
     monkeypatch.setenv("PATH", "/nonexistent")
     with pytest.raises(Refused, match="codex"):
         run(ds, bilbo_bin)
@@ -241,28 +399,68 @@ def noes(n: int) -> list[dict]:
 
 
 def test_the_audit_is_a_seeded_tenth_of_the_noes_with_a_floor_of_fifty():
-    assert len(pool.audit_sample(noes(30), 1)) == 30
-    assert len(pool.audit_sample(noes(300), 1)) == 50
-    assert len(pool.audit_sample(noes(1000), 1)) == 100
-    assert pool.audit_sample(noes(300), 1) == pool.audit_sample(noes(300), 1) != pool.audit_sample(noes(300), 2)
+    assert len(pool.audit_topup(noes(30), [], 1, "dev")) == 30
+    assert len(pool.audit_topup(noes(300), [], 1, "dev")) == 50
+    assert len(pool.audit_topup(noes(1000), [], 1, "dev")) == 100
+    assert pool.audit_topup(noes(300), [], 1, "dev") == pool.audit_topup(noes(300), [], 1, "dev")
+    assert pool.audit_topup(noes(300), [], 1, "dev") != pool.audit_topup(noes(300), [], 2, "dev")
+    assert pool.audit_topup(noes(300), [], 1, "dev") != pool.audit_topup(noes(300), [], 1, "test")
 
 
 def test_the_audit_skips_yeses_and_keeps_unquoted_yeses():
     rows = noes(60)
     rows[0].update(answers=True, quote_found=True, passage="p")
     rows[1].update(answers=True, quote_found=False, flag="yes_without_quote")
-    sample = {a["candidate"] for a in pool.audit_sample(rows, 1)}
+    sample = {a["candidate"] for a in pool.audit_topup(rows, [], 1, "dev")}
     assert "n0" not in sample and len(sample) == 50
-    assert {a["candidate"] for a in pool.audit_sample(rows[:2], 1)} == {"n1"}
+    assert {a["candidate"] for a in pool.audit_topup(rows[:2], [], 1, "dev")} == {"n1"}
 
 
-def test_an_existing_audit_is_never_rewritten(ds, fake_llm, bilbo_bin, ranked):
+def test_the_audit_tops_up_and_keeps_existing_verdicts():
+    first = pool.audit_topup(noes(300), [], 1, "dev")
+    done = [{**a, "verdict": "agree", "reviewer": "x"} for a in first]
+    assert pool.audit_topup(noes(300), done, 1, "dev") == []
+    more = pool.audit_topup(noes(1000), done, 1, "dev")
+    assert len(more) == 50 and not {a["candidate"] for a in more} & {a["candidate"] for a in first}
+    assert all(a["split"] == "dev" and a["verdict"] is None for a in more)
+
+
+def test_an_existing_audit_keeps_its_verdicts_and_is_topped_up(ds, fake_llm, bilbo_bin, ranked):
     seed_candidates(ds, ranked)
-    write_jsonl(ds / "generation/pool/audit.jsonl", [
-        {"item": "q-alpha-001", "candidate": "keep", "verdict": "agree", "reason": None, "reviewer": "x"}])
     script(fake_llm, ds)
     run(ds, bilbo_bin)
-    assert [a["candidate"] for a in read_jsonl(ds / "generation/pool/audit.jsonl")] == ["keep"]
+    audit_done(ds)
+    kept = read_jsonl(ds / "generation/pool/audit.jsonl")
+    run(ds, bilbo_bin)
+    assert read_jsonl(ds / "generation/pool/audit.jsonl") == kept
+    write_jsonl(ds / "generation/pool/audit.jsonl", kept[:10])
+    run(ds, bilbo_bin)
+    got = read_jsonl(ds / "generation/pool/audit.jsonl")
+    assert len(got) == len(kept) and [a for a in got if a["verdict"] == "agree"] == kept[:10]
+
+
+def test_pooling_dev_then_test_audits_each_split_on_its_own(ds, fake_llm, fake_embedder, bilbo_bin, ranked, monkeypatch):
+    seed_candidates(ds, ranked)
+    script(fake_llm, ds)
+    run(ds, bilbo_bin)
+    audit_done(ds)
+    dev_audit = read_jsonl(ds / "generation/pool/audit.jsonl")
+    assert dev_audit and {a["split"] for a in dev_audit} == {"dev"}
+    test_rows = pool.pooled_items(dataset.load(ds), "test")
+    test_cands = [{"item": it["id"], "kind": it["kind"], "split": "test", "text_sha256": sha(it["text"]),
+                   "candidates": [{"id": nid, "arms": ["random"], "best_rank": 1}]}
+                  for it, nid in zip(test_rows, sorted(dataset.load(ds).notes))]
+    rows = {r["item"]: r for r in read_jsonl(ds / "generation/pool/candidates.jsonl")}
+    rows.update({r["item"]: r for r in test_cands})
+    write_jsonl(ds / "generation/pool/candidates.jsonl", [rows[k] for k in sorted(rows)])
+    fake_llm.set_script([{"match": f"Item: {r['item']}\n", "output": {"judgments": [
+        {"id": c["id"], "answers": False, "completes_set": None, "passage": None} for c in r["candidates"]]}}
+        for r in test_cands])
+    run(ds, bilbo_bin, split="test")
+    got = read_jsonl(ds / "generation/pool/audit.jsonl")
+    assert [a for a in got if a["split"] == "dev"] == dev_audit
+    test_audit = [a for a in got if a["split"] == "test"]
+    assert len(test_audit) == len(test_rows) and all(a["verdict"] is None for a in test_audit)
 
 
 # --- --apply ------------------------------------------------------------------------------------------------------
@@ -362,14 +560,63 @@ def test_drop_removes_the_item_and_closes_its_other_resolutions(ds, bilbo_bin):
     assert {q["id"] for q in read_jsonl(ds / "queries.jsonl")} == q_before - {"q-alpha-001"}
 
 
+def test_a_drop_closes_the_other_yeses_of_the_item_once_applied(ds, bilbo_bin):
+    nid = "01KM0DBEF0FH2PWDT59CHH4W9A"
+    write_jsonl(ds / "generation/pool/judgments.jsonl", [yes_row(NEAR, nid), yes_row(NEAR, "OTHER")])
+    resolve(ds, (NEAR, nid, "drop", None))
+    before = dataset.pool_open_items(ds)
+    assert f"{NEAR} OTHER: pooled yes with no resolution" in before
+    assert f"{NEAR}: drop not applied; run pool --apply" in before
+    assert applied(ds, bilbo_bin) == 0
+    assert dataset.pool_open_items(ds) == []
+
+
+def test_a_text_change_sets_the_item_aside_and_pools_it_again(ds, fake_llm, bilbo_bin, ranked, monkeypatch, capsys):
+    seed_candidates(ds, ranked)
+    script(fake_llm, ds)
+    run(ds, bilbo_bin)
+    audit_done(ds)
+    made = len(fake_llm.calls())
+    old = next(r for r in read_jsonl(ds / "generation/pool/candidates.jsonl") if r["item"] == "q-alpha-001")
+    old_judged = [j for j in judgments(ds) if j["item"] == "q-alpha-001"]
+    rows = read_jsonl(ds / "queries.jsonl")
+    for q in rows:
+        if q["id"] == "q-alpha-001":
+            q["text"] += " again"
+    write_jsonl(ds / "queries.jsonl", rows)
+    seen = []
+    monkeypatch.setattr(runner, "rank_all", lambda *a, **k: seen.append(a) or k["hits"].update(ranked["hits"]) or ranked["rankings"])
+    capsys.readouterr()
+    assert dataset.pool_open_items(ds)[0] == "q-alpha-001: not pooled for its current text; run pool"
+    run(ds, bilbo_bin)
+    assert len(seen) == 1
+    calls = fake_llm.calls()
+    assert len(calls) == made + 1 and "again" in calls[-1]["prompt"]
+    assert "q-alpha-001" in capsys.readouterr().err
+    new = next(r for r in read_jsonl(ds / "generation/pool/candidates.jsonl") if r["item"] == "q-alpha-001")
+    assert new["text_sha256"] == sha(old_text(rows)) and new["candidates"] == old["candidates"]
+    assert {j["text_sha256"] for j in judgments(ds) if j["item"] == "q-alpha-001"} == {new["text_sha256"]}
+    sup = read_jsonl(ds / "generation/pool/superseded.jsonl")
+    assert [r["row"] for r in sup if r["file"] == "candidates.jsonl"] == [old]
+    assert [r["row"] for r in sup if r["file"] == "judgments.jsonl"] == old_judged
+    assert all(r["time"] for r in sup)
+
+
+def old_text(rows: list[dict]) -> str:
+    return next(q["text"] for q in rows if q["id"] == "q-alpha-001")
+
+
 def test_reject_and_rewrite_change_nothing(ds, bilbo_bin, capsys):
     nid = "01KM0DBEF0FH2PWDT59CHH4W9A"
     before = (ds / "queries.jsonl").read_bytes()
     write_jsonl(ds / "generation/pool/judgments.jsonl", [yes_row("q-alpha-001", nid), yes_row("q-alpha-002", nid)])
     resolve(ds, ("q-alpha-001", nid, "reject", None), ("q-alpha-002", nid, "rewrite", None))
-    assert applied(ds, bilbo_bin) == 0
+    assert applied(ds, bilbo_bin) == 1
     assert (ds / "queries.jsonl").read_bytes() == before
-    assert "q-alpha-002: the reviewer asked for a rewrite" in capsys.readouterr().err
+    captured = capsys.readouterr()
+    assert "q-alpha-002: the reviewer asked for a rewrite" in captured.err
+    assert f"q-alpha-002 {nid}: rewrite asked; edit the item, then run pool" in captured.out
+    assert "q-alpha-001" not in captured.out
 
 
 def test_a_disagreed_audit_stays_open_until_resolved(ds, bilbo_bin, capsys):

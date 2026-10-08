@@ -138,6 +138,8 @@ def prompt_id(b: Batch, i: int) -> str:
 
 def output_problem(b: Batch, out: dict) -> str | None:
     items = [s for s in out.get("prompts", []) if isinstance(s, str) and s.strip()]
+    if len({s.strip().lower() for s in items}) != len(items):
+        return "duplicate prompts"
     if b.label == "positive" and len(out.get("prompts", [])) != b.n:
         return f"{len(out.get('prompts', []))} prompts for {b.n} notes"
     return None if len(items) >= b.n else f"{len(items)} prompts, {b.n} asked"

@@ -13,7 +13,8 @@ arm gives 20 rankings per query (trial = seed) and the report averages them. In-
 ## ripgrep
 
 For each distinct query word (`words.words`, stopwords removed, accents and case folded) it runs
-`rg --ignore-case --word-regexp --fixed-strings --count-matches -e <word>` over `<store>/notes` (or the corpus folders
+`rg --ignore-case --word-regexp --fixed-strings --count-matches -e <word> ...`, one `-e` for the folded word and one for each
+distinct lowercase spelling the query uses for it (`migração` as well as `migracao`), over `<store>/notes` (or the corpus folders
 of `<store>/library`) in the run's copy of the store. A note's score is the number of distinct words found in it, then
 its total matches; ties go by path ascending. Notes with no match are not listed. Latency is the wall time of every
 `rg` process of the query. The version is the first line of `rg --version`.

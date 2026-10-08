@@ -14,7 +14,7 @@ from bilbo_evals import cli, common, llm
 from bilbo_evals.generate import facts as facts_mod
 from bilbo_evals.generate import notes as notes_mod
 
-PROBE = {"match": "preflight probe (claude)", "output": {"ok": True}}
+PROBE = {"match": "preflight probe (claude)", "output": {"user_instructions_first_heading": "NONE"}}
 CODEX_PROBE = {"match": "preflight probe (codex)", "output": {"user_instructions_first_heading": "NONE", "mcp_tools": []}}
 
 S1 = "alpha-sync retries a failed push 3 times; the key is sync.max_retries = 3."
@@ -319,3 +319,46 @@ def test_fidelity_without_codex_is_refused(mini, fake_llm, monkeypatch, tmp_path
     monkeypatch.setenv("PATH", f"{only_claude}:/usr/bin:/bin")
     assert run("fidelity", ds) == 1
     assert "`codex` is missing" in capsys.readouterr().err
+
+
+def test_the_last_attempt_checks_the_facts_whose_strings_are_present(mini, fake_llm):
+    ds, ids = mini
+    lost = body("The cache logs ERR_EVICT_STORM and evicts a lot. Lantern era o nome antigo de edge-cache.")
+    start(ds, fake_llm, [{"match": S3, "output": lost}])
+    unreadable = check_rule([("f-alpha-004", None)], f"fact: {S4}")
+    fake_llm.set_script(script(codex=[unreadable], claude=[{"match": S3, "output": lost}]))
+    before = len(fake_llm.calls())
+    assert run("fidelity", ds) == 0
+    facts = {f["id"]: f for f in common.read_jsonl(ds / "world/facts.jsonl")}
+    assert facts["f-alpha-003"]["status"] == "dropped" and facts["f-alpha-004"]["status"] == "dropped"
+    reasons = {d["item"]: d["reason"] for d in common.read_jsonl(ds / "generation/drops.jsonl")}
+    assert "7421" in reasons["f-alpha-003"] and "could not read" in reasons["f-alpha-004"]
+    checks = [c for c in fake_llm.calls()[before:] if "Facts to check" in c["prompt"] and "Lantern" in c["prompt"]]
+    assert len(checks) == 1 and f"fact: {S4}" in checks[0]["prompt"] and f"fact: {S3}" not in checks[0]["prompt"]
+
+
+def test_one_failed_check_does_not_block_the_other_notes(mini, fake_llm, capsys):
+    ds, ids = mini
+    start(ds, fake_llm)
+    broken = {"match": f"fact: {S1}", "output": {}, "exit": 1}
+    bad = check_rule([("f-alpha-002", None)], f"fact: {S2}")
+    fake_llm.set_script(script(codex=[broken, {**bad, "times": 1}]))
+    assert run("fidelity", ds) == 1
+    assert ids[0] in capsys.readouterr().err
+    notes = read_notes(ds)
+    assert notes[ids[1]]["render_attempts"] == 2 and notes[ids[0]]["render_attempts"] == 1
+    facts = {f["id"]: f for f in common.read_jsonl(ds / "world/facts.jsonl")}
+    assert facts["f-alpha-001"]["status"] == "planted" and facts["f-alpha-002"]["status"] == "planted"
+    assert not (ds / "generation/drops.jsonl").exists()
+
+
+def test_noise_stale_follows_the_dropped_facts(mini, fake_llm):
+    ds, ids = mini
+    common.write_json(ds / "world/noise.json", {"near-duplicate": [ids[4]], "omission": [ids[1]], "stale": [[ids[0], ids[1]]]})
+    lost = body("The push is retried and the key is something.")
+    start(ds, fake_llm, [{"match": S2, "output": lost}])
+    assert run("fidelity", ds) == 0
+    facts = {f["id"]: f for f in common.read_jsonl(ds / "world/facts.jsonl")}
+    assert facts["f-alpha-002"]["status"] == "dropped"
+    noise = json.loads((ds / "world/noise.json").read_text())
+    assert noise["stale"] == [] and noise["omission"] == [ids[1]] and noise["near-duplicate"] == [ids[4]]

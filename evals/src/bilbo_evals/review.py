@@ -113,6 +113,7 @@ def evaluate(dir: Path, split: str = "all") -> tuple[str, list[str]]:
     valid = len([r for r in reviewed if r["verdict"] == "valid"])
     pct = 100.0 * valid / len(reviewed) if reviewed else 0.0
     summary = f"{valid}/{len(reviewed)} valid ({pct:.1f}%)"
+    held = {row["id"] for row in [*ds.queries, *ds.prompts]}
     open_items = []
     for r in rows:
         if r["verdict"] is None:
@@ -122,6 +123,8 @@ def evaluate(dir: Path, split: str = "all") -> tuple[str, list[str]]:
                 open_items.append(f"open: {r['item']} invalid with no reason")
             if r["resolution"] not in ("fixed", "dropped"):
                 open_items.append(f"open: {r['item']} invalid and neither fixed nor dropped")
+            elif r["resolution"] == "dropped" and r["item"] in held:
+                open_items.append(f"open: {r['item']} dropped but still in the dataset; run review apply")
     counts: dict[tuple[str, str], int] = {}
     for r in rows:
         counts[(r["split"], r["group"])] = counts.get((r["split"], r["group"]), 0) + 1

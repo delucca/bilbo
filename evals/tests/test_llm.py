@@ -8,7 +8,7 @@ import stat
 from pathlib import Path
 
 import pytest
-from gen_e_helpers import CLEAN_PROBE, cfg, login, make_ds, rows, use_cache
+from gen_e_helpers import CLAUDE_CLEAN, CLEAN_PROBE, cfg, login, make_ds, rows, use_cache
 
 from bilbo_evals import common, llm
 from bilbo_evals.common import Refused
@@ -98,7 +98,7 @@ def test_output_with_a_home_path_is_invalid(tmp_path, fake_llm):
 @pytest.mark.parametrize("leak,word", [("plugin", "bilbo"), ("hook", "hook"), ("mcp", "MCP"), ("tool_use", "tools")])
 def test_a_leak_refuses_the_step_before_any_generation_call(tmp_path, fake_llm, leak, word):
     ds = make_ds(tmp_path)
-    fake_llm.set_script([{"match": "preflight probe", "output": {"ok": True}, "leak": leak}])
+    fake_llm.set_script([{"match": "preflight probe", "output": CLAUDE_CLEAN, "leak": leak}])
     with pytest.raises(Refused, match=word):
         llm.preflight("claude", ds, cfg(ds), "notes")
     assert len(fake_llm.calls()) == 1
@@ -107,10 +107,22 @@ def test_a_leak_refuses_the_step_before_any_generation_call(tmp_path, fake_llm, 
     assert not list((ds / "generation/outputs").rglob("*.json"))
 
 
+def test_a_claude_probe_that_reports_instructions_refuses_before_any_generation_call(tmp_path, fake_llm):
+    ds = make_ds(tmp_path)
+    fake_llm.set_script([
+        {"match": "preflight probe", "output": {"user_instructions_first_heading": "Global Agent Instructions"}},
+        {"match": "WRITE", "output": {"title": "T"}},
+    ])
+    with pytest.raises(Refused, match="Global Agent Instructions"):
+        llm.preflight("claude", ds, cfg(ds), "notes")
+    assert len(fake_llm.calls()) == 1
+    assert rows(ds, "preflight.jsonl")[0]["status"] == "refused"
+
+
 def test_a_leak_on_a_later_call_stops_the_step(tmp_path, fake_llm):
     ds = make_ds(tmp_path)
     fake_llm.set_script([
-        {"match": "preflight probe", "output": {"ok": True}},
+        {"match": "preflight probe", "output": CLAUDE_CLEAN},
         {"match": "WRITE note n2", "output": {"title": "x"}, "leak": "plugin"},
         {"match": "WRITE", "output": {"title": "ok"}},
     ])
@@ -308,16 +320,31 @@ def test_a_refreshed_login_is_copied_back_and_the_link_restored(tmp_path, monkey
     ds = make_ds(tmp_path)
     real = Path(os.environ["HOME"]) / ".codex/auth.json"
     real.chmod(0o600)
-    fresh = json.dumps({"tokens": {"access_token": "new"}})
+    real.write_text(json.dumps({"tokens": {"access_token": "old"}, "last_refresh": "2026-10-07T11:00:00Z"}))
+    fresh = json.dumps({"tokens": {"access_token": "new"}, "last_refresh": "2026-10-07T12:00:00Z"})
     refreshing_codex(tmp_path, monkeypatch, fresh)
     fake_llm.set_script([{"match": "WORD", "output": {"title": "q"}}])
     llm.call(codex_call(), ds, cfg(ds))
-    assert json.loads(real.read_text()) == {"tokens": {"access_token": "new"}}
+    assert json.loads(real.read_text())["tokens"] == {"access_token": "new"}
     assert stat.S_IMODE(real.stat().st_mode) == 0o600
     link = llm._codex_home(ds) / "auth.json"
     assert link.is_symlink() and link.resolve() == real.resolve()
     assert "refreshed its login" in capsys.readouterr().err
     assert not [p for p in real.parent.iterdir() if p.name != "auth.json"]
+
+
+def test_an_older_login_never_replaces_a_newer_one(tmp_path, monkeypatch, fake_llm, capsys):
+    ds = make_ds(tmp_path)
+    real = Path(os.environ["HOME"]) / ".codex/auth.json"
+    real.write_text(json.dumps({"tokens": {"access_token": "mine"}, "last_refresh": "2026-10-07T11:00:00Z"}))
+    before = real.read_bytes()
+    refreshing_codex(tmp_path, monkeypatch, json.dumps({"tokens": {"access_token": "stale"}, "last_refresh": "2026-10-07T10:00:00Z"}))
+    fake_llm.set_script([{"match": "WORD", "output": {"title": "q"}}])
+    llm.call(codex_call(), ds, cfg(ds))
+    assert real.read_bytes() == before
+    link = llm._codex_home(ds) / "auth.json"
+    assert link.is_symlink() and link.resolve() == real.resolve()
+    assert "older auth.json" in capsys.readouterr().err
 
 
 def test_a_broken_login_file_never_overwrites_the_real_one(tmp_path, monkeypatch, fake_llm):
@@ -329,6 +356,39 @@ def test_a_broken_login_file_never_overwrites_the_real_one(tmp_path, monkeypatch
     llm.call(codex_call(), ds, cfg(ds))
     assert real.read_text() == before
     assert (llm._codex_home(ds) / "auth.json").is_symlink()
+
+
+def test_a_preflight_failure_row_holds_no_home_path(tmp_path, fake_llm):
+    from bilbo_evals import dataset
+
+    ds = make_ds(tmp_path)
+    (Path(os.environ["HOME"]) / ".codex/auth.json").unlink()
+    with pytest.raises(Refused, match="not logged in"):
+        llm.preflight("codex", ds, cfg(ds), "queries")
+    (row,) = rows(ds, "preflight.jsonl")
+    assert "~/.codex/auth.json" in row["reason"] and os.environ["HOME"] not in row["reason"]
+    assert dataset._home_problems(ds) == []
+
+
+def test_the_log_row_is_written_before_the_output(tmp_path, fake_llm, monkeypatch):
+    ds = make_ds(tmp_path)
+    fake_llm.set_script([{"match": "WRITE", "output": {"title": "T"}}])
+    real_write = llm.write_json
+
+    def interrupted(path, value):
+        if "outputs" in Path(path).parts:
+            raise KeyboardInterrupt
+        return real_write(path, value)
+
+    monkeypatch.setattr(llm, "write_json", interrupted)
+    with pytest.raises(KeyboardInterrupt):
+        llm.call(claude_call(), ds, cfg(ds))
+    (row,) = rows(ds)
+    assert row["output_file"] == "outputs/notes/n1.1.json" and row["status"] == "ok"
+    assert not llm.output_path(ds, "notes", "n1", 1).exists()
+    monkeypatch.setattr(llm, "write_json", real_write)
+    assert llm.call(claude_call(), ds, cfg(ds)) == {"title": "T"}
+    assert len(fake_llm.calls()) == 2
 
 
 def test_a_codex_login_that_did_not_change_is_left_alone(tmp_path, fake_llm):
@@ -347,3 +407,17 @@ def test_the_cli_env_drops_memory_variables(monkeypatch):
     env = llm._env({"CLAUDE_CODE_DISABLE_AUTO_MEMORY": "1"})
     assert not [k for k in env if k.startswith(llm.ENV_STRIP) and k != "CLAUDE_CODE_DISABLE_AUTO_MEMORY"]
     assert env["KEEP_ME"] == "1" and env["CLAUDE_CODE_DISABLE_AUTO_MEMORY"] == "1"
+
+
+def test_a_pool_call_keeps_its_prompt_in_the_cache_not_in_the_dataset(tmp_path, fake_llm):
+    ds = make_ds(tmp_path)
+    fake_llm.set_script([{"match": "WORD", "output": {"title": "q"}}])
+    c = llm.Call("pool", "q1", "codex", "WORD pool prompt", SCHEMA, 1)
+    assert c.prompt_in_cache and not codex_call().prompt_in_cache
+    assert llm.call(c, ds, cfg(ds)) == {"title": "q"}
+    assert not (ds / "generation/prompts").exists()
+    (row,) = rows(ds)
+    assert row["prompt_file"] is None and row["prompt_sha256"] == common.sha256_bytes(b"WORD pool prompt")
+    cached = llm.cached_prompt_path(ds, row["prompt_sha256"])
+    assert common.CACHE_DIR in cached.parents
+    assert common.sha256_bytes(cached.read_bytes()) == row["prompt_sha256"]

@@ -35,7 +35,7 @@ def test_the_whole_flow_runs_offline_on_the_fixture(fixture_copy, fake_embedder,
     monkeypatch.setattr(common, "RUNS_DIR", runs)
     monkeypatch.setattr(common, "TEST_RUNS_LOG", base / "test-runs.jsonl")
     monkeypatch.setenv("TMPDIR", str(tmp_path))
-    # report and compare find the dataset by name and version under EVALS_ROOT
+    # the dataset sits inside EVALS_ROOT, as a run requires
     (base / "datasets/fixture").mkdir(parents=True)
     ds = ds.rename(base / "datasets/fixture/v1")
     flags = ["--dataset", str(ds), "--bilbo", str(bilbo_bin), "--embedder-url", fake_embedder.url]
