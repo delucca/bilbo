@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 from bilbo_evals import common, llm
@@ -11,6 +12,14 @@ from bilbo_evals.generate import schema, template
 
 STEP = "fidelity"
 MAX_ATTEMPTS = 3
+LEAK = re.compile(r"\b(?:the brief|my instructions|the manifest)\b", re.I)
+LEAK_KEY = "_leak"
+
+
+def leak_of(text: str) -> str | None:
+    """The phrase with which a note refers to its own generation instructions, if it does."""
+    m = LEAK.search(text)
+    return m.group(0) if m else None
 
 
 def norm(text: str) -> str:
@@ -72,12 +81,25 @@ def drop(ds: Path, w: notes_mod.World, aliases: list[dict], note: dict, fact: di
     })
 
 
-def settle(ds: Path, cfg: llm.GenConfig, w: notes_mod.World, aliases: list[dict]) -> tuple[Exception | None, dict[str, int]]:
-    """Check, re-render and drop until every note with facts either passes or has lost its failing facts."""
-    stats = {"checked": 0, "rendered": 0, "dropped": 0}
-    pending = [n for n in w.notes if n["status"] == "kept" and live(w, n)]
+def settle(
+    ds: Path, cfg: llm.GenConfig, w: notes_mod.World, aliases: list[dict], recheck: bool = False,
+) -> tuple[Exception | None, dict[str, int]]:
+    """Check, re-render and drop until every note passes, has lost its failing facts, or is reported as leaking.
+
+    A note that mentions its instructions is re-rendered like a missing fact. With `recheck`, only the notes that
+    leak now are taken up, each with two fresh re-renders whatever it has used before.
+    """
+    stats = {"checked": 0, "rendered": 0, "dropped": 0, "leaking": 0}
+    kept = [n for n in w.notes if n["status"] == "kept"]
+    cap = {n["id"]: MAX_ATTEMPTS for n in kept}
+    if recheck:
+        kept = [n for n in kept if leak_of(body_text(ds, n))]
+        for n in kept:
+            cap[n["id"]] = notes_mod.latest(ds, n["id"])[0] + 2
+    pending = kept
     failed: dict[str, Exception] = {}
-    for _ in range(MAX_ATTEMPTS + 1):
+    stuck: set[str] = set()
+    for _ in range(max(cap.values(), default=MAX_ATTEMPTS) + 2):
         if not pending:
             break
         attempts, texts, problems, checked, calls = {}, {}, {}, {}, []
@@ -85,10 +107,16 @@ def settle(ds: Path, cfg: llm.GenConfig, w: notes_mod.World, aliases: list[dict]
             attempts[n["id"]], _ = notes_mod.latest(ds, n["id"])
             texts[n["id"]] = body_text(ds, n)
             found = {f["id"]: {"missing": m, "why": None} for f in live(w, n) if (m := missing_strings(texts[n["id"]], f))}
+            phrase = leak_of(texts[n["id"]])
+            if phrase:
+                found[LEAK_KEY] = {"missing": [], "why": phrase}
+                common.append_jsonl(Path(ds) / "generation/rejects.jsonl", {
+                    "item": n["id"], "step": STEP, "attempt": attempts[n["id"]], "reason": "leak", "match": phrase,
+                })
             problems[n["id"]] = found
             # a note that will be re-rendered anyway skips the checker, except on its last attempt
             checked[n["id"]] = live(w, n) if not found else (
-                [f for f in live(w, n) if f["id"] not in found] if attempts[n["id"]] >= MAX_ATTEMPTS else []
+                [f for f in live(w, n) if f["id"] not in found] if attempts[n["id"]] >= cap[n["id"]] else []
             )
             if checked[n["id"]]:
                 prompt = check_prompt(texts[n["id"]], checked[n["id"]])
@@ -113,13 +141,22 @@ def settle(ds: Path, cfg: llm.GenConfig, w: notes_mod.World, aliases: list[dict]
             found = problems[n["id"]]
             if not found:
                 continue
-            if attempts[n["id"]] >= MAX_ATTEMPTS:
+            if attempts[n["id"]] >= cap[n["id"]]:
                 for fid, p in found.items():
+                    if fid == LEAK_KEY:
+                        stuck.add(n["id"])
+                        continue
                     reason = "fidelity: " + (f"missing {p['missing']}" if p["missing"] else p["why"])
                     drop(ds, w, aliases, n, w.facts[fid], reason)
                     stats["dropped"] += 1
                 continue
-            lines = [x for fid, p in found.items() for x in feedback(w.facts[fid], p["missing"], p["why"])]
+            lines = []
+            for fid, p in found.items():
+                if fid == LEAK_KEY:
+                    lines.append(f"The note mentions its own instructions (\"{p['why']}\"). Never refer to a brief, "
+                                 "instructions, a prompt or a manifest; write as someone who knows the project first-hand.")
+                else:
+                    lines += feedback(w.facts[fid], p["missing"], p["why"])
             prompt = notes_mod.prompt_for(w, n, lines)
             renders.append(llm.Call(notes_mod.STEP, n["id"], "claude", prompt, schema("note.json"), attempts[n["id"]] + 1))
             again.append(n)
@@ -132,11 +169,15 @@ def settle(ds: Path, cfg: llm.GenConfig, w: notes_mod.World, aliases: list[dict]
             if stop:
                 return stop, stats
         pending = again
+    stats["leaking"] = len(stuck)
     if failed:
         names = ", ".join(f"{i} ({e})" for i, e in list(failed.items())[:5])
         return common.Refused(f"fidelity: the check of {len(failed)} notes failed, run it again: {names}"), stats
     if pending:
         return common.Refused(f"fidelity: {len(pending)} notes could not be re-rendered: " + ", ".join(n["id"] for n in pending[:5])), stats
+    if stuck:
+        return common.Refused(f"fidelity: {len(stuck)} notes still mention their instructions after the re-renders: "
+                              + ", ".join(sorted(stuck)[:5])), stats
     return None, stats
 
 
@@ -168,13 +209,13 @@ def cmd(args) -> int:
     notes_mod.write_all(ds, w)
     aliases_path = ds / "world/aliases.json"
     aliases = json.loads(aliases_path.read_text(encoding="utf-8")) if aliases_path.is_file() else []
-    stop, stats = settle(ds, cfg, w, aliases)
+    stop, stats = settle(ds, cfg, w, aliases, getattr(args, "recheck_leaks", False))
     notes_mod.save_notes(ds, w.notes)
     notes_mod.save_facts(ds, w)
     common.write_json(aliases_path, aliases)
     refresh_noise(ds, w)
     dataset.build_corpus(ds)
-    common.out(f"fidelity: {stats['checked']} checks, {stats['rendered']} re-renders, {stats['dropped']} facts dropped")
+    common.out(f"fidelity: {stats['checked']} checks, {stats['rendered']} re-renders, {stats['dropped']} facts dropped, {stats['leaking']} notes still leaking")
     if stop is not None:
         raise stop
     return 0

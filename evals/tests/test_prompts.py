@@ -163,3 +163,43 @@ def test_cmd_rerolls_a_batch_with_duplicate_prompts(step):
     assert (step.ds / f"generation/outputs/prompts/{pos.key}.2.json").exists()
     assert "same task" not in {r["prompt"] for r in rows}
     assert {r["prompt"] for r in rows} >= {"task 0", "task 9"}
+
+
+def test_positives_are_never_built_from_a_superseded_fact(ds):
+    batches, short = plan(ds, {"positive": 200})
+    gold = {n for b in batches for g in b.gold for n in g}
+    assert "NALPHA010" not in gold and "NALPHA011" in gold
+    text = p.build_prompt(next(b for b in batches if b.label == "positive"), q.load_sections("prompts.md"))
+    assert "never ask for an original, initial or earlier value" in text
+
+
+def stale_row(i="p-alpha-007"):
+    return {"id": i, "prompt": "What was the first retry limit?", "split": "dev", "label": "positive",
+            "gold": ["NALPHA010"], "project": "alpha", "canary": common.CANARY}
+
+
+def test_stale_positives_point_at_the_newest_note_of_the_family(ds):
+    w = q.load_world(ds)
+    other = {**stale_row("p-alpha-008"), "gold": ["NALPHA001"]}
+    found = p.stale_positives(w, [stale_row(), other], "dev")
+    assert [(r["id"], nid) for r, nid, _ in found] == [("p-alpha-007", "NALPHA011")]
+    assert found[0][2] == ["Retry limit of alpha is 5, replacing the old one."]
+
+
+def test_redo_stale_rewrites_only_stale_positives_in_place(step, monkeypatch):
+    keep = {**stale_row("p-alpha-008"), "gold": ["NALPHA001"], "prompt": "keep me"}
+    common.write_jsonl(step.ds / "digest/prompts.jsonl", [stale_row(), keep])
+    step.fake.set_script([{"match": "Batch: dev-redo-alpha-01\n", "output": {"prompts": ["Raise the retry limit handling."]}}])
+    assert p.cmd(Namespace(dataset=str(step.ds), split="dev", redo_stale=True)) == 0
+    rows = {r["id"]: r for r in common.read_jsonl(step.ds / "digest/prompts.jsonl")}
+    assert rows["p-alpha-007"]["prompt"] == "Raise the retry limit handling." and rows["p-alpha-007"]["gold"] == ["NALPHA011"]
+    assert rows["p-alpha-008"] == keep and len(rows) == 2
+    n = len(step.fake.calls())
+    assert p.cmd(Namespace(dataset=str(step.ds), split="dev", redo_stale=True)) == 0
+    assert len(step.fake.calls()) == n
+
+
+def test_redo_stale_is_refused_after_the_freeze(step):
+    (step.ds / "FROZEN").write_text("x\n")
+    with pytest.raises(common.Refused, match="frozen"):
+        p.cmd(Namespace(dataset=str(step.ds), split="dev", redo_stale=True))

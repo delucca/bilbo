@@ -88,7 +88,7 @@ def prompt_for(w: World, note: dict, feedback: list[str] = ()) -> str:
         style_sha=w.style_sha, style_guide=w.style.strip(), project_name=project["name"], project_summary=project["summary"],
         technologies=", ".join(project["technologies"]), component=component, kind=note["kind"],
         language=LANGUAGES[note["lang"]], task=task, chars=style["chars"], headings=style["headings"],
-        code_line=("- Include one short fenced code block that fits, using only values from the brief."
+        code_line=("- Include one short fenced code block that fits, using only values given here."
                    if style["code_block"] else "- Use no fenced code blocks."),
         wiki_line=f"- Mention the related note once as [[{style['wiki_link']}]], written exactly so." if style["wiki_link"] else "",
         extra="\n".join(extra),

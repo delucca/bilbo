@@ -87,7 +87,7 @@ def test_generated_query_and_prompt_rows_go_through_the_real_build_qrels(generat
 
     ds, fake = generation
     _, (built, _) = intents(ds)
-    fake.set_script([{"match": f"Item: {it.id}\n", "output": {"query": f"query for {it.id}", "lang": it.lang}} for it in built])
+    fake.set_script([{"match": f"Item: {it.id}\n", "output": {"query": f"query for {it.id}", "lang": it.lang, "hop_link": "carried answer" if it.stratum == "multi-hop" else ""}} for it in built])
     assert queries.cmd(Namespace(dataset=str(ds), split="dev")) == 0
 
     batches, _ = prompts.plan_batches(queries.load_world(ds), "dev", {"positive": 12, "noise": 10, "off-topic": 10, "near-miss": 10}, 7)

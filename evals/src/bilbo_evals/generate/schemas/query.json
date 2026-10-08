@@ -2,8 +2,9 @@
   "type": "object",
   "properties": {
     "query": {"type": "string"},
-    "lang": {"type": "string", "enum": ["en", "pt"]}
+    "lang": {"type": "string", "enum": ["en", "pt"]},
+    "hop_link": {"type": "string"}
   },
-  "required": ["query", "lang"],
+  "required": ["query", "lang", "hop_link"],
   "additionalProperties": false
 }

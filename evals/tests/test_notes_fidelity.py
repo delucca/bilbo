@@ -362,3 +362,119 @@ def test_noise_stale_follows_the_dropped_facts(mini, fake_llm):
     assert facts["f-alpha-002"]["status"] == "dropped"
     noise = json.loads((ds / "world/noise.json").read_text())
     assert noise["stale"] == [] and noise["omission"] == [ids[1]] and noise["near-duplicate"] == [ids[4]]
+
+
+# --- notes that mention their instructions ---------------------------------------------------------------------------
+
+LEAK = body("General progress was fine. This note was written from the brief.")
+RECAP = "write a weekly recap of work"
+
+
+def leaks_logged(ds):
+    p = ds / "generation/rejects.jsonl"
+    return common.read_jsonl(p) if p.is_file() else []
+
+
+def test_the_note_template_forbids_mentioning_the_instructions(mini, fake_llm):
+    ds, _ = mini
+    fake_llm.set_script(script())
+    assert run("notes", ds) == 0
+    for c in fake_llm.calls():
+        p = c["prompt"]
+        if "Component this note is about" in p:
+            assert "Never mention a brief, instructions, a prompt or a manifest" in p
+            assert "from this brief" not in p and "from the brief" not in p and "values from the brief" not in p
+
+
+@pytest.mark.parametrize("phrase", ["From the brief", "in the brief", "the BRIEF names", "my instructions", "the manifest"])
+def test_leak_patterns(phrase):
+    from bilbo_evals.generate import fidelity
+
+    assert fidelity.leak_of(f"some text. {phrase} said so") is not None
+    assert fidelity.leak_of("A brief summary of the plan, with instructions for users and a manifest file name.") is None
+
+
+def test_a_leaking_note_is_rerendered_like_a_missing_fact(mini, fake_llm):
+    ds, ids = mini
+    start(ds, fake_llm, [{"match": RECAP, "output": LEAK, "times": 1}])
+    assert "the brief" in (ds / "store/notes/report-alpha-sync-weekly-recap.md").read_text()
+    assert run("fidelity", ds) == 0
+    assert "the brief" not in (ds / "store/notes/report-alpha-sync-weekly-recap.md").read_text()
+    assert read_notes(ds)[ids[3]]["render_attempts"] == 2
+    again = [c for c in fake_llm.calls() if "Your previous attempt was rejected" in c["prompt"]]
+    assert len(again) == 1 and "mentions its own instructions" in again[0]["prompt"]
+    (row,) = leaks_logged(ds)
+    assert row["item"] == ids[3] and row["attempt"] == 1 and row["reason"] == "leak"
+
+
+def test_a_note_that_leaks_three_times_fails_the_step(mini, fake_llm, capsys):
+    ds, ids = mini
+    start(ds, fake_llm, [{"match": RECAP, "output": LEAK}])
+    assert run("fidelity", ds) == 1
+    assert "still mention their instructions" in capsys.readouterr().err
+    renders = [r["attempt"] for r in rows(ds) if r["step"] == "notes" and r["item"] == ids[3]]
+    assert renders == [1, 2, 3]
+    assert len(leaks_logged(ds)) == 3
+
+
+def settled(ds, fake_llm):
+    start(ds, fake_llm)
+    assert run("fidelity", ds) == 0
+
+
+def inject_leak(ds, nid, attempts):
+    for a in attempts:
+        path = llm.output_path(ds, "notes", nid, a)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        common.write_json(path, LEAK)
+
+
+def test_recheck_leaks_rerenders_only_the_leaking_notes(mini, fake_llm):
+    ds, ids = mini
+    settled(ds, fake_llm)
+    inject_leak(ds, ids[3], [1])
+    assert run("notes", ds) == 0
+    assert "the brief" in (ds / "store/notes/report-alpha-sync-weekly-recap.md").read_text()
+    before = fake_llm.calls()
+    assert cli.main(["generate", "fidelity", "--dataset", str(ds), "--recheck-leaks"]) == 0
+    new = fake_llm.calls()[len(before):]
+    assert len(new) == 1 and "Your previous attempt was rejected" in new[0]["prompt"]
+    assert "the brief" not in (ds / "store/notes/report-alpha-sync-weekly-recap.md").read_text()
+    assert cli.main(["generate", "fidelity", "--dataset", str(ds), "--recheck-leaks"]) == 0
+    assert len(fake_llm.calls()) == len(before) + 1
+
+
+def test_recheck_leaks_gets_two_fresh_rerenders_after_a_settled_note_used_its_attempts(mini, fake_llm):
+    ds, ids = mini
+    settled(ds, fake_llm)
+    inject_leak(ds, ids[3], [1, 2, 3])
+    assert run("notes", ds) == 0
+    assert cli.main(["generate", "fidelity", "--dataset", str(ds), "--recheck-leaks"]) == 0
+    assert llm.output_path(ds, "notes", ids[3], 4).is_file()
+    assert read_notes(ds)[ids[3]]["render_attempts"] == 4
+
+
+def test_recheck_leaks_with_nothing_leaking_makes_no_call(mini, fake_llm):
+    ds, _ = mini
+    settled(ds, fake_llm)
+    n = len(fake_llm.calls())
+    assert cli.main(["generate", "fidelity", "--dataset", str(ds), "--recheck-leaks"]) == 0
+    assert len(fake_llm.calls()) == n
+
+
+def test_recheck_leaks_checks_a_note_with_facts_again(mini, fake_llm):
+    ds, ids = mini
+    settled(ds, fake_llm)
+    inject_leak(ds, ids[0], [1])
+    assert run("notes", ds) == 0
+    fake_llm.set_script(script(claude=[{"match": "Your previous attempt was rejected", "output": GOOD["n1"]}]))
+    assert cli.main(["generate", "fidelity", "--dataset", str(ds), "--recheck-leaks"]) == 0
+    assert "the brief" not in (ds / "store/notes/decision-sync-retry-limit.md").read_text()
+
+
+def test_recheck_leaks_is_refused_after_freeze(mini, fake_llm, capsys):
+    ds, _ = mini
+    settled(ds, fake_llm)
+    (ds / "FROZEN").write_text("x\n")
+    assert cli.main(["generate", "fidelity", "--dataset", str(ds), "--recheck-leaks"]) == 1
+    assert "frozen" in capsys.readouterr().err

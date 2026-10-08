@@ -35,6 +35,7 @@ class Batch:
     lang: str
     slots: dict[str, str]
     gold: list[list[str]]
+    ids: list[str] | None = None  # set by a redo: the rows keep their ids
 
 
 def allocate(total: int, caps: dict[str, int | None], rng) -> dict[str, int]:
@@ -120,7 +121,8 @@ def plan_batches(w: q.World, split: str, counts: dict[str, int], seed: int) -> t
 def _positive_notes(w: q.World, project: str, facts: list[dict], rng) -> list[tuple[str, list[str]]]:
     by_note: dict[str, list[str]] = {}
     for f in facts:
-        if f["project"] == project and not f.get("bridge"):
+        # A superseded fact never makes a positive: the newest note of its family is the one a prompt bears on.
+        if f["project"] == project and not f.get("bridge") and not f.get("superseded_by"):
             by_note.setdefault(f["note_id"], []).append(f["statement"])
     items = sorted(by_note.items())
     rng.shuffle(items)
@@ -133,6 +135,8 @@ def build_prompt(b: Batch, templates: dict[str, Template]) -> str:
 
 
 def prompt_id(b: Batch, i: int) -> str:
+    if b.ids:
+        return b.ids[i]
     return f"p-{b.project or 'none'}-{b.start + i + 1:03d}"
 
 
@@ -163,6 +167,47 @@ def make_rows(b: Batch, out: dict) -> list[dict]:
     return rows
 
 
+def stale_positives(w: q.World, rows: list[dict], split: str) -> list[tuple[dict, str, list[str]]]:
+    """(row, newest note, its current statements) for each positive of the split whose gold note holds only superseded facts."""
+    out = []
+    for r in rows:
+        if r["split"] != split or r["label"] != "positive" or len(r["gold"]) != 1:
+            continue
+        mine = [f for f in w.facts.values() if f.get("note_id") == r["gold"][0] and not f.get("bridge")]
+        if not mine or not all(f.get("superseded_by") for f in mine):
+            continue
+        head = mine[0]
+        for _ in range(len(w.facts)):
+            nxt = w.facts.get(head.get("superseded_by") or "")
+            if nxt is None:
+                break
+            head = nxt
+        if head.get("superseded_by") or not w.usable(head):
+            continue
+        current = sorted(f["statement"] for f in w.facts.values() if f.get("note_id") == head["note_id"] and not f.get("bridge") and not f.get("superseded_by"))
+        out.append((r, head["note_id"], current))
+    return out
+
+
+def redo_batches(w: q.World, stale: list[tuple[dict, str, list[str]]], split: str, seed: int) -> list[Batch]:
+    out = []
+    by_project: dict[str, list] = {}
+    for item in stale:
+        by_project.setdefault(item[0]["project"], []).append(item)
+    for project, items in sorted(by_project.items()):
+        items.sort(key=lambda t: t[0]["id"])
+        slots = _project_slots(w, project, [], random.Random(f"{seed}:{split}:redo:{project}"))
+        for k, start in enumerate(range(0, len(items), BATCH)):
+            chunk = items[start:start + BATCH]
+            notes = "\n".join(f"{i + 1}. [{w.notes[nid]['kind']}] " + "; ".join(st) for i, (_, nid, st) in enumerate(chunk))
+            out.append(Batch(
+                f"{split}-redo-{project}-{k + 1:02d}", split, "positive", project, 0, len(chunk),
+                w.notes[chunk[0][1]]["lang"], {**slots, "notes": notes}, [[nid] for _, nid, _ in chunk],
+                [r["id"] for r, _, _ in chunk],
+            ))
+    return out
+
+
 def cmd(args) -> int:
     from bilbo_evals import dataset, llm
 
@@ -171,13 +216,19 @@ def cmd(args) -> int:
     split = args.split
     llm.require_cli("codex")
     w = q.load_world(ds)
-    batches, short = plan_batches(w, split, q.prompt_counts(cfg, split), cfg.seed)
+    path = ds / "digest/prompts.jsonl"
+    redo = bool(getattr(args, "redo_stale", False))
+    if redo:
+        stale = stale_positives(w, common.read_jsonl(path) if path.exists() else [], split)
+        batches, short = redo_batches(w, stale, split, cfg.seed), {}
+        common.err(f"{len(stale)} stale positives in {split}")
+    else:
+        batches, short = plan_batches(w, split, q.prompt_counts(cfg, split), cfg.seed)
     for label, n in sorted(short.items()):
         common.err(f"{split} {label}: the notes allow {n} fewer prompts than asked")
 
     templates = q.load_sections("prompts.md")
     prompts_schema = q._json(q.HERE / "schemas/prompts.json")
-    path = ds / "digest/prompts.jsonl"
     existing = {r["id"]: r for r in (common.read_jsonl(path) if path.exists() else [])}
     settled = q.settled_items(ds)
     preflighted = False
@@ -214,7 +265,9 @@ def cmd(args) -> int:
                 common.append_jsonl(ds / "generation/drops.jsonl", {"item": b.key, "reason": "invalid-output", "stratum": b.label})
             continue
         for row in make_rows(b, good):
-            if row["id"] not in existing and row["id"] not in settled:
+            if redo:
+                existing[row["id"]] = {**existing[row["id"]], "prompt": row["prompt"], "gold": row["gold"]}
+            elif row["id"] not in existing and row["id"] not in settled:
                 existing[row["id"]] = row
     common.write_jsonl(path, [existing[i] for i in sorted(existing)])
     dataset.build_qrels(ds)
