@@ -204,3 +204,74 @@ def test_page_slugs_and_stage_output_parse():
     info = library.parse_stage("stage: 01X\ncapture: /a b/capture.md\nlines: 11\ntokens: 3\ntitle: T: x\nkeep: 2-11\n\n1\t# T\n5\t## Overview\n")
     assert info["stage"] == "01X" and info["capture"] == "/a b/capture.md" and info["title"] == "T: x"
     assert info["headings"] == [(1, "# T"), (5, "## Overview")]
+
+
+def test_a_page_without_a_level_one_heading_lands_with_a_title(tmp_path, pages, fake_llm, bilbo_bin, monkeypatch):
+    src = tmp_path / "c3ref.md"
+    src.write_text("[Home](/index.html)\n\n## Overview of the call\n\nThe call opens a database.\n\n## Return value\n\nZero on success.\n", encoding="utf-8")
+    for key in ("wal", "busy", "locks", "fts"):
+        monkeypatch.setitem(library.STAGE_FROM_FILES, pages[key], str(src))
+    ds = make_ds(tmp_path)
+    fake_llm.set_script(rules([keep(k, n, keep="3-7") for k, n in (("wal", "open-call"), ("busy", "busy-call"), ("locks", "lock-call"), ("fts", "fts-call"))]))
+    assert run(ds, bilbo_bin) == 0
+    assert len(json.loads((ds / "world/library.json").read_text())) == 2
+    for f in (ds / "store/library/sqlite").glob("*-call.md"):
+        assert "# Overview of the call" in f.read_text()
+
+
+def test_title_comes_from_the_first_heading_in_the_kept_range_or_the_name():
+    cap = ["nav", "# Page", "text", "## Inner heading ##", "more"]
+    assert library.land_title(cap, "3-5", "some-name") == "Inner heading"
+    assert library.land_title(cap, "1-5", "some-name") == "Page"
+    assert library.land_title(cap, "3-3", "some-name") == "Some name"
+
+
+def test_a_land_failure_logs_the_last_two_stderr_lines(tmp_path, pages, fake_llm, tmp_path_factory, capsys):
+    ds = make_ds(tmp_path)
+    fake = tmp_path / "bilbo"
+    fake.write_text("#!/bin/sh\nif [ \"$2\" = land ]; then echo first >&2; echo second >&2; echo third >&2; exit 2; fi\nexec "
+                    + str(__import__("os").environ["BILBO_BIN"]) + " \"$@\"\n")
+    fake.chmod(0o755)
+    fake_llm.set_script(rules())
+    assert run(ds, fake) == 1
+    err = capsys.readouterr().err
+    assert "land exited 2: second | third" in err and "first" not in err.split("land exited 2")[1]
+
+
+def test_redo_relands_from_cached_outputs(tmp_path, pages, fake_llm, bilbo_bin):
+    ds = make_ds(tmp_path)
+    fake_llm.set_script(rules())
+    assert run(ds, bilbo_bin) == 0
+    n = len(fake_llm.calls())
+    before = sorted(r["ref"] for r in json.loads((ds / "world/library.json").read_text()))
+    splits = json.loads((ds / "world/splits.json").read_text())
+    splits["dev"] = ["alpha"]
+    common.write_json(ds / "world/splits.json", splits)
+    (ds / "store/library/sqlite/stray.md").write_text("x")
+    assert cli.main(["generate", "library", "--dataset", str(ds), "--bilbo", str(bilbo_bin), "--redo"]) == 0
+    assert len(fake_llm.calls()) == n and not (ds / "store/library/sqlite/stray.md").exists()
+    assert sorted(r["ref"] for r in json.loads((ds / "world/library.json").read_text())) == before
+    assert json.loads((ds / "world/splits.json").read_text())["dev"] == ["alpha"]
+
+
+def test_redo_removes_the_library_before_landing(tmp_path, pages, fake_llm, bilbo_bin):
+    ds = make_ds(tmp_path)
+    fake_llm.set_script(rules())
+    assert run(ds, bilbo_bin) == 0
+    fake_llm.set_script([])
+    (ds / "generation/outputs/library").rename(tmp_path / "moved")
+    assert cli.main(["generate", "library", "--dataset", str(ds), "--bilbo", str(bilbo_bin), "--redo"]) == 1
+    assert not (ds / "world/library.json").exists() and not (ds / "store/library").exists()
+    assert "library" not in json.loads((ds / "world/splits.json").read_text())
+
+
+@pytest.mark.parametrize("make", ["queries.jsonl", "generation/outputs/queries"])
+def test_redo_is_refused_once_queries_exist(tmp_path, pages, fake_llm, bilbo_bin, capsys, make):
+    ds = make_ds(tmp_path)
+    fake_llm.set_script(rules())
+    assert run(ds, bilbo_bin) == 0
+    target = ds / make
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.mkdir() if "." not in target.name else target.write_text("")
+    assert cli.main(["generate", "library", "--dataset", str(ds), "--bilbo", str(bilbo_bin), "--redo"]) == 1
+    assert "queries exist" in capsys.readouterr().err and (ds / "world/library.json").is_file()
