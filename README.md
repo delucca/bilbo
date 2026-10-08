@@ -32,29 +32,18 @@ brings relevant notes into later conversations. You rarely need to type a
 
 ## See it work
 
-One debugging adventure is plenty. Here's an illustrative conversation across
-two sessions:
+A new Claude Code session with the bilbo plugin. The prompt hook hands the
+agent a saved note, and the agent answers from it. The notes come from bilbo's
+synthetic eval set.
 
-```text
-Session 1
+https://github.com/user-attachments/assets/a4969ef2-599c-4aa6-8111-fbcc8b852077
 
-You:   The tests deadlock when two writers share one SQLite file. Fixed it
-       with a busy timeout. Note this as a gotcha.
-Agent: Saved a note: SQLite needs a busy timeout.
-
-Session 2, a day later
-
-You:   Why does our SQLite test suite fail with "database is locked"?
-Agent: We ran into this before. The note says to set busy_timeout = 5000
-       on each connection. Let me check your setup.
-```
-
-The plugin brings relevant notes into the new session before the agent starts.
-You can also ask "What did we decide about the database layer?" and have it
-search the notes.
+In your own work, notes like that one come from earlier sessions: you tell the
+agent to note a fix, and it saves one. You can also ask "What did we decide
+about the database layer?" and have it search the notes.
 
 <details>
-<summary>See the commands and the note the agent receives</summary>
+<summary>See both sessions step by step, with the note the agent receives</summary>
 
 Lines starting with `You:` are what you type, `Hook:` is what the plugin's
 prompt hook adds before the agent sees your prompt, and `Agent:` is what the
