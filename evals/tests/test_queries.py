@@ -320,19 +320,67 @@ def test_cmd_regenerates_a_leaked_query_with_the_tokens_to_avoid(step):
     assert len(new) == 1 and "BODYMARK" not in new[0]["prompt"]
 
 
-def test_cmd_gives_up_after_three_attempts(step):
+ANY_QUERY = [
+    {"match": "Write it in English", "output": {"query": "an extra", "lang": "en", "hop_link": ""}},
+    {"match": "Write it in Brazilian Portuguese", "output": {"query": "um extra", "lang": "pt", "hop_link": ""}},
+]
+
+
+def exhaust(step, stratum):
     step.run()
     rows = common.read_jsonl(step.ds / "queries.jsonl")
-    target = next(r for r in rows if r["stratum"] == "alias")
+    target = next(r for r in rows if r["stratum"] == stratum)
     common.write_jsonl(step.ds / "queries.jsonl", [r for r in rows if r["id"] != target["id"]])
     for a in (1, 2, 3):
         common.append_jsonl(step.ds / "generation/drops.jsonl", {"item": target["id"], "reason": "leakage", "attempt": a, "tokens": ["x"]})
     for a in (2, 3):
         common.write_json(step.ds / f"generation/outputs/queries/{target['id']}.{a}.json", {"query": "q", "lang": target["lang"], "hop_link": ""})
+    step.fake.set_script(ANY_QUERY)
+    return target, rows
+
+
+def test_cmd_gives_up_after_three_attempts_and_tops_the_stratum_up_with_a_new_id(step):
+    target, before = exhaust(step, "paraphrase")
     assert step.run() == 0
     drops = common.read_jsonl(step.ds / "generation/drops.jsonl")
-    assert drops[-1] == {"item": target["id"], "reason": "leakage-exhausted", "stratum": "alias"}
-    assert target["id"] not in {r["id"] for r in common.read_jsonl(step.ds / "queries.jsonl")}
+    assert {"item": target["id"], "reason": "leakage-exhausted", "stratum": "paraphrase"} in drops
+    rows = common.read_jsonl(step.ds / "queries.jsonl")
+    ids = {r["id"] for r in rows}
+    assert target["id"] not in ids
+    new = sorted(ids - {r["id"] for r in before})
+    assert len(new) == 1 and new[0] > max(r["id"] for r in before if r["project"] == "alpha" and r["stratum"] != "no-answer")
+    extra = next(r for r in rows if r["id"] == new[0])
+    assert extra["stratum"] == "paraphrase" and extra["split"] == "dev" and extra["family"] != target["family"]
+    used = {f for r in before if r["stratum"] == "paraphrase" for f in r["fact_ids"]}
+    assert not set(extra["fact_ids"]) & used
+    assert sum(r["stratum"] == "paraphrase" for r in rows) == COUNTS["paraphrase"]
+    # blind wording, and a second run adds nothing: no call, no new id
+    assert all("BODYMARK" not in c["prompt"] for c in step.fake.calls())
+    n = len(step.fake.calls())
+    assert step.run() == 0 and len(step.fake.calls()) == n
+    assert {r["id"] for r in common.read_jsonl(step.ds / "queries.jsonl")} == ids
+
+
+def test_a_dropped_extra_is_replaced_by_yet_another_id(step):
+    target, _ = exhaust(step, "paraphrase")
+    step.run()
+    top = [json.loads(l) for l in (step.ds / "generation/topup.jsonl").read_text().splitlines()]
+    assert [t["index"] for t in top] == [0]
+    # the extra is itself dropped for good (as a review would): the next run tops up again, never reusing ids
+    rows = common.read_jsonl(step.ds / "queries.jsonl")
+    common.write_jsonl(step.ds / "queries.jsonl", [r for r in rows if r["id"] != top[0]["item"]])
+    common.append_jsonl(step.ds / "generation/drops.jsonl", {"item": top[0]["item"], "reason": "invalid-output", "stratum": "paraphrase"})
+    assert step.run() == 0
+    top = [json.loads(l) for l in (step.ds / "generation/topup.jsonl").read_text().splitlines()]
+    assert [t["index"] for t in top] == [0, 1] and len({t["item"] for t in top} | {target["id"]}) == 3
+    ids = {r["id"] for r in common.read_jsonl(step.ds / "queries.jsonl")}
+    assert top[0]["item"] not in ids and top[1]["item"] in ids
+
+
+def test_no_top_up_when_the_facts_are_used_up(step, capsys):
+    exhaust(step, "supersession")
+    assert step.run() == 1
+    assert "no unused facts left for 1 top-up queries" in capsys.readouterr().err
 
 
 def test_cmd_refuses_a_missing_codex(step, monkeypatch):
