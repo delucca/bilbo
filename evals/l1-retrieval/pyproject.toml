@@ -1,0 +1,11 @@
+[project]
+name = "bilbo-eval-l1"
+version = "0.1.0"
+description = "L1 retrieval eval of bilbo"
+requires-python = "==3.12.*"
+dependencies = [
+    "ir-measures==0.4.3",
+    "bm25s==0.3.11",
+    "PyStemmer==3.1.0",
+    "numpy==2.5.3",
+]
