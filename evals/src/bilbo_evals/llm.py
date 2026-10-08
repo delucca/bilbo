@@ -26,6 +26,8 @@ UTILIZATION_STOP = 0.95
 LIMIT_WORDS = ("usage limit", "rate limit", "rate_limit", "quota")
 # Codex adds cache files of its own to the home; these are the names that would carry memory in.
 CODEX_MEMORY = ("AGENTS.md", "AGENTS.override.md", "config.toml", "hooks.json", "rules", "plugins", "prompts")
+# Codex's own built-in tools, present in a clean CODEX_HOME; the model may list them in the probe.
+CODEX_BUILTIN_TOOLS = frozenset({"clock__curr_time", "clock.sleep", "image_gen__imagegen", "web__run"})
 PROBE_MARK = "bilbo-evals preflight probe"
 CODEX_PROBE = (
     f"This is the {PROBE_MARK} (codex). Do not use any tool. Answer only from what is already in this session.\n"
@@ -705,10 +707,11 @@ def preflight(cli: str, ds_dir: Path, cfg: GenConfig, step: str = "") -> None:
             checks.append("codex home holds no instructions, config, hooks, rules, plugins or user skills")
             answer = call(Call("preflight", item, "codex", CODEX_PROBE, CODEX_PROBE_SCHEMA), ds_dir, cfg)
             heading = answer["user_instructions_first_heading"].strip().strip("`'\".").upper()
-            if heading != "NONE" or answer["mcp_tools"]:
+            extra = [t for t in answer["mcp_tools"] if t not in CODEX_BUILTIN_TOOLS]
+            if heading != "NONE" or extra:
                 raise SessionLeak(
                     f"the codex probe reports user instructions {answer['user_instructions_first_heading']!r} "
-                    f"and MCP tools {answer['mcp_tools']}"
+                    f"and MCP tools {extra}"
                 )
             checks.append("probe call reports no user instructions and no MCP tools")
     except Refused as e:
