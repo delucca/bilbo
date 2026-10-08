@@ -418,6 +418,12 @@ def pool_open_items(dir: Path) -> list[str]:
         for c in row["candidates"]:
             if (it["id"], c["id"]) not in judged_now:
                 open_items.append(f"{it['id']} {c['id']}: not judged; run pool")
+    for it in items:
+        row = cands.get(it["id"])
+        mine = set(it["row"]["gold"]) | {i for ev in it["row"].get("evidence_sets", []) for i in ev}
+        for c in (row["candidates"] if row and row.get("text_sha256") == shas[it["id"]] else []):
+            if c["id"] in mine and (it["id"], c["id"]) not in resolved:
+                open_items.append(f"{it['id']} {c['id']}: in the gold through a pool resolution with no current resolution")
     for r in judgments:
         key = (r["item"], r["candidate"])
         if key in resolved:

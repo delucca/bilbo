@@ -810,3 +810,67 @@ def test_a_record_holds_the_harness_and_a_rebuild_warns_when_it_differs(ds, fake
     other = {**record, "harness": {"package": "0.0.0", "commit": "0" * 40}}
     assert sha(pool.rebuild_prompt(loaded, other)) == record["prompt_sha256"]
     assert "harness" in capsys.readouterr().err
+
+
+# --- round 4: applied gold, rejects of it, rewrite requests ---------------------------------------------------------
+
+def qrel(ds: Path, cid: str) -> list[str]:
+    return [line for line in (ds / "qrels/dev.txt").read_text().splitlines() if line.startswith(f"{ITEM} 0 {cid} ")]
+
+
+def gold_of(ds: Path) -> list[str]:
+    return next(q for q in dataset.load(ds).queries if q["id"] == ITEM)["gold"]
+
+
+def add_gold_applied(ds: Path, fake_llm, bilbo_bin, cid: str) -> None:
+    script(fake_llm, ds, {ITEM: {cid: None}})
+    run(ds, bilbo_bin)
+    audit_done(ds)
+    resolve(ds, (ITEM, cid, "add-gold", None))
+    assert applied(ds, bilbo_bin) == 0 and cid in gold_of(ds)
+
+
+def test_gold_added_by_a_resolution_is_an_open_item_once_its_note_changed(ds, fake_llm, bilbo_bin, ranked):
+    seed_candidates(ds, ranked)
+    cid = first_candidate(ranked)
+    add_gold_applied(ds, fake_llm, bilbo_bin, cid)
+    edit_note(ds, cid, "\nThe review rewrote this note; it no longer holds the answer.\n")
+    script(fake_llm, ds)
+    run(ds, bilbo_bin)
+    audit_done(ds)
+    applied(ds, bilbo_bin)
+    assert f"{ITEM} {cid}: in the gold through a pool resolution with no current resolution" in dataset.pool_open_items(ds)
+    resolve(ds, (ITEM, cid, "add-gold", None))
+    applied(ds, bilbo_bin)
+    assert dataset.pool_open_items(ds) == [] and qrel(ds, cid) == [f"{ITEM} 0 {cid} 1"]
+
+
+def test_a_reject_of_an_applied_gold_removes_it_and_is_recorded(ds, fake_llm, bilbo_bin, ranked):
+    seed_candidates(ds, ranked)
+    cid = first_candidate(ranked)
+    add_gold_applied(ds, fake_llm, bilbo_bin, cid)
+    edit_note(ds, cid, "\nA review edit.\n")
+    script(fake_llm, ds, {ITEM: {cid: None}}, quote={(ITEM, cid): "A review edit."})
+    run(ds, bilbo_bin)
+    audit_done(ds)
+    resolve(ds, (ITEM, cid, "reject", None))
+    applied(ds, bilbo_bin)
+    assert cid not in gold_of(ds) and dataset.pool_open_items(ds) == []
+    assert qrel(ds, cid) == [f"{ITEM} 0 {cid} 0"]
+    assert any(r["candidate"] == cid and r["action"] == "reject" for r in read_jsonl(ds / "generation/pool/applied.jsonl"))
+    assert applied(ds, bilbo_bin) == 0 and cid not in gold_of(ds)
+
+
+def test_a_rewrite_request_survives_a_note_edit(ds, fake_llm, bilbo_bin, ranked):
+    seed_candidates(ds, ranked)
+    cid = first_candidate(ranked)
+    script(fake_llm, ds, {ITEM: {cid: None}})
+    run(ds, bilbo_bin)
+    audit_done(ds)
+    resolve(ds, (ITEM, cid, "rewrite", None))
+    applied(ds, bilbo_bin)
+    edit_note(ds, cid, "\nA review edit.\n")
+    script(fake_llm, ds)
+    run(ds, bilbo_bin)
+    audit_done(ds)
+    assert f"{ITEM} {cid}: rewrite asked; edit the item, then run pool" in dataset.pool_open_items(ds)
