@@ -28,6 +28,7 @@ PROMPT_CHARS = 200_000  # the candidates of one call; 30 candidates at VIEW_CHAR
 AUDIT_SHARE = 0.10
 AUDIT_MIN = 50
 PROMPT_LABELS = ("positive", "near-miss")
+PAIR_ACTIONS = ("add-gold", "add-evidence", "reject")  # the others (rewrite, drop) are about the item
 ACTIONS = ("add-gold", "add-evidence", "reject", "rewrite", "drop")
 KIND_RULE = {
     "query": "The request is a question a developer puts to their notes.",
@@ -371,7 +372,8 @@ def set_aside_judgments(ds_dir: Path, ds: dataset.Dataset, items: list[dict]) ->
     prompts = {r["call_id"]: r["prompt_sha256"] for r in _rows(ds_dir, "records.jsonl") if r["item"] in gone}
     for name in ("judgments", "audit", "records", "resolutions"):
         rows = _rows(ds_dir, f"{name}.jsonl")
-        hit = (lambda r: (r["item"], r["candidate"]) in old) if name == "resolutions" else (lambda r: r["item"] in gone)  # noqa: E731
+        hit = ((lambda r: (r["item"], r["candidate"]) in old and r["action"] in PAIR_ACTIONS) if name == "resolutions"  # noqa: E731
+               else (lambda r: r["item"] in gone))
         if not any(hit(r) for r in rows):
             continue
         for r in rows:
@@ -501,7 +503,7 @@ def cmd(args: argparse.Namespace) -> int:
 def apply(ds_dir: Path) -> int:
     dataset.refuse_if_frozen(ds_dir)
     ds = dataset.load(ds_dir)
-    applied = {(r["item"], r["candidate"]) for r in _rows(ds_dir, "applied.jsonl")}
+    applied = {(r["item"], r["candidate"]) for r in _rows(ds_dir, "applied.jsonl") if r["action"] in ACTIONS[:2]}
     resolutions = _rows(ds_dir, "resolutions.jsonl")
     for r in resolutions:
         if r["action"] not in ACTIONS:
@@ -526,7 +528,16 @@ def apply(ds_dir: Path) -> int:
     for item in dropped:
         queries.pop(item, None)
         prompts.pop(item, None)
-    if new:
+    removed = [r for r in resolutions if r["action"] == "reject" and r["item"] not in dropped
+               and (r["item"], r["candidate"]) in applied and _remove_gold(r, queries, prompts)]
+    if removed:
+        kept = [r for r in _rows(ds_dir, "applied.jsonl")
+                if not any(r["item"] == x["item"] and r["candidate"] == x["candidate"] for x in removed)]
+        write_jsonl(_pool(ds_dir, "applied.jsonl"), kept)
+        for r in removed:
+            append_jsonl(_pool(ds_dir, "applied.jsonl"), {"item": r["item"], "candidate": r["candidate"],
+                                                           "action": "reject", "time": common.now()})
+    if new or removed:
         write_jsonl(ds_dir / "queries.jsonl", [queries[q["id"]] for q in ds.queries if q["id"] in queries])
         if ds.prompts:
             write_jsonl(ds_dir / "digest/prompts.jsonl", [prompts[p["id"]] for p in ds.prompts if p["id"] in prompts])
@@ -539,6 +550,21 @@ def apply(ds_dir: Path) -> int:
     for line in open_items:
         out(line)
     return 1 if open_items else 0
+
+
+def _remove_gold(r: dict, queries: dict[str, dict], prompts: dict[str, dict]) -> bool:
+    """A reject of a note an earlier resolution put in the gold takes it out again; True when it was there."""
+    item, cid = r["item"], r["candidate"]
+    row = queries.get(item) or prompts.get(item)
+    if row is None or cid not in row["gold"]:
+        return False
+    if row["gold"] == [cid]:
+        raise Refused(f"{item} {cid}: the reject would leave the item with no gold; drop or rewrite it")
+    row["gold"].remove(cid)
+    if item in queries:
+        row["evidence_sets"] = [[i for i in ev if i != cid] for ev in row.get("evidence_sets", [])]
+        row["evidence_sets"] = [ev for ev in row["evidence_sets"] if ev]
+    return True
 
 
 def _apply_one(r: dict, queries: dict[str, dict], prompts: dict[str, dict]) -> None:
