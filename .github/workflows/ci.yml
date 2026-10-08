@@ -94,8 +94,11 @@ jobs:
       - name: Build bilbo
         run: nix develop -c cargo build --locked
 
-      - name: Install the harness
-        run: nix develop -c uv --directory evals sync --locked
+      - name: Install the eval
+        run: nix develop -c uv --directory evals/l1-retrieval sync --locked
 
-      - name: Test the harness
-        run: BILBO_BIN="$PWD/target/debug/bilbo" nix develop -c uv --directory evals run pytest
+      - name: Smoke run (guards only; no embedder, scores never gate)
+        run: |
+          nix develop -c uv --directory evals/l1-retrieval run eval.py run \
+            --bilbo "$PWD/target/debug/bilbo" --split dev \
+            --arms oracle,bm25,bilbo-keyword --out "$RUNNER_TEMP/results.json"

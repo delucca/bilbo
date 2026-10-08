@@ -23,11 +23,12 @@ nix develop -c cargo test --release --test recall --test digest -- --ignored
 # After touching plugins/ (one missing-version warning each is expected; never --strict); Codex's needs Codex installed
 claude plugin validate . && claude plugin validate plugins/bilbo
 PYTHONDONTWRITEBYTECODE=1 python3 ~/.codex/skills/.system/plugin-creator/scripts/validate_plugin.py plugins/bilbo
-# The eval harness (evals/README.md); the tests need no llama-server, claude or codex
-nix develop -c uv --directory evals sync --locked
-BILBO_BIN="$PWD/target/debug/bilbo" nix develop -c uv --directory evals run pytest
-nix develop -c uv --directory evals run bilbo-evals l1 run --split test --arms all --bilbo "$PWD/target/debug/bilbo"
-nix develop -c uv --directory evals run bilbo-evals compare baselines/0.19.0 runs/<run-id>
+# The L1 eval (evals/l1-retrieval/README.md); needs no claude or codex. Smoke run: guards only, no embedder
+nix develop -c uv --directory evals/l1-retrieval sync --locked
+nix develop -c uv --directory evals/l1-retrieval run eval.py run --bilbo "$PWD/target/debug/bilbo" --split dev --arms oracle,bm25,bilbo-keyword --out "$TMPDIR/results.json"
+# A baseline: release build, llama-server and the pinned GGUF, test split once per release
+nix develop -c uv --directory evals/l1-retrieval run eval.py run --bilbo "$PWD/target/release/bilbo" --split test --out baseline/<version>.json
+nix develop -c uv --directory evals/l1-retrieval run eval.py diff baseline/0.19.0.json baseline/<version>.json
 ```
 
 ## Workflow
@@ -87,9 +88,9 @@ failures say what to change. Beyond it:
   (older releases lack subcommands the workflows call). Regenerate, never
   edit. Keep the two skill folders as separate copies: a symlink makes every
   `openspec update` rewrite them.
-- `evals/datasets/*/v*/` and `evals/baselines/*/` are written by
-  `bilbo-evals`, never by hand: a change is a new dataset version or a new
-  baseline.
+- `evals/l1-retrieval/dataset/` and `evals/l1-retrieval/baseline/` are
+  generated, never by hand: a change is a new dataset version (rebuilt from
+  the generator tag `evals/notes-synth-v1-generator`) or a new baseline.
 - `.agents/plugins/marketplace.json` is written by hand. `release.yml` comes
   from `dist generate` over `dist-workspace.toml`: edit that and regenerate, or
   the release `plan` job fails.
@@ -153,8 +154,6 @@ failures say what to change. Beyond it:
   `$HOME/.nix-profile/bin` of the throwaway `HOME`.
 - `llama-server` is not in the dev shell: real eval runs use
   `nix shell --inputs-from . nixpkgs#llama-cpp`.
-- `codex exec --ignore-user-config` still loads `$CODEX_HOME/AGENTS.md` and
-  skills: dataset generation uses a throwaway `CODEX_HOME`.
 
 ## Releases
 
