@@ -547,3 +547,17 @@ def test_freeze_puts_the_canary_in_every_jsonl_row(draft):
     for path in files:
         assert all(r.get("canary") == CANARY for r in read_jsonl(path)), path
     assert dataset.verify(draft)[1] == []
+
+
+def test_an_item_citing_a_dropped_fact_is_an_error(draft):
+    write_jsonl(draft / "generation/drops.jsonl", [
+        {"item": "f-alpha-003", "kind": "fact", "step": "fidelity", "note": "n", "reason": "lost"},
+        {"item": "q-other", "kind": "query", "reason": "leakage"}])
+    prompts = read_jsonl(draft / "digest/prompts.jsonl")
+    write_jsonl(draft / "digest/prompts.jsonl", [{**p, "fact_ids": ["f-alpha-003"]} if p["id"] == "p-alpha-002" else p for p in prompts])
+    problems = check(draft)
+    assert any("q-alpha-001" in p and "f-alpha-003" in p for p in problems)
+    assert any("p-alpha-002" in p and "f-alpha-003" in p for p in problems)
+    assert not any("q-alpha-002" in p and "dropped" in p for p in problems)
+    with pytest.raises(Refused, match="f-alpha-003"):
+        dataset.freeze(draft)

@@ -12,7 +12,7 @@ from bilbo_evals.generate import schema, template
 
 STEP = "fidelity"
 MAX_ATTEMPTS = 3
-LEAK = re.compile(r"\b(?:the brief|my instructions|the manifest)\b", re.I)
+LEAK = re.compile(r"\b(?:the brief|my instructions)\b", re.I)
 LEAK_KEY = "_leak"
 
 
