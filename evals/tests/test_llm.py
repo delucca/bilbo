@@ -421,3 +421,18 @@ def test_a_pool_call_keeps_its_prompt_in_the_cache_not_in_the_dataset(tmp_path, 
     cached = llm.cached_prompt_path(ds, row["prompt_sha256"])
     assert common.CACHE_DIR in cached.parents
     assert common.sha256_bytes(cached.read_bytes()) == row["prompt_sha256"]
+
+
+def test_codex_builtin_tools_are_allowed_in_the_probe(tmp_path, fake_llm):
+    ds = make_ds(tmp_path)
+    tools = ["clock__curr_time", "clock.sleep", "image_gen__imagegen", "web__run"]
+    fake_llm.set_script([{"match": "preflight probe", "output": {"user_instructions_first_heading": "NONE", "mcp_tools": tools}}])
+    llm.preflight("codex", ds, cfg(ds), "queries")
+    assert rows(ds, "preflight.jsonl")[0]["status"] == "ok"
+
+
+def test_any_other_codex_tool_still_fails_closed(tmp_path, fake_llm):
+    ds = make_ds(tmp_path)
+    fake_llm.set_script([{"match": "preflight probe", "output": {"user_instructions_first_heading": "NONE", "mcp_tools": ["web__run", "bilbo_recall"]}}])
+    with pytest.raises(Refused, match="bilbo_recall"):
+        llm.preflight("codex", ds, cfg(ds), "queries")
