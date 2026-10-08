@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import importlib.metadata
 import json
 import math
 import random
+import subprocess
 from pathlib import Path
 
 from bilbo_evals import common, dataset, llm, passages, runner, words
@@ -207,6 +209,21 @@ def _template_sha(name: str) -> str:
     return text_sha((HERE / "templates" / name).read_text(encoding="utf-8"))
 
 
+def harness() -> dict:
+    """The version of this package and the git commit of the checkout it runs from (None outside a checkout)."""
+    try:
+        package = importlib.metadata.version("bilbo-evals")
+    except importlib.metadata.PackageNotFoundError:
+        package = "unknown"
+    try:
+        done = subprocess.run(["git", "-C", str(Path(__file__).resolve().parent), "rev-parse", "HEAD"],
+                              capture_output=True, text=True, timeout=10, check=True)
+        commit = done.stdout.strip() or None
+    except (OSError, subprocess.SubprocessError):
+        commit = None
+    return {"package": package, "commit": commit}
+
+
 def call_record(ds: dataset.Dataset, item: dict, cands: list[dict], seed: int, call_id: str, prompt: str) -> dict:
     """What `build_prompt` reads for one call, as judged: kept in `pool/records.jsonl` so the prompt can be rebuilt later."""
     row = item["row"]
@@ -214,7 +231,7 @@ def call_record(ds: dataset.Dataset, item: dict, cands: list[dict], seed: int, c
         "call_id": call_id, "item": item["id"], "kind": item["kind"], "text": item["text"], "text_sha256": text_sha(item["text"]),
         "stratum": row.get("stratum"), "evidence_sets": [list(ev) for ev in row.get("evidence_sets", [])], "evidence_sha256": evidence_shas(ds, row),
         "candidates": [{"id": c["id"], "lines": c.get("lines", {})} for c in cands], "seed": seed,
-        "template": TEMPLATE, "template_sha256": _template_sha(TEMPLATE), "prompt_sha256": text_sha(prompt),
+        "harness": harness(), "template": TEMPLATE, "template_sha256": _template_sha(TEMPLATE), "prompt_sha256": text_sha(prompt),
     }
 
 
@@ -222,6 +239,8 @@ def rebuild_prompt(ds: dataset.Dataset, record: dict) -> str:
     """The prompt of a recorded call, from its record, the notes and the template; refuses once the template changed."""
     if record["template_sha256"] != _template_sha(record["template"]):
         raise Refused(f"{record['call_id']}: the template {record['template']} changed since the call; the prompt cannot be rebuilt")
+    if record.get("harness") != harness():
+        err(f"{record['call_id']}: the prompt was built by another harness version or commit; the rebuild is exact only under the recorded one")
     item = {"id": record["item"], "kind": record["kind"], "text": record["text"],
             "row": {"stratum": record["stratum"], "evidence_sets": record["evidence_sets"], "gold": []}}
     return build_prompt(ds, item, record["candidates"], record["seed"], record["call_id"])
@@ -332,38 +351,67 @@ def set_aside(ds_dir: Path, items: list[dict]) -> None:
                 append_jsonl(_superseded(ds_dir), {"file": f"{name}.jsonl", "row": r, "time": common.now()})
         write_jsonl(_pool(ds_dir, f"{name}.jsonl"), [r for r in rows if r["item"] not in gone])
     for item in stale:
-        out = llm.output_path(ds_dir, STEP, item, 1).parent
-        for path in sorted([*out.glob(f"{item}.[123].json"), *out.glob(f"{item}--b*.[123].json")]):
-            target = out / "superseded" / f"{path.stem}.{cands[item].get('text_sha256', 'unhashed')[:12]}.json"
-            target.parent.mkdir(parents=True, exist_ok=True)
-            path.replace(target)
+        _park_outputs(ds_dir, item, cands[item].get("text_sha256", "unhashed"))
         err(f"{item}: its text changed since it was pooled; the old rows are in generation/pool/superseded.jsonl")
 
 
 def set_aside_judgments(ds_dir: Path, ds: dataset.Dataset, items: list[dict]) -> None:
-    """Move the judgments, audit rows and records of every item with a judgment whose candidate text changed since."""
+    """Move the judgments, audit rows, records and outputs of every item with a judgment whose candidate text changed since.
+
+    The resolutions of the pairs that are no longer current go too: a reviewer's verdict on the old text must not cover the new judgment.
+    """
     shas = {it["id"]: text_sha(it["text"]) for it in items}
     judged = _rows(ds_dir, "judgments.jsonl")
-    stale = sorted({r["item"] for r in judged if r["item"] in shas and r.get("text_sha256") == shas[r["item"]]
-                    and not is_current(ds, r, shas)})
+    old = {(r["item"], r["candidate"]) for r in judged if r["item"] in shas and r.get("text_sha256") == shas[r["item"]]
+           and not is_current(ds, r, shas)}
+    stale = sorted({i for i, _ in old})
     if not stale:
         return
     gone = set(stale)
-    for name in ("judgments", "audit", "records"):
+    prompts = {r["call_id"]: r["prompt_sha256"] for r in _rows(ds_dir, "records.jsonl") if r["item"] in gone}
+    for name in ("judgments", "audit", "records", "resolutions"):
         rows = _rows(ds_dir, f"{name}.jsonl")
-        if not any(r["item"] in gone for r in rows):
+        hit = (lambda r: (r["item"], r["candidate"]) in old) if name == "resolutions" else (lambda r: r["item"] in gone)  # noqa: E731
+        if not any(hit(r) for r in rows):
             continue
         for r in rows:
-            if r["item"] in gone:
+            if hit(r):
                 append_jsonl(_superseded(ds_dir), {"file": f"{name}.jsonl", "row": r, "time": common.now()})
-        write_jsonl(_pool(ds_dir, f"{name}.jsonl"), [r for r in rows if r["item"] not in gone])
+        write_jsonl(_pool(ds_dir, f"{name}.jsonl"), [r for r in rows if not hit(r)])
+    for r in _rows(ds_dir, "applied.jsonl"):
+        if (r["item"], r["candidate"]) in old:
+            err(f"{r['item']} {r['candidate']}: its {r['action']} was applied to the item before the note changed; check the gold")
     for item in stale:
-        out = llm.output_path(ds_dir, STEP, item, 1).parent
-        for path in sorted([*out.glob(f"{item}.[123].json"), *out.glob(f"{item}--b*.[123].json")]):
-            target = out / "superseded" / f"{path.stem}.{shas[item][:12]}.json"
-            target.parent.mkdir(parents=True, exist_ok=True)
-            path.replace(target)
+        _park_outputs(ds_dir, item, shas[item], prompts)
         err(f"{item}: a candidate's or evidence note's text changed since it was judged; the old judgments are in generation/pool/superseded.jsonl")
+
+
+def _park(path: Path, tag: str) -> None:
+    """Move an output into `superseded/` under a name that holds `tag` and never replaces an earlier one."""
+    target = path.parent / "superseded" / f"{path.stem}.{tag[:12]}.json"
+    n = 1
+    while target.exists():
+        n += 1
+        target = target.with_name(f"{path.stem}.{tag[:12]}.{n}.json")
+    target.parent.mkdir(parents=True, exist_ok=True)
+    path.replace(target)
+
+
+def _park_outputs(ds_dir: Path, item: str, tag: str, prompts: dict[str, str] | None = None) -> None:
+    """Park every output of the item's calls; one that has a prompt hash in `prompts` is named by it."""
+    out = llm.output_path(ds_dir, STEP, item, 1).parent
+    for path in sorted([*out.glob(f"{item}.[123].json"), *out.glob(f"{item}--b*.[123].json")]):
+        _park(path, (prompts or {}).get(path.stem.rsplit(".", 1)[0], tag))
+
+
+def set_aside_stale_outputs(ds_dir: Path, records: dict[str, dict]) -> None:
+    """Park the outputs of a call whose prompt is no longer the one recorded for it, so `solve` makes a real call."""
+    old = {r["call_id"]: r for r in _rows(ds_dir, "records.jsonl")}
+    for cid, rec in records.items():
+        if cid in old and old[cid]["prompt_sha256"] != rec["prompt_sha256"]:
+            out = llm.output_path(ds_dir, STEP, cid, 1).parent
+            for path in sorted(out.glob(f"{cid}.[123].json")):
+                _park(path, old[cid]["prompt_sha256"])
 
 
 def _top_up_audits(ds_dir: Path, ds: dataset.Dataset, seed: int) -> None:
@@ -425,6 +473,7 @@ def cmd(args: argparse.Namespace) -> int:
             wants[cid] = (prompt, pool_schema)
             records[cid] = call_record(ds, it, group, cfg.seed, cid, prompt)
             checks[cid] = valid_output({c["id"] for c in group}, n_sets)
+    set_aside_stale_outputs(ds_dir, records)
     if records:
         kept = [r for r in _rows(ds_dir, "records.jsonl") if r["call_id"] not in records]
         write_jsonl(_pool(ds_dir, "records.jsonl"), sorted([*kept, *records.values()], key=lambda r: r["call_id"]))

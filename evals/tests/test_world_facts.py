@@ -386,3 +386,11 @@ def test_unit_helpers():
     q = {"p10": 100, "p25": 200, "p50": 300, "p75": 400, "p90": 500}
     assert all(100 <= facts_mod.sample_quantiles(q, rng) <= 500 for _ in range(50))
     assert facts_mod.topic_for("edge-cache-layer", "The retry count is raised to five", set()) == "edge-cache-retry-count"
+
+
+def test_the_capacity_warning_names_the_per_stratum_rule(tmp_path, capsys):
+    short = make_ds(tmp_path, "short", known=500)
+    put_world(short)
+    run_facts(short)
+    err = capsys.readouterr().err
+    assert "a fact serves one query per stratum" in err and "serves each fact once" not in err

@@ -607,10 +607,10 @@ class Planner:
                 if have[stratum] < need[s][stratum]:
                     short.append(f"{s} {stratum}: {have[stratum]} < {need[s][stratum]}")
             gold = len([f for f in mine if not f["bridge"]])
-            asked = sum(need[s].values())
+            asked = max(need[s].values())
             if gold < asked:
                 self.warnings.append(
-                    f"{s}: {gold} facts for {asked} note queries; a query builder that serves each fact once will fall short")
+                    f"{s}: {gold} facts for {asked} queries of one stratum; a fact serves one query per stratum, so the largest stratum will fall short")
         return rows, short
 
     def dsu_group(self, f: dict, key: str) -> str:
