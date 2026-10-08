@@ -297,6 +297,11 @@ def check(ds: Dataset, split: str = "all") -> list[str]:
             problems.append(f"{p['id']}: a positive prompt has no gold id")
         if p["label"] != "positive" and p["gold"]:
             problems.append(f"{p['id']}: a {p['label']} prompt has gold ids")
+    dropped = {r["item"] for r in _jsonl(ds.dir / "generation/drops.jsonl") if r.get("kind") == "fact"}
+    for row in [*queries, *prompts]:
+        for fid in row.get("fact_ids", []):
+            if fid in dropped:
+                problems.append(f"{row['id']}: cites fact {fid}, which fidelity dropped")
     if split == "all":
         problems += _splits_problems(ds)
     if "" in ds.notes:

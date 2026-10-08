@@ -386,7 +386,7 @@ def test_the_note_template_forbids_mentioning_the_instructions(mini, fake_llm):
             assert "from this brief" not in p and "from the brief" not in p and "values from the brief" not in p
 
 
-@pytest.mark.parametrize("phrase", ["From the brief", "in the brief", "the BRIEF names", "my instructions", "the manifest"])
+@pytest.mark.parametrize("phrase", ["From the brief", "in the brief", "the BRIEF names", "my instructions"])
 def test_leak_patterns(phrase):
     from bilbo_evals.generate import fidelity
 
@@ -478,3 +478,10 @@ def test_recheck_leaks_is_refused_after_freeze(mini, fake_llm, capsys):
     (ds / "FROZEN").write_text("x\n")
     assert cli.main(["generate", "fidelity", "--dataset", str(ds), "--recheck-leaks"]) == 1
     assert "frozen" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("text", ["Declare READ_MEDIA_IMAGES in the manifest", "Edit the package manifest first"])
+def test_manifest_alone_is_not_a_leak(text):
+    from bilbo_evals.generate import fidelity
+
+    assert fidelity.leak_of(text) is None
