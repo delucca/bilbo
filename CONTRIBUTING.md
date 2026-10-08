@@ -105,8 +105,11 @@ under `$SHELL -lc`, and a login profile can rebuild `PATH`.
    `nix develop -c cargo update --workspace`.
    `plugins/bilbo/.claude-plugin/plugin.json` sets no version, so Claude Code
    follows commits.
-2. Merge through a pull request.
-3. Tag the commit on `main` that carries the bump `v<version>` and push the
+2. Record the L1 baseline: build the release binary (`cargo build --release --locked`), run the test split once
+   with `llama-server` and the pinned GGUF, commit `evals/l1-retrieval/baseline/<version>.json` and `.md` in the bump
+   pull request, and `diff` it against the previous baseline (commands in `evals/l1-retrieval/README.md`).
+3. Merge through a pull request.
+4. Tag the commit on `main` that carries the bump `v<version>` and push the
    tag; the release workflow publishes the GitHub Release. Push only
    `v<version>` tags: the generated trigger also accepts `<version>` and
    `bilbo-v<version>`, and either would publish a second release.
