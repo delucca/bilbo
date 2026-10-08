@@ -41,43 +41,8 @@ https://github.com/user-attachments/assets/a4969ef2-599c-4aa6-8111-fbcc8b852077
 In your own work, notes like that one come from earlier sessions: you tell the
 agent to note a fix, and it saves one. You can also ask "What did we decide
 about the database layer?" and have it search the notes.
-
-<details>
-<summary>See both sessions step by step, with the note the agent receives</summary>
-
-Lines starting with `You:` are what you type, `Hook:` is what the plugin's
-prompt hook adds before the agent sees your prompt, and `Agent:` is what the
-agent does on its own. The agent's wording is illustrative; the `Hook:` text is
-real `bilbo digest` output.
-
-```text
-Session 1
-
-You:   The tests deadlock when two writers share one SQLite file. Fixed it
-       with a busy timeout. Note this as a gotcha.
-Agent: (note skill) Runs `bilbo recall` for an existing note on the subject,
-       finds none, runs `bilbo new gotcha sqlite-busy-timeout`, writes the
-       Markdown, then runs `bilbo check`.
-       Saved /Users/me/.local/share/bilbo/notes/gotcha-sqlite-busy-timeout.md
-```
-
-A day later, in a new session, the plugin's prompt hook runs `bilbo digest` on
-every prompt and hands the agent the notes that bear on it:
-
-```text
-Session 2
-
-You:   Why does our SQLite test suite fail with "database is locked"?
-Hook:  <!-- bilbo digest: 1 of 1 notes -->
-       Notes that may bear on this prompt (open the file to read more):
-       - /Users/me/.local/share/bilbo/notes/gotcha-sqlite-busy-timeout.md:11 (gotcha, 2026-10-06T14:39-03:00) SQLite needs a busy timeout > Fix: Set `busy_timeout = 5000` right after opening the connection.
-Agent: Last time this was a missing busy timeout. Let me check your setup.
-
-You:   What else did we decide about the database layer?
-Agent: (recall skill) Runs `bilbo recall database layer` and shows the hits.
-```
-
-</details>
+[Getting started](docs/getting-started.md#5-see-your-agent-use-it) shows the
+text the hook hands the agent.
 
 ## Install
 
