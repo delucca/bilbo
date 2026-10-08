@@ -192,7 +192,7 @@ def test_the_prompt_shows_the_view_not_the_first_3000_characters(ds, fake_llm, b
     script(fake_llm, ds, {"q-alpha-001": {nid: None}}, quote={("q-alpha-001", nid): LATE})
     run(ds, bilbo_bin)
     prompt = next(c["prompt"] for c in fake_llm.calls() if "Item: q-alpha-001\n" in c["prompt"])
-    assert LATE in prompt and f"=== {nid} ===\nTitle: " in prompt
+    assert LATE in prompt and "=== c01 ===\nTitle: " in prompt
     row = next(j for j in judgments(ds) if j["item"] == "q-alpha-001" and j["candidate"] == nid)
     assert row["answers"] is True and row["quote_found"] is True
 
@@ -701,7 +701,7 @@ def test_a_judgment_goes_back_to_pending_when_its_note_text_changed(ds, fake_llm
     run(ds, bilbo_bin)
     calls = fake_llm.calls()
     assert len(calls) == made + len({j["item"] for j in judgments(ds) if j["candidate"] == row["candidate"]})
-    assert all("Item: q-alpha-001\n" in c["prompt"] or row["candidate"] in c["prompt"] for c in calls[made:])
+    assert any("Item: q-alpha-001\n" in c["prompt"] for c in calls[made:])
     new = next(j for j in judgments(ds) if j["item"] == "q-alpha-001" and j["candidate"] == row["candidate"])
     assert new["note_sha256"] == sha(dataset.load(ds).notes[row["candidate"]].text) != row["note_sha256"]
     sup = [r["row"] for r in read_jsonl(ds / "generation/pool/superseded.jsonl") if r["file"] == "judgments.jsonl"]
@@ -874,3 +874,59 @@ def test_a_rewrite_request_survives_a_note_edit(ds, fake_llm, bilbo_bin, ranked)
     run(ds, bilbo_bin)
     audit_done(ds)
     assert f"{ITEM} {cid}: rewrite asked; edit the item, then run pool" in dataset.pool_open_items(ds)
+
+
+# --- short local candidate ids --------------------------------------------------------------------------------------
+
+def test_the_judge_sees_short_local_ids_and_the_output_maps_back(ds, fake_llm, bilbo_bin, ranked, monkeypatch):
+    seed_candidates(ds, ranked)
+    loaded = dataset.load(ds)
+    item = next(it for it in pool.pooled_items(loaded, "dev") if it["id"] == ITEM)
+    cands = next(r for r in ranked["rows"] if r["item"] == ITEM)["candidates"]
+    seed = llm.load_config(ds).seed
+    mapping = pool.local_ids(item, cands, seed)
+    assert list(mapping) == [f"c{n:02d}" for n in range(1, len(cands) + 1)] and sorted(mapping.values()) == sorted(c["id"] for c in cands)
+    prompt = pool.build_prompt(loaded, item, cands, seed)
+    assert all(f"=== {lid} ===" in prompt for lid in mapping) and not any(f"=== {c['id']} ===" in prompt for c in cands)
+    yes = next(iter(mapping))
+    rules = [{"match": f"Item: {r['item']}\n", "output": {"judgments": [
+        {"id": lid, "answers": False, "completes_set": None, "passage": None}
+        for lid in pool.local_ids(next(i for i in pool.pooled_items(loaded, "dev") if i["id"] == r["item"]), r["candidates"], seed)]}}
+        for r in ranked["rows"] if r["item"] != ITEM]
+    rules.append({"match": f"Item: {ITEM}\n", "output": {"judgments": [
+        {"id": lid, "answers": lid == yes, "completes_set": None,
+         "passage": first_line(loaded, mapping[lid]) if lid == yes else None} for lid in mapping]}})
+    fake_llm.set_script(rules)
+    run(ds, bilbo_bin)
+    mine = [j for j in judgments(ds) if j["item"] == ITEM]
+    assert sorted(j["candidate"] for j in mine) == sorted(c["id"] for c in cands)
+    assert [j["candidate"] for j in mine if j["answers"]] == [mapping[yes]] and all(j["quote_found"] for j in mine if j["answers"])
+    record = next(r for r in read_jsonl(ds / "generation/pool/records.jsonl") if r["call_id"] == ITEM)
+    assert record["ids"] == "local" and record["local_ids"] == mapping
+    assert sha(pool.rebuild_prompt(loaded, record)) == record["prompt_sha256"]
+
+
+def test_local_ids_keep_candidates_with_long_shared_prefixes_apart(ds, monkeypatch):
+    loaded = dataset.load(ds)
+    item = next(it for it in pool.pooled_items(loaded, "dev") if it["id"] == ITEM)
+    cands = [{"id": f"01KSAAAAAAAAAAAAAAAAAAAA{n:02d}"} for n in range(12)]
+    monkeypatch.setattr(pool, "_view", lambda d, c, q: f"text of {c['id']}")
+    check = pool.valid_output({c["id"] for c in cands}, 0, pool.local_ids(item, cands, 1))
+    mapping = pool.local_ids(item, cands, 1)
+    good = {"judgments": [{"id": lid, "answers": False, "completes_set": None, "passage": None} for lid in mapping]}
+    assert check(ITEM, good) is None
+    repeated = {"judgments": [*good["judgments"][:-1], good["judgments"][0]]}
+    assert check(ITEM, repeated) is not None
+    assert check(ITEM, {"judgments": [{**j, "id": mapping[j["id"]]} for j in good["judgments"]]}) is None  # an old output
+
+
+def test_a_rebuild_matches_both_the_old_and_the_new_form_of_a_record(ds, ranked):
+    seed_candidates(ds, ranked)
+    loaded = dataset.load(ds)
+    item = next(it for it in pool.pooled_items(loaded, "dev") if it["id"] == ITEM)
+    cands = next(r for r in ranked["rows"] if r["item"] == ITEM)["candidates"]
+    new = pool.call_record(loaded, item, cands, 7, ITEM, pool.build_prompt(loaded, item, cands, 7, ITEM))
+    assert new["ids"] == "local" and sha(pool.rebuild_prompt(loaded, new)) == new["prompt_sha256"]
+    old_prompt = pool.build_prompt(loaded, item, cands, 7, ITEM, local=False)
+    old = {k: v for k, v in new.items() if k not in ("ids", "local_ids")} | {"prompt_sha256": sha(old_prompt)}
+    assert sha(pool.rebuild_prompt(loaded, old)) == sha(old_prompt) != new["prompt_sha256"]
