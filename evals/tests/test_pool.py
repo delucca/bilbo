@@ -636,3 +636,94 @@ def test_apply_reports_the_unreviewed_audit_count(ds, fake_llm, bilbo_bin, ranke
     capsys.readouterr()
     assert applied(ds, bilbo_bin) == 1
     assert f"audit: {pool.AUDIT_MIN} sampled noes have no reviewer verdict" in capsys.readouterr().out
+
+
+# --- one call per item, rebuildable prompts, judgments bound to the note ---------------------------------------------
+
+def test_an_item_of_thirty_candidates_at_the_view_cap_is_one_call(ds, monkeypatch):
+    loaded = dataset.load(ds)
+    item = next(it for it in pool.pooled_items(loaded, "dev") if it["id"] == "q-alpha-001")
+    cands = [{"id": f"n{n:02d}"} for n in range(30)]
+    monkeypatch.setattr(pool, "_view", lambda d, c, q: "x" * pool.VIEW_CHARS)
+    groups = pool.chunks(loaded, item, cands, 1)
+    assert len(groups) == 1 and len(groups[0]) == 30
+    assert pool.call_ids(item, len(groups)) == ["q-alpha-001"]
+    monkeypatch.setattr(pool, "_view", lambda d, c, q: "x" * (pool.PROMPT_CHARS // 2 + 1))
+    assert len(pool.chunks(loaded, item, cands[:2], 1)) == 2
+
+
+def pool_calls(ds: Path) -> dict[str, str]:
+    return {r["item"]: r["prompt_sha256"] for r in read_jsonl(ds / "generation/calls.jsonl")
+            if r["step"] == "pool" and r["status"] == "ok"}
+
+
+def test_a_pool_prompt_is_rebuilt_from_its_record_after_pool_apply_changed_the_evidence(ds, fake_llm, bilbo_bin, ranked):
+    seed_candidates(ds, ranked)
+    cid = next(r for r in ranked["rows"] if r["item"] == MULTI)["candidates"][0]["id"]
+    script(fake_llm, ds)
+    run(ds, bilbo_bin)
+    records = {r["call_id"]: r for r in read_jsonl(ds / "generation/pool/records.jsonl")}
+    assert set(records) == set(pool_calls(ds)) and records[MULTI]["template"] == "pool.md"
+    assert records[MULTI]["template_sha256"] == sha((Path(pool.__file__).parent / "generate/templates/pool.md").read_text(encoding="utf-8"))
+    resolve(ds, (MULTI, cid, "add-evidence", 0))
+    applied(ds, bilbo_bin)
+    loaded = dataset.load(ds)
+    assert cid in next(q for q in loaded.queries if q["id"] == MULTI)["evidence_sets"][0]
+    item = next(it for it in pool.pooled_items(loaded, "dev") if it["id"] == MULTI)
+    naive = pool.build_prompt(loaded, item, next(r for r in ranked["rows"] if r["item"] == MULTI)["candidates"], llm.load_config(ds).seed)
+    assert sha(naive) != pool_calls(ds)[MULTI]
+    for call_id, record in records.items():
+        assert sha(pool.rebuild_prompt(loaded, record)) == pool_calls(ds)[call_id]
+
+
+def test_a_rebuild_refuses_a_template_that_changed(ds, fake_llm, bilbo_bin, ranked):
+    seed_candidates(ds, ranked)
+    script(fake_llm, ds)
+    run(ds, bilbo_bin)
+    record = read_jsonl(ds / "generation/pool/records.jsonl")[0]
+    with pytest.raises(Refused, match="template"):
+        pool.rebuild_prompt(dataset.load(ds), {**record, "template_sha256": "0" * 64})
+
+
+def test_a_judgment_goes_back_to_pending_when_its_note_text_changed(ds, fake_llm, bilbo_bin, ranked):
+    seed_candidates(ds, ranked)
+    script(fake_llm, ds)
+    run(ds, bilbo_bin)
+    audit_done(ds)
+    row = next(j for j in judgments(ds) if j["item"] == "q-alpha-001")
+    loaded = dataset.load(ds)
+    assert row["note_sha256"] == sha(loaded.notes[row["candidate"]].text)
+    assert not [line for line in dataset.pool_open_items(ds) if "not judged" in line]
+    path = ds / "store/notes" / loaded.notes[row["candidate"]].file
+    path.write_text(path.read_text(encoding="utf-8") + "\nA line added in review.\n", encoding="utf-8")
+    assert f"q-alpha-001 {row['candidate']}: not judged; run pool" in dataset.pool_open_items(ds)
+    made = len(fake_llm.calls())
+    run(ds, bilbo_bin)
+    calls = fake_llm.calls()
+    assert len(calls) == made + len({j["item"] for j in judgments(ds) if j["candidate"] == row["candidate"]})
+    assert all("Item: q-alpha-001\n" in c["prompt"] or row["candidate"] in c["prompt"] for c in calls[made:])
+    new = next(j for j in judgments(ds) if j["item"] == "q-alpha-001" and j["candidate"] == row["candidate"])
+    assert new["note_sha256"] == sha(dataset.load(ds).notes[row["candidate"]].text) != row["note_sha256"]
+    sup = [r["row"] for r in read_jsonl(ds / "generation/pool/superseded.jsonl") if r["file"] == "judgments.jsonl"]
+    assert row in sup
+    assert not [line for line in dataset.pool_open_items(ds) if "not judged" in line]
+
+
+def test_a_multi_hop_judgment_goes_back_to_pending_when_an_evidence_note_changed(ds, fake_llm, bilbo_bin, ranked):
+    seed_candidates(ds, ranked)
+    script(fake_llm, ds)
+    run(ds, bilbo_bin)
+    loaded = dataset.load(ds)
+    evidence = sorted({i for ev in next(q for q in loaded.queries if q["id"] == MULTI)["evidence_sets"] for i in ev})
+    record = next(r for r in read_jsonl(ds / "generation/pool/records.jsonl") if r["item"] == MULTI)
+    assert record["evidence_sha256"] == {i: sha(loaded.notes[i].text) for i in evidence}
+    assert all(j["evidence_sha256"] == record["evidence_sha256"] for j in judgments(ds) if j["item"] == MULTI)
+    path = ds / "store/notes" / loaded.notes[evidence[0]].file
+    path.write_text(path.read_text(encoding="utf-8") + "\nA line added in review.\n", encoding="utf-8")
+    assert any(line.startswith(f"{MULTI} ") and "not judged" in line for line in dataset.pool_open_items(ds))
+    made = len(fake_llm.calls())
+    run(ds, bilbo_bin)
+    assert any(f"Item: {MULTI}\n" in c["prompt"] for c in fake_llm.calls()[made:])
+    sup = [r for r in read_jsonl(ds / "generation/pool/superseded.jsonl") if r["row"]["item"] == MULTI]
+    assert {r["file"] for r in sup} >= {"judgments.jsonl", "records.jsonl"}
+    assert not [line for line in dataset.pool_open_items(ds) if line.startswith(f"{MULTI} ") and "not judged" in line]

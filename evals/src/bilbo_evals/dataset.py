@@ -409,7 +409,7 @@ def pool_open_items(dir: Path) -> list[str]:
     resolved = {(r["item"], r["candidate"]): r for r in _pool(dir, "resolutions.jsonl") if r["item"] in ids}
     applied = {(r["item"], r["candidate"]) for r in _pool(dir, "applied.jsonl")}
     open_items = []
-    judged_now = {(r["item"], r["candidate"]) for r in judgments if r.get("text_sha256") == shas[r["item"]]}
+    judged_now = {(r["item"], r["candidate"]) for r in judgments if pool.is_current(ds, r, shas)}
     for it in items:
         row = cands.get(it["id"])
         if row is None or row.get("text_sha256") != shas[it["id"]]:
@@ -443,7 +443,7 @@ def pool_open_items(dir: Path) -> list[str]:
     if unreviewed:
         open_items.append(f"audit: {unreviewed} sampled noes have no reviewer verdict")
     for split in schema.SPLITS:
-        noes = pool.current_noes([i for i in items if i["split"] == split], cands, judgments)
+        noes = pool.current_noes(ds, [i for i in items if i["split"] == split], cands, judgments)
         if noes is None:
             continue
         ids_ = {(j["item"], j["candidate"]) for j in noes}
