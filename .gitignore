@@ -2,3 +2,8 @@
 /result
 /.claude/settings.local.json
 /openspec/changes/archive/
+/evals/runs/
+/evals/.venv/
+/evals/.cache/
+/evals/**/__pycache__/
+/evals/.pytest_cache/

@@ -1,0 +1,40 @@
+seed = 20261007
+max_calls = 3500
+concurrency = 4
+
+[renderer]
+cli = "claude"
+model = "claude-sonnet-5-5"
+
+[query_model]
+cli = "codex"
+model = "gpt-6.1-sol"
+reasoning_effort = "low"
+
+[world]
+projects = 14
+dev_projects = 6
+notes = 600
+filler_share = 0.30
+max_test_note_queries = 450     # facts plants enough supersession, multi-hop, kind and alias structure for this test size
+
+[library]
+corpus = "sqlite"
+pages = 60
+
+[strata.dev]                    # dev counts, design decision 5
+known-item = 20
+paraphrase = 30
+pt-en = 25
+alias = 20
+supersession = 20
+multi-hop = 20
+kind-filter = 20
+library = 20
+no-answer = 10
+
+[prompts.dev]
+positive = 100
+noise = 40
+off-topic = 40
+near-miss = 40

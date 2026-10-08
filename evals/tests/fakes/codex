@@ -1,0 +1,41 @@
+#!/usr/bin/env python3
+"""Fake `codex exec`: --json events, output written to the -o file, driven by $FAKE_LLM_SCRIPT."""
+
+import json
+import sys
+
+import fakellm
+
+if "--version" in sys.argv:
+    print("fake 0.0.0")
+    sys.exit(0)
+
+argv = sys.argv[1:]
+out_file = argv[argv.index("-o") + 1] if "-o" in argv else None
+prompt = sys.stdin.read()
+fakellm.log_call(prompt)
+rule = fakellm.pick_rule(prompt)
+if rule is None:
+    print("fake codex: no rule matches the prompt", file=sys.stderr)
+    sys.exit(3)
+
+code = int(rule.get("exit", 0))
+if rule.get("rate_limit"):
+    print("ERROR: You've hit your usage limit. Try again later.", file=sys.stderr)
+    print(json.dumps({"type": "error", "message": "usage limit reached"}))
+    sys.exit(code or 1)
+
+text = json.dumps(rule.get("output", {}))
+events = [{"type": "thread.started", "thread_id": "fake-thread"}, {"type": "turn.started"}]
+if rule.get("leak") == "tool_use":
+    events.append({"type": "item.completed", "item": {
+        "id": "item_0", "type": "command_execution", "command": "cat AGENTS.md",
+        "aggregated_output": "", "exit_code": 0, "status": "completed"}})
+events.append({"type": "item.completed", "item": {"id": "item_1", "type": "agent_message", "text": text}})
+events.append({"type": "turn.completed", "usage": {"input_tokens": 10, "cached_input_tokens": 0, "output_tokens": 5}})
+for e in events:
+    print(json.dumps(e))
+if out_file and code == 0:
+    with open(out_file, "w", encoding="utf-8") as f:
+        f.write(text)
+sys.exit(code)

@@ -1,0 +1,27 @@
+{
+  "dev": [
+    "alpha"
+  ],
+  "library": {
+    "dev": [
+      "demo/wal"
+    ],
+    "test": [
+      "demo/busy"
+    ]
+  },
+  "none_prompts": {
+    "dev": [
+      "p-none-001",
+      "p-none-002"
+    ],
+    "test": [
+      "p-none-003",
+      "p-none-004"
+    ]
+  },
+  "seed": 20261007,
+  "test": [
+    "beta"
+  ]
+}

@@ -641,6 +641,8 @@
               pkgs.clippy
               pkgs.rustfmt
               nixpkgs-unstable.legacyPackages.${system}.cargo-dist
+              pkgs.uv
+              pkgs.ripgrep
             ];
           };
         }

@@ -1,0 +1,154 @@
+{
+  "project_list": {
+    "type": "object",
+    "required": [
+      "projects"
+    ],
+    "additionalProperties": false,
+    "properties": {
+      "projects": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "required": [
+            "slug",
+            "name",
+            "summary",
+            "technologies"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "slug": {
+              "type": "string"
+            },
+            "name": {
+              "type": "string"
+            },
+            "summary": {
+              "type": "string"
+            },
+            "technologies": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "project": {
+    "type": "object",
+    "required": [
+      "components",
+      "candidate_facts"
+    ],
+    "additionalProperties": false,
+    "properties": {
+      "components": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "required": [
+            "slug",
+            "name",
+            "aliases"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "slug": {
+              "type": "string"
+            },
+            "name": {
+              "type": "string"
+            },
+            "aliases": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "required": [
+                  "alias",
+                  "type"
+                ],
+                "additionalProperties": false,
+                "properties": {
+                  "alias": {
+                    "type": "string"
+                  },
+                  "type": {
+                    "type": "string",
+                    "enum": [
+                      "old-name",
+                      "codename",
+                      "abbreviation"
+                    ]
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "candidate_facts": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "required": [
+            "key",
+            "component",
+            "kind",
+            "statement",
+            "verbatim",
+            "replaces",
+            "source"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "key": {
+              "type": "string"
+            },
+            "component": {
+              "type": "string"
+            },
+            "kind": {
+              "type": "string",
+              "enum": [
+                "plan",
+                "spec",
+                "design",
+                "decision",
+                "gotcha",
+                "research",
+                "review",
+                "report",
+                "reference"
+              ]
+            },
+            "statement": {
+              "type": "string"
+            },
+            "verbatim": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "replaces": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "source": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        }
+      }
+    }
+  }
+}

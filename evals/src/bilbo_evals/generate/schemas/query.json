@@ -1,0 +1,9 @@
+{
+  "type": "object",
+  "properties": {
+    "query": {"type": "string"},
+    "lang": {"type": "string", "enum": ["en", "pt"]}
+  },
+  "required": ["query", "lang"],
+  "additionalProperties": false
+}

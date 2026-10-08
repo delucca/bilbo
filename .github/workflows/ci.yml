@@ -72,3 +72,30 @@ jobs:
 
       - name: Evaluate aarch64-darwin
         run: nix eval --raw .#packages.aarch64-darwin.default.drvPath
+
+  evals:
+    name: evals
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31.11.1
+
+      - uses: nix-community/cache-nix-action@7df957e333c1e5da7721f60227dbba6d06080569 # v7.0.2
+        with:
+          primary-key: nix-evals-${{ runner.os }}-${{ hashFiles('flake.nix', 'flake.lock', 'Cargo.toml', 'Cargo.lock') }}
+          restore-prefixes-first-match: nix-evals-${{ runner.os }}-
+          save: ${{ github.ref == 'refs/heads/main' }}
+          gc-max-store-size-linux: 0
+
+      - name: Build bilbo
+        run: nix develop -c cargo build --locked
+
+      - name: Install the harness
+        run: nix develop -c uv --directory evals sync --locked
+
+      - name: Test the harness
+        run: BILBO_BIN="$PWD/target/debug/bilbo" nix develop -c uv --directory evals run pytest

@@ -1,0 +1,20 @@
+{
+  "type": "object",
+  "required": [
+    "keep",
+    "guide_entry",
+    "name"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "keep": {
+      "type": "string"
+    },
+    "guide_entry": {
+      "type": "string"
+    },
+    "name": {
+      "type": "string"
+    }
+  }
+}

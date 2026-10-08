@@ -1,0 +1,47 @@
+{
+  "projects": [
+    {
+      "candidate_facts": [],
+      "components": [
+        {
+          "aliases": [
+            {
+              "alias": "Lantern",
+              "type": "old-name"
+            }
+          ],
+          "name": "edge-cache",
+          "slug": "edge-cache"
+        }
+      ],
+      "name": "Alpha",
+      "slug": "alpha",
+      "summary": "Invented sync service.",
+      "technologies": [
+        "Go"
+      ]
+    },
+    {
+      "candidate_facts": [],
+      "components": [
+        {
+          "aliases": [
+            {
+              "alias": "Conveyor",
+              "type": "old-name"
+            }
+          ],
+          "name": "importer",
+          "slug": "importer"
+        }
+      ],
+      "name": "Beta",
+      "slug": "beta",
+      "summary": "Invented importer.",
+      "technologies": [
+        "PostgreSQL"
+      ]
+    }
+  ],
+  "seed": 20261007
+}

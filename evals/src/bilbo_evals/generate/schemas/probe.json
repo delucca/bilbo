@@ -1,0 +1,19 @@
+{
+  "type": "object",
+  "required": [
+    "user_instructions_first_heading",
+    "mcp_tools"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "user_instructions_first_heading": {
+      "type": "string"
+    },
+    "mcp_tools": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    }
+  }
+}

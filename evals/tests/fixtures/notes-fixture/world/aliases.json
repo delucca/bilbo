@@ -1,0 +1,22 @@
+[
+  {
+    "alias": "Lantern",
+    "bridge_notes": [
+      "01KG0EYAP0K7JQTSB9FZP0SEK3"
+    ],
+    "canonical": "edge-cache",
+    "component": "edge-cache",
+    "project": "alpha",
+    "type": "old-name"
+  },
+  {
+    "alias": "Conveyor",
+    "bridge_notes": [
+      "01KG7TZDX0XPPTK6KPTBWTREZ2"
+    ],
+    "canonical": "importer",
+    "component": "importer",
+    "project": "beta",
+    "type": "old-name"
+  }
+]
