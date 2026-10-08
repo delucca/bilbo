@@ -74,6 +74,17 @@ appended to `test-runs.jsonl`.
 7. Write the dataset README, `dataset freeze`, `dataset verify`.
 8. The baseline run on the test split.
 
+Pooling notes:
+
+- An unquoted yes (the quote is not in the text shown, after folding whitespace and Markdown emphasis) counts as a no
+  until it has a resolution, like any other yes. `freeze` refuses while one is open.
+- A `rewrite` resolution means editing the item's text and running `pool` again; `pool` sets the old rows aside and
+  judges the item anew.
+- Each split's noes get their own audit sample, so pool the test split too before `freeze`.
+- `dataset check` fails when the test split holds fewer queries than `preregistration.json` asks for a stratum. The fix
+  is to rerun generation with more facts.
+- `--dataset` for `l1 run` and `l1 digest` must be inside `evals/`.
+
 A frozen dataset is never regenerated or edited. A change is a new version (`v2`).
 
 ## Compare a release with the baseline

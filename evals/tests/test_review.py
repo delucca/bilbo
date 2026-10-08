@@ -204,3 +204,16 @@ def test_apply_refuses_a_frozen_dataset(fixture_copy):
 def test_the_committed_sheet_passes_the_check(fixture_dir, capsys):
     assert cli.main(["review", "check", "--dataset", str(fixture_dir)]) == 0
     assert capsys.readouterr().out.strip() == "40/40 valid (100.0%)"
+
+
+def test_check_names_a_dropped_item_still_in_the_dataset_until_apply(draft, capsys):
+    review.sample(draft, "all")
+    rows = mark(sheet(draft), 40, 0, None)
+    for r in rows:
+        if r["item"] == "q-alpha-005":
+            r.update(verdict="invalid", reason="ambiguous", resolution="dropped")
+    write_jsonl(draft / SHEET, rows)
+    assert cli.main(["review", "check", "--dataset", str(draft)]) == 1
+    assert "open: q-alpha-005 dropped but still in the dataset; run review apply" in capsys.readouterr().out
+    assert cli.main(["review", "apply", "--dataset", str(draft)]) == 0
+    assert review.evaluate(draft, "all")[1] == []

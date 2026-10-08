@@ -123,7 +123,8 @@ def test_a_dev_run_writes_one_folder_per_arm(live, capsys):
     for arm in ARMS:
         meta = json.loads((run / arm / "run.json").read_text())
         assert (meta["schema_version"], meta["layer"], meta["arm"], meta["split"], meta["draft"]) == (1, "L1", arm, "dev", False)
-        assert meta["dataset"] == {"name": "fixture", "version": "v1", "tree_hash": (live.ds / "FROZEN").read_text().strip()}
+        assert meta["dataset"] == {"name": "fixture", "version": "v1", "tree_hash": (live.ds / "FROZEN").read_text().strip(),
+                                 "path": "datasets/fixture/v1"}
         assert results.check_files(run / arm) == []
         rows = rows_of(run, arm)
         per_item = 20 if arm == "random" else 1
@@ -176,9 +177,9 @@ def test_run_json_records_identity_embedder_and_folders(live):
     assert full["parity"] == "ok" and full["index"]["embedded"] > 0
     assert full["bilbo_config"] == {"embedder.model": "qwen3-embedding-0.6b"}
     assert keyword["embedder"] is None and keyword["parity"] is None and keyword["bilbo_config"] == {}
-    assert full["root"].startswith(str(live.base / "tmp"))
+    assert full["root"] == "$TMPDIR/bilbo-evals-r1"
     assert set(full["folders"]) == {"store", "config", "cache", "state"}
-    assert all(Path(p).resolve().is_relative_to(Path(full["root"]).resolve()) for p in full["folders"].values())
+    assert all(p.startswith(full["root"] + "/") for p in full["folders"].values())
     assert set(full["versions"]) >= {"python", "bilbo_evals", "ir_measures", "bm25s", "PyStemmer", "numpy", "ripgrep", "llama_server"}
     assert set(full["host"]) == {"platform", "machine", "cpu"}
     assert full["started"] <= full["ended"]
@@ -313,3 +314,72 @@ def test_a_second_run_with_the_same_id_is_refused(live):
 def test_unknown_arms_are_a_usage_error(live):
     with pytest.raises(common.UsageError, match="nope"):
         runner.cmd_run(run_args(live, arms="ripgrep,nope"))
+
+
+def test_no_expanded_tmpdir_in_a_run_folder(live, monkeypatch):
+    tmp = live.base / "home/tmp"
+    tmp.mkdir(parents=True)
+    monkeypatch.setenv("TMPDIR", str(tmp))
+    runner.cmd_run(run_args(live, run_id="r1", keep_root=True))
+    run = live.runs / "r1"
+    text = "".join(p.read_text() for p in run.rglob("*") if p.is_file())
+    assert str(Path.home()) not in text
+    assert dataset._home_problems(run) == []
+    for arm in ARMS:
+        meta = json.loads((run / arm / "run.json").read_text())
+        assert meta["root"] == "$TMPDIR/bilbo-evals-r1"
+        assert all(p.startswith("$TMPDIR/bilbo-evals-r1/") for p in meta["folders"].values())
+
+
+def test_a_run_records_its_dataset_folder_and_report_finds_it(live):
+    elsewhere = live.base / "elsewhere/ds"
+    elsewhere.parent.mkdir()
+    live.ds.rename(elsewhere)
+    live.ds = elsewhere
+    assert runner.cmd_run(run_args(live, arms="ripgrep", run_id="r1")) == 0
+    meta = json.loads((live.runs / "r1/ripgrep/run.json").read_text())
+    assert meta["dataset"]["path"] == "elsewhere/ds"
+    assert results.report(live.runs / "r1")
+
+
+def test_a_dataset_outside_evals_is_refused_and_nothing_is_written(live, tmp_path_factory):
+    outside = tmp_path_factory.mktemp("outside") / "ds"
+    shutil.copytree(live.ds, outside)
+    with pytest.raises(common.Refused, match="inside evals/"):
+        runner.cmd_run(run_args(live, arms="ripgrep", run_id="r1", dataset=outside))
+    assert not (live.runs / "r1").exists()
+
+
+def test_rank_all_refuses_an_arm_error(live, monkeypatch):
+    real = arms_pkg.get("ripgrep")
+
+    class Broken:
+        def prepare(self, ctx):
+            return real.prepare(ctx)
+
+        def rank(self, item, ctx):
+            if item["id"] == first:
+                return arms_pkg.Result([], error="exit 101: boom")
+            return real.rank(item, ctx)
+
+    first = next(q["id"] for q in common.read_jsonl(live.ds / "queries.jsonl") if q["split"] == "dev")
+    monkeypatch.setattr(arms_pkg, "get", lambda name: Broken())
+    with pytest.raises(common.Refused, match=rf"ripgrep {first}: exit 101: boom"):
+        runner.rank_all(live.ds, "dev", ["ripgrep"], BILBO, None, None)
+
+
+def test_rank_all_refuses_a_fallback(live, monkeypatch):
+    real = arms_pkg.get("ripgrep")
+
+    class Fell:
+        def prepare(self, ctx):
+            return real.prepare(ctx)
+
+        def rank(self, item, ctx):
+            r = real.rank(item, ctx)
+            r.fallback = True
+            return r
+
+    monkeypatch.setattr(arms_pkg, "get", lambda name: Fell())
+    with pytest.raises(common.Refused, match="ripgrep .*: fallback"):
+        runner.rank_all(live.ds, "dev", ["ripgrep"], BILBO, None, None)

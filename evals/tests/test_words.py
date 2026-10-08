@@ -73,3 +73,15 @@ def test_a_small_corpus_keeps_a_floor_of_one_document():
     df = Counter({w.stem("checkpoint", "en"): 1, w.stem("database", "en"): 2})
     got = w.distinctive("checkpoint database", "en", df, 12)
     assert got == {w.stem("checkpoint", "en")}
+
+
+def test_distinctive_is_under_two_percent_not_up_to_it():
+    stem = w.stem("checkpoint", "en")
+    assert stem not in w.distinctive("checkpoint", "en", Counter({stem: 12}), 600)
+    assert stem in w.distinctive("checkpoint", "en", Counter({stem: 11}), 600)
+
+
+def test_distinctive_keeps_a_floor_of_one_note_on_tiny_corpora():
+    stem = w.stem("checkpoint", "en")
+    assert stem in w.distinctive("checkpoint", "en", Counter({stem: 1}), 12)
+    assert stem not in w.distinctive("checkpoint", "en", Counter({stem: 2}), 12)

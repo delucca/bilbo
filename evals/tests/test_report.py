@@ -170,11 +170,21 @@ def test_the_principal_test_and_the_random_floor_by_hand(env):
     assert principal[1] == "principal" and principal[2] == "7"
     assert principal[5] == "+1.000 [+1.000, +1.000]"
     assert principal[6] == "0.1250" and principal[7] == "-"
-    assert stats["ripgrep"][1] == "secondary" and stats["ripgrep"][6] == "0.1250" and stats["ripgrep"][7] == "0.2500"
+    assert stats["ripgrep"][1] == "secondary" and stats["ripgrep"][6] == "0.1250" and stats["ripgrep"][7] == "0.5000"
     floor = stats["random"]
     assert floor[3] == "1.000" and floor[4] == "0.500" and floor[5] == "+0.500 [+0.500, +0.500]"
-    assert floor[6] == "0.1250" and floor[7] == "0.2500"
+    assert floor[6] == "0.1250" and floor[7] == "0.5000"
     assert "exploratory" not in text
+    assert "Holm family: bilbo-keyword, ripgrep, dense-ref, random; not in this run (p = 1): bilbo-keyword, dense-ref" in text
+
+
+def test_the_holm_family_is_the_preregistered_one_even_when_arms_are_missing(env):
+    run = synth(env, "t1", {"bilbo-full": 1.0, "bm25-ref": 0.0, "ripgrep": 0.0})
+    text = results.report(run)
+    stats = {r[0]: r for r in table(text, "Paired statistics")}
+    p = float(stats["ripgrep"][6])
+    assert float(stats["ripgrep"][7]) == pytest.approx(min(1.0, 4 * p), abs=5e-5)
+    assert "Holm family: bilbo-keyword, ripgrep, dense-ref, random; not in this run (p = 1): bilbo-keyword, dense-ref, random" in text
 
 
 def test_a_test_report_counts_earlier_runs(env):

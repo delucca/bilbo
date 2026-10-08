@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import fcntl
 import json
 import os
 import re
@@ -180,15 +181,20 @@ class VectorCache:
             self._load()
 
     def _load(self) -> None:
-        data = self._file.read_bytes()
-        at = 0
-        while at + 36 <= len(data):
-            (dim,) = struct.unpack_from("<I", data, at + 32)
-            end = at + 36 + 4 * dim
-            if end > len(data):
-                break
-            self._vectors[data[at : at + 32]] = np.frombuffer(data, dtype="<f4", count=dim, offset=at + 36).copy()
-            at = end
+        """Read the whole records; a partial record at the end is cut off so later appends stay aligned."""
+        with open(self._file, "r+b") as f:
+            fcntl.flock(f, fcntl.LOCK_EX)
+            data = f.read()
+            at = 0
+            while at + 36 <= len(data):
+                (dim,) = struct.unpack_from("<I", data, at + 32)
+                end = at + 36 + 4 * dim
+                if end > len(data):
+                    break
+                self._vectors[data[at : at + 32]] = np.frombuffer(data, dtype="<f4", count=dim, offset=at + 36).copy()
+                at = end
+            if at < len(data):
+                f.truncate(at)
 
     @staticmethod
     def _key(text: str) -> bytes:
@@ -206,6 +212,7 @@ class VectorCache:
                 return
             self._vectors[key] = arr
             with open(self._file, "ab") as f:
+                fcntl.flock(f, fcntl.LOCK_EX)
                 f.write(key + struct.pack("<I", len(arr)) + arr.tobytes())
 
     def __len__(self) -> int:

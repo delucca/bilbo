@@ -33,9 +33,14 @@ CODEX_PROBE = (
     "first heading; if it holds none, answer exactly NONE.\n"
     "2. List the names of the MCP tools you can call; if you can call none, answer an empty list."
 )
-CLAUDE_PROBE = f"This is the {PROBE_MARK} (claude). Do not use any tool. Reply with the JSON object {{\"ok\": true}}."
+CLAUDE_PROBE = (
+    f"This is the {PROBE_MARK} (claude). Do not use any tool. Answer only from what is already in this session.\n"
+    "If the session holds instructions from a user or a project file (such as CLAUDE.md), give the text of their "
+    "first heading; if it holds none, answer exactly NONE."
+)
 CLAUDE_PROBE_SCHEMA = {
-    "type": "object", "required": ["ok"], "additionalProperties": False, "properties": {"ok": {"type": "boolean"}},
+    "type": "object", "required": ["user_instructions_first_heading"], "additionalProperties": False,
+    "properties": {"user_instructions_first_heading": {"type": "string"}},
 }
 CODEX_PROBE_SCHEMA = json.loads((Path(__file__).resolve().parent / "generate/schemas/probe.json").read_text(encoding="utf-8"))
 
@@ -70,6 +75,9 @@ class GenConfig:
     prompts: dict = field(default_factory=dict)
 
 
+CACHED_PROMPT_STEPS = frozenset({"pool"})
+
+
 @dataclass
 class Call:
     step: str
@@ -78,6 +86,11 @@ class Call:
     prompt: str
     schema: dict
     attempt: int = 1
+
+    @property
+    def prompt_in_cache(self) -> bool:
+        """A pool prompt is rebuilt from the frozen dataset and the templates: only its SHA-256 is committed."""
+        return self.step in CACHED_PROMPT_STEPS
 
 
 # --- config -----------------------------------------------------------------------------------------------------
@@ -137,6 +150,11 @@ def require_cli(name: str) -> str:
     if not found:
         raise Refused(f"`{name}` is missing: it is not on PATH")
     return found
+
+
+def cached_prompt_path(ds_dir: Path, prompt_sha: str) -> Path:
+    ds = Path(ds_dir).resolve()
+    return common.CACHE_DIR / "generation" / ds.parent.name / ds.name / "prompts" / f"{prompt_sha}.txt"
 
 
 def output_path(ds_dir: Path, step: str, item: str, attempt: int) -> Path:
@@ -464,6 +482,24 @@ def _codex_home(ds_dir: Path) -> Path:
         return home
 
 
+def _last_refresh(data: bytes) -> datetime | None:
+    try:
+        value = json.loads(data).get("last_refresh")
+        when = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except (ValueError, AttributeError, TypeError):
+        return None
+    return when if when.tzinfo else when.replace(tzinfo=timezone.utc)
+
+
+def _newer_login(data: bytes, target: Path) -> bool:
+    """Whether the worker's auth.json carries a later `last_refresh` than the real file (or the real one has none)."""
+    theirs = _last_refresh(data)
+    if theirs is None:
+        return False
+    mine = _last_refresh(target.read_bytes()) if target.exists() else None
+    return mine is None or theirs > mine
+
+
 def _sync_auth(home: Path, real: Path | None) -> str | None:
     """Codex may replace the link with a refreshed token; copy a valid newer file back and restore the link."""
     if real is None:
@@ -482,7 +518,11 @@ def _sync_auth(home: Path, real: Path | None) -> str | None:
             target = Path(os.path.realpath(real))
             if not valid:
                 note = "codex left an auth.json that is not a JSON object; the real one is untouched"
-            elif data != target.read_bytes():
+            elif target.exists() and data == target.read_bytes():
+                pass
+            elif not _newer_login(data, target):
+                note = "codex left an older auth.json; the real one is kept"
+            else:
                 mode = target.stat().st_mode & 0o777 if target.exists() else 0o600
                 tmp = target.with_name(f".{target.name}.{os.getpid()}.tmp")
                 fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, mode)
@@ -530,7 +570,7 @@ def _try(c: Call, ds_dir: Path, cfg: GenConfig, tries: int) -> tuple[str, dict |
     model, params = _model(c, cfg)
     outcome = _Outcome("error", message="the call raised before it finished")
     try:
-        _write_once(gen / "prompts" / f"{prompt_sha}.txt", c.prompt)
+        _write_once(cached_prompt_path(ds_dir, prompt_sha) if c.prompt_in_cache else gen / "prompts" / f"{prompt_sha}.txt", c.prompt)
         _write_once(gen / "schemas" / f"{schema_sha}.json", json.dumps(c.schema, indent=2, sort_keys=True) + "\n")
         start = time.monotonic()
         try:
@@ -554,18 +594,17 @@ def _try(c: Call, ds_dir: Path, cfg: GenConfig, tries: int) -> tuple[str, dict |
             raw = _raw_path(ds_dir, call_id, tries)
             raw.parent.mkdir(parents=True, exist_ok=True)
             raw.write_text(outcome.stdout, encoding="utf-8")
-        out_file = None
-        if outcome.status == "ok":
-            path = output_path(ds_dir, c.step, c.item, c.attempt)
-            write_json(path, outcome.output)
-            out_file = str(path.relative_to(gen))
+        path = output_path(ds_dir, c.step, c.item, c.attempt)
+        out_file = str(path.relative_to(gen)) if outcome.status == "ok" else None
         append_jsonl(gen / "calls.jsonl", {
             "call_id": call_id, "step": c.step, "item": c.item, "attempt": c.attempt, "cli": c.cli,
             "cli_version": _cli_version(c.cli), "model": model, "params": params, "prompt_sha256": prompt_sha,
-            "prompt_file": f"prompts/{prompt_sha}.txt", "schema_sha256": schema_sha, "output_file": out_file,
+            "prompt_file": None if c.prompt_in_cache else f"prompts/{prompt_sha}.txt", "schema_sha256": schema_sha, "output_file": out_file,
             "status": outcome.status, "duration_ms": duration, "tokens_in": outcome.tokens_in,
             "tokens_out": outcome.tokens_out, "time": common.now(), "try": tries,
         })
+        if out_file:
+            write_json(path, outcome.output)
     finally:
         with run.lock:
             run.inflight -= 1
@@ -635,9 +674,10 @@ def failed(results: dict) -> list[str]:
 
 
 def _preflight_row(ds_dir: Path, cli: str, step: str, status: str, reason: str | None, checks: list[str]) -> None:
+    home = str(Path.home())
     append_jsonl(Path(ds_dir) / "generation/preflight.jsonl", {
-        "cli": cli, "cli_version": _cli_version(cli), "step": step, "status": status, "reason": reason,
-        "checks": checks, "time": common.now(),
+        "cli": cli, "cli_version": _cli_version(cli), "step": step, "status": status,
+        "reason": reason.replace(home, "~") if reason and len(home) > 1 else reason, "checks": checks, "time": common.now(),
     })
 
 
@@ -652,8 +692,11 @@ def preflight(cli: str, ds_dir: Path, cfg: GenConfig, step: str = "") -> None:
     checks: list[str] = []
     try:
         if cli == "claude":
-            call(Call("preflight", item, "claude", CLAUDE_PROBE, CLAUDE_PROBE_SCHEMA), ds_dir, cfg)
-            checks.append("session init, hooks and rate limit read from the probe call")
+            answer = call(Call("preflight", item, "claude", CLAUDE_PROBE, CLAUDE_PROBE_SCHEMA), ds_dir, cfg)
+            heading = answer["user_instructions_first_heading"].strip().strip("`'\".").upper()
+            if heading != "NONE":
+                raise SessionLeak(f"the claude probe reports user instructions {answer['user_instructions_first_heading']!r}")
+            checks.append("session init, hooks and rate limit read from the probe call; it reports no user instructions")
         else:
             home = _codex_home(ds_dir)
             for entry in sorted(home.iterdir()):

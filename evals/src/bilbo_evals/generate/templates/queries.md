@@ -27,9 +27,9 @@ Project: $project_name ($project_summary)
 Component: $component
 Names the project uses for its components (alias table):
 $aliases
-Fact (written in $fact_lang_name): $statement
+Fact (stated in English): $statement
 
-The fact is in $fact_lang_name and the query must be in $lang_name. Ask for this fact in $lang_name, as a native speaker would, without translating word by word. If you name the component, use its current name "$component", never an alias. Keep a product, tool or error name only if a person would not translate it.
+The note is written in $fact_lang_name and the fact above is stated in English; the query must be in $lang_name. Ask for this fact in $lang_name, as a native speaker would, without translating word by word. If you name the component, use its current name "$component", never an alias. Keep a product, tool or error name only if a person would not translate it.
 
 ## alias
 Project: $project_name ($project_summary)

@@ -122,6 +122,21 @@ def guard(sb: Sandbox) -> dict[str, str]:
     return resolved
 
 
+def portable(sb: Sandbox, value):
+    """`value` with the temporary root, as written and as resolved, replaced by `$TMPDIR/<root name>` in every string."""
+    shown = f"$TMPDIR/{sb.root.name}"
+    roots = sorted({str(sb.root), os.path.realpath(sb.root)}, key=len, reverse=True)
+    if isinstance(value, str):
+        for root in roots:
+            value = value.replace(root, shown)
+        return value
+    if isinstance(value, dict):
+        return {k: portable(sb, v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [portable(sb, v) for v in value]
+    return value
+
+
 def bilbo(sb: Sandbox, exe: Path, args: list[str], stdin: str | None = None, timeout: float = 60) -> Proc:
     guard(sb)
     return run([str(exe), *args], env=sb.env, stdin=stdin, cwd=sb.root, timeout=timeout)

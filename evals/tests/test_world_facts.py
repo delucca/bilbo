@@ -14,7 +14,7 @@ from bilbo_evals import cli, common, llm
 from bilbo_evals.generate import facts as facts_mod
 from bilbo_evals.generate import world as world_mod
 
-PROBE = {"match": "preflight probe (claude)", "output": {"ok": True}}
+PROBE = {"match": "preflight probe (claude)", "output": {"user_instructions_first_heading": "NONE"}}
 CROCKFORD = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
 
 

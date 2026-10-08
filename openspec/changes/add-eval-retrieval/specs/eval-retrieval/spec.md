@@ -38,7 +38,7 @@ A dataset folder SHALL hold: `README.md`, stating the generation method, the mod
 - **THEN** `bilbo-evals dataset check` prints the query id and the missing id, and exits 1
 
 ### Requirement: Freeze and verify
-`bilbo-evals dataset freeze <dir>` SHALL write `MANIFEST`, one line `<sha256>  <path>` per file of the dataset folder except `MANIFEST` and `FROZEN`, sorted by path, and `FROZEN`, the SHA-256 of `MANIFEST`, which is the dataset's tree hash. It SHALL refuse when `FROZEN` already exists, when `bilbo-evals dataset check` fails, or when the validity review has not passed. `bilbo-evals dataset verify <dir>` SHALL recompute both hashes, print the tree hash and exit 0 when they match, and print each differing, missing or extra path and exit 1 otherwise. Every command that runs arms on a dataset SHALL verify it first and refuse on a mismatch; only `bilbo-evals pool` and `bilbo-evals l1 run --draft` SHALL run on a dataset that has no `FROZEN` yet.
+`bilbo-evals dataset freeze <dir>` SHALL write `MANIFEST`, one line `<sha256>  <path>` per file of the dataset folder except `MANIFEST` and `FROZEN`, sorted by path, and `FROZEN`, the SHA-256 of `MANIFEST`, which is the dataset's tree hash. It SHALL refuse when `FROZEN` already exists, when `bilbo-evals dataset check` fails, or when the validity review has not passed, or when `README.md` is missing or lacks the canary or the licence of a library document. `bilbo-evals dataset verify <dir>` SHALL recompute both hashes, print the tree hash and exit 0 when they match, and print each differing, missing or extra path and exit 1 otherwise. Every command that runs arms on a dataset SHALL verify it first and refuse on a mismatch; only `bilbo-evals pool`, `bilbo-evals l1 run --draft` and `bilbo-evals l1 digest --draft` SHALL run on a dataset that has no `FROZEN` yet, and a `--draft` run on a dataset that has `FROZEN` SHALL verify it first. A dataset SHALL hold no symbolic link: `dataset check` and `dataset verify` SHALL name any they find and fail.
 
 #### Scenario: A clean dataset
 - **WHEN** `bilbo-evals dataset verify evals/datasets/notes-synth/v1` runs on an unmodified checkout
@@ -51,6 +51,14 @@ A dataset folder SHALL hold: `README.md`, stating the generation method, the mod
 #### Scenario: An edited query
 - **WHEN** one character of `queries.jsonl` changed after the freeze, and `bilbo-evals l1 run --split dev --arms all --bilbo ./target/release/bilbo` runs
 - **THEN** stderr names `queries.jsonl` as differing from `MANIFEST`, no run folder is written, and the exit code is 1
+
+#### Scenario: A symbolic link in the dataset
+- **WHEN** a file under `store/notes/` of a dataset is a symbolic link
+- **THEN** `bilbo-evals dataset check` and `bilbo-evals dataset verify` name the path, and the exit code is 1
+
+#### Scenario: A README without the canary
+- **WHEN** `bilbo-evals dataset freeze` runs on a dataset whose `README.md` lacks the canary
+- **THEN** stderr names `README.md`, no `FROZEN` is written, and the exit code is 1
 
 #### Scenario: Freezing twice
 - **WHEN** `bilbo-evals dataset freeze` runs on a folder that has `FROZEN`
@@ -149,7 +157,7 @@ For `paraphrase`, `pt-en` and `alias` queries, a distinctive token SHALL be a wo
 - **THEN** `bilbo-evals dataset check` prints the query id and both tokens, and exits 1
 
 ### Requirement: Pooled gold completeness
-Before a dataset is frozen, `bilbo-evals pool` SHALL run every arm of the eval, bilbo included, on every query and digest prompt of both splits, and collect each one's top 10 notes that are not gold. The checking model SHALL judge each collected note: whether it answers the query on its own, or, for `multi-hop`, whether it completes an evidence set, quoting the passage that supports a yes. Every yes SHALL be resolved by a reviewer, by adding the note to the gold or an evidence set, or by rewriting or dropping the query; a sample of the noes SHALL be audited by a reviewer. Judged notes SHALL enter the qrels with relevance 0 or 1. `generation/` SHALL log every judgment and resolution.
+Before a dataset is frozen, `bilbo-evals pool` SHALL run every arm of the eval, bilbo included, on every query and every `positive` and `near-miss` digest prompt of both splits, and collect each one's top 10 notes that are not gold. The checking model SHALL judge each collected note: whether it answers the query on its own, or, for `multi-hop`, whether it completes an evidence set, quoting the passage that supports a yes. A yes whose quote is not found in the text shown, after folding whitespace and Markdown emphasis, SHALL count as a no in the qrels and SHALL need a resolution like any yes. Every yes SHALL be resolved by a reviewer, by adding the note to the gold or an evidence set, or by rewriting or dropping the query; a seeded sample of each split's noes, 10% and at least 50, SHALL be audited by a reviewer. Judged notes SHALL enter the qrels with relevance 0 or 1. `generation/` SHALL log every judgment and resolution. Pooling SHALL refuse when an arm reports an error or a keyword fallback for an item. An item whose text changes after pooling SHALL be pooled again, its earlier rows set aside. `bilbo-evals dataset freeze` SHALL refuse while an item lacks candidates or judgments for its current text, a split's audit sample is short, or a `drop`, `rewrite`, `add-gold` or `add-evidence` resolution has not taken effect.
 
 #### Scenario: A second note also answers
 - **WHEN** the pool for query `q-ledger-12` holds a note the checking model judges to answer it, and the reviewer agrees
@@ -158,6 +166,18 @@ Before a dataset is frozen, `bilbo-evals pool` SHALL run every arm of the eval, 
 #### Scenario: An unresolved yes blocks the freeze
 - **WHEN** one pooled yes has no resolution
 - **THEN** `bilbo-evals dataset freeze` prints its query and note ids, writes no `FROZEN`, and exits 1
+
+#### Scenario: A yes with a mangled quote
+- **WHEN** the checking model answers yes and quotes a passage without the backticks the note has around it
+- **THEN** the quote is found after folding, and the candidate enters the qrels at relevance 1 once resolved
+
+#### Scenario: An arm that failed
+- **WHEN** one arm exits with an error for one item during `bilbo-evals pool`
+- **THEN** stderr names the arm and the item, no candidates are written, and the exit code is 1
+
+#### Scenario: A query edited after pooling
+- **WHEN** the text of a pooled query changes and `bilbo-evals pool` runs again
+- **THEN** the query is ranked and judged again, its earlier rows are in `generation/pool/superseded.jsonl`, and until then `bilbo-evals dataset freeze` refuses
 
 ### Requirement: Validity review
 `bilbo-evals review sample` SHALL write a seeded review sheet to `generation/review/`: every `supersession` and `multi-hop` query of the test split, at least 5 queries per other stratum per split, at least 10 digest prompts per label per split, and 20 notes. A reviewer SHALL mark each item valid or invalid with a reason. `bilbo-evals review check` SHALL pass only when at least 95% of the reviewed items are valid and every invalid item is fixed or dropped; it SHALL print the share and the open items.
@@ -182,7 +202,7 @@ The library SHALL be built from real documents under a public-domain licence, ad
 - **THEN** `bilbo-evals generate library` skips it, says so on stderr, and adds nothing to `store/library/`
 
 ### Requirement: Preregistered power
-`bilbo-evals power <dev-run>` SHALL read a dev run of the principal comparison, measure on it the share of queries where the two arms disagree on success@5 and the design effect of clustering by fact family, and compute the number of test note queries that gives at least 80% power to detect the preregistered minimum effect at a two-sided α of 0.05. It SHALL write `preregistration.json` with the primary metric, the principal comparison, the minimum effect, α, the power target, the measured discordance, the design effect, the resulting count per stratum and the secondary comparisons. It SHALL refuse a test run as input, and SHALL refuse to change `preregistration.json` once the dataset is frozen.
+`bilbo-evals power <dev-run>` SHALL read a dev run of the principal comparison, measure on it the share of queries where the two arms disagree on success@5 and the design effect of clustering by fact family, and compute the number of test note queries that gives at least 80% power to detect the preregistered minimum effect at a two-sided α of 0.05. It SHALL write `preregistration.json` with the primary metric, the principal comparison, the minimum effect, α, the power target, the measured discordance, the design effect, the resulting count per stratum and the secondary comparisons. It SHALL refuse a test run as input, and SHALL refuse to change `preregistration.json` once the dataset is frozen. `bilbo-evals dataset check` SHALL report each stratum of the test split that holds fewer queries than `preregistration.json` asks, so a dataset short of its preregistered size cannot be frozen.
 
 #### Scenario: Sizing from dev
 - **WHEN** the dev run shows full bilbo and the reference BM25 disagreeing on 24% of note queries, with a design effect of 1.3, and the minimum effect is 0.10
@@ -192,8 +212,12 @@ The library SHALL be built from real documents under a public-domain licence, ad
 - **WHEN** `bilbo-evals power` is given a run of the test split
 - **THEN** stderr says power is sized on dev only, nothing is written, and the exit code is 1
 
+#### Scenario: A test split short of its preregistration
+- **WHEN** `preregistration.json` asks 58 `paraphrase` test queries and the test split holds 49
+- **THEN** `bilbo-evals dataset check` prints the stratum and both counts and exits 1, and `bilbo-evals dataset freeze` refuses
+
 ### Requirement: Run isolation
-Every run SHALL give bilbo a fresh temporary root holding `HOME`, `BILBO_HOME`, `BILBO_CONFIG`, `XDG_CONFIG_HOME`, `XDG_DATA_HOME`, `XDG_CACHE_HOME` and `XDG_STATE_HOME`, an environment cleared of every other variable except `PATH`, the locale and `TMPDIR`, a copy of the dataset's store, and a config written by the harness. Before running bilbo, the harness SHALL resolve the store root, config, cache and state folders as bilbo does for that environment, and refuse when any of them is outside the temporary root or equal to the store or config the invoking user's environment resolves. `run.json` SHALL record the temporary root and the resolved folders. No run SHALL write to the user's real store, config, cache or state folders.
+Every run SHALL give bilbo a fresh temporary root holding `HOME`, `BILBO_HOME`, `BILBO_CONFIG`, `XDG_CONFIG_HOME`, `XDG_DATA_HOME`, `XDG_CACHE_HOME` and `XDG_STATE_HOME`, an environment cleared of every other variable except `PATH`, the locale and `TMPDIR`, a copy of the dataset's store, and a config written by the harness. Before running bilbo, the harness SHALL resolve the store root, config, cache and state folders as bilbo does for that environment, and refuse when any of them is outside the temporary root or equal to the store or config the invoking user's environment resolves. `run.json` SHALL record the temporary root and the resolved folders written as `$TMPDIR/<root name>/...`, and no file of a run folder SHALL hold the expanded temporary root. No run SHALL write to the user's real store, config, cache or state folders.
 
 #### Scenario: A run stays in its root
 - **WHEN** `bilbo-evals l1 run --split dev --arms all --bilbo ./target/release/bilbo` finishes
@@ -308,11 +332,15 @@ For the arms that start a process per query (`ripgrep`, `bilbo-keyword` and `bil
 - **THEN** the curve is labelled approximate and no line of the report names an AUROC
 
 ### Requirement: Result records
-A run SHALL write `evals/runs/<run-id>/`, with one folder per arm holding `run.json`, `per_item.jsonl` and, for ranking arms, `run.trec`. `run.json` SHALL record the schema version, run id, layer `L1`, arm, split, the dataset name, version and tree hash, the bilbo version, commit and binary SHA-256, the embedder record, the bilbo config keys used, the versions of Python, the harness's dependencies and every external tool, the seeds, the host's platform and CPU, the start and end times, whether the run is a draft, and the SHA-256 of every other file in the arm's folder. `per_item.jsonl` SHALL hold one row per item and trial with `item`, `stratum`, `split`, `trial`, `ranking`, `metrics`, `latency_ms`, `exit`, `warnings`, `fallback`, `error`, `tokens_in`, `tokens_out` and `cost_usd`, the last three null in L1. `evals/runs/` SHALL be ignored by git.
+A run SHALL write `evals/runs/<run-id>/`, with one folder per arm holding `run.json`, `per_item.jsonl` and, for ranking arms, `run.trec`. `run.json` SHALL record the schema version, run id, layer `L1`, arm, split, the dataset name, version, tree hash and folder relative to `evals/`, the bilbo version, commit and binary SHA-256, the embedder record, the bilbo config keys used, the versions of Python, the harness's dependencies and every external tool, the seeds, the host's platform and CPU, the start and end times, whether the run is a draft, and the SHA-256 of every other file in the arm's folder. `per_item.jsonl` SHALL hold one row per item and trial with `item`, `stratum`, `split`, `trial`, `ranking`, `metrics`, `latency_ms`, `exit`, `warnings`, `fallback`, `error`, `tokens_in`, `tokens_out` and `cost_usd`, the last three null in L1. `evals/runs/` SHALL be ignored by git. A run on a dataset outside `evals/` SHALL be refused before anything is written.
 
 #### Scenario: One record per query
 - **WHEN** a dev run of `bilbo-full` covers 185 queries
 - **THEN** its `per_item.jsonl` has 185 rows, each with the fields above
+
+#### Scenario: A dataset outside evals
+- **WHEN** `bilbo-evals l1 run --dataset /tmp/ds` names a dataset outside `evals/`
+- **THEN** stderr says a run's dataset must be inside `evals/`, no run folder is written, and the exit code is 1
 
 #### Scenario: Draft runs are marked
 - **WHEN** `bilbo-evals l1 run --draft --split dev` runs on a dataset without `FROZEN`

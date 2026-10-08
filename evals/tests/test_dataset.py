@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import subprocess
@@ -9,8 +10,8 @@ from pathlib import Path
 
 import pytest
 
-from bilbo_evals import cli, dataset
-from bilbo_evals.common import Refused, read_jsonl, write_jsonl
+from bilbo_evals import cli, dataset, pool
+from bilbo_evals.common import CANARY, Refused, read_jsonl, write_jsonl
 
 FIXTURE_HASH_LEN = 64
 
@@ -54,6 +55,38 @@ def add_fillers(ds_dir: Path, n: int = 80) -> None:
 def gold_note(ds_dir: Path, qid: str) -> Path:
     q = next(q for q in queries(ds_dir) if q["id"] == qid)
     return note_file(ds_dir, q["gold"][0])
+
+
+def sha(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def pooled(ds_dir: Path, listed: dict[str, list[str]] | None = None) -> None:
+    """A candidates row for every pooled item, with the current text hash; `listed[item]` names its candidates."""
+    listed = listed or {}
+    ds = dataset.load(ds_dir)
+    write_jsonl(ds_dir / "generation/pool/candidates.jsonl", [
+        {"item": i["id"], "kind": i["kind"], "split": i["split"], "text_sha256": sha(i["text"]),
+         "candidates": [{"id": c, "arms": ["random"], "best_rank": n} for n, c in enumerate(listed.get(i["id"], []), 1)]}
+        for i in pool.pooled_items(ds, "all")])
+
+
+def judged(ds_dir: Path, *rows: tuple) -> None:
+    """Judgment rows `(item, candidate, kind)` with kind `no`, `yes` or `unquoted`, bound to the item's current text."""
+    ds = dataset.load(ds_dir)
+    hashes = {i["id"]: sha(i["text"]) for i in pool.pooled_items(ds, "all")}
+    out = []
+    for item, cid, kind in rows:
+        out.append({"item": item, "candidate": cid, "answers": kind != "no", "completes_set": None,
+                    "passage": "a quote" if kind == "yes" else None, "quote_found": kind == "yes",
+                    "flag": "yes_without_quote" if kind == "unquoted" else None, "call_id": "c",
+                    "text_sha256": hashes[item]})
+    write_jsonl(ds_dir / "generation/pool/judgments.jsonl", out)
+
+
+def resolve(ds_dir: Path, *rows: tuple) -> None:
+    write_jsonl(ds_dir / "generation/pool/resolutions.jsonl", [
+        {"item": i, "candidate": c, "action": a, "evidence_set": None, "reason": "r", "reviewer": "x"} for i, c, a in rows])
 
 
 def test_the_fixture_is_clean_and_verifies(fixture_dir):
@@ -308,30 +341,85 @@ def test_freeze_refuses_a_failed_review(draft):
 
 
 def test_an_unresolved_yes_blocks_the_freeze(draft):
-    write_jsonl(draft / "generation/pool/judgments.jsonl", [
-        {"item": "q-alpha-001", "candidate": "01JUDGED", "answers": True, "completes_set": None, "passage": "a quote", "quote_found": True, "flag": None, "call_id": "c"}])
+    pooled(draft, {"q-alpha-001": ["01JUDGED"]})
+    judged(draft, ("q-alpha-001", "01JUDGED", "yes"))
     with pytest.raises(Refused, match="q-alpha-001 01JUDGED"):
         dataset.freeze(draft)
     assert not (draft / "FROZEN").exists()
 
 
 def test_pool_open_items(draft):
-    pool = draft / "generation/pool"
-    yes = {"answers": True, "completes_set": None, "passage": "a quote", "quote_found": True, "flag": None, "call_id": "c"}
-    write_jsonl(pool / "judgments.jsonl", [
-        {"item": "q1", "candidate": "n1", **yes}, {"item": "q1", "candidate": "n2", **yes},
-        {"item": "q1", "candidate": "n3", **{**yes, "quote_found": False, "flag": "yes_without_quote"}}])
-    write_jsonl(pool / "audit.jsonl", [
-        {"item": "q1", "candidate": "n4", "verdict": "disagree", "reason": "r", "reviewer": "x"},
-        {"item": "q1", "candidate": "n5", "verdict": "agree", "reason": None, "reviewer": "x"}])
-    assert [i.split(":")[0] for i in dataset.pool_open_items(draft)] == ["q1 n1", "q1 n2", "q1 n4"]
-    write_jsonl(pool / "resolutions.jsonl", [
-        {"item": "q1", "candidate": "n1", "action": "add-gold", "evidence_set": None, "reason": "r", "reviewer": "x"},
-        {"item": "q1", "candidate": "n2", "action": "reject", "evidence_set": None, "reason": "r", "reviewer": "x"},
-        {"item": "q1", "candidate": "n4", "action": "drop", "evidence_set": None, "reason": "r", "reviewer": "x"}])
-    assert [i.split(":")[0] for i in dataset.pool_open_items(draft)] == ["q1 n1"]
-    write_jsonl(pool / "applied.jsonl", [{"item": "q1", "candidate": "n1"}])
+    pool_dir = draft / "generation/pool"
+    pooled(draft, {"q-alpha-001": ["n1", "n2", "n3", "n4", "n5"]})
+    judged(draft, ("q-alpha-001", "n1", "yes"), ("q-alpha-001", "n2", "yes"), ("q-alpha-001", "n3", "unquoted"),
+           ("q-alpha-001", "n4", "no"), ("q-alpha-001", "n5", "no"))
+    audit = {"item": "q-alpha-001", "reason": None, "reviewer": "x", "split": "dev"}
+    write_jsonl(pool_dir / "audit.jsonl", [
+        {**audit, "candidate": "n3", "verdict": "agree"}, {**audit, "candidate": "n4", "verdict": "disagree", "reason": "r"},
+        {**audit, "candidate": "n5", "verdict": "agree"}])
+    assert [i.split(":")[0] for i in dataset.pool_open_items(draft)] == [
+        "q-alpha-001 n1", "q-alpha-001 n2", "q-alpha-001 n3", "q-alpha-001 n4"]
+    assert dataset.pool_open_items(draft)[2] == "q-alpha-001 n3: unquoted yes with no resolution"
+    resolve(draft, ("q-alpha-001", "n1", "add-gold"), ("q-alpha-001", "n2", "reject"), ("q-alpha-001", "n3", "reject"),
+            ("q-alpha-001", "n4", "reject"))
+    assert [i.split(":")[0] for i in dataset.pool_open_items(draft)] == ["q-alpha-001 n1"]
+    write_jsonl(pool_dir / "applied.jsonl", [{"item": "q-alpha-001", "candidate": "n1"}])
     assert dataset.pool_open_items(draft) == []
+
+
+def test_an_item_never_pooled_for_its_current_text_blocks_the_freeze(draft):
+    rows = [r for r in read_jsonl(draft / "generation/pool/candidates.jsonl") if r["item"] != "q-alpha-001"]
+    write_jsonl(draft / "generation/pool/candidates.jsonl", rows)
+    with pytest.raises(Refused, match="q-alpha-001: not pooled for its current text; run pool"):
+        dataset.freeze(draft)
+    pooled(draft)
+    rows = read_jsonl(draft / "generation/pool/candidates.jsonl")
+    rows[0]["text_sha256"] = "0" * 64
+    write_jsonl(draft / "generation/pool/candidates.jsonl", rows)
+    with pytest.raises(Refused, match=f"{rows[0]['item']}: not pooled for its current text"):
+        dataset.freeze(draft)
+    assert not (draft / "FROZEN").exists()
+
+
+def test_a_listed_candidate_without_a_judgment_of_the_same_text_blocks_the_freeze(draft):
+    pooled(draft, {"q-alpha-001": ["01LISTED"]})
+    with pytest.raises(Refused, match="q-alpha-001 01LISTED: not judged; run pool"):
+        dataset.freeze(draft)
+    judged(draft, ("q-alpha-001", "01LISTED", "no"))
+    rows = read_jsonl(draft / "generation/pool/judgments.jsonl")
+    write_jsonl(draft / "generation/pool/judgments.jsonl", [{**r, "text_sha256": "0" * 64} for r in rows])
+    with pytest.raises(Refused, match="q-alpha-001 01LISTED: not judged"):
+        dataset.freeze(draft)
+
+
+def test_a_rewrite_and_a_drop_not_applied_block_the_freeze(draft):
+    resolve(draft, ("q-alpha-001", "N1", "rewrite"), ("q-alpha-002", "N2", "drop"))
+    items = dataset.pool_open_items(draft)
+    assert "q-alpha-001 N1: rewrite asked; edit the item, then run pool" in items
+    assert "q-alpha-002: drop not applied; run pool --apply" in items
+    with pytest.raises(Refused, match="rewrite asked"):
+        dataset.freeze(draft)
+
+
+def test_the_rows_of_an_item_no_longer_in_the_dataset_are_ignored(draft):
+    write_jsonl(draft / "generation/pool/judgments.jsonl", [
+        {"item": "q-gone", "candidate": "N1", "answers": True, "completes_set": None, "passage": "p", "quote_found": True,
+         "flag": None, "call_id": "c", "text_sha256": "0" * 64}])
+    write_jsonl(draft / "generation/pool/audit.jsonl", [
+        {"item": "q-gone", "candidate": "N2", "verdict": None, "reason": None, "reviewer": None, "split": "dev"}])
+    resolve(draft, ("q-gone", "N3", "drop"))
+    assert dataset.pool_open_items(draft) == []
+
+
+def test_a_short_audit_sample_of_a_split_blocks_the_freeze(draft):
+    pooled(draft, {"q-beta-001": ["01TESTNO"]})
+    judged(draft, ("q-beta-001", "01TESTNO", "no"))
+    assert dataset.pool_open_items(draft) == ["audit test: 0 of 1 sampled noes; run pool"]
+    with pytest.raises(Refused, match="audit test: 0 of 1 sampled noes"):
+        dataset.freeze(draft)
+    write_jsonl(draft / "generation/pool/audit.jsonl", [
+        {"item": "q-beta-001", "candidate": "01TESTNO", "verdict": "agree", "reason": None, "reviewer": "x", "split": "test"}])
+    assert len(dataset.freeze(draft)) == FIXTURE_HASH_LEN
 
 
 # --- gates, materialize --------------------------------------------------------------------------------------------
@@ -349,6 +437,16 @@ def test_require_ready_draft_runs_on_dev_only(draft):
     assert dataset.require_ready(draft, True, "dev") is None
     with pytest.raises(Refused, match="test split"):
         dataset.require_ready(draft, True, "test")
+
+
+def test_a_draft_run_on_a_frozen_dataset_verifies_it(fixture_copy):
+    assert dataset.require_ready(fixture_copy, True, "dev") == (fixture_copy / "FROZEN").read_text().strip()
+    with pytest.raises(Refused, match="test split"):
+        dataset.require_ready(fixture_copy, True, "test")
+    with open(fixture_copy / "queries.jsonl", "a", encoding="utf-8") as f:
+        f.write(" ")
+    with pytest.raises(Refused, match="queries.jsonl"):
+        dataset.require_ready(fixture_copy, True, "dev")
 
 
 def test_require_ready_names_an_edited_file(fixture_copy):
@@ -387,3 +485,65 @@ def test_the_small_fixture_exercises_the_leakage_rules(fixture_dir):
     assert got["q-alpha-004"] == {"listen"} and got["q-alpha-003"] == set()
     flags = {q["id"]: q["zero_overlap"] for q in ds.queries if q["stratum"] in dataset.LEAK_STRATA}
     assert flags["q-alpha-004"] is False and flags["q-alpha-003"] is True
+
+
+# --- symlinks, the preregistered size, the README, the canary -------------------------------------------------------
+
+def test_a_symlinked_note_is_reported_by_verify(fixture_copy, capsys):
+    target = next((fixture_copy / "store/notes").glob("*.md"))
+    (fixture_copy / "store/notes/link.md").symlink_to(target)
+    _hash, problems = dataset.verify(fixture_copy)
+    assert "store/notes/link.md: a symlink; a dataset holds regular files only" in problems
+    assert cli.main(["dataset", "verify", str(fixture_copy)]) == 1
+    assert "store/notes/link.md: a symlink" in capsys.readouterr().out
+    with pytest.raises(Refused, match="link.md"):
+        dataset.require_ready(fixture_copy, False, "dev")
+
+
+def test_a_symlinked_note_is_reported_by_check_and_blocks_the_freeze(draft):
+    (draft / "store/notes/link.md").symlink_to(next((draft / "store/notes").glob("*.md")))
+    assert "store/notes/link.md: a symlink; a dataset holds regular files only" in check(draft)
+    with pytest.raises(Refused, match="link.md: a symlink"):
+        dataset.freeze(draft)
+
+
+def test_a_test_split_short_of_its_preregistration(draft):
+    pre = json.loads((draft / "preregistration.json").read_text(encoding="utf-8"))
+    pre["per_stratum"]["paraphrase"] += 1
+    (draft / "preregistration.json").write_text(json.dumps(pre), encoding="utf-8")
+    want = pre["per_stratum"]["paraphrase"]
+    line = f"test paraphrase: {want - 1} queries, preregistration asks {want}"
+    assert line in check(draft) and line in check(draft, "test")
+    assert not any("preregistration asks" in p for p in check(draft, "dev"))
+    with pytest.raises(Refused, match="preregistration asks"):
+        dataset.freeze(draft)
+    assert not (draft / "FROZEN").exists()
+
+
+def test_freeze_needs_a_readme_with_the_canary_and_the_licences(draft):
+    readme = draft / "README.md"
+    text = readme.read_text(encoding="utf-8")
+    readme.write_text(text.replace(CANARY, ""), encoding="utf-8")
+    with pytest.raises(Refused, match="README.md"):
+        dataset.freeze(draft)
+    readme.write_text(text.replace("public-domain", "x"), encoding="utf-8")
+    with pytest.raises(Refused, match="README.md.*public-domain"):
+        dataset.freeze(draft)
+    readme.unlink()
+    with pytest.raises(Refused, match="README.md"):
+        dataset.freeze(draft)
+    assert not (draft / "FROZEN").exists()
+    assert not any("README" in p for p in check(draft))
+
+
+def test_freeze_puts_the_canary_in_every_jsonl_row(draft):
+    notes = read_jsonl(draft / "world/notes.jsonl")
+    notes[0].pop("canary", None)
+    write_jsonl(draft / "world/notes.jsonl", notes)
+    write_jsonl(draft / "generation/drops.jsonl", [{"fact": "f-x", "reason": "r"}])
+    dataset.freeze(draft)
+    files = sorted(p for p in draft.rglob("*.jsonl"))
+    assert draft / "generation/drops.jsonl" in files and draft / "world/notes.jsonl" in files
+    for path in files:
+        assert all(r.get("canary") == CANARY for r in read_jsonl(path)), path
+    assert dataset.verify(draft)[1] == []

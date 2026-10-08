@@ -252,3 +252,22 @@ def test_a_count_that_disagrees_with_matching_inputs_is_refused(box, server, tmp
     (tmp_path / "body.json").write_text(json.dumps({"model": "m", "input": expected}))
     with pytest.raises(Refused, match="embedded 1 and kept 0, but the store has"):
         embedder.index_and_check(box, script, server, None)
+
+
+def test_vector_cache_truncates_a_torn_tail_before_the_next_append(tmp_path):
+    cache = VectorCache(tmp_path / "v")
+    cache.put("one", [0.5, 0.25])
+    cache.put("two", [1.0, 2.0])
+    path = tmp_path / "v/vectors.bin"
+    whole = path.stat().st_size
+    with open(path, "ab") as f:
+        f.write(b"\x01" * 20)
+    again = VectorCache(tmp_path / "v")
+    assert path.stat().st_size == whole
+    again.put("three", [3.0, 4.0])
+    final = VectorCache(tmp_path / "v")
+    assert len(final) == 3
+    assert final.get("one").tolist() == [0.5, 0.25]
+    assert final.get("two").tolist() == [1.0, 2.0]
+    assert final.get("three").tolist() == [3.0, 4.0]
+    assert path.stat().st_size == whole + 32 + 4 + 8

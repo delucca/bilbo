@@ -182,9 +182,22 @@ def _rank_items(arm, items: list[dict], ctx: Context) -> dict[str, list[Result]]
     return raw
 
 
+def dataset_path(ds_dir: Path) -> str:
+    """The dataset folder relative to evals/, POSIX form; a run on a folder outside evals/ is refused."""
+    try:
+        return Path(ds_dir).resolve().relative_to(common.EVALS_ROOT.resolve()).as_posix()
+    except ValueError:
+        raise Refused("a run's dataset must be inside evals/") from None
+
+
+def _folders(session: Session) -> dict[str, str]:
+    return {k: session.folders[k] for k in ("store", "config", "cache", "state")}
+
+
 def cmd_run(args: argparse.Namespace) -> int:
     split, draft, ds_dir = args.split, bool(args.draft), Path(args.dataset)
     names = parse_arms(args.arms)
+    rel_path = dataset_path(ds_dir)
     tree_hash = dataset.require_ready(ds_dir, draft, split)
     ds = dataset.load(ds_dir)
     items = ds.queries_for(split)
@@ -220,15 +233,15 @@ def cmd_run(args: argparse.Namespace) -> int:
                 trec = {q["id"]: raw[q["id"]][0].ranking for q in items if q["stratum"] != NO_ANSWER}
             meta = {
                 "schema_version": 1, "run_id": run_id, "layer": "L1", "arm": name, "split": split, "draft": draft,
-                "dataset": {"name": ds.name, "version": ds.version, "tree_hash": tree_hash}, "bilbo": identity,
+                "dataset": {"name": ds.name, "version": ds.version, "tree_hash": tree_hash, "path": rel_path}, "bilbo": identity,
                 "embedder": embedder_record(session.server) if entry.get("embedder") else None,
                 "bilbo_config": entry.get("bilbo_config", {}), "parity": entry.get("parity"), "index": entry.get("index"),
                 "versions": {**tool_versions, **entry.get("versions", {})},
                 "seeds": list(ctx.seeds) if name == "random" else [], "host": host(),
-                "root": str(session.sb.root), "folders": {k: session.folders[k] for k in ("store", "config", "cache", "state")},
+                "root": str(session.sb.root), "folders": _folders(session),
                 "started": arm_started, "ended": common.now(),
             }  # fmt: skip
-            results.write_arm(run, name, meta, rows, trec)
+            results.write_arm(run, name, sandbox.portable(session.sb, meta), sandbox.portable(session.sb, rows), trec)
     if not run.exists():
         raise Refused("no arm was scored")
     if split == "test" and not draft:
@@ -240,8 +253,11 @@ def cmd_run(args: argparse.Namespace) -> int:
 
 
 def rank_all(ds_dir: Path, split: str, arm_names: list[str], bilbo: Path, gguf: Path | None, llama_server: str | None,
-             server_url: str | None = None) -> dict[str, dict[str, list[str]]]:  # fmt: skip
-    """Top-100 ranking of every query and digest prompt of a split per arm (random: seed 0); nothing is written."""
+             server_url: str | None = None, hits: dict | None = None) -> dict[str, dict[str, list[str]]]:  # fmt: skip
+    """Top-100 ranking of every query and digest prompt of a split per arm (random: seed 0); nothing is written.
+
+    When `hits` is given it is filled with `hits[arm][item] = {note id: file line of the passage that ranked it}`.
+    """
     ds = dataset.load(Path(ds_dir))
     items = list(ds.queries_for(split))
     items += [
@@ -252,13 +268,23 @@ def rank_all(ds_dir: Path, split: str, arm_names: list[str], bilbo: Path, gguf: 
     tag = f"rank-{uuid.uuid4().hex[:8]}"
     with Session(ds, split, bilbo, gguf, llama_server, server_url, bool(EMBEDDER_ARMS & set(names)), tag) as session:
         found: dict[str, dict[str, list[str]]] = {}
+        failed: list[str] = []
         for name in names:
             arm = arms_pkg.get(name)
             arm.prepare(session.ctx)
             ranked: dict[str, list[str]] = {}
             for q in items:
                 r = arm.rank(q, session.ctx)
-                first = r[0] if isinstance(r, list) else r
-                ranked[q["id"]] = first.ranking
+                got = r if isinstance(r, list) else [r]
+                for res in got:
+                    if res.error or res.fallback:
+                        failed.append(f"{name} {q['id']}: {res.error or 'fallback'}")
+                        break
+                ranked[q["id"]] = got[0].ranking
+                if hits is not None and got[0].lines:
+                    hits.setdefault(name, {})[q["id"]] = got[0].lines
             found[name] = ranked
+    if failed:
+        shown = "\n".join(failed[:10])
+        raise Refused(f"{len(failed)} ranking(s) failed or fell back to keywords; pooling needs none:\n{shown}")
     return found

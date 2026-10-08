@@ -140,6 +140,7 @@ def section(digest: dict) -> list[str]:
 
 def cmd(args: argparse.Namespace) -> int:
     split, draft, ds_dir = args.split, bool(args.draft), Path(args.dataset)
+    rel_path = runner.dataset_path(ds_dir)
     tree_hash = dataset.require_ready(ds_dir, draft, split)
     ds = dataset.load(ds_dir)
     prompts = [p for p in ds.prompts if p["split"] == split]
@@ -148,6 +149,7 @@ def cmd(args: argparse.Namespace) -> int:
     bilbo_exe = Path(args.bilbo)
     if not bilbo_exe.is_file():
         raise Refused(f"no bilbo binary at {bilbo_exe}")
+    identity = runner.bilbo_identity(bilbo_exe)
     if args.run:
         run = Path(args.run)
         existing = results.load_run(run)
@@ -155,6 +157,8 @@ def cmd(args: argparse.Namespace) -> int:
             seen = (arm["run"]["split"], arm["run"]["dataset"]["tree_hash"])
             if seen != (split, tree_hash):
                 raise Refused(f"{run} holds {name} for split {seen[0]} and tree hash {seen[1]}, not {split} and {tree_hash}")
+            if arm["run"]["bilbo"]["sha256"] != identity["sha256"]:
+                raise Refused(f"{run} holds {name} made by bilbo sha256 {arm['run']['bilbo']['sha256']}, not {identity['sha256']}")
         if existing["digest"] is not None:
             raise Refused(f"{run} holds a digest run already")
         run_id = run.name
@@ -163,12 +167,18 @@ def cmd(args: argparse.Namespace) -> int:
         run = results.run_dir(run_id)
         if run.exists():
             raise Refused(f"{run} exists already; pick another run id")
-    identity = runner.bilbo_identity(bilbo_exe)
     started = common.now()
     from bilbo_evals.arms.dense_ref import ensure_index
 
     with runner.Session(ds, split, bilbo_exe, args.model, args.llama_server, getattr(args, "embedder_url", None),
                         True, f"{run_id}-digest") as sess:  # fmt: skip
+        if args.run:
+            mine = runner.embedder_record(sess.server)
+            for name, arm in existing["arms"].items():
+                theirs = arm["run"].get("embedder")
+                for field in ("model", "gguf_sha256", "query_prefix"):
+                    if theirs and theirs.get(field) != mine.get(field):
+                        raise Refused(f"{run} holds {name} with embedder {field} {theirs.get(field)!r}, not {mine.get(field)!r}")
         index = ensure_index(sess.ctx)
         rows = run_config(sess, prompts, THRESHOLD) + run_config(sess, prompts, None)
         sweep: list[dict] = []
@@ -177,15 +187,18 @@ def cmd(args: argparse.Namespace) -> int:
                 sweep += run_config(sess, prompts, t)
         meta = {
             "schema_version": 1, "run_id": run_id, "layer": "L1", "arm": "digest", "split": split, "draft": draft,
-            "dataset": {"name": ds.name, "version": ds.version, "tree_hash": tree_hash}, "bilbo": identity,
+            "dataset": {"name": ds.name, "version": ds.version, "tree_hash": tree_hash, "path": rel_path}, "bilbo": identity,
             "embedder": runner.embedder_record(sess.server),
             "bilbo_config": {"digest.log": "on", "digest.min_similarity": f"{THRESHOLD:g}", "embedder.model": embedder.MODEL},
             "parity": "ok", "index": {"embedded": index["embedded"], "inputs": index["inputs"]},
             "versions": runner.versions(sess.server), "seeds": [], "host": runner.host(), "root": str(sess.sb.root),
-            "folders": {k: sess.folders[k] for k in ("store", "config", "cache", "state")},
+            "folders": runner._folders(sess),
             "sweep": bool(args.sweep), "started": started, "ended": common.now(),
         }  # fmt: skip
-        results.write_digest(run, meta, rows, sweep or None)
+        results.write_digest(run, sandbox.portable(sess.sb, meta), sandbox.portable(sess.sb, rows),
+                             sandbox.portable(sess.sb, sweep) or None)
+    if split == "test" and not draft and not args.run:
+        results.log_test_run(run_id, tree_hash, identity["version"])
     text = results.report(run)
     (run / "report.md").write_text(text + "\n", encoding="utf-8")
     out(text)

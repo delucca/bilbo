@@ -11,7 +11,7 @@ from gen_e_helpers import make_ds, rows, use_cache
 from bilbo_evals import cli, common
 from bilbo_evals.generate import library
 
-PROBE = {"match": "preflight probe (claude)", "output": {"ok": True}}
+PROBE = {"match": "preflight probe (claude)", "output": {"user_instructions_first_heading": "NONE"}}
 EVIDENCE = "https://www.sqlite.org/copyright.html"
 
 

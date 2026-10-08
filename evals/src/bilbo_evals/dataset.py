@@ -307,8 +307,20 @@ def check(ds: Dataset, split: str = "all") -> list[str]:
         want = set(ds.notes) | set(ds.sources)
         if have != want:
             problems.append(f"corpus.jsonl: out of step with store/ ({len(want - have)} missing, {len(have - want)} extra)")
+    problems += _prereg_problems(ds, split)
+    problems += _symlinks(ds.dir)
     problems += _home_problems(ds.dir)
     return problems
+
+
+def _prereg_problems(ds: Dataset, split: str) -> list[str]:
+    """Each stratum of the test split that holds fewer queries than `preregistration.json` asks."""
+    path = ds.dir / "preregistration.json"
+    if split not in ("test", "all") or not path.is_file():
+        return []
+    want = json.loads(path.read_text(encoding="utf-8")).get("per_stratum") or {}
+    have = Counter(q["stratum"] for q in ds.queries_for("test"))
+    return [f"test {s}: {have[s]} queries, preregistration asks {n}" for s, n in sorted(want.items()) if have[s] < n]
 
 
 def cmd_check(args: argparse.Namespace) -> int:
@@ -384,26 +396,61 @@ def build_qrels(dir: Path) -> None:
 
 
 def pool_open_items(dir: Path) -> list[str]:
-    """Pooled yeses and disagreed audits without a resolution, and add-gold resolutions not yet applied."""
-    resolved = {(r["item"], r["candidate"]): r for r in _pool(dir, "resolutions.jsonl")}
+    """What stops a freeze in the pool files, over the queries and the positive and near-miss prompts the dataset holds now."""
+    from bilbo_evals import pool
+
+    ds = load(dir)
+    items = pool.pooled_items(ds, "all")
+    ids = {i["id"] for i in items}
+    shas = {i["id"]: pool.text_sha(i["text"]) for i in items}
+    cands = {r["item"]: r for r in _pool(dir, "candidates.jsonl") if r["item"] in ids}
+    judgments = [r for r in _pool(dir, "judgments.jsonl") if r["item"] in ids]
+    audit = [r for r in _pool(dir, "audit.jsonl") if r["item"] in ids]
+    resolved = {(r["item"], r["candidate"]): r for r in _pool(dir, "resolutions.jsonl") if r["item"] in ids}
     applied = {(r["item"], r["candidate"]) for r in _pool(dir, "applied.jsonl")}
     open_items = []
-    for r in _pool(dir, "judgments.jsonl"):
+    judged_now = {(r["item"], r["candidate"]) for r in judgments if r.get("text_sha256") == shas[r["item"]]}
+    for it in items:
+        row = cands.get(it["id"])
+        if row is None or row.get("text_sha256") != shas[it["id"]]:
+            open_items.append(f"{it['id']}: not pooled for its current text; run pool")
+            continue
+        for c in row["candidates"]:
+            if (it["id"], c["id"]) not in judged_now:
+                open_items.append(f"{it['id']} {c['id']}: not judged; run pool")
+    for r in judgments:
         key = (r["item"], r["candidate"])
-        if _yes(r) and key not in resolved:
+        if key in resolved:
+            continue
+        if _yes(r):
             open_items.append(f"{r['item']} {r['candidate']}: pooled yes with no resolution")
-    unreviewed = 0
-    for r in _pool(dir, "audit.jsonl"):
-        key = (r["item"], r["candidate"])
-        if r.get("verdict") is None:
-            unreviewed += 1
-        elif r["verdict"] == "disagree" and key not in resolved:
-            open_items.append(f"{r['item']} {r['candidate']}: disagreed audit with no resolution")
-    if unreviewed:
-        open_items.append(f"audit: {unreviewed} sampled noes have no reviewer verdict")
+        elif r.get("flag") == "yes_without_quote":
+            open_items.append(f"{r['item']} {r['candidate']}: unquoted yes with no resolution")
+    for key, r in sorted(resolved.items()):
+        if r["action"] == "rewrite":
+            open_items.append(f"{key[0]} {key[1]}: rewrite asked; edit the item, then run pool")
+    for item in sorted({k[0] for k, r in resolved.items() if r["action"] == "drop"}):
+        open_items.append(f"{item}: drop not applied; run pool --apply")
     for key, r in sorted(resolved.items()):
         if r["action"] in ("add-gold", "add-evidence") and key not in applied:
             open_items.append(f"{key[0]} {key[1]}: {r['action']} resolution not applied; run `pool --apply`")
+    unreviewed = 0
+    for r in audit:
+        if r.get("verdict") is None:
+            unreviewed += 1
+        elif r["verdict"] == "disagree" and (r["item"], r["candidate"]) not in resolved:
+            open_items.append(f"{r['item']} {r['candidate']}: disagreed audit with no resolution")
+    if unreviewed:
+        open_items.append(f"audit: {unreviewed} sampled noes have no reviewer verdict")
+    for split in schema.SPLITS:
+        noes = pool.current_noes([i for i in items if i["split"] == split], cands, judgments)
+        if noes is None:
+            continue
+        ids_ = {(j["item"], j["candidate"]) for j in noes}
+        have = len([a for a in audit if (a["item"], a["candidate"]) in ids_])
+        need = pool.audit_need(len(noes))
+        if have < need:
+            open_items.append(f"audit {split}: {have} of {need} sampled noes; run pool")
     return open_items
 
 
@@ -415,6 +462,11 @@ def _tree(dir: Path) -> dict[str, str]:
         if path.is_file() and not path.is_symlink() and path.name not in IGNORED_FILES:
             files[path.relative_to(dir).as_posix()] = sha256_file(path)
     return dict(sorted(files.items()))
+
+
+def _symlinks(dir: Path) -> list[str]:
+    return [f"{path.relative_to(dir).as_posix()}: a symlink; a dataset holds regular files only"
+            for path in sorted(dir.rglob("*")) if path.is_symlink()]
 
 
 def _manifest_text(tree: dict[str, str]) -> str:
@@ -444,6 +496,7 @@ def verify(dir: Path) -> tuple[str, list[str]]:
             problems.append(f"{path}: not listed in MANIFEST, extra")
         elif actual[path] != listed[path]:
             problems.append(f"{path}: differs from MANIFEST")
+    problems += _symlinks(dir)
     return tree_hash, problems
 
 
@@ -452,8 +505,9 @@ def require_ready(dir: Path, draft: bool, split: str) -> str | None:
     if draft:
         if split == "test":
             raise Refused("a draft run on the test split is refused: the test split runs only on a frozen dataset")
-        return None
-    if not (dir / "FROZEN").is_file():
+        if not (dir / "FROZEN").is_file():
+            return None
+    elif not (dir / "FROZEN").is_file():
         raise Refused(f"{dir} is not frozen; freeze it, or pass --draft to run on the dev split of a draft")
     tree_hash, problems = verify(dir)
     if problems:
@@ -475,6 +529,30 @@ def materialize(ds: Dataset, store: Path) -> dict[str, str]:
     return mapping
 
 
+def _readme_problems(dir: Path) -> None:
+    readme = dir / "README.md"
+    if not readme.is_file():
+        raise Refused("README.md is missing: write it before the freeze")
+    text = readme.read_text(encoding="utf-8")
+    problems = [] if CANARY in text else ["README.md: lacks the canary"]
+    library = dir / "world/library.json"
+    licences = sorted({r["licence"] for r in json.loads(library.read_text(encoding="utf-8")) if r.get("licence")}) if library.is_file() else []
+    problems += [f"README.md: lacks the licence {x} of a library document" for x in licences if x not in text]
+    if problems:
+        raise Refused("\n".join(problems))
+
+
+def stamp_canary(dir: Path) -> None:
+    """Add `"canary"` to every row of a `*.jsonl` file that lacks it; a file whose rows all carry it is left alone."""
+    for path in sorted(dir.rglob("*.jsonl")):
+        if path.is_symlink() or not path.is_file():
+            continue
+        rows = read_jsonl(path)
+        if all("canary" in r for r in rows if isinstance(r, dict)):
+            continue
+        write_jsonl(path, [{**r, "canary": CANARY} if isinstance(r, dict) and "canary" not in r else r for r in rows])
+
+
 def freeze(dir: Path) -> str:
     from bilbo_evals import review
 
@@ -483,6 +561,8 @@ def freeze(dir: Path) -> str:
         raise Refused(f"{dir} is already frozen")
     if not (dir / "preregistration.json").is_file():
         raise Refused("preregistration.json is missing: run `bilbo-evals power` on a dev run first")
+    _readme_problems(dir)
+    stamp_canary(dir)
     build_corpus(dir)
     build_qrels(dir)
     problems = check(load(dir))

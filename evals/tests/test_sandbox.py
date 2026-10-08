@@ -143,3 +143,14 @@ def test_destroy_removes_the_root_only_when_it_is_one(sb, tmp_path):
     (tmp_path / "keep").mkdir()
     sandbox.destroy(stranger)
     assert (tmp_path / "keep").is_dir()
+
+
+def test_portable_replaces_the_root_in_nested_strings(sb):
+    real = os.path.realpath(sb.root)
+    value = {"root": str(sb.root), "n": 3, "list": [f"{real}/store", {"deep": f"x {sb.root}/y"}], "none": None}
+    got = sandbox.portable(sb, value)
+    assert got == {
+        "root": "$TMPDIR/bilbo-evals-t1", "n": 3, "list": ["$TMPDIR/bilbo-evals-t1/store", {"deep": "x $TMPDIR/bilbo-evals-t1/y"}],
+        "none": None,
+    }
+    assert value["root"] == str(sb.root)

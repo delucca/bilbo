@@ -16,10 +16,11 @@ import shutil
 import subprocess
 import sys
 import tempfile
+from collections import Counter
 from datetime import datetime
 from pathlib import Path
 
-from bilbo_evals import dataset, review
+from bilbo_evals import dataset, pool, review
 from bilbo_evals.common import CANARY, REPO_ROOT, Refused, read_jsonl, sha256_bytes, write_json, write_jsonl
 from bilbo_evals.generate import filter as leak_filter
 
@@ -278,7 +279,7 @@ def build(out: Path, exe: Path, fetched: str) -> str:
 
     # generation and the rest
     (out / "generation/pool").mkdir(parents=True)
-    for name in ("candidates", "judgments", "audit", "resolutions"):
+    for name in ("judgments", "audit", "resolutions"):
         (out / f"generation/pool/{name}.jsonl").write_text("", encoding="utf-8")
     (out / "generation/config.toml").write_text(f"seed = {SEED}\nmax_calls = 0\n", encoding="utf-8")
     write_json(out / "preregistration.json", {
@@ -287,8 +288,7 @@ def build(out: Path, exe: Path, fetched: str) -> str:
         "correction": "holm (secondary only)", "test": "paired sign-flip by fact family, 10000 resamples",
         "dev_run": "fixture", "dev_tree_hash": None, "discordance": 0.24, "psi_used": 0.24, "design_effect": 1.3,
         "n_iid": 0, "n_test": 0,
-        "per_stratum": {s: 0 for s in ("known-item", "paraphrase", "pt-en", "alias", "supersession", "multi-hop", "kind-filter")}
-        | {"library": 20, "no-answer": 20},
+        "per_stratum": dict(Counter(q["stratum"] for q in queries if q["split"] == "test")),
         "seed": 0, "resamples": 10000, "created": "2026-10-07T00:00:00Z",
     })
     (out / "README.md").write_text(
@@ -298,6 +298,10 @@ def build(out: Path, exe: Path, fetched: str) -> str:
         f"Library documents (invented, licence {LICENCE}): demo/wal, demo/busy.\n\n{CANARY}\n", encoding="utf-8")
 
     leak_filter.run(out, ["dev", "test"])
+    ds = dataset.load(out)
+    write_jsonl(out / "generation/pool/candidates.jsonl", [
+        {"item": i["id"], "kind": i["kind"], "split": i["split"], "text_sha256": pool.text_sha(i["text"]), "candidates": []}
+        for i in pool.pooled_items(ds, "all")])
     dataset.build_corpus(out)
     dataset.build_qrels(out)
     review.sample(out, "all")

@@ -326,3 +326,19 @@ def test_cmd_refuses_a_missing_codex(step, monkeypatch):
     with pytest.raises(Refused, match="codex"):
         step.run()
     assert not (step.ds / "queries.jsonl").exists()
+
+
+def test_cmd_exits_1_when_the_facts_cannot_fill_a_stratum(step, monkeypatch, capsys):
+    monkeypatch.setattr(q, "split_counts", lambda *a: {**COUNTS, "supersession": 5})
+    assert step.run() == 1
+    assert "4 queries short of the asked counts" in capsys.readouterr().err
+    assert len(common.read_jsonl(step.ds / "queries.jsonl")) == len(step.built)
+
+
+def test_the_pt_en_prompt_states_the_fact_in_english_and_the_note_language(ds):
+    w, (built, _) = intents(ds)
+    it = next(i for i in built if i.stratum == "pt-en")
+    prompt = q.build_prompt(it, q.load_sections("queries.md"))
+    assert "stated in English" in prompt
+    assert f"written in {it.slots['fact_lang_name']}" in prompt
+    assert f"Fact (written in {it.slots['fact_lang_name']})" not in prompt

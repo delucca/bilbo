@@ -121,3 +121,12 @@ def test_bm25_ranks_sources_for_library(ctx):
     arm.prepare(ctx)
     result = arm.rank(query(ctx.ds, "q-lib-002"), ctx)
     assert result.ranking[0] == "demo/busy"
+
+
+def test_ripgrep_finds_an_accented_word_in_its_own_spelling(ctx):
+    arm = arms.get("ripgrep")
+    arm.prepare(ctx)
+    target = "gotcha-edge-cache-eviction.md"
+    (ctx.sb.store / "notes" / target).write_text("# Migra\u00e7\u00e3o\n\nA migra\u00e7\u00e3o do banco roda de noite.\n", encoding="utf-8")
+    result = arm.rank({"text": "migra\u00e7\u00e3o", "stratum": "known-item", "kind": None}, ctx)
+    assert note_id(ctx.ds, target) in result.ranking
