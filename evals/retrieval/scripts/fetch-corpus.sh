@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Fetch the SWE-chat sessions listed at the bottom, untouched, into dataset/corpus-<sha256>.tar.zst.
-# Needs HF_TOKEN from an account that accepted the dataset's terms.
+# Get the corpus, the SWE-chat sessions listed at the bottom, untouched, into dataset/corpus-<sha256>.tar.zst, and print
+# its path: the archive already there if valid, else the one in dataset.lock, else rebuilt from SWE-chat, which needs
+# HF_TOKEN from an account that accepted the dataset's terms.
 set -euo pipefail
 
 root=$(cd "$(dirname "$0")/.." && pwd)
@@ -14,14 +15,23 @@ out=$root/dataset/corpus-${CORPUS_SHA256:0:12}.tar.zst
 cache=${BILBO_EVALS_CACHE:-${XDG_CACHE_HOME:-$HOME/.cache}/bilbo-evals}/retrieval/transcripts
 
 die() { echo "fetch-corpus: $*" >&2; exit 1; }
+log() { echo "fetch-corpus: $*" >&2; }
 sha() { sha256sum "$1" | cut -d' ' -f1; }
+# shellcheck source=dataset.sh
+source "$root/scripts/dataset.sh"
 
 fetch() {
   if [[ -f $out && $(sha "$out") == "$CORPUS_SHA256" ]]; then
-    echo "fetch-corpus: ${out#"$root"/} is already valid" >&2
+    log "${out#"$root"/} is already valid"
+    echo "$out"
     exit 0
   fi
-  [[ -n ${HF_TOKEN:-} ]] || die "HF_TOKEN is not set"
+  if fetch_archive "${out##*/}"; then
+    [[ $(sha "$out") == "$CORPUS_SHA256" ]] || die "${out##*/} in dataset.lock is not the corpus pinned here"
+    echo "$out"
+    exit 0
+  fi
+  [[ -n ${HF_TOKEN:-} ]] || die "HF_TOKEN is not set, and rebuilding the corpus from SWE-chat needs it"
 
   mkdir -p "$cache" "${out%/*}"
   stage=$(mktemp -d "$cache/../stage.XXXXXX")
@@ -30,7 +40,7 @@ fetch() {
   while read -r repo created path; do
     file=$cache/${path##*/}
     if [[ ! -f $file ]]; then
-      echo "fetch-corpus: downloading ${path##*/}" >&2
+      log "downloading ${path##*/}"
       curl -fsSL --retry 3 -H "Authorization: Bearer $HF_TOKEN" -o "$file.part" \
         "https://huggingface.co/datasets/$DATASET/resolve/$REVISION/$path"
       mv "$file.part" "$file"
@@ -48,7 +58,8 @@ fetch() {
   got=$(sha "$out.part")
   [[ $got == "$CORPUS_SHA256" ]] || die "archive sha256 is $got, expected $CORPUS_SHA256 (if the sessions are unchanged, clear $cache and run again)"
   mv "$out.part" "$out"
-  echo "fetch-corpus: ${out#"$root"/} verified" >&2
+  log "${out#"$root"/} verified"
+  echo "$out"
 }
 
 # repo, session start, path in the dataset

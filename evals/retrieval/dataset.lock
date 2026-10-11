@@ -1,0 +1,5 @@
+# The archives that scripts/publish.sh published to the Hugging Face repo named in scripts/dataset.sh, one per line:
+# <file> <sha256> <commit> [<llm-model>]. The scripts download a file at its commit and check its sha256. A store's line
+# also names the LLM it was built with, so build-store.sh can find the store built from the current inputs.
+corpus-1235aec0592a.tar.zst 1235aec0592a637d039f27796f49986bbc1d1a9c4267ddae28031f2fe29649f8 014da319c4117df37af2a06db555f254792c0213
+store-mem0-65648a198753.tar.zst 0b7232c5a2da66a2ed10e96e5475ee28b381e44d51983d2494925d421dce311a 014da319c4117df37af2a06db555f254792c0213 claude-opus-5-5

@@ -1,9 +1,13 @@
 #!/usr/bin/env bash
-# Build an arm's store from the corpus into dataset/store-<arm>-<key>.tar.zst, its services in Docker.
-#   build-store.sh <arm> [--rebuild] [--sessions N]
-# Needs BILBO_EVAL_LLM_URL (as the containers see it), BILBO_EVAL_LLM_KEY and BILBO_EVAL_LLM_MODEL; BILBO_EVAL_LLM_HEADERS,
-# a JSON object, adds headers to every LLM call for a gateway that needs them.
-# --sessions N builds from the first N sessions only: a trial, whose archive stays in the cache.
+# Get an arm's store into dataset/store-<arm>-<key>.tar.zst: the archive already there, else the one in dataset.lock,
+# else build it from the corpus, its services in Docker.
+#   build-store.sh <arm> [--rebuild] [--sessions N] [--check] [--key]
+# Building needs BILBO_EVAL_LLM_URL (as the containers see it), BILBO_EVAL_LLM_KEY and BILBO_EVAL_LLM_MODEL;
+# BILBO_EVAL_LLM_HEADERS, a JSON object, adds headers to every LLM call for a gateway that needs them. Without
+# BILBO_EVAL_LLM_MODEL, the store is the one in dataset.lock built from the current corpus, embedder and arm files (it
+# stops when there are several). --key prints the store's key for the current inputs and stops.
+# --rebuild builds it again. --sessions N builds from the first N sessions only: a trial, whose archive stays in the
+# cache. --check then restores the store into fresh services and checks it with arms/<arm>/check.py.
 # The embedder runs on an NVIDIA GPU when Docker reports one; BILBO_EVAL_GPU=1 or 0 forces it on or off.
 set -euo pipefail
 
@@ -16,29 +20,89 @@ EMBEDDER_SHA256=06507c7b42688469c4e7298b0a1e16deff06caf291cf0a5b278c308249c3e439
 die() { echo "build-store: $*" >&2; exit 1; }
 log() { echo "build-store: $*" >&2; }
 sha() { sha256sum "$1" | cut -d' ' -f1; }
+# shellcheck source=dataset.sh
+source "$root/scripts/dataset.sh"
 
 arm=${1:-}
 [[ -n $arm && -f $root/arms/$arm/compose.yaml ]] ||
-  die "usage: build-store.sh <arm> [--rebuild] [--sessions N] (arms: $(cd "$root/arms" && echo *))"
+  die "usage: build-store.sh <arm> [--rebuild] [--sessions N] [--check] [--key] (arms: $(cd "$root/arms" && echo *))"
 shift
-rebuild= sessions=
+rebuild= sessions= check= print_key=
 while (($#)); do
   case $1 in
     --rebuild) rebuild=1 ;;
+    --key) print_key=1 ;;
     --sessions) [[ ${2:-} =~ ^[1-9][0-9]*$ ]] || die "--sessions needs a number"; sessions=$2; shift ;;
+    --check) [[ -f $root/arms/$arm/check.py ]] || die "$arm has no check.py"; check=1 ;;
     *) die "unknown option $1" ;;
   esac
   shift
 done
-for v in BILBO_EVAL_LLM_URL BILBO_EVAL_LLM_KEY BILBO_EVAL_LLM_MODEL; do
-  [[ -n ${!v:-} ]] || die "$v is not set"
-done
 
 cache=${BILBO_EVALS_CACHE:-${XDG_CACHE_HOME:-$HOME/.cache}/bilbo-evals}/retrieval
 
-"$root/scripts/fetch-corpus.sh"
-archive=$(echo "$root"/dataset/corpus-*.tar.zst)
+archive=$("$root/scripts/fetch-corpus.sh")
 corpus_sha=$(sha "$archive")
+
+# The key covers everything that shapes the store. The device does not: it changes only floating-point noise. check.py
+# only reads a store.
+inputs_for() {
+  echo "corpus $corpus_sha"
+  echo "embedder $EMBEDDER_SHA256"
+  echo "llm $1"
+  echo "sessions ${sessions:-all}"
+  cd "$root/arms/$arm"
+  find . -mindepth 1 \( -name '.*' -o -name __pycache__ \) -prune -o -type f ! -name compose.gpu.yaml ! -name check.py \
+    -print | LC_ALL=C sort | while read -r f; do echo "file ${f#./} $(sha "$f")"; done
+}
+key_of() { printf '%s\n' "$1" | sha256sum | cut -c1-12; }
+
+# Only a build needs the LLM.
+need_llm() {
+  for v in BILBO_EVAL_LLM_URL BILBO_EVAL_LLM_KEY BILBO_EVAL_LLM_MODEL; do
+    [[ -n ${!v:-} ]] || die "$v is not set, and building the $arm store needs it"
+  done
+}
+
+llm=${BILBO_EVAL_LLM_MODEL:-}
+if [[ -z $llm && -z $sessions ]]; then
+  # A store's lock line names its LLM; it is current when the key of the current inputs with that LLM is its name.
+  current=()
+  while read -r file _ _ m; do
+    [[ $file == "store-$arm-"*.tar.zst && -n $m ]] || continue
+    if [[ $file == "store-$arm-$(key_of "$(inputs_for "$m")").tar.zst" ]]; then current+=("$m"); fi
+  done < <(lock_entries)
+  ((${#current[@]} < 2)) ||
+    die "dataset.lock has $arm stores from the current inputs built by ${current[*]}: set BILBO_EVAL_LLM_MODEL to one"
+  llm=${current[0]:-}
+  [[ -n $llm ]] || log "dataset.lock has no $arm store built from the current inputs"
+fi
+if [[ -z $llm ]]; then
+  [[ -z $print_key ]] || die "--key needs BILBO_EVAL_LLM_MODEL or a $arm store in dataset.lock"
+  need_llm
+fi
+
+inputs=$(inputs_for "$llm")
+key=$(key_of "$inputs")
+[[ -z $print_key ]] || { echo "$key"; exit 0; }
+name=store-$arm-$key.tar.zst
+if [[ -n $sessions ]]; then out=$cache/trials/$name; else out=$root/dataset/$name; fi
+
+build=
+if [[ -n $rebuild ]]; then
+  build=1
+elif [[ -f $out ]]; then
+  log "${out#"$root"/} is already built (--rebuild builds it again)"
+  if [[ -z $sessions ]] && entry=$(locked "$name") && read -r want _ <<<"$entry" &&
+     [[ $(sha "$out") != "$want" ]]; then
+    log "warning: ${out#"$root"/} is not the archive dataset.lock pins (a local build?); using it"
+  fi
+elif [[ -n $sessions ]] || ! fetch_archive "$name"; then
+  build=1
+fi
+[[ -z $build ]] || need_llm
+[[ -n $build$check ]] || exit 0
+
 corpus=$cache/corpus-${corpus_sha:0:12}
 if [[ ! -d $corpus ]]; then
   rm -rf "$corpus.part" && mkdir -p "$corpus.part"
@@ -55,27 +119,8 @@ if [[ ! -f $model || $(sha "$model") != "$EMBEDDER_SHA256" ]]; then
   mv "$model.part" "$model"
 fi
 
-# The key covers everything that shapes the store. The device does not: it changes only floating-point noise.
-inputs=$(
-  echo "corpus $corpus_sha"
-  echo "embedder $EMBEDDER_SHA256"
-  echo "llm $BILBO_EVAL_LLM_MODEL"
-  echo "sessions ${sessions:-all}"
-  cd "$root/arms/$arm"
-  find . -mindepth 1 \( -name '.*' -o -name __pycache__ \) -prune -o -type f ! -name compose.gpu.yaml -print | LC_ALL=C sort |
-    while read -r f; do echo "file ${f#./} $(sha "$f")"; done
-)
-key=$(printf '%s\n' "$inputs" | sha256sum | cut -c1-12)
-if [[ -n $sessions ]]; then out=$cache/trials/store-$arm-$key.tar.zst; else out=$root/dataset/store-$arm-$key.tar.zst; fi
-if [[ -f $out && -z $rebuild ]]; then
-  log "${out#"$root"/} is already built (--rebuild builds it again)"
-  exit 0
-fi
-
 work=$cache/work/$arm-$key
-[[ -z $rebuild ]] || rm -rf "$work"
-mkdir -p "$work"
-printf '%s\n%s\n' "$key" "$inputs" > "$work/key.txt"
+check_dir=$cache/check/$arm-$key
 
 files=(-f "$root/arms/$arm/compose.yaml")
 gpu_file=$root/arms/$arm/compose.gpu.yaml
@@ -89,20 +134,45 @@ device=cpu; ((${#files[@]} == 2)) || device=gpu
 
 export BILBO_UID=$(id -u) BILBO_GID=$(id -g) BILBO_EVAL_CORPUS=$corpus/corpus BILBO_EVAL_WORK=$work
 export BILBO_EVAL_EMBEDDER=$model BILBO_EVAL_DEVICE=$device BILBO_EVAL_SESSIONS=$sessions
-compose() { docker-compose -p "bilbo-retrieval-$arm" --profile build "${files[@]}" "$@"; }
-trap 'compose down -v --remove-orphans >/dev/null 2>&1 || true' EXIT
+# Compose warns about each unset variable, and a check has no LLM.
+export BILBO_EVAL_LLM_URL=${BILBO_EVAL_LLM_URL:-} BILBO_EVAL_LLM_KEY=${BILBO_EVAL_LLM_KEY:-}
+export BILBO_EVAL_LLM_MODEL=${BILBO_EVAL_LLM_MODEL:-}
+# A check-only run gets its own project: check.py empties the Qdrant it reaches, and the trap takes the project down.
+project=bilbo-retrieval-$arm
+[[ -n $build ]] || project+=-check
+compose() { docker-compose -p "$project" --profile build "${files[@]}" "$@"; }
+trap 'compose down -v --remove-orphans >/dev/null 2>&1 || true; rm -rf "$check_dir"' EXIT
 trap 'exit 130' INT TERM
 
-log "building the $arm store $key on the $device"
-compose up -d --wait qdrant embedder
-compose run --rm --build build
-compose down -v --remove-orphans
+if [[ -n $build ]]; then
+  [[ -z $rebuild ]] || rm -rf "$work"
+  mkdir -p "$work"
+  printf '%s\n%s\n' "$key" "$inputs" > "$work/key.txt"
 
-mkdir -p "${out%/*}"
-# Fixed order, times and owners, as for the corpus.
-tar --sort=name --mtime='1970-01-01 00:00:00Z' --owner=0 --group=0 --numeric-owner --format=posix \
-  --pax-option='exthdr.name=%d/PaxHeaders/%f,delete=atime,delete=ctime' \
-  -C "$work" -cf - store | zstd -q -19 -T0 -o "$out.part"
-mv "$out.part" "$out"
-rm -rf "$work"
-log "${out#"$root"/} built ($(du -h "$out" | cut -f1))"
+  log "building the $arm store $key on the $device"
+  compose up -d --wait qdrant embedder
+  compose run --rm --build build
+  compose down -v --remove-orphans
+
+  mkdir -p "${out%/*}"
+  # Fixed order, times and owners, as for the corpus.
+  tar --sort=name --mtime='1970-01-01 00:00:00Z' --owner=0 --group=0 --numeric-owner --format=posix \
+    --pax-option='exthdr.name=%d/PaxHeaders/%f,delete=atime,delete=ctime' \
+    -C "$work" -cf - store | zstd -q -19 -T0 -o "$out.part"
+  mv "$out.part" "$out"
+  rm -rf "$work"
+  log "${out#"$root"/} built ($(du -h "$out" | cut -f1))"
+fi
+
+if [[ -n $check ]]; then
+  rm -rf "$check_dir" && mkdir -p "$check_dir"
+  zstd -dc "$out" | tar -xf - -C "$check_dir"
+  cp "$root/arms/$arm/check.py" "$check_dir/check.py"
+  export BILBO_EVAL_WORK=$check_dir
+
+  log "checking ${out#"$root"/} on the $device"
+  compose up -d --wait qdrant embedder
+  compose run --rm --build --entrypoint python build /work/check.py ||
+    die "${out#"$root"/} failed its check"
+  compose down -v --remove-orphans
+fi

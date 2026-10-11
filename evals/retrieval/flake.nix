@@ -26,6 +26,7 @@
             findutils
             gnugrep
             gnutar
+            python3Packages.huggingface-hub
             zstd
           ];
           BILBO_EVAL = "retrieval";
