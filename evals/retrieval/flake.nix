@@ -9,6 +9,7 @@
       systems = [
         "aarch64-darwin"
         "aarch64-linux"
+        "x86_64-darwin"
         "x86_64-linux"
       ];
       forAll = f: nixpkgs.lib.genAttrs systems (system: f nixpkgs.legacyPackages.${system});
@@ -28,6 +29,9 @@
             zstd
           ];
           BILBO_EVAL = "retrieval";
+          # nixpkgs' Compose looks for buildx only in ~/.docker/cli-plugins and here. Without it, Compose builds
+          # with the classic builder, which ignores ADD --checksum.
+          DOCKER_CLI_PLUGIN_DIRS = "${pkgs.docker-buildx}/libexec/docker/cli-plugins";
         };
       });
     };
