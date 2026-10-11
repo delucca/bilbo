@@ -1,8 +1,8 @@
 # shellcheck shell=bash
 # Where the dataset is published, and how to fetch an archive that dataset.lock pins. Sourced by the scripts once they
 # have set root and defined die, log and sha.
-# A lock line is <file> <sha256> <commit> [<llm-model>]: the Hugging Face commit that published the file, and for a
-# store built with an LLM, that LLM.
+# A lock line is <file> <sha256> <commit> [<llm-model> [<small-model>]]: the Hugging Face commit that published the
+# file, and for a store built with an LLM, that LLM and the small model when it differs from the LLM.
 
 HF_REPO=deluccadev/bilbo-retrieval
 lock=${root:?}/dataset.lock
@@ -17,7 +17,8 @@ lock_entries() {
   done <"$lock"
 }
 
-# Print the rest of <file>'s lock line: <sha256> <commit> [<llm-model>]. Return 1 when the lock does not list it.
+# Print the rest of <file>'s lock line: <sha256> <commit> [<llm-model> [<small-model>]]. Return 1 when the lock does
+# not list it.
 locked() {
   local file rest
   while read -r file rest; do

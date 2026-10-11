@@ -3,13 +3,17 @@
 # else build it from the corpus, its services in Docker.
 #   build-store.sh <arm> [--rebuild] [--sessions N] [--check] [--key]
 # Building needs BILBO_EVAL_LLM_URL (as the containers see it), BILBO_EVAL_LLM_KEY and BILBO_EVAL_LLM_MODEL;
-# BILBO_EVAL_LLM_HEADERS, a JSON object, adds headers to every LLM call for a gateway that needs them. Without
+# BILBO_EVAL_LLM_HEADERS, a JSON object, adds headers to every LLM call for a gateway that needs them, and
+# BILBO_EVAL_LLM_SMALL_MODEL is the model for the lighter calls of an arm whose compose.yaml reads it. Without
 # BILBO_EVAL_LLM_MODEL, the store is the one in dataset.lock built from the current corpus, embedder and arm files (it
 # stops when there are several). --key prints the store's key for the current inputs and stops.
 # An arm whose compose.yaml reads none of the LLM variables needs none of them, and its key names no LLM.
 # --rebuild builds the store again. --sessions N builds from the first N sessions only: a trial, whose archive stays in
 # the cache. --check then restores the store into fresh services and checks it with arms/<arm>/check.py.
 # The embedder runs on an NVIDIA GPU when Docker reports one; BILBO_EVAL_GPU=1 or 0 forces it on or off.
+# An arm with a `pack` service (profile `pack`) runs it after the build with the other services stopped, to dump a
+# database into $work/store; one with a `restore` service (profile `restore`) runs it before a check's services start,
+# to load that database back.
 set -euo pipefail
 
 root=$(cd "$(dirname "$0")/.." && pwd)
@@ -49,11 +53,14 @@ archive=$("$root/scripts/fetch-corpus.sh")
 corpus_sha=$(sha "$archive")
 
 # The key covers everything that shapes the store. The device does not: it changes only floating-point noise. check.py
-# only reads a store.
+# only reads a store. The small model counts only for an arm that reads it, and only when it is not the LLM itself.
+uses_small=
+grep -q BILBO_EVAL_LLM_SMALL_MODEL "$root/arms/$arm/compose.yaml" && uses_small=1
 inputs_for() {
   echo "corpus $corpus_sha"
   echo "embedder $EMBEDDER_SHA256"
   [[ -z $uses_llm ]] || echo "llm $1"
+  [[ -z $uses_small || -z $2 || $2 == "$1" ]] || echo "llm-small $2"
   echo "sessions ${sessions:-all}"
   cd "$root/arms/$arm"
   find . -mindepth 1 \( -name '.*' -o -name __pycache__ \) -prune -o -type f ! -name compose.gpu.yaml ! -name check.py \
@@ -68,17 +75,22 @@ need_llm() {
   done
 }
 
-llm=${BILBO_EVAL_LLM_MODEL:-}
+llm=${BILBO_EVAL_LLM_MODEL:-} small=${BILBO_EVAL_LLM_SMALL_MODEL:-}
 if [[ -n $uses_llm && -z $llm && -z $sessions ]]; then
-  # A store's lock line names its LLM; it is current when the key of the current inputs with that LLM is its name.
+  # A store's lock line names its LLM and small model; it is current when the key of the current inputs with them is
+  # its name.
   current=()
-  while read -r file _ _ m; do
+  while read -r file _ _ m s; do
     [[ $file == "store-$arm-"*.tar.zst && -n $m ]] || continue
-    if [[ $file == "store-$arm-$(key_of "$(inputs_for "$m")").tar.zst" ]]; then current+=("$m"); fi
+    if [[ $file == "store-$arm-$(key_of "$(inputs_for "$m" "$s")").tar.zst" ]]; then
+      current+=("$m${s:+ (small $s)}") llm=$m small=$s
+    fi
   done < <(lock_entries)
-  ((${#current[@]} < 2)) ||
-    die "dataset.lock has $arm stores from the current inputs built by ${current[*]}: set BILBO_EVAL_LLM_MODEL to one"
-  llm=${current[0]:-}
+  if ((${#current[@]} > 1)); then
+    printf -v built '%s, ' "${current[@]}"
+    die "dataset.lock has $arm stores from the current inputs built by ${built%, }:" \
+      "set BILBO_EVAL_LLM_MODEL (and BILBO_EVAL_LLM_SMALL_MODEL) to one"
+  fi
   [[ -n $llm ]] || log "dataset.lock has no $arm store built from the current inputs"
 fi
 if [[ -n $uses_llm && -z $llm ]]; then
@@ -86,7 +98,7 @@ if [[ -n $uses_llm && -z $llm ]]; then
   need_llm
 fi
 
-inputs=$(inputs_for "$llm")
+inputs=$(inputs_for "$llm" "$small")
 key=$(key_of "$inputs")
 [[ -z $print_key ]] || { echo "$key"; exit 0; }
 name=store-$arm-$key.tar.zst
@@ -157,6 +169,10 @@ if [[ -n $build ]]; then
   log "building the $arm store $key on the $device"
   compose up -d --wait $(services)  # every service without a profile: the arm's database and the embedder
   compose run --rm --build build
+  if services pack | grep -x pack >/dev/null; then
+    compose stop
+    compose --profile pack run --rm --no-deps pack
+  fi
   compose down -v --remove-orphans
 
   mkdir -p "${out%/*}"
@@ -176,6 +192,7 @@ if [[ -n $check ]]; then
   export BILBO_EVAL_WORK=$check_dir
 
   log "checking ${out#"$root"/} on the $device"
+  if services restore | grep -x restore >/dev/null; then compose --profile restore run --rm --no-deps restore; fi
   compose up -d --wait $(services)
   compose run --rm --build --entrypoint python build /work/check.py ||
     die "${out#"$root"/} failed its check"

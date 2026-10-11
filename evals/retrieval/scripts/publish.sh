@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Publish archives from dataset/ to the Hugging Face dataset repo in one commit, with dataset-card.md as its card, and
-# write each one's line in dataset.lock: its sha256, the commit and, for a store built with an LLM, that LLM.
+# write each one's line in dataset.lock: its sha256, the commit and, for a store built with an LLM, the LLMs it used.
 #   publish.sh <file>...
 # For the repo's owner: needs HF_TOKEN with write access, which hf reads from the environment. Commit dataset.lock
 # afterwards. Only a corpus, or a store built from every session whose manifest matches its name, is published.
@@ -18,7 +18,7 @@ source "$root/scripts/dataset.sh"
 (($#)) || die "usage: publish.sh <file>... (archives in dataset/)"
 [[ -f $lock ]] || die "dataset.lock is missing"
 dataset=$(realpath "$root/dataset")
-declare -A sums models
+declare -A sums models smalls
 names=()
 for arg; do
   [[ -f $arg ]] || die "$arg is not a file"
@@ -40,8 +40,10 @@ for arg; do
     # An arm that uses an LLM has it in its key, so the key check below refuses a store built with another LLM.
     re='"llm ([^"[:space:]]+)"'
     if [[ $manifest =~ $re ]]; then models[$name]=${BASH_REMATCH[1]}; fi
-    current=$(BILBO_EVAL_LLM_MODEL=${models[$name]:-} "$root/scripts/build-store.sh" "$arm" --key) ||
-      die "cannot compute the current key of the $arm store"
+    re='"llm-small ([^"[:space:]]+)"'
+    if [[ $manifest =~ $re ]]; then smalls[$name]=${BASH_REMATCH[1]}; fi
+    current=$(BILBO_EVAL_LLM_MODEL=${models[$name]:-} BILBO_EVAL_LLM_SMALL_MODEL=${smalls[$name]:-} \
+      "$root/scripts/build-store.sh" "$arm" --key) || die "cannot compute the current key of the $arm store"
     [[ $current == "$key" ]] ||
       die "$name is stale: the current corpus, embedder and $arm files give store-$arm-$current.tar.zst"
   else
@@ -70,7 +72,9 @@ commit=${url##*/commit/}
 [[ $commit =~ ^[0-9a-f]{40}$ ]] || die "hf upload printed '$url', not a commit URL"
 
 declare -A written
-line() { printf '%s %s %s%s\n' "$1" "${sums[$1]}" "$commit" "${models[$1]:+ ${models[$1]}}"; }
+line() {
+  printf '%s %s %s%s%s\n' "$1" "${sums[$1]}" "$commit" "${models[$1]:+ ${models[$1]}}" "${smalls[$1]:+ ${smalls[$1]}}"
+}
 {
   while IFS= read -r l || [[ -n $l ]]; do
     read -r first _ <<<"$l"
