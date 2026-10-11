@@ -1,9 +1,0 @@
-$ codex plugin remove bilbo@bilbo --json
-exit 0
---- stdout
-{
-  "pluginId": "bilbo@bilbo",
-  "name": "bilbo",
-  "marketplaceName": "bilbo"
-}
---- stderr

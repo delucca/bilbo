@@ -1,7 +1,0 @@
-$ codex plugin marketplace list --json
-exit 0
---- stdout
-{
-  "marketplaces": []
-}
---- stderr

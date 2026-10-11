@@ -1,5 +1,0 @@
-$ claude plugin marketplace list --json
-exit 0
---- stdout
-[]
---- stderr

@@ -1,9 +1,0 @@
-{
-  "name": "bilbo",
-  "description": "Write and recall the notes agent sessions keep, and answer from the library's sources with checked citations, through the bilbo CLI.",
-  "author": {
-    "name": "delucca"
-  },
-  "repository": "https://github.com/delucca/bilbo",
-  "license": "Apache-2.0"
-}

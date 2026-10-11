@@ -1,6 +1,0 @@
-/target
-/result
-/.claude/settings.local.json
-/openspec/changes/archive/
-/evals/**/.venv/
-/evals/**/__pycache__/

@@ -1,8 +1,0 @@
-$ codex plugin marketplace remove bilbo --json
-exit 0
---- stdout
-{
-  "marketplaceName": "bilbo",
-  "installedRoot": "/fixture/home/codex/.tmp/marketplaces/bilbo"
-}
---- stderr
