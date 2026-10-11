@@ -1,0 +1,30 @@
+{
+  description = "bilbo retrieval eval";
+
+  inputs.nixpkgs.url = "github:NixOS/nixpkgs/2bd3427b41d10b8318383195efe502ed1baca6cd";
+
+  outputs =
+    { nixpkgs, ... }:
+    let
+      systems = [
+        "aarch64-darwin"
+        "aarch64-linux"
+        "x86_64-linux"
+      ];
+      forAll = f: nixpkgs.lib.genAttrs systems (system: f nixpkgs.legacyPackages.${system});
+    in
+    {
+      devShells = forAll (pkgs: {
+        default = pkgs.mkShell {
+          packages = with pkgs; [
+            bash
+            coreutils
+            curl
+            gnutar
+            zstd
+          ];
+          BILBO_EVAL = "retrieval";
+        };
+      });
+    };
+}
