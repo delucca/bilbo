@@ -157,8 +157,16 @@ def fit_embedder(mem, counts):
     mem.embedding_model.embed = fitted
 
 
+def retry_after(error):
+    try:
+        return int(float(error.response.headers.get("retry-after", 0)))
+    except ValueError:  # an HTTP date: back off as usual
+        return 0
+
+
 def add(mem, messages, **kwargs):
-    """mem0 calls the LLM before it writes anything, so an add whose call failed is safe to send again."""
+    """mem0 calls the LLM before it writes anything, so an add whose call failed is safe to send again. A usage limit
+    can last hours: a 429 waits as long as its Retry-After asks."""
     for attempt in range(1, 11):
         try:
             return mem.add(messages, **kwargs)["results"]
@@ -166,6 +174,8 @@ def add(mem, messages, **kwargs):
             if not isinstance(e.__cause__, TRANSIENT):
                 raise
             wait = min(60 * attempt, 600)
+            if isinstance(e.__cause__, openai.RateLimitError):
+                wait = max(wait, retry_after(e.__cause__))
             log(f"LLM call failed ({e}); retrying in {wait} s")
             time.sleep(wait)
     sys.exit("mem0: the LLM failed 10 times in a row; run again to resume from the last checkpoint")
