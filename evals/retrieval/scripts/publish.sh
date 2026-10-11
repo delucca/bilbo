@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Publish archives from dataset/ to the Hugging Face dataset repo in one commit, with dataset-card.md as its card, and
-# write each one's line in dataset.lock: its sha256, the commit and, for a store, the LLM it was built with.
+# write each one's line in dataset.lock: its sha256, the commit and, for a store built with an LLM, that LLM.
 #   publish.sh <file>...
 # For the repo's owner: needs HF_TOKEN with write access, which hf reads from the environment. Commit dataset.lock
 # afterwards. Only a corpus, or a store built from every session whose manifest matches its name, is published.
@@ -37,10 +37,10 @@ for arg; do
     [[ $manifest == *'"sessions all"'* ]] || die "$name is a trial: only a store built from every session is published"
     re='"key": "([^"]*)"'
     [[ $manifest =~ $re && ${BASH_REMATCH[1]} == "$key" ]] || die "$name's manifest has another key"
+    # An arm that uses an LLM has it in its key, so the key check below refuses a store built with another LLM.
     re='"llm ([^"[:space:]]+)"'
-    [[ $manifest =~ $re ]] || die "$name's manifest names no LLM"
-    models[$name]=${BASH_REMATCH[1]}
-    current=$(BILBO_EVAL_LLM_MODEL=${models[$name]} "$root/scripts/build-store.sh" "$arm" --key) ||
+    if [[ $manifest =~ $re ]]; then models[$name]=${BASH_REMATCH[1]}; fi
+    current=$(BILBO_EVAL_LLM_MODEL=${models[$name]:-} "$root/scripts/build-store.sh" "$arm" --key) ||
       die "cannot compute the current key of the $arm store"
     [[ $current == "$key" ]] ||
       die "$name is stale: the current corpus, embedder and $arm files give store-$arm-$current.tar.zst"

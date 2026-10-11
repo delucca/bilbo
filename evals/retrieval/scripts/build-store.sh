@@ -6,8 +6,9 @@
 # BILBO_EVAL_LLM_HEADERS, a JSON object, adds headers to every LLM call for a gateway that needs them. Without
 # BILBO_EVAL_LLM_MODEL, the store is the one in dataset.lock built from the current corpus, embedder and arm files (it
 # stops when there are several). --key prints the store's key for the current inputs and stops.
-# --rebuild builds it again. --sessions N builds from the first N sessions only: a trial, whose archive stays in the
-# cache. --check then restores the store into fresh services and checks it with arms/<arm>/check.py.
+# An arm whose compose.yaml reads none of the LLM variables needs none of them, and its key names no LLM.
+# --rebuild builds the store again. --sessions N builds from the first N sessions only: a trial, whose archive stays in
+# the cache. --check then restores the store into fresh services and checks it with arms/<arm>/check.py.
 # The embedder runs on an NVIDIA GPU when Docker reports one; BILBO_EVAL_GPU=1 or 0 forces it on or off.
 set -euo pipefail
 
@@ -38,6 +39,9 @@ while (($#)); do
   esac
   shift
 done
+# The containers get the LLM only through compose.yaml.
+uses_llm=
+grep -q BILBO_EVAL_LLM_ "$root/arms/$arm/compose.yaml" && uses_llm=1
 
 cache=${BILBO_EVALS_CACHE:-${XDG_CACHE_HOME:-$HOME/.cache}/bilbo-evals}/retrieval
 
@@ -49,7 +53,7 @@ corpus_sha=$(sha "$archive")
 inputs_for() {
   echo "corpus $corpus_sha"
   echo "embedder $EMBEDDER_SHA256"
-  echo "llm $1"
+  [[ -z $uses_llm ]] || echo "llm $1"
   echo "sessions ${sessions:-all}"
   cd "$root/arms/$arm"
   find . -mindepth 1 \( -name '.*' -o -name __pycache__ \) -prune -o -type f ! -name compose.gpu.yaml ! -name check.py \
@@ -65,7 +69,7 @@ need_llm() {
 }
 
 llm=${BILBO_EVAL_LLM_MODEL:-}
-if [[ -z $llm && -z $sessions ]]; then
+if [[ -n $uses_llm && -z $llm && -z $sessions ]]; then
   # A store's lock line names its LLM; it is current when the key of the current inputs with that LLM is its name.
   current=()
   while read -r file _ _ m; do
@@ -77,7 +81,7 @@ if [[ -z $llm && -z $sessions ]]; then
   llm=${current[0]:-}
   [[ -n $llm ]] || log "dataset.lock has no $arm store built from the current inputs"
 fi
-if [[ -z $llm ]]; then
+if [[ -n $uses_llm && -z $llm ]]; then
   [[ -z $print_key ]] || die "--key needs BILBO_EVAL_LLM_MODEL or a $arm store in dataset.lock"
   need_llm
 fi
@@ -100,7 +104,7 @@ elif [[ -f $out ]]; then
 elif [[ -n $sessions ]] || ! fetch_archive "$name"; then
   build=1
 fi
-[[ -z $build ]] || need_llm
+[[ -z $build || -z $uses_llm ]] || need_llm
 [[ -n $build$check ]] || exit 0
 
 corpus=$cache/corpus-${corpus_sha:0:12}
@@ -140,6 +144,7 @@ export BILBO_EVAL_LLM_MODEL=${BILBO_EVAL_LLM_MODEL:-}
 # A check-only run gets its own project: check.py empties the Qdrant it reaches, and the trap takes the project down.
 project=bilbo-retrieval-$arm
 [[ -n $build ]] || project+=-check
+services() { docker-compose -p "$project" ${1:+--profile "$1"} "${files[@]}" config --services; }
 compose() { docker-compose -p "$project" --profile build "${files[@]}" "$@"; }
 trap 'compose down -v --remove-orphans >/dev/null 2>&1 || true; rm -rf "$check_dir"' EXIT
 trap 'exit 130' INT TERM
@@ -150,7 +155,7 @@ if [[ -n $build ]]; then
   printf '%s\n%s\n' "$key" "$inputs" > "$work/key.txt"
 
   log "building the $arm store $key on the $device"
-  compose up -d --wait qdrant embedder
+  compose up -d --wait $(services)  # every service without a profile: the arm's database and the embedder
   compose run --rm --build build
   compose down -v --remove-orphans
 
@@ -171,7 +176,7 @@ if [[ -n $check ]]; then
   export BILBO_EVAL_WORK=$check_dir
 
   log "checking ${out#"$root"/} on the $device"
-  compose up -d --wait qdrant embedder
+  compose up -d --wait $(services)
   compose run --rm --build --entrypoint python build /work/check.py ||
     die "${out#"$root"/} failed its check"
   compose down -v --remove-orphans

@@ -1,0 +1,33 @@
+services:
+  embedder:
+    image: ghcr.io/ggml-org/llama.cpp:server-b11206@sha256:00bd6c289c590e576948cb3639b8195e4d3e6dd6ba1d761f0e2b871fcd4df24f
+    environment:
+      LLAMA_ARG_MODEL: /models/embedder.gguf
+      LLAMA_ARG_EMBEDDINGS: "1"
+      LLAMA_ARG_POOLING: last
+      LLAMA_ARG_CTX_SIZE: "8192"
+      LLAMA_ARG_BATCH: "8192"
+      LLAMA_ARG_UBATCH: "8192"
+      LLAMA_ARG_N_PARALLEL: "1"
+      LLAMA_ARG_FLASH_ATTN: "on"
+      LLAMA_ARG_CACHE_RAM: "0"  # no prompt cache in host memory, which takes up to 8 GiB by default
+    volumes:
+      - ${BILBO_EVAL_EMBEDDER}:/models/embedder.gguf:ro
+    healthcheck:
+      test: ["CMD", "curl", "-fs", "http://localhost:8080/health"]
+      interval: 2s
+      retries: 300
+
+  build:
+    build: .
+    profiles: [build]
+    user: ${BILBO_UID}:${BILBO_GID}
+    depends_on:
+      embedder: { condition: service_healthy }
+    environment:
+      EMBEDDER_URL: http://embedder:8080
+      BILBO_EVAL_SESSIONS: ${BILBO_EVAL_SESSIONS}
+      BILBO_EVAL_DEVICE: ${BILBO_EVAL_DEVICE}
+    volumes:
+      - ${BILBO_EVAL_CORPUS}:/corpus:ro
+      - ${BILBO_EVAL_WORK}:/work

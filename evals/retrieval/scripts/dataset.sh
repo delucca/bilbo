@@ -2,7 +2,7 @@
 # Where the dataset is published, and how to fetch an archive that dataset.lock pins. Sourced by the scripts once they
 # have set root and defined die, log and sha.
 # A lock line is <file> <sha256> <commit> [<llm-model>]: the Hugging Face commit that published the file, and for a
-# store the LLM it was built with.
+# store built with an LLM, that LLM.
 
 HF_REPO=deluccadev/bilbo-retrieval
 lock=${root:?}/dataset.lock
