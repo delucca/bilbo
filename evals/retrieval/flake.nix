@@ -20,6 +20,10 @@
             bash
             coreutils
             curl
+            docker-client
+            docker-compose
+            findutils
+            gnugrep
             gnutar
             zstd
           ];
