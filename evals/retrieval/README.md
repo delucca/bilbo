@@ -7,8 +7,10 @@ Which memory strategy best remembers what happened in real coding sessions?
 - [Nix](https://nixos.org/download) with flakes enabled.
 - To build or check a store: [Docker](https://docs.docker.com/get-started/get-docker/). The shell pins the client,
   Compose and buildx; the engine is yours. A buildx installed by Docker Desktop or OrbStack takes precedence.
-- To build a store: an OpenAI-compatible LLM endpoint with `GET /models` and JSON mode. With NVIDIA's
-  [container toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/), the embedder runs on the GPU.
+- To build a store with an LLM (every arm but dense): an OpenAI-compatible LLM endpoint with `GET /models` and JSON
+  mode.
+- To run the embedder on the GPU: NVIDIA's
+  [container toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/).
 - To rebuild the corpus from SWE-chat or to publish: a [Hugging Face token](https://huggingface.co/settings/tokens).
   Rebuilding needs an account that accepted [SWE-chat](https://huggingface.co/datasets/SALT-NLP/SWE-chat)'s terms;
   publishing, write access to the dataset.
@@ -43,39 +45,51 @@ It is packed the same way every time, so a rebuild gives the same bytes.
 ## The stores
 
 A store is the memory one strategy builds from the corpus, `dataset/store-<arm>-<key>.tar.zst`, so running the eval
-needs no LLM. The key hashes what shapes a store: the corpus, the embedder, the LLM and the files under `arms/<arm>/`.
-Change any of them and the key changes.
+needs no LLM. The key hashes what shapes a store: the corpus, the embedder, the LLM for an arm that uses one, and the
+files under `arms/<arm>/`. Change any of them and the key changes.
+
+| Arm | Strategy | LLM | Published store |
+|---|---|---|---|
+| [mem0](#mem0) | mem0, fed by its Claude Code plugin | yes | built with Claude Opus 5.5 |
+| [dense](#dense) | the sessions in chunks, embedded | no | yes |
+| [graphiti](#graphiti) | Graphiti's knowledge graph, fed one turn at a time | yes | not yet |
+| [ai-memory](#ai-memory) | ai-memory, fed by its Claude Code hooks | yes | not yet |
 
 To get a store:
 
     evals/retrieval/scripts/build-store.sh mem0
 
 Without `BILBO_EVAL_LLM_MODEL`, the script takes the store in `dataset.lock` built from the current corpus, embedder
-and arm files, and asks for `BILBO_EVAL_LLM_MODEL` when there are several. A store already in `dataset/` is used as it
-is, with a warning when it is not the one in the lock, as after a local build. When there is none, the script builds it,
-which needs the LLM:
+and arm files, and asks for `BILBO_EVAL_LLM_MODEL` (and `BILBO_EVAL_LLM_SMALL_MODEL`) when there are several. A store
+already in `dataset/` is used as it is, with a warning when it is not the one in the lock, as after a local build. When
+there is none, the script builds it, which needs the LLM for every arm but dense:
 
     BILBO_EVAL_LLM_URL=http://host.docker.internal:8080/v1 BILBO_EVAL_LLM_KEY=... BILBO_EVAL_LLM_MODEL=... \
       evals/retrieval/scripts/build-store.sh mem0
 
 The script runs the arm's services with Docker Compose, feeds the sessions, packs the store and removes the
-containers, even after a failure. Run it again after a stop and it resumes from the last point where no session was
-open. An LLM usage limit only pauses it, for as long as the endpoint's `Retry-After` asks.
+containers, even after a failure. Run it again after a stop and it resumes from the arm's last checkpoint. An LLM usage
+limit only pauses it, for as long as the endpoint's `Retry-After` asks.
 
 - `BILBO_EVAL_LLM_URL` is the URL the containers see. `host.docker.internal` reaches this machine, but on a Linux
   engine the server must listen on Docker's bridge (`172.17.0.1`) or on every interface, not on loopback alone.
 - `BILBO_EVAL_LLM_HEADERS`, a JSON object, adds headers to every LLM call.
+- `BILBO_EVAL_LLM_SMALL_MODEL`, optional, is the model for an arm's lighter calls; only Graphiti reads it. When it
+  names a model other than `BILBO_EVAL_LLM_MODEL`, it joins that arm's key and the store's line in `dataset.lock`.
 - The embedder uses an NVIDIA GPU when Docker reports one. `BILBO_EVAL_GPU=1` or `0` forces it.
 - `--rebuild` builds the store again. `--sessions N` builds from the first N sessions only: a trial, kept with the
   build's work files in `~/.cache/bilbo-evals` or `BILBO_EVALS_CACHE`, and never published.
 - `--check` then restores the store into fresh services and checks it with `arms/<arm>/check.py`, with no LLM.
 - `--key` prints the store's key for the current inputs and stops. `publish.sh` uses it to refuse a stale store.
 
+Every arm embeds with Qwen3-Embedding-0.6B, bilbo's embedder, on llama.cpp.
+
 ### mem0
 
 mem0 2.2.1, open source, fed by its own Claude Code plugin (0.3.3, same release). Each session is replayed through the
 plugin hook by hook, as Claude Code would have called it, so the plugin decides what to keep and when to send it. All
-sessions share one store and one timeline: sessions that overlapped interleave as they did.
+sessions share one store and one timeline: sessions that overlapped interleave as they did. The build checkpoints
+whenever no session is open.
 
 What the replay changes:
 
@@ -88,10 +102,9 @@ What the replay changes:
   batch's start and end. The LLM still reads all of it.
 - The two Cursor transcripts are left out. The plugin never sees them.
 
-Search is mem0's full hybrid search: Qdrant, BM25 through `fastembed` and entity matching through spaCy, with
-Qwen3-Embedding-0.6B, bilbo's embedder, on llama.cpp. mem0 only warns when BM25 or entity matching fails to load; the
-build stops instead. A store holds a Qdrant snapshot per collection, mem0's SQLite file and a `manifest.json` with the
-versions, counts and LLM tokens.
+Search is mem0's full hybrid search: Qdrant, BM25 through `fastembed` and entity matching through spaCy. mem0 only
+warns when BM25 or entity matching fails to load; the build stops instead. A store holds a Qdrant snapshot per
+collection, mem0's SQLite file and a `manifest.json` with the versions, counts and LLM tokens.
 
 `--check` restores the store into a fresh Qdrant twice. The counts must match the manifest, every memory in mem0's
 history must be in Qdrant with the same text, both restores must give the same points, and four searches in each
@@ -100,6 +113,82 @@ project's memory and in the personal memory must find memories.
 The published store was built with Claude Opus 5.5, through a gateway that runs `claude -p` for each call, and the
 embedder on an RTX 5070 Ti: 1,262 LLM calls, 24.1 million prompt tokens and 0.97 million completion tokens, in 2 h 51
 min. It holds 2,576 memories.
+
+### dense
+
+The plain baseline: the sessions cut into chunks, each chunk embedded once, with no LLM. Searching it is exact nearest
+neighbours over the vectors. The build checkpoints after every session.
+
+A session's text is its main thread, from Claude Code or Cursor: user and assistant messages, tool calls with their
+input, and tool results. Thinking and messages the harness injected are left out; compact summaries stay, labelled.
+Consecutive messages pack into chunks of at most 512 tokens of the embedder's tokenizer, and a longer message becomes
+windows of 512 tokens that overlap by 64.
+
+A store holds `vectors.npy` (unit vectors as float16, row i for line i of `chunks.jsonl`), `chunks.jsonl` and a
+`manifest.json`. llama.cpp reuses the start of the previous request, which would make a vector depend on the text
+before it, so a one-token sentinel goes before every chunk, and a search must send it before every query. CPU and GPU
+vectors differ only by floating-point noise, so the device is not in the key.
+
+`--check` checks that the vectors, the chunks and the manifest agree and that every chunk lies within its session in
+the corpus, then embeds five chunks again: each must point the way its stored vector does, at a cosine of at least
+0.99.
+
+The published store was built with the embedder on an RTX 5070 Ti, in 12 min: 28,115 chunks from 39,378 messages,
+11.5 million tokens.
+
+### graphiti
+
+graphiti-core 0.30.2 on Neo4j 5.26, fed the way Graphiti's authors feed a conversation: each turn of a session is one
+`message` episode, `Developer (user): ...` then `Claude Code (assistant): ...` with everything Claude Code said in
+answer, at the turn's real time. Episodes are added one after another in the order they happened, across all five
+projects, in the one group the Graphiti MCP server calls `main`; each session is one saga. Entity types are the ten
+the MCP server ships, and everything else stays at Graphiti's defaults. The graph is the checkpoint: each episode is
+written in one transaction, so a rerun skips those already there.
+
+What the replay leaves out: tool calls and their results, subagents, compaction summaries, notices and the two Cursor
+transcripts. A turn the user interrupted keeps the reply they saw.
+
+Graphiti's generic OpenAI client is subclassed to send its lighter calls to `BILBO_EVAL_LLM_SMALL_MODEL` when set,
+count tokens and wait out a 429. A store holds a `neo4j-admin` dump of the database and a `manifest.json` with the
+versions, counts and LLM tokens by model and prompt.
+
+`--check` loads the dump into a fresh Neo4j. The search indexes must come online, the counts must match the manifest,
+every saga must start and end with its earliest and latest episode, the stored vectors of 20 entities and 20 facts
+must match the embedder's, and four searches with no LLM must find facts and entities.
+
+No store is published yet; it has only been built in trials of up to six sessions.
+
+### ai-memory
+
+[ai-memory](https://github.com/akitaonrails/ai-memory) 2.6.3, fed by its own Claude Code hooks. Each session is
+replayed hook by hook into `ai-memory hook`, which spools each event into one `ai-memory serve` in the same container,
+as on a developer's machine. All sessions share one store and one timeline, and the build checkpoints whenever no
+session is open.
+
+It is set up the way its docs tell a Claude Code user to get the best recall: assistant capture, LLM consolidation at
+SessionEnd and at each compaction, and Qwen3's query instruction. Its scheduler reviews one finished session per
+project an hour, too slow for a replay, so the build runs `ai-memory auto-improve` once per session itself. The forget
+sweep is off, so no session page ages out. The manifest lists every setting that differs from a fresh install, with
+the doc or source line that asks for it.
+
+What the replay changes:
+
+- Each event carries the time it happened, which ai-memory keeps for sessions and observations. Pages get the time of
+  the build.
+- Each project is a minimal git checkout with its GitHub remote, which is all the hook reads to name a project.
+- The LLM sits behind a small gateway in the build that waits out a 429 and retries a 5xx. On its own, ai-memory gives
+  up after three tries and keeps a rule-based page.
+- The two Cursor transcripts are left out. The hooks never see them.
+
+Search is ai-memory's own: SQLite full text, entities and links, plus vectors. A store holds the extracted
+`ai-memory backup` (the wiki, `db/memory.sqlite` and `config.toml`) and a `manifest.json`. `ai-memory serve` starts on
+a store only with `AI_MEMORY_EMBEDDING_BASE_URL` set.
+
+`--check` reads the store as packed: SQLite's integrity, the counts against the manifest, the wiki file and vector of
+every latest page, and up to five pages embedded again. It then serves a copy with no LLM and maintenance off, and
+four searches in each project must find pages through the vectors.
+
+No store is published yet; it has only been built in trials of up to six sessions.
 
 ## Publishing
 
