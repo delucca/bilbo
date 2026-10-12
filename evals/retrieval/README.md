@@ -8,7 +8,8 @@ Which memory strategy best remembers what happened in real coding sessions?
 - To build or check a store: [Docker](https://docs.docker.com/get-started/get-docker/). The shell pins the client,
   Compose and buildx; the engine is yours. A buildx installed by Docker Desktop or OrbStack takes precedence.
 - To build a store with an LLM (every arm but dense and mempalace): an OpenAI-compatible LLM endpoint with
-  `GET /models` and JSON mode, and tool calls for bilbo's arms.
+  `GET /models` and JSON mode, and tool calls for bilbo's arms. The auto-memory arm needs none: it runs
+  `claude -p` with its own login.
 - To run the embedder on the GPU: NVIDIA's
   [container toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/).
 - To rebuild the corpus from SWE-chat or to publish: a [Hugging Face token](https://huggingface.co/settings/tokens).
@@ -59,6 +60,7 @@ files under `arms/<arm>/`. Change any of them and the key changes.
 | [bilbo-agent](#bilbo) | notes the agent writes with bilbo's note skill | yes | from L3, with Claude Opus 5.5 |
 | [bilbo-assisted](#bilbo) | `bilbo-agent` plus a `/note` at each session's end | yes | from L3, with Claude Opus 5.5 |
 | [mempalace](#mempalace) | MemPalace, fed by its Claude Code plugin hooks | no | not yet |
+| [auto-memory](#auto-memory) | Claude Code's auto memory, written by Claude Code itself | yes | not yet |
 
 To get a store:
 
@@ -74,7 +76,8 @@ there is none, the script builds it, which needs the LLM for every arm but dense
 
 The script runs the arm's services with Docker Compose, feeds the sessions, packs the store and removes the
 containers, even after a failure. Run it again after a stop and it resumes from the arm's last checkpoint. An LLM usage
-limit only pauses it, for as long as the endpoint's `Retry-After` asks.
+limit only pauses it, for as long as the endpoint's `Retry-After` asks (auto-memory waits for the reset time Claude Code
+reports).
 
 - `BILBO_EVAL_LLM_URL` is the URL the containers see. `host.docker.internal` reaches this machine, but on a Linux
   engine the server must listen on Docker's bridge (`172.17.0.1`) or on every interface, not on loopback alone.
@@ -87,7 +90,7 @@ limit only pauses it, for as long as the endpoint's `Retry-After` asks.
 - `--check` then restores the store into fresh services and checks it with `arms/<arm>/check.py`, with no LLM.
 - `--key` prints the store's key for the current inputs and stops. `publish.sh` uses it to refuse a stale store.
 
-Every arm embeds with Qwen3-Embedding-0.6B, bilbo's embedder, on llama.cpp.
+Every arm but auto-memory embeds with Qwen3-Embedding-0.6B, bilbo's embedder, on llama.cpp.
 
 ### mem0
 
@@ -419,6 +422,52 @@ Four searches in the `sessions` wing, in each diary wing and in none must find d
 return a sweep drawer.
 
 No store is published yet; it has only been built in a trial of two sessions.
+
+### auto-memory
+
+Claude Code 2.1.296's own auto memory, written by Claude Code itself. Each session is replayed by resuming a copy of
+its transcript headless, at the points where Claude Code would have reviewed it (its end, and before each compaction),
+with one closing message; the model and Claude Code's background extraction then write `MEMORY.md` and topic files
+under the project's memory directory, the same name the developer's machine used, under the build's config directory.
+Every later point of that project starts with that memory: `MEMORY.md` is loaded, and topic files come through Read or
+the recall selector. Points run in the order they happened, and each is a checkpoint.
+
+What the replay changes:
+
+- The memory the developer's Claude Code wrote mid-session is applied to the memory directory before the point it
+  falls in: successful `Write`, `Edit` and `MultiEdit` calls on a memory file and the Bash writes of three known
+  shapes, as the tool input had them. A recorded command is never run, an `Edit` whose text is absent is skipped, and no
+  `Read` seeds the start, so each project's memory starts empty, as for every arm.
+- The closing message, `let's pause here for a bit`, is the replay's; the developer said nothing there. At a point
+  that ends mid-task or on a question, the model is asked to pause there. If the model saves memory itself in answer
+  to it, Claude Code skips the background review of that point; the manifest counts those points.
+- The checkout is empty, and without the project's `CLAUDE.md` or `AGENTS.md`, so the model writes memory from the
+  transcript alone.
+- Claude Code reviews a point once, not after every turn of the session.
+- The model is told the build's date, not the session's, so a relative date in a session resolves against it, and the
+  memory dates are the build's.
+- Auto dream, Claude Code's periodic consolidation, never runs under `claude -p`, so it never runs here.
+- With an OAuth login Claude Code puts the account's email address in the context. After each point the build scans
+  the memory directories the point touched and its record for the account's identifiers, and the whole store again
+  before it is written; on a hit it stops and packs nothing.
+- Files Claude Code writes in the build carry the build's time and its own frontmatter stamp. Applied recorded files
+  have neither stamp: their content is as their authors' sessions wrote it.
+- The two Cursor transcripts are left out. Claude Code never saw them.
+
+The build runs with the account's own feature flags and stops unless the background extraction runs under `claude -p`
+on every turn; the manifest records them. Auth comes from exactly one of `CLAUDE_CODE_OAUTH_TOKEN` or
+`ANTHROPIC_API_KEY` in the caller's environment; the model is `BILBO_EVAL_LLM_MODEL`, and `BILBO_EVAL_LLM_URL` and
+`_KEY` are not read. Claude Code waits out a usage limit itself (`CLAUDE_CODE_RETRY_WATCHDOG`), and the build stops on
+an error no timer cures, such as a request that needs usage credits.
+
+A store holds each project's memory directory as Claude Code left it, `points.jsonl` with one record per point and a
+`manifest.json` with the versions, flags, counts and LLM usage, the background extraction's input and cache tokens
+included (its output tokens are not reported locally). The replay's own
+transcript entries stay in the work folder. Search is whatever the run step gives the model: `MEMORY.md` is loaded up
+to its first 200 lines or 25,000 characters, and topic files are read on demand.
+
+`--check` reads the store as packed, with no LLM: every memory file against the manifest's hashes, `MEMORY.md`'s size
+and links and the topic files' frontmatter against the manifest's numbers, and the per-point records against the counts.
 
 ## Publishing
 
