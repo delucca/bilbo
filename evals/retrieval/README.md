@@ -53,7 +53,7 @@ files under `arms/<arm>/`. Change any of them and the key changes.
 |---|---|---|---|
 | [mem0](#mem0) | mem0, fed by its Claude Code plugin | yes | built with Claude Opus 5.5 |
 | [dense](#dense) | the sessions in chunks, embedded | no | yes |
-| [graphiti](#graphiti) | Graphiti's knowledge graph, fed one turn at a time | yes | not yet |
+| [graphiti](#graphiti) | Graphiti's knowledge graph, fed one turn at a time | yes | built with Opus 5.5 and luna |
 | [ai-memory](#ai-memory) | ai-memory, fed by its Claude Code hooks | yes | built with Claude Opus 5.5 |
 | [hindsight](#hindsight) | Hindsight, fed by its Claude Code integration | yes | not yet |
 | [claude-mem](#claude-mem) | claude-mem, fed by its Claude Code hooks | yes | not yet |
@@ -164,7 +164,12 @@ versions, counts and LLM tokens by model and prompt.
 every saga must start and end with its earliest and latest episode, the stored vectors of 20 entities and 20 facts
 must match the embedder's, and four searches with no LLM must find facts and entities.
 
-No store is published yet; it has only been built in trials of up to six sessions.
+The published store splits the models as Graphiti's library does: Claude Opus 5.5 extracts entities and facts and
+merges duplicate entities, and `gpt-6-luna` makes the small calls (fact deduplication and contradiction, dates, entity
+attributes and summaries). It was built through a gateway that runs `claude -p` or `codex exec` for each call, with the
+embedder on an RTX 5070 Ti: 18,797 LLM calls (2,437 Opus, 16,360 luna), 139 million prompt tokens and 3.0 million
+completion tokens, in 11 h 2 min, 1 h 27 min of it waiting out the account's usage limit. It holds 828 episodes, 4,564
+nodes and 8,705 facts, 2,069 of them invalidated by later ones.
 
 ### ai-memory
 
