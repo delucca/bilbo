@@ -55,6 +55,7 @@ files under `arms/<arm>/`. Change any of them and the key changes.
 | [graphiti](#graphiti) | Graphiti's knowledge graph, fed one turn at a time | yes | not yet |
 | [ai-memory](#ai-memory) | ai-memory, fed by its Claude Code hooks | yes | not yet |
 | [hindsight](#hindsight) | Hindsight, fed by its Claude Code integration | yes | not yet |
+| [claude-mem](#claude-mem) | claude-mem, fed by its Claude Code hooks | yes | not yet |
 
 To get a store:
 
@@ -234,6 +235,56 @@ when searched by their own text. Up to 20 memories per bank are embedded again a
 and facts whose entity names can be rebuilt exactly must match their stored vectors to a cosine of 0.99, while a fact
 whose stored entity names differ from the extracted ones is rebuilt approximately, must reach 0.97 and must still be its
 own nearest stored vector.
+
+No store is published yet; it has only been built in trials of up to two sessions.
+
+### claude-mem
+
+[claude-mem](https://github.com/thedotmack/claude-mem) 13.35.0, the npm package pinned by sha256, fed by its own
+Claude Code hooks. Each session is replayed hook by hook through the plugin's hook command, which hands each event to
+one claude-mem worker in the same container, as on a developer's machine. claude-mem's observer, an LLM, writes
+observations from the tool calls and a summary at the end of each turn. All sessions share one store and one timeline,
+and the build checkpoints whenever no session is open.
+
+It is set up the way its docs set up a custom OpenAI-compatible observer, with the context window of its default
+Claude observer, and Chroma embeds through the shared embedder (`CLAUDE_MEM_CHROMA_EMBEDDING_FUNCTION=openai` with
+`OPENAI_BASE_URL`). Everything else stays at its default. The manifest lists every setting that differs from a fresh
+install, with the doc or source line behind it.
+
+What the replay changes:
+
+- claude-mem dates everything by the clock when it receives it. A small Bun preload gives the worker and every hook a
+  clock that reads the time of the event being replayed, so rows carry the sessions' dates. The observer's 3-minute
+  idle timer follows the same clock, so a new observer conversation starts where a real pause would have started one.
+- Each event waits until the observer is done with the one before. During a usage limit the build waits for the LLM, as
+  mem0's does. Once the LLM's wait has passed, claude-mem's own rate-limit breaker, which counts 90 seconds of the
+  replayed clock, may still hold the observer: the clock then steps forward, never past the next event. Inside a burst
+  of events there is no room for that, so the observer stays held until the timeline passes the breaker's window, and
+  its backlog is then observed in one generation. The manifest counts these waits and steps.
+- A transcript line Claude Code wrote again (one session re-writes its earlier history) is written to the transcript
+  but fires no hook. The mem0 and ai-memory arms replay those lines.
+- When claude-mem drops a batch itself, after a second reply that is not XML, the manifest lists it
+  (`dropped_by_claude_mem`) and the build goes on.
+- Each project is a minimal git checkout with its GitHub remote, worktrees included, which is all claude-mem reads to
+  name a project.
+- The LLM sits behind a small gateway in the build that waits out a 429 and retries a 5xx, keeping each call alive;
+  when the LLM asks for a wait of more than about a minute it answers with a rate limit, which claude-mem retries for
+  free and which ends that session's observer conversation: claude-mem's resume starts a new one, briefed again from
+  memory. On its own, claude-mem drops a batch after two failed sends.
+- Image-only prompts are sent, as Claude Code sends them, and claude-mem stores `[media prompt]`. The mem0 and
+  ai-memory arms skip them.
+- The two Cursor transcripts are left out. The hooks never see them.
+
+Search is claude-mem's own: Chroma first, SQLite full text when Chroma finds nothing. It embeds a query like a
+document: the `openai` function takes no query instruction, which Qwen3 would take (ai-memory sends one). A store
+holds `claude-mem.db`, `chroma/`, `chroma-sync-state.json`, `settings.json` and a `manifest.json`. Serving one needs
+`OPENAI_BASE_URL` and `OPENAI_API_KEY` for the embedder, and a search sees rows older than 90 days only when it sends
+`dateStart`. claude-mem keeps only the first 4,000 characters of a prompt (`prompt-storage.ts`), so no prompt is
+too long for the embedder.
+
+`--check` reads the store as packed: SQLite's integrity and full-text tables, the counts against the manifest, every
+row's Chroma documents, and five documents embedded again. It then serves a copy with no LLM, and four searches in each
+project must find observations through Chroma.
 
 No store is published yet; it has only been built in trials of up to two sessions.
 
