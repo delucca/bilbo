@@ -275,7 +275,7 @@ def reindex(repo, info, vectors):
 
 def main():
     expect(list(manifest)[:5] == ["arm", "key", "inputs", "device", "versions"], f"the manifest opens with {list(manifest)[:5]}")
-    expect(manifest["arm"] in ("bilbo-agent", "bilbo-assisted"), f"arm {manifest['arm']!r}")
+    expect(manifest["arm"] in ("bilbo-agent-v0_19", "bilbo-assisted-v0_19"), f"arm {manifest['arm']!r}")
     v = subprocess.run([BILBO, "--version"], capture_output=True, text=True).stdout.strip()
     expect(v == "bilbo 0.19.0", f"bilbo --version prints {v!r}")
     pin = RELEASE_SHA256.get(manifest["versions"]["arch"])

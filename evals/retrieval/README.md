@@ -57,8 +57,8 @@ files under `arms/<arm>/`. Change any of them and the key changes.
 | [ai-memory](#ai-memory) | ai-memory, fed by its Claude Code hooks | yes | not yet |
 | [hindsight](#hindsight) | Hindsight, fed by its Claude Code integration | yes | not yet |
 | [claude-mem](#claude-mem) | claude-mem, fed by its Claude Code hooks | yes | not yet |
-| [bilbo-agent](#bilbo) | notes the agent writes with bilbo's note skill | yes | from L3, with Claude Opus 5.5 |
-| [bilbo-assisted](#bilbo) | `bilbo-agent` plus a `/note` at each session's end | yes | from L3, with Claude Opus 5.5 |
+| [bilbo-agent-v0_19](#bilbo-019) | notes the agent writes with bilbo's note skill | yes | from L3, Claude Opus 5.5 |
+| [bilbo-assisted-v0_19](#bilbo-019) | the same, plus a `/note` at each session's end | yes | from L3, Claude Opus 5.5 |
 | [mempalace](#mempalace) | MemPalace, fed by its Claude Code plugin hooks | no | not yet |
 | [auto-memory](#auto-memory) | Claude Code's auto memory, written by Claude Code itself | yes | not yet |
 
@@ -294,15 +294,16 @@ project must find observations through Chroma.
 
 No store is published yet; it has only been built in trials of up to two sessions.
 
-### bilbo
+### bilbo 0.19
 
 [bilbo](https://github.com/delucca/bilbo) 0.19.0, the release binary. bilbo keeps what the agent of a session chooses
 to write with its `note` skill, and these sessions never had bilbo, so a writer model plays that agent. The writer is
-the L3 eval's, copied into `l3/` byte for byte (the manifest lists their sha256). Two arms run it:
+the L3 eval's, copied into `l3/` byte for byte (the manifest lists their sha256). Two arms run it, named for bilbo's
+version, since a later bilbo may write and search another way:
 
-- `bilbo-agent`: after each exchange, one call asks the model whether the agent would use the note skill now. When it
-  says yes, the model runs the skill as shipped, with Bash, Read and Edit, against the real binary.
-- `bilbo-assisted`: the same, plus a bare `/note` from the user after the last exchange of every session.
+- `bilbo-agent-v0_19`: after each exchange, one call asks the model whether the agent would use the note skill now.
+  When it says yes, the model runs the skill as shipped, with Bash, Read and Edit, against the real binary.
+- `bilbo-assisted-v0_19`: the same, plus a bare `/note` from the user after the last exchange of every session.
 
 Each project is written into its own store, its sessions one after another in the order they started; then the five
 are merged into one store, as one developer's bilbo holds every project, and that store is what search reads. A run
@@ -357,9 +358,9 @@ How they were written, as the L3 records show:
   (sha256 in each project's provenance).
 
 A replay of the gateway's records, with each `bilbo recall` answered as it was then, regenerated every request behind
-the stores from this arm's writer (`l3/`) and this corpus, 3,252 for bilbo-agent and 3,772 for bilbo-assisted, and
-every note byte for byte. bilbo-agent holds 106 notes and bilbo-assisted 120, and the sessions written are 143 of 145:
-the two Cursor transcripts are left out.
+the stores from this arm's writer (`l3/`) and this corpus, 3,252 for bilbo-agent-v0_19 and 3,772 for
+bilbo-assisted-v0_19, and every note byte for byte. bilbo-agent-v0_19 holds 106 notes and bilbo-assisted-v0_19 120,
+and the sessions written are 143 of 145: the two Cursor transcripts are left out.
 
 ### mempalace
 

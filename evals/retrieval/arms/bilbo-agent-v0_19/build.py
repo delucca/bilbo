@@ -36,7 +36,10 @@ import schema  # noqa: E402
 import writer  # noqa: E402
 
 ROW = os.environ.get("BILBO_EVAL_ROW", "")
-ARM = f"bilbo-{ROW}"
+# The arm names bilbo's version: a later bilbo may write and search another way.
+ARM = f"bilbo-{ROW}-v0_19"
+# L3's name for the row, in the writer's labels and journals, which the replay of L3's records matches.
+L3_ARM = f"bilbo-{ROW}"
 MODEL = "qwen3-embedding-0.6b"
 DIMS = 1024
 # bilbo's own query prefix for this model (config.rs:37, the value its setup writes for a qwen3-embedding model).
@@ -520,7 +523,7 @@ def main():
         state = states / key
         rows = schema.load_exchanges(repos[key]["exchanges"])
         p = writer.Params(
-            arm=ARM, repo=key, state=state, exchanges=repos[key]["exchanges"], render_sha=render.render_sha(), decisions_dir=decisions,
+            arm=L3_ARM, repo=key, state=state, exchanges=repos[key]["exchanges"], render_sha=render.render_sha(), decisions_dir=decisions,
             bilbo=BILBO, skill=SKILL, embedder=(embedder, MODEL, QUERY_PREFIX), schedule=L3 / "policy" / "schedule.jsonl" if ROW == "assisted" else None,
             rep=1, stage=None, workers=8, model=llm_model, effort=None,
         )  # fmt: skip
