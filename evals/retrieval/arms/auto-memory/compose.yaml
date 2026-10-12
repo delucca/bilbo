@@ -1,0 +1,19 @@
+services:
+  build:
+    build: .
+    profiles: [build]
+    user: ${BILBO_UID}:${BILBO_GID}
+    init: true  # reaps the helpers Claude Code forks
+    environment:
+      BILBO_EVAL_LLM_MODEL: ${BILBO_EVAL_LLM_MODEL}
+      BILBO_EVAL_SESSIONS: ${BILBO_EVAL_SESSIONS}
+      BILBO_EVAL_DEVICE: ${BILBO_EVAL_DEVICE}
+      # Claude Code's own auth, straight from the caller's environment. Nothing else of it reaches the container.
+      CLAUDE_CODE_OAUTH_TOKEN: ${CLAUDE_CODE_OAUTH_TOKEN:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+    volumes:
+      - ${BILBO_EVAL_CORPUS}:/corpus:ro
+      - ${BILBO_EVAL_WORK}:/work
+      # The sessions' checkouts are recreated under their own paths, which the build user must be able to create.
+      - { type: tmpfs, target: /Users, tmpfs: { mode: 01777 } }
+      - { type: tmpfs, target: /home, tmpfs: { mode: 01777 } }

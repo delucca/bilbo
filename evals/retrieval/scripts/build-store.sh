@@ -2,11 +2,12 @@
 # Get an arm's store into dataset/store-<arm>-<key>.tar.zst: the archive already there, else the one in dataset.lock,
 # else build it from the corpus, its services in Docker.
 #   build-store.sh <arm> [--rebuild] [--sessions N] [--check] [--key]
-# Building needs BILBO_EVAL_LLM_URL (as the containers see it), BILBO_EVAL_LLM_KEY and BILBO_EVAL_LLM_MODEL;
-# BILBO_EVAL_LLM_HEADERS, a JSON object, adds headers to every LLM call for a gateway that needs them, and
-# BILBO_EVAL_LLM_SMALL_MODEL is the model for the lighter calls of an arm whose compose.yaml reads it. Without
-# BILBO_EVAL_LLM_MODEL, the store is the one in dataset.lock built from the current corpus, embedder and arm files (it
-# stops when there are several). --key prints the store's key for the current inputs and stops.
+# Building needs the LLM variables the arm's compose.yaml reads, usually BILBO_EVAL_LLM_URL (as the containers see it),
+# BILBO_EVAL_LLM_KEY and BILBO_EVAL_LLM_MODEL; BILBO_EVAL_LLM_HEADERS, a JSON object, adds headers to every LLM call
+# for a gateway that needs them, and BILBO_EVAL_LLM_SMALL_MODEL is the model for the lighter calls of an arm whose
+# compose.yaml reads it. Without BILBO_EVAL_LLM_MODEL, the store is the one in dataset.lock built from the current
+# corpus, embedder and arm files (it stops when there are several). --key prints the store's key for the current inputs
+# and stops.
 # An arm whose compose.yaml reads none of the LLM variables needs none of them, and its key names no LLM.
 # --rebuild builds the store again. --sessions N builds from the first N sessions only: a trial, whose archive stays in
 # the cache. --check then restores the store into fresh services and checks it with arms/<arm>/check.py.
@@ -68,9 +69,11 @@ inputs_for() {
 }
 key_of() { printf '%s\n' "$1" | sha256sum | cut -c1-12; }
 
-# Only a build needs the LLM.
+# Only a build needs the LLM, and only the variables the arm's compose.yaml reads: an arm that drives a tool's own
+# model client (auto-memory runs claude -p) names the model alone and brings its own auth.
 need_llm() {
   for v in BILBO_EVAL_LLM_URL BILBO_EVAL_LLM_KEY BILBO_EVAL_LLM_MODEL; do
+    grep -q "$v" "$root/arms/$arm/compose.yaml" || continue
     [[ -n ${!v:-} ]] || die "$v is not set, and building the $arm store needs it"
   done
 }
@@ -158,6 +161,9 @@ project=bilbo-retrieval-$arm
 [[ -n $build ]] || project+=-check
 services() { docker-compose -p "$project" ${1:+--profile "$1"} "${files[@]}" config --services; }
 compose() { docker-compose -p "$project" --profile build "${files[@]}" "$@"; }
+# Every service without a profile: the arm's database and the embedder. With none, `up` would start the build service
+# itself, since compose() always selects the build profile.
+start() { local names; names=$(services); [[ -z $names ]] || compose up -d --wait $names; }
 trap 'compose down -v --remove-orphans >/dev/null 2>&1 || true; rm -rf "$check_dir"' EXIT
 trap 'exit 130' INT TERM
 
@@ -167,7 +173,7 @@ if [[ -n $build ]]; then
   printf '%s\n%s\n' "$key" "$inputs" > "$work/key.txt"
 
   log "building the $arm store $key on the $device"
-  compose up -d --wait $(services)  # every service without a profile: the arm's database and the embedder
+  start
   compose run --rm --build build
   if services pack | grep -x pack >/dev/null; then
     compose stop
@@ -193,7 +199,7 @@ if [[ -n $check ]]; then
 
   log "checking ${out#"$root"/} on the $device"
   if services restore | grep -x restore >/dev/null; then compose --profile restore run --rm --no-deps restore; fi
-  compose up -d --wait $(services)
+  start
   compose run --rm --build --entrypoint python build /work/check.py ||
     die "${out#"$root"/} failed its check"
   compose down -v --remove-orphans
