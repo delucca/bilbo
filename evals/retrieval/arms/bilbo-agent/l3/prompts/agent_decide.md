@@ -1,0 +1,1 @@
+[harness] The last exchange above is finished and the user has not written again. Decide whether to use a listed skill now. Reply with strict JSON only: {"skill": "<name of the listed skill>"} to use it, or {"skill": "none"} to use none.
