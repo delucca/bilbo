@@ -59,7 +59,7 @@ files under `arms/<arm>/`. Change any of them and the key changes.
 | [bilbo-agent-v0_19](#bilbo-019) | notes the agent writes with bilbo's note skill | yes | from L3, Claude Opus 5.5 |
 | [bilbo-assisted-v0_19](#bilbo-019) | the same, plus a `/note` at each session's end | yes | from L3, Claude Opus 5.5 |
 | [mempalace](#mempalace) | MemPalace, fed by its Claude Code plugin hooks | no | not yet |
-| [auto-memory](#auto-memory) | the memory files the developers' Claude Code wrote | no | not yet |
+| [auto-memory](#auto-memory) | the memory files the developers' Claude Code wrote | no | yes |
 
 To get a store:
 
