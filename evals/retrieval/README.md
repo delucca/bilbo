@@ -8,7 +8,8 @@ Which memory strategy best remembers what happened in real coding sessions?
 - To build or check a store: [Docker](https://docs.docker.com/get-started/get-docker/). The shell pins the client,
   Compose and buildx; the engine is yours. A buildx installed by Docker Desktop or OrbStack takes precedence.
 - To build a store with an LLM (every arm but dense, mempalace and auto-memory): an OpenAI-compatible LLM endpoint with
-  `GET /models` and JSON mode, and tool calls for bilbo's arms.
+  `GET /models` and JSON mode, and tool calls for bilbo's arms. The claude-mem arm runs Claude Code instead, and needs a
+  Claude subscription token from `claude setup-token` or an Anthropic API key.
 - To run the embedder on the GPU: NVIDIA's
   [container toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/).
 - To rebuild the corpus from SWE-chat or to publish: a [Hugging Face token](https://huggingface.co/settings/tokens).
@@ -55,7 +56,7 @@ files under `arms/<arm>/`. Change any of them and the key changes.
 | [graphiti](#graphiti) | Graphiti's knowledge graph, fed one turn at a time | yes | built with Opus 5.5 and luna |
 | [ai-memory](#ai-memory) | ai-memory, fed by its Claude Code hooks | yes | built with Claude Opus 5.5 |
 | [hindsight](#hindsight) | Hindsight, fed by its Claude Code integration | yes | not yet; Claude Sonnet 5.5 |
-| [claude-mem](#claude-mem) | claude-mem, fed by its Claude Code hooks | yes | not yet; Claude Haiku 4.5 |
+| [claude-mem](#claude-mem) | claude-mem, fed by its Claude Code hooks | yes | not yet; Claude Haiku 5.5 |
 | [bilbo-agent-v0_19](#bilbo-019) | notes the agent writes with bilbo's note skill | yes | from L3, Claude Opus 5.5 |
 | [bilbo-assisted-v0_19](#bilbo-019) | the same, plus a `/note` at each session's end | yes | from L3, Claude Opus 5.5 |
 | [mempalace](#mempalace) | MemPalace, fed by its Claude Code plugin hooks | no | yes |
@@ -266,31 +267,43 @@ one claude-mem worker in the same container, as on a developer's machine. claude
 observations from the tool calls and a summary at the end of each turn. All sessions share one store and one timeline,
 and the build checkpoints whenever no session is open.
 
-It is set up the way its docs set up a custom OpenAI-compatible observer, with the context window of its default
-Claude observer, and Chroma embeds through the shared embedder (`CLAUDE_MEM_CHROMA_EMBEDDING_FUNCTION=openai` with
-`OPENAI_BASE_URL`). Everything else stays at its default. The manifest lists every setting that differs from a fresh
-install, with the doc or source line behind it.
+The observer is claude-mem's default: its `claude` provider, which runs Claude Code 2.1.296 (pinned by sha256) on a
+Claude account, with its tier routing. Its model is Claude Haiku 5.5, the user's choice; claude-mem 13.35.0's default
+is Claude Haiku 4.5. A generation that starts on Read, Glob, Grep or LS calls runs on the `haiku` alias, which this
+Claude Code resolves to Haiku 5.5 as well. Chroma embeds through the shared embedder
+(`CLAUDE_MEM_CHROMA_EMBEDDING_FUNCTION=openai` with `OPENAI_BASE_URL`). Everything else but telemetry stays at its
+default. The manifest lists every setting that differs from a fresh install, with the doc or source line behind it, and
+what Claude Code reported for every call: tokens by model, cache reads included, retries and the account's limits.
+
+To build it, set `BILBO_EVAL_LLM_MODEL=claude-haiku-5-5` and the account: `CLAUDE_CODE_OAUTH_TOKEN`, a
+subscription's token from `claude setup-token` (which carries no profile, so Claude Code knows no account email), or
+`ANTHROPIC_API_KEY`. An API key also works, but it turns claude-mem's quota guard off, as for its API-key users; the
+published store uses a subscription. The build needs no other LLM variable.
 
 What the replay changes:
 
 - claude-mem dates everything by the clock when it receives it. A small Bun preload gives the worker and every hook a
   clock that reads the time of the event being replayed, so rows carry the sessions' dates. The observer's 3-minute
   idle timer follows the same clock, so a new observer conversation starts where a real pause would have started one.
-- Each event waits until the observer is done with the one before. During a usage limit the build waits for the LLM, as
-  mem0's does. Once the LLM's wait has passed, claude-mem's own rate-limit breaker, which counts 90 seconds of the
-  replayed clock, may still hold the observer: the clock then steps forward, never past the next event. Inside a burst
-  of events there is no room for that, so the observer stays held until the timeline passes the breaker's window, and
-  its backlog is then observed in one generation. The manifest counts these waits and steps.
+  Claude Code keeps the real clock, so the observer model is told the build's date, while claude-mem's prompts carry
+  each event's own time.
+- Each event waits until the observer is done with the one before. claude-mem's quota guard stops the observer near
+  the account's limit (95% of the five-hour window, 93% of the week) and, live, keeps it stopped until the reset while
+  the sessions go on. The build keeps it from tripping, as the other arms wait out a usage limit: before an event, it
+  waits for the reset of any window within two points of the guard. The guard's 15-minute grace before a reset never
+  fires, since it reads Anthropic's reset times against the replayed clock. If the guard trips anyway, its 30-minute
+  breaker runs on the replayed clock: the clock steps to its end where the next event leaves room, and otherwise the
+  held messages are observed later, in one generation. The account is the build's own, so the usage limits the
+  developers hit in four transcripts do not stop the observer.
+- claude-mem runs at most two observer processes, and an idle one keeps its slot until its 3-minute exit. A third
+  waits (once in this corpus), and the clock steps to that exit under the same rule. The manifest counts these waits
+  and steps.
 - A transcript line Claude Code wrote again (one session re-writes its earlier history) is written to the transcript
   but fires no hook. The mem0 and ai-memory arms replay those lines.
 - When claude-mem drops a batch itself, after a second reply that is not XML, the manifest lists it
   (`dropped_by_claude_mem`) and the build goes on.
 - Each project is a minimal git checkout with its GitHub remote, worktrees included, which is all claude-mem reads to
   name a project.
-- The LLM sits behind a small gateway in the build that waits out a 429 and retries a 5xx, keeping each call alive;
-  when the LLM asks for a wait of more than about a minute it answers with a rate limit, which claude-mem retries for
-  free and which ends that session's observer conversation: claude-mem's resume starts a new one, briefed again from
-  memory. On its own, claude-mem drops a batch after two failed sends.
 - Image-only prompts are sent, as Claude Code sends them, and claude-mem stores `[media prompt]`. The mem0 and
   ai-memory arms skip them.
 - The two Cursor transcripts are left out. The hooks never see them.
@@ -303,16 +316,20 @@ holds `claude-mem.db`, `chroma/`, `chroma-sync-state.json`, `settings.json` and 
 too long for the embedder.
 
 `--check` reads the store as packed: SQLite's integrity and full-text tables, the counts against the manifest, every
-row's Chroma documents, and five documents embedded again. It then serves a copy with no LLM, and four searches in each
-project must find observations through Chroma.
+session replayed, every row's Chroma documents, five documents embedded again, and no Anthropic credential in any file.
+It then serves a copy with no LLM, and four searches in each project must find observations through Chroma.
 
-The published store is built with Claude Haiku 4.5 (`claude-haiku-4-5-20251001`), claude-mem's own default model. Real
-users run its default `claude` provider on a Claude subscription with Haiku 4.5, and the bug reports since June 2026
-that name a model name Haiku 4.5 most (12 of 20, the rest Sonnet). Going through the OpenAI-compatible provider
-deviates in three ways: it sends temperature 0.3, the gateway that runs `claude -p` for each call wraps it in its own
-instructions, and claude-mem's tier routing does nothing on this provider (its simple tier is Haiku anyway).
+The published store is built with Claude Haiku 5.5 (`claude-haiku-5-5`) through claude-mem's own `claude` provider on a
+Claude Max subscription, as its users run it: the bug reports since June 2026 that state a provider name `claude` most
+(41 of 55). Those that name a model name Haiku 4.5, claude-mem's default, most (12 of 20, the rest Sonnet); the user
+chose Haiku 5.5, released after them. claude-mem's interactive installer preselects its paid hosted observer instead,
+which a build cannot reproduce. A first route,
+through an OpenAI-compatible gateway that runs `claude -p` for each call, was dropped. It flattened the observer's
+conversation into one prompt, and Haiku 4.5 went on to write invented turns of the session, which reached the store.
+Claude Sonnet 5.5 on the same route wrote none, but each call resent the whole conversation with nothing cached, about
+43,000 prompt tokens a call, one to two weeks of a Max 20x subscription for the full corpus.
 
-No store is published yet; it has only been built in trials of up to two sessions.
+No store is published yet; on this route it has only been built offline, against a fake API.
 
 ### bilbo 0.19
 

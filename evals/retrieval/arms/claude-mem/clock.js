@@ -1,11 +1,13 @@
 // The build's clock, loaded into claude-mem's worker and every hook process through BUN_OPTIONS: Date.now(),
 // new Date() and Date() read the time of the event being replayed, which build.py writes to $BILBO_CLOCK_FILE, and
 // never move backwards. With BILBO_VIRTUAL_IDLE=1, the observer's 3-minute idle wait (SessionMessageBuffer.ts:5)
-// ends when this clock passes it instead of after three real minutes. Everything else keeps real time.
+// ends when this clock passes it instead of after three real minutes. Everything else keeps real time, and so does
+// Claude Code: the observer claude-mem spawns is a compiled Bun binary (its script is /$bunfs/root/cli) that reads
+// BUN_OPTIONS too, and its retries and the account's limits run on the real clock.
 'use strict';
 const { readFileSync } = require('node:fs');
 
-if (!globalThis.__bilboClock) {
+if (!globalThis.__bilboClock && !String(process.argv[1]).startsWith('/$bunfs/')) {
   globalThis.__bilboClock = true;
   const FILE = process.env.BILBO_CLOCK_FILE;
   if (!FILE) throw new Error('clock.js: BILBO_CLOCK_FILE is not set');

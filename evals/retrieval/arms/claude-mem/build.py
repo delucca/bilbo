@@ -1,13 +1,13 @@
 """Build the claude-mem store: replay every session through claude-mem's own Claude Code hook command, hook by hook and
-in one timeline across all sessions, into one claude-mem worker on loopback, set up with its docs' custom
-OpenAI-compatible observer and Chroma embedding through the shared embedder. A Bun preload (clock.js) gives the worker
-and every hook the time of the event being replayed, which claude-mem would otherwise stamp with the build's clock. Then
-save the worker's data directory (SQLite, Chroma and its sync state) with a manifest in /work/store. Whenever no
-session is open, the worker is stopped and its data goes to /work/checkpoint, and a run that finds it resumes from
-there. `--count-chroma <dir>` is a mode of this file for the chroma-mcp environment: it counts a Chroma directory."""
+in one timeline across all sessions, into one claude-mem worker on loopback, with its default observer (its `claude`
+provider: Claude Code driving BILBO_EVAL_LLM_MODEL on the account in CLAUDE_CODE_OAUTH_TOKEN or ANTHROPIC_API_KEY) and
+Chroma embedding through the shared embedder. A Bun preload (clock.js) gives the worker and every hook the time of the
+event being replayed, which claude-mem would otherwise stamp with the build's clock. Then save the worker's data
+directory (SQLite, Chroma and its sync state) with a manifest in /work/store. Whenever no session is open, the worker is
+stopped and its data goes to /work/checkpoint, and a run that finds it resumes from there. `--count-chroma <dir>` is a
+mode of this file for the chroma-mcp environment: it counts a Chroma directory."""
 
 import heapq
-import http.client
 import json
 import os
 import platform
@@ -17,14 +17,11 @@ import signal
 import sqlite3
 import subprocess
 import sys
-import threading
 import time
-import urllib.error
 import urllib.request
 import uuid
 from collections import Counter
 from datetime import datetime, timezone
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 NOTICES = ("<local-command-stdout>", "<local-command-stderr>", "<local-command-caveat>", "<system-reminder>")
@@ -38,17 +35,38 @@ HOME = Path("/tmp/home")
 PLUGIN = Path("/opt/claude-mem/plugin")
 WORKER = PLUGIN / "scripts" / "worker-service.cjs"
 PORT = 37777
-GATEWAY = ("127.0.0.1", 37800)
+IO = WORK / "claude"  # what each Claude Code process claude-mem ran wrote on stdout, copied by claude.sh
+# The observer claude-mem 13.35.0 runs with nothing set: its claude provider on CLAUDE_MEM_MODEL's default
+# (SettingsDefaultsManager.ts:372, 401), or on CLAUDE_MEM_TIER_SIMPLE_MODEL's `haiku` for a generation that starts on
+# read-only tool calls only (:488-489, SessionRoutes.ts:1026-1065), through this Claude Code. BILBO_EVAL_LLM_MODEL names
+# the model, so the store's key and lock line do; another model than the default goes into settings.json.
+DEFAULT_MODEL = "claude-haiku-4-5-20251001"
+LLM_MODEL = os.environ.get("BILBO_EVAL_LLM_MODEL", "")
+TIER_SIMPLE = "haiku"
+CLAUDE_CODE = "2.1.296"
+AUTH = ("CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY")
+# claude-mem's quota guard stops its observer once a window of a subscription reaches these, or on any window the API
+# refused (SettingsDefaultsManager.ts:436-440, RateLimitStore.ts:401-485; overage only while it is in use); the build
+# waits for the window's reset before an event once the account is within MARGIN of one, so the guard seldom trips.
+QUOTA = {"five_hour": 0.95, "seven_day": 0.93, "seven_day_opus": 0.93, "seven_day_sonnet": 0.92, "overage": 0.95}
+MARGIN = 0.02
+RESET_SLACK = 120  # seconds waited past a window's reset
+THROTTLE_MAX = 900  # the longest wait after a refusal that is not a spent window (a per-minute limit), doubling from 60 s
+# claude-mem refreshes these two windows from every reply; any other reading it keeps until the worker restarts, since
+# it ages it by the replayed clock (RateLimitStore.ts:131-158, 430).
+REFRESHED = ("five_hour", "seven_day")
+# After a quota stop, claude-mem sends nothing until its breaker's window passes on its clock, the replay's: 30 minutes,
+# or 90 s for a throttle (quota-cooldown.ts:179, 192).
+BREAKER_MS = {"rate_limit": 90_000}
+BREAKER_DEFAULT_MS = 1_800_000
+STUCK = 900  # seconds claude-mem may hold messages with nothing moving and no quota stop before the build fails
+QUIET = 5  # seconds with no observer turn open and nothing moving before the build moves the clock for a held observer
+TRANSIENT_ERRORS = ("rate_limit", "server_error", "overloaded")  # Claude Code's error kinds that a retry can heal
 # How the observer's 3-minute idle wait (SessionMessageBuffer.ts:5) is honoured: "virtual" lets clock.js end it when the
 # replay's clock passes 3 minutes; "real" leaves claude-mem's own timer and waits it out in real time wherever the
 # replay predicts an exit.
 IDLE = "virtual"
 IDLE_MS = 180_000
-SLICE = 240  # seconds the gateway holds one request before it answers with a rate limit
-CONDENSE_SLICE = 170  # claude-mem gives up on a field condense at 180 s (field-optimizer.ts:72)
-MIN_ATTEMPT = (
-    60  # an upstream attempt starts only with a slice's length minus this left, so a slow upstream is not cut short
-)
 SKIP_TOOLS = (
     "listmcpresourcestool", "slashcommand", "skill", "todowrite", "askuserquestion")  # CLAUDE_MEM_SKIP_TOOLS default
 EMBED_CTX = 8192
@@ -61,24 +79,10 @@ BUN_SHA256 = {
     "x86_64": "36368faef7527875d5ffa52e53cd48021741f2a83eb6208a8dd64068d422a913",
     "aarch64": "54328bbc2d9c8e0c9f892c544d66c57a83b84139e34909e5ee81758f1ac8fda7"}
 EMBEDDER_URL = os.environ.get("EMBEDDER_URL", "")
-LLM_URL = os.environ.get("BILBO_EVAL_LLM_URL", "").rstrip("/")
-LLM_KEY = os.environ.get("BILBO_EVAL_LLM_KEY", "")
-LLM_MODEL = os.environ.get("BILBO_EVAL_LLM_MODEL", "")
-LLM_HEADERS = json.loads(os.environ.get("BILBO_EVAL_LLM_HEADERS") or "{}")
 
 # What differs from a fresh install, each with where claude-mem 13.35.0's docs or source ask for it (paths in its repo).
 # settings.json travels with the store.
 SETTINGS = {
-    "CLAUDE_MEM_PROVIDER": (
-        "openai-compatible",
-        "docs/public/configuration.mdx:17,125-134: a custom OpenAI-compatible observer, the eval's LLM"),
-    "CLAUDE_MEM_OPENAI_COMPAT_BASE_URL": (
-        f"http://{GATEWAY[0]}:{GATEWAY[1]}/v1",
-        "docs/public/configuration.mdx:130: the gateway in this file, in front of BILBO_EVAL_LLM_URL"),
-    "CLAUDE_MEM_OPENAI_COMPAT_MODEL": (LLM_MODEL, "docs/public/configuration.mdx:131: BILBO_EVAL_LLM_MODEL"),
-    "CLAUDE_MEM_OBSERVER_CONTEXT_WINDOW": (
-        "200000",
-        "docs/public/configuration.mdx:167: a custom endpoint falls back to 131,072, so it is set to the doc's Claude value, 200,000, which is what claude-mem resolves for its default Claude observer (src/services/worker/context-window.ts), so the budgets equal the default provider's"),
     "CLAUDE_MEM_CHROMA_EMBEDDING_FUNCTION": (
         "openai",
         "src/shared/SettingsDefaultsManager.ts:504-510: the shared embedder is served on an OpenAI-compatible endpoint, which chroma-mcp's openai function reads from OPENAI_BASE_URL"),
@@ -86,10 +90,19 @@ SETTINGS = {
         "false",
         "docs/public/configuration.mdx:29: false when you run the worker yourself (a container, `worker-service.cjs --daemon`)"),
     "CLAUDE_MEM_WORKER_PORT": (str(PORT), "docs/public/configuration.mdx:27: fixed instead of 37700 + uid % 100"),
-}
-# What else is set around claude-mem, outside settings.json.
+} | ({"CLAUDE_MEM_MODEL": (LLM_MODEL, "docs/public/configuration.mdx:16: the observer's model when it is not the default, BILBO_EVAL_LLM_MODEL")}
+     if LLM_MODEL != DEFAULT_MODEL else {})
+# What else is set around claude-mem, outside settings.json. The worker's environment reaches Claude Code but for
+# CLAUDE_CODE_* and the Anthropic credentials (src/supervisor/env-sanitizer.ts, src/shared/EnvManager.ts:54-81).
 ENV = {
-    "DO_NOT_TRACK": ("1", "docs/public/telemetry.mdx:235: overrides every other telemetry switch"),
+    "CLAUDE_MEM_TELEMETRY": (
+        "0",
+        "docs/public/telemetry.mdx:236: claude-mem's own switch; DO_NOT_TRACK, its other one, would reach Claude Code, which then fetches none of its feature flags"),
+    "DISABLE_AUTOUPDATER": (
+        "1",
+        "keeps the pinned Claude Code: an update lands in ~/.local/bin/claude, which claude-mem probes and prefers when newer (src/shared/find-claude-executable.ts:312, 522)"),
+    "BILBO_CLAUDE_IO": (
+        str(IO), "claude.sh copies each Claude Code process's stdout there, which the LLM usage is read from"),
     "OPENAI_BASE_URL": (
         EMBEDDER_URL, "read by chroma-mcp's openai embedding function; claude-mem's own LLM path never reads it"),
     "OPENAI_API_KEY": ("local", "the embedder needs none; the openai function needs a value"),
@@ -101,41 +114,64 @@ ENV = {
         "the user's decision (LEAD-LOG 2026-10-11): the observer's 3-minute idle timer follows the same clock"),
 }
 # Log lines that mean claude-mem lost work (copied from the source, SessionManager.ts:88,713, ResponseProcessor.ts:564,
-# GeneratorExitHandler.ts:129, hook-spool.ts:422): any fails the build.
+# GeneratorExitHandler.ts:129, hook-spool.ts:422), or that its observer cannot run until someone acts
+# (ResponseProcessor.ts:475, GeneratorRunner.ts:196, dependency-preflight.ts:178, SessionRoutes.ts:340): any fails the
+# build.
 LOSS_LINES = (
     "Batch parked: its paid-send budget is spent", "Session ended with parked batches",
     "Dropping the buffered summarize after its one rescue pass",
-    "Hook spool entry was never accepted within its retry window")
+    "Hook spool entry was never accepted within its retry window", "authentication failed; run /login",
+    "Claude generator start requires setup", "Claude CLI dependency preflight failed",
+    "Claude setup dependency still unavailable")
 # claude-mem drops a batch after a second reply that is not XML (ResponseProcessor.ts:564): the tool and the model
-# behaving as they would live, so it is listed in the manifest, not fatal.
+# behaving as they would live, so it is listed in the manifest, not fatal. So is a refusal the API repeats, such as a
+# 400, which Claude Code hands claude-mem as `API Error: 400 ...`; a usage limit, a 5xx and an overload keep their batch.
 DROPPED_LINE = "response again for the same queued batch — dropping it"
 # Counted in the manifest, not fatal.
 COUNTED_LINES = {
-    "rate_limit_retries": "{kind=rate_limit, outcome=", "compression_unusable": "Oversized field compression unusable",
+    "compression_unusable": "Oversized field compression unusable",
     "compression_failed": "Oversized field compression failed",
-    "cut_off": "reply was cut off at the output-token limit",
     "oversized_field": "Oversized field too large to condense; falling back to truncation",
-    "non_xml": "returned non-XML"}
+    "non_xml": "returned non-XML",
+    # The observer's pauses (agents/ResponseProcessor.ts, ClaudeProvider.ts, http/routes/SessionRoutes.ts,
+    # SessionManager.ts, supervisor/process-registry.ts).
+    "quota_guard_stops": "Aborting session for quota guard", "quota_prose": "SDK returned quota-limit prose",
+    "breaker_refusals": "Skipping generator start while the provider cooldown is active",
+    "transport_pauses": "Transport pause: scheduled buffered-work resume",
+    "response_stalls": "Observer prompt went unanswered", "slot_waits": "Pool limit reached"}
 NOTES = {
     "hooks_not_replayed": "SessionStart and PreToolUse only read what claude-mem would show the live agent (GET /api/context/inject, /api/observations/by-file), and Setup installs dependencies, which the image does; none reaches the store",
     "serial": "each event waits until claude-mem has stored what it gave the observer before the clock moves, so no LLM call is in flight across a clock jump",
     "search": "/api/search drops Chroma hits older than 90 days unless dateStart is sent (SearchManager.ts:121,431, ChromaSearchStrategy.ts:196) and falls back to SQLite FTS5 when Chroma finds nothing (SearchOrchestrator.ts:135-174); this store's rows are dated by the replayed sessions, so the run step should send dateStart",
     "serve": "copy the store to a writable directory, set CLAUDE_MEM_DATA_DIR, OPENAI_BASE_URL and OPENAI_API_KEY, and start `bun worker-service.cjs --daemon`; no LLM is needed to search",
     "quiet_points": "the worker is stopped at each one, which finalizes open generators",
-    "llm": "the calls behind this store: the calls of work an interrupt threw away are not counted",
+    "llm": "what Claude Code reported for the calls behind this store, the calls of work an interrupt threw away not counted: calls are the model replies by the model each named, tokens are from its result lines (modelUsage); unreported are replies whose process was stopped before its result line (claude-mem's quota guard does that), their output not known; windows are the account's utilization at the first and last reply that reported it, which counts everything else the account did meanwhile",
+    "clock_claude_code": "Claude Code keeps real time: the model is told the build's date, not the session's, while claude-mem's prompts carry each event's own time",
+    "quota_guard_clock": "claude-mem's quota guard compares Anthropic's reset times with the replayed clock: its 15-minute grace before a five-hour reset never fires, and a reading of a window other than the five-hour and weekly ones lapses only when the worker restarts (RateLimitStore.ts:430, 467-481); the build waits before the guard's thresholds, so the guard seldom trips",
+    "tier_routing": "claude-mem runs a generation that starts on Read, Glob, Grep or LS calls on its simple tier, the `haiku` alias (SessionRoutes.ts:1022-1065), which this Claude Code resolves to the model `llm.models` lists beside the default",
     "projects": "a worktree's sessions are filed under <repo>/<worktree> keys (drain-cycle/ABA-301, ...) and stay there, since claude-mem adopts a worktree's rows into its repo only when the checkout is gone or merged (WorktreeAdoption.ts:470-560): a per-repo search must pass every key `projects` lists for the repo",
     "queries": "a search embeds the query like a document: the openai embedding function takes no query instruction, which Qwen3 would take (ai-memory sends one)",
     "image_only_prompts": "sent with an empty prompt as Claude Code sends them, and stored by claude-mem as [media prompt]; the mem0 and ai-memory arms skip them"}
 HOOK_ENV = {
     "HOME": str(HOME), "PATH": "/usr/local/bin:/usr/bin:/bin", "CLAUDE_MEM_DATA_DIR": str(DATA),
     "CLAUDE_MEM_WORKER_PORT": str(PORT), "BUN_OPTIONS": ENV["BUN_OPTIONS"][0], "BILBO_CLOCK_FILE": str(CLOCK),
-    "DO_NOT_TRACK": "1"}
+    "CLAUDE_MEM_TELEMETRY": ENV["CLAUDE_MEM_TELEMETRY"][0]}
 WORKER_ENV = (
     HOOK_ENV
-    | {"OPENAI_BASE_URL": EMBEDDER_URL, "OPENAI_API_KEY": "local"}
+    | {k: ENV[k][0] for k in ("OPENAI_BASE_URL", "OPENAI_API_KEY", "DISABLE_AUTOUPDATER", "BILBO_CLAUDE_IO")}
     | {k: os.environ[k] for k in os.environ if k.startswith("UV_")}
     | ({"BILBO_VIRTUAL_IDLE": "1"} if IDLE == "virtual" else {})
+    | ({"CLAUDE_CODE_OAUTH_TOKEN": os.environ["CLAUDE_CODE_OAUTH_TOKEN"]} if os.environ.get("CLAUDE_CODE_OAUTH_TOKEN") else {})
 )
+# How each credential reaches Claude Code: claude-mem drops both from the worker's environment for the child it spawns.
+AUTH_CONFIG = {
+    "CLAUDE_CODE_OAUTH_TOKEN": (
+        "env",
+        "src/shared/oauth-token.ts:543-566, 625-638: with no credential store, claude-mem reads the worker's token at each spawn and hands it to Claude Code, as it would a login from the store; its quota guard applies"),
+    "ANTHROPIC_API_KEY": (
+        "<data dir>/.env",
+        "src/shared/EnvManager.ts:106-116, 321: the only way an API key reaches Claude Code; claude-mem's quota guard then never stops the observer (RateLimitStore.ts isApiKeyAuth), and the .env never goes into a checkpoint or the store"),
+}
 MARKERS = (".cleanup-v12.4.3-applied", ".fts-bloat-reclaim-started")
 
 
@@ -206,249 +242,196 @@ def tool_results(content):
     )
 
 
-def retry_after(headers):
+def bump(counter, key, n=1):
+    counter[key] = counter.get(key, 0) + n
+
+
+def resets_at(value):
+    """A reset time as epoch seconds: Claude Code reports seconds, its SDK documents milliseconds."""
+    return value / 1000 if isinstance(value, (int, float)) and value >= 1e12 else value
+
+
+def quota_hold():
+    """claude-mem's breaker for its claude provider while one is armed, as quota-cooldown.ts persists it: the window it
+    stopped for, when (armedAtMs, on the replay's clock) and, for a refused credential, cause `auth`."""
     try:
-        return int(float(headers.get("retry-after", 0)))
-    except (ValueError, TypeError):  # an HTTP date: back off as usual
-        return 0
+        rows = json.loads((DATA / "quota-cooldown.json").read_text())
+    except (OSError, ValueError):
+        return None
+    return next((r for r in rows if isinstance(r, dict) and r.get("provider") == "claude"), None)
 
 
-def fetch(request, timeout):
-    """The upstream's answer, an error status included."""
-    try:
-        with urllib.request.urlopen(request, timeout=timeout) as r:
-            return r.status, r.headers, r.read()
-    except urllib.error.HTTPError as e:
-        return e.code, e.headers, e.read()
+def breaker_end(hold):
+    """When claude-mem's breaker lets a probe through, on the replay's clock (resolveQuotaCooldownMs)."""
+    return hold["armedAtMs"] + BREAKER_MS.get(hold.get("window"), BREAKER_DEFAULT_MS)
 
 
-def kind_of(request):
-    """Which of claude-mem's jobs made an LLM call, and the head of the user request its conversation is about."""
-    messages = request.get("messages") or []
-    texts = [m["content"] if isinstance(m.get("content"), str) else json.dumps(m.get("content")) for m in messages]
-    last = texts[-1] if texts else ""
-    if any("Reply with the condensed payload only" in t for t in texts):
-        kind = "condense"  # field-optimizer.ts:109
-    elif "MODE SWITCH: PROGRESS SUMMARY" in last:  # prompts.ts:6
-        kind = "summary"
-    elif "<occurred_at>" in last:
-        kind = "observation"
-    else:
-        kind = "other"
-    found = re.search(
-        r"<user_request>(.*?)</user_request>", next((t for t in texts if "<user_request>" in t), ""), re.DOTALL)
-    return kind, (found.group(1).strip() if found else "")[:80]
+class Claude:
+    """What each Claude Code process claude-mem ran reported on stdout, read from the copies claude.sh keeps in IO: calls
+    and tokens by model, replies by session, open turns, the API's refusals and retries, and the account's limits. A
+    process's file starts with claude.sh's own line: its pid, its working directory, observer-sessions/<session db id>
+    for an observer and that directory itself for a one-off call (a field condense), and its --model."""
 
+    FIELDS = (
+        ("inputTokens", "input_tokens"), ("cacheCreationInputTokens", "cache_creation_input_tokens"),
+        ("cacheReadInputTokens", "cache_read_input_tokens"), ("outputTokens", "output_tokens"), ("costUSD", "cost_usd"))
 
-class Gateway(ThreadingHTTPServer):
-    """claude-mem's LLM calls go through here to BILBO_EVAL_LLM_URL. claude-mem streams every call and gives up after
-    90 s without a byte, and a failure after work may have started spends one of the two paid sends of a batch, after
-    which the batch is parked and never resent; a refusal before work (a rate limit) spends nothing and is retried. So
-    each call is answered at once as a stream with keep-alives, the upstream is called without streaming, a failed call
-    is sent again the way mem0's build retries its add(), and a call that cannot be answered within its slice becomes a
-    rate limit claude-mem retries. Every call to the LLM is counted."""
+    def __init__(self, counts):
+        self.counts = counts  # kept in progress["llm"] at each checkpoint
+        for name in ("by_model", "turns", "error_turns", "processes", "observer_model_args", "api_retries", "api_errors",
+                     "unreported", "windows"):
+            self.counts.setdefault(name, {})
+        # A rerun finds the files of the run it resumes: what they hold after the checkpoint was thrown away with
+        # that work, and what they hold before it is in counts already, so none is read again.
+        self.files = {p.name: {"offset": p.stat().st_size, "done": True} for p in IO.glob("*.jsonl")}
+        self.windows = {}  # window -> (utilization, reset in epoch s), as Claude Code last reported it
+        self.overage_in_use = False
+        self.refused = None  # the reset of a window the API refused once it was spent
+        self.throttled, self.throttle_streak = False, 0  # a refusal of a window that was not spent: a per-minute limit
+        self.replies = 0  # successful observer replies read
+        self.by_session = Counter()  # successful observer replies read, by session db id
+        self.size = 0
+        self.errors = {}  # session db id -> the API error its observer's latest reply was, or None for a model reply
 
-    daemon_threads = True
-
-    def __init__(self, counts, models=()):
-        super().__init__(GATEWAY, Forward)
-        self.counts, self.lock, self.fatal = Counter(counts), threading.Lock(), threading.Event()
-        self.in_flight, self.active = 0, time.monotonic()
-        self.usable_at, self.attempt, self.hard = 0.0, 0, 0
-        self.models = set(models)  # the model ids the upstream answered with
-        self.calls = (WORK / "llm-calls.jsonl").open("a")
-
-    def headers(self, request_id=None):
-        return (
-            {"Content-Type": "application/json", "Authorization": f"Bearer {LLM_KEY}"}
-            | ({"x-client-request-id": request_id} if request_id else {})
-            | LLM_HEADERS
-        )
-
-    def unusable(self):
-        """Whether a wait the upstream asked for is pending. The failures behind it only scale the next wait."""
-        with self.lock:
-            return self.usable_at > time.monotonic()
-
-    def complete(self, request, deadline, kind, head, request_id=None):
-        """The upstream's answer to a chat completion as (status, json), or (429, None) when the slice has too little
-        time left to wait and to call: claude-mem retries a rate limit a second later with a slice of its own."""
-        data = json.dumps({k: v for k, v in request.items() if k not in ("stream", "stream_options")}).encode()
-        slice_ = CONDENSE_SLICE if kind == "condense" else SLICE
-        while True:
-            if self.fatal.is_set():
-                return 503, {"error": {"message": "the LLM failed 10 times in a row"}}
-            with self.lock:
-                wait = max(0.0, self.usable_at - time.monotonic())
-            if deadline - time.monotonic() - wait < slice_ - MIN_ATTEMPT:
-                return 429, None
-            if wait > 0:
-                time.sleep(wait)
+    def pump(self):
+        for path in sorted(IO.glob("*.jsonl")):
+            state = self.files.setdefault(path.name, {"offset": 0})
+            if state.get("done"):
                 continue
-            started, error = time.monotonic(), None
-            try:
-                status, answer, raw = fetch(
-                    urllib.request.Request(
-                        f"{LLM_URL}/chat/completions", data, self.headers(request_id), method="POST"),
-                    max(1, deadline - time.monotonic()),
-                )
-            except (OSError, http.client.HTTPException) as e:  # refused, reset, timed out or cut short
-                status, answer, raw, error = None, {}, b"", e
-            try:
-                parsed = json.loads(raw) if raw else {}
-            except ValueError:
-                parsed = {}
-            self.record(kind, head, len(request.get("messages") or []), status, time.monotonic() - started, parsed)
-            if status is not None and status != 429 and status < 500:
-                with self.lock:
-                    if status == 200:
-                        self.attempt = self.hard = 0
-                return status, parsed
-            with self.lock:
-                self.attempt += 1
-                self.counts["retries"] += 1
-                wait = min(60 * self.attempt, 600)
-                if status == 429:
-                    wait = max(wait, retry_after(answer))
-                else:
-                    self.hard += 1
-                    if self.hard >= 10:
-                        self.fatal.set()
-                self.usable_at = time.monotonic() + wait
-            log(f"LLM call failed ({status or error}); waiting {wait} s")
-
-    def record(self, kind, head, messages, status, seconds, answer):
-        usage = (answer.get("usage") or {}) if status == 200 else {}
-        choice = ((answer.get("choices") or [{}])[0]) if status == 200 else {}
-        empty = status == 200 and not (choice.get("message") or {}).get("content")
-        with self.lock:
-            self.counts[f"status_{status}"] += 1
-            self.counts["seconds"] += seconds
-            if status == 200:
-                self.counts["calls"] += 1
-                self.counts[f"calls_{kind}"] += 1
-                self.counts["prompt_tokens"] += usage.get("prompt_tokens") or 0
-                self.counts["completion_tokens"] += usage.get("completion_tokens") or 0
-                self.counts["cached_tokens"] += (usage.get("prompt_tokens_details") or {}).get("cached_tokens") or 0
-                self.counts["empty_answers"] += empty
-                self.counts["cut_off"] += choice.get("finish_reason") == "length"
-                if answer.get("model"):
-                    self.models.add(answer["model"])
-                if messages == 2 and kind in ("observation", "summary"):
-                    self.counts["generations"] += 1
-            line = {
-                "time": datetime.now(timezone.utc).isoformat(timespec="seconds"), "kind": kind, "status": status,
-                "attempt": self.attempt, "ms": round(seconds * 1000), "prompt_tokens": usage.get("prompt_tokens"),
-                "completion_tokens": usage.get("completion_tokens"),
-                "cached_tokens": (usage.get("prompt_tokens_details") or {}).get("cached_tokens"),
-                "finish_reason": choice.get("finish_reason"), "messages": messages, "user_request": head}
-            self.calls.write(json.dumps(line) + "\n")
-            self.calls.flush()
-
-    def check(self):
-        if self.fatal.is_set():
-            sys.exit("claude-mem: the LLM failed 10 times in a row; run again to resume from the last checkpoint")
-
-
-class Forward(BaseHTTPRequestHandler):
-    def log_message(self, *args):
-        pass
-
-    def do_GET(self):
-        """GET /v1/models, forwarded as is."""
-        try:
-            status, headers, data = fetch(
-                urllib.request.Request(LLM_URL + self.path.removeprefix("/v1"), headers=self.server.headers()), 60)
-        except (OSError, http.client.HTTPException):
-            status, headers, data = 502, {}, b"{}"
-        self.send_response(status)
-        self.send_header("Content-Type", headers.get("Content-Type") or "application/json")
-        self.send_header("Content-Length", str(len(data)))
-        self.end_headers()
-        self.wfile.write(data)
-
-    def do_POST(self):
-        gateway = self.server
-        arrived = time.monotonic()
-        request = json.loads(self.rfile.read(int(self.headers.get("Content-Length") or 0)))
-        kind, head = kind_of(request)
-        with gateway.lock:
-            gateway.in_flight += 1
-            gateway.active = arrived
-            gateway.counts["requests"] += 1
-            gateway.counts["requests_observer"] += kind in ("observation", "summary")
-        self.send_response(200)
-        self.send_header("Content-Type", "text/event-stream")
-        self.send_header("Cache-Control", "no-cache")
-        self.send_header("Retry-After", "1")
-        self.send_header("Connection", "close")
-        self.end_headers()
-        wire, done = threading.Lock(), threading.Event()
-
-        def emit(payload):
-            with wire:
+            with path.open("rb") as f:
+                f.seek(state["offset"])
+                data = f.read()
+            data = data[: data.rfind(b"\n") + 1]
+            state["offset"] += len(data)
+            self.size += len(data)
+            for line in data.decode(errors="replace").splitlines():
                 try:
-                    self.wfile.write(payload)
-                    self.wfile.flush()
-                except OSError:  # claude-mem gave up on this call
-                    pass
+                    entry = json.loads(line)
+                except ValueError:
+                    continue
+                if isinstance(entry, dict):
+                    self.read(state, entry)
+            if not data and state.get("pid") and not alive(state["pid"]) and path.stat().st_size == state["offset"]:
+                state["done"] = True  # its process has ended and every line of it is read
 
-        def keepalive():
-            while not done.wait(15):
-                emit(b": keepalive\n\n")
+    def read(self, state, entry):
+        c, kind = self.counts, entry.get("type")
+        if kind == "bilbo_process":
+            name = Path(entry.get("cwd") or "").name
+            state.update(session=int(name) if name.isdigit() else None, usage={}, pending={}, seen=set(),
+                         pid=entry.get("pid"), open=False)
+            bump(c["processes"], "observer" if state["session"] is not None else "one_off")
+            if state["session"] is not None:
+                bump(c["observer_model_args"], entry.get("model") or "")
+            return
+        if "pending" not in state:
+            return
+        role = "observer" if state["session"] is not None else "one_off"
+        if kind == "system" and entry.get("subtype") == "init":
+            state["open"] = True  # Claude Code starts each turn with an init line and ends it with a result line
+        elif kind == "assistant":
+            message = entry.get("message") or {}
+            if entry.get("error") or message.get("model") == "<synthetic>":
+                bump(c["api_errors"], entry.get("error") or "unknown")
+                if state["session"] is not None:
+                    self.errors[state["session"]] = text_of(message.get("content"))[:300]
+            elif message.get("id") not in state["seen"]:  # a reply split into frames repeats its id
+                state["seen"].add(message.get("id"))
+                state["pending"][message.get("id")] = message.get("usage") or {}
+                bump(c["by_model"].setdefault(message.get("model") or "", {}), "calls")
+                self.throttle_streak = 0
+                if state["session"] is not None:
+                    self.replies += 1
+                    self.by_session[state["session"]] += 1
+                    self.errors[state["session"]] = None
+        elif kind == "result":
+            totals = entry.get("modelUsage") or {}  # this process's totals so far
+            for name, now in totals.items():
+                before = state["usage"].get(name) or {}
+                model = c["by_model"].setdefault(name, {})
+                for src, dst in self.FIELDS:
+                    bump(model, dst, (now.get(src) or 0) - (before.get(src) or 0))
+            state["usage"] = totals or state["usage"]
+            state["pending"], state["open"] = {}, False
+            bump(c["error_turns" if entry.get("is_error") else "turns"], role)
+        elif kind == "rate_limit_event":
+            info = entry.get("rate_limit_info") or {}
+            c["rate_limit_events"] = c.get("rate_limit_events", 0) + 1
+            reported = {
+                w: (s.get("utilization"), resets_at(s.get("resetsAt")))
+                for w, s in (info.get("unifiedWindows") or {}).items()
+                if isinstance(s, dict)
+            }
+            claim = info.get("rateLimitType")
+            if claim and info.get("utilization") is not None:
+                reported.setdefault(claim, (info["utilization"], resets_at(info.get("resetsAt"))))
+            self.overage_in_use = bool(info.get("isUsingOverage"))
+            seen = datetime.now(timezone.utc).isoformat(timespec="seconds")
+            for window, (used, reset) in reported.items():
+                self.windows[window] = (used, reset)
+                if isinstance(used, (int, float)):
+                    snap = {"utilization": used, "resets_at": iso(reset * 1000) if reset else None, "seen": seen}
+                    w = c["windows"].setdefault(window, {})
+                    w.setdefault("first", snap)
+                    w["last"], w["max"] = snap, max(w.get("max", 0), used)
+            if info.get("status") == "rejected":
+                used = (reported.get(claim) or (None, None))[0]
+                if isinstance(used, (int, float)) and used >= QUOTA.get(claim, 1.0) - MARGIN:
+                    c["refusals"] = c.get("refusals", 0) + 1
+                    self.refused = resets_at(info.get("resetsAt"))
+                else:  # Claude Code reports a per-minute limit as a refusal of the five-hour window (probe out3)
+                    c["throttles"] = c.get("throttles", 0) + 1
+                    self.throttled, self.throttle_streak = True, self.throttle_streak + 1
+        elif kind == "system" and entry.get("subtype") == "api_retry":
+            bump(c["api_retries"], str(entry.get("error_status")))
 
-        threading.Thread(target=keepalive, daemon=True).start()
-        try:
-            status, answer = gateway.complete(
-                request, arrived + (CONDENSE_SLICE if kind == "condense" else SLICE), kind, head,
-                self.headers.get("x-client-request-id"))
-        finally:
-            done.set()
-            with gateway.lock:
-                gateway.in_flight -= 1
-                gateway.active = time.monotonic()
-        choice = ((answer or {}).get("choices") or [None])[0]
-        if status == 200 and choice:
-            chunks = [
-                {
-                    "id": answer.get("id"),
-                    "model": answer.get("model"),
-                    "choices": [
-                        {
-                            "index": 0,
-                            "delta": {
-                                "role": "assistant", "content": (choice.get("message") or {}).get("content") or ""},
-                            "finish_reason": None,
-                        }
-                    ],
-                },
-                {
-                    "id": answer.get("id"), "model": answer.get("model"),
-                    "choices": [{"index": 0, "delta": {}, "finish_reason": choice.get("finish_reason") or "stop"}],
-                    "usage": answer.get("usage")},
-            ]
-        elif status == 200 and isinstance((answer or {}).get("error"), dict):
-            chunks = [{"error": answer["error"]}]
-        elif answer is None:
-            with gateway.lock:
-                gateway.counts["rate_limit_relays"] += 1
-            chunks = [
-                {"error": {"code": 429, "type": "rate_limit_exceeded", "message": "the gateway is waiting for the LLM"}}]
-        else:
-            error = (
-                answer.get("error")
-                if isinstance(answer.get("error"), dict)
-                else {"message": str(answer.get("error") or answer)[:300]}
-            )
-            chunks = [
-                {
-                    "error": {
-                        "code": status if status != 200 else 502, "type": error.get("type"),
-                        "message": error.get("message") or str(answer)[:300]}
-                }
-            ]
-        emit(b"".join(f"data: {json.dumps(c)}\n\n".encode() for c in chunks) + b"data: [DONE]\n\n")
-        self.close_connection = True
+    def open_turns(self):
+        """Claude Code processes with a turn begun and not ended, whose process is still alive."""
+        return sum(1 for state in self.files.values() if state.get("open") and alive(state.get("pid")))
+
+    def settle(self):
+        """Once the worker has stopped, so every process has ended: a reply whose result line never came was cut off
+        (claude-mem's quota guard kills its process), and only its input is known."""
+        self.pump()
+        for state in self.files.values():
+            for usage in (state.get("pending") or {}).values():
+                bump(self.counts["unreported"], "replies")
+                for k in ("input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens"):
+                    bump(self.counts["unreported"], k, usage.get(k) or 0)
+            state["pending"], state["open"] = {}, False
+
+    def near_limit(self):
+        """(window, its reset) for a window within MARGIN of the guard's threshold, or spent and refused, that has not
+        reset."""
+        now = time.time()
+        for window, threshold in QUOTA.items():
+            if window == "overage" and not self.overage_in_use:
+                continue
+            used, reset = self.windows.get(window, (None, None))
+            if isinstance(used, (int, float)) and used >= threshold - MARGIN and reset and reset > now:
+                return window, reset
+        if self.refused and self.refused > now:
+            return "refused", self.refused
+        return None
+
+    def models(self):
+        return {m for m, v in self.counts["by_model"].items() if m and (v.get("calls") or v.get("output_tokens"))}
+
+
+def alive(pid):
+    """Whether a process of this container is still running: claude.sh's pid is Claude Code's, which it execs."""
+    if not isinstance(pid, int):
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    try:  # a process that has ended but not been reaped yet is not running
+        return Path(f"/proc/{pid}/stat").read_text().split(") ")[-1][:1] != "Z"
+    except OSError:
+        return False
 
 
 class Clock:
@@ -532,6 +515,9 @@ class Worker:
         self.process, self.offsets = None, {}
         self.idle, self.lost, self.backfilled, self.gone = (
             set(), [], False, set())  # gone: db ids whose generator paused or exited
+        self.waiting_until = 0.0  # monotonic time until which claude-mem said it waits on purpose (a transport backoff)
+        self.overflow_until = {}  # session db id -> the replayed time its overflow cooldown ends (SessionRoutes.ts:266)
+        self.clock = None  # the replay's Clock, which dates the overflow cooldown
         self.counted, self.errors, self.rejected, self.dropped = Counter(counts), [], {}, []
 
     def start(self, strict=True):
@@ -539,6 +525,10 @@ class Worker:
         if not (DATA / "settings.json").exists():
             DATA.mkdir(parents=True, exist_ok=True)
             (DATA / "settings.json").write_text(json.dumps({k: v for k, (v, _) in SETTINGS.items()}, indent=2) + "\n")
+        if os.environ.get("ANTHROPIC_API_KEY"):  # written at every start: copy_store leaves it out of checkpoints
+            env = DATA / ".env"
+            env.touch(mode=0o600)
+            env.write_text(f"ANTHROPIC_API_KEY={os.environ['ANTHROPIC_API_KEY']}\n")
         self.process = subprocess.Popen(
             ["bun", str(WORKER), "--daemon"], env=WORKER_ENV, cwd=HOME, stdin=subprocess.DEVNULL,
             stdout=(WORK / "worker.out").open("a"), stderr=subprocess.STDOUT,
@@ -553,10 +543,10 @@ class Worker:
                 if time.monotonic() > until:
                     sys.exit("claude-mem: the worker did not answer /api/readiness in 4 minutes")
                 time.sleep(0.5)
-        provider = api("/api/health")["ai"]["provider"]
-        if provider != "openai-compatible":
-            sys.exit(
-                f"claude-mem: the worker's observer is {provider}, not openai-compatible (provider-dispatch.ts falls back when it is not fully configured)")
+        ai = api("/api/health")["ai"]
+        want = "API key" if os.environ.get("ANTHROPIC_API_KEY") else "Claude Code OAuth token (env"
+        if ai["provider"] != "claude" or not ai.get("authMethod", "").startswith(want):
+            sys.exit(f"claude-mem: the worker's observer is {ai['provider']} on {ai.get('authMethod')}, not claude on {want}")
         until = time.monotonic() + 600
         while not self.backfilled:
             self.check()
@@ -594,11 +584,12 @@ class Worker:
                 self.kill()
                 sys.exit("claude-mem: the worker did not stop in 120 s; run again to resume from the last checkpoint")
         self.pump()
-        left = subprocess.run(["pgrep", "-f", "chroma-mcp"], capture_output=True, text=True).stdout.split()
-        if left:
-            subprocess.run(["pkill", "-9", "-f", "chroma-mcp"])
-            sys.exit(
-                f"claude-mem: chroma-mcp outlived the worker ({' '.join(left)}); run again to resume from the last checkpoint")
+        for name, pattern in (("chroma-mcp", "chroma-mcp"), ("Claude Code", "/opt/claude-code/claude")):
+            left = subprocess.run(["pgrep", "-f", pattern], capture_output=True, text=True).stdout.split()
+            if left:
+                subprocess.run(["pkill", "-9", "-f", pattern])
+                sys.exit(
+                    f"claude-mem: {name} outlived the worker ({' '.join(left)}); run again to resume from the last checkpoint")
         self.backfilled = False
 
     def kill(self):
@@ -651,6 +642,12 @@ class Worker:
                     "session_db_id": int(who.group(1)) if who else None, "kind": kind.group(1) if kind else None,
                     "time": line[1:24]}
             )
+        backoff = re.search(r"Transport pause: scheduled buffered-work resume.*?delayMs=(\d+)", line)
+        cooling = re.search(r"overflow cooldown is active \{sessionId=(\d+),.*?retryInMs=(\d+)", line)
+        if cooling and self.clock:
+            self.overflow_until[int(cooling.group(1))] = self.clock.value + int(cooling.group(2))
+        if backoff:
+            self.waiting_until = max(self.waiting_until, time.monotonic() + int(backoff.group(1)) / 1000)
         found = re.search(r"Idle timeout reached.*?sessionDbId=(\d+)", line)
         if found:
             self.idle.add(int(found.group(1)))
@@ -671,7 +668,8 @@ class Worker:
             sys.exit(f"claude-mem: the worker lost work: {self.lost[0][:600]}")
 
     def wait_idle(self, db_id, timeout):
-        """Whether the observer of this session exited because it was idle, within the seconds given."""
+        """How the observer of this session ended within the seconds given: "idle" when it exited because it was idle,
+        "gone" when its generator paused or exited another way, None when it did not end."""
         until = time.monotonic() + timeout
         while time.monotonic() < until:
             self.check()
@@ -685,9 +683,12 @@ class Worker:
                         break
                     time.sleep(0.1)
                 self.gone.discard(db_id)
-                return True
+                return "idle"
+            if db_id in self.gone:
+                self.gone.discard(db_id)
+                return "gone"
             time.sleep(0.1)
-        return False
+        return None
 
 
 def hook(name, payload, cwd, launch):
@@ -978,14 +979,15 @@ def marks(state):
 
 
 class Replay:
-    """The clock, the worker and the gateway, and what the replay needs of them: each event moves the clock to its time,
-    runs its hook, and waits until claude-mem has stored what the event gave the observer, so every LLM call starts at
-    its event's time and none is in flight across a clock jump."""
+    """The clock, the worker and Claude Code's reports, and what the replay needs of them: each event moves the clock to
+    its time, runs its hook, and waits until claude-mem has stored what the event gave the observer, so every LLM call
+    starts at its event's time and none is in flight across a clock jump."""
 
-    def __init__(self, clock, worker, gateway, checkouts, counts, idle, rejected):
-        self.clock, self.worker, self.gateway, self.checkouts, self.counts, self.idle = (
-            clock, worker, gateway, checkouts, counts, idle)
+    def __init__(self, clock, worker, claude, checkouts, counts, idle, rejected):
+        self.clock, self.worker, self.claude, self.checkouts, self.counts, self.idle = (
+            clock, worker, claude, checkouts, counts, idle)
         self.alive, self.db_ids = {}, {}  # session id → the clock when its observer last took a message
+        self.noted = Counter(claude.by_session)  # observer replies by session db id already turned into self.alive
         self.uncertain = set()  # alive sessions whose generator paused or exited during the drain that set them
         self.rejected = worker.rejected = rejected  # (kind, id) → tokens: rows the embedder refuses for length
         self.horizon = float("inf")  # the time of the next event of the timeline: the clock never steps past it
@@ -1001,7 +1003,9 @@ class Replay:
     def advance(self, t):
         """Move the clock to t. The observer of a session exits when 3 minutes pass with no message: bring the clock to
         each due exit first and wait for it. A session whose generator paused or exited meanwhile has no exit to wait for.
-        """
+        The clock never moves while an observer turn is open, and an exit that frees a process slot for a parked observer
+        lets that observer work before the clock moves on."""
+        self.quiesce()
         self.worker.pump()
         for sid in [s for s in self.alive if self.db_id(s) in self.worker.gone]:
             del self.alive[sid]
@@ -1009,13 +1013,15 @@ class Replay:
         for sid, due in sorted(((s, last + IDLE_MS) for s, last in self.alive.items()), key=lambda x: x[1]):
             if due > t:
                 break
+            parked = self.worker.status().get("parkedSessions", 0)
             self.clock.set(due)
             self.idle["predicted"] += 1
-            if self.worker.wait_idle(self.db_id(sid), 15 if IDLE == "virtual" else 200):
+            exit_ = self.worker.wait_idle(self.db_id(sid), 15 if IDLE == "virtual" else 200)
+            if exit_ == "idle":
                 self.idle["observed"] += 1
-            elif sid in self.uncertain:
-                self.idle[
-                    "uncertain_missed"] += 1  # its generator paused or exited during a drain: the exit may never come
+            elif exit_ == "gone" or sid in self.uncertain:
+                # its generator paused or exited another way, during a drain or now: the exit may never come
+                self.idle["uncertain_missed"] += 1
             elif IDLE == "virtual":
                 sys.exit(
                     f"claude-mem: the observer of session {sid} did not exit idle at {iso(due)}, so the replay's clock model is wrong; "
@@ -1025,13 +1031,16 @@ class Replay:
                 self.idle["missed"] += 1
             del self.alive[sid]
             self.uncertain.discard(sid)
+            if parked:
+                self.wait_drain(due)
         self.clock.set(t)
 
     def deliver(self, session, name, payload, when, message, more=False):
+        # The clock first, so the observers whose idle exits come before this event end before a long account wait
+        # (an open Claude Code process waits it out otherwise).
         self.advance(millis(when))
+        self.wait_for_account()
         self.checkouts.ensure(session.cwd)
-        # Counted before the hook: the observer's request can reach the gateway before the hook's spool entry is gone.
-        seen = self.gateway.counts["requests_observer"]
         self.counts["hook_seconds"] += hook(name, payload, session.cwd, session.launch)
         self.counts[payload["hook_event_name"]] += 1
         if name != "session-init":  # that hook has already waited for the worker to take the prompt
@@ -1045,14 +1054,53 @@ class Replay:
         self.worker.pump()
         self.worker.idle.discard(db_id)
         self.worker.gone.discard(db_id)
+        before = self.noted[db_id]
         # Another hook of this step follows at the same time, so the clock may not step: it would stamp that hook late.
-        if not self.wait_drain(millis(when) if more else self.horizon):
-            self.alive.pop(session.sid, None)  # its generator is paused behind a rate limit: no idle exit is coming
+        drained = self.wait_drain(millis(when) if more else self.horizon)
+        if drained and self.noted[db_id] == before:
+            # claude.sh's copy of a reply can land a moment after claude-mem has stored it
+            until = time.monotonic() + 2
+            while self.claude.by_session[db_id] == before and time.monotonic() < until:
+                time.sleep(0.1)
+                self.claude.pump()
+        self.note_replies()
+        if not drained:
+            self.alive.pop(session.sid, None)  # its generator is held: no idle exit is coming
             self.uncertain.discard(session.sid)
-        elif self.gateway.counts["requests_observer"] > seen:
-            self.worker.pump()
-            self.alive[session.sid] = self.clock.value  # what claude-mem's claim saw, and clock.js arms its timer from
-            (self.uncertain.add if db_id in self.worker.gone else self.uncertain.discard)(session.sid)
+
+    def note_replies(self):
+        """Each session whose observer replied since the last look took a message at the clock now: claude-mem's claim
+        saw it, and clock.js arms the observer's idle timer from it."""
+        self.claude.pump()
+        self.worker.pump()
+        for db_id, n in list(self.claude.by_session.items()):
+            if n == self.noted[db_id]:
+                continue
+            self.noted[db_id] = n
+            sid = self.sid_of(db_id)
+            if sid is None:
+                continue
+            self.alive[sid] = self.clock.value
+            (self.uncertain.add if db_id in self.worker.gone else self.uncertain.discard)(sid)
+
+    def sid_of(self, db_id):
+        sid = next((s for s, d in self.db_ids.items() if d == db_id), None)
+        if sid is None:
+            rows = query("SELECT content_session_id FROM sdk_sessions WHERE id = ?", db_id)
+            if rows:
+                sid = rows[0][0]
+                self.db_ids[sid] = db_id
+        return sid
+
+    def quiesce(self):
+        """Wait until no observer turn is open, so no LLM call is in flight when the clock moves."""
+        until = time.monotonic() + STUCK
+        while self.claude.open_turns():
+            self.worker.check()
+            if time.monotonic() > max(until, self.worker.waiting_until):
+                sys.exit(f"claude-mem: an observer turn stayed open for {STUCK} s; run again to resume from the last checkpoint")
+            time.sleep(0.1)
+            self.claude.pump()
 
     def wait_spool(self):
         until = time.monotonic() + 120
@@ -1062,44 +1110,109 @@ class Replay:
                 sys.exit("claude-mem: a hook event stayed in the spool for 2 minutes")
             time.sleep(0.05)
 
+    def wait_for_account(self):
+        """Wait out a window of the account that is within MARGIN of claude-mem's quota guard, or that the API refused
+        once spent, as Claude Code last reported it: the replay pauses for a usage limit, as the other arms' builds do,
+        and claude-mem's guard seldom trips. A refusal of a window that was not spent (a per-minute limit) is waited out
+        for 60 s, doubling with each one in a row, up to THROTTLE_MAX."""
+        self.claude.pump()
+        if self.claude.throttled:
+            wait = min(60 * 2 ** (max(self.claude.throttle_streak, 1) - 1), THROTTLE_MAX)
+            self.counts["throttle_waits"] += 1
+            self.counts["throttle_wait_seconds"] += wait
+            log(f"the API refused a call with no window spent (a per-minute limit): waiting {wait} s")
+            self.sleep(wait)
+            self.claude.throttled = False
+        near = self.claude.near_limit()
+        if not near:
+            return
+        window, reset = near
+        wait = max(0.0, reset - time.time()) + RESET_SLACK
+        used = (self.claude.windows.get(window) or (None, None))[0]
+        self.counts["limit_waits"] += 1
+        self.counts["limit_wait_seconds"] += wait
+        log(f"the account's {window} window is at {used}: waiting {round(wait)} s for its reset at {iso(reset * 1000)}")
+        self.sleep(wait, f"still waiting for the {window} window's reset at {iso(reset * 1000)}")
+        if window == "refused":
+            self.claude.refused = None
+
+    def sleep(self, seconds, note=None):
+        """Sleep in real time, the worker watched, with a line every 30 minutes for whoever watches the log."""
+        until, told = time.monotonic() + seconds, time.monotonic()
+        while time.monotonic() < until:
+            self.worker.check()
+            time.sleep(min(30.0, max(0.0, until - time.monotonic())))
+            if note and time.monotonic() - told > 1800:
+                log(note)
+                told = time.monotonic()
+
     def wait_drain(self, horizon):
-        """Wait until claude-mem has stored what the last event gave the observer. While the upstream refuses, the wait
-        goes on, as mem0's add() blocks. Once it answers but claude-mem is still held by its rate-limit breaker, whose
-        90 s window is virtual, the clock steps by at most 91 s, never past the next event of the timeline. False when it
-        cannot step and nothing has moved for 120 s: the replay then goes on, and the manifest counts it."""
-        told = quiet_since = time.monotonic()
-        limited = False
+        """Wait until claude-mem has stored what the last event gave the observer: no message queued, none parked.
+        Once nothing moves and no observer turn is open, a held observer is helped along, never past the next event of
+        the timeline: claude-mem's quota breaker holds it, so the account is waited out in real time and the clock
+        steps to the breaker's end, since the breaker runs on the replayed clock; an observer waits for one of
+        claude-mem's process slots (two by default), so the clock steps to the latest idle exit due, which frees one; or
+        claude-mem's overflow cooldown holds it, and the clock steps to the cooldown's end. False when the clock cannot
+        step: the replay then goes on with those messages queued, and the manifest counts it. A breaker on a window
+        claude-mem never refreshes, or for a refused credential, fails the build: a rerun's new worker forgets the
+        stale reading. Anything else that moves nothing for STUCK seconds, past a backoff claude-mem announced, fails
+        the build too."""
+        told = moved = time.monotonic()
+        last = None
         while True:
             self.worker.check()
-            self.gateway.check()
             self.worker.pump()
+            self.claude.pump()
+            self.note_replies()
             status = self.worker.status()
-            if status["queueDepth"] == 0 and status.get("parkedSessions", 0) == 0 and not self.gateway.in_flight:
+            depth, parked = status["queueDepth"], status.get("parkedSessions", 0)
+            if depth == 0 and parked == 0:
                 return True
-            quiet_since = max(quiet_since, self.gateway.active)
-            if not self.gateway.in_flight:
-                if self.gateway.unusable():
-                    if not limited:
-                        self.counts["limit_waits"] += 1
-                        log("the LLM refuses calls; waiting for it")
-                    limited, quiet_since = True, time.monotonic()
-                elif (limited and horizon - 1 - self.clock.value < 91_000 and time.monotonic() - quiet_since > 10) or (
-                        time.monotonic() - quiet_since > 120):
-                    # After a limit claude-mem's breaker needs 90 virtual seconds: with less room than that before the
-                    # next event no step can open it, so the replay goes on at once instead of
-                    # waiting 190 s for nothing.
-                    room = horizon - 1 - self.clock.value
-                    if room <= 0 or (limited and room < 91_000):
-                        self.counts["stall_continues"] += 1
-                        log(
-                            f"claude-mem holds {status['queueDepth']} messages behind its rate-limit breaker and the clock cannot step: the replay goes on without them")
-                        return False
-                    self.counts["breaker_steps"] += 1
-                    self.advance(self.clock.value + min(91_000, room))
-                    quiet_since = time.monotonic() - 50  # the breaker's sweep re-probes within 60 s
-                    limited = False
+            mark = (depth, parked, self.claude.size, sum(self.worker.offsets.values()))
+            if mark != last:
+                last, moved = mark, time.monotonic()
+            quiet = not self.claude.open_turns() and time.monotonic() - moved > QUIET
+            room = horizon - 1 - self.clock.value
+            hold = quota_hold()
+            if hold and breaker_end(hold) > self.clock.value:
+                if hold.get("cause") == "auth":
+                    sys.exit("claude-mem: claude-mem's breaker holds the observer for a refused credential")
+                self.wait_for_account()
+                if hold.get("window") not in (*REFRESHED, "observer_text", "rate_limit", "unknown", None):
+                    sys.exit(
+                        f"claude-mem: claude-mem's quota guard stopped the observer on its {hold['window']} reading, which it "
+                        "keeps until the worker restarts; run again to resume from the last checkpoint")
+                if not quiet:
+                    time.sleep(0.1)
+                    continue
+                if breaker_end(hold) - self.clock.value > room:
+                    self.counts["breaker_holds"] += 1
+                    log(
+                        f"claude-mem's quota breaker holds {depth} messages and the clock cannot reach its end before the next event: the replay goes on without them")
+                    return False
+                self.counts["breaker_steps"] += 1
+                self.advance(breaker_end(hold))
+                last, moved = None, time.monotonic()  # its sweep lets a probe through within 60 s
+                continue
+            cooling = [t for t in self.worker.overflow_until.values() if t > self.clock.value]
+            if quiet and (parked or cooling):
+                # The latest due exit frees every slot an idle observer holds: each took its last message by now.
+                target = min(cooling) if cooling and not parked else self.clock.value + IDLE_MS
+                kind = "slot" if parked else "overflow"
+                if target > horizon - 1:
+                    self.counts[f"{kind}_holds"] += 1
+                    log(f"{depth} messages wait for claude-mem's observer {kind} and the clock cannot reach it before the next event: the replay goes on without them")
+                    return False
+                self.counts[f"{kind}_steps"] += 1
+                self.advance(target)
+                last, moved = None, time.monotonic()
+                continue
+            if time.monotonic() - max(moved, self.worker.waiting_until) > STUCK:
+                sys.exit(
+                    f"claude-mem: {depth} messages ({parked} sessions parked) waited {STUCK} s for the observer with nothing moving; "
+                    f"latest observer errors {dict(list(self.claude.errors.items())[-3:])}; run again to resume from the last checkpoint")
             if time.monotonic() - told > 300:
-                log(f"{status['queueDepth']} messages wait for the LLM")
+                log(f"{depth} messages wait for the observer")
                 told = time.monotonic()
             time.sleep(0.1)
 
@@ -1192,38 +1305,47 @@ class Replay:
         for session in done:
             self.record(session, progress)
         progress["done"] += [s.name for s in done]
-        self.check_run()
+        self.check_run(progress)
         self.worker.stop()
+        self.claude.settle()
         self.alive.clear()
         self.db_ids.clear()
         progress["marks"] = state
         progress["clock"] = self.clock.value
         progress["idle"] = dict(self.idle)
         progress["counts"] = dict(self.counts)
-        with self.gateway.lock:
-            progress["llm"] = dict(self.gateway.counts)
+        progress["llm"] = self.claude.counts
         progress["log"] = {
             "counted": dict(self.worker.counted), "errors": self.worker.errors, "dropped": self.worker.dropped}
-        progress["models"] = sorted(self.gateway.models)
+        progress["at_checkpoint"] = {
+            "dropped": len(self.worker.dropped), "messages": self.counts["messages"],
+            "api_errors": dict(self.claude.counts["api_errors"])}
         save(progress)
         if not final:
             self.worker.start()
             self.verify_marks(progress)
         return True
 
-    def check_run(self):
-        """What would fail the build at its end, checked at each quiet point instead, before more of the LLM is spent."""
-        with self.gateway.lock:
-            calls = self.gateway.counts["calls"]
-        if calls < self.counts["messages"]:
-            sys.exit(
-                f"claude-mem: the gateway answered {calls} calls for {self.counts['messages']} messages; run again to resume from the last checkpoint")
+    def check_run(self, progress):
+        """What would fail the build at its end, checked at each quiet point instead, before more of the LLM is spent:
+        observations written by a model Claude Code never reported (claude-mem records the model each reply names);
+        since the last checkpoint, more batches dropped than a model's odd reply explains, or API errors a retry does not
+        heal, both what a refusal the API repeats (a 400) would leave."""
+        self.claude.pump()
         served = {m for (m,) in query("SELECT DISTINCT generated_by_model FROM observations") if m}
-        allowed = self.gateway.models or {
-            LLM_MODEL}  # an upstream that names no model leaves claude-mem the configured one
+        allowed = self.claude.models()
         if served - allowed:
             sys.exit(
-                f"claude-mem: observations were generated by {sorted(served - allowed)}, not by a model the LLM answered with {sorted(allowed)}")
+                f"claude-mem: observations were generated by {sorted(served - allowed)}, not by a model Claude Code reported {sorted(allowed)}")
+        since = progress.get("at_checkpoint") or {}
+        dropped = len(self.worker.dropped) - since.get("dropped", 0)
+        messages = self.counts["messages"] - since.get("messages", 0)
+        if dropped > max(3, messages // 100):
+            sys.exit(f"claude-mem: claude-mem dropped {dropped} batches for {messages} messages since the last checkpoint")
+        errors = {k: n - (since.get("api_errors") or {}).get(k, 0) for k, n in self.claude.counts["api_errors"].items()}
+        lasting = {k: n for k, n in errors.items() if k not in TRANSIENT_ERRORS and n}
+        if sum(lasting.values()) > 3:
+            sys.exit(f"claude-mem: Claude Code reported API errors a retry does not heal since the last checkpoint: {lasting}")
 
     def verify_marks(self, progress):
         if marks(sync_state()) != progress["marks"]:
@@ -1330,6 +1452,9 @@ def tool_versions():
         "claude-mem": "13.35.0", "npm_tarball_sha256": NPM_SHA256, "bun": out("bun", "--version"),
         "bun_zip_sha256": BUN_SHA256[platform.machine()], "python": "3.13.15", "uv": out("uv", "--version"),
         "git": out("git", "--version"), "procps": out("ps", "--version"), "chroma_env": dict(sorted(env.items())),
+        "claude_code": out("/opt/claude-code/claude", "--version"),
+        "claude_code_sha256": subprocess.run(
+            ["sha256sum", "/opt/claude-code/claude"], capture_output=True, text=True).stdout.split()[0],
         "base_image": BASE_IMAGE, "arch": platform.machine(), "driver_python": platform.python_version()}
 
 
@@ -1344,16 +1469,10 @@ def manifest(progress, skipped_files, plan, replayed):
     chroma = chroma_counts()
     counts, idle, llm = progress["counts"], progress["idle"], progress["llm"]
     events = ("UserPromptSubmit", "PostToolUse", "PostToolUseFailure", "Stop", "SessionEnd")
-    config = [
-        {"key": k, "value": v, "cite": cite}
-        for k, (v, cite) in (SETTINGS | ENV).items()
-        if k != "CLAUDE_MEM_OPENAI_COMPAT_MODEL"
-    ]
-    config.append(
-        {
-            "key": "CLAUDE_MEM_OPENAI_COMPAT_MODEL", "value": LLM_MODEL,
-            "cite": SETTINGS["CLAUDE_MEM_OPENAI_COMPAT_MODEL"][1]}
-    )
+    config = [{"key": k, "value": v, "where": "settings.json", "cite": cite} for k, (v, cite) in SETTINGS.items()]
+    config += [{"key": k, "value": v, "where": "environment", "cite": cite} for k, (v, cite) in ENV.items()]
+    config += [{"key": k, "value": "set", "where": how, "cite": cite}
+               for k, (how, cite) in AUTH_CONFIG.items() if os.environ.get(k)]
     times = [
         t
         for _, _, path in plan
@@ -1383,7 +1502,7 @@ def manifest(progress, skipped_files, plan, replayed):
         "notes": NOTES,
         "projects": {repo: dict(found) for repo, found in sorted(projects.items())},
         "sessions": {
-            "replayed": replayed, "skipped": skipped_files, "completed": statuses.get("completed", 0),
+            "planned": len(plan), "replayed": replayed, "skipped": skipped_files, "completed": statuses.get("completed", 0),
             "active": statuses.get("active", 0)},
         "events": {k: counts.get(k, 0) for k in events},
         "replay": {
@@ -1410,9 +1529,17 @@ def manifest(progress, skipped_files, plan, replayed):
                 | {k: d[k] for k in ("kind", "time")}
                 for d in progress["log"].get("dropped", [])
             ],
+            "observer_replies": llm.get("turns", {}).get("observer", 0),
             "limit_waits": counts.get("limit_waits", 0),
+            "limit_wait_seconds": round(counts.get("limit_wait_seconds", 0)),
+            "throttle_waits": counts.get("throttle_waits", 0),
+            "throttle_wait_seconds": round(counts.get("throttle_wait_seconds", 0)),
             "breaker_steps": counts.get("breaker_steps", 0),
-            "stall_continues": counts.get("stall_continues", 0),
+            "breaker_holds": counts.get("breaker_holds", 0),
+            "slot_steps": counts.get("slot_steps", 0),
+            "slot_holds": counts.get("slot_holds", 0),
+            "overflow_steps": counts.get("overflow_steps", 0),
+            "overflow_holds": counts.get("overflow_holds", 0),
             "skipped_checkpoints": counts.get("skipped_checkpoints", 0),
         },
         "rows": {
@@ -1429,7 +1556,10 @@ def manifest(progress, skipped_files, plan, replayed):
             "collection": "cm__claude-mem", "documents": chroma["count"], "by_doc_type": chroma["by_doc_type"],
             "rejected_by_embedder": [{"kind": k, "id": i, "tokens": n} for k, i, n in progress["rejected"]]},
         "worker_log": progress["log"],
-        "llm": {"model": LLM_MODEL} | {k: round(v) if isinstance(v, float) else v for k, v in sorted(llm.items())},
+        "llm": {
+            "model": LLM_MODEL, "provider": "claude", "claude_code": CLAUDE_CODE, "tier_simple_model": TIER_SIMPLE,
+            "models": sorted(m for m, v in llm.get("by_model", {}).items() if m and v.get("calls"))}
+        | {k: v for k, v in sorted(llm.items())},
         "ingest_seconds": round(progress["ingest_seconds"]),
         "finished": datetime.now(timezone.utc).isoformat(timespec="seconds"),
     }
@@ -1444,15 +1574,15 @@ def main():
         return count_chroma(sys.argv[2])
     signal.signal(signal.SIGINT, interrupted)
     signal.signal(signal.SIGTERM, interrupted)
-    try:
-        urllib.request.urlopen(
-            urllib.request.Request(f"{LLM_URL}/models", headers={"Authorization": f"Bearer {LLM_KEY}"} | LLM_HEADERS),
-            timeout=30).close()
-    except OSError as e:
-        sys.exit(f"claude-mem: the LLM endpoint {LLM_URL} does not answer: {e}")
+    given = [k for k in AUTH if os.environ.get(k)]
+    if len(given) != 1:
+        sys.exit(f"claude-mem: set exactly one of {' or '.join(AUTH)} for the observer's account (set: {given or 'none'})")
+    if not LLM_MODEL:
+        sys.exit("claude-mem: BILBO_EVAL_LLM_MODEL is not set")
 
     HOME.mkdir(parents=True, exist_ok=True)
     LIVE.mkdir(parents=True, exist_ok=True)
+    IO.mkdir(parents=True, exist_ok=True)
     if not CHECKPOINT.exists() and (WORK / "checkpoint.old").exists():
         (WORK / "checkpoint.old").rename(CHECKPOINT)
     plan, skipped_files = sessions()
@@ -1463,12 +1593,11 @@ def main():
     else:
         DATA.mkdir(parents=True)
         progress = {
-            "done": [], "sessions": {}, "counts": {}, "llm": {}, "idle": {}, "marks": {}, "rejected": [], "models": [],
+            "done": [], "sessions": {}, "counts": {}, "llm": {}, "idle": {}, "marks": {}, "rejected": [],
             "ingest_seconds": 0, "clock": first, "log": {"counted": {}, "errors": []}}
     counts = Counter(progress["counts"])
     clock = Clock(progress["clock"])
-    gateway = Gateway(progress["llm"], progress["models"])
-    threading.Thread(target=gateway.serve_forever, daemon=True).start()
+    claude = Claude(progress["llm"])
     worker = Worker(progress["log"]["counted"])
     worker.errors = progress["log"]["errors"]
     worker.dropped = progress["log"].get("dropped", [])
@@ -1479,8 +1608,9 @@ def main():
                 for _, repo, path in plan
             ]
             checkouts = Checkouts(checkout_roots(), launches)
+            worker.clock = clock
             replay = Replay(
-                clock, worker, gateway, checkouts, counts, Counter(progress["idle"]),
+                clock, worker, claude, checkouts, counts, Counter(progress["idle"]),
                 {(k, i): n for k, i, n in progress["rejected"]})
             worker.start()
             verify_counts(progress)
@@ -1494,7 +1624,6 @@ def main():
             open_now, started, finished = 0, time.monotonic(), []
             while queue:
                 worker.check()
-                gateway.check()
                 _, n, session, repo, path = heapq.heappop(queue)
                 if session is None:
                     session, open_now = Session(repo, path, replay), open_now + 1
@@ -1512,26 +1641,29 @@ def main():
                     if replay.quiet_point(
                         finished, progress, millis(queue[0][0])):  # one skipped keeps its sessions for the next
                         finished = []
-                        progress_line(progress, len(plan), counts, gateway)
+                        progress_line(progress, len(plan), counts, claude)
                     started = time.monotonic()
             progress["ingest_seconds"] += time.monotonic() - started
-            replay.quiet_point(finished, progress, float("inf"), final=True)
+            if not replay.quiet_point(finished, progress, float("inf"), final=True):
+                sys.exit("claude-mem: the last quiet point could not drain the observer; run again to resume from the last checkpoint")
     finally:
         worker.kill()
-        gateway.shutdown()
 
     out = WORK / "store"
     copy_store(out)
     (out / "manifest.json").write_text(
         json.dumps(manifest(progress, skipped_files, plan, len(progress["done"])), indent=2) + "\n")
+    secret = os.environ[given[0]].encode()
+    leaked = [str(f.relative_to(WORK)) for f in WORK.rglob("*") if f.is_file() and secret in f.read_bytes()]
+    if leaked:
+        sys.exit(f"claude-mem: the account's credential is in {leaked[:5]}; remove them before anything leaves /work")
     log(f"done: {out}")
 
 
-def progress_line(progress, total, counts, gateway):
-    log(
-        f"{len(progress['done'])}/{total} sessions: {sum(counts[k] for k in ('UserPromptSubmit', 'PostToolUse', 'PostToolUseFailure', 'Stop', 'SessionEnd'))} hooks, "
-        f"{gateway.counts['calls']} LLM calls so far"
-    )
+def progress_line(progress, total, counts, claude):
+    calls = {name: m.get("calls", 0) for name, m in sorted(claude.counts["by_model"].items()) if name}
+    hooks = sum(counts[k] for k in ("UserPromptSubmit", "PostToolUse", "PostToolUseFailure", "Stop", "SessionEnd"))
+    log(f"{len(progress['done'])}/{total} sessions: {hooks} hooks, {sum(calls.values())} LLM calls so far {calls}")
 
 
 if __name__ == "__main__":

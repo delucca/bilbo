@@ -1,7 +1,7 @@
 """Check a claude-mem store unpacked in /work/store. As packed: SQLite is intact and its full-text tables verify, its
 row counts and dates match the manifest, settings.json holds the settings the manifest lists, Chroma holds exactly the
-documents claude-mem writes for the rows (but the ones the embedder rejected for length), and five documents embedded
-again point the way their stored vectors do.
+documents claude-mem writes for the rows (but the ones the embedder rejected for length), five documents embedded
+again point the way their stored vectors do, and no file holds an Anthropic credential.
 Then a copy is served the way the eval serves it, with the embedder and no LLM: it must report the same counts and add
 no document, and four searches in each project must find observations through Chroma.
 build-store.sh --check runs it in the build service. Its Chroma part (--chroma <dir>) runs in chroma-mcp's
@@ -31,7 +31,8 @@ MIN_COSINE = 0.99  # as for dense and Graphiti; dense measured 0.9976 between a 
 LAUNCHER = ["--python", "3.13", "--with", "onnxruntime>=1.20", "--with", "protobuf<7", "--with", "chromadb==1.5.9",
             "--with", "pydantic<2.14", "--from", "chroma-mcp==0.2.6"]
 FALLBACKS = ("falling back to FTS5", "falling back to SQLite", "supplementing from SQLite", "semantic search failed")
-LLM_ATTEMPTS = ("multi-turn (", "API usage", "network error")  # what the worker logs when it tries the observer
+LLM_ATTEMPTS = ("Generator auto-starting", "Starting SDK query")  # what the worker logs when it starts the observer
+CREDENTIAL = re.compile(rb"sk-ant-[a-z]{3}\d{2}-")  # an OAuth token or API key, in any file of the store
 
 
 def chroma_part(path):
@@ -149,20 +150,28 @@ for table in ("observations_fts", "session_summaries_fts"):
 print("integrity", integrity, "| full-text integrity-check", fts)
 
 found, listed = counts(db), manifest["rows"]
+sessions = manifest["sessions"]
+complete = sessions.get("planned") == sessions["replayed"]
+print("sessions replayed", sessions["replayed"], "of", sessions.get("planned"), "planned:", complete)
 epochs = {t: db.execute(f"SELECT MIN(created_at_epoch), MAX(created_at_epoch) FROM {t}").fetchone()
           for t in ("user_prompts", "observations", "session_summaries")}
 ms = lambda iso: int(datetime.datetime.fromisoformat(iso.replace("Z", "+00:00")).timestamp() * 1000)
 lo, hi = ms(manifest["time"]["first_event"]), ms(manifest["time"]["last_event"])
-dated = all(a is None or (lo <= a and b <= hi + 180_000) for a, b in epochs.values())
+# An observation or summary keeps the time its message was queued, and a prompt its hook's (ResponseProcessor.ts:669).
+late = 180_000
+dated = all(a is None or (lo <= a and b <= hi + late) for a, b in epochs.values())
 rows_ok = all(found[k] == listed[k] for k in found)
 print("rows", found, "manifest", {k: listed[k] for k in found}, "| match", rows_ok, "| dated within",
       manifest["time"]["first_event"], "to", manifest["time"]["last_event"],
-      "+ 180 s", dated, {t: tuple(v) for t, v in epochs.items()})
+      f"+ {late // 1000} s", dated, {t: tuple(v) for t, v in epochs.items()})
+
+leaked = sorted(str(f.relative_to(STORE)) for f in STORE.rglob("*") if f.is_file() and CREDENTIAL.search(f.read_bytes()))
+print("files holding an Anthropic credential:", leaked)
 
 settings = json.loads((STORE / "settings.json").read_text())
-wanted = {e["key"]: e["value"] for e in manifest["config"] if e["key"].startswith("CLAUDE_MEM_")}
+wanted = {e["key"]: e["value"] for e in manifest["config"] if e.get("where") == "settings.json"}
 settings_ok = all(settings.get(k) == v for k, v in wanted.items())
-print("settings.json holds the manifest's", len(wanted), "CLAUDE_MEM_ settings:", settings_ok)
+print("settings.json holds the manifest's", len(wanted), "settings:", settings_ok)
 
 # Chroma, in chroma-mcp's own environment: ids, metadata and five stored vectors.
 shutil.copytree(STORE / "chroma", CHECK / "packed-chroma")
@@ -217,11 +226,11 @@ chroma_ok = ids_ok and dates_ok and embedded_ok and chroma["function"] == "opena
 # Served, as the run step serves it: a copy, real time, the embedder, and an observer URL nothing listens on.
 data = CHECK / "data"
 shutil.copytree(STORE, data, ignore=shutil.ignore_patterns("manifest.json"))
-dead = {"CLAUDE_MEM_OPENAI_COMPAT_BASE_URL": "http://127.0.0.1:9/v1", "CLAUDE_MEM_LOG_LEVEL": "DEBUG"}
+dead = {"CLAUDE_MEM_LOG_LEVEL": "DEBUG"}  # and no credential: an observer the worker started could not reach a model
 served = json.loads((data / "settings.json").read_text()) | dead
 (data / "settings.json").write_text(json.dumps(served, indent=2) + "\n")
 env = {"HOME": str(CHECK / "home"), "PATH": "/usr/local/bin:/usr/bin:/bin", "CLAUDE_MEM_DATA_DIR": str(data),
-       "CLAUDE_MEM_WORKER_PORT": str(PORT), "CLAUDE_MEM_WORKER_AUTOSTART": "false", "DO_NOT_TRACK": "1",
+       "CLAUDE_MEM_WORKER_PORT": str(PORT), "CLAUDE_MEM_WORKER_AUTOSTART": "false", "CLAUDE_MEM_TELEMETRY": "0",
        "OPENAI_BASE_URL": EMBEDDER, "OPENAI_API_KEY": "local"} | dead
 env |= {k: v for k, v in os.environ.items() if k.startswith("UV_")}
 started = time.monotonic()
@@ -299,6 +308,6 @@ print("fallbacks while searching:", fallbacks)
 searches_ok = bool(searches) and all(n and same for n, same in searches.values()) and not fallbacks
 
 ok = (integrity == ["ok"] and all(v == "ok" for v in fts.values()) and rows_ok and dated and settings_ok and chroma_ok
-      and serve_ok and searches_ok)
+      and serve_ok and searches_ok and not leaked and complete)
 print("OK" if ok else "FAILED")
 sys.exit(0 if ok else 1)

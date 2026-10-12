@@ -25,16 +25,15 @@ services:
     init: true  # reaps the chroma-mcp processes claude-mem's worker leaves behind
     depends_on:
       embedder: { condition: service_healthy }
-    extra_hosts:
-      - host.docker.internal:host-gateway
     environment:
       EMBEDDER_URL: http://embedder:8080/v1
-      BILBO_EVAL_LLM_URL: ${BILBO_EVAL_LLM_URL}
-      BILBO_EVAL_LLM_KEY: ${BILBO_EVAL_LLM_KEY}
-      BILBO_EVAL_LLM_MODEL: ${BILBO_EVAL_LLM_MODEL}
-      BILBO_EVAL_LLM_HEADERS: ${BILBO_EVAL_LLM_HEADERS:-}
       BILBO_EVAL_SESSIONS: ${BILBO_EVAL_SESSIONS}
       BILBO_EVAL_DEVICE: ${BILBO_EVAL_DEVICE}
+      # The observer's model, and its account straight from the caller's environment: a subscription's token from
+      # `claude setup-token`, or an API key. Nothing else of the account reaches the container.
+      BILBO_EVAL_LLM_MODEL: ${BILBO_EVAL_LLM_MODEL}
+      CLAUDE_CODE_OAUTH_TOKEN: ${CLAUDE_CODE_OAUTH_TOKEN:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
     volumes:
       - ${BILBO_EVAL_CORPUS}:/corpus:ro
       - ${BILBO_EVAL_WORK}:/work
