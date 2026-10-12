@@ -56,8 +56,8 @@ files under `arms/<arm>/`. Change any of them and the key changes.
 | [ai-memory](#ai-memory) | ai-memory, fed by its Claude Code hooks | yes | not yet |
 | [hindsight](#hindsight) | Hindsight, fed by its Claude Code integration | yes | not yet |
 | [claude-mem](#claude-mem) | claude-mem, fed by its Claude Code hooks | yes | not yet |
-| [bilbo-agent](#bilbo) | bilbo's notes, written by the agent with bilbo's note skill when it sees fit | yes | not yet |
-| [bilbo-assisted](#bilbo) | the same, plus a `/note` from the user at the end of every session | yes | not yet |
+| [bilbo-agent](#bilbo) | notes the agent writes with bilbo's note skill | yes | from L3, with Claude Opus 5.5 |
+| [bilbo-assisted](#bilbo) | `bilbo-agent` plus a `/note` at each session's end | yes | from L3, with Claude Opus 5.5 |
 
 To get a store:
 
@@ -336,7 +336,26 @@ then indexes the smallest project's notes again, whose vectors must point the sa
 Four searches, and one made of the title of each project's first note, must run on the vectors; the title search must
 find that note.
 
-No store is published yet; it has only been built in trials of two sessions.
+The published stores were not built here. They are the bilbo stores of the L3 eval, written there on 2026-10-09 and
+10 with Claude Opus 5.5, and this arm's build resumed from them with no LLM call. Each project was written on its own,
+then the five were merged into the one store and indexed with this eval's embedder.
+
+How they were written, as the L3 records show:
+
+- The L3 gateway ran `claude -p` for each call. It flattened every chat into one text prompt, and the model answered
+  with one JSON object that named its tool call, so the tool loop is a simulation of one over that gateway.
+- The two stores share L3's one yes-or-no pass per project. A fresh build of both arms draws two.
+- The writer's own searches ran on L3's embedder, llama.cpp b9190, on a GPU for four projects and a CPU for readaloud,
+  not on this eval's. The final vectors come from this eval's embedder.
+- readaloud is L3's dev project, where the 800-character cap was chosen. Its rows came from the same frozen code.
+- `ingest_seconds` is L3's wall time, usage-limit pauses included, not the time of this resume.
+- `versions` describes the image that packed the stores. L3 wrote with the x86_64 release binary of bilbo 0.19.0
+  (sha256 in each project's provenance).
+
+A replay of the gateway's records, with each `bilbo recall` answered as it was then, regenerated every request behind
+the stores from this arm's writer (`l3/`) and this corpus, 3,252 for bilbo-agent and 3,772 for bilbo-assisted, and
+every note byte for byte. bilbo-agent holds 106 notes and bilbo-assisted 120, and the sessions written are 143 of 145:
+the two Cursor transcripts are left out.
 
 ## Publishing
 
