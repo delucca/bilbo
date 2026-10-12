@@ -69,8 +69,7 @@ inputs_for() {
 }
 key_of() { printf '%s\n' "$1" | sha256sum | cut -c1-12; }
 
-# Only a build needs the LLM, and only the variables the arm's compose.yaml reads: an arm that drives a tool's own
-# model client (auto-memory runs claude -p) names the model alone and brings its own auth.
+# Only a build needs the LLM, and only the variables the arm's compose.yaml reads.
 need_llm() {
   for v in BILBO_EVAL_LLM_URL BILBO_EVAL_LLM_KEY BILBO_EVAL_LLM_MODEL; do
     grep -q "$v" "$root/arms/$arm/compose.yaml" || continue
