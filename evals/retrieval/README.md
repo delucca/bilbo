@@ -506,6 +506,17 @@ skipped by reason, files, bytes) and, for every operation, its session, time, to
 and links and the topic files' frontmatter against the manifest's numbers, and the per-operation provenance against
 its counts.
 
+## The questions
+
+`questions/questions.jsonl` holds the questions, one per line, each about one of the five projects. A question asks
+for something the project's sessions settled and its files do not show: what the developer decided, was told, tried
+or left open. Its answer is a list of facts, each pointing at the session lines that state it. It comes in two forms:
+the prompt a developer would type in a later session, and the search an agent would run for it.
+
+The questions fall in seven classes, such as the state of a piece of work or a decision and its reason, weighted by
+how often real memory queries ask for each. They are committed, not published, and committing them freezes them.
+[questions/README.md](questions/README.md) has the classes, the fields and how the questions are made.
+
 ## Publishing
 
 Only the dataset's owner publishes. The script uploads archives from `dataset/` in one commit, with `dataset-card.md`
@@ -521,9 +532,9 @@ It refuses a trial, a stale store, or a store whose manifest does not match its 
 
 1. Each strategy reads the sessions in the order they happened, fed the way the tool normally is, and builds its store
    once.
-2. Each project has questions whose answers are somewhere in its sessions.
-3. Each strategy searches its memory for every question. Its answers are scored against the answer key, along with
-   what the strategy cost.
+2. Each project has questions whose answers are facts somewhere in its sessions.
+3. Each strategy searches its memory for every question, and what it returns is checked for the question's facts,
+   along with what the strategy cost.
 
 ## Credits
 
