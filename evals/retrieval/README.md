@@ -8,7 +8,7 @@ Which memory strategy best remembers what happened in real coding sessions?
 - To build or check a store: [Docker](https://docs.docker.com/get-started/get-docker/). The shell pins the client,
   Compose and buildx; the engine is yours. A buildx installed by Docker Desktop or OrbStack takes precedence.
 - To build a store with an LLM (every arm but dense): an OpenAI-compatible LLM endpoint with `GET /models` and JSON
-  mode.
+  mode, and tool calls for bilbo's arms.
 - To run the embedder on the GPU: NVIDIA's
   [container toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/).
 - To rebuild the corpus from SWE-chat or to publish: a [Hugging Face token](https://huggingface.co/settings/tokens).
@@ -56,6 +56,8 @@ files under `arms/<arm>/`. Change any of them and the key changes.
 | [ai-memory](#ai-memory) | ai-memory, fed by its Claude Code hooks | yes | not yet |
 | [hindsight](#hindsight) | Hindsight, fed by its Claude Code integration | yes | not yet |
 | [claude-mem](#claude-mem) | claude-mem, fed by its Claude Code hooks | yes | not yet |
+| [bilbo-agent](#bilbo) | bilbo's notes, written by the agent with bilbo's note skill when it sees fit | yes | not yet |
+| [bilbo-assisted](#bilbo) | the same, plus a `/note` from the user at the end of every session | yes | not yet |
 
 To get a store:
 
@@ -287,6 +289,54 @@ row's Chroma documents, and five documents embedded again. It then serves a copy
 project must find observations through Chroma.
 
 No store is published yet; it has only been built in trials of up to two sessions.
+
+### bilbo
+
+[bilbo](https://github.com/delucca/bilbo) 0.19.0, the release binary. bilbo keeps what the agent of a session chooses
+to write with its `note` skill, and these sessions never had bilbo, so a writer model plays that agent. The writer is
+the L3 eval's, copied into `l3/` byte for byte (the manifest lists their sha256). Two arms run it:
+
+- `bilbo-agent`: after each exchange, one call asks the model whether the agent would use the note skill now. When it
+  says yes, the model runs the skill as shipped, with Bash, Read and Edit, against the real binary.
+- `bilbo-assisted`: the same, plus a bare `/note` from the user after the last exchange of every session.
+
+Each project is written into its own store, its sessions one after another in the order they started; then the five
+are merged into one store, as one developer's bilbo holds every project, and that store is what search reads. A run
+sees the skill's `SKILL.md` from the v0.19.0 tag and up to 32k tokens of its session; the yes-or-no call sees 16k.
+After each run the build runs `bilbo check`, as the harness does, and `bilbo index`, as bilbo's timer would. The build
+checkpoints after every exchange, and a session that stopped half way starts again from its beginning.
+
+What the replay changes:
+
+- An exchange is one prompt and everything up to the next, rendered as L3 rendered it: thinking and system reminders
+  are dropped, and each tool input and result is cut to 800 characters. The two Cursor transcripts are skipped before
+  rendering.
+- The yes-or-no call is the harness's: a real agent decides while it works. Each arm runs its own pass, so a build
+  of both draws it twice, where L3 drew one pass per project for both rows.
+- Only the note skill is listed, and the prompt hook (`bilbo digest`) is off, since it only reads. After a compaction
+  the writer sees the nudge of bilbo's compaction hook.
+- The writer can open only bilbo's notes, never the project's files, and runs only the skill's allowed commands. The
+  build indexes after every run, where bilbo's timer runs every 15 minutes.
+- Sessions that overlapped in one project run one after another, not interleaved.
+- A project's writer never saw another project's notes.
+- A note's `created` is the exchange's time in UTC, and its `id` is a hash of the exchange, so a replay writes the
+  same bytes. bilbo would write the local time and a time-ordered ULID.
+- The writer is a simulated agent, so a notes store measures that simulation as much as it measures bilbo.
+
+Search is bilbo's own `bilbo recall`: BM25 over the notes' passages, fused with the embedder's vectors, one hit per
+note. Once the stores are merged, the result is indexed in one pass, right after a request that leaves the embedder
+nothing to reuse, so its vectors depend only on its notes. A store holds every project's notes in `notes/`, its
+vectors in `cache/bilbo/`, the writer's journals and traces in `writer/<project>/`, bilbo's `config` and a
+`manifest.json`, which lists each project's notes. bilbo finds a vector file by a hash of the store's path: they were
+built at `/work/store`, and a search from another path renames them, as the manifest says.
+
+`--check` runs `bilbo check` on the store, checks the notes, the journals and the manifest against each other,
+renders the sessions again from the corpus, and checks that every passage has a unit vector from the embedder. It
+then indexes the smallest project's notes again, whose vectors must point the same way at a cosine of at least 0.99.
+Four searches, and one made of the title of each project's first note, must run on the vectors; the title search must
+find that note.
+
+No store is published yet; it has only been built in trials of two sessions.
 
 ## Publishing
 
