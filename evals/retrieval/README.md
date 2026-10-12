@@ -7,8 +7,8 @@ Which memory strategy best remembers what happened in real coding sessions?
 - [Nix](https://nixos.org/download) with flakes enabled.
 - To build or check a store: [Docker](https://docs.docker.com/get-started/get-docker/). The shell pins the client,
   Compose and buildx; the engine is yours. A buildx installed by Docker Desktop or OrbStack takes precedence.
-- To build a store with an LLM (every arm but dense): an OpenAI-compatible LLM endpoint with `GET /models` and JSON
-  mode, and tool calls for bilbo's arms.
+- To build a store with an LLM (every arm but dense and mempalace): an OpenAI-compatible LLM endpoint with
+  `GET /models` and JSON mode, and tool calls for bilbo's arms.
 - To run the embedder on the GPU: NVIDIA's
   [container toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/).
 - To rebuild the corpus from SWE-chat or to publish: a [Hugging Face token](https://huggingface.co/settings/tokens).
@@ -58,6 +58,7 @@ files under `arms/<arm>/`. Change any of them and the key changes.
 | [claude-mem](#claude-mem) | claude-mem, fed by its Claude Code hooks | yes | not yet |
 | [bilbo-agent](#bilbo) | notes the agent writes with bilbo's note skill | yes | from L3, with Claude Opus 5.5 |
 | [bilbo-assisted](#bilbo) | `bilbo-agent` plus a `/note` at each session's end | yes | from L3, with Claude Opus 5.5 |
+| [mempalace](#mempalace) | MemPalace, fed by its Claude Code plugin hooks | no | not yet |
 
 To get a store:
 
@@ -66,7 +67,7 @@ To get a store:
 Without `BILBO_EVAL_LLM_MODEL`, the script takes the store in `dataset.lock` built from the current corpus, embedder
 and arm files, and asks for `BILBO_EVAL_LLM_MODEL` (and `BILBO_EVAL_LLM_SMALL_MODEL`) when there are several. A store
 already in `dataset/` is used as it is, with a warning when it is not the one in the lock, as after a local build. When
-there is none, the script builds it, which needs the LLM for every arm but dense:
+there is none, the script builds it, which needs the LLM for every arm but dense and mempalace:
 
     BILBO_EVAL_LLM_URL=http://host.docker.internal:8080/v1 BILBO_EVAL_LLM_KEY=... BILBO_EVAL_LLM_MODEL=... \
       evals/retrieval/scripts/build-store.sh mem0
@@ -356,6 +357,68 @@ A replay of the gateway's records, with each `bilbo recall` answered as it was t
 the stores from this arm's writer (`l3/`) and this corpus, 3,252 for bilbo-agent and 3,772 for bilbo-assisted, and
 every note byte for byte. bilbo-agent holds 106 notes and bilbo-assisted 120, and the sessions written are 143 of 145:
 the two Cursor transcripts are left out.
+
+### mempalace
+
+[MemPalace](https://github.com/MemPalace/mempalace) 3.10.0, fed by its own Claude Code plugin hooks. Each session is
+replayed hook by hook into `mempalace hook run`, as Claude Code calls the plugin's Stop, PreCompact and SessionEnd
+hooks, with the transcript as Claude Code had written it by then. The hooks decide what to keep: every 15 `user`
+records of the transcript (tool results count) and at the end they write a diary checkpoint, and with each save, and
+before a compaction, they mine the whole transcript again into the `sessions` wing, in drawers of up to 800
+characters. All sessions share one palace and one timeline, and the build checkpoints whenever no session is open.
+
+On top of the hooks it runs `mempalace sweep`, which MemPalace's README recommends "periodically" for per-message
+recall: at each quiet point, once for every transcript that ended since the last one. It stores one drawer per `user`
+and `assistant` message, whole, with no wing and no room, so a search filtered by wing does not see them.
+
+It is set up the way its docs set up a Claude Code user: the marketplace plugin with its defaults, the embedder swapped
+for the eval's through MemPalace's OpenAI-compatible embedding setting, and no LLM, since the plugin's silent save
+mode, the default, computes everything from the transcript. The plugin's `/mempalace:init` is not run: it writes project
+entity files and config defaults that neither mining nor search reads. The manifest lists every setting that differs
+from a fresh install, with the doc or source line that asks for it.
+
+What the replay changes:
+
+- Each hook runs under libfaketime at the time its event happened, and each sweep at the time of the last event
+  before its quiet point, so the dates MemPalace files (`filed_at`, the diary checkpoints) are the session's, in UTC,
+  not the build's. `authored_at` is MemPalace's own: the transcript's latest timestamp.
+- The plugin's mine runs detached in the background on a developer's machine; the build waits for each one, so no save
+  is ever skipped because an earlier mine of the transcript is still running.
+- An input longer than the embedder's context goes to the sweep's embedder cut to its first tokens, as MemPalace's own
+  embedders cut at 2,048 or 256 tokens, and the drawer keeps the whole message. The manifest says where the limit is
+  and how many inputs were cut. The hooks, their mines and the diary are far under the context and are not cut.
+- The sweep waits up to an hour for each embeddings request instead of MemPalace's 120 s, which a CPU embedder needs.
+  The full store is meant to be built on a GPU: the sweeps alone would take about 52 hours on a laptop CPU.
+- The embedder identity is recorded with `mempalace palace set-embedder`, as MemPalace asks on every open of a palace
+  its hooks created.
+- Each session ends once, at its last line. A session resumed after an exit does not get the SessionEnd that exit
+  fired (12 resumes in 9 sessions), so a few diary checkpoints and mines are missing; the final drawers are the same.
+- The two Cursor transcripts are left out. The hooks never see them.
+- What a live agent saves through MemPalace's MCP tools is not reproduced: the corpus agents never had it, so the
+  knowledge graph stays empty. `mempalace mine --extract general` is off: it adds drawers beside the exchange ones and
+  the hooks never run it.
+
+What MemPalace keeps from a transcript is its own. Before chunking, its normalizer drops thinking blocks, omits the
+results of Read, Edit and Write, keeps the first and last 20 lines of Bash output and 20 Grep or Glob matches, cuts
+any other tool result to 2,048 characters and turns each tool call into one line. Its chunker drops the lines after a
+`---` rule inside a turn, and cuts a transcript with fewer than three lines starting with `>` by paragraph instead of
+by exchange. The sweep keeps each message whole, with tool inputs and results in full.
+
+Search is `search_memories`, MemPalace's blend of cosine similarity and BM25 over the top vector candidates. A store
+holds the palace directory (ChromaDB), `hallways.json`, the config directory with MemPalace's write log and a
+`manifest.json` with the versions, settings and counts. Open it with the same `MEMPALACE_EMBEDDING_*` settings as
+the build: MemPalace refuses a palace under another embedder kind, but opens it silently under another model id.
+
+`--check` opens the store with the embedder and no LLM. The embedding function must be MemPalace's OpenAI-compatible
+one with unit vectors of 1,024 dimensions, and the counts by kind, wing and room must match the manifest. The sessions
+must be the first ones of the corpus, each with the chunks MemPalace's own normalizer and chunker make of its
+transcript, dated with its latest timestamp and filed within its time, and with one sweep drawer per message. Every
+drawer must carry the metadata MemPalace writes. Up to five transcript drawers, a diary drawer and two sweep drawers
+(one cut, when the build cut any) embedded again must agree with their stored vectors at a cosine of at least 0.99.
+Four searches in the `sessions` wing, in each diary wing and in none must find drawers, and an unfiltered search must
+return a sweep drawer.
+
+No store is published yet; it has only been built in a trial of two sessions.
 
 ## Publishing
 
