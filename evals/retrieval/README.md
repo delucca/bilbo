@@ -55,7 +55,7 @@ files under `arms/<arm>/`. Change any of them and the key changes.
 | [dense](#dense) | the sessions in chunks, embedded | no | yes |
 | [graphiti](#graphiti) | Graphiti's knowledge graph, fed one turn at a time | yes | built with Opus 5.5 and luna |
 | [ai-memory](#ai-memory) | ai-memory, fed by its Claude Code hooks | yes | built with Claude Opus 5.5 |
-| [hindsight](#hindsight) | Hindsight, fed by its Claude Code integration | yes | not yet |
+| [hindsight](#hindsight) | Hindsight, fed by its Claude Code integration | yes | not yet; Claude Sonnet 5.5 |
 | [claude-mem](#claude-mem) | claude-mem, fed by its Claude Code hooks | yes | not yet |
 | [bilbo-agent-v0_19](#bilbo-019) | notes the agent writes with bilbo's note skill | yes | from L3, Claude Opus 5.5 |
 | [bilbo-assisted-v0_19](#bilbo-019) | the same, plus a `/note` at each session's end | yes | from L3, Claude Opus 5.5 |
@@ -218,11 +218,11 @@ one bank per repository, and the build checkpoints whenever no session is open.
 
 It is set up the way the integration sets up a Claude Code user: its coding missions, a conversation strategy with
 12,000-character chunks, knowledge labels, observations in one shared scope and five knowledge pages. Extraction is
-verbose, the documented setting for more detail per fact, in place of the integration's default, concise. The five
-similarity thresholds Hindsight calibrated for its own embedder are matched to Qwen3's, as its docs ask when the model
-changes, and Qwen3's query instruction is on, which also acts at build time when consolidation recalls. Pages refresh
-hourly when stale; the build runs that schedule on the sessions' own clock. The manifest lists every setting that
-differs from a fresh install, with the doc or source line that asks for it.
+concise, the integration's default. The five similarity thresholds Hindsight calibrated for its own embedder are
+matched to Qwen3's, as its docs ask when the model changes, and Qwen3's query instruction is on, which also acts at
+build time when consolidation recalls. Pages refresh hourly when stale; the build runs that schedule on the sessions'
+own clock. The manifest lists every setting that differs from a fresh install, with the doc or source line that asks
+for it.
 
 What the replay changes:
 
@@ -251,6 +251,12 @@ when searched by their own text. Up to 20 memories per bank are embedded again a
 and facts whose entity names can be rebuilt exactly must match their stored vectors to a cosine of 0.99, while a fact
 whose stored entity names differ from the extracted ones is rebuilt approximately, must reach 0.97 and must still be its
 own nearest stored vector.
+
+The published store is built with Claude Sonnet 5.5 for every call (extraction, consolidation and pages), as Hindsight
+uses one model by default; its per-operation model settings stay unset. A Claude Code user running Hindsight's local
+daemon with no API key goes through its Claude Code CLI provider, whose default in this version is a Sonnet
+(`claude-sonnet-4-5-20250929`); Sonnet 5.5 is the current Sonnet. Hindsight's own model leaderboard and
+docs suggest little sensitivity to model size, but test no Claude model.
 
 No store is published yet; it has only been built in trials of up to two sessions.
 

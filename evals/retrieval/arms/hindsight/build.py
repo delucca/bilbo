@@ -59,9 +59,14 @@ API = "hindsight-api-slim/hindsight_api/"
 DOC = "hindsight-docs/docs/developer/"
 
 # The decisions the user can flip, each one line; every flip changes the key.
-EXTRACTION_MODE = "verbose"  # "concise" is the integration's shipped default
+EXTRACTION_MODE = "concise"  # the integration's shipped default; "verbose" is the documented setting for more detail per fact
 QUERY_PREFIX = "Instruct: Given a question about a software project's past coding sessions, retrieve the memories that answer it\nQuery:"  # "" turns it off
 PAGES = "hourly"  # the knowledge pages' refresh: "hourly" (live use's cron, on the replayed clock), "final" or "off"
+PAGES_CITE = {
+    "final": "our cost choice, not live use's: one refresh per stale page when the build ends, for about a third of the LLM cost of hourly. Recall never reads pages, so what search reads is the same store",
+    "hourly": "live use's cron: the server's cron loop (" + API + "engine/maintenance.py:528-654) keeps running for as long as the server does, and a coding-agents daemon never stops on its own (" + CA + "core/daemon.ts:36-37); run on the replayed clock",
+    "off": "no page is refreshed",
+}
 # The five similarity thresholds are calibrated for BAAI/bge-small-en-v1.5 (DOC configuration.mdx:1619-1623); each is
 # matched to Qwen3 by quantile over memory pairs: (value, default, where it acts, cite). An empty dict keeps the defaults.
 THRESHOLDS = {
@@ -107,7 +112,7 @@ INTEGRATION = {
     "codebaseSurvey": (False, CA + "core/config.ts:209: a headless claude surveys the checkout, which is outside the corpus"),
     "gitIngest": ("none", CA + "core/config.ts:227: git history is outside the corpus"),
     "autoUpdate": (False, CA + "core/config.ts:221: an npm version check"),
-    "retainExtractionMode": (EXTRACTION_MODE, DOC + "configuration.mdx:1971-1973, retain.md:297: verbose, richer facts with full context and relationships; the integration syncs it onto its own strategies (" + CA + "core/missions.ts:720, 733-740)"),
+    "retainExtractionMode": (EXTRACTION_MODE, "the integration's default, as a Claude Code user gets it; passed explicitly so the bank check below has a mode to compare; the integration syncs it onto its own strategies (" + CA + "core/missions.ts:720, 733-740)"),
 }
 # What the run step needs to reproduce what reaches the agent for a question asked as the first prompt of a new session: the
 # hooks' sequence, in order. The faithful reproduction is the pinned tarball's own hooks, run unmodified per question.
@@ -933,7 +938,7 @@ def manifest(progress, skipped, found, tables):
     config = [{"key": k, "value": v, "cite": cite} for k, (v, cite) in (SERVER_ENV | {f"integration.{k}": (v, c) for k, (v, c) in INTEGRATION.items()}).items() if not k.endswith(omit)]
     config += [{"key": k, "value": v, "default": default, "acts_at": at, "calibrated_for": "BAAI/bge-small-en-v1.5", "matched_by": "quantile over memory pairs", "cite": cite}
                for k, (v, default, at, cite) in THRESHOLDS.items()]
-    config.append({"key": "pages", "value": PAGES, "cite": "hourly is live use's cron: the server's cron loop (" + API + "engine/maintenance.py:528-654) keeps running for as long as the server does, and a coding-agents daemon never stops on its own (" + CA + "core/daemon.ts:36-37); run on the replayed clock"})
+    config.append({"key": "pages", "value": PAGES, "cite": PAGES_CITE[PAGES]})
     llm = {"model": LLM_MODEL} | {k: round(v) if isinstance(v, float) else v for k, v in sorted(progress["llm"].items())}
     by_operation = {}
     for b in found["banks"].values():
