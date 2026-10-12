@@ -12,6 +12,7 @@
 # --rebuild builds the store again. --sessions N builds from the first N sessions only: a trial, whose archive stays in
 # the cache. --check then restores the store into fresh services and checks it with arms/<arm>/check.py.
 # The embedder runs on an NVIDIA GPU when Docker reports one; BILBO_EVAL_GPU=1 or 0 forces it on or off.
+# BILBO_EVAL_EMBED_THREADS=N caps a CPU embedder at N threads, so two CPU builds can share a host.
 # An arm with a `pack` service (profile `pack`) runs it after the build with the other services stopped, to dump a
 # database into $work/store; one with a `restore` service (profile `restore`) runs it before a check's services start,
 # to load that database back.
@@ -149,6 +150,17 @@ case ${BILBO_EVAL_GPU:-auto} in
   *) die "BILBO_EVAL_GPU must be 0 or 1" ;;
 esac
 device=cpu; ((${#files[@]} == 2)) || device=gpu
+# Like the device, the CPU embedder's thread count changes only floating-point noise: it stays out of the key, goes in
+# through a Compose override of its own, and the manifest records it with the device.
+[[ -z ${BILBO_EVAL_EMBED_THREADS:-} || $BILBO_EVAL_EMBED_THREADS =~ ^[1-9][0-9]*$ ]] || die "BILBO_EVAL_EMBED_THREADS must be a number"
+if [[ -n ${BILBO_EVAL_EMBED_THREADS:-} && $device == cpu ]] && grep -q '^  embedder:' "$root/arms/$arm/compose.yaml"; then
+  threads_file=$cache/compose.embed-threads-$BILBO_EVAL_EMBED_THREADS.yaml
+  mkdir -p "$cache"
+  printf 'services:\n  embedder:\n    environment:\n      LLAMA_ARG_THREADS: "%s"\n' "$BILBO_EVAL_EMBED_THREADS" > "$threads_file.$$"
+  mv "$threads_file.$$" "$threads_file"  # another build may be reading it
+  files+=(-f "$threads_file")
+  device+=" (embedder threads $BILBO_EVAL_EMBED_THREADS)"
+fi
 
 export BILBO_UID=$(id -u) BILBO_GID=$(id -g) BILBO_EVAL_CORPUS=$corpus/corpus BILBO_EVAL_WORK=$work
 export BILBO_EVAL_EMBEDDER=$model BILBO_EVAL_DEVICE=$device BILBO_EVAL_SESSIONS=$sessions

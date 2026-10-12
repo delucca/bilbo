@@ -84,6 +84,8 @@ limit only pauses it, for as long as the endpoint's `Retry-After` asks.
 - `BILBO_EVAL_LLM_SMALL_MODEL`, optional, is the model for an arm's lighter calls; only Graphiti reads it. When it
   names a model other than `BILBO_EVAL_LLM_MODEL`, it joins that arm's key and the store's line in `dataset.lock`.
 - The embedder uses an NVIDIA GPU when Docker reports one. `BILBO_EVAL_GPU=1` or `0` forces it.
+- `BILBO_EVAL_EMBED_THREADS=N` caps an embedder on the CPU at N threads, so two CPU builds can share a host without
+  thrashing. Like the device, it stays out of the key, and the manifest records it with the device.
 - `--rebuild` builds the store again. `--sessions N` builds from the first N sessions only: a trial, kept with the
   build's work files in `~/.cache/bilbo-evals` or `BILBO_EVALS_CACHE`, and never published.
 - `--check` then restores the store into fresh services and checks it with `arms/<arm>/check.py`, with no LLM.
