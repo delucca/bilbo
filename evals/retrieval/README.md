@@ -54,7 +54,7 @@ files under `arms/<arm>/`. Change any of them and the key changes.
 | [mem0](#mem0) | mem0, fed by its Claude Code plugin | yes | built with Claude Opus 5.5 |
 | [dense](#dense) | the sessions in chunks, embedded | no | yes |
 | [graphiti](#graphiti) | Graphiti's knowledge graph, fed one turn at a time | yes | not yet |
-| [ai-memory](#ai-memory) | ai-memory, fed by its Claude Code hooks | yes | not yet |
+| [ai-memory](#ai-memory) | ai-memory, fed by its Claude Code hooks | yes | built with Claude Opus 5.5 |
 | [hindsight](#hindsight) | Hindsight, fed by its Claude Code integration | yes | not yet |
 | [claude-mem](#claude-mem) | claude-mem, fed by its Claude Code hooks | yes | not yet |
 | [bilbo-agent-v0_19](#bilbo-019) | notes the agent writes with bilbo's note skill | yes | from L3, Claude Opus 5.5 |
@@ -175,9 +175,10 @@ session is open.
 
 It is set up the way its docs tell a Claude Code user to get the best recall: assistant capture, LLM consolidation at
 SessionEnd and at each compaction, and Qwen3's query instruction. Its scheduler reviews one finished session per
-project an hour, too slow for a replay, so the build runs `ai-memory auto-improve` once per session itself. The forget
-sweep is off, so no session page ages out. The manifest lists every setting that differs from a fresh install, with
-the doc or source line that asks for it.
+project an hour, too slow for a replay, so the build runs `ai-memory auto-improve` once per session itself. Its review
+also reads the `decisions/` and `gotchas/` pages it writes, as the docs advise, so it patches a lesson instead of
+proposing it again. The forget sweep is off, so no session page ages out. The manifest lists every setting that differs
+from a fresh install, with the doc or source line that asks for it.
 
 What the replay changes:
 
@@ -196,7 +197,11 @@ a store only with `AI_MEMORY_EMBEDDING_BASE_URL` set.
 every latest page, and up to five pages embedded again. It then serves a copy with no LLM and maintenance off, and
 four searches in each project must find pages through the vectors.
 
-No store is published yet; it has only been built in trials of up to six sessions.
+The published store was built with Claude Opus 5.5, through a gateway that runs `claude -p` for each call, and the
+embedder on an RTX 5070 Ti: 358 LLM calls, 22.8 million prompt tokens and 1.2 million completion tokens, in 4 h 38
+min, 1 h 27 min of it waiting out the account's usage limit. It holds 33,590 observations and 370 pages: 142 session
+pages, all consolidated by the LLM, and 228 more from 234 approved auto-improve proposals. kimi-cli's pages are mostly
+in Chinese, the language its developer wrote in, since no `_prompts/consolidation.md` pins one.
 
 ### hindsight
 

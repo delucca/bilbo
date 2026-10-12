@@ -75,6 +75,7 @@ CONFIG = {
     "embedding_query_prefix": (QUERY_PREFIX, "docs/llm-providers.md:409-449: the Qwen3 recipe, an instructed query with no trailing space and plain documents"),
     "maintenance.forget_sweep_interval_secs": (0, "docs/ARCHITECTURE.md:830, crates/ai-memory-cli/src/commands/serve.rs:1941: 0 disables the forget sweep, which a default install runs daily and which evicts a session page about 80 days after its last write unless searches keep it"),
     "maintenance.embedding_backfill_interval_secs": (3600, "docs/ARCHITECTURE.md:833, docs/install.md:2457-2463: off by default only because it may call a paid provider; each tick embeds the latest pages that lack a vector, nothing else and no LLM (crates/ai-memory-consolidate/src/embed.rs:1-9, 84-130). Approved auto-improve pages are written without one (crates/ai-memory-wiki/src/wiki.rs:1710-1848), so hourly, the scheduler's cadence (docs/auto-improvement-loop.md:375); the build's embed at each quiet point stands in for the tick"),
+    "auto_improve.patchable_page_prefixes": (["_rules/", "procedures/", "decisions/", "gotchas/"], "docs/auto-improvement-loop.md:382-397, crates/ai-memory-cli/src/config.rs:1306-1312: the reviewer reads only these folders' page bodies and re-proposes what it cannot read; its own targets are gotchas/ and decisions/ (docs/auto-improvement-loop.md:254-259)"),
     "auto_improve.scheduler.enabled": (False, "crates/ai-memory-cli/src/config.rs:1398-1407: one session per project an hour; each ended session is reviewed at the next quiet point instead"),
 }
 DAEMON_ENV = {
