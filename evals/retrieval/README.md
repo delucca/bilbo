@@ -56,7 +56,7 @@ files under `arms/<arm>/`. Change any of them and the key changes.
 | [graphiti](#graphiti) | Graphiti's knowledge graph, fed one turn at a time | yes | built with Opus 5.5 and luna |
 | [ai-memory](#ai-memory) | ai-memory, fed by its Claude Code hooks | yes | built with Claude Opus 5.5 |
 | [hindsight](#hindsight) | Hindsight, fed by its Claude Code integration | yes | not yet; Claude Sonnet 5.5 |
-| [claude-mem](#claude-mem) | claude-mem, fed by its Claude Code hooks | yes | not yet |
+| [claude-mem](#claude-mem) | claude-mem, fed by its Claude Code hooks | yes | not yet; Claude Haiku 4.5 |
 | [bilbo-agent-v0_19](#bilbo-019) | notes the agent writes with bilbo's note skill | yes | from L3, Claude Opus 5.5 |
 | [bilbo-assisted-v0_19](#bilbo-019) | the same, plus a `/note` at each session's end | yes | from L3, Claude Opus 5.5 |
 | [mempalace](#mempalace) | MemPalace, fed by its Claude Code plugin hooks | no | not yet |
@@ -307,6 +307,12 @@ too long for the embedder.
 `--check` reads the store as packed: SQLite's integrity and full-text tables, the counts against the manifest, every
 row's Chroma documents, and five documents embedded again. It then serves a copy with no LLM, and four searches in each
 project must find observations through Chroma.
+
+The published store is built with Claude Haiku 4.5 (`claude-haiku-4-5-20251001`), claude-mem's own default model. Real
+users run its default `claude` provider on a Claude subscription with Haiku 4.5, and the bug reports since June 2026
+that name a model name Haiku 4.5 most (12 of 20, the rest Sonnet). Going through the OpenAI-compatible provider
+deviates in three ways: it sends temperature 0.3, the gateway that runs `claude -p` for each call wraps it in its own
+instructions, and claude-mem's tier routing does nothing on this provider (its simple tier is Haiku anyway).
 
 No store is published yet; it has only been built in trials of up to two sessions.
 
