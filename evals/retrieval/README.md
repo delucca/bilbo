@@ -54,6 +54,7 @@ files under `arms/<arm>/`. Change any of them and the key changes.
 | [dense](#dense) | the sessions in chunks, embedded | no | yes |
 | [graphiti](#graphiti) | Graphiti's knowledge graph, fed one turn at a time | yes | not yet |
 | [ai-memory](#ai-memory) | ai-memory, fed by its Claude Code hooks | yes | not yet |
+| [hindsight](#hindsight) | Hindsight, fed by its Claude Code integration | yes | not yet |
 
 To get a store:
 
@@ -189,6 +190,52 @@ every latest page, and up to five pages embedded again. It then serves a copy wi
 four searches in each project must find pages through the vectors.
 
 No store is published yet; it has only been built in trials of up to six sessions.
+
+### hindsight
+
+[Hindsight](https://github.com/vectorize-io/hindsight) 0.10.3 on Postgres with pgvector, fed by its own Claude Code
+integration (`hindsight-coding-agents` 0.8.0, run against a self-hosted server rather than the Cloud it defaults to).
+Each session is replayed through the integration's Stop hook, which reads the transcript when a turn ends and sends what
+is new; the integration's setup engine configures each repository's bank first. All sessions share one timeline, with
+one bank per repository, and the build checkpoints whenever no session is open.
+
+It is set up the way the integration sets up a Claude Code user: its coding missions, a conversation strategy with
+12,000-character chunks, knowledge labels, observations in one shared scope and five knowledge pages. Extraction is
+verbose, the documented setting for more detail per fact, in place of the integration's default, concise. The five
+similarity thresholds Hindsight calibrated for its own embedder are matched to Qwen3's, as its docs ask when the model
+changes, and Qwen3's query instruction is on, which also acts at build time when consolidation recalls. Pages refresh
+hourly when stale; the build runs that schedule on the sessions' own clock. The manifest lists every setting that
+differs from a fresh install, with the doc or source line that asks for it.
+
+What the replay changes:
+
+- Git history, the codebase survey and imports of past sessions are off: they read things outside the corpus. Every
+  retain carries the session's time, which the hook takes from the transcript.
+- The session-start and prompt hooks are not run: they write no memory. The setup engine runs once per bank.
+- A Stop fires where Claude Code's own record of it sits in the transcript, and otherwise where a reply ends. A resumed
+  session's copied history is written to the transcript but fires nothing.
+- Every session of a repository goes to that repository's bank. Two readaloud sessions start in `/home/noah/projects`
+  and `/home/noah`; live, the integration would name banks after those directories.
+- After each Stop the build waits until the bank has finished the retain, its consolidation and any page refresh, as the
+  minutes before the next prompt allow live.
+- The LLM sits behind a small gateway in the build that waits out a 429 and retries a 5xx. On its own, Hindsight retries
+  three times with short backoffs, or parks the whole retain and extracts it again later.
+- The two Cursor transcripts are left out. The hook never sees them.
+
+Search is Hindsight's recall: semantic, keyword, graph and temporal retrieval fused and reranked by a local
+cross-encoder, with no LLM. It is not what the integration gives an agent per prompt, which is an LLM reflect with page
+and observation fallbacks; the manifest's `recall.prompt_time` lists that path. A store holds a `hindsight-admin backup`
+of the database (facts, observations, entities, links, pages, operations and LLM traces, each with a 100-character
+preview of its prompt and answer) and a `manifest.json`.
+
+`--check` restores the backup into a fresh database, rebuilds the per-bank vector indexes and starts the server with no
+LLM. The counts, documents, pages and schema version must match the manifest, and three facts per bank must come back
+when searched by their own text. Up to 20 memories per bank are embedded again as Hindsight embedded them: observations
+and facts whose entity names can be rebuilt exactly must match their stored vectors to a cosine of 0.99, while a fact
+whose stored entity names differ from the extracted ones is rebuilt approximately, must reach 0.97 and must still be its
+own nearest stored vector.
+
+No store is published yet; it has only been built in trials of up to two sessions.
 
 ## Publishing
 
