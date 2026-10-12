@@ -58,7 +58,7 @@ files under `arms/<arm>/`. Change any of them and the key changes.
 | [claude-mem](#claude-mem) | claude-mem, fed by its Claude Code hooks | yes | not yet; Claude Haiku 4.5 |
 | [bilbo-agent-v0_19](#bilbo-019) | notes the agent writes with bilbo's note skill | yes | from L3, Claude Opus 5.5 |
 | [bilbo-assisted-v0_19](#bilbo-019) | the same, plus a `/note` at each session's end | yes | from L3, Claude Opus 5.5 |
-| [mempalace](#mempalace) | MemPalace, fed by its Claude Code plugin hooks | no | not yet |
+| [mempalace](#mempalace) | MemPalace, fed by its Claude Code plugin hooks | no | yes |
 | [auto-memory](#auto-memory) | the memory files the developers' Claude Code wrote | no | yes |
 
 To get a store:
@@ -442,7 +442,9 @@ drawer must carry the metadata MemPalace writes. Up to five transcript drawers, 
 Four searches in the `sessions` wing, in each diary wing and in none must find drawers, and an unfiltered search must
 return a sweep drawer.
 
-No store is published yet; it has only been built in a trial of two sessions.
+The published store was built with the embedder on an RTX 5070 Ti in 2 h 6 min: 589 mines and 143 sweeps over the
+143 sessions. It holds 60,269 drawers, 15,862 from the transcripts, 43,854 from the sweeps and 553 from 533 diary
+checkpoints, and 76,255 hallways. The sweeps cut 690 of their 43,996 inputs to 8,190 tokens, the longest from 726,678.
 
 ### auto-memory
 
