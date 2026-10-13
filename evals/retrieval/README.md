@@ -55,7 +55,7 @@ files under `arms/<arm>/`. Change any of them and the key changes.
 | [dense](#dense) | the sessions in chunks, embedded | no | yes |
 | [graphiti](#graphiti) | Graphiti's knowledge graph, fed one turn at a time | yes | built with Opus 5.5 and luna |
 | [ai-memory](#ai-memory) | ai-memory, fed by its Claude Code hooks | yes | built with Claude Opus 5.5 |
-| [hindsight](#hindsight) | Hindsight, fed by its Claude Code integration | yes | not yet; Claude Sonnet 5.5 |
+| [hindsight](#hindsight) | Hindsight, fed by its Claude Code integration | yes | built with Claude Sonnet 5.5 |
 | [claude-mem](#claude-mem) | claude-mem, fed by its Claude Code hooks | yes | built with Claude Haiku 5.5 |
 | [bilbo-agent-v0_19](#bilbo-019) | notes the agent writes with bilbo's note skill | yes | from L3, Claude Opus 5.5 |
 | [bilbo-assisted-v0_19](#bilbo-019) | the same, plus a `/note` at each session's end | yes | from L3, Claude Opus 5.5 |
@@ -273,7 +273,11 @@ daemon with no API key goes through its Claude Code CLI provider, whose default 
 (`claude-sonnet-4-5-20250929`); Sonnet 5.5 is the current Sonnet. Hindsight's own model leaderboard and
 docs suggest little sensitivity to model size, but test no Claude model.
 
-No store is published yet; it has only been built in trials of up to two sessions.
+The published store was built with the embedder on an RTX 5070 Ti in 10 h 24 min, its first 20 sessions one at a time
+and the other 123 with the five repositories at once: 10,342 calls to Claude Sonnet 5.5, 154 million prompt tokens (7%
+read from the cache) and 11.0 million output tokens, with no usage-limit wait. It holds the 821 Stops of the 143
+sessions in five banks: 1,182 experience facts, 548 world facts and 651 observations, 63,663 links and 25 pages
+refreshed 1,576 times.
 
 ### claude-mem
 
