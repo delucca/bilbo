@@ -1,14 +1,21 @@
 """Build the claude-mem store: replay every session through claude-mem's own Claude Code hook command, hook by hook and
-in one timeline across all sessions, into one claude-mem worker on loopback, with its default observer (its `claude`
-provider: Claude Code driving BILBO_EVAL_LLM_MODEL on the account in CLAUDE_CODE_OAUTH_TOKEN or ANTHROPIC_API_KEY) and
-Chroma embedding through the shared embedder. A Bun preload (clock.js) gives the worker and every hook the time of the
+in one timeline across the sessions it replays, into one claude-mem worker on loopback, with its default observer (its
+`claude` provider: Claude Code driving BILBO_EVAL_LLM_MODEL on the account in CLAUDE_CODE_OAUTH_TOKEN or
+ANTHROPIC_API_KEY) and Chroma embedding through the shared embedder. A Bun preload (clock.js) gives the worker and every hook the time of the
 event being replayed, which claude-mem would otherwise stamp with the build's clock. Then save the worker's data
 directory (SQLite, Chroma and its sync state) with a manifest in /work/store. Whenever no session is open, the worker is
-stopped and its data goes to /work/checkpoint, and a run that finds it resumes from there. `--count-chroma <dir>` is a
-mode of this file for the chroma-mcp environment: it counts a Chroma directory."""
+stopped and its data goes to /work/checkpoint, and a run that finds it resumes from there.
+The store is built in lanes (x-lanes in compose.yaml): with BILBO_EVAL_LANE set, this replays only that repository's
+sessions, in a build container of its own, into /work/lanes/<lane>, and stops at its last checkpoint; `--merge` then
+combines the lanes' checkpoints into one store, and `--lanes` names the lanes. BILBO_EVAL_SESSIONS is a trial: N for the
+first N sessions, or `repo:N,repo:N` for the first N sessions of each repository named. `--count-chroma <dir>` and
+`--merge-chroma <spec>` are modes of this file for the chroma-mcp environment: they count a Chroma directory, and copy
+the lanes' Chroma documents into one."""
 
+import fcntl
 import heapq
 import json
+import mmap
 import os
 import platform
 import re
@@ -26,7 +33,10 @@ from pathlib import Path
 
 NOTICES = ("<local-command-stdout>", "<local-command-stderr>", "<local-command-caveat>", "<system-reminder>")
 CORPUS = Path("/corpus")
-WORK = Path("/work")
+LANE = os.environ.get("BILBO_EVAL_LANE", "")  # the repository this container replays, when the store is built in lanes
+LANES = Path("/work/lanes")
+WORK = LANES / LANE if LANE else Path("/work")
+MERGE = sys.argv[1:2] == ["--merge"]
 CHECKPOINT = WORK / "checkpoint"
 LIVE = Path("/tmp/live")
 DATA = LIVE / "data"
@@ -70,6 +80,9 @@ IDLE_MS = 180_000
 SKIP_TOOLS = (
     "listmcpresourcestool", "slashcommand", "skill", "todowrite", "askuserquestion")  # CLAUDE_MEM_SKIP_TOOLS default
 EMBED_CTX = 8192
+# Documents per Chroma read: a get of a whole large collection fails with SQLite's "too many SQL variables" (54,548
+# documents did).
+CHROMA_PAGE = 5000
 LAUNCHER = [
     "--python", "3.13", "--with", "onnxruntime>=1.20", "--with", "protobuf<7", "--with", "chromadb==1.5.9", "--with",
     "pydantic<2.14", "--from", "chroma-mcp==0.2.6"]
@@ -102,7 +115,8 @@ ENV = {
         "1",
         "keeps the pinned Claude Code: an update lands in ~/.local/bin/claude, which claude-mem probes and prefers when newer (src/shared/find-claude-executable.ts:312, 522)"),
     "BILBO_CLAUDE_IO": (
-        str(IO), "claude.sh copies each Claude Code process's stdout there, which the LLM usage is read from"),
+        str(LANES / "<lane>" / "claude") if MERGE else str(IO),
+        "claude.sh copies each Claude Code process's stdout there, which the LLM usage is read from"),
     "OPENAI_BASE_URL": (
         EMBEDDER_URL, "read by chroma-mcp's openai embedding function; claude-mem's own LLM path never reads it"),
     "OPENAI_API_KEY": ("local", "the embedder needs none; the openai function needs a value"),
@@ -151,7 +165,8 @@ NOTES = {
     "tier_routing": "claude-mem runs a generation that starts on Read, Glob, Grep or LS calls on its simple tier, the `haiku` alias (SessionRoutes.ts:1022-1065), which this Claude Code resolves to the model `llm.models` lists beside the default",
     "projects": "a worktree's sessions are filed under <repo>/<worktree> keys (drain-cycle/ABA-301, ...) and stay there, since claude-mem adopts a worktree's rows into its repo only when the checkout is gone or merged (WorktreeAdoption.ts:470-560): a per-repo search must pass every key `projects` lists for the repo",
     "queries": "a search embeds the query like a document: the openai embedding function takes no query instruction, which Qwen3 would take (ai-memory sends one)",
-    "image_only_prompts": "sent with an empty prompt as Claude Code sends them, and stored by claude-mem as [media prompt]; the mem0 and ai-memory arms skip them"}
+    "image_only_prompts": "sent with an empty prompt as Claude Code sends them, and stored by claude-mem as [media prompt]; the mem0 and ai-memory arms skip them",
+    "lanes": "each repository's sessions are replayed as a lane of their own, in a build container of their own with its own worker, clock, quota guard and checkpoints, all lanes at once against the one embedder; a lane applies one worker's rules to its repository's sessions, and claude-mem keeps its content by project, no project spanning two repositories; it differs from one worker only in what that worker shares across repositories: the observer's two process slots and its quota breaker, the next event that bounds a clock step, and the quiet points where the worker stops, so a session whose observer a lane's quiet point shuts down, where one worker would idle it out while another repository's session goes on, is completed up to 3 minutes earlier; the merge renumbers the rows in time order across the lanes, each lane's own order kept, remaps the ids rows and the sync state hold, rebuilds the full-text index, copies Chroma's vectors under the new ids, and checks every row and document against its lane's, a vector to within 1e-6 in each component, since hnswlib normalizes a copied cosine vector again and float32 rounding moves it by about 1e-8; counts, LLM usage, hook_seconds and ingest_seconds add up the lanes, and `lanes` lists each one's"}
 HOOK_ENV = {
     "HOME": str(HOME), "PATH": "/usr/local/bin:/usr/bin:/bin", "CLAUDE_MEM_DATA_DIR": str(DATA),
     "CLAUDE_MEM_WORKER_PORT": str(PORT), "BUN_OPTIONS": ENV["BUN_OPTIONS"][0], "BILBO_CLOCK_FILE": str(CLOCK),
@@ -206,8 +221,20 @@ def sessions():
             start = t if t and (start is None or t < start) else start
         (found if start else other).append((start, path.parent.name, path))
     found.sort()
-    limit = os.environ.get("BILBO_EVAL_SESSIONS")
-    return found[: int(limit) if limit else None], [f"{repo}/{path.name}" for _, repo, path in other]
+    limit = os.environ.get("BILBO_EVAL_SESSIONS") or ""
+    if ":" in limit:  # repo:N,repo:N: the first N sessions of each repository named
+        per = {repo: int(n) for repo, n in (part.split(":") for part in limit.split(","))}
+        if unknown := set(per) - {repo for _, repo, _ in found}:
+            sys.exit(f"claude-mem: BILBO_EVAL_SESSIONS names repositories the corpus lacks: {sorted(unknown)}")
+        taken, kept = Counter(), []
+        for start, repo, path in found:
+            if taken[repo] < per.get(repo, 0):
+                taken[repo] += 1
+                kept.append((start, repo, path))
+        found = kept
+    elif limit:
+        found = found[: int(limit)]
+    return found, [f"{repo}/{path.name}" for _, repo, path in other]
 
 
 def checkout_roots():
@@ -1412,12 +1439,18 @@ def verify_counts(progress):
 
 
 def count_chroma(path):
-    """Run in the chroma-mcp environment: how many documents a Chroma directory holds, by doc_type."""
+    """Run in the chroma-mcp environment: how many documents a Chroma directory holds, by doc_type, read a page at a
+    time."""
     import chromadb
 
     collection = chromadb.PersistentClient(path=path).get_collection("cm__claude-mem")
-    metadatas = collection.get(include=["metadatas"])["metadatas"]
-    print(json.dumps({"count": len(metadatas), "by_doc_type": dict(Counter(m.get("doc_type") for m in metadatas))}))
+    total, kinds = collection.count(), Counter()
+    for offset in range(0, total, CHROMA_PAGE):
+        page = collection.get(include=["metadatas"], limit=CHROMA_PAGE, offset=offset)["metadatas"]
+        kinds.update(m.get("doc_type") for m in page)
+    if sum(kinds.values()) != total:
+        sys.exit(f"claude-mem: Chroma's pages held {sum(kinds.values())} documents, not its {total}")
+    print(json.dumps({"count": total, "by_doc_type": dict(kinds)}))
 
 
 def chroma_counts():
@@ -1565,6 +1598,420 @@ def manifest(progress, skipped_files, plan, replayed):
     }
 
 
+# The tables the merge combines, each with the column that orders its rows in time and the integer ids of other tables
+# it holds (SessionStore.ts, tool-uses.ts). Every other table must be empty in every lane, but the migrations' ledger,
+# which every lane holds alike.
+MERGED = {
+    "sdk_sessions": ("started_at_epoch", {}),
+    "observations": ("created_at_epoch", {}),
+    "session_summaries": ("created_at_epoch", {}),
+    "user_prompts": ("created_at_epoch", {"session_db_id": "sdk_sessions"}),
+    "tool_uses": ("created_at_epoch", {"session_db_id": "sdk_sessions", "observation_id": "observations"}),
+}
+KINDS = {"observations": "observations", "summaries": "session_summaries", "prompts": "user_prompts"}  # Chroma's and the sync state's
+PROJECT_IDS = {
+    "observations": "SELECT id FROM observations WHERE project = ?",
+    "summaries": "SELECT id FROM session_summaries WHERE project = ?",
+    "prompts": "SELECT p.id FROM user_prompts p JOIN sdk_sessions s ON s.id = p.session_db_id WHERE s.project = ?"}
+SYNC_KEYS = {"observations", "summaries", "prompts", "pending", "fragmentReconciliation", "titleOnlyRequeued", "rebuildPending"}
+# Columns of the merged tables named like ids that hold no id of a merged table: Claude Code's and claude-mem's own
+# strings, and cloud sync's, which must be empty. A new one fails the merge until it is placed here or in MERGED.
+TEXT_IDS = {
+    "content_session_id", "memory_session_id", "tool_use_id", "agent_id", "native_prompt_id", "or_generation_id",
+    "or_session_id", "origin_device_id", "origin_local_id"}
+STORE_FILES = {"claude-mem.db", "chroma", "chroma-sync-state.json", "settings.json", *MARKERS}
+CHROMA_RECORD = ".claude-mem-chroma-store.json"
+# How far a copied vector may move in any component: float32 rounding as hnswlib normalizes an already normalized cosine
+# vector again (about 1e-8), a hundred times over; a wrong or swapped vector is off by orders of magnitude more.
+VECTOR_TOLERANCE = 1e-6
+
+
+def merge(plan, skipped_files):
+    """The lanes' stores as one, as one worker holds every repository's rows: SQLite's rows renumbered in time order
+    across the lanes, each lane's own order kept, with the ids they hold of each other remapped; Chroma's documents and
+    vectors copied under the new ids; the sync state's marks moved to them. Every lane must have replayed all its
+    sessions, and the merged store must hold every row and document of every lane, equal but for its ids, or the build
+    fails. Writes /work/store and its manifest."""
+    lanes = []
+    for lane in dict.fromkeys(repo for _, repo, _ in plan):
+        saved = LANES / lane / "checkpoint"
+        want = {f"{repo}/{path.name}" for _, repo, path in plan if repo == lane}
+        progress = json.loads((saved / "progress.json").read_text()) if (saved / "progress.json").exists() else {"done": []}
+        if set(progress["done"]) != want:
+            sys.exit(f"claude-mem: lane {lane} has replayed {len(progress['done'])} of its {len(want)} sessions; run again to finish it")
+        lanes.append((lane, saved, progress))
+    if len({(saved / "settings.json").read_text() for _, saved, _ in lanes}) != 1:
+        sys.exit("claude-mem: the lanes' settings.json differ")
+    if len({(saved / MARKERS[0]).exists() for _, saved, _ in lanes}) != 1:
+        sys.exit(f"claude-mem: only some lanes hold {MARKERS[0]}")
+    tmp, out = WORK / "store.tmp", WORK / "store"
+    shutil.rmtree(tmp, ignore_errors=True)
+    tmp.mkdir(parents=True)
+    # The lane of the first session started its worker at the first event, as one worker would have: its migrations'
+    # ledger, settings and cleanup marker are the store's. claude-mem writes the reclaim marker on a real 60 s timer, in
+    # the first worker run that lasts that long, which a short lane may never have: the first lane's that has one.
+    for name in ("settings.json", *MARKERS):
+        holder = next((saved for _, saved, _ in lanes if (saved / name).exists()), None)
+        if holder:
+            shutil.copy2(holder / name, tmp / name)
+    log(f"merging {len(lanes)} lanes: SQLite")
+    ids, rows = merge_sqlite(lanes, tmp / "claude-mem.db")
+    merge_sync_state(lanes, ids, tmp)
+    log("merging: Chroma")
+    documents = merge_chroma_dirs(lanes, ids, tmp / "chroma")
+    log(f"merged {documents['documents']} Chroma documents: vectors within {documents['vector_max_difference']:.3g} of the "
+        f"lanes' in every component, cosine at least 1 - {1 - documents['vector_min_cosine']:.3g}")
+    progress = merged_progress(lanes, ids)
+    if extra := {f.name for f in tmp.iterdir()} - STORE_FILES:
+        sys.exit(f"claude-mem: the merged store holds files a store does not: {sorted(extra)}")
+    shutil.rmtree(out, ignore_errors=True)
+    tmp.rename(out)
+    found = manifest(progress, skipped_files, plan, len(progress["done"]))
+    found["lanes"] = {
+        lane: {
+            "sessions": len(p["done"]), "ingest_seconds": round(p["ingest_seconds"]),
+            "llm_calls": sum(m.get("calls", 0) for m in p["llm"].get("by_model", {}).values()),
+            "rows": {t: len(ids[t][lane]) for t in MERGED},
+            "chroma_documents": documents["lanes"].get(lane, 0),
+            "waits": {k: round(p["counts"].get(k, 0)) for k in (
+                "limit_waits", "limit_wait_seconds", "throttle_waits", "throttle_wait_seconds", "breaker_steps",
+                "breaker_holds", "slot_steps", "slot_holds", "overflow_steps", "overflow_holds", "skipped_checkpoints")}}
+        for lane, _, p in lanes}
+    found["merge"] = {
+        "rows": rows, "chroma_documents": documents["documents"],
+        "vector_tolerance": VECTOR_TOLERANCE, "vector_max_difference": documents["vector_max_difference"],
+        "vector_min_cosine": documents["vector_min_cosine"],
+        "checked": "every row of every lane is in the store, equal but for its ids; every Chroma document with its id, text and metadata equal but for the new id, and its vector within vector_tolerance in every component: a copied vector is normalized again by hnswlib as it is added, which moves it by float32 rounding only; SQLite's integrity, foreign keys and full-text tables verify against their rows; every project's sync marks leave exactly its lane's rows, renumbered, for claude-mem's backfill"}
+    (out / "manifest.json").write_text(json.dumps(found, indent=2) + "\n")
+
+
+def merge_sqlite(lanes, dest):
+    """The lanes' databases as one: the first lane's, emptied of the merged tables through claude-mem's own triggers
+    (which keep the full-text tables in step), then filled with every lane's rows under new ids, then checked row by row.
+    Returns the new ids, {table: {lane: {old: new}}}, and the row counts."""
+    shutil.copy2(lanes[0][1] / "claude-mem.db", dest)
+    sources = {
+        lane: sqlite3.connect(f"file:{saved / 'claude-mem.db'}?mode=ro&immutable=1", uri=True) for lane, saved, _ in lanes}
+    schemas = {
+        lane: sorted(c.execute("SELECT type, name, tbl_name, sql FROM sqlite_master WHERE name != 'sqlite_sequence'"))
+        for lane, c in sources.items()}
+    if len({json.dumps(v) for v in schemas.values()}) != 1:
+        sys.exit("claude-mem: the lanes' databases have different schemas")
+    first = next(iter(sources.values()))
+    virtual = [n for (n,) in first.execute("SELECT name FROM sqlite_master WHERE type = 'table' AND sql LIKE 'CREATE VIRTUAL TABLE%'")]
+    tables = [
+        n for (n,) in first.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
+        if n != "sqlite_sequence" and n not in virtual and not n.startswith(tuple(f"{v}_" for v in virtual))]
+    for t in tables:
+        if t in MERGED or t == "schema_versions":
+            continue
+        held = {lane: c.execute(f'SELECT COUNT(*) FROM "{t}"').fetchone()[0] for lane, c in sources.items()}
+        if any(held.values()):
+            sys.exit(f"claude-mem: the lanes hold rows in {t}, which the merge does not combine: {held}")
+    if len({json.dumps(c.execute("SELECT id, version FROM schema_versions ORDER BY id").fetchall()) for c in sources.values()}) != 1:
+        sys.exit("claude-mem: the lanes' databases ran different migrations")
+    projects = {}
+    for lane, c in sources.items():
+        for (project,) in c.execute(
+                "SELECT project FROM sdk_sessions UNION SELECT project FROM observations UNION SELECT project FROM session_summaries "
+                "UNION SELECT project FROM tool_uses UNION SELECT merged_into_project FROM observations "
+                "UNION SELECT merged_into_project FROM session_summaries"):
+            if project is not None:
+                projects.setdefault(project.lower(), set()).add(lane)
+    shared = {p: sorted(ls) for p, ls in projects.items() if len(ls) > 1}
+    if shared:
+        sys.exit(f"claude-mem: projects span lanes, whose state one worker would keep together: {shared}")
+    for t, (_, refs) in MERGED.items():
+        cols = [r[1] for r in first.execute(f'PRAGMA table_info("{t}")')]
+        if unknown := [c for c in cols if c.endswith("_id") and c not in refs and c not in TEXT_IDS]:
+            sys.exit(f"claude-mem: {t} has columns named like ids the merge does not know: {unknown}")
+        if "origin_local_id" in cols:
+            synced = {lane: c.execute(f'SELECT COUNT(*) FROM "{t}" WHERE origin_device_id IS NOT NULL OR origin_local_id IS NOT NULL').fetchone()[0]
+                      for lane, c in sources.items()}
+            if any(synced.values()):
+                sys.exit(f"claude-mem: {t} holds cloud sync's ids of local rows, which the merge does not renumber: {synced}")
+
+    db = sqlite3.connect(dest)
+    for t in reversed(MERGED):
+        db.execute(f'DELETE FROM "{t}"')
+    db.execute(f"DELETE FROM sqlite_sequence WHERE name IN ({', '.join('?' * len(MERGED))})", tuple(MERGED))
+    ids = {t: {lane: {} for lane in sources} for t in MERGED}
+    for t, (when, refs) in MERGED.items():
+        # In time order across the lanes; heapq.merge keeps each lane's own order whatever its times.
+        streams = [
+            [((w if w is not None else -1), k, lane, i) for i, w in c.execute(f'SELECT id, "{when}" FROM "{t}" ORDER BY id')]
+            for k, (lane, c) in enumerate(sources.items())]
+        for new, (_, _, lane, old) in enumerate(heapq.merge(*streams), start=1):
+            ids[t][lane][old] = new
+        cols = [r[1] for r in db.execute(f'PRAGMA table_info("{t}")')]
+        names = ", ".join('"' + c + '"' for c in cols)
+        insert = f'INSERT INTO "{t}" ({names}) VALUES ({", ".join("?" * len(cols))})'
+        for new, lane, old in sorted((new, lane, old) for lane, m in ids[t].items() for old, new in m.items()):
+            row = dict(zip(cols, sources[lane].execute(f'SELECT * FROM "{t}" WHERE id = ?', (old,)).fetchone()))
+            row["id"] = new
+            for col, target in refs.items():
+                if row[col] is not None:
+                    if row[col] not in ids[target][lane]:
+                        sys.exit(f"claude-mem: {t} {old} of lane {lane} holds {col} {row[col]}, which no {target} row has")
+                    row[col] = ids[target][lane][row[col]]
+            try:
+                db.execute(insert, [row[c] for c in cols])
+            except sqlite3.IntegrityError as e:
+                sys.exit(f"claude-mem: {t} {old} of lane {lane} does not fit the merged store: {e}")
+    # Rebuilt from the rows, so the first lane's deleted rows leave nothing behind in the index.
+    for fts in virtual:
+        db.execute(f'INSERT INTO "{fts}"("{fts}") VALUES (\'rebuild\')')
+    db.commit()
+    db.execute("VACUUM")
+    db.close()
+
+    # The check: every row of every lane, equal but for its ids, and nothing else.
+    db = sqlite3.connect(dest)
+    rows = {}
+    for t, (_, refs) in MERGED.items():
+        cols = [r[1] for r in db.execute(f'PRAGMA table_info("{t}")')]
+        total = sum(c.execute(f'SELECT COUNT(*) FROM "{t}"').fetchone()[0] for c in sources.values())
+        if db.execute(f'SELECT COUNT(*), MIN(id), MAX(id) FROM "{t}"').fetchone() != (total, 1 if total else None, total or None):
+            sys.exit(f"claude-mem: the merged {t} does not hold the lanes' {total} rows under ids 1 to {total}")
+        for lane, c in sources.items():
+            for row in c.execute(f'SELECT * FROM "{t}" ORDER BY id'):
+                want = dict(zip(cols, row))
+                want["id"] = ids[t][lane][want["id"]]
+                for col, target in refs.items():
+                    if want[col] is not None:
+                        want[col] = ids[target][lane][want[col]]
+                got = db.execute(f'SELECT * FROM "{t}" WHERE id = ?', (want["id"],)).fetchone()
+                if got != tuple(want[c] for c in cols):
+                    sys.exit(f"claude-mem: the merged {t} {want['id']} differs from {t} {row[0]} of lane {lane}")
+        rows[t] = total
+    for t in tables:
+        if t not in MERGED and t != "schema_versions" and db.execute(f'SELECT COUNT(*) FROM "{t}"').fetchone()[0]:
+            sys.exit(f"claude-mem: the merged {t} holds rows")
+    if db.execute("SELECT * FROM schema_versions ORDER BY id").fetchall() != first.execute("SELECT * FROM schema_versions ORDER BY id").fetchall():
+        sys.exit("claude-mem: the merged migrations' ledger differs from the first lane's")
+    integrity = [r[0] for r in db.execute("PRAGMA integrity_check")]
+    dangling = len(db.execute("PRAGMA foreign_key_check").fetchall())
+    before = sum(len(c.execute("PRAGMA foreign_key_check").fetchall()) for c in sources.values())
+    if integrity != ["ok"] or dangling != before:
+        sys.exit(f"claude-mem: the merged database fails its integrity check {integrity}, or has {dangling} foreign keys that name no row where the lanes had {before}")
+    for fts in virtual:
+        try:
+            db.execute(f'INSERT INTO "{fts}"("{fts}", rank) VALUES (\'integrity-check\', 1)')
+        except sqlite3.Error as e:
+            sys.exit(f"claude-mem: the merged {fts} does not match its rows: {e}")
+    db.rollback()
+    db.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+    db.close()
+    for name in ("claude-mem.db-wal", "claude-mem.db-shm"):
+        (dest.parent / name).unlink(missing_ok=True)
+    for c in sources.values():
+        c.close()
+    return ids, rows
+
+
+def merge_sync_state(lanes, ids, dest):
+    """Each project's marks in chroma-sync-state.json under the merged ids (ChromaSyncState.ts): a mark is the highest id
+    of a kind Chroma holds for the project, and the pending ids are rows it still lacks. A project caught up in its lane
+    must be caught up in the store."""
+    merged = {}
+    store = sqlite3.connect(f"file:{dest / 'claude-mem.db'}?mode=ro&immutable=1", uri=True)
+    for lane, saved, _ in lanes:
+        path = saved / "chroma-sync-state.json"
+        state = json.loads(path.read_text()) if path.exists() else {}
+        c = sqlite3.connect(f"file:{saved / 'claude-mem.db'}?mode=ro&immutable=1", uri=True)
+        for project, marks_ in state.items():
+            if project in merged:
+                sys.exit(f"claude-mem: two lanes' sync state hold {project}")
+            if set(marks_) - SYNC_KEYS:
+                sys.exit(f"claude-mem: {project}'s sync state holds what the merge does not know: {sorted(set(marks_) - SYNC_KEYS)}")
+            new = dict(marks_)
+            for kind, table in KINDS.items():
+                if kind not in marks_:
+                    continue
+                own = [i for (i,) in c.execute(PROJECT_IDS[kind], (project,))]
+                new[kind] = max((ids[table][lane][i] for i in own if i <= marks_[kind]), default=0)
+                # claude-mem's backfill sends a project's rows past its mark (ChromaSync.ts ensureBackfilled): the same
+                # rows, renumbered, as in the lane.
+                after = {j for (j,) in store.execute(PROJECT_IDS[kind], (project,)) if j > new[kind]}
+                if after != {ids[table][lane][i] for i in own if i > marks_[kind]}:
+                    sys.exit(f"claude-mem: {project}'s {kind} mark leaves other rows to the backfill than in lane {lane}")
+            for key in ("pending", "fragmentReconciliation"):
+                if key in marks_:
+                    try:
+                        new[key] = {kind: [ids[KINDS[kind]][lane][i] for i in v] for kind, v in marks_[key].items()}
+                    except KeyError as e:
+                        sys.exit(f"claude-mem: {project}'s sync state names {key} {e}, which lane {lane} does not hold")
+            merged[project] = new
+        c.close()
+    store.close()
+    (dest / "chroma-sync-state.json").write_text(json.dumps(merged, indent=2))
+
+
+def merge_chroma_dirs(lanes, ids, dest):
+    """Chroma's part of the merge, in the chroma-mcp environment, on copies: opening a Chroma directory writes to it."""
+    work = WORK / "merge.tmp"  # beside the lanes, not on the container's own disk
+    shutil.rmtree(work, ignore_errors=True)
+    spec = {"out": str(dest), "lanes": []}
+    for lane, saved, _ in lanes:
+        shutil.copytree(saved / "chroma", work / lane)
+        spec["lanes"].append({
+            "lane": lane, "chroma": str(work / lane),
+            "ids": {kind: {str(old): new for old, new in ids[table][lane].items()} for kind, table in KINDS.items()}})
+    (work / "spec.json").write_text(json.dumps(spec))
+    r = subprocess.run(
+        ["uvx", *LAUNCHER, "python", "/app/build.py", "--merge-chroma", str(work / "spec.json")], capture_output=True,
+        text=True, env=os.environ | {"OPENAI_BASE_URL": EMBEDDER_URL, "OPENAI_API_KEY": "local"})
+    shutil.rmtree(work, ignore_errors=True)
+    if r.returncode:
+        sys.exit(f"claude-mem: merging Chroma failed: {r.stderr.strip()[-2000:]}")
+    # claude-mem's record of what last wrote the Chroma directory, which it rewrites at each chroma-mcp start
+    # (ChromaMcpManager.ts writeChromaStoreRecord): the latest of the lanes', as one worker's last start left it.
+    records = [saved / "chroma" / CHROMA_RECORD for _, saved, _ in lanes if (saved / "chroma" / CHROMA_RECORD).exists()]
+    if records:
+        shutil.copy2(max(records, key=lambda f: json.loads(f.read_text()).get("updatedAt", "")), dest / CHROMA_RECORD)
+    return json.loads(r.stdout.strip().splitlines()[-1])
+
+
+def merge_chroma(spec_path):
+    """Run in the chroma-mcp environment: every lane's Chroma documents, with their vectors and metadata, into one
+    collection configured as the lanes' are, under the merged ids and in their time order; then each read back and
+    compared with its lane's: its document and metadata equal, its vector within VECTOR_TOLERANCE in every component.
+    A vector does not come back bit for bit: hnswlib normalizes a cosine vector as it adds it, and the lane's had been
+    normalized once already, so float32 rounding moves it by about 1e-8; embedding again instead would tie the merge to
+    the embedder giving the same bits twice. Prints what it wrote and the largest deviation."""
+    import chromadb
+    import numpy
+
+    spec = json.loads(Path(spec_path).read_text())
+    prefixes = {"obs": "observations", "summary": "summaries", "prompt": "prompts"}
+    lanes = []
+    for lane in spec["lanes"]:
+        client = chromadb.PersistentClient(path=lane["chroma"])
+        if [c.name for c in client.list_collections()] != ["cm__claude-mem"]:
+            sys.exit(f"claude-mem: lane {lane['lane']}'s Chroma holds other collections than cm__claude-mem")
+        collection = client.get_collection("cm__claude-mem")
+        lanes.append((lane["lane"], collection, {k: {int(o): n for o, n in m.items()} for k, m in lane["ids"].items()}))
+    shapes = {json.dumps([c.configuration_json, c.metadata], sort_keys=True, default=str) for _, c, _ in lanes}
+    if len(shapes) != 1:
+        sys.exit(f"claude-mem: the lanes' Chroma collections are configured differently: {shapes}")
+
+    def renamed(doc_id, metadata, ids):
+        found = re.fullmatch(r"(obs|summary|prompt)_(\d+)(.*)", doc_id)
+        if not found:
+            sys.exit(f"claude-mem: Chroma's {doc_id} is not a document id claude-mem writes")
+        prefix, old, rest = found.groups()
+        new = ids[prefixes[prefix]].get(int(old))
+        if new is None or metadata.get("sqlite_id") != int(old):
+            sys.exit(f"claude-mem: Chroma's {doc_id} names no row the merge renumbered")
+        return f"{prefix}_{new}{rest}", metadata | {"sqlite_id": new}
+
+    def every(collection, include):
+        offset = 0
+        while True:
+            got = collection.get(include=include, limit=CHROMA_PAGE, offset=offset)
+            if not got["ids"]:
+                return
+            yield got
+            offset += len(got["ids"])
+
+    order, counted = [], Counter()
+    for k, (lane, collection, ids) in enumerate(lanes):
+        for got in every(collection, ["metadatas"]):
+            for doc_id, metadata in zip(got["ids"], got["metadatas"]):
+                new_id, new_metadata = renamed(doc_id, metadata, ids)
+                order.append((metadata.get("created_at_epoch") or 0, new_metadata["sqlite_id"], new_id, k, doc_id))
+                counted[lane] += 1
+    order.sort()
+    if len({new_id for _, _, new_id, _, _ in order}) != len(order):
+        sys.exit("claude-mem: two lanes' Chroma documents take the same merged id")
+    first = lanes[0][1]
+    target = chromadb.PersistentClient(path=spec["out"]).create_collection(
+        "cm__claude-mem", configuration=first.configuration, metadata=first.metadata,
+        embedding_function=first.configuration["embedding_function"])
+
+    def batches():
+        for b in range(0, len(order), 1000):
+            part = order[b : b + 1000]
+            got = {}
+            for k in {k for *_, k, _ in part}:
+                lane, collection, ids = lanes[k]
+                found = collection.get(
+                    ids=[doc_id for *_, kk, doc_id in part if kk == k], include=["documents", "metadatas", "embeddings"])
+                for doc_id, document, metadata, embedding in zip(
+                        found["ids"], found["documents"], found["metadatas"], found["embeddings"]):
+                    got[(k, doc_id)] = (document, metadata, embedding)
+            if missing := [doc_id for *_, k, doc_id in part if (k, doc_id) not in got]:
+                sys.exit(f"claude-mem: Chroma did not return {missing[:5]}")
+            yield [(new_id, k, doc_id, *got[(k, doc_id)]) for _, _, new_id, k, doc_id in part]
+
+    for part in batches():
+        target.add(
+            ids=[new_id for new_id, *_ in part], documents=[d for _, _, _, d, _, _ in part],
+            metadatas=[renamed(doc_id, m, lanes[k][2])[1] for _, k, doc_id, _, m, _ in part],
+            embeddings=[e for *_, e in part])
+    # The check, read back from the merged collection.
+    if target.count() != len(order):
+        sys.exit(f"claude-mem: the merged Chroma holds {target.count()} documents, not {len(order)}")
+    if json.dumps([target.configuration_json, target.metadata], sort_keys=True, default=str) != shapes.pop():
+        sys.exit("claude-mem: the merged Chroma collection is configured differently from the lanes'")
+    kinds, largest, lowest = Counter(), 0.0, 1.0
+    for part in batches():
+        found = target.get(ids=[new_id for new_id, *_ in part], include=["documents", "metadatas", "embeddings"])
+        stored = {i: (d, m, e) for i, d, m, e in zip(found["ids"], found["documents"], found["metadatas"], found["embeddings"])}
+        for new_id, k, doc_id, document, metadata, embedding in part:
+            d, m, e = stored[new_id]
+            if d != document or m != renamed(doc_id, metadata, lanes[k][2])[1]:
+                sys.exit(f"claude-mem: the merged Chroma's {new_id} differs from {doc_id} of lane {lanes[k][0]}")
+            got, want = numpy.asarray(e, dtype=numpy.float64), numpy.asarray(embedding, dtype=numpy.float64)
+            off = float(numpy.max(numpy.abs(got - want))) if got.shape == want.shape else float("inf")
+            cosine = float(got @ want / (numpy.linalg.norm(got) * numpy.linalg.norm(want))) if off != float("inf") else 0.0
+            if not off <= VECTOR_TOLERANCE:  # a NaN fails too
+                sys.exit(f"claude-mem: the merged Chroma's vector of {new_id} is off {doc_id}'s of lane {lanes[k][0]} by {off:.3g}")
+            kinds[m.get("doc_type")] += 1
+            largest, lowest = max(largest, off), min(lowest, cosine)
+    print(json.dumps({
+        "documents": len(order), "by_doc_type": dict(kinds), "lanes": dict(counted),
+        "vector_max_difference": largest, "vector_min_cosine": lowest}))
+
+
+def merged_progress(lanes, ids):
+    """The lanes' progress as one: counts and the LLM's usage add up, a window's first and last readings are the earliest
+    and the latest of any lane, and session db ids and rejected rows follow the merge."""
+    merged = {
+        "done": [], "sessions": {}, "counts": Counter(), "idle": Counter(), "llm": {}, "rejected": [],
+        "ingest_seconds": 0, "log": {"counted": Counter(), "errors": [], "dropped": []}}
+    for lane, _, progress in lanes:
+        sessions = ids["sdk_sessions"][lane]
+        merged["done"] += progress["done"]
+        merged["sessions"] |= {name: s | {"db_id": sessions[s["db_id"]]} for name, s in progress["sessions"].items()}
+        merged["counts"].update(progress["counts"])
+        merged["idle"].update(progress["idle"])
+        merged["ingest_seconds"] += progress["ingest_seconds"]
+        merged["rejected"] += [[k, ids[KINDS[k]][lane][i], n] for k, i, n in progress["rejected"]]
+        merged["log"]["counted"].update(progress["log"]["counted"])
+        merged["log"]["errors"] += [f"[{lane}] {e}" for e in progress["log"]["errors"]]
+        merged["log"]["dropped"] += [
+            d | {"session_db_id": sessions.get(d["session_db_id"])} for d in progress["log"].get("dropped", [])]
+        add_usage(merged["llm"], progress["llm"])
+    return merged
+
+
+def add_usage(total, part):
+    for key, value in part.items():
+        if key == "windows":
+            for window, w in value.items():
+                t = total.setdefault("windows", {}).setdefault(window, {})
+                if "first" in w and ("first" not in t or w["first"]["seen"] < t["first"]["seen"]):
+                    t["first"] = w["first"]
+                if "last" in w and ("last" not in t or w["last"]["seen"] > t["last"]["seen"]):
+                    t["last"] = w["last"]
+                t["max"] = max(t.get("max", 0), w.get("max", 0))
+        elif isinstance(value, dict):
+            add_usage(total.setdefault(key, {}), value)
+        else:
+            total[key] = total.get(key, 0) + value
+
+
 def interrupted(signum, frame):
     sys.exit("claude-mem: stopped; run again to resume from the last checkpoint")
 
@@ -1572,6 +2019,12 @@ def interrupted(signum, frame):
 def main():
     if sys.argv[1:2] == ["--count-chroma"]:
         return count_chroma(sys.argv[2])
+    if sys.argv[1:2] == ["--merge-chroma"]:
+        return merge_chroma(sys.argv[2])
+    if sys.argv[1:2] == ["--lanes"]:
+        for repo in dict.fromkeys(repo for _, repo, _ in sessions()[0]):
+            print(repo)
+        return
     signal.signal(signal.SIGINT, interrupted)
     signal.signal(signal.SIGTERM, interrupted)
     given = [k for k in AUTH if os.environ.get(k)]
@@ -1579,13 +2032,28 @@ def main():
         sys.exit(f"claude-mem: set exactly one of {' or '.join(AUTH)} for the observer's account (set: {given or 'none'})")
     if not LLM_MODEL:
         sys.exit("claude-mem: BILBO_EVAL_LLM_MODEL is not set")
+    # One build at a time in a work dir: lanes share the mount, so this holds across containers.
+    WORK.mkdir(parents=True, exist_ok=True)
+    lock = (WORK / ".lock").open("w")
+    try:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        sys.exit(f"claude-mem: another build is working in {WORK}")
 
     HOME.mkdir(parents=True, exist_ok=True)
     LIVE.mkdir(parents=True, exist_ok=True)
+    plan, skipped_files = sessions()
+    if MERGE:
+        merge(plan, skipped_files)
+        return finish(given[0])
+    every = plan  # every lane's sessions, whose checkouts a lane makes too, as one worker's build has them all
+    if LANE:
+        plan = [s for s in plan if s[1] == LANE]
+        if not plan:
+            sys.exit(f"claude-mem: the lane {LANE} has no session")
     IO.mkdir(parents=True, exist_ok=True)
     if not CHECKPOINT.exists() and (WORK / "checkpoint.old").exists():
         (WORK / "checkpoint.old").rename(CHECKPOINT)
-    plan, skipped_files = sessions()
     first = millis(plan[0][0])
     if (CHECKPOINT / "progress.json").exists():
         progress = restore()
@@ -1605,7 +2073,7 @@ def main():
         if len(progress["done"]) < len(plan):  # a rerun of a build that finished goes straight to the store
             launches = [
                 (repo, next((e["cwd"] for e in map(json.loads, path.open()) if e.get("cwd")), "/"))
-                for _, repo, path in plan
+                for _, repo, path in every
             ]
             checkouts = Checkouts(checkout_roots(), launches)
             worker.clock = clock
@@ -1648,16 +2116,29 @@ def main():
                 sys.exit("claude-mem: the last quiet point could not drain the observer; run again to resume from the last checkpoint")
     finally:
         worker.kill()
+    if LANE:
+        log(f"the lane {LANE} is done: its {len(plan)} sessions are in {CHECKPOINT}, for the merge")
+        return
 
     out = WORK / "store"
     copy_store(out)
     (out / "manifest.json").write_text(
         json.dumps(manifest(progress, skipped_files, plan, len(progress["done"])), indent=2) + "\n")
-    secret = os.environ[given[0]].encode()
-    leaked = [str(f.relative_to(WORK)) for f in WORK.rglob("*") if f.is_file() and secret in f.read_bytes()]
+    finish(given[0])
+
+
+def finish(credential):
+    """No file of /work may hold the account's credential, the lanes' included."""
+    secret = os.environ[credential].encode()
+    leaked = []
+    for f in WORK.rglob("*"):
+        if f.is_file() and not f.is_symlink() and f.stat().st_size:
+            with f.open("rb") as fh, mmap.mmap(fh.fileno(), 0, access=mmap.ACCESS_READ) as m:
+                if m.find(secret) != -1:
+                    leaked.append(str(f.relative_to(WORK)))
     if leaked:
         sys.exit(f"claude-mem: the account's credential is in {leaked[:5]}; remove them before anything leaves /work")
-    log(f"done: {out}")
+    log(f"done: {WORK / 'store'}")
 
 
 def progress_line(progress, total, counts, claude):

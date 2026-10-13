@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Get an arm's store into dataset/store-<arm>-<key>.tar.zst: the archive already there, else the one in dataset.lock,
 # else build it from the corpus, its services in Docker.
-#   build-store.sh <arm> [--rebuild] [--sessions N] [--check] [--key]
+#   build-store.sh <arm> [--rebuild] [--sessions N|repo:N,...] [--check] [--key]
 # Building needs the LLM variables the arm's compose.yaml reads, usually BILBO_EVAL_LLM_URL (as the containers see it),
 # BILBO_EVAL_LLM_KEY and BILBO_EVAL_LLM_MODEL; BILBO_EVAL_LLM_HEADERS, a JSON object, adds headers to every LLM call
 # for a gateway that needs them, and BILBO_EVAL_LLM_SMALL_MODEL is the model for the lighter calls of an arm whose
@@ -9,10 +9,17 @@
 # corpus, embedder and arm files (it stops when there are several). --key prints the store's key for the current inputs
 # and stops.
 # An arm whose compose.yaml reads none of the LLM variables needs none of them, and its key names no LLM.
-# --rebuild builds the store again. --sessions N builds from the first N sessions only: a trial, whose archive stays in
-# the cache. --check then restores the store into fresh services and checks it with arms/<arm>/check.py.
+# --rebuild builds the store again. --sessions N builds from the first N sessions only (repo:N,repo:N, for an arm built
+# in lanes, the first N sessions of each repository named): a trial, whose archive stays in the cache. --check then
+# restores the store into fresh services and checks it with arms/<arm>/check.py.
 # The embedder runs on an NVIDIA GPU when Docker reports one; BILBO_EVAL_GPU=1 or 0 forces it on or off.
 # BILBO_EVAL_EMBED_THREADS=N caps a CPU embedder at N threads, so two CPU builds can share a host.
+# BILBO_EVAL_PROJECT names the Compose project (default bilbo-retrieval-<arm>), so a second build of an arm with another
+# key (a trial, another model) can run beside the first without touching its containers; one key has one work dir.
+# An arm whose compose.yaml has `x-lanes:` is built in lanes: each repository's sessions in a build container
+# of its own, all at once against the one embedder (`build.py --lanes` names them, BILBO_EVAL_LANE tells each its own),
+# then the build service runs once more with `--merge` to combine the lanes' stores into one. A lane that fails leaves
+# the others running; a rerun resumes each lane from its own checkpoint.
 # An arm with a `pack` service (profile `pack`) runs it after the build with the other services stopped, to dump a
 # database into $work/store; one with a `restore` service (profile `restore`) runs it before a check's services start,
 # to load that database back.
@@ -32,14 +39,18 @@ source "$root/scripts/dataset.sh"
 
 arm=${1:-}
 [[ -n $arm && -f $root/arms/$arm/compose.yaml ]] ||
-  die "usage: build-store.sh <arm> [--rebuild] [--sessions N] [--check] [--key] (arms: $(cd "$root/arms" && echo *))"
+  die "usage: build-store.sh <arm> [--rebuild] [--sessions N|repo:N,...] [--check] [--key] (arms: $(cd "$root/arms" && echo *))"
 shift
 rebuild= sessions= check= print_key=
 while (($#)); do
   case $1 in
     --rebuild) rebuild=1 ;;
     --key) print_key=1 ;;
-    --sessions) [[ ${2:-} =~ ^[1-9][0-9]*$ ]] || die "--sessions needs a number"; sessions=$2; shift ;;
+    --sessions) [[ ${2:-} =~ ^([1-9][0-9]*|[A-Za-z0-9_.-]+:[1-9][0-9]*(,[A-Za-z0-9_.-]+:[1-9][0-9]*)*)$ ]] ||
+                  die "--sessions needs a number or repo:N,repo:N"
+                [[ $2 != *:* ]] || grep -q '^x-lanes:' "$root/arms/$arm/compose.yaml" ||
+                  die "only an arm built in lanes takes --sessions repo:N"
+                sessions=$2; shift ;;
     --check) [[ -f $root/arms/$arm/check.py ]] || die "$arm has no check.py"; check=1 ;;
     *) die "unknown option $1" ;;
   esac
@@ -168,7 +179,7 @@ export BILBO_EVAL_EMBEDDER=$model BILBO_EVAL_DEVICE=$device BILBO_EVAL_SESSIONS=
 export BILBO_EVAL_LLM_URL=${BILBO_EVAL_LLM_URL:-} BILBO_EVAL_LLM_KEY=${BILBO_EVAL_LLM_KEY:-}
 export BILBO_EVAL_LLM_MODEL=${BILBO_EVAL_LLM_MODEL:-}
 # A check-only run gets its own project: check.py empties the Qdrant it reaches, and the trap takes the project down.
-project=bilbo-retrieval-$arm
+project=${BILBO_EVAL_PROJECT:-bilbo-retrieval-$arm}
 [[ -n $build ]] || project+=-check
 services() { docker-compose -p "$project" ${1:+--profile "$1"} "${files[@]}" config --services; }
 compose() { docker-compose -p "$project" --profile build "${files[@]}" "$@"; }
@@ -185,7 +196,29 @@ if [[ -n $build ]]; then
 
   log "building the $arm store $key on the $device"
   start
-  compose run --rm --build build
+  if grep -q '^x-lanes:' "$root/arms/$arm/compose.yaml"; then
+    compose build -q build
+    named=$(compose run --rm --no-deps -T build --lanes) || die "build.py --lanes failed"
+    mapfile -t lanes <<<"$named"
+    [[ -n ${lanes[0]:-} ]] || die "$arm has no lanes to build"
+    log "building ${#lanes[@]} lanes at once: ${lanes[*]}"
+    pids=()
+    for lane in "${lanes[@]}"; do
+      # Each lane's lines carry its name; a lane that fails says so and leaves the others running.
+      (
+        compose run --rm --no-deps -T -e BILBO_EVAL_LANE="$lane" build 2>&1 | sed -u "s/^/[$lane] /" && exit 0
+        log "the lane $lane failed; the other lanes go on"
+        exit 1
+      ) &
+      pids+=($!)
+    done
+    failed=()
+    for i in "${!pids[@]}"; do wait "${pids[$i]}" || failed+=("${lanes[$i]}"); done
+    ((${#failed[@]} == 0)) || die "lanes failed: ${failed[*]}; run again to resume them from their checkpoints"
+    compose run --rm --no-deps -T build --merge
+  else
+    compose run --rm --build build
+  fi
   if services pack | grep -x pack >/dev/null; then
     compose stop
     compose --profile pack run --rm --no-deps pack
@@ -198,7 +231,9 @@ if [[ -n $build ]]; then
     --pax-option='exthdr.name=%d/PaxHeaders/%f,delete=atime,delete=ctime' \
     -C "$work" -cf - store | zstd -q -19 -T0 -o "$out.part"
   mv "$out.part" "$out"
-  rm -rf "$work"
+  # With --check, the work dir goes only once the store passes: a lanes build that fails its check keeps its lanes, so
+  # removing the archive and running again merges them again without replaying them.
+  [[ -n $check ]] || rm -rf "$work"
   log "${out#"$root"/} built ($(du -h "$out" | cut -f1))"
 fi
 
@@ -214,4 +249,5 @@ if [[ -n $check ]]; then
   compose run --rm --build --entrypoint python build /work/check.py ||
     die "${out#"$root"/} failed its check"
   compose down -v --remove-orphans
+  [[ -z $build ]] || rm -rf "$work"
 fi

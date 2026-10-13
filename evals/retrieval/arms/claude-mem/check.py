@@ -33,6 +33,7 @@ LAUNCHER = ["--python", "3.13", "--with", "onnxruntime>=1.20", "--with", "protob
 FALLBACKS = ("falling back to FTS5", "falling back to SQLite", "supplementing from SQLite", "semantic search failed")
 LLM_ATTEMPTS = ("Generator auto-starting", "Starting SDK query")  # what the worker logs when it starts the observer
 CREDENTIAL = re.compile(rb"sk-ant-[a-z]{3}\d{2}-")  # an OAuth token or API key, in any file of the store
+PAGE = 5000  # documents per Chroma read: a get of a whole large collection exceeds SQLite's limit on variables
 
 
 def chroma_part(path):
@@ -42,7 +43,13 @@ def chroma_part(path):
     collection = chromadb.PersistentClient(path=path).get_collection("cm__claude-mem")
     configuration = collection.configuration
     function = configuration.get("embedding_function") if hasattr(configuration, "get") else None
-    got = collection.get(include=["metadatas"])
+    total, got = collection.count(), {"ids": [], "metadatas": []}
+    for offset in range(0, total, PAGE):
+        page = collection.get(include=["metadatas"], limit=PAGE, offset=offset)
+        got["ids"] += page["ids"]
+        got["metadatas"] += page["metadatas"]
+    if len(set(got["ids"])) != total or len(got["ids"]) != total:
+        sys.exit(f"check: Chroma's pages held {len(got['ids'])} documents ({len(set(got['ids']))} distinct), not its {total}")
     ids = sorted(got["ids"])
     picks = sorted({len(ids) * k // 4 for k in range(4)} | {len(ids) - 1}) if ids else []
     samples = {"ids": [], "documents": [], "embeddings": []}
