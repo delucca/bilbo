@@ -56,7 +56,7 @@ files under `arms/<arm>/`. Change any of them and the key changes.
 | [graphiti](#graphiti) | Graphiti's knowledge graph, fed one turn at a time | yes | built with Opus 5.5 and luna |
 | [ai-memory](#ai-memory) | ai-memory, fed by its Claude Code hooks | yes | built with Claude Opus 5.5 |
 | [hindsight](#hindsight) | Hindsight, fed by its Claude Code integration | yes | not yet; Claude Sonnet 5.5 |
-| [claude-mem](#claude-mem) | claude-mem, fed by its Claude Code hooks | yes | not yet; Claude Haiku 5.5 |
+| [claude-mem](#claude-mem) | claude-mem, fed by its Claude Code hooks | yes | built with Claude Haiku 5.5 |
 | [bilbo-agent-v0_19](#bilbo-019) | notes the agent writes with bilbo's note skill | yes | from L3, Claude Opus 5.5 |
 | [bilbo-assisted-v0_19](#bilbo-019) | the same, plus a `/note` at each session's end | yes | from L3, Claude Opus 5.5 |
 | [mempalace](#mempalace) | MemPalace, fed by its Claude Code plugin hooks | no | yes |
@@ -356,7 +356,11 @@ conversation into one prompt, and Haiku 4.5 went on to write invented turns of t
 Claude Sonnet 5.5 on the same route wrote none, but each call resent the whole conversation with nothing cached, about
 43,000 prompt tokens a call, one to two weeks of a Max 20x subscription for the full corpus.
 
-No store is published yet; on this route it has only been built offline, against a fake API.
+The published store was built in five lanes with the embedder on an RTX 5070 Ti, in 5 h 42 min of lanes and a
+one-minute merge: 16,774 calls to Claude Haiku 5.5, 717 million prompt tokens (91% read from the cache) and 11.7
+million output tokens, with no usage-limit wait. It holds 8,685 observations, 619 summaries, 846 prompts and 15,408
+tool calls from the 143 sessions, and 54,548 Chroma documents. 27 observations carry a malformed type, Haiku's XML
+running on, as claude-mem parsed it.
 
 ### bilbo 0.19
 
