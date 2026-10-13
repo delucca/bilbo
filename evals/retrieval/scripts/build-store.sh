@@ -10,8 +10,8 @@
 # and stops.
 # An arm whose compose.yaml reads none of the LLM variables needs none of them, and its key names no LLM.
 # --rebuild builds the store again. --sessions N builds from the first N sessions only (repo:N,repo:N, for an arm built
-# in lanes, the first N sessions of each repository named): a trial, whose archive stays in the cache. --check then
-# restores the store into fresh services and checks it with arms/<arm>/check.py.
+# in lanes or hindsight, the first N sessions of each repository named): a trial, whose archive stays in the cache.
+# --check then restores the store into fresh services and checks it with arms/<arm>/check.py.
 # The embedder runs on an NVIDIA GPU when Docker reports one; BILBO_EVAL_GPU=1 or 0 forces it on or off.
 # BILBO_EVAL_EMBED_THREADS=N caps a CPU embedder at N threads, so two CPU builds can share a host.
 # BILBO_EVAL_PROJECT names the Compose project (default bilbo-retrieval-<arm>), so a second build of an arm with another
@@ -48,7 +48,7 @@ while (($#)); do
     --key) print_key=1 ;;
     --sessions) [[ ${2:-} =~ ^([1-9][0-9]*|[A-Za-z0-9_.-]+:[1-9][0-9]*(,[A-Za-z0-9_.-]+:[1-9][0-9]*)*)$ ]] ||
                   die "--sessions needs a number or repo:N,repo:N"
-                [[ $2 != *:* ]] || grep -q '^x-lanes:' "$root/arms/$arm/compose.yaml" ||
+                [[ $2 != *:* || $arm == hindsight ]] || grep -q '^x-lanes:' "$root/arms/$arm/compose.yaml" ||
                   die "only an arm built in lanes takes --sessions repo:N"
                 sessions=$2; shift ;;
     --check) [[ -f $root/arms/$arm/check.py ]] || die "$arm has no check.py"; check=1 ;;

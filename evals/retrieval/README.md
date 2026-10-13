@@ -92,7 +92,7 @@ that fails leaves the others running, and a rerun resumes each lane from its own
   another key, such as a trial, runs beside the first without touching its containers. One key has one work dir.
 - `--rebuild` builds the store again. `--sessions N` builds from the first N sessions only: a trial, kept with the
   build's work files in `~/.cache/bilbo-evals` or `BILBO_EVALS_CACHE`, and never published. For an arm built in lanes,
-  `--sessions repo:N,repo:N` takes the first N sessions of each repository named.
+  and for Hindsight, `--sessions repo:N,repo:N` takes the first N sessions of each repository named.
 - `--check` then restores the store into fresh services and checks it with `arms/<arm>/check.py`, with no LLM. The
   build's work dir is removed only once the store passes. After a failed check it stays, so removing the archive and
   running again resumes from it (an arm built in lanes merges its lanes again without replaying them); only
@@ -222,16 +222,22 @@ in Chinese, the language its developer wrote in, since no `_prompts/consolidatio
 [Hindsight](https://github.com/vectorize-io/hindsight) 0.10.3 on Postgres with pgvector, fed by its own Claude Code
 integration (`hindsight-coding-agents` 0.8.0, run against a self-hosted server rather than the Cloud it defaults to).
 Each session is replayed through the integration's Stop hook, which reads the transcript when a turn ends and sends what
-is new; the integration's setup engine configures each repository's bank first. All sessions share one timeline, with
-one bank per repository, and the build checkpoints whenever no session is open.
+is new; the integration's setup engine configures each repository's bank first. Each repository has its own bank, and
+its sessions are replayed in their own timeline, all repositories at once against the one server: banks share nothing.
+The build checkpoints when no session of any repository is open, which needs every repository at rest at once, so the
+first checkpoint can come hours into a full build.
 
 It is set up the way the integration sets up a Claude Code user: its coding missions, a conversation strategy with
 12,000-character chunks, knowledge labels, observations in one shared scope and five knowledge pages. Extraction is
 concise, the integration's default. The five similarity thresholds Hindsight calibrated for its own embedder are
 matched to Qwen3's, as its docs ask when the model changes, and Qwen3's query instruction is on, which also acts at
-build time when consolidation recalls. Pages refresh hourly when stale; the build runs that schedule on the sessions'
-own clock. The manifest lists every setting that differs from a fresh install, with the doc or source line that asks
-for it.
+build time when consolidation recalls. Hindsight cuts every text it embeds at a cap counted in its own o200k tokens, and
+Qwen3 counts 1.005 to 1.052 times as many on this corpus, so the cap is 7,424, which keeps a whole knowledge page inside
+the embedder's 8,192-token context; a longer page is embedded from its start. Pages refresh hourly when stale; the build
+runs that schedule on the sessions' own clock. A refresh is stamped at its due time plus how long it took, which with
+the repositories replayed at once includes waiting on the others, so refresh times and counts can differ from a build
+that replays them one at a time. The manifest lists every setting that differs from a fresh install, with the doc or
+source line that asks for it.
 
 What the replay changes:
 

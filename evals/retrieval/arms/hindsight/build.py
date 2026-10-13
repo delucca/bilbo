@@ -1,9 +1,11 @@
 """Build the Hindsight store: replay every session through Hindsight's own Claude Code integration (the coding-agents
-package, its Stop hook as shipped), one timeline across all sessions, into one Hindsight server on loopback with one
-memory bank per repository, set up the way the integration sets up a Claude Code user. Then save Hindsight's own
-backup (`hindsight-admin backup`) with a manifest in /work/store. Whenever no session is open, the backup goes to
-/work/checkpoint, and a run that finds it resumes from there.
-BILBO_EVAL_DRY_RUN=1 walks the timeline on the host's Python and prints it, with no server, no LLM and no Docker."""
+package, its Stop hook as shipped) into one Hindsight server on loopback with one memory bank per repository, set up the
+way the integration sets up a Claude Code user. Banks share nothing, so each repository is a lane of its own: one
+timeline across that repository's sessions, all lanes at once against the one server. Then save Hindsight's own backup
+(`hindsight-admin backup`) with a manifest in /work/store. When every lane is at rest (no session of its bank open), the
+backup goes to /work/checkpoint, and a run that finds it resumes from there.
+BILBO_EVAL_SESSIONS is a trial: N for the first N sessions, or `repo:N,repo:N` for the first N sessions of each repository
+named. BILBO_EVAL_DRY_RUN=1 walks the timeline on the host's Python and prints it, with no server, no LLM and no Docker."""
 
 import hashlib
 import heapq
@@ -49,6 +51,9 @@ LLM_KEY = os.environ.get("BILBO_EVAL_LLM_KEY", "")
 LLM_MODEL = os.environ.get("BILBO_EVAL_LLM_MODEL", "")
 LLM_HEADERS = json.loads(os.environ.get("BILBO_EVAL_LLM_HEADERS") or "{}")
 QUIET_IDLE = 1800  # seconds a bank may stay busy with the LLM idle before the build gives up on it
+CHECKPOINT_EVERY = 1800  # seconds between checkpoints; one is taken when every lane is at rest
+REST_WAIT = 600  # seconds a lane at rest waits for the others once a checkpoint is due, before the checkpoint waits for the next round
+ABORT = threading.Event()  # set when a lane fails or the build is stopped: every lane stops at its next check
 HOOK_TIMEOUT = 60  # the host's timeout for the Stop hook (hindsight-integrations/coding-agents/src/harness/hook-lifecycle.ts:301)
 DRY_REFRESH_SECONDS = 60  # the dry run has no server to time a refresh: it takes a nominal minute
 FAR = datetime(9999, 1, 1, tzinfo=timezone.utc)
@@ -97,6 +102,7 @@ SERVER_ENV = {
     "HINDSIGHT_API_EMBEDDINGS_OPENAI_MODEL": ("embedder", "the shared embedder"),
     "HINDSIGHT_API_EMBEDDINGS_OPENAI_API_KEY": ("none", "the shared embedder takes none"),
     "HINDSIGHT_API_EMBEDDINGS_QUERY_PREFIX": (QUERY_PREFIX, DOC + "configuration.mdx:854, 924-930: the instruction an asymmetric model needs; consolidation recalls with it too (engine/consolidation/consolidator.py:3061-3112)"),
+    "HINDSIGHT_API_EMBEDDINGS_MAX_INPUT_TOKENS": ("7424", DOC + "configuration.mdx:853: the cap is counted in Hindsight's o200k tokens, so divide the model's real limit by its tokens per Hindsight token; Qwen3 counted 1.005-1.052x o200k on this arm's pages and corpus, and the embedder's context is 8192, so 8192 / 1.10; a knowledge page is embedded whole (engine/memory_engine.py:16773-16776) and outgrows the default 8192"),
     "HINDSIGHT_API_BANK_STATS_CACHE_TTL_SECONDS": ("0", API + "config.py:1638: the 60 s cache would hide a pending operation from the quiet check"),
     "HINDSIGHT_API_MENTAL_MODEL_REFRESH_TICK_SECONDS": ("0", API + "config.py:2021, engine/maintenance.py:224-226: 0 turns the wall-clock page cron off; the build refreshes pages on the replayed clock"),
     "HINDSIGHT_API_LLM_TRACE_RETENTION_DAYS": ("3650", API + "config.py:2003, 2025: the default sweeps a day-old trace; the per-operation token counts must outlive the build"),
@@ -141,8 +147,9 @@ PROMPT_TIME = {
 NOTES = {
     "time": "facts and observations are dated from the session's first kept turn, which the integration takes from the transcript; created_at and page refresh times are the build's wall clock",
     "pages": "refreshed on the replayed clock by the server's cron rule: a page is due when it is stale and a cron fire has passed since its last refresh, and that refresh is stamped at its replayed time plus its measured duration, as live stamps its completion; the server's 5-minute tick is ignored, so a page can refresh up to one tick earlier than live; recency inside a refresh is measured from the wall clock",
-    "vectors": "reproducible to about 1e-3 when embedded again, across devices: Hindsight embeds a fact with its date and its entities in extraction order, which text_signals keeps",
+    "vectors": "reproducible to about 1e-3 when embedded again, across devices: Hindsight embeds a fact with its date and its entities in extraction order, which text_signals keeps; a knowledge page longer than HINDSIGHT_API_EMBEDDINGS_MAX_INPUT_TOKENS is embedded from its start only, its content kept whole",
     "llm": "the calls behind this store: the calls of work an interrupt threw away are not counted",
+    "lanes": "one replay lane per bank, all at once against the one server, every bank set up before the lanes start: each lane keeps its repository's event order and quiet waits, as the serial timeline restricted to that bank does; banks share no data, so the order of writes across banks and the wall-clock times differ from a serial build, and so can page refreshes: a refresh is stamped at its due time plus its measured duration, which under lanes includes waiting on the other lanes' work, so a page's later refresh times and its refresh count can differ; replay.quiet_seconds and hook_seconds add up the lanes; a checkpoint needs every lane at rest at once, so the first can come hours in",
     "skipped_hooks": "SessionStart and UserPromptSubmit are not run: neither writes a memory, the prompt hook's reflect only leaves LLM trace rows (" + CA + "core/session-start.ts, core/hook.ts); deepen.js sets up each bank once, in the foreground, at the bank's first session",
 }
 BASE_ENV = {"PATH": os.environ.get("PATH", "/usr/local/bin:/usr/bin:/bin"), "HOME": str(HOME), "TMPDIR": str(HOOK_TMP), "NO_COLOR": "1"}
@@ -178,8 +185,20 @@ def sessions():
         start = next((t for t in map(stamp, map(json.loads, path.open())) if t), None)
         (found if start else other).append((start, path.parent.name, path))
     found.sort()
-    limit = os.environ.get("BILBO_EVAL_SESSIONS")
-    return found[: int(limit) if limit else None], [f"{repo}/{path.name}" for _, repo, path in other]
+    limit = os.environ.get("BILBO_EVAL_SESSIONS") or ""
+    if ":" in limit:  # repo:N,repo:N: the first N sessions of each repository named
+        per = {repo: int(n) for repo, n in (part.split(":") for part in limit.split(","))}
+        if unknown := set(per) - {repo for _, repo, _ in found}:
+            sys.exit(f"hindsight: BILBO_EVAL_SESSIONS names repositories the corpus lacks: {sorted(unknown)}")
+        taken, kept = Counter(), []
+        for start, repo, path in found:
+            if taken[repo] < per.get(repo, 0):
+                taken[repo] += 1
+                kept.append((start, repo, path))
+        found = kept
+    elif limit:
+        found = found[: int(limit)]
+    return found, [f"{repo}/{path.name}" for _, repo, path in other]
 
 
 def checkout_roots():
@@ -390,6 +409,8 @@ class Server:
                 time.sleep(1)
 
     def check(self):
+        if ABORT.is_set():
+            sys.exit("hindsight: stopped with the other lanes")
         if self.process.poll() is not None:
             sys.exit(f"hindsight: the server exited with {self.process.returncode}; see {WORK / 'server.log'}, then run again to resume from the last checkpoint")
 
@@ -474,8 +495,13 @@ def write_configs(roots):
         (CONFIGS / f"{repo}.deepen.json").write_text(json.dumps(base))
 
 
-def hook_env(config):
-    return BASE_ENV | {"HINDSIGHT_CONFIG": str(config), "HINDSIGHT_DIAG_FILE": str(WORK / "hooks" / "diag.jsonl"), "HINDSIGHT_LOG_FILE": str(WORK / "hooks" / "plugin.log")}
+def diag_file(repo):
+    return WORK / "hooks" / f"diag-{repo}.jsonl"
+
+
+def hook_env(config, repo):
+    """Each lane's hooks write their own diagnostics and log, so a lane reads only its own sessions' retain events."""
+    return BASE_ENV | {"HINDSIGHT_CONFIG": str(config), "HINDSIGHT_DIAG_FILE": str(diag_file(repo)), "HINDSIGHT_LOG_FILE": str(WORK / "hooks" / f"plugin-{repo}.log")}
 
 
 def deepen(server, quiet, repo, bank):
@@ -486,7 +512,7 @@ def deepen(server, quiet, repo, bank):
     command = ["node", f"{PLUGIN}/deepen.js", "--repo", str(REPOS / basename), "--bank", bank, "--harness", "claude-code", "--git-ingest", "none",
                "--config", str(CONFIGS / f"{repo}.deepen.json")]
     try:
-        r = subprocess.run(command, env=hook_env(CONFIGS / f"{repo}.deepen.json"), cwd=HOME, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=900)
+        r = subprocess.run(command, env=hook_env(CONFIGS / f"{repo}.deepen.json", repo), cwd=HOME, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=900)
     except subprocess.TimeoutExpired:
         sys.exit(f"hindsight: deepen.js for {bank} ran past 15 minutes")
     (WORK / "hooks" / f"deepen-{basename}.log").write_text(r.stdout + r.stderr)
@@ -653,7 +679,7 @@ class Session:
                 # Claude Code's own text (an API error, a usage limit, "No response requested."), not the model's: never a
                 # reply. A turn an API error ends fires StopFailure, which the integration does not register, not Stop; a
                 # synthetic reply ends its turn with no Stop in all 10 of the corpus's. Claude Code's record, if any, wins.
-                self.replay.counts["skipped_api_error_replies" if api_error else "skipped_synthetic_replies"] += 1
+                self.replay.add("skipped_api_error_replies" if api_error else "skipped_synthetic_replies")
                 if self.turn:
                     self.turn["interrupted"] = True
             elif self.turn and reply:
@@ -731,26 +757,33 @@ class Pages:
             sys.exit(f"hindsight: the refresh of {name} in {bank} failed")
         page.update(last=due + took, stale_since=None, refreshes=page["refreshes"] + 1)  # live stamps last_refreshed_at when the refresh completes
 
-    def finish(self):
-        """The end of the timeline, the daemon still running (CA core/daemon.ts:36-37): hourly lets every stale page's cron fire."""
-        for bank, pages in self.banks.items():
+    def finish(self, only=None):
+        """The end of the timeline, the daemon still running (CA core/daemon.ts:36-37): hourly lets every stale page's cron fire.
+        A lane finishes its own bank (`only`)."""
+        for bank in [only] if only else list(self.banks):
+            if bank not in self.banks:
+                continue
             if self.mode == "hourly":
                 self.tick(bank, FAR)
             elif self.mode == "final":
-                for name, page in pages.items():
+                for name, page in self.banks[bank].items():
                     if self.is_stale(bank, page):
                         self.refresh(bank, name, page, self.latest.get(bank, page["last"]))
 
 
 class Replay:
-    """The Stop hook, the server around it and the checks between them."""
+    """The Stop hook, the server around it and the checks between them, shared by the lanes: the counts take a lock, and
+    each lane reads its own hooks' diagnostics."""
 
     def __init__(self, server, gateway, pages, progress):
         self.server, self.gateway, self.pages, self.progress = server, gateway, pages, progress
-        self.counts = Counter(progress["counts"])
+        self.counts, self.lock = Counter(progress["counts"]), threading.Lock()
         self.banks = progress["bank_names"]
-        self.diag = WORK / "hooks" / "diag.jsonl"
-        self.read = self.diag.stat().st_size if self.diag.exists() else 0  # earlier runs' lines are not this store's
+        self.read = {repo: diag_file(repo).stat().st_size if diag_file(repo).exists() else 0 for repo in self.banks}  # earlier runs' lines are not this store's
+
+    def add(self, key, n=1):
+        with self.lock:
+            self.counts[key] += n
 
     def check(self):
         self.server.check()
@@ -758,16 +791,21 @@ class Replay:
 
     def begin(self, session):
         session.file = (TRANSCRIPTS / f"{session.sid}.jsonl").open("w")
-        if session.bank not in self.progress["banks"]:
-            deepen(self.server, self.quiet, session.repo, session.bank)
-            self.pages.setup(session.bank, session.times[0])
-            self.progress["banks"][session.bank] = {"repo": session.repo, "checkout": self.progress["roots"][session.repo]}
-            self.counts["deepen_runs"] += 1
+        self.setup(session.repo, session.times[0])
+
+    def setup(self, repo, start):
+        """A bank's setup, once, at its first session's start: deepen, then its pages on the sessions' clock."""
+        bank = self.banks[repo]
+        if bank not in self.progress["banks"]:
+            deepen(self.server, self.quiet, repo, bank)
+            self.pages.setup(bank, start)
+            self.progress["banks"][bank] = {"repo": repo, "checkout": self.progress["roots"][repo]}
+            self.add("deepen_runs")
 
     def quiet(self, bank):
         started = time.monotonic()
         self.server.quiet(bank)
-        self.counts["quiet_seconds"] += time.monotonic() - started
+        self.add("quiet_seconds", time.monotonic() - started)
 
     def quiet_all(self):
         for bank in self.progress["banks"]:
@@ -778,19 +816,20 @@ class Replay:
         and a sub-chunk that could not be split small enough (:2567-2573). The operation still completes."""
         for line in self.server.logged():
             if "Fact extraction kept" in line:
-                self.counts["extraction_partial_chunks"] += 1
+                self.add("extraction_partial_chunks")
             elif "dropping this sub-chunk" in line:
-                self.counts["extraction_dropped_chunks"] += 1
+                self.add("extraction_dropped_chunks")
 
-    def logged(self):
-        """The hook diagnostics' whole lines written since the last call."""
-        if not self.diag.exists():
+    def logged(self, repo):
+        """A lane's hook diagnostics: the whole lines written since its last call."""
+        diag = diag_file(repo)
+        if not diag.exists():
             return []
-        with self.diag.open("rb") as f:
-            f.seek(self.read)
+        with diag.open("rb") as f:
+            f.seek(self.read.get(repo, 0))
             data = f.read()
         data = data[: data.rfind(b"\n") + 1]
-        self.read += len(data)
+        self.read[repo] = self.read.get(repo, 0) + len(data)
         return [json.loads(line) for line in data.decode(errors="replace").splitlines() if line.strip()]
 
     def stop(self, session, when, reply):
@@ -801,24 +840,24 @@ class Replay:
                               "stop_hook_active": False, "last_assistant_message": reply}, ensure_ascii=False, separators=(",", ":"))
         started = time.monotonic()
         try:
-            r = subprocess.run(["node", f"{PLUGIN}/claude-stop-hook.js"], input=payload, env=hook_env(CONFIGS / f"{session.repo}.json"), cwd=HOME, capture_output=True, text=True,
+            r = subprocess.run(["node", f"{PLUGIN}/claude-stop-hook.js"], input=payload, env=hook_env(CONFIGS / f"{session.repo}.json", session.repo), cwd=HOME, capture_output=True, text=True,
                                timeout=HOOK_TIMEOUT)
         except subprocess.TimeoutExpired:
             sys.exit(f"hindsight: the Stop hook of {session.name} ran past {HOOK_TIMEOUT} s, the host's timeout")
-        self.counts["hook_seconds"] += time.monotonic() - started
+        self.add("hook_seconds", time.monotonic() - started)
         if r.returncode:
             sys.exit(f"hindsight: the Stop hook of {session.name} exited with {r.returncode}: {r.stderr.strip()[-1000:]}")
-        self.counts["stops"] += 1
+        self.add("stops")
         self.quiet(bank)
         ok = 0
-        for line in self.logged():
+        for line in self.logged(session.repo):
             if line["event"] == "retain_failed":
                 sys.exit(f"hindsight: the Stop hook could not retain {session.name}: {line.get('error')}")
             if line["event"] == "retain_ok" and line.get("session") == session.sid:
                 ok += 1
-        self.counts["retain_ok"] += ok
+        self.add("retain_ok", ok)
         if not ok and session.kept:
-            sys.exit(f"hindsight: the Stop hook of {session.name} returned without retaining its {session.kept} kept turns (no retain_ok in {self.diag})")
+            sys.exit(f"hindsight: the Stop hook of {session.name} returned without retaining its {session.kept} kept turns (no retain_ok in {diag_file(session.repo)})")
         self.pages.after_stop(bank, when)
 
 
@@ -841,6 +880,48 @@ def timeline(plan, done, replay, idle):
         idle(session, open_now)
 
 
+class Rest:
+    """Checkpoints across lanes. A store is consistent only when every bank is at rest at once: no session of it open and
+    the bank quiet. Once a checkpoint is due, a lane that comes to rest waits for the others, and the last to arrive takes
+    it. After REST_WAIT the lanes go on without one, and the checkpoint waits for the next round. A finished lane is at
+    rest for good."""
+
+    def __init__(self, lanes, take):
+        self.cond, self.take = threading.Condition(), take
+        self.active, self.waiting = set(lanes), set()
+        self.last, self.round = time.monotonic(), 0
+
+    def rest(self, lane, finished=False):
+        with self.cond:
+            if finished:
+                self.active.discard(lane)
+            elif self.waiting or time.monotonic() - self.last >= CHECKPOINT_EVERY:
+                self.waiting.add(lane)
+            if not self.waiting:
+                return
+            if self.waiting >= self.active:
+                self.next_round(take=True)
+                return
+            if finished:
+                return
+            this, since = self.round, time.monotonic()
+            while self.round == this:
+                self.cond.wait(min(5, REST_WAIT))
+                if ABORT.is_set():
+                    sys.exit("hindsight: stopped with the other lanes")
+                if self.round == this and time.monotonic() - since > REST_WAIT:
+                    log(f"no checkpoint this round: {', '.join(sorted(self.active - self.waiting))} not at rest after {REST_WAIT} s")
+                    self.next_round(take=False)
+
+    def next_round(self, take):
+        """With the lock held: take the checkpoint, or skip it, and let the waiting lanes go on."""
+        if take:
+            self.take()
+        self.waiting.clear()
+        self.last, self.round = time.monotonic(), self.round + 1
+        self.cond.notify_all()
+
+
 def save(server, gateway, pages, replay, progress):
     """Write the store to the checkpoint: the swap is two renames, and a run that finds only checkpoint.old uses it."""
     replay.tally()
@@ -850,7 +931,8 @@ def save(server, gateway, pages, replay, progress):
         s = server.stats(bank)
         info["stats"] = {k: s[k] for k in ("nodes_by_fact_type", "total_documents", "total_links")}
     progress["pages"] = pages.state()
-    progress["counts"] = dict(replay.counts)
+    with replay.lock:
+        progress["counts"] = dict(replay.counts)
     tmp, old = WORK / "checkpoint.tmp", WORK / "checkpoint.old"
     shutil.rmtree(tmp, ignore_errors=True)
     tmp.mkdir(parents=True)
@@ -995,6 +1077,7 @@ def manifest(progress, skipped, found, tables):
 
 
 def interrupted(signum, frame):
+    ABORT.set()
     sys.exit("hindsight: stopped; run again to resume from the last checkpoint")
 
 
@@ -1027,7 +1110,7 @@ def main():
         if resuming:
             restore_database(CHECKPOINT / "hindsight.zip")
         elif sql("SELECT to_regclass('public.banks') AS t")[0]["t"] and sql("SELECT count(*) AS n FROM banks")[0]["n"]:
-            sys.exit("hindsight: the database already holds banks from an earlier run: `docker-compose -p bilbo-retrieval-hindsight down -v`, then run again")
+            sys.exit("hindsight: the database already holds banks from an earlier run: take the build's Compose project down (`docker-compose -p bilbo-retrieval-hindsight down -v`, or BILBO_EVAL_PROJECT's), then run again")
         server.start()
         if resuming:
             verify_counts(server, progress)
@@ -1036,26 +1119,58 @@ def main():
         replay = Replay(server, gateway, Pages(server, lambda bank: replay.quiet(bank), PAGES, progress["pages"]), progress)
         pages = replay.pages
         plan, skipped = sessions()
-        state = {"started": time.monotonic()}
+        lanes = {}
+        for start, repo, path in plan:
+            lanes.setdefault(repo, []).append((start, repo, path))
+        done, state, lock, errors = set(progress["done"]), {"started": time.monotonic()}, threading.Lock(), []
 
-        def idle(session, open_now):
-            progress["done"].append(session.name)
-            progress["sessions"][session.name] = {"sid": session.sid, "bank": session.bank, "stops": session.stops, "kept": session.kept}
-            progress["last_session_time"] = max(progress.get("last_session_time", ""), iso(session.times[-1]))
-            if open_now == 0:
-                replay.quiet_all()
-                gateway.check()
-                progress["ingest_seconds"] += time.monotonic() - state["started"]
-                save(server, gateway, pages, replay, progress)
-                state["started"] = time.monotonic()
-                log(f"{len(progress['done'])}/{len(plan)} sessions: {replay.counts['stops']} Stops, {gateway.counts['calls']} LLM calls so far")
+        def checkpoint():
+            replay.quiet_all()
+            gateway.check()
+            progress["ingest_seconds"] += time.monotonic() - state["started"]
+            save(server, gateway, pages, replay, progress)
+            state["started"] = time.monotonic()
+            log(f"checkpoint after {len(progress['done'])}/{len(plan)} sessions")
 
-        timeline(plan, set(progress["done"]), replay, idle)
-        pages.finish()
+        rest = Rest(lanes, checkpoint)
+
+        def lane(repo, items):
+            def idle(session, open_now):
+                with lock:
+                    progress["done"].append(session.name)
+                    progress["sessions"][session.name] = {"sid": session.sid, "bank": session.bank, "stops": session.stops, "kept": session.kept}
+                    progress["last_session_time"] = max(progress.get("last_session_time", ""), iso(session.times[-1]))
+                if open_now == 0:
+                    replay.quiet(session.bank)
+                    replay.check()
+                    log(f"{len(progress['done'])}/{len(plan)} sessions: {replay.counts['stops']} Stops, {gateway.counts['calls']} LLM calls so far ({repo} at rest)")
+                    rest.rest(repo)
+
+            try:
+                timeline(items, done, replay, idle)
+                pages.finish(replay.banks[repo])
+                rest.rest(repo, finished=True)
+            except BaseException as e:  # sys.exit in a thread ends only that thread: the main thread raises it
+                errors.append(e)
+                ABORT.set()
+
+        # Every bank is set up before the lanes start, one at a time: deepen creates five pages, each embedding its query
+        # under the integration's 15 s client deadline, which lanes busy on the one embedder can push past. A bank's
+        # setup touches only that bank and keeps its first session's time, so the order changes nothing in the store.
+        for repo, items in lanes.items():
+            replay.setup(repo, items[0][0])
+        threads = [threading.Thread(target=lane, args=(repo, items), name=repo, daemon=True) for repo, items in lanes.items()]
+        for t in threads:
+            t.start()
+        while any(t.is_alive() for t in threads):
+            for t in threads:
+                t.join(1)
+        if errors:
+            raise next((e for e in errors if str(getattr(e, "code", e)) != "hindsight: stopped with the other lanes"), errors[0])
         replay.quiet_all()
         gateway.check()
         progress["ingest_seconds"] += time.monotonic() - state["started"]
-        save(server, gateway, pages, replay, progress)  # a resume from here runs finish() as a no-op
+        save(server, gateway, pages, replay, progress)  # a resume from here finds every lane done and its pages refreshed
         found = collect(server, progress)
         shutil.rmtree(out, ignore_errors=True)
         out.mkdir()
@@ -1087,6 +1202,9 @@ class Dry:
 
     def check(self):
         pass
+
+    def add(self, key, n=1):
+        self.counts[key] += n
 
     def begin(self, session):
         session.file = None
