@@ -6,8 +6,8 @@ project's sessions, since every store is built from all of them.
 
 ## Files
 
-- `questions.jsonl`: the 115 questions, one per line. Committing it freezes it.
-- `dropped.jsonl`: the 451 questions that failed a check or the audit, with the reason.
+- `questions.jsonl`: the 118 questions, one per line. Committing it freezes it.
+- `dropped.jsonl`: the 462 questions that failed a check or the audit, with the reason.
 - `classes.json`: the classes, with the weight and the target count of each.
 
 ## The classes
@@ -40,23 +40,25 @@ project's sessions hold.
 | `overview` | 61 | 21 | 3 | 3 | 6 | 5 | 4 |
 | `status` | 29 | 18 | 4 | 0 | 4 | 4 | 6 |
 | `decision` | 38 | 14 | 3 | 1 | 7 | 0 | 3 |
-| `rules` | 38 | 9 | 3 | 0 | 0 | 5 | 1 |
+| `rules` | 38 | 12 | 3 | 0 | 1 | 7 | 1 |
 | `procedure` | 24 | 4 | 0 | 0 | 1 | 2 | 1 |
 | `fact` | 27 | 17 | 0 | 2 | 7 | 6 | 2 |
 | `refind` | 8 | 8 | 1 | 1 | 2 | 2 | 2 |
-| answerable | 225 | 91 | 14 | 7 | 27 | 24 | 19 |
+| answerable | 225 | 94 | 14 | 7 | 28 | 26 | 19 |
 | no answer | 25 | 24 | 5 | 5 | 5 | 4 | 5 |
-| all | 250 | 115 | 19 | 12 | 32 | 28 | 24 |
+| all | 250 | 118 | 19 | 12 | 33 | 30 | 24 |
 
-- The headline covers `overview`, `status`, `decision` and `fact`: 70 questions, weighted 85, 41, 54 and 38.
-- `rules` (9), `procedure` (4) and `refind` (8) have fewer than 10 questions each and are reported on their own.
+- The headline covers `overview`, `status`, `decision`, `rules` and `fact`: 82 questions, weighted 85, 41, 54, 54
+  and 38.
+- `procedure` (4) and `refind` (8) have fewer than 10 questions each and are reported on their own.
 - The no-answer questions look like `fact` (14), `decision` (8), `procedure` (1) and `refind` (1) questions.
 - Every question is drafted; none is harvested (below).
 
 The classes came up short because the audit (below) failed every question whose answer the project's files hold,
 and much of what a session settles ends up in a file: a decision's reason in a code comment, a rule in `AGENTS.md`, a
 procedure in the README. Besides `refind` (8 of 8), `status` and `fact` kept the most of their targets (62% and 63%),
-`procedure` and `rules` the least (17% and 24%). readaloud ships no `decision` question, and kimi-cli no `status`, `rules` or `procedure` question.
+`procedure` and `rules` the least (17% and 32%). readaloud ships no `decision` question, and kimi-cli no `status`,
+`rules` or `procedure` question.
 
 ## A question
 
@@ -124,17 +126,19 @@ A drop found by the audit has a `detail` that starts with `audit:`.
 | Reason | At mining | At the audit | All |
 |---|---:|---:|---:|
 | `in_repo` | 45 | 116 | 161 |
-| `unsupported` | 144 | 19 | 163 |
+| `unsupported` | 152 | 19 | 171 |
 | `not_current` | 24 | 24 | 48 |
-| `not_unique` | 23 | 18 | 41 |
+| `not_unique` | 25 | 19 | 44 |
 | `guessable` | 6 | 28 | 34 |
 | `duplicate` | 1 | 3 | 4 |
-| all | 243 | 208 | 451 |
+| all | 253 | 209 | 462 |
 
 ## How the questions were made
 
-One script made every model call, with the prompts below, frozen before mining began. Claude Opus 5.5 read, drafted
-and wrote; gpt-6.1-sol, from another model family, checked; Claude Opus 5.5 reviewers with tools audited.
+In the first round, one script made every model call, with the prompts below, frozen before mining began. Claude
+Opus 5.5 read, drafted and wrote; gpt-6.1-sol, from another model family, checked; Claude Opus 5.5 reviewers with
+tools audited. A second round for rules and procedure (the last subsection) added agents with tools around the same
+frozen writers and checks.
 
 1. **Views.** Each session is shown with the line numbers of its raw file. A long payload shows its head and its
    tail, and an overflow call reads each cut middle whole, so a fact that lives only there is kept.
@@ -184,6 +188,33 @@ unclear, or a drafted question already rested on its answer.
 The audit is the gate because the checks alone were not enough. In three pilot rounds on iptvnator, the reviewers
 failed 50%, 29% and 40% of the questions that had passed every check: answers in the files, changes made in git,
 facts their lines did not state.
+
+### A second round for rules and procedure
+
+After the first round, rules had 9 questions and procedure 4, both under the floor of 10 and out of the headline. A
+second round tried to fill them.
+
+- **The probe.** Before any drafting, Claude Sonnet 5.5 workers judged whether each candidate item of the ledgers
+  could carry a `rules` or `procedure` question that passes the audit. A calibration failed first: on 33 groups the
+  first audit had ruled on, two workers agreed with it 55% of the time, against a gate of 85%, and their judgment
+  calls killed 12 of the 13 groups that shipped. So the probe kills only on evidence (such as a file that states it,
+  or a later line or commit that changed it) and forwards every judgment call. On the calibration groups, that rule
+  kills none of the 13.
+  Then 12 workers judged 426 items of the five projects and forwarded 95.
+- **The check of the forwards.** Three Claude Opus 5.5 reviewers ruled 174 rows: the 95 forwards and 79 kills (51
+  borderline, 24 random, 4 picked by hand). They upheld 17 forwards and 76 kills. The 3 kills they overturned stayed
+  kills, for another reason. 14 rules groups survived, and no procedure group.
+- **Drafting and checks.** Claude Sonnet 5.5 drafters wrote each group's facts and subject. The frozen writer prompts
+  and gpt-6.1-sol then ran as in the first round: two questions had their evidence repointed to the lines sol found,
+  and four got their one repair call.
+- **The audit.** Two Claude Opus 5.5 auditors judged each question on their own. An adjudicator ruled where they
+  differed: the two questions they split on, and the fixes of a third.
+- **The funnel.** 14 drafted, 4 passed the checks, 3 passed the audit: linear-cycle-drain-172, readaloud-156 and
+  readaloud-158. Rules goes from 9 to 12 and enters the headline. Of the 11 drops, 10 came at mining and 1 at the audit.
+- **Procedure.** No procedure question came out of the round, and procedure stays at 4. gpt-6-astra, from another
+  model family, also read the sessions for flows, without the ledgers. A first pass checked 30 and failed them all.
+  An exhaustive second pass grouped 747 command shapes and 557 developer asks and checked 60. It left one candidate,
+  a one-time setup with a weak subject, which was not drafted or audited.
 
 ## The prompts
 
@@ -1689,6 +1720,535 @@ One JSON object: `fixed`, the full revised `facts` and `stale` lists (ids `f1`, 
 
 </details>
 
+### The second round's briefs
+
+The instructions the round's agents followed, word for word. Their paths are relative to the round's work folder,
+not to this repository.
+
+<details>
+<summary><code>BRIEF-probe-v2.md</code>: tells a probe worker to kill an item only on evidence and forward every judgment call</summary>
+
+````text
+# Brief: probe the supply of rules and procedure questions (v2)
+
+You are a probe worker (Claude Sonnet 5.5). The probe runs before any new question is drafted. It sorts each candidate
+item of a project's ledger into two piles:
+- **Killed:** items that hard evidence shows could not carry a `rules` or `procedure` question that passes the audit.
+- **Forwarded:** everything else, which goes to an Opus reviewer with your notes on what to look at.
+
+**You kill only on evidence: a file line, a later line or commit, a committed question, a chain head.** Every
+judgment call (is it guessable, is it settled, does it fit the class) is the reviewer's: you record it as a flag and
+forward the item. You draft nothing and change nothing; you write one row per item.
+
+The folder that holds this brief is the work folder (below, `./`); every path here is relative to it. The message
+that started you gives your letter. Your row in `plan-rp/planner-assign.md` names your input, your project's folder
+and clone, the committed questions file, and the folders you must never read.
+
+## What a question in these classes needs
+
+- `rules`: what to watch out for, how things are done in the project. Its facts are the rule and when it applies.
+  - Rules include a project convention, a gotcha, and a quirk of a tool as this project's setup meets it.
+  - They include a lesson from a bug or an incident (what broke, why, what to check next time), and a known failure
+    to ignore (errors that were already there).
+  - They include a recipe for an agent's tools that the sessions worked out.
+- `procedure`: how to do something in the project. Its facts are the steps, in order, with their commands: two or
+  more. A flow the sessions ran more than once is a procedure, as is a one-time setup whose own values (a remote, a
+  host, a path) a later question can name.
+
+The audit passes a question only when all of these hold:
+
+1. **Supported:** session lines state each fact.
+2. **Not in the files:** the project's files at its end trees do not state its facts, or all of them but what is
+   generic, guessable or not asked.
+   - Files are the code and its comments, configs, tests, and docs: ADRs, plans, architecture notes, and the last
+     session's own docs even on an unmerged branch.
+   - The agent instruction files count too (`CLAUDE.md`, `AGENTS.md`, `CONTRIBUTING*`, `.claude/`, `.cursor/rules/`,
+     `.agents/skills/*/SKILL.md`), and so do READMEs, changelogs and vendored specs.
+   - A file that holds only the names, and not the rule, the reason, the order of the steps or what was tried, does
+     not count. Another repository's files are not this project's files. The git log is not a file.
+3. **Not guessable, fact by fact:** a developer who knows the stack, with no memory of these sessions, would not give
+   most of its facts in substance. A question keeps its value when one of its facts is session-only:
+   - a name, a value, a path or a host the project chose;
+   - the cause of a failure, or an incident;
+   - how a tool behaved in this setup.
+
+   It fails when every substantive part is stock knowledge: a tool's documented behaviour or flags, a fix the tool's
+   own error or help text prescribes, or the usual practice for the situation.
+4. **Current:** no later session, and no commit made between sessions, changed it before the end of the sessions.
+5. **Unique:** the sessions hold no second fair answer, such as another way they did the same thing.
+6. **Worth asking:** a later developer would want to know it.
+   - Neither the developer's own words nor repetition is required: a quirk observed once and recorded counts.
+   - What does not count:
+     - a move incidental to one task that nobody would ask about again;
+     - a claim nothing acted on (a passing reviewer's note);
+     - a tool's, plugin's or skill's own printed instructions that the sessions only followed, or did otherwise.
+   - Running another repository's tools or gates as part of this project's own workflow is this project's procedure.
+7. **Askable:** a developer can ask it without stating the answer, in words a later session would use for the topic.
+
+## Inputs
+
+- **The ledger:** `<folder>/ledger.jsonl`, one item per line. Its fields: `id`, `kind`, `statement`, `reason`,
+  `steps`, `value`, `standing`, `evidence` (`session`, `lines`, `quote`), `first_seen`, `last_seen`, `supersedes`,
+  `superseded_by`, `workstream`. From the project's folder read only `ledger.jsonl`, `workstreams.jsonl`,
+  `trees.json` and `view/`.
+- **The views:**
+  - Print a session's lines with `python3 -I tools/render.py show <repo> <session> <first> <last>`. Every line
+    starts with `L<raw line> <UTC time> <ROLE>:`.
+  - The same views are in `<folder>/view/<first 8 characters of the session>.txt`. Read them only by line range,
+    never a whole session.
+  - Search them only with `grep -a`: the shell's `grep` skips a file it takes for binary, and one view holds a NUL
+    byte.
+- **The clone:** `repos/<owner>__<repo>.git`, a bare clone. Use read-only git only: `grep`, `show`, `log`,
+  `ls-tree`. It runs past the end of the sessions, so name trees by sha, never `HEAD`, `main`, `master` or a branch.
+- **The end trees** of an item:
+  `python3 -I -c "import sys; sys.path.insert(0, 'tools'); import render; print(render.question_trees('<owner>__<repo>', ['<session id>']))"`,
+  with the full session ids of the item's evidence.
+- **Bundles:**
+  - When `probe-rp/bundles/<repo>/<item>.md` exists, read it first. In calibration, read
+    `probe-rp/bundles/cal/<repo>/<item>.md` instead.
+  - A bundle holds:
+    1. the item and its chain;
+    2. the evidence with 8 lines either side;
+    3. the end trees;
+    4. the `git grep` hits at every end tree;
+    5. the later view lines that name the item's terms;
+    6. the git log after the item;
+    7. the committed questions and drops that cite the same lines (absent in calibration).
+  - A bundle saves commands, not reading. Its grep hits are on the item's own names only, so read the component's
+    code and the instruction files yourself.
+  - Without a bundle, run the commands in the steps below.
+
+## Per item
+
+1. **The item.** Read it in the ledger. When `superseded_by` is not empty, follow the chain to its head, the item
+   that nothing replaces. If the head is in your input, write `superseded` with `head`: a kill. Otherwise judge the
+   head in this row and set `head`.
+2. **The best question.**
+   - Read the evidence lines with some lines around them, and look at the item's neighbours: the other items of its
+     workstream, its chain, and later lines that repeat it.
+   - Ask what the best `rules` or `procedure` question is that the item could carry, alone or with those neighbours,
+     and set `class_fit`.
+   - An item whose `source` is a regex pick (`event_cause`, `decision_way`, `manual_steps`, `fact_cue`, `event_cue`,
+     `state_cue`) is a pure record when it holds nothing to watch out for and no way of doing something: a change
+     made, a value, a state of the work. Write `not_class` for it: a kill.
+   - Any other item, and any regex pick you are unsure of, goes on with a `class_fit` flag when the fit is doubtful.
+3. **Overlap** (probe only, not calibration). Search the committed questions file for the item's session and lines
+   and for its distinctive terms, and read section 7 of its bundle. When a committed question already holds the
+   fact, write `overlap` with its id: a kill.
+4. **Files.**
+   - At every end tree, grep the item's names, values and distinctive phrases:
+     `git -C repos/<owner>__<repo>.git grep -n -I -i -F -e '<term>' <sha> --`.
+   - Read the hits in context: `git -C ... show <sha>:<path> | sed -n '<a>,<b>p'`.
+   - Read the component's code and comments, and every instruction file of criterion 2 that the tree has, whatever
+     their hits. List them with `git -C ... ls-tree -r --name-only <sha>`.
+   - Read a one-line JSON spec with `python3 -I -c 'import json, sys; ...'`, never by eye.
+   - When a file line states the item's core fact (the rule, the reason, the steps), write `in_files` with that line
+     as `answer`: a kill.
+   - When the files state part of it and you judge the rest generic, still write `in_files`, but with `borderline`
+     `true`, and name the leftover in `note`.
+5. **Current.**
+   - Grep the later view lines (`grep -a -n -i -F '<term>' <folder>/view/*.txt`, keeping hits whose time is after
+     the item's `last_seen`) and read them.
+   - At each end tree, run `git -C ... log --format='%h %ad %s' --date=iso <sha> --since='<last_seen>' -- <paths>`
+     and read the diffs that touch the rule or the steps (`git -C ... show <commit> -- <path>`).
+   - When a later line or a commit changes the item's answer, write `changed` with `changed_by` set to
+     `<session 8>:L<line>` or `commit <sha 8>`: a kill.
+   - A wrong later claim that nothing corrects is not a change; flag it as `second_answer`.
+6. **Judgment flags.** For each of these that you doubt, add a flag with one line of why, then forward the item:
+   - `generic` (criterion 3): name the facts you think are stock and the session-only fact if there is one;
+   - `second_answer` (criterion 5): give the other answer's session and line;
+   - `one_off` (criterion 6): an incidental move or a claim nothing acted on;
+   - `third_party` (criterion 6): a tool's own printed steps;
+   - `class_fit` (step 2);
+   - `askable` (criterion 7).
+7. **Forward.** Write `survive`, with:
+   - `flags`;
+   - `residue`: one sentence on what only the sessions hold;
+   - `group`: a key shared by the items one question would rest on, `<repo>/<a few words in kebab case>`;
+   - `subject`: a span of 2 to 15 words from one line of the developer's turns (`USER` lines in the view), copied
+     exactly, that names the topic. It must not hold an exact value of the answer (a flag, a command, a path, a
+     number) or the project's name, and must not state the rule or the steps. It may be in the developer's language.
+     When only the agent's words name the topic, take them and set `"source": "assistant"`. When nothing does, write
+     `null` and add an `askable` flag.
+
+- **Order:** the first kill that applies, in step order, is the row's verdict; note any other in `note`.
+- **When unsure whether evidence kills, forward:** a wrong forward costs one review, a wrong kill loses the item.
+- **Time:** about 5 minutes an item. Past 8 minutes, forward it with the flags you have.
+
+## The row
+
+One JSON object per line in `probe-rp/verdicts-<letter>.jsonl`, appended as soon as the item is judged. On a restart,
+skip the items already there.
+
+| field | value |
+|---|---|
+| `letter` | your letter |
+| `repo` | the project's short name (`readaloud`, `port-cli`, ...) |
+| `item` | the item's id; in calibration the group's id (`cal07`) |
+| `items` | the ledger ids judged: `[item]`, or the group's items |
+| `kind`, `source` | from your input; in calibration the main item's kind and `"calibration"` |
+| `class_fit` | `rules`, `procedure` or `none` |
+| `verdict` | `survive` (forwarded), or a kill: `in_files`, `changed`, `overlap`, `superseded`, `not_class` |
+| `borderline` | `true` for a kill you are unsure of, else `false` |
+| `flags` | for `survive`: `[{"criterion": "generic", "why": "..."}]`, empty when none; else `[]` |
+| `answer` | `{"file": "<path>", "line": <n>, "tree": "<sha 8>"}` for `in_files`, else `null` |
+| `changed_by` | `"<session 8>:L<n>"` or `"commit <sha 8>"` for `changed`, else `null` |
+| `other_answer` | `"<session 8>:L<n>"` when a `second_answer` flag is set, else `null` |
+| `overlaps` | the committed question's id for `overlap`, else `null` |
+| `head` | the chain head's id when the item is superseded, else `null` |
+| `group` | for `survive`, else `null` |
+| `residue` | for `survive`, else `null` |
+| `subject` | `{"session": "<full id>", "line": <n>, "quote": "...", "source": "user"}` or `null` |
+| `note` | at most 300 characters: why, and any other kill that also applies |
+
+## Calibration (workers A and B)
+
+The calibration checks the kills before the probe runs on new items: every kill must be right, and no question the
+audit passed may be killed.
+
+- **Input:** A takes groups `cal01` to `cal17` of `plan-rp/planner-calibration.jsonl`, B takes `cal18` to `cal33`.
+- **The unit:** a group is the set of ledger items that one question rested on. Judge it as one `rules` or
+  `procedure` question built on all its items, and write one row per group.
+- **Steps:** 1, 2 and 4 to 7 apply to the whole group; skip step 3. A group is never a regex pick.
+- **Bundles:** read only `probe-rp/bundles/cal/<repo>/<item>.md`, never `probe-rp/bundles/<repo>/`.
+- **Never read** anything that carries an earlier verdict, besides the list under Rules:
+  - `review/`, any `AUDIT.md` and any `final/`;
+  - any `dropped.jsonl` or `questions.jsonl`, the committed ones included;
+  - `spares.jsonl`, `selected.jsonl`, `drafts.jsonl`, `verdicts/` and any `rulings*` file;
+  - `LEAD-LOG*`, `PROGRESS*`, every `DONE-*` and every `PLAN*.md`;
+  - `plan-rp/planner-calibration-key.jsonl`, `plan-rp/planner-funnel.jsonl` and `plan-rp/P1-diagnosis.md`;
+  - the other calibration worker's files.
+
+## Rules
+
+- Do not spawn agents, forks or teammates. Do not use SendMessage or ListAgents.
+- No LLM calls of any kind: no `tools/mine.py` stage, no proxy, no `codex`, no `claude`. `tools/render.py show` and
+  importing `render` for `question_trees` are fine.
+- Write only `probe-rp/verdicts-<letter>.jsonl`, `probe-rp/progress-<letter>.txt` and your DONE file. Name any helper
+  `probe-<letter>-*`, under `probe-rp/` or the scratchpad: other agents share the scratchpad.
+- Never edit `tools/`, a project folder, `review/`, `plan-rp/`, the bundles or another worker's files. Make no git
+  writes. Make no commits.
+- Never read the outputs of the earlier mining and audit: every file in the calibration list above. Two exceptions,
+  outside calibration only: the committed questions file in step 3, and section 7 of a bundle. The same holds for
+  the `BRIEF-*` files other than this one, the `FIXES-*` files, `llm-calls.jsonl`, other workers' files in `probe-rp/`,
+  and `plan-rp/` except `planner-assign.md` and your input. Never read the folders `planner-assign.md` lists under
+  "never read". Use no notes or memory tool.
+- Read sessions only by line range.
+
+## Progress and finish
+
+- **Progress:** at least every 30 minutes, append one line to `probe-rp/progress-<letter>.txt`:
+  `<UTC time> <done>/<total> last=<item>`.
+- **When every item has its row,** write `DONE-probe-<letter>.md` in `./` (at most 12 lines): rows per `verdict` and
+  per `class_fit`, the forwarded count with the flags most used, the borderline kills, any item not judged and why,
+  the minutes taken, and anything odd.
+- Then stop with a final message of at most 5 lines.
+````
+
+</details>
+
+<details>
+<summary><code>BRIEF-probe-review.md</code>: tells an Opus reviewer to rule on the probe's forwards and kills</summary>
+
+````text
+# Brief: P3, review the probe's verdicts
+
+You are a probe reviewer (Claude Opus 5.5), X or Y; the message that started you gives your letter. The probe workers
+(Sonnet 5.5) judged every candidate item of the rules and procedure supply against the audit's standard. You rule on
+the verdicts that decide the yield ceiling, so the lead can tell the user how many questions a new round could give.
+You draft nothing.
+
+The folder that holds this brief is the work folder (below, `./`); paths are relative to it.
+
+## Read first
+
+- `./BRIEF-probe-v2.md`: the standard (criteria 1 to 7), the inputs, the steps and the row format. The probe kills
+  only on evidence and forwards every judgment call to you as a `survive` row with `flags`, so most of your rows are
+  forwards: rule on each flag, then on everything else. Apply the standard as the full audit applied it, with these
+  settled points:
+  - **Files:** code comments, configs, tests, docs, the agent instruction files, vendored specs, and the last
+    session's own docs at its commit (even on an unmerged branch) are files. The git log is not.
+  - **Current and unique:** commits made between sessions count for both.
+  - **Guessable:** judge substance, not wording, and fact by fact. One session-only fact the question asks for (a
+    value, a cause, an incident, a tool's behaviour in this setup) keeps it.
+  - **Worth asking:** lessons from bugs and incidents, known pre-existing failures, observed tool quirks, agent-tool
+    recipes, one-time setups whose values a prompt can pin, and the project's use of another repo's tools all passed
+    the audit.
+  - **A wrong later claim** that nothing corrects is a second answer, not a change.
+- `./plan-rp/planner-assign.md`: the folders, the clones, the committed questions file and the folders you must never
+  read.
+
+## Your rows
+
+`plan-rp/planner-p3-split.py` drew them into `probe-rp/p3-<letter>.jsonl`. Each line is a probe row plus `p3_reason`.
+
+- **Every `survive`.**
+- **Every borderline kill**, of any verdict but `not_class` and `superseded`. That is wider than borderline
+  `in_files` alone, since a borderline `generic` or `changed` decides the ceiling as much.
+- **Seeded random kills** (seed 20261013): with `--kills 24`, 16 from rule and procedure items and 8 from the regex
+  picks, as far as they exist.
+- **The split:** whole repos go to the reviewer with fewer rows, the largest repo first. When that leaves one reviewer
+  more than 30% above the other, the repos are split by `group` instead, so a group's items stay together. A third
+  reviewer (Z) is added with `--reviewers X,Y,Z` when the rows exceed about 35 a reviewer.
+
+## Per row
+
+1. **Read** the probe row, its bundle (`probe-rp/bundles/<repo>/<item>.md`) and the ledger item, and its chain head
+   when it has one.
+2. **A `survive` (a forward):** rule on each of its `flags` first, then re-run every other criterion yourself, with
+   the commands of `BRIEF-probe-v2.md`.
+   - The files at every end tree, by sha, read beyond the bundle's grep hits: the component's code and comments, and
+     every instruction file and doc the tree holds.
+   - Guessable in substance; current over later sessions and the git log; unique; settled; askable.
+   - **Class fit:** a `procedure` group needs two distinct steps or more; with fewer, it is a `rules` candidate or
+     nothing.
+   - **Overlap:** search the committed questions file. A committed question that holds the fact makes it `overlap`.
+   - **Subject:** the quote is found on that line, names the topic, holds no exact value of the answer and no project
+     name, and does not state the rule or the steps. Replace a bad subject with a better span from the sessions if one
+     exists, or write `null`.
+   - **Group:** give the final `group` key. Items that one question would rest on share it, even when different
+     workers named them. If `p3-<other letter>.jsonl` holds rows of your repo, read its survivors and reuse their key
+     for the same question.
+3. **A kill:** re-run the check that killed it, and judge whether the probe's evidence holds (the file and line
+   state the fact; the later line or commit changes it; the other answer is fair). When you overturn it, run the other
+   criteria too, as for a `survive`.
+4. **Rule:** `uphold` keeps the probe's verdict; `overturn` replaces it with yours. A fix that changes only the group,
+   the subject or the class fit is an `uphold`, with the new values.
+
+## The row
+
+One JSON object per line in `probe-rp/review-<letter>.jsonl`, appended as soon as the row is ruled. On a restart, skip
+the rows already there.
+
+| field | value |
+|---|---|
+| `reviewer` | your letter |
+| `repo`, `item`, `items` | from the probe row |
+| `probe_letter`, `probe_verdict`, `p3_reason` | the probe row's `letter`, `verdict` and `p3_reason` |
+| `ruling` | `uphold` or `overturn` |
+| `verdict` | the final verdict: `survive`, or a kill: `in_files`, `changed`, `overlap`, `superseded`, `not_class`, `generic`, `second_answer`, `one_off`, `third_party`, `askable` (the judgment kills are yours alone) |
+| `class_fit` | `rules`, `procedure` or `none` |
+| `answer`, `changed_by`, `other_answer`, `overlaps` | as in the probe row, for the final verdict |
+| `group` | the final key for a final `survive`, else `null` |
+| `steps` | for a `procedure` survivor, the number of distinct steps its group holds, else `null` |
+| `subject` | the final subject (`{"session", "line", "quote", "source"}`) or `null` |
+| `subject_ok` | `true` when a usable subject exists for a survivor, else `false` |
+| `residue` | for a final `survive`: what only the sessions hold, one sentence |
+| `note` | at most 300 characters: why, above all for an overturn |
+
+The ceiling table per class and repo is the lead's to build from these rows.
+
+## Rules
+
+- Do not spawn agents, forks or teammates. Do not use SendMessage or ListAgents.
+- No LLM calls of any kind: no `tools/mine.py` stage, no proxy, no `codex`, no `claude`.
+- Write only `probe-rp/review-<letter>.jsonl`, `probe-rp/progress-review-<letter>.txt` and your DONE file. Name any
+  helper `probe-review-<letter>-*`: other agents share the scratchpad.
+- Never edit `tools/`, a project folder, `review/`, `plan-rp/`, the bundles or the probe's files. Make no git writes.
+  Make no commits.
+- You may read the earlier audit's files (`review/`, the `AUDIT.md` files, the committed `dropped.jsonl`) to keep your
+  rulings consistent with it. Never read `../l3-conversations/l3v2/` or `../l3-conversations/recall-query-study/`.
+  Use no notes or memory tool.
+- Read sessions only by line range, search views only with `grep -a`, and name trees only by sha.
+
+## Progress and finish
+
+- **Progress:** at least every 30 minutes, append one line to `probe-rp/progress-review-<letter>.txt`:
+  `<UTC time> <done>/<total> last=<item>`.
+- **When every row has its ruling,** write `DONE-probe-review-<letter>.md` in `./` (at most 12 lines): rows ruled,
+  upheld and overturned by probe verdict, and the final survivors as groups per class and repo. Add the patterns
+  behind the overturns (for example, the probe too lenient on guessable) and anything odd.
+- Then stop with a final message of at most 5 lines.
+````
+
+</details>
+
+<details>
+<summary><code>BRIEF-draft-rp.md</code>: tells a drafter to write the facts and subject of each surviving rules group</summary>
+
+````text
+# Brief: draft the rows of the rules round
+
+You are a drafter (Claude Sonnet 5.5). The probe and its reviewers left a set of groups: ledger items on which one
+`rules` question could pass the audit. You turn each group into one candidate row. Afterwards a script issues the ids,
+the frozen prompt and query writers write the row's `prompt` and `query` without seeing your facts, and sol and an
+Opus audit check it. You write no prompt and no query.
+
+The folder that holds this brief is the work folder (below, `./`); every path here is relative to it. The message
+that started you gives your letter.
+
+| letter | repos | ledger folder | your output |
+|---|---|---|---|
+| U | readaloud | `ngngardner__readaloud/` | `ngngardner__readaloud-rp/drafts-rp.jsonl` |
+| U | linear-cycle-drain | `ababushkin__linear-cycle-drain/` | `ababushkin__linear-cycle-drain-rp/drafts-rp.jsonl` |
+| V | iptvnator | `4gray__iptvnator-final/` | `4gray__iptvnator-rp/drafts-rp.jsonl` |
+| V | port-cli | `port-experimental__port-cli/` | `port-experimental__port-cli-rp/drafts-rp.jsonl` |
+
+## Your groups
+
+- The groups are the rows with `"verdict": "survive"` in `probe-rp/review-X.jsonl`, `-Y.jsonl` and `-Z.jsonl` whose
+  `repo` is yours. Rows with the same `group` make one question: draft one row per group.
+- Each review row gives:
+  - `items`: the ledger ids;
+  - `residue`: what only the sessions hold, which is the answer your facts must carry;
+  - `subject`;
+  - `note`: what the files already hold, what a committed question already asks, and what the question must
+    therefore avoid.
+
+## What you read, and nothing else
+
+- The review rows above, and the probe rows of the same items in `probe-rp/verdicts-*.jsonl`.
+- The bundles `probe-rp/bundles/<repo>/<item>.md`.
+- The ledger, `<ledger folder>/ledger.jsonl`: each item's statement, its evidence (session, lines, quote), and its
+  chain (`supersedes`, `superseded_by`).
+- The sessions:
+  - Print lines with `python3 -I tools/render.py show <repo> <session> <first> <last>`. Every line starts with
+    `L<raw line> <UTC time> <ROLE>:`, and that `L<n>` is the line number evidence uses.
+  - Or read `<ledger folder>/view/<first 8 characters of the session>.txt` by line range, searching it only with
+    `grep -a`.
+  - Never read a whole session.
+
+## A rules question
+
+`rules` asks what to watch out for, or how things are done in the project. Its facts are the rule and when it
+applies: what to do or avoid, and the session-only reason or circumstance behind it. One to three facts. The question
+must stand on the review row's residue.
+
+## The draft row
+
+One JSON object per line in your output file, one per group:
+
+```json
+{
+  "cand": "rp-<the part of the group key after the slash>",
+  "group": "<repo>/<...>",
+  "class": "rules",
+  "items": ["<ledger id>", "..."],
+  "facts": [
+    {"text": "...", "keys": ["..."],
+     "evidence": [{"session": "<full session id>", "lines": [<first>, <last>], "quote": "..."}]}
+  ],
+  "stale": [
+    {"text": "...", "replaces": "f1",
+     "evidence": [{"session": "<full session id>", "lines": [<first>, <last>], "quote": "..."}]}
+  ],
+  "subject": {"session": "<full session id>", "line": <n>, "quote": "...", "source": "user"},
+  "note": "..."
+}
+```
+
+- **Facts:** listed in order, f1 first. `stale` may be empty.
+- **`note`:** one or two sentences: what the question asks, and which fact answers what. When you replace the
+  subject or leave a part of the residue out, add why.
+
+## Facts
+
+- **One claim each.** Every fact is required of an answer, so no fact may be optional or decorative.
+- **Only what its own evidence states.** These rows failed before because a fact said more than its quote did. If the
+  line says "in some attempts", the fact says "in some attempts", not "always". If a claim needs a second line, add a
+  second evidence entry. If no line states a claim, leave the claim out.
+- **The rule first,** then when it applies or why: the cause, the circumstance, the incident.
+- **Leave out what the files hold** (the review `note` names them) and what any developer would say anyway. The
+  question rests on the session-only part.
+- **True at the end of the sessions.** When the chain or a later line changed a value, the fact takes the latest one,
+  and the older one becomes a `stale` item. Do not pin a number that kept changing, such as a size or a count. State
+  the fact without it, or with the latest value and its line.
+- **No fact a committed question already holds:** the review `note` names any such question.
+
+## Keys
+
+- A key is an exact string from the fact's evidence lines that a right answer must contain: an error message, a path,
+  a flag, a setting, a value.
+- Never the topic's name. Zero to two per fact.
+- A key may not appear in the subject.
+
+## Evidence
+
+- `session`: the full session id, as the ledger gives it.
+- `lines`: `[first, last]`, raw line numbers (the view's `L<n>`), at most 40 apart.
+- `quote`: copied from the text of one line in that range (whitespace may differ):
+  - at least six words or 30 characters;
+  - no redaction placeholder;
+  - not from a compaction summary (the view marks those as not evidence).
+- Start from the ledger's evidence of the group's items. Add lines only after reading them in the view.
+
+## Stale items
+
+Only when a later line or a newer chain item replaced a value:
+- `text`: the old value;
+- `replaces`: the fact that holds the new one;
+- evidence older than that fact's newest evidence.
+
+## The subject decides what is asked
+
+The prompt writer sees only the class and the subject, and writes what a developer would type. So the subject must
+name exactly the topic your facts answer.
+
+- **Not broader than the facts.** A subject that names a whole task ("look into recent failures") makes the writer ask
+  about everything in it, and the facts then answer less than the prompt asks. These rows failed for that before.
+- **Not the rule itself.** A subject that states the rule makes the prompt hand over the answer, and the question
+  becomes guessable.
+- **Default: the review row's subject.** Replace it when it fails the checks below or names a broader or narrower
+  topic than the facts, and say why in `note`.
+- **Sources,** in order of preference:
+  - `user`: a whole clause of a developer's typed turn (`USER` line), copied exactly, 2 to 15 words. It must be in a
+    session the row's evidence or its items' evidence comes from, at or before the last evidence line there.
+  - `ledger`: the `subject` field of one of the row's items, copied exactly: `{"quote": "...", "source": "ledger"}`,
+    with no session or line.
+  - `assistant`: the agent's prose (`ASSISTANT` line), under the same rules as `user`. Use it only when no
+    developer's words and no ledger subject name the topic.
+- **In every case:**
+  - no project name and no key;
+  - it names something specific;
+  - it is not cut before its topic;
+  - it does not start with "that", "this" or "it".
+  - It may be in the developer's language.
+
+## Check before you finish
+
+Run `python3 -I plan-rp/planner-issue-ids.py --repo <repo>` for each of your repos. It is a dry run and writes
+nothing. It applies the checker's own rules to your rows and prints:
+- `PROBLEM` lines: fix every one.
+- `WARNING` lines: read every one. A fact that quotes the same line text as a committed question is a duplicate:
+  rewrite the fact, or drop the group and say so.
+
+Run it until it prints no `PROBLEM`. Never pass `--write`: the lead issues the ids.
+
+A group you cannot draft gets no row: report it in your DONE file with why. Examples are a residue that no line
+states, or a subject that cannot pass.
+
+## Rules
+
+- Do not spawn agents, forks or teammates. Do not use SendMessage or ListAgents.
+- No LLM calls of any kind: no `tools/mine.py`, no proxy, no `codex`, no `claude`.
+- Write only your output files and your DONE file. Name any helper `draft-<letter>-*`, in the scratchpad: other agents
+  share it.
+- Never edit `tools/`, `plan-rp/`, `probe-rp/`, a ledger folder, `review/`, or any file outside your outputs. Make no
+  git writes. Make no commits.
+- Read only what "What you read" lists. In particular, do not read:
+  - the earlier mining's or audit's outputs (`selected.jsonl`, `drafts.jsonl`, `verdicts/`, `final/`, `review/`, any
+    `questions.jsonl` or `dropped.jsonl`);
+  - the other briefs, plans, logs or DONE files;
+  - `../l3-conversations/l3v2/` or `../l3-conversations/recall-query-study/`.
+- Use no notes or memory tool.
+
+## Finish
+
+Write `DONE-draft-rp-<letter>.md` in `./` (at most 10 lines):
+- the groups drafted, with facts per row;
+- the subjects you replaced, and why;
+- the groups you dropped, and why;
+- the last dry run's result;
+- anything odd.
+
+Then stop with a final message of at most 5 lines.
+````
+
+</details>
+
 ## Corrections
 
 Any change after the questions are committed is listed here, one line each.
+
+- 2026-10-13: added 3 rules questions (linear-cycle-drain-172, readaloud-156, readaloud-158) from a second round,
+  and 11 rows to `dropped.jsonl`; counts, headline classes, method and briefs updated.
