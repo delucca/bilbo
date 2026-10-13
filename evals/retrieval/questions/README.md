@@ -26,8 +26,8 @@ A class's `weight` in `classes.json` is how many of 317 real memory queries aske
 coding agents and their user sent to their memory tools over a month, September to October 2026. A strategy's score
 weights its class scores by them, so the classes count as much as real use asks for them. `target` is how many
 questions a class should get: its weight's share of the 225 answerable questions, so the questions themselves follow
-real use. The score keeps the weights, so a class that comes up short still counts at its share. A class with fewer
-than 10 questions is reported on its own and left out of the headline, whose weights then rescale over the others.
+real use. The score keeps the weights, so a class that comes up short still counts at its share: every class is in the
+headline, however few questions it has, and the class tables give each class's count beside its score.
 `no_answer_target` is the number of questions with no answer.
 
 Out of scope: questions about written sources (41% of all the real queries), and personal or home facts, which no
@@ -48,9 +48,9 @@ project's sessions hold.
 | no answer | 25 | 24 | 5 | 5 | 5 | 4 | 5 |
 | all | 250 | 118 | 19 | 12 | 33 | 30 | 24 |
 
-- The headline covers `overview`, `status`, `decision`, `rules` and `fact`: 82 questions, weighted 85, 41, 54, 54
-  and 38.
-- `procedure` (4) and `refind` (8) have fewer than 10 questions each and are reported on their own.
+- The headline covers all seven classes, 94 answerable questions, weighted 85, 41, 54, 54, 34, 38 and 11.
+- The small classes weigh more per question: a `procedure` question carries about 2.7% of the headline and a
+  `refind` question about 0.4%, against about 1.3% for an `overview` question.
 - The no-answer questions look like `fact` (14), `decision` (8), `procedure` (1) and `refind` (1) questions.
 - Every question is drafted; none is harvested (below).
 
@@ -121,7 +121,14 @@ A question is dropped, and written to `dropped.jsonl` with its `reason`, when:
 - `guessable`: a model with no memory of the sessions answers it.
 - `duplicate`: another question asks the same.
 
-A drop found by the audit has a `detail` that starts with `audit:`.
+A drop found by the audit has a `detail` that starts with `audit:`. The audit also settled these cases:
+
+- The commit of the last session is an end tree, even on a branch that was never merged (kimi-cli-001).
+- Git history is not a file for `in_repo`, but a commit counts for `not_current` and `not_unique`.
+- A `refind` date is the UTC day of its line. When the developer's local day differs, two days fit and the question
+  fails `not_unique` (iptvnator-230, readaloud-098).
+- A question with no answer fails when the sessions show its premise false at the time (readaloud-112). It passes
+  when the premise held when the value was set (iptvnator-237), or when nothing contradicts it (kimi-cli-029).
 
 | Reason | At mining | At the audit | All |
 |---|---:|---:|---:|
@@ -191,8 +198,8 @@ facts their lines did not state.
 
 ### A second round for rules and procedure
 
-After the first round, rules had 9 questions and procedure 4, both under the floor of 10 and out of the headline. A
-second round tried to fill them.
+After the first round, rules had 9 questions and procedure 4, both under the floor of 10 questions that then kept a
+class out of the headline (since dropped, see Corrections). A second round tried to fill them.
 
 - **The probe.** Before any drafting, Claude Sonnet 5.5 workers judged whether each candidate item of the ledgers
   could carry a `rules` or `procedure` question that passes the audit. A calibration failed first: on 33 groups the
@@ -210,7 +217,7 @@ second round tried to fill them.
 - **The audit.** Two Claude Opus 5.5 auditors judged each question on their own. An adjudicator ruled where they
   differed: the two questions they split on, and the fixes of a third.
 - **The funnel.** 14 drafted, 4 passed the checks, 3 passed the audit: linear-cycle-drain-172, readaloud-156 and
-  readaloud-158. Rules goes from 9 to 12 and enters the headline. Of the 11 drops, 10 came at mining and 1 at the audit.
+  readaloud-158. Rules goes from 9 to 12. Of the 11 drops, 10 came at mining and 1 at the audit.
 - **Procedure.** No procedure question came out of the round, and procedure stays at 4. gpt-6-astra, from another
   model family, also read the sessions for flows, without the ledgers. A first pass checked 30 and failed them all.
   An exhaustive second pass grouped 747 command shapes and 557 developer asks and checked 60. It left one candidate,
@@ -2252,3 +2259,5 @@ Any change after the questions are committed is listed here, one line each.
 
 - 2026-10-13: added 3 rules questions (linear-cycle-drain-172, readaloud-156, readaloud-158) from a second round,
   and 11 rows to `dropped.jsonl`; counts, headline classes, method and briefs updated.
+- 2026-10-13: dropped the floor of 10 questions per class: every class now counts in the headline at its weight,
+  decided before any strategy was scored.
