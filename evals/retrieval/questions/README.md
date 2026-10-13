@@ -8,7 +8,7 @@ project's sessions, since every store is built from all of them.
 
 - `questions.jsonl`: the 118 questions, one per line. Committing it freezes it.
 - `dropped.jsonl`: the 462 questions that failed a check or the audit, with the reason.
-- `classes.json`: the classes, with the weight and the target count of each.
+- `classes.json`: the classes, with the weight of each.
 
 ## The classes
 
@@ -24,41 +24,35 @@ project's sessions, since every store is built from all of them.
 
 A class's `weight` in `classes.json` is how many of 317 real memory queries asked for it. They are the queries that
 coding agents and their user sent to their memory tools over a month, September to October 2026. A strategy's score
-weights its class scores by them, so the classes count as much as real use asks for them. `target` is how many
-questions a class should get: its weight's share of the 225 answerable questions, so the questions themselves follow
-real use. The score keeps the weights, so a class that comes up short still counts at its share: every class is in the
-headline, however few questions it has, and the class tables give each class's count beside its score.
-`no_answer_target` is the number of questions with no answer.
+weights its class scores by them, so the classes count as much as real use asks for them, however many questions each
+has: every class is in the headline, and the class tables give each class's count beside its score.
 
 Out of scope: questions about written sources (41% of all the real queries), and personal or home facts, which no
 project's sessions hold.
 
 ## The counts
 
-| Class | Target | Questions | iptvnator | kimi-cli | linear-cycle-drain | readaloud | port-cli |
-|---|---:|---:|---:|---:|---:|---:|---:|
-| `overview` | 61 | 21 | 3 | 3 | 6 | 5 | 4 |
-| `status` | 29 | 18 | 4 | 0 | 4 | 4 | 6 |
-| `decision` | 38 | 14 | 3 | 1 | 7 | 0 | 3 |
-| `rules` | 38 | 12 | 3 | 0 | 1 | 7 | 1 |
-| `procedure` | 24 | 4 | 0 | 0 | 1 | 2 | 1 |
-| `fact` | 27 | 17 | 0 | 2 | 7 | 6 | 2 |
-| `refind` | 8 | 8 | 1 | 1 | 2 | 2 | 2 |
-| answerable | 225 | 94 | 14 | 7 | 28 | 26 | 19 |
-| no answer | 25 | 24 | 5 | 5 | 5 | 4 | 5 |
-| all | 250 | 118 | 19 | 12 | 33 | 30 | 24 |
+| Class | Questions | iptvnator | kimi-cli | linear-cycle-drain | readaloud | port-cli |
+|---|---:|---:|---:|---:|---:|---:|
+| `overview` | 21 | 3 | 3 | 6 | 5 | 4 |
+| `status` | 18 | 4 | 0 | 4 | 4 | 6 |
+| `decision` | 14 | 3 | 1 | 7 | 0 | 3 |
+| `rules` | 12 | 3 | 0 | 1 | 7 | 1 |
+| `procedure` | 4 | 0 | 0 | 1 | 2 | 1 |
+| `fact` | 17 | 0 | 2 | 7 | 6 | 2 |
+| `refind` | 8 | 1 | 1 | 2 | 2 | 2 |
+| answerable | 94 | 14 | 7 | 28 | 26 | 19 |
+| no answer | 24 | 5 | 5 | 5 | 4 | 5 |
+| all | 118 | 19 | 12 | 33 | 30 | 24 |
 
 - The headline covers all seven classes, 94 answerable questions, weighted 85, 41, 54, 54, 34, 38 and 11.
 - The small classes weigh more per question: a `procedure` question carries about 2.7% of the headline and a
   `refind` question about 0.4%, against about 1.3% for an `overview` question.
 - The no-answer questions look like `fact` (14), `decision` (8), `procedure` (1) and `refind` (1) questions.
 - Every question is drafted; none is harvested (below).
-
-The classes came up short because the audit (below) failed every question whose answer the project's files hold,
-and much of what a session settles ends up in a file: a decision's reason in a code comment, a rule in `AGENTS.md`, a
-procedure in the README. Besides `refind` (8 of 8), `status` and `fact` kept the most of their targets (62% and 63%),
-`procedure` and `rules` the least (17% and 32%). readaloud ships no `decision` question, and kimi-cli no `status`,
-`rules` or `procedure` question.
+- readaloud ships no `decision` question, and kimi-cli no `status`, `rules` or `procedure` question.
+- Every class but `refind` has fewer questions than the plan gave it, since the audit failed every question whose
+  answer the project's files hold (Filling and the audit, below).
 
 ## A question
 
@@ -177,9 +171,12 @@ frozen writers and checks.
    - that an answer written with no access to the project does not hold two thirds of its facts.
    A question with no answer is checked against every line that names what it asks. A failure that points at other
    lines or a later change gets one repair call, then the checks again.
-8. **Filling.** Selection, writers, checks and repair run batch after batch until each cell has one and a half times
-   its count of passing questions or runs out of candidates. A class that runs out gets one more round of drafting.
-   The first passing questions in seeded order fill the cell; the rest are spares.
+8. **Filling.** The plan was 225 answerable questions, split over the classes by weight (`overview` 61, `status` 29,
+   `decision` 38, `rules` 38, `procedure` 24, `fact` 27, `refind` 8) and over the projects by the mean of their shares
+   of the sessions and of the text, plus 5 with no answer per project. Selection, writers, checks and repair run batch
+   after batch until each cell has one and a half times its count of passing questions or runs out of candidates. A
+   class that runs out gets one more round of drafting. The first passing questions in seeded order fill the cell; the
+   rest are spares.
 9. **The audit.** Every question and every spare, 339 in all, went to an Opus reviewer that read its sessions and the
    project's files at the commits where its sessions ended, git history included. A failing question was replaced by
    the next passing spare in seeded order. Adjudicators re-ran the checks on the verdicts that decided what ships, and
@@ -195,6 +192,12 @@ unclear, or a drafted question already rested on its answer.
 The audit is the gate because the checks alone were not enough. In three pilot rounds on iptvnator, the reviewers
 failed 50%, 29% and 40% of the questions that had passed every check: answers in the files, changes made in git,
 facts their lines did not state.
+
+The audit is also why the classes came up short of the plan. It failed every question whose answer the project's
+files hold, and much of what a session settles ends up in a file: a decision's reason in a code comment, a rule in
+`AGENTS.md`, a procedure in the README. Besides `refind` (8 of 8), `status` and `fact` kept the most of their counts
+(62% and 63%), `procedure` and `rules` the least (17%, and 32% with the second round's three). 24 of the 25 questions
+with no answer shipped.
 
 ### A second round for rules and procedure
 
@@ -2261,3 +2264,5 @@ Any change after the questions are committed is listed here, one line each.
   and 11 rows to `dropped.jsonl`; counts, headline classes, method and briefs updated.
 - 2026-10-13: dropped the floor of 10 questions per class: every class now counts in the headline at its weight,
   decided before any strategy was scored.
+- 2026-10-13: dropped `target` and `no_answer_target` from `classes.json` and the target column from the counts:
+  nothing scores by them, and the plan they set is under Filling.

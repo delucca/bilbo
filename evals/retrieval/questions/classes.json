@@ -1,12 +1,11 @@
 {
   "classes": [
-    { "name": "overview", "weight": 85, "target": 61 },
-    { "name": "status", "weight": 41, "target": 29 },
-    { "name": "decision", "weight": 54, "target": 38 },
-    { "name": "rules", "weight": 54, "target": 38 },
-    { "name": "procedure", "weight": 34, "target": 24 },
-    { "name": "fact", "weight": 38, "target": 27 },
-    { "name": "refind", "weight": 11, "target": 8 }
-  ],
-  "no_answer_target": 25
+    { "name": "overview", "weight": 85 },
+    { "name": "status", "weight": 41 },
+    { "name": "decision", "weight": 54 },
+    { "name": "rules", "weight": 54 },
+    { "name": "procedure", "weight": 34 },
+    { "name": "fact", "weight": 38 },
+    { "name": "refind", "weight": 11 }
+  ]
 }
