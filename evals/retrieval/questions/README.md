@@ -6,8 +6,8 @@ project's sessions, since every store is built from all of them.
 
 ## Files
 
-- `questions.jsonl`: the 130 questions, one per line. Committing it freezes it.
-- `dropped.jsonl`: the 493 questions that failed a check or the audit, with the reason.
+- `questions.jsonl`: the 139 questions, one per line. Committing it freezes it.
+- `dropped.jsonl`: the 561 questions that failed a check or the audit, with the reason.
 - `classes.json`: the classes, with the weight of each.
 
 ## The classes
@@ -32,28 +32,37 @@ project's sessions hold.
 
 ## The counts
 
-| Class | Questions | iptvnator | kimi-cli | linear-cycle-drain | readaloud | port-cli |
-|---|---:|---:|---:|---:|---:|---:|
-| `overview` | 21 | 3 | 3 | 6 | 5 | 4 |
-| `status` | 18 | 4 | 0 | 4 | 4 | 6 |
-| `decision` | 14 | 3 | 1 | 7 | 0 | 3 |
-| `rules` | 12 | 3 | 0 | 1 | 7 | 1 |
-| `procedure` | 4 | 0 | 0 | 1 | 2 | 1 |
-| `fact` | 17 | 0 | 2 | 7 | 6 | 2 |
-| `refind` | 20 | 7 | 0 | 4 | 2 | 7 |
-| answerable | 106 | 20 | 6 | 30 | 26 | 24 |
-| no answer | 24 | 5 | 5 | 5 | 4 | 5 |
-| all | 130 | 25 | 11 | 35 | 30 | 29 |
+The first five projects were chosen by metadata, the five added for `procedure` by a screen (A third round, below).
 
-- The headline covers all seven classes, 106 answerable questions, weighted 85, 41, 54, 54, 34, 38 and 11.
-- The small classes weigh more per question: a `procedure` question carries about 2.7% of the headline and a
-  `refind` question about 0.2% (11 of 317, over 20 questions), against about 1.3% for an `overview` question.
+| Project | `overview` | `status` | `decision` | `rules` | `procedure` | `fact` | `refind` | answerable | no answer | all |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| iptvnator | 3 | 4 | 3 | 3 | 0 | 0 | 7 | 20 | 5 | 25 |
+| kimi-cli | 3 | 0 | 1 | 0 | 0 | 2 | 0 | 6 | 5 | 11 |
+| linear-cycle-drain | 6 | 4 | 7 | 1 | 1 | 7 | 4 | 30 | 5 | 35 |
+| readaloud | 5 | 4 | 0 | 7 | 2 | 6 | 2 | 26 | 4 | 30 |
+| port-cli | 4 | 6 | 3 | 1 | 1 | 2 | 7 | 24 | 5 | 29 |
+| **first five** | 21 | 18 | 14 | 12 | 4 | 17 | 20 | 106 | 24 | 130 |
+| safecast-map-MCP | 0 | 0 | 0 | 0 | 1 | 0 | 0 | 1 | 0 | 1 |
+| bosarsalog | 0 | 0 | 0 | 0 | 1 | 0 | 0 | 1 | 0 | 1 |
+| go-nuts | 0 | 0 | 0 | 0 | 2 | 0 | 0 | 2 | 0 | 2 |
+| neuralips26 | 0 | 0 | 0 | 0 | 1 | 0 | 0 | 1 | 0 | 1 |
+| contoso | 0 | 0 | 0 | 0 | 4 | 0 | 0 | 4 | 0 | 4 |
+| **added five** | 0 | 0 | 0 | 0 | 9 | 0 | 0 | 9 | 0 | 9 |
+| **all ten** | 21 | 18 | 14 | 12 | 13 | 17 | 20 | 115 | 24 | 139 |
+
+- The headline covers all seven classes, 115 answerable questions, weighted 85, 41, 54, 54, 34, 38 and 11.
+- A question's share of the headline is its class's weight over its count: about 1.3% for an `overview` question, 0.8%
+  for a `procedure` question (34 of 317, over 13 questions) and 0.2% for a `refind` question (11 of 317, over 20
+  questions).
 - The no-answer questions look like `fact` (14), `decision` (8), `procedure` (1) and `refind` (1) questions.
 - Every question is drafted; none is harvested (below).
-- readaloud ships no `decision` question, and kimi-cli no `status`, `rules`, `procedure` or `refind` question.
+- iptvnator ships no `procedure` or `fact` question, readaloud no `decision` question, and kimi-cli no `status`,
+  `rules`, `procedure` or `refind` question. The five added projects ship `procedure` questions only (9 of the 13), and
+  no question with no answer.
 - Every class but `refind` has fewer questions than the plan gave it, since the audit failed every question whose
   answer the project's files hold (Filling and the audit, below).
-  `refind` has 20, against the plan's 8, after a later fill (The refind fill, below).
+  `refind` has 20, against the plan's 8, after a later fill (The refind fill, below). `procedure` has 13, against 24,
+  after the third round (below).
 
 ## A question
 
@@ -131,22 +140,22 @@ with `rule:`. The audit also settled these cases:
 
 | Reason | At mining | At the audit | By rule | All |
 |---|---:|---:|---:|---:|
-| `in_repo` | 47 | 117 | 0 | 164 |
-| `unsupported` | 158 | 19 | 0 | 177 |
-| `not_current` | 24 | 25 | 0 | 49 |
-| `not_unique` | 28 | 26 | 0 | 54 |
-| `guessable` | 6 | 28 | 0 | 34 |
-| `duplicate` | 1 | 3 | 0 | 4 |
+| `in_repo` | 53 | 126 | 0 | 179 |
+| `unsupported` | 176 | 21 | 0 | 197 |
+| `not_current` | 26 | 29 | 0 | 55 |
+| `not_unique` | 38 | 31 | 0 | 69 |
+| `guessable` | 7 | 38 | 0 | 45 |
+| `duplicate` | 1 | 4 | 0 | 5 |
 | `commit_event` | 0 | 1 | 10 | 11 |
-| all | 264 | 219 | 10 | 493 |
+| all | 301 | 250 | 10 | 561 |
 
 ## How the questions were made
 
 In the first round, one script made every model call, with the prompts below, frozen before mining began. Claude
 Opus 5.5 read, drafted and wrote; gpt-6.1-sol, from another model family, checked; Claude Opus 5.5 reviewers with
 tools audited. A second round for rules and procedure (below) added agents with tools around the same
-frozen writers and checks. A later fill for `refind` (the last subsection) ran the same frozen writers and checks
-on drafts the first round left unused.
+frozen writers and checks. A third round added `procedure` questions from five more projects, and a later fill for
+`refind` (the last subsection) ran the same frozen writers and checks on drafts the first round left unused.
 
 1. **Views.** Each session is shown with the line numbers of its raw file. A long payload shows its head and its
    tail, and an overflow call reads each cut middle whole, so a fact that lives only there is kept.
@@ -203,8 +212,8 @@ facts their lines did not state.
 The audit is also why the classes came up short of the plan. It failed every question whose answer the project's
 files hold, and much of what a session settles ends up in a file: a decision's reason in a code comment, a rule in
 `AGENTS.md`, a procedure in the README. Besides `refind` (8 of 8), `status` and `fact` kept the most of their counts
-(62% and 63%), `procedure` and `rules` the least (17%, and 32% with the second round's three). 24 of the 25 questions
-with no answer shipped.
+(62% and 63%), `procedure` and `rules` the least (17%, and 32% with the second round's three). The third round
+brought `procedure` to 54%. 24 of the 25 questions with no answer shipped.
 
 ### A second round for rules and procedure
 
@@ -232,6 +241,39 @@ class out of the headline (since dropped, see Corrections). A second round tried
   model family, also read the sessions for flows, without the ledgers. A first pass checked 30 and failed them all.
   An exhaustive second pass grouped 747 command shapes and 557 developer asks and checked 60. It left one candidate,
   a one-time setup with a weak subject, which was not drafted or audited.
+
+### A third round: procedure from screened projects
+
+After the second round `procedure` had 4 questions. A third round looked for more in projects outside the corpus,
+screened for work the project's files do not hold, which is what survives the audit.
+
+- **The screen.** A no-LLM screen read SWE-chat's tables, not the transcripts. Of 596 Claude Code repositories it kept
+  185 new ones (3 sessions or more, an open licence, no fork, 80% of the sessions or more from one developer) and scored
+  them with 44 labelled before, the five corpus projects and 39 an earlier scan had read, for recurring commands that
+  work outside the repository (ssh, rsync, deploy and cloud CLIs, other machines' paths) and that its files do not name.
+  It ranked the 5 corpus projects as their yields did (rank correlation 0.95, on five), but it is a ranking: it missed
+  runbooks written in stock commands.
+- **The gate.** For 24 projects (23 candidates, and readaloud read blind as a calibration) a Claude Opus 5.5 judge read
+  the sessions in the window, the command clusters and every instruction file, and listed the procedure groups that
+  could pass the audit. It killed a group only on evidence, such as a file that states it or a later change, and rated
+  the rest `high`, `medium` or `low`. A forecast of 1.0 or more (0.6 per `high`, 0.3 per `medium`, 0.1 per `low`)
+  qualified a project: 13 did. 11 were mined; the other two held dev-workflow groups, the kind the first audits failed
+  as guessable.
+- **The windows.** No added project exceeds the first five's largest on any measure (39 sessions, 688 prompts, 5,432
+  tool calls). A larger one went in as the contiguous window with the highest screen score, chosen before any model
+  read it: neuralips26 is 22 of its 105 sessions, contoso 9 of its 10. go-nuts is 12 of 14 (two began outside its
+  repository).
+- **Two drafting routes.** The first round's frozen tools ran with the new projects added as data, and a second route
+  drafted rows from the gate's groups that the first left uncovered, by the second round's method. The frozen prompts,
+  sol's checks and the fill loop were the same.
+- **The audit.** Every row that passed sol (76) went to a Claude Opus 5.5 reviewer that read the sessions and the files
+  at the end tree, and an adjudicator ruled on each verdict. 67 failed and 9 shipped.
+- **The funnel.** 229 repositories scored, 24 gated, 117 groups forwarded by the 23 candidates (67 in the 11 mined),
+  151 rows sent to sol, 76 passed sol, 9 passed the audit, from 5 projects. The other 6 mined projects ship nothing and
+  stay out of the corpus.
+- **The result.** `procedure` goes from 4 questions to 13, short of the 24 the plan gave it.
+- **The bias.** Operations-heavy, thinly documented projects pass this screen and the audit more often, so the added
+  projects are not a sample, and 5 of the 9 new questions ask about services outside the repository.
 
 ### The refind fill
 
@@ -2285,6 +2327,267 @@ Then stop with a final message of at most 5 lines.
 
 </details>
 
+### The third round's briefs
+
+The instructions the round's gate judges and gate-route drafters followed, word for word, except that `<work>` stands
+for the absolute path of the round's work folder; the sha256 is the original file's. Their paths are not this
+repository's.
+
+<details>
+<summary><code>BRIEF-gate.md</code>: tells a gate judge to list the procedure groups of one project that could pass the audit</summary>
+
+sha256 `48978d09c38aa83bee58aefa3af15e87b3ed6d97aece0b89e82b8528a322fa4b`
+
+````text
+# Brief `gate`: does this repo hold procedure questions that can pass the audit?
+
+You are a gate judge (Claude Opus 5.5). Your repo (or repos) and your stream name, `gate-<short>`, are in the message
+that started you. Your folder: `PS/gate/<owner>__<repo>/`. No model call. You read one repo's sessions in its window,
+its command clusters and its files, and you list the procedure groups that could carry a question that passes the
+eval's audit. Mining a repo costs a corpus change and hours of model calls, so your list decides where that is paid.
+
+Paths: `W` = `<work>`, `PS` =
+`W/procedure-screen`, `RQ` = `W/retrieval-questions`, `C` = `PS/corpus/corpus`.
+
+## What a procedure question needs
+
+`procedure` asks how to do something in the project. Its facts are the steps, in order, with their commands: two or
+more. A flow the sessions ran more than once is a procedure, and so is a one-time setup whose own values (a remote, a
+host, a path) a later question can name. Running another repository's tools or gates as part of this project's own
+workflow is this project's procedure. The audit passes a question only when all of these hold:
+
+1. **Supported:** session lines state each step.
+2. **Not in the files:** the repo's files at its end trees do not state the steps, or all of them but what is generic,
+   guessable or not asked.
+   - Files are the code and its comments, configs, tests, scripts, CI workflows, docs (ADRs, plans, architecture
+     notes, runbooks) and the last session's own docs even on an unmerged branch.
+   - The agent instruction files count too: `CLAUDE.md`, `AGENTS.md`, `CONTRIBUTING*`, `.claude/` (commands, skills,
+     settings), `.cursor/rules/`, `.agents/skills/*/SKILL.md`, and READMEs, changelogs and vendored specs.
+   - **A runbook written with stock commands counts** (`wrangler deploy --env production` in a README; a deploy skill
+     in `.claude/skills/`). The funnel's token grep missed exactly these (hevy-planner, SprintSpark), so read every
+     instruction file and doc at the end trees in full, not only grep hits.
+   - A file that holds only the names, and not the order of the steps, the host, the path or what was tried, does not
+     count. Another repository's files, a file on a server, and the git log are not this project's files.
+3. **Not guessable, step by step:** a developer who knows the stack, with no memory of these sessions, would not give
+   most of the steps in substance. A question keeps its value when one of its facts is session-only: a name, value,
+   path or host the project chose; the cause of a failure; how a tool behaved in this setup; an order that matters
+   and is written nowhere. It fails when every substantive step is stock: a tool's documented flags, a fix its error
+   text prescribes, the usual practice.
+4. **Current:** no later session in the window, and no commit before the window's end, changed it.
+5. **Unique:** the window holds no second fair answer, such as another way the sessions did the same thing, or two
+   people doing it differently.
+6. **Worth asking:** a later developer would want to know it. Not a move incidental to one task, not a claim nothing
+   acted on, not a tool's own printed steps that the sessions only followed.
+7. **Askable:** a developer can ask it without stating the answer, in words a later session would use for the topic.
+
+## Inputs, and nothing else
+
+- `PS/gate/<owner>__<repo>/clusters.md`: the funnel's recurring command clusters that two or more window sessions
+  hold, outside-the-repo and project-specific ones first, with example commands and sessions. A ranking aid: the
+  clusters find command-shaped flows only; a flow typed as prose or done through an MCP tool is yours to find in the
+  views.
+- `PS/gate/<owner>__<repo>/window.json`: the window's sessions (id, time, size, cwd, view file). Only these sessions
+  exist for the eval: a group whose evidence lies outside them does not count. When the clusters show a group the
+  window cut, note it (`cut_by_window`).
+- The views: `RQ/<owner>__<repo>/view/<first 8 of the session>.txt`. Every line starts `L<raw line> <UTC time>
+  <ROLE>:`; `L<n>` is the number evidence uses. Read them only by line range (`sed -n`), never whole; search them
+  only with `grep -a -n` (the shell's `grep` skips a file it takes for binary). Or print a range with
+  `RQ_CORPUS=$C python3 -I RQ/tools-v2/render.py show <owner>__<repo> <session> <first> <last>` (from `RQ/`).
+- The clone: `RQ/repos/<owner>__<repo>.git`, read-only git (`grep`, `show`, `log`, `ls-tree`). It runs past the
+  window, so name trees by sha, never `HEAD` or a branch.
+- The end trees: `RQ/<owner>__<repo>/trees.json` (`commits`, `last_session`, `default_head`, `branch_last`,
+  `session_branches`). List a tree's files with `git -C <clone> ls-tree -r --name-only <sha>`.
+- For the calibration repo (`ngngardner__readaloud`) only: its views are in `RQ/ngngardner__readaloud/view/`, its
+  clone in `RQ/repos/`, its trees in `RQ/ngngardner__readaloud/trees.json`, and the tools are `RQ/tools/` with no
+  `RQ_CORPUS`. **Never read** anything that carries an earlier verdict on it: `questions.jsonl`, `dropped.jsonl`,
+  `spares.jsonl`, `selected.jsonl`, `drafts.jsonl`, `verdicts/`, `final/`, `review/`, any `AUDIT.md`, `LEAD-LOG*`,
+  `DONE-*`, `PLAN*`, `BRIEF-*` other than this one, the eval's README and question files, and the bilbo notes.
+- For every repo: do not read `W/procedure-repos/SHORTLIST.md` or other judges' folders. Use no notes or memory tool.
+
+## Per repo
+
+1. **Orient (10 minutes).** Read `clusters.md` and `window.json`. List the end tree's instruction files and docs and
+   read them all (they are what kills most groups). Note the window's languages.
+2. **Find the groups.** Start from the outside and specific clusters, then the developer's own asks in the views
+   (`grep -a -n -i` on `USER` lines for deploy, release, backup, restore, migrate, ssh, server, prod, run, rerun,
+   setup, again, how do, remember, always, and the clusters' tokens). A group is one flow: the steps one question
+   would ask for. Examine at most 12 groups, the most promising first.
+3. **Per group, kill only on evidence:**
+   - `in_files`: a file line at an end tree states the steps (or all but what is generic): give `file`, `line`,
+     `tree` (sha 8). When the files state part and you judge the rest generic, still `in_files`, with
+     `borderline: true` and the leftover in `note`.
+   - `changed`: a later window line or a commit before the window's end changed the steps: give `<session 8>:L<n>`
+     or `commit <sha 8>`.
+   - `outside_window`: the evidence that makes it a procedure lies outside the window.
+   - `not_class`: no steps (a state, a value, a single command with no order), or a pure record of a change made.
+   When unsure whether evidence kills, forward: a wrong forward costs one review, a wrong kill loses the group.
+4. **Forward the rest** with flags, each with one line of why: `generic` (name the stock steps and the session-only
+   one), `second_answer` (the other answer's session and line), `one_off`, `third_party`, `askable`, `two_people`.
+   Then rate the group's odds of passing the audit, as a ranking aid only, never a kill:
+   - `high`: no flag, or one you think the audit will clear; a session-only fact sits in the steps themselves.
+   - `medium`: one flag you think is a real risk, or the session-only part is a single value.
+   - `low`: likely fails (mostly stock, one-off, or a second answer in sight).
+5. **Rules and refind, in passing.** Count the strong `rules` items and refind events (incidents, findings, deploys,
+   not commits) you met while reading. A count, no list, no extra reading.
+
+Time: about 45 minutes a repo; past 75, finish with what you have.
+
+## Output
+
+`PS/gate/<owner>__<repo>/groups.jsonl`, one object per examined group, appended as soon as it is judged:
+
+| field | value |
+|---|---|
+| `repo` | `owner__repo` |
+| `group` | `<short>/<a few words in kebab case>` |
+| `verdict` | `forward`, or a kill: `in_files`, `changed`, `outside_window`, `not_class` |
+| `odds` | for `forward`: `high`, `medium` or `low`; else `null` |
+| `flags` | `[{"criterion": "generic", "why": "..."}]`, empty when none |
+| `steps` | the steps in order, each one line with its command or value |
+| `evidence` | `[{"session": "<full id>", "lines": [a, b]}]`, one per step or per session that runs the flow |
+| `runs` | the sessions (8 characters) that ran the flow, and their UTC days |
+| `residue` | one sentence: what only the sessions hold |
+| `subject` | `{"session": "<full id>", "line": n, "quote": "...", "source": "user"}`: 2 to 15 words copied exactly from one developer turn that names the topic, holding no step, command, value or the project's name; `"source": "assistant"` when only the agent's words name it; `null` with an `askable` flag when nothing does |
+| `answer` | for `in_files`: `{"file": "...", "line": n, "tree": "<sha 8>"}`; else `null` |
+| `changed_by` | for `changed`; else `null` |
+| `cut_by_window` | `true` when the clusters show runs outside the window that would have strengthened it |
+| `note` | at most 300 characters |
+
+Then `PS/gate/<owner>__<repo>/VERDICT.md` (at most 15 lines): forwarded groups by odds; the forecast `0.6 x high +
+0.3 x medium + 0.1 x low` and whether it reaches 1.0; kills by kind; groups the window cut; the rules and refind counts
+of step 5; languages; anything the lead must know (two people, another project's sessions, a secret you saw: count
+only, never the value).
+
+## Rules
+
+- Do not spawn agents, forks or teammates. Do not use SendMessage or ListAgents.
+- No model call of any kind: no `mine.py` stage, no proxy, no `claude`, no `codex`. `render.py show` is fine.
+- Write only `PS/gate/<owner>__<repo>/groups.jsonl`, `VERDICT.md`, `PROGRESS.md` and `PS/DONE-gate-<short>.md`. Name
+  scratch helpers `gate-<short>-*` in the scratchpad. No git writes. Never edit a view, a clone, `RQ/` or `PS/` files
+  of anyone else.
+- Transcripts hold real secrets: never quote one into your output or your messages.
+
+## Progress and finish
+
+- Append `<UTC time> <groups done>/<examined> last=<group>` to `PS/gate/<owner>__<repo>/PROGRESS.md` at least every
+  30 minutes.
+- `PS/DONE-gate-<short>.md`: one line with the counts and the forecast. Final message: three lines.
+````
+
+</details>
+
+<details>
+<summary><code>BRIEF-draft-gp.md</code>: tells a drafter to write a row for each procedure group the first drafting left uncovered</summary>
+
+sha256 `5ca4cd1a9be6a681321b9574ff8c9dda079db8327d93f64ff988e05e43e1bfad`
+
+````text
+# Brief `draft-gp`: draft rows for the gate's uncovered procedure groups
+
+You are a drafter (Claude Sonnet 5.5): the lane worker of `BRIEF-mine.md` at its step 7, or a drafter the lead
+started with this brief. The gate judge forwarded procedure groups for your repo `R`, and the frozen drafting left some
+of them without a live row (`PS/mine/<short>/coverage.json`, `uncovered`). You turn each uncovered group with odds
+`high` or `medium` into one candidate row. A script issues the ids; the frozen prompt and query writers then write the
+row's `prompt` and `query` without seeing your facts; sol and an Opus audit check it. You write no prompt and no
+query. This is the second round's method (`RQ/BRIEF-draft-rp.md`, which drafted rules rows from probe groups), used
+for procedure.
+
+Paths: `W` = `<work>`, `PS` =
+`W/procedure-screen`, `RQ` = `W/retrieval-questions`, `C` = `PS/corpus/corpus`. Run commands from `RQ/` with
+`RQ_CORPUS=$C` on the line.
+
+## What you read, and nothing else
+
+- Your groups: `PS/gate/<R>/groups.jsonl` rows named in `coverage.json`'s `uncovered`, with odds `high` or `medium`:
+  their `steps`, `evidence`, `runs`, `residue`, `subject`, `flags` and `note`.
+- The ledger, `RQ/<R>/ledger.jsonl`: find the items whose evidence the group's lines fall in (same session, lines
+  within 20); they become the row's `items`. A group with no ledger item cannot be drafted: report it.
+- The sessions: `RQ_CORPUS=$C python3 -I tools-v2/render.py show <R> <session> <first> <last>`, or
+  `RQ/<R>/view/<first 8>.txt` by line range, searched only with `grep -a`. Never a whole session.
+- The live procedure rows, to avoid them: `RQ/<R>/selected.jsonl` (`row.facts` evidence and `meta.items`).
+- Do not read `verdicts/`, `review/`, any `final/`, the other repos' folders, the plan's other briefs or logs.
+
+## A procedure row
+
+`procedure` asks how to do something in the project. Its facts are the steps, in order, with their commands, two or
+more, listed in step order. The question must stand on the group's residue: the steps or values only the sessions
+hold.
+
+## The draft row
+
+One JSON object per line in `RQ/<R>-gp/drafts-gp.jsonl`, one per group:
+
+```json
+{
+  "cand": "gp-<the part of the group key after the slash>",
+  "group": "<short>/<...>",
+  "class": "procedure",
+  "items": ["<ledger id>", "..."],
+  "facts": [
+    {"text": "...", "keys": ["..."],
+     "evidence": [{"session": "<full session id>", "lines": [<first>, <last>], "quote": "..."}]}
+  ],
+  "stale": [],
+  "subject": {"session": "<full session id>", "line": <n>, "quote": "...", "source": "user"},
+  "note": "..."
+}
+```
+
+## Facts
+
+- **One step each,** in the order the sessions run them. Every fact is required of an answer: no optional or
+  decorative step.
+- **Only what its own evidence states.** If a step needs a second line, add a second evidence entry. If no line
+  states a step, leave it out. The earlier rounds lost rows to facts that said more than their quotes.
+- **Leave out what the files hold** (the gate's `answer` or `note` names it) and what any developer would do anyway,
+  unless the order or a value makes it this project's; the question rests on the session-only part.
+- **True at the end of the window.** When a later line changed a step (a host, a path, a flag), the fact takes the
+  latest one and the older one becomes a `stale` item with `replaces`.
+- **No fact a live row already holds** (`selected.jsonl`).
+
+## Keys
+
+An exact string from the fact's evidence lines that a right answer must contain: a command, a host, a path, a flag,
+a script name. Never the topic's name. Zero to two per fact. Never in the subject.
+
+## Evidence
+
+`session`: the full id. `lines`: `[first, last]`, raw line numbers (the view's `L<n>`), at most 40 apart. `quote`:
+copied from the text of one line in that range (whitespace may differ), at least six words or 30 characters, no
+redaction placeholder, not from a compaction summary, **and never a secret** (a token, password, key or connection
+string with credentials): pick another line or another quote.
+
+## The subject decides what is asked
+
+The prompt writer sees only the class and the subject. The subject must name exactly the flow the facts answer: not
+broader (a whole task makes the prompt ask more than the facts give), not the steps themselves (the prompt would hand
+over the answer). Default: the gate's `subject`. Sources, in order: `user` (a whole clause of a developer's typed
+turn, 2 to 15 words, copied exactly, from a session of the row's evidence, at or before its last evidence line),
+`ledger` (an item's `subject`, copied exactly, `{"quote": "...", "source": "ledger"}`), `assistant` (the agent's
+prose, only when nothing else names it). No project name, no key, nothing that starts with "that", "this" or "it". It
+may be in the developer's language.
+
+## Check before you finish
+
+`python3 -I ../procedure-screen/scripts/issue_ids_gp.py --repo <short>` (a dry run that writes nothing) applies the
+checker's own rules and prints `PROBLEM` and `WARNING` lines. Fix every `PROBLEM`; read every `WARNING` (a fact quoting
+a committed question's line is a duplicate: rewrite or drop the group). The lane worker runs `--write` once it is
+clean; a drafter the lead started does not.
+
+## Rules
+
+- Do not spawn agents, forks or teammates. Do not use SendMessage or ListAgents.
+- No model call of any kind while drafting.
+- Write only `RQ/<R>-gp/drafts-gp.jsonl` and your notes in `PS/mine/<short>/`. No git writes. Never print a secret.
+
+## Finish
+
+In `PS/mine/<short>/gp-notes.md` (at most 10 lines): the groups drafted with facts per row, subjects you replaced and
+why, groups you could not draft and why, the last dry run's result.
+````
+
+</details>
+
 ## Corrections
 
 Any change after the questions are committed is listed here, one line each.
@@ -2301,3 +2604,6 @@ Any change after the questions are committed is listed here, one line each.
   audited it again.
 - 2026-10-14: filled `refind` to 20 with port-cli-083, an audited spare, and 16 questions from the first round's
   unused drafts; 21 rows to `dropped.jsonl`; counts, drops, method and the `commit_event` reason updated.
+- 2026-10-14: added 9 `procedure` questions from five projects chosen by a screen (safecast-map-MCP, bosarsalog,
+  go-nuts, neuralips26, contoso; 89 sessions) and 68 rows to `dropped.jsonl`; the corpus, counts, drops, method and
+  briefs updated.

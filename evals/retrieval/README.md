@@ -32,8 +32,18 @@ download the pinned one and check its sha256, else build it.
 
 ## The corpus
 
-`dataset/corpus-1235aec0592a.tar.zst` holds 145 real coding sessions from five open-source projects, untouched: one
-file per session, grouped by project. 143 are from Claude Code, 2 from Cursor.
+`dataset/corpus-f2c9eaac04f9.tar.zst` holds 234 real coding sessions from ten open-source projects, untouched: one
+file per session, grouped by project. 232 are from Claude Code, 2 from Cursor.
+
+The first five projects (iptvnator, kimi-cli, linear-cycle-drain, readaloud, port-cli; 145 sessions) were chosen by
+their metadata. The other five (safecast-map-MCP, bosarsalog, go-nuts, neuralips26, contoso; 89 sessions) were added
+for `procedure` questions. A no-LLM screen scored SWE-chat's Claude Code repositories for commands their sessions kept
+running outside the repository: ssh, rsync, deploy and cloud CLIs, other machines' paths. A project larger than the
+largest of the first five went in as the contiguous run of its sessions with the highest screen score (neuralips26 is
+22 of its 105 sessions). Claude Opus 5.5 judges read the sessions and files of 23 candidates, 11 were mined, and the 5
+with a question that passed the audit joined the corpus. This selection favours operations-heavy, thinly documented
+projects, so the added five are not a sample of SWE-chat. The method is in `questions/README.md`, "A third round:
+procedure from screened projects".
 
 To get it:
 
@@ -48,6 +58,9 @@ It is packed the same way every time, so a rebuild gives the same bytes.
 A store is the memory one strategy builds from the corpus, `dataset/store-<arm>-<key>.tar.zst`, so running the eval
 needs no LLM. The key hashes what shapes a store: the corpus, the embedder, the LLM for an arm that uses one, and the
 files under `arms/<arm>/`. Change any of them and the key changes.
+
+The stores in `dataset.lock` were built from the previous corpus, `corpus-1235aec0592a`; none is built yet for this
+one.
 
 | Arm | Strategy | LLM | Published store |
 |---|---|---|---|
@@ -547,7 +560,7 @@ its counts.
 
 ## The questions
 
-`questions/questions.jsonl` holds the questions, one per line, each about one of the five projects. A question asks
+`questions/questions.jsonl` holds the questions, one per line, each about one of the ten projects. A question asks
 for something the project's sessions settled and its files do not show: what the developer decided, was told, tried
 or left open. Its answer is a list of facts, each pointing at the session lines that state it. It comes in two forms:
 the prompt a developer would type in a later session, and the search an agent would run for it.

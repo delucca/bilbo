@@ -9,7 +9,7 @@ root=$(cd "$(dirname "$0")/.." && pwd)
 
 DATASET=SALT-NLP/SWE-chat
 REVISION=202b071f18e03c79df5a7287565ce2ebc5ee7756
-CORPUS_SHA256=1235aec0592a637d039f27796f49986bbc1d1a9c4267ddae28031f2fe29649f8
+CORPUS_SHA256=f2c9eaac04f9613b816dea3391c566e804faa1252d85ff093ea68a7c17ff0066
 
 out=$root/dataset/corpus-${CORPUS_SHA256:0:12}.tar.zst
 cache=${BILBO_EVALS_CACHE:-${XDG_CACHE_HOME:-$HOME/.cache}/bilbo-evals}/retrieval/transcripts
@@ -106,6 +106,28 @@ MoonshotAI/kimi-cli 2026-03-10T04:53:18Z transcripts1/516b7270-b0ab-4d34-9e4d-1f
 MoonshotAI/kimi-cli 2026-03-10T07:50:21Z transcripts/7719a9c7-6657-41ab-ad59-9617421811df.jsonl
 MoonshotAI/kimi-cli 2026-03-10T09:08:52Z transcripts/116e5aa5-77ff-42f7-b1e4-067c43f61818.jsonl
 MoonshotAI/kimi-cli 2026-03-11T07:56:39Z transcripts/7758c4c5-5d29-41e5-bc0a-b3091fd59b0c.jsonl
+Safecast/safecast-map-MCP 2026-02-11T13:00:38Z transcripts/b18f7e10-3ef7-4a1a-a610-3c3a57cd3bd2.jsonl
+Safecast/safecast-map-MCP 2026-02-16T04:08:01Z transcripts/20f9319f-a0e1-43f7-92da-b744b96c95d9.jsonl
+Safecast/safecast-map-MCP 2026-02-16T05:42:01Z transcripts/960e1199-4c77-4e97-9fa1-33fb9498a0a9.jsonl
+Safecast/safecast-map-MCP 2026-02-16T07:54:17Z transcripts/b6847497-f5f3-4b52-a8dd-39eafaa75c69.jsonl
+Safecast/safecast-map-MCP 2026-02-18T23:36:30Z transcripts/9140e479-d2cf-4f2a-83d2-c43dcac70eee.jsonl
+Safecast/safecast-map-MCP 2026-02-20T04:15:08Z transcripts/a851941e-91ed-4706-a4e2-39177a334681.jsonl
+Safecast/safecast-map-MCP 2026-02-20T09:19:37Z transcripts/b35d0ffa-3758-4c6a-a9d2-44ffa4ecf1ee.jsonl
+Safecast/safecast-map-MCP 2026-02-20T09:32:51Z transcripts/b86e41be-0756-455c-bc32-901d460eef6b.jsonl
+Safecast/safecast-map-MCP 2026-02-22T15:24:59Z transcripts/a63effd9-4778-47b8-8b1a-2e5a910fa1af.jsonl
+Safecast/safecast-map-MCP 2026-02-23T01:13:28Z transcripts/4349298f-34ca-435c-9350-4d15476e7a4e.jsonl
+Safecast/safecast-map-MCP 2026-02-24T07:37:43Z transcripts/8ea091c9-3998-4d23-aa1f-5732adaea61f.jsonl
+Safecast/safecast-map-MCP 2026-02-25T09:10:07Z transcripts/d3af4e36-d6e3-4220-9a81-ebca89484b4f.jsonl
+Safecast/safecast-map-MCP 2026-02-25T15:10:42Z transcripts/0852daa6-239f-424e-bdd6-79521b1cbc88.jsonl
+Safecast/safecast-map-MCP 2026-02-25T22:59:21Z transcripts/323f4137-d5cd-497a-ba7f-d2a1ce9660de.jsonl
+Safecast/safecast-map-MCP 2026-02-26T01:47:28Z transcripts/9e2616b7-587c-4f38-be28-d49345b61936.jsonl
+Safecast/safecast-map-MCP 2026-02-26T06:19:42Z transcripts/4df2f39a-53b2-4edb-8759-ac9db246bd91.jsonl
+Safecast/safecast-map-MCP 2026-02-26T13:09:47Z transcripts/f80e1c19-a344-4583-9cf6-5c9e7daf6737.jsonl
+Safecast/safecast-map-MCP 2026-02-27T14:34:17Z transcripts/ba492de5-dae3-4266-bb89-fd5c858092c4.jsonl
+Safecast/safecast-map-MCP 2026-02-28T04:57:08Z transcripts/e2172417-c330-4394-80c8-ae75a7da91f5.jsonl
+Safecast/safecast-map-MCP 2026-03-02T03:09:53Z transcripts/2da52712-c112-44d9-9bc5-68af6d178f26.jsonl
+Safecast/safecast-map-MCP 2026-03-03T13:38:55Z transcripts/bc583e35-b9e8-45bd-bdd1-b7275c4d77d2.jsonl
+Safecast/safecast-map-MCP 2026-03-04T01:21:15Z transcripts/38b54a46-5663-47ec-8f87-af920b1f4ba3.jsonl
 ababushkin/linear-cycle-drain 2026-05-22T15:04:52Z transcripts/dfb1d8d6-5014-4c8e-8420-98593c05d452.jsonl
 ababushkin/linear-cycle-drain 2026-05-23T07:09:27Z transcripts1/df8acbd6-6078-4599-afca-8c1f27104117.jsonl
 ababushkin/linear-cycle-drain 2026-05-23T13:41:08Z transcripts1/6f7f96be-151b-447b-9801-d97b0344e7b0.jsonl
@@ -145,6 +167,64 @@ ababushkin/linear-cycle-drain 2026-06-23T06:16:00Z transcripts1/8d6ea8ad-45c7-48
 ababushkin/linear-cycle-drain 2026-06-23T06:22:30Z transcripts1/2b015bc9-f784-44bc-a1f6-65c1d66f41ec.jsonl
 ababushkin/linear-cycle-drain 2026-06-23T10:34:19Z transcripts1/fc19ab21-914f-47c3-b619-c21eaf38561f.jsonl
 ababushkin/linear-cycle-drain 2026-06-23T11:03:38Z transcripts/f9197be4-db62-490d-8eef-157574f44b34.jsonl
+achildrenmile/bosarsalog 2026-02-15T10:10:01Z transcripts1/4fad57e0-08c3-465e-b5c7-b843989b5a46.jsonl
+achildrenmile/bosarsalog 2026-02-15T11:56:25Z transcripts/2a33c1f0-1609-4959-9904-91ae778bddda.jsonl
+achildrenmile/bosarsalog 2026-02-16T07:15:37Z transcripts1/461ccc04-e951-4f15-b21f-f1c732dd3667.jsonl
+achildrenmile/bosarsalog 2026-02-16T13:43:20Z transcripts1/e0ab8722-350a-4e36-83d7-22c437ec33cd.jsonl
+achildrenmile/bosarsalog 2026-02-16T14:43:14Z transcripts1/dc8a8949-5565-4a85-a67a-3cadf10e1936.jsonl
+achildrenmile/bosarsalog 2026-02-16T18:14:52Z transcripts1/6a216e27-0036-4285-9be7-fe9753b90aca.jsonl
+achildrenmile/bosarsalog 2026-02-16T19:31:54Z transcripts1/f3619e03-9d1e-4cfc-95cc-2af785639c53.jsonl
+achildrenmile/bosarsalog 2026-02-17T16:11:36Z transcripts1/fea1333a-a7e9-44e5-9a3d-9e6e2cf0c4e3.jsonl
+achildrenmile/bosarsalog 2026-02-17T18:29:05Z transcripts1/33d8e7b4-37c8-4a39-9bf1-1d2b56aa8be3.jsonl
+achildrenmile/bosarsalog 2026-02-24T19:14:35Z transcripts1/7d36dfe9-1644-4da7-aeb9-ef74a092d12c.jsonl
+achildrenmile/bosarsalog 2026-02-24T19:35:53Z transcripts1/6a97a4cc-3b28-4ddc-90a0-a07287463f2a.jsonl
+achildrenmile/bosarsalog 2026-02-24T20:13:30Z transcripts/47641f8a-2768-48b1-80d1-f5ce1ff72e81.jsonl
+achildrenmile/bosarsalog 2026-02-24T20:13:31Z transcripts1/8fe1ab72-5959-4535-87e9-f9e120378f3d.jsonl
+achildrenmile/bosarsalog 2026-02-25T06:25:56Z transcripts/013e9a46-7047-41cf-9e91-46c53d5aca1f.jsonl
+achildrenmile/bosarsalog 2026-02-25T06:50:38Z transcripts1/96d8ab46-33fc-42f9-b250-da5ea8eafd3a.jsonl
+achildrenmile/bosarsalog 2026-02-25T07:36:26Z transcripts/d9f35ffc-1637-4992-a696-d51accfa31c2.jsonl
+achildrenmile/bosarsalog 2026-02-25T08:25:55Z transcripts/d40b7114-7701-4b28-b9dd-b300e7aa9394.jsonl
+achildrenmile/bosarsalog 2026-03-02T09:30:17Z transcripts1/9ff48ab2-2ddc-4f81-a10f-8f3836db2506.jsonl
+achildrenmile/bosarsalog 2026-03-02T19:28:35Z transcripts/abcc5a4f-9583-427f-85cf-1c4283b3d576.jsonl
+achildrenmile/bosarsalog 2026-03-02T22:46:03Z transcripts1/ccf13571-f85b-4be8-b142-9e5e060af664.jsonl
+achildrenmile/bosarsalog 2026-03-03T07:21:54Z transcripts1/613e732b-201d-4dba-84de-089659d98cfc.jsonl
+achildrenmile/bosarsalog 2026-03-15T21:15:11Z transcripts1/1f303b0c-b261-4c38-b120-381193d1d1dd.jsonl
+achildrenmile/bosarsalog 2026-05-10T18:50:52Z transcripts1/6a11b066-ab08-47ec-837f-bea27bda801e.jsonl
+achildrenmile/bosarsalog 2026-06-01T05:10:44Z transcripts/cd0d2355-a2a4-4701-a7ca-c25458bfafef.jsonl
+entireio/go-nuts 2026-07-10T11:51:43Z transcripts/b19adb79-1a3a-463d-b5df-57c95724b4b7.jsonl
+entireio/go-nuts 2026-07-10T13:00:25Z transcripts/80c151b5-6e53-4d70-a24f-e06b58b2d83d.jsonl
+entireio/go-nuts 2026-07-14T08:27:03Z transcripts1/72bff985-4a1a-4a24-ab7e-a7ad3dba9c7e.jsonl
+entireio/go-nuts 2026-07-16T11:12:05Z transcripts/033c3992-c4df-4e86-a73c-f74bbec4bd33.jsonl
+entireio/go-nuts 2026-07-17T10:56:38Z transcripts/9a9a1b8a-7091-45cd-961d-b5a3f1341316.jsonl
+entireio/go-nuts 2026-08-10T18:01:28Z transcripts1/543cc1b7-5c73-41d8-a92b-d8e90b5c5b50.jsonl
+entireio/go-nuts 2026-08-12T14:07:59Z transcripts1/92803846-44fa-4a98-9cfa-8f103b196f32.jsonl
+entireio/go-nuts 2026-08-12T16:33:19Z transcripts/fdaa4d69-95e1-4f90-a1a4-c28bb1a1c3ac.jsonl
+entireio/go-nuts 2026-08-13T07:56:01Z transcripts1/7613ebe4-ca24-471a-8d20-f6bc356c5f8e.jsonl
+entireio/go-nuts 2026-08-13T12:09:10Z transcripts/86391b05-8edc-4261-97ce-c28aa0be977f.jsonl
+entireio/go-nuts 2026-08-14T14:39:32Z transcripts/d2e2972a-5403-4def-9c9c-8f3771242207.jsonl
+entireio/go-nuts 2026-08-14T15:40:48Z transcripts1/eb0b9643-97cb-4ad8-a938-caaf0606b585.jsonl
+henryph24/neuralips26 2026-04-07T17:10:10Z transcripts/1afea02a-acd8-4499-9d25-279b3a0c11a9.jsonl
+henryph24/neuralips26 2026-04-08T18:29:29Z transcripts/db4a8d3b-caab-4f7d-92a6-ade807e32f39.jsonl
+henryph24/neuralips26 2026-04-09T09:02:11Z transcripts/582b8944-aace-48ed-853a-155dd9b5ff68.jsonl
+henryph24/neuralips26 2026-04-09T13:04:00Z transcripts/9fde1548-1a2b-4dc8-b9fa-6150f8d3d21d.jsonl
+henryph24/neuralips26 2026-04-09T16:44:26Z transcripts/5ab2777b-c8a9-4ab2-8d84-364c71597977.jsonl
+henryph24/neuralips26 2026-04-09T16:44:28Z transcripts/b2b5366b-6963-4be6-be4a-ce094982febd.jsonl
+henryph24/neuralips26 2026-04-10T07:54:52Z transcripts/fc463366-d96e-469b-b8ca-4c0c4afa40e2.jsonl
+henryph24/neuralips26 2026-04-10T10:26:13Z transcripts/4df34b53-9a00-4833-b743-861a1f104931.jsonl
+henryph24/neuralips26 2026-04-14T05:07:15Z transcripts/01bdfe47-aa15-42ed-bb6a-71aedb7e8063.jsonl
+henryph24/neuralips26 2026-04-14T12:18:02Z transcripts/19e7d2d8-dbb5-461b-acd5-341bf783f757.jsonl
+henryph24/neuralips26 2026-04-15T15:09:11Z transcripts/370a641a-4f3f-4f1b-9338-a4bdaf027e61.jsonl
+henryph24/neuralips26 2026-04-15T15:09:18Z transcripts/a34b6199-9b61-4012-9e65-841a686ad2b1.jsonl
+henryph24/neuralips26 2026-04-17T08:54:48Z transcripts/c5a9377e-2658-48ae-871b-1af5067c1578.jsonl
+henryph24/neuralips26 2026-04-18T03:05:27Z transcripts/acb3b7d2-0f13-4bfe-bfc9-166e59c3c607.jsonl
+henryph24/neuralips26 2026-04-18T10:26:19Z transcripts/dd693f48-c8c7-464a-9721-c339ef9012ee.jsonl
+henryph24/neuralips26 2026-04-20T03:51:15Z transcripts1/1439812d-4c89-4bd0-ad09-396f408f413b.jsonl
+henryph24/neuralips26 2026-04-20T11:09:29Z transcripts/7e95990f-b0aa-4d9a-a78c-0389c772eba7.jsonl
+henryph24/neuralips26 2026-04-20T11:09:32Z transcripts/950afe9d-51e4-4401-8ff6-3f00569d50c3.jsonl
+henryph24/neuralips26 2026-04-21T10:10:44Z transcripts1/73aa526d-b2de-42af-9096-dd737fc6c36e.jsonl
+henryph24/neuralips26 2026-04-22T07:23:15Z transcripts1/4a095dfb-66ac-41d7-90e0-2f69f6bcc013.jsonl
+henryph24/neuralips26 2026-04-22T07:23:18Z transcripts/8ef779a5-0625-43ff-a62e-44cdbbd544e8.jsonl
+henryph24/neuralips26 2026-04-24T01:15:46Z transcripts1/281fca7c-6430-4ae0-ba1f-02aa219048d6.jsonl
 ngngardner/readaloud 2026-03-12T23:21:53Z transcripts/ca2f8b89-21d0-4da2-91f1-7b17c04613a4.jsonl
 ngngardner/readaloud 2026-05-01T20:58:34Z transcripts1/313a90af-7255-4653-b5ba-0440308fb9fa.jsonl
 ngngardner/readaloud 2026-05-01T20:58:34Z transcripts1/c28fe12d-c40c-4c90-961f-12d3f036eeb7.jsonl
@@ -209,4 +289,13 @@ port-experimental/port-cli 2026-06-24T10:41:51Z transcripts/b4014210-53b5-4f24-8
 port-experimental/port-cli 2026-06-25T10:25:41Z transcripts1/78c61f4b-fac0-4488-afa1-d63040218ae8.jsonl
 port-experimental/port-cli 2026-07-02T10:40:08Z transcripts/144bb8bd-3844-473f-9808-ba96d5ef4026.jsonl
 port-experimental/port-cli 2026-07-06T17:05:20Z transcripts1/1db8024f-af27-4682-a497-50e95a046f1b.jsonl
+scottdensmore/contoso 2026-08-12T03:58:43Z transcripts1/4368fb93-c8cc-4d91-99ab-3d6d4964d7d7.jsonl
+scottdensmore/contoso 2026-08-16T01:03:54Z transcripts/6981b884-fc97-4527-9bb8-dfe067a590b0.jsonl
+scottdensmore/contoso 2026-08-17T06:03:46Z transcripts1/7e777541-03c5-42ee-bd9f-59ae0f93daad.jsonl
+scottdensmore/contoso 2026-08-17T06:10:42Z transcripts1/32326432-9961-4c06-ab5c-44ff606dccde.jsonl
+scottdensmore/contoso 2026-08-17T17:04:55Z transcripts1/7d209c9f-4ef0-437a-9a43-a48e7ac452d3.jsonl
+scottdensmore/contoso 2026-08-17T23:40:04Z transcripts/89a8e71c-0cc2-4723-bb0b-893448362963.jsonl
+scottdensmore/contoso 2026-08-18T18:48:09Z transcripts/32aea79c-3855-4190-9ae4-5916c6d50c99.jsonl
+scottdensmore/contoso 2026-08-19T21:37:50Z transcripts1/93f6c8cf-8698-4af0-962b-05046cda36d1.jsonl
+scottdensmore/contoso 2026-08-21T04:53:55Z transcripts1/76d36c20-8877-449b-bb72-3ba33106b3cc.jsonl
 EOF
