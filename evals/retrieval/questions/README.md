@@ -6,8 +6,8 @@ project's sessions, since every store is built from all of them.
 
 ## Files
 
-- `questions.jsonl`: the 118 questions, one per line. Committing it freezes it.
-- `dropped.jsonl`: the 462 questions that failed a check or the audit, with the reason.
+- `questions.jsonl`: the 130 questions, one per line. Committing it freezes it.
+- `dropped.jsonl`: the 493 questions that failed a check or the audit, with the reason.
 - `classes.json`: the classes, with the weight of each.
 
 ## The classes
@@ -40,19 +40,20 @@ project's sessions hold.
 | `rules` | 12 | 3 | 0 | 1 | 7 | 1 |
 | `procedure` | 4 | 0 | 0 | 1 | 2 | 1 |
 | `fact` | 17 | 0 | 2 | 7 | 6 | 2 |
-| `refind` | 8 | 1 | 1 | 2 | 2 | 2 |
-| answerable | 94 | 14 | 7 | 28 | 26 | 19 |
+| `refind` | 20 | 7 | 0 | 4 | 2 | 7 |
+| answerable | 106 | 20 | 6 | 30 | 26 | 24 |
 | no answer | 24 | 5 | 5 | 5 | 4 | 5 |
-| all | 118 | 19 | 12 | 33 | 30 | 24 |
+| all | 130 | 25 | 11 | 35 | 30 | 29 |
 
-- The headline covers all seven classes, 94 answerable questions, weighted 85, 41, 54, 54, 34, 38 and 11.
+- The headline covers all seven classes, 106 answerable questions, weighted 85, 41, 54, 54, 34, 38 and 11.
 - The small classes weigh more per question: a `procedure` question carries about 2.7% of the headline and a
-  `refind` question about 0.4%, against about 1.3% for an `overview` question.
+  `refind` question about 0.2% (11 of 317, over 20 questions), against about 1.3% for an `overview` question.
 - The no-answer questions look like `fact` (14), `decision` (8), `procedure` (1) and `refind` (1) questions.
 - Every question is drafted; none is harvested (below).
-- readaloud ships no `decision` question, and kimi-cli no `status`, `rules` or `procedure` question.
+- readaloud ships no `decision` question, and kimi-cli no `status`, `rules`, `procedure` or `refind` question.
 - Every class but `refind` has fewer questions than the plan gave it, since the audit failed every question whose
   answer the project's files hold (Filling and the audit, below).
+  `refind` has 20, against the plan's 8, after a later fill (The refind fill, below).
 
 ## A question
 
@@ -114,8 +115,12 @@ A question is dropped, and written to `dropped.jsonl` with its `reason`, when:
 - `not_unique`: more than one answer fits.
 - `guessable`: a model with no memory of the sessions answers it.
 - `duplicate`: another question asks the same.
+- `commit_event`: a `refind` question whose event is a commit, push, merge, tag or release, or a pull request opened
+  or merged, or whose identifying detail is a commit hash, a commit message or one of those events. Git or the
+  hosting service answers it, not memory.
 
-A drop found by the audit has a `detail` that starts with `audit:`. The audit also settled these cases:
+A drop found by the audit has a `detail` that starts with `audit:`. A drop by the commit rule has one that starts
+with `rule:`. The audit also settled these cases:
 
 - The commit of the last session is an end tree, even on a branch that was never merged (kimi-cli-001).
 - Git history is not a file for `in_repo`, but a commit counts for `not_current` and `not_unique`.
@@ -124,22 +129,24 @@ A drop found by the audit has a `detail` that starts with `audit:`. The audit al
 - A question with no answer fails when the sessions show its premise false at the time (readaloud-112). It passes
   when the premise held when the value was set (iptvnator-237), or when nothing contradicts it (kimi-cli-029).
 
-| Reason | At mining | At the audit | All |
-|---|---:|---:|---:|
-| `in_repo` | 45 | 116 | 161 |
-| `unsupported` | 152 | 19 | 171 |
-| `not_current` | 24 | 24 | 48 |
-| `not_unique` | 25 | 19 | 44 |
-| `guessable` | 6 | 28 | 34 |
-| `duplicate` | 1 | 3 | 4 |
-| all | 253 | 209 | 462 |
+| Reason | At mining | At the audit | By rule | All |
+|---|---:|---:|---:|---:|
+| `in_repo` | 47 | 117 | 0 | 164 |
+| `unsupported` | 158 | 19 | 0 | 177 |
+| `not_current` | 24 | 25 | 0 | 49 |
+| `not_unique` | 28 | 26 | 0 | 54 |
+| `guessable` | 6 | 28 | 0 | 34 |
+| `duplicate` | 1 | 3 | 0 | 4 |
+| `commit_event` | 0 | 1 | 10 | 11 |
+| all | 264 | 219 | 10 | 493 |
 
 ## How the questions were made
 
 In the first round, one script made every model call, with the prompts below, frozen before mining began. Claude
 Opus 5.5 read, drafted and wrote; gpt-6.1-sol, from another model family, checked; Claude Opus 5.5 reviewers with
-tools audited. A second round for rules and procedure (the last subsection) added agents with tools around the same
-frozen writers and checks.
+tools audited. A second round for rules and procedure (below) added agents with tools around the same
+frozen writers and checks. A later fill for `refind` (the last subsection) ran the same frozen writers and checks
+on drafts the first round left unused.
 
 1. **Views.** Each session is shown with the line numbers of its raw file. A long payload shows its head and its
    tail, and an overflow call reads each cut middle whole, so a fact that lives only there is kept.
@@ -225,6 +232,28 @@ class out of the headline (since dropped, see Corrections). A second round tried
   model family, also read the sessions for flows, without the ledgers. A first pass checked 30 and failed them all.
   An exhaustive second pass grouped 747 command shapes and 557 developer asks and checked 60. It left one candidate,
   a one-time setup with a weak subject, which was not drafted or audited.
+
+### The refind fill
+
+- **Why.** `refind` had the plan's 8 questions. The target became 20.
+- **The commit rule.** A `refind` question may not ask about a commit, push, merge, tag, release, or a pull request
+  opened or merged, nor hold a commit hash or message as its detail (What a question is not, above). It dropped 5 of
+  the 8 shipped questions and 5 of the 6 audited spares. readaloud-100's event was an incident but its detail was a
+  hotfix commit, so Claude Opus 5.5 re-drafted the detail from another line of its session; it was checked and
+  audited again and passed. port-cli-083, an audited spare, was promoted.
+- **The day check.** At selection, the local day of a candidate is read from the developer's own commits. A candidate
+  whose line falls on another local day than its UTC day is not sent.
+- **The pool.** 130 unused drafts, taken in seeded order; 45 were eligible after the rule and the day check.
+- **The cells.** The first round's shares gave 3, 2, 5, 5 and 5. A repo with no candidates left handed its shortfall
+  to the repos that had some, in a fixed order. The final split is iptvnator 7, kimi-cli 0, linear-cycle-drain 4,
+  readaloud 2 and port-cli 7, counting the 3 questions that stood.
+- **The checks.** The first round's fill loop: the writer check before ids, the query writer, gpt-6.1-sol's checks
+  with repoint and one repair, and 1.5 times over-production. Two Claude Opus 5.5 auditors judged each question on
+  their own, and an adjudicator ruled on splits and fixes. A last screen of the shipped questions found that
+  kimi-cli-051's evidence quoted a commit message, and it was dropped at the audit as `commit_event`.
+- **The funnel.** 45 eligible, 40 sent, 2 refused as unclear before ids, 38 ids (39 with readaloud-100), 28 sol
+  passes, 19 audit passes, 18 after the last screen, and 20 questions shipped with the 3 that stood (port-cli-083
+  among them). One audit pass is a spare. A Claude Sonnet 5.5 worker ran the tools.
 
 ## The prompts
 
@@ -2266,3 +2295,9 @@ Any change after the questions are committed is listed here, one line each.
   decided before any strategy was scored.
 - 2026-10-13: dropped `target` and `no_answer_target` from `classes.json` and the target column from the counts:
   nothing scores by them, and the plan they set is under Filling.
+- 2026-10-14: dropped 5 `refind` questions (kimi-cli-024, linear-cycle-drain-105, linear-cycle-drain-106,
+  readaloud-101, port-cli-081) whose event or detail is a commit, push or pull request, as `commit_event`, and 5
+  audited refind spares for the same reason; re-drafted readaloud-100's detail, a commit hash, and checked and
+  audited it again.
+- 2026-10-14: filled `refind` to 20 with port-cli-083, an audited spare, and 16 questions from the first round's
+  unused drafts; 21 rows to `dropped.jsonl`; counts, drops, method and the `commit_event` reason updated.
