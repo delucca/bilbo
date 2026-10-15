@@ -9,7 +9,7 @@ root=$(cd "$(dirname "$0")/.." && pwd)
 
 DATASET=SALT-NLP/SWE-chat
 REVISION=202b071f18e03c79df5a7287565ce2ebc5ee7756
-CORPUS_SHA256=f2c9eaac04f9613b816dea3391c566e804faa1252d85ff093ea68a7c17ff0066
+CORPUS_SHA256=4fa3b3a36df3465502a687a0a577d803b8f2cbde876b252212dddf9c91d829d5
 
 out=$root/dataset/corpus-${CORPUS_SHA256:0:12}.tar.zst
 cache=${BILBO_EVALS_CACHE:-${XDG_CACHE_HOME:-$HOME/.cache}/bilbo-evals}/retrieval/transcripts
@@ -191,6 +191,7 @@ achildrenmile/bosarsalog 2026-03-03T07:21:54Z transcripts1/613e732b-201d-4dba-84
 achildrenmile/bosarsalog 2026-03-15T21:15:11Z transcripts1/1f303b0c-b261-4c38-b120-381193d1d1dd.jsonl
 achildrenmile/bosarsalog 2026-05-10T18:50:52Z transcripts1/6a11b066-ab08-47ec-837f-bea27bda801e.jsonl
 achildrenmile/bosarsalog 2026-06-01T05:10:44Z transcripts/cd0d2355-a2a4-4701-a7ca-c25458bfafef.jsonl
+eldios/dotfiles 2026-07-22T23:18:25Z transcripts1/e7611564-a9f2-4b7f-b17e-1685338102c0.jsonl
 entireio/go-nuts 2026-07-10T11:51:43Z transcripts/b19adb79-1a3a-463d-b5df-57c95724b4b7.jsonl
 entireio/go-nuts 2026-07-10T13:00:25Z transcripts/80c151b5-6e53-4d70-a24f-e06b58b2d83d.jsonl
 entireio/go-nuts 2026-07-14T08:27:03Z transcripts1/72bff985-4a1a-4a24-ab7e-a7ad3dba9c7e.jsonl

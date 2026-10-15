@@ -6,8 +6,8 @@ project's sessions, since every store is built from all of them.
 
 ## Files
 
-- `questions.jsonl`: the 139 questions, one per line. Committing it freezes it.
-- `dropped.jsonl`: the 561 questions that failed a check or the audit, with the reason.
+- `questions.jsonl`: the 140 questions, one per line. Committing it freezes it.
+- `dropped.jsonl`: the 564 questions that failed a check or the audit, with the reason.
 - `classes.json`: the classes, with the weight of each.
 
 ## The classes
@@ -32,7 +32,8 @@ project's sessions hold.
 
 ## The counts
 
-The first five projects were chosen by metadata, the five added for `procedure` by a screen (A third round, below).
+The first five projects were chosen by metadata, the six added for `procedure` by a screen (A third round and A
+fourth round, below).
 
 | Project | `overview` | `status` | `decision` | `rules` | `procedure` | `fact` | `refind` | answerable | no answer | all |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
@@ -47,22 +48,23 @@ The first five projects were chosen by metadata, the five added for `procedure` 
 | go-nuts | 0 | 0 | 0 | 0 | 2 | 0 | 0 | 2 | 0 | 2 |
 | neuralips26 | 0 | 0 | 0 | 0 | 1 | 0 | 0 | 1 | 0 | 1 |
 | contoso | 0 | 0 | 0 | 0 | 4 | 0 | 0 | 4 | 0 | 4 |
-| **added five** | 0 | 0 | 0 | 0 | 9 | 0 | 0 | 9 | 0 | 9 |
-| **all ten** | 21 | 18 | 14 | 12 | 13 | 17 | 20 | 115 | 24 | 139 |
+| eldios-dotfiles | 0 | 0 | 0 | 0 | 1 | 0 | 0 | 1 | 0 | 1 |
+| **added six** | 0 | 0 | 0 | 0 | 10 | 0 | 0 | 10 | 0 | 10 |
+| **all eleven** | 21 | 18 | 14 | 12 | 14 | 17 | 20 | 116 | 24 | 140 |
 
-- The headline covers all seven classes, 115 answerable questions, weighted 85, 41, 54, 54, 34, 38 and 11.
+- The headline covers all seven classes, 116 answerable questions, weighted 85, 41, 54, 54, 34, 38 and 11.
 - A question's share of the headline is its class's weight over its count: about 1.3% for an `overview` question, 0.8%
-  for a `procedure` question (34 of 317, over 13 questions) and 0.2% for a `refind` question (11 of 317, over 20
+  for a `procedure` question (34 of 317, over 14 questions) and 0.2% for a `refind` question (11 of 317, over 20
   questions).
 - The no-answer questions look like `fact` (14), `decision` (8), `procedure` (1) and `refind` (1) questions.
 - Every question is drafted; none is harvested (below).
 - iptvnator ships no `procedure` or `fact` question, readaloud no `decision` question, and kimi-cli no `status`,
-  `rules`, `procedure` or `refind` question. The five added projects ship `procedure` questions only (9 of the 13), and
+  `rules`, `procedure` or `refind` question. The six added projects ship `procedure` questions only (10 of the 14), and
   no question with no answer.
 - Every class but `refind` has fewer questions than the plan gave it, since the audit failed every question whose
   answer the project's files hold (Filling and the audit, below).
-  `refind` has 20, against the plan's 8, after a later fill (The refind fill, below). `procedure` has 13, against 24,
-  after the third round (below).
+  `refind` has 20, against the plan's 8, after a later fill (The refind fill, below). `procedure` has 14, against 24,
+  after the third and fourth rounds (below).
 
 ## A question
 
@@ -140,22 +142,23 @@ with `rule:`. The audit also settled these cases:
 
 | Reason | At mining | At the audit | By rule | All |
 |---|---:|---:|---:|---:|
-| `in_repo` | 53 | 126 | 0 | 179 |
-| `unsupported` | 176 | 21 | 0 | 197 |
+| `in_repo` | 53 | 127 | 0 | 180 |
+| `unsupported` | 177 | 22 | 0 | 199 |
 | `not_current` | 26 | 29 | 0 | 55 |
 | `not_unique` | 38 | 31 | 0 | 69 |
 | `guessable` | 7 | 38 | 0 | 45 |
 | `duplicate` | 1 | 4 | 0 | 5 |
 | `commit_event` | 0 | 1 | 10 | 11 |
-| all | 301 | 250 | 10 | 561 |
+| all | 302 | 252 | 10 | 564 |
 
 ## How the questions were made
 
 In the first round, one script made every model call, with the prompts below, frozen before mining began. Claude
 Opus 5.5 read, drafted and wrote; gpt-6.1-sol, from another model family, checked; Claude Opus 5.5 reviewers with
 tools audited. A second round for rules and procedure (below) added agents with tools around the same
-frozen writers and checks. A third round added `procedure` questions from five more projects, and a later fill for
-`refind` (the last subsection) ran the same frozen writers and checks on drafts the first round left unused.
+frozen writers and checks. A third round added `procedure` questions from five more projects, a fourth from one more
+with Codex models in every stage before a last Claude check, and a later fill for `refind` (the last subsection) ran
+the same frozen writers and checks on drafts the first round left unused.
 
 1. **Views.** Each session is shown with the line numbers of its raw file. A long payload shows its head and its
    tail, and an overflow call reads each cut middle whole, so a fact that lives only there is kept.
@@ -213,7 +216,7 @@ The audit is also why the classes came up short of the plan. It failed every que
 files hold, and much of what a session settles ends up in a file: a decision's reason in a code comment, a rule in
 `AGENTS.md`, a procedure in the README. Besides `refind` (8 of 8), `status` and `fact` kept the most of their counts
 (62% and 63%), `procedure` and `rules` the least (17%, and 32% with the second round's three). The third round
-brought `procedure` to 54%. 24 of the 25 questions with no answer shipped.
+brought `procedure` to 54%, and the fourth to 58%. 24 of the 25 questions with no answer shipped.
 
 ### A second round for rules and procedure
 
@@ -274,6 +277,32 @@ screened for work the project's files do not hold, which is what survives the au
 - **The result.** `procedure` goes from 4 questions to 13, short of the 24 the plan gave it.
 - **The bias.** Operations-heavy, thinly documented projects pass this screen and the audit more often, so the added
   projects are not a sample, and 5 of the 9 new questions ask about services outside the repository.
+
+### A fourth round: procedure from more screened projects
+
+After the third round `procedure` had 13 questions. A fourth round ran the third round's method on the projects its
+screen had not read, with Codex models in every stage, and one Claude check at the end.
+
+- **The pool.** A no-LLM screen of the same kind, recalibrated on the third round's gates, read three pools: the
+  repositories the third round left unscreened, now with forks and projects of several developers taken as one
+  developer's sessions; the rest of its earlier ranking; and projects under licences the third round's list left out.
+  Each pool gave 24 nominations. 61 of the 72 had a clone and a historical tree, and after a short read by
+  gpt-6.1-sol 11 went to the gate.
+- **The gate.** gpt-6.1-sol judges read the sessions and every instruction file of the 11, as in the third round, and
+  admitted 4: three passed the forecast of 1.0, and one small project was admitted at 0.9.
+- **Mining.** The first round's frozen prompts ran on gpt-6.1-sol (drafts, ledgers and checks) and gpt-6-astra
+  (consolidation and topic links), with the third round's two drafting routes. One mined project, content-factory, is
+  not audited yet and is not counted here.
+- **The audit.** gpt-6.1-sol auditors with tools read the sessions, the files at the end tree and every commit up to
+  the cutoff, and gpt-6-astra ruled on every verdict. A last Claude Opus 5.5 check read the survivor on its own before
+  reading either verdict, and passed it.
+- **The funnel.** 11 rows audited from three projects, 1 passed, with three mechanical fixes. The one question,
+  `eldi870f-003`, asks how the developer repaired corrupt narinfo entries in their own binary cache. eldios/dotfiles
+  joins the corpus with its one session; the other two projects ship nothing and stay out of the corpus, their drops
+  with them, as in the third round. eldios/dotfiles is CC0-1.0, a licence the third round's list did not include.
+- **The result.** `procedure` goes from 13 questions to 14.
+- **The caveat.** The drafter, the checks, the audit and the adjudication were all Codex models; only the last check
+  came from another family. The earlier rounds had Claude drafters and a Codex check.
 
 ### The refind fill
 

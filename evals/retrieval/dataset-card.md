@@ -10,8 +10,8 @@ The data of [bilbo](https://github.com/delucca/bilbo)'s retrieval eval: which me
 happened in real coding sessions? The code, and how each file here was made, is in
 [evals/retrieval](https://github.com/delucca/bilbo/tree/next/evals/retrieval).
 
-- `corpus-<sha12>.tar.zst`: 234 real coding sessions from ten open-source projects, untouched, one file per session.
-  `<sha12>` starts the archive's sha256. The first five projects were chosen by metadata, the other five by a screen
+- `corpus-<sha12>.tar.zst`: 235 real coding sessions from eleven open-source projects, untouched, one file per session.
+  `<sha12>` starts the archive's sha256. The first five projects were chosen by metadata, the other six by a screen
   for procedure.
 - `store-<arm>-<key>.tar.zst`: the memory one strategy built from the corpus. `<key>` hashes what shapes it: the
   corpus, the embedder, the LLM for an arm that uses one, and the arm's files.
