@@ -32,23 +32,24 @@ download the pinned one and check its sha256, else build it.
 
 ## The corpus
 
-`dataset/corpus-dd44b0767e4b.tar.zst` holds 291 real coding sessions from seventeen public projects, untouched: one
-file per session, grouped by project. 289 are from Claude Code, 2 from Cursor.
+`dataset/corpus-763988dcb3ab.tar.zst` holds 403 real coding sessions from twenty-two public projects, untouched: one
+file per session, grouped by project. 401 are from Claude Code, 2 from Cursor.
 
 The first five projects (iptvnator, kimi-cli, linear-cycle-drain, readaloud, port-cli; 145 sessions) were chosen by
-their metadata. The other twelve (safecast-map-MCP, bosarsalog, go-nuts, neuralips26, contoso, eldios-dotfiles,
-content-factory, arosenfeld2003-cli, openclaw-skills, Cakebrew, entire-graph, superset-windows-arm64; 146 sessions)
-were added for `procedure` questions. A no-LLM screen scored SWE-chat's Claude Code repositories for commands their
-sessions kept running outside the repository: ssh, rsync, deploy and cloud CLIs, other machines' paths. A project
-larger than the largest of the first five went in as the contiguous run of its sessions with the highest screen score
-(neuralips26 is 22 of its 105 sessions). Claude Opus 5.5 judges read the sessions and files of 23 candidates, 11 were
-mined, and the 5 with a question that passed the audit joined the corpus. A fourth round ran the same method with
-Codex models on 11 more candidates, and eldios-dotfiles (one session) joined with one question. A fifth had a Gemini
-judge gate 42 reserve candidates, and six projects (56 sessions) joined with seven questions. Not every licence is an
-open-source one: superset-windows-arm64 is under Elastic-2.0 (each project's licence is in `questions/README.md`). This
-selection favours operations-heavy, thinly documented projects, so the added twelve are not a sample of SWE-chat. The
-method is in `questions/README.md`, "A third round: procedure from screened projects", "A fourth round" and "A fifth
-round".
+their metadata. The other seventeen (safecast-map-MCP, bosarsalog, go-nuts, neuralips26, contoso, eldios-dotfiles,
+content-factory, arosenfeld2003-cli, openclaw-skills, Cakebrew, entire-graph, superset-windows-arm64, wakil,
+pablo-companion, hackerspub-android, MiscMetabar, cavecrew-mcp; 258 sessions) were added for `procedure` questions. A
+no-LLM screen scored SWE-chat's Claude Code repositories for commands their sessions kept running outside the
+repository: ssh, rsync, deploy and cloud CLIs, other machines' paths. A project larger than the largest of the first
+five went in as the contiguous run of its sessions with the highest screen score (neuralips26 is 22 of its 105
+sessions). Claude Opus 5.5 judges read the sessions and files of 23 candidates, 11 were mined, and the 5 with a question
+that passed the audit joined the corpus. A fourth round ran the same method with Codex models on 11 more candidates, and
+eldios-dotfiles (one session) joined with one question. A fifth had a Gemini judge gate 42 reserve candidates, and six
+projects (56 sessions) joined with seven questions. A sixth mined seven more of the projects that gate admitted, and
+five (112 sessions) joined with five questions. Not every licence is an open-source one: superset-windows-arm64 is under
+Elastic-2.0 (each project's licence is in `questions/README.md`). This selection favours operations-heavy, thinly
+documented projects, so the added seventeen are not a sample of SWE-chat. The method is in `questions/README.md`, "A
+third round: procedure from screened projects", "A fourth round", "A fifth round" and "A sixth round".
 
 To get it:
 
@@ -64,8 +65,8 @@ A store is the memory one strategy builds from the corpus, `dataset/store-<arm>-
 needs no LLM. The key hashes what shapes a store: the corpus, the embedder, the LLM for an arm that uses one, and the
 files under `arms/<arm>/`. Change any of them and the key changes.
 
-The stores in `dataset.lock` were built from the previous corpus, `corpus-1235aec0592a`; none is built yet for this
-one.
+The stores in `dataset.lock` were built from an earlier corpus, `corpus-1235aec0592a`, the first five projects; none is
+built yet for this one.
 
 | Arm | Strategy | LLM | Published store |
 |---|---|---|---|
