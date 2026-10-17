@@ -32,19 +32,23 @@ download the pinned one and check its sha256, else build it.
 
 ## The corpus
 
-`dataset/corpus-4fa3b3a36df3.tar.zst` holds 235 real coding sessions from eleven open-source projects, untouched: one
-file per session, grouped by project. 233 are from Claude Code, 2 from Cursor.
+`dataset/corpus-dd44b0767e4b.tar.zst` holds 291 real coding sessions from seventeen public projects, untouched: one
+file per session, grouped by project. 289 are from Claude Code, 2 from Cursor.
 
 The first five projects (iptvnator, kimi-cli, linear-cycle-drain, readaloud, port-cli; 145 sessions) were chosen by
-their metadata. The other six (safecast-map-MCP, bosarsalog, go-nuts, neuralips26, contoso, eldios-dotfiles; 90
-sessions) were added for `procedure` questions. A no-LLM screen scored SWE-chat's Claude Code repositories for
-commands their sessions kept running outside the repository: ssh, rsync, deploy and cloud CLIs, other machines'
-paths. A project larger than the largest of the first five went in as the contiguous run of its sessions with the
-highest screen score (neuralips26 is 22 of its 105 sessions). Claude Opus 5.5 judges read the sessions and files of 23
-candidates, 11 were mined, and the 5 with a question that passed the audit joined the corpus. A fourth round ran the
-same method with Codex models on 11 more candidates, and eldios-dotfiles (one session) joined with one question. This
-selection favours operations-heavy, thinly documented projects, so the added six are not a sample of SWE-chat. The
-method is in `questions/README.md`, "A third round: procedure from screened projects" and "A fourth round".
+their metadata. The other twelve (safecast-map-MCP, bosarsalog, go-nuts, neuralips26, contoso, eldios-dotfiles,
+content-factory, arosenfeld2003-cli, openclaw-skills, Cakebrew, entire-graph, superset-windows-arm64; 146 sessions)
+were added for `procedure` questions. A no-LLM screen scored SWE-chat's Claude Code repositories for commands their
+sessions kept running outside the repository: ssh, rsync, deploy and cloud CLIs, other machines' paths. A project
+larger than the largest of the first five went in as the contiguous run of its sessions with the highest screen score
+(neuralips26 is 22 of its 105 sessions). Claude Opus 5.5 judges read the sessions and files of 23 candidates, 11 were
+mined, and the 5 with a question that passed the audit joined the corpus. A fourth round ran the same method with
+Codex models on 11 more candidates, and eldios-dotfiles (one session) joined with one question. A fifth had a Gemini
+judge gate 42 reserve candidates, and six projects (56 sessions) joined with seven questions. Not every licence is an
+open-source one: superset-windows-arm64 is under Elastic-2.0 (each project's licence is in `questions/README.md`). This
+selection favours operations-heavy, thinly documented projects, so the added twelve are not a sample of SWE-chat. The
+method is in `questions/README.md`, "A third round: procedure from screened projects", "A fourth round" and "A fifth
+round".
 
 To get it:
 
@@ -561,7 +565,7 @@ its counts.
 
 ## The questions
 
-`questions/questions.jsonl` holds the questions, one per line, each about one of the eleven projects. A question asks
+`questions/questions.jsonl` holds the questions, one per line, each about one of the twenty-two projects. A question asks
 for something the project's sessions settled and its files do not show: what the developer decided, was told, tried
 or left open. Its answer is a list of facts, each pointing at the session lines that state it. It comes in two forms:
 the prompt a developer would type in a later session, and the search an agent would run for it.

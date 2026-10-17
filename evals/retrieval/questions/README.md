@@ -6,8 +6,8 @@ project's sessions, since every store is built from all of them.
 
 ## Files
 
-- `questions.jsonl`: the 140 questions, one per line. Committing it freezes it.
-- `dropped.jsonl`: the 564 questions that failed a check or the audit, with the reason.
+- `questions.jsonl`: the 152 questions, one per line. Committing it freezes it.
+- `dropped.jsonl`: the 640 questions that failed a check or the audit, with the reason.
 - `classes.json`: the classes, with the weight of each.
 
 ## The classes
@@ -32,8 +32,8 @@ project's sessions hold.
 
 ## The counts
 
-The first five projects were chosen by metadata, the six added for `procedure` by a screen (A third round and A
-fourth round, below).
+The first five projects were chosen by metadata, the seventeen added for `procedure` by a screen (A third round, A
+fourth round, A fifth round and A sixth round, below).
 
 | Project | `overview` | `status` | `decision` | `rules` | `procedure` | `fact` | `refind` | answerable | no answer | all |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
@@ -49,22 +49,33 @@ fourth round, below).
 | neuralips26 | 0 | 0 | 0 | 0 | 1 | 0 | 0 | 1 | 0 | 1 |
 | contoso | 0 | 0 | 0 | 0 | 4 | 0 | 0 | 4 | 0 | 4 |
 | eldios-dotfiles | 0 | 0 | 0 | 0 | 1 | 0 | 0 | 1 | 0 | 1 |
-| **added six** | 0 | 0 | 0 | 0 | 10 | 0 | 0 | 10 | 0 | 10 |
-| **all eleven** | 21 | 18 | 14 | 12 | 14 | 17 | 20 | 116 | 24 | 140 |
+| content-factory | 0 | 0 | 0 | 0 | 1 | 0 | 0 | 1 | 0 | 1 |
+| arosenfeld2003-cli | 0 | 0 | 0 | 0 | 1 | 0 | 0 | 1 | 0 | 1 |
+| openclaw-skills | 0 | 0 | 0 | 0 | 1 | 0 | 0 | 1 | 0 | 1 |
+| Cakebrew | 0 | 0 | 0 | 0 | 2 | 0 | 0 | 2 | 0 | 2 |
+| entire-graph | 0 | 0 | 0 | 0 | 1 | 0 | 0 | 1 | 0 | 1 |
+| superset-windows-arm64 | 0 | 0 | 0 | 0 | 1 | 0 | 0 | 1 | 0 | 1 |
+| wakil | 0 | 0 | 0 | 0 | 1 | 0 | 0 | 1 | 0 | 1 |
+| cavecrew-mcp | 0 | 0 | 0 | 0 | 1 | 0 | 0 | 1 | 0 | 1 |
+| MiscMetabar | 0 | 0 | 0 | 0 | 1 | 0 | 0 | 1 | 0 | 1 |
+| hackerspub-android | 0 | 0 | 0 | 0 | 1 | 0 | 0 | 1 | 0 | 1 |
+| pablo-companion | 0 | 0 | 0 | 0 | 1 | 0 | 0 | 1 | 0 | 1 |
+| **added seventeen** | 0 | 0 | 0 | 0 | 22 | 0 | 0 | 22 | 0 | 22 |
+| **all twenty-two** | 21 | 18 | 14 | 12 | 26 | 17 | 20 | 128 | 24 | 152 |
 
-- The headline covers all seven classes, 116 answerable questions, weighted 85, 41, 54, 54, 34, 38 and 11.
-- A question's share of the headline is its class's weight over its count: about 1.3% for an `overview` question, 0.8%
-  for a `procedure` question (34 of 317, over 14 questions) and 0.2% for a `refind` question (11 of 317, over 20
+- The headline covers all seven classes, 128 answerable questions, weighted 85, 41, 54, 54, 34, 38 and 11.
+- A question's share of the headline is its class's weight over its count: about 1.3% for an `overview` question, 0.4%
+  for a `procedure` question (34 of 317, over 26 questions) and 0.2% for a `refind` question (11 of 317, over 20
   questions).
 - The no-answer questions look like `fact` (14), `decision` (8), `procedure` (1) and `refind` (1) questions.
 - Every question is drafted; none is harvested (below).
 - iptvnator ships no `procedure` or `fact` question, readaloud no `decision` question, and kimi-cli no `status`,
-  `rules`, `procedure` or `refind` question. The six added projects ship `procedure` questions only (10 of the 14), and
-  no question with no answer.
+  `rules`, `procedure` or `refind` question. The seventeen added projects ship `procedure` questions only (22 of the 26),
+  and no question with no answer.
 - Every class but `refind` has fewer questions than the plan gave it, since the audit failed every question whose
   answer the project's files hold (Filling and the audit, below).
-  `refind` has 20, against the plan's 8, after a later fill (The refind fill, below). `procedure` has 14, against 24,
-  after the third and fourth rounds (below).
+  `refind` has 20, against the plan's 8, after a later fill (The refind fill, below). `procedure` has 26, against 24,
+  after the third, fourth, fifth and sixth rounds (below).
 
 ## A question
 
@@ -142,14 +153,14 @@ with `rule:`. The audit also settled these cases:
 
 | Reason | At mining | At the audit | By rule | All |
 |---|---:|---:|---:|---:|
-| `in_repo` | 53 | 127 | 0 | 180 |
-| `unsupported` | 177 | 22 | 0 | 199 |
-| `not_current` | 26 | 29 | 0 | 55 |
-| `not_unique` | 38 | 31 | 0 | 69 |
-| `guessable` | 7 | 38 | 0 | 45 |
+| `in_repo` | 58 | 149 | 0 | 207 |
+| `unsupported` | 181 | 46 | 0 | 227 |
+| `not_current` | 30 | 30 | 0 | 60 |
+| `not_unique` | 46 | 34 | 0 | 80 |
+| `guessable` | 7 | 43 | 0 | 50 |
 | `duplicate` | 1 | 4 | 0 | 5 |
 | `commit_event` | 0 | 1 | 10 | 11 |
-| all | 302 | 252 | 10 | 564 |
+| all | 323 | 307 | 10 | 640 |
 
 ## How the questions were made
 
@@ -157,8 +168,9 @@ In the first round, one script made every model call, with the prompts below, fr
 Opus 5.5 read, drafted and wrote; gpt-6.1-sol, from another model family, checked; Claude Opus 5.5 reviewers with
 tools audited. A second round for rules and procedure (below) added agents with tools around the same
 frozen writers and checks. A third round added `procedure` questions from five more projects, a fourth from one more
-with Codex models in every stage before a last Claude check, and a later fill for `refind` (the last subsection) ran
-the same frozen writers and checks on drafts the first round left unused.
+with Codex models in every stage before a last Claude check, a fifth from six more behind a Gemini gate, a sixth from
+five more behind the same gate, and a later fill for `refind` (the last subsection) ran the same frozen writers and
+checks on drafts the first round left unused.
 
 1. **Views.** Each session is shown with the line numbers of its raw file. A long payload shows its head and its
    tail, and an overflow call reads each cut middle whole, so a fact that lives only there is kept.
@@ -216,7 +228,8 @@ The audit is also why the classes came up short of the plan. It failed every que
 files hold, and much of what a session settles ends up in a file: a decision's reason in a code comment, a rule in
 `AGENTS.md`, a procedure in the README. Besides `refind` (8 of 8), `status` and `fact` kept the most of their counts
 (62% and 63%), `procedure` and `rules` the least (17%, and 32% with the second round's three). The third round
-brought `procedure` to 54%, and the fourth to 58%. 24 of the 25 questions with no answer shipped.
+brought `procedure` to 54%, the fourth to 58%, the fifth to 88% and the sixth to 108% (26 of 24). 24 of the 25
+questions with no answer shipped.
 
 ### A second round for rules and procedure
 
@@ -291,8 +304,8 @@ screen had not read, with Codex models in every stage, and one Claude check at t
 - **The gate.** gpt-6.1-sol judges read the sessions and every instruction file of the 11, as in the third round, and
   admitted 4: three passed the forecast of 1.0, and one small project was admitted at 0.9.
 - **Mining.** The first round's frozen prompts ran on gpt-6.1-sol (drafts, ledgers and checks) and gpt-6-astra
-  (consolidation and topic links), with the third round's two drafting routes. One mined project, content-factory, is
-  not audited yet and is not counted here.
+  (consolidation and topic links), with the third round's two drafting routes. One mined project, content-factory,
+  was audited in the fifth round (below).
 - **The audit.** gpt-6.1-sol auditors with tools read the sessions, the files at the end tree and every commit up to
   the cutoff, and gpt-6-astra ruled on every verdict. A last Claude Opus 5.5 check read the survivor on its own before
   reading either verdict, and passed it.
@@ -303,6 +316,52 @@ screen had not read, with Codex models in every stage, and one Claude check at t
 - **The result.** `procedure` goes from 13 questions to 14.
 - **The caveat.** The drafter, the checks, the audit and the adjudication were all Codex models; only the last check
   came from another family. The earlier rounds had Claude drafters and a Codex check.
+
+### A fifth round: procedure from the reserves
+
+After the fourth round `procedure` had 14 questions. A fifth round gated the reserves the earlier screens had left
+with a Gemini judge, then mined and audited the admitted projects as the fourth round did.
+
+- **The calibration.** A Gemini 4 Argon judge first read, blind, 15 rows whose outcome was known: it kept all 9 that
+  had passed the audit and forwarded none of the 6 that had failed. Its verdicts were then taken at the standard of
+  the fourth round's gpt-6.1-sol gates.
+- **The gate.** It read the sessions and every instruction file of 42 reserve projects, in three batches, and
+  admitted 21.
+- **Mining.** Seven of the 21 were mined with the fourth round's models and its two drafting routes. One, zeo, was
+  interrupted and is not counted here. content-factory, mined in the fourth round, was audited with the other six.
+- **The audit.** gpt-6.1-sol auditors with tools and gpt-6-astra rulings, as in the fourth round. A last Claude Opus
+  5.5 check read the 9 survivors on their own and failed 2: one whose answer a committed file holds, and one with a
+  competing procedure in a session's checklist. gpt-6-astra, shown that evidence, agreed on both.
+- **The funnel.** 27 rows audited from seven projects, 9 passed the audit and 7 the last check. Six projects join the
+  corpus with 56 sessions; bGeigieZen ships nothing and stays out of the corpus, its drops with it, as in the third
+  round.
+- **The licences.** content-factory (26 sessions), arosenfeld2003-cli (4, a fork) and entire-graph (6) are MIT,
+  openclaw-skills (3) is MIT-0, Cakebrew (3, a fork) GPL-3.0, and superset-windows-arm64 (14) Elastic-2.0, a
+  source-available licence rather than an open-source one. Only MIT is on the third round's list.
+- **The result.** `procedure` goes from 14 questions to 21, short of the 24 the plan gave it.
+- **The caveat.** The gate was a Gemini model, and the drafting, checks, audit and adjudication Codex models; only the
+  last check came from Claude.
+
+### A sixth round: procedure from the Argon-gated reserves
+
+After the fifth round `procedure` had 21 questions. A sixth round mined and audited seven more projects admitted by
+the Gemini 4 Argon gate, following the fifth round's methods and models.
+
+- **Mining.** Seven projects were mined with the fourth round's models and two drafting routes: wakil (7 sessions),
+  bids-utils (21), cavecrew-mcp (8), MiscMetabar (31), hackerspub-android (36), pablo-companion (30), and
+  safecast-new-map (38).
+- **The audit.** gpt-6.1-sol auditors with tools and gpt-6-astra rulings, as in the fourth and fifth rounds. A last
+  Claude Opus 5.5 check read the seven prospective survivors across three cohorts and failed two Safecast rows:
+  one whose answer a committed guide file holds (`in_repo`) and one whose single-command answer is not supported as a
+  procedure. gpt-6-astra concurred on both. Two surviving rows had minor mechanical edits confirmed (`drop_fact f1`).
+- **The funnel.** 41 rows audited from seven projects, 7 passed the audit and 5 the last check. Five projects join
+  the corpus with 112 sessions; bids-utils and safecast-new-map ship nothing and stay out of the corpus, their drops
+  with them, as in the earlier rounds.
+- **The licences.** wakil is MIT, cavecrew-mcp is Apache-2.0, MiscMetabar is AGPL-3.0, hackerspub-android is AGPL-3.0,
+  and pablo-companion is AGPL-3.0.
+- **The result.** `procedure` goes from 21 questions to 26 answerable questions (27 total), reaching 108% of the plan.
+- **The caveat.** As in the fifth round, the gate was a Gemini model, and the drafting, checks, audit and
+  adjudication Codex models; only the last check came from Claude.
 
 ### The refind fill
 
@@ -2636,3 +2695,11 @@ Any change after the questions are committed is listed here, one line each.
 - 2026-10-14: added 9 `procedure` questions from five projects chosen by a screen (safecast-map-MCP, bosarsalog,
   go-nuts, neuralips26, contoso; 89 sessions) and 68 rows to `dropped.jsonl`; the corpus, counts, drops, method and
   briefs updated.
+- 2026-10-14: added 1 `procedure` question from eldios/dotfiles (eldi870f-003; 1 session) from a fourth round, and 3
+  rows to `dropped.jsonl`; counts, drops and method updated.
+- 2026-10-15: added 7 `procedure` questions from six projects behind the Gemini gate (content-factory,
+  arosenfeld2003-cli, openclaw-skills, Cakebrew, entire-graph, superset-windows-arm64; 56 sessions) and 26 rows to
+  `dropped.jsonl`; counts, drops and method updated.
+- 2026-10-17: added 5 `procedure` questions from five projects behind the Gemini gate (wakil, cavecrew-mcp,
+  MiscMetabar, hackerspub-android, pablo-companion; 112 sessions) and 50 rows to `dropped.jsonl`; counts, drops,
+  method and corrections updated.

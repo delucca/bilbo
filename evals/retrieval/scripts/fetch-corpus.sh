@@ -9,7 +9,7 @@ root=$(cd "$(dirname "$0")/.." && pwd)
 
 DATASET=SALT-NLP/SWE-chat
 REVISION=202b071f18e03c79df5a7287565ce2ebc5ee7756
-CORPUS_SHA256=4fa3b3a36df3465502a687a0a577d803b8f2cbde876b252212dddf9c91d829d5
+CORPUS_SHA256=dd44b0767e4b998fc1b898c7e52c14cace00d16a1680bed898676323f4bef936
 
 out=$root/dataset/corpus-${CORPUS_SHA256:0:12}.tar.zst
 cache=${BILBO_EVALS_CACHE:-${XDG_CACHE_HOME:-$HOME/.cache}/bilbo-evals}/retrieval/transcripts
@@ -84,6 +84,32 @@ fetch <<'EOF'
 4gray/iptvnator 2026-04-11T08:38:59Z transcripts/546d90a2-1403-4daa-9eb6-b46af8983d86.jsonl
 4gray/iptvnator 2026-04-12T17:27:58Z transcripts/02eb8642-e65b-4dc2-8f25-0f1de6a24d36.jsonl
 4gray/iptvnator 2026-04-16T19:57:25Z transcripts/27761a3e-ccfa-40c2-8ce7-b7fba58263d2.jsonl
+HackatonWinnners/content-factory 2026-04-25T22:29:55Z transcripts1/8dcda7fb-d952-44a6-a953-769596d0e0cc.jsonl
+HackatonWinnners/content-factory 2026-04-25T22:31:44Z transcripts1/511b9cfe-390e-4d02-be62-3a36b6d7bbef.jsonl
+HackatonWinnners/content-factory 2026-04-25T23:15:10Z transcripts1/51853158-d2cb-4dbb-9fd3-a34a52255c75.jsonl
+HackatonWinnners/content-factory 2026-04-25T23:22:17Z transcripts1/9ace951c-5755-4a27-a292-eabc0e0c8fa7.jsonl
+HackatonWinnners/content-factory 2026-04-25T23:25:54Z transcripts1/fad1b566-6f91-4287-88b2-5446fe44627f.jsonl
+HackatonWinnners/content-factory 2026-04-25T23:31:15Z transcripts1/6b8ae584-ea9c-42e8-81b8-fc7283851ae0.jsonl
+HackatonWinnners/content-factory 2026-04-25T23:37:23Z transcripts1/7656c1fa-054d-4f2e-a8a2-58c6dabb4db3.jsonl
+HackatonWinnners/content-factory 2026-04-25T23:43:19Z transcripts1/70fd0ad8-dcff-4666-86c4-becd344ee470.jsonl
+HackatonWinnners/content-factory 2026-04-25T23:47:45Z transcripts1/5fc9fc05-1a08-4838-84a9-fc25835bfffa.jsonl
+HackatonWinnners/content-factory 2026-04-26T00:52:43Z transcripts1/a15079bd-63f4-4748-8bab-14523e7ff485.jsonl
+HackatonWinnners/content-factory 2026-04-26T00:57:06Z transcripts1/87450a9c-0c20-4356-b1b6-b1db5ad6d786.jsonl
+HackatonWinnners/content-factory 2026-04-26T01:03:27Z transcripts1/a361642a-3e51-4ec2-9f17-dbb3518c26b9.jsonl
+HackatonWinnners/content-factory 2026-04-26T01:08:51Z transcripts1/ecf38355-3efa-44db-a388-3bd606fbc9b6.jsonl
+HackatonWinnners/content-factory 2026-04-26T01:16:16Z transcripts/7d160239-7623-4949-ad44-1e52e29b5b66.jsonl
+HackatonWinnners/content-factory 2026-04-26T01:19:54Z transcripts1/f46e60fb-616b-4ef6-81ed-c711bc4f5b03.jsonl
+HackatonWinnners/content-factory 2026-04-26T01:28:35Z transcripts1/b5f76e20-cbe3-4959-9d0f-3a5aecfa819b.jsonl
+HackatonWinnners/content-factory 2026-04-26T01:35:47Z transcripts1/50672195-8849-4425-977f-7dffc9e576ce.jsonl
+HackatonWinnners/content-factory 2026-04-26T01:42:38Z transcripts/ef9e6b10-504e-49e3-af73-8a058be3ac55.jsonl
+HackatonWinnners/content-factory 2026-04-26T01:51:27Z transcripts1/e37e2133-8ca8-4d54-902f-dc5d34705c39.jsonl
+HackatonWinnners/content-factory 2026-04-26T01:57:43Z transcripts/3a506f45-e492-4628-847b-5f1cda4b9a5c.jsonl
+HackatonWinnners/content-factory 2026-04-26T02:04:59Z transcripts/0daa610b-0584-4cb0-932c-bef239f8a5dd.jsonl
+HackatonWinnners/content-factory 2026-04-26T02:15:51Z transcripts1/315de080-083b-408d-bd9d-25e8f3f871da.jsonl
+HackatonWinnners/content-factory 2026-04-26T06:23:38Z transcripts1/eb59bf88-007b-4e4b-910f-ac4072cfc238.jsonl
+HackatonWinnners/content-factory 2026-04-26T06:30:22Z transcripts/cb7eab82-9c4f-4163-9086-6762638519d8.jsonl
+HackatonWinnners/content-factory 2026-04-26T11:44:31Z transcripts1/edf254db-af5b-4035-8042-fde8e8112ffc.jsonl
+HackatonWinnners/content-factory 2026-04-26T13:06:01Z transcripts1/59663164-bb96-4ede-a1f3-183c90dc5e8b.jsonl
 MoonshotAI/kimi-cli 2026-02-25T06:42:32Z transcripts/ad4b203d-0231-46e9-ac6c-54f1817cb9dd.jsonl
 MoonshotAI/kimi-cli 2026-02-25T06:42:32Z transcripts/d530d2dc-eba4-4a3a-9aa1-0658cddb8af2.jsonl
 MoonshotAI/kimi-cli 2026-02-25T08:19:04Z transcripts/629b7931-a460-4113-a0c5-66a7fa4c424e.jsonl
@@ -191,7 +217,17 @@ achildrenmile/bosarsalog 2026-03-03T07:21:54Z transcripts1/613e732b-201d-4dba-84
 achildrenmile/bosarsalog 2026-03-15T21:15:11Z transcripts1/1f303b0c-b261-4c38-b120-381193d1d1dd.jsonl
 achildrenmile/bosarsalog 2026-05-10T18:50:52Z transcripts1/6a11b066-ab08-47ec-837f-bea27bda801e.jsonl
 achildrenmile/bosarsalog 2026-06-01T05:10:44Z transcripts/cd0d2355-a2a4-4701-a7ca-c25458bfafef.jsonl
+arosenfeld2003/cli 2026-02-13T09:32:16Z transcripts1/0ef07392-4155-48cf-b778-a15b0a6021dd.jsonl
+arosenfeld2003/cli 2026-02-15T08:41:44Z transcripts1/2a6165b3-8637-4ee3-a1b9-c8537f9227aa.jsonl
+arosenfeld2003/cli 2026-02-17T01:59:58Z transcripts/16e04720-d514-4c85-9a98-6cd9b19f68c7.jsonl
+arosenfeld2003/cli 2026-02-17T02:00:06Z transcripts1/52f73254-7b7a-4a7a-ab26-7e6c17199dd2.jsonl
 eldios/dotfiles 2026-07-22T23:18:25Z transcripts1/e7611564-a9f2-4b7f-b17e-1685338102c0.jsonl
+entireio/entire-graph 2026-08-16T06:27:15Z transcripts1/f0fe1aad-8ea2-4b96-bd6c-0743b14025f0.jsonl
+entireio/entire-graph 2026-08-17T08:04:39Z transcripts1/6c774419-2fd5-436e-95ca-e30ee7ad67e1.jsonl
+entireio/entire-graph 2026-08-17T20:27:35Z transcripts1/97efe670-b5a9-4610-a78b-ce4e72e98f1e.jsonl
+entireio/entire-graph 2026-08-18T00:09:57Z transcripts/80bcc7be-ba2a-4ba6-9982-ed61a0f6d010.jsonl
+entireio/entire-graph 2026-08-23T19:20:24Z transcripts/f0df9bf4-e1f7-4ba8-ae9e-a0fd0eb5af49.jsonl
+entireio/entire-graph 2026-08-30T17:51:45Z transcripts1/5cd65790-57b7-4cde-b499-c3530b55792b.jsonl
 entireio/go-nuts 2026-07-10T11:51:43Z transcripts/b19adb79-1a3a-463d-b5df-57c95724b4b7.jsonl
 entireio/go-nuts 2026-07-10T13:00:25Z transcripts/80c151b5-6e53-4d70-a24f-e06b58b2d83d.jsonl
 entireio/go-nuts 2026-07-14T08:27:03Z transcripts1/72bff985-4a1a-4a24-ab7e-a7ad3dba9c7e.jsonl
@@ -226,6 +262,20 @@ henryph24/neuralips26 2026-04-21T10:10:44Z transcripts1/73aa526d-b2de-42af-9096-
 henryph24/neuralips26 2026-04-22T07:23:15Z transcripts1/4a095dfb-66ac-41d7-90e0-2f69f6bcc013.jsonl
 henryph24/neuralips26 2026-04-22T07:23:18Z transcripts/8ef779a5-0625-43ff-a62e-44cdbbd544e8.jsonl
 henryph24/neuralips26 2026-04-24T01:15:46Z transcripts1/281fca7c-6430-4ae0-ba1f-02aa219048d6.jsonl
+khairm/superset-windows-arm64 2026-07-21T16:17:40Z transcripts1/9f7a1e8e-a89e-439a-9850-74aabbab6199.jsonl
+khairm/superset-windows-arm64 2026-07-21T22:32:13Z transcripts/cc93a2e8-3460-4ccb-967b-8843019f99fb.jsonl
+khairm/superset-windows-arm64 2026-07-27T21:27:05Z transcripts/90c95250-04f1-4676-b818-f5d92686133a.jsonl
+khairm/superset-windows-arm64 2026-07-28T23:47:04Z transcripts1/edb8e93d-6808-4d27-b954-1c08ed8d43ca.jsonl
+khairm/superset-windows-arm64 2026-07-28T23:47:06Z transcripts1/f7713565-e464-48c1-a066-92a246fadb31.jsonl
+khairm/superset-windows-arm64 2026-08-06T15:23:21Z transcripts1/905bacbc-36b9-4f9b-9873-1366bc98b0a8.jsonl
+khairm/superset-windows-arm64 2026-08-14T08:46:27Z transcripts1/30065850-2472-4b23-9844-946b8f0192bf.jsonl
+khairm/superset-windows-arm64 2026-08-16T13:33:03Z transcripts1/d014854a-f1da-4fca-9fef-b3efc3c2c90b.jsonl
+khairm/superset-windows-arm64 2026-08-19T22:20:19Z transcripts1/41b65f55-7b51-4cfd-82d1-d1d1eec49d91.jsonl
+khairm/superset-windows-arm64 2026-08-20T14:14:00Z transcripts1/f339f5e3-1159-42a5-b296-eea4f5eacc7c.jsonl
+khairm/superset-windows-arm64 2026-08-22T03:04:55Z transcripts1/16872641-532a-4b4b-b870-eb85acd12093.jsonl
+khairm/superset-windows-arm64 2026-08-22T03:04:58Z transcripts/1965f49a-6bb1-4b13-95f6-52f27fa5ae35.jsonl
+khairm/superset-windows-arm64 2026-08-24T12:48:35Z transcripts1/aa11cfb2-4a02-42b8-8f66-dfc794ecbb7e.jsonl
+khairm/superset-windows-arm64 2026-08-24T12:48:37Z transcripts/b47f0a34-e926-4bb4-bf0c-842dd56c71e0.jsonl
 ngngardner/readaloud 2026-03-12T23:21:53Z transcripts/ca2f8b89-21d0-4da2-91f1-7b17c04613a4.jsonl
 ngngardner/readaloud 2026-05-01T20:58:34Z transcripts1/313a90af-7255-4653-b5ba-0440308fb9fa.jsonl
 ngngardner/readaloud 2026-05-01T20:58:34Z transcripts1/c28fe12d-c40c-4c90-961f-12d3f036eeb7.jsonl
@@ -260,6 +310,9 @@ ngngardner/readaloud 2026-08-13T00:28:27Z transcripts/d85efab2-d937-4964-89ba-f1
 ngngardner/readaloud 2026-08-16T04:20:15Z transcripts1/c108bb48-f63b-4f4d-b601-76bd6a8a03c9.jsonl
 ngngardner/readaloud 2026-08-19T02:12:05Z transcripts/087e6694-3a24-4799-abbc-be0cad08e97f.jsonl
 ngngardner/readaloud 2026-08-19T03:14:05Z transcripts1/5816f6dd-7d64-4034-8949-b6320deddeb7.jsonl
+panthrocorp/openclaw-skills 2026-04-07T21:54:26Z transcripts/6dc18778-5e96-4800-8a13-4e327516745c.jsonl
+panthrocorp/openclaw-skills 2026-04-08T20:38:11Z transcripts/705d5f7a-c4e0-4188-9214-cf99762ee2e5.jsonl
+panthrocorp/openclaw-skills 2026-04-08T20:38:14Z transcripts/93e9a848-1942-43d4-a81b-2c5cedc20252.jsonl
 port-experimental/port-cli 2026-03-24T16:55:28Z transcripts1/8a6e7859-a9d6-4d6a-ba12-5cb86da805ec.jsonl
 port-experimental/port-cli 2026-03-24T17:02:40Z transcripts1/d0dbaa44-f91f-4495-b738-5e12e8baef63.jsonl
 port-experimental/port-cli 2026-04-07T15:59:40Z transcripts1/81d8640e-ca5d-4e57-b521-788834f2da1f.jsonl
@@ -290,6 +343,9 @@ port-experimental/port-cli 2026-06-24T10:41:51Z transcripts/b4014210-53b5-4f24-8
 port-experimental/port-cli 2026-06-25T10:25:41Z transcripts1/78c61f4b-fac0-4488-afa1-d63040218ae8.jsonl
 port-experimental/port-cli 2026-07-02T10:40:08Z transcripts/144bb8bd-3844-473f-9808-ba96d5ef4026.jsonl
 port-experimental/port-cli 2026-07-06T17:05:20Z transcripts1/1db8024f-af27-4682-a497-50e95a046f1b.jsonl
+scottdensmore/Cakebrew 2026-05-26T03:38:41Z transcripts1/c5508f23-68ad-4ad4-aaa7-d78ccbc9f10a.jsonl
+scottdensmore/Cakebrew 2026-05-26T03:38:41Z transcripts1/ff0f4123-0c71-4068-92ca-4e7a2399c8d7.jsonl
+scottdensmore/Cakebrew 2026-07-03T20:41:35Z transcripts1/86f7230f-16a2-4201-9dae-105c1789c2c6.jsonl
 scottdensmore/contoso 2026-08-12T03:58:43Z transcripts1/4368fb93-c8cc-4d91-99ab-3d6d4964d7d7.jsonl
 scottdensmore/contoso 2026-08-16T01:03:54Z transcripts/6981b884-fc97-4527-9bb8-dfe067a590b0.jsonl
 scottdensmore/contoso 2026-08-17T06:03:46Z transcripts1/7e777541-03c5-42ee-bd9f-59ae0f93daad.jsonl
