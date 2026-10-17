@@ -78,8 +78,8 @@ NOTES = {
     "closet_llm": "off: python -m mempalace.closet_llm is documented only in its module docstring and the 3.3 changelog, no Claude Code path runs it, and its client sends no custom headers",
     "init": "the plugin's /mempalace:init is not run: it writes project entity files and config defaults that neither conversation mining nor search reads",
     "mcp": "the diary and knowledge-graph writes a live agent makes through the MCP tools (mcp_server/tools_read.py:370-377) are not in a transcript and are not reproduced: the corpus agents never had MemPalace, so the knowledge graph stays empty",
-    "resumes": "each session ends once, at its last line; a session resumed after an exit does not get the SessionEnd that exit fired (12 resumes in 9 sessions, where Claude Code recorded one). The final transcript drawers are unchanged; a diary checkpoint and a mine per resume are missing",
-    "search": "for the run step: mempalace.searcher.search_memories (query.py:129), not the CLI or the MCP tool; candidate_strategy 'union' adds BM25 candidates (candidates.py:261-264); MEMPALACE_HYBRID_VECTOR_WEIGHT / _BM25_WEIGHT default 0.6/0.4 (config.py:1385-1418); max_distance 0.0; no query instruction is possible for openai-compat (embedding.py:638-641); wing 'sessions' holds the transcript drawers, the wing_<cwd leaf> wings of each session's first cwd hold the diary (14 wings, not one per repository), the sweep drawers have no wing; since/before filter on filed_at, which is the session time here (UTC)",
+    "resumes": "each session ends once, at its last line; a session resumed after an exit does not get the SessionEnd that exit fired. The final transcript drawers are unchanged; a diary checkpoint and a mine per resume are missing",
+    "search": "for the run step: mempalace.searcher.search_memories (query.py:129), not the CLI or the MCP tool; candidate_strategy 'union' adds BM25 candidates (candidates.py:261-264); MEMPALACE_HYBRID_VECTOR_WEIGHT / _BM25_WEIGHT default 0.6/0.4 (config.py:1385-1418); max_distance 0.0; no query instruction is possible for openai-compat (embedding.py:638-641); wing 'sessions' holds the transcript drawers, the wing_<cwd leaf> wings of each session's first cwd hold the diary (not one per repository), the sweep drawers have no wing; since/before filter on filed_at, which is the session time here (UTC)",
     "embedder_requests": "derived, not observed: MemPalace's embedding function sends 64 texts a request and the miner hands it 1,000 drawers at a time; a diary write is one request; the sweep's are not counted",
     "prefix_reuse": "MemPalace sends 64 texts a request with no sentinel, so llama.cpp's prefix reuse applies to every request as the decision note's gotcha says; the order is fixed, so a fresh embedder and the same session order reproduce the vectors",
 }
@@ -110,6 +110,11 @@ def text_of(content):
     if isinstance(content, str):
         return content.strip()
     return "\n".join(b.get("text", "") for b in content or [] if isinstance(b, dict) and b.get("type") == "text").strip()
+
+
+def posix_cwd(cwd):
+    """A Windows working directory at the POSIX form of its path: C:\\Users\\a\\b as /Users/a/b."""
+    return "/" + cwd[3:].replace("\\", "/") if re.match(r"[A-Za-z]:\\", cwd) else cwd
 
 
 def tool_results(content):
@@ -200,7 +205,7 @@ class Session:
 
     def __init__(self, repo, path, counts, hook_log):
         self.name, self.counts, self.log = f"{repo}/{path.name}", counts, hook_log
-        self.lines = [line for line in path.read_text().splitlines() if line.strip()]
+        self.lines = [line for line in path.read_text().split("\n") if line.strip()]
         self.entries = [json.loads(line) for line in self.lines]  # so an entry's index is its line's
         self.times, when = [], None
         for entry in self.entries:
@@ -209,9 +214,10 @@ class Session:
         first_time = next(t for t in self.times if t)
         self.times = [t or first_time for t in self.times]
         self.sid = next(e["sessionId"] for e in self.entries if e.get("sessionId"))
-        self.cwd = next((e["cwd"] for e in self.entries if e.get("cwd")), "/")  # the first entries often carry none
+        first = next((e["cwd"] for e in self.entries if e.get("cwd")), "/")  # the first entries often carry none
+        self.cwd = posix_cwd(first)
         home = "/".join(self.cwd.split("/")[:3])
-        self.transcript = Path(f"{home}/.claude/projects/{re.sub('[^A-Za-z0-9]', '-', self.cwd)}/{self.sid}.jsonl")
+        self.transcript = Path(f"{home}/.claude/projects/{re.sub('[^A-Za-z0-9]', '-', first)}/{self.sid}.jsonl")
         self.transcript.parent.mkdir(parents=True, exist_ok=True)
         self.out = self.transcript.open("w")
         self.written, self.mtime = 0, 0.0
@@ -258,7 +264,7 @@ class Session:
             new_turn = text and not text.startswith((*NOTICES, "[Request interrupted"))
             if new_turn:
                 self.stop(index, when)  # the turn before ends where it ran
-            self.cwd = entry.get("cwd") or self.cwd
+            self.cwd = posix_cwd(entry["cwd"]) if entry.get("cwd") else self.cwd
             if kind == "system" and subtype in ("stop_hook_summary", "turn_duration"):
                 self.stop(index, when)
             elif kind == "system" and subtype == "compact_boundary":

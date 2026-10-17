@@ -85,9 +85,9 @@ def parse_lines(lines, keep_bad=True):
 
 
 # The memory operations the developer's Claude Code recorded. A memory file is one under .claude/projects/<key>/memory
-# of the developer's home; the corpus redacts one iptvnator path, which is the MEMORY.md of the session's key.
+# of the developer's home, a Windows one too (C:\Users\<name>, or /c/Users/<name> from Git Bash); the corpus redacts one iptvnator path, which is the MEMORY.md of the session's key.
 MEMORY_PATH = re.compile(r"(?P<root>[^\s\"'=<>]*?)/\.claude/projects/(?P<key>[^/\s\"']+)/memory(?P<rest>/[^\s\"'\;&|<>]*)?")
-HOME_ROOT = re.compile(r"(?:/Users|/home)/[^/\s\"']+")
+HOME_ROOT = re.compile(r"(?:/Users|/home|[A-Za-z]:/Users|/[a-z]/Users)/[^/\s\"']+")
 REDACTED = re.compile(r"^(/Users|/home)/[^/]+/\.REDACTED\.md$")
 
 
@@ -143,11 +143,11 @@ def recorded_ops(entries, session_key, start):
         name, inp = b.get("name"), b.get("input") or {}
         path, match, key, rest = inp.get("file_path"), None, None, "MEMORY.md"
         if name in ("Write", "Edit", "MultiEdit") and path:
-            match = MEMORY_PATH.search(path)
+            match = MEMORY_PATH.search(path.replace("\\", "/"))
             if not match and REDACTED.match(path):
                 key = session_key
         elif name == "Bash":
-            match = MEMORY_PATH.search(inp.get("command") or "")
+            match = MEMORY_PATH.search((inp.get("command") or "").replace("\\", "/"))
         if not match and not key:
             continue
         if match:

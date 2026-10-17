@@ -493,8 +493,10 @@ What the replay changes:
 - The embedder identity is recorded with `mempalace palace set-embedder`, as MemPalace asks on every open of a palace
   its hooks created.
 - Each session ends once, at its last line. A session resumed after an exit does not get the SessionEnd that exit
-  fired (12 resumes in 9 sessions), so a few diary checkpoints and mines are missing; the final drawers are the same.
+  fired, so a few diary checkpoints and mines are missing; the final drawers are the same.
 - The two Cursor transcripts are left out. The hooks never see them.
+- superset-windows-arm64's 14 sessions ran on Windows. They are replayed at the POSIX form of their paths,
+  `C:\Users\<name>\...` as `/Users/<name>/...`, in the project folder Claude Code named after the Windows path.
 - What a live agent saves through MemPalace's MCP tools is not reproduced: the corpus agents never had it, so the
   knowledge graph stays empty. `mempalace mine --extract general` is off: it adds drawers beside the exchange ones and
   the hooks never run it.
@@ -528,9 +530,10 @@ checkpoints, and 76,255 hallways. The sweeps cut 690 of their 43,996 inputs to 8
 The memory files the developers' own Claude Code wrote during the recorded sessions, extracted from the transcripts.
 Nothing here runs Claude Code or calls a model. The main model's successful `Write`, `Edit` and `MultiEdit` calls on a
 file under `.claude/projects/<key>/memory/` and the Bash writes of three known shapes are applied, in the order they
-took effect, to that project's memory directory, under the name the developer's machine used. A recorded command is
-never run. Each project's memory starts empty, as for every arm, and the two Cursor transcripts are left out: Claude
-Code never saw them.
+took effect, to that project's memory directory, under the name the developer's machine used. A memory path written
+on Windows, `C:\Users\<name>\.claude\projects\<key>\memory\` or `/c/Users/<name>/...` from Git Bash, is read the
+same way, under the key Claude Code gave the Windows path. A recorded command is never run. Each project's memory
+starts empty, as for every arm, and the two Cursor transcripts are left out: Claude Code never saw them.
 
 Why recorded writes and not a replay: the corpus holds no trace of Claude Code's background memory extraction, auto
 dream or recall: in its 145 sessions there is no `memory_saved` entry, no "Saved N memories" or "Improved N memories"
