@@ -21,7 +21,8 @@ WORK = Path("/work")
 STORE = WORK / "store"
 MEMORY = STORE / "memory"
 NOTES = {
-    "scope": "only what the developers' Claude Code wrote through the main model's tools during the recorded sessions: background memory extraction, auto dream and the recall selector are off on the accounts these were recorded on, and the corpus holds no trace of them",
+    "scope": "what the developers' Claude Code wrote through the main model's tools during the recorded sessions; Claude Code's own memory saves (memory_saved entries) name files but not their content, so they are counted in unrecorded_saves and not applied",
+    "unrecorded_saves": "Claude Code's own record that it wrote memory files outside the main model's tool calls; the transcript names the files but not what was written, so they are counted and not applied",
     "empty_start": "each project's memory starts empty, as for every arm; an Edit on a file written before the recordings finds no text to change and is skipped, counted as edit_file_unknown",
     "bash": "Bash writes of three known shapes are applied; a recorded command is never run, and a write of another shape is skipped as bash_unparsed",
     "failed": "a tool call whose result is an error is not applied and is counted as recorded_failed",
@@ -246,21 +247,41 @@ def stats(directory):
             "topic_files": {"with_frontmatter": framed, "without": len(topics) - framed}}
 
 
+def memory_saves(entries, session_key):
+    """Claude Code's own memory saves in a session, as (project key, verb, file names): the project is the one the
+    written paths name, else the session's. The transcript holds the names and not the content."""
+    saves = []
+    for e in entries:
+        if e.get("type") == "system" and e.get("subtype") == "memory_saved":
+            hits = [MEMORY_PATH.search(str(w).replace("\\", "/")) for w in e.get("writtenPaths") or ()]
+            hits = [m for m in hits if m]
+            saves.append((hits[0].group("key") if hits else session_key, e.get("verb"),
+                          [(m.group("rest") or "/").lstrip("/") for m in hits]))
+    return saves
+
+
 def recorded(plan, roots):
     """Every memory operation of every session, the project keys by repository and the sessions that made any, in
-    the order they took effect: per project by the result's time, then the session's start and the entry's line."""
-    ops, keys, made = [], {}, set()
+    the order they took effect: per project by the result's time, then the session's start and the entry's line.
+    Also Claude Code's own memory saves, per project."""
+    ops, keys, made, saves = [], {}, set(), {}
     for start, repo, path in plan:
         entries = parse_lines(lines_of(path))
         sid = next(e["sessionId"] for e in entries if e.get("sessionId"))
         cwd = next((e["cwd"] for e in entries if e.get("cwd")), "/")
         key = key_of(roots[repo], cwd)
         keys.setdefault(repo, set()).add(key)
+        for save_key, verb, names in memory_saves(entries, key):
+            mine = saves.setdefault(save_key, {"saves": 0, "verbs": Counter(), "files": Counter()})
+            mine["saves"] += 1
+            mine["verbs"][str(verb)] += 1
+            mine["files"].update(names)
         for op in recorded_ops(entries, key, start):
             ops.append(op | {"repo": repo, "session": sid, "start": start})
             made.add(sid)
     ops.sort(key=lambda o: (o["key"], o["time"], o["start"], o["line"]))
-    return ops, keys, len(made)
+    return ops, keys, len(made), {k: {"saves": v["saves"], "verbs": dict(sorted(v["verbs"].items())), "files": dict(sorted(v["files"].items()))}
+                                  for k, v in sorted(saves.items())}
 
 
 def packed_keys(keys):
@@ -269,7 +290,7 @@ def packed_keys(keys):
     return keys | ({"(other)": extra} if extra else {})
 
 
-def manifest(skipped_files, ops, outcomes, keys, sessions_made):
+def manifest(skipped_files, ops, outcomes, keys, sessions_made, saves):
     inputs = (WORK / "key.txt").read_text().splitlines()
     keys = packed_keys(keys)
     applied = [o for o, r in zip(ops, outcomes) if r == "applied"]
@@ -295,6 +316,7 @@ def manifest(skipped_files, ops, outcomes, keys, sessions_made):
         "sessions": {"with_memory_operations": sessions_made, "skipped": skipped_files},
         "operations": {"recorded": len(ops), "applied": len(applied), "recorded_failed": outcomes.count("recorded_failed"),
                        "skipped": dict(sorted(Counter(r for r in outcomes if r not in ("applied", "recorded_failed")).items()))},
+        "unrecorded_saves": saves,
         "writers": {"models": dict(sorted(Counter(str(o["model"]) for o in applied).items())),
                     "claude_code_versions": dict(sorted(Counter(str(o["version"]) for o in applied).items()))},
         "provenance": [{"project": o["key"], "session": o["session"], "time": o["time"].isoformat(), "tool": o["tool"], "file": o["file"],
@@ -305,14 +327,14 @@ def manifest(skipped_files, ops, outcomes, keys, sessions_made):
 
 def main():
     plan, skipped_files = sessions()
-    ops, keys, sessions_made = recorded(plan, checkout_roots())
+    ops, keys, sessions_made, saves = recorded(plan, checkout_roots())
     shutil.rmtree(STORE, ignore_errors=True)
     if bad := sorted({o["key"] for o in ops if o["key"] in ("", ".", "..")}):
         sys.exit(f"auto-memory: a recorded write names the project key {bad}, which is not a directory name")
     for key in sorted({k for ks in keys.values() for k in ks} | {o["key"] for o in ops}):
         memory_dir(key).mkdir(parents=True, exist_ok=True)
     outcomes = [apply_op(op) for op in ops]
-    (STORE / "manifest.json").write_text(json.dumps(manifest(skipped_files, ops, outcomes, keys, sessions_made), indent=2) + "\n")
+    (STORE / "manifest.json").write_text(json.dumps(manifest(skipped_files, ops, outcomes, keys, sessions_made, saves), indent=2) + "\n")
     log(f"done: {STORE}, {outcomes.count('applied')} of {len(ops)} operations applied")
 
 

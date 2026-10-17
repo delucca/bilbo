@@ -535,12 +535,13 @@ on Windows, `C:\Users\<name>\.claude\projects\<key>\memory\` or `/c/Users/<name>
 same way, under the key Claude Code gave the Windows path. A recorded command is never run. Each project's memory
 starts empty, as for every arm, and the two Cursor transcripts are left out: Claude Code never saw them.
 
-Why recorded writes and not a replay: the corpus holds no trace of Claude Code's background memory extraction, auto
-dream or recall: in its 145 sessions there is no `memory_saved` entry, no "Saved N memories" or "Improved N memories"
-message and no `relevant_memories` attachment. On the accounts this eval runs on, those features are switched off
-server-side too. What the corpus does hold is the main model's own memory writes, 46 recorded operations
-in 19 sessions of four repositories. Running a current Claude Code over the transcripts would measure a setup none of
-these developers had.
+Why recorded writes and not a replay: what the corpus holds is the main model's own memory writes, 46 recorded
+operations in 19 sessions of four repositories, and 6 `memory_saved` entries, all in neuralips26 (Claude Code 2.1.84
+to 2.1.92, "Improved"), which name files Claude Code rewrote outside the main model's tool calls but not their
+content. The manifest counts those under `unrecorded_saves` and the store cannot hold what they wrote. There is no
+"Saved N memories" or "Improved N memories" message and no `relevant_memories` attachment in any session. On the
+accounts this eval runs on, those features are switched off server-side too. Running a current Claude Code over the
+transcripts would measure a setup none of these developers had.
 
 What the store holds, from the manifest:
 
