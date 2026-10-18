@@ -65,8 +65,8 @@ A store is the memory one strategy builds from the corpus, `dataset/store-<arm>-
 needs no LLM. The key hashes what shapes a store: the corpus, the embedder, the LLM for an arm that uses one, and the
 files under `arms/<arm>/`. Change any of them and the key changes.
 
-The stores in `dataset.lock` were built from an earlier corpus, `corpus-1235aec0592a`, the first five projects; none is
-built yet for this one.
+`dataset.lock` pins a mem0 store built from this corpus, and every arm's store built from an earlier one,
+`corpus-1235aec0592a`, the first five projects; the other arms have none for this corpus yet.
 
 | Arm | Strategy | LLM | Published store |
 |---|---|---|---|
@@ -148,9 +148,9 @@ collection, mem0's SQLite file and a `manifest.json` with the versions, counts a
 history must be in Qdrant with the same text, both restores must give the same points, and four searches in each
 project's memory and in the personal memory must find memories.
 
-The published store was built with Claude Opus 5.5, through a gateway that runs `claude -p` for each call, and the
-embedder on an RTX 5070 Ti: 1,262 LLM calls, 24.1 million prompt tokens and 0.97 million completion tokens, in 2 h 51
-min. It holds 2,576 memories.
+The published store was built from the 401 Claude Code sessions with Claude Opus 5.5, through a gateway that runs
+`claude -p` for each call, and the embedder on an RTX 5070 Ti: 5,988 LLM calls, 111 million prompt tokens and 4.5
+million completion tokens, in 14 h 5 min, with no usage-limit wait. It holds 12,182 memories.
 
 ### dense
 
