@@ -216,12 +216,14 @@ summary on a terminal.
 ## digest
 
 ```sh
-bilbo digest
+bilbo digest [--agy]
 ```
 
 Run by the plugin's prompt hook. It reads the hook's JSON on stdin and prints
 the notes that bear on the prompt. It always exits 0. Plain on a terminal too.
-See [The digest](../guides/agents.md#the-digest).
+`--agy` reads Antigravity CLI's `PreInvocation` input instead and prints the
+block as one JSON line that adds it as a system message. See [The
+digest](../guides/agents.md#the-digest).
 
 ## library
 

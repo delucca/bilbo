@@ -33,6 +33,49 @@ fn payload(session: &str, prompt: &str) -> String {
         .to_string()
 }
 
+const CONVERSATION: &str = "36082b66-9aef-4f39-8189-dfaa0c1b1ba9";
+
+fn agy_payload(call: u64, transcript: &Path) -> String {
+    serde_json::json!({
+        "artifactDirectoryPath": "/tmp/brain/c1",
+        "conversationId": CONVERSATION,
+        "initialNumSteps": 1,
+        "invocationNum": call,
+        "modelName": "gemini-3.8-flash-low",
+        "transcriptPath": transcript,
+        "workspacePaths": ["/tmp/w"],
+    })
+    .to_string()
+}
+
+/// A transcript step as agy writes it; a user input wraps the prompt in `<USER_REQUEST>`.
+fn step(kind: &str, content: &str) -> serde_json::Value {
+    let content = match kind {
+        "USER_INPUT" => format!(
+            "<USER_REQUEST>\n{content}\n</USER_REQUEST>\n<ADDITIONAL_METADATA>\nThe current local time is: 2026-10-17T21:23:51-03:00.\n</ADDITIONAL_METADATA>"
+        ),
+        _ => content.to_string(),
+    };
+    serde_json::json!({
+        "step_index": 0,
+        "source": if kind == "USER_INPUT" { "USER_EXPLICIT" } else { "MODEL" },
+        "type": kind,
+        "status": "DONE",
+        "created_at": "2026-10-18T00:23:51Z",
+        "content": content,
+    })
+}
+
+/// The system message an agy digest adds, from its one stdout line.
+fn injected(run: &Run) -> String {
+    assert_eq!(run.stdout.lines().count(), 1, "{}", run.stdout);
+    let value: serde_json::Value = serde_json::from_str(&run.stdout).unwrap();
+    value["injectSteps"][0]["systemMessage"]["systemMessage"]
+        .as_str()
+        .unwrap()
+        .to_string()
+}
+
 struct Rig {
     dir: TempDir,
     root: PathBuf,
@@ -89,6 +132,23 @@ impl Rig {
 
     fn digest(&self, session: &str, prompt: &str) -> Run {
         self.feed(&payload(session, prompt))
+    }
+
+    fn feed_agy(&self, input: &str) -> Run {
+        let env = self.env();
+        let env: Vec<(&str, &str)> = env.iter().map(|(k, v)| (*k, v.as_str())).collect();
+        let run = bilbo_input(self.dir.path(), &env, &["digest", "--agy"], input);
+        assert_eq!(run.code, 0, "{}", run.stderr);
+        run
+    }
+
+    /// agy's `PreInvocation` input for its `call`, its transcript holding `steps`.
+    fn agy(&self, call: u64, steps: &[serde_json::Value]) -> Run {
+        let transcript = self.path("brain/c1/.system_generated/logs/transcript_full.jsonl");
+        std::fs::create_dir_all(transcript.parent().unwrap()).unwrap();
+        let text: String = steps.iter().map(|step| format!("{step}\n")).collect();
+        std::fs::write(&transcript, text).unwrap();
+        self.feed_agy(&agy_payload(call, &transcript))
     }
 
     fn index(&self) {
@@ -276,6 +336,102 @@ fn input_dot_dot_session() {
         refused(&rig.digest(id, PROMPT), "session_id");
     }
     assert!(!rig.path("cache").exists());
+}
+
+#[test]
+fn input_agy_payload() {
+    let rig = Rig::new("digest-agy", &[]);
+    hit(&rig, "gotcha-slots.md");
+    let run = rig.agy(0, &[step("USER_INPUT", PROMPT)]);
+    assert!(run.stderr.is_empty(), "{}", run.stderr);
+    let message = injected(&run);
+    assert!(
+        message.starts_with("<!-- bilbo digest: 1 of 1 notes -->\n"),
+        "{message}"
+    );
+    assert!(message.contains("gotcha-slots.md"), "{message}");
+    assert!(rig.sessions().join(CONVERSATION).is_file());
+}
+
+#[test]
+fn agy_reads_past_system_messages() {
+    let rig = Rig::new("digest-agy-system", &[]);
+    hit(&rig, "gotcha-slots.md");
+    let run = rig.agy(
+        0,
+        &[
+            step("USER_INPUT", "an earlier prompt"),
+            step("PLANNER_RESPONSE", "done"),
+            step("USER_INPUT", PROMPT),
+            step("SYSTEM_MESSAGE", "a hook's message"),
+        ],
+    );
+    assert!(injected(&run).contains("gotcha-slots.md"));
+}
+
+#[test]
+fn agy_digests_only_a_turns_first_call() {
+    let rig = Rig::new("digest-agy-later", &["digest.log = on"]);
+    hit(&rig, "gotcha-slots.md");
+    silent(&rig.agy(1, &[step("USER_INPUT", PROMPT)]));
+    silent(&rig.agy(
+        0,
+        &[
+            step("USER_INPUT", PROMPT),
+            step("PLANNER_RESPONSE", "working"),
+        ],
+    ));
+    silent(&rig.agy(0, &[step("USER_INPUT", "  ")]));
+    assert!(rig.log().is_empty());
+    assert!(!rig.sessions().exists());
+    rig.agy(0, &[step("USER_INPUT", PROMPT)]);
+    let log = rig.log();
+    assert_eq!(log.len(), 1);
+    assert_eq!(log[0]["session"], CONVERSATION);
+    assert_eq!(log[0]["prompt"], PROMPT);
+}
+
+#[test]
+fn agy_reads_the_end_of_a_long_transcript() {
+    let rig = Rig::new("digest-agy-long", &[]);
+    hit(&rig, "gotcha-slots.md");
+    let output = "x".repeat(3 << 20);
+    let run = rig.agy(
+        0,
+        &[
+            step("GENERIC", &output),
+            step("PLANNER_RESPONSE", "done"),
+            step("USER_INPUT", PROMPT),
+        ],
+    );
+    assert!(injected(&run).contains("gotcha-slots.md"));
+}
+
+#[test]
+fn agy_input_refused() {
+    let rig = Rig::new("digest-agy-refused", &[]);
+    hit(&rig, "gotcha-slots.md");
+    refused(
+        &rig.feed_agy(&agy_payload(0, &rig.path("missing.jsonl"))),
+        "cannot read ",
+    );
+    refused(
+        &rig.feed_agy(r#"{"conversationId": "c1", "invocationNum": 0}"#),
+        "the hook input has no transcriptPath",
+    );
+    let transcript = rig.path("t.jsonl");
+    std::fs::write(&transcript, format!("{}\n", step("USER_INPUT", PROMPT))).unwrap();
+    let input = serde_json::json!({"invocationNum": 0, "transcriptPath": transcript}).to_string();
+    refused(
+        &rig.feed_agy(&input),
+        "the hook input has no conversationId",
+    );
+    let env = rig.env();
+    let env: Vec<(&str, &str)> = env.iter().map(|(k, v)| (*k, v.as_str())).collect();
+    let extra = bilbo_input(rig.dir.path(), &env, &["digest", "--agy", "now"], "{}");
+    refused(&extra, "unexpected argument 'now'");
+    let other = bilbo_input(rig.dir.path(), &env, &["digest", "--codex"], "{}");
+    refused(&other, "unknown option '--codex'");
 }
 
 #[test]
