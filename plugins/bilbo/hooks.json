@@ -1,0 +1,11 @@
+{
+  "bilbo-digest": {
+    "PreInvocation": [
+      {
+        "type": "command",
+        "command": "command -v bilbo >/dev/null 2>&1 || exit 0; bilbo digest --agy; exit 0",
+        "timeout": 5
+      }
+    ]
+  }
+}

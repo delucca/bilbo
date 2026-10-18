@@ -1,16 +1,20 @@
-//! The claude and codex plugin commands.
+//! The claude, codex and agy plugin commands.
 
 use crate::host::command::{Output, Runner, first_line};
 use serde_json::Value;
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 const PLUGIN: &str = "bilbo@bilbo";
 const MARKETPLACE_FILE: &str = ".claude-plugin/marketplace.json";
+/// The plugin folder under a folder source, which agy installs a copy of.
+const PLUGIN_FOLDER: &str = "plugins/bilbo";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Tool {
     Claude,
     Codex,
+    Agy,
 }
 
 impl Tool {
@@ -19,6 +23,7 @@ impl Tool {
         match self {
             Tool::Claude => "claude",
             Tool::Codex => "codex",
+            Tool::Agy => "agy",
         }
     }
 
@@ -26,6 +31,7 @@ impl Tool {
         match self {
             Tool::Claude => "Claude Code",
             Tool::Codex => "Codex",
+            Tool::Agy => "Antigravity CLI",
         }
     }
 }
@@ -111,6 +117,8 @@ pub enum Listed {
 pub struct Installed {
     pub enabled: bool,
     pub version: String,
+    /// agy's copy of the plugin folder.
+    pub path: Option<PathBuf>,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -139,15 +147,19 @@ fn list(tool: Tool, runner: &dyn Runner, program: &Path, what: &str) -> Result<S
     Ok(output.stdout)
 }
 
-/// Runs the two list commands.
+/// Runs the two list commands; agy has no marketplace, so only its plugin list.
 pub fn read(tool: Tool, runner: &dyn Runner, program: &Path) -> Result<State, String> {
-    let marketplaces = list(tool, runner, program, "marketplace")?;
-    let marketplace = parse_marketplaces(tool, &marketplaces).map_err(|e| {
-        format!(
-            "cannot read `{} plugin marketplace list --json`: {e}",
-            tool.name()
-        )
-    })?;
+    let marketplace = if tool == Tool::Agy {
+        None
+    } else {
+        let marketplaces = list(tool, runner, program, "marketplace")?;
+        parse_marketplaces(tool, &marketplaces).map_err(|e| {
+            format!(
+                "cannot read `{} plugin marketplace list --json`: {e}",
+                tool.name()
+            )
+        })?
+    };
     let plugins = list(tool, runner, program, "plugin")?;
     let plugin = parse_plugins(tool, &plugins)
         .map_err(|e| format!("cannot read `{} plugin list --json`: {e}", tool.name()))?;
@@ -208,6 +220,7 @@ pub fn parse_marketplaces(tool: Tool, json: &str) -> Result<Option<Listed>, Stri
                 _ => Listed::Other(source),
             }))
         }
+        Tool::Agy => Ok(None),
     }
 }
 
@@ -221,12 +234,17 @@ fn github_repo(url: &str) -> Option<String> {
 
 pub fn parse_plugins(tool: Tool, json: &str) -> Result<Option<Installed>, String> {
     let value = parse(json)?;
-    let (entries, key) = match tool {
-        Tool::Claude => (value.as_array(), "id"),
-        Tool::Codex => (value.get("installed").and_then(Value::as_array), "pluginId"),
+    let (entries, key, id) = match tool {
+        Tool::Claude => (value.as_array(), "id", PLUGIN),
+        Tool::Codex => (
+            value.get("installed").and_then(Value::as_array),
+            "pluginId",
+            PLUGIN,
+        ),
+        Tool::Agy => (value.as_array(), "name", "bilbo"),
     };
     let entries = entries.ok_or("unexpected JSON")?;
-    let mut found = entries.iter().filter(|e| e[key] == PLUGIN);
+    let mut found = entries.iter().filter(|e| e[key] == id);
     let first = found.next();
     let entry = match tool {
         Tool::Claude => first
@@ -234,11 +252,14 @@ pub fn parse_plugins(tool: Tool, json: &str) -> Result<Option<Installed>, String
             .chain(found)
             .find(|e| e["scope"] == "user")
             .or(first),
-        Tool::Codex => first,
+        Tool::Codex | Tool::Agy => first,
     };
     Ok(entry.map(|e| Installed {
         enabled: e["enabled"].as_bool().unwrap_or(false),
         version: text(e, "version").unwrap_or_default(),
+        path: text(e, "path")
+            .filter(|_| tool == Tool::Agy)
+            .map(PathBuf::from),
     }))
 }
 
@@ -265,10 +286,17 @@ fn add(tool: Tool, source: &Source) -> Vec<String> {
     command
 }
 
-fn install(tool: Tool) -> Vec<String> {
+fn install(tool: Tool, source: &Source) -> Vec<String> {
     match tool {
         Tool::Claude => args(&["plugin", "install", PLUGIN, "--json"]),
         Tool::Codex => args(&["plugin", "add", PLUGIN, "--json"]),
+        Tool::Agy => {
+            let target = match source {
+                Source::Folder(root) => root.join(PLUGIN_FOLDER).display().to_string(),
+                Source::GitHub { .. } => source.display(),
+            };
+            vec!["plugin".to_string(), "install".to_string(), target]
+        }
     }
 }
 
@@ -280,6 +308,7 @@ fn uninstall(tool: Tool) -> Vec<String> {
     match tool {
         Tool::Claude => args(&["plugin", "uninstall", PLUGIN, "--json"]),
         Tool::Codex => args(&["plugin", "remove", PLUGIN, "--json"]),
+        Tool::Agy => args(&["plugin", "uninstall", "bilbo"]),
     }
 }
 
@@ -308,15 +337,24 @@ fn same_source(tool: Tool, listed: &Listed, source: &Source) -> bool {
 }
 
 pub fn plan(tool: Tool, state: &State, source: &Source, version: &str) -> Change {
-    let fresh = || vec![add(tool, source), install(tool)];
+    if tool == Tool::Agy {
+        return plan_agy(state, source);
+    }
+    let fresh = || vec![add(tool, source), install(tool, source)];
     let Some(listed) = &state.marketplace else {
         return Change::Install(fresh());
     };
-    let replace = || Change::Update(vec![drop_marketplace(), add(tool, source), install(tool)]);
+    let replace = || {
+        Change::Update(vec![
+            drop_marketplace(),
+            add(tool, source),
+            install(tool, source),
+        ])
+    };
     if !same_source(tool, listed, source) {
         return replace();
     }
-    let reinstall = || Change::Update(vec![install(tool)]);
+    let reinstall = || Change::Update(vec![install(tool, source)]);
     let Some(plugin) = &state.plugin else {
         return if tool == Tool::Codex && matches!(listed, Listed::GitHub { .. }) {
             replace()
@@ -332,6 +370,57 @@ pub fn plan(tool: Tool, state: &State, source: &Source, version: &str) -> Change
     } else {
         Change::Keep
     }
+}
+
+/// agy installs a copy of a folder and fetches nothing: setup skips it for a GitHub source.
+pub fn installs_from(tool: Tool, source: &Source) -> bool {
+    tool != Tool::Agy || matches!(source, Source::Folder(_))
+}
+
+/// agy keeps a copy of the plugin folder, so a copy that differs from the source's is installed
+/// again, and a disabled plugin is enabled.
+fn plan_agy(state: &State, source: &Source) -> Change {
+    let Some(plugin) = &state.plugin else {
+        return Change::Install(vec![install(Tool::Agy, source)]);
+    };
+    let mut commands = Vec::new();
+    let current = match (source, &plugin.path) {
+        (Source::Folder(root), Some(copy)) => same_files(&root.join(PLUGIN_FOLDER), copy),
+        _ => false,
+    };
+    if !current {
+        commands.push(install(Tool::Agy, source));
+    }
+    if !plugin.enabled {
+        commands.push(args(&["plugin", "enable", "bilbo"]));
+    }
+    if commands.is_empty() {
+        Change::Keep
+    } else {
+        Change::Update(commands)
+    }
+}
+
+/// Every file under `root` by its path from `root`, with its bytes; `None` when one cannot be read.
+fn files(root: &Path) -> Option<BTreeMap<PathBuf, Vec<u8>>> {
+    let mut found = BTreeMap::new();
+    let mut folders = vec![root.to_path_buf()];
+    while let Some(folder) = folders.pop() {
+        for entry in std::fs::read_dir(&folder).ok()? {
+            let path = entry.ok()?.path();
+            if path.is_dir() {
+                folders.push(path);
+            } else {
+                let bytes = std::fs::read(&path).ok()?;
+                found.insert(path.strip_prefix(root).ok()?.to_path_buf(), bytes);
+            }
+        }
+    }
+    Some(found)
+}
+
+fn same_files(a: &Path, b: &Path) -> bool {
+    matches!((files(a), files(b)), (Some(a), Some(b)) if a == b)
 }
 
 /// The commands that remove bilbo from the tool; empty when nothing is listed.
@@ -371,9 +460,9 @@ pub fn run_all(
     Ok(())
 }
 
-/// Claude by the JSON `outcome` when stdout has one, else by the exit code; Codex by the exit code.
+/// Claude by the JSON `outcome` when stdout has one, else by the exit code; Codex and agy by the exit code.
 fn judge(tool: Tool, output: &Output, command: &[String]) -> bool {
-    if tool == Tool::Codex {
+    if tool != Tool::Claude {
         return output.success();
     }
     let json = serde_json::from_str::<Value>(&output.stdout).ok();
@@ -611,6 +700,7 @@ mod tests {
         Installed {
             enabled,
             version: version.into(),
+            path: None,
         }
     }
 
@@ -980,8 +1070,153 @@ mod tests {
     }
 
     #[test]
+    fn parses_the_recorded_agy_lists() {
+        let parsed = |o: Output| parse_plugins(Tool::Agy, &o.stdout).unwrap();
+        assert_eq!(parsed(fixture!("agy-plugin-list-empty")), None);
+        let enabled = parsed(fixture!("agy-plugin-list-enabled")).unwrap();
+        assert!(enabled.enabled);
+        assert_eq!(
+            enabled.path,
+            Some(PathBuf::from("/fixture/home/.gemini/config/plugins/bilbo"))
+        );
+        assert!(
+            !parsed(fixture!("agy-plugin-list-disabled"))
+                .unwrap()
+                .enabled
+        );
+        assert_eq!(parse_marketplaces(Tool::Agy, "[]"), Ok(None));
+    }
+
+    #[test]
+    fn read_agy_runs_only_the_plugin_list() {
+        let runner = Script::new(vec![fixture!("agy-plugin-list-enabled")]);
+        let got = read(Tool::Agy, &runner, Path::new("/x/agy")).unwrap();
+        assert_eq!(got.marketplace, None);
+        assert!(got.plugin.is_some());
+        assert_eq!(
+            *runner.calls.borrow(),
+            vec![args(&["plugin", "list", "--json"])]
+        );
+    }
+
+    #[test]
+    fn plan_agy_installs_the_plugin_folder() {
+        let folder = Source::Folder("/p/share/bilbo".into());
+        let got = plan(Tool::Agy, &state(None, None), &folder, "0.1.0");
+        assert!(matches!(got, Change::Install(_)));
+        assert_eq!(cmds(got), ["plugin install /p/share/bilbo/plugins/bilbo"]);
+        let tag = github("delucca/bilbo", "v0.1.0");
+        assert_eq!(
+            cmds(plan(Tool::Agy, &state(None, None), &tag, "0.1.0")),
+            ["plugin install delucca/bilbo#v0.1.0"]
+        );
+        assert!(installs_from(Tool::Agy, &folder));
+        assert!(!installs_from(Tool::Agy, &tag));
+        assert!(installs_from(Tool::Claude, &tag) && installs_from(Tool::Codex, &tag));
+    }
+
+    #[test]
+    fn plan_agy_keeps_a_current_copy_and_reinstalls_a_stale_one() {
+        let s = scratch("agy-copy");
+        let source = s.0.join("bilbo/plugins/bilbo");
+        let copy = s.0.join("copy");
+        for dir in [&source, &copy] {
+            std::fs::create_dir_all(dir.join("skills/note")).unwrap();
+            std::fs::write(dir.join("hooks.json"), "{}").unwrap();
+            std::fs::write(dir.join("skills/note/SKILL.md"), "note").unwrap();
+        }
+        let folder = Source::Folder(s.0.join("bilbo"));
+        let listed = |enabled: bool, path: &Path| {
+            state(
+                None,
+                Some(Installed {
+                    enabled,
+                    version: String::new(),
+                    path: Some(path.to_path_buf()),
+                }),
+            )
+        };
+        let install = format!("plugin install {}", source.display());
+        assert_eq!(
+            plan(Tool::Agy, &listed(true, &copy), &folder, "0.1.0"),
+            Change::Keep
+        );
+        let disabled = plan(Tool::Agy, &listed(false, &copy), &folder, "0.1.0");
+        assert!(matches!(disabled, Change::Update(_)));
+        assert_eq!(cmds(disabled), ["plugin enable bilbo"]);
+        std::fs::write(copy.join("skills/note/SKILL.md"), "older").unwrap();
+        assert_eq!(
+            cmds(plan(Tool::Agy, &listed(true, &copy), &folder, "0.1.0")),
+            [install.as_str()]
+        );
+        std::fs::write(copy.join("skills/note/SKILL.md"), "note").unwrap();
+        std::fs::write(copy.join("stale.md"), "gone from the source").unwrap();
+        assert_eq!(
+            cmds(plan(Tool::Agy, &listed(false, &copy), &folder, "0.1.0")),
+            [install.clone(), "plugin enable bilbo".to_string()]
+        );
+        assert_eq!(
+            cmds(plan(
+                Tool::Agy,
+                &listed(true, &s.0.join("gone")),
+                &folder,
+                "0.1.0"
+            )),
+            [install]
+        );
+    }
+
+    #[test]
+    fn removal_agy_uninstalls_by_name() {
+        assert_eq!(
+            removal(Tool::Agy, &state(None, Some(installed(true, "")))),
+            [args(&["plugin", "uninstall", "bilbo"])]
+        );
+    }
+
+    #[test]
+    fn run_all_agy_judges_by_exit_code() {
+        let folder = Source::Folder("/fixture/bilbo".into());
+        let commands = vec![
+            install(Tool::Agy, &folder),
+            args(&["plugin", "enable", "bilbo"]),
+        ];
+        let runner = Script::new(vec![fixture!("agy-install-folder"), fixture!("agy-enable")]);
+        assert!(run_all(Tool::Agy, &runner, Path::new("/x/agy"), &commands).is_ok());
+        assert_eq!(*runner.calls.borrow(), commands);
+        let runner = Script::new(vec![fixture!("agy-install-missing-folder")]);
+        let failed = run_all(Tool::Agy, &runner, Path::new("/x/agy"), &commands[..1])
+            .err()
+            .unwrap();
+        assert_eq!(
+            failed.message,
+            "install target must be a directory: /fixture/missing"
+        );
+        let runner = Script::new(vec![fixture!("agy-install-github")]);
+        let failed = run_all(
+            Tool::Agy,
+            &runner,
+            Path::new("/x/agy"),
+            &[install(Tool::Agy, &github("delucca/bilbo", "v0.19.0"))],
+        )
+        .err()
+        .unwrap();
+        assert!(failed.message.ends_with("delucca/bilbo#v0.19.0"));
+        let runner = Script::new(vec![fixture!("agy-uninstall")]);
+        assert!(
+            run_all(
+                Tool::Agy,
+                &runner,
+                Path::new("/x/agy"),
+                &[uninstall(Tool::Agy)]
+            )
+            .is_ok()
+        );
+    }
+
+    #[test]
     fn removal_nothing() {
-        for tool in [Tool::Claude, Tool::Codex] {
+        for tool in [Tool::Claude, Tool::Codex, Tool::Agy] {
             assert!(removal(tool, &state(None, None)).is_empty());
         }
     }
@@ -1030,7 +1265,7 @@ mod tests {
         let commands = vec![
             drop_marketplace(),
             add(Tool::Claude, &github("delucca", "v9.9.9")),
-            install(Tool::Claude),
+            install(Tool::Claude, &github("delucca/bilbo", "v0.1.0")),
         ];
         let failed = run_all(Tool::Claude, &runner, Path::new("/x/claude"), &commands)
             .err()
@@ -1065,7 +1300,7 @@ mod tests {
             Tool::Claude,
             &runner,
             Path::new("/x/claude"),
-            &[install(Tool::Claude)],
+            &[install(Tool::Claude, &github("delucca/bilbo", "v0.1.0"))],
         );
         assert!(failed.is_err(), "only removal tolerates it");
     }
@@ -1078,7 +1313,7 @@ mod tests {
             Tool::Claude,
             &runner,
             Path::new("/x/claude"),
-            &[install(Tool::Claude)],
+            &[install(Tool::Claude, &github("delucca/bilbo", "v0.1.0"))],
         )
         .err()
         .unwrap();
@@ -1089,7 +1324,7 @@ mod tests {
                 Tool::Claude,
                 &runner,
                 Path::new("/x/claude"),
-                &[install(Tool::Claude)]
+                &[install(Tool::Claude, &github("delucca/bilbo", "v0.1.0"))]
             )
             .is_ok()
         );
@@ -1107,7 +1342,7 @@ mod tests {
             Tool::Codex,
             &Dead,
             Path::new("/x/codex"),
-            &[install(Tool::Codex)],
+            &[install(Tool::Codex, &github("delucca/bilbo", "v0.1.0"))],
         )
         .err()
         .unwrap();

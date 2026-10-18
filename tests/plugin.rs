@@ -25,6 +25,7 @@ fn json_string(text: &str, key: &str) -> Option<String> {
 
 const CLAUDE_MANIFEST: &str = "plugins/bilbo/.claude-plugin/plugin.json";
 const CODEX_MANIFEST: &str = "plugins/bilbo/.codex-plugin/plugin.json";
+const AGY_MANIFEST: &str = "plugins/bilbo/.antigravity-plugin/plugin.json";
 const CLAUDE_MARKETPLACE: &str = ".claude-plugin/marketplace.json";
 const CODEX_MARKETPLACE: &str = ".agents/plugins/marketplace.json";
 const RECALL_SKILL: &str = "plugins/bilbo/skills/recall/SKILL.md";
@@ -33,6 +34,9 @@ const REFERENCE_SKILL: &str = "plugins/bilbo/skills/reference/SKILL.md";
 const INGEST_SKILL: &str = "plugins/bilbo/skills/ingest/SKILL.md";
 const READER_BRIEF: &str = "plugins/bilbo/skills/reference/references/reader.md";
 const HOOKS: &str = "plugins/bilbo/hooks/hooks.json";
+const AGY_HOOKS: &str = "plugins/bilbo/hooks.json";
+const AGY_DIGEST_COMMAND: &str =
+    "command -v bilbo >/dev/null 2>&1 || exit 0; bilbo digest --agy; exit 0";
 const COMPACT_COMMAND: &str = "command -v bilbo >/dev/null 2>&1 || exit 0; echo 'Context was compacted. If this session settled something later sessions should know, such as a decision, a gotcha or a plan, save it with the bilbo note skill once the current task allows.'";
 const DIGEST_COMMAND: &str = "command -v bilbo >/dev/null 2>&1 || exit 0; bilbo digest; exit 0";
 
@@ -41,6 +45,7 @@ fn plugin_files_exist() {
     for file in [
         CLAUDE_MANIFEST,
         CODEX_MANIFEST,
+        AGY_MANIFEST,
         CLAUDE_MARKETPLACE,
         CODEX_MARKETPLACE,
         RECALL_SKILL,
@@ -49,6 +54,7 @@ fn plugin_files_exist() {
         INGEST_SKILL,
         READER_BRIEF,
         HOOKS,
+        AGY_HOOKS,
     ] {
         assert!(path(file).is_file(), "{file} is not a file");
     }
@@ -474,8 +480,10 @@ fn json(file: &str) -> serde_json::Value {
 fn plugin_descriptions_agree() {
     let claude = json(CLAUDE_MANIFEST)["description"].clone();
     let codex = json(CODEX_MANIFEST)["description"].clone();
+    let agy = json(AGY_MANIFEST)["description"].clone();
     let market = json(CLAUDE_MARKETPLACE)["plugins"][0]["description"].clone();
     assert_eq!(claude, codex);
+    assert_eq!(claude, agy);
     assert_eq!(claude, market);
     let text = claude.as_str().expect("a string description");
     for needle in ["Write", "recall", "sources"] {
@@ -519,9 +527,65 @@ fn digest_hook_runs_bilbo_digest_and_never_blocks() {
 
 #[test]
 fn manifests_do_not_name_the_hooks() {
-    for file in [CLAUDE_MANIFEST, CODEX_MANIFEST] {
+    for file in [CLAUDE_MANIFEST, CODEX_MANIFEST, AGY_MANIFEST] {
         assert!(!read(file).contains("\"hooks\""), "{file} names hooks");
     }
+}
+
+#[test]
+fn agy_manifest_names_the_plugin() {
+    assert_eq!(json(AGY_MANIFEST)["name"], "bilbo");
+}
+
+#[test]
+fn agy_digest_hook_runs_on_each_model_call() {
+    let hooks = json(AGY_HOOKS);
+    let named = hooks.as_object().expect("an object of named hooks");
+    assert_eq!(named.keys().collect::<Vec<_>>(), ["bilbo-digest"]);
+    let events = named["bilbo-digest"].as_object().unwrap();
+    assert_eq!(events.keys().collect::<Vec<_>>(), ["PreInvocation"]);
+    assert_eq!(
+        events["PreInvocation"],
+        serde_json::json!([{"type": "command", "command": AGY_DIGEST_COMMAND, "timeout": 5}])
+    );
+}
+
+fn run_agy_hook(bin: &std::path::Path) -> std::process::Output {
+    Command::new("/bin/sh")
+        .args(["-c", AGY_DIGEST_COMMAND])
+        .env_clear()
+        .env("PATH", bin)
+        .output()
+        .expect("sh runs")
+}
+
+#[test]
+fn agy_digest_hook_is_silent_without_bilbo() {
+    let dir = TempDir::new("agy-hook-absent");
+    let out = run_agy_hook(dir.path());
+    assert_eq!(out.status.code(), Some(0));
+    assert!(out.stdout.is_empty() && out.stderr.is_empty());
+}
+
+#[test]
+fn agy_digest_hook_exits_zero_when_bilbo_fails() {
+    let dir = TempDir::new("agy-hook-fail");
+    let fake = dir.path().join("bilbo");
+    // Written by a child process: a write fd held here can make the exec fail with ETXTBSY.
+    let made = Command::new("/bin/sh")
+        .args([
+            "-c",
+            r#"printf '%s\n' '#!/bin/sh' 'echo "$*" >&2' 'exit 2' > "$1" && chmod 755 "$1""#,
+            "sh",
+        ])
+        .arg(&fake)
+        .status()
+        .unwrap();
+    assert!(made.success());
+    let out = run_agy_hook(dir.path());
+    assert_eq!(out.status.code(), Some(0));
+    assert!(out.stdout.is_empty());
+    assert_eq!(out.stderr, b"digest --agy\n");
 }
 
 /// The hook's command from hooks.json, run under `/bin/sh -c` with `bin` as the whole PATH.

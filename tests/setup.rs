@@ -134,6 +134,7 @@ fn modes_a_pipe_runs_without_the_wizard() {
             "embedder skipped: none configured".to_string(),
             "claude skipped: not found".to_string(),
             "codex skipped: not found".to_string(),
+            "agy skipped: not found".to_string(),
             "hook skipped: no codex plugin".to_string(),
             "timer skipped: no embedder".to_string(),
             format!("watch installed: watching {}/notes", root(&m).display()),
@@ -554,6 +555,7 @@ fn report_fresh_run() {
             "embedder skipped: none configured".to_string(),
             "claude skipped: --no-plugin".to_string(),
             "codex skipped: --no-plugin".to_string(),
+            "agy skipped: --no-plugin".to_string(),
             "hook skipped: no codex plugin".to_string(),
             "timer skipped: no embedder".to_string(),
             format!("watch installed: watching {}/notes", root(&m).display()),
@@ -590,9 +592,9 @@ fn the_report_on_a_terminal() {
     let lines = lines(&run);
     let (last, steps) = lines.split_last().unwrap();
     assert!(last.starts_with("◆  Setup done: "), "{}", run.stdout);
-    assert_eq!(steps.len(), 13, "{}", run.stdout);
-    assert_eq!(steps[12], "");
-    for line in &steps[..12] {
+    assert_eq!(steps.len(), 14, "{}", run.stdout);
+    assert_eq!(steps[13], "");
+    for line in &steps[..13] {
         assert!(line.starts_with(['◆', '◇', '○']), "{line}");
     }
     assert!(steps[0].starts_with("◆  store"), "{}", run.stdout);
@@ -634,7 +636,7 @@ fn a_failed_step_on_a_terminal() {
     let lines = lines(&run);
     assert_eq!(
         lines.last().unwrap(),
-        &"■  1 of 12 steps failed",
+        &"■  1 of 13 steps failed",
         "{}",
         run.stdout
     );
@@ -675,7 +677,7 @@ fn store_root_cannot_be_created() {
         report[0].starts_with(&format!("store failed: cannot create {home}/notes: ")),
         "{report:?}"
     );
-    assert_eq!(report.len(), 12, "a failed step stops nothing: {report:?}");
+    assert_eq!(report.len(), 13, "a failed step stops nothing: {report:?}");
     assert!(report[1].starts_with("config written: "));
 }
 
@@ -1545,6 +1547,118 @@ fn plugin_rerun_runs_no_changing_command() {
     assert_eq!(writes(&m), 1);
 }
 
+/// A folder source whose `plugins/bilbo` agy copies.
+fn agy_source(m: &Machine) -> PathBuf {
+    let folder = std::fs::canonicalize(m.dir.path()).unwrap().join("market");
+    package_folder(&folder);
+    let plugin = folder.join("plugins/bilbo");
+    std::fs::create_dir_all(plugin.join(".antigravity-plugin")).unwrap();
+    std::fs::write(plugin.join(".antigravity-plugin/plugin.json"), "{}\n").unwrap();
+    std::fs::write(plugin.join("hooks.json"), "{}\n").unwrap();
+    folder
+}
+
+#[test]
+fn plugin_agy_installs_keeps_and_reinstalls_the_folder() {
+    let m = agents_machine("plugin-agy", &["agy"]);
+    let folder = agy_source(&m);
+    let shown = folder.display().to_string();
+    let plugin = folder.join("plugins/bilbo");
+    let install = format!("plugin install {}", plugin.display());
+    let run = plugin_setup(&m, &["--plugin-source", &shown]);
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    assert!(lines(&run).contains(&format!("agy installed: {shown}").as_str()));
+    assert_eq!(
+        fakes::log(&m.state, "agy"),
+        ["plugin list --json", install.as_str()]
+    );
+    let again = plugin_setup(&m, &["--plugin-source", &shown]);
+    assert_eq!(again.code, 0, "{}", again.stderr);
+    assert!(lines(&again).contains(&"agy kept"), "{}", again.stdout);
+    assert_eq!(changing(&m, "agy"), [install.as_str()]);
+    let stale = m.dir.path().join("stale-copy");
+    std::fs::create_dir_all(&stale).unwrap();
+    std::fs::write(stale.join("hooks.json"), "{}\n").unwrap();
+    fakes::set(&m.state, "agy", "copy", stale.to_str().unwrap());
+    fakes::set(&m.state, "agy", "plugin", "false");
+    let stale = plugin_setup(&m, &["--plugin-source", &shown]);
+    assert_eq!(stale.code, 0, "{}", stale.stderr);
+    assert!(lines(&stale).contains(&format!("agy updated: {shown}").as_str()));
+    assert_eq!(
+        changing(&m, "agy"),
+        [install.clone(), install, "plugin enable bilbo".to_string()]
+    );
+    assert_eq!(fakes::get(&m.state, "agy", "plugin"), "true");
+}
+
+#[test]
+fn plugin_agy_installs_from_the_package_folder() {
+    let m = agents_machine("plugin-agy-package", &["agy"]);
+    let (exe, share) = packaged_binary(&m);
+    std::fs::create_dir_all(share.join("plugins/bilbo")).unwrap();
+    let run = setup_with(&exe, &m, &["--yes", "--no-timer", "--no-watch"]);
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    assert!(lines(&run).contains(&format!("agy installed: {}", share.display()).as_str()));
+    assert!(fakes::log(&m.state, "agy").contains(&format!(
+        "plugin install {}",
+        share.join("plugins/bilbo").display()
+    )));
+}
+
+#[test]
+fn plugin_agy_skips_a_github_source() {
+    let m = agents_machine("plugin-agy-tag", &["agy"]);
+    let run = plugin_setup(&m, &[]);
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    assert!(
+        lines(&run).contains(&"agy skipped: needs a plugin folder; pass --plugin-source <folder>")
+    );
+    assert!(fakes::log(&m.state, "agy").is_empty());
+}
+
+#[test]
+fn plugin_agy_failure_names_the_source() {
+    let m = agents_machine("plugin-agy-fail", &["agy"]);
+    let folder = std::fs::canonicalize(m.dir.path()).unwrap().join("market");
+    package_folder(&folder);
+    let shown = folder.display().to_string();
+    let run = plugin_setup(&m, &["--plugin-source", &shown]);
+    assert_eq!(run.code, 1, "{}", run.stdout);
+    assert!(
+        lines(&run).contains(
+            &format!(
+                "agy failed: {shown}: install target must be a directory: {shown}/plugins/bilbo"
+            )
+            .as_str()
+        )
+    );
+}
+
+#[test]
+fn plugin_agy_flag_path_is_used() {
+    let m = agents_machine("plugin-agy-flag", &[]);
+    let elsewhere = m.dir.path().join("elsewhere");
+    fakes::install(&elsewhere, &m.state, &["agy"]);
+    let program = elsewhere.join("agy");
+    let folder = agy_source(&m);
+    let run = plugin_setup(
+        &m,
+        &[
+            "--agy",
+            program.to_str().unwrap(),
+            "--plugin-source",
+            folder.to_str().unwrap(),
+        ],
+    );
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    assert!(lines(&run).contains(&format!("agy installed: {}", folder.display()).as_str()));
+    usage_error(
+        &m,
+        &["--no-plugin", "--agy", program.to_str().unwrap()],
+        "--no-plugin and --agy cannot be used together",
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Codex hook trust
 
@@ -2398,6 +2512,7 @@ fn remove_an_install() {
             "server skipped: not installed".to_string(),
             "claude removed".to_string(),
             "codex removed".to_string(),
+            "agy skipped: not found".to_string(),
             "hook removed".to_string(),
             "timer removed".to_string(),
             "watch removed".to_string(),
@@ -2435,6 +2550,7 @@ fn remove_nothing_installed() {
             "server skipped: not installed",
             "claude skipped: not installed",
             "codex skipped: not installed",
+            "agy skipped: not found",
             "hook skipped: not trusted",
             "timer skipped: not installed",
             "watch skipped: not installed",
@@ -2450,13 +2566,29 @@ fn remove_nothing_installed() {
     let run = setup(&bare, &[], &["--remove", "--yes"]);
     assert_eq!(run.code, 0, "{}", run.stderr);
     assert_eq!(
-        lines(&run)[5..8],
+        lines(&run)[5..9],
         [
             "claude skipped: not found",
             "codex skipped: not found",
+            "agy skipped: not found",
             "hook skipped: not found"
         ]
     );
+}
+
+#[test]
+fn remove_takes_bilbo_out_of_agy() {
+    let m = agents_machine("remove-agy", &["agy"]);
+    let folder = agy_source(&m);
+    let run = plugin_setup(&m, &["--plugin-source", folder.to_str().unwrap()]);
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    let run = setup(&m, &[], &["--remove", "--yes"]);
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    assert!(lines(&run).contains(&"agy removed"));
+    assert!(fakes::log(&m.state, "agy").contains(&"plugin uninstall bilbo".to_string()));
+    assert_eq!(fakes::get(&m.state, "agy", "plugin"), "");
+    let again = setup(&m, &[], &["--remove", "--yes"]);
+    assert!(lines(&again).contains(&"agy skipped: not installed"));
 }
 
 #[test]
@@ -2869,6 +3001,7 @@ fn local_fresh_run_reports_every_step() {
             "embedder ok: 1024 dimensions".to_string(),
             "claude skipped: --no-plugin".to_string(),
             "codex skipped: --no-plugin".to_string(),
+            "agy skipped: --no-plugin".to_string(),
             "hook skipped: no codex plugin".to_string(),
             "timer installed: every 15 min".to_string(),
             format!("watch installed: watching {}/notes", root(&m).display()),
@@ -3520,8 +3653,8 @@ fn sync_a_failed_step_does_not_stop_the_rest() {
     assert_eq!(
         names,
         [
-            "store", "config", "key", "model", "server", "embedder", "claude", "codex", "hook",
-            "timer", "watch", "sync"
+            "store", "config", "key", "model", "server", "embedder", "claude", "codex", "agy",
+            "hook", "timer", "watch", "sync"
         ]
     );
 }

@@ -3,7 +3,7 @@
 use super::syncing::{self, Enrol, Inspected, Turn, Turned};
 use crate::Failure;
 use crate::host::prompt::{Choice, Prompter};
-use crate::host::swap;
+use crate::host::{agents, swap};
 use crate::identity::keys::{self, Device, Owner};
 use crate::identity::manifest::{self, Recipient};
 use crate::identity::{ceremony, phrase};
@@ -50,6 +50,7 @@ pub struct Facts {
     pub ollama: Option<Vec<String>>,
     pub claude: Option<PathBuf>,
     pub codex: Option<PathBuf>,
+    pub agy: Option<PathBuf>,
     /// This platform has a timer and a watcher service.
     pub timer: bool,
     /// The interval of the installed timer, if one is installed.
@@ -81,6 +82,7 @@ pub struct Answers {
     pub dims: Option<usize>,
     pub claude: bool,
     pub codex: bool,
+    pub agy: bool,
     /// `None`: not chosen, or no embedder.
     pub timer: Option<u32>,
     /// Whether to record note history in the background.
@@ -134,7 +136,7 @@ pub fn ask<P: Prompter>(
         None => ask_embedder(p, facts, &mut check, &var_set)?,
     };
 
-    let (claude, codex) = ask_plugin(p, facts)?;
+    let [claude, codex, agy] = ask_plugin(p, facts)?;
     let timer = match &embedder {
         Some(e) if facts.timer => ask_timer(p, e, facts.timer_minutes)?,
         _ => None,
@@ -146,6 +148,7 @@ pub fn ask<P: Prompter>(
         dims,
         claude,
         codex,
+        agy,
         timer,
         watch,
         sync: Turn::Unchanged,
@@ -826,33 +829,33 @@ fn ask_key<P: Prompter>(
     Ok(answer)
 }
 
-fn ask_plugin<P: Prompter>(p: &mut P, facts: &Facts) -> io::Result<(bool, bool)> {
-    let found: Vec<(bool, &PathBuf)> = [(true, &facts.claude), (false, &facts.codex)]
-        .into_iter()
-        .filter_map(|(is_claude, path)| path.as_ref().map(|path| (is_claude, path)))
+/// Whether to install the plugin in Claude Code, Codex and agy, in that order.
+fn ask_plugin<P: Prompter>(p: &mut P, facts: &Facts) -> io::Result<[bool; 3]> {
+    let tools = [
+        (agents::Tool::Claude, &facts.claude),
+        (agents::Tool::Codex, &facts.codex),
+        (agents::Tool::Agy, &facts.agy),
+    ];
+    let found: Vec<(usize, &PathBuf)> = tools
+        .iter()
+        .enumerate()
+        .filter_map(|(at, (_, path))| path.as_ref().map(|path| (at, path)))
         .collect();
     if found.is_empty() {
-        p.info("Neither claude nor codex was found, so the plugin is skipped.")?;
-        return Ok((false, false));
+        p.info("No claude, codex or agy was found, so the plugin is skipped.")?;
+        return Ok([false; 3]);
     }
     let choices: Vec<Choice> = found
         .iter()
-        .map(|(is_claude, path)| {
-            Choice::new(
-                if *is_claude { "Claude Code" } else { "Codex" },
-                path.display().to_string(),
-            )
-        })
+        .map(|(at, path)| Choice::new(tools[*at].0.label(), path.display().to_string()))
         .collect();
     let all: Vec<usize> = (0..choices.len()).collect();
     let picked = p.multiselect("Install the bilbo plugin in", &choices, &all)?;
-    let chose = |want_claude: bool| {
-        found
-            .iter()
-            .enumerate()
-            .any(|(i, (is_claude, _))| *is_claude == want_claude && picked.contains(&i))
-    };
-    Ok((chose(true), chose(false)))
+    let mut chosen = [false; 3];
+    for (i, (at, _)) in found.iter().enumerate() {
+        chosen[*at] = picked.contains(&i);
+    }
+    Ok(chosen)
 }
 
 fn ask_timer<P: Prompter>(
@@ -1244,6 +1247,7 @@ mod tests {
             ollama: None,
             claude: Some(PathBuf::from("/bin/claude")),
             codex: Some(PathBuf::from("/bin/codex")),
+            agy: None,
             timer: true,
             timer_minutes: None,
             local: Local {
@@ -1868,6 +1872,26 @@ mod tests {
     }
 
     #[test]
+    fn agy_found_is_offered_after_codex() {
+        let mut f = facts();
+        f.agy = Some(PathBuf::from("/bin/agy"));
+        let (r, s) = run(
+            &f,
+            vec![Answer::Select(NONE), Answer::Multi(vec![0, 2]), Answer::Yes],
+        );
+        let a = r.unwrap();
+        assert!(a.claude && !a.codex && a.agy);
+        assert!(s.saw("Antigravity CLI / /bin/agy"));
+        f.claude = None;
+        let (r, _) = run(
+            &f,
+            vec![Answer::Select(NONE), Answer::Multi(vec![1]), Answer::Yes],
+        );
+        let a = r.unwrap();
+        assert!(!a.claude && !a.codex && a.agy);
+    }
+
+    #[test]
     fn no_tools_found_skips_the_question() {
         let mut f = facts();
         f.claude = None;
@@ -1875,7 +1899,7 @@ mod tests {
         let (r, s) = run(&f, vec![Answer::Select(NONE), Answer::Yes]);
         let a = r.unwrap();
         assert!(!a.claude && !a.codex);
-        assert!(s.saw("info: Neither claude nor codex was found, so the plugin is skipped."));
+        assert!(s.saw("info: No claude, codex or agy was found, so the plugin is skipped."));
         assert!(!s.saw("multiselect:"));
     }
 

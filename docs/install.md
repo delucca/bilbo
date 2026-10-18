@@ -134,8 +134,8 @@ bilbo setup --remove
 ```
 
 This unloads the timer, the watcher and the local embedder's service, removes
-the plugin and its marketplace from Claude Code and Codex, and takes away
-Codex's trust of the hooks. It keeps the store and its history, the config, the
+the plugin and its marketplace from Claude Code and Codex, the plugin from agy,
+and takes away Codex's trust of the hooks. It keeps the store and its history, the config, the
 key file and the downloaded model, and prints their paths. In a terminal it asks
 first; `--yes` skips the question.
 

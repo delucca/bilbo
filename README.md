@@ -11,7 +11,7 @@ test failure. Then a new session begins, ready to rediscover all three.
 
 bilbo gives your agent a notebook: plain Markdown notes it writes in one session
 and finds again in the next, plus a library of sources it can cite. Its plugin
-for Claude Code and Codex helps your agent save decisions and gotchas, and
+for Claude Code, Codex and Antigravity CLI helps your agent save decisions and gotchas, and
 brings relevant notes into later conversations. You rarely need to type a
 `bilbo` command yourself.
 
@@ -91,7 +91,7 @@ and removal.
 
    It asks which embedder to use for search by meaning (none is fine to start),
    shows its plan and asks once. Then it creates the store and the config,
-   installs the plugin in Claude Code and Codex (each one found on your `PATH`)
+   installs the plugin in Claude Code, Codex and agy (each one found on your `PATH`)
    and installs a login service that records note history. It prints one line
    per step; [docs/getting-started.md](docs/getting-started.md) shows them, and
    [docs/guides/setup.md](docs/guides/setup.md) lists every option.
@@ -149,7 +149,7 @@ More detail: [docs/getting-started.md](docs/getting-started.md).
 - **History for every note.** A background watcher records each version, so a
   careless rewrite is one `bilbo restore` away from undone. See
   [history](docs/guides/history.md).
-- **Agent plugin.** Four skills for Claude Code and Codex (`note`, `recall`,
+- **Agent plugin.** Four skills for Claude Code, Codex and agy (`note`, `recall`,
   `reference`, `ingest`), a prompt hook that hands the agent the notes that bear
   on each prompt, and a reminder to write down what a session settled after a
   compaction. See [agents](docs/guides/agents.md).

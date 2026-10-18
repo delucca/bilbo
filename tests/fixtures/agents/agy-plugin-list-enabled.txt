@@ -1,0 +1,21 @@
+$ agy plugin list --json
+exit 0
+--- stdout
+[
+  {
+    "name": "bilbo",
+    "enabled": true,
+    "source": "antigravity",
+    "path": "/fixture/home/.gemini/config/plugins/bilbo",
+    "skills": [
+      "ingest",
+      "note",
+      "recall",
+      "reference"
+    ],
+    "hooks": [
+      "bilbo-digest"
+    ]
+  }
+]
+--- stderr

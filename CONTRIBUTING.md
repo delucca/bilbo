@@ -84,9 +84,10 @@ Never edit a fixture by hand.
   seeds. Regenerate them with the ignored
   `identity::device::tests::write_fixtures`. Git keeps only the execute bit,
   so `tests/device.rs` sets the 0700 and 0600 modes itself.
-- `tests/fixtures/agents/` holds recorded `claude` and `codex` output, the
-  first line being the command. When a tool's JSON moves, re-record it against
-  a throwaway `CLAUDE_CONFIG_DIR` and `CODEX_HOME`, and re-record
+- `tests/fixtures/agents/` holds recorded `claude`, `codex` and `agy` output,
+  the first line being the command. When a tool's JSON moves, re-record it
+  against a throwaway `CLAUDE_CONFIG_DIR`, `CODEX_HOME` and, for agy, `HOME`
+  (its paths written as `/fixture/home` and `/fixture`), and re-record
   `codex-app-server-*` when the app-server protocol moves. Trim
   `codex-app-server-config-read.txt` to `marketplaces`, `plugins`,
   `hooks.state` and their `origins`: Codex also returns every key and layer of

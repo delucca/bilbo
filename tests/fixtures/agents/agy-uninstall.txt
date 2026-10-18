@@ -1,0 +1,5 @@
+$ agy plugin uninstall bilbo
+exit 0
+--- stdout
+Uninstalled plugin "bilbo"
+--- stderr

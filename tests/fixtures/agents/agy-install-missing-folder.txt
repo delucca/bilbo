@@ -1,0 +1,5 @@
+$ agy plugin install /fixture/missing
+exit 1
+--- stdout
+--- stderr
+Error: install target must be a directory: /fixture/missing

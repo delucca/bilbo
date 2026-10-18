@@ -115,8 +115,9 @@ failures say what to change. Beyond it:
   `docs/manual-tests.md` after touching `Terminal` in `src/host/prompt.rs`,
   which the unit tests cannot reach.
 - `tests/<verb>.rs` runs the built binary in a clean environment with the
-  fakes in `tests/common/`, never a real `claude`, `codex`, `launchctl`,
-  `systemctl` or `llama-server`.
+  fakes in `tests/common/`, never a real `claude`, `codex`, `agy`, `launchctl`,
+  `systemctl` or `llama-server`. `PATH` holds only the fakes, so a fake uses
+  shell builtins, never `cp` or `rm`.
 - Tests that run `bilbo watch` poll with a deadline, never a fixed sleep. A
   check that nothing happened waits on a barrier: a later edit to another
   note that it polls for.
@@ -142,9 +143,9 @@ failures say what to change. Beyond it:
   checks the existing skills by name, not a new one. A heredoc body is data:
   the check skips from a line ending in `<<'EOF'` to the line `EOF`. Use that
   exact delimiter.
-- Every command in `plugins/bilbo/hooks/hooks.json` must never pass on
-  bilbo's exit code (`; exit 0`: exit 2 blocks the prompt) and must stay
-  quiet without `bilbo` on `PATH`.
+- Every command in `plugins/bilbo/hooks/hooks.json` and in agy's
+  `plugins/bilbo/hooks.json` must never pass on bilbo's exit code (`; exit 0`:
+  exit 2 blocks the prompt) and must stay quiet without `bilbo` on `PATH`.
 - PreCompact and PostCompact output never reaches the model in Claude Code or
   Codex; SessionStart with the matcher `compact` does.
 - Codex skips an untrusted plugin hook in silence. `bilbo setup` trusts it

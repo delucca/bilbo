@@ -1,0 +1,4 @@
+$ agy plugin enable bilbo
+exit 0
+--- stdout
+--- stderr

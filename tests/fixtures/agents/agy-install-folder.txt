@@ -1,0 +1,10 @@
+$ agy plugin install /fixture/bilbo/plugins/bilbo
+exit 0
+--- stdout
+  [32m[ok][0m    bilbo
+          [32m✔[0m skills      : 4 processed
+          - agents      : skipped (not found)
+          - commands    : skipped (not found)
+          - mcpServers  : skipped (not found)
+          [32m✔[0m hooks       : 1 processed
+--- stderr

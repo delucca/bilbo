@@ -189,6 +189,7 @@ fn wizard_with<P: Prompter>(
         ollama,
         claude: facts.claude.clone(),
         codex: facts.codex.clone(),
+        agy: facts.agy.clone(),
         timer: facts.timer.platform.is_some(),
         timer_minutes: facts
             .timer
@@ -214,7 +215,12 @@ fn wizard_with<P: Prompter>(
         answers.sync = wizard::ask_sync(p, &sync, answers.watch)?;
     }
     let exe = facts.exe.clone();
-    let kept = (answers.claude, answers.codex, answers.watch);
+    let kept = Kept {
+        claude: answers.claude,
+        codex: answers.codex,
+        agy: answers.agy,
+        watch: answers.watch,
+    };
     let local = match &answers.local {
         Some(llama_server) => {
             match plan_local(&facts, model::PORT, Some(llama_server.clone()), outside) {
@@ -316,15 +322,22 @@ impl<P: Prompter, O: Outside> Outside for Shown<'_, P, O> {
     }
 }
 
+/// The wizard's plugin and watch answers, which the keyword-only plan keeps.
+struct Kept {
+    claude: bool,
+    codex: bool,
+    agy: bool,
+    watch: bool,
+}
+
 /// After the confirmation: prepares the local embedder (or only checks it, when a new config
-/// would name it), offering a retry or keyword search only when that fails. `kept` are the
-/// wizard's claude, codex and watch answers, which the keyword-only plan keeps.
+/// would name it), offering a retry or keyword search only when that fails.
 fn settle_local<P: Prompter>(
     p: &mut P,
     outside: &mut impl Outside,
     facts: &Facts,
     plan: &mut Plan,
-    kept: (bool, bool, bool),
+    kept: Kept,
 ) -> Result<(), Failure> {
     let Some(mut local) = plan.local.take() else {
         return Ok(());
@@ -425,10 +438,11 @@ fn settle_local<P: Prompter>(
                     embedder: None,
                     pasted: None,
                     dims: None,
-                    claude: kept.0,
-                    codex: kept.1,
+                    claude: kept.claude,
+                    codex: kept.codex,
+                    agy: kept.agy,
                     timer: None,
-                    watch: kept.2,
+                    watch: kept.watch,
                     sync: std::mem::take(&mut plan.sync.choice),
                     local: None,
                 };
@@ -450,16 +464,16 @@ Usage:
 
 With stdin and stderr on a terminal, setup runs a wizard, unless --yes or an
 option that answers a question is given (every option below but --remove,
---claude, --codex and --plugin-source). Otherwise it asks nothing and each
-missing answer takes its default. Run it again at any time.
+--claude, --codex, --agy and --plugin-source). Otherwise it asks nothing and
+each missing answer takes its default. Run it again at any time.
 
 Answers:
   --yes                           Ask nothing, even in a terminal
   --interactive                   Run the wizard; needs a terminal
   --remove                        Unload the services and remove the plugin;
                                   keep the store, config, key and model.
-                                  Takes only --yes, --interactive, --claude
-                                  and --codex
+                                  Takes only --yes, --interactive, --claude,
+                                  --codex and --agy
 Embedder:
   --embedder-url <url>            An OpenAI-compatible embedder; needs
                                   --embedder-model
@@ -472,17 +486,19 @@ Embedder:
   --embedder-port <port>          Its port on 127.0.0.1 (default 8737)
   --llama-server <path>           The llama-server it runs (default: on PATH)
 Plugin:
-  --no-plugin                     Skip the Claude Code and Codex plugin
+  --no-plugin                     Skip the Claude Code, Codex and agy plugin
   --claude <path>                 The claude to use (default: on PATH)
   --codex <path>                  The codex to use (default: on PATH)
-  --plugin-source <source>        Install from a folder or owner/repo#ref
+  --agy <path>                    The agy to use (default: on PATH)
+  --plugin-source <source>        Install from a folder or owner/repo#ref;
+                                  agy installs from a folder only
 Services:
   --no-timer                      Skip the index timer
   --index-every <minutes>         Timer interval, 1 to 1440 (default 15)
   --no-watch                      Skip the watcher; remove it if installed
 
 Output: one line per step, in this order: store, config, key, model, server,
-embedder, claude, codex, hook, timer, watch, sync. A line is
+embedder, claude, codex, agy, hook, timer, watch, sync. A line is
   <step> <status>[: <detail>]
 where status is created, written, kept, ok, installed, updated, removed,
 skipped or failed.

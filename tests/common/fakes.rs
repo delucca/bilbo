@@ -235,6 +235,42 @@ case "$1 $2 $3" in
 esac
 "##;
 
+const AGY: &str = r##"#!/bin/sh
+D='@STATE@'
+printf '%s\n' "$*" >>"$D/agy.log"
+e=
+[ -s "$D/agy.plugin" ] && read -r e <"$D/agy.plugin"
+copy=
+[ -s "$D/agy.copy" ] && read -r copy <"$D/agy.copy"
+case "$*" in
+"plugin list --json")
+  case "$e" in
+  "") printf '[]\n' ;;
+  *) printf '[\n  {\n    "name": "bilbo",\n    "enabled": %s,\n    "source": "antigravity",\n    "path": "%s",\n    "skills": [],\n    "hooks": [\n      "bilbo-digest"\n    ]\n  }\n]\n' "$e" "$copy" ;;
+  esac
+  ;;
+"plugin install "*)
+  if [ ! -d "$3" ]; then
+    printf 'Error: install target must be a directory: %s\n' "$3" >&2
+    exit 1
+  fi
+  printf '%s\n' "$3" >"$D/agy.copy"
+  printf '%s\n' "${e:-true}" >"$D/agy.plugin"
+  printf '  [ok]    bilbo\n'
+  ;;
+"plugin enable bilbo") [ -z "$e" ] || printf 'true\n' >"$D/agy.plugin" ;;
+"plugin uninstall bilbo")
+  : >"$D/agy.copy"
+  : >"$D/agy.plugin"
+  printf 'Uninstalled plugin "bilbo"\n'
+  ;;
+*)
+  printf 'fake agy: unexpected arguments: %s\n' "$*" >&2
+  exit 64
+  ;;
+esac
+"##;
+
 const LAUNCHCTL: &str = r##"#!/bin/sh
 D='@STATE@'
 printf '%s\n' "$*" >>"$D/launchctl.log"
@@ -341,6 +377,7 @@ pub fn install(bin: &Path, state: &Path, tools: &[&str]) {
         let template = match *tool {
             "claude" => CLAUDE,
             "codex" => CODEX,
+            "agy" => AGY,
             "launchctl" => LAUNCHCTL,
             "systemctl" => SYSTEMCTL,
             "llama-server" => LLAMA_SERVER,
