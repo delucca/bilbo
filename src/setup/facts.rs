@@ -35,6 +35,7 @@ pub struct Facts {
     pub source: agents::Source,
     pub claude: Option<PathBuf>,
     pub codex: Option<PathBuf>,
+    pub agy: Option<PathBuf>,
     pub timer: TimerFacts,
     /// `llama-server` from `--llama-server` or PATH, as given: links are not resolved.
     pub llama_server: Option<PathBuf>,
@@ -154,6 +155,7 @@ pub fn gather(
     };
     let claude = tool(&flags.claude, "claude");
     let codex = tool(&flags.codex, "codex");
+    let agy = tool(&flags.agy, "agy");
     let llama_server = flags
         .local
         .as_ref()
@@ -172,6 +174,7 @@ pub fn gather(
         source,
         claude,
         codex,
+        agy,
         timer: timer_facts(env, path.as_deref()),
         llama_server,
         model: store::cache_dir(env).map(|cache| model::path(&cache)),

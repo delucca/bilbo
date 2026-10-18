@@ -108,6 +108,7 @@ pub struct Plan {
     pub source: agents::Source,
     pub claude: PluginPlan,
     pub codex: PluginPlan,
+    pub agy: PluginPlan,
     pub timer: TimerPlan,
     pub watch: TimerPlan,
     pub sync: SyncPlan,
@@ -215,6 +216,7 @@ pub fn answer_batch(
     };
     let claude = plugin(agents::Tool::Claude, &facts.claude);
     let codex = plugin(agents::Tool::Codex, &facts.codex);
+    let agy = plugin(agents::Tool::Agy, &facts.agy);
     let timer = plan_timer(
         &facts,
         embedder.as_ref(),
@@ -244,6 +246,7 @@ pub fn answer_batch(
         source: facts.source,
         claude,
         codex,
+        agy,
         timer,
         watch,
         sync,
@@ -345,6 +348,7 @@ pub fn answer_wizard(facts: &Facts, answers: wizard::Answers, local: Option<Loca
     };
     let claude = plugin(agents::Tool::Claude, &facts.claude, answers.claude);
     let codex = plugin(agents::Tool::Codex, &facts.codex, answers.codex);
+    let agy = plugin(agents::Tool::Agy, &facts.agy, answers.agy);
     let asked = embedder.is_some() && facts.timer.platform.is_some();
     let timer = plan_timer(
         facts,
@@ -374,6 +378,7 @@ pub fn answer_wizard(facts: &Facts, answers: wizard::Answers, local: Option<Loca
         source: facts.source.clone(),
         claude,
         codex,
+        agy,
         timer,
         watch,
         sync,
@@ -543,6 +548,9 @@ fn plan_job(
 
 /// Reads the tool's lists, the only commands planning runs, and decides what to change.
 fn plan_plugin(tool: agents::Tool, program: &Path, source: &agents::Source) -> PluginPlan {
+    if !agents::installs_from(tool, source) {
+        return PluginPlan::Skipped("needs a plugin folder; pass --plugin-source <folder>");
+    }
     match agents::read(tool, &command::System, program) {
         Ok(state) => PluginPlan::Run {
             program: program.to_path_buf(),
@@ -743,10 +751,11 @@ pub fn summary(plan: &Plan) -> Vec<String> {
     lines
 }
 
-pub fn plugins(plan: &Plan) -> [(agents::Tool, &PluginPlan); 2] {
+pub fn plugins(plan: &Plan) -> [(agents::Tool, &PluginPlan); 3] {
     [
         (agents::Tool::Claude, &plan.claude),
         (agents::Tool::Codex, &plan.codex),
+        (agents::Tool::Agy, &plan.agy),
     ]
 }
 
@@ -762,6 +771,7 @@ mod tests {
             pasted: pasted.map(|key| Zeroizing::new(key.to_string())),
             claude: true,
             codex: true,
+            agy: true,
             timer: None,
             watch: true,
             local: None,

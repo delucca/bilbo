@@ -43,6 +43,7 @@ pub fn plan(config: ConfigPlan, embedder: Option<Embedder>, check: EmbedderPlan)
         },
         claude: PluginPlan::Skipped("--no-plugin"),
         codex: PluginPlan::Skipped("--no-plugin"),
+        agy: PluginPlan::Skipped("--no-plugin"),
         timer: TimerPlan::Skipped("no embedder"),
         watch: TimerPlan::Skipped("--no-watch"),
         sync: SyncPlan::default(),
@@ -93,6 +94,7 @@ pub fn seen(dir: &Path, existing: Option<Embedder>, config: ConfigState) -> Fact
         },
         claude: None,
         codex: None,
+        agy: None,
         timer: TimerFacts {
             platform: None,
             home: None,

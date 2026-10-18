@@ -151,6 +151,10 @@
               "--codex"
               cfg.codex
             ]
+            ++ lib.optionals (cfg.agy != null) [
+              "--agy"
+              cfg.agy
+            ]
             ++ (
               if cfg.index.enable then
                 [
@@ -232,6 +236,11 @@
               type = lib.types.nullOr lib.types.str;
               default = null;
               description = "The codex executable; null looks it up on the activation PATH, which rarely has it.";
+            };
+            agy = lib.mkOption {
+              type = lib.types.nullOr lib.types.str;
+              default = null;
+              description = "The agy (Antigravity CLI) executable; null looks it up on the activation PATH, which rarely has it. agy installs the plugin from the package's own folder.";
             };
             localEmbedder = {
               enable = lib.mkEnableOption "the local embedder: bilbo downloads its pinned model and runs llama-server as a login service";
@@ -439,6 +448,7 @@
               "embedder.query_prefix" = "Instruct: Given a question, retrieve notes that answer it\nQuery: ";
             };
             claude = "/opt/claude/bin/claude";
+            agy = "/opt/agy/bin/agy";
           };
           misspelled = hm {
             enable = true;
@@ -557,7 +567,7 @@
                 embedder.model = qwen3-embedding-0.6b
                 embedder.query_prefix = "Instruct: Given a question, retrieve notes that answer it\nQuery: "
               '';
-            assert lib.hasInfix "/bin/bilbo setup --yes --claude /opt/claude/bin/claude --index-every 15"
+            assert lib.hasInfix "/bin/bilbo setup --yes --claude /opt/claude/bin/claude --agy /opt/agy/bin/agy --index-every 15"
               activation;
             assert lib.hasInfix "BILBO_HOME=${lib.escapeShellArg "/data/my notes/bilbo"} " rootedActivation;
             assert lib.hasInfix " --no-timer --no-watch" rootedActivation;

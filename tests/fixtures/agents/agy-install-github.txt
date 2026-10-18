@@ -1,0 +1,5 @@
+$ agy plugin install delucca/bilbo#v0.19.0
+exit 1
+--- stdout
+--- stderr
+Error: install target must be a directory: delucca/bilbo#v0.19.0

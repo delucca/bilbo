@@ -1,12 +1,13 @@
 # What your agent does with bilbo
 
-This guide shows what the bilbo plugin gives Claude Code and Codex, and what
-each part does when you ask for it: the four skills, the compaction reminder and
-the digest.
+This guide shows what the bilbo plugin gives Claude Code, Codex and Antigravity
+CLI (`agy`), and what each part does when you ask for it: the four skills, the
+compaction reminder and the digest.
 
 `bilbo setup` installs the plugin ([Set up](setup.md)). It gives your agent four
 skills, `note`, `recall`, `reference` and `ingest`, a hook that runs the digest
 on every prompt and a hook that reminds it to save notes after a compaction.
+agy has no compaction event, so it gets no reminder.
 
 ## Keep something for a later session
 
@@ -91,7 +92,14 @@ nothing without `bilbo` on `PATH`.
 
 `bilbo digest` is what the plugin's prompt hook runs, in Claude Code and in
 Codex, on every prompt. It reads the hook's JSON from stdin and prints the notes
-that bear on the prompt, which the tool hands to the agent as context:
+that bear on the prompt, which the tool hands to the agent as context.
+
+agy has no prompt hook and its hook input carries no prompt. Its hook runs
+`bilbo digest --agy` before each model call: on a turn's first call the digest
+reads the prompt from the end of the conversation's transcript, and it hands
+the block to agy as a system message. Every other call prints nothing.
+
+The block:
 
 ```text
 <!-- bilbo digest: 2 of 3 notes -->

@@ -18,7 +18,7 @@ const BOOL_FLAGS: [&str; 7] = [
     "--embedder-local",
 ];
 
-const VALUE_FLAGS: [&str; 11] = [
+const VALUE_FLAGS: [&str; 12] = [
     "--embedder-url",
     "--embedder-model",
     "--embedder-token-env",
@@ -26,6 +26,7 @@ const VALUE_FLAGS: [&str; 11] = [
     "--embedder-query-prefix",
     "--claude",
     "--codex",
+    "--agy",
     "--plugin-source",
     "--index-every",
     "--embedder-port",
@@ -55,7 +56,7 @@ const ANSWER_FLAGS: [&str; 12] = [
     "--llama-server",
 ];
 
-const REMOVE_FLAGS: [&str; 4] = ["--yes", "--interactive", "--claude", "--codex"];
+const REMOVE_FLAGS: [&str; 5] = ["--yes", "--interactive", "--claude", "--codex", "--agy"];
 
 fn usage<T>(message: impl Into<String>) -> Result<T, Failure> {
     Err(Failure::Usage(message.into()))
@@ -79,6 +80,7 @@ struct Args {
     query_prefix: Option<String>,
     claude: Option<String>,
     codex: Option<String>,
+    agy: Option<String>,
     plugin_source: Option<String>,
     index_every: Option<String>,
     embedder_port: Option<String>,
@@ -160,6 +162,7 @@ fn parse(args: &[String]) -> Result<Args, Failure> {
                 "--embedder-query-prefix" => &mut out.query_prefix,
                 "--claude" => &mut out.claude,
                 "--codex" => &mut out.codex,
+                "--agy" => &mut out.agy,
                 "--plugin-source" => &mut out.plugin_source,
                 "--embedder-port" => &mut out.embedder_port,
                 "--llama-server" => &mut out.llama_server,
@@ -224,6 +227,7 @@ pub struct Flags {
     pub embedder_flag: Option<&'static str>,
     pub claude: Option<PathBuf>,
     pub codex: Option<PathBuf>,
+    pub agy: Option<PathBuf>,
     pub source: Option<agents::Source>,
 }
 
@@ -278,7 +282,7 @@ pub fn settle(args: &[String], env: &store::Env) -> Result<Flags, Failure> {
         return usage("--no-timer and --index-every cannot be used together");
     }
     if args.no_plugin
-        && let Some(flag) = args.first(&["--claude", "--codex", "--plugin-source"])
+        && let Some(flag) = args.first(&["--claude", "--codex", "--agy", "--plugin-source"])
     {
         return usage(format!("--no-plugin and {flag} cannot be used together"));
     }
@@ -310,6 +314,7 @@ pub fn settle(args: &[String], env: &store::Env) -> Result<Flags, Failure> {
     };
     let claude = tool_flag("--claude", &args.claude, &cwd)?;
     let codex = tool_flag("--codex", &args.codex, &cwd)?;
+    let agy = tool_flag("--agy", &args.agy, &cwd)?;
     let source = match &args.plugin_source {
         Some(text) => Some(
             agents::parse_source(text, &cwd, home.as_deref())
@@ -348,6 +353,7 @@ pub fn settle(args: &[String], env: &store::Env) -> Result<Flags, Failure> {
         },
         claude,
         codex,
+        agy,
         source,
     })
 }
@@ -420,7 +426,7 @@ fn token_file(value: &str, home: Option<&Path>) -> Result<PathBuf, Failure> {
     }
 }
 
-/// A `--claude` or `--codex` path; a relative one joins the working directory.
+/// A `--claude`, `--codex` or `--agy` path; a relative one joins the working directory.
 fn tool_flag(flag: &str, value: &Option<String>, cwd: &Path) -> Result<Option<PathBuf>, Failure> {
     let Some(value) = value else {
         return Ok(None);

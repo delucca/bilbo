@@ -10,8 +10,11 @@ and so on). It does these things:
 
 - creates the store, `<root>/notes/`;
 - writes the config, after checking the embedder with one real request;
-- installs the bilbo plugin in Claude Code and Codex, at the binary's own
-  version, for each of the two that is on your `PATH`;
+- installs the bilbo plugin in Claude Code, Codex and Antigravity CLI (`agy`),
+  at the binary's own version, for each of them that is on your `PATH`. agy
+  copies the plugin from a folder and cannot fetch one, so it gets the plugin
+  from a package that carries the folder, as the Nix package does, or from
+  `--plugin-source <folder>`; otherwise its step is `skipped`;
 - trusts the plugin's hooks in Codex, which runs a plugin hook only once it is
   trusted: setup asks `codex app-server` to record the trust, so no review step
   is left, and a release that changes the hook is trusted again on the next run;
@@ -67,7 +70,7 @@ To try setup without installing anything, add `--no-plugin --no-timer
 | `--embedder-token-env <var>`, `--embedder-token-file <path>` | Where the key lives. Pick one. No option takes the key itself. |
 | `--embedder-query-prefix <text>` | Text put before each query. |
 | `--no-plugin` | Skip the agent plugin. |
-| `--claude <path>`, `--codex <path>` | Use this executable instead of looking one up on `PATH`. |
+| `--claude <path>`, `--codex <path>`, `--agy <path>` | Use this executable instead of looking one up on `PATH`. |
 | `--plugin-source <folder\|owner/repo#ref>` | Install the plugin from here instead of the default source. |
 | `--no-timer` | Skip the index timer. |
 | `--index-every <minutes>` | Timer interval, 1 to 1440. |

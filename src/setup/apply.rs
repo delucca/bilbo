@@ -46,7 +46,7 @@ pub fn apply(plan: &Plan) -> Outcome {
     let mut codex_installed = false;
     for (tool, plugin) in plugins(plan) {
         let left = plugin_step(tool, plugin, &plan.source, &mut report);
-        codex_installed = tool == agents::Tool::Codex && left;
+        codex_installed |= tool == agents::Tool::Codex && left;
     }
     hook_step(&plan.codex, codex_installed, &mut report);
     timer_step(&plan.timer, &mut report);

@@ -98,8 +98,9 @@ See [Sync](guides/sync.md) and [Relay](guides/relay.md).
 
 ## Plugin
 
-The plugin gives Claude Code and Codex four skills (`note`, `recall`,
-`reference`, `ingest`), the digest hook and a compaction hook. `bilbo setup`
+The plugin gives Claude Code, Codex and Antigravity CLI (`agy`) four skills
+(`note`, `recall`, `reference`, `ingest`) and the digest hook, and Claude Code
+and Codex a compaction hook. `bilbo setup`
 installs it, along with the index timer and the watcher service.
 
 See [Agents](guides/agents.md) and [Set up](guides/setup.md).

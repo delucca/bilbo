@@ -38,7 +38,7 @@ guide](guides/embedders.md).
 
 The wizard then shows its plan and asks once before it writes anything. Say yes.
 A real run creates the store, writes the config, installs the plugin in each of
-Claude Code and Codex that is on your `PATH`, and installs a login service that
+Claude Code, Codex and agy that is on your `PATH`, and installs a login service that
 records note history. It installs the index timer only when an embedder is
 configured.
 

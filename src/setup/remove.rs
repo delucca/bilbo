@@ -52,6 +52,7 @@ struct RemovePlan {
     server: TimerRemoval,
     claude: ToolRemoval,
     codex: ToolRemoval,
+    agy: ToolRemoval,
     /// The `codex` whose app-server forgets the hook trust; `None` when there is none.
     hook: Option<PathBuf>,
     timer: TimerRemoval,
@@ -139,6 +140,7 @@ fn plan_remove(flags: &Flags, env: &store::Env, path: Option<std::ffi::OsString>
         server,
         claude: tool(agents::Tool::Claude, &flags.claude),
         codex: tool(agents::Tool::Codex, &flags.codex),
+        agy: tool(agents::Tool::Agy, &flags.agy),
         hook,
         timer,
         watch,
@@ -160,13 +162,18 @@ fn job_removal(facts: &TimerFacts, name: timer::Name) -> TimerRemoval {
     }
 }
 
+fn tools(plan: &RemovePlan) -> [(agents::Tool, &ToolRemoval); 3] {
+    [
+        (agents::Tool::Claude, &plan.claude),
+        (agents::Tool::Codex, &plan.codex),
+        (agents::Tool::Agy, &plan.agy),
+    ]
+}
+
 /// The confirmation text: only what is removed; empty when nothing is.
 fn remove_summary(plan: &RemovePlan) -> Vec<String> {
     let mut lines = Vec::new();
-    for (tool, removal) in [
-        (agents::Tool::Claude, &plan.claude),
-        (agents::Tool::Codex, &plan.codex),
-    ] {
+    for (tool, removal) in tools(plan) {
         if matches!(removal, ToolRemoval::Run { .. }) {
             lines.push(format!("Remove the bilbo plugin from {}", tool.label()));
         }
@@ -219,10 +226,7 @@ fn apply_remove(plan: &RemovePlan) -> Outcome {
             Err(message) => report.line("server", "failed", Some(message)),
         },
     }
-    for (tool, removal) in [
-        (agents::Tool::Claude, &plan.claude),
-        (agents::Tool::Codex, &plan.codex),
-    ] {
+    for (tool, removal) in tools(plan) {
         let step = tool.name();
         match removal {
             ToolRemoval::Skipped(reason) => report.line(step, "skipped", Some((*reason).into())),
