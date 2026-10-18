@@ -21,6 +21,8 @@ pub struct Env {
     pub codex_thread_id: Option<OsString>,
     /// `CODEX_CI`.
     pub codex_ci: Option<OsString>,
+    /// `ANTIGRAVITY_AGENT`.
+    pub antigravity_agent: Option<OsString>,
     /// `NO_COLOR`.
     pub no_color: Option<OsString>,
     /// `CLICOLOR`.
@@ -54,6 +56,7 @@ impl Env {
             claude_code_child_session: var("CLAUDE_CODE_CHILD_SESSION"),
             codex_thread_id: var("CODEX_THREAD_ID"),
             codex_ci: var("CODEX_CI"),
+            antigravity_agent: var("ANTIGRAVITY_AGENT"),
             no_color: var("NO_COLOR"),
             clicolor: var("CLICOLOR"),
             term: var("TERM"),
@@ -63,14 +66,16 @@ impl Env {
         }
     }
 
-    /// An agent runs bilbo: `AI_AGENT`, `CLAUDE_CODE_CHILD_SESSION`, `CODEX_THREAD_ID` or `CODEX_CI` is
-    /// set and not empty. `CLAUDECODE` is not one: IDE extensions set it in the terminals people type in.
+    /// An agent runs bilbo: `AI_AGENT`, `CLAUDE_CODE_CHILD_SESSION`, `CODEX_THREAD_ID`, `CODEX_CI` or
+    /// `ANTIGRAVITY_AGENT` is set and not empty. `CLAUDECODE` is not one: IDE extensions set it in the
+    /// terminals people type in.
     pub fn agent(&self) -> bool {
         [
             &self.ai_agent,
             &self.claude_code_child_session,
             &self.codex_thread_id,
             &self.codex_ci,
+            &self.antigravity_agent,
         ]
         .into_iter()
         .any(|v| v.as_ref().is_some_and(|v| !v.is_empty()))
@@ -324,6 +329,7 @@ mod tests {
             "CLAUDE_CODE_CHILD_SESSION",
             "CODEX_THREAD_ID",
             "CODEX_CI",
+            "ANTIGRAVITY_AGENT",
         ] {
             assert!(with(name, "x").agent(), "{name} set");
             assert!(!with(name, "").agent(), "{name} empty");
@@ -356,6 +362,7 @@ mod tests {
             ("TERM", "/n"),
             ("COLUMNS", "/o"),
             ("LANG", "/p"),
+            ("ANTIGRAVITY_AGENT", "/q"),
         ];
         let lookup = |name: &str| {
             table
@@ -380,6 +387,7 @@ mod tests {
         assert_eq!(e.term, Some(OsString::from("/n")));
         assert_eq!(e.columns, Some(OsString::from("/o")));
         assert_eq!(e.lang, Some(OsString::from("/p")));
+        assert_eq!(e.antigravity_agent, Some(OsString::from("/q")));
         let none = Env::from_vars(|_| None);
         assert!(none.bilbo_config.is_none() && none.xdg_cache_home.is_none());
     }

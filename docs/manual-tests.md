@@ -21,7 +21,7 @@ export T HOME="$T/home" BILBO_HOME="$T/store" BILBO_CONFIG="$T/conf/config" \
 mkdir -p "$HOME"
 ```
 
-- Start the shell as `env -u AI_AGENT -u CLAUDE_CODE_CHILD_SESSION -u CODEX_THREAD_ID -u CODEX_CI B=... sh`. Under an
+- Start the shell as `env -u AI_AGENT -u CLAUDE_CODE_CHILD_SESSION -u CODEX_THREAD_ID -u CODEX_CI -u ANTIGRAVITY_AGENT B=... sh`. Under an
   agent marker the wizard keeps sync off and `bilbo device init` refuses to
   show a phrase.
 - The `PATH` above has no `claude` or `codex`, so setup skips the plugin
@@ -95,8 +95,8 @@ script -qc "$B recall <word>" /dev/null
    hint, exit 1.
 2. The same with `NO_COLOR=1`, `CLICOLOR=0`, `TERM=dumb` and `env -u TERM`: the
    same layout, no colour, no bold.
-3. The same with `AI_AGENT=x`, then `CLAUDE_CODE_CHILD_SESSION=1`, `CODEX_CI=1`
-   and `CODEX_THREAD_ID=t`: the plain three-line blocks and `bilbo: ` on
+3. The same with `AI_AGENT=x`, then `CLAUDE_CODE_CHILD_SESSION=1`, `CODEX_CI=1`,
+   `CODEX_THREAD_ID=t` and `ANTIGRAVITY_AGENT=1`: the plain three-line blocks and `bilbo: ` on
    stderr. With only `CLAUDECODE=1`: the terminal view.
 4. At 60 columns (`script -q /dev/null sh -c "stty cols 60; $B recall <word>"`):
    two-line snippets, no line wider than 60, the meta line broken under the

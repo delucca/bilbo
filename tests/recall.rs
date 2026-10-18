@@ -2090,6 +2090,7 @@ fn an_agent_in_a_terminal_gets_the_blocks() {
         &[("CLAUDE_CODE_CHILD_SESSION", "1")],
         &[("CODEX_CI", "1"), ("TERM", "dumb"), ("NO_COLOR", "1")],
         &[("CODEX_THREAD_ID", "t")],
+        &[("ANTIGRAVITY_AGENT", "1")],
     ] {
         let run = recall_tty(&dir, &root, markers, &["rollback"], 100);
         assert_eq!(run.code, 0, "{}", run.stderr);
