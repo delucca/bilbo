@@ -1,5 +1,5 @@
 use std::collections::{HashMap, HashSet};
-use std::io::{Read, Write};
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime};
@@ -27,6 +27,8 @@ const SESSION_MAX: usize = 128;
 const LISTED_WAITING: usize = 3;
 /// The line of a session's memory that says the sync conflicts were raised; a path never reads like it.
 const RAISED: &str = "sync conflicts raised";
+/// The end of an agy transcript that is read for the prompt; a longer last step has none.
+const TRANSCRIPT_TAIL: u64 = 1 << 20;
 
 pub struct Outcome {
     /// stdout lines; empty means no digest.
@@ -43,6 +45,8 @@ struct Record {
     passed: usize,
     shown: Vec<String>,
     error: Option<String>,
+    /// An agy call that starts no turn: nothing to log.
+    skipped: bool,
 }
 
 /// A note that passed the gate, as its line in the block needs it.
@@ -81,6 +85,7 @@ pub fn run(args: &[String], input: &mut dyn Read, env: &store::Env) -> Outcome {
         passed: 0,
         shown: Vec::new(),
         error: None,
+        skipped: false,
     };
     let lines = match digest(args, input, env, &settings, start, &mut record) {
         Ok(lines) => lines,
@@ -94,6 +99,7 @@ pub fn run(args: &[String], input: &mut dyn Read, env: &store::Env) -> Outcome {
         sweep(&dir.join("sessions"), SystemTime::now());
     }
     if settings.digest.log
+        && !record.skipped
         && let Err(e) = append_log(env, &record, start.elapsed())
     {
         record.error.get_or_insert(e);
@@ -114,7 +120,8 @@ fn digest(
     start: Instant,
     record: &mut Record,
 ) -> Result<Vec<String>, String> {
-    if let Some(arg) = args.first() {
+    let agy = args.first().is_some_and(|arg| arg == "--agy");
+    if let Some(arg) = args.get(usize::from(agy)) {
         return Err(if arg.starts_with('-') && arg != "-" {
             format!("unknown option '{arg}'")
         } else {
@@ -135,16 +142,27 @@ fn digest(
             .and_then(serde_json::Value::as_str)
             .filter(|s| !s.is_empty())
     };
-    let prompt = field("prompt").ok_or("the hook input has no prompt")?;
+    let prompt = if agy {
+        let Some(prompt) = agy_prompt(&value)? else {
+            record.skipped = true;
+            return Ok(Vec::new());
+        };
+        prompt
+    } else {
+        field("prompt")
+            .ok_or("the hook input has no prompt")?
+            .to_string()
+    };
     record.prompt = Some(prompt.trim().chars().take(LOG_PROMPT_CHARS).collect());
-    let session = field("session_id").ok_or("the hook input has no session_id")?;
+    let key = if agy { "conversationId" } else { "session_id" };
+    let session = field(key).ok_or_else(|| format!("the hook input has no {key}"))?;
     if !is_session(session) {
-        return Err(
-            "the hook input's session_id is not 1 to 128 of A-Z, a-z, 0-9, '.', '_' and '-'".into(),
-        );
+        return Err(format!(
+            "the hook input's {key} is not 1 to 128 of A-Z, a-z, 0-9, '.', '_' and '-'"
+        ));
     }
     record.session = Some(session.to_string());
-    let ranked = match query(prompt) {
+    let ranked = match query(&prompt) {
         Some(query) => ranked(&query, env, settings, start, record)?,
         None => {
             let Ok(root) = store::root(env) else {
@@ -229,7 +247,56 @@ fn digest(
     }
     remember(&sessions, &memory, &text)?;
     record.shown = shown;
+    if agy {
+        let block = lines.join("\n");
+        return Ok(vec![
+            serde_json::json!({"injectSteps": [{"systemMessage": {"systemMessage": block}}]})
+                .to_string(),
+        ]);
+    }
     Ok(lines)
+}
+
+/// The prompt of agy's `PreInvocation` call: the last user input in its transcript, when the call
+/// is its turn's first and only system messages follow that input; `None` otherwise.
+fn agy_prompt(value: &serde_json::Value) -> Result<Option<String>, String> {
+    let call = value
+        .get("invocationNum")
+        .and_then(serde_json::Value::as_u64);
+    if call.unwrap_or(0) != 0 {
+        return Ok(None);
+    }
+    let path = value
+        .get("transcriptPath")
+        .and_then(serde_json::Value::as_str)
+        .filter(|s| !s.is_empty())
+        .ok_or("the hook input has no transcriptPath")?;
+    let fail = |e: std::io::Error| format!("cannot read {path}: {e}");
+    let mut file = std::fs::File::open(path).map_err(fail)?;
+    let len = file.metadata().map_err(fail)?.len();
+    file.seek(SeekFrom::Start(len.saturating_sub(TRANSCRIPT_TAIL)))
+        .map_err(fail)?;
+    let mut tail = Vec::new();
+    file.read_to_end(&mut tail).map_err(fail)?;
+    let tail = String::from_utf8_lossy(&tail);
+    for line in tail.lines().rev().filter(|line| !line.trim().is_empty()) {
+        let Ok(step) = serde_json::from_str::<serde_json::Value>(line) else {
+            return Ok(None);
+        };
+        match step["type"].as_str() {
+            Some("SYSTEM_MESSAGE") => {}
+            Some("USER_INPUT") => {
+                let content = step["content"].as_str().unwrap_or("");
+                let request = content
+                    .split_once("<USER_REQUEST>")
+                    .and_then(|(_, rest)| rest.split_once("</USER_REQUEST>"))
+                    .map_or(content, |(request, _)| request);
+                return Ok(Some(request.trim().to_string()).filter(|r| !r.is_empty()));
+            }
+            _ => return Ok(None),
+        }
+    }
+    Ok(None)
 }
 
 /// What ranking found: the store, its notes and the ones that passed the gate, best first.
@@ -571,9 +638,12 @@ pub const HELP: &str = r#"bilbo digest: read a prompt hook's JSON on stdin and p
 on the prompt. The plugin's prompt hook runs it.
 
 Usage:
-  bilbo digest
+  bilbo digest [--agy]
 
-Input: one JSON object with the string fields session_id and prompt.
+Input: one JSON object with the string fields session_id and prompt. With
+--agy, Antigravity CLI's PreInvocation input: the session is conversationId
+and the prompt is the last user input in the transcriptPath file, read only
+on a turn's first call (invocationNum 0).
 It shows at most 6 notes the first time in a session and 3 after, never one
 the session saw already. digest.enable = off in the config turns it off.
 
@@ -582,6 +652,8 @@ Output: nothing, or a block for the agent:
   Notes that may bear on this prompt (open the file to read more):
   - <path>:<line> (<kind>, <created>[, <label>]) <heading path>: <snippet>
   Sync conflicts wait in: <path>, ... (run bilbo check), when notes wait
+With --agy the block is one JSON line that adds it as a system message:
+  {"injectSteps":[{"systemMessage":{"systemMessage":"<block>"}}]}
 
 Exit: always 0, so a prompt is never blocked; an error is one line on stderr.
 
