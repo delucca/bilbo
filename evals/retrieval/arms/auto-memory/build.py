@@ -9,6 +9,7 @@ import hashlib
 import json
 import os
 import platform
+import posixpath
 import re
 import shutil
 import sys
@@ -155,7 +156,7 @@ def recorded_ops(entries, session_key, start):
             key, rest = match.group("key"), (match.group("rest") or "/").lstrip("/")
         op = {"tool": name, "key": key, "file": rest, "line": use_line, "skip": None, "failed": False,
               "version": made.get("version"), "model": (made.get("message") or {}).get("model")}
-        if match and match.group("root") and not HOME_ROOT.fullmatch(match.group("root")):
+        if match and match.group("root") and not HOME_ROOT.fullmatch(posixpath.normpath(match.group("root"))):
             op["skip"] = "wrong_root"
         done = results.get(tid)
         if done:
