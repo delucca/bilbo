@@ -58,7 +58,7 @@ Deleting the cache loses nothing that `bilbo index` cannot rebuild. `bilbo
 | `XDG_BIN_HOME` | Where the installer puts the binary, else `~/.local/bin`; see [Install](../install.md). |
 | `BILBO_NO_MODIFY_PATH` | Set to `1` to stop the installer editing your shell rc files; see [Install](../install.md). |
 | `HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY` and their lowercase forms | bilbo ignores them for a loopback embedder, which it reaches directly. |
-| `AI_AGENT`, `CLAUDE_CODE_CHILD_SESSION`, `CODEX_THREAD_ID`, `CODEX_CI` | When one is set and not empty, an agent runs bilbo: it prints the plain view on a terminal too, and refuses the steps that need the user at a terminal; see [Commands that need a terminal](../guides/devices.md#commands-that-need-a-terminal). `CLAUDECODE` is not one. |
+| `AI_AGENT`, `CLAUDE_CODE_CHILD_SESSION`, `CODEX_THREAD_ID`, `CODEX_CI`, `ANTIGRAVITY_AGENT` | When one is set and not empty, an agent runs bilbo: it prints the plain view on a terminal too, and refuses the steps that need the user at a terminal; see [Commands that need a terminal](../guides/devices.md#commands-that-need-a-terminal). `CLAUDECODE` is not one. |
 | `NO_COLOR`, `CLICOLOR` | No escapes in the terminal view when `NO_COLOR` is set and not empty, or `CLICOLOR` is `0`; `CLICOLOR_FORCE` and `FORCE_COLOR` are ignored. See [Terminal output](commands.md#terminal-output). |
 | `TERM` | Unset or `dumb`: no escapes in the terminal view. |
 | `BILBO_HYPERLINKS` | `1` makes `recall`'s paths and references clickable links (OSC 8) in the terminal view; any other value, or none, leaves them plain. See [Terminal output](commands.md#terminal-output). |

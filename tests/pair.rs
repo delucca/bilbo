@@ -16,12 +16,13 @@ const FIXTURES: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/devi
 const CODE: &str = "42-orbit-tunnel-velvet";
 
 /// The ways a run can be an agent's or a person's, each as the extra environment it sets.
-const MARKS: [&[(&str, &str)]; 5] = [
+const MARKS: [&[(&str, &str)]; 6] = [
     &[],
     &[("CLAUDE_CODE_CHILD_SESSION", "1")],
     &[("CODEX_THREAD_ID", "x")],
     &[("AI_AGENT", "x")],
     &[("CODEX_CI", "1")],
+    &[("ANTIGRAVITY_AGENT", "1")],
 ];
 
 struct Machine {
@@ -225,6 +226,7 @@ fn an_empty_agent_marker_is_still_no_terminal_without_a_tty() {
             ("CLAUDE_CODE_CHILD_SESSION", ""),
             ("CODEX_THREAD_ID", ""),
             ("CODEX_CI", ""),
+            ("ANTIGRAVITY_AGENT", ""),
         ],
         &[],
     );

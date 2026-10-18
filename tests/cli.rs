@@ -847,6 +847,7 @@ fn help_is_plain_under_each_agent_marker_and_no_color_rule() {
         ("CLAUDE_CODE_CHILD_SESSION", "1"),
         ("CODEX_THREAD_ID", "t"),
         ("CODEX_CI", "1"),
+        ("ANTIGRAVITY_AGENT", "1"),
         ("NO_COLOR", "1"),
         ("CLICOLOR", "0"),
         ("TERM", "dumb"),

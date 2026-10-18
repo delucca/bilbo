@@ -38,11 +38,11 @@ page, and on the guides, show the plain view unless they say otherwise.
 
 The gate is checked per stream, so `bilbo recall x | less` prints the plain
 view to the pipe and the terminal form of stderr to the screen. The agent
-markers are `AI_AGENT`, `CLAUDE_CODE_CHILD_SESSION`, `CODEX_THREAD_ID` and
-`CODEX_CI`: when any is set and not empty, bilbo prints the plain view even on
-a terminal. `CLAUDECODE` is not one, so a person's own terminal inside an IDE
-that sets it still gets the terminal view. To see the plain view in a terminal,
-run `bilbo <verb> | cat`.
+markers are `AI_AGENT`, `CLAUDE_CODE_CHILD_SESSION`, `CODEX_THREAD_ID`,
+`CODEX_CI` and `ANTIGRAVITY_AGENT`: when any is set and not empty, bilbo
+prints the plain view even on a terminal. `CLAUDECODE` is not one, so a
+person's own terminal inside an IDE that sets it still gets the terminal view.
+To see the plain view in a terminal, run `bilbo <verb> | cat`.
 
 The terminal view is tuned by the environment:
 

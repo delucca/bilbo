@@ -759,7 +759,7 @@ mod tests {
             bool,
             bool,
             Option<usize>,
-        ); 21] = [
+        ); 22] = [
             (
                 true,
                 Some(120),
@@ -823,6 +823,14 @@ mod tests {
                 true,
                 Some(100),
                 &[("TERM", "xterm"), ("CODEX_THREAD_ID", "t")],
+                false,
+                false,
+                None,
+            ),
+            (
+                true,
+                Some(100),
+                &[("TERM", "xterm"), ("ANTIGRAVITY_AGENT", "1")],
                 false,
                 false,
                 None,

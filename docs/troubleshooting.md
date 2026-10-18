@@ -267,8 +267,8 @@ agent.
 
 Cause: an agent harness that runs bilbo through a terminal has to say so, or
 bilbo cannot tell it from a person. It reads one of `AI_AGENT`,
-`CLAUDE_CODE_CHILD_SESSION`, `CODEX_THREAD_ID` and `CODEX_CI`. `CLAUDECODE`
-does not count.
+`CLAUDE_CODE_CHILD_SESSION`, `CODEX_THREAD_ID`, `CODEX_CI` and
+`ANTIGRAVITY_AGENT`. `CLAUDECODE` does not count.
 
-Fix: set one of the four in the harness's environment; `AI_AGENT=<name>` works
-for any harness. Claude Code and Codex set theirs already.
+Fix: set one of the five in the harness's environment; `AI_AGENT=<name>` works
+for any harness. Claude Code, Codex and agy set theirs already.
