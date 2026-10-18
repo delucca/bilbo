@@ -137,6 +137,8 @@ What the replay changes:
 - When a batch is longer than the embedder's context, mem0's lookup of the memories it already holds embeds only the
   batch's start and end. The LLM still reads all of it.
 - The two Cursor transcripts are left out. The plugin never sees them.
+- superset-windows-arm64's 14 sessions ran on Windows. The file paths the plugin reads from their tool calls are given
+  at their POSIX form, `C:\Users\<name>\...` as `/Users/<name>/...`, as the MemPalace and auto-memory replays read them.
 
 Search is mem0's full hybrid search: Qdrant, BM25 through `fastembed` and entity matching through spaCy. mem0 only
 warns when BM25 or entity matching fails to load; the build stops instead. A store holds a Qdrant snapshot per

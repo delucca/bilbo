@@ -207,6 +207,16 @@ def hosted_api(mem, counts):
     plugin._wait_for_event = wait_for_event
 
 
+def posix_path(value):
+    """A Windows path at the POSIX form of its path: C:\\Users\\a\\b as /Users/a/b."""
+    return "/" + value[3:].replace("\\", "/") if isinstance(value, str) and re.match(r"[A-Za-z]:\\", value) else value
+
+
+def posix_input(tool_input):
+    """A tool's input with its file paths at the POSIX form; the transcript line keeps what was recorded."""
+    return {k: posix_path(v) if k in ("file_path", "notebook_path") else v for k, v in tool_input.items()}
+
+
 def text_of(content):
     if isinstance(content, str):
         return content.strip()
@@ -230,7 +240,7 @@ class Session:
 
     def __init__(self, repo, path, store, counts):
         self.name, self.store, self.counts = f"{repo}/{path.name}", store, counts
-        self.lines = [line if line.endswith("\n") else line + "\n" for line in path.read_text().splitlines()]
+        self.lines = [line + "\n" for line in path.read_text().split("\n") if line]
         self.entries = [json.loads(line) for line in self.lines]
         self.times, when = [], None
         for entry in self.entries:
@@ -239,7 +249,7 @@ class Session:
         first_time = next(t for t in self.times if t)
         self.times = [t or first_time for t in self.times]
         first = next(e for e in self.entries if e.get("sessionId"))
-        self.sid, self.cwd = first["sessionId"], first.get("cwd") or "/"
+        self.sid, self.cwd = first["sessionId"], posix_path(first.get("cwd") or "/")
         branch = first.get("gitBranch")
         self.git = {"remote": f"https://github.com/{repo.replace('__', '/', 1)}", "branch": "" if branch in (None, "HEAD") else branch}
         self.model = next(((e.get("message") or {}).get("model", "") for e in self.entries if e.get("type") == "assistant"), "")
@@ -333,7 +343,7 @@ class Session:
                 self.turn["prompt"] = None
             for b in blocks:
                 if isinstance(b, dict) and b.get("type") == "tool_use":
-                    self.tools[b.get("id")] = (b.get("name"), b.get("input") or {})
+                    self.tools[b.get("id")] = (b.get("name"), posix_input(b.get("input") or {}))
             reply = text_of(content)
             if self.turn and reply:
                 self.turn["reply"], self.turn["interrupted"] = reply, False
