@@ -65,7 +65,7 @@ A store is the memory one strategy builds from the corpus, `dataset/store-<arm>-
 needs no LLM. The key hashes what shapes a store: the corpus, the embedder, the LLM for an arm that uses one, and the
 files under `arms/<arm>/`. Change any of them and the key changes.
 
-`dataset.lock` pins a mem0 store built from this corpus, and every arm's store built from an earlier one,
+`dataset.lock` pins mem0 and dense stores built from this corpus, and every arm's store built from an earlier one,
 `corpus-1235aec0592a`, the first five projects; the other arms have none for this corpus yet.
 
 | Arm | Strategy | LLM | Published store |
@@ -171,8 +171,8 @@ vectors differ only by floating-point noise, so the device is not in the key.
 the corpus, then embeds five chunks again: each must point the way its stored vector does, at a cosine of at least
 0.99.
 
-The published store was built with the embedder on an RTX 5070 Ti, in 12 min: 28,115 chunks from 39,378 messages,
-11.5 million tokens.
+The published store was built from the 403 sessions with the embedder on an RTX 5070 Ti, in 55 min: 114,516 chunks
+from 156,115 messages, 46.7 million tokens.
 
 ### graphiti
 
