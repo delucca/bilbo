@@ -65,8 +65,8 @@ A store is the memory one strategy builds from the corpus, `dataset/store-<arm>-
 needs no LLM. The key hashes what shapes a store: the corpus, the embedder, the LLM for an arm that uses one, and the
 files under `arms/<arm>/`. Change any of them and the key changes.
 
-`dataset.lock` pins mem0 and dense stores built from this corpus, and every arm's store built from an earlier one,
-`corpus-1235aec0592a`, the first five projects; the other arms have none for this corpus yet.
+`dataset.lock` pins mem0, dense and auto-memory stores built from this corpus, and every arm's store built from an
+earlier one, `corpus-1235aec0592a`, the first five projects; the other arms have none for this corpus yet.
 
 | Arm | Strategy | LLM | Published store |
 |---|---|---|---|
@@ -539,26 +539,34 @@ on Windows, `C:\Users\<name>\.claude\projects\<key>\memory\` or `/c/Users/<name>
 same way, under the key Claude Code gave the Windows path. A recorded command is never run. Each project's memory
 starts empty, as for every arm, and the two Cursor transcripts are left out: Claude Code never saw them.
 
-Why recorded writes and not a replay: what the corpus holds is the main model's own memory writes, 46 recorded
-operations in 19 sessions of four repositories, and 6 `memory_saved` entries, all in neuralips26 (Claude Code 2.1.84
-to 2.1.92, "Improved"), which name files Claude Code rewrote outside the main model's tool calls but not their
+Why recorded writes and not a replay: what the corpus holds is the main model's own memory writes, 240 recorded
+operations in 68 sessions of 19 repositories, and 6 `memory_saved` entries, all in neuralips26 (Claude Code 2.1.84
+to 2.1.92, "Improved"), which name files Claude Code wrote outside the main model's tool calls but not their
 content. The manifest counts those under `unrecorded_saves` and the store cannot hold what they wrote. There is no
 "Saved N memories" or "Improved N memories" message and no `relevant_memories` attachment in any session. On the
-accounts this eval runs on, those features are switched off server-side too. Running a current Claude Code over the
-transcripts would measure a setup none of these developers had.
+accounts this eval runs on, background memory extraction, auto dream and the recall selector are switched off
+server-side. Running a current Claude Code over the transcripts would measure a setup none of these developers had.
 
 What the store holds, from the manifest:
 
-- 38 of the 46 operations applied (16 writes, 17 edits, 5 Bash writes), 3 failed when recorded and are not applied, and
-  5 `Edit`s are skipped because their file was written before the recordings (`edit_file_unknown`): memory from before
-  the corpus is unseen.
-- 17 files: readaloud 11 (10 under its project, 1 under the home directory's key), linear-cycle-drain 3, port-cli 2
-  and iptvnator 1 (a `MEMORY.md`). kimi-cli has no memory, so its directory is empty.
-- Written by a mix of models and Claude Code versions, per operation in `manifest.json`: `claude-opus-4-7` 15,
-  `claude-fable-5` 14, `claude-sonnet-4-6` 5 and `claude-opus-4-8` 4, across Claude Code 2.1.49 to 2.1.235. They are
-  not today's model and prompts.
+- 149 of the 240 operations applied (83 writes, 61 edits, 5 Bash writes), 19 failed when recorded and are not applied,
+  and 72 are skipped: 51 `Edit`s on a file the store does not hold (`edit_file_unknown`), most on files written
+  before the recordings; 15 Bash writes of another shape (`bash_unparsed`); 5 `Edit`s whose text is not in the file
+  (`edit_target_missing`); and 1 whose memory path goes through `$HOME` instead of a home directory (`wrong_root`).
+  Memory from before the corpus is unseen.
+- 76 files in 18 repositories: readaloud 11 (10 under its project, 1 under the home directory's key),
+  superset-windows-arm64 10, neuralips26 8, hackerspub-android 6 (5 under its project, 1 under a worktree's key),
+  cavecrew-mcp 6, openclaw-skills 6, go-nuts 5 (3 and 2 under the keys of two task directories), Cakebrew 5,
+  MiscMetabar 4, linear-cycle-drain 3, wakil 2, pablo-companion 2, port-cli 2, contoso 2, and iptvnator, bosarsalog,
+  eldios-dotfiles and entire-graph 1 each. content-factory, kimi-cli, arosenfeld2003-cli and safecast-map-MCP have
+  no memory, so their directories are empty.
+- Written by a mix of models and Claude Code versions, per operation in `manifest.json`: `claude-fable-5` 50,
+  `claude-opus-4-6` 30, `claude-opus-4-7` 23, `claude-opus-4-8` 18, `claude-opus-5` 16 and `claude-sonnet-4-6` 12,
+  across Claude Code 2.1.37 to 2.1.252. They are not today's model and prompts.
 - Bash writes only of the known shapes (an `echo >>` append, a Python `replace` script, a `cat >` heredoc); a write of
-  another shape is skipped as `bash_unparsed`, and none was met.
+  another shape is skipped as `bash_unparsed`, and 15 were met.
+- neuralips26's 6 `memory_saved` entries, naming 11 distinct files, are counted under `unrecorded_saves` and not
+  applied.
 - Files keep the dates their authors wrote, not the build's.
 
 Search is whatever the run step gives the model: `MEMORY.md` is loaded up to its first 200 lines or 25,000 characters,
