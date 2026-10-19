@@ -4,8 +4,11 @@ manifest; every drawer carries the metadata MemPalace writes; each session has t
 and chunker make of its corpus file, dated with its latest timestamp and filed during the session, and the sweep
 drawers of its messages (one per message uuid); the sessions are the first N of the corpus; up to five transcript
 drawers, one diary drawer and two sweep drawers (one of them cut, when the build cut any) embedded again point the way
-their stored vectors do; and four searches in the sessions wing, in each diary wing and in none find drawers.
-build-store.sh --check runs it in the build service, with the embedder and no LLM."""
+their stored vectors do; and four searches in the sessions wing, in each diary wing and in none find drawers. The
+hallways are what MemPalace's hallway count makes of the transcript drawers, and the write log holds every diary write.
+A store built in lanes (manifest `lanes`) holds each lane's drawers, as many of each kind as the manifest says, and each
+lane's hallways, which only that lane's drawers make. build-store.sh --check runs it in the build service, with the
+embedder and no LLM."""
 
 import http.client
 import json
@@ -14,6 +17,7 @@ import re
 import sys
 from collections import Counter, defaultdict
 from datetime import datetime, timedelta
+from itertools import combinations
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -38,6 +42,7 @@ Path(os.environ["HOME"]).mkdir(parents=True, exist_ok=True)
 
 from mempalace.config import MempalaceConfig, strip_lone_surrogates, strip_nul_bytes  # noqa: E402
 from mempalace.convo_miner import MIN_CHUNK_SIZE, chunk_exchanges  # noqa: E402
+from mempalace.hallways import _hallway_id, _parse_entities  # noqa: E402
 from mempalace.ids import make_convo_drawer_id  # noqa: E402
 from mempalace.normalize import normalize_conversations  # noqa: E402
 from mempalace.palace import get_collection  # noqa: E402
@@ -155,7 +160,14 @@ for path in CORPUS.glob("*/*.jsonl"):
 # name); the Cursor transcripts (no timestamp) left out.
 limit = next(line.split()[1] for line in manifest["inputs"] if line.startswith("sessions "))
 order = sorted((first, files[sid].parent.name, files[sid].name, sid) for sid, first in firsts.items())
-expected_sids = {row[-1] for row in order[: None if limit == "all" else int(limit)]}
+if ":" in limit:  # repo:N,repo:N: the first N sessions of each repository named
+    per, taken, expected_sids = {r: int(k) for r, k in (part.split(":") for part in limit.split(","))}, Counter(), set()
+    for _, repo, _, sid in order:
+        if taken[repo] < per.get(repo, 0):
+            taken[repo] += 1
+            expected_sids.add(sid)
+else:
+    expected_sids = {row[-1] for row in order[: None if limit == "all" else int(limit)]}
 # What MemPalace's own normalizer and chunker make of a corpus file, as its mine does (convo_miner.py:1128-1150).
 chunk_size = MempalaceConfig(palace_path=str(STORE / "palace")).chunk_size
 
@@ -242,9 +254,131 @@ for i, m, doc in zip(ids, metas, docs):
 diary_ok = diary_bad == 0 and entries == manifest["replay"]["diary_writes"] == d["diary_entries"]
 print("diary drawers", kinds["diary"], "entries", entries, "manifest writes", manifest["replay"]["diary_writes"], "| wings", sorted(diary_wings), "| bad", diary_bad)
 
+# The repository each drawer came from: a transcript or sweep drawer by its session, a diary drawer by the session its
+# checkpoint names (a chunked entry's chunks by their first chunk's, through parent_entry_id).
+lane_of, entry_session = {sid: path.parent.name for sid, path in files.items()}, {}
+for i, m, doc in zip(ids, metas, docs):
+    if kind_of(m) == "diary" and m.get("chunk_index") == 0 and (found := CHECKPOINT.match(doc)):
+        entry_session[m.get("parent_entry_id") or i] = found.group(2)
+repo_of = []
+for i, m in zip(ids, metas):
+    if kind_of(m) == "diary":
+        repo_of.append(lane_of.get(entry_session.get(m.get("parent_entry_id") or i), "?"))
+    else:
+        found = TRANSCRIPT.match(m.get("source_file") or "")
+        repo_of.append(lane_of.get(found.group(2), "?") if found else "?")
+
+
+def hallways_of(rows):
+    """MemPalace's hallway count over some transcript drawers (hallways.py compute_hallways_for_wing, min_count 2):
+    every pair of distinct entities a drawer carries is one co-occurrence. As a mine leaves them: id, pair, count and
+    rooms."""
+    counts, rooms = Counter(), defaultdict(set)
+    for m in rows:
+        entities = _parse_entities(m.get("entities"))
+        if m.get("is_sentinel") or len(entities) < 2:
+            continue
+        for a, b in combinations(entities, 2):
+            if a != b:
+                key = tuple(sorted([a, b]))
+                counts[key] += 1
+                if isinstance(m.get("room"), str) and m["room"].strip():
+                    rooms[key].add(m["room"])
+    return {_hallway_id("sessions", a, b): (a, b, n, sorted(rooms[(a, b)])) for (a, b), n in counts.items() if n >= 2}
+
+
+def as_left(records):
+    return {h["id"]: (h["entity_a"], h["entity_b"], h["co_occurrence_count"], h["rooms"]) for h in records if h.get("wing") == "sessions"}
+
+
+def wal_findings(writes, entries):
+    """What is wrong with the write log against the diary. MemPalace writes one diary_write per logical entry
+    (tools_diary.py, wal.py; a chunked entry once, under its parent id), so every entry id the log holds must be a
+    diary entry's, none twice, and none of them missing."""
+    got, bad = Counter((w.get("params") or {}).get("entry_id") for w in writes), []
+    if any(w.get("operation") != "diary_write" for w in writes):
+        bad.append("operations other than diary_write")
+    if twice := sorted(i for i, k in got.items() if k > 1):
+        bad.append(f"entry ids written twice {twice[:3]}")
+    if unknown := sorted(set(got) - set(entries), key=str):
+        bad.append(f"entry ids of no diary entry {unknown[:3]}")
+    if missing := sorted(set(entries) - set(got)):
+        bad.append(f"diary entries never written {missing[:3]}")
+    return bad
+
+
+def slice_findings(lanes, total):
+    """The lanes' hallway slices, in the manifest's lane order, must follow one another from 0 with no gap and no
+    overlap, and end at the end of the file."""
+    at, bad = 0, []
+    for lane, facts in lanes.items():
+        if facts["hallways"]["first"] != at or facts["hallways"]["count"] < 0:
+            bad.append(lane)
+        at = facts["hallways"]["first"] + facts["hallways"]["count"]
+    return bad + ([] if at == total else [f"the slices end at {at}, the file at {total}"])
+
+
+def lane_findings(lanes, manifest, actual):
+    """Each lane's manifest facts against what the store holds for it, and their sums against the store's own fields.
+    actual[lane] holds what the store says: the lane's sessions (the corpus sessions its transcript drawers come from),
+    its drawers by kind, its diary entries and its write-log lines."""
+    bad = []
+    if set(lanes) != set(actual):
+        bad.append(f"lanes the manifest and the store do not share: {sorted(set(lanes) ^ set(actual))}")
+    for lane, facts in lanes.items():
+        a = actual.get(lane, {"sessions": set(), "by_kind": {}, "diary_entries": 0, "write_log": 0})
+        if not (facts["sessions"] == len(a["sessions"]) == manifest["by_repo"].get(lane) == facts.get("sweeps")):
+            bad.append(f"{lane}: sessions")
+        if facts["drawers"]["by_kind"] != a["by_kind"] or facts["drawers"]["total"] != sum(a["by_kind"].values()):
+            bad.append(f"{lane}: drawers")
+        if not (facts["diary_writes"] == a["diary_entries"] == facts["write_log"] == a["write_log"]):
+            bad.append(f"{lane}: diary writes")
+    total = lambda key: sum(f.get(key, 0) for f in lanes.values())  # noqa: E731
+    sums = {"sessions": manifest["sessions"], "diary_writes": manifest["replay"]["diary_writes"],
+            "sweeps": manifest["replay"]["sweeps"]["runs"], "mines": manifest["replay"]["mines"],
+            "stop": manifest["events"]["stop"], "precompact": manifest["events"]["precompact"],
+            "session-end": manifest["events"]["session_end"]}
+    bad += [f"the lanes' {key} add up to {total(key)}, the store's to {want}" for key, want in sums.items() if total(key) != want]
+    return bad
+
+
 hallways = json.loads((STORE / "hallways.json").read_text()).get("hallways", []) if (STORE / "hallways.json").exists() else []
-hallways_ok = len(hallways) == manifest["hallways"]
-print("hallways", len(hallways), "manifest", manifest["hallways"])
+lanes = manifest.get("lanes")
+sessions_rows = [(r, m) for r, m in zip(repo_of, metas) if m.get("wing") == "sessions"]
+if lanes:  # each lane's hallways, lane after lane, made by its own drawers alone
+    hallways_bad = slice_findings(lanes, len(hallways))
+    for lane, facts in lanes.items():
+        part = hallways[facts["hallways"]["first"] : facts["hallways"]["first"] + facts["hallways"]["count"]]
+        if as_left(part) != hallways_of([m for r, m in sessions_rows if r == lane]) or len(as_left(part)) != len(part):
+            hallways_bad.append(lane)
+else:
+    hallways_bad = [] if as_left(hallways) == hallways_of([m for _, m in sessions_rows]) and len(as_left(hallways)) == len(hallways) else ["the store"]
+hallways_ok = not hallways_bad and len(hallways) == manifest["hallways"]
+print("hallways", len(hallways), "manifest", manifest["hallways"], "| not what MemPalace's count makes of the drawers:", hallways_bad)
+
+# Each logical diary entry (a chunked one once, by parent_entry_id) and its lane; the write log against them.
+entries = {m.get("parent_entry_id") or i: r for i, m, r in zip(ids, metas, repo_of) if kind_of(m) == "diary" and m.get("chunk_index") == 0}
+log_file = STORE / "config" / "wal" / "write_log.jsonl"
+writes = [json.loads(line) for line in log_file.read_text().splitlines()] if log_file.exists() else []
+log_bad = wal_findings(writes, entries)
+log_ok = not log_bad and len(writes) == manifest["replay"]["diary_writes"]
+print("write log", len(writes), "diary writes, manifest", manifest["replay"]["diary_writes"], "| bad", log_bad)
+
+lanes_ok = True
+if lanes:  # every lane's sessions, drawers and diary, from the store and the corpus, against the manifest
+    actual = defaultdict(lambda: {"sessions": set(), "by_kind": Counter(), "diary_entries": 0, "write_log": 0})
+    for i, r, m in zip(ids, repo_of, metas):
+        actual[r]["by_kind"][kind_of(m)] += 1
+        if kind_of(m) == "convos" and (found := TRANSCRIPT.match(m.get("source_file") or "")):
+            actual[r]["sessions"].add(found.group(2))
+    for r in entries.values():
+        actual[r]["diary_entries"] += 1
+    for w in writes:
+        actual[entries.get((w.get("params") or {}).get("entry_id"), "?")]["write_log"] += 1
+    actual = {r: a | {"by_kind": dict(a["by_kind"])} for r, a in actual.items()}
+    lanes_bad = lane_findings(lanes, manifest, actual)
+    lanes_ok = not lanes_bad and sum(f["drawers"]["total"] for f in lanes.values()) == n
+    print("lanes", len(lanes), "| sessions by lane", {r: len(a["sessions"]) for r, a in sorted(actual.items())}, "| bad", lanes_bad)
 
 # Up to five transcript drawers spread over the store, one diary drawer, and two sweep drawers (the longest message,
 # which the build cut when it cut any, and the shortest), embedded again; a sweep drawer through the build's cut.
@@ -291,6 +425,15 @@ print("unfiltered search hits that are sweep drawers:", sweep_hits)
 print("searches with no hits:", empty, "| wings none of whose drawers its own vector finds:", sorted(unreached))
 print("searches (hits, best similarity):", found)
 
-ok = identity_ok and sweep_ok and config_ok and ef_ok and vectors_ok and counts_ok and sessions_ok and diary_ok and hallways_ok and embedded_ok and searches_ok
+# How much of the palace its vector index reaches (DIAG-mempalace.md), printed, not judged: each drawer's own vector as
+# the query of an unfiltered search for 3, found when it or an equal vector comes back.
+missed = 0
+for b in range(0, n, 100):
+    res = col.query(query_embeddings=[v.tolist() for v in vectors[b : b + 100]], n_results=3, include=["distances"])
+    missed += sum(i not in hits and not (dist and dist[0] < 1e-4) for i, hits, dist in zip(ids[b : b + 100], res["ids"], res["distances"]))
+print(f"index reach: {missed} of {n} drawers not found by their own vector at k=3", "| the merge's:", (manifest.get("merge") or {}).get("reach"))
+
+ok = (identity_ok and sweep_ok and config_ok and ef_ok and vectors_ok and counts_ok and sessions_ok and diary_ok and hallways_ok
+      and embedded_ok and searches_ok and log_ok and lanes_ok)
 print("OK" if ok else "FAILED")
 sys.exit(0 if ok else 1)

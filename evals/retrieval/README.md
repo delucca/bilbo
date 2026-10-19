@@ -584,7 +584,10 @@ transcript, dated with its latest timestamp and filed within its time, and with 
 drawer must carry the metadata MemPalace writes. Up to five transcript drawers, a diary drawer and two sweep drawers
 (one cut, when the build cut any) embedded again must agree with their stored vectors at a cosine of at least 0.99.
 Four searches in the `sessions` wing, in each diary wing and in none must find drawers, and an unfiltered search must
-return a sweep drawer.
+return a sweep drawer; a diary wing may come back empty only when none of its drawers is found by its own vector
+either. The hallways must be what MemPalace's hallway count makes of each lane's transcript drawers, lane after lane,
+and each lane must hold as many drawers of each kind as the manifest's `lanes` says. The write log must hold every
+diary write. The check also prints how many drawers the index does not reach, as above.
 
 The published store was built with the embedder on an RTX 5070 Ti in 2 h 6 min: 589 mines and 143 sweeps over the
 143 sessions. It holds 60,269 drawers, 15,862 from the transcripts, 43,854 from the sweeps and 553 from 533 diary
