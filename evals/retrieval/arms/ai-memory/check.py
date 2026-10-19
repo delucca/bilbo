@@ -203,7 +203,14 @@ try:
         sys.exit("check: ai-memory serve did not answer /healthz in 5 minutes")
     before = status()
     found = {}
+    # A project whose name is another project's canonical or legacy key answers to no name: the server refuses it as ambiguous.
+    ambiguous = {(r["workspace"], r["project"]): r["other"] for r in rows(
+        "SELECT w.name AS workspace, p.name AS project, o.name AS other FROM projects p JOIN workspaces w ON w.id = p.workspace_id"
+        " JOIN projects o ON o.workspace_id = p.workspace_id AND o.id <> p.id AND (o.canonical_name = p.name OR o.legacy_name = p.name)"
+        " WHERE p.name <> ''")}
     for scope in sorted({(p["workspace"], p["project"]) for p in latest}):
+        if scope in ambiguous:
+            continue
         for q in QUERIES:
             hits = search(*scope, q)
             found[f"{scope[1]}: {q}"] = (len(hits["hits"]),
@@ -237,6 +244,8 @@ print("served: ai-memory", after["version"], "manifest", manifest["versions"]["a
       (emb["provider"], emb["model"], emb["dim"]), "| maintenance off", maintenance_off, "| backfilled", backfilled,
       "| served in", seconds, "s")
 print("searches (hits, hits from the vector stream, vector stream on):", found)
+print("projects not searched, their name is another project's key (project: the project whose key it is):",
+      {f"{w}/{p}": other for (w, p), other in ambiguous.items() if (w, p) in {(x["workspace"], x["project"]) for x in latest}})
 searches_ok = all(hits and from_vector and on for hits, from_vector, on in found.values())
 
 ok = (integrity == ["ok"] and config_ok and sessions_ok and pages_ok and work_ok and vectors_ok and embedded_ok

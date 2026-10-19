@@ -62,6 +62,7 @@ LLM_KEY = os.environ["BILBO_EVAL_LLM_KEY"]
 LLM_MODEL = os.environ["BILBO_EVAL_LLM_MODEL"]
 LLM_HEADERS = json.loads(os.environ.get("BILBO_EVAL_LLM_HEADERS") or "{}")
 QUERY_PREFIX = "Instruct: Given a question about a software project's past coding sessions, retrieve the memory pages that answer it\nQuery:"
+EMBEDDER = {"provider": "openai-compat", "model": "Qwen3-Embedding-0.6B Q8_0", "dim": 1024, "query_prefix": QUERY_PREFIX}
 
 # What differs from a fresh install, each with where ai-memory 2.6.3's docs or source ask for it (paths in its repo).
 # config.toml travels with the store; the URLs and the model stay in the environment.
@@ -74,7 +75,7 @@ CONFIG = {
     "embedding_dim": (1024, "Qwen3-Embedding-0.6B"),
     "embedding_query_prefix": (QUERY_PREFIX, "docs/llm-providers.md:409-449: the Qwen3 recipe, an instructed query with no trailing space and plain documents"),
     "maintenance.forget_sweep_interval_secs": (0, "docs/ARCHITECTURE.md:830, crates/ai-memory-cli/src/commands/serve.rs:1941: 0 disables the forget sweep, which a default install runs daily and which evicts a session page about 80 days after its last write unless searches keep it"),
-    "maintenance.embedding_backfill_interval_secs": (3600, "docs/ARCHITECTURE.md:833, docs/install.md:2457-2463: off by default only because it may call a paid provider; each tick embeds the latest pages that lack a vector, nothing else and no LLM (crates/ai-memory-consolidate/src/embed.rs:1-9, 84-130). Approved auto-improve pages are written without one (crates/ai-memory-wiki/src/wiki.rs:1710-1848), so hourly, the scheduler's cadence (docs/auto-improvement-loop.md:375); the build's embed at each quiet point stands in for the tick"),
+    "maintenance.embedding_backfill_interval_secs": (3600, "docs/ARCHITECTURE.md:833, docs/install.md:2457-2463: off by default only because it may call a paid provider; each tick embeds the latest pages that lack a vector, nothing else and no LLM (crates/ai-memory-consolidate/src/embed.rs:1-9, 84-130). Approved auto-improve pages are written without one (crates/ai-memory-wiki/src/wiki.rs:1710-1848), so hourly, the scheduler's cadence (docs/auto-improvement-loop.md:375); the daemon's env below shortens the tick for the replay"),
     "auto_improve.patchable_page_prefixes": (["_rules/", "procedures/", "decisions/", "gotchas/"], "docs/auto-improvement-loop.md:382-397, crates/ai-memory-cli/src/config.rs:1306-1312: the reviewer reads only these folders' page bodies and re-proposes what it cannot read; its own targets are gotchas/ and decisions/ (docs/auto-improvement-loop.md:254-259)"),
     "auto_improve.scheduler.enabled": (False, "crates/ai-memory-cli/src/config.rs:1398-1407: one session per project an hour; each ended session is reviewed at the next quiet point instead"),
 }
@@ -84,6 +85,8 @@ DAEMON_ENV = {
     "AI_MEMORY_LLM_MODEL": (LLM_MODEL, "BILBO_EVAL_LLM_MODEL"),
     "AI_MEMORY_LLM_TIMEOUT_SECS": ("86400", "crates/ai-memory-cli/src/config.rs llm_timeout_secs: the gateway holds a call through a usage limit, past the 300 s default"),
     "AI_MEMORY_EMBEDDING_BASE_URL": (EMBEDDER_URL, "the shared embedder"),
+    "AI_MEMORY_MAINTENANCE__EMBEDDING_BACKFILL_INTERVAL_SECS": ("5", "crates/ai-memory-cli/src/commands/serve.rs:2141-2149, config.rs:1900: the daemon's own backfill embeds the latest pages that lack a vector, project by project by id, after each interval; config.toml keeps the hourly 3600 set above, and a replay shortens the tick so the pages an approved auto-improve proposal writes are embedded at each quiet point, where the build waits for them"),
+    "AI_MEMORY_MAINTENANCE__LINT_INTERVAL_SECS": ("0", "docs/ARCHITECTURE.md:832, crates/ai-memory-cli/src/commands/serve.rs:697-713, 2049: 0 disables the rule-based lint, which runs a minute after the daemon first starts and then daily by the wall clock. A fresh store has nothing to lint then; a store restored from a checkpoint over a day old would run it at once and write a _lint/report.md page into each of its projects with pages"),
 }
 HOOK_ENV = {
     "AI_MEMORY_HOOK_DRAIN_TIMEOUT_MINUTES": ("60", "docs/install.md:702-724, the maximum: a drain posts the PreCompact whose LLM call runs in the request"),
@@ -97,7 +100,8 @@ NOTES = {
     "server_home": f"the daemon runs with HOME={SERVER_HOME}, the only home a session starts in, since ai-memory keeps a session's events in its project unless it started in the server's home (crates/ai-memory-hooks/src/router.rs:3076-3118); the hooks run with HOME={HOME}",
     "experience_pass": "off, the default: it runs only in the auto-improve scheduler and counts sessions that ended after the scope was first seen by the wall clock, which no replayed session did (docs/experience.md; crates/ai-memory-store/src/auto_improve.rs:559-589)",
     "reranker": "AI_MEMORY_RERANKER=llm (docs/install.md:1899) reranks at query time with one LLM call per query: the run step's decision",
-    "embedding_backfill": "the build runs `ai-memory embed` per project at each quiet point where latest pages still lack a vector, standing in for the hourly backfill in config.toml as the manual reviews stand in for the scheduler; pages.embedded_by_build counts them. A daemon start also backfills once (crates/ai-memory-cli/src/commands/serve.rs:2110-2139)",
+    "embedding_backfill": "the daemon's own backfill (every 5 s here, AI_MEMORY_MAINTENANCE__EMBEDDING_BACKFILL_INTERVAL_SECS, in place of the hourly tick in config.toml) embeds the latest pages that lack a vector, by project id; the build waits at each quiet point until none lacks one. pages.embedded_by_build is the seed's value plus the pages those passes report having embedded (`embedded=` in the server log's `scheduled embedding backfill completed` and `startup embedding backfill completed` lines). A daemon start also backfills once (crates/ai-memory-cli/src/commands/serve.rs:2110-2139)",
+    "auto_improve_names": "`ai-memory auto-improve --project` takes a project name, and the server refuses a name that is also another project's canonical or legacy key (project_coordinates.rs); a session of such a project (go-nuts, also the legacy key of `entireio-go-nuts`) that was not reviewed before its name became ambiguous is not reviewed, and is listed in auto_improve.unaddressable. The daemon's own scheduler, off in this build, addresses projects by id",
     "llm": "the calls behind this store: the calls of work an interrupt threw away are not counted",
 }
 BASE_ENV = {"HOME": str(HOME), "PATH": "/usr/local/bin:/usr/bin:/bin", "NO_COLOR": "1"}
@@ -123,11 +127,21 @@ def sessions():
     return found[: int(limit) if limit else None], [f"{repo}/{path.name}" for _, repo, path in other]
 
 
+def posix_path(value):
+    """A Windows path at the POSIX form of its path: C:\\Users\\a\\b as /Users/a/b."""
+    return "/" + value[3:].replace("\\", "/") if isinstance(value, str) and re.match(r"[A-Za-z]:\\", value) else value
+
+
+def posix_input(tool_input):
+    """A tool's input with its file and search paths at the POSIX form; the transcript line keeps what was recorded."""
+    return {k: posix_path(v) if k in ("file_path", "notebook_path", "path") else v for k, v in tool_input.items()}
+
+
 def checkout_roots():
     """Each repository's main checkout: the directory most of its sessions start in."""
     starts = {}
     for path in sorted(CORPUS.glob("*/*.jsonl")):
-        cwd = next((e["cwd"] for e in map(json.loads, path.open()) if e.get("cwd")), None)
+        cwd = next((posix_path(e["cwd"]) for e in map(json.loads, path.open()) if e.get("cwd")), None)
         if cwd:
             starts.setdefault(path.parent.name, Counter())[cwd] += 1
     return {repo: cwds.most_common(1)[0][0] for repo, cwds in starts.items()}
@@ -333,7 +347,7 @@ class Daemon:
             data = f.read()
         data = data[: data.rfind(b"\n") + 1]
         self.read += len(data)
-        return data.decode(errors="replace").splitlines()
+        return data.decode(errors="replace").split("\n")
 
     def cli(self, *args, env=None):
         r = subprocess.run([BIN, "--data-dir", str(DATA), *args], env=env or self.env, cwd=HOME, stdin=subprocess.DEVNULL, capture_output=True, text=True)
@@ -354,7 +368,7 @@ class Daemon:
         payload = json.dumps(body, ensure_ascii=False, separators=(",", ":")).encode()
         r = subprocess.run(args, input=payload, env=self.hook_env, cwd=body["cwd"], stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
         lost = ("ai-memory hook warning", "hook-spool at capacity")
-        warning = next((line for line in r.stderr.decode(errors="replace").splitlines() if any(x in line for x in lost)), None)
+        warning = next((line for line in r.stderr.decode(errors="replace").split("\n") if any(x in line for x in lost)), None)
         if r.returncode or warning:
             sys.exit(f"ai-memory: the {slug} hook did not spool its event ({warning or f'exit {r.returncode}'})")
 
@@ -393,7 +407,7 @@ class Session:
 
     def __init__(self, repo, path, daemon, gateway, checkouts, counts):
         self.name, self.daemon, self.gateway, self.checkouts, self.counts = f"{repo}/{path.name}", daemon, gateway, checkouts, counts
-        self.entries = [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
+        self.entries = [json.loads(line) for line in path.read_text().split("\n") if line.strip()]
         self.times, when = [], None
         for entry in self.entries:
             when = stamp(entry) or when
@@ -401,9 +415,10 @@ class Session:
         first_time = next(t for t in self.times if t)
         self.times = [t or first_time for t in self.times]
         self.sid = next(e["sessionId"] for e in self.entries if e.get("sessionId"))
-        self.cwd = next((e["cwd"] for e in self.entries if e.get("cwd")), "/")  # the first entries often carry none
+        recorded = next((e["cwd"] for e in self.entries if e.get("cwd")), "/")  # the first entries often carry none
+        self.cwd = posix_path(recorded)
         home = "/".join(self.cwd.split("/")[:3])
-        self.transcript = f"{home}/.claude/projects/{re.sub('[^A-Za-z0-9]', '-', self.cwd)}/{self.sid}.jsonl"
+        self.transcript = f"{home}/.claude/projects/{re.sub('[^A-Za-z0-9]', '-', recorded)}/{self.sid}.jsonl"
         # A subagent's id and last reply arrive with its result; SubagentStart already knows the id.
         self.subagents = {}
         for entry in self.entries:
@@ -482,7 +497,7 @@ class Session:
         new_turn = text and not text.startswith((*NOTICES, "[Request interrupted"))
         if new_turn:
             self.stop(when)  # the turn before ends where it ran
-        self.cwd = entry.get("cwd") or self.cwd  # Claude Code sends the cwd the session is in at each hook
+        self.cwd = posix_path(entry.get("cwd")) or self.cwd  # Claude Code sends the cwd the session is in at each hook
 
         if kind == "system" and subtype in ("stop_hook_summary", "turn_duration"):
             self.stop(when)
@@ -511,7 +526,7 @@ class Session:
                 if isinstance(b, dict) and b.get("type") == "tool_use":
                     name, tool_input = b.get("name"), b.get("input") or {}
                     self.tools[b.get("id")] = (name, tool_input, when)
-                    self.send("pre-tool-use", "PreToolUse", when, turn=True, tool_name=name, tool_input=tool_input, tool_use_id=b.get("id"))
+                    self.send("pre-tool-use", "PreToolUse", when, turn=True, tool_name=name, tool_input=posix_input(tool_input), tool_use_id=b.get("id"))
                     if name in SUBAGENT_TOOLS:
                         agent_id, _ = self.subagents.get(b.get("id"), (b.get("id"), ""))
                         self.send("subagent-start", "SubagentStart", when, turn=True, agent_id=agent_id, agent_type=tool_input.get("subagent_type") or "general-purpose")
@@ -536,7 +551,7 @@ class Session:
                               agent_transcript_path=f"{self.transcript.removesuffix('.jsonl')}/subagents/agent-{agent_id}.jsonl",
                               stop_hook_active=False, last_assistant_message=reply, background_tasks=[], session_crons=[])
                 response = entry.get("toolUseResult")
-                self.send("post-tool-use", "PostToolUse", when, turn=True, tool_name=name, tool_input=tool_input, tool_use_id=b.get("tool_use_id"),
+                self.send("post-tool-use", "PostToolUse", when, turn=True, tool_name=name, tool_input=posix_input(tool_input), tool_use_id=b.get("tool_use_id"),
                           tool_response=text_of(b.get("content")) if response is None else response,
                           duration_ms=max(0, round((when - called).total_seconds() * 1000)))
 
@@ -591,10 +606,16 @@ def wait_queue(daemon, gateway):
 def auto_improve(daemon, progress):
     """ai-memory's scheduler reviews each completed session once, at most one per project an hour. Each session that
     has ended is reviewed here instead, once, in the order the sessions ended, with the same settings."""
-    ended = query("SELECT s.id, p.name FROM sessions s JOIN projects p ON p.id = s.project_id WHERE s.ended_at IS NOT NULL ORDER BY s.ended_at")
-    for sid, project in ended:
+    ended = query("SELECT s.id, p.name, (SELECT o.name FROM projects o WHERE o.workspace_id = p.workspace_id AND o.id <> p.id AND p.name <> ''"
+                  " AND (o.canonical_name = p.name OR o.legacy_name = p.name) LIMIT 1)"
+                  " FROM sessions s JOIN projects p ON p.id = s.project_id WHERE s.ended_at IS NOT NULL ORDER BY s.ended_at")
+    for sid, project, collides_with in ended:
         sid = str(uuid.UUID(bytes=sid))
         if sid in progress["auto_improve"]:
+            continue
+        if collides_with:  # the server refuses a name that is another project's key as ambiguous
+            progress["auto_improve"][sid] = {"project": project, "skipped_preflight": False, "unaddressable": collides_with, "proposals": {}, "skipped": 0,
+                                             "rejected": 0, "warnings": []}
             continue
         report = json.loads(daemon.cli("auto-improve", "--session-id", sid, "--workspace", WORKSPACE, "--project", project, "--json"))
         progress["auto_improve"][sid] = {
@@ -608,25 +629,21 @@ def auto_improve(daemon, progress):
 
 
 def missing_embeddings(daemon):
-    """Wait until every latest page has its embedding, or the count stops moving for 10 s."""
-    seen = [daemon.status()["derived"]["latest_pages_missing_embeddings"]]
-    while seen[-1] and seen[-3:] != [seen[-1]] * 3:
+    """Wait until every latest page has its embedding, or the count has not moved for 30 s: the daemon's backfill does it."""
+    left = daemon.status()["derived"]["latest_pages_missing_embeddings"]
+    since = time.monotonic()
+    while left and time.monotonic() - since < 30:
+        daemon.check()
         time.sleep(5)
-        seen.append(daemon.status()["derived"]["latest_pages_missing_embeddings"])
-    return seen[-1]
-
-
-def wait_embeddings(daemon, counts):
-    """Wait for new pages to be embedded; embed any left over, project by project, as the hourly backfill set in
-    config.toml would. Returns how many still have none."""
-    missing = missing_embeddings(daemon)
-    if not missing:
-        return 0
-    for (name,) in query("SELECT name FROM projects"):
-        daemon.cli("embed", "--workspace", WORKSPACE, "--project", name)
-    left = missing_embeddings(daemon)
-    counts["embedded_by_build"] += max(0, missing - left)
+        now = daemon.status()["derived"]["latest_pages_missing_embeddings"]
+        if now != left:
+            left, since = now, time.monotonic()
     return left
+
+
+def wait_embeddings(daemon):
+    """Wait for new pages to be embedded by the daemon's backfill. Returns how many still have none."""
+    return missing_embeddings(daemon)
 
 
 def observation_counts(names, progress):
@@ -644,6 +661,8 @@ def tally(lines, found):
     for line in lines:
         if FALLBACK_WARNING in line:
             found["fallback_warnings"] += 1
+        elif "embedding backfill completed" in line:
+            found["backfill_embedded"] = found.get("backfill_embedded", 0) + int(field(line, "embedded") or 0)
         elif PROFILE_PASS in line:
             found["profile_passes"] += 1
             found["profile_llm_fallbacks"] += int(field(line, "llm_fallbacks") or 0)
@@ -670,6 +689,84 @@ def save(daemon, gateway, progress):
         CHECKPOINT.rename(old)
     tmp.rename(CHECKPOINT)
     shutil.rmtree(old, ignore_errors=True)
+
+
+def binary_versions():
+    return {"ai-memory": subprocess.run([BIN, "--version"], env=BASE_ENV, capture_output=True, text=True).stdout.split()[-1],
+            "binary_sha256": hashlib.sha256(Path(BIN).read_bytes()).hexdigest()}
+
+
+def corpus_sessions():
+    """Every Claude Code file's first sessionId, whatever BILBO_EVAL_SESSIONS keeps, as {sessionId: [name]}."""
+    found = {}
+    for path in sorted(CORPUS.glob("*/*.jsonl")):
+        if next((t for t in map(stamp, map(json.loads, path.open())) if t), None):
+            sid = next(e["sessionId"] for e in map(json.loads, path.open()) if e.get("sessionId"))
+            found.setdefault(sid, []).append(f"{path.parent.name}/{path.name}")
+    return found
+
+
+def seed_checkpoint():
+    """Write the published store in /work/seed as the first checkpoint, the backup and the progress.json a build that had
+    made it would have left, after the guards that make it the store this build would have made for its sessions."""
+    seed = WORK / "seed" / "store"
+    manifest = json.loads((seed / "manifest.json").read_text())
+    inputs = (WORK / "key.txt").read_text().splitlines()
+    named = next((line.split() for line in inputs if line.startswith("seed ")), None)
+    if not named or len(named) != 3:
+        sys.exit(f"ai-memory: {seed} exists, but {WORK / 'key.txt'} has no `seed <archive> <sha256>` line")
+    archive, digest = named[1:]
+    key = re.fullmatch(r"store-ai-memory-([0-9a-f]{12})\.tar\.zst", archive)
+    ids = corpus_sessions()
+    rows = {str(uuid.UUID(bytes=sid)): n for sid, n in query("SELECT s.id, (SELECT COUNT(*) FROM observations o WHERE o.session_id = s.id) FROM sessions s",
+                                                              path=seed / "db" / "memory.sqlite", immutable=True)}
+    unmapped = sorted(sid for sid in rows if len(ids.get(sid, [])) != 1)
+    now = binary_versions()
+    differs = [f"{what}: the seed has {had!r}, this build {want!r}" for what, had, want in (
+        ("arm", manifest["arm"], "ai-memory"),
+        ("key", manifest["key"], key and key.group(1)),
+        ("llm.model", manifest["llm"].get("model"), LLM_MODEL),
+        ("config.toml", (seed / "config.toml").read_text(), config_toml()),
+        ("versions.ai-memory", manifest["versions"]["ai-memory"], now["ai-memory"]),
+        ("versions.binary_sha256", manifest["versions"]["binary_sha256"], now["binary_sha256"]),
+        ("embedder", manifest["embedder"], EMBEDDER),
+        ("pages.missing_embeddings", manifest["pages"]["missing_embeddings"], 0),
+        ("sessions in the database", len(rows), manifest["sessions"]["replayed"]),
+        ("database sessions without exactly one corpus file", unmapped, []),
+        ("ingest counters of lost events", {k: manifest["ingest"].get(k, 0) for k in ("failed", "dropped_invalid", "dropped_unauthorized")},
+         {"failed": 0, "dropped_invalid": 0, "dropped_unauthorized": 0}),
+    ) if had != want]
+    if differs:
+        sys.exit("ai-memory: the seed is not a store this build can continue:\n  " + "\n  ".join(differs))
+    names = {sid: ids[sid][0] for sid in rows}
+    replay, sid_of = manifest["replay"], {name: sid for sid, name in names.items()}
+    progress = {
+        "done": sorted(names.values()),
+        "sessions": {names[sid]: {"sid": sid, "observations": n} for sid, n in rows.items()},
+        "counts": manifest["events"] | {"hook_seconds": replay["hook_seconds"], "spool_paced": replay["spool_paced"],
+                                        "skipped_api_error_replies": replay["skipped_replies"]["api_error"],
+                                        "skipped_synthetic_replies": replay["skipped_replies"]["synthetic"],
+                                        "embedded_by_build": manifest["pages"]["embedded_by_build"]},
+        "llm": {k: v for k, v in manifest["llm"].items() if k != "model"},
+        "ingest": manifest["ingest"],
+        "ingest_before": {},
+        "auto_improve": manifest["auto_improve"]["sessions"],
+        "ingest_seconds": manifest["ingest_seconds"],
+        "log": {"fallback_warnings": manifest["consolidation"]["fallback_warnings"], "profile_passes": manifest["profile"]["passes_that_wrote"],
+                "profile_llm_fallbacks": manifest["profile"]["llm_fallbacks"], "ignored_ends": [sid_of[e["session"]] for e in manifest["sessions"]["ignored_end"] if e["logged"]]},
+        "seed": {"archive": archive, "sha256": digest, "key": manifest["key"], "finished": manifest["finished"], "sessions": len(rows),
+                 "inputs": manifest["inputs"], "llm": manifest["llm"], "ingest_seconds": manifest["ingest_seconds"]},
+    }
+    tmp = WORK / "checkpoint.tmp"
+    shutil.rmtree(tmp, ignore_errors=True)
+    tmp.mkdir(parents=True)
+    with tarfile.open(tmp / "backup.tar.gz", "w:gz") as t:
+        t.add(seed / "wiki", "wiki")
+        t.add(seed / "db" / "memory.sqlite", "db/memory.sqlite")
+        t.add(seed / "config.toml", "config.toml")
+    (tmp / "progress.json").write_text(json.dumps(progress, indent=2) + "\n")
+    tmp.rename(CHECKPOINT)
+    log(f"seeded from {archive}: {len(rows)} sessions")
 
 
 def restore(daemon):
@@ -724,21 +821,21 @@ def manifest(progress, skipped, status, missing):
     for name, s in progress["sessions"].items():
         projects.setdefault(name.split("/")[0], Counter())[rows.get(s["sid"], (None, "?"))[1]] += 1
     reviews = progress["auto_improve"]
+    by_sid = {s["sid"]: name for name, s in progress["sessions"].items()}
     settings = [{"key": k, "value": v, "cite": cite} for k, (v, cite) in (CONFIG | DAEMON_ENV | HOOK_ENV).items() if k != "AI_MEMORY_LLM_MODEL"]
     settings.append({"key": "hook --capture-assistant", "value": "on the stop hook", "cite": "docs/install.md:623-656: install-hooks --capture-assistant"})
-    return {
+    result = {
         "arm": "ai-memory",
         "key": inputs[0],
         "inputs": inputs[1:],
         "device": os.environ["BILBO_EVAL_DEVICE"],
         "versions": {
-            "ai-memory": subprocess.run([BIN, "--version"], env=BASE_ENV, capture_output=True, text=True).stdout.split()[-1],
-            "binary_sha256": hashlib.sha256(Path(BIN).read_bytes()).hexdigest(),
+            **binary_versions(),
             "arch": platform.machine(),
             "python": platform.python_version(),
         },
         "config": settings,
-        "embedder": {"provider": "openai-compat", "model": "Qwen3-Embedding-0.6B Q8_0", "dim": 1024, "query_prefix": QUERY_PREFIX},
+        "embedder": EMBEDDER,
         "notes": NOTES,
         "time": {"sessions_and_observations": "occurred_at (session time)", "pages": "wall clock at build"},
         "projects": {repo: dict(found) for repo, found in sorted(projects.items())},
@@ -757,7 +854,7 @@ def manifest(progress, skipped, status, missing):
             "by_folder": dict(sorted(Counter(path.split("/")[0] for path, _, _ in latest).items())),
             "missing_embeddings": missing,
             "unembeddable": status["derived"].get("latest_pages_unembeddable", 0),
-            "embedded_by_build": progress["counts"].get("embedded_by_build", 0),
+            "embedded_by_build": progress["counts"].get("embedded_by_build", 0) + progress["log"].get("backfill_embedded", 0),
         },
         "consolidation": {
             "jobs": dict(query("SELECT state, COUNT(*) FROM session_consolidation_jobs GROUP BY state", **saved)),
@@ -766,9 +863,10 @@ def manifest(progress, skipped, status, missing):
             "consolidated_latest_session_pages": sum(meta.get("consolidated") is True for _, meta in session_pages.values()),
         },
         "auto_improve": {
-            "reviewed": sum(not r["skipped_preflight"] for r in reviews.values()),
+            "reviewed": sum(not r["skipped_preflight"] and not r.get("unaddressable") for r in reviews.values()),
             "skipped_preflight": sum(r["skipped_preflight"] for r in reviews.values()),
             "proposals": dict(sum((Counter(r["proposals"]) for r in reviews.values()), Counter())),
+            "unaddressable": [{"session": by_sid[sid], "project": r["project"], "collides_with": r["unaddressable"]} for sid, r in reviews.items() if r.get("unaddressable")],
             "sessions": reviews,
         },
         "profile": {"llm_calls": progress["llm"].get("calls_profile", 0), "passes_that_wrote": progress["log"]["profile_passes"], "llm_fallbacks": progress["log"]["profile_llm_fallbacks"]},
@@ -776,6 +874,12 @@ def manifest(progress, skipped, status, missing):
         "ingest_seconds": round(progress["ingest_seconds"]),
         "finished": datetime.now(timezone.utc).isoformat(timespec="seconds"),
     }
+    seed = progress.get("seed")
+    if seed:
+        corpus = next(line.split()[1][:12] for line in seed["inputs"] if line.startswith("corpus "))
+        result["seed"] = seed
+        result["notes"] = NOTES | {"seed": f"the store began as {seed['archive']}, restored as the first checkpoint: that build's {seed['sessions']} sessions, replayed on {seed['finished'][:10]} on the corpus {corpus}, whose files are byte-identical here; every count in this manifest, llm included, covers both runs, and seed holds the seed's own"}
+    return result
 
 
 def interrupted(signum, frame):
@@ -794,6 +898,8 @@ def main():
     SERVER_HOME.mkdir(parents=True, exist_ok=True)
     if not CHECKPOINT.exists() and (WORK / "checkpoint.old").exists():
         (WORK / "checkpoint.old").rename(CHECKPOINT)
+    if not CHECKPOINT.exists() and (WORK / "seed" / "store").exists():
+        seed_checkpoint()
     daemon = Daemon()
     if (CHECKPOINT / "progress.json").exists():
         progress = restore(daemon)
@@ -831,7 +937,7 @@ def main():
                 drain_all(daemon, gateway)
                 wait_queue(daemon, gateway)
                 auto_improve(daemon, progress)
-                wait_embeddings(daemon, counts)
+                wait_embeddings(daemon)
                 gateway.check()
                 progress["counts"] = dict(counts)
                 progress["ingest_seconds"] += time.monotonic() - started
@@ -842,7 +948,7 @@ def main():
         settle(daemon, gateway, last_end)
         drain_all(daemon, gateway)
         wait_queue(daemon, gateway)
-        missing = wait_embeddings(daemon, counts)
+        missing = wait_embeddings(daemon)
         gateway.check()
         progress["counts"] = dict(counts)
         status = daemon.status()

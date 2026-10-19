@@ -223,6 +223,42 @@ What the replay changes:
 - The LLM sits behind a small gateway in the build that waits out a 429 and retries a 5xx. On its own, ai-memory gives
   up after three tries and keeps a rule-based page.
 - The two Cursor transcripts are left out. The hooks never see them.
+- superset-windows-arm64's 14 sessions ran on Windows. They are replayed at the POSIX form of their paths,
+  `C:\Users\<name>\...` as `/Users/<name>/...`, for the directory a session runs in and for the `file_path`,
+  `notebook_path` and `path` of its tool calls, in the project folder Claude Code named after the Windows path. Prompts,
+  commands and tool results stay as recorded.
+- 47 of the 401 sessions started in a directory outside their repository's main checkout. The hook finds no git
+  remote there and names the project after the folder. ai-memory later renamed two such projects, MiscMetabar's and
+  go-nuts' first, to their repository's name once a session ran in the main checkout, so 11 of these sessions
+  (MiscMetabar's 8 and 3 of go-nuts') are filed with their repository. The other 36, mostly hackerspub's worktrees,
+  keep a project named after their folder. Nothing was changed for them.
+- One pablo-companion transcript, `2026-03-03T155149Z--e4c6252f-...jsonl`, is a session continued from another
+  machine: lines 2-124 are the history of session `3bd82088` there, in `/home/user/pablo-companion`, and the rest is
+  `e4c6252f` on the developer's Mac, in `/Users/kurtn/Developer/pablo-companion`. The replay takes a session's id and
+  directory from its first record, as the other replay arms do (mem0's published store among them), so it sends the
+  whole file as `3bd82088` from `/home/user/pablo-companion`. ai-memory files that session in a project named after the
+  folder, its last events land in `pablo-health-pablo-companion`, and the server ignores its SessionEnd, so it is never
+  consolidated or reviewed. On the Mac, ai-memory would have seen only `e4c6252f`, in `pablo-health-pablo-companion`,
+  with its own SessionEnd.
+
+The store starts from the published store of the first five projects, `store-ai-memory-340652c60c1e` (sha256
+`38e4057f4d4d2096c61e2e53d099eccf1ffb78ebb72162babd16acbde00570ad`): its 143 sessions are byte-identical here, and
+the build restores it as its first checkpoint, then replays only the other 258 sessions. The seed is in the store's
+key, and the manifest's `seed` block holds its own numbers, while every other count covers both runs. ai-memory's jobs
+read only their own session and project, so each new project gets what a full replay would give it. Three things
+differ from one: the cross-project profile words a topic shared by a new project and one of the first five from the
+new project's page, the first five projects' pages carry the date of the first build and the others the date of this
+one, and the first five projects are kept as published instead of replayed again.
+
+The daemon's wiki lint is switched off: it runs a minute after the first start and then daily by the wall clock, so a
+store restored from a checkpoint more than a day old would write a lint page into every old project at its first
+start, where a fresh build finds nothing to lint. A page an approved proposal writes has no vector until the daemon's
+own backfill embeds it, which runs every 5 seconds here instead of every hour. `ai-memory auto-improve --project` takes
+a project name, and the server refuses a name that is also another project's key (go-nuts, also the legacy key of
+`entireio-go-nuts`): a real user's command would fail the same way, while the daemon's scheduler, off in this build,
+addresses projects by id. A session of such a project that was not reviewed before its name became ambiguous is not
+reviewed; the manifest lists these under `auto_improve.unaddressable`, and `--check` leaves those projects out of its
+searches and lists them.
 
 Search is ai-memory's own: SQLite full text, entities and links, plus vectors. A store holds the extracted
 `ai-memory backup` (the wiki, `db/memory.sqlite` and `config.toml`) and a `manifest.json`. `ai-memory serve` starts on
@@ -232,11 +268,19 @@ a store only with `AI_MEMORY_EMBEDDING_BASE_URL` set.
 every latest page, and up to five pages embedded again. It then serves a copy with no LLM and maintenance off, and
 four searches in each project must find pages through the vectors.
 
-The published store was built with Claude Opus 5.5, through a gateway that runs `claude -p` for each call, and the
-embedder on an RTX 5070 Ti: 358 LLM calls, 22.8 million prompt tokens and 1.2 million completion tokens, in 4 h 38
-min, 1 h 27 min of it waiting out the account's usage limit. It holds 33,590 observations and 370 pages: 142 session
-pages, all consolidated by the LLM, and 228 more from 234 approved auto-improve proposals. kimi-cli's pages are mostly
-in Chinese, the language its developer wrote in, since no `_prompts/consolidation.md` pins one.
+The published store was built in two runs with Claude Opus 5.5, through a gateway that runs `claude -p` for each call,
+and the embedder on an RTX 5070 Ti. The first run built the first five projects: 358 LLM calls, 22.8 million prompt
+tokens and 1.2 million completion tokens, in 4 h 38 min, 1 h 27 min of it waiting out the account's usage limit. The
+second run restored that store and replayed the other 258 sessions: 680 calls, 42.4 million prompt tokens and 2.5
+million completion tokens, in 5 h 53 min, with no usage-limit or brake pause. A memory guard on the shared machine
+stopped it once, about 8 minutes after its checkpoint at 246 sessions; it resumed from that checkpoint, and the calls
+it threw away (16 consolidations and 4 profile calls, 1.4 million prompt tokens) are not counted. Together: 1,038
+calls, 65.2 million prompt tokens and 3.7 million completion tokens, in 10 h 31 min. The store holds 135,521
+observations and 1,242 pages: 396 session pages, all consolidated by the LLM, and 846 more from 885 approved
+auto-improve proposals and the profile passes (two profile pages and three `_slots` pages among them). Two sessions of
+go-nuts were not reviewed (see above). kimi-cli's pages are mostly in Chinese, the language its developer wrote in,
+since no `_prompts/consolidation.md` pins one; for the same reason a few of bosarsalog's and cavecrew-mcp's pages are
+in German.
 
 ### hindsight
 

@@ -20,6 +20,9 @@
 # of its own, all at once against the one embedder (`build.py --lanes` names them, BILBO_EVAL_LANE tells each its own),
 # then the build service runs once more with `--merge` to combine the lanes' stores into one. A lane that fails leaves
 # the others running; a rerun resumes each lane from its own checkpoint.
+# An arm with a `seed` file (<archive> <sha256>, after any # lines) continues a published store: the key names it, and a
+# build unpacks it, once the lock and the file agree on its sha256, into $work/seed for the arm's build to restore as
+# its first checkpoint.
 # An arm with a `pack` service (profile `pack`) runs it after the build with the other services stopped, to dump a
 # database into $work/store; one with a `restore` service (profile `restore`) runs it before a check's services start,
 # to load that database back.
@@ -69,12 +72,18 @@ corpus_sha=$(sha "$archive")
 # only reads a store. The small model counts only for an arm that reads it, and only when it is not the LLM itself.
 uses_small=
 grep -q BILBO_EVAL_LLM_SMALL_MODEL "$root/arms/$arm/compose.yaml" && uses_small=1
+seed_file= seed_sha=
+if [[ -f $root/arms/$arm/seed ]]; then
+  read -r seed_file seed_sha < <(grep -v '^#' "$root/arms/$arm/seed") || die "arms/$arm/seed names no archive"
+  [[ $seed_file == store-*.tar.zst && $seed_sha =~ ^[0-9a-f]{64}$ ]] || die "arms/$arm/seed must read <archive> <sha256>"
+fi
 inputs_for() {
   echo "corpus $corpus_sha"
   echo "embedder $EMBEDDER_SHA256"
   [[ -z $uses_llm ]] || echo "llm $1"
   [[ -z $uses_small || -z $2 || $2 == "$1" ]] || echo "llm-small $2"
   echo "sessions ${sessions:-all}"
+  [[ -z $seed_file ]] || echo "seed $seed_file $seed_sha"
   cd "$root/arms/$arm"
   find . -mindepth 1 \( -name '.*' -o -name __pycache__ \) -prune -o -type f ! -name compose.gpu.yaml ! -name check.py \
     -print | LC_ALL=C sort | while read -r f; do echo "file ${f#./} $(sha "$f")"; done
@@ -193,6 +202,16 @@ if [[ -n $build ]]; then
   [[ -z $rebuild ]] || rm -rf "$work"
   mkdir -p "$work"
   printf '%s\n%s\n' "$key" "$inputs" > "$work/key.txt"
+  if [[ -n $seed_file && ! -e $work/seed ]]; then
+    [[ -f $root/dataset/$seed_file ]] || fetch_archive "$seed_file" || die "$seed_file is not in dataset.lock"
+    entry=$(locked "$seed_file") || die "$seed_file is not in dataset.lock"
+    read -r locked_sha _ <<<"$entry"
+    [[ $(sha "$root/dataset/$seed_file") == "$seed_sha" && $locked_sha == "$seed_sha" ]] ||
+      die "$seed_file does not match the sha256 in arms/$arm/seed and dataset.lock"
+    rm -rf "$work/seed.part" && mkdir -p "$work/seed.part"
+    zstd -dc "$root/dataset/$seed_file" | tar -xf - -C "$work/seed.part"
+    mv "$work/seed.part" "$work/seed"
+  fi
 
   log "building the $arm store $key on the $device"
   start
