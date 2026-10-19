@@ -151,9 +151,11 @@ for path in CORPUS.glob("*/*.jsonl"):
         own = next((i for i, e in enumerate(entries) if e.get("sessionId") == sid), 0)
         firsts[sid] = datetime.fromisoformat(next(e["timestamp"] for e in entries[own:] if isinstance(e.get("timestamp"), str)))
         files[sid] = path
-# The sessions a build of N replays: the first N by first timestamp, the Cursor transcripts (no timestamp) left out.
+# The sessions a build of N replays: the first N by their own start, ties as build.py sorts them (repository, then file
+# name); the Cursor transcripts (no timestamp) left out.
 limit = next(line.split()[1] for line in manifest["inputs"] if line.startswith("sessions "))
-expected_sids = {sid for _, sid in sorted((first, sid) for sid, first in firsts.items())[: None if limit == "all" else int(limit)]}
+order = sorted((first, files[sid].parent.name, files[sid].name, sid) for sid, first in firsts.items())
+expected_sids = {row[-1] for row in order[: None if limit == "all" else int(limit)]}
 # What MemPalace's own normalizer and chunker make of a corpus file, as its mine does (convo_miner.py:1128-1150).
 chunk_size = MempalaceConfig(palace_path=str(STORE / "palace")).chunk_size
 
@@ -274,11 +276,19 @@ for wing in ["sessions", *sorted(diary_wings), None]:
         found[f"{wing or 'all'}: {q}"] = (len(hits), round(max((h.get("similarity") or 0) for h in hits), 3) if hits else None)
         sweep_hits += wing is None and sum(str(h.get("drawer_id")).startswith("sweep_") for h in hits)
 empty = sorted(k for k, (hits, _) in found.items() if not hits)
-# A wing whose few drawers MemPalace's approximate index cannot reach comes back empty: only the unfiltered and the
-# transcript searches must find something, and the sweep drawers must be reachable.
-searches_ok = sweep_hits > 0 and not [k for k in empty if k.startswith(("all: ", "sessions: "))]
+# A diary wing whose few drawers MemPalace's approximate index cannot reach comes back empty. It passes only when no
+# drawer of it is found by its own stored vector under the wing's filter; the unfiltered and the transcript searches
+# must always find something, and the sweep drawers must be reachable.
+unreached = set()
+for wing in {k.split(": ", 1)[0] for k in empty} - {"all", "sessions"}:
+    members = [i for i in range(n) if metas[i].get("wing") == wing]
+    answers = [col.query(query_embeddings=[vectors[i].tolist()], n_results=5, where={"wing": wing}).ids for i in members]
+    reached = [ids[i] in sum(found_ids, []) for i, found_ids in zip(members, answers)]
+    if members and not any(reached):
+        unreached.add(wing)
+searches_ok = sweep_hits > 0 and all(k.split(": ", 1)[0] in unreached for k in empty)
 print("unfiltered search hits that are sweep drawers:", sweep_hits)
-print("searches with no hits:", empty)
+print("searches with no hits:", empty, "| wings none of whose drawers its own vector finds:", sorted(unreached))
 print("searches (hits, best similarity):", found)
 
 ok = identity_ok and sweep_ok and config_ok and ef_ok and vectors_ok and counts_ok and sessions_ok and diary_ok and hallways_ok and embedded_ok and searches_ok
