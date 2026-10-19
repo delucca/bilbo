@@ -1,8 +1,15 @@
 """Build the MemPalace store: replay every Claude Code session through MemPalace's own Claude Code plugin hooks, hook
-by hook and in one timeline across all sessions, into one palace, each hook run at the time its event happened. Then
-save the palace directory with the files MemPalace writes beside it and a manifest in /work/store. Whenever no session
-is open, the same files go to /work/checkpoint, and a run that finds them resumes from there."""
+by hook and in one timeline across the sessions it replays, into one palace, each hook run at the time its event
+happened. Then save the palace directory with the files MemPalace writes beside it and a manifest in /work/store.
+Whenever no session is open, the same files go to /work/checkpoint, and a run that finds them resumes from there.
+The store is built in lanes (x-lanes in compose.yaml), one per repository: the replay models an independent MemPalace
+installation for each repository. With BILBO_EVAL_LANE set, this replays only that repository's sessions, in a build container and a palace
+of their own, into /work/lanes/<lane>, and stops at its last checkpoint; `--merge` then combines the lanes' palaces into
+one store, and `--lanes` names the lanes. BILBO_EVAL_SESSIONS is a trial: N for the first N sessions, or `repo:N,repo:N`
+for the first N sessions of each repository named. `--merge-palace <spec>` and `--merge-verify <spec>` are the merge's
+steps that run with MemPalace's settings, each in a process of its own."""
 
+import fcntl
 import heapq
 import http.client
 import json
@@ -10,6 +17,7 @@ import os
 import re
 import shutil
 import signal
+import sqlite3
 import subprocess
 import sys
 import threading
@@ -39,7 +47,11 @@ CUT_LIMIT = 8190
 CUT_AS = "text"
 
 CORPUS = Path("/corpus")
-WORK = Path("/work")
+ROOT = Path("/work")
+LANE = os.environ.get("BILBO_EVAL_LANE", "")  # the repository this container replays, when the store is built in lanes
+LANES = ROOT / "lanes"
+WORK = LANES / LANE if LANE else ROOT
+MERGE = sys.argv[1:2] == ["--merge"]
 CHECKPOINT = WORK / "checkpoint"
 LIVE = Path("/tmp/live")
 # The hooks' home: ~/.mempalace/hook_state and ~/.mempalace/locks (flock, so not on the bind mount).
@@ -81,7 +93,8 @@ NOTES = {
     "resumes": "each session ends once, at its last line; a session resumed after an exit does not get the SessionEnd that exit fired. The final transcript drawers are unchanged; a diary checkpoint and a mine per resume are missing",
     "search": "for the run step: mempalace.searcher.search_memories (query.py:129), not the CLI or the MCP tool; candidate_strategy 'union' adds BM25 candidates (candidates.py:261-264); MEMPALACE_HYBRID_VECTOR_WEIGHT / _BM25_WEIGHT default 0.6/0.4 (config.py:1385-1418); max_distance 0.0; no query instruction is possible for openai-compat (embedding.py:638-641); wing 'sessions' holds the transcript drawers, the wing_<cwd leaf> wings of each session's first cwd hold the diary (not one per repository), the sweep drawers have no wing; since/before filter on filed_at, which is the session time here (UTC)",
     "embedder_requests": "derived, not observed: MemPalace's embedding function sends 64 texts a request and the miner hands it 1,000 drawers at a time; a diary write is one request; the sweep's are not counted",
-    "prefix_reuse": "MemPalace sends 64 texts a request with no sentinel, so llama.cpp's prefix reuse applies to every request as the decision note's gotcha says; the order is fixed, so a fresh embedder and the same session order reproduce the vectors",
+    "prefix_reuse": "MemPalace sends 64 texts a request with no sentinel, so llama.cpp's prefix reuse applies to every request as the decision note's gotcha says. Each lane's events, and so its own requests, run in a fixed order; the lanes' requests reach the shared embedder interleaved in an order that varies from run to run, so a vector can differ by that noise from the same lane replayed alone, and a store built in lanes does not reproduce its vectors bit for bit. The merge copies the vectors the lanes got",
+    "lanes": "the replay models an independent MemPalace installation for each repository: one palace per repository, each replayed on its own timeline with its own quiet points, sweeps and checkpoints, against the one shared embedder; then merged into one store (`merge`). One palace for every repository differs only in what it shares across them: hallways counted over every repository's transcript drawers, the mine's check for a conversation filed under another path (it matches nothing in this corpus) and quiet points when no session of any repository is open",
 }
 BASE_ENV = {"HOME": str(HOME), "PATH": "/app/.venv/bin:/usr/local/bin:/usr/bin:/bin", "TZ": "UTC", "PYTHONUNBUFFERED": "1"} | {k: v for k, (v, _) in CONFIG.items()}
 
@@ -115,8 +128,20 @@ def sessions():
         start = next((t for t in map(stamp, entries[own_start(entries, session_id(path)):]) if t), None)
         (found if start else other).append((start, path.parent.name, path))
     found.sort()
-    limit = os.environ.get("BILBO_EVAL_SESSIONS")
-    return found[: int(limit) if limit else None], [f"{repo}/{path.name}" for _, repo, path in other]
+    limit = os.environ.get("BILBO_EVAL_SESSIONS") or ""
+    if ":" in limit:  # repo:N,repo:N: the first N sessions of each repository named
+        per = {repo: int(n) for repo, n in (part.split(":") for part in limit.split(","))}
+        if unknown := set(per) - {repo for _, repo, _ in found}:
+            sys.exit(f"mempalace: BILBO_EVAL_SESSIONS names repositories the corpus lacks: {sorted(unknown)}")
+        taken, kept = Counter(), []
+        for start, repo, path in found:
+            if taken[repo] < per.get(repo, 0):
+                taken[repo] += 1
+                kept.append((start, repo, path))
+        found = kept
+    elif limit:
+        found = found[: int(limit)]
+    return found, [f"{repo}/{path.name}" for _, repo, path in other]
 
 
 def text_of(content):
@@ -574,11 +599,332 @@ def manifest(progress, skipped, found):
     }
 
 
+# The merge (merge()): what a lane's store may hold, the files MemPalace writes in and beside the palace (config.py:
+# 255-262, 919-952) and Chroma's database with its one vector segment. Anything else, such as tunnels.json or a
+# knowledge graph, fails the merge, which does not know how to combine it.
+LANE_FILES = {"config/config.json", "config/wal/write_log.jsonl", "hallways.json", "palace/chroma.sqlite3",
+              "palace/mempalace_embedder.json", "palace/.collection_type_fixed", "palace/.blob_seq_ids_migrated"}
+SEGMENT_FILES = {"data_level0.bin", "header.bin", "index_metadata.pickle", "length.bin", "link_lists.bin"}
+# A copied vector comes back within float32 rounding, not bit for bit: Chroma's hnswlib normalizes a cosine vector as
+# it adds it, and the lane's had been normalized already.
+VECTOR_TOLERANCE = 1e-6
+REACH_K = (3,)  # see reach()
+MERGE_TMP = ROOT / "merge.tmp"  # the lanes' palaces copied, beside them on the work dir's disk
+MERGE_TIMEOUT = 12 * 3600
+
+
+def collection_rows(store):
+    """What a palace's Chroma database says about its one collection, read without opening it. The schema's keys are
+    the metadata keys its drawers ever carried, in the order they first came; only the set is compared."""
+    db = sqlite3.connect(f"file:{store / 'palace' / 'chroma.sqlite3'}?mode=ro&immutable=1", uri=True)
+    try:
+        (name, dimension, config, schema), *more = db.execute("SELECT name, dimension, config_json_str, schema_str FROM collections").fetchall()
+        if more:
+            sys.exit(f"mempalace: {store} holds more than one collection")
+        schema = json.loads(schema)
+        return {
+            "collection": [name, dimension, config, schema.get("defaults")],
+            "metadata": sorted(db.execute("SELECT key, str_value, int_value, float_value, bool_value FROM collection_metadata").fetchall()),
+            "segments": sorted(db.execute("SELECT type, scope FROM segments").fetchall()),
+            "migrations": db.execute("SELECT dir, version, hash FROM migrations ORDER BY dir, version").fetchall(),
+            "queue": db.execute("SELECT config_json_str FROM embeddings_queue_config").fetchall(),
+        }, set(schema.get("keys", {}))
+    finally:
+        db.close()
+
+
+def merge(plan, skipped):
+    """The lanes' palaces as one store, as one palace would hold every repository's drawers: every drawer of every lane
+    with its id, document, metadata and vector, written into a fresh palace in interleave()'s order; each lane's
+    hallways as its palace computed them, lane after lane; the write logs in interleave()'s order; the config and the
+    embedder identity, which every lane holds alike. Every lane must have replayed all its
+    sessions, no drawer id may be in two lanes, and the merged palace must hold every lane's drawers equal to its own,
+    each vector within VECTOR_TOLERANCE in every component, or the build stops."""
+    started = time.monotonic()
+    lanes = list(dict.fromkeys(repo for _, repo, _ in plan))  # the order `--lanes` names them: by first session
+    saved, progresses = {}, {}
+    for lane in lanes:
+        cp = LANES / lane / "checkpoint"
+        progress = json.loads((cp / "progress.json").read_text()) if (cp / "progress.json").exists() else {"done": []}
+        want = [f"{repo}/{path.name}" for _, repo, path in plan if repo == lane]
+        if sorted(progress["done"]) != sorted(want):
+            sys.exit(f"mempalace: the lane {lane} has replayed {len(progress['done'])} of its {len(want)} sessions; run again to finish it")
+        files = {str(f.relative_to(cp / "store")) for f in (cp / "store").rglob("*") if f.is_file()}
+        segment = lambda f: f.startswith("palace/") and f.count("/") == 2 and f.rsplit("/", 1)[1] in SEGMENT_FILES  # noqa: E731
+        unknown = sorted(f for f in files if f not in LANE_FILES and not segment(f))
+        missing = {"config/config.json", "palace/chroma.sqlite3", "palace/mempalace_embedder.json"} - files
+        if unknown or missing or len({f.split("/")[1] for f in files if segment(f)}) > 1:
+            sys.exit(f"mempalace: the lane {lane}'s store holds files the merge does not know {unknown}, lacks {sorted(missing)} or has two vector segments")
+        saved[lane], progresses[lane] = cp / "store", progress
+
+    def alike(what, read):
+        found = {lane: read(saved[lane]) for lane in lanes}
+        if len({json.dumps(v, sort_keys=True, default=str) for v in found.values()}) != 1:
+            sys.exit(f"mempalace: the lanes' {what} differ: {json.dumps(found, default=str)[:2000]}")
+        return found[lanes[0]]
+
+    alike("config.json", lambda s: (s / "config" / "config.json").read_text())
+    identity = alike("embedder identity", lambda s: (s / "palace" / "mempalace_embedder.json").read_text())
+    markers = alike("marker files", lambda s: sorted(p.name for p in (s / "palace").iterdir() if p.is_file() and p.name.startswith(".")))
+    alike("hallways schema", lambda s: json.loads((s / "hallways.json").read_text()).get("schema_version") if (s / "hallways.json").exists() else 1)
+    collection = alike("collections", lambda s: collection_rows(s)[0])
+    keys = set().union(*(collection_rows(saved[lane])[1] for lane in lanes))
+
+    # The Chroma part runs with MemPalace's settings in processes of their own, on copies: opening a palace writes to it.
+    shutil.rmtree(MERGE_TMP, ignore_errors=True)
+    MERGE_TMP.mkdir(parents=True)
+    spec = {"out": str(STORE / "palace"), "written": str(MERGE_TMP / "written.json"), "verified": str(MERGE_TMP / "verified.json"),
+            "order": str(MERGE_TMP / "order.json"), "lanes": []}
+    for lane in lanes:
+        shutil.copytree(saved[lane] / "palace", MERGE_TMP / lane)
+        hallways = saved[lane] / "hallways.json"
+        spec["lanes"].append({"lane": lane, "palace": str(MERGE_TMP / lane), "hallways": str(hallways) if hallways.exists() else None})
+    (MERGE_TMP / "spec.json").write_text(json.dumps(spec, indent=2))
+    (STORE / "config").mkdir(parents=True)
+    shutil.copy2(saved[lanes[0]] / "config" / "config.json", STORE / "config" / "config.json")
+    log(f"merging {len(lanes)} lanes: the palace")
+    run(["python", "/app/build.py", "--merge-palace", str(MERGE_TMP / "spec.json")], BASE_ENV | {"EMBEDDER_URL": EMBEDDER_URL}, timeout=MERGE_TIMEOUT)
+    written = json.loads(Path(spec["written"]).read_text())
+    # Opened once as MemPalace's hooks open a palace, through the MCP session's collection, as a Stop's diary write
+    # does: that open pins Chroma's insert threads, which Chroma records in the collection's configuration.
+    run(["python", "-c", "import mempalace.mcp_server as m; m._get_collection(create=False)"], BASE_ENV)
+    # The embedder identity, recorded as each lane recorded it after its first mine (MemPalace's get_collection, which
+    # created the palace, records the model with no dimension); it must be every lane's.
+    record_embedder()
+    if (STORE / "palace" / "mempalace_embedder.json").read_text() != identity:
+        sys.exit("mempalace: the merged palace's embedder identity differs from the lanes'")
+    log(f"merging {len(lanes)} lanes: checking the palace against every lane")
+    run(["python", "/app/build.py", "--merge-verify", str(MERGE_TMP / "spec.json")], BASE_ENV | {"EMBEDDER_URL": EMBEDDER_URL}, timeout=MERGE_TIMEOUT)
+    verified = json.loads(Path(spec["verified"]).read_text())
+    got, got_keys = collection_rows(STORE)
+    if got != collection or got_keys != keys:
+        sys.exit(f"mempalace: the merged collection is not configured as the lanes' are: {got} {sorted(got_keys ^ keys)} against {collection}")
+    for name in markers:  # MemPalace writes them on opening an existing palace; one the merge never reopened lacks them
+        if not (STORE / "palace" / name).exists():
+            shutil.copy2(saved[lanes[0]] / "palace" / name, STORE / "palace" / name)
+    if extra := {p.name for p in (STORE / "palace").iterdir() if p.is_file() and p.name.startswith(".")} - set(markers):
+        sys.exit(f"mempalace: the merged palace holds marker files the lanes do not: {sorted(extra)}")
+
+    # The write log: every lane's lines, byte for byte, each lane's in the order MemPalace appended them (interleave).
+    logs = []
+    for lane in lanes:
+        f = saved[lane] / "config" / "wal" / "write_log.jsonl"
+        lines = f.read_text().splitlines(keepends=True) if f.exists() else []
+        logs.append([(json.loads(line)["timestamp"], line) for line in lines])
+    merged_log = interleave(logs)
+    if merged_log:
+        (STORE / "config" / "wal").mkdir(mode=0o700)
+        with os.fdopen(os.open(STORE / "config" / "wal" / "write_log.jsonl", os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "w") as f:
+            f.write("".join(merged_log))
+    if sorted(merged_log) != sorted(line for part in logs for _, line in part):
+        sys.exit("mempalace: the merged write log is not every lane's lines")
+
+    # One progress for the manifest: the sessions lane after lane, the counts added up.
+    progress = {"done": [], "counts": Counter(), "cut": Counter(), "ingest_seconds": 0}
+    for lane in lanes:
+        p = progresses[lane]
+        progress["done"] += p["done"]
+        progress["counts"].update(p["counts"])
+        cut = p.get("cut", {})
+        progress["cut"].update({k: v for k, v in cut.items() if k != "max_tokens"})
+        progress["cut"]["max_tokens"] = max(progress["cut"]["max_tokens"], cut.get("max_tokens", 0))
+        progress["ingest_seconds"] += p["ingest_seconds"]
+    out = ROOT / "store"
+    shutil.rmtree(out, ignore_errors=True)
+    shutil.copytree(STORE, out)
+    found = inventory(out)
+    if lost := incomplete(found, progress):
+        fatal(f"the merged store is incomplete ({', '.join(lost)})")
+    result = manifest(progress, skipped, found)
+    hallways = json.loads((out / "hallways.json").read_text())["hallways"] if (out / "hallways.json").exists() else []
+    owners = Counter(lane for lane, ids in written["hallway_ids"].items() for _ in ids)
+    shared = Counter(i for ids in written["hallway_ids"].values() for i in set(ids))
+    result["lanes"] = {
+        lane: {
+            "sessions": len(progresses[lane]["done"]),
+            "ingest_seconds": round(progresses[lane]["ingest_seconds"]),
+            **{k: round(progresses[lane]["counts"].get(k, 0)) for k in ("quiet_points", "mines", "sweeps", "diary_writes", "stop", "precompact", "session-end")},
+            "drawers": written["lanes"][lane]["drawers"],
+            "hallways": {"first": written["hallways"][lane][0], "count": written["hallways"][lane][1]},
+            "write_log": len(logs[k]),
+            "reach": written["lanes"][lane]["reach"],
+        }
+        for k, lane in enumerate(lanes)}
+    result["merge"] = {
+        "order": "each lane's drawers in the order they entered its palace, and its write-log lines in the order MemPalace appended them; next, always the lane head with the smallest filed_at (timestamp), a tie going to the earlier lane in `lanes`. Deterministic for identical lanes; not sorted by time, since a lane's own order is not (each hook, mine and sweep runs its own faked clock)",
+        "drawers": verified["drawers"], "vector_tolerance": VECTOR_TOLERANCE,
+        "vector_max_difference": verified["vector_max_difference"], "vector_min_cosine": verified["vector_min_cosine"],
+        "hallways": {"records": len(hallways), "ids": len(shared), "ids_in_more_than_one_lane": sum(1 for n in shared.values() if n > 1)},
+        "write_log": len(merged_log),
+        "reach": verified["reach"],
+        "seconds": round(time.monotonic() - started),
+        "checked": "every lane replayed all its sessions; no drawer id is in two lanes; the merged palace holds every drawer of every lane and no other, its document and metadata equal to the lane's and its vector within vector_tolerance in every component, inserted in the order above; it passes MemPalace's own SQLite quick_check, and its collection is configured as every lane's; hallways.json is every lane's hallways as its palace computed them, lane after lane, and the write log every lane's lines; config.json and the embedder identity are every lane's",
+    }
+    if sum(owners.values()) != len(hallways):
+        sys.exit("mempalace: the merged hallways are not every lane's")
+    (out / "manifest.json").write_text(json.dumps(result, indent=2) + "\n")
+    log(f"merged {len(lanes)} lanes in {round(time.monotonic() - started)} s: {verified['drawers']} drawers, vectors within "
+        f"{verified['vector_max_difference']:.3g} of the lanes' in every component; {len(hallways)} hallways")
+    log(f"done: {out}")
+
+
+def interleave(streams):
+    """The merge's order over the lanes. streams[k] is lane k's items as (key, item) in that lane's own order: its
+    drawers in the order they entered its palace, keyed by filed_at, or its write-log lines in the order MemPalace
+    appended them, keyed by timestamp. Each lane's order is kept; the next item is always the lane head with the
+    smallest key, a tie going to the earlier lane. A lane's own keys are not sorted (each hook, mine and sweep runs its
+    own faked clock, which advances with the time it takes), so neither is the result: it is deterministic for
+    identical lanes, not sorted by time."""
+    tagged = ([(key, k, n, item) for n, (key, item) in enumerate(stream)] for k, stream in enumerate(streams))
+    return [item for _, _, _, item in heapq.merge(*tagged)]
+
+
+def reach(col, ids, vectors):
+    """How much of a palace MemPalace's vector index reaches: each drawer's own stored vector as the query of an
+    unfiltered search, at k=3 and at k=1000, which widens Chroma's search (its ef is the larger of ef_search, 100, and
+    k). A drawer is reached when it comes back, or a vector equal to its own does (distance under 1e-4: a text the
+    palace holds twice). DIAG-mempalace.md measured the single palace this way."""
+    missed = Counter()
+    for b in range(0, len(ids), 100):
+        part = [v.tolist() for v in vectors[b : b + 100]]
+        for k in REACH_K:
+            res = col.query(query_embeddings=part, n_results=min(k, len(ids)), include=["distances"])
+            for i, hits, d in zip(ids[b : b + 100], res["ids"], res["distances"]):
+                missed[f"missed_k{k}"] += i not in hits and not (d and d[0] < 1e-4)
+    return {"drawers": len(ids), **{f"missed_k{k}": missed[f"missed_k{k}"] for k in REACH_K}}
+
+
+def read_palace(path):
+    """Every drawer of a palace through MemPalace's own collection, in the order the drawers entered it (Chroma's rows):
+    ids, documents, metadata and float32 vectors."""
+    import numpy as np
+    from mempalace.palace import get_collection
+
+    col = get_collection(path, create=False)
+    got = {}
+    for offset in range(0, col.count(), 1000):  # chromadb 1.5.9 fails an unbounded get past 32,766 rows
+        page = col.get(limit=1000, offset=offset, include=["documents", "metadatas", "embeddings"])
+        for i, d, m, e in zip(page["ids"], page["documents"], page["metadatas"], page["embeddings"]):
+            got[i] = (d, m, np.asarray(e, dtype=np.float32))
+    db = sqlite3.connect(f"file:{Path(path) / 'chroma.sqlite3'}?mode=ro&immutable=1", uri=True)
+    order = [i for (i,) in db.execute("SELECT embedding_id FROM embeddings ORDER BY id")]
+    db.close()
+    if len(order) != len(got) or set(order) != set(got):
+        sys.exit(f"mempalace: {path}'s collection and its rows disagree: {len(got)} drawers, {len(order)} rows")
+    ids = order
+    return col, ids, [got[i][0] for i in ids], [got[i][1] for i in ids], np.stack([got[i][2] for i in ids]) if ids else np.zeros((0, 1024), np.float32)
+
+
+def kind(m):
+    return m.get("ingest_mode") or ("diary" if m.get("type") == "diary_entry" else "other")
+
+
+def merge_palace(spec):
+    """The merge's palace, run with MemPalace's settings (BASE_ENV): every lane's drawers read through MemPalace's own
+    collection, then added to a fresh palace that MemPalace's get_collection creates, 1,000 at a time as its miner
+    upserts, with their vectors (never embedded again), in interleave()'s order by filed_at, each lane's drawers in the
+    order they entered its palace. Then each lane's hallways, lane after
+    lane, through MemPalace's own writer. Writes what it did to spec["written"]. Chroma's index of the same drawers in
+    the same order is not the same graph twice: its inserts do not repeat bit for bit."""
+    import gc
+
+    from mempalace.config import MempalaceConfig
+    from mempalace.hallways import _save_hallways
+    from mempalace.palace import get_collection
+    from mempalace.repair import _close_chroma_handles
+
+    lanes, owner, streams, written = [], {}, [], {"lanes": {}, "hallways": {}, "hallway_ids": {}}
+    for k, lane in enumerate(spec["lanes"]):
+        col, ids, docs, metas, vectors = read_palace(lane["palace"])
+        for i in ids:
+            if i in owner:
+                sys.exit(f"mempalace: the drawer {i} is in the lanes {owner[i]} and {lane['lane']}")
+            owner[i] = lane["lane"]
+        written["lanes"][lane["lane"]] = {
+            "drawers": {"total": len(ids), "by_kind": dict(Counter(kind(m) for m in metas))}, "reach": reach(col, ids, vectors)}
+        del col
+        _close_chroma_handles(lane["palace"])
+        gc.collect()
+        lanes.append((ids, docs, metas, vectors))
+        streams.append([(m.get("filed_at") or "", (k, j)) for j, m in enumerate(metas)])
+    order = interleave(streams)
+    Path(spec["order"]).write_text(json.dumps([lanes[k][0][j] for k, j in order]))
+    col = get_collection(spec["out"], create=True)
+    for b in range(0, len(order), UPSERT_BATCH):
+        part = order[b : b + UPSERT_BATCH]
+        col.add(ids=[lanes[k][0][j] for k, j in part], documents=[lanes[k][1][j] for k, j in part],
+                metadatas=[lanes[k][2][j] for k, j in part], embeddings=[lanes[k][3][j].tolist() for k, j in part])
+    if col.count() != len(order):
+        sys.exit(f"mempalace: the merged palace holds {col.count()} drawers, not {len(order)}")
+    del col
+    _close_chroma_handles(spec["out"])
+    records = []
+    for lane in spec["lanes"]:
+        found = json.loads(Path(lane["hallways"]).read_text())["hallways"] if lane["hallways"] else []
+        written["hallways"][lane["lane"]] = [len(records), len(found)]
+        written["hallway_ids"][lane["lane"]] = [h["id"] for h in found]
+        records += found
+    if records:
+        _save_hallways(records, MempalaceConfig())
+    written["drawers"] = len(order)
+    Path(spec["written"]).write_text(json.dumps(written))
+
+
+def merge_verify(spec):
+    """The merge's check, in a process of its own, with MemPalace's settings: every drawer of every lane read back from
+    the merged palace: its document and metadata equal, its vector within VECTOR_TOLERANCE in every component; no
+    other drawer; inserted in the merge's order; MemPalace's own SQLite quick_check clean; the hallways every lane's.
+    And the merged index's reach. Writes the result to spec["verified"]."""
+    import numpy as np
+
+    from mempalace.hallways import list_hallways
+    from mempalace.repair import sqlite_integrity_errors
+
+    col, ids, docs, metas, vectors = read_palace(spec["out"])
+    if ids != json.loads(Path(spec["order"]).read_text()):
+        sys.exit("mempalace: the merged palace's drawers are not in the merge's order")
+    reached = reach(col, ids, vectors)  # before the lanes' palaces open, whose open can reset Chroma's clients
+    at = {i: n for n, i in enumerate(ids)}
+    worst, lowest, total = 0.0, 1.0, 0
+    for lane in spec["lanes"]:
+        _, lids, ldocs, lmetas, lvectors = read_palace(lane["palace"])
+        total += len(lids)
+        for i, d, m, v in zip(lids, ldocs, lmetas, lvectors):
+            n = at.get(i)
+            if n is None or docs[n] != d or metas[n] != m:
+                sys.exit(f"mempalace: the merged palace's {i} differs from lane {lane['lane']}'s")
+            got, want = vectors[n].astype(np.float64), v.astype(np.float64)
+            off = float(np.abs(got - want).max())
+            if not off <= VECTOR_TOLERANCE:  # a NaN fails too
+                sys.exit(f"mempalace: the merged vector of {i} is off lane {lane['lane']}'s by {off:.3g}")
+            worst = max(worst, off)
+            lowest = min(lowest, float(got @ want / (np.linalg.norm(got) * np.linalg.norm(want))))
+    if total != len(ids):
+        sys.exit(f"mempalace: the merged palace holds {len(ids)} drawers, the lanes {total}")
+    if errors := sqlite_integrity_errors(spec["out"]):
+        sys.exit(f"mempalace: the merged palace fails MemPalace's quick_check: {errors[:5]}")
+    want = []
+    for lane in spec["lanes"]:
+        want += json.loads(Path(lane["hallways"]).read_text())["hallways"] if lane["hallways"] else []
+    if list_hallways() != want:
+        sys.exit("mempalace: the merged hallways.json is not every lane's hallways, lane after lane")
+    Path(spec["verified"]).write_text(json.dumps({
+        "drawers": len(ids), "vector_max_difference": worst, "vector_min_cosine": lowest, "reach": reached}))
+
+
 def interrupted(signum, frame):
     sys.exit("mempalace: stopped; run again to resume from the last checkpoint")
 
 
 def main():
+    if sys.argv[1:2] == ["--lanes"]:
+        for repo in dict.fromkeys(repo for _, repo, _ in sessions()[0]):
+            print(repo)
+        return
+    if sys.argv[1:2] == ["--merge-palace"]:
+        return merge_palace(json.loads(Path(sys.argv[2]).read_text()))
+    if sys.argv[1:2] == ["--merge-verify"]:
+        return merge_verify(json.loads(Path(sys.argv[2]).read_text()))
     signal.signal(signal.SIGINT, interrupted)
     signal.signal(signal.SIGTERM, interrupted)
     try:
@@ -588,6 +934,20 @@ def main():
 
     shutil.rmtree(LIVE, ignore_errors=True)
     (HOME / ".mempalace").mkdir(parents=True)  # the hooks' kill switch: hooks_cli.py:71-97
+    plan, skipped = sessions()
+    if MERGE:
+        return merge(plan, skipped)
+    if LANE:
+        plan = [s for s in plan if s[1] == LANE]
+        if not plan:
+            sys.exit(f"mempalace: the lane {LANE} has no session")
+    # One build at a time in a work dir: the lanes share the mount, so this holds across containers.
+    WORK.mkdir(parents=True, exist_ok=True)
+    lock = (WORK / ".lock").open("w")
+    try:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        sys.exit(f"mempalace: another build is working in {WORK}")
     if not CHECKPOINT.exists() and (WORK / "checkpoint.old").exists():
         (WORK / "checkpoint.old").rename(CHECKPOINT)
     if (CHECKPOINT / "progress.json").exists():
@@ -605,7 +965,6 @@ def main():
     threading.Thread(target=cut.serve_forever, daemon=True).start()
     ended = []  # the transcripts to sweep at the next quiet point, in the order their sessions ended
 
-    plan, skipped = sessions()
     done = set(progress["done"])
     queue = [(start, n, None, repo, path) for n, (start, repo, path) in enumerate(plan) if f"{repo}/{path.name}" not in done]
     heapq.heapify(queue)
@@ -628,6 +987,7 @@ def main():
         progress["done"].append(session.name)
         ended.append(session.transcript)
         if open_now == 0:
+            counts["quiet_points"] += 1
             for transcript in ended:
                 sweep(cut, transcript, session.times[-1], counts)
             ended.clear()
@@ -641,6 +1001,11 @@ def main():
         progress["counts"] = dict(counts)
         progress["ingest_seconds"] += time.monotonic() - started
         save(progress)
+    if LANE:
+        if lost := incomplete(progress["palace"], progress):
+            fatal(f"the lane {LANE} is incomplete ({', '.join(lost)}); see {CHECKPOINT / 'progress.json'}")
+        log(f"the lane {LANE} is done: its {len(plan)} sessions are in {CHECKPOINT}, for the merge")
+        return
 
     out = WORK / "store"
     shutil.rmtree(out, ignore_errors=True)
@@ -648,17 +1013,21 @@ def main():
     shutil.copy(CHECKPOINT / "hook.log", WORK / "hook.log")
     found = inventory(out)
     (out / "manifest.json").write_text(json.dumps(manifest(progress, skipped, found), indent=2) + "\n")
-    # A store that lost a diary checkpoint or a transcript is not packed: it would be compared with the other arms
-    # as it stands.
-    # (the faults themselves stop the build where they happen; these are the backstop)
-    lost = []
-    if found["sources"] != len(progress["done"]):
-        lost.append(f"{found['sources']} sessions with drawers of {len(progress['done'])}")
-    if found["by_kind"].get("sweep", 0) != counts["sweep_drawers"] or counts["sweeps"] != len(progress["done"]):
-        lost.append(f"{found['by_kind'].get('sweep', 0)} sweep drawers of {counts['sweep_drawers']} filed, {counts['sweeps']} sweeps of {len(progress['done'])} sessions")
-    if lost:
+    if lost := incomplete(found, progress):
         fatal(f"the store is incomplete ({', '.join(lost)}); see {out / 'manifest.json'}")
     log(f"done: {out}")
+
+
+def incomplete(found, progress):
+    """What a palace lost against its replay: a store that lost a diary checkpoint or a transcript is not packed, as it
+    would be compared with the other arms as it stands. (The faults themselves stop the build where they happen; this
+    is the backstop.)"""
+    counts, done, lost = Counter(progress["counts"]), len(progress["done"]), []
+    if found["sources"] != done:
+        lost.append(f"{found['sources']} sessions with drawers of {done}")
+    if found["by_kind"].get("sweep", 0) != counts["sweep_drawers"] or counts["sweeps"] != done:
+        lost.append(f"{found['by_kind'].get('sweep', 0)} sweep drawers of {counts['sweep_drawers']} filed, {counts['sweeps']} sweeps of {done} sessions")
+    return lost
 
 
 if __name__ == "__main__":

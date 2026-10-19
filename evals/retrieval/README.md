@@ -97,7 +97,7 @@ there is none, the script builds it, which needs the LLM for every arm but dense
 The script runs the arm's services with Docker Compose, feeds the sessions, packs the store and removes the
 containers, even after a failure. Run it again after a stop and it resumes from the arm's last checkpoint. An LLM usage
 limit only pauses it, for as long as the endpoint's `Retry-After` asks. An arm built in lanes (`x-lanes` in its
-`compose.yaml`, claude-mem) runs one build container per repository, all at once or as many at a time as
+`compose.yaml`, claude-mem and mempalace) runs one build container per repository, all at once or as many at a time as
 `BILBO_EVAL_LANES_AT_ONCE` allows, then merges their stores into one; a lane that fails leaves the others running, and a
 rerun resumes each lane from its own checkpoint.
 
@@ -529,7 +529,8 @@ replayed hook by hook into `mempalace hook run`, as Claude Code calls the plugin
 hooks, with the transcript as Claude Code had written it by then. The hooks decide what to keep: every 15 `user`
 records of the transcript (tool results count) and at the end they write a diary checkpoint, and with each save, and
 before a compaction, they mine the whole transcript again into the `sessions` wing, in drawers of up to 800
-characters. All sessions share one palace and one timeline, and the build checkpoints whenever no session is open.
+characters. The replay models an independent MemPalace installation for each repository: each repository has a palace
+of its own, and the palaces are merged into one store at the end.
 
 On top of the hooks it runs `mempalace sweep`, which MemPalace's README recommends "periodically" for per-message
 recall: at each quiet point, once for every transcript that ended since the last one. It stores one drawer per `user`
@@ -541,11 +542,51 @@ mode, the default, computes everything from the transcript. The plugin's `/mempa
 entity files and config defaults that neither mining nor search reads. The manifest lists every setting that differs
 from a fresh install, with the doc or source line that asks for it.
 
+The build runs in lanes, one per repository. Each repository's sessions are replayed on their own timeline, into a
+palace of their own in a build container of their own, as many lanes at a time as the build runs, against the shared
+embedder, and each lane checkpoints whenever none of its sessions is open. A lane runs MemPalace's hooks, mines, diary
+and sweeps over its repository's sessions as one palace runs them. It differs from one palace for every repository
+only in what that palace shares across them: the hallways, which MemPalace counts over every transcript drawer of the
+`sessions` wing after each mine, so a lane's link only entities that occur together in its own repository's drawers;
+the check a mine makes before filing a conversation already filed under another path, which matches nothing in this
+corpus, across repositories or within one; and the quiet points, which come whenever none of the repository's own
+sessions is open rather than none of any repository's, so a transcript is swept sooner after its session ends and its
+sweep drawers are dated then.
+
+The lanes' palaces are then merged into one. Every drawer is copied with its id, document, metadata and vector, not
+embedded again, into a fresh palace that MemPalace's own `get_collection` creates, 1,000 at a time as its miner files
+them. Each lane's drawers keep the order they entered its palace, and the next drawer is always the lane head with the
+earliest `filed_at`, a tie going to the earlier lane. That order is the same for the same lanes, but it is not sorted by
+time, since a lane's own times are not: each hook, mine and sweep runs its own clock. No drawer id can be in two lanes:
+a transcript drawer's id hashes its transcript's path, which names its session; a sweep drawer's names its message's
+session and uuid; a diary drawer's hashes its checkpoint, which names its session; and no session or message is in two
+repositories. The merge fails on a shared id all the same, and it checks every drawer against its lane's: ids, documents
+and metadata must be equal, and each vector within 1e-6 in every component of its lane's. A copied vector is not bit for
+bit the same, since Chroma's hnswlib normalizes a cosine vector as it adds it and the lane's was normalized already;
+float32 rounding moves it by about 1e-8, and the manifest's `merge` records the largest deviation. `hallways.json` holds
+each lane's hallways as its palace computed them, lane after lane, so a pair of entities two repositories share is
+listed once for each; MemPalace reads the file as a list. The write log holds every lane's lines in the same kind of
+order, by their timestamps, and the config and the embedder identity, the same in every lane, are copied. The manifest's
+`lanes` lists each lane with its counts and where its hallways start, and the store's counts add them up.
+
+Each lane's events, and so its embeddings requests, run in a fixed order, but the lanes' requests reach the shared
+embedder interleaved in an order that varies from run to run. With llama.cpp's prefix reuse, which MemPalace's requests
+get as dense's would without its sentinel, a vector can differ slightly from the same lane replayed alone, so a store
+built in lanes does not reproduce its vectors bit for bit. The merge copies the vectors the lanes got, and the
+difference is measured against lanes replayed alone before a store is published.
+
+The merged palace's vector index is built fresh, in the merge's order, where each lane's grew through MemPalace's
+refiles: a mine files a transcript whole again, so most elements of a palace's index are deleted ones. In one
+experiment, on the first five's store (60,269 drawers), rebuilding did not remove the misses: a drawer's own vector
+did not find it among the first three hits for 606 drawers in MemPalace's own index, and for 621 to 925 in fresh
+indexes of the same drawers, since Chroma does not build the same graph twice. For this store the effect is measured,
+not assumed: the manifest's `merge.reach` and each lane's `reach` give it.
+
 What the replay changes:
 
 - Each hook runs under libfaketime at the time its event happened, and each sweep at the time of the last event
-  before its quiet point, so the dates MemPalace files (`filed_at`, the diary checkpoints) are the session's, in UTC,
-  not the build's. `authored_at` is MemPalace's own: the transcript's latest timestamp.
+  before its repository's quiet point, so the dates MemPalace files (`filed_at`, the diary checkpoints) are the
+  session's, in UTC, not the build's. `authored_at` is MemPalace's own: the transcript's latest timestamp.
 - The plugin's mine runs detached in the background on a developer's machine; the build waits for each one, so no save
   is ever skipped because an earlier mine of the transcript is still running.
 - An input longer than the embedder's context goes to the sweep's embedder cut to its first tokens, as MemPalace's own

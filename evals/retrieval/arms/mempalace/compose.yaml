@@ -1,3 +1,8 @@
+# One lane per repository (scripts/build-store.sh): the replay models an independent MemPalace installation for each
+# repository, its sessions in a build container and a palace of their own, then merged into one store by
+# build.py --merge.
+x-lanes: repository
+
 services:
   embedder:
     image: ghcr.io/ggml-org/llama.cpp:server-b11206@sha256:00bd6c289c590e576948cb3639b8195e4d3e6dd6ba1d761f0e2b871fcd4df24f
