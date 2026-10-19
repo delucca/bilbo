@@ -65,8 +65,8 @@ A store is the memory one strategy builds from the corpus, `dataset/store-<arm>-
 needs no LLM. The key hashes what shapes a store: the corpus, the embedder, the LLM for an arm that uses one, and the
 files under `arms/<arm>/`. Change any of them and the key changes.
 
-`dataset.lock` pins mem0, dense and auto-memory stores built from this corpus, and every arm's store built from an
-earlier one, `corpus-1235aec0592a`, the first five projects; the other arms have none for this corpus yet.
+`dataset.lock` pins mem0, dense, auto-memory and ai-memory stores built from this corpus, and every arm's store built
+from an earlier one, `corpus-1235aec0592a`, the first five projects; the other arms have none for this corpus yet.
 
 | Arm | Strategy | LLM | Published store |
 |---|---|---|---|
