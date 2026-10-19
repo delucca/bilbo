@@ -96,8 +96,9 @@ there is none, the script builds it, which needs the LLM for every arm but dense
 The script runs the arm's services with Docker Compose, feeds the sessions, packs the store and removes the
 containers, even after a failure. Run it again after a stop and it resumes from the arm's last checkpoint. An LLM usage
 limit only pauses it, for as long as the endpoint's `Retry-After` asks. An arm built in lanes (`x-lanes` in its
-`compose.yaml`, claude-mem) runs one build container per repository at once, then merges their stores into one; a lane
-that fails leaves the others running, and a rerun resumes each lane from its own checkpoint.
+`compose.yaml`, claude-mem) runs one build container per repository, all at once or as many at a time as
+`BILBO_EVAL_LANES_AT_ONCE` allows, then merges their stores into one; a lane that fails leaves the others running, and a
+rerun resumes each lane from its own checkpoint.
 
 - `BILBO_EVAL_LLM_URL` is the URL the containers see. `host.docker.internal` reaches this machine, but on a Linux
   engine the server must listen on Docker's bridge (`172.17.0.1`) or on every interface, not on loopback alone.
@@ -107,6 +108,10 @@ that fails leaves the others running, and a rerun resumes each lane from its own
 - The embedder uses an NVIDIA GPU when Docker reports one. `BILBO_EVAL_GPU=1` or `0` forces it.
 - `BILBO_EVAL_EMBED_THREADS=N` caps an embedder on the CPU at N threads, so two CPU builds can share a host without
   thrashing. Like the device, it stays out of the key, and the manifest records it with the device.
+- `BILBO_EVAL_LANES_AT_ONCE=N` runs at most N lanes at a time, each lane that ends freeing its place for the next, and
+  `BILBO_EVAL_LANE_ORDER=a,b,...` starts the lanes it names first, in that order, and the others after them in the
+  build's own order. Unset, every lane starts at once. A name that is not one of the build's lanes, or an N that is not
+  a positive number, stops the build before any lane starts. Like the device, neither is part of the key.
 - `BILBO_EVAL_PROJECT` names the Compose project (default `bilbo-retrieval-<arm>`), so a second build of an arm with
   another key, such as a trial, runs beside the first without touching its containers. One key has one work dir.
 - `--rebuild` builds the store again. `--sessions N` builds from the first N sessions only: a trial, kept with the
@@ -352,20 +357,20 @@ claude-mem worker in the same container, as on a developer's machine. claude-mem
 observations from the tool calls and a summary at the end of each turn.
 
 The build runs in lanes, one per repository. Each repository's sessions are replayed on their own timeline, into a
-worker of their own in a build container of their own, all lanes at once against the shared embedder, and each lane
-checkpoints whenever none of its sessions is open. claude-mem keeps its content by project, and no project spans two
-repositories, so a lane replays its repository's sessions under the rules one worker applies. It differs only in what
-one worker shares across repositories: the observer's two process slots and its quota breaker, the next event that
-bounds a clock step, and the quiet points where the worker stops, so a session whose observer a lane's quiet point shuts
-down, where one worker would idle it out while another repository's session goes on, is marked completed up to three
-minutes earlier. The lanes' stores are then merged into one: SQLite's rows are renumbered in time order across the
-lanes, each lane's own order kept, with the ids they hold of each other remapped, and the full-text index rebuilt;
-Chroma's vectors are copied under the new ids, not embedded again, in time order; the sync state's marks move with
-them. The merge checks every row and document against its lane's and fails on any difference: rows, document texts and
-metadata must be equal but for their ids, and each vector within 1e-6 in every component of its lane's. A copied vector
-is not bit for bit the same, since Chroma's hnswlib normalizes a cosine vector as it adds it and the lane's was
-normalized already; float32 rounding moves it by about 1e-8, and the manifest's `merge` records the largest deviation.
-The manifest's `lanes` lists each lane, and its counts and LLM usage add them up.
+worker of their own in a build container of their own, the lanes at once, or as many at a time as the build runs,
+against the shared embedder, and each lane checkpoints whenever none of its sessions is open. claude-mem keeps its
+content by project, and no project spans two repositories, so a lane replays its repository's sessions under the rules
+one worker applies. It differs only in what one worker shares across repositories: the observer's two process slots and
+its quota breaker, the next event that bounds a clock step, and the quiet points where the worker stops, so a session
+whose observer a lane's quiet point shuts down, where one worker would idle it out while another repository's session
+goes on, is marked completed up to three minutes earlier. The lanes' stores are then merged into one: SQLite's rows are
+renumbered in time order across the lanes, each lane's own order kept, with the ids they hold of each other remapped,
+and the full-text index rebuilt; Chroma's vectors are copied under the new ids, not embedded again, in time order; the
+sync state's marks move with them. The merge checks every row and document against its lane's and fails on any
+difference: rows, document texts and metadata must be equal but for their ids, and each vector within 1e-6 in every
+component of its lane's. A copied vector is not bit for bit the same, since Chroma's hnswlib normalizes a cosine vector
+as it adds it and the lane's was normalized already; float32 rounding moves it by about 1e-8, and the manifest's `merge`
+records the largest deviation. The manifest's `lanes` lists each lane, and its counts and LLM usage add them up.
 
 The observer is claude-mem's default: its `claude` provider, which runs Claude Code 2.1.296 (pinned by sha256) on a
 Claude account, with its tier routing. Its model is Claude Haiku 5.5, the user's choice; claude-mem 13.35.0's default
@@ -402,13 +407,22 @@ What the replay changes:
   steps to its end or holds is bounded by the lane's next event rather than the timeline's.
 - A transcript line Claude Code wrote again (one session re-writes its earlier history) is written to the transcript
   but fires no hook. The mem0 and ai-memory arms replay those lines.
+- A session continued from another machine holds the earlier session's records at the start of its transcript. They
+  are written to the transcript and fire no hook, as lines written again do, and the session keeps its own id and the
+  working directory of its own first record.
 - When claude-mem drops a batch itself, after a second reply that is not XML, the manifest lists it
   (`dropped_by_claude_mem`) and the build goes on.
-- Each project is a minimal git checkout with its GitHub remote, worktrees included, which is all claude-mem reads to
-  name a project.
+- Each project is a minimal git checkout with its GitHub remote, worktrees under `.worktrees` and `.claude/worktrees`
+  included, which is all claude-mem reads to name a project. A session that ran anywhere else, such as
+  hackerspub-android's `<repo>-worktrees/<branch>` folders, go-nuts' task folders or superset-windows-arm64's
+  `.superset/worktrees`, runs in a plain folder, and claude-mem names its project after that folder.
 - Image-only prompts are sent, as Claude Code sends them, and claude-mem stores `[media prompt]`. The mem0 and
   ai-memory arms skip them.
 - The two Cursor transcripts are left out. The hooks never see them.
+- superset-windows-arm64's 14 sessions ran on Windows. They are replayed at the POSIX form of their paths,
+  `C:\Users\<name>\...` as `/Users/<name>/...`, in the project folder Claude Code named after the Windows path, so
+  claude-mem names their project from its checkout as it did on Windows. The `file_path`, `notebook_path` and search
+  `path` of their tool calls reach it at the same form; commands, relative paths and tool results reach it as recorded.
 
 Search is claude-mem's own: Chroma first, SQLite full text when Chroma finds nothing. It embeds a query like a
 document: the `openai` function takes no query instruction, which Qwen3 would take (ai-memory sends one). A store

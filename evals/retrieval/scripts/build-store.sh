@@ -19,7 +19,9 @@
 # An arm whose compose.yaml has `x-lanes:` is built in lanes: each repository's sessions in a build container
 # of its own, all at once against the one embedder (`build.py --lanes` names them, BILBO_EVAL_LANE tells each its own),
 # then the build service runs once more with `--merge` to combine the lanes' stores into one. A lane that fails leaves
-# the others running; a rerun resumes each lane from its own checkpoint.
+# the others running; a rerun resumes each lane from its own checkpoint. BILBO_EVAL_LANES_AT_ONCE=N runs at most N lanes
+# at a time (each one that ends frees its place for the next), and BILBO_EVAL_LANE_ORDER=a,b,... starts the lanes it
+# names first, in that order, and the others after them; neither is part of a store's key.
 # An arm with a `seed` file (<archive> <sha256>, after any # lines) continues a published store: the key names it, and a
 # build unpacks it, once the lock and the file agree on its sha256, into $work/seed for the arm's build to restore as
 # its first checkpoint.
@@ -220,19 +222,37 @@ if [[ -n $build ]]; then
     named=$(compose run --rm --no-deps -T build --lanes) || die "build.py --lanes failed"
     mapfile -t lanes <<<"$named"
     [[ -n ${lanes[0]:-} ]] || die "$arm has no lanes to build"
-    log "building ${#lanes[@]} lanes at once: ${lanes[*]}"
-    pids=()
+    at_once=${BILBO_EVAL_LANES_AT_ONCE:-${#lanes[@]}}
+    [[ $at_once =~ ^[1-9][0-9]*$ ]] || die "BILBO_EVAL_LANES_AT_ONCE is '$at_once', not a positive number"
+    ((at_once <= ${#lanes[@]})) || at_once=${#lanes[@]}
+    IFS=, read -ra wanted <<<"${BILBO_EVAL_LANE_ORDER:-}"
+    ordered=()
+    for lane in "${wanted[@]}"; do
+      [[ " ${lanes[*]} " == *" $lane "* ]] || die "BILBO_EVAL_LANE_ORDER names '$lane', not one of: ${lanes[*]}"
+      [[ " ${ordered[*]} " == *" $lane "* ]] || ordered+=("$lane")
+    done
+    for lane in "${lanes[@]}"; do [[ " ${ordered[*]} " == *" $lane "* ]] || ordered+=("$lane"); done
+    lanes=("${ordered[@]}")
+    log "building ${#lanes[@]} lanes, $at_once at once: ${lanes[*]}"
+    declare -A running=()
+    failed=()
+    reap() {
+      local pid status=0
+      wait -n -p pid || status=$?
+      ((status == 0)) || failed+=("${running[$pid]}")
+      unset "running[$pid]"
+    }
     for lane in "${lanes[@]}"; do
+      while ((${#running[@]} >= at_once)); do reap; done
       # Each lane's lines carry its name; a lane that fails says so and leaves the others running.
       (
         compose run --rm --no-deps -T -e BILBO_EVAL_LANE="$lane" build 2>&1 | sed -u "s/^/[$lane] /" && exit 0
         log "the lane $lane failed; the other lanes go on"
         exit 1
       ) &
-      pids+=($!)
+      running[$!]=$lane
     done
-    failed=()
-    for i in "${!pids[@]}"; do wait "${pids[$i]}" || failed+=("${lanes[$i]}"); done
+    while ((${#running[@]})); do reap; done
     ((${#failed[@]} == 0)) || die "lanes failed: ${failed[*]}; run again to resume them from their checkpoints"
     compose run --rm --no-deps -T build --merge
   else

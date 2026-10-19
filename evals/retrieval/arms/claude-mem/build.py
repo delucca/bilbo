@@ -166,7 +166,7 @@ NOTES = {
     "projects": "a worktree's sessions are filed under <repo>/<worktree> keys (drain-cycle/ABA-301, ...) and stay there, since claude-mem adopts a worktree's rows into its repo only when the checkout is gone or merged (WorktreeAdoption.ts:470-560): a per-repo search must pass every key `projects` lists for the repo",
     "queries": "a search embeds the query like a document: the openai embedding function takes no query instruction, which Qwen3 would take (ai-memory sends one)",
     "image_only_prompts": "sent with an empty prompt as Claude Code sends them, and stored by claude-mem as [media prompt]; the mem0 and ai-memory arms skip them",
-    "lanes": "each repository's sessions are replayed as a lane of their own, in a build container of their own with its own worker, clock, quota guard and checkpoints, all lanes at once against the one embedder; a lane applies one worker's rules to its repository's sessions, and claude-mem keeps its content by project, no project spanning two repositories; it differs from one worker only in what that worker shares across repositories: the observer's two process slots and its quota breaker, the next event that bounds a clock step, and the quiet points where the worker stops, so a session whose observer a lane's quiet point shuts down, where one worker would idle it out while another repository's session goes on, is completed up to 3 minutes earlier; the merge renumbers the rows in time order across the lanes, each lane's own order kept, remaps the ids rows and the sync state hold, rebuilds the full-text index, copies Chroma's vectors under the new ids, and checks every row and document against its lane's, a vector to within 1e-6 in each component, since hnswlib normalizes a copied cosine vector again and float32 rounding moves it by about 1e-8; counts, LLM usage, hook_seconds and ingest_seconds add up the lanes, and `lanes` lists each one's"}
+    "lanes": "each repository's sessions are replayed as a lane of their own, in a build container of their own with its own worker, clock, quota guard and checkpoints, the lanes at once, or as many at a time as the build runs, against the one embedder; a lane applies one worker's rules to its repository's sessions, and claude-mem keeps its content by project, no project spanning two repositories; it differs from one worker only in what that worker shares across repositories: the observer's two process slots and its quota breaker, the next event that bounds a clock step, and the quiet points where the worker stops, so a session whose observer a lane's quiet point shuts down, where one worker would idle it out while another repository's session goes on, is completed up to 3 minutes earlier; the merge renumbers the rows in time order across the lanes, each lane's own order kept, remaps the ids rows and the sync state hold, rebuilds the full-text index, copies Chroma's vectors under the new ids, and checks every row and document against its lane's, a vector to within 1e-6 in each component, since hnswlib normalizes a copied cosine vector again and float32 rounding moves it by about 1e-8; counts, LLM usage, hook_seconds and ingest_seconds add up the lanes, and `lanes` lists each one's"}
 HOOK_ENV = {
     "HOME": str(HOME), "PATH": "/usr/local/bin:/usr/bin:/bin", "CLAUDE_MEM_DATA_DIR": str(DATA),
     "CLAUDE_MEM_WORKER_PORT": str(PORT), "BUN_OPTIONS": ENV["BUN_OPTIONS"][0], "BILBO_CLOCK_FILE": str(CLOCK),
@@ -212,7 +212,7 @@ def sessions():
     found, other = [], []
     for path in sorted(CORPUS.glob("*/*.jsonl")):
         start, seen = None, set()
-        for entry in map(json.loads, path.open()):
+        for entry in own_entries(path):
             if entry.get("uuid") in seen:  # a line Claude Code wrote again fires no hook
                 continue
             if entry.get("uuid"):
@@ -237,11 +237,37 @@ def sessions():
     return found, [f"{repo}/{path.name}" for _, repo, path in other]
 
 
+def posix_path(value):
+    """A Windows path at the POSIX form of its path: C:\\Users\\a\\b as /Users/a/b."""
+    return "/" + value[3:].replace("\\", "/") if isinstance(value, str) and re.match(r"[A-Za-z]:\\", value) else value
+
+
+def posix_input(tool_input):
+    """A tool's input with its file and search paths at the POSIX form; the transcript line keeps what was recorded."""
+    return {k: posix_path(v) if k in ("file_path", "notebook_path", "path") else v for k, v in tool_input.items()}
+
+
+def session_id(path):
+    """A transcript's own session id, from its name <time>--<id>.jsonl."""
+    return path.stem.rsplit("--", 1)[-1]
+
+
+def imported(entry, sid):
+    """Whether a record is another session's: one continued from another machine holds the earlier one's history."""
+    return entry.get("sessionId") not in (None, sid)
+
+
+def own_entries(path):
+    """A transcript's parsed records, but those of another session."""
+    sid = session_id(path)
+    return (e for e in map(json.loads, path.open()) if not imported(e, sid))
+
+
 def checkout_roots():
     """Each repository's main checkout: the directory most of its sessions start in."""
     starts = {}
     for path in sorted(CORPUS.glob("*/*.jsonl")):
-        cwd = next((e["cwd"] for e in map(json.loads, path.open()) if e.get("cwd")), None)
+        cwd = next((posix_path(e["cwd"]) for e in own_entries(path) if e.get("cwd")), None)
         if cwd:
             starts.setdefault(path.parent.name, Counter())[cwd] += 1
     return {repo: cwds.most_common(1)[0][0] for repo, cwds in starts.items()}
@@ -331,7 +357,7 @@ class Claude:
             data = data[: data.rfind(b"\n") + 1]
             state["offset"] += len(data)
             self.size += len(data)
-            for line in data.decode(errors="replace").splitlines():
+            for line in data.decode(errors="replace").split("\n"):
                 try:
                     entry = json.loads(line)
                 except ValueError:
@@ -649,7 +675,7 @@ class Worker:
                 data = f.read()
             data = data[: data.rfind(b"\n") + 1]
             self.offsets[path.name] = self.offsets.get(path.name, 0) + len(data)
-            for line in data.decode(errors="replace").splitlines():
+            for line in data.decode(errors="replace").split("\n"):
                 self.read(line)
 
     def read(self, line):
@@ -758,10 +784,15 @@ class Session:
             self.times.append(when)
         first_time = next(t for t in self.times if t)
         self.times = [t or first_time for t in self.times]
-        self.sid = next(e["sessionId"] for e in self.entries if e.get("sessionId"))
-        self.launch = next((e["cwd"] for e in self.entries if e.get("cwd")), "/")  # the first entries often carry none
+        self.sid = session_id(path)
+        seen = set()
+        self.copied = {k for k, e in enumerate(self.entries) if imported(e, self.sid)}
+        recorded = next(
+            (e["cwd"] for k, e in enumerate(self.entries) if k not in self.copied and e.get("cwd")),
+            "/")  # the first entries often carry none
+        self.launch = posix_path(recorded)
         self.cwd = self.launch
-        self.transcript = HOME / ".claude" / "projects" / re.sub("[^A-Za-z0-9]", "-", self.launch) / f"{self.sid}.jsonl"
+        self.transcript = HOME / ".claude" / "projects" / re.sub("[^A-Za-z0-9]", "-", recorded) / f"{self.sid}.jsonl"
         self.transcript.parent.mkdir(parents=True, exist_ok=True)
         self.out = self.transcript.open("w")
         self.turn, self.tools, self.index, self.ended = None, {}, -1, False
@@ -769,11 +800,13 @@ class Session:
         self.expected = set()  # the tool_use_ids claude-mem should keep in tool_uses
         self.sent = Counter()
         # Claude Code sometimes writes a line after lines with later timestamps, and one session re-writes its earlier
-        # history. A line whose uuid appeared before is written to the transcript and fires no hook. A session is placed
+        # history. A line whose uuid appeared before, or that is another session's (one continued from another machine
+        # holds the earlier one's), is written to the transcript and fires no hook. A session is placed
         # in the timeline by the earliest timestamp among the lines still to come that replay, so a late-written line is
         # delivered at its own time, before other sessions move the clock past it.
-        seen, self.copied = set(), set()
         for k, entry in enumerate(self.entries):
+            if k in self.copied:
+                continue
             if entry.get("uuid") in seen:
                 self.copied.add(k)
             elif entry.get("uuid"):
@@ -869,7 +902,7 @@ class Session:
         new_turn = (text and not text.startswith((*NOTICES, "[Request interrupted"))) or image_only
         if new_turn:
             self.stop(when, more=True)  # the turn before ends where it ran; this prompt's hook follows in the same step
-        self.cwd = entry.get("cwd") or self.cwd  # Claude Code sends the cwd the session is in at each hook
+        self.cwd = posix_path(entry.get("cwd")) or self.cwd  # Claude Code sends the cwd the session is in at each hook
         self.replay.checkouts.ensure(self.cwd)
 
         if kind == "system" and subtype in ("stop_hook_summary", "turn_duration"):
@@ -925,7 +958,7 @@ class Session:
                 name, tool_input, called = self.tools.get(b.get("tool_use_id"), ("unknown", {}, when))
                 self.replay.counts["unknown_tools"] += name == "unknown"
                 common = {
-                    "tool_name": name, "tool_input": tool_input, "tool_use_id": b.get("tool_use_id"),
+                    "tool_name": name, "tool_input": posix_input(tool_input), "tool_use_id": b.get("tool_use_id"),
                     "duration_ms": max(0, round((when - called).total_seconds() * 1000))}
                 if b.get("tool_use_id") and not skipped(name, tool_input):
                     self.expected.add(b["tool_use_id"])
@@ -2072,7 +2105,7 @@ def main():
     try:
         if len(progress["done"]) < len(plan):  # a rerun of a build that finished goes straight to the store
             launches = [
-                (repo, next((e["cwd"] for e in map(json.loads, path.open()) if e.get("cwd")), "/"))
+                (repo, posix_path(next((e["cwd"] for e in own_entries(path) if e.get("cwd")), "/")))
                 for _, repo, path in every
             ]
             checkouts = Checkouts(checkout_roots(), launches)
