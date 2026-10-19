@@ -45,12 +45,24 @@ def lines_of(path):
     return [line for line in path.read_text().split("\n") if line.strip()]
 
 
+def session_id(path):
+    """The session a corpus file records: Claude Code names its transcript after it, and the corpus keeps the name."""
+    return path.name.split("--", 1)[1].removesuffix(".jsonl")
+
+
+def own_start(entries, sid):
+    """The index of the session's first own record. A cloud session continued in a terminal (`claude --teleport`)
+    begins with the cloud session's history under that session's id, which ran on the other machine."""
+    return next((i for i, e in enumerate(entries) if e.get("sessionId") == sid), 0)
+
+
 def sessions():
-    """Every Claude Code session as (start, repo, path), in the order they started across all repos. A transcript with
-    no timestamp is not Claude Code's and is left out; Claude Code never saw it."""
+    """Every Claude Code session as (start, repo, path), in the order they started across all repos, each at its first
+    own record (own_start). A transcript with no timestamp is not Claude Code's and is left out; Claude Code never saw it."""
     found, other = [], []
     for path in sorted(CORPUS.glob("*/*.jsonl")):
-        start = next((t for t in map(stamp, map(json.loads, lines_of(path))) if t), None)
+        entries = parse_lines(lines_of(path))
+        start = next((t for t in map(stamp, entries[own_start(entries, session_id(path)):]) if t), None)
         (found if start else other).append((start, path.parent.name, path))
     found.sort()
     limit = os.environ.get("BILBO_EVAL_SESSIONS")
@@ -61,7 +73,8 @@ def checkout_roots():
     """Each repository's main checkout: the directory most of its sessions start in."""
     starts = {}
     for path in sorted(CORPUS.glob("*/*.jsonl")):
-        cwd = next((e["cwd"] for e in map(json.loads, lines_of(path)) if e.get("cwd")), None)
+        entries = parse_lines(lines_of(path))
+        cwd = next((e["cwd"] for e in entries[own_start(entries, session_id(path)):] if e.get("cwd")), None)
         if cwd:
             starts.setdefault(path.parent.name, Counter())[cwd] += 1
     return {repo: cwds.most_common(1)[0][0] for repo, cwds in starts.items()}
@@ -121,15 +134,16 @@ def bash_op(command):
     return ("unknown",) if re.search(r">>|\bcat >|open\(|\btee\b|\bsed -i|\bmv |\brm |\bcp ", command) else None
 
 
-def recorded_ops(entries, session_key, start):
+def recorded_ops(entries, session_key, start, first=0):
     """Every memory operation in a session, with the entry its result is in (where it took effect, and its time), the
-    Claude Code version and model recorded on the entry that made the call, and why it cannot be applied, if so."""
+    Claude Code version and model recorded on the entry that made the call, and why it cannot be applied, if so.
+    `entries` begin at the file's entry `first`, and "line" is the file's."""
     times, when = [], start
     for e in entries:
         when = stamp(e) or when
         times.append(when)
     uses, results, seen = {}, {}, set()
-    for line, e in enumerate(entries):
+    for line, e in enumerate(entries, first):
         if e.get("uuid"):
             if e["uuid"] in seen:
                 continue
@@ -175,7 +189,7 @@ def recorded_ops(entries, session_key, start):
                 op |= {"kind": "bash", "skip": op["skip"] or "bash_unparsed"}
             else:
                 op |= {"kind": "bash", "shape": shape[0], "file": shape[1], "payload": shape[2]}
-        ops.append(op | {"time": times[op["line"]]})
+        ops.append(op | {"time": times[op["line"] - first]})
     return sorted(ops, key=lambda o: o["line"])
 
 
@@ -268,7 +282,9 @@ def recorded(plan, roots):
     ops, keys, made, saves = [], {}, set(), {}
     for start, repo, path in plan:
         entries = parse_lines(lines_of(path))
-        sid = next(e["sessionId"] for e in entries if e.get("sessionId"))
+        sid = session_id(path)
+        first = own_start(entries, sid)
+        entries = entries[first:]
         cwd = next((e["cwd"] for e in entries if e.get("cwd")), "/")
         key = key_of(roots[repo], cwd)
         keys.setdefault(repo, set()).add(key)
@@ -277,7 +293,7 @@ def recorded(plan, roots):
             mine["saves"] += 1
             mine["verbs"][str(verb)] += 1
             mine["files"].update(names)
-        for op in recorded_ops(entries, key, start):
+        for op in recorded_ops(entries, key, start, first):
             ops.append(op | {"repo": repo, "session": sid, "start": start})
             made.add(sid)
     ops.sort(key=lambda o: (o["key"], o["time"], o["start"], o["line"]))

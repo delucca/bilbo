@@ -94,12 +94,25 @@ def stamp(entry):
     return datetime.fromisoformat(entry["timestamp"]) if entry.get("timestamp") else None
 
 
+def session_id(path):
+    """The session a corpus file records: Claude Code names its transcript after it, and the corpus keeps the name."""
+    return path.name.split("--", 1)[1].removesuffix(".jsonl")
+
+
+def own_start(entries, sid):
+    """The index of the session's first own record. A cloud session continued in a terminal (`claude --teleport`)
+    begins with the cloud session's history under that session's id: turns that ran on the other machine, which the
+    terminal loaded at once and fired no hook for."""
+    return next((i for i, e in enumerate(entries) if e.get("sessionId") == sid), 0)
+
+
 def sessions():
-    """Every Claude Code session as (start, repo, path), in the order they started across all repos. A transcript
-    with no timestamp is not Claude Code's and is left out; the hooks never see it."""
+    """Every Claude Code session as (start, repo, path), in the order they started across all repos, each at its first
+    own record (own_start). A transcript with no timestamp is not Claude Code's and is left out; the hooks never see it."""
     found, other = [], []
     for path in sorted(CORPUS.glob("*/*.jsonl")):
-        start = next((t for t in map(stamp, map(json.loads, path.open())) if t), None)
+        entries = [json.loads(line) for line in path.read_text().split("\n") if line.strip()]
+        start = next((t for t in map(stamp, entries[own_start(entries, session_id(path)):]) if t), None)
         (found if start else other).append((start, path.parent.name, path))
     found.sort()
     limit = os.environ.get("BILBO_EVAL_SESSIONS")
@@ -213,15 +226,17 @@ class Session:
             self.times.append(when)
         first_time = next(t for t in self.times if t)
         self.times = [t or first_time for t in self.times]
-        self.sid = next(e["sessionId"] for e in self.entries if e.get("sessionId"))
-        first = next((e["cwd"] for e in self.entries if e.get("cwd")), "/")  # the first entries often carry none
+        self.sid = session_id(path)
+        own = own_start(self.entries, self.sid)
+        first = next((e["cwd"] for e in self.entries[own:] if e.get("cwd")), "/")  # the first entries often carry none
         self.cwd = posix_cwd(first)
         home = "/".join(self.cwd.split("/")[:3])
         self.transcript = Path(f"{home}/.claude/projects/{re.sub('[^A-Za-z0-9]', '-', first)}/{self.sid}.jsonl")
         self.transcript.parent.mkdir(parents=True, exist_ok=True)
         self.out = self.transcript.open("w")
         self.written, self.mtime = 0, 0.0
-        self.turn, self.index, self.ended, self.pending = None, 0, False, []
+        # The lines before own fire nothing; they reach the transcript with the first hook, as they were there before it.
+        self.turn, self.index, self.ended, self.pending = None, own, False, []
 
     def due(self):
         return self.times[min(self.index, len(self.entries) - 1)]

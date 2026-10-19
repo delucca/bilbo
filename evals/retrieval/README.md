@@ -499,6 +499,8 @@ What the replay changes:
 - The two Cursor transcripts are left out. The hooks never see them.
 - superset-windows-arm64's 14 sessions ran on Windows. They are replayed at the POSIX form of their paths,
   `C:\Users\<name>\...` as `/Users/<name>/...`, in the project folder Claude Code named after the Windows path.
+- A session continued from another machine (`claude --teleport`) starts at its own first record, under its own id and
+  working directory; the history it brought arrives with its first hook and fires none.
 - What a live agent saves through MemPalace's MCP tools is not reproduced: the corpus agents never had it, so the
   knowledge graph stays empty. `mempalace mine --extract general` is off: it adds drawers beside the exchange ones and
   the hooks never run it.
