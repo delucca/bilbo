@@ -65,8 +65,9 @@ A store is the memory one strategy builds from the corpus, `dataset/store-<arm>-
 needs no LLM. The key hashes what shapes a store: the corpus, the embedder, the LLM for an arm that uses one, and the
 files under `arms/<arm>/`. Change any of them and the key changes.
 
-`dataset.lock` pins mem0, dense, auto-memory and ai-memory stores built from this corpus, and every arm's store built
-from an earlier one, `corpus-1235aec0592a`, the first five projects; the other arms have none for this corpus yet.
+`dataset.lock` pins mem0, dense, auto-memory, ai-memory and claude-mem stores built from this corpus, and every arm's
+store built from an earlier one, `corpus-1235aec0592a`, the first five projects; the other arms have none for this
+corpus yet.
 
 | Arm | Strategy | LLM | Published store |
 |---|---|---|---|
@@ -401,10 +402,12 @@ What the replay changes:
   held messages are observed later, in one generation. The account is the build's own, so the usage limits the
   developers hit in four transcripts do not stop the observer.
 - claude-mem runs at most two observer processes, and an idle one keeps its slot until its 3-minute exit. A third
-  waits (once in this corpus), and the clock steps to that exit under the same rule. The manifest counts these waits
-  and steps. A lane's worker has its two slots to itself, where one worker would share them across repositories; the
-  one wait in this corpus is between sessions of the same project, so its lane still has it, though whether the clock
-  steps to its end or holds is bounded by the lane's next event rather than the timeline's.
+  waits (66 times in this corpus, in five repositories, 60 of them in cavecrew-mcp, whose 8 sessions ran side by
+  side), and the clock steps to that exit under the same rule. The manifest counts the steps and the holds, one each
+  time the exit falls after the next event: 3 steps and 6,017 holds, 5,792 of them in cavecrew-mcp, whose held
+  messages were observed as slots came free. A lane's worker has its two slots to itself, where one worker would
+  share them across repositories, so a lane keeps the waits between its own sessions; whether the clock steps to an
+  exit or holds is bounded by the lane's next event rather than the timeline's.
 - A transcript line Claude Code wrote again (one session re-writes its earlier history) is written to the transcript
   but fires no hook. The mem0 and ai-memory arms replay those lines.
 - A session continued from another machine holds the earlier session's records at the start of its transcript. They
@@ -445,11 +448,11 @@ conversation into one prompt, and Haiku 4.5 went on to write invented turns of t
 Claude Sonnet 5.5 on the same route wrote none, but each call resent the whole conversation with nothing cached, about
 43,000 prompt tokens a call, one to two weeks of a Max 20x subscription for the full corpus.
 
-The published store was built in five lanes with the embedder on an RTX 5070 Ti, in 5 h 42 min of lanes and a
-one-minute merge: 16,774 calls to Claude Haiku 5.5, 717 million prompt tokens (91% read from the cache) and 11.7
-million output tokens, with no usage-limit wait. It holds 8,685 observations, 619 summaries, 846 prompts and 15,408
-tool calls from the 143 sessions, and 54,548 Chroma documents. 27 observations carry a malformed type, Haiku's XML
-running on, as claude-mem parsed it.
+The published store was built in 22 lanes, 12 at a time, with the embedder on an RTX 5070 Ti, in 13 h 57 min of
+lanes (the last, cavecrew-mcp's, alone for its final 5 h) and a 4-minute merge: 67,811 calls to Claude Haiku 5.5,
+2.84 billion prompt tokens (91% read from the cache) and 49.1 million output tokens, with no usage-limit wait. It
+holds 36,736 observations, 3,879 summaries, 4,630 prompts and 60,365 tool calls from the 401 sessions, and 244,341
+Chroma documents. 80 observations carry a malformed type, Haiku's XML running on, as claude-mem parsed it.
 
 ### bilbo 0.19
 
