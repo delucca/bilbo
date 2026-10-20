@@ -65,9 +65,9 @@ A store is the memory one strategy builds from the corpus, `dataset/store-<arm>-
 needs no LLM. The key hashes what shapes a store: the corpus, the embedder, the LLM for an arm that uses one, and the
 files under `arms/<arm>/`. Change any of them and the key changes.
 
-`dataset.lock` pins mem0, dense, auto-memory, ai-memory and claude-mem stores built from this corpus, and every arm's
-store built from an earlier one, `corpus-1235aec0592a`, the first five projects; the other arms have none for this
-corpus yet.
+`dataset.lock` pins mem0, dense, ai-memory, claude-mem, mempalace and auto-memory stores built from this corpus, and
+every arm's store built from an earlier one, `corpus-1235aec0592a`, the first five projects; the other arms have none
+for this corpus yet.
 
 | Arm | Strategy | LLM | Published store |
 |---|---|---|---|
@@ -572,8 +572,11 @@ order, by their timestamps, and the config and the embedder identity, the same i
 Each lane's events, and so its embeddings requests, run in a fixed order, but the lanes' requests reach the shared
 embedder interleaved in an order that varies from run to run. With llama.cpp's prefix reuse, which MemPalace's requests
 get as dense's would without its sentinel, a vector can differ slightly from the same lane replayed alone, so a store
-built in lanes does not reproduce its vectors bit for bit. The merge copies the vectors the lanes got, and the
-difference is measured against lanes replayed alone before a store is published.
+built in lanes does not reproduce its vectors bit for bit. The merge copies the vectors the lanes got. Measured on 24
+sessions of six repositories run six at once on the GPU, against each repository replayed alone: about 88% of the
+vectors were bit-identical and the rest differed by less than 6.4e-3 in any component, at a cosine of 0.9994 or more,
+closer than a CPU and a GPU embedding of the same text (down to 0.9976, measured for dense). Everything else was equal
+but for the seconds each step's clock adds.
 
 The merged palace's vector index is built fresh, in the merge's order, where each lane's grew through MemPalace's
 refiles: a mine files a transcript whole again, so most elements of a palace's index are deleted ones. In one
@@ -630,9 +633,12 @@ either. The hallways must be what MemPalace's hallway count makes of each lane's
 and each lane must hold as many drawers of each kind as the manifest's `lanes` says. The write log must hold every
 diary write. The check also prints how many drawers the index does not reach, as above.
 
-The published store was built with the embedder on an RTX 5070 Ti in 2 h 6 min: 589 mines and 143 sweeps over the
-143 sessions. It holds 60,269 drawers, 15,862 from the transcripts, 43,854 from the sweeps and 553 from 533 diary
-checkpoints, and 76,255 hallways. The sweeps cut 690 of their 43,996 inputs to 8,190 tokens, the longest from 726,678.
+The published store was built with the embedder on an RTX 5070 Ti in 4 h 41 min: 22 lanes, six at a time, for
+4 h 29 min, then a 12-minute merge, with 2,485 mines and 401 sweeps over the 401 sessions (the two Cursor transcripts
+left out). It holds 245,915 drawers, 65,131 from the transcripts, 178,158 from the sweeps and 2,626 from 2,338 diary
+checkpoints, and 247,509 hallways. The sweeps cut 1,688 of their 179,228 inputs to 8,190 tokens, the longest from
+1,991,252. In the merged index, a drawer's own vector does not find it among the first three hits for 9,299 drawers
+(3.8%), as the merge measured it.
 
 ### auto-memory
 
