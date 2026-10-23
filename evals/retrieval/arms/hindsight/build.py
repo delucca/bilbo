@@ -2,14 +2,17 @@
 package, its Stop hook as shipped) into one Hindsight server on loopback with one memory bank per repository, set up the
 way the integration sets up a Claude Code user. Banks share nothing, so each repository is a lane of its own: one
 timeline across that repository's sessions, all lanes at once against the one server. Then save Hindsight's own backup
-(`hindsight-admin backup`) with a manifest in /work/store. When every lane is at rest (no session of its bank open), the
-backup goes to /work/checkpoint, and a run that finds it resumes from there.
+(`hindsight-admin backup`) with a manifest in /work/store. Every BILBO_EVAL_CHECKPOINT_HOURS (1), each lane stops at its next
+Stop (or session end), and when all have, the backup, the open sessions' replay state and the integration's files go to
+/work/checkpoint; a run that finds it resumes from there, in the middle of a session if it was in one.
 BILBO_EVAL_SESSIONS is a trial: N for the first N sessions, or `repo:N,repo:N` for the first N sessions of each repository
 named. BILBO_EVAL_DRY_RUN=1 walks the timeline on the host's Python and prints it, with no server, no LLM and no Docker."""
 
+import contextlib
 import hashlib
 import heapq
 import http.client
+import io
 import json
 import os
 import platform
@@ -18,6 +21,7 @@ import shutil
 import signal
 import subprocess
 import sys
+import tarfile
 import threading
 import time
 import urllib.error
@@ -50,9 +54,9 @@ LLM_URL = os.environ.get("BILBO_EVAL_LLM_URL", "").rstrip("/")
 LLM_KEY = os.environ.get("BILBO_EVAL_LLM_KEY", "")
 LLM_MODEL = os.environ.get("BILBO_EVAL_LLM_MODEL", "")
 LLM_HEADERS = json.loads(os.environ.get("BILBO_EVAL_LLM_HEADERS") or "{}")
+HOLD = 7 * 86400  # seconds the gateway holds one LLM call through a usage limit, up to a weekly reset
 QUIET_IDLE = 1800  # seconds a bank may stay busy with the LLM idle before the build gives up on it
-CHECKPOINT_EVERY = 1800  # seconds between checkpoints; one is taken when every lane is at rest
-REST_WAIT = 600  # seconds a lane at rest waits for the others once a checkpoint is due, before the checkpoint waits for the next round
+CHECKPOINT_SECONDS = float(os.environ.get("BILBO_EVAL_CHECKPOINT_HOURS") or 1) * 3600  # between checkpoints; a trial can shorten it
 ABORT = threading.Event()  # set when a lane fails or the build is stopped: every lane stops at its next check
 HOOK_TIMEOUT = 60  # the host's timeout for the Stop hook (hindsight-integrations/coding-agents/src/harness/hook-lifecycle.ts:301)
 DRY_REFRESH_SECONDS = 60  # the dry run has no server to time a refresh: it takes a nominal minute
@@ -82,6 +86,15 @@ THRESHOLDS = {
     "HINDSIGHT_API_TEMPORAL_SEMANTIC_MIN_SIMILARITY": (0.1, 0.1, "recall", API + "config.py:632, 1322: Qwen3 needs no change"),
 }
 
+RECALL_THRESHOLDS = {k.removeprefix("HINDSIGHT_API_"): v for k, (v, _, at, _) in THRESHOLDS.items() if at == "recall"}
+EMBEDDER = {"provider": "openai", "model": "Qwen3-Embedding-0.6B Q8_0", "dim": 1024, "query_prefix": QUERY_PREFIX}
+# These three pins repeat the Dockerfile's and compose.yaml's: change them together.
+PINS = {
+    "image": "ghcr.io/vectorize-io/hindsight-api:0.10.3@sha256:f80f304db313cbc8775acd601fda7d094f5854ebf9bc252d8134eb9276d56b40",
+    "pgvector": "pgvector/pgvector:0.8.7-pg18@sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11",
+    "coding_agents": {"version": "0.8.0", "tarball_sha256": "afc489206154f2e7254057e52b455be8751e8b8bbf5e4a720a104c136fbeed7c", "registry_integrity": "sha512-CViWmh2fnVjhQM8kqOJ2GIGC0kp/Gv4t5X+j+kzpzP+T54PiKQPsrQOunvmluEE3JCGnRQOIcz91Vu/0QUcZow=="},
+}
+
 # The server's environment: what differs from a fresh install, or what the manifest should say anyway, each with where
 # Hindsight's docs or source ask for it.
 SERVER_ENV = {
@@ -92,17 +105,17 @@ SERVER_ENV = {
     "HINDSIGHT_API_LLM_BASE_URL": (f"http://{GATEWAY[0]}:{GATEWAY[1]}/v1", "the gateway in this file, in front of BILBO_EVAL_LLM_URL"),
     "HINDSIGHT_API_LLM_API_KEY": ("local", "the gateway adds the real key"),
     "HINDSIGHT_API_LLM_MODEL": (LLM_MODEL, "BILBO_EVAL_LLM_MODEL"),
-    "HINDSIGHT_API_LLM_TIMEOUT": ("86400", API + "config.py:1182, 2391-2411: the gateway holds a call through a usage limit, past the 120 s default; retain, consolidation, reflect and page refreshes inherit it"),
+    "HINDSIGHT_API_LLM_TIMEOUT": (str(HOLD), API + "config.py:1182, 2391-2411: the gateway holds a call through a usage limit, up to a weekly reset, past the 120 s default; retain, consolidation, reflect and page refreshes inherit it"),
     "HINDSIGHT_API_RETAIN_WALL_TIMEOUT": ("0", API + "config.py:1903, worker/poller.py:98-170: the worker's 3600 s ceiling on a whole retain would cut a held call; 0 lifts it"),
     "HINDSIGHT_API_CONSOLIDATION_WALL_TIMEOUT": ("0", API + "config.py:1910: the 7200 s ceiling without progress; same reason"),
-    "HINDSIGHT_API_REFLECT_WALL_TIMEOUT": ("86400", API + "config.py:1927, engine/memory_engine.py:15558: the 300 s ceiling on a reflect and a page refresh; it cannot be 0"),
+    "HINDSIGHT_API_REFLECT_WALL_TIMEOUT": (str(HOLD), API + "config.py:1927, engine/memory_engine.py:15558: the 300 s ceiling on a reflect and a page refresh, which must outlast a held call; it cannot be 0"),
     "HINDSIGHT_API_SKIP_LLM_VERIFICATION": ("true", API + "config.py:904: build.py checks the endpoint itself first, as every arm does"),
     "HINDSIGHT_API_EMBEDDINGS_PROVIDER": ("openai", API + "config.py:471, " + DOC + "configuration.mdx:848-935: the shared Qwen3 embedder behind an OpenAI-compatible endpoint"),
     "HINDSIGHT_API_EMBEDDINGS_OPENAI_BASE_URL": (EMBEDDER_URL, "the shared embedder"),
     "HINDSIGHT_API_EMBEDDINGS_OPENAI_MODEL": ("embedder", "the shared embedder"),
     "HINDSIGHT_API_EMBEDDINGS_OPENAI_API_KEY": ("none", "the shared embedder takes none"),
     "HINDSIGHT_API_EMBEDDINGS_QUERY_PREFIX": (QUERY_PREFIX, DOC + "configuration.mdx:854, 924-930: the instruction an asymmetric model needs; consolidation recalls with it too (engine/consolidation/consolidator.py:3061-3112)"),
-    "HINDSIGHT_API_EMBEDDINGS_MAX_INPUT_TOKENS": ("7424", DOC + "configuration.mdx:853: the cap is counted in Hindsight's o200k tokens, so divide the model's real limit by its tokens per Hindsight token; Qwen3 counted 1.005-1.052x o200k on this arm's pages and corpus, and the embedder's context is 8192, so 8192 / 1.10; a knowledge page is embedded whole (engine/memory_engine.py:16773-16776) and outgrows the default 8192"),
+    "HINDSIGHT_API_EMBEDDINGS_MAX_INPUT_TOKENS": ("7424", DOC + "configuration.mdx:853: the cap is counted in Hindsight's o200k tokens, so divide the model's real limit by its tokens per Hindsight token; kept from the published store, so its banks and the new ones embed pages the same way; Qwen3 counted 1.005-1.052x o200k on that store's pages and up to 1.12x on the new repositories', and the embedder's context, batch and ubatch are 16384 (compose.yaml), which holds a capped text at any ratio up to 2.2; a knowledge page is embedded whole (engine/memory_engine.py:16773-16776) and outgrows the default 8192"),
     "HINDSIGHT_API_BANK_STATS_CACHE_TTL_SECONDS": ("0", API + "config.py:1638: the 60 s cache would hide a pending operation from the quiet check"),
     "HINDSIGHT_API_MENTAL_MODEL_REFRESH_TICK_SECONDS": ("0", API + "config.py:2021, engine/maintenance.py:224-226: 0 turns the wall-clock page cron off; the build refreshes pages on the replayed clock"),
     "HINDSIGHT_API_LLM_TRACE_RETENTION_DAYS": ("3650", API + "config.py:2003, 2025: the default sweeps a day-old trace; the per-operation token counts must outlive the build"),
@@ -147,9 +160,11 @@ PROMPT_TIME = {
 NOTES = {
     "time": "facts and observations are dated from the session's first kept turn, which the integration takes from the transcript; created_at and page refresh times are the build's wall clock",
     "pages": "refreshed on the replayed clock by the server's cron rule: a page is due when it is stale and a cron fire has passed since its last refresh, and that refresh is stamped at its replayed time plus its measured duration, as live stamps its completion; the server's 5-minute tick is ignored, so a page can refresh up to one tick earlier than live; recency inside a refresh is measured from the wall clock",
-    "vectors": "reproducible to about 1e-3 when embedded again, across devices: Hindsight embeds a fact with its date and its entities in extraction order, which text_signals keeps; a knowledge page longer than HINDSIGHT_API_EMBEDDINGS_MAX_INPUT_TOKENS is embedded from its start only, its content kept whole",
+    "vectors": "reproducible to about 1e-3 when embedded again, across devices: Hindsight embeds a fact with its date and its entities in extraction order, which text_signals keeps; a knowledge page longer than HINDSIGHT_API_EMBEDDINGS_MAX_INPUT_TOKENS is embedded from its start only, its content kept whole; the embedder runs at a context of 16384 so that a page cut at that cap fits it whatever the ratio of Qwen3 tokens to Hindsight's (up to 1.12 on the new repositories' pages, over the 8192 of the published store's embedder), which changes no vector a 8192 context embeds (the same inputs embedded at both gave identical vectors)",
     "llm": "the calls behind this store: the calls of work an interrupt threw away are not counted",
-    "lanes": "one replay lane per bank, all at once against the one server, every bank set up before the lanes start: each lane keeps its repository's event order and quiet waits, as the serial timeline restricted to that bank does; banks share no data, so the order of writes across banks and the wall-clock times differ from a serial build, and so can page refreshes: a refresh is stamped at its due time plus its measured duration, which under lanes includes waiting on the other lanes' work, so a page's later refresh times and its refresh count can differ; replay.quiet_seconds and hook_seconds add up the lanes; a checkpoint needs every lane at rest at once, so the first can come hours in",
+    "llm_route": "every call is `claude -p` behind the L3 proxy, on the API keys of Console orgs linked to Max plans (their monthly credit) and then Max subscription logins, switched by restarting the proxy, with the same model, flags, system prompt, tools and anthropic-version on every route, but not byte-identical requests: a subscription login marks the system blocks for a 1 h cache and an API key for a 5-minute one (the betas differ accordingly); the seed's subscription calls ran on a logged-in config dir, where Claude Code also adds a system-reminder with the account's email (about 160 tokens) to the first user message, and this build's on a setup-token, which adds none, as an API key adds none; the store holds no trace of those reminders; the seed's calls ran through the proxy on the laptop (macOS) and this build's on isengard (Linux), so the environment block of the first user message names another platform and shell (about 30 tokens), which carries no task content either; llm.calls_api_key and llm.calls_subscription count them by the proxy's X-L3-Claude-Auth header, llm.calls_route_unknown the calls that carry none, and the seed's calls (subscription) are in seed.llm",
+    "lanes": "one replay lane per bank, all at once against the one server, every bank set up before the lanes start: each lane keeps its repository's event order and quiet waits, as the serial timeline restricted to that bank does; banks share no data, so the order of writes across banks and the wall-clock times differ from a serial build, and so can page refreshes: a refresh is stamped at its due time plus its measured duration, which under lanes includes waiting on the other lanes' work, so a page's later refresh times and its refresh count can differ; replay.quiet_seconds and hook_seconds add up the lanes; replay.checkpoints and replay.checkpoint_pause_seconds count the checkpoints and the seconds the lanes stood still for them",
+    "checkpoints": "every hour (BILBO_EVAL_CHECKPOINT_HOURS) of the build's wall clock, each lane stops at its next Stop or session end, and when all have the backup, the open sessions' replay state and the integration's files (HOME, TMPDIR, the open transcripts) are saved; a rerun resumes in the middle of a session. The replay keeps the sessions' clock and order, so a pause moves only wall-clock fields, which the store carries as build times anyway; the lanes that wait for the slowest are idle for that long",
     "skipped_hooks": "SessionStart and UserPromptSubmit are not run: neither writes a memory, the prompt hook's reflect only leaves LLM trace rows (" + CA + "core/session-start.ts, core/hook.ts); deepen.js sets up each bank once, in the foreground, at the bank's first session",
 }
 BASE_ENV = {"PATH": os.environ.get("PATH", "/usr/local/bin:/usr/bin:/bin"), "HOME": str(HOME), "TMPDIR": str(HOOK_TMP), "NO_COLOR": "1"}
@@ -177,15 +192,16 @@ def tool_results(content):
     return [b for b in content if isinstance(b, dict) and b.get("type") == "tool_result"] if isinstance(content, list) else []
 
 
-def sessions():
-    """Every Claude Code session as (start, repo, path), in the order they started across all repos. A transcript
-    with no timestamp is not Claude Code's and is left out; the hooks never see it."""
+def sessions(trial=True):
+    """Every Claude Code session as (start, repo, path), in the order they started across all repos; a session starts at
+    its first own record. A transcript with no timestamp is not Claude Code's and is left out; the hooks never see it.
+    `trial` False ignores BILBO_EVAL_SESSIONS."""
     found, other = [], []
     for path in sorted(CORPUS.glob("*/*.jsonl")):
-        start = next((t for t in map(stamp, map(json.loads, path.open())) if t), None)
+        start = next((t for t in map(stamp, own_entries(path)) if t), None)
         (found if start else other).append((start, path.parent.name, path))
     found.sort()
-    limit = os.environ.get("BILBO_EVAL_SESSIONS") or ""
+    limit = (os.environ.get("BILBO_EVAL_SESSIONS") or "") if trial else ""
     if ":" in limit:  # repo:N,repo:N: the first N sessions of each repository named
         per = {repo: int(n) for repo, n in (part.split(":") for part in limit.split(","))}
         if unknown := set(per) - {repo for _, repo, _ in found}:
@@ -201,11 +217,32 @@ def sessions():
     return found, [f"{repo}/{path.name}" for _, repo, path in other]
 
 
+def posix_path(value):
+    """A Windows path at the POSIX form of its path: C:\\Users\\a\\b as /Users/a/b."""
+    return "/" + value[3:].replace("\\", "/") if isinstance(value, str) and re.match(r"[A-Za-z]:\\", value) else value
+
+
+def session_id(path):
+    """A transcript's own session id, from its name <time>--<id>.jsonl."""
+    return path.stem.rsplit("--", 1)[-1]
+
+
+def imported(entry, sid):
+    """Whether a record is another session's: one continued from another machine holds the earlier one's history."""
+    return entry.get("sessionId") not in (None, sid)
+
+
+def own_entries(path):
+    """A transcript's parsed records, but those of another session."""
+    sid = session_id(path)
+    return (e for e in map(json.loads, path.open()) if not imported(e, sid))
+
+
 def checkout_roots():
     """Each repository's main checkout: the directory most of its sessions start in."""
     starts = {}
     for path in sorted(CORPUS.glob("*/*.jsonl")):
-        cwd = next((e["cwd"] for e in map(json.loads, path.open()) if e.get("cwd")), None)
+        cwd = next((posix_path(e["cwd"]) for e in own_entries(path) if e.get("cwd")), None)
         if cwd:
             starts.setdefault(path.parent.name, Counter())[cwd] += 1
     return {repo: cwds.most_common(1)[0][0] for repo, cwds in starts.items()}
@@ -278,7 +315,7 @@ class Gateway(ThreadingHTTPServer):
                 status, answer, data = fetch(urllib.request.Request(url, body, headers, method=method))
             except (OSError, http.client.HTTPException) as e:  # refused, reset, timed out or cut short
                 status, answer, data, error = None, {}, b"", e
-            self.record(kind, system, attempt, status, time.monotonic() - started, data)
+            self.record(kind, system, attempt, status, time.monotonic() - started, data, answer.get("X-L3-Claude-Auth") or "")
             if status is not None and status != 429 and status < 500:
                 return status, answer, data
             wait = min(60 * attempt, 600)
@@ -291,7 +328,7 @@ class Gateway(ThreadingHTTPServer):
         self.fatal.set()
         return 503, {}, b""
 
-    def record(self, kind, system, attempt, status, seconds, data):
+    def record(self, kind, system, attempt, status, seconds, data, auth=""):
         usage, empty = {}, False
         if status == 200 and data:
             try:
@@ -307,6 +344,8 @@ class Gateway(ThreadingHTTPServer):
             if status == 200:
                 self.counts["calls"] += 1
                 self.counts[f"calls_{kind}"] += 1
+                # The L3 proxy names the route of a call in a header, `key:...` or `login:...`; only the kind of route is kept, as the rest names accounts.
+                self.counts["calls_api_key" if auth.startswith("key:") else "calls_subscription" if auth.startswith("login:") else "calls_route_unknown"] += 1
                 self.counts["prompt_tokens"] += usage.get("prompt_tokens") or 0
                 self.counts["completion_tokens"] += usage.get("completion_tokens") or 0
                 self.counts["cached_tokens"] += (usage.get("prompt_tokens_details") or {}).get("cached_tokens") or 0
@@ -440,7 +479,7 @@ class Server:
             data = f.read()
         data = data[: data.rfind(b"\n") + 1]
         self.read += len(data)
-        return data.decode(errors="replace").splitlines()
+        return data.decode(errors="replace").split("\n")
 
     def get(self, path):
         return self.call("GET", path)
@@ -568,32 +607,50 @@ class Session:
     is Stop) fires it once per event, even with no reply text or after an API error. Without a record a Stop fires at a system
     turn_duration entry, at the next typed prompt (before its line is written), at the end of the session, and at a compaction
     unless the turn goes on; a turn the user interrupted, an API error or a synthetic reply ended sends none, and its lines
-    go out with the next Stop. A line whose uuid the session already wrote (a resumed session's copied history) goes into the
-    transcript but is no event and never moves the clock back. Each step is one transcript line, so sessions open at the same
+    go out with the next Stop. A line whose uuid the session already wrote (a resumed session's copied history), or that is
+    another session's (one continued from another machine holds the earlier one's), goes into the transcript but is no event
+    and never moves the clock. Each step is one transcript line, so sessions open at the same
     time interleave by time. SessionStart and UserPromptSubmit write nothing to the store and are not run."""
 
     def __init__(self, repo, path, replay):
         self.repo, self.name, self.replay = repo, f"{repo}/{path.name}", replay
-        self.lines = [line for line in path.read_text().splitlines() if line.strip()]
+        self.lines = [line for line in path.read_text().split("\n") if line.strip()]
         self.entries = [json.loads(line) for line in self.lines]
+        self.sid = session_id(path)
+        foreign = [imported(e, self.sid) for e in self.entries]
+        first_own = next((t for t in (stamp(e) for e, other in zip(self.entries, foreign) if not other) if t), None)
         self.times, self.copy, when, seen = [], [], None, set()
-        for entry in self.entries:
+        for entry, other in zip(self.entries, foreign):
             uuid = entry.get("uuid")
-            self.copy.append(bool(uuid) and uuid in seen)
-            seen.add(uuid)
+            self.copy.append(other or (bool(uuid) and uuid in seen))
             at = stamp(entry)
-            when = max(when, at) if self.copy[-1] and when and at else (at or when)
+            if other:  # the clock stays where it is, or at the session's first own record
+                when = when or first_own
+            else:
+                seen.add(uuid)
+                when = max(when, at) if self.copy[-1] and when and at else (at or when)
             self.times.append(when)
         first_time = next(t for t in self.times if t)
         self.times = [t or first_time for t in self.times]
-        self.sid = next(e["sessionId"] for e in self.entries if e.get("sessionId"))
-        self.cwd = next((e["cwd"] for e in self.entries if e.get("cwd")), "/")  # the first entries often carry none
+        recorded = next((e["cwd"] for e, other in zip(self.entries, foreign) if not other and e.get("cwd")), "/")  # the first entries often carry none
+        self.cwd = posix_path(recorded)
         self.bank = replay.banks[repo]
         self.turn, self.index, self.ended, self.file = None, -1, False, None
         self.written, self.kept, self.stops = 0, 0, 0
 
     def due(self):
         return self.times[min(max(self.index, 0), len(self.entries) - 1)]
+
+    def snapshot(self):
+        """Where this open session stands, between two steps: everything the corpus file does not say."""
+        if self.file:
+            self.file.flush()
+        return {"name": self.name, "sid": self.sid, "index": self.index, "written": self.written, "kept": self.kept, "stops": self.stops, "turn": self.turn}
+
+    def restore(self, state):
+        """Back to a snapshot: its transcript (restored with /tmp/live) is opened for append."""
+        self.index, self.written, self.kept, self.stops, self.turn = state["index"], state["written"], state["kept"], state["stops"], state["turn"]
+        self.file = (TRANSCRIPTS / f"{self.sid}.jsonl").open("a")
 
     def next_time(self):
         return self.due()
@@ -659,7 +716,7 @@ class Session:
         if new_turn:
             self.stop()  # the turn before ends where it ran, before this prompt's line is written
         self.write()
-        self.cwd = entry.get("cwd") or self.cwd  # Claude Code sends the cwd the session is in at each hook
+        self.cwd = posix_path(entry.get("cwd")) or self.cwd  # Claude Code sends the cwd the session is in at each hook
 
         if record or (kind == "system" and subtype == "turn_duration"):
             self.stop()
@@ -830,7 +887,7 @@ class Replay:
             data = f.read()
         data = data[: data.rfind(b"\n") + 1]
         self.read[repo] = self.read.get(repo, 0) + len(data)
-        return [json.loads(line) for line in data.decode(errors="replace").splitlines() if line.strip()]
+        return [json.loads(line) for line in data.decode(errors="replace").split("\n") if line.strip()]
 
     def stop(self, session, when, reply):
         self.check()
@@ -861,64 +918,78 @@ class Replay:
         self.pages.after_stop(bank, when)
 
 
-def timeline(plan, done, replay, idle):
+def timeline(plan, done, replay, idle, boundary=None, saved=()):
     """The sessions in one heap ordered by each session's next entry, so those open at once interleave by real time.
-    `idle` is called with each session that ends when no other is open."""
-    queue = [(start, n, None, repo, path) for n, (start, repo, path) in enumerate(plan) if f"{repo}/{path.name}" not in done]
+    `idle` is called with each session that ends when no other is open. After a step that fired a Stop or ended a session,
+    `boundary(repo, snapshots)` is called, `snapshots` being a function that gives the state of the open sessions: a
+    checkpoint can be taken there. `saved` is the state of the sessions a checkpoint found open."""
+    open_state = {state["name"]: state for state in saved}
+    queue, open_now = [], 0
+    for n, (start, repo, path) in enumerate(plan):
+        name = f"{repo}/{path.name}"
+        if name in done:
+            continue
+        if name in open_state:
+            session = Session(repo, path, replay)
+            session.restore(open_state[name])
+            queue.append((session.next_time(), n, session, repo, path))
+            open_now += 1
+        else:
+            queue.append((start, n, None, repo, path))
     heapq.heapify(queue)
-    open_now = 0
     while queue:
         replay.check()
         _, n, session, repo, path = heapq.heappop(queue)
         if session is None:
             session, open_now = Session(repo, path, replay), open_now + 1
+        stops = session.stops
         session.step()
         if not session.ended:
             heapq.heappush(queue, (session.next_time(), n, session, repo, path))
-            continue
-        open_now -= 1
-        idle(session, open_now)
+        else:
+            open_now -= 1
+            idle(session, open_now)
+        if boundary and (session.ended or session.stops != stops):
+            boundary(repo, lambda: [e[2].snapshot() for e in queue if e[2] is not None])
 
 
 class Rest:
-    """Checkpoints across lanes. A store is consistent only when every bank is at rest at once: no session of it open and
-    the bank quiet. Once a checkpoint is due, a lane that comes to rest waits for the others, and the last to arrive takes
-    it. After REST_WAIT the lanes go on without one, and the checkpoint waits for the next round. A finished lane is at
-    rest for good."""
+    """Checkpoints across lanes. A store is consistent only when every bank is quiet and its lane stopped between two steps.
+    Once a checkpoint is due, a lane that comes to a Stop or the end of a session waits for the others, and the last to
+    arrive takes it, with the state of every lane's open sessions. A finished lane has nothing open for good."""
 
     def __init__(self, lanes, take):
         self.cond, self.take = threading.Condition(), take
-        self.active, self.waiting = set(lanes), set()
-        self.last, self.round = time.monotonic(), 0
+        self.active, self.waiting, self.snaps = set(lanes), set(), {}
+        self.last, self.round, self.since = time.monotonic(), 0, None
 
-    def rest(self, lane, finished=False):
+    def boundary(self, lane, snapshots, finished=False):
         with self.cond:
             if finished:
                 self.active.discard(lane)
-            elif self.waiting or time.monotonic() - self.last >= CHECKPOINT_EVERY:
+                self.snaps.pop(lane, None)
+            elif self.waiting or time.monotonic() - self.last >= CHECKPOINT_SECONDS:
                 self.waiting.add(lane)
+                self.snaps[lane] = snapshots()
+                self.since = self.since or time.monotonic()
             if not self.waiting:
                 return
             if self.waiting >= self.active:
-                self.next_round(take=True)
+                self.next_round()
                 return
             if finished:
                 return
-            this, since = self.round, time.monotonic()
+            this = self.round
             while self.round == this:
-                self.cond.wait(min(5, REST_WAIT))
+                self.cond.wait(5)
                 if ABORT.is_set():
                     sys.exit("hindsight: stopped with the other lanes")
-                if self.round == this and time.monotonic() - since > REST_WAIT:
-                    log(f"no checkpoint this round: {', '.join(sorted(self.active - self.waiting))} not at rest after {REST_WAIT} s")
-                    self.next_round(take=False)
 
-    def next_round(self, take):
-        """With the lock held: take the checkpoint, or skip it, and let the waiting lanes go on."""
-        if take:
-            self.take()
+    def next_round(self):
+        """With the lock held: take the checkpoint and let the waiting lanes go on."""
+        self.take(self.snaps, self.since)
         self.waiting.clear()
-        self.last, self.round = time.monotonic(), self.round + 1
+        self.last, self.round, self.since = time.monotonic(), self.round + 1, None
         self.cond.notify_all()
 
 
@@ -937,6 +1008,10 @@ def save(server, gateway, pages, replay, progress):
     shutil.rmtree(tmp, ignore_errors=True)
     tmp.mkdir(parents=True)
     admin("backup", str(tmp / "hindsight.zip"))
+    # The integration keeps its cursors in HOME and TMPDIR, and a session open at the checkpoint needs its transcript so far.
+    keep = {f"live/transcripts/{state['sid']}.jsonl" for states in progress.get("open", {}).values() for state in states}
+    with tarfile.open(tmp / "live.tar", "w") as t:
+        t.add(LIVE, "live", filter=lambda info: None if info.name.startswith("live/transcripts/") and info.name not in keep else info)
     (tmp / "progress.json").write_text(json.dumps(progress, indent=2) + "\n")
     shutil.rmtree(old, ignore_errors=True)
     if CHECKPOINT.exists():
@@ -965,6 +1040,128 @@ def verify_counts(server, progress):
     for name, s in progress["sessions"].items():
         if s["stops"] and f"conversation:{s['sid']}" not in documents(server, s["bank"]):
             sys.exit(f"hindsight: the restored store lacks the document of {name}")
+
+
+def seed_walk(repos, roots):
+    """The timeline of the seeded repositories' sessions on this build's Session, whatever BILBO_EVAL_SESSIONS keeps, with
+    no server: {name: {sid, bank, stops, kept}}, and the transcripts it leaves out."""
+    plan, skipped = sessions(trial=False)
+    dry = Dry({repo: bank_of(root) for repo, root in roots.items()})
+    found = {}
+
+    def idle(session, open_now):
+        found[session.name] = {"sid": session.sid, "bank": session.bank, "stops": session.stops, "kept": session.kept}
+
+    with contextlib.redirect_stdout(io.StringIO()):  # Dry prints its timeline
+        timeline([item for item in plan if item[1] in repos], set(), dry, idle)
+    return found, [name for name in skipped if name.split("/")[0] in repos]
+
+
+def delta(had, want):
+    """What differs between the seed's value and this build's, as short as it can be said."""
+    if isinstance(had, dict) and isinstance(want, dict):
+        return {k: delta(had.get(k), want.get(k)) for k in sorted(had.keys() | want.keys(), key=str) if had.get(k) != want.get(k)}
+    if isinstance(had, set) and isinstance(want, set):
+        return f"only in the seed {sorted(had - want)}, only in this build {sorted(want - had)}"
+    return f"the seed has {had!r}, this build {want!r}"
+
+
+def seed_checkpoint(roots):
+    """Write the published store in /work/seed as the first checkpoint, the backup and the progress.json a build that had
+    made it would have left, after the guards that make it the store this build would have made for its repositories."""
+    seed = WORK / "seed" / "store"
+    manifest = json.loads((seed / "manifest.json").read_text())
+    inputs = (WORK / "key.txt").read_text().rstrip("\n").split("\n")
+    named = next((line.split() for line in inputs if line.startswith("seed ")), None)
+    if not named or len(named) != 3:
+        sys.exit(f"hindsight: {seed} exists, but {WORK / 'key.txt'} has no `seed <archive> <sha256>` line")
+    archive, digest = named[1:]
+    key = re.fullmatch(r"store-hindsight-([0-9a-f]{12})\.tar\.zst", archive)
+    seeded = {b["repo"] for b in manifest["banks"].values()}
+    banks = {bank_of(roots[repo]): {"repo": repo, "checkout": roots[repo]} for repo in sorted(seeded) if repo in roots}
+    walk, skipped = seed_walk(seeded & set(roots), roots)
+    stops = {bank: sum(w["stops"] for w in walk.values() if w["bank"] == bank) for bank in banks}
+    sessions_of = {bank: sum(1 for w in walk.values() if w["bank"] == bank) for bank in banks}
+    documents_of = {bank: {f"conversation:{w['sid']}" for w in walk.values() if w["bank"] == bank and w["stops"]} for bank in banks}
+    config, now = {c["key"]: c["value"] for c in manifest["config"]}, {c["key"]: c["value"] for c in config_list()}
+    failed = [f"{bank}: {b['failed_operations']} failed operations, {b['failed_consolidation']} failed consolidation, operations {b['operations']}"
+              for bank, b in manifest["banks"].items() if b["failed_operations"] or b["failed_consolidation"] or any("failed" in by_status for by_status in b["operations"].values())]
+    failed += [f"{bank}: the last refresh of {name} failed" for bank, pages in manifest["pages"]["banks"].items() for name, p in pages.items() if p["last_refresh_failed_at"]]
+    checks = [
+        ("arm", manifest["arm"], "hindsight"),
+        ("key", manifest["key"], key and key.group(1)),
+        ("finished", bool(manifest.get("finished")), True),
+        ("llm.model", manifest["llm"].get("model"), LLM_MODEL),
+        ("versions.image", manifest["versions"]["image"], PINS["image"]),
+        ("versions.pgvector", manifest["versions"]["pgvector"], PINS["pgvector"]),
+        ("versions.coding_agents", manifest["versions"]["coding_agents"], PINS["coding_agents"]),
+        ("embedder", manifest["embedder"], EMBEDDER),
+        ("recall.query_prefix", manifest["recall"]["query_prefix"], QUERY_PREFIX),
+        ("recall.thresholds", manifest["recall"]["thresholds"], RECALL_THRESHOLDS),
+        ("pages.mode", manifest["pages"]["mode"], PAGES),
+        ("pages.mode is hourly", PAGES, "hourly"),
+        ("failed operations, consolidations or page refreshes", failed, []),
+        ("banks (repo, checkout and bank name)", {bank: {"repo": b["repo"], "checkout": b["checkout"]} for bank, b in manifest["banks"].items()}, banks),
+        ("seed banks that are a new repository's", sorted(bank for bank in manifest["banks"] if bank in {bank_of(root) for repo, root in roots.items() if repo not in seeded}), []),
+        ("sessions of the seeded repositories left out", manifest["sessions"]["skipped"], skipped),
+        ("sessions per bank", {bank: b["sessions"] for bank, b in manifest["banks"].items()}, sessions_of),
+        ("Stops per bank", {bank: b["stops"] for bank, b in manifest["banks"].items()}, stops),
+        ("documents per bank (the sessions with Stops)", {bank: set(b["documents"]) for bank, b in manifest["banks"].items()}, documents_of),
+        ("events.stops", manifest["events"]["stops"], sum(stops.values())),
+        ("pages per bank", {bank: sorted(pages) for bank, pages in manifest["pages"]["banks"].items()}, {bank: sorted(PAGE_NAMES) for bank in banks}),
+    ]
+    differs = [f"{what}: {delta(had, want)}" for what, had, want in checks if had != want]
+    # The two timeouts are the entries a later change raised (the gateway holds a call through a weekly reset); a seed that kept
+    # the 86400 s they had is still the store this build would make, the server's timeouts changing no stored row.
+    relaxed = {k: "86400" for k in ("HINDSIGHT_API_LLM_TIMEOUT", "HINDSIGHT_API_REFLECT_WALL_TIMEOUT")}
+    differs += [f"config {k}: {delta(config.get(k), now.get(k))}" for k in sorted(config.keys() | now.keys())
+                if config.get(k) != now.get(k) and not (k in relaxed and config.get(k) == relaxed[k])]
+    if differs:
+        sys.exit("hindsight: the seed is not a store this build can continue:\n  " + "\n  ".join(differs))
+    replay, events = manifest["replay"], manifest["events"]
+    progress = {
+        "done": sorted(walk),
+        "sessions": walk,
+        "banks": {bank: {"repo": b["repo"], "checkout": b["checkout"],
+                         "stats": {"nodes_by_fact_type": b["nodes_by_fact_type"], "total_documents": len(b["documents"]), "total_links": b["links"]}}
+                  for bank, b in manifest["banks"].items()},
+        "pages": {bank: {name: {"id": None, "cron": p["cron"], "last": p["last"], "stale_since": None, "refreshes": p["refreshes"]} for name, p in pages.items()}
+                  for bank, pages in manifest["pages"]["banks"].items()},  # the ids come from the restored store
+        "counts": {"stops": events["stops"], "retain_ok": events["retain_ok"], "deepen_runs": events["deepen_runs"],
+                   "hook_seconds": replay["hook_seconds"], "quiet_seconds": replay["quiet_seconds"],
+                   "extraction_partial_chunks": replay["extraction_drops"]["partial_chunks"], "extraction_dropped_chunks": replay["extraction_drops"]["dropped_chunks"],
+                   "skipped_api_error_replies": replay["skipped_replies"]["api_error"], "skipped_synthetic_replies": replay["skipped_replies"]["synthetic"]},
+        "llm": {k: v for k, v in manifest["llm"].items() if k not in ("model", "by_operation")},
+        "ingest_seconds": manifest["ingest_seconds"],
+        "last_session_time": manifest["recall"]["last_session_time"],
+        "seed": {"archive": archive, "sha256": digest, "key": manifest["key"], "finished": manifest["finished"], "banks": len(manifest["banks"]), "sessions": len(walk),
+                 "inputs": manifest["inputs"], "llm": manifest["llm"], "ingest_seconds": manifest["ingest_seconds"]},
+    }
+    tmp = WORK / "checkpoint.tmp"
+    shutil.rmtree(tmp, ignore_errors=True)
+    tmp.mkdir(parents=True)
+    shutil.copyfile(seed / "hindsight.zip", tmp / "hindsight.zip")
+    (tmp / "progress.json").write_text(json.dumps(progress, indent=2) + "\n")
+    tmp.rename(CHECKPOINT)
+    log(f"seeded from {archive}: {len(walk)} sessions in {len(banks)} banks")
+
+
+def seeded_pages(server, progress):
+    """The restored seed's pages: each one's id from the tree, and none stale (the published build refreshed every stale page at
+    its end), else the first Stop of the bank would refresh pages the seed's timeline never did."""
+    stale = []
+    for bank, pages in progress["pages"].items():
+        found = {n["name"]: n["mental_model_id"] for n in server.get(f"{bank_path(bank)}/knowledge-base/tree")["roots"] if n["kind"] == "page"}
+        for name, page in pages.items():
+            if page["id"] is not None:
+                continue
+            if name not in found:
+                sys.exit(f"hindsight: the restored seed lacks the page {name} of {bank}: {sorted(found)}")
+            page["id"] = found[name]
+            if server.get(f"{bank_path(bank)}/mental-models/{found[name]}?detail=full")["is_stale"]:
+                stale.append(f"{bank} / {name}")
+    if stale:
+        sys.exit(f"hindsight: the restored seed has stale pages: {stale}")
 
 
 def collect(server, progress):
@@ -1014,13 +1211,17 @@ def lost_work(progress, found):
     return lost
 
 
-def manifest(progress, skipped, found, tables):
-    inputs = (WORK / "key.txt").read_text().splitlines()
+def config_list():
     omit = ("_URL", "_KEY")
     config = [{"key": k, "value": v, "cite": cite} for k, (v, cite) in (SERVER_ENV | {f"integration.{k}": (v, c) for k, (v, c) in INTEGRATION.items()}).items() if not k.endswith(omit)]
     config += [{"key": k, "value": v, "default": default, "acts_at": at, "calibrated_for": "BAAI/bge-small-en-v1.5", "matched_by": "quantile over memory pairs", "cite": cite}
                for k, (v, default, at, cite) in THRESHOLDS.items()]
     config.append({"key": "pages", "value": PAGES, "cite": PAGES_CITE[PAGES]})
+    return config
+
+
+def manifest(progress, skipped, found, tables):
+    inputs = (WORK / "key.txt").read_text().rstrip("\n").split("\n")
     llm = {"model": LLM_MODEL} | {k: round(v) if isinstance(v, float) else v for k, v in sorted(progress["llm"].items())}
     by_operation = {}
     for b in found["banks"].values():
@@ -1029,31 +1230,27 @@ def manifest(progress, skipped, found, tables):
             total.update(u)
     llm["by_operation"] = {k: dict(v) for k, v in sorted(by_operation.items())}
     pages = [p for b in found["banks"].values() for p in b["pages"].values()]
-    return {
+    result = {
         "arm": "hindsight",
         "key": inputs[0],
         "inputs": inputs[1:],
         "device": os.environ["BILBO_EVAL_DEVICE"],
-        "versions": found["versions"] | {
-            # These three pins repeat the Dockerfile's and compose.yaml's: change them together.
-            "image": "ghcr.io/vectorize-io/hindsight-api:0.10.3@sha256:f80f304db313cbc8775acd601fda7d094f5854ebf9bc252d8134eb9276d56b40",
-            "pgvector": "pgvector/pgvector:0.8.7-pg18@sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11",
-            "coding_agents": {"version": "0.8.0", "tarball_sha256": "afc489206154f2e7254057e52b455be8751e8b8bbf5e4a720a104c136fbeed7c", "registry_integrity": "sha512-CViWmh2fnVjhQM8kqOJ2GIGC0kp/Gv4t5X+j+kzpzP+T54PiKQPsrQOunvmluEE3JCGnRQOIcz91Vu/0QUcZow=="},
+        "versions": found["versions"] | PINS | {
             "node": subprocess.run(["node", "--version"], capture_output=True, text=True).stdout.strip(),
             "python": platform.python_version(),
             "arch": platform.machine(),
         },
-        "config": config,
+        "config": config_list(),
         "bank_config": {bank: b["config"] for bank, b in found["banks"].items()},
         "pages": {"mode": PAGES, "trigger": "per page, as the server's tree reports it: banks.<bank>.<page>.trigger (the cron is the integration's hashed minute per bank and page)", "banks": {bank: b["pages"] for bank, b in found["banks"].items()},
                   "refreshes": sum(p["refreshes"] for p in pages), "pages_with_content": sum(1 for p in pages if p["content_chars"]), "scope_names_repo": True},
-        "embedder": {"provider": "openai", "model": "Qwen3-Embedding-0.6B Q8_0", "dim": 1024, "query_prefix": QUERY_PREFIX},
+        "embedder": EMBEDDER,
         "recall": {
             "query_prefix": QUERY_PREFIX,
             "reranker": "local cross-encoder/ms-marco-MiniLM-L-6-v2",
             "text_search": "native",
             "vector_extension": "pgvector",
-            "thresholds": {k.removeprefix("HINDSIGHT_API_"): v for k, (v, _, at, _) in THRESHOLDS.items() if at == "recall"},
+            "thresholds": RECALL_THRESHOLDS,
             "query_timestamp": f"the question's time (recency is measured from it, the wall clock if absent); the corpus ends at {progress['last_session_time']}",
             "last_session_time": progress["last_session_time"],
             "llm": "none",
@@ -1068,12 +1265,19 @@ def manifest(progress, skipped, found, tables):
                    "page_refreshes": sum(p["refreshes"] for p in pages)},
         "replay": {"hook_seconds": round(progress["counts"].get("hook_seconds", 0)), "quiet_seconds": round(progress["counts"].get("quiet_seconds", 0)),
                    "extraction_drops": {"partial_chunks": progress["counts"].get("extraction_partial_chunks", 0), "dropped_chunks": progress["counts"].get("extraction_dropped_chunks", 0)},
-                   "skipped_replies": {"api_error": progress["counts"].get("skipped_api_error_replies", 0), "synthetic": progress["counts"].get("skipped_synthetic_replies", 0)}},
+                   "skipped_replies": {"api_error": progress["counts"].get("skipped_api_error_replies", 0), "synthetic": progress["counts"].get("skipped_synthetic_replies", 0)},
+                   "checkpoint_hours": CHECKPOINT_SECONDS / 3600, "checkpoints": progress["counts"].get("checkpoints", 0), "checkpoint_pause_seconds": round(progress["counts"].get("checkpoint_pause_seconds", 0))},
         "llm": llm,
         "store": {"file": "hindsight.zip", "tables": tables},
         "notes": NOTES,
         "ingest_seconds": round(progress["ingest_seconds"]),
     }
+    seed = progress.get("seed")
+    if seed:
+        corpus = next(line.split()[1][:12] for line in seed["inputs"] if line.startswith("corpus "))
+        result["seed"] = seed
+        result["notes"] = NOTES | {"seed": f"the store began as {seed['archive']}, restored as the first checkpoint: that build's {seed['sessions']} sessions in {seed['banks']} banks, finished on {seed['finished'][:10]} on the corpus {corpus}, whose files for those repositories are byte-identical here; every count in this manifest, llm included, covers both runs but llm.calls_api_key, calls_subscription and calls_route_unknown, which are this build's only, and seed holds the seed's own; the seeded banks' wall-clock fields (created and updated times, operation and trace times) are that build's"}
+    return result
 
 
 def interrupted(signum, frame):
@@ -1096,9 +1300,14 @@ def main():
     if not CHECKPOINT.exists() and (WORK / "checkpoint.old").exists():
         (WORK / "checkpoint.old").rename(CHECKPOINT)
     roots = checkout_roots()
+    if not CHECKPOINT.exists() and (WORK / "seed" / "store").exists():
+        seed_checkpoint(roots)
     resuming = (CHECKPOINT / "progress.json").exists()
     if resuming:
         progress = json.loads((CHECKPOINT / "progress.json").read_text())
+        if (CHECKPOINT / "live.tar").exists():
+            with tarfile.open(CHECKPOINT / "live.tar") as t:
+                t.extractall(LIVE.parent, filter="data")
     else:
         progress = {"done": [], "sessions": {}, "banks": {}, "pages": {}, "counts": {}, "llm": {}, "ingest_seconds": 0}
     progress |= {"roots": roots, "bank_names": {repo: bank_of(root) for repo, root in roots.items()}}
@@ -1114,6 +1323,7 @@ def main():
         server.start()
         if resuming:
             verify_counts(server, progress)
+            seeded_pages(server, progress)
             log(f"resuming after {len(progress['done'])} sessions")
         write_configs(roots)
         replay = Replay(server, gateway, Pages(server, lambda bank: replay.quiet(bank), PAGES, progress["pages"]), progress)
@@ -1124,13 +1334,17 @@ def main():
             lanes.setdefault(repo, []).append((start, repo, path))
         done, state, lock, errors = set(progress["done"]), {"started": time.monotonic()}, threading.Lock(), []
 
-        def checkpoint():
+        def checkpoint(snaps, since):
             replay.quiet_all()
             gateway.check()
             progress["ingest_seconds"] += time.monotonic() - state["started"]
+            progress["open"] = {repo: states for repo, states in snaps.items() if states}
+            replay.add("checkpoints")
+            began = time.monotonic()
             save(server, gateway, pages, replay, progress)
+            replay.add("checkpoint_pause_seconds", time.monotonic() - since)
             state["started"] = time.monotonic()
-            log(f"checkpoint after {len(progress['done'])}/{len(plan)} sessions")
+            log(f"checkpoint after {len(progress['done'])}/{len(plan)} sessions, {sum(len(v) for v in progress['open'].values())} open: lanes stood still {time.monotonic() - since:.0f} s, backup {time.monotonic() - began:.0f} s")
 
         rest = Rest(lanes, checkpoint)
 
@@ -1144,12 +1358,11 @@ def main():
                     replay.quiet(session.bank)
                     replay.check()
                     log(f"{len(progress['done'])}/{len(plan)} sessions: {replay.counts['stops']} Stops, {gateway.counts['calls']} LLM calls so far ({repo} at rest)")
-                    rest.rest(repo)
 
             try:
-                timeline(items, done, replay, idle)
+                timeline(items, done, replay, idle, rest.boundary, progress.get("open", {}).get(repo, ()))
                 pages.finish(replay.banks[repo])
-                rest.rest(repo, finished=True)
+                rest.boundary(repo, None, finished=True)
             except BaseException as e:  # sys.exit in a thread ends only that thread: the main thread raises it
                 errors.append(e)
                 ABORT.set()
@@ -1170,6 +1383,7 @@ def main():
         replay.quiet_all()
         gateway.check()
         progress["ingest_seconds"] += time.monotonic() - state["started"]
+        progress["open"] = {}
         save(server, gateway, pages, replay, progress)  # a resume from here finds every lane done and its pages refreshed
         found = collect(server, progress)
         shutil.rmtree(out, ignore_errors=True)

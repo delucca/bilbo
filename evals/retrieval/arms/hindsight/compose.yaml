@@ -17,9 +17,9 @@ services:
       LLAMA_ARG_MODEL: /models/embedder.gguf
       LLAMA_ARG_EMBEDDINGS: "1"
       LLAMA_ARG_POOLING: last
-      LLAMA_ARG_CTX_SIZE: "8192"
-      LLAMA_ARG_BATCH: "8192"
-      LLAMA_ARG_UBATCH: "8192"
+      LLAMA_ARG_CTX_SIZE: "16384"
+      LLAMA_ARG_BATCH: "16384"
+      LLAMA_ARG_UBATCH: "16384"
       LLAMA_ARG_N_PARALLEL: "1"
       LLAMA_ARG_FLASH_ATTN: "on"
       LLAMA_ARG_CACHE_RAM: "0"  # no prompt cache in host memory, which takes up to 8 GiB by default
@@ -49,6 +49,7 @@ services:
       BILBO_EVAL_LLM_HEADERS: ${BILBO_EVAL_LLM_HEADERS:-}
       BILBO_EVAL_SESSIONS: ${BILBO_EVAL_SESSIONS}
       BILBO_EVAL_DEVICE: ${BILBO_EVAL_DEVICE}
+      BILBO_EVAL_CHECKPOINT_HOURS: ${BILBO_EVAL_CHECKPOINT_HOURS:-1}
     volumes:
       - ${BILBO_EVAL_CORPUS}:/corpus:ro
       - ${BILBO_EVAL_WORK}:/work

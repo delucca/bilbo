@@ -295,20 +295,22 @@ integration (`hindsight-coding-agents` 0.8.0, run against a self-hosted server r
 Each session is replayed through the integration's Stop hook, which reads the transcript when a turn ends and sends what
 is new; the integration's setup engine configures each repository's bank first. Each repository has its own bank, and
 its sessions are replayed in their own timeline, all repositories at once against the one server: banks share nothing.
-The build checkpoints when no session of any repository is open, which needs every repository at rest at once, so the
-first checkpoint can come hours into a full build.
+Every hour the build checkpoints: each repository's lane stops at its next Stop, and when all have, it saves the
+backup, the open sessions' replay state and the integration's files, so a rerun resumes in the middle of a session.
 
 It is set up the way the integration sets up a Claude Code user: its coding missions, a conversation strategy with
 12,000-character chunks, knowledge labels, observations in one shared scope and five knowledge pages. Extraction is
-concise, the integration's default. The five similarity thresholds Hindsight calibrated for its own embedder are
-matched to Qwen3's, as its docs ask when the model changes, and Qwen3's query instruction is on, which also acts at
-build time when consolidation recalls. Hindsight cuts every text it embeds at a cap counted in its own o200k tokens, and
-Qwen3 counts 1.005 to 1.052 times as many on this corpus, so the cap is 7,424, which keeps a whole knowledge page inside
-the embedder's 8,192-token context; a longer page is embedded from its start. Pages refresh hourly when stale; the build
-runs that schedule on the sessions' own clock. A refresh is stamped at its due time plus how long it took, which with
-the repositories replayed at once includes waiting on the others, so refresh times and counts can differ from a build
-that replays them one at a time. The manifest lists every setting that differs from a fresh install, with the doc or
-source line that asks for it.
+concise, the integration's default. The five similarity thresholds Hindsight calibrated for its own embedder are matched
+to Qwen3's, as its docs ask when the model changes, and Qwen3's query instruction is on, which also acts at build time
+when consolidation recalls. Hindsight cuts every text it embeds at a cap counted in its own o200k tokens, and Qwen3
+counts 1.005 to 1.052 times as many on the first five repositories' pages, so the cap is 7,424, which kept a whole
+knowledge page inside an 8,192-token context; it counts up to 1.12 times as many on the other 17 repositories' pages, so
+the embedder runs at a context, batch and ubatch of 16,384 and the cap stays the first five repositories' (a longer page
+is embedded from its start). Texts under 8,192 tokens embed to the same vectors at either context. Pages refresh hourly
+when stale; the build runs that schedule on the sessions' own clock. A refresh is stamped at its due time plus how long
+it took, which with the repositories replayed at once includes waiting on the others, so refresh times and counts can
+differ from a build that replays them one at a time. The manifest lists every setting that differs from a fresh install,
+with the doc or source line that asks for it.
 
 What the replay changes:
 
@@ -317,12 +319,33 @@ What the replay changes:
 - The session-start and prompt hooks are not run: they write no memory. The setup engine runs once per bank.
 - A Stop fires where Claude Code's own record of it sits in the transcript, and otherwise where a reply ends. A resumed
   session's copied history is written to the transcript but fires nothing.
+- A session continued from another machine (`claude --teleport`, pablo-companion's `e4c6252f`) holds the earlier
+  session's records at the start of its transcript. They are written to the transcript and fire no Stop, the session
+  starts at its own first record under its own id (the file's), and its working directory is that of its own first
+  record.
+- superset-windows-arm64's 14 sessions ran on Windows. They are replayed at the POSIX form of their paths,
+  `C:\Users\<name>\...` as `/Users/<name>/...`, as the other arms read them: the repository's checkout, and so its bank
+  and its pages' scope, are named `fork-superset-windows-arm64`, and the Stop's `cwd` has the same form. The transcript
+  lines stay as recorded.
+- Transcripts are split on `\n` only, as Claude Code writes them: bosarsalog's `fea1333a` has U+0085 and Cakebrew's
+  `c5508f23` U+2028 inside a line, and the integration's own reader keeps both whole.
 - Every session of a repository goes to that repository's bank. Two readaloud sessions start in `/home/noah/projects`
   and `/home/noah`; live, the integration would name banks after those directories.
 - After each Stop the build waits until the bank has finished the retain, its consolidation and any page refresh, as the
   minutes before the next prompt allow live.
 - The LLM sits behind a small gateway in the build that waits out a 429 and retries a 5xx. On its own, Hindsight retries
-  three times with short backoffs, or parks the whole retain and extracts it again later.
+  three times with short backoffs, or parks the whole retain and extracts it again later. The gateway waits out the
+  proxy's 429 for as long as its Retry-After says, and Hindsight's LLM and refresh timeouts let a call wait up to 7
+  days, a weekly usage reset.
+- Every call is `claude -p` behind the L3 proxy, on the API keys of Console orgs linked to Max plans (their monthly
+  credit) and then Max subscription logins. The requests have the same model, flags, system prompt, tools and
+  anthropic-version on every route, but are not byte-identical: a subscription login marks the system blocks for a 1 h
+  cache and an API key for a 5-minute one. The seed's subscription calls ran on a logged-in config dir, where Claude
+  Code also adds a system-reminder with the account's email (about 160 tokens) to the first user message; this build's
+  run on a setup-token, which adds none, as an API key adds none. The seed's calls ran through the proxy on a macOS
+  host and this build's on a Linux host, so the environment block of the first user message names another platform
+  and shell (about 30 tokens). The store holds no trace of the reminders or the block. The manifest counts the calls by
+  route (`llm.calls_api_key`, `llm.calls_subscription`); the seed's calls, all by subscription, are in `seed.llm`.
 - The two Cursor transcripts are left out. The hook never sees them.
 
 Search is Hindsight's recall: semantic, keyword, graph and temporal retrieval fused and reranked by a local
@@ -338,17 +361,24 @@ and facts whose entity names can be rebuilt exactly must match their stored vect
 whose stored entity names differ from the extracted ones is rebuilt approximately, must reach 0.97 and must still be its
 own nearest stored vector.
 
+The store starts from the published store of the first five repositories, `store-hindsight-9b271a98abd1` (sha256
+`679be3896b0b16bcad33216dc5a94568f79f29ad5fd1dc214b1217e7aab5aea6`): its 143 sessions in five banks are replayed again
+nowhere, since their files are byte-identical here. The build restores it as its first checkpoint, after guards on its
+key, model, settings, pins, embedder, losses and sessions, and replays only the 17 new repositories. The seed is in the
+store's key and the manifest's `seed` block holds its own numbers, while every other count covers both runs. A bank
+shares nothing with another, so each new bank gets what a full replay would give it; the five seeded banks are kept as
+published, their created, updated, operation and trace times those of the first build. The seed ran with Hindsight's LLM
+and refresh timeouts at 86,400 s, where this build's are 604,800 s.
+
 The published store is built with Claude Sonnet 5.5 for every call (extraction, consolidation and pages), as Hindsight
 uses one model by default; its per-operation model settings stay unset. A Claude Code user running Hindsight's local
 daemon with no API key goes through its Claude Code CLI provider, whose default in this version is a Sonnet
 (`claude-sonnet-4-5-20250929`); Sonnet 5.5 is the current Sonnet. Hindsight's own model leaderboard and
 docs suggest little sensitivity to model size, but test no Claude model.
 
-The published store was built with the embedder on an RTX 5070 Ti in 10 h 24 min, its first 20 sessions one at a time
-and the other 123 with the five repositories at once: 10,342 calls to Claude Sonnet 5.5, 154 million prompt tokens (7%
-read from the cache) and 11.0 million output tokens, with no usage-limit wait. It holds the 821 Stops of the 143
-sessions in five banks: 1,182 experience facts, 548 world facts and 651 observations, 63,663 links and 25 pages
-refreshed 1,576 times.
+The published store was built in two runs, the first of which built the first five repositories as the published store
+did, 10,342 calls to Claude Sonnet 5.5 in 10 h 24 min. TBD: the second run's hours, calls, tokens, banks, facts,
+observations, links and pages, once the build has run.
 
 ### claude-mem
 
