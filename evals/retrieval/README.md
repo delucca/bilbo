@@ -65,9 +65,9 @@ A store is the memory one strategy builds from the corpus, `dataset/store-<arm>-
 needs no LLM. The key hashes what shapes a store: the corpus, the embedder, the LLM for an arm that uses one, and the
 files under `arms/<arm>/`. Change any of them and the key changes.
 
-`dataset.lock` pins mem0, dense, ai-memory, claude-mem, mempalace and auto-memory stores built from this corpus, and
-every arm's store built from an earlier one, `corpus-1235aec0592a`, the first five projects; the other arms have none
-for this corpus yet.
+`dataset.lock` pins mem0, dense, ai-memory, claude-mem, mempalace, hindsight and auto-memory stores built from this
+corpus, and every arm's store built from an earlier one, `corpus-1235aec0592a`, the first five projects; the other arms
+have none for this corpus yet.
 
 | Arm | Strategy | LLM | Published store |
 |---|---|---|---|
@@ -376,9 +376,19 @@ daemon with no API key goes through its Claude Code CLI provider, whose default 
 (`claude-sonnet-4-5-20250929`); Sonnet 5.5 is the current Sonnet. Hindsight's own model leaderboard and
 docs suggest little sensitivity to model size, but test no Claude model.
 
-The published store was built in two runs, the first of which built the first five repositories as the published store
-did, 10,342 calls to Claude Sonnet 5.5 in 10 h 24 min. TBD: the second run's hours, calls, tokens, banks, facts,
-observations, links and pages, once the build has run.
+The published store was built in two runs. The first built the first five repositories, 10,342 calls to Claude Sonnet
+5.5 in 10 h 24 min. The second restored that store as its seed and replayed the 17 new repositories (258 sessions, 4,708
+Stops): 40,723 calls to Claude Sonnet 5.5, 627.9 million prompt tokens and 47.8 million completion tokens, in 54 h 56
+min from launch (2026-10-20 15:01 UTC) to the last write (2026-10-22 21:57 UTC). Of those calls 104 ran on an API key
+and 40,619 on Max subscription logins, with the same model, flags and prompts on every route (see `llm_route` in the
+manifest). The wall time includes the subscription windows' brake pauses and a pause for a proxy restart; the lanes
+retried through all of them and lost no work. The build ran with the embedder on an RTX 5070 Ti until a checkpoint at
+398 of 401 sessions, then resumed from it with the embedder on the CPU (6 threads) for the last 4 h 46 min, so the
+manifest's `device`, `cpu (embedder threads 6)`, names the final segment only. It took 33 hourly checkpoints, 9,435 s of
+lane pauses in all. The whole store holds 401 sessions in 22 banks, 5,529 Stops, 11,310 memory units (5,191 experience
+facts, 2,878 world facts and 3,241 observations), 309,074 links, 400 documents and 110 pages refreshed 6,272 times
+(1,576 of them in the seed); the seed's five banks are unchanged from the published store, row for row. One extraction
+call was refused by Claude Sonnet 5.5; Claude Code's refusal fallback answered it with no facts.
 
 ### claude-mem
 
