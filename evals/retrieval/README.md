@@ -184,7 +184,7 @@ from 156,115 messages, 46.7 million tokens.
 
 graphiti-core 0.30.2 on Neo4j 5.26, fed the way Graphiti's authors feed a conversation: each turn of a session is one
 `message` episode, `Developer (user): ...` then `Claude Code (assistant): ...` with everything Claude Code said in
-answer, at the turn's real time. Episodes are added one after another in the order they happened, across all five
+answer, at the turn's real time. Episodes are added one after another in the order they happened, across all twenty-two
 projects, in the one group the Graphiti MCP server calls `main`; each session is one saga. Entity types are the ten
 the MCP server ships, and everything else stays at Graphiti's defaults. The graph is the checkpoint: each episode is
 written in one transaction, so a rerun skips those already there.
@@ -192,8 +192,15 @@ written in one transaction, so a rerun skips those already there.
 What the replay leaves out: tool calls and their results, subagents, compaction summaries, notices and the two Cursor
 transcripts. A turn the user interrupted keeps the reply they saw.
 
+A session continued from another machine (`claude --teleport`) starts at its own first record, under its own id: the
+history it brought ran on the other machine and becomes no episode.
+
 Graphiti's generic OpenAI client is subclassed to send its lighter calls to `BILBO_EVAL_LLM_SMALL_MODEL` when set,
-count tokens and wait out a 429. A store holds a `neo4j-admin` dump of the database and a `manifest.json` with the
+count tokens and wait out a 429. A call the model's safeguards refuse, or one an Antigravity (`agy/`) model fails, goes
+to `gpt-6.1-sol` at once instead of being retried, since every retry is one more flag on the account. kimi-cli's,
+hackerspub-android's and readaloud's text drew repeated refusals, and Graphiti puts the group's last 10 episodes in its
+prompts, so the main-model calls of an episode whose window holds one of those repositories go to `gpt-6.1-sol` too;
+its small calls stay. The manifest counts both (`llm.fallback`, `llm.routed`). A store holds a `neo4j-admin` dump of the database and a `manifest.json` with the
 versions, counts and LLM tokens by model and prompt.
 
 `--check` loads the dump into a fresh Neo4j. The search indexes must come online, the counts must match the manifest,

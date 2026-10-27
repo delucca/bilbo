@@ -43,12 +43,24 @@ def slash_command(text):
     return " ".join(x for x in (name.group(1).strip() if name else "", args.group(1).strip() if args else "") if x)
 
 
+def session_id(path):
+    """The session a corpus file records: Claude Code names its transcript after it, and the corpus keeps the name."""
+    return path.name.split("--", 1)[1].removesuffix(".jsonl")
+
+
+def own_start(entries, sid):
+    """The index of the session's first own record. A cloud session continued in a terminal (`claude --teleport`)
+    begins with the cloud session's history under that session's id: turns that ran on the other machine."""
+    return next((i for i, e in enumerate(entries) if e.get("sessionId") == sid), 0)
+
+
 def sessions(corpus, limit=None):
-    """Every Claude Code session as (start, repo, path), in the order they started across all repos. A transcript
-    with no timestamp is not Claude Code's and is left out."""
+    """Every Claude Code session as (start, repo, path), in the order they started across all repos, each at its first
+    own record (own_start). A transcript with no timestamp is not Claude Code's and is left out."""
     found, other = [], []
     for path in sorted(Path(corpus).glob("*/*.jsonl")):
-        start = next((t for t in map(stamp, map(json.loads, path.open())) if t), None)
+        entries = [json.loads(line) for line in path.open()]
+        start = next((t for t in map(stamp, entries[own_start(entries, session_id(path)):]) if t), None)
         (found if start else other).append((start, path.parent.name, path))
     found.sort()
     return found[:limit], [f"{repo}/{path.name}" for _, repo, path in other]
@@ -56,11 +68,17 @@ def sessions(corpus, limit=None):
 
 def turns(path):
     """The (time, user text, assistant texts) of each turn of a session, and the entries it dropped by reason. A turn
-    starts at a prompt the user typed. Claude Code's synthetic assistant entries are dropped. An interrupted turn keeps the reply the user saw. A slash command stays only if
-    the model answered it: a local command such as /clear has no reply."""
+    starts at a prompt the user typed, from the session's first own record (own_start): another session's history
+    that a continued session opens with ran on the other machine. Claude Code's synthetic assistant entries are
+    dropped. An interrupted turn keeps the reply the user saw. A slash command stays only if the model answered it: a
+    local command such as /clear has no reply."""
     entries = [json.loads(line) for line in path.open()]
+    sid = session_id(path)
+    own = own_start(entries, sid)
     drops, found, current, when = Counter(), [], None, None
-    for entry in entries:
+    if imported := sum(1 for e in entries[:own] if e.get("sessionId") not in (None, sid)):
+        drops["another session's history"] += imported
+    for entry in entries[own:]:
         when = stamp(entry) or when
         content = (entry.get("message") or {}).get("content")
         blocks = content if isinstance(content, list) else []
@@ -107,7 +125,7 @@ def plan(corpus, limit=None):
     for order, (_, repo, path) in enumerate(chosen):
         kept, dropped = turns(path)
         drops.update(dropped)
-        sid = next(e["sessionId"] for e in map(json.loads, path.open()) if e.get("sessionId"))
+        sid = session_id(path)
         owner, name = repo.split("__", 1)
         for n, (at, user, replies) in enumerate(kept, 1):
             body = f"{USER}: {user}" + (f"\n\n{ASSISTANT}: " + "\n\n".join(replies) if replies else "")

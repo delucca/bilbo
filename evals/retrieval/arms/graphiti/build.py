@@ -32,6 +32,7 @@ from graphiti_core.llm_client.config import DEFAULT_MAX_TOKENS, LLMConfig, Model
 from graphiti_core.llm_client.errors import EmptyResponseError
 from graphiti_core.llm_client.openai_generic_client import OpenAIGenericClient
 from graphiti_core.nodes import EpisodeType
+from graphiti_core.search.search_utils import RELEVANT_SCHEMA_LIMIT
 from openai import AsyncOpenAI
 
 # The MCP server's types in the order of mcp_server/config/config.yaml, which is the order its type_config.py passes them.
@@ -40,6 +41,8 @@ GROUP_ID = "main"  # the default group of Graphiti's MCP server (mcp_server/conf
 INDEXES = ("episode_content", "node_name_and_summary", "community_name", "edge_name_and_fact")
 ATTEMPTS = 10
 TRANSIENT = (openai.RateLimitError, openai.InternalServerError, openai.APIConnectionError)
+FALLBACK = "gpt-6.1-sol"  # a call the model's safeguards refuse goes here at once: every retry is one more flag on the account
+ROUTED = ("MoonshotAI/kimi-cli", "malkoG/hackerspub-android", "ngngardner/readaloud")  # the repos whose text drew repeated refusals: the main-model calls of an episode whose prompts carry it go to FALLBACK, never to Claude; small calls stay (the user, 2026-10-22 and 2026-10-24)
 
 CORPUS = Path("/corpus")
 WORK = Path("/work")
@@ -58,6 +61,7 @@ logging.basicConfig(level=logging.WARNING, stream=sys.stderr, format="graphiti: 
 logging.getLogger("neo4j.notifications").setLevel(logging.ERROR)  # Graphiti's queries warn about unknown properties on an empty graph
 
 PROMPT = contextvars.ContextVar("prompt", default=None)
+ROUTE = contextvars.ContextVar("route", default=None)  # the repo of the episode being added, when its prompts carry a ROUTED repo's episodes
 
 
 def log(msg):
@@ -71,19 +75,38 @@ def retry_after(error):
         return 0
 
 
+def refused(error):
+    """Claude's safeguards refusing a call, which the L3 proxy answers with a 502."""
+    return isinstance(error, openai.InternalServerError) and "safeguards flagged this message" in str(error)
+
+
+def agy_failed(error, model):
+    """A call on an agy model that the L3 proxy failed with a 502: its refusals have no known text, so it goes to FALLBACK
+    at once as a refusal does, never again to the same account; a usage limit (429) and an outage (503) still wait."""
+    return model.startswith("agy/") and isinstance(error, openai.InternalServerError) and error.status_code == 502
+
+
+def repo(episode):
+    return episode.source_description.removeprefix("Claude Code session in ")
+
+
 def tally(counts, table, key, **amounts):
-    row = counts[table].setdefault(key, {})
+    row = counts.setdefault(table, {}).setdefault(key, {})
     for name, amount in amounts.items():
         row[name] = row.get(name, 0) + amount
 
 
-class LLMFailed(Exception):
-    pass
+class LLMFailed(BaseException):
+    """The LLM endpoint refused a call for good or failed it every attempt. A BaseException, not an Exception:
+    graphiti-core catches Exception around some of its LLM calls (edge_operations.py `_extract_edge_timestamps` logs
+    it and goes on), which would commit the episode without what the call adds; this passes those handlers, fails the
+    episode, and a rerun resumes before it."""
 
 
 class Client(OpenAIGenericClient):
     """Graphiti's client for OpenAI-compatible endpoints, with what the build needs: the small model on Graphiti's
-    small calls, the token counts of every call, and a wait for the endpoint on a usage limit or a server error."""
+    small calls, FALLBACK on the other calls of an episode that ROUTE names, the token counts of every call, and a wait for
+    the endpoint on a usage limit or a server error."""
 
     def __init__(self, config, counts):
         client = AsyncOpenAI(api_key=LLM_KEY, base_url=LLM_URL, default_headers=LLM_HEADERS, max_retries=0, timeout=1800)
@@ -94,10 +117,41 @@ class Client(OpenAIGenericClient):
         PROMPT.set(prompt_name)
         return await super().generate_response(*args, prompt_name=prompt_name, **kwargs)
 
+    async def send(self, request):
+        """The call and its retries: a refusal by the model's safeguards on FALLBACK at once, any other transient error again
+        after a growing wait. Returns the response and the model that gave it."""
+        failures = 0
+        while True:
+            try:
+                return await self.client.chat.completions.create(**request), request["model"]
+            except TRANSIENT as e:
+                if (refused(e) or agy_failed(e, request["model"])) and request["model"] != FALLBACK:
+                    why = f"refused by {request['model']}'s safeguards" if refused(e) else f"failed on {request['model']}"
+                    log(f"LLM call {why}; sending it to {FALLBACK}")
+                    tally(self.counts, "fallback", request["model"], calls=1)
+                    request = request | {"model": FALLBACK}
+                    failures = 0
+                    continue
+                failures += 1
+                wait = min(60 * failures, 600)
+                if isinstance(e, openai.RateLimitError):
+                    wait = max(wait, retry_after(e))
+                log(f"LLM call failed ({type(e).__name__}: {e}); retrying in {wait} s")
+                await asyncio.sleep(wait)
+                if failures == ATTEMPTS:
+                    raise LLMFailed(f"the LLM failed {ATTEMPTS} times in a row")
+            except openai.APIError as e:
+                raise LLMFailed(f"the LLM endpoint refused the call ({type(e).__name__}: {e})") from e
+
     async def _generate_response(self, messages, response_model=None, max_tokens=DEFAULT_MAX_TOKENS, model_size=ModelSize.medium):
         """The parent's request, sent to the model for its size. Nothing is written before the LLM answers, so a call that
-        failed is safe to send again; a usage limit can last hours, so a 429 waits as long as its Retry-After asks."""
+        failed is safe to send again; a usage limit can last hours, so a 429 waits as long as its Retry-After asks. An
+        error no retry changes (a wrong key, model or request) and one that outlasts the attempts raise LLMFailed; an
+        answer the model got wrong (empty, not JSON) is left to graphiti-core, as the published build left it."""
         model = self.small_model if model_size is ModelSize.small else self.model
+        if model_size is not ModelSize.small and ROUTE.get():
+            tally(self.counts, "routed", ROUTE.get(), calls=1)
+            model = FALLBACK
         request = dict(
             model=model,
             messages=[{"role": m.role, "content": self._clean_input(m.content)} for m in messages if m.role in ("user", "system")],
@@ -106,18 +160,7 @@ class Client(OpenAIGenericClient):
         )
         if self.temperature is not None:
             request["temperature"] = self.temperature
-        for attempt in range(1, ATTEMPTS + 1):
-            try:
-                response = await self.client.chat.completions.create(**request)
-                break
-            except TRANSIENT as e:
-                wait = min(60 * attempt, 600)
-                if isinstance(e, openai.RateLimitError):
-                    wait = max(wait, retry_after(e))
-                log(f"LLM call failed ({type(e).__name__}: {e}); retrying in {wait} s")
-                await asyncio.sleep(wait)
-        else:
-            raise LLMFailed(f"the LLM failed {ATTEMPTS} times in a row")
+        response, model = await self.send(request)
         used = response.usage.prompt_tokens or 0 if response.usage else 0
         amounts = dict(calls=1, prompt_tokens=used, completion_tokens=response.usage.completion_tokens or 0 if response.usage else 0)
         tally(self.counts, "model", model, **amounts)
@@ -242,14 +285,26 @@ async def repair_saga(graphiti, episodes, found, done):
 
 
 def save_progress(progress):
+    """Replace progress.json whole and durably: the file and the rename are on disk before the build goes on."""
     tmp = PROGRESS.with_suffix(".tmp")
-    tmp.write_text(json.dumps(progress, indent=2) + "\n")
+    with tmp.open("w") as f:
+        f.write(json.dumps(progress, indent=2) + "\n")
+        f.flush()
+        os.fsync(f.fileno())
     tmp.rename(PROGRESS)
+    folder = os.open(PROGRESS.parent, os.O_RDONLY)
+    try:
+        os.fsync(folder)
+    finally:
+        os.close(folder)
 
 
 async def ingest(graphiti, episodes, done, progress):
     last, started = {}, time.monotonic()  # a session's latest uuid; after a resume Graphiti looks it up
     for n, episode in enumerate(episodes[done:], done + 1):
+        # add_episode puts the group's last RELEVANT_SCHEMA_LIMIT episodes in its prompts: the plan's, as it is in time order
+        context = episodes[max(0, n - 1 - RELEVANT_SCHEMA_LIMIT):n]
+        ROUTE.set(repo(episode) if any(repo(e) in ROUTED for e in context) else None)
         try:
             result = await graphiti.add_episode(
                 name=episode.name,
@@ -262,7 +317,7 @@ async def ingest(graphiti, episodes, done, progress):
                 saga=episode.session,
                 saga_previous_episode_uuid=last.get(episode.session),
             )
-        except Exception as e:
+        except (Exception, LLMFailed) as e:
             sys.exit(f"graphiti: {episode.name} failed after {n - 1} episodes ({type(e).__name__}: {e}); run again to resume")
         last[episode.session] = result.episode.uuid
         progress["episodes"] = n
@@ -322,7 +377,11 @@ async def manifest(driver, counts, episodes, skipped, drops, progress):
         "sagas": labels.get("Saga", 0),
         "llm": {"model": LLM_MODEL, "small_model": LLM_SMALL}
         | {k: sum(row.get(k, 0) for row in models.values()) for k in usage}
-        | {"max_prompt_tokens": counts["max_prompt_tokens"], "by_model": dict(sorted(models.items())), "by_prompt": dict(sorted(counts["prompt"].items()))},
+        | {"max_prompt_tokens": counts["max_prompt_tokens"], "unrecorded_episodes": progress.get("unrecorded_episodes", 0)}
+        | {"fallback": {"model": FALLBACK, "from": dict(sorted(counts.get("fallback", {}).items()))}}
+        | {"routed": {"model": FALLBACK, "repos": list(ROUTED), "context": RELEVANT_SCHEMA_LIMIT, "calls": dict(sorted(counts.get("routed", {}).items()))}}
+        | {"by_model": dict(sorted(models.items())), "by_prompt": dict(sorted(counts["prompt"].items()))},
+        "carried_over": progress.get("carried_over"),  # the keys the graph was begun under, oldest first: episodes, key and models
         "embedder": {"calls": 0, "texts": 0, "cuts": 0} | counts["embedder"].get("all", {}),
         "ingest_seconds": round(progress["ingest_seconds"]),
         "finished": datetime.now(timezone.utc).isoformat(timespec="seconds"),
@@ -341,6 +400,13 @@ async def main():
         done = resume_point(episodes, found)
         if done not in (progress["episodes"], progress["episodes"] + 1):  # the last episode may be written but not yet recorded
             sys.exit(f"graphiti: progress.json counts {progress['episodes']} episodes and the graph holds {done}; --rebuild")
+        if done == progress["episodes"] + 1:
+            # The last run stopped between this episode's write and its record. Record it before another episode is
+            # written, so a second stop at the same point still resumes; its LLM calls are not in the counts.
+            progress["episodes"] = done
+            progress["unrecorded_episodes"] = progress.get("unrecorded_episodes", 0) + 1
+            save_progress(progress)
+            log(f"recorded episode {done}, written before the last stop; its LLM calls are not counted")
         if done:
             log(f"resuming after {done} episodes")
         await repair_saga(graphiti, episodes, found, done)
