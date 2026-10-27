@@ -65,15 +65,15 @@ A store is the memory one strategy builds from the corpus, `dataset/store-<arm>-
 needs no LLM. The key hashes what shapes a store: the corpus, the embedder, the LLM for an arm that uses one, and the
 files under `arms/<arm>/`. Change any of them and the key changes.
 
-`dataset.lock` pins mem0, dense, ai-memory, claude-mem, mempalace, hindsight and auto-memory stores built from this
-corpus, and every arm's store built from an earlier one, `corpus-1235aec0592a`, the first five projects; the other arms
-have none for this corpus yet.
+`dataset.lock` pins mem0, dense, graphiti, ai-memory, claude-mem, mempalace, hindsight and auto-memory stores built
+from this corpus, and every arm's store built from an earlier one, `corpus-1235aec0592a`, the first five projects; the
+other arms have none for this corpus yet.
 
 | Arm | Strategy | LLM | Published store |
 |---|---|---|---|
 | [mem0](#mem0) | mem0, fed by its Claude Code plugin | yes | built with Claude Opus 5.5 |
 | [dense](#dense) | the sessions in chunks, embedded | no | yes |
-| [graphiti](#graphiti) | Graphiti's knowledge graph, fed one turn at a time | yes | built with Opus 5.5 and luna |
+| [graphiti](#graphiti) | Graphiti's knowledge graph, fed one turn at a time | yes | built with Claude 5.5, then Gemini |
 | [ai-memory](#ai-memory) | ai-memory, fed by its Claude Code hooks | yes | built with Claude Opus 5.5 |
 | [hindsight](#hindsight) | Hindsight, fed by its Claude Code integration | yes | built with Claude Sonnet 5.5 |
 | [claude-mem](#claude-mem) | claude-mem, fed by its Claude Code hooks | yes | built with Claude Haiku 5.5 |
@@ -200,19 +200,46 @@ count tokens and wait out a 429. A call the model's safeguards refuse, or one an
 to `gpt-6.1-sol` at once instead of being retried, since every retry is one more flag on the account. kimi-cli's,
 hackerspub-android's and readaloud's text drew repeated refusals, and Graphiti puts the group's last 10 episodes in its
 prompts, so the main-model calls of an episode whose window holds one of those repositories go to `gpt-6.1-sol` too;
-its small calls stay. The manifest counts both (`llm.fallback`, `llm.routed`). A store holds a `neo4j-admin` dump of the database and a `manifest.json` with the
-versions, counts and LLM tokens by model and prompt.
+its small calls stay. The manifest counts both (`llm.fallback`, `llm.routed`). A store holds a `neo4j-admin` dump of
+the database and a `manifest.json` with the versions, counts and LLM tokens by model and prompt.
 
 `--check` loads the dump into a fresh Neo4j. The search indexes must come online, the counts must match the manifest,
 every saga must start and end with its earliest and latest episode, the stored vectors of 20 entities and 20 facts
 must match the embedder's, and four searches with no LLM must find facts and entities.
 
-The published store splits the models as Graphiti's library does: Claude Opus 5.5 extracts entities and facts and
-merges duplicate entities, and `gpt-6-luna` makes the small calls (fact deduplication and contradiction, dates, entity
-attributes and summaries). It was built through a gateway that runs `claude -p` or `codex exec` for each call, with the
-embedder on an RTX 5070 Ti: 18,797 LLM calls (2,437 Opus, 16,360 luna), 139 million prompt tokens and 3.0 million
-completion tokens, in 11 h 2 min, 1 h 27 min of it waiting out the account's usage limit. It holds 828 episodes, 4,564
-nodes and 8,705 facts, 2,069 of them invalidated by later ones.
+The store of the first five projects, `store-graphiti-3c33dd5aff9e`, splits the models as Graphiti's library does:
+Claude Opus 5.5 extracts entities and facts and merges duplicate entities, and `gpt-6-luna` makes the small calls (fact
+deduplication and contradiction, dates, entity attributes and summaries). It was built through a gateway that runs
+`claude -p` or `codex exec` for each call, with the embedder on an RTX 5070 Ti: 18,797 LLM calls (2,437 Opus, 16,360
+luna), 139 million prompt tokens and 3.0 million completion tokens, in 11 h 2 min, 1 h 27 min of it waiting out the
+account's usage limit. It holds 828 episodes, 4,564 nodes and 8,705 facts, 2,069 of them invalidated by later ones.
+
+The published store of this corpus, `store-graphiti-eac10edab868`, was built through the same kind of gateway (`claude
+-p`, `codex exec` or `agy`) with the embedder on the CPU (6 threads). Its models changed as the subscriptions' weekly
+limits ran out, each time carrying the graph built so far over to the new key; the manifest's `carried_over` lists every
+hop with its episodes, key and models:
+
+- episodes 1-553: Claude Opus 5.5, with `gpt-6-luna` on the small calls;
+- 554-3,380: Claude Opus 5.5, with Claude Sonnet 5.5 on the small calls;
+- 3,381-3,412: the same two through Antigravity (`agy/claude-opus-5-5-medium`, `agy/claude-sonnet-5-5-medium`);
+- 3,413-4,547: Gemini 4 Argon, with Gemini 3.8 Flash on the small calls, through Antigravity
+  (`agy/gemini-4-argon-medium`, `agy/gemini-3.8-flash-medium`). These name the store's key and its line in
+  `dataset.lock`.
+
+Before the last switch, Argon with Flash and `gpt-6.1-sol` on both were each run on 30 episodes (3,338-3,367) from the
+same graph and compared with what Claude had built from them. Argon with Flash came closer on entities (F1 70% against
+67%) and on facts (54% against 47% at a 0.85 semantic match), with a shuffled control at 4% or less. Gemini left 24
+graphiti-core warnings the earlier episodes did not (a duplicate resolution or a fact's endpoint missing, a summary for
+an unknown entity), most of them on superset-windows-arm64.
+
+The build made 102,447 LLM calls: 60,491 on Claude subscription logins (8,277 Opus, 52,214 Sonnet), 697 on Claude
+through Antigravity, 29,468 on Gemini (3,094 Argon, 26,374 Flash), 10,044 on luna and 1,747 on `gpt-6.1-sol` (1,707
+routed, 40 refused or failed elsewhere). They took 989.1 million prompt tokens and 90.3 million completion tokens, in
+123 h 32 min of ingest between 2026-10-20 and 2026-10-27 14:43 UTC; the rest of that time went to waiting out usage
+limits. It holds 4,547 episodes in 401 sagas, 14,214 entities and 43,677 facts, 7,167 of them invalidated by later
+ones. On the store of the first five projects, CPU vectors matched the GPU's to a cosine of 0.9956 at worst, yet
+changed 6.2% of Graphiti's duplicate-entity candidates, so a GPU build would not give this graph even with the same
+models.
 
 ### ai-memory
 
