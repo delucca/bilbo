@@ -1,0 +1,13 @@
+test --build_tests_only
+test --test_output=errors
+test --test_tag_filters=-desktop,-release
+
+test:unit --test_tag_filters=unit
+test:contract --test_tag_filters=contract
+test:acceptance --test_tag_filters=acceptance
+test:integration --test_tag_filters=integration
+test:snapshot --test_tag_filters=snapshot
+test:e2e --test_tag_filters=e2e
+test:release --test_tag_filters=release
+test:desktop --test_tag_filters=desktop
+test:all --test_tag_filters=

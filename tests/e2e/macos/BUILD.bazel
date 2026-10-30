@@ -1,0 +1,19 @@
+load("//tools/bazel:swift.bzl", "bilbo_test")
+
+bilbo_test(
+    name = "LaunchTests",
+    srcs = [
+        "Driver.swift",
+        "LaunchTests.swift",
+    ],
+    data = [
+        "//apps/macos",
+        "@axorc//:axorc",
+    ],
+    desktop = True,
+    env = {
+        "AXORC": "$(rlocationpath @axorc//:axorc)",
+        "BILBO_APP": "$(rlocationpath //apps/macos)",
+    },
+    layer = "e2e",
+)

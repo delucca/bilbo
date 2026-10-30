@@ -2,7 +2,7 @@
 
 Place tests in the lowest folder containing everything exercised: beside one component; top-level `tests/` only across components. Keep `apps/{cli,serve,macos}` thin; composition lives there, component behavior in `libs/`. Rust and Swift libraries never depend on each other; cross-language suites compose them under `tests/`.
 
-Targets, macros and configurations are planned, not yet built; add layers as needed.
+Built so far: `.bazelrc`, `bilbo_test` for Swift in `tools/bazel/swift.bzl`, and the macOS launch test in `tests/e2e/macos/`. Add other layers as they get something to test.
 
 ## Choose a layer
 
@@ -23,12 +23,12 @@ Acceptance provides primary feature coverage with fakes: no real disk, AppKit or
 ## Declare and write tests
 
 - Each layer folder gets a Bazel target. Rust non-unit component layers share `tests/` with separate targets/source sets.
-- Declare through `tools/bazel/`'s conceptual `bilbo_test(layer = "acceptance")`; the macro owns tags, visibility and compiler options (`copts`); exact API undecided.
+- Declare through `bilbo_test(layer = "acceptance")` from `tools/bazel/swift.bzl` (Swift only for now); it owns tags, size and compiler options (`copts`). `desktop = True` marks a screen test.
 - Name acceptance tests by feature, with parameterized example tables; no spec IDs.
 - Swift uses Swift Testing and `@testable import`; reusable port fakes: S `Testing/`, test-only visibility.
 - Assert exact layout numerically in integration; inspect Metal terminal buffer state instead of pixels.
 - Compare snapshots with approved baselines. Prefer text, including substantial Rust output deserving review; few pixel snapshots, covering light/dark. Snapshot library undecided; no extra Rust folder convention.
-- Screen tests additionally carry `desktop`, `local`, `exclusive`. `desktop` is not a layer. Keep them short and serialize across concurrent runs: they share user focus/keyboard.
+- Screen tests additionally carry `desktop`, `local`, `exclusive`. `desktop` is not a layer. Keep them short: they share user focus/keyboard. `exclusive` serializes them within one Bazel run only; do not run desktop tests from two worktrees at once.
 
 ## Exercise real products
 
@@ -36,7 +36,7 @@ Keep e2e to a few smoke flows:
 
 - **CLI:** real `bilbo`, isolated temporary directory; assert stdout, exit code, files, relevant stderr.
 - **Serve:** real binary, isolated state; stdio JSON-RPC responses and process behavior.
-- **macOS:** real `.app` through Accessibility; Swift Testing `swift_test` targets. Only these use pinned, signed AXorcist `axorc`, through one wrapper in `tests/e2e/macos/`. Harness owns launch/waits/assertions; driver needs Accessibility permission. Unverified under `bazel test` against the built app.
+- **macOS:** real `.app` through Accessibility; Swift Testing `swift_test` targets. Only these use pinned, signed AXorcist `axorc`, through one wrapper in `tests/e2e/macos/`. Harness owns launch/waits/assertions; driver needs Accessibility permission.
 
 CLI/serve e2e need no desktop.
 
