@@ -1,59 +1,65 @@
 # Testing bilbo
 
-Tests belong in the lowest folder that contains everything they exercise. Keep single-component tests beside the component; use top-level `tests/` only for suites spanning components.
+Place tests in the lowest folder containing everything exercised: beside one component; top-level `tests/` only across components. Keep `apps/{cli,serve,macos}` thin; composition lives there, component behavior in `libs/`. Rust and Swift libraries never depend on each other; cross-language suites compose them under `tests/`.
 
-This document defines the convention. The layer targets, macros and `.bazelrc` configurations are not yet implemented. Add each layer when it has something to test.
+Targets, macros and configurations are planned, not yet built; add layers as needed.
 
 ## Choose a layer
 
-The layer name is also its Bazel tag.
+Each layer covers both languages; its name is its Bazel tag. Below, R = `libs/rust/<crate>/`, S = `libs/swift/<Module>/`.
 
-| Layer | What it checks and may touch | Location |
-|---|---|---|
-| **unit** | Isolated logic with fakes. No real disk, AppKit or app. | Rust: `libs/rust/<crate>/src/**`, inline `#[cfg(test)]`. Swift: `libs/swift/<Module>/Tests/Unit/`. |
-| **contract** | Rust and Swift agree on protocol examples. Uses golden request/response pairs from `libs/proto/examples/`. | `tests/contract/` |
-| **acceptance** | A feature through a component's public API or Swift state models, using fake dependencies. No real disk, AppKit or app. This is the main source of feature coverage. | Rust: `libs/rust/<crate>/tests/`. Swift: `libs/swift/<Module>/Tests/Acceptance/`. |
-| **integration** | A component against real infrastructure: Rust with real disk, Swift with real AppKit views and numeric layout assertions. Does not drive the running app. | Rust: `libs/rust/<crate>/tests/`. Swift: `libs/swift/<Module>/Tests/Integration/`. |
-| **e2e** | A few smoke flows through the real `.app` and `serve`, or the CLI. Desktop flows use the real desktop. | `tests/e2e/` |
-| **snapshot** | Recorded state or rendered views compared with an approved baseline. Prefer text state; keep pixel snapshots few, covering light and dark appearances. | `libs/swift/<Module>/Tests/Snapshots/` |
-| **release** | The signed, notarized distribution bundle. | `tests/release/` |
+| Layer | Rust boundary | Swift boundary | Folder |
+|---|---|---|---|
+| unit | Isolated logic, fakes; no disk/database | Isolated logic, fakes; no disk/AppKit/app | R `src/**`, inline `#[cfg(test)]`; S `Tests/Unit/` |
+| contract | Protocol encoding, decoding, validation | Same examples; agreement with Rust | `tests/contract/`; golden requests/responses: `libs/proto/examples/` |
+| acceptance | Feature behavior through public API | Feature behavior through API/state models | R `tests/`; S `Tests/Acceptance/` |
+| integration | Component with real files/SQLite | Component with real infrastructure/AppKit | R `tests/`; S `Tests/Integration/` |
+| snapshot | Rendered text/CLI formatting | Recorded state/rendered views | R `tests/`, baselines alongside; S `Tests/Snapshots/` |
+| e2e | Real CLI/serve outer interfaces | Real `.app`, including serve connection | `tests/e2e/{cli,serve,macos}/` |
+| release | Shipped CLI executable/runtime dependencies; serve as distributed | Signed, notarized bundle: contents, embedded executables, signing/notarization | `tests/release/` |
 
-Choose by the boundary exercised: protocol agreement is contract; feature behavior with fakes is acceptance; real infrastructure is integration; running products are e2e; distribution artifacts are release. Use unit for isolated logic and snapshot for baseline comparisons.
+Acceptance provides primary feature coverage with fakes: no real disk, AppKit or running products. Integration uses real dependencies without driving complete products. Choose by boundary: baseline comparisons of CLI invocations remain e2e; formatting-library snapshots stay beside the library. Release checks packaging independently; test serve inside the bundle if shipped there, without inventing standalone distribution.
 
 ## Declare and write tests
 
-- Give each layer folder its own Bazel test target, tagged with its layer. Rust unit tests stay inline; acceptance and integration share `tests/` but use separate targets and source sets.
-- Declare targets through the layer macro in `tools/bazel/`, conceptually `bilbo_test(layer = "acceptance")`. The macro owns tags, visibility and compiler options; its exact API is to be defined.
-- Name acceptance tests by feature and use parameterized example tables. Tests cite no spec IDs.
-- Swift tests use `@testable import`. Put reusable port fakes in `libs/swift/<Module>/Testing/`, with test-only visibility.
-- Keep `apps/` thin: composition belongs there, component behavior and its tests belong in `libs/`. Rust and Swift libraries never depend on each other; cross-language suites compose them under `tests/`.
-- Assert exact layout numerically in integration tests. For Metal-rendered terminal content, inspect buffer state instead of relying on pixel capture.
+- Each layer folder gets a Bazel target. Rust non-unit component layers share `tests/` with separate targets/source sets.
+- Declare through `tools/bazel/`'s conceptual `bilbo_test(layer = "acceptance")`; the macro owns tags, visibility and compiler options (`copts`); exact API undecided.
+- Name acceptance tests by feature, with parameterized example tables; no spec IDs.
+- Swift uses Swift Testing and `@testable import`; reusable port fakes: S `Testing/`, test-only visibility.
+- Assert exact layout numerically in integration; inspect Metal terminal buffer state instead of pixels.
+- Compare snapshots with approved baselines. Prefer text, including substantial Rust output deserving review; few pixel snapshots, covering light/dark. Snapshot library undecided; no extra Rust folder convention.
+- Screen tests additionally carry `desktop`, `local`, `exclusive`. `desktop` is not a layer. Keep them short and serialize across concurrent runs: they share user focus/keyboard.
 
-The desktop e2e driver is **to be confirmed**: first verify XCUITest through rules_apple's `macos_ui_test` under Bazel; use palantir's AX driver if that does not work. Swift Testing execution under Bazel also remains to be verified.
+## Exercise real products
+
+Keep e2e to a few smoke flows:
+
+- **CLI:** real `bilbo`, isolated temporary directory; assert stdout, exit code, files, relevant stderr.
+- **Serve:** real binary, isolated state; stdio JSON-RPC responses and process behavior.
+- **macOS:** real `.app` through Accessibility; Swift Testing `swift_test` targets. Only these use pinned, signed AXorcist `axorc`, through one wrapper in `tests/e2e/macos/`. Harness owns launch/waits/assertions; driver needs Accessibility permission. Unverified under `bazel test` against the built app.
+
+CLI/serve e2e need no desktop.
 
 ## Run tests
 
-Once the targets and configurations exist:
+Run `nix develop -c bazel test //...`, optionally adding `--config=<name>`; scope components by replacing `//...`, e.g. `//libs/swift/Notebook/...`. Each configuration replaces the default filter, including desktop tests within a selected layer. `--config=desktop` selects screen tests; `--config=all` selects everything.
 
-```sh
-# Default: every layer except e2e and release.
-nix develop -c bazel test //...
-
-# One layer: unit, contract, acceptance, integration, snapshot, e2e or release.
-nix develop -c bazel test //... --config=acceptance
-
-# Every layer, e2e and release included.
-nix develop -c bazel test //... --config=all
-
-# One layer of one component.
-nix develop -c bazel test //libs/swift/Notebook/... --config=acceptance
+```text
+test --test_tag_filters=-desktop,-release
+test:unit --test_tag_filters=unit
+test:contract --test_tag_filters=contract
+test:acceptance --test_tag_filters=acceptance
+test:integration --test_tag_filters=integration
+test:snapshot --test_tag_filters=snapshot
+test:e2e --test_tag_filters=e2e
+test:release --test_tag_filters=release
+test:desktop --test_tag_filters=desktop
+test:all --test_tag_filters=
 ```
-
-`.bazelrc` sets `test --test_tag_filters=-e2e,-release` and one `test:<layer> --test_tag_filters=<layer>` per layer, so a `--config` replaces the default rather than adding to it. Desktop e2e runs share focus and keyboard input with the user, so keep them short and serialize access to the desktop.
 
 ## Why
 
-- **Beside the component:** ownership stays local. Top-level suites hold only checks that span components.
-- **Tags select layers:** a layer spans many component folders. Bazel tags select it across the repository without moving tests or relying on Swift Testing tag filtering.
-- **Snapshots warn of change:** a matching baseline does not prove the UI is correct. Review differences and use behavioral or numeric assertions to establish correctness.
+- Local placement keeps component ownership clear.
+- Tags select layers across languages; screen access stays opt-in, headless e2e included by default.
+- Snapshots only warn of change: review differences; establish correctness through behavioral/numeric assertions.
 
