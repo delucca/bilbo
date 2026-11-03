@@ -10,6 +10,7 @@ swift_library(
 
 macos_application(
     name = "macos",
+    app_icons = glob(["AppIcon.icon/**"]),
     bundle_id = "com.delucca.bilbo",
     bundle_name = "Bilbo",
     infoplists = ["Info.plist"],

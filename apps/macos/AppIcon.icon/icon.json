@@ -1,0 +1,46 @@
+{
+  "fill-specializations": [
+    {
+      "value": {
+        "linear-gradient": [
+          "extended-srgb:1.00000,0.98824,0.96078,1.00000",
+          "extended-srgb:0.91765,0.89020,0.83529,1.00000"
+        ]
+      }
+    },
+    {
+      "appearance": "dark",
+      "value": {
+        "linear-gradient": [
+          "extended-srgb:0.26667,0.27843,0.29412,1.00000",
+          "extended-srgb:0.12549,0.13333,0.14510,1.00000"
+        ]
+      }
+    }
+  ],
+  "groups": [
+    {
+      "layers": [
+        {
+          "name": "mark",
+          "image-name-specializations": [
+            {
+              "value": "mark-paper.svg"
+            },
+            {
+              "appearance": "dark",
+              "value": "mark-graphite.svg"
+            },
+            {
+              "appearance": "tinted",
+              "value": "mark-graphite.svg"
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "supported-platforms": {
+    "squares": "shared"
+  }
+}
