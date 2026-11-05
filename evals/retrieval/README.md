@@ -795,8 +795,17 @@ What the store holds, from the manifest:
   applied.
 - Files keep the dates their authors wrote, not the build's.
 
-Search is whatever the run step gives the model: `MEMORY.md` is loaded up to its first 200 lines or 25,000 characters,
-and topic files are read on demand, as Claude Code does.
+Auto memory has no search: Claude Code loads `MEMORY.md` into every session, up to its first 200 lines or 25,000
+characters, and the model reads topic files when it chooses to. The eval gives both forms the same context, with no
+model choosing: for each project key of the question's repository, the main checkout's first (the directory most of
+its sessions start in) and the others by name, `MEMORY.md` as loaded, then every topic file, those `MEMORY.md` links
+first and the rest by name, each opening with its file name. That is an upper bound on the topic files, as if the
+model read them all, and it is the choice because the store's `MEMORY.md` is often missing: linear-cycle-drain,
+contoso, neuralips26, wakil, eldios-dotfiles, entire-graph, cavecrew-mcp and superset-windows-arm64 have topic files
+and no `MEMORY.md`, likely the index writes Claude Code made outside the main model's tool calls. Every key of the
+repository counts, worktrees and the home directory included, because go-nuts's memory is only under its task
+directories. No `MEMORY.md` here comes near 25,000 characters (the largest is 4,114), so the budget cuts only topic
+files, in readaloud, neuralips26 and superset-windows-arm64.
 
 A store holds each project's memory directory and a `manifest.json` with the counts per project (operations applied,
 skipped by reason, files, bytes) and, for every operation, its session, time, tool, file, outcome and the Claude Code
