@@ -66,15 +66,14 @@ A store is the memory one strategy builds from the corpus, `dataset/store-<arm>-
 needs no LLM. The key hashes what shapes a store: the corpus, the embedder, the LLM for an arm that uses one, and the
 files under `arms/<arm>/`. Change any of them and the key changes.
 
-`dataset.lock` pins mem0, dense, graphiti, ai-memory, claude-mem, mempalace, hindsight and auto-memory stores built
-from this corpus, and every arm's store built from an earlier one, `corpus-1235aec0592a`, the first five projects; the
-other arms have none for this corpus yet.
+`dataset.lock` pins a store built from this corpus for every arm, and a store of every arm but bm25 built from an
+earlier one, `corpus-1235aec0592a`, the first five projects.
 
 | Arm | Strategy | LLM | Published store |
 |---|---|---|---|
 | [mem0](#mem0) | mem0, fed by its Claude Code plugin | yes | built with Claude Opus 5.5 |
 | [dense](#dense) | the sessions in chunks, embedded | no | yes |
-| [bm25](#bm25) | the same chunks, BM25 over each project's | no | not yet |
+| [bm25](#bm25) | the same chunks, BM25 over each project's | no | yes |
 | [graphiti](#graphiti) | Graphiti's knowledge graph, fed one turn at a time | yes | built with Claude 5.5, then Gemini |
 | [ai-memory](#ai-memory) | ai-memory, fed by its Claude Code hooks | yes | built with Claude Opus 5.5 |
 | [hindsight](#hindsight) | Hindsight, fed by its Claude Code integration | yes | built with Claude Sonnet 5.5 |
