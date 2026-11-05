@@ -443,7 +443,14 @@ What the replay changes:
 
 Search is Hindsight's recall: semantic, keyword, graph and temporal retrieval fused and reranked by a local
 cross-encoder, with no LLM. It is not what the integration gives an agent per prompt, which is an LLM reflect with page
-and observation fallbacks; the manifest's `recall.prompt_time` lists that path. A store holds a `hindsight-admin backup`
+and observation fallbacks; the manifest's `recall.prompt_time` lists that path. Nor is it one of the integration's
+tools: the agent gets a search over the bank's five knowledge pages and an LLM reflect.
+
+The eval runs recall for both forms, as Hindsight's own MCP server's `recall` tool calls it: every fact type (world,
+experience, observation) and budget `high`, its defaults, in the bank of the question's repository, with
+`query_timestamp` at the corpus's last session (`recall.last_session_time`) so recency is measured from the corpus and
+not the wall clock. `max_tokens` is 8,192 instead of the tool's 4,096, so the budget fills. A result reads as its text
+with the date recall returns beside it: when it happened, else when it was mentioned. A store holds a `hindsight-admin backup`
 of the database (facts, observations, entities, links, pages, operations and LLM traces, each with a 100-character
 preview of its prompt and answer) and a `manifest.json`.
 
