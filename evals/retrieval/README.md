@@ -450,7 +450,9 @@ The eval runs recall for both forms, as Hindsight's own MCP server's `recall` to
 experience, observation) and budget `high`, its defaults, in the bank of the question's repository, with
 `query_timestamp` at the corpus's last session (`recall.last_session_time`) so recency is measured from the corpus and
 not the wall clock. `max_tokens` is 8,192 instead of the tool's 4,096, so the budget fills. A result reads as its text
-with the date recall returns beside it: when it happened, else when it was mentioned. A store holds a `hindsight-admin backup`
+with the date recall returns beside it: when it happened, else when it was mentioned. The search is slow on a CPU:
+the cross-encoder scores up to 300 candidates per recall (`RERANKER_MAX_CANDIDATES`, at every budget), about 25 s each
+on a laptop's Docker, so all 143 questions took 70 minutes. A store holds a `hindsight-admin backup`
 of the database (facts, observations, entities, links, pages, operations and LLM traces, each with a 100-character
 preview of its prompt and answer) and a `manifest.json`.
 
@@ -959,6 +961,7 @@ Provisional until the judge's stress test and audit are built.
 | [bm25](results/bm25.json) | `cc0c68a903d7` | 41% | 46% | 84% | 69% | 63% | 72% | 50% | **60%** | 61% | 2 of 17 |
 | [claude-mem](results/claude-mem.json) | `c277bbdc782f` | 19% | 26% | 46% | 20% | 34% | 50% | 15% | **30%** | 4% | 4 of 17 |
 | [dense](results/dense.json) | `0eac8883d38c` | 32% | 48% | 61% | 48% | 70% | 50% | 28% | **48%** | 51% | 5 of 17 |
+| [hindsight](results/hindsight.json) | `9fc2bf01cb2c` | 66% | 71% | 72% | 58% | 47% | 47% | 88% | **63%** | 63% | 3 of 17 |
 | [mempalace](results/mempalace.json) | `17bb4ee04c3a` | 26% | 24% | 57% | 30% | 45% | 61% | 52% | **39%** | 43% | 6 of 17 |
 
 Class scores are on the `query` form. The questions per class: overview 27, status 21, decision 16, rules 15,
