@@ -180,6 +180,14 @@ vectors differ only by floating-point noise, so the device is not in the key.
 the corpus, then embeds five chunks again: each must point the way its stored vector does, at a cosine of at least
 0.99.
 
+The eval searches with `arms/dense/search.py`, the same way for both forms: dense has no tool of its own, so the
+search is the plain one. The question's text is embedded by the build's embedder after the sentinel, in the query
+format of Qwen3-Embedding's model card, `Instruct: {task}\nQuery:{text}`, with the task `Given a question about a
+coding project, retrieve passages of past coding sessions that answer it`. Chunks were embedded with no instruction, as
+the card says for documents. The vector is compared by cosine with every chunk of the question's project, exact and
+best first; the 100 best are returned. Scope is the question's project, as a tool that runs in the repository would
+see. A result reads as the chunk's text: its messages with their labels (`user:`, `tool_use Edit:` and so on).
+
 The published store was built from the 403 sessions with the embedder on an RTX 5070 Ti, in 55 min: 114,516 chunks
 from 156,115 messages, 46.7 million tokens.
 
