@@ -539,19 +539,41 @@ version, since a later bilbo may write and search another way:
   When it says yes, the model runs the skill as shipped, with Bash, Read and Edit, against the real binary.
 - `bilbo-assisted-v0_19`: the same, plus a bare `/note` from the user after the last exchange of every session.
 
-Each project is written into its own store, its sessions one after another in the order they started; then the five
+Each project is written into its own store, its sessions one after another in the order they started; then the projects
 are merged into one store, as one developer's bilbo holds every project, and that store is what search reads. A run
 sees the skill's `SKILL.md` from the v0.19.0 tag and up to 32k tokens of its session; the yes-or-no call sees 16k.
 After each run the build runs `bilbo check`, as the harness does, and `bilbo index`, as bilbo's timer would. The build
 checkpoints after every exchange, and a session that stopped half way starts again from its beginning.
+
+The build continues the published store named in `seed`: it restores the five L3 projects' journals, decisions and notes
+from it, after checking that they render to the same exchanges, and writes only the 17 new projects. The seed is in the
+store's key, and the manifest's `seed` block holds its numbers.
 
 What the replay changes:
 
 - An exchange is one prompt and everything up to the next, rendered as L3 rendered it: thinking and system reminders
   are dropped, and each tool input and result is cut to 800 characters. The two Cursor transcripts are skipped before
   rendering.
-- The yes-or-no call is the harness's: a real agent decides while it works. Each arm runs its own pass, so a build
-  of both draws it twice, where L3 drew one pass per project for both rows.
+- The yes-or-no call is the harness's: a real agent decides while it works. Its request does not depend on the row,
+  so the two arms share one pass per project, as L3 drew it: whichever arm reaches a project first draws it, under a lock
+  on a folder both builds mount, and the other reads it. The manifest's `decisions` block says which arm drew each pass.
+- Projects run in lanes, a build container each, three at a time per arm, against the arm's one embedder; a project's
+  sessions still run one after another. A vector the writer's own searches see can differ from one embedded alone by
+  floating-point noise; the store's vectors come from one fresh pass.
+- This build ran on a Linux x86_64 host with the embedder on its CPU, four threads for each arm. The five L3 projects'
+  notes come from the published stores, which were packed on an arm64 Mac's CPU, and every vector of the store is made
+  again in the one fresh pass. The device and the threads are outside the key; the manifest's `device` and
+  `versions.arch` record them.
+- The renderer splits lines on U+0085, U+2028 and U+2029, which bosarsalog and Cakebrew carry inside strings: they are
+  given as JSON escapes first, so the text is unchanged. A session continued from another machine (pablo-companion's
+  e4c6252f) starts at its own first record: the 124 records before it ran there. superset-windows-arm64's Windows paths
+  stay as recorded, since the writer sees only the transcript's text.
+- The assisted arm's `/note` follows the last exchange of every session, derived from the exchanges; on the five L3
+  projects that is `l3/policy/schedule.jsonl` exactly.
+- A call the model's safeguards refuse is never sent again: the build records it as the writer records any model
+  failure (a `none` decision, a run that ends in an error), and stops both arms at the fourth refusal
+  (`BILBO_EVAL_ON_REFUSAL=record`, `BILBO_EVAL_REFUSAL_LIMIT=3`; unset, the first refusal stops them). The manifest of the
+  arm that met a refusal lists it. The refusals are kept in a folder keyed by the LLM only, so a trial's refusals count toward the full build's limit.
 - Only the note skill is listed, and the prompt hook (`bilbo digest`) is off, since it only reads. After a compaction
   the writer sees the nudge of bilbo's compaction hook.
 - The writer can open only bilbo's notes, never the project's files, and runs only the skill's allowed commands. The

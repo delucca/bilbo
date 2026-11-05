@@ -2,10 +2,21 @@
 Every project is written on its own, session by session: after each exchange a call asks the model whether
 the agent would use bilbo's note skill (the decision pass), and where it would, a tool loop runs the skill as shipped
 against the real bilbo binary. The assisted row adds a bare /note after the last exchange of every session. The LLM
-calls go through a loopback gateway to BILBO_EVAL_LLM_URL. Once every project is written, their notes are merged
-into one bilbo store, indexed once with the eval's embedder and saved with the writer's journals and a manifest in /work/store. The writer checkpoints
-after every exchange in /work/states, and a run that finds them resumes from there."""
+calls go through a loopback gateway to BILBO_EVAL_LLM_URL.
+The store is built in lanes (x-lanes in compose.yaml): with BILBO_EVAL_LANE set, this writes only that project, in a build
+container of its own, into /work/states/<project> (scratch in /work/lanes/<project>); `--merge` then merges the projects'
+notes into one bilbo store, indexed once with the eval's embedder and saved with the writer's journals and a manifest in
+/work/store, and `--lanes` names the lanes. The writer checkpoints after every exchange, and a run that finds them
+resumes from there; a copy of a project's state is kept at the end of each session in /work/backup.
+Both arms mount one folder at /decisions: the decision pass of a project does not depend on the row, so whichever arm
+reaches a project first draws it, under the writer's own lock, and the other finds every row done.
+A seed (the published store this build continues) restores the five L3 projects' journals, decisions and notes after
+checking that they render to the same exchanges, so only the other projects cost an LLM call. The renderer's input is
+fixed first by replay.py (separators escaped, a teleported session started at its own first record). A call the model's
+safeguards refuse stops both builds and is never sent again. BILBO_EVAL_DRY_RUN=1 renders every exchange on the host and
+counts the calls, with no LLM and no Docker."""
 
+import fcntl
 import hashlib
 import http.client
 import json
@@ -16,6 +27,7 @@ import shutil
 import signal
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import urllib.error
@@ -29,9 +41,13 @@ from math import isfinite
 from pathlib import Path, PurePosixPath
 from urllib.parse import quote, unquote, urlparse
 
-sys.path.insert(0, "/app/l3")
+HERE = Path(__file__).resolve().parent
+L3 = Path("/app/l3") if Path("/app/l3").is_dir() else HERE / "l3"
+sys.path.insert(0, str(L3))
+sys.path.insert(1, str(HERE))
 
 import render  # noqa: E402
+import replay  # noqa: E402
 import schema  # noqa: E402
 import writer  # noqa: E402
 
@@ -60,10 +76,26 @@ KINDS = "plan|spec|design|decision|gotcha|research|review|report|reference"
 JOURNALS = ("done.jsonl", "actions.jsonl", "edits.jsonl", "metrics.jsonl")
 NAME = re.compile(r"^(\d{4}-\d\d-\d\dT)(\d\d)(\d\d)(\d\d)Z--(.+)\.jsonl$")
 FNV_OFFSET, FNV_PRIME = 0xCBF29CE484222325, 0x100000001B3
+# The five projects L3 wrote: byte-identical in both corpora, restored from the seed and not written again.
+OLD = ("4gray__iptvnator", "MoonshotAI__kimi-cli", "ababushkin__linear-cycle-drain", "ngngardner__readaloud", "port-experimental__port-cli")
+# What a decision call carries besides the window of the session it shows: the frame, the tail and the message wrappers.
+DECIDE_OVERHEAD = 6430
 
-CORPUS = Path("/corpus")
+DRY = os.environ.get("BILBO_EVAL_DRY_RUN") == "1"
+LANE = os.environ.get("BILBO_EVAL_LANE", "")
+ON_REFUSAL = os.environ.get("BILBO_EVAL_ON_REFUSAL", "stop")
+REFUSAL_LIMIT = int(os.environ.get("BILBO_EVAL_REFUSAL_LIMIT", "3"))
+
+CORPUS = Path(os.environ["BILBO_EVAL_CORPUS"]) if DRY and os.environ.get("BILBO_EVAL_CORPUS") else Path("/corpus")
 WORK = Path("/work")
-L3 = Path("/app/l3")
+LANES = WORK / "lanes"
+DECISIONS = Path("/decisions")
+# The refusal memory is kept outside the store key (a trial, a full build and a fixed build.py share it) and holds the per-request
+# locks both arms take around an upstream call.
+REFUSAL_DIR = Path("/refusals")
+REFUSALS = REFUSAL_DIR / "refusals.jsonl"
+INFLIGHT = REFUSAL_DIR / "inflight"
+SEED = Path(os.environ["BILBO_EVAL_SEED"]) if os.environ.get("BILBO_EVAL_SEED") else WORK / "seed" / "store"
 SKILL = Path("/app/skill/SKILL.md")
 BILBO = Path("/usr/local/bin/bilbo")
 
@@ -77,16 +109,30 @@ def stamp(entry):
 
 
 def sessions():
-    """Every Claude Code session as (start, repo, path), in the order they started across all repos, as for mem0.
-    A transcript with no timestamp (Cursor's) is left out, as the other arms do."""
+    """Every Claude Code session as (start, repo, path), in the order they started across all repos, as for mem0, each read
+    as the renderer will read it (replay.py). A transcript with no timestamp (Cursor's) is left out, as the other arms do.
+    BILBO_EVAL_SESSIONS is N, the first N sessions, or repo:N,repo:N, the first N of each repository named."""
     found, other = [], []
     for path in sorted(CORPUS.glob("*/*.jsonl")):
-        start = next((t for t in map(stamp, map(json.loads, path.open())) if t), None)
+        text = replay.transcript_text(path)[0]
+        start = next((t for t in (stamp(json.loads(line)) for line in text.split("\n") if line.strip()) if t), None)
         (found if start else other).append((start, path.parent.name, path))
     found.sort()
-    limit = os.environ.get("BILBO_EVAL_SESSIONS")
+    limit = os.environ.get("BILBO_EVAL_SESSIONS") or ""
+    if ":" in limit:
+        per = {repo: int(n) for repo, n in (part.split(":") for part in limit.split(","))}
+        if unknown := set(per) - {repo for _, repo, _ in found}:
+            sys.exit(f"{ARM}: BILBO_EVAL_SESSIONS names repositories the corpus lacks: {sorted(unknown)}")
+        taken, kept = Counter(), []
+        for start, repo, path in found:
+            if taken[repo] < per.get(repo, 0):
+                taken[repo] += 1
+                kept.append((start, repo, path))
+        found = kept
+    elif limit:
+        found = found[: int(limit)]
     skipped = [{"file": f"{repo}/{path.name}", "reason": "no timestamp (Cursor)"} for _, repo, path in other]
-    return found[: int(limit) if limit else None], skipped
+    return found, skipped
 
 
 def sha256(path):
@@ -96,29 +142,145 @@ def sha256(path):
 # --- the LLM, through a loopback gateway ---------------------------------------------------------------------------------
 
 
+def append_escaped(path, row, lock=None):
+    """writer.append_jsonl with the separators splitlines() breaks on written as JSON escapes (the row parses the same): a model that
+    echoes U+0085, U+2028 or U+2029 into an action, edit or decision must not split a journal row for the writer's own line counts."""
+    line = replay.escape_separators(json.dumps(row, ensure_ascii=False, sort_keys=True)) + "\n"
+    if lock:
+        lock.acquire()
+    try:
+        with open(path, "a", encoding="utf-8") as f:
+            f.write(line)
+            f.flush()
+            os.fsync(f.fileno())
+    finally:
+        if lock:
+            lock.release()
+
+
+writer.append_jsonl = append_escaped
+
+
+def seedless(body):
+    """sha256 of a request without its seed: the writer retries a step whose output was invalid with a new seed, and a
+    refused request must not go out again under one."""
+    try:
+        doc = json.loads(body)
+    except ValueError:
+        return hashlib.sha256(body).hexdigest()
+    if isinstance(doc, dict):
+        doc.pop("seed", None)
+    return hashlib.sha256(json.dumps(doc, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
+
+
+def refusals():
+    """The refusals both arms recorded in /decisions/refusals.jsonl."""
+    if not REFUSALS.exists():
+        return []
+    rows = []
+    for line in REFUSALS.read_text(encoding="utf-8").split("\n"):
+        try:
+            rows.append(json.loads(line))
+        except ValueError:
+            pass  # a cut last line
+    return rows
+
+
+def error_code(data):
+    try:
+        return (json.loads(data).get("error") or {}).get("code") or ""
+    except (ValueError, AttributeError):
+        return ""
+
+
+def usage_totals(usages):
+    """The counters of every label of the given usage documents, added up, and the same split by stage."""
+    zero = {"requests": 0, "answered": 0, "cached": 0, "prompt_tokens": 0, "completion_tokens": 0}
+    total, by_stage, status = dict(zero), {}, Counter()
+    for usage in usages:
+        for c in usage.values():
+            stage = by_stage.setdefault(c.get("stage") or "run", dict(zero))
+            for k in zero:
+                total[k] += c[k]
+                stage[k] += c[k]
+            status.update(c["status"])
+    return total | {"status": dict(sorted(status.items()))}, dict(sorted(by_stage.items()))
+
+
 class Gateway(ThreadingHTTPServer):
     """The writer builds its own L3 labels and sends them as X-L3-Label. Here each call goes to /l/<label>/v1, and the
-    gateway sends the body unchanged to the eval's endpoint with the eval's key and headers: a label of L3's never reaches
-    the endpoint, where it would replay or bill L3's own records. An upstream answer comes back as it came, with its
-    Retry-After, which writer.Chat waits out; an upstream that cannot be reached is a 503 with no body, which it waits
-    out too. Per label, the answered calls, those the endpoint served from a cache, the tokens and the statuses are
-    counted, and /work/usage.json is rewritten after every call so that the totals survive a resume."""
+    gateway sends the body unchanged to the eval's endpoint with the eval's key and headers. An X-L3-Label among those
+    headers is the build's base label: the call then goes out as <base>/decide/<project> or <base>/run-<row>/<project>,
+    so the endpoint's ledger splits the stages and projects of this build, and a label of L3's never reaches it. An
+    upstream answer comes back as it came, with its Retry-After, which writer.Chat waits out; an upstream that cannot be
+    reached is a 503 with no body, which it waits out too. Per label, the answered calls, those the endpoint served from a
+    cache, the tokens and the statuses are counted, and the lane's usage.json is rewritten after every call so that the
+    totals survive a resume.
+    A refusal by the model's safeguards (502 l3_refused) is written to /decisions/refusals.jsonl, shared by both arms, and
+    that request is never sent again. In the default mode (BILBO_EVAL_ON_REFUSAL=stop) the first one stops every call of
+    both builds with a 403, which the writer treats as a stop; in `record` mode the refusal reaches the writer as a model
+    failure, up to BILBO_EVAL_REFUSAL_LIMIT of them. A call cap of the endpoint (429) is also turned into a 403: the
+    writer would wait out a 429, and a cap is for the lead to raise."""
 
     daemon_threads = True
+    LABEL = re.compile(r"^l3s/([^/]+)/[^/]+/([^/]+)/r\d+$")
 
     def __init__(self, upstream, key, headers, usage_path):
         super().__init__(("127.0.0.1", 0), Forward)
-        self.upstream, self.key, self.headers = upstream.rstrip("/"), key, headers
+        self.upstream, self.key = upstream.rstrip("/"), key
+        self.base = next((v for k, v in headers.items() if k.lower() == "x-l3-label"), None)
+        self.headers = {k: v for k, v in headers.items() if k.lower() != "x-l3-label"}
         self.usage_path, self.lock = Path(usage_path), threading.Lock()
         self.usage = json.loads(self.usage_path.read_text()) if self.usage_path.exists() else {}
 
     def base_for(self, label):
         return f"http://127.0.0.1:{self.server_address[1]}/l/{quote(label, safe='')}/v1"
 
+    def route(self, label):
+        """(the label the endpoint sees or None, the stage) of a writer label; None for a label the writer never builds
+        when a base label is set."""
+        m = self.LABEL.match(label)
+        if not self.base:
+            return None, "decide" if m and m[1] == "decide" else "run"
+        if not m or m[1] not in ("decide", "run"):
+            return None
+        return (f"{self.base}/decide/{m[2]}" if m[1] == "decide" else f"{self.base}/run-{ROW}/{m[2]}"), m[1]
+
+    def local(self, status, code, message, label, stage):
+        data = json.dumps({"error": {"code": code, "message": message}}).encode()
+        self.record(label, stage, status, False, data)
+        return status, {"Content-Type": "application/json"}, data
+
+    def stopped(self, label, stage, rows):
+        return self.local(403, "bilbo_refusal_stop", f"{len(rows)} refusals in {REFUSALS}; the lead decides", label, stage)
+
     def send(self, label, body):
+        routed = self.route(label)
+        if routed is None:
+            return 404, {}, b'{"error": {"code": "not_found"}}'
+        upstream_label, stage = routed
+        count = upstream_label or label
+        rows = refusals()
+        if rows and (ON_REFUSAL == "stop" or len(rows) > REFUSAL_LIMIT):
+            return self.stopped(count, stage, rows)
+        sha = seedless(body)
+        # Identical bodies of the two arms (the first step of an agent-triggered run is the same text in both) go one at a time, so a
+        # request the model refuses is refused once: the second copy waits here, re-reads the refusals and gets the local 502.
+        INFLIGHT.mkdir(parents=True, exist_ok=True)
+        with open(INFLIGHT / f"{sha}.lock", "w") as twin:
+            fcntl.flock(twin, fcntl.LOCK_EX)
+            rows = refusals()
+            if rows and (ON_REFUSAL == "stop" or len(rows) > REFUSAL_LIMIT):
+                return self.stopped(count, stage, rows)
+            if any(r.get("sha") == sha for r in rows):
+                return self.local(502, "l3_refused", "refused before; not sent again", count, stage)
+            return self.upstream_call(body, sha, upstream_label, count, stage)
+
+    def upstream_call(self, body, sha, upstream_label, count, stage):
+        extra = {"X-L3-Label": upstream_label} if upstream_label else {}
         request = urllib.request.Request(
             self.upstream + "/chat/completions", body, method="POST",
-            headers={"Content-Type": "application/json", "Authorization": f"Bearer {self.key}"} | self.headers,
+            headers={"Content-Type": "application/json", "Authorization": f"Bearer {self.key}"} | self.headers | extra,
         )  # fmt: skip
         try:
             with urllib.request.urlopen(request, timeout=1700) as r:
@@ -128,10 +290,27 @@ class Gateway(ThreadingHTTPServer):
         except (OSError, http.client.HTTPException) as e:  # refused, reset or timed out
             log(f"the LLM endpoint is unreachable: {e}")
             status, headers, data = 503, {}, b""
-        self.record(label, status, headers.get("x-l3-cache") == "hit", data)
+        code = error_code(data) if status in (429, 502) else ""
+        if (status == 429 and code in ("l3_claude_call_cap", "l3_call_cap")) or (status == 502 and code == "l3_cap_after_retry"):
+            log(f"{count}: the endpoint's call cap is reached ({code}); the lead raises it and runs again")
+            return self.local(403, code, "the endpoint's call cap is reached", count, stage)
+        self.record(count, stage, status, headers.get("x-l3-cache") == "hit", data)
+        if status == 502 and code == "l3_refused":
+            self.refused(count, sha)
+            rows = refusals()
+            if ON_REFUSAL == "stop" or len(rows) > REFUSAL_LIMIT:
+                return self.stopped(count, stage, rows)
         return status, headers, data
 
-    def record(self, label, status, cached, data):
+    def refused(self, label, sha):
+        log(f"REFUSED: the model's safeguards refused a call of {label} (request {sha[:12]}); recorded in {REFUSALS}")
+        REFUSALS.parent.mkdir(parents=True, exist_ok=True)
+        with open(REFUSALS.with_suffix(".lock"), "w") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            if not any(r.get("sha") == sha for r in refusals()):
+                writer.append_jsonl(REFUSALS, {"time": datetime.now(timezone.utc).isoformat(timespec="seconds"), "arm": ARM, "lane": LANE, "label": label, "sha": sha})
+
+    def record(self, label, stage, status, cached, data):
         usage = {}
         if status == 200:
             try:
@@ -139,7 +318,7 @@ class Gateway(ThreadingHTTPServer):
             except ValueError:
                 pass
         with self.lock:
-            c = self.usage.setdefault(label, {"requests": 0, "answered": 0, "cached": 0, "prompt_tokens": 0, "completion_tokens": 0, "status": {}})
+            c = self.usage.setdefault(label, {"stage": stage, "requests": 0, "answered": 0, "cached": 0, "prompt_tokens": 0, "completion_tokens": 0, "status": {}})
             c["requests"] += 1
             c["status"][str(status)] = c["status"].get(str(status), 0) + 1
             if status == 200:
@@ -150,14 +329,8 @@ class Gateway(ThreadingHTTPServer):
             writer.write_atomic(self.usage_path, json.dumps(self.usage, indent=1, sort_keys=True) + "\n")
 
     def totals(self):
-        t = {"requests": 0, "answered": 0, "cached": 0, "prompt_tokens": 0, "completion_tokens": 0}
-        status = Counter()
         with self.lock:
-            for c in self.usage.values():
-                for k in t:
-                    t[k] += c[k]
-                status.update(c["status"])
-        return t | {"status": dict(sorted(status.items()))}
+            return usage_totals([self.usage])[0]
 
 
 def retry_after(value):
@@ -205,18 +378,27 @@ class Forward(BaseHTTPRequestHandler):
 # --- rendering ------------------------------------------------------------------------------------------------------------
 
 
-def render_all(plan, data):
-    """L3's renderer, unchanged, over the kept sessions of each repo: transcripts linked under their session ids and a
-    selection.json as the renderer reads it. Returns {repo: {"exchanges": path}} for the repos that render to at least one
-    exchange."""
+def render_all(plan, data, only=None):
+    """L3's renderer, unchanged, over the kept sessions of each repo (only the one named, for a lane): the transcripts as
+    replay.py fixes them, written under their session ids (linked when nothing changed) and a selection.json as the
+    renderer reads it, then each exchanges file with its separators escaped, since schema.py and the journals split lines
+    on them. Returns ({repo: {"exchanges": path}} for the repos that render to at least one exchange, {file: what replay
+    changed})."""
     shutil.rmtree(data, ignore_errors=True)
     raw = data / "raw" / "transcripts"
     raw.mkdir(parents=True)
-    repos = {}
+    repos, changes = {}, {}
     for _, key, path in plan:
+        if only and key != only:
+            continue
         m = NAME.match(path.name)
         sid = m[5]
-        (raw / f"{sid}.jsonl").symlink_to(path)
+        text, changed = replay.transcript_text(path)
+        if changed:
+            (raw / f"{sid}.jsonl").write_text(text, encoding="utf-8")
+            changes[f"{key}/{path.name}"] = changed
+        else:
+            (raw / f"{sid}.jsonl").symlink_to(path)
         repos.setdefault(key.replace("__", "/", 1), {"key": key, "sessions": []})["sessions"].append(
             {"session_id": sid, "created_at": f"{m[1]}{m[2]}:{m[3]}:{m[4]}Z"}
         )
@@ -226,9 +408,10 @@ def render_all(plan, data):
         key = repos[rid]["key"]
         render.main(["--data", str(data), "--selection", str(data / "selection.json"), "--repo", rid, "--out", str(data / "exchanges")])
         path = data / "exchanges" / f"{key}.jsonl"
+        replay.escape_file(path)
         if path.stat().st_size:
             out[key] = {"exchanges": path}
-    return out
+    return out, changes
 
 
 # --- resuming ---------------------------------------------------------------------------------------------------------
@@ -268,6 +451,155 @@ def restore_half(state, bilbo, skill, embedder):
         return None
     writer.after_run(sb, tool)
     return session
+
+
+def schedule_for(key, rows):
+    """The assisted row's /note schedule of a project: the last exchange of every session. L3 wrote its schedule for the five
+    old projects only; this rule gives that file exactly there, and the new projects get theirs from the same rule. Stops
+    when either does not hold."""
+    derived = [s[-1]["xid"] for s in writer.group_sessions(rows)]
+    l3 = {r["xid"] for r in schema.load_schedule(L3 / "policy" / "schedule.jsonl")}
+    if key in OLD and set(derived) != l3 & {r["xid"] for r in rows}:
+        sys.exit(f"{ARM}: the last exchange of every session of {key} is not what l3/policy/schedule.jsonl holds")
+    if key not in OLD and set(derived) & l3:
+        sys.exit(f"{ARM}: l3/policy/schedule.jsonl names exchanges of {key}, which L3 did not write")
+    return [{"request": "/note", "xid": x} for x in derived]
+
+
+def write_schedule(path, schedule):
+    writer.write_atomic(path, "".join(json.dumps(r) + "\n" for r in schedule))
+
+
+def seed_manifest():
+    return json.loads((SEED / "manifest.json").read_text()) if (SEED / "manifest.json").exists() else None
+
+
+def check_seed(sm, key, exchanges, rows, model=None):
+    """Stops unless the seed is the published store of this row, built by the same writer, skill and model, and its
+    project renders to the exchanges it was written from, all of which it has done."""
+    bad = []
+    if sm["arm"] != ARM:
+        bad.append(f"the seed is the store of {sm['arm']}")
+    if model and sm["llm"]["model"] != model:
+        bad.append(f"the seed was written by {sm['llm']['model']}, this build by {model}")
+    if sm["method"]["l3_files"] != L3_FILES:
+        bad.append("the seed was written by other L3 files")
+    if sm["method"]["skill"]["sha256"] != writer.SKILL_SHA256:
+        bad.append("the seed was written with another note skill")
+    if key not in sm["repos"]:
+        bad.append(f"the seed holds no {key}")
+    else:
+        if sm["repos"][key]["exchanges_sha256"] != sha256(exchanges):
+            bad.append(f"{key} renders to other exchanges than the seed's")
+        done = {r["xid"] for r in writer.jsonl(SEED / "writer" / key / "done.jsonl")}
+        if done != {r["xid"] for r in rows}:
+            bad.append(f"the seed's done journal of {key} is not the rendered exchanges")
+    if bad:
+        sys.exit(f"{ARM}: cannot continue the seed: {'; '.join(bad)}")
+
+
+def restore_seed(key, exchanges, rows, model):
+    """Continue the published store for a project it holds: its journals, decisions, traces and notes, copied into the
+    state the writer resumes from and compared byte for byte with the seed's. The writer then finds every exchange done
+    and calls nothing. The shared decisions file gets the seed's decisions under its lock (the other arm's seed holds the
+    same bytes). Does nothing when the state already exists. Returns True when it restored the project."""
+    state = WORK / "states" / key
+    sm = seed_manifest()
+    if sm is None or key not in sm["repos"] or state.exists():
+        return False
+    check_seed(sm, key, exchanges, rows, model)
+    src, info = SEED / "writer" / key, sm["repos"][key]
+    tmp = state.with_name(key + ".seed.tmp")
+    shutil.rmtree(tmp, ignore_errors=True)
+    pairs = []
+    for f in (*JOURNALS, "manifest.json", "provenance.json"):
+        if (src / f).exists():
+            pairs.append((src / f, tmp / f))
+    pairs.append((src / "decisions.jsonl", tmp / "decisions" / "bilbo.jsonl"))
+    if (src / "traces").is_dir():
+        pairs += [(t, tmp / "traces" / t.name) for t in sorted((src / "traces").iterdir())]
+    pairs += [(SEED / "notes" / n, tmp / "store" / "notes" / n) for n in info["notes"]]
+    for a, b in pairs:
+        b.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(a, b)
+        if sha256(a) != sha256(b):
+            sys.exit(f"{ARM}: {b} differs from the seed's {a}")
+    shared = writer.decisions_file(DECISIONS, key, 1, "bilbo", model)
+    shared.parent.mkdir(parents=True, exist_ok=True)
+    data = (src / "decisions.jsonl").read_bytes()
+    with open(shared.with_suffix(".lock"), "w") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        if shared.exists():
+            if shared.read_bytes() != data:
+                sys.exit(f"{ARM}: {shared} is not the seed's decisions of {key}")
+        else:
+            part = shared.with_name(shared.name + ".tmp")
+            part.write_bytes(data)
+            os.replace(part, shared)
+    (LANES / key).mkdir(parents=True, exist_ok=True)
+    writer.write_atomic(LANES / key / "seed.json", json.dumps({"notes": len(info["notes"]), "llm_calls": info["llm_calls"]}) + "\n")
+    os.replace(tmp, state)
+    log(f"{key}: restored from the seed: {len(rows)} exchanges, {len(info['notes'])} notes, no LLM call")
+    return True
+
+
+def require_seed_decisions(lane, state, model):
+    """A seeded project is never drawn again: its shared decisions file must exist and be the restored one, else a lost decisions folder
+    would make decide() draw the whole pass anew (805 calls for the old five)."""
+    if lane not in OLD:
+        return
+    shared = writer.decisions_file(DECISIONS, lane, 1, "bilbo", model)
+    if not shared.exists() or shared.read_bytes() != (state / "decisions" / "bilbo.jsonl").read_bytes():
+        sys.exit(f"{ARM}: {lane} is a seeded project and its shared decisions file {shared} is missing or not the restored one; "
+                 "drawing it again would cost its whole pass: restore the decisions folder")  # fmt: skip
+
+
+def decide(p, chat, rows):
+    """The decision pass of one project, shared by both arms: under the writer's own lock on the shared file, whichever arm
+    comes first draws it and the other finds every row done. A cut last line is dropped under the lock, never beside a
+    writer that is still appending. Returns the rows this arm drew."""
+    tool, _, sessions, _, _ = writer._load(p)
+    out = writer.decisions_path(p, tool)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    with open(out.with_suffix(".lock"), "w") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        if trim_tail(out):
+            log(f"{p.repo}: dropped the half-written last line of {out.name}")
+        had = len(writer.jsonl(out))
+        try:
+            writer.decision_pass(chat, f"l3s/{p.stage or 'decide'}/{tool.name}/{p.repo}/r{p.rep}", tool, sessions, out, p.workers)
+        finally:
+            try:
+                count_drawn(p.repo, len(writer.jsonl(out)) - had)
+            except Exception:
+                pass
+        got = [r["xid"] for r in writer.jsonl(out)]
+    if len(got) != len(set(got)) or set(got) != {x["xid"] for x in rows}:
+        sys.exit(f"{ARM}: {out} holds {len(got)} rows for {len(rows)} exchanges ({len(got) - len(set(got))} doubled): "
+                 "two passes met; stop both builds and look before resuming")  # fmt: skip
+    return len(got) - had
+
+
+def count_drawn(key, n):
+    """Add the decisions this arm drew to the lane's tally, which a resumed lane keeps."""
+    f = LANES / key / "drawn.json"
+    f.parent.mkdir(parents=True, exist_ok=True)
+    total = n + (json.loads(f.read_text())["drawn"] if f.exists() else 0)
+    writer.write_atomic(f, json.dumps({"drawn": total}) + "\n")
+
+
+def backup(key):
+    """A copy of the project's state, made at the end of a session (the writer is between two sessions then): the newest
+    two are kept in /work/backup/<project>."""
+    dest = WORK / "backup" / key
+    dest.mkdir(parents=True, exist_ok=True)
+    for old in dest.glob("*.tmp"):
+        shutil.rmtree(old, ignore_errors=True)
+    name = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+    shutil.copytree(WORK / "states" / key, dest / f"{name}.tmp", symlinks=True, ignore=shutil.ignore_patterns("snap"))
+    os.replace(dest / f"{name}.tmp", dest / name)
+    for old in sorted(dest.iterdir())[:-2]:
+        shutil.rmtree(old, ignore_errors=True)
 
 
 # --- the store ---------------------------------------------------------------------------------------------------------
@@ -412,25 +744,51 @@ INDEX_NOTE = (
 )
 
 
-def manifest(repos, found, embedder, gateway, skipped):
+def read_json(path, default):
+    path = Path(path)
+    return json.loads(path.read_text()) if path.exists() else default
+
+
+def manifest(repos, found, embedder, skipped, changes):
     names, vectors, vector_file = found
     inputs = (WORK / "key.txt").read_text().splitlines()
-    by_repo, wall = {}, 0.0
+    by_repo, lanes, usages, wall = {}, {}, [], 0.0
+    drawn, seeded = {}, {}
     for key in sorted(repos):
         state = WORK / "states" / key
         w = json.loads((state / "manifest.json").read_text())
         rows = schema.load_exchanges(repos[key]["exchanges"])
         created = sorted(writer.split_frontmatter((WORK / "store" / "notes" / n).read_text())[0]["created"] for n in names[key])
+        drawn[key] = read_json(LANES / key / "drawn.json", {"drawn": 0})["drawn"]
+        if (LANES / key / "seed.json").exists():
+            seeded[key] = read_json(LANES / key / "seed.json", {})
         entry = {
             "sessions": sorted({r["session_id"] for r in rows}, key=lambda s: next(r["s"] for r in rows if r["session_id"] == s)),
             "exchanges": len(rows), "exchanges_sha256": sha256(repos[key]["exchanges"]), "notes": names[key],
             "notes_count": len(names[key]), "writer": w["counts"],
             "llm_calls": w["counts"]["decisions"] + w["counts"]["run_llm_calls"], "created": [created[0], created[-1]] if created else None,
+            "decide_drawn_here": drawn[key] > 0,
         }  # fmt: skip
         if (state / "provenance.json").exists():
             entry["provenance"] = json.loads((state / "provenance.json").read_text())
         by_repo[key] = entry
+        usage = read_json(LANES / key / "usage.json", {})
+        usages.append(usage)
+        lanes[key] = {"usage": usage_totals([usage])[0], "wall_s": w["wall_s"]}
         wall += w["wall_s"]
+    total, by_stage = usage_totals(usages)
+    seed = None
+    if seeded:
+        sm = seed_manifest()
+        line = next((i.split() for i in inputs[1:] if i.startswith("seed ")), None)
+        seed = {
+            "archive": line[1] if line else None, "sha256": line[2] if line else None, "key": sm["key"], "repos": sorted(seeded),
+            "notes": sum(v["notes"] for v in seeded.values()), "llm_calls": sum(v["llm_calls"] for v in seeded.values()),
+        }  # fmt: skip
+    schedule = None
+    if ROW == "assisted":
+        schedule = ("a bare /note after the last exchange of every session, derived from the exchanges; on the five L3 projects it is "
+                    "l3/policy/schedule.jsonl exactly")  # fmt: skip
     return {
         "arm": ARM, "key": inputs[0], "inputs": inputs[1:], "device": os.environ["BILBO_EVAL_DEVICE"], "versions": versions(embedder),
         "method": {
@@ -438,7 +796,7 @@ def manifest(repos, found, embedder, gateway, skipped):
             "skill": {"path": writer.SKILL_PATH, "tag": writer.SKILL_TAG, "sha256": writer.SKILL_SHA256},
             "render_sha": render.render_sha(), "cap": render.CAP, "encoding": render.ENCODING, "decide_window": writer.DECIDE_WINDOW,
             "run_window": writer.RUN_WINDOW, "max_steps": writer.MAX_STEPS, "effort": "default",
-            "schedule": "a bare /note after the last exchange of every session" if ROW == "assisted" else None,
+            "schedule": schedule,
         },
         "settings": SETTINGS,
         "index": {
@@ -449,10 +807,18 @@ def manifest(repos, found, embedder, gateway, skipped):
         "search": SEARCH,
         "sessions": sum(len(r["sessions"]) for r in by_repo.values()),
         "skipped": skipped,
+        "seed": seed,
+        "decisions": {"shared": "bilbo-v0_19", "folder": os.environ.get("BILBO_EVAL_DECISIONS_NAME", ""), "drawn_here": drawn},
+        "replay": {
+            "separators_escaped": {f: c["separators"] for f, c in changes.items() if "separators" in c},
+            "teleported": {f: c["teleported_records"] for f, c in changes.items() if "teleported_records" in c},
+        },
+        "refusals": [r for r in refusals() if r.get("arm") == ARM],
+        "lanes": lanes,
         "repos": by_repo,
         "notes": sum(r["notes_count"] for r in by_repo.values()),
         "vectors": vectors,
-        "llm": {"model": os.environ["BILBO_EVAL_LLM_MODEL"], "calls": sum(r["llm_calls"] for r in by_repo.values()), "gateway": gateway.totals()},
+        "llm": {"model": os.environ["BILBO_EVAL_LLM_MODEL"], "calls": sum(r["llm_calls"] for r in by_repo.values()), "gateway": total, "by_stage": by_stage},
         "ingest_seconds": round(wall),
         "finished": datetime.now(timezone.utc).isoformat(timespec="seconds"),
     }  # fmt: skip
@@ -462,11 +828,13 @@ def manifest(repos, found, embedder, gateway, skipped):
 
 
 def progress(rows, key, gateway):
-    """The writer's step hook: one line at the end of each session, counted from the done journal. It never raises."""
+    """The writer's step hook: at the end of each session one line, counted from the done journal, and a backup of the
+    project's state. It never raises."""
     last = {}
     for r in rows:
         last[r["session_id"]] = r["xid"]
     ends = set(last.values())
+    failed = []
 
     def hook(point, xid):
         try:
@@ -475,6 +843,12 @@ def progress(rows, key, gateway):
             finished = {r["xid"] for r in writer.jsonl(WORK / "states" / key / "done.jsonl")}
             log(f"{key} {len(ends & finished)}/{len(ends)} sessions, {len(finished)}/{len(rows)} exchanges, "
                 f"{gateway.totals()['answered']} LLM calls")  # fmt: skip
+            try:
+                backup(key)
+            except Exception as e:
+                if not failed:
+                    failed.append(e)
+                    log(f"{key}: no backup of the state: {e}")
         except Exception:
             pass
 
@@ -484,10 +858,12 @@ def progress(rows, key, gateway):
 def guards():
     if ROW not in ("agent", "assisted"):
         sys.exit("bilbo: BILBO_EVAL_ROW must be agent or assisted")
+    if ON_REFUSAL not in ("stop", "record"):
+        sys.exit(f"{ARM}: BILBO_EVAL_ON_REFUSAL must be stop or record")
     for name, want in L3_FILES.items():
         if sha256(L3 / name) != want:
             sys.exit(f"{ARM}: {name} is not the file the L3 eval froze at {L3_COMMIT}")
-    if sha256(SKILL) != writer.SKILL_SHA256:
+    if not DRY and sha256(SKILL) != writer.SKILL_SHA256:
         sys.exit(f"{ARM}: {SKILL} is not the note skill of {writer.SKILL_TAG}")
 
 
@@ -498,51 +874,161 @@ def stop(signum, frame):
     os._exit(130)
 
 
-def main():
-    signal.signal(signal.SIGINT, stop)
-    signal.signal(signal.SIGTERM, stop)
-    guards()
+def llm_settings():
     llm_url = os.environ["BILBO_EVAL_LLM_URL"].rstrip("/")
     llm_key = os.environ["BILBO_EVAL_LLM_KEY"]
-    llm_model = os.environ["BILBO_EVAL_LLM_MODEL"]
     llm_headers = json.loads(os.environ.get("BILBO_EVAL_LLM_HEADERS") or "{}")
-    embedder = os.environ["EMBEDDER_URL"].rstrip("/")
     try:
         request = urllib.request.Request(f"{llm_url}/models", headers={"Authorization": f"Bearer {llm_key}"} | llm_headers)
         urllib.request.urlopen(request, timeout=30).close()
     except (OSError, http.client.HTTPException) as e:
         sys.exit(f"{ARM}: the LLM endpoint {llm_url} does not answer: {e}")
+    return llm_url, llm_key, llm_headers
 
-    plan, skipped = sessions()
-    repos = render_all(plan, WORK / "data")
-    gateway = Gateway(llm_url, llm_key, llm_headers, WORK / "usage.json")
+
+def lane_main(lane):
+    """One project, in this container: restore it from the seed when the seed holds it, draw (or find) its decision pass,
+    write its sessions. The merge builds the store from the states of all lanes."""
+    guards()
+    llm_model = os.environ["BILBO_EVAL_LLM_MODEL"]
+    llm_url, llm_key, llm_headers = llm_settings()
+    embedder = os.environ["EMBEDDER_URL"].rstrip("/")
+    plan = [x for x in sessions()[0] if x[1] == lane]
+    if not plan:
+        sys.exit(f"{ARM}: the first {os.environ.get('BILBO_EVAL_SESSIONS') or 'all'} sessions hold none of {lane}")
+    (LANES / lane).mkdir(parents=True, exist_ok=True)
+    held = open(LANES / lane / ".lock", "w")
+    try:
+        fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        sys.exit(f"{ARM}: {lane} is being built by another container")
+    repos = render_all(plan, LANES / lane / "data", only=lane)[0]
+    if lane not in repos:
+        return log(f"{lane}: its sessions render to no exchange")
+    exchanges = repos[lane]["exchanges"]
+    rows = schema.load_exchanges(exchanges)
+    schedule = None
+    if ROW == "assisted":
+        schedule = LANES / lane / "schedule.jsonl"
+        write_schedule(schedule, schedule_for(lane, rows))
+    gateway = Gateway(llm_url, llm_key, llm_headers, LANES / lane / "usage.json")
     threading.Thread(target=gateway.serve_forever, daemon=True).start()
     chat = writer.Chat(gateway.base_for)
-    states, decisions = WORK / "states", WORK / "decisions"
-    for key in sorted(repos):
-        state = states / key
-        rows = schema.load_exchanges(repos[key]["exchanges"])
-        p = writer.Params(
-            arm=L3_ARM, repo=key, state=state, exchanges=repos[key]["exchanges"], render_sha=render.render_sha(), decisions_dir=decisions,
-            bilbo=BILBO, skill=SKILL, embedder=(embedder, MODEL, QUERY_PREFIX), schedule=L3 / "policy" / "schedule.jsonl" if ROW == "assisted" else None,
-            rep=1, stage=None, workers=8, model=llm_model, effort=None,
-        )  # fmt: skip
-        file = writer.decisions_file(decisions, key, 1, "bilbo", llm_model)
-        if any(trim_tail(f) for f in [file, *(state / j for j in JOURNALS)]):
-            log(f"{key}: dropped the half-written last line of a file an interrupt cut")
-        writer.STEP_HOOK = progress(rows, key, gateway)
-        try:
-            writer.run_decide(p, chat)
-            if (session := restore_half(state, BILBO, SKILL, p.embedder)) is not None:
-                log(f"{key}: an interrupt stopped session {session} in its first exchange: restored the store it started from")
-            writer.run_capture(p, chat)
-        except (writer.WriterError, schema.SchemaError) as e:
-            sys.exit(f"{ARM}: {key}: {e}; run again to resume")
-        log(f"{key}: written")
+    state = WORK / "states" / lane
+    restore_seed(lane, exchanges, rows, llm_model)
+    if any([trim_tail(state / j) | replay.escape_file(state / j) for j in JOURNALS]):
+        log(f"{lane}: dropped the half-written last line of a journal, or escaped a separator in one")
+    p = writer.Params(
+        arm=L3_ARM, repo=lane, state=state, exchanges=exchanges, render_sha=render.render_sha(), decisions_dir=DECISIONS,
+        bilbo=BILBO, skill=SKILL, embedder=(embedder, MODEL, QUERY_PREFIX), schedule=schedule,
+        rep=1, stage=None, workers=8, model=llm_model, effort=None,
+    )  # fmt: skip
+    writer.STEP_HOOK = progress(rows, lane, gateway)
+    require_seed_decisions(lane, state, llm_model)
+    try:
+        decide(p, chat, rows)
+        if (session := restore_half(state, BILBO, SKILL, p.embedder)) is not None:
+            log(f"{lane}: an interrupt stopped session {session} in its first exchange: restored the store it started from")
+        writer.run_capture(p, chat)
+    except (writer.WriterError, schema.SchemaError) as e:
+        sys.exit(f"{ARM}: {lane}: {e}; run again to resume")
+    log(f"{lane}: written")
 
+
+def merge_main():
+    """The store from the lanes' states, once every project is written."""
+    guards()
+    embedder = os.environ["EMBEDDER_URL"].rstrip("/")
+    plan, skipped = sessions()
+    repos, changes = render_all(plan, WORK / "data")
+    unfinished = []
+    for key in sorted(repos):
+        mf = WORK / "states" / key / "manifest.json"
+        done = {r["xid"] for r in writer.jsonl(WORK / "states" / key / "done.jsonl")}
+        have = json.loads(mf.read_text()) if mf.exists() else {}
+        want = {r["xid"] for r in schema.load_exchanges(repos[key]["exchanges"])}
+        if not have.get("done") or done != want:
+            unfinished.append(key)
+        elif have["exchanges_sha256"] != sha256(repos[key]["exchanges"]):
+            sys.exit(f"{ARM}: {key} was written from other exchanges than the corpus renders to now")
+    if unfinished:
+        sys.exit(f"{ARM}: lanes not finished: {', '.join(unfinished)}; run again to resume them")
+    states = WORK / "states"
     found = build_store(repos, states, WORK / "store", BILBO, embedder, Path("/tmp/index-home"))
-    (WORK / "store" / "manifest.json").write_text(json.dumps(manifest(repos, found, embedder, gateway, skipped), indent=2) + "\n")
+    (WORK / "store" / "manifest.json").write_text(json.dumps(manifest(repos, found, embedder, skipped, changes), indent=2) + "\n")
     log(f"done: {WORK / 'store'}")
+
+
+def dry_main():
+    """What the build would do, with no LLM, no Docker and no binary: every exchange rendered, the calls counted per
+    project, and the seed and the schedule checked. The table is the checkpoint the live run is compared with."""
+    guards()
+    scratch = Path(tempfile.mkdtemp(prefix="bilbo-dry-"))
+    try:
+        plan, skipped = sessions()
+        repos, changes = render_all(plan, scratch / "data")
+        stats = json.loads((scratch / "data" / "rendered_stats.json").read_text())
+        sm = seed_manifest()
+        print(f"{'project':34} {'sess':>4} {'exch':>5} {'/note':>5} {'decide window tok':>17}  old-five sha vs seed   drops")
+        tot, table = Counter(), []
+        for rid in sorted({k.replace("__", "/", 1) for _, k, _ in plan}):
+            key = rid.replace("/", "__", 1)
+            if key not in repos:
+                table.append((key, 0, 0, 0, 0, "", stats[rid]["dropped"]))
+                continue
+            rows = schema.load_exchanges(repos[key]["exchanges"])
+            sess = writer.group_sessions(rows)
+            notes = len(schedule_for(key, rows))
+            window = sum(y["tokens"] for s in sess for i in range(len(s)) for y in writer.window(s, i, writer.DECIDE_WINDOW))
+            table.append((key, len(sess), len(rows), notes, window, sha256(repos[key]["exchanges"]), stats[rid]["dropped"]))
+            if sm and key in OLD:
+                check_seed(sm, key, repos[key]["exchanges"], rows)
+        for key, ns, nx, nn, wt, sha, drops in table:
+            verdict = ""
+            if key in OLD and sm and key in sm["repos"]:
+                verdict = "EQUAL" if sm["repos"][key]["exchanges_sha256"] == sha else "DIFFERS"
+            print(f"{key:34} {ns:4} {nx:5} {nn:5} {wt:17,}  {verdict:20}   {drops}")
+            part = "old" if key in OLD else "new"
+            tot[part + "_sessions"] += ns
+            tot[part + "_exchanges"] += nx
+            tot[part + "_notes"] += nn
+            tot[part + "_window_tokens"] += wt
+        print(dict(tot))
+        if all(k in repos for k in OLD):
+            print("schedule rule (last exchange of every session) on the old five: EQUALS l3/policy/schedule.jsonl")
+        print("transcripts changed by the fixes:", sorted(changes))
+        print("skipped (no timestamp):", [r["file"] for r in skipped])
+        print(f"\n{'new project':34} {'sessions':>8} {'exchanges = decide calls':>25} {'decide window M':>16} {'decide est. M':>14}")
+        out = []
+        for key, ns, nx, nn, wt, sha, drops in sorted((t for t in table if t[0] not in OLD), key=lambda t: t[2]):
+            est = wt + DECIDE_OVERHEAD * nx
+            print(f"{key:34} {ns:8} {nx:25} {wt / 1e6:16.2f} {est / 1e6:14.1f}")
+            out.append({"project": key, "sessions": ns, "exchanges": nx, "notes": nn, "window_tokens": wt, "decide_estimate_tokens": est})
+        new = [t for t in table if t[0] not in OLD]
+        print(f"{'new, in all':34} {sum(t[1] for t in new):8} {sum(t[2] for t in new):25} {sum(t[4] for t in new) / 1e6:16.2f} "
+              f"{(sum(t[4] for t in new) + DECIDE_OVERHEAD * sum(t[2] for t in new)) / 1e6:14.1f}")  # fmt: skip
+        if os.environ.get("BILBO_EVAL_DRY_OUT"):
+            Path(os.environ["BILBO_EVAL_DRY_OUT"]).write_text(json.dumps({"row": ROW, "decide_overhead": DECIDE_OVERHEAD, "projects": out}, indent=1) + "\n")
+    finally:
+        shutil.rmtree(scratch, ignore_errors=True)
+
+
+def main():
+    args = sys.argv[1:]
+    if DRY:
+        return dry_main()
+    guards()
+    if args == ["--lanes"]:
+        for repo in sorted({repo for _, repo, _ in sessions()[0]}):
+            print(repo)
+        return
+    signal.signal(signal.SIGINT, stop)
+    signal.signal(signal.SIGTERM, stop)
+    if args == ["--merge"]:
+        return merge_main()
+    if LANE and not args:
+        return lane_main(LANE)
+    sys.exit(f"{ARM} builds in lanes: run it through scripts/build-store.sh")
 
 
 if __name__ == "__main__":

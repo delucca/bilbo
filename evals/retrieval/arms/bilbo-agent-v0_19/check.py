@@ -14,13 +14,16 @@ import subprocess
 import sys
 import urllib.request
 from array import array
+from collections import Counter
 from datetime import datetime
 from math import isfinite, sqrt
 from pathlib import Path, PurePosixPath
 
 sys.path.insert(0, "/app/l3")
+sys.path.insert(1, "/app")
 
 import render  # noqa: E402
+import replay  # noqa: E402
 import writer  # noqa: E402
 
 STORE = Path("/work/store")
@@ -127,11 +130,16 @@ def render_again(repo, sids, tag="out"):
         m = SESSION_FILE.match(f.name)
         if m and m[5] in sids:
             (raw / f"{m[5]}.jsonl").unlink(missing_ok=True)
-            (raw / f"{m[5]}.jsonl").symlink_to(f)
+            text, changed = replay.transcript_text(f)
+            if changed:
+                (raw / f"{m[5]}.jsonl").write_text(text, encoding="utf-8")
+            else:
+                (raw / f"{m[5]}.jsonl").symlink_to(f)
             found.append({"session_id": m[5], "created_at": f"{m[1]}{m[2]}:{m[3]}:{m[4]}Z"})
     rid = repo.replace("__", "/", 1)
     (tmp / "data" / "selection.json").write_text(json.dumps({"dev": "", "test": [], "repos": {rid: {"key": repo, "sessions": found}}}))
     render.main(["--data", str(tmp / "data"), "--selection", str(tmp / "data" / "selection.json"), "--repo", rid, "--out", str(tmp / "out")])
+    replay.escape_file(tmp / "out" / f"{repo}.jsonl")
     return tmp / "out" / f"{repo}.jsonl"
 
 
@@ -238,11 +246,47 @@ def check_store():
 
 def first_stamp(path):
     """The first timestamp of a transcript, as build.py orders sessions by it; None for Cursor's."""
-    for line in path.open():
-        t = json.loads(line).get("timestamp")
+    for line in replay.transcript_text(path)[0].split("\n"):
+        t = json.loads(line).get("timestamp") if line.strip() else None
         if t:
             return datetime.fromisoformat(t)
     return None
+
+
+def limited(found, limit):
+    """The sessions the build kept: all, the first N, or the first N of each repository named (repo:N,repo:N), as
+    build.py's sessions() takes them."""
+    if limit == "all":
+        return found
+    if ":" not in limit:
+        return found[: int(limit)]
+    per = {repo: int(n) for repo, n in (part.split(":") for part in limit.split(","))}
+    taken, kept = Counter(), []
+    for item in found:
+        if taken[item[1]] < per.get(item[1], 0):
+            taken[item[1]] += 1
+            kept.append(item)
+    return kept
+
+
+def check_build_blocks():
+    """What the lanes, the shared decisions and the seed add to the manifest."""
+    d = manifest.get("decisions")
+    expect(isinstance(d, dict) and d.get("shared") == "bilbo-v0_19", f"decisions block {d!r}")
+    expect(set(manifest["lanes"]) == set(manifest["repos"]), "lanes against repos")
+    for repo, info in manifest["repos"].items():
+        expect(isinstance(info.get("decide_drawn_here"), bool), f"{repo}: decide_drawn_here {info.get('decide_drawn_here')!r}")
+        if manifest["method"]["row"] == "assisted":
+            expect(info["writer"]["user_runs"] == len(info["sessions"]), f"{repo}: {info['writer']['user_runs']} /note runs for {len(info['sessions'])} sessions")
+    seed = manifest.get("seed")
+    if seed:
+        for repo in seed["repos"]:
+            state = STORE / "writer" / repo
+            for f in ("done.jsonl", "actions.jsonl", "edits.jsonl", "metrics.jsonl", "decisions.jsonl", "manifest.json"):
+                expect((state / f).exists(), f"{repo}: the seeded {f} is not in the store")
+            expect(manifest["repos"][repo]["decide_drawn_here"] is False, f"{repo}: a seeded project drew decisions")
+        expect(sum(manifest["repos"][r]["notes_count"] for r in seed["repos"]) == seed["notes"], "seed.notes against the repos' notes")
+    expect(isinstance(manifest.get("refusals"), list), "refusals is not a list")
 
 
 def reindex(repo, info, vectors):
@@ -289,7 +333,7 @@ def main():
         if start:
             found.append((start, f.parent.name, f.name))
     found.sort()
-    expected = found if limit == "all" else found[: int(limit)]
+    expected = limited(found, limit)
     written = {(r, s) for r, i in manifest["repos"].items() for s in i["sessions"]}
     want = {(r, SESSION_FILE.match(name)[5]) for _, r, name in expected}
     expect(written <= want, f"sessions written that the first {limit} do not include: {sorted(written - want)[:3]}")
@@ -305,6 +349,7 @@ def main():
 
     for repo in sorted(manifest["repos"]):
         check_repo(repo, manifest["repos"][repo])
+    check_build_blocks()
     vectors = check_store()
     withnotes = [(len(i["notes"]), r, i) for r, i in manifest["repos"].items() if i["notes"]]
     if vectors and withnotes:

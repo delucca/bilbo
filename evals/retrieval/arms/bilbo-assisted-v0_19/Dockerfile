@@ -28,4 +28,5 @@ RUN chmod -R a+rX /opt/tiktoken /app/skill \
 
 COPY l3/ /app/l3/
 COPY build.py ./
+COPY replay.py ./
 ENTRYPOINT ["python", "/app/build.py"]

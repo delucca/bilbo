@@ -1,3 +1,6 @@
+x-lanes: repository
+x-shared-decisions: bilbo-v0_19
+
 services:
   embedder:
     image: ghcr.io/ggml-org/llama.cpp:server-b11206@sha256:00bd6c289c590e576948cb3639b8195e4d3e6dd6ba1d761f0e2b871fcd4df24f
@@ -35,6 +38,11 @@ services:
       BILBO_EVAL_LLM_HEADERS: ${BILBO_EVAL_LLM_HEADERS:-}
       BILBO_EVAL_SESSIONS: ${BILBO_EVAL_SESSIONS}
       BILBO_EVAL_DEVICE: ${BILBO_EVAL_DEVICE}
+      BILBO_EVAL_ON_REFUSAL: ${BILBO_EVAL_ON_REFUSAL:-stop}
+      BILBO_EVAL_REFUSAL_LIMIT: ${BILBO_EVAL_REFUSAL_LIMIT:-3}
+      BILBO_EVAL_DECISIONS_NAME: ${BILBO_EVAL_DECISIONS_NAME}
     volumes:
       - ${BILBO_EVAL_CORPUS}:/corpus:ro
       - ${BILBO_EVAL_WORK}:/work
+      - ${BILBO_EVAL_DECISIONS}:/decisions
+      - ${BILBO_EVAL_REFUSALS}:/refusals

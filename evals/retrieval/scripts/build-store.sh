@@ -22,6 +22,10 @@
 # the others running; a rerun resumes each lane from its own checkpoint. BILBO_EVAL_LANES_AT_ONCE=N runs at most N lanes
 # at a time (each one that ends frees its place for the next), and BILBO_EVAL_LANE_ORDER=a,b,... starts the lanes it
 # names first, in that order, and the others after them; neither is part of a store's key.
+# An arm whose compose.yaml has `x-shared-decisions: <group>` shares one decision pass per project with the other arms of
+# the group: a folder keyed by every input but each arm's own compose.yaml and seed, mounted into the build containers as
+# $BILBO_EVAL_DECISIONS (named by BILBO_EVAL_DECISIONS_NAME). Nothing deletes it. The refusals the model made live in
+# $BILBO_EVAL_REFUSALS, keyed by the group and the LLM only, mounted at /refusals.
 # An arm with a `seed` file (<archive> <sha256>, after any # lines) continues a published store: the key names it, and a
 # build unpacks it, once the lock and the file agree on its sha256, into $work/seed for the arm's build to restore as
 # its first checkpoint.
@@ -125,7 +129,21 @@ fi
 
 inputs=$(inputs_for "$llm" "$small")
 key=$(key_of "$inputs")
+# Arms that name a group in x-shared-decisions share one decision pass per project: a folder keyed by every input but
+# the arm's own compose.yaml and seed, which is all the arms of the group differ in, so they all find the same one.
+shared=$(sed -n 's/^x-shared-decisions: *//p' "$root/arms/$arm/compose.yaml")
+if [[ -n $shared ]]; then
+  [[ $shared =~ ^[A-Za-z0-9_.-]+$ ]] || die "x-shared-decisions must be one word"
+  dkey=$(key_of "$(grep -v -e '^file compose.yaml ' -e '^file seed ' -e '^seed ' <<<"$inputs")")
+  export BILBO_EVAL_DECISIONS=$cache/decisions/$shared-$dkey BILBO_EVAL_DECISIONS_NAME=$shared-$dkey
+  log "decision passes shared in ${BILBO_EVAL_DECISIONS#"$cache"/}"
+  # The refusals the model has made, and the per-request locks of the arms, outlive the store key: keyed by the group and the LLM only,
+  # so a trial, a full build and a build.py fix all see the same refusals.
+  export BILBO_EVAL_REFUSALS=$cache/refusals/$shared-$(tr -c 'A-Za-z0-9.\n' - <<<"${llm:-none}")
+  log "refusals kept in ${BILBO_EVAL_REFUSALS#"$cache"/}"
+fi
 [[ -z $print_key ]] || { echo "$key"; exit 0; }
+[[ -z $shared ]] || mkdir -p "$BILBO_EVAL_DECISIONS" "$BILBO_EVAL_REFUSALS"
 name=store-$arm-$key.tar.zst
 if [[ -n $sessions ]]; then out=$cache/trials/$name; else out=$root/dataset/$name; fi
 
