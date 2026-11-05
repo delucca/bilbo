@@ -826,6 +826,18 @@ checkpoints, and 247,509 hallways. The sweeps cut 1,688 of their 179,228 inputs 
 1,991,252. In the merged index, a drawer's own vector does not find it among the first three hits for 9,299 drawers
 (3.8%), as the merge measured it.
 
+The eval searches as a developer with one palace per repository would. The merge records no repository on a drawer,
+and `search_memories` filters only by wing, room or one source file, so the store's palace is split back into a palace
+for each repository the questions name: a transcript or sweep drawer goes with the session its transcript path names,
+a diary drawer with the session its checkpoint names. Each drawer is copied with its stored vector, not embedded again,
+in the order its lane filed it, into a fresh palace that MemPalace's `get_collection` creates, with the store's
+embedder identity; each repository must get as many drawers as its lane in the manifest. Filtering the merged palace
+instead would not give the same ranking: BM25's IDF is computed over the candidate pool, which would hold other
+repositories' drawers. Both forms call `search_memories` as `--check` does, with the default `vector` candidate
+strategy (cosine, then BM25 over the top vector candidates; the plugin has no prompt hook, so the prompt is searched
+as a query), no wing and no room, so the sweep drawers are searched too. It returns 100 hits, the MCP tool's most
+instead of its default 5, so the budget fills. A hit reads as its drawer's text and the date MemPalace filed it.
+
 ### auto-memory
 
 The memory files the developers' own Claude Code wrote during the recorded sessions, extracted from the transcripts.
