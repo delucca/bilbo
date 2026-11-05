@@ -896,40 +896,51 @@ instead of its default 5, so the budget fills. A hit reads as its drawer's text 
 
 The memory files the developers' own Claude Code wrote during the recorded sessions, extracted from the transcripts.
 Nothing here runs Claude Code or calls a model. The main model's successful `Write`, `Edit` and `MultiEdit` calls on a
-file under `.claude/projects/<key>/memory/` and the Bash writes of three known shapes are applied, in the order they
-took effect, to that project's memory directory, under the name the developer's machine used. A memory path written
-on Windows, `C:\Users\<name>\.claude\projects\<key>\memory\` or `/c/Users/<name>/...` from Git Bash, is read the
-same way, under the key Claude Code gave the Windows path. A recorded command is never run. Each project's memory
-starts empty, as for every arm, and the two Cursor transcripts are left out: Claude Code never saw them.
+file under `.claude/projects/<key>/memory/`, and its Bash commands that touch one, are applied in the order they took
+effect to that project's memory directory, under the name the developer's machine used. A memory path written on
+Windows, `C:\Users\<name>\.claude\projects\<key>\memory\` or `/c/Users/<name>/...` from Git Bash, is read the same
+way, under the key Claude Code gave the Windows path. Each project's memory starts empty, as for every arm, and the two
+Cursor transcripts are left out: Claude Code never saw them.
 
-Why recorded writes and not a replay: what the corpus holds is the main model's own memory writes, 240 recorded
-operations in 68 sessions of 19 repositories, and 6 `memory_saved` entries, all in neuralips26 (Claude Code 2.1.84
-to 2.1.92, "Improved"), which name files Claude Code wrote outside the main model's tool calls but not their
-content. The manifest counts those under `unrecorded_saves` and the store cannot hold what they wrote. There is no
-"Saved N memories" or "Improved N memories" message and no `relevant_memories` attachment in any session. On the
-accounts this eval runs on, background memory extraction, auto dream and the recall selector are switched off
-server-side. Running a current Claude Code over the transcripts would measure a setup none of these developers had.
+A recorded Bash command is never run. `replay.py` replays it one statement at a time, the way the shell would have:
+`cat`, `echo`, `printf` and `tee` with their redirections and heredocs, `rm`, `mv`, `cp`, `sed -i` with one `s`
+command, and Python scripts (`python3 -c`, or a heredoc to `python3 -`), which it evaluates over strings, lists and
+file reads and writes only. A statement after a failed `&&` does not apply. When the recorded command failed, its last
+list, the one whose exit status Claude Code recorded, is held back. A write it cannot follow is skipped as
+`bash_unparsed`, and the manifest lists each one under `unparsed`.
+
+Whenever the transcript shows a whole memory file, the file is set to what it showed, and later operations apply on
+top. The transcript shows one in three ways: a `Read` of all of it, an `Edit`'s original file (Claude Code records it
+with the result), or a lone `cat` of it between lines the same command echoed. This brings in memory written before the
+recordings and changes no tool call shows: Claude Code's own saves, and the frontmatter it adds to a file after a
+`Write`. A `Read` of part of a file, and a `cat` whose output cannot be told apart from the commands beside it, are
+counted under `unparsed.reads`.
+
+Why recorded writes and not a replay: what the corpus holds is the main model's own memory writes, in 68 sessions,
+and 6 `memory_saved` entries, all in neuralips26 (Claude Code 2.1.84 to 2.1.92, "Improved"), which name files Claude
+Code wrote outside the main model's tool calls but not their content. The manifest counts those under
+`unrecorded_saves`. Their content reaches the store only where a later snapshot shows it. There is no "Saved N
+memories" or "Improved N memories" message and no `relevant_memories` attachment in any session. On the accounts this
+eval runs on, background memory extraction, auto dream and the recall selector are switched off server-side. Running
+a current Claude Code over the transcripts would measure a setup none of these developers had.
 
 What the store holds, from the manifest:
 
-- 149 of the 240 operations applied (83 writes, 61 edits, 5 Bash writes), 19 failed when recorded and are not applied,
-  and 72 are skipped: 51 `Edit`s on a file the store does not hold (`edit_file_unknown`), most on files written
-  before the recordings; 15 Bash writes of another shape (`bash_unparsed`); 5 `Edit`s whose text is not in the file
-  (`edit_target_missing`); and 1 whose memory path goes through `$HOME` instead of a home directory (`wrong_root`).
-  Memory from before the corpus is unseen.
-- 76 files in 18 repositories: readaloud 11 (10 under its project, 1 under the home directory's key),
-  superset-windows-arm64 10, neuralips26 8, hackerspub-android 6 (5 under its project, 1 under a worktree's key),
-  cavecrew-mcp 6, openclaw-skills 6, go-nuts 5 (3 and 2 under the keys of two task directories), Cakebrew 5,
-  MiscMetabar 4, linear-cycle-drain 3, wakil 2, pablo-companion 2, port-cli 2, contoso 2, and iptvnator, bosarsalog,
-  eldios-dotfiles and entire-graph 1 each. content-factory, kimi-cli, arosenfeld2003-cli and safecast-map-MCP have
-  no memory, so their directories are empty.
-- Written by a mix of models and Claude Code versions, per operation in `manifest.json`: `claude-fable-5` 50,
-  `claude-opus-4-6` 30, `claude-opus-4-7` 23, `claude-opus-4-8` 18, `claude-opus-5` 16 and `claude-sonnet-4-6` 12,
-  across Claude Code 2.1.37 to 2.1.252. They are not today's model and prompts.
-- Bash writes only of the known shapes (an `echo >>` append, a Python `replace` script, a `cat >` heredoc); a write of
-  another shape is skipped as `bash_unparsed`, and 15 were met.
-- neuralips26's 6 `memory_saved` entries, naming 11 distinct files, are counted under `unrecorded_saves` and not
-  applied.
+- 544 operations: 253 writes and 291 snapshots.
+  - Writes: 218 applied (106 edits, 103 writes, 6 appends, 3 deletes; 29 of them from Bash). 18 failed when recorded
+    and are not applied. 11 are `Edit`s on a file the store does not hold and whose original the transcript does not
+    record (`edit_file_unknown`), and 6 are Bash appends or Python edits to such a file (`bash_file_unknown`).
+  - Snapshots: 98 set a file (29 new, 69 corrected) and 193 found it already as shown.
+- No Bash write is left unparsed. 10 reads are unusable: 6 `Read`s of part of a file and 4 `cat`s beside other output.
+- 100 files in 19 repositories: neuralips26 16, readaloud 13 (11 under its project, 2 under the home directory's key),
+  superset-windows-arm64 13, hackerspub-android 8 (5 under its project, 3 under worktrees' keys), cavecrew-mcp 7,
+  openclaw-skills 6, Cakebrew 5, go-nuts 5 (3 and 2 under the keys of two task directories), linear-cycle-drain 4,
+  MiscMetabar 4, contoso 4, wakil 3, eldios-dotfiles 3, entire-graph 2, pablo-companion 2, port-cli 2, and iptvnator,
+  bosarsalog and safecast-map-MCP 1 each. content-factory, kimi-cli and arosenfeld2003-cli have no memory, so their
+  directories are empty.
+- Written by a mix of models and Claude Code versions, per applied write in `manifest.json`: `claude-fable-5` 66,
+  `claude-opus-5` 46, `claude-opus-4-6` 36, `claude-opus-4-7` 28, `claude-opus-4-8` 22, `claude-sonnet-4-6` 14 and
+  `claude-sonnet-4-5` 6, across Claude Code 2.1.37 to 2.1.252. They are not today's model and prompts.
 - Files keep the dates their authors wrote, not the build's.
 
 Auto memory has no search: Claude Code loads `MEMORY.md` into every session, up to its first 200 lines or 25,000

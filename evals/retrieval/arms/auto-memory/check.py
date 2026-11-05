@@ -65,18 +65,22 @@ log = manifest["provenance"]
 ops = manifest["operations"]
 outcomes = Counter(o["outcome"] for o in log)
 check("operations: provenance has one entry per recorded operation", len(log) == ops["recorded"], len(log))
-check("operations: applied, failed and skipped match the provenance", (outcomes["applied"], outcomes["recorded_failed"]) == (ops["applied"], ops["recorded_failed"])
-      and ops["skipped"] == {k: v for k, v in sorted(outcomes.items()) if k not in ("applied", "recorded_failed")})
-check("projects: operations, applied, failed and skipped add up to the provenance's, per project", all(
-    (p["operations"], sum(p["applied"].values()), p["recorded_failed"], p["skipped"])
-    == (sum(o["project"] == key for o in log), sum(o["project"] == key and o["outcome"] == "applied" for o in log),
-        sum(o["project"] == key and o["outcome"] == "recorded_failed" for o in log),
-        dict(sorted(Counter(o["outcome"] for o in log if o["project"] == key and o["outcome"] not in ("applied", "recorded_failed")).items())))
+KEPT = ("applied", "unchanged", "recorded_failed")
+check("operations: applied, unchanged, failed and skipped match the provenance", [outcomes[k] for k in KEPT] == [ops[k] for k in KEPT]
+      and ops["skipped"] == {k: v for k, v in sorted(outcomes.items()) if k not in KEPT})
+check("projects: operations, applied, unchanged, failed and skipped add up to the provenance's, per project", all(
+    (p["operations"], sum(p["applied"].values()), p["unchanged"], p["recorded_failed"], p["skipped"])
+    == (sum(o["project"] == key for o in log), *(sum(o["project"] == key and o["outcome"] == k for o in log) for k in KEPT),
+        dict(sorted(Counter(o["outcome"] for o in log if o["project"] == key and o["outcome"] not in KEPT).items())))
     for found in manifest["projects"].values() for key, p in found.items()))
-check("every applied operation's file is in the store", all(
-    o["file"] in manifest["memory_files"].get(o["project"], {}) for o in log if o["outcome"] == "applied"))
-applied = [o for o in log if o["outcome"] == "applied"]
-check("writers: models and versions match the provenance", manifest["writers"] == {
+alive = set()
+for o in log:
+    if o["outcome"] == "applied":
+        (alive.discard if o["kind"] == "delete" else alive.add)((o["project"], o["file"]))
+check("every file an applied operation left is in the store, and nothing else is",
+      alive == {(key, f) for key, files in manifest["memory_files"].items() for f in files}, len(alive))
+applied = [o for o in log if o["outcome"] == "applied" and o["kind"] != "snapshot"]
+check("writers: models and versions of the applied writes match the provenance", manifest["writers"] == {
     "models": dict(sorted(Counter(str(o["model"]) for o in applied).items())),
     "claude_code_versions": dict(sorted(Counter(str(o["version"]) for o in applied).items()))})
 check("no file in the store carries a credential", not [f.name for f in STORE.rglob("*") if f.is_file()
