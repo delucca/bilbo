@@ -1,6 +1,7 @@
 """Judge what each context states. Usage: judge.py <selected.jsonl> <contexts.jsonl> <judged.jsonl> [--jobs N].
-One `claude -p` call per context marks each fact and each older value present or absent; a context whose prompt is
-already in judged.jsonl is not judged again. BILBO_EVAL_JUDGE_CWD is the empty directory the judge runs in."""
+One `claude -p` call per distinct prompt marks each fact and each older value present or absent: contexts with the same
+prompt (a question's two forms that returned the same text) share one verdict, and a prompt already in judged.jsonl is
+not judged again. BILBO_EVAL_JUDGE_CWD is the empty directory the judge runs in."""
 
 import argparse
 import hashlib
@@ -87,6 +88,10 @@ def call(prompt, q):
     raise RuntimeError(last)
 
 
+def lines(path):
+    return [json.loads(line) for line in Path(path).read_text().split("\n") if line.strip()]
+
+
 ap = argparse.ArgumentParser()
 ap.add_argument("selected")
 ap.add_argument("contexts")
@@ -94,12 +99,14 @@ ap.add_argument("judged")
 ap.add_argument("--jobs", type=int, default=4)
 args = ap.parse_args()
 
-questions = {q["id"]: q for q in map(json.loads, Path(args.selected).read_text().splitlines()) if q}
+questions = {q["id"]: q for q in lines(args.selected)}
 judged = Path(args.judged)
-cached = {(r["id"], r["form"], r["prompt"]) for r in map(json.loads, filter(None, judged.read_text().splitlines()))} if judged.exists() else set()
-todo, hits = [], 0
-for line in Path(args.contexts).read_text().splitlines():
-    c = json.loads(line)
+cached, verdicts = set(), {}
+for r in lines(judged) if judged.exists() else []:
+    cached.add((r["id"], r["form"], r["prompt"]))
+    verdicts.setdefault(r["prompt"], {"facts": r["facts"], "stale": r["stale"]})
+todo, reuse, hits = {}, [], 0
+for c in lines(args.contexts):
     if c["id"] not in questions:
         continue
     q = questions[c["id"]]
@@ -107,38 +114,45 @@ for line in Path(args.contexts).read_text().splitlines():
     sha = hashlib.sha256(prompt.encode()).hexdigest()
     if (c["id"], c["form"], sha) in cached:
         hits += 1
+    elif sha in verdicts:
+        reuse.append((c, sha))
     else:
-        todo.append((c, q, prompt, sha))
+        todo.setdefault(sha, (q, prompt, []))[2].append(c)
 
 done = failures = 0
 with judged.open("a") as out, ThreadPoolExecutor(args.jobs) as pool:
-    def row(c, q, sha, marks, usage):
+    def row(c, sha, marks, usage):
         out.write(json.dumps({"id": c["id"], "form": c["form"], "ctx": c["sha"], "prompt": sha, **marks, "usage": usage}) + "\n")
         out.flush()
 
+    for c, sha in reuse:
+        row(c, sha, verdicts[sha], None)
+        done += 1
     futures = {}
-    for c, q, prompt, sha in todo:
-        if not c["text"].strip():
-            row(c, q, sha, {"facts": {f["id"]: False for f in q["facts"]}, "stale": {s["id"]: False for s in q.get("stale", [])}}, None)
-            done += 1
+    for sha, (q, prompt, cs) in todo.items():
+        if not cs[0]["text"].strip():
+            for c in cs:
+                row(c, sha, {"facts": {f["id"]: False for f in q["facts"]}, "stale": {s["id"]: False for s in q.get("stale", [])}}, None)
+                done += 1
         else:
-            futures[pool.submit(call, prompt, q)] = (c, q, sha)
+            futures[pool.submit(call, prompt, q)] = (cs, sha)
     for fut in as_completed(futures):
         if fut.cancelled():
             continue
-        c, q, sha = futures[fut]
+        cs, sha = futures[fut]
         try:
             marks, usage = fut.result()
         except RuntimeError as e:
-            print(f"judge: {c['id']} {c['form']}: {e}", file=sys.stderr)
+            print(f"judge: {cs[0]['id']} {'+'.join(c['form'] for c in cs)}: {e}", file=sys.stderr)
             failures += 1
             if failures >= STOP_AFTER:
                 for f in futures:
                     f.cancel()
             continue
         failures = 0
-        row(c, q, sha, marks, usage)
-        done += 1
-left = len(todo) - done
+        for i, c in enumerate(cs):
+            row(c, sha, marks, usage if i == 0 else None)
+            done += 1
+left = len(reuse) + sum(len(cs) for _, _, cs in todo.values()) - done
 print(f"judge: judged {done}, cached {hits}, left {left}", file=sys.stderr)
 sys.exit(1 if left else 0)

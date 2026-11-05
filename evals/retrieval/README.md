@@ -934,6 +934,10 @@ The questions fall in seven classes, such as the state of a piece of work or a d
 how often real memory queries ask for each. They are committed, not published, and committing them freezes them.
 [questions/README.md](questions/README.md) has the classes, the fields and how the questions are made.
 
+Two questions lean on the two Cursor transcripts, which every hook-fed arm leaves out: `port-cli-061` is answerable
+only from them (session `1db8024f`, both facts), and `port-cli-001` partly (f3 and f4). A hook-fed arm cannot score on
+those facts; bm25, dense and the controls read every transcript.
+
 ## Running the eval
 
 To score an arm's store against the questions:
@@ -943,9 +947,10 @@ To score an arm's store against the questions:
 The script gets the store as `build-store.sh` does, restores it into fresh services and searches it for every
 answerable question, once per form (`query` and `prompt`), in the scope the tool searches: the question's project
 for a tool that scopes by project, everything for one that does not (each arm's section says which). It packs what
-each search returns, in the tool's order, into 4,000 tokens counted with tiktoken's o200k_base, cutting the result
-that does not fit. Claude Opus 5.5, through `claude -p` on a Claude subscription, marks each fact and each older
-value present or absent in each context; when it writes prose before its JSON reply, its last verdict object counts.
+each search returns, in the tool's order and separated by blank lines, into 4,000 tokens counted with tiktoken's
+o200k_base, separators included, cutting the result that does not fit. Claude Opus 5.5, through `claude -p` on a Claude subscription, marks each fact and each older
+value present or absent in each context, once per distinct context: a question's two forms that returned the same
+text share one verdict; when it writes prose before its JSON reply, its last verdict object counts.
 A script scores: a question's score is
 the share of its facts present, and misled counts a question whose older value is present while the fact that
 replaced it is not. The headline weights the class means by `questions/classes.json`, on the `query` form, with the
@@ -955,7 +960,8 @@ replaced it is not. The headline weights the class means by `questions/classes.j
 Searches, contexts and verdicts are kept in `~/.cache/bilbo-evals/retrieval/eval` (or `BILBO_EVALS_CACHE`), so a
 rerun repeats no search and no judge call already made. `--questions id,id` or `--limit N` runs a few questions;
 `--jobs N` sets the judge calls at once (default 4). Each arm searches with `arms/<arm>/search.py`, which is not part
-of the store's key.
+of the store's key but is part of the run's: a changed adapter searches again, and a changed `scripts/controls.py`
+rebuilds the controls.
 
 Not built yet: the answer run (and with it the no-answer questions), the 16,000-token sensitivity run, the judge's
 stress test and the cross-family audit of its verdicts, and the paired comparisons with their intervals.

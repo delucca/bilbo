@@ -74,8 +74,12 @@ def stamp(e):
 
 def load(corpus, repo, session):
     (path,) = (corpus / repo).glob(f"*--{session}.jsonl")
+    # Evidence lines count newlines only: splitlines() also breaks on U+0085 and U+2028, which sessions hold.
+    lines = path.read_text(encoding="utf-8").split("\n")
+    if lines[-1] == "":
+        lines.pop()
     out = []
-    for no, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+    for no, line in enumerate(lines, 1):
         try:
             out.append((no, json.loads(line)))
         except ValueError:
@@ -134,11 +138,11 @@ def random_row(q, units):
 
 
 corpus, selected, gold_out, random_out = (Path(a) for a in sys.argv[1:5])
-questions = [json.loads(line) for line in selected.read_text().splitlines() if line.strip()]
+questions = [json.loads(line) for line in selected.read_text().split("\n") if line.strip()]
 
 
 def have(path):
-    return {json.loads(line)["id"] for line in path.read_text().splitlines() if line.strip()} if path.exists() else set()
+    return {json.loads(line)["id"] for line in path.read_text().split("\n") if line.strip()} if path.exists() else set()
 
 
 for out, build in ((gold_out, lambda q: gold_row(corpus, q)),

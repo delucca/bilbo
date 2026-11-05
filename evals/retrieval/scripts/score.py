@@ -14,12 +14,12 @@ FORMS = ("query", "prompt")
 
 selected, classes_file, run, gold, rand = sys.argv[1:6]
 run, gold, rand = Path(run), Path(gold), Path(rand)
-questions = [json.loads(line) for line in Path(selected).read_text().splitlines() if line.strip()]
+questions = [json.loads(line) for line in Path(selected).read_text().split("\n") if line.strip()]
 weights = {c["name"]: c["weight"] for c in json.loads(Path(classes_file).read_text())["classes"]}
 
 
 def rows(path):
-    return [json.loads(line) for line in path.read_text().splitlines() if line.strip()] if path.exists() else []
+    return [json.loads(line) for line in path.read_text().split("\n") if line.strip()] if path.exists() else []
 
 
 def verdicts(d):

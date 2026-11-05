@@ -3,8 +3,10 @@
 # tokens, judge it with Claude Opus 5.5 through `claude -p`, and print the scores.
 #   eval.sh <arm> [--limit N] [--questions id,id,...] [--jobs N]
 # --questions or --limit runs a few questions; --jobs N sets the judge calls at once (default 4). Searches, contexts
-# and verdicts are kept in $cache/eval/<arm>-<storekey>, and the controls in $cache/eval/gold-<corpus> and random-<corpus>
-# (the cache is BILBO_EVALS_CACHE, as for build-store.sh), so a rerun repeats no search and no judge call already made.
+# and verdicts are kept in $cache/eval/<arm>-<storekey>-<searchkey>, and the controls in
+# $cache/eval/{gold,random}-<corpus>-<controlskey> (the cache is BILBO_EVALS_CACHE, as for build-store.sh), so a rerun
+# repeats no search and no judge call already made. The search key hashes arms/<arm>/search.py, which the store key
+# leaves out; the controls key hashes controls.py.
 # Not built: the answer run, the 16,000-token run, the judge's stress test and audit, the paired comparisons.
 set -euo pipefail
 
@@ -46,9 +48,11 @@ if [[ ! -d $corpus ]]; then
 fi
 
 key=$("$root/scripts/build-store.sh" "$arm" --key)
-run=$cache/eval/$arm-$key
-gold=$cache/eval/gold-${corpus_sha:0:12}
-random=$cache/eval/random-${corpus_sha:0:12}
+search_sha=$(sha "$root/arms/$arm/search.py")
+controls_sha=$(sha "$root/scripts/controls.py")
+run=$cache/eval/$arm-$key-${search_sha:0:12}
+gold=$cache/eval/gold-${corpus_sha:0:12}-${controls_sha:0:12}
+random=$cache/eval/random-${corpus_sha:0:12}-${controls_sha:0:12}
 mkdir -p "$run" "$gold" "$random"
 
 grep -F '"abstain": false' "$root/questions/questions.jsonl" > "$run/all.jsonl"
