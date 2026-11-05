@@ -7,7 +7,7 @@ Which memory strategy best remembers what happened in real coding sessions?
 - [Nix](https://nixos.org/download) with flakes enabled.
 - To build or check a store: [Docker](https://docs.docker.com/get-started/get-docker/). The shell pins the client,
   Compose and buildx; the engine is yours. A buildx installed by Docker Desktop or OrbStack takes precedence.
-- To build a store with an LLM (every arm but dense, mempalace and auto-memory): an OpenAI-compatible LLM endpoint with
+- To build a store with an LLM (every arm but dense, bm25, mempalace and auto-memory): an OpenAI-compatible LLM endpoint with
   `GET /models` and JSON mode, and tool calls for bilbo's arms. The claude-mem arm runs Claude Code instead, and needs a
   Claude subscription token from `claude setup-token` or an Anthropic API key.
 - To run the embedder on the GPU: NVIDIA's
@@ -74,6 +74,7 @@ other arms have none for this corpus yet.
 |---|---|---|---|
 | [mem0](#mem0) | mem0, fed by its Claude Code plugin | yes | built with Claude Opus 5.5 |
 | [dense](#dense) | the sessions in chunks, embedded | no | yes |
+| [bm25](#bm25) | the same chunks, BM25 over each project's | no | not yet |
 | [graphiti](#graphiti) | Graphiti's knowledge graph, fed one turn at a time | yes | built with Claude 5.5, then Gemini |
 | [ai-memory](#ai-memory) | ai-memory, fed by its Claude Code hooks | yes | built with Claude Opus 5.5 |
 | [hindsight](#hindsight) | Hindsight, fed by its Claude Code integration | yes | built with Claude Sonnet 5.5 |
@@ -90,7 +91,7 @@ To get a store:
 Without `BILBO_EVAL_LLM_MODEL`, the script takes the store in `dataset.lock` built from the current corpus, embedder
 and arm files, and asks for `BILBO_EVAL_LLM_MODEL` (and `BILBO_EVAL_LLM_SMALL_MODEL`) when there are several. A store
 already in `dataset/` is used as it is, with a warning when it is not the one in the lock, as after a local build. When
-there is none, the script builds it, which needs the LLM for every arm but dense, mempalace and auto-memory:
+there is none, the script builds it, which needs the LLM for every arm but dense, bm25, mempalace and auto-memory:
 
     BILBO_EVAL_LLM_URL=http://host.docker.internal:8080/v1 BILBO_EVAL_LLM_KEY=... BILBO_EVAL_LLM_MODEL=... \
       evals/retrieval/scripts/build-store.sh mem0
@@ -127,7 +128,8 @@ rerun resumes each lane from its own checkpoint.
 - `--search <questions.jsonl> <out.jsonl>` restores the store into fresh services and runs `arms/<arm>/search.py` over
   the questions, appending its rows to the output. It never builds, and `search.py` is not part of the store's key.
 
-Every arm but auto-memory embeds with Qwen3-Embedding-0.6B, bilbo's embedder, on llama.cpp.
+Every arm but bm25 and auto-memory embeds with Qwen3-Embedding-0.6B, bilbo's embedder, on llama.cpp; bm25 uses only its
+tokenizer.
 
 ### mem0
 
@@ -190,6 +192,31 @@ see. A result reads as the chunk's text: its messages with their labels (`user:`
 
 The published store was built from the 403 sessions with the embedder on an RTX 5070 Ti, in 55 min: 114,516 chunks
 from 156,115 messages, 46.7 million tokens.
+
+### bm25
+
+The keyword baseline: dense's chunks, scored with BM25, with no LLM and no embedder. It differs from dense only in how a
+chunk is scored.
+
+The build renders and packs the sessions with dense's own code and counts tokens with the same tokenizer, the
+embedder's, through llama-server's `/tokenize`; nothing is embedded. The chunks come out byte for byte the ones in
+the dense store. Each project's chunks then get a BM25 index of their own, so a term's weight comes from that project
+alone: [bm25s](https://github.com/xhluca/bm25s) 0.3.11, Lucene's variant with k1 = 1.2 and b = 0.75, lowercased words of
+two or more letters (`\b\w\w+\b`), bm25s's English stopwords and the Snowball English stemmer from PyStemmer. The
+manifest records these settings, and search tokenizes with them. The build checkpoints after every session.
+
+A store holds `chunks.jsonl` (dense's rows), `index/<project>/` (one saved bm25s index per project, document i the
+project's i-th chunk in `chunks.jsonl`) and a `manifest.json`.
+
+Search scores the question's project only, in both forms, and returns the 50 best chunks with a score above zero,
+best first, each as its text. A query with no word in the project's vocabulary returns nothing.
+
+`--check` checks that the chunks and the manifest agree, that every chunk lies within its session in the corpus and
+that five chunks have the token counts the tokenizer gives them now, then builds each project's index again from the
+chunks: it must hold as many documents and terms and rank three queries the same, scores included.
+
+The store was built from the 403 sessions on a laptop CPU in 18 min: the 114,516 chunks of the dense store, 302,519
+terms over the twenty-two indexes.
 
 ### graphiti
 
