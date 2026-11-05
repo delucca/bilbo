@@ -137,20 +137,23 @@ def random_row(q, units):
     return {"id": q["id"], "form": "both", "results": [{"text": t} for t in picked]}
 
 
-corpus, selected, gold_out, random_out = (Path(a) for a in sys.argv[1:5])
-questions = [json.loads(line) for line in selected.read_text().split("\n") if line.strip()]
-
-
 def have(path):
     return {json.loads(line)["id"] for line in path.read_text().split("\n") if line.strip()} if path.exists() else set()
 
 
-for out, build in ((gold_out, lambda q: gold_row(corpus, q)),
-                   (random_out, lambda q: random_row(q, units_of(corpus, q["repo"])))):
-    out.parent.mkdir(parents=True, exist_ok=True)
-    done = have(out)
-    with out.open("a") as f:
-        for q in questions:
-            if q["id"] not in done:
-                f.write(json.dumps(build(q), ensure_ascii=False) + "\n")
-                f.flush()
+def main():
+    corpus, selected, gold_out, random_out = (Path(a) for a in sys.argv[1:5])
+    questions = [json.loads(line) for line in selected.read_text().split("\n") if line.strip()]
+    for out, build in ((gold_out, lambda q: gold_row(corpus, q)),
+                       (random_out, lambda q: random_row(q, units_of(corpus, q["repo"])))):
+        out.parent.mkdir(parents=True, exist_ok=True)
+        done = have(out)
+        with out.open("a") as f:
+            for q in questions:
+                if q["id"] not in done:
+                    f.write(json.dumps(build(q), ensure_ascii=False) + "\n")
+                    f.flush()
+
+
+if __name__ == "__main__":
+    main()

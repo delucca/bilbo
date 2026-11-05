@@ -7,7 +7,7 @@
 # $cache/eval/{gold,random}-<corpus>-<controlskey> (the cache is BILBO_EVALS_CACHE, as for build-store.sh), so a rerun
 # repeats no search and no judge call already made. The search key hashes arms/<arm>/search.py, which the store key
 # leaves out; the controls key hashes controls.py.
-# Not built: the answer run, the 16,000-token run, the judge's stress test and audit, the paired comparisons.
+# Not built: the answer run, the 16,000-token run, the paired comparisons. The judge's gates are gates.sh.
 set -euo pipefail
 
 root=$(cd "$(dirname "$0")/.." && pwd)

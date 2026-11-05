@@ -963,14 +963,35 @@ rerun repeats no search and no judge call already made. `--questions id,id` or `
 of the store's key but is part of the run's: a changed adapter searches again, and a changed `scripts/controls.py`
 rebuilds the controls.
 
-Not built yet: the answer run (and with it the no-answer questions), the 16,000-token sensitivity run, the judge's
-stress test and the cross-family audit of its verdicts, and the paired comparisons with their intervals.
+Two gates check the judge before any arm's number is read:
+
+    evals/retrieval/scripts/gates.sh [stress|audit]
+
+- **Stress test** (`scripts/stress.py`): the gold of every answerable question must score at least 0.95. 60 contexts
+  each leave out one fact whose evidence lines no other fact shares, and 20 put an older value's gold in place of the
+  fact that replaced it (one more shares its evidence lines with that fact and is skipped); the judge must mark the
+  missing fact absent in at least 90% of each, and for a swap the older value present too. Facts read as their
+  evidence quotes, not the gold's windows, since a window around one fact's quote often restates its neighbour. 40
+  questions read another project's gold, which must score 0.05 or less. The gold is the same control `eval.sh`
+  judges, so they share verdicts.
+- **Audit**: `gpt-6.1-sol`, through `codex exec`, re-judges 150 of the Opus verdicts in the arms' newest cached runs,
+  blind, with the same prompt, spread over the arms, the classes and verdicts with and without a present item. Cohen's
+  kappa over their marks must be at least 0.75. Codex runs with a `CODEX_HOME` that links only `auth.json`, so the
+  user's AGENTS.md, hooks and plugins stay out, as hooks do for `claude -p`.
+
+Reports land in `~/.cache/bilbo-evals/retrieval/eval/stress-*/stress.json` and `audit-*/audit.json`, with every miss
+and disagreement listed.
+
+Not built yet: the answer run (and with it the no-answer questions), the 16,000-token sensitivity run, and the paired
+comparisons with their intervals.
 
 ## Results
 
 Each arm's `score.json` from its run is copied to `results/<arm>.json`. Share of facts present in what each arm
 returned, 4,000 tokens, all 143 answerable questions; `misled` counts questions with an older value, in brackets.
-Provisional until the judge's stress test and audit are built.
+The judge passed both gates on these runs (2026-11-05): gold 1.00, a dropped fact caught in 58 of 60, a swapped older
+value in 19 of 20, another project's gold 0.00; `gpt-6.1-sol` agreed with Opus on 150 verdicts at kappa 0.93. Every
+miss read by hand was the context still stating the fact through another fact's quote, not a judge error.
 
 | Arm | Store | overview | status | decision | rules | procedure | fact | refind | headline `query` | `prompt` | misled `query` |
 |---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|

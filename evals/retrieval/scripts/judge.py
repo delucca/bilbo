@@ -1,7 +1,9 @@
-"""Judge what each context states. Usage: judge.py <selected.jsonl> <contexts.jsonl> <judged.jsonl> [--jobs N].
-One `claude -p` call per distinct prompt marks each fact and each older value present or absent: contexts with the same
-prompt (a question's two forms that returned the same text) share one verdict, and a prompt already in judged.jsonl is
-not judged again. BILBO_EVAL_JUDGE_CWD is the empty directory the judge runs in."""
+"""Judge what each context states. Usage: judge.py <selected.jsonl> <contexts.jsonl> <judged.jsonl> [--jobs N] [--model M].
+One call per distinct prompt marks each fact and each older value present or absent: contexts with the same prompt (a
+question's two forms that returned the same text) share one verdict, and a prompt already in judged.jsonl is not judged
+again. A claude-* model runs through `claude -p`, any other through `codex exec`. BILBO_EVAL_JUDGE_CWD is the empty
+directory the judge runs in; BILBO_EVAL_CODEX_HOME is a CODEX_HOME that holds only auth.json, so the user's AGENTS.md,
+hooks and plugins never reach a Codex judge."""
 
 import argparse
 import hashlib
@@ -10,13 +12,17 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
-MODEL = "claude-opus-5-5"
 SYSTEM = "You check whether a text states given facts. You reply with JSON only."
 TRIES = 3
 STOP_AFTER = 3
+CODEX_EFFORT = "high"
+CODEX_OFF = ("hooks", "plugins", "apps", "multi_agent", "code_mode_host", "skill_search", "tool_suggest", "sleep_tool",
+             "browser_use", "computer_use")
 
 TEMPLATE = """You check what a memory tool returned for a developer's question about a software project. For each item below,
 decide whether the returned text states it.
@@ -56,20 +62,47 @@ def build_prompt(q, context):
     return TEMPLATE.format(prompt=q["prompt"], facts=facts, stale=stale, context=context)
 
 
-def call(prompt, q):
+def ask_claude(model, prompt):
+    p = subprocess.run(
+        ["claude", "-p", "--model", model, "--output-format", "json", "--tools", "", "--disable-slash-commands",
+         "--strict-mcp-config", "--setting-sources", "project", "--settings", '{"disableAllHooks": true}',
+         "--no-session-persistence", "--system-prompt", SYSTEM],
+        input=prompt, capture_output=True, text=True, timeout=600, cwd=os.environ["BILBO_EVAL_JUDGE_CWD"])
+    reply = json.loads(p.stdout)
+    if reply.get("is_error"):
+        raise ValueError(f"is_error: {str(reply.get('result'))[:200]}")
+    return reply["result"], reply.get("usage")
+
+
+def ask_codex(model, prompt):
+    """codex exec has no system prompt flag: SYSTEM leads the prompt. Its shell runs read-only in the empty cwd."""
+    with tempfile.TemporaryDirectory() as tmp:
+        last = Path(tmp) / "last.md"
+        p = subprocess.run(
+            ["codex", "exec", "-m", model, "-c", f'model_reasoning_effort="{CODEX_EFFORT}"', "-c", 'web_search="disabled"',
+             "--ignore-rules", "--ephemeral", "--skip-git-repo-check", "-s", "read-only", "--json", "-o", str(last),
+             *(a for f in CODEX_OFF for a in ("--disable", f)), "-C", os.environ["BILBO_EVAL_JUDGE_CWD"], "-"],
+            input=f"{SYSTEM}\n\n{prompt}", capture_output=True, text=True, timeout=900,
+            env={**os.environ, "CODEX_HOME": os.environ["BILBO_EVAL_CODEX_HOME"]})
+        usage = None
+        for line in p.stdout.split("\n"):
+            if '"turn.completed"' in line:
+                usage = json.loads(line).get("usage")
+        if p.returncode or not last.exists() or not last.read_text().strip():
+            err = p.stderr.strip().split("\n")[-1][:200] if p.stderr.strip() else f"exit {p.returncode}"
+            if "429" in p.stderr or "rate limit" in p.stderr.lower():
+                time.sleep(60)
+            raise ValueError(f"codex: {err}")
+        return last.read_text(), usage
+
+
+def call(model, prompt, q):
     """claude -p can exit 0 on failure, so only a parsed, error-free reply with exactly the expected ids counts."""
     last = "no try"
     for _ in range(TRIES):
         try:
-            p = subprocess.run(
-                ["claude", "-p", "--model", MODEL, "--output-format", "json", "--tools", "", "--disable-slash-commands",
-                 "--strict-mcp-config", "--setting-sources", "project", "--settings", '{"disableAllHooks": true}',
-                 "--no-session-persistence", "--system-prompt", SYSTEM],
-                input=prompt, capture_output=True, text=True, timeout=600, cwd=os.environ["BILBO_EVAL_JUDGE_CWD"])
-            reply = json.loads(p.stdout)
-            if reply.get("is_error"):
-                raise ValueError(f"is_error: {str(reply.get('result'))[:200]}")
-            body = re.sub(r"^```(?:json)?\s*|\s*```$", "", reply["result"].strip())
+            result, usage = (ask_claude if model.startswith("claude-") else ask_codex)(model, prompt)
+            body = re.sub(r"^```(?:json)?\s*|\s*```$", "", result.strip())
             try:
                 marks = json.loads(body)
             except json.JSONDecodeError:
@@ -82,7 +115,7 @@ def call(prompt, q):
                 got = marks[key]
                 if set(got) != {i["id"] for i in items} or not all(isinstance(v, bool) for v in got.values()):
                     raise ValueError(f"bad {key} marks {got}")
-            return marks, reply.get("usage")
+            return marks, usage
         except (ValueError, KeyError, TypeError, subprocess.TimeoutExpired) as e:
             last = f"{type(e).__name__}: {e}"
     raise RuntimeError(last)
@@ -97,6 +130,7 @@ ap.add_argument("selected")
 ap.add_argument("contexts")
 ap.add_argument("judged")
 ap.add_argument("--jobs", type=int, default=4)
+ap.add_argument("--model", default="claude-opus-5-5")
 args = ap.parse_args()
 
 questions = {q["id"]: q for q in lines(args.selected)}
@@ -135,7 +169,7 @@ with judged.open("a") as out, ThreadPoolExecutor(args.jobs) as pool:
                 row(c, sha, {"facts": {f["id"]: False for f in q["facts"]}, "stale": {s["id"]: False for s in q.get("stale", [])}}, None)
                 done += 1
         else:
-            futures[pool.submit(call, prompt, q)] = (cs, sha)
+            futures[pool.submit(call, args.model, prompt, q)] = (cs, sha)
     for fut in as_completed(futures):
         if fut.cancelled():
             continue
