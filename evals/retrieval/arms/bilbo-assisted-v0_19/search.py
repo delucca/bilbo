@@ -1,9 +1,9 @@
 """Search a bilbo store unpacked in /work/store for the questions in /work/questions.jsonl the way bilbo 0.19.0 reads
 for an agent, over the notes of the question's project: each project's notes are copied into a store of their own and
 indexed, as if the developer's bilbo held only that project. The `query` form goes through `bilbo recall`, as the
-recall skill runs it, and the `prompt` form through `bilbo digest`, as the prompt hook runs it, each session's first
-digest. Appends one row per question and form to /work/search.jsonl. build-store.sh --search runs it in the build
-service."""
+recall skill runs it, then the agent's Read of the top READ notes in full, the rest as recall printed them; the
+`prompt` form through `bilbo digest`, as the prompt hook runs it, each session's first digest, as injected. Appends one
+row per question and form to /work/search.jsonl. build-store.sh --search runs it in the build service."""
 
 import json
 import os
@@ -22,6 +22,8 @@ BILBO = "/usr/local/bin/bilbo"
 EMBEDDER = os.environ["EMBEDDER_URL"].rstrip("/")
 # recall prints 10 by default; the budget, not bilbo, cuts, so ask for more than 4,000 tokens hold.
 LIMIT = 50
+# The recall skill prints snippets and allows Read: an agent opens the best notes whole (the eval's k).
+READ = 3
 # The digest gives the embedder 1.2 seconds and falls back to keywords past it; a retry asks again in a new session.
 DIGEST_TRIES = 3
 SENTINEL = "\u0000"
@@ -85,7 +87,10 @@ def recall(qid, text):
         m = BLOCK_HEAD.match(block.split("\n", 1)[0])
         if not m:
             sys.exit(f"search: {qid} query: a recall block does not open with path, kind and created: {block[:200]!r}")
-        hits.append({"text": block, "ref": m[1], "rank": len(hits) + 1})
+        hit = {"text": block, "ref": m[1], "rank": len(hits) + 1}
+        if len(hits) < READ:
+            hit |= {"text": f"{m[1]}\n{Path(m[1]).read_text()}", "read": True}
+        hits.append(hit)
     return hits
 
 

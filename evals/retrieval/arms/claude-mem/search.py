@@ -1,7 +1,8 @@
 """Search a claude-mem store unpacked in /work/store for the questions in /work/questions.jsonl, served by claude-mem's
 worker with the embedder and no LLM, as a later session of the question's project would reach it. The query form is
-the MCP tool mem_search in auto mode, the one claude-mem's instructions tell an agent to call; the prompt form is the
-SessionStart injection, since the hook that sees the prompt searches with it only when CLAUDE_MEM_SEMANTIC_INJECT is
+the MCP tool mem_search in guided mode, its default: the index, then the context of the top READ index rows by the
+search's own rank, then the details of those rows, with a fixed choice where an agent would choose; the prompt form is
+the SessionStart injection, since the hook that sees the prompt searches with it only when CLAUDE_MEM_SEMANTIC_INJECT is
 on, which it is not by default. Both scope to every project key the build filed the repository's sessions under.
 The worker's clock reads the repository's last event (clock.js), so mem_search's 90-day window, which it cannot widen,
 ends where a session right after the last one would see it end. Appends one row per question and form to
@@ -24,8 +25,10 @@ SERVE = Path("/tmp/search")
 CLOCK = SERVE / "clock"
 PORT = 37777
 EMBEDDER = os.environ["EMBEDDER_URL"]
-# mem_search's ceilings (mcp-server.ts inputSchema); its defaults are 20 and 3, and pack.py cuts at the budget.
-LIMIT, MAX_DETAILS = 20, 5
+# mem_search's index default and ceiling (mcp-server.ts inputSchema); READ is the eval's k, maxDetails' default.
+LIMIT, READ = 20, 3
+INDEX_LINE = re.compile(r"^- \[([^\]]+)\] .*? · (observation|summary|prompt)(?: · .*)?$")
+CONTINUATION = re.compile(r"^Continue with: (ms_[A-Za-z0-9_-]{24})$", re.M)
 BACKFILLED = ("Backfill check complete for all projects", "Backfill check ended before every project finished")
 LLM_ATTEMPTS = ("Generator auto-starting", "Starting SDK query")
 manifest = json.loads((STORE / "manifest.json").read_text())
@@ -62,12 +65,49 @@ def scope(repo, db):
     return keys, last
 
 
-def split_search(text):
-    """mem_search's rendering (progressive-search.ts renderProgressiveSearchResult), one result per detail or, when
-    no title matched the query, per index line. The protocol lines around them carry no memory."""
-    if "\n### [" in text:
-        return [part.strip() for part in text.split("\n### ")[1:] if part.strip()]
-    return [line[2:].strip() for line in text.splitlines() if line.startswith("- [")]
+def mem_search(qid, body):
+    found = api("/api/mem-search", body)
+    text = found["content"][0]["text"]
+    if found.get("isError"):
+        sys.exit(f"search: {qid}: mem_search failed: {text}")
+    return text
+
+
+def rows_of(text):
+    """The index or context lines of a guided step (progressive-search.ts indexLine), as (id, kind, line)."""
+    return [(m[1], m[2], line[2:].strip()) for line in text.splitlines() if (m := INDEX_LINE.match(line))]
+
+
+def continuation(qid, text):
+    m = CONTINUATION.search(text)
+    if not m:
+        sys.exit(f"search: {qid}: a guided step gave no continuation: {text[-300:]!r}")
+    return m[1]
+
+
+def guided(qid, query, primary, projects):
+    """Step 1, the index in the search's order; step 2, the context of its top READ rows that are not prompts (the
+    details step refuses prompts); step 3, the details of those same rows. The details come first, each one result as
+    the tool renders it, then the index lines of the rows not opened."""
+    scope = {"searchScope": projects}
+    index = mem_search(qid, {"mode": "guided", "query": query, "project": primary, "projects": projects,
+                             "limit": LIMIT, "maxDetails": READ} | scope)
+    rows = rows_of(index)
+    picked = [i for i, kind, _ in rows if kind != "prompt"][:READ]
+    if not picked:
+        return [{"text": line, "ref": i} for i, _, line in rows]
+    context = mem_search(qid, {"mode": "guided", "continuation": continuation(qid, index), "selectedIds": picked}
+                         | scope)
+    shown = {i for i, _, _ in rows_of(context)}
+    anchors = [i for i in picked if i in shown]
+    details = []
+    if anchors and "Continue with: " in context:
+        text = mem_search(qid, {"mode": "guided", "continuation": continuation(qid, context),
+                                "selectedIds": anchors} | scope)
+        details = [part.strip() for part in text.split("\n### ")[1:] if part.strip()]
+    read = [{"text": t, "ref": t.split("]", 1)[0].lstrip("["), "read": True} for t in details]
+    opened = {r["ref"] for r in read}
+    return read + [{"text": line, "ref": i} for i, _, line in rows if i not in opened]
 
 
 def main():
@@ -109,13 +149,7 @@ def main():
                 keys, last = scopes[q["repo"]]
                 CLOCK.write_text(str(last))
                 primary, projects = keys[-1], ",".join(keys)
-                found = api("/api/mem-search", {"mode": "auto", "query": q["query"], "project": primary,
-                                                "limit": LIMIT, "maxDetails": MAX_DETAILS,
-                                                "searchScope": projects, "projects": projects})
-                text = found["content"][0]["text"]
-                if found.get("isError"):
-                    sys.exit(f"search: {q['id']}: mem_search failed: {text}")
-                hits = [{"text": t, "ref": t.split("]", 1)[0].lstrip("[")} for t in split_search(text)]
+                hits = guided(q["id"], q["query"], primary, projects)
                 out.write(json.dumps({"id": q["id"], "form": "query", "results": hits}, ensure_ascii=False) + "\n")
 
                 params = urllib.parse.urlencode({"projects": projects, "platformSource": "claude"})

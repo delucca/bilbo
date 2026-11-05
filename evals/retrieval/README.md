@@ -187,7 +187,10 @@ format of Qwen3-Embedding's model card, `Instruct: {task}\nQuery:{text}`, with t
 coding project, retrieve passages of past coding sessions that answer it`. Chunks were embedded with no instruction, as
 the card says for documents. The vector is compared by cosine with every chunk of the question's project, exact and
 best first; the 100 best are returned. Scope is the question's project, as a tool that runs in the repository would
-see. A result reads as the chunk's text: its messages with their labels (`user:`, `tool_use Edit:` and so on).
+see. A result reads as `Session started <time UTC>:`, then the chunk's text: its messages with their labels (`user:`,
+`tool_use Edit:` and so on). The time is the session's first timestamp, read from the corpus at search time since a
+chunk does not carry it, so a question about when something happened can be answered; Cursor's transcripts have none
+and read `Session date unknown:`. Dense has no read step: a chunk is already whole.
 
 The published store was built from the 403 sessions with the embedder on an RTX 5070 Ti, in 55 min: 114,516 chunks
 from 156,115 messages, 46.7 million tokens.
@@ -208,7 +211,8 @@ A store holds `chunks.jsonl` (dense's rows), `index/<project>/` (one saved bm25s
 project's i-th chunk in `chunks.jsonl`) and a `manifest.json`.
 
 Search scores the question's project only, in both forms, and returns the 50 best chunks with a score above zero,
-best first, each as its text. A query with no word in the project's vocabulary returns nothing.
+best first, each as its text after its session's start time, as for dense. A query with no word in the project's
+vocabulary returns nothing.
 
 `--check` checks that the chunks and the manifest agree, that every chunk lies within its session in the corpus and
 that five chunks have the token counts the tokenizer gives them now, then builds each project's index again from the
@@ -373,11 +377,17 @@ refuses as ambiguous: it is left out, as a real user could not name it either. W
 hook searches with the prompt: `UserPromptSubmit` prints `{}`, and `SessionStart` injects only an open handoff, which
 the prompt does not shape. So the `prompt` form, like the `query` form, sends its text to `memory_query`. The tool
 returns 100 results instead of its default 10, so the budget fills, in the response's order: the projects' pages, or
-the raw observations it falls back to when no page matches. A page
-reads as its path, its title and the snippet `memory_query` returns, an FTS5 excerpt of about 24 tokens around the
-matched terms, or up to 240 characters of the page's own text for a page found by another stream, with the `<mark>` tags removed.
-`memory_query` returns snippets, not pages: an agent reads a whole page with `memory_read_page`, a second call this eval
-does not make.
+the raw observations it falls back to when no page matches.
+
+`memory_query` returns snippets, not pages, and its MCP instructions tell an agent to read a page past its snippet with
+`memory_read_page`, and always for a `_rules/`, `gotchas/`, `procedures/` or `decisions/` page. The eval's rule, the
+same k as bilbo's and claude-mem's: the top 3 pages by `memory_query`'s rank, whatever their namespace, are read with
+`memory_read_page` (by path, in the project that holds the page, since a scoped hit does not name it; the store's page
+id says which) and read as their path, their title and their whole body, frontmatter left out. The rest read as their
+path, their title and the snippet `memory_query` returns, an FTS5 excerpt of about 24 tokens around the matched terms,
+or up to 240 characters of the page's own text for a page found by another stream, with the `<mark>` tags removed. Raw
+observations are not pages and have nothing to read. Both forms follow the rule, since both are an agent's
+`memory_query`.
 
 The published store was built in two runs with Claude Opus 5.5, through a gateway that runs `claude -p` for each call,
 and the embedder on an RTX 5070 Ti. The first run built the first five projects: 358 LLM calls, 22.8 million prompt
@@ -593,12 +603,13 @@ session replayed, every row's Chroma documents, five documents embedded again, a
 It then serves a copy with no LLM, and four searches in each project must find observations through Chroma.
 
 The eval serves a copy with claude-mem's worker, the embedder and no LLM, as a later session of the question's project
-reaches it. The `query` form is the MCP tool `mem_search` in auto mode, the call claude-mem's instructions tell an
-agent to make first: its search ranks the hits, the ones whose titles share a word with the query anchor a timeline
-of their neighbours, and the details of the best of those come back (index, context, selected details, with no
-model choosing). It asks for the tool's ceilings, 20 index rows and 5 details, instead of its defaults of 20 and 3.
-Each detail is one result, its id, title and text as the tool renders them; when no title matches, the index lines
-are the results. The `prompt` form is the SessionStart injection, `/api/context/inject` with `platformSource=claude`
+reaches it. The `query` form is the MCP tool `mem_search` in guided mode, its default, where the agent picks what to
+open in three calls: the index (step 1, 20 rows, the tool's default, in its search's order), the context around the
+rows it picks (step 2), then the details of the rows it picks from that context (step 3). The eval's rule, the same k
+as bilbo's and ai-memory's: step 2 picks the top 3 index rows that are not prompts (step 3 refuses prompts), and
+step 3 picks those same 3 rows, `maxDetails` 3, the tool's default. The context then holds the details first, each
+its id, title and text as the tool renders them, then the index lines of the rows not opened; the step 2 context
+lines, titles of the picked rows' neighbours, are left out. The `prompt` form is the SessionStart injection, `/api/context/inject` with `platformSource=claude`
 as the hook asks for it: the project's last 50 observation titles, its last 10 sessions and the latest summary, the
 same text for every question of a project, without the fixed usage instructions the hook appends. The hook that sees
 the prompt searches with it only when `CLAUDE_MEM_SEMANTIC_INJECT` is on, which is off by default and marked
@@ -612,8 +623,8 @@ reaches the tool only through the full-text fallback, which runs when Chroma fin
 questions, in readaloud, port-cli and bosarsalog, have evidence more than 90 days before their repository's last
 session.
 
-In the first full run, all but 6 of the 143 `query` searches came back with details, and those 6 with index lines.
-The `prompt` form scores 4%: the SessionStart text lists a project's latest work, which a question about an earlier
+In the first full run, in auto mode (20 index rows, 5 details picked by title words), all but 6 of the 143 `query`
+searches came back with details, and those 6 with index lines. The `prompt` form scores 4%: the SessionStart text lists a project's latest work, which a question about an earlier
 decision or step seldom is.
 
 The published store is built with Claude Haiku 5.5 (`claude-haiku-5-5`) through claude-mem's own `claude` provider on a
@@ -695,13 +706,16 @@ before a project's questions, its notes (the manifest's `repos.<repo>.notes`) ar
 Each project's notes were written in its own container, so the split is clean; only BM25's statistics and the
 vectors' floating-point noise change. The eval reads that store the two ways bilbo 0.19.0 reads it for an agent:
 
-- `query`: `bilbo recall --limit 50 -- <query>`, as the recall skill runs it, each block as printed (path and line,
-  kind and `created`, heading path, the passage's first 300 characters). The skill asks for 10 unless the user names a
-  number; 50 lets the budget, not bilbo, cut. `bilbo: no notes match` is an empty result.
+- `query`: `bilbo recall --limit 50 -- <query>`, as the recall skill runs it, then the agent's `Read` of the best
+  notes. The skill prints snippets and allows `Read`; the eval's rule, the same k as ai-memory's and claude-mem's,
+  reads the top 3 notes whole (the note's path, then the file), and the rest are each block as printed (path and
+  line, kind and `created`, heading path, the passage's first 300 characters). The skill asks for 10 unless the user
+  names a number; 50 lets the budget, not bilbo, cut. `bilbo: no notes match` is an empty result.
 - `prompt`: `bilbo digest` with `{"session_id", "prompt"}` on stdin, as the prompt hook runs it, a new session each
   time, so each is a session's first digest: up to 6 notes that pass `digest.min_similarity` (0.55, the default), in
   at most 9,000 bytes, each its line as printed. This is all bilbo gives an agent for a prompt, so this form fills
-  well under 4,000 tokens, and a prompt nothing passes for gets no context.
+  well under 4,000 tokens, and a prompt nothing passes for gets no context. No note is read: the form measures what
+  the hook injects before the agent acts.
 - Each search follows one request of a NUL to the embedder, so its query vector depends only on its own text (llama.cpp
   reuses the prefix a request shares with the one before it). A recall that reports `not indexed` or `embedder
   unavailable` stops the search. The digest gives the embedder 1.2 seconds and falls back to keywords past it, saying
@@ -919,11 +933,15 @@ What the store holds, from the manifest:
 - Files keep the dates their authors wrote, not the build's.
 
 Auto memory has no search: Claude Code loads `MEMORY.md` into every session, up to its first 200 lines or 25,000
-characters, and the model reads topic files when it chooses to. The eval gives both forms the same context, with no
-model choosing: for each project key of the question's repository, the main checkout's first (the directory most of
-its sessions start in) and the others by name, `MEMORY.md` as loaded, then every topic file, those `MEMORY.md` links
-first and the rest by name, each opening with its file name. That is an upper bound on the topic files, as if the
-model read them all, and it is the choice because the store's `MEMORY.md` is often missing: linear-cycle-drain,
+characters, and the model reads topic files when it chooses to. The eval's rule stands in for that choice with no
+model: for each project key of the question's repository, the main checkout's first (the directory most of its
+sessions start in) and the others by name, `MEMORY.md` as loaded; then every topic file of those keys, ranked for the
+form's text by BM25 (Okapi, k1 = 1.2, b = 0.75, lowercased runs of letters and digits, no stemming, no stopwords) over
+what the model sees before it opens one: the file's name and the lines of the loaded `MEMORY.md` that link it. Ties
+keep the old order, the keys' order, then `MEMORY.md`'s links, then by name. Each file opens with its full memory
+path, `~/.claude/projects/<key>/memory/<file>:`. The two forms now differ, each ranked by its own text. Every topic
+file stays in, as if the model read them in that order until the budget ran out, because the store's `MEMORY.md` is
+often missing, and a file under a key with none is ranked by its name alone: linear-cycle-drain,
 contoso, neuralips26, wakil, eldios-dotfiles, entire-graph, cavecrew-mcp and superset-windows-arm64 have topic files
 and no `MEMORY.md`, likely the index writes Claude Code made outside the main model's tool calls. Every key of the
 repository counts, worktrees and the home directory included, because go-nuts's memory is only under its task
