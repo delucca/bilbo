@@ -2,12 +2,16 @@
 # Get an arm's store into dataset/store-<arm>-<key>.tar.zst: the archive already there, else the one in dataset.lock,
 # else build it from the corpus, its services in Docker.
 #   build-store.sh <arm> [--rebuild] [--sessions N|repo:N,...] [--check] [--key]
+#   build-store.sh <arm> --search <questions.jsonl> <out.jsonl>
 # Building needs the LLM variables the arm's compose.yaml reads, usually BILBO_EVAL_LLM_URL (as the containers see it),
 # BILBO_EVAL_LLM_KEY and BILBO_EVAL_LLM_MODEL; BILBO_EVAL_LLM_HEADERS, a JSON object, adds headers to every LLM call
 # for a gateway that needs them, and BILBO_EVAL_LLM_SMALL_MODEL is the model for the lighter calls of an arm whose
 # compose.yaml reads it. Without BILBO_EVAL_LLM_MODEL, the store is the one in dataset.lock built from the current
 # corpus, embedder and arm files (it stops when there are several). --key prints the store's key for the current inputs
 # and stops.
+# --search restores the store into fresh services and runs arms/<arm>/search.py over the questions, appending its rows
+# to <out.jsonl> (they are kept when it fails, so a rerun searches only the rest). It never builds. A check and a search
+# of one arm share a Compose project, so they cannot run at once.
 # An arm whose compose.yaml reads none of the LLM variables needs none of them, and its key names no LLM.
 # --rebuild builds the store again. --sessions N builds from the first N sessions only (repo:N,repo:N, for an arm built
 # in lanes or hindsight, the first N sessions of each repository named): a trial, whose archive stays in the cache.
@@ -48,9 +52,9 @@ source "$root/scripts/dataset.sh"
 
 arm=${1:-}
 [[ -n $arm && -f $root/arms/$arm/compose.yaml ]] ||
-  die "usage: build-store.sh <arm> [--rebuild] [--sessions N|repo:N,...] [--check] [--key] (arms: $(cd "$root/arms" && echo *))"
+  die "usage: build-store.sh <arm> [--rebuild] [--sessions N|repo:N,...] [--check] [--key] | --search <in> <out> (arms: $(cd "$root/arms" && echo *))"
 shift
-rebuild= sessions= check= print_key=
+rebuild= sessions= check= print_key= search= search_in= search_out=
 while (($#)); do
   case $1 in
     --rebuild) rebuild=1 ;;
@@ -61,10 +65,14 @@ while (($#)); do
                   die "only an arm built in lanes takes --sessions repo:N"
                 sessions=$2; shift ;;
     --check) [[ -f $root/arms/$arm/check.py ]] || die "$arm has no check.py"; check=1 ;;
+    --search) [[ -f $root/arms/$arm/search.py ]] || die "$arm has no search.py"
+              [[ -f ${2:-} && -n ${3:-} ]] || die "--search needs a questions file and an output file"
+              search=1 search_in=$(realpath "$2") search_out=$(realpath -m "$3"); shift 2 ;;
     *) die "unknown option $1" ;;
   esac
   shift
 done
+[[ -z $search || -z $rebuild$sessions$check ]] || die "--search does not combine with --rebuild, --sessions or --check"
 # The containers get the LLM only through compose.yaml.
 uses_llm=
 grep -q BILBO_EVAL_LLM_ "$root/arms/$arm/compose.yaml" && uses_llm=1
@@ -75,7 +83,7 @@ archive=$("$root/scripts/fetch-corpus.sh")
 corpus_sha=$(sha "$archive")
 
 # The key covers everything that shapes the store. The device does not: it changes only floating-point noise. check.py
-# only reads a store. The small model counts only for an arm that reads it, and only when it is not the LLM itself.
+# and search.py only read a store. The small model counts only for an arm that reads it, and only when it is not the LLM itself.
 uses_small=
 grep -q BILBO_EVAL_LLM_SMALL_MODEL "$root/arms/$arm/compose.yaml" && uses_small=1
 seed_file= seed_sha=
@@ -91,7 +99,7 @@ inputs_for() {
   echo "sessions ${sessions:-all}"
   [[ -z $seed_file ]] || echo "seed $seed_file $seed_sha"
   cd "$root/arms/$arm"
-  find . -mindepth 1 \( -name '.*' -o -name __pycache__ \) -prune -o -type f ! -name compose.gpu.yaml ! -name check.py \
+  find . -mindepth 1 \( -name '.*' -o -name __pycache__ \) -prune -o -type f ! -name compose.gpu.yaml ! -name check.py ! -name search.py \
     -print | LC_ALL=C sort | while read -r f; do echo "file ${f#./} $(sha "$f")"; done
 }
 key_of() { printf '%s\n' "$1" | sha256sum | cut -c1-12; }
@@ -160,7 +168,8 @@ elif [[ -n $sessions ]] || ! fetch_archive "$name"; then
   build=1
 fi
 [[ -z $build || -z $uses_llm ]] || need_llm
-[[ -n $build$check ]] || exit 0
+[[ -z $search || -z $build ]] || die "no $arm store to search; build it first"
+[[ -n $build$check$search ]] || exit 0
 
 corpus=$cache/corpus-${corpus_sha:0:12}
 if [[ ! -d $corpus ]]; then
@@ -307,4 +316,23 @@ if [[ -n $check ]]; then
     die "${out#"$root"/} failed its check"
   compose down -v --remove-orphans
   [[ -z $build ]] || rm -rf "$work"
+fi
+
+if [[ -n $search ]]; then
+  rm -rf "$check_dir" && mkdir -p "$check_dir"
+  zstd -dc "$out" | tar -xf - -C "$check_dir"
+  cp "$root/arms/$arm/search.py" "$check_dir/search.py"
+  cp "$search_in" "$check_dir/questions.jsonl"
+  export BILBO_EVAL_WORK=$check_dir
+
+  log "searching ${out#"$root"/} on the $device"
+  if services restore | grep -x restore >/dev/null; then compose --profile restore run --rm --no-deps restore; fi
+  start
+  status=0
+  compose run --rm --build --entrypoint python build /work/search.py || status=$?
+  # Rows written before a failure count: a rerun searches only the rest.
+  mkdir -p "${search_out%/*}"
+  [[ ! -f $check_dir/search.jsonl ]] || cat "$check_dir/search.jsonl" >> "$search_out"
+  ((status == 0)) || die "searching ${out#"$root"/} failed"
+  compose down -v --remove-orphans
 fi

@@ -15,6 +15,7 @@ Which memory strategy best remembers what happened in real coding sessions?
 - To rebuild the corpus from SWE-chat or to publish: a [Hugging Face token](https://huggingface.co/settings/tokens).
   Rebuilding needs an account that accepted [SWE-chat](https://huggingface.co/datasets/SALT-NLP/SWE-chat)'s terms;
   publishing, write access to the dataset.
+- To run the eval: Claude Code logged in to a Claude subscription.
 
 ## The shell
 
@@ -123,6 +124,8 @@ rerun resumes each lane from its own checkpoint.
   running again resumes from it (an arm built in lanes merges its lanes again without replaying them); only
   `--rebuild` starts from zero.
 - `--key` prints the store's key for the current inputs and stops. `publish.sh` uses it to refuse a stale store.
+- `--search <questions.jsonl> <out.jsonl>` restores the store into fresh services and runs `arms/<arm>/search.py` over
+  the questions, appending its rows to the output. It never builds, and `search.py` is not part of the store's key.
 
 Every arm but auto-memory embeds with Qwen3-Embedding-0.6B, bilbo's embedder, on llama.cpp.
 
@@ -804,6 +807,30 @@ the prompt a developer would type in a later session, and the search an agent wo
 The questions fall in seven classes, such as the state of a piece of work or a decision and its reason, weighted by
 how often real memory queries ask for each. They are committed, not published, and committing them freezes them.
 [questions/README.md](questions/README.md) has the classes, the fields and how the questions are made.
+
+## Running the eval
+
+To score an arm's store against the questions:
+
+    evals/retrieval/scripts/eval.sh mem0
+
+The script gets the store as `build-store.sh` does, restores it into fresh services and searches it for every
+answerable question, once per form (`query` and `prompt`), with the question's project as the scope, the way the
+tool searches. It packs what each search returns, in the tool's order, into 4,000 tokens counted with tiktoken's
+o200k_base, cutting the result that does not fit. Claude Opus 5.5, through `claude -p` on a Claude subscription,
+marks each fact and each older value present or absent in each context, and a script scores: a question's score is
+the share of its facts present, and misled counts a question whose older value is present while the fact that
+replaced it is not. The headline weights the class means by `questions/classes.json`, on the `query` form, with the
+`prompt` form beside it. Two controls are judged once and shared by every arm: `gold`, the evidence lines, and
+`random`, random lines of the same project at the same budget.
+
+Searches, contexts and verdicts are kept in `~/.cache/bilbo-evals/retrieval/eval` (or `BILBO_EVALS_CACHE`), so a
+rerun repeats no search and no judge call already made. `--questions id,id` or `--limit N` runs a few questions;
+`--jobs N` sets the judge calls at once (default 4). Each arm searches with `arms/<arm>/search.py`, which is not part
+of the store's key.
+
+Not built yet: the answer run (and with it the no-answer questions), the 16,000-token sensitivity run, the judge's
+stress test and the cross-family audit of its verdicts, and the paired comparisons with their intervals.
 
 ## Publishing
 
