@@ -1,0 +1,99 @@
+"""Search a bilbo store unpacked in /work/store for the questions in /work/questions.jsonl the way bilbo 0.19.0 reads
+for an agent, over every note of the store: the `query` form through `bilbo recall`, as the recall skill runs it, and
+the `prompt` form through `bilbo digest`, as the prompt hook runs it, each session's first digest. Appends one row per
+question and form to /work/search.jsonl. build-store.sh --search runs it in the build service."""
+
+import json
+import os
+import re
+import subprocess
+import sys
+import urllib.request
+import uuid
+from pathlib import Path
+
+STORE = Path("/work/store")
+BILBO = "/usr/local/bin/bilbo"
+EMBEDDER = os.environ["EMBEDDER_URL"].rstrip("/")
+# recall prints 10 by default; the budget, not bilbo, cuts, so ask for more than 4,000 tokens hold.
+LIMIT = 50
+# The digest gives the embedder 1.2 seconds and falls back to keywords past it; a retry asks again in a new session.
+DIGEST_TRIES = 3
+SENTINEL = "\u0000"
+BLOCK_HEAD = re.compile(r"^(/\S+\.md):\d+\t[a-z]+\t\S+$")
+DIGEST_LINE = re.compile(r"^- (/\S+\.md):\d+ \(")
+
+
+def env():
+    scratch = Path("/tmp/search-home")
+    for d in ("home", "config", "data", "state"):
+        (scratch / d).mkdir(parents=True, exist_ok=True)
+    return {
+        "HOME": str(scratch / "home"), "BILBO_HOME": str(STORE), "BILBO_CONFIG": str(STORE / "config"),
+        "XDG_CACHE_HOME": str(STORE / "cache"), "XDG_CONFIG_HOME": str(scratch / "config"),
+        "XDG_DATA_HOME": str(scratch / "data"), "XDG_STATE_HOME": str(scratch / "state"),
+        "PATH": "/usr/bin:/bin", "NO_COLOR": "1", "LANG": "en_US.UTF-8", "LC_ALL": "en_US.UTF-8",
+    }  # fmt: skip
+
+
+def sentinel():
+    """llama.cpp b11206 reuses the prefix a request shares with the one before it, so each query vector would depend on
+    the previous search; a sentinel first makes it depend only on its own text (the store manifest's `search`)."""
+    request = urllib.request.Request(EMBEDDER + "/v1/embeddings", json.dumps({"input": [SENTINEL]}).encode(),
+                                     {"Content-Type": "application/json"})
+    urllib.request.urlopen(request, timeout=600).read()
+
+
+def bilbo(*args, stdin=None):
+    return subprocess.run([BILBO, *args], input=stdin, env=env(), cwd="/tmp/search-home", capture_output=True,
+                          text=True, timeout=600)
+
+
+def recall(qid, text):
+    sentinel()
+    p = bilbo("recall", "--limit", str(LIMIT), "--", text)
+    err = p.stderr.strip()
+    if "not indexed" in err or "embedder unavailable" in err:
+        sys.exit(f"search: {qid} query: recall did not use the vectors: {err[:300]!r}")
+    if p.returncode == 1 and err.splitlines()[-1:] == ["bilbo: no notes match"]:
+        return []
+    if p.returncode != 0 or err:
+        sys.exit(f"search: {qid} query: recall exit {p.returncode}: {err[:300]!r}")
+    hits = []
+    for block in p.stdout.strip().split("\n\n"):
+        m = BLOCK_HEAD.match(block.split("\n", 1)[0])
+        if not m:
+            sys.exit(f"search: {qid} query: a recall block does not open with path, kind and created: {block[:200]!r}")
+        hits.append({"text": block, "ref": m[1], "rank": len(hits) + 1})
+    return hits
+
+
+def digest(qid, text):
+    for _ in range(DIGEST_TRIES):
+        sentinel()
+        p = bilbo("digest", stdin=json.dumps({"session_id": f"eval-{uuid.uuid4()}", "prompt": text}))
+        err = p.stderr.strip()
+        if p.returncode != 0:
+            sys.exit(f"search: {qid} prompt: digest exit {p.returncode}: {err[:300]!r}")
+        if err:
+            print(f"search: {qid} prompt: digest said {err[:300]!r}; asking again", file=sys.stderr)
+            continue
+        hits = []
+        for line in p.stdout.splitlines():
+            m = DIGEST_LINE.match(line)
+            if m:
+                hits.append({"text": line[2:], "ref": m[1], "rank": len(hits) + 1})
+            elif not (line.startswith("<!-- bilbo digest: ") or line.startswith("Notes that may bear on this prompt")
+                      or re.match(r"^\(\d+ more passed; run bilbo recall for them\)$", line)):
+                sys.exit(f"search: {qid} prompt: an unexpected digest line: {line[:200]!r}")
+        return hits
+    sys.exit(f"search: {qid} prompt: the digest did not rank by meaning in {DIGEST_TRIES} tries")
+
+
+rows = [json.loads(line) for line in Path("/work/questions.jsonl").read_text().splitlines() if line.strip()]
+with open("/work/search.jsonl", "a") as out:
+    for i, q in enumerate(rows, 1):
+        for form, hits in (("query", recall(q["id"], q["query"])), ("prompt", digest(q["id"], q["prompt"]))):
+            out.write(json.dumps({"id": q["id"], "form": form, "results": hits}, ensure_ascii=False) + "\n")
+            out.flush()
+        print(f"search: {i}/{len(rows)} {q['id']}", file=sys.stderr)

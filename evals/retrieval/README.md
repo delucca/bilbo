@@ -677,7 +677,23 @@ What the replay changes:
 - The writer is a simulated agent, so a notes store measures that simulation as much as it measures bilbo.
 
 Search is bilbo's own `bilbo recall`: BM25 over the notes' passages, fused with the embedder's vectors, one hit per
-note. Once the stores are merged, the result is indexed in one pass, right after a request that leaves the embedder
+note. The eval reads the store the two ways bilbo 0.19.0 reads it for an agent, over every note of the store, since
+bilbo searches every project's notes:
+
+- `query`: `bilbo recall --limit 50 -- <query>`, as the recall skill runs it, each block as printed (path and line,
+  kind and `created`, heading path, the passage's first 300 characters). The skill asks for 10 unless the user names a
+  number; 50 lets the budget, not bilbo, cut. `bilbo: no notes match` is an empty result.
+- `prompt`: `bilbo digest` with `{"session_id", "prompt"}` on stdin, as the prompt hook runs it, a new session each
+  time, so each is a session's first digest: up to 6 notes that pass `digest.min_similarity` (0.55, the default), in
+  at most 9,000 bytes, each its line as printed. This is all bilbo gives an agent for a prompt, so this form fills
+  well under 4,000 tokens, and a prompt nothing passes for gets no context.
+- Each search follows one request of a NUL to the embedder, so its query vector depends only on its own text (llama.cpp
+  reuses the prefix a request shares with the one before it). A recall that reports `not indexed` or `embedder
+  unavailable` stops the search. The digest gives the embedder 1.2 seconds and falls back to keywords past it, saying
+  so on stderr: such a digest is asked again in a new session, up to three times, and then the search stops, so every
+  row ranks by meaning.
+
+Once the stores are merged, the result is indexed in one pass, right after a request that leaves the embedder
 nothing to reuse, so its vectors depend only on its notes. A store holds every project's notes in `notes/`, its
 vectors in `cache/bilbo/`, the writer's journals and traces in `writer/<project>/`, bilbo's `config` and a
 `manifest.json`, which lists each project's notes. bilbo finds a vector file by a hash of the store's path: they were
