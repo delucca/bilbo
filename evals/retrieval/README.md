@@ -320,6 +320,19 @@ a store only with `AI_MEMORY_EMBEDDING_BASE_URL` set.
 every latest page, and up to five pages embedded again. It then serves a copy with no LLM and maintenance off, and
 four searches in each project must find pages through the vectors.
 
+The eval searches the way an agent recalls: the MCP tool `memory_query`, on a served copy with the embedder, no LLM and
+maintenance off, as for `--check`. Scope is the question's project, named the way the hook names a checkout with the
+repository's GitHub remote (`4gray-iptvnator` for `4gray__iptvnator`), in the workspace `default`; the projects named
+after a worktree's folder are not searched, as they would not be from the main checkout. With Claude Code, no ai-memory
+hook searches with the prompt: `UserPromptSubmit` prints `{}`, and `SessionStart` injects only an open handoff, which
+the prompt does not shape. So the `prompt` form, like the `query` form, sends its text to `memory_query`. The tool
+returns 100 results instead of its default 10, so the budget fills, in the response's order: the project's pages, the
+raw observations it falls back to when no page matches, then the pages of the `_global` and profile scopes. A page
+reads as its path, its title and the snippet `memory_query` returns, an FTS5 excerpt of about 24 tokens around the
+matched terms, or up to 240 characters of the page's own text for a page found by another stream, with the `<mark>` tags removed.
+`memory_query` returns snippets, not pages: an agent reads a whole page with `memory_read_page`, a second call this eval
+does not make.
+
 The published store was built in two runs with Claude Opus 5.5, through a gateway that runs `claude -p` for each call,
 and the embedder on an RTX 5070 Ti. The first run built the first five projects: 358 LLM calls, 22.8 million prompt
 tokens and 1.2 million completion tokens, in 4 h 38 min, 1 h 27 min of it waiting out the account's usage limit. The
