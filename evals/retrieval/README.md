@@ -77,8 +77,8 @@ other arms have none for this corpus yet.
 | [ai-memory](#ai-memory) | ai-memory, fed by its Claude Code hooks | yes | built with Claude Opus 5.5 |
 | [hindsight](#hindsight) | Hindsight, fed by its Claude Code integration | yes | built with Claude Sonnet 5.5 |
 | [claude-mem](#claude-mem) | claude-mem, fed by its Claude Code hooks | yes | built with Claude Haiku 5.5 |
-| [bilbo-agent-v0_19](#bilbo-019) | notes the agent writes with bilbo's note skill | yes | from L3, Claude Opus 5.5 |
-| [bilbo-assisted-v0_19](#bilbo-019) | the same, plus a `/note` at each session's end | yes | from L3, Claude Opus 5.5 |
+| [bilbo-agent-v0_19](#bilbo-019) | notes the agent writes with bilbo's note skill | yes | built with Claude Opus 5.5 |
+| [bilbo-assisted-v0_19](#bilbo-019) | the same, plus a `/note` at each session's end | yes | built with Claude Opus 5.5 |
 | [mempalace](#mempalace) | MemPalace, fed by its Claude Code plugin hooks | no | yes |
 | [auto-memory](#auto-memory) | the memory files the developers' Claude Code wrote | no | yes |
 
@@ -597,26 +597,33 @@ then indexes the smallest project's notes again, whose vectors must point the sa
 Four searches, and one made of the title of each project's first note, must run on the vectors; the title search must
 find that note.
 
-The published stores were not built here. They are the bilbo stores of the L3 eval, written there on 2026-10-09 and
-10 with Claude Opus 5.5, and this arm's build resumed from them with no LLM call. Each project was written on its own,
-then the five were merged into the one store and indexed with this eval's embedder.
+The published stores were built from 2026-10-28 to 11-05 with Claude Opus 5.5, through a gateway that runs `claude -p`
+for each call, with the embedder on a CPU. They continue the seed stores below: the five L3 projects are restored from
+them, byte for byte, and the 17 new projects were written here. The two builds made 27,532 calls, 3,684 of them the
+shared yes-or-no pass (the agent build drew it for 14 projects, the assisted build for 3), and met no refusal. The
+decisions of all 22 projects are byte-identical in the two stores. bilbo-agent-v0_19 holds 479 notes and
+bilbo-assisted-v0_19 543, from 401 sessions: the two Cursor transcripts are left out.
+
+The seed stores were not built here. They are the bilbo stores of the L3 eval, written there on 2026-10-09 and 10 with
+Claude Opus 5.5, and resumed in this eval with no LLM call. Each project was written on its own, then the five were
+merged into one store and indexed with this eval's embedder.
 
 How they were written, as the L3 records show:
 
 - The L3 gateway ran `claude -p` for each call. It flattened every chat into one text prompt, and the model answered
   with one JSON object that named its tool call, so the tool loop is a simulation of one over that gateway.
-- The two stores share L3's one yes-or-no pass per project. A fresh build of both arms draws two.
+- The two stores share L3's one yes-or-no pass per project.
 - The writer's own searches ran on L3's embedder, llama.cpp b9190, on a GPU for four projects and a CPU for readaloud,
   not on this eval's. The final vectors come from this eval's embedder.
 - readaloud is L3's dev project, where the 800-character cap was chosen. Its rows came from the same frozen code.
 - `ingest_seconds` is L3's wall time, usage-limit pauses included, not the time of this resume.
-- `versions` describes the image that packed the stores. L3 wrote with the x86_64 release binary of bilbo 0.19.0
+- `versions` describes the image that packed the seed stores. L3 wrote with the x86_64 release binary of bilbo 0.19.0
   (sha256 in each project's provenance).
 
 A replay of the gateway's records, with each `bilbo recall` answered as it was then, regenerated every request behind
-the stores from this arm's writer (`l3/`) and this corpus, 3,252 for bilbo-agent-v0_19 and 3,772 for
-bilbo-assisted-v0_19, and every note byte for byte. bilbo-agent-v0_19 holds 106 notes and bilbo-assisted-v0_19 120,
-and the sessions written are 143 of 145: the two Cursor transcripts are left out.
+the seed stores from this arm's writer (`l3/`) and this corpus, 3,252 for bilbo-agent-v0_19 and 3,772 for
+bilbo-assisted-v0_19, and every note byte for byte. The seed of bilbo-agent-v0_19 holds 106 notes and that of
+bilbo-assisted-v0_19 120, from 143 of the five projects' 145 sessions.
 
 ### mempalace
 
