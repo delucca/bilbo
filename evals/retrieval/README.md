@@ -952,6 +952,7 @@ Provisional until the judge's stress test and audit are built.
 | [bm25](results/bm25.json) | `cc0c68a903d7` | 41% | 46% | 84% | 69% | 63% | 72% | 50% | **60%** | 61% | 2 of 17 |
 | [claude-mem](results/claude-mem.json) | `c277bbdc782f` | 19% | 26% | 46% | 20% | 34% | 50% | 15% | **30%** | 4% | 4 of 17 |
 | [dense](results/dense.json) | `0eac8883d38c` | 32% | 48% | 61% | 48% | 70% | 50% | 28% | **48%** | 51% | 5 of 17 |
+| [mempalace](results/mempalace.json) | `17bb4ee04c3a` | 26% | 24% | 57% | 30% | 45% | 61% | 52% | **39%** | 43% | 6 of 17 |
 
 Class scores are on the `query` form. The questions per class: overview 27, status 21, decision 16, rules 15,
 procedure 26, fact 18, refind 20.
