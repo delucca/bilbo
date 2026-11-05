@@ -210,6 +210,15 @@ the database and a `manifest.json` with the versions, counts and LLM tokens by m
 every saga must start and end with its earliest and latest episode, the stored vectors of 20 entities and 20 facts
 must match the embedder's, and four searches with no LLM must find facts and entities.
 
+The eval searches the way the Graphiti MCP server's two search tools do, with the embedder and no LLM, for both forms:
+`search_memory_facts` (`Graphiti.search`, BM25 and cosine over facts fused by RRF) and `search_nodes`
+(`NODE_HYBRID_SEARCH_RRF` over entities). The server's instructions name both as core tools and prefer neither, so the
+results alternate by rank: fact 1, entity 1, fact 2, and so on. Each tool returns 100 results instead of its default
+10, so the budget fills. Scope is the one group `main`, with no project filter: Graphiti searches every project, and
+the other projects' facts it returns are part of how it behaves. A fact reads as its text with the `valid_at` and
+`invalid_at` dates the tools return beside it, so a superseded fact is marked; an entity reads as its name, its type
+when it has one beyond `Entity`, and its summary.
+
 The store of the first five projects, `store-graphiti-3c33dd5aff9e`, splits the models as Graphiti's library does:
 Claude Opus 5.5 extracts entities and facts and merges duplicate entities, and `gpt-6-luna` makes the small calls (fact
 deduplication and contradiction, dates, entity attributes and summaries). It was built through a gateway that runs
@@ -815,11 +824,12 @@ To score an arm's store against the questions:
     evals/retrieval/scripts/eval.sh mem0
 
 The script gets the store as `build-store.sh` does, restores it into fresh services and searches it for every
-answerable question, once per form (`query` and `prompt`), with the question's project as the scope, the way the
-tool searches. It packs what each search returns, in the tool's order, into 4,000 tokens counted with tiktoken's
-o200k_base, cutting the result that does not fit. Claude Opus 5.5, through `claude -p` on a Claude subscription,
-marks each fact and each older value present or absent in each context; when it writes prose before its JSON reply,
-its last verdict object counts. A script scores: a question's score is
+answerable question, once per form (`query` and `prompt`), in the scope the tool searches: the question's project
+for a tool that scopes by project, everything for one that does not (each arm's section says which). It packs what
+each search returns, in the tool's order, into 4,000 tokens counted with tiktoken's o200k_base, cutting the result
+that does not fit. Claude Opus 5.5, through `claude -p` on a Claude subscription, marks each fact and each older
+value present or absent in each context; when it writes prose before its JSON reply, its last verdict object counts.
+A script scores: a question's score is
 the share of its facts present, and misled counts a question whose older value is present while the fact that
 replaced it is not. The headline weights the class means by `questions/classes.json`, on the `query` form, with the
 `prompt` form beside it. Two controls are judged once and shared by every arm: `gold`, the evidence lines, and
