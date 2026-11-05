@@ -565,6 +565,10 @@ reaches the tool only through the full-text fallback, which runs when Chroma fin
 questions, in readaloud, port-cli and bosarsalog, have evidence more than 90 days before their repository's last
 session.
 
+In the first full run, all but 6 of the 143 `query` searches came back with details, and those 6 with index lines.
+The `prompt` form scores 4%: the SessionStart text lists a project's latest work, which a question about an earlier
+decision or step seldom is.
+
 The published store is built with Claude Haiku 5.5 (`claude-haiku-5-5`) through claude-mem's own `claude` provider on a
 Claude Max subscription, as its users run it: the bug reports since June 2026 that state a provider name `claude` most
 (41 of 55). Those that name a model name Haiku 4.5, claude-mem's default, most (12 of 20, the rest Sonnet); the user
@@ -907,6 +911,7 @@ Provisional until the judge's stress test and audit are built.
 | [graphiti](results/graphiti.json) | `eac10edab868` | 33% | 24% | 44% | 13% | 25% | 44% | 75% | **32%** | 34% | 2 of 17 |
 | [ai-memory](results/ai-memory.json) | `aba1b3153a9b` | 17% | 9% | 10% | 21% | 12% | 25% | 5% | **16%** | 19% | 4 of 17 |
 | [auto-memory](results/auto-memory.json) | `8758a8f3a57c` | 0% | 0% | 0% | 20% | 21% | 6% | 0% | **6%** | 6% | 0 of 17 |
+| [claude-mem](results/claude-mem.json) | `c277bbdc782f` | 19% | 26% | 46% | 20% | 34% | 50% | 15% | **30%** | 4% | 4 of 17 |
 | [dense](results/dense.json) | `0eac8883d38c` | 32% | 48% | 61% | 48% | 70% | 50% | 28% | **48%** | 51% | 5 of 17 |
 
 Class scores are on the `query` form. The questions per class: overview 27, status 21, decision 16, rules 15,
