@@ -69,7 +69,14 @@ def call(prompt, q):
             if reply.get("is_error"):
                 raise ValueError(f"is_error: {str(reply.get('result'))[:200]}")
             body = re.sub(r"^```(?:json)?\s*|\s*```$", "", reply["result"].strip())
-            marks = json.loads(body)
+            try:
+                marks = json.loads(body)
+            except json.JSONDecodeError:
+                # The judge sometimes reasons in prose before the JSON despite the prompt: take its last verdict object.
+                starts = [m.start() for m in re.finditer(r'\{\s*"facts"', body)]
+                if not starts:
+                    raise
+                marks, _ = json.JSONDecoder().raw_decode(body, starts[-1])
             for key, items in (("facts", q["facts"]), ("stale", q.get("stale", []))):
                 got = marks[key]
                 if set(got) != {i["id"] for i in items} or not all(isinstance(v, bool) for v in got.values()):

@@ -818,7 +818,8 @@ The script gets the store as `build-store.sh` does, restores it into fresh servi
 answerable question, once per form (`query` and `prompt`), with the question's project as the scope, the way the
 tool searches. It packs what each search returns, in the tool's order, into 4,000 tokens counted with tiktoken's
 o200k_base, cutting the result that does not fit. Claude Opus 5.5, through `claude -p` on a Claude subscription,
-marks each fact and each older value present or absent in each context, and a script scores: a question's score is
+marks each fact and each older value present or absent in each context; when it writes prose before its JSON reply,
+its last verdict object counts. A script scores: a question's score is
 the share of its facts present, and misled counts a question whose older value is present while the fact that
 replaced it is not. The headline weights the class means by `questions/classes.json`, on the `query` form, with the
 `prompt` form beside it. Two controls are judged once and shared by every arm: `gold`, the evidence lines, and
