@@ -937,6 +937,7 @@ Provisional until the judge's stress test and audit are built.
 | [graphiti](results/graphiti.json) | `eac10edab868` | 33% | 24% | 44% | 13% | 25% | 44% | 75% | **32%** | 34% | 2 of 17 |
 | [ai-memory](results/ai-memory.json) | `aba1b3153a9b` | 17% | 9% | 10% | 21% | 12% | 25% | 5% | **16%** | 19% | 4 of 17 |
 | [auto-memory](results/auto-memory.json) | `8758a8f3a57c` | 0% | 0% | 0% | 20% | 21% | 6% | 0% | **6%** | 6% | 0 of 17 |
+| [bm25](results/bm25.json) | `cc0c68a903d7` | 41% | 46% | 84% | 69% | 63% | 72% | 50% | **60%** | 61% | 2 of 17 |
 | [claude-mem](results/claude-mem.json) | `c277bbdc782f` | 19% | 26% | 46% | 20% | 34% | 50% | 15% | **30%** | 4% | 4 of 17 |
 | [dense](results/dense.json) | `0eac8883d38c` | 32% | 48% | 61% | 48% | 70% | 50% | 28% | **48%** | 51% | 5 of 17 |
 
