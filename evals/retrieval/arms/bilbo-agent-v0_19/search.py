@@ -1,11 +1,14 @@
 """Search a bilbo store unpacked in /work/store for the questions in /work/questions.jsonl the way bilbo 0.19.0 reads
-for an agent, over every note of the store: the `query` form through `bilbo recall`, as the recall skill runs it, and
-the `prompt` form through `bilbo digest`, as the prompt hook runs it, each session's first digest. Appends one row per
-question and form to /work/search.jsonl. build-store.sh --search runs it in the build service."""
+for an agent, over the notes of the question's project: each project's notes are copied into a store of their own and
+indexed, as if the developer's bilbo held only that project. The `query` form goes through `bilbo recall`, as the
+recall skill runs it, and the `prompt` form through `bilbo digest`, as the prompt hook runs it, each session's first
+digest. Appends one row per question and form to /work/search.jsonl. build-store.sh --search runs it in the build
+service."""
 
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import urllib.request
@@ -13,6 +16,8 @@ import uuid
 from pathlib import Path
 
 STORE = Path("/work/store")
+# One project's store at a time, always at this root: a note's path reads the same whatever its project.
+SCOPED = Path("/tmp/store")
 BILBO = "/usr/local/bin/bilbo"
 EMBEDDER = os.environ["EMBEDDER_URL"].rstrip("/")
 # recall prints 10 by default; the budget, not bilbo, cuts, so ask for more than 4,000 tokens hold.
@@ -29,11 +34,27 @@ def env():
     for d in ("home", "config", "data", "state"):
         (scratch / d).mkdir(parents=True, exist_ok=True)
     return {
-        "HOME": str(scratch / "home"), "BILBO_HOME": str(STORE), "BILBO_CONFIG": str(STORE / "config"),
-        "XDG_CACHE_HOME": str(STORE / "cache"), "XDG_CONFIG_HOME": str(scratch / "config"),
+        "HOME": str(scratch / "home"), "BILBO_HOME": str(SCOPED), "BILBO_CONFIG": str(SCOPED / "config"),
+        "XDG_CACHE_HOME": str(SCOPED / "cache"), "XDG_CONFIG_HOME": str(scratch / "config"),
         "XDG_DATA_HOME": str(scratch / "data"), "XDG_STATE_HOME": str(scratch / "state"),
         "PATH": "/usr/bin:/bin", "NO_COLOR": "1", "LANG": "en_US.UTF-8", "LC_ALL": "en_US.UTF-8",
     }  # fmt: skip
+
+
+def scope(repo, notes):
+    """A store holding only this project's notes, indexed on a fresh cache after a sentinel, as the build indexes."""
+    shutil.rmtree(SCOPED, ignore_errors=True)
+    (SCOPED / "notes").mkdir(parents=True)
+    (SCOPED / "cache").mkdir()
+    shutil.copyfile(STORE / "config", SCOPED / "config")
+    for name in notes:
+        shutil.copyfile(STORE / "notes" / name, SCOPED / "notes" / name)
+    sentinel()
+    p = bilbo("index")
+    m = re.search(r"^embedded (\d+), kept (\d+), dropped (\d+)$", p.stdout, re.M)
+    if p.returncode != 0 or not m or m[2] != "0" or m[3] != "0":
+        sys.exit(f"search: {repo}: bilbo index did not embed a fresh cache (exit {p.returncode}): {p.stdout[-300:]!r} {p.stderr[-300:]!r}")
+    print(f"search: {repo}: {len(notes)} notes, {m[1]} passages embedded", file=sys.stderr)
 
 
 def sentinel():
@@ -91,8 +112,15 @@ def digest(qid, text):
 
 
 rows = [json.loads(line) for line in Path("/work/questions.jsonl").read_text().splitlines() if line.strip()]
+projects = json.loads((STORE / "manifest.json").read_text())["repos"]
+missing = sorted({q["repo"] for q in rows} - projects.keys())
+if missing:
+    sys.exit(f"search: the store has no project {', '.join(missing)}")
+rows.sort(key=lambda q: q["repo"])
 with open("/work/search.jsonl", "a") as out:
     for i, q in enumerate(rows, 1):
+        if i == 1 or q["repo"] != rows[i - 2]["repo"]:
+            scope(q["repo"], projects[q["repo"]]["notes"])
         for form, hits in (("query", recall(q["id"], q["query"])), ("prompt", digest(q["id"], q["prompt"]))):
             out.write(json.dumps({"id": q["id"], "form": form, "results": hits}, ensure_ascii=False) + "\n")
             out.flush()

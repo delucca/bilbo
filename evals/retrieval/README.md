@@ -248,8 +248,14 @@ The eval searches the way the Graphiti MCP server's two search tools do, with th
 `search_memory_facts` (`Graphiti.search`, BM25 and cosine over facts fused by RRF) and `search_nodes`
 (`NODE_HYBRID_SEARCH_RRF` over entities). The server's instructions name both as core tools and prefer neither, so the
 results alternate by rank: fact 1, entity 1, fact 2, and so on. Each tool returns 100 results instead of its default
-10, so the budget fills. Scope is the one group `main`, with no project filter: Graphiti searches every project, and
-the other projects' facts it returns are part of how it behaves. A fact reads as its text with the `valid_at` and
+10, so the budget fills. Scope is the question's project: the search first splits the loaded copy of the dump into one
+group per repository (`owner__name`), and searches `group_ids=[repo]`, as a developer would with one group per
+project. An episode goes to its session's repository. An entity goes to every repository whose episodes mention it
+or whose facts touch it, one copy each; a fact goes to the repositories of the episodes it cites, between that
+repository's copies of its entities, citing only its episodes. The build merged 455 of 14,214 entities (3.2%) across
+repositories, since all shared one group; their copies keep the one summary, which can mix repositories, and that
+residue stays. 42 facts cite episodes of several repositories. After the split no item is left in `main` and no
+relationship joins two groups, or the search stops. A fact reads as its text with the `valid_at` and
 `invalid_at` dates the tools return beside it, so a superseded fact is marked; an entity reads as its name, its type
 when it has one beyond `Entity`, and its summary.
 
@@ -355,13 +361,19 @@ every latest page, and up to five pages embedded again. It then serves a copy wi
 four searches in each project must find pages through the vectors.
 
 The eval searches the way an agent recalls: the MCP tool `memory_query`, on a served copy with the embedder, no LLM and
-maintenance off, as for `--check`. Scope is the question's project, named the way the hook names a checkout with the
-repository's GitHub remote (`4gray-iptvnator` for `4gray__iptvnator`), in the workspace `default`; the projects named
-after a worktree's folder are not searched, as they would not be from the main checkout. With Claude Code, no ai-memory
+maintenance off, as for `--check`. Scope is every ai-memory project in the workspace `default` that holds a session of
+the question's repository, passed as `scopes`: the one named after its GitHub remote (`4gray-iptvnator` for
+`4gray__iptvnator`) and the ones named after a worktree's or another folder, as the manifest's `projects` lists them.
+No project holds sessions of two repositories. A query with `scopes` leaves out the `_global` scope, whose profile
+pages were harvested from every developer. The 15 projects that hold only observations of a session, filed under a
+folder its commands ran in, hold no session and are not searched. hackerspub-android's 26 projects pass the server's
+cap of 25 scopes, so its query runs once per 25 and the hits merge as the server merges its scopes, by rank, then
+path. `go-nuts`, a folder project of go-nuts' 2 sessions, is also `entireio-go-nuts`'s legacy key, which the server
+refuses as ambiguous: it is left out, as a real user could not name it either. With Claude Code, no ai-memory
 hook searches with the prompt: `UserPromptSubmit` prints `{}`, and `SessionStart` injects only an open handoff, which
 the prompt does not shape. So the `prompt` form, like the `query` form, sends its text to `memory_query`. The tool
-returns 100 results instead of its default 10, so the budget fills, in the response's order: the project's pages, the
-raw observations it falls back to when no page matches, then the pages of the `_global` and profile scopes. A page
+returns 100 results instead of its default 10, so the budget fills, in the response's order: the projects' pages, or
+the raw observations it falls back to when no page matches. A page
 reads as its path, its title and the snippet `memory_query` returns, an FTS5 excerpt of about 24 tokens around the
 matched terms, or up to 240 characters of the page's own text for a page found by another stream, with the `<mark>` tags removed.
 `memory_query` returns snippets, not pages: an agent reads a whole page with `memory_read_page`, a second call this eval
@@ -677,8 +689,11 @@ What the replay changes:
 - The writer is a simulated agent, so a notes store measures that simulation as much as it measures bilbo.
 
 Search is bilbo's own `bilbo recall`: BM25 over the notes' passages, fused with the embedder's vectors, one hit per
-note. The eval reads the store the two ways bilbo 0.19.0 reads it for an agent, over every note of the store, since
-bilbo searches every project's notes:
+note. bilbo searches every note it holds, of every project, but the eval scopes every arm to the question's project:
+before a project's questions, its notes (the manifest's `repos.<repo>.notes`) are copied into a store of their own at
+`/tmp/store`, with the store's `config`, and indexed on a fresh cache after a sentinel request, as the build indexes.
+Each project's notes were written in its own container, so the split is clean; only BM25's statistics and the
+vectors' floating-point noise change. The eval reads that store the two ways bilbo 0.19.0 reads it for an agent:
 
 - `query`: `bilbo recall --limit 50 -- <query>`, as the recall skill runs it, each block as printed (path and line,
   kind and `created`, heading path, the passage's first 300 characters). The skill asks for 10 unless the user names a
@@ -945,8 +960,10 @@ To score an arm's store against the questions:
     evals/retrieval/scripts/eval.sh mem0
 
 The script gets the store as `build-store.sh` does, restores it into fresh services and searches it for every
-answerable question, once per form (`query` and `prompt`), in the scope the tool searches: the question's project
-for a tool that scopes by project, everything for one that does not (each arm's section says which). It packs what
+answerable question, once per form (`query` and `prompt`), in the question's project alone, for every arm: a store
+of every project is split by project at search time where the tool does not scope by project itself (each arm's
+section says how). A developer's bilbo or Graphiti holds every project they work on and searches it all, so this
+slightly flatters those two: other projects' notes and facts no longer compete for the budget. It packs what
 each search returns, in the tool's order and separated by blank lines, into 4,000 tokens counted with tiktoken's
 o200k_base, separators included, cutting the result that does not fit. Claude Opus 5.5, through `claude -p` on a Claude subscription, marks each fact and each older
 value present or absent in each context, once per distinct context: a question's two forms that returned the same
