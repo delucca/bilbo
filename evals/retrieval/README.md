@@ -537,13 +537,33 @@ What the replay changes:
 Search is claude-mem's own: Chroma first, SQLite full text when Chroma finds nothing. It embeds a query like a
 document: the `openai` function takes no query instruction, which Qwen3 would take (ai-memory sends one). A store
 holds `claude-mem.db`, `chroma/`, `chroma-sync-state.json`, `settings.json` and a `manifest.json`. Serving one needs
-`OPENAI_BASE_URL` and `OPENAI_API_KEY` for the embedder, and a search sees rows older than 90 days only when it sends
-`dateStart`. claude-mem keeps only the first 4,000 characters of a prompt (`prompt-storage.ts`), so no prompt is
-too long for the embedder.
+`OPENAI_BASE_URL` and `OPENAI_API_KEY` for the embedder, and Chroma sees rows older than 90 days before the worker's
+clock only when a search sends `dateStart`. claude-mem keeps only the first 4,000 characters of a prompt
+(`prompt-storage.ts`), so no prompt is too long for the embedder.
 
 `--check` reads the store as packed: SQLite's integrity and full-text tables, the counts against the manifest, every
 session replayed, every row's Chroma documents, five documents embedded again, and no Anthropic credential in any file.
 It then serves a copy with no LLM, and four searches in each project must find observations through Chroma.
+
+The eval serves a copy with claude-mem's worker, the embedder and no LLM, as a later session of the question's project
+reaches it. The `query` form is the MCP tool `mem_search` in auto mode, the call claude-mem's instructions tell an
+agent to make first: its search ranks the hits, the ones whose titles share a word with the query anchor a timeline
+of their neighbours, and the details of the best of those come back (index, context, selected details, with no
+model choosing). It asks for the tool's ceilings, 20 index rows and 5 details, instead of its defaults of 20 and 3.
+Each detail is one result, its id, title and text as the tool renders them; when no title matches, the index lines
+are the results. The `prompt` form is the SessionStart injection, `/api/context/inject` with `platformSource=claude`
+as the hook asks for it: the project's last 50 observation titles, its last 10 sessions and the latest summary, the
+same text for every question of a project, without the fixed usage instructions the hook appends. The hook that sees
+the prompt searches with it only when `CLAUDE_MEM_SEMANTIC_INJECT` is on, which is off by default and marked
+experimental, and the store keeps the defaults. Both forms scope to every project key the manifest's `projects`
+lists for the repository, the key with the most sessions (its main checkout's) as the primary.
+
+`mem_search` sends no `dateStart`, so Chroma sees only the 90 days before the worker's clock. A Bun preload (the
+build's `clock.js`) sets that clock to the repository's last event, so the window ends where a session right after
+the last one would see it end, and a run's results do not depend on the day it runs. Evidence older than that window
+reaches the tool only through the full-text fallback, which runs when Chroma finds nothing: 34 of the 143 answerable
+questions, in readaloud, port-cli and bosarsalog, have evidence more than 90 days before their repository's last
+session.
 
 The published store is built with Claude Haiku 5.5 (`claude-haiku-5-5`) through claude-mem's own `claude` provider on a
 Claude Max subscription, as its users run it: the bug reports since June 2026 that state a provider name `claude` most
