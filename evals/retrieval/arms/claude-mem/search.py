@@ -8,6 +8,7 @@ The worker's clock reads the repository's last event (clock.js), so mem_search's
 ends where a session right after the last one would see it end. Appends one row per question and form to
 /work/search.jsonl. build-store.sh --search runs it in the build service."""
 
+import contextlib
 import json
 import os
 import re
@@ -110,19 +111,15 @@ def guided(qid, query, primary, projects):
     return read + [{"text": line, "ref": i} for i, _, line in rows if i not in opened]
 
 
-def main():
+@contextlib.contextmanager
+def serve(first_clock):
+    """claude-mem's worker on a copy of the store, its clock at first_clock, up once its backfill check ends and Chroma
+    is healthy. Yields the copy's data directory and the worker's environment."""
     shutil.rmtree(SERVE, ignore_errors=True)
     (SERVE / "home").mkdir(parents=True)
     data = SERVE / "data"
     shutil.copytree(STORE, data, ignore=shutil.ignore_patterns("manifest.json"))
-    db = sqlite3.connect(data / "claude-mem.db")
-    rows = [json.loads(line) for line in Path("/work/questions.jsonl").read_text().splitlines() if line.strip()]
-    scopes = {repo: scope(repo, db) for repo in {q["repo"] for q in rows}}
-    db.close()
-    # clock.js never moves back, so the projects go in the order of their last event.
-    rows.sort(key=lambda q: (scopes[q["repo"]][1], q["repo"]))
-    CLOCK.write_text(str(scopes[rows[0]["repo"]][1]))
-
+    CLOCK.write_text(str(first_clock))
     env = {"HOME": str(SERVE / "home"), "PATH": "/usr/local/bin:/usr/bin:/bin", "CLAUDE_MEM_DATA_DIR": str(data),
            "CLAUDE_MEM_WORKER_PORT": str(PORT), "CLAUDE_MEM_WORKER_AUTOSTART": "false", "CLAUDE_MEM_TELEMETRY": "0",
            "OPENAI_BASE_URL": EMBEDDER, "OPENAI_API_KEY": "local",
@@ -143,23 +140,7 @@ def main():
             time.sleep(0.5)
         if api("/api/chroma/status?deep=1").get("status") != "healthy":
             sys.exit("search: Chroma is not healthy")
-
-        with open("/work/search.jsonl", "a") as out:
-            for i, q in enumerate(rows, 1):
-                keys, last = scopes[q["repo"]]
-                CLOCK.write_text(str(last))
-                primary, projects = keys[-1], ",".join(keys)
-                hits = guided(q["id"], q["query"], primary, projects)
-                out.write(json.dumps({"id": q["id"], "form": "query", "results": hits}, ensure_ascii=False) + "\n")
-
-                params = urllib.parse.urlencode({"projects": projects, "platformSource": "claude"})
-                context = api(f"/api/context/inject?{params}").strip()
-                if not context:
-                    sys.exit(f"search: {q['id']}: the SessionStart injection for {projects} is empty")
-                out.write(json.dumps({"id": q["id"], "form": "prompt", "results": [{"text": context}]},
-                                     ensure_ascii=False) + "\n")
-                out.flush()
-                print(f"search: {i}/{len(rows)} {q['id']} ({len(hits)} results)", file=sys.stderr)
+        yield data, env
         tried = [m for m in LLM_ATTEMPTS if m in logged()]
         if tried:
             sys.exit(f"search: the worker tried to start the observer: {tried}")
@@ -182,4 +163,36 @@ def main():
         subprocess.run(["pkill", "-9", "-f", "chroma-mcp"])
 
 
-main()
+def load(rows):
+    """Each question repository's (project keys, last event), read from the store as packed; sorts rows in place by
+    their repository's last event, since clock.js never moves back."""
+    db = sqlite3.connect(f"file:{STORE / 'claude-mem.db'}?mode=ro&immutable=1", uri=True)
+    scopes = {repo: scope(repo, db) for repo in {q["repo"] for q in rows}}
+    db.close()
+    rows.sort(key=lambda q: (scopes[q["repo"]][1], q["repo"]))
+    return scopes
+
+
+def main():
+    rows = [json.loads(line) for line in Path("/work/questions.jsonl").read_text().splitlines() if line.strip()]
+    scopes = load(rows)
+    with serve(scopes[rows[0]["repo"]][1]), open("/work/search.jsonl", "a") as out:
+        for i, q in enumerate(rows, 1):
+            keys, last = scopes[q["repo"]]
+            CLOCK.write_text(str(last))
+            primary, projects = keys[-1], ",".join(keys)
+            hits = guided(q["id"], q["query"], primary, projects)
+            out.write(json.dumps({"id": q["id"], "form": "query", "results": hits}, ensure_ascii=False) + "\n")
+
+            params = urllib.parse.urlencode({"projects": projects, "platformSource": "claude"})
+            context = api(f"/api/context/inject?{params}").strip()
+            if not context:
+                sys.exit(f"search: {q['id']}: the SessionStart injection for {projects} is empty")
+            out.write(json.dumps({"id": q["id"], "form": "prompt", "results": [{"text": context}]},
+                                 ensure_ascii=False) + "\n")
+            out.flush()
+            print(f"search: {i}/{len(rows)} {q['id']} ({len(hits)} results)", file=sys.stderr)
+
+
+if __name__ == "__main__":
+    main()

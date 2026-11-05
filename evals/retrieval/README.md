@@ -1028,6 +1028,33 @@ Two gates check the judge before any arm's number is read:
 Reports land in `~/.cache/bilbo-evals/retrieval/eval/stress-*/stress.json` and `audit-*/audit.json`, with every miss
 and disagreement listed.
 
+The read rules of bilbo, ai-memory, claude-mem and auto-memory (each arm's section) stand in for an agent that
+searches, then opens what looks best. A check runs a real agent on the same questions and compares:
+
+    CLAUDE_CODE_OAUTH_TOKEN=... evals/retrieval/agent/run.sh bilbo-agent-v0_19
+
+`agent/run.sh` runs `eval.sh` on the 20 questions of `agent/questions.txt` (all seven classes, eleven projects), then
+Claude Code 2.1.296 with `claude-sonnet-5-5` (`BILBO_EVAL_AGENT_MODEL`) inside the arm's search container, on a
+subscription token from `claude setup-token`. The agent gets the question's `prompt` and the tool as a Claude Code user
+has it: bilbo's recall skill with `bilbo` and Read on the notes; ai-memory's MCP server and its instructions; claude-mem's
+mem_search and its mem-search skill; auto memory, with the main checkout's `MEMORY.md` loaded and Read, Glob and Grep on
+its memory folder. It has no other tool and no code. It is told it may read about 4,000 tokens, and a PreToolUse hook
+refuses its calls once the tool results reach that, estimated at 4 bytes a token. Scope stays the eval's: a proxy
+pins each MCP call to the question's projects, as `search.py` scopes them, so the agent picks its words, its calls and
+what it opens, never the projects. What it read, in order, is packed into 4,000 tokens and judged like any context, and
+`agent/compare.py` sets it beside the rule's `query` form: the paired score difference with a bootstrap interval, what
+each opened, and how the agent searched. Rows, transcripts and the comparison stay in the cache, in
+`eval/agent-<arm>-<store key>-<agent key>`.
+
+Run once on 2026-11-05, the agent scored below the rule on all four arms: bilbo-agent 37% to the rule's 43%, ai-memory
+28% to 40%, claude-mem 25% to 32%, auto-memory 10% to 15%. Only ai-memory's gap is outside the noise of 20 questions
+(-12 points, 95% interval -22 to -4). The agent never ran out of budget. It read 600 to 1,800 tokens where the rule
+read 1,750 to 4,000, and it opened fewer hits: 0.6 notes in bilbo, 0.7 pages in ai-memory, against the rule's 3. Where
+it opened one, it was mostly the rule's first. In claude-mem it chose mem_search's `auto` mode on 27 of 32 searches,
+not the guided mode the rule follows. The rules stay as they are. Every arm fills the same 4,000 tokens from its
+tool's own ranking, so the results measure what each tool can give in that budget, which is more than an agent that
+stops early takes from it.
+
 Not built yet: the answer run (and with it the no-answer questions), the 16,000-token sensitivity run, and the paired
 comparisons with their intervals.
 

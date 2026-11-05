@@ -90,11 +90,16 @@ def memory(repo, text):
     return out
 
 
-rows = [json.loads(line) for line in Path("/work/questions.jsonl").read_text().split("\n") if line.strip()]
-with open("/work/search.jsonl", "a") as out:
-    for i, q in enumerate(rows, 1):
-        for form in ("query", "prompt"):
-            results = memory(q["repo"], q[form])
-            out.write(json.dumps({"id": q["id"], "form": form, "results": results}, ensure_ascii=False) + "\n")
-            out.flush()
-        print(f"search: {i}/{len(rows)} {q['id']} ({len(results)} files)", file=sys.stderr)
+def main():
+    rows = [json.loads(line) for line in Path("/work/questions.jsonl").read_text().split("\n") if line.strip()]
+    with open("/work/search.jsonl", "a") as out:
+        for i, q in enumerate(rows, 1):
+            for form in ("query", "prompt"):
+                results = memory(q["repo"], q[form])
+                out.write(json.dumps({"id": q["id"], "form": form, "results": results}, ensure_ascii=False) + "\n")
+                out.flush()
+            print(f"search: {i}/{len(rows)} {q['id']} ({len(results)} files)", file=sys.stderr)
+
+
+if __name__ == "__main__":
+    main()

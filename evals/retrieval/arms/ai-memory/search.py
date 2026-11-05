@@ -10,6 +10,7 @@ import http.client
 import json
 import os
 import re
+import contextlib
 import shutil
 import sqlite3
 import subprocess
@@ -93,52 +94,73 @@ def query(projects, text):
             [{"text": observation_text(h), "ref": h["id"], "kind": "observation", "rank": h["rank"]} for h in raw])
 
 
-rows = [json.loads(line) for line in Path("/work/questions.jsonl").read_text().splitlines() if line.strip()]
-db = sqlite3.connect(f"file:{STORE / 'db' / 'memory.sqlite'}?mode=ro&immutable=1", uri=True)
-named = {r[0] for r in db.execute("SELECT p.name FROM projects p JOIN workspaces w ON w.id = p.workspace_id"
-                                  " WHERE w.name = ?", (WORKSPACE,))}
-# The server refuses a name that is also another project's canonical or legacy key as ambiguous.
-taken = {r[0] for r in db.execute("SELECT o.name FROM projects p JOIN projects o ON o.workspace_id = p.workspace_id"
-                                  " AND o.id <> p.id AND (p.canonical_name = o.name OR p.legacy_name = o.name)")}
-page_project = {r[0].hex(): r[1] for r in db.execute(
-    "SELECT g.id, p.name FROM pages g JOIN projects p ON p.id = g.project_id JOIN workspaces w ON w.id = g.workspace_id"
-    " WHERE w.name = ? AND g.is_latest = 1", (WORKSPACE,))}
-db.close()
-held = json.loads((STORE / "manifest.json").read_text())["projects"]
-scopes = {}
-for repo in sorted({q["repo"] for q in rows}):
-    projects = sorted(held.get(repo, {}))
-    absent = [p for p in projects if p not in named]
-    if absent or not projects:
-        sys.exit(f"search: the store has no project {', '.join(absent) or 'at all'} for {repo}")
-    # A real user cannot name these either; build.py's --check leaves them out too.
-    for p in projects:
-        if p in taken:
-            print(f"search: {repo}: {p} is another project's key, so memory_query cannot name it; left out",
-                  file=sys.stderr)
-    scopes[repo] = [p for p in projects if p not in taken]
-    if not scopes[repo]:
-        sys.exit(f"search: memory_query can name no project of {repo}")
+page_project = {}
 
-shutil.rmtree(SERVE, ignore_errors=True)
-shutil.copytree(STORE, SERVE / "data", ignore=shutil.ignore_patterns("manifest.json"))
-(SERVE / "home").mkdir()
-log = SERVE / "serve.log"
-server = subprocess.Popen([BIN, "--data-dir", str(SERVE / "data"), "serve", "--transport", "http", "--bind", SERVER],
-                          env=env, cwd=SERVE / "home", stdin=subprocess.DEVNULL, stdout=log.open("w"),
-                          stderr=subprocess.STDOUT)
-try:
-    for _ in range(600):
-        if server.poll() is not None:
-            sys.exit(f"search: ai-memory serve exited with {server.returncode}:\n{log.read_text()[-3000:]}")
+
+def load(rows):
+    """Each question repository's scopes, from the store as packed; fills page_project, which read_page reads."""
+    db = sqlite3.connect(f"file:{STORE / 'db' / 'memory.sqlite'}?mode=ro&immutable=1", uri=True)
+    named = {r[0] for r in db.execute("SELECT p.name FROM projects p JOIN workspaces w ON w.id = p.workspace_id"
+                                      " WHERE w.name = ?", (WORKSPACE,))}
+    # The server refuses a name that is also another project's canonical or legacy key as ambiguous.
+    taken = {r[0] for r in db.execute("SELECT o.name FROM projects p JOIN projects o ON o.workspace_id = p.workspace_id"
+                                      " AND o.id <> p.id AND (p.canonical_name = o.name OR p.legacy_name = o.name)")}
+    page_project.update({r[0].hex(): r[1] for r in db.execute(
+        "SELECT g.id, p.name FROM pages g JOIN projects p ON p.id = g.project_id JOIN workspaces w ON w.id = g.workspace_id"
+        " WHERE w.name = ? AND g.is_latest = 1", (WORKSPACE,))})
+    db.close()
+    held = json.loads((STORE / "manifest.json").read_text())["projects"]
+    scopes = {}
+    for repo in sorted({q["repo"] for q in rows}):
+        projects = sorted(held.get(repo, {}))
+        absent = [p for p in projects if p not in named]
+        if absent or not projects:
+            sys.exit(f"search: the store has no project {', '.join(absent) or 'at all'} for {repo}")
+        # A real user cannot name these either; build.py's --check leaves them out too.
+        for p in projects:
+            if p in taken:
+                print(f"search: {repo}: {p} is another project's key, so memory_query cannot name it; left out",
+                      file=sys.stderr)
+        scopes[repo] = [p for p in projects if p not in taken]
+        if not scopes[repo]:
+            sys.exit(f"search: memory_query can name no project of {repo}")
+    return scopes
+
+
+@contextlib.contextmanager
+def serve():
+    """ai-memory serve on a copy of the store, up once /healthz answers; yields its log."""
+    shutil.rmtree(SERVE, ignore_errors=True)
+    shutil.copytree(STORE, SERVE / "data", ignore=shutil.ignore_patterns("manifest.json"))
+    (SERVE / "home").mkdir()
+    log = SERVE / "serve.log"
+    server = subprocess.Popen([BIN, "--data-dir", str(SERVE / "data"), "serve", "--transport", "http", "--bind", SERVER],
+                              env=env, cwd=SERVE / "home", stdin=subprocess.DEVNULL, stdout=log.open("w"),
+                              stderr=subprocess.STDOUT)
+    try:
+        for _ in range(600):
+            if server.poll() is not None:
+                sys.exit(f"search: ai-memory serve exited with {server.returncode}:\n{log.read_text()[-3000:]}")
+            try:
+                urllib.request.urlopen(f"http://{SERVER}/healthz", timeout=2).close()
+                break
+            except OSError:
+                time.sleep(0.5)
+        else:
+            sys.exit("search: ai-memory serve did not answer /healthz in 5 minutes")
+        yield log
+    finally:
+        server.terminate()
         try:
-            urllib.request.urlopen(f"http://{SERVER}/healthz", timeout=2).close()
-            break
-        except OSError:
-            time.sleep(0.5)
-    else:
-        sys.exit("search: ai-memory serve did not answer /healthz in 5 minutes")
-    with open("/work/search.jsonl", "a") as out:
+            server.wait(60)
+        except subprocess.TimeoutExpired:
+            server.kill()
+
+
+def main():
+    rows = [json.loads(line) for line in Path("/work/questions.jsonl").read_text().splitlines() if line.strip()]
+    scopes = load(rows)
+    with serve() as log, open("/work/search.jsonl", "a") as out:
         for i, q in enumerate(rows, 1):
             for form in ("query", "prompt"):
                 hits = query(scopes[q["repo"]], q[form])
@@ -150,9 +172,7 @@ try:
                 out.write(json.dumps({"id": q["id"], "form": form, "results": hits}, ensure_ascii=False) + "\n")
                 out.flush()
             print(f"search: {i}/{len(rows)} {q['id']}", file=sys.stderr)
-finally:
-    server.terminate()
-    try:
-        server.wait(60)
-    except subprocess.TimeoutExpired:
-        server.kill()
+
+
+if __name__ == "__main__":
+    main()

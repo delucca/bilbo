@@ -116,17 +116,22 @@ def digest(qid, text):
     sys.exit(f"search: {qid} prompt: the digest did not rank by meaning in {DIGEST_TRIES} tries")
 
 
-rows = [json.loads(line) for line in Path("/work/questions.jsonl").read_text().splitlines() if line.strip()]
-projects = json.loads((STORE / "manifest.json").read_text())["repos"]
-missing = sorted({q["repo"] for q in rows} - projects.keys())
-if missing:
-    sys.exit(f"search: the store has no project {', '.join(missing)}")
-rows.sort(key=lambda q: q["repo"])
-with open("/work/search.jsonl", "a") as out:
-    for i, q in enumerate(rows, 1):
-        if i == 1 or q["repo"] != rows[i - 2]["repo"]:
-            scope(q["repo"], projects[q["repo"]]["notes"])
-        for form, hits in (("query", recall(q["id"], q["query"])), ("prompt", digest(q["id"], q["prompt"]))):
-            out.write(json.dumps({"id": q["id"], "form": form, "results": hits}, ensure_ascii=False) + "\n")
-            out.flush()
-        print(f"search: {i}/{len(rows)} {q['id']}", file=sys.stderr)
+def main():
+    rows = [json.loads(line) for line in Path("/work/questions.jsonl").read_text().splitlines() if line.strip()]
+    projects = json.loads((STORE / "manifest.json").read_text())["repos"]
+    missing = sorted({q["repo"] for q in rows} - projects.keys())
+    if missing:
+        sys.exit(f"search: the store has no project {', '.join(missing)}")
+    rows.sort(key=lambda q: q["repo"])
+    with open("/work/search.jsonl", "a") as out:
+        for i, q in enumerate(rows, 1):
+            if i == 1 or q["repo"] != rows[i - 2]["repo"]:
+                scope(q["repo"], projects[q["repo"]]["notes"])
+            for form, hits in (("query", recall(q["id"], q["query"])), ("prompt", digest(q["id"], q["prompt"]))):
+                out.write(json.dumps({"id": q["id"], "form": form, "results": hits}, ensure_ascii=False) + "\n")
+                out.flush()
+            print(f"search: {i}/{len(rows)} {q['id']}", file=sys.stderr)
+
+
+if __name__ == "__main__":
+    main()

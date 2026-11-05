@@ -2,7 +2,7 @@
 # Get an arm's store into dataset/store-<arm>-<key>.tar.zst: the archive already there, else the one in dataset.lock,
 # else build it from the corpus, its services in Docker.
 #   build-store.sh <arm> [--rebuild] [--sessions N|repo:N,...] [--check] [--key]
-#   build-store.sh <arm> --search <questions.jsonl> <out.jsonl>
+#   build-store.sh <arm> --search <questions.jsonl> <out.jsonl> [--driver <dir>]
 # Building needs the LLM variables the arm's compose.yaml reads, usually BILBO_EVAL_LLM_URL (as the containers see it),
 # BILBO_EVAL_LLM_KEY and BILBO_EVAL_LLM_MODEL; BILBO_EVAL_LLM_HEADERS, a JSON object, adds headers to every LLM call
 # for a gateway that needs them, and BILBO_EVAL_LLM_SMALL_MODEL is the model for the lighter calls of an arm whose
@@ -11,7 +11,9 @@
 # and stops.
 # --search restores the store into fresh services and runs arms/<arm>/search.py over the questions, appending its rows
 # to <out.jsonl> (they are kept when it fails, so a rerun searches only the rest). It never builds. A check and a search
-# of one arm share a Compose project, so they cannot run at once.
+# of one arm share a Compose project, so they cannot run at once. --driver <dir> runs <dir>/drive.py instead, with the
+# directory at /work/driver beside search.py, and passes CLAUDE_CODE_OAUTH_TOKEN and BILBO_EVAL_AGENT_MODEL into the
+# container (agent/run.sh drives each tool through a real Claude Code this way).
 # An arm whose compose.yaml reads none of the LLM variables needs none of them, and its key names no LLM.
 # --rebuild builds the store again. --sessions N builds from the first N sessions only (repo:N,repo:N, for an arm built
 # in lanes or hindsight, the first N sessions of each repository named): a trial, whose archive stays in the cache.
@@ -52,9 +54,9 @@ source "$root/scripts/dataset.sh"
 
 arm=${1:-}
 [[ -n $arm && -f $root/arms/$arm/compose.yaml ]] ||
-  die "usage: build-store.sh <arm> [--rebuild] [--sessions N|repo:N,...] [--check] [--key] | --search <in> <out> (arms: $(cd "$root/arms" && echo *))"
+  die "usage: build-store.sh <arm> [--rebuild] [--sessions N|repo:N,...] [--check] [--key] | --search <in> <out> [--driver <dir>] (arms: $(cd "$root/arms" && echo *))"
 shift
-rebuild= sessions= check= print_key= search= search_in= search_out=
+rebuild= sessions= check= print_key= search= search_in= search_out= driver=
 while (($#)); do
   case $1 in
     --rebuild) rebuild=1 ;;
@@ -68,11 +70,14 @@ while (($#)); do
     --search) [[ -f $root/arms/$arm/search.py ]] || die "$arm has no search.py"
               [[ -f ${2:-} && -n ${3:-} ]] || die "--search needs a questions file and an output file"
               search=1 search_in=$(realpath "$2") search_out=$(realpath -m "$3"); shift 2 ;;
+    --driver) [[ -f ${2:-}/drive.py ]] || die "--driver needs a directory holding drive.py"
+              driver=$(realpath "$2"); shift ;;
     *) die "unknown option $1" ;;
   esac
   shift
 done
 [[ -z $search || -z $rebuild$sessions$check ]] || die "--search does not combine with --rebuild, --sessions or --check"
+[[ -z $driver || -n $search ]] || die "--driver goes with --search"
 # The containers get the LLM only through compose.yaml.
 uses_llm=
 grep -q BILBO_EVAL_LLM_ "$root/arms/$arm/compose.yaml" && uses_llm=1
@@ -323,13 +328,19 @@ if [[ -n $search ]]; then
   zstd -dc "$out" | tar -xf - -C "$check_dir"
   cp "$root/arms/$arm/search.py" "$check_dir/search.py"
   cp "$search_in" "$check_dir/questions.jsonl"
+  script=/work/search.py run_env=()
+  if [[ -n $driver ]]; then
+    cp -R "$driver" "$check_dir/driver"
+    script=/work/driver/drive.py
+    run_env=(-e CLAUDE_CODE_OAUTH_TOKEN -e BILBO_EVAL_AGENT_MODEL -e BILBO_EVAL_ARM="$arm")
+  fi
   export BILBO_EVAL_WORK=$check_dir
 
   log "searching ${out#"$root"/} on the $device"
   if services restore | grep -x restore >/dev/null; then compose --profile restore run --rm --no-deps restore; fi
   start
   status=0
-  compose run --rm --build --entrypoint python build /work/search.py || status=$?
+  compose run --rm --build "${run_env[@]}" --entrypoint python build "$script" || status=$?
   # Rows written before a failure count: a rerun searches only the rest.
   mkdir -p "${search_out%/*}"
   [[ ! -f $check_dir/search.jsonl ]] || cat "$check_dir/search.jsonl" >> "$search_out"
