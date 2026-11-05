@@ -832,6 +832,21 @@ of the store's key.
 Not built yet: the answer run (and with it the no-answer questions), the 16,000-token sensitivity run, the judge's
 stress test and the cross-family audit of its verdicts, and the paired comparisons with their intervals.
 
+## Results
+
+Each arm's `score.json` from its run is copied to `results/<arm>.json`. Share of facts present in what each arm
+returned, 4,000 tokens, all 143 answerable questions; `misled` counts questions with an older value, in brackets.
+Provisional until the judge's stress test and audit are built.
+
+| Arm | Store | overview | status | decision | rules | procedure | fact | refind | headline `query` | `prompt` | misled `query` |
+|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| gold (control) | | 96% | 95% | 100% | 100% | 100% | 100% | 100% | 98% | 98% | |
+| random (control) | | 6% | 0% | 0% | 0% | 8% | 0% | 0% | 2% | 2% | |
+| [mem0](results/mem0.json) | `d105294feebd` | 48% | 25% | 51% | 33% | 46% | 17% | 25% | **38%** | 40% | 3 of 17 |
+
+Class scores are on the `query` form. The questions per class: overview 27, status 21, decision 16, rules 15,
+procedure 26, fact 18, refind 20.
+
 ## Publishing
 
 Only the dataset's owner publishes. The script uploads archives from `dataset/` in one commit, with `dataset-card.md`
