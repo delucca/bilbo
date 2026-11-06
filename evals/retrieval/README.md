@@ -80,7 +80,7 @@ earlier one, `corpus-1235aec0592a`, the first five projects.
 | [claude-mem](#claude-mem) | claude-mem, fed by its Claude Code hooks | yes | built with Claude Haiku 5.5 |
 | [bilbo-agent-v0_19](#bilbo-019) | notes the agent writes with bilbo's note skill | yes | built with Claude Opus 5.5 |
 | [bilbo-assisted-v0_19](#bilbo-019) | the same, plus a `/note` at each session's end | yes | built with Claude Opus 5.5 |
-| [mempalace](#mempalace) | MemPalace, fed by its Claude Code plugin hooks | no | yes |
+| [mempalace](#mempalace) | MemPalace, fed by its Claude Code plugin hooks plus `mempalace sweep` | no | yes |
 | [auto-memory](#auto-memory) | the memory files the developers' Claude Code wrote | no | yes |
 
 To get a store:
@@ -1096,13 +1096,16 @@ in 58 of 60, a swapped older value in 19 of 20, another project's gold 0.00; `gp
 | [bilbo-agent-v0_19](results/bilbo-agent-v0_19.json) | `1a3f9a5213f7` | 44% | 38% | 52% | 33% | 31% | 25% | 38% | **39%** | 11% | 3 of 17 |
 | [bilbo-assisted-v0_19](results/bilbo-assisted-v0_19.json) | `e21e81bb40d2` | 62% | 45% | 68% | 33% | 35% | 31% | 42% | **48%** | 14% | 1 of 17 |
 | [bm25](results/bm25.json) | `cc0c68a903d7` | 41% | 44% | 81% | 69% | 62% | 72% | 72% | **60%** | 62% | 2 of 17 |
-| [claude-mem](results/claude-mem.json) | `c277bbdc782f` | 18% | 25% | 52% | 20% | 35% | 44% | 42% | **31%** | 4% | 2 of 17 |
+| [claude-mem](results/claude-mem.json) | `c277bbdc782f` | 18% | 25% | 52% | 20% | 35% | 44% | 42% | **31%** | 4%† | 2 of 17 |
 | [dense](results/dense.json) | `0eac8883d38c` | 30% | 46% | 61% | 42% | 68% | 50% | 55% | **47%** | 50% | 6 of 17 |
 | [hindsight](results/hindsight.json)\* | `9fc2bf01cb2c` | 66% | 71% | 72% | 58% | 47% | 47% | 88% | **63%** | 63% | 3 of 17 |
 | [mempalace](results/mempalace.json)\* | `17bb4ee04c3a` | 26% | 24% | 57% | 30% | 45% | 61% | 52% | **39%** | 43% | 6 of 17 |
 
 \* mem0, hindsight and mempalace were not rerun: their rows are the first runs below, packed before the separators
 counted in the budget and judged before identical contexts shared a verdict.
+
+† claude-mem's `prompt` column is its SessionStart injection, the same text for every question of a project, not a
+search with the prompt. See [Caveats](#caveats).
 
 Class scores are on the `query` form. The questions per class: overview 27, status 21, decision 16, rules 15,
 procedure 26, fact 18, refind 20.
@@ -1145,6 +1148,38 @@ coined ("progress beacon"), which a developer would type as they are, and some r
 every arm pays for (dense's drop bounds it roughly). So the drops are an upper bound. hindsight's original run reuses
 the first run's searches: re-searching 3 questions with the current `search.py` changed only results past the
 4,000-token cut, and all 6 packed contexts were identical.
+
+### Caveats
+
+Read each row with these. They come from the audit of 2026-11-05, and each arm's section has the detail.
+
+- **Every arm**: each fills the same 4,000 tokens from its tool's own ranking, which asks most tools for more than
+  their defaults give: mem0, Graphiti and MemPalace return 100 results where their tools return 3, 10 and 5 by
+  default, and Hindsight recalls up to 8,192 tokens where its tool asks for 4,096. The table measures what each tool
+  can give in that budget, not what a default install hands an agent. A real agent read less than the budget (600 to
+  1,800 tokens, see [Running the eval](#running-the-eval)).
+- **claude-mem**: `mem_search` sees only the 90 days before the repository's last session, and the 30 questions whose
+  evidence all lies before that window (21 in readaloud, 5 in port-cli, 4 in bosarsalog) score 0. Its headline is
+  30.9% on all 143 questions and 39.7% without those 30. The same cut moves the other arms by 3 points or less, in
+  either direction (mempalace 38.9% to 36.0%, bm25 60.3% to 58.2%). Its `prompt` column is the SessionStart
+  injection, not a search, so it is not comparable with the other arms' `prompt` column.
+- **mem0**: the plugin's search returns 3 memories by default and at most 20, in 4,000 characters by default; the eval
+  takes 100 from each lane. The plugin searches with `latest_only`, which open-source mem0 cannot reproduce: its
+  history only adds, so superseded memories stay searchable here and can count as misled. Personal memories were built
+  under one `user_id` for every repository, with the repository only in metadata, so mem0's extraction saw every
+  repository's personal memories when it decided what to add; the effect is unmeasured.
+- **MemPalace**: the row is hooks plus sweep. The plugin never runs `mempalace sweep`, and sweep drawers are 89% of
+  the tokens in its packed `query` contexts and the first hit on 122 of 143 questions, so a plugin-only install would
+  score differently. It also embeds with Qwen3-Embedding-0.6B, stronger than the MiniLM or EmbeddingGemma it ships
+  with, which flatters a tool that ranks by embedding.
+- **Graphiti**: the store was built in one group and relabelled per repository at search time. 455 of its 14,214
+  entities (3.2%) were merged across repositories during the build, and their shared summaries stay. Six models
+  from three vendors built it, switching by date and so by project (Gemini wrote every episode of cavecrew-mcp and
+  entire-graph and most of go-nuts, wakil and contoso), so per-project and per-class comparisons are confounded. Tool
+  calls and their results were never fed: of the 385 facts, 74 are evidenced only in tool calls and 82 only in tool
+  results.
+- **Hindsight**: the eval calls Hindsight's native recall API, not what its Claude Code integration gives an agent,
+  an LLM reflect with page and observation fallbacks. The row measures Hindsight's retrieval, not the plugin's path.
 
 ## Publishing
 
