@@ -3,6 +3,7 @@
 # else build it from the corpus, its services in Docker.
 #   build-store.sh <arm> [--rebuild] [--sessions N|repo:N,...] [--check] [--key]
 #   build-store.sh <arm> --search <questions.jsonl> <out.jsonl> [--driver <dir>]
+#   build-store.sh <arm> --salvage
 # Building needs the LLM variables the arm's compose.yaml reads, usually BILBO_EVAL_LLM_URL (as the containers see it),
 # BILBO_EVAL_LLM_KEY and BILBO_EVAL_LLM_MODEL; BILBO_EVAL_LLM_HEADERS, a JSON object, adds headers to every LLM call
 # for a gateway that needs them, and BILBO_EVAL_LLM_SMALL_MODEL is the model for the lighter calls of an arm whose
@@ -10,7 +11,10 @@
 # corpus, embedder and arm files (it stops when there are several). --key prints the store's key for the current inputs
 # and stops.
 # --search restores the store into fresh services and runs arms/<arm>/search.py over the questions, appending its rows
-# to <out.jsonl> (they are kept when it fails, so a rerun searches only the rest). It never builds. A check and a search
+# to <out.jsonl> (they are kept when it fails or is stopped, so a rerun searches only the rest). --salvage moves the rows
+# a search killed outright (SIGKILL, a reboot) left behind into the <out.jsonl> it was given, only when it can take the
+# arm's check lock and no container of its project runs; otherwise it says why and exits 1. eval.sh runs it before it
+# lists the questions still to search. A check or a search holds the lock for its whole life. It never builds. A check and a search
 # of one arm share a Compose project, so they cannot run at once. --driver <dir> runs <dir>/drive.py instead, with the
 # directory at /work/driver beside search.py, and passes CLAUDE_CODE_OAUTH_TOKEN and BILBO_EVAL_AGENT_MODEL into the
 # container (agent/run.sh drives each tool through a real Claude Code this way).
@@ -56,7 +60,7 @@ arm=${1:-}
 [[ -n $arm && -f $root/arms/$arm/compose.yaml ]] ||
   die "usage: build-store.sh <arm> [--rebuild] [--sessions N|repo:N,...] [--check] [--key] | --search <in> <out> [--driver <dir>] (arms: $(cd "$root/arms" && echo *))"
 shift
-rebuild= sessions= check= print_key= search= search_in= search_out= driver=
+rebuild= sessions= check= print_key= search= search_in= search_out= driver= salvage_only=
 while (($#)); do
   case $1 in
     --rebuild) rebuild=1 ;;
@@ -70,6 +74,7 @@ while (($#)); do
     --search) [[ -f $root/arms/$arm/search.py ]] || die "$arm has no search.py"
               [[ -f ${2:-} && -n ${3:-} ]] || die "--search needs a questions file and an output file"
               search=1 search_in=$(realpath "$2") search_out=$(realpath -m "$3"); shift 2 ;;
+    --salvage) salvage_only=1 ;;
     --driver) [[ -f ${2:-}/drive.py ]] || die "--driver needs a directory holding drive.py"
               driver=$(realpath "$2"); shift ;;
     *) die "unknown option $1" ;;
@@ -78,6 +83,7 @@ while (($#)); do
 done
 [[ -z $search || -z $rebuild$sessions$check ]] || die "--search does not combine with --rebuild, --sessions or --check"
 [[ -z $driver || -n $search ]] || die "--driver goes with --search"
+[[ -z $salvage_only || -z $search$rebuild$sessions$check$print_key ]] || die "--salvage stands alone"
 # The containers get the LLM only through compose.yaml.
 uses_llm=
 grep -q BILBO_EVAL_LLM_ "$root/arms/$arm/compose.yaml" && uses_llm=1
@@ -156,6 +162,85 @@ if [[ -n $shared ]]; then
   log "refusals kept in ${BILBO_EVAL_REFUSALS#"$cache"/}"
 fi
 [[ -z $print_key ]] || { echo "$key"; exit 0; }
+check_dir=$cache/check/$arm-$key
+lock_file=$cache/check/$arm-$key.lock lock_project=${BILBO_EVAL_PROJECT:-bilbo-retrieval-$arm}-check lock_pid=
+# A check or a search owns the arm's check state, <cache>/check/<arm>-<key>, for its whole life: hold-lock.py holds an
+# exclusive lock on $lock_file for as long as this script lives, even if it is killed outright, and records the owner.
+own() {
+  local status=$lock_file.status.$$ word rest i
+  mkdir -p "${lock_file%/*}" && rm -f "$status"
+  python3 "$root/scripts/hold-lock.py" "$lock_file" "$status" "$$" "{\"pid\": $$, \"project\": \"$lock_project\"}" &
+  lock_pid=$!
+  for i in $(seq 100); do [[ -f $status ]] && break; sleep 0.1; done
+  [[ -f $status ]] || { log "no answer from the lock helper"; release; return 1; }
+  read -r word rest < "$status" || true
+  rm -f "$status"
+  [[ $word == held ]] && return 0
+  log "$arm's check state is owned by $rest"
+  wait "$lock_pid" 2>/dev/null || true; lock_pid=
+  return 1
+}
+release() { [[ -z $lock_pid ]] || { kill "$lock_pid" 2>/dev/null || true; wait "$lock_pid" 2>/dev/null || true; lock_pid=; }; }
+# Docker confirms that no container of Compose project $1 runs. A failure to ask is no confirmation.
+producer_gone() {
+  local ids
+  ids=$(docker ps -q --filter "label=com.docker.compose.project=$1") || { log "docker cannot say whether $1 runs"; return 1; }
+  [[ -z $ids ]] || { log "a container of $1 is still running ($ids)"; return 1; }
+}
+# The Compose project of the producer whose rows are in $check_dir, written when that producer started.
+recorded_project() { cat "$check_dir/project" 2>/dev/null || true; }
+# Rows in $check_dir whose producer is not recorded are never moved or deleted by this script: it says how to go on.
+unrecorded_rows() {
+  [[ -f $check_dir/search.jsonl && -z $(recorded_project) ]] || return 1
+  log "the rows in $check_dir/search.jsonl have no recorded project, so nothing is moved or deleted. Find the Compose project that"
+  log "wrote them (docker ps; bilbo-retrieval-$arm-check unless BILBO_EVAL_PROJECT was set) and write its name to $check_dir/project,"
+  log "or, once Docker shows nothing running, append the rows to the file named in $check_dir/search-out by hand."
+}
+# A search's rows reach the <out.jsonl> it was given when it ends however it ends, by an error or a signal. A kill -9
+# or a reboot runs no trap: the rows stay in $check_dir until `recover`, or the next search or check of the arm. A
+# record cut off mid-write, even inside a character, is dropped.
+salvage() {
+  [[ -f $check_dir/search.jsonl && -f $check_dir/search-out ]] || return 0
+  local target
+  target=$(cat "$check_dir/search-out")
+  mkdir -p "${target%/*}"
+  python3 -c 'import json, sys
+for raw in open(sys.argv[1], "rb").read().split(b"\n"):
+    try:
+        json.loads(raw.decode("utf-8"))
+    except ValueError:
+        continue
+    sys.stdout.buffer.write(raw + b"\n")' "$check_dir/search.jsonl" >> "$target"
+  rm "$check_dir/search.jsonl"
+}
+# --salvage: move the stranded rows only when this process owns the state and Docker confirms that no container of the
+# project recorded with those rows runs, so a live search is never touched. It says why and fails otherwise.
+recover() {
+  [[ -f $check_dir/search.jsonl && -f $check_dir/search-out ]] || return 0
+  local was
+  own || { log "a search of $arm is alive or another process is using its state; not salvaging"; return 1; }
+  ! unrecorded_rows || { release; return 1; }
+  was=$(recorded_project)
+  producer_gone "$was" || { release; log "not salvaging"; return 1; }
+  salvage
+  release
+}
+# The one way out of a check or a search: take its services down, and only when this process owns the state and Docker
+# confirms that nothing of its project runs, move the rows and delete the check dir. Otherwise every file stays.
+# A failed shutdown is remembered for the rest of the run: a later successful retry does not make the files safe to move.
+down_failed=
+shut_down() { compose down -v --remove-orphans >/dev/null 2>&1 || { down_failed=1; return 1; }; }
+finish() {
+  shut_down || true
+  [[ -n $lock_pid ]] || return 0
+  if [[ -n $down_failed ]]; then log "a compose down failed in this run; keeping $check_dir and its rows"
+  elif unrecorded_rows; then :
+  elif producer_gone "$project"; then salvage; rm -rf "$check_dir"
+  else log "keeping $check_dir and its rows"; fi
+  release
+  return 0
+}
+[[ -z $salvage_only ]] || { recover; exit; }
 [[ -z $shared ]] || mkdir -p "$BILBO_EVAL_DECISIONS" "$BILBO_EVAL_REFUSALS"
 name=store-$arm-$key.tar.zst
 if [[ -n $sessions ]]; then out=$cache/trials/$name; else out=$root/dataset/$name; fi
@@ -193,7 +278,6 @@ if [[ ! -f $model || $(sha "$model") != "$EMBEDDER_SHA256" ]]; then
 fi
 
 work=$cache/work/$arm-$key
-check_dir=$cache/check/$arm-$key
 
 files=(-f "$root/arms/$arm/compose.yaml")
 gpu_file=$root/arms/$arm/compose.gpu.yaml
@@ -229,7 +313,13 @@ compose() { docker-compose -p "$project" --profile build "${files[@]}" "$@"; }
 # Every service without a profile: the arm's database and the embedder. With none, `up` would start the build service
 # itself, since compose() always selects the build profile.
 start() { local names; names=$(services); [[ -z $names ]] || compose up -d --wait $names; }
-trap 'compose down -v --remove-orphans >/dev/null 2>&1 || true; rm -rf "$check_dir"' EXIT
+if [[ -n $check$search ]]; then
+  own || die "another check or search of $arm is running"
+  ! unrecorded_rows || die "stranded rows with no recorded project in $check_dir"
+  was=$(recorded_project)
+  producer_gone "$project" && { [[ -z $was ]] || producer_gone "$was"; } || die "stop the containers above, then run again"
+fi
+trap finish EXIT
 trap 'exit 130' INT TERM
 
 if [[ -n $build ]]; then
@@ -309,8 +399,10 @@ if [[ -n $build ]]; then
 fi
 
 if [[ -n $check ]]; then
+  salvage
   rm -rf "$check_dir" && mkdir -p "$check_dir"
   zstd -dc "$out" | tar -xf - -C "$check_dir"
+  echo "$project" > "$check_dir/project"
   cp "$root/arms/$arm/check.py" "$check_dir/check.py"
   export BILBO_EVAL_WORK=$check_dir
 
@@ -324,8 +416,11 @@ if [[ -n $check ]]; then
 fi
 
 if [[ -n $search ]]; then
+  salvage
   rm -rf "$check_dir" && mkdir -p "$check_dir"
+  echo "$search_out" > "$check_dir/search-out"
   zstd -dc "$out" | tar -xf - -C "$check_dir"
+  echo "$project" > "$check_dir/project"
   cp "$root/arms/$arm/search.py" "$check_dir/search.py"
   cp "$search_in" "$check_dir/questions.jsonl"
   script=/work/search.py run_env=()
@@ -341,9 +436,10 @@ if [[ -n $search ]]; then
   start
   status=0
   compose run --rm --build "${run_env[@]}" --entrypoint python build "$script" || status=$?
-  # Rows written before a failure count: a rerun searches only the rest.
-  mkdir -p "${search_out%/*}"
-  [[ ! -f $check_dir/search.jsonl ]] || cat "$check_dir/search.jsonl" >> "$search_out"
+  # Rows written before a failure count: a rerun searches only the rest. They move only once the project is down.
+  shut_down || die "compose down failed after searching ${out#"$root"/}; its rows stay in $check_dir"
+  producer_gone "$project" || die "searching ${out#"$root"/} left containers running; its rows stay in $check_dir"
+  salvage
   ((status == 0)) || die "searching ${out#"$root"/} failed"
-  compose down -v --remove-orphans
+  shut_down || log "warning: compose down failed after the rows were appended; keeping $check_dir"
 fi

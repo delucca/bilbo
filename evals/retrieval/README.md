@@ -972,7 +972,9 @@ its counts.
 `questions/questions.jsonl` holds the questions, one per line, each about one of the twenty-two projects. A question asks
 for something the project's sessions settled and its files do not show: what the developer decided, was told, tried
 or left open. Its answer is a list of facts, each pointing at the session lines that state it. It comes in two forms:
-the prompt a developer would type in a later session, and the search an agent would run for it.
+the prompt a developer would type in a later session, and the search an agent would run for it. Each answerable
+question gets a query variation once `vary.sh` has written it, the same two forms in other words, for the robustness
+test in Results.
 
 The questions fall in seven classes, such as the state of a piece of work or a decision and its reason, weighted by
 how often real memory queries ask for each. They are committed, not published, and committing them freezes them.
@@ -1056,23 +1058,40 @@ tool's own ranking, so the results measure what each tool can give in that budge
 stops early takes from it.
 
 The prompt writer used the developer's own words for each subject (`questions/README.md`, step 6), so the questions
-share vocabulary with the sessions, which may favour a keyword search. A wording test asks the same questions in other
-words:
+share vocabulary with the sessions, which may favour a keyword search: Lee, Chang and Toutanova (ACL 2019,
+arXiv:1906.00300) found that "on datasets where the questioner already knows the answer, a traditional IR system such
+as BM25 is sufficient". A query variation asks each answerable question again in other words, the robustness test of
+Penha, Câmara and Hauff ("Evaluating the Robustness of Retrieval Pipelines with Query Variation Generators", ECIR
+2022, arXiv:2111.13057):
 
-    evals/retrieval/scripts/reword.sh
-    evals/retrieval/scripts/eval.sh <arm> --reworded
-    uv run --project evals/retrieval/scripts python evals/retrieval/scripts/wording.py questions/reworded.jsonl \
-      questions/classes.json out.json bm25=<run>,<reworded run> dense=<run>,<reworded run> ...
+    evals/retrieval/scripts/vary.sh [--keep-list]
+    evals/retrieval/scripts/eval.sh <arm> --variation
+    uv run --project evals/retrieval/scripts python evals/retrieval/scripts/variation.py questions/questions.jsonl \
+      questions/classes.json out.json bm25=<run>,<variation run> dense=<run>,<variation run> ...
 
-`reword.sh` writes `questions/reworded.jsonl` (`scripts/reword.py` holds the prompts). `gpt-6.1-sol` rewords each
-answerable prompt, seeing only the prompt: the same request, every topic word replaced, keeping only terms with no
-other name (identifiers, file names, flags, commands, error text, numbers, product and tool names). Claude Opus 5.5
-checks each pair, the same answer and no repeated topic word, and a failure goes back to sol once with the reason. The
-frozen `query_writer.md` then writes each query from the new prompt with Opus. `--reworded` searches with that file's
-prompt and query, in a run dir keyed by it; the judge still reads the original question, so only what the search
-returns changes. `wording.py` sets each arm's drop against the first arm's, with 95% intervals from 10,000 resamples
-of the questions within each class, and counts how many of the original's terms, tokenized as bm25 tokenizes, the
-rewrite keeps.
+`vary.sh` writes each answerable question's `wording.variation` (`questions/README.md`, Query variation); `--keep-list`
+only prints the terms each variation must keep, and `--redo id,id` makes those rows' variation again with new calls. `--variation` searches with the variation, in a run dir keyed by its
+text, and keeps the exact text searched in the run's `searched.jsonl`; the judge still reads the original question,
+so only what the search returns changes. `variation.py` first checks that each pair of runs is the same arm, store
+and search, on the questions and the variation as they are now, then sets each arm's drop against the first arm's, with 95% intervals from 10,000 resamples of the questions within each class, and
+relative drops beside the absolute ones, on all the questions and apart on three strata: the framing-only ones, whose
+every topic word had to be kept, the rest, and the under-reworded ones, whose variation changed only function words.
+It also stops when a run's scores were judged against other facts than the questions now hold. A run starts its judge
+cache from the cached run of the same store and search, so a context the search returned again keeps its verdict and
+only changed contexts are judged again; for claude-mem's `prompt` form, which ignores the text, the drop is zero by
+that reuse. The rule, set before any variation run: on `query`, the primary form, bm25's drop is at least 5
+points larger than each other arm's, with the 95% interval of the difference above zero. `prompt` is secondary and
+reported the same way, without claude-mem, whose `prompt` form ignores the text. The headline stays on the original
+wording.
+
+`--rerun LABEL` searches and judges an arm again in a run dir of its own, `<run>-rerun-LABEL`, and leaves the cached
+run as it is. A search stopped by an error or a signal keeps the rows it wrote: `build-store.sh` adds them to the run's
+`search.jsonl` when it ends. After a `kill -9` or a reboot no trap runs, and `eval.sh` moves the rows with
+`build-store.sh <arm> --salvage` before it lists the questions to search, so running the same command again searches
+only the rest. A check or a search holds a lock on the arm's check state for as long as it lives, even if killed;
+`--salvage` takes the rows only when it can take that lock and no container of the arm's search project runs, and
+otherwise says why and fails, so `eval.sh` stops instead of searching twice. A second search of the same arm (a variation
+run and a `--rerun` of one arm included) is refused the same way.
 
 Not built yet: the answer run (and with it the no-answer questions), the 16,000-token sensitivity run, and the paired
 comparisons with their intervals.
@@ -1128,26 +1147,19 @@ The first runs, earlier the same day, before those fixes, for comparison:
 | hindsight | `9fc2bf01cb2c` | 66% | 71% | 72% | 58% | 47% | 47% | 88% | **63%** | 63% | 3 of 17 |
 | mempalace | `17bb4ee04c3a` | 26% | 24% | 57% | 30% | 45% | 61% | 52% | **39%** | 43% | 6 of 17 |
 
-The wording test (2026-11-06), on bm25, dense and hindsight: part of bm25's lead is the questions' wording. All 143
-answerable questions were reworded; 12 needed the one repair, and none failed the check after it. Reworded prompts
-keep 40% of the original's terms, reworded queries 60%: the query writer puts canonical terms back ("pull request" to
-`PR`, "software development kit" to `SDK`), as an agent writing a search would. Headline scores, original to reworded,
-with the drop and its 95% interval:
+### Query variation
 
-| Arm | `query` | drop | `prompt` | drop |
-|---|---:|---:|---:|---:|
-| bm25 | 60% to 40% | 20.3 (13.2 to 27.6) | 62% to 19% | 43.0 (35.4 to 50.4) |
-| dense | 47% to 40% | 6.5 (0.5 to 12.7) | 50% to 33% | 16.9 (9.2 to 24.6) |
-| hindsight | 62% to 49% | 12.1 (7.0 to 17.6) | 63% to 43% | 20.4 (13.9 to 27.2) |
+Each arm is to search again with each answerable question asked in other words (Running the eval). The variations
+are not generated yet and no arm has been run on them. The headline above stays on the original wording.
 
-bm25 drops more than dense by 13.7 points on `query` (6.0 to 21.8) and 26.1 on `prompt` (16.9 to 35.7), and more than
-hindsight by 8.1 (0.8 to 15.7) and 22.6 (14.3 to 30.9). The rule set before the runs, a drop at least 5 points larger
-than both others' with an interval above zero on `prompt`, holds. Reworded, hindsight leads on both forms, and bm25
-ties dense on `query` and falls below it on `prompt`. The test is harsh: the writer also renamed names the project
-coined ("progress beacon"), which a developer would type as they are, and some rewrites lose a little meaning, which
-every arm pays for (dense's drop bounds it roughly). So the drops are an upper bound. hindsight's original run reuses
-the first run's searches: re-searching 3 questions with the current `search.py` changed only results past the
-4,000-token cut, and all 6 packed contexts were identical.
+The first test (2026-11-06, bm25, dense and hindsight) used a harsh first rule and is an upper bound. Its writer had
+to replace every topic word but identifiers and product names, and its checker failed any reused one, so it renamed
+terms of art and the projects' own names a developer types as they are ("worktree" to "linked checkout", "pull
+request #29" to "proposed change #29"). Two blind audits, by Claude Opus 5.5 and gpt-6-astra, judged 112 and 41 of the
+143 prompts over-renamed and 5 and 13 changed in meaning. Under it bm25 dropped 20.3 points on `query` (13.2 to 27.6)
+and 43.0 on `prompt` (35.4 to 50.4), dense 6.5 and 16.9, hindsight 12.1 and 20.4. Renaming one term of art cost bm25
+about four times what it cost dense (51 points against 13 on the prompts where only that changed), so dense's drop
+does not bound the loss of meaning for bm25. hindsight's original run reused an earlier search file.
 
 ### Caveats
 

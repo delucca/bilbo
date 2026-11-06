@@ -6,7 +6,8 @@ project's sessions, since every store is built from all of them.
 
 ## Files
 
-- `questions.jsonl`: the 167 questions, one per line. Committing it freezes it.
+- `questions.jsonl`: the 167 questions, one per line; each answerable one gets its query variation when `vary.sh` has
+  written it. Committing it freezes it.
 - `dropped.jsonl`: the 778 questions that failed a check or the audit, with the reason.
 - `classes.json`: the classes, with the weight of each.
 
@@ -88,8 +89,6 @@ fourth round, A fifth round and A sixth round, below).
   "class": "status",
   "abstain": false,
   "source": "drafted",
-  "prompt": "can we pick up the users staged import where we left it?",
-  "query": "users staged import progress pending",
   "facts": [
     {
       "id": "f1",
@@ -105,7 +104,19 @@ fourth round, A fifth round and A sixth round, below).
       "replaces": "f1",
       "evidence": [{ "session": "d0dbaa44-f91f-4495-b738-5e12e8baef63", "lines": [40, 52], "quote": "..." }]
     }
-  ]
+  ],
+  "wording": {
+    "original": {
+      "prompt": "can we pick up the users staged import where we left it?",
+      "query": "users staged import progress pending"
+    },
+    "variation": {
+      "prompt": "...",
+      "query": "...",
+      "check": { "keep": ["..."], "lost": [], "added": [], "same": true, "prompt_ok": true, "query_ok": true,
+                 "reason": "", "under": false, "framing_only": false, "repaired": false }
+    }
+  }
 }
 ```
 
@@ -115,8 +126,10 @@ fourth round, A fifth round and A sixth round, below).
 - `abstain`: `true` when the sessions hold no answer.
 - `source`: `drafted`, or `harvested` when it comes from a real moment where the developer reached back to an earlier
   session. A harvested question has `asked`, the evidence of that moment.
-- `prompt`: what a developer would type at the start of a later session, without naming the project.
-- `query`: the search an agent would run for that prompt.
+- `wording`: how the question is asked. `original` holds `prompt`, what a developer would type at the start of a
+  later session, without naming the project, and `query`, the search an agent would run for that prompt. Every score
+  reads it. `variation`, on an answerable question only and absent until `vary.sh` writes it, asks the same in other
+  words, with its `check` (Query variation, below).
 - `facts`: what the answer must contain. Every fact is required. `keys` are exact strings a fact holds, when it has
   any. `procedure` lists its facts in step order.
 - `stale`: older values a later session replaced, each naming the fact that `replaces` it. Status and decision
@@ -163,6 +176,35 @@ with `rule:`. The audit also settled these cases:
 | `duplicate` | 1 | 4 | 0 | 5 |
 | `commit_event` | 0 | 1 | 10 | 11 |
 | all | 365 | 403 | 10 | 778 |
+
+## Query variation
+
+`wording.variation` asks an answerable question again in other words. The prompt writer used the developer's own
+words (step 6 below), so the questions share vocabulary with the sessions; the variation measures how much each arm's
+score depends on that. It is a robustness test reported beside the headline, never in it. `scripts/vary.sh` writes
+it, never a hand.
+
+- `scripts/keep.py` lists, before any model call and from names alone, the terms of the original prompt the variation
+  must keep, each a span of the prompt with how it must be kept: identifiers, paths, flags, numbers, versions, ticket
+  and pull request ids exactly; acronyms in their capitals; and, in any inflection, words capitalised in the message,
+  a short list of terms of art, the programs and subcommands the project's shell commands run, words the developer
+  typed in two or more of their own messages that are particular to the project, and words or phrases the project's
+  sessions write far more than other projects do, such as a component's or a tool's name.
+- gpt-6.1-sol, seeing only the prompt and its keep-list, writes the new prompt: every kept term as its kind allows,
+  or as an equivalent the same developer typed (`PR` and `pull request`), and any name the list missed as it is; the
+  framing, the word order and the ordinary words in other words; nothing added and nothing left out. It runs through
+  `codex exec` with its shell, file and image tools off, so it cannot read the repository; the first, harsher test's
+  writer had its shell on.
+- The frozen `query_writer.md` writes the query from the new prompt with Claude Opus 5.5.
+- Opus checks the new prompt and query against the original: the same answer, no name renamed, listed or not, no
+  detail added. A script checks the kept terms too. A failure goes back to sol once with the rejected variation and the reasons; a failure only in the query runs the frozen query writer again, unchanged, as a new logged call. Reusing the
+  original's words is no failure; a variation that changes only function words is marked under-reworded. Every call
+  is logged with its usage, and a stopped run resumes from the log without repeating a call.
+
+`check` records the kept terms (`keep`), those lost (`lost`), what was added (`added`), `same`, whether the prompt and
+the query pass on their own (`prompt_ok`, `query_ok`), the last `reason`,
+`under`, `framing_only` (every topic word of the prompt is a kept term, so only the framing could change) and
+`repaired`.
 
 ## How the questions were made
 

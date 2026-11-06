@@ -5,8 +5,9 @@
 # and the stress contexts stress.py builds from it; it needs the gold at 0.95 or more, a dropped fact and a swapped older
 # value caught in 90% of cases, and another project's gold at 0.05 or less. audit has gpt-6.1-sol, through
 # `codex exec`, re-judge 150 of the Opus verdicts in the arms' runs blind, and needs Cohen's kappa of 0.75 or more over
-# their items. It reads each arm's newest run in the cache, so run eval.sh for the arms first. With no word it runs
-# both. Reports go to $cache/eval/{stress,audit}-*/ as JSON; a rerun repeats no judge call.
+# their items. It reads each arm's newest run on the original wording in the cache, never a variation or a rerun, so
+# run eval.sh for the arms first. With no word it runs both. Reports go to $cache/eval/{stress,audit}-*/ as JSON; a
+# rerun repeats no judge call.
 set -euo pipefail
 
 root=$(cd "$(dirname "$0")/.." && pwd)
@@ -35,7 +36,7 @@ ln -sfn "${CODEX_HOME:-$HOME/.codex}/auth.json" "$BILBO_EVAL_CODEX_HOME/auth.jso
 py() { uv run --project "$root/scripts" --locked --quiet python "$@"; }
 
 selected=$cache/eval/answerable.jsonl
-grep -F '"abstain": false' "$root/questions/questions.jsonl" > "$selected"
+py "$root/scripts/questions.py" flat "$root/questions/questions.jsonl" > "$selected"
 
 if [[ -n $do_stress ]]; then
   archive=$("$root/scripts/fetch-corpus.sh")
@@ -68,7 +69,7 @@ if [[ -n $do_audit ]]; then
     arm=$(basename "$(dirname "$f")")
     key=$("$root/scripts/build-store.sh" "$arm" --key)
     run=$(ls -td "$cache/eval/$arm-$key" "$cache/eval/$arm-$key"-* 2>/dev/null | while read -r d; do
-      [[ -s $d/judged.jsonl ]] && echo "$d" && break; done || true)
+      [[ ${d##*/} =~ ^$arm-$key(-[0-9a-f]{12})?$ && -s $d/judged.jsonl ]] && echo "$d" && break; done || true)
     if [[ -n $run ]]; then runs+=("$arm=$run"); else log "no judged run of $arm; run eval.sh $arm"; fi
   done
   ((${#runs[@]})) || die "no judged arm runs"

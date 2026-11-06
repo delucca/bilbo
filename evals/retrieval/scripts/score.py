@@ -1,11 +1,14 @@
 """Score the judged contexts. Usage: score.py <selected.jsonl> <classes.json> <run-dir> <gold-dir> <random-dir>.
 A question's score is the share of its facts present; misled is a stale item present while the fact that replaced it is
-absent. The headline weights the class means by classes.json."""
+absent. The headline weights the class means by classes.json. Beside score.json it writes selected.sha256, the hash of
+the selected.jsonl it scored."""
 
+import hashlib
 import json
 import sys
-from collections import defaultdict
 from pathlib import Path
+
+import judged
 
 BUDGET = 4000
 TOKENIZER = "tiktoken o200k_base"
@@ -16,37 +19,16 @@ selected, classes_file, run, gold, rand = sys.argv[1:6]
 run, gold, rand = Path(run), Path(gold), Path(rand)
 questions = [json.loads(line) for line in Path(selected).read_text().split("\n") if line.strip()]
 weights = {c["name"]: c["weight"] for c in json.loads(Path(classes_file).read_text())["classes"]}
-
-
-def rows(path):
-    return [json.loads(line) for line in path.read_text().split("\n") if line.strip()] if path.exists() else []
-
-
-def verdicts(d):
-    """(id, form) -> last judged row whose ctx is the current context."""
-    judged = defaultdict(list)
-    for r in rows(d / "judged.jsonl"):
-        judged[(r["id"], r["form"], r["ctx"])].append(r)
-    return {(c["id"], c["form"]): judged[(c["id"], c["form"], c["sha"])][-1]
-            for c in rows(d / f"contexts-{BUDGET}.jsonl") if judged[(c["id"], c["form"], c["sha"])]}
-
-
-def grade(q, v):
-    present = [f["id"] for f in q["facts"] if v["facts"][f["id"]]]
-    stale = q.get("stale", [])
-    misled = any(v["stale"][s["id"]] and not v["facts"][s["replaces"]] for s in stale) if stale else None
-    return {"score": len(present) / len(q["facts"]), "present": present, "facts": len(q["facts"]), "misled": misled}
-
-
-arm, controls = verdicts(run), {"gold": verdicts(gold), "random": verdicts(rand)}
+by_id = {q["id"]: q for q in questions}
+arm, controls = judged.verdicts(run, by_id), {"gold": judged.verdicts(gold, by_id), "random": judged.verdicts(rand, by_id)}
 missing = [f"{q['id']}/{f}" for q in questions for f in FORMS if (q["id"], f) not in arm] + \
           [f"{n}:{q['id']}" for n, t in controls.items() for q in questions if (q["id"], "both") not in t]
 if missing:
     sys.exit(f"score: no verdict for {', '.join(missing)}")
 
-graded = [{"id": q["id"], "class": q["class"], "repo": q["repo"], "form": f, **grade(q, arm[(q["id"], f)])}
+graded = [{"id": q["id"], "class": q["class"], "repo": q["repo"], "form": f, **judged.grade(q, arm[(q["id"], f)])}
           for q in questions for f in FORMS]
-ctl = {n: {q["id"]: grade(q, t[(q["id"], "both")]) for q in questions} for n, t in controls.items()}
+ctl = {n: {q["id"]: judged.grade(q, t[(q["id"], "both")]) for q in questions} for n, t in controls.items()}
 
 
 def mean(xs):
@@ -80,13 +62,17 @@ for f in FORMS:
     flags = [r["misled"] for r in graded if r["form"] == f and r["misled"] is not None]
     misled[f] = {"misled": sum(flags), "of": len(flags)}
 
-name, _, reworded = run.name.partition("-reworded-")
+name, _, rerun = run.name.partition("-rerun-")
+name, _, variation = name.partition("-variation-")
+name, _, reworded = name.partition("-reworded-")
 arm_name, store, search = name.rsplit("-", 2)
 (run / "scores.jsonl").write_text("".join(json.dumps(r, ensure_ascii=False) + "\n" for r in graded))
 (run / "score.json").write_text(json.dumps({
-    "arm": arm_name, "store": store, "search": search, **({"reworded": reworded} if reworded else {}), "budget": BUDGET, "tokenizer": TOKENIZER, "judge": JUDGE, "questions": len(questions),
+    "arm": arm_name, "store": store, "search": search, **({"reworded": reworded} if reworded else {}), **({"variation": variation} if variation else {}),
+    **({"rerun": rerun} if rerun else {}), "budget": BUDGET, "tokenizer": TOKENIZER, "judge": JUDGE, "questions": len(questions),
     "partial": len(by_class) < len(weights), "headline": head, "classes": by_class, "gold": ctl["gold"], "random": ctl["random"],
     "misled": misled}, indent=2) + "\n")
+(run / "selected.sha256").write_text(hashlib.sha256(Path(selected).read_bytes()).hexdigest() + "\n")
 
 
 def pct(x):

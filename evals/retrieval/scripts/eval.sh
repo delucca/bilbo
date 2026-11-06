@@ -1,14 +1,17 @@
 #!/usr/bin/env bash
 # Score an arm's store against the answerable questions: search each one in both forms, pack what came back into 4,000
 # tokens, judge it with Claude Opus 5.5 through `claude -p`, and print the scores.
-#   eval.sh <arm> [--limit N] [--questions id,id,...] [--jobs N] [--reworded]
+#   eval.sh <arm> [--limit N] [--questions id,id,...] [--jobs N] [--variation] [--rerun LABEL]
 # --questions or --limit runs a few questions; --jobs N sets the judge calls at once (default 4). Searches, contexts
 # and verdicts are kept in $cache/eval/<arm>-<storekey>-<searchkey>, and the controls in
 # $cache/eval/{gold,random}-<corpus>-<controlskey> (the cache is BILBO_EVALS_CACHE, as for build-store.sh), so a rerun
 # repeats no search and no judge call already made. The search key hashes arms/<arm>/search.py, which the store key
-# leaves out; the controls key hashes controls.py. --reworded searches with the prompt and query of
-# questions/reworded.jsonl (reword.sh) instead, in a run dir keyed by that file too; the judge still reads the original
-# question, so only what the search returns differs.
+# leaves out; the controls key hashes controls.py. --variation searches with each question's query variation (vary.sh)
+# instead, in a run dir keyed by the variation's text too; the judge still reads the original question, so only what
+# the search returns differs. --rerun LABEL searches and judges again in a run dir of its own, <run>-rerun-LABEL, and
+# leaves the cached run as it is. Every row handed to a search is also appended to <run>/searched.jsonl, the exact
+# text each search read. A run of either kind starts its judge cache from the cached run of the same store and search,
+# so a context the search returned again is not judged again.
 # Not built: the answer run, the 16,000-token run, the paired comparisons. The judge's gates are gates.sh.
 set -euo pipefail
 
@@ -21,15 +24,16 @@ sha() { sha256sum "$1" | cut -d' ' -f1; }
 
 arm=${1:-}
 [[ -n $arm && -f $root/arms/$arm/search.py ]] ||
-  die "usage: eval.sh <arm> [--limit N] [--questions id,id,...] [--jobs N] [--reworded] (the arm needs arms/<arm>/search.py)"
+  die "usage: eval.sh <arm> [--limit N] [--questions id,id,...] [--jobs N] [--variation] [--rerun LABEL] (the arm needs arms/<arm>/search.py)"
 shift
-limit='' ids='' jobs=4 reworded=''
+limit='' ids='' jobs=4 wording=original rerun=''
 while (($#)); do
   case $1 in
     --limit) [[ ${2:-} =~ ^[1-9][0-9]*$ ]] || die "--limit needs a number"; limit=$2; shift ;;
     --questions) [[ ${2:-} =~ ^[A-Za-z0-9_.-]+(,[A-Za-z0-9_.-]+)*$ ]] || die "--questions needs id,id"; ids=$2; shift ;;
     --jobs) [[ ${2:-} =~ ^[1-9][0-9]*$ ]] || die "--jobs needs a number"; jobs=$2; shift ;;
-    --reworded) [[ -f $root/questions/reworded.jsonl ]] || die "no questions/reworded.jsonl; run reword.sh"; reworded=1 ;;
+    --variation) wording=variation ;;
+    --rerun) [[ ${2:-} =~ ^[a-z0-9]+$ ]] || die "--rerun needs a label of lower-case letters and digits"; rerun=$2; shift ;;
     *) die "unknown option $1" ;;
   esac
   shift
@@ -40,6 +44,7 @@ export UV_PROJECT_ENVIRONMENT=$cache/eval/venv UV_PYTHON_DOWNLOADS=never TIKTOKE
 export BILBO_EVAL_JUDGE_CWD=$cache/eval/judge-cwd
 mkdir -p "$BILBO_EVAL_JUDGE_CWD" "$TIKTOKEN_CACHE_DIR"
 py() { uv run --project "$root/scripts" --locked --quiet python "$@"; }
+questions() { py "$root/scripts/questions.py" "$1" "$root/questions/questions.jsonl" "${@:2}"; }
 
 archive=$("$root/scripts/fetch-corpus.sh")
 corpus_sha=$(sha "$archive")
@@ -54,44 +59,37 @@ key=$("$root/scripts/build-store.sh" "$arm" --key)
 search_sha=$(sha "$root/arms/$arm/search.py")
 controls_sha=$(sha "$root/scripts/controls.py")
 run=$cache/eval/$arm-$key-${search_sha:0:12}
-[[ -z $reworded ]] || run=$run-reworded-$(sha "$root/questions/reworded.jsonl" | cut -c1-12)
+if [[ $wording == variation ]]; then
+  variation_key=$(questions key)
+  run=$run-variation-$variation_key
+fi
+[[ -z $rerun ]] || run=$run-rerun-$rerun
 gold=$cache/eval/gold-${corpus_sha:0:12}-${controls_sha:0:12}
 random=$cache/eval/random-${corpus_sha:0:12}-${controls_sha:0:12}
 mkdir -p "$run" "$gold" "$random"
 
-grep -F '"abstain": false' "$root/questions/questions.jsonl" > "$run/all.jsonl"
-if [[ -n $ids ]]; then
-  : > "$run/selected.jsonl"
-  IFS=, read -ra want <<<"$ids"
-  for id in "${want[@]}"; do
-    grep -F "\"id\": \"$id\", \"prompt\"" "$run/all.jsonl" >> "$run/selected.jsonl" || die "$id is not an answerable question"
-  done
-else
-  cp "$run/all.jsonl" "$run/selected.jsonl"
-fi
-rm "$run/all.jsonl"
-if [[ -n $limit ]]; then
-  head -n "$limit" "$run/selected.jsonl" > "$run/selected.part" && mv "$run/selected.part" "$run/selected.jsonl"
-fi
+picked=()
+[[ -z $ids ]] || picked+=(--ids "$ids")
+[[ -z $limit ]] || picked+=(--limit "$limit")
+questions flat "${picked[@]}" > "$run/selected.jsonl"
 log "$(wc -l < "$run/selected.jsonl" | tr -d ' ') questions"
 
+"$root/scripts/build-store.sh" "$arm" --salvage
 touch "$run/search.jsonl"
 : > "$run/todo.jsonl"
+unsearched=()
 while read -r line; do
   [[ $line =~ \"id\":\ \"([^\"]+)\",\ \"prompt\" ]] || die "no id in a question"
   for f in query prompt; do
     if ! grep -qF "{\"id\": \"${BASH_REMATCH[1]}\", \"form\": \"$f\"," "$run/search.jsonl"; then
-      if [[ -n $reworded ]]; then
-        grep -F "\"id\": \"${BASH_REMATCH[1]}\", \"prompt\"" "$root/questions/reworded.jsonl" >> "$run/todo.jsonl" ||
-          die "${BASH_REMATCH[1]} is not in questions/reworded.jsonl"
-      else
-        echo "$line" >> "$run/todo.jsonl"
-      fi
+      unsearched+=("${BASH_REMATCH[1]}")
       break
     fi
   done
 done < "$run/selected.jsonl"
+((${#unsearched[@]} == 0)) || questions flat --wording "$wording" --ids "$(IFS=,; echo "${unsearched[*]}")" > "$run/todo.jsonl"
 if [[ -s $run/todo.jsonl ]]; then
+  cat "$run/todo.jsonl" >> "$run/searched.jsonl"
   "$root/scripts/build-store.sh" "$arm" --search "$run/todo.jsonl" "$run/search.jsonl"
 else
   log "nothing to search"
@@ -102,6 +100,12 @@ py "$root/scripts/controls.py" "$corpus/corpus" "$run/selected.jsonl" "$gold/sea
 for d in "$run" "$gold" "$random"; do
   py "$root/scripts/pack.py" "$d/search.jsonl" "$d/contexts-4000.jsonl" 4000
 done
+
+base=$cache/eval/$arm-$key-${search_sha:0:12}
+if [[ $run != "$base" && -s $base/judged.jsonl && ! -e $run/judged.jsonl ]]; then
+  cp "$base/judged.jsonl" "$run/judged.jsonl"
+  log "judge cache seeded from ${base##*/}"
+fi
 
 failed=''
 for d in "$run" "$gold" "$random"; do
