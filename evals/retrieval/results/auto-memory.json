@@ -1,16 +1,17 @@
 {
   "arm": "auto-memory",
-  "store": "8758a8f3a57c",
+  "store": "c138c09fda93",
+  "search": "f050b84d3565",
   "budget": 4000,
   "tokenizer": "tiktoken o200k_base",
   "judge": "claude-opus-5-5",
   "questions": 143,
   "partial": false,
   "headline": {
-    "query": 0.06341772493192052,
-    "prompt": 0.06135511876836799,
-    "gold": 0.9835789672803343,
-    "random": 0.023656310196793897
+    "query": 0.11905686322090109,
+    "prompt": 0.11905686322090109,
+    "gold": 1.0,
+    "random": 0.019314651543883933
   },
   "classes": {
     "overview": {
@@ -22,8 +23,8 @@
       "prompt": 0.0,
       "misled_prompt": 0.0,
       "stale_n_prompt": 7,
-      "gold": 0.9617283950617284,
-      "random": 0.056172839506172835
+      "gold": 1.0,
+      "random": 0.043827160493827164
     },
     "status": {
       "n": 21,
@@ -34,7 +35,7 @@
       "prompt": 0.0,
       "misled_prompt": 0.0,
       "stale_n_prompt": 2,
-      "gold": 0.9523809523809523,
+      "gold": 1.0,
       "random": 0.0
     },
     "decision": {
@@ -52,10 +53,10 @@
     "rules": {
       "n": 15,
       "weight": 54,
-      "query": 0.2,
+      "query": 0.4,
       "misled_query": 0.0,
       "stale_n_query": 1,
-      "prompt": 0.2,
+      "prompt": 0.4,
       "misled_prompt": 0.0,
       "stale_n_prompt": 1,
       "gold": 1.0,
@@ -64,22 +65,22 @@
     "procedure": {
       "n": 26,
       "weight": 34,
-      "query": 0.21153846153846154,
+      "query": 0.28846153846153844,
       "misled_query": 0.0,
       "stale_n_query": 1,
-      "prompt": 0.19230769230769232,
+      "prompt": 0.28846153846153844,
       "misled_prompt": 0.0,
       "stale_n_prompt": 1,
       "gold": 1.0,
-      "random": 0.08012820512820513
+      "random": 0.07051282051282051
     },
     "fact": {
       "n": 18,
       "weight": 38,
-      "query": 0.05555555555555555,
+      "query": 0.16666666666666666,
       "misled_query": 0.0,
       "stale_n_query": 2,
-      "prompt": 0.05555555555555555,
+      "prompt": 0.16666666666666666,
       "misled_prompt": 0.0,
       "stale_n_prompt": 2,
       "gold": 1.0,
@@ -1342,10 +1343,11 @@
       "misled": null
     },
     "bosarsalog-016": {
-      "score": 0.8,
+      "score": 1.0,
       "present": [
         "f1",
         "f2",
+        "f3",
         "f4",
         "f5"
       ],
@@ -1353,16 +1355,24 @@
       "misled": false
     },
     "bosarsalog-018": {
-      "score": 0.16666666666666666,
+      "score": 1.0,
       "present": [
-        "f1"
+        "f1",
+        "f2",
+        "f3",
+        "f4",
+        "f5",
+        "f6"
       ],
       "facts": 6,
       "misled": null
     },
     "bosarsalog-027": {
-      "score": 0.0,
-      "present": [],
+      "score": 1.0,
+      "present": [
+        "f1",
+        "f2"
+      ],
       "facts": 2,
       "misled": null
     },
@@ -1497,10 +1507,8 @@
       "misled": null
     },
     "iptvnator-186": {
-      "score": 0.25,
-      "present": [
-        "f4"
-      ],
+      "score": 0.0,
+      "present": [],
       "facts": 4,
       "misled": null
     },
@@ -1599,9 +1607,8 @@
       "misled": null
     },
     "kimi-cli-007": {
-      "score": 0.5,
+      "score": 0.25,
       "present": [
-        "f1",
         "f3"
       ],
       "facts": 4,
@@ -2132,10 +2139,8 @@
       "misled": null
     },
     "bosarsalog-001": {
-      "score": 0.25,
-      "present": [
-        "f4"
-      ],
+      "score": 0.0,
+      "present": [],
       "facts": 4,
       "misled": null
     },
@@ -2218,7 +2223,7 @@
     "scotbc14-005": {
       "score": 0.5,
       "present": [
-        "f1"
+        "f2"
       ],
       "facts": 2,
       "misled": null
@@ -2328,8 +2333,10 @@
       "misled": false
     },
     "scotbc14-006": {
-      "score": 0.0,
-      "present": [],
+      "score": 0.16666666666666666,
+      "present": [
+        "f3"
+      ],
       "facts": 6,
       "misled": false
     },

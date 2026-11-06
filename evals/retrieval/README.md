@@ -1062,28 +1062,49 @@ comparisons with their intervals.
 
 Each arm's `score.json` from its run is copied to `results/<arm>.json`. Share of facts present in what each arm
 returned, 4,000 tokens, all 143 answerable questions; `misled` counts questions with an older value, in brackets.
-The judge passed both gates on these runs (2026-11-05): gold 1.00, a dropped fact caught in 58 of 60, a swapped older
-value in 19 of 20, another project's gold 0.00; `gpt-6.1-sol` agreed with Opus on 150 verdicts at kappa 0.93. Every
-miss read by hand was the context still stating the fact through another fact's quote, not a judge error.
+These runs (2026-11-05, evening) follow every fix of the audit: the harness bugs, each arm scoped to the question's
+project, the read rules, and auto-memory's rebuilt store. The judge passed both gates: gold 1.00, a dropped fact caught
+in 58 of 60, a swapped older value in 19 of 20, another project's gold 0.00; `gpt-6.1-sol` agreed with Opus on 150 verdicts at kappa 0.90 (0.93 on the first runs).
+
+| Arm | Store | overview | status | decision | rules | procedure | fact | refind | headline `query` | `prompt` | misled `query` |
+|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| gold (control) | | 100% | 100% | 100% | 100% | 100% | 100% | 100% | 100% | 100% | |
+| random (control) | | 4% | 0% | 0% | 0% | 7% | 0% | 0% | 2% | 2% | |
+| [mem0](results/mem0.json)\* | `d105294feebd` | 48% | 25% | 51% | 33% | 46% | 17% | 25% | **38%** | 40% | 3 of 17 |
+| [graphiti](results/graphiti.json) | `eac10edab868` | 36% | 34% | 47% | 21% | 37% | 50% | 75% | **38%** | 42% | 2 of 17 |
+| [ai-memory](results/ai-memory.json) | `aba1b3153a9b` | 47% | 38% | 44% | 56% | 22% | 44% | 20% | **43%** | 43% | 5 of 17 |
+| [auto-memory](results/auto-memory.json) | `c138c09fda93` | 0% | 0% | 0% | 40% | 29% | 17% | 0% | **12%** | 12% | 0 of 17 |
+| [bilbo-agent-v0_19](results/bilbo-agent-v0_19.json) | `1a3f9a5213f7` | 44% | 38% | 52% | 33% | 31% | 25% | 38% | **39%** | 11% | 3 of 17 |
+| [bilbo-assisted-v0_19](results/bilbo-assisted-v0_19.json) | `e21e81bb40d2` | 62% | 45% | 68% | 33% | 35% | 31% | 42% | **48%** | 14% | 1 of 17 |
+| [bm25](results/bm25.json) | `cc0c68a903d7` | 41% | 44% | 81% | 69% | 62% | 72% | 72% | **60%** | 62% | 2 of 17 |
+| [claude-mem](results/claude-mem.json) | `c277bbdc782f` | 18% | 25% | 52% | 20% | 35% | 44% | 42% | **31%** | 4% | 2 of 17 |
+| [dense](results/dense.json) | `0eac8883d38c` | 30% | 46% | 61% | 42% | 68% | 50% | 55% | **47%** | 50% | 6 of 17 |
+| [hindsight](results/hindsight.json)\* | `9fc2bf01cb2c` | 66% | 71% | 72% | 58% | 47% | 47% | 88% | **63%** | 63% | 3 of 17 |
+| [mempalace](results/mempalace.json)\* | `17bb4ee04c3a` | 26% | 24% | 57% | 30% | 45% | 61% | 52% | **39%** | 43% | 6 of 17 |
+
+\* mem0, hindsight and mempalace were not rerun: their rows are the first runs below, packed before the separators
+counted in the budget and judged before identical contexts shared a verdict.
+
+Class scores are on the `query` form. The questions per class: overview 27, status 21, decision 16, rules 15,
+procedure 26, fact 18, refind 20.
+
+The first runs, earlier the same day, before those fixes, for comparison:
 
 | Arm | Store | overview | status | decision | rules | procedure | fact | refind | headline `query` | `prompt` | misled `query` |
 |---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
 | gold (control) | | 96% | 95% | 100% | 100% | 100% | 100% | 100% | 98% | 98% | |
 | random (control) | | 6% | 0% | 0% | 0% | 8% | 0% | 0% | 2% | 2% | |
-| [mem0](results/mem0.json) | `d105294feebd` | 48% | 25% | 51% | 33% | 46% | 17% | 25% | **38%** | 40% | 3 of 17 |
-| [graphiti](results/graphiti.json) | `eac10edab868` | 33% | 24% | 44% | 13% | 25% | 44% | 75% | **32%** | 34% | 2 of 17 |
-| [ai-memory](results/ai-memory.json) | `aba1b3153a9b` | 17% | 9% | 10% | 21% | 12% | 25% | 5% | **16%** | 19% | 4 of 17 |
-| [auto-memory](results/auto-memory.json) | `8758a8f3a57c` | 0% | 0% | 0% | 20% | 21% | 6% | 0% | **6%** | 6% | 0 of 17 |
-| [bilbo-agent-v0_19](results/bilbo-agent-v0_19.json) | `1a3f9a5213f7` | 10% | 14% | 17% | 10% | 9% | 14% | 15% | **12%** | 9% | 2 of 17 |
-| [bilbo-assisted-v0_19](results/bilbo-assisted-v0_19.json) | `e21e81bb40d2` | 12% | 20% | 34% | 3% | 19% | 31% | 22% | **19%** | 14% | 2 of 17 |
-| [bm25](results/bm25.json) | `cc0c68a903d7` | 41% | 46% | 84% | 69% | 63% | 72% | 50% | **60%** | 61% | 2 of 17 |
-| [claude-mem](results/claude-mem.json) | `c277bbdc782f` | 19% | 26% | 46% | 20% | 34% | 50% | 15% | **30%** | 4% | 4 of 17 |
-| [dense](results/dense.json) | `0eac8883d38c` | 32% | 48% | 61% | 48% | 70% | 50% | 28% | **48%** | 51% | 5 of 17 |
-| [hindsight](results/hindsight.json) | `9fc2bf01cb2c` | 66% | 71% | 72% | 58% | 47% | 47% | 88% | **63%** | 63% | 3 of 17 |
-| [mempalace](results/mempalace.json) | `17bb4ee04c3a` | 26% | 24% | 57% | 30% | 45% | 61% | 52% | **39%** | 43% | 6 of 17 |
-
-Class scores are on the `query` form. The questions per class: overview 27, status 21, decision 16, rules 15,
-procedure 26, fact 18, refind 20.
+| mem0 | `d105294feebd` | 48% | 25% | 51% | 33% | 46% | 17% | 25% | **38%** | 40% | 3 of 17 |
+| graphiti | `eac10edab868` | 33% | 24% | 44% | 13% | 25% | 44% | 75% | **32%** | 34% | 2 of 17 |
+| ai-memory | `aba1b3153a9b` | 17% | 9% | 10% | 21% | 12% | 25% | 5% | **16%** | 19% | 4 of 17 |
+| auto-memory | `8758a8f3a57c` | 0% | 0% | 0% | 20% | 21% | 6% | 0% | **6%** | 6% | 0 of 17 |
+| bilbo-agent-v0_19 | `1a3f9a5213f7` | 10% | 14% | 17% | 10% | 9% | 14% | 15% | **12%** | 9% | 2 of 17 |
+| bilbo-assisted-v0_19 | `e21e81bb40d2` | 12% | 20% | 34% | 3% | 19% | 31% | 22% | **19%** | 14% | 2 of 17 |
+| bm25 | `cc0c68a903d7` | 41% | 46% | 84% | 69% | 63% | 72% | 50% | **60%** | 61% | 2 of 17 |
+| claude-mem | `c277bbdc782f` | 19% | 26% | 46% | 20% | 34% | 50% | 15% | **30%** | 4% | 4 of 17 |
+| dense | `0eac8883d38c` | 32% | 48% | 61% | 48% | 70% | 50% | 28% | **48%** | 51% | 5 of 17 |
+| hindsight | `9fc2bf01cb2c` | 66% | 71% | 72% | 58% | 47% | 47% | 88% | **63%** | 63% | 3 of 17 |
+| mempalace | `17bb4ee04c3a` | 26% | 24% | 57% | 30% | 45% | 61% | 52% | **39%** | 43% | 6 of 17 |
 
 ## Publishing
 

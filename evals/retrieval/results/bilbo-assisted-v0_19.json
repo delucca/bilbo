@@ -1,49 +1,50 @@
 {
   "arm": "bilbo-assisted-v0_19",
   "store": "e21e81bb40d2",
+  "search": "7616a7e07a85",
   "budget": 4000,
   "tokenizer": "tiktoken o200k_base",
   "judge": "claude-opus-5-5",
   "questions": 143,
   "partial": false,
   "headline": {
-    "query": 0.18682750779228172,
-    "prompt": 0.13523786306383573,
-    "gold": 0.9835789672803343,
-    "random": 0.023656310196793897
+    "query": 0.4847663139329806,
+    "prompt": 0.13742269774078397,
+    "gold": 1.0,
+    "random": 0.019314651543883933
   },
   "classes": {
     "overview": {
       "n": 27,
       "weight": 85,
-      "query": 0.12098765432098765,
+      "query": 0.617283950617284,
       "misled_query": 0.14285714285714285,
       "stale_n_query": 7,
-      "prompt": 0.13950617283950617,
+      "prompt": 0.13765432098765432,
       "misled_prompt": 0.14285714285714285,
       "stale_n_prompt": 7,
-      "gold": 0.9617283950617284,
-      "random": 0.056172839506172835
+      "gold": 1.0,
+      "random": 0.043827160493827164
     },
     "status": {
       "n": 21,
       "weight": 41,
-      "query": 0.19841269841269843,
+      "query": 0.4523809523809524,
       "misled_query": 0.0,
       "stale_n_query": 2,
       "prompt": 0.0873015873015873,
       "misled_prompt": 0.0,
       "stale_n_prompt": 2,
-      "gold": 0.9523809523809523,
+      "gold": 1.0,
       "random": 0.0
     },
     "decision": {
       "n": 16,
       "weight": 54,
-      "query": 0.34375,
-      "misled_query": 0.25,
+      "query": 0.6770833333333334,
+      "misled_query": 0.0,
       "stale_n_query": 4,
-      "prompt": 0.28125,
+      "prompt": 0.3020833333333333,
       "misled_prompt": 0.25,
       "stale_n_prompt": 4,
       "gold": 1.0,
@@ -52,7 +53,7 @@
     "rules": {
       "n": 15,
       "weight": 54,
-      "query": 0.03333333333333333,
+      "query": 0.3333333333333333,
       "misled_query": 0.0,
       "stale_n_query": 1,
       "prompt": 0.06666666666666667,
@@ -64,14 +65,14 @@
     "procedure": {
       "n": 26,
       "weight": 34,
-      "query": 0.18696581196581194,
+      "query": 0.34722222222222227,
       "misled_query": 0.0,
       "stale_n_query": 1,
       "prompt": 0.07478632478632478,
       "misled_prompt": 0.0,
       "stale_n_prompt": 1,
       "gold": 1.0,
-      "random": 0.08012820512820513
+      "random": 0.07051282051282051
     },
     "fact": {
       "n": 18,
@@ -88,10 +89,10 @@
     "refind": {
       "n": 20,
       "weight": 11,
-      "query": 0.225,
+      "query": 0.425,
       "misled_query": null,
       "stale_n_query": 0,
-      "prompt": 0.075,
+      "prompt": 0.05,
       "misled_prompt": null,
       "stale_n_prompt": 0,
       "gold": 1.0,
@@ -1342,10 +1343,11 @@
       "misled": null
     },
     "bosarsalog-016": {
-      "score": 0.8,
+      "score": 1.0,
       "present": [
         "f1",
         "f2",
+        "f3",
         "f4",
         "f5"
       ],
@@ -1353,16 +1355,24 @@
       "misled": false
     },
     "bosarsalog-018": {
-      "score": 0.16666666666666666,
+      "score": 1.0,
       "present": [
-        "f1"
+        "f1",
+        "f2",
+        "f3",
+        "f4",
+        "f5",
+        "f6"
       ],
       "facts": 6,
       "misled": null
     },
     "bosarsalog-027": {
-      "score": 0.0,
-      "present": [],
+      "score": 1.0,
+      "present": [
+        "f1",
+        "f2"
+      ],
       "facts": 2,
       "misled": null
     },
@@ -1497,10 +1507,8 @@
       "misled": null
     },
     "iptvnator-186": {
-      "score": 0.25,
-      "present": [
-        "f4"
-      ],
+      "score": 0.0,
+      "present": [],
       "facts": 4,
       "misled": null
     },
@@ -1599,9 +1607,8 @@
       "misled": null
     },
     "kimi-cli-007": {
-      "score": 0.5,
+      "score": 0.25,
       "present": [
-        "f1",
         "f3"
       ],
       "facts": 4,
@@ -2132,10 +2139,8 @@
       "misled": null
     },
     "bosarsalog-001": {
-      "score": 0.25,
-      "present": [
-        "f4"
-      ],
+      "score": 0.0,
+      "present": [],
       "facts": 4,
       "misled": null
     },
@@ -2218,7 +2223,7 @@
     "scotbc14-005": {
       "score": 0.5,
       "present": [
-        "f1"
+        "f2"
       ],
       "facts": 2,
       "misled": null
@@ -2328,8 +2333,10 @@
       "misled": false
     },
     "scotbc14-006": {
-      "score": 0.0,
-      "present": [],
+      "score": 0.16666666666666666,
+      "present": [
+        "f3"
+      ],
       "facts": 6,
       "misled": false
     },
@@ -2360,7 +2367,7 @@
   },
   "misled": {
     "query": {
-      "misled": 2,
+      "misled": 1,
       "of": 17
     },
     "prompt": {

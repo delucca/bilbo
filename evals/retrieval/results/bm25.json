@@ -1,16 +1,17 @@
 {
   "arm": "bm25",
   "store": "cc0c68a903d7",
+  "search": "e6bc9d876ce8",
   "budget": 4000,
   "tokenizer": "tiktoken o200k_base",
   "judge": "claude-opus-5-5",
   "questions": 143,
   "partial": false,
   "headline": {
-    "query": 0.6028178412116372,
-    "prompt": 0.6089469581320265,
-    "gold": 0.9835789672803343,
-    "random": 0.023656310196793897
+    "query": 0.6026761453680486,
+    "prompt": 0.6232217698568908,
+    "gold": 1.0,
+    "random": 0.019314651543883933
   },
   "classes": {
     "overview": {
@@ -19,28 +20,28 @@
       "query": 0.41358024691358025,
       "misled_query": 0.2857142857142857,
       "stale_n_query": 7,
-      "prompt": 0.4419753086419753,
-      "misled_prompt": 0.5714285714285714,
+      "prompt": 0.454320987654321,
+      "misled_prompt": 0.42857142857142855,
       "stale_n_prompt": 7,
-      "gold": 0.9617283950617284,
-      "random": 0.056172839506172835
+      "gold": 1.0,
+      "random": 0.043827160493827164
     },
     "status": {
       "n": 21,
       "weight": 41,
-      "query": 0.4603174603174603,
+      "query": 0.4444444444444445,
       "misled_query": 0.0,
       "stale_n_query": 2,
-      "prompt": 0.30158730158730157,
+      "prompt": 0.2777777777777778,
       "misled_prompt": 0.5,
       "stale_n_prompt": 2,
-      "gold": 0.9523809523809523,
+      "gold": 1.0,
       "random": 0.0
     },
     "decision": {
       "n": 16,
       "weight": 54,
-      "query": 0.84375,
+      "query": 0.8125,
       "misled_query": 0.0,
       "stale_n_query": 4,
       "prompt": 0.8958333333333334,
@@ -64,14 +65,14 @@
     "procedure": {
       "n": 26,
       "weight": 34,
-      "query": 0.6282051282051282,
+      "query": 0.6228632478632478,
       "misled_query": 0.0,
       "stale_n_query": 1,
-      "prompt": 0.6410256410256411,
+      "prompt": 0.6506410256410257,
       "misled_prompt": 0.0,
       "stale_n_prompt": 1,
       "gold": 1.0,
-      "random": 0.08012820512820513
+      "random": 0.07051282051282051
     },
     "fact": {
       "n": 18,
@@ -88,10 +89,10 @@
     "refind": {
       "n": 20,
       "weight": 11,
-      "query": 0.5,
+      "query": 0.725,
       "misled_query": null,
       "stale_n_query": 0,
-      "prompt": 0.4,
+      "prompt": 0.775,
       "misled_prompt": null,
       "stale_n_prompt": 0,
       "gold": 1.0,
@@ -1342,10 +1343,11 @@
       "misled": null
     },
     "bosarsalog-016": {
-      "score": 0.8,
+      "score": 1.0,
       "present": [
         "f1",
         "f2",
+        "f3",
         "f4",
         "f5"
       ],
@@ -1353,16 +1355,24 @@
       "misled": false
     },
     "bosarsalog-018": {
-      "score": 0.16666666666666666,
+      "score": 1.0,
       "present": [
-        "f1"
+        "f1",
+        "f2",
+        "f3",
+        "f4",
+        "f5",
+        "f6"
       ],
       "facts": 6,
       "misled": null
     },
     "bosarsalog-027": {
-      "score": 0.0,
-      "present": [],
+      "score": 1.0,
+      "present": [
+        "f1",
+        "f2"
+      ],
       "facts": 2,
       "misled": null
     },
@@ -1497,10 +1507,8 @@
       "misled": null
     },
     "iptvnator-186": {
-      "score": 0.25,
-      "present": [
-        "f4"
-      ],
+      "score": 0.0,
+      "present": [],
       "facts": 4,
       "misled": null
     },
@@ -1599,9 +1607,8 @@
       "misled": null
     },
     "kimi-cli-007": {
-      "score": 0.5,
+      "score": 0.25,
       "present": [
-        "f1",
         "f3"
       ],
       "facts": 4,
@@ -2132,10 +2139,8 @@
       "misled": null
     },
     "bosarsalog-001": {
-      "score": 0.25,
-      "present": [
-        "f4"
-      ],
+      "score": 0.0,
+      "present": [],
       "facts": 4,
       "misled": null
     },
@@ -2218,7 +2223,7 @@
     "scotbc14-005": {
       "score": 0.5,
       "present": [
-        "f1"
+        "f2"
       ],
       "facts": 2,
       "misled": null
@@ -2328,8 +2333,10 @@
       "misled": false
     },
     "scotbc14-006": {
-      "score": 0.0,
-      "present": [],
+      "score": 0.16666666666666666,
+      "present": [
+        "f3"
+      ],
       "facts": 6,
       "misled": false
     },
@@ -2364,7 +2371,7 @@
       "of": 17
     },
     "prompt": {
-      "misled": 5,
+      "misled": 4,
       "of": 17
     }
   }
