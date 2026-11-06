@@ -1,12 +1,14 @@
 #!/usr/bin/env bash
 # Score an arm's store against the answerable questions: search each one in both forms, pack what came back into 4,000
 # tokens, judge it with Claude Opus 5.5 through `claude -p`, and print the scores.
-#   eval.sh <arm> [--limit N] [--questions id,id,...] [--jobs N]
+#   eval.sh <arm> [--limit N] [--questions id,id,...] [--jobs N] [--reworded]
 # --questions or --limit runs a few questions; --jobs N sets the judge calls at once (default 4). Searches, contexts
 # and verdicts are kept in $cache/eval/<arm>-<storekey>-<searchkey>, and the controls in
 # $cache/eval/{gold,random}-<corpus>-<controlskey> (the cache is BILBO_EVALS_CACHE, as for build-store.sh), so a rerun
 # repeats no search and no judge call already made. The search key hashes arms/<arm>/search.py, which the store key
-# leaves out; the controls key hashes controls.py.
+# leaves out; the controls key hashes controls.py. --reworded searches with the prompt and query of
+# questions/reworded.jsonl (reword.sh) instead, in a run dir keyed by that file too; the judge still reads the original
+# question, so only what the search returns differs.
 # Not built: the answer run, the 16,000-token run, the paired comparisons. The judge's gates are gates.sh.
 set -euo pipefail
 
@@ -19,14 +21,15 @@ sha() { sha256sum "$1" | cut -d' ' -f1; }
 
 arm=${1:-}
 [[ -n $arm && -f $root/arms/$arm/search.py ]] ||
-  die "usage: eval.sh <arm> [--limit N] [--questions id,id,...] [--jobs N] (the arm needs arms/<arm>/search.py)"
+  die "usage: eval.sh <arm> [--limit N] [--questions id,id,...] [--jobs N] [--reworded] (the arm needs arms/<arm>/search.py)"
 shift
-limit='' ids='' jobs=4
+limit='' ids='' jobs=4 reworded=''
 while (($#)); do
   case $1 in
     --limit) [[ ${2:-} =~ ^[1-9][0-9]*$ ]] || die "--limit needs a number"; limit=$2; shift ;;
     --questions) [[ ${2:-} =~ ^[A-Za-z0-9_.-]+(,[A-Za-z0-9_.-]+)*$ ]] || die "--questions needs id,id"; ids=$2; shift ;;
     --jobs) [[ ${2:-} =~ ^[1-9][0-9]*$ ]] || die "--jobs needs a number"; jobs=$2; shift ;;
+    --reworded) [[ -f $root/questions/reworded.jsonl ]] || die "no questions/reworded.jsonl; run reword.sh"; reworded=1 ;;
     *) die "unknown option $1" ;;
   esac
   shift
@@ -51,6 +54,7 @@ key=$("$root/scripts/build-store.sh" "$arm" --key)
 search_sha=$(sha "$root/arms/$arm/search.py")
 controls_sha=$(sha "$root/scripts/controls.py")
 run=$cache/eval/$arm-$key-${search_sha:0:12}
+[[ -z $reworded ]] || run=$run-reworded-$(sha "$root/questions/reworded.jsonl" | cut -c1-12)
 gold=$cache/eval/gold-${corpus_sha:0:12}-${controls_sha:0:12}
 random=$cache/eval/random-${corpus_sha:0:12}-${controls_sha:0:12}
 mkdir -p "$run" "$gold" "$random"
@@ -77,7 +81,12 @@ while read -r line; do
   [[ $line =~ \"id\":\ \"([^\"]+)\",\ \"prompt\" ]] || die "no id in a question"
   for f in query prompt; do
     if ! grep -qF "{\"id\": \"${BASH_REMATCH[1]}\", \"form\": \"$f\"," "$run/search.jsonl"; then
-      echo "$line" >> "$run/todo.jsonl"
+      if [[ -n $reworded ]]; then
+        grep -F "\"id\": \"${BASH_REMATCH[1]}\", \"prompt\"" "$root/questions/reworded.jsonl" >> "$run/todo.jsonl" ||
+          die "${BASH_REMATCH[1]} is not in questions/reworded.jsonl"
+      else
+        echo "$line" >> "$run/todo.jsonl"
+      fi
       break
     fi
   done

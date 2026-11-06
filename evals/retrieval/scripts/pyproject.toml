@@ -2,7 +2,7 @@
 name = "retrieval-eval"
 version = "0"
 requires-python = "==3.13.*"
-dependencies = ["tiktoken==0.12.0"]
+dependencies = ["tiktoken==0.12.0", "bm25s==0.3.11", "PyStemmer==3.1.0", "numpy==2.5.3"]
 
 [tool.uv]
 package = false

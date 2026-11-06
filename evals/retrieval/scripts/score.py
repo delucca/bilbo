@@ -80,10 +80,11 @@ for f in FORMS:
     flags = [r["misled"] for r in graded if r["form"] == f and r["misled"] is not None]
     misled[f] = {"misled": sum(flags), "of": len(flags)}
 
-arm_name, store, search = run.name.rsplit("-", 2)
+name, _, reworded = run.name.partition("-reworded-")
+arm_name, store, search = name.rsplit("-", 2)
 (run / "scores.jsonl").write_text("".join(json.dumps(r, ensure_ascii=False) + "\n" for r in graded))
 (run / "score.json").write_text(json.dumps({
-    "arm": arm_name, "store": store, "search": search, "budget": BUDGET, "tokenizer": TOKENIZER, "judge": JUDGE, "questions": len(questions),
+    "arm": arm_name, "store": store, "search": search, **({"reworded": reworded} if reworded else {}), "budget": BUDGET, "tokenizer": TOKENIZER, "judge": JUDGE, "questions": len(questions),
     "partial": len(by_class) < len(weights), "headline": head, "classes": by_class, "gold": ctl["gold"], "random": ctl["random"],
     "misled": misled}, indent=2) + "\n")
 

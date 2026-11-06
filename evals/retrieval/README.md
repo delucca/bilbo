@@ -1055,6 +1055,25 @@ not the guided mode the rule follows. The rules stay as they are. Every arm fill
 tool's own ranking, so the results measure what each tool can give in that budget, which is more than an agent that
 stops early takes from it.
 
+The prompt writer used the developer's own words for each subject (`questions/README.md`, step 6), so the questions
+share vocabulary with the sessions, which may favour a keyword search. A wording test asks the same questions in other
+words:
+
+    evals/retrieval/scripts/reword.sh
+    evals/retrieval/scripts/eval.sh <arm> --reworded
+    uv run --project evals/retrieval/scripts python evals/retrieval/scripts/wording.py questions/reworded.jsonl \
+      questions/classes.json out.json bm25=<run>,<reworded run> dense=<run>,<reworded run> ...
+
+`reword.sh` writes `questions/reworded.jsonl` (`scripts/reword.py` holds the prompts). `gpt-6.1-sol` rewords each
+answerable prompt, seeing only the prompt: the same request, every topic word replaced, keeping only terms with no
+other name (identifiers, file names, flags, commands, error text, numbers, product and tool names). Claude Opus 5.5
+checks each pair, the same answer and no repeated topic word, and a failure goes back to sol once with the reason. The
+frozen `query_writer.md` then writes each query from the new prompt with Opus. `--reworded` searches with that file's
+prompt and query, in a run dir keyed by it; the judge still reads the original question, so only what the search
+returns changes. `wording.py` sets each arm's drop against the first arm's, with 95% intervals from 10,000 resamples
+of the questions within each class, and counts how many of the original's terms, tokenized as bm25 tokenizes, the
+rewrite keeps.
+
 Not built yet: the answer run (and with it the no-answer questions), the 16,000-token sensitivity run, and the paired
 comparisons with their intervals.
 
@@ -1105,6 +1124,27 @@ The first runs, earlier the same day, before those fixes, for comparison:
 | dense | `0eac8883d38c` | 32% | 48% | 61% | 48% | 70% | 50% | 28% | **48%** | 51% | 5 of 17 |
 | hindsight | `9fc2bf01cb2c` | 66% | 71% | 72% | 58% | 47% | 47% | 88% | **63%** | 63% | 3 of 17 |
 | mempalace | `17bb4ee04c3a` | 26% | 24% | 57% | 30% | 45% | 61% | 52% | **39%** | 43% | 6 of 17 |
+
+The wording test (2026-11-06), on bm25, dense and hindsight: part of bm25's lead is the questions' wording. All 143
+answerable questions were reworded; 12 needed the one repair, and none failed the check after it. Reworded prompts
+keep 40% of the original's terms, reworded queries 60%: the query writer puts canonical terms back ("pull request" to
+`PR`, "software development kit" to `SDK`), as an agent writing a search would. Headline scores, original to reworded,
+with the drop and its 95% interval:
+
+| Arm | `query` | drop | `prompt` | drop |
+|---|---:|---:|---:|---:|
+| bm25 | 60% to 40% | 20.3 (13.2 to 27.6) | 62% to 19% | 43.0 (35.4 to 50.4) |
+| dense | 47% to 40% | 6.5 (0.5 to 12.7) | 50% to 33% | 16.9 (9.2 to 24.6) |
+| hindsight | 62% to 49% | 12.1 (7.0 to 17.6) | 63% to 43% | 20.4 (13.9 to 27.2) |
+
+bm25 drops more than dense by 13.7 points on `query` (6.0 to 21.8) and 26.1 on `prompt` (16.9 to 35.7), and more than
+hindsight by 8.1 (0.8 to 15.7) and 22.6 (14.3 to 30.9). The rule set before the runs, a drop at least 5 points larger
+than both others' with an interval above zero on `prompt`, holds. Reworded, hindsight leads on both forms, and bm25
+ties dense on `query` and falls below it on `prompt`. The test is harsh: the writer also renamed names the project
+coined ("progress beacon"), which a developer would type as they are, and some rewrites lose a little meaning, which
+every arm pays for (dense's drop bounds it roughly). So the drops are an upper bound. hindsight's original run reuses
+the first run's searches: re-searching 3 questions with the current `search.py` changed only results past the
+4,000-token cut, and all 6 packed contexts were identical.
 
 ## Publishing
 
