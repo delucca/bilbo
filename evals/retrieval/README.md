@@ -1100,7 +1100,7 @@ comparisons with their intervals.
 
 Each arm's `score.json` from its run is copied to `results/<arm>.json`. Share of facts present in what each arm
 returned, 4,000 tokens, all 143 answerable questions; `misled` counts questions with an older value, in brackets.
-These runs (2026-11-05, evening) follow every fix of the audit: the harness bugs, each arm scoped to the question's
+These runs (2026-11-05, evening; the three marked \* on 2026-11-06) follow every fix of the audit: the harness bugs, each arm scoped to the question's
 project, the read rules, and auto-memory's rebuilt store. The judge passed both gates: gold 1.00, a dropped fact caught
 in 58 of 60, a swapped older value in 19 of 20, another project's gold 0.00; `gpt-6.1-sol` agreed with Opus on 150 verdicts at kappa 0.90 (0.93 on the first runs).
 
@@ -1108,7 +1108,7 @@ in 58 of 60, a swapped older value in 19 of 20, another project's gold 0.00; `gp
 |---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
 | gold (control) | | 100% | 100% | 100% | 100% | 100% | 100% | 100% | 100% | 100% | |
 | random (control) | | 4% | 0% | 0% | 0% | 7% | 0% | 0% | 2% | 2% | |
-| [mem0](results/mem0.json)\* | `d105294feebd` | 48% | 25% | 51% | 33% | 46% | 17% | 25% | **38%** | 40% | 3 of 17 |
+| [mem0](results/mem0.json)\* | `d105294feebd` | 49% | 25% | 51% | 37% | 48% | 17% | 25% | **39%** | 41% | 4 of 17 |
 | [graphiti](results/graphiti.json) | `eac10edab868` | 36% | 34% | 47% | 21% | 37% | 50% | 75% | **38%** | 42% | 2 of 17 |
 | [ai-memory](results/ai-memory.json) | `aba1b3153a9b` | 47% | 38% | 44% | 56% | 22% | 44% | 20% | **43%** | 43% | 5 of 17 |
 | [auto-memory](results/auto-memory.json) | `c138c09fda93` | 0% | 0% | 0% | 40% | 29% | 17% | 0% | **12%** | 12% | 0 of 17 |
@@ -1117,11 +1117,12 @@ in 58 of 60, a swapped older value in 19 of 20, another project's gold 0.00; `gp
 | [bm25](results/bm25.json) | `cc0c68a903d7` | 41% | 44% | 81% | 69% | 62% | 72% | 72% | **60%** | 62% | 2 of 17 |
 | [claude-mem](results/claude-mem.json) | `c277bbdc782f` | 18% | 25% | 52% | 20% | 35% | 44% | 42% | **31%** | 4%† | 2 of 17 |
 | [dense](results/dense.json) | `0eac8883d38c` | 30% | 46% | 61% | 42% | 68% | 50% | 55% | **47%** | 50% | 6 of 17 |
-| [hindsight](results/hindsight.json)\* | `9fc2bf01cb2c` | 66% | 71% | 72% | 58% | 47% | 47% | 88% | **63%** | 63% | 3 of 17 |
-| [mempalace](results/mempalace.json)\* | `17bb4ee04c3a` | 26% | 24% | 57% | 30% | 45% | 61% | 52% | **39%** | 43% | 6 of 17 |
+| [hindsight](results/hindsight.json)\* | `9fc2bf01cb2c` | 65% | 71% | 72% | 54% | 49% | 44% | 85% | **62%** | 64% | 3 of 17 |
+| [mempalace](results/mempalace.json)\* | `17bb4ee04c3a` | 25% | 24% | 55% | 30% | 44% | 61% | 48% | **38%** | 39% | 6 of 17 |
 
-\* mem0, hindsight and mempalace were not rerun: their rows are the first runs below, packed before the separators
-counted in the budget and judged before identical contexts shared a verdict.
+\* mem0, hindsight and mempalace were run on 2026-11-06, on their current search and after the same fixes; hindsight
+searched every question again (`--rerun full`) instead of reusing an earlier search file. Their earlier rows are the
+first runs below.
 
 † claude-mem's `prompt` column is its SessionStart injection, the same text for every question of a project, not a
 search with the prompt. See [Caveats](#caveats).
@@ -1172,8 +1173,8 @@ Read each row with these. They come from the audit of 2026-11-05, and each arm's
   1,800 tokens, see [Running the eval](#running-the-eval)).
 - **claude-mem**: `mem_search` sees only the 90 days before the repository's last session, and the 30 questions whose
   evidence all lies before that window (21 in readaloud, 5 in port-cli, 4 in bosarsalog) score 0. Its headline is
-  30.9% on all 143 questions and 39.7% without those 30. The same cut moves the other arms by 3 points or less, in
-  either direction (mempalace 38.9% to 36.0%, bm25 60.3% to 58.2%). Its `prompt` column is the SessionStart
+  30.9% on all 143 questions and 39.7% without those 30. The same cut moves the other arms by 3.5 points or less, in
+  either direction (mempalace 38.1% to 34.6%, bm25 60.3% to 58.2%). Its `prompt` column is the SessionStart
   injection, not a search, so it is not comparable with the other arms' `prompt` column.
 - **mem0**: the plugin's search returns 3 memories by default and at most 20, in 4,000 characters by default; the eval
   takes 100 from each lane. The plugin searches with `latest_only`, which open-source mem0 cannot reproduce: its
