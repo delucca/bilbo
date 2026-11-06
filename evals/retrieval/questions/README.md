@@ -180,8 +180,9 @@ with `rule:`. The audit also settled these cases:
 ## Query variation
 
 `wording.variation` asks an answerable question again in other words. The prompt writer used the developer's own
-words (step 6 below), so the questions share vocabulary with the sessions; the variation measures how much each arm's
-score depends on that. It is a robustness test reported beside the headline, never in it. `scripts/vary.sh` writes
+words (step 6 below), so the questions share vocabulary with the sessions. The variation keeps that vocabulary, the
+topic words and the developer's terms, and changes the framing and the other words: it measures how much each arm's
+score depends on how a question is framed, not on the shared vocabulary itself. It is a robustness test reported beside the headline, never in it. `scripts/vary.sh` writes
 it, never a hand.
 
 - `scripts/keep.py` lists, before any model call and from names alone, the terms of the original prompt the variation

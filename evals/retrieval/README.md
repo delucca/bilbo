@@ -1062,7 +1062,8 @@ share vocabulary with the sessions, which may favour a keyword search: Lee, Chan
 arXiv:1906.00300) found that "on datasets where the questioner already knows the answer, a traditional IR system such
 as BM25 is sufficient". A query variation asks each answerable question again in other words, the robustness test of
 Penha, Câmara and Hauff ("Evaluating the Robustness of Retrieval Pipelines with Query Variation Generators", ECIR
-2022, arXiv:2111.13057):
+2022, arXiv:2111.13057). It keeps the topic words a developer would type, so it tests how a question is framed, not
+the vocabulary it shares with the sessions:
 
     evals/retrieval/scripts/vary.sh [--keep-list]
     evals/retrieval/scripts/eval.sh <arm> --variation
@@ -1102,7 +1103,8 @@ Each arm's `score.json` from its run is copied to `results/<arm>.json`. Share of
 returned, 4,000 tokens, all 143 answerable questions; `misled` counts questions with an older value, in brackets.
 These runs (2026-11-05, evening; the three marked \* on 2026-11-06) follow every fix of the audit: the harness bugs, each arm scoped to the question's
 project, the read rules, and auto-memory's rebuilt store. The judge passed both gates: gold 1.00, a dropped fact caught
-in 58 of 60, a swapped older value in 19 of 20, another project's gold 0.00; `gpt-6.1-sol` agreed with Opus on 150 verdicts at kappa 0.90 (0.93 on the first runs).
+in 58 of 60, a swapped older value in 19 of 20, another project's gold 0.00; `gpt-6.1-sol` agreed with Opus on 150 verdicts at kappa 0.90 (0.93 on the first runs). That audit sampled the runs of
+2026-11-05, not the three rows marked \* or the variation runs.
 
 | Arm | Store | overview | status | decision | rules | procedure | fact | refind | headline `query` | `prompt` | misled `query` |
 |---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
@@ -1154,19 +1156,40 @@ Each arm searched again with each answerable question asked in other words (Runn
 terms kept, the framing and the ordinary words changed. The judge read the original question, so only what the search
 returned differs. The headline above stays on the original wording.
 
-**The rule fails on `query` against all ten arms.** bm25 drops 1.5 points (-2.6 to 5.5), and no arm's drop is more
-than 2.6 points from it. bm25's lead does not come from how the question is worded. On `prompt`, the raw question,
-bm25 drops 9.0 points (3.3 to 15.1); the rule holds against seven of the nine arms in it and fails against ai-memory
-and mempalace.
+**On `query` the rule fails against all ten arms, which does not show there is no effect.** bm25 drops 1.5 points
+(-2.6 to 5.5), the largest `query` drop of the eleven though not significantly larger than any other; against nine
+of the ten arms the interval of bm25's extra drop still reaches past 5 points (upper bounds 4.6 to 8.2). What the
+result supports is narrower: bm25's lead survives a reframed question once an agent reduces it to a keyword query.
+Its own drop is also smaller than its lead over the third arm, bilbo-assisted, 11.8 points (2.4 to 21.2).
+
+The variation kept the topic vocabulary, so it tests framing, not the vocabulary the questions share with the
+sessions. On average 98.5% of an original prompt's topic words that also occur in the answer's evidence survive, and
+101 of the 143 prompts keep every topic word. The query writer then reduces both wordings to nearly the same
+keywords: the variation queries share 91% of the original's terms (the prompts 74%), 38 of the 143 queries came out
+identical, and bm25's packed `query` context is identical on 60. Whether bm25's lead depends on the shared vocabulary
+stays open (the first test, below).
+
+The query writer also changed. Codex models wrote the original queries of 28 questions (`eldi870f-003` and the rows
+added in `03bb065` and `5c51ef9`), Claude Opus 5.5 every variation query, and only 4 of those 28 came out identical.
+On the other 115 questions, a subset read after the runs, bm25's `query` drop is 4.1 points (0.7 to 8.0), its extra
+drop has an interval above 0 against five arms, and the rule holds against graphiti alone, 6.0 (1.3 to 11.8).
+
+On `prompt`, the raw question, bm25 drops 9.0 points (3.3 to 15.1). The rule holds against seven of the nine arms in
+it and fails against ai-memory and mempalace; three of the seven are arms near the floor on `prompt` (auto-memory
+12%, bilbo-agent 11%, bilbo-assisted 14%), so it holds against four of the other six. bm25 drops 6.2 points (-0.1 to
+12.9) even on the 101 prompts that kept every topic word, where dense gains 3.7: bm25s's English stopword list has 33
+words, and "what", "did", "we", "should", "how" or "anything" are index terms. On the varied prompts bm25's lead over
+dense falls from 12.8 points (5.0 to 20.6) to 1.2 (-7.8 to 10.0), and hindsight leads bm25 by 9.3 (0.2 to 18.5).
 
 Run on 2026-11-06, questions file SHA-256 `ab30562a3c57…`, variation key `cf8c972429b6`; each arm's variation scores
 are in `results/variation/<arm>.json`. mem0, mempalace and hindsight are compared with the original runs in the
-headline above, made the same day. The query form changes less than the prompt: the variation
-queries share 91% of the original's terms and the prompts 74%, and 38 of the 143 queries came out identical, since the
-query writer reduces both wordings to the same keywords. Five variations still fail the checker and are scored as
-they are: four queries leave out a tool the original query added and the developer never typed (`git`, `git stash`,
-`git push`, `docker compose`; linear-cycle-drain-010, port-cli-015, port-cli-104, contoso-019), and port-cli-030's
-query adds "failures".
+headline above, made the same day. Five variations still fail the checker and are scored as they are: four queries
+leave out a tool the original query added and the developer never typed (`git`, `git stash`, `git push`, `docker
+compose`; linear-cycle-drain-010, port-cli-015, port-cli-104, contoso-019), and port-cli-030's query adds "failures".
+Leaving the five out moves bm25's `query` drop from 1.5 to 1.2 points. mempalace's search does not repeat: on the 38
+identical queries it returned a different context for 19, every other arm for none, so its drops hold run-to-run
+noise. The intervals resample questions within classes; they leave out the variation's, the judge's and the search's
+own variability.
 
 | Arm | query: original | variation | drop (95%) | relative | prompt: original | variation | drop (95%) | relative |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|
@@ -1195,10 +1218,12 @@ query adds "failures".
 | mem0 | 1.0 (-3.3 to 5.1) | fails | 9.3 (3.5 to 15.5) | holds |
 | mempalace | 0.2 (-4.8 to 5.0) | fails | 6.9 (-0.2 to 14.2) | fails |
 
-The strata are anecdotal: they are small, and a class of one question gives a zero-width interval. On the 17
-framing-only questions bm25's `query` drop is 0.0 and its `prompt` drop 13.2 (2.6 to 24.1). On the 20 under-reworded
-ones, whose prompts changed in little but function words, bm25's `prompt` drop is 20.8 and graphiti's 23.8, against
-7.6 for ai-memory and 3.2 or less for the rest. `variation.py` prints all four strata.
+The strata are anecdotal: they are small, a class of one question gives a zero-width interval, and one question
+drives their largest figures. On the 20 under-reworded questions, whose prompts changed in little but function words,
+bm25's `prompt` drop is 20.8 and graphiti's 23.8, against 7.6 for ai-memory and 3.2 or less for the rest; 20.5 of
+those points are iptvnator-217, the stratum's only `rules` question ("anything i should know" to "what should i
+know"), which falls from 1 to 0 for both. On the 17 framing-only questions bm25's `query` drop is 0.0 and its `prompt`
+drop 13.2 (2.6 to 24.1), 8.5 of them the same question. `variation.py` prints all four strata.
 
 The first test (2026-11-06, bm25, dense and hindsight) used a harsh first rule and is an upper bound. Its writer had
 to replace every topic word but identifiers and product names, and its checker failed any reused one, so it renamed
@@ -1207,7 +1232,10 @@ request #29" to "proposed change #29"). Two blind audits, by Claude Opus 5.5 and
 143 prompts over-renamed and 5 and 13 changed in meaning. Under it bm25 dropped 20.3 points on `query` (13.2 to 27.6)
 and 43.0 on `prompt` (35.4 to 50.4), dense 6.5 and 16.9, hindsight 12.1 and 20.4. Renaming one term of art cost bm25
 about four times what it cost dense (51 points against 13 on the prompts where only that changed), so dense's drop
-does not bound the loss of meaning for bm25. hindsight's original run reused an earlier search file.
+does not bound the loss of meaning for bm25. On the 72 prompts and 59 queries gpt-6-astra's audit judged plausible
+paraphrases, bm25's extra drop over dense was 32.5 points (19.7 to 45.3) on `prompt` and 21.2 (9.6 to 33.3) on
+`query`, and over hindsight 29.8 (18.4 to 41.3) and 8.9 (-2.8 to 20.7). hindsight's original run reused an earlier
+search file.
 
 ### Caveats
 
