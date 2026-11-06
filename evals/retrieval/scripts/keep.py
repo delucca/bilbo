@@ -66,6 +66,25 @@ OPERAND_PROGRAMS = {"cd", "ls", "cat", "rm", "mkdir", "rmdir", "cp", "mv", "touc
                     "chmod", "chown", "ln", "stat", "file", "du", "df", "tree", "source", "python", "python3", "node",
                     "bash", "sh", "zsh", "ruby", "perl", "jq", "curl", "wget", "sleep", "kill", "tar", "unzip", "vim",
                     "nano", "code", "which", "test", "export", "readlink", "realpath", "dirname", "basename", "xargs"}
+SUBCOMMAND_WRAPPERS = {"nix", "npm", "pnpm", "yarn", "bun", "uv"}
+QUOTED_WORD = re.compile(r"""(['"])([\w.:/-]+)\1""")
+WRAPPER_PROGRAMS = WRAPPERS - {"env", "time", "exec", "timeout", "watch", "run", "develop", "shell", "--command", "-c"}
+COMPOSE_GLOBAL_VALUE_FLAGS = {"-f", "--file", "-p", "--project-name", "--profile", "--env-file", "--project-directory",
+                              "--ansi", "--parallel", "--progress"}
+COMPOSE_VALUE_FLAGS = {
+    "run": {"-e", "--env", "-u", "--user", "-w", "--workdir", "-v", "--volume", "--name", "--entrypoint", "-l", "--label",
+            "-p", "--publish"},
+    "exec": {"-e", "--env", "-u", "--user", "-w", "--workdir", "--index"},
+    "up": {"--scale", "-t", "--timeout", "--exit-code-from", "--attach", "--no-attach", "--pull", "--wait-timeout"},
+    "logs": {"-n", "--tail", "--since", "--until"},
+    "restart": {"-t", "--timeout"}, "stop": {"-t", "--timeout"},
+    "build": {"--build-arg", "-m", "--memory", "--ssh", "--progress"},
+}
+COMPOSE_ONE_SERVICE = {"run", "exec", "port", "attach"}
+COMPOSE_SERVICES = {"up", "logs", "build", "restart", "stop", "start", "ps", "pull", "push", "rm", "kill", "top", "pause",
+                    "unpause", "create", "images", "events", "wait", "watch"} | COMPOSE_ONE_SERVICE
+SERVICE_MIN_SELECTED = 3
+SERVICE_NAME = re.compile(r"[a-z][a-z0-9_-]*")
 TOKEN = re.compile(r"[a-z0-9]+")
 stem = Stemmer.Stemmer("english").stemWord
 
@@ -171,36 +190,104 @@ def typed_counts(messages):
     return counts
 
 
+def compose_services(tokens):
+    """The services a `docker compose <subcommand> ...` or `docker-compose ...` command line selects, or none. Global
+    flags and each subcommand's own flags are skipped with their values (-f is a file before the subcommand and
+    `follow` after logs); for run, exec, port and attach only the first operand is a service, cp takes the service of a
+    `service:path`, and an operand that is a path, a number or an assignment is never one."""
+    base = [t.split("/")[-1] for t in tokens]
+    start = next((i + 1 for i, t in enumerate(base) if t in ("docker-compose", "compose")), None)
+    if start is None:
+        return []
+    i = start
+    while i < len(tokens) and tokens[i].startswith("-"):
+        i += 2 if tokens[i] in COMPOSE_GLOBAL_VALUE_FLAGS else 1
+    if i >= len(tokens) or tokens[i] not in COMPOSE_SERVICES | {"cp"}:
+        return []
+    sub, operands, i = tokens[i], [], i + 1
+    while i < len(tokens):
+        if tokens[i].startswith("-"):
+            i += 2 if tokens[i] in COMPOSE_VALUE_FLAGS.get(sub, ()) else 1
+        else:
+            operands.append(tokens[i])
+            i += 1
+    if sub == "cp":
+        return [o.split(":", 1)[0] for o in operands if ":" in o and SERVICE_NAME.fullmatch(o.split(":", 1)[0])]
+    names = [t for t in operands if SERVICE_NAME.fullmatch(t)]
+    return names[:1] if sub in COMPOSE_ONE_SERVICE else names
+
+
+def declared_services(text):
+    """The service names of the Compose `services:` blocks in text: the keys at the first indentation level under
+    `services:`, whatever follows the colon; nested keys such as `volumes:` never count."""
+    out = []
+    for m in re.finditer(r"^services:[ \t]*\n((?:[ \t]+\S.*\n?|[ \t]*\n)+)", text.expandtabs(2), re.M):
+        lines = [line for line in m.group(1).split("\n") if line.strip() and not line.lstrip().startswith("#")]
+        if lines:
+            base = len(lines[0]) - len(lines[0].lstrip())
+            out += [k.group(1) for line in lines if len(line) - len(line.lstrip()) == base
+                    for k in [re.match(r" *([a-z][a-z0-9_-]*):(?:[ \t]|$)", line)] if k]
+    return out
+
+
+def strings(value):
+    if isinstance(value, str):
+        yield value
+    elif isinstance(value, list):
+        for v in value:
+            yield from strings(v)
+    elif isinstance(value, dict):
+        for v in value.values():
+            yield from strings(v)
+
+
 def command_words(repo_dir):
-    """Counts of (word, position) over the command and subcommand of every shell command run in the repo's sessions,
-    with quoted text, heredocs and wrappers such as npx or sudo left out. The second word counts only for a program that
-    takes subcommands, not one whose arguments are operands (OPERAND_PROGRAMS), and never when it is a path."""
-    counts = Counter()
+    """(counts, services). counts: (word, position) over the command and subcommand of every shell command run in the
+    repo's sessions, with quoted text and heredocs left out and a wrapper such as nix or npx counted as the program it is
+    before it is unwrapped (its own subcommands never count). The second word counts only for a program that takes
+    subcommands, not one whose arguments are operands (OPERAND_PROGRAMS), and never when it is a path. services: name ->
+    where the project names it as one, a Compose `services:` key in the sessions or at least SERVICE_MIN_SELECTED commands
+    that select it."""
+    counts, selected, services = Counter(), Counter(), {}
     for f in sorted(repo_dir.glob("*.jsonl")):
         for line in f.read_text(encoding="utf-8").split("\n"):
-            if '"tool_use"' not in line:
+            declared = "services:" in line
+            if '"tool_use"' not in line and not declared:
                 continue
             try:
                 e = json.loads(line)
             except ValueError:
                 continue
+            if declared:
+                for text in strings(e):
+                    for name in declared_services(text):
+                        services.setdefault(name, "compose services: key")
             content = (e.get("message") or {}).get("content")
             for b in content if isinstance(content, list) else []:
                 cmd = (b.get("input") or {}).get("command") if isinstance(b, dict) and b.get("type") == "tool_use" \
                     and isinstance(b.get("input"), dict) else None
                 if not isinstance(cmd, str):
                     continue
-                for seg in SHELL_SEP.split(QUOTED.sub(" ", cmd.split("<<")[0])):
+                for seg in SHELL_SEP.split(QUOTED.sub(" ", QUOTED_WORD.sub(r"\2", cmd.split("<<")[0]))):
+                    for name in compose_services(seg.split()):
+                        selected[name] += 1
                     toks = [t for t in seg.split() if "=" not in t]
                     while toks and toks[0].split("/")[-1] in WRAPPERS:
-                        toks = toks[1:]
+                        w, toks = toks[0].split("/")[-1], toks[1:]
+                        if w in WRAPPER_PROGRAMS:
+                            counts[(w, 0)] += 1
+                        if w in SUBCOMMAND_WRAPPERS and toks and toks[0].split("/")[-1] not in WRAPPERS:
+                            toks = []
                     for i, t in enumerate(toks[:2]):
                         if t.startswith("-") or (i == 1 and (toks[0].split("/")[-1] in OPERAND_PROGRAMS or "/" in t)):
                             break
                         w = t.split("/")[-1].lower()
                         if re.fullmatch(r"[a-z][a-z0-9-]*", w):
                             counts[(w, i)] += 1
-    return counts
+    for name, n in selected.items():
+        if n >= SERVICE_MIN_SELECTED:
+            services.setdefault(name, f"compose command {n}x")
+    return counts, services
 
 
 def raw_counts(repo_dir, wanted):
@@ -242,7 +329,8 @@ def build(corpus, questions):
     rows = [q for q in questions if not q["abstain"]]
     repos = sorted(p.name for p in corpus.iterdir() if p.is_dir())
     typed = {r: typed_counts(developer_messages(corpus / r)) for r in repos}
-    commands = {r: command_words(corpus / r) for r in repos}
+    both = {r: command_words(corpus / r) for r in repos}
+    commands, services = {r: b[0] for r, b in both.items()}, {r: b[1] for r, b in both.items()}
     prompt = {q["id"]: q["wording"]["original"]["prompt"] for q in rows}
     wanted = {tuple(TOKEN.findall(prompt[q["id"]][s:e].lower()))
               for q in rows for run in runs(prompt[q["id"]], []) for n in (1, 2, 3)
@@ -302,6 +390,8 @@ def build(corpus, questions):
                     elif n == 1 and cmd_total(repo, toks[0]) >= CMD_MIN and \
                             sum(1 for r in repos if cmd_total(r, toks[0]) >= 3) <= CMD_SPREAD:
                         keep(s, e, "words", f"command word {cmd_total(repo, toks[0])}x")
+                    elif n == 1 and toks[0] in services[repo]:
+                        keep(s, e, "words", f"service ({services[repo][toks[0]]})")
                     elif typed[repo][st] >= MIN_TYPED and spread(typed, st) <= DEV_SPREAD and \
                             (n > 1 or specific(repo, toks) >= SPECIFIC):
                         keep(s, e, "words", f"typed {typed[repo][st]}x")

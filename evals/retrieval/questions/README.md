@@ -187,7 +187,9 @@ it, never a hand.
 - `scripts/keep.py` lists, before any model call and from names alone, the terms of the original prompt the variation
   must keep, each a span of the prompt with how it must be kept: identifiers, paths, flags, numbers, versions, ticket
   and pull request ids exactly; acronyms in their capitals; and, in any inflection, words capitalised in the message,
-  a short list of terms of art, the programs and subcommands the project's shell commands run, words the developer
+  a short list of terms of art, the programs (wrappers such as `nix` included) and subcommands the project's shell
+  commands run, the services its Compose files declare or its commands select (kept wherever the word appears, whatever the question
+  means by it), words the developer
   typed in two or more of their own messages that are particular to the project, and words or phrases the project's
   sessions write far more than other projects do, such as a component's or a tool's name.
 - gpt-6.1-sol, seeing only the prompt and its keep-list, writes the new prompt: every kept term as its kind allows,
