@@ -1150,8 +1150,55 @@ The first runs, earlier the same day, before those fixes, for comparison:
 
 ### Query variation
 
-Each arm is to search again with each answerable question asked in other words (Running the eval). The variations
-are not generated yet and no arm has been run on them. The headline above stays on the original wording.
+Each arm searched again with each answerable question asked in other words (Running the eval): the developer's own
+terms kept, the framing and the ordinary words changed. The judge read the original question, so only what the search
+returned differs. The headline above stays on the original wording.
+
+**The rule fails on `query` against all ten arms.** bm25 drops 1.5 points (-2.6 to 5.5), and no arm's drop is more
+than 2.6 points from it. bm25's lead does not come from how the question is worded. On `prompt`, the raw question,
+bm25 drops 9.0 points (3.3 to 15.1); the rule holds against seven of the nine arms in it and fails against ai-memory
+and mempalace.
+
+Run on 2026-11-06, questions file SHA-256 `ab30562a3c57…`, variation key `cf8c972429b6`; each arm's variation scores
+are in `results/variation/<arm>.json`. mem0, mempalace and hindsight are compared with the original runs in the
+headline above, made the same day. The query form changes less than the prompt: the variation
+queries share 91% of the original's terms and the prompts 74%, and 38 of the 143 queries came out identical, since the
+query writer reduces both wordings to the same keywords. Five variations still fail the checker and are scored as
+they are: four queries leave out a tool the original query added and the developer never typed (`git`, `git stash`,
+`git push`, `docker compose`; linear-cycle-drain-010, port-cli-015, port-cli-104, contoso-019), and port-cli-030's
+query adds "failures".
+
+| Arm | query: original | variation | drop (95%) | relative | prompt: original | variation | drop (95%) | relative |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| bm25 | 60% | 59% | 1.5 (-2.6 to 5.5) | 3% | 62% | 53% | 9.0 (3.3 to 15.1) | 14% |
+| ai-memory | 43% | 43% | 0.2 (-1.0 to 1.6) | 0% | 43% | 39% | 4.2 (1.2 to 7.9) | 10% |
+| auto-memory | 12% | 12% | 0.0 (0.0 to 0.0) | 0% | 12% | 11% | 0.8 (0.0 to 2.3) | 6% |
+| bilbo-agent-v0_19 | 39% | 38% | 0.8 (0.0 to 2.3) | 2% | 11% | 10% | 0.4 (-0.5 to 1.4) | 4% |
+| bilbo-assisted-v0_19 | 48% | 48% | 0.5 (-1.5 to 2.4) | 1% | 14% | 14% | -0.2 (-2.4 to 1.9) | -1% |
+| claude-mem | 31% | 31% | 0.1 (-1.1 to 1.3) | 0% | 4% | 4% | 0.0 (0.0 to 0.0) | 0% |
+| dense | 47% | 48% | -0.8 (-3.8 to 1.5) | -2% | 50% | 52% | -2.6 (-6.3 to 0.6) | -5% |
+| graphiti | 38% | 39% | -1.0 (-3.4 to 1.2) | -3% | 42% | 40% | 1.8 (-0.6 to 4.7) | 4% |
+| hindsight | 62% | 63% | -1.1 (-3.0 to 0.6) | -2% | 64% | 63% | 0.9 (-1.2 to 3.2) | 1% |
+| mem0 | 39% | 39% | 0.6 (-0.4 to 1.7) | 1% | 41% | 41% | -0.4 (-3.2 to 1.9) | -1% |
+| mempalace | 38% | 37% | 1.3 (-1.5 to 4.3) | 3% | 39% | 37% | 2.0 (-3.0 to 7.3) | 5% |
+
+| bm25 drops more than | query (95%) | rule | prompt (95%) | rule |
+|---|---:|---|---:|---|
+| ai-memory | 1.3 (-3.2 to 5.8) | fails | 4.8 (-2.2 to 12.0) | fails |
+| auto-memory | 1.5 (-2.6 to 5.5) | fails | 8.2 (2.3 to 14.6) | holds |
+| bilbo-agent-v0_19 | 0.7 (-3.2 to 4.6) | fails | 8.6 (2.8 to 14.7) | holds |
+| bilbo-assisted-v0_19 | 1.1 (-3.3 to 5.2) | fails | 9.1 (3.2 to 15.5) | holds |
+| claude-mem | 1.4 (-2.9 to 5.7) | fails | 9.0 (3.3 to 15.1) | not in the rule |
+| dense | 2.3 (-2.6 to 7.4) | fails | 11.5 (5.2 to 18.2) | holds |
+| graphiti | 2.5 (-2.6 to 8.2) | fails | 7.2 (1.4 to 13.4) | holds |
+| hindsight | 2.6 (-1.3 to 6.9) | fails | 8.1 (2.1 to 14.5) | holds |
+| mem0 | 1.0 (-3.3 to 5.1) | fails | 9.3 (3.5 to 15.5) | holds |
+| mempalace | 0.2 (-4.8 to 5.0) | fails | 6.9 (-0.2 to 14.2) | fails |
+
+The strata are anecdotal: they are small, and a class of one question gives a zero-width interval. On the 17
+framing-only questions bm25's `query` drop is 0.0 and its `prompt` drop 13.2 (2.6 to 24.1). On the 20 under-reworded
+ones, whose prompts changed in little but function words, bm25's `prompt` drop is 20.8 and graphiti's 23.8, against
+7.6 for ai-memory and 3.2 or less for the rest. `variation.py` prints all four strata.
 
 The first test (2026-11-06, bm25, dense and hindsight) used a harsh first rule and is an upper bound. Its writer had
 to replace every topic word but identifiers and product names, and its checker failed any reused one, so it renamed

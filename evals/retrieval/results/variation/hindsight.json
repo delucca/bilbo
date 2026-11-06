@@ -1,0 +1,2379 @@
+{
+  "arm": "hindsight",
+  "store": "9fc2bf01cb2c",
+  "search": "bcc2cf688ab2",
+  "variation": "cf8c972429b6",
+  "budget": 4000,
+  "tokenizer": "tiktoken o200k_base",
+  "judge": "claude-opus-5-5",
+  "questions": 143,
+  "partial": false,
+  "headline": {
+    "query": 0.6259341483184806,
+    "prompt": 0.6260690875701391,
+    "gold": 1.0,
+    "random": 0.019314651543883933
+  },
+  "classes": {
+    "overview": {
+      "n": 27,
+      "weight": 85,
+      "query": 0.6635802469135803,
+      "misled_query": 0.2857142857142857,
+      "stale_n_query": 7,
+      "prompt": 0.6895061728395062,
+      "misled_prompt": 0.2857142857142857,
+      "stale_n_prompt": 7,
+      "gold": 1.0,
+      "random": 0.043827160493827164
+    },
+    "status": {
+      "n": 21,
+      "weight": 41,
+      "query": 0.6865079365079365,
+      "misled_query": 0.0,
+      "stale_n_query": 2,
+      "prompt": 0.6666666666666666,
+      "misled_prompt": 0.0,
+      "stale_n_prompt": 2,
+      "gold": 1.0,
+      "random": 0.0
+    },
+    "decision": {
+      "n": 16,
+      "weight": 54,
+      "query": 0.7395833333333334,
+      "misled_query": 0.0,
+      "stale_n_query": 4,
+      "prompt": 0.71875,
+      "misled_prompt": 0.0,
+      "stale_n_prompt": 4,
+      "gold": 1.0,
+      "random": 0.0
+    },
+    "rules": {
+      "n": 15,
+      "weight": 54,
+      "query": 0.5777777777777777,
+      "misled_query": 0.0,
+      "stale_n_query": 1,
+      "prompt": 0.5444444444444444,
+      "misled_prompt": 0.0,
+      "stale_n_prompt": 1,
+      "gold": 1.0,
+      "random": 0.0
+    },
+    "procedure": {
+      "n": 26,
+      "weight": 34,
+      "query": 0.45405982905982906,
+      "misled_query": 0.0,
+      "stale_n_query": 1,
+      "prompt": 0.5085470085470085,
+      "misled_prompt": 0.0,
+      "stale_n_prompt": 1,
+      "gold": 1.0,
+      "random": 0.07051282051282051
+    },
+    "fact": {
+      "n": 18,
+      "weight": 38,
+      "query": 0.4722222222222222,
+      "misled_query": 0.0,
+      "stale_n_query": 2,
+      "prompt": 0.4722222222222222,
+      "misled_prompt": 0.0,
+      "stale_n_prompt": 2,
+      "gold": 1.0,
+      "random": 0.0
+    },
+    "refind": {
+      "n": 20,
+      "weight": 11,
+      "query": 0.85,
+      "misled_query": null,
+      "stale_n_query": 0,
+      "prompt": 0.825,
+      "misled_prompt": null,
+      "stale_n_prompt": 0,
+      "gold": 1.0,
+      "random": 0.0
+    }
+  },
+  "gold": {
+    "iptvnator-201": {
+      "score": 1.0,
+      "present": [
+        "f1",
+        "f2"
+      ],
+      "facts": 2,
+      "misled": false
+    },
+    "iptvnator-209": {
+      "score": 1.0,
+      "present": [
+        "f1",
+        "f2"
+      ],
+      "facts": 2,
+      "misled": false
+    },
+    "iptvnator-212": {
+      "score": 1.0,
+      "present": [
+        "f1",
+        "f2"
+      ],
+      "facts": 2,
+      "misled": null
+    },
+    "iptvnator-186": {
+      "score": 1.0,
+      "present": [
+        "f1",
+        "f2",
+        "f3",
+        "f4"
+      ],
+      "facts": 4,
+      "misled": null
+    },
+    "iptvnator-189": {
+      "score": 1.0,
+      "present": [
+        "f1",
+        "f2",
+        "f3",
+        "f4",
+        "f5"
+      ],
+      "facts": 5,
+      "misled": false
+    },
+    "iptvnator-259": {
+      "score": 1.0,
+      "present": [
+        "f1",
+        "f2",
+        "f3"
+      ],
+      "facts": 3,
+      "misled": false
+    },
+    "iptvnator-231": {
+      "score": 1.0,
+      "present": [
+        "f1",
+        "f2"
+      ],
+      "facts": 2,
+      "misled": null
+    },
+    "iptvnator-216": {
+      "score": 1.0,
+      "present": [
+        "f1",
+        "f2"
+      ],
+      "facts": 2,
+      "misled": null
+    },
+    "iptvnator-217": {
+      "score": 1.0,
+      "present": [
+        "f1"
+      ],
+      "facts": 1,
+      "misled": null
+    },
+    "iptvnator-225": {
+      "score": 1.0,
+      "present": [
+        "f1",
+        "f2"
+      ],
+      "facts": 2,
+      "misled": null
+    },
+    "iptvnator-197": {
+      "score": 1.0,
+      "present": [
+        "f1",
+        "f2"
+      ],
+      "facts": 2,
+      "misled": null
+    },
+    "iptvnator-200": {
+      "score": 1.0,
+      "present": [
+        "f1",
+        "f2"
+      ],
+      "facts": 2,
+      "misled": null
+    },
+    "iptvnator-247": {
+      "score": 1.0,
+      "present": [
+        "f1",
+        "f2"
+      ],
+      "facts": 2,
+      "misled": null
+    },
+    "iptvnator-249": {
+      "score": 1.0,
+      "present": [
+        "f1",
+        "f2"
+      ],
+      "facts": 2,
+      "misled": null
+    },
+    "kimi-cli-013": {
+      "score": 1.0,
+      "present": [
+        "f1",
+        "f2",
+        "f3"
+      ],
+      "facts": 3,
+      "misled": false
+    },
+    "kimi-cli-046": {
+      "score": 1.0,
+      "present": [
+        "f1"
+      ],
+      "facts": 1,
+      "misled": null
+    },
+    "kimi-cli-047": {
+      "score": 1.0,
+      "present": [
+        "f1"
+      ],
+      "facts": 1,
+      "misled": null
+    },
+    "kimi-cli-004": {
+      "score": 1.0,
+      "present": [
+        "f1",
+        "f2",
+        "f3"
+      ],
+      "facts": 3,
+      "misled": false
+    },
+    "kimi-cli-005": {
+      "score": 1.0,
+      "present": [
+        "f1",
+        "f2",
+        "f3",
+        "f4",
+        "f5"
+      ],
+      "facts": 5,
+      "misled": null
+    },
+    "kimi-cli-007": {
+      "score": 1.0,
+      "present": [
+        "f1",
+        "f2",
+        "f3",
+        "f4"
+      ],
+      "facts": 4,
+      "misled": null
+    },
+    "linear-cycle-drain-040": {
+      "score": 1.0,
+      "present": [
+        "f1",
+        "f2"
+      ],
+      "facts": 2,
+      "misled": null
+    },
+    "linear-cycle-drain-045": {
+      "score": 1.0,
+      "present": [
+        "f1",
+        "f2",
+        "f3"
+      ],
+      "facts": 3,
+      "misled": null
+    },
+    "linear-cycle-drain-046": {
+      "score": 1.0,
+      "present": [
+        "f1",
+        "f2",
+        "f3"
+      ],
+      "facts": 3,
+      "misled": null
+    },
+    "linear-cycle-drain-058": {
+      "score": 1.0,
+      "present": [
+        "f1",
+        "f2"
+      ],
+      "facts": 2,
+      "misled": null
+    },
+    "linear-cycle-drain-124": {
+      "score": 1.0,
+      "present": [
+        "f1",
+        "f2",
+        "f3"
+      ],
+      "facts": 3,
+      "misled": null
+    },
+    "linear-cycle-drain-127": {
+      "score": 1.0,
+      "present": [
+        "f1",
+        "f2"
+      ],
+      "facts": 2,
+      "misled": null
+    },
+    "linear-cycle-drain-128": {
+      "score": 1.0,
+      "present": [
+        "f1",
+        "f2",
+        "f3"
+      ],
+      "facts": 3,
+      "misled": null
+    },
+    "linear-cycle-drain-090": {
+      "score": 1.0,
+      "present": [
+        "f1"
+      ],
+      "facts": 1,
+      "misled": null
+    },
+    "linear-cycle-drain-092": {
+      "score": 1.0,
+      "present": [
+        "f1",
+        "f2"
+      ],
+      "facts": 2,
+      "misled": null
+    },
+    "linear-cycle-drain-094": {
+      "score": 1.0,
+      "present": [
+        "f1"
+      ],
+      "facts": 1,
+      "misled": null
+    },
+    "linear-cycle-drain-096": {
+      "score": 1.0,
+      "present": [
+        "f1"
+      ],
+      "facts": 1,
+      "misled": null
+    },
+    "linear-cycle-drain-097": {
+      "score": 1.0,
+      "present": [
+        "f1",
+        "f2"
+      ],
+      "facts": 2,
+      "misled": null
+    },
+    "linear-cycle-drain-098": {
+      "score": 1.0,
+      "present": [
+        "f1",
+        "f2"
+      ],
+      "facts": 2,
+      "misled": null
+    },
+    "linear-cycle-drain-100": {
+      "score": 1.0,
+      "present": [
+        "f1"
+      ],
+      "facts": 1,
+      "misled": null
+    },
+    "linear-cycle-drain-004": {
+      "score": 1.0,
+      "present": [
+        "f1",
+        "f2",
+        "f3",
+        "f4"
+      ],
+      "facts": 4,
+      "misled": null
+    },
+    "linear-cycle-drain-010": {
+      "score": 1.0,
+      "present": [
+        "f1",
+        "f2",
+        "f3",
+        "f4",
+        "f5"
+      ],
+      "facts": 5,
+      "misled": null
+    },
+    "linear-cycle-drain-016": {
+      "score": 1.0,
+      "present": [
+        "f1",
+        "f2",
+        "f3",
+        "f4",
+        "f5",
+        "f6"
+      ],
+      "facts": 6,
+      "misled": null
+    },
+    "linear-cycle-drain-022": {
+      "score": 1.0,
+      "present": [
+        "f1",
+        "f2",
+        "f3"
+      ],
+      "facts": 3,
+      "misled": null
+    },
+    "linear-cycle-drain-151": {
+      "score": 1.0,
+      "present": [
+        "f1",
+        "f2",
+        "f3",
+        "f4"
+      ],
+      "facts": 4,
+      "misled": null
+    },
+    "linear-cycle-drain-162": {
+      "score": 1.0,
+      "present": [
+        "f1",
+        "f2",
+        "f3",
+        "f4"
+      ],
+      "facts": 4,
+      "misled": null
+    },
+    "linear-cycle-drain-085": {
+      "score": 1.0,
+      "present": [
+        "f1",
+        "f2",
+        "f3",
+        "f4"
+      ],
+      "facts": 4,
+      "misled": null
+    },
+    "linear-cycle-drain-032": {
+      "score": 1.0,
+      "present": [
+        "f1",
+        "f2",
+        "f3"
+      ],
+      "facts": 3,
+      "misled": null
+    },
+    "linear-cycle-drain-033": {
+      "score": 1.0,
+      "present": [
+        "f1",
+        "f2",
+        "f3"
+      ],
+      "facts": 3,
+      "misled": null
+    },
+    "linear-cycle-drain-037": {
+      "score": 1.0,
+      "present": [
+        "f1",
+        "f2"
+      ],
+      "facts": 2,
+      "misled": null
+    },
+    "linear-cycle-drain-147": {
+      "score": 1.0,
+      "present": [
+        "f1",
+        "f2"
+      ],
+      "facts": 2,
+      "misled": null
+    },
+    "readaloud-090": {
+      "score": 1.0,
+      "present": [
+        "f1"
+      ],
+      "facts": 1,
+      "misled": null
+    },
+    "readaloud-092": {
+      "score": 1.0,
+      "present": [
+        "f1"
+      ],
+      "facts": 1,
+      "misled": false
+    },
+    "readaloud-096": {
+      "score": 1.0,
+      "present": [
+        "f1"
+      ],
+      "facts": 1,
+      "misled": false
+    },
+    "readaloud-142": {
+      "score": 1.0,
+      "present": [
+        "f1",
+        "f2"
+      ],
+      "facts": 2,
+      "misled": null
+    },
+    "readaloud-146": {
+      "score": 1.0,
+      "present": [
+        "f1",
+        "f2"
+      ],
+      "facts": 2,
+      "misled": null
+    },
+    "readaloud-147": {
+      "score": 1.0,
+      "present": [
+        "f1",
+        "f2"
+      ],
+      "facts": 2,
+      "misled": null
+    },
+    "readaloud-010": {
+      "score": 1.0,
+      "present": [
+        "f1",
+        "f2",
+        "f3",
+        "f4"
+      ],
+      "facts": 4,
+      "misled": null
+    },
+    "readaloud-013": {
+      "score": 1.0,
+      "present": [
+        "f1",
+        "f2",
+        "f3"
+      ],
+      "facts": 3,
+      "misled": false
+    },
+    "readaloud-020": {
+      "score": 1.0,
+      "present": [
+        "f1",
+        "f2",
+        "f3"
+      ],
+      "facts": 3,
+      "misled": null
+    },
+    "readaloud-021": {
+      "score": 1.0,
+      "present": [
+        "f1",
+        "f2",
+        "f3"
+      ],
+      "facts": 3,
+      "misled": null
+    },
+    "readaloud-116": {
+      "score": 1.0,
+      "present": [
+        "f1",
+        "f2",
+        "f3",
+        "f4"
+      ],
+      "facts": 4,
+      "misled": null
+    },
+    "readaloud-127": {
+      "score": 1.0,
+      "present": [
+        "f1",
+        "f2"
+      ],
+      "facts": 2,
+      "misled": null
+    },
+    "readaloud-139": {
+      "score": 1.0,
+      "present": [
+        "f1",
+        "f2",
+        "f3"
+      ],
+      "facts": 3,
+      "misled": null
+    },
+    "readaloud-100": {
+      "score": 1.0,
+      "present": [
+        "f1",
+        "f2"
+      ],
+      "facts": 2,
+      "misled": null
+    },
+    "readaloud-061": {
+      "score": 1.0,
+      "present": [
+        "f1"
+      ],
+      "facts": 1,
+      "misled": null
+    },
+    "readaloud-062": {
+      "score": 1.0,
+      "present": [
+        "f1",
+        "f2"
+      ],
+      "facts": 2,
+      "misled": null
+    },
+    "readaloud-069": {
+      "score": 1.0,
+      "present": [
+        "f1",
+        "f2",
+        "f3"
+      ],
+      "facts": 3,
+      "misled": null
+    },
+    "readaloud-070": {
+      "score": 1.0,
+      "present": [
+        "f1",
+        "f2"
+      ],
+      "facts": 2,
+      "misled": null
+    },
+    "readaloud-078": {
+      "score": 1.0,
+      "present": [
+        "f1",
+        "f2",
+        "f3"
+      ],
+      "facts": 3,
+      "misled": null
+    },
+    "readaloud-030": {
+      "score": 1.0,
+      "present": [
+        "f1",
+        "f2",
+        "f3",
+        "f4"
+      ],
+      "facts": 4,
+      "misled": null
+    },
+    "readaloud-032": {
+      "score": 1.0,
+      "present": [
+        "f1",
+        "f2",
+        "f3"
+      ],
+      "facts": 3,
+      "misled": null
+    },
+    "readaloud-033": {
+      "score": 1.0,
+      "present": [
+        "f1",
+        "f2"
+      ],
+      "facts": 2,
+      "misled": null
+    },
+    "readaloud-035": {
+      "score": 1.0,
+      "present": [
+        "f1"
+      ],
+      "facts": 1,
+      "misled": null
+    },
+    "port-cli-032": {
+      "score": 1.0,
+      "present": [
+        "f1",
+        "f2",
+        "f3"
+      ],
+      "facts": 3,
+      "misled": null
+    },
+    "port-cli-046": {
+      "score": 1.0,
+      "present": [
+        "f1",
+        "f2",
+        "f3"
+      ],
+      "facts": 3,
+      "misled": null
+    },
+    "port-cli-098": {
+      "score": 1.0,
+      "present": [
+        "f1",
+        "f2",
+        "f3"
+      ],
+      "facts": 3,
+      "misled": false
+    },
+    "port-cli-072": {
+      "score": 1.0,
+      "present": [
+        "f1",
+        "f2"
+      ],
+      "facts": 2,
+      "misled": null
+    },
+    "port-cli-074": {
+      "score": 1.0,
+      "present": [
+        "f1"
+      ],
+      "facts": 1,
+      "misled": null
+    },
+    "port-cli-001": {
+      "score": 1.0,
+      "present": [
+        "f1",
+        "f2",
+        "f3",
+        "f4"
+      ],
+      "facts": 4,
+      "misled": null
+    },
+    "port-cli-014": {
+      "score": 1.0,
+      "present": [
+        "f1",
+        "f2",
+        "f3"
+      ],
+      "facts": 3,
+      "misled": null
+    },
+    "port-cli-015": {
+      "score": 1.0,
+      "present": [
+        "f1",
+        "f2",
+        "f3",
+        "f4",
+        "f5",
+        "f6"
+      ],
+      "facts": 6,
+      "misled": null
+    },
+    "port-cli-114": {
+      "score": 1.0,
+      "present": [
+        "f1",
+        "f2",
+        "f3",
+        "f4",
+        "f5"
+      ],
+      "facts": 5,
+      "misled": null
+    },
+    "port-cli-104": {
+      "score": 1.0,
+      "present": [
+        "f1",
+        "f2",
+        "f3"
+      ],
+      "facts": 3,
+      "misled": null
+    },
+    "port-cli-082": {
+      "score": 1.0,
+      "present": [
+        "f1",
+        "f2"
+      ],
+      "facts": 2,
+      "misled": null
+    },
+    "port-cli-061": {
+      "score": 1.0,
+      "present": [
+        "f1",
+        "f2"
+      ],
+      "facts": 2,
+      "misled": null
+    },
+    "port-cli-018": {
+      "score": 1.0,
+      "present": [
+        "f1",
+        "f2",
+        "f3"
+      ],
+      "facts": 3,
+      "misled": null
+    },
+    "port-cli-020": {
+      "score": 1.0,
+      "present": [
+        "f1",
+        "f2",
+        "f3"
+      ],
+      "facts": 3,
+      "misled": null
+    },
+    "port-cli-022": {
+      "score": 1.0,
+      "present": [
+        "f1",
+        "f2"
+      ],
+      "facts": 2,
+      "misled": null
+    },
+    "port-cli-027": {
+      "score": 1.0,
+      "present": [
+        "f1",
+        "f2",
+        "f3"
+      ],
+      "facts": 3,
+      "misled": false
+    },
+    "port-cli-030": {
+      "score": 1.0,
+      "present": [
+        "f1",
+        "f2"
+      ],
+      "facts": 2,
+      "misled": null
+    },
+    "port-cli-123": {
+      "score": 1.0,
+      "present": [
+        "f1",
+        "f2"
+      ],
+      "facts": 2,
+      "misled": null
+    },
+    "linear-cycle-drain-172": {
+      "score": 1.0,
+      "present": [
+        "f1",
+        "f2",
+        "f3"
+      ],
+      "facts": 3,
+      "misled": null
+    },
+    "readaloud-156": {
+      "score": 1.0,
+      "present": [
+        "f1",
+        "f2",
+        "f3"
+      ],
+      "facts": 3,
+      "misled": null
+    },
+    "readaloud-158": {
+      "score": 1.0,
+      "present": [
+        "f1",
+        "f2",
+        "f3",
+        "f4"
+      ],
+      "facts": 4,
+      "misled": null
+    },
+    "port-cli-083": {
+      "score": 1.0,
+      "present": [
+        "f1",
+        "f2"
+      ],
+      "facts": 2,
+      "misled": null
+    },
+    "iptvnator-274": {
+      "score": 1.0,
+      "present": [
+        "f1",
+        "f2"
+      ],
+      "facts": 2,
+      "misled": null
+    },
+    "iptvnator-276": {
+      "score": 1.0,
+      "present": [
+        "f1",
+        "f2"
+      ],
+      "facts": 2,
+      "misled": null
+    },
+    "iptvnator-278": {
+      "score": 1.0,
+      "present": [
+        "f1",
+        "f2"
+      ],
+      "facts": 2,
+      "misled": null
+    },
+    "iptvnator-279": {
+      "score": 1.0,
+      "present": [
+        "f1",
+        "f2"
+      ],
+      "facts": 2,
+      "misled": null
+    },
+    "iptvnator-280": {
+      "score": 1.0,
+      "present": [
+        "f1",
+        "f2"
+      ],
+      "facts": 2,
+      "misled": null
+    },
+    "iptvnator-281": {
+      "score": 1.0,
+      "present": [
+        "f1",
+        "f2"
+      ],
+      "facts": 2,
+      "misled": null
+    },
+    "linear-cycle-drain-174": {
+      "score": 1.0,
+      "present": [
+        "f1",
+        "f2"
+      ],
+      "facts": 2,
+      "misled": null
+    },
+    "linear-cycle-drain-179": {
+      "score": 1.0,
+      "present": [
+        "f1",
+        "f2"
+      ],
+      "facts": 2,
+      "misled": null
+    },
+    "linear-cycle-drain-180": {
+      "score": 1.0,
+      "present": [
+        "f1",
+        "f2"
+      ],
+      "facts": 2,
+      "misled": null
+    },
+    "linear-cycle-drain-181": {
+      "score": 1.0,
+      "present": [
+        "f1",
+        "f2"
+      ],
+      "facts": 2,
+      "misled": null
+    },
+    "readaloud-159": {
+      "score": 1.0,
+      "present": [
+        "f1",
+        "f2"
+      ],
+      "facts": 2,
+      "misled": null
+    },
+    "port-cli-136": {
+      "score": 1.0,
+      "present": [
+        "f1",
+        "f2"
+      ],
+      "facts": 2,
+      "misled": null
+    },
+    "port-cli-137": {
+      "score": 1.0,
+      "present": [
+        "f1",
+        "f2"
+      ],
+      "facts": 2,
+      "misled": null
+    },
+    "port-cli-139": {
+      "score": 1.0,
+      "present": [
+        "f1",
+        "f2"
+      ],
+      "facts": 2,
+      "misled": null
+    },
+    "port-cli-141": {
+      "score": 1.0,
+      "present": [
+        "f1",
+        "f2"
+      ],
+      "facts": 2,
+      "misled": null
+    },
+    "port-cli-142": {
+      "score": 1.0,
+      "present": [
+        "f1",
+        "f2"
+      ],
+      "facts": 2,
+      "misled": null
+    },
+    "safecast-map-MCP-005": {
+      "score": 1.0,
+      "present": [
+        "f1",
+        "f2"
+      ],
+      "facts": 2,
+      "misled": null
+    },
+    "bosarsalog-001": {
+      "score": 1.0,
+      "present": [
+        "f1",
+        "f2",
+        "f3",
+        "f4"
+      ],
+      "facts": 4,
+      "misled": null
+    },
+    "go-nuts-001": {
+      "score": 1.0,
+      "present": [
+        "f1",
+        "f2"
+      ],
+      "facts": 2,
+      "misled": null
+    },
+    "go-nuts-007": {
+      "score": 1.0,
+      "present": [
+        "f1",
+        "f2",
+        "f3"
+      ],
+      "facts": 3,
+      "misled": null
+    },
+    "neuralips26-011": {
+      "score": 1.0,
+      "present": [
+        "f1",
+        "f2"
+      ],
+      "facts": 2,
+      "misled": false
+    },
+    "contoso-001": {
+      "score": 1.0,
+      "present": [
+        "f1",
+        "f2",
+        "f3"
+      ],
+      "facts": 3,
+      "misled": null
+    },
+    "contoso-003": {
+      "score": 1.0,
+      "present": [
+        "f1",
+        "f2",
+        "f3"
+      ],
+      "facts": 3,
+      "misled": null
+    },
+    "contoso-018": {
+      "score": 1.0,
+      "present": [
+        "f1",
+        "f2",
+        "f3",
+        "f4"
+      ],
+      "facts": 4,
+      "misled": null
+    },
+    "contoso-019": {
+      "score": 1.0,
+      "present": [
+        "f1",
+        "f2"
+      ],
+      "facts": 2,
+      "misled": null
+    },
+    "eldi870f-003": {
+      "score": 1.0,
+      "present": [
+        "f1",
+        "f2",
+        "f3",
+        "f4"
+      ],
+      "facts": 4,
+      "misled": null
+    },
+    "hack6c71-001": {
+      "score": 1.0,
+      "present": [
+        "f1",
+        "f2"
+      ],
+      "facts": 2,
+      "misled": null
+    },
+    "arosa408-002": {
+      "score": 1.0,
+      "present": [
+        "f1",
+        "f2",
+        "f3",
+        "f4",
+        "f5",
+        "f6"
+      ],
+      "facts": 6,
+      "misled": null
+    },
+    "pantb603-002": {
+      "score": 1.0,
+      "present": [
+        "f1",
+        "f2",
+        "f3"
+      ],
+      "facts": 3,
+      "misled": null
+    },
+    "scotbc14-004": {
+      "score": 1.0,
+      "present": [
+        "f1",
+        "f2",
+        "f3"
+      ],
+      "facts": 3,
+      "misled": null
+    },
+    "scotbc14-005": {
+      "score": 1.0,
+      "present": [
+        "f1",
+        "f2"
+      ],
+      "facts": 2,
+      "misled": null
+    },
+    "enti5536-008": {
+      "score": 1.0,
+      "present": [
+        "f1",
+        "f2",
+        "f3",
+        "f4"
+      ],
+      "facts": 4,
+      "misled": null
+    },
+    "khaib7e3-006": {
+      "score": 1.0,
+      "present": [
+        "f1",
+        "f2"
+      ],
+      "facts": 2,
+      "misled": null
+    },
+    "ebri0385-007": {
+      "score": 1.0,
+      "present": [
+        "f1",
+        "f2"
+      ],
+      "facts": 2,
+      "misled": null
+    },
+    "monkd300-006": {
+      "score": 1.0,
+      "present": [
+        "f1",
+        "f2",
+        "f3",
+        "f4",
+        "f5",
+        "f6",
+        "f7",
+        "f8",
+        "f9"
+      ],
+      "facts": 9,
+      "misled": null
+    },
+    "adri9bad-004": {
+      "score": 1.0,
+      "present": [
+        "f1",
+        "f2",
+        "f3"
+      ],
+      "facts": 3,
+      "misled": null
+    },
+    "malk9c3d-006": {
+      "score": 1.0,
+      "present": [
+        "f1",
+        "f2"
+      ],
+      "facts": 2,
+      "misled": null
+    },
+    "pabl157a-002": {
+      "score": 1.0,
+      "present": [
+        "f1",
+        "f2"
+      ],
+      "facts": 2,
+      "misled": null
+    },
+    "safecast-map-MCP-023": {
+      "score": 1.0,
+      "present": [
+        "f1",
+        "f2"
+      ],
+      "facts": 2,
+      "misled": null
+    },
+    "bosarsalog-016": {
+      "score": 1.0,
+      "present": [
+        "f1",
+        "f2",
+        "f3",
+        "f4",
+        "f5"
+      ],
+      "facts": 5,
+      "misled": false
+    },
+    "bosarsalog-018": {
+      "score": 1.0,
+      "present": [
+        "f1",
+        "f2",
+        "f3",
+        "f4",
+        "f5",
+        "f6"
+      ],
+      "facts": 6,
+      "misled": null
+    },
+    "bosarsalog-027": {
+      "score": 1.0,
+      "present": [
+        "f1",
+        "f2"
+      ],
+      "facts": 2,
+      "misled": null
+    },
+    "bosarsalog-030": {
+      "score": 1.0,
+      "present": [
+        "f1",
+        "f2"
+      ],
+      "facts": 2,
+      "misled": null
+    },
+    "bosarsalog-037": {
+      "score": 1.0,
+      "present": [
+        "f1",
+        "f2"
+      ],
+      "facts": 2,
+      "misled": null
+    },
+    "neuralips26-027": {
+      "score": 1.0,
+      "present": [
+        "f1",
+        "f2",
+        "f3",
+        "f4"
+      ],
+      "facts": 4,
+      "misled": null
+    },
+    "neuralips26-037": {
+      "score": 1.0,
+      "present": [
+        "f1",
+        "f2"
+      ],
+      "facts": 2,
+      "misled": null
+    },
+    "neuralips26-045": {
+      "score": 1.0,
+      "present": [
+        "f1"
+      ],
+      "facts": 1,
+      "misled": null
+    },
+    "pabl157a-004": {
+      "score": 1.0,
+      "present": [
+        "f1",
+        "f2",
+        "f3",
+        "f4",
+        "f5"
+      ],
+      "facts": 5,
+      "misled": false
+    },
+    "scotbc14-006": {
+      "score": 1.0,
+      "present": [
+        "f1",
+        "f2",
+        "f3",
+        "f4",
+        "f5",
+        "f6"
+      ],
+      "facts": 6,
+      "misled": false
+    },
+    "contoso-021": {
+      "score": 1.0,
+      "present": [
+        "f1",
+        "f2",
+        "f3",
+        "f4"
+      ],
+      "facts": 4,
+      "misled": null
+    },
+    "contoso-028": {
+      "score": 1.0,
+      "present": [
+        "f1",
+        "f2",
+        "f3"
+      ],
+      "facts": 3,
+      "misled": false
+    },
+    "hack6c71-010": {
+      "score": 1.0,
+      "present": [
+        "f1",
+        "f2",
+        "f3"
+      ],
+      "facts": 3,
+      "misled": null
+    },
+    "hack6c71-020": {
+      "score": 1.0,
+      "present": [
+        "f1"
+      ],
+      "facts": 1,
+      "misled": false
+    }
+  },
+  "random": {
+    "iptvnator-201": {
+      "score": 0.0,
+      "present": [],
+      "facts": 2,
+      "misled": false
+    },
+    "iptvnator-209": {
+      "score": 0.0,
+      "present": [],
+      "facts": 2,
+      "misled": false
+    },
+    "iptvnator-212": {
+      "score": 0.0,
+      "present": [],
+      "facts": 2,
+      "misled": null
+    },
+    "iptvnator-186": {
+      "score": 0.0,
+      "present": [],
+      "facts": 4,
+      "misled": null
+    },
+    "iptvnator-189": {
+      "score": 0.0,
+      "present": [],
+      "facts": 5,
+      "misled": false
+    },
+    "iptvnator-259": {
+      "score": 0.0,
+      "present": [],
+      "facts": 3,
+      "misled": false
+    },
+    "iptvnator-231": {
+      "score": 0.0,
+      "present": [],
+      "facts": 2,
+      "misled": null
+    },
+    "iptvnator-216": {
+      "score": 0.0,
+      "present": [],
+      "facts": 2,
+      "misled": null
+    },
+    "iptvnator-217": {
+      "score": 0.0,
+      "present": [],
+      "facts": 1,
+      "misled": null
+    },
+    "iptvnator-225": {
+      "score": 0.0,
+      "present": [],
+      "facts": 2,
+      "misled": null
+    },
+    "iptvnator-197": {
+      "score": 0.0,
+      "present": [],
+      "facts": 2,
+      "misled": null
+    },
+    "iptvnator-200": {
+      "score": 0.0,
+      "present": [],
+      "facts": 2,
+      "misled": null
+    },
+    "iptvnator-247": {
+      "score": 0.0,
+      "present": [],
+      "facts": 2,
+      "misled": null
+    },
+    "iptvnator-249": {
+      "score": 0.0,
+      "present": [],
+      "facts": 2,
+      "misled": null
+    },
+    "kimi-cli-013": {
+      "score": 0.0,
+      "present": [],
+      "facts": 3,
+      "misled": false
+    },
+    "kimi-cli-046": {
+      "score": 0.0,
+      "present": [],
+      "facts": 1,
+      "misled": null
+    },
+    "kimi-cli-047": {
+      "score": 0.0,
+      "present": [],
+      "facts": 1,
+      "misled": null
+    },
+    "kimi-cli-004": {
+      "score": 0.0,
+      "present": [],
+      "facts": 3,
+      "misled": false
+    },
+    "kimi-cli-005": {
+      "score": 0.6,
+      "present": [
+        "f1",
+        "f2",
+        "f4"
+      ],
+      "facts": 5,
+      "misled": null
+    },
+    "kimi-cli-007": {
+      "score": 0.25,
+      "present": [
+        "f3"
+      ],
+      "facts": 4,
+      "misled": null
+    },
+    "linear-cycle-drain-040": {
+      "score": 0.0,
+      "present": [],
+      "facts": 2,
+      "misled": null
+    },
+    "linear-cycle-drain-045": {
+      "score": 0.0,
+      "present": [],
+      "facts": 3,
+      "misled": null
+    },
+    "linear-cycle-drain-046": {
+      "score": 0.0,
+      "present": [],
+      "facts": 3,
+      "misled": null
+    },
+    "linear-cycle-drain-058": {
+      "score": 0.0,
+      "present": [],
+      "facts": 2,
+      "misled": null
+    },
+    "linear-cycle-drain-124": {
+      "score": 0.0,
+      "present": [],
+      "facts": 3,
+      "misled": null
+    },
+    "linear-cycle-drain-127": {
+      "score": 0.0,
+      "present": [],
+      "facts": 2,
+      "misled": null
+    },
+    "linear-cycle-drain-128": {
+      "score": 0.0,
+      "present": [],
+      "facts": 3,
+      "misled": null
+    },
+    "linear-cycle-drain-090": {
+      "score": 0.0,
+      "present": [],
+      "facts": 1,
+      "misled": null
+    },
+    "linear-cycle-drain-092": {
+      "score": 0.0,
+      "present": [],
+      "facts": 2,
+      "misled": null
+    },
+    "linear-cycle-drain-094": {
+      "score": 0.0,
+      "present": [],
+      "facts": 1,
+      "misled": null
+    },
+    "linear-cycle-drain-096": {
+      "score": 0.0,
+      "present": [],
+      "facts": 1,
+      "misled": null
+    },
+    "linear-cycle-drain-097": {
+      "score": 0.0,
+      "present": [],
+      "facts": 2,
+      "misled": null
+    },
+    "linear-cycle-drain-098": {
+      "score": 0.0,
+      "present": [],
+      "facts": 2,
+      "misled": null
+    },
+    "linear-cycle-drain-100": {
+      "score": 0.0,
+      "present": [],
+      "facts": 1,
+      "misled": null
+    },
+    "linear-cycle-drain-004": {
+      "score": 0.0,
+      "present": [],
+      "facts": 4,
+      "misled": null
+    },
+    "linear-cycle-drain-010": {
+      "score": 0.0,
+      "present": [],
+      "facts": 5,
+      "misled": null
+    },
+    "linear-cycle-drain-016": {
+      "score": 0.16666666666666666,
+      "present": [
+        "f1"
+      ],
+      "facts": 6,
+      "misled": null
+    },
+    "linear-cycle-drain-022": {
+      "score": 0.0,
+      "present": [],
+      "facts": 3,
+      "misled": null
+    },
+    "linear-cycle-drain-151": {
+      "score": 0.0,
+      "present": [],
+      "facts": 4,
+      "misled": null
+    },
+    "linear-cycle-drain-162": {
+      "score": 0.0,
+      "present": [],
+      "facts": 4,
+      "misled": null
+    },
+    "linear-cycle-drain-085": {
+      "score": 0.0,
+      "present": [],
+      "facts": 4,
+      "misled": null
+    },
+    "linear-cycle-drain-032": {
+      "score": 0.0,
+      "present": [],
+      "facts": 3,
+      "misled": null
+    },
+    "linear-cycle-drain-033": {
+      "score": 0.0,
+      "present": [],
+      "facts": 3,
+      "misled": null
+    },
+    "linear-cycle-drain-037": {
+      "score": 0.0,
+      "present": [],
+      "facts": 2,
+      "misled": null
+    },
+    "linear-cycle-drain-147": {
+      "score": 0.0,
+      "present": [],
+      "facts": 2,
+      "misled": null
+    },
+    "readaloud-090": {
+      "score": 0.0,
+      "present": [],
+      "facts": 1,
+      "misled": null
+    },
+    "readaloud-092": {
+      "score": 0.0,
+      "present": [],
+      "facts": 1,
+      "misled": true
+    },
+    "readaloud-096": {
+      "score": 0.0,
+      "present": [],
+      "facts": 1,
+      "misled": false
+    },
+    "readaloud-142": {
+      "score": 0.0,
+      "present": [],
+      "facts": 2,
+      "misled": null
+    },
+    "readaloud-146": {
+      "score": 0.0,
+      "present": [],
+      "facts": 2,
+      "misled": null
+    },
+    "readaloud-147": {
+      "score": 0.0,
+      "present": [],
+      "facts": 2,
+      "misled": null
+    },
+    "readaloud-010": {
+      "score": 0.0,
+      "present": [],
+      "facts": 4,
+      "misled": null
+    },
+    "readaloud-013": {
+      "score": 0.0,
+      "present": [],
+      "facts": 3,
+      "misled": false
+    },
+    "readaloud-020": {
+      "score": 0.0,
+      "present": [],
+      "facts": 3,
+      "misled": null
+    },
+    "readaloud-021": {
+      "score": 0.0,
+      "present": [],
+      "facts": 3,
+      "misled": null
+    },
+    "readaloud-116": {
+      "score": 0.0,
+      "present": [],
+      "facts": 4,
+      "misled": null
+    },
+    "readaloud-127": {
+      "score": 0.0,
+      "present": [],
+      "facts": 2,
+      "misled": null
+    },
+    "readaloud-139": {
+      "score": 0.0,
+      "present": [],
+      "facts": 3,
+      "misled": null
+    },
+    "readaloud-100": {
+      "score": 0.0,
+      "present": [],
+      "facts": 2,
+      "misled": null
+    },
+    "readaloud-061": {
+      "score": 0.0,
+      "present": [],
+      "facts": 1,
+      "misled": null
+    },
+    "readaloud-062": {
+      "score": 0.0,
+      "present": [],
+      "facts": 2,
+      "misled": null
+    },
+    "readaloud-069": {
+      "score": 0.0,
+      "present": [],
+      "facts": 3,
+      "misled": null
+    },
+    "readaloud-070": {
+      "score": 0.0,
+      "present": [],
+      "facts": 2,
+      "misled": null
+    },
+    "readaloud-078": {
+      "score": 0.0,
+      "present": [],
+      "facts": 3,
+      "misled": null
+    },
+    "readaloud-030": {
+      "score": 0.0,
+      "present": [],
+      "facts": 4,
+      "misled": null
+    },
+    "readaloud-032": {
+      "score": 0.0,
+      "present": [],
+      "facts": 3,
+      "misled": null
+    },
+    "readaloud-033": {
+      "score": 0.0,
+      "present": [],
+      "facts": 2,
+      "misled": null
+    },
+    "readaloud-035": {
+      "score": 0.0,
+      "present": [],
+      "facts": 1,
+      "misled": null
+    },
+    "port-cli-032": {
+      "score": 0.0,
+      "present": [],
+      "facts": 3,
+      "misled": null
+    },
+    "port-cli-046": {
+      "score": 0.0,
+      "present": [],
+      "facts": 3,
+      "misled": null
+    },
+    "port-cli-098": {
+      "score": 0.0,
+      "present": [],
+      "facts": 3,
+      "misled": false
+    },
+    "port-cli-072": {
+      "score": 0.0,
+      "present": [],
+      "facts": 2,
+      "misled": null
+    },
+    "port-cli-074": {
+      "score": 0.0,
+      "present": [],
+      "facts": 1,
+      "misled": null
+    },
+    "port-cli-001": {
+      "score": 0.0,
+      "present": [],
+      "facts": 4,
+      "misled": null
+    },
+    "port-cli-014": {
+      "score": 0.0,
+      "present": [],
+      "facts": 3,
+      "misled": null
+    },
+    "port-cli-015": {
+      "score": 0.0,
+      "present": [],
+      "facts": 6,
+      "misled": null
+    },
+    "port-cli-114": {
+      "score": 0.0,
+      "present": [],
+      "facts": 5,
+      "misled": null
+    },
+    "port-cli-104": {
+      "score": 0.0,
+      "present": [],
+      "facts": 3,
+      "misled": null
+    },
+    "port-cli-082": {
+      "score": 0.0,
+      "present": [],
+      "facts": 2,
+      "misled": null
+    },
+    "port-cli-061": {
+      "score": 0.0,
+      "present": [],
+      "facts": 2,
+      "misled": null
+    },
+    "port-cli-018": {
+      "score": 0.0,
+      "present": [],
+      "facts": 3,
+      "misled": null
+    },
+    "port-cli-020": {
+      "score": 0.0,
+      "present": [],
+      "facts": 3,
+      "misled": null
+    },
+    "port-cli-022": {
+      "score": 0.0,
+      "present": [],
+      "facts": 2,
+      "misled": null
+    },
+    "port-cli-027": {
+      "score": 0.0,
+      "present": [],
+      "facts": 3,
+      "misled": false
+    },
+    "port-cli-030": {
+      "score": 0.0,
+      "present": [],
+      "facts": 2,
+      "misled": null
+    },
+    "port-cli-123": {
+      "score": 0.0,
+      "present": [],
+      "facts": 2,
+      "misled": null
+    },
+    "linear-cycle-drain-172": {
+      "score": 0.0,
+      "present": [],
+      "facts": 3,
+      "misled": null
+    },
+    "readaloud-156": {
+      "score": 0.0,
+      "present": [],
+      "facts": 3,
+      "misled": null
+    },
+    "readaloud-158": {
+      "score": 0.0,
+      "present": [],
+      "facts": 4,
+      "misled": null
+    },
+    "port-cli-083": {
+      "score": 0.0,
+      "present": [],
+      "facts": 2,
+      "misled": null
+    },
+    "iptvnator-274": {
+      "score": 0.0,
+      "present": [],
+      "facts": 2,
+      "misled": null
+    },
+    "iptvnator-276": {
+      "score": 0.0,
+      "present": [],
+      "facts": 2,
+      "misled": null
+    },
+    "iptvnator-278": {
+      "score": 0.0,
+      "present": [],
+      "facts": 2,
+      "misled": null
+    },
+    "iptvnator-279": {
+      "score": 0.0,
+      "present": [],
+      "facts": 2,
+      "misled": null
+    },
+    "iptvnator-280": {
+      "score": 0.0,
+      "present": [],
+      "facts": 2,
+      "misled": null
+    },
+    "iptvnator-281": {
+      "score": 0.0,
+      "present": [],
+      "facts": 2,
+      "misled": null
+    },
+    "linear-cycle-drain-174": {
+      "score": 0.0,
+      "present": [],
+      "facts": 2,
+      "misled": null
+    },
+    "linear-cycle-drain-179": {
+      "score": 0.0,
+      "present": [],
+      "facts": 2,
+      "misled": null
+    },
+    "linear-cycle-drain-180": {
+      "score": 0.0,
+      "present": [],
+      "facts": 2,
+      "misled": null
+    },
+    "linear-cycle-drain-181": {
+      "score": 0.0,
+      "present": [],
+      "facts": 2,
+      "misled": null
+    },
+    "readaloud-159": {
+      "score": 0.0,
+      "present": [],
+      "facts": 2,
+      "misled": null
+    },
+    "port-cli-136": {
+      "score": 0.0,
+      "present": [],
+      "facts": 2,
+      "misled": null
+    },
+    "port-cli-137": {
+      "score": 0.0,
+      "present": [],
+      "facts": 2,
+      "misled": null
+    },
+    "port-cli-139": {
+      "score": 0.0,
+      "present": [],
+      "facts": 2,
+      "misled": null
+    },
+    "port-cli-141": {
+      "score": 0.0,
+      "present": [],
+      "facts": 2,
+      "misled": null
+    },
+    "port-cli-142": {
+      "score": 0.0,
+      "present": [],
+      "facts": 2,
+      "misled": null
+    },
+    "safecast-map-MCP-005": {
+      "score": 0.0,
+      "present": [],
+      "facts": 2,
+      "misled": null
+    },
+    "bosarsalog-001": {
+      "score": 0.0,
+      "present": [],
+      "facts": 4,
+      "misled": null
+    },
+    "go-nuts-001": {
+      "score": 0.0,
+      "present": [],
+      "facts": 2,
+      "misled": null
+    },
+    "go-nuts-007": {
+      "score": 0.0,
+      "present": [],
+      "facts": 3,
+      "misled": null
+    },
+    "neuralips26-011": {
+      "score": 0.0,
+      "present": [],
+      "facts": 2,
+      "misled": false
+    },
+    "contoso-001": {
+      "score": 0.0,
+      "present": [],
+      "facts": 3,
+      "misled": null
+    },
+    "contoso-003": {
+      "score": 0.0,
+      "present": [],
+      "facts": 3,
+      "misled": null
+    },
+    "contoso-018": {
+      "score": 0.0,
+      "present": [],
+      "facts": 4,
+      "misled": null
+    },
+    "contoso-019": {
+      "score": 0.0,
+      "present": [],
+      "facts": 2,
+      "misled": null
+    },
+    "eldi870f-003": {
+      "score": 0.0,
+      "present": [],
+      "facts": 4,
+      "misled": null
+    },
+    "hack6c71-001": {
+      "score": 0.5,
+      "present": [
+        "f2"
+      ],
+      "facts": 2,
+      "misled": null
+    },
+    "arosa408-002": {
+      "score": 0.0,
+      "present": [],
+      "facts": 6,
+      "misled": null
+    },
+    "pantb603-002": {
+      "score": 0.3333333333333333,
+      "present": [
+        "f3"
+      ],
+      "facts": 3,
+      "misled": null
+    },
+    "scotbc14-004": {
+      "score": 0.0,
+      "present": [],
+      "facts": 3,
+      "misled": null
+    },
+    "scotbc14-005": {
+      "score": 0.5,
+      "present": [
+        "f2"
+      ],
+      "facts": 2,
+      "misled": null
+    },
+    "enti5536-008": {
+      "score": 0.0,
+      "present": [],
+      "facts": 4,
+      "misled": null
+    },
+    "khaib7e3-006": {
+      "score": 0.0,
+      "present": [],
+      "facts": 2,
+      "misled": null
+    },
+    "ebri0385-007": {
+      "score": 0.0,
+      "present": [],
+      "facts": 2,
+      "misled": null
+    },
+    "monkd300-006": {
+      "score": 0.0,
+      "present": [],
+      "facts": 9,
+      "misled": null
+    },
+    "adri9bad-004": {
+      "score": 0.0,
+      "present": [],
+      "facts": 3,
+      "misled": null
+    },
+    "malk9c3d-006": {
+      "score": 0.0,
+      "present": [],
+      "facts": 2,
+      "misled": null
+    },
+    "pabl157a-002": {
+      "score": 0.5,
+      "present": [
+        "f1"
+      ],
+      "facts": 2,
+      "misled": null
+    },
+    "safecast-map-MCP-023": {
+      "score": 0.0,
+      "present": [],
+      "facts": 2,
+      "misled": null
+    },
+    "bosarsalog-016": {
+      "score": 0.0,
+      "present": [],
+      "facts": 5,
+      "misled": false
+    },
+    "bosarsalog-018": {
+      "score": 0.0,
+      "present": [],
+      "facts": 6,
+      "misled": null
+    },
+    "bosarsalog-027": {
+      "score": 0.0,
+      "present": [],
+      "facts": 2,
+      "misled": null
+    },
+    "bosarsalog-030": {
+      "score": 0.0,
+      "present": [],
+      "facts": 2,
+      "misled": null
+    },
+    "bosarsalog-037": {
+      "score": 0.0,
+      "present": [],
+      "facts": 2,
+      "misled": null
+    },
+    "neuralips26-027": {
+      "score": 0.0,
+      "present": [],
+      "facts": 4,
+      "misled": null
+    },
+    "neuralips26-037": {
+      "score": 0.0,
+      "present": [],
+      "facts": 2,
+      "misled": null
+    },
+    "neuralips26-045": {
+      "score": 0.0,
+      "present": [],
+      "facts": 1,
+      "misled": null
+    },
+    "pabl157a-004": {
+      "score": 0.0,
+      "present": [],
+      "facts": 5,
+      "misled": false
+    },
+    "scotbc14-006": {
+      "score": 0.16666666666666666,
+      "present": [
+        "f3"
+      ],
+      "facts": 6,
+      "misled": false
+    },
+    "contoso-021": {
+      "score": 0.0,
+      "present": [],
+      "facts": 4,
+      "misled": null
+    },
+    "contoso-028": {
+      "score": 0.0,
+      "present": [],
+      "facts": 3,
+      "misled": false
+    },
+    "hack6c71-010": {
+      "score": 0.0,
+      "present": [],
+      "facts": 3,
+      "misled": null
+    },
+    "hack6c71-020": {
+      "score": 0.0,
+      "present": [],
+      "facts": 1,
+      "misled": false
+    }
+  },
+  "misled": {
+    "query": {
+      "misled": 2,
+      "of": 17
+    },
+    "prompt": {
+      "misled": 2,
+      "of": 17
+    }
+  }
+}
