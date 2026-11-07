@@ -40,5 +40,5 @@ fi
 
 py "$root/scripts/keep.py" "$corpus/corpus" "$root/questions/questions.jsonl" "$cache/eval/keep.jsonl"
 [[ -z $keep_only ]] || exit 0
-py "$root/scripts/vary.py" "$root/questions/questions.jsonl" "$root/questions/README.md" "$cache/eval/keep.jsonl" \
+py "$root/scripts/vary.py" "$root/questions/questions.jsonl" "$root/questions/methodology.md" "$cache/eval/keep.jsonl" \
   "$cache/eval/variation-log.jsonl" --jobs "$jobs" ${redo:+--redo "$redo"}
