@@ -1,7 +1,7 @@
 use clap::builder::NonEmptyStringValueParser;
 use clap::{Arg, ArgAction, Command};
 
-use crate::command::shape;
+use crate::help::page::shape;
 
 /// A short+long option, a long-only flag, an option with `long_help` and one positional: one per
 /// help-layout branch the page tests cover.

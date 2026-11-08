@@ -1,8 +1,8 @@
 use std::io::{self, Write};
 
-use crate::outcome::Outcome;
-use crate::outcome::failure::Failure;
-use crate::terminal::View;
+use crate::console::outcome::Failure;
+use crate::console::outcome::Outcome;
+use crate::console::view::View;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Emit {
@@ -16,9 +16,8 @@ pub struct Plan {
     pub code: u8,
 }
 
-/// Each stream is rendered in its own view. When stdout gets the human view the diagnostics
-/// follow the result; otherwise they come first, so a reader of both streams merged sees them
-/// before a long result.
+/// When stdout gets the human view the diagnostics follow the result; otherwise they come first,
+/// so a reader of both streams merged sees them before a long result.
 pub fn plan(result: &Result<Outcome, Failure>, out: &View, err: &View) -> Plan {
     match result {
         Ok(outcome) => {
@@ -82,10 +81,10 @@ mod tests {
     use std::io::{self, Write};
 
     use super::{Emit, Plan, execute, plan, write_result};
-    use crate::outcome::failure::Failure;
-    use crate::outcome::{Exit, Outcome};
-    use crate::terminal::View;
-    use crate::terminal::message::{Mark, Message};
+    use crate::console::message::{Mark, Message};
+    use crate::console::outcome::Failure;
+    use crate::console::outcome::{Exit, Outcome};
+    use crate::console::view::View;
 
     fn outcome() -> Outcome {
         Outcome::new("hits\n").with_diagnostics(vec![Message {

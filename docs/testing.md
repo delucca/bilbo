@@ -2,7 +2,7 @@
 
 Place tests in the lowest folder containing everything exercised: beside one component; top-level `tests/` only across components. Keep `apps/{cli,serve,macos}` thin; composition lives there, component behavior in `libs/`. Rust and Swift libraries never depend on each other; cross-language suites compose them under `tests/`.
 
-Built so far: `.bazelrc`; `bilbo_test` for Swift in `tools/bazel/swift.bzl` and `bilbo_rust_test` for Rust in `tools/bazel/rust.bzl`, both reading the layers from `tools/bazel/layers.bzl`; the macOS launch test in `tests/e2e/macos/`; the CLI's unit tests (`libs/rust/store`, `apps/cli`), snapshot tests (`apps/cli/tests/`) and e2e tests (`tests/e2e/cli/`). Add other layers as they get something to test.
+Built so far: `.bazelrc`; `bilbo_test` for Swift in `tools/bazel/swift.bzl` and `bilbo_rust_test` for Rust in `tools/bazel/rust.bzl`, both reading the layers from `tools/bazel/layers.bzl`; the macOS launch test in `tests/e2e/macos/`; the CLI's unit tests (`libs/rust/store`, `apps/cli`), snapshot tests (`apps/cli/tests/`), the layout test of `apps/cli/src` (`apps/cli/tests/layout.rs`, layer integration) and e2e tests (`tests/e2e/cli/`). Add other layers as they get something to test.
 
 ## Choose a layer
 

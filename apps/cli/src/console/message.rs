@@ -1,5 +1,5 @@
-use crate::terminal::View;
-use crate::terminal::theme::{Tone, paint};
+use crate::console::theme::{Tone, paint};
+use crate::console::view::View;
 
 pub const PREFIX: &str = "bilbo: ";
 
@@ -110,7 +110,7 @@ impl Message {
     }
 }
 
-/// The lines of `text`, split on `\n` only: a `\r` stays in its line for `sanitize` to escape.
+/// Split on `\n` only: a `\r` stays in its line for `sanitize` to escape.
 fn parts(text: &str) -> impl Iterator<Item = &str> {
     text.split_inclusive('\n')
         .map(|line| line.strip_suffix('\n').unwrap_or(line))
@@ -140,7 +140,7 @@ pub fn sanitize(line: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use crate::terminal::View;
+    use crate::console::view::View;
 
     use super::{Detail, Mark, Message};
 

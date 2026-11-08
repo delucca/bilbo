@@ -47,6 +47,16 @@ bilbo_rust_test(
 )
 
 bilbo_rust_test(
+    name = "layout",
+    srcs = ["tests/layout.rs"],
+    data = glob(["src/**/*.rs"]),
+    env = {"LAYOUT_ROOT": "$(rlocationpath src/lib.rs)"},
+    layer = "integration",
+    lint_config = ":lints",
+    deps = all_crate_deps(normal_dev = True),
+)
+
+bilbo_rust_test(
     name = "snapshot",
     srcs = ["tests/snapshot.rs"],
     compile_data = glob(["tests/snapshots/*"]),

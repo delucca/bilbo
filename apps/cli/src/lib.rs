@@ -1,25 +1,25 @@
-pub mod command;
-pub mod outcome;
-pub mod terminal;
+pub mod console;
+pub mod help;
+#[cfg(test)]
+mod probe;
 
 use std::ffi::OsString;
 
 use clap::{Command, CommandFactory, Parser, Subcommand};
 
-use crate::command::help;
-use crate::command::usage::usage;
-use crate::command::{Parsed, parse, shape, typed};
-use crate::outcome::Outcome;
-use crate::outcome::failure::Failure;
+use crate::console::args::{Parsed, parse, typed, usage, verbs};
+use crate::console::outcome::{Failure, Outcome};
+use crate::help::overview;
+use crate::help::page::shape;
 
 #[derive(Debug, Parser)]
 #[command(
     name = "bilbo",
     version,
-    about = help::DESCRIPTION,
-    override_usage = help::USAGE,
-    after_help = help::AFTER,
-    help_template = help::TEMPLATE,
+    about = overview::DESCRIPTION,
+    override_usage = overview::USAGE,
+    after_help = overview::AFTER,
+    help_template = overview::TEMPLATE,
     disable_help_subcommand = true
 )]
 pub struct Cli {
@@ -32,8 +32,7 @@ pub enum Verb {}
 
 pub fn bilbo() -> Command {
     let root = Cli::command();
-    let names = command::verbs(&root);
-    names
+    verbs(&root)
         .into_iter()
         .fold(root, |root, name| root.mut_subcommand(name, shape))
 }
@@ -44,7 +43,7 @@ pub fn run(args: &[OsString]) -> Result<Outcome, Failure> {
 
 pub fn run_command(root: &Command, args: &[OsString]) -> Result<Outcome, Failure> {
     match parse(root, args)? {
-        Parsed::Help(text) => Ok(help::outcome(text)),
+        Parsed::Help(topic) => help::run(root, &topic),
         Parsed::Version => Ok(Outcome::new(format!(
             "bilbo {}\n",
             env!("CARGO_PKG_VERSION")
@@ -60,9 +59,9 @@ mod tests {
     use std::ffi::OsString;
 
     use super::{bilbo, run, run_command};
-    use crate::command::probe::{self, with_verb};
-    use crate::outcome::failure::Failure;
-    use crate::terminal::View;
+    use crate::console::outcome::Failure;
+    use crate::console::view::View;
+    use crate::probe::{self, with_verb};
 
     fn args(list: &[&str]) -> Vec<OsString> {
         list.iter().map(OsString::from).collect()

@@ -1,6 +1,3 @@
-pub mod message;
-pub mod theme;
-
 use std::ffi::OsString;
 
 /// Not `CLAUDECODE`: it marks an IDE terminal a person types in.
@@ -46,7 +43,7 @@ pub fn decide(terminal: bool, macos: bool, var: impl Fn(&str) -> Option<OsString
     }
 }
 
-/// macOS terminals always draw Unicode; elsewhere the locale's codeset decides.
+/// macOS terminals always draw Unicode.
 pub fn unicode(macos: bool, var: impl Fn(&str) -> Option<OsString>) -> bool {
     let locale = ["LC_ALL", "LC_CTYPE", "LANG"]
         .into_iter()

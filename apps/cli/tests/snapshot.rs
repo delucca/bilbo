@@ -1,7 +1,7 @@
 use std::ffi::OsString;
 
+use bilbo_cli::console::view::View;
 use bilbo_cli::run;
-use bilbo_cli::terminal::View;
 
 fn args(list: &[&str]) -> Vec<OsString> {
     std::iter::once("bilbo")

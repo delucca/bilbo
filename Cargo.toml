@@ -10,8 +10,10 @@ publish = false
 
 [workspace.dependencies]
 clap = { version = "4.6.7", default-features = false, features = ["std", "derive", "help", "usage", "error-context"] }
+proc-macro2 = { version = "1.0.107", default-features = false }
 runfiles = "0.3.0"
 rustix = { version = "1.1.5", default-features = false, features = ["std", "event", "fs", "pty"] }
+syn = { version = "3.0.9", default-features = false, features = ["full", "parsing", "visit"] }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

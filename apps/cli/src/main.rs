@@ -9,26 +9,26 @@ use std::io::{self, IsTerminal, Write};
 use std::os::fd::AsFd;
 use std::process::ExitCode;
 
-use bilbo_cli::outcome::failure::Failure;
-use bilbo_cli::outcome::route::{self, Emit};
-use bilbo_cli::terminal;
+use bilbo_cli::console::outcome::Failure;
+use bilbo_cli::console::streams::{self, Emit};
+use bilbo_cli::console::view;
 
 fn main() -> ExitCode {
     let args: Vec<OsString> = std::env::args_os().collect();
     let macos = cfg!(target_os = "macos");
-    let out = terminal::decide(io::stdout().is_terminal(), macos, |name| {
+    let out = view::decide(io::stdout().is_terminal(), macos, |name| {
         std::env::var_os(name)
     });
-    let err = terminal::decide(io::stderr().is_terminal(), macos, |name| {
+    let err = view::decide(io::stderr().is_terminal(), macos, |name| {
         std::env::var_os(name)
     });
-    let plan = route::plan(&bilbo_cli::run(&args), &out, &err);
-    ExitCode::from(route::execute(&plan, &err, &mut perform))
+    let plan = streams::plan(&bilbo_cli::run(&args), &out, &err);
+    ExitCode::from(streams::execute(&plan, &err, &mut perform))
 }
 
 fn perform(write: &Emit) -> Result<(), Failure> {
     match write {
-        Emit::Stdout(text) => route::write_result(&mut stdout()?, text),
+        Emit::Stdout(text) => streams::write_result(&mut stdout()?, text),
         Emit::Stderr(line) => {
             let _ = writeln!(io::stderr().lock(), "{line}");
             Ok(())

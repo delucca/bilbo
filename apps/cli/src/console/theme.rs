@@ -1,4 +1,4 @@
-use crate::terminal::View;
+use crate::console::view::View;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Tone {
@@ -36,7 +36,7 @@ pub fn paint(view: &View, tone: Tone, text: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use crate::terminal::View;
+    use crate::console::view::View;
 
     use super::{Tone, paint};
 
