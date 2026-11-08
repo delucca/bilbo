@@ -1,5 +1,3 @@
-//! The real `bilbo` binary, run in a clean environment: streams, exit codes and the pinned texts.
-
 use std::ffi::OsStr;
 use std::io::Read;
 use std::path::PathBuf;

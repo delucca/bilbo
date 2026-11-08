@@ -1,9 +1,7 @@
-//! The rendered text of the command line, pinned against the baselines in `snapshots/`.
-
 use std::ffi::OsString;
 
-use bilbo_cli::view::View;
-use bilbo_cli::{run, stderr_lines};
+use bilbo_cli::run;
+use bilbo_cli::terminal::View;
 
 fn args(list: &[&str]) -> Vec<OsString> {
     std::iter::once("bilbo")
@@ -22,7 +20,7 @@ fn stdout(list: &[&str], view: &View) -> String {
 fn stderr(list: &[&str], view: &View) -> String {
     let failure = run(&args(list)).expect_err("a failure");
     assert_eq!(failure.exit_code(), 2, "{list:?}");
-    let mut text = stderr_lines(&failure, view).join("\n");
+    let mut text = failure.stderr_lines(view).join("\n");
     text.push('\n');
     text
 }

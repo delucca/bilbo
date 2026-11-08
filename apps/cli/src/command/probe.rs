@@ -1,10 +1,10 @@
-//! A verb that exists only in tests: it stands in for the first real verb, so the page shape,
-//! the dispatch and the guards are exercised before one exists.
-
 use clap::builder::NonEmptyStringValueParser;
 use clap::{Arg, ArgAction, Command};
 
-/// A short+long option, a long-only flag, an option with `long_help` and one positional.
+use crate::command::shape;
+
+/// A short+long option, a long-only flag, an option with `long_help` and one positional: one per
+/// help-layout branch the page tests cover.
 pub fn verb() -> Command {
     Command::new("probe")
         .about("bilbo probe: shows the shape of a verb page.")
@@ -44,4 +44,10 @@ Examples:
 
 Docs: reference/commands.md#probe",
         )
+}
+
+/// Derive's typed arguments know only the variants of `Verb`, so a verb registered here parses
+/// and pages but cannot be run.
+pub fn with_verb(root: Command, verb: Command) -> Command {
+    root.subcommand(shape(verb))
 }

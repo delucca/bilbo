@@ -1,69 +1,54 @@
-//! The command line as clap parses it, and clap's errors in bilbo's words.
+pub mod help;
+#[cfg(test)]
+pub mod probe;
+pub mod usage;
 
 use std::ffi::OsString;
 
-use clap::error::{ContextKind, ContextValue, ErrorKind};
-use clap::{ArgMatches, Command, CommandFactory, FromArgMatches, Parser, Subcommand};
+use clap::error::ErrorKind;
+use clap::{Arg, ArgAction, ArgMatches, Command, FromArgMatches};
 
-use crate::failure::Failure;
-use crate::help;
-use crate::message::sanitize;
+use crate::outcome::failure::Failure;
 
-#[derive(Debug, Parser)]
-#[command(
-    name = "bilbo",
-    version,
-    about = help::DESCRIPTION,
-    override_usage = help::USAGE,
-    after_help = help::AFTER,
-    help_template = help::TEMPLATE,
-    disable_help_subcommand = true
-)]
-pub struct Cli {
-    #[command(subcommand)]
-    pub verb: Option<Verb>,
-}
-
-/// Every verb is a variant, so registering one makes `run_command` name it in a `match`.
-#[derive(Debug, Subcommand)]
-pub enum Verb {}
-
-/// What the arguments asked for.
 #[derive(Debug)]
 pub enum Parsed {
-    /// A page, plain, ending in one newline.
     Help(String),
     Version,
     Matches(ArgMatches),
 }
 
-/// `bilbo` with every verb given the page shape of `help::verb`.
-pub fn command() -> Command {
-    let root = Cli::command();
-    let names: Vec<String> = root
-        .get_subcommands()
+/// A hidden `-h, --help` keeps the Options list to the verb's own. clap's help flag stays off
+/// because its long form would render `long_help` text that `help <verb>` does not.
+pub fn shape(command: Command) -> Command {
+    command
+        .help_template(help::VERB_TEMPLATE)
+        .disable_help_flag(true)
+        .arg(
+            Arg::new("help")
+                .short('h')
+                .long("help")
+                .action(ArgAction::Help)
+                .hide(true),
+        )
+}
+
+pub fn verbs(root: &Command) -> Vec<String> {
+    root.get_subcommands()
         .map(|verb| verb.get_name().to_owned())
-        .collect();
-    names
-        .into_iter()
-        .fold(root, |root, name| root.mut_subcommand(name, help::verb))
+        .collect()
 }
 
-/// Registers a verb built by hand with the page shape of `help::verb`. Derive's typed arguments
-/// know only the variants of `Verb`, so a registered verb that is not one cannot be run.
-#[cfg(test)]
-pub(crate) fn with_verb(root: Command, verb: Command) -> Command {
-    root.subcommand(help::verb(verb))
+pub fn typed<T: FromArgMatches>(root: &Command, matches: &ArgMatches) -> Result<T, Failure> {
+    T::from_arg_matches(matches)
+        .map_err(|error| usage::usage(root, usage::reason(&error, false), None))
 }
 
-/// The typed arguments behind `matches`, which `parse` got from `root`.
-pub fn typed(root: &Command, matches: &ArgMatches) -> Result<Cli, Failure> {
-    Cli::from_arg_matches(matches).map_err(|error| help::usage(root, reason(&error, false), None))
-}
-
-/// Parses `args` (`args[0]` is the program) against `root`. A help request renders through
-/// `help::overview` or `help::page`, the same path `bilbo help <verb>` takes.
+/// `args[0]` is the program. Every help request, `help <topic>` included, renders through
+/// `help::overview` or `help::page`.
 pub fn parse(root: &Command, args: &[OsString]) -> Result<Parsed, Failure> {
+    if args.get(1).is_some_and(|arg| arg == "help") {
+        return help::topic(root, &args[2..]).map(Parsed::Help);
+    }
     let named = args
         .get(1)
         .and_then(|arg| arg.to_str())
@@ -77,116 +62,12 @@ pub fn parse(root: &Command, args: &[OsString]) -> Result<Parsed, Failure> {
                     .unwrap_or_else(|| help::overview(root)),
             )),
             ErrorKind::DisplayVersion => Ok(Parsed::Version),
-            _ => Err(help::usage(root, reason(&error, named.is_some()), named)),
+            _ => Err(usage::usage(
+                root,
+                usage::reason(&error, named.is_some()),
+                named,
+            )),
         },
-    }
-}
-
-/// clap's error in bilbo's words. `verb_named` says a known verb was run, so a stray word is an
-/// unexpected argument, not an unknown verb. Outside text is escaped before it joins a reason.
-fn reason(error: &clap::Error, verb_named: bool) -> String {
-    let text = |kind: ContextKind| match error.get(kind) {
-        Some(ContextValue::String(value)) => Some(sanitize(value)),
-        _ => None,
-    };
-    match error.kind() {
-        ErrorKind::UnknownArgument => match text(ContextKind::InvalidArg) {
-            Some(arg) if arg.starts_with('-') => format!("unknown option '{arg}'"),
-            Some(arg) if verb_named => format!("unexpected argument '{arg}'"),
-            Some(arg) => format!("unknown verb '{arg}'"),
-            None => bare(error),
-        },
-        ErrorKind::InvalidSubcommand => text(ContextKind::InvalidSubcommand)
-            .map_or_else(|| bare(error), |name| format!("unknown verb '{name}'")),
-        ErrorKind::MissingSubcommand => "missing verb".to_owned(),
-        ErrorKind::MissingRequiredArgument => match error.get(ContextKind::InvalidArg) {
-            Some(ContextValue::Strings(names)) if !names.is_empty() => {
-                let names: Vec<String> = names.iter().map(|name| sanitize(name)).collect();
-                format!("missing {}", list(&names))
-            }
-            _ => bare(error),
-        },
-        ErrorKind::InvalidValue
-            if matches!(
-                error.get(ContextKind::InvalidValue),
-                Some(ContextValue::String(value)) if value.is_empty()
-            ) =>
-        {
-            text(ContextKind::InvalidArg).map_or_else(
-                || bare(error),
-                |arg| format!("{} needs a value", option_name(&arg)),
-            )
-        }
-        ErrorKind::InvalidUtf8 => "arguments must be valid UTF-8".to_owned(),
-        _ => bare(error),
-    }
-}
-
-/// `a`, `a and b`, `a, b and c`.
-fn list(names: &[String]) -> String {
-    match names {
-        [] => String::new(),
-        [only] => only.clone(),
-        [head @ .., last] => format!("{} and {last}", head.join(", ")),
-    }
-}
-
-/// The long form of an option as clap shows it (`-k, --kind <kind>`), else its first word.
-fn option_name(arg: &str) -> &str {
-    let words = || {
-        arg.split_whitespace()
-            .map(|word| word.trim_end_matches(','))
-    };
-    words()
-        .find(|word| word.starts_with("--"))
-        .or_else(|| words().next())
-        .unwrap_or(arg)
-}
-
-/// clap's own first line, without `error: `, its usage and its tips. Its context values are
-/// escaped first: a newline inside an argument would end the line early.
-fn bare(error: &clap::Error) -> String {
-    let mut fresh = clap::Error::new(error.kind());
-    for (kind, value) in error.context() {
-        if !matches!(
-            kind,
-            ContextKind::Usage
-                | ContextKind::Suggested
-                | ContextKind::SuggestedArg
-                | ContextKind::SuggestedCommand
-                | ContextKind::SuggestedSubcommand
-                | ContextKind::SuggestedValue
-        ) {
-            fresh.insert(kind, escaped(value));
-        }
-    }
-    let rendered = fresh.render().to_string();
-    let rendered = rendered.strip_prefix("error: ").unwrap_or(&rendered);
-    let mut text = rendered.lines().next().unwrap_or_default().to_owned();
-    if let (ErrorKind::ValueValidation, Some(source)) =
-        (error.kind(), std::error::Error::source(error))
-    {
-        text = format!("{text}: {}", sanitize(&source.to_string()));
-    }
-    text
-}
-
-fn escaped(value: &ContextValue) -> ContextValue {
-    match value {
-        ContextValue::String(text) => ContextValue::String(sanitize(text)),
-        ContextValue::Strings(texts) => {
-            ContextValue::Strings(texts.iter().map(|text| sanitize(text)).collect())
-        }
-        ContextValue::StyledStr(text) => {
-            ContextValue::StyledStr(sanitize(&text.to_string()).into())
-        }
-        ContextValue::StyledStrs(texts) => ContextValue::StyledStrs(
-            texts
-                .iter()
-                .map(|text| sanitize(&text.to_string()).into())
-                .collect(),
-        ),
-        other => other.clone(),
     }
 }
 
@@ -194,9 +75,10 @@ fn escaped(value: &ContextValue) -> ContextValue {
 mod tests {
     use std::ffi::OsString;
 
-    use super::{Parsed, command, parse, typed, with_verb};
-    use crate::failure::Failure;
-    use crate::probe;
+    use super::{Parsed, parse, typed};
+    use crate::command::probe::{self, with_verb};
+    use crate::outcome::failure::Failure;
+    use crate::{Cli, bilbo};
 
     fn args(list: &[&str]) -> Vec<OsString> {
         list.iter().map(OsString::from).collect()
@@ -214,12 +96,12 @@ mod tests {
     }
 
     fn usage_error(list: &[&str]) -> String {
-        let (reason, usage, page) = usage_error_of(&command(), list);
+        let (reason, usage, page) = usage_error_of(&bilbo(), list);
         format!("{reason} | {} | {page}", usage.join(" / "))
     }
 
     fn probe_root() -> clap::Command {
-        with_verb(command(), probe::verb())
+        with_verb(bilbo(), probe::verb())
     }
 
     fn probe_reason(list: &[&str]) -> String {
@@ -240,7 +122,7 @@ mod tests {
 
     #[test]
     fn the_definition_is_valid() {
-        command().debug_assert();
+        bilbo().debug_assert();
         probe_root().debug_assert();
     }
 
@@ -284,7 +166,7 @@ mod tests {
     #[test]
     fn several_missing_arguments_are_named_together() {
         let root = with_verb(
-            command(),
+            bilbo(),
             clap::Command::new("pair")
                 .arg(clap::Arg::new("kind").value_name("kind").required(true))
                 .arg(clap::Arg::new("topic").value_name("topic").required(true)),
@@ -353,7 +235,7 @@ mod tests {
 
     #[test]
     fn help_and_version_are_results() {
-        let root = command();
+        let root = bilbo();
         for list in [
             &["bilbo", "--help"][..],
             &["bilbo", "-h"],
@@ -378,11 +260,11 @@ mod tests {
 
     #[test]
     fn no_verb_parses_to_no_verb() {
-        let root = command();
+        let root = bilbo();
         for list in [&["bilbo"][..], &["bilbo", "--"]] {
             match parse(&root, &args(list)) {
                 Ok(Parsed::Matches(matches)) => {
-                    let cli = typed(&root, &matches).expect("typed arguments");
+                    let cli: Cli = typed(&root, &matches).expect("typed arguments");
                     assert!(cli.verb.is_none(), "{list:?}");
                 }
                 other => panic!("{list:?}: {other:?}"),

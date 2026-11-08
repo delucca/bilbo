@@ -1,15 +1,15 @@
-//! What a run that did not fail has to say: stdout for each view, diagnostics for stderr and an
-//! exit code of 0 or 1. A verb builds one; `main.rs` writes it.
+pub mod failure;
+pub mod route;
 
 use std::fmt;
 
-use crate::message::Message;
-use crate::view::View;
+use crate::terminal::View;
+use crate::terminal::message::Message;
 
-/// 1 is "nothing matched" or "problems found" without a failure.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Exit {
     Success,
+    /// Exit 1 with a result: nothing matched or problems found; stdout and diagnostics still print.
     NothingMatched,
 }
 
@@ -23,7 +23,6 @@ pub struct Outcome {
 }
 
 impl Outcome {
-    /// Stdout is `plain` in every view until `with_human` says otherwise.
     pub fn new(plain: impl Into<String>) -> Self {
         Self {
             plain: plain.into(),
@@ -33,14 +32,12 @@ impl Outcome {
         }
     }
 
-    /// The human view of stdout: a pure function of the view, which may leave `paint` off.
     #[must_use]
     pub fn with_human(mut self, human: impl Fn(&View) -> String + 'static) -> Self {
         self.human = Some(Box::new(human));
         self
     }
 
-    /// Messages for stderr, in the view of stderr. `route::plan` orders them against stdout.
     #[must_use]
     pub fn with_diagnostics(mut self, diagnostics: Vec<Message>) -> Self {
         self.diagnostics = diagnostics;
@@ -88,8 +85,8 @@ impl fmt::Debug for Outcome {
 #[cfg(test)]
 mod tests {
     use super::{Exit, Outcome};
-    use crate::message::{Detail, Mark, Message};
-    use crate::view::View;
+    use crate::terminal::View;
+    use crate::terminal::message::{Detail, Mark, Message};
 
     fn warning(text: &str) -> Message {
         Message {

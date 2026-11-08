@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["apps/cli", "libs/rust/core"]
+members = ["apps/cli", "libs/rust/store"]
 
 [workspace.package]
 version = "0.0.0"
@@ -17,7 +17,8 @@ rustix = { version = "1.1.5", default-features = false, features = ["std", "even
 unsafe_code = "forbid"
 
 [workspace.lints.clippy]
-# Hand-picked pedantic subset, all at warn; checks run with -D warnings.
+# warn is enough: the lint run passes -D warnings.
+self_named_module_files = "warn"
 cloned_instead_of_copied = "warn"
 doc_markdown = "warn"
 explicit_into_iter_loop = "warn"
@@ -34,7 +35,6 @@ semicolon_if_nothing_returned = "warn"
 unnested_or_patterns = "warn"
 unused_self = "warn"
 wildcard_imports = "warn"
-# Restriction lints.
 dbg_macro = "warn"
 todo = "warn"
 unwrap_used = "deny"

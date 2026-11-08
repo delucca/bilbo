@@ -1,2 +1,13 @@
 allow-unwrap-in-tests = true
 allow-expect-in-tests = true
+
+disallowed-macros = [
+    { path = "std::print", reason = "main.rs is the only writer of stdout and stderr" },
+    { path = "std::println", reason = "main.rs is the only writer of stdout and stderr" },
+    { path = "std::eprint", reason = "main.rs is the only writer of stdout and stderr" },
+    { path = "std::eprintln", reason = "main.rs is the only writer of stdout and stderr" },
+]
+disallowed-methods = [
+    { path = "std::io::stdout", reason = "main.rs is the only writer of stdout and stderr" },
+    { path = "std::io::stderr", reason = "main.rs is the only writer of stdout and stderr" },
+]

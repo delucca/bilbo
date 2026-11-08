@@ -9,9 +9,9 @@ extract_cargo_lints(
 )
 
 rust_library(
-    name = "core",
+    name = "store",
     srcs = glob(["src/**/*.rs"]),
-    crate_name = "bilbo_core",
+    crate_name = "bilbo_store",
     lint_config = ":lints",
     visibility = [
         "//apps:__subpackages__",
@@ -22,7 +22,7 @@ rust_library(
 
 bilbo_rust_test(
     name = "unit",
-    crate = ":core",
+    crate = ":store",
     layer = "unit",
     lint_config = ":lints",
 )

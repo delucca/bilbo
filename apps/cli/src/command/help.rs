@@ -1,14 +1,14 @@
-//! The help pages: the overview's text, `bilbo help <topic>`, and the bold of the human view.
-//! Every form of help (`--help`, `-h`, `help <verb>`) renders through `overview` and `page`.
-
 use std::ffi::OsString;
 
+use clap::Command;
 use clap::builder::StyledStr;
-use clap::{Arg, ArgAction, Command};
 
-use crate::failure::Failure;
-use crate::message::sanitize;
-use crate::view::View;
+use crate::command::usage::usage;
+use crate::outcome::Outcome;
+use crate::outcome::failure::Failure;
+use crate::terminal::View;
+use crate::terminal::message::sanitize;
+use crate::terminal::theme::{Tone, paint};
 
 pub const DESCRIPTION: &str = "\
 bilbo keeps durable memory for coding agents: it ingests their sessions and
@@ -20,12 +20,11 @@ pub const USAGE: &str = "bilbo <verb> [<args>]...";
 /// overview names no option. clap puts a blank line before `{after-help}` itself.
 pub const TEMPLATE: &str = "{about-with-newline}\n{usage-heading} {usage}{after-help}";
 
-/// A verb's page: what it does (the about text names the verb literally, because `{name}`
-/// renders `bilbo-<verb>`), the usage block, the options, then the verb's `after_help` with its
-/// Output, Exit, Examples and Docs. A verb with several usage forms joins them in
-/// `override_usage` with `\n  `, so each form is indented two spaces under `Usage:`.
+/// The about text names the verb: `{name}` renders `bilbo-<verb>`. Several usage forms join in
+/// `override_usage` with `\n  `, so each sits two spaces under `Usage:`.
 pub const VERB_TEMPLATE: &str = "{about}\n\nUsage:\n  {usage}\n\nOptions:\n{options}{after-help}";
 
+/// The Paths block repeats `bilbo_store::paths`; nothing checks it.
 pub const AFTER: &str = "\
 No verbs yet.
 
@@ -42,28 +41,10 @@ Paths, the first that applies:
 Run 'bilbo <verb> --help' or 'bilbo help <verb>' for a verb's options, output
 and exit codes.";
 
-/// A verb as bilbo pages it: its own template, and a hidden `-h, --help` so the Options list
-/// holds only the verb's. clap's help flag stays off because its long form would render
-/// `long_help` text that `help <verb>` does not.
-pub fn verb(command: Command) -> Command {
-    command
-        .help_template(VERB_TEMPLATE)
-        .disable_help_flag(true)
-        .arg(
-            Arg::new("help")
-                .short('h')
-                .long("help")
-                .action(ArgAction::Help)
-                .hide(true),
-        )
-}
-
-/// `bilbo --help`.
 pub fn overview(root: &Command) -> String {
     render(root, None).unwrap_or_default()
 }
 
-/// `bilbo <verb> --help`, when `verb` exists.
 pub fn page(root: &Command, verb: &str) -> Option<String> {
     render(root, Some(verb))
 }
@@ -80,29 +61,6 @@ fn render(root: &Command, verb: Option<&str>) -> Option<String> {
     Some(normalize(&command.render_help()))
 }
 
-/// Every verb, in the order they are declared.
-pub fn verbs(root: &Command) -> Vec<String> {
-    root.get_subcommands()
-        .map(|verb| verb.get_name().to_owned())
-        .collect()
-}
-
-/// The verbs the overview's groups name: the rows (two spaces, the verb, two spaces) between the
-/// usage line and the exit codes.
-pub fn named_verbs(overview: &str) -> Vec<String> {
-    overview
-        .lines()
-        .skip_while(|line| !line.starts_with("Usage: "))
-        .take_while(|line| !line.starts_with("Exit codes:"))
-        .filter_map(|line| line.strip_prefix("  "))
-        .filter_map(|row| row.split_once("  ").map(|(name, _)| name))
-        .filter(|name| !name.is_empty() && name.chars().all(|c| c.is_ascii_lowercase()))
-        .map(str::to_owned)
-        .collect()
-}
-
-/// The page `bilbo help` was asked for: the overview, or one verb's page. `-h` and `--help`
-/// add nothing to it.
 pub fn topic(root: &Command, rest: &[OsString]) -> Result<String, Failure> {
     let rest: Vec<&OsString> = rest
         .iter()
@@ -133,84 +91,37 @@ pub fn topic(root: &Command, rest: &[OsString]) -> Result<String, Failure> {
     }
 }
 
-/// A usage failure for `bilbo` itself, or for `verb` when one was run.
-pub fn usage(root: &Command, reason: String, verb: Option<&str>) -> Failure {
-    let mut root = root.clone();
-    root.build();
-    let known = verb.filter(|verb| root.find_subcommand(verb).is_some());
-    let (usage, page) = match known {
-        Some(verb) => {
-            let command = root
-                .find_subcommand_mut(verb)
-                .expect("the verb was just found");
-            (usage_lines(command, false), format!("bilbo {verb} --help"))
-        }
-        None => (usage_lines(&mut root, true), "bilbo --help".to_owned()),
-    };
-    Failure::Usage {
-        reason,
-        usage,
-        page,
-    }
+pub fn outcome(text: String) -> Outcome {
+    Outcome::new(text.clone())
+        .with_human(move |view| text.lines().map(|line| bold(view, line) + "\n").collect())
 }
 
-/// `usage: <first form>`, later forms under it at column 7, and the verbs of the overview when
-/// `top`.
-pub fn usage_lines(command: &mut Command, top: bool) -> Vec<String> {
-    let rendered = command.render_usage().to_string();
-    let mut lines: Vec<String> = rendered
-        .lines()
-        .enumerate()
-        .map(|(i, line)| match i {
-            0 => line.replacen("Usage: ", "usage: ", 1),
-            _ => format!("       {}", line.trim_start()),
-        })
-        .collect();
-    let verbs = verbs(command);
-    if top && !verbs.is_empty() {
-        lines.push(format!("verbs: {}", verbs.join(", ")));
-    }
-    lines
-}
-
-/// The page on stdout: plain, or with bold headings and left columns when the view paints.
-pub fn styled(page: &str, view: &View) -> String {
-    if !view.paint {
-        return page.to_owned();
-    }
-    page.lines().map(|line| bold(line) + "\n").collect()
-}
-
-/// The rendered page as bilbo prints it: plain, one trailing newline.
 fn normalize(styled: &StyledStr) -> String {
     let mut text = styled.to_string().trim_end().to_owned();
     text.push('\n');
     text
 }
 
-/// `line` with its heading or its left column in bold. A heading starts the line with a capital
-/// letter and runs to the first `:` over letters, spaces and commas, when that ends the line or
-/// takes at most three words. A left column starts after two spaces (or six, for a long-only
-/// option that clap aligns under options with a short flag) and ends before the first run of two
-/// or more spaces.
-pub fn bold(line: &str) -> String {
-    const BOLD: &str = "\x1b[1m";
-    const PLAIN: &str = "\x1b[22m";
+/// A heading starts the line with a capital letter and runs to the first `:` over letters,
+/// spaces and commas, when that ends the line or takes at most three words. A left column starts
+/// after two spaces (or six, for a long-only option that clap aligns under options with a short
+/// flag) and ends before the first run of two or more spaces.
+pub fn bold(view: &View, line: &str) -> String {
+    let strong = |text: &str| paint(view, Tone::Bold, text);
     if let Some(end) = heading_end(line) {
-        return format!("{BOLD}{}{PLAIN}{}", &line[..end], &line[end..]);
+        return format!("{}{}", strong(&line[..end]), &line[end..]);
     }
     match column(line) {
         Some((indent, width)) => format!(
-            "{}{BOLD}{}{PLAIN}{}",
+            "{}{}{}",
             &line[..indent],
-            &line[indent..indent + width],
+            strong(&line[indent..indent + width]),
             &line[indent + width..]
         ),
         None => line.to_owned(),
     }
 }
 
-/// The indent and width of the left column of `line`, if it has one.
 fn column(line: &str) -> Option<(usize, usize)> {
     let indent = line.len() - line.trim_start_matches(' ').len();
     let rest = &line[indent..];
@@ -219,7 +130,6 @@ fn column(line: &str) -> Option<(usize, usize)> {
     ((indent == 2 && !rest.is_empty()) || long_only).then_some((indent, width))
 }
 
-/// Where the heading of `line` ends, just after its colon, if `line` opens with one.
 fn heading_end(line: &str) -> Option<usize> {
     if !line.starts_with(|c: char| c.is_ascii_uppercase()) {
         return None;
@@ -237,20 +147,33 @@ fn heading_end(line: &str) -> Option<usize> {
 mod tests {
     use std::ffi::OsString;
 
-    use clap::{Arg, Command};
+    use clap::Command;
 
-    use super::{TEMPLATE, USAGE, bold, named_verbs, overview, page, topic, usage_lines, verbs};
-    use crate::cli;
-    use crate::failure::Failure;
-    use crate::probe;
+    use super::{TEMPLATE, USAGE, bold, overview, page, topic};
+    use crate::bilbo;
+    use crate::command::probe::{self, with_verb};
+    use crate::command::verbs;
+    use crate::outcome::failure::Failure;
+    use crate::terminal::View;
+
+    fn named_verbs(overview: &str) -> Vec<String> {
+        overview
+            .lines()
+            .skip_while(|line| !line.starts_with("Usage: "))
+            .take_while(|line| !line.starts_with("Exit codes:"))
+            .filter_map(|line| line.strip_prefix("  "))
+            .filter_map(|row| row.split_once("  ").map(|(name, _)| name))
+            .filter(|name| !name.is_empty() && name.chars().all(|c| c.is_ascii_lowercase()))
+            .map(str::to_owned)
+            .collect()
+    }
 
     fn args(list: &[&str]) -> Vec<OsString> {
         list.iter().map(OsString::from).collect()
     }
 
-    /// The overview and the page of every verb of this build, plus the test-only verb.
     fn every_page() -> Vec<(String, String)> {
-        let root = cli::with_verb(cli::command(), probe::verb());
+        let root = with_verb(bilbo(), probe::verb());
         let mut pages = vec![("overview".to_owned(), overview(&root))];
         for verb in verbs(&root) {
             let text = page(&root, &verb).expect("a registered verb has a page");
@@ -269,7 +192,7 @@ mod tests {
     }
 
     #[test]
-    fn every_verb_page_has_the_shape_of_0_20() {
+    fn every_verb_page_has_its_sections_in_order() {
         for (name, text) in every_page().into_iter().skip(1) {
             assert!(
                 text.starts_with(&format!("bilbo {name}: ")),
@@ -294,8 +217,8 @@ mod tests {
     }
 
     #[test]
-    fn the_overview_has_the_shape_of_0_20() {
-        let text = overview(&cli::command());
+    fn the_overview_has_its_sections_in_order() {
+        let text = overview(&bilbo());
         let at = |needle: &str| {
             text.find(needle)
                 .unwrap_or_else(|| panic!("{needle:?} missing"))
@@ -311,7 +234,7 @@ mod tests {
 
     #[test]
     fn the_overview_names_exactly_the_registered_verbs() {
-        let root = cli::command();
+        let root = bilbo();
         assert_eq!(named_verbs(&overview(&root)), verbs(&root));
     }
 
@@ -323,7 +246,7 @@ mod tests {
                 .override_usage(USAGE)
                 .disable_help_subcommand(true)
                 .after_help(after);
-            let root = cli::with_verb(bare, probe::verb());
+            let root = with_verb(bare, probe::verb());
             (named_verbs(&overview(&root)), verbs(&root))
         };
         let (groups, registered) = named("\nProbing:\n  probe  Shows a verb page\n\nExit codes: x");
@@ -336,7 +259,7 @@ mod tests {
 
     #[test]
     fn help_topics_are_the_overview_a_page_or_a_usage_error() {
-        let root = cli::command();
+        let root = bilbo();
         for list in [&[][..], &["help"], &["--help"], &["help", "-h"]] {
             assert_eq!(topic(&root, &args(list)), Ok(overview(&root)), "{list:?}");
         }
@@ -361,7 +284,7 @@ mod tests {
 
     #[test]
     fn a_registered_verb_has_a_page_and_is_listed() {
-        let root = cli::with_verb(cli::command(), probe::verb());
+        let root = with_verb(bilbo(), probe::verb());
         assert!(verbs(&root).contains(&"probe".to_owned()));
         assert_eq!(
             topic(&root, &args(&["probe"])),
@@ -370,43 +293,21 @@ mod tests {
     }
 
     #[test]
-    fn usage_lines_fold_claps_forms_and_list_the_verbs() {
-        let mut two_forms = Command::new("bilbo")
-            .override_usage("bilbo recall <query>...\n  bilbo recall --library <query>...");
-        assert_eq!(
-            usage_lines(&mut two_forms, false),
-            [
-                "usage: bilbo recall <query>...",
-                "       bilbo recall --library <query>..."
-            ]
-        );
-        let mut with_verbs = Command::new("bilbo")
-            .disable_help_subcommand(true)
-            .override_usage("bilbo <verb> [<args>]...")
-            .subcommand(Command::new("ingest"))
-            .subcommand(Command::new("recall").arg(Arg::new("q")));
-        assert_eq!(
-            usage_lines(&mut with_verbs, true),
-            ["usage: bilbo <verb> [<args>]...", "verbs: ingest, recall"]
-        );
-    }
-
-    #[test]
     fn bold_marks_headings_and_left_columns_only() {
         assert_eq!(
-            bold("Usage: bilbo <verb> [<args>]..."),
+            bold(&View::HUMAN, "Usage: bilbo <verb> [<args>]..."),
             "\x1b[1mUsage:\x1b[22m bilbo <verb> [<args>]..."
         );
         assert_eq!(
-            bold("Paths, the first that applies:"),
+            bold(&View::HUMAN, "Paths, the first that applies:"),
             "\x1b[1mPaths, the first that applies:\x1b[22m"
         );
         assert_eq!(
-            bold("Exit codes: 0 success"),
+            bold(&View::HUMAN, "Exit codes: 0 success"),
             "\x1b[1mExit codes:\x1b[22m 0 success"
         );
         assert_eq!(
-            bold("  root    $BILBO_HOME"),
+            bold(&View::HUMAN, "  root    $BILBO_HOME"),
             "  \x1b[1mroot\x1b[22m    $BILBO_HOME"
         );
         for plain in [
@@ -417,25 +318,25 @@ mod tests {
             "      text that is not an option  x",
             "",
         ] {
-            assert_eq!(bold(plain), plain);
+            assert_eq!(bold(&View::HUMAN, plain), plain);
         }
     }
 
     #[test]
     fn bold_follows_the_option_rows_clap_renders() {
-        let root = cli::with_verb(cli::command(), probe::verb());
+        let root = with_verb(bilbo(), probe::verb());
         let rows: Vec<String> = page(&root, "probe")
             .expect("a page")
             .lines()
             .filter(|line| line.trim_start().starts_with('-'))
-            .map(bold)
+            .map(|line| bold(&View::HUMAN, line))
             .collect();
         assert_eq!(rows.len(), 3, "{rows:?}");
         let page = page(&root, "probe").expect("a page");
         let block: Vec<String> = page
             .lines()
             .filter(|line| line.starts_with("  bilbo probe "))
-            .map(bold)
+            .map(|line| bold(&View::HUMAN, line))
             .collect();
         assert_eq!(block.len(), 3, "{block:?}");
         assert!(block.iter().all(|line| !line.contains('\x1b')), "{block:?}");

@@ -1,6 +1,6 @@
 [package]
-name = "bilbo-core"
-description = "bilbo's verbs, called by the CLI and serve."
+name = "bilbo-store"
+description = "Where bilbo keeps its files: the store."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

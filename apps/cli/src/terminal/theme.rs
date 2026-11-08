@@ -1,7 +1,4 @@
-//! The human view's tones: bold, dim and the basic colours, each closed by its own off-code so
-//! tones nest.
-
-use crate::view::View;
+use crate::terminal::View;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Tone {
@@ -15,6 +12,7 @@ pub enum Tone {
 }
 
 impl Tone {
+    /// Each tone closes with its own off-code, so tones nest.
     fn codes(self) -> (&'static str, &'static str) {
         match self {
             Tone::Bold => ("\x1b[1m", "\x1b[22m"),
@@ -28,7 +26,6 @@ impl Tone {
     }
 }
 
-/// `text` in `tone`; `text` itself when the view may not paint or `text` is empty.
 pub fn paint(view: &View, tone: Tone, text: &str) -> String {
     if !view.paint || text.is_empty() {
         return text.to_owned();
@@ -39,7 +36,7 @@ pub fn paint(view: &View, tone: Tone, text: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use crate::view::View;
+    use crate::terminal::View;
 
     use super::{Tone, paint};
 

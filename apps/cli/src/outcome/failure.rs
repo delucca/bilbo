@@ -1,20 +1,16 @@
-//! Every way a run fails, classified once and mapped to an exit code and a message.
-
-use crate::message::{Detail, Message};
+use crate::terminal::View;
+use crate::terminal::message::{Detail, Message};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Failure {
-    /// Exit 2: the reason, the usage lines of the command that was run, and the page to read.
     Usage {
         reason: String,
         usage: Vec<String>,
         page: String,
     },
-    /// Exit 2: a path or a setting that cannot be used.
     Config(String),
-    /// Exit 1: a rule refused the input, problems were found, or nothing matched.
+    /// Exit 1 with no result: a rule refused the input.
     Refused(String),
-    /// Exit 1: a result could not be written to stdout.
     Output(String),
 }
 
@@ -46,12 +42,17 @@ impl Failure {
             }
         }
     }
+
+    pub fn stderr_lines(&self, view: &View) -> Vec<String> {
+        self.message().lines(view)
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::Failure;
-    use crate::message::Detail;
+    use crate::terminal::View;
+    use crate::terminal::message::Detail;
 
     #[test]
     fn usage_and_config_exit_2_refused_and_output_exit_1() {
@@ -64,6 +65,16 @@ mod tests {
         assert_eq!(Failure::Config(String::new()).exit_code(), 2);
         assert_eq!(Failure::Refused(String::new()).exit_code(), 1);
         assert_eq!(Failure::Output(String::new()).exit_code(), 1);
+    }
+
+    #[test]
+    fn stderr_lines_follow_the_view() {
+        let failure = Failure::Refused("no".to_owned());
+        assert_eq!(failure.stderr_lines(&View::PLAIN), ["bilbo: no"]);
+        assert_eq!(
+            failure.stderr_lines(&View::HUMAN),
+            ["\x1b[31m■\x1b[39m  no"]
+        );
     }
 
     #[test]

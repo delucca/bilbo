@@ -30,13 +30,10 @@ struct Seen {
     terminal: String,
 }
 
-/// Runs `command` with `tty` on a pseudo-terminal and the other of stdout and stderr piped,
-/// reading the terminal while the command runs.
 fn capture(command: Command, tty: &Tty) -> Seen {
     capture_within(command, tty, DEADLINE)
 }
 
-/// `capture` that kills and reaps a command still running after `deadline`, then fails.
 fn capture_within(mut command: Command, tty: &Tty, deadline: Duration) -> Seen {
     command.stdin(Stdio::null());
     let master = openpt(OpenptFlags::RDWR | OpenptFlags::NOCTTY).expect("a pty master");
@@ -107,7 +104,6 @@ fn capture_within(mut command: Command, tty: &Tty, deadline: Duration) -> Seen {
     }
 }
 
-/// Runs `bilbo` with `args`.
 fn run(args: &[&str], tty: &Tty) -> Seen {
     let mut command = Command::new(binary());
     command.env_clear().envs(ENV).args(args);
@@ -161,7 +157,6 @@ fn help_on_a_piped_stdout_has_no_escape_byte_while_stderr_is_a_terminal() {
 fn a_terminal_stream_larger_than_the_pty_buffer_is_read_while_the_command_runs() {
     let line = "0123456789012345678901234567890123456789012345678901234567890123";
     for (tty, redirect) in [(Tty::Stdout, ""), (Tty::Stderr, ">&2")] {
-        // 8 KB through the shell's builtins: more than a pty holds unread.
         let mut command = Command::new("/bin/sh");
         command.env_clear().args([
             "-c",

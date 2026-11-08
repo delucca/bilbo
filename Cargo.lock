@@ -18,7 +18,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "bilbo-core"
+name = "bilbo-store"
 version = "0.0.0"
 
 [[package]]

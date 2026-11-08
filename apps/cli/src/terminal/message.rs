@@ -1,11 +1,6 @@
-//! The one shape of everything bilbo says on stderr: a mark and a text, then details indented
-//! under it on a terminal; every line prefixed `bilbo: ` elsewhere.
+use crate::terminal::View;
+use crate::terminal::theme::{Tone, paint};
 
-use crate::view::View;
-
-use crate::theme::{Tone, paint};
-
-/// What every plain-view stderr line starts with.
 pub const PREFIX: &str = "bilbo: ";
 
 const INDENT: &str = "   ";
@@ -42,11 +37,7 @@ impl Mark {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Detail {
     Text(String),
-    /// `see 'bilbo --help'` in the plain view; `see` dim and the command cyan on a terminal.
-    Command {
-        lead: &'static str,
-        command: String,
-    },
+    Command { lead: &'static str, command: String },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -65,7 +56,6 @@ impl Message {
         }
     }
 
-    /// The lines for `view`: the human lines on a person's terminal, else the plain ones.
     pub fn lines(&self, view: &View) -> Vec<String> {
         if view.human {
             self.human_lines(view)
@@ -74,7 +64,6 @@ impl Message {
         }
     }
 
-    /// The lines for a person's terminal.
     pub fn human_lines(&self, view: &View) -> Vec<String> {
         let mark = paint(view, self.mark.tone(), self.mark.glyph(view.unicode));
         let mut lines = Vec::new();
@@ -103,7 +92,6 @@ impl Message {
         lines
     }
 
-    /// The lines for a pipe, a file or an agent, each starting with `bilbo: `.
     pub fn plain_lines(&self) -> Vec<String> {
         let mut lines: Vec<String> = parts(&self.text)
             .map(|line| format!("{PREFIX}{}", sanitize(line)))
@@ -136,8 +124,8 @@ fn indented(line: &str) -> String {
     }
 }
 
-/// Every control character (C0 but the `\n` the callers split on, DEL and C1) escaped, so a
-/// path or an error text from outside can never emit a raw escape sequence.
+/// Every control character escaped, `\n` included, so outside text can never emit a raw escape
+/// sequence or end a line early. `parts` splits message text on `\n` before it gets here.
 pub fn sanitize(line: &str) -> String {
     line.chars()
         .flat_map(|c| {
@@ -152,7 +140,7 @@ pub fn sanitize(line: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use crate::view::View;
+    use crate::terminal::View;
 
     use super::{Detail, Mark, Message};
 

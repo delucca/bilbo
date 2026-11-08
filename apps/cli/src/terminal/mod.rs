@@ -1,5 +1,5 @@
-//! Which view a stream gets: the plain view for pipes, files and agents, the
-//! human view for a person's terminal.
+pub mod message;
+pub mod theme;
 
 use std::ffi::OsString;
 
@@ -12,26 +12,20 @@ pub const AGENT_MARKERS: [&str; 5] = [
     "ANTIGRAVITY_AGENT",
 ];
 
-/// How one stream prints, decided once per stream.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct View {
-    /// A terminal, and no agent runs bilbo: print the human view.
     pub human: bool,
-    /// The human view may use escape codes.
     pub paint: bool,
-    /// Marks in Unicode, else their ASCII forms.
     pub unicode: bool,
 }
 
 impl View {
-    /// The view of a pipe, a file or an agent.
     pub const PLAIN: View = View {
         human: false,
         paint: false,
         unicode: false,
     };
 
-    /// The view of a person's terminal that may paint.
     pub const HUMAN: View = View {
         human: true,
         paint: true,

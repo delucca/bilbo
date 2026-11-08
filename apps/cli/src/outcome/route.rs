@@ -1,10 +1,9 @@
-//! Which text goes to which stream, and in what order. Pure: `main.rs` only performs the plan.
+use std::io::{self, Write};
 
-use crate::failure::Failure;
 use crate::outcome::Outcome;
-use crate::view::View;
+use crate::outcome::failure::Failure;
+use crate::terminal::View;
 
-/// One write: the result as a whole to stdout, or one line to stderr.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Emit {
     Stdout(String),
@@ -41,8 +40,6 @@ pub fn plan(result: &Result<Outcome, Failure>, out: &View, err: &View) -> Plan {
     }
 }
 
-/// Performs the writes of `plan` through `write` and returns the exit code. A failed write ends
-/// the run: its message goes to stderr in `err`'s view and its exit code replaces the plan's.
 pub fn execute(
     plan: &Plan,
     err: &View,
@@ -59,12 +56,10 @@ pub fn execute(
     plan.code
 }
 
-/// The plan for a failure: its message on stderr and its exit code.
-pub fn failed(failure: &Failure, err: &View) -> Plan {
+fn failed(failure: &Failure, err: &View) -> Plan {
     Plan {
         writes: failure
-            .message()
-            .lines(err)
+            .stderr_lines(err)
             .into_iter()
             .map(Emit::Stderr)
             .collect(),
@@ -72,13 +67,25 @@ pub fn failed(failure: &Failure, err: &View) -> Plan {
     }
 }
 
+/// A reader that went away (`bilbo --help | head -1`) is not a failure; any other write error is.
+pub fn write_result(out: &mut impl Write, text: &str) -> Result<(), Failure> {
+    match out.write_all(text.as_bytes()).and_then(|()| out.flush()) {
+        Err(error) if error.kind() != io::ErrorKind::BrokenPipe => {
+            Err(Failure::Output(format!("cannot write to stdout: {error}")))
+        }
+        _ => Ok(()),
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{Emit, Plan, execute, plan};
-    use crate::failure::Failure;
-    use crate::message::{Mark, Message};
+    use std::io::{self, Write};
+
+    use super::{Emit, Plan, execute, plan, write_result};
+    use crate::outcome::failure::Failure;
     use crate::outcome::{Exit, Outcome};
-    use crate::view::View;
+    use crate::terminal::View;
+    use crate::terminal::message::{Mark, Message};
 
     fn outcome() -> Outcome {
         Outcome::new("hits\n").with_diagnostics(vec![Message {
@@ -210,5 +217,64 @@ mod tests {
         });
         assert_eq!(code, 1);
         assert_eq!(written, plan.writes);
+    }
+
+    #[derive(Clone, Copy)]
+    enum Break {
+        Write(io::ErrorKind),
+        Flush(io::ErrorKind),
+    }
+
+    struct Broken(Break);
+
+    impl Write for Broken {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            match self.0 {
+                Break::Write(kind) => Err(io::Error::new(kind, "broken")),
+                Break::Flush(_) => Ok(buf.len()),
+            }
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            match self.0 {
+                Break::Flush(kind) => Err(io::Error::new(kind, "broken")),
+                Break::Write(_) => Ok(()),
+            }
+        }
+    }
+
+    #[test]
+    fn a_result_is_written_whole_and_flushed() {
+        let mut out = Vec::new();
+        assert_eq!(write_result(&mut out, "hits\n"), Ok(()));
+        assert_eq!(out, b"hits\n");
+    }
+
+    #[test]
+    fn a_write_error_is_an_output_failure() {
+        let failure = write_result(&mut Broken(Break::Write(io::ErrorKind::Other)), "x");
+        assert_eq!(
+            failure,
+            Err(Failure::Output("cannot write to stdout: broken".to_owned()))
+        );
+    }
+
+    #[test]
+    fn a_flush_error_is_an_output_failure() {
+        let failure = write_result(&mut Broken(Break::Flush(io::ErrorKind::Other)), "x");
+        assert_eq!(
+            failure,
+            Err(Failure::Output("cannot write to stdout: broken".to_owned()))
+        );
+    }
+
+    #[test]
+    fn a_reader_that_went_away_is_success() {
+        for kind in [
+            Break::Write(io::ErrorKind::BrokenPipe),
+            Break::Flush(io::ErrorKind::BrokenPipe),
+        ] {
+            assert_eq!(write_result(&mut Broken(kind), "x"), Ok(()));
+        }
     }
 }

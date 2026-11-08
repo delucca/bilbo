@@ -1,11 +1,9 @@
-//! Where bilbo keeps its files: the first path that applies, as `bilbo --help`
-//! lists them. Each lookup takes the environment as an argument and reads nothing itself.
+//! Each lookup takes the environment as an argument and reads nothing itself.
 
 use std::ffi::OsString;
 use std::fmt;
 use std::path::PathBuf;
 
-/// Why a path could not be found.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ConfigError {
     Relative { name: &'static str, value: OsString },
@@ -31,7 +29,6 @@ impl fmt::Display for ConfigError {
 
 impl std::error::Error for ConfigError {}
 
-/// `$BILBO_HOME`, `$XDG_DATA_HOME/bilbo`, `~/.local/share/bilbo`.
 pub fn root(var: impl Fn(&str) -> Option<OsString>) -> Result<PathBuf, ConfigError> {
     locate(
         &var,
@@ -42,7 +39,6 @@ pub fn root(var: impl Fn(&str) -> Option<OsString>) -> Result<PathBuf, ConfigErr
     )
 }
 
-/// `$BILBO_CONFIG`, `$XDG_CONFIG_HOME/bilbo/config`, `~/.config/bilbo/config`.
 pub fn config(var: impl Fn(&str) -> Option<OsString>) -> Result<PathBuf, ConfigError> {
     locate(
         &var,
@@ -53,12 +49,10 @@ pub fn config(var: impl Fn(&str) -> Option<OsString>) -> Result<PathBuf, ConfigE
     )
 }
 
-/// `$XDG_CACHE_HOME/bilbo`, `~/.cache/bilbo`.
 pub fn cache(var: impl Fn(&str) -> Option<OsString>) -> Result<PathBuf, ConfigError> {
     locate(&var, None, "XDG_CACHE_HOME", "bilbo", ".cache/bilbo")
 }
 
-/// `$XDG_STATE_HOME/bilbo`, `~/.local/state/bilbo`.
 pub fn state(var: impl Fn(&str) -> Option<OsString>) -> Result<PathBuf, ConfigError> {
     locate(&var, None, "XDG_STATE_HOME", "bilbo", ".local/state/bilbo")
 }
