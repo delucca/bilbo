@@ -36,8 +36,7 @@ fn perform(write: &Emit) -> Result<(), Failure> {
     }
 }
 
-/// A file on a duplicate of stdout's descriptor: `std::io::stdout()` reports a write to a
-/// descriptor that cannot be written (`EBADF`) as success.
+/// `std::io::stdout()` reports a write to an unwritable descriptor (`EBADF`) as success.
 fn stdout() -> Result<File, Failure> {
     io::stdout()
         .as_fd()

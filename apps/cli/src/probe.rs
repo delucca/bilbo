@@ -3,8 +3,6 @@ use clap::{Arg, ArgAction, Command};
 
 use crate::help::page::shape;
 
-/// A short+long option, a long-only flag, an option with `long_help` and one positional: one per
-/// help-layout branch the page tests cover.
 pub fn verb() -> Command {
     Command::new("probe")
         .about("bilbo probe: shows the shape of a verb page.")
@@ -46,8 +44,7 @@ Docs: reference/commands.md#probe",
         )
 }
 
-/// Derive's typed arguments know only the variants of `Verb`, so a verb registered here parses
-/// and pages but cannot be run.
+/// Derive reads a verb outside `Verb` as none: one registered here runs as `missing verb`.
 pub fn with_verb(root: Command, verb: Command) -> Command {
     root.subcommand(shape(verb))
 }

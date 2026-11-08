@@ -6,7 +6,6 @@ use crate::console::view::View;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Exit {
     Success,
-    /// Exit 1 with a result: nothing matched or problems found; stdout and diagnostics still print.
     NothingMatched,
 }
 
@@ -87,7 +86,6 @@ pub enum Failure {
         page: String,
     },
     Config(String),
-    /// Exit 1 with no result: a rule refused the input.
     Refused(String),
     Output(String),
 }

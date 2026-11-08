@@ -32,7 +32,6 @@ rust_binary(
     deps = [":bilbo_cli"],
 )
 
-# `bazel run //apps/cli` is the binary, which keeps its own name.
 alias(
     name = "cli",
     actual = ":bilbo",

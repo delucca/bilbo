@@ -1,5 +1,3 @@
-"""The test layers of docs/testing.md: each one's name is its Bazel tag."""
-
 LAYERS = ["unit", "contract", "acceptance", "integration", "snapshot", "e2e", "release"]
 
 SIZES = {

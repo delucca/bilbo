@@ -19,7 +19,6 @@ syn = { version = "3.0.9", default-features = false, features = ["full", "parsin
 unsafe_code = "forbid"
 
 [workspace.lints.clippy]
-# warn is enough: the lint run passes -D warnings.
 self_named_module_files = "warn"
 cloned_instead_of_copied = "warn"
 doc_markdown = "warn"

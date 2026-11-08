@@ -12,7 +12,6 @@ pub enum Tone {
 }
 
 impl Tone {
-    /// Each tone closes with its own off-code, so tones nest.
     fn codes(self) -> (&'static str, &'static str) {
         match self {
             Tone::Bold => ("\x1b[1m", "\x1b[22m"),

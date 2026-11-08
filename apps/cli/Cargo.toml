@@ -19,8 +19,6 @@ runfiles.workspace = true
 rustix.workspace = true
 syn.workspace = true
 
-# The end-to-end tests live under tests/e2e so every layer has one place; Cargo builds the
-# binary for them and sets CARGO_BIN_EXE_bilbo.
 [[test]]
 name = "cli"
 path = "../../tests/e2e/cli/cli.rs"

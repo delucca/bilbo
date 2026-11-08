@@ -110,7 +110,6 @@ impl Message {
     }
 }
 
-/// Split on `\n` only: a `\r` stays in its line for `sanitize` to escape.
 fn parts(text: &str) -> impl Iterator<Item = &str> {
     text.split_inclusive('\n')
         .map(|line| line.strip_suffix('\n').unwrap_or(line))
@@ -124,8 +123,6 @@ fn indented(line: &str) -> String {
     }
 }
 
-/// Every control character escaped, `\n` included, so outside text can never emit a raw escape
-/// sequence or end a line early. `parts` splits message text on `\n` before it gets here.
 pub fn sanitize(line: &str) -> String {
     line.chars()
         .flat_map(|c| {

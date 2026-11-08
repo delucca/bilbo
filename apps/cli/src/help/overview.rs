@@ -4,8 +4,6 @@ the pages they cite, and recalls them when a later session asks.";
 
 pub const USAGE: &str = "bilbo <verb> [<args>]...";
 
-/// clap's default template minus `{all-args}`: the verbs are listed in groups below and the
-/// overview names no option. clap puts a blank line before `{after-help}` itself.
 pub const TEMPLATE: &str = "{about-with-newline}\n{usage-heading} {usage}{after-help}";
 
 /// The Paths block repeats `bilbo_store::paths`; nothing checks it.

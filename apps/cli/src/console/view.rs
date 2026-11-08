@@ -30,7 +30,6 @@ impl View {
     };
 }
 
-/// `CLICOLOR_FORCE` and `FORCE_COLOR` are never read: they leak into agent environments.
 pub fn decide(terminal: bool, macos: bool, var: impl Fn(&str) -> Option<OsString>) -> View {
     let set = |name: &str| var(name).is_some_and(|value| !value.is_empty());
     let human = terminal && !AGENT_MARKERS.into_iter().any(set);
@@ -43,7 +42,6 @@ pub fn decide(terminal: bool, macos: bool, var: impl Fn(&str) -> Option<OsString
     }
 }
 
-/// macOS terminals always draw Unicode.
 pub fn unicode(macos: bool, var: impl Fn(&str) -> Option<OsString>) -> bool {
     let locale = ["LC_ALL", "LC_CTYPE", "LANG"]
         .into_iter()

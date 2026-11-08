@@ -15,7 +15,6 @@ use super::binary;
 
 const ENV: [(&str, &str); 2] = [("TERM", "xterm-256color"), ("LANG", "en_US.UTF-8")];
 
-/// A pty holds about 1 KB when nobody reads, so the child must be read while it runs.
 const DEADLINE: Duration = Duration::from_secs(10);
 
 enum Tty {

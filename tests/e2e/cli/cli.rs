@@ -11,7 +11,6 @@ struct Run {
     stderr: String,
 }
 
-/// Cargo builds the binary and names it; Bazel puts it in the runfiles.
 pub(crate) fn binary() -> PathBuf {
     if let Some(path) = option_env!("CARGO_BIN_EXE_bilbo") {
         return PathBuf::from(path);

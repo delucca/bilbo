@@ -5,12 +5,9 @@ use crate::console::outcome::Outcome;
 use crate::console::theme::{Tone, paint};
 use crate::console::view::View;
 
-/// The about text names the verb: `{name}` renders `bilbo-<verb>`. Several usage forms join in
-/// `override_usage` with `\n  `, so each sits two spaces under `Usage:`.
+/// Usage forms joined with `\n  ` in `override_usage` sit two spaces under `Usage:`.
 pub const VERB_TEMPLATE: &str = "{about}\n\nUsage:\n  {usage}\n\nOptions:\n{options}{after-help}";
 
-/// A hidden `-h, --help` keeps the Options list to the verb's own. clap's help flag stays off
-/// because its long form would render `long_help` text that `help <verb>` does not.
 pub fn shape(command: Command) -> Command {
     command
         .help_template(VERB_TEMPLATE)
@@ -32,8 +29,6 @@ pub fn page(root: &Command, verb: &str) -> Option<String> {
     render(root, Some(verb))
 }
 
-/// Built first, so a verb's usage reads `bilbo <verb>`, not `<verb>`. `render_help` and never
-/// `render_long_help`: the short form is the one page every help form shares.
 fn render(root: &Command, verb: Option<&str>) -> Option<String> {
     let mut root = root.clone();
     root.build();

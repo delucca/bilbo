@@ -23,7 +23,6 @@ pub fn typed<T: FromArgMatches>(root: &Command, matches: &ArgMatches) -> Result<
     T::from_arg_matches(matches).map_err(|error| usage(root, reason(&error, false), None))
 }
 
-/// `args[0]` is the program.
 pub fn parse(root: &Command, args: &[OsString]) -> Result<Parsed, Failure> {
     if args.get(1).is_some_and(|arg| arg == "help") {
         return Ok(Parsed::Help(args[2..].to_vec()));
@@ -138,8 +137,6 @@ fn option_name(arg: &str) -> &str {
         .unwrap_or(arg)
 }
 
-/// Context values are escaped before clap renders them: a newline inside an argument would end
-/// the line early.
 fn bare(error: &clap::Error) -> String {
     let mut fresh = clap::Error::new(error.kind());
     for (kind, value) in error.context() {

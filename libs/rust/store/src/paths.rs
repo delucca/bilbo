@@ -1,5 +1,3 @@
-//! Each lookup takes the environment as an argument and reads nothing itself.
-
 use std::ffi::OsString;
 use std::fmt;
 use std::path::PathBuf;
@@ -57,8 +55,6 @@ pub fn state(var: impl Fn(&str) -> Option<OsString>) -> Result<PathBuf, ConfigEr
     locate(&var, None, "XDG_STATE_HOME", "bilbo", ".local/state/bilbo")
 }
 
-/// An override set to a relative path is an error; empty, it is unset. A relative or empty
-/// XDG variable falls through to `HOME`, which must be set, non-empty and absolute.
 fn locate(
     var: &impl Fn(&str) -> Option<OsString>,
     override_name: Option<&'static str>,

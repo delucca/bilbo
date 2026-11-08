@@ -16,8 +16,6 @@ pub struct Plan {
     pub code: u8,
 }
 
-/// When stdout gets the human view the diagnostics follow the result; otherwise they come first,
-/// so a reader of both streams merged sees them before a long result.
 pub fn plan(result: &Result<Outcome, Failure>, out: &View, err: &View) -> Plan {
     match result {
         Ok(outcome) => {
@@ -66,7 +64,6 @@ fn failed(failure: &Failure, err: &View) -> Plan {
     }
 }
 
-/// A reader that went away (`bilbo --help | head -1`) is not a failure; any other write error is.
 pub fn write_result(out: &mut impl Write, text: &str) -> Result<(), Failure> {
     match out.write_all(text.as_bytes()).and_then(|()| out.flush()) {
         Err(error) if error.kind() != io::ErrorKind::BrokenPipe => {
