@@ -1,3 +1,12 @@
+build --@rules_rust//rust/settings:clippy.toml=//:clippy.toml
+build --@rules_rust//rust/settings:rustfmt.toml=//:rustfmt.toml
+
+# `bazel build //... --config=lint`: clippy and rustfmt over every Rust target. A crate with a
+# lint_config gets no -Dwarnings from rules_rust, so the flag is passed here.
+build:lint --aspects=@rules_rust//rust:defs.bzl%rust_clippy_aspect,@rules_rust//rust:defs.bzl%rustfmt_aspect
+build:lint --output_groups=+clippy_checks,+rustfmt_checks
+build:lint --@rules_rust//rust/settings:clippy_flags=-Dwarnings
+
 test --build_tests_only
 test --test_output=errors
 test --test_tag_filters=-desktop,-release

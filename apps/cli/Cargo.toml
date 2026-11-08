@@ -1,0 +1,27 @@
+[package]
+name = "bilbo-cli"
+description = "The bilbo command line."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "bilbo"
+path = "src/main.rs"
+
+[dependencies]
+clap.workspace = true
+
+[dev-dependencies]
+runfiles.workspace = true
+rustix.workspace = true
+
+# The end-to-end tests live under tests/e2e so every layer has one place; Cargo builds the
+# binary for them and sets CARGO_BIN_EXE_bilbo.
+[[test]]
+name = "cli"
+path = "../../tests/e2e/cli/cli.rs"
+
+[lints]
+workspace = true

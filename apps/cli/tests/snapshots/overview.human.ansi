@@ -1,0 +1,19 @@
+bilbo keeps durable memory for coding agents: it ingests their sessions and
+the pages they cite, and recalls them when a later session asks.
+
+[1mUsage:[22m bilbo <verb> [<args>]...
+
+No verbs yet.
+
+[1mExit codes:[22m 0 success; 1 refused, problems found or nothing matched; 2 usage
+or config error.
+Results go to stdout; diagnostics to stderr, prefixed 'bilbo: ' off a terminal.
+
+[1mPaths, the first that applies:[22m
+  [1mroot[22m    $BILBO_HOME, $XDG_DATA_HOME/bilbo, ~/.local/share/bilbo
+  [1mconfig[22m  $BILBO_CONFIG, $XDG_CONFIG_HOME/bilbo/config, ~/.config/bilbo/config
+  [1mcache[22m   $XDG_CACHE_HOME/bilbo, ~/.cache/bilbo
+  [1mstate[22m   $XDG_STATE_HOME/bilbo, ~/.local/state/bilbo
+
+Run 'bilbo <verb> --help' or 'bilbo help <verb>' for a verb's options, output
+and exit codes.

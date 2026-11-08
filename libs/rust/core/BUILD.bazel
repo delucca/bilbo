@@ -1,0 +1,28 @@
+load("@rules_rust//cargo:defs.bzl", "extract_cargo_lints")
+load("@rules_rust//rust:defs.bzl", "rust_library")
+load("//tools/bazel:rust.bzl", "bilbo_rust_test")
+
+extract_cargo_lints(
+    name = "lints",
+    manifest = "Cargo.toml",
+    workspace = "//:Cargo.toml",
+)
+
+rust_library(
+    name = "core",
+    srcs = glob(["src/**/*.rs"]),
+    crate_name = "bilbo_core",
+    lint_config = ":lints",
+    visibility = [
+        "//apps:__subpackages__",
+        "//libs/rust:__subpackages__",
+        "//tests:__subpackages__",
+    ],
+)
+
+bilbo_rust_test(
+    name = "unit",
+    crate = ":core",
+    layer = "unit",
+    lint_config = ":lints",
+)

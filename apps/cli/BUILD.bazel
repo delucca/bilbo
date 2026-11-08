@@ -1,0 +1,57 @@
+load("@crates//:defs.bzl", "all_crate_deps")
+load("@rules_rust//cargo:defs.bzl", "extract_cargo_lints")
+load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_library")
+load("//tools/bazel:rust.bzl", "bilbo_rust_test")
+load("//tools/bazel:version.bzl", "BILBO_VERSION")
+
+extract_cargo_lints(
+    name = "lints",
+    manifest = "Cargo.toml",
+    visibility = ["//tests:__subpackages__"],
+    workspace = "//:Cargo.toml",
+)
+
+rust_library(
+    name = "bilbo_cli",
+    srcs = glob(
+        ["src/**/*.rs"],
+        exclude = ["src/main.rs"],
+    ),
+    crate_root = "src/lib.rs",
+    lint_config = ":lints",
+    version = BILBO_VERSION,
+    deps = all_crate_deps(normal = True),
+)
+
+rust_binary(
+    name = "bilbo",
+    srcs = ["src/main.rs"],
+    lint_config = ":lints",
+    version = BILBO_VERSION,
+    visibility = ["//tests:__subpackages__"],
+    deps = [":bilbo_cli"],
+)
+
+# `bazel run //apps/cli` is the binary, which keeps its own name.
+alias(
+    name = "cli",
+    actual = ":bilbo",
+)
+
+bilbo_rust_test(
+    name = "unit",
+    crate = ":bilbo_cli",
+    layer = "unit",
+    lint_config = ":lints",
+    version = BILBO_VERSION,
+)
+
+bilbo_rust_test(
+    name = "snapshot",
+    srcs = ["tests/snapshot.rs"],
+    compile_data = glob(["tests/snapshots/*"]),
+    layer = "snapshot",
+    lint_config = ":lints",
+    version = BILBO_VERSION,
+    deps = [":bilbo_cli"],
+)

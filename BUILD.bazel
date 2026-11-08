@@ -1,0 +1,8 @@
+exports_files(
+    [
+        "Cargo.toml",
+        "clippy.toml",
+        "rustfmt.toml",
+    ],
+    visibility = ["//visibility:public"],
+)

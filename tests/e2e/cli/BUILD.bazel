@@ -1,0 +1,22 @@
+load("//tools/bazel:rust.bzl", "bilbo_rust_test")
+load("//tools/bazel:version.bzl", "BILBO_VERSION")
+
+bilbo_rust_test(
+    name = "cli",
+    srcs = [
+        "cli.rs",
+        "tty.rs",
+    ],
+    crate_root = "cli.rs",
+    data = ["//apps/cli:bilbo"],
+    env = {
+        "BILBO": "$(rlocationpath //apps/cli:bilbo)",
+    },
+    layer = "e2e",
+    lint_config = "//apps/cli:lints",
+    version = BILBO_VERSION,
+    deps = [
+        "@crates//:runfiles",
+        "@crates//:rustix",
+    ],
+)

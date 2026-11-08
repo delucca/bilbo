@@ -2,7 +2,7 @@
 
 Place tests in the lowest folder containing everything exercised: beside one component; top-level `tests/` only across components. Keep `apps/{cli,serve,macos}` thin; composition lives there, component behavior in `libs/`. Rust and Swift libraries never depend on each other; cross-language suites compose them under `tests/`.
 
-Built so far: `.bazelrc`, `bilbo_test` for Swift in `tools/bazel/swift.bzl`, and the macOS launch test in `tests/e2e/macos/`. Add other layers as they get something to test.
+Built so far: `.bazelrc`; `bilbo_test` for Swift in `tools/bazel/swift.bzl` and `bilbo_rust_test` for Rust in `tools/bazel/rust.bzl`, both reading the layers from `tools/bazel/layers.bzl`; the macOS launch test in `tests/e2e/macos/`; the CLI's unit tests (`libs/rust/core`, `apps/cli`), snapshot tests (`apps/cli/tests/`) and e2e tests (`tests/e2e/cli/`). Add other layers as they get something to test.
 
 ## Choose a layer
 
@@ -23,11 +23,11 @@ Acceptance provides primary feature coverage with fakes: no real disk, AppKit or
 ## Declare and write tests
 
 - Each layer folder gets a Bazel target. Rust non-unit component layers share `tests/` with separate targets/source sets.
-- Declare through `bilbo_test(layer = "acceptance")` from `tools/bazel/swift.bzl` (Swift only for now); it owns tags, size and compiler options (`copts`). `desktop = True` marks a screen test.
+- Declare through `bilbo_test(layer = "acceptance")` from `tools/bazel/swift.bzl` for Swift and `bilbo_rust_test(layer = ...)` from `tools/bazel/rust.bzl` for Rust; each owns tags and size, the Swift one also `copts`. `desktop = True` marks a screen test and exists only on the Swift macro; Rust has no screen tests yet. A Rust unit target passes `crate = ":lib"`; snapshot and e2e targets pass `srcs`.
 - Name acceptance tests by feature, with parameterized example tables; no spec IDs.
 - Swift uses Swift Testing and `@testable import`; reusable port fakes: S `Testing/`, test-only visibility.
 - Assert exact layout numerically in integration; inspect Metal terminal buffer state instead of pixels.
-- Compare snapshots with approved baselines. Prefer text, including substantial Rust output deserving review; few pixel snapshots, covering light/dark. Snapshot library undecided; no extra Rust folder convention.
+- Compare snapshots with approved baselines. Prefer text, including substantial Rust output deserving review; few pixel snapshots, covering light/dark. Rust snapshots are plain files under the crate's `tests/snapshots/`, listed in the target's `compile_data` and compared with `include_str!`; no snapshot library.
 - Screen tests additionally carry `desktop`, `local`, `exclusive`. `desktop` is not a layer. Keep them short: they share user focus/keyboard. `exclusive` serializes them within one Bazel run only; do not run desktop tests from two worktrees at once.
 
 ## Exercise real products
