@@ -1,0 +1,2 @@
+# Fixtures are test input byte for byte: crlf.md must keep its CRLF endings.
+libs/rust/kinds/markdown/fixtures/*.md -text
