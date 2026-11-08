@@ -1,7 +1,12 @@
 use std::ffi::OsString;
+use std::path::PathBuf;
 
+use bilbo_cli::console::env::Env;
 use bilbo_cli::console::view::View;
+use bilbo_cli::remember::view;
 use bilbo_cli::run;
+use bilbo_kinds::remember::{Item, Outcome, Output};
+use bilbo_store::id::Id;
 
 fn args(list: &[&str]) -> Vec<OsString> {
     std::iter::once("bilbo")
@@ -11,14 +16,14 @@ fn args(list: &[&str]) -> Vec<OsString> {
 }
 
 fn stdout(list: &[&str], view: &View) -> String {
-    let outcome = run(&args(list)).expect("a result");
+    let outcome = run(&args(list), &mut Env::quiet()).expect("a result");
     assert_eq!(outcome.exit_code(), 0, "{list:?}");
     assert!(outcome.stderr_lines(view).is_empty(), "{list:?}");
     outcome.stdout(view)
 }
 
 fn stderr(list: &[&str], view: &View) -> String {
-    let failure = run(&args(list)).expect_err("a failure");
+    let failure = run(&args(list), &mut Env::quiet()).expect_err("a failure");
     assert_eq!(failure.exit_code(), 2, "{list:?}");
     let mut text = failure.stderr_lines(view).join("\n");
     text.push('\n');
@@ -95,6 +100,61 @@ fn a_usage_error_on_a_terminal_is_a_marked_message() {
     );
     assert_eq!(
         stderr(&["frob"], &unpainted()),
-        "■  unknown verb 'frob'\n   usage: bilbo <verb> [<args>]...\n   see bilbo --help\n"
+        "■  unknown verb 'frob'\n   usage: bilbo <verb> [<args>]...\n   verbs: remember\n   see bilbo --help\n"
     );
+}
+
+fn remembered() -> Output {
+    let item = |name: &str, outcome| Item {
+        path: PathBuf::from(name),
+        outcome,
+    };
+    let id = |byte: u8| Id::from_bytes([byte; 16]);
+    Output {
+        target: PathBuf::from("/notes"),
+        kind: Some("markdown".to_owned()),
+        claimed: 8,
+        items: vec![
+            item("/notes/bad.md", Outcome::Refused("not UTF-8".to_owned())),
+            item("/notes/a.md", Outcome::New(id(1))),
+            item("/notes/b.md", Outcome::New(id(2))),
+            item("/notes/c.md", Outcome::Appended(id(3))),
+            item("/notes/d.md", Outcome::NewGeneration(id(4))),
+            item("/notes/e.md", Outcome::Unchanged(id(5))),
+            item("/notes/f.md", Outcome::Unchanged(id(6))),
+            item("/notes/g.md", Outcome::Unchanged(id(7))),
+        ],
+        records: 1234,
+        raw_bytes: 56789,
+        stored_bytes: 12345,
+    }
+}
+
+#[test]
+fn the_remember_output_in_the_plain_view() {
+    assert_eq!(
+        view::plain(&remembered()),
+        include_str!("snapshots/remember-output.txt")
+    );
+}
+
+#[test]
+fn the_remember_output_on_a_terminal() {
+    assert_eq!(
+        view::human(&remembered(), &View::HUMAN),
+        include_str!("snapshots/remember-output.human.ansi")
+    );
+}
+
+#[test]
+fn the_remember_page_is_the_same_from_every_help_form() {
+    let page = include_str!("snapshots/remember-help.txt");
+    for form in [
+        &["remember", "--help"][..],
+        &["remember", "-h"],
+        &["help", "remember"],
+        &["help", "remember", "--help"],
+    ] {
+        assert_eq!(stdout(form, &View::PLAIN), page, "{form:?}");
+    }
 }

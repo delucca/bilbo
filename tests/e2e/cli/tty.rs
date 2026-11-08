@@ -30,10 +30,10 @@ struct Seen {
 }
 
 fn capture(command: Command, tty: &Tty) -> Seen {
-    capture_within(command, tty, DEADLINE)
+    capture_within(command, tty, Stdio::piped(), DEADLINE)
 }
 
-fn capture_within(mut command: Command, tty: &Tty, deadline: Duration) -> Seen {
+fn capture_within(mut command: Command, tty: &Tty, other: Stdio, deadline: Duration) -> Seen {
     command.stdin(Stdio::null());
     let master = openpt(OpenptFlags::RDWR | OpenptFlags::NOCTTY).expect("a pty master");
     grantpt(&master).expect("grantpt");
@@ -46,17 +46,19 @@ fn capture_within(mut command: Command, tty: &Tty, deadline: Duration) -> Seen {
         .expect("the pty slave");
     let on_terminal = || Stdio::from(slave.try_clone().expect("a slave handle"));
     match tty {
-        Tty::Stdout => command.stdout(on_terminal()).stderr(Stdio::piped()),
-        Tty::Stderr => command.stdout(Stdio::piped()).stderr(on_terminal()),
+        Tty::Stdout => command.stdout(on_terminal()).stderr(other),
+        Tty::Stderr => command.stdout(other).stderr(on_terminal()),
     };
     let mut child = command.spawn().expect("the command starts");
-    let mut pipe: Box<dyn Read + Send> = match tty {
-        Tty::Stdout => Box::new(child.stderr.take().expect("a piped stderr")),
-        Tty::Stderr => Box::new(child.stdout.take().expect("a piped stdout")),
+    let pipe: Option<Box<dyn Read + Send>> = match tty {
+        Tty::Stdout => child.stderr.take().map(|p| Box::new(p) as _),
+        Tty::Stderr => child.stdout.take().map(|p| Box::new(p) as _),
     };
     let piped = thread::spawn(move || {
         let mut text = Vec::new();
-        pipe.read_to_end(&mut text).expect("reads the pipe");
+        if let Some(mut pipe) = pipe {
+            pipe.read_to_end(&mut text).expect("reads the pipe");
+        }
         text
     });
     let flags = fcntl_getfl(&master).expect("flags");
@@ -116,7 +118,7 @@ fn an_error_on_a_terminal_stderr_is_marked_while_a_piped_stdout_stays_plain() {
     assert_eq!(seen.piped, "");
     assert_eq!(
         seen.terminal,
-        "\x1b[31m■\x1b[39m  unknown verb 'frob'\n   \x1b[2musage: bilbo <verb> [<args>]...\x1b[22m\n   \x1b[2msee\x1b[22m \x1b[36mbilbo --help\x1b[39m\n"
+        "\x1b[31m■\x1b[39m  unknown verb 'frob'\n   \x1b[2musage: bilbo <verb> [<args>]...\x1b[22m\n   \x1b[2mverbs: remember\x1b[22m\n   \x1b[2msee\x1b[22m \x1b[36mbilbo --help\x1b[39m\n"
     );
 }
 
@@ -127,7 +129,7 @@ fn an_error_on_a_piped_stderr_is_plain_while_a_terminal_stdout_is_untouched() {
     assert_eq!(seen.terminal, "");
     assert_eq!(
         seen.piped,
-        "bilbo: unknown verb 'frob'\nbilbo: usage: bilbo <verb> [<args>]...\nbilbo: see 'bilbo --help'\n"
+        "bilbo: unknown verb 'frob'\nbilbo: usage: bilbo <verb> [<args>]...\nbilbo: verbs: remember\nbilbo: see 'bilbo --help'\n"
     );
 }
 
@@ -175,7 +177,12 @@ fn a_command_that_outlives_the_deadline_is_killed_and_the_test_fails() {
         .env_clear()
         .args(["-c", "echo pid=$$; exec /bin/sleep 37"]);
     let failure = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        capture_within(command, &Tty::Stdout, Duration::from_millis(500))
+        capture_within(
+            command,
+            &Tty::Stdout,
+            Stdio::piped(),
+            Duration::from_millis(500),
+        )
     }))
     .expect_err("a command that never ends fails the test");
     let message = failure
@@ -211,4 +218,21 @@ fn a_command_gets_no_stdin_from_the_test() {
     let seen = capture(command, &Tty::Stdout);
     assert_eq!(seen.code, 0);
     assert_eq!(seen.terminal, "");
+}
+
+#[test]
+fn a_failed_stdout_write_is_reported_in_the_view_of_a_terminal_stderr() {
+    let mut command = Command::new(binary());
+    command.env_clear().envs(ENV).arg("--help");
+    let unwritable = Stdio::from(File::open("/dev/null").expect("/dev/null"));
+    let seen = capture_within(command, &Tty::Stderr, unwritable, DEADLINE);
+    assert_eq!(seen.code, 1);
+    assert_eq!(seen.piped, "");
+    assert!(
+        seen.terminal
+            .starts_with("\x1b[31m■\x1b[39m  cannot write to stdout: "),
+        "{}",
+        seen.terminal
+    );
+    assert_eq!(seen.terminal.lines().count(), 1, "{}", seen.terminal);
 }

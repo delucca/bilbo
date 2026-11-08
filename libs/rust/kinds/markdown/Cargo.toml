@@ -1,0 +1,14 @@
+[package]
+name = "bilbo-markdown"
+description = "The markdown kind: .md files, one record per line."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+bilbo-kinds.workspace = true
+bilbo-store.workspace = true
+
+[lints]
+workspace = true

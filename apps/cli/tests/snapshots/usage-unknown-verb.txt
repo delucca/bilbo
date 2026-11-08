@@ -1,3 +1,4 @@
 bilbo: unknown verb 'frob'
 bilbo: usage: bilbo <verb> [<args>]...
+bilbo: verbs: remember
 bilbo: see 'bilbo --help'

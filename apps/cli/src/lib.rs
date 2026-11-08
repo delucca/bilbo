@@ -2,12 +2,14 @@ pub mod console;
 pub mod help;
 #[cfg(test)]
 mod probe;
+pub mod remember;
 
 use std::ffi::OsString;
 
 use clap::{Command, CommandFactory, Parser, Subcommand};
 
 use crate::console::args::{Parsed, parse, typed, usage, verbs};
+use crate::console::env::Env;
 use crate::console::outcome::{Failure, Outcome};
 use crate::help::overview;
 use crate::help::page::shape;
@@ -28,7 +30,9 @@ pub struct Cli {
 }
 
 #[derive(Debug, Subcommand)]
-pub enum Verb {}
+pub enum Verb {
+    Remember(remember::Args),
+}
 
 pub fn bilbo() -> Command {
     let root = Cli::command();
@@ -37,11 +41,11 @@ pub fn bilbo() -> Command {
         .fold(root, |root, name| root.mut_subcommand(name, shape))
 }
 
-pub fn run(args: &[OsString]) -> Result<Outcome, Failure> {
-    run_command(&bilbo(), args)
+pub fn run(args: &[OsString], env: &mut Env) -> Result<Outcome, Failure> {
+    run_command(&bilbo(), args, env)
 }
 
-pub fn run_command(root: &Command, args: &[OsString]) -> Result<Outcome, Failure> {
+pub fn run_command(root: &Command, args: &[OsString], env: &mut Env) -> Result<Outcome, Failure> {
     match parse(root, args)? {
         Parsed::Help(topic) => help::run(root, &topic),
         Parsed::Version => Ok(Outcome::new(format!(
@@ -50,6 +54,7 @@ pub fn run_command(root: &Command, args: &[OsString]) -> Result<Outcome, Failure
         ))),
         Parsed::Matches(matches) => match typed::<Cli>(root, &matches)?.verb {
             None => Err(usage(root, "missing verb".to_owned(), None)),
+            Some(Verb::Remember(args)) => remember::run(root, args, env),
         },
     }
 }
@@ -59,6 +64,7 @@ mod tests {
     use std::ffi::OsString;
 
     use super::{bilbo, run, run_command};
+    use crate::console::env::Env;
     use crate::console::outcome::Failure;
     use crate::console::view::View;
     use crate::probe::{self, with_verb};
@@ -68,14 +74,14 @@ mod tests {
     }
 
     fn stdout(root: &clap::Command, list: &[&str]) -> String {
-        run_command(root, &args(list))
+        run_command(root, &args(list), &mut Env::quiet())
             .unwrap_or_else(|failure| panic!("{list:?}: {failure:?}"))
             .stdout(&View::PLAIN)
     }
 
     #[test]
     fn a_newline_in_a_help_topic_cannot_cut_the_reason() {
-        let reason = |list: &[&str]| match run_command(&bilbo(), &args(list)) {
+        let reason = |list: &[&str]| match run_command(&bilbo(), &args(list), &mut Env::quiet()) {
             Err(Failure::Usage { reason, .. }) => reason,
             other => panic!("{list:?}: {other:?}"),
         };
@@ -93,7 +99,7 @@ mod tests {
     #[test]
     fn help_and_version_are_results_that_exit_0() {
         for list in [&["bilbo", "--help"][..], &["bilbo", "--version"]] {
-            let outcome = run(&args(list)).expect("a result");
+            let outcome = run(&args(list), &mut Env::quiet()).expect("a result");
             assert_eq!(outcome.exit_code(), 0);
             assert!(outcome.stderr_lines(&View::PLAIN).is_empty());
         }
@@ -139,9 +145,13 @@ mod tests {
     #[test]
     fn a_verb_page_is_bold_in_its_headings_and_option_columns() {
         let root = with_verb(bilbo(), probe::verb());
-        let human = run_command(&root, &args(&["bilbo", "probe", "--help"]))
-            .expect("a page")
-            .stdout(&View::HUMAN);
+        let human = run_command(
+            &root,
+            &args(&["bilbo", "probe", "--help"]),
+            &mut Env::quiet(),
+        )
+        .expect("a page")
+        .stdout(&View::HUMAN);
         for bold in [
             "\x1b[1mUsage:\x1b[22m\n  bilbo probe",
             "\x1b[1mOptions:\x1b[22m\n",

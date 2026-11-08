@@ -11,6 +11,9 @@ name = "bilbo"
 path = "src/main.rs"
 
 [dependencies]
+bilbo-kinds.workspace = true
+bilbo-markdown.workspace = true
+bilbo-store.workspace = true
 clap.workspace = true
 
 [dev-dependencies]

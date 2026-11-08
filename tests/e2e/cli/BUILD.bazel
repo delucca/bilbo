@@ -5,6 +5,7 @@ bilbo_rust_test(
     name = "cli",
     srcs = [
         "cli.rs",
+        "remember.rs",
         "tty.rs",
     ],
     crate_root = "cli.rs",

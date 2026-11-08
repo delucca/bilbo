@@ -1,0 +1,299 @@
+use std::fs;
+
+use bilbo_store::entries::{
+    Capture, CaptureError, Captured, Change, Cursor, Entries, Generation, Meta, RecordRange,
+    StoreError,
+};
+use bilbo_store::id::Id;
+
+use crate::scratch::{
+    Scratch, catalog, id_of, keep, keep_as, open, open_seg, origin, read_records, try_keep,
+};
+
+#[test]
+fn a_first_capture_is_new_and_reads_back_byte_for_byte() {
+    let scratch = Scratch::new("first_capture");
+    let layout = scratch.layout();
+    let mut store = open(&layout);
+    let bytes = b"one\ntwo\nthree";
+    let captured = keep(&mut store, "a.md", bytes);
+    let Captured::New(new) = captured else {
+        panic!("expected New, got {captured:?}");
+    };
+    assert_eq!(new.generation, Generation(1));
+    assert_eq!(new.records, RecordRange { first: 1, count: 3 });
+    assert_eq!(new.raw_bytes, bytes.len() as u64);
+    assert_eq!(
+        new.stored_bytes,
+        fs::metadata(open_seg(&layout)).expect("open.seg").len() - 12
+    );
+    assert_eq!(read_records(&store, new.id, 1, 3), bytes);
+    let middle = store
+        .read(new.id, Generation(1), RecordRange { first: 2, count: 1 })
+        .expect("read");
+    assert_eq!(middle, vec![b"two\n".to_vec()]);
+    let meta = store.meta(new.id).expect("meta").expect("some");
+    assert_eq!(meta.kind, "markdown");
+    assert_eq!(meta.origin, Some(origin("a.md")));
+    assert_eq!(meta.labels, vec!["p".to_string()]);
+    let head = store
+        .by_origin(&origin("a.md"))
+        .expect("head")
+        .expect("some");
+    assert_eq!(head.id, new.id);
+    assert_eq!(head.generation, Generation(1));
+    assert_eq!(head.records, 3);
+    assert_eq!(head.mark.end, bytes.len() as u64);
+}
+
+#[test]
+fn the_same_bytes_again_are_unchanged_and_write_nothing() {
+    let scratch = Scratch::new("unchanged");
+    let layout = scratch.layout();
+    let mut store = open(&layout);
+    let first = keep(&mut store, "a.md", b"one\ntwo\n");
+    let before = fs::metadata(open_seg(&layout)).expect("open.seg").len();
+    let again = keep(&mut store, "a.md", b"one\ntwo\n");
+    assert_eq!(again, Captured::Unchanged(id_of(&first)));
+    assert_eq!(
+        fs::metadata(open_seg(&layout)).expect("open.seg").len(),
+        before
+    );
+}
+
+#[test]
+fn bytes_after_the_prefix_are_appended_as_the_next_records() {
+    let scratch = Scratch::new("append");
+    let mut store = open(&scratch.layout());
+    let id = id_of(&keep(&mut store, "a.md", b"one\ntwo\n"));
+    let grown = b"one\ntwo\nthree\nfour";
+    let Captured::Appended(appended) = keep(&mut store, "a.md", grown) else {
+        panic!("expected Appended");
+    };
+    assert_eq!(appended.id, id);
+    assert_eq!(appended.generation, Generation(1));
+    assert_eq!(appended.records, RecordRange { first: 3, count: 2 });
+    assert_eq!(appended.raw_bytes, "three\nfour".len() as u64);
+    assert_eq!(read_records(&store, id, 1, 4), grown);
+}
+
+#[test]
+fn a_changed_prefix_starts_a_new_generation_and_the_old_one_stays_readable() {
+    let scratch = Scratch::new("new_generation");
+    let mut store = open(&scratch.layout());
+    let id = id_of(&keep(&mut store, "a.md", b"one\ntwo\n"));
+    let Captured::NewGeneration(second) = keep(&mut store, "a.md", b"one\nTWO\nthree\n") else {
+        panic!("expected NewGeneration");
+    };
+    assert_eq!(second.id, id);
+    assert_eq!(second.generation, Generation(2));
+    assert_eq!(second.records, RecordRange { first: 1, count: 3 });
+    assert_eq!(second.raw_bytes, "one\nTWO\nthree\n".len() as u64);
+    assert_eq!(read_records(&store, id, 1, 2), b"one\ntwo\n");
+    assert_eq!(read_records(&store, id, 2, 3), b"one\nTWO\nthree\n");
+    let head = store
+        .by_origin(&origin("a.md"))
+        .expect("head")
+        .expect("some");
+    assert_eq!(head.generation, Generation(2));
+}
+
+#[test]
+fn an_empty_file_stays_unchanged_grows_by_append_and_empties_into_a_new_generation() {
+    let scratch = Scratch::new("empty_file");
+    let layout = scratch.layout();
+    let mut store = open(&layout);
+    let first = keep(&mut store, "e.md", b"");
+    let Captured::New(new) = first else {
+        panic!("expected New");
+    };
+    let id = new.id;
+    assert_eq!(new.records, RecordRange { first: 1, count: 0 });
+    drop(store);
+
+    let mut store = open(&layout);
+    assert_eq!(keep(&mut store, "e.md", b""), Captured::Unchanged(id));
+    let Captured::Appended(grown) = keep(&mut store, "e.md", b"x\n") else {
+        panic!("expected Appended");
+    };
+    assert_eq!(grown.generation, Generation(1));
+    assert_eq!(grown.records, RecordRange { first: 1, count: 1 });
+    let Captured::NewGeneration(emptied) = keep(&mut store, "e.md", b"") else {
+        panic!("expected NewGeneration");
+    };
+    assert_eq!(emptied.generation, Generation(2));
+    assert_eq!(emptied.records, RecordRange { first: 1, count: 0 });
+    drop(store);
+
+    let mut store = open(&layout);
+    assert_eq!(keep(&mut store, "e.md", b""), Captured::Unchanged(id));
+    drop(store);
+
+    fs::remove_file(catalog(&layout)).expect("delete the catalog");
+    let mut store = open(&layout);
+    assert_eq!(keep(&mut store, "e.md", b""), Captured::Unchanged(id));
+    assert_eq!(read_records(&store, id, 1, 1), b"x\n");
+    assert!(
+        store
+            .read(id, Generation(2), RecordRange { first: 1, count: 1 })
+            .is_err()
+    );
+    assert_eq!(
+        store
+            .read(id, Generation(2), RecordRange { first: 1, count: 0 })
+            .expect("read"),
+        Vec::<Vec<u8>>::new()
+    );
+}
+
+#[test]
+fn a_given_id_is_used_at_first_capture_only() {
+    let scratch = Scratch::new("given_id");
+    let mut store = open(&scratch.layout());
+    let given = Id::parse("01JC5Q3V7XKM4P8R2T6W9YB0DE").expect("id");
+    let other = Id::parse("01JC5Q3V7XKM4P8R2T6W9YB0DF").expect("id");
+    let first = keep_as(&mut store, "a.md", b"one\n", Some(given));
+    assert_eq!(id_of(&first), given);
+    let grown = keep_as(&mut store, "a.md", b"one\ntwo\n", Some(other));
+    assert_eq!(id_of(&grown), given);
+    assert!(store.meta(other).expect("meta").is_none());
+}
+
+#[test]
+fn an_id_held_by_another_origin_is_refused() {
+    let scratch = Scratch::new("id_clash");
+    let layout = scratch.layout();
+    let mut store = open(&layout);
+    let given = Id::parse("01JC5Q3V7XKM4P8R2T6W9YB0DE").expect("id");
+    keep_as(&mut store, "a.md", b"one\n", Some(given));
+    let before = fs::metadata(open_seg(&layout)).expect("open.seg").len();
+    let refused = try_keep(&mut store, "b.md", b"two\n", Some(given));
+    match refused {
+        Err(CaptureError::IdHeld { id, by }) => {
+            assert_eq!(id, given);
+            assert_eq!(by, Some(origin("a.md")));
+        }
+        other => panic!("expected IdHeld, got {other:?}"),
+    }
+    assert_eq!(
+        fs::metadata(open_seg(&layout)).expect("open.seg").len(),
+        before
+    );
+    assert!(store.by_origin(&origin("b.md")).expect("head").is_none());
+}
+
+#[test]
+fn records_that_do_not_cover_the_bytes_are_refused() {
+    let scratch = Scratch::new("bad_records");
+    let mut store = open(&scratch.layout());
+    let origin = origin("a.md");
+    let refused = store.capture(&Capture {
+        origin: &origin,
+        kind: "markdown",
+        id: None,
+        labels: &[],
+        bytes: b"one\ntwo\n",
+        ends: &[4],
+    });
+    assert!(matches!(refused, Err(CaptureError::Records(_))));
+}
+
+#[test]
+fn set_meta_replaces_the_meta_and_survives_a_rebuild() {
+    let scratch = Scratch::new("set_meta");
+    let layout = scratch.layout();
+    let mut store = open(&layout);
+    let id = id_of(&keep(&mut store, "a.md", b"one\n"));
+    let mut meta = store.meta(id).expect("meta").expect("some");
+    meta.kind = "other".into();
+    meta.labels = vec!["x".into(), "y".into()];
+    meta.origin = Some(origin("moved.md"));
+    store.set_meta(id, &meta).expect("set_meta");
+    assert_eq!(store.meta(id).expect("meta"), Some(meta.clone()));
+    assert!(store.by_origin(&origin("a.md")).expect("head").is_none());
+    assert_eq!(
+        store
+            .by_origin(&origin("moved.md"))
+            .expect("head")
+            .map(|h| h.id),
+        Some(id)
+    );
+
+    let wrong = Meta {
+        id: Id::parse("01JC5Q3V7XKM4P8R2T6W9YB0DF").expect("id"),
+        ..meta.clone()
+    };
+    assert!(matches!(
+        store.set_meta(id, &wrong),
+        Err(StoreError::MetaMismatch { .. })
+    ));
+    assert!(matches!(
+        store.set_meta(wrong.id, &wrong),
+        Err(StoreError::Missing(_))
+    ));
+    let other = id_of(&keep(&mut store, "b.md", b"two\n"));
+    let clash = Meta {
+        origin: Some(origin("moved.md")),
+        ..store.meta(other).expect("meta").expect("some")
+    };
+    assert_eq!(
+        store.set_meta(other, &clash).map_err(|e| e.to_string()),
+        Err(format!("origin file:/notes/moved.md is held by {id}"))
+    );
+    drop(store);
+
+    fs::remove_file(catalog(&layout)).expect("delete the catalog");
+    let store = open(&layout);
+    assert_eq!(store.meta(id).expect("meta"), Some(meta));
+}
+
+#[test]
+fn changes_list_every_meta_and_body_frame_in_order() {
+    let scratch = Scratch::new("changes");
+    let mut store = open(&scratch.layout());
+    let a = id_of(&keep(&mut store, "a.md", b"one\n"));
+    let b = id_of(&keep(&mut store, "b.md", b"x\ny\n"));
+    keep(&mut store, "a.md", b"one\ntwo\n");
+    let meta = store.meta(a).expect("meta").expect("some");
+    store.set_meta(a, &meta).expect("set_meta");
+    keep(&mut store, "b.md", b"changed\n");
+    let (changes, cursor) = store.changes(&Cursor::start()).expect("changes");
+    let records = |id, generation, first, count| Change::Records {
+        id,
+        generation: Generation(generation),
+        records: RecordRange { first, count },
+    };
+    assert_eq!(
+        changes,
+        vec![
+            Change::Meta(a),
+            records(a, 1, 1, 1),
+            Change::Meta(b),
+            records(b, 1, 1, 2),
+            records(a, 1, 2, 1),
+            Change::Meta(a),
+            records(b, 2, 1, 1),
+        ]
+    );
+    assert!(
+        changes
+            .iter()
+            .all(|change| change.id() == a || change.id() == b)
+    );
+    assert_eq!(store.changes(&cursor).expect("changes").0, Vec::new());
+    keep(&mut store, "c.md", b"z\n");
+    let (later, _) = store.changes(&cursor).expect("changes");
+    assert_eq!(later.len(), 2);
+}
+
+#[test]
+fn a_cursor_from_another_catalog_starts_over() {
+    let scratch = Scratch::new("foreign_cursor");
+    let mut store = open(&scratch.layout());
+    keep(&mut store, "a.md", b"one\n");
+    keep(&mut store, "b.md", b"two\n");
+    let (all, _) = store.changes(&Cursor::start()).expect("changes");
+    assert_eq!(all.len(), 4);
+    let (again, _) = store.changes(&Cursor::at([9; 16], 3)).expect("changes");
+    assert_eq!(again, all);
+}

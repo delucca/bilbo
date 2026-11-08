@@ -1,5 +1,5 @@
 pub const DESCRIPTION: &str = "\
-bilbo keeps durable memory for coding agents: it ingests their sessions and
+bilbo keeps durable memory for coding agents: it remembers their sessions and
 the pages they cite, and recalls them when a later session asks.";
 
 pub const USAGE: &str = "bilbo <verb> [<args>]...";
@@ -8,7 +8,8 @@ pub const TEMPLATE: &str = "{about-with-newline}\n{usage-heading} {usage}{after-
 
 /// The Paths block repeats `bilbo_store::paths`; nothing checks it.
 pub const AFTER: &str = "\
-No verbs yet.
+Keep:
+  remember  Keep files as entries; a later run keeps what grew or changed
 
 Exit codes: 0 success; 1 refused, problems found or nothing matched; 2 usage
 or config error.

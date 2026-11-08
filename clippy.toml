@@ -10,4 +10,7 @@ disallowed-macros = [
 disallowed-methods = [
     { path = "std::io::stdout", reason = "main.rs is the only writer of stdout and stderr" },
     { path = "std::io::stderr", reason = "main.rs is the only writer of stdout and stderr" },
+    { path = "std::env::var", reason = "the environment reaches bilbo only through main.rs and Env" },
+    { path = "std::env::var_os", reason = "the environment reaches bilbo only through main.rs and Env" },
+    { path = "std::env::vars", reason = "the environment reaches bilbo only through main.rs and Env" },
 ]

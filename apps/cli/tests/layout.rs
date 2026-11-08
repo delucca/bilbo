@@ -6,7 +6,7 @@ use std::sync::OnceLock;
 use proc_macro2::{Delimiter, TokenStream, TokenTree};
 use syn::visit::{self, Visit};
 
-const COMPONENTS: [&str; 1] = ["help"];
+const COMPONENTS: [&str; 2] = ["help", "remember"];
 const MODULE: &str = "console";
 const THEME: [&str; 2] = ["console", "theme"];
 const ROOTS: [&str; 2] = ["crate", "bilbo_cli"];
@@ -594,6 +594,10 @@ fn analyze(sources: &BTreeMap<String, String>, components: &[&str]) -> Report {
     report
 }
 
+#[expect(
+    clippy::disallowed_methods,
+    reason = "Bazel names the scanned tree through LAYOUT_ROOT"
+)]
 fn src() -> PathBuf {
     match std::env::var("LAYOUT_ROOT") {
         Ok(root) => {

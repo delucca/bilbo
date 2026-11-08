@@ -231,7 +231,7 @@ mod tests {
         reason
     }
 
-    const TOP: &str = "usage: bilbo <verb> [<args>]... | bilbo --help";
+    const TOP: &str = "usage: bilbo <verb> [<args>]... / verbs: remember | bilbo --help";
 
     #[test]
     fn the_definition_is_valid() {

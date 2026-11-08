@@ -3,6 +3,7 @@ use std::io::Read;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 
+mod remember;
 mod tty;
 
 struct Run {
@@ -11,6 +12,10 @@ struct Run {
     stderr: String,
 }
 
+#[expect(
+    clippy::disallowed_methods,
+    reason = "a test finds the binary through its runfiles variable"
+)]
 pub(crate) fn binary() -> PathBuf {
     if let Some(path) = option_env!("CARGO_BIN_EXE_bilbo") {
         return PathBuf::from(path);
@@ -36,7 +41,8 @@ fn bilbo<S: AsRef<OsStr>>(args: &[S], env: &[(&str, &str)]) -> Run {
 }
 
 const OVERVIEW_START: &str = "bilbo keeps durable memory for coding agents: ";
-const TOP_USAGE: &str = "bilbo: usage: bilbo <verb> [<args>]...\nbilbo: see 'bilbo --help'\n";
+const TOP_USAGE: &str =
+    "bilbo: usage: bilbo <verb> [<args>]...\nbilbo: verbs: remember\nbilbo: see 'bilbo --help'\n";
 
 #[test]
 fn every_help_form_prints_the_overview_on_stdout_and_exits_0() {

@@ -1,6 +1,6 @@
 #![expect(
     clippy::disallowed_methods,
-    reason = "main.rs is the only writer of stdout and stderr"
+    reason = "main.rs is the only writer of stdout and stderr and the only reader of the environment"
 )]
 
 use std::ffi::OsString;
@@ -9,6 +9,7 @@ use std::io::{self, IsTerminal, Write};
 use std::os::fd::AsFd;
 use std::process::ExitCode;
 
+use bilbo_cli::console::env::Env;
 use bilbo_cli::console::outcome::Failure;
 use bilbo_cli::console::streams::{self, Emit};
 use bilbo_cli::console::view;
@@ -22,7 +23,16 @@ fn main() -> ExitCode {
     let err = view::decide(io::stderr().is_terminal(), macos, |name| {
         std::env::var_os(name)
     });
-    let plan = streams::plan(&bilbo_cli::run(&args), &out, &err);
+    let mut env = Env {
+        var: Box::new(|name| std::env::var_os(name)),
+        stdin: Box::new(io::stdin()),
+        notice: Box::new(move |message| {
+            for line in message.lines(&err) {
+                let _ = writeln!(io::stderr().lock(), "{line}");
+            }
+        }),
+    };
+    let plan = streams::plan(&bilbo_cli::run(&args, &mut env), &out, &err);
     ExitCode::from(streams::execute(&plan, &err, &mut perform))
 }
 

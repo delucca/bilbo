@@ -165,8 +165,7 @@ mod tests {
         );
         for plain in [
             "Results go to stdout; diagnostics to stderr, prefixed 'bilbo: ' off a terminal.",
-            "bilbo keeps durable memory for coding agents: it ingests their sessions and",
-            "No verbs yet.",
+            "bilbo keeps durable memory for coding agents: it remembers their sessions and",
             "   continued",
             "      text that is not an option  x",
             "",

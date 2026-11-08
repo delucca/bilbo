@@ -7,6 +7,7 @@ use crate::console::view::View;
 pub enum Exit {
     Success,
     NothingMatched,
+    Refused,
 }
 
 type Human = Box<dyn Fn(&View) -> String>;
@@ -63,7 +64,7 @@ impl Outcome {
     pub fn exit_code(&self) -> u8 {
         match self.exit {
             Exit::Success => 0,
-            Exit::NothingMatched => 1,
+            Exit::NothingMatched | Exit::Refused => 1,
         }
     }
 }
@@ -88,6 +89,12 @@ pub enum Failure {
     Config(String),
     Refused(String),
     Output(String),
+}
+
+impl From<bilbo_store::paths::ConfigError> for Failure {
+    fn from(error: bilbo_store::paths::ConfigError) -> Self {
+        Self::Config(crate::console::message::sanitize(&error.to_string()))
+    }
 }
 
 impl Failure {
@@ -126,6 +133,8 @@ impl Failure {
 
 #[cfg(test)]
 mod tests {
+    use bilbo_store::paths::ConfigError;
+
     use super::{Exit, Failure, Outcome};
     use crate::console::message::{Detail, Mark, Message};
     use crate::console::view::View;
@@ -213,6 +222,26 @@ mod tests {
         assert_eq!(Failure::Config(String::new()).exit_code(), 2);
         assert_eq!(Failure::Refused(String::new()).exit_code(), 1);
         assert_eq!(Failure::Output(String::new()).exit_code(), 1);
+    }
+
+    #[test]
+    fn a_refused_run_exits_1_without_a_failure() {
+        let outcome = Outcome::new("x").with_exit(Exit::Refused);
+        assert_eq!(outcome.exit_code(), 1);
+        assert_eq!(outcome.stdout(&View::PLAIN), "x");
+    }
+
+    #[test]
+    fn a_config_error_is_a_config_failure() {
+        let failure = Failure::from(ConfigError::Relative {
+            name: "BILBO_HOME",
+            value: "x".into(),
+        });
+        assert_eq!(
+            failure,
+            Failure::Config("BILBO_HOME is not an absolute path: x".to_owned())
+        );
+        assert_eq!(failure.exit_code(), 2);
     }
 
     #[test]

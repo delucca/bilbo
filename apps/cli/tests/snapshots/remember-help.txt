@@ -1,0 +1,37 @@
+bilbo remember: keep files as entries, and what grew or changed in them since.
+
+Usage:
+  bilbo remember <file|folder> [--kind <kind>] [--project <project>]
+
+Options:
+      --kind <kind>        Run this kind, not the one that claims the files
+      --project <project>  Label each new entry with this project
+
+Kinds:
+  markdown  .md files, one record per line
+Without --kind, the one kind that claims files under the target runs; when
+several do, name one with --kind.
+
+A folder is walked whole, skipping the hidden entries and symbolic links it
+finds; a target named here is taken as given, even a link or a hidden name,
+and its origin is the resolved path. A kind tests the resolved file, so a
+note.md link to a file without .md keeps nothing. A file remembered before
+is found by its path: a run keeps only the records it gained, or starts a
+new generation when an earlier record changed, and the older generation
+stays. --project labels new entries only. A file that left the folder keeps
+its entry.
+
+Output:
+  new <n>, appended <n>, new generation <n>, unchanged <n>, refused <n>
+  records <n>, raw bytes <n>, stored bytes <n>
+Raw bytes are the input bytes kept; stored bytes are what the store grew by.
+Each refused file is named on stderr with its reason.
+
+Exit: 0 success; 1 a file was refused, nothing to keep, a missing target or a
+store failure; 2 usage or config error.
+
+Examples:
+  bilbo remember ~/.local/share/bilbo/notes
+  bilbo remember notes/decision-x.md --project bilbo
+
+Docs: reference/commands.md#remember

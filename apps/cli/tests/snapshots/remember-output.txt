@@ -1,0 +1,2 @@
+new 2, appended 1, new generation 1, unchanged 3, refused 1
+records 1234, raw bytes 56789, stored bytes 12345
