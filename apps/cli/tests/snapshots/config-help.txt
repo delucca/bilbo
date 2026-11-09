@@ -2,24 +2,20 @@ bilbo config: show each setting, its value and where the value came from.
 
 Usage:
   bilbo config [<key>]
-
-A key takes the first of these that sets it: a flag, its variable, the config
-file, its default. The config file is $BILBO_CONFIG, else
-$XDG_CONFIG_HOME/bilbo/config.toml, else ~/.config/bilbo/config.toml; when it
-is missing every key takes its variable or its default, unless BILBO_CONFIG
-names it. reference/configuration.md says what each key means.
+The config file is $BILBO_CONFIG, else $XDG_CONFIG_HOME/bilbo/config.toml,
+else ~/.config/bilbo/config.toml.
 
 Output:
   <key> = <value> (<origin>)
-One line per key, the value as TOML; the origin is default, <file>:<line>,
-the variable or the flag. With <key>, its value alone, a string without its
-quotes.
+One line per key, the value as TOML; the origin is default, <file>:<line>, a
+variable or a flag. With <key>, its value alone, a string without its quotes.
 
-Exit: 0 success; 2 usage or config error: an unknown key, or a config file or
-variable bilbo refuses.
+Exit:
+  0  success
+  2  usage or config error: an unknown key, or a file or variable bilbo refuses
 
 Examples:
   bilbo config
   bilbo config paths.root
 
-Docs: reference/commands.md#config
+Docs: https://github.com/delucca/bilbo/wiki/Configuration

@@ -9,7 +9,7 @@ use std::ffi::OsString;
 
 use clap::{Command, CommandFactory, Parser, Subcommand};
 
-use crate::console::args::{Parsed, parse, typed, usage, verbs};
+use crate::console::args::{Parsed, parse, typed, usage, verbs, with_verbs};
 use crate::console::env::Env;
 use crate::console::outcome::{Failure, Outcome};
 use crate::console::settings::Settings;
@@ -67,7 +67,7 @@ pub fn run_command(
         ))),
         Parsed::Matches(matches) => {
             let Some(verb) = typed::<Cli>(root, &matches)?.verb else {
-                return Err(usage(root, "missing verb".to_owned(), None));
+                return Err(usage(root, with_verbs(root, "missing verb"), None));
             };
             let settings = settings?;
             match verb {
@@ -112,7 +112,10 @@ mod tests {
                 Err(Failure::Usage { reason, .. }) => reason,
                 other => panic!("{list:?}: {other:?}"),
             };
-        assert_eq!(reason(&["bilbo", "help", "a\nb"]), "unknown verb 'a\\nb'");
+        assert_eq!(
+            reason(&["bilbo", "help", "a\nb"]),
+            "unknown verb 'a\\nb'; the verbs are remember, config"
+        );
         assert_eq!(
             reason(&["bilbo", "help", "--a\nb"]),
             "unknown option '--a\\nb'"
@@ -129,6 +132,24 @@ mod tests {
             let outcome = run(&args(list), &mut Env::quiet(), unread()).expect("a result");
             assert_eq!(outcome.exit_code(), 0);
             assert!(outcome.stderr_lines(&View::PLAIN).is_empty());
+        }
+    }
+
+    #[test]
+    fn a_top_level_usage_error_is_two_lines() {
+        for list in [
+            &["bilbo"][..],
+            &["bilbo", "frob"],
+            &["bilbo", "--frobnicate"],
+            &["bilbo", "help", "frob"],
+            &["bilbo", "help", "frob", "x"],
+        ] {
+            let failure = run(&args(list), &mut Env::quiet(), unread()).expect_err("a usage error");
+            assert_eq!(failure.exit_code(), 2, "{list:?}");
+            for view in [View::PLAIN, View::HUMAN] {
+                let lines = failure.stderr_lines(&view);
+                assert_eq!(lines.len(), 2, "{list:?}: {lines:?}");
+            }
         }
     }
 
@@ -159,8 +180,8 @@ mod tests {
                 < at("\nOptions:\n")
         );
         assert!(at("\nOptions:\n") < at("\nOutput:\n"));
-        assert!(at("\nOutput:\n") < at("\nExit: "));
-        assert!(at("\nExit: ") < at("\nExamples:\n"));
+        assert!(at("\nOutput:\n") < at("\nExit:\n  0  "));
+        assert!(at("\nExit:\n  0  ") < at("\nExamples:\n"));
         assert!(at("\nExamples:\n") < at("\nDocs: "));
         assert!(!page.contains("--help"), "{page}");
         assert!(!page.contains("Only the long help says this."), "{page}");
@@ -170,7 +191,7 @@ mod tests {
     }
 
     #[test]
-    fn a_verb_page_is_bold_in_its_headings_and_option_columns() {
+    fn a_verb_page_on_a_terminal_is_styled() {
         let root = with_verb(bilbo(), probe::verb());
         let human = run_command(
             &root,
@@ -180,17 +201,22 @@ mod tests {
         )
         .expect("a page")
         .stdout(&View::HUMAN);
-        for bold in [
-            "\x1b[1mUsage:\x1b[22m\n  bilbo probe",
+        for styled in [
+            "\x1b[1mUsage:\x1b[22m\n  \x1b[36mbilbo probe",
+            "\x1b[36mbilbo probe [options] \x1b[39m\x1b[2m<word>\x1b[22m",
+            "\x1b[36mbilbo probe --all \x1b[39m\x1b[2m<word>\x1b[22m",
+            "\x1b[2mOne line per word.\x1b[22m",
             "\x1b[1mOptions:\x1b[22m\n",
-            "\x1b[1m-k, --kind <kind>\x1b[22m",
+            "\x1b[1m-k, --kind \x1b[22m\x1b[2m<kind>\x1b[22m",
             "\x1b[1m--all\x1b[22m",
-            "\x1b[1m--times <n>\x1b[22m",
+            "\x1b[1m--times \x1b[22m\x1b[2m<n>\x1b[22m",
             "\x1b[1mOutput:\x1b[22m\n",
+            "\n  \x1b[2m<word>\x1b[22m\n",
+            "\x1b[1mExit:\x1b[22m\n  \x1b[1m0\x1b[22m  success\n",
             "\x1b[1mExamples:\x1b[22m\n",
-            "\x1b[1mDocs:\x1b[22m reference",
+            "\x1b[1mDocs:\x1b[22m \x1b[2mhttps://",
         ] {
-            assert!(human.contains(bold), "{bold:?} missing in\n{human}");
+            assert!(human.contains(styled), "{styled:?} missing in\n{human}");
         }
     }
 }

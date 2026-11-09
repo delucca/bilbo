@@ -69,7 +69,7 @@ fn the_overview_is_the_same_from_every_help_form() {
 }
 
 #[test]
-fn the_overview_on_a_terminal_has_bold_headings_and_columns() {
+fn the_overview_on_a_terminal() {
     assert_eq!(
         stdout(&["--help"], &View::HUMAN),
         include_str!("snapshots/overview.human.ansi")
@@ -77,6 +77,30 @@ fn the_overview_on_a_terminal_has_bold_headings_and_columns() {
     assert_eq!(
         stdout(&["--help"], &unpainted()),
         include_str!("snapshots/overview.txt")
+    );
+}
+
+#[test]
+fn the_remember_page_on_a_terminal() {
+    assert_eq!(
+        stdout(&["remember", "--help"], &View::HUMAN),
+        include_str!("snapshots/remember-help.human.ansi")
+    );
+    assert_eq!(
+        stdout(&["remember", "--help"], &unpainted()),
+        include_str!("snapshots/remember-help.txt")
+    );
+}
+
+#[test]
+fn the_config_page_on_a_terminal() {
+    assert_eq!(
+        stdout(&["config", "--help"], &View::HUMAN),
+        include_str!("snapshots/config-help.human.ansi")
+    );
+    assert_eq!(
+        stdout(&["config", "--help"], &unpainted()),
+        include_str!("snapshots/config-help.txt")
     );
 }
 
@@ -90,7 +114,7 @@ fn the_version_is_bilbo_and_the_build_version() {
 }
 
 #[test]
-fn a_usage_error_in_the_plain_view_is_the_reason_the_usage_and_the_page() {
+fn a_top_level_usage_error_in_the_plain_view_is_the_reason_and_the_page() {
     assert_eq!(
         stderr(&[], &View::PLAIN),
         include_str!("snapshots/usage-missing-verb.txt")
@@ -116,7 +140,7 @@ fn a_usage_error_on_a_terminal_is_a_marked_message() {
     );
     assert_eq!(
         stderr(&["frob"], &unpainted()),
-        "■  unknown verb 'frob'\n   usage: bilbo <verb> [<args>]...\n   verbs: remember, config\n   see bilbo --help\n"
+        "■  unknown verb 'frob'; the verbs are remember, config\n   see bilbo --help\n"
     );
 }
 

@@ -1,0 +1,27 @@
+bilbo remember: keep files as entries, and what grew or changed in them since.
+
+[1mUsage:[22m
+  [36mbilbo remember [39m[2m<file|folder>[22m[36m [--kind [39m[2m<kind>[22m[36m] [--project [39m[2m<project>[22m[36m][39m
+
+[1mOptions:[22m
+      [1m--kind [22m[2m<kind>[22m        Run this kind, not the one that claims the files
+      [1m--project [22m[2m<project>[22m  Label each new entry with this project
+
+[1mKinds:[22m
+  [1mmarkdown[22m  .md files, one record per line
+
+[1mOutput:[22m
+  new [2m<n>[22m, appended [2m<n>[22m, new generation [2m<n>[22m, unchanged [2m<n>[22m, refused [2m<n>[22m
+  records [2m<n>[22m, raw bytes [2m<n>[22m, stored bytes [2m<n>[22m
+[2mEach refused file is named on stderr with its reason.[22m
+
+[1mExit:[22m
+  [1m0[22m  success
+  [1m1[22m  a file was refused, nothing to keep, a missing target or a store failure
+  [1m2[22m  usage or config error
+
+[1mExamples:[22m
+  [36mbilbo remember notes/[39m
+  [36mbilbo remember notes/decision-x.md --project bilbo[39m
+
+[1mDocs:[22m [2mhttps://github.com/delucca/bilbo/wiki/Commands#remember[22m

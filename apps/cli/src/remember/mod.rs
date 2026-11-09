@@ -11,17 +11,19 @@ use clap::builder::NonEmptyStringValueParser;
 
 use crate::console::args::usage;
 use crate::console::env::Env;
-use crate::console::message::{Mark, Message, sanitize};
+use crate::console::message::{Message, sanitize};
 use crate::console::outcome::{Exit, Failure, Outcome};
 use crate::console::settings::Settings;
+use crate::console::theme::Mark;
 use disk::Disk;
 
+const SUMMARY: &str = "Keep files as entries; a later run keeps what grew or changed";
 const ABOUT: &str =
     "bilbo remember: keep files as entries, and what grew or changed in them since.";
 const USAGE: &str = "bilbo remember <file|folder> [--kind <kind>] [--project <project>]";
 
 #[derive(Debug, clap::Args)]
-#[command(about = ABOUT, override_usage = USAGE, after_help = page())]
+#[command(about = SUMMARY, before_help = ABOUT, override_usage = USAGE, after_help = page())]
 pub struct Args {
     #[arg(value_name = "file|folder")]
     pub target: PathBuf,
@@ -52,36 +54,25 @@ fn page() -> String {
         .iter()
         .map(|kind| format!("  {:<width$}  {}\n", kind.name(), kind.summary()))
         .collect();
-    format!("Kinds:\n{rows}{PAGE}")
+    format!("Kinds:\n{rows}\n{PAGE}")
 }
 
 const PAGE: &str = "\
-Without --kind, the one kind that claims files under the target runs; when
-several do, name one with --kind.
-
-A folder is walked whole, skipping the hidden entries and symbolic links it
-finds; a target named here is taken as given, even a link or a hidden name,
-and its origin is the resolved path. A kind tests the resolved file, so a
-note.md link to a file without .md keeps nothing. A file remembered before
-is found by its path: a run keeps only the records it gained, or starts a
-new generation when an earlier record changed, and the older generation
-stays. --project labels new entries only. A file that left the folder keeps
-its entry.
-
 Output:
   new <n>, appended <n>, new generation <n>, unchanged <n>, refused <n>
   records <n>, raw bytes <n>, stored bytes <n>
-Raw bytes are the input bytes kept; stored bytes are what the store grew by.
 Each refused file is named on stderr with its reason.
 
-Exit: 0 success; 1 a file was refused, nothing to keep, a missing target or a
-store failure; 2 usage or config error.
+Exit:
+  0  success
+  1  a file was refused, nothing to keep, a missing target or a store failure
+  2  usage or config error
 
 Examples:
-  bilbo remember ~/.local/share/bilbo/notes
+  bilbo remember notes/
   bilbo remember notes/decision-x.md --project bilbo
 
-Docs: reference/commands.md#remember";
+Docs: https://github.com/delucca/bilbo/wiki/Commands#remember";
 
 pub fn run(
     root: &Command,
@@ -212,7 +203,7 @@ mod tests {
     use bilbo_store::segments::Notice;
 
     use super::{notice_message, page, registry};
-    use crate::console::message::Mark;
+    use crate::console::theme::Mark;
 
     #[test]
     fn every_store_notice_is_a_message() {

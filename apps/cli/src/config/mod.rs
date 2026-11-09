@@ -8,37 +8,35 @@ use crate::console::message::sanitize;
 use crate::console::outcome::{Failure, Outcome};
 use crate::console::settings::Settings;
 
+const SUMMARY: &str = "Show each setting, its value and where it came from";
 const ABOUT: &str = "bilbo config: show each setting, its value and where the value came from.";
-const USAGE: &str = "bilbo config [<key>]";
+const USAGE: &str = "\
+bilbo config [<key>]
+The config file is $BILBO_CONFIG, else $XDG_CONFIG_HOME/bilbo/config.toml,
+else ~/.config/bilbo/config.toml.";
 
 #[derive(Debug, clap::Args)]
-#[command(about = ABOUT, override_usage = USAGE, after_help = PAGE)]
+#[command(about = SUMMARY, before_help = ABOUT, override_usage = USAGE, after_help = PAGE)]
 pub struct Args {
     #[arg(value_name = "key", value_parser = NonEmptyStringValueParser::new())]
     pub key: Option<String>,
 }
 
 const PAGE: &str = "\
-A key takes the first of these that sets it: a flag, its variable, the config
-file, its default. The config file is $BILBO_CONFIG, else
-$XDG_CONFIG_HOME/bilbo/config.toml, else ~/.config/bilbo/config.toml; when it
-is missing every key takes its variable or its default, unless BILBO_CONFIG
-names it. reference/configuration.md says what each key means.
-
 Output:
   <key> = <value> (<origin>)
-One line per key, the value as TOML; the origin is default, <file>:<line>,
-the variable or the flag. With <key>, its value alone, a string without its
-quotes.
+One line per key, the value as TOML; the origin is default, <file>:<line>, a
+variable or a flag. With <key>, its value alone, a string without its quotes.
 
-Exit: 0 success; 2 usage or config error: an unknown key, or a config file or
-variable bilbo refuses.
+Exit:
+  0  success
+  2  usage or config error: an unknown key, or a file or variable bilbo refuses
 
 Examples:
   bilbo config
   bilbo config paths.root
 
-Docs: reference/commands.md#config";
+Docs: https://github.com/delucca/bilbo/wiki/Configuration";
 
 pub fn run(root: &Command, args: Args, settings: &Settings) -> Result<Outcome, Failure> {
     let shown = settings.shown();
@@ -68,10 +66,12 @@ pub fn run(root: &Command, args: Args, settings: &Settings) -> Result<Outcome, F
 mod tests {
     use std::ffi::OsString;
 
-    use super::{Args, run};
+    use bilbo_settings::key::Default;
+
+    use super::{Args, USAGE, run};
     use crate::bilbo;
     use crate::console::outcome::Failure;
-    use crate::console::settings::{self, Settings};
+    use crate::console::settings::{self, CONFIG, Settings};
     use crate::console::view::View;
 
     fn defaults() -> Settings {
@@ -113,6 +113,22 @@ mod tests {
             }
             other => panic!("{other:?}"),
         }
+    }
+
+    #[test]
+    fn the_config_file_note_holds_what_its_key_declares() {
+        let Default::Folder(folder) = CONFIG.about.default else {
+            unreachable!("a folder key");
+        };
+        let declared = format!(
+            "The config file is ${}, else {}.",
+            CONFIG.about.variable.unwrap_or_default(),
+            folder.describe()
+        );
+        let note = USAGE
+            .split_once('\n')
+            .map(|(_, note)| note.replace('\n', " "));
+        assert_eq!(note, Some(declared));
     }
 
     #[test]

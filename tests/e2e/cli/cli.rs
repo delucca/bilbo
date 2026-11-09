@@ -43,7 +43,8 @@ pub(crate) fn bilbo<S: AsRef<OsStr>>(args: &[S], env: &[(&str, &str)]) -> Run {
 }
 
 const OVERVIEW_START: &str = "bilbo keeps durable memory for coding agents: ";
-const TOP_USAGE: &str = "bilbo: usage: bilbo <verb> [<args>]...\nbilbo: verbs: remember, config\nbilbo: see 'bilbo --help'\n";
+const VERBS: &str = "; the verbs are remember, config";
+const SEE: &str = "bilbo: see 'bilbo --help'\n";
 
 #[test]
 fn every_help_form_prints_the_overview_on_stdout_and_exits_0() {
@@ -54,7 +55,11 @@ fn every_help_form_prints_the_overview_on_stdout_and_exits_0() {
         "{}",
         reference.stdout
     );
-    assert!(reference.stdout.ends_with("and exit codes.\n"));
+    assert!(
+        reference
+            .stdout
+            .ends_with("\nDocs: https://github.com/delucca/bilbo/wiki\n")
+    );
     assert_eq!(reference.stderr, "");
     for form in [&["-h"][..], &["help"], &["help", "help"]] {
         let run = bilbo(form, &[]);
@@ -77,7 +82,7 @@ fn no_arguments_is_a_usage_error() {
     let run = bilbo::<&str>(&[], &[]);
     assert_eq!(run.code, 2);
     assert_eq!(run.stdout, "");
-    assert_eq!(run.stderr, format!("bilbo: missing verb\n{TOP_USAGE}"));
+    assert_eq!(run.stderr, format!("bilbo: missing verb{VERBS}\n{SEE}"));
 }
 
 #[test]
@@ -87,7 +92,7 @@ fn an_unknown_option_is_a_usage_error() {
     assert_eq!(run.stdout, "");
     assert_eq!(
         run.stderr,
-        format!("bilbo: unknown option '--frobnicate'\n{TOP_USAGE}")
+        format!("bilbo: unknown option '--frobnicate'\n{SEE}")
     );
 }
 
@@ -99,7 +104,7 @@ fn an_unknown_verb_is_a_usage_error_with_or_without_help() {
         assert_eq!(run.stdout, "", "{form:?}");
         assert_eq!(
             run.stderr,
-            format!("bilbo: unknown verb 'frob'\n{TOP_USAGE}"),
+            format!("bilbo: unknown verb 'frob'{VERBS}\n{SEE}"),
             "{form:?}"
         );
     }
@@ -136,7 +141,8 @@ fn a_non_utf8_option_is_a_usage_error() {
         "{}",
         run.stderr
     );
-    assert!(run.stderr.ends_with(TOP_USAGE), "{}", run.stderr);
+    assert!(run.stderr.ends_with(&format!("'\n{SEE}")), "{}", run.stderr);
+    assert_eq!(run.stderr.lines().count(), 2, "{}", run.stderr);
 }
 
 #[test]

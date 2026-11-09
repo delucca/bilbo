@@ -1,0 +1,21 @@
+bilbo config: show each setting, its value and where the value came from.
+
+[1mUsage:[22m
+  [36mbilbo config [[39m[2m<key>[22m[36m][39m
+[2mThe config file is $BILBO_CONFIG, else $XDG_CONFIG_HOME/bilbo/config.toml,[22m
+[2melse ~/.config/bilbo/config.toml.[22m
+
+[1mOutput:[22m
+  [2m<key>[22m = [2m<value>[22m ([2m<origin>[22m)
+[2mOne line per key, the value as TOML; the origin is default, <file>:<line>, a[22m
+[2mvariable or a flag. With <key>, its value alone, a string without its quotes.[22m
+
+[1mExit:[22m
+  [1m0[22m  success
+  [1m2[22m  usage or config error: an unknown key, or a file or variable bilbo refuses
+
+[1mExamples:[22m
+  [36mbilbo config[39m
+  [36mbilbo config paths.root[39m
+
+[1mDocs:[22m [2mhttps://github.com/delucca/bilbo/wiki/Configuration[22m

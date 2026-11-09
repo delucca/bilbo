@@ -5,7 +5,7 @@ use std::ffi::OsString;
 
 use clap::Command;
 
-use crate::console::args::usage;
+use crate::console::args::{usage, with_verbs};
 use crate::console::message::sanitize;
 use crate::console::outcome::{Failure, Outcome};
 
@@ -54,12 +54,13 @@ pub fn run(root: &Command, words: &[OsString]) -> Result<Outcome, Failure> {
 }
 
 fn no_page(root: &Command, word: &str) -> Failure {
-    let what = if word.starts_with('-') {
-        "option"
+    let word = sanitize(word);
+    let reason = if word.starts_with('-') {
+        format!("unknown option '{word}'")
     } else {
-        "verb"
+        with_verbs(root, &format!("unknown verb '{word}'"))
     };
-    usage(root, format!("unknown {what} '{}'", sanitize(word)), None)
+    usage(root, reason, None)
 }
 
 #[cfg(test)]
@@ -120,7 +121,10 @@ mod tests {
             Err(Failure::Usage { reason, page, .. }) => format!("{reason}; {page}"),
             other => panic!("{list:?}: {other:?}"),
         };
-        assert_eq!(reason(&["frob"]), "unknown verb 'frob'; bilbo --help");
+        assert_eq!(
+            reason(&["frob"]),
+            "unknown verb 'frob'; the verbs are remember, config, probe; bilbo --help"
+        );
         assert_eq!(
             reason(&["--verbose"]),
             "unknown option '--verbose'; bilbo --help"
@@ -129,6 +133,9 @@ mod tests {
             reason(&["frob", "x"]),
             "unexpected argument 'x'; bilbo --help"
         );
-        assert_eq!(reason(&["a\nb"]), "unknown verb 'a\\nb'; bilbo --help");
+        assert_eq!(
+            reason(&["a\nb"]),
+            "unknown verb 'a\\nb'; the verbs are remember, config, probe; bilbo --help"
+        );
     }
 }

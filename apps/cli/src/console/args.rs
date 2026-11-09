@@ -19,8 +19,12 @@ pub fn verbs(root: &Command) -> Vec<String> {
         .collect()
 }
 
+pub fn with_verbs(root: &Command, reason: &str) -> String {
+    format!("{reason}; the verbs are {}", verbs(root).join(", "))
+}
+
 pub fn typed<T: FromArgMatches>(root: &Command, matches: &ArgMatches) -> Result<T, Failure> {
-    T::from_arg_matches(matches).map_err(|error| usage(root, reason(&error, false), None))
+    T::from_arg_matches(matches).map_err(|error| usage(root, reason(root, &error, false), None))
 }
 
 pub fn parse(root: &Command, args: &[OsString]) -> Result<Parsed, Failure> {
@@ -38,7 +42,7 @@ pub fn parse(root: &Command, args: &[OsString]) -> Result<Parsed, Failure> {
                 named.map(OsString::from).into_iter().collect(),
             )),
             ErrorKind::DisplayVersion => Ok(Parsed::Version),
-            _ => Err(usage(root, reason(&error, named.is_some()), named)),
+            _ => Err(usage(root, reason(root, &error, named.is_some()), named)),
         },
     }
 }
@@ -46,15 +50,12 @@ pub fn parse(root: &Command, args: &[OsString]) -> Result<Parsed, Failure> {
 pub fn usage(root: &Command, reason: String, verb: Option<&str>) -> Failure {
     let mut root = root.clone();
     root.build();
-    let known = verb.filter(|verb| root.find_subcommand(verb).is_some());
-    let (usage, page) = match known {
-        Some(verb) => {
-            let command = root
-                .find_subcommand_mut(verb)
-                .expect("the verb was just found");
-            (usage_lines(command, false), format!("bilbo {verb} --help"))
-        }
-        None => (usage_lines(&mut root, true), "bilbo --help".to_owned()),
+    let (usage, page) = match verb.and_then(|verb| root.find_subcommand_mut(verb)) {
+        Some(command) => (
+            usage_lines(command),
+            format!("bilbo {} --help", command.get_name()),
+        ),
+        None => (Vec::new(), "bilbo --help".to_owned()),
     };
     Failure::Usage {
         reason,
@@ -63,24 +64,23 @@ pub fn usage(root: &Command, reason: String, verb: Option<&str>) -> Failure {
     }
 }
 
-pub fn usage_lines(command: &mut Command, top: bool) -> Vec<String> {
+pub fn usage_lines(command: &mut Command) -> Vec<String> {
     let rendered = command.render_usage().to_string();
-    let mut lines: Vec<String> = rendered
-        .lines()
-        .enumerate()
-        .map(|(i, line)| match i {
-            0 => line.replacen("Usage: ", "usage: ", 1),
-            _ => format!("       {}", line.trim_start()),
-        })
-        .collect();
-    let verbs = verbs(command);
-    if top && !verbs.is_empty() {
-        lines.push(format!("verbs: {}", verbs.join(", ")));
-    }
-    lines
+    let mut lines = rendered.lines();
+    let first = lines
+        .next()
+        .unwrap_or_default()
+        .replacen("Usage: ", "usage: ", 1);
+    std::iter::once(first)
+        .chain(
+            lines
+                .take_while(|line| line.starts_with("  "))
+                .map(|line| format!("       {}", line.trim_start())),
+        )
+        .collect()
 }
 
-pub fn reason(error: &clap::Error, verb_named: bool) -> String {
+pub fn reason(root: &Command, error: &clap::Error, verb_named: bool) -> String {
     let text = |kind: ContextKind| match error.get(kind) {
         Some(ContextValue::String(value)) => Some(sanitize(value)),
         _ => None,
@@ -89,12 +89,14 @@ pub fn reason(error: &clap::Error, verb_named: bool) -> String {
         ErrorKind::UnknownArgument => match text(ContextKind::InvalidArg) {
             Some(arg) if arg.starts_with('-') => format!("unknown option '{arg}'"),
             Some(arg) if verb_named => format!("unexpected argument '{arg}'"),
-            Some(arg) => format!("unknown verb '{arg}'"),
+            Some(arg) => with_verbs(root, &format!("unknown verb '{arg}'")),
             None => bare(error),
         },
-        ErrorKind::InvalidSubcommand => text(ContextKind::InvalidSubcommand)
-            .map_or_else(|| bare(error), |name| format!("unknown verb '{name}'")),
-        ErrorKind::MissingSubcommand => "missing verb".to_owned(),
+        ErrorKind::InvalidSubcommand => text(ContextKind::InvalidSubcommand).map_or_else(
+            || bare(error),
+            |name| with_verbs(root, &format!("unknown verb '{name}'")),
+        ),
+        ErrorKind::MissingSubcommand => with_verbs(root, "missing verb"),
         ErrorKind::MissingRequiredArgument => match error.get(ContextKind::InvalidArg) {
             Some(ContextValue::Strings(names)) if !names.is_empty() => {
                 let names: Vec<String> = names.iter().map(|name| sanitize(name)).collect();
@@ -188,7 +190,7 @@ mod tests {
 
     use clap::{Arg, Command};
 
-    use super::{Parsed, parse, typed, usage_lines};
+    use super::{Parsed, parse, typed, usage_lines, with_verbs};
     use crate::console::outcome::Failure;
     use crate::probe::{self, with_verb};
     use crate::{Cli, bilbo};
@@ -208,9 +210,11 @@ mod tests {
         }
     }
 
-    fn usage_error(list: &[&str]) -> String {
+    fn top_reason(list: &[&str]) -> String {
         let (reason, usage, page) = usage_error_of(&bilbo(), list);
-        format!("{reason} | {} | {page}", usage.join(" / "))
+        assert!(usage.is_empty(), "{list:?}: {usage:?}");
+        assert_eq!(page, "bilbo --help", "{list:?}");
+        reason
     }
 
     fn probe_root() -> Command {
@@ -231,7 +235,7 @@ mod tests {
         reason
     }
 
-    const TOP: &str = "usage: bilbo <verb> [<args>]... / verbs: remember, config | bilbo --help";
+    const VERBS: &str = "; the verbs are remember, config";
 
     #[test]
     fn the_definition_is_valid() {
@@ -242,28 +246,25 @@ mod tests {
     #[test]
     fn claps_errors_come_out_in_bilbos_words() {
         assert_eq!(
-            usage_error(&["bilbo", "--frobnicate"]),
-            format!("unknown option '--frobnicate' | {TOP}")
+            top_reason(&["bilbo", "--frobnicate"]),
+            "unknown option '--frobnicate'"
+        );
+        assert_eq!(top_reason(&["bilbo", "-x"]), "unknown option '-x'");
+        assert_eq!(
+            top_reason(&["bilbo", "frob"]),
+            format!("unknown verb 'frob'{VERBS}")
         );
         assert_eq!(
-            usage_error(&["bilbo", "-x"]),
-            format!("unknown option '-x' | {TOP}")
+            top_reason(&["bilbo", "frob", "--help"]),
+            format!("unknown verb 'frob'{VERBS}")
         );
         assert_eq!(
-            usage_error(&["bilbo", "frob"]),
-            format!("unknown verb 'frob' | {TOP}")
+            top_reason(&["bilbo", "--frobnicate", "--help"]),
+            "unknown option '--frobnicate'"
         );
         assert_eq!(
-            usage_error(&["bilbo", "frob", "--help"]),
-            format!("unknown verb 'frob' | {TOP}")
-        );
-        assert_eq!(
-            usage_error(&["bilbo", "--frobnicate", "--help"]),
-            format!("unknown option '--frobnicate' | {TOP}")
-        );
-        assert_eq!(
-            usage_error(&["bilbo", "--help=x"]),
-            format!("unexpected value 'x' for '--help' found; no more were expected | {TOP}")
+            top_reason(&["bilbo", "--help=x"]),
+            "unexpected value 'x' for '--help' found; no more were expected"
         );
     }
 
@@ -333,16 +334,16 @@ mod tests {
     #[test]
     fn a_newline_in_an_argument_cannot_cut_the_reason() {
         assert_eq!(
-            usage_error(&["bilbo", "--help=a\nb"]),
-            format!("unexpected value 'a\\nb' for '--help' found; no more were expected | {TOP}")
+            top_reason(&["bilbo", "--help=a\nb"]),
+            "unexpected value 'a\\nb' for '--help' found; no more were expected"
         );
         assert_eq!(
-            usage_error(&["bilbo", "a\r\nb"]),
-            format!("unknown verb 'a\\r\\nb' | {TOP}")
+            top_reason(&["bilbo", "a\r\nb"]),
+            format!("unknown verb 'a\\r\\nb'{VERBS}")
         );
         assert_eq!(
-            usage_error(&["bilbo", "--a\u{1b}[2J"]),
-            format!("unknown option '--a\\u{{1b}}[2J' | {TOP}")
+            top_reason(&["bilbo", "--a\u{1b}[2J"]),
+            "unknown option '--a\\u{1b}[2J'"
         );
     }
 
@@ -421,24 +422,28 @@ mod tests {
     }
 
     #[test]
-    fn usage_lines_fold_claps_forms_and_list_the_verbs() {
+    fn usage_lines_fold_claps_forms_and_leave_the_note_to_the_page() {
         let mut two_forms = Command::new("bilbo")
             .override_usage("bilbo recall <query>...\n  bilbo recall --library <query>...");
-        assert_eq!(
-            usage_lines(&mut two_forms, false),
-            [
-                "usage: bilbo recall <query>...",
-                "       bilbo recall --library <query>..."
-            ]
+        let folded = [
+            "usage: bilbo recall <query>...",
+            "       bilbo recall --library <query>...",
+        ];
+        assert_eq!(usage_lines(&mut two_forms), folded);
+        let mut with_note = Command::new("bilbo").override_usage(
+            "bilbo recall <query>...\n  bilbo recall --library <query>...\nA note\n  indented",
         );
-        let mut with_verbs = Command::new("bilbo")
-            .disable_help_subcommand(true)
-            .override_usage("bilbo <verb> [<args>]...")
+        assert_eq!(usage_lines(&mut with_note), folded);
+    }
+
+    #[test]
+    fn a_reason_about_the_verb_names_the_verbs_in_their_order() {
+        let root = Command::new("bilbo")
             .subcommand(Command::new("ingest"))
             .subcommand(Command::new("recall").arg(Arg::new("q")));
         assert_eq!(
-            usage_lines(&mut with_verbs, true),
-            ["usage: bilbo <verb> [<args>]...", "verbs: ingest, recall"]
+            with_verbs(&root, "missing verb"),
+            "missing verb; the verbs are ingest, recall"
         );
     }
 }

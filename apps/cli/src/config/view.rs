@@ -1,7 +1,7 @@
 use bilbo_settings::key::Shown;
 
 use crate::console::message::sanitize;
-use crate::console::theme::{Tone, paint};
+use crate::console::theme::{Style, paint};
 use crate::console::view::View;
 
 pub fn plain(shown: &[Shown]) -> String {
@@ -35,7 +35,7 @@ pub fn human(shown: &[Shown], view: &View) -> String {
                 "{:<width$} = {}  {}\n",
                 one.name,
                 sanitize(&one.value),
-                paint(view, Tone::Dim, &format!("({})", origin(one)))
+                paint(view, Style::Note, &format!("({})", origin(one)))
             )
         })
         .collect()

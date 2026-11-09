@@ -2,43 +2,22 @@ pub const DESCRIPTION: &str = "\
 bilbo keeps durable memory for coding agents: it remembers their sessions and
 the pages they cite, and recalls them when a later session asks.";
 
-pub const USAGE: &str = "bilbo <verb> [<args>]...";
+pub const USAGE: &str = "bilbo <verb> [<args>]";
 
-pub const TEMPLATE: &str = "{about-with-newline}\n{usage-heading} {usage}{after-help}";
+pub const TEMPLATE: &str =
+    "{about-with-newline}\n{usage-heading} {usage}\n\nVerbs:\n{subcommands}{after-help}";
 
 pub const AFTER: &str = "\
-Keep:
-  remember  Keep files as entries; a later run keeps what grew or changed
-
-Settings:
-  config    Show each setting, its value and where the value came from
-
-Exit codes: 0 success; 1 refused, problems found or nothing matched; 2 usage
-or config error.
-Results go to stdout; diagnostics to stderr, prefixed 'bilbo: ' off a terminal.
-
-Paths, the first that applies:
-  root    $BILBO_HOME, paths.root, $XDG_DATA_HOME/bilbo, ~/.local/share/bilbo
-  config  $BILBO_CONFIG, $XDG_CONFIG_HOME/bilbo/config.toml,
-          ~/.config/bilbo/config.toml
-  cache   paths.cache, $XDG_CACHE_HOME/bilbo, ~/.cache/bilbo
-  state   paths.state, $XDG_STATE_HOME/bilbo, ~/.local/state/bilbo
-'bilbo config' shows every setting; reference/configuration.md says what each
-one means.
-
-Run 'bilbo <verb> --help' or 'bilbo help <verb>' for a verb's options, output
-and exit codes.";
+Run 'bilbo <verb> --help' for its options, output and exit codes.
+Docs: https://github.com/delucca/bilbo/wiki";
 
 #[cfg(test)]
 mod tests {
     use clap::Command;
 
-    use bilbo_settings::key::{Default, Key};
-
     use super::{AFTER, TEMPLATE, USAGE};
     use crate::bilbo;
     use crate::console::args::verbs;
-    use crate::console::settings::{CACHE, CONFIG, ROOT, STATE};
     use crate::help::page::overview;
     use crate::probe::{self, with_verb};
 
@@ -46,7 +25,7 @@ mod tests {
         overview
             .lines()
             .skip_while(|line| !line.starts_with("Usage: "))
-            .take_while(|line| !line.starts_with("Exit codes:"))
+            .take_while(|line| !line.starts_with("Run '"))
             .filter_map(|line| line.strip_prefix("  "))
             .filter_map(|row| row.split_once("  ").map(|(name, _)| name))
             .filter(|name| !name.is_empty() && name.chars().all(|c| c.is_ascii_lowercase()))
@@ -62,64 +41,15 @@ mod tests {
                 .unwrap_or_else(|| panic!("{needle:?} missing"))
         };
         assert!(text.starts_with("bilbo keeps durable memory for coding agents: "));
-        assert!(at("\nUsage: bilbo <verb> [<args>]...\n") < at("\nExit codes: "));
-        assert!(at("\nExit codes: ") < at("\nResults go to stdout; "));
-        assert!(at("\nResults go to stdout; ") < at("\nPaths, the first that applies:\n"));
-        assert!(at("\nPaths, the first that applies:\n") < at("\nRun 'bilbo <verb> --help' or "));
-        assert!(text.ends_with("and exit codes.\n"));
+        assert!(at("\n\nUsage: bilbo <verb> [<args>]\n\n") < at("\nVerbs:\n  "));
+        assert!(at("\nVerbs:\n  ") < at("\n\nRun 'bilbo <verb> --help' for "));
+        assert!(at("\n\nRun 'bilbo <verb> --help' for ") < at("\nDocs: https://"));
+        assert!(
+            text.lines()
+                .last()
+                .is_some_and(|line| line.starts_with("Docs: "))
+        );
         assert!(!text.contains("Options:"));
-    }
-
-    fn paths_entry(word: &str) -> String {
-        let block = AFTER
-            .split("Paths, the first that applies:\n")
-            .nth(1)
-            .and_then(|rest| rest.split("\n'bilbo config'").next())
-            .unwrap_or_default();
-        let mut entry = Vec::new();
-        for line in block.lines() {
-            if let Some(rest) = line
-                .strip_prefix("  ")
-                .filter(|rest| !rest.starts_with(' '))
-            {
-                if rest.split_whitespace().next() == Some(word) {
-                    entry.push(rest.trim());
-                } else if !entry.is_empty() {
-                    break;
-                }
-            } else if !entry.is_empty() && line.starts_with("    ") {
-                entry.push(line.trim());
-            }
-        }
-        entry.join(" ")
-    }
-
-    #[test]
-    fn each_paths_line_holds_what_its_key_declares() {
-        let keys: [(&str, &Key<std::path::PathBuf>); 4] = [
-            ("root", &ROOT),
-            ("state", &STATE),
-            ("cache", &CACHE),
-            ("config", &CONFIG),
-        ];
-        for (word, key) in keys {
-            let line = paths_entry(word);
-            assert!(!line.is_empty(), "{word}: no line in the Paths block");
-            if let Some(variable) = key.about.variable {
-                assert!(line.contains(&format!("${variable}")), "{word}: {line}");
-            }
-            if word != "config" {
-                assert!(line.contains(key.about.name), "{word}: {line}");
-            }
-            let Default::Folder(folder) = key.about.default else {
-                unreachable!("a folder key");
-            };
-            let described = folder.describe();
-            let (first, second) = described.split_once(", else ").expect("two halves");
-            for half in [first, second] {
-                assert!(line.contains(half), "{word}: {half:?} missing from {line}");
-            }
-        }
     }
 
     #[test]
@@ -129,21 +59,21 @@ mod tests {
     }
 
     #[test]
-    fn the_drift_guard_sees_a_verb_the_groups_leave_out_or_invent() {
-        let named = |after: &'static str| {
+    fn the_drift_guard_sees_a_verb_the_overview_leaves_out_or_invents() {
+        let named = |verb: Command, after: &'static str| {
             let bare = Command::new("bilbo")
                 .help_template(TEMPLATE)
                 .override_usage(USAGE)
                 .disable_help_subcommand(true)
                 .after_help(after);
-            let root = with_verb(bare, probe::verb());
+            let root = with_verb(bare, verb);
             (named_verbs(&overview(&root)), verbs(&root))
         };
-        let (groups, registered) = named("\nProbing:\n  probe  Shows a verb page\n\nExit codes: x");
-        assert_eq!(groups, registered);
-        let (groups, registered) = named("\nExit codes: x");
-        assert_ne!(groups, registered);
-        let (groups, registered) = named("\n  probe  a\n  ghost  b\n\nExit codes: x");
-        assert_ne!(groups, registered);
+        let (rows, registered) = named(probe::verb(), AFTER);
+        assert_eq!(rows, registered);
+        let (rows, registered) = named(probe::verb().hide(true), AFTER);
+        assert_ne!(rows, registered);
+        let (rows, registered) = named(probe::verb(), "  ghost  b\n\nRun 'x'");
+        assert_ne!(rows, registered);
     }
 }

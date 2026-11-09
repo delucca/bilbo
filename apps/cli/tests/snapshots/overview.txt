@@ -1,26 +1,11 @@
 bilbo keeps durable memory for coding agents: it remembers their sessions and
 the pages they cite, and recalls them when a later session asks.
 
-Usage: bilbo <verb> [<args>]...
+Usage: bilbo <verb> [<args>]
 
-Keep:
+Verbs:
   remember  Keep files as entries; a later run keeps what grew or changed
+  config    Show each setting, its value and where it came from
 
-Settings:
-  config    Show each setting, its value and where the value came from
-
-Exit codes: 0 success; 1 refused, problems found or nothing matched; 2 usage
-or config error.
-Results go to stdout; diagnostics to stderr, prefixed 'bilbo: ' off a terminal.
-
-Paths, the first that applies:
-  root    $BILBO_HOME, paths.root, $XDG_DATA_HOME/bilbo, ~/.local/share/bilbo
-  config  $BILBO_CONFIG, $XDG_CONFIG_HOME/bilbo/config.toml,
-          ~/.config/bilbo/config.toml
-  cache   paths.cache, $XDG_CACHE_HOME/bilbo, ~/.cache/bilbo
-  state   paths.state, $XDG_STATE_HOME/bilbo, ~/.local/state/bilbo
-'bilbo config' shows every setting; reference/configuration.md says what each
-one means.
-
-Run 'bilbo <verb> --help' or 'bilbo help <verb>' for a verb's options, output
-and exit codes.
+Run 'bilbo <verb> --help' for its options, output and exit codes.
+Docs: https://github.com/delucca/bilbo/wiki

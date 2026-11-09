@@ -1,4 +1,2 @@
 bilbo: unknown option '--frobnicate'
-bilbo: usage: bilbo <verb> [<args>]...
-bilbo: verbs: remember, config
 bilbo: see 'bilbo --help'

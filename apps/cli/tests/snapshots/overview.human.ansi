@@ -1,26 +1,11 @@
 bilbo keeps durable memory for coding agents: it remembers their sessions and
 the pages they cite, and recalls them when a later session asks.
 
-[1mUsage:[22m bilbo <verb> [<args>]...
+[1mUsage:[22m [36mbilbo [39m[2m<verb>[22m[36m [[39m[2m<args>[22m[36m][39m
 
-[1mKeep:[22m
+[1mVerbs:[22m
   [1mremember[22m  Keep files as entries; a later run keeps what grew or changed
+  [1mconfig[22m    Show each setting, its value and where it came from
 
-[1mSettings:[22m
-  [1mconfig[22m    Show each setting, its value and where the value came from
-
-[1mExit codes:[22m 0 success; 1 refused, problems found or nothing matched; 2 usage
-or config error.
-Results go to stdout; diagnostics to stderr, prefixed 'bilbo: ' off a terminal.
-
-[1mPaths, the first that applies:[22m
-  [1mroot[22m    $BILBO_HOME, paths.root, $XDG_DATA_HOME/bilbo, ~/.local/share/bilbo
-  [1mconfig[22m  $BILBO_CONFIG, $XDG_CONFIG_HOME/bilbo/config.toml,
-          ~/.config/bilbo/config.toml
-  [1mcache[22m   paths.cache, $XDG_CACHE_HOME/bilbo, ~/.cache/bilbo
-  [1mstate[22m   paths.state, $XDG_STATE_HOME/bilbo, ~/.local/state/bilbo
-'bilbo config' shows every setting; reference/configuration.md says what each
-one means.
-
-Run 'bilbo <verb> --help' or 'bilbo help <verb>' for a verb's options, output
-and exit codes.
+[2mRun '[22m[36mbilbo [39m[2m<verb>[22m[36m --help[39m[2m' for its options, output and exit codes.[22m
+[1mDocs:[22m [2mhttps://github.com/delucca/bilbo/wiki[22m

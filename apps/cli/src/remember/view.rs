@@ -1,6 +1,7 @@
 use bilbo_kinds::remember::Output;
 
-use crate::console::message::{Detail, Mark, Message};
+use crate::console::message::{Detail, Message};
+use crate::console::theme::Mark;
 use crate::console::view::View;
 
 pub fn plain(output: &Output) -> String {

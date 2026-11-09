@@ -118,7 +118,7 @@ fn an_error_on_a_terminal_stderr_is_marked_while_a_piped_stdout_stays_plain() {
     assert_eq!(seen.piped, "");
     assert_eq!(
         seen.terminal,
-        "\x1b[31m■\x1b[39m  unknown verb 'frob'\n   \x1b[2musage: bilbo <verb> [<args>]...\x1b[22m\n   \x1b[2mverbs: remember, config\x1b[22m\n   \x1b[2msee\x1b[22m \x1b[36mbilbo --help\x1b[39m\n"
+        "\x1b[31m■\x1b[39m  unknown verb 'frob'; the verbs are remember, config\n   \x1b[2msee\x1b[22m \x1b[36mbilbo --help\x1b[39m\n"
     );
 }
 
@@ -129,17 +129,19 @@ fn an_error_on_a_piped_stderr_is_plain_while_a_terminal_stdout_is_untouched() {
     assert_eq!(seen.terminal, "");
     assert_eq!(
         seen.piped,
-        "bilbo: unknown verb 'frob'\nbilbo: usage: bilbo <verb> [<args>]...\nbilbo: verbs: remember, config\nbilbo: see 'bilbo --help'\n"
+        "bilbo: unknown verb 'frob'; the verbs are remember, config\nbilbo: see 'bilbo --help'\n"
     );
 }
 
 #[test]
-fn help_on_a_terminal_stdout_has_bold_headings() {
+fn help_on_a_terminal_stdout_is_styled() {
     let seen = run(&["--help"], &Tty::Stdout);
     assert_eq!(seen.code, 0);
     assert_eq!(seen.piped, "");
     assert!(
-        seen.terminal.contains("\x1b[1mUsage:\x1b[22m"),
+        seen.terminal.contains(
+            "\x1b[1mUsage:\x1b[22m \x1b[36mbilbo \x1b[39m\x1b[2m<verb>\x1b[22m\x1b[36m [\x1b[39m\x1b[2m<args>\x1b[22m\x1b[36m]\x1b[39m"
+        ),
         "{}",
         seen.terminal
     );

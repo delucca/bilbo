@@ -161,7 +161,8 @@ mod tests {
     use bilbo_store::entries::StoreError;
 
     use super::{Exit, Failure, Outcome};
-    use crate::console::message::{Detail, Mark, Message};
+    use crate::console::message::{Detail, Message};
+    use crate::console::theme::Mark;
     use crate::console::view::View;
 
     fn warning(text: &str) -> Message {
@@ -323,20 +324,36 @@ mod tests {
     #[test]
     fn a_usage_failure_is_the_reason_the_usage_lines_and_the_page() {
         let failure = Failure::Usage {
-            reason: "missing verb".to_owned(),
-            usage: vec!["usage: bilbo <verb> [<args>]...".to_owned()],
-            page: "bilbo --help".to_owned(),
+            reason: "missing <file|folder>".to_owned(),
+            usage: vec!["usage: bilbo remember <file|folder>".to_owned()],
+            page: "bilbo remember --help".to_owned(),
         };
         let message = failure.message();
-        assert_eq!(message.text, "missing verb");
+        assert_eq!(message.text, "missing <file|folder>");
         assert_eq!(
             message.details,
             [
-                Detail::Text("usage: bilbo <verb> [<args>]...".to_owned()),
+                Detail::Text("usage: bilbo remember <file|folder>".to_owned()),
                 Detail::Command {
                     lead: "see",
-                    command: "bilbo --help".to_owned()
+                    command: "bilbo remember --help".to_owned()
                 }
+            ]
+        );
+    }
+
+    #[test]
+    fn a_usage_failure_without_usage_lines_is_the_reason_and_the_page() {
+        let failure = Failure::Usage {
+            reason: "missing verb; the verbs are remember, config".to_owned(),
+            usage: Vec::new(),
+            page: "bilbo --help".to_owned(),
+        };
+        assert_eq!(
+            failure.stderr_lines(&View::PLAIN),
+            [
+                "bilbo: missing verb; the verbs are remember, config",
+                "bilbo: see 'bilbo --help'"
             ]
         );
     }

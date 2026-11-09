@@ -78,9 +78,10 @@ mod tests {
     use std::io::{self, Write};
 
     use super::{Emit, Plan, execute, plan, write_result};
-    use crate::console::message::{Mark, Message};
+    use crate::console::message::Message;
     use crate::console::outcome::Failure;
     use crate::console::outcome::{Exit, Outcome};
+    use crate::console::theme::Mark;
     use crate::console::view::View;
 
     fn outcome() -> Outcome {

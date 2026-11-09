@@ -1,38 +1,9 @@
-use crate::console::theme::{Tone, paint};
+use crate::console::theme::{Mark, Style, paint};
 use crate::console::view::View;
 
 pub const PREFIX: &str = "bilbo: ";
 
 const INDENT: &str = "   ";
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Mark {
-    Error,
-    Warning,
-    Done,
-    Info,
-}
-
-impl Mark {
-    fn glyph(self, unicode: bool) -> &'static str {
-        let (unicode_glyph, ascii) = match self {
-            Self::Error => ("■", "x"),
-            Self::Warning => ("▲", "!"),
-            Self::Done => ("◆", "*"),
-            Self::Info => ("●", "i"),
-        };
-        if unicode { unicode_glyph } else { ascii }
-    }
-
-    fn tone(self) -> Tone {
-        match self {
-            Self::Error => Tone::Red,
-            Self::Warning => Tone::Yellow,
-            Self::Done => Tone::Green,
-            Self::Info => Tone::Blue,
-        }
-    }
-}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Detail {
@@ -65,7 +36,7 @@ impl Message {
     }
 
     pub fn human_lines(&self, view: &View) -> Vec<String> {
-        let mark = paint(view, self.mark.tone(), self.mark.glyph(view.unicode));
+        let mark = paint(view, Style::Mark(self.mark), self.mark.glyph(view.unicode));
         let mut lines = Vec::new();
         let mut text = parts(&self.text);
         lines.push(format!(
@@ -79,13 +50,13 @@ impl Message {
             match detail {
                 Detail::Text(text) => {
                     for line in parts(text) {
-                        lines.push(indented(&paint(view, Tone::Dim, &sanitize(line))));
+                        lines.push(indented(&paint(view, Style::Note, &sanitize(line))));
                     }
                 }
                 Detail::Command { lead, command } => lines.push(format!(
                     "{INDENT}{} {}",
-                    paint(view, Tone::Dim, lead),
-                    paint(view, Tone::Cyan, &sanitize(command))
+                    paint(view, Style::Note, lead),
+                    paint(view, Style::Command, &sanitize(command))
                 )),
             }
         }
@@ -139,7 +110,9 @@ pub fn sanitize(line: &str) -> String {
 mod tests {
     use crate::console::view::View;
 
-    use super::{Detail, Mark, Message};
+    use crate::console::theme::Mark;
+
+    use super::{Detail, Message};
 
     fn message(mark: Mark) -> Message {
         Message {

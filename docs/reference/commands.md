@@ -1,5 +1,17 @@
 # Commands
 
+## Every verb
+
+Results go to standard output; diagnostics go to standard error, each line prefixed `bilbo: ` off a terminal.
+
+### Exit codes
+
+| Code | Meaning |
+|---|---|
+| 0 | success |
+| 1 | refused, problems found or nothing matched |
+| 2 | usage or config error |
+
 ## config
 
 ```text

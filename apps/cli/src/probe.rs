@@ -5,7 +5,8 @@ use crate::help::page::shape;
 
 pub fn verb() -> Command {
     Command::new("probe")
-        .about("bilbo probe: shows the shape of a verb page.")
+        .about("Shows the shape of a verb page")
+        .before_help("bilbo probe: shows the shape of a verb page.")
         .override_usage("bilbo probe [options] <word>\n  bilbo probe --all <word>")
         .arg(Arg::new("word").value_name("word").required(true))
         .arg(
@@ -33,14 +34,18 @@ pub fn verb() -> Command {
         .after_help(
             "\
 Output:
-  One line per word.
+  <word>
+One line per word.
 
-Exit: 0 success; 1 nothing matched; 2 usage error.
+Exit:
+  0  success
+  1  nothing matched
+  2  usage error
 
 Examples:
   bilbo probe --kind note word
 
-Docs: reference/commands.md#probe",
+Docs: https://github.com/delucca/bilbo/wiki/Commands#probe",
         )
 }
 
