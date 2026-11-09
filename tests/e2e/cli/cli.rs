@@ -3,13 +3,15 @@ use std::io::Read;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 
+mod config;
 mod remember;
+mod scratch;
 mod tty;
 
-struct Run {
-    code: i32,
-    stdout: String,
-    stderr: String,
+pub(crate) struct Run {
+    pub(crate) code: i32,
+    pub(crate) stdout: String,
+    pub(crate) stderr: String,
 }
 
 #[expect(
@@ -26,7 +28,7 @@ pub(crate) fn binary() -> PathBuf {
         .expect("the binary is in the runfiles")
 }
 
-fn bilbo<S: AsRef<OsStr>>(args: &[S], env: &[(&str, &str)]) -> Run {
+pub(crate) fn bilbo<S: AsRef<OsStr>>(args: &[S], env: &[(&str, &str)]) -> Run {
     let output = Command::new(binary())
         .env_clear()
         .envs(env.iter().copied())
@@ -41,8 +43,7 @@ fn bilbo<S: AsRef<OsStr>>(args: &[S], env: &[(&str, &str)]) -> Run {
 }
 
 const OVERVIEW_START: &str = "bilbo keeps durable memory for coding agents: ";
-const TOP_USAGE: &str =
-    "bilbo: usage: bilbo <verb> [<args>]...\nbilbo: verbs: remember\nbilbo: see 'bilbo --help'\n";
+const TOP_USAGE: &str = "bilbo: usage: bilbo <verb> [<args>]...\nbilbo: verbs: remember, config\nbilbo: see 'bilbo --help'\n";
 
 #[test]
 fn every_help_form_prints_the_overview_on_stdout_and_exits_0() {

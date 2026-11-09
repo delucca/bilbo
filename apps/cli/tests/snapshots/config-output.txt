@@ -1,0 +1,6 @@
+paths.root = "/home/u/.local/share/bilbo" (default)
+paths.state = "/home/u/.local/state/bilbo" (default)
+paths.cache = "/home/u/.cache/bilbo" (default)
+store.seal_at = "8 MiB" (default)
+store.compression = 19 (default)
+store.tear_budget = 4 (default)

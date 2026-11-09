@@ -2,6 +2,8 @@ use std::ffi::OsString;
 use std::path::PathBuf;
 
 use bilbo_cli::console::env::Env;
+use bilbo_cli::console::outcome::Failure;
+use bilbo_cli::console::settings::{self, Settings};
 use bilbo_cli::console::view::View;
 use bilbo_cli::remember::view;
 use bilbo_cli::run;
@@ -15,15 +17,29 @@ fn args(list: &[&str]) -> Vec<OsString> {
         .collect()
 }
 
+fn unread() -> Result<Settings, Failure> {
+    Err(Failure::Config(
+        "these tests never read a setting".to_owned(),
+    ))
+}
+
+/// Every default, under a fixed HOME and with no config file.
+fn defaults() -> Settings {
+    settings::load(&|name| (name == "HOME").then(|| "/home/u".into()), &|_| {
+        Err(std::io::ErrorKind::NotFound.into())
+    })
+    .expect("the defaults")
+}
+
 fn stdout(list: &[&str], view: &View) -> String {
-    let outcome = run(&args(list), &mut Env::quiet()).expect("a result");
+    let outcome = run(&args(list), &mut Env::quiet(), unread()).expect("a result");
     assert_eq!(outcome.exit_code(), 0, "{list:?}");
     assert!(outcome.stderr_lines(view).is_empty(), "{list:?}");
     outcome.stdout(view)
 }
 
 fn stderr(list: &[&str], view: &View) -> String {
-    let failure = run(&args(list), &mut Env::quiet()).expect_err("a failure");
+    let failure = run(&args(list), &mut Env::quiet(), unread()).expect_err("a failure");
     assert_eq!(failure.exit_code(), 2, "{list:?}");
     let mut text = failure.stderr_lines(view).join("\n");
     text.push('\n');
@@ -100,7 +116,7 @@ fn a_usage_error_on_a_terminal_is_a_marked_message() {
     );
     assert_eq!(
         stderr(&["frob"], &unpainted()),
-        "■  unknown verb 'frob'\n   usage: bilbo <verb> [<args>]...\n   verbs: remember\n   see bilbo --help\n"
+        "■  unknown verb 'frob'\n   usage: bilbo <verb> [<args>]...\n   verbs: remember, config\n   see bilbo --help\n"
     );
 }
 
@@ -154,6 +170,41 @@ fn the_remember_page_is_the_same_from_every_help_form() {
         &["remember", "-h"],
         &["help", "remember"],
         &["help", "remember", "--help"],
+    ] {
+        assert_eq!(stdout(form, &View::PLAIN), page, "{form:?}");
+    }
+}
+
+fn configured(list: &[&str], view: &View) -> String {
+    let outcome = run(&args(list), &mut Env::quiet(), Ok(defaults())).expect("a result");
+    assert_eq!(outcome.exit_code(), 0, "{list:?}");
+    outcome.stdout(view)
+}
+
+#[test]
+fn the_config_listing_in_the_plain_view() {
+    assert_eq!(
+        configured(&["config"], &View::PLAIN),
+        include_str!("snapshots/config-output.txt")
+    );
+}
+
+#[test]
+fn the_config_listing_on_a_terminal() {
+    assert_eq!(
+        configured(&["config"], &View::HUMAN),
+        include_str!("snapshots/config-output.human.ansi")
+    );
+}
+
+#[test]
+fn the_config_page_is_the_same_from_every_help_form() {
+    let page = include_str!("snapshots/config-help.txt");
+    for form in [
+        &["config", "--help"][..],
+        &["config", "-h"],
+        &["help", "config"],
+        &["help", "config", "--help"],
     ] {
         assert_eq!(stdout(form, &View::PLAIN), page, "{form:?}");
     }

@@ -1,8 +1,8 @@
 use std::fs;
 
 use bilbo_store::entries::{CaptureError, Entries, Generation, Meta, RecordRange, StoreError};
-use bilbo_store::paths::Layout;
-use bilbo_store::segments::Store;
+use bilbo_store::layout::Layout;
+use bilbo_store::segments::{Options, Store};
 
 use crate::frames::spans;
 use crate::scratch::{
@@ -33,7 +33,8 @@ fn a_read_only_store_reads_everything_and_writes_nothing() {
     fs::remove_file(catalog(&layout)).expect("delete the catalog");
     let before = snapshot_of(&layout);
 
-    let store = Store::open_read_only(&layout, &mut |_| {}).expect("read-only open");
+    let store =
+        Store::open_read_only(&layout, Options::default(), &mut |_| {}).expect("read-only open");
     assert_eq!(read_records(&store, a, 1, 2), b"one\ntwo\n");
     assert_eq!(read_records(&store, b, 1, 1), b"three\n");
     assert_eq!(
@@ -73,7 +74,8 @@ fn a_read_only_open_without_a_lock_file_or_a_state_folder_reads_the_sealed_segme
         }
         let before = snapshot_of(&layout);
 
-        let store = Store::open_read_only(&layout, &mut |_| {}).expect("read-only open");
+        let store = Store::open_read_only(&layout, Options::default(), &mut |_| {})
+            .expect("read-only open");
         assert_eq!(read_records(&store, a, 1, 2), b"one\ntwo\n", "{case}");
         assert!(
             store.by_origin(&origin("b.md")).expect("head").is_none(),
@@ -90,7 +92,8 @@ fn a_read_only_store_refuses_writes() {
     let scratch = Scratch::new("read_only_refuses");
     let layout = scratch.layout();
     let (a, _) = two_places(&layout);
-    let mut store = Store::open_read_only(&layout, &mut |_| {}).expect("read-only open");
+    let mut store =
+        Store::open_read_only(&layout, Options::default(), &mut |_| {}).expect("read-only open");
     let refused = try_keep(&mut store, "c.md", b"x\n", None);
     assert!(matches!(
         refused,
@@ -115,7 +118,7 @@ fn a_read_only_store_refuses_writes() {
 fn a_read_only_open_of_a_missing_store_says_so() {
     let scratch = Scratch::new("read_only_missing");
     let layout = scratch.layout();
-    let error = Store::open_read_only(&layout, &mut |_| {})
+    let error = Store::open_read_only(&layout, Options::default(), &mut |_| {})
         .err()
         .expect("must fail");
     assert_eq!(
@@ -150,16 +153,12 @@ fn two_store_roots_cannot_share_one_state_folder() {
     }
     .to_string();
 
-    let writer = Store::open(
-        &second,
-        bilbo_store::segments::Options::default(),
-        &mut |_| {},
-    );
+    let writer = Store::open(&second, Options::default(), &mut |_| {});
     assert_eq!(writer.err().map(|e| e.to_string()), Some(expected.clone()));
-    let reader = Store::open_read_only(&second, &mut |_| {});
+    let reader = Store::open_read_only(&second, Options::default(), &mut |_| {});
     assert_eq!(reader.err().map(|e| e.to_string()), Some(expected));
     assert_eq!((snapshot_of(&first), snapshot_of(&second)), held);
 
     fs::remove_file(first.state.join("root")).expect("remove the record");
-    assert!(Store::open_read_only(&second, &mut |_| {}).is_ok());
+    assert!(Store::open_read_only(&second, Options::default(), &mut |_| {}).is_ok());
 }

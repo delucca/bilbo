@@ -1,6 +1,12 @@
 [workspace]
 resolver = "3"
-members = ["apps/cli", "libs/rust/kinds", "libs/rust/kinds/markdown", "libs/rust/store"]
+members = [
+    "apps/cli",
+    "libs/rust/kinds",
+    "libs/rust/kinds/markdown",
+    "libs/rust/settings",
+    "libs/rust/store",
+]
 
 [workspace.package]
 version = "0.0.0"
@@ -11,6 +17,7 @@ publish = false
 [workspace.dependencies]
 bilbo-kinds = { path = "libs/rust/kinds" }
 bilbo-markdown = { path = "libs/rust/kinds/markdown" }
+bilbo-settings = { path = "libs/rust/settings" }
 bilbo-store = { path = "libs/rust/store" }
 clap = { version = "4.6.7", default-features = false, features = ["std", "derive", "help", "usage", "error-context"] }
 proc-macro2 = { version = "1.0.107", default-features = false }
@@ -18,6 +25,7 @@ runfiles = "0.3.0"
 rusqlite = { version = "0.41.1", default-features = false, features = ["bundled"] }
 rustix = { version = "1.1.5", default-features = false, features = ["std", "event", "fs", "pty"] }
 syn = { version = "3.0.9", default-features = false, features = ["full", "parsing", "visit"] }
+toml = { version = "1.1.8", default-features = false, features = ["std", "parse"] }
 xxhash-rust = { version = "0.8.19", features = ["xxh3"] }
 zstd = { version = "0.14.3", default-features = false }
 

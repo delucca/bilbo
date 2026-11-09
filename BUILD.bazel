@@ -2,6 +2,7 @@ exports_files(
     [
         "Cargo.toml",
         "clippy.toml",
+        "docs/reference/configuration.md",
         "rustfmt.toml",
     ],
     visibility = ["//visibility:public"],

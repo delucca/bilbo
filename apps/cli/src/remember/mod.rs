@@ -5,8 +5,7 @@ pub mod view;
 use std::path::PathBuf;
 
 use bilbo_kinds::remember::{self, Output, Request};
-use bilbo_store::paths;
-use bilbo_store::segments::{Notice, Options, Store};
+use bilbo_store::segments::{Notice, Store};
 use clap::Command;
 use clap::builder::NonEmptyStringValueParser;
 
@@ -14,6 +13,7 @@ use crate::console::args::usage;
 use crate::console::env::Env;
 use crate::console::message::{Mark, Message, sanitize};
 use crate::console::outcome::{Exit, Failure, Outcome};
+use crate::console::settings::Settings;
 use disk::Disk;
 
 const ABOUT: &str =
@@ -83,7 +83,12 @@ Examples:
 
 Docs: reference/commands.md#remember";
 
-pub fn run(root: &Command, args: Args, env: &mut Env) -> Result<Outcome, Failure> {
+pub fn run(
+    root: &Command,
+    args: Args,
+    env: &mut Env,
+    settings: &Settings,
+) -> Result<Outcome, Failure> {
     let kinds = registry::kinds();
     let request = Request {
         target: args.target,
@@ -97,15 +102,16 @@ pub fn run(root: &Command, args: Args, env: &mut Env) -> Result<Outcome, Failure
         remember::Error::Target { .. } | remember::Error::Store(_) => refused(&error),
     })?;
 
+    let layout = settings.layout();
+    Store::check(&layout).map_err(|error| Failure::from(&error))?;
     let (output, close_error) = if plan.files.is_empty() {
         (Output::unkept(&plan), None)
     } else {
-        let layout = paths::layout(&*env.var)?;
         let notice = &mut env.notice;
-        let mut store = Store::open(&layout, Options::default(), &mut |n| {
+        let mut store = Store::open(&layout, settings.store.options(), &mut |n| {
             notice(&notice_message(&n));
         })
-        .map_err(|error| refused(&error))?;
+        .map_err(|error| Failure::from(&error))?;
         let output = remember::keep(&plan, &Disk, &mut store).map_err(|error| refused(&error))?;
         (
             output,

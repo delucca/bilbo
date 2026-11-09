@@ -1,101 +1,6 @@
 use std::fs;
-use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
 
-use super::bilbo;
-
-static COUNTER: AtomicU64 = AtomicU64::new(0);
-
-#[expect(
-    clippy::disallowed_methods,
-    reason = "Bazel gives each test its scratch folder in TEST_TMPDIR"
-)]
-fn base() -> PathBuf {
-    std::env::var_os("TEST_TMPDIR").map_or_else(std::env::temp_dir, PathBuf::from)
-}
-
-struct Scratch {
-    dir: PathBuf,
-}
-
-impl Scratch {
-    fn new(test: &str) -> Scratch {
-        let dir = base()
-            .canonicalize()
-            .expect("canonical scratch base")
-            .join(format!(
-                "{test}-{}-{}",
-                std::process::id(),
-                COUNTER.fetch_add(1, Ordering::Relaxed)
-            ));
-        fs::create_dir_all(dir.join("home")).expect("home");
-        fs::create_dir_all(dir.join("notes")).expect("notes");
-        Scratch { dir }
-    }
-
-    fn path(&self, name: &str) -> String {
-        self.dir.join(name).to_str().expect("UTF-8").to_owned()
-    }
-
-    fn env(&self) -> Vec<(&'static str, String)> {
-        vec![
-            ("HOME", self.path("home")),
-            ("BILBO_HOME", self.path("store")),
-            ("XDG_STATE_HOME", self.path("state")),
-            ("XDG_CACHE_HOME", self.path("cache")),
-            ("BILBO_CONFIG", self.path("config/config")),
-        ]
-    }
-
-    fn run(&self, args: &[&str]) -> super::Run {
-        let env = self.env();
-        let pairs: Vec<(&str, &str)> = env.iter().map(|(k, v)| (*k, v.as_str())).collect();
-        bilbo(args, &pairs)
-    }
-
-    fn write(&self, name: &str, bytes: &str) {
-        let path = self.dir.join("notes").join(name);
-        fs::create_dir_all(path.parent().expect("parent")).expect("folders");
-        fs::write(path, bytes).expect("write");
-    }
-
-    fn segments(&self) -> usize {
-        fs::read_dir(self.dir.join("store"))
-            .expect("the store")
-            .filter(|e| {
-                e.as_ref()
-                    .expect("entry")
-                    .path()
-                    .extension()
-                    .is_some_and(|x| x == "seg")
-            })
-            .count()
-    }
-
-    fn notes_state(&self) -> Vec<(PathBuf, Vec<u8>)> {
-        let mut files = Vec::new();
-        let mut stack = vec![self.dir.join("notes")];
-        while let Some(dir) = stack.pop() {
-            for entry in fs::read_dir(dir).expect("list") {
-                let path = entry.expect("entry").path();
-                if path.is_dir() {
-                    stack.push(path);
-                } else {
-                    let bytes = fs::read(&path).expect("read");
-                    files.push((path, bytes));
-                }
-            }
-        }
-        files.sort();
-        files
-    }
-}
-
-impl Drop for Scratch {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.dir);
-    }
-}
+use super::scratch::Scratch;
 
 #[test]
 fn remembering_a_folder_twice_keeps_everything_once() {
@@ -174,5 +79,37 @@ fn remember_usage_errors_name_the_problem_and_touch_no_store() {
     }
     for folder in ["store", "state/bilbo", "cache/bilbo"] {
         assert!(!scratch.dir.join(folder).exists(), "{folder}");
+    }
+}
+
+#[test]
+fn a_root_that_holds_0_20s_library_exits_2_and_writes_nothing_even_with_nothing_to_keep() {
+    for files in [false, true] {
+        let scratch = Scratch::new("older_root");
+        let library = scratch.dir.join("store/library");
+        fs::create_dir_all(&library).expect("a 0.20 library folder");
+        if files {
+            scratch.write("a.md", "a\n");
+        }
+        let run = scratch.run(&["remember", &scratch.path("notes")]);
+        assert_eq!(run.code, 2, "files: {files}");
+        assert_eq!(run.stdout, "", "files: {files}");
+        assert_eq!(
+            run.stderr,
+            format!(
+                "bilbo: {} belongs to bilbo 0.20; set BILBO_HOME or paths.root to another folder\n",
+                library.display()
+            ),
+            "files: {files}"
+        );
+        for folder in ["state", "cache"] {
+            assert!(!scratch.dir.join(folder).exists(), "{folder}");
+        }
+        assert_eq!(
+            fs::read_dir(scratch.dir.join("store"))
+                .expect("store")
+                .count(),
+            1
+        );
     }
 }

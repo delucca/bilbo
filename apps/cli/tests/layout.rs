@@ -6,7 +6,7 @@ use std::sync::OnceLock;
 use proc_macro2::{Delimiter, TokenStream, TokenTree};
 use syn::visit::{self, Visit};
 
-const COMPONENTS: [&str; 2] = ["help", "remember"];
+const COMPONENTS: [&str; 3] = ["config", "help", "remember"];
 const MODULE: &str = "console";
 const THEME: [&str; 2] = ["console", "theme"];
 const ROOTS: [&str; 2] = ["crate", "bilbo_cli"];

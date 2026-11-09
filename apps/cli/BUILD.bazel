@@ -23,6 +23,7 @@ rust_library(
     deps = [
         "//libs/rust/kinds",
         "//libs/rust/kinds/markdown",
+        "//libs/rust/settings",
         "//libs/rust/store",
     ] + all_crate_deps(normal = True),
 )
@@ -43,6 +44,7 @@ alias(
 
 bilbo_rust_test(
     name = "unit",
+    compile_data = ["//:docs/reference/configuration.md"],
     crate = ":bilbo_cli",
     layer = "unit",
     lint_config = ":lints",

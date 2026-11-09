@@ -1,3 +1,4 @@
+pub mod config;
 pub mod console;
 pub mod help;
 #[cfg(test)]
@@ -11,6 +12,7 @@ use clap::{Command, CommandFactory, Parser, Subcommand};
 use crate::console::args::{Parsed, parse, typed, usage, verbs};
 use crate::console::env::Env;
 use crate::console::outcome::{Failure, Outcome};
+use crate::console::settings::Settings;
 use crate::help::overview;
 use crate::help::page::shape;
 
@@ -32,6 +34,7 @@ pub struct Cli {
 #[derive(Debug, Subcommand)]
 pub enum Verb {
     Remember(remember::Args),
+    Config(config::Args),
 }
 
 pub fn bilbo() -> Command {
@@ -41,21 +44,37 @@ pub fn bilbo() -> Command {
         .fold(root, |root, name| root.mut_subcommand(name, shape))
 }
 
-pub fn run(args: &[OsString], env: &mut Env) -> Result<Outcome, Failure> {
-    run_command(&bilbo(), args, env)
+/// `settings` is what `main` resolved; help, the version and a usage error never read it.
+pub fn run(
+    args: &[OsString],
+    env: &mut Env,
+    settings: Result<Settings, Failure>,
+) -> Result<Outcome, Failure> {
+    run_command(&bilbo(), args, env, settings)
 }
 
-pub fn run_command(root: &Command, args: &[OsString], env: &mut Env) -> Result<Outcome, Failure> {
+pub fn run_command(
+    root: &Command,
+    args: &[OsString],
+    env: &mut Env,
+    settings: Result<Settings, Failure>,
+) -> Result<Outcome, Failure> {
     match parse(root, args)? {
         Parsed::Help(topic) => help::run(root, &topic),
         Parsed::Version => Ok(Outcome::new(format!(
             "bilbo {}\n",
             env!("CARGO_PKG_VERSION")
         ))),
-        Parsed::Matches(matches) => match typed::<Cli>(root, &matches)?.verb {
-            None => Err(usage(root, "missing verb".to_owned(), None)),
-            Some(Verb::Remember(args)) => remember::run(root, args, env),
-        },
+        Parsed::Matches(matches) => {
+            let Some(verb) = typed::<Cli>(root, &matches)?.verb else {
+                return Err(usage(root, "missing verb".to_owned(), None));
+            };
+            let settings = settings?;
+            match verb {
+                Verb::Remember(args) => remember::run(root, args, env, &settings),
+                Verb::Config(args) => config::run(root, args, &settings),
+            }
+        }
     }
 }
 
@@ -66,25 +85,33 @@ mod tests {
     use super::{bilbo, run, run_command};
     use crate::console::env::Env;
     use crate::console::outcome::Failure;
+    use crate::console::settings::Settings;
     use crate::console::view::View;
     use crate::probe::{self, with_verb};
+
+    fn unread() -> Result<Settings, Failure> {
+        Err(Failure::Config(
+            "these tests never read a setting".to_owned(),
+        ))
+    }
 
     fn args(list: &[&str]) -> Vec<OsString> {
         list.iter().map(OsString::from).collect()
     }
 
     fn stdout(root: &clap::Command, list: &[&str]) -> String {
-        run_command(root, &args(list), &mut Env::quiet())
+        run_command(root, &args(list), &mut Env::quiet(), unread())
             .unwrap_or_else(|failure| panic!("{list:?}: {failure:?}"))
             .stdout(&View::PLAIN)
     }
 
     #[test]
     fn a_newline_in_a_help_topic_cannot_cut_the_reason() {
-        let reason = |list: &[&str]| match run_command(&bilbo(), &args(list), &mut Env::quiet()) {
-            Err(Failure::Usage { reason, .. }) => reason,
-            other => panic!("{list:?}: {other:?}"),
-        };
+        let reason =
+            |list: &[&str]| match run_command(&bilbo(), &args(list), &mut Env::quiet(), unread()) {
+                Err(Failure::Usage { reason, .. }) => reason,
+                other => panic!("{list:?}: {other:?}"),
+            };
         assert_eq!(reason(&["bilbo", "help", "a\nb"]), "unknown verb 'a\\nb'");
         assert_eq!(
             reason(&["bilbo", "help", "--a\nb"]),
@@ -99,7 +126,7 @@ mod tests {
     #[test]
     fn help_and_version_are_results_that_exit_0() {
         for list in [&["bilbo", "--help"][..], &["bilbo", "--version"]] {
-            let outcome = run(&args(list), &mut Env::quiet()).expect("a result");
+            let outcome = run(&args(list), &mut Env::quiet(), unread()).expect("a result");
             assert_eq!(outcome.exit_code(), 0);
             assert!(outcome.stderr_lines(&View::PLAIN).is_empty());
         }
@@ -149,6 +176,7 @@ mod tests {
             &root,
             &args(&["bilbo", "probe", "--help"]),
             &mut Env::quiet(),
+            unread(),
         )
         .expect("a page")
         .stdout(&View::HUMAN);

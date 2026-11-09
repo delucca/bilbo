@@ -1,0 +1,13 @@
+[package]
+name = "bilbo-settings"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+description = "How bilbo reads a setting: a flag, a variable, the config file, or its default."
+
+[dependencies]
+toml.workspace = true
+
+[lints]
+workspace = true

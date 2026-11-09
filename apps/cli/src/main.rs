@@ -11,6 +11,7 @@ use std::process::ExitCode;
 
 use bilbo_cli::console::env::Env;
 use bilbo_cli::console::outcome::Failure;
+use bilbo_cli::console::settings;
 use bilbo_cli::console::streams::{self, Emit};
 use bilbo_cli::console::view;
 
@@ -32,7 +33,8 @@ fn main() -> ExitCode {
             }
         }),
     };
-    let plan = streams::plan(&bilbo_cli::run(&args, &mut env), &out, &err);
+    let settings = settings::load(&*env.var, &settings::read_regular).map_err(Failure::from);
+    let plan = streams::plan(&bilbo_cli::run(&args, &mut env, settings), &out, &err);
     ExitCode::from(streams::execute(&plan, &err, &mut perform))
 }
 

@@ -11,13 +11,15 @@ use std::thread;
 use std::time::{Duration, SystemTime};
 
 use bilbo_cli::console::env::Env;
+use bilbo_cli::console::outcome::Failure;
+use bilbo_cli::console::settings;
 use bilbo_cli::console::view::View;
 use bilbo_cli::remember::disk::Disk;
 use bilbo_kinds::files::{Files, Node};
 use bilbo_store::entries::{Cursor, Entries, Generation, Head, Meta, Origin, RecordRange};
 use bilbo_store::id::Id;
-use bilbo_store::paths::{self, Layout};
-use bilbo_store::segments::Store;
+use bilbo_store::layout::Layout;
+use bilbo_store::segments::{Options, Store};
 
 const ID_A: &str = "01JC5Q3V7XKM4P8R2T6W9YB0DE";
 const ID_B: &str = "01JC5Q3V7XKM4P8R2T6W9YB0DF";
@@ -65,6 +67,7 @@ impl Sandbox {
         for sub in ["home", "notes", "config"] {
             fs::create_dir_all(dir.join(sub)).expect("create scratch");
         }
+        fs::write(dir.join("config/config.toml"), "").expect("an empty config file");
         Sandbox { dir }
     }
 
@@ -78,7 +81,7 @@ impl Sandbox {
             ("BILBO_HOME", self.dir.join("store")),
             ("XDG_STATE_HOME", self.dir.join("state")),
             ("XDG_CACHE_HOME", self.dir.join("cache")),
-            ("BILBO_CONFIG", self.dir.join("config/config")),
+            ("BILBO_CONFIG", self.dir.join("config/config.toml")),
         ]
         .into_iter()
         .map(|(name, path)| (name.to_owned(), path.into_os_string()))
@@ -86,8 +89,7 @@ impl Sandbox {
     }
 
     fn layout(&self) -> Layout {
-        let vars = self.vars();
-        paths::layout(|name| vars.get(name).cloned()).expect("a layout")
+        layout(&self.vars())
     }
 
     fn open_seg(&self) -> PathBuf {
@@ -121,7 +123,8 @@ impl Sandbox {
     }
 
     fn entries(&self) -> Vec<(Meta, Head)> {
-        let store = Store::open_read_only(&self.layout(), &mut |_| {}).expect("open read-only");
+        let store = Store::open_read_only(&self.layout(), Options::default(), &mut |_| {})
+            .expect("open read-only");
         let (changes, _) = store.changes(&Cursor::start()).expect("changes");
         let ids: BTreeSet<Id> = changes
             .iter()
@@ -149,7 +152,8 @@ impl Sandbox {
     }
 
     fn generation(&self, id: Id, generation: Generation, records: u64) -> Vec<u8> {
-        let store = Store::open_read_only(&self.layout(), &mut |_| {}).expect("open read-only");
+        let store = Store::open_read_only(&self.layout(), Options::default(), &mut |_| {})
+            .expect("open read-only");
         store
             .read(
                 id,
@@ -170,6 +174,12 @@ impl Drop for Sandbox {
     }
 }
 
+fn layout(vars: &HashMap<String, OsString>) -> Layout {
+    settings::load(&|name| vars.get(name).cloned(), &|path| fs::read(path))
+        .expect("settings")
+        .layout()
+}
+
 fn remember(vars: HashMap<String, OsString>, args: &[&str]) -> Run {
     let notices = Arc::new(Mutex::new(Vec::new()));
     let sink = Arc::clone(&notices);
@@ -185,7 +195,8 @@ fn remember(vars: HashMap<String, OsString>, args: &[&str]) -> Run {
         .chain(args.iter().copied())
         .map(OsString::from)
         .collect();
-    let run = match bilbo_cli::run(&argv, &mut env) {
+    let settings = settings::load(&*env.var, &|path| fs::read(path)).map_err(Failure::from);
+    let run = match bilbo_cli::run(&argv, &mut env, settings) {
         Ok(outcome) => Run {
             code: outcome.exit_code(),
             stdout: outcome.stdout(&View::PLAIN),
@@ -520,7 +531,8 @@ fn a_second_run_waits_on_the_lock_and_says_so() {
             }),
         };
         let argv: Vec<OsString> = vec!["bilbo".into(), "remember".into(), notes.into()];
-        let outcome = bilbo_cli::run(&argv, &mut env).expect("a result");
+        let settings = settings::load(&*env.var, &|path| fs::read(path)).map_err(Failure::from);
+        let outcome = bilbo_cli::run(&argv, &mut env, settings).expect("a result");
         (outcome.exit_code(), outcome.stdout(&View::PLAIN))
     });
 
@@ -833,10 +845,7 @@ fn a_notice_naming_a_path_with_a_newline_stays_one_line() {
     );
     let notes = sandbox.notes();
     assert_eq!(remember(vars.clone(), &[text(&notes)]).code, 0);
-    let layout = {
-        let vars = vars.clone();
-        paths::layout(|name| vars.get(name).cloned()).expect("a layout")
-    };
+    let layout = layout(&vars);
     let mut file = fs::OpenOptions::new()
         .append(true)
         .open(layout.state.join("open.seg"))
@@ -875,5 +884,37 @@ fn a_config_path_with_a_dotted_component_exits_2_and_creates_nothing() {
     let layout = sandbox.layout();
     for folder in [&layout.root, &layout.state, &layout.cache] {
         assert!(!folder.exists(), "{folder:?}");
+    }
+}
+
+#[test]
+fn a_root_that_holds_0_20s_notes_exits_2_and_writes_nothing_even_with_nothing_to_keep() {
+    for files in [false, true] {
+        let sandbox = Sandbox::new("older_root");
+        if files {
+            sandbox.write("a.md", "a\n");
+        }
+        let layout = sandbox.layout();
+        fs::create_dir_all(layout.root.join("notes")).expect("a 0.20 notes folder");
+        let run = sandbox.remember_notes();
+        assert_eq!(run.code, 2, "files: {files}");
+        assert_eq!(run.stdout, "", "files: {files}");
+        assert_eq!(
+            run.stderr,
+            [format!(
+                "bilbo: {}/notes belongs to bilbo 0.20; set BILBO_HOME or paths.root to another folder",
+                layout.root.display()
+            )],
+            "files: {files}"
+        );
+        assert!(
+            !layout.state.exists() && !layout.cache.exists(),
+            "files: {files}"
+        );
+        assert_eq!(
+            fs::read_dir(&layout.root).expect("the root").count(),
+            1,
+            "only notes/, files: {files}"
+        );
     }
 }

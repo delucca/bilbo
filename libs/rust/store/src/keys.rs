@@ -1,0 +1,275 @@
+use bilbo_settings::error::Error;
+use bilbo_settings::file::File;
+use bilbo_settings::key::{About, Default, Key, Resolved, Shown, Source};
+use bilbo_settings::size::{self, GIB, MIB};
+
+use crate::limits::{Compression, TearBudget};
+use crate::segments::Options;
+
+pub const SEAL_SIZE: Key<u64> = Key {
+    about: About {
+        name: "store.seal_at",
+        variable: Some("BILBO_STORE_SEAL_AT"),
+        default: Default::Toml(r#""8 MiB""#),
+        allowed: "between 1 MiB and 1 GiB",
+        doc: "The size at which open.seg is sealed into a segment of the store.",
+    },
+    parse: |value| {
+        size::read(value)
+            .filter(|bytes| (MIB..=GIB).contains(bytes))
+            .ok_or_else(|| value.refuse())
+    },
+    show: |bytes| size::show(*bytes),
+};
+
+pub const COMPRESSION: Key<Compression> = Key {
+    about: About {
+        name: "store.compression",
+        variable: Some("BILBO_STORE_COMPRESSION"),
+        default: Default::Toml("19"),
+        allowed: "a zstd level from 1 to 22",
+        doc: "The zstd level of every frame the store writes: higher packs smaller and writes slower.",
+    },
+    parse: |value| {
+        value
+            .integer()
+            .and_then(|level| Compression::try_from(level).ok())
+            .ok_or_else(|| value.refuse())
+    },
+    show: |level| level.level().to_string(),
+};
+
+pub const TEAR_BUDGET: Key<TearBudget> = Key {
+    about: About {
+        name: "store.tear_budget",
+        variable: Some("BILBO_STORE_TEAR_BUDGET"),
+        default: Default::Toml("4"),
+        allowed: "a whole number from 1 to 64",
+        doc: "How many times open.seg's size the search after a torn frame may hash before it refuses the file.",
+    },
+    parse: |value| {
+        value
+            .integer()
+            .and_then(|times| usize::try_from(times).ok())
+            .and_then(|times| TearBudget::try_from(times).ok())
+            .ok_or_else(|| value.refuse())
+    },
+    show: |times| times.times().to_string(),
+};
+
+pub const ABOUT: [&About; 3] = [&SEAL_SIZE.about, &COMPRESSION.about, &TEAR_BUDGET.about];
+
+/// The store's keys as the settings resolved them.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Section {
+    pub seal_at: Resolved<u64>,
+    pub compression: Resolved<Compression>,
+    pub tear_budget: Resolved<TearBudget>,
+}
+
+pub fn section(source: &Source<'_>) -> Result<Section, Error> {
+    Ok(Section {
+        seal_at: SEAL_SIZE.resolve(source)?,
+        compression: COMPRESSION.resolve(source)?,
+        tear_budget: TEAR_BUDGET.resolve(source)?,
+    })
+}
+
+/// Every key at its default: no variable, no file.
+pub fn defaults() -> Section {
+    let file = File::default();
+    section(&Source {
+        var: &|_| None,
+        file: &file,
+    })
+    .expect("each default is a literal its key's unit test parses")
+}
+
+impl std::default::Default for Options {
+    fn default() -> Self {
+        defaults().options()
+    }
+}
+
+impl Section {
+    pub fn options(&self) -> Options {
+        Options {
+            seal_at: self.seal_at.value,
+            compression: self.compression.value,
+            tear_budget: self.tear_budget.value,
+            hook: None,
+        }
+    }
+
+    pub fn shown(&self) -> [Shown; 3] {
+        [
+            SEAL_SIZE.shown(&self.seal_at),
+            COMPRESSION.shown(&self.compression),
+            TEAR_BUDGET.shown(&self.tear_budget),
+        ]
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::ffi::OsString;
+    use std::path::Path;
+
+    use bilbo_settings::file::File;
+    use bilbo_settings::key::{Origin, Resolved, Source};
+    use bilbo_settings::size::MIB;
+
+    use super::{ABOUT, Section, defaults, section};
+    use crate::limits::{Compression, TearBudget};
+
+    fn resolve(env: &[(&str, &str)], text: &str) -> Result<super::Section, String> {
+        let var = |name: &str| {
+            env.iter()
+                .find(|(key, _)| *key == name)
+                .map(|(_, value)| OsString::from(value))
+        };
+        let file = File::parse(Path::new("/c/config.toml"), text.as_bytes()).expect("toml");
+        section(&Source {
+            var: &var,
+            file: &file,
+        })
+        .map_err(|error| error.to_string())
+    }
+
+    #[test]
+    fn the_defaults_are_8_mib_level_19_and_four_times_the_file() {
+        let options = defaults().options();
+        assert_eq!(
+            (
+                options.seal_at,
+                options.compression.level(),
+                options.tear_budget.times()
+            ),
+            (8 * MIB, 19, 4)
+        );
+        let shown: Vec<String> = defaults()
+            .shown()
+            .iter()
+            .map(|shown| format!("{} = {} ({})", shown.name, shown.value, shown.origin))
+            .collect();
+        assert_eq!(
+            shown,
+            [
+                "store.seal_at = \"8 MiB\" (default)",
+                "store.compression = 19 (default)",
+                "store.tear_budget = 4 (default)"
+            ]
+        );
+    }
+
+    #[test]
+    fn each_key_takes_its_variable_over_the_file() {
+        let text = "[store]\nseal_at = \"16 MiB\"\ncompression = 3\ntear_budget = 8\n";
+        let from_file = resolve(&[], text).expect("valid");
+        assert_eq!(from_file.options().seal_at, 16 * MIB);
+        assert_eq!(from_file.compression.value.level(), 3);
+        assert_eq!(
+            from_file.tear_budget.origin,
+            Origin::File {
+                path: "/c/config.toml".into(),
+                line: 4
+            }
+        );
+        let env = [
+            ("BILBO_STORE_SEAL_AT", "1GiB"),
+            ("BILBO_STORE_COMPRESSION", "22"),
+            ("BILBO_STORE_TEAR_BUDGET", "64"),
+        ];
+        let options = resolve(&env, text).expect("valid").options();
+        assert_eq!(
+            (
+                options.seal_at,
+                options.compression.level(),
+                options.tear_budget.times()
+            ),
+            (1024 * MIB, 22, 64)
+        );
+    }
+
+    #[test]
+    fn each_key_refuses_a_value_out_of_its_range() {
+        for (text, message) in [
+            (
+                "store.seal_at = \"1023 KiB\"",
+                "/c/config.toml:1: store.seal_at must be between 1 MiB and 1 GiB, got \"1023 KiB\"",
+            ),
+            (
+                "store.seal_at = \"1025 MiB\"",
+                "/c/config.toml:1: store.seal_at must be between 1 MiB and 1 GiB, got \"1025 MiB\"",
+            ),
+            (
+                "store.compression = 0",
+                "/c/config.toml:1: store.compression must be a zstd level from 1 to 22, got 0",
+            ),
+            (
+                "store.compression = 23",
+                "/c/config.toml:1: store.compression must be a zstd level from 1 to 22, got 23",
+            ),
+            (
+                "store.tear_budget = 0",
+                "/c/config.toml:1: store.tear_budget must be a whole number from 1 to 64, got 0",
+            ),
+            (
+                "store.tear_budget = 65",
+                "/c/config.toml:1: store.tear_budget must be a whole number from 1 to 64, got 65",
+            ),
+        ] {
+            assert_eq!(resolve(&[], text).err().as_deref(), Some(message), "{text}");
+        }
+        assert_eq!(
+            resolve(&[("BILBO_STORE_COMPRESSION", "-3")], "")
+                .err()
+                .as_deref(),
+            Some("BILBO_STORE_COMPRESSION must be a zstd level from 1 to 22, got \"-3\"")
+        );
+    }
+
+    #[test]
+    fn a_section_maps_every_key_onto_options() {
+        let section = Section {
+            seal_at: Resolved {
+                value: 3 * MIB,
+                origin: Origin::Default,
+            },
+            compression: Resolved {
+                value: Compression::try_from(7).expect("in range"),
+                origin: Origin::Default,
+            },
+            tear_budget: Resolved {
+                value: TearBudget::try_from(9).expect("in range"),
+                origin: Origin::Default,
+            },
+        };
+        let options = section.options();
+        assert_eq!(
+            (
+                options.seal_at,
+                options.compression.level(),
+                options.tear_budget.times()
+            ),
+            (3 * MIB, 7, 9)
+        );
+        assert!(options.hook.is_none());
+    }
+
+    #[test]
+    fn the_store_declares_three_keys_each_with_its_own_variable() {
+        let names: Vec<(&str, Option<&str>)> = ABOUT
+            .iter()
+            .map(|about| (about.name, about.variable))
+            .collect();
+        assert_eq!(
+            names,
+            [
+                ("store.seal_at", Some("BILBO_STORE_SEAL_AT")),
+                ("store.compression", Some("BILBO_STORE_COMPRESSION")),
+                ("store.tear_budget", Some("BILBO_STORE_TEAR_BUDGET")),
+            ]
+        );
+    }
+}

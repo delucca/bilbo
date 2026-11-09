@@ -3,7 +3,7 @@ use std::fs::{self, File, OpenOptions, TryLockError};
 use std::io::{self, Write};
 use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::os::unix::fs::FileExt;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::time::SystemTime;
 
 use crate::capture::{self, Action};
@@ -15,10 +15,10 @@ use crate::entries::{
 use crate::files::{self, Create};
 use crate::frame;
 use crate::id::Id;
+use crate::layout::Layout;
+use crate::limits::{Compression, TearBudget};
 use crate::meta;
-use crate::paths::Layout;
 
-pub const SEAL_AT: u64 = 8 * 1024 * 1024;
 pub type Hook = Box<dyn FnMut(Step) -> io::Result<()> + Send>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -27,6 +27,8 @@ pub enum Step {
     Locked,
     /// A reader validated its paths and has not touched the store yet.
     Checked,
+    /// The root passed the 0.20 guard; no folder is created yet.
+    Guarded,
     /// The root or cache folder is about to be created.
     Creating,
     /// The root or cache folder exists and is not checked yet.
@@ -71,16 +73,10 @@ pub enum Notice {
 
 pub struct Options {
     pub seal_at: u64,
+    pub compression: Compression,
+    /// The frame bytes the search after a torn frame may hash, in multiples of the file's size.
+    pub tear_budget: TearBudget,
     pub hook: Option<Hook>,
-}
-
-impl Default for Options {
-    fn default() -> Self {
-        Options {
-            seal_at: SEAL_AT,
-            hook: None,
-        }
-    }
 }
 
 struct Writer {
@@ -181,6 +177,104 @@ fn binding(layout: &Layout) -> Result<catalog::Binding, StoreError> {
         root: canonical(&layout.root)?.as_os_str().as_bytes().to_vec(),
         state: canonical(&layout.state)?.as_os_str().as_bytes().to_vec(),
     })
+}
+
+/// bilbo 0.20 shares the default root; the migration task deletes this guard.
+fn refuse_older(root: &Path, shown: &Path) -> Result<(), StoreError> {
+    for name in ["notes", "library"] {
+        let folder = root.join(name);
+        match fs::symlink_metadata(&folder) {
+            Ok(_) => return Err(StoreError::Older(shown.join(name))),
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    io::ErrorKind::NotFound | io::ErrorKind::NotADirectory
+                ) => {}
+            Err(error) => return Err(files::io_err("read", &folder, error)),
+        }
+    }
+    Ok(())
+}
+
+/// The root as it is now, checked for 0.20's folders. A store uses this path from here on, never
+/// the configured one: a link in the configured path could be repointed after it was checked.
+/// The check is on a pathname, not a handle: each open checks the canonical root again once it
+/// exists, and a root swapped for a link after that is the residual the folder guards accept.
+fn guarded_root(configured: &Layout) -> Result<PathBuf, StoreError> {
+    let root = files::resolve(&configured.root)?;
+    refuse_older(&root, &configured.root)?;
+    refuse_inside(configured, &root)?;
+    Ok(root)
+}
+
+/// The root is one flat folder of segments: a state or cache folder in it, or the root itself,
+/// would make the root hold more than segments. Compared lexically and with every link followed,
+/// a dangling one included, so a link cannot hide the nesting.
+fn refuse_inside(configured: &Layout, root: &Path) -> Result<(), StoreError> {
+    let roots = [
+        lexical(&configured.root),
+        root.to_path_buf(),
+        files::follow(&configured.root)?,
+    ];
+    for (folder, path) in [("state", &configured.state), ("cache", &configured.cache)] {
+        let lexical = lexical(path);
+        let followed = files::follow(&lexical)?;
+        if roots
+            .iter()
+            .any(|inside| lexical.starts_with(inside) || followed.starts_with(inside))
+        {
+            return Err(StoreError::Inside {
+                folder,
+                path: path.clone(),
+                root: configured.root.clone(),
+            });
+        }
+    }
+    Ok(())
+}
+
+/// `path` without `.` and without the components `..` cancels.
+fn lexical(path: &Path) -> PathBuf {
+    let mut out = PathBuf::new();
+    for part in path.components() {
+        match part {
+            Component::CurDir => {}
+            Component::ParentDir
+                if matches!(out.components().next_back(), Some(Component::Normal(_))) =>
+            {
+                out.pop();
+            }
+            other => out.push(other),
+        }
+    }
+    out
+}
+
+/// A root that is gone is no store to a reader, not an I/O failure.
+fn vanished(error: StoreError, configured: &Layout) -> StoreError {
+    match error {
+        StoreError::Io { error, .. } if error.kind() == io::ErrorKind::NotFound => {
+            StoreError::Missing(format!("no store at {}", configured.root.display()))
+        }
+        other => other,
+    }
+}
+
+/// Where `root` leads now. A reader binds and reads this path, so a link swapped in since the
+/// last look is seen by the binding check.
+fn current_root(root: &Path, configured: &Layout) -> Result<PathBuf, StoreError> {
+    canonical(root).map_err(|error| vanished(error, configured))
+}
+
+/// Creates `dir` private if it is missing and returns it canonical, checked after the creation.
+fn make_private(dir: &Path, hook: &mut Option<Hook>) -> Result<PathBuf, StoreError> {
+    files::check_parents(dir)?;
+    step(hook, Step::Creating)?;
+    files::create_dir(dir)?;
+    step(hook, Step::Created)?;
+    files::check_private(dir)?;
+    files::check_parents(dir)?;
+    canonical(dir)
 }
 
 fn canonical(path: &Path) -> Result<PathBuf, StoreError> {
@@ -289,6 +383,7 @@ fn populate(
     layout: &Layout,
     sealed: &[(String, u64)],
     open: Option<&[u8]>,
+    budget: TearBudget,
 ) -> Result<u64, StoreError> {
     let mut batch = catalog.batch()?;
     let mut frames = 0;
@@ -309,7 +404,7 @@ fn populate(
         let path = open_seg(layout);
         match frame::check_segment_header(bytes) {
             Ok(frame::HeaderState::Whole) => {
-                let end = frame::good_end(bytes)
+                let end = frame::good_end(bytes, budget)
                     .map_err(|damage| damaged(&path, damage.offset, damage.what))?;
                 frames += apply_walk(
                     &mut batch,
@@ -333,10 +428,11 @@ fn rebuild(
     binding: &catalog::Binding,
     sealed: &[(String, u64)],
     open: &[u8],
+    budget: TearBudget,
     notice: &mut dyn FnMut(Notice),
 ) -> Result<Catalog, StoreError> {
     let mut catalog = Catalog::create(&catalog_file(layout), binding)?;
-    let frames = populate(&mut catalog, layout, sealed, Some(open))?;
+    let frames = populate(&mut catalog, layout, sealed, Some(open), budget)?;
     if frames > 0 {
         let (entries, segments) = catalog.counts()?;
         notice(Notice::RebuiltCatalog { entries, segments });
@@ -344,7 +440,11 @@ fn rebuild(
     Ok(catalog)
 }
 
-fn load_catalog(layout: &Layout, notice: &mut dyn FnMut(Notice)) -> Result<Catalog, StoreError> {
+fn load_catalog(
+    layout: &Layout,
+    budget: TearBudget,
+    notice: &mut dyn FnMut(Notice),
+) -> Result<Catalog, StoreError> {
     let binding = binding(layout)?;
     let sealed = list_sealed(&layout.root)?;
     let open = files::read_file(&open_seg(layout))?;
@@ -367,11 +467,11 @@ fn load_catalog(layout: &Layout, notice: &mut dyn FnMut(Notice)) -> Result<Catal
                 Ok(()) => Ok(catalog),
                 Err(_) => {
                     drop(catalog);
-                    rebuild(layout, &binding, &sealed, &open, notice)
+                    rebuild(layout, &binding, &sealed, &open, budget, notice)
                 }
             }
         }
-        Fresh::Rebuild => rebuild(layout, &binding, &sealed, &open, notice),
+        Fresh::Rebuild => rebuild(layout, &binding, &sealed, &open, budget, notice),
     }
 }
 
@@ -436,7 +536,11 @@ fn cut(path: &Path, length: u64) -> Result<(), StoreError> {
         .map_err(|error| files::io_err("cut", path, error))
 }
 
-fn prepare_open_seg(layout: &Layout, notice: &mut dyn FnMut(Notice)) -> Result<Writer, StoreError> {
+fn prepare_open_seg(
+    layout: &Layout,
+    budget: TearBudget,
+    notice: &mut dyn FnMut(Notice),
+) -> Result<Writer, StoreError> {
     let path = open_seg(layout);
     match files::read_optional(&path)? {
         None => {
@@ -454,7 +558,7 @@ fn prepare_open_seg(layout: &Layout, notice: &mut dyn FnMut(Notice)) -> Result<W
                 });
             }
             Ok(frame::HeaderState::Whole) => {
-                let end = frame::good_end(&bytes)
+                let end = frame::good_end(&bytes, budget)
                     .map_err(|damage| damaged(&path, damage.offset, damage.what))?;
                 if end < bytes.len() {
                     cut(&path, end as u64)?;
@@ -490,22 +594,30 @@ enum Piece {
 }
 
 impl Store {
+    /// What both opens refuse before they create or write anything, so a caller with nothing to
+    /// keep still reports a root it must not use. Creates nothing.
+    pub fn check(layout: &Layout) -> Result<(), StoreError> {
+        guarded_root(layout).map(|_| ())
+    }
+
     pub fn open(
         configured: &Layout,
         mut options: Options,
         notice: &mut dyn FnMut(Notice),
     ) -> Result<Store, StoreError> {
-        // From the first check on, the store uses the resolved paths, never the configured ones:
-        // a link in a configured path could be repointed after it was checked.
+        let root = guarded_root(configured)?;
+        step(&mut options.hook, Step::Guarded)?;
+        let root = make_private(&root, &mut options.hook)?;
+        refuse_older(&root, &configured.root)?;
         let state = files::resolve(&configured.state)?;
         files::check_parents(&state)?;
         files::create_dir(&state)?;
         files::check_private(&state)?;
         files::check_parents(&state)?;
         let mut paths = Layout {
-            root: files::resolve(&configured.root)?,
+            root,
             state: canonical(&state)?,
-            cache: files::resolve(&configured.cache)?,
+            cache: configured.cache.clone(),
         };
         let layout = &paths;
         let lock_path = lock_file(layout);
@@ -528,46 +640,32 @@ impl Store {
             }
         }
         check_root(layout, &layout.root, Root::Check)?;
-        for dir in [&mut paths.root, &mut paths.cache] {
-            files::check_parents(dir)?;
-            step(&mut options.hook, Step::Creating)?;
-            files::create_dir(dir)?;
-            step(&mut options.hook, Step::Created)?;
-            files::check_private(dir)?;
-            files::check_parents(dir)?;
-            *dir = canonical(dir)?;
-        }
+        paths.cache = make_private(&files::resolve(&configured.cache)?, &mut options.hook)?;
         let layout = &paths;
         check_root(layout, &layout.root, Root::Record)?;
         step(&mut options.hook, Step::Locked)?;
         recover(layout, &mut options.hook)?;
-        let writer = prepare_open_seg(layout, notice)?;
-        let catalog = load_catalog(layout, notice)?;
+        let writer = prepare_open_seg(layout, options.tear_budget, notice)?;
+        let catalog = load_catalog(layout, options.tear_budget, notice)?;
         Ok(Store {
             layout: layout.clone(),
             _lock: Some(lock),
             writer: Some(writer),
             catalog,
-            compressor: Some(new_compressor(&layout.state)?),
+            compressor: Some(new_compressor(&layout.state, options.compression)?),
             options,
             poisoned: false,
         })
     }
 
     /// Holds a shared lock for its lifetime; `notice` hears `Waiting` when a writer holds the store.
+    /// The options' hook hears `Step::Checked` once the paths are validated.
     pub fn open_read_only(
         configured: &Layout,
+        mut options: Options,
         notice: &mut dyn FnMut(Notice),
     ) -> Result<Store, StoreError> {
-        Store::open_read_only_with(configured, None, notice)
-    }
-
-    /// `open_read_only` with a test hook, which hears `Step::Checked` once the paths are validated.
-    pub fn open_read_only_with(
-        configured: &Layout,
-        mut hook: Option<Hook>,
-        notice: &mut dyn FnMut(Notice),
-    ) -> Result<Store, StoreError> {
+        let root = guarded_root(configured)?;
         match fs::metadata(&configured.root) {
             Ok(_) => {}
             Err(error) if error.kind() == io::ErrorKind::NotFound => {
@@ -578,20 +676,21 @@ impl Store {
             }
             Err(error) => return Err(files::io_err("read", &configured.root, error)),
         }
-        let paths = Layout {
-            root: canonical(&configured.root)?,
+        step(&mut options.hook, Step::Guarded)?;
+        let mut paths = Layout {
+            root,
             state: files::resolve(&configured.state)?,
             cache: configured.cache.clone(),
         };
-        let layout = &paths;
-        let asked = canonical(&layout.root)?;
-        files::check_parents(&layout.root)?;
-        files::check_parents(&layout.state)?;
-        files::check_private(&layout.root)?;
-        files::check_private_if_present(&layout.state)?;
-        check_root(layout, &asked, Root::Check)?;
-        step(&mut hook, Step::Checked)?;
-        let lock_path = lock_file(layout);
+        files::check_parents(&paths.root)?;
+        files::check_parents(&paths.state)?;
+        files::check_private(&paths.root).map_err(|error| vanished(error, configured))?;
+        files::check_private_if_present(&paths.state)?;
+        paths.root = current_root(&paths.root, configured)?;
+        refuse_older(&paths.root, &configured.root)?;
+        check_root(&paths, &paths.root, Root::Check)?;
+        step(&mut options.hook, Step::Checked)?;
+        let lock_path = lock_file(&paths);
         let lock = match File::open(&lock_path) {
             Ok(file) => {
                 match file.try_lock_shared() {
@@ -610,8 +709,11 @@ impl Store {
             Err(error) if error.kind() == io::ErrorKind::NotFound => None,
             Err(error) => return Err(files::io_err("lock", &lock_path, error)),
         };
+        paths.root = current_root(&paths.root, configured)?;
+        refuse_older(&paths.root, &configured.root)?;
+        let layout = &paths;
         if lock.is_some() {
-            check_root(layout, &asked, Root::Check)?;
+            check_root(layout, &layout.root, Root::Check)?;
         }
         let sealed = list_sealed(&layout.root)?;
         let mut open = if lock.is_some() {
@@ -641,14 +743,20 @@ impl Store {
             }
         }
         let mut catalog = Catalog::in_memory()?;
-        populate(&mut catalog, layout, &sealed, open.as_deref())?;
+        populate(
+            &mut catalog,
+            layout,
+            &sealed,
+            open.as_deref(),
+            options.tear_budget,
+        )?;
         Ok(Store {
             layout: layout.clone(),
             _lock: lock,
             writer: None,
             catalog,
             compressor: None,
-            options: Options::default(),
+            options,
             poisoned: false,
         })
     }
@@ -820,8 +928,12 @@ fn covered(catalog: &Catalog, found: u64, wanted: u64) -> Result<(), StoreError>
     }
 }
 
-fn new_compressor(near: &Path) -> Result<zstd::bulk::Compressor<'static>, StoreError> {
-    zstd::bulk::Compressor::new(19).map_err(|error| files::io_err("compress", near, error))
+fn new_compressor(
+    near: &Path,
+    level: Compression,
+) -> Result<zstd::bulk::Compressor<'static>, StoreError> {
+    zstd::bulk::Compressor::new(level.level())
+        .map_err(|error| files::io_err("compress", near, error))
 }
 
 impl Pending {
@@ -1105,18 +1217,26 @@ mod tests {
     }
 
     #[test]
-    fn the_defaults_are_8_mib_and_level_19() {
-        assert_eq!(SEAL_AT, 8 * 1024 * 1024);
-        assert_eq!(Options::default().seal_at, SEAL_AT);
+    fn the_compressor_packs_at_the_level_it_is_given() {
         let mut text = Vec::new();
         let mut seed = 12345u32;
         for _ in 0..40_000 {
             seed = seed.wrapping_mul(1_103_515_245).wrapping_add(12_345);
             text.extend_from_slice(format!("word{} ", (seed >> 16) % 900).as_bytes());
         }
-        let mut compressor = new_compressor(Path::new("/s")).expect("compressor");
+        let level = Options::default().compression;
+        let mut compressor = new_compressor(Path::new("/s"), level).expect("compressor");
         let packed = compressor.compress(&text).expect("compress");
-        assert_eq!(packed, zstd::bulk::compress(&text, 19).expect("level 19"));
+        assert_eq!(
+            packed,
+            zstd::bulk::compress(&text, level.level()).expect("default")
+        );
         assert_ne!(packed, zstd::bulk::compress(&text, 3).expect("level 3"));
+        let three = Compression::try_from(3).expect("in range");
+        let mut fast = new_compressor(Path::new("/s"), three).expect("compressor");
+        assert_eq!(
+            fast.compress(&text).expect("compress"),
+            zstd::bulk::compress(&text, 3).expect("level 3")
+        );
     }
 }

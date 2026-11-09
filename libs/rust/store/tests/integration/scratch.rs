@@ -5,7 +5,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use bilbo_store::entries::{Capture, Captured, Entries, Generation, RecordRange};
 use bilbo_store::id::Id;
-use bilbo_store::paths::Layout;
+use bilbo_store::layout::Layout;
 use bilbo_store::segments::{Options, Store};
 
 static COUNTER: AtomicU64 = AtomicU64::new(0);

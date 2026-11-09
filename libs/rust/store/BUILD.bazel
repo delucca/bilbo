@@ -18,7 +18,7 @@ rust_library(
         "//apps/cli:__pkg__",
         "//libs/rust/kinds:__subpackages__",
     ],
-    deps = all_crate_deps(normal = True),
+    deps = ["//libs/rust/settings"] + all_crate_deps(normal = True),
 )
 
 bilbo_rust_test(

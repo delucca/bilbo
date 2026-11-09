@@ -5,7 +5,7 @@
 - Read `docs/testing.md` before adding or moving a test.
 - `nix develop -c bazel test //...` runs every layer except tests that need the screen (`desktop`) and release.
 - `--config=<layer>` runs one layer (`unit`, `contract`, `acceptance`, `integration`, `snapshot`, `e2e`, `release`); `--config=desktop` runs only screen tests; `--config=all` runs everything. Desktop tests take focus and keyboard input. A layer config also runs that layer's desktop tests: add `--test_tag_filters=<layer>,-desktop` to stay headless.
-- Every run of the built binary, by hand or in a test, sets `BILBO_HOME`, `XDG_STATE_HOME`, `XDG_CACHE_HOME` and `BILBO_CONFIG` to scratch folders: `BILBO_HOME` moves only the store.
+- Every run of the built binary, by hand or in a test, sets `BILBO_HOME`, `XDG_STATE_HOME` and `XDG_CACHE_HOME` to scratch folders and `BILBO_CONFIG` to a scratch `config.toml` that exists, empty or not: `BILBO_HOME` moves only the store, and a missing file that `BILBO_CONFIG` names is a config error.
 
 ## Rust
 
@@ -15,3 +15,4 @@
 - Keep `BILBO_VERSION` in `tools/bazel/version.bzl` equal to `workspace.package.version` in `Cargo.toml`, and give every target that reads `CARGO_PKG_VERSION` `version = BILBO_VERSION`; nothing checks either.
 - A verb's CLI side is the folder `apps/cli/src/<verb>/` (`mod.rs`: its clap `Args` with its page, and `run`; `view.rs`: its human view), registered as one `Verb` variant and one arm in `apps/cli/src/lib.rs`. Its logic lives in the lib crate of its domain under `libs/rust/`, never in a crate of all verbs; a new crate lists exactly its dependents in `visibility`. String options use `NonEmptyStringValueParser`, so `--kind=` fails with `--kind needs a value`.
 - Snapshot baselines in `apps/cli/tests/snapshots/` are plain files: after reading a failing diff, copy the rendered text over the baseline.
+- A tunable is a settings key: its default, variable and range live only in its `Key` descriptor, beside the options of the crate that reads it, and `keys()` in `apps/cli/src/console/settings.rs` registers it; a clap flag for a key has no `default_value` and no `env`. The folder keys are the composition root's, in `console/settings.rs`, since more than one crate uses the folders.

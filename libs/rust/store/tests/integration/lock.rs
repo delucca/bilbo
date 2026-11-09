@@ -106,7 +106,7 @@ fn a_reader_waits_for_a_writer_and_sees_its_seal_whole() {
     let (read_tx, read_rx) = channel::<Vec<Vec<u8>>>();
     let reader_layout = layout.clone();
     let reader = thread::spawn(move || {
-        let store = Store::open_read_only(&reader_layout, &mut |notice| {
+        let store = Store::open_read_only(&reader_layout, Options::default(), &mut |notice| {
             waiting_tx.send(notice).ok();
         })
         .expect("read-only open");
@@ -152,7 +152,8 @@ fn a_writer_waits_for_a_reader_and_the_readers_reads_stay_valid() {
     let b = id_of(&keep(&mut store, "b.md", b"three\n"));
     drop(store);
 
-    let reader = Store::open_read_only(&layout, &mut |_| {}).expect("read-only open");
+    let reader =
+        Store::open_read_only(&layout, Options::default(), &mut |_| {}).expect("read-only open");
     let (waiting_tx, waiting_rx) = channel::<Notice>();
     let (opened_tx, opened_rx) = channel::<()>();
     let writer_layout = layout.clone();
@@ -174,7 +175,8 @@ fn a_writer_waits_for_a_reader_and_the_readers_reads_stay_valid() {
         .expect("the writer opens once the reader is gone");
     writer.join().expect("writer thread");
 
-    let again = Store::open_read_only(&layout, &mut |_| {}).expect("read-only open");
+    let again =
+        Store::open_read_only(&layout, Options::default(), &mut |_| {}).expect("read-only open");
     assert_eq!(read_records(&again, a, 1, 2), b"one\ntwo\n");
     assert_eq!(read_records(&again, b, 1, 1), b"three\n");
 }

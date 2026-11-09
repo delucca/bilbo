@@ -1,5 +1,39 @@
 # Commands
 
+## config
+
+```text
+bilbo config [<key>]
+```
+
+Shows every setting: its key, its value and where the value came from. With a key, it prints that key's value alone, for scripts. It never changes a setting: edit the config file. [Configuration](configuration.md) lists the keys, their variables and their defaults.
+
+### Output
+
+Standard output, one line per key, in the order [Configuration](configuration.md#keys) lists them:
+
+```text
+paths.root = "/home/me/.local/share/bilbo" (default)
+paths.state = "/home/me/.local/state/bilbo" (default)
+paths.cache = "/home/me/.cache/bilbo" (default)
+store.seal_at = "16 MiB" (/home/me/.config/bilbo/config.toml:5)
+store.compression = 3 (BILBO_STORE_COMPRESSION)
+store.tear_budget = 4 (default)
+```
+
+The value is TOML, as the config file would hold it. The origin is `default`, the config file and the line that set the key, the variable, or the flag. On a terminal the values line up and the origins are dimmed.
+
+`bilbo config store.seal_at` prints `16 MiB`: a string without its quotes, any other value as TOML. A key bilbo does not know is a usage error.
+
+A config file or variable that bilbo refuses fails `bilbo config` as it fails every other verb, with the same message, except the 0.20-root refusal and the refusal of a state or cache folder inside the store root, which a verb runs when it opens the store (`the state folder <path> is inside the store root <root>, which holds only segments; set paths.state to a folder outside the root`). `bilbo config` runs neither. So `bilbo config` checks a file you edited.
+
+### Exit codes
+
+| Code | Meaning |
+|---|---|
+| 0 | success |
+| 2 | usage or config error: an unknown key, or a config file or variable bilbo refuses |
+
 ## remember
 
 ```text
@@ -59,4 +93,4 @@ A second `remember` waits for the first one to finish writing the store, and say
 |---|---|
 | 0 | success |
 | 1 | a file was refused, nothing was claimed, or the target or the store could not be read |
-| 2 | usage or config error |
+| 2 | usage or config error, a store root that holds bilbo 0.20's `notes/` or `library/`, or a state or cache folder inside the root, included |

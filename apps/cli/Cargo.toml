@@ -1,10 +1,10 @@
 [package]
 name = "bilbo-cli"
-description = "The bilbo command line."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 publish.workspace = true
+description = "The bilbo command line."
 
 [[bin]]
 name = "bilbo"
@@ -13,13 +13,14 @@ path = "src/main.rs"
 [dependencies]
 bilbo-kinds.workspace = true
 bilbo-markdown.workspace = true
+bilbo-settings.workspace = true
 bilbo-store.workspace = true
 clap.workspace = true
+rustix.workspace = true
 
 [dev-dependencies]
 proc-macro2.workspace = true
 runfiles.workspace = true
-rustix.workspace = true
 syn.workspace = true
 
 [[test]]

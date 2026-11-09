@@ -6,20 +6,25 @@ pub const USAGE: &str = "bilbo <verb> [<args>]...";
 
 pub const TEMPLATE: &str = "{about-with-newline}\n{usage-heading} {usage}{after-help}";
 
-/// The Paths block repeats `bilbo_store::paths`; nothing checks it.
 pub const AFTER: &str = "\
 Keep:
   remember  Keep files as entries; a later run keeps what grew or changed
+
+Settings:
+  config    Show each setting, its value and where the value came from
 
 Exit codes: 0 success; 1 refused, problems found or nothing matched; 2 usage
 or config error.
 Results go to stdout; diagnostics to stderr, prefixed 'bilbo: ' off a terminal.
 
 Paths, the first that applies:
-  root    $BILBO_HOME, $XDG_DATA_HOME/bilbo, ~/.local/share/bilbo
-  config  $BILBO_CONFIG, $XDG_CONFIG_HOME/bilbo/config, ~/.config/bilbo/config
-  cache   $XDG_CACHE_HOME/bilbo, ~/.cache/bilbo
-  state   $XDG_STATE_HOME/bilbo, ~/.local/state/bilbo
+  root    $BILBO_HOME, paths.root, $XDG_DATA_HOME/bilbo, ~/.local/share/bilbo
+  config  $BILBO_CONFIG, $XDG_CONFIG_HOME/bilbo/config.toml,
+          ~/.config/bilbo/config.toml
+  cache   paths.cache, $XDG_CACHE_HOME/bilbo, ~/.cache/bilbo
+  state   paths.state, $XDG_STATE_HOME/bilbo, ~/.local/state/bilbo
+'bilbo config' shows every setting; reference/configuration.md says what each
+one means.
 
 Run 'bilbo <verb> --help' or 'bilbo help <verb>' for a verb's options, output
 and exit codes.";
@@ -28,9 +33,12 @@ and exit codes.";
 mod tests {
     use clap::Command;
 
-    use super::{TEMPLATE, USAGE};
+    use bilbo_settings::key::{Default, Key};
+
+    use super::{AFTER, TEMPLATE, USAGE};
     use crate::bilbo;
     use crate::console::args::verbs;
+    use crate::console::settings::{CACHE, CONFIG, ROOT, STATE};
     use crate::help::page::overview;
     use crate::probe::{self, with_verb};
 
@@ -60,6 +68,58 @@ mod tests {
         assert!(at("\nPaths, the first that applies:\n") < at("\nRun 'bilbo <verb> --help' or "));
         assert!(text.ends_with("and exit codes.\n"));
         assert!(!text.contains("Options:"));
+    }
+
+    fn paths_entry(word: &str) -> String {
+        let block = AFTER
+            .split("Paths, the first that applies:\n")
+            .nth(1)
+            .and_then(|rest| rest.split("\n'bilbo config'").next())
+            .unwrap_or_default();
+        let mut entry = Vec::new();
+        for line in block.lines() {
+            if let Some(rest) = line
+                .strip_prefix("  ")
+                .filter(|rest| !rest.starts_with(' '))
+            {
+                if rest.split_whitespace().next() == Some(word) {
+                    entry.push(rest.trim());
+                } else if !entry.is_empty() {
+                    break;
+                }
+            } else if !entry.is_empty() && line.starts_with("    ") {
+                entry.push(line.trim());
+            }
+        }
+        entry.join(" ")
+    }
+
+    #[test]
+    fn each_paths_line_holds_what_its_key_declares() {
+        let keys: [(&str, &Key<std::path::PathBuf>); 4] = [
+            ("root", &ROOT),
+            ("state", &STATE),
+            ("cache", &CACHE),
+            ("config", &CONFIG),
+        ];
+        for (word, key) in keys {
+            let line = paths_entry(word);
+            assert!(!line.is_empty(), "{word}: no line in the Paths block");
+            if let Some(variable) = key.about.variable {
+                assert!(line.contains(&format!("${variable}")), "{word}: {line}");
+            }
+            if word != "config" {
+                assert!(line.contains(key.about.name), "{word}: {line}");
+            }
+            let Default::Folder(folder) = key.about.default else {
+                unreachable!("a folder key");
+            };
+            let described = folder.describe();
+            let (first, second) = described.split_once(", else ").expect("two halves");
+            for half in [first, second] {
+                assert!(line.contains(half), "{word}: {half:?} missing from {line}");
+            }
+        }
     }
 
     #[test]

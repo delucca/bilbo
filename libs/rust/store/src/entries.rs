@@ -252,6 +252,14 @@ pub enum StoreError {
     },
     /// A test hook stopped the store at this step (the step's `Debug` name).
     Stopped(String),
+    /// The root holds bilbo 0.20's `notes/` or `library/`.
+    Older(PathBuf),
+    /// The state or cache folder is the root or lies beneath it: the root holds only segments.
+    Inside {
+        folder: &'static str,
+        path: PathBuf,
+        root: PathBuf,
+    },
 }
 
 impl fmt::Display for StoreError {
@@ -274,6 +282,13 @@ impl fmt::Display for StoreError {
                 write!(f, "cannot use the catalog {}: {error}", path.display())
             }
             Self::Missing(what) => f.write_str(what),
+            Self::Older(folder) => write!(f, "{} belongs to bilbo 0.20", folder.display()),
+            Self::Inside { folder, path, root } => write!(
+                f,
+                "the {folder} folder {} is inside the store root {}, which holds only segments",
+                path.display(),
+                root.display()
+            ),
             Self::ReadOnly => f.write_str("the store is open read-only"),
             Self::Unsafe(path) => write!(
                 f,

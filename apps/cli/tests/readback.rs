@@ -3,9 +3,10 @@ use std::ffi::OsString;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use bilbo_cli::console::settings;
 use bilbo_store::entries::{Capture, Cursor, Entries, Origin, RecordRange};
 use bilbo_store::id::Id;
-use bilbo_store::paths::{self, Layout};
+use bilbo_store::layout::Layout;
 use bilbo_store::segments::{Options, Store};
 
 #[expect(
@@ -154,8 +155,10 @@ fn every_entry_reads_back_as_its_origin_file_with_its_frontmatter_id() {
     let target = PathBuf::from(required("READBACK_TARGET"))
         .canonicalize()
         .expect("READBACK_TARGET exists");
-    let layout = paths::layout(var).expect("a layout from the environment");
-    let store = Store::open_read_only(&layout, &mut |_| {}).expect("open the store read-only");
+    let settings =
+        settings::load(&var, &|path| fs::read(path)).expect("settings from the environment");
+    let store = Store::open_read_only(&settings.layout(), settings.store.options(), &mut |_| {})
+        .expect("open the store read-only");
     let report = check(&store).unwrap_or_else(|error| panic!("{error}"));
 
     let mut found = BTreeSet::new();
@@ -235,7 +238,8 @@ fn an_entry_at_generation_0_fails_the_read_back_even_with_nothing_to_read() {
         .set_len((body + 30) as u64)
         .expect("tear the body frame away");
 
-    let store = Store::open_read_only(&layout, &mut |_| {}).expect("open read-only");
+    let store =
+        Store::open_read_only(&layout, Options::default(), &mut |_| {}).expect("open read-only");
     let error = check(&store).expect_err("a generation 0 entry cannot be read back");
     assert!(error.contains(&file.display().to_string()), "{error}");
     let _ = fs::remove_dir_all(&dir);
@@ -287,7 +291,8 @@ fn an_entry_whose_id_the_frontmatter_contradicts_fails_the_read_back() {
         .expect("capture");
     drop(store);
 
-    let store = Store::open_read_only(&layout, &mut |_| {}).expect("open read-only");
+    let store =
+        Store::open_read_only(&layout, Options::default(), &mut |_| {}).expect("open read-only");
     let error = check(&store).expect_err("the ids disagree");
     assert!(error.contains("frontmatter id"), "{error}");
     let _ = fs::remove_dir_all(&dir);

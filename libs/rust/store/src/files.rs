@@ -1,7 +1,8 @@
+use std::ffi::OsString;
 use std::fs::{self, DirBuilder, File, OpenOptions};
 use std::io::{self, Write};
 use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt};
-use std::path::Path;
+use std::path::{Component, Path, PathBuf};
 
 use crate::entries::StoreError;
 
@@ -72,6 +73,66 @@ pub fn resolve(path: &Path) -> Result<std::path::PathBuf, StoreError> {
             Err(error) => return Err(io_err("read", at, error)),
         }
     }
+}
+
+const MAX_LINKS: usize = 40;
+
+enum Part {
+    Root,
+    Parent,
+    Name(OsString),
+}
+
+fn parts(path: &Path) -> impl Iterator<Item = Part> {
+    path.components().rev().filter_map(|part| match part {
+        Component::Prefix(_) | Component::RootDir => Some(Part::Root),
+        Component::CurDir => None,
+        Component::ParentDir => Some(Part::Parent),
+        Component::Normal(name) => Some(Part::Name(name.to_os_string())),
+    })
+}
+
+/// Where `path` leads, following every link in it, a dangling one included: a link to a missing
+/// target counts as that target. `resolve` keeps a dangling link as it is, which hides that a
+/// writer would create its target.
+pub fn follow(path: &Path) -> Result<PathBuf, StoreError> {
+    let mut todo: Vec<Part> = parts(path).collect();
+    let mut at = if path.is_absolute() {
+        PathBuf::new()
+    } else {
+        fs::canonicalize(".").map_err(|error| io_err("read", Path::new("."), error))?
+    };
+    let mut links = 0;
+    while let Some(part) = todo.pop() {
+        match part {
+            Part::Root => at = PathBuf::from("/"),
+            Part::Parent => {
+                at.pop();
+            }
+            Part::Name(name) => {
+                let next = at.join(name);
+                match fs::symlink_metadata(&next) {
+                    Ok(meta) if meta.file_type().is_symlink() => {
+                        links += 1;
+                        if links > MAX_LINKS {
+                            return Err(io_err(
+                                "read",
+                                path,
+                                io::Error::other("too many levels of symbolic links"),
+                            ));
+                        }
+                        let target =
+                            fs::read_link(&next).map_err(|error| io_err("read", &next, error))?;
+                        todo.extend(parts(&target));
+                    }
+                    Ok(_) => at = next,
+                    Err(error) if error.kind() == io::ErrorKind::NotFound => at = next,
+                    Err(error) => return Err(io_err("read", &next, error)),
+                }
+            }
+        }
+    }
+    Ok(at)
 }
 
 /// Refuses a path with an ancestor that another user (root excepted) owns, or that others or a

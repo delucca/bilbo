@@ -2,6 +2,7 @@ use std::fs;
 use std::io::Write;
 
 use bilbo_store::entries::{Captured, Entries, Generation, RecordRange, StoreError};
+use bilbo_store::limits::TearBudget;
 use bilbo_store::segments::{Notice, Options, Store};
 
 use crate::frames::{frames, spans};
@@ -9,7 +10,7 @@ use crate::scratch::{
     Scratch, catalog, flip, id_of, keep, open, open_seg, origin, read_records, sealed,
 };
 
-fn reopen(layout: &bilbo_store::paths::Layout) -> Result<(Store, Vec<Notice>), StoreError> {
+fn reopen(layout: &bilbo_store::layout::Layout) -> Result<(Store, Vec<Notice>), StoreError> {
     let mut notices = Vec::new();
     Store::open(layout, Options::default(), &mut |notice| {
         notices.push(notice);
@@ -79,7 +80,7 @@ fn a_corrupt_last_frame_of_open_seg_is_cut() {
     assert_eq!(read_records(&store, a, 1, 1), b"one\n");
 }
 
-fn three_captures(name: &str) -> (Scratch, bilbo_store::paths::Layout) {
+fn three_captures(name: &str) -> (Scratch, bilbo_store::layout::Layout) {
     let scratch = Scratch::new(name);
     let layout = scratch.layout();
     let mut store = open(&layout);
@@ -90,7 +91,7 @@ fn three_captures(name: &str) -> (Scratch, bilbo_store::paths::Layout) {
     (scratch, layout)
 }
 
-fn assert_refused_and_untouched(layout: &bilbo_store::paths::Layout, offset: usize) {
+fn assert_refused_and_untouched(layout: &bilbo_store::layout::Layout, offset: usize) {
     let segment = fs::read(open_seg(layout)).expect("read");
     let database = fs::read(catalog(layout)).expect("read");
     match reopen(layout) {
@@ -159,7 +160,10 @@ fn a_crash_between_the_fsync_and_the_catalog_commit_is_caught_up() {
     assert_eq!(read_records(&store, head.id, 1, 2), b"one\ntwo\n");
 }
 
-fn open_with_hook(layout: &bilbo_store::paths::Layout, hook: bilbo_store::segments::Hook) -> Store {
+fn open_with_hook(
+    layout: &bilbo_store::layout::Layout,
+    hook: bilbo_store::segments::Hook,
+) -> Store {
     crate::scratch::open_with(
         layout,
         Options {
@@ -606,6 +610,85 @@ fn a_torn_header_is_rewritten_and_reported() {
             path: open_seg(&layout),
             offset: 0,
             bytes: 5
+        }]
+    );
+    assert_eq!(fs::metadata(open_seg(&layout)).expect("open.seg").len(), 12);
+}
+
+/// A segment header, then zeros, with eight frame headers that pass their sum and each claim a
+/// frame to the end of the 8 MiB file: hashing them all costs just under eight times the file.
+fn crafted_tear() -> Vec<u8> {
+    use xxhash_rust::xxh3::Xxh3;
+
+    let len = 8 * 1024 * 1024;
+    let mut bytes = vec![0u8; len];
+    bytes[..8].copy_from_slice(b"BILBOSEG");
+    bytes[8..12].copy_from_slice(&1u32.to_le_bytes());
+    for slot in 0..8 {
+        let at = 100 + slot * 77;
+        let mut header = [0u8; 77];
+        header[..4].copy_from_slice(&u32::try_from(len - at - 4).expect("length").to_le_bytes());
+        let mut hasher = Xxh3::new();
+        hasher.update(&header[..4]);
+        hasher.update(&header[16..]);
+        header[4..8].copy_from_slice(&(hasher.digest() as u32).to_le_bytes());
+        bytes[at..at + 77].copy_from_slice(&header);
+    }
+    bytes
+}
+
+fn budget(times: usize) -> Options {
+    Options {
+        tear_budget: TearBudget::try_from(times).expect("in range"),
+        ..Options::default()
+    }
+}
+
+#[test]
+fn a_reader_applies_the_configured_tear_budget() {
+    let scratch = Scratch::new("budget_reader");
+    let layout = scratch.layout();
+    drop(open(&layout));
+    let crafted = crafted_tear();
+    fs::write(open_seg(&layout), &crafted).expect("write");
+
+    let enough = Store::open_read_only(&layout, budget(8), &mut |_| {});
+    assert!(enough.is_ok(), "{:?}", enough.err());
+    drop(enough);
+    let too_small = Store::open_read_only(&layout, budget(7), &mut |_| {});
+    assert!(
+        matches!(too_small, Err(StoreError::Damaged { offset: 12, .. })),
+        "{:?}",
+        too_small.err()
+    );
+    assert_eq!(fs::read(open_seg(&layout)).expect("read"), crafted);
+}
+
+#[test]
+fn a_writer_applies_the_configured_tear_budget() {
+    let scratch = Scratch::new("budget_writer");
+    let layout = scratch.layout();
+    drop(open(&layout));
+    let crafted = crafted_tear();
+    fs::write(open_seg(&layout), &crafted).expect("write");
+
+    let too_small = Store::open(&layout, budget(7), &mut |_| {});
+    assert!(
+        matches!(too_small, Err(StoreError::Damaged { offset: 12, .. })),
+        "{:?}",
+        too_small.err()
+    );
+    assert_eq!(fs::read(open_seg(&layout)).expect("read"), crafted);
+
+    let mut notices = Vec::new();
+    let enough = Store::open(&layout, budget(8), &mut |notice| notices.push(notice));
+    assert!(enough.is_ok(), "{:?}", enough.err());
+    assert_eq!(
+        notices,
+        vec![Notice::CutTornTail {
+            path: open_seg(&layout),
+            offset: 12,
+            bytes: crafted.len() as u64 - 12
         }]
     );
     assert_eq!(fs::metadata(open_seg(&layout)).expect("open.seg").len(), 12);

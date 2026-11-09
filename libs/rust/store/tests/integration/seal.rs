@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use bilbo_store::entries::{Change, Cursor, Entries, Generation, Meta, RecordRange, StoreError};
-use bilbo_store::paths::Layout;
+use bilbo_store::layout::Layout;
 use bilbo_store::segments::{Hook, Notice, Options, Step, Store};
 
 use crate::frames::{Summary, frames};
@@ -96,7 +96,8 @@ fn assert_whole(layout: &Layout, before: &Before) {
     );
     drop(store);
 
-    let read_only = Store::open_read_only(layout, &mut |_| {}).expect("read-only");
+    let read_only =
+        Store::open_read_only(layout, Options::default(), &mut |_| {}).expect("read-only");
     assert_eq!(
         read_only.changes(&Cursor::start()).expect("changes").0,
         before.changes
@@ -314,7 +315,8 @@ fn a_read_only_open_during_an_interrupted_seal_sees_every_frame_once() {
         assert!(store.close().is_err());
         let held = crate::scratch::snapshot_of(&layout);
 
-        let reader = Store::open_read_only(&layout, &mut |_| {}).expect("read-only open");
+        let reader = Store::open_read_only(&layout, Options::default(), &mut |_| {})
+            .expect("read-only open");
         assert_eq!(
             reader.changes(&Cursor::start()).expect("changes").0,
             before.changes,
@@ -341,7 +343,7 @@ fn a_read_only_open_refuses_a_sealed_segment_that_differs_from_open_seg() {
     let last = fs::metadata(&segment).expect("segment").len() as usize - 1;
     flip(&segment, last);
     let held = crate::scratch::snapshot_of(&layout);
-    match Store::open_read_only(&layout, &mut |_| {}) {
+    match Store::open_read_only(&layout, Options::default(), &mut |_| {}) {
         Err(StoreError::Damaged { path, .. }) => assert_eq!(path, segment),
         Ok(_) => panic!("the open must fail"),
         Err(other) => panic!("expected Damaged, got {other}"),

@@ -7,18 +7,27 @@ use crate::console::view::View;
 
 /// Usage forms joined with `\n  ` in `override_usage` sit two spaces under `Usage:`.
 pub const VERB_TEMPLATE: &str = "{about}\n\nUsage:\n  {usage}\n\nOptions:\n{options}{after-help}";
+pub const NO_OPTIONS_TEMPLATE: &str = "{about}\n\nUsage:\n  {usage}{after-help}";
 
 pub fn shape(command: Command) -> Command {
+    let template = if has_options(&command) {
+        VERB_TEMPLATE
+    } else {
+        NO_OPTIONS_TEMPLATE
+    };
+    command.help_template(template).disable_help_flag(true).arg(
+        Arg::new("help")
+            .short('h')
+            .long("help")
+            .action(ArgAction::Help)
+            .hide(true),
+    )
+}
+
+fn has_options(command: &Command) -> bool {
     command
-        .help_template(VERB_TEMPLATE)
-        .disable_help_flag(true)
-        .arg(
-            Arg::new("help")
-                .short('h')
-                .long("help")
-                .action(ArgAction::Help)
-                .hide(true),
-        )
+        .get_arguments()
+        .any(|arg| !arg.is_positional() && !arg.is_hide_set())
 }
 
 pub fn overview(root: &Command) -> String {
@@ -90,7 +99,7 @@ fn heading_end(line: &str) -> Option<usize> {
 
 #[cfg(test)]
 mod tests {
-    use super::{bold, overview, page};
+    use super::{bold, has_options, overview, page};
     use crate::bilbo;
     use crate::console::args::verbs;
     use crate::console::view::View;
@@ -117,20 +126,26 @@ mod tests {
 
     #[test]
     fn every_verb_page_has_its_sections_in_order() {
+        let root = with_verb(bilbo(), probe::verb());
         for (name, text) in every_page().into_iter().skip(1) {
             assert!(
                 text.starts_with(&format!("bilbo {name}: ")),
                 "{name}: {text}"
             );
+            let verb = root.find_subcommand(&name).expect("a registered verb");
+            let options = has_options(verb).then_some("\n\nOptions:\n  ");
+            assert_eq!(
+                text.contains("Options:"),
+                options.is_some(),
+                "{name}: {text}"
+            );
             let mut from = 0;
-            for heading in [
-                "\n\nUsage:\n  bilbo ",
-                "\n\nOptions:\n",
+            for heading in ["\n\nUsage:\n  bilbo "].into_iter().chain(options).chain([
                 "\n\nOutput:\n",
                 "\n\nExit: ",
                 "\n\nExamples:\n",
                 "\n\nDocs: ",
-            ] {
+            ]) {
                 let at = text[from..].find(heading).unwrap_or_else(|| {
                     panic!("{name}: {heading:?} missing or out of order in\n{text}")
                 });

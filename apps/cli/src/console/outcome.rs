@@ -1,6 +1,9 @@
 use std::fmt;
 
+use bilbo_store::entries::StoreError;
+
 use crate::console::message::{Detail, Message};
+use crate::console::settings::{CACHE, ROOT, STATE};
 use crate::console::view::View;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -91,9 +94,30 @@ pub enum Failure {
     Output(String),
 }
 
-impl From<bilbo_store::paths::ConfigError> for Failure {
-    fn from(error: bilbo_store::paths::ConfigError) -> Self {
+impl From<bilbo_settings::error::Error> for Failure {
+    fn from(error: bilbo_settings::error::Error) -> Self {
         Self::Config(crate::console::message::sanitize(&error.to_string()))
+    }
+}
+
+/// A 0.20 root is a setting to change, so it is a config error like any other.
+impl From<&StoreError> for Failure {
+    fn from(error: &StoreError) -> Self {
+        match error {
+            StoreError::Older(_) => Self::Config(crate::console::message::sanitize(&format!(
+                "{error}; set {} or {} to another folder",
+                ROOT.about.variable.unwrap_or_default(),
+                ROOT.about.name
+            ))),
+            StoreError::Inside { folder, .. } => {
+                let key = if *folder == "state" { &STATE } else { &CACHE };
+                Self::Config(crate::console::message::sanitize(&format!(
+                    "{error}; set {} to a folder outside the root",
+                    key.about.name
+                )))
+            }
+            _ => Self::Refused(crate::console::message::sanitize(&error.to_string())),
+        }
     }
 }
 
@@ -133,7 +157,8 @@ impl Failure {
 
 #[cfg(test)]
 mod tests {
-    use bilbo_store::paths::ConfigError;
+    use bilbo_settings::error::{At, Error};
+    use bilbo_store::entries::StoreError;
 
     use super::{Exit, Failure, Outcome};
     use crate::console::message::{Detail, Mark, Message};
@@ -233,8 +258,8 @@ mod tests {
 
     #[test]
     fn a_config_error_is_a_config_failure() {
-        let failure = Failure::from(ConfigError::Relative {
-            name: "BILBO_HOME",
+        let failure = Failure::from(Error::Relative {
+            at: At::Variable("BILBO_HOME"),
             value: "x".into(),
         });
         assert_eq!(
@@ -242,6 +267,47 @@ mod tests {
             Failure::Config("BILBO_HOME is not an absolute path: x".to_owned())
         );
         assert_eq!(failure.exit_code(), 2);
+    }
+
+    #[test]
+    fn a_0_20_root_is_a_config_error_that_names_the_settings_to_change() {
+        let failure = Failure::from(&StoreError::Older("/r/notes".into()));
+        assert_eq!(
+            failure,
+            Failure::Config(
+                "/r/notes belongs to bilbo 0.20; set BILBO_HOME or paths.root to another folder"
+                    .to_owned()
+            )
+        );
+        assert_eq!(failure.exit_code(), 2);
+    }
+
+    #[test]
+    fn a_state_or_cache_folder_inside_the_root_is_a_config_error_that_names_its_key() {
+        for (folder, key) in [("state", "paths.state"), ("cache", "paths.cache")] {
+            let failure = Failure::from(&StoreError::Inside {
+                folder,
+                path: format!("/r/{folder}").into(),
+                root: "/r".into(),
+            });
+            assert_eq!(
+                failure,
+                Failure::Config(format!(
+                    "the {folder} folder /r/{folder} is inside the store root /r, which holds only segments; set {key} to a folder outside the root"
+                ))
+            );
+            assert_eq!(failure.exit_code(), 2);
+        }
+    }
+
+    #[test]
+    fn any_other_store_error_is_refused_and_exits_1() {
+        let failure = Failure::from(&StoreError::Unsafe("/r\n".into()));
+        assert_eq!(
+            failure,
+            Failure::Refused("/r\\n can be written by others; bilbo will not use it".to_owned())
+        );
+        assert_eq!(failure.exit_code(), 1);
     }
 
     #[test]

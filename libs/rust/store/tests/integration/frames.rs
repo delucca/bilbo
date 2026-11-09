@@ -70,7 +70,13 @@ pub fn forge(frame: &[u8], payload: &[u8]) -> Vec<u8> {
 }
 
 pub fn compress(plain: &[u8]) -> Vec<u8> {
-    zstd::bulk::compress(plain, 19).expect("compress")
+    zstd::bulk::compress(
+        plain,
+        bilbo_store::segments::Options::default()
+            .compression
+            .level(),
+    )
+    .expect("compress")
 }
 
 /// `path` with the frame at `span` replaced by `frame`.

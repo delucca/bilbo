@@ -3,6 +3,7 @@ use std::io::Read;
 use xxhash_rust::xxh3;
 
 use crate::id::Id;
+use crate::limits::TearBudget;
 
 pub const MAGIC: &[u8; 8] = b"BILBOSEG";
 pub const FORMAT: u32 = 1;
@@ -298,12 +299,13 @@ pub struct Damage {
 
 /// The end of the good frames of an open segment: the file's length when it is whole, else the
 /// start of its torn last frame. A bad frame followed by a good last frame is damage, not a tear.
-pub fn good_end(bytes: &[u8]) -> Result<usize, Damage> {
+/// The search for that good frame hashes at most `budget` times the file's length.
+pub fn good_end(bytes: &[u8], budget: TearBudget) -> Result<usize, Damage> {
     for item in walk(bytes, SEGMENT_HEADER) {
         if let Err((at, fault)) = item {
             if matches!(fault, FrameFault::Field(_))
                 || !matches!(
-                    search_after(bytes, at, bytes.len().saturating_mul(4)),
+                    search_after(bytes, at, bytes.len().saturating_mul(budget.times())),
                     Search::Nothing
                 )
             {
@@ -459,8 +461,20 @@ mod tests {
         Id::parse("01JC5Q3V7XKM4P8R2T6W9YB0DE").expect("id")
     }
 
+    fn level() -> i32 {
+        crate::segments::Options::default().compression.level()
+    }
+
+    fn end(bytes: &[u8]) -> Result<usize, Damage> {
+        good_end(bytes, crate::segments::Options::default().tear_budget)
+    }
+
+    fn times(times: usize) -> TearBudget {
+        TearBudget::try_from(times).expect("in range")
+    }
+
     fn compressor() -> zstd::bulk::Compressor<'static> {
-        zstd::bulk::Compressor::new(19).expect("compressor")
+        zstd::bulk::Compressor::new(level()).expect("compressor")
     }
 
     fn body(first: u64, text: &[u8]) -> Vec<u8> {
@@ -590,7 +604,7 @@ mod tests {
                 .filter(|&b| b <= length)
                 .max()
                 .unwrap_or(12);
-            assert_eq!(good_end(&whole[..length]), Ok(kept), "cut at {length}");
+            assert_eq!(end(&whole[..length]), Ok(kept), "cut at {length}");
         }
     }
 
@@ -617,7 +631,7 @@ mod tests {
             ("zeros", zeros),
             ("stray", stray),
         ] {
-            assert_eq!(good_end(&bytes), Ok(keep), "{name}");
+            assert_eq!(end(&bytes), Ok(keep), "{name}");
         }
     }
 
@@ -634,25 +648,25 @@ mod tests {
 
         let mut flipped = file(&frames);
         flipped[second + 80] ^= 0xFF;
-        assert_eq!(good_end(&flipped), damage("checksum mismatch"));
+        assert_eq!(end(&flipped), damage("checksum mismatch"));
 
         let mut huge = file(&frames);
         huge[second..second + 4].copy_from_slice(&u32::MAX.to_le_bytes());
         assert_eq!(
-            good_end(&huge),
+            end(&huge),
             damage(&format!("length {} runs past the end", u32::MAX))
         );
 
         let mut zero = file(&frames);
         zero[second..second + 4].copy_from_slice(&0u32.to_le_bytes());
-        assert_eq!(good_end(&zero), damage("length 0 below 73"));
+        assert_eq!(end(&zero), damage("length 0 below 73"));
 
         let mut junk = file(&frames[..1]);
         junk.extend_from_slice(&[0xAA; 10]);
         junk.extend_from_slice(&frames[1]);
         junk.extend_from_slice(&frames[2]);
         assert_eq!(
-            good_end(&junk),
+            end(&junk),
             damage(&format!("length {} runs past the end", 0xAAAA_AAAAu32))
         );
     }
@@ -662,7 +676,7 @@ mod tests {
         let mut bytes = segment_header().to_vec();
         bytes.resize(SEGMENT_HEADER + 64 * 1024 * 1024, 1);
         let started = std::time::Instant::now();
-        assert_eq!(good_end(&bytes), Ok(SEGMENT_HEADER));
+        assert_eq!(end(&bytes), Ok(SEGMENT_HEADER));
         assert!(started.elapsed().as_secs() < 60, "{:?}", started.elapsed());
     }
 
@@ -689,12 +703,13 @@ mod tests {
         .expect("encode");
         bytes.extend_from_slice(&big[..big.len() / 2]);
         let started = std::time::Instant::now();
-        assert_eq!(good_end(&bytes), Ok(keep));
+        assert_eq!(end(&bytes), Ok(keep));
         assert!(started.elapsed().as_secs() < 30, "{:?}", started.elapsed());
     }
 
-    #[test]
-    fn crafted_headers_that_sum_run_the_search_out_of_budget_and_are_refused() {
+    /// Eight headers that sum, each claiming a frame to the end of an 8 MiB file: hashing them all
+    /// costs about eight times the file.
+    fn crafted() -> Vec<u8> {
         let len = 8 * 1024 * 1024;
         let mut bytes = segment_header().to_vec();
         bytes.resize(len, 0);
@@ -707,9 +722,22 @@ mod tests {
             header[4..8].copy_from_slice(&head.to_le_bytes());
             bytes[at..at + FRAME_HEADER].copy_from_slice(&header);
         }
+        bytes
+    }
+
+    #[test]
+    fn a_budget_large_enough_for_every_crafted_header_finds_no_frame_and_cuts_a_tear() {
+        let bytes = crafted();
+        assert_eq!(good_end(&bytes, times(8)), Ok(SEGMENT_HEADER));
+        assert!(good_end(&bytes, times(7)).is_err());
+    }
+
+    #[test]
+    fn crafted_headers_that_sum_run_the_search_out_of_budget_and_are_refused() {
+        let bytes = crafted();
         let started = std::time::Instant::now();
         assert_eq!(
-            good_end(&bytes),
+            end(&bytes),
             Err(Damage {
                 offset: SEGMENT_HEADER as u64,
                 what: "length 0 below 73".into()
@@ -743,7 +771,7 @@ mod tests {
             search_after(&bytes, keep, budget),
             Search::Nothing
         ));
-        assert_eq!(good_end(&bytes), Ok(keep));
+        assert_eq!(end(&bytes), Ok(keep));
     }
 
     #[test]
@@ -755,10 +783,10 @@ mod tests {
         assert_eq!(parse(&bad, 0).err(), Some(FrameFault::HeaderSum));
         let mut bytes = file(&frames[..1]);
         bytes.extend_from_slice(&bad);
-        assert_eq!(good_end(&bytes), Ok(keep));
+        assert_eq!(end(&bytes), Ok(keep));
         let mut cut = file(&frames[..1]);
         cut.extend_from_slice(&bad[..FRAME_HEADER]);
-        assert_eq!(good_end(&cut), Ok(keep));
+        assert_eq!(end(&cut), Ok(keep));
     }
 
     #[test]
@@ -768,11 +796,7 @@ mod tests {
         for cut in 1..FRAME_HEADER {
             let mut bytes = file(&frames[..1]);
             bytes.extend_from_slice(&frames[1][..cut]);
-            assert_eq!(
-                good_end(&bytes),
-                Ok(keep),
-                "cut {cut} bytes into the header"
-            );
+            assert_eq!(end(&bytes), Ok(keep), "cut {cut} bytes into the header");
         }
     }
 
@@ -795,7 +819,7 @@ mod tests {
         bytes[second + FRAME_HEADER] ^= 0xFF;
         assert_eq!(parse(&bytes, second).err(), Some(FrameFault::Checksum));
         assert_eq!(
-            good_end(&bytes),
+            end(&bytes),
             Err(Damage {
                 offset: second as u64,
                 what: "checksum mismatch".into()
@@ -831,7 +855,7 @@ mod tests {
         let last = bytes.len() - frames[3].len();
         bytes.truncate(last + 40);
         assert_eq!(
-            good_end(&bytes),
+            end(&bytes),
             Err(Damage {
                 offset: second as u64,
                 what: "checksum mismatch".into()
@@ -839,7 +863,7 @@ mod tests {
         );
         let mut only_torn = file(&frames[..3]);
         only_torn.extend_from_slice(&frames[3][..40]);
-        assert_eq!(good_end(&only_torn), Ok(only_torn.len() - 40));
+        assert_eq!(end(&only_torn), Ok(only_torn.len() - 40));
     }
 
     #[test]
@@ -864,7 +888,7 @@ mod tests {
             ("meta with a count", meta_with_count),
         ] {
             let bytes = file(&[frame]);
-            let damage = good_end(&bytes).expect_err(name);
+            let damage = end(&bytes).expect_err(name);
             assert_eq!(damage.offset, 12, "{name}");
             assert!(
                 matches!(parse(&bytes, 12), Err(FrameFault::Field(_))),
@@ -875,7 +899,7 @@ mod tests {
 
     #[test]
     fn a_payload_must_be_exactly_one_zstd_frame() {
-        let one = zstd::bulk::compress(b"hello", 19).expect("compress");
+        let one = zstd::bulk::compress(b"hello", level()).expect("compress");
         assert_eq!(unpack(&one).expect("one frame"), b"hello");
         assert_eq!(
             unpack(&compressor().compress(b"").expect("empty")).expect("empty"),
@@ -883,10 +907,10 @@ mod tests {
         );
 
         let mut two = one.clone();
-        two.extend_from_slice(&zstd::bulk::compress(b"world", 19).expect("compress"));
+        two.extend_from_slice(&zstd::bulk::compress(b"world", level()).expect("compress"));
         let mut trailing = one.clone();
         trailing.push(0);
-        let no_size = zstd::stream::encode_all(&b"hello"[..], 19).expect("encode_all");
+        let no_size = zstd::stream::encode_all(&b"hello"[..], level()).expect("encode_all");
         let truncated = one[..one.len() - 2].to_vec();
         for (name, payload) in [
             ("two frames", two),
