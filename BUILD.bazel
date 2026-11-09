@@ -2,7 +2,11 @@ exports_files(
     [
         "Cargo.toml",
         "clippy.toml",
+        "docs/reference/commands.md",
         "docs/reference/configuration.md",
+        "docs/reference/timer/bilbo-remember.service",
+        "docs/reference/timer/bilbo-remember.timer",
+        "docs/reference/timer/io.github.delucca.bilbo.remember.plist",
         "rustfmt.toml",
     ],
     visibility = ["//visibility:public"],

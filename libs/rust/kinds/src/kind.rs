@@ -13,6 +13,8 @@ pub struct Claims {
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct Proposal {
     pub id: Option<Id>,
+    /// The entry this one belongs to, such as a subagent's session.
+    pub parent: Option<Id>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -32,10 +34,11 @@ pub trait Kind {
     fn summary(&self) -> &'static str;
     /// The files under `target` (canonical) this kind takes, in a stable order.
     fn claims(&self, files: &dyn Files, target: &Path) -> Claims;
-    /// Each record's end offset, or why the file is refused.
+    /// Bytes after the last end are not a record yet (a line still being written): a later run
+    /// keeps them.
     fn split(&self, bytes: &[u8]) -> Result<Vec<usize>, Refusal>;
-    /// The meta this kind proposes for a first capture.
-    fn propose(&self, bytes: &[u8]) -> Proposal;
+    /// `kept` gives the entry kept for another file, if any.
+    fn propose(&self, path: &Path, bytes: &[u8], kept: &dyn Fn(&Path) -> Option<Id>) -> Proposal;
 }
 
 #[cfg(test)]

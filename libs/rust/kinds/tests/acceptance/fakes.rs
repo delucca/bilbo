@@ -1,23 +1,37 @@
+use std::cell::Cell;
 use std::collections::HashMap;
+use std::ffi::OsString;
+use std::io;
 use std::path::{Path, PathBuf};
+use std::time::SystemTime;
 
-use bilbo_kinds::files::{Files, Node};
+use bilbo_kinds::files::{Files, Memory, Node};
 use bilbo_kinds::kind::{Claims, Kind, Proposal, Refusal};
 use bilbo_store::entries::{
-    Capture, CaptureError, Captured, Change, Cursor, Entries, Generation, Head, Kept, Meta, Origin,
-    RecordRange, StoreError,
+    Capture, CaptureError, Captured, Change, Cursor, Entries, Generation, Head, Kept, Mark, Meta,
+    Origin, RecordRange, Stamp, StoreError,
 };
 use bilbo_store::id::Id;
 
-/// Claims `*.fake`, splits on `|`, refuses content starting with `!`, proposes the id after `id=`.
+/// Claims `*.fake`; records end at `|`; `!` refuses; `id=` sets the id; `<name>.sub.fake` takes
+/// `<name>.fake` as parent.
 pub struct FakeKind {
     pub refused: Vec<(PathBuf, String)>,
+    pub overrun: bool,
 }
 
 impl FakeKind {
     pub fn new() -> FakeKind {
         FakeKind {
             refused: Vec::new(),
+            overrun: false,
+        }
+    }
+
+    pub fn overrunning() -> FakeKind {
+        FakeKind {
+            overrun: true,
+            ..FakeKind::new()
         }
     }
 
@@ -56,25 +70,69 @@ impl Kind for FakeKind {
         if bytes.starts_with(b"!") {
             return Err(Refusal("the fake kind refuses it".into()));
         }
-        let mut ends: Vec<usize> = bytes
+        if self.overrun {
+            return Ok(vec![bytes.len() + 1]);
+        }
+        Ok(bytes
             .iter()
             .enumerate()
             .filter(|(_, byte)| **byte == b'|')
             .map(|(at, _)| at + 1)
-            .collect();
-        if !bytes.is_empty() && ends.last() != Some(&bytes.len()) {
-            ends.push(bytes.len());
-        }
-        Ok(ends)
+            .collect())
     }
 
-    fn propose(&self, bytes: &[u8]) -> Proposal {
+    fn propose(&self, path: &Path, bytes: &[u8], kept: &dyn Fn(&Path) -> Option<Id>) -> Proposal {
         let text = String::from_utf8_lossy(bytes);
         let id = text
             .split_once("id=")
             .and_then(|(_, rest)| rest.get(..26))
             .and_then(Id::parse);
-        Proposal { id }
+        let parent = path
+            .to_str()
+            .and_then(|path| path.strip_suffix(".sub.fake"))
+            .and_then(|stem| kept(Path::new(&format!("{stem}.fake"))));
+        Proposal { id, parent }
+    }
+}
+
+pub struct Counting {
+    pub files: Memory,
+    pub reads: Cell<usize>,
+}
+
+impl Counting {
+    pub fn new(files: Memory) -> Counting {
+        Counting {
+            files,
+            reads: Cell::new(0),
+        }
+    }
+}
+
+impl Files for Counting {
+    fn canonical(&self, path: &Path) -> io::Result<PathBuf> {
+        self.files.canonical(path)
+    }
+
+    fn node(&self, path: &Path) -> io::Result<Node> {
+        self.files.node(path)
+    }
+
+    fn list(&self, folder: &Path) -> io::Result<Vec<OsString>> {
+        self.files.list(folder)
+    }
+
+    fn read(&self, path: &Path) -> io::Result<Vec<u8>> {
+        self.reads.set(self.reads.get() + 1);
+        self.files.read(path)
+    }
+
+    fn stamp(&self, path: &Path) -> io::Result<Stamp> {
+        self.files.stamp(path)
+    }
+
+    fn now(&self) -> SystemTime {
+        self.files.now()
     }
 }
 
@@ -96,17 +154,20 @@ pub struct Seen {
     pub origin: String,
     pub kind: String,
     pub id: Option<Id>,
-    pub labels: Vec<String>,
+    pub parent: Option<Id>,
+    pub stamp: Option<Stamp>,
     pub bytes: Vec<u8>,
     pub ends: Vec<usize>,
 }
 
-/// Answers `capture` from a script keyed by origin text; every other method panics, because
-/// `remember` must not call it.
+/// Every method but `capture` and `by_origin` panics: `remember` must not call it.
 #[derive(Default)]
 pub struct FakeEntries {
     pub script: HashMap<String, Script>,
     pub seen: Vec<Seen>,
+    pub heads: HashMap<String, Head>,
+    pub metas: HashMap<Id, Meta>,
+    pub adopted: Vec<(Id, Option<Id>)>,
 }
 
 impl FakeEntries {
@@ -121,6 +182,8 @@ impl FakeEntries {
     }
 }
 
+pub const ADOPTED: u64 = 64;
+
 pub fn id(n: u8) -> Id {
     Id::from_bytes([n; 16])
 }
@@ -132,13 +195,15 @@ impl Entries for FakeEntries {
             origin: input.origin.to_string(),
             kind: input.kind.to_string(),
             id: input.id,
-            labels: input.labels.to_vec(),
+            parent: input.parent,
+            stamp: input.stamp,
             bytes: input.bytes.to_vec(),
             ends: input.ends.to_vec(),
         });
         let n = u8::try_from(self.seen.len()).unwrap_or(u8::MAX);
+        let held = self.heads.get(input.origin.as_str()).map(|head| head.id);
         let kept = Kept {
-            id: input.id.unwrap_or_else(|| id(n)),
+            id: held.or(input.id).unwrap_or_else(|| id(n)),
             generation: Generation(1),
             records: RecordRange {
                 first: 1,
@@ -147,12 +212,34 @@ impl Entries for FakeEntries {
             raw_bytes: input.bytes.len() as u64,
             stored_bytes: input.bytes.len() as u64 + 100,
         };
-        match self
+        let script = self
             .script
             .get(input.origin.as_str())
             .cloned()
-            .unwrap_or(Script::New)
-        {
+            .unwrap_or(Script::New);
+        if matches!(
+            script,
+            Script::New | Script::Appended | Script::NewGeneration | Script::Unchanged
+        ) {
+            self.metas.entry(kept.id).or_insert_with(|| Meta {
+                id: kept.id,
+                kind: input.kind.to_string(),
+                origin: Some(input.origin.clone()),
+                captured: std::time::SystemTime::UNIX_EPOCH,
+                parent: input.parent,
+            });
+            self.heads.insert(
+                input.origin.to_string(),
+                Head {
+                    id: kept.id,
+                    generation: Generation(1),
+                    records: kept.records.count,
+                    mark: Mark { end: 0, hash: 0 },
+                    stamp: input.stamp,
+                },
+            );
+        }
+        match script {
             Script::New => Ok(Captured::New(kept)),
             Script::Appended => Ok(Captured::Appended(kept)),
             Script::NewGeneration => Ok(Captured::NewGeneration(kept)),
@@ -163,8 +250,10 @@ impl Entries for FakeEntries {
         }
     }
 
-    fn set_meta(&mut self, _id: Id, _meta: &Meta) -> Result<(), StoreError> {
-        panic!("remember must not call set_meta")
+    fn set_meta(&mut self, id: Id, meta: &Meta) -> Result<u64, StoreError> {
+        self.adopted.push((id, meta.parent));
+        self.metas.insert(id, meta.clone());
+        Ok(ADOPTED)
     }
 
     fn read(
@@ -176,15 +265,15 @@ impl Entries for FakeEntries {
         panic!("remember must not call read")
     }
 
-    fn meta(&self, _id: Id) -> Result<Option<Meta>, StoreError> {
-        panic!("remember must not call meta")
+    fn meta(&self, id: Id) -> Result<Option<Meta>, StoreError> {
+        Ok(self.metas.get(&id).cloned())
     }
 
     fn changes(&self, _since: &Cursor) -> Result<(Vec<Change>, Cursor), StoreError> {
         panic!("remember must not call changes")
     }
 
-    fn by_origin(&self, _origin: &Origin) -> Result<Option<Head>, StoreError> {
-        panic!("remember must not call by_origin")
+    fn by_origin(&self, origin: &Origin) -> Result<Option<Head>, StoreError> {
+        Ok(self.heads.get(origin.as_str()).copied())
     }
 }

@@ -1,27 +1,30 @@
 bilbo remember: keep files as entries, and what grew or changed in them since.
 
 Usage:
-  bilbo remember <file|folder> [--kind <kind>] [--project <project>]
+  bilbo remember <file|folder> [--kind <kind>] [--follow]
+  bilbo remember
+  bilbo remember --hook
 
 Options:
-      --kind <kind>        Run this kind, not the one that claims the files
-      --project <project>  Label each new entry with this project
+      --kind <kind>  Run this kind, not the one that claims the files
+      --follow       Save the target in the config file, so a bare run keeps it
+      --hook         Keep the transcript a harness hook names on stdin
 
 Kinds:
   markdown  .md files, one record per line
+  session   Claude Code and Codex sessions, one record per JSONL line
 
 Output:
   new <n>, appended <n>, new generation <n>, unchanged <n>, refused <n>
   records <n>, raw bytes <n>, stored bytes <n>
-Each refused file is named on stderr with its reason.
 
 Exit:
-  0  success
+  0  success, and --hook once it runs
   1  a file was refused, nothing to keep, a missing target or a store failure
-  2  usage or config error
+  2  usage or config error, or a config file --follow cannot write
 
 Examples:
-  bilbo remember notes/
-  bilbo remember notes/decision-x.md --project bilbo
+  bilbo remember ~/.claude/projects --kind session
+  bilbo remember ~/notes --follow
 
 Docs: https://github.com/delucca/bilbo/wiki/Commands#remember

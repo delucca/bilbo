@@ -4,7 +4,7 @@ The config file, its keys, the folders bilbo uses and the environment variables 
 
 ## The config file
 
-The config file is `$BILBO_CONFIG`, else `$XDG_CONFIG_HOME/bilbo/config.toml`, else `~/.config/bilbo/config.toml`. It is TOML; bilbo only reads it, and you edit it by hand. Each key sits in the table named before its dot:
+The config file is `$BILBO_CONFIG`, else `$XDG_CONFIG_HOME/bilbo/config.toml`, else `~/.config/bilbo/config.toml`. It is TOML, and you edit it by hand; the one thing bilbo writes to it is a `[[follow]]` table that `bilbo remember --follow` appends (see [Commands](commands.md#remember)), taking turns with other saves on `config.toml.lock` beside it, which it leaves there. Each key sits in the table named before its dot, and each follow is a `[[follow]]` table of its own:
 
 ```toml
 [paths]
@@ -13,13 +13,20 @@ root = "~/bilbo/store"
 [store]
 seal_at = "16 MiB"
 compression = 12
+
+[[follow]]
+path = "~/.claude/projects"
+kind = "session"
+
+[[follow]]
+path = "~/notes"
 ```
 
-A key takes the first of these that sets it: a flag, its variable, the config file, its default. A variable set to the empty string counts as unset. No key has a flag yet. The config file is checked whole whatever the variables say: a bad value in it is a config error even for a key whose variable is set. A value bilbo refuses is a config error wherever it is set, even when a flag or a variable above it sets the key too.
+A key takes the first of these that sets it: a flag, its variable, the config file, its default. A list such as `follow` is taken whole from that one source: a file that declares one follow drops the default follows. A variable set to the empty string counts as unset. No key has a flag yet. The config file is checked whole whatever the variables say: a bad value in it is a config error even for a key whose variable is set. A value bilbo refuses is a config error wherever it is set, even when a flag or a variable above it sets the key too.
 
 A missing config file means every key takes its variable or its default, unless `BILBO_CONFIG` names the file: then the missing file is a config error.
 
-Sizes are strings with a binary unit, `KiB`, `MiB` or `GiB`, with or without the space (`"8 MiB"`, `"512KiB"`), or an integer of bytes (`8388608`). Decimal units such as `MB` or `M` are refused. Paths are absolute, or start with `~/`, which stands for `$HOME`; a path with a `.` or `..` component is refused.
+Sizes are strings with a binary unit, `KiB`, `MiB` or `GiB`, with or without the space (`"8 MiB"`, `"512KiB"`), or an integer of bytes (`8388608`). Decimal units such as `MB` or `M` are refused. Durations are strings of whole seconds, minutes or hours, with or without the space (`"90s"`, `"60m"`, `"1 h"`); a bare number is refused. Paths are absolute, or start with `~/`, which stands for `$HOME`; a path with a `.` or `..` component is refused.
 
 ## Keys
 
@@ -28,9 +35,11 @@ Sizes are strings with a binary unit, `KiB`, `MiB` or `GiB`, with or without the
 | `paths.root` | `BILBO_HOME` | `$XDG_DATA_HOME/bilbo, else ~/.local/share/bilbo` | The store: its sealed segments. Must be an absolute path or one starting with ~/. A root that holds a `notes/` or `library/` folder, bilbo 0.20's layout, is refused. |
 | `paths.state` | none | `$XDG_STATE_HOME/bilbo, else ~/.local/state/bilbo` | This device's state: `open.seg`, the store lock and its store root. Must be an absolute path or one starting with ~/. |
 | `paths.cache` | none | `$XDG_CACHE_HOME/bilbo, else ~/.cache/bilbo` | What bilbo rebuilds from the store: the catalog. Must be an absolute path or one starting with ~/. |
-| `store.seal_at` | `BILBO_STORE_SEAL_AT` | `"8 MiB"` | The size at which `open.seg` is sealed into a segment of the store. Must be between 1 MiB and 1 GiB. |
+| `store.seal_at` | `BILBO_STORE_SEAL_AT` | `"8 MiB"` | The size at which `open.seg` is sealed into a segment of the store. Must be between 1 MiB and 1 GiB. A run checks it after each capture and when it ends. |
+| `store.seal_after` | `BILBO_STORE_SEAL_AFTER` | `"60m"` | The age of `open.seg`'s oldest frame at which a run seals it, whatever its size. Must be between 1m and 24h. A run checks it when it ends, and a bare run does so even when no follow claims a file; `bilbo remember --hook` never seals. |
 | `store.compression` | `BILBO_STORE_COMPRESSION` | `19` | The zstd level of every frame the store writes: higher packs smaller and writes slower. Must be a zstd level from 1 to 22. |
 | `store.tear_budget` | `BILBO_STORE_TEAR_BUDGET` | `4` | How many times `open.seg`'s size the search after a torn frame may hash before it refuses the file. Must be a whole number from 1 to 64. |
+| `follow` | none | `[{ path = "~/.claude/projects", kind = "session" }, { path = "~/.codex/sessions", kind = "session" }]` | What a bare bilbo remember keeps up with: each folder or file, and the kind that runs there, else the one detected. Must be a list of [[follow]] tables, each with a path and an optional kind. `--follow` refuses a file whose `follow` is an inline array and prints the inline table to add. A path follows the rules of the folder keys. A follow whose folder is missing is skipped with one line on stderr. |
 
 An XDG variable moves a default only when it holds an absolute path.
 
@@ -39,13 +48,13 @@ An XDG variable moves a default only when it holds an absolute path.
 | Folder | Path | Holds |
 | --- | --- | --- |
 | Store root | `paths.root` | The sealed segments, each `<ULID>.seg`. |
-| State | `paths.state` | `open.seg`, `store.lock`, `sealing` and `root`. |
-| Cache | `paths.cache` | `catalog.sqlite`. Deleting it loses nothing: the next run rebuilds it. |
+| State | `paths.state` | `open.seg`, `open.since` (when `open.seg` got its oldest frame), `store.lock`, `store.writer` and `store.again` (the store lock, the writer's lock and the again flag; see [Commands](commands.md#remember)), `sealing` and `root`. |
+| Cache | `paths.cache` | `catalog.sqlite`. Deleting it loses nothing: the next run with a target or none rebuilds it; a hook leaves that to such a run. |
 | Config | `$BILBO_CONFIG`, else `$XDG_CONFIG_HOME/bilbo/config.toml`, else `~/.config/bilbo/config.toml` | The config file. |
 
 The state and cache folders cannot be inside the store root.
 
-Until the migration, point `BILBO_HOME` or `paths.root` at another folder. The default folders are bilbo 0.20's: it keeps its notes in `notes/` and `library/` under the root and reads its config from `config` in the same folder. This version reads only `config.toml`, and refuses a root that holds either folder before it writes anything, naming the folder: `<root>/notes belongs to bilbo 0.20; set BILBO_HOME or paths.root to another folder`.
+Until the migration, point `paths.root` (or `BILBO_HOME`), `paths.state` and `paths.cache` at folders of their own. The default folders are bilbo 0.20's: it keeps its notes in `notes/` and `library/` under the root and reads its config from `config` in the same folder. This version reads only `config.toml`, and refuses a root that holds either folder before it writes anything, naming the folder: `<root>/notes belongs to bilbo 0.20; set BILBO_HOME or paths.root to another folder`.
 
 ## Errors
 
@@ -62,7 +71,7 @@ A key the [Keys](#keys) table does not list, a key set twice, a value of the wro
 
 ```text
 bilbo: /home/me/.config/bilbo/config.toml:7: store.seal_at must be between 1 MiB and 1 GiB, got "0"
-bilbo: /home/me/.config/bilbo/config.toml:9: unknown key store.sealat; the keys are paths.root, paths.state, paths.cache, store.seal_at, store.compression, store.tear_budget
+bilbo: /home/me/.config/bilbo/config.toml:9: unknown key store.sealat; the keys are paths.root, paths.state, paths.cache, store.seal_at, store.seal_after, store.compression, store.tear_budget, follow
 bilbo: /home/me/.config/bilbo/config.toml:4: duplicate key seal_at
 bilbo: BILBO_STORE_SEAL_AT must be between 1 MiB and 1 GiB, got "0"
 bilbo: /home/me/.config/bilbo/config.toml:2: not valid UTF-8
@@ -80,7 +89,7 @@ bilbo: /home/me/.local/share/bilbo/notes belongs to bilbo 0.20; set BILBO_HOME o
 | Variable | Effect |
 | --- | --- |
 | `BILBO_HOME` | Sets `paths.root`. |
-| `BILBO_STORE_SEAL_AT`, `BILBO_STORE_COMPRESSION`, `BILBO_STORE_TEAR_BUDGET` | Set `store.seal_at`, `store.compression` and `store.tear_budget`. |
+| `BILBO_STORE_SEAL_AT`, `BILBO_STORE_SEAL_AFTER`, `BILBO_STORE_COMPRESSION`, `BILBO_STORE_TEAR_BUDGET` | Set `store.seal_at`, `store.seal_after`, `store.compression` and `store.tear_budget`. |
 | `BILBO_CONFIG` | The config file's path. A file it names must exist. |
 | `XDG_DATA_HOME`, `XDG_CONFIG_HOME`, `XDG_CACHE_HOME`, `XDG_STATE_HOME` | Move the default store root, config file, cache and state folders, as [Keys](#keys) and [Folders](#folders) show. |
 | `HOME` | The base of every default folder, and what `~/` stands for. |

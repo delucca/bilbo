@@ -8,7 +8,12 @@ bilbo_rust_test(
         "config.rs",
         "remember.rs",
         "scratch.rs",
+        "sessions.rs",
         "tty.rs",
+    ],
+    compile_data = [
+        "//apps/cli:hook_payloads",
+        "//libs/rust/kinds/session:fixtures",
     ],
     crate_root = "cli.rs",
     data = ["//apps/cli:bilbo"],

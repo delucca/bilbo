@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 
 use bilbo_kinds::files::{Files, Node};
 use bilbo_kinds::kind::{Claims, Kind, Proposal, Refusal};
+use bilbo_store::id::Id;
 
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Markdown;
@@ -48,9 +49,10 @@ impl Kind for Markdown {
         Ok(ends)
     }
 
-    fn propose(&self, bytes: &[u8]) -> Proposal {
+    fn propose(&self, _path: &Path, bytes: &[u8], _kept: &dyn Fn(&Path) -> Option<Id>) -> Proposal {
         Proposal {
             id: std::str::from_utf8(bytes).ok().and_then(frontmatter::id),
+            parent: None,
         }
     }
 }
@@ -214,7 +216,7 @@ mod tests {
             Markdown.split(b"ab\n\xff\xfe"),
             Err(Refusal("not UTF-8 (byte 3)".to_string()))
         );
-        assert_eq!(Markdown.propose(b"---\n\xff\n"), Proposal { id: None });
+        assert_eq!(propose(b"---\n\xff\n"), Proposal::default());
     }
 
     #[test]
@@ -224,8 +226,19 @@ mod tests {
     }
 
     #[test]
-    fn a_note_proposes_its_frontmatter_id() {
-        assert!(Markdown.propose(FIXTURES[0].1).id.is_some());
-        assert!(Markdown.propose(FIXTURES[3].1).id.is_none());
+    fn a_note_proposes_its_frontmatter_id_and_no_parent() {
+        assert!(propose(FIXTURES[0].1).id.is_some());
+        assert_eq!(
+            propose(FIXTURES[0].1).parent,
+            None,
+            "even with another entry kept"
+        );
+        assert!(propose(FIXTURES[3].1).id.is_none());
+    }
+
+    fn propose(bytes: &[u8]) -> Proposal {
+        Markdown.propose(Path::new("/n/a.md"), bytes, &|_| {
+            Some(Id::from_bytes([7; 16]))
+        })
     }
 }

@@ -1,15 +1,14 @@
 use std::ffi::OsString;
-use std::fs;
-use std::io::{self, Read};
+use std::io;
 use std::path::{Path, PathBuf};
 
+use bilbo_kinds::follows::Follow;
 use bilbo_settings::error::Error;
 use bilbo_settings::file::{File, Named};
 use bilbo_settings::folder::{self, Folder};
-use bilbo_settings::key::{About, Default, Key, Origin, Resolved, Shown, Source};
+use bilbo_settings::key::{About, Default, Key, Origin, Resolved, Shown, Source, Value, quote};
 use bilbo_store::keys;
 use bilbo_store::layout::Layout;
-use rustix::fs::{FileType, Mode, OFlags};
 
 /// Not a key: the file cannot name itself.
 pub const CONFIG: Key<PathBuf> = Key {
@@ -73,19 +72,82 @@ pub const CACHE: Key<PathBuf> = Key {
     ..CONFIG
 };
 
+/// The composition root's: its default names a kind, which only the registry may.
+pub const FOLLOW: Key<Vec<Follow>> = Key {
+    about: About {
+        name: "follow",
+        variable: None,
+        default: Default::Toml(
+            r#"[{ path = "~/.claude/projects", kind = "session" }, { path = "~/.codex/sessions", kind = "session" }]"#,
+        ),
+        allowed: "a list of [[follow]] tables, each with a path and an optional kind",
+        doc: "What a bare bilbo remember keeps up with: each folder or file, and the kind that runs there, else the one detected.",
+    },
+    parse: follows,
+    show: |list| show_follows(list),
+};
+
 const PATHS: [&About; 3] = [&ROOT.about, &STATE.about, &CACHE.about];
 
 /// Every key, in the order `bilbo config` lists them.
 pub fn keys() -> Vec<&'static About> {
-    PATHS.into_iter().chain(keys::ABOUT).collect()
+    PATHS
+        .into_iter()
+        .chain(keys::ABOUT)
+        .chain([&FOLLOW.about])
+        .collect()
+}
+
+fn follows(value: &Value<'_>) -> Result<Vec<Follow>, Error> {
+    let items = value.items().ok_or_else(|| value.refuse())?;
+    items
+        .iter()
+        .map(|item| {
+            let fields = item.fields().ok_or_else(|| item.refuse())?;
+            let mut path = None;
+            let mut kind = None;
+            for (name, field) in fields {
+                match name {
+                    "path" => path = Some(folder::path(&field)?),
+                    "kind" => {
+                        let text = field.text().filter(|text| !text.is_empty());
+                        kind = Some(text.ok_or_else(|| field.refuse())?.to_owned());
+                    }
+                    _ => return Err(field.refuse()),
+                }
+            }
+            Ok(Follow {
+                path: path.ok_or_else(|| item.refuse())?,
+                kind,
+            })
+        })
+        .collect()
+}
+
+pub fn inline_follow(follow: &Follow) -> String {
+    match &follow.kind {
+        Some(kind) => format!(
+            "{{ path = {}, kind = {} }}",
+            folder::show(&follow.path),
+            quote(kind)
+        ),
+        None => format!("{{ path = {} }}", folder::show(&follow.path)),
+    }
+}
+
+pub fn show_follows(list: &[Follow]) -> String {
+    let tables: Vec<String> = list.iter().map(inline_follow).collect();
+    format!("[{}]", tables.join(", "))
 }
 
 #[derive(Debug)]
 pub struct Settings {
+    pub config: Resolved<PathBuf>,
     pub root: Resolved<PathBuf>,
     pub state: Resolved<PathBuf>,
     pub cache: Resolved<PathBuf>,
     pub store: keys::Section,
+    pub follow: Resolved<Vec<Follow>>,
 }
 
 impl Settings {
@@ -105,28 +167,9 @@ impl Settings {
             CACHE.shown(&self.cache),
         ];
         shown.extend(self.store.shown());
+        shown.push(FOLLOW.shown(&self.follow));
         shown
     }
-}
-
-/// A file's bytes, read only from a regular file: a named pipe or a device would block the read,
-/// and the file is read before any verb parses its arguments.
-pub fn read_regular(path: &Path) -> io::Result<Vec<u8>> {
-    let fd = rustix::fs::open(
-        path,
-        OFlags::RDONLY | OFlags::NONBLOCK | OFlags::CLOEXEC,
-        Mode::empty(),
-    )?;
-    let stat = rustix::fs::fstat(&fd)?;
-    if FileType::from_raw_mode(stat.st_mode) != FileType::RegularFile {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "not a regular file",
-        ));
-    }
-    let mut bytes = Vec::new();
-    fs::File::from(fd).read_to_end(&mut bytes)?;
-    Ok(bytes)
 }
 
 /// The config file's path from the environment, then the file, then every key.
@@ -149,6 +192,8 @@ pub fn load(
         state: STATE.resolve(&source)?,
         cache: CACHE.resolve(&source)?,
         store: keys::section(&source)?,
+        follow: FOLLOW.resolve(&source)?,
+        config,
     })
 }
 
@@ -161,7 +206,9 @@ mod tests {
 
     use bilbo_settings::key::{Default, Origin};
 
-    use super::{CACHE, CONFIG, ROOT, STATE, keys, load};
+    use bilbo_kinds::follows::Follow;
+
+    use super::{CACHE, CONFIG, FOLLOW, ROOT, STATE, keys, load, show_follows};
 
     const PAGE: &str = include_str!("../../../../docs/reference/configuration.md");
 
@@ -184,7 +231,7 @@ mod tests {
     }
 
     #[test]
-    fn the_registry_is_the_three_folders_then_the_three_store_keys() {
+    fn the_registry_is_the_three_folders_the_four_store_keys_then_the_follows() {
         let names: Vec<&str> = keys().iter().map(|about| about.name).collect();
         assert_eq!(
             names,
@@ -193,8 +240,10 @@ mod tests {
                 "paths.state",
                 "paths.cache",
                 "store.seal_at",
+                "store.seal_after",
                 "store.compression",
-                "store.tear_budget"
+                "store.tear_budget",
+                "follow"
             ]
         );
     }
@@ -255,7 +304,7 @@ mod tests {
             .err(),
             Some(
                 "/c.toml:3: unknown key store.sealat; the keys are paths.root, paths.state, \
-                 paths.cache, store.seal_at, store.compression, store.tear_budget"
+                 paths.cache, store.seal_at, store.seal_after, store.compression, store.tear_budget, follow"
                     .to_owned()
             )
         );
@@ -394,6 +443,7 @@ mod tests {
                 "BILBO_CONFIG",
                 "BILBO_HOME",
                 "BILBO_STORE_COMPRESSION",
+                "BILBO_STORE_SEAL_AFTER",
                 "BILBO_STORE_SEAL_AT",
                 "BILBO_STORE_TEAR_BUDGET",
                 "XDG_CACHE_HOME",
@@ -414,5 +464,93 @@ mod tests {
             let with = format!("{PAGE}\n`{foreign}`\n");
             assert_ne!(names_in(&with), expected, "{foreign} must fail");
         }
+    }
+
+    fn follow(path: &str, kind: Option<&str>) -> Follow {
+        Follow {
+            path: PathBuf::from(path),
+            kind: kind.map(str::to_owned),
+        }
+    }
+
+    #[test]
+    fn the_follows_are_the_two_defaults_until_the_file_declares_one() {
+        let env = [("HOME", "/h"), ("BILBO_CONFIG", "/c.toml")];
+        let defaults = settings(&env, &[("/c.toml", "")]).expect("defaults");
+        assert_eq!(
+            defaults.follow.value,
+            [
+                follow("/h/.claude/projects", Some("session")),
+                follow("/h/.codex/sessions", Some("session")),
+            ]
+        );
+        assert_eq!(defaults.follow.origin, Origin::Default);
+        let file = "[store]\ncompression = 3\n\n[[follow]]\npath = \"~/notes\"\n\n[[follow]]\npath = \"/x\"\nkind = \"markdown\"\n";
+        let declared = settings(&env, &[("/c.toml", file)]).expect("declared");
+        assert_eq!(
+            declared.follow.value,
+            [follow("/h/notes", None), follow("/x", Some("markdown"))]
+        );
+        assert_eq!(
+            declared.follow.origin,
+            Origin::File {
+                path: PathBuf::from("/c.toml"),
+                line: 4
+            }
+        );
+        let none = settings(&env, &[("/c.toml", "follow = []\n")]).expect("none");
+        assert!(none.follow.value.is_empty());
+    }
+
+    #[test]
+    fn a_follow_the_file_cannot_mean_is_a_config_error_naming_its_line() {
+        let env = [("HOME", "/h"), ("BILBO_CONFIG", "/c.toml")];
+        let error = |text: &str| settings(&env, &[("/c.toml", text)]).err();
+        let allowed = "must be a list of [[follow]] tables, each with a path and an optional kind";
+        assert_eq!(
+            error("[[follow]]\nkind = \"session\"\n"),
+            Some(format!("/c.toml:1: follow {allowed}, got a table"))
+        );
+        assert_eq!(
+            error("[[follow]]\npath = \"/x\"\nkinds = \"session\"\n"),
+            Some(format!(
+                "/c.toml:3: follow.kinds {allowed}, got \"session\""
+            ))
+        );
+        assert_eq!(
+            error("[[follow]]\npath = \"/x\"\nkind = \"\"\n"),
+            Some(format!("/c.toml:3: follow.kind {allowed}, got \"\""))
+        );
+        assert_eq!(
+            error("follow = \"/x\"\n"),
+            Some(format!("/c.toml:1: follow {allowed}, got \"/x\""))
+        );
+        assert_eq!(
+            error("[[follow]]\npath = \"notes\"\n"),
+            Some("/c.toml:2: follow.path is not an absolute path: notes".to_owned())
+        );
+        assert_eq!(
+            settings(
+                &[
+                    ("BILBO_CONFIG", "/c.toml"),
+                    ("XDG_DATA_HOME", "/xd"),
+                    ("XDG_STATE_HOME", "/xs"),
+                    ("XDG_CACHE_HOME", "/xc")
+                ],
+                &[("/c.toml", "")]
+            )
+            .err(),
+            Some("the default of follow needs HOME, which is not set".to_owned())
+        );
+    }
+
+    #[test]
+    fn the_follows_show_as_inline_tables_in_the_order_given() {
+        assert_eq!(show_follows(&[]), "[]");
+        assert_eq!(
+            show_follows(&[follow("/h/a", Some("session")), follow("/h/b \"q\"", None)]),
+            "[{ path = \"/h/a\", kind = \"session\" }, { path = \"/h/b \\\"q\\\"\" }]"
+        );
+        assert_eq!(FOLLOW.about.variable, None);
     }
 }

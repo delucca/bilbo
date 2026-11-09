@@ -4,16 +4,10 @@ use std::fs;
 use std::io::{self, Write};
 use std::os::unix::fs::symlink;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc;
-use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, SystemTime};
 
-use bilbo_cli::console::env::Env;
-use bilbo_cli::console::outcome::Failure;
-use bilbo_cli::console::settings;
-use bilbo_cli::console::view::View;
 use bilbo_cli::remember::disk::Disk;
 use bilbo_kinds::files::{Files, Node};
 use bilbo_store::entries::{Cursor, Entries, Generation, Head, Meta, Origin, RecordRange};
@@ -21,26 +15,13 @@ use bilbo_store::id::Id;
 use bilbo_store::layout::Layout;
 use bilbo_store::segments::{Options, Store};
 
+mod sandbox;
+
+use sandbox::{Run, backdate, counts, layout, run, scratch_dir, text, vars, write};
+
 const ID_A: &str = "01JC5Q3V7XKM4P8R2T6W9YB0DE";
 const ID_B: &str = "01JC5Q3V7XKM4P8R2T6W9YB0DF";
 const WAIT: Duration = Duration::from_secs(10);
-
-static COUNTER: AtomicU64 = AtomicU64::new(0);
-
-#[expect(
-    clippy::disallowed_methods,
-    reason = "Bazel gives each test its scratch folder in TEST_TMPDIR"
-)]
-fn base() -> PathBuf {
-    std::env::var_os("TEST_TMPDIR").map_or_else(std::env::temp_dir, PathBuf::from)
-}
-
-struct Run {
-    code: u8,
-    stdout: String,
-    stderr: Vec<String>,
-    notices: Vec<String>,
-}
 
 impl Run {
     fn counts(&self) -> &str {
@@ -58,12 +39,7 @@ struct Sandbox {
 
 impl Sandbox {
     fn new(test: &str) -> Sandbox {
-        let base = base().canonicalize().expect("canonical scratch base");
-        let dir = base.join(format!(
-            "{test}-{}-{}",
-            std::process::id(),
-            COUNTER.fetch_add(1, Ordering::Relaxed)
-        ));
+        let dir = scratch_dir(test);
         for sub in ["home", "notes", "config"] {
             fs::create_dir_all(dir.join(sub)).expect("create scratch");
         }
@@ -76,16 +52,7 @@ impl Sandbox {
     }
 
     fn vars(&self) -> HashMap<String, OsString> {
-        [
-            ("HOME", self.dir.join("home")),
-            ("BILBO_HOME", self.dir.join("store")),
-            ("XDG_STATE_HOME", self.dir.join("state")),
-            ("XDG_CACHE_HOME", self.dir.join("cache")),
-            ("BILBO_CONFIG", self.dir.join("config/config.toml")),
-        ]
-        .into_iter()
-        .map(|(name, path)| (name.to_owned(), path.into_os_string()))
-        .collect()
+        vars(&self.dir)
     }
 
     fn layout(&self) -> Layout {
@@ -98,13 +65,12 @@ impl Sandbox {
 
     fn write(&self, name: &str, bytes: impl AsRef<[u8]>) -> PathBuf {
         let path = self.notes().join(name);
-        fs::create_dir_all(path.parent().expect("a parent")).expect("create folders");
-        fs::write(&path, bytes).expect("write");
+        write(&path, bytes);
         path
     }
 
     fn remember(&self, args: &[&str]) -> Run {
-        remember(self.vars(), args)
+        run(self.vars(), args, b"", None)
     }
 
     fn remember_notes(&self) -> Run {
@@ -172,56 +138,6 @@ impl Drop for Sandbox {
     fn drop(&mut self) {
         let _ = fs::remove_dir_all(&self.dir);
     }
-}
-
-fn layout(vars: &HashMap<String, OsString>) -> Layout {
-    settings::load(&|name| vars.get(name).cloned(), &|path| fs::read(path))
-        .expect("settings")
-        .layout()
-}
-
-fn remember(vars: HashMap<String, OsString>, args: &[&str]) -> Run {
-    let notices = Arc::new(Mutex::new(Vec::new()));
-    let sink = Arc::clone(&notices);
-    let mut env = Env {
-        var: Box::new(move |name| vars.get(name).cloned()),
-        stdin: Box::new(io::empty()),
-        notice: Box::new(move |message| {
-            sink.lock().expect("notices").extend(message.plain_lines());
-        }),
-    };
-    let argv: Vec<OsString> = ["bilbo", "remember"]
-        .into_iter()
-        .chain(args.iter().copied())
-        .map(OsString::from)
-        .collect();
-    let settings = settings::load(&*env.var, &|path| fs::read(path)).map_err(Failure::from);
-    let run = match bilbo_cli::run(&argv, &mut env, settings) {
-        Ok(outcome) => Run {
-            code: outcome.exit_code(),
-            stdout: outcome.stdout(&View::PLAIN),
-            stderr: outcome.stderr_lines(&View::PLAIN),
-            notices: Vec::new(),
-        },
-        Err(failure) => Run {
-            code: failure.exit_code(),
-            stdout: String::new(),
-            stderr: failure.stderr_lines(&View::PLAIN),
-            notices: Vec::new(),
-        },
-    };
-    let notices = notices.lock().expect("notices").clone();
-    Run { notices, ..run }
-}
-
-fn text(path: &Path) -> &str {
-    path.to_str().expect("UTF-8 path")
-}
-
-fn counts(new: u64, appended: u64, generation: u64, unchanged: u64, refused: u64) -> String {
-    format!(
-        "new {new}, appended {appended}, new generation {generation}, unchanged {unchanged}, refused {refused}"
-    )
 }
 
 #[test]
@@ -447,29 +363,12 @@ fn a_file_that_left_the_folder_keeps_its_entry() {
 }
 
 #[test]
-fn the_project_labels_new_entries_only() {
-    let sandbox = Sandbox::new("project_label");
-    let old = sandbox.write("a.md", "a\n");
-    let notes = sandbox.notes();
-    let run = sandbox.remember(&[text(&notes), "--project", "first"]);
-    assert_eq!(run.code, 0, "{:?}", run.stderr);
-    assert_eq!(sandbox.entry(&old).0.labels, ["first"]);
-
-    let young = sandbox.write("b.md", "b\n");
-    fs::write(&old, "a\nmore\n").expect("grow");
-    let run = sandbox.remember(&[text(&notes), "--project", "second"]);
-    assert_eq!(run.counts(), counts(1, 1, 0, 0, 0));
-    assert_eq!(sandbox.entry(&old).0.labels, ["first"]);
-    assert_eq!(sandbox.entry(&young).0.labels, ["second"]);
-}
-
-#[test]
 fn a_torn_tail_of_open_seg_is_cut_and_the_run_goes_on() {
     let sandbox = Sandbox::new("torn_tail");
     sandbox.write("a.md", "a\n");
     assert_eq!(sandbox.remember_notes().counts(), counts(1, 0, 0, 0, 0));
     let open_seg = sandbox.open_seg();
-    assert_eq!(fs::metadata(&open_seg).expect("open.seg").len(), 12);
+    let kept = fs::metadata(&open_seg).expect("open.seg").len();
     let mut file = fs::OpenOptions::new()
         .append(true)
         .open(&open_seg)
@@ -484,11 +383,11 @@ fn a_torn_tail_of_open_seg_is_cut_and_the_run_goes_on() {
     assert_eq!(
         run.notices,
         [format!(
-            "bilbo: cut 20 bytes of a torn frame at byte 12 of {}",
+            "bilbo: cut 20 bytes of a torn frame at byte {kept} of {}",
             text(&open_seg)
         )]
     );
-    assert_eq!(fs::metadata(&open_seg).expect("open.seg").len(), 12);
+    assert_eq!(fs::metadata(&open_seg).expect("open.seg").len(), kept);
 }
 
 #[test]
@@ -504,7 +403,7 @@ fn a_deleted_cache_is_rebuilt_and_the_next_run_keeps_nothing() {
     assert_eq!(run.code, 0, "{:?}", run.stderr);
     assert_eq!(
         run.notices,
-        ["bilbo: rebuilt the catalog from the store: 3 entries in 1 segment"]
+        ["bilbo: rebuilt the catalog from the store: 3 entries in 0 segments"]
     );
     assert_eq!(run.counts(), counts(0, 0, 0, 3, 0));
     assert_eq!(run.totals(), "records 0, raw bytes 0, stored bytes 0");
@@ -522,19 +421,7 @@ fn a_second_run_waits_on_the_lock_and_says_so() {
     let (sender, receiver) = mpsc::channel();
     let vars = sandbox.vars();
     let notes = sandbox.notes();
-    let runner = thread::spawn(move || {
-        let mut env = Env {
-            var: Box::new(move |name| vars.get(name).cloned()),
-            stdin: Box::new(io::empty()),
-            notice: Box::new(move |message| {
-                let _ = sender.send(message.plain_lines().join("\n"));
-            }),
-        };
-        let argv: Vec<OsString> = vec!["bilbo".into(), "remember".into(), notes.into()];
-        let settings = settings::load(&*env.var, &|path| fs::read(path)).map_err(Failure::from);
-        let outcome = bilbo_cli::run(&argv, &mut env, settings).expect("a result");
-        (outcome.exit_code(), outcome.stdout(&View::PLAIN))
-    });
+    let runner = thread::spawn(move || run(vars, &[text(&notes)], b"", Some(sender)));
 
     let notice = receiver.recv_timeout(WAIT).expect("a waiting notice");
     assert_eq!(
@@ -542,16 +429,23 @@ fn a_second_run_waits_on_the_lock_and_says_so() {
         "bilbo: waiting for another bilbo to finish writing the store"
     );
     lock.unlock().expect("release the lock");
-    let (code, stdout) = runner.join().expect("the run finishes");
-    assert_eq!(code, 0);
-    assert_eq!(stdout.lines().next(), Some(counts(1, 0, 0, 0, 0).as_str()));
+    let finished = runner.join().expect("the run finishes");
+    assert_eq!(finished.code, 0);
+    assert_eq!(
+        finished.stdout.lines().next(),
+        Some(counts(1, 0, 0, 0, 0).as_str())
+    );
 }
 
 #[test]
-fn the_end_of_a_run_seals_open_seg_into_the_store() {
+fn a_run_leaves_a_young_open_seg_open_and_seals_one_older_than_seal_after() {
     let sandbox = Sandbox::new("sealed");
     sandbox.write("a.md", "a\n");
     assert_eq!(sandbox.remember_notes().counts(), counts(1, 0, 0, 0, 0));
+    assert!(sandbox.segments().is_empty());
+    assert!(fs::metadata(sandbox.open_seg()).expect("open.seg").len() > 12);
+    backdate(&sandbox.layout().state, 61);
+    assert_eq!(sandbox.remember_notes().counts(), counts(0, 0, 0, 1, 0));
     let segments = sandbox.segments();
     assert_eq!(segments.len(), 1, "{segments:?}");
     let bytes = fs::read(&segments[0]).expect("read the segment");
@@ -560,6 +454,7 @@ fn the_end_of_a_run_seals_open_seg_into_the_store() {
         fs::metadata(sandbox.open_seg()).expect("open.seg").len(),
         12
     );
+    assert!(!sandbox.layout().state.join("open.since").exists());
 }
 
 #[test]
@@ -665,6 +560,7 @@ fn a_failed_close_keeps_the_runs_output_and_exits_1() {
     sandbox.write("a.md", "a\n");
     assert_eq!(sandbox.remember_notes().counts(), counts(1, 0, 0, 0, 0));
     sandbox.write("b.md", "b\n");
+    backdate(&sandbox.layout().state, 61);
     let root = sandbox.layout().root;
     fs::set_permissions(&root, fs::Permissions::from_mode(0o500)).expect("lock the root");
     let run = sandbox.remember_notes();
@@ -687,7 +583,7 @@ fn a_config_error_with_a_file_to_keep_exits_2() {
     let mut vars = sandbox.vars();
     vars.insert("BILBO_HOME".to_owned(), "relative".into());
     let notes = sandbox.notes();
-    let run = remember(vars, &[text(&notes)]);
+    let run = run(vars, &[text(&notes)], b"", None);
     assert_eq!(run.code, 2);
     assert_eq!(run.stdout, "");
     assert_eq!(
@@ -708,7 +604,7 @@ fn a_store_that_cannot_open_exits_1_with_the_stores_message() {
         blocker.join("store").into_os_string(),
     );
     let notes = sandbox.notes();
-    let run = remember(vars, &[text(&notes)]);
+    let run = run(vars, &[text(&notes)], b"", None);
     assert_eq!(run.code, 1);
     assert_eq!(run.stdout, "");
     assert_eq!(run.stderr.len(), 1, "{:?}", run.stderr);
@@ -824,7 +720,7 @@ fn a_store_path_that_holds_a_newline_stays_one_line() {
         blocker.join("st\nbilbo: forged").into_os_string(),
     );
     let notes = sandbox.notes();
-    let run = remember(vars, &[text(&notes)]);
+    let run = run(vars, &[text(&notes)], b"", None);
     assert_eq!(run.code, 1);
     assert_eq!(run.stderr.len(), 1, "{:?}", run.stderr);
     assert!(
@@ -844,7 +740,7 @@ fn a_notice_naming_a_path_with_a_newline_stays_one_line() {
         sandbox.dir.join("st\nbilbo: forged").into_os_string(),
     );
     let notes = sandbox.notes();
-    assert_eq!(remember(vars.clone(), &[text(&notes)]).code, 0);
+    assert_eq!(run(vars.clone(), &[text(&notes)], b"", None).code, 0);
     let layout = layout(&vars);
     let mut file = fs::OpenOptions::new()
         .append(true)
@@ -854,7 +750,7 @@ fn a_notice_naming_a_path_with_a_newline_stays_one_line() {
     file.write_all(&[7; 16]).expect("junk");
     drop(file);
 
-    let run = remember(vars, &[text(&notes)]);
+    let run = run(vars, &[text(&notes)], b"", None);
     assert_eq!(run.code, 0, "{:?}", run.stderr);
     assert_eq!(run.notices.len(), 1, "{:?}", run.notices);
     assert!(
@@ -872,7 +768,7 @@ fn a_config_path_with_a_dotted_component_exits_2_and_creates_nothing() {
     let mut vars = sandbox.vars();
     vars.insert("BILBO_HOME".to_owned(), dotted.clone().into());
     let notes = sandbox.notes();
-    let run = remember(vars, &[text(&notes)]);
+    let run = run(vars, &[text(&notes)], b"", None);
     assert_eq!(run.code, 2);
     assert_eq!(run.stdout, "");
     assert_eq!(

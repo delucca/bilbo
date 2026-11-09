@@ -2,5 +2,7 @@ paths.root        = "/home/u/.local/share/bilbo"  [2m(default)[22m
 paths.state       = "/home/u/.local/state/bilbo"  [2m(default)[22m
 paths.cache       = "/home/u/.cache/bilbo"  [2m(default)[22m
 store.seal_at     = "8 MiB"  [2m(default)[22m
+store.seal_after  = "60m"  [2m(default)[22m
 store.compression = 19  [2m(default)[22m
 store.tear_budget = 4  [2m(default)[22m
+follow            = [{ path = "/home/u/.claude/projects", kind = "session" }, { path = "/home/u/.codex/sessions", kind = "session" }]  [2m(default)[22m

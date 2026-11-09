@@ -1,12 +1,12 @@
 use std::fs;
 use std::process::{Command, Stdio};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 use super::scratch::Scratch;
 use super::{Run, binary};
 
-const KEYS: &str = "paths.root, paths.state, paths.cache, store.seal_at, store.compression, \
-                    store.tear_budget";
+const KEYS: &str = "paths.root, paths.state, paths.cache, store.seal_at, store.seal_after, \
+                    store.compression, store.tear_budget, follow";
 
 #[test]
 fn each_key_shows_the_source_that_won_a_variable_over_the_file_over_the_default() {
@@ -24,8 +24,11 @@ fn each_key_shows_the_source_that_won_a_variable_over_the_file_over_the_default(
              paths.state = \"{home}/state\" ({config}:2)\n\
              paths.cache = \"{cache}/bilbo\" (default)\n\
              store.seal_at = \"16 MiB\" ({config}:5)\n\
+             store.seal_after = \"60m\" (default)\n\
              store.compression = 3 (BILBO_STORE_COMPRESSION)\n\
-             store.tear_budget = 4 (default)\n",
+             store.tear_budget = 4 (default)\n\
+             follow = [{{ path = \"{home}/.claude/projects\", kind = \"session\" }}, \
+             {{ path = \"{home}/.codex/sessions\", kind = \"session\" }}] (default)\n",
             root = scratch.path("store"),
             home = scratch.path("home"),
             cache = scratch.path("cache"),
@@ -129,6 +132,9 @@ fn paths_in_the_file_move_the_store_and_the_cache_when_bilbo_home_is_unset() {
     let kept = scratch.run_without_home(&["remember", &scratch.path("notes")]);
     assert_eq!(kept.code, 0, "{}", kept.stderr);
     assert!(scratch.dir.join("file-cache/catalog.sqlite").exists());
+    scratch.backdate(61);
+    let sealing = scratch.run_without_home(&["remember", &scratch.path("notes")]);
+    assert_eq!(sealing.code, 0, "{}", sealing.stderr);
     let sealed = fs::read_dir(scratch.dir.join("file-store"))
         .expect("the store the file names")
         .filter(|entry| {
@@ -201,7 +207,7 @@ fn help_and_the_version_need_no_valid_config_file() {
 fn remember_works_with_every_folder_and_store_key_set_in_the_file() {
     let scratch = Scratch::new("keys_in_file");
     scratch.config(&format!(
-        "[paths]\nstate = \"{}\"\n\n[store]\nseal_at = \"1 MiB\"\ncompression = 3\ntear_budget = 2\n",
+        "[paths]\nstate = \"{}\"\n\n[store]\nseal_at = \"1 MiB\"\nseal_after = \"2m\"\ncompression = 3\ntear_budget = 2\n",
         scratch.path("elsewhere")
     ));
     scratch.write("a.md", "a\nb\n");
@@ -213,7 +219,19 @@ fn remember_works_with_every_folder_and_store_key_set_in_the_file() {
     );
     assert!(scratch.dir.join("elsewhere/open.seg").exists());
     assert!(!scratch.dir.join("state").exists());
-    assert_eq!(scratch.segments(), 1);
+    assert_eq!(scratch.segments(), 0);
+    let at = SystemTime::now() - Duration::from_secs(3 * 60);
+    let millis = at
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .expect("after 1970")
+        .as_millis();
+    fs::write(
+        scratch.dir.join("elsewhere/open.since"),
+        format!("{millis}\n"),
+    )
+    .expect("backdate");
+    assert_eq!(scratch.run(&["remember", &scratch.path("notes")]).code, 0);
+    assert_eq!(scratch.segments(), 1, "3 minutes is past the file's 2m");
 }
 
 fn stored_bytes(stdout: &str) -> u64 {
@@ -291,12 +309,30 @@ fn remember_noisy_notes(test: &str, config: &str) -> Scratch {
 #[test]
 fn seal_at_from_the_file_decides_when_the_store_seals_a_segment() {
     let small = remember_noisy_notes("seal_1_mib", "[store]\nseal_at = \"1 MiB\"\n");
-    assert_eq!(small.segments(), 2);
+    assert_eq!(
+        small.segments(),
+        1,
+        "1 MiB seals during the run; the young rest stays open"
+    );
     let default = remember_noisy_notes("seal_default", "");
-    assert_eq!(default.segments(), 1);
+    assert_eq!(default.segments(), 0);
     for scratch in [&small, &default] {
         let open = fs::metadata(scratch.dir.join("state/bilbo/open.seg")).expect("open.seg");
-        assert_eq!(open.len(), 12);
+        assert!(open.len() > 12);
+    }
+}
+
+#[test]
+fn seal_after_from_the_file_decides_when_an_old_open_seg_is_sealed() {
+    for (config, sealed) in [("[store]\nseal_after = \"5m\"\n", 1), ("", 0)] {
+        let scratch = Scratch::new("seal_after");
+        scratch.config(config);
+        scratch.write("a.md", "a\n");
+        assert_eq!(scratch.run(&["remember", &scratch.path("notes")]).code, 0);
+        assert_eq!(scratch.segments(), 0, "{config:?}");
+        scratch.backdate(10);
+        assert_eq!(scratch.run(&["remember", &scratch.path("notes")]).code, 0);
+        assert_eq!(scratch.segments(), sealed, "10 minutes against {config:?}");
     }
 }
 

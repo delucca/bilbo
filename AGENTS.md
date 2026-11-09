@@ -6,6 +6,9 @@
 - `nix develop -c bazel test //...` runs every layer except tests that need the screen (`desktop`) and release.
 - `--config=<layer>` runs one layer (`unit`, `contract`, `acceptance`, `integration`, `snapshot`, `e2e`, `release`); `--config=desktop` runs only screen tests; `--config=all` runs everything. Desktop tests take focus and keyboard input. A layer config also runs that layer's desktop tests: add `--test_tag_filters=<layer>,-desktop` to stay headless.
 - Every run of the built binary, by hand or in a test, sets `BILBO_HOME`, `XDG_STATE_HOME` and `XDG_CACHE_HOME` to scratch folders and `BILBO_CONFIG` to a scratch `config.toml` that exists, empty or not: `BILBO_HOME` moves only the store, and a missing file that `BILBO_CONFIG` names is a config error.
+- Every `remember` test also needs `HOME` set to a scratch folder, or a config that declares fixture follows: a bare run and a target run that finds the again flag run the follows, a hook consults them to pick the transcript's kind and never runs them, and the default follows are the real `~/.claude/projects` and `~/.codex/sessions`.
+- Session fixtures in `libs/rust/kinds/session/fixtures/` are synthetic, written in the harness's exact field names and nesting; never copy a line of a real session into the repo.
+- A test that holds `store.lock` to stand for another writer also holds `store.writer` in the state folder; with `store.lock` alone it stands for a reader, and a bare run or a hook waits for it instead of setting the again flag.
 
 ## Rust
 

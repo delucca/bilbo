@@ -10,6 +10,8 @@ description = "Where bilbo keeps its files: the store."
 bilbo-settings.workspace = true
 rusqlite.workspace = true
 rustix = { workspace = true, features = ["process"] }
+serde.workspace = true
+serde_json.workspace = true
 xxhash-rust.workspace = true
 zstd.workspace = true
 

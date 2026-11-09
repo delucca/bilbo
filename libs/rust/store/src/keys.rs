@@ -1,10 +1,13 @@
+use std::time::Duration;
+
+use bilbo_settings::duration::{self, DAY, MINUTE};
 use bilbo_settings::error::Error;
 use bilbo_settings::file::File;
 use bilbo_settings::key::{About, Default, Key, Resolved, Shown, Source};
 use bilbo_settings::size::{self, GIB, MIB};
 
 use crate::limits::{Compression, TearBudget};
-use crate::segments::Options;
+use crate::segments::{Held, Options, Rebuild, Sealing};
 
 pub const SEAL_SIZE: Key<u64> = Key {
     about: About {
@@ -20,6 +23,22 @@ pub const SEAL_SIZE: Key<u64> = Key {
             .ok_or_else(|| value.refuse())
     },
     show: |bytes| size::show(*bytes),
+};
+
+pub const SEAL_AFTER: Key<Duration> = Key {
+    about: About {
+        name: "store.seal_after",
+        variable: Some("BILBO_STORE_SEAL_AFTER"),
+        default: Default::Toml(r#""60m""#),
+        allowed: "between 1m and 24h",
+        doc: "The age of open.seg's oldest frame at which a run seals it, whatever its size.",
+    },
+    parse: |value| {
+        duration::read(value)
+            .filter(|after| (MINUTE..=DAY).contains(after))
+            .ok_or_else(|| value.refuse())
+    },
+    show: |after| duration::show(*after),
 };
 
 pub const COMPRESSION: Key<Compression> = Key {
@@ -57,12 +76,18 @@ pub const TEAR_BUDGET: Key<TearBudget> = Key {
     show: |times| times.times().to_string(),
 };
 
-pub const ABOUT: [&About; 3] = [&SEAL_SIZE.about, &COMPRESSION.about, &TEAR_BUDGET.about];
+pub const ABOUT: [&About; 4] = [
+    &SEAL_SIZE.about,
+    &SEAL_AFTER.about,
+    &COMPRESSION.about,
+    &TEAR_BUDGET.about,
+];
 
 /// The store's keys as the settings resolved them.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Section {
     pub seal_at: Resolved<u64>,
+    pub seal_after: Resolved<Duration>,
     pub compression: Resolved<Compression>,
     pub tear_budget: Resolved<TearBudget>,
 }
@@ -70,6 +95,7 @@ pub struct Section {
 pub fn section(source: &Source<'_>) -> Result<Section, Error> {
     Ok(Section {
         seal_at: SEAL_SIZE.resolve(source)?,
+        seal_after: SEAL_AFTER.resolve(source)?,
         compression: COMPRESSION.resolve(source)?,
         tear_budget: TEAR_BUDGET.resolve(source)?,
     })
@@ -95,15 +121,20 @@ impl Section {
     pub fn options(&self) -> Options {
         Options {
             seal_at: self.seal_at.value,
+            seal_after: self.seal_after.value,
             compression: self.compression.value,
             tear_budget: self.tear_budget.value,
             hook: None,
+            held: Held::Wait,
+            sealing: Sealing::WhenDue,
+            rebuild: Rebuild::Allowed,
         }
     }
 
-    pub fn shown(&self) -> [Shown; 3] {
+    pub fn shown(&self) -> [Shown; 4] {
         [
             SEAL_SIZE.shown(&self.seal_at),
+            SEAL_AFTER.shown(&self.seal_after),
             COMPRESSION.shown(&self.compression),
             TEAR_BUDGET.shown(&self.tear_budget),
         ]
@@ -114,6 +145,7 @@ impl Section {
 mod tests {
     use std::ffi::OsString;
     use std::path::Path;
+    use std::time::Duration;
 
     use bilbo_settings::file::File;
     use bilbo_settings::key::{Origin, Resolved, Source};
@@ -137,15 +169,16 @@ mod tests {
     }
 
     #[test]
-    fn the_defaults_are_8_mib_level_19_and_four_times_the_file() {
+    fn the_defaults_are_8_mib_60_minutes_level_19_and_four_times_the_file() {
         let options = defaults().options();
         assert_eq!(
             (
                 options.seal_at,
+                options.seal_after,
                 options.compression.level(),
                 options.tear_budget.times()
             ),
-            (8 * MIB, 19, 4)
+            (8 * MIB, Duration::from_secs(3600), 19, 4)
         );
         let shown: Vec<String> = defaults()
             .shown()
@@ -156,6 +189,7 @@ mod tests {
             shown,
             [
                 "store.seal_at = \"8 MiB\" (default)",
+                "store.seal_after = \"60m\" (default)",
                 "store.compression = 19 (default)",
                 "store.tear_budget = 4 (default)"
             ]
@@ -164,9 +198,13 @@ mod tests {
 
     #[test]
     fn each_key_takes_its_variable_over_the_file() {
-        let text = "[store]\nseal_at = \"16 MiB\"\ncompression = 3\ntear_budget = 8\n";
+        let text = "[store]\nseal_at = \"16 MiB\"\ncompression = 3\ntear_budget = 8\nseal_after = \"2h\"\n";
         let from_file = resolve(&[], text).expect("valid");
         assert_eq!(from_file.options().seal_at, 16 * MIB);
+        assert_eq!(
+            from_file.options().seal_after,
+            Duration::from_secs(2 * 3600)
+        );
         assert_eq!(from_file.compression.value.level(), 3);
         assert_eq!(
             from_file.tear_budget.origin,
@@ -179,8 +217,10 @@ mod tests {
             ("BILBO_STORE_SEAL_AT", "1GiB"),
             ("BILBO_STORE_COMPRESSION", "22"),
             ("BILBO_STORE_TEAR_BUDGET", "64"),
+            ("BILBO_STORE_SEAL_AFTER", "90s"),
         ];
         let options = resolve(&env, text).expect("valid").options();
+        assert_eq!(options.seal_after, Duration::from_secs(90));
         assert_eq!(
             (
                 options.seal_at,
@@ -201,6 +241,18 @@ mod tests {
             (
                 "store.seal_at = \"1025 MiB\"",
                 "/c/config.toml:1: store.seal_at must be between 1 MiB and 1 GiB, got \"1025 MiB\"",
+            ),
+            (
+                "store.seal_after = \"59s\"",
+                "/c/config.toml:1: store.seal_after must be between 1m and 24h, got \"59s\"",
+            ),
+            (
+                "store.seal_after = \"25h\"",
+                "/c/config.toml:1: store.seal_after must be between 1m and 24h, got \"25h\"",
+            ),
+            (
+                "store.seal_after = 60",
+                "/c/config.toml:1: store.seal_after must be between 1m and 24h, got 60",
             ),
             (
                 "store.compression = 0",
@@ -236,6 +288,10 @@ mod tests {
                 value: 3 * MIB,
                 origin: Origin::Default,
             },
+            seal_after: Resolved {
+                value: Duration::from_secs(120),
+                origin: Origin::Default,
+            },
             compression: Resolved {
                 value: Compression::try_from(7).expect("in range"),
                 origin: Origin::Default,
@@ -254,11 +310,12 @@ mod tests {
             ),
             (3 * MIB, 7, 9)
         );
+        assert_eq!(options.seal_after, Duration::from_secs(120));
         assert!(options.hook.is_none());
     }
 
     #[test]
-    fn the_store_declares_three_keys_each_with_its_own_variable() {
+    fn the_store_declares_four_keys_each_with_its_own_variable() {
         let names: Vec<(&str, Option<&str>)> = ABOUT
             .iter()
             .map(|about| (about.name, about.variable))
@@ -267,6 +324,7 @@ mod tests {
             names,
             [
                 ("store.seal_at", Some("BILBO_STORE_SEAL_AT")),
+                ("store.seal_after", Some("BILBO_STORE_SEAL_AFTER")),
                 ("store.compression", Some("BILBO_STORE_COMPRESSION")),
                 ("store.tear_budget", Some("BILBO_STORE_TEAR_BUDGET")),
             ]

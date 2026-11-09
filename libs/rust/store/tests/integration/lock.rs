@@ -5,7 +5,7 @@ use std::time::Duration;
 use bilbo_store::entries::{Entries, Generation, RecordRange};
 use bilbo_store::segments::{Hook, Notice, Options, Step, Store};
 
-use crate::scratch::{Scratch, id_of, keep, open, read_records};
+use crate::scratch::{Scratch, id_of, keep, open, read_records, sealing};
 
 const WAIT: Duration = Duration::from_secs(10);
 
@@ -30,7 +30,7 @@ fn a_second_writer_waits_for_the_first_and_says_so() {
             &first_layout,
             Options {
                 hook: Some(hook),
-                ..Options::default()
+                ..sealing()
             },
             &mut |_| {},
         )
@@ -46,7 +46,7 @@ fn a_second_writer_waits_for_the_first_and_says_so() {
     let (opened_tx, opened_rx) = channel::<bool>();
     let second_layout = layout.clone();
     let second = thread::spawn(move || {
-        let store = Store::open(&second_layout, Options::default(), &mut |notice| {
+        let store = Store::open(&second_layout, sealing(), &mut |notice| {
             waiting_tx.send(notice).ok();
         })
         .expect("second open");
@@ -89,7 +89,7 @@ fn a_reader_waits_for_a_writer_and_sees_its_seal_whole() {
             &writer_layout,
             Options {
                 hook: Some(hook),
-                ..Options::default()
+                ..sealing()
             },
             &mut |_| {},
         )
@@ -106,7 +106,7 @@ fn a_reader_waits_for_a_writer_and_sees_its_seal_whole() {
     let (read_tx, read_rx) = channel::<Vec<Vec<u8>>>();
     let reader_layout = layout.clone();
     let reader = thread::spawn(move || {
-        let store = Store::open_read_only(&reader_layout, Options::default(), &mut |notice| {
+        let store = Store::open_read_only(&reader_layout, sealing(), &mut |notice| {
             waiting_tx.send(notice).ok();
         })
         .expect("read-only open");
@@ -152,13 +152,12 @@ fn a_writer_waits_for_a_reader_and_the_readers_reads_stay_valid() {
     let b = id_of(&keep(&mut store, "b.md", b"three\n"));
     drop(store);
 
-    let reader =
-        Store::open_read_only(&layout, Options::default(), &mut |_| {}).expect("read-only open");
+    let reader = Store::open_read_only(&layout, sealing(), &mut |_| {}).expect("read-only open");
     let (waiting_tx, waiting_rx) = channel::<Notice>();
     let (opened_tx, opened_rx) = channel::<()>();
     let writer_layout = layout.clone();
     let writer = thread::spawn(move || {
-        let store = Store::open(&writer_layout, Options::default(), &mut |notice| {
+        let store = Store::open(&writer_layout, sealing(), &mut |notice| {
             waiting_tx.send(notice).ok();
         })
         .expect("writer open");
@@ -175,8 +174,7 @@ fn a_writer_waits_for_a_reader_and_the_readers_reads_stay_valid() {
         .expect("the writer opens once the reader is gone");
     writer.join().expect("writer thread");
 
-    let again =
-        Store::open_read_only(&layout, Options::default(), &mut |_| {}).expect("read-only open");
+    let again = Store::open_read_only(&layout, sealing(), &mut |_| {}).expect("read-only open");
     assert_eq!(read_records(&again, a, 1, 2), b"one\ntwo\n");
     assert_eq!(read_records(&again, b, 1, 1), b"three\n");
 }

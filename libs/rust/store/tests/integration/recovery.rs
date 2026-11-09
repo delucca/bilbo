@@ -3,16 +3,16 @@ use std::io::Write;
 
 use bilbo_store::entries::{Captured, Entries, Generation, RecordRange, StoreError};
 use bilbo_store::limits::TearBudget;
-use bilbo_store::segments::{Notice, Options, Store};
+use bilbo_store::segments::{Notice, Options, Rebuild, Store};
 
 use crate::frames::{frames, spans};
 use crate::scratch::{
-    Scratch, catalog, flip, id_of, keep, open, open_seg, origin, read_records, sealed,
+    Scratch, catalog, flip, id_of, keep, open, open_seg, origin, read_records, sealed, sealing,
 };
 
 fn reopen(layout: &bilbo_store::layout::Layout) -> Result<(Store, Vec<Notice>), StoreError> {
     let mut notices = Vec::new();
-    Store::open(layout, Options::default(), &mut |notice| {
+    Store::open(layout, sealing(), &mut |notice| {
         notices.push(notice);
     })
     .map(|store| (store, notices))
@@ -168,7 +168,7 @@ fn open_with_hook(
         layout,
         Options {
             hook: Some(hook),
-            ..Options::default()
+            ..sealing()
         },
     )
 }
@@ -403,7 +403,7 @@ fn a_stopped_store_refuses_more_writes_and_seals_nothing() {
             kind: "k".into(),
             origin: None,
             captured: std::time::UNIX_EPOCH,
-            labels: Vec::new(),
+            parent: None,
         };
         assert!(matches!(
             store.set_meta(meta.id, &meta),
@@ -640,7 +640,7 @@ fn crafted_tear() -> Vec<u8> {
 fn budget(times: usize) -> Options {
     Options {
         tear_budget: TearBudget::try_from(times).expect("in range"),
-        ..Options::default()
+        ..sealing()
     }
 }
 
@@ -692,4 +692,102 @@ fn a_writer_applies_the_configured_tear_budget() {
         }]
     );
     assert_eq!(fs::metadata(open_seg(&layout)).expect("open.seg").len(), 12);
+}
+
+#[test]
+fn a_store_that_may_not_rebuild_refuses_a_missing_or_stale_catalog_and_keeps_nothing() {
+    let scratch = Scratch::new("unrebuilt");
+    let layout = scratch.layout();
+    let no_rebuild = || Options {
+        rebuild: Rebuild::CatchUpOnly,
+        ..sealing()
+    };
+    let mut store = open(&layout);
+    keep(&mut store, "a.md", b"one\n");
+    store.close().expect("close");
+    let old = fs::read(catalog(&layout)).expect("the catalog of one segment");
+
+    fs::remove_file(catalog(&layout)).expect("remove the catalog");
+    assert!(matches!(
+        Store::open(&layout, no_rebuild(), &mut |_| {}),
+        Err(StoreError::Unrebuilt)
+    ));
+    assert!(!catalog(&layout).exists(), "nothing rebuilt");
+
+    let mut store = open(&layout);
+    keep(&mut store, "b.md", b"two\n");
+    store.close().expect("close");
+    assert_eq!(sealed(&layout).len(), 2);
+    let open_seg_before = fs::read(open_seg(&layout)).expect("open.seg");
+    fs::write(catalog(&layout), &old).expect("a catalog that lists one segment of two");
+    assert!(matches!(
+        Store::open(&layout, no_rebuild(), &mut |_| {}),
+        Err(StoreError::Unrebuilt)
+    ));
+    assert_eq!(fs::read(catalog(&layout)).expect("catalog"), old);
+    assert_eq!(
+        fs::read(open_seg(&layout)).expect("open.seg"),
+        open_seg_before
+    );
+
+    let store = open(&layout);
+    assert!(
+        store.by_origin(&origin("b.md")).expect("head").is_some(),
+        "a run that may rebuilds"
+    );
+    store.close().expect("close");
+}
+
+#[test]
+fn a_catch_up_after_an_interrupted_capture_drops_the_stale_stamp() {
+    use bilbo_store::entries::{Capture, Stamp};
+    let scratch = Scratch::new("catch_up_stamp");
+    let layout = scratch.layout();
+    let settled = Stamp {
+        size: 2,
+        modified: std::time::UNIX_EPOCH
+            + std::time::Duration::from_nanos(1_700_000_000_000_000_000),
+    };
+    let origin = origin("a.md");
+    let capture = |store: &mut Store, bytes: &[u8], stamp: Option<Stamp>| {
+        store.capture(&Capture {
+            origin: &origin,
+            kind: "markdown",
+            id: None,
+            parent: None,
+            stamp,
+            bytes,
+            ends: &crate::scratch::ends(bytes),
+        })
+    };
+
+    let mut store = open(&layout);
+    capture(&mut store, b"a\n", Some(settled)).expect("capture");
+    assert_eq!(
+        store
+            .by_origin(&origin)
+            .expect("head")
+            .expect("entry")
+            .stamp,
+        Some(settled)
+    );
+    drop(store);
+
+    let mut store = open_with_hook(&layout, stopping_at(bilbo_store::segments::Step::Appended));
+    assert!(capture(&mut store, b"b\n", None).is_err());
+    drop(store);
+
+    let (mut store, _) = reopen(&layout).expect("open");
+    let head = store.by_origin(&origin).expect("head").expect("entry");
+    assert_eq!(head.generation.0, 2, "the catch-up recovered the capture");
+    assert_eq!(head.stamp, None, "the stale stamp must not survive");
+
+    let restored = capture(&mut store, b"a\n", Some(settled)).expect("capture");
+    assert!(
+        matches!(restored, Captured::NewGeneration(_)),
+        "{restored:?}"
+    );
+    let head = store.by_origin(&origin).expect("head").expect("entry");
+    assert_eq!(head.generation.0, 3);
+    assert_eq!(head.stamp, Some(settled));
 }

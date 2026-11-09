@@ -1,0 +1,2 @@
+{"role":"user","message":{"content":[{"type":"text","text":"Rename the trellis module."}]}}
+{"role":"assistant","message":{"content":[{"type":"text","text":"Renamed it to support."}]}}

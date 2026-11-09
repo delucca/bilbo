@@ -7,12 +7,29 @@ const ID: u8 = 1;
 const KIND: u8 = 2;
 const ORIGIN: u8 = 3;
 const CAPTURED: u8 = 4;
-const LABEL: u8 = 5;
+const PARENT: u8 = 5;
 
 pub fn millis(time: SystemTime) -> i64 {
     match time.duration_since(UNIX_EPOCH) {
         Ok(after) => i64::try_from(after.as_millis()).unwrap_or(i64::MAX),
         Err(before) => i64::try_from(before.duration().as_millis()).map_or(i64::MIN, |ms| -ms),
+    }
+}
+
+/// Nanoseconds from the epoch, saturated past 2262: a stamp only needs to compare equal.
+pub fn nanos(time: SystemTime) -> i64 {
+    match time.duration_since(UNIX_EPOCH) {
+        Ok(after) => i64::try_from(after.as_nanos()).unwrap_or(i64::MAX),
+        Err(before) => i64::try_from(before.duration().as_nanos()).map_or(i64::MIN, |ns| -ns),
+    }
+}
+
+pub fn time_of_nanos(nanos: i64) -> SystemTime {
+    let magnitude = Duration::from_nanos(nanos.unsigned_abs());
+    if nanos >= 0 {
+        UNIX_EPOCH + magnitude
+    } else {
+        UNIX_EPOCH - magnitude
     }
 }
 
@@ -41,8 +58,8 @@ pub fn encode(meta: &Meta) -> Option<Vec<u8>> {
         field(&mut out, ORIGIN, origin.as_str().as_bytes())?;
     }
     field(&mut out, CAPTURED, &millis(meta.captured).to_le_bytes())?;
-    for label in &meta.labels {
-        field(&mut out, LABEL, label.as_bytes())?;
+    if let Some(parent) = meta.parent {
+        field(&mut out, PARENT, &parent.to_bytes())?;
     }
     Some(out)
 }
@@ -95,19 +112,23 @@ pub fn decode(entry: Id, bytes: &[u8]) -> Result<Meta, String> {
         }
         _ => return Err("the meta has no captured time in its place".into()),
     };
-    let mut labels = Vec::new();
-    for (tag, value) in found {
-        if tag != LABEL {
-            return Err(format!("unexpected meta field {tag}"));
+    let parent = match found.next() {
+        Some((PARENT, value)) => {
+            let raw: [u8; 16] = value.try_into().map_err(|_| "the parent is not 16 bytes")?;
+            Some(Id::from_bytes(raw))
         }
-        labels.push(text(value)?);
+        Some((tag, _)) => return Err(format!("unexpected meta field {tag}")),
+        None => None,
+    };
+    if let Some((tag, _)) = found.next() {
+        return Err(format!("unexpected meta field {tag}"));
     }
     Ok(Meta {
         id,
         kind,
         origin,
         captured,
-        labels,
+        parent,
     })
 }
 
@@ -121,31 +142,35 @@ mod tests {
         Id::parse("01JC5Q3V7XKM4P8R2T6W9YB0DE").expect("id")
     }
 
-    fn meta(origin: Option<Origin>, labels: &[&str]) -> Meta {
+    fn parent() -> Id {
+        Id::parse("01JC5Q3V7XKM4P8R2T6W9YB0DF").expect("id")
+    }
+
+    fn meta(origin: Option<Origin>, parent: Option<Id>) -> Meta {
         Meta {
             id: id(),
             kind: "markdown".into(),
             origin,
             captured: time_of(1_762_560_000_123),
-            labels: labels.iter().map(ToString::to_string).collect(),
+            parent,
         }
     }
 
     #[test]
-    fn a_meta_round_trips_with_and_without_an_origin_and_labels() {
+    fn a_meta_round_trips_with_and_without_an_origin_and_a_parent() {
         let origin = Origin::file(Path::new("/notes/a.md"));
         for meta in [
-            meta(origin.clone(), &["p", "q"]),
-            meta(origin, &[]),
-            meta(None, &["only"]),
-            meta(None, &[]),
+            meta(origin.clone(), Some(parent())),
+            meta(origin, None),
+            meta(None, Some(parent())),
+            meta(None, None),
         ] {
             let bytes = encode(&meta).expect("encode");
             assert_eq!(decode(id(), &bytes), Ok(meta));
         }
         let before_epoch = Meta {
             captured: time_of(-5),
-            ..meta(None, &[])
+            ..meta(None, None)
         };
         let bytes = encode(&before_epoch).expect("encode");
         assert_eq!(decode(id(), &bytes), Ok(before_epoch));
@@ -153,7 +178,8 @@ mod tests {
 
     #[test]
     fn a_meta_with_an_unknown_field_or_a_missing_one_is_damaged() {
-        let good = encode(&meta(Origin::file(Path::new("/n/a.md")), &["p"])).expect("encode");
+        let good =
+            encode(&meta(Origin::file(Path::new("/n/a.md")), Some(parent()))).expect("encode");
         let mut unknown = good.clone();
         unknown.extend_from_slice(&[9, 0, 0, 0, 0]);
         let mut out_of_order = Vec::new();
@@ -189,7 +215,13 @@ mod tests {
         let cut = good[..good.len() - 1].to_vec();
         let mut trailing = good.clone();
         trailing.push(1);
+        let mut two_parents = good.clone();
+        field(&mut two_parents, PARENT, &parent().to_bytes());
+        let mut short_parent = encode(&meta(None, None)).expect("encode");
+        field(&mut short_parent, PARENT, &[1, 2, 3]);
         for (name, bytes) in [
+            ("two parents", two_parents),
+            ("short parent", short_parent),
             ("unknown tag", unknown),
             ("out of order", out_of_order),
             ("no kind", no_kind),

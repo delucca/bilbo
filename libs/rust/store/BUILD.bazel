@@ -16,7 +16,9 @@ rust_library(
     lint_config = ":lints",
     visibility = [
         "//apps/cli:__pkg__",
-        "//libs/rust/kinds:__subpackages__",
+        "//libs/rust/kinds:__pkg__",
+        "//libs/rust/kinds/markdown:__pkg__",
+        "//libs/rust/kinds/session:__pkg__",
     ],
     deps = ["//libs/rust/settings"] + all_crate_deps(normal = True),
 )

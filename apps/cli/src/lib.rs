@@ -69,10 +69,10 @@ pub fn run_command(
             let Some(verb) = typed::<Cli>(root, &matches)?.verb else {
                 return Err(usage(root, with_verbs(root, "missing verb"), None));
             };
-            let settings = settings?;
             match verb {
-                Verb::Remember(args) => remember::run(root, args, env, &settings),
-                Verb::Config(args) => config::run(root, args, &settings),
+                Verb::Remember(args) if args.hook => Ok(remember::hook::run(env, settings)),
+                Verb::Remember(args) => remember::run(root, args, env, &settings?),
+                Verb::Config(args) => config::run(root, args, &settings?),
             }
         }
     }
