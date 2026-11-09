@@ -1,14 +1,18 @@
 bilbo remember: keep files as entries, and what grew or changed in them since.
 
 Usage:
-  bilbo remember <file|folder> [--kind <kind>] [--project <project>]
+  bilbo remember <file|folder> [--kind <kind>] [--follow]
+  bilbo remember
+  bilbo remember --hook
 
 Options:
-      --kind <kind>        Run this kind, not the one that claims the files
-      --project <project>  Label each new entry with this project
+      --kind <kind>  Run this kind, not the one that claims the files
+      --follow       Save the target in the config file, so a bare run keeps it
+      --hook         Keep the transcript a harness hook names on stdin
 
 Kinds:
   markdown  .md files, one record per line
+  session   Claude Code and Codex sessions, one record per JSONL line
 Without --kind, the one kind that claims files under the target runs; when
 several do, name one with --kind.
 
@@ -18,8 +22,16 @@ and its origin is the resolved path. A kind tests the resolved file, so a
 note.md link to a file without .md keeps nothing. A file remembered before
 is found by its path: a run keeps only the records it gained, or starts a
 new generation when an earlier record changed, and the older generation
-stays. --project labels new entries only. A file that left the folder keeps
-its entry.
+stays. A file whose size and modification time did not change is not read.
+A file that left the folder keeps its entry.
+
+--follow saves the target and its kind as a [[follow]] in the config file.
+With no target, remember runs every follow: ~/.claude/projects and
+~/.codex/sessions as session until the config file declares one. --hook
+reads a Claude Code or Codex hook's JSON on stdin and keeps the new lines of
+its transcript_path; it never seals open.seg and prints nothing on stdout.
+When another bilbo is writing the store, a run with no target or with --hook
+asks for one more run of the follows and stops at once; a target waits.
 
 Output:
   new <n>, appended <n>, new generation <n>, unchanged <n>, refused <n>
@@ -28,10 +40,13 @@ Raw bytes are the input bytes kept; stored bytes are what the store grew by.
 Each refused file is named on stderr with its reason.
 
 Exit: 0 success; 1 a file was refused, nothing to keep, a missing target or a
-store failure; 2 usage or config error.
+store failure; 2 usage or config error, or a config file --follow cannot
+write. --hook exits 0 once it runs; wrong arguments to it are a usage
+error (2).
 
 Examples:
-  bilbo remember ~/.local/share/bilbo/notes
-  bilbo remember notes/decision-x.md --project bilbo
+  bilbo remember ~/.claude/projects --kind session
+  bilbo remember ~/notes --follow
+  bilbo remember
 
 Docs: reference/commands.md#remember

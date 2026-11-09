@@ -112,6 +112,7 @@ mod tests {
                 end: prefix.len() as u64,
                 hash: xxh3::xxh3_128(prefix),
             },
+            stamp: None,
         }
     }
 

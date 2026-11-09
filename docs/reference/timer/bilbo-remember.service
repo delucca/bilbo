@@ -1,0 +1,8 @@
+[Unit]
+Description=Remember what the bilbo follows gained
+
+[Service]
+Type=oneshot
+ExecStart="@BILBO@" remember
+StandardOutput=append:@LOG@
+StandardError=append:@LOG@

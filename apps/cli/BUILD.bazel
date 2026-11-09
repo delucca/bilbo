@@ -23,6 +23,7 @@ rust_library(
     deps = [
         "//libs/rust/kinds",
         "//libs/rust/kinds/markdown",
+        "//libs/rust/kinds/session",
         "//libs/rust/settings",
         "//libs/rust/store",
     ] + all_crate_deps(normal = True),
@@ -42,9 +43,18 @@ alias(
     actual = ":bilbo",
 )
 
+filegroup(
+    name = "hook_payloads",
+    srcs = glob(["tests/fixtures/hook/*.json"]),
+    visibility = ["//tests:__subpackages__"],
+)
+
 bilbo_rust_test(
     name = "unit",
-    compile_data = ["//:docs/reference/configuration.md"],
+    compile_data = [
+        ":hook_payloads",
+        "//:docs/reference/configuration.md",
+    ],
     crate = ":bilbo_cli",
     layer = "unit",
     lint_config = ":lints",
@@ -64,7 +74,7 @@ bilbo_rust_test(
 bilbo_rust_test(
     name = "snapshot",
     srcs = ["tests/snapshot.rs"],
-    compile_data = glob(["tests/snapshots/*"]),
+    compile_data = glob(["tests/snapshots/*"]) + ["//libs/rust/kinds/session:fixtures"],
     layer = "snapshot",
     lint_config = ":lints",
     version = BILBO_VERSION,
@@ -77,7 +87,11 @@ bilbo_rust_test(
 
 bilbo_rust_test(
     name = "remember",
-    srcs = ["tests/remember.rs"],
+    srcs = [
+        "tests/remember.rs",
+        "tests/sandbox/mod.rs",
+    ],
+    crate_root = "tests/remember.rs",
     layer = "integration",
     lint_config = ":lints",
     deps = [
@@ -85,6 +99,39 @@ bilbo_rust_test(
         "//libs/rust/kinds",
         "//libs/rust/store",
     ],
+)
+
+bilbo_rust_test(
+    name = "sessions",
+    srcs = [
+        "tests/sandbox/mod.rs",
+        "tests/sessions.rs",
+    ],
+    crate_root = "tests/sessions.rs",
+    compile_data = [
+        ":hook_payloads",
+        "//libs/rust/kinds/session:fixtures",
+    ],
+    layer = "integration",
+    lint_config = ":lints",
+    deps = [
+        ":bilbo_cli",
+        "//libs/rust/kinds",
+        "//libs/rust/store",
+    ],
+)
+
+bilbo_rust_test(
+    name = "timer",
+    srcs = ["tests/timer.rs"],
+    compile_data = [
+        "//:docs/reference/commands.md",
+        "//:docs/reference/timer/bilbo-remember.service",
+        "//:docs/reference/timer/bilbo-remember.timer",
+        "//:docs/reference/timer/io.github.delucca.bilbo.remember.plist",
+    ],
+    layer = "integration",
+    lint_config = ":lints",
 )
 
 bilbo_rust_test(

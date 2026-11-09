@@ -2,7 +2,9 @@ use std::path::{Path, PathBuf};
 
 use rusqlite::{Connection, OpenFlags, OptionalExtension, Transaction, params};
 
-use crate::entries::{Change, Generation, Head, Mark, Meta, Origin, RecordRange, StoreError};
+use crate::entries::{
+    Change, Generation, Head, Mark, Meta, Origin, RecordRange, Stamp, StoreError,
+};
 use crate::files;
 use crate::frame;
 use crate::id::Id;
@@ -12,10 +14,10 @@ const SCHEMA: &str = "
 CREATE TABLE catalog (key TEXT PRIMARY KEY, value BLOB NOT NULL);
 CREATE TABLE segments (name TEXT PRIMARY KEY, length INTEGER NOT NULL);
 CREATE TABLE entries (
-  id BLOB PRIMARY KEY, kind TEXT NOT NULL, origin TEXT UNIQUE, captured INTEGER NOT NULL
+  id BLOB PRIMARY KEY, kind TEXT NOT NULL, origin TEXT UNIQUE, captured INTEGER NOT NULL, parent BLOB
 ) WITHOUT ROWID;
-CREATE TABLE labels (
-  entry BLOB NOT NULL, position INTEGER NOT NULL, label TEXT NOT NULL, PRIMARY KEY (entry, position)
+CREATE TABLE stamps (
+  entry BLOB PRIMARY KEY, size INTEGER NOT NULL, modified INTEGER NOT NULL
 ) WITHOUT ROWID;
 CREATE TABLE generations (
   entry BLOB NOT NULL, generation INTEGER NOT NULL, records INTEGER NOT NULL,
@@ -29,10 +31,12 @@ CREATE INDEX frames_by_entry ON frames (entry, generation, first);
 CREATE TABLE changes (
   seq INTEGER PRIMARY KEY, entry BLOB NOT NULL, generation INTEGER, first INTEGER, count INTEGER
 );
-PRAGMA user_version = 1;
+PRAGMA user_version = 2;
 ";
 
 pub const OPEN: &str = "open";
+
+type EntryRow = (String, Option<String>, i64, Option<Vec<u8>>);
 
 fn int(value: u64) -> i64 {
     i64::try_from(value).unwrap_or(i64::MAX)
@@ -197,7 +201,7 @@ impl Catalog {
             OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX,
         )?;
         let version: i64 = conn.query_row("PRAGMA user_version", [], |row| row.get(0))?;
-        if version != 1 {
+        if version != 2 {
             return Ok(Fresh::Rebuild);
         }
         let raw: Vec<u8> =
@@ -318,32 +322,31 @@ impl Catalog {
 
     pub fn meta(&self, id: Id) -> Result<Option<Meta>, StoreError> {
         let run = || -> rusqlite::Result<Option<Meta>> {
-            let row: Option<(String, Option<String>, i64)> = self
+            let row: Option<EntryRow> = self
                 .conn
                 .query_row(
-                    "SELECT kind, origin, captured FROM entries WHERE id = ?1",
+                    "SELECT kind, origin, captured, parent FROM entries WHERE id = ?1",
                     params![id.to_bytes().as_slice()],
-                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
                 )
                 .optional()?;
-            let Some((kind, origin, captured)) = row else {
+            let Some((kind, origin, captured, parent)) = row else {
                 return Ok(None);
             };
-            let mut statement = self
-                .conn
-                .prepare("SELECT label FROM labels WHERE entry = ?1 ORDER BY position")?;
-            let labels = statement
-                .query_map(params![id.to_bytes().as_slice()], |row| row.get(0))?
-                .collect::<rusqlite::Result<Vec<String>>>()?;
             Ok(Some(Meta {
                 id,
                 kind,
                 origin: origin.and_then(Origin::new),
                 captured: meta::time_of(captured),
-                labels,
+                parent: parent.map(|raw| id_of(&raw, 3)).transpose()?,
             }))
         };
         run().map_err(|error| self.err(&error))
+    }
+
+    /// The catalog is a cache: nothing else is written.
+    pub fn set_stamp(&mut self, id: Id, stamp: Option<&Stamp>) -> Result<(), StoreError> {
+        stamp_in(&self.conn, id, stamp).map_err(|error| self.err(&error))
     }
 
     pub fn entry_exists(&self, id: Id) -> Result<bool, StoreError> {
@@ -449,6 +452,43 @@ fn sql_error(path: &Path, error: &rusqlite::Error) -> StoreError {
     }
 }
 
+fn stamp_in(conn: &Connection, id: Id, stamp: Option<&Stamp>) -> rusqlite::Result<()> {
+    let Some(stamp) = stamp else {
+        return conn
+            .execute(
+                "DELETE FROM stamps WHERE entry = ?1",
+                params![id.to_bytes().as_slice()],
+            )
+            .map(|_| ());
+    };
+    conn.execute(
+        "INSERT OR REPLACE INTO stamps (entry, size, modified) VALUES (?1, ?2, ?3)",
+        params![
+            id.to_bytes().as_slice(),
+            int(stamp.size),
+            meta::nanos(stamp.modified)
+        ],
+    )
+    .map(|_| ())
+}
+
+fn stamp_of(conn: &Connection, id: Id) -> rusqlite::Result<Option<Stamp>> {
+    let row: Option<(i64, i64)> = conn
+        .query_row(
+            "SELECT size, modified FROM stamps WHERE entry = ?1",
+            params![id.to_bytes().as_slice()],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()?;
+    row.map(|(size, modified)| {
+        Ok(Stamp {
+            size: uint(size, 0)?,
+            modified: meta::time_of_nanos(modified),
+        })
+    })
+    .transpose()
+}
+
 fn head_in(conn: &Connection, id: Id) -> rusqlite::Result<Head> {
     let row: Option<(i64, i64, i64, Vec<u8>)> = conn
         .query_row(
@@ -467,6 +507,7 @@ fn head_in(conn: &Connection, id: Id) -> rusqlite::Result<Head> {
                 end: uint(end, 2)?,
                 hash: u128::from_le_bytes(blob::<16>(&hash, 3)?),
             },
+            stamp: stamp_of(conn, id)?,
         },
         None => Head {
             id,
@@ -476,6 +517,7 @@ fn head_in(conn: &Connection, id: Id) -> rusqlite::Result<Head> {
                 end: 0,
                 hash: xxhash_rust::xxh3::xxh3_128(b""),
             },
+            stamp: None,
         },
     })
 }
@@ -503,6 +545,10 @@ impl Batch<'_> {
 
     pub fn body(&mut self, header: &frame::Header, place: &Place<'_>) -> Result<(), StoreError> {
         body_in(&self.tx, header, place).map_err(|fault| self.settle(place, fault))
+    }
+
+    pub fn stamp(&mut self, id: Id, stamp: Option<&Stamp>) -> Result<(), StoreError> {
+        stamp_in(&self.tx, id, stamp).map_err(|error| sql_error(self.catalog, &error))
     }
 
     pub fn set_segment(&mut self, name: &str, length: u64) -> Result<(), StoreError> {
@@ -551,24 +597,15 @@ fn meta_in(conn: &Connection, meta: &Meta) -> Result<(), ApplyFault> {
         }
     }
     conn.execute(
-        "INSERT OR REPLACE INTO entries (id, kind, origin, captured) VALUES (?1, ?2, ?3, ?4)",
+        "INSERT OR REPLACE INTO entries (id, kind, origin, captured, parent) VALUES (?1, ?2, ?3, ?4, ?5)",
         params![
             id.as_slice(),
             meta.kind,
             meta.origin.as_ref().map(Origin::as_str),
-            meta::millis(meta.captured)
+            meta::millis(meta.captured),
+            meta.parent.map(Id::to_bytes).as_ref().map(<[u8; 16]>::as_slice)
         ],
     )?;
-    conn.execute(
-        "DELETE FROM labels WHERE entry = ?1",
-        params![id.as_slice()],
-    )?;
-    for (position, label) in meta.labels.iter().enumerate() {
-        conn.execute(
-            "INSERT INTO labels (entry, position, label) VALUES (?1, ?2, ?3)",
-            params![id.as_slice(), int(position as u64), label],
-        )?;
-    }
     conn.execute(
         "INSERT INTO changes (entry) VALUES (?1)",
         params![id.as_slice()],
@@ -647,6 +684,10 @@ fn body_in(conn: &Connection, header: &frame::Header, place: &Place<'_>) -> Resu
             int(header.first),
             int(header.count)
         ],
+    )?;
+    conn.execute(
+        "DELETE FROM stamps WHERE entry = ?1",
+        params![id.as_slice()],
     )?;
     Ok(())
 }

@@ -4,13 +4,13 @@ use std::io::{self, Write};
 use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::os::unix::fs::FileExt;
 use std::path::{Component, Path, PathBuf};
-use std::time::SystemTime;
+use std::time::{Duration, SystemTime};
 
 use crate::capture::{self, Action};
 use crate::catalog::{self, Catalog, Fresh, Place};
 use crate::entries::{
     Capture, CaptureError, Captured, Change, Cursor, Entries, Generation, Head, Kept, Meta, Origin,
-    RecordRange, StoreError,
+    RecordRange, Stamp, StoreError,
 };
 use crate::files::{self, Create};
 use crate::frame;
@@ -18,6 +18,7 @@ use crate::id::Id;
 use crate::layout::Layout;
 use crate::limits::{Compression, TearBudget};
 use crate::meta;
+use crate::opaque;
 
 pub type Hook = Box<dyn FnMut(Step) -> io::Result<()> + Send>;
 
@@ -55,6 +56,34 @@ pub enum Step {
     RecoverySynced,
     /// Recovery cut `open.seg`; it removes the marker next.
     RecoveryCut,
+    /// A writer found the store held and takes the again guard next.
+    Asking,
+    /// The again flag was clear; the store lock is released next, under the again guard.
+    Releasing,
+    /// Store lock and `store.writer` released; the again guard goes next.
+    Released,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Held {
+    Wait,
+    /// Set the again flag for the holder and fail with `StoreError::Busy`.
+    Flag,
+}
+
+pub enum Closed {
+    Released,
+    /// Another writer asked for one more run: the store is still open and locked.
+    Again(Box<Store>),
+}
+
+impl std::fmt::Debug for Closed {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Released => "Released",
+            Self::Again(_) => "Again",
+        })
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -71,12 +100,33 @@ pub enum Notice {
     },
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Sealing {
+    /// At `seal_at` during a run; at `seal_at` or `seal_after` when the store closes.
+    WhenDue,
+    /// Never: `open.seg` only grows, as a hook within its time limit needs.
+    Never,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Rebuild {
+    Allowed,
+    /// Catch up on `open.seg` or make an empty store's catalog; a full rebuild is
+    /// `StoreError::Unrebuilt`, as a hook within its time limit needs.
+    CatchUpOnly,
+}
+
 pub struct Options {
     pub seal_at: u64,
+    /// Age of `open.seg`'s oldest frame at which `close` seals, whatever its size.
+    pub seal_after: Duration,
     pub compression: Compression,
     /// The frame bytes the search after a torn frame may hash, in multiples of the file's size.
     pub tear_budget: TearBudget,
     pub hook: Option<Hook>,
+    pub held: Held,
+    pub sealing: Sealing,
+    pub rebuild: Rebuild,
 }
 
 struct Writer {
@@ -86,8 +136,12 @@ struct Writer {
 
 pub struct Store {
     layout: Layout,
+    /// Dropped before `_lock`: whoever holds `store.writer` holds the store lock too.
+    _writer: Option<File>,
     _lock: Option<File>,
     writer: Option<Writer>,
+    /// When `open.seg` got its oldest frame; `None` while it holds none.
+    since: Option<SystemTime>,
     catalog: Catalog,
     compressor: Option<zstd::bulk::Compressor<'static>>,
     options: Options,
@@ -100,6 +154,105 @@ fn open_seg(layout: &Layout) -> PathBuf {
 
 fn lock_file(layout: &Layout) -> PathBuf {
     layout.state.join("store.lock")
+}
+
+/// Held by every writer while it holds the store lock, so a writer that finds the store held can
+/// tell a writer (which checks the again flag before releasing) from readers (which never do).
+fn writer_file(layout: &Layout) -> PathBuf {
+    layout.state.join("store.writer")
+}
+
+/// Opens a lock file, created private when missing and never truncated.
+fn open_lock(path: &Path) -> Result<File, StoreError> {
+    files::private_file()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(path)
+        .map_err(|error| files::io_err("lock", path, error))
+}
+
+/// Asked under the again guard.
+fn writer_holds(layout: &Layout) -> Result<bool, StoreError> {
+    match open_lock(&writer_file(layout))?.try_lock() {
+        Ok(()) => Ok(false),
+        Err(TryLockError::WouldBlock) => Ok(true),
+        Err(TryLockError::Error(error)) => Err(files::io_err("lock", &writer_file(layout), error)),
+    }
+}
+
+fn again_file(layout: &Layout) -> PathBuf {
+    layout.state.join("store.again")
+}
+
+/// The catalog cannot say it: a body frame carries no time.
+fn since_file(layout: &Layout) -> PathBuf {
+    layout.state.join("open.since")
+}
+
+fn write_since(layout: &Layout, at: SystemTime) -> Result<(), StoreError> {
+    let text = format!("{}\n", meta::millis(at));
+    files::write_synced(&since_file(layout), text.as_bytes(), Create::Replace)
+}
+
+/// A missing, torn or future record is now, written down: a lost record delays a seal by at most
+/// `seal_after`.
+fn read_since(layout: &Layout) -> Result<SystemTime, StoreError> {
+    let recorded = files::read_optional(&since_file(layout))?
+        .and_then(|text| String::from_utf8(text).ok())
+        .and_then(|text| text.strip_suffix('\n')?.parse::<i64>().ok())
+        .map(meta::time_of);
+    let now = SystemTime::now();
+    match recorded.filter(|at| *at <= now) {
+        Some(at) => Ok(at),
+        None => {
+            write_since(layout, now)?;
+            Ok(now)
+        }
+    }
+}
+
+/// The flag is the file's length, set, taken and checked only under this lock; a holder releases
+/// the store lock under it too, so a request cannot fall between its last look and its release.
+///
+/// Lock order: `store.lock`, then `store.writer`, then this guard (blocking). Whoever holds the
+/// guard only tries the other two.
+struct Guard {
+    file: File,
+    path: PathBuf,
+}
+
+impl Guard {
+    fn take(layout: &Layout) -> Result<Guard, StoreError> {
+        let path = again_file(layout);
+        let file = open_lock(&path)?;
+        file.lock()
+            .map_err(|error| files::io_err("lock", &path, error))?;
+        Ok(Guard { file, path })
+    }
+
+    fn set(&self) -> Result<(), StoreError> {
+        self.file
+            .set_len(1)
+            .map_err(|error| files::io_err("write", &self.path, error))
+    }
+
+    /// Whether the flag was set; it is clear after.
+    fn take_flag(&self) -> Result<bool, StoreError> {
+        let set = self
+            .file
+            .metadata()
+            .map_err(|error| files::io_err("read", &self.path, error))?
+            .len()
+            > 0;
+        if set {
+            self.file
+                .set_len(0)
+                .map_err(|error| files::io_err("write", &self.path, error))?;
+        }
+        Ok(set)
+    }
 }
 
 fn marker_file(layout: &Layout) -> PathBuf {
@@ -443,11 +596,15 @@ fn rebuild(
 fn load_catalog(
     layout: &Layout,
     budget: TearBudget,
+    mode: Rebuild,
     notice: &mut dyn FnMut(Notice),
 ) -> Result<Catalog, StoreError> {
     let binding = binding(layout)?;
     let sealed = list_sealed(&layout.root)?;
     let open = files::read_file(&open_seg(layout))?;
+    // The catalog of an empty store is made, not rebuilt.
+    let refused =
+        mode == Rebuild::CatchUpOnly && (!sealed.is_empty() || open.len() > frame::SEGMENT_HEADER);
     match Catalog::open_current(&catalog_file(layout), &binding, &sealed, open.len() as u64) {
         Fresh::Current(catalog) => Ok(catalog),
         Fresh::CatchUp(mut catalog, from) => {
@@ -465,12 +622,14 @@ fn load_catalog(
             })();
             match caught_up {
                 Ok(()) => Ok(catalog),
+                Err(_) if refused => Err(StoreError::Unrebuilt),
                 Err(_) => {
                     drop(catalog);
                     rebuild(layout, &binding, &sealed, &open, budget, notice)
                 }
             }
         }
+        Fresh::Rebuild if refused => Err(StoreError::Unrebuilt),
         Fresh::Rebuild => rebuild(layout, &binding, &sealed, &open, budget, notice),
     }
 }
@@ -586,6 +745,7 @@ fn prepare_open_seg(
 struct Pending {
     bytes: Vec<u8>,
     pieces: Vec<(Piece, usize, usize)>,
+    stamp: Option<(Id, Option<Stamp>)>,
 }
 
 enum Piece {
@@ -621,15 +781,31 @@ impl Store {
         };
         let layout = &paths;
         let lock_path = lock_file(layout);
-        let lock = files::private_file()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(false)
-            .open(&lock_path)
-            .map_err(|error| files::io_err("lock", &lock_path, error))?;
+        let lock = open_lock(&lock_path)?;
         match lock.try_lock() {
             Ok(()) => {}
+            Err(TryLockError::WouldBlock) if options.held == Held::Flag => {
+                step(&mut options.hook, Step::Asking)?;
+                let guard = Guard::take(layout)?;
+                match lock.try_lock() {
+                    Ok(()) => {}
+                    Err(TryLockError::WouldBlock) if writer_holds(layout)? => {
+                        guard.set()?;
+                        return Err(StoreError::Busy);
+                    }
+                    Err(TryLockError::WouldBlock) => {
+                        // Only readers, which never run again for a request. The guard goes
+                        // before the wait: nobody blocks on `store.lock` while holding it.
+                        drop(guard);
+                        notice(Notice::Waiting);
+                        lock.lock()
+                            .map_err(|error| files::io_err("lock", &lock_path, error))?;
+                    }
+                    Err(TryLockError::Error(error)) => {
+                        return Err(files::io_err("lock", &lock_path, error));
+                    }
+                }
+            }
             Err(TryLockError::WouldBlock) => {
                 notice(Notice::Waiting);
                 lock.lock()
@@ -639,6 +815,11 @@ impl Store {
                 return Err(files::io_err("lock", &lock_path, error));
             }
         }
+        // Blocks only while a writer that let go of the store lock drops this one too.
+        let writer_lock = open_lock(&writer_file(layout))?;
+        writer_lock
+            .lock()
+            .map_err(|error| files::io_err("lock", &writer_file(layout), error))?;
         check_root(layout, &layout.root, Root::Check)?;
         paths.cache = make_private(&files::resolve(&configured.cache)?, &mut options.hook)?;
         let layout = &paths;
@@ -646,11 +827,18 @@ impl Store {
         step(&mut options.hook, Step::Locked)?;
         recover(layout, &mut options.hook)?;
         let writer = prepare_open_seg(layout, options.tear_budget, notice)?;
-        let catalog = load_catalog(layout, options.tear_budget, notice)?;
+        let since = if writer.len > frame::SEGMENT_HEADER as u64 {
+            Some(read_since(layout)?)
+        } else {
+            None
+        };
+        let catalog = load_catalog(layout, options.tear_budget, options.rebuild, notice)?;
         Ok(Store {
             layout: layout.clone(),
+            _writer: Some(writer_lock),
             _lock: Some(lock),
             writer: Some(writer),
+            since,
             catalog,
             compressor: Some(new_compressor(&layout.state, options.compression)?),
             options,
@@ -752,8 +940,10 @@ impl Store {
         )?;
         Ok(Store {
             layout: layout.clone(),
+            _writer: None,
             _lock: lock,
             writer: None,
+            since: None,
             catalog,
             compressor: None,
             options,
@@ -761,16 +951,40 @@ impl Store {
         })
     }
 
-    /// Seals `open.seg` when it holds a frame, then releases the lock.
-    pub fn close(mut self) -> Result<(), StoreError> {
-        let holds_frames = self
-            .writer
-            .as_ref()
-            .is_some_and(|writer| writer.len > frame::SEGMENT_HEADER as u64);
-        if holds_frames && !self.poisoned {
+    /// Unless a writer that found the store held asked for a rerun: then the store comes back,
+    /// still locked, with the request taken.
+    pub fn close(mut self) -> Result<Closed, StoreError> {
+        if self.options.sealing == Sealing::WhenDue && self.due() && !self.poisoned {
             self.seal()?;
         }
-        Ok(())
+        if self.writer.is_none() || self.poisoned {
+            return Ok(Closed::Released);
+        }
+        let guard = Guard::take(&self.layout)?;
+        if guard.take_flag()? {
+            return Ok(Closed::Again(Box::new(self)));
+        }
+        step(&mut self.options.hook, Step::Releasing)?;
+        let mut hook = self.options.hook.take();
+        drop(self);
+        step(&mut hook, Step::Released)?;
+        drop(guard);
+        Ok(Closed::Released)
+    }
+
+    /// No seal and no rerun request taken: it stays for the next writer that closes.
+    pub fn release(self) {
+        drop(self);
+    }
+
+    fn due(&self) -> bool {
+        let Some(since) = self.since else {
+            return false;
+        };
+        let age = SystemTime::now()
+            .duration_since(since)
+            .unwrap_or(Duration::ZERO);
+        self.open_len() >= self.options.seal_at || age >= self.options.seal_after
     }
 
     fn writable(&self) -> Result<(), StoreError> {
@@ -803,6 +1017,12 @@ impl Store {
         let Some(base) = self.writer.as_ref().map(|writer| writer.len) else {
             return Err(StoreError::ReadOnly);
         };
+        // Recorded before the frame, so a crash between the two never leaves frames timed by a
+        // record from an earlier open.seg; a record beside an empty open.seg is ignored.
+        let first = (base == frame::SEGMENT_HEADER as u64).then(SystemTime::now);
+        if let Some(now) = first {
+            write_since(&self.layout, now)?;
+        }
         self.poisoned = true;
         let last = pending.pieces.len().saturating_sub(1);
         for (index, (_, offset, length)) in pending.pieces.iter().enumerate() {
@@ -846,14 +1066,21 @@ impl Store {
                 Piece::Body(header) => batch.body(header, &place)?,
             }
         }
+        if let Some((id, stamp)) = &pending.stamp {
+            batch.stamp(*id, stamp.as_ref())?;
+        }
         batch.set_segment(catalog::OPEN, end)?;
         batch.commit()?;
         self.poisoned = false;
+        if first.is_some() {
+            self.since = first;
+        }
         Ok(())
     }
 
+    /// During a run only the size seals; the age is weighed at `close`, once per run.
     fn seal_if_full(&mut self) -> Result<(), StoreError> {
-        if self.open_len() >= self.options.seal_at {
+        if self.options.sealing == Sealing::WhenDue && self.open_len() >= self.options.seal_at {
             self.seal()?;
         }
         Ok(())
@@ -903,6 +1130,8 @@ impl Store {
         if let Some(writer) = self.writer.as_mut() {
             writer.len = frame::SEGMENT_HEADER as u64;
         }
+        self.since = None;
+        files::remove_if_present(&since_file(&layout))?;
         step(&mut self.options.hook, Step::SealCut)?;
 
         files::remove_if_present(&marker)?;
@@ -941,6 +1170,7 @@ impl Pending {
         Pending {
             bytes: Vec::new(),
             pieces: Vec::new(),
+            stamp: None,
         }
     }
 
@@ -976,7 +1206,12 @@ impl Entries for Store {
         };
         let decision = capture::decide(head.as_ref(), input.bytes, input.ends);
         let (generation, first, from, prior_end, with_meta) = match decision.action {
-            Action::Unchanged => return Ok(Captured::Unchanged(id)),
+            Action::Unchanged => {
+                if head.as_ref().and_then(|head| head.stamp) != input.stamp {
+                    self.catalog.set_stamp(id, input.stamp.as_ref())?;
+                }
+                return Ok(Captured::Unchanged(id));
+            }
             Action::New { with_meta } => (1, 1, 0, 0, with_meta),
             Action::NewGeneration => {
                 let next = head
@@ -1001,7 +1236,7 @@ impl Entries for Store {
                 kind: input.kind.to_string(),
                 origin: Some(input.origin.clone()),
                 captured: meta::time_of(meta::millis(SystemTime::now())),
-                labels: input.labels.to_vec(),
+                parent: input.parent,
             };
             let plain = meta::encode(&meta).ok_or(CaptureError::TooLarge)?;
             let payload = self.pack(&plain)?;
@@ -1009,7 +1244,16 @@ impl Entries for Store {
                 frame::encode(&frame::Header::meta(id), &payload).ok_or(CaptureError::TooLarge)?;
             pending.push(Piece::Meta(meta), &frame);
         }
-        let plain = frame::pack_records(input.bytes, records, prior_end);
+        let mut start = prior_end;
+        let filtered: Vec<_> = records
+            .iter()
+            .map(|&end| {
+                let record = opaque::filter(&input.bytes[start..end]);
+                start = end;
+                record
+            })
+            .collect();
+        let plain = frame::pack_records(&filtered);
         let payload = self.pack(&plain)?;
         let header = frame::Header::body(
             id,
@@ -1021,6 +1265,7 @@ impl Entries for Store {
         );
         let frame = frame::encode(&header, &payload).ok_or(CaptureError::TooLarge)?;
         pending.push(Piece::Body(header), &frame);
+        pending.stamp = Some((id, input.stamp));
         self.persist(&pending)?;
         self.seal_if_full()?;
         let kept = Kept {
@@ -1037,7 +1282,7 @@ impl Entries for Store {
         })
     }
 
-    fn set_meta(&mut self, id: Id, meta: &Meta) -> Result<(), StoreError> {
+    fn set_meta(&mut self, id: Id, meta: &Meta) -> Result<u64, StoreError> {
         self.writable()?;
         if meta.id != id {
             return Err(StoreError::MetaMismatch {
@@ -1065,10 +1310,12 @@ impl Entries for Store {
         let payload = self.pack(&plain)?;
         let frame =
             frame::encode(&frame::Header::meta(id), &payload).ok_or(StoreError::MetaTooLarge)?;
+        let grew = u64::try_from(frame.len()).unwrap_or(u64::MAX);
         let mut pending = Pending::new();
         pending.push(Piece::Meta(meta), &frame);
         self.persist(&pending)?;
-        self.seal_if_full()
+        self.seal_if_full()?;
+        Ok(grew)
     }
 
     fn read(

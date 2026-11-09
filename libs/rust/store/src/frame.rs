@@ -384,14 +384,15 @@ pub fn get_varint(bytes: &[u8], at: &mut usize) -> Option<u64> {
 }
 
 /// The records `ends` (offsets in `bytes`, the first starting at `from`) as a body payload.
-pub fn pack_records(bytes: &[u8], ends: &[usize], from: usize) -> Vec<u8> {
-    let mut plain = Vec::with_capacity(bytes.len() - from + ends.len());
-    let mut start = from;
-    for &end in ends {
-        put_varint(&mut plain, (end - start) as u64);
-        start = end;
+pub fn pack_records<R: AsRef<[u8]>>(records: &[R]) -> Vec<u8> {
+    let total: usize = records.iter().map(|record| record.as_ref().len()).sum();
+    let mut plain = Vec::with_capacity(total + records.len());
+    for record in records {
+        put_varint(&mut plain, record.as_ref().len() as u64);
     }
-    plain.extend_from_slice(&bytes[from..]);
+    for record in records {
+        plain.extend_from_slice(record.as_ref());
+    }
     plain
 }
 
@@ -574,11 +575,10 @@ mod tests {
 
     #[test]
     fn records_pack_and_split_back_to_the_same_bytes() {
-        let bytes = b"ab\ncd\nef";
-        let plain = pack_records(bytes, &[3, 6, 8], 0);
+        let plain = pack_records(&[&b"ab\n"[..], b"cd\n", b"ef"]);
         let records = split_records(&plain, 3).expect("split");
         assert_eq!(records, vec![&b"ab\n"[..], b"cd\n", b"ef"]);
-        let tail = pack_records(bytes, &[6, 8], 3);
+        let tail = pack_records(&[&b"cd\n"[..], b"ef"]);
         assert_eq!(
             split_records(&tail, 2).expect("split"),
             vec![&b"cd\n"[..], b"ef"]

@@ -13,7 +13,7 @@ use bilbo_store::segments::{Hook, Notice, Options, Step, Store};
 use crate::frames::{frames, spans};
 use crate::scratch::{
     Scratch, catalog, chmod, id_of, keep, open, open_seg, open_with, origin, read_records, sealed,
-    snapshot, snapshot_of, sql, try_keep,
+    sealing, snapshot, snapshot_of, sql, try_keep,
 };
 use crate::seal::{fill, stopping_at};
 
@@ -78,7 +78,7 @@ fn a_waiting_reader_checks_the_root_binding_again_under_its_lock() {
     let (done_tx, done_rx) = channel::<Option<String>>();
     let layout = second.clone();
     let reader = thread::spawn(move || {
-        let result = Store::open_read_only(&layout, Options::default(), &mut |notice| {
+        let result = Store::open_read_only(&layout, sealing(), &mut |notice| {
             waiting_tx.send(notice).ok();
         });
         done_tx
@@ -112,7 +112,7 @@ fn a_torn_root_record_counts_as_absent_and_a_writer_rewrites_it() {
         let good = fs::read(&record).expect("record");
         fs::write(&record, torn).expect("tear it");
 
-        let reader = Store::open_read_only(&layout, Options::default(), &mut |_| {})
+        let reader = Store::open_read_only(&layout, sealing(), &mut |_| {})
             .unwrap_or_else(|e| panic!("{name}: {e}"));
         drop(reader);
         assert_eq!(
@@ -121,8 +121,8 @@ fn a_torn_root_record_counts_as_absent_and_a_writer_rewrites_it() {
             "{name}: a reader writes nothing"
         );
 
-        let store = Store::open(&layout, Options::default(), &mut |_| {})
-            .unwrap_or_else(|e| panic!("{name}: {e}"));
+        let store =
+            Store::open(&layout, sealing(), &mut |_| {}).unwrap_or_else(|e| panic!("{name}: {e}"));
         drop(store);
         assert_eq!(fs::read(&record).expect("record"), good, "{name}");
         assert!(!layout.state.join("root.tmp").exists(), "{name}");
@@ -149,9 +149,9 @@ fn a_folder_that_others_can_write_is_refused_and_left_untouched() {
             chmod(folder, 0o777);
             let held = snapshot_of(&layout);
             let result = if writer {
-                Store::open(&layout, Options::default(), &mut |_| {}).err()
+                Store::open(&layout, sealing(), &mut |_| {}).err()
             } else {
-                Store::open_read_only(&layout, Options::default(), &mut |_| {}).err()
+                Store::open_read_only(&layout, sealing(), &mut |_| {}).err()
             };
             match result {
                 Some(StoreError::Unsafe(path)) => assert_eq!(&path, folder),
@@ -168,7 +168,7 @@ fn a_writer_refused_for_another_root_creates_no_cache_folder() {
     let first = scratch.layout();
     open(&first).close().expect("close");
     let second = second_root(&first);
-    let refused = Store::open(&second, Options::default(), &mut |_| {});
+    let refused = Store::open(&second, sealing(), &mut |_| {});
     assert!(matches!(refused, Err(StoreError::OtherRoot { .. })));
     assert!(!second.cache.exists());
 }
@@ -263,7 +263,7 @@ fn a_sealed_copy_that_is_a_valid_shorter_prefix_stops_recovery_and_keeps_everyth
     file.set_len(keep_bytes as u64).expect("shorten");
     drop(file);
     let held = snapshot_of(&layout);
-    match Store::open(&layout, Options::default(), &mut |_| {}) {
+    match Store::open(&layout, sealing(), &mut |_| {}) {
         Err(StoreError::Damaged { path, offset, .. }) => {
             assert_eq!(path, segment);
             assert_eq!(offset, keep_bytes as u64);
@@ -284,7 +284,7 @@ fn files_that_exist_but_cannot_be_opened_are_errors_not_absences() {
 
     let lock = layout.state.join("store.lock");
     chmod(&lock, 0o000);
-    let reader = Store::open_read_only(&layout, Options::default(), &mut |_| {});
+    let reader = Store::open_read_only(&layout, sealing(), &mut |_| {});
     chmod(&lock, 0o600);
     assert!(
         matches!(reader, Err(StoreError::Io { action: "lock", .. })),
@@ -295,7 +295,7 @@ fn files_that_exist_but_cannot_be_opened_are_errors_not_absences() {
     let segment = open_seg(&layout);
     let held = fs::read(&segment).expect("read");
     chmod(&segment, 0o000);
-    let writer = Store::open(&layout, Options::default(), &mut |_| {});
+    let writer = Store::open(&layout, sealing(), &mut |_| {});
     chmod(&segment, 0o600);
     assert!(
         matches!(writer, Err(StoreError::Io { action: "read", .. })),
@@ -324,7 +324,7 @@ fn a_failed_first_frame_write_is_rolled_back_and_the_store_stays_usable() {
         &layout,
         Options {
             hook: Some(hook),
-            ..Options::default()
+            ..sealing()
         },
     );
     let failed = try_keep(&mut store, "a.md", b"one\ntwo\n", None);
@@ -356,7 +356,7 @@ fn a_failed_second_frame_write_keeps_the_store_poisoned_and_the_meta_is_complete
         &layout,
         Options {
             hook: Some(hook),
-            ..Options::default()
+            ..sealing()
         },
     );
     let failed = try_keep(&mut store, "a.md", b"one\n", None);
@@ -392,8 +392,7 @@ fn a_read_only_open_of_a_torn_open_seg_header_reads_the_sealed_segments() {
     store.close().expect("close");
     fs::write(open_seg(&layout), b"BILBO").expect("tear the header");
     let held = snapshot_of(&layout);
-    let reader =
-        Store::open_read_only(&layout, Options::default(), &mut |_| {}).expect("read-only open");
+    let reader = Store::open_read_only(&layout, sealing(), &mut |_| {}).expect("read-only open");
     assert_eq!(read_records(&reader, a, 1, 1), b"one\n");
     drop(reader);
     assert_eq!(snapshot_of(&layout), held);
@@ -404,14 +403,14 @@ fn a_folder_another_user_owns_is_refused_before_anything_is_written() {
     let scratch = Scratch::new("foreign_owner");
     let mut layout = scratch.layout();
     layout.state = std::path::PathBuf::from("/usr");
-    let writer = Store::open(&layout, Options::default(), &mut |_| {});
+    let writer = Store::open(&layout, sealing(), &mut |_| {});
     assert!(
         matches!(&writer, Err(StoreError::Unsafe(path)) if path == &layout.state),
         "{:?}",
         writer.err()
     );
     fs::create_dir_all(&layout.root).expect("root");
-    let reader = Store::open_read_only(&layout, Options::default(), &mut |_| {});
+    let reader = Store::open_read_only(&layout, sealing(), &mut |_| {});
     assert!(
         matches!(reader, Err(StoreError::Unsafe(_))),
         "{:?}",
@@ -432,7 +431,7 @@ fn a_folder_that_is_open_to_others_when_it_is_first_used_is_refused_and_stays_em
         };
         fs::create_dir_all(folder).expect("folder");
         chmod(folder, 0o777);
-        match Store::open(&layout, Options::default(), &mut |_| {}).err() {
+        match Store::open(&layout, sealing(), &mut |_| {}).err() {
             Some(StoreError::Unsafe(path)) => assert_eq!(&path, folder),
             other => panic!("{which}: expected Unsafe, got {other:?}"),
         }
@@ -492,7 +491,7 @@ fn a_deleted_root_behind_a_symlinked_parent_keeps_its_binding() {
     store.close().expect("close");
     fs::remove_dir_all(real.join("store")).expect("delete the root");
 
-    let reopened = Store::open(&layout, Options::default(), &mut |_| {});
+    let reopened = Store::open(&layout, sealing(), &mut |_| {});
     assert!(reopened.is_ok(), "{:?}", reopened.err());
     assert!(real.join("store").is_dir());
 }
@@ -517,7 +516,7 @@ fn a_writer_that_loses_the_race_to_bind_the_state_creates_no_cache_folder() {
     let (done_tx, done_rx) = channel::<Option<String>>();
     let layout = second.clone();
     let writer = thread::spawn(move || {
-        let result = Store::open(&layout, Options::default(), &mut |notice| {
+        let result = Store::open(&layout, sealing(), &mut |notice| {
             waiting_tx.send(notice).ok();
         });
         done_tx
@@ -552,7 +551,7 @@ fn an_ancestor_anyone_can_write_is_refused_before_anything_is_written() {
     let scratch = Scratch::new("open_ancestor");
     let (layout, shared) = shared_layout(&scratch);
     chmod(&shared, 0o777);
-    match Store::open(&layout, Options::default(), &mut |_| {}).err() {
+    match Store::open(&layout, sealing(), &mut |_| {}).err() {
         Some(StoreError::Unsafe(path)) => assert_eq!(path, shared),
         other => panic!("expected Unsafe, got {other:?}"),
     }
@@ -561,7 +560,7 @@ fn an_ancestor_anyone_can_write_is_refused_before_anything_is_written() {
     chmod(&shared, 0o755);
     open(&layout).close().expect("close");
     chmod(&shared, 0o777);
-    let reader = Store::open_read_only(&layout, Options::default(), &mut |_| {});
+    let reader = Store::open_read_only(&layout, sealing(), &mut |_| {});
     assert!(
         matches!(&reader, Err(StoreError::Unsafe(path)) if path == &shared),
         "{:?}",
@@ -575,7 +574,7 @@ fn a_sticky_ancestor_that_anyone_can_write_is_accepted() {
     let (layout, shared) = shared_layout(&scratch);
     chmod(&shared, 0o1777);
     open(&layout).close().expect("a sticky ancestor passes");
-    assert!(Store::open_read_only(&layout, Options::default(), &mut |_| {}).is_ok());
+    assert!(Store::open_read_only(&layout, sealing(), &mut |_| {}).is_ok());
 }
 
 #[test]
@@ -593,7 +592,7 @@ fn a_folder_removed_between_its_creation_and_its_check_fails_the_open() {
         &layout,
         Options {
             hook: Some(hook),
-            ..Options::default()
+            ..sealing()
         },
         &mut |_| {},
     );
@@ -614,9 +613,9 @@ fn a_first_open_that_fails_records_no_binding_and_a_corrected_one_succeeds() {
         root: file,
         ..good.clone()
     };
-    assert!(Store::open(&wrong, Options::default(), &mut |_| {}).is_err());
+    assert!(Store::open(&wrong, sealing(), &mut |_| {}).is_err());
     assert!(!good.state.join("root").exists());
-    let corrected = Store::open(&good, Options::default(), &mut |_| {});
+    let corrected = Store::open(&good, sealing(), &mut |_| {});
     assert!(corrected.is_ok(), "{:?}", corrected.err());
 }
 
@@ -653,7 +652,7 @@ fn a_folder_and_an_ancestor_that_the_effective_group_can_write_pass() {
     open(&layout)
         .close()
         .expect("group-writable store folders of the effective group pass");
-    assert!(Store::open_read_only(&layout, Options::default(), &mut |_| {}).is_ok());
+    assert!(Store::open_read_only(&layout, sealing(), &mut |_| {}).is_ok());
 }
 
 #[test]
@@ -666,7 +665,7 @@ fn a_folder_and_an_ancestor_that_another_group_can_write_are_refused() {
     let (layout, shared) = shared_layout(&scratch);
     chown_group(&shared, other);
     chmod(&shared, 0o775);
-    match Store::open(&layout, Options::default(), &mut |_| {}).err() {
+    match Store::open(&layout, sealing(), &mut |_| {}).err() {
         Some(StoreError::Unsafe(path)) => assert_eq!(path, shared),
         other => panic!("expected Unsafe for the ancestor, got {other:?}"),
     }
@@ -677,7 +676,7 @@ fn a_folder_and_an_ancestor_that_another_group_can_write_are_refused() {
     open(&layout).close().expect("close");
     chown_group(&layout.cache, other);
     chmod(&layout.cache, 0o775);
-    match Store::open(&layout, Options::default(), &mut |_| {}).err() {
+    match Store::open(&layout, sealing(), &mut |_| {}).err() {
         Some(StoreError::Unsafe(path)) => assert_eq!(path, layout.cache),
         other => panic!("expected Unsafe for the folder, got {other:?}"),
     }
@@ -718,7 +717,7 @@ fn a_state_path_repointed_after_its_check_does_not_redirect_the_store() {
         &layout,
         Options {
             hook: Some(hook),
-            ..Options::default()
+            ..sealing()
         },
         &mut |_| {},
     );
@@ -762,7 +761,7 @@ fn a_missing_parent_made_writable_before_the_folder_is_created_is_refused_before
         &layout,
         Options {
             hook: Some(hook),
-            ..Options::default()
+            ..sealing()
         },
         &mut |_| {},
     );
@@ -816,7 +815,7 @@ fn a_reader_of_a_missing_state_folder_uses_its_resolved_path_too() {
         &layout,
         Options {
             hook: Some(hook),
-            ..Options::default()
+            ..sealing()
         },
         &mut |_| {},
     );
@@ -836,13 +835,13 @@ fn a_root_that_holds_0_20s_notes_or_library_is_refused_before_anything_is_writte
         fs::create_dir_all(layout.root.join(name)).expect("a 0.20 folder");
         let before = snapshot_of(&layout);
         let expected = format!("{} belongs to bilbo 0.20", layout.root.join(name).display());
-        let writer = Store::open(&layout, Options::default(), &mut |_| {});
+        let writer = Store::open(&layout, sealing(), &mut |_| {});
         assert_eq!(
             writer.err().map(|e| e.to_string()),
             Some(expected.clone()),
             "{name}"
         );
-        let reader = Store::open_read_only(&layout, Options::default(), &mut |_| {});
+        let reader = Store::open_read_only(&layout, sealing(), &mut |_| {});
         assert_eq!(
             reader.err().map(|e| e.to_string()),
             Some(expected),
@@ -875,12 +874,12 @@ fn a_root_that_cannot_be_read_is_an_error_not_an_absence_and_nothing_is_written(
     if fs::read_dir(&layout.root).is_ok() {
         return;
     }
-    let writer = Store::open(&layout, Options::default(), &mut |_| {});
+    let writer = Store::open(&layout, sealing(), &mut |_| {});
     match writer.err() {
         Some(StoreError::Io { path, .. }) => assert_eq!(path, layout.root.join("notes")),
         other => panic!("expected an io error naming notes, got {other:?}"),
     }
-    let reader = Store::open_read_only(&layout, Options::default(), &mut |_| {});
+    let reader = Store::open_read_only(&layout, sealing(), &mut |_| {});
     assert!(matches!(reader.err(), Some(StoreError::Io { .. })));
     assert!(!layout.state.exists() && !layout.cache.exists());
 }
@@ -896,7 +895,7 @@ fn repoint_at_the_guard(link: &std::path::Path, to: &std::path::Path) -> Options
     });
     Options {
         hook: Some(hook),
-        ..Options::default()
+        ..sealing()
     }
 }
 
@@ -1051,7 +1050,7 @@ fn a_root_replaced_by_a_link_to_a_0_20_root_after_the_guard_is_refused_to_a_read
         &layout,
         Options {
             hook: Some(hook),
-            ..Options::default()
+            ..sealing()
         },
         &mut |_| {},
     );
@@ -1099,7 +1098,7 @@ fn a_root_replaced_by_a_link_to_another_clean_store_after_the_guard_is_refused_t
         &layout,
         Options {
             hook: Some(hook),
-            ..Options::default()
+            ..sealing()
         },
         &mut |_| {},
     );
@@ -1126,7 +1125,7 @@ fn a_root_that_vanishes_after_the_guard_is_missing_to_a_reader_not_an_io_error()
         &layout,
         Options {
             hook: Some(hook),
-            ..Options::default()
+            ..sealing()
         },
         &mut |_| {},
     );
@@ -1239,11 +1238,11 @@ fn a_state_or_cache_folder_inside_a_missing_root_is_refused_and_nothing_is_creat
         };
         refused(Store::check(&layout), "check");
         refused(
-            Store::open(&layout, Options::default(), &mut |_| {}).map(|_| ()),
+            Store::open(&layout, sealing(), &mut |_| {}).map(|_| ()),
             "open",
         );
         refused(
-            Store::open_read_only(&layout, Options::default(), &mut |_| {}).map(|_| ()),
+            Store::open_read_only(&layout, sealing(), &mut |_| {}).map(|_| ()),
             "open_read_only",
         );
         assert!(
@@ -1266,11 +1265,11 @@ fn a_state_or_cache_folder_inside_an_existing_root_is_refused_by_all_three_and_t
         };
         refused(Store::check(&layout), "check");
         refused(
-            Store::open(&layout, Options::default(), &mut |_| {}).map(|_| ()),
+            Store::open(&layout, sealing(), &mut |_| {}).map(|_| ()),
             "open",
         );
         refused(
-            Store::open_read_only(&layout, Options::default(), &mut |_| {}).map(|_| ()),
+            Store::open_read_only(&layout, sealing(), &mut |_| {}).map(|_| ()),
             "open_read_only",
         );
         assert_eq!(snapshot(&base), before, "{name}: nothing was created");
@@ -1310,14 +1309,14 @@ fn a_state_or_cache_folder_inside_the_root_through_a_link_is_refused() {
         );
         assert!(
             matches!(
-                Store::open(&layout, Options::default(), &mut |_| {}),
+                Store::open(&layout, sealing(), &mut |_| {}),
                 Err(StoreError::Inside { .. })
             ),
             "{name}: open"
         );
         assert!(
             matches!(
-                Store::open_read_only(&layout, Options::default(), &mut |_| {}),
+                Store::open_read_only(&layout, sealing(), &mut |_| {}),
                 Err(StoreError::Inside { .. })
             ),
             "{name}: open_read_only"
@@ -1366,12 +1365,12 @@ fn link(to: &std::path::Path, at: &std::path::Path) {
 fn refused_by_all_three(layout: &Layout, folder: &str, what: &str) {
     refused_inside(Store::check(layout), folder, &format!("{what}: check"));
     refused_inside(
-        Store::open(layout, Options::default(), &mut |_| {}).map(|_| ()),
+        Store::open(layout, sealing(), &mut |_| {}).map(|_| ()),
         folder,
         &format!("{what}: open"),
     );
     refused_inside(
-        Store::open_read_only(layout, Options::default(), &mut |_| {}).map(|_| ()),
+        Store::open_read_only(layout, sealing(), &mut |_| {}).map(|_| ()),
         folder,
         &format!("{what}: open_read_only"),
     );
@@ -1478,9 +1477,9 @@ fn a_state_or_cache_link_to_a_sibling_folder_passes_the_check_whether_it_exists_
         state: to_present,
         cache: base.join("cache"),
     };
-    Store::open(&layout, Options::default(), &mut |_| {}).expect("a writer opens it");
+    Store::open(&layout, sealing(), &mut |_| {}).expect("a writer opens it");
     assert!(
-        Store::open_read_only(&layout, Options::default(), &mut |_| {}).is_ok(),
+        Store::open_read_only(&layout, sealing(), &mut |_| {}).is_ok(),
         "a reader opens it"
     );
 }

@@ -2,18 +2,18 @@ use std::error::Error as StdError;
 use std::fmt;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::time::{Duration, SystemTime};
 
-use bilbo_store::entries::{Capture, CaptureError, Captured, Entries, Origin, StoreError};
+use bilbo_store::entries::{Capture, CaptureError, Captured, Entries, Meta, Origin, StoreError};
 use bilbo_store::id::Id;
 
 use crate::files::Files;
-use crate::kind::Kind;
+use crate::kind::{Kind, Proposal};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Request {
     pub target: PathBuf,
     pub kind: Option<String>,
-    pub project: Option<String>,
 }
 
 pub struct Plan<'k> {
@@ -25,8 +25,6 @@ pub struct Plan<'k> {
     pub files: Vec<PathBuf>,
     /// What the walk could not read.
     pub refused: Vec<(PathBuf, String)>,
-    /// The project, when given.
-    pub labels: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -136,7 +134,6 @@ pub fn plan<'k>(
             path: request.target.clone(),
             error,
         })?;
-    let labels: Vec<String> = request.project.iter().cloned().collect();
 
     if let Some(kind) = named {
         let claims = kind.claims(files, &target);
@@ -145,7 +142,6 @@ pub fn plan<'k>(
             kind: Some(&**kind),
             files: claims.files,
             refused: claims.refused,
-            labels,
         });
     }
 
@@ -180,12 +176,20 @@ pub fn plan<'k>(
         kind,
         files: claimed,
         refused,
-        labels,
     })
 }
 
+/// Git's racy-index rule: a stamp this fresh may hide a same-size write in the same tick, so none
+/// is kept.
+const RACY: Duration = Duration::from_secs(2);
+
+fn racy(modified: SystemTime, taken: SystemTime) -> bool {
+    !taken.duration_since(modified).is_ok_and(|age| age >= RACY)
+}
+
+/// `Kept` carries the bytes a parent repair added.
 enum Done {
-    Kept(Captured),
+    Kept(Captured, u64),
     Refused(String),
 }
 
@@ -200,9 +204,10 @@ pub fn keep(
     };
     output.claimed = u64::try_from(plan.files.len()).unwrap_or(u64::MAX);
     for path in &plan.files {
-        let outcome = match keep_file(kind, &plan.labels, path, files, entries)? {
+        let outcome = match keep_file(kind, path, files, entries)? {
             Done::Refused(reason) => Outcome::Refused(reason),
-            Done::Kept(captured) => {
+            Done::Kept(captured, adopted) => {
+                output.stored_bytes += adopted;
                 let (outcome, kept) = match captured {
                     Captured::New(kept) => (Outcome::New(kept.id), Some(kept)),
                     Captured::Appended(kept) => (Outcome::Appended(kept.id), Some(kept)),
@@ -225,9 +230,11 @@ pub fn keep(
     Ok(output)
 }
 
+/// Unchanged size and mtime: not read. The stamp is taken before the read, so a write during it
+/// shows next run. An entry without a parent proposes one again, so a subagent kept before its
+/// session gets it once it grows.
 fn keep_file(
     kind: &dyn Kind,
-    labels: &[String],
     path: &Path,
     files: &dyn Files,
     entries: &mut dyn Entries,
@@ -235,6 +242,15 @@ fn keep_file(
     let Some(origin) = Origin::file(path) else {
         return Ok(Done::Refused("its path is not UTF-8".into()));
     };
+    let stamp = files.stamp(path).ok();
+    let taken = files.now();
+    let head = entries.by_origin(&origin)?;
+    if let Some(head) = &head
+        && stamp.is_some()
+        && head.stamp == stamp
+    {
+        return Ok(Done::Kept(Captured::Unchanged(head.id), 0));
+    }
     let bytes = match files.read(path) {
         Ok(bytes) => bytes,
         Err(error) => return Ok(Done::Refused(format!("cannot read: {error}"))),
@@ -243,17 +259,32 @@ fn keep_file(
         Ok(ends) => ends,
         Err(refusal) => return Ok(Done::Refused(refusal.to_string())),
     };
-    let proposal = kind.propose(&bytes);
+    let Some(records) = bytes.get(..ends.last().copied().unwrap_or(0)) else {
+        return Ok(Done::Refused("its records do not cover it".into()));
+    };
+    let proposal = if head.is_some() {
+        Proposal::default()
+    } else {
+        let entries: &dyn Entries = entries;
+        kind.propose(path, records, &|other| kept(entries, other))
+    };
     let input = Capture {
         origin: &origin,
         kind: kind.name(),
         id: proposal.id,
-        labels,
-        bytes: &bytes,
+        parent: proposal.parent,
+        stamp: stamp.filter(|stamp| !racy(stamp.modified, taken)),
+        bytes: records,
         ends: &ends,
     };
     match entries.capture(&input) {
-        Ok(captured) => Ok(Done::Kept(captured)),
+        Ok(captured) => {
+            let adopted = match &head {
+                Some(head) => adopt(kind, path, records, head.id, entries)?,
+                None => 0,
+            };
+            Ok(Done::Kept(captured, adopted))
+        }
         Err(CaptureError::Store(error)) => Err(error.into()),
         Err(
             error @ (CaptureError::IdHeld { .. }
@@ -261,6 +292,44 @@ fn keep_file(
             | CaptureError::TooLarge),
         ) => Ok(Done::Refused(error.to_string())),
     }
+}
+
+fn adopt(
+    kind: &dyn Kind,
+    path: &Path,
+    records: &[u8],
+    id: Id,
+    entries: &mut dyn Entries,
+) -> Result<u64, Error> {
+    let Some(meta) = entries.meta(id)?.filter(|meta| meta.parent.is_none()) else {
+        return Ok(0);
+    };
+    let parent = {
+        let entries: &dyn Entries = entries;
+        kind.propose(path, records, &|other| kept(entries, other))
+            .parent
+            .filter(|parent| *parent != id)
+    };
+    let Some(parent) = parent else {
+        return Ok(0);
+    };
+    Ok(entries.set_meta(
+        id,
+        &Meta {
+            parent: Some(parent),
+            ..meta
+        },
+    )?)
+}
+
+/// A failed lookup gives no id: the capture that follows reads the same catalog and reports it.
+fn kept(entries: &dyn Entries, path: &Path) -> Option<Id> {
+    let origin = Origin::file(path)?;
+    entries
+        .by_origin(&origin)
+        .ok()
+        .flatten()
+        .map(|head| head.id)
 }
 
 impl fmt::Display for Error {
@@ -330,7 +399,6 @@ mod tests {
         Request {
             target: PathBuf::from(target),
             kind: kind.map(str::to_string),
-            project: None,
         }
     }
 
@@ -448,7 +516,7 @@ mod tests {
     }
 
     #[test]
-    fn kinds_see_the_canonical_target_and_the_project_becomes_the_label() {
+    fn kinds_see_the_canonical_target() {
         struct Links(Memory);
         impl Files for Links {
             fn canonical(&self, path: &Path) -> io::Result<PathBuf> {
@@ -467,14 +535,14 @@ mod tests {
             fn read(&self, path: &Path) -> io::Result<Vec<u8>> {
                 self.0.read(path)
             }
+            fn stamp(&self, path: &Path) -> io::Result<bilbo_store::entries::Stamp> {
+                self.0.stamp(path)
+            }
         }
         let kinds = registry(vec![Suffix::new("one", ".one")]);
-        let mut named = request("/link", None);
-        named.project = Some("p".into());
-        let plan = plan(&named, &kinds, &Links(tree())).expect("plan");
+        let plan = plan(&request("/link", None), &kinds, &Links(tree())).expect("plan");
         assert_eq!(plan.target, PathBuf::from("/t/sub"));
         assert_eq!(plan.files, vec![PathBuf::from("/t/sub/b.one")]);
-        assert_eq!(plan.labels, vec!["p".to_string()]);
     }
 
     #[test]

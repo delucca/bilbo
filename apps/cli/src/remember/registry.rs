@@ -1,7 +1,10 @@
 use bilbo_kinds::kind::Kind;
 
 pub fn kinds() -> Vec<Box<dyn Kind>> {
-    vec![Box::new(bilbo_markdown::Markdown)]
+    vec![
+        Box::new(bilbo_markdown::Markdown),
+        Box::new(bilbo_session::Session),
+    ]
 }
 
 #[cfg(test)]

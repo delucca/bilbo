@@ -1,6 +1,7 @@
 use std::fs;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{Duration, SystemTime};
 
 use super::{Run, bilbo};
 
@@ -92,6 +93,20 @@ impl Scratch {
         let path = self.dir.join("notes").join(name);
         fs::create_dir_all(path.parent().expect("parent")).expect("folders");
         fs::write(path, bytes).expect("write");
+    }
+
+    /// Backdates the age record so the next close weighs it against `store.seal_after`.
+    pub(crate) fn backdate(&self, minutes: u64) {
+        let at = SystemTime::now() - Duration::from_secs(minutes * 60);
+        let millis = at
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .expect("after 1970")
+            .as_millis();
+        fs::write(
+            self.dir.join("state/bilbo/open.since"),
+            format!("{millis}\n"),
+        )
+        .expect("backdate");
     }
 
     pub(crate) fn segments(&self) -> usize {

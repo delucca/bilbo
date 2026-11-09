@@ -8,7 +8,9 @@ use bilbo_store::layout::Layout;
 use bilbo_store::segments::{Hook, Notice, Options, Step, Store};
 
 use crate::frames::{Summary, frames};
-use crate::scratch::{Scratch, catalog, flip, id_of, keep, open, open_seg, open_with, sealed};
+use crate::scratch::{
+    Scratch, catalog, flip, id_of, keep, open, open_seg, open_with, sealed, sealing,
+};
 
 pub fn stopping_at(target: Step) -> Hook {
     Box::new(move |step| {
@@ -25,7 +27,7 @@ fn with_hook(layout: &Layout, hook: Hook) -> Result<Store, StoreError> {
         layout,
         Options {
             hook: Some(hook),
-            ..Options::default()
+            ..sealing()
         },
         &mut |_| {},
     )
@@ -39,18 +41,12 @@ pub struct Before {
 
 /// Three captures and a `set_meta` in one open segment, left unsealed.
 pub fn fill(layout: &Layout, hook: Option<Hook>) -> (Store, Before) {
-    let mut store = open_with(
-        layout,
-        Options {
-            hook,
-            ..Options::default()
-        },
-    );
+    let mut store = open_with(layout, Options { hook, ..sealing() });
     let a = id_of(&keep(&mut store, "a.md", b"one\ntwo\n"));
     keep(&mut store, "e.md", b"");
     keep(&mut store, "a.md", b"one\ntwo\nthree\n");
     let meta = Meta {
-        labels: vec!["changed".into()],
+        parent: Some(a),
         ..store.meta(a).expect("meta").expect("some")
     };
     store.set_meta(a, &meta).expect("set_meta");
@@ -96,8 +92,7 @@ fn assert_whole(layout: &Layout, before: &Before) {
     );
     drop(store);
 
-    let read_only =
-        Store::open_read_only(layout, Options::default(), &mut |_| {}).expect("read-only");
+    let read_only = Store::open_read_only(layout, sealing(), &mut |_| {}).expect("read-only");
     assert_eq!(
         read_only.changes(&Cursor::start()).expect("changes").0,
         before.changes
@@ -134,7 +129,7 @@ fn open_seg_is_sealed_when_it_reaches_the_threshold() {
         &layout,
         Options {
             seal_at: 1,
-            ..Options::default()
+            ..sealing()
         },
     );
     for (count, name) in ["a.md", "b.md", "c.md"].iter().enumerate() {
@@ -152,7 +147,7 @@ fn segment_names_rise_with_seal_order() {
         &layout,
         Options {
             seal_at: 1,
-            ..Options::default()
+            ..sealing()
         },
     );
     let mut ids = Vec::new();
@@ -282,7 +277,7 @@ fn a_sealed_segment_that_does_not_match_open_seg_stops_recovery_and_keeps_both()
             fs::read(open_seg(&layout)).expect("open.seg"),
             fs::read(&segment).expect("segment"),
         );
-        match Store::open(&layout, Options::default(), &mut |_: Notice| {}) {
+        match Store::open(&layout, sealing(), &mut |_: Notice| {}) {
             Err(StoreError::Damaged { .. }) => {}
             Ok(_) => panic!("{target:?}: the open must fail"),
             Err(other) => panic!("{target:?}: expected Damaged, got {other}"),
@@ -315,8 +310,8 @@ fn a_read_only_open_during_an_interrupted_seal_sees_every_frame_once() {
         assert!(store.close().is_err());
         let held = crate::scratch::snapshot_of(&layout);
 
-        let reader = Store::open_read_only(&layout, Options::default(), &mut |_| {})
-            .expect("read-only open");
+        let reader =
+            Store::open_read_only(&layout, sealing(), &mut |_| {}).expect("read-only open");
         assert_eq!(
             reader.changes(&Cursor::start()).expect("changes").0,
             before.changes,
@@ -343,7 +338,7 @@ fn a_read_only_open_refuses_a_sealed_segment_that_differs_from_open_seg() {
     let last = fs::metadata(&segment).expect("segment").len() as usize - 1;
     flip(&segment, last);
     let held = crate::scratch::snapshot_of(&layout);
-    match Store::open_read_only(&layout, Options::default(), &mut |_| {}) {
+    match Store::open_read_only(&layout, sealing(), &mut |_| {}) {
         Err(StoreError::Damaged { path, .. }) => assert_eq!(path, segment),
         Ok(_) => panic!("the open must fail"),
         Err(other) => panic!("expected Damaged, got {other}"),

@@ -11,6 +11,9 @@ pub enum Exit {
     Success,
     NothingMatched,
     Refused,
+    /// Exit 2 after the run's own lines: the config file refused the write, or a setting points the
+    /// store at a forbidden folder.
+    Config,
 }
 
 type Human = Box<dyn Fn(&View) -> String>;
@@ -68,6 +71,7 @@ impl Outcome {
         match self.exit {
             Exit::Success => 0,
             Exit::NothingMatched | Exit::Refused => 1,
+            Exit::Config => 2,
         }
     }
 }
@@ -247,6 +251,13 @@ mod tests {
         assert_eq!(Failure::Config(String::new()).exit_code(), 2);
         assert_eq!(Failure::Refused(String::new()).exit_code(), 1);
         assert_eq!(Failure::Output(String::new()).exit_code(), 1);
+    }
+
+    #[test]
+    fn a_config_file_a_run_could_not_write_exits_2_without_a_failure() {
+        let outcome = Outcome::new("x").with_exit(Exit::Config);
+        assert_eq!(outcome.exit_code(), 2);
+        assert_eq!(outcome.stdout(&View::PLAIN), "x");
     }
 
     #[test]

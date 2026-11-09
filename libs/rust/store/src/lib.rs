@@ -10,3 +10,4 @@ mod catalog;
 mod files;
 mod frame;
 mod meta;
+mod opaque;

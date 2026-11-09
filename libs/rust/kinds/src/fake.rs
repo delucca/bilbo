@@ -58,7 +58,12 @@ impl Kind for Suffix {
         })
     }
 
-    fn propose(&self, _bytes: &[u8]) -> Proposal {
+    fn propose(
+        &self,
+        _path: &Path,
+        _bytes: &[u8],
+        _kept: &dyn Fn(&Path) -> Option<bilbo_store::id::Id>,
+    ) -> Proposal {
         Proposal::default()
     }
 }

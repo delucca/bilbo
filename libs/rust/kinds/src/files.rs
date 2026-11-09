@@ -2,6 +2,9 @@ use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::time::SystemTime;
+
+use bilbo_store::entries::Stamp;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Node {
@@ -19,11 +22,17 @@ pub trait Files {
     /// The names in a folder, sorted bytewise.
     fn list(&self, folder: &Path) -> io::Result<Vec<OsString>>;
     fn read(&self, path: &Path) -> io::Result<Vec<u8>>;
+    /// Without following a symbolic link.
+    fn stamp(&self, path: &Path) -> io::Result<Stamp>;
+    /// Separate so a fake can fix it.
+    fn now(&self) -> SystemTime {
+        SystemTime::now()
+    }
 }
 
 #[derive(Debug, Clone)]
 enum Entry {
-    File(Vec<u8>),
+    File(Vec<u8>, SystemTime),
     Folder,
     Other,
     Unreadable(Node),
@@ -33,6 +42,7 @@ enum Entry {
 #[derive(Debug, Clone, Default)]
 pub struct Memory {
     tree: BTreeMap<PathBuf, Entry>,
+    clock: Option<SystemTime>,
 }
 
 impl Memory {
@@ -41,12 +51,26 @@ impl Memory {
         Memory::default()
     }
 
-    /// A file, with every missing parent folder up to `/`.
     #[must_use]
     pub fn file(mut self, path: impl Into<PathBuf>, bytes: impl Into<Vec<u8>>) -> Memory {
         let path = path.into();
         self.parents(&path);
-        self.tree.insert(path, Entry::File(bytes.into()));
+        self.tree
+            .insert(path, Entry::File(bytes.into(), SystemTime::UNIX_EPOCH));
+        self
+    }
+
+    #[must_use]
+    pub fn modified(mut self, path: impl AsRef<Path>, time: SystemTime) -> Memory {
+        if let Some(Entry::File(_, modified)) = self.tree.get_mut(path.as_ref()) {
+            *modified = time;
+        }
+        self
+    }
+
+    #[must_use]
+    pub fn clock(mut self, time: SystemTime) -> Memory {
+        self.clock = Some(time);
         self
     }
 
@@ -92,6 +116,10 @@ impl Memory {
 }
 
 impl Files for Memory {
+    fn now(&self) -> SystemTime {
+        self.clock.unwrap_or_else(SystemTime::now)
+    }
+
     fn canonical(&self, path: &Path) -> io::Result<PathBuf> {
         if !path.is_absolute() {
             return Err(io::Error::from(io::ErrorKind::NotFound));
@@ -101,7 +129,7 @@ impl Files for Memory {
 
     fn node(&self, path: &Path) -> io::Result<Node> {
         Ok(match self.entry(path)? {
-            Entry::File(_) => Node::File,
+            Entry::File(..) => Node::File,
             Entry::Folder => Node::Folder,
             Entry::Other => Node::Other,
             Entry::Unreadable(node) => *node,
@@ -129,7 +157,18 @@ impl Files for Memory {
 
     fn read(&self, path: &Path) -> io::Result<Vec<u8>> {
         match self.entry(path)? {
-            Entry::File(bytes) => Ok(bytes.clone()),
+            Entry::File(bytes, _) => Ok(bytes.clone()),
+            Entry::Unreadable(_) => Err(io::Error::from(io::ErrorKind::PermissionDenied)),
+            _ => Err(io::Error::from(io::ErrorKind::InvalidInput)),
+        }
+    }
+
+    fn stamp(&self, path: &Path) -> io::Result<Stamp> {
+        match self.entry(path)? {
+            Entry::File(bytes, modified) => Ok(Stamp {
+                size: bytes.len() as u64,
+                modified: *modified,
+            }),
             Entry::Unreadable(_) => Err(io::Error::from(io::ErrorKind::PermissionDenied)),
             _ => Err(io::Error::from(io::ErrorKind::InvalidInput)),
         }
@@ -141,6 +180,9 @@ mod tests {
     use std::ffi::OsString;
     use std::io::ErrorKind;
     use std::path::{Path, PathBuf};
+    use std::time::{Duration, SystemTime};
+
+    use bilbo_store::entries::Stamp;
 
     use super::{Files, Memory, Node};
 
@@ -216,5 +258,32 @@ mod tests {
             files.read(Path::new("/nope")).map_err(|e| e.kind()),
             Err(ErrorKind::NotFound)
         );
+    }
+
+    #[test]
+    fn memory_stamps_a_file_with_its_size_and_the_time_it_was_given() {
+        let later = SystemTime::UNIX_EPOCH + Duration::from_secs(9);
+        let files = Memory::new()
+            .file("/t/a.md", "abc")
+            .file("/t/b.md", "b")
+            .modified("/t/b.md", later)
+            .modified("/t/none.md", later);
+        let stamp = |path: &str| files.stamp(Path::new(path)).map_err(|e| e.kind());
+        assert_eq!(
+            stamp("/t/a.md"),
+            Ok(Stamp {
+                size: 3,
+                modified: SystemTime::UNIX_EPOCH
+            })
+        );
+        assert_eq!(
+            stamp("/t/b.md"),
+            Ok(Stamp {
+                size: 1,
+                modified: later
+            })
+        );
+        assert_eq!(stamp("/t"), Err(ErrorKind::InvalidInput));
+        assert_eq!(stamp("/t/none.md"), Err(ErrorKind::NotFound));
     }
 }

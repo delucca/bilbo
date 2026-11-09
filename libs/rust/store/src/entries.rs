@@ -52,7 +52,8 @@ pub struct Meta {
     pub origin: Option<Origin>,
     /// Whole milliseconds: the store truncates before writing.
     pub captured: SystemTime,
-    pub labels: Vec<String>,
+    /// The entry this one belongs to, such as a subagent's session.
+    pub parent: Option<Id>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -73,11 +74,19 @@ pub struct Mark {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Stamp {
+    pub size: u64,
+    pub modified: SystemTime,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Head {
     pub id: Id,
     pub generation: Generation,
     pub records: u64,
     pub mark: Mark,
+    /// `None` until a capture records one; the catalog is rebuilt without them.
+    pub stamp: Option<Stamp>,
 }
 
 pub struct Capture<'a> {
@@ -87,7 +96,9 @@ pub struct Capture<'a> {
     /// Used at first capture only; `None` mints one.
     pub id: Option<Id>,
     /// Used at first capture only.
-    pub labels: &'a [String],
+    pub parent: Option<Id>,
+    /// The origin as it was before its bytes were read.
+    pub stamp: Option<Stamp>,
     pub bytes: &'a [u8],
     /// Each record's end offset: strictly rising, the last equal to `bytes.len()`.
     pub ends: &'a [usize],
@@ -260,6 +271,10 @@ pub enum StoreError {
         path: PathBuf,
         root: PathBuf,
     },
+    /// Another writer holds the store; the again flag is set for it.
+    Busy,
+    /// The catalog must be rebuilt from every segment, and the options refused that.
+    Unrebuilt,
 }
 
 impl fmt::Display for StoreError {
@@ -314,6 +329,8 @@ impl fmt::Display for StoreError {
                 asked.display()
             ),
             Self::Stopped(step) => write!(f, "stopped at the test hook {step}"),
+            Self::Busy => f.write_str("another bilbo is writing the store"),
+            Self::Unrebuilt => f.write_str("the catalog must be rebuilt from the store first"),
         }
     }
 }
@@ -329,7 +346,8 @@ impl Error for StoreError {
 
 pub trait Entries {
     fn capture(&mut self, input: &Capture<'_>) -> Result<Captured, CaptureError>;
-    fn set_meta(&mut self, id: Id, meta: &Meta) -> Result<(), StoreError>;
+    /// Returns the bytes the store grew by.
+    fn set_meta(&mut self, id: Id, meta: &Meta) -> Result<u64, StoreError>;
     fn read(
         &self,
         id: Id,
@@ -491,6 +509,14 @@ mod tests {
             (
                 CaptureError::Store(StoreError::ReadOnly).to_string(),
                 "the store is open read-only",
+            ),
+            (
+                StoreError::Busy.to_string(),
+                "another bilbo is writing the store",
+            ),
+            (
+                StoreError::Unrebuilt.to_string(),
+                "the catalog must be rebuilt from the store first",
             ),
         ];
         for (text, expected) in cases {

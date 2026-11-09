@@ -5,10 +5,14 @@ use bilbo_cli::console::env::Env;
 use bilbo_cli::console::outcome::Failure;
 use bilbo_cli::console::settings::{self, Settings};
 use bilbo_cli::console::view::View;
-use bilbo_cli::remember::view;
+use bilbo_cli::remember::{registry, view};
 use bilbo_cli::run;
-use bilbo_kinds::remember::{Item, Outcome, Output};
+use bilbo_kinds::files::Memory;
+use bilbo_kinds::remember::{self, Item, Outcome, Output, Request};
+use bilbo_store::entries::{Entries, Origin, RecordRange};
 use bilbo_store::id::Id;
+use bilbo_store::layout::Layout;
+use bilbo_store::segments::{Options, Store};
 
 fn args(list: &[&str]) -> Vec<OsString> {
     std::iter::once("bilbo")
@@ -208,4 +212,70 @@ fn the_config_page_is_the_same_from_every_help_form() {
     ] {
         assert_eq!(stdout(form, &View::PLAIN), page, "{form:?}");
     }
+}
+
+#[test]
+fn the_output_of_a_bare_run_adds_up_every_follow() {
+    let mut sessions = remembered();
+    sessions.target = PathBuf::from("/h/.claude/projects");
+    sessions.kind = Some("session".to_owned());
+    assert_eq!(
+        view::plain_totals(&view::Totals::of(&[remembered(), sessions])),
+        include_str!("snapshots/remember-follows.txt")
+    );
+}
+
+#[expect(
+    clippy::disallowed_methods,
+    reason = "Bazel gives each test its scratch folder in TEST_TMPDIR"
+)]
+fn scratch(name: &str) -> PathBuf {
+    std::env::var_os("TEST_TMPDIR")
+        .map_or_else(std::env::temp_dir, PathBuf::from)
+        .join(format!("{name}-{}", std::process::id()))
+}
+
+#[test]
+fn a_codex_session_as_the_store_keeps_it() {
+    const ROLLOUT: &[u8] = include_bytes!(
+        "../../../libs/rust/kinds/session/fixtures/rollout-2026-11-06T09-10-00-019a4f2e-7c1d-7b3a-9e55-2d8c41f0a6b7.jsonl"
+    );
+    let path =
+        "/s/2026/11/06/rollout-2026-11-06T09-10-00-019a4f2e-7c1d-7b3a-9e55-2d8c41f0a6b7.jsonl";
+    let dir = scratch("stored_session");
+    let layout = Layout {
+        root: dir.join("store"),
+        state: dir.join("state"),
+        cache: dir.join("cache"),
+    };
+    let files = Memory::new().file(path, ROLLOUT);
+    let kinds = registry::kinds();
+    let request = Request {
+        target: PathBuf::from(path),
+        kind: None,
+    };
+    let plan = remember::plan(&request, &kinds, &files).expect("plan");
+    let mut store = Store::open(&layout, Options::default(), &mut |_| {}).expect("open");
+    remember::keep(&plan, &files, &mut store).expect("keep");
+    let head = store
+        .by_origin(&Origin::new(format!("file:{path}")).expect("origin"))
+        .expect("head")
+        .expect("an entry");
+    let records = store
+        .read(
+            head.id,
+            head.generation,
+            RecordRange {
+                first: 1,
+                count: head.records,
+            },
+        )
+        .expect("read");
+    let stored = String::from_utf8(records.concat()).expect("UTF-8");
+    drop(store);
+    let _ = std::fs::remove_dir_all(&dir);
+    assert_eq!(
+        stored,
+        include_str!("snapshots/session-rollout.stored.jsonl")
+    );
 }

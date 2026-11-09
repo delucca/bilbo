@@ -31,9 +31,10 @@ fn remembering_a_folder_twice_keeps_everything_once() {
         "{totals}"
     );
     assert!(!totals.ends_with(" 0"), "{totals}");
-    assert_eq!(scratch.segments(), 1);
+    assert_eq!(scratch.segments(), 0, "a young open.seg is not sealed");
     let open_seg = fs::read(scratch.dir.join("state/bilbo/open.seg")).expect("open.seg");
-    assert_eq!(open_seg.len(), 12);
+    assert!(open_seg.len() > 12);
+    assert!(scratch.dir.join("state/bilbo/open.since").exists());
     assert!(scratch.dir.join("cache/bilbo/catalog.sqlite").exists());
 
     let second = scratch.run(&["remember", &notes]);
@@ -42,17 +43,24 @@ fn remembering_a_folder_twice_keeps_everything_once() {
         second.stdout,
         "new 0, appended 0, new generation 0, unchanged 3, refused 0\nrecords 0, raw bytes 0, stored bytes 0\n"
     );
-    assert_eq!(scratch.segments(), 1);
+    assert_eq!(scratch.segments(), 0);
     assert_eq!(scratch.notes_state(), before);
 }
 
 #[test]
 fn remember_usage_errors_name_the_problem_and_touch_no_store() {
-    const USAGE: &str = "bilbo: usage: bilbo remember <file|folder> [--kind <kind>] [--project <project>]\nbilbo: see 'bilbo remember --help'\n";
+    const USAGE: &str = "bilbo: usage: bilbo remember <file|folder> [--kind <kind>] [--follow]\n\
+                         bilbo:        bilbo remember\n\
+                         bilbo:        bilbo remember --hook\n\
+                         bilbo: see 'bilbo remember --help'\n";
     let scratch = Scratch::new("usage");
-    let cases: [(&[&str], &str); 7] = [
-        (&["remember"], "bilbo: missing <file|folder>\n"),
-        (&["remember", ""], "bilbo: <file|folder> needs a value\n"),
+    let cases: [(&[&str], &str); 8] = [
+        (&["remember", "--follow"], "bilbo: missing <file|folder>\n"),
+        (
+            &["remember", "--kind", "session"],
+            "bilbo: missing <file|folder>\n",
+        ),
+        (&["remember", ""], "bilbo: [file|folder] needs a value\n"),
         (
             &["remember", "x", "--kind"],
             "bilbo: --kind needs a value\n",
@@ -62,13 +70,13 @@ fn remember_usage_errors_name_the_problem_and_touch_no_store() {
             "bilbo: --kind needs a value\n",
         ),
         (
-            &["remember", "x", "--project="],
-            "bilbo: --project needs a value\n",
+            &["remember", "--hook", "--follow"],
+            "bilbo: the argument '--hook' cannot be used with '--follow'\n",
         ),
         (&["remember", "a", "b"], "bilbo: unexpected argument 'b'\n"),
         (
             &["remember", "x", "--kind", "nope"],
-            "bilbo: unknown kind 'nope'; kinds: markdown\n",
+            "bilbo: unknown kind 'nope'; kinds: markdown, session\n",
         ),
     ];
     for (args, reason) in cases {

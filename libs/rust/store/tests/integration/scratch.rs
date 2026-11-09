@@ -2,6 +2,7 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Duration;
 
 use bilbo_store::entries::{Capture, Captured, Entries, Generation, RecordRange};
 use bilbo_store::id::Id;
@@ -49,8 +50,16 @@ impl Drop for Scratch {
     }
 }
 
+/// Every close due to seal: the default waits for `open.seg` to be 60 minutes old.
+pub fn sealing() -> Options {
+    Options {
+        seal_after: Duration::ZERO,
+        ..Options::default()
+    }
+}
+
 pub fn open(layout: &Layout) -> Store {
-    open_with(layout, Options::default())
+    open_with(layout, sealing())
 }
 
 pub fn open_with(layout: &Layout, options: Options) -> Store {
@@ -93,7 +102,8 @@ pub fn try_keep(
         origin: &origin,
         kind: "markdown",
         id,
-        labels: &["p".to_string()],
+        parent: None,
+        stamp: None,
         bytes,
         ends: &ends(bytes),
     })

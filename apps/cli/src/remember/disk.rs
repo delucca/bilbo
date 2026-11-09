@@ -5,6 +5,7 @@ use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 
 use bilbo_kinds::files::{Files, Node};
+use bilbo_store::entries::Stamp;
 
 /// Reads the disk and never writes it.
 pub struct Disk;
@@ -36,5 +37,13 @@ impl Files for Disk {
 
     fn read(&self, path: &Path) -> io::Result<Vec<u8>> {
         fs::read(path)
+    }
+
+    fn stamp(&self, path: &Path) -> io::Result<Stamp> {
+        let meta = fs::symlink_metadata(path)?;
+        Ok(Stamp {
+            size: meta.len(),
+            modified: meta.modified()?,
+        })
     }
 }

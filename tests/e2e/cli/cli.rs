@@ -6,6 +6,7 @@ use std::process::{Command, Stdio};
 mod config;
 mod remember;
 mod scratch;
+mod sessions;
 mod tty;
 
 pub(crate) struct Run {

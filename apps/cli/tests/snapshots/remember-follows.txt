@@ -1,0 +1,2 @@
+new 4, appended 2, new generation 2, unchanged 6, refused 2
+records 2468, raw bytes 113578, stored bytes 24690

@@ -1,0 +1,9 @@
+[Unit]
+Description=Run bilbo remember every 10 min
+
+[Timer]
+OnActiveSec=10min
+OnUnitActiveSec=10min
+
+[Install]
+WantedBy=timers.target

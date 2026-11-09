@@ -223,7 +223,8 @@ fn an_entry_at_generation_0_fails_the_read_back_even_with_nothing_to_read() {
             origin: &origin,
             kind: "markdown",
             id: None,
-            labels: &[],
+            parent: None,
+            stamp: None,
             bytes: b"",
             ends: &[],
         })
@@ -284,7 +285,8 @@ fn an_entry_whose_id_the_frontmatter_contradicts_fails_the_read_back() {
             origin: &origin,
             kind: "markdown",
             id: Some(other),
-            labels: &[],
+            parent: None,
+            stamp: None,
             bytes: &bytes,
             ends: &ends,
         })

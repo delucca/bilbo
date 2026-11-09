@@ -35,7 +35,7 @@ fn a_first_capture_is_new_and_reads_back_byte_for_byte() {
     let meta = store.meta(new.id).expect("meta").expect("some");
     assert_eq!(meta.kind, "markdown");
     assert_eq!(meta.origin, Some(origin("a.md")));
-    assert_eq!(meta.labels, vec!["p".to_string()]);
+    assert_eq!(meta.parent, None);
     let head = store
         .by_origin(&origin("a.md"))
         .expect("head")
@@ -191,11 +191,26 @@ fn records_that_do_not_cover_the_bytes_are_refused() {
         origin: &origin,
         kind: "markdown",
         id: None,
-        labels: &[],
+        parent: None,
+        stamp: None,
         bytes: b"one\ntwo\n",
         ends: &[4],
     });
     assert!(matches!(refused, Err(CaptureError::Records(_))));
+}
+
+#[test]
+fn set_meta_returns_the_length_of_the_meta_frame_it_wrote() {
+    let scratch = Scratch::new("set_meta_grew");
+    let layout = scratch.layout();
+    let mut store = open(&layout);
+    let id = id_of(&keep(&mut store, "a.md", b"one\n"));
+    let meta = store.meta(id).expect("meta").expect("some");
+    let before = fs::metadata(open_seg(&layout)).expect("open.seg").len();
+    let grew = store.set_meta(id, &meta).expect("set_meta");
+    let after = fs::metadata(open_seg(&layout)).expect("open.seg").len();
+    assert!(grew > 0);
+    assert_eq!(grew, after - before);
 }
 
 #[test]
@@ -206,7 +221,7 @@ fn set_meta_replaces_the_meta_and_survives_a_rebuild() {
     let id = id_of(&keep(&mut store, "a.md", b"one\n"));
     let mut meta = store.meta(id).expect("meta").expect("some");
     meta.kind = "other".into();
-    meta.labels = vec!["x".into(), "y".into()];
+    meta.parent = Some(Id::parse("01JC5Q3V7XKM4P8R2T6W9YB0DF").expect("id"));
     meta.origin = Some(origin("moved.md"));
     store.set_meta(id, &meta).expect("set_meta");
     assert_eq!(store.meta(id).expect("meta"), Some(meta.clone()));
@@ -296,4 +311,153 @@ fn a_cursor_from_another_catalog_starts_over() {
     assert_eq!(all.len(), 4);
     let (again, _) = store.changes(&Cursor::at([9; 16], 3)).expect("changes");
     assert_eq!(again, all);
+}
+
+#[test]
+fn a_parent_is_kept_in_the_meta_and_survives_a_rebuild() {
+    let scratch = Scratch::new("parent");
+    let layout = scratch.layout();
+    let parent = Id::parse("01JC5Q3V7XKM4P8R2T6W9YB0DF").expect("id");
+    let mut store = open(&layout);
+    let origin = origin("agent-a.jsonl");
+    let captured = store
+        .capture(&Capture {
+            origin: &origin,
+            kind: "session",
+            id: None,
+            parent: Some(parent),
+            stamp: None,
+            bytes: b"{}\n",
+            ends: &[3],
+        })
+        .expect("capture");
+    let id = id_of(&captured);
+    assert_eq!(
+        store.meta(id).expect("meta").map(|m| m.parent),
+        Some(Some(parent))
+    );
+    let plain = id_of(&keep(&mut store, "a.md", b"one\n"));
+    assert_eq!(
+        store.meta(plain).expect("meta").map(|m| m.parent),
+        Some(None)
+    );
+    store.close().expect("close");
+
+    fs::remove_file(catalog(&layout)).expect("drop the catalog");
+    let store = open(&layout);
+    assert_eq!(
+        store.meta(id).expect("meta").map(|m| m.parent),
+        Some(Some(parent))
+    );
+    assert_eq!(
+        store.meta(plain).expect("meta").map(|m| m.parent),
+        Some(None)
+    );
+}
+
+#[test]
+fn a_capture_without_a_stamp_clears_the_old_one_so_a_restore_is_a_new_generation() {
+    let scratch = Scratch::new("stamp-clear");
+    let layout = scratch.layout();
+    let settled = bilbo_store::entries::Stamp {
+        size: 2,
+        modified: std::time::UNIX_EPOCH
+            + std::time::Duration::from_nanos(1_700_000_000_000_000_000),
+    };
+    let mut store = open(&layout);
+    let origin = origin("a.md");
+    let capture = |store: &mut bilbo_store::segments::Store,
+                   bytes: &[u8],
+                   stamp: Option<bilbo_store::entries::Stamp>| {
+        store
+            .capture(&Capture {
+                origin: &origin,
+                kind: "markdown",
+                id: None,
+                parent: None,
+                stamp,
+                bytes,
+                ends: &crate::scratch::ends(bytes),
+            })
+            .expect("capture")
+    };
+    let head = |store: &bilbo_store::segments::Store| {
+        store.by_origin(&origin).expect("head").expect("an entry")
+    };
+    capture(&mut store, b"a\n", Some(settled));
+    assert_eq!(head(&store).stamp, Some(settled));
+
+    assert!(matches!(
+        capture(&mut store, b"b\n", None),
+        Captured::NewGeneration(_)
+    ));
+    assert_eq!(head(&store).stamp, None, "a racy capture keeps no stamp");
+
+    let restored = head(&store);
+    assert_ne!(
+        restored.stamp,
+        Some(settled),
+        "the growth check must not report the restore unchanged"
+    );
+    assert!(matches!(
+        capture(&mut store, b"a\n", Some(settled)),
+        Captured::NewGeneration(_)
+    ));
+    assert_eq!(head(&store).generation.0, 3);
+    assert_eq!(head(&store).stamp, Some(settled));
+
+    assert!(matches!(
+        capture(&mut store, b"a\n", None),
+        Captured::Unchanged(_)
+    ));
+    assert_eq!(
+        head(&store).stamp,
+        None,
+        "an unchanged racy capture clears the stamp too"
+    );
+}
+
+#[test]
+fn a_stamp_is_kept_with_each_capture_and_a_rebuild_forgets_it() {
+    let scratch = Scratch::new("stamp");
+    let layout = scratch.layout();
+    let stamp = |seconds| bilbo_store::entries::Stamp {
+        size: 4,
+        modified: std::time::UNIX_EPOCH + std::time::Duration::from_nanos(seconds),
+    };
+    let mut store = open(&layout);
+    let origin = origin("a.md");
+    let capture = |store: &mut bilbo_store::segments::Store, bytes: &[u8], at| {
+        store
+            .capture(&Capture {
+                origin: &origin,
+                kind: "markdown",
+                id: None,
+                parent: None,
+                stamp: Some(stamp(at)),
+                bytes,
+                ends: &crate::scratch::ends(bytes),
+            })
+            .expect("capture")
+    };
+    let head = |store: &bilbo_store::segments::Store| {
+        store
+            .by_origin(&origin)
+            .expect("head")
+            .and_then(|head| head.stamp)
+    };
+    capture(&mut store, b"one\n", 1_700_000_000_123_456_789);
+    assert_eq!(head(&store), Some(stamp(1_700_000_000_123_456_789)));
+    assert!(matches!(
+        capture(&mut store, b"one\n", 1_700_000_001_000_000_000),
+        Captured::Unchanged(_)
+    ));
+    assert_eq!(head(&store), Some(stamp(1_700_000_001_000_000_000)));
+    capture(&mut store, b"one\ntwo\n", 1_700_000_002_000_000_000);
+    assert_eq!(head(&store), Some(stamp(1_700_000_002_000_000_000)));
+    store.close().expect("close");
+
+    fs::remove_file(catalog(&layout)).expect("drop the catalog");
+    let store = open(&layout);
+    assert_eq!(head(&store), None);
 }
