@@ -35,7 +35,10 @@ rust_binary(
     lint_config = ":lints",
     version = BILBO_VERSION,
     visibility = ["//tests:__subpackages__"],
-    deps = [":bilbo_cli"],
+    deps = [
+        ":bilbo_cli",
+        "//libs/rust/settings",
+    ],
 )
 
 alias(

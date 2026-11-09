@@ -1,6 +1,5 @@
 use std::ffi::OsString;
-use std::fs;
-use std::io::{self, Read};
+use std::io;
 use std::path::{Path, PathBuf};
 
 use bilbo_kinds::follows::Follow;
@@ -10,7 +9,6 @@ use bilbo_settings::folder::{self, Folder};
 use bilbo_settings::key::{About, Default, Key, Origin, Resolved, Shown, Source, Value, quote};
 use bilbo_store::keys;
 use bilbo_store::layout::Layout;
-use rustix::fs::{FileType, Mode, OFlags};
 
 /// Not a key: the file cannot name itself.
 pub const CONFIG: Key<PathBuf> = Key {
@@ -172,26 +170,6 @@ impl Settings {
         shown.push(FOLLOW.shown(&self.follow));
         shown
     }
-}
-
-/// A file's bytes, read only from a regular file: a named pipe or a device would block the read,
-/// and the file is read before any verb parses its arguments.
-pub fn read_regular(path: &Path) -> io::Result<Vec<u8>> {
-    let fd = rustix::fs::open(
-        path,
-        OFlags::RDONLY | OFlags::NONBLOCK | OFlags::CLOEXEC,
-        Mode::empty(),
-    )?;
-    let stat = rustix::fs::fstat(&fd)?;
-    if FileType::from_raw_mode(stat.st_mode) != FileType::RegularFile {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "not a regular file",
-        ));
-    }
-    let mut bytes = Vec::new();
-    fs::File::from(fd).read_to_end(&mut bytes)?;
-    Ok(bytes)
 }
 
 /// The config file's path from the environment, then the file, then every key.

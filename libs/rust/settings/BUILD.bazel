@@ -27,3 +27,12 @@ bilbo_rust_test(
     layer = "unit",
     lint_config = ":lints",
 )
+
+bilbo_rust_test(
+    name = "integration",
+    srcs = glob(["tests/integration/*.rs"]),
+    crate_root = "tests/integration/main.rs",
+    layer = "integration",
+    lint_config = ":lints",
+    deps = [":settings"],
+)

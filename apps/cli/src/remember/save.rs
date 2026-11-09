@@ -1,10 +1,9 @@
 use std::ffi::OsString;
 use std::fs;
-use std::io::{self, Write};
-use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 
 use bilbo_kinds::follows::Follow;
+use bilbo_settings::edit;
 use bilbo_settings::folder;
 use bilbo_settings::key::{Origin, quote};
 
@@ -120,13 +119,13 @@ pub fn save_with(
             follow,
         ))
     };
-    check(config).map_err(|reason| refusal(reason, first_lines.clone()))?;
+    edit::check(config).map_err(|reason| refusal(reason, first_lines.clone()))?;
     let lock =
-        lock_file(config).map_err(|error| refusal(error.to_string(), first_lines.clone()))?;
+        edit::lock_file(config).map_err(|error| refusal(error.to_string(), first_lines.clone()))?;
     hook(Saving::Locking);
     lock.lock()
         .map_err(|error| refusal(error.to_string(), first_lines.clone()))?;
-    let current = settings::load(var, &settings::read_regular)
+    let current = settings::load(var, &edit::read_regular)
         .map_err(|error| refusal(error.to_string(), first_lines.clone()))?;
     if current.follow.value.iter().any(|declared| {
         fs::canonicalize(&declared.path).unwrap_or_else(|_| declared.path.clone()) == follow.path
@@ -136,10 +135,10 @@ pub fn save_with(
     let defaults = current.follow.origin == Origin::Default;
     let lines = lines(&current.follow.value, defaults, follow);
     let refuse = |reason: String| refusal(reason, Remedy::Tables(lines.clone()));
-    let before = read(config).map_err(refuse)?;
+    let before = edit::read(config).map_err(refuse)?;
     hook(Saving::Read);
     if let Origin::File { line, .. } = current.follow.origin
-        && inline(&before, line)
+        && edit::inline(&before, line)
     {
         return Err(Refusal {
             config: config.clone(),
@@ -147,19 +146,19 @@ pub fn save_with(
             remedy: Remedy::ArrayItem(settings::inline_follow(follow)),
         });
     }
-    let text = appended(&before, &lines);
+    let text = edit::appended(&before, &lines);
     let loaded = settings::load(var, &|path| {
         if path == config {
             Ok(text.clone())
         } else {
-            settings::read_regular(path)
+            edit::read_regular(path)
         }
     })
     .map_err(|error| refuse(error.to_string()))?;
     if !loaded.follow.value.contains(follow) {
         return Err(refuse("the file would not declare it".to_owned()));
     }
-    let unsynced = replace(config, &text).map_err(|error| refuse(error.to_string()))?;
+    let unsynced = edit::replace(config, &text).map_err(|error| refuse(error.to_string()))?;
     Ok(Saved::Added {
         config: config.clone(),
         defaults,
@@ -178,26 +177,6 @@ fn lines(declared: &[Follow], defaults: bool, follow: &Follow) -> String {
     tables.join("\n")
 }
 
-/// `<config>.lock` beside the file, created private with its folder, never removed.
-fn lock_file(config: &Path) -> io::Result<fs::File> {
-    let folder = config
-        .parent()
-        .ok_or_else(|| io::Error::other("it has no folder"))?;
-    fs::create_dir_all(folder)?;
-    let mut name = config
-        .file_name()
-        .ok_or_else(|| io::Error::other("it has no name"))?
-        .to_owned();
-    name.push(".lock");
-    fs::OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .mode(0o600)
-        .open(folder.join(name))
-}
-
 pub fn table(follow: &Follow) -> String {
     let mut text = format!("[[follow]]\npath = {}\n", folder::show(&follow.path));
     if let Some(kind) = &follow.kind {
@@ -206,94 +185,14 @@ pub fn table(follow: &Follow) -> String {
     text
 }
 
-pub fn appended(before: &[u8], tables: &str) -> Vec<u8> {
-    let mut text = before.to_vec();
-    if !text.is_empty() {
-        if !text.ends_with(b"\n") {
-            text.push(b'\n');
-        }
-        text.push(b'\n');
-    }
-    text.extend_from_slice(tables.as_bytes());
-    text
-}
-
-/// A link (a Nix-managed config), a read-only file or another account's file is refused: replacing
-/// it would cut it from what manages it.
-fn check(config: &Path) -> Result<bool, String> {
-    match fs::symlink_metadata(config) {
-        Ok(meta) if meta.file_type().is_symlink() => Err("it is a symbolic link".to_owned()),
-        Ok(meta) if !meta.is_file() => Err("it is not a regular file".to_owned()),
-        Ok(_) => fs::OpenOptions::new()
-            .write(true)
-            .open(config)
-            .map(|_| true)
-            .map_err(|_| "it is read-only".to_owned()),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
-        Err(error) => Err(error.to_string()),
-    }
-}
-
 /// Judged before any refusal: a read-only or linked file is read as it is.
 fn declares_inline(config: &Path, origin: &Origin) -> bool {
     let Origin::File { line, .. } = origin else {
         return false;
     };
-    settings::read_regular(config)
+    edit::read_regular(config)
         .ok()
-        .is_some_and(|bytes| inline(&bytes, *line))
-}
-
-fn read(config: &Path) -> Result<Vec<u8>, String> {
-    if check(config)? {
-        fs::read(config).map_err(|error| error.to_string())
-    } else {
-        Ok(Vec::new())
-    }
-}
-
-/// Only the `[[follow]]` form starts the key's value on a `[[` header.
-fn inline(before: &[u8], line: usize) -> bool {
-    before
-        .split(|&byte| byte == b'\n')
-        .nth(line.saturating_sub(1))
-        .is_some_and(|text| !text.trim_ascii_start().starts_with(b"[["))
-}
-
-/// Temp file then rename, keeping the old permissions; a failed folder sync is returned, not
-/// refused.
-fn replace(config: &Path, text: &[u8]) -> io::Result<Option<String>> {
-    let folder = config
-        .parent()
-        .ok_or_else(|| io::Error::other("it has no folder"))?;
-    let name = config
-        .file_name()
-        .ok_or_else(|| io::Error::other("it has no name"))?;
-    let mut temporary = OsString::from(".");
-    temporary.push(name);
-    temporary.push(format!(".{}.tmp", std::process::id()));
-    let temporary = folder.join(temporary);
-    let renamed = (|| {
-        let mut file = fs::File::create_new(&temporary)?;
-        if let Ok(meta) = fs::metadata(config) {
-            file.set_permissions(meta.permissions())?;
-        }
-        file.write_all(text)?;
-        file.sync_all()?;
-        fs::rename(&temporary, config)
-    })();
-    if renamed.is_err() {
-        let _ = fs::remove_file(&temporary);
-    }
-    finish(renamed, || fs::File::open(folder)?.sync_all())
-}
-
-fn finish(
-    renamed: io::Result<()>,
-    sync: impl FnOnce() -> io::Result<()>,
-) -> io::Result<Option<String>> {
-    renamed?;
-    Ok(sync().err().map(|error| error.to_string()))
+        .is_some_and(|bytes| edit::inline(&bytes, *line))
 }
 
 #[cfg(test)]
@@ -302,9 +201,7 @@ mod tests {
 
     use bilbo_kinds::follows::Follow;
 
-    use std::io;
-
-    use super::{Refusal, Remedy, Saved, appended, finish, table};
+    use super::{Refusal, Remedy, Saved, table};
     use crate::console::message::Mark;
     use crate::console::view::View;
 
@@ -325,22 +222,6 @@ mod tests {
             table(&follow("/h/a \"b\"", None)),
             "[[follow]]\npath = \"/h/a \\\"b\\\"\"\n"
         );
-    }
-
-    #[test]
-    fn the_tables_go_after_the_file_as_it_was_with_a_blank_line_between() {
-        let tables = "[[follow]]\npath = \"/x\"\n";
-        assert_eq!(appended(b"", tables), tables.as_bytes());
-        assert_eq!(
-            appended(b"[store]\ncompression = 3\n", tables),
-            b"[store]\ncompression = 3\n\n[[follow]]\npath = \"/x\"\n"
-        );
-        assert_eq!(
-            appended(b"# no newline at the end", tables),
-            b"# no newline at the end\n\n[[follow]]\npath = \"/x\"\n"
-        );
-        let odd = b"[store]  \r\n#  spaced   comment\r\n\n\n";
-        assert!(appended(odd, tables).starts_with(odd));
     }
 
     #[test]
@@ -398,16 +279,6 @@ mod tests {
 
     #[test]
     fn a_failed_folder_sync_after_the_rename_is_saved_with_a_warning() {
-        assert_eq!(
-            finish(Ok(()), || Err(io::Error::other("no sync"))).expect("renamed"),
-            Some("no sync".to_owned())
-        );
-        assert!(
-            finish(Err(io::Error::other("no rename")), || panic!(
-                "never synced"
-            ))
-            .is_err()
-        );
         let message = Saved::Added {
             config: "/c/config.toml".into(),
             defaults: false,

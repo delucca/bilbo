@@ -53,6 +53,7 @@ dependencies = [
 name = "bilbo-settings"
 version = "0.0.0"
 dependencies = [
+ "rustix",
  "toml",
 ]
 

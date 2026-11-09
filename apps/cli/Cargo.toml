@@ -17,12 +17,12 @@ bilbo-session.workspace = true
 bilbo-settings.workspace = true
 bilbo-store.workspace = true
 clap.workspace = true
-rustix.workspace = true
 serde_json.workspace = true
 
 [dev-dependencies]
 proc-macro2.workspace = true
 runfiles.workspace = true
+rustix.workspace = true
 syn.workspace = true
 
 [[test]]
