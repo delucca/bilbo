@@ -22,7 +22,7 @@ kind = "session"
 path = "~/notes"
 ```
 
-A key takes the first of these that sets it: a flag, its variable, the config file, its default. A list such as `follow` is taken whole from that one source: a file that declares one follow drops the default follows. A variable set to the empty string counts as unset. No key has a flag yet. The config file is checked whole whatever the variables say: a bad value in it is a config error even for a key whose variable is set. A value bilbo refuses is a config error wherever it is set, even when a flag or a variable above it sets the key too.
+A key takes the first of these that sets it: a flag, its variable, the config file, its default. A list such as `follow` is taken whole from that one source: a file that declares one follow drops the default follows. A variable set to the empty string counts as unset. One key has a flag: `--budget` of `bilbo read` sets `read.budget`. The config file is checked whole whatever the variables say: a bad value in it is a config error even for a key whose variable is set. A value bilbo refuses is a config error wherever it is set, even when a flag or a variable above it sets the key too.
 
 A missing config file means every key takes its variable or its default, unless `BILBO_CONFIG` names the file: then the missing file is a config error.
 
@@ -39,7 +39,10 @@ Sizes are strings with a binary unit, `KiB`, `MiB` or `GiB`, with or without the
 | `store.seal_after` | `BILBO_STORE_SEAL_AFTER` | `"60m"` | The age of `open.seg`'s oldest frame at which a run seals it, whatever its size. Must be between 1m and 24h. A run checks it when it ends, and a bare run does so even when no follow claims a file; `bilbo remember --hook` never seals. |
 | `store.compression` | `BILBO_STORE_COMPRESSION` | `19` | The zstd level of every frame the store writes: higher packs smaller and writes slower. Must be a zstd level from 1 to 22. |
 | `store.tear_budget` | `BILBO_STORE_TEAR_BUDGET` | `4` | How many times `open.seg`'s size the search after a torn frame may hash before it refuses the file. Must be a whole number from 1 to 64. |
+| `store.wait` | `BILBO_STORE_WAIT` | `"10s"` | How long a reader of the store, such as bilbo read, waits for a bilbo that is writing it before it gives up. Must be between 0s and 10m. A reader that gives up exits 1 and says so; `"0s"` never waits. |
+| `store.hook_wait` | `BILBO_STORE_HOOK_WAIT` | `"2s"` | How long bilbo remember --hook waits for a bilbo that is reading the store before it leaves the lines to the next run. Must be between 0s and 4s. A harness gives a hook five seconds; a hook that gives up says so in one line on stderr and exits 0. |
 | `follow` | none | `[{ path = "~/.claude/projects", kind = "session" }, { path = "~/.codex/sessions", kind = "session" }]` | What a bare bilbo remember keeps up with: each folder or file, and the kind that runs there, else the one detected. Must be a list of [[follow]] tables, each with a path and an optional kind. `--follow` refuses a file whose `follow` is an inline array and prints the inline table to add. A path follows the rules of the folder keys. A follow whose folder is missing is skipped with one line on stderr. |
+| `read.budget` | `BILBO_READ_BUDGET` | `7000` | The most tokens a page of bilbo read prints, as bilbo counts them. The default keeps a page written to a pipe or a file under the 30,000 characters at which Claude Code cuts a command's output. Must be a whole number of 256 or more. The flag `--budget` of `bilbo read` sets it for one run. |
 
 An XDG variable moves a default only when it holds an absolute path.
 
@@ -49,7 +52,7 @@ An XDG variable moves a default only when it holds an absolute path.
 | --- | --- | --- |
 | Store root | `paths.root` | The sealed segments, each `<ULID>.seg`. |
 | State | `paths.state` | `open.seg`, `open.since` (when `open.seg` got its oldest frame), `store.lock`, `store.writer` and `store.again` (the store lock, the writer's lock and the again flag; see [Commands](commands.md#remember)), `sealing` and `root`. |
-| Cache | `paths.cache` | `catalog.sqlite`. Deleting it loses nothing: the next run with a target or none rebuilds it; a hook leaves that to such a run. |
+| Cache | `paths.cache` | `catalog.sqlite`. Deleting it loses nothing: the next `bilbo remember` with a target or none rebuilds it; a hook leaves that to such a run, and `bilbo read` reads the segments themselves until then, which is slower. bilbo trusts the catalog for the store it was built from: after restoring a store from a copy, delete it. |
 | Config | `$BILBO_CONFIG`, else `$XDG_CONFIG_HOME/bilbo/config.toml`, else `~/.config/bilbo/config.toml` | The config file. |
 
 The state and cache folders cannot be inside the store root.
@@ -71,7 +74,7 @@ A key the [Keys](#keys) table does not list, a key set twice, a value of the wro
 
 ```text
 bilbo: /home/me/.config/bilbo/config.toml:7: store.seal_at must be between 1 MiB and 1 GiB, got "0"
-bilbo: /home/me/.config/bilbo/config.toml:9: unknown key store.sealat; the keys are paths.root, paths.state, paths.cache, store.seal_at, store.seal_after, store.compression, store.tear_budget, follow
+bilbo: /home/me/.config/bilbo/config.toml:9: unknown key store.sealat; the keys are paths.root, paths.state, paths.cache, store.seal_at, store.seal_after, store.compression, store.tear_budget, store.wait, store.hook_wait, follow, read.budget
 bilbo: /home/me/.config/bilbo/config.toml:4: duplicate key seal_at
 bilbo: BILBO_STORE_SEAL_AT must be between 1 MiB and 1 GiB, got "0"
 bilbo: /home/me/.config/bilbo/config.toml:2: not valid UTF-8
@@ -89,7 +92,8 @@ bilbo: /home/me/.local/share/bilbo/notes belongs to bilbo 0.20; set BILBO_HOME o
 | Variable | Effect |
 | --- | --- |
 | `BILBO_HOME` | Sets `paths.root`. |
-| `BILBO_STORE_SEAL_AT`, `BILBO_STORE_SEAL_AFTER`, `BILBO_STORE_COMPRESSION`, `BILBO_STORE_TEAR_BUDGET` | Set `store.seal_at`, `store.seal_after`, `store.compression` and `store.tear_budget`. |
+| `BILBO_STORE_SEAL_AT`, `BILBO_STORE_SEAL_AFTER`, `BILBO_STORE_COMPRESSION`, `BILBO_STORE_TEAR_BUDGET`, `BILBO_STORE_WAIT`, `BILBO_STORE_HOOK_WAIT` | Set `store.seal_at`, `store.seal_after`, `store.compression`, `store.tear_budget`, `store.wait` and `store.hook_wait`. |
+| `BILBO_READ_BUDGET` | Sets `read.budget`. |
 | `BILBO_CONFIG` | The config file's path. A file it names must exist. |
 | `XDG_DATA_HOME`, `XDG_CONFIG_HOME`, `XDG_CACHE_HOME`, `XDG_STATE_HOME` | Move the default store root, config file, cache and state folders, as [Keys](#keys) and [Folders](#folders) show. |
 | `HOME` | The base of every default folder, and what `~/` stands for. |

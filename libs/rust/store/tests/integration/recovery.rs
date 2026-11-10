@@ -306,6 +306,11 @@ fn an_entry_whose_body_frame_was_torn_away_is_new_on_the_next_capture() {
         .expect("meta survives");
     assert_eq!(head.id, id);
     assert_eq!(head.generation, Generation(0));
+    assert_eq!(
+        store.extent(id, None).expect("extent"),
+        Some((Generation(0), 0)),
+        "a reader sees an entry with no record yet"
+    );
     let Captured::New(kept) = keep(&mut store, "a.md", b"one\ntwo\n") else {
         panic!("expected New");
     };

@@ -5,11 +5,13 @@ use bilbo_cli::console::env::Env;
 use bilbo_cli::console::outcome::Failure;
 use bilbo_cli::console::settings::{self, Settings};
 use bilbo_cli::console::view::View;
-use bilbo_cli::remember::{registry, view};
-use bilbo_cli::run;
+use bilbo_cli::remember::view;
+use bilbo_cli::{kinds, readers, run};
 use bilbo_kinds::files::Memory;
+use bilbo_kinds::read::refs::Ref;
+use bilbo_kinds::read::{self, Fetched};
 use bilbo_kinds::remember::{self, Item, Outcome, Output, Request};
-use bilbo_store::entries::{Entries, Origin, RecordRange};
+use bilbo_store::entries::{Entries, Generation, Meta, Origin, RecordRange};
 use bilbo_store::id::Id;
 use bilbo_store::layout::Layout;
 use bilbo_store::segments::{Options, Store};
@@ -144,7 +146,7 @@ fn a_usage_error_on_a_terminal_is_a_marked_message() {
     );
     assert_eq!(
         stderr(&["frob"], &unpainted()),
-        "■  unknown verb 'frob'; the verbs are remember, config\n   see bilbo --help\n"
+        "■  unknown verb 'frob'; the verbs are remember, read, config\n   see bilbo --help\n"
     );
 }
 
@@ -273,7 +275,7 @@ fn a_codex_session_as_the_store_keeps_it() {
         cache: dir.join("cache"),
     };
     let files = Memory::new().file(path, ROLLOUT);
-    let kinds = registry::kinds();
+    let kinds = kinds();
     let request = Request {
         target: PathBuf::from(path),
         kind: None,
@@ -302,4 +304,141 @@ fn a_codex_session_as_the_store_keeps_it() {
         stored,
         include_str!("snapshots/session-rollout.stored.jsonl")
     );
+}
+
+#[test]
+fn the_read_page_on_a_terminal() {
+    assert_eq!(
+        stdout(&["read", "--help"], &View::HUMAN),
+        include_str!("snapshots/read-help.human.ansi")
+    );
+    assert_eq!(
+        stdout(&["read", "--help"], &unpainted()),
+        include_str!("snapshots/read-help.txt")
+    );
+}
+
+#[test]
+fn the_read_page_is_the_same_from_every_help_form() {
+    let page = include_str!("snapshots/read-help.txt");
+    for form in [
+        &["read", "--help"][..],
+        &["read", "-h"],
+        &["help", "read"],
+        &["help", "read", "--help"],
+    ] {
+        assert_eq!(stdout(form, &View::PLAIN), page, "{form:?}");
+    }
+}
+
+const READ_ID: &str = "01JC5Q3V7XKM4P8R2T6W9YB0DG";
+const CLAUDE_SESSION: &[u8] = include_bytes!(
+    "../../../libs/rust/kinds/session/fixtures/8f2b6d4e-1a3c-4e5f-9b7a-2c4d6e8f0a1b.jsonl"
+);
+const CODEX_SESSION: &[u8] = include_bytes!(
+    "../../../libs/rust/kinds/session/fixtures/rollout-2026-11-07T08-00-00-019a5b3c-2d4e-7f60-8a1b-3c5d7e9f0a2b.jsonl"
+);
+const NOTE: &[u8] = include_bytes!("../../../libs/rust/kinds/markdown/fixtures/sections.md");
+
+/// What `bilbo read <ref>` prints for a fixture kept as one entry, in both views.
+fn read_output(
+    kind: &str,
+    origin: &str,
+    file: &[u8],
+    locator: &str,
+    budget: usize,
+) -> (String, String) {
+    let fetched = Fetched {
+        meta: Meta {
+            id: Id::parse(READ_ID).expect("id"),
+            kind: kind.to_owned(),
+            origin: Origin::new(format!("file:{origin}")),
+            captured: std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_794_193_920),
+            parent: Id::parse("01JC5Q3V7XKM4P8R2T6W9YB0DF").filter(|_| kind == "session"),
+        },
+        generation: Generation(1),
+        current: Generation(1),
+        records: file
+            .split_inclusive(|byte| *byte == b'\n')
+            .map(<[u8]>::to_vec)
+            .collect(),
+    };
+    let budget = read::Budget::try_from(budget).expect("a budget the key accepts");
+    let request = read::Request {
+        reference: Ref::parse(&format!("{READ_ID}{locator}")).expect("a ref"),
+        outline: false,
+        budget,
+    };
+    let given = (budget.tokens() != 7000).then_some(budget);
+    let output =
+        bilbo_cli::read::rendered(&fetched, &request, &readers(), given).expect("an output");
+    (
+        bilbo_cli::read::view::plain(&output, given),
+        bilbo_cli::read::view::shown(&output, given, &View::HUMAN),
+    )
+}
+
+fn claude(locator: &str, budget: usize) -> (String, String) {
+    let origin =
+        "/home/me/.claude/projects/-home-me-src-garden/8f2b6d4e-1a3c-4e5f-9b7a-2c4d6e8f0a1b.jsonl";
+    read_output("session", origin, CLAUDE_SESSION, locator, budget)
+}
+
+fn codex(locator: &str) -> (String, String) {
+    let origin = "/home/me/.codex/sessions/2026/11/07/rollout-2026-11-07T08-00-00-019a5b3c-2d4e-7f60-8a1b-3c5d7e9f0a2b.jsonl";
+    read_output("session", origin, CODEX_SESSION, locator, 7000)
+}
+
+fn note(locator: &str, budget: usize) -> (String, String) {
+    read_output(
+        "markdown",
+        "/home/me/notes/garden-log.md",
+        NOTE,
+        locator,
+        budget,
+    )
+}
+
+#[test]
+fn a_claude_code_session_as_read_prints_it() {
+    let (plain, human) = claude("", 7000);
+    assert_eq!(plain, include_str!("snapshots/read-claude-outline.txt"));
+    assert_eq!(
+        human,
+        include_str!("snapshots/read-claude-outline.human.ansi")
+    );
+    let (plain, human) = claude("#r1-19", 7000);
+    assert_eq!(plain, include_str!("snapshots/read-claude-page.txt"));
+    assert_eq!(human, include_str!("snapshots/read-claude-page.human.ansi"));
+}
+
+#[test]
+fn a_page_that_ends_at_the_budget_and_a_record_cut_to_it() {
+    let (plain, _) = claude("#r1-23", 256);
+    assert_eq!(plain, include_str!("snapshots/read-claude-more.txt"));
+    let (plain, human) = claude("#r21-23", 256);
+    assert_eq!(plain, include_str!("snapshots/read-claude-cut.txt"));
+    assert_eq!(human, include_str!("snapshots/read-claude-cut.human.ansi"));
+}
+
+#[test]
+fn a_codex_session_as_read_prints_it() {
+    let (plain, _) = codex("");
+    assert_eq!(plain, include_str!("snapshots/read-codex-outline.txt"));
+    let (plain, human) = codex("#r1-25");
+    assert_eq!(plain, include_str!("snapshots/read-codex-page.txt"));
+    assert_eq!(human, include_str!("snapshots/read-codex-page.human.ansi"));
+}
+
+#[test]
+fn a_note_as_read_prints_it() {
+    let (plain, human) = note("", 7000);
+    assert_eq!(plain, include_str!("snapshots/read-note-outline.txt"));
+    assert_eq!(
+        human,
+        include_str!("snapshots/read-note-outline.human.ansi")
+    );
+    let (plain, human) = note("#r8-27", 300);
+    assert_eq!(plain, include_str!("snapshots/read-note-page.txt"));
+    assert_eq!(human, include_str!("snapshots/read-note-page.human.ansi"));
 }

@@ -3,6 +3,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 
 use bilbo_kinds::follows::Follow;
+use bilbo_kinds::read;
 use bilbo_settings::error::Error;
 use bilbo_settings::file::{File, Named};
 use bilbo_settings::folder::{self, Folder};
@@ -94,7 +95,7 @@ pub fn keys() -> Vec<&'static About> {
     PATHS
         .into_iter()
         .chain(keys::ABOUT)
-        .chain([&FOLLOW.about])
+        .chain([&FOLLOW.about, &read::BUDGET.about])
         .collect()
 }
 
@@ -148,6 +149,7 @@ pub struct Settings {
     pub cache: Resolved<PathBuf>,
     pub store: keys::Section,
     pub follow: Resolved<Vec<Follow>>,
+    pub read_budget: Resolved<read::Budget>,
 }
 
 impl Settings {
@@ -168,6 +170,7 @@ impl Settings {
         ];
         shown.extend(self.store.shown());
         shown.push(FOLLOW.shown(&self.follow));
+        shown.push(read::BUDGET.shown(&self.read_budget));
         shown
     }
 }
@@ -193,6 +196,7 @@ pub fn load(
         cache: CACHE.resolve(&source)?,
         store: keys::section(&source)?,
         follow: FOLLOW.resolve(&source)?,
+        read_budget: read::BUDGET.resolve(&source)?,
         config,
     })
 }
@@ -231,7 +235,7 @@ mod tests {
     }
 
     #[test]
-    fn the_registry_is_the_three_folders_the_four_store_keys_then_the_follows() {
+    fn the_registry_is_the_three_folders_the_six_store_keys_the_follows_then_the_read_budget() {
         let names: Vec<&str> = keys().iter().map(|about| about.name).collect();
         assert_eq!(
             names,
@@ -243,7 +247,10 @@ mod tests {
                 "store.seal_after",
                 "store.compression",
                 "store.tear_budget",
-                "follow"
+                "store.wait",
+                "store.hook_wait",
+                "follow",
+                "read.budget"
             ]
         );
     }
@@ -304,7 +311,7 @@ mod tests {
             .err(),
             Some(
                 "/c.toml:3: unknown key store.sealat; the keys are paths.root, paths.state, \
-                 paths.cache, store.seal_at, store.seal_after, store.compression, store.tear_budget, follow"
+                 paths.cache, store.seal_at, store.seal_after, store.compression, store.tear_budget, store.wait, store.hook_wait, follow, read.budget"
                     .to_owned()
             )
         );
@@ -442,10 +449,13 @@ mod tests {
             [
                 "BILBO_CONFIG",
                 "BILBO_HOME",
+                "BILBO_READ_BUDGET",
                 "BILBO_STORE_COMPRESSION",
+                "BILBO_STORE_HOOK_WAIT",
                 "BILBO_STORE_SEAL_AFTER",
                 "BILBO_STORE_SEAL_AT",
                 "BILBO_STORE_TEAR_BUDGET",
+                "BILBO_STORE_WAIT",
                 "XDG_CACHE_HOME",
                 "XDG_CONFIG_HOME",
                 "XDG_DATA_HOME",

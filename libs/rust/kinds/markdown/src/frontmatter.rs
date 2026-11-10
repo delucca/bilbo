@@ -2,19 +2,26 @@ use bilbo_store::id::Id;
 
 const FENCE: &str = "---";
 
-pub fn id(text: &str) -> Option<Id> {
-    let text = text.strip_prefix('\u{feff}').unwrap_or(text);
-    let mut lines = text
-        .split('\n')
-        .map(|line| line.strip_suffix('\r').unwrap_or(line));
+/// The line that closes a frontmatter block, counted from 0: `lines` starts with `---` and holds
+/// a later `---`. The lines come without their line ending, the first without a byte order mark.
+pub fn close<'l>(mut lines: impl Iterator<Item = &'l str>) -> Option<usize> {
     if lines.next()? != FENCE {
         return None;
     }
+    lines.position(|line| line == FENCE).map(|at| at + 1)
+}
+
+fn lines(text: &str) -> impl Iterator<Item = &str> {
+    text.strip_prefix('\u{feff}')
+        .unwrap_or(text)
+        .split('\n')
+        .map(|line| line.strip_suffix('\r').unwrap_or(line))
+}
+
+pub fn id(text: &str) -> Option<Id> {
+    let close = close(lines(text))?;
     let mut found: Option<Option<Id>> = None;
-    for line in lines {
-        if line == FENCE {
-            return found?;
-        }
+    for line in lines(text).take(close).skip(1) {
         if found.is_some() || line.starts_with([' ', '-']) {
             continue;
         }
@@ -22,7 +29,7 @@ pub fn id(text: &str) -> Option<Id> {
             found = Some(value.strip_prefix(' ').and_then(Id::parse));
         }
     }
-    None
+    found?
 }
 
 #[cfg(test)]
@@ -81,6 +88,17 @@ mod tests {
     fn a_note_that_is_only_frontmatter_keeps_its_id() {
         assert_eq!(id(&format!("---\nid: {VALID}\n---")), valid());
         assert_eq!(id(&format!("---\r\nid: {VALID}\r\n---")), valid());
+    }
+
+    #[test]
+    fn a_block_closes_at_the_first_later_fence() {
+        let close = |text: &str| super::close(text.lines());
+        assert_eq!(close("---\nid: x\n---\nbody\n---\n"), Some(2));
+        assert_eq!(close("---\n---\n"), Some(1));
+        assert_eq!(close("---\nid: x\n"), None);
+        assert_eq!(close("# Title\n---\n"), None);
+        assert_eq!(close("--- \nid: x\n---\n"), None);
+        assert_eq!(close(""), None);
     }
 
     #[test]

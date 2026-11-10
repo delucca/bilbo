@@ -1,0 +1,166 @@
+{"type":"user","message":{"content":"the first entry is on the main thread"}}
+
+ 	 
+
+{"type":"assistant","message":{"content":[{"type":"tool_use","id":"f1","name":"Floats","input":{"a":1.0,"b":-0.0,"c":0.0,"d":1e0,"e":1E5,"f":1.5,"g":0.1,"h":100.25,"i":0.0001,"j":0.00001,"k":0.000012345,"l":1e15,"m":9999999999999998.0,"n":1e16,"o":1.5e16,"p":123456789012345680000.0,"q":1e22,"r":1e-7,"s":1.7976931348623157e308,"t":5e-324,"u":2.5e-100,"v":0.30000000000000004,"w":1e400,"x":-1e400,"y":3.0e2,"z":-12.5E-1}}]}}
+{"type":"assistant","message":{"content":[{"type":"tool_use","id":"f2","name":"Floats","input":{"a":123456.789e3,"b":1.0e+2,"c":0.1e-6,"d":4.35,"e":2.675,"f":1e21,"g":1e23,"h":9007199254740993.0,"i":0.000123456789012345678,"j":1234567890123456.7,"k":12345678901234567.0,"l":2e-4,"m":2e-5,"n":17.0e-1,"o":628661958223826.25,"p":628661958223826.75,"q":-1325584522169260.25,"r":-233739651248482.625,"s":0.25,"t":2.5,"u":9007199254740993.0,"v":0.1e-322,"w":2.2250738585072014e-308}}]}}
+{"type":"assistant","message":{"content":[{"type":"tool_use","id":"n1","name":"Ints","input":{"zero":0,"minus":-0,"neg":-7,"big":18446744073709551616,"huge":-123456789012345678901234567890,"nan":NaN,"inf":Infinity,"ninf":-Infinity}}]}}
+{"type":"assistant","message":{"content":[{"type":"tool_use","id":"d1","name":"Order","input":{"b":1,"a":2,"b":3,"c":{"z":1,"y":2,"z":3},"é":"ü","":"empty key","k":[]}}]}}
+{"type":"assistant","message":{"content":[{"type":"tool_use","id":"s1","name":"Strings","input":{"raw":"line one\nline \"two\"\ttab \\ back","nested":["line one\nline \"two\"\ttab \\ back \b\f\r","\u0000\u0001\u001f\u007f\u0085\u00a0\u2028\u2029","é ✓ 😀 \ud83d\ude00 \/"],"n":null,"t":true,"f":false,"obj":{"k":{"k":[{}, [], [[]], {"a":{}}]}}}}]}}
+{"type":"assistant","message":{"content":[{"type":"tool_use","id":"i0","name":"Input","input":{}}]}}
+{"type":"assistant","message":{"content":[{"type":"tool_use","id":"i1","name":"Input","input":null}]}}
+{"type":"assistant","message":{"content":[{"type":"tool_use","id":"i2","name":"Input","input":0}]}}
+{"type":"assistant","message":{"content":[{"type":"tool_use","id":"i3","name":"Input","input":0.0}]}}
+{"type":"assistant","message":{"content":[{"type":"tool_use","id":"i4","name":"Input","input":""}]}}
+{"type":"assistant","message":{"content":[{"type":"tool_use","id":"i5","name":"Input","input":[]}]}}
+{"type":"assistant","message":{"content":[{"type":"tool_use","id":"i6","name":"Input","input":false}]}}
+{"type":"assistant","message":{"content":[{"type":"tool_use","id":"i7","name":"Input","input":"text"}]}}
+{"type":"assistant","message":{"content":[{"type":"tool_use","id":"i8","name":"Input","input":[1]}]}}
+{"type":"assistant","message":{"content":[{"type":"tool_use","id":"i9","name":"Input","input":7}]}}
+{"type":"assistant","message":{"content":[{"type":"tool_use","id":"i10","name":"Input","input":true}]}}
+{"type":"assistant","message":{"content":[{"type":"tool_use","id":"i11","name":"Input","input":-1}]}}
+{"type":"assistant","message":{"content":[{"type":"tool_use","id":"i12","name":"Input","input":[[]]}]}}
+{"type":"assistant","message":{"content":[{"type":"tool_use","id":"i13","name":"Input","input":"0"}]}}
+{"type":"assistant","message":{"content":[{"type":"tool_use","id":"i14","name":"Input","input":1.5}]}}
+{"type":"assistant","message":{"content":[{"type":"tool_use","id":"noinput","name":"NoInput"}]}}
+{"type":"assistant","message":{"content":[{"type":"tool_use","id":"m0","name":null,"input":{}}]}}
+{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"m0","content":"r"}]}}
+{"type":"assistant","message":{"content":[{"type":"tool_use","id":"m1","name":true,"input":{}}]}}
+{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"m1","content":"r"}]}}
+{"type":"assistant","message":{"content":[{"type":"tool_use","id":"m2","name":false,"input":{}}]}}
+{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"m2","content":"r"}]}}
+{"type":"assistant","message":{"content":[{"type":"tool_use","id":"m3","name":12,"input":{}}]}}
+{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"m3","content":"r"}]}}
+{"type":"assistant","message":{"content":[{"type":"tool_use","id":"m4","name":-0,"input":{}}]}}
+{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"m4","content":"r"}]}}
+{"type":"assistant","message":{"content":[{"type":"tool_use","id":"m5","name":1.50,"input":{}}]}}
+{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"m5","content":"r"}]}}
+{"type":"assistant","message":{"content":[{"type":"tool_use","id":"m6","name":1e400,"input":{}}]}}
+{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"m6","content":"r"}]}}
+{"type":"assistant","message":{"content":[{"type":"tool_use","id":"m7","name":["a",1,null,true,1.5],"input":{}}]}}
+{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"m7","content":"r"}]}}
+{"type":"assistant","message":{"content":[{"type":"tool_use","id":"m8","name":{"k":"v","it's":"q\"","n":[{}]},"input":{}}]}}
+{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"m8","content":"r"}]}}
+{"type":"assistant","message":{"content":[{"type":"tool_use","id":"m9","name":"with: colon","input":{}}]}}
+{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"m9","content":"r"}]}}
+{"type":"assistant","message":{"content":[{"type":"tool_use","id":"m10","name":"two\nlines: x","input":{}}]}}
+{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"m10","content":"r"}]}}
+{"type":"assistant","message":{"content":[{"type":"tool_use","id":"m11","name":"","input":{}}]}}
+{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"m11","content":"r"}]}}
+{"type":"assistant","message":{"content":[{"type":"tool_use","id":"m12","name":"é","input":{}}]}}
+{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"m12","content":"r"}]}}
+{"type":"assistant","message":{"content":[{"type":"tool_use","id":"m13","name":["both ' and \""],"input":{}}]}}
+{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"m13","content":"r"}]}}
+{"type":"assistant","message":{"content":[{"type":"tool_use","id":"m14","name":["a\nb\\c\u0001\t"],"input":{}}]}}
+{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"m14","content":"r"}]}}
+{"type":"assistant","message":{"content":[{"type":"tool_use","id":"noname","input":{}}]}}
+{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"noname","content":"r"}]}}
+{"type":"assistant","message":{"content":[{"type":"tool_use","id":1,"name":"NumberOne","input":{}}]}}
+{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":1,"content":""}]}}
+{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":1.0,"content":""}]}}
+{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":true,"content":""}]}}
+{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":1e0,"content":""}]}}
+{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"1","content":""}]}}
+{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":2,"content":""}]}}
+{"type":"assistant","message":{"content":[{"type":"tool_use","id":-0.0,"name":"Zero","input":{}}]}}
+{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":0,"content":""}]}}
+{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":false,"content":""}]}}
+{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":0.0,"content":""}]}}
+{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":-0,"content":""}]}}
+{"type":"assistant","message":{"content":[{"type":"tool_use","id":1e20,"name":"Big","input":{}}]}}
+{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":100000000000000000000,"content":""}]}}
+{"type":"assistant","message":{"content":[{"type":"tool_use","id":1.5,"name":"Half","input":{}}]}}
+{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":1.5,"content":""}]}}
+{"type":"assistant","message":{"content":[{"type":"tool_use","id":null,"name":"NullId","input":{}}]}}
+{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":null,"content":""}]}}
+{"type":"user","message":{"content":[{"type":"tool_result","content":"no id is the null id"}]}}
+{"type":"assistant","message":{"content":[{"type":"tool_use","name":"NoId","input":{}}]}}
+{"type":"user","message":{"content":[{"type":"tool_result","content":"now it names NoId"}]}}
+{"type":"assistant","message":{"content":[{"type":"tool_use","id":NaN,"name":"NanId","input":{}}]}}
+{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":NaN,"content":"every NaN is one key"}]}}
+{"type":"assistant","message":{"content":[{"type":"tool_use","id":"again","name":"First","input":{}}]}}
+{"type":"assistant","message":{"content":[{"type":"tool_use","id":"again","name":"Second","input":{}}]}}
+{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"again","content":"the last call names it"}]}}
+{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"missing","content":"  body \n"}]}}
+{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"missing","content":"\u001c \u001f"}]}}
+{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"missing","content":""}]}}
+{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"missing","content":null}]}}
+{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"missing","content":[]}]}}
+{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"missing","content":0}]}}
+{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"missing","content":false}]}}
+{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"missing","content":0.0}]}}
+{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"missing","content":{}}]}}
+{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"missing","content":{"type":"text","text":"keys are no items"}}]}}
+{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"missing","content":[{"type":"text","text":"a"},{"type":"text"},{"type":"text","text":"b"}]}]}}
+{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"missing","content":[{"type":"text","text":"  kept as it is  "},{"type":"text","text":""}]}]}}
+{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"missing","content":[{"type":"image"},{"type":"image","source":{}},{"type":"image","source":{"media_type":null}},{"type":"image","source":{"media_type":"a ]b"}},{"type":"image","source":{"media_type":7}},{"type":"image","source":{"media_type":"image/png","data":"x"}}]}]}}
+{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"missing","content":[{"type":"tool_reference"},{"type":"tool_reference","tool_name":7},{"type":"tool_reference","tool_name":null},{"type":"tool_reference","tool_name":"Read"},{"type":"resource"},{"type":5},{"type":1.5},{"type":true},{"type":""},{"type":0},{"type":null},{"type":[1]},{"type":{"a":1}},"text",3,null,[],{"no":"type"}]}]}}
+{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"missing","content":"x","is_error":true}]}}
+{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"missing","content":"x","is_error":false}]}}
+{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"missing","content":"x","is_error":null}]}}
+{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"missing","content":"x","is_error":0}]}}
+{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"missing","content":"x","is_error":1}]}}
+{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"missing","content":"x","is_error":"false"}]}}
+{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"missing","content":"x","is_error":""}]}}
+{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"missing","content":"x","is_error":[]}]}}
+{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"missing","content":"x","is_error":[0]}]}}
+{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"missing","content":"x","is_error":{}}]}}
+{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"missing","content":"x","is_error":0.0}]}}
+{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"missing","content":"x","is_error":-1}]}}
+{"type":"user","message":{"content":[{"type":"text","text":" \u001d stripped \u00a0\u3000\u2028"},{"type":"text","text":"\u200b kept \ufeff"},{"type":"text","text":" \u001c\u001f\u0085 "},{"type":"text"},{"type":"text","text":""}]}}
+{"type":"user","message":{"content":[{"type":"image"},{"type":"image","source":{}},{"type":"document","source":{"media_type":"application/pdf"}},{"type":"image","source":{"media_type":null}},{"type":"document","source":{"media_type":" ]"}}]}}
+{"type":"assistant","message":{"content":[{"type":"thinking","thinking":"hidden \ud83d lone surrogate"},{"type":"redacted_thinking","data":"x"},{"type":"server_tool_use","id":"s"},{"type":5},{"type":null},{"no":"type"},"a string",null,7,[],{"type":"text","text":"after every skipped block"}]}}
+{"type":"assistant","message":{"content":[{"type":"text","text":"olá — bytes"},{"type":"tool_use","id":"b1","name":"Bytes","input":{"k":"é"}},{"type":"text","text":"third piece"}]}}
+{"type":"user","isMeta":false,"message":{"content":"entry with 'isMeta':false"}}
+{"type":"user","isMeta":0,"message":{"content":"entry with 'isMeta':0"}}
+{"type":"user","isMeta":"","message":{"content":"entry with 'isMeta':''"}}
+{"type":"user","isMeta":null,"message":{"content":"entry with 'isMeta':null"}}
+{"type":"user","isMeta":[],"message":{"content":"entry with 'isMeta':[]"}}
+{"type":"user","isMeta":{},"message":{"content":"entry with 'isMeta':{}"}}
+{"type":"user","isMeta":0.0,"message":{"content":"entry with 'isMeta':0.0"}}
+{"type":"user","isMeta":"false","message":{"content":"entry with 'isMeta':'false'"}}
+{"type":"user","isMeta":1,"message":{"content":"entry with 'isMeta':1"}}
+{"type":"user","isMeta":[0],"message":{"content":"entry with 'isMeta':[0]"}}
+{"type":"user","isMeta":"0","message":{"content":"entry with 'isMeta':'0'"}}
+{"type":"user","isSidechain":true,"message":{"content":"entry with 'isSidechain':true"}}
+{"type":"user","isSidechain":"no","message":{"content":"entry with 'isSidechain':'no'"}}
+{"type":"user","isSidechain":1,"message":{"content":"entry with 'isSidechain':1"}}
+{"type":"user","isSidechain":0,"message":{"content":"entry with 'isSidechain':0"}}
+{"type":"user","isSidechain":null,"message":{"content":"entry with 'isSidechain':null"}}
+{"type":"user","isCompactSummary":true,"message":{"content":"entry with 'isCompactSummary':true"}}
+{"type":"user","isCompactSummary":"yes","message":{"content":"entry with 'isCompactSummary':'yes'"}}
+{"type":"user","isCompactSummary":0,"message":{"content":"entry with 'isCompactSummary':0"}}
+{"type":"user","isCompactSummary":[],"message":{"content":"entry with 'isCompactSummary':[]"}}
+{"type":"assistant","isCompactSummary":true,"message":{"content":[{"type":"text","text":"a summary by the assistant"}]}}
+{"role":"user","message":{"content":"a role and no type"}}
+{"type":null,"role":"assistant","message":{"content":"a null type"}}
+{"type":"user","role":"assistant","message":{"content":"the type wins"}}
+{"type":"system","role":"user","message":{"content":"not shown"}}
+{"type":5,"role":"user","message":{"content":"not shown"}}
+{"type":["user"],"message":{"content":"not shown"}}
+{"role":"system","message":{"content":"not shown"}}
+{"role":null,"message":{"content":"not shown"}}
+{"type":"system","subtype":"compact_boundary","content":"x"}
+{"type":"summary","summary":"x"}
+{}
+{"type":"user","message":null}
+{"type":"user","message":0}
+{"type":"user","message":""}
+{"type":"user","message":[]}
+{"type":"user","message":{}}
+{"type":"user","message":false}
+{"type":"user","message":0.0}
+{"type":"user","message":{"content":null}}
+{"type":"user","message":{"content":7}}
+{"type":"user","message":{"content":true}}
+{"type":"user","message":{"content":{"type":"text","text":"an object is no list"}}}
+{"type":"user","message":{"content":"   "}}
+{"type":"user","message":{"content":[]}}
+{"type":"user","message":{"role":"user"}}
+{"type":"user"}
+{"type":"user","message":{"content":"crlf line ending"}}
+ {"type" : "user" , "message" : { "content" : "spaces between tokens" } } 
+{"type":"user","timestamp":"2026-02-14T23:33:43.000Z","message":{"content":"with a timestamp"},"extra":{"deep":[[[[[[[[[[1]]]]]]]]]]}}
+{"type":"user","message":{"content":"a key written twice","content":"keeps its last value"}}
+{"type":"assistant","type":"user","message":{"content":"the last type"}}
+{"type":"user","message":{"content":"the last line"}}

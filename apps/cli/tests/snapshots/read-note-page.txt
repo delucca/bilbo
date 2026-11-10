@@ -1,0 +1,19 @@
+#r8-11 # The garden log
+
+A note with every kind of section a reader meets.
+
+#r12-21 ## Beds
+
+- north: carrots
+- south: beans
+
+```sh
+# a comment in a code block, not a heading
+ls beds
+```
+
+#r22-25 Watering
+--------
+
+Water in the morning.
+more: bilbo read 01JC5Q3V7XKM4P8R2T6W9YB0DG#g1:r26-27 --budget 300

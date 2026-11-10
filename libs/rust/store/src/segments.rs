@@ -4,7 +4,8 @@ use std::io::{self, Write};
 use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::os::unix::fs::FileExt;
 use std::path::{Component, Path, PathBuf};
-use std::time::{Duration, SystemTime};
+use std::thread;
+use std::time::{Duration, Instant, SystemTime};
 
 use crate::capture::{self, Action};
 use crate::catalog::{self, Catalog, Fresh, Place};
@@ -67,8 +68,11 @@ pub enum Step {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Held {
     Wait,
-    /// Set the again flag for the holder and fail with `StoreError::Busy`.
-    Flag,
+    /// Set the again flag for a writer that holds the store and fail with `StoreError::Busy`.
+    /// Readers are waited for, for `readers` at most (then `StoreError::Reading`), or without end.
+    Flag {
+        readers: Option<Duration>,
+    },
 }
 
 pub enum Closed {
@@ -123,6 +127,8 @@ pub struct Options {
     pub compression: Compression,
     /// The frame bytes the search after a torn frame may hash, in multiples of the file's size.
     pub tear_budget: TearBudget,
+    /// How long a reader waits for a writer before it fails with `StoreError::Busy`.
+    pub wait: Duration,
     pub hook: Option<Hook>,
     pub held: Held,
     pub sealing: Sealing,
@@ -432,6 +438,86 @@ fn make_private(dir: &Path, hook: &mut Option<Hook>) -> Result<PathBuf, StoreErr
 
 fn canonical(path: &Path) -> Result<PathBuf, StoreError> {
     fs::canonicalize(path).map_err(|error| files::io_err("read", path, error))
+}
+
+/// Between two tries of a reader that waits for a writer: `flock` has no timed wait.
+const POLL: Duration = Duration::from_millis(20);
+
+/// Whether the store lock was given. A writer that holds it is asked to run again, which is
+/// `StoreError::Busy`; `false` is readers, which never run again for a request. The guard is
+/// dropped on return: nobody blocks on `store.lock` while holding it.
+fn taken_or_asked(layout: &Layout, lock: &File, lock_path: &Path) -> Result<bool, StoreError> {
+    let guard = Guard::take(layout)?;
+    match lock.try_lock() {
+        Ok(()) => Ok(true),
+        Err(TryLockError::WouldBlock) if writer_holds(layout)? => {
+            guard.set()?;
+            Err(StoreError::Busy)
+        }
+        Err(TryLockError::WouldBlock) => Ok(false),
+        Err(TryLockError::Error(error)) => Err(files::io_err("lock", lock_path, error)),
+    }
+}
+
+#[derive(Clone, Copy)]
+enum Mode {
+    Shared,
+    Exclusive,
+}
+
+/// The lock, tried until it is given or `wait` has passed: then `held` is the error.
+fn lock_within(
+    file: &File,
+    path: &Path,
+    (mode, wait, held): (Mode, Duration, StoreError),
+    notice: &mut dyn FnMut(Notice),
+) -> Result<(), StoreError> {
+    let started = Instant::now();
+    let mut said = false;
+    loop {
+        let tried = match mode {
+            Mode::Shared => file.try_lock_shared(),
+            Mode::Exclusive => file.try_lock(),
+        };
+        match tried {
+            Ok(()) => return Ok(()),
+            Err(TryLockError::WouldBlock) => {
+                let left = wait.saturating_sub(started.elapsed());
+                if left.is_zero() {
+                    return Err(held);
+                }
+                if !said {
+                    notice(Notice::Waiting);
+                    said = true;
+                }
+                thread::sleep(POLL.min(left));
+            }
+            Err(TryLockError::Error(error)) => return Err(files::io_err("lock", path, error)),
+        }
+    }
+}
+
+/// The catalog on disk when a reader can use it as it is: no seal was interrupted, its folder is
+/// private, and it holds every frame of the sealed segments and of `open.seg`. Anything else is
+/// `None`, and the reader walks the segments instead.
+fn kept_catalog(configured: &Layout, layout: &Layout, sealed: &[(String, u64)]) -> Option<Catalog> {
+    if files::read_optional(&marker_file(layout)).ok()?.is_some() {
+        return None;
+    }
+    let open_len = fs::metadata(open_seg(layout)).ok()?.len();
+    let cache = files::resolve(&configured.cache).ok()?;
+    files::check_parents(&cache).ok()?;
+    files::check_private(&cache).ok()?;
+    let cache = Layout {
+        cache: canonical(&cache).ok()?,
+        ..layout.clone()
+    };
+    Catalog::open_unchanged(
+        &catalog_file(&cache),
+        &binding(layout).ok()?,
+        sealed,
+        open_len,
+    )
 }
 
 fn list_sealed(root: &Path) -> Result<Vec<(String, u64)>, StoreError> {
@@ -782,36 +868,35 @@ impl Store {
         let layout = &paths;
         let lock_path = lock_file(layout);
         let lock = open_lock(&lock_path)?;
-        match lock.try_lock() {
-            Ok(()) => {}
-            Err(TryLockError::WouldBlock) if options.held == Held::Flag => {
-                step(&mut options.hook, Step::Asking)?;
-                let guard = Guard::take(layout)?;
-                match lock.try_lock() {
-                    Ok(()) => {}
-                    Err(TryLockError::WouldBlock) if writer_holds(layout)? => {
-                        guard.set()?;
-                        return Err(StoreError::Busy);
-                    }
-                    Err(TryLockError::WouldBlock) => {
-                        // Only readers, which never run again for a request. The guard goes
-                        // before the wait: nobody blocks on `store.lock` while holding it.
-                        drop(guard);
-                        notice(Notice::Waiting);
-                        lock.lock()
-                            .map_err(|error| files::io_err("lock", &lock_path, error))?;
-                    }
-                    Err(TryLockError::Error(error)) => {
-                        return Err(files::io_err("lock", &lock_path, error));
-                    }
-                }
-            }
-            Err(TryLockError::WouldBlock) => {
+        match (lock.try_lock(), options.held) {
+            (Ok(()), _) => {}
+            (Err(TryLockError::WouldBlock), Held::Wait) => {
                 notice(Notice::Waiting);
                 lock.lock()
                     .map_err(|error| files::io_err("lock", &lock_path, error))?;
             }
-            Err(TryLockError::Error(error)) => {
+            (Err(TryLockError::WouldBlock), Held::Flag { readers }) => {
+                step(&mut options.hook, Step::Asking)?;
+                if !taken_or_asked(layout, &lock, &lock_path)? {
+                    match readers {
+                        Some(wait) => {
+                            let bound = (Mode::Exclusive, wait, StoreError::Reading);
+                            match lock_within(&lock, &lock_path, bound, notice) {
+                                // A writer may have followed the readers during the wait.
+                                Err(StoreError::Reading)
+                                    if taken_or_asked(layout, &lock, &lock_path)? => {}
+                                given => given?,
+                            }
+                        }
+                        None => {
+                            notice(Notice::Waiting);
+                            lock.lock()
+                                .map_err(|error| files::io_err("lock", &lock_path, error))?;
+                        }
+                    }
+                }
+            }
+            (Err(TryLockError::Error(error)), _) => {
                 return Err(files::io_err("lock", &lock_path, error));
             }
         }
@@ -846,7 +931,9 @@ impl Store {
         })
     }
 
-    /// Holds a shared lock for its lifetime; `notice` hears `Waiting` when a writer holds the store.
+    /// Holds a shared lock for its lifetime; `notice` hears `Waiting` when a writer holds the store,
+    /// and after the options' `wait` the open fails with `StoreError::Busy`. With the catalog on
+    /// disk current the open reads no segment; else it walks them all into a catalog in memory.
     /// The options' hook hears `Step::Checked` once the paths are validated.
     pub fn open_read_only(
         configured: &Layout,
@@ -881,17 +968,8 @@ impl Store {
         let lock_path = lock_file(&paths);
         let lock = match File::open(&lock_path) {
             Ok(file) => {
-                match file.try_lock_shared() {
-                    Ok(()) => {}
-                    Err(TryLockError::WouldBlock) => {
-                        notice(Notice::Waiting);
-                        file.lock_shared()
-                            .map_err(|error| files::io_err("lock", &lock_path, error))?;
-                    }
-                    Err(TryLockError::Error(error)) => {
-                        return Err(files::io_err("lock", &lock_path, error));
-                    }
-                }
+                let bound = (Mode::Shared, options.wait, StoreError::Busy);
+                lock_within(&file, &lock_path, bound, notice)?;
                 Some(file)
             }
             Err(error) if error.kind() == io::ErrorKind::NotFound => None,
@@ -904,6 +982,21 @@ impl Store {
             check_root(layout, &layout.root, Root::Check)?;
         }
         let sealed = list_sealed(&layout.root)?;
+        if lock.is_some()
+            && let Some(catalog) = kept_catalog(configured, layout, &sealed)
+        {
+            return Ok(Store {
+                layout: layout.clone(),
+                _writer: None,
+                _lock: lock,
+                writer: None,
+                since: None,
+                catalog,
+                compressor: None,
+                options,
+                poisoned: false,
+            });
+        }
         let mut open = if lock.is_some() {
             files::read_optional(&open_seg(layout))?
         } else {
@@ -1446,6 +1539,30 @@ impl Entries for Store {
 
     fn by_origin(&self, origin: &Origin) -> Result<Option<Head>, StoreError> {
         self.catalog.head_by_origin(origin)
+    }
+
+    fn extent(
+        &self,
+        id: Id,
+        generation: Option<Generation>,
+    ) -> Result<Option<(Generation, u64)>, StoreError> {
+        if !self.catalog.entry_exists(id)? {
+            return Ok(None);
+        }
+        match generation {
+            None => {
+                let head = self.catalog.head_of(id)?;
+                Ok(Some((head.generation, head.records)))
+            }
+            Some(generation) => Ok(self
+                .catalog
+                .generation_records(id, generation.0)?
+                .map(|records| (generation, records))),
+        }
+    }
+
+    fn origins_with(&self, part: &str) -> Result<Vec<(Id, Origin)>, StoreError> {
+        self.catalog.origins_with(part)
     }
 }
 

@@ -76,11 +76,51 @@ pub const TEAR_BUDGET: Key<TearBudget> = Key {
     show: |times| times.times().to_string(),
 };
 
-pub const ABOUT: [&About; 4] = [
+/// The longest a reader may be told to wait.
+const LONGEST_WAIT: Duration = Duration::from_secs(10 * 60);
+
+pub const WAIT: Key<Duration> = Key {
+    about: About {
+        name: "store.wait",
+        variable: Some("BILBO_STORE_WAIT"),
+        default: Default::Toml(r#""10s""#),
+        allowed: "between 0s and 10m",
+        doc: "How long a reader of the store, such as bilbo read, waits for a bilbo that is writing it before it gives up.",
+    },
+    parse: |value| {
+        duration::read(value)
+            .filter(|wait| *wait <= LONGEST_WAIT)
+            .ok_or_else(|| value.refuse())
+    },
+    show: |wait| duration::show(*wait),
+};
+
+/// A harness gives a hook five seconds.
+const LONGEST_HOOK_WAIT: Duration = Duration::from_secs(4);
+
+pub const HOOK_WAIT: Key<Duration> = Key {
+    about: About {
+        name: "store.hook_wait",
+        variable: Some("BILBO_STORE_HOOK_WAIT"),
+        default: Default::Toml(r#""2s""#),
+        allowed: "between 0s and 4s",
+        doc: "How long bilbo remember --hook waits for a bilbo that is reading the store before it leaves the lines to the next run.",
+    },
+    parse: |value| {
+        duration::read(value)
+            .filter(|wait| *wait <= LONGEST_HOOK_WAIT)
+            .ok_or_else(|| value.refuse())
+    },
+    show: |wait| duration::show(*wait),
+};
+
+pub const ABOUT: [&About; 6] = [
     &SEAL_SIZE.about,
     &SEAL_AFTER.about,
     &COMPRESSION.about,
     &TEAR_BUDGET.about,
+    &WAIT.about,
+    &HOOK_WAIT.about,
 ];
 
 /// The store's keys as the settings resolved them.
@@ -90,6 +130,8 @@ pub struct Section {
     pub seal_after: Resolved<Duration>,
     pub compression: Resolved<Compression>,
     pub tear_budget: Resolved<TearBudget>,
+    pub wait: Resolved<Duration>,
+    pub hook_wait: Resolved<Duration>,
 }
 
 pub fn section(source: &Source<'_>) -> Result<Section, Error> {
@@ -98,6 +140,8 @@ pub fn section(source: &Source<'_>) -> Result<Section, Error> {
         seal_after: SEAL_AFTER.resolve(source)?,
         compression: COMPRESSION.resolve(source)?,
         tear_budget: TEAR_BUDGET.resolve(source)?,
+        wait: WAIT.resolve(source)?,
+        hook_wait: HOOK_WAIT.resolve(source)?,
     })
 }
 
@@ -124,6 +168,7 @@ impl Section {
             seal_after: self.seal_after.value,
             compression: self.compression.value,
             tear_budget: self.tear_budget.value,
+            wait: self.wait.value,
             hook: None,
             held: Held::Wait,
             sealing: Sealing::WhenDue,
@@ -131,12 +176,14 @@ impl Section {
         }
     }
 
-    pub fn shown(&self) -> [Shown; 4] {
+    pub fn shown(&self) -> [Shown; 6] {
         [
             SEAL_SIZE.shown(&self.seal_at),
             SEAL_AFTER.shown(&self.seal_after),
             COMPRESSION.shown(&self.compression),
             TEAR_BUDGET.shown(&self.tear_budget),
+            WAIT.shown(&self.wait),
+            HOOK_WAIT.shown(&self.hook_wait),
         ]
     }
 }
@@ -169,7 +216,7 @@ mod tests {
     }
 
     #[test]
-    fn the_defaults_are_8_mib_60_minutes_level_19_and_four_times_the_file() {
+    fn the_defaults_are_8_mib_60_minutes_level_19_four_times_the_file_and_a_10_second_wait() {
         let options = defaults().options();
         assert_eq!(
             (
@@ -191,7 +238,9 @@ mod tests {
                 "store.seal_at = \"8 MiB\" (default)",
                 "store.seal_after = \"60m\" (default)",
                 "store.compression = 19 (default)",
-                "store.tear_budget = 4 (default)"
+                "store.tear_budget = 4 (default)",
+                "store.wait = \"10s\" (default)",
+                "store.hook_wait = \"2s\" (default)"
             ]
         );
     }
@@ -282,6 +331,50 @@ mod tests {
     }
 
     #[test]
+    fn a_readers_wait_is_seconds_or_minutes_up_to_ten_minutes() {
+        for (text, seconds) in [("0s", 0), ("1s", 1), ("90s", 90), ("10m", 600)] {
+            let options = resolve(&[("BILBO_STORE_WAIT", text)], "")
+                .expect("a wait")
+                .options();
+            assert_eq!(options.wait, Duration::from_secs(seconds), "{text}");
+        }
+        let from_file = resolve(&[], "[store]\nwait = \"2m\"\n").expect("a wait");
+        assert_eq!(from_file.options().wait, Duration::from_secs(120));
+        assert_eq!(defaults().options().wait, Duration::from_secs(10));
+        for text in ["11m", "601s", "1h", "10", "-1s", "soon"] {
+            assert_eq!(
+                resolve(&[("BILBO_STORE_WAIT", text)], "").err(),
+                Some(format!(
+                    "BILBO_STORE_WAIT must be between 0s and 10m, got \"{text}\""
+                )),
+                "{text}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_hooks_wait_for_readers_is_at_most_four_seconds() {
+        for (text, seconds) in [("0s", 0), ("2s", 2), ("4s", 4)] {
+            let section = resolve(&[("BILBO_STORE_HOOK_WAIT", text)], "").expect("a wait");
+            assert_eq!(
+                section.hook_wait.value,
+                Duration::from_secs(seconds),
+                "{text}"
+            );
+        }
+        assert_eq!(defaults().hook_wait.value, Duration::from_secs(2));
+        for text in ["5s", "1m", "2", "soon"] {
+            assert_eq!(
+                resolve(&[("BILBO_STORE_HOOK_WAIT", text)], "").err(),
+                Some(format!(
+                    "BILBO_STORE_HOOK_WAIT must be between 0s and 4s, got \"{text}\""
+                )),
+                "{text}"
+            );
+        }
+    }
+
+    #[test]
     fn a_section_maps_every_key_onto_options() {
         let section = Section {
             seal_at: Resolved {
@@ -300,6 +393,14 @@ mod tests {
                 value: TearBudget::try_from(9).expect("in range"),
                 origin: Origin::Default,
             },
+            wait: Resolved {
+                value: Duration::from_secs(3),
+                origin: Origin::Default,
+            },
+            hook_wait: Resolved {
+                value: Duration::from_secs(1),
+                origin: Origin::Default,
+            },
         };
         let options = section.options();
         assert_eq!(
@@ -311,11 +412,17 @@ mod tests {
             (3 * MIB, 7, 9)
         );
         assert_eq!(options.seal_after, Duration::from_secs(120));
+        assert_eq!(options.wait, Duration::from_secs(3));
+        assert_eq!(
+            options.held,
+            crate::segments::Held::Wait,
+            "only a caller asks a holder to run again"
+        );
         assert!(options.hook.is_none());
     }
 
     #[test]
-    fn the_store_declares_four_keys_each_with_its_own_variable() {
+    fn the_store_declares_six_keys_each_with_its_own_variable() {
         let names: Vec<(&str, Option<&str>)> = ABOUT
             .iter()
             .map(|about| (about.name, about.variable))
@@ -327,6 +434,8 @@ mod tests {
                 ("store.seal_after", Some("BILBO_STORE_SEAL_AFTER")),
                 ("store.compression", Some("BILBO_STORE_COMPRESSION")),
                 ("store.tear_budget", Some("BILBO_STORE_TEAR_BUDGET")),
+                ("store.wait", Some("BILBO_STORE_WAIT")),
+                ("store.hook_wait", Some("BILBO_STORE_HOOK_WAIT")),
             ]
         );
     }

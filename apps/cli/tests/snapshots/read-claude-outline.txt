@@ -1,0 +1,13 @@
+bilbo:01JC5Q3V7XKM4P8R2T6W9YB0DG
+kind: session
+origin: file:/home/me/.claude/projects/-home-me-src-garden/8f2b6d4e-1a3c-4e5f-9b7a-2c4d6e8f0a1b.jsonl
+captured: 2026-11-09 03:12 UTC
+started: 2026-11-07 08:01 UTC
+parent: bilbo:01JC5Q3V7XKM4P8R2T6W9YB0DF
+records: 23
+generation: 1
+outline:
+#r3 user: Thin the carrot rows, then tell me how many seedlings are left.
+#r17 compact summary: This session is being continued. The carrots in the north bed were thinned from 42…
+#r18 user: Here is the bed. What is the weed in the corner?
+end: #r1-23 of 23 records

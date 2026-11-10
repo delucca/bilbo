@@ -32,7 +32,10 @@ store.seal_at = "16 MiB" (/home/me/.config/bilbo/config.toml:5)
 store.seal_after = "60m" (default)
 store.compression = 3 (BILBO_STORE_COMPRESSION)
 store.tear_budget = 4 (default)
+store.wait = "10s" (default)
+store.hook_wait = "2s" (default)
 follow = [{ path = "/home/me/.claude/projects", kind = "session" }, { path = "/home/me/.codex/sessions", kind = "session" }] (default)
+read.budget = 7000 (default)
 ```
 
 The value is TOML, as the config file would hold it. The origin is `default`, the config file and the line that set the key, the variable, or the flag. On a terminal the values line up and the origins are dimmed.
@@ -111,7 +114,7 @@ New records go to `open.seg` in the state folder. A run with a target or none se
 
 ### Hooks
 
-`--hook` reads the JSON a Claude Code or Codex hook gets on stdin and keeps the new lines of its `transcript_path`, with the kind of the follow whose folder holds it, or the one detected. The transcript must be a regular file once its links are followed: a folder or a device is refused. To stay short, a hook skips the work that can take long: it never seals, whatever `store.seal_at` and `store.seal_after` say; it never runs the follows for another bilbo, so a request it finds stays for the next run with a target or none; and it never rebuilds the catalog: when the cache was lost or no longer matches the store, it keeps nothing and says so in one line. None of this bounds its time. It reads its input to the end and assumes the harness closes it after the payload, and when only readers hold the store it waits for them. What a hook did not keep, the next run that reads the transcript keeps: a bare run whose follow holds it, or a run with the transcript, or a folder that holds it, as target. It prints nothing on stdout and exits 0 once it runs, even on a payload it cannot read, a missing transcript or a config error; what went wrong is one line on stderr. Wrong arguments, such as a target beside `--hook`, are a usage error (exit 2) before the hook runs. Until the migration, set `paths.root`, `paths.state` and `paths.cache` in the config file first, as for the timer below. The `Stop` hook runs it at the end of every turn. Add it to Claude Code's settings or Codex's `hooks.json`:
+`--hook` reads the JSON a Claude Code or Codex hook gets on stdin and keeps the new lines of its `transcript_path`, with the kind of the follow whose folder holds it, or the one detected. The transcript must be a regular file once its links are followed: a folder or a device is refused. To stay short, a hook skips the work that can take long: it never seals, whatever `store.seal_at` and `store.seal_after` say; it never runs the follows for another bilbo, so a request it finds stays for the next run with a target or none; and it never rebuilds the catalog: when the cache was lost or no longer matches the store, it keeps nothing and says so in one line. None of this bounds its time. It reads its input to the end and assumes the harness closes it after the payload, and when only readers hold the store it waits for them, up to `store.hook_wait` (2 seconds by default): then it keeps nothing and names the run that does, the path quoted as one shell argument: `kept nothing: another bilbo is reading the store; bilbo remember <path> keeps these lines`. A path that holds a control character, or is not UTF-8, gets no command: the line says so instead. A transcript whose path is not UTF-8 is never kept: `remember` refuses it. What a hook did not keep of any other, the next run that reads the transcript keeps: a bare run whose follow holds it, or a run with the transcript, or a folder that holds it, as target. It prints nothing on stdout and exits 0 once it runs, even on a payload it cannot read, a missing transcript or a config error; what went wrong is one line on stderr. Wrong arguments, such as a target beside `--hook`, are a usage error (exit 2) before the hook runs. Until the migration, set `paths.root`, `paths.state` and `paths.cache` in the config file first, as for the timer below. The `Stop` hook runs it at the end of every turn. Add it to Claude Code's settings or Codex's `hooks.json`:
 
 ```json
 {
@@ -133,7 +136,7 @@ New records go to `open.seg` in the state folder. A run with a target or none se
 
 ### Two runs at once
 
-One bilbo writes the store at a time: the writer holds `store.lock` and `store.writer` in the state folder, and a reader holds `store.lock` shared. A run with no target, or with `--hook`, that finds another bilbo writing sets the again flag (`store.again`) and exits 0 at once; one that finds only readers waits for them, since a reader never runs the follows again. Before a run with a target or none releases the store, it runs every follow once more for each request it finds. A `--hook` run leaves a request where it is, for the next such run, since it cannot promise a pass over every follow within its time limit. A run with a target waits for the store instead, and says so on stderr, since a rerun of the follows would not keep its target.
+One bilbo writes the store at a time: the writer holds `store.lock` and `store.writer` in the state folder, and a reader holds `store.lock` shared. A run with no target, or with `--hook`, that finds another bilbo writing sets the again flag (`store.again`) and exits 0 at once; one that finds only readers waits for them, since a reader never runs the follows again: a run with no target for as long as it takes, a `--hook` run for `store.hook_wait` at most. When a writer took the store from the readers during that wait, the `--hook` run sets the again flag for it, as for any writer. Before a run with a target or none releases the store, it runs every follow once more for each request it finds. A `--hook` run leaves a request where it is, for the next such run, since it cannot promise a pass over every follow within its time limit. A run with a target waits for the store instead, and says so on stderr, since a rerun of the follows would not keep its target.
 
 ### The timer
 
@@ -180,3 +183,109 @@ A second `remember` with a target waits for the first one to finish writing the 
 | 0 | success, also when another bilbo holds the store and a run with no target asked it to run again; `--hook` once it runs, whatever happens |
 | 1 | a file was refused, nothing was claimed under a target, a follow cannot run (also in a pass run again for another bilbo), or the target or the store could not be read |
 | 2 | usage or config error (wrong arguments to `--hook` among them, before it runs), a store root that holds bilbo 0.20's `notes/` or `library/`, a state or cache folder inside the root, or a config file `--follow` cannot write |
+
+## read
+
+```text
+bilbo read <ref> [--budget <tokens>]
+bilbo read <ref> --outline [--budget <tokens>]
+```
+
+Prints an entry that `bilbo remember` kept: its metadata and its outline, or its records a page at a time. Each page ends with the command that prints the next one, so a reader that follows those lines sees every record once.
+
+### The ref
+
+```text
+<ref>     = <entry> | <entry>#<locator>
+<entry>   = <id> | bilbo:<id> | <session id>
+<locator> = r<a> | r<a>-<b> | g<n> | g<n>:r<a> | g<n>:r<a>-<b>
+```
+
+- `<id>` is the entry's id, 26 characters, with or without the `bilbo:` a citation gives it.
+- `<session id>` is the UUID a harness gave a session, or its first 8 characters or more: `bilbo read 2d6b1857`. It names the entry kept from the `.jsonl` file whose name ends in that UUID: Claude Code's `<uuid>.jsonl`, Codex's `rollout-<time>-<uuid>.jsonl`. A note named for a UUID is not a session: read it by its id. Upper or lower case. When it names several entries (one session kept from two folders, or a short prefix two sessions share), the run exits 2 and lists up to five of them with their origins: give the id of one. A subagent has no UUID of its own: read it by its id, which its session's records name.
+- `r<a>-<b>` is the records from `a` to `b`, counted from 1; `r<a>` is one record. A record outside the entry is refused, exit 1, with the number of records the entry has.
+- `g<n>` is a generation: an entry whose file was rewritten keeps the old records as an older generation. With no `g`, the newest. A page of an older generation shows it in every locator (`#g1:r5`); a page of the newest shows the short form (`#r5`). The `more:` and `cut:` commands of the last line always name the generation that was read, so a file rewritten between two pages cannot make the next page read other records.
+
+### The outline
+
+With no record range, `read` prints what it knows of the entry, then one line per prompt of a session or per heading section of a note, each after the locator that reads it:
+
+```text
+bilbo:01M6ZGE4KTBYYH07AS2KVMSCAF
+kind: session
+origin: file:/home/me/.claude/projects/-home-me-src-garden/8f2b6d4e-1a3c-4e5f-9b7a-2c4d6e8f0a1b.jsonl
+captured: 2026-11-09 03:12 UTC
+started: 2026-11-07 08:01 UTC
+parent: bilbo:01M6ZFZ0V5T2K1X8Q4W7N9R3HB
+records: 23
+generation: 1
+outline:
+#r3 user: Thin the carrot rows, then tell me how many seedlings are left.
+#r17 compact summary: This session is being continued. The carrots in the north bed were thinned from 42…
+#r18 user: Here is the bed. What is the weed in the corner?
+end: #r1-23 of 23 records
+```
+
+- `origin` is left out for an entry that has none, `started` for one whose records carry no time (a note), and `parent` unless the entry belongs to another: a subagent names its session.
+- `generation` is `1 of 2` when the one shown is not the newest.
+- A session lists its user prompts, its compact summaries and, for Codex, the messages one agent sent another. A note lists its frontmatter, the text before its first heading, and each heading with the headings above it: `#r28-31 The garden log > Watering > Tools`.
+- An outline line is the first 100 characters of the prompt's first line; a longer one ends in `…`.
+- A long outline is paged by the budget like the records, its metadata counted in: it ends with `more: bilbo read <id>#g<n>:r<a>-<b> --outline`. `--outline` with a range lists the passages that start in that range, without the metadata.
+
+### A page
+
+With a range, `read` prints each record that renders, after its locator:
+
+```text
+#r5 assistant: I'll count the rows first.
+tool_use Bash:
+command: wc -l beds/north.csv
+#r6 tool_result Bash:
+42 beds/north.csv
+more: bilbo read 01M6ZGE4KTBYYH07AS2KVMSCAF#g1:r8-23
+```
+
+- A session record is one message: `user:`, `assistant:`, `tool_use <name>:` with the call's input a line per key, `tool_result <name>:` or `tool_error <name>:` with what came back, `compact summary:`. Thinking, the harness's own injections (Claude Code's `isMeta` entries, Codex's developer messages, its `AGENTS.md` and environment messages), entries of another thread and every bookkeeping line render nothing: they are never printed and never counted as missing. The thread of a Claude Code file is that of its first entry that renders: a session's file leaves out the entries marked `isSidechain`, and a subagent's file, where every entry is marked, reads as its own thread. An older Codex rollout does not say which user items the harness wrote; there an item is left out when its text starts with `# AGENTS.md instructions`, `<environment_context>`, `<recommended_plugins>` or `<skill>`, also when a person typed it. A rollout of Codex's first format, whose lines are bare items with no `payload`, reads as an empty outline. A range that holds none of the records that render prints its last line alone and exits 0.
+- A note's records are its lines. They are printed a section at a time under the locator of the lines printed: `#r28-31`. A range that starts or ends inside a section prints the lines it holds. Headings are found by scanning lines, not by parsing Markdown's containers: inside or right after a list, a quote or indented code a section can start at the wrong line or carry the wrong label, but every line is printed, once.
+- A pipe or a file gets each record's text as it is. A terminal gets its control characters escaped (`\u{1b}`), also when an agent runs bilbo there; a person's terminal also gets the locators in bold and the commands in colour.
+
+The last line of every output is bilbo's, on a line of its own also when the last record has no line end, and nothing else is: a record prints as it was kept, so a line above the last can look like a locator or like any line of bilbo's. It is one of two:
+
+| Line | Meaning |
+|---|---|
+| `more: bilbo read <id>#g<n>:r<a>-<b>` | The command for the next page: the rest of what was asked, from the next record that renders, in the generation this page read. It carries `--outline` after an outline page and `--budget <n>` when the flag gave the budget. |
+| `end: #r<a>-<b> of <n> records` | Nothing is left of the range this run was asked for; the entry has `n` records. An entry with no record ends with `end: 0 records`. |
+
+When the page ends in a record that was cut, the same line says so first: `cut: <n> more characters; bilbo read <id>#g<n>:r<k> --budget <b>; more: ...`, or `...; end: ...` when nothing is left after that record.
+
+### The budget
+
+A page holds as many whole records as fit `read.budget` tokens (see [Configuration](configuration.md#keys)); `--budget <tokens>` sets it for one run. A token is counted as 4 bytes until bilbo's tokenizer arrives, so the default of 7,000 is at most 28,000 bytes of records: under the 30,000 characters at which Claude Code cuts a command's output. That bound holds for a pipe or a file, which is what a harness reads. On a terminal each control character of a record prints as its six-character escape, which the budget does not count, so a page can be longer there.
+
+A record is never split across pages. One that is over the budget by itself is printed alone, up to the budget, then the last line says how much is left and gives the command that prints it whole, before the command for the next page:
+
+```text
+$ bilbo read 01M6ZGE4KTBYYH07AS2KVMSCAF#r21-23 --budget 256
+#r21 tool_result Read:
+row 001 of the seed log: sown, watered, thinned
+row 002 of the seed log: sown, watered, thinned
+[rows 003 to 020 are left out of this example]
+row 021 of the seed log: sown, wat
+cut: 1885 more characters; bilbo read 01M6ZGE4KTBYYH07AS2KVMSCAF#g1:r21 --budget 1000; more: bilbo read 01M6ZGE4KTBYYH07AS2KVMSCAF#g1:r22-23 --budget 256
+```
+
+The cut falls between two characters. The budget of the `cut:` command is what the whole record counts under the locator of that command, rounded up to the next thousand; it is always one `--budget` accepts, and it prints the record whole also after the file was rewritten. The cut record counts as printed: `more:` goes on after it. A long section of a note is not cut: it goes on at its next line on the next page. Only a single line over the budget is cut.
+
+### Reading while bilbo writes
+
+`read` only reads: it creates and changes nothing in the store, the state or the cache folder. It holds the store's lock in shared mode for as long as it takes to fetch the entry's records, and lets it go before it renders or prints. While a `bilbo remember` holds the store, `read` waits up to `store.wait` (10 seconds by default), says so on stderr once, and then gives up with exit 1: `another bilbo is writing the store`. Run it again.
+
+`read` uses the catalog in the cache folder when it holds every frame of the store. When the catalog is missing or behind (the cache folder was deleted, say), `read` walks every segment instead, under the lock, which takes as long as the store is large: reads are slow until the next `bilbo remember` with a target or none rebuilds the catalog. A `bilbo remember --hook` that finds a reader on the store waits for it up to `store.hook_wait` (2 seconds by default), then leaves its lines to the next run and says so; a run with a target or none waits for the reader.
+
+### Exit codes
+
+| Code | Meaning |
+|---|---|
+| 0 | success, also when no record of the range renders |
+| 1 | no entry has the id or the session id, the range or the generation is outside the entry, the entry is of a kind this bilbo cannot read, there is no store, the store is being written for longer than `store.wait`, or the store could not be read |
+| 2 | usage or config error: a ref that does not parse, a session id that names several entries, a `--budget` under 256 |

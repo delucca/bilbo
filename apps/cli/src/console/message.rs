@@ -94,6 +94,19 @@ fn indented(line: &str) -> String {
     }
 }
 
+/// A number as a terminal shows it: `1,234,567`.
+pub fn group(number: u64) -> String {
+    let digits = number.to_string();
+    let mut grouped = String::with_capacity(digits.len() + digits.len() / 3);
+    for (at, digit) in digits.chars().enumerate() {
+        if at > 0 && (digits.len() - at).is_multiple_of(3) {
+            grouped.push(',');
+        }
+        grouped.push(digit);
+    }
+    grouped
+}
+
 pub fn sanitize(line: &str) -> String {
     line.chars()
         .flat_map(|c| {
@@ -112,7 +125,13 @@ mod tests {
 
     use crate::console::theme::Mark;
 
-    use super::{Detail, Message};
+    use super::{Detail, Message, group};
+
+    #[test]
+    fn numbers_on_a_terminal_are_grouped_by_thousands() {
+        let grouped: Vec<String> = [0, 999, 1000, 1_234_567].into_iter().map(group).collect();
+        assert_eq!(grouped, ["0", "999", "1,000", "1,234,567"]);
+    }
 
     fn message(mark: Mark) -> Message {
         Message {

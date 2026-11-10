@@ -1,8 +1,9 @@
+pub mod read;
+
 use std::path::{Path, PathBuf};
 
-use serde_json::{Map, Value};
-
-use crate::dialect::Dialect;
+use crate::dialect::{Dialect, Evidence};
+use crate::json::Value;
 
 /// Skipped outside `subagents/`: memories, workflow definitions and tool outputs.
 /// `subagents/workflows/wf_*/` holds workflow runs' subagents and is kept.
@@ -12,14 +13,24 @@ pub fn is_subagents(path: &Path) -> bool {
     path.file_name().is_some_and(|name| name == "subagents")
 }
 
-/// A string `type` (Codex, with an object `payload`, is told apart first); Cursor's entries have
-/// `role` and no `type`.
-pub fn dialect(line: &Map<String, Value>) -> Option<Dialect> {
-    match (line.get("type"), line.get("role")) {
-        (Some(Value::String(_)), _) => Some(Dialect::ClaudeCode),
-        (None, Some(Value::String(_))) => Some(Dialect::Cursor),
-        _ => None,
-    }
+/// A string `type` is Claude Code's (Codex, with an object `payload`, is told apart first).
+/// Cursor's entries have a user or assistant `role` and no `type`, or a null one. Only an entry
+/// the reader renders something from is sure: any other may sit before another dialect's lines.
+pub fn dialect(line: &Value) -> Option<Evidence> {
+    let dialect = match (line.get("type"), line.get("role")) {
+        (Some(Value::Str(_)), _) => Dialect::ClaudeCode,
+        (None | Some(Value::Null), Some(Value::Str(role)))
+            if matches!(role.as_str(), "user" | "assistant") =>
+        {
+            Dialect::Cursor
+        }
+        _ => return None,
+    };
+    Some(if read::renders(line) {
+        Evidence::Sure(dialect)
+    } else {
+        Evidence::Maybe(dialect)
+    })
 }
 
 /// `<folder>/<uuid>.jsonl`, by the nearest `subagents` folder whose parent is a UUID.

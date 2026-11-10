@@ -14,7 +14,7 @@ const WAIT: Duration = Duration::from_secs(10);
 
 fn flagging(hook: Option<Hook>) -> Options {
     Options {
-        held: Held::Flag,
+        held: Held::Flag { readers: None },
         hook,
         ..sealing()
     }

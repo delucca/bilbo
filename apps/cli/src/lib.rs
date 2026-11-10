@@ -3,10 +3,13 @@ pub mod console;
 pub mod help;
 #[cfg(test)]
 mod probe;
+pub mod read;
 pub mod remember;
 
 use std::ffi::OsString;
 
+use bilbo_kinds::kind::Kind;
+use bilbo_kinds::reader::Reader;
 use clap::{Command, CommandFactory, Parser, Subcommand};
 
 use crate::console::args::{Parsed, parse, typed, usage, verbs, with_verbs};
@@ -34,14 +37,38 @@ pub struct Cli {
 #[derive(Debug, Subcommand)]
 pub enum Verb {
     Remember(remember::Args),
+    Read(read::Args),
     Config(config::Args),
 }
 
+/// Every kind `remember` keeps. Only this file names a kind crate.
+pub fn kinds() -> Vec<Box<dyn Kind>> {
+    vec![
+        Box::new(bilbo_markdown::Markdown),
+        Box::new(bilbo_session::Session),
+    ]
+}
+
+/// The reader of every kind, so `read` can print whatever `remember` kept.
+pub fn readers() -> Vec<Box<dyn Reader>> {
+    vec![
+        Box::new(bilbo_markdown::Markdown),
+        Box::new(bilbo_session::Session),
+    ]
+}
+
+/// The `remember` page lists the kinds, which only this file can name.
 pub fn bilbo() -> Command {
     let root = Cli::command();
-    verbs(&root)
-        .into_iter()
-        .fold(root, |root, name| root.mut_subcommand(name, shape))
+    verbs(&root).into_iter().fold(root, |root, name| {
+        let kinds = (name == "remember").then(|| remember::page(&kinds()));
+        root.mut_subcommand(name, |verb| {
+            shape(match kinds {
+                Some(page) => verb.after_help(page),
+                None => verb,
+            })
+        })
+    })
 }
 
 /// `settings` is what `main` resolved; help, the version and a usage error never read it.
@@ -70,8 +97,11 @@ pub fn run_command(
                 return Err(usage(root, with_verbs(root, "missing verb"), None));
             };
             match verb {
-                Verb::Remember(args) if args.hook => Ok(remember::hook::run(env, settings)),
-                Verb::Remember(args) => remember::run(root, args, env, &settings?),
+                Verb::Remember(args) if args.hook => {
+                    Ok(remember::hook::run(env, settings, &kinds()))
+                }
+                Verb::Remember(args) => remember::run(root, args, env, &settings?, &kinds()),
+                Verb::Read(args) => read::run(root, &args, env, &settings?, &readers()),
                 Verb::Config(args) => config::run(root, args, &settings?),
             }
         }
@@ -82,7 +112,7 @@ pub fn run_command(
 mod tests {
     use std::ffi::OsString;
 
-    use super::{bilbo, run, run_command};
+    use super::{bilbo, kinds, readers, run, run_command};
     use crate::console::env::Env;
     use crate::console::outcome::Failure;
     use crate::console::settings::Settings;
@@ -106,6 +136,37 @@ mod tests {
     }
 
     #[test]
+    fn every_kind_has_its_own_lowercase_name_and_its_reader() {
+        let names: Vec<&str> = kinds().iter().map(|kind| kind.name()).collect();
+        assert!(!names.is_empty());
+        for name in &names {
+            assert!(
+                !name.is_empty() && name.chars().all(|c| c.is_ascii_lowercase()),
+                "{name:?}"
+            );
+        }
+        let mut unique = names.clone();
+        unique.sort_unstable();
+        unique.dedup();
+        assert_eq!(unique.len(), names.len(), "{names:?}");
+        let read: Vec<&str> = readers().iter().map(|reader| reader.kind()).collect();
+        assert_eq!(
+            read, names,
+            "a kind that is kept and cannot be read, or the reverse"
+        );
+    }
+
+    #[test]
+    fn the_remember_page_lists_every_kind() {
+        let page = stdout(&bilbo(), &["bilbo", "remember", "--help"]);
+        let at = page.find("\nKinds:\n").expect("a Kinds section");
+        for kind in kinds() {
+            let row = format!("  {:<8}  {}\n", kind.name(), kind.summary());
+            assert!(page[at..].contains(&row), "{row:?} missing in\n{page}");
+        }
+    }
+
+    #[test]
     fn a_newline_in_a_help_topic_cannot_cut_the_reason() {
         let reason =
             |list: &[&str]| match run_command(&bilbo(), &args(list), &mut Env::quiet(), unread()) {
@@ -114,7 +175,7 @@ mod tests {
             };
         assert_eq!(
             reason(&["bilbo", "help", "a\nb"]),
-            "unknown verb 'a\\nb'; the verbs are remember, config"
+            "unknown verb 'a\\nb'; the verbs are remember, read, config"
         );
         assert_eq!(
             reason(&["bilbo", "help", "--a\nb"]),

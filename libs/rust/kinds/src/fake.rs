@@ -67,3 +67,48 @@ impl Kind for Suffix {
         Proposal::default()
     }
 }
+
+/// One token a character.
+pub struct Chars;
+
+impl crate::tokens::Tokens for Chars {
+    fn count(&self, text: &str) -> usize {
+        text.chars().count()
+    }
+
+    fn prefix(&self, text: &str, budget: usize) -> usize {
+        text.char_indices()
+            .nth(budget)
+            .map_or(text.len(), |(at, _)| at)
+    }
+}
+
+/// A passage of one record, as a session's message is.
+pub fn single(record: u64, text: &str) -> crate::reader::Passage {
+    section(record, &[text])
+}
+
+/// A passage of one record a line, from `first` on, as a note's section is.
+pub fn section(first: u64, lines: &[&str]) -> crate::reader::Passage {
+    let text = lines.concat();
+    crate::reader::Passage {
+        range: bilbo_store::entries::RecordRange {
+            first,
+            count: lines.len() as u64,
+        },
+        pieces: vec![crate::reader::Piece {
+            start: 0,
+            label: text.lines().next().unwrap_or_default().to_owned(),
+        }],
+        ends: lines
+            .iter()
+            .scan(0, |end, line| {
+                *end += line.len();
+                Some(*end)
+            })
+            .collect(),
+        text,
+        at: None,
+        outline: None,
+    }
+}

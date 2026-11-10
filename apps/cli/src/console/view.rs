@@ -11,6 +11,8 @@ pub const AGENT_MARKERS: [&str; 5] = [
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct View {
+    /// The stream is a terminal, whoever reads it: an agent's terminal gets the plain view.
+    pub terminal: bool,
     pub human: bool,
     pub paint: bool,
     pub unicode: bool,
@@ -18,12 +20,14 @@ pub struct View {
 
 impl View {
     pub const PLAIN: View = View {
+        terminal: false,
         human: false,
         paint: false,
         unicode: false,
     };
 
     pub const HUMAN: View = View {
+        terminal: true,
         human: true,
         paint: true,
         unicode: true,
@@ -36,6 +40,7 @@ pub fn decide(terminal: bool, macos: bool, var: impl Fn(&str) -> Option<OsString
     let term_ok = var("TERM").is_some_and(|term| !term.is_empty() && term != "dumb");
     let colour = !set("NO_COLOR") && var("CLICOLOR").is_none_or(|v| v != "0") && term_ok;
     View {
+        terminal,
         human,
         paint: human && colour,
         unicode: unicode(macos, var),
@@ -99,6 +104,18 @@ mod tests {
             );
         }
         assert_eq!(view(true, &[XTERM, ("CLAUDECODE", "1")]), (true, true));
+    }
+
+    #[test]
+    fn a_terminal_is_known_as_one_also_when_an_agent_gets_the_plain_view() {
+        let agent = decide(true, true, vars(&[XTERM, ("AI_AGENT", "1")]));
+        assert_eq!(
+            (agent.terminal, agent.human, agent.paint),
+            (true, false, false)
+        );
+        let pipe = decide(false, true, vars(&[XTERM]));
+        assert_eq!((pipe.terminal, pipe.human), (false, false));
+        assert!(decide(true, true, vars(&[XTERM])).terminal);
     }
 
     #[test]

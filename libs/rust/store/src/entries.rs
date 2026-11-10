@@ -271,8 +271,11 @@ pub enum StoreError {
         path: PathBuf,
         root: PathBuf,
     },
-    /// Another writer holds the store; the again flag is set for it.
+    /// A writer holds the store: a writer that found it so set the again flag for it, a reader
+    /// waited for it as long as its options allow.
     Busy,
+    /// Readers held the store for longer than a writer's options let it wait for them.
+    Reading,
     /// The catalog must be rebuilt from every segment, and the options refused that.
     Unrebuilt,
 }
@@ -330,6 +333,7 @@ impl fmt::Display for StoreError {
             ),
             Self::Stopped(step) => write!(f, "stopped at the test hook {step}"),
             Self::Busy => f.write_str("another bilbo is writing the store"),
+            Self::Reading => f.write_str("another bilbo is reading the store"),
             Self::Unrebuilt => f.write_str("the catalog must be rebuilt from the store first"),
         }
     }
@@ -357,6 +361,15 @@ pub trait Entries {
     fn meta(&self, id: Id) -> Result<Option<Meta>, StoreError>;
     fn changes(&self, since: &Cursor) -> Result<(Vec<Change>, Cursor), StoreError>;
     fn by_origin(&self, origin: &Origin) -> Result<Option<Head>, StoreError>;
+    /// A generation's number and how many records it holds; `None` asks for the newest.
+    /// `Ok(None)`: no such entry or generation.
+    fn extent(
+        &self,
+        id: Id,
+        generation: Option<Generation>,
+    ) -> Result<Option<(Generation, u64)>, StoreError>;
+    /// The entries whose origin holds `part`, whatever the case of its ASCII letters, in id order.
+    fn origins_with(&self, part: &str) -> Result<Vec<(Id, Origin)>, StoreError>;
 }
 
 #[cfg(test)]
@@ -513,6 +526,10 @@ mod tests {
             (
                 StoreError::Busy.to_string(),
                 "another bilbo is writing the store",
+            ),
+            (
+                StoreError::Reading.to_string(),
+                "another bilbo is reading the store",
             ),
             (
                 StoreError::Unrebuilt.to_string(),

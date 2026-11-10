@@ -6,6 +6,7 @@ bilbo_rust_test(
     srcs = [
         "cli.rs",
         "config.rs",
+        "read.rs",
         "remember.rs",
         "scratch.rs",
         "sessions.rs",
@@ -13,6 +14,7 @@ bilbo_rust_test(
     ],
     compile_data = [
         "//apps/cli:hook_payloads",
+        "//libs/rust/kinds/markdown:fixtures",
         "//libs/rust/kinds/session:fixtures",
     ],
     crate_root = "cli.rs",

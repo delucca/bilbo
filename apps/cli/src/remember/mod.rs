@@ -2,13 +2,13 @@ pub mod disk;
 pub mod follows;
 pub mod hook;
 pub mod messages;
-pub mod registry;
 pub mod save;
 pub mod view;
 
 use std::path::PathBuf;
 
 use bilbo_kinds::follows::Follow;
+use bilbo_kinds::kind::Kind;
 use bilbo_kinds::remember::{self, Output, Request};
 use bilbo_store::segments::Store;
 use clap::Command;
@@ -31,7 +31,7 @@ const USAGE: &str = "bilbo remember <file|folder> [--kind <kind>] [--follow]
   bilbo remember --hook";
 
 #[derive(Debug, clap::Args)]
-#[command(about = SUMMARY, before_help = ABOUT, override_usage = USAGE, after_help = page())]
+#[command(about = SUMMARY, before_help = ABOUT, override_usage = USAGE)]
 pub struct Args {
     #[arg(value_name = "file|folder")]
     pub target: Option<PathBuf>,
@@ -57,8 +57,8 @@ pub struct Args {
     pub hook: bool,
 }
 
-fn page() -> String {
-    let kinds = registry::kinds();
+/// What follows the options on the help page: the kinds, then the rest of the page.
+pub fn page(kinds: &[Box<dyn Kind>]) -> String {
     let width = kinds
         .iter()
         .map(|kind| kind.name().len())
@@ -92,16 +92,16 @@ pub fn run(
     args: Args,
     env: &mut Env,
     settings: &Settings,
+    kinds: &[Box<dyn Kind>],
 ) -> Result<Outcome, Failure> {
     let Some(target) = args.target else {
-        return follows::run(env, settings);
+        return follows::run(env, settings, kinds);
     };
-    let kinds = registry::kinds();
     let request = Request {
         target,
         kind: args.kind,
     };
-    let plan = remember::plan(&request, &kinds, &Disk).map_err(|error| match error {
+    let plan = remember::plan(&request, kinds, &Disk).map_err(|error| match error {
         remember::Error::UnknownKind { .. } | remember::Error::SeveralKinds { .. } => {
             usage(root, sanitize(&error.to_string()), Some("remember"))
         }
@@ -119,7 +119,7 @@ pub fn run(
         })
         .map_err(|error| Failure::from(&error))?;
         let output = remember::keep(&plan, &Disk, &mut store).map_err(|error| refused(&error))?;
-        (output, follows::close(store, &settings.follow.value))
+        (output, follows::close(store, &settings.follow.value, kinds))
     };
     if args.follow && !closing.failed {
         let follow = Follow {
@@ -163,19 +163,4 @@ fn outcome(output: Output, closing: Closing) -> Outcome {
 
 fn refused(error: &dyn std::fmt::Display) -> Failure {
     Failure::Refused(sanitize(&error.to_string()))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{page, registry};
-
-    #[test]
-    fn the_page_lists_every_kind_of_the_registry() {
-        let page = page();
-        for kind in registry::kinds() {
-            let row = format!("  {:<8}  {}\n", kind.name(), kind.summary());
-            assert!(page.contains(&row), "{row:?} missing in\n{page}");
-        }
-        assert!(page.starts_with("Kinds:\n"));
-    }
 }

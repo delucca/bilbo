@@ -5,6 +5,7 @@ Usage: bilbo <verb> [<args>]
 
 Verbs:
   remember  Keep files as entries; a later run keeps what grew or changed
+  read      Print an entry: its outline, or its records a page at a time
   config    Show each setting, its value and where it came from
 
 Run 'bilbo <verb> --help' for its options, output and exit codes.

@@ -16,6 +16,7 @@ rust_library(
     lint_config = ":lints",
     visibility = [
         "//apps/cli:__pkg__",
+        "//libs/rust/kinds:__pkg__",
         "//libs/rust/store:__pkg__",
     ],
     deps = all_crate_deps(normal = True),

@@ -5,6 +5,7 @@ mod filter;
 mod frames;
 mod guards;
 mod lock;
+mod lookup;
 mod read_only;
 mod recovery;
 mod scratch;

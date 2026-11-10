@@ -77,7 +77,10 @@ bilbo_rust_test(
 bilbo_rust_test(
     name = "snapshot",
     srcs = ["tests/snapshot.rs"],
-    compile_data = glob(["tests/snapshots/*"]) + ["//libs/rust/kinds/session:fixtures"],
+    compile_data = glob(["tests/snapshots/*"]) + [
+        "//libs/rust/kinds/markdown:fixtures",
+        "//libs/rust/kinds/session:fixtures",
+    ],
     layer = "snapshot",
     lint_config = ":lints",
     version = BILBO_VERSION,
@@ -113,6 +116,22 @@ bilbo_rust_test(
     crate_root = "tests/sessions.rs",
     compile_data = [
         ":hook_payloads",
+        "//libs/rust/kinds/session:fixtures",
+    ],
+    layer = "integration",
+    lint_config = ":lints",
+    deps = [
+        ":bilbo_cli",
+        "//libs/rust/kinds",
+        "//libs/rust/store",
+    ],
+)
+
+bilbo_rust_test(
+    name = "read",
+    srcs = ["tests/read.rs"],
+    compile_data = [
+        "//libs/rust/kinds/markdown:fixtures",
         "//libs/rust/kinds/session:fixtures",
     ],
     layer = "integration",

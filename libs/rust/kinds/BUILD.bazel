@@ -18,7 +18,10 @@ rust_library(
         "//libs/rust/kinds/markdown:__pkg__",
         "//libs/rust/kinds/session:__pkg__",
     ],
-    deps = ["//libs/rust/store"],
+    deps = [
+        "//libs/rust/settings",
+        "//libs/rust/store",
+    ],
 )
 
 bilbo_rust_test(

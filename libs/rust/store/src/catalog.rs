@@ -184,9 +184,35 @@ impl Catalog {
         sealed: &[(String, u64)],
         open_len: u64,
     ) -> Fresh {
-        match Catalog::check(path, binding, sealed, open_len) {
+        match Catalog::check(
+            path,
+            binding,
+            sealed,
+            open_len,
+            OpenFlags::SQLITE_OPEN_READ_WRITE,
+        ) {
             Ok(fresh) => fresh,
             Err(_) => Fresh::Rebuild,
+        }
+    }
+
+    /// The catalog at `path`, opened read-only, when it already holds every frame of the store:
+    /// a reader that gets it walks no segment. Creates and writes nothing.
+    pub fn open_unchanged(
+        path: &Path,
+        binding: &Binding,
+        sealed: &[(String, u64)],
+        open_len: u64,
+    ) -> Option<Catalog> {
+        match Catalog::check(
+            path,
+            binding,
+            sealed,
+            open_len,
+            OpenFlags::SQLITE_OPEN_READ_ONLY,
+        ) {
+            Ok(Fresh::Current(catalog)) => Some(catalog),
+            _ => None,
         }
     }
 
@@ -195,11 +221,9 @@ impl Catalog {
         binding: &Binding,
         sealed: &[(String, u64)],
         open_len: u64,
+        access: OpenFlags,
     ) -> rusqlite::Result<Fresh> {
-        let conn = Connection::open_with_flags(
-            path,
-            OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX,
-        )?;
+        let conn = Connection::open_with_flags(path, access | OpenFlags::SQLITE_OPEN_NO_MUTEX)?;
         let version: i64 = conn.query_row("PRAGMA user_version", [], |row| row.get(0))?;
         if version != 2 {
             return Ok(Fresh::Rebuild);
@@ -318,6 +342,31 @@ impl Catalog {
             .map(|raw| id_of(&raw, 0))
             .transpose()
             .map_err(|error| self.err(&error))
+    }
+
+    /// `instr`, not `LIKE`: no character of `part` is a wildcard.
+    pub fn origins_with(&self, part: &str) -> Result<Vec<(Id, Origin)>, StoreError> {
+        let run = || -> rusqlite::Result<Vec<(Id, Origin)>> {
+            let mut statement = self.conn.prepare(
+                "SELECT id, origin FROM entries
+                 WHERE origin IS NOT NULL AND instr(lower(origin), lower(?1)) > 0 ORDER BY id",
+            )?;
+            let rows = statement.query_map(params![part], |row| {
+                Ok((
+                    id_of(&row.get::<_, Vec<u8>>(0)?, 0)?,
+                    row.get::<_, String>(1)?,
+                ))
+            })?;
+            let mut found = Vec::new();
+            for row in rows {
+                let (id, origin) = row?;
+                if let Some(origin) = Origin::new(origin) {
+                    found.push((id, origin));
+                }
+            }
+            Ok(found)
+        };
+        run().map_err(|error| self.err(&error))
     }
 
     pub fn meta(&self, id: Id) -> Result<Option<Meta>, StoreError> {

@@ -160,3 +160,109 @@ fn two_store_roots_cannot_share_one_state_folder() {
     fs::remove_file(first.state.join("root")).expect("remove the record");
     assert!(Store::open_read_only(&second, sealing(), &mut |_| {}).is_ok());
 }
+
+/// `a.md` sealed and `b.md` in open.seg, the catalog on disk holding both.
+fn two_places_cataloged(layout: &Layout) -> (bilbo_store::id::Id, bilbo_store::id::Id) {
+    let mut store = open(layout);
+    let a = id_of(&keep(&mut store, "a.md", b"one\ntwo\n"));
+    store.close().expect("close");
+    let mut store = bilbo_store::segments::Store::open(
+        layout,
+        bilbo_store::segments::Options::default(),
+        &mut |_| {},
+    )
+    .expect("open");
+    let b = id_of(&keep(&mut store, "b.md", b"three\n"));
+    store.close().expect("close without a seal");
+    assert_eq!(crate::scratch::sealed(layout).len(), 1);
+    (a, b)
+}
+
+#[test]
+fn a_read_only_open_with_a_current_catalog_walks_no_segment_and_writes_nothing() {
+    let scratch = Scratch::new("read_only_catalog");
+    let layout = scratch.layout();
+    let (a, b) = two_places_cataloged(&layout);
+    // A sealed frame damaged after the catalog was written: a walk of the segments would refuse
+    // the store, and only a read of that frame finds it.
+    let segment = crate::scratch::sealed(&layout).pop().expect("a segment");
+    let frame = spans(&segment).pop().expect("a frame");
+    crate::scratch::flip(&segment, frame.offset + frame.total - 1);
+    let before = snapshot_of(&layout);
+
+    let store = Store::open_read_only(&layout, sealing(), &mut |_| {}).expect("read-only open");
+    assert_eq!(read_records(&store, b, 1, 1), b"three\n");
+    assert_eq!(
+        store
+            .by_origin(&origin("a.md"))
+            .expect("head")
+            .map(|head| head.id),
+        Some(a)
+    );
+    let damaged = store.read(a, Generation(1), RecordRange { first: 1, count: 2 });
+    assert!(
+        matches!(damaged, Err(StoreError::Damaged { .. })),
+        "{damaged:?}"
+    );
+    drop(store);
+    assert_eq!(snapshot_of(&layout), before, "no journal, no write");
+
+    fs::remove_file(catalog(&layout)).expect("delete the catalog");
+    let walked = Store::open_read_only(&layout, sealing(), &mut |_| {});
+    assert!(matches!(walked, Err(StoreError::Damaged { .. })));
+}
+
+#[test]
+fn a_read_only_open_walks_the_segments_when_the_catalog_cannot_be_used_as_it_is() {
+    type Spoil = fn(&Layout);
+    let cases: [(&str, Spoil); 6] = [
+        ("the catalog is behind open.seg", |layout| {
+            let whole = fs::read(open_seg(layout)).expect("read");
+            let frame = spans(&open_seg(layout)).pop().expect("a frame");
+            let mut torn = whole.clone();
+            torn.extend_from_slice(&whole[frame.offset..frame.offset + 40]);
+            fs::write(open_seg(layout), &torn).expect("write");
+        }),
+        ("the catalog is not a database", |layout| {
+            fs::write(catalog(layout), b"not sqlite").expect("write");
+        }),
+        ("the catalog belongs to another store", |layout| {
+            crate::scratch::sql(
+                layout,
+                "UPDATE catalog SET value = x'2f6f74686572' WHERE key = 'root'",
+            );
+        }),
+        ("the catalog lists another segment", |layout| {
+            crate::scratch::sql(
+                layout,
+                "UPDATE segments SET length = length + 1 WHERE name != 'open'",
+            );
+        }),
+        ("a seal was interrupted", |layout| {
+            fs::write(
+                layout.state.join("sealing"),
+                b"01JC5Q3V7XKM4P8R2T6W9YB0DE\n",
+            )
+            .expect("marker");
+        }),
+        ("the cache folder is open to others", |layout| {
+            crate::scratch::chmod(&layout.cache, 0o777);
+        }),
+    ];
+    for (case, spoil) in cases {
+        let scratch = Scratch::new("read_only_fallback");
+        let layout = scratch.layout();
+        let (a, b) = two_places_cataloged(&layout);
+        // The rows of the catalog on disk lead nowhere: only a walk of the segments reads `a.md`.
+        crate::scratch::sql(&layout, "UPDATE frames SET offset = offset + 1");
+        spoil(&layout);
+        let before = snapshot_of(&layout);
+        let store = Store::open_read_only(&layout, sealing(), &mut |_| {})
+            .unwrap_or_else(|error| panic!("{case}: {error}"));
+        assert_eq!(read_records(&store, a, 1, 2), b"one\ntwo\n", "{case}");
+        assert_eq!(read_records(&store, b, 1, 1), b"three\n", "{case}");
+        drop(store);
+        assert_eq!(snapshot_of(&layout), before, "{case}");
+        crate::scratch::chmod(&layout.cache, 0o700);
+    }
+}

@@ -4,6 +4,7 @@ use std::path::PathBuf;
 use std::process::{Command, Stdio};
 
 mod config;
+mod read;
 mod remember;
 mod scratch;
 mod sessions;
@@ -44,7 +45,7 @@ pub(crate) fn bilbo<S: AsRef<OsStr>>(args: &[S], env: &[(&str, &str)]) -> Run {
 }
 
 const OVERVIEW_START: &str = "bilbo keeps durable memory for coding agents: ";
-const VERBS: &str = "; the verbs are remember, config";
+const VERBS: &str = "; the verbs are remember, read, config";
 const SEE: &str = "bilbo: see 'bilbo --help'\n";
 
 #[test]

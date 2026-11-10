@@ -1,0 +1,19 @@
+[1m#r8-11[22m # The garden log
+
+A note with every kind of section a reader meets.
+
+[1m#r12-21[22m ## Beds
+
+- north: carrots
+- south: beans
+
+```sh
+# a comment in a code block, not a heading
+ls beds
+```
+
+[1m#r22-25[22m Watering
+--------
+
+Water in the morning.
+[2mmore:[22m [36mbilbo read 01JC5Q3V7XKM4P8R2T6W9YB0DG#g1:r26-27 --budget 300[39m

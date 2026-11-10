@@ -21,6 +21,7 @@ type Human = Box<dyn Fn(&View) -> String>;
 pub struct Outcome {
     plain: String,
     human: Option<Human>,
+    every_terminal: bool,
     diagnostics: Vec<Message>,
     exit: Exit,
 }
@@ -30,6 +31,7 @@ impl Outcome {
         Self {
             plain: plain.into(),
             human: None,
+            every_terminal: false,
             diagnostics: Vec::new(),
             exit: Exit::Success,
         }
@@ -38,6 +40,15 @@ impl Outcome {
     #[must_use]
     pub fn with_human(mut self, human: impl Fn(&View) -> String + 'static) -> Self {
         self.human = Some(Box::new(human));
+        self
+    }
+
+    /// The human text is asked for on every terminal, also an agent's, which gets the plain
+    /// view: for a result that holds text from outside, whose control characters no terminal
+    /// should run.
+    #[must_use]
+    pub fn on_every_terminal(mut self) -> Self {
+        self.every_terminal = true;
         self
     }
 
@@ -55,7 +66,7 @@ impl Outcome {
 
     pub fn stdout(&self, view: &View) -> String {
         match &self.human {
-            Some(human) if view.human => human(view),
+            Some(human) if view.human || (self.every_terminal && view.terminal) => human(view),
             _ => self.plain.clone(),
         }
     }
@@ -196,6 +207,39 @@ mod tests {
             ..View::HUMAN
         };
         assert_eq!(differ.stdout(&unpainted), "hits (terminal)\n");
+    }
+
+    #[test]
+    fn a_plain_view_on_a_terminal_gets_its_own_text_when_the_result_has_one() {
+        let agent = View {
+            terminal: true,
+            ..View::PLAIN
+        };
+        let raw = Outcome::new("a\u{1b}b\n");
+        assert_eq!(
+            raw.stdout(&agent),
+            "a\u{1b}b\n",
+            "without one, the plain text"
+        );
+        let shown = |view: &View| {
+            if view.human {
+                "human\n".to_owned()
+            } else {
+                "a\\u{1b}b\n".to_owned()
+            }
+        };
+        let unasked = Outcome::new("a\u{1b}b\n").with_human(shown);
+        assert_eq!(unasked.stdout(&agent), "a\u{1b}b\n");
+        let safe = Outcome::new("a\u{1b}b\n")
+            .with_human(shown)
+            .on_every_terminal();
+        assert_eq!(safe.stdout(&agent), "a\\u{1b}b\n");
+        assert_eq!(
+            safe.stdout(&View::PLAIN),
+            "a\u{1b}b\n",
+            "a pipe gets the bytes"
+        );
+        assert_eq!(safe.stdout(&View::HUMAN), "human\n");
     }
 
     #[test]
@@ -356,14 +400,14 @@ mod tests {
     #[test]
     fn a_usage_failure_without_usage_lines_is_the_reason_and_the_page() {
         let failure = Failure::Usage {
-            reason: "missing verb; the verbs are remember, config".to_owned(),
+            reason: "missing verb; the verbs are remember, read, config".to_owned(),
             usage: Vec::new(),
             page: "bilbo --help".to_owned(),
         };
         assert_eq!(
             failure.stderr_lines(&View::PLAIN),
             [
-                "bilbo: missing verb; the verbs are remember, config",
+                "bilbo: missing verb; the verbs are remember, read, config",
                 "bilbo: see 'bilbo --help'"
             ]
         );

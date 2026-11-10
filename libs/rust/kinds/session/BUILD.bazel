@@ -37,3 +37,16 @@ bilbo_rust_test(
     layer = "unit",
     lint_config = ":lints",
 )
+
+bilbo_rust_test(
+    name = "contract",
+    srcs = glob(["tests/contract/*.rs"]),
+    compile_data = glob(["tests/contract/*.jsonl"]),
+    crate_root = "tests/contract/main.rs",
+    layer = "contract",
+    lint_config = ":lints",
+    deps = [
+        ":session",
+        "//libs/rust/kinds",
+    ] + all_crate_deps(normal_dev = True),
+)

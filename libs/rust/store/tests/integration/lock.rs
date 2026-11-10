@@ -178,3 +178,162 @@ fn a_writer_waits_for_a_reader_and_the_readers_reads_stay_valid() {
     assert_eq!(read_records(&again, a, 1, 2), b"one\ntwo\n");
     assert_eq!(read_records(&again, b, 1, 1), b"three\n");
 }
+
+#[test]
+fn a_reader_gives_up_on_a_writer_after_the_wait_it_was_given() {
+    let scratch = Scratch::new("reader_gives_up");
+    let layout = scratch.layout();
+    let (locked_tx, locked_rx) = channel::<()>();
+    let (release_tx, release_rx) = channel::<()>();
+    let hook: Hook = Box::new(move |step| {
+        if step == Step::Locked {
+            locked_tx.send(()).ok();
+            release_rx
+                .recv_timeout(WAIT)
+                .map_err(std::io::Error::other)?;
+        }
+        Ok(())
+    });
+    let writer_layout = layout.clone();
+    let writer = thread::spawn(move || {
+        let options = Options {
+            hook: Some(hook),
+            ..sealing()
+        };
+        let mut store = Store::open(&writer_layout, options, &mut |_| {}).expect("open");
+        keep(&mut store, "a.md", b"one\n");
+        store.close().expect("close");
+    });
+    locked_rx
+        .recv_timeout(WAIT)
+        .expect("the writer holds the lock");
+
+    for (wait, said) in [(Duration::ZERO, 0), (Duration::from_millis(60), 1)] {
+        let mut notices = Vec::new();
+        let started = std::time::Instant::now();
+        let options = Options { wait, ..sealing() };
+        let refused = Store::open_read_only(&layout, options, &mut |notice| notices.push(notice));
+        assert!(
+            matches!(refused, Err(bilbo_store::entries::StoreError::Busy)),
+            "a wait of {wait:?}"
+        );
+        assert!(started.elapsed() >= wait);
+        assert_eq!(notices, vec![Notice::Waiting; said], "a wait of {wait:?}");
+    }
+
+    release_tx.send(()).expect("release the writer");
+    writer.join().expect("the writer");
+    let store = Store::open_read_only(
+        &layout,
+        Options {
+            wait: Duration::ZERO,
+            ..sealing()
+        },
+        &mut |_| {},
+    )
+    .expect("nobody holds the store");
+    assert!(
+        store
+            .by_origin(&crate::scratch::origin("a.md"))
+            .expect("head")
+            .is_some()
+    );
+}
+
+#[test]
+fn a_writer_that_follows_the_readers_during_a_bounded_wait_is_asked_to_run_again() {
+    use bilbo_store::entries::StoreError;
+    use bilbo_store::segments::Held;
+    let scratch = Scratch::new("writer_follows_readers");
+    let layout = scratch.layout();
+    Store::open(&layout, sealing(), &mut |_| {})
+        .expect("open")
+        .close()
+        .expect("close");
+    let held = |name: &str| {
+        std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(layout.state.join(name))
+            .expect("a lock file")
+    };
+    // `store.lock` alone stands for readers; with `store.writer` it stands for a writer.
+    let lock = held("store.lock");
+    lock.lock().expect("hold the store");
+    let writer = held("store.writer");
+
+    let options = Options {
+        held: Held::Flag {
+            readers: Some(Duration::from_millis(60)),
+        },
+        ..sealing()
+    };
+    let refused = Store::open(&layout, options, &mut |notice| {
+        if notice == Notice::Waiting {
+            writer.lock().expect("a writer follows the readers");
+        }
+    });
+    assert!(
+        matches!(refused, Err(StoreError::Busy)),
+        "a writer holds the store when the wait ends"
+    );
+    assert_eq!(
+        std::fs::metadata(layout.state.join("store.again"))
+            .expect("flag")
+            .len(),
+        1,
+        "the writer is asked to run again"
+    );
+}
+
+#[test]
+fn a_writer_that_may_not_wait_long_for_readers_gives_up_and_writes_nothing() {
+    use bilbo_store::entries::StoreError;
+    use bilbo_store::segments::Held;
+    let scratch = Scratch::new("writer_gives_up");
+    let layout = scratch.layout();
+    let mut store = Store::open(&layout, sealing(), &mut |_| {}).expect("open");
+    keep(&mut store, "a.md", b"one\n");
+    store.close().expect("close");
+    std::fs::remove_file(crate::scratch::catalog(&layout)).expect("delete the catalog");
+    let reader = Store::open_read_only(&layout, sealing(), &mut |_| {}).expect("a reader");
+    let before = crate::scratch::snapshot_of(&layout);
+
+    for wait in [Duration::ZERO, Duration::from_millis(60)] {
+        let started = std::time::Instant::now();
+        let options = Options {
+            held: Held::Flag {
+                readers: Some(wait),
+            },
+            ..sealing()
+        };
+        let refused = Store::open(&layout, options, &mut |_| {});
+        assert!(
+            matches!(refused, Err(StoreError::Reading)),
+            "a wait of {wait:?}"
+        );
+        assert!(started.elapsed() >= wait);
+    }
+    let after = crate::scratch::snapshot_of(&layout);
+    assert_eq!(after[0], before[0], "no segment changed");
+    assert!(
+        !layout.state.join("store.again").exists()
+            || std::fs::metadata(layout.state.join("store.again"))
+                .expect("flag")
+                .len()
+                == 0,
+        "a reader is asked for no rerun"
+    );
+
+    drop(reader);
+    let options = Options {
+        held: Held::Flag {
+            readers: Some(Duration::ZERO),
+        },
+        ..sealing()
+    };
+    let mut store = Store::open(&layout, options, &mut |_| {}).expect("no reader holds the store");
+    keep(&mut store, "b.md", b"two\n");
+}

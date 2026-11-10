@@ -6,10 +6,13 @@ use std::sync::OnceLock;
 use proc_macro2::{Delimiter, TokenStream, TokenTree};
 use syn::visit::{self, Visit};
 
-const COMPONENTS: [&str; 3] = ["config", "help", "remember"];
+const COMPONENTS: [&str; 4] = ["config", "help", "read", "remember"];
 const MODULE: &str = "console";
 const THEME: [&str; 2] = ["console", "theme"];
 const ROOTS: [&str; 2] = ["crate", "bilbo_cli"];
+/// bilbo's own crates that any file may name. Every other `bilbo_` crate is a kind's.
+const SHARED: [&str; 3] = ["bilbo_kinds", "bilbo_settings", "bilbo_store"];
+const OWN: &str = "bilbo_";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Rule {
@@ -18,6 +21,7 @@ enum Rule {
     ComponentNamedOutside,
     Cycle,
     Escape,
+    KindNamedOutside,
 }
 
 #[derive(Default)]
@@ -25,6 +29,8 @@ struct Report {
     violations: Vec<(Rule, String)>,
     edges: BTreeMap<String, BTreeSet<String>>,
     theme_escape: bool,
+    /// The kind crates `lib.rs` names.
+    kinds: BTreeSet<String>,
 }
 
 impl Report {
@@ -49,6 +55,8 @@ struct Decl {
 #[derive(Default)]
 struct Found {
     paths: Vec<Vec<String>>,
+    /// The paths of every `use` that is not private.
+    reexports: Vec<Vec<String>>,
     decls: Vec<Decl>,
     problems: Vec<String>,
     escape: bool,
@@ -159,7 +167,10 @@ fn scan_tokens(stream: TokenStream, found: &mut Found) {
     while at < tokens.len() {
         match &tokens[at] {
             TokenTree::Ident(ident)
-                if ROOTS.contains(&id(ident).as_str()) || ident == "self" || ident == "super" =>
+                if ROOTS.contains(&id(ident).as_str())
+                    || id(ident).starts_with(OWN)
+                    || ident == "self"
+                    || ident == "super" =>
             {
                 at = path_in_tokens(&tokens, at, Vec::new(), found);
             }
@@ -302,7 +313,12 @@ impl<'ast> Visit<'ast> for Scan {
     }
 
     fn visit_item_use(&mut self, item: &'ast syn::ItemUse) {
+        let before = self.0.paths.len();
         flatten(&item.tree, &mut Vec::new(), &mut self.0);
+        if !matches!(item.vis, syn::Visibility::Inherited) {
+            let named = self.0.paths[before..].to_vec();
+            self.0.reexports.extend(named);
+        }
         visit::visit_item_use(self, item);
     }
 
@@ -398,6 +414,10 @@ fn resolve(
             modules.contains(&child).then(|| [module, raw].concat())
         }
     }
+}
+
+fn is_kind_crate(name: &str) -> bool {
+    name.starts_with(OWN) && !SHARED.contains(&name) && !ROOTS.contains(&name)
 }
 
 fn theme() -> Vec<String> {
@@ -557,7 +577,26 @@ fn analyze(sources: &BTreeMap<String, String>, components: &[&str]) -> Report {
         if *module == theme().as_slice() {
             report.theme_escape = found.escape;
         }
+        // A re-export would give the crate a second name, which the check below cannot follow.
+        for raw in &found.reexports {
+            if raw.first().is_some_and(|first| is_kind_crate(first)) {
+                report.add(
+                    Rule::KindNamedOutside,
+                    format!("src/{file}: re-exports `{}`", raw.join("::")),
+                );
+            }
+        }
         for raw in &found.paths {
+            if let Some(first) = raw.first().filter(|first| is_kind_crate(first)) {
+                if file == "lib.rs" {
+                    report.kinds.insert(first.clone());
+                } else {
+                    report.add(
+                        Rule::KindNamedOutside,
+                        format!("src/{file}: uses `{}`", raw.join("::")),
+                    );
+                }
+            }
             let Some(path) = resolve(raw, module, &modules) else {
                 continue;
             };
@@ -684,6 +723,17 @@ fn top_level_entries_form_no_cycle() {
 }
 
 #[test]
+fn a_kind_crate_is_named_only_by_lib_rs() {
+    let report = real();
+    assert_clean(report, Rule::KindNamedOutside);
+    assert!(
+        report.kinds.len() >= 2,
+        "the scan no longer sees the kind crates lib.rs names: {:?}",
+        report.kinds
+    );
+}
+
+#[test]
 fn escape_codes_live_only_in_the_theme() {
     let report = real();
     assert_clean(report, Rule::Escape);
@@ -795,6 +845,65 @@ fn a_component_naming_another_component_or_a_non_lib_file_naming_one_is_found() 
         let report = with(&[("main.rs", source)]);
         fires(&report, Rule::ComponentNamedOutside, "help");
     }
+}
+
+#[test]
+fn a_kind_crate_named_outside_lib_rs_is_found() {
+    let registry = "pub mod console;\npub mod help;\npub fn kinds() { bilbo_markdown::Markdown; let _: bilbo_session::Session; }\npub fn run() { help::run(); console::view::show(); }\n";
+    let clean = with(&[("lib.rs", registry)]);
+    assert_silent(&clean);
+    assert_eq!(
+        clean.kinds.iter().map(String::as_str).collect::<Vec<_>>(),
+        ["bilbo_markdown", "bilbo_session"]
+    );
+    for (rel, text, named) in [
+        (
+            "help/mod.rs",
+            "use crate::console::view;\nuse bilbo_markdown::Markdown;\npub fn run() { view::show(); }\n",
+            "bilbo_markdown::Markdown",
+        ),
+        (
+            "help/mod.rs",
+            "use crate::console::view;\npub fn run() { view::show(); bilbo_session::Session; }\n",
+            "bilbo_session::Session",
+        ),
+        (
+            "console/view.rs",
+            "pub fn show() { let _ = bilbo_pdf::Pdf; }\n",
+            "bilbo_pdf::Pdf",
+        ),
+        (
+            "help/mod.rs",
+            "use crate::console::view;\npub fn run() { view::show(); vec![Box::new(bilbo_markdown::Markdown)]; }\n",
+            "bilbo_markdown::Markdown",
+        ),
+        (
+            "main.rs",
+            "use bilbo_cli::console::view;\nfn main() { view::show(); bilbo_cli::run(); bilbo_markdown::Markdown; }\n",
+            "bilbo_markdown::Markdown",
+        ),
+    ] {
+        let report = with(&[(rel, text)]);
+        fires(&report, Rule::KindNamedOutside, named);
+        fires(&report, Rule::KindNamedOutside, rel);
+    }
+    for reexport in [
+        "pub use bilbo_markdown as markdown;",
+        "pub use bilbo_markdown::Markdown;",
+        "pub(crate) use bilbo_session::{self, Session};",
+    ] {
+        let report = with(&[("lib.rs", &format!("{registry}{reexport}\n"))]);
+        fires(&report, Rule::KindNamedOutside, "re-exports `bilbo_");
+        fires(&report, Rule::KindNamedOutside, "lib.rs");
+    }
+    assert_silent(&with(&[(
+        "lib.rs",
+        &format!("{registry}use bilbo_markdown::Markdown;\npub use bilbo_kinds::kind::Kind;\n"),
+    )]));
+    let shared = "use crate::console::view;\nuse bilbo_kinds::kind::Kind;\npub fn run() { view::show(); bilbo_store::id::Id::mint(); bilbo_settings::file::File::default(); }\n";
+    assert_silent(&with(&[("help/mod.rs", shared)]));
+    let tested = "use crate::console::view;\npub fn run() { view::show(); }\n#[cfg(test)]\nmod tests { fn kind() { bilbo_markdown::Markdown; } }\n";
+    assert_silent(&with(&[("help/mod.rs", tested)]));
 }
 
 #[test]

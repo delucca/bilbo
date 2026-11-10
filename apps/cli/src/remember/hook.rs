@@ -2,6 +2,7 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use bilbo_kinds::files::{Files, Node};
+use bilbo_kinds::kind::Kind;
 use bilbo_kinds::remember::{self, Request};
 use bilbo_store::entries::StoreError;
 use bilbo_store::segments::{Held, Options, Rebuild, Sealing, Store};
@@ -9,7 +10,6 @@ use serde_json::Value;
 
 use super::disk::Disk;
 use super::messages::{refusals, warning};
-use super::registry;
 use crate::console::env::Env;
 use crate::console::message::{Message, sanitize};
 use crate::console::outcome::{Failure, Outcome};
@@ -18,15 +18,19 @@ use crate::console::settings::Settings;
 /// Keeps the transcript the harness hook names on stdin. Never seals, rebuilds or reruns follows:
 /// those wait for the next run. Exits 0 whatever happens, since a failing hook can block the
 /// harness; errors are one stderr line.
-pub fn run(env: &mut Env, settings: Result<Settings, Failure>) -> Outcome {
-    let diagnostics = match keep(env, settings) {
+pub fn run(env: &mut Env, settings: Result<Settings, Failure>, kinds: &[Box<dyn Kind>]) -> Outcome {
+    let diagnostics = match keep(env, settings, kinds) {
         Ok(diagnostics) => diagnostics,
         Err(line) => vec![line],
     };
     Outcome::new("").with_diagnostics(diagnostics)
 }
 
-fn keep(env: &mut Env, settings: Result<Settings, Failure>) -> Result<Vec<Message>, Message> {
+fn keep(
+    env: &mut Env,
+    settings: Result<Settings, Failure>,
+    kinds: &[Box<dyn Kind>],
+) -> Result<Vec<Message>, Message> {
     let settings = settings.map_err(|failure| failure.message())?;
     let mut input = Vec::new();
     env.stdin
@@ -34,13 +38,12 @@ fn keep(env: &mut Env, settings: Result<Settings, Failure>) -> Result<Vec<Messag
         .map_err(|error| warning(&format!("cannot read the hook input: {error}")))?;
     let target = transcript(&input).map_err(|reason| warning(&reason))?;
     regular(&target, &Disk).map_err(|reason| warning(&reason))?;
-    let kinds = registry::kinds();
     let request = Request {
         kind: bilbo_kinds::follows::kind_of(&settings.follow.value, &target, &Disk),
         target,
     };
     let plan =
-        remember::plan(&request, &kinds, &Disk).map_err(|error| warning(&error.to_string()))?;
+        remember::plan(&request, kinds, &Disk).map_err(|error| warning(&error.to_string()))?;
     if plan.files.is_empty() {
         return Err(warning(&format!(
             "nothing to keep: no kind claims {}",
@@ -50,7 +53,9 @@ fn keep(env: &mut Env, settings: Result<Settings, Failure>) -> Result<Vec<Messag
     let layout = settings.layout();
     Store::check(&layout).map_err(|error| Failure::from(&error).message())?;
     let options = Options {
-        held: Held::Flag,
+        held: Held::Flag {
+            readers: Some(settings.store.hook_wait.value),
+        },
         sealing: Sealing::Never,
         rebuild: Rebuild::CatchUpOnly,
         ..settings.store.options()
@@ -58,6 +63,7 @@ fn keep(env: &mut Env, settings: Result<Settings, Failure>) -> Result<Vec<Messag
     let mut store = match Store::open(&layout, options, &mut |_| {}) {
         Ok(store) => store,
         Err(StoreError::Busy) => return Ok(Vec::new()),
+        Err(StoreError::Reading) => return Err(warning(&reading(&plan.target))),
         Err(StoreError::Unrebuilt) => {
             return Err(warning(
                 "kept nothing: the catalog must be rebuilt first, which the next bilbo remember \
@@ -70,6 +76,37 @@ fn keep(env: &mut Env, settings: Result<Settings, Failure>) -> Result<Vec<Messag
     store.release();
     let output = kept.map_err(|error| Message::error(sanitize(&error.to_string())))?;
     Ok(refusals(std::slice::from_ref(&output)))
+}
+
+/// A hook cannot tell whether a bare run will come by the transcript (a follow skips hidden
+/// folders, and may fail to choose its kind), so the line names the run that keeps it. A path
+/// that one line cannot hold as it is gets no command: a wrong one would name another file.
+fn reading(transcript: &Path) -> String {
+    const KEPT_NOTHING: &str = "kept nothing: another bilbo is reading the store";
+    match transcript.to_str() {
+        None => format!(
+            "{KEPT_NOTHING}, and the transcript's path is not UTF-8: bilbo remember does not \
+             keep such a file"
+        ),
+        Some(path) if path.chars().any(char::is_control) => format!(
+            "{KEPT_NOTHING}, and the transcript's path holds a control character, so no \
+             command for it can be printed: run bilbo remember on that file"
+        ),
+        Some(path) => format!(
+            "{KEPT_NOTHING}; bilbo remember {} keeps these lines",
+            quoted(path)
+        ),
+    }
+}
+
+/// One argument of a POSIX shell: as it is when no character of it means anything to a shell.
+fn quoted(text: &str) -> String {
+    let plain = |c: char| c.is_ascii_alphanumeric() || "_@%+=:,./-".contains(c);
+    if !text.is_empty() && text.chars().all(plain) {
+        text.to_owned()
+    } else {
+        format!("'{}'", text.replace('\'', "'\\''"))
+    }
 }
 
 fn transcript(input: &[u8]) -> Result<PathBuf, String> {
@@ -112,14 +149,71 @@ fn regular(transcript: &Path, files: &dyn Files) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
+    use std::os::unix::ffi::OsStrExt;
     use std::path::{Path, PathBuf};
 
     use bilbo_kinds::files::Memory;
 
-    use super::{regular, transcript};
+    use super::{quoted, reading, regular, transcript};
 
     const CLAUDE: &str = include_str!("../../tests/fixtures/hook/claude-code-stop.json");
     const CODEX: &str = include_str!("../../tests/fixtures/hook/codex-stop.json");
+
+    #[test]
+    fn the_give_up_line_names_the_run_that_keeps_the_transcript_as_one_shell_argument() {
+        assert_eq!(
+            reading(Path::new("/h/.claude/projects/p/s.jsonl")),
+            "kept nothing: another bilbo is reading the store; bilbo remember \
+             /h/.claude/projects/p/s.jsonl keeps these lines"
+        );
+        assert_eq!(
+            reading(Path::new("/tmp/My Project/it's.jsonl")),
+            "kept nothing: another bilbo is reading the store; bilbo remember \
+             '/tmp/My Project/it'\\''s.jsonl' keeps these lines"
+        );
+        for control in [
+            "/tmp/two\nlines/s.jsonl",
+            "/tmp/a\tb/s.jsonl",
+            "/tmp/\u{1b}[2J/s.jsonl",
+        ] {
+            assert_eq!(
+                reading(Path::new(control)),
+                "kept nothing: another bilbo is reading the store, and the transcript's path \
+                 holds a control character, so no command for it can be printed: run bilbo \
+                 remember on that file",
+                "{control:?}"
+            );
+        }
+        let not_utf8 = std::ffi::OsStr::from_bytes(b"/tmp/\xff/s.jsonl");
+        assert_eq!(
+            reading(Path::new(not_utf8)),
+            "kept nothing: another bilbo is reading the store, and the transcript's path is not \
+             UTF-8: bilbo remember does not keep such a file"
+        );
+        for (path, argument) in [
+            ("/h/a-b_c.d/e@f%g+h=i:j,k", "/h/a-b_c.d/e@f%g+h=i:j,k"),
+            ("/tmp/My Project/s.jsonl", "'/tmp/My Project/s.jsonl'"),
+            ("/tmp/it's/s.jsonl", "'/tmp/it'\\''s/s.jsonl'"),
+            (
+                "/tmp/$(rm x);`y`&|<>*?~#!\"\\/s",
+                "'/tmp/$(rm x);`y`&|<>*?~#!\"\\/s'",
+            ),
+            ("/tmp/é", "'/tmp/é'"),
+            ("", "''"),
+        ] {
+            assert_eq!(quoted(path), argument, "{path}");
+            let script = format!("printf %s {argument}");
+            let read = std::process::Command::new("/bin/sh")
+                .args(["-c", &script])
+                .output()
+                .expect("a shell");
+            assert_eq!(
+                String::from_utf8_lossy(&read.stdout),
+                path,
+                "a shell reads it back"
+            );
+        }
+    }
 
     #[test]
     fn a_claude_code_or_codex_stop_payload_names_its_transcript() {

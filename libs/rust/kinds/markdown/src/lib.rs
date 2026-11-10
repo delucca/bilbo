@@ -1,17 +1,31 @@
 mod frontmatter;
+mod read;
 
 use std::path::{Path, PathBuf};
 
 use bilbo_kinds::files::{Files, Node};
 use bilbo_kinds::kind::{Claims, Kind, Proposal, Refusal};
+use bilbo_kinds::reader::{Passage, Reader};
 use bilbo_store::id::Id;
+
+const NAME: &str = "markdown";
 
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Markdown;
 
+impl Reader for Markdown {
+    fn kind(&self) -> &'static str {
+        NAME
+    }
+
+    fn passages(&self, records: &[&[u8]]) -> Vec<Passage> {
+        read::passages(records)
+    }
+}
+
 impl Kind for Markdown {
     fn name(&self) -> &'static str {
-        "markdown"
+        NAME
     }
 
     fn summary(&self) -> &'static str {

@@ -1,2 +1,2 @@
-bilbo: missing verb; the verbs are remember, config
+bilbo: missing verb; the verbs are remember, read, config
 bilbo: see 'bilbo --help'

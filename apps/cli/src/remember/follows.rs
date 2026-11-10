@@ -6,7 +6,7 @@ use bilbo_store::segments::{Closed, Held, Options, Store};
 
 use super::disk::Disk;
 use super::messages::{info, notice_message, refusals, warning};
-use super::{registry, view};
+use super::view;
 use crate::console::env::Env;
 use crate::console::message::{Message, sanitize};
 use crate::console::outcome::{Exit, Failure, Outcome};
@@ -41,16 +41,19 @@ impl<'k> Pass<'k> {
 
 /// Every follow into one store. The store is opened even when nothing is claimed, so the timer's
 /// pass seals and rebuilds; a bilbo that holds it is asked to rerun instead.
-pub fn run(env: &mut Env, settings: &Settings) -> Result<Outcome, Failure> {
-    let kinds = registry::kinds();
-    let pass = Pass::plan(&settings.follow.value, &kinds);
+pub fn run(
+    env: &mut Env,
+    settings: &Settings,
+    kinds: &[Box<dyn Kind>],
+) -> Result<Outcome, Failure> {
+    let pass = Pass::plan(&settings.follow.value, kinds);
     let mut diagnostics = pass.messages.clone();
     let layout = settings.layout();
     if let Err(error) = Store::check(&layout) {
         return Ok(stopped(diagnostics, &Failure::from(&error)));
     }
     let options = Options {
-        held: Held::Flag,
+        held: Held::Flag { readers: None },
         ..settings.store.options()
     };
     let notice = &mut env.notice;
@@ -71,7 +74,7 @@ pub fn run(env: &mut Env, settings: &Settings) -> Result<Outcome, Failure> {
             ));
         }
     };
-    let closing = close(store, &settings.follow.value);
+    let closing = close(store, &settings.follow.value, kinds);
     diagnostics.extend(refusals(&outputs));
     diagnostics.extend(closing.messages);
     Ok(outcome(
@@ -104,15 +107,14 @@ pub struct Closing {
     pub config: bool,
 }
 
-pub fn close(mut store: Store, follows: &[Follow]) -> Closing {
+pub fn close(mut store: Store, follows: &[Follow], kinds: &[Box<dyn Kind>]) -> Closing {
     let mut closing = Closing::default();
     loop {
         match store.close() {
             Ok(Closed::Released) => return closing,
             Ok(Closed::Again(again)) => {
                 store = *again;
-                let kinds = registry::kinds();
-                let mut pass = Pass::plan(follows, &kinds);
+                let mut pass = Pass::plan(follows, kinds);
                 closing.messages.append(&mut pass.messages);
                 closing.refused |= pass.failed;
                 match pass.keep(&mut store) {
@@ -208,7 +210,6 @@ mod tests {
 
     use super::planned_messages;
     use crate::console::theme::Mark;
-    use crate::remember::registry;
 
     #[test]
     fn a_follow_that_does_not_run_says_why_in_one_line() {
@@ -220,7 +221,7 @@ mod tests {
             path: PathBuf::from(path),
             kind: kind.map(str::to_owned),
         };
-        let kinds = registry::kinds();
+        let kinds = crate::kinds();
         let planned = plan(
             &[
                 follow("/gone", Some("session")),

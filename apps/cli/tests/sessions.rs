@@ -370,6 +370,134 @@ fn a_hook_that_finds_the_store_held_sets_the_again_flag_and_exits_0() {
     drop(rerun);
 }
 
+#[test]
+fn a_hook_that_finds_a_reader_walking_the_segments_gives_up_within_its_wait_and_exits_0() {
+    let sandbox = Sandbox::new("hook_reader");
+    let first = sandbox.run(&[text(&sandbox.projects()), "--kind", "session"], b"");
+    assert_eq!(first.code, 0, "{:?}", first.stderr);
+    let kept = sandbox.records(&sandbox.main()).len();
+    let more = b"{\"type\":\"user\",\"message\":{\"content\":\"one more\"}}\n";
+    fs::write(sandbox.main(), [CLAUDE, more].concat()).expect("the session grows");
+    fs::remove_file(sandbox.layout().cache.join("catalog.sqlite")).expect("delete the catalog");
+    // With no catalog a reader walks every segment under the shared lock: it stands for a read
+    // that takes long.
+    let reader = sandbox.store();
+    let payload = CLAUDE_STOP.replace("/home/me", text(&sandbox.home()));
+    for (wait, least) in [("0s", 0), ("1s", 1)] {
+        let mut vars = sandbox.vars();
+        vars.insert("BILBO_STORE_HOOK_WAIT".to_owned(), wait.into());
+        let started = std::time::Instant::now();
+        let hook = run(vars, &["--hook"], payload.as_bytes(), None);
+        let took = started.elapsed().as_secs();
+        assert_eq!((hook.code, hook.stdout.as_str()), (0, ""), "{wait}");
+        assert_eq!(
+            hook.stderr,
+            [format!(
+                "bilbo: kept nothing: another bilbo is reading the store; bilbo remember {} \
+                     keeps these lines",
+                text(&fs::canonicalize(sandbox.main()).expect("the transcript"))
+            )],
+            "{wait}"
+        );
+        assert!(
+            (least..least + 3).contains(&took),
+            "{wait}: it took {took} s"
+        );
+    }
+    assert_eq!(
+        fs::metadata(sandbox.again()).map_or(0, |flag| flag.len()),
+        0,
+        "a reader runs nothing again"
+    );
+    drop(reader);
+    let bare = sandbox.run(&[], b"");
+    assert_eq!(bare.code, 0, "{:?}", bare.stderr);
+    assert_eq!(
+        sandbox.records(&sandbox.main()).len(),
+        kept + 1,
+        "the next bare run keeps the line"
+    );
+}
+
+#[test]
+fn a_hook_that_gives_up_names_the_run_that_keeps_its_lines_whatever_folder_they_are_in() {
+    let sandbox = Sandbox::new("hook_reader_named");
+    let first = sandbox.run(&[text(&sandbox.projects()), "--kind", "session"], b"");
+    assert_eq!(first.code, 0, "{:?}", first.stderr);
+    fs::remove_file(sandbox.layout().cache.join("catalog.sqlite")).expect("delete the catalog");
+    // Under the default follow, in a folder a bare run skips; and in a folder a shell would split.
+    let hidden = sandbox.projects().join(format!(".hidden/{OTHER}.jsonl"));
+    let spaced = sandbox.dir.join(format!("My Proj'ect/{OTHER}.jsonl"));
+    write(&hidden, CLAUDE);
+    write(&spaced, CLAUDE);
+    let hidden = fs::canonicalize(&hidden).expect("the transcript");
+    let spaced = fs::canonicalize(&spaced).expect("the transcript");
+    let reader = sandbox.store();
+    let mut commands = Vec::new();
+    for file in [&hidden, &spaced] {
+        let mut vars = sandbox.vars();
+        vars.insert("BILBO_STORE_HOOK_WAIT".to_owned(), "0s".into());
+        let payload = format!("{{\"transcript_path\":\"{}\"}}", text(file));
+        let hook = run(vars, &["--hook"], payload.as_bytes(), None);
+        assert_eq!((hook.code, hook.stdout.as_str()), (0, ""));
+        let [line] = hook.stderr.as_slice() else {
+            panic!("one line: {:?}", hook.stderr);
+        };
+        let command = line
+            .strip_prefix("bilbo: kept nothing: another bilbo is reading the store; ")
+            .and_then(|rest| rest.strip_suffix(" keeps these lines"))
+            .unwrap_or_else(|| panic!("{line}"));
+        commands.push(command.to_owned());
+    }
+    // A newline in a folder's name: no command could name the file on one line.
+    let broken = sandbox.dir.join(format!("two\nlines/{OTHER}.jsonl"));
+    write(&broken, CLAUDE);
+    let broken = fs::canonicalize(&broken).expect("the transcript");
+    let mut vars = sandbox.vars();
+    vars.insert("BILBO_STORE_HOOK_WAIT".to_owned(), "0s".into());
+    let payload = format!(
+        "{{\"transcript_path\":\"{}\"}}",
+        text(&broken).replace('\n', "\\n")
+    );
+    let hook = run(vars, &["--hook"], payload.as_bytes(), None);
+    assert_eq!((hook.code, hook.stdout.as_str()), (0, ""));
+    assert_eq!(
+        hook.stderr,
+        [
+            "bilbo: kept nothing: another bilbo is reading the store, and the transcript's path \
+             holds a control character, so no command for it can be printed: run bilbo remember \
+             on that file"
+        ]
+    );
+    assert_eq!(commands[0], format!("bilbo remember {}", text(&hidden)));
+    assert_eq!(
+        commands[1],
+        format!("bilbo remember '{}'", text(&spaced).replace('\'', "'\\''"))
+    );
+    drop(reader);
+    let bare = sandbox.run(&[], b"");
+    assert_eq!(bare.code, 0, "{:?}", bare.stderr);
+    for (file, command) in [&hidden, &spaced].into_iter().zip(&commands) {
+        let origin = Origin::file(file).expect("origin");
+        assert!(
+            sandbox.store().by_origin(&origin).expect("head").is_none(),
+            "a bare run does not come by {}",
+            file.display()
+        );
+        // The command, as a shell splits it.
+        let split = std::process::Command::new("/bin/sh")
+            .args(["-c", &format!("set -- {command}; printf '%s\\n' \"$@\"")])
+            .output()
+            .expect("a shell");
+        let split = String::from_utf8(split.stdout).expect("UTF-8");
+        let words: Vec<&str> = split.lines().collect();
+        assert_eq!(words, ["bilbo", "remember", text(file)]);
+        let named = sandbox.run(&words[2..], b"");
+        assert_eq!(named.code, 0, "{:?}", named.stderr);
+        assert!(!sandbox.records(file).is_empty());
+    }
+}
+
 #[expect(
     clippy::disallowed_methods,
     reason = "the done check is told its scratch store and the real folders by the environment"

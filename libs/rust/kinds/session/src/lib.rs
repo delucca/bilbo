@@ -1,20 +1,41 @@
 mod claude;
 mod codex;
 mod dialect;
+mod json;
+mod render;
 
 use std::path::{Path, PathBuf};
 
 use bilbo_kinds::files::{Files, Node};
 use bilbo_kinds::kind::{Claims, Kind, Proposal, Refusal};
+use bilbo_kinds::reader::{Passage, Reader};
 use bilbo_store::id::Id;
+
+use crate::dialect::Dialect;
+
+const NAME: &str = "session";
 
 /// Claude Code's and Codex's transcripts, and Cursor's Claude-shaped ones: one record per line.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Session;
 
+impl Reader for Session {
+    fn kind(&self) -> &'static str {
+        NAME
+    }
+
+    fn passages(&self, records: &[&[u8]]) -> Vec<Passage> {
+        match dialect::sniff(records.iter().copied()) {
+            Some(Dialect::ClaudeCode | Dialect::Cursor) => claude::read::passages(records),
+            Some(Dialect::Codex) => codex::read::passages(records),
+            None => Vec::new(),
+        }
+    }
+}
+
 impl Kind for Session {
     fn name(&self) -> &'static str {
-        "session"
+        NAME
     }
 
     fn summary(&self) -> &'static str {
@@ -144,6 +165,7 @@ mod tests {
 
     use bilbo_kinds::files::{Memory, Node};
     use bilbo_kinds::kind::{Kind, Proposal, Refusal};
+    use bilbo_kinds::reader::Passage;
     use bilbo_store::id::Id;
 
     use super::{Session, is_uuid};
@@ -316,6 +338,24 @@ mod tests {
         assert_eq!(Session.split(b""), Ok(vec![]));
     }
 
+    /// A departure from the eval's render, which read a lone carriage return as a line end.
+    #[test]
+    fn a_lone_carriage_return_does_not_end_a_record() {
+        use bilbo_kinds::reader::Reader;
+        let entry =
+            |text: &str| format!("{{\"type\":\"user\",\"message\":{{\"content\":\"{text}\"}}}}");
+        let bytes = format!("{}\r{}\n{}\r\n", entry("a"), entry("b"), entry("c")).into_bytes();
+        let ends = Session.split(&bytes).expect("a session");
+        assert_eq!(ends.len(), 2);
+        let records: Vec<&[u8]> = bytes.split_inclusive(|&byte| byte == b'\n').collect();
+        let read: Vec<(u64, String)> = Session
+            .passages(&records)
+            .into_iter()
+            .map(|passage| (passage.range.first, passage.text))
+            .collect();
+        assert_eq!(read, [(2, "user: c".to_owned())]);
+    }
+
     #[test]
     fn a_line_still_being_written_is_left_for_a_later_run() {
         let grown = [CURSOR, b"{\"role\":\"user\",\"mess"].concat();
@@ -393,6 +433,223 @@ mod tests {
         assert!(!is_uuid(&MAIN.as_bytes()[1..]));
         assert!(!is_uuid(MAIN.replace('-', "_").as_bytes()));
         assert!(!is_uuid(MAIN.replace('c', "g").as_bytes()));
+    }
+
+    #[test]
+    fn a_session_is_read_by_the_dialect_its_records_show() {
+        use bilbo_kinds::reader::Reader;
+        let first = |bytes: &[u8]| {
+            let records: Vec<&[u8]> = bytes.split_inclusive(|&byte| byte == b'\n').collect();
+            Session
+                .passages(&records)
+                .first()
+                .map(|passage| (passage.range.first, passage.text.clone()))
+        };
+        assert_eq!(Reader::kind(&Session), Session.name());
+        assert_eq!(
+            first(CLAUDE),
+            Some((
+                2,
+                "user: Plant the tomatoes in the north bed and log the commit.".to_owned()
+            ))
+        );
+        assert_eq!(
+            first(SUBAGENT),
+            Some((1, "user: Count the seed packets in the shed.".to_owned()))
+        );
+        assert_eq!(
+            first(CURSOR),
+            Some((1, "user: Rename the trellis module.".to_owned()))
+        );
+        assert_eq!(
+            first(CODEX),
+            Some((
+                3,
+                "user: Water the beans, then show me the bed.\nuser: [input_image]".to_owned()
+            ))
+        );
+        assert_eq!(first(NONE), None);
+        assert_eq!(first(b""), None);
+        assert_eq!(first(NOT_UTF8), None);
+    }
+
+    #[test]
+    fn a_session_whose_only_evidence_is_odd_still_reaches_its_reader() {
+        use bilbo_kinds::reader::Reader;
+        let texts = |bytes: &[u8]| -> Vec<String> {
+            let records: Vec<&[u8]> = bytes.split_inclusive(|&byte| byte == b'\n').collect();
+            assert!(Session.split(bytes).is_ok(), "the file is claimed");
+            Session
+                .passages(&records)
+                .into_iter()
+                .map(|passage| passage.text)
+                .collect()
+        };
+        let null_type = b"{\"type\":null,\"role\":\"user\",\"message\":{\"content\":\"hello\"}}\n";
+        assert_eq!(texts(null_type), ["user: hello"]);
+        let nan = b"{\"type\":\"user\",\"n\":NaN,\"message\":{\"content\":\"hello\"}}\n";
+        assert_eq!(texts(nan), ["user: hello"]);
+        let prelude = [b"{\"type\":\"garbage\"}\n".as_slice(), CODEX].concat();
+        assert_eq!(
+            texts(&prelude)[0],
+            "user: Water the beans, then show me the bed.\nuser: [input_image]",
+            "an unknown line first does not hide a Codex session"
+        );
+        for weak in [
+            b"{\"type\":null,\"role\":\"garbage\"}\n".as_slice(),
+            b"{\"type\":\"user\",\"n\":NaN}\n",
+        ] {
+            assert_eq!(
+                texts(&[weak, CODEX].concat())[0],
+                "user: Water the beans, then show me the bed.\nuser: [input_image]",
+                "{}",
+                String::from_utf8_lossy(weak)
+            );
+        }
+    }
+
+    /// xorshift64*, from a fixed seed: the same cases on every run.
+    struct Dice(u64);
+
+    impl Dice {
+        fn below(&mut self, bound: usize) -> usize {
+            self.0 ^= self.0 >> 12;
+            self.0 ^= self.0 << 25;
+            self.0 ^= self.0 >> 27;
+            let drawn = self.0.wrapping_mul(0x2545_f491_4f6c_dd1d) >> 33;
+            usize::try_from(drawn).unwrap_or(0) % bound.max(1)
+        }
+
+        fn byte(&mut self) -> u8 {
+            const OFTEN: &[u8] = b"{}[]\",:\\ \n\r#-=>`~|0159eEuNI\xff\xc3\x80";
+            if self.below(3) == 0 {
+                u8::try_from(self.below(256)).unwrap_or(0)
+            } else {
+                OFTEN[self.below(OFTEN.len())]
+            }
+        }
+
+        fn bytes(&mut self, most: usize) -> Vec<u8> {
+            (0..self.below(most)).map(|_| self.byte()).collect()
+        }
+
+        /// A line with a few bytes changed, dropped, added or repeated, or cut short.
+        fn spoiled(&mut self, line: &[u8]) -> Vec<u8> {
+            let mut line = line.to_vec();
+            for _ in 0..=self.below(3) {
+                let at = self.below(line.len());
+                match self.below(7) {
+                    0 if !line.is_empty() => line[at] = self.byte(),
+                    1 if !line.is_empty() => {
+                        line.remove(at);
+                    }
+                    2 => line.insert(at, self.byte()),
+                    3 => line.truncate(at),
+                    4 => {
+                        let run = vec![self.byte(); self.below(300)];
+                        line.splice(at..at, run);
+                    }
+                    5 => {
+                        const PARTS: [&[u8]; 10] = [
+                            b"\\u",
+                            b"\\uab\xe2\x82\xac",
+                            b"\\ud800",
+                            b"NaN",
+                            b"1e400",
+                            b"[[[[[[[[",
+                            b"\"\\",
+                            b"\n---\n",
+                            b"```",
+                            b"> - ",
+                        ];
+                        let part = PARTS[self.below(PARTS.len())];
+                        line.splice(at..at, part.iter().copied());
+                    }
+                    _ => {
+                        let end = (at + self.below(40)).min(line.len());
+                        let again = line[at..end].to_vec();
+                        line.splice(at..at, again);
+                    }
+                }
+            }
+            line
+        }
+    }
+
+    /// What `Reader` promises of any records: passages in record order, none sharing a record,
+    /// all inside the generation, their offsets rising char boundaries of their text.
+    fn sound(passages: &[Passage], records: usize, case: usize) {
+        let mut next = 1;
+        for passage in passages {
+            let range = passage.range;
+            assert!(
+                range.first >= next && range.count > 0,
+                "case {case}: {range:?}"
+            );
+            next = range.first + range.count;
+            assert!(
+                next - 1 <= records as u64,
+                "case {case}: {range:?} of {records}"
+            );
+            assert_eq!(passage.ends.len() as u64, range.count, "case {case}");
+            assert_eq!(
+                passage.ends.last(),
+                Some(&passage.text.len()),
+                "case {case}"
+            );
+            assert!(passage.ends.is_sorted(), "case {case}");
+            let starts = passage.pieces.iter().map(|piece| piece.start);
+            assert!(
+                passage
+                    .ends
+                    .iter()
+                    .copied()
+                    .chain(starts)
+                    .all(|at| passage.text.is_char_boundary(at)),
+                "case {case}"
+            );
+            assert!(
+                passage.pieces.iter().map(|piece| piece.start).is_sorted(),
+                "case {case}"
+            );
+        }
+    }
+
+    #[test]
+    fn no_record_makes_a_reader_panic_or_leave_its_generation() {
+        use bilbo_kinds::reader::Reader;
+        let lines: Vec<&[u8]> = [CLAUDE, SUBAGENT, CODEX, CURSOR, NONE, NOT_UTF8]
+            .into_iter()
+            .flat_map(|file| file.split_inclusive(|&byte| byte == b'\n'))
+            .collect();
+        let mut dice = Dice(0x9e37_79b9_7f4a_7c15);
+        let mut rendered = 0;
+        for case in 0..4000 {
+            let records: Vec<Vec<u8>> = (0..dice.below(7))
+                .map(|_| match dice.below(5) {
+                    0 => dice.bytes(80),
+                    1 => lines[dice.below(lines.len())].to_vec(),
+                    _ => {
+                        let line = lines[dice.below(lines.len())];
+                        dice.spoiled(line)
+                    }
+                })
+                .collect();
+            let records: Vec<&[u8]> = records.iter().map(Vec::as_slice).collect();
+            for passages in [
+                Session.passages(&records),
+                crate::claude::read::passages(&records),
+                crate::codex::read::passages(&records),
+            ] {
+                sound(&passages, records.len(), case);
+                assert!(passages.iter().all(|passage| passage.range.count == 1));
+                rendered += passages.len();
+            }
+        }
+        assert!(
+            rendered > 2000,
+            "the cases still reach the renders: {rendered}"
+        );
     }
 
     #[test]

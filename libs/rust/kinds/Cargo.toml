@@ -4,9 +4,10 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 publish.workspace = true
-description = "The remember use case and its ports: Kind and Files."
+description = "The remember and read use cases and their ports: Kind, Files, Reader and Tokens."
 
 [dependencies]
+bilbo-settings.workspace = true
 bilbo-store.workspace = true
 
 [lints]

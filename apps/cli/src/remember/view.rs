@@ -1,6 +1,6 @@
 use bilbo_kinds::remember::{Output, Tally};
 
-use crate::console::message::{Detail, Message};
+use crate::console::message::{Detail, Message, group};
 use crate::console::theme::Mark;
 use crate::console::view::View;
 
@@ -101,18 +101,6 @@ pub fn human_totals(totals: &Totals, view: &View) -> String {
     text
 }
 
-pub fn group(number: u64) -> String {
-    let digits = number.to_string();
-    let mut grouped = String::with_capacity(digits.len() + digits.len() / 3);
-    for (at, digit) in digits.chars().enumerate() {
-        if at > 0 && (digits.len() - at).is_multiple_of(3) {
-            grouped.push(',');
-        }
-        grouped.push(digit);
-    }
-    grouped
-}
-
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
@@ -120,7 +108,7 @@ mod tests {
     use bilbo_kinds::remember::{Item, Outcome, Output};
     use bilbo_store::id::Id;
 
-    use super::{Totals, group, human, plain, plain_totals};
+    use super::{Totals, human, plain, plain_totals};
     use crate::console::view::View;
 
     fn output(claimed: u64, outcomes: Vec<Outcome>) -> Output {
@@ -160,12 +148,6 @@ mod tests {
             "new 1, appended 1, new generation 0, unchanged 0, refused 1\n\
              records 3, raw bytes 40, stored bytes 50\n"
         );
-    }
-
-    #[test]
-    fn numbers_on_a_terminal_are_grouped_by_thousands() {
-        let grouped: Vec<String> = [0, 999, 1000, 1_234_567].into_iter().map(group).collect();
-        assert_eq!(grouped, ["0", "999", "1,000", "1,234,567"]);
     }
 
     #[test]

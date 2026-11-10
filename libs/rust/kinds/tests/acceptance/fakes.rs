@@ -160,7 +160,7 @@ pub struct Seen {
     pub ends: Vec<usize>,
 }
 
-/// Every method but `capture` and `by_origin` panics: `remember` must not call it.
+/// Every method `remember` has no use for panics.
 #[derive(Default)]
 pub struct FakeEntries {
     pub script: HashMap<String, Script>,
@@ -275,5 +275,17 @@ impl Entries for FakeEntries {
 
     fn by_origin(&self, origin: &Origin) -> Result<Option<Head>, StoreError> {
         Ok(self.heads.get(origin.as_str()).copied())
+    }
+
+    fn extent(
+        &self,
+        _id: Id,
+        _generation: Option<Generation>,
+    ) -> Result<Option<(Generation, u64)>, StoreError> {
+        panic!("remember must not call extent")
+    }
+
+    fn origins_with(&self, _part: &str) -> Result<Vec<(Id, Origin)>, StoreError> {
+        panic!("remember must not call origins_with")
     }
 }

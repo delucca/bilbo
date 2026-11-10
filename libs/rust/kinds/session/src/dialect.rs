@@ -1,5 +1,4 @@
-use serde_json::Value;
-
+use crate::json::{self, Value};
 use crate::{claude, codex};
 
 /// Sniffed on each read and never stored, so it cannot go stale.
@@ -11,15 +10,33 @@ pub enum Dialect {
     Codex,
 }
 
-/// Only `is_none()` is read today; the dialect itself is the seam for a third harness (AGY).
-pub fn sniff<'r>(records: impl IntoIterator<Item = &'r [u8]>) -> Option<Dialect> {
-    records.into_iter().find_map(line)
+/// What one line says of its file's dialect.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Evidence {
+    /// A line only this dialect writes and its reader renders: it decides.
+    Sure(Dialect),
+    /// A line shaped as this dialect's that its reader renders nothing from: this dialect's
+    /// unless a later line is sure of another.
+    Maybe(Dialect),
 }
 
-fn line(record: &[u8]) -> Option<Dialect> {
-    let value: Value = serde_json::from_slice(record).ok()?;
-    let object = value.as_object()?;
-    codex::dialect(object).or_else(|| claude::dialect(object))
+/// The first line that is sure of a dialect decides; without one, the first that may be one's.
+/// Lines are read as the readers read them, so what a reader renders is never refused here.
+pub fn sniff<'r>(records: impl IntoIterator<Item = &'r [u8]>) -> Option<Dialect> {
+    let mut maybe = None;
+    for record in records {
+        match line(record) {
+            Some(Evidence::Sure(dialect)) => return Some(dialect),
+            Some(Evidence::Maybe(dialect)) => maybe = maybe.or(Some(dialect)),
+            None => {}
+        }
+    }
+    maybe
+}
+
+fn line(record: &[u8]) -> Option<Evidence> {
+    let value = json::parse(record).filter(Value::is_dict)?;
+    codex::dialect(&value).or_else(|| claude::dialect(&value))
 }
 
 #[cfg(test)]
@@ -55,13 +72,7 @@ mod tests {
 
     #[test]
     fn the_first_line_that_has_a_dialect_decides() {
-        let mixed = [
-            &b"{\"a\":1}\n"[..],
-            b"garbage\n",
-            b"{\"role\":\"user\"}\n",
-            CODEX,
-        ]
-        .concat();
+        let mixed = [&b"{\"a\":1}\n"[..], b"garbage\n", CURSOR, CODEX].concat();
         assert_eq!(of(&mixed), Some(Dialect::Cursor));
         assert_eq!(
             of(b"{\"type\":\"summary\",\"summary\":\"s\"}\n"),
@@ -72,5 +83,67 @@ mod tests {
             Some(Dialect::Codex)
         );
         assert_eq!(of(b"{\"type\":3}\n{\"role\":4}\n"), None);
+    }
+
+    #[test]
+    fn a_line_of_an_unknown_type_does_not_hide_the_dialect_of_the_lines_after_it() {
+        let prelude = b"{\"type\":\"garbage\"}\n";
+        assert_eq!(
+            of(prelude),
+            Some(Dialect::ClaudeCode),
+            "alone it is Claude Code's"
+        );
+        assert_eq!(of(&[prelude, CODEX].concat()), Some(Dialect::Codex));
+        assert_eq!(of(&[prelude, CURSOR].concat()), Some(Dialect::Cursor));
+        assert_eq!(of(&[prelude, CLAUDE].concat()), Some(Dialect::ClaudeCode));
+        let user = b"{\"type\":\"user\",\"message\":{\"content\":\"x\"}}\n";
+        assert_eq!(
+            of(&[user, CODEX].concat()),
+            Some(Dialect::ClaudeCode),
+            "a user entry is sure"
+        );
+    }
+
+    #[test]
+    fn a_line_its_reader_renders_nothing_from_is_never_sure() {
+        for (weak, alone) in [
+            (&b"{\"role\":\"user\"}\n"[..], Some(Dialect::Cursor)),
+            (b"{\"type\":null,\"role\":\"garbage\"}\n", None),
+            (b"{\"role\":\"system\"}\n", None),
+            (
+                b"{\"type\":\"user\",\"n\":NaN}\n",
+                Some(Dialect::ClaudeCode),
+            ),
+            (
+                b"{\"type\":\"user\",\"isMeta\":true,\"message\":{\"content\":\"x\"}}\n",
+                Some(Dialect::ClaudeCode),
+            ),
+            (
+                b"{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"thinking\"}]}}\n",
+                Some(Dialect::ClaudeCode),
+            ),
+        ] {
+            let shown = String::from_utf8_lossy(weak);
+            assert_eq!(of(weak), alone, "{shown}");
+            assert_eq!(of(&[weak, CODEX].concat()), Some(Dialect::Codex), "{shown}");
+        }
+    }
+
+    #[test]
+    fn a_line_is_read_as_the_readers_read_it() {
+        assert_eq!(
+            of(b"{\"type\":null,\"role\":\"user\",\"message\":{\"content\":\"hello\"}}\n"),
+            Some(Dialect::Cursor),
+            "a null type falls back to the role"
+        );
+        assert_eq!(
+            of(b"{\"type\":\"user\",\"n\":NaN,\"message\":{\"content\":\"hello\"}}\n"),
+            Some(Dialect::ClaudeCode),
+            "Python reads NaN"
+        );
+        assert_eq!(
+            of(b"{\"type\":\"response_item\",\"n\":Infinity,\"payload\":{}}\n"),
+            Some(Dialect::Codex)
+        );
     }
 }

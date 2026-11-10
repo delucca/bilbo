@@ -20,9 +20,18 @@ rust_library(
     ],
 )
 
+filegroup(
+    name = "fixtures",
+    srcs = glob(["fixtures/*"]),
+    visibility = [
+        "//apps/cli:__pkg__",
+        "//tests/e2e/cli:__pkg__",
+    ],
+)
+
 bilbo_rust_test(
     name = "unit",
-    compile_data = glob(["fixtures/*"]),
+    compile_data = [":fixtures"],
     crate = ":markdown",
     layer = "unit",
     lint_config = ":lints",
