@@ -379,8 +379,7 @@ fn a_hook_that_finds_a_reader_walking_the_segments_gives_up_within_its_wait_and_
     let more = b"{\"type\":\"user\",\"message\":{\"content\":\"one more\"}}\n";
     fs::write(sandbox.main(), [CLAUDE, more].concat()).expect("the session grows");
     fs::remove_file(sandbox.layout().cache.join("catalog.sqlite")).expect("delete the catalog");
-    // With no catalog a reader walks every segment under the shared lock: it stands for a read
-    // that takes long.
+    // With no catalog a reader walks every segment under the shared lock: it stands for a slow read.
     let reader = sandbox.store();
     let payload = CLAUDE_STOP.replace("/home/me", text(&sandbox.home()));
     for (wait, least) in [("0s", 0), ("1s", 1)] {
@@ -484,7 +483,6 @@ fn a_hook_that_gives_up_names_the_run_that_keeps_its_lines_whatever_folder_they_
             "a bare run does not come by {}",
             file.display()
         );
-        // The command, as a shell splits it.
         let split = std::process::Command::new("/bin/sh")
             .args(["-c", &format!("set -- {command}; printf '%s\\n' \"$@\"")])
             .output()
@@ -626,9 +624,13 @@ fn done_check_store() -> Store {
     .into_iter()
     .map(|name| (name.to_owned(), done_check_var(name)))
     .collect();
-    let layout = settings::load(&|name| vars.get(name).cloned(), &|path| fs::read(path))
-        .expect("settings")
-        .layout();
+    let layout = settings::load(
+        &|name| vars.get(name).cloned(),
+        &|path| fs::read(path),
+        &bilbo_cli::kind_keys(),
+    )
+    .expect("settings")
+    .layout();
     Store::open_read_only(&layout, Options::default(), &mut |_| {}).expect("the store")
 }
 
@@ -1252,7 +1254,8 @@ fn two_follow_saves_at_once_keep_both_follows_and_the_files_own_bytes() {
     write(&config, b"# mine\n[store]\ncompression = 3");
     let vars = sandbox.vars();
     let var = move |name: &str| vars.get(name).cloned();
-    let settings = settings::load(&var, &|path| fs::read(path)).expect("settings");
+    let settings =
+        settings::load(&var, &|path| fs::read(path), &bilbo_cli::kind_keys()).expect("settings");
     let follow = |name: &str| Follow {
         path: sandbox.dir.join(name),
         kind: Some("markdown".to_owned()),

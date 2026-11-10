@@ -155,8 +155,8 @@ fn every_entry_reads_back_as_its_origin_file_with_its_frontmatter_id() {
     let target = PathBuf::from(required("READBACK_TARGET"))
         .canonicalize()
         .expect("READBACK_TARGET exists");
-    let settings =
-        settings::load(&var, &|path| fs::read(path)).expect("settings from the environment");
+    let settings = settings::load(&var, &|path| fs::read(path), &bilbo_cli::kind_keys())
+        .expect("settings from the environment");
     let store = Store::open_read_only(&settings.layout(), settings.store.options(), &mut |_| {})
         .expect("open the store read-only");
     let report = check(&store).unwrap_or_else(|error| panic!("{error}"));

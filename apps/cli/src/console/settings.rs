@@ -90,12 +90,21 @@ pub const FOLLOW: Key<Vec<Follow>> = Key {
 
 const PATHS: [&About; 3] = [&ROOT.about, &STATE.about, &CACHE.about];
 
+/// A key a kind crate declares; `lib.rs`, the one file that names a kind crate, hands them in.
+pub type KindKey = Key<usize>;
+
 /// Every key, in the order `bilbo config` lists them.
-pub fn keys() -> Vec<&'static About> {
+pub fn keys(kind: &[&'static KindKey]) -> Vec<&'static About> {
     PATHS
         .into_iter()
         .chain(keys::ABOUT)
-        .chain([&FOLLOW.about, &read::BUDGET.about])
+        .chain([
+            &FOLLOW.about,
+            &read::BUDGET.about,
+            &read::OUTLINE_WIDTH.about,
+            &read::MATCHES_LISTED.about,
+        ])
+        .chain(kind.iter().map(|key| &key.about))
         .collect()
 }
 
@@ -150,6 +159,9 @@ pub struct Settings {
     pub store: keys::Section,
     pub follow: Resolved<Vec<Follow>>,
     pub read_budget: Resolved<read::Budget>,
+    pub read_outline_width: Resolved<usize>,
+    pub read_matches_listed: Resolved<usize>,
+    pub kind: Vec<(&'static KindKey, Resolved<usize>)>,
 }
 
 impl Settings {
@@ -159,6 +171,14 @@ impl Settings {
             state: self.state.value.clone(),
             cache: self.cache.value.clone(),
         }
+    }
+
+    /// The value a kind crate's key resolved to, if `load` was given that key.
+    pub fn kind_value(&self, key: &KindKey) -> Option<usize> {
+        self.kind
+            .iter()
+            .find(|(declared, _)| declared.about.name == key.about.name)
+            .map(|(_, resolved)| resolved.value)
     }
 
     /// Every key with its value and origin, in the order of `keys`.
@@ -171,6 +191,9 @@ impl Settings {
         shown.extend(self.store.shown());
         shown.push(FOLLOW.shown(&self.follow));
         shown.push(read::BUDGET.shown(&self.read_budget));
+        shown.push(read::OUTLINE_WIDTH.shown(&self.read_outline_width));
+        shown.push(read::MATCHES_LISTED.shown(&self.read_matches_listed));
+        shown.extend(self.kind.iter().map(|(key, resolved)| key.shown(resolved)));
         shown
     }
 }
@@ -179,6 +202,7 @@ impl Settings {
 pub fn load(
     var: &dyn Fn(&str) -> Option<OsString>,
     read: &dyn Fn(&Path) -> io::Result<Vec<u8>>,
+    kind: &[&'static KindKey],
 ) -> Result<Settings, Error> {
     let none = File::default();
     let config = CONFIG.resolve(&Source { var, file: &none })?;
@@ -187,7 +211,7 @@ pub fn load(
         _ => Named::ByDefault,
     };
     let file = File::load(&config.value, named, read(&config.value))?;
-    let names: Vec<&'static str> = keys().iter().map(|about| about.name).collect();
+    let names: Vec<&'static str> = keys(kind).iter().map(|about| about.name).collect();
     file.check(&names)?;
     let source = Source { var, file: &file };
     Ok(Settings {
@@ -197,6 +221,12 @@ pub fn load(
         store: keys::section(&source)?,
         follow: FOLLOW.resolve(&source)?,
         read_budget: read::BUDGET.resolve(&source)?,
+        read_outline_width: read::OUTLINE_WIDTH.resolve(&source)?,
+        read_matches_listed: read::MATCHES_LISTED.resolve(&source)?,
+        kind: kind
+            .iter()
+            .map(|key| Ok((*key, key.resolve(&source)?)))
+            .collect::<Result<_, Error>>()?,
         config,
     })
 }
@@ -213,6 +243,10 @@ mod tests {
     use bilbo_kinds::follows::Follow;
 
     use super::{CACHE, CONFIG, FOLLOW, ROOT, STATE, keys, load, show_follows};
+
+    fn kind() -> Vec<&'static super::KindKey> {
+        crate::kind_keys()
+    }
 
     const PAGE: &str = include_str!("../../../../docs/reference/configuration.md");
 
@@ -231,12 +265,13 @@ mod tests {
                 .cloned()
                 .ok_or_else(|| io::Error::from(io::ErrorKind::NotFound))
         };
-        load(&|name| env.get(name).cloned(), &read).map_err(|error| error.to_string())
+        load(&|name| env.get(name).cloned(), &read, &kind()).map_err(|error| error.to_string())
     }
 
     #[test]
-    fn the_registry_is_the_three_folders_the_six_store_keys_the_follows_then_the_read_budget() {
-        let names: Vec<&str> = keys().iter().map(|about| about.name).collect();
+    fn the_registry_is_the_three_folders_the_seven_store_keys_the_follows_then_the_read_and_markdown_keys()
+     {
+        let names: Vec<&str> = keys(&kind()).iter().map(|about| about.name).collect();
         assert_eq!(
             names,
             [
@@ -249,8 +284,12 @@ mod tests {
                 "store.tear_budget",
                 "store.wait",
                 "store.hook_wait",
+                "store.poll",
                 "follow",
-                "read.budget"
+                "read.budget",
+                "read.outline_width",
+                "read.matches_listed",
+                "markdown.heading_width"
             ]
         );
     }
@@ -311,7 +350,7 @@ mod tests {
             .err(),
             Some(
                 "/c.toml:3: unknown key store.sealat; the keys are paths.root, paths.state, \
-                 paths.cache, store.seal_at, store.seal_after, store.compression, store.tear_budget, store.wait, store.hook_wait, follow, read.budget"
+                 paths.cache, store.seal_at, store.seal_after, store.compression, store.tear_budget, store.wait, store.hook_wait, store.poll, follow, read.budget, read.outline_width, read.matches_listed, markdown.heading_width"
                     .to_owned()
             )
         );
@@ -379,7 +418,7 @@ mod tests {
 
     #[test]
     fn the_reference_page_lists_every_key_with_its_variable_and_default() {
-        let expected: Vec<Vec<String>> = keys()
+        let expected: Vec<Vec<String>> = keys(&kind())
             .iter()
             .map(|about| {
                 vec![
@@ -404,8 +443,8 @@ mod tests {
             .into_iter()
             .map(|row| row[3].replace('`', ""))
             .collect();
-        assert_eq!(meanings.len(), keys().len());
-        for (about, meaning) in keys().iter().zip(&meanings) {
+        assert_eq!(meanings.len(), keys(&kind()).len());
+        for (about, meaning) in keys(&kind()).iter().zip(&meanings) {
             assert!(
                 meaning.starts_with(about.doc),
                 "{}: the Meaning cell must start with {:?}, got {meaning:?}",
@@ -429,7 +468,7 @@ mod tests {
     }
 
     fn expected_names() -> BTreeSet<String> {
-        let variables = keys().into_iter().filter_map(|about| about.variable);
+        let variables = keys(&kind()).into_iter().filter_map(|about| about.variable);
         let folders = [&ROOT, &STATE, &CACHE, &CONFIG].map(|key| match key.about.default {
             Default::Folder(folder) => folder.xdg,
             Default::Toml(_) => unreachable!("a folder key"),
@@ -449,9 +488,13 @@ mod tests {
             [
                 "BILBO_CONFIG",
                 "BILBO_HOME",
+                "BILBO_MARKDOWN_HEADING_WIDTH",
                 "BILBO_READ_BUDGET",
+                "BILBO_READ_MATCHES_LISTED",
+                "BILBO_READ_OUTLINE_WIDTH",
                 "BILBO_STORE_COMPRESSION",
                 "BILBO_STORE_HOOK_WAIT",
+                "BILBO_STORE_POLL",
                 "BILBO_STORE_SEAL_AFTER",
                 "BILBO_STORE_SEAL_AT",
                 "BILBO_STORE_TEAR_BUDGET",

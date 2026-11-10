@@ -8,6 +8,7 @@ description = "The markdown kind: .md files, one record per line."
 
 [dependencies]
 bilbo-kinds.workspace = true
+bilbo-settings.workspace = true
 bilbo-store.workspace = true
 
 [lints]

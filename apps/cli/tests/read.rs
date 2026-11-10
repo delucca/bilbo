@@ -1,6 +1,4 @@
-//! `bilbo read` in process, over a real store on disk: the fixtures of both kinds are remembered
-//! into a scratch store and read back a page at a time. The ignored test does the same over a
-//! store the environment names, which the done check fills from a sample of the real folders.
+//! The ignored test reads the store the environment names.
 
 use std::collections::HashMap;
 use std::ffi::OsString;
@@ -94,7 +92,6 @@ struct Run {
     stderr: Vec<String>,
 }
 
-/// A way to run `bilbo` with one set of folders: in process, or the binary a path names.
 #[derive(Clone)]
 struct Bilbo {
     vars: HashMap<String, OsString>,
@@ -103,8 +100,12 @@ struct Bilbo {
 
 impl Bilbo {
     fn settings(&self) -> Settings {
-        settings::load(&|name| self.vars.get(name).cloned(), &|path| fs::read(path))
-            .expect("settings")
+        settings::load(
+            &|name| self.vars.get(name).cloned(),
+            &|path| fs::read(path),
+            &bilbo_cli::kind_keys(),
+        )
+        .expect("settings")
     }
 
     fn run(&self, args: &[&str]) -> Run {
@@ -138,7 +139,8 @@ impl Bilbo {
             .chain(args.iter().copied())
             .map(OsString::from)
             .collect();
-        let settings = settings::load(&*env.var, &|path| fs::read(path)).map_err(Failure::from);
+        let settings = settings::load(&*env.var, &|path| fs::read(path), &bilbo_cli::kind_keys())
+            .map_err(Failure::from);
         let (code, stdout, lines) = match bilbo_cli::run(&argv, &mut env, settings) {
             Ok(outcome) => (
                 outcome.exit_code(),
@@ -193,7 +195,6 @@ impl Scratch {
         }
     }
 
-    /// Every fixture of both kinds, remembered.
     fn remembered(test: &str) -> Scratch {
         let scratch = Scratch::new(test);
         for (name, bytes) in SESSIONS {
@@ -232,16 +233,12 @@ impl Drop for Scratch {
     }
 }
 
-/// An entry as the store holds it, and what its reader makes of it.
 struct Kept {
     id: Id,
     kind: String,
-    /// The newest generation, which every command of a page names.
     generation: u32,
     total: u64,
-    /// Each record that renders, with its text.
     units: Vec<(u64, String)>,
-    /// The records each listed passage starts and ends at.
     listed: Vec<(u64, u64)>,
 }
 
@@ -260,11 +257,10 @@ fn units(passages: &[Passage]) -> Vec<(u64, String)> {
     units
 }
 
-/// Every entry of the store, read through `Entries` and the readers, not through the verb.
 fn kept(settings: &Settings) -> Vec<Kept> {
     let store = Store::open_read_only(&settings.layout(), Options::default(), &mut |_| {})
         .expect("open the store");
-    let readers = bilbo_cli::readers();
+    let readers = bilbo_cli::readers(settings).expect("the readers");
     let (changes, _) = store.changes(&Cursor::start()).expect("changes");
     let mut found = Vec::new();
     for change in changes {
@@ -314,12 +310,10 @@ struct Walked {
     pages: usize,
     records: usize,
     cuts: usize,
-    /// The most characters one page printed.
     longest: usize,
 }
 
-/// What a line that should not be there looks like, without a byte of it: a walk over real
-/// sessions must never copy their text into a log.
+/// Describes a bad line without a byte of it: a walk over real sessions must never copy their text into a log.
 fn shape(line: &str) -> String {
     use std::hash::{Hash, Hasher};
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
@@ -332,7 +326,6 @@ fn number(text: &str) -> Option<(u64, &str)> {
     Some((text[..digits].parse().ok()?, &text[digits..]))
 }
 
-/// The records a block's locator names, and what follows the space after it.
 fn locator(text: &str) -> Option<(u64, u64, &str)> {
     let (first, rest) = number(text.strip_prefix("#r")?)?;
     let (last, rest) = match rest.strip_prefix('-') {
@@ -342,9 +335,6 @@ fn locator(text: &str) -> Option<(u64, u64, &str)> {
     Some((first, last, rest.strip_prefix(' ')?))
 }
 
-/// Reads `#r1-<total>` and every page its `more:` lines name. Each page must hold the next
-/// records that render, each under its locator with its whole text or a cut of it, and nothing
-/// else; the last one must end the chain. The texts come from the reader, not from the verb.
 fn walk_pages(bilbo: &Bilbo, kept: &Kept, budget: Option<&str>) -> Result<Walked, String> {
     let id = kept.id.to_string();
     let pinned = format!("#g{}:", kept.generation);
@@ -376,7 +366,6 @@ fn walk_pages(bilbo: &Bilbo, kept: &Kept, budget: Option<&str>) -> Result<Walked
             Some(at) => (&run.stdout[..=at], &body[at + 1..]),
             None => ("", body),
         };
-        // Only the last line is the verb's own: a cut is said there, before `more:` or `end:`.
         let (mut cut, trailer) = match last.strip_prefix("cut: ") {
             Some(said) => {
                 let (more, rest) = said
@@ -413,8 +402,6 @@ fn walk_pages(bilbo: &Bilbo, kept: &Kept, budget: Option<&str>) -> Result<Walked
             if let Some(after) = rest.strip_prefix(whole.as_str()) {
                 body = after;
             } else {
-                // A cut record ends its page: what stands before the newline that ends the
-                // body is the record's text as far as it was printed.
                 let printed = rest.strip_suffix('\n').ok_or("a block without an end")?;
                 let left = text
                     .strip_prefix(printed)
@@ -494,8 +481,6 @@ fn walk_pages(bilbo: &Bilbo, kept: &Kept, budget: Option<&str>) -> Result<Walked
     }
 }
 
-/// Reads the entry with no locator and every outline page after it: the listed passages, each
-/// once and in order.
 fn walk_outline(
     bilbo: &Bilbo,
     kept: &Kept,
@@ -551,10 +536,6 @@ fn walk_outline(
     }
 }
 
-/// Checks the last line of an outline page read by `reference`, which took the count of passages
-/// listed from `before` to `next`, against the one line it can be. A page that names a next one
-/// must have listed something, or the walk would never end. The ref of the next page is built here, never taken from the
-/// line, and a line that is another is told by its shape only.
 fn outline_trailer(
     kept: &Kept,
     reference: &str,
@@ -659,7 +640,6 @@ fn following_more_prints_each_record_of_every_fixture_exactly_once_at_any_budget
     );
 }
 
-/// Changes what the reader is said to have made of an entry.
 type Spoil = fn(&mut Vec<(u64, String)>);
 
 #[test]
@@ -1149,6 +1129,180 @@ fn the_budget_comes_from_the_flag_then_the_variable_then_the_file() {
     );
 }
 
+fn outline_texts(run: &Run) -> Vec<String> {
+    assert_eq!(run.code, 0, "{:?}", run.stderr);
+    run.stdout
+        .lines()
+        .skip_while(|line| *line != "outline:")
+        .skip(1)
+        .filter_map(|line| line.strip_prefix("#r")?.split_once(' '))
+        .map(|(_, text)| text.to_owned())
+        .collect()
+}
+
+#[test]
+fn the_outline_width_comes_from_the_variable_then_the_file_and_is_checked() {
+    let scratch = Scratch::remembered("read_outline_width");
+    let longest = |run: &Run| {
+        outline_texts(run)
+            .iter()
+            .map(|text| text.chars().count())
+            .max()
+            .unwrap_or(0)
+    };
+    let by_default = scratch.bilbo.run(&["read", &CODEX[..13]]);
+    assert!(longest(&by_default) > 40, "{}", by_default.stdout);
+    assert!(!by_default.stdout.contains('…'));
+    fs::write(
+        scratch.dir.join("config/config.toml"),
+        "[read]\noutline_width = 30\n",
+    )
+    .expect("config");
+    let by_file = scratch.bilbo.run(&["read", &CODEX[..13]]);
+    assert_eq!(longest(&by_file), 30, "{}", by_file.stdout);
+    assert!(by_file.stdout.contains("…\n"), "{}", by_file.stdout);
+    let by_variable = scratch
+        .with("BILBO_READ_OUTLINE_WIDTH", "25")
+        .run(&["read", &CODEX[..13]]);
+    assert_eq!(longest(&by_variable), 25, "{}", by_variable.stdout);
+    let config = scratch.bilbo.run(&["config", "read.outline_width"]);
+    assert_eq!(config.stdout, "30\n");
+    for text in ["19", "1001", "wide"] {
+        let refused = scratch
+            .with("BILBO_READ_OUTLINE_WIDTH", text)
+            .run(&["read", &CODEX[..13]]);
+        assert_eq!(refused.code, 2, "{text}");
+        assert_eq!(
+            refused.stderr[0],
+            format!(
+                "bilbo: BILBO_READ_OUTLINE_WIDTH must be a whole number from 20 to 1000, got \"{text}\""
+            )
+        );
+    }
+    fs::write(
+        scratch.dir.join("config/config.toml"),
+        "[read]\noutline_width = 19\n",
+    )
+    .expect("config");
+    let refused = scratch.bilbo.run(&["read", &CODEX[..13]]);
+    assert_eq!(refused.code, 2);
+    assert!(
+        refused.stderr[0].ends_with(
+            "config.toml:2: read.outline_width must be a whole number from 20 to 1000, got 19"
+        ),
+        "{:?}",
+        refused.stderr
+    );
+}
+
+#[test]
+fn the_matches_listed_come_from_the_variable_then_the_file_and_are_checked() {
+    let scratch = Scratch::remembered("read_matches_listed");
+    for copy in ["copy", "again"] {
+        scratch.write(
+            &format!("{copy}/p/8f2b6d4e-1a3c-4e5f-9b7a-2c4d6e8f0a1b.jsonl"),
+            SESSIONS[0].1,
+        );
+        assert_eq!(
+            scratch.bilbo.run(&["remember", &scratch.path(copy)]).code,
+            0
+        );
+    }
+    let entries = |run: &Run| {
+        assert_eq!(run.code, 2, "{:?}", run.stderr);
+        run.stderr[0].matches("(file:").count()
+    };
+    let by_default = scratch.bilbo.run(&["read", &CLAUDE[..8]]);
+    assert_eq!(entries(&by_default), 3);
+    assert!(!by_default.stderr[0].contains(" more"));
+    fs::write(
+        scratch.dir.join("config/config.toml"),
+        "[read]\nmatches_listed = 2\n",
+    )
+    .expect("config");
+    let by_file = scratch.bilbo.run(&["read", &CLAUDE[..8]]);
+    assert_eq!(entries(&by_file), 2);
+    assert!(
+        by_file.stderr[0].ends_with(" and 1 more; give the id of one"),
+        "{:?}",
+        by_file.stderr
+    );
+    let by_variable = scratch
+        .with("BILBO_READ_MATCHES_LISTED", "1")
+        .run(&["read", &CLAUDE[..8]]);
+    assert_eq!(entries(&by_variable), 1);
+    assert!(by_variable.stderr[0].ends_with(" and 2 more; give the id of one"));
+    for text in ["0", "101", "many"] {
+        let refused = scratch
+            .with("BILBO_READ_MATCHES_LISTED", text)
+            .run(&["read", &CLAUDE[..8]]);
+        assert_eq!(refused.code, 2, "{text}");
+        assert_eq!(
+            refused.stderr[0],
+            format!(
+                "bilbo: BILBO_READ_MATCHES_LISTED must be a whole number from 1 to 100, got \"{text}\""
+            )
+        );
+    }
+}
+
+#[test]
+fn the_heading_width_comes_from_the_variable_then_the_file_and_is_checked() {
+    let scratch = Scratch::remembered("read_heading_width");
+    scratch.write(
+        "wide/wide.md",
+        format!(
+            "---\nid: 01JC5Q3V7XKM4P8R2T6W9YB0DH\n---\n# {}\n## Inner\ntext\n",
+            "h".repeat(40)
+        )
+        .as_bytes(),
+    );
+    assert_eq!(
+        scratch.bilbo.run(&["remember", &scratch.path("wide")]).code,
+        0
+    );
+    let page = |bilbo: &Bilbo| bilbo.run(&["read", "01JC5Q3V7XKM4P8R2T6W9YB0DH", "--outline"]);
+    let by_default = page(&scratch.bilbo);
+    assert!(
+        by_default
+            .stdout
+            .contains(&format!("{} > Inner", "h".repeat(40))),
+        "{}",
+        by_default.stdout
+    );
+    fs::write(
+        scratch.dir.join("config/config.toml"),
+        "[markdown]\nheading_width = 30\n",
+    )
+    .expect("config");
+    let by_file = page(&scratch.bilbo);
+    assert!(
+        by_file
+            .stdout
+            .contains(&format!("{}… > Inner", "h".repeat(29))),
+        "{}",
+        by_file.stdout
+    );
+    let by_variable = page(&scratch.with("BILBO_MARKDOWN_HEADING_WIDTH", "20"));
+    assert!(
+        by_variable
+            .stdout
+            .contains(&format!("{}… > Inner", "h".repeat(19))),
+        "{}",
+        by_variable.stdout
+    );
+    for text in ["19", "1001", "wide"] {
+        let refused = page(&scratch.with("BILBO_MARKDOWN_HEADING_WIDTH", text));
+        assert_eq!(refused.code, 2, "{text}");
+        assert_eq!(
+            refused.stderr[0],
+            format!(
+                "bilbo: BILBO_MARKDOWN_HEADING_WIDTH must be a whole number from 20 to 1000, got \"{text}\""
+            )
+        );
+    }
+}
+
 #[test]
 fn a_command_of_a_page_reads_the_generation_the_page_read_also_after_the_file_was_rewritten() {
     let scratch = Scratch::remembered("read_pinned");
@@ -1213,7 +1367,6 @@ fn a_command_of_a_page_reads_the_generation_the_page_read_also_after_the_file_wa
     assert!(!whole.stdout.contains("\ncut: "));
 }
 
-/// 600 sections of one heading line each, kept from `origin`.
 fn headings(origin: String, line: usize) -> bilbo_kinds::read::Fetched {
     use bilbo_store::entries::{Generation, Meta, Origin};
     bilbo_kinds::read::Fetched {
@@ -1232,8 +1385,6 @@ fn headings(origin: String, line: usize) -> bilbo_kinds::read::Fetched {
     }
 }
 
-/// Every page of the default budget off a terminal, from `first` on by its `more`: how many
-/// lines start with a locator, after checking each page against the 30,000 characters.
 fn default_pages(fetched: &bilbo_kinds::read::Fetched, first: &str, outline: bool) -> usize {
     use bilbo_kinds::read::Request;
     use bilbo_kinds::read::refs::Ref;
@@ -1250,9 +1401,17 @@ fn default_pages(fetched: &bilbo_kinds::read::Fetched, first: &str, outline: boo
             reference: Ref::parse(&reference).expect("a ref"),
             outline,
             budget,
+            outline_width: 100,
+            matches_listed: 5,
         };
-        let output = bilbo_cli::read::rendered(fetched, &request, &bilbo_cli::readers(), None)
-            .expect("a page");
+        let output = bilbo_cli::read::rendered(
+            fetched,
+            &request,
+            &bilbo_cli::readers(&Scratch::new("read_readers").bilbo.settings())
+                .expect("the readers"),
+            None,
+        )
+        .expect("a page");
         let text = bilbo_cli::read::view::plain(&output, None);
         let characters = text.chars().count();
         assert!(characters <= 30_000, "page {page}: {characters}");
@@ -1284,7 +1443,6 @@ fn a_page_of_the_default_budget_stays_under_the_cut_off_a_terminal() {
     assert_eq!(default_pages(&fetched, &all, false), 600);
 }
 
-/// Says in `free` whether the store's lock could be taken for writing while it renders.
 struct Probe {
     lock: PathBuf,
     free: Arc<Mutex<Vec<bool>>>,
@@ -1424,9 +1582,7 @@ fn a_read_changes_nothing_in_the_store_the_state_or_the_cache() {
     );
 }
 
-/// The done check: every entry of the store the environment names is read to its end, through
-/// its outline and through its pages at the default budget and at the smallest one. Prints
-/// counts only. `READ_BINARY`, when set, is the binary to run in place of this process.
+/// `READ_BINARY`, when set, is the binary to run in place of this process. Prints counts only.
 #[test]
 #[ignore = "the done check: the lead runs it against a scratch store filled from the real folders"]
 #[expect(

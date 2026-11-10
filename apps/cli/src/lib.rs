@@ -15,7 +15,7 @@ use clap::{Command, CommandFactory, Parser, Subcommand};
 use crate::console::args::{Parsed, parse, typed, usage, verbs, with_verbs};
 use crate::console::env::Env;
 use crate::console::outcome::{Failure, Outcome};
-use crate::console::settings::Settings;
+use crate::console::settings::{KindKey, Settings};
 use crate::help::overview;
 use crate::help::page::shape;
 
@@ -41,23 +41,32 @@ pub enum Verb {
     Config(config::Args),
 }
 
-/// Every kind `remember` keeps. Only this file names a kind crate.
 pub fn kinds() -> Vec<Box<dyn Kind>> {
     vec![
-        Box::new(bilbo_markdown::Markdown),
+        Box::new(bilbo_markdown::Markdown::default()),
         Box::new(bilbo_session::Session),
     ]
 }
 
-/// The reader of every kind, so `read` can print whatever `remember` kept.
-pub fn readers() -> Vec<Box<dyn Reader>> {
-    vec![
-        Box::new(bilbo_markdown::Markdown),
-        Box::new(bilbo_session::Session),
-    ]
+pub fn kind_keys() -> Vec<&'static KindKey> {
+    vec![&bilbo_markdown::HEADING_WIDTH]
 }
 
-/// The `remember` page lists the kinds, which only this file can name.
+pub fn readers(settings: &Settings) -> Result<Vec<Box<dyn Reader>>, Failure> {
+    let width = settings
+        .kind_value(&bilbo_markdown::HEADING_WIDTH)
+        .ok_or_else(|| {
+            Failure::Config(format!(
+                "{} was not registered with the settings",
+                bilbo_markdown::HEADING_WIDTH.about.name
+            ))
+        })?;
+    Ok(vec![
+        Box::new(bilbo_markdown::Markdown::new(width)),
+        Box::new(bilbo_session::Session),
+    ])
+}
+
 pub fn bilbo() -> Command {
     let root = Cli::command();
     verbs(&root).into_iter().fold(root, |root, name| {
@@ -101,7 +110,11 @@ pub fn run_command(
                     Ok(remember::hook::run(env, settings, &kinds()))
                 }
                 Verb::Remember(args) => remember::run(root, args, env, &settings?, &kinds()),
-                Verb::Read(args) => read::run(root, &args, env, &settings?, &readers()),
+                Verb::Read(args) => {
+                    let settings = settings?;
+                    let readers = readers(&settings)?;
+                    read::run(root, &args, env, &settings, &readers)
+                }
                 Verb::Config(args) => config::run(root, args, &settings?),
             }
         }
@@ -118,6 +131,38 @@ mod tests {
     use crate::console::settings::Settings;
     use crate::console::view::View;
     use crate::probe::{self, with_verb};
+
+    fn defaults() -> Settings {
+        crate::console::settings::load(
+            &|name| (name == "HOME").then(|| OsString::from("/h")),
+            &|_| Err(std::io::ErrorKind::NotFound.into()),
+            &super::kind_keys(),
+        )
+        .expect("the defaults")
+    }
+
+    #[test]
+    fn a_reader_whose_key_was_not_registered_is_a_config_error_not_a_default() {
+        let settings = crate::console::settings::load(
+            &|name| match name {
+                "HOME" => Some(OsString::from("/h")),
+                "BILBO_MARKDOWN_HEADING_WIDTH" => Some(OsString::from("20")),
+                _ => None,
+            },
+            &|_| Err(std::io::ErrorKind::NotFound.into()),
+            &[],
+        )
+        .expect("settings with no kind key");
+        match readers(&settings) {
+            Err(Failure::Config(text)) => {
+                assert_eq!(
+                    text,
+                    "markdown.heading_width was not registered with the settings"
+                );
+            }
+            other => panic!("{:?}", other.map(|list| list.len())),
+        }
+    }
 
     fn unread() -> Result<Settings, Failure> {
         Err(Failure::Config(
@@ -149,7 +194,11 @@ mod tests {
         unique.sort_unstable();
         unique.dedup();
         assert_eq!(unique.len(), names.len(), "{names:?}");
-        let read: Vec<&str> = readers().iter().map(|reader| reader.kind()).collect();
+        let read: Vec<&str> = readers(&defaults())
+            .expect("the readers")
+            .iter()
+            .map(|reader| reader.kind())
+            .collect();
         assert_eq!(
             read, names,
             "a kind that is kept and cannot be read, or the reverse"

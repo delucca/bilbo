@@ -43,9 +43,7 @@ impl Outcome {
         self
     }
 
-    /// The human text is asked for on every terminal, also an agent's, which gets the plain
-    /// view: for a result that holds text from outside, whose control characters no terminal
-    /// should run.
+    /// The human text is asked for on every terminal, an agent's too: the result holds outside text.
     #[must_use]
     pub fn on_every_terminal(mut self) -> Self {
         self.every_terminal = true;

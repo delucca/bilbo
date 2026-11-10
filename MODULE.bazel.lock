@@ -511,13 +511,13 @@
           "REPO_MAPPING:rules_rust+,bazel_tools bazel_tools",
           "REPO_MAPPING:rules_rust+,rules_cc rules_cc+",
           "REPO_MAPPING:rules_rust+,rules_rust rules_rust+",
-          "FILE:@@//Cargo.lock 755492439591402f4597f0e4d0dd9c85de1535d5ff0b79a708e50c855195b5ef",
+          "FILE:@@//Cargo.lock 21ac1570e73e78f6804d145422ea7177f9b7bf84ce74e0d1c57294148f320627",
           "FILE:@@//Cargo.toml 9706fc24002598e1300ca801ccab6d7e501a6f5c7527342846247c0aff01baaa",
           "FILE:@@//apps/cli/Cargo.toml 4648991340624078a1b3e5e826dbbe1d18731ed06327f90183e8bbe5cd07f513",
           "FILE:@@//libs/rust/kinds/Cargo.toml a479346276a414cb148354a2c181ad39082234c216b4957d239051425bb49ee2",
           "FILE:@@//libs/rust/settings/Cargo.toml 3e885efc99c425dbdc4775ffae4ecd306870d86f016d15e57b20dafd4372e755",
           "FILE:@@//libs/rust/store/Cargo.toml 28814746757cc488e6877d1eb1acbd03d3cabac3843d87b90da0412ab84a45ec",
-          "FILE:@@//libs/rust/kinds/markdown/Cargo.toml 9525ebf4252c7e7cab9112e6f541d44e4caacef5eaf9968a6820b142019f23d6",
+          "FILE:@@//libs/rust/kinds/markdown/Cargo.toml 1453f4312a528a88d765ec74ff165083e7b7c2b2e6e2b9803c87c4a0a665bddd",
           "FILE:@@//libs/rust/kinds/session/Cargo.toml 347c2565dabe4ede00683830eb36b28b9b2ba36e29e2faa423271cf5a7c9721e"
         ],
         "generatedRepoSpecs": {

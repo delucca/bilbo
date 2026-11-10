@@ -1,6 +1,4 @@
-//! A Markdown file as heading sections: the frontmatter block, the text before the first heading,
-//! then one passage per heading, down to the line before the next one. Every line is in exactly
-//! one passage, so the passages of a file join back to its bytes.
+//! A Markdown file as heading sections; every line is in exactly one passage, so the passages join back to its bytes.
 
 use std::borrow::Cow;
 
@@ -10,29 +8,29 @@ use bilbo_store::entries::RecordRange;
 use crate::frontmatter;
 
 const FRONTMATTER: &str = "frontmatter";
-/// Between the headings of a label: `Title > Section`.
 const UNDER: &str = " > ";
-/// The characters of a heading a label keeps. A label holds at most six headings, so the labels
-/// of a file stay within a small multiple of its size.
-const KEPT: usize = 100;
 const CLIPPED: char = '…';
 
-fn clip(heading: &str) -> Cow<'_, str> {
-    match heading.char_indices().nth(KEPT) {
-        Some((end, _)) => Cow::Owned(format!("{}{CLIPPED}", &heading[..end])),
+/// A label holds at most six headings, so labels stay within a small multiple of the file's size.
+fn clip(heading: &str, width: usize) -> Cow<'_, str> {
+    match heading.char_indices().nth(width) {
+        Some(_) => {
+            let end = heading
+                .char_indices()
+                .nth(width.saturating_sub(1))
+                .map_or(heading.len(), |(at, _)| at);
+            Cow::Owned(format!("{}{CLIPPED}", &heading[..end]))
+        }
         None => Cow::Borrowed(heading),
     }
 }
 
-/// A record's line without its line ending.
 fn line(record: &[u8]) -> &str {
     let text = std::str::from_utf8(record).unwrap_or_default();
     let text = text.strip_suffix('\n').unwrap_or(text);
     text.strip_suffix('\r').unwrap_or(text)
 }
 
-/// The fence character and its run length when the line opens or closes a fenced code block,
-/// and whether anything but spaces follows the run.
 fn fence(line: &str) -> Option<(char, usize, bool)> {
     let stripped = line.trim_start_matches(' ');
     if line.len() - stripped.len() > 3 {
@@ -44,7 +42,6 @@ fn fence(line: &str) -> Option<(char, usize, bool)> {
     (run >= 3 && !(mark == '`' && rest.contains('`'))).then(|| (mark, run, !rest.trim().is_empty()))
 }
 
-/// `# Title` to `###### Title`: the level and the text, a closing run of `#` removed.
 fn atx(line: &str) -> Option<(usize, String)> {
     let level = line.bytes().take_while(|byte| *byte == b'#').count();
     if !(1..=6).contains(&level) {
@@ -61,7 +58,6 @@ fn atx(line: &str) -> Option<(usize, String)> {
     (!text.is_empty()).then_some((level, text))
 }
 
-/// The level a setext underline gives the paragraph above it: a run of `=` or of `-`.
 fn underline(line: &str) -> Option<usize> {
     let stripped = line.trim_start_matches(' ');
     if line.len() - stripped.len() > 3 {
@@ -75,12 +71,10 @@ fn underline(line: &str) -> Option<usize> {
     }
 }
 
-/// Whether the line is indented as code: four spaces or a tab.
 fn indented(line: &str) -> bool {
     line.starts_with('\t') || line.len() - line.trim_start_matches(' ').len() > 3
 }
 
-/// A thematic break: three or more `*`, `-` or `_`, with nothing but spaces between and around.
 fn rule(line: &str) -> bool {
     let marks = line.trim_matches([' ', '\t']);
     let mark = marks
@@ -94,8 +88,6 @@ fn rule(line: &str) -> bool {
         })
 }
 
-/// A quote or a list item: the lines after it, down to a blank one, continue it. A line indented
-/// as code is neither.
 fn container(line: &str) -> bool {
     let stripped = line.trim_start_matches(' ');
     let item = |rest: &str| rest.starts_with([' ', '\t']) || rest.is_empty();
@@ -109,8 +101,6 @@ fn container(line: &str) -> bool {
             || numbered())
 }
 
-/// A line of paragraph text, which a setext underline can make a heading: not blank, not
-/// indented as code, and not a quote, a list item, a table row, a thematic break or a heading.
 fn paragraph(line: &str) -> bool {
     let stripped = line.trim_start_matches(' ');
     !(stripped.trim().is_empty()
@@ -122,19 +112,16 @@ fn paragraph(line: &str) -> bool {
 }
 
 struct Heading {
-    /// The line the heading starts on, counted from 0: a setext heading starts with its paragraph.
+    /// Counted from 0; a setext heading starts with its paragraph.
     start: usize,
     level: usize,
     text: String,
 }
 
-/// The headings from line `from` on, outside fenced code blocks.
 fn headings(lines: &[&str], from: usize) -> Vec<Heading> {
     let mut open: Option<(char, usize)> = None;
     let mut found: Vec<Heading> = Vec::new();
-    // The paragraph the last line continues: where it starts.
     let mut text_from: Option<usize> = None;
-    // Inside a quote or a list item, whose lines a setext underline makes no heading.
     let mut contained = false;
     for (at, line) in lines.iter().enumerate().skip(from) {
         let run = fence(line);
@@ -170,7 +157,6 @@ fn headings(lines: &[&str], from: usize) -> Vec<Heading> {
                 text,
             });
         }
-        // A blank line, a heading and a thematic break end a quote or a list item.
         if line.trim().is_empty() || line.starts_with('#') || rule(line) {
             contained = false;
         } else if container(line) {
@@ -190,9 +176,7 @@ struct Section {
     label: String,
 }
 
-/// Where each passage starts: the frontmatter, the text after it, then each heading with the
-/// headings it is under.
-fn sections(lines: &[&str]) -> Vec<Section> {
+fn sections(lines: &[&str], heading_width: usize) -> Vec<Section> {
     let mut sections = Vec::new();
     let body = match frontmatter::close(lines.iter().copied()) {
         Some(close) => {
@@ -219,7 +203,7 @@ fn sections(lines: &[&str]) -> Vec<Section> {
         {
             above.pop();
         }
-        above.push((heading.level, clip(&heading.text)));
+        above.push((heading.level, clip(&heading.text, heading_width)));
         let path: Vec<&str> = above.iter().map(|(_, text)| text.as_ref()).collect();
         sections.push(Section {
             start: heading.start,
@@ -229,14 +213,13 @@ fn sections(lines: &[&str]) -> Vec<Section> {
     sections
 }
 
-/// One passage per section, its records the section's lines. Blank lines alone are no passage:
-/// they join the one before them, or the one after them at the top of the file.
-pub fn passages(records: &[&[u8]]) -> Vec<Passage> {
+/// Blank lines alone are no passage: they join the one before, or the one after at the top of the file.
+pub fn passages(records: &[&[u8]], heading_width: usize) -> Vec<Passage> {
     let mut lines: Vec<&str> = records.iter().map(|record| line(record)).collect();
     if let Some(first) = lines.first_mut() {
         *first = first.strip_prefix('\u{feff}').unwrap_or(first);
     }
-    let found = sections(&lines);
+    let found = sections(&lines, heading_width);
     let mut passages: Vec<Passage> = Vec::new();
     let mut carried: Option<usize> = None;
     for (at, section) in found.iter().enumerate() {
@@ -295,12 +278,17 @@ mod tests {
 
     use super::{atx, passages, underline};
 
-    fn read(text: &str) -> Vec<Passage> {
+    const WIDTH: usize = 100;
+
+    fn read_at(text: &str, width: usize) -> Vec<Passage> {
         let records: Vec<&[u8]> = text.split_inclusive('\n').map(str::as_bytes).collect();
-        passages(&records)
+        passages(&records, width)
     }
 
-    /// Each passage as its first and last line, counted from 1, and its label.
+    fn read(text: &str) -> Vec<Passage> {
+        read_at(text, WIDTH)
+    }
+
     fn shape(text: &str) -> Vec<(u64, u64, String)> {
         read(text)
             .iter()
@@ -385,7 +373,6 @@ mod tests {
             assert_eq!(read(text).len(), 1, "{text:?}");
         }
         assert_eq!(shape("a\n---\nb\n===\n").len(), 2);
-        // A line that continues a list item or a quote is no paragraph of its own.
         for text in [
             "- first point\n  more about it\n---\n",
             "> quote\ncontinued\n---\n",
@@ -457,11 +444,21 @@ mod tests {
         assert!(held <= 20 * note.len(), "{held} bytes of labels");
         assert_eq!(
             found[1].pieces[0].label,
-            format!("{}… > a", "x".repeat(100)),
+            format!("{}… > a", "x".repeat(99)),
             "a long heading is clipped in the path"
         );
         let setext = format!("{}\n===\n## a\n", "wide ".repeat(100));
-        assert_eq!(read(&setext)[1].pieces[0].label.chars().count(), 105);
+        assert_eq!(read(&setext)[1].pieces[0].label.chars().count(), 104);
+    }
+
+    #[test]
+    fn the_width_decides_where_a_heading_is_clipped_in_a_label() {
+        let note = format!("# {}\n## a\n", "h".repeat(60));
+        let label = |width| read_at(&note, width)[1].pieces[0].label.clone();
+        assert_eq!(label(20), format!("{}… > a", "h".repeat(19)));
+        assert_eq!(label(59), format!("{}… > a", "h".repeat(58)));
+        assert_eq!(label(60), format!("{} > a", "h".repeat(60)));
+        assert_eq!(label(1000), format!("{} > a", "h".repeat(60)));
     }
 
     /// The reader scans lines; it does not parse Markdown's containers. Inside or right
@@ -605,7 +602,6 @@ mod tests {
         }
     }
 
-    /// xorshift64*, from a fixed seed: the same cases on every run.
     struct Dice(u64);
 
     impl Dice {
@@ -630,7 +626,6 @@ mod tests {
             (0..self.below(most)).map(|_| self.byte()).collect()
         }
 
-        /// A line with a few bytes changed, dropped, added or repeated, or cut short.
         fn spoiled(&mut self, line: &[u8]) -> Vec<u8> {
             let mut line = line.to_vec();
             for _ in 0..=self.below(3) {
@@ -673,8 +668,6 @@ mod tests {
         }
     }
 
-    /// What `Reader` promises of any records: passages in record order, none sharing a record,
-    /// all inside the generation, their offsets rising char boundaries of their text.
     fn sound(passages: &[Passage], records: usize, case: usize) {
         let mut next = 1;
         for passage in passages {
@@ -739,7 +732,7 @@ mod tests {
                 })
                 .collect();
             let records: Vec<&[u8]> = records.iter().map(Vec::as_slice).collect();
-            let found = passages(&records);
+            let found = passages(&records, WIDTH);
             sound(&found, records.len(), case);
             let held: u64 = found.iter().map(|passage| passage.range.count).sum();
             assert_eq!(
@@ -767,7 +760,7 @@ mod tests {
     #[test]
     fn a_record_that_is_not_utf8_is_kept_and_never_a_heading() {
         let records: [&[u8]; 3] = [b"# Title\n", b"# \xff\n", b"text\n"];
-        let found = passages(&records);
+        let found = passages(&records, WIDTH);
         assert_eq!(found.len(), 1);
         assert_eq!(found[0].range.count, 3);
         assert_eq!(found[0].text, "# Title\n# \u{fffd}\ntext\n");

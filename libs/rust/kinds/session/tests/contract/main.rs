@@ -1,6 +1,5 @@
-//! The Claude dialect against the eval's own render: `expected.jsonl` is what `render_session` of
-//! the retrieval eval's bm25 `build.py` printed for `edges.jsonl` and `sample.jsonl`, written by
-//! `regenerate.py` and never by hand.
+//! `expected.jsonl` is what the eval's bm25 `render_session` printed for `edges.jsonl` and `sample.jsonl`,
+//! written by `regenerate.py`, never by hand.
 
 use std::collections::BTreeMap;
 use std::ffi::OsString;
@@ -15,7 +14,6 @@ const EDGES: &[u8] = include_bytes!("edges.jsonl");
 const SAMPLE: &str = include_str!("sample.jsonl");
 const EXPECTED: &str = include_str!("expected.jsonl");
 
-/// One message: its line, its text, and each piece's byte offset and label line.
 type Message = (u64, String, Vec<(u64, String)>);
 
 fn read(session: &[u8]) -> Vec<Message> {
@@ -42,7 +40,6 @@ fn text(value: &Value, key: &str) -> String {
         .to_owned()
 }
 
-/// The rows of an expected file, by session.
 fn expected(rows: &str) -> BTreeMap<String, Vec<Message>> {
     let mut sessions: BTreeMap<String, Vec<Message>> = BTreeMap::new();
     for row in rows.lines() {
@@ -73,7 +70,6 @@ fn say(line: &str) {
     eprintln!("{line}");
 }
 
-/// How many messages differ, after the first is shown.
 fn compare(name: &str, found: &[Message], wanted: &[Message]) -> usize {
     let mut differing = found.len().abs_diff(wanted.len());
     for (found, wanted) in found.iter().zip(wanted) {
@@ -175,8 +171,7 @@ fn var(name: &str) -> Option<OsString> {
     std::env::var_os(name)
 }
 
-/// The whole eval corpus, when the environment names it: `CONTRACT_CORPUS` is the unpacked folder
-/// and `CONTRACT_EXPECTED` what `regenerate.py --whole` wrote for it. Prints counts only.
+/// `CONTRACT_CORPUS` is the unpacked eval corpus, `CONTRACT_EXPECTED` what `regenerate.py --whole` wrote. Prints counts only.
 #[test]
 #[ignore = "needs the unpacked eval corpus"]
 fn the_whole_corpus_reads_as_build_py_printed_it() {

@@ -3,9 +3,7 @@ use std::fmt;
 use bilbo_store::entries::{Generation, RecordRange};
 use bilbo_store::id::Id;
 
-/// The prefix a citation gives an entry id; a ref may carry it.
 pub const SCHEME: &str = "bilbo:";
-/// A session id is told by a prefix of its UUID at least this long.
 pub(crate) const SHORTEST: usize = 8;
 pub(super) const UUID: usize = 36;
 const DASHES: [usize; 4] = [8, 13, 18, 23];
@@ -13,11 +11,9 @@ const DASHES: [usize; 4] = [8, 13, 18, 23];
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Target {
     Entry(Id),
-    /// A harness session's UUID or a prefix of it, in lowercase.
     Session(String),
 }
 
-/// `#r<a>[-<b>]`, `#g<n>` or `#g<n>:r<a>[-<b>]`; no generation means the current one.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Locator {
     pub generation: Option<Generation>,
@@ -30,7 +26,6 @@ pub struct Ref {
     pub locator: Locator,
 }
 
-/// Why a ref does not parse, as a usage error says it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Malformed(String);
 
@@ -70,7 +65,6 @@ fn parse_target(text: &str) -> Result<Target, Malformed> {
     )))
 }
 
-/// A UUID or a prefix of it long enough to tell a session by.
 pub(super) fn is_session(text: &str) -> bool {
     (SHORTEST..=UUID).contains(&text.len())
         && text.bytes().enumerate().all(|(at, byte)| {
@@ -138,7 +132,6 @@ fn number(digits: &str) -> Option<u64> {
         .filter(|&number| plain && number < u64::MAX)
 }
 
-/// The last record of a range that holds one.
 pub(crate) fn last(range: RecordRange) -> u64 {
     range.first.saturating_add(range.count.saturating_sub(1))
 }

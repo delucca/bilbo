@@ -34,7 +34,8 @@ fn main() -> ExitCode {
             }
         }),
     };
-    let settings = settings::load(&*env.var, &edit::read_regular).map_err(Failure::from);
+    let settings = settings::load(&*env.var, &edit::read_regular, &bilbo_cli::kind_keys())
+        .map_err(Failure::from);
     let plan = streams::plan(&bilbo_cli::run(&args, &mut env, settings), &out, &err);
     ExitCode::from(streams::execute(&plan, &err, &mut perform))
 }

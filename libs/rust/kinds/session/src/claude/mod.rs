@@ -13,9 +13,8 @@ pub fn is_subagents(path: &Path) -> bool {
     path.file_name().is_some_and(|name| name == "subagents")
 }
 
-/// A string `type` is Claude Code's (Codex, with an object `payload`, is told apart first).
-/// Cursor's entries have a user or assistant `role` and no `type`, or a null one. Only an entry
-/// the reader renders something from is sure: any other may sit before another dialect's lines.
+/// A string `type` is Claude Code's (Codex, with an object `payload`, is told apart first). Cursor's entries have a
+/// `role` and no `type`, or a null one. Only an entry the reader renders is sure: any other may sit before another dialect's lines.
 pub fn dialect(line: &Value) -> Option<Evidence> {
     let dialect = match (line.get("type"), line.get("role")) {
         (Some(Value::Str(_)), _) => Dialect::ClaudeCode,

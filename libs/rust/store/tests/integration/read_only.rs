@@ -161,7 +161,6 @@ fn two_store_roots_cannot_share_one_state_folder() {
     assert!(Store::open_read_only(&second, sealing(), &mut |_| {}).is_ok());
 }
 
-/// `a.md` sealed and `b.md` in open.seg, the catalog on disk holding both.
 fn two_places_cataloged(layout: &Layout) -> (bilbo_store::id::Id, bilbo_store::id::Id) {
     let mut store = open(layout);
     let a = id_of(&keep(&mut store, "a.md", b"one\ntwo\n"));

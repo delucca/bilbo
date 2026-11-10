@@ -16,6 +16,7 @@ rust_library(
     visibility = ["//apps/cli:__pkg__"],
     deps = [
         "//libs/rust/kinds",
+        "//libs/rust/settings",
         "//libs/rust/store",
     ],
 )

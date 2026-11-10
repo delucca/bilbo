@@ -78,6 +78,7 @@ mod tests {
         settings::load(
             &|name| (name == "HOME").then(|| OsString::from("/h")),
             &|_| Err(std::io::ErrorKind::NotFound.into()),
+            &crate::kind_keys(),
         )
         .expect("the defaults")
     }
@@ -107,7 +108,7 @@ mod tests {
                 assert_eq!(
                     reason,
                     "unknown key 'store.sealat'; the keys are paths.root, paths.state, \
-                     paths.cache, store.seal_at, store.seal_after, store.compression, store.tear_budget, store.wait, store.hook_wait, follow, read.budget"
+                     paths.cache, store.seal_at, store.seal_after, store.compression, store.tear_budget, store.wait, store.hook_wait, store.poll, follow, read.budget, read.outline_width, read.matches_listed, markdown.heading_width"
                 );
                 assert_eq!(page, "bilbo config --help");
             }
@@ -140,6 +141,7 @@ mod tests {
                 _ => None,
             },
             &|_| Err(std::io::ErrorKind::NotFound.into()),
+            &crate::kind_keys(),
         )
         .expect("a path with control bytes");
         let stdout = run(&bilbo(), key("paths.root"), &hostile)

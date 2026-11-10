@@ -5,7 +5,6 @@ use crate::read::refs::last;
 use crate::reader::Passage;
 use crate::tokens::Tokens;
 
-/// Records of one passage, printed after the locator of exactly those records.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Block {
     pub records: RecordRange,
@@ -15,16 +14,13 @@ pub struct Block {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Cut {
-    /// Characters of the record left out.
     pub characters: usize,
     /// A budget that prints the record whole when it is read alone under the locator a command
     /// carries.
     pub budget: Budget,
 }
 
-/// How a page names records.
 pub(crate) struct Locators<'l> {
-    /// Before a block.
     pub shown: &'l dyn Fn(RecordRange) -> String,
     /// In a command to run later: with the generation, so never shorter than `shown`.
     pub pinned: &'l dyn Fn(RecordRange) -> String,
@@ -33,20 +29,17 @@ pub(crate) struct Locators<'l> {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct Page {
     pub blocks: Vec<Block>,
-    /// From the next record that renders to the end of what was asked.
     pub more: Option<RecordRange>,
 }
 
 struct Unit<'p> {
     passage: usize,
     record: u64,
-    /// Records of the same passage from this one to the end of what was asked.
     rest: u64,
     text: &'p str,
 }
 
-/// One unit per record of a passage inside `asked`. Offsets a reader got wrong give an empty text,
-/// never a panic.
+/// Offsets a reader got wrong give an empty text, never a panic.
 fn units(passages: &[Passage], asked: RecordRange) -> impl Iterator<Item = Unit<'_>> {
     let asked_last = last(asked);
     passages
@@ -75,14 +68,11 @@ fn newline(text: &str) -> usize {
     usize::from(!text.ends_with('\n'))
 }
 
-/// What a record costs after a locator that costs `head`. A counter's numbers never overflow it.
 fn body(head: usize, text: &str, tokens: &dyn Tokens) -> usize {
     head.saturating_add(tokens.count(text))
         .saturating_add(newline(text))
 }
 
-/// Records are added whole while they fit `budget`. A record is cut only when it is over the
-/// budget alone, at the top of a page; the page then ends, and `more` starts after it.
 pub(crate) fn page(
     passages: &[Passage],
     asked: RecordRange,
@@ -198,7 +188,6 @@ mod tests {
         .to_string()
     }
 
-    /// As a command carries it, and as a page shows it once a newer generation exists.
     fn pinned(records: RecordRange) -> String {
         Locator {
             generation: Some(Generation(1)),
@@ -228,7 +217,6 @@ mod tests {
         }
     }
 
-    /// Records 2, 3, 5 and 9 render; 1, 4 and 6 to 8 render nothing.
     fn session() -> Vec<Passage> {
         vec![
             single(2, "user: one"),
@@ -238,7 +226,6 @@ mod tests {
         ]
     }
 
-    /// Every page from `asked` to the end, by its `more`.
     fn chain(passages: &[Passage], asked: RecordRange, budget: usize) -> Vec<Page> {
         let mut pages = Vec::new();
         let mut next = Some(asked);
@@ -446,7 +433,6 @@ mod tests {
         assert!(pages.iter().all(|page| page.blocks[0].text.is_empty()));
     }
 
-    /// Lines 1 to 3 are one section, 4 to 6 the next.
     fn note() -> Vec<Passage> {
         vec![
             section(1, &["# One\n", "first\n", "\n"]),

@@ -6,12 +6,53 @@ use std::path::{Path, PathBuf};
 use bilbo_kinds::files::{Files, Node};
 use bilbo_kinds::kind::{Claims, Kind, Proposal, Refusal};
 use bilbo_kinds::reader::{Passage, Reader};
+use bilbo_settings::file::File;
+use bilbo_settings::key::{About, Default, Key, Source};
 use bilbo_store::id::Id;
 
 const NAME: &str = "markdown";
 
-#[derive(Debug, Clone, Copy, Default)]
-pub struct Markdown;
+pub const HEADING_WIDTH: Key<usize> = Key {
+    about: About {
+        name: "markdown.heading_width",
+        variable: Some("BILBO_MARKDOWN_HEADING_WIDTH"),
+        default: Default::Toml("100"),
+        allowed: "a whole number from 20 to 1000",
+        doc: "The most characters a heading may have inside a section label of a Markdown file, an ellipsis included: a longer heading is cut and ends in one.",
+    },
+    parse: |value| {
+        value
+            .integer()
+            .and_then(|width| usize::try_from(width).ok())
+            .filter(|width| (20..=1000).contains(width))
+            .ok_or_else(|| value.refuse())
+    },
+    show: ToString::to_string,
+};
+
+#[derive(Debug, Clone, Copy)]
+pub struct Markdown {
+    heading_width: usize,
+}
+
+impl Markdown {
+    pub fn new(heading_width: usize) -> Self {
+        Self { heading_width }
+    }
+}
+
+impl std::default::Default for Markdown {
+    fn default() -> Self {
+        let file = File::default();
+        let width = HEADING_WIDTH
+            .resolve(&Source {
+                var: &|_| None,
+                file: &file,
+            })
+            .expect("the default is a literal its key's unit test parses");
+        Self::new(width.value)
+    }
+}
 
 impl Reader for Markdown {
     fn kind(&self) -> &'static str {
@@ -19,7 +60,7 @@ impl Reader for Markdown {
     }
 
     fn passages(&self, records: &[&[u8]]) -> Vec<Passage> {
-        read::passages(records)
+        read::passages(records, self.heading_width)
     }
 }
 
@@ -129,6 +170,62 @@ mod tests {
             .collect()
     }
 
+    fn heading_width(env: Option<&str>, text: &str) -> Result<usize, String> {
+        let file = File::parse(Path::new("/c/config.toml"), text.as_bytes()).expect("toml");
+        let var = |name: &str| {
+            (name == "BILBO_MARKDOWN_HEADING_WIDTH")
+                .then(|| env.map(Into::into))
+                .flatten()
+        };
+        HEADING_WIDTH
+            .resolve(&Source {
+                var: &var,
+                file: &file,
+            })
+            .map(|resolved| resolved.value)
+            .map_err(|error| error.to_string())
+    }
+
+    #[test]
+    fn the_heading_width_is_20_to_1000_characters_and_defaults_to_100() {
+        assert_eq!(heading_width(None, ""), Ok(100));
+        assert_eq!(heading_width(None, "markdown.heading_width = 40"), Ok(40));
+        assert_eq!(
+            heading_width(Some("1000"), "markdown.heading_width = 40"),
+            Ok(1000)
+        );
+        assert_eq!(heading_width(Some("20"), ""), Ok(20));
+        for text in ["19", "1001", "0", "-5", "wide", "20.5"] {
+            assert_eq!(
+                heading_width(Some(text), ""),
+                Err(format!(
+                    "BILBO_MARKDOWN_HEADING_WIDTH must be a whole number from 20 to 1000, got \"{text}\""
+                )),
+                "{text}"
+            );
+        }
+        assert_eq!(
+            heading_width(None, "markdown.heading_width = 1001"),
+            Err("/c/config.toml:1: markdown.heading_width must be a whole number from 20 to 1000, got 1001".to_owned())
+        );
+    }
+
+    #[test]
+    fn a_reader_clips_the_headings_of_a_label_at_its_width() {
+        let note = format!("# {}\n## a\n", "h".repeat(30));
+        let records: Vec<&[u8]> = note.split_inclusive('\n').map(str::as_bytes).collect();
+        for (width, clipped) in [(20, true), (30, false)] {
+            let label = Markdown::new(width).passages(&records)[1].pieces[0]
+                .label
+                .clone();
+            assert_eq!(label.contains('…'), clipped, "{width}");
+        }
+        assert_eq!(
+            Markdown::default().passages(&records)[1].pieces[0].label,
+            format!("{} > a", "h".repeat(30))
+        );
+    }
+
     #[test]
     fn a_folder_is_walked_for_md_files_skipping_hidden_entries_and_links() {
         let files = Memory::new()
@@ -139,7 +236,7 @@ mod tests {
             .file("/n/x.txt", "x")
             .other("/n/link.md")
             .file("/n/deep/er/d.md", "d");
-        let claims = Markdown.claims(&files, Path::new("/n"));
+        let claims = Markdown::default().claims(&files, Path::new("/n"));
         assert_eq!(
             paths(&claims),
             ["/n/a.md", "/n/deep/er/d.md", "/n/sub/b.md"]
@@ -160,7 +257,7 @@ mod tests {
             ("a.txt", false),
             ("a.MD", false),
         ] {
-            let claims = Markdown.claims(&files, &Path::new("/n").join(name));
+            let claims = Markdown::default().claims(&files, &Path::new("/n").join(name));
             assert_eq!(claims.files.len(), usize::from(claimed), "{name}");
             assert!(claims.refused.is_empty(), "{name}");
         }
@@ -172,7 +269,7 @@ mod tests {
             .file("/n/a.md", "a")
             .unreadable("/n/locked", Node::Folder)
             .file("/n/z.md", "z");
-        let claims = Markdown.claims(&files, Path::new("/n"));
+        let claims = Markdown::default().claims(&files, Path::new("/n"));
         assert_eq!(paths(&claims), ["/n/a.md", "/n/z.md"]);
         assert_eq!(claims.refused.len(), 1);
         assert_eq!(claims.refused[0].0, Path::new("/n/locked"));
@@ -181,7 +278,7 @@ mod tests {
 
     #[test]
     fn a_missing_target_is_refused() {
-        let claims = Markdown.claims(&Memory::new(), Path::new("/nope"));
+        let claims = Markdown::default().claims(&Memory::new(), Path::new("/nope"));
         assert!(claims.files.is_empty());
         assert_eq!(claims.refused.len(), 1);
     }
@@ -189,7 +286,7 @@ mod tests {
     #[test]
     fn each_line_is_a_record_and_the_records_join_back_to_the_file() {
         for (name, bytes) in FIXTURES {
-            let ends = Markdown.split(bytes).unwrap_or_default();
+            let ends = Markdown::default().split(bytes).unwrap_or_default();
             assert_eq!(ends.last().copied(), Some(bytes.len()), "{name}");
             let mut start = 0;
             let mut joined = Vec::new();
@@ -210,24 +307,24 @@ mod tests {
 
     #[test]
     fn a_last_line_without_a_newline_is_one_record() {
-        assert_eq!(Markdown.split(b"a\nb"), Ok(vec![2, 3]));
-        assert_eq!(Markdown.split(b"a\nb\n"), Ok(vec![2, 4]));
+        assert_eq!(Markdown::default().split(b"a\nb"), Ok(vec![2, 3]));
+        assert_eq!(Markdown::default().split(b"a\nb\n"), Ok(vec![2, 4]));
     }
 
     #[test]
     fn an_empty_file_has_no_records() {
-        assert_eq!(Markdown.split(b""), Ok(vec![]));
+        assert_eq!(Markdown::default().split(b""), Ok(vec![]));
     }
 
     #[test]
     fn a_crlf_file_keeps_its_carriage_returns() {
-        assert_eq!(Markdown.split(b"a\r\nb\r\n"), Ok(vec![3, 6]));
+        assert_eq!(Markdown::default().split(b"a\r\nb\r\n"), Ok(vec![3, 6]));
     }
 
     #[test]
     fn a_file_that_is_not_utf8_is_refused_with_the_byte_it_breaks_at() {
         assert_eq!(
-            Markdown.split(b"ab\n\xff\xfe"),
+            Markdown::default().split(b"ab\n\xff\xfe"),
             Err(Refusal("not UTF-8 (byte 3)".to_string()))
         );
         assert_eq!(propose(b"---\n\xff\n"), Proposal::default());
@@ -235,8 +332,11 @@ mod tests {
 
     #[test]
     fn the_kind_is_named_markdown_with_its_summary() {
-        assert_eq!(Markdown.name(), "markdown");
-        assert_eq!(Markdown.summary(), ".md files, one record per line");
+        assert_eq!(Markdown::default().name(), "markdown");
+        assert_eq!(
+            Markdown::default().summary(),
+            ".md files, one record per line"
+        );
     }
 
     #[test]
@@ -251,7 +351,7 @@ mod tests {
     }
 
     fn propose(bytes: &[u8]) -> Proposal {
-        Markdown.propose(Path::new("/n/a.md"), bytes, &|_| {
+        Markdown::default().propose(Path::new("/n/a.md"), bytes, &|_| {
             Some(Id::from_bytes([7; 16]))
         })
     }

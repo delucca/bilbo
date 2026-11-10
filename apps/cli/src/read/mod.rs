@@ -63,8 +63,7 @@ Docs: https://github.com/delucca/bilbo/wiki/Commands#read";
 
 const WAITING: &str = "waiting for another bilbo to finish writing the store";
 
-/// The store is open, and its shared lock held, only while the entry's records are fetched: a
-/// writer never waits for a page to render or to be written out.
+/// The store lock is held only while the entry's records are fetched, never while rendering.
 pub fn run(
     root: &Command,
     args: &Args,
@@ -89,6 +88,8 @@ pub fn run(
         reference,
         outline: args.outline,
         budget: budget.value,
+        outline_width: settings.read_outline_width.value,
+        matches_listed: settings.read_matches_listed.value,
     };
 
     let notice = &mut env.notice;
@@ -102,7 +103,7 @@ pub fn run(
         }
     })
     .map_err(|error| Failure::from(&error))?;
-    let fetched = read::fetch(&request.reference, &store);
+    let fetched = read::fetch(&request, &store);
     drop(store);
 
     let given = matches!(budget.origin, Origin::Flag(_)).then_some(budget.value);
@@ -114,8 +115,7 @@ pub fn run(
         .on_every_terminal())
 }
 
-/// The page the views of this verb print: counted by the estimate, an outline's lines chosen
-/// after what `view::plain` prints around them. `given` is the budget a flag gave.
+/// Outline lines are chosen after what `view::plain` prints around them.
 pub fn rendered(
     fetched: &Fetched,
     request: &Request,

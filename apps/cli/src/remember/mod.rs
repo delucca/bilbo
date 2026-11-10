@@ -57,7 +57,6 @@ pub struct Args {
     pub hook: bool,
 }
 
-/// What follows the options on the help page: the kinds, then the rest of the page.
 pub fn page(kinds: &[Box<dyn Kind>]) -> String {
     let width = kinds
         .iter()

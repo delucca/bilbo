@@ -160,7 +160,6 @@ pub struct Seen {
     pub ends: Vec<usize>,
 }
 
-/// Every method `remember` has no use for panics.
 #[derive(Default)]
 pub struct FakeEntries {
     pub script: HashMap<String, Script>,

@@ -1,13 +1,12 @@
-//! Claude Code's and Cursor's entries as the eval's bm25 arm rendered them: `render_session` and
-//! `render_entry` of the retrieval eval's bm25 `build.py`, one passage per rendered entry. Where
-//! that script would stop on a shape it did not expect, the block or the entry renders nothing.
+//! Renders as the eval's bm25 `build.py` does (`render_session`, `render_entry`); where that script would stop on
+//! an unexpected shape, the block or the entry renders nothing.
 
 use bilbo_kinds::reader::Passage;
 
 use crate::json::{self, Value};
 use crate::render::{self, Outline, Tools};
 
-/// `[image image/png]`; `None` where `media()` would stop: a `source` that is not an object.
+/// `None` where the eval's `media()` would stop: a `source` that is not an object.
 fn media(block: &Value) -> Option<String> {
     let kind = block.get("type")?.python_str();
     let media_type = match block.get("source") {
@@ -21,8 +20,7 @@ fn media(block: &Value) -> Option<String> {
     Some(format!("[{kind} {media_type}]").replace(" ]", "]"))
 }
 
-/// `None` where `render_result` would stop: content that is a number or `true`, or a text item
-/// whose text is not a string.
+/// `None` where `render_result` would stop: content that is a number or `true`, or a text item whose text is no string.
 fn render_result(content: Option<&Value>) -> Option<String> {
     let items = match content {
         Some(Value::Str(text)) => return Some(text.clone()),
@@ -60,7 +58,6 @@ fn render_result(content: Option<&Value>) -> Option<String> {
     Some(parts.join("\n"))
 }
 
-/// One piece per block; `None` for a block that renders nothing.
 fn piece(block: &Value, label: &str, tools: &mut Tools) -> Option<String> {
     let name = || block.get("name").map(Value::python_str).unwrap_or_default();
     match block.get("type")?.as_str()? {
@@ -96,8 +93,6 @@ fn piece(block: &Value, label: &str, tools: &mut Tools) -> Option<String> {
     }
 }
 
-/// The pieces of one user or assistant entry. Thinking and every block of an unknown type are
-/// left out.
 fn render_entry(entry: &Value, role: &str, tools: &mut Tools) -> Vec<String> {
     let content = match entry.get("message") {
         Some(message @ Value::Dict(_)) => message.get("content"),
@@ -123,7 +118,6 @@ fn render_entry(entry: &Value, role: &str, tools: &mut Tools) -> Vec<String> {
         .collect()
 }
 
-/// `user` or `assistant`: the entry's `type`, or its `role` when it has no `type` (Cursor's).
 fn role(entry: &Value) -> Option<&str> {
     let kind = match entry.get("type") {
         None | Some(Value::Null) => entry.get("role"),
@@ -137,19 +131,15 @@ fn flag(entry: &Value, name: &str) -> bool {
     entry.get(name).is_some_and(Value::truthy)
 }
 
-/// Whether the entry alone renders something: a user or assistant entry that is not `isMeta` and
-/// has a block to print.
 pub fn renders(entry: &Value) -> bool {
     role(entry).is_some_and(|role| {
         !flag(entry, "isMeta") && !render_entry(entry, role, &mut Tools::default()).is_empty()
     })
 }
 
-/// One passage per entry that renders, its range the one record. The thread of a file is the
-/// `isSidechain` value of its first entry that renders; entries of the other value are left out.
-/// So a session's file leaves out the entries of another thread, as the eval did, and a
-/// subagent's file, which marks every entry, reads as its own. An entry that is left out for
-/// another reason (`isMeta`, nothing to say) never chooses the thread.
+/// The thread is the `isSidechain` value of the first entry that renders; entries of the other value are left out,
+/// as in the eval. A subagent's file marks every entry, so it reads as its own. An entry left out for another reason
+/// (`isMeta`, nothing to say) never chooses the thread.
 pub fn passages(records: &[&[u8]]) -> Vec<Passage> {
     let mut tools = Tools::default();
     let mut thread = None;
@@ -196,7 +186,6 @@ mod tests {
         passages(&records)
     }
 
-    /// Each passage as its record and its text.
     fn texts(text: &str) -> Vec<(u64, String)> {
         read(text)
             .into_iter()
@@ -424,7 +413,6 @@ mod tests {
         );
     }
 
-    /// Where this reader departs from the eval's render, each on a shape no harness writes.
     #[test]
     fn nesting_past_128_levels_and_lone_surrogates_read_as_the_plan_says() {
         let deep = format!("{}{}", "[".repeat(200), "]".repeat(200));

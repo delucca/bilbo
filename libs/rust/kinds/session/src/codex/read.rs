@@ -1,19 +1,14 @@
-//! Codex rollouts in the labels of the Claude dialect. A rollout line is `{type, payload}`; only
-//! `response_item` lines and a `compacted` line's summary are read.
-
 use bilbo_kinds::reader::Passage;
 
 use crate::json::{self, Value};
 use crate::render::{self, Outline, Tools};
 
-/// How the text of an injected user item starts when the rollout carries no item kinds.
 const INJECTED: [&str; 4] = [
     "# AGENTS.md instructions",
     "<environment_context>",
     "<recommended_plugins>",
     "<skill>",
 ];
-/// The kinds of the items a person sent: `user.text`, `user.image`.
 const TYPED: &str = "user.";
 const NO_KIND: &str = "unknown";
 
@@ -21,8 +16,6 @@ fn field<'v>(value: &'v Value, name: &str) -> Option<&'v str> {
     value.get(name).and_then(Value::as_str)
 }
 
-/// Whether the harness, not a person, wrote a user message's item: by its kind when the rollout
-/// names one, else by how its text starts.
 fn injected(kind: Option<&str>, text: &str) -> bool {
     match kind.filter(|kind| *kind != NO_KIND) {
         Some(kind) => !kind.starts_with(TYPED),
@@ -30,8 +23,6 @@ fn injected(kind: Option<&str>, text: &str) -> bool {
     }
 }
 
-/// `user:` and `assistant:` pieces, a piece per text or image item. A developer message, and a
-/// user item the harness injected, render nothing.
 fn message(payload: &Value) -> Vec<String> {
     let Some(role) = field(payload, "role").filter(|role| matches!(*role, "user" | "assistant"))
     else {
@@ -68,9 +59,7 @@ fn message(payload: &Value) -> Vec<String> {
     }
 }
 
-/// `tool_use <name>:` and what the call was given. A function call's `arguments` that are a JSON
-/// object print a line per key, as Claude's input does; a custom tool's `input` is text of its
-/// own (a script, a patch) and prints as it was written, JSON or not.
+/// A custom tool's `input` is text of its own (a script, a patch) and prints as written, JSON or not.
 fn call(payload: &Value, given: &str, tools: &mut Tools) -> Option<String> {
     let name = field(payload, "name")?;
     tools.name(payload.get("call_id"), name.to_owned());
@@ -86,7 +75,6 @@ fn call(payload: &Value, given: &str, tools: &mut Tools) -> Option<String> {
     Some(render::labelled(format!("tool_use {name}:"), &args))
 }
 
-/// `tool_result <name>:` and the output: a string, or its text items joined.
 fn output(payload: &Value, tools: &Tools) -> Option<String> {
     let name = tools.named(payload.get("call_id"))?;
     let body = match payload.get("output") {
@@ -107,8 +95,7 @@ fn output(payload: &Value, tools: &Tools) -> Option<String> {
     ))
 }
 
-/// What one agent sent another: `agent_message <author> to <recipient>:`. A subagent's rollout
-/// has no user message; its task arrives as one of these.
+/// A subagent's rollout has no user message; its task arrives as one of these.
 fn agent_message(payload: &Value) -> Option<String> {
     let author = field(payload, "author")?;
     let recipient = field(payload, "recipient")?;
@@ -125,8 +112,6 @@ fn agent_message(payload: &Value) -> Option<String> {
     (!text.is_empty()).then(|| format!("agent_message {author} to {recipient}: {text}"))
 }
 
-/// One passage per line that renders. Reasoning, developer messages, tool definitions and every
-/// line that is not a response item render nothing.
 pub fn passages(records: &[&[u8]]) -> Vec<Passage> {
     let mut tools = Tools::default();
     let mut passages = Vec::new();

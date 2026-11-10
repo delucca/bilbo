@@ -2,8 +2,7 @@ use bilbo_store::id::Id;
 
 const FENCE: &str = "---";
 
-/// The line that closes a frontmatter block, counted from 0: `lines` starts with `---` and holds
-/// a later `---`. The lines come without their line ending, the first without a byte order mark.
+/// Index of the closing `---`; `lines` come without line endings, the first without a byte order mark.
 pub fn close<'l>(mut lines: impl Iterator<Item = &'l str>) -> Option<usize> {
     if lines.next()? != FENCE {
         return None;

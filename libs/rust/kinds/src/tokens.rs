@@ -1,11 +1,9 @@
-/// Counts what a budget is spent on.
 pub trait Tokens {
     fn count(&self, text: &str) -> usize;
     /// Bytes of the longest prefix of `text` within `budget` tokens, on a char boundary.
     fn prefix(&self, text: &str, budget: usize) -> usize;
 }
 
-/// Four bytes a token, rounded up.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Estimate;
 

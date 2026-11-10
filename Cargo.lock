@@ -38,6 +38,7 @@ name = "bilbo-markdown"
 version = "0.0.0"
 dependencies = [
  "bilbo-kinds",
+ "bilbo-settings",
  "bilbo-store",
 ]
 

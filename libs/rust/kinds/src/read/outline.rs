@@ -4,11 +4,8 @@ use crate::read::refs::last;
 use crate::reader::Passage;
 use crate::tokens::Tokens;
 
-/// The characters of a passage's line an outline shows.
-const WIDTH: usize = 100;
 const ELLIPSIS: char = '…';
 
-/// A listed passage: all its records, and the line its reader lists it by.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Line {
     pub records: RecordRange,
@@ -18,17 +15,15 @@ pub struct Line {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct Listing {
     pub lines: Vec<Line>,
-    /// From the next listed passage to the end of what was asked.
     pub more: Option<RecordRange>,
 }
 
-/// One line of at most `WIDTH` characters: the first of `text` that is not blank.
-fn shown(text: &str) -> String {
+fn shown(text: &str, width: usize) -> String {
     let line = text
         .lines()
         .find(|line| !line.trim().is_empty())
         .unwrap_or_default();
-    match line.char_indices().nth(WIDTH) {
+    match line.char_indices().nth(width) {
         Some((end, _)) => {
             let kept = line[..end]
                 .char_indices()
@@ -40,13 +35,12 @@ fn shown(text: &str) -> String {
     }
 }
 
-/// The passages a reader marked, among those that start inside `asked`, while their lines fit
-/// `budget`; a page lists at least one.
 pub(crate) fn outline(
     passages: &[Passage],
     asked: RecordRange,
     locator: &dyn Fn(RecordRange) -> String,
     budget: usize,
+    width: usize,
     tokens: &dyn Tokens,
 ) -> Listing {
     let asked_last = last(asked);
@@ -63,7 +57,7 @@ pub(crate) fn outline(
             .map(|line| (passage, line))
     });
     for (passage, line) in listed {
-        let text = shown(line);
+        let text = shown(line, width);
         let cost = tokens
             .count(&locator(passage.range))
             .saturating_add(tokens.count(&text))
@@ -88,7 +82,7 @@ pub(crate) fn outline(
 mod tests {
     use bilbo_store::entries::RecordRange;
 
-    use super::{Line, Listing, WIDTH, outline, shown};
+    use super::{Line, Listing, outline, shown};
     use crate::fake::{Chars, section, single};
     use crate::read::refs::Locator;
     use crate::reader::Passage;
@@ -108,8 +102,10 @@ mod tests {
         .to_string()
     }
 
+    const WIDTH: usize = 100;
+
     fn listed(passages: &[Passage], asked: RecordRange, budget: usize) -> Listing {
-        outline(passages, asked, &locator, budget, &Chars)
+        outline(passages, asked, &locator, budget, WIDTH, &Chars)
     }
 
     fn prompt(record: u64, text: &str) -> Passage {
@@ -199,13 +195,25 @@ mod tests {
     #[test]
     fn a_long_line_is_cut_to_the_width_and_only_one_line_is_ever_shown() {
         let exact = "x".repeat(WIDTH);
-        assert_eq!(shown(&exact), exact);
+        assert_eq!(shown(&exact, WIDTH), exact);
         let long = format!("{}é tail", "x".repeat(WIDTH - 1));
-        let cut = shown(&long);
+        let cut = shown(&long, WIDTH);
         assert_eq!(cut.chars().count(), WIDTH);
         assert_eq!(cut, format!("{}…", "x".repeat(WIDTH - 1)));
-        assert_eq!(shown("\n  \nthird\nfourth"), "third");
-        assert_eq!(shown("\n\n"), "");
-        assert_eq!(shown(""), "");
+        assert_eq!(shown("\n  \nthird\nfourth", WIDTH), "third");
+        assert_eq!(shown("\n\n", WIDTH), "");
+        assert_eq!(shown("", WIDTH), "");
+    }
+
+    #[test]
+    fn the_width_decides_where_an_outline_line_is_cut() {
+        let passages = vec![prompt(2, &format!("user: {}", "w".repeat(60)))];
+        let at = |width| {
+            let listing = outline(&passages, range(1, 9), &locator, 1000, width, &Chars);
+            listing.lines[0].text.clone()
+        };
+        assert_eq!(at(20), format!("user: {}…", "w".repeat(13)));
+        assert_eq!(at(30).chars().count(), 30);
+        assert_eq!(at(66), format!("user: {}", "w".repeat(60)));
     }
 }

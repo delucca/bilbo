@@ -49,9 +49,13 @@ pub fn vars(dir: &Path) -> HashMap<String, OsString> {
 }
 
 pub fn layout(vars: &HashMap<String, OsString>) -> Layout {
-    settings::load(&|name| vars.get(name).cloned(), &|path| fs::read(path))
-        .expect("settings")
-        .layout()
+    settings::load(
+        &|name| vars.get(name).cloned(),
+        &|path| fs::read(path),
+        &bilbo_cli::kind_keys(),
+    )
+    .expect("settings")
+    .layout()
 }
 
 pub struct Run {
@@ -86,7 +90,8 @@ pub fn run(
         .chain(args.iter().copied())
         .map(OsString::from)
         .collect();
-    let settings = settings::load(&*env.var, &|path| fs::read(path)).map_err(Failure::from);
+    let settings = settings::load(&*env.var, &|path| fs::read(path), &bilbo_cli::kind_keys())
+        .map_err(Failure::from);
     let (code, stdout, stderr) = match bilbo_cli::run(&argv, &mut env, settings) {
         Ok(outcome) => (
             outcome.exit_code(),

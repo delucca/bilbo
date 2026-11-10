@@ -271,10 +271,9 @@ pub enum StoreError {
         path: PathBuf,
         root: PathBuf,
     },
-    /// A writer holds the store: a writer that found it so set the again flag for it, a reader
-    /// waited for it as long as its options allow.
+    /// A writer holds the store: a writer set the again flag for it, a reader waited as long as its options allow.
     Busy,
-    /// Readers held the store for longer than a writer's options let it wait for them.
+    /// Readers held the store for longer than a writer's options let it wait.
     Reading,
     /// The catalog must be rebuilt from every segment, and the options refused that.
     Unrebuilt,
@@ -361,8 +360,7 @@ pub trait Entries {
     fn meta(&self, id: Id) -> Result<Option<Meta>, StoreError>;
     fn changes(&self, since: &Cursor) -> Result<(Vec<Change>, Cursor), StoreError>;
     fn by_origin(&self, origin: &Origin) -> Result<Option<Head>, StoreError>;
-    /// A generation's number and how many records it holds; `None` asks for the newest.
-    /// `Ok(None)`: no such entry or generation.
+    /// `None` asks for the newest generation. `Ok(None)`: no such entry or generation.
     fn extent(
         &self,
         id: Id,

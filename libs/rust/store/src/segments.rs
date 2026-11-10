@@ -127,8 +127,9 @@ pub struct Options {
     pub compression: Compression,
     /// The frame bytes the search after a torn frame may hash, in multiples of the file's size.
     pub tear_budget: TearBudget,
-    /// How long a reader waits for a writer before it fails with `StoreError::Busy`.
     pub wait: Duration,
+    /// Between two tries of a waiting reader: `flock` has no timed wait.
+    pub poll: Duration,
     pub hook: Option<Hook>,
     pub held: Held,
     pub sealing: Sealing,
@@ -440,12 +441,8 @@ fn canonical(path: &Path) -> Result<PathBuf, StoreError> {
     fs::canonicalize(path).map_err(|error| files::io_err("read", path, error))
 }
 
-/// Between two tries of a reader that waits for a writer: `flock` has no timed wait.
-const POLL: Duration = Duration::from_millis(20);
-
-/// Whether the store lock was given. A writer that holds it is asked to run again, which is
-/// `StoreError::Busy`; `false` is readers, which never run again for a request. The guard is
-/// dropped on return: nobody blocks on `store.lock` while holding it.
+/// Whether the store lock was given. A writer that holds it is asked to run again (`StoreError::Busy`); `false` is readers.
+/// The guard is dropped on return: nobody blocks on `store.lock` while holding it.
 fn taken_or_asked(layout: &Layout, lock: &File, lock_path: &Path) -> Result<bool, StoreError> {
     let guard = Guard::take(layout)?;
     match lock.try_lock() {
@@ -465,11 +462,11 @@ enum Mode {
     Exclusive,
 }
 
-/// The lock, tried until it is given or `wait` has passed: then `held` is the error.
 fn lock_within(
     file: &File,
     path: &Path,
     (mode, wait, held): (Mode, Duration, StoreError),
+    poll: Duration,
     notice: &mut dyn FnMut(Notice),
 ) -> Result<(), StoreError> {
     let started = Instant::now();
@@ -490,16 +487,13 @@ fn lock_within(
                     notice(Notice::Waiting);
                     said = true;
                 }
-                thread::sleep(POLL.min(left));
+                thread::sleep(poll.min(left));
             }
             Err(TryLockError::Error(error)) => return Err(files::io_err("lock", path, error)),
         }
     }
 }
 
-/// The catalog on disk when a reader can use it as it is: no seal was interrupted, its folder is
-/// private, and it holds every frame of the sealed segments and of `open.seg`. Anything else is
-/// `None`, and the reader walks the segments instead.
 fn kept_catalog(configured: &Layout, layout: &Layout, sealed: &[(String, u64)]) -> Option<Catalog> {
     if files::read_optional(&marker_file(layout)).ok()?.is_some() {
         return None;
@@ -881,7 +875,7 @@ impl Store {
                     match readers {
                         Some(wait) => {
                             let bound = (Mode::Exclusive, wait, StoreError::Reading);
-                            match lock_within(&lock, &lock_path, bound, notice) {
+                            match lock_within(&lock, &lock_path, bound, options.poll, notice) {
                                 // A writer may have followed the readers during the wait.
                                 Err(StoreError::Reading)
                                     if taken_or_asked(layout, &lock, &lock_path)? => {}
@@ -931,9 +925,6 @@ impl Store {
         })
     }
 
-    /// Holds a shared lock for its lifetime; `notice` hears `Waiting` when a writer holds the store,
-    /// and after the options' `wait` the open fails with `StoreError::Busy`. With the catalog on
-    /// disk current the open reads no segment; else it walks them all into a catalog in memory.
     /// The options' hook hears `Step::Checked` once the paths are validated.
     pub fn open_read_only(
         configured: &Layout,
@@ -969,7 +960,7 @@ impl Store {
         let lock = match File::open(&lock_path) {
             Ok(file) => {
                 let bound = (Mode::Shared, options.wait, StoreError::Busy);
-                lock_within(&file, &lock_path, bound, notice)?;
+                lock_within(&file, &lock_path, bound, options.poll, notice)?;
                 Some(file)
             }
             Err(error) if error.kind() == io::ErrorKind::NotFound => None,

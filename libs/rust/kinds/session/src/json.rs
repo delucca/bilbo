@@ -7,14 +7,12 @@ use std::fmt::Write;
 
 /// Nesting past this is not read: the walk is recursive.
 const DEPTH: usize = 128;
-/// From this many fields on an object's keys are found through a map, not by a scan.
 const WIDE: usize = 32;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Value {
     Null,
     Bool(bool),
-    /// The digits as written, with their sign.
     Int(String),
     Float(f64),
     Str(String),
@@ -111,7 +109,6 @@ impl Value {
     }
 }
 
-/// How one of Python's two printers spells what is not a list or a dict.
 struct Words {
     null: &'static str,
     truth: &'static str,
@@ -130,7 +127,6 @@ const JSON: Words = Words {
     string: quoted,
 };
 
-/// `repr(value)`.
 const REPR: Words = Words {
     null: "None",
     truth: "True",
@@ -250,8 +246,8 @@ fn repr_str(text: &str, out: &mut String) {
     out.push(quote);
 }
 
-/// One JSON text, as `json.loads` reads it: `NaN`, `Infinity` and `-Infinity` are numbers. `None`
-/// for anything it refuses, and for nesting past `DEPTH`. A lone surrogate escape reads as U+FFFD.
+/// As `json.loads` reads it: `NaN`, `Infinity` and `-Infinity` are numbers; a lone surrogate escape reads as U+FFFD.
+/// `None` for anything it refuses, and for nesting past `DEPTH`.
 pub fn parse(record: &[u8]) -> Option<Value> {
     let text = std::str::from_utf8(record).ok()?;
     let mut walk = Walk {
@@ -483,7 +479,6 @@ impl Walk<'_> {
         }
     }
 
-    /// The character of a `\u` escape whose `\u` is read, with the low half of a pair.
     fn escaped(&mut self) -> Option<char> {
         let first = self.hex4()?;
         if (0xD800..0xDC00).contains(&first) && self.bytes[self.at..].starts_with(b"\\u") {

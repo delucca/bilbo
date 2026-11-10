@@ -31,9 +31,11 @@ fn unread() -> Result<Settings, Failure> {
 
 /// Every default, under a fixed HOME and with no config file.
 fn defaults() -> Settings {
-    settings::load(&|name| (name == "HOME").then(|| "/home/u".into()), &|_| {
-        Err(std::io::ErrorKind::NotFound.into())
-    })
+    settings::load(
+        &|name| (name == "HOME").then(|| "/home/u".into()),
+        &|_| Err(std::io::ErrorKind::NotFound.into()),
+        &bilbo_cli::kind_keys(),
+    )
     .expect("the defaults")
 }
 
@@ -340,7 +342,6 @@ const CODEX_SESSION: &[u8] = include_bytes!(
 );
 const NOTE: &[u8] = include_bytes!("../../../libs/rust/kinds/markdown/fixtures/sections.md");
 
-/// What `bilbo read <ref>` prints for a fixture kept as one entry, in both views.
 fn read_output(
     kind: &str,
     origin: &str,
@@ -368,10 +369,17 @@ fn read_output(
         reference: Ref::parse(&format!("{READ_ID}{locator}")).expect("a ref"),
         outline: false,
         budget,
+        outline_width: 100,
+        matches_listed: 5,
     };
     let given = (budget.tokens() != 7000).then_some(budget);
-    let output =
-        bilbo_cli::read::rendered(&fetched, &request, &readers(), given).expect("an output");
+    let output = bilbo_cli::read::rendered(
+        &fetched,
+        &request,
+        &readers(&defaults()).expect("the readers"),
+        given,
+    )
+    .expect("an output");
     (
         bilbo_cli::read::view::plain(&output, given),
         bilbo_cli::read::view::shown(&output, given, &View::HUMAN),

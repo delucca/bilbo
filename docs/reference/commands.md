@@ -202,7 +202,7 @@ Prints an entry that `bilbo remember` kept: its metadata and its outline, or its
 ```
 
 - `<id>` is the entry's id, 26 characters, with or without the `bilbo:` a citation gives it.
-- `<session id>` is the UUID a harness gave a session, or its first 8 characters or more: `bilbo read 2d6b1857`. It names the entry kept from the `.jsonl` file whose name ends in that UUID: Claude Code's `<uuid>.jsonl`, Codex's `rollout-<time>-<uuid>.jsonl`. A note named for a UUID is not a session: read it by its id. Upper or lower case. When it names several entries (one session kept from two folders, or a short prefix two sessions share), the run exits 2 and lists up to five of them with their origins: give the id of one. A subagent has no UUID of its own: read it by its id, which its session's records name.
+- `<session id>` is the UUID a harness gave a session, or its first 8 characters or more: `bilbo read 2d6b1857`. It names the entry kept from the `.jsonl` file whose name ends in that UUID: Claude Code's `<uuid>.jsonl`, Codex's `rollout-<time>-<uuid>.jsonl`. A note named for a UUID is not a session: read it by its id. Upper or lower case. When it names several entries (one session kept from two folders, or a short prefix two sessions share), the run exits 2 and lists up to `read.matches_listed` of them (five by default) with their origins: give the id of one. A subagent has no UUID of its own: read it by its id, which its session's records name.
 - `r<a>-<b>` is the records from `a` to `b`, counted from 1; `r<a>` is one record. A record outside the entry is refused, exit 1, with the number of records the entry has.
 - `g<n>` is a generation: an entry whose file was rewritten keeps the old records as an older generation. With no `g`, the newest. A page of an older generation shows it in every locator (`#g1:r5`); a page of the newest shows the short form (`#r5`). The `more:` and `cut:` commands of the last line always name the generation that was read, so a file rewritten between two pages cannot make the next page read other records.
 
@@ -229,7 +229,7 @@ end: #r1-23 of 23 records
 - `origin` is left out for an entry that has none, `started` for one whose records carry no time (a note), and `parent` unless the entry belongs to another: a subagent names its session.
 - `generation` is `1 of 2` when the one shown is not the newest.
 - A session lists its user prompts, its compact summaries and, for Codex, the messages one agent sent another. A note lists its frontmatter, the text before its first heading, and each heading with the headings above it: `#r28-31 The garden log > Watering > Tools`.
-- An outline line is the first 100 characters of the prompt's first line; a longer one ends in `…`.
+- An outline line is the prompt's first line, at most `read.outline_width` characters (100 by default); a longer one is cut to fit and ends in `…`. Inside a note's path, a heading over `markdown.heading_width` characters (100 by default) is cut to fit and ends in `…` too.
 - A long outline is paged by the budget like the records, its metadata counted in: it ends with `more: bilbo read <id>#g<n>:r<a>-<b> --outline`. `--outline` with a range lists the passages that start in that range, without the metadata.
 
 ### A page

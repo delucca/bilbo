@@ -16,14 +16,11 @@ use outline::Line;
 use page::{Block, Locators};
 use refs::{Locator, Ref, Target, last};
 
-/// Under the budget a page could not print one locator.
 const LEAST: usize = 256;
 /// The most a budget can be: what a TOML integer holds.
 const MOST: usize = usize::MAX >> 1;
-/// A cut's suggested budget is the record's own count, rounded up to this.
 const ROUND: usize = 1000;
 
-/// The tokens a page may print: a number the `read.budget` key accepts.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Budget(usize);
 
@@ -35,7 +32,6 @@ impl Budget {
         self.0
     }
 
-    /// The least budget in thousands that holds `tokens`, and never more than the key accepts.
     pub(crate) fn holding(tokens: usize) -> Budget {
         let round = tokens.max(1).checked_next_multiple_of(ROUND);
         Budget(round.map_or(MOST, |round| round.min(MOST)))
@@ -78,12 +74,49 @@ pub const BUDGET: Key<Budget> = Key {
     show: ToString::to_string,
 };
 
+pub const OUTLINE_WIDTH: Key<usize> = Key {
+    about: KeyAbout {
+        name: "read.outline_width",
+        variable: Some("BILBO_READ_OUTLINE_WIDTH"),
+        default: Default::Toml("100"),
+        allowed: "a whole number from 20 to 1000",
+        doc: "The most characters an outline line of bilbo read may have, an ellipsis included: a longer one is cut and ends in one.",
+    },
+    parse: |value| {
+        value
+            .integer()
+            .and_then(|width| usize::try_from(width).ok())
+            .filter(|width| (20..=1000).contains(width))
+            .ok_or_else(|| value.refuse())
+    },
+    show: ToString::to_string,
+};
+
+pub const MATCHES_LISTED: Key<usize> = Key {
+    about: KeyAbout {
+        name: "read.matches_listed",
+        variable: Some("BILBO_READ_MATCHES_LISTED"),
+        default: Default::Toml("5"),
+        allowed: "a whole number from 1 to 100",
+        doc: "How many entries bilbo read names when a session id matches several, before it says how many more there are.",
+    },
+    parse: |value| {
+        value
+            .integer()
+            .and_then(|listed| usize::try_from(listed).ok())
+            .filter(|listed| (1..=100).contains(listed))
+            .ok_or_else(|| value.refuse())
+    },
+    show: ToString::to_string,
+};
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Request {
     pub reference: Ref,
-    /// List the range's marked passages, not their text.
     pub outline: bool,
     pub budget: Budget,
+    pub outline_width: usize,
+    pub matches_listed: usize,
 }
 
 /// One generation of an entry, read whole: a reader's state runs from its first record.
@@ -91,7 +124,6 @@ pub struct Request {
 pub struct Fetched {
     pub meta: Meta,
     pub generation: Generation,
-    /// The entry's newest generation.
     pub current: Generation,
     pub records: Vec<Vec<u8>>,
 }
@@ -101,16 +133,13 @@ pub struct About {
     pub kind: String,
     pub origin: Option<Origin>,
     pub captured: SystemTime,
-    /// The entry this one belongs to, such as a subagent's session.
     pub parent: Option<Id>,
-    /// The time of the first passage that carries one.
     pub started: Option<SystemTime>,
     pub current: Generation,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Body {
-    /// `about` comes with an outline of the whole generation, asked with no record range.
     Outline {
         about: Option<About>,
         lines: Vec<Line>,
@@ -122,18 +151,14 @@ pub enum Body {
 pub struct Output {
     pub id: Id,
     pub generation: Generation,
-    /// Set when `generation` is not the current one: every locator then carries it.
     pub older: bool,
-    /// Records in the generation.
     pub total: u64,
     pub asked: RecordRange,
     pub body: Body,
-    /// What the next page reads; `None` at the end of what was asked.
     pub more: Option<RecordRange>,
 }
 
 impl Output {
-    /// As a page shows it: with its generation only when that is not the newest.
     pub fn locator(&self, records: RecordRange) -> Locator {
         Locator {
             generation: self.older.then_some(self.generation),
@@ -154,10 +179,10 @@ impl Output {
 #[derive(Debug)]
 pub enum Error {
     NoEntry(Target),
-    /// A session id that names more than one entry.
     Ambiguous {
         session: String,
         entries: Vec<(Id, Origin)>,
+        listed: usize,
     },
     NoGeneration {
         id: Id,
@@ -168,16 +193,12 @@ pub enum Error {
         total: u64,
         asked: RecordRange,
     },
-    /// No reader for the kind the entry was kept with.
     UnreadKind {
         id: Id,
         kind: String,
     },
     Store(StoreError),
 }
-
-/// The entries an ambiguous session id lists before it only counts the rest.
-const LISTED: usize = 5;
 
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -186,14 +207,18 @@ impl fmt::Display for Error {
             Self::NoEntry(Target::Session(session)) => {
                 write!(f, "no entry for the session {session}")
             }
-            Self::Ambiguous { session, entries } => {
+            Self::Ambiguous {
+                session,
+                entries,
+                listed,
+            } => {
                 write!(f, "{session} names {} entries: ", entries.len())?;
-                for (at, (id, origin)) in entries.iter().take(LISTED).enumerate() {
+                for (at, (id, origin)) in entries.iter().take(*listed).enumerate() {
                     let comma = if at == 0 { "" } else { ", " };
                     write!(f, "{comma}{id} ({origin})")?;
                 }
-                if entries.len() > LISTED {
-                    write!(f, " and {} more", entries.len() - LISTED)?;
+                if entries.len() > *listed {
+                    write!(f, " and {} more", entries.len() - listed)?;
                 }
                 f.write_str("; give the id of one")
             }
@@ -233,8 +258,7 @@ impl From<StoreError> for Error {
     }
 }
 
-/// Whether the origin is the file of the session: a `.jsonl` whose name ends in a UUID that
-/// starts with `session` (lowercase). A note named for a UUID is no session.
+/// A note named for a UUID is no session.
 fn names(origin: &Origin, session: &str) -> bool {
     let Some(name) = origin
         .path()
@@ -254,7 +278,7 @@ fn names(origin: &Origin, session: &str) -> bool {
         })
 }
 
-fn resolve(target: &Target, entries: &dyn Entries) -> Result<Id, Error> {
+fn resolve(target: &Target, listed: usize, entries: &dyn Entries) -> Result<Id, Error> {
     let session = match target {
         Target::Entry(id) => return Ok(*id),
         Target::Session(session) => session,
@@ -271,13 +295,14 @@ fn resolve(target: &Target, entries: &dyn Entries) -> Result<Id, Error> {
         _ => Err(Error::Ambiguous {
             session: session.clone(),
             entries: found,
+            listed,
         }),
     }
 }
 
-/// Every store call of a read: the caller lets the store go before it renders.
-pub fn fetch(reference: &Ref, entries: &dyn Entries) -> Result<Fetched, Error> {
-    let id = resolve(&reference.target, entries)?;
+pub fn fetch(request: &Request, entries: &dyn Entries) -> Result<Fetched, Error> {
+    let reference = &request.reference;
+    let id = resolve(&reference.target, request.matches_listed, entries)?;
     let no_entry = || Error::NoEntry(Target::Entry(id));
     let meta = entries.meta(id)?.ok_or_else(no_entry)?;
     let (current, _) = entries.extent(id, None)?.ok_or_else(no_entry)?;
@@ -309,7 +334,6 @@ pub fn fetch(reference: &Ref, entries: &dyn Entries) -> Result<Fetched, Error> {
     })
 }
 
-/// How the caller counts and shows a page.
 pub struct Shown<'s> {
     pub tokens: &'s dyn Tokens,
     /// What the caller prints around the lines of an outline, at its longest, given the output
@@ -317,9 +341,7 @@ pub struct Shown<'s> {
     pub beside: &'s dyn Fn(&Output) -> String,
 }
 
-/// Pure: the passages of the fetched generation, then one page of them or of their outline.
-/// The request need not be the one that was fetched: a range outside the records is refused
-/// here too.
+/// Pure. The request need not be the one that was fetched: a range outside the records is refused here too.
 pub fn render(
     fetched: &Fetched,
     request: &Request,
@@ -375,7 +397,14 @@ pub fn render(
             ..output.clone()
         };
         let budget = budget.saturating_sub(tokens.count(&(shown.beside)(&frame)));
-        let listing = outline::outline(&passages, asked, &locator, budget, tokens);
+        let listing = outline::outline(
+            &passages,
+            asked,
+            &locator,
+            budget,
+            request.outline_width,
+            tokens,
+        );
         (
             Body::Outline {
                 about,
@@ -407,7 +436,8 @@ mod tests {
     use bilbo_store::id::Id;
 
     use super::refs::Target;
-    use super::{BUDGET, Budget, Error, MOST, OutOfRange, names};
+    use super::{BUDGET, Budget, Error, MATCHES_LISTED, MOST, OUTLINE_WIDTH, OutOfRange, names};
+    use bilbo_settings::key::Key;
 
     fn resolved(variable: Option<&str>) -> Result<(usize, From), String> {
         let file = File::default();
@@ -501,6 +531,110 @@ mod tests {
         assert!(Flag::parse(&BUDGET, &source, "--budget", "60000").is_ok());
     }
 
+    fn count(
+        key: &Key<usize>,
+        variable: &str,
+        env: Option<&str>,
+        file: &str,
+    ) -> Result<(usize, From), String> {
+        let file = File::parse(Path::new("/c/config.toml"), file.as_bytes()).expect("toml");
+        let var = |name: &str| (name == variable).then(|| env.map(Into::into)).flatten();
+        key.resolve(&Source {
+            var: &var,
+            file: &file,
+        })
+        .map(|resolved| (resolved.value, resolved.origin))
+        .map_err(|error| error.to_string())
+    }
+
+    #[test]
+    fn the_outline_width_is_20_to_1000_characters_and_defaults_to_100() {
+        let var = "BILBO_READ_OUTLINE_WIDTH";
+        let at = |env, file| count(&OUTLINE_WIDTH, var, env, file);
+        assert_eq!(at(None, ""), Ok((100, From::Default)));
+        assert_eq!(
+            at(None, "read.outline_width = 60"),
+            Ok((
+                60,
+                From::File {
+                    path: "/c/config.toml".into(),
+                    line: 1
+                }
+            ))
+        );
+        assert_eq!(
+            at(Some("1000"), "read.outline_width = 60"),
+            Ok((1000, From::Variable("BILBO_READ_OUTLINE_WIDTH")))
+        );
+        assert_eq!(at(Some("20"), "").map(|(width, _)| width), Ok(20));
+        for text in ["19", "1001", "0", "-100", "wide", "100.5"] {
+            assert_eq!(
+                at(Some(text), ""),
+                Err(format!(
+                    "{var} must be a whole number from 20 to 1000, got \"{text}\""
+                )),
+                "{text}"
+            );
+        }
+        assert_eq!(
+            at(None, "read.outline_width = 19"),
+            Err(
+                "/c/config.toml:1: read.outline_width must be a whole number from 20 to 1000, got 19"
+                    .to_owned()
+            )
+        );
+    }
+
+    #[test]
+    fn the_matches_listed_are_1_to_100_and_default_to_5() {
+        let var = "BILBO_READ_MATCHES_LISTED";
+        let at = |env, file| count(&MATCHES_LISTED, var, env, file);
+        assert_eq!(at(None, ""), Ok((5, From::Default)));
+        assert_eq!(
+            at(None, "read.matches_listed = 12").map(|(listed, _)| listed),
+            Ok(12)
+        );
+        assert_eq!(
+            at(Some("100"), "read.matches_listed = 12"),
+            Ok((100, From::Variable("BILBO_READ_MATCHES_LISTED")))
+        );
+        assert_eq!(at(Some("1"), "").map(|(listed, _)| listed), Ok(1));
+        for text in ["0", "101", "-1", "some", "2.5"] {
+            assert_eq!(
+                at(Some(text), ""),
+                Err(format!(
+                    "{var} must be a whole number from 1 to 100, got \"{text}\""
+                )),
+                "{text}"
+            );
+        }
+        assert_eq!(
+            at(None, "read.matches_listed = 0"),
+            Err(
+                "/c/config.toml:1: read.matches_listed must be a whole number from 1 to 100, got 0"
+                    .to_owned()
+            )
+        );
+    }
+
+    #[test]
+    fn an_ambiguous_session_names_as_many_entries_as_were_asked() {
+        let id = bilbo_store::id::Id::parse("01JC5Q3V7XKM4P8R2T6W9YB0DE").expect("id");
+        let origin = Origin::file(Path::new("/a")).expect("an origin");
+        let error = |listed| Error::Ambiguous {
+            session: "5c3a9e1f".to_owned(),
+            entries: vec![(id, origin.clone()); 4],
+            listed,
+        };
+        assert!(
+            error(2)
+                .to_string()
+                .ends_with("(file:/a) and 2 more; give the id of one")
+        );
+        assert!(!error(4).to_string().contains(" more"));
+        assert_eq!(error(1).to_string().matches("(file:/a)").count(), 1);
+    }
+
     #[test]
     fn an_origin_names_a_session_when_its_file_name_ends_in_that_uuid() {
         const UUID: &str = "5c3a9e1f-0b7d-4c2e-9a41-7f2d8e6b1c03";
@@ -549,6 +683,7 @@ mod tests {
                 Error::Ambiguous {
                     session: "5c3a9e1f".to_owned(),
                     entries: vec![(id, origin("/a/x.jsonl")), (other, origin("/b/x.jsonl"))],
+                    listed: 5,
                 },
                 "5c3a9e1f names 2 entries: 01JC5Q3V7XKM4P8R2T6W9YB0DE (file:/a/x.jsonl), \
                  01JC5Q3V7XKM4P8R2T6W9YB0DF (file:/b/x.jsonl); give the id of one"
@@ -558,6 +693,7 @@ mod tests {
                 Error::Ambiguous {
                     session: "5c3a9e1f".to_owned(),
                     entries: vec![(id, origin("/a")); 7],
+                    listed: 5,
                 },
                 format!(
                     "5c3a9e1f names 7 entries: {} and 2 more; give the id of one",

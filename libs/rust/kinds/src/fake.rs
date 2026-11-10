@@ -68,7 +68,6 @@ impl Kind for Suffix {
     }
 }
 
-/// One token a character.
 pub struct Chars;
 
 impl crate::tokens::Tokens for Chars {
@@ -83,12 +82,10 @@ impl crate::tokens::Tokens for Chars {
     }
 }
 
-/// A passage of one record, as a session's message is.
 pub fn single(record: u64, text: &str) -> crate::reader::Passage {
     section(record, &[text])
 }
 
-/// A passage of one record a line, from `first` on, as a note's section is.
 pub fn section(first: u64, lines: &[&str]) -> crate::reader::Passage {
     let text = lines.concat();
     crate::reader::Passage {

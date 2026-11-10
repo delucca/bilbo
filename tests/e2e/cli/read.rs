@@ -9,7 +9,6 @@ const SESSION: &[u8] = include_bytes!(
 const NOTE: &str = include_str!("../../../libs/rust/kinds/markdown/fixtures/sections.md");
 const NOTE_ID: &str = "01JC5Q3V7XKM4P8R2T6W9YB0DG";
 
-/// A scratch home with one session and one note remembered.
 fn remembered(test: &str) -> Scratch {
     let scratch = Scratch::new(test);
     let session = scratch.dir.join(format!(
@@ -28,7 +27,6 @@ fn remembered(test: &str) -> Scratch {
     scratch
 }
 
-/// The record each block of a page starts at: the lines `#r<n> ...`.
 fn records(page: &str) -> Vec<u64> {
     page.lines()
         .filter_map(|line| line.strip_prefix("#r")?.split_once(' '))
@@ -69,7 +67,6 @@ fn a_remembered_session_reads_as_its_outline_then_a_page_at_a_time_to_its_end() 
         assert_eq!((run.code, run.stderr.as_str()), (0, ""), "{command}");
         seen.extend(records(&run.stdout));
         let last = run.stdout.lines().last().expect("a last line");
-        // A cut is said on the last line, before what follows it.
         let last = match last
             .strip_prefix("cut: ")
             .and_then(|cut| cut.rsplit_once("; "))

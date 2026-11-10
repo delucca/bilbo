@@ -1,6 +1,3 @@
-//! What both dialects share of the eval's render: Python's `strip`, the tool names a call id
-//! leads to, the label line of a piece, and a passage out of its pieces.
-
 use std::collections::HashMap;
 use std::time::{Duration, SystemTime};
 
@@ -19,13 +16,11 @@ pub fn strip(text: &str) -> &str {
     text.trim_matches(is_space)
 }
 
-/// The label line of a piece up to its first colon: `user:`, `tool_use Edit:`.
 pub fn head_of(piece: &str) -> &str {
     let first = piece.split('\n').next().unwrap_or_default();
     first.find(':').map_or(first, |colon| &first[..=colon])
 }
 
-/// A tool call's input, a line per key: a string as it is, any other value as JSON.
 pub fn input(value: &Value) -> String {
     match value {
         Value::Dict(fields) => fields
@@ -40,7 +35,6 @@ pub fn input(value: &Value) -> String {
     }
 }
 
-/// A label line, then the body on the lines after it when there is one.
 pub fn labelled(head: String, body: &str) -> String {
     if body.is_empty() {
         head
@@ -54,9 +48,7 @@ pub fn labelled(head: String, body: &str) -> String {
 enum Key {
     None,
     Text(String),
-    /// A whole number, as its digits.
     Whole(String),
-    /// Any other float, as its bits.
     Float(u64),
     /// `json.loads` gives every `NaN` the same object, which a dict finds by identity.
     Nan,
@@ -78,7 +70,6 @@ fn key(value: Option<&Value>) -> Option<Key> {
     })
 }
 
-/// The name each tool call gave its id, kept across the whole session: a result names its call.
 #[derive(Debug, Default)]
 pub struct Tools(HashMap<Key, String>);
 
@@ -88,13 +79,11 @@ impl Tools {
         key(id).map(|key| self.0.insert(key, name)).is_some()
     }
 
-    /// The name of the call, `unknown` for an id no call gave; `None` when the id cannot be a key.
     pub fn named(&self, id: Option<&Value>) -> Option<&str> {
         key(id).map(|key| self.0.get(&key).map_or("unknown", String::as_str))
     }
 }
 
-/// Whether an outline lists a passage, by its first line.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Outline {
     Listed,
@@ -111,8 +100,6 @@ impl Outline {
     }
 }
 
-/// The passage of one record: its pieces joined by a newline, each with the byte it starts at.
-/// `None` when nothing was rendered.
 pub fn passage(
     record: u64,
     pieces: &[String],
@@ -157,7 +144,6 @@ fn digits(text: &str, from: usize, count: usize) -> Option<u64> {
         .flatten()
 }
 
-/// Days from 1970-01-01 to a date of the proleptic Gregorian calendar.
 fn days(year: u64, month: u64, day: u64) -> Option<u64> {
     let leap = year.is_multiple_of(4) && (!year.is_multiple_of(100) || year.is_multiple_of(400));
     let lengths = [

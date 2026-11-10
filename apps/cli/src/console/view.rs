@@ -11,7 +11,6 @@ pub const AGENT_MARKERS: [&str; 5] = [
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct View {
-    /// The stream is a terminal, whoever reads it: an agent's terminal gets the plain view.
     pub terminal: bool,
     pub human: bool,
     pub paint: bool,

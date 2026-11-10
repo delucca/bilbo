@@ -94,7 +94,6 @@ fn indented(line: &str) -> String {
     }
 }
 
-/// A number as a terminal shows it: `1,234,567`.
 pub fn group(number: u64) -> String {
     let digits = number.to_string();
     let mut grouped = String::with_capacity(digits.len() + digits.len() / 3);

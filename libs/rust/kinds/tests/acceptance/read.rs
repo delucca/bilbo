@@ -94,7 +94,6 @@ struct Kept {
     generations: Vec<Vec<&'static str>>,
 }
 
-/// Entries as a store holds them; every method a read has no use for panics.
 #[derive(Default)]
 struct Shelf {
     kept: Vec<Kept>,
@@ -226,12 +225,24 @@ fn readers() -> Vec<Box<dyn Reader>> {
 }
 
 fn run_with(shelf: &Shelf, reference: &str, outline: bool, budget: usize) -> Result<Output, Error> {
+    run_tuned(shelf, reference, outline, budget, (100, 5))
+}
+
+fn run_tuned(
+    shelf: &Shelf,
+    reference: &str,
+    outline: bool,
+    budget: usize,
+    (outline_width, matches_listed): (usize, usize),
+) -> Result<Output, Error> {
     let request = Request {
         reference: Ref::parse(reference).expect("a ref"),
         outline,
         budget: Budget::try_from(budget).expect("a budget the key accepts"),
+        outline_width,
+        matches_listed,
     };
-    let fetched = read::fetch(&request.reference, shelf)?;
+    let fetched = read::fetch(&request, shelf)?;
     let shown = Shown {
         tokens: &Wide,
         beside: &|_| String::new(),
@@ -507,8 +518,10 @@ fn the_caller_says_what_it_prints_around_an_outline_and_the_lines_get_the_rest()
             reference: Ref::parse(&first()).expect("a ref"),
             outline: true,
             budget: Budget::try_from(800).expect("a budget"),
+            outline_width: 100,
+            matches_listed: 5,
         };
-        let fetched = read::fetch(&request.reference, &shelf).expect("the entry");
+        let fetched = read::fetch(&request, &shelf).expect("the entry");
         let shown = Shown {
             tokens: &Wide,
             beside: &|frame: &Output| {
@@ -570,7 +583,9 @@ fn a_session_id_that_names_no_entry_or_several_is_refused() {
             &["user: copy"],
         );
     match run(&shelf, &SESSION[..8]) {
-        Err(Error::Ambiguous { session, entries }) => {
+        Err(Error::Ambiguous {
+            session, entries, ..
+        }) => {
             assert_eq!(session, &SESSION[..8]);
             let ids: Vec<Id> = entries.iter().map(|(id, _)| *id).collect();
             assert_eq!(
@@ -593,6 +608,55 @@ fn a_session_id_that_names_no_entry_or_several_is_refused() {
         }
     }
     assert_eq!(shelf.reads.get(), 1, "a refused ref reads no record");
+}
+
+#[test]
+fn the_outline_width_cuts_a_line_where_the_request_says() {
+    let shelf = Shelf::default().with(
+        1,
+        "lines",
+        None,
+        &["user: abcdefghijklmnopqrstuvwxyz0123456789"],
+    );
+    let text = |width| {
+        let output = run_tuned(&shelf, &first(), true, 160_000, (width, 5)).expect("an outline");
+        match output.body {
+            Body::Outline { lines, .. } => lines[0].text.clone(),
+            Body::Page(_) => panic!("an outline"),
+        }
+    };
+    assert_eq!(text(20), "user: abcdefghijklm…");
+    assert_eq!(text(23), "user: abcdefghijklmnop…");
+    assert_eq!(text(100), "user: abcdefghijklmnopqrstuvwxyz0123456789");
+}
+
+#[test]
+fn an_ambiguous_session_lists_as_many_entries_as_the_request_says() {
+    let mut shelf = Shelf::default();
+    for number in 1..=4 {
+        shelf = shelf.with(
+            number,
+            "lines",
+            Some(&format!("/h/{number}/{SESSION}.jsonl")),
+            &["user: copy"],
+        );
+    }
+    for (listed, shown, more) in [
+        (1, 1, Some(3)),
+        (2, 2, Some(2)),
+        (4, 4, None),
+        (100, 4, None),
+    ] {
+        let Err(error) = run_tuned(&shelf, &SESSION[..8], false, 160_000, (100, listed)) else {
+            panic!("a session that names four entries");
+        };
+        let text = error.to_string();
+        assert_eq!(text.matches("(file:").count(), shown, "{listed}");
+        match more {
+            Some(more) => assert!(text.contains(&format!(" and {more} more;")), "{text}"),
+            None => assert!(!text.contains(" more"), "{text}"),
+        }
+    }
 }
 
 #[test]

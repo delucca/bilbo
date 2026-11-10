@@ -196,8 +196,7 @@ impl Catalog {
         }
     }
 
-    /// The catalog at `path`, opened read-only, when it already holds every frame of the store:
-    /// a reader that gets it walks no segment. Creates and writes nothing.
+    /// Opened read-only when it already holds every frame of the store, so a reader walks no segment.
     pub fn open_unchanged(
         path: &Path,
         binding: &Binding,

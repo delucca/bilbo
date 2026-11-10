@@ -337,3 +337,48 @@ fn a_writer_that_may_not_wait_long_for_readers_gives_up_and_writes_nothing() {
     let mut store = Store::open(&layout, options, &mut |_| {}).expect("no reader holds the store");
     keep(&mut store, "b.md", b"two\n");
 }
+
+#[test]
+fn a_waiting_reader_tries_the_lock_again_at_the_polling_interval() {
+    let scratch = Scratch::new("poll");
+    let layout = scratch.layout();
+    let mut store = Store::open(&layout, sealing(), &mut |_| {}).expect("open");
+    keep(&mut store, "a.md", b"one\n");
+    store.close().expect("close");
+
+    for (poll, slow) in [
+        (Duration::from_millis(5), false),
+        (Duration::from_millis(600), true),
+    ] {
+        let lock = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(layout.state.join("store.lock"))
+            .expect("a lock file");
+        lock.lock().expect("hold the store");
+        let releasing = thread::spawn(move || {
+            thread::sleep(Duration::from_millis(150));
+            drop(lock);
+        });
+        let started = std::time::Instant::now();
+        let options = Options {
+            wait: WAIT,
+            poll,
+            ..sealing()
+        };
+        let reader = Store::open_read_only(&layout, options, &mut |_| {});
+        let took = started.elapsed();
+        releasing.join().expect("the holder");
+        assert!(reader.is_ok(), "a poll of {poll:?}");
+        if slow {
+            assert!(took >= poll, "a poll of {poll:?} took {took:?}");
+        } else {
+            assert!(
+                took < Duration::from_millis(500),
+                "a poll of {poll:?} took {took:?}"
+            );
+        }
+    }
+}

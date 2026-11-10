@@ -78,9 +78,8 @@ fn keep(
     Ok(refusals(std::slice::from_ref(&output)))
 }
 
-/// A hook cannot tell whether a bare run will come by the transcript (a follow skips hidden
-/// folders, and may fail to choose its kind), so the line names the run that keeps it. A path
-/// that one line cannot hold as it is gets no command: a wrong one would name another file.
+/// A hook cannot tell whether a bare run will come by the transcript (a follow skips hidden folders),
+/// so the line names the run that keeps it. A path one line cannot hold as it is gets no command.
 fn reading(transcript: &Path) -> String {
     const KEPT_NOTHING: &str = "kept nothing: another bilbo is reading the store";
     match transcript.to_str() {
@@ -99,7 +98,6 @@ fn reading(transcript: &Path) -> String {
     }
 }
 
-/// One argument of a POSIX shell: as it is when no character of it means anything to a shell.
 fn quoted(text: &str) -> String {
     let plain = |c: char| c.is_ascii_alphanumeric() || "_@%+=:,./-".contains(c);
     if !text.is_empty() && text.chars().all(plain) {

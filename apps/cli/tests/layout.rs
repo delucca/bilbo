@@ -29,7 +29,6 @@ struct Report {
     violations: Vec<(Rule, String)>,
     edges: BTreeMap<String, BTreeSet<String>>,
     theme_escape: bool,
-    /// The kind crates `lib.rs` names.
     kinds: BTreeSet<String>,
 }
 
@@ -55,7 +54,6 @@ struct Decl {
 #[derive(Default)]
 struct Found {
     paths: Vec<Vec<String>>,
-    /// The paths of every `use` that is not private.
     reexports: Vec<Vec<String>>,
     decls: Vec<Decl>,
     problems: Vec<String>,

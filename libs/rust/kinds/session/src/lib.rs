@@ -508,7 +508,6 @@ mod tests {
         }
     }
 
-    /// xorshift64*, from a fixed seed: the same cases on every run.
     struct Dice(u64);
 
     impl Dice {
@@ -533,7 +532,6 @@ mod tests {
             (0..self.below(most)).map(|_| self.byte()).collect()
         }
 
-        /// A line with a few bytes changed, dropped, added or repeated, or cut short.
         fn spoiled(&mut self, line: &[u8]) -> Vec<u8> {
             let mut line = line.to_vec();
             for _ in 0..=self.below(3) {
@@ -576,8 +574,6 @@ mod tests {
         }
     }
 
-    /// What `Reader` promises of any records: passages in record order, none sharing a record,
-    /// all inside the generation, their offsets rising char boundaries of their text.
     fn sound(passages: &[Passage], records: usize, case: usize) {
         let mut next = 1;
         for passage in passages {

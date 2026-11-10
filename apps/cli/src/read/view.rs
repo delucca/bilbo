@@ -28,8 +28,6 @@ impl Show<'_> {
         }
     }
 
-    /// A terminal gets a record's control characters escaped, whoever reads it; a pipe gets
-    /// its bytes.
     fn body(&self, text: &str) -> String {
         if !self.view.terminal {
             return text.to_owned();
@@ -46,13 +44,12 @@ impl Show<'_> {
     }
 }
 
-/// What a pipe gets: the contract bytes.
 pub fn plain(output: &Output, budget: Option<Budget>) -> String {
     shown(output, budget, &View::PLAIN)
 }
 
-/// What `plain` prints around the lines of an outline at its longest: the metadata of `frame`
-/// and a `more:` line of the two last records asked, which no other trailer is longer than.
+/// The longest `plain` prints around an outline's lines: the metadata of `frame` and a `more:` line
+/// of the two last records asked, which no other trailer is longer than.
 pub fn beside(frame: &Output, budget: Option<Budget>) -> String {
     let asked = frame.asked;
     let widest = (asked.count > 1).then(|| RecordRange {
@@ -66,8 +63,6 @@ pub fn beside(frame: &Output, budget: Option<Budget>) -> String {
     plain(&longest, budget)
 }
 
-/// What the stream of `view` gets: a terminal never a raw control character, a person's also
-/// grouped numbers and paint.
 pub fn shown(output: &Output, budget: Option<Budget>, view: &View) -> String {
     render(output, budget, &Show { view })
 }
@@ -139,16 +134,13 @@ fn block_lines(output: &Output, block: &Block, show: &Show<'_>) -> String {
         show.painted(Style::Name, &locator),
         show.body(&block.text)
     );
-    // A cut always gets its own newline: what stands before the last line is then the record's
-    // text, to the byte, also when the cut falls after a line end.
+    // A cut always gets its own newline: the text before the last line is then the record's, to the byte.
     if block.cut.is_some() || !text.ends_with('\n') {
         text.push('\n');
     }
     text
 }
 
-/// What a page that ends in a cut says first on its last line: how much of the record is left
-/// and the command that prints it whole.
 fn cut_part(output: &Output, block: &Block, show: &Show<'_>) -> Option<String> {
     let cut = block.cut.as_ref()?;
     let command = format!(
@@ -165,8 +157,7 @@ fn cut_part(output: &Output, block: &Block, show: &Show<'_>) -> Option<String> {
     ))
 }
 
-/// The one line of an output that is bilbo's own: a record's text can look like anything above
-/// it, so a cut is said here too, never on a line of its own.
+/// The one line that is bilbo's own: a record's text can look like anything above it.
 fn trailer(output: &Output, outline: bool, budget: Option<Budget>, show: &Show<'_>) -> String {
     let cut = match &output.body {
         Body::Page(blocks) => blocks
@@ -209,13 +200,11 @@ fn last_part(output: &Output, outline: bool, budget: Option<Budget>, show: &Show
     )
 }
 
-/// `2026-11-07 16:39 UTC`; a time before 1970 is 1970.
 fn utc(time: SystemTime) -> String {
     let seconds = time
         .duration_since(SystemTime::UNIX_EPOCH)
         .map_or(0, |since| since.as_secs());
     let (days, rest) = (seconds / 86_400, seconds % 86_400);
-    // Days to a civil date, counted in 400-year eras from 0000-03-01.
     let shifted = days + 719_468;
     let (era, day_of_era) = (shifted / 146_097, shifted % 146_097);
     let year_of_era =

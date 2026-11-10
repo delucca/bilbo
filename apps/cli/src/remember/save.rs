@@ -126,7 +126,8 @@ pub fn save_with(
     hook(Saving::Locking);
     lock.lock()
         .map_err(|error| refusal(error.to_string(), first_lines.clone()))?;
-    let current = settings::load(var, &edit::read_regular)
+    let kind: Vec<_> = settings.kind.iter().map(|(key, _)| *key).collect();
+    let current = settings::load(var, &edit::read_regular, &kind)
         .map_err(|error| refusal(error.to_string(), first_lines.clone()))?;
     if current.follow.value.iter().any(|declared| {
         fs::canonicalize(&declared.path).unwrap_or_else(|_| declared.path.clone()) == follow.path
@@ -148,13 +149,17 @@ pub fn save_with(
         });
     }
     let text = edit::appended(&before, &lines);
-    let loaded = settings::load(var, &|path| {
-        if path == config {
-            Ok(text.clone())
-        } else {
-            edit::read_regular(path)
-        }
-    })
+    let loaded = settings::load(
+        var,
+        &|path| {
+            if path == config {
+                Ok(text.clone())
+            } else {
+                edit::read_regular(path)
+            }
+        },
+        &kind,
+    )
     .map_err(|error| refuse(error.to_string()))?;
     if !loaded.follow.value.contains(follow) {
         return Err(refuse("the file would not declare it".to_owned()));

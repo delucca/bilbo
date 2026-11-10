@@ -10,17 +10,12 @@ pub enum Dialect {
     Codex,
 }
 
-/// What one line says of its file's dialect.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Evidence {
-    /// A line only this dialect writes and its reader renders: it decides.
     Sure(Dialect),
-    /// A line shaped as this dialect's that its reader renders nothing from: this dialect's
-    /// unless a later line is sure of another.
     Maybe(Dialect),
 }
 
-/// The first line that is sure of a dialect decides; without one, the first that may be one's.
 /// Lines are read as the readers read them, so what a reader renders is never refused here.
 pub fn sniff<'r>(records: impl IntoIterator<Item = &'r [u8]>) -> Option<Dialect> {
     let mut maybe = None;
