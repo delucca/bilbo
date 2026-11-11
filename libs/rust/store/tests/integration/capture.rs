@@ -461,3 +461,36 @@ fn a_stamp_is_kept_with_each_capture_and_a_rebuild_forgets_it() {
     let store = open(&layout);
     assert_eq!(head(&store), None);
 }
+
+#[test]
+fn changes_from_a_cursor_ahead_of_the_catalog_give_the_catalogs_newest_sequence_number() {
+    let scratch = Scratch::new("changes_ahead");
+    let layout = scratch.layout();
+    let mut store = open(&layout);
+
+    let (none, empty) = store.changes(&Cursor::start()).expect("changes");
+    assert!(none.is_empty());
+    assert_eq!(empty.seq(), 0);
+    let ahead = Cursor::at(empty.catalog(), 100);
+    let (none, newest) = store.changes(&ahead).expect("changes");
+    assert!(none.is_empty());
+    assert_eq!(newest.seq(), 0, "a catalog with no change is at 0");
+    assert_eq!(newest.catalog(), empty.catalog());
+
+    keep(&mut store, "a.md", b"one\n");
+    keep(&mut store, "b.md", b"two\n");
+    let (all, cursor) = store.changes(&Cursor::start()).expect("changes");
+    assert!(!all.is_empty());
+    let newest_seq = cursor.seq();
+    assert!(newest_seq > 0);
+
+    let (none, same) = store.changes(&cursor).expect("changes");
+    assert!(none.is_empty());
+    assert_eq!(same.seq(), newest_seq, "a current cursor stays");
+
+    let ahead = Cursor::at(cursor.catalog(), newest_seq + 100);
+    let (none, real) = store.changes(&ahead).expect("changes");
+    assert!(none.is_empty(), "nothing follows a cursor ahead");
+    assert_eq!(real.seq(), newest_seq, "the real newest number comes back");
+    assert_eq!(real.catalog(), cursor.catalog());
+}

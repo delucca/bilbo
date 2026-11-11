@@ -1,6 +1,7 @@
 pub mod disk;
 pub mod follows;
 pub mod hook;
+pub mod index;
 pub mod messages;
 pub mod save;
 pub mod view;
@@ -15,13 +16,14 @@ use clap::Command;
 use clap::builder::NonEmptyStringValueParser;
 
 use crate::console::args::usage;
+use crate::console::closing::Closing;
 use crate::console::env::Env;
-use crate::console::message::sanitize;
+use crate::console::indexing::Indexing;
+use crate::console::message::{notice_message, sanitize};
 use crate::console::outcome::{Exit, Failure, Outcome};
 use crate::console::settings::Settings;
 use disk::Disk;
-use follows::Closing;
-use messages::{notice_message, refusals, warning};
+use messages::{refusals, warning};
 
 const SUMMARY: &str = "Keep files as entries; a later run keeps what grew or changed";
 const ABOUT: &str =
@@ -77,7 +79,7 @@ Output:
 
 Exit:
   0  success, and --hook once it runs
-  1  a file was refused, nothing to keep, a missing target or a store failure
+  1  a refused file, nothing to keep, a missing target, a store or index failure
   2  usage or config error, or a config file --follow cannot write
 
 Examples:
@@ -92,9 +94,10 @@ pub fn run(
     env: &mut Env,
     settings: &Settings,
     kinds: &[Box<dyn Kind>],
+    indexing: &Indexing<'_>,
 ) -> Result<Outcome, Failure> {
     let Some(target) = args.target else {
-        return follows::run(env, settings, kinds);
+        return follows::run(env, settings, kinds, indexing);
     };
     let request = Request {
         target,
@@ -118,8 +121,18 @@ pub fn run(
         })
         .map_err(|error| Failure::from(&error))?;
         let output = remember::keep(&plan, &Disk, &mut store).map_err(|error| refused(&error))?;
-        (output, follows::close(store, &settings.follow.value, kinds))
+        let kept = view::Totals::of(std::slice::from_ref(&output)).kept();
+        let closing = follows::finish(
+            store,
+            &settings.follow.value,
+            kinds,
+            indexing,
+            &mut *env.notice,
+            kept,
+        );
+        (output, closing)
     };
+    let mut config = false;
     if args.follow && !closing.failed {
         let follow = Follow {
             path: plan.target.clone(),
@@ -129,14 +142,14 @@ pub fn run(
             Ok(saved) => closing.messages.push(saved.message()),
             Err(refusal) => {
                 closing.messages.push(refusal.message());
-                closing.config = true;
+                config = true;
             }
         }
     }
-    Ok(outcome(output, closing))
+    Ok(outcome(output, closing, config))
 }
 
-fn outcome(output: Output, closing: Closing) -> Outcome {
+fn outcome(output: Output, closing: Closing, config: bool) -> Outcome {
     let mut diagnostics = refusals(std::slice::from_ref(&output));
     if output.claimed == 0 {
         let target = output.target.display();
@@ -147,7 +160,7 @@ fn outcome(output: Output, closing: Closing) -> Outcome {
     }
     diagnostics.extend(closing.messages);
     let refused = output.tally().refused > 0 || closing.refused;
-    let exit = if closing.config {
+    let exit = if config {
         Exit::Config
     } else if output.claimed == 0 || refused || closing.failed {
         Exit::Refused

@@ -7,6 +7,7 @@ bilbo_rust_test(
         "cli.rs",
         "config.rs",
         "read.rs",
+        "reindex.rs",
         "remember.rs",
         "scratch.rs",
         "sessions.rs",
@@ -24,6 +25,7 @@ bilbo_rust_test(
     },
     layer = "e2e",
     lint_config = "//apps/cli:lints",
+    size = "medium",
     version = BILBO_VERSION,
     deps = [
         "@crates//:runfiles",

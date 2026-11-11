@@ -118,6 +118,9 @@ pub enum Rebuild {
     /// Catch up on `open.seg` or make an empty store's catalog; a full rebuild is
     /// `StoreError::Unrebuilt`, as a hook within its time limit needs.
     CatchUpOnly,
+    /// Discard the catalog and rebuild it from every segment. A growth stamp of the old catalog
+    /// is kept when that catalog is this store's and the entry's head comes back the same.
+    Always,
 }
 
 pub struct Options {
@@ -685,7 +688,19 @@ fn load_catalog(
     // The catalog of an empty store is made, not rebuilt.
     let refused =
         mode == Rebuild::CatchUpOnly && (!sealed.is_empty() || open.len() > frame::SEGMENT_HEADER);
-    match Catalog::open_current(&catalog_file(layout), &binding, &sealed, open.len() as u64) {
+    let fresh = Catalog::open_current(&catalog_file(layout), &binding, &sealed, open.len() as u64);
+    if mode == Rebuild::Always {
+        let stamped = match fresh {
+            Fresh::Current(catalog) | Fresh::CatchUp(catalog, _) => {
+                catalog.stamped().unwrap_or_default()
+            }
+            Fresh::Rebuild => Vec::new(),
+        };
+        let mut catalog = rebuild(layout, &binding, &sealed, &open, budget, notice)?;
+        catalog.restamp(&stamped)?;
+        return Ok(catalog);
+    }
+    match fresh {
         Fresh::Current(catalog) => Ok(catalog),
         Fresh::CatchUp(mut catalog, from) => {
             let caught_up = (|| {
@@ -1054,6 +1069,11 @@ impl Store {
         step(&mut hook, Step::Released)?;
         drop(guard);
         Ok(Closed::Released)
+    }
+
+    /// The cache folder as this store validated it: what is rebuilt from the store lives there.
+    pub fn cache(&self) -> &Path {
+        &self.layout.cache
     }
 
     /// No seal and no rerun request taken: it stays for the next writer that closes.

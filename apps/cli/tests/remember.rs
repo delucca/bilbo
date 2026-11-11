@@ -159,7 +159,7 @@ fn remembering_a_folder_keeps_each_md_file_once() {
         first.totals()
     );
     assert!(!first.totals().ends_with(" 0"), "{}", first.totals());
-    assert!(first.stderr.is_empty(), "{:?}", first.stderr);
+    assert_eq!(first.stderr, Vec::<String>::new());
     assert_eq!(sandbox.entries().len(), 3);
 
     let second = sandbox.remember_notes();
@@ -403,7 +403,10 @@ fn a_deleted_cache_is_rebuilt_and_the_next_run_keeps_nothing() {
     assert_eq!(run.code, 0, "{:?}", run.stderr);
     assert_eq!(
         run.notices,
-        ["bilbo: rebuilt the catalog from the store: 3 entries in 0 segments"]
+        [
+            "bilbo: rebuilt the catalog from the store: 3 entries in 0 segments",
+            "bilbo: building the search index: 3 entries"
+        ]
     );
     assert_eq!(run.counts(), counts(0, 0, 0, 3, 0));
     assert_eq!(run.totals(), "records 0, raw bytes 0, stored bytes 0");

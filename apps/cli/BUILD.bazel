@@ -24,6 +24,9 @@ rust_library(
         "//libs/rust/kinds",
         "//libs/rust/kinds/markdown",
         "//libs/rust/kinds/session",
+        "//libs/rust/search",
+        "//libs/rust/search/qwen",
+        "//libs/rust/search/tantivy",
         "//libs/rust/settings",
         "//libs/rust/store",
     ] + all_crate_deps(normal = True),
@@ -87,6 +90,7 @@ bilbo_rust_test(
     deps = [
         ":bilbo_cli",
         "//libs/rust/kinds",
+        "//libs/rust/search",
         "//libs/rust/store",
     ],
 )
@@ -141,6 +145,26 @@ bilbo_rust_test(
         "//libs/rust/kinds",
         "//libs/rust/store",
     ],
+)
+
+bilbo_rust_test(
+    name = "reindex",
+    srcs = ["tests/reindex.rs"],
+    compile_data = [
+        ":hook_payloads",
+        "//libs/rust/kinds/markdown:fixtures",
+        "//libs/rust/kinds/session:fixtures",
+    ],
+    layer = "integration",
+    lint_config = ":lints",
+    deps = [
+        ":bilbo_cli",
+        "//libs/rust/kinds",
+        "//libs/rust/search",
+        "//libs/rust/search/qwen",
+        "//libs/rust/search/tantivy",
+        "//libs/rust/store",
+    ] + all_crate_deps(normal = True),
 )
 
 bilbo_rust_test(

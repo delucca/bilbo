@@ -20,7 +20,7 @@ Output:
 
 Exit:
   0  success, and --hook once it runs
-  1  a file was refused, nothing to keep, a missing target or a store failure
+  1  a refused file, nothing to keep, a missing target, a store or index failure
   2  usage or config error, or a config file --follow cannot write
 
 Examples:

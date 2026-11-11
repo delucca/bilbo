@@ -108,7 +108,7 @@ mod tests {
                 assert_eq!(
                     reason,
                     "unknown key 'store.sealat'; the keys are paths.root, paths.state, \
-                     paths.cache, store.seal_at, store.seal_after, store.compression, store.tear_budget, store.wait, store.hook_wait, store.poll, follow, read.budget, read.outline_width, read.matches_listed, markdown.heading_width"
+                     paths.cache, store.seal_at, store.seal_after, store.compression, store.tear_budget, store.wait, store.hook_wait, store.poll, follow, read.budget, read.outline_width, read.matches_listed, search.chunk_tokens, search.chunk_overlap, markdown.heading_width"
                 );
                 assert_eq!(page, "bilbo config --help");
             }

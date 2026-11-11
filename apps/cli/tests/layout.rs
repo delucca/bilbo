@@ -6,12 +6,18 @@ use std::sync::OnceLock;
 use proc_macro2::{Delimiter, TokenStream, TokenTree};
 use syn::visit::{self, Visit};
 
-const COMPONENTS: [&str; 4] = ["config", "help", "read", "remember"];
+const COMPONENTS: [&str; 5] = ["config", "help", "read", "reindex", "remember"];
 const MODULE: &str = "console";
 const THEME: [&str; 2] = ["console", "theme"];
 const ROOTS: [&str; 2] = ["crate", "bilbo_cli"];
-/// bilbo's own crates that any file may name. Every other `bilbo_` crate is a kind's.
-const SHARED: [&str; 3] = ["bilbo_kinds", "bilbo_settings", "bilbo_store"];
+/// bilbo's own crates that any file may name. Every other `bilbo_` crate is a kind's or an
+/// adapter's: `lib.rs` alone names it.
+const SHARED: [&str; 4] = [
+    "bilbo_kinds",
+    "bilbo_search",
+    "bilbo_settings",
+    "bilbo_store",
+];
 const OWN: &str = "bilbo_";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -721,12 +727,12 @@ fn top_level_entries_form_no_cycle() {
 }
 
 #[test]
-fn a_kind_crate_is_named_only_by_lib_rs() {
+fn a_kind_or_adapter_crate_is_named_only_by_lib_rs() {
     let report = real();
     assert_clean(report, Rule::KindNamedOutside);
     assert!(
-        report.kinds.len() >= 2,
-        "the scan no longer sees the kind crates lib.rs names: {:?}",
+        report.kinds.len() >= 4,
+        "the scan no longer sees the kind and adapter crates lib.rs names: {:?}",
         report.kinds
     );
 }

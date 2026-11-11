@@ -7,6 +7,7 @@ mod guards;
 mod lock;
 mod lookup;
 mod read_only;
+mod rebuild;
 mod recovery;
 mod scratch;
 mod seal;

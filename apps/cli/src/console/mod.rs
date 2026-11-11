@@ -1,5 +1,7 @@
 pub mod args;
+pub mod closing;
 pub mod env;
+pub mod indexing;
 pub mod message;
 pub mod outcome;
 pub mod settings;

@@ -15,6 +15,9 @@ use crate::dialect::Dialect;
 
 const NAME: &str = "session";
 
+/// How this kind renders passages; changes with any change to that.
+pub const RENDER: &str = "1";
+
 /// Claude Code's and Codex's transcripts, and Cursor's Claude-shaped ones: one record per line.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Session;
@@ -30,6 +33,10 @@ impl Reader for Session {
             Some(Dialect::Codex) => codex::read::passages(records),
             None => Vec::new(),
         }
+    }
+
+    fn appends_only(&self) -> bool {
+        true
     }
 }
 

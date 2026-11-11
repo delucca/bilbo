@@ -1,0 +1,15 @@
+[package]
+name = "bilbo-tantivy"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+description = "The tantivy index behind the Index port."
+
+[dependencies]
+bilbo-search.workspace = true
+bilbo-store.workspace = true
+tantivy.workspace = true
+
+[lints]
+workspace = true

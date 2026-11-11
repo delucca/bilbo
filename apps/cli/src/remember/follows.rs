@@ -1,19 +1,32 @@
 use bilbo_kinds::follows::{self, Follow, Planned};
 use bilbo_kinds::kind::Kind;
 use bilbo_kinds::remember::{self, Output};
+use bilbo_search::index::Index;
 use bilbo_store::entries::{Entries, StoreError};
 use bilbo_store::segments::{Closed, Held, Options, Store};
 
 use super::disk::Disk;
-use super::messages::{info, notice_message, refusals, warning};
+use super::index::update;
+use super::messages::{info, refusals, warning};
 use super::view;
+use crate::console::closing::Closing;
 use crate::console::env::Env;
-use crate::console::message::{Message, sanitize};
+use crate::console::indexing::Indexing;
+use crate::console::message::{Message, notice_message, sanitize};
 use crate::console::outcome::{Exit, Failure, Outcome};
 use crate::console::settings::Settings;
 
 /// Said instead of the store's Busy text, which says less.
-const BUSY: &str = "another bilbo is writing the store; it runs the follows again before it stops";
+const BUSY: &str = "another bilbo is writing the store; requested another pass over the follows";
+
+/// What an invocation has done to the index so far.
+#[derive(Default)]
+pub struct Progress {
+    /// Entries this invocation kept: a build of no more says nothing.
+    pub kept: u64,
+    /// An update failed for the whole index: none is tried again.
+    pub fatal: bool,
+}
 
 pub struct Pass<'k> {
     planned: Vec<Planned<'k>>,
@@ -45,6 +58,7 @@ pub fn run(
     env: &mut Env,
     settings: &Settings,
     kinds: &[Box<dyn Kind>],
+    indexing: &Indexing<'_>,
 ) -> Result<Outcome, Failure> {
     let pass = Pass::plan(&settings.follow.value, kinds);
     let mut diagnostics = pass.messages.clone();
@@ -74,7 +88,15 @@ pub fn run(
             ));
         }
     };
-    let closing = close(store, &settings.follow.value, kinds);
+    let kept = view::Totals::of(&outputs).kept();
+    let closing = finish(
+        store,
+        &settings.follow.value,
+        kinds,
+        indexing,
+        &mut *env.notice,
+        kept,
+    );
     diagnostics.extend(refusals(&outputs));
     diagnostics.extend(closing.messages);
     Ok(outcome(
@@ -96,18 +118,49 @@ fn stopped(mut diagnostics: Vec<Message>, failure: &Failure) -> Outcome {
         .with_exit(exit)
 }
 
-#[derive(Default)]
-pub struct Closing {
-    pub messages: Vec<Message>,
-    /// The store failed: the run exits 1, and `--follow` does not save.
-    pub failed: bool,
-    /// A rerun refused a file or could not run a follow: the run exits 1, and `--follow` saves.
-    pub refused: bool,
-    /// The config file refused the follow: the run exits 2.
-    pub config: bool,
+/// Brings the index to what was just kept, then closes the store.
+pub fn finish(
+    store: Store,
+    follows: &[Follow],
+    kinds: &[Box<dyn Kind>],
+    indexing: &Indexing<'_>,
+    notice: &mut dyn FnMut(&Message),
+    kept: u64,
+) -> Closing {
+    let mut index = (indexing.index)(store.cache());
+    let updated = update(&store, index.as_mut(), true, kept, indexing, notice);
+    let progress = Progress {
+        kept,
+        fatal: updated.fatal,
+    };
+    let mut closing = close(
+        store,
+        index.as_mut(),
+        follows,
+        kinds,
+        indexing,
+        notice,
+        progress,
+    );
+    let mut messages = updated.messages;
+    messages.append(&mut closing.messages);
+    closing.messages = messages;
+    closing.refused |= updated.refused;
+    closing
 }
 
-pub fn close(mut store: Store, follows: &[Follow], kinds: &[Box<dyn Kind>]) -> Closing {
+/// Serves the requests of other bilbos until none is left, bringing the index up to what each
+/// pass kept. A pass never retries an entry the invocation tried already, and after an update that
+/// failed for the whole index it tries none.
+pub fn close(
+    mut store: Store,
+    index: &mut dyn Index,
+    follows: &[Follow],
+    kinds: &[Box<dyn Kind>],
+    indexing: &Indexing<'_>,
+    notice: &mut dyn FnMut(&Message),
+    mut progress: Progress,
+) -> Closing {
     let mut closing = Closing::default();
     loop {
         match store.close() {
@@ -126,6 +179,14 @@ pub fn close(mut store: Store, follows: &[Follow], kinds: &[Box<dyn Kind>]) -> C
                             "ran the follows again for another bilbo: {}",
                             view::counts(&totals)
                         )));
+                        progress.kept += totals.kept();
+                        if !progress.fatal {
+                            let mut updated =
+                                update(&store, index, false, progress.kept, indexing, notice);
+                            closing.messages.append(&mut updated.messages);
+                            closing.refused |= updated.refused;
+                            progress.fatal = updated.fatal;
+                        }
                     }
                     Err(error) => {
                         closing

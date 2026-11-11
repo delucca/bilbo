@@ -148,7 +148,7 @@ fn a_usage_error_on_a_terminal_is_a_marked_message() {
     );
     assert_eq!(
         stderr(&["frob"], &unpainted()),
-        "■  unknown verb 'frob'; the verbs are remember, read, config\n   see bilbo --help\n"
+        "■  unknown verb 'frob'; the verbs are remember, read, reindex, config\n   see bilbo --help\n"
     );
 }
 
@@ -449,4 +449,71 @@ fn a_note_as_read_prints_it() {
     let (plain, human) = note("#r8-27", 300);
     assert_eq!(plain, include_str!("snapshots/read-note-page.txt"));
     assert_eq!(human, include_str!("snapshots/read-note-page.human.ansi"));
+}
+
+#[test]
+fn the_reindex_page_on_a_terminal() {
+    assert_eq!(
+        stdout(&["reindex", "--help"], &View::HUMAN),
+        include_str!("snapshots/reindex-help.human.ansi")
+    );
+    assert_eq!(
+        stdout(&["reindex", "--help"], &unpainted()),
+        include_str!("snapshots/reindex-help.txt")
+    );
+}
+
+#[test]
+fn the_reindex_page_is_the_same_from_every_help_form() {
+    let page = include_str!("snapshots/reindex-help.txt");
+    for form in [
+        &["reindex", "--help"][..],
+        &["reindex", "-h"],
+        &["help", "reindex"],
+        &["help", "reindex", "--help"],
+    ] {
+        assert_eq!(stdout(form, &View::PLAIN), page, "{form:?}");
+    }
+}
+
+fn reindexed() -> bilbo_search::work::Output {
+    bilbo_search::work::Output {
+        entries: 5335,
+        chunks: 1_042_276,
+        unread: [("pdf".to_owned(), 2), ("audio".to_owned(), 1)].into(),
+        failed: vec![(
+            Id::from_bytes([7; 16]),
+            "/s/a.seg is damaged at byte 12: checksum mismatch".to_owned(),
+        )],
+        index_bytes: 198_424_967,
+    }
+}
+
+#[test]
+fn the_reindex_output_in_the_plain_view() {
+    assert_eq!(
+        bilbo_cli::reindex::view::plain(&reindexed(), 811_190),
+        include_str!("snapshots/reindex-output.txt")
+    );
+}
+
+#[test]
+fn the_reindex_output_on_a_terminal() {
+    assert_eq!(
+        bilbo_cli::reindex::view::human(&reindexed(), 811_190, &View::HUMAN),
+        include_str!("snapshots/reindex-output.human.ansi")
+    );
+}
+
+#[test]
+fn the_reindex_lines_for_what_was_left_out() {
+    let mut lines: Vec<String> = bilbo_cli::reindex::view::left_out(&reindexed())
+        .iter()
+        .flat_map(bilbo_cli::console::message::Message::plain_lines)
+        .collect();
+    lines.push(String::new());
+    assert_eq!(
+        lines.join("\n"),
+        include_str!("snapshots/reindex-left-out.txt")
+    );
 }

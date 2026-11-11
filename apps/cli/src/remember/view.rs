@@ -30,6 +30,10 @@ impl Totals {
         }
         totals
     }
+
+    pub fn kept(&self) -> u64 {
+        self.tally.new + self.tally.appended + self.tally.new_generation
+    }
 }
 
 pub fn plain(output: &Output) -> String {
@@ -60,7 +64,7 @@ pub fn plain_totals(totals: &Totals) -> String {
 
 pub fn human_totals(totals: &Totals, view: &View) -> String {
     let tally = &totals.tally;
-    let kept = tally.new + tally.appended + tally.new_generation;
+    let kept = totals.kept();
     let mark = if totals.claimed == 0 || tally.refused > 0 {
         Mark::Warning
     } else if kept > 0 {

@@ -6,6 +6,7 @@ the pages they cite, and recalls them when a later session asks.
 [1mVerbs:[22m
   [1mremember[22m  Keep files as entries; a later run keeps what grew or changed
   [1mread[22m      Print an entry: its outline, or its records a page at a time
+  [1mreindex[22m   Rebuild the catalog and the search index from the store
   [1mconfig[22m    Show each setting, its value and where it came from
 
 [2mRun '[22m[36mbilbo [39m[2m<verb>[22m[36m --help[39m[2m' for its options, output and exit codes.[22m

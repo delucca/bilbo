@@ -17,6 +17,8 @@ rust_library(
         "//apps/cli:__pkg__",
         "//libs/rust/kinds/markdown:__pkg__",
         "//libs/rust/kinds/session:__pkg__",
+        "//libs/rust/search:__pkg__",
+        "//libs/rust/search/qwen:__pkg__",
     ],
     deps = [
         "//libs/rust/settings",

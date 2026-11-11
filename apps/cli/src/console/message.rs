@@ -1,3 +1,5 @@
+use bilbo_store::segments::Notice;
+
 use crate::console::theme::{Mark, Style, paint};
 use crate::console::view::View;
 
@@ -118,13 +120,57 @@ pub fn sanitize(line: &str) -> String {
         .collect()
 }
 
+fn plural(count: u64, one: &str, many: &str) -> String {
+    format!("{count} {}", if count == 1 { one } else { many })
+}
+
+pub fn notice_message(notice: &Notice) -> Message {
+    match notice {
+        Notice::Waiting => plain(
+            Mark::Info,
+            "waiting for another bilbo to finish writing the store",
+        ),
+        Notice::CutTornTail {
+            path,
+            offset,
+            bytes,
+        } => plain(
+            Mark::Warning,
+            &format!(
+                "cut {bytes} bytes of a torn frame at byte {offset} of {}",
+                path.display()
+            ),
+        ),
+        Notice::RebuiltCatalog { entries, segments } => plain(
+            Mark::Info,
+            &format!(
+                "rebuilt the catalog from the store: {} in {}",
+                plural(*entries, "entry", "entries"),
+                plural(*segments, "segment", "segments")
+            ),
+        ),
+    }
+}
+
+fn plain(mark: Mark, text: &str) -> Message {
+    Message {
+        mark,
+        text: sanitize(text),
+        details: Vec::new(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use crate::console::view::View;
 
     use crate::console::theme::Mark;
 
-    use super::{Detail, Message, group};
+    use std::path::PathBuf;
+
+    use bilbo_store::segments::Notice;
+
+    use super::{Detail, Message, group, notice_message};
 
     #[test]
     fn numbers_on_a_terminal_are_grouped_by_thousands() {
@@ -298,6 +344,47 @@ mod tests {
             assert!(shown.contains("go\\u{7f}d"), "{shown:?}");
             assert!(shown.contains("go\\u{9b}d"), "{shown:?}");
             assert!(shown.contains("bilbo \\u{1b}[2J"), "{shown:?}");
+        }
+    }
+
+    #[test]
+    fn every_store_notice_is_a_message() {
+        let cases = [
+            (
+                Notice::Waiting,
+                Mark::Info,
+                "waiting for another bilbo to finish writing the store",
+            ),
+            (
+                Notice::CutTornTail {
+                    path: PathBuf::from("/s/open.seg"),
+                    offset: 12,
+                    bytes: 20,
+                },
+                Mark::Warning,
+                "cut 20 bytes of a torn frame at byte 12 of /s/open.seg",
+            ),
+            (
+                Notice::RebuiltCatalog {
+                    entries: 3,
+                    segments: 1,
+                },
+                Mark::Info,
+                "rebuilt the catalog from the store: 3 entries in 1 segment",
+            ),
+            (
+                Notice::RebuiltCatalog {
+                    entries: 1,
+                    segments: 2,
+                },
+                Mark::Info,
+                "rebuilt the catalog from the store: 1 entry in 2 segments",
+            ),
+        ];
+        for (notice, mark, text) in cases {
+            let message = notice_message(&notice);
+            assert_eq!(message.mark, mark);
+            assert_eq!(message.text, text);
         }
     }
 }

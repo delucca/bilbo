@@ -392,6 +392,9 @@ mod tests {
     fn the_budget_a_cut_suggests_is_never_more_than_the_key_accepts() {
         struct Heavy;
         impl crate::tokens::Tokens for Heavy {
+            fn ends(&self, text: &str) -> Vec<usize> {
+                vec![text.len()]
+            }
             fn count(&self, text: &str) -> usize {
                 text.len().saturating_mul(usize::MAX / 8)
             }

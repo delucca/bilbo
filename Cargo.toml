@@ -5,6 +5,9 @@ members = [
     "libs/rust/kinds",
     "libs/rust/kinds/markdown",
     "libs/rust/kinds/session",
+    "libs/rust/search",
+    "libs/rust/search/qwen",
+    "libs/rust/search/tantivy",
     "libs/rust/settings",
     "libs/rust/store",
 ]
@@ -18,10 +21,14 @@ publish = false
 [workspace.dependencies]
 bilbo-kinds = { path = "libs/rust/kinds" }
 bilbo-markdown = { path = "libs/rust/kinds/markdown" }
+bilbo-qwen = { path = "libs/rust/search/qwen" }
+bilbo-search = { path = "libs/rust/search" }
 bilbo-session = { path = "libs/rust/kinds/session" }
 bilbo-settings = { path = "libs/rust/settings" }
 bilbo-store = { path = "libs/rust/store" }
+bilbo-tantivy = { path = "libs/rust/search/tantivy" }
 clap = { version = "4.6.7", default-features = false, features = ["std", "derive", "help", "usage", "error-context"] }
+frostem = { version = "2.20261016.2", default-features = false, features = ["english"] }
 proc-macro2 = { version = "1.0.107", default-features = false }
 runfiles = "0.3.0"
 rusqlite = { version = "0.41.1", default-features = false, features = ["bundled"] }
@@ -29,6 +36,8 @@ rustix = { version = "1.1.5", default-features = false, features = ["std", "even
 serde = { version = "1.0.229", default-features = false, features = ["std"] }
 serde_json = { version = "1.0.154", default-features = false, features = ["std"] }
 syn = { version = "3.0.9", default-features = false, features = ["full", "parsing", "visit"] }
+tantivy = { version = "0.27.0", default-features = false, features = ["mmap"] }
+tokenizers = { version = "0.23.2", default-features = false, features = ["fancy-regex"] }
 toml = { version = "1.1.8", default-features = false, features = ["std", "parse"] }
 xxhash-rust = { version = "0.8.19", features = ["xxh3"] }
 zstd = { version = "0.14.3", default-features = false }

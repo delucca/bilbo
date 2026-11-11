@@ -91,6 +91,56 @@ fn compare(name: &str, found: &[Message], wanted: &[Message]) -> usize {
     differing
 }
 
+const FIXTURES: &[(&str, &[u8])] = &[
+    (
+        "claude",
+        include_bytes!("../../fixtures/5c3a9e1f-0b7d-4c2e-9a41-7f2d8e6b1c03.jsonl"),
+    ),
+    (
+        "claude, long",
+        include_bytes!("../../fixtures/8f2b6d4e-1a3c-4e5f-9b7a-2c4d6e8f0a1b.jsonl"),
+    ),
+    (
+        "subagent",
+        include_bytes!("../../fixtures/agent-ad63c2b3c9e7a4b3d.jsonl"),
+    ),
+    (
+        "cursor",
+        include_bytes!("../../fixtures/cursor-session.jsonl"),
+    ),
+    (
+        "codex",
+        include_bytes!(
+            "../../fixtures/rollout-2026-11-06T09-10-00-019a4f2e-7c1d-7b3a-9e55-2d8c41f0a6b7.jsonl"
+        ),
+    ),
+    (
+        "codex, long",
+        include_bytes!(
+            "../../fixtures/rollout-2026-11-07T08-00-00-019a5b3c-2d4e-7f60-8a1b-3c5d7e9f0a2b.jsonl"
+        ),
+    ),
+];
+
+#[test]
+fn appending_records_changes_no_existing_passage() {
+    assert!(Session.appends_only());
+    let mut cuts = 0;
+    for (name, bytes) in FIXTURES.iter().chain(&[("edges", EDGES)]) {
+        let records: Vec<&[u8]> = bytes.split_inclusive(|byte| *byte == b'\n').collect();
+        let whole = Session.passages(&records);
+        for cut in 0..=records.len() {
+            let part = Session.passages(&records[..cut]);
+            assert!(
+                part.len() <= whole.len() && whole[..part.len()] == part[..],
+                "{name}: the passages of the first {cut} records are not the first passages of the whole"
+            );
+            cuts += 1;
+        }
+    }
+    assert!(cuts > 100, "{cuts} cuts");
+}
+
 #[test]
 fn every_branch_the_corpus_does_not_reach_reads_as_build_py_printed_it() {
     let expected = expected(EXPECTED);

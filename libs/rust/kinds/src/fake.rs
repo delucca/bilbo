@@ -71,6 +71,12 @@ impl Kind for Suffix {
 pub struct Chars;
 
 impl crate::tokens::Tokens for Chars {
+    fn ends(&self, text: &str) -> Vec<usize> {
+        text.char_indices()
+            .map(|(at, c)| at + c.len_utf8())
+            .collect()
+    }
+
     fn count(&self, text: &str) -> usize {
         text.chars().count()
     }

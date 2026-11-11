@@ -4,16 +4,20 @@ pub mod help;
 #[cfg(test)]
 mod probe;
 pub mod read;
+pub mod reindex;
 pub mod remember;
 
 use std::ffi::OsString;
 
 use bilbo_kinds::kind::Kind;
 use bilbo_kinds::reader::Reader;
+use bilbo_search::index::Index;
+use bilbo_search::tokenizer::Tokenizer;
 use clap::{Command, CommandFactory, Parser, Subcommand};
 
 use crate::console::args::{Parsed, parse, typed, usage, verbs, with_verbs};
 use crate::console::env::Env;
+use crate::console::indexing::Indexing;
 use crate::console::outcome::{Failure, Outcome};
 use crate::console::settings::{KindKey, Settings};
 use crate::help::overview;
@@ -38,6 +42,7 @@ pub struct Cli {
 pub enum Verb {
     Remember(remember::Args),
     Read(read::Args),
+    Reindex(reindex::Args),
     Config(config::Args),
 }
 
@@ -67,6 +72,69 @@ pub fn readers(settings: &Settings) -> Result<Vec<Box<dyn Reader>>, Failure> {
     ])
 }
 
+/// One item for each reader, in the order of `readers()`: what the index's manifest records of how passages render.
+pub fn rendering(settings: &Settings) -> Result<String, Failure> {
+    let width = settings
+        .kind_value(&bilbo_markdown::HEADING_WIDTH)
+        .ok_or_else(|| {
+            Failure::Config(format!(
+                "{} was not registered with the settings",
+                bilbo_markdown::HEADING_WIDTH.about.name
+            ))
+        })?;
+    let last = |name: &'static str| name.rsplit('.').next().unwrap_or(name);
+    Ok([
+        format!(
+            "{}/{}/{}={width}",
+            bilbo_markdown::Markdown::new(width).kind(),
+            bilbo_markdown::RENDER,
+            last(bilbo_markdown::HEADING_WIDTH.about.name)
+        ),
+        format!(
+            "{}/{}",
+            bilbo_session::Session.kind(),
+            bilbo_session::RENDER
+        ),
+    ]
+    .join(" "))
+}
+
+/// Loading it costs a tenth of a second: a verb that does not chunk never calls this.
+pub fn tokenizer() -> Result<Tokenizer, Failure> {
+    let qwen = bilbo_qwen::Qwen::load()
+        .map_err(|error| Failure::Refused(format!("cannot load the tokenizer: {error}")))?;
+    Ok(Tokenizer {
+        tokens: Box::new(qwen),
+        id: bilbo_qwen::ID,
+    })
+}
+
+/// The index of a store's cache folder: nothing is opened or made before its first use.
+pub fn index(cache: &std::path::Path) -> Box<dyn Index> {
+    Box::new(bilbo_tantivy::Tantivy::at(bilbo_tantivy::folder(cache)))
+}
+
+/// What `remember` and `reindex` share to keep the index current.
+pub fn indexing<'a>(
+    settings: &Settings,
+    readers: &'a [Box<dyn Reader>],
+    rendering: &str,
+    tokenizer: &'a dyn Fn() -> Result<Tokenizer, Failure>,
+    index: &'a dyn Fn(&std::path::Path) -> Box<dyn Index>,
+) -> Indexing<'a> {
+    Indexing {
+        readers,
+        request: bilbo_search::work::Request {
+            chunk: settings.search.chunk(),
+            render: rendering.to_owned(),
+            workers: std::thread::available_parallelism().map_or(1, usize::from),
+        },
+        tokenizer_id: bilbo_qwen::ID,
+        tokenizer,
+        index,
+    }
+}
+
 pub fn bilbo() -> Command {
     let root = Cli::command();
     verbs(&root).into_iter().fold(root, |root, name| {
@@ -89,11 +157,24 @@ pub fn run(
     run_command(&bilbo(), args, env, settings)
 }
 
+/// What a test can change of the indexing a verb builds: the tokenizer's loader, the workers.
+pub type Tune = dyn for<'a> Fn(Indexing<'a>) -> Indexing<'a>;
+
 pub fn run_command(
     root: &Command,
     args: &[OsString],
     env: &mut Env,
     settings: Result<Settings, Failure>,
+) -> Result<Outcome, Failure> {
+    run_tuned(root, args, env, settings, &|indexing| indexing)
+}
+
+pub fn run_tuned(
+    root: &Command,
+    args: &[OsString],
+    env: &mut Env,
+    settings: Result<Settings, Failure>,
+    tune: &Tune,
 ) -> Result<Outcome, Failure> {
     match parse(root, args)? {
         Parsed::Help(topic) => help::run(root, &topic),
@@ -109,11 +190,39 @@ pub fn run_command(
                 Verb::Remember(args) if args.hook => {
                     Ok(remember::hook::run(env, settings, &kinds()))
                 }
-                Verb::Remember(args) => remember::run(root, args, env, &settings?, &kinds()),
+                Verb::Remember(args) => {
+                    let settings = settings?;
+                    let readers = readers(&settings)?;
+                    let rendering = rendering(&settings)?;
+                    let indexing = tune(indexing(
+                        &settings, &readers, &rendering, &tokenizer, &index,
+                    ));
+                    remember::run(root, args, env, &settings, &kinds(), &indexing)
+                }
                 Verb::Read(args) => {
                     let settings = settings?;
                     let readers = readers(&settings)?;
                     read::run(root, &args, env, &settings, &readers)
+                }
+                Verb::Reindex(args) => {
+                    let settings = settings?;
+                    let readers = readers(&settings)?;
+                    let rendering = rendering(&settings)?;
+                    let kinds = kinds();
+                    let indexing = tune(indexing(
+                        &settings, &readers, &rendering, &tokenizer, &index,
+                    ));
+                    reindex::run(&args, env, &settings, &indexing, &|store, index, notice| {
+                        remember::follows::close(
+                            store,
+                            index,
+                            &settings.follow.value,
+                            &kinds,
+                            &indexing,
+                            notice,
+                            remember::follows::Progress::default(),
+                        )
+                    })
                 }
                 Verb::Config(args) => config::run(root, args, &settings?),
             }
@@ -125,7 +234,7 @@ pub fn run_command(
 mod tests {
     use std::ffi::OsString;
 
-    use super::{bilbo, kinds, readers, run, run_command};
+    use super::{bilbo, kinds, readers, rendering, run, run_command};
     use crate::console::env::Env;
     use crate::console::outcome::Failure;
     use crate::console::settings::Settings;
@@ -203,6 +312,45 @@ mod tests {
             read, names,
             "a kind that is kept and cannot be read, or the reverse"
         );
+        let rendered = rendering(&defaults()).expect("the rendering");
+        let named: Vec<&str> = rendered
+            .split(' ')
+            .map(|item| item.split('/').next().unwrap_or_default())
+            .collect();
+        assert_eq!(named, names, "{rendered:?}");
+    }
+
+    #[test]
+    fn the_rendering_names_each_reader_its_version_and_its_settings() {
+        assert_eq!(
+            rendering(&defaults()).expect("the rendering"),
+            "markdown/1/heading_width=100 session/1"
+        );
+        let wide = crate::console::settings::load(
+            &|name| match name {
+                "HOME" => Some(OsString::from("/h")),
+                "BILBO_MARKDOWN_HEADING_WIDTH" => Some(OsString::from("40")),
+                _ => None,
+            },
+            &|_| Err(std::io::ErrorKind::NotFound.into()),
+            &super::kind_keys(),
+        )
+        .expect("settings");
+        assert_eq!(
+            rendering(&wide).expect("the rendering"),
+            "markdown/1/heading_width=40 session/1"
+        );
+    }
+
+    #[test]
+    fn a_rendering_whose_key_was_not_registered_is_a_config_error() {
+        let settings = crate::console::settings::load(
+            &|name| (name == "HOME").then(|| OsString::from("/h")),
+            &|_| Err(std::io::ErrorKind::NotFound.into()),
+            &[],
+        )
+        .expect("settings with no kind key");
+        assert!(matches!(rendering(&settings), Err(Failure::Config(_))));
     }
 
     #[test]
@@ -224,7 +372,7 @@ mod tests {
             };
         assert_eq!(
             reason(&["bilbo", "help", "a\nb"]),
-            "unknown verb 'a\\nb'; the verbs are remember, read, config"
+            "unknown verb 'a\\nb'; the verbs are remember, read, reindex, config"
         );
         assert_eq!(
             reason(&["bilbo", "help", "--a\nb"]),

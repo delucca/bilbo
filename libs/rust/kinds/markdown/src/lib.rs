@@ -12,6 +12,9 @@ use bilbo_store::id::Id;
 
 const NAME: &str = "markdown";
 
+/// How this kind renders passages; changes with any change to that.
+pub const RENDER: &str = "1";
+
 pub const HEADING_WIDTH: Key<usize> = Key {
     about: About {
         name: "markdown.heading_width",
@@ -61,6 +64,11 @@ impl Reader for Markdown {
 
     fn passages(&self, records: &[&[u8]]) -> Vec<Passage> {
         read::passages(records, self.heading_width)
+    }
+
+    /// A frontmatter fence closed by a later record turns the text before it into frontmatter.
+    fn appends_only(&self) -> bool {
+        false
     }
 }
 

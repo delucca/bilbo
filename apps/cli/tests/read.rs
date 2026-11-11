@@ -1453,6 +1453,10 @@ impl Reader for Probe {
         "markdown"
     }
 
+    fn appends_only(&self) -> bool {
+        false
+    }
+
     fn passages(&self, _records: &[&[u8]]) -> Vec<Passage> {
         let lock = fs::File::open(&self.lock).expect("the lock file");
         self.free

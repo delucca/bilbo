@@ -108,13 +108,21 @@ A config file that is a symbolic link, or that this user cannot write (read-only
 
 `bilbo remember` with no target keeps every follow in order, into one store. With no `[[follow]]` in the config file it follows `~/.claude/projects` and `~/.codex/sessions`, both as `session`. A follow whose folder is missing is skipped with one line on stderr, and one that claims nothing says so; neither is an error. A file or folder a follow cannot read is refused and counts in the totals, as under a target.
 
+### The index
+
+A run with a target or none also brings the search index to what the store holds, inside the lock that kept the files and before it releases: it indexes the entries that changed since the cursor the index's last commit recorded, and an entry whose kind cannot promise that appending records changes no passage already indexed (Markdown) is indexed again whole. When the index cannot be continued, because it was never made or is broken, `search.chunk_tokens`, `search.chunk_overlap`, `markdown.heading_width` or a rule of this bilbo changed, or the catalog was rebuilt, the run makes it again in full, as [`reindex`](#reindex) does, says so on stderr before it starts (`building the search index: <n> entries`, or `rebuilding the search index: <why>`) and can take minutes on a large store. The line comes when the build names more entries than the run has kept, so a first run on a new store, where the entries it kept are all there is to build, says nothing, and neither do two other long builds: a store whose index was lost and whose every entry is captured again in the same run, and a first run that keeps one very large entry. A file of the index that is cut short, or that the index library panics on when it opens it, makes the index broken (the library's own panic text can appear on stderr while the run looks at it), and the run makes it again by itself. A run that finds nothing new does not even load the tokenizer. A run with a target that claims nothing does not open the store, so it does not touch the index.
+
+If the index cannot be read or written, or its folder is not bilbo's, the run prints `the search index was not updated: <error>` and exits 1, and when the index itself failed (not a folder that is not bilbo's, which nothing repairs) the line ends with `; bilbo reindex makes the index again`; damage that shows only when the index's columns are read, which the check of its files does not see, fails the update with the same line (`its content could not be read`, after tantivy's own panic text on stderr), and `bilbo reindex` repairs it; what it kept stays kept, and the run tries the index no more. Nothing is remembered between runs: the next one with a target or none plans again, and a rebuild that fails late costs its whole time again at every such run, up to about five minutes of the store held every ten on a large one, until what makes it fail is fixed. An entry the reader or the tokenizer fails on is named on stderr and exits 1; it is tried again by the next two runs that are not hooks, and then waits for a change to it or for `bilbo reindex`.
+
+An index kept current by `remember` holds the same documents as one `reindex` builds and the same documents match a query, but it can rank them differently until `bilbo reindex` runs.
+
 ### Sealing
 
 New records go to `open.seg` in the state folder. A run with a target or none seals `open.seg` into a segment of the store when it ends, if `open.seg` holds frames and has reached `store.seal_at` or its oldest frame is `store.seal_after` old (60 minutes by default); during a run, `store.seal_at` alone seals. `open.since` in the state folder records when `open.seg` got its oldest frame. A bare run opens the store and seals what is due even when no follow claims a file, so the timer's pass seals by age and rebuilds a lost catalog; a run whose target claims nothing does not open the store. See [Configuration](configuration.md#keys).
 
 ### Hooks
 
-`--hook` reads the JSON a Claude Code or Codex hook gets on stdin and keeps the new lines of its `transcript_path`, with the kind of the follow whose folder holds it, or the one detected. The transcript must be a regular file once its links are followed: a folder or a device is refused. To stay short, a hook skips the work that can take long: it never seals, whatever `store.seal_at` and `store.seal_after` say; it never runs the follows for another bilbo, so a request it finds stays for the next run with a target or none; and it never rebuilds the catalog: when the cache was lost or no longer matches the store, it keeps nothing and says so in one line. None of this bounds its time. It reads its input to the end and assumes the harness closes it after the payload, and when only readers hold the store it waits for them, up to `store.hook_wait` (2 seconds by default): then it keeps nothing and names the run that does, the path quoted as one shell argument: `kept nothing: another bilbo is reading the store; bilbo remember <path> keeps these lines`. A path that holds a control character, or is not UTF-8, gets no command: the line says so instead. A transcript whose path is not UTF-8 is never kept: `remember` refuses it. What a hook did not keep of any other, the next run that reads the transcript keeps: a bare run whose follow holds it, or a run with the transcript, or a folder that holds it, as target. It prints nothing on stdout and exits 0 once it runs, even on a payload it cannot read, a missing transcript or a config error; what went wrong is one line on stderr. Wrong arguments, such as a target beside `--hook`, are a usage error (exit 2) before the hook runs. Until the migration, set `paths.root`, `paths.state` and `paths.cache` in the config file first, as for the timer below. The `Stop` hook runs it at the end of every turn. Add it to Claude Code's settings or Codex's `hooks.json`:
+`--hook` reads the JSON a Claude Code or Codex hook gets on stdin and keeps the new lines of its `transcript_path`, with the kind of the follow whose folder holds it, or the one detected. The transcript must be a regular file once its links are followed: a folder or a device is refused. To stay short, a hook skips the work that can take long: it never seals, whatever `store.seal_at` and `store.seal_after` say; it never runs the follows for another bilbo, so a request it finds stays for the next run with a target or none; and it never rebuilds the catalog: when the cache was lost or no longer matches the store, it keeps nothing and says so in one line. It never touches the index either: what a hook captured is indexed by the next run with a target or none that succeeds. The timer's 10 minutes are the interval between its starts, not a bound: a run that rebuilds the index takes minutes, and a failing or suspended run takes longer; without a timer, the index stays behind until such a run. None of this bounds its time. It reads its input to the end and assumes the harness closes it after the payload, and when only readers hold the store it waits for them, up to `store.hook_wait` (2 seconds by default): then it keeps nothing and names the run that does, the path quoted as one shell argument: `kept nothing: another bilbo is reading the store; bilbo remember <path> keeps these lines`. A path that holds a control character, or is not UTF-8, gets no command: the line says so instead. A transcript whose path is not UTF-8 is never kept: `remember` refuses it. What a hook did not keep of any other, the next run that reads the transcript keeps: a bare run whose follow holds it, or a run with the transcript, or a folder that holds it, as target. It prints nothing on stdout and exits 0 once it runs, even on a payload it cannot read, a missing transcript or a config error; what went wrong is one line on stderr. Wrong arguments, such as a target beside `--hook`, are a usage error (exit 2) before the hook runs. Until the migration, set `paths.root`, `paths.state` and `paths.cache` in the config file first, as for the timer below. The `Stop` hook runs it at the end of every turn. Add it to Claude Code's settings or Codex's `hooks.json`:
 
 ```json
 {
@@ -136,7 +144,7 @@ New records go to `open.seg` in the state folder. A run with a target or none se
 
 ### Two runs at once
 
-One bilbo writes the store at a time: the writer holds `store.lock` and `store.writer` in the state folder, and a reader holds `store.lock` shared. A run with no target, or with `--hook`, that finds another bilbo writing sets the again flag (`store.again`) and exits 0 at once; one that finds only readers waits for them, since a reader never runs the follows again: a run with no target for as long as it takes, a `--hook` run for `store.hook_wait` at most. When a writer took the store from the readers during that wait, the `--hook` run sets the again flag for it, as for any writer. Before a run with a target or none releases the store, it runs every follow once more for each request it finds. A `--hook` run leaves a request where it is, for the next such run, since it cannot promise a pass over every follow within its time limit. A run with a target waits for the store instead, and says so on stderr, since a rerun of the follows would not keep its target.
+One bilbo writes the store at a time: the writer holds `store.lock` and `store.writer` in the state folder, and a reader holds `store.lock` shared. A run with no target, or with `--hook`, that finds another bilbo writing sets the again flag (`store.again`) and exits 0 at once; one that finds only readers waits for them, since a reader never runs the follows again: a run with no target for as long as it takes, a `--hook` run for `store.hook_wait` at most. When a writer took the store from the readers during that wait, the `--hook` run sets the again flag for it, as for any writer. A bare run that finds another bilbo writing the store prints `another bilbo is writing the store; requested another pass over the follows`. A `remember` with a target or none, or a `reindex`, that reaches the end of its work takes the request and runs the pass; a hook leaves it. Before a run with a target or none releases the store, it runs every follow once more for each request it finds, and brings the index up to what each pass kept. A `--hook` run leaves a request where it is, for the next such run, since it cannot promise a pass over every follow within its time limit. A run with a target waits for the store instead, and says so on stderr, since a rerun of the follows would not keep its target.
 
 ### The timer
 
@@ -172,7 +180,7 @@ new <n>, appended <n>, new generation <n>, unchanged <n>, refused <n>
 records <n>, raw bytes <n>, stored bytes <n>
 ```
 
-Raw bytes are the input bytes kept; stored bytes are what the store grew by. A run with no target adds up every follow. On a terminal the same counts come as a marked message. A run that also ran the follows again for another bilbo says what that pass kept in one line on stderr. `--hook` prints nothing on stdout. A bare run that finds another bilbo writing the store prints nothing on stdout either; its planning lines, if any, come before the busy line on stderr.
+Raw bytes are the input bytes kept; stored bytes are what the store grew by. A run with no target adds up every follow. On a terminal the same counts come as a marked message. A run that also ran the follows again for another bilbo says what that pass kept in one line on stderr. The index adds lines on stderr only when it rebuilds, leaves an entry out or fails; stdout does not change. `--hook` prints nothing on stdout. A bare run that finds another bilbo writing the store prints nothing on stdout either; its planning lines, if any, come before the busy line on stderr.
 
 A second `remember` with a target waits for the first one to finish writing the store, and says so on stderr.
 
@@ -181,7 +189,7 @@ A second `remember` with a target waits for the first one to finish writing the 
 | Code | Meaning |
 |---|---|
 | 0 | success, also when another bilbo holds the store and a run with no target asked it to run again; `--hook` once it runs, whatever happens |
-| 1 | a file was refused, nothing was claimed under a target, a follow cannot run (also in a pass run again for another bilbo), or the target or the store could not be read |
+| 1 | a file was refused, nothing was claimed under a target, a follow cannot run (also in a pass run again for another bilbo), the search index could not be updated or an entry could not be indexed, or the target or the store could not be read |
 | 2 | usage or config error (wrong arguments to `--hook` among them, before it runs), a store root that holds bilbo 0.20's `notes/` or `library/`, a state or cache folder inside the root, or a config file `--follow` cannot write |
 
 ## read
@@ -289,3 +297,53 @@ The cut falls between two characters. The budget of the `cut:` command is what t
 | 0 | success, also when no record of the range renders |
 | 1 | no entry has the id or the session id, the range or the generation is outside the entry, the entry is of a kind this bilbo cannot read, there is no store, the store is being written for longer than `store.wait`, or the store could not be read |
 | 2 | usage or config error: a ref that does not parse, a session id that names several entries, a `--budget` under 256 |
+
+## reindex
+
+```text
+bilbo reindex
+```
+
+Makes the catalog and the search index again from the store. Both live in the cache folder ([Configuration](configuration.md#folders)) and hold nothing the store does not, so `reindex` loses nothing: run it after the cache folder was deleted or restored from a copy, after `search.chunk_tokens`, `search.chunk_overlap` or `markdown.heading_width` changed, or when an index is in doubt.
+
+### What it makes
+
+- **The catalog**, `catalog.sqlite`: rebuilt from every segment and `open.seg`, as a `bilbo remember` rebuilds a missing one.
+- **The index**, the folder `index/`: one document for each chunk of each entry's newest generation. A chunk is consecutive records packed up to `search.chunk_tokens` tokens of the Qwen3-Embedding tokenizer; a record longer than that is cut into chunks that share `search.chunk_overlap` tokens. A record that renders to more than 1 MiB is cut at line ends before it is counted. The index holds each chunk's words (lowercased, without 33 English stopwords, stemmed) and where its records are in the store (entry, generation, record range, date, kind), never its text. A word of more than 4,096 bytes is not indexed.
+
+An entry whose kind no reader reads is left out and counted as unread. Older generations of an entry are not indexed; `bilbo read` still prints them.
+
+`reindex` replaces only its own files: `catalog.sqlite` with its journals, and the files of an index it made. The `index/` folder holds a file `bilbo-index` that marks it as bilbo's. An `index/` folder that holds anything and lacks that file, that holds a stranger beside it, or that is a link is refused, exit 1, and nothing in it is touched: move it away or set `paths.cache` to another folder. The old index stays in place until the new one is whole, so while `reindex` runs the folder holds both.
+
+### What it keeps
+
+The catalog remembers the size and time of each file `remember` kept, so a later run skips a file that has neither changed. `reindex` carries those over from the old catalog. When the old catalog is missing, unreadable or another store's, they are lost, and the first `bilbo remember` after it reads every followed file once more to find that nothing changed.
+
+### While another bilbo runs
+
+`reindex` holds the store's lock from start to end, as a `bilbo remember` does, and waits for one that is writing, saying so on stderr. A `bilbo remember` with a target waits for `reindex`. One with no target, or with `--hook`, that finds `reindex` running exits 0 and asks for one more run, as it asks any writer ([Two runs at once](#two-runs-at-once)). `reindex` closes as `remember` does: once it has committed the index it serves that request by running the follows, grows the index from the cursor it committed after each pass, and seals when a seal is due. Its lines for a pass are `remember`'s, on stderr; stdout counts only its own rebuild; the exit code is 1 also when a pass failed or refused a file. A `reindex` whose own rebuild fails releases the store as it is: it runs no close loop, does not seal and leaves another bilbo's request for the next writer. Only a failure inside its close loop follows `remember`'s rule that the run tries the index no more.
+
+### When it is needed
+
+`remember` keeps the index current, so `reindex` is for an index in doubt, and after a store is restored from a copy, always: bilbo cannot tell an older or branched history that kept its catalog id from a current one. It is also the way to the rebuilt ranking: an index kept by `remember` holds the same documents and the same documents match, but it can rank them differently. A failed entry is tried again by the next two runs of `remember`, then waits for a change or a `reindex`.
+
+### Output
+
+Standard output, two lines:
+
+```text
+entries <n>, chunks <n>, unread <n>, failed <n>
+index bytes <n>, milliseconds <n>
+```
+
+`entries` are the entries indexed, `unread` the ones left out for their kind, `failed` the ones left out whole because their records could not be read back, a reader or the tokenizer failed on them, or the tokenizer could not split a text of them; each kind left out and each failed entry gets a line on stderr, and any failed entry makes the exit code 1. `index bytes` is the size of the index's files, `milliseconds` how long the run took. On a terminal the same counts come as a marked message.
+
+A store that cannot be read, or a damaged frame found while the catalog is rebuilt, stops `reindex` with the store's error and exit 1 before the index is touched.
+
+### Exit codes
+
+| Code | Meaning |
+|---|---|
+| 0 | success, also when entries of a kind no reader reads were left out |
+| 1 | an entry could not be read back, the `index/` folder is not bilbo's, or the store or the index could not be read or written |
+| 2 | usage or config error, a store root that holds bilbo 0.20's `notes/` or `library/`, or a state or cache folder inside the root |

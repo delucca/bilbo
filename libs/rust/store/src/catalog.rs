@@ -397,6 +397,44 @@ impl Catalog {
         stamp_in(&self.conn, id, stamp).map_err(|error| self.err(&error))
     }
 
+    /// The head of every entry that has a stamp, with the origin the entry has now.
+    pub fn stamped(&self) -> Result<Vec<(Head, Option<Origin>)>, StoreError> {
+        let run = || -> rusqlite::Result<Vec<(Head, Option<Origin>)>> {
+            let mut statement = self
+                .conn
+                .prepare("SELECT entry FROM stamps ORDER BY entry")?;
+            let ids = statement
+                .query_map([], |row| id_of(&row.get::<_, Vec<u8>>(0)?, 0))?
+                .collect::<rusqlite::Result<Vec<Id>>>()?;
+            ids.into_iter()
+                .map(|id| Ok((head_in(&self.conn, id)?, origin_in(&self.conn, id)?)))
+                .collect()
+        };
+        run().map_err(|error| self.err(&error))
+    }
+
+    /// Gives each head its stamp back when this catalog holds the same head and the same origin,
+    /// stamp aside. An entry with no origin gets none.
+    pub fn restamp(&mut self, stamped: &[(Head, Option<Origin>)]) -> Result<(), StoreError> {
+        let mut same = Vec::new();
+        for (old, origin) in stamped {
+            let now = self.head_of(old.id)?;
+            let holder = origin_in(&self.conn, old.id).map_err(|error| self.err(&error))?;
+            if origin.is_some()
+                && holder == *origin
+                && (now.generation, now.records, now.mark)
+                    == (old.generation, old.records, old.mark)
+            {
+                same.push(old);
+            }
+        }
+        let mut batch = self.batch()?;
+        for head in same {
+            batch.stamp(head.id, head.stamp.as_ref())?;
+        }
+        batch.commit()
+    }
+
     pub fn entry_exists(&self, id: Id) -> Result<bool, StoreError> {
         Ok(self.holder_of_id(id)?.is_some())
     }
@@ -453,11 +491,11 @@ impl Catalog {
             let mut statement = self.conn.prepare(
                 "SELECT seq, entry, generation, first, count FROM changes WHERE seq > ?1 ORDER BY seq",
             )?;
-            let mut last = since;
+            let mut last = None;
             let mut changes = Vec::new();
             let mut rows = statement.query(params![int(since)])?;
             while let Some(row) = rows.next()? {
-                last = uint(row.get(0)?, 0)?;
+                last = Some(uint(row.get(0)?, 0)?);
                 let id = id_of(&row.get::<_, Vec<u8>>(1)?, 1)?;
                 let generation: Option<i64> = row.get(2)?;
                 changes.push(match generation {
@@ -472,6 +510,17 @@ impl Catalog {
                     },
                 });
             }
+            drop(rows);
+            drop(statement);
+            let last = match last {
+                Some(last) => last,
+                None => {
+                    let newest: Option<i64> =
+                        self.conn
+                            .query_row("SELECT max(seq) FROM changes", [], |row| row.get(0))?;
+                    newest.map_or(Ok(0), |newest| uint(newest, 0))?
+                }
+            };
             Ok((changes, last))
         };
         run().map_err(|error| self.err(&error))
@@ -518,6 +567,17 @@ fn stamp_in(conn: &Connection, id: Id, stamp: Option<&Stamp>) -> rusqlite::Resul
         ],
     )
     .map(|_| ())
+}
+
+fn origin_in(conn: &Connection, id: Id) -> rusqlite::Result<Option<Origin>> {
+    let found: Option<Option<String>> = conn
+        .query_row(
+            "SELECT origin FROM entries WHERE id = ?1",
+            params![id.to_bytes().as_slice()],
+            |row| row.get(0),
+        )
+        .optional()?;
+    Ok(found.flatten().and_then(Origin::new))
 }
 
 fn stamp_of(conn: &Connection, id: Id) -> rusqlite::Result<Option<Stamp>> {
@@ -643,6 +703,13 @@ fn meta_in(conn: &Connection, meta: &Meta) -> Result<(), ApplyFault> {
                 id_of(&other, 0)?
             )));
         }
+    }
+    let held = origin_in(conn, meta.id)?;
+    if held != meta.origin {
+        conn.execute(
+            "DELETE FROM stamps WHERE entry = ?1",
+            params![id.as_slice()],
+        )?;
     }
     conn.execute(
         "INSERT OR REPLACE INTO entries (id, kind, origin, captured, parent) VALUES (?1, ?2, ?3, ?4, ?5)",

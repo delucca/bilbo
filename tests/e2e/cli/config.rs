@@ -7,7 +7,7 @@ use super::{Run, binary};
 
 const KEYS: &str = "paths.root, paths.state, paths.cache, store.seal_at, store.seal_after, \
                     store.compression, store.tear_budget, store.wait, store.hook_wait, store.poll, follow, read.budget, read.outline_width, \
-                    read.matches_listed, markdown.heading_width";
+                    read.matches_listed, search.chunk_tokens, search.chunk_overlap, markdown.heading_width";
 
 #[test]
 fn each_key_shows_the_source_that_won_a_variable_over_the_file_over_the_default() {
@@ -36,6 +36,8 @@ fn each_key_shows_the_source_that_won_a_variable_over_the_file_over_the_default(
              read.budget = 7000 (default)\n\
              read.outline_width = 100 (default)\n\
              read.matches_listed = 5 (default)\n\
+             search.chunk_tokens = 512 (default)\n\
+             search.chunk_overlap = 64 (default)\n\
              markdown.heading_width = 100 (default)\n",
             root = scratch.path("store"),
             home = scratch.path("home"),

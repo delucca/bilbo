@@ -22,9 +22,12 @@ pub struct Piece {
 }
 
 /// Pure: no I/O, and nothing a record holds makes it fail or panic.
-pub trait Reader {
+pub trait Reader: Sync {
     fn kind(&self) -> &'static str;
     /// `records` is one whole generation, record `n` at `records[n - 1]`. Passages come in record
     /// order and never share a record; a record that renders nothing is in none.
     fn passages(&self, records: &[&[u8]]) -> Vec<Passage>;
+    /// Whether appending records to a generation changes no existing passage: the passages of the
+    /// shorter generation are the first passages of the longer one.
+    fn appends_only(&self) -> bool;
 }

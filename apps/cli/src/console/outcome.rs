@@ -398,14 +398,14 @@ mod tests {
     #[test]
     fn a_usage_failure_without_usage_lines_is_the_reason_and_the_page() {
         let failure = Failure::Usage {
-            reason: "missing verb; the verbs are remember, read, config".to_owned(),
+            reason: "missing verb; the verbs are remember, read, reindex, config".to_owned(),
             usage: Vec::new(),
             page: "bilbo --help".to_owned(),
         };
         assert_eq!(
             failure.stderr_lines(&View::PLAIN),
             [
-                "bilbo: missing verb; the verbs are remember, read, config",
+                "bilbo: missing verb; the verbs are remember, read, reindex, config",
                 "bilbo: see 'bilbo --help'"
             ]
         );

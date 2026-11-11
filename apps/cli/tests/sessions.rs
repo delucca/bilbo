@@ -13,7 +13,7 @@ use bilbo_cli::remember::save::{Saved, Saving, save_with};
 use bilbo_kinds::follows::Follow;
 use bilbo_store::entries::{Entries, Head, Meta, Origin, RecordRange};
 use bilbo_store::layout::Layout;
-use bilbo_store::segments::{Options, Store};
+use bilbo_store::segments::{Held, Options, Rebuild, Sealing, Store};
 
 mod sandbox;
 
@@ -318,6 +318,96 @@ fn a_hook_keeps_its_transcripts_new_lines_and_seals_nothing() {
         1,
         "the next run with a target seals what is due"
     );
+}
+
+/// Every file of the index folder with its bytes.
+fn index_files(sandbox: &Sandbox) -> BTreeMap<String, Vec<u8>> {
+    let folder = sandbox.layout().cache.join("index");
+    fs::read_dir(folder)
+        .expect("the index folder")
+        .map(|entry| {
+            let entry = entry.expect("an entry");
+            (
+                entry.file_name().into_string().expect("a name"),
+                fs::read(entry.path()).unwrap_or_default(),
+            )
+        })
+        .collect()
+}
+
+/// The store's sequence number the index's last commit records.
+fn indexed_to(sandbox: &Sandbox) -> u64 {
+    let meta = fs::read_to_string(sandbox.layout().cache.join("index/meta.json"))
+        .expect("the index's meta.json");
+    let at = meta.find("\\nseq ").expect("a seq line") + "\\nseq ".len();
+    meta[at..]
+        .chars()
+        .take_while(char::is_ascii_digit)
+        .collect::<String>()
+        .parse()
+        .expect("a number")
+}
+
+#[test]
+fn a_hook_keeps_its_turn_and_changes_no_file_of_the_cache_folders_index_and_the_next_remember_indexes_it()
+ {
+    let sandbox = Sandbox::new("hook_index");
+    let first = sandbox.run(&[text(&sandbox.projects()), "--kind", "session"], b"");
+    assert_eq!(first.code, 0, "{:?}", first.stderr);
+    let files = index_files(&sandbox);
+    let seq = indexed_to(&sandbox);
+    let more = b"{\"type\":\"user\",\"message\":{\"content\":\"one more\"}}\n";
+    fs::write(sandbox.main(), [CLAUDE, more].concat()).expect("the session grows");
+    let payload = CLAUDE_STOP.replace("/home/me", text(&sandbox.home()));
+    let hook = sandbox.run(&["--hook"], payload.as_bytes());
+    assert_eq!((hook.code, hook.stdout.as_str()), (0, ""));
+    assert!(hook.stderr.is_empty(), "{:?}", hook.stderr);
+    assert_eq!(sandbox.records(&sandbox.main()).len(), lines(CLAUDE) + 1);
+    assert_eq!(
+        index_files(&sandbox),
+        files,
+        "the hook left the index alone"
+    );
+    let next = sandbox.run(&[text(&sandbox.projects()), "--kind", "session"], b"");
+    assert_eq!((next.code, next.stderr.clone()), (0, Vec::<String>::new()));
+    assert!(indexed_to(&sandbox) > seq, "the next run indexed the turn");
+}
+
+#[test]
+fn a_bare_remember_that_finds_a_hook_holding_the_store_leaves_its_request_for_the_next_run_that_is_not_a_hook()
+ {
+    let sandbox = Sandbox::new("bare_finds_hook");
+    let hook = Store::open(
+        &sandbox.layout(),
+        Options {
+            held: Held::Flag {
+                readers: Some(Duration::from_secs(1)),
+            },
+            sealing: Sealing::Never,
+            rebuild: Rebuild::CatchUpOnly,
+            ..Options::default()
+        },
+        &mut |_| {},
+    )
+    .expect("hold the store as a hook does");
+    let run = sandbox.run(&[], b"");
+    assert_eq!((run.code, run.stdout.as_str()), (0, ""));
+    assert_eq!(
+        run.stderr,
+        ["bilbo: another bilbo is writing the store; requested another pass over the follows"]
+    );
+    hook.release();
+    assert_eq!(fs::metadata(sandbox.again()).expect("flag").len(), 1);
+    let next = sandbox.run(&[], b"");
+    assert_eq!(next.code, 0, "{:?}", next.stderr);
+    assert!(
+        next.stderr
+            .iter()
+            .any(|line| line.starts_with("bilbo: ran the follows again for another bilbo: ")),
+        "{:?}",
+        next.stderr
+    );
+    assert_eq!(fs::metadata(sandbox.again()).expect("flag").len(), 0);
 }
 
 #[test]

@@ -1,0 +1,44 @@
+load("@crates//:defs.bzl", "all_crate_deps")
+load("@rules_rust//cargo:defs.bzl", "extract_cargo_lints")
+load("@rules_rust//rust:defs.bzl", "rust_library")
+load("//tools/bazel:rust.bzl", "bilbo_rust_test")
+
+extract_cargo_lints(
+    name = "lints",
+    manifest = "Cargo.toml",
+    workspace = "//:Cargo.toml",
+)
+
+rust_library(
+    name = "qwen",
+    srcs = glob(["src/**/*.rs"]),
+    compile_data = ["tokenizer.json.zst"],
+    crate_name = "bilbo_qwen",
+    lint_config = ":lints",
+    visibility = [
+        "//apps/cli:__pkg__",
+        "//libs/rust/search:__pkg__",
+    ],
+    deps = ["//libs/rust/kinds"] + all_crate_deps(normal = True),
+)
+
+bilbo_rust_test(
+    name = "unit",
+    compile_data = ["tokenizer.json.zst"],
+    crate = ":qwen",
+    layer = "unit",
+    lint_config = ":lints",
+)
+
+bilbo_rust_test(
+    name = "contract",
+    srcs = glob(["tests/contract/*.rs"]),
+    compile_data = ["//libs/rust/search:contract_fixtures"],
+    crate_root = "tests/contract/main.rs",
+    layer = "contract",
+    lint_config = ":lints",
+    deps = [
+        ":qwen",
+        "//libs/rust/kinds",
+    ] + all_crate_deps(normal_dev = True),
+)

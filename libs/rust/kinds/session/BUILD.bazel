@@ -41,7 +41,7 @@ bilbo_rust_test(
 bilbo_rust_test(
     name = "contract",
     srcs = glob(["tests/contract/*.rs"]),
-    compile_data = glob(["tests/contract/*.jsonl"]),
+    compile_data = glob(["tests/contract/*.jsonl"]) + [":fixtures"],
     crate_root = "tests/contract/main.rs",
     layer = "contract",
     lint_config = ":lints",

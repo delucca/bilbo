@@ -19,6 +19,8 @@ rust_library(
         "//libs/rust/kinds:__pkg__",
         "//libs/rust/kinds/markdown:__pkg__",
         "//libs/rust/kinds/session:__pkg__",
+        "//libs/rust/search:__pkg__",
+        "//libs/rust/search/tantivy:__pkg__",
     ],
     deps = ["//libs/rust/settings"] + all_crate_deps(normal = True),
 )
@@ -28,6 +30,7 @@ bilbo_rust_test(
     crate = ":store",
     layer = "unit",
     lint_config = ":lints",
+    size = "medium",
 )
 
 bilbo_rust_test(

@@ -1,0 +1,21 @@
+bilbo reindex: rebuild the catalog and the search index from the store.
+
+[1mUsage:[22m
+  [36mbilbo reindex[39m
+
+[2mBoth hold nothing the store does not: reindex makes them again from it.[22m
+[2mIt waits for another bilbo that is writing the store.[22m
+
+[1mOutput:[22m
+  entries [2m<n>[22m, chunks [2m<n>[22m, unread [2m<n>[22m, failed [2m<n>[22m
+  index bytes [2m<n>[22m, milliseconds [2m<n>[22m
+
+[1mExit:[22m
+  [1m0[22m  success, also when entries of a kind no reader reads were left out
+  [1m1[22m  an entry failed or could not be read back, or a store or index failure
+  [1m2[22m  usage or config error
+
+[1mExamples:[22m
+  [36mbilbo reindex[39m
+
+[1mDocs:[22m [2mhttps://github.com/delucca/bilbo/wiki/Commands#reindex[22m

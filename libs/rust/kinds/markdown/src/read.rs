@@ -307,6 +307,20 @@ mod tests {
     }
 
     #[test]
+    fn a_frontmatter_fence_closed_later_changes_an_earlier_passage() {
+        let open = "---\ntitle: a\n# Heading\ntext\n";
+        let closed = format!("{open}---\nafter\n");
+        let labels = |text: &str| -> Vec<String> {
+            read(text)
+                .iter()
+                .map(|passage| passage.pieces[0].label.clone())
+                .collect()
+        };
+        assert!(!labels(open).contains(&"frontmatter".to_owned()));
+        assert_eq!(labels(&closed)[0], "frontmatter");
+    }
+
+    #[test]
     fn a_note_reads_as_its_frontmatter_then_one_passage_per_heading() {
         let note = include_str!("../fixtures/note.md");
         let found = read(note);

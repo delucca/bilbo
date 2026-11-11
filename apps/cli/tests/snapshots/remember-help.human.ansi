@@ -20,7 +20,7 @@ bilbo remember: keep files as entries, and what grew or changed in them since.
 
 [1mExit:[22m
   [1m0[22m  success, and --hook once it runs
-  [1m1[22m  a file was refused, nothing to keep, a missing target or a store failure
+  [1m1[22m  a refused file, nothing to keep, a missing target, a store or index failure
   [1m2[22m  usage or config error, or a config file --follow cannot write
 
 [1mExamples:[22m

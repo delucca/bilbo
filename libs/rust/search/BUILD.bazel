@@ -1,0 +1,70 @@
+load("@crates//:defs.bzl", "all_crate_deps")
+load("@rules_rust//cargo:defs.bzl", "extract_cargo_lints")
+load("@rules_rust//rust:defs.bzl", "rust_library")
+load("//tools/bazel:rust.bzl", "bilbo_rust_test")
+
+extract_cargo_lints(
+    name = "lints",
+    manifest = "Cargo.toml",
+    workspace = "//:Cargo.toml",
+)
+
+rust_library(
+    name = "search",
+    srcs = glob(["src/**/*.rs"]),
+    crate_name = "bilbo_search",
+    lint_config = ":lints",
+    visibility = [
+        "//apps/cli:__pkg__",
+        "//libs/rust/search/tantivy:__pkg__",
+    ],
+    deps = [
+        "//libs/rust/kinds",
+        "//libs/rust/settings",
+        "//libs/rust/store",
+    ] + all_crate_deps(normal = True),
+)
+
+filegroup(
+    name = "contract_fixtures",
+    srcs = glob([
+        "tests/contract/*.jsonl",
+        "tests/contract/*.zst",
+    ]),
+    visibility = ["//libs/rust/search/qwen:__pkg__"],
+)
+
+bilbo_rust_test(
+    name = "unit",
+    crate = ":search",
+    layer = "unit",
+    lint_config = ":lints",
+)
+
+bilbo_rust_test(
+    name = "acceptance",
+    srcs = glob(["tests/acceptance/*.rs"]),
+    crate_root = "tests/acceptance/main.rs",
+    layer = "acceptance",
+    lint_config = ":lints",
+    deps = [
+        ":search",
+        "//libs/rust/kinds",
+        "//libs/rust/store",
+    ],
+)
+
+bilbo_rust_test(
+    name = "contract",
+    srcs = glob(["tests/contract/*.rs"]),
+    compile_data = [":contract_fixtures"],
+    crate_root = "tests/contract/main.rs",
+    layer = "contract",
+    lint_config = ":lints",
+    deps = [
+        ":search",
+        "//libs/rust/kinds",
+        "//libs/rust/search/qwen",
+        "//libs/rust/store",
+    ] + all_crate_deps(normal_dev = True),
+)

@@ -70,6 +70,10 @@ impl Reader for Lines {
         }
         passages
     }
+
+    fn appends_only(&self) -> bool {
+        true
+    }
 }
 
 /// Sixteen tokens a character, so the least budget the key accepts pages these short records.
@@ -78,6 +82,12 @@ struct Wide;
 const WIDE: usize = 16;
 
 impl Tokens for Wide {
+    fn ends(&self, text: &str) -> Vec<usize> {
+        text.char_indices()
+            .flat_map(|(at, c)| std::iter::repeat_n(at + c.len_utf8(), WIDE))
+            .collect()
+    }
+
     fn count(&self, text: &str) -> usize {
         text.chars().count() * WIDE
     }
