@@ -40,8 +40,8 @@ pub enum Filter<'a> {
 pub trait Lookup {
     /// `None`: no index there (the folder is absent or empty), or one that is broken or of another
     /// schema. A folder holding files that are not bilbo's index is `Err(Foreign)` from every
-    /// method, `position` included, as `Index::position` answers today. With no usable index every
-    /// other method fails with `IndexError::Failed` saying it holds no index.
+    /// method, `position` included. With no usable index every other method fails with
+    /// `IndexError::Failed` saying it holds no index.
     fn position(&self) -> Result<Option<Position>, IndexError>;
     fn totals(&self) -> Result<Totals, IndexError>;
     fn postings(&self, term: &str) -> Result<Vec<Posting>, IndexError>;

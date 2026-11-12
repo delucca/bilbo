@@ -59,7 +59,6 @@ impl<'a> Readback<'a> {
         }
     }
 
-    /// `None`: the store no longer gives the text the index ranked.
     pub(super) fn hit(&mut self, found: Found) -> Option<Hit> {
         let reader = self
             .readers

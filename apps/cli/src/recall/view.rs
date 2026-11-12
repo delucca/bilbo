@@ -139,7 +139,6 @@ mod tests {
         }
     }
 
-    /// What a reader does: the header, then exactly the lines it counts, joined.
     fn content(printed: &str) -> (String, String) {
         let (header, rest) = printed.split_once('\n').expect("a header line");
         let lines: usize = header

@@ -234,7 +234,6 @@ pub fn time(value: Option<&Value>) -> Option<SystemTime> {
     SystemTime::UNIX_EPOCH.checked_add(Duration::new(seconds, nanos))
 }
 
-/// `YYYY-MM-DD HH:MM` in UTC, the second dropped.
 pub fn minute(time: SystemTime) -> String {
     let seconds = time
         .duration_since(SystemTime::UNIX_EPOCH)

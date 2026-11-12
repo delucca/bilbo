@@ -88,7 +88,6 @@ pub fn terms(text: &str) -> Vec<String> {
         .collect()
 }
 
-/// The terms of a question: its words but those in `dropped`, stemmed, repeats kept.
 pub fn query(text: &str, dropped: &[String]) -> Vec<String> {
     words(text)
         .iter()
@@ -98,7 +97,6 @@ pub fn query(text: &str, dropped: &[String]) -> Vec<String> {
         .collect()
 }
 
-/// The text itself when it is exactly one word as the analyzer lowercases and splits it.
 pub fn word(text: &str) -> Option<String> {
     match words(text).as_slice() {
         [only] if only == text => Some(text.to_owned()),

@@ -45,10 +45,8 @@ pub fn chunks(
     chunks_within(passages, tokens, size, MAX_ENCODE_BYTES)
 }
 
-/// The chunk the index holds at these coordinates, or `None` when the passages do not give it.
-/// Only the passages the coordinates name are chunked. A packed extent whose passages are whole and
-/// consecutive is recomputed from them, also when a later passage would now be packed with them;
-/// whether it is the indexed text is the digest's to say.
+/// A packed extent whose passages are whole and consecutive is recomputed from them, also when a
+/// later passage would now be packed with them: whether it is the indexed text is the digest's to say.
 pub fn at(
     passages: &[Passage],
     tokens: &dyn Tokens,

@@ -108,7 +108,6 @@ impl From<IndexError> for Error {
 #[derive(Debug)]
 pub struct Finished {
     pub result: Result<Output, Error>,
-    /// Why the query's line was not appended to the log.
     pub unlogged: Option<String>,
 }
 

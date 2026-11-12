@@ -2,7 +2,6 @@ use bilbo_kinds::tokens::Tokens;
 
 use super::hit::Hit;
 
-/// Whole hits while their printed forms fit, the first that does not cut at a token, nothing after.
 pub fn pack<E>(
     mut hits: impl Iterator<Item = Result<Hit, E>>,
     tokens: &dyn Tokens,
@@ -28,7 +27,6 @@ pub fn pack<E>(
     Ok(packed)
 }
 
-/// Whether `hit` has a text of at least one token that, cut and marked, costs no more than `left`.
 fn cut(hit: &mut Hit, tokens: &dyn Tokens, shown: &dyn Fn(&Hit) -> String, left: usize) -> bool {
     hit.cut = true;
     for budget in (1..=left).rev() {
@@ -87,7 +85,6 @@ mod tests {
         }
     }
 
-    /// A header of three bytes, four for a cut hit, then the text.
     fn shown(hit: &Hit) -> String {
         format!("{}{}", if hit.cut { "===c" } else { "===" }, hit.text)
     }

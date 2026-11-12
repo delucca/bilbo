@@ -46,7 +46,6 @@ pub fn check_private(path: &Path) -> Result<(), StoreError> {
     }
 }
 
-/// Opened read-only; a link as the last component is an error.
 pub fn open_no_follow(path: &Path, extra: rustix::fs::OFlags) -> io::Result<File> {
     OpenOptions::new()
         .read(true)

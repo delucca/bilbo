@@ -168,7 +168,6 @@ struct Row {
     live: bool,
 }
 
-/// A document's number is its place in the list, so a test numbers them in reverse by listing them so.
 #[derive(Default)]
 pub(crate) struct Table {
     rows: Vec<Row>,

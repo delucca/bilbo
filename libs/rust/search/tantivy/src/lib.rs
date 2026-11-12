@@ -483,7 +483,6 @@ impl Place<'_> {
         }
     }
 
-    /// The folder's index for reading: no file is made, repaired or removed, and no writer taken.
     fn readable(&self, between: &dyn Fn()) -> Result<Look, IndexError> {
         match self.inspect()? {
             Folder::Absent | Folder::Unmarked { .. } => Ok(Look::Unusable),
@@ -843,8 +842,7 @@ struct Loaded {
     totals: OnceCell<Totals>,
 }
 
-/// The last commit of an index folder, read through its segments with no searcher: it creates,
-/// repairs, locks and removes nothing. A call that fails drops what an earlier one kept.
+/// Read through its segments with no searcher: `Index::reader` takes a lock and creates its file.
 pub struct Committed {
     folder: PathBuf,
     between: Box<dyn Fn()>,
@@ -852,7 +850,6 @@ pub struct Committed {
 }
 
 impl Committed {
-    /// Touches nothing.
     pub fn at(folder: impl AsRef<Path>) -> Committed {
         Committed::watched(folder.as_ref(), Box::new(|| {}))
     }

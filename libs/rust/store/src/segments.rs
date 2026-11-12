@@ -130,7 +130,6 @@ struct Writer {
     len: u64,
 }
 
-/// What a reader may do with the cache folder.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Cache {
     /// Canonical and private, read under the store's lock, holding a catalog bound to this store's root and state.
@@ -140,7 +139,6 @@ pub enum Cache {
     Unlocked,
     /// The folder holds no catalog this bilbo reads (none, unreadable, another catalog version).
     NoCatalog(PathBuf),
-    /// Its catalog is bound to another root or state.
     OtherStore(PathBuf),
     /// Others can write it, another user owns it, or it cannot be looked at.
     Unsafe(PathBuf),
@@ -1105,7 +1103,7 @@ impl Store {
         &self.layout.cache
     }
 
-    /// What a reader may do with the cache. A writer's store always answers `Own`.
+    /// A writer's store always answers `Own`.
     pub fn reader_cache(&self) -> &Cache {
         &self.reader_cache
     }

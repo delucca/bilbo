@@ -927,7 +927,6 @@ fn extent(
 
 type Left = (&'static str, fn(&Path));
 
-/// Folders that hold no usable index and are not foreign.
 fn unusable() -> [Left; 7] {
     [
         ("a missing folder", |_| {}),

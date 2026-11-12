@@ -16,7 +16,6 @@ fn civil(days: u64) -> (u64, u64, u64) {
     (year_of_era + era * 400 + u64::from(month <= 2), month, day)
 }
 
-/// The UTC day of a time in milliseconds since 1970; an earlier time is 1970-01-01.
 pub fn day(millis: i64) -> String {
     let seconds = u64::try_from(millis).map_or(0, |millis| millis / 1000);
     let (year, month, day) = civil(seconds / 86_400);

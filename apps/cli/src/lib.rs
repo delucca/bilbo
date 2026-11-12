@@ -124,7 +124,6 @@ pub fn index(cache: &std::path::Path, search: &bilbo_search::keys::Section) -> B
     ))
 }
 
-/// The last commit of the index of a store's cache folder, read only.
 pub fn lookup(cache: &std::path::Path) -> Box<dyn Lookup> {
     Box::new(bilbo_tantivy::Committed::at(bilbo_tantivy::folder(cache)))
 }
