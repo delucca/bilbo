@@ -330,7 +330,6 @@ impl Sandbox {
             target: Some(PathBuf::from(target)),
             kind: None,
             follow: false,
-            hook: false,
         };
         let outcome = bilbo_cli::remember::run(
             &bilbo_cli::bilbo(),
@@ -406,20 +405,11 @@ impl Reader for Poisoned {
 }
 
 fn bilbo(vars: HashMap<String, OsString>, args: &[&str], notices: Option<Sender<String>>) -> Run {
-    bilbo_reading(vars, args, notices, Vec::new())
-}
-
-fn bilbo_reading(
-    vars: HashMap<String, OsString>,
-    args: &[&str],
-    notices: Option<Sender<String>>,
-    stdin: Vec<u8>,
-) -> Run {
     let said = Arc::new(Mutex::new(Vec::new()));
     let sink = Arc::clone(&said);
     let mut env = Env {
         var: Box::new(move |name| vars.get(name).cloned()),
-        stdin: Box::new(io::Cursor::new(stdin)),
+        stdin: Box::new(io::empty()),
         notice: Box::new(move |message| {
             let lines = message.plain_lines();
             if let Some(notices) = &notices {
@@ -890,7 +880,8 @@ fn a_reindex_serves_the_again_flag_and_indexes_what_that_pass_kept() {
     .expect("a config that follows the notes");
     sandbox.write("notes/new.md", b"# Fresh\n\na note about giraffes\n");
     let flag = sandbox.dir.join("state/bilbo/store.again");
-    fs::write(&flag, b"1").expect("ask for one more run, as a hook that found the store held does");
+    fs::write(&flag, b"1")
+        .expect("ask for one more run, as a bare run that found the store held does");
     let run = sandbox.reindex();
     assert_eq!(
         numbers(&run.stdout)[0],
@@ -1306,7 +1297,6 @@ fn the_close_loop_indexes_what_each_pass_kept_and_retries_nothing() {
 }
 
 const BUILDING_SEVEN: &str = "bilbo: building the search index: 7 entries";
-const CLAUDE_STOP: &str = include_str!("fixtures/hook/claude-code-stop.json");
 
 #[test]
 fn a_first_remember_builds_the_index_and_says_nothing_of_it() {
@@ -1570,41 +1560,6 @@ fn a_reindex_seals_when_a_seal_is_due() {
     .expect("backdate the open segment");
     sandbox.reindex();
     assert_eq!(sealed(&sandbox), 1, "the close of the reindex sealed it");
-}
-
-#[test]
-fn a_turn_a_hook_kept_is_among_the_terms_of_its_entry_after_the_next_remember() {
-    let sandbox = Sandbox::new("hook_terms");
-    let transcript =
-        "home/.claude/projects/-home-me-src-garden/5c3a9e1f-0b7d-4c2e-9a41-7f2d8e6b1c03.jsonl";
-    sandbox.write(transcript, SESSIONS[2].1);
-    let projects = sandbox.path("home/.claude/projects");
-    let run = sandbox.run(&["remember", &projects]);
-    assert_eq!(run.code, 0, "{:?}", run.stderr);
-    let has_word = |sandbox: &Sandbox| {
-        sandbox
-            .index()
-            .terms()
-            .expect("the terms")
-            .iter()
-            .any(|(_, words)| words.iter().any(|(word, _)| word.starts_with("xylophon")))
-    };
-    assert!(!has_word(&sandbox));
-    let more = br#"{"type":"user","message":{"content":"a xylophone in the garden"}}
-"#;
-    sandbox.write(transcript, &[SESSIONS[2].1, more].concat());
-    let payload = CLAUDE_STOP.replace("/home/me", &sandbox.path("home"));
-    let hook = bilbo_reading(
-        sandbox.vars(),
-        &["remember", "--hook"],
-        None,
-        payload.into_bytes(),
-    );
-    assert_eq!((hook.code, hook.stderr), (0, Vec::<String>::new()));
-    assert!(!has_word(&sandbox), "the hook left the index alone");
-    let next = sandbox.run(&["remember", &projects]);
-    assert_eq!((next.code, next.stderr), (0, Vec::<String>::new()));
-    assert!(has_word(&sandbox), "the next run indexed the hook's turn");
 }
 
 fn fnv(hash: u64, data: &[u8]) -> u64 {

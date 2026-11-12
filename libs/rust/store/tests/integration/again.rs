@@ -5,8 +5,7 @@ use std::time::Duration;
 
 use bilbo_store::entries::{Entries, StoreError};
 use bilbo_store::layout::Layout;
-use bilbo_store::limits::Compression;
-use bilbo_store::segments::{Closed, Held, Hook, Notice, Options, Sealing, Step, Store};
+use bilbo_store::segments::{Closed, Held, Hook, Notice, Options, Step, Store};
 
 use crate::scratch::{Scratch, keep, open_seg, origin, sealed, sealing};
 
@@ -14,7 +13,7 @@ const WAIT: Duration = Duration::from_secs(10);
 
 fn flagging(hook: Option<Hook>) -> Options {
     Options {
-        held: Held::Flag { readers: None },
+        held: Held::Flag,
         hook,
         ..sealing()
     }
@@ -169,52 +168,10 @@ fn several_requests_ask_for_one_more_run() {
 }
 
 #[test]
-fn a_store_that_never_seals_keeps_its_frames_in_open_seg() {
-    let scratch = Scratch::new("never_seals");
-    let layout = scratch.layout();
-    let mut store = Store::open(
-        &layout,
-        Options {
-            seal_at: 1 << 20,
-            compression: Compression::try_from(1).expect("a level"),
-            sealing: Sealing::Never,
-            ..sealing()
-        },
-        &mut |_| {},
-    )
-    .expect("open");
-    let mut seed = 7u64;
-    let big: Vec<u8> = (0..100_000)
-        .flat_map(|_| {
-            seed = seed
-                .wrapping_mul(6_364_136_223_846_793_005)
-                .wrapping_add(1_442_695_040_888_963_407);
-            format!("{seed:016x}{:016x}\n", seed.rotate_left(17)).into_bytes()
-        })
-        .collect();
-    keep(&mut store, "a.md", &big);
-    assert!(fs::metadata(open_seg(&layout)).expect("open.seg").len() > 1 << 20);
-    assert!(matches!(store.close().expect("close"), Closed::Released));
-    assert!(sealed(&layout).is_empty());
-
-    let store = Store::open(&layout, sealing(), &mut |_| {}).expect("open");
-    assert!(matches!(store.close().expect("close"), Closed::Released));
-    assert_eq!(sealed(&layout).len(), 1);
-}
-
-#[test]
 fn a_release_leaves_a_request_and_open_seg_for_the_next_close() {
     let scratch = Scratch::new("again_release");
     let layout = scratch.layout();
-    let mut store = Store::open(
-        &layout,
-        Options {
-            sealing: Sealing::Never,
-            ..flagging(None)
-        },
-        &mut |_| {},
-    )
-    .expect("open");
+    let mut store = Store::open(&layout, flagging(None), &mut |_| {}).expect("open");
     keep(&mut store, "a.md", b"one\n");
     fs::write(again_file(&layout), b"1").expect("a request from another writer");
     store.release();

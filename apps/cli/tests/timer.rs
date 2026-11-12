@@ -97,7 +97,6 @@ fn the_install_steps_name_each_unit_file() {
         "docs/reference/timer/bilbo-remember.service",
         "docs/reference/timer/bilbo-remember.timer",
         "systemctl --user enable --now bilbo-remember.timer",
-        "\"command\": \"command -v bilbo >/dev/null 2>&1 || exit 0; bilbo remember --hook; exit 0\"",
     ] {
         assert!(COMMANDS.contains(needle), "{needle}");
     }

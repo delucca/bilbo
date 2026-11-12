@@ -2,10 +2,9 @@ use std::fs;
 use std::io::Write;
 use std::os::unix::fs::{PermissionsExt, symlink};
 use std::path::PathBuf;
-use std::process::{Command, Stdio};
 
+use super::Run;
 use super::scratch::Scratch;
-use super::{Run, binary};
 
 const MAIN: &str = "5c3a9e1f-0b7d-4c2e-9a41-7f2d8e6b1c03";
 const OTHER: &str = "9b1d2c3e-4f5a-4b6c-8d7e-0f1a2b3c4d5e";
@@ -20,9 +19,6 @@ const META: &[u8] =
 const CODEX: &[u8] = include_bytes!(
     "../../../libs/rust/kinds/session/fixtures/rollout-2026-11-06T09-10-00-019a4f2e-7c1d-7b3a-9e55-2d8c41f0a6b7.jsonl"
 );
-const CLAUDE_STOP: &str =
-    include_str!("../../../apps/cli/tests/fixtures/hook/claude-code-stop.json");
-const CODEX_STOP: &str = include_str!("../../../apps/cli/tests/fixtures/hook/codex-stop.json");
 
 fn counts(new: u64, appended: u64, generation: u64, unchanged: u64, refused: u64) -> String {
     format!(
@@ -80,31 +76,6 @@ fn main_session(scratch: &Scratch) -> PathBuf {
     scratch.dir.join(format!(
         "home/.claude/projects/-home-me-src-garden/{MAIN}.jsonl"
     ))
-}
-
-fn with_stdin(scratch: &Scratch, args: &[&str], stdin: &[u8]) -> Run {
-    let env = scratch.env();
-    let mut child = Command::new(binary())
-        .env_clear()
-        .envs(env.iter().map(|(name, value)| (*name, value.as_str())))
-        .args(args)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("bilbo starts");
-    child
-        .stdin
-        .take()
-        .expect("stdin")
-        .write_all(stdin)
-        .expect("write stdin");
-    let output = child.wait_with_output().expect("bilbo exits");
-    Run {
-        code: output.status.code().expect("an exit code"),
-        stdout: String::from_utf8(output.stdout).expect("UTF-8"),
-        stderr: String::from_utf8(output.stderr).expect("UTF-8"),
-    }
 }
 
 fn first(run: &Run) -> &str {
@@ -266,54 +237,18 @@ fn follow_never_replaces_a_linked_config_file_and_prints_the_lines_to_add() {
     );
 }
 
-#[test]
-fn a_hook_with_each_recorded_payload_keeps_the_new_lines_and_seals_nothing() {
-    let scratch = harness("hook_payloads");
-    let home = scratch.path("home");
-    for payload in [CLAUDE_STOP, CODEX_STOP] {
-        let payload = payload.replace("/home/me", &home);
-        let run = with_stdin(&scratch, &["remember", "--hook"], payload.as_bytes());
-        assert_eq!(
-            (run.code, run.stdout.as_str(), run.stderr.as_str()),
-            (0, "", "")
-        );
-        scratch.backdate(61);
-    }
-    assert_eq!(scratch.segments(), 0, "the hook never seals, even when due");
-    let main = main_session(&scratch);
-    let mut file = fs::OpenOptions::new()
-        .append(true)
-        .open(&main)
-        .expect("open");
-    file.write_all(b"{\"type\":\"user\",\"sessionId\":\"s\"}\n")
-        .expect("grow");
-    let payload = CLAUDE_STOP.replace("/home/me", &home);
-    assert_eq!(
-        with_stdin(&scratch, &["remember", "--hook"], payload.as_bytes()).code,
-        0
-    );
-    let run = scratch.run(&["remember", main.to_str().expect("UTF-8")]);
-    assert_eq!(
-        first(&run),
-        counts(0, 0, 0, 1, 0),
-        "the hook kept the new line"
-    );
-    assert_eq!(scratch.segments(), 1);
-}
-
-fn payload(scratch: &Scratch) -> (Vec<u8>, Vec<String>) {
+fn payload(scratch: &Scratch) -> Vec<String> {
     let bytes = fs::read(scratch.dir.join("cache/bilbo/index/meta.json")).expect("meta.json");
-    let text = String::from_utf8(bytes.clone()).expect("UTF-8");
+    let text = String::from_utf8(bytes).expect("UTF-8");
     let key = text.find("\"payload\"").expect("a payload");
     let at = key + text[key..].find(":").expect("a colon");
     let at = at + text[at..].find('"').expect("the payload's quote") + 1;
     let end = at + text[at..].find('"').expect("the end of the payload");
-    let lines = text[at..end]
+    text[at..end]
         .split("\\n")
         .filter(|line| !line.is_empty())
         .map(str::to_owned)
-        .collect();
-    (bytes, lines)
+        .collect()
 }
 
 fn seq(lines: &[String]) -> u64 {
@@ -326,11 +261,11 @@ fn seq(lines: &[String]) -> u64 {
 }
 
 #[test]
-fn the_index_follows_a_remember_and_a_hook_turn_waits_for_the_next_one() {
+fn the_index_follows_a_bare_remember_over_a_session_that_grew() {
     let scratch = harness("index_follows");
     let bare = scratch.run(&["remember"]);
     assert_eq!(bare.code, 0, "{}", bare.stderr);
-    let (made, lines) = payload(&scratch);
+    let lines = payload(&scratch);
     assert_eq!(lines.last().map(String::as_str), Some("failed -"));
 
     let mut file = fs::OpenOptions::new()
@@ -339,50 +274,25 @@ fn the_index_follows_a_remember_and_a_hook_turn_waits_for_the_next_one() {
         .expect("open");
     file.write_all(b"{\"type\":\"user\",\"sessionId\":\"s\"}\n")
         .expect("grow");
-    let payload_in = CLAUDE_STOP.replace("/home/me", &scratch.path("home"));
-    let hook = with_stdin(&scratch, &["remember", "--hook"], payload_in.as_bytes());
-    assert_eq!(
-        (hook.code, hook.stdout.as_str(), hook.stderr.as_str()),
-        (0, "", "")
-    );
-    assert_eq!(
-        payload(&scratch).0,
-        made,
-        "the hook turn left the index as it was"
-    );
-
     let bare = scratch.run(&["remember"]);
     assert_eq!(bare.code, 0, "{}", bare.stderr);
     assert_eq!(bare.stderr, "");
-    let (_, grown) = payload(&scratch);
+    assert_eq!(first(&bare), counts(0, 1, 0, 3, 0));
+    let grown = payload(&scratch);
     assert!(seq(&grown) > seq(&lines), "{grown:?}");
     assert_eq!(grown[..6], lines[..6], "the manifest stays");
     assert_eq!(grown.last().map(String::as_str), Some("failed -"));
 
     let reindexed = scratch.run(&["reindex"]);
     assert_eq!(reindexed.code, 0, "{}", reindexed.stderr);
-    let (_, rebuilt) = payload(&scratch);
+    let rebuilt = payload(&scratch);
     assert_eq!(rebuilt[..6], lines[..6]);
     assert_eq!(rebuilt.last().map(String::as_str), Some("failed -"));
 }
 
 #[test]
-fn a_hook_exits_0_with_garbage_on_stdin() {
-    let scratch = harness("hook_garbage");
-    for input in [
-        &b"garbage"[..],
-        b"",
-        b"{\"transcript_path\":\"/nowhere.jsonl\"}",
-    ] {
-        let run = with_stdin(&scratch, &["remember", "--hook"], input);
-        assert_eq!((run.code, run.stdout.as_str()), (0, ""));
-        assert_eq!(run.stderr.lines().count(), 1, "{}", run.stderr);
-    }
-    assert!(!scratch.dir.join("store").exists());
-}
-
-#[test]
-fn a_bare_run_or_a_hook_that_finds_the_store_held_exits_0_at_once_and_asks_for_one_more_run() {
+fn a_bare_run_that_finds_the_store_held_exits_0_at_once_asks_for_one_more_run_and_the_next_run_takes_it()
+ {
     let scratch = harness("held");
     assert_eq!(scratch.run(&["remember"]).code, 0);
     let state = scratch.dir.join("state/bilbo");
@@ -400,19 +310,21 @@ fn a_bare_run_or_a_hook_that_finds_the_store_held_exits_0_at_once_and_asks_for_o
         fs::metadata(state.join("store.again")).expect("flag").len(),
         1
     );
-    fs::write(state.join("store.again"), b"").expect("clear the flag");
-    let payload = CLAUDE_STOP.replace("/home/me", &scratch.path("home"));
-    let run = with_stdin(&scratch, &["remember", "--hook"], payload.as_bytes());
-    assert_eq!(
-        (run.code, run.stdout.as_str(), run.stderr.as_str()),
-        (0, "", "")
+    writer.unlock().expect("release");
+    lock.unlock().expect("release");
+    let run = scratch.run(&["remember"]);
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    assert!(
+        run.stderr
+            .lines()
+            .any(|line| line.starts_with("bilbo: ran the follows again for another bilbo:")),
+        "{}",
+        run.stderr
     );
     assert_eq!(
         fs::metadata(state.join("store.again")).expect("flag").len(),
-        1
+        0
     );
-    writer.unlock().expect("release");
-    lock.unlock().expect("release");
 }
 
 #[test]

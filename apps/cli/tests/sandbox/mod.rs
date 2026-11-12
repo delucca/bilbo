@@ -66,17 +66,12 @@ pub struct Run {
 }
 
 /// Notices also go to `notices`, for a test that waits on one.
-pub fn run(
-    vars: HashMap<String, OsString>,
-    args: &[&str],
-    stdin: &[u8],
-    notices: Option<Sender<String>>,
-) -> Run {
+pub fn run(vars: HashMap<String, OsString>, args: &[&str], notices: Option<Sender<String>>) -> Run {
     let said = Arc::new(Mutex::new(Vec::new()));
     let sink = Arc::clone(&said);
     let mut env = Env {
         var: Box::new(move |name| vars.get(name).cloned()),
-        stdin: Box::new(io::Cursor::new(stdin.to_vec())),
+        stdin: Box::new(io::empty()),
         notice: Box::new(move |message| {
             let lines = message.plain_lines();
             if let Some(notices) = &notices {

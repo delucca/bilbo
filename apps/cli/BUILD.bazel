@@ -49,18 +49,9 @@ alias(
     actual = ":bilbo",
 )
 
-filegroup(
-    name = "hook_payloads",
-    srcs = glob(["tests/fixtures/hook/*.json"]),
-    visibility = ["//tests:__subpackages__"],
-)
-
 bilbo_rust_test(
     name = "unit",
-    compile_data = [
-        ":hook_payloads",
-        "//:docs/reference/configuration.md",
-    ],
+    compile_data = ["//:docs/reference/configuration.md"],
     crate = ":bilbo_cli",
     layer = "unit",
     lint_config = ":lints",
@@ -118,10 +109,7 @@ bilbo_rust_test(
         "tests/sessions.rs",
     ],
     crate_root = "tests/sessions.rs",
-    compile_data = [
-        ":hook_payloads",
-        "//libs/rust/kinds/session:fixtures",
-    ],
+    compile_data = ["//libs/rust/kinds/session:fixtures"],
     layer = "integration",
     lint_config = ":lints",
     deps = [
@@ -151,7 +139,6 @@ bilbo_rust_test(
     name = "reindex",
     srcs = ["tests/reindex.rs"],
     compile_data = [
-        ":hook_payloads",
         "//libs/rust/kinds/markdown:fixtures",
         "//libs/rust/kinds/session:fixtures",
     ],
@@ -164,7 +151,7 @@ bilbo_rust_test(
         "//libs/rust/search/qwen",
         "//libs/rust/search/tantivy",
         "//libs/rust/store",
-    ] + all_crate_deps(normal = True),
+    ] + all_crate_deps(normal_dev = True),
 )
 
 bilbo_rust_test(

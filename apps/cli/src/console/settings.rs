@@ -273,7 +273,7 @@ mod tests {
     }
 
     #[test]
-    fn the_registry_is_the_three_folders_the_seven_store_keys_the_follows_then_the_read_search_and_markdown_keys()
+    fn the_registry_is_the_three_folders_the_six_store_keys_the_follows_then_the_read_search_and_markdown_keys()
      {
         let names: Vec<&str> = keys(&kind()).iter().map(|about| about.name).collect();
         assert_eq!(
@@ -287,7 +287,6 @@ mod tests {
                 "store.compression",
                 "store.tear_budget",
                 "store.wait",
-                "store.hook_wait",
                 "store.poll",
                 "follow",
                 "read.budget",
@@ -360,7 +359,7 @@ mod tests {
             .err(),
             Some(
                 "/c.toml:3: unknown key store.sealat; the keys are paths.root, paths.state, \
-                 paths.cache, store.seal_at, store.seal_after, store.compression, store.tear_budget, store.wait, store.hook_wait, store.poll, follow, read.budget, read.outline_width, read.matches_listed, search.chunk_tokens, search.chunk_overlap, search.workers, search.index_memory, search.merge_deleted_percent, search.entry_tries, markdown.heading_width"
+                 paths.cache, store.seal_at, store.seal_after, store.compression, store.tear_budget, store.wait, store.poll, follow, read.budget, read.outline_width, read.matches_listed, search.chunk_tokens, search.chunk_overlap, search.workers, search.index_memory, search.merge_deleted_percent, search.entry_tries, markdown.heading_width"
                     .to_owned()
             )
         );
@@ -509,7 +508,6 @@ mod tests {
                 "BILBO_SEARCH_MERGE_DELETED_PERCENT",
                 "BILBO_SEARCH_WORKERS",
                 "BILBO_STORE_COMPRESSION",
-                "BILBO_STORE_HOOK_WAIT",
                 "BILBO_STORE_POLL",
                 "BILBO_STORE_SEAL_AFTER",
                 "BILBO_STORE_SEAL_AT",

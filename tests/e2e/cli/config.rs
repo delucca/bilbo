@@ -6,7 +6,7 @@ use super::scratch::Scratch;
 use super::{Run, binary};
 
 const KEYS: &str = "paths.root, paths.state, paths.cache, store.seal_at, store.seal_after, \
-                    store.compression, store.tear_budget, store.wait, store.hook_wait, store.poll, follow, read.budget, read.outline_width, \
+                    store.compression, store.tear_budget, store.wait, store.poll, follow, read.budget, read.outline_width, \
                     read.matches_listed, search.chunk_tokens, search.chunk_overlap, search.workers, \
                     search.index_memory, search.merge_deleted_percent, search.entry_tries, markdown.heading_width";
 
@@ -30,7 +30,6 @@ fn each_key_shows_the_source_that_won_a_variable_over_the_file_over_the_default(
              store.compression = 3 (BILBO_STORE_COMPRESSION)\n\
              store.tear_budget = 4 (default)\n\
              store.wait = \"10s\" (default)\n\
-             store.hook_wait = \"2s\" (default)\n\
              store.poll = \"20ms\" (default)\n\
              follow = [{{ path = \"{home}/.claude/projects\", kind = \"session\" }}, \
              {{ path = \"{home}/.codex/sessions\", kind = \"session\" }}] (default)\n\

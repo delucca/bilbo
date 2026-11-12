@@ -3,12 +3,10 @@ bilbo remember: keep files as entries, and what grew or changed in them since.
 [1mUsage:[22m
   [36mbilbo remember [39m[2m<file|folder>[22m[36m [--kind [39m[2m<kind>[22m[36m] [--follow][39m
   [36mbilbo remember[39m
-  [36mbilbo remember --hook[39m
 
 [1mOptions:[22m
       [1m--kind [22m[2m<kind>[22m  Run this kind, not the one that claims the files
       [1m--follow[22m       Save the target in the config file, so a bare run keeps it
-      [1m--hook[22m         Keep the transcript a harness hook names on stdin
 
 [1mKinds:[22m
   [1mmarkdown[22m  .md files, one record per line
@@ -19,7 +17,7 @@ bilbo remember: keep files as entries, and what grew or changed in them since.
   records [2m<n>[22m, raw bytes [2m<n>[22m, stored bytes [2m<n>[22m
 
 [1mExit:[22m
-  [1m0[22m  success, and --hook once it runs
+  [1m0[22m  success
   [1m1[22m  a refused file, nothing to keep, a missing target, a store or index failure
   [1m2[22m  usage or config error, or a config file --follow cannot write
 

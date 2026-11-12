@@ -7,7 +7,7 @@ use bilbo_settings::key::{About, Default, Key, Resolved, Shown, Source};
 use bilbo_settings::size::{self, GIB, MIB};
 
 use crate::limits::{Compression, TearBudget};
-use crate::segments::{Held, Options, Rebuild, Sealing};
+use crate::segments::{Held, Options, Rebuild};
 
 pub const SEAL_SIZE: Key<u64> = Key {
     about: About {
@@ -94,32 +94,13 @@ pub const WAIT: Key<Duration> = Key {
     show: |wait| duration::show(*wait),
 };
 
-/// A harness gives a hook five seconds.
-const LONGEST_HOOK_WAIT: Duration = Duration::from_secs(4);
-
-pub const HOOK_WAIT: Key<Duration> = Key {
-    about: About {
-        name: "store.hook_wait",
-        variable: Some("BILBO_STORE_HOOK_WAIT"),
-        default: Default::Toml(r#""2s""#),
-        allowed: "between 0s and 4s",
-        doc: "How long bilbo remember --hook waits for a bilbo that is reading the store before it leaves the lines to the next run.",
-    },
-    parse: |value| {
-        duration::read(value)
-            .filter(|wait| *wait <= LONGEST_HOOK_WAIT)
-            .ok_or_else(|| value.refuse())
-    },
-    show: |wait| duration::show(*wait),
-};
-
 pub const POLL: Key<Duration> = Key {
     about: About {
         name: "store.poll",
         variable: Some("BILBO_STORE_POLL"),
         default: Default::Toml(r#""20ms""#),
         allowed: "between 1ms and 1s",
-        doc: "How often a bilbo that waits for the store lock tries it again: flock has no timed wait.",
+        doc: "How often a reader that waits for a writer tries the lock again: flock has no timed wait.",
     },
     parse: |value| {
         duration::read(value)
@@ -129,13 +110,12 @@ pub const POLL: Key<Duration> = Key {
     show: |poll| duration::show(*poll),
 };
 
-pub const ABOUT: [&About; 7] = [
+pub const ABOUT: [&About; 6] = [
     &SEAL_SIZE.about,
     &SEAL_AFTER.about,
     &COMPRESSION.about,
     &TEAR_BUDGET.about,
     &WAIT.about,
-    &HOOK_WAIT.about,
     &POLL.about,
 ];
 
@@ -147,7 +127,6 @@ pub struct Section {
     pub compression: Resolved<Compression>,
     pub tear_budget: Resolved<TearBudget>,
     pub wait: Resolved<Duration>,
-    pub hook_wait: Resolved<Duration>,
     pub poll: Resolved<Duration>,
 }
 
@@ -158,7 +137,6 @@ pub fn section(source: &Source<'_>) -> Result<Section, Error> {
         compression: COMPRESSION.resolve(source)?,
         tear_budget: TEAR_BUDGET.resolve(source)?,
         wait: WAIT.resolve(source)?,
-        hook_wait: HOOK_WAIT.resolve(source)?,
         poll: POLL.resolve(source)?,
     })
 }
@@ -190,19 +168,17 @@ impl Section {
             poll: self.poll.value,
             hook: None,
             held: Held::Wait,
-            sealing: Sealing::WhenDue,
             rebuild: Rebuild::Allowed,
         }
     }
 
-    pub fn shown(&self) -> [Shown; 7] {
+    pub fn shown(&self) -> [Shown; 6] {
         [
             SEAL_SIZE.shown(&self.seal_at),
             SEAL_AFTER.shown(&self.seal_after),
             COMPRESSION.shown(&self.compression),
             TEAR_BUDGET.shown(&self.tear_budget),
             WAIT.shown(&self.wait),
-            HOOK_WAIT.shown(&self.hook_wait),
             POLL.shown(&self.poll),
         ]
     }
@@ -260,7 +236,6 @@ mod tests {
                 "store.compression = 19 (default)",
                 "store.tear_budget = 4 (default)",
                 "store.wait = \"10s\" (default)",
-                "store.hook_wait = \"2s\" (default)",
                 "store.poll = \"20ms\" (default)"
             ]
         );
@@ -374,28 +349,6 @@ mod tests {
     }
 
     #[test]
-    fn a_hooks_wait_for_readers_is_at_most_four_seconds() {
-        for (text, seconds) in [("0s", 0), ("2s", 2), ("4s", 4)] {
-            let section = resolve(&[("BILBO_STORE_HOOK_WAIT", text)], "").expect("a wait");
-            assert_eq!(
-                section.hook_wait.value,
-                Duration::from_secs(seconds),
-                "{text}"
-            );
-        }
-        assert_eq!(defaults().hook_wait.value, Duration::from_secs(2));
-        for text in ["5s", "1m", "2", "soon"] {
-            assert_eq!(
-                resolve(&[("BILBO_STORE_HOOK_WAIT", text)], "").err(),
-                Some(format!(
-                    "BILBO_STORE_HOOK_WAIT must be between 0s and 4s, got \"{text}\""
-                )),
-                "{text}"
-            );
-        }
-    }
-
-    #[test]
     fn the_poll_is_milliseconds_up_to_a_second() {
         assert_eq!(defaults().options().poll, Duration::from_millis(20));
         for (text, millis) in [("1ms", 1), ("250ms", 250), ("1s", 1000), ("1000ms", 1000)] {
@@ -444,10 +397,6 @@ mod tests {
                 value: Duration::from_secs(3),
                 origin: Origin::Default,
             },
-            hook_wait: Resolved {
-                value: Duration::from_secs(1),
-                origin: Origin::Default,
-            },
             poll: Resolved {
                 value: Duration::from_millis(5),
                 origin: Origin::Default,
@@ -474,7 +423,7 @@ mod tests {
     }
 
     #[test]
-    fn the_store_declares_seven_keys_each_with_its_own_variable() {
+    fn the_store_declares_six_keys_each_with_its_own_variable() {
         let names: Vec<(&str, Option<&str>)> = ABOUT
             .iter()
             .map(|about| (about.name, about.variable))
@@ -487,7 +436,6 @@ mod tests {
                 ("store.compression", Some("BILBO_STORE_COMPRESSION")),
                 ("store.tear_budget", Some("BILBO_STORE_TEAR_BUDGET")),
                 ("store.wait", Some("BILBO_STORE_WAIT")),
-                ("store.hook_wait", Some("BILBO_STORE_HOOK_WAIT")),
                 ("store.poll", Some("BILBO_STORE_POLL")),
             ]
         );

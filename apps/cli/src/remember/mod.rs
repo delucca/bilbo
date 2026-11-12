@@ -1,6 +1,5 @@
 pub mod disk;
 pub mod follows;
-pub mod hook;
 pub mod index;
 pub mod messages;
 pub mod save;
@@ -29,8 +28,7 @@ const SUMMARY: &str = "Keep files as entries; a later run keeps what grew or cha
 const ABOUT: &str =
     "bilbo remember: keep files as entries, and what grew or changed in them since.";
 const USAGE: &str = "bilbo remember <file|folder> [--kind <kind>] [--follow]
-  bilbo remember
-  bilbo remember --hook";
+  bilbo remember";
 
 #[derive(Debug, clap::Args)]
 #[command(about = SUMMARY, before_help = ABOUT, override_usage = USAGE)]
@@ -51,12 +49,6 @@ pub struct Args {
         help = "Save the target in the config file, so a bare run keeps it"
     )]
     pub follow: bool,
-    #[arg(
-        long,
-        conflicts_with_all = ["target", "kind", "follow"],
-        help = "Keep the transcript a harness hook names on stdin"
-    )]
-    pub hook: bool,
 }
 
 pub fn page(kinds: &[Box<dyn Kind>]) -> String {
@@ -78,7 +70,7 @@ Output:
   records <n>, raw bytes <n>, stored bytes <n>
 
 Exit:
-  0  success, and --hook once it runs
+  0  success
   1  a refused file, nothing to keep, a missing target, a store or index failure
   2  usage or config error, or a config file --follow cannot write
 

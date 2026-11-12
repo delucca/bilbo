@@ -66,7 +66,7 @@ pub fn run(
         return Ok(stopped(diagnostics, &Failure::from(&error)));
     }
     let options = Options {
-        held: Held::Flag { readers: None },
+        held: Held::Flag,
         ..settings.store.options()
     };
     let notice = &mut env.notice;

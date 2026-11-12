@@ -68,11 +68,9 @@ pub enum Step {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Held {
     Wait,
-    /// Set the again flag for a writer that holds the store and fail with `StoreError::Busy`.
-    /// Readers are waited for, for `readers` at most (then `StoreError::Reading`), or without end.
-    Flag {
-        readers: Option<Duration>,
-    },
+    /// Set the again flag for a writer that holds the store and fail with `StoreError::Busy`;
+    /// wait for readers.
+    Flag,
 }
 
 pub enum Closed {
@@ -105,19 +103,8 @@ pub enum Notice {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Sealing {
-    /// At `seal_at` during a run; at `seal_at` or `seal_after` when the store closes.
-    WhenDue,
-    /// Never: `open.seg` only grows, as a hook within its time limit needs.
-    Never,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Rebuild {
     Allowed,
-    /// Catch up on `open.seg` or make an empty store's catalog; a full rebuild is
-    /// `StoreError::Unrebuilt`, as a hook within its time limit needs.
-    CatchUpOnly,
     /// Discard the catalog and rebuild it from every segment. A growth stamp of the old catalog
     /// is kept when that catalog is this store's and the entry's head comes back the same.
     Always,
@@ -135,7 +122,6 @@ pub struct Options {
     pub poll: Duration,
     pub hook: Option<Hook>,
     pub held: Held,
-    pub sealing: Sealing,
     pub rebuild: Rebuild,
 }
 
@@ -459,32 +445,22 @@ fn taken_or_asked(layout: &Layout, lock: &File, lock_path: &Path) -> Result<bool
     }
 }
 
-#[derive(Clone, Copy)]
-enum Mode {
-    Shared,
-    Exclusive,
-}
-
-fn lock_within(
+fn lock_shared_within(
     file: &File,
     path: &Path,
-    (mode, wait, held): (Mode, Duration, StoreError),
+    wait: Duration,
     poll: Duration,
     notice: &mut dyn FnMut(Notice),
 ) -> Result<(), StoreError> {
     let started = Instant::now();
     let mut said = false;
     loop {
-        let tried = match mode {
-            Mode::Shared => file.try_lock_shared(),
-            Mode::Exclusive => file.try_lock(),
-        };
-        match tried {
+        match file.try_lock_shared() {
             Ok(()) => return Ok(()),
             Err(TryLockError::WouldBlock) => {
                 let left = wait.saturating_sub(started.elapsed());
                 if left.is_zero() {
-                    return Err(held);
+                    return Err(StoreError::Busy);
                 }
                 if !said {
                     notice(Notice::Waiting);
@@ -685,9 +661,6 @@ fn load_catalog(
     let binding = binding(layout)?;
     let sealed = list_sealed(&layout.root)?;
     let open = files::read_file(&open_seg(layout))?;
-    // The catalog of an empty store is made, not rebuilt.
-    let refused =
-        mode == Rebuild::CatchUpOnly && (!sealed.is_empty() || open.len() > frame::SEGMENT_HEADER);
     let fresh = Catalog::open_current(&catalog_file(layout), &binding, &sealed, open.len() as u64);
     if mode == Rebuild::Always {
         let stamped = match fresh {
@@ -717,14 +690,12 @@ fn load_catalog(
             })();
             match caught_up {
                 Ok(()) => Ok(catalog),
-                Err(_) if refused => Err(StoreError::Unrebuilt),
                 Err(_) => {
                     drop(catalog);
                     rebuild(layout, &binding, &sealed, &open, budget, notice)
                 }
             }
         }
-        Fresh::Rebuild if refused => Err(StoreError::Unrebuilt),
         Fresh::Rebuild => rebuild(layout, &binding, &sealed, &open, budget, notice),
     }
 }
@@ -884,25 +855,12 @@ impl Store {
                 lock.lock()
                     .map_err(|error| files::io_err("lock", &lock_path, error))?;
             }
-            (Err(TryLockError::WouldBlock), Held::Flag { readers }) => {
+            (Err(TryLockError::WouldBlock), Held::Flag) => {
                 step(&mut options.hook, Step::Asking)?;
                 if !taken_or_asked(layout, &lock, &lock_path)? {
-                    match readers {
-                        Some(wait) => {
-                            let bound = (Mode::Exclusive, wait, StoreError::Reading);
-                            match lock_within(&lock, &lock_path, bound, options.poll, notice) {
-                                // A writer may have followed the readers during the wait.
-                                Err(StoreError::Reading)
-                                    if taken_or_asked(layout, &lock, &lock_path)? => {}
-                                given => given?,
-                            }
-                        }
-                        None => {
-                            notice(Notice::Waiting);
-                            lock.lock()
-                                .map_err(|error| files::io_err("lock", &lock_path, error))?;
-                        }
-                    }
+                    notice(Notice::Waiting);
+                    lock.lock()
+                        .map_err(|error| files::io_err("lock", &lock_path, error))?;
                 }
             }
             (Err(TryLockError::Error(error)), _) => {
@@ -974,8 +932,7 @@ impl Store {
         let lock_path = lock_file(&paths);
         let lock = match File::open(&lock_path) {
             Ok(file) => {
-                let bound = (Mode::Shared, options.wait, StoreError::Busy);
-                lock_within(&file, &lock_path, bound, options.poll, notice)?;
+                lock_shared_within(&file, &lock_path, options.wait, options.poll, notice)?;
                 Some(file)
             }
             Err(error) if error.kind() == io::ErrorKind::NotFound => None,
@@ -1053,7 +1010,7 @@ impl Store {
     /// Unless a writer that found the store held asked for a rerun: then the store comes back,
     /// still locked, with the request taken.
     pub fn close(mut self) -> Result<Closed, StoreError> {
-        if self.options.sealing == Sealing::WhenDue && self.due() && !self.poisoned {
+        if self.due() && !self.poisoned {
             self.seal()?;
         }
         if self.writer.is_none() || self.poisoned {
@@ -1184,7 +1141,7 @@ impl Store {
 
     /// During a run only the size seals; the age is weighed at `close`, once per run.
     fn seal_if_full(&mut self) -> Result<(), StoreError> {
-        if self.options.sealing == Sealing::WhenDue && self.open_len() >= self.options.seal_at {
+        if self.open_len() >= self.options.seal_at {
             self.seal()?;
         }
         Ok(())

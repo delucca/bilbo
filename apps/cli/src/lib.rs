@@ -194,12 +194,9 @@ pub fn run_tuned(
             let Some(verb) = typed::<Cli>(root, &matches)?.verb else {
                 return Err(usage(root, with_verbs(root, "missing verb"), None));
             };
+            let settings = settings?;
             match verb {
-                Verb::Remember(args) if args.hook => {
-                    Ok(remember::hook::run(env, settings, &kinds()))
-                }
                 Verb::Remember(args) => {
-                    let settings = settings?;
                     let readers = readers(&settings)?;
                     let rendering = rendering(&settings)?;
                     let disk = |cache: &std::path::Path| index(cache, &settings.search);
@@ -208,12 +205,10 @@ pub fn run_tuned(
                     remember::run(root, args, env, &settings, &kinds(), &indexing)
                 }
                 Verb::Read(args) => {
-                    let settings = settings?;
                     let readers = readers(&settings)?;
                     read::run(root, &args, env, &settings, &readers)
                 }
                 Verb::Reindex(args) => {
-                    let settings = settings?;
                     let readers = readers(&settings)?;
                     let rendering = rendering(&settings)?;
                     let kinds = kinds();
@@ -232,7 +227,7 @@ pub fn run_tuned(
                         )
                     })
                 }
-                Verb::Config(args) => config::run(root, args, &settings?),
+                Verb::Config(args) => config::run(root, args, &settings),
             }
         }
     }

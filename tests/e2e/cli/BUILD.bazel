@@ -14,7 +14,6 @@ bilbo_rust_test(
         "tty.rs",
     ],
     compile_data = [
-        "//apps/cli:hook_payloads",
         "//libs/rust/kinds/markdown:fixtures",
         "//libs/rust/kinds/session:fixtures",
     ],

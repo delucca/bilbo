@@ -3,7 +3,7 @@ use std::io::Write;
 
 use bilbo_store::entries::{Captured, Entries, Generation, RecordRange, StoreError};
 use bilbo_store::limits::TearBudget;
-use bilbo_store::segments::{Notice, Options, Rebuild, Store};
+use bilbo_store::segments::{Notice, Options, Store};
 
 use crate::frames::{frames, spans};
 use crate::scratch::{
@@ -700,45 +700,24 @@ fn a_writer_applies_the_configured_tear_budget() {
 }
 
 #[test]
-fn a_store_that_may_not_rebuild_refuses_a_missing_or_stale_catalog_and_keeps_nothing() {
-    let scratch = Scratch::new("unrebuilt");
+fn a_writer_that_finds_a_catalog_missing_a_sealed_segment_rebuilds_it() {
+    let scratch = Scratch::new("stale_catalog");
     let layout = scratch.layout();
-    let no_rebuild = || Options {
-        rebuild: Rebuild::CatchUpOnly,
-        ..sealing()
-    };
     let mut store = open(&layout);
     keep(&mut store, "a.md", b"one\n");
     store.close().expect("close");
     let old = fs::read(catalog(&layout)).expect("the catalog of one segment");
 
-    fs::remove_file(catalog(&layout)).expect("remove the catalog");
-    assert!(matches!(
-        Store::open(&layout, no_rebuild(), &mut |_| {}),
-        Err(StoreError::Unrebuilt)
-    ));
-    assert!(!catalog(&layout).exists(), "nothing rebuilt");
-
     let mut store = open(&layout);
     keep(&mut store, "b.md", b"two\n");
     store.close().expect("close");
     assert_eq!(sealed(&layout).len(), 2);
-    let open_seg_before = fs::read(open_seg(&layout)).expect("open.seg");
     fs::write(catalog(&layout), &old).expect("a catalog that lists one segment of two");
-    assert!(matches!(
-        Store::open(&layout, no_rebuild(), &mut |_| {}),
-        Err(StoreError::Unrebuilt)
-    ));
-    assert_eq!(fs::read(catalog(&layout)).expect("catalog"), old);
-    assert_eq!(
-        fs::read(open_seg(&layout)).expect("open.seg"),
-        open_seg_before
-    );
 
     let store = open(&layout);
     assert!(
         store.by_origin(&origin("b.md")).expect("head").is_some(),
-        "a run that may rebuilds"
+        "the rebuilt catalog holds the later file"
     );
     store.close().expect("close");
 }

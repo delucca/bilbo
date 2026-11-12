@@ -6,14 +6,14 @@ use std::os::unix::fs::{PermissionsExt, symlink};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Sender, channel};
 use std::thread;
-use std::time::{Duration, Instant, SystemTime};
+use std::time::{Duration, SystemTime};
 
 use bilbo_cli::console::settings;
 use bilbo_cli::remember::save::{Saved, Saving, save_with};
 use bilbo_kinds::follows::Follow;
 use bilbo_store::entries::{Entries, Head, Meta, Origin, RecordRange};
 use bilbo_store::layout::Layout;
-use bilbo_store::segments::{Held, Options, Rebuild, Sealing, Store};
+use bilbo_store::segments::{Options, Store};
 
 mod sandbox;
 
@@ -34,8 +34,6 @@ const META: &[u8] =
 const CODEX: &[u8] = include_bytes!(
     "../../../libs/rust/kinds/session/fixtures/rollout-2026-11-06T09-10-00-019a4f2e-7c1d-7b3a-9e55-2d8c41f0a6b7.jsonl"
 );
-const CLAUDE_STOP: &str = include_str!("fixtures/hook/claude-code-stop.json");
-const CODEX_STOP: &str = include_str!("fixtures/hook/codex-stop.json");
 
 struct Sandbox {
     dir: PathBuf,
@@ -111,12 +109,12 @@ impl Sandbox {
         layout(&self.vars())
     }
 
-    fn run(&self, args: &[&str], stdin: &[u8]) -> Run {
-        run(self.vars(), args, stdin, None)
+    fn run(&self, args: &[&str]) -> Run {
+        run(self.vars(), args, None)
     }
 
-    fn run_noticed(&self, args: &[&str], stdin: &[u8], notices: Option<Sender<String>>) -> Run {
-        run(self.vars(), args, stdin, notices)
+    fn run_noticed(&self, args: &[&str], notices: Option<Sender<String>>) -> Run {
+        run(self.vars(), args, notices)
     }
 
     fn store(&self) -> Store {
@@ -191,7 +189,7 @@ fn lines(bytes: &[u8]) -> usize {
 #[test]
 fn a_projects_folder_keeps_its_sessions_and_each_subagent_names_its_session_as_parent() {
     let sandbox = Sandbox::new("projects");
-    let run = sandbox.run(&[text(&sandbox.projects()), "--kind", "session"], b"");
+    let run = sandbox.run(&[text(&sandbox.projects()), "--kind", "session"]);
     assert_eq!(run.code, 0, "{:?}", run.stderr);
     assert_eq!(
         run.stdout.lines().next(),
@@ -213,7 +211,7 @@ fn a_projects_folder_keeps_its_sessions_and_each_subagent_names_its_session_as_p
 #[test]
 fn a_session_keeps_one_record_per_line_with_its_opaque_strings_as_placeholders() {
     let sandbox = Sandbox::new("records");
-    assert_eq!(sandbox.run(&[text(&sandbox.rollout())], b"").code, 0);
+    assert_eq!(sandbox.run(&[text(&sandbox.rollout())]).code, 0);
     let records = sandbox.records(&sandbox.rollout());
     let originals: Vec<&[u8]> = CODEX.split_inclusive(|&byte| byte == b'\n').collect();
     assert_eq!(records.len(), originals.len());
@@ -232,14 +230,14 @@ fn a_session_keeps_one_record_per_line_with_its_opaque_strings_as_placeholders()
 fn a_grown_session_appends_its_new_lines_and_a_half_written_line_waits() {
     let sandbox = Sandbox::new("grown");
     let main = sandbox.main();
-    assert_eq!(sandbox.run(&[text(&main)], b"").code, 0);
+    assert_eq!(sandbox.run(&[text(&main)]).code, 0);
     let grown = [
         CLAUDE,
         b"{\"type\":\"user\",\"sessionId\":\"s\"}\n{\"type\":\"assi",
     ]
     .concat();
     write(&main, &grown);
-    let run = sandbox.run(&[text(&main)], b"");
+    let run = sandbox.run(&[text(&main)]);
     assert_eq!(
         run.stdout.lines().next(),
         Some(counts(0, 1, 0, 0, 0).as_str())
@@ -247,7 +245,7 @@ fn a_grown_session_appends_its_new_lines_and_a_half_written_line_waits() {
     assert_eq!(sandbox.records(&main).len(), lines(CLAUDE) + 1);
     let whole = [grown.as_slice(), b"stant\"}\n"].concat();
     write(&main, &whole);
-    let run = sandbox.run(&[text(&main)], b"");
+    let run = sandbox.run(&[text(&main)]);
     assert_eq!(
         run.stdout.lines().next(),
         Some(counts(0, 1, 0, 0, 0).as_str()),
@@ -261,9 +259,9 @@ fn a_file_whose_size_and_time_did_not_change_is_not_read_again() {
     let sandbox = Sandbox::new("not_read");
     let main = sandbox.main();
     settle(&main);
-    assert_eq!(sandbox.run(&[text(&main)], b"").code, 0);
+    assert_eq!(sandbox.run(&[text(&main)]).code, 0);
     fs::set_permissions(&main, fs::Permissions::from_mode(0o000)).expect("chmod");
-    let run = sandbox.run(&[text(&main)], b"");
+    let run = sandbox.run(&[text(&main)]);
     assert_eq!((run.code, run.stderr.clone()), (0, Vec::<String>::new()));
     assert_eq!(
         run.stdout.lines().next(),
@@ -278,7 +276,7 @@ fn a_run_that_finds_the_again_flag_runs_the_follows_once_more_before_it_stops() 
     write(&notes.join("a.md"), b"a\n");
     fs::create_dir_all(sandbox.layout().state).expect("state");
     fs::write(sandbox.again(), b"1").expect("the flag another bilbo set");
-    let run = sandbox.run(&[text(&notes)], b"");
+    let run = sandbox.run(&[text(&notes)]);
     assert_eq!(run.code, 0, "{:?}", run.stderr);
     assert_eq!(
         run.stdout.lines().next(),
@@ -294,46 +292,6 @@ fn a_run_that_finds_the_again_flag_runs_the_follows_once_more_before_it_stops() 
     assert_eq!(fs::metadata(sandbox.again()).expect("flag").len(), 0);
 }
 
-#[test]
-fn a_hook_keeps_its_transcripts_new_lines_and_seals_nothing() {
-    let sandbox = Sandbox::new("hook");
-    let home = text(&sandbox.home()).to_owned();
-    for payload in [CLAUDE_STOP, CODEX_STOP] {
-        let payload = payload.replace("/home/me", &home);
-        let run = sandbox.run(&["--hook"], payload.as_bytes());
-        assert_eq!((run.code, run.stdout.as_str()), (0, ""));
-        assert!(run.stderr.is_empty(), "{:?}", run.stderr);
-        backdate(&sandbox.layout().state, 61);
-    }
-    assert_eq!(sandbox.records(&sandbox.main()).len(), lines(CLAUDE));
-    assert_eq!(sandbox.records(&sandbox.rollout()).len(), lines(CODEX));
-    assert_eq!(sandbox.segments(), 0, "the hook never seals, even when due");
-    let open = fs::metadata(sandbox.layout().state.join("open.seg")).expect("open.seg");
-    assert!(open.len() > 12);
-
-    let run = sandbox.run(&[text(&sandbox.projects()), "--kind", "session"], b"");
-    assert_eq!(run.code, 0, "{:?}", run.stderr);
-    assert_eq!(
-        sandbox.segments(),
-        1,
-        "the next run with a target seals what is due"
-    );
-}
-
-fn index_files(sandbox: &Sandbox) -> BTreeMap<String, Vec<u8>> {
-    let folder = sandbox.layout().cache.join("index");
-    fs::read_dir(folder)
-        .expect("the index folder")
-        .map(|entry| {
-            let entry = entry.expect("an entry");
-            (
-                entry.file_name().into_string().expect("a name"),
-                fs::read(entry.path()).unwrap_or_default(),
-            )
-        })
-        .collect()
-}
-
 fn indexed_to(sandbox: &Sandbox) -> u64 {
     let meta = fs::read_to_string(sandbox.layout().cache.join("index/meta.json"))
         .expect("the index's meta.json");
@@ -347,241 +305,21 @@ fn indexed_to(sandbox: &Sandbox) -> u64 {
 }
 
 #[test]
-fn a_hook_keeps_its_turn_and_changes_no_file_of_the_cache_folders_index_and_the_next_remember_indexes_it()
- {
-    let sandbox = Sandbox::new("hook_index");
-    let first = sandbox.run(&[text(&sandbox.projects()), "--kind", "session"], b"");
+fn a_bare_remember_keeps_what_a_followed_session_gained_and_indexes_it() {
+    let sandbox = Sandbox::new("bare_grown");
+    let first = sandbox.run(&[]);
     assert_eq!(first.code, 0, "{:?}", first.stderr);
-    let files = index_files(&sandbox);
     let seq = indexed_to(&sandbox);
     let more = b"{\"type\":\"user\",\"message\":{\"content\":\"one more\"}}\n";
     fs::write(sandbox.main(), [CLAUDE, more].concat()).expect("the session grows");
-    let payload = CLAUDE_STOP.replace("/home/me", text(&sandbox.home()));
-    let hook = sandbox.run(&["--hook"], payload.as_bytes());
-    assert_eq!((hook.code, hook.stdout.as_str()), (0, ""));
-    assert!(hook.stderr.is_empty(), "{:?}", hook.stderr);
-    assert_eq!(sandbox.records(&sandbox.main()).len(), lines(CLAUDE) + 1);
-    assert_eq!(
-        index_files(&sandbox),
-        files,
-        "the hook left the index alone"
-    );
-    let next = sandbox.run(&[text(&sandbox.projects()), "--kind", "session"], b"");
+    let next = sandbox.run(&[]);
     assert_eq!((next.code, next.stderr.clone()), (0, Vec::<String>::new()));
-    assert!(indexed_to(&sandbox) > seq, "the next run indexed the turn");
-}
-
-#[test]
-fn a_bare_remember_that_finds_a_hook_holding_the_store_leaves_its_request_for_the_next_run_that_is_not_a_hook()
- {
-    let sandbox = Sandbox::new("bare_finds_hook");
-    let hook = Store::open(
-        &sandbox.layout(),
-        Options {
-            held: Held::Flag {
-                readers: Some(Duration::from_secs(1)),
-            },
-            sealing: Sealing::Never,
-            rebuild: Rebuild::CatchUpOnly,
-            ..Options::default()
-        },
-        &mut |_| {},
-    )
-    .expect("hold the store as a hook does");
-    let run = sandbox.run(&[], b"");
-    assert_eq!((run.code, run.stdout.as_str()), (0, ""));
     assert_eq!(
-        run.stderr,
-        ["bilbo: another bilbo is writing the store; requested another pass over the follows"]
+        next.stdout.lines().next(),
+        Some(counts(0, 1, 0, 3, 0).as_str())
     );
-    hook.release();
-    assert_eq!(fs::metadata(sandbox.again()).expect("flag").len(), 1);
-    let next = sandbox.run(&[], b"");
-    assert_eq!(next.code, 0, "{:?}", next.stderr);
-    assert!(
-        next.stderr
-            .iter()
-            .any(|line| line.starts_with("bilbo: ran the follows again for another bilbo: ")),
-        "{:?}",
-        next.stderr
-    );
-    assert_eq!(fs::metadata(sandbox.again()).expect("flag").len(), 0);
-}
-
-#[test]
-fn a_hook_exits_0_whatever_it_is_given() {
-    let sandbox = Sandbox::new("hook_garbage");
-    let missing = CLAUDE_STOP.replace("/home/me", "/nowhere");
-    for (input, line) in [
-        (
-            "garbage",
-            "bilbo: the hook input is not a JSON object".to_owned(),
-        ),
-        (
-            "{}",
-            "bilbo: the hook input has no transcript_path".to_owned(),
-        ),
-        (
-            missing.as_str(),
-            format!(
-                "bilbo: cannot read /nowhere/.claude/projects/-home-me-src-garden/{MAIN}.jsonl: No such file or directory (os error 2)"
-            ),
-        ),
-    ] {
-        let run = sandbox.run(&["--hook"], input.as_bytes());
-        assert_eq!((run.code, run.stdout.as_str()), (0, ""), "{input}");
-        assert_eq!(run.stderr, [line], "{input}");
-    }
-    write(
-        &sandbox.dir.join("config/config.toml"),
-        b"[store]\nseal_at = 0\n",
-    );
-    let run = sandbox.run(&["--hook"], CLAUDE_STOP.as_bytes());
-    assert_eq!(run.code, 0);
-    assert_eq!(run.stderr.len(), 1, "{:?}", run.stderr);
-    assert!(!sandbox.dir.join("store").exists());
-}
-
-#[test]
-fn a_hook_that_finds_the_store_held_sets_the_again_flag_and_exits_0() {
-    let sandbox = Sandbox::new("hook_held");
-    let layout = sandbox.layout();
-    let held = Store::open(&layout, Options::default(), &mut |_| {}).expect("hold the store");
-    let payload = CLAUDE_STOP.replace("/home/me", text(&sandbox.home()));
-    let run = sandbox.run(&["--hook"], payload.as_bytes());
-    assert_eq!((run.code, run.stdout.as_str()), (0, ""));
-    assert!(run.stderr.is_empty(), "{:?}", run.stderr);
-    assert_eq!(fs::metadata(sandbox.again()).expect("flag").len(), 1);
-    let bilbo_store::segments::Closed::Again(rerun) = held.close().expect("close") else {
-        panic!("the holder must run again");
-    };
-    drop(rerun);
-}
-
-#[test]
-fn a_hook_that_finds_a_reader_walking_the_segments_gives_up_within_its_wait_and_exits_0() {
-    let sandbox = Sandbox::new("hook_reader");
-    let first = sandbox.run(&[text(&sandbox.projects()), "--kind", "session"], b"");
-    assert_eq!(first.code, 0, "{:?}", first.stderr);
-    let kept = sandbox.records(&sandbox.main()).len();
-    let more = b"{\"type\":\"user\",\"message\":{\"content\":\"one more\"}}\n";
-    fs::write(sandbox.main(), [CLAUDE, more].concat()).expect("the session grows");
-    fs::remove_file(sandbox.layout().cache.join("catalog.sqlite")).expect("delete the catalog");
-    // With no catalog a reader walks every segment under the shared lock: it stands for a slow read.
-    let reader = sandbox.store();
-    let payload = CLAUDE_STOP.replace("/home/me", text(&sandbox.home()));
-    for (wait, least) in [("0s", 0), ("1s", 1)] {
-        let mut vars = sandbox.vars();
-        vars.insert("BILBO_STORE_HOOK_WAIT".to_owned(), wait.into());
-        let started = std::time::Instant::now();
-        let hook = run(vars, &["--hook"], payload.as_bytes(), None);
-        let took = started.elapsed().as_secs();
-        assert_eq!((hook.code, hook.stdout.as_str()), (0, ""), "{wait}");
-        assert_eq!(
-            hook.stderr,
-            [format!(
-                "bilbo: kept nothing: another bilbo is reading the store; bilbo remember {} \
-                     keeps these lines",
-                text(&fs::canonicalize(sandbox.main()).expect("the transcript"))
-            )],
-            "{wait}"
-        );
-        assert!(
-            (least..least + 3).contains(&took),
-            "{wait}: it took {took} s"
-        );
-    }
-    assert_eq!(
-        fs::metadata(sandbox.again()).map_or(0, |flag| flag.len()),
-        0,
-        "a reader runs nothing again"
-    );
-    drop(reader);
-    let bare = sandbox.run(&[], b"");
-    assert_eq!(bare.code, 0, "{:?}", bare.stderr);
-    assert_eq!(
-        sandbox.records(&sandbox.main()).len(),
-        kept + 1,
-        "the next bare run keeps the line"
-    );
-}
-
-#[test]
-fn a_hook_that_gives_up_names_the_run_that_keeps_its_lines_whatever_folder_they_are_in() {
-    let sandbox = Sandbox::new("hook_reader_named");
-    let first = sandbox.run(&[text(&sandbox.projects()), "--kind", "session"], b"");
-    assert_eq!(first.code, 0, "{:?}", first.stderr);
-    fs::remove_file(sandbox.layout().cache.join("catalog.sqlite")).expect("delete the catalog");
-    // Under the default follow, in a folder a bare run skips; and in a folder a shell would split.
-    let hidden = sandbox.projects().join(format!(".hidden/{OTHER}.jsonl"));
-    let spaced = sandbox.dir.join(format!("My Proj'ect/{OTHER}.jsonl"));
-    write(&hidden, CLAUDE);
-    write(&spaced, CLAUDE);
-    let hidden = fs::canonicalize(&hidden).expect("the transcript");
-    let spaced = fs::canonicalize(&spaced).expect("the transcript");
-    let reader = sandbox.store();
-    let mut commands = Vec::new();
-    for file in [&hidden, &spaced] {
-        let mut vars = sandbox.vars();
-        vars.insert("BILBO_STORE_HOOK_WAIT".to_owned(), "0s".into());
-        let payload = format!("{{\"transcript_path\":\"{}\"}}", text(file));
-        let hook = run(vars, &["--hook"], payload.as_bytes(), None);
-        assert_eq!((hook.code, hook.stdout.as_str()), (0, ""));
-        let [line] = hook.stderr.as_slice() else {
-            panic!("one line: {:?}", hook.stderr);
-        };
-        let command = line
-            .strip_prefix("bilbo: kept nothing: another bilbo is reading the store; ")
-            .and_then(|rest| rest.strip_suffix(" keeps these lines"))
-            .unwrap_or_else(|| panic!("{line}"));
-        commands.push(command.to_owned());
-    }
-    // A newline in a folder's name: no command could name the file on one line.
-    let broken = sandbox.dir.join(format!("two\nlines/{OTHER}.jsonl"));
-    write(&broken, CLAUDE);
-    let broken = fs::canonicalize(&broken).expect("the transcript");
-    let mut vars = sandbox.vars();
-    vars.insert("BILBO_STORE_HOOK_WAIT".to_owned(), "0s".into());
-    let payload = format!(
-        "{{\"transcript_path\":\"{}\"}}",
-        text(&broken).replace('\n', "\\n")
-    );
-    let hook = run(vars, &["--hook"], payload.as_bytes(), None);
-    assert_eq!((hook.code, hook.stdout.as_str()), (0, ""));
-    assert_eq!(
-        hook.stderr,
-        [
-            "bilbo: kept nothing: another bilbo is reading the store, and the transcript's path \
-             holds a control character, so no command for it can be printed: run bilbo remember \
-             on that file"
-        ]
-    );
-    assert_eq!(commands[0], format!("bilbo remember {}", text(&hidden)));
-    assert_eq!(
-        commands[1],
-        format!("bilbo remember '{}'", text(&spaced).replace('\'', "'\\''"))
-    );
-    drop(reader);
-    let bare = sandbox.run(&[], b"");
-    assert_eq!(bare.code, 0, "{:?}", bare.stderr);
-    for (file, command) in [&hidden, &spaced].into_iter().zip(&commands) {
-        let origin = Origin::file(file).expect("origin");
-        assert!(
-            sandbox.store().by_origin(&origin).expect("head").is_none(),
-            "a bare run does not come by {}",
-            file.display()
-        );
-        let split = std::process::Command::new("/bin/sh")
-            .args(["-c", &format!("set -- {command}; printf '%s\\n' \"$@\"")])
-            .output()
-            .expect("a shell");
-        let split = String::from_utf8(split.stdout).expect("UTF-8");
-        let words: Vec<&str> = split.lines().collect();
-        assert_eq!(words, ["bilbo", "remember", text(file)]);
-        let named = sandbox.run(&words[2..], b"");
-        assert_eq!(named.code, 0, "{:?}", named.stderr);
-        assert!(!sandbox.records(file).is_empty());
-    }
+    assert_eq!(sandbox.records(&sandbox.main()).len(), lines(CLAUDE) + 1);
+    assert!(indexed_to(&sandbox) > seq, "the run indexed the turn");
 }
 
 #[expect(
@@ -1113,53 +851,18 @@ fn hex_strings(line: &[u8]) -> Vec<&[u8]> {
 }
 
 #[test]
-fn a_hook_leaves_a_request_for_another_run_to_the_next_run_with_a_target() {
-    let sandbox = Sandbox::new("hook_leaves_flag");
-    let layout = sandbox.layout();
-    fs::create_dir_all(&layout.state).expect("state");
-    fs::write(sandbox.again(), b"1").expect("the flag another bilbo set");
-    let payload = CLAUDE_STOP.replace("/home/me", text(&sandbox.home()));
-    let run = sandbox.run(&["--hook"], payload.as_bytes());
-    assert_eq!((run.code, run.stdout.as_str()), (0, ""));
-    assert!(run.stderr.is_empty(), "{:?}", run.stderr);
-    assert_eq!(sandbox.records(&sandbox.main()).len(), lines(CLAUDE));
-    assert_eq!(
-        fs::metadata(sandbox.again()).expect("flag").len(),
-        1,
-        "the hook neither reran the follows nor took the request"
-    );
-    assert!(
-        sandbox
-            .store()
-            .by_origin(&Origin::file(&sandbox.rollout()).expect("origin"))
-            .expect("head")
-            .is_none()
-    );
-
-    let run = sandbox.run(&[text(&sandbox.main())], b"");
-    assert_eq!(run.code, 0, "{:?}", run.stderr);
-    assert_eq!(
-        run.stderr,
-        [
-            "bilbo: ran the follows again for another bilbo: new 3, appended 0, new generation 0, unchanged 1, refused 0"
-        ]
-    );
-    assert_eq!(fs::metadata(sandbox.again()).expect("flag").len(), 0);
-}
-
-#[test]
 fn a_subagent_kept_before_its_session_gets_its_parent_when_a_sweep_finds_it_grown() {
     let sandbox = Sandbox::new("child_first");
     let child = sandbox.subagent();
     settle(&child);
-    assert_eq!(sandbox.run(&[text(&child)], b"").code, 0);
+    assert_eq!(sandbox.run(&[text(&child)]).code, 0);
     assert_eq!(
         sandbox.meta(&child).parent,
         None,
         "its session is not kept yet"
     );
     let projects = text(&sandbox.projects()).to_owned();
-    let run = sandbox.run(&[&projects, "--kind", "session"], b"");
+    let run = sandbox.run(&[&projects, "--kind", "session"]);
     assert_eq!(
         run.stdout.lines().next(),
         Some(counts(2, 0, 0, 1, 0).as_str())
@@ -1169,7 +872,7 @@ fn a_subagent_kept_before_its_session_gets_its_parent_when_a_sweep_finds_it_grow
         &child,
         [SUBAGENT, b"{\"type\":\"user\",\"sessionId\":\"s\"}\n"].concat(),
     );
-    let run = sandbox.run(&[&projects, "--kind", "session"], b"");
+    let run = sandbox.run(&[&projects, "--kind", "session"]);
     assert_eq!(
         run.stdout.lines().next(),
         Some(counts(0, 1, 0, 2, 0).as_str())
@@ -1181,86 +884,13 @@ fn a_subagent_kept_before_its_session_gets_its_parent_when_a_sweep_finds_it_grow
 }
 
 #[test]
-fn a_hook_that_finds_the_catalog_missing_or_stale_keeps_nothing_and_leaves_the_rebuild() {
-    let sandbox = Sandbox::new("hook_unrebuilt");
-    let layout = sandbox.layout();
-    let catalog = layout.cache.join("catalog.sqlite");
-    let open_seg = layout.state.join("open.seg");
-    let payload = CLAUDE_STOP.replace("/home/me", text(&sandbox.home()));
-    let refused = [
-        "bilbo: kept nothing: the catalog must be rebuilt first, which the next bilbo remember without --hook does",
-    ];
-    assert_eq!(sandbox.run(&[text(&sandbox.rollout())], b"").code, 0);
-    let one_segment_ago = fs::read(&catalog).expect("the catalog");
-
-    fs::remove_file(&catalog).expect("lose the catalog");
-    let before = fs::read(&open_seg).expect("open.seg");
-    let started = Instant::now();
-    let run = sandbox.run(&["--hook"], payload.as_bytes());
-    assert!(started.elapsed() < Duration::from_secs(5));
-    assert_eq!((run.code, run.stdout.as_str()), (0, ""));
-    assert_eq!(run.stderr, refused);
-    assert!(!catalog.exists(), "the hook rebuilt nothing");
-    assert_eq!(
-        fs::read(&open_seg).expect("open.seg"),
-        before,
-        "and kept nothing"
-    );
-
-    let run = sandbox.run(&[text(&sandbox.rollout())], b"");
-    assert_eq!(run.code, 0, "{:?}", run.stderr);
-    backdate(&layout.state, 61);
-    assert_eq!(sandbox.run(&[text(&sandbox.rollout())], b"").code, 0);
-    assert_eq!(sandbox.segments(), 1);
-    fs::write(&catalog, &one_segment_ago).expect("a catalog older than the store");
-    let before = fs::read(&open_seg).expect("open.seg");
-    let run = sandbox.run(&["--hook"], payload.as_bytes());
-    assert_eq!((run.code, run.stdout.as_str()), (0, ""));
-    assert_eq!(run.stderr, refused);
-    assert_eq!(fs::read(&catalog).expect("catalog"), one_segment_ago);
-    assert_eq!(fs::read(&open_seg).expect("open.seg"), before);
-
-    let run = sandbox.run(&["--hook"], payload.as_bytes());
-    assert_eq!(run.stderr, refused, "still refused until a run rebuilds");
-    assert_eq!(sandbox.run(&[text(&sandbox.rollout())], b"").code, 0);
-    let run = sandbox.run(&["--hook"], payload.as_bytes());
-    assert!(run.stderr.is_empty(), "{:?}", run.stderr);
-    assert_eq!(sandbox.records(&sandbox.main()).len(), lines(CLAUDE));
-}
-
-#[test]
-fn a_hook_whose_transcript_is_not_a_regular_file_keeps_nothing() {
-    let sandbox = Sandbox::new("hook_not_a_file");
-    let link = sandbox.dir.join("projects-link");
-    symlink(sandbox.projects(), &link).expect("a link to a folder");
-    for path in [sandbox.projects(), link, PathBuf::from("/dev/null")] {
-        let payload = format!("{{\"transcript_path\":\"{}\"}}", text(&path));
-        let run = sandbox.run(&["--hook"], payload.as_bytes());
-        assert_eq!(
-            (run.code, run.stdout.as_str()),
-            (0, ""),
-            "{}",
-            path.display()
-        );
-        assert_eq!(
-            run.stderr,
-            [format!(
-                "bilbo: the hook input's transcript_path is not a regular file: {}",
-                text(&path)
-            )]
-        );
-    }
-    assert!(!sandbox.dir.join("store").exists(), "nothing kept");
-}
-
-#[test]
 fn a_bare_run_that_finds_only_a_reader_waits_for_it_and_keeps() {
     let sandbox = Sandbox::new("reader_held");
-    assert_eq!(sandbox.run(&[text(&sandbox.rollout())], b"").code, 0);
+    assert_eq!(sandbox.run(&[text(&sandbox.rollout())]).code, 0);
     let reader = sandbox.store();
     let (notices_tx, notices) = channel();
     let run = thread::scope(|scope| {
-        let bare = scope.spawn(|| sandbox.run_noticed(&[], b"", Some(notices_tx)));
+        let bare = scope.spawn(|| sandbox.run_noticed(&[], Some(notices_tx)));
         let notice = notices.recv_timeout(WAIT).expect("the bare run waits");
         assert!(notice.contains("waiting for another bilbo"), "{notice}");
         assert_eq!(
@@ -1291,7 +921,7 @@ fn a_follow_that_only_refuses_counts_its_refusals_once_and_exits_1() {
         .as_bytes(),
     );
     fs::set_permissions(locked.join("sub"), fs::Permissions::from_mode(0o000)).expect("lock");
-    let run = sandbox.run(&[], b"");
+    let run = sandbox.run(&[]);
     fs::set_permissions(locked.join("sub"), fs::Permissions::from_mode(0o700)).expect("unlock");
     assert_eq!(run.code, 1, "{:?}", run.stderr);
     assert_eq!(
@@ -1317,7 +947,7 @@ fn a_rerun_with_a_follow_that_cannot_run_exits_1() {
     );
     fs::create_dir_all(sandbox.layout().state).expect("state");
     fs::write(sandbox.again(), b"1").expect("the flag another bilbo set");
-    let run = sandbox.run(&[text(&notes)], b"");
+    let run = sandbox.run(&[text(&notes)]);
     assert_eq!(run.code, 1, "{:?}", run.stderr);
     assert_eq!(
         run.stdout.lines().next(),
@@ -1413,55 +1043,6 @@ fn two_follow_saves_at_once_keep_both_follows_and_the_files_own_bytes() {
 }
 
 #[test]
-fn a_hook_never_seals_even_past_seal_at() {
-    let sandbox = Sandbox::new("hook_past_seal_at");
-    write(
-        &sandbox.dir.join("config/config.toml"),
-        b"[store]\nseal_at = \"1 MiB\"\n",
-    );
-    let transcript = sandbox
-        .project()
-        .join("0f1e2d3c-4b5a-4968-8776-a5b4c3d2e1f0.jsonl");
-    write(&transcript, noisy_session(3000));
-    let payload = format!("{{\"transcript_path\":\"{}\"}}", text(&transcript));
-    let run = sandbox.run(&["--hook"], payload.as_bytes());
-    assert_eq!((run.code, run.stdout.as_str()), (0, ""));
-    assert!(run.stderr.is_empty(), "{:?}", run.stderr);
-    let open = fs::metadata(sandbox.layout().state.join("open.seg"))
-        .expect("open.seg")
-        .len();
-    assert!(
-        open > 1024 * 1024,
-        "the capture took open.seg past seal_at: {open} bytes"
-    );
-    assert_eq!(sandbox.segments(), 0, "and the hook sealed nothing");
-}
-
-/// Lines of 1,000 pseudo-random characters, which zstd barely shrinks.
-fn noisy_session(lines: usize) -> Vec<u8> {
-    let alphabet = b"abcdefghijklmnopqrstuvwxyz0123456789 ";
-    let mut state = 0x9E37_79B9_7F4A_7C15_u64;
-    let mut out = Vec::new();
-    for n in 0..lines {
-        let message: String = (0..1000)
-            .map(|_| {
-                state ^= state << 13;
-                state ^= state >> 7;
-                state ^= state << 17;
-                char::from(alphabet[(state % 37) as usize])
-            })
-            .collect();
-        out.extend_from_slice(
-            format!(
-                "{{\"type\":\"user\",\"sessionId\":\"s\",\"n\":{n},\"message\":\"{message}\"}}\n"
-            )
-            .as_bytes(),
-        );
-    }
-    out
-}
-
-#[test]
 fn follow_refuses_a_config_its_user_cannot_write() {
     let sandbox = Sandbox::new("follow_unwritable");
     let config = sandbox.dir.join("config/config.toml");
@@ -1469,7 +1050,7 @@ fn follow_refuses_a_config_its_user_cannot_write() {
     write(&notes.join("a.md"), b"a\n");
     write(&config, b"# mine\n");
     fs::set_permissions(&config, fs::Permissions::from_mode(0o422)).expect("chmod");
-    let run = sandbox.run(&[text(&notes), "--follow"], b"");
+    let run = sandbox.run(&[text(&notes), "--follow"]);
     fs::set_permissions(&config, fs::Permissions::from_mode(0o600)).expect("chmod back");
     assert_eq!(run.code, 2, "{:?}", run.stderr);
     assert_eq!(
@@ -1495,7 +1076,7 @@ fn follow_finds_a_folder_declared_through_a_link_followed_already() {
         text(&link)
     );
     write(&config, declared.as_bytes());
-    let run = sandbox.run(&[text(&link), "--follow"], b"");
+    let run = sandbox.run(&[text(&link), "--follow"]);
     assert_eq!(run.code, 0, "{:?}", run.stderr);
     assert_eq!(
         run.stderr,
@@ -1509,10 +1090,10 @@ fn a_bare_run_over_follows_that_claim_nothing_opens_and_closes_the_store() {
     let sandbox = Sandbox::new("bare_claims_nothing");
     let notes = sandbox.dir.join("notes");
     write(&notes.join("a.md"), b"a\n");
-    assert_eq!(sandbox.run(&[text(&notes)], b"").code, 0);
+    assert_eq!(sandbox.run(&[text(&notes)]).code, 0);
     backdate(&sandbox.layout().state, 61);
     write(&sandbox.dir.join("config/config.toml"), b"follow = []\n");
-    let run = sandbox.run(&[], b"");
+    let run = sandbox.run(&[]);
     assert_eq!(run.code, 0, "{:?}", run.stderr);
     assert_eq!(
         run.stdout.lines().next(),
@@ -1537,7 +1118,7 @@ fn a_bare_run_whose_store_fails_still_says_what_it_planned() {
         )
         .as_bytes(),
     );
-    let run = sandbox.run(&[], b"");
+    let run = sandbox.run(&[]);
     assert_eq!(run.code, 2, "{:?}", run.stderr);
     assert_eq!(run.stderr.len(), 3, "{:?}", run.stderr);
     assert_eq!(
@@ -1566,7 +1147,7 @@ fn follow_refuses_an_inline_follow_array_and_names_the_table_to_add() {
         let notes = sandbox.dir.join("notes");
         write(&notes.join("a.md"), b"a\n");
         write(&config, declared.as_bytes());
-        let run = sandbox.run(&[text(&notes), "--follow"], b"");
+        let run = sandbox.run(&[text(&notes), "--follow"]);
         assert_eq!(run.code, 2, "{declared:?}: {:?}", run.stderr);
         assert_eq!(
             run.stdout.lines().next(),

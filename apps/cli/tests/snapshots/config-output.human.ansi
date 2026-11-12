@@ -6,7 +6,6 @@ store.seal_after             = "60m"  [2m(default)[22m
 store.compression            = 19  [2m(default)[22m
 store.tear_budget            = 4  [2m(default)[22m
 store.wait                   = "10s"  [2m(default)[22m
-store.hook_wait              = "2s"  [2m(default)[22m
 store.poll                   = "20ms"  [2m(default)[22m
 follow                       = [{ path = "/home/u/.claude/projects", kind = "session" }, { path = "/home/u/.codex/sessions", kind = "session" }]  [2m(default)[22m
 read.budget                  = 7000  [2m(default)[22m

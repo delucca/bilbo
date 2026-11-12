@@ -51,7 +51,6 @@ fn remembering_a_folder_twice_keeps_everything_once() {
 fn remember_usage_errors_name_the_problem_and_touch_no_store() {
     const USAGE: &str = "bilbo: usage: bilbo remember <file|folder> [--kind <kind>] [--follow]\n\
                          bilbo:        bilbo remember\n\
-                         bilbo:        bilbo remember --hook\n\
                          bilbo: see 'bilbo remember --help'\n";
     let scratch = Scratch::new("usage");
     let cases: [(&[&str], &str); 8] = [
@@ -69,10 +68,7 @@ fn remember_usage_errors_name_the_problem_and_touch_no_store() {
             &["remember", "x", "--kind="],
             "bilbo: --kind needs a value\n",
         ),
-        (
-            &["remember", "--hook", "--follow"],
-            "bilbo: the argument '--hook' cannot be used with '--follow'\n",
-        ),
+        (&["remember", "--hook"], "bilbo: unknown option '--hook'\n"),
         (&["remember", "a", "b"], "bilbo: unexpected argument 'b'\n"),
         (
             &["remember", "x", "--kind", "nope"],

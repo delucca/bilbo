@@ -1,5 +1,5 @@
 use std::io;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use bilbo_store::entries::Entries;
 
@@ -46,20 +46,6 @@ pub fn plan<'k>(
         .collect()
 }
 
-/// `None` when no follow holds `file` or its follow names no kind.
-#[must_use]
-pub fn kind_of(follows: &[Follow], file: &Path, files: &dyn Files) -> Option<String> {
-    let file = files.canonical(file).ok()?;
-    follows
-        .iter()
-        .find(|follow| {
-            files
-                .canonical(&follow.path)
-                .is_ok_and(|folder| file.starts_with(folder))
-        })
-        .and_then(|follow| follow.kind.clone())
-}
-
 pub fn keep(
     planned: &[Planned<'_>],
     files: &dyn Files,
@@ -76,9 +62,9 @@ pub fn keep(
 
 #[cfg(test)]
 mod tests {
-    use std::path::{Path, PathBuf};
+    use std::path::PathBuf;
 
-    use super::{Follow, Planned, kind_of, plan};
+    use super::{Follow, Planned, plan};
     use crate::fake::Suffix;
     use crate::files::{Memory, Node};
     use crate::kind::Kind;
@@ -154,26 +140,5 @@ mod tests {
                 "ready /locked one 0",
             ]
         );
-    }
-
-    #[test]
-    fn a_transcript_under_a_follow_runs_that_follows_kind() {
-        let files = Memory::new()
-            .file("/h/.claude/projects/p/s.jsonl", "{}\n")
-            .file("/elsewhere/s.jsonl", "{}\n")
-            .file("/h/notes/a.jsonl", "{}\n");
-        let follows = [
-            follow("/h/.claude/projects", Some("session")),
-            follow("/h/notes", None),
-            follow("/gone", Some("markdown")),
-        ];
-        let kind = |path: &str| kind_of(&follows, Path::new(path), &files);
-        assert_eq!(
-            kind("/h/.claude/projects/p/s.jsonl"),
-            Some("session".to_owned())
-        );
-        assert_eq!(kind("/h/notes/a.jsonl"), None);
-        assert_eq!(kind("/elsewhere/s.jsonl"), None);
-        assert_eq!(kind("/missing.jsonl"), None);
     }
 }

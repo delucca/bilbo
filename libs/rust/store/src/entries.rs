@@ -273,10 +273,6 @@ pub enum StoreError {
     },
     /// A writer holds the store: a writer set the again flag for it, a reader waited as long as its options allow.
     Busy,
-    /// Readers held the store for longer than a writer's options let it wait.
-    Reading,
-    /// The catalog must be rebuilt from every segment, and the options refused that.
-    Unrebuilt,
 }
 
 impl fmt::Display for StoreError {
@@ -332,8 +328,6 @@ impl fmt::Display for StoreError {
             ),
             Self::Stopped(step) => write!(f, "stopped at the test hook {step}"),
             Self::Busy => f.write_str("another bilbo is writing the store"),
-            Self::Reading => f.write_str("another bilbo is reading the store"),
-            Self::Unrebuilt => f.write_str("the catalog must be rebuilt from the store first"),
         }
     }
 }
@@ -524,14 +518,6 @@ mod tests {
             (
                 StoreError::Busy.to_string(),
                 "another bilbo is writing the store",
-            ),
-            (
-                StoreError::Reading.to_string(),
-                "another bilbo is reading the store",
-            ),
-            (
-                StoreError::Unrebuilt.to_string(),
-                "the catalog must be rebuilt from the store first",
             ),
         ];
         for (text, expected) in cases {
