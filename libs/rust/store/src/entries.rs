@@ -108,9 +108,7 @@ pub struct Capture<'a> {
 pub struct Kept {
     pub id: Id,
     pub generation: Generation,
-    /// The records written by this capture.
     pub records: RecordRange,
-    /// Input bytes captured.
     pub raw_bytes: u64,
     /// Bytes appended to `open.seg`, frame headers and the meta frame included.
     pub stored_bytes: u64,

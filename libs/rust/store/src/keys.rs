@@ -119,7 +119,6 @@ pub const ABOUT: [&About; 6] = [
     &POLL.about,
 ];
 
-/// The store's keys as the settings resolved them.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Section {
     pub seal_at: Resolved<u64>,
@@ -141,7 +140,6 @@ pub fn section(source: &Source<'_>) -> Result<Section, Error> {
     })
 }
 
-/// Every key at its default: no variable, no file.
 pub fn defaults() -> Section {
     let file = File::default();
     section(&Source {
