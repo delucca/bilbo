@@ -1,6 +1,4 @@
-//! `bilbo remember` and `bilbo reindex` in one process over a scratch store, with the real kinds,
-//! tokenizer and index. This file and `lib.rs` are the only ones that name the index's crate: a
-//! test of what the index holds has to read it. The ignored test reads the folders the environment names.
+//! This file and `lib.rs` are the only ones that name the index's crate: a test of what the index holds has to read it.
 
 use std::collections::HashMap;
 use std::ffi::OsString;
@@ -79,7 +77,19 @@ static COUNTER: AtomicU64 = AtomicU64::new(0);
 static QWEN: LazyLock<bilbo_qwen::Qwen> =
     LazyLock::new(|| bilbo_qwen::Qwen::load().expect("the tokenizer"));
 
-const WORKERS: usize = 2;
+const WORKERS: &str = "2";
+
+fn options() -> bilbo_tantivy::Options {
+    let search = bilbo_search::keys::defaults();
+    bilbo_tantivy::Options {
+        memory: search.memory(),
+        merge_deleted_share: search.merge_deleted_share(),
+    }
+}
+
+fn disk(cache: &Path) -> Box<dyn Index> {
+    bilbo_cli::index(cache, &bilbo_search::keys::defaults())
+}
 
 struct Shared;
 
@@ -106,7 +116,6 @@ fn shared_tokenizer() -> Result<Tokenizer, Failure> {
 
 fn tune(mut indexing: Indexing<'_>) -> Indexing<'_> {
     indexing.tokenizer = &shared_tokenizer;
-    indexing.request.workers = WORKERS;
     indexing
 }
 
@@ -148,7 +157,6 @@ impl Sandbox {
         Sandbox { dir }
     }
 
-    /// The session and Markdown fixtures, remembered.
     fn filled(test: &str) -> Sandbox {
         let sandbox = Sandbox::new(test);
         for (name, bytes) in SESSIONS {
@@ -179,7 +187,7 @@ impl Sandbox {
     }
 
     fn vars(&self) -> HashMap<String, OsString> {
-        [
+        let mut vars: HashMap<String, OsString> = [
             ("HOME", "home"),
             ("BILBO_HOME", "store"),
             ("XDG_STATE_HOME", "state"),
@@ -188,7 +196,9 @@ impl Sandbox {
         ]
         .into_iter()
         .map(|(name, folder)| (name.to_owned(), self.dir.join(folder).into_os_string()))
-        .collect()
+        .collect();
+        vars.insert("BILBO_SEARCH_WORKERS".to_owned(), OsString::from(WORKERS));
+        vars
     }
 
     fn cache(&self) -> PathBuf {
@@ -196,7 +206,7 @@ impl Sandbox {
     }
 
     fn index(&self) -> Tantivy {
-        Tantivy::at(bilbo_tantivy::folder(&self.cache()))
+        Tantivy::at(bilbo_tantivy::folder(&self.cache()), options())
     }
 
     fn run(&self, args: &[&str]) -> Run {
@@ -235,8 +245,6 @@ impl Sandbox {
             .expect("a number")
     }
 
-    /// The documents of the index and the documents each query matches, without scores: what a
-    /// grown index and a rebuilt one must share.
     fn matching(&self) -> (Vec<String>, Vec<Vec<String>>) {
         let index = self.index();
         let sorted = |rows: Vec<Row>| {
@@ -260,7 +268,6 @@ impl Sandbox {
         (sorted(index.documents().expect("documents")), hits)
     }
 
-    /// `remember <target>` in this process, with the given index and a tokenizer loader that counts.
     fn remember_in_process(
         &self,
         target: &str,
@@ -274,9 +281,6 @@ impl Sandbox {
         self.remember_with(target, index, &load, false, &Arc::default())
     }
 
-    /// `remember <target>` in this process. `said` holds every line the notice callback has been
-    /// handed so far, and `load` may read it; `panicky` wraps each reader in one that panics on a
-    /// record that holds `POISON`.
     fn remember_with(
         &self,
         target: &str,
@@ -285,8 +289,25 @@ impl Sandbox {
         panicky: bool,
         said: &Arc<Mutex<Vec<String>>>,
     ) -> Run {
+        self.remember_with_vars(target, &[], index, load, panicky, said)
+    }
+
+    fn remember_with_vars(
+        &self,
+        target: &str,
+        extra: &[(&str, &str)],
+        index: &dyn Fn(&Path) -> Box<dyn Index>,
+        load: &dyn Fn() -> Result<Tokenizer, Failure>,
+        panicky: bool,
+        said: &Arc<Mutex<Vec<String>>>,
+    ) -> Run {
         let sink = Arc::clone(said);
-        let vars = self.vars();
+        let mut vars = self.vars();
+        vars.extend(
+            extra
+                .iter()
+                .map(|(name, value)| ((*name).to_owned(), OsString::from(value))),
+        );
         let mut env = Env {
             var: Box::new(move |name| vars.get(name).cloned()),
             stdin: Box::new(io::empty()),
@@ -304,8 +325,7 @@ impl Sandbox {
                 .collect();
         }
         let rendering = bilbo_cli::rendering(&settings).expect("the rendering");
-        let mut indexing = bilbo_cli::indexing(&settings, &readers, &rendering, load, index);
-        indexing.request.workers = WORKERS;
+        let indexing = bilbo_cli::indexing(&settings, &readers, &rendering, load, index);
         let args = bilbo_cli::remember::Args {
             target: Some(PathBuf::from(target)),
             kind: None,
@@ -347,7 +367,6 @@ impl Sandbox {
         Store::open_read_only(&layout, Options::default(), &mut |_| {}).expect("open the store")
     }
 
-    /// What two indexes of one store have in common: every row, and the hits of each query.
     fn held(&self) -> (Vec<Row>, Vec<Vec<(u32, Row)>>) {
         let index = self.index();
         let hits = QUERIES
@@ -364,7 +383,6 @@ impl Sandbox {
     }
 }
 
-/// Delegates to the real reader and panics on a record that holds `POISON`.
 struct Poisoned(Box<dyn Reader>);
 
 impl Reader for Poisoned {
@@ -716,7 +734,6 @@ fn a_reindex_waits_for_a_writer_of_the_store_and_says_so() {
     assert_eq!(numbers(&finished.stdout)[0], 6);
 }
 
-/// What the store lock allows a reindex to be asked, at the two points where the index changes.
 struct Watched {
     inner: Box<dyn Index>,
     state: PathBuf,
@@ -790,7 +807,7 @@ fn a_reindex_holds_the_store_from_the_catalog_to_the_commit_and_a_bare_remember_
         );
         move |cache: &Path| -> Box<dyn Index> {
             Box::new(Watched {
-                inner: bilbo_cli::index(cache),
+                inner: disk(cache),
                 state: state.clone(),
                 vars: vars.clone(),
                 bare: Arc::clone(&bare),
@@ -920,9 +937,7 @@ fn a_remember_indexes_what_it_kept() {
     assert_eq!(sandbox.seq(), second, "nothing new, nothing indexed");
 }
 
-/// Every document of the index with its terms, each entry named by its file. A date is kept when
-/// the session gave it and left out when it is the capture's own time (what a passage with no date
-/// takes), since two stores are captured at different times.
+/// A date is left out when it is the capture's own time: two stores are captured at different times.
 type Named = Vec<(String, [u64; 5], Option<i64>, String, Vec<(String, u32)>)>;
 
 fn named_terms(sandbox: &Sandbox, files: &[&str]) -> Named {
@@ -1001,8 +1016,6 @@ fn a_session_remembered_turn_by_turn_holds_the_documents_of_a_reindex() {
     }
 }
 
-/// A note of several chunks whose first record opens a frontmatter fence that nothing closes, with
-/// `sections` headings or none.
 fn open_fence_note(sections: usize) -> String {
     let mut note = String::from("---\n");
     for section in 0..sections.max(1) {
@@ -1128,10 +1141,10 @@ fn a_remember_with_nothing_new_never_loads_the_tokenizer() {
     sandbox.write("notes/a.md", b"# One\n\nsome text\n");
     let notes = sandbox.path("notes");
     let loads = AtomicU64::new(0);
-    let run = sandbox.remember_in_process(&notes, &bilbo_cli::index, &loads);
+    let run = sandbox.remember_in_process(&notes, &disk, &loads);
     assert_eq!(run.code, 0, "{:?}", run.stderr);
     assert_eq!(loads.load(Ordering::Relaxed), 1, "the first run has work");
-    let run = sandbox.remember_in_process(&notes, &bilbo_cli::index, &loads);
+    let run = sandbox.remember_in_process(&notes, &disk, &loads);
     assert_eq!((run.code, run.stderr), (0, Vec::<String>::new()));
     assert_eq!(loads.load(Ordering::Relaxed), 1, "the second has none");
 }
@@ -1184,7 +1197,6 @@ fn an_index_folder_that_is_not_bilbos_fails_the_run_after_the_capture_is_kept() 
     );
 }
 
-/// Sets the store's again flag when the second commit lands, and lists a ghost entry as failed.
 struct Flagger {
     inner: Box<dyn Index>,
     flag: PathBuf,
@@ -1256,7 +1268,7 @@ fn the_close_loop_indexes_what_each_pass_kept_and_retries_nothing() {
         let (flag, retried) = (flag.clone(), Arc::clone(&retried));
         move |cache: &Path| -> Box<dyn Index> {
             Box::new(Flagger {
-                inner: bilbo_cli::index(cache),
+                inner: disk(cache),
                 flag: flag.clone(),
                 ghost: Id::from_bytes([9; 16]),
                 commits: 0,
@@ -1336,13 +1348,7 @@ fn the_line_that_an_index_is_being_built_is_written_before_the_tokenizer_is_load
         }
         bilbo_cli::tokenizer()
     };
-    let run = sandbox.remember_with(
-        &sandbox.path("notes"),
-        &bilbo_cli::index,
-        &load,
-        false,
-        &said,
-    );
+    let run = sandbox.remember_with(&sandbox.path("notes"), &disk, &load, false, &said);
     assert_eq!(run.code, 0, "{:?}", run.stderr);
     assert_eq!(
         seen.into_inner().expect("seen"),
@@ -1351,7 +1357,6 @@ fn the_line_that_an_index_is_being_built_is_written_before_the_tokenizer_is_load
     );
 }
 
-/// Sets the store's again flag at the first two captures that write frames.
 fn flag_at_two_captures(flag: PathBuf) -> bilbo_store::segments::Hook {
     let mut captures = 0;
     Box::new(move |step| {
@@ -1363,7 +1368,6 @@ fn flag_at_two_captures(flag: PathBuf) -> bilbo_store::segments::Hook {
     })
 }
 
-/// Counts its clears and refuses every commit.
 struct Refusing {
     inner: Box<dyn Index>,
     clears: Arc<AtomicU64>,
@@ -1433,7 +1437,7 @@ fn an_update_that_fails_is_not_tried_again_by_the_close_loop() {
         let clears = Arc::clone(&clears);
         move |cache: &Path| -> Box<dyn Index> {
             Box::new(Refusing {
-                inner: bilbo_cli::index(cache),
+                inner: disk(cache),
                 clears: Arc::clone(&clears),
             })
         }
@@ -1515,7 +1519,7 @@ fn an_entry_the_reader_fails_on_is_named_and_the_run_exits_1_with_the_capture_ke
     sandbox.write("notes/b.md", b"# Two\n\nthe POISON text\n");
     let run = sandbox.remember_with(
         &sandbox.path("notes"),
-        &bilbo_cli::index,
+        &disk,
         &bilbo_cli::tokenizer,
         true,
         &Arc::default(),
@@ -1629,7 +1633,7 @@ fn say(line: &str) {
 fn what_an_index_of_the_done_check_store_holds() {
     const START: u64 = 0xcbf2_9ce4_8422_2325;
     let cache = folder("DONE_CACHE");
-    let index = Tantivy::at(bilbo_tantivy::folder(&cache));
+    let index = Tantivy::at(bilbo_tantivy::folder(&cache), options());
     let rows = index.documents().expect("the documents");
     let mut digest = START;
     for row in &rows {
@@ -1710,4 +1714,44 @@ fn what_an_index_of_the_done_check_store_holds() {
     say(&format!(
         "store: {entries} entries, {records} records, {passages} passages, {rendered} bytes of rendered text"
     ));
+}
+
+#[test]
+fn the_workers_key_changes_no_document() {
+    let sandbox = Sandbox::filled("workers_key");
+    let terms = |workers: &str| {
+        let run = sandbox.run_with(&["reindex"], &[("BILBO_SEARCH_WORKERS", workers)], None);
+        assert_eq!(run.code, 0, "{:?}", run.stderr);
+        sandbox.index().terms().expect("the terms")
+    };
+    let alone = terms("1");
+    assert!(!alone.is_empty());
+    assert_eq!(terms("8"), alone);
+}
+
+#[test]
+fn the_tries_key_reaches_the_update() {
+    let second_run_of = |extra: &[(&str, &str)]| {
+        let sandbox = Sandbox::new("tries_key");
+        sandbox.write("notes/a.md", b"# One\n\nthe first text about zebras\n");
+        sandbox.write("notes/b.md", b"# Two\n\nthe POISON text\n");
+        let target = sandbox.path("notes");
+        let kept = |sandbox: &Sandbox| {
+            sandbox.remember_with_vars(
+                &target,
+                extra,
+                &disk,
+                &bilbo_cli::tokenizer,
+                true,
+                &Arc::default(),
+            )
+        };
+        assert_eq!(kept(&sandbox).code, 1);
+        kept(&sandbox)
+    };
+    let once = second_run_of(&[("BILBO_SEARCH_ENTRY_TRIES", "1")]);
+    assert_eq!((once.code, once.stderr), (0, Vec::<String>::new()));
+    let again = second_run_of(&[]);
+    assert_eq!(again.code, 1, "{:?}", again.stderr);
+    assert_eq!(again.stderr.len(), 1, "{:?}", again.stderr);
 }

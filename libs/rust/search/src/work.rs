@@ -10,9 +10,8 @@ use crate::index::IndexError;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Request {
     pub chunk: chunk::Size,
-    /// How the readers render passages: their versions and the settings they take.
     pub render: String,
-    /// The threads that read and chunk entries; 0 is 1.
+    /// 0 is 1.
     pub workers: usize,
 }
 
@@ -21,10 +20,9 @@ pub struct Output {
     /// Entries whose newest generation is in the index, also when it gave no chunk.
     pub entries: u64,
     pub chunks: u64,
-    /// Entries left out because no reader reads their kind, by kind.
+    /// By kind.
     pub unread: BTreeMap<String, u64>,
-    /// Entries left out because the store could not give their records, their reader or tokenizer
-    /// failed on them, or the tokenizer could not split a text of them, with why.
+    /// With why.
     pub failed: Vec<(Id, String)>,
     pub index_bytes: u64,
 }
@@ -35,9 +33,7 @@ pub enum Error {
     Index(IndexError),
     /// A manifest name holds a line break or nothing.
     Manifest,
-    /// The threads that chunk the entries all stopped before the entries were done.
     Workers,
-    /// More entries failed than a position can record.
     Failed(usize),
 }
 

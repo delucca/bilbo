@@ -13,7 +13,6 @@ pub struct Chunk {
     pub text: String,
 }
 
-/// The tokenizer gave no usable tokens for a text that is not empty.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Unsplit;
 
@@ -27,9 +26,7 @@ impl std::error::Error for Unsplit {}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Size {
-    /// The most tokens a chunk holds.
     pub tokens: usize,
-    /// The tokens two consecutive windows of one passage share.
     pub overlap: usize,
 }
 
@@ -107,7 +104,6 @@ fn through(first: RecordRange, last: RecordRange) -> RecordRange {
     }
 }
 
-/// The index of the piece that holds byte `at`: the first piece for a byte before it.
 fn piece_at(passage: &Passage, at: usize) -> usize {
     passage
         .pieces
@@ -115,7 +111,6 @@ fn piece_at(passage: &Passage, at: usize) -> usize {
         .saturating_sub(1)
 }
 
-/// The records of `passage` that hold the bytes `from..to` of its text.
 fn records_of(passage: &Passage, from: usize, to: usize) -> RecordRange {
     let last = passage.ends.len().saturating_sub(1);
     let first = passage.ends.partition_point(|end| *end <= from).min(last);
@@ -183,7 +178,6 @@ fn windows(
         .collect())
 }
 
-/// A window and the bytes `from..to` of the passage's text it was cut from.
 struct Cut {
     text: String,
     tokens: usize,
@@ -296,7 +290,6 @@ mod tests {
         super::chunks(passages, tokens, size).expect("chunks")
     }
 
-    /// A token every `0` bytes, wherever a character falls.
     struct Every(usize);
 
     impl Tokens for Every {
@@ -618,8 +611,6 @@ mod tests {
         assert!(found.iter().any(|chunk| chunk.text.starts_with("u:\n")));
     }
 
-    /// A token a byte, noting the longest text `ends` and `count` were asked about and whether any
-    /// text held `needle`.
     #[derive(Default)]
     struct Spy {
         longest_ends: AtomicUsize,
@@ -656,8 +647,6 @@ mod tests {
 
     #[test]
     fn packing_counts_the_joined_text_and_never_a_sum() {
-        /// A token a byte, except that a line feed and the byte before it are one token when that
-        /// byte is `.`, and a line feed and the byte after it are three tokens when that byte is `#`.
         struct Joined;
         impl Tokens for Joined {
             fn ends(&self, text: &str) -> Vec<usize> {
@@ -834,7 +823,6 @@ mod tests {
         );
     }
 
-    /// A token a byte, counting how many times it was handed exactly `needle`.
     struct Tally {
         needle: String,
         seen: AtomicUsize,
@@ -925,7 +913,6 @@ mod tests {
 
     #[test]
     fn two_passages_that_are_together_over_the_bound_are_not_joined_and_not_counted_together() {
-        /// A token every 128 bytes, noting the longest text `count` was handed.
         struct Wide(AtomicUsize);
         impl Tokens for Wide {
             fn ends(&self, text: &str) -> Vec<usize> {
@@ -948,13 +935,10 @@ mod tests {
         assert!(wide.0.load(Ordering::Relaxed) <= 64);
     }
 
-    /// The windows of `passage` with the bytes of its text each was cut from.
     fn cuts_of(passage: &Passage, tokens: &dyn Tokens, size: Size, bound: usize) -> Vec<Cut> {
         super::cuts(passage, tokens, size, bound).expect("cuts")
     }
 
-    /// Each window starts at or before where the ones before it ended, ends with the bytes it was
-    /// cut from, and the last one ends the text.
     fn assert_covers(text: &str, cuts: &[Cut], case: &str) {
         let mut covered: usize = 0;
         for (at, cut) in cuts.iter().enumerate() {

@@ -3,10 +3,9 @@ use bilbo_store::segments::Store;
 
 use crate::console::message::Message;
 
-/// What a verb that held the store runs to let it go; the last argument hears what it says as it goes.
+/// The last argument hears each message as it is said.
 pub type Closer<'a> = dyn Fn(Store, &mut dyn Index, &mut dyn FnMut(&Message)) -> Closing + 'a;
 
-/// What a verb that held the store says when it lets it go.
 #[derive(Default)]
 pub struct Closing {
     pub messages: Vec<Message>,

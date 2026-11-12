@@ -134,7 +134,6 @@ fn only_the_newest_generation_of_an_entry_is_indexed() {
     assert_eq!(index.calls()[2], Call::Commit(position(3)));
 }
 
-/// First record, part, text.
 type Window = (u64, Option<(u32, u32)>, String);
 
 #[test]
@@ -534,7 +533,6 @@ fn the_manifest_of_a_run_names_the_analyzer_the_tokenizer_and_the_rendering() {
     );
 }
 
-/// Waits, in an entry that holds `hold`, until the entry that holds `go` has been read.
 struct Gated {
     inner: Lines,
     gone: Arc<(Mutex<bool>, Condvar)>,

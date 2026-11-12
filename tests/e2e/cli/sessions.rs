@@ -301,7 +301,6 @@ fn a_hook_with_each_recorded_payload_keeps_the_new_lines_and_seals_nothing() {
     assert_eq!(scratch.segments(), 1);
 }
 
-/// The lines of the payload the index's last commit recorded, read from its `meta.json`.
 fn payload(scratch: &Scratch) -> (Vec<u8>, Vec<String>) {
     let bytes = fs::read(scratch.dir.join("cache/bilbo/index/meta.json")).expect("meta.json");
     let text = String::from_utf8(bytes.clone()).expect("UTF-8");

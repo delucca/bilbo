@@ -9,7 +9,6 @@ const FORMAT: &str = "bilbo index 1";
 /// The most entries a position lists as left out: about 120 KB of payload.
 pub const MAX_FAILED: usize = 4096;
 
-/// What the documents of an index were made with: an index of another manifest is rebuilt.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Manifest {
     pub chunk: Size,
@@ -30,17 +29,14 @@ impl Manifest {
     }
 }
 
-/// What a commit records beside its documents: their manifest, and how far into the store's
-/// changes they go.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Position {
     pub manifest: Manifest,
     pub cursor: Cursor,
-    /// The entries the run left out, each with how many runs in a row failed on it (1 to 9), by id.
+    /// By id, each count 1 to 9.
     pub failed: Vec<(Id, u8)>,
 }
 
-/// How an index stands against the store it is asked to serve.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Standing {
     /// Its documents hold every change up to this sequence number of this catalog.

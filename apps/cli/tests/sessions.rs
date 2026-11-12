@@ -320,7 +320,6 @@ fn a_hook_keeps_its_transcripts_new_lines_and_seals_nothing() {
     );
 }
 
-/// Every file of the index folder with its bytes.
 fn index_files(sandbox: &Sandbox) -> BTreeMap<String, Vec<u8>> {
     let folder = sandbox.layout().cache.join("index");
     fs::read_dir(folder)
@@ -335,7 +334,6 @@ fn index_files(sandbox: &Sandbox) -> BTreeMap<String, Vec<u8>> {
         .collect()
 }
 
-/// The store's sequence number the index's last commit records.
 fn indexed_to(sandbox: &Sandbox) -> u64 {
     let meta = fs::read_to_string(sandbox.layout().cache.join("index/meta.json"))
         .expect("the index's meta.json");

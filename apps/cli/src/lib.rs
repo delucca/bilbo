@@ -72,7 +72,7 @@ pub fn readers(settings: &Settings) -> Result<Vec<Box<dyn Reader>>, Failure> {
     ])
 }
 
-/// One item for each reader, in the order of `readers()`: what the index's manifest records of how passages render.
+/// One item for each reader, in the order of `readers()`.
 pub fn rendering(settings: &Settings) -> Result<String, Failure> {
     let width = settings
         .kind_value(&bilbo_markdown::HEADING_WIDTH)
@@ -110,11 +110,16 @@ pub fn tokenizer() -> Result<Tokenizer, Failure> {
 }
 
 /// The index of a store's cache folder: nothing is opened or made before its first use.
-pub fn index(cache: &std::path::Path) -> Box<dyn Index> {
-    Box::new(bilbo_tantivy::Tantivy::at(bilbo_tantivy::folder(cache)))
+pub fn index(cache: &std::path::Path, search: &bilbo_search::keys::Section) -> Box<dyn Index> {
+    Box::new(bilbo_tantivy::Tantivy::at(
+        bilbo_tantivy::folder(cache),
+        bilbo_tantivy::Options {
+            memory: search.memory(),
+            merge_deleted_share: search.merge_deleted_share(),
+        },
+    ))
 }
 
-/// What `remember` and `reindex` share to keep the index current.
 pub fn indexing<'a>(
     settings: &Settings,
     readers: &'a [Box<dyn Reader>],
@@ -127,8 +132,11 @@ pub fn indexing<'a>(
         request: bilbo_search::work::Request {
             chunk: settings.search.chunk(),
             render: rendering.to_owned(),
-            workers: std::thread::available_parallelism().map_or(1, usize::from),
+            workers: settings
+                .search
+                .workers(std::thread::available_parallelism().map_or(1, usize::from)),
         },
+        tries: settings.search.tries(),
         tokenizer_id: bilbo_qwen::ID,
         tokenizer,
         index,
@@ -194,9 +202,9 @@ pub fn run_tuned(
                     let settings = settings?;
                     let readers = readers(&settings)?;
                     let rendering = rendering(&settings)?;
-                    let indexing = tune(indexing(
-                        &settings, &readers, &rendering, &tokenizer, &index,
-                    ));
+                    let disk = |cache: &std::path::Path| index(cache, &settings.search);
+                    let indexing =
+                        tune(indexing(&settings, &readers, &rendering, &tokenizer, &disk));
                     remember::run(root, args, env, &settings, &kinds(), &indexing)
                 }
                 Verb::Read(args) => {
@@ -209,9 +217,9 @@ pub fn run_tuned(
                     let readers = readers(&settings)?;
                     let rendering = rendering(&settings)?;
                     let kinds = kinds();
-                    let indexing = tune(indexing(
-                        &settings, &readers, &rendering, &tokenizer, &index,
-                    ));
+                    let disk = |cache: &std::path::Path| index(cache, &settings.search);
+                    let indexing =
+                        tune(indexing(&settings, &readers, &rendering, &tokenizer, &disk));
                     reindex::run(&args, env, &settings, &indexing, &|store, index, notice| {
                         remember::follows::close(
                             store,

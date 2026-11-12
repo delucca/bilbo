@@ -674,7 +674,8 @@ mod tests {
     #[test]
     fn the_search_after_damage_costs_linear_time() {
         let mut bytes = segment_header().to_vec();
-        bytes.resize(SEGMENT_HEADER + 64 * 1024 * 1024, 1);
+        // Four bytes of 1 claim a length of 16,843,009: a position is plausible only in a file longer than that.
+        bytes.resize(SEGMENT_HEADER + 24 * 1024 * 1024, 1);
         let started = std::time::Instant::now();
         assert_eq!(end(&bytes), Ok(SEGMENT_HEADER));
         assert!(started.elapsed().as_secs() < 60, "{:?}", started.elapsed());

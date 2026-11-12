@@ -295,6 +295,10 @@ mod tests {
                 "read.matches_listed",
                 "search.chunk_tokens",
                 "search.chunk_overlap",
+                "search.workers",
+                "search.index_memory",
+                "search.merge_deleted_percent",
+                "search.entry_tries",
                 "markdown.heading_width"
             ]
         );
@@ -356,7 +360,7 @@ mod tests {
             .err(),
             Some(
                 "/c.toml:3: unknown key store.sealat; the keys are paths.root, paths.state, \
-                 paths.cache, store.seal_at, store.seal_after, store.compression, store.tear_budget, store.wait, store.hook_wait, store.poll, follow, read.budget, read.outline_width, read.matches_listed, search.chunk_tokens, search.chunk_overlap, markdown.heading_width"
+                 paths.cache, store.seal_at, store.seal_after, store.compression, store.tear_budget, store.wait, store.hook_wait, store.poll, follow, read.budget, read.outline_width, read.matches_listed, search.chunk_tokens, search.chunk_overlap, search.workers, search.index_memory, search.merge_deleted_percent, search.entry_tries, markdown.heading_width"
                     .to_owned()
             )
         );
@@ -500,6 +504,10 @@ mod tests {
                 "BILBO_READ_OUTLINE_WIDTH",
                 "BILBO_SEARCH_CHUNK_OVERLAP",
                 "BILBO_SEARCH_CHUNK_TOKENS",
+                "BILBO_SEARCH_ENTRY_TRIES",
+                "BILBO_SEARCH_INDEX_MEMORY",
+                "BILBO_SEARCH_MERGE_DELETED_PERCENT",
+                "BILBO_SEARCH_WORKERS",
                 "BILBO_STORE_COMPRESSION",
                 "BILBO_STORE_HOOK_WAIT",
                 "BILBO_STORE_POLL",

@@ -19,7 +19,6 @@ use crate::console::settings::Settings;
 /// Said instead of the store's Busy text, which says less.
 const BUSY: &str = "another bilbo is writing the store; requested another pass over the follows";
 
-/// What an invocation has done to the index so far.
 #[derive(Default)]
 pub struct Progress {
     /// Entries this invocation kept: a build of no more says nothing.
@@ -118,7 +117,6 @@ fn stopped(mut diagnostics: Vec<Message>, failure: &Failure) -> Outcome {
         .with_exit(exit)
 }
 
-/// Brings the index to what was just kept, then closes the store.
 pub fn finish(
     store: Store,
     follows: &[Follow],
@@ -128,7 +126,14 @@ pub fn finish(
     kept: u64,
 ) -> Closing {
     let mut index = (indexing.index)(store.cache());
-    let updated = update(&store, index.as_mut(), true, kept, indexing, notice);
+    let updated = update(
+        &store,
+        index.as_mut(),
+        indexing.tries,
+        kept,
+        indexing,
+        notice,
+    );
     let progress = Progress {
         kept,
         fatal: updated.fatal,
@@ -149,9 +154,7 @@ pub fn finish(
     closing
 }
 
-/// Serves the requests of other bilbos until none is left, bringing the index up to what each
-/// pass kept. A pass never retries an entry the invocation tried already, and after an update that
-/// failed for the whole index it tries none.
+/// A pass never retries an entry the invocation tried already, and after an update that failed for the whole index it tries none.
 pub fn close(
     mut store: Store,
     index: &mut dyn Index,
@@ -182,7 +185,7 @@ pub fn close(
                         progress.kept += totals.kept();
                         if !progress.fatal {
                             let mut updated =
-                                update(&store, index, false, progress.kept, indexing, notice);
+                                update(&store, index, 0, progress.kept, indexing, notice);
                             closing.messages.append(&mut updated.messages);
                             closing.refused |= updated.refused;
                             progress.fatal = updated.fatal;

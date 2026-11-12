@@ -17,20 +17,18 @@ use crate::work::{Error, Output};
 /// How many entries a worker may be ahead of the one the index waits for.
 const AHEAD: usize = 4;
 
-/// What the index holds of an entry already, and what the reader promises.
 struct Growth {
     rows: Vec<Extent>,
     meta_changed: bool,
     appends_only: bool,
 }
 
-/// What one entry gives the index, made off the thread that holds the store and the index.
 struct Made {
     meta: Meta,
     generation: Generation,
     date: SystemTime,
     chunks: Vec<Chunk>,
-    /// The first record from which the entry's documents in the index are replaced, in a growth.
+    /// `None` in a rebuild.
     delete_from: Option<u64>,
 }
 
@@ -42,7 +40,6 @@ struct Job {
     growth: Option<Growth>,
 }
 
-/// A made entry, or why the entry is left out.
 type Outcome = Result<Made, (Id, &'static str)>;
 
 fn make(job: Job, reader: &dyn Reader, tokens: &dyn Tokens, size: chunk::Size) -> Outcome {
@@ -142,10 +139,8 @@ fn guarded(
     (at, outcome)
 }
 
-/// What a worker tells the thread that holds the index.
 enum Msg {
     Done(usize, Outcome),
-    /// The worker panicked outside `guarded`.
     Died,
 }
 
@@ -159,7 +154,6 @@ impl Drop for Mourner {
     }
 }
 
-/// Takes the made entries as they arrive and adds them to the index in the order they were sent.
 struct Adder<'i> {
     index: &'i mut dyn Index,
     waiting: BTreeMap<usize, Outcome>,
@@ -208,7 +202,6 @@ impl Adder<'_> {
     }
 }
 
-/// Where the thread that reads the store hands its jobs to the workers.
 struct Feed<'a, 'i, 'r> {
     jobs: mpsc::SyncSender<(Job, &'r dyn Reader)>,
     made: &'a mpsc::Receiver<Msg>,
@@ -313,7 +306,6 @@ where
     })
 }
 
-/// What fills an index: the entries to read, the readers, the chunker.
 pub(crate) struct Fill<'a> {
     pub size: chunk::Size,
     pub workers: usize,
@@ -522,8 +514,7 @@ mod tests {
         }
     }
 
-    /// Runs `jobs` jobs through a pool whose workers do `work`, on a thread of its own so that a
-    /// run that waits for ever fails by timing out.
+    /// On a thread of its own, so a run that waits for ever fails by timing out.
     fn dying_pool(
         workers: usize,
         jobs: u8,
@@ -618,7 +609,6 @@ mod tests {
             }
         }
 
-        /// A passage of `records` records of ten bytes each from record `first`.
         fn several(first: u64, records: u64) -> Passage {
             let text: String = (0..records)
                 .map(|record| {

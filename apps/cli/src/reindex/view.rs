@@ -19,7 +19,6 @@ pub fn plain(output: &Output, milliseconds: u128) -> String {
     )
 }
 
-/// One line for each kind no reader reads and for each entry the store could not give back.
 pub fn left_out(output: &Output) -> Vec<Message> {
     let kinds = output.unread.iter().map(|(kind, entries)| Message {
         mark: Mark::Info,

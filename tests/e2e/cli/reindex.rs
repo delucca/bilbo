@@ -27,7 +27,6 @@ fn remembered(test: &str) -> Scratch {
     scratch
 }
 
-/// `entries`, `chunks`, `unread` and `failed` of the first line; the second line is checked for shape.
 fn counts(stdout: &str) -> [u64; 4] {
     let (first, second) = stdout.split_once('\n').expect("two lines");
     let numbers = |line: &str, names: &[&str]| -> Vec<u64> {
@@ -180,7 +179,6 @@ fn a_reindex_waits_for_a_writer_and_a_bare_remember_does_not_wait_for_a_reindex(
     );
     assert!(child.try_wait().expect("a state").is_none(), "it waits");
 
-    // A bare run that finds a writer asks for one more run and leaves at once.
     let bare = scratch.run(&["remember"]);
     assert_eq!((bare.code, bare.stdout.as_str()), (0, ""));
 

@@ -11,31 +11,24 @@ use crate::reindex;
 use crate::tokenizer::Tokenizer;
 use crate::work::{Error, Request};
 
-/// How many invocations in a row try a failed entry before it waits for a change.
-const TRIES: u8 = 3;
-
-/// The most a failed entry's count goes to.
+/// The payload holds a count in one digit.
 const MOST_TRIES: u8 = 9;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Plan {
-    /// The index holds everything the store has.
     Current,
     Work(Work),
 }
 
-/// Why an index is made again from the start.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Reason {
     /// Never committed, or its payload is not a position.
     Unmade,
-    /// Made with other settings, or by other rules.
     Manifest,
     /// Its cursor is of another catalog, or ahead of this one's newest change.
     Catalog,
 }
 
-/// What `apply` does.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Work(Box<Parts>);
 
@@ -57,7 +50,7 @@ enum Kind {
 }
 
 impl Work {
-    /// Why the index is made again from the start; `None` when it is continued.
+    /// `None` when the index is continued.
     pub fn rebuilds(&self) -> Option<Reason> {
         match &self.0.kind {
             Kind::Rebuild(why) => Some(*why),
@@ -76,7 +69,7 @@ pub struct Output {
     /// Entries whose newest generation was put in the index, also when it gave no chunk.
     pub entries: u64,
     pub chunks: u64,
-    /// Entries left out because no reader reads their kind, by kind.
+    /// By kind.
     pub unread: BTreeMap<String, u64>,
     /// The entries this run attempted and left out, with why.
     pub failed: Vec<(Id, String)>,
@@ -84,10 +77,11 @@ pub struct Output {
     pub rebuilt: bool,
 }
 
-/// Decides what the index needs. It writes nothing.
+/// Writes nothing.
+/// A failed entry that was tried fewer than `tries` times is tried again; 0 retries nothing.
 pub fn plan(
     manifest: &Manifest,
-    retry: bool,
+    tries: u8,
     entries: &dyn Entries,
     index: &mut dyn Index,
 ) -> Result<Plan, Error> {
@@ -114,7 +108,7 @@ pub fn plan(
             ids: everything.iter().map(Change::id).collect(),
         }))));
     };
-    let retry = retry && found.failed.iter().any(|(_, tries)| *tries < TRIES);
+    let retry = found.failed.iter().any(|(_, tried)| *tried < tries);
     if changes.is_empty() && !retry {
         return Ok(Plan::Current);
     }
@@ -124,7 +118,7 @@ pub fn plan(
             found
                 .failed
                 .iter()
-                .filter(|(_, tries)| *tries < TRIES)
+                .filter(|(_, tried)| *tried < tries)
                 .map(|(id, _)| *id),
         );
     }

@@ -8,7 +8,6 @@ use bilbo_store::id::Id;
 use crate::chunk::Chunk;
 use crate::position::Position;
 
-/// One chunk as the index holds it: its words, and the way back to its records in the store.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Doc<'a> {
     pub entry: Id,
@@ -18,7 +17,6 @@ pub struct Doc<'a> {
     pub chunk: &'a Chunk,
 }
 
-/// One document of an entry as the last commit holds it, without its words.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Extent {
     pub generation: Generation,
@@ -28,7 +26,6 @@ pub struct Extent {
     pub date: i64,
 }
 
-/// A time as the index keeps it: whole milliseconds since the epoch, before it negative.
 pub fn millis(time: SystemTime) -> i64 {
     match time.duration_since(UNIX_EPOCH) {
         Ok(after) => i64::try_from(after.as_millis()).unwrap_or(i64::MAX),
@@ -38,7 +35,6 @@ pub fn millis(time: SystemTime) -> i64 {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Stats {
-    /// The index's files on disk.
     pub bytes: u64,
 }
 

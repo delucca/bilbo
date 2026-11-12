@@ -17,13 +17,11 @@ pub struct Updated {
     pub fatal: bool,
 }
 
-/// Brings the index to the store's cursor, inside the lock the store holds. It leaves no writer
-/// open on any path. `kept` is what this invocation has kept so far; a build of no more entries
-/// than that says nothing, since nothing was lost to it.
+/// Leaves no writer open on any path. A build of no more entries than `kept` says nothing: nothing was lost to it.
 pub fn update(
     store: &Store,
     index: &mut dyn Index,
-    retry: bool,
+    tries: u8,
     kept: u64,
     indexing: &Indexing<'_>,
     notice: &mut dyn FnMut(&Message),
@@ -33,7 +31,7 @@ pub fn update(
         indexing.tokenizer_id,
         &indexing.request.render,
     );
-    let work = match update::plan(&manifest, retry, store, index) {
+    let work = match update::plan(&manifest, tries, store, index) {
         Ok(Plan::Current) => return Updated::default(),
         Ok(Plan::Work(work)) => work,
         Err(error) => return failed(&describe(&error)),

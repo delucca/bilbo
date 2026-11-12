@@ -52,8 +52,7 @@ fn lower(text: &str) -> String {
     }
 }
 
-/// The words of `text` as bm25s splits them with `\b\w\w+\b`: lowercased, runs of two word
-/// characters or more, without the stopwords and the words over `MAX_TERM_BYTES`.
+/// As bm25s splits with `\b\w\w+\b`, lowercased, without its stopwords.
 fn words(text: &str) -> Vec<String> {
     let lowered = lower(text);
     let mut words = Vec::new();
@@ -227,7 +226,6 @@ mod tests {
             assert!(found.iter().all(|term| term.len() <= MAX_TERM_BYTES));
             assert_eq!(found[1], stem(&kept));
         }
-        // 2,049 two-byte letters are 4,098 bytes.
         assert_eq!(words(&"é".repeat(2049)), Vec::<String>::new());
     }
 

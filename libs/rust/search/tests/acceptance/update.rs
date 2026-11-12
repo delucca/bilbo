@@ -15,7 +15,7 @@ const SMALL: Size = Size {
     overlap: 2,
 };
 
-const RETRY: bool = true;
+const TRIES: u8 = 3;
 
 fn request_of(chunk: Size, workers: usize) -> Request {
     Request {
@@ -48,25 +48,24 @@ fn readers() -> Vec<Box<dyn Reader>> {
     ]
 }
 
-fn plan_of(log: &Log, index: &mut Docs, retry: bool) -> Plan {
-    plan(&manifest_of(&request()), retry, log, index).expect("a plan")
+fn plan_of(log: &Log, index: &mut Docs, tries: u8) -> Plan {
+    plan(&manifest_of(&request()), tries, log, index).expect("a plan")
 }
 
-/// Plans and does the work, if there is any.
 fn keep_with(
     request: &Request,
     log: &Log,
     index: &mut Docs,
-    retry: bool,
+    tries: u8,
 ) -> Result<Option<Output>, Error> {
-    match plan(&manifest_of(request), retry, log, index)? {
+    match plan(&manifest_of(request), tries, log, index)? {
         Plan::Work(work) => apply(work, request, log, &readers(), &tokenizer(), index).map(Some),
         Plan::Current => Ok(None),
     }
 }
 
 fn keep(log: &Log, index: &mut Docs) -> Output {
-    keep_with(&request(), log, index, RETRY)
+    keep_with(&request(), log, index, TRIES)
         .expect("a run")
         .expect("work")
 }
@@ -92,10 +91,10 @@ fn an_index_at_the_stores_cursor_is_left_alone() {
     let mut index = Docs::default();
     keep(&log, &mut index);
     let (writes, position) = (index.writes, index.position.clone());
-    assert_eq!(plan_of(&log, &mut index, RETRY), Plan::Current);
-    assert_eq!(plan_of(&log, &mut index, false), Plan::Current);
+    assert_eq!(plan_of(&log, &mut index, TRIES), Plan::Current);
+    assert_eq!(plan_of(&log, &mut index, 0), Plan::Current);
     assert!(
-        keep_with(&request(), &log, &mut index, RETRY)
+        keep_with(&request(), &log, &mut index, TRIES)
             .expect("a run")
             .is_none()
     );
@@ -107,7 +106,7 @@ fn an_index_never_made_is_planned_as_a_rebuild_and_planning_writes_nothing() {
     let mut log = Log::new();
     log.put(1, "lines", &["aaaaa"]);
     let mut index = Docs::default();
-    let Plan::Work(work) = plan_of(&log, &mut index, RETRY) else {
+    let Plan::Work(work) = plan_of(&log, &mut index, TRIES) else {
         panic!("work");
     };
     assert_eq!(work.rebuilds(), Some(Reason::Unmade));
@@ -216,7 +215,7 @@ fn growth_in_any_number_of_steps_gives_the_documents_of_a_rebuild() {
                     log.append(n, &records);
                 }
             }
-            keep_with(&request(), &log, &mut index, RETRY).expect("a run");
+            keep_with(&request(), &log, &mut index, TRIES).expect("a run");
             assert_eq!(index.sorted(), rebuilt(&log), "case {case} step {step}");
         }
     }
@@ -294,7 +293,7 @@ fn a_failed_entry_that_becomes_unread_leaves_the_list() {
     log.retouch(1, |held| held.kind = "pdf".to_owned());
     keep(&log, &mut index);
     assert_eq!(failed_of(&index), []);
-    assert_eq!(plan_of(&log, &mut index, RETRY), Plan::Current);
+    assert_eq!(plan_of(&log, &mut index, TRIES), Plan::Current);
 }
 
 #[test]
@@ -373,13 +372,13 @@ fn a_changed_manifest_rebuilds_in_full_from_the_first_change() {
         1,
     );
     let before = (index.writes, index.sorted());
-    let Plan::Work(work) = plan(&manifest_of(&wider), RETRY, &log, &mut index).expect("a plan")
+    let Plan::Work(work) = plan(&manifest_of(&wider), TRIES, &log, &mut index).expect("a plan")
     else {
         panic!("work");
     };
     assert_eq!(work.rebuilds(), Some(Reason::Manifest));
     assert_eq!((index.writes, index.sorted()), before);
-    let output = keep_with(&wider, &log, &mut index, RETRY)
+    let output = keep_with(&wider, &log, &mut index, TRIES)
         .expect("a run")
         .expect("work");
     assert!(output.rebuilt);
@@ -400,7 +399,7 @@ fn a_cursor_of_another_catalog_rebuilds_in_full() {
     log.catalog = [9; 16];
     log.append(1, &["ccccc"]);
     let before = (index.writes, index.sorted());
-    let Plan::Work(work) = plan_of(&log, &mut index, RETRY) else {
+    let Plan::Work(work) = plan_of(&log, &mut index, TRIES) else {
         panic!("work");
     };
     assert_eq!(work.rebuilds(), Some(Reason::Catalog));
@@ -425,7 +424,7 @@ fn an_index_ahead_of_the_store_is_rebuilt() {
     let mut older = Log::new();
     older.put(1, "lines", &["aaaaa"]);
     assert_eq!(older.cursor(), Cursor::at(CATALOG, 2));
-    let Plan::Work(work) = plan_of(&older, &mut index, RETRY) else {
+    let Plan::Work(work) = plan_of(&older, &mut index, TRIES) else {
         panic!("work");
     };
     assert_eq!(work.rebuilds(), Some(Reason::Catalog));
@@ -445,7 +444,7 @@ fn an_error_after_adds_rolls_back_and_the_next_run_does_the_work() {
     log.append(1, &["ccccc"]);
     log.append(2, &["yyyyy"]);
     index.fail_add = Some(3);
-    let error = keep_with(&request(), &log, &mut index, RETRY).expect_err("a failure");
+    let error = keep_with(&request(), &log, &mut index, TRIES).expect_err("a failure");
     assert!(matches!(error, Error::Index(_)), "{error:?}");
     assert_eq!(index.rolled_back, 1);
     assert_eq!((index.sorted(), index.position.clone()), (rows, position));
@@ -468,11 +467,31 @@ fn an_entry_left_out_is_tried_again_by_the_next_two_invocations_and_then_left() 
         assert_eq!(output.failed.len(), 1, "try {tries}");
         assert_eq!(failed_of(&index), [(id(1), tries)]);
     }
-    assert_eq!(plan_of(&log, &mut index, RETRY), Plan::Current);
+    assert_eq!(plan_of(&log, &mut index, TRIES), Plan::Current);
     log.append(1, &["bbbbb"]);
     let output = keep(&log, &mut index);
     assert_eq!(output.failed.len(), 1);
     assert_eq!(failed_of(&index), [(id(1), 4)]);
+}
+
+#[test]
+fn an_entry_is_tried_as_many_runs_as_the_tries_say_and_then_left() {
+    for (tries, tried) in [(1, 1), (5, 5)] {
+        let mut log = Log::new();
+        log.put(1, "lines", &["aaaaa"]);
+        log.put(2, "lines", &["xxxxx"]);
+        log.entries[0].damaged = true;
+        let mut index = Docs::default();
+        keep_with(&request(), &log, &mut index, tries).expect("a run");
+        for run in 2..=tried {
+            let output = keep_with(&request(), &log, &mut index, tries)
+                .expect("a run")
+                .expect("work");
+            assert_eq!(output.failed.len(), 1, "tries {tries}, run {run}");
+        }
+        assert_eq!(failed_of(&index), [(id(1), tried)], "tries {tries}");
+        assert_eq!(plan_of(&log, &mut index, tries), Plan::Current);
+    }
 }
 
 #[test]
@@ -497,7 +516,7 @@ fn a_pass_that_may_not_retry_keeps_the_list_as_it_is() {
     log.entries[0].damaged = true;
     let mut index = Docs::default();
     keep(&log, &mut index);
-    let no_retry = false;
+    let no_retry = 0;
     assert_eq!(plan_of(&log, &mut index, no_retry), Plan::Current);
     log.append(2, &["yyyyy"]);
     keep_with(&request(), &log, &mut index, no_retry)
@@ -529,11 +548,11 @@ fn a_passage_over_the_bound_that_follows_new_records_is_windowed_as_a_rebuild_wi
     let mut log = Log::new();
     log.put(1, "lines", &["first"]);
     let mut index = Docs::default();
-    keep_with(&request, &log, &mut index, RETRY).expect("a run");
+    keep_with(&request, &log, &mut index, TRIES).expect("a run");
     log.append(1, &[big.as_str()]);
-    keep_with(&request, &log, &mut index, RETRY).expect("a run");
+    keep_with(&request, &log, &mut index, TRIES).expect("a run");
     log.append(1, &["last"]);
-    keep_with(&request, &log, &mut index, RETRY).expect("a run");
+    keep_with(&request, &log, &mut index, TRIES).expect("a run");
     assert_eq!(index.sorted(), rebuilt_with(&request, &log));
     assert!(index.rows.iter().filter(|row| row.first == 2).count() > 100);
 }
@@ -550,7 +569,7 @@ fn many_changed_entries_are_added_in_id_order_whatever_the_workers() {
         for n in (1..=60u8).rev() {
             log.append(n, &["ddddd", "eeeeeeeeeeeeeeeeeeeeeeee"]);
         }
-        keep_with(&request_of(SMALL, workers), &log, &mut index, RETRY).expect("a run");
+        keep_with(&request_of(SMALL, workers), &log, &mut index, TRIES).expect("a run");
         assert_eq!(index.sorted(), rebuilt(&log));
         index.rows
     };
@@ -565,7 +584,7 @@ fn apply_refuses_a_tokenizer_the_plan_was_not_made_for() {
     let mut log = Log::new();
     log.put(1, "lines", &["aaaaa"]);
     let mut index = Docs::default();
-    let Plan::Work(work) = plan_of(&log, &mut index, RETRY) else {
+    let Plan::Work(work) = plan_of(&log, &mut index, TRIES) else {
         panic!("work");
     };
     let other = Tokenizer {
@@ -586,14 +605,14 @@ fn a_rebuilds_work_names_every_entry_of_the_store_and_why() {
         log.put(n, "lines", &["aaaaa"]);
     }
     let mut index = Docs::default();
-    let Plan::Work(work) = plan_of(&log, &mut index, RETRY) else {
+    let Plan::Work(work) = plan_of(&log, &mut index, TRIES) else {
         panic!("work");
     };
     assert_eq!((work.rebuilds(), work.entries()), (Some(Reason::Unmade), 3));
     keep(&log, &mut index);
 
     log.append(1, &["bbbbb"]);
-    let Plan::Work(work) = plan_of(&log, &mut index, RETRY) else {
+    let Plan::Work(work) = plan_of(&log, &mut index, TRIES) else {
         panic!("work");
     };
     assert_eq!((work.rebuilds(), work.entries()), (None, 1));
@@ -605,7 +624,7 @@ fn a_rebuilds_work_names_every_entry_of_the_store_and_why() {
         },
         1,
     );
-    let Plan::Work(work) = plan(&manifest_of(&wider), RETRY, &log, &mut index).expect("a plan")
+    let Plan::Work(work) = plan(&manifest_of(&wider), TRIES, &log, &mut index).expect("a plan")
     else {
         panic!("work");
     };
@@ -619,7 +638,7 @@ fn a_rebuilds_work_names_every_entry_of_the_store_and_why() {
     for n in 1..=3 {
         other.put(n, "lines", &["aaaaa"]);
     }
-    let Plan::Work(work) = plan_of(&other, &mut index, RETRY) else {
+    let Plan::Work(work) = plan_of(&other, &mut index, TRIES) else {
         panic!("work");
     };
     assert_eq!(
@@ -631,7 +650,7 @@ fn a_rebuilds_work_names_every_entry_of_the_store_and_why() {
     ahead.put(1, "lines", &[]);
     ahead.put(2, "lines", &[]);
     assert!(ahead.cursor().seq() < index.position.clone().expect("a commit").cursor.seq());
-    let Plan::Work(work) = plan_of(&ahead, &mut index, RETRY) else {
+    let Plan::Work(work) = plan_of(&ahead, &mut index, TRIES) else {
         panic!("work");
     };
     assert_eq!(
@@ -674,7 +693,7 @@ fn apply_refuses_a_request_whose_chunk_size_or_rendering_the_plan_was_not_made_f
     for other in others {
         let mut index = Docs::default();
         let Plan::Work(work) =
-            plan(&manifest_of(&planned), RETRY, &log, &mut index).expect("a plan")
+            plan(&manifest_of(&planned), TRIES, &log, &mut index).expect("a plan")
         else {
             panic!("work");
         };
@@ -683,7 +702,7 @@ fn apply_refuses_a_request_whose_chunk_size_or_rendering_the_plan_was_not_made_f
         assert!(matches!(error, Error::Manifest), "{error:?}");
         assert_eq!((index.writes, index.commits), (0, 0));
         assert_eq!(index.position, None);
-        let again = plan(&manifest_of(&planned), RETRY, &log, &mut index).expect("a plan");
+        let again = plan(&manifest_of(&planned), TRIES, &log, &mut index).expect("a plan");
         let Plan::Work(work) = again else {
             panic!("work");
         };

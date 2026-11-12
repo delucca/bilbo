@@ -223,7 +223,6 @@ fn a_meta_update_that_changes_the_origin_drops_the_stamp_and_one_that_keeps_it_d
     assert_eq!(head(&store, "new.md").stamp, None);
 }
 
-/// What happened to the catalog, and how.
 type Break = (&'static str, fn(&Layout));
 
 #[test]

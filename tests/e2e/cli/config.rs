@@ -7,7 +7,8 @@ use super::{Run, binary};
 
 const KEYS: &str = "paths.root, paths.state, paths.cache, store.seal_at, store.seal_after, \
                     store.compression, store.tear_budget, store.wait, store.hook_wait, store.poll, follow, read.budget, read.outline_width, \
-                    read.matches_listed, search.chunk_tokens, search.chunk_overlap, markdown.heading_width";
+                    read.matches_listed, search.chunk_tokens, search.chunk_overlap, search.workers, \
+                    search.index_memory, search.merge_deleted_percent, search.entry_tries, markdown.heading_width";
 
 #[test]
 fn each_key_shows_the_source_that_won_a_variable_over_the_file_over_the_default() {
@@ -38,6 +39,10 @@ fn each_key_shows_the_source_that_won_a_variable_over_the_file_over_the_default(
              read.matches_listed = 5 (default)\n\
              search.chunk_tokens = 512 (default)\n\
              search.chunk_overlap = 64 (default)\n\
+             search.workers = 0 (default)\n\
+             search.index_memory = \"64 MiB\" (default)\n\
+             search.merge_deleted_percent = 20 (default)\n\
+             search.entry_tries = 3 (default)\n\
              markdown.heading_width = 100 (default)\n",
             root = scratch.path("store"),
             home = scratch.path("home"),
@@ -415,4 +420,35 @@ fn a_config_path_that_is_a_folder_is_not_a_regular_file_either() {
         run.stderr,
         format!("bilbo: cannot read {folder}: not a regular file\n")
     );
+}
+
+#[test]
+fn a_search_key_out_of_range_is_a_config_error() {
+    let scratch = Scratch::new("search_out_of_range");
+    for (variable, value, allowed) in [
+        ("BILBO_SEARCH_WORKERS", "65", "a whole number from 0 to 64"),
+        (
+            "BILBO_SEARCH_INDEX_MEMORY",
+            "15 MiB",
+            "between 16 MiB and 2 GiB",
+        ),
+        (
+            "BILBO_SEARCH_MERGE_DELETED_PERCENT",
+            "0",
+            "a whole number from 1 to 100",
+        ),
+        (
+            "BILBO_SEARCH_ENTRY_TRIES",
+            "10",
+            "a whole number from 1 to 9",
+        ),
+    ] {
+        let run = scratch.run_with(&["config"], &[(variable, value)]);
+        assert_eq!(run.code, 2, "{variable}");
+        assert_eq!(run.stdout, "", "{variable}");
+        assert_eq!(
+            run.stderr,
+            format!("bilbo: {variable} must be {allowed}, got \"{value}\"\n")
+        );
+    }
 }

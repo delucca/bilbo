@@ -16,7 +16,6 @@ pub(crate) fn id(n: u8) -> Id {
     Id::from_bytes([n; 16])
 }
 
-/// Entries 1 to 4, each with one record; 1, 3 and 4 are damaged.
 pub(crate) struct Four;
 
 fn unused() -> StoreError {

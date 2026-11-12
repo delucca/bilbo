@@ -25,13 +25,11 @@ pub fn at(seconds: u64) -> SystemTime {
     UNIX_EPOCH + Duration::from_secs(seconds)
 }
 
-/// An entry as the catalog has it: each generation's records, the last one the newest.
 pub struct Kept {
     pub id: Id,
     pub kind: &'static str,
     pub captured: SystemTime,
     pub generations: Vec<Vec<&'static str>>,
-    /// Reading its records fails.
     pub damaged: bool,
 }
 
@@ -45,7 +43,6 @@ pub fn kept(n: u8, kind: &'static str, records: &[&'static str]) -> Kept {
     }
 }
 
-/// A store holding these entries, their changes listed entry by entry as they were shelved.
 pub fn shelf(kept: Vec<Kept>) -> Log {
     let mut log = Log::new();
     for entry in kept {
@@ -126,7 +123,6 @@ impl Reader for Lines {
     }
 }
 
-/// `Lines` that does not promise appending changes no passage.
 pub struct Whole(pub &'static str);
 
 impl Reader for Whole {
@@ -143,7 +139,6 @@ impl Reader for Whole {
     }
 }
 
-/// A panic payload that panics when it is dropped.
 struct Bomb;
 
 impl Drop for Bomb {
@@ -152,7 +147,6 @@ impl Drop for Bomb {
     }
 }
 
-/// A token a byte.
 pub struct Bytes;
 
 impl Tokens for Bytes {
@@ -161,7 +155,6 @@ impl Tokens for Bytes {
     }
 }
 
-/// A token a byte, noting the longest text it was asked about.
 #[derive(Default)]
 pub struct Watched(pub std::sync::Arc<std::sync::atomic::AtomicUsize>);
 
@@ -213,7 +206,6 @@ pub enum Call {
     },
 }
 
-/// Records what the use case asks of the index; `fail_at` makes the call of that number fail.
 #[derive(Default)]
 pub struct Recorded {
     pub rolled_back: Cell<u32>,
@@ -240,7 +232,6 @@ impl Recorded {
         self.calls.borrow().clone()
     }
 
-    /// Entry number and text of every document added.
     pub fn added(&self) -> Vec<(Id, String)> {
         self.calls()
             .into_iter()
@@ -342,7 +333,6 @@ impl Log {
         });
     }
 
-    /// A new entry with its first records.
     pub fn put(&mut self, n: u8, kind: &str, records: &[&str]) {
         self.entries.push(Held {
             id: id(n),
@@ -358,7 +348,6 @@ impl Log {
         }
     }
 
-    /// Records appended to the newest generation.
     pub fn append(&mut self, n: u8, records: &[&str]) {
         let held = self.held(n);
         let generation = held.generations.len();
@@ -368,7 +357,6 @@ impl Log {
         self.records(id(n), generation as u32, first, records.len() as u64);
     }
 
-    /// A new generation that replaces the records.
     pub fn rewrite(&mut self, n: u8, records: &[&str]) {
         let held = self.held(n);
         held.generations
@@ -377,7 +365,6 @@ impl Log {
         self.records(id(n), generation as u32, 1, records.len() as u64);
     }
 
-    /// A change of the entry's metadata alone.
     pub fn retouch(&mut self, n: u8, change: impl FnOnce(&mut Held)) {
         change(self.held(n));
         self.log.push(Change::Meta(id(n)));
@@ -488,7 +475,6 @@ impl Entries for Log {
     }
 }
 
-/// A document as the index holds it, text included.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Row {
     pub entry: Id,
@@ -514,18 +500,15 @@ pub struct Docs {
     pub rows: Vec<Row>,
     pub position: Option<Position>,
     pending: Vec<Op>,
-    /// Calls that changed or could change the index: everything but `position` and `extents`.
     pub writes: u32,
     pub rolled_back: u32,
     pub commits: u32,
-    /// The add that fails, counted from 0 over the index's life.
     pub fail_add: Option<u32>,
     adds: u32,
     pub deletes: Vec<(Id, u64)>,
 }
 
 impl Docs {
-    /// Every document, in a fixed order.
     pub fn sorted(&self) -> Vec<Row> {
         let mut rows = self.rows.clone();
         rows.sort();

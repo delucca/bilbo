@@ -48,6 +48,10 @@ Sizes are strings with a binary unit, `KiB`, `MiB` or `GiB`, with or without the
 | `read.matches_listed` | `BILBO_READ_MATCHES_LISTED` | `5` | How many entries bilbo read names when a session id matches several, before it says how many more there are. Must be a whole number from 1 to 100. |
 | `search.chunk_tokens` | `BILBO_SEARCH_CHUNK_TOKENS` | `512` | The most tokens a chunk of the index holds, as the Qwen3-Embedding tokenizer counts them. A change takes a new index: run bilbo reindex. Must be a whole number from 256 to 8192. |
 | `search.chunk_overlap` | `BILBO_SEARCH_CHUNK_OVERLAP` | `64` | The tokens two consecutive chunks share when one record is too long for a chunk and is cut into several. A change takes a new index: run bilbo reindex. Must be a whole number from 0 to 128. |
+| `search.workers` | `BILBO_SEARCH_WORKERS` | `0` | The threads that read and chunk entries when the index is built or brought up to date; 0 takes one for each core. It changes no document. Must be a whole number from 0 to 64. |
+| `search.index_memory` | `BILBO_SEARCH_INDEX_MEMORY` | `"64 MiB"` | The memory the index's writer may hold before it writes a segment. It changes no document. Must be between 16 MiB and 2 GiB. |
+| `search.merge_deleted_percent` | `BILBO_SEARCH_MERGE_DELETED_PERCENT` | `20` | A segment of the index is merged when more than this share of its documents, in percent, was replaced; 100 never merges for that reason. It changes no document; it changes how far the ranking of an index kept by remember can drift from a rebuilt one's. Must be a whole number from 1 to 100. |
+| `search.entry_tries` | `BILBO_SEARCH_ENTRY_TRIES` | `3` | How many runs in a row try to index an entry that failed, before it waits for a change to it or for bilbo reindex. Must be a whole number from 1 to 9. |
 | `markdown.heading_width` | `BILBO_MARKDOWN_HEADING_WIDTH` | `100` | The most characters a heading may have inside a section label of a Markdown file, an ellipsis included: a longer heading is cut and ends in one. Must be a whole number from 20 to 1000. A change takes a new index: run bilbo reindex. |
 
 An XDG variable moves a default only when it holds an absolute path.
@@ -80,7 +84,7 @@ A key the [Keys](#keys) table does not list, a key set twice, a value of the wro
 
 ```text
 bilbo: /home/me/.config/bilbo/config.toml:7: store.seal_at must be between 1 MiB and 1 GiB, got "0"
-bilbo: /home/me/.config/bilbo/config.toml:9: unknown key store.sealat; the keys are paths.root, paths.state, paths.cache, store.seal_at, store.seal_after, store.compression, store.tear_budget, store.wait, store.hook_wait, store.poll, follow, read.budget, read.outline_width, read.matches_listed, search.chunk_tokens, search.chunk_overlap, markdown.heading_width
+bilbo: /home/me/.config/bilbo/config.toml:9: unknown key store.sealat; the keys are paths.root, paths.state, paths.cache, store.seal_at, store.seal_after, store.compression, store.tear_budget, store.wait, store.hook_wait, store.poll, follow, read.budget, read.outline_width, read.matches_listed, search.chunk_tokens, search.chunk_overlap, search.workers, search.index_memory, search.merge_deleted_percent, search.entry_tries, markdown.heading_width
 bilbo: /home/me/.config/bilbo/config.toml:4: duplicate key seal_at
 bilbo: BILBO_STORE_SEAL_AT must be between 1 MiB and 1 GiB, got "0"
 bilbo: /home/me/.config/bilbo/config.toml:2: not valid UTF-8
@@ -100,7 +104,7 @@ bilbo: /home/me/.local/share/bilbo/notes belongs to bilbo 0.20; set BILBO_HOME o
 | `BILBO_HOME` | Sets `paths.root`. |
 | `BILBO_STORE_SEAL_AT`, `BILBO_STORE_SEAL_AFTER`, `BILBO_STORE_COMPRESSION`, `BILBO_STORE_TEAR_BUDGET`, `BILBO_STORE_WAIT`, `BILBO_STORE_HOOK_WAIT`, `BILBO_STORE_POLL` | Set `store.seal_at`, `store.seal_after`, `store.compression`, `store.tear_budget`, `store.wait`, `store.hook_wait` and `store.poll`. |
 | `BILBO_READ_BUDGET`, `BILBO_READ_OUTLINE_WIDTH`, `BILBO_READ_MATCHES_LISTED` | Set `read.budget`, `read.outline_width` and `read.matches_listed`. |
-| `BILBO_SEARCH_CHUNK_TOKENS`, `BILBO_SEARCH_CHUNK_OVERLAP` | Set `search.chunk_tokens` and `search.chunk_overlap`. |
+| `BILBO_SEARCH_CHUNK_TOKENS`, `BILBO_SEARCH_CHUNK_OVERLAP`, `BILBO_SEARCH_WORKERS`, `BILBO_SEARCH_INDEX_MEMORY`, `BILBO_SEARCH_MERGE_DELETED_PERCENT`, `BILBO_SEARCH_ENTRY_TRIES` | Set `search.chunk_tokens`, `search.chunk_overlap`, `search.workers`, `search.index_memory`, `search.merge_deleted_percent` and `search.entry_tries`. |
 | `BILBO_MARKDOWN_HEADING_WIDTH` | Sets `markdown.heading_width`. |
 | `BILBO_CONFIG` | The config file's path. A file it names must exist. |
 | `XDG_DATA_HOME`, `XDG_CONFIG_HOME`, `XDG_CACHE_HOME`, `XDG_STATE_HOME` | Move the default store root, config file, cache and state folders, as [Keys](#keys) and [Folders](#folders) show. |

@@ -48,11 +48,13 @@ enum Folder {
     Marked(Vec<String>),
 }
 
-/// The writer's memory, in bytes: tantivy takes 15 MB at least.
-const HEAP: usize = 64 * 1024 * 1024;
-
-/// A segment whose deleted share is over this is merged, where tantivy's default waits for all of it.
-const DELETED_SHARE_BEFORE_MERGE: f32 = 0.2;
+pub struct Options {
+    /// The writer's memory, in bytes: tantivy takes 15 MB at least.
+    pub memory: usize,
+    /// A segment whose deleted share is over this is merged, where tantivy's default waits for all
+    /// of it.
+    pub merge_deleted_share: f32,
+}
 
 struct Fields {
     text: Field,
@@ -71,9 +73,10 @@ struct Open {
     fields: Fields,
 }
 
-/// The index in one folder. Nothing touches the folder before the first call of a port method.
+/// Nothing touches the folder before the first call of a port method.
 pub struct Tantivy {
     folder: PathBuf,
+    options: Options,
     open: Option<Open>,
 }
 
@@ -97,8 +100,6 @@ fn schema() -> (Schema, Fields) {
     (builder.build(), fields)
 }
 
-/// A name tantivy gives a file of an index: its meta files, its locks, a temporary file, or a
-/// segment's file, named by 32 hex digits.
 fn is_tantivy_name(name: &str) -> bool {
     if matches!(
         name,
@@ -117,8 +118,12 @@ fn is_tantivy_name(name: &str) -> bool {
 }
 
 impl Tantivy {
-    pub fn at(folder: PathBuf) -> Tantivy {
-        Tantivy { folder, open: None }
+    pub fn at(folder: PathBuf, options: Options) -> Tantivy {
+        Tantivy {
+            folder,
+            options,
+            open: None,
+        }
     }
 
     fn failed(&self, action: &'static str, error: &dyn std::fmt::Display) -> IndexError {
@@ -188,8 +193,7 @@ impl Tantivy {
         Ok(found)
     }
 
-    /// Whether `.managed.json`, when there is one, is a list of tantivy's file names that tantivy
-    /// can safely delete from the folder.
+    /// tantivy deletes the paths this file lists, with no containment.
     fn managed_is_safe(&self, names: &[String]) -> Result<bool, IndexError> {
         if !names.iter().any(|name| name == MANAGED) {
             return Ok(true);
@@ -220,12 +224,7 @@ impl Tantivy {
             .map_err(failed)
     }
 
-    /// The folder's index when it is bilbo's and its metadata opens with this schema; `None` when
-    /// the folder was absent or empty and now holds a marker, or was bilbo's and anything else
-    /// and now holds the marker alone. No segment is opened and no component read: what a
-    /// component holds cannot stop a rebuild. A folder that is not bilbo's is `Foreign` and
-    /// untouched. Only `clear` calls this: every other method leaves a folder that is not whole
-    /// as it is.
+    /// No segment is opened and no component read: what a component holds cannot stop a rebuild. Only `clear` calls this.
     fn existing(&self, schema: &Schema) -> Result<Option<tantivy::Index>, IndexError> {
         match self.inspect()? {
             Folder::Absent => {
@@ -258,9 +257,7 @@ impl Tantivy {
         }
     }
 
-    /// The marked folder's index when it is whole: a safe managed list, a `meta.json` of this
-    /// schema, and every committed segment opening. `None` when it is broken; an error when
-    /// tantivy could not look, which says nothing about the content.
+    /// `None` when the index is broken; an error when tantivy could not look, which says nothing about the content.
     fn usable(
         &self,
         names: &[String],
@@ -322,8 +319,6 @@ impl Tantivy {
         Ok(false)
     }
 
-    /// What tantivy gave back: `None` when it says the index is broken, an error when it says
-    /// only that it could not look.
     fn looked<T>(&self, result: tantivy::Result<T>) -> Result<Option<T>, IndexError> {
         match result {
             Ok(found) => Ok(Some(found)),
@@ -359,8 +354,7 @@ impl Tantivy {
         Ok(self.open.insert(open))
     }
 
-    /// A writer on the folder's index. Only with `repair`, which `clear` passes, a folder that is
-    /// absent, empty or broken is made into an empty index; otherwise it is an error.
+    /// Only with `repair`, which `clear` alone passes, is a folder that is absent, empty or broken made into an empty index.
     fn build(&self, repair: bool) -> Result<Open, IndexError> {
         let (schema, fields) = schema();
         let existing = if repair {
@@ -383,10 +377,10 @@ impl Tantivy {
             }
         };
         let writer: IndexWriter<TantivyDocument> = index
-            .writer_with_num_threads(1, HEAP)
+            .writer_with_num_threads(1, self.options.memory)
             .map_err(|error| self.failed("write", &error))?;
         let mut policy = LogMergePolicy::default();
-        policy.set_del_docs_ratio_before_merge(DELETED_SHARE_BEFORE_MERGE);
+        policy.set_del_docs_ratio_before_merge(self.options.merge_deleted_share);
         writer.set_merge_policy(Box::new(policy));
         Ok(Open { writer, fields })
     }
@@ -462,7 +456,6 @@ fn is_unreadable(error: &tantivy::TantivyError) -> bool {
     }
 }
 
-/// A JSON array of names a tantivy index can hold, none of which reaches outside its folder.
 fn is_managed_list(bytes: &[u8]) -> bool {
     let Ok(text) = std::str::from_utf8(bytes) else {
         return false;
@@ -655,10 +648,8 @@ impl Index for Tantivy {
     }
 }
 
-/// A document's terms with the number of times each occurs in it, sorted.
 pub type Words = Vec<(String, u32)>;
 
-/// A document as its columns give it back.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Row {
     pub entry: [u8; 16],
@@ -750,8 +741,7 @@ impl Tantivy {
         })
     }
 
-    /// Every document of the last commit, sorted: what two indexes of one store have in common
-    /// whatever their files are.
+    /// Of the last commit, sorted.
     pub fn documents(&self) -> Result<Vec<Row>, IndexError> {
         let (searcher, _) = self.committed()?;
         let mut rows = Vec::new();
@@ -764,8 +754,7 @@ impl Tantivy {
         Ok(rows)
     }
 
-    /// Every live document of the last commit with its terms and their frequencies, sorted: two
-    /// indexes of one store hold the same documents when these are equal, whatever their files.
+    /// Live documents of the last commit, sorted.
     pub fn terms(&self) -> Result<Vec<(Row, Words)>, IndexError> {
         let (searcher, fields) = self.committed()?;
         let read = |error: tantivy::TantivyError| self.failed("read", &error);

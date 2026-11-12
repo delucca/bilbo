@@ -9,11 +9,19 @@ use bilbo_search::index::{Doc, Extent, Index, IndexError};
 use bilbo_search::position::{Manifest, Position};
 use bilbo_store::entries::{Cursor, Generation, RecordRange};
 use bilbo_store::id::Id;
-use bilbo_tantivy::{Row, Tantivy};
+use bilbo_tantivy::{Options, Row, Tantivy};
 
 static COUNTER: AtomicU64 = AtomicU64::new(0);
 
 struct Scratch(PathBuf);
+
+fn options() -> Options {
+    let section = bilbo_search::keys::defaults();
+    Options {
+        memory: section.memory(),
+        merge_deleted_share: section.merge_deleted_share(),
+    }
+}
 
 #[expect(
     clippy::disallowed_methods,
@@ -39,11 +47,15 @@ impl Scratch {
     }
 
     fn index(&self) -> Tantivy {
-        Tantivy::at(self.folder())
+        Tantivy::at(self.folder(), options())
     }
 
     fn fresh(&self) -> Tantivy {
-        let mut index = self.index();
+        self.fresh_with(options())
+    }
+
+    fn fresh_with(&self, options: Options) -> Tantivy {
+        let mut index = Tantivy::at(self.folder(), options);
         index.clear().expect("clear");
         index
     }
@@ -358,7 +370,6 @@ const MARKER: &[u8] = b"bilbo index\n";
 
 type Snapshot = Vec<(String, String)>;
 
-/// Every name under the folder with its bytes, or what a link points at, without following links.
 fn snapshot(folder: &Path) -> Snapshot {
     let mut found = Vec::new();
     let Ok(listed) = fs::read_dir(folder) else {
@@ -385,9 +396,8 @@ fn marker(folder: &Path) {
     fs::write(folder.join("bilbo-index"), MARKER).expect("write the marker");
 }
 
-/// A committed index of bilbo's own, made by the adapter, in the folder.
 fn built(folder: &Path) {
-    let mut index = Tantivy::at(folder.to_path_buf());
+    let mut index = Tantivy::at(folder.to_path_buf(), options());
     index.clear().expect("clear");
     fill(&mut index);
     index.commit(&position(5)).expect("commit");
@@ -642,7 +652,7 @@ fn an_index_interrupted_at_any_point_is_made_again_or_used() {
             fs::write(folder.join(".tantivy-writer.lock"), "").expect("write");
         }),
         ("an index made and never committed", |folder| {
-            let mut index = Tantivy::at(folder.to_path_buf());
+            let mut index = Tantivy::at(folder.to_path_buf(), options());
             index.clear().expect("clear");
             fill(&mut index);
         }),
@@ -1184,10 +1194,9 @@ fn a_grown_index_matches_what_a_rebuilt_one_matches_and_scores_it_otherwise() {
     );
 }
 
-#[test]
-fn a_commit_merges_away_a_segment_with_over_a_fifth_of_its_documents_deleted() {
+fn deletes_left_after(options: Options, deleted: u8) -> (usize, usize) {
     let scratch = Scratch::new("merge-share");
-    let mut index = scratch.fresh();
+    let mut index = scratch.fresh_with(options);
     for entry in 1..=100 {
         add(
             &mut index,
@@ -1198,27 +1207,60 @@ fn a_commit_merges_away_a_segment_with_over_a_fifth_of_its_documents_deleted() {
         );
     }
     index.commit(&position(1)).expect("commit");
-    for entry in 1..=19 {
+    for entry in 1..=deleted {
         index.delete(id(entry), 1).expect("delete");
     }
     index.commit(&position(2)).expect("commit");
-    let deletes = || {
-        names(&scratch.folder())
-            .iter()
-            .filter(|name| name.ends_with(".del"))
-            .count()
-    };
+    let deletes = names(&scratch.folder())
+        .iter()
+        .filter(|name| name.ends_with(".del"))
+        .count();
+    (deletes, index.documents().expect("documents").len())
+}
+
+#[test]
+fn a_commit_merges_away_a_segment_with_over_a_fifth_of_its_documents_deleted() {
     assert_eq!(
-        deletes(),
-        1,
+        deletes_left_after(options(), 19),
+        (1, 81),
         "19 of 100 is under the share: the deletes stay"
     );
-    for entry in 20..=22 {
-        index.delete(id(entry), 1).expect("delete");
-    }
-    index.commit(&position(3)).expect("commit");
-    assert_eq!(deletes(), 0, "22 of 100 is over it: the segment was merged");
-    assert_eq!(index.documents().expect("documents").len(), 78);
+    assert_eq!(
+        deletes_left_after(options(), 22),
+        (0, 78),
+        "22 of 100 is over it: the segment was merged"
+    );
+    let never = Options {
+        merge_deleted_share: 1.0,
+        ..options()
+    };
+    assert_eq!(
+        deletes_left_after(never, 22),
+        (1, 78),
+        "a share of 1.0 keeps the delete file"
+    );
+}
+
+#[test]
+fn a_writer_takes_the_memory_it_is_given() {
+    let small = Options {
+        memory: 16 * 1024 * 1024,
+        ..options()
+    };
+    assert_eq!(deletes_left_after(small, 1), (1, 99));
+    let scratch = Scratch::new("memory");
+    let mut index = Tantivy::at(
+        scratch.folder(),
+        Options {
+            memory: 1024 * 1024,
+            ..options()
+        },
+    );
+    let error = index.clear().expect_err("under tantivy's minimum");
+    assert!(
+        error.to_string().contains("memory arena"),
+        "tantivy's own error: {error}"
+    );
 }
 
 #[test]
@@ -1333,9 +1375,8 @@ fn a_committed_index_with_a_segment_file_missing_or_cut_has_no_position_and_the_
     }
 }
 
-/// A committed index of bilbo's own in which one segment holds a delete file.
 fn built_with_a_delete_file(folder: &Path) {
-    let mut index = Tantivy::at(folder.to_path_buf());
+    let mut index = Tantivy::at(folder.to_path_buf(), options());
     index.clear().expect("clear");
     for entry in 1..=100 {
         add(

@@ -30,7 +30,6 @@ pub fn run(
     output
 }
 
-/// `run` with the most failed entries a commit may record.
 pub(crate) fn rebuild(
     manifest: Manifest,
     request: &Request,
