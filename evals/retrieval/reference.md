@@ -11,6 +11,7 @@ Start with the [overview](README.md) for a short introduction.
   - [mem0](#mem0)
   - [dense](#dense)
   - [bm25](#bm25)
+  - [bilbo next](#bilbo-next)
   - [graphiti](#graphiti)
   - [ai-memory](#ai-memory)
   - [hindsight](#hindsight)
@@ -32,9 +33,9 @@ Start with the [overview](README.md) for a short introduction.
 - [Nix](https://nixos.org/download) with flakes enabled.
 - To build or check a store: [Docker](https://docs.docker.com/get-started/get-docker/). The shell pins the client,
   Compose and buildx; the engine is yours. A buildx installed by Docker Desktop or OrbStack takes precedence.
-- To build a store with an LLM (every arm but dense, bm25, mempalace and auto-memory): an OpenAI-compatible LLM endpoint with
-  `GET /models` and JSON mode, and tool calls for bilbo's arms. The claude-mem arm runs Claude Code instead, and needs a
-  Claude subscription token from `claude setup-token` or an Anthropic API key.
+- To build a store with an LLM (every arm but dense, bm25, bilbo-next, mempalace and auto-memory): an OpenAI-compatible
+  LLM endpoint with `GET /models` and JSON mode, and tool calls for the bilbo 0.19 arms. The claude-mem arm runs Claude
+  Code instead, and needs a Claude subscription token from `claude setup-token` or an Anthropic API key.
 - To run the embedder on the GPU: NVIDIA's
   [container toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/).
 - To rebuild the corpus from SWE-chat or to publish: a [Hugging Face token](https://huggingface.co/settings/tokens).
@@ -91,8 +92,8 @@ A store is the memory one strategy builds from the corpus, `dataset/store-<arm>-
 needs no store-building LLM; judging retrieval still calls an LLM. The key hashes what shapes a store: the corpus, the embedder, the LLM for an arm that uses one, and the
 files under `arms/<arm>/`. Change any of them and the key changes.
 
-`dataset.lock` pins a store built from this corpus for every arm, and a store of every arm but bm25 built from an
-earlier one, `corpus-1235aec0592a`, the first five projects.
+`dataset.lock` pins a store built from this corpus for every arm but bilbo-next, and a store of every arm but bm25 built
+from an earlier one, `corpus-1235aec0592a`, the first five projects.
 
 | Arm | Strategy | LLM | Published store |
 |---|---|---|---|
@@ -116,7 +117,8 @@ To get a store:
 Without `BILBO_EVAL_LLM_MODEL`, the script takes the store in `dataset.lock` built from the current corpus, embedder
 and arm files, and asks for `BILBO_EVAL_LLM_MODEL` (and `BILBO_EVAL_LLM_SMALL_MODEL`) when there are several. A store
 already in `dataset/` is used as it is, with a warning when it is not the one in the lock, as after a local build. When
-there is none, the script builds it, which needs the LLM for every arm but dense, bm25, mempalace and auto-memory:
+there is none, the script builds it, which needs the LLM for every arm but dense, bm25, bilbo-next, mempalace and
+auto-memory:
 
     BILBO_EVAL_LLM_URL=http://host.docker.internal:8080/v1 BILBO_EVAL_LLM_KEY=... BILBO_EVAL_LLM_MODEL=... \
       evals/retrieval/scripts/build-store.sh mem0
@@ -153,8 +155,8 @@ rerun resumes each lane from its own checkpoint.
 - `--search <questions.jsonl> <out.jsonl>` restores the store into fresh services and runs `arms/<arm>/search.py` over
   the questions, appending its rows to the output. It never builds, and `search.py` is not part of the store's key.
 
-Every arm but bm25 and auto-memory embeds with Qwen3-Embedding-0.6B, bilbo's embedder, on llama.cpp; bm25 uses only its
-tokenizer.
+Every arm but bm25, bilbo-next and auto-memory embeds with Qwen3-Embedding-0.6B, bilbo's embedder, on llama.cpp; bm25 and
+bilbo-next use only its tokenizer.
 
 ### mem0
 

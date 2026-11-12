@@ -28,8 +28,8 @@ evals/retrieval/scripts/eval.sh bm25
 ```
 
 `build-store.sh` uses a local archive, downloads a pinned one, or builds it if neither is
-available. Building bm25, dense, mempalace, and auto-memory needs no LLM; other arms do.
-Judging retrieval always uses an LLM.
+available. Building bm25, dense, bilbo-next, mempalace, and auto-memory needs no LLM;
+other arms do. Judging retrieval always uses an LLM.
 
 ## Files in an arm
 
