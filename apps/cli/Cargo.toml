@@ -20,11 +20,11 @@ bilbo-settings.workspace = true
 bilbo-store.workspace = true
 bilbo-tantivy.workspace = true
 clap.workspace = true
+rustix = { workspace = true, features = ["process"] }
 
 [dev-dependencies]
 proc-macro2.workspace = true
 runfiles.workspace = true
-rustix.workspace = true
 serde_json.workspace = true
 syn.workspace = true
 

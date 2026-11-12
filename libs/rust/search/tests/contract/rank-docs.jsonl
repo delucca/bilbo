@@ -1,0 +1,15 @@
+{"corpus": "docs", "terms": ["aa", "bb", "cc", "cc", "cc", "cc", "cc"]}
+{"corpus": "docs", "terms": ["aa", "aa", "aa", "aa", "aa", "bb", "cc"]}
+{"corpus": "docs", "terms": ["zz", "zz", "zz", "zz", "zz", "zz", "zz"]}
+{"corpus": "docs", "terms": ["dd", "ee", "ff", "dd", "ee", "ff", "gg"]}
+{"corpus": "docs", "terms": ["dd", "ee", "ff", "dd", "ee", "ff", "gg"]}
+{"corpus": "docs", "terms": []}
+{"corpus": "orders", "terms": ["aa", "bb", "cc", "cc", "cc", "cc", "cc"]}
+{"corpus": "orders", "terms": ["aa", "aa", "aa", "aa", "aa", "bb", "cc"]}
+{"corpus": "orders", "terms": ["aa", "bb", "bb", "bb", "bb", "bb", "cc"]}
+{"corpus": "orders", "terms": ["aa", "aa", "aa", "bb", "bb", "bb", "cc"]}
+{"corpus": "orders", "terms": ["aa", "bb", "bb", "bb", "cc", "cc", "cc"]}
+{"corpus": "orders", "terms": ["aa", "aa", "bb", "bb", "cc", "cc", "cc"]}
+{"corpus": "every", "terms": ["common", "aa"]}
+{"corpus": "every", "terms": ["common", "common", "bb", "bb"]}
+{"corpus": "every", "terms": ["common", "cc", "cc", "cc"]}

@@ -7,6 +7,7 @@ store builder, integrity checks, and search adapter.
 |---|---|
 | [bm25](bm25/) | Session chunks ranked by keyword matching. |
 | [dense](dense/) | The same chunks ranked by embedding similarity. |
+| [bilbo-next](bilbo-next/) | Session chunks ranked by bilbo's own keyword search, through the built bilbo. |
 | [mem0](mem0/) | Memories extracted through mem0’s Claude Code plugin. |
 | [graphiti](graphiti/) | A graph built from conversation turns. |
 | [ai-memory](ai-memory/) | Observations and pages written by its hooks and consolidation. |

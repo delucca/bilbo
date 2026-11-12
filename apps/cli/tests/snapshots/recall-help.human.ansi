@@ -1,0 +1,29 @@
+bilbo recall: search what bilbo keeps and print the chunks that match best.
+
+[1mUsage:[22m
+  [36mbilbo recall [39m[2m<query>[22m[36m... [--kind [39m[2m<kind>[22m[36m]... [--budget [39m[2m<tokens>[22m[36m][39m
+
+[1mOptions:[22m
+      [1m--kind [22m[2m<kind>[22m      Search entries of this kind only; repeat it for more
+      [1m--budget [22m[2m<tokens>[22m  Print at most this many tokens
+
+[1mOutput:[22m
+  [1m=== [22m[2m<ref>[22m[1m [22m[2m<kind>[22m[1m [22m[2m<date>[22m[1m [22m[2m<n>[22m[1m lines[22m  a hit's header, its fields tab-separated,
+                                     then exactly [2m<n>[22m lines of text
+  [1m... part [22m[2m<k>[22m[1m/[22m[2m<m>[22m                   one piece of a record too long for a chunk
+  [1m... cut[22m                            the last hit, cut to fit the budget
+[2mThe text is as it was kept, after a line its kind adds (a session's start).[22m
+[2m<ref> is what bilbo read takes. stderr says how many entries were searched.[22m
+
+[2mEach query that reaches the store is logged in the state folder's queries.log.[22m
+
+[1mExit:[22m
+  [1m0[22m  at least one hit
+  [1m1[22m  nothing matched, no store, no search index, or a store or index failure
+  [1m2[22m  usage or config error
+
+[1mExamples:[22m
+  [36mbilbo recall how did we decide the index format[39m
+  [36mbilbo recall --kind markdown --budget 1500 -- release checklist[39m
+
+[1mDocs:[22m [2mhttps://github.com/delucca/bilbo/wiki/Commands#recall[22m

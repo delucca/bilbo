@@ -1,3 +1,4 @@
+use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use rusqlite::{Connection, OpenFlags, OptionalExtension, Transaction, params};
@@ -31,8 +32,9 @@ CREATE INDEX frames_by_entry ON frames (entry, generation, first);
 CREATE TABLE changes (
   seq INTEGER PRIMARY KEY, entry BLOB NOT NULL, generation INTEGER, first INTEGER, count INTEGER
 );
-PRAGMA user_version = 2;
 ";
+
+const VERSION: u32 = 2;
 
 pub const OPEN: &str = "open";
 
@@ -111,6 +113,63 @@ pub struct Binding {
     pub state: Vec<u8>,
 }
 
+pub enum Owner {
+    Bound,
+    Other,
+    Unknown,
+}
+
+/// SQLite would read a WAL file's sidecars and could create them, so the header and the `-wal`
+/// name are looked at with plain reads first: the magic, a rollback journal (bytes 18 and 19 are
+/// 1), this catalog version at offset 60, and no `-wal` file. The header is read without following
+/// a link, so a catalog that is one is no catalog. The version is read again from the opened
+/// database: a writer's open has replayed a hot journal by then, a reader's open fails on one.
+fn open_catalog(path: &Path, access: OpenFlags) -> rusqlite::Result<Option<Connection>> {
+    let mut header = [0u8; 100];
+    let read = files::open_no_follow(path, rustix::fs::OFlags::empty())
+        .and_then(|mut file| file.read_exact(&mut header));
+    if read.is_err()
+        || !header.starts_with(b"SQLite format 3\0")
+        || header[18] != 1
+        || header[19] != 1
+        || header[60..64] != VERSION.to_be_bytes()
+    {
+        return Ok(None);
+    }
+    let mut wal = path.as_os_str().to_os_string();
+    wal.push("-wal");
+    if !matches!(
+        std::fs::symlink_metadata(&wal),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound
+    ) {
+        return Ok(None);
+    }
+    let conn = Connection::open_with_flags(path, access | OpenFlags::SQLITE_OPEN_NO_MUTEX)?;
+    let version: i64 = conn.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+    Ok((version == i64::from(VERSION)).then_some(conn))
+}
+
+fn binds(conn: &Connection, binding: &Binding) -> rusqlite::Result<Owner> {
+    let bound = |key: &str| -> rusqlite::Result<Option<Vec<u8>>> {
+        conn.query_row(
+            "SELECT value FROM catalog WHERE key = ?1",
+            params![key],
+            |row| row.get(0),
+        )
+        .optional()
+    };
+    let (Some(root), Some(state)) = (bound("root")?, bound("state")?) else {
+        return Ok(Owner::Unknown);
+    };
+    Ok(
+        if root == binding.root.as_slice() && state == binding.state.as_slice() {
+            Owner::Bound
+        } else {
+            Owner::Other
+        },
+    )
+}
+
 pub struct Catalog {
     conn: Connection,
     path: PathBuf,
@@ -161,6 +220,7 @@ impl Catalog {
         let id = Id::mint().map_err(StoreError::Id)?.to_bytes();
         let run = || -> rusqlite::Result<()> {
             conn.execute_batch(SCHEMA)?;
+            conn.pragma_update(None, "user_version", VERSION)?;
             let mut insert = conn.prepare("INSERT INTO catalog (key, value) VALUES (?1, ?2)")?;
             insert.execute(params!["id", id.as_slice()])?;
             if let Some(binding) = binding {
@@ -215,6 +275,16 @@ impl Catalog {
         }
     }
 
+    pub fn owner(path: &Path, binding: &Binding) -> Owner {
+        let read = || -> rusqlite::Result<Owner> {
+            let Some(conn) = open_catalog(path, OpenFlags::SQLITE_OPEN_READ_ONLY)? else {
+                return Ok(Owner::Unknown);
+            };
+            binds(&conn, binding)
+        };
+        read().unwrap_or(Owner::Unknown)
+    }
+
     fn check(
         path: &Path,
         binding: &Binding,
@@ -222,11 +292,9 @@ impl Catalog {
         open_len: u64,
         access: OpenFlags,
     ) -> rusqlite::Result<Fresh> {
-        let conn = Connection::open_with_flags(path, access | OpenFlags::SQLITE_OPEN_NO_MUTEX)?;
-        let version: i64 = conn.query_row("PRAGMA user_version", [], |row| row.get(0))?;
-        if version != 2 {
+        let Some(conn) = open_catalog(path, access)? else {
             return Ok(Fresh::Rebuild);
-        }
+        };
         let raw: Vec<u8> =
             conn.query_row("SELECT value FROM catalog WHERE key = 'id'", [], |row| {
                 row.get(0)
@@ -234,17 +302,7 @@ impl Catalog {
         let Ok(id) = <[u8; 16]>::try_from(raw) else {
             return Ok(Fresh::Rebuild);
         };
-        let bound = |key: &str| -> rusqlite::Result<Option<Vec<u8>>> {
-            conn.query_row(
-                "SELECT value FROM catalog WHERE key = ?1",
-                params![key],
-                |row| row.get(0),
-            )
-            .optional()
-        };
-        if bound("root")?.as_deref() != Some(binding.root.as_slice())
-            || bound("state")?.as_deref() != Some(binding.state.as_slice())
-        {
+        if !matches!(binds(&conn, binding)?, Owner::Bound) {
             return Ok(Fresh::Rebuild);
         }
         let listed: Vec<(String, u64)> = {

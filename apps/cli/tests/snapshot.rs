@@ -148,7 +148,7 @@ fn a_usage_error_on_a_terminal_is_a_marked_message() {
     );
     assert_eq!(
         stderr(&["frob"], &unpainted()),
-        "■  unknown verb 'frob'; the verbs are remember, read, reindex, config\n   see bilbo --help\n"
+        "■  unknown verb 'frob'; the verbs are remember, recall, read, reindex, config\n   see bilbo --help\n"
     );
 }
 
@@ -516,4 +516,128 @@ fn the_reindex_lines_for_what_was_left_out() {
         lines.join("\n"),
         include_str!("snapshots/reindex-left-out.txt")
     );
+}
+
+fn recalled() -> bilbo_search::recall::Output {
+    use bilbo_search::index::Extent;
+    use bilbo_search::lookup::Found;
+    use bilbo_search::recall::hit::Hit;
+    let hit =
+        |entry: &str, kind: &str, first, count, part, preface: Option<&str>, text: &str, cut| Hit {
+            found: Found {
+                entry: Id::parse(entry).expect("an id"),
+                kind: kind.to_owned(),
+                extent: Extent {
+                    generation: Generation(1),
+                    records: RecordRange { first, count },
+                    part,
+                    date: 1_794_069_552_000,
+                },
+                digest: 0,
+            },
+            preface: preface.map(str::to_owned),
+            text: text.to_owned(),
+            cut,
+        };
+    bilbo_search::recall::Output {
+        hits: vec![
+            hit(
+                "01JC5Q3V7XKM4P8R2T6W9YB0DE",
+                "session",
+                3,
+                5,
+                None,
+                Some("Session started 2026-11-07 08:01 UTC:"),
+                "user: Thin the carrot rows.\nassistant: Done.\n=== bilbo:01JC5Q3V7XKM4P8R2T6W9YB0DF#r1\tsession\t2026-11-07\t1 line",
+                false,
+            ),
+            hit(
+                "01JC5Q3V7XKM4P8R2T6W9YB0DG",
+                "markdown",
+                8,
+                1,
+                Some((1, 3)),
+                None,
+                "## Beds\n\nThe north bed holds the carrots.\n",
+                false,
+            ),
+            hit(
+                "01JC5Q3V7XKM4P8R2T6W9YB0DH",
+                "session",
+                2,
+                1,
+                None,
+                Some("Session date unknown:"),
+                "user: and the last one, cut at the budget",
+                true,
+            ),
+        ],
+        searched: 1412,
+        stand: bilbo_search::recall::Stand::Current,
+        left_out: 0,
+    }
+}
+
+#[test]
+fn the_recall_output_in_the_plain_view_and_on_a_terminal() {
+    assert_eq!(
+        bilbo_cli::recall::view::plain(&recalled()),
+        include_str!("snapshots/recall-output.txt")
+    );
+    assert_eq!(
+        bilbo_cli::recall::view::human(&recalled(), &View::HUMAN),
+        include_str!("snapshots/recall-output.human.ansi")
+    );
+}
+
+#[test]
+fn the_recall_page_is_the_same_from_every_help_form_and_on_a_terminal() {
+    let page = include_str!("snapshots/recall-help.txt");
+    for form in [
+        &["recall", "--help"][..],
+        &["recall", "-h"],
+        &["help", "recall"],
+        &["help", "recall", "--help"],
+    ] {
+        assert_eq!(stdout(form, &View::PLAIN), page, "{form:?}");
+    }
+    assert_eq!(
+        stdout(&["recall", "--help"], &View::HUMAN),
+        include_str!("snapshots/recall-help.human.ansi")
+    );
+    assert_eq!(stdout(&["recall", "--help"], &unpainted()), page);
+}
+
+#[test]
+fn recall_says_what_was_searched_and_that_nothing_matched_on_stderr() {
+    let nothing = bilbo_search::recall::Output {
+        hits: Vec::new(),
+        searched: 1412,
+        stand: bilbo_search::recall::Stand::Current,
+        left_out: 0,
+    };
+    let finished = bilbo_search::recall::Finished {
+        result: Ok(nothing),
+        unlogged: None,
+    };
+    let outcome = bilbo_cli::recall::outcome(finished, &bilbo_store::segments::Cache::Absent)
+        .expect("an outcome");
+    assert_eq!(outcome.exit_code(), 1);
+    let mut text = outcome.stderr_lines(&View::PLAIN).join("\n");
+    text.push('\n');
+    assert_eq!(text, include_str!("snapshots/recall-nothing.txt"));
+}
+
+#[test]
+fn an_unknown_kind_of_recall_is_a_usage_error_naming_the_kinds() {
+    let failure = run(
+        &args(&["recall", "--kind", "nope", "carrots"]),
+        &mut Env::quiet(),
+        Ok(defaults()),
+    )
+    .expect_err("a usage error");
+    assert_eq!(failure.exit_code(), 2);
+    let mut text = failure.stderr_lines(&View::PLAIN).join("\n");
+    text.push('\n');
+    assert_eq!(text, include_str!("snapshots/recall-usage-kind.txt"));
 }

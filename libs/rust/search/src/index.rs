@@ -47,6 +47,7 @@ pub enum IndexError {
         path: PathBuf,
         error: String,
     },
+    Inconsistent(&'static str),
 }
 
 impl fmt::Display for IndexError {
@@ -62,6 +63,9 @@ impl fmt::Display for IndexError {
                 path,
                 error,
             } => write!(f, "cannot {action} the index {}: {error}", path.display()),
+            Self::Inconsistent(text) => {
+                write!(f, "the search index does not agree with itself: {text}")
+            }
         }
     }
 }

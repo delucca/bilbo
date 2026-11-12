@@ -45,6 +45,66 @@ pub fn chunks(
     chunks_within(passages, tokens, size, MAX_ENCODE_BYTES)
 }
 
+/// The chunk the index holds at these coordinates, or `None` when the passages do not give it.
+/// Only the passages the coordinates name are chunked. A packed extent whose passages are whole and
+/// consecutive is recomputed from them, also when a later passage would now be packed with them;
+/// whether it is the indexed text is the digest's to say.
+pub fn at(
+    passages: &[Passage],
+    tokens: &dyn Tokens,
+    size: Size,
+    records: RecordRange,
+    part: Option<(u32, u32)>,
+) -> Result<Option<Chunk>, Unsplit> {
+    let Some(end) = end_of(records) else {
+        return Ok(None);
+    };
+    let mut found = match part {
+        None => {
+            let from = passages.partition_point(|passage| passage.range.first < records.first);
+            let named = &passages[from..];
+            let count = named
+                .iter()
+                .take_while(|passage| end_of(passage.range).is_some_and(|last| last <= end))
+                .count();
+            chunks(&named[..count], tokens, size)?
+        }
+        Some(_) => {
+            let holder = passages.iter().find(|passage| {
+                passage.range.first <= records.first
+                    && end_of(passage.range).is_some_and(|last| end <= last)
+            });
+            match holder {
+                Some(passage) => chunks(std::slice::from_ref(passage), tokens, size)?,
+                None => Vec::new(),
+            }
+        }
+    };
+    let wanted = match part {
+        None => (found.len() == 1).then_some(0),
+        Some((k, n)) => {
+            if usize::try_from(n).ok() == Some(found.len()) {
+                usize::try_from(k).ok()
+            } else {
+                None
+            }
+        }
+    };
+    let Some(at) = wanted.filter(|at| *at < found.len()) else {
+        return Ok(None);
+    };
+    let chunk = found.swap_remove(at);
+    Ok((chunk.records == records && chunk.part == part).then_some(chunk))
+}
+
+fn end_of(range: RecordRange) -> Option<u64> {
+    range.first.checked_add(range.count)
+}
+
+pub fn digest(text: &str) -> u64 {
+    xxhash_rust::xxh3::xxh3_64(text.as_bytes())
+}
+
 fn chunks_within(
     passages: &[Passage],
     tokens: &dyn Tokens,
@@ -1052,5 +1112,137 @@ mod tests {
                 "case {case}: {last:?} does not end {text:?}"
             );
         }
+    }
+
+    type Case = (&'static str, RecordRange, Option<(u32, u32)>);
+
+    fn at(passages: &[Passage], records: RecordRange, part: Option<(u32, u32)>) -> Option<Chunk> {
+        super::at(passages, &Every(1), SMALL, records, part).expect("a text it splits")
+    }
+
+    #[test]
+    fn a_packed_chunk_is_found_by_its_records_and_a_window_by_its_records_and_part() {
+        let mut section = labelled(range(10, 4), "u: abcdefghijklmnopqrstuv", &[(0, "u:")]);
+        section.ends = vec![5, 10, 15, 25];
+        let passages = [
+            passage(1, "aaaa"),
+            passage(2, "bbbb"),
+            passage(4, "cccc"),
+            section,
+        ];
+        let all = chunks(&passages, &Every(1), SMALL);
+        assert_eq!(all.len(), 6);
+        assert_eq!(at(&passages, range(1, 2), None), Some(all[0].clone()));
+        assert_eq!(at(&passages, range(4, 1), None), Some(all[1].clone()));
+        for (found, part) in all[2..].iter().zip(0..) {
+            assert_eq!(found.part, Some((part, 4)));
+            assert_eq!(
+                at(&passages, found.records, found.part).as_ref(),
+                Some(found)
+            );
+        }
+        assert_ne!(all[2].records.first, all[3].records.first);
+    }
+
+    #[test]
+    fn coordinates_no_chunk_has_give_nothing() {
+        let mut section = labelled(range(10, 4), "u: abcdefghijklmnopqrstuv", &[(0, "u:")]);
+        section.ends = vec![5, 10, 15, 25];
+        let passages = [
+            passage(1, "aaaa"),
+            labelled(range(2, 2), "", &[(0, "x:")]),
+            passage(4, "cccc"),
+            passage(5, "dddddddddd"),
+            section,
+        ];
+        let cases: [Case; 11] = [
+            ("a first record inside a passage", range(11, 3), None),
+            ("a last record inside a passage", range(10, 2), None),
+            (
+                "records the window does not have",
+                range(11, 2),
+                Some((1, 4)),
+            ),
+            ("no passage with text", range(2, 2), None),
+            ("a part beyond the windows", range(10, 2), Some((4, 4))),
+            ("a window count that differs", range(10, 2), Some((0, 3))),
+            ("records outside the entry", range(40, 2), None),
+            (
+                "a part asked of a passage that fits",
+                range(5, 1),
+                Some((0, 1)),
+            ),
+            (
+                "a first record that ends past u64",
+                range(u64::MAX, 1),
+                None,
+            ),
+            ("a count that ends past u64", range(1, u64::MAX), None),
+            ("a count of nothing", range(1, 0), None),
+        ];
+        for (what, records, part) in cases {
+            assert_eq!(at(&passages, records, part), None, "{what}");
+        }
+        assert!(at(&passages, range(10, 2), Some((0, 4))).is_some());
+    }
+
+    #[test]
+    fn a_packed_chunk_that_a_later_passage_would_now_join_is_still_found() {
+        let first = [passage(1, "aaaa")];
+        let before = chunks(&first, &Every(1), SMALL);
+        let grown = [passage(1, "aaaa"), passage(2, "bbbb")];
+        assert_eq!(chunks(&grown, &Every(1), SMALL).len(), 1);
+        assert_eq!(at(&grown, range(1, 1), None), Some(before[0].clone()));
+    }
+
+    #[test]
+    fn only_the_passages_the_coordinates_name_are_tokenized() {
+        struct Seen(std::sync::Mutex<Vec<String>>);
+        impl Tokens for Seen {
+            fn ends(&self, text: &str) -> Vec<usize> {
+                self.0.lock().expect("a lock").push(text.to_owned());
+                (1..=text.len()).collect()
+            }
+            fn count(&self, text: &str) -> usize {
+                self.0.lock().expect("a lock").push(text.to_owned());
+                text.len()
+            }
+        }
+        let passages = [
+            passage(1, "aaaa"),
+            passage(2, "bbbb"),
+            passage(4, "cccc"),
+            passage(5, "u: abcdefghijklmnopqrst"),
+            passage(6, "zzzz"),
+        ];
+        let seen = Seen(std::sync::Mutex::new(Vec::new()));
+        super::at(&passages, &seen, SMALL, range(1, 2), None).expect("a chunk");
+        super::at(&passages, &seen, SMALL, range(5, 1), Some((1, 3))).expect("a chunk");
+        let seen = seen.0.lock().expect("a lock");
+        assert!(!seen.is_empty());
+        assert!(
+            seen.iter()
+                .all(|text| !text.contains("cccc") && !text.contains("zzzz")),
+            "{seen:?}"
+        );
+        assert!(seen.iter().any(|text| text.contains("bbbb")));
+        assert!(seen.iter().any(|text| text.starts_with("u:")));
+        drop(seen);
+        let none = Seen(std::sync::Mutex::new(Vec::new()));
+        for records in [range(5, u64::MAX), range(u64::MAX, 2)] {
+            assert_eq!(
+                super::at(&passages, &none, SMALL, records, Some((0, 3))),
+                Ok(None)
+            );
+        }
+        assert!(none.0.lock().expect("a lock").is_empty());
+    }
+
+    #[test]
+    fn a_digest_is_xxh3_64_of_the_texts_bytes() {
+        assert_eq!(super::digest(""), 0x2d06_8005_38d3_94c2);
+        assert_eq!(super::digest("a"), 0xe6c6_32b6_1e96_4e1f);
+        assert_eq!(super::digest("hello world"), 0xd447_b1ea_40e6_988b);
+        assert_eq!(super::digest("é日本"), 0xbbf5_7df7_a072_67f4);
     }
 }

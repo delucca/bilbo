@@ -1,5 +1,4 @@
 use std::fmt::Write;
-use std::time::SystemTime;
 
 use bilbo_kinds::read::outline::Line;
 use bilbo_kinds::read::page::Block;
@@ -7,8 +6,10 @@ use bilbo_kinds::read::refs::SCHEME;
 use bilbo_kinds::read::{About, Body, Budget, Output};
 use bilbo_store::entries::RecordRange;
 
-use crate::console::message::{group, sanitize};
+use crate::console::body::body;
+use crate::console::message::{group, line};
 use crate::console::theme::{Style, paint};
+use crate::console::time::utc;
 use crate::console::view::View;
 
 struct Show<'v> {
@@ -26,21 +27,6 @@ impl Show<'_> {
         } else {
             number.to_string()
         }
-    }
-
-    fn body(&self, text: &str) -> String {
-        if !self.view.terminal {
-            return text.to_owned();
-        }
-        text.split('\n')
-            .map(|line| {
-                line.split('\t')
-                    .map(sanitize)
-                    .collect::<Vec<_>>()
-                    .join("\t")
-            })
-            .collect::<Vec<_>>()
-            .join("\n")
     }
 }
 
@@ -81,7 +67,7 @@ fn render(output: &Output, budget: Option<Budget>, show: &Show<'_>) -> String {
             } in lines
             {
                 let locator = show.painted(Style::Name, &output.locator(*records).to_string());
-                let _ = writeln!(text, "{locator} {}", show.body(line));
+                let _ = writeln!(text, "{locator} {}", body(show.view, line));
             }
             true
         }
@@ -96,9 +82,9 @@ fn render(output: &Output, budget: Option<Budget>, show: &Show<'_>) -> String {
 }
 
 fn about_lines(output: &Output, about: &About, show: &Show<'_>) -> String {
-    let mut rows = vec![("kind", sanitize(&about.kind))];
+    let mut rows = vec![("kind", line(show.view, &about.kind))];
     if let Some(origin) = &about.origin {
-        rows.push(("origin", sanitize(origin.as_str())));
+        rows.push(("origin", line(show.view, origin.as_str())));
     }
     rows.push(("captured", utc(about.captured)));
     if let Some(started) = about.started {
@@ -132,7 +118,7 @@ fn block_lines(output: &Output, block: &Block, show: &Show<'_>) -> String {
     let mut text = format!(
         "{} {}",
         show.painted(Style::Name, &locator),
-        show.body(&block.text)
+        body(show.view, &block.text)
     );
     // A cut always gets its own newline: the text before the last line is then the record's, to the byte.
     if block.cut.is_some() || !text.ends_with('\n') {
@@ -200,31 +186,6 @@ fn last_part(output: &Output, outline: bool, budget: Option<Budget>, show: &Show
     )
 }
 
-fn utc(time: SystemTime) -> String {
-    let seconds = time
-        .duration_since(SystemTime::UNIX_EPOCH)
-        .map_or(0, |since| since.as_secs());
-    let (days, rest) = (seconds / 86_400, seconds % 86_400);
-    let shifted = days + 719_468;
-    let (era, day_of_era) = (shifted / 146_097, shifted % 146_097);
-    let year_of_era =
-        (day_of_era - day_of_era / 1460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
-    let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
-    let march_month = (5 * day_of_year + 2) / 153;
-    let day = day_of_year - (153 * march_month + 2) / 5 + 1;
-    let month = if march_month < 10 {
-        march_month + 3
-    } else {
-        march_month - 9
-    };
-    let year = year_of_era + era * 400 + u64::from(month <= 2);
-    format!(
-        "{year:04}-{month:02}-{day:02} {:02}:{:02} UTC",
-        rest / 3600,
-        rest % 3600 / 60
-    )
-}
-
 #[cfg(test)]
 mod tests {
     use std::path::Path;
@@ -236,7 +197,7 @@ mod tests {
     use bilbo_store::entries::{Generation, Origin, RecordRange};
     use bilbo_store::id::Id;
 
-    use super::{beside, plain, shown, utc};
+    use super::{beside, plain, shown};
     use crate::console::view::View;
 
     const ID: &str = "01JC5Q3V7XKM4P8R2T6W9YB0DE";
@@ -715,22 +676,6 @@ mod tests {
         assert_eq!(
             plain(&output(Body::Page(Vec::new()), range(5, 9), None), None),
             format!("{end}\n")
-        );
-    }
-
-    #[test]
-    fn a_time_prints_as_a_utc_date_and_minute() {
-        let at = |seconds: u64| utc(SystemTime::UNIX_EPOCH + Duration::from_secs(seconds));
-        assert_eq!(at(0), "1970-01-01 00:00 UTC");
-        assert_eq!(at(59), "1970-01-01 00:00 UTC");
-        assert_eq!(at(1_794_069_552), "2026-11-07 16:39 UTC");
-        assert_eq!(at(1_709_164_800), "2024-02-29 00:00 UTC");
-        assert_eq!(at(951_868_799), "2000-02-29 23:59 UTC");
-        assert_eq!(at(4_107_542_400), "2100-03-01 00:00 UTC");
-        assert_eq!(at(1_798_761_599), "2026-12-31 23:59 UTC");
-        assert_eq!(
-            utc(SystemTime::UNIX_EPOCH - Duration::from_secs(1)),
-            "1970-01-01 00:00 UTC"
         );
     }
 }

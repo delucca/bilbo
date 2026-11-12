@@ -1,0 +1,12 @@
+services:
+  build:
+    build: .
+    profiles: [build]
+    user: ${BILBO_UID}:${BILBO_GID}
+    environment:
+      BILBO_EVAL_SESSIONS: ${BILBO_EVAL_SESSIONS}
+      BILBO_EVAL_DEVICE: ${BILBO_EVAL_DEVICE}
+      BILBO_EVAL_SCOPE: ${BILBO_EVAL_SCOPE}
+    volumes:
+      - ${BILBO_EVAL_CORPUS}:/corpus:ro
+      - ${BILBO_EVAL_WORK}:/work

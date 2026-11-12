@@ -19,13 +19,16 @@ use bilbo_cli::console::settings;
 use bilbo_cli::console::view::View;
 use bilbo_kinds::reader::{Passage, Reader};
 use bilbo_kinds::tokens::Tokens;
+use bilbo_search::bm25::Bm25;
 use bilbo_search::index::{Doc, Extent, Index, IndexError, Stats, millis};
+use bilbo_search::lookup::Found;
 use bilbo_search::position::Position;
+use bilbo_search::rank::{Candidate, Query, Ranker};
 use bilbo_search::tokenizer::Tokenizer;
-use bilbo_store::entries::{Entries, Origin};
+use bilbo_store::entries::{Entries, Generation, Origin};
 use bilbo_store::id::Id;
 use bilbo_store::segments::{Options, Store};
-use bilbo_tantivy::{Row, Tantivy};
+use bilbo_tantivy::{Committed, Row, Tantivy};
 
 const SESSIONS: [(&str, &[u8]); 4] = [
     (
@@ -85,6 +88,25 @@ fn options() -> bilbo_tantivy::Options {
         memory: search.memory(),
         merge_deleted_share: search.merge_deleted_share(),
     }
+}
+
+fn rank(cache: &Path, text: &str, limit: usize) -> Vec<Candidate> {
+    let keys = bilbo_search::recall::keys::defaults();
+    let index = Committed::at(bilbo_tantivy::folder(cache));
+    Bm25 {
+        index: &index,
+        k1: keys.bm25_k1.value,
+        b: keys.bm25_b.value,
+        dropped: &[],
+    }
+    .rank(
+        &Query {
+            text: text.to_owned(),
+            kinds: Vec::new(),
+        },
+        limit,
+    )
+    .expect("a search")
 }
 
 fn disk(cache: &Path) -> Box<dyn Index> {
@@ -209,6 +231,10 @@ impl Sandbox {
         Tantivy::at(bilbo_tantivy::folder(&self.cache()), options())
     }
 
+    fn rank(&self, text: &str, limit: usize) -> Vec<Candidate> {
+        rank(&self.cache(), text, limit)
+    }
+
     fn run(&self, args: &[&str]) -> Run {
         self.run_with(args, &[], None)
     }
@@ -247,8 +273,8 @@ impl Sandbox {
 
     fn matching(&self) -> (Vec<String>, Vec<Vec<String>>) {
         let index = self.index();
-        let sorted = |rows: Vec<Row>| {
-            let mut rows: Vec<String> = rows.iter().map(|row| format!("{row:?}")).collect();
+        let sorted = |rows: Vec<String>| {
+            let mut rows = rows;
             rows.sort();
             rows
         };
@@ -256,16 +282,20 @@ impl Sandbox {
             .iter()
             .map(|query| {
                 sorted(
-                    index
-                        .search(query, 50)
-                        .expect("a search")
+                    self.rank(query, 50)
                         .into_iter()
-                        .map(|(_, row)| row)
+                        .map(|candidate| format!("{:?}", candidate.found))
                         .collect(),
                 )
             })
             .collect();
-        (sorted(index.documents().expect("documents")), hits)
+        let rows = index
+            .documents()
+            .expect("documents")
+            .iter()
+            .map(|row| format!("{row:?}"))
+            .collect();
+        (sorted(rows), hits)
     }
 
     fn remember_in_process(
@@ -366,15 +396,14 @@ impl Sandbox {
         Store::open_read_only(&layout, Options::default(), &mut |_| {}).expect("open the store")
     }
 
-    fn held(&self) -> (Vec<Row>, Vec<Vec<(u32, Row)>>) {
+    fn held(&self) -> (Vec<Row>, Vec<Vec<(u32, Found)>>) {
         let index = self.index();
         let hits = QUERIES
             .iter()
             .map(|query| {
-                let found = index.search(query, 20).expect("a search");
-                found
+                self.rank(query, 20)
                     .into_iter()
-                    .map(|(score, row)| (score.to_bits(), row))
+                    .map(|candidate| (candidate.score.to_bits(), candidate.found))
                     .collect()
             })
             .collect();
@@ -541,7 +570,7 @@ fn the_index_records_the_manifest_it_was_made_with_and_the_stores_cursor() {
     assert_eq!(
         lines[..6],
         [
-            "bilbo index 1",
+            "bilbo index 2",
             "chunk_tokens 512",
             "chunk_overlap 64",
             "analyzer bm25s-en/2",
@@ -604,9 +633,9 @@ fn only_the_newest_generation_of_an_entry_is_in_the_index() {
     sandbox.write("notes/b.md", b"# Other\n\nanother note\n");
     assert_eq!(sandbox.run(&["remember", &sandbox.path("notes")]).code, 0);
     sandbox.reindex();
-    let before = sandbox.index().search("zebras", 5).expect("a search");
+    let before = sandbox.rank("zebras", 5);
     assert_eq!(before.len(), 1);
-    assert_eq!(before[0].1.generation, 1);
+    assert_eq!(before[0].found.extent.generation, Generation(1));
     sandbox.write(
         "notes/a.md",
         b"# Rewritten\n\nnothing of the old text, only giraffes\n",
@@ -614,12 +643,12 @@ fn only_the_newest_generation_of_an_entry_is_in_the_index() {
     assert_eq!(sandbox.run(&["remember", &sandbox.path("notes")]).code, 0);
     sandbox.reindex();
     let index = sandbox.index();
-    assert_eq!(index.search("zebras", 5).expect("a search"), []);
-    let after = index.search("giraffes", 5).expect("a search");
+    assert!(sandbox.rank("zebras", 5).is_empty());
+    let after = sandbox.rank("giraffes", 5);
     assert_eq!(after.len(), 1);
     assert_eq!(
-        (after[0].1.entry, after[0].1.generation),
-        (before[0].1.entry, 2)
+        (after[0].found.entry, after[0].found.extent.generation),
+        (before[0].found.entry, Generation(2))
     );
     assert_eq!(index.documents().expect("documents").len(), 2);
 }
@@ -895,7 +924,7 @@ fn a_reindex_serves_the_again_flag_and_indexes_what_that_pass_kept() {
         run.stderr
     );
     assert_eq!(fs::metadata(&flag).expect("the flag").len(), 0);
-    let hits = sandbox.index().search("giraffes", 5).expect("a search");
+    let hits = sandbox.rank("giraffes", 5);
     assert_eq!(hits.len(), 1, "the pass's entry is in the index");
 }
 
@@ -905,19 +934,15 @@ fn a_remember_indexes_what_it_kept() {
     sandbox.write("notes/a.md", b"# One\n\nthe first text about zebras\n");
     let run = sandbox.run(&["remember", &sandbox.path("notes")]);
     assert_eq!((run.code, run.stderr), (0, Vec::<String>::new()));
-    assert_eq!(
-        sandbox.index().search("zebras", 5).expect("a search").len(),
-        1
-    );
+    assert_eq!(sandbox.rank("zebras", 5).len(), 1);
     let first = sandbox.seq();
     sandbox.write("notes/b.md", b"# Two\n\nthe second text about giraffes\n");
     let run = sandbox.run(&["remember", &sandbox.path("notes")]);
     assert_eq!((run.code, run.stderr), (0, Vec::<String>::new()));
     let second = sandbox.seq();
     assert!(second > first, "{first} then {second}");
-    let index = sandbox.index();
-    assert_eq!(index.search("zebras", 5).expect("a search").len(), 1);
-    assert_eq!(index.search("giraffes", 5).expect("a search").len(), 1);
+    assert_eq!(sandbox.rank("zebras", 5).len(), 1);
+    assert_eq!(sandbox.rank("giraffes", 5).len(), 1);
     assert!(
         sandbox.payload().ends_with("\nfailed -\n"),
         "{}",
@@ -1118,9 +1143,8 @@ fn a_note_that_changes_is_indexed_again_whole() {
         b"# Rewritten\n\nnothing of the old text, only giraffes\n",
     );
     assert_eq!(sandbox.run(&["remember", &sandbox.path("notes")]).code, 0);
-    let index = sandbox.index();
-    assert_eq!(index.search("zebras", 5).expect("a search"), []);
-    assert_eq!(index.search("giraffes", 5).expect("a search").len(), 1);
+    assert!(sandbox.rank("zebras", 5).is_empty());
+    assert_eq!(sandbox.rank("giraffes", 5).len(), 1);
     let grown = sandbox.matching();
     sandbox.reindex();
     assert_eq!(sandbox.matching(), grown, "a note rewritten");
@@ -1286,14 +1310,7 @@ fn the_close_loop_indexes_what_each_pass_kept_and_retries_nothing() {
         1,
         "the first update tried the listed entry and no later pass did"
     );
-    assert_eq!(
-        sandbox
-            .index()
-            .search("giraffes", 5)
-            .expect("a search")
-            .len(),
-        1
-    );
+    assert_eq!(sandbox.rank("giraffes", 5).len(), 1);
 }
 
 const BUILDING_SEVEN: &str = "bilbo: building the search index: 7 entries";
@@ -1314,14 +1331,7 @@ fn a_remember_that_finds_a_filled_store_with_no_index_says_how_many_entries_it_b
     sandbox.write("notes/new.md", b"# Fresh\n\na note about giraffes\n");
     let run = sandbox.run(&["remember", &sandbox.path("notes")]);
     assert_eq!((run.code, run.stderr), (0, vec![BUILDING_SEVEN.to_owned()]));
-    assert_eq!(
-        sandbox
-            .index()
-            .search("giraffes", 5)
-            .expect("a search")
-            .len(),
-        1
-    );
+    assert_eq!(sandbox.rank("giraffes", 5).len(), 1);
 }
 
 #[test]
@@ -1529,9 +1539,8 @@ fn an_entry_the_reader_fails_on_is_named_and_the_run_exits_1_with_the_capture_ke
             head.id
         )]
     );
-    let index = sandbox.index();
-    assert_eq!(index.search("zebras", 5).expect("a search").len(), 1);
-    assert_eq!(index.search("poison", 5).expect("a search"), []);
+    assert_eq!(sandbox.rank("zebras", 5).len(), 1);
+    assert!(sandbox.rank("poison", 5).is_empty());
 }
 
 #[test]
@@ -1612,8 +1621,11 @@ fn what_an_index_of_the_done_check_store_holds() {
         "notes",
         "what did we decide about sync",
     ] {
-        for (score, row) in index.search(query, 50).expect("a search") {
-            hits = fnv(hits, format!("{} {row:?}\n", score.to_bits()).as_bytes());
+        for candidate in rank(&cache, query, 50) {
+            hits = fnv(
+                hits,
+                format!("{} {:?}\n", candidate.score.to_bits(), candidate.found).as_bytes(),
+            );
             found += 1;
         }
     }

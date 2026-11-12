@@ -1,3 +1,5 @@
+use std::cell::RefCell;
+use std::collections::BTreeSet;
 use std::path::PathBuf;
 use std::time::SystemTime;
 
@@ -10,6 +12,7 @@ use bilbo_store::entries::{
 use bilbo_store::id::Id;
 
 use crate::index::{Doc, Extent, Index, IndexError, Stats};
+use crate::lookup::{Filter, Found, Lookup, Posting, Totals};
 use crate::position::Position;
 
 pub(crate) fn id(n: u8) -> Id {
@@ -153,5 +156,163 @@ impl Index for Commits {
 
     fn rollback(&mut self) {
         self.rollbacks += 1;
+    }
+}
+
+struct Row {
+    kind: String,
+    entry: Id,
+    records: RecordRange,
+    part: Option<(u32, u32)>,
+    terms: Vec<String>,
+    live: bool,
+}
+
+/// A document's number is its place in the list, so a test numbers them in reverse by listing them so.
+#[derive(Default)]
+pub(crate) struct Table {
+    rows: Vec<Row>,
+    failing: bool,
+    posting_at: Option<u32>,
+    holding_at: Option<u32>,
+    pub(crate) asked: RefCell<Vec<usize>>,
+}
+
+impl Table {
+    pub(crate) fn new() -> Table {
+        Table::default()
+    }
+
+    pub(crate) fn doc(mut self, kind: &str, entry: u8, first: u64, terms: &str) -> Table {
+        self.rows.push(Row {
+            kind: kind.to_owned(),
+            entry: id(entry),
+            records: RecordRange { first, count: 1 },
+            part: None,
+            terms: terms.split_whitespace().map(str::to_owned).collect(),
+            live: true,
+        });
+        self
+    }
+
+    pub(crate) fn part(mut self, part: u32, of: u32) -> Table {
+        if let Some(row) = self.rows.last_mut() {
+            row.part = Some((part, of));
+        }
+        self
+    }
+
+    pub(crate) fn dead(mut self) -> Table {
+        if let Some(row) = self.rows.last_mut() {
+            row.live = false;
+        }
+        self
+    }
+
+    pub(crate) fn failing(mut self) -> Table {
+        self.failing = true;
+        self
+    }
+
+    pub(crate) fn posting_at(mut self, doc: u32) -> Table {
+        self.posting_at = Some(doc);
+        self
+    }
+
+    pub(crate) fn holding_at(mut self, doc: u32) -> Table {
+        self.holding_at = Some(doc);
+        self
+    }
+
+    fn check(&self) -> Result<(), IndexError> {
+        if self.failing {
+            return Err(IndexError::Failed {
+                action: "read",
+                path: PathBuf::from("/c/index"),
+                error: "broken".to_owned(),
+            });
+        }
+        Ok(())
+    }
+
+    fn live(&self) -> impl Iterator<Item = (usize, &Row)> {
+        self.rows.iter().enumerate().filter(|(_, row)| row.live)
+    }
+}
+
+impl Lookup for Table {
+    fn position(&self) -> Result<Option<Position>, IndexError> {
+        Ok(None)
+    }
+
+    fn totals(&self) -> Result<Totals, IndexError> {
+        self.check()?;
+        Ok(Totals {
+            documents: self.live().count() as u64,
+            entries: self
+                .live()
+                .map(|(_, row)| row.entry)
+                .collect::<BTreeSet<_>>()
+                .len() as u64,
+            length: self.live().map(|(_, row)| row.terms.len() as u64).sum(),
+            bound: u32::try_from(self.rows.len()).expect("a small table"),
+        })
+    }
+
+    fn postings(&self, term: &str) -> Result<Vec<Posting>, IndexError> {
+        self.check()?;
+        let mut postings: Vec<Posting> = self
+            .live()
+            .filter_map(|(doc, row)| {
+                let freq = row.terms.iter().filter(|each| *each == term).count();
+                (freq > 0).then(|| Posting {
+                    doc: u32::try_from(doc).expect("a small table"),
+                    freq: u32::try_from(freq).expect("a small count"),
+                    length: u32::try_from(row.terms.len()).expect("a small count"),
+                })
+            })
+            .collect();
+        if let Some(doc) = self.posting_at {
+            postings.push(Posting {
+                doc,
+                freq: 1,
+                length: 1,
+            });
+        }
+        Ok(postings)
+    }
+
+    fn holding(&self, filter: &Filter<'_>) -> Result<Vec<u32>, IndexError> {
+        self.check()?;
+        let Filter::Kind(kind) = filter;
+        let mut held: Vec<u32> = self
+            .live()
+            .filter(|(_, row)| row.kind == *kind)
+            .map(|(doc, _)| u32::try_from(doc).expect("a small table"))
+            .collect();
+        held.extend(self.holding_at);
+        Ok(held)
+    }
+
+    fn found(&self, docs: &[u32]) -> Result<Vec<Found>, IndexError> {
+        self.check()?;
+        self.asked.borrow_mut().push(docs.len());
+        Ok(docs
+            .iter()
+            .map(|doc| {
+                let row = &self.rows[*doc as usize];
+                Found {
+                    entry: row.entry,
+                    kind: row.kind.clone(),
+                    extent: Extent {
+                        generation: Generation(1),
+                        records: row.records,
+                        part: row.part,
+                        date: 0,
+                    },
+                    digest: u64::from(*doc),
+                }
+            })
+            .collect())
     }
 }

@@ -22,7 +22,7 @@ kind = "session"
 path = "~/notes"
 ```
 
-A key takes the first of these that sets it: a flag, its variable, the config file, its default. A list such as `follow` is taken whole from that one source: a file that declares one follow drops the default follows. A variable set to the empty string counts as unset. One key has a flag: `--budget` of `bilbo read` sets `read.budget`. The config file is checked whole whatever the variables say: a bad value in it is a config error even for a key whose variable is set. A value bilbo refuses is a config error wherever it is set, even when a flag or a variable above it sets the key too.
+A key takes the first of these that sets it: a flag, its variable, the config file, its default. A list such as `follow` is taken whole from that one source: a file that declares one follow drops the default follows. A variable set to the empty string counts as unset. Two keys have a flag: `--budget` of `bilbo read` sets `read.budget`, and `--budget` of `bilbo recall` sets `recall.budget`. The config file is checked whole whatever the variables say: a bad value in it is a config error even for a key whose variable is set. A value bilbo refuses is a config error wherever it is set, even when a flag or a variable above it sets the key too.
 
 A missing config file means every key takes its variable or its default, unless `BILBO_CONFIG` names the file: then the missing file is a config error.
 
@@ -33,7 +33,7 @@ Sizes are strings with a binary unit, `KiB`, `MiB` or `GiB`, with or without the
 | Key | Variable | Default | Meaning |
 | --- | --- | --- | --- |
 | `paths.root` | `BILBO_HOME` | `$XDG_DATA_HOME/bilbo, else ~/.local/share/bilbo` | The store: its sealed segments. Must be an absolute path or one starting with ~/. A root that holds a `notes/` or `library/` folder, bilbo 0.20's layout, is refused. |
-| `paths.state` | none | `$XDG_STATE_HOME/bilbo, else ~/.local/state/bilbo` | This device's state: `open.seg`, the store lock and its store root. Must be an absolute path or one starting with ~/. |
+| `paths.state` | none | `$XDG_STATE_HOME/bilbo, else ~/.local/state/bilbo` | This device's state: `open.seg`, the store lock, its store root and the query log. Must be an absolute path or one starting with ~/. |
 | `paths.cache` | none | `$XDG_CACHE_HOME/bilbo, else ~/.cache/bilbo` | What bilbo rebuilds from the store: the catalog. Must be an absolute path or one starting with ~/. |
 | `store.seal_at` | `BILBO_STORE_SEAL_AT` | `"8 MiB"` | The size at which `open.seg` is sealed into a segment of the store. Must be between 1 MiB and 1 GiB. A run checks it after each capture and when it ends. |
 | `store.seal_after` | `BILBO_STORE_SEAL_AFTER` | `"60m"` | The age of `open.seg`'s oldest frame at which a run seals it, whatever its size. Must be between 1m and 24h. A run checks it when it ends, and a bare run does so even when no follow claims a file. |
@@ -49,8 +49,14 @@ Sizes are strings with a binary unit, `KiB`, `MiB` or `GiB`, with or without the
 | `search.chunk_overlap` | `BILBO_SEARCH_CHUNK_OVERLAP` | `64` | The tokens two consecutive chunks share when one record is too long for a chunk and is cut into several. A change takes a new index: run bilbo reindex. Must be a whole number from 0 to 128. |
 | `search.workers` | `BILBO_SEARCH_WORKERS` | `0` | The threads that read and chunk entries when the index is built or brought up to date; 0 takes one for each core. It changes no document. Must be a whole number from 0 to 64. |
 | `search.index_memory` | `BILBO_SEARCH_INDEX_MEMORY` | `"64 MiB"` | The memory the index's writer may hold before it writes a segment. It changes no document. Must be between 16 MiB and 2 GiB. |
-| `search.merge_deleted_percent` | `BILBO_SEARCH_MERGE_DELETED_PERCENT` | `20` | A segment of the index is merged when more than this share of its documents, in percent, was replaced; 100 never merges for that reason. It changes no document; it changes how far the ranking of an index kept by remember can drift from a rebuilt one's. Must be a whole number from 1 to 100. |
+| `search.merge_deleted_percent` | `BILBO_SEARCH_MERGE_DELETED_PERCENT` | `20` | A segment of the index is merged when more than this share of its documents, in percent, was replaced; 100 never merges for that reason. It changes no document and no ranking: only how much space replaced documents hold until a merge. Must be a whole number from 1 to 100. |
 | `search.entry_tries` | `BILBO_SEARCH_ENTRY_TRIES` | `3` | How many runs in a row try to index an entry that failed, before it waits for a change to it or for bilbo reindex. Must be a whole number from 1 to 9. |
+| `recall.budget` | `BILBO_RECALL_BUDGET` | `4000` | The most tokens bilbo recall prints, as the index's tokenizer counts them, each hit's header included. Must be a whole number from 256 to 1000000. The flag `--budget` of `bilbo recall` sets it for one run. |
+| `recall.candidates` | `BILBO_RECALL_CANDIDATES` | `50` | How many of the best chunks bilbo recall considers before it fills the budget. Must be a whole number from 1 to 1000. |
+| `recall.cap` | `BILBO_RECALL_CAP` | `0` | The most hits bilbo recall takes from one entry; 0 sets no limit. Must be a whole number from 0 to 1000. |
+| `recall.question_words` | none | `["what", "did", "we", "should", "how", "anything"]` | Words left out of a query before it is searched; they stay searchable in what was kept. An empty list leaves none out. Must be a list of lowercase words. Each is one word as the index's analyzer reads it: a word it drops, such as `the`, is refused. |
+| `recall.bm25_k1` | `BILBO_RECALL_BM25_K1` | `1.2` | How fast a word that repeats in a chunk stops adding to its score. At 0 every chunk holding a word would score the same. Must be a number from 0.01 to 10. |
+| `recall.bm25_b` | `BILBO_RECALL_BM25_B` | `0.75` | How much a chunk longer than the average is scored down: 0 not at all, 1 fully. Must be a number from 0 to 1. |
 | `markdown.heading_width` | `BILBO_MARKDOWN_HEADING_WIDTH` | `100` | The most characters a heading may have inside a section label of a Markdown file, an ellipsis included: a longer heading is cut and ends in one. Must be a whole number from 20 to 1000. A change takes a new index: run bilbo reindex. |
 
 An XDG variable moves a default only when it holds an absolute path.
@@ -60,7 +66,7 @@ An XDG variable moves a default only when it holds an absolute path.
 | Folder | Path | Holds |
 | --- | --- | --- |
 | Store root | `paths.root` | The sealed segments, each `<ULID>.seg`. |
-| State | `paths.state` | `open.seg`, `open.since` (when `open.seg` got its oldest frame), `store.lock`, `store.writer` and `store.again` (the store lock, the writer's lock and the again flag; see [Commands](commands.md#remember)), `sealing` and `root`. |
+| State | `paths.state` | `open.seg`, `open.since` (when `open.seg` got its oldest frame), `store.lock`, `store.writer` and `store.again` (the store lock, the writer's lock and the again flag; see [Commands](commands.md#remember)), `sealing`, `root` and `queries.log`, the log of `bilbo recall` (see [Commands](commands.md#the-query-log)). |
 | Cache | `paths.cache` | `catalog.sqlite` and `index/`, the search index. Deleting it loses nothing: `bilbo reindex` makes both again. Without one, the next `bilbo remember` makes the catalog and the index again, and `bilbo read` reads the segments themselves until then, which is slower. bilbo trusts the catalog for the store it was built from: after restoring a store from a copy, delete it. |
 | Config | `$BILBO_CONFIG`, else `$XDG_CONFIG_HOME/bilbo/config.toml`, else `~/.config/bilbo/config.toml` | The config file. |
 
@@ -83,7 +89,7 @@ A key the [Keys](#keys) table does not list, a key set twice, a value of the wro
 
 ```text
 bilbo: /home/me/.config/bilbo/config.toml:7: store.seal_at must be between 1 MiB and 1 GiB, got "0"
-bilbo: /home/me/.config/bilbo/config.toml:9: unknown key store.sealat; the keys are paths.root, paths.state, paths.cache, store.seal_at, store.seal_after, store.compression, store.tear_budget, store.wait, store.poll, follow, read.budget, read.outline_width, read.matches_listed, search.chunk_tokens, search.chunk_overlap, search.workers, search.index_memory, search.merge_deleted_percent, search.entry_tries, markdown.heading_width
+bilbo: /home/me/.config/bilbo/config.toml:9: unknown key store.sealat; the keys are paths.root, paths.state, paths.cache, store.seal_at, store.seal_after, store.compression, store.tear_budget, store.wait, store.poll, follow, read.budget, read.outline_width, read.matches_listed, search.chunk_tokens, search.chunk_overlap, search.workers, search.index_memory, search.merge_deleted_percent, search.entry_tries, recall.budget, recall.candidates, recall.cap, recall.question_words, recall.bm25_k1, recall.bm25_b, markdown.heading_width
 bilbo: /home/me/.config/bilbo/config.toml:4: duplicate key seal_at
 bilbo: BILBO_STORE_SEAL_AT must be between 1 MiB and 1 GiB, got "0"
 bilbo: /home/me/.config/bilbo/config.toml:2: not valid UTF-8
@@ -104,6 +110,7 @@ bilbo: /home/me/.local/share/bilbo/notes belongs to bilbo 0.20; set BILBO_HOME o
 | `BILBO_STORE_SEAL_AT`, `BILBO_STORE_SEAL_AFTER`, `BILBO_STORE_COMPRESSION`, `BILBO_STORE_TEAR_BUDGET`, `BILBO_STORE_WAIT`, `BILBO_STORE_POLL` | Set `store.seal_at`, `store.seal_after`, `store.compression`, `store.tear_budget`, `store.wait` and `store.poll`. |
 | `BILBO_READ_BUDGET`, `BILBO_READ_OUTLINE_WIDTH`, `BILBO_READ_MATCHES_LISTED` | Set `read.budget`, `read.outline_width` and `read.matches_listed`. |
 | `BILBO_SEARCH_CHUNK_TOKENS`, `BILBO_SEARCH_CHUNK_OVERLAP`, `BILBO_SEARCH_WORKERS`, `BILBO_SEARCH_INDEX_MEMORY`, `BILBO_SEARCH_MERGE_DELETED_PERCENT`, `BILBO_SEARCH_ENTRY_TRIES` | Set `search.chunk_tokens`, `search.chunk_overlap`, `search.workers`, `search.index_memory`, `search.merge_deleted_percent` and `search.entry_tries`. |
+| `BILBO_RECALL_BUDGET`, `BILBO_RECALL_CANDIDATES`, `BILBO_RECALL_CAP`, `BILBO_RECALL_BM25_K1`, `BILBO_RECALL_BM25_B` | Set `recall.budget`, `recall.candidates`, `recall.cap`, `recall.bm25_k1` and `recall.bm25_b`. `recall.question_words` has no variable. |
 | `BILBO_MARKDOWN_HEADING_WIDTH` | Sets `markdown.heading_width`. |
 | `BILBO_CONFIG` | The config file's path. A file it names must exist. |
 | `XDG_DATA_HOME`, `XDG_CONFIG_HOME`, `XDG_CACHE_HOME`, `XDG_STATE_HOME` | Move the default store root, config file, cache and state folders, as [Keys](#keys) and [Folders](#folders) show. |

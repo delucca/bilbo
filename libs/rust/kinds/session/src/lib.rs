@@ -12,6 +12,7 @@ use bilbo_kinds::reader::{Passage, Reader};
 use bilbo_store::id::Id;
 
 use crate::dialect::Dialect;
+use crate::json::Value;
 
 const NAME: &str = "session";
 
@@ -37,6 +38,17 @@ impl Reader for Session {
 
     fn appends_only(&self) -> bool {
         true
+    }
+
+    fn preface(&self, records: &[&[u8]]) -> Option<String> {
+        let started = records
+            .iter()
+            .filter_map(|record| json::parse(record).filter(Value::is_dict))
+            .find_map(|record| render::time(record.get("timestamp")));
+        Some(match started {
+            Some(time) => format!("Session started {} UTC:", render::minute(time)),
+            None => "Session date unknown:".to_owned(),
+        })
     }
 }
 
@@ -172,7 +184,7 @@ mod tests {
 
     use bilbo_kinds::files::{Memory, Node};
     use bilbo_kinds::kind::{Kind, Proposal, Refusal};
-    use bilbo_kinds::reader::Passage;
+    use bilbo_kinds::reader::{Passage, Reader};
     use bilbo_store::id::Id;
 
     use super::{Session, is_uuid};
@@ -652,6 +664,122 @@ mod tests {
         assert!(
             rendered > 2000,
             "the cases still reach the renders: {rendered}"
+        );
+    }
+
+    fn preface(text: &str) -> Option<String> {
+        let records: Vec<&[u8]> = text.split_inclusive('\n').map(str::as_bytes).collect();
+        Session.preface(&records)
+    }
+
+    fn stamped(timestamp: &str) -> String {
+        format!("{{\"timestamp\":\"{timestamp}\",\"type\":\"summary\"}}\n")
+    }
+
+    #[test]
+    fn the_preface_is_the_first_stamped_record_also_one_that_renders_nothing() {
+        let text = format!(
+            "{}{}{}",
+            stamped("2026-11-07T16:39:59Z"),
+            r#"{"type":"user","timestamp":"2026-11-07T16:45:00Z","message":{"role":"user","content":"hello"}}"#.to_owned() + "\n",
+            stamped("2026-11-08T01:00:00Z"),
+        );
+        let records: Vec<&[u8]> = text.split_inclusive('\n').map(str::as_bytes).collect();
+        let first = Session.passages(&records);
+        assert_eq!(first.len(), 1);
+        assert_eq!(
+            first[0].range.first, 2,
+            "the first passage is the second record"
+        );
+        assert_eq!(
+            Session.preface(&records).as_deref(),
+            Some("Session started 2026-11-07 16:39 UTC:")
+        );
+    }
+
+    #[test]
+    fn a_session_with_no_timestamp_says_its_date_is_unknown() {
+        let unknown = Some("Session date unknown:".to_owned());
+        for text in [
+            "",
+            "{\"type\":\"user\"}\n",
+            "{\"timestamp\":\"yesterday\"}\n",
+            "{\"timestamp\":\"\"}\n{\"timestamp\":null}\n{\"timestamp\":5}\n",
+            "[1,2]\nnot json\n\"2026-11-07T16:39:12Z\"\n",
+            "{\"timestamp\":\"1969-12-31T23:59:59Z\"}\n",
+        ] {
+            assert_eq!(preface(text), unknown, "{text:?}");
+        }
+        assert_eq!(
+            preface("{\"timestamp\":\"nope\"}\n{\"timestamp\":\"2026-11-07T16:39:12Z\"}\n")
+                .as_deref(),
+            Some("Session started 2026-11-07 16:39 UTC:"),
+            "an unreadable stamp is passed over"
+        );
+    }
+
+    #[test]
+    fn the_preface_is_utc_to_the_minute() {
+        for (stamp, line) in [
+            ("2026-11-07T16:39:12Z", "2026-11-07 16:39"),
+            ("2026-11-07T16:39:59.999Z", "2026-11-07 16:39"),
+            ("2026-11-07T16:39:00.000Z", "2026-11-07 16:39"),
+            ("2026-11-07T16:39:12+02:00", "2026-11-07 14:39"),
+            ("2026-11-07T16:39:12-07:00", "2026-11-07 23:39"),
+            ("2026-11-07T00:10:00+02:00", "2026-11-06 22:10"),
+            ("2026-11-07T16:39:12", "2026-11-07 16:39"),
+            ("2026-11-07 16:39:12.5", "2026-11-07 16:39"),
+            ("2024-02-29T23:59:59Z", "2024-02-29 23:59"),
+            ("2024-02-28T23:30:00-01:00", "2024-02-29 00:30"),
+            ("2025-12-31T23:59:59Z", "2025-12-31 23:59"),
+            ("2025-12-31T23:59:59-00:01", "2026-01-01 00:00"),
+            ("1970-01-01T00:00:00Z", "1970-01-01 00:00"),
+            ("2100-03-01T00:00:00Z", "2100-03-01 00:00"),
+        ] {
+            assert_eq!(
+                preface(&stamped(stamp)),
+                Some(format!("Session started {line} UTC:")),
+                "{stamp}"
+            );
+        }
+    }
+
+    #[test]
+    fn both_dialects_and_cursor_give_the_same_line_for_the_same_first_timestamp() {
+        let same = |fixture: &[u8]| {
+            let records: Vec<&[u8]> = fixture.split_inclusive(|&byte| byte == b'\n').collect();
+            Session.preface(&records)
+        };
+        assert_eq!(
+            same(CLAUDE).as_deref(),
+            Some("Session started 2026-11-02 10:06 UTC:")
+        );
+        assert_eq!(
+            same(SUBAGENT).as_deref(),
+            Some("Session started 2026-11-02 10:01 UTC:")
+        );
+        assert_eq!(
+            same(CODEX).as_deref(),
+            Some("Session started 2026-11-06 09:10 UTC:")
+        );
+        assert_eq!(same(CURSOR).as_deref(), Some("Session date unknown:"));
+        let moved = |fixture: &[u8], from: &str, to: &str| {
+            let text = String::from_utf8(fixture.to_vec())
+                .expect("utf-8")
+                .replacen(from, to, 1);
+            same(text.as_bytes())
+        };
+        assert_eq!(
+            moved(
+                CLAUDE,
+                "2026-11-02T10:06:00.000Z",
+                "2026-11-09T04:05:06.000Z"
+            ),
+            moved(
+                CODEX,
+                "2026-11-06T09:10:00.000Z",
+                "2026-11-09T04:05:06.000Z"
+            ),
         );
     }
 

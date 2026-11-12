@@ -8,9 +8,15 @@ The eval lives outside this tree: every run names what it reads. Nothing here ru
                                                       word without its last n characters, then suffix), zstd level 19
     regenerate.py --store <folder> --build <build.py> --corpus <folder>
                                                       pick sample.jsonl again, then write expected.jsonl
-    regenerate.py --store <folder> --build <build.py> --whole <corpus> <out>
+    regenerate.py --store <folder> --build <build.py> --whole <corpus> <out> [--questions <questions.jsonl>]
                                                       write messages.jsonl and digests.tsv for the ignored
-                                                      whole-store tests of this crate and of the qwen crate
+                                                      whole-store tests of this crate and of the qwen crate, and with
+                                                      --questions ranks-whole.jsonl: the 200 best chunks of each of the
+                                                      eval's answerable questions' two forms in the question's repo
+    regenerate.py --store <folder> --ranks --questions <questions.jsonl> [--check]
+                                                      write ranks.jsonl from sample.jsonl's chunks, the synthetic
+                                                      documents of rank-docs.jsonl and the queries: the first 40 question
+                                                      texts with a term in the sample's vocabulary, then rank-edges.jsonl
     regenerate.py --table                             write src/analyze/word.rs
     --out <folder>                                    with --corpus: write sample.jsonl and expected.jsonl there
 
@@ -24,7 +30,9 @@ Run it with the eval's own versions, and Python 3.12 for its Unicode 15.0:
 
 sample.jsonl holds spans (an expected chunk names its span by its row number, from 0): consecutive messages of one session that start where an eval chunk starts and end
 where one ends, so the eval's chunks for them are in its store as they are. edges.jsonl is written by hand:
-texts for the analyzer that the corpus does not hold. expected.jsonl is never written by hand."""
+texts for the analyzer that the corpus does not hold. rank-docs.jsonl and rank-edges.jsonl are written by hand too: synthetic
+documents (lists of terms, in corpora named by `corpus`) and the queries that rank them or the sample. expected.jsonl,
+ranks.jsonl and ranks-whole.jsonl are never written by hand."""
 
 import collections
 import importlib.util
@@ -232,6 +240,97 @@ def pick(build, store, corpus):
     return sample
 
 
+K1, B = 1.2, 0.75
+TOP = 10  # a ranking row keeps this many of the best, and every document that ties with the last
+WHOLE_TOP = 200
+
+
+def scores_of(analyzer, documents, queries):
+    """bm25s's own scores (method lucene, k1 1.2, b 0.75) of each query's terms over `documents`, term lists:
+    one float32 array a query, None for a query with no term in the vocabulary."""
+    import numpy as np
+
+    retriever = analyzer.bm25s.BM25(method="lucene", k1=K1, b=B)
+    retriever.index(documents, show_progress=False)
+    found = []
+    for terms in queries:
+        known = [term for term in terms if term in retriever.vocab_dict]
+        found.append(retriever.get_scores(known).astype(np.float32) if known else None)
+    return found
+
+
+def best(scores, limit):
+    """[document, score, bits] by score, then document, over the `limit` best with a score above 0 and every
+    document that ties with the last of them; limit None keeps every document with a score above 0."""
+    import numpy as np
+
+    if scores is None:
+        return []
+    order = np.lexsort((np.arange(len(scores)), -scores))
+    order = [int(at) for at in order if scores[at] > 0]
+    if limit is not None and len(order) > limit:
+        cut = scores[order[limit - 1]]
+        order = [at for at in order if scores[at] >= cut]
+    return [[at, float(scores[at]), int(scores[at].view(np.uint32))] for at in order]
+
+
+def question_texts(questions):
+    """The answerable questions' original wordings, `query` then `prompt`, in file order."""
+    found = []
+    for row in rows_of(pathlib.Path(questions)):
+        if not row["abstain"]:
+            original = row["wording"]["original"]
+            found += [(row["id"], form, row["repo"], original[form]) for form in ("query", "prompt")]
+    return found
+
+
+def ranks(questions):
+    """The rows of ranks.jsonl."""
+    analyzer = Analyzer()
+    sample = [row["terms"] for row in rows_of(HERE / "expected.jsonl") if "span" in row]
+    corpora = {"sample": sample}
+    for row in rows_of(HERE / "rank-docs.jsonl"):
+        corpora.setdefault(row["corpus"], []).append(row["terms"])
+    vocabulary = {term for terms in sample for term in terms}
+    wanted = []
+    for _, _, _, text in question_texts(questions):
+        if len(wanted) < 40 and any(term in vocabulary for term in analyzer.terms([text])[0]):
+            wanted.append(("sample", text))
+    wanted += [(row["corpus"], row["query"]) for row in rows_of(HERE / "rank-edges.jsonl")]
+    out = []
+    for corpus, documents in corpora.items():
+        chosen = [text for name, text in wanted if name == corpus]
+        queries = analyzer.terms(chosen)
+        for text, terms, scores in zip(chosen, queries, scores_of(analyzer, documents, queries)):
+            out.append((corpus, text, terms, best(scores, TOP if corpus == "sample" else None)))
+    order = {(name, text): at for at, (name, text) in enumerate(wanted)}
+    out.sort(key=lambda row: order[row[0], row[1]])
+    return [{"corpus": corpus, "query": text, "terms": terms, "top": top} for corpus, text, terms, top in out]
+
+
+def ranks_whole(store, questions, out):
+    """ranks-whole.jsonl: for each question form, the 200 best chunks of its repo by bm25s, as the eval's arm ranks."""
+    analyzer, by_repo = Analyzer(), {}
+    for name, chunks in store_chunks(store).items():
+        by_repo.setdefault(name.split("/")[0], []).extend(chunks)
+    asked = question_texts(questions)
+    lines = []
+    for repo in sorted(by_repo):
+        chunks = by_repo[repo]
+        documents = []
+        for at in range(0, len(chunks), 2000):
+            documents += analyzer.terms([chunk["text"] for chunk in chunks[at:at + 2000]])
+        mine = [item for item in asked if item[2] == repo]
+        queries = analyzer.terms([item[3] for item in mine])
+        for (qid, form, _, text), scores in zip(mine, scores_of(analyzer, documents, queries)):
+            top = [[chunks[at]["id"], score, bits] for at, score, bits in best(scores, WHOLE_TOP)]
+            lines.append((qid, form, {"id": qid, "form": form, "repo": repo, "query": text, "top": top}))
+    order = {(qid, form): at for at, (qid, form, _, _) in enumerate(asked)}
+    lines.sort(key=lambda line: order[line[0], line[1]])
+    (pathlib.Path(out) / "ranks-whole.jsonl").write_bytes(dump([row for _, _, row in lines]))
+    print(f"regenerate: {len(lines)} lists")
+
+
 def lowercase_row():
     """Every character Python lowercases, between two letters."""
     return " ".join(f"x{chr(c)}x" for c in range(sys.maxunicode + 1)
@@ -274,7 +373,9 @@ def expected(store, sample, edges):
     return rows
 
 
-def whole(build, store, corpus, out):
+def whole(build, store, corpus, out, questions=None):
+    if questions:
+        ranks_whole(store, questions, out)
     analyzer, qwen, by_file = Analyzer(), Qwen(), store_chunks(store)
     out = pathlib.Path(out)
     with open(out / "messages.jsonl", "wb") as messages_file:
@@ -352,6 +453,10 @@ def main():
 
     store, build_path = value("--store"), value("--build")
     corpus, out, everything = value("--corpus"), value("--out"), value("--whole", 2)
+    questions = value("--questions")
+    only_ranks = "--ranks" in args
+    if only_ranks:
+        args.remove("--ranks")
     check = "--check" in args
     if check:
         args.remove("--check")
@@ -362,8 +467,18 @@ def main():
         fail("usage: see the top of this file")
     if (corpus or everything) and not build_path:
         fail("--corpus and --whole need --build <build.py>")
+    if only_ranks:
+        if not questions:
+            fail("--ranks needs --questions <questions.jsonl>")
+        data = dump(ranks(questions))
+        if check:
+            if (HERE / "ranks.jsonl").read_bytes() != data:
+                fail("ranks.jsonl is not what bm25s gives now")
+            return print("regenerate: ranks.jsonl is current")
+        (HERE / "ranks.jsonl").write_bytes(data)
+        return print(f"regenerate: {len(data)} bytes of ranks.jsonl")
     if everything:
-        return whole(load_build(build_path), store, *everything)
+        return whole(load_build(build_path), store, *everything, questions)
     if only_stems:
         data = stems(store)
         if check:

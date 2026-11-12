@@ -136,6 +136,28 @@ bilbo_rust_test(
 )
 
 bilbo_rust_test(
+    name = "recall",
+    srcs = [
+        "tests/recall.rs",
+        "tests/sandbox/mod.rs",
+    ],
+    crate_root = "tests/recall.rs",
+    compile_data = [
+        "//libs/rust/kinds/markdown:fixtures",
+        "//libs/rust/kinds/session:fixtures",
+    ],
+    layer = "integration",
+    lint_config = ":lints",
+    deps = [
+        ":bilbo_cli",
+        "//libs/rust/kinds",
+        "//libs/rust/search",
+        "//libs/rust/store",
+        "@crates//:rustix",
+    ] + all_crate_deps(normal_dev = True),
+)
+
+bilbo_rust_test(
     name = "reindex",
     srcs = ["tests/reindex.rs"],
     compile_data = [

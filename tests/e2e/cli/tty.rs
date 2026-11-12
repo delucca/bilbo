@@ -118,7 +118,7 @@ fn an_error_on_a_terminal_stderr_is_marked_while_a_piped_stdout_stays_plain() {
     assert_eq!(seen.piped, "");
     assert_eq!(
         seen.terminal,
-        "\x1b[31m■\x1b[39m  unknown verb 'frob'; the verbs are remember, read, reindex, config\n   \x1b[2msee\x1b[22m \x1b[36mbilbo --help\x1b[39m\n"
+        "\x1b[31m■\x1b[39m  unknown verb 'frob'; the verbs are remember, recall, read, reindex, config\n   \x1b[2msee\x1b[22m \x1b[36mbilbo --help\x1b[39m\n"
     );
 }
 
@@ -129,7 +129,7 @@ fn an_error_on_a_piped_stderr_is_plain_while_a_terminal_stdout_is_untouched() {
     assert_eq!(seen.terminal, "");
     assert_eq!(
         seen.piped,
-        "bilbo: unknown verb 'frob'; the verbs are remember, read, reindex, config\nbilbo: see 'bilbo --help'\n"
+        "bilbo: unknown verb 'frob'; the verbs are remember, recall, read, reindex, config\nbilbo: see 'bilbo --help'\n"
     );
 }
 
@@ -239,42 +239,57 @@ fn a_failed_stdout_write_is_reported_in_the_view_of_a_terminal_stderr() {
     assert_eq!(seen.terminal.lines().count(), 1, "{}", seen.terminal);
 }
 
-#[test]
-fn read_on_an_agents_terminal_escapes_a_records_control_characters_and_a_pipe_gets_them() {
-    let scratch = super::scratch::Scratch::new("tty_read");
+const ESCAPING_RECORD: &str =
+    "{\"role\":\"user\",\"message\":{\"content\":\"clear \\u001b[2J the screen \\u202eback\"}}\n";
+
+fn scratch_with_an_escape(test: &str) -> super::scratch::Scratch {
+    let scratch = super::scratch::Scratch::new(test);
     let session = scratch
         .dir
         .join("home/.claude/projects/p/0e1d2c3b-4a59-4687-b6a5-a4b3c2d1e0f9.jsonl");
     std::fs::create_dir_all(session.parent().expect("a parent")).expect("folders");
-    let line = "{\"role\":\"user\",\"message\":{\"content\":\"clear \\u001b[2J the screen\"}}\n";
-    std::fs::write(&session, line).expect("a session");
+    std::fs::write(&session, ESCAPING_RECORD).expect("a session");
     let remembered = scratch.run(&["remember", session.to_str().expect("UTF-8")]);
     assert_eq!(remembered.code, 0, "{}", remembered.stderr);
+    scratch
+}
 
+fn on_a_terminal(scratch: &super::scratch::Scratch, args: &[&str], agent: bool) -> Seen {
+    let mut command = Command::new(binary());
+    command
+        .env_clear()
+        .envs(ENV)
+        .envs(
+            scratch
+                .env()
+                .iter()
+                .map(|(name, value)| (*name, value.as_str())),
+        )
+        .args(args);
+    if agent {
+        command.env("AI_AGENT", "1");
+    }
+    capture(command, &Tty::Stdout)
+}
+
+#[test]
+fn read_on_an_agents_terminal_escapes_a_records_control_characters_and_a_pipe_gets_them() {
+    let scratch = scratch_with_an_escape("tty_read");
     let piped = scratch.run(&["read", "0e1d2c3b#r1"]);
     assert_eq!(
         piped.stdout,
-        "#r1 user: clear \u{1b}[2J the screen\nend: #r1 of 1 record\n"
+        "#r1 user: clear \u{1b}[2J the screen \u{202e}back\nend: #r1 of 1 record\n"
     );
     for agent in [false, true] {
-        let mut command = Command::new(binary());
-        command
-            .env_clear()
-            .envs(ENV)
-            .envs(
-                scratch
-                    .env()
-                    .iter()
-                    .map(|(name, value)| (*name, value.as_str())),
-            )
-            .args(["read", "0e1d2c3b#r1"]);
-        if agent {
-            command.env("AI_AGENT", "1");
-        }
-        let seen = capture(command, &Tty::Stdout);
+        let seen = on_a_terminal(&scratch, &["read", "0e1d2c3b#r1"], agent);
         assert_eq!((seen.code, seen.piped.as_str()), (0, ""), "agent {agent}");
         assert!(
             seen.terminal.contains("clear \\u{1b}[2J the screen"),
+            "agent {agent}: {:?}",
+            seen.terminal
+        );
+        assert!(
+            seen.terminal.contains("screen \\u{202e}back") && !seen.terminal.contains('\u{202e}'),
             "agent {agent}: {:?}",
             seen.terminal
         );
@@ -287,6 +302,51 @@ fn read_on_an_agents_terminal_escapes_a_records_control_characters_and_a_pipe_ge
             seen.terminal.contains('\u{1b}'),
             !agent,
             "only a person's terminal is painted"
+        );
+    }
+}
+
+#[test]
+fn recall_shows_its_human_view_on_an_agents_terminal() {
+    let scratch = scratch_with_an_escape("tty_recall");
+    let piped = scratch.run(&["recall", "clear", "screen"]);
+    assert_eq!(piped.code, 0, "{}", piped.stderr);
+    assert!(piped.stdout.starts_with("=== bilbo:"), "{}", piped.stdout);
+    assert!(
+        piped
+            .stdout
+            .contains("clear \u{1b}[2J the screen \u{202e}back"),
+        "{:?}",
+        piped.stdout
+    );
+    for agent in [false, true] {
+        let seen = on_a_terminal(&scratch, &["recall", "clear", "screen"], agent);
+        assert_eq!(seen.code, 0, "agent {agent}: {}", seen.piped);
+        assert!(
+            seen.terminal.contains("clear \\u{1b}[2J the screen"),
+            "agent {agent}: {:?}",
+            seen.terminal
+        );
+        assert!(
+            seen.terminal.contains("screen \\u{202e}back") && !seen.terminal.contains('\u{202e}'),
+            "agent {agent}: {:?}",
+            seen.terminal
+        );
+        assert!(
+            !seen.terminal.contains("\u{1b}[2J"),
+            "agent {agent}: {:?}",
+            seen.terminal
+        );
+        assert_eq!(
+            seen.terminal.starts_with("\u{1b}[2m===\u{1b}[22m "),
+            !agent,
+            "only a person's terminal gets the painted header: {:?}",
+            seen.terminal
+        );
+        assert!(
+            seen.terminal.contains("=== bilbo:") || !agent,
+            "an agent's terminal gets the plain header: {:?}",
+            seen.terminal
         );
     }
 }

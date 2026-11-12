@@ -1,0 +1,18 @@
+{"corpus": "sample", "query": "verdict verdict record"}
+{"corpus": "sample", "query": "verdict zzyzx"}
+{"corpus": "sample", "query": "zzyzx plugh"}
+{"corpus": "sample", "query": "the and of to"}
+{"corpus": "sample", "query": "verdict compact summary"}
+{"corpus": "docs", "query": "aa bb cc"}
+{"corpus": "docs", "query": "cc bb aa"}
+{"corpus": "docs", "query": "aa aa bb"}
+{"corpus": "docs", "query": "dd gg"}
+{"corpus": "docs", "query": "zz"}
+{"corpus": "docs", "query": "unheard"}
+{"corpus": "orders", "query": "aa bb cc"}
+{"corpus": "orders", "query": "cc bb aa"}
+{"corpus": "orders", "query": "bb cc aa"}
+{"corpus": "orders", "query": "aa aa bb"}
+{"corpus": "every", "query": "common"}
+{"corpus": "every", "query": "common aa"}
+{"corpus": "every", "query": "aa common common"}

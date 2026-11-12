@@ -99,6 +99,7 @@ earlier one, `corpus-1235aec0592a`, the first five projects.
 | [mem0](#mem0) | mem0, fed by its Claude Code plugin | yes | built with Claude Opus 5.5 |
 | [dense](#dense) | the sessions in chunks, embedded | no | yes |
 | [bm25](#bm25) | the same chunks, BM25 over each project's | no | yes |
+| [bilbo-next](#bilbo-next) | the sessions as bilbo's `recall` ranks them, through the built bilbo | no | no, built on the machine |
 | [graphiti](#graphiti) | Graphiti's knowledge graph, fed one turn at a time | yes | built with Claude 5.5, then Gemini |
 | [ai-memory](#ai-memory) | ai-memory, fed by its Claude Code hooks | yes | built with Claude Opus 5.5 |
 | [hindsight](#hindsight) | Hindsight, fed by its Claude Code integration | yes | built with Claude Sonnet 5.5 |
@@ -245,6 +246,51 @@ chunks: it must hold as many documents and terms and rank three queries the same
 
 The store was built from the 403 sessions on a laptop CPU in 18 min: the 114,516 chunks of the dense store, 302,519
 terms over the twenty-two indexes.
+
+### bilbo next
+
+The sessions as bilbo's own keyword search ranks them, through the bilbo built from the checkout under test. No LLM and no
+embedder. `arms/bilbo-next/binary.sh` builds the Linux binary in Docker (`rust:1.99.1-trixie` pinned by digest, the repository
+mounted read-only, cargo's folders in the eval cache) into `arms/bilbo-next/bin/bilbo`, which git ignores. The store's key
+hashes that file, so another binary is another store, and the binary is per machine architecture, so the key is too: run
+`binary.sh` before `build-store.sh --key`. Nothing of this arm is published.
+
+The build orders the sessions as bm25's does and, for each repository in name order, runs `bilbo remember /corpus/<repo>
+--kind session` (with a session limit, the chosen files are first copied to a folder of their own and that folder is
+remembered). Each run must exit 0 with `refused 0` and one `new` a file (a rerun: `unchanged`). One `bilbo reindex` a store
+follows, which must report `unread 0` and `failed 0`, and then one `bilbo recall` (`user assistant`), whose `searched N entries` is kept as the store's `indexed` (the build stops when it is 0 or above the entries) and whose line in the query log is removed, so the archive holds no `queries.log`. `bilbo read <session id>` gives each session's entry id, written to
+`entries.jsonl` (store, entry id, repo, session file).
+
+The scope is `BILBO_EVAL_SCOPE`, part of the key: `all` (the default) puts the 22 repositories in one store, the task's arm;
+`repo` makes one store a repository, for the comparison like for like. A store is a folder of `/work/store/stores/<name>/`
+holding `root`, `state`, `cache`, `home` and `config.toml` (`follow = []`); every `bilbo` run sets `HOME`, `BILBO_HOME`,
+`XDG_STATE_HOME`, `XDG_CACHE_HOME` and `BILBO_CONFIG` to them, at the same paths in the build, the check and the search, since
+the catalog and the state folder record them. The sessions' frames are in `state`, which the archive holds with `cache`.
+`manifest.json` has the key and inputs, the scope, bilbo's version and the binary's sha256, and each store's repositories,
+entries, indexed (the entries recall searches), chunks and index bytes.
+
+Search runs `bilbo recall --budget 4000 -- <text>` once for each form, over the store of the question's repository (scope
+`repo`) or the one store, and returns the hits as recall prints them. `search.py` reads no setting from the environment:
+its `run(settings)` takes `budget`, `question_words` and `candidates` and stops on any other key; run as a script it uses the
+defaults (the key defaults of recall). A hit's text opens with its session's start time, as bm25's. Each result also names its
+entry, repository, session, records, part and whether it was cut, so a comparison finds the eval chunk it is.
+
+The comparison's variants are drivers, each calling `run` with its own settings, and run only as
+`evals/retrieval/scripts/build-store.sh bilbo-next --search <questions> <out> --driver evals/retrieval/scripts/variants/<name>`:
+
+| Variant | Settings |
+|---|---|
+| `wide-no-words` | budget 1,000,000, question words none |
+| `wide` | budget 1,000,000, the default question words |
+| `budget-4600` | budget 4,600 |
+| `candidates-1000` | budget 1,000,000, question words none, 1,000 candidates |
+
+`--check` checks that the manifest's sessions and the entry rows are the corpus's (as many as the limit says) and that every
+store answers `bilbo recall --budget 4000 -- user assistant` with exit 0, as many searched entries as the build's own `recall` counted (`indexed` in the manifest, which can be below the entries when
+one has no chunk) and well-formed headers, that `bilbo read` takes the first hit's ref, and that a query of stopwords only exits 1 with `bilbo:
+nothing matched`.
+
+`scripts/reference.py` and `scripts/compare.py` compare a run with the bm25 arm without a judge.
 
 ### graphiti
 

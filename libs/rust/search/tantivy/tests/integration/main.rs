@@ -1,15 +1,21 @@
+use std::cell::Cell;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, UNIX_EPOCH};
 
-use bilbo_search::chunk::{Chunk, Size};
+use bilbo_search::analyze;
+use bilbo_search::bm25::Bm25;
+use bilbo_search::chunk::{self, Chunk, Size};
 use bilbo_search::index::{Doc, Extent, Index, IndexError};
+use bilbo_search::lookup::{Filter, Lookup};
 use bilbo_search::position::{Manifest, Position};
+use bilbo_search::rank::{Candidate, Query, Ranker};
 use bilbo_store::entries::{Cursor, Generation, RecordRange};
 use bilbo_store::id::Id;
-use bilbo_tantivy::{Options, Row, Tantivy};
+use bilbo_tantivy::{Committed, Options, Row, Tantivy};
 
 static COUNTER: AtomicU64 = AtomicU64::new(0);
 
@@ -110,7 +116,20 @@ fn add(index: &mut Tantivy, entry: u8, kind: &str, seconds: u64, chunk: &Chunk) 
         .expect("add a document");
 }
 
-fn row(entry: u8, kind: &str, seconds: i64, first: u64, count: u64, part: (u64, u64)) -> Row {
+const RUNNER: &str = "the runner was running in the garden";
+const GARDENS: &str = "gardens and gardening tools";
+const SHED: &str = "tools for the shed";
+const ZEBRA: &str = "a zebra crossing by the garden";
+
+fn row(
+    entry: u8,
+    kind: &str,
+    seconds: i64,
+    first: u64,
+    count: u64,
+    part: (u64, u64),
+    text: &str,
+) -> Row {
     Row {
         entry: id(entry).to_bytes(),
         generation: u64::from(entry) + 1,
@@ -120,7 +139,37 @@ fn row(entry: u8, kind: &str, seconds: i64, first: u64, count: u64, part: (u64, 
         parts: part.1,
         date: seconds * 1000,
         kind: kind.to_owned(),
+        length: analyze::terms(text).len() as u64,
+        digest: chunk::digest(text),
     }
+}
+
+fn committed(scratch: &Scratch) -> Committed {
+    Committed::at(scratch.folder())
+}
+
+fn rank(folder: &Path, text: &str, limit: usize) -> Vec<Candidate> {
+    let committed = Committed::at(folder);
+    let query = Query {
+        text: text.to_owned(),
+        kinds: Vec::new(),
+    };
+    Bm25 {
+        index: &committed,
+        k1: 1.2,
+        b: 0.75,
+        dropped: &[],
+    }
+    .rank(&query, limit)
+    .expect("a rank")
+}
+
+fn key(candidate: &Candidate) -> (u64, u64) {
+    let extent = &candidate.found.extent;
+    (
+        extent.records.first,
+        extent.part.map_or(0, |(part, _)| u64::from(part)),
+    )
 }
 
 fn names(folder: &Path) -> Vec<String> {
@@ -139,42 +188,24 @@ fn names(folder: &Path) -> Vec<String> {
 }
 
 fn fill(index: &mut Tantivy) {
+    add(index, 1, "session", 100, &chunk(1, 3, None, RUNNER));
     add(
         index,
         1,
         "session",
         100,
-        &chunk(1, 3, None, "the runner was running in the garden"),
+        &chunk(4, 1, Some((0, 2)), GARDENS),
     );
-    add(
-        index,
-        1,
-        "session",
-        100,
-        &chunk(4, 1, Some((0, 2)), "gardens and gardening tools"),
-    );
-    add(
-        index,
-        1,
-        "session",
-        100,
-        &chunk(4, 1, Some((1, 2)), "tools for the shed"),
-    );
-    add(
-        index,
-        2,
-        "markdown",
-        200,
-        &chunk(7, 2, None, "a zebra crossing by the garden"),
-    );
+    add(index, 1, "session", 100, &chunk(4, 1, Some((1, 2)), SHED));
+    add(index, 2, "markdown", 200, &chunk(7, 2, None, ZEBRA));
 }
 
 fn filled() -> Vec<Row> {
     vec![
-        row(1, "session", 100, 1, 3, (0, 0)),
-        row(1, "session", 100, 4, 1, (0, 2)),
-        row(1, "session", 100, 4, 1, (1, 2)),
-        row(2, "markdown", 200, 7, 2, (0, 0)),
+        row(1, "session", 100, 1, 3, (0, 0), RUNNER),
+        row(1, "session", 100, 4, 1, (0, 2), GARDENS),
+        row(1, "session", 100, 4, 1, (1, 2), SHED),
+        row(2, "markdown", 200, 7, 2, (0, 0), ZEBRA),
     ]
 }
 
@@ -275,7 +306,7 @@ fn a_clear_and_the_documents_after_it_replace_the_index_in_one_commit() {
     index.commit(&position(9)).expect("commit");
     assert_eq!(
         index.documents().expect("documents"),
-        [row(3, "markdown", 300, 2, 2, (0, 0))]
+        [row(3, "markdown", 300, 2, 2, (0, 0), "the only one left")]
     );
     assert_eq!(index.position().expect("a position"), Some(position(9)));
     index.clear().expect("clear");
@@ -289,15 +320,14 @@ fn a_search_matches_the_analyzers_terms_and_ranks_by_how_often_and_how_rare() {
     let mut index = scratch.fresh();
     fill(&mut index);
     index.commit(&position(5)).expect("commit");
+    drop(index);
     let found = |text: &str| -> Vec<(u64, u64)> {
-        let hits = index.search(text, 10).expect("a search");
+        let hits = rank(&scratch.folder(), text, 10);
         assert!(
-            hits.windows(2).all(|pair| pair[0].0 >= pair[1].0),
+            hits.windows(2).all(|pair| pair[0].score >= pair[1].score),
             "{hits:?}"
         );
-        hits.into_iter()
-            .map(|(_, row)| (row.first, row.part))
-            .collect()
+        hits.iter().map(key).collect()
     };
     assert_eq!(found("runs"), [(1, 0)], "a stem matches its other forms");
     assert_eq!(
@@ -314,8 +344,8 @@ fn a_search_matches_the_analyzers_terms_and_ranks_by_how_often_and_how_rare() {
     assert_eq!(found("the and of"), [], "a stopword is no term");
     assert_eq!(found("unknown"), []);
     assert_eq!(found(""), []);
-    assert_eq!(index.search("garden", 2).expect("a search").len(), 2);
-    assert_eq!(index.search("garden", 0).expect("a search").len(), 0);
+    assert_eq!(rank(&scratch.folder(), "garden", 2).len(), 2);
+    assert_eq!(rank(&scratch.folder(), "garden", 0).len(), 0);
 }
 
 #[test]
@@ -406,6 +436,7 @@ fn built(folder: &Path) {
 fn refused(scratch: &Scratch, what: &str) {
     let before = snapshot(&scratch.0);
     let mut index = scratch.index();
+    let reader = committed(scratch);
     let doc = Doc {
         entry: id(1),
         generation: Generation(1),
@@ -419,7 +450,16 @@ fn refused(scratch: &Scratch, what: &str) {
         index.add(&doc).expect_err("refused"),
         index.commit(&position(1)).map(|_| ()).expect_err("refused"),
         index.documents().map(|_| ()).expect_err("refused"),
-        index.search("text", 3).map(|_| ()).expect_err("refused"),
+        reader.position().map(|_| ()).expect_err("refused"),
+        reader.totals().map(|_| ()).expect_err("refused"),
+        reader.postings("text").map(|_| ()).expect_err("refused"),
+        reader
+            .holding(&Filter::Kind("session"))
+            .map(|_| ())
+            .expect_err("refused"),
+        reader.found(&[0]).map(|_| ()).expect_err("refused"),
+        reader.documents().map(|_| ()).expect_err("refused"),
+        reader.terms().map(|_| ()).expect_err("refused"),
     ] {
         assert!(matches!(error, IndexError::Foreign(_)), "{what}: {error}");
     }
@@ -504,7 +544,7 @@ fn a_managed_list_that_names_a_path_outside_the_folder_deletes_nothing_outside_i
         );
         assert_eq!(
             index.documents().expect(&extra),
-            [row(5, "session", 500, 1, 1, (0, 0))],
+            [row(5, "session", 500, 1, 1, (0, 0), "one text")],
             "{extra}"
         );
     }
@@ -770,8 +810,8 @@ fn two_indexes_of_the_same_documents_have_the_same_rows_and_the_same_hits_whatev
     for query in ["garden", "zebra tools", "running shed", "nothing"] {
         for limit in [1, 2, 10] {
             assert_eq!(
-                first.search(query, limit).expect("a search"),
-                second.search(query, limit).expect("a search"),
+                rank(&one.folder(), query, limit),
+                rank(&two.folder(), query, limit),
                 "{query} {limit}"
             );
         }
@@ -794,17 +834,15 @@ fn of_documents_with_one_score_the_lowest_rows_are_kept_whatever_order_they_were
         second.commit(&position(5)).expect("commit");
     }
     for limit in 1..=4 {
-        let entries = |index: &Tantivy| -> Vec<u8> {
-            index
-                .search("same words", limit)
-                .expect("a search")
-                .into_iter()
-                .map(|(_, row)| row.entry[15])
+        let entries = |scratch: &Scratch| -> Vec<u8> {
+            rank(&scratch.folder(), "same words", limit)
+                .iter()
+                .map(|hit| hit.found.entry.to_bytes()[15])
                 .collect()
         };
         let wanted: Vec<u8> = (1..=4).take(limit).collect();
-        assert_eq!(entries(&first), wanted, "rising, limit {limit}");
-        assert_eq!(entries(&second), wanted, "falling, limit {limit}");
+        assert_eq!(entries(&rising), wanted, "rising, limit {limit}");
+        assert_eq!(entries(&falling), wanted, "falling, limit {limit}");
     }
 }
 
@@ -822,9 +860,9 @@ fn a_document_is_found_by_its_longest_term_and_a_longer_word_is_in_no_document()
         &chunk(1, 1, None, &format!("{longest} {longer} zebra")),
     );
     index.commit(&position(5)).expect("commit");
-    assert_eq!(index.search(&longest, 10).expect("a search").len(), 1);
-    assert_eq!(index.search(&longer, 10).expect("a search").len(), 0);
-    assert_eq!(index.search("zebra", 10).expect("a search").len(), 1);
+    assert_eq!(rank(&scratch.folder(), &longest, 10).len(), 1);
+    assert_eq!(rank(&scratch.folder(), &longer, 10).len(), 0);
+    assert_eq!(rank(&scratch.folder(), "zebra", 10).len(), 1);
 
     let opened = tantivy::Index::open_in_dir(scratch.folder()).expect("the index");
     let field = opened.schema().get_field("text").expect("the text field");
@@ -887,10 +925,11 @@ fn extent(
     }
 }
 
-#[test]
-fn asking_the_position_of_a_missing_a_broken_or_an_older_index_changes_no_file() {
-    type Left = (&'static str, fn(&Path));
-    let lefts: [Left; 7] = [
+type Left = (&'static str, fn(&Path));
+
+/// Folders that hold no usable index and are not foreign.
+fn unusable() -> [Left; 7] {
+    [
         ("a missing folder", |_| {}),
         ("an empty folder", |folder| {
             fs::create_dir_all(folder).expect("create");
@@ -924,7 +963,12 @@ fn asking_the_position_of_a_missing_a_broken_or_an_older_index_changes_no_file()
             prepared.set_payload("bilbo index 0\nanything\n");
             prepared.commit().expect("commit");
         }),
-    ];
+    ]
+}
+
+#[test]
+fn asking_the_position_of_a_missing_a_broken_or_an_older_index_changes_no_file() {
+    let lefts = unusable();
     for (what, leave) in lefts {
         let scratch = Scratch::new("read-only");
         leave(&scratch.folder());
@@ -1018,8 +1062,8 @@ fn a_delete_from_a_record_takes_the_documents_from_it_on_and_no_other_entrys() {
     assert_eq!(
         index.documents().expect("documents"),
         [
-            row(1, "session", 100, 1, 3, (0, 0)),
-            row(2, "markdown", 200, 7, 2, (0, 0)),
+            row(1, "session", 100, 1, 3, (0, 0), RUNNER),
+            row(2, "markdown", 200, 7, 2, (0, 0), ZEBRA),
         ],
         "an earlier commit's documents from record 4 on; entry 2 starts at 7, before 8"
     );
@@ -1051,10 +1095,10 @@ fn a_delete_from_a_record_takes_the_documents_from_it_on_and_no_other_entrys() {
     assert_eq!(
         index.documents().expect("documents"),
         [
-            row(1, "session", 100, 1, 3, (0, 0)),
-            row(1, "session", 100, 10, 1, (0, 0)),
-            row(1, "session", 100, 30, 1, (0, 0)),
-            row(2, "markdown", 200, 7, 2, (0, 0)),
+            row(1, "session", 100, 1, 3, (0, 0), RUNNER),
+            row(1, "session", 100, 10, 1, (0, 0), "added before the delete"),
+            row(1, "session", 100, 30, 1, (0, 0), "added after the delete"),
+            row(2, "markdown", 200, 7, 2, (0, 0), ZEBRA),
         ]
     );
 
@@ -1063,7 +1107,7 @@ fn a_delete_from_a_record_takes_the_documents_from_it_on_and_no_other_entrys() {
     index.commit(&position(8)).expect("commit");
     assert_eq!(
         index.documents().expect("documents"),
-        [row(2, "markdown", 200, 7, 2, (0, 0))]
+        [row(2, "markdown", 200, 7, 2, (0, 0), ZEBRA)]
     );
 }
 
@@ -1149,8 +1193,35 @@ fn a_rollback_drops_what_was_added_and_deleted_and_frees_the_writer() {
     again.clear().expect("a commit frees the writer too");
 }
 
+fn same_scores(grown: &Scratch, rebuilt: &Scratch, queries: &[&str]) {
+    for query in queries {
+        for limit in [1, 5, 50] {
+            let grown_hits = rank(&grown.folder(), query, limit);
+            let rebuilt_hits = rank(&rebuilt.folder(), query, limit);
+            assert_eq!(grown_hits, rebuilt_hits, "{query} {limit}");
+        }
+    }
+    let (grown_totals, rebuilt_totals) = (
+        committed(grown).totals().expect("totals"),
+        committed(rebuilt).totals().expect("totals"),
+    );
+    assert_eq!(
+        (
+            grown_totals.documents,
+            grown_totals.entries,
+            grown_totals.length
+        ),
+        (
+            rebuilt_totals.documents,
+            rebuilt_totals.entries,
+            rebuilt_totals.length
+        ),
+        "the statistics count live documents only"
+    );
+}
+
 #[test]
-fn a_grown_index_matches_what_a_rebuilt_one_matches_and_scores_it_otherwise() {
+fn a_grown_index_ranks_as_a_rebuilt_one_scores_included() {
     let one = |word: &str| chunk(1, 1, None, word);
     let word = |entry: u8| if entry <= 20 { "zebra" } else { "apple" };
     let grown = Scratch::new("grown");
@@ -1178,19 +1249,49 @@ fn a_grown_index_matches_what_a_rebuilt_one_matches_and_scores_it_otherwise() {
         fresh.documents().expect("documents")
     );
     assert_eq!(index.terms().expect("terms"), fresh.terms().expect("terms"));
-    let grown_hits = index.search("zebra", 10).expect("search");
-    let rebuilt_hits = fresh.search("zebra", 10).expect("search");
-    assert_eq!(
-        grown_hits.iter().map(|hit| &hit.1).collect::<Vec<_>>(),
-        rebuilt_hits.iter().map(|hit| &hit.1).collect::<Vec<_>>(),
-        "the same documents match"
+    assert_eq!(rank(&grown.folder(), "zebra", 10).len(), 1);
+    same_scores(
+        &grown,
+        &rebuilt,
+        &["zebra", "yak", "apple", "zebra yak apple"],
     );
-    assert_eq!(grown_hits.len(), 1);
-    assert!(
-        (grown_hits[0].0 - rebuilt_hits[0].0).abs() > 0.01,
-        "deleted documents still count in the statistics until a merge: see the docs on ranking ({} against {})",
-        grown_hits[0].0,
-        rebuilt_hits[0].0
+}
+
+#[test]
+fn a_grown_session_ranks_as_a_rebuilt_one_scores_included() {
+    let first = [
+        (1, 2, "the first question about the garden"),
+        (3, 1, "an answer about a zebra and the garden"),
+    ];
+    let later = [
+        (4, 1, "a later question about tools"),
+        (5, 3, "the shed holds tools and more tools and the garden"),
+    ];
+    let other = chunk(1, 1, None, "a note on the garden and the shed");
+    let grown = Scratch::new("grown-session");
+    let mut index = grown.fresh();
+    for (at, count, text) in first {
+        add(&mut index, 1, "session", 100, &chunk(at, count, None, text));
+    }
+    add(&mut index, 2, "markdown", 200, &other);
+    index.commit(&position(1)).expect("commit");
+    for (at, count, text) in later {
+        add(&mut index, 1, "session", 100, &chunk(at, count, None, text));
+    }
+    index.commit(&position(2)).expect("commit");
+
+    let rebuilt = Scratch::new("rebuilt-session");
+    let mut fresh = rebuilt.fresh();
+    for (at, count, text) in first.into_iter().chain(later) {
+        add(&mut fresh, 1, "session", 100, &chunk(at, count, None, text));
+    }
+    add(&mut fresh, 2, "markdown", 200, &other);
+    fresh.commit(&position(2)).expect("commit");
+
+    same_scores(
+        &grown,
+        &rebuilt,
+        &["garden", "tools", "zebra shed", "question"],
     );
 }
 
@@ -1404,7 +1505,7 @@ fn component(folder: &Path, extension: &str) -> PathBuf {
 
 /// The first byte of the version that an `SSTable` in the `.fast` file of `fill`'s index starts
 /// with: tantivy's parser rejects another version with an error that is not one of a broken file.
-const SSTABLE_VERSION_AT: usize = 324;
+const SSTABLE_VERSION_AT: usize = 413;
 
 fn sstable_version_changed(file: &Path) {
     let mut bytes = fs::read(file).expect("read");
@@ -1619,7 +1720,7 @@ fn part_1_schema() -> tantivy::schema::Schema {
 }
 
 #[test]
-fn an_index_part_1_made_is_continued() {
+fn an_index_of_the_older_format_has_no_position() {
     use tantivy::tokenizer::{PreTokenizedString, Token};
     let scratch = Scratch::new("part-1");
     fs::create_dir_all(scratch.folder()).expect("create");
@@ -1667,26 +1768,71 @@ fn an_index_part_1_made_is_continued() {
     drop(writer);
     drop(old);
 
+    let before = snapshot(&scratch.0);
     let mut index = scratch.index();
+    assert_eq!(index.position().expect("a position"), None);
+    assert_eq!(committed(&scratch).position().expect("a position"), None);
+    assert_eq!(index.extents(id(2)).expect("extents"), []);
+    assert!(matches!(
+        committed(&scratch).totals().expect_err("no index"),
+        IndexError::Failed { .. }
+    ));
+    assert_eq!(snapshot(&scratch.0), before, "looking changed a file");
+    let doc = Doc {
+        entry: id(1),
+        generation: Generation(1),
+        kind: "session",
+        date: UNIX_EPOCH,
+        chunk: &chunk(4, 1, None, "grown"),
+    };
+    assert!(matches!(
+        index.add(&doc).expect_err("not continued"),
+        IndexError::Failed { .. }
+    ));
+    index.clear().expect("clear");
+    fill(&mut index);
+    index.commit(&position(5)).expect("commit");
     assert_eq!(index.position().expect("a position"), Some(position(5)));
-    assert_eq!(index.extents(id(2)).expect("extents").len(), 1);
-    index.delete(id(1), 4).expect("delete");
-    add(&mut index, 1, "session", 100, &chunk(4, 1, None, "grown"));
-    index.commit(&position(6)).expect("commit");
-    assert_eq!(index.position().expect("a position"), Some(position(6)));
-    assert_eq!(index.documents().expect("documents").len(), 3);
+    assert_eq!(index.documents().expect("documents"), filled());
 
     let own = Scratch::new("part-1-own");
     own.fresh().commit(&position(1)).expect("commit");
     let made = tantivy::Index::open_in_dir(own.folder())
         .expect("the adapter's index")
         .schema();
-    assert_eq!(made.fields().count(), schema.fields().count());
+    assert_ne!(made, schema);
     for (_, entry) in schema.fields() {
         let found = made.get_field(entry.name()).expect("the field");
         assert_eq!(made.get_field_entry(found), entry, "{}", entry.name());
     }
-    assert_eq!(made, schema);
+    assert_eq!(made.fields().count(), schema.fields().count() + 2);
+    for name in ["length", "digest"] {
+        assert!(made.get_field(name).is_ok(), "{name}");
+    }
+}
+
+#[test]
+fn an_index_of_this_schema_with_a_format_1_payload_has_no_position() {
+    let scratch = Scratch::new("format-1");
+    built(&scratch.folder());
+    assert_eq!(
+        committed(&scratch).position().expect("a position"),
+        Some(position(5))
+    );
+    let raw = tantivy::Index::open_in_dir(scratch.folder()).expect("the index");
+    let mut writer: tantivy::IndexWriter = raw.writer(15_000_000).expect("a writer");
+    let mut prepared = writer.prepare_commit().expect("prepare");
+    prepared.set_payload(PART_1_PAYLOAD);
+    prepared.commit().expect("commit");
+    drop(writer);
+    drop(raw);
+    assert_eq!(committed(&scratch).position().expect("a position"), None);
+    let mut index = scratch.index();
+    assert_eq!(index.position().expect("a position"), None);
+    index.clear().expect("clear");
+    fill(&mut index);
+    index.commit(&position(5)).expect("commit");
+    assert_eq!(index.position().expect("a position"), Some(position(5)));
 }
 
 #[test]
@@ -1742,7 +1888,7 @@ fn a_body_damaged_under_a_good_footer_that_panics_tantivy_is_a_broken_index() {
     fill(&mut wanted);
     wanted.commit(&position(5)).expect("commit");
     let mut broken = Vec::new();
-    for at in 280..360usize {
+    for at in 385..435usize {
         let scratch = Scratch::new("panic");
         built(&scratch.folder());
         let file = component(&scratch.folder(), ".fast");
@@ -1828,4 +1974,907 @@ fn a_column_damaged_under_a_good_footer_that_panics_when_read_is_a_failed_read()
             .any(|(_, text)| text.contains("its content could not be read")),
         "no offset made tantivy panic while the columns were read"
     );
+}
+
+fn term_of(word: &str) -> String {
+    analyze::terms(word).remove(0)
+}
+
+fn docs_of(postings: &[bilbo_search::lookup::Posting]) -> Vec<u32> {
+    postings.iter().map(|posting| posting.doc).collect()
+}
+
+#[test]
+fn a_documents_row_carries_its_length_and_digest() {
+    let scratch = Scratch::new("row-length-digest");
+    built(&scratch.folder());
+    let rows = committed(&scratch).documents().expect("documents");
+    assert_eq!(rows, filled());
+    assert_eq!(rows[0].length, 3);
+    assert_eq!(rows[0].digest, chunk::digest(RUNNER));
+}
+
+#[test]
+fn what_was_added_comes_back_as_postings_lengths_kinds_and_rows() {
+    let scratch = Scratch::new("lookup");
+    built(&scratch.folder());
+    let reader = committed(&scratch);
+    let garden = term_of("garden");
+    let postings = reader.postings(&garden).expect("postings");
+    let found = reader.found(&docs_of(&postings)).expect("found");
+    let seen: Vec<(u64, u64, u32, u32)> = postings
+        .iter()
+        .zip(&found)
+        .map(|(posting, found)| {
+            (
+                found.extent.records.first,
+                found.extent.part.map_or(0, |(part, _)| u64::from(part)),
+                posting.freq,
+                posting.length,
+            )
+        })
+        .collect();
+    assert_eq!(seen, [(1, 0, 1, 3), (4, 0, 2, 3), (7, 0, 1, 3)]);
+    assert!(postings.windows(2).all(|pair| pair[0].doc < pair[1].doc));
+    assert_eq!(
+        found.iter().map(|found| found.digest).collect::<Vec<_>>(),
+        [RUNNER, GARDENS, ZEBRA].map(chunk::digest)
+    );
+    assert_eq!(reader.postings("nowhere").expect("postings"), []);
+
+    let sessions = reader.holding(&Filter::Kind("session")).expect("holding");
+    let markdown = reader.holding(&Filter::Kind("markdown")).expect("holding");
+    assert_eq!(sessions.len(), 3);
+    assert_eq!(markdown.len(), 1);
+    assert!(
+        reader
+            .holding(&Filter::Kind("none"))
+            .expect("holding")
+            .is_empty()
+    );
+    let all = reader.totals().expect("totals");
+    assert_eq!(
+        (all.documents, all.entries, all.length, u64::from(all.bound)),
+        (4, 2, 3 + 3 + 2 + 3, 4)
+    );
+
+    let mut asked: Vec<u32> = sessions.iter().chain(&markdown).copied().collect();
+    asked.reverse();
+    let rows = reader.found(&asked).expect("found");
+    assert_eq!(rows.len(), 4);
+    assert_eq!(rows[0].kind, "markdown");
+    assert_eq!(rows[0].entry, id(2));
+    assert_eq!(rows[0].extent.records, RecordRange { first: 7, count: 2 });
+    assert_eq!(rows[0].extent.date, 200_000);
+    assert_eq!(rows[3].extent.records, RecordRange { first: 1, count: 3 });
+    assert_eq!(rows[3].extent.generation, Generation(2));
+}
+
+#[test]
+fn a_documents_length_is_its_exact_number_of_terms() {
+    let scratch = Scratch::new("lengths");
+    let mut index = scratch.fresh();
+    let lengths = [41usize, 1000, 5000];
+    for (n, length) in lengths.iter().enumerate() {
+        let text = "alpha ".repeat(*length);
+        assert_eq!(analyze::terms(&text).len(), *length);
+        add(
+            &mut index,
+            n as u8 + 1,
+            "session",
+            100,
+            &chunk(1, 1, None, &text),
+        );
+    }
+    add(
+        &mut index,
+        9,
+        "session",
+        100,
+        &chunk(1, 1, None, "the and of"),
+    );
+    index.commit(&position(5)).expect("commit");
+    let reader = committed(&scratch);
+    let postings = reader.postings(&term_of("alpha")).expect("postings");
+    assert_eq!(
+        postings
+            .iter()
+            .map(|posting| (posting.freq as usize, posting.length as usize))
+            .collect::<Vec<_>>(),
+        lengths.map(|length| (length, length))
+    );
+    let rows = reader.documents().expect("documents");
+    assert_eq!(
+        rows.iter().map(|row| row.length).collect::<Vec<_>>(),
+        [41, 1000, 5000, 0]
+    );
+    assert_eq!(reader.totals().expect("totals").length, 6041);
+}
+
+#[test]
+fn a_replaced_document_is_in_no_posting_and_no_total() {
+    let scratch = Scratch::new("replaced-document");
+    let mut index = scratch.fresh();
+    for entry in 1..=10 {
+        add(
+            &mut index,
+            entry,
+            "session",
+            100,
+            &chunk(1, 1, None, "zebra zebra"),
+        );
+    }
+    index.commit(&position(1)).expect("commit");
+    index.delete(id(1), 1).expect("delete");
+    add(&mut index, 1, "markdown", 100, &chunk(1, 1, None, "yak"));
+    index.commit(&position(2)).expect("commit");
+    assert_eq!(
+        names(&scratch.folder())
+            .iter()
+            .filter(|name| name.ends_with(".term"))
+            .count(),
+        2,
+        "no merge has happened"
+    );
+    let reader = committed(&scratch);
+    let zebra = reader.postings(&term_of("zebra")).expect("postings");
+    assert_eq!(docs_of(&zebra), (1..=9).collect::<Vec<u32>>());
+    assert!(zebra.iter().all(|posting| posting.freq == 2));
+    assert_eq!(docs_of(&reader.postings("yak").expect("postings")), [10]);
+    assert_eq!(
+        reader.holding(&Filter::Kind("session")).expect("holding"),
+        (1..=9).collect::<Vec<u32>>()
+    );
+    let totals = reader.totals().expect("totals");
+    assert_eq!(
+        (
+            totals.documents,
+            totals.entries,
+            totals.length,
+            totals.bound
+        ),
+        (10, 10, 19, 11)
+    );
+}
+
+#[test]
+fn the_entries_counted_are_those_with_a_live_document() {
+    let scratch = Scratch::new("entries");
+    let mut index = scratch.fresh();
+    add(&mut index, 1, "session", 100, &chunk(1, 1, None, "one"));
+    add(&mut index, 1, "session", 100, &chunk(2, 1, None, "two"));
+    add(&mut index, 2, "session", 100, &chunk(1, 1, None, "three"));
+    add(&mut index, 3, "session", 100, &chunk(1, 1, None, "four"));
+    add(&mut index, 4, "session", 100, &chunk(1, 1, None, "five"));
+    for entry in 10..=40 {
+        add(
+            &mut index,
+            entry,
+            "session",
+            100,
+            &chunk(1, 1, None, "filler"),
+        );
+    }
+    index.commit(&position(1)).expect("commit");
+    assert_eq!(committed(&scratch).totals().expect("totals").entries, 35);
+    index.delete(id(3), 1).expect("delete");
+    index.delete(id(1), 2).expect("delete");
+    add(&mut index, 2, "session", 100, &chunk(2, 1, None, "six"));
+    index.commit(&position(2)).expect("commit");
+    let unmerged = |scratch: &Scratch| {
+        let files = names(&scratch.folder());
+        (
+            files.iter().filter(|name| name.ends_with(".term")).count(),
+            files.iter().any(|name| name.ends_with(".del")),
+        )
+    };
+    assert_eq!(
+        unmerged(&scratch),
+        (2, true),
+        "deletes in a segment still there"
+    );
+    let totals = committed(&scratch).totals().expect("totals");
+    assert_eq!(
+        (totals.documents, totals.entries),
+        (35, 34),
+        "entry 3 has no live document; entry 2 lies in two segments and counts once; entry 1 keeps its first"
+    );
+    index.delete(id(1), 1).expect("delete");
+    index.delete(id(4), 1).expect("delete");
+    index.commit(&position(3)).expect("commit");
+    assert!(unmerged(&scratch).1);
+    let totals = committed(&scratch).totals().expect("totals");
+    assert_eq!((totals.documents, totals.entries), (33, 32));
+}
+
+#[test]
+fn the_same_documents_rank_the_same_in_one_segment_and_in_many() {
+    let texts: Vec<String> = (0..14)
+        .map(|n| {
+            format!(
+                "garden {} tools {}",
+                "zebra ".repeat(n % 4),
+                "shed ".repeat(n % 3)
+            )
+        })
+        .collect();
+    let one = Scratch::new("one-segment");
+    let mut single = one.fresh();
+    let many = Scratch::new("seven-segments");
+    let mut several = many.fresh();
+    for (n, text) in texts.iter().enumerate() {
+        let at = n as u64 + 1;
+        add(
+            &mut single,
+            n as u8 + 1,
+            "session",
+            100,
+            &chunk(at, 1, None, text),
+        );
+        add(
+            &mut several,
+            n as u8 + 1,
+            "session",
+            100,
+            &chunk(at, 1, None, text),
+        );
+        if n % 2 == 1 {
+            several.commit(&position(at)).expect("commit");
+        }
+    }
+    single.commit(&position(14)).expect("commit");
+    let terms = |scratch: &Scratch| {
+        names(&scratch.folder())
+            .iter()
+            .filter(|name| name.ends_with(".term"))
+            .count()
+    };
+    assert_eq!((terms(&one), terms(&many)), (1, 7));
+    assert_eq!(
+        committed(&one).documents().expect("documents"),
+        committed(&many).documents().expect("documents")
+    );
+    assert_eq!(
+        committed(&one).totals().expect("totals"),
+        committed(&many).totals().expect("totals")
+    );
+    for query in ["garden", "zebra", "zebra shed", "tools garden shed", "none"] {
+        for limit in [1, 3, 20] {
+            assert_eq!(
+                rank(&one.folder(), query, limit),
+                rank(&many.folder(), query, limit),
+                "{query} {limit}"
+            );
+        }
+    }
+}
+
+type Stamp = Vec<(String, u64, std::time::SystemTime)>;
+
+fn stamps(folder: &Path) -> Stamp {
+    let mut found: Stamp = fs::read_dir(folder)
+        .expect("list")
+        .map(|entry| {
+            let entry = entry.expect("an entry");
+            let meta = entry.metadata().expect("metadata");
+            (
+                entry.file_name().into_string().expect("a name"),
+                meta.len(),
+                meta.modified().expect("a time"),
+            )
+        })
+        .collect();
+    found.push((
+        String::new(),
+        0,
+        fs::metadata(folder)
+            .expect("the folder")
+            .modified()
+            .expect("a time"),
+    ));
+    found.sort();
+    found
+}
+
+fn read_everything(folder: &Path) {
+    let reader = Committed::at(folder);
+    assert!(reader.position().expect("position").is_some());
+    let totals = reader.totals().expect("totals");
+    reader.postings(&term_of("garden")).expect("postings");
+    reader.holding(&Filter::Kind("session")).expect("holding");
+    let all: Vec<u32> = (0..totals.bound).collect();
+    reader.found(&all).expect("found");
+    reader.documents().expect("documents");
+    reader.terms().expect("terms");
+}
+
+#[test]
+fn reading_creates_and_changes_no_file() {
+    let scratch = Scratch::new("reading");
+    built(&scratch.folder());
+    for lock in [".tantivy-meta.lock", ".tantivy-writer.lock"] {
+        let _ = fs::remove_file(scratch.folder().join(lock));
+    }
+    let before = stamps(&scratch.folder());
+    std::thread::sleep(Duration::from_millis(20));
+    read_everything(&scratch.folder());
+    assert_eq!(stamps(&scratch.folder()), before);
+    assert!(!scratch.folder().join(".tantivy-meta.lock").exists());
+
+    let permissions = fs::metadata(scratch.folder())
+        .expect("the folder")
+        .permissions();
+    let mut closed = permissions.clone();
+    closed.set_mode(0o500);
+    fs::set_permissions(scratch.folder(), closed).expect("close the folder");
+    let outcome = std::panic::catch_unwind(|| read_everything(&scratch.folder()));
+    fs::set_permissions(scratch.folder(), permissions).expect("open the folder");
+    assert!(outcome.is_ok(), "a read-only folder is read");
+    assert_eq!(stamps(&scratch.folder()), before);
+}
+
+fn nothing_to_read(reader: &Committed, what: &str) {
+    assert_eq!(reader.position().expect(what), None, "{what}");
+    let errors = [
+        reader.totals().map(|_| ()),
+        reader.postings("garden").map(|_| ()),
+        reader.holding(&Filter::Kind("session")).map(|_| ()),
+        reader.found(&[0]).map(|_| ()),
+        reader.documents().map(|_| ()),
+        reader.terms().map(|_| ()),
+    ];
+    for error in errors {
+        let error = error.expect_err(what);
+        assert!(
+            matches!(error, IndexError::Failed { .. }),
+            "{what}: {error}"
+        );
+        assert!(
+            error.to_string().contains("it holds no index"),
+            "{what}: {error}"
+        );
+    }
+}
+
+#[test]
+fn a_missing_an_empty_or_a_broken_folder_has_no_position_and_every_other_call_fails() {
+    for (what, leave) in unusable() {
+        let scratch = Scratch::new("no-index");
+        leave(&scratch.folder());
+        let before = snapshot(&scratch.0);
+        nothing_to_read(&committed(&scratch), what);
+        assert_eq!(snapshot(&scratch.0), before, "{what}");
+    }
+}
+
+#[test]
+fn a_foreign_folder_is_an_error_from_every_call_and_is_left_as_it_was() {
+    type Foreign = (&'static str, fn(&Path));
+    let foreign: [Foreign; 3] = [
+        ("a file that is not tantivy's", |folder| {
+            fs::write(folder.join("notes.txt"), "mine").expect("write");
+        }),
+        ("a stranger beside a marked index", |folder| {
+            built(folder);
+            fs::write(folder.join("notes.txt"), "mine").expect("write");
+        }),
+        ("a segment file and no marker", |folder| {
+            fs::write(folder.join("7827f006c8a44482bed98f5b97d6420f.idx"), "x").expect("write");
+        }),
+    ];
+    for (what, stray) in foreign {
+        let scratch = Scratch::new("foreign-reads");
+        fs::create_dir_all(scratch.folder()).expect("create");
+        stray(&scratch.folder());
+        refused(&scratch, what);
+    }
+}
+
+#[test]
+fn a_segment_file_removed_between_two_looks_is_no_usable_index_not_a_panic() {
+    for extension in [".idx", ".term", ".fast", ".fieldnorm", ".store"] {
+        let scratch = Scratch::new("removed");
+        built(&scratch.folder());
+        let file = component(&scratch.folder(), extension);
+        let (reader, looks) = counted(&scratch.folder(), move |_| {
+            let _ = fs::remove_file(&file);
+        });
+        assert_eq!(reader.position().expect(extension), None, "{extension}");
+        assert_eq!(looks.get(), 2, "{extension}");
+        nothing_to_read(&committed(&scratch), extension);
+    }
+}
+
+fn a_tie() -> (Scratch, usize) {
+    let scratch = Scratch::new("tie");
+    let mut index = scratch.fresh();
+    let count = 20_000usize;
+    let same = chunk(1, 1, None, "same words here");
+    for n in 0..count {
+        let mut entry = [0u8; 16];
+        entry[12..].copy_from_slice(&(n as u32).to_be_bytes());
+        index
+            .add(&Doc {
+                entry: Id::from_bytes(entry),
+                generation: Generation(1),
+                kind: "session",
+                date: UNIX_EPOCH,
+                chunk: &same,
+            })
+            .expect("add");
+    }
+    index.commit(&position(1)).expect("commit");
+    (scratch, count)
+}
+
+struct Counting<'a> {
+    inner: &'a Committed,
+    widest: std::cell::Cell<usize>,
+}
+
+impl Lookup for Counting<'_> {
+    fn position(&self) -> Result<Option<Position>, IndexError> {
+        self.inner.position()
+    }
+    fn totals(&self) -> Result<bilbo_search::lookup::Totals, IndexError> {
+        self.inner.totals()
+    }
+    fn postings(&self, term: &str) -> Result<Vec<bilbo_search::lookup::Posting>, IndexError> {
+        self.inner.postings(term)
+    }
+    fn holding(&self, filter: &Filter<'_>) -> Result<Vec<u32>, IndexError> {
+        self.inner.holding(filter)
+    }
+    fn found(&self, docs: &[u32]) -> Result<Vec<bilbo_search::lookup::Found>, IndexError> {
+        self.widest.set(self.widest.get().max(docs.len()));
+        self.inner.found(docs)
+    }
+}
+
+#[test]
+fn a_tie_of_every_document_is_cut_by_the_tie_order() {
+    let (scratch, count) = a_tie();
+    let reader = committed(&scratch);
+    let counting = Counting {
+        inner: &reader,
+        widest: std::cell::Cell::new(0),
+    };
+    let query = Query {
+        text: "same words".to_owned(),
+        kinds: Vec::new(),
+    };
+    let hits = Bm25 {
+        index: &counting,
+        k1: 1.2,
+        b: 0.75,
+        dropped: &[],
+    }
+    .rank(&query, 50)
+    .expect("a rank");
+    let wanted: Vec<u32> = (0..50).collect();
+    let entries: Vec<u32> = hits
+        .iter()
+        .map(|hit| {
+            let bytes = hit.found.entry.to_bytes();
+            u32::from_be_bytes([bytes[12], bytes[13], bytes[14], bytes[15]])
+        })
+        .collect();
+    assert_eq!(entries, wanted);
+    assert_eq!(reader.totals().expect("totals").documents, count as u64);
+    assert!(counting.widest.get() <= 4096, "{}", counting.widest.get());
+    assert!(counting.widest.get() > 0);
+}
+
+fn template() -> Scratch {
+    let scratch = Scratch::new("template");
+    built(&scratch.folder());
+    scratch
+}
+
+fn flipped(template: &Scratch, extension: &str, at: usize) -> Scratch {
+    let scratch = Scratch::new("flipped");
+    copy_files(&template.folder(), &scratch.folder());
+    let file = component(&scratch.folder(), extension);
+    let mut bytes = fs::read(&file).expect("read");
+    bytes[at] ^= 0x55;
+    fs::write(&file, bytes).expect("write");
+    scratch
+}
+
+fn length_of(extension: &str, template: &Scratch) -> usize {
+    fs::metadata(component(&template.folder(), extension))
+        .expect("a file")
+        .len() as usize
+}
+
+#[test]
+fn a_damaged_length_column_is_an_index_error_from_totals_and_postings() {
+    let template = template();
+    let size = length_of(".fast", &template);
+    let garden = term_of("garden");
+    let mut both = Vec::new();
+    let mut panicked = Vec::new();
+    for at in 0..size {
+        let scratch = flipped(&template, ".fast", at);
+        let before = snapshot(&scratch.0);
+        let reader = committed(&scratch);
+        if !matches!(reader.position(), Ok(Some(_))) {
+            continue;
+        }
+        let Err(error) = reader.totals() else {
+            continue;
+        };
+        assert!(matches!(error, IndexError::Failed { .. }), "offset {at}");
+        if error.to_string().contains("its content could not be read") {
+            panicked.push(at);
+        }
+        let Err(posting_error) = reader.postings(&garden) else {
+            panic!("offset {at}: totals failed on the length column and postings read it");
+        };
+        assert!(
+            matches!(posting_error, IndexError::Failed { .. }),
+            "offset {at}"
+        );
+        both.push(at);
+        assert_eq!(snapshot(&scratch.0), before, "offset {at}");
+    }
+    say(&format!(
+        "offsets of .fast where totals and postings fail: {both:?}; by a caught panic: {panicked:?}"
+    ));
+    assert!(!both.is_empty(), "no offset damaged the length column");
+    assert!(
+        !panicked.is_empty(),
+        "no offset made tantivy panic while the length column was read"
+    );
+}
+
+#[test]
+fn a_damaged_postings_or_term_file_is_an_index_error_from_every_read() {
+    let mut failed_lazily = 0;
+    let template = template();
+    for extension in [".idx", ".term"] {
+        let size = length_of(extension, &template);
+        for at in 0..size {
+            let scratch = flipped(&template, extension, at);
+            let before = snapshot(&scratch.0);
+            let reader = committed(&scratch);
+            let opened = matches!(reader.position(), Ok(Some(_)));
+            let bound = if opened {
+                reader.totals().map_or(4, |totals| totals.bound)
+            } else {
+                4
+            };
+            let all: Vec<u32> = (0..bound).collect();
+            let results = [
+                reader.totals().map(|_| ()),
+                reader.postings(&term_of("garden")).map(|_| ()),
+                reader.holding(&Filter::Kind("session")).map(|_| ()),
+                reader.found(&all).map(|_| ()),
+                reader.documents().map(|_| ()),
+                reader.terms().map(|_| ()),
+            ];
+            for result in results {
+                match result {
+                    Ok(()) => {}
+                    Err(IndexError::Failed { .. } | IndexError::Inconsistent(_)) => {
+                        failed_lazily += usize::from(opened);
+                    }
+                    Err(error) => panic!("{extension} offset {at}: {error}"),
+                }
+            }
+            assert_eq!(snapshot(&scratch.0), before, "{extension} offset {at}");
+        }
+    }
+    say(&format!(
+        "reads that failed after the segments opened: {failed_lazily}"
+    ));
+    assert!(failed_lazily > 0, "no damage reached a lazy read");
+}
+
+#[test]
+fn a_column_that_cannot_be_read_is_a_failed_read_of_its_content() {
+    let template = template();
+    let size = length_of(".fast", &template);
+    let mut failed = Vec::new();
+    for at in 0..size {
+        let scratch = flipped(&template, ".fast", at);
+        let reader = committed(&scratch);
+        if !matches!(reader.position(), Ok(Some(_))) {
+            continue;
+        }
+        let Err(error) = reader.found(&[0, 1, 2, 3]) else {
+            continue;
+        };
+        assert!(matches!(error, IndexError::Failed { .. }), "offset {at}");
+        failed.push((at, error.to_string()));
+    }
+    assert!(
+        failed
+            .iter()
+            .any(|(_, text)| text.contains("its content could not be read")),
+        "no offset made a column panic through found: {failed:?}"
+    );
+}
+
+fn copy_files(from: &Path, to: &Path) {
+    fs::create_dir_all(to).expect("create");
+    for name in names(from) {
+        fs::copy(from.join(&name), to.join(name)).expect("copy");
+    }
+}
+
+fn remove_files(folder: &Path) {
+    for name in names(folder) {
+        fs::remove_file(folder.join(name)).expect("remove");
+    }
+}
+
+fn counted(folder: &Path, each: impl Fn(u32) + 'static) -> (Committed, Rc<Cell<u32>>) {
+    let looks = Rc::new(Cell::new(0));
+    let seen = Rc::clone(&looks);
+    let reader = Committed::watched(
+        folder,
+        Box::new(move || {
+            seen.set(seen.get() + 1);
+            each(seen.get());
+        }),
+    );
+    (reader, looks)
+}
+
+fn pad_meta(scratch: &Scratch, size: u64) {
+    let file = fs::OpenOptions::new()
+        .append(true)
+        .open(scratch.folder().join("meta.json"))
+        .expect("meta.json");
+    let held = file.metadata().expect("metadata").len();
+    std::io::Write::write_all(
+        &mut &file,
+        &vec![b' '; usize::try_from(size - held).expect("a size")],
+    )
+    .expect("pad");
+}
+
+#[test]
+fn a_meta_file_over_the_bound_is_no_usable_index() {
+    const BOUND: u64 = 64 * 1024 * 1024;
+    let under = Scratch::new("meta-under");
+    built(&under.folder());
+    pad_meta(&under, BOUND);
+    assert_eq!(
+        committed(&under).position().expect("a position"),
+        Some(position(5))
+    );
+    assert_eq!(committed(&under).documents().expect("documents"), filled());
+
+    let over = Scratch::new("meta-over");
+    built(&over.folder());
+    pad_meta(&over, BOUND + 1);
+    let before = snapshot(&over.0);
+    nothing_to_read(&committed(&over), "a meta.json over the bound");
+    assert_eq!(snapshot(&over.0), before);
+}
+
+fn other_index(scratch: &Scratch) {
+    let mut index = scratch.fresh();
+    add(
+        &mut index,
+        7,
+        "markdown",
+        700,
+        &chunk(1, 1, None, "otter river"),
+    );
+    add(
+        &mut index,
+        7,
+        "markdown",
+        700,
+        &chunk(2, 1, None, "otter bank"),
+    );
+    index.commit(&position(9)).expect("commit");
+}
+
+#[test]
+fn a_commit_that_replaces_the_segments_between_two_looks_is_read_at_the_second_look() {
+    let second = Scratch::new("second-index");
+    other_index(&second);
+    let scratch = Scratch::new("replaced-between");
+    built(&scratch.folder());
+    let (folder, from) = (scratch.folder(), second.folder());
+    let (reader, looks) = counted(&scratch.folder(), move |look| {
+        if look == 1 {
+            remove_files(&folder);
+            copy_files(&from, &folder);
+        }
+    });
+    assert_eq!(reader.position().expect("a position"), Some(position(9)));
+    assert_eq!(reader.totals().expect("totals").documents, 2);
+    let rows = reader.documents().expect("documents");
+    assert_eq!(
+        rows,
+        [
+            row(7, "markdown", 700, 1, 1, (0, 0), "otter river"),
+            row(7, "markdown", 700, 2, 1, (0, 0), "otter bank"),
+        ]
+    );
+    assert_eq!(looks.get(), 2);
+}
+
+#[test]
+fn a_commit_between_the_metadata_and_the_segments_leaves_one_commit_read() {
+    let scratch = Scratch::new("commit-between");
+    let mut index = scratch.fresh();
+    fill(&mut index);
+    index.commit(&position(5)).expect("commit");
+    let kept = Scratch::new("after-first");
+    copy_files(&scratch.folder(), &kept.folder());
+    add(
+        &mut index,
+        3,
+        "session",
+        300,
+        &chunk(1, 1, None, "one more"),
+    );
+    index.commit(&position(6)).expect("commit");
+    drop(index);
+    assert_eq!(
+        names(&scratch.folder())
+            .iter()
+            .filter(|name| name.ends_with(".term"))
+            .count(),
+        2,
+        "no merge: the second commit keeps the first's segment"
+    );
+    let next = Scratch::new("after-second");
+    copy_files(&scratch.folder(), &next.folder());
+    remove_files(&scratch.folder());
+    copy_files(&kept.folder(), &scratch.folder());
+    let (folder, from) = (scratch.folder(), next.folder());
+    let (reader, looks) = counted(&scratch.folder(), move |_| {
+        copy_files(&from, &folder);
+    });
+    assert_eq!(reader.position().expect("a position"), Some(position(5)));
+    assert_eq!(reader.totals().expect("totals").documents, 4);
+    assert_eq!(reader.documents().expect("documents"), filled());
+    assert_eq!(looks.get(), 1);
+}
+
+#[test]
+fn a_broken_index_is_judged_once() {
+    let scratch = Scratch::new("judged-once");
+    built(&scratch.folder());
+    let file = component(&scratch.folder(), ".term");
+    fs::write(&file, [0u8; 4]).expect("cut");
+    let (reader, looks) = counted(&scratch.folder(), |_| {});
+    assert_eq!(reader.position().expect("a position"), None);
+    assert_eq!(looks.get(), 1);
+
+    let template = template();
+    let mut refused = 0;
+    for at in 385..435 {
+        let scratch = flipped(&template, ".fast", at);
+        let (reader, looks) = counted(&scratch.folder(), |_| {});
+        if matches!(reader.position(), Ok(None)) {
+            refused += 1;
+            assert_eq!(looks.get(), 1, "offset {at}");
+        }
+    }
+    assert!(refused > 0, "no damage made the open of a segment fail");
+
+    let absent = Scratch::new("judged-never");
+    let (reader, looks) = counted(&absent.folder(), |_| {});
+    assert_eq!(reader.position().expect("a position"), None);
+    assert_eq!(looks.get(), 0);
+}
+
+#[test]
+fn a_damaged_postings_or_term_file_is_an_index_error_from_extents() {
+    let template = template();
+    let mut failed = 0;
+    for extension in [".idx", ".term"] {
+        for at in 0..length_of(extension, &template) {
+            let scratch = flipped(&template, extension, at);
+            match scratch.index().extents(id(1)) {
+                Ok(_) => {}
+                Err(IndexError::Failed { .. } | IndexError::Inconsistent(_)) => failed += 1,
+                Err(error) => panic!("{extension} offset {at}: {error}"),
+            }
+        }
+    }
+    assert!(failed > 0, "no damage reached a lazy read of extents");
+}
+
+fn two_documents(scratch: &Scratch) {
+    let mut index = scratch.fresh();
+    add(
+        &mut index,
+        1,
+        "session",
+        100,
+        &chunk(1, 1, None, "zebra one"),
+    );
+    add(
+        &mut index,
+        2,
+        "session",
+        100,
+        &chunk(1, 1, None, "zebra two"),
+    );
+    index.commit(&position(5)).expect("commit");
+}
+
+#[test]
+fn a_segment_whose_bound_disagrees_with_its_columns_is_no_usable_index() {
+    let unedited = Scratch::new("bound-unedited");
+    two_documents(&unedited);
+    assert_eq!(committed(&unedited).totals().expect("totals").documents, 2);
+    for wrong in [1, 3] {
+        let scratch = Scratch::new("bound-edited");
+        two_documents(&scratch);
+        let meta = scratch.folder().join("meta.json");
+        let text = fs::read_to_string(&meta).expect("meta.json");
+        assert_eq!(text.matches("\"max_doc\": 2").count(), 1, "{text}");
+        fs::write(
+            &meta,
+            text.replace("\"max_doc\": 2", &format!("\"max_doc\": {wrong}")),
+        )
+        .expect("write");
+        let before = snapshot(&scratch.0);
+        nothing_to_read(&committed(&scratch), &format!("max_doc {wrong}"));
+        assert_eq!(snapshot(&scratch.0), before);
+    }
+}
+
+#[test]
+fn a_posting_outside_its_segment_is_an_index_error() {
+    let long = Scratch::new("postings-of-three");
+    let mut index = long.fresh();
+    for entry in 1..=3 {
+        add(
+            &mut index,
+            entry,
+            "session",
+            100,
+            &chunk(1, 1, None, "zebra"),
+        );
+    }
+    index.commit(&position(5)).expect("commit");
+    drop(index);
+    let short = Scratch::new("postings-of-two");
+    two_documents(&short);
+    let untouched = Scratch::new("postings-of-two-untouched");
+    copy_files(&short.folder(), &untouched.folder());
+    for extension in [".idx", ".term"] {
+        fs::copy(
+            component(&long.folder(), extension),
+            component(&short.folder(), extension),
+        )
+        .expect("replace");
+    }
+    let reader = committed(&short);
+    let Some(_) = reader.position().expect("a position") else {
+        panic!("the folder does not open: no test reaches the per-posting check");
+    };
+    let error = reader
+        .postings(&term_of("zebra"))
+        .expect_err("a posting past the segment");
+    assert!(matches!(error, IndexError::Inconsistent(_)), "{error}");
+    let error = reader
+        .holding(&Filter::Kind("session"))
+        .expect_err("a posting past the segment");
+    assert!(matches!(error, IndexError::Inconsistent(_)), "{error}");
+    let errors = [
+        committed(&short).totals().map(|_| ()),
+        committed(&short).terms().map(|_| ()),
+        short.index().extents(id(3)).map(|_| ()),
+    ];
+    for error in errors {
+        let error = error.expect_err("a posting past the segment");
+        assert!(matches!(error, IndexError::Inconsistent(_)), "{error}");
+    }
+
+    let reader = committed(&untouched);
+    assert_eq!(reader.totals().expect("totals").entries, 2);
+    assert_eq!(reader.terms().expect("terms").len(), 2);
+    assert_eq!(untouched.index().extents(id(1)).expect("extents").len(), 1);
 }

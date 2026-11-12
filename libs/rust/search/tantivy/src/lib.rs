@@ -1,37 +1,36 @@
-use std::collections::BTreeMap;
+use std::cell::{OnceCell, RefCell};
+use std::collections::{BTreeMap, HashSet};
 use std::fs;
 use std::io::{self, Read, Write};
 use std::ops::Bound;
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 
-use bilbo_search::analyze;
 use bilbo_search::index::{Doc, Extent, Index, IndexError, Stats, millis};
+use bilbo_search::lookup::{Filter, Found, Lookup, Posting, Totals};
 use bilbo_search::position::Position;
+use bilbo_search::{analyze, chunk};
 use bilbo_store::entries::{Generation, RecordRange};
 use bilbo_store::id::Id;
 use tantivy::DocSet;
 use tantivy::TERMINATED;
-use tantivy::collector::{Collector, SegmentCollector};
 use tantivy::index::SegmentComponent;
 use tantivy::merge_policy::LogMergePolicy;
 use tantivy::postings::Postings;
 use tantivy::query::{BooleanQuery, EnableScoring, Occur, Query, RangeQuery, TermQuery};
 use tantivy::schema::{
-    BytesOptions, FAST, Field, INDEXED, IndexRecordOption, STRING, Schema, TextFieldIndexing,
-    TextOptions,
+    BytesOptions, FAST, Field, FieldType, INDEXED, IndexRecordOption, STRING, Schema,
+    TextFieldIndexing, TextOptions,
 };
 use tantivy::store::Compressor;
 use tantivy::tokenizer::{PreTokenizedString, Token};
-use tantivy::{
-    DocAddress, DocId, IndexSettings, IndexWriter, Score, SegmentOrdinal, SegmentReader,
-    TantivyDocument, Term,
-};
+use tantivy::{DocId, IndexSettings, IndexWriter, SegmentReader, TantivyDocument, Term};
 
 const MARKER_NAME: &str = "bilbo-index";
 const MARKER: &[u8] = b"bilbo index\n";
 const MANAGED: &str = ".managed.json";
-const MANAGED_LIMIT: u64 = 64 * 1024 * 1024;
+const LIST_LIMIT: u64 = 64 * 1024 * 1024;
 
 /// The footer's fixed part, `<(u32, u32)>::SIZE_IN_BYTES` in tantivy 0.27's `directory/footer.rs`:
 /// a file shorter than this makes `Footer::extract_footer` panic.
@@ -66,6 +65,8 @@ struct Fields {
     parts: Field,
     date: Field,
     kind: Field,
+    length: Field,
+    digest: Field,
 }
 
 struct Open {
@@ -96,6 +97,8 @@ fn schema() -> (Schema, Fields) {
         parts: builder.add_u64_field("parts", FAST),
         date: builder.add_i64_field("date", INDEXED | FAST),
         kind: builder.add_text_field("kind", STRING | FAST),
+        length: builder.add_u64_field("length", FAST),
+        digest: builder.add_u64_field("digest", FAST),
     };
     (builder.build(), fields)
 }
@@ -126,83 +129,40 @@ impl Tantivy {
         }
     }
 
-    fn failed(&self, action: &'static str, error: &dyn std::fmt::Display) -> IndexError {
-        IndexError::Failed {
-            action,
-            path: self.folder.clone(),
-            error: error.to_string(),
-        }
+    fn place(&self) -> Place<'_> {
+        Place(&self.folder)
     }
 
-    fn inspect(&self) -> Result<Folder, IndexError> {
-        match fs::symlink_metadata(&self.folder) {
-            Ok(meta) if meta.file_type().is_dir() => {}
-            Ok(_) => return Err(IndexError::Foreign(self.folder.clone())),
-            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Folder::Absent),
-            Err(error) => return Err(self.failed("read", &error)),
-        }
-        let listed = fs::read_dir(&self.folder).map_err(|error| self.failed("read", &error))?;
-        let mut entries = Vec::new();
-        for entry in listed {
-            let entry = entry.map_err(|error| self.failed("read", &error))?;
-            let plain = entry
-                .file_type()
-                .map_err(|error| self.failed("read", &error))?
-                .is_file();
-            let Ok(name) = entry.file_name().into_string() else {
-                return Err(IndexError::Foreign(self.folder.clone()));
-            };
-            entries.push((name, plain));
-        }
-        if entries.is_empty() {
-            return Ok(Folder::Unmarked { cut_marker: false });
-        }
-        let marker = entries
-            .iter()
-            .find(|(name, _)| name == MARKER_NAME)
-            .filter(|(_, plain)| *plain);
-        let Some(_) = marker else {
-            return Err(IndexError::Foreign(self.folder.clone()));
+    /// The writer holds the store's lock, so a folder with nothing to read is not looked at twice.
+    fn extents_of(&self, entry: Id) -> Result<Vec<Extent>, IndexError> {
+        let Look::Usable(opened) = self.place().readable(&|| {})? else {
+            return Ok(Vec::new());
         };
-        let found = self.marker_bytes()?;
-        if found == MARKER {
-            let mut names = Vec::new();
-            for (name, plain) in entries {
-                if name == MARKER_NAME {
-                    continue;
-                }
-                if !plain || !is_tantivy_name(&name) {
-                    return Err(IndexError::Foreign(self.folder.clone()));
-                }
-                names.push(name);
-            }
-            names.sort_unstable();
-            Ok(Folder::Marked(names))
-        } else if entries.len() == 1 && MARKER.starts_with(&found) {
-            Ok(Folder::Unmarked { cut_marker: true })
-        } else {
-            Err(IndexError::Foreign(self.folder.clone()))
-        }
-    }
-
-    fn marker_bytes(&self) -> Result<Vec<u8>, IndexError> {
+        let read = |error: tantivy::TantivyError| self.failed("read", &error);
+        let (_, fields) = schema();
+        let term = Term::from_field_bytes(fields.entry, &entry.to_bytes());
+        let query = TermQuery::new(term, IndexRecordOption::Basic);
+        let weight = query
+            .weight(EnableScoring::disabled_from_schema(&opened.index.schema()))
+            .map_err(read)?;
         let mut found = Vec::new();
-        fs::File::open(self.folder.join(MARKER_NAME))
-            .and_then(|file| file.take(MARKER.len() as u64 + 1).read_to_end(&mut found))
-            .map_err(|error| self.failed("read", &error))?;
-        Ok(found)
+        for segment in &opened.readers {
+            let mut scorer = weight.scorer(segment, 1.0).map_err(read)?;
+            let mut doc = scorer.doc();
+            while doc != TERMINATED {
+                within(segment, doc)?;
+                if !segment.is_deleted(doc) {
+                    found.push(self.place().row(segment, doc)?);
+                }
+                doc = scorer.advance();
+            }
+        }
+        found.sort_by_key(|row| (row.first, row.part));
+        Ok(found.iter().map(Row::extent).collect())
     }
 
-    /// tantivy deletes the paths this file lists, with no containment.
-    fn managed_is_safe(&self, names: &[String]) -> Result<bool, IndexError> {
-        if !names.iter().any(|name| name == MANAGED) {
-            return Ok(true);
-        }
-        let mut bytes = Vec::new();
-        fs::File::open(self.folder.join(MANAGED))
-            .and_then(|file| file.take(MANAGED_LIMIT + 1).read_to_end(&mut bytes))
-            .map_err(|error| self.failed("read", &error))?;
-        Ok(bytes.len() as u64 <= MANAGED_LIMIT && is_managed_list(&bytes))
+    fn failed(&self, action: &'static str, error: &dyn std::fmt::Display) -> IndexError {
+        self.place().failed(action, error)
     }
 
     fn write_marker(&self, cut_marker: bool) -> Result<(), IndexError> {
@@ -226,7 +186,7 @@ impl Tantivy {
 
     /// No segment is opened and no component read: what a component holds cannot stop a rebuild. Only `clear` calls this.
     fn existing(&self, schema: &Schema) -> Result<Option<tantivy::Index>, IndexError> {
-        match self.inspect()? {
+        match self.place().inspect()? {
             Folder::Absent => {
                 fs::DirBuilder::new()
                     .recursive(true)
@@ -241,7 +201,9 @@ impl Tantivy {
                 Ok(None)
             }
             Folder::Marked(names) => {
-                if self.managed_is_safe(&names)? && names.iter().any(|name| name == "meta.json") {
+                if self.place().managed_is_safe(&names)?
+                    && names.iter().any(|name| name == "meta.json")
+                {
                     match tantivy::Index::open_in_dir(&self.folder) {
                         Ok(index) if index.schema() == *schema => return Ok(Some(index)),
                         Ok(_) => {}
@@ -254,84 +216,6 @@ impl Tantivy {
                 self.remove(&names)?;
                 Ok(None)
             }
-        }
-    }
-
-    /// `None` when the index is broken; an error when tantivy could not look, which says nothing about the content.
-    fn usable(
-        &self,
-        names: &[String],
-        schema: &Schema,
-    ) -> Result<Option<tantivy::Index>, IndexError> {
-        if !self.managed_is_safe(names)? || !names.iter().any(|name| name == "meta.json") {
-            return Ok(None);
-        }
-        let Some(index) = self.looked(tantivy::Index::open_in_dir(&self.folder))? else {
-            return Ok(None);
-        };
-        if index.schema() != *schema {
-            return Ok(None);
-        }
-        let Some(segments) = self.looked(index.searchable_segments())? else {
-            return Ok(None);
-        };
-        for segment in &segments {
-            if self.cut_short(segment)? {
-                return Ok(None);
-            }
-        }
-        for segment in &segments {
-            let Some(opened) = opens(segment) else {
-                return Ok(None);
-            };
-            if self.looked(opened)?.is_none() {
-                return Ok(None);
-            }
-        }
-        Ok(Some(index))
-    }
-
-    /// Whether a component file of a committed segment is shorter than tantivy's footer, which
-    /// `Footer::extract_footer` slices without checking and so panics on. A file that is absent
-    /// is left to tantivy, which names it broken; `.pos` is absent from an index without
-    /// positions.
-    fn cut_short(&self, segment: &tantivy::Segment) -> Result<bool, IndexError> {
-        let mut components = vec![
-            SegmentComponent::Postings,
-            SegmentComponent::Positions,
-            SegmentComponent::Terms,
-            SegmentComponent::Store,
-            SegmentComponent::FastFields,
-            SegmentComponent::FieldNorms,
-        ];
-        if segment.meta().has_deletes() {
-            components.push(SegmentComponent::Delete);
-        }
-        for component in components {
-            let file = self.folder.join(segment.relative_path(component));
-            match fs::metadata(&file) {
-                Ok(meta) if meta.len() < FOOTER_FIXED_BYTES => return Ok(true),
-                Ok(_) => {}
-                Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-                Err(error) => return Err(self.failed("read", &error)),
-            }
-        }
-        Ok(false)
-    }
-
-    fn looked<T>(&self, result: tantivy::Result<T>) -> Result<Option<T>, IndexError> {
-        match result {
-            Ok(found) => Ok(Some(found)),
-            Err(error) if is_broken(&error) => Ok(None),
-            Err(error) => Err(self.failed("read", &error)),
-        }
-    }
-
-    /// The folder's index for reading: no file is made, repaired or removed, and no writer taken.
-    fn readable(&self) -> Result<Option<tantivy::Index>, IndexError> {
-        match self.inspect()? {
-            Folder::Absent | Folder::Unmarked { .. } => Ok(None),
-            Folder::Marked(names) => self.usable(&names, &schema().0),
         }
     }
 
@@ -386,18 +270,20 @@ impl Tantivy {
     }
 
     fn whole(&self, schema: &Schema) -> Result<tantivy::Index, IndexError> {
-        let names = match self.inspect()? {
+        let names = match self.place().inspect()? {
             Folder::Marked(names) => names,
             Folder::Absent | Folder::Unmarked { .. } => {
                 return Err(self.failed("write", &"it holds no index"));
             }
         };
-        self.usable(&names, schema)?
-            .ok_or_else(|| self.failed("write", &"its index is broken"))
+        match self.place().usable(&names, schema, &|| {})? {
+            Look::Usable(opened) => Ok(opened.index),
+            Look::Missing | Look::Unusable => Err(self.failed("write", &"its index is broken")),
+        }
     }
 
     fn bytes(&self) -> Result<u64, IndexError> {
-        let Folder::Marked(mut names) = self.inspect()? else {
+        let Folder::Marked(mut names) = self.place().inspect()? else {
             return Err(IndexError::Foreign(self.folder.clone()));
         };
         names.push(MARKER_NAME.to_owned());
@@ -408,6 +294,201 @@ impl Tantivy {
                 .len();
         }
         Ok(bytes)
+    }
+}
+
+/// A folder judged for reading: nothing here creates, repairs or removes a file.
+struct Place<'a>(&'a Path);
+
+struct Opened {
+    index: tantivy::Index,
+    readers: Vec<SegmentReader>,
+    payload: Option<String>,
+}
+
+enum Look {
+    Usable(Opened),
+    Missing,
+    Unusable,
+}
+
+impl Place<'_> {
+    fn failed(&self, action: &'static str, error: &dyn std::fmt::Display) -> IndexError {
+        IndexError::Failed {
+            action,
+            path: self.0.to_path_buf(),
+            error: error.to_string(),
+        }
+    }
+
+    fn inspect(&self) -> Result<Folder, IndexError> {
+        match fs::symlink_metadata(self.0) {
+            Ok(meta) if meta.file_type().is_dir() => {}
+            Ok(_) => return Err(IndexError::Foreign(self.0.to_path_buf())),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Folder::Absent),
+            Err(error) => return Err(self.failed("read", &error)),
+        }
+        let listed = fs::read_dir(self.0).map_err(|error| self.failed("read", &error))?;
+        let mut entries = Vec::new();
+        for entry in listed {
+            let entry = entry.map_err(|error| self.failed("read", &error))?;
+            let plain = entry
+                .file_type()
+                .map_err(|error| self.failed("read", &error))?
+                .is_file();
+            let Ok(name) = entry.file_name().into_string() else {
+                return Err(IndexError::Foreign(self.0.to_path_buf()));
+            };
+            entries.push((name, plain));
+        }
+        if entries.is_empty() {
+            return Ok(Folder::Unmarked { cut_marker: false });
+        }
+        let marker = entries
+            .iter()
+            .find(|(name, _)| name == MARKER_NAME)
+            .filter(|(_, plain)| *plain);
+        let Some(_) = marker else {
+            return Err(IndexError::Foreign(self.0.to_path_buf()));
+        };
+        let found = self.marker_bytes()?;
+        if found == MARKER {
+            let mut names = Vec::new();
+            for (name, plain) in entries {
+                if name == MARKER_NAME {
+                    continue;
+                }
+                if !plain || !is_tantivy_name(&name) {
+                    return Err(IndexError::Foreign(self.0.to_path_buf()));
+                }
+                names.push(name);
+            }
+            names.sort_unstable();
+            Ok(Folder::Marked(names))
+        } else if entries.len() == 1 && MARKER.starts_with(&found) {
+            Ok(Folder::Unmarked { cut_marker: true })
+        } else {
+            Err(IndexError::Foreign(self.0.to_path_buf()))
+        }
+    }
+
+    fn marker_bytes(&self) -> Result<Vec<u8>, IndexError> {
+        let mut found = Vec::new();
+        fs::File::open(self.0.join(MARKER_NAME))
+            .and_then(|file| file.take(MARKER.len() as u64 + 1).read_to_end(&mut found))
+            .map_err(|error| self.failed("read", &error))?;
+        Ok(found)
+    }
+
+    /// tantivy deletes the paths this file lists, with no containment.
+    fn managed_is_safe(&self, names: &[String]) -> Result<bool, IndexError> {
+        if !names.iter().any(|name| name == MANAGED) {
+            return Ok(true);
+        }
+        let mut bytes = Vec::new();
+        fs::File::open(self.0.join(MANAGED))
+            .and_then(|file| file.take(LIST_LIMIT + 1).read_to_end(&mut bytes))
+            .map_err(|error| self.failed("read", &error))?;
+        Ok(bytes.len() as u64 <= LIST_LIMIT && is_managed_list(&bytes))
+    }
+
+    /// An error when tantivy could not look, which says nothing about the content.
+    fn usable(
+        &self,
+        names: &[String],
+        schema: &Schema,
+        between: &dyn Fn(),
+    ) -> Result<Look, IndexError> {
+        if !self.managed_is_safe(names)? || !names.iter().any(|name| name == "meta.json") {
+            return Ok(Look::Unusable);
+        }
+        match fs::metadata(self.0.join("meta.json")) {
+            Ok(meta) if meta.len() > LIST_LIMIT => return Ok(Look::Unusable),
+            Ok(_) => {}
+            Err(error) => return Err(self.failed("read", &error)),
+        }
+        let Some(index) = self.looked(tantivy::Index::open_in_dir(self.0))? else {
+            return Ok(Look::Unusable);
+        };
+        let Some(metas) = self.looked(index.load_metas())? else {
+            return Ok(Look::Unusable);
+        };
+        if index.schema() != *schema || metas.schema != *schema {
+            return Ok(Look::Unusable);
+        }
+        between();
+        let segments: Vec<tantivy::Segment> = metas
+            .segments
+            .iter()
+            .map(|meta| index.segment(meta.clone()))
+            .collect();
+        for segment in &segments {
+            if self.cut_short(segment)? {
+                return Ok(Look::Unusable);
+            }
+        }
+        let mut readers = Vec::with_capacity(segments.len());
+        for segment in &segments {
+            let Some(opened) = opens(segment) else {
+                return Ok(Look::Unusable);
+            };
+            match opened {
+                Ok(reader) if columns_agree(&reader, schema) => readers.push(reader),
+                Ok(_) => return Ok(Look::Unusable),
+                Err(error) if is_missing(&error) => return Ok(Look::Missing),
+                Err(error) if is_broken(&error) => return Ok(Look::Unusable),
+                Err(error) => return Err(self.failed("read", &error)),
+            }
+        }
+        Ok(Look::Usable(Opened {
+            index,
+            readers,
+            payload: metas.payload,
+        }))
+    }
+
+    /// Whether a component file of a committed segment is shorter than tantivy's footer, which
+    /// `Footer::extract_footer` slices without checking and so panics on. A file that is absent
+    /// is left to tantivy, which names it broken; `.pos` is absent from an index without
+    /// positions.
+    fn cut_short(&self, segment: &tantivy::Segment) -> Result<bool, IndexError> {
+        let mut components = vec![
+            SegmentComponent::Postings,
+            SegmentComponent::Positions,
+            SegmentComponent::Terms,
+            SegmentComponent::Store,
+            SegmentComponent::FastFields,
+            SegmentComponent::FieldNorms,
+        ];
+        if segment.meta().has_deletes() {
+            components.push(SegmentComponent::Delete);
+        }
+        for component in components {
+            let file = self.0.join(segment.relative_path(component));
+            match fs::metadata(&file) {
+                Ok(meta) if meta.len() < FOOTER_FIXED_BYTES => return Ok(true),
+                Ok(_) => {}
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+                Err(error) => return Err(self.failed("read", &error)),
+            }
+        }
+        Ok(false)
+    }
+
+    fn looked<T>(&self, result: tantivy::Result<T>) -> Result<Option<T>, IndexError> {
+        match result {
+            Ok(found) => Ok(Some(found)),
+            Err(error) if is_broken(&error) => Ok(None),
+            Err(error) => Err(self.failed("read", &error)),
+        }
+    }
+
+    /// The folder's index for reading: no file is made, repaired or removed, and no writer taken.
+    fn readable(&self, between: &dyn Fn()) -> Result<Look, IndexError> {
+        match self.inspect()? {
+            Folder::Absent | Folder::Unmarked { .. } => Ok(Look::Unusable),
+            Folder::Marked(names) => self.usable(&names, &schema().0, between),
+        }
     }
 }
 
@@ -428,6 +509,20 @@ fn is_broken(error: &tantivy::TantivyError) -> bool {
         ) => true,
         TantivyError::OpenReadError(OpenReadError::IoError { io_error, .. }) => {
             reads_as_broken(io_error)
+        }
+        _ => false,
+    }
+}
+
+/// Asked before `is_broken`, which a missing file also satisfies.
+fn is_missing(error: &tantivy::TantivyError) -> bool {
+    use tantivy::TantivyError;
+    use tantivy::directory::error::OpenReadError;
+    match error {
+        TantivyError::IoError(error) => error.kind() == io::ErrorKind::NotFound,
+        TantivyError::OpenReadError(OpenReadError::FileDoesNotExist(_)) => true,
+        TantivyError::OpenReadError(OpenReadError::IoError { io_error, .. }) => {
+            io_error.kind() == io::ErrorKind::NotFound
         }
         _ => false,
     }
@@ -483,6 +578,52 @@ fn is_managed_list(bytes: &[u8]) -> bool {
         })
 }
 
+fn within(segment: &SegmentReader, doc: DocId) -> Result<(), IndexError> {
+    if doc >= segment.max_doc() {
+        return Err(IndexError::Inconsistent(
+            "a posting names a document outside its segment",
+        ));
+    }
+    Ok(())
+}
+
+fn columns_agree(reader: &SegmentReader, schema: &Schema) -> bool {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let columns = reader.fast_fields();
+        let max_doc = reader.max_doc();
+        schema
+            .fields()
+            .filter(|(_, entry)| entry.is_fast())
+            .all(|(_, entry)| {
+                let name = entry.name();
+                match entry.field_type() {
+                    FieldType::U64(_) => columns
+                        .u64(name)
+                        .is_ok_and(|column| column.num_docs() == max_doc),
+                    FieldType::I64(_) => columns
+                        .i64(name)
+                        .is_ok_and(|column| column.num_docs() == max_doc),
+                    FieldType::Bytes(_) => columns
+                        .bytes(name)
+                        .is_ok_and(|column| column.is_some_and(|c| c.ords().num_docs() == max_doc)),
+                    FieldType::Str(_) => columns
+                        .str(name)
+                        .is_ok_and(|column| column.is_some_and(|c| c.ords().num_docs() == max_doc)),
+                    _ => true,
+                }
+            })
+    }))
+    .unwrap_or(false)
+}
+
+fn caught<T>(
+    place: &Place<'_>,
+    body: impl FnOnce() -> Result<T, IndexError>,
+) -> Result<T, IndexError> {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(body))
+        .unwrap_or_else(|_| Err(place.failed("read", &"its content could not be read")))
+}
+
 /// Opens a committed segment; `None` when tantivy panics on a component whose body is damaged
 /// under a good footer, which is a broken index like a component that does not open. The
 /// closure only reads: tantivy holds no lock across the open, and the caller's `Index` is
@@ -496,12 +637,7 @@ fn opens(segment: &tantivy::Segment) -> Option<tantivy::Result<SegmentReader>> {
 
 impl Index for Tantivy {
     fn position(&mut self) -> Result<Option<Position>, IndexError> {
-        let Some(index) = self.readable()? else {
-            return Ok(None);
-        };
-        let payload = index.load_metas().map(|metas| metas.payload);
-        let payload = payload.map_err(|error| self.failed("read", &error))?;
-        Ok(payload.as_deref().and_then(Position::decode))
+        Committed::at(&self.folder).position()
     }
 
     fn clear(&mut self) -> Result<(), IndexError> {
@@ -518,7 +654,9 @@ impl Index for Tantivy {
     fn add(&mut self, doc: &Doc<'_>) -> Result<(), IndexError> {
         let open = self.opened()?;
         let fields = &open.fields;
-        let tokens = analyze::terms(&doc.chunk.text)
+        let terms = analyze::terms(&doc.chunk.text);
+        let length = terms.len() as u64;
+        let tokens = terms
             .into_iter()
             .enumerate()
             .map(|(position, text)| Token {
@@ -546,6 +684,8 @@ impl Index for Tantivy {
         document.add_u64(fields.parts, u64::from(parts));
         document.add_i64(fields.date, millis(doc.date));
         document.add_text(fields.kind, doc.kind);
+        document.add_u64(fields.length, length);
+        document.add_u64(fields.digest, chunk::digest(&doc.chunk.text));
         let added = open.writer.add_document(document).map(|_| ());
         added.map_err(|error| self.failed("write", &error))
     }
@@ -577,46 +717,7 @@ impl Index for Tantivy {
     }
 
     fn extents(&mut self, entry: Id) -> Result<Vec<Extent>, IndexError> {
-        let Some(index) = self.readable()? else {
-            return Ok(Vec::new());
-        };
-        let read = |error: tantivy::TantivyError| self.failed("read", &error);
-        let (_, fields) = schema();
-        let term = Term::from_field_bytes(fields.entry, &entry.to_bytes());
-        let query = TermQuery::new(term, IndexRecordOption::Basic);
-        let weight = query
-            .weight(EnableScoring::disabled_from_schema(&index.schema()))
-            .map_err(read)?;
-        let mut found = Vec::new();
-        for segment in index.searchable_segments().map_err(read)? {
-            let segment = SegmentReader::open(&segment).map_err(read)?;
-            let mut scorer = weight.scorer(&segment, 1.0).map_err(read)?;
-            let mut doc = scorer.doc();
-            while doc != TERMINATED {
-                if !segment.is_deleted(doc) {
-                    found.push(self.row(&segment, doc)?);
-                }
-                doc = scorer.advance();
-            }
-        }
-        found.sort_by_key(|row| (row.first, row.part));
-        Ok(found
-            .into_iter()
-            .map(|row| Extent {
-                generation: Generation(u32::try_from(row.generation).unwrap_or(u32::MAX)),
-                records: RecordRange {
-                    first: row.first,
-                    count: row.count,
-                },
-                part: (row.parts > 0).then(|| {
-                    (
-                        u32::try_from(row.part).unwrap_or(u32::MAX),
-                        u32::try_from(row.parts).unwrap_or(u32::MAX),
-                    )
-                }),
-                date: row.date,
-            })
-            .collect())
+        caught(&self.place(), || self.extents_of(entry))
     }
 
     fn delete(&mut self, entry: Id, from: u64) -> Result<(), IndexError> {
@@ -660,42 +761,31 @@ pub struct Row {
     pub parts: u64,
     pub date: i64,
     pub kind: String,
+    pub length: u64,
+    pub digest: u64,
 }
 
-impl Tantivy {
-    fn committed(&self) -> Result<(tantivy::Searcher, Fields), IndexError> {
-        let (schema, fields) = schema();
-        let Folder::Marked(names) = self.inspect()? else {
-            return Err(self.failed("read", &"it holds no index"));
-        };
-        if !self.managed_is_safe(&names)? {
-            return Err(IndexError::Foreign(self.folder.clone()));
+impl Row {
+    fn extent(&self) -> Extent {
+        Extent {
+            generation: Generation(u32::try_from(self.generation).unwrap_or(u32::MAX)),
+            records: RecordRange {
+                first: self.first,
+                count: self.count,
+            },
+            part: (self.parts > 0).then(|| {
+                (
+                    u32::try_from(self.part).unwrap_or(u32::MAX),
+                    u32::try_from(self.parts).unwrap_or(u32::MAX),
+                )
+            }),
+            date: self.date,
         }
-        let index = tantivy::Index::open_in_dir(&self.folder)
-            .map_err(|error| self.failed("read", &error))?;
-        if index.schema() != schema {
-            return Err(IndexError::Foreign(self.folder.clone()));
-        }
-        let reader = index
-            .reader()
-            .map_err(|error| self.failed("read", &error))?;
-        Ok((reader.searcher(), fields))
     }
+}
 
-    /// A document's columns. A column whose body is damaged under a good footer opens with its
-    /// segment and panics in tantivy when it is read: that is an index whose content cannot be
-    /// read, `Failed`, which `bilbo reindex` repairs. The closure only reads; no lock or writer
-    /// is held across it.
+impl Place<'_> {
     fn row(
-        &self,
-        segment: &tantivy::SegmentReader,
-        doc: tantivy::DocId,
-    ) -> Result<Row, IndexError> {
-        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.decode(segment, doc)))
-            .unwrap_or_else(|_| Err(self.failed("read", &"its content could not be read")))
-    }
-
-    fn decode(
         &self,
         segment: &tantivy::SegmentReader,
         doc: tantivy::DocId,
@@ -738,147 +828,361 @@ impl Tantivy {
                 .first(doc)
                 .unwrap_or_default(),
             kind,
+            length: number("length")?,
+            digest: number("digest")?,
         })
+    }
+}
+
+struct Loaded {
+    readers: Vec<SegmentReader>,
+    fields: Fields,
+    offsets: Vec<u32>,
+    bound: u32,
+    payload: Option<String>,
+    totals: OnceCell<Totals>,
+}
+
+/// The last commit of an index folder, read through its segments with no searcher: it creates,
+/// repairs, locks and removes nothing. A call that fails drops what an earlier one kept.
+pub struct Committed {
+    folder: PathBuf,
+    between: Box<dyn Fn()>,
+    loaded: RefCell<Option<Rc<Loaded>>>,
+}
+
+impl Committed {
+    /// Touches nothing.
+    pub fn at(folder: impl AsRef<Path>) -> Committed {
+        Committed::watched(folder.as_ref(), Box::new(|| {}))
+    }
+
+    /// `between` runs once a look, after the metadata is read and before any component of a
+    /// segment is looked at.
+    pub fn watched(folder: &Path, between: Box<dyn Fn()>) -> Committed {
+        Committed {
+            folder: folder.to_path_buf(),
+            between,
+            loaded: RefCell::new(None),
+        }
+    }
+
+    fn place(&self) -> Place<'_> {
+        Place(&self.folder)
+    }
+
+    /// Every method runs its whole body here: a tantivy panic raised while a component is read is
+    /// a failed read, not an unwind into the caller.
+    fn guard<T>(&self, body: impl FnOnce() -> Result<T, IndexError>) -> Result<T, IndexError> {
+        let result = caught(&self.place(), body);
+        if result.is_err() {
+            self.loaded.borrow_mut().take();
+        }
+        result
+    }
+
+    fn load(&self) -> Result<Option<Rc<Loaded>>, IndexError> {
+        if let Some(loaded) = self.loaded.borrow().as_ref() {
+            return Ok(Some(Rc::clone(loaded)));
+        }
+        let place = self.place();
+        let mut look = place.readable(&*self.between)?;
+        if matches!(look, Look::Missing) {
+            look = place.readable(&*self.between)?;
+        }
+        let Look::Usable(Opened {
+            readers, payload, ..
+        }) = look
+        else {
+            return Ok(None);
+        };
+        let mut offsets = Vec::with_capacity(readers.len());
+        let mut bound = 0u32;
+        for reader in &readers {
+            offsets.push(bound);
+            bound = bound
+                .checked_add(reader.max_doc())
+                .ok_or_else(|| place.failed("read", &"it holds too many documents"))?;
+        }
+        let loaded = Rc::new(Loaded {
+            readers,
+            fields: schema().1,
+            offsets,
+            bound,
+            payload,
+            totals: OnceCell::new(),
+        });
+        *self.loaded.borrow_mut() = Some(Rc::clone(&loaded));
+        Ok(Some(loaded))
+    }
+
+    fn required(&self) -> Result<Rc<Loaded>, IndexError> {
+        self.load()?
+            .ok_or_else(|| self.place().failed("read", &"it holds no index"))
+    }
+
+    fn read_error(&self, error: &dyn std::fmt::Display) -> IndexError {
+        self.place().failed("read", error)
     }
 
     /// Of the last commit, sorted.
     pub fn documents(&self) -> Result<Vec<Row>, IndexError> {
-        let (searcher, _) = self.committed()?;
-        let mut rows = Vec::new();
-        for segment in searcher.segment_readers() {
-            for doc in segment.doc_ids_alive() {
-                rows.push(self.row(segment, doc)?);
+        self.guard(|| {
+            let loaded = self.required()?;
+            let mut rows = Vec::new();
+            for segment in &loaded.readers {
+                for doc in segment.doc_ids_alive() {
+                    rows.push(self.place().row(segment, doc)?);
+                }
             }
-        }
-        rows.sort();
-        Ok(rows)
+            rows.sort();
+            Ok(rows)
+        })
     }
 
     /// Live documents of the last commit, sorted.
     pub fn terms(&self) -> Result<Vec<(Row, Words)>, IndexError> {
-        let (searcher, fields) = self.committed()?;
-        let read = |error: tantivy::TantivyError| self.failed("read", &error);
-        let mut found: BTreeMap<(usize, DocId), Words> = BTreeMap::new();
-        for (ordinal, segment) in searcher.segment_readers().iter().enumerate() {
-            let inverted = segment.inverted_index(fields.text).map_err(read)?;
-            let mut stream = inverted
-                .terms()
-                .stream()
-                .map_err(|e| self.failed("read", &e))?;
-            while stream.advance() {
-                let term = String::from_utf8_lossy(stream.key()).into_owned();
-                let mut postings = inverted
-                    .read_postings_from_terminfo(stream.value(), IndexRecordOption::WithFreqs)
-                    .map_err(|e| self.failed("read", &e))?;
-                let mut doc = postings.doc();
-                while doc != TERMINATED {
-                    if !segment.is_deleted(doc) {
-                        found
-                            .entry((ordinal, doc))
-                            .or_default()
-                            .push((term.clone(), postings.term_freq()));
+        self.guard(|| {
+            let loaded = self.required()?;
+            let mut found: BTreeMap<(usize, DocId), Words> = BTreeMap::new();
+            for (ordinal, segment) in loaded.readers.iter().enumerate() {
+                let inverted = segment
+                    .inverted_index(loaded.fields.text)
+                    .map_err(|error| self.read_error(&error))?;
+                let mut stream = inverted
+                    .terms()
+                    .stream()
+                    .map_err(|error| self.read_error(&error))?;
+                while stream.advance() {
+                    let term = String::from_utf8_lossy(stream.key()).into_owned();
+                    let mut postings = inverted
+                        .read_postings_from_terminfo(stream.value(), IndexRecordOption::WithFreqs)
+                        .map_err(|error| self.read_error(&error))?;
+                    let mut doc = postings.doc();
+                    while doc != TERMINATED {
+                        within(segment, doc)?;
+                        if !segment.is_deleted(doc) {
+                            found
+                                .entry((ordinal, doc))
+                                .or_default()
+                                .push((term.clone(), postings.term_freq()));
+                        }
+                        doc = postings.advance();
                     }
-                    doc = postings.advance();
                 }
             }
-        }
-        let mut terms = Vec::new();
-        for (ordinal, segment) in searcher.segment_readers().iter().enumerate() {
-            for doc in segment.doc_ids_alive() {
-                let mut words = found.remove(&(ordinal, doc)).unwrap_or_default();
-                words.sort();
-                terms.push((self.row(segment, doc)?, words));
+            let mut terms = Vec::new();
+            for (ordinal, segment) in loaded.readers.iter().enumerate() {
+                for doc in segment.doc_ids_alive() {
+                    let mut words = found.remove(&(ordinal, doc)).unwrap_or_default();
+                    words.sort();
+                    terms.push((self.place().row(segment, doc)?, words));
+                }
             }
-        }
-        terms.sort();
-        Ok(terms)
-    }
-
-    /// The `limit` best documents for the text's terms, any of them, by BM25: best first, and
-    /// documents of one score in the order of `Row`.
-    pub fn search(&self, text: &str, limit: usize) -> Result<Vec<(f32, Row)>, IndexError> {
-        let (searcher, fields) = self.committed()?;
-        let terms: Vec<Box<dyn Query>> = analyze::terms(text)
-            .into_iter()
-            .map(|term| {
-                let term = Term::from_field_text(fields.text, &term);
-                Box::new(TermQuery::new(term, IndexRecordOption::WithFreqs)) as Box<dyn Query>
-            })
-            .collect();
-        if terms.is_empty() || limit == 0 {
-            return Ok(Vec::new());
-        }
-        let mut found = searcher
-            .search(&BooleanQuery::union(terms), &Everything)
-            .map_err(|error| self.failed("read", &error))?;
-        found.sort_by(|a, b| b.0.total_cmp(&a.0));
-        if found.len() > limit {
-            let cut = found[limit - 1].0;
-            found.truncate(found.partition_point(|(score, _)| score.total_cmp(&cut).is_ge()));
-        }
-        let mut hits = Vec::new();
-        for (score, address) in found {
-            let segment = searcher.segment_reader(address.segment_ord);
-            hits.push((score, self.row(segment, address.doc_id)?));
-        }
-        hits.sort_by(|a, b| b.0.total_cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
-        hits.truncate(limit);
-        Ok(hits)
-    }
-}
-
-/// Every matching document with its score: the cut by score and row is made after all of them
-/// are known, since tantivy's own cut breaks ties by segment and document number.
-struct Everything;
-
-struct EverythingInSegment {
-    segment: SegmentOrdinal,
-    found: Vec<(Score, DocId)>,
-}
-
-impl Collector for Everything {
-    type Fruit = Vec<(Score, DocAddress)>;
-    type Child = EverythingInSegment;
-
-    fn for_segment(
-        &self,
-        segment: SegmentOrdinal,
-        _reader: &SegmentReader,
-    ) -> tantivy::Result<EverythingInSegment> {
-        Ok(EverythingInSegment {
-            segment,
-            found: Vec::new(),
+            terms.sort();
+            Ok(terms)
         })
     }
 
-    fn requires_scoring(&self) -> bool {
-        true
+    fn live_postings(
+        &self,
+        loaded: &Loaded,
+        field: Field,
+        term: &str,
+        option: IndexRecordOption,
+        mut each: impl FnMut(usize, DocId, u32),
+    ) -> Result<(), IndexError> {
+        let term = Term::from_field_text(field, term);
+        for (ordinal, segment) in loaded.readers.iter().enumerate() {
+            let inverted = segment
+                .inverted_index(field)
+                .map_err(|error| self.read_error(&error))?;
+            let Some(mut postings) = inverted
+                .read_postings(&term, option)
+                .map_err(|error| self.read_error(&error))?
+            else {
+                continue;
+            };
+            let mut doc = postings.doc();
+            while doc != TERMINATED {
+                within(segment, doc)?;
+                if !segment.is_deleted(doc) {
+                    let freq = if option.has_freq() {
+                        postings.term_freq()
+                    } else {
+                        0
+                    };
+                    each(ordinal, doc, freq);
+                }
+                doc = postings.advance();
+            }
+        }
+        Ok(())
     }
 
-    fn merge_fruits(
-        &self,
-        fruits: Vec<(SegmentOrdinal, Vec<(Score, DocId)>)>,
-    ) -> tantivy::Result<Self::Fruit> {
-        Ok(fruits
-            .into_iter()
-            .flat_map(|(segment, found)| {
-                found
-                    .into_iter()
-                    .map(move |(score, doc)| (score, DocAddress::new(segment, doc)))
-            })
-            .collect())
+    fn totals_of(&self, loaded: &Loaded) -> Result<Totals, IndexError> {
+        let mut documents = 0u64;
+        let mut length = 0u64;
+        for segment in &loaded.readers {
+            documents += u64::from(segment.num_docs());
+            let column = segment
+                .fast_fields()
+                .u64("length")
+                .map_err(|error| self.read_error(&error))?;
+            for doc in segment.doc_ids_alive() {
+                length = length.saturating_add(column.first(doc).unwrap_or_default());
+            }
+        }
+        let mut seen: HashSet<Vec<u8>> = HashSet::new();
+        for segment in &loaded.readers {
+            let inverted = segment
+                .inverted_index(loaded.fields.entry)
+                .map_err(|error| self.read_error(&error))?;
+            let mut stream = inverted
+                .terms()
+                .stream()
+                .map_err(|error| self.read_error(&error))?;
+            let mut postings_held = 0u64;
+            while stream.advance() {
+                postings_held += u64::from(stream.value().doc_freq);
+                if seen.contains(stream.key()) {
+                    continue;
+                }
+                if segment.has_deletes() {
+                    let mut postings = inverted
+                        .read_postings_from_terminfo(stream.value(), IndexRecordOption::Basic)
+                        .map_err(|error| self.read_error(&error))?;
+                    let mut doc = postings.doc();
+                    while doc != TERMINATED {
+                        within(segment, doc)?;
+                        if !segment.is_deleted(doc) {
+                            break;
+                        }
+                        doc = postings.advance();
+                    }
+                    if doc == TERMINATED {
+                        continue;
+                    }
+                }
+                seen.insert(stream.key().to_vec());
+            }
+            if postings_held != u64::from(segment.max_doc()) {
+                return Err(IndexError::Inconsistent(
+                    "the entries' postings do not add up to the segment's documents",
+                ));
+            }
+        }
+        Ok(Totals {
+            documents,
+            entries: seen.len() as u64,
+            length,
+            bound: loaded.bound,
+        })
     }
 }
 
-impl SegmentCollector for EverythingInSegment {
-    type Fruit = (SegmentOrdinal, Vec<(Score, DocId)>);
-
-    fn collect(&mut self, doc: DocId, score: Score) {
-        self.found.push((score, doc));
+impl Lookup for Committed {
+    fn position(&self) -> Result<Option<Position>, IndexError> {
+        self.guard(|| {
+            Ok(self
+                .load()?
+                .and_then(|loaded| loaded.payload.as_deref().and_then(Position::decode)))
+        })
     }
 
-    fn harvest(self) -> Self::Fruit {
-        (self.segment, self.found)
+    fn totals(&self) -> Result<Totals, IndexError> {
+        self.guard(|| {
+            let loaded = self.required()?;
+            if let Some(totals) = loaded.totals.get() {
+                return Ok(*totals);
+            }
+            let totals = self.totals_of(&loaded)?;
+            let _ = loaded.totals.set(totals);
+            Ok(totals)
+        })
+    }
+
+    fn postings(&self, term: &str) -> Result<Vec<Posting>, IndexError> {
+        self.guard(|| {
+            let loaded = self.required()?;
+            let mut found = Vec::new();
+            let mut lengths = Vec::with_capacity(loaded.readers.len());
+            for segment in &loaded.readers {
+                lengths.push(
+                    segment
+                        .fast_fields()
+                        .u64("length")
+                        .map_err(|error| self.read_error(&error))?,
+                );
+            }
+            self.live_postings(
+                &loaded,
+                loaded.fields.text,
+                term,
+                IndexRecordOption::WithFreqs,
+                |ordinal, doc, freq| {
+                    let length = lengths[ordinal].first(doc).unwrap_or_default();
+                    found.push(Posting {
+                        doc: loaded.offsets[ordinal] + doc,
+                        freq,
+                        length: u32::try_from(length).unwrap_or(u32::MAX),
+                    });
+                },
+            )?;
+            Ok(found)
+        })
+    }
+
+    fn holding(&self, filter: &Filter<'_>) -> Result<Vec<u32>, IndexError> {
+        self.guard(|| {
+            let loaded = self.required()?;
+            let Filter::Kind(kind) = filter;
+            let mut found = Vec::new();
+            self.live_postings(
+                &loaded,
+                loaded.fields.kind,
+                kind,
+                IndexRecordOption::Basic,
+                |ordinal, doc, _| {
+                    found.push(loaded.offsets[ordinal] + doc);
+                },
+            )?;
+            Ok(found)
+        })
+    }
+
+    fn found(&self, docs: &[u32]) -> Result<Vec<Found>, IndexError> {
+        self.guard(|| {
+            let loaded = self.required()?;
+            let mut found = Vec::with_capacity(docs.len());
+            for &doc in docs {
+                if doc >= loaded.bound {
+                    return Err(self.read_error(&"a document number beyond the index"));
+                }
+                let ordinal = loaded.offsets.partition_point(|&offset| offset <= doc) - 1;
+                let segment = &loaded.readers[ordinal];
+                let row = self.place().row(segment, doc - loaded.offsets[ordinal])?;
+                found.push(Found {
+                    entry: Id::from_bytes(row.entry),
+                    extent: row.extent(),
+                    kind: row.kind,
+                    digest: row.digest,
+                });
+            }
+            Ok(found)
+        })
+    }
+}
+
+impl Tantivy {
+    /// Of the last commit, sorted.
+    pub fn documents(&self) -> Result<Vec<Row>, IndexError> {
+        Committed::at(&self.folder).documents()
+    }
+
+    /// Live documents of the last commit, sorted.
+    pub fn terms(&self) -> Result<Vec<(Row, Words)>, IndexError> {
+        Committed::at(&self.folder).terms()
     }
 }
 

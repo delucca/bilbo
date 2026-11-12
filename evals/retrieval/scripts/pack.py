@@ -9,7 +9,6 @@ from pathlib import Path
 
 import tiktoken
 
-search, contexts, budget = Path(sys.argv[1]), Path(sys.argv[2]), int(sys.argv[3])
 enc = tiktoken.get_encoding("o200k_base")
 SEP = "\n\n"
 
@@ -21,17 +20,11 @@ def tokens(text):
 sep = len(tokens(SEP))
 
 
-seen, rows = set(), []
-for line in search.read_text().split("\n"):
-    if not line.strip():
-        continue
-    row = json.loads(line)
-    if (row["id"], row["form"]) in seen:
-        continue
-    seen.add((row["id"], row["form"]))
+def pack(texts, budget):
+    """The context of results' texts, in order, and what it holds: the row's text, sha, tokens, results and cut."""
     parts, left, used, cut = [], budget, 0, False
-    for r in row["results"]:
-        toks = tokens(r["text"]) if r["text"].strip() else []
+    for result in texts:
+        toks = tokens(result) if result.strip() else []
         if not toks:
             continue
         room = left - (sep if parts else 0)
@@ -41,7 +34,7 @@ for line in search.read_text().split("\n"):
                 used += 1
             cut = True
             break
-        parts.append(r["text"])
+        parts.append(result)
         left = room - len(toks)
         used += 1
     text = SEP.join(parts)
@@ -49,9 +42,28 @@ for line in search.read_text().split("\n"):
     toks = tokens(text)
     if len(toks) > budget:
         text, toks = enc.decode(toks[:budget]), toks[:budget]
-    rows.append({"id": row["id"], "form": row["form"], "sha": hashlib.sha256(text.encode()).hexdigest(),
-                 "tokens": len(toks), "results": used, "cut": cut, "text": text})
+    return {"text": text, "sha": hashlib.sha256(text.encode()).hexdigest(), "tokens": len(toks), "results": used,
+            "cut": cut}
 
-tmp = contexts.with_name(contexts.name + ".part")
-tmp.write_text("".join(json.dumps(r, ensure_ascii=False) + "\n" for r in rows))
-tmp.rename(contexts)
+
+def main():
+    search, contexts, budget = Path(sys.argv[1]), Path(sys.argv[2]), int(sys.argv[3])
+    seen, rows = set(), []
+    for line in search.read_text().split("\n"):
+        if not line.strip():
+            continue
+        row = json.loads(line)
+        if (row["id"], row["form"]) in seen:
+            continue
+        seen.add((row["id"], row["form"]))
+        packed = pack([r["text"] for r in row["results"]], budget)
+        rows.append({"id": row["id"], "form": row["form"], "sha": packed["sha"], "tokens": packed["tokens"],
+                     "results": packed["results"], "cut": packed["cut"], "text": packed["text"]})
+
+    tmp = contexts.with_name(contexts.name + ".part")
+    tmp.write_text("".join(json.dumps(r, ensure_ascii=False) + "\n" for r in rows))
+    tmp.rename(contexts)
+
+
+if __name__ == "__main__":
+    main()

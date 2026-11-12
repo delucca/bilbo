@@ -88,12 +88,30 @@ pub fn terms(text: &str) -> Vec<String> {
         .collect()
 }
 
+/// The terms of a question: its words but those in `dropped`, stemmed, repeats kept.
+pub fn query(text: &str, dropped: &[String]) -> Vec<String> {
+    words(text)
+        .iter()
+        .filter(|word| !dropped.contains(word))
+        .map(|word| stem(word))
+        .filter(|term| term.len() <= MAX_TERM_BYTES)
+        .collect()
+}
+
+/// The text itself when it is exactly one word as the analyzer lowercases and splits it.
+pub fn word(text: &str) -> Option<String> {
+    match words(text).as_slice() {
+        [only] if only == text => Some(text.to_owned()),
+        _ => None,
+    }
+}
+
 /// Names these rules in the index's manifest. Change it with any of them, the stemmer's version included.
 pub const ID: &str = "bm25s-en/2";
 
 #[cfg(test)]
 mod tests {
-    use super::{MAX_TERM_BYTES, STOPWORDS, is_word, lower, stem, terms, word, words};
+    use super::{MAX_TERM_BYTES, STOPWORDS, is_word, lower, query, stem, terms, word, words};
 
     #[test]
     fn a_word_is_two_or_more_letters_numbers_or_underscores() {
@@ -235,5 +253,41 @@ mod tests {
             terms("Running the runners: they ran, running!"),
             ["run", "runner", "ran", "run"]
         );
+    }
+
+    #[test]
+    fn a_query_loses_its_question_words_and_keeps_its_repeats() {
+        let dropped = ["what".to_owned(), "did".to_owned(), "we".to_owned()];
+        assert_eq!(
+            query("What did we decide? Decide the index index", &dropped),
+            ["decid", "decid", "index", "index"]
+        );
+        assert_eq!(query("what did we", &dropped), Vec::<String>::new());
+    }
+
+    #[test]
+    fn a_question_word_stays_a_term_of_a_chunk() {
+        assert_eq!(terms("what did we decide"), ["what", "did", "we", "decid"]);
+    }
+
+    #[test]
+    fn a_dropped_word_is_compared_before_stemming() {
+        let dropped = ["anything".to_owned()];
+        assert_eq!(query("anything", &dropped), Vec::<String>::new());
+        assert_eq!(query("anythings", &dropped), [stem("anythings")]);
+    }
+
+    #[test]
+    fn an_empty_list_drops_nothing() {
+        assert_eq!(query("what did we", &[]), ["what", "did", "we"]);
+    }
+
+    #[test]
+    fn one_word_is_a_word_and_two_or_an_uppercase_one_are_not() {
+        assert_eq!(word("decide").as_deref(), Some("decide"));
+        assert_eq!(word("x_y").as_deref(), Some("x_y"));
+        for text in ["", "a", "Decide", "two words", " decide", "decide!", "the"] {
+            assert_eq!(word(text), None, "{text:?}");
+        }
     }
 }

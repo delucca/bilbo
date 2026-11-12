@@ -13,6 +13,9 @@ use bilbo_search::chunk::{Chunk, Size, chunks};
 use bilbo_store::entries::RecordRange;
 use serde_json::Value;
 
+mod coordinates;
+mod ranking;
+
 const SAMPLE: &str = include_str!("sample.jsonl");
 const EDGES: &str = include_str!("edges.jsonl");
 const EXPECTED: &str = include_str!("expected.jsonl");

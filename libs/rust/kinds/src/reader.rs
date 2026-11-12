@@ -30,4 +30,36 @@ pub trait Reader: Sync {
     /// Whether appending records to a generation changes no existing passage: the passages of the
     /// shorter generation are the first passages of the longer one.
     fn appends_only(&self) -> bool;
+    /// The line shown before any chunk of this entry. `records` is one whole generation.
+    fn preface(&self, _records: &[&[u8]]) -> Option<String> {
+        None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Passage, Reader};
+
+    struct Silent;
+
+    impl Reader for Silent {
+        fn kind(&self) -> &'static str {
+            "silent"
+        }
+
+        fn passages(&self, _records: &[&[u8]]) -> Vec<Passage> {
+            Vec::new()
+        }
+
+        fn appends_only(&self) -> bool {
+            true
+        }
+    }
+
+    #[test]
+    fn a_reader_that_does_not_say_shows_no_preface() {
+        let records: [&[u8]; 2] = [b"one\n", b"two\n"];
+        assert_eq!(Silent.preface(&records), None);
+        assert_eq!(Silent.preface(&[]), None);
+    }
 }

@@ -8,7 +8,7 @@ use super::{Run, binary};
 const KEYS: &str = "paths.root, paths.state, paths.cache, store.seal_at, store.seal_after, \
                     store.compression, store.tear_budget, store.wait, store.poll, follow, read.budget, read.outline_width, \
                     read.matches_listed, search.chunk_tokens, search.chunk_overlap, search.workers, \
-                    search.index_memory, search.merge_deleted_percent, search.entry_tries, markdown.heading_width";
+                    search.index_memory, search.merge_deleted_percent, search.entry_tries, recall.budget, recall.candidates, recall.cap, recall.question_words, recall.bm25_k1, recall.bm25_b, markdown.heading_width";
 
 #[test]
 fn each_key_shows_the_source_that_won_a_variable_over_the_file_over_the_default() {
@@ -42,6 +42,12 @@ fn each_key_shows_the_source_that_won_a_variable_over_the_file_over_the_default(
              search.index_memory = \"64 MiB\" (default)\n\
              search.merge_deleted_percent = 20 (default)\n\
              search.entry_tries = 3 (default)\n\
+             recall.budget = 4000 (default)\n\
+             recall.candidates = 50 (default)\n\
+             recall.cap = 0 (default)\n\
+             recall.question_words = [\"what\", \"did\", \"we\", \"should\", \"how\", \"anything\"] (default)\n\
+             recall.bm25_k1 = 1.2 (default)\n\
+             recall.bm25_b = 0.75 (default)\n\
              markdown.heading_width = 100 (default)\n",
             root = scratch.path("store"),
             home = scratch.path("home"),
@@ -450,4 +456,15 @@ fn a_search_key_out_of_range_is_a_config_error() {
             format!("bilbo: {variable} must be {allowed}, got \"{value}\"\n")
         );
     }
+}
+
+#[test]
+fn a_config_value_with_a_bidirectional_control_prints_as_given_off_a_terminal() {
+    let scratch = Scratch::new("bidi_value");
+    let folder = scratch.dir.join("store\u{200f}");
+    fs::create_dir(&folder).expect("a folder");
+    let path = folder.to_str().expect("UTF-8");
+    let run = scratch.run_with(&["config", "paths.root"], &[("BILBO_HOME", path)]);
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    assert_eq!(run.stdout, format!("{path}\n"));
 }

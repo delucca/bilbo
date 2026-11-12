@@ -112,7 +112,7 @@ A run also brings the search index to what the store holds, inside the lock that
 
 If the index cannot be read or written, or its folder is not bilbo's, the run prints `the search index was not updated: <error>` and exits 1, and when the index itself failed (not a folder that is not bilbo's, which nothing repairs) the line ends with `; bilbo reindex makes the index again`; damage that shows only when the index's columns are read, which the check of its files does not see, fails the update with the same line (`its content could not be read`, after tantivy's own panic text on stderr), and `bilbo reindex` repairs it; what it kept stays kept, and the run tries the index no more. Nothing is remembered between runs: the next run plans again, and a rebuild that fails late costs its whole time again at every run, up to about five minutes of the store held every ten on a large one, until what makes it fail is fixed. An entry the reader or the tokenizer fails on is named on stderr and exits 1; it is tried again by the next two runs, and then waits for a change to it or for `bilbo reindex`.
 
-An index kept current by `remember` holds the same documents as one `reindex` builds and the same documents match a query, but it can rank them differently until `bilbo reindex` runs.
+An index kept current by `remember` holds the same documents as one `reindex` builds and ranks them as it does.
 
 ### Sealing
 
@@ -169,6 +169,67 @@ A second `remember` with a target waits for the first one to finish writing the 
 | 0 | success, also when another bilbo holds the store and a run with no target asked it to run again |
 | 1 | a file was refused, nothing was claimed under a target, a follow cannot run (also in a pass run again for another bilbo), the search index could not be updated or an entry could not be indexed, or the target or the store could not be read |
 | 2 | usage or config error, a store root that holds bilbo 0.20's `notes/` or `library/`, a state or cache folder inside the root, or a config file `--follow` cannot write |
+
+## recall
+
+```text
+bilbo recall <query>... [--kind <kind>]... [--budget <tokens>]
+```
+
+Searches everything `bilbo remember` kept and prints the chunks that match best, each with its text, read back from the store. It only reads: the one file it writes is the query log ([The query log](#the-query-log)).
+
+### The query
+
+The arguments are joined by one space: `bilbo recall how did we decide the index format` is one query. A query that starts with a dash needs `--` before it: `bilbo recall -- -x flag`. The query is cut into words as the index cut the chunks (lowercased, without the 33 English stopwords, stemmed), after the words of `recall.question_words` (`what`, `did`, `we`, `should`, `how` and `anything` by default) are taken out of it; they stay searchable in what the index holds. A query with no word left matches nothing. Chunks are ranked by BM25 with `recall.bm25_k1` and `recall.bm25_b`, from the exact length of each chunk and the statistics of every chunk in the index. Equal scores come in the order of entry id, generation, record and part. At most `recall.candidates` chunks are considered, at most `recall.cap` of them from one entry (no limit by default).
+
+### Kinds
+
+`--kind <kind>` searches only entries of that kind; repeat it to search several. A kind no reader reads is a usage error, exit 2, naming the kinds. The filter changes no score: a chunk scores the same with it and without.
+
+### A hit
+
+Standard output is one hit after another, with no blank line between them:
+
+```text
+=== bilbo:01JC5Q3V7XKM4P8R2T6W9YB0DE#r3-7<TAB>session<TAB>2026-11-07<TAB>4 lines
+Session started 2026-11-07 08:01 UTC:
+user: Thin the carrot rows.
+...
+```
+
+The header is `=== `, the ref, the kind, the UTC day of the entry's first dated passage, or the day it was captured when none is dated (it is the entry's, not the hit's own), and the number of lines, apart by tabs. A chunk cut from a record too long for one chunk adds `part <k>/<m>`, the last hit of a run that was cut to the budget adds `cut`. The ref is what `bilbo read` takes: the entry and the records of the chunk, with no generation. After the header come exactly as many lines as it says. A line ends at a line feed and nowhere else: a carriage return is content. A line feed ends the hit; nothing scans the text for a header, so a chunk that quotes an earlier `recall` cannot forge one. A tool takes a header, then `<n>` lines, and so on to the end. The text is the store's, with one line feed between the passages a chunk joins, which the store does not hold, after a line its kind adds: a session's hit opens with `Session started <time> UTC:` (the time of its first record, or `Session date unknown:`); a note's has none. On a terminal each control character of a line prints as its escape, tabs kept, and so do the twelve bidirectional controls (U+061C, U+200E, U+200F, U+202A to U+202E, U+2066 to U+2069); plain output keeps them as they are.
+
+### The budget
+
+`recall.budget` (4,000 tokens by default; `--budget <tokens>` sets it for one run, 256 at least) bounds the plain output as the index's tokenizer counts it, each hit's header included. On a terminal a control character, and each of the twelve bidirectional controls (U+061C, U+200E, U+200F, U+202A to U+202E, U+2066 to U+2069), prints as its escape, which the budget does not count, so the output can be longer there. Whole hits are printed while they fit. The first that does not is cut at a token and marked `cut`; nothing follows it. A hit that has room for no token of text is left out.
+
+### What is searched
+
+Everything: there is no project filter and no scope. The index is searched as of its last commit. stderr says how many entries it holds: `searched 1,412 entries` counts the entries of the index, not of the store.
+
+### When the index is behind
+
+Three lines on stderr say what stands between the index and the store. An index behind the store says by how many entries (`bilbo remember` brings it up to date); an index that cannot be compared with the store's catalog says each hit was checked against the store; hits the store no longer gives as indexed (a note that grew in place, an entry rewritten or gone) are left out and counted. A hit is shown only when the store still gives the text the index ranked: its chunk is recomputed from the entry's records and compared with a digest the index holds. A session that only grew still gives its indexed chunks.
+
+### The query log
+
+Each query that reaches the store is logged in `queries.log` in the state folder ([Configuration](configuration.md#folders)): whatever it finds, also an index that was refused or damaged. A run that ends before the store is open (a usage or config error, a tokenizer that does not load, no store, a store held past `store.wait`) is not logged. One line a query, fields apart by tabs: `q1`, the time in unix seconds, `hits`, `nothing`, `no-index`, `other-manifest`, `withheld` or `failed`, the number of entries searched, the kinds asked (`-` for none), the printed hits as `<id>#r<a>-<b>`, or `<id>#r<a>` for a ref of one record (a cut one followed by `!`), and the query's text, with `\`, tab, line feed and other control characters escaped. The file holds your questions, stays in the state folder, is made with mode 600, grows without a bound and can be deleted at any time. A line that cannot be written is one warning on stderr, `the query was not logged: <error>`; hits and the exit code do not change. A store with no state folder that bilbo checked is not logged and says `this store has no state folder that bilbo checked`. The line is appended under the state folder the store opened and checked at this run, and only a regular file of this user with one name and no group or other permission is written.
+
+### Searching while bilbo writes
+
+`recall` takes the store's lock in shared mode, as `read` does, and holds it until the last hit is read back. While a `bilbo remember` holds the store it waits up to `store.wait` (10 seconds by default), says so on stderr once, and then gives up with exit 1. It never takes the writer, and it creates and repairs nothing: no index, catalog or folder. It reads the index only when the cache folder is the store's own, private, and the state folder has a `store.lock`; otherwise it says so and exits 1.
+
+### What stderr holds
+
+Off a terminal every line bilbo writes starts with `bilbo: `. On a run that searched: `searched <n> entries`, then the lines of the last section, `left out <n> hits ...`, `the query was not logged: <error>` and, with no hit, `nothing matched`. Where no search ran, an error line: `the store has no search index bilbo can use; bilbo reindex makes it`; `the search index was made with other settings or by another bilbo; bilbo reindex makes it again`; or the reason the index was not read: no `store.lock` in the state folder, a cache folder with no catalog of this store, with another store's catalog, or that is not this user's alone or could not be checked (`<path> is not this user's alone, or could not be checked; bilbo reads no search index under it`). A damaged index can make tantivy print a line of its own before bilbo's; bilbo's line is the last.
+
+### Exit codes
+
+| Code | Meaning |
+|---|---|
+| 0 | at least one hit |
+| 1 | nothing matched, there is no store, no search index or none that bilbo can read, the store is being written for longer than `store.wait`, or the store or the index could not be read |
+| 2 | usage or config error: no query, an unknown kind, a `--budget` outside 256 to 1,000,000, a store root that holds bilbo 0.20's `notes/` or `library/`, or a state or cache folder inside the root |
 
 ## read
 
@@ -233,7 +294,7 @@ more: bilbo read 01M6ZGE4KTBYYH07AS2KVMSCAF#g1:r8-23
 
 - A session record is one message: `user:`, `assistant:`, `tool_use <name>:` with the call's input a line per key, `tool_result <name>:` or `tool_error <name>:` with what came back, `compact summary:`. Thinking, the harness's own injections (Claude Code's `isMeta` entries, Codex's developer messages, its `AGENTS.md` and environment messages), entries of another thread and every bookkeeping line render nothing: they are never printed and never counted as missing. The thread of a Claude Code file is that of its first entry that renders: a session's file leaves out the entries marked `isSidechain`, and a subagent's file, where every entry is marked, reads as its own thread. An older Codex rollout does not say which user items the harness wrote; there an item is left out when its text starts with `# AGENTS.md instructions`, `<environment_context>`, `<recommended_plugins>` or `<skill>`, also when a person typed it. A rollout of Codex's first format, whose lines are bare items with no `payload`, reads as an empty outline. A range that holds none of the records that render prints its last line alone and exits 0.
 - A note's records are its lines. They are printed a section at a time under the locator of the lines printed: `#r28-31`. A range that starts or ends inside a section prints the lines it holds. Headings are found by scanning lines, not by parsing Markdown's containers: inside or right after a list, a quote or indented code a section can start at the wrong line or carry the wrong label, but every line is printed, once.
-- A pipe or a file gets each record's text as it is. A terminal gets its control characters escaped (`\u{1b}`), also when an agent runs bilbo there; a person's terminal also gets the locators in bold and the commands in colour.
+- A pipe or a file gets each record's text as it is. A terminal gets its control characters and the twelve bidirectional controls (U+061C, U+200E, U+200F, U+202A to U+202E, U+2066 to U+2069) escaped (`\u{1b}`), also when an agent runs bilbo there; a person's terminal also gets the locators in bold and the commands in colour.
 
 The last line of every output is bilbo's, on a line of its own also when the last record has no line end, and nothing else is: a record prints as it was kept, so a line above the last can look like a locator or like any line of bilbo's. It is one of two:
 
@@ -246,7 +307,7 @@ When the page ends in a record that was cut, the same line says so first: `cut: 
 
 ### The budget
 
-A page holds as many whole records as fit `read.budget` tokens (see [Configuration](configuration.md#keys)); `--budget <tokens>` sets it for one run. A token is counted as 4 bytes until bilbo's tokenizer arrives, so the default of 7,000 is at most 28,000 bytes of records: under the 30,000 characters at which Claude Code cuts a command's output. That bound holds for a pipe or a file, which is what a harness reads. On a terminal each control character of a record prints as its six-character escape, which the budget does not count, so a page can be longer there.
+A page holds as many whole records as fit `read.budget` tokens (see [Configuration](configuration.md#keys)); `--budget <tokens>` sets it for one run. A token is counted as 4 bytes until bilbo's tokenizer arrives, so the default of 7,000 is at most 28,000 bytes of records: under the 30,000 characters at which Claude Code cuts a command's output. That bound holds for a pipe or a file, which is what a harness reads. On a terminal each control character of a record, and each of the twelve bidirectional controls (U+061C, U+200E, U+200F, U+202A to U+202E, U+2066 to U+2069), prints as its escape, which the budget does not count, so a page can be longer there.
 
 A record is never split across pages. One that is over the budget by itself is printed alone, up to the budget, then the last line says how much is left and gives the command that prints it whole, before the command for the next page:
 
@@ -287,7 +348,7 @@ Makes the catalog and the search index again from the store. Both live in the ca
 ### What it makes
 
 - **The catalog**, `catalog.sqlite`: rebuilt from every segment and `open.seg`, as a `bilbo remember` rebuilds a missing one.
-- **The index**, the folder `index/`: one document for each chunk of each entry's newest generation. A chunk is consecutive records packed up to `search.chunk_tokens` tokens of the Qwen3-Embedding tokenizer; a record longer than that is cut into chunks that share `search.chunk_overlap` tokens. A record that renders to more than 1 MiB is cut at line ends before it is counted. The index holds each chunk's words (lowercased, without 33 English stopwords, stemmed) and where its records are in the store (entry, generation, record range, date, kind), never its text. A word of more than 4,096 bytes is not indexed.
+- **The index**, the folder `index/`: one document for each chunk of each entry's newest generation. A chunk is consecutive records packed up to `search.chunk_tokens` tokens of the Qwen3-Embedding tokenizer; a record longer than that is cut into chunks that share `search.chunk_overlap` tokens. A record that renders to more than 1 MiB is cut at line ends before it is counted. The index holds each chunk's words (lowercased, without 33 English stopwords, stemmed) and where its records are in the store (entry, generation, record range, date, kind), its length and the digest of its text, never its text. A word of more than 4,096 bytes is not indexed.
 
 An entry whose kind no reader reads is left out and counted as unread. Older generations of an entry are not indexed; `bilbo read` still prints them.
 
@@ -303,7 +364,7 @@ The catalog remembers the size and time of each file `remember` kept, so a later
 
 ### When it is needed
 
-`remember` keeps the index current, so `reindex` is for an index in doubt, and after a store is restored from a copy, always: bilbo cannot tell an older or branched history that kept its catalog id from a current one. It is also the way to the rebuilt ranking: an index kept by `remember` holds the same documents and the same documents match, but it can rank them differently. A failed entry is tried again by the next two runs of `remember`, then waits for a change or a `reindex`.
+`remember` keeps the index current, so `reindex` is for an index in doubt, and after a store is restored from a copy, always: bilbo cannot tell an older or branched history that kept its catalog id from a current one. An index kept by `remember` ranks as a rebuilt one, scores included. An index of an older format is made again by the next `remember` or `reindex`. A failed entry is tried again by the next two runs of `remember`, then waits for a change or a `reindex`.
 
 ### Output
 

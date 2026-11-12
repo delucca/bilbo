@@ -8,7 +8,7 @@ use std::thread;
 use std::time::{Duration, Instant, SystemTime};
 
 use crate::capture::{self, Action};
-use crate::catalog::{self, Catalog, Fresh, Place};
+use crate::catalog::{self, Catalog, Fresh, Owner, Place};
 use crate::entries::{
     Capture, CaptureError, Captured, Change, Cursor, Entries, Generation, Head, Kept, Meta, Origin,
     RecordRange, Stamp, StoreError,
@@ -130,8 +130,42 @@ struct Writer {
     len: u64,
 }
 
+/// What a reader may do with the cache folder.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Cache {
+    /// Canonical and private, read under the store's lock, holding a catalog bound to this store's root and state.
+    Own(PathBuf),
+    Absent,
+    /// The state folder has no `store.lock`: this read holds no lock.
+    Unlocked,
+    /// The folder holds no catalog this bilbo reads (none, unreadable, another catalog version).
+    NoCatalog(PathBuf),
+    /// Its catalog is bound to another root or state.
+    OtherStore(PathBuf),
+    /// Others can write it, another user owns it, or it cannot be looked at.
+    Unsafe(PathBuf),
+}
+
+/// Made by a reader's open; `path` is the resolved path.
+pub struct State {
+    path: PathBuf,
+    folder: File,
+}
+
+impl State {
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    pub fn folder(&self) -> &File {
+        &self.folder
+    }
+}
+
 pub struct Store {
     layout: Layout,
+    reader_cache: Cache,
+    state: Option<State>,
     /// Dropped before `_lock`: whoever holds `store.writer` holds the store lock too.
     _writer: Option<File>,
     _lock: Option<File>,
@@ -473,24 +507,51 @@ fn lock_shared_within(
     }
 }
 
-fn kept_catalog(configured: &Layout, layout: &Layout, sealed: &[(String, u64)]) -> Option<Catalog> {
+fn kept_catalog(layout: &Layout, cache: &Path, sealed: &[(String, u64)]) -> Option<Catalog> {
     if files::read_optional(&marker_file(layout)).ok()?.is_some() {
         return None;
     }
     let open_len = fs::metadata(open_seg(layout)).ok()?.len();
-    let cache = files::resolve(&configured.cache).ok()?;
-    files::check_parents(&cache).ok()?;
-    files::check_private(&cache).ok()?;
-    let cache = Layout {
-        cache: canonical(&cache).ok()?,
-        ..layout.clone()
-    };
     Catalog::open_unchanged(
-        &catalog_file(&cache),
+        &cache.join("catalog.sqlite"),
         &binding(layout).ok()?,
         sealed,
         open_len,
     )
+}
+
+fn judge_cache(configured: &Layout, layout: &Layout, locked: bool) -> Cache {
+    if !locked {
+        return Cache::Unlocked;
+    }
+    let Ok(resolved) = files::resolve(&configured.cache) else {
+        return Cache::Unsafe(configured.cache.clone());
+    };
+    match fs::metadata(&resolved) {
+        Ok(_) => {}
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Cache::Absent,
+        Err(_) => return Cache::Unsafe(resolved),
+    }
+    if let Err(error) = files::check_parents(&resolved) {
+        return Cache::Unsafe(match error {
+            StoreError::Unsafe(ancestor) => ancestor,
+            _ => resolved,
+        });
+    }
+    if files::check_private(&resolved).is_err() {
+        return Cache::Unsafe(resolved);
+    }
+    let Ok(cache) = canonical(&resolved) else {
+        return Cache::Unsafe(resolved);
+    };
+    let Ok(binding) = binding(layout) else {
+        return Cache::Unsafe(cache);
+    };
+    match Catalog::owner(&cache.join("catalog.sqlite"), &binding) {
+        Owner::Bound => Cache::Own(cache),
+        Owner::Other => Cache::OtherStore(cache),
+        Owner::Unknown => Cache::NoCatalog(cache),
+    }
 }
 
 fn list_sealed(root: &Path) -> Result<Vec<(String, u64)>, StoreError> {
@@ -887,6 +948,8 @@ impl Store {
         let catalog = load_catalog(layout, options.tear_budget, options.rebuild, notice)?;
         Ok(Store {
             layout: layout.clone(),
+            reader_cache: Cache::Own(layout.cache.clone()),
+            state: None,
             _writer: Some(writer_lock),
             _lock: Some(lock),
             writer: Some(writer),
@@ -925,6 +988,10 @@ impl Store {
         files::check_parents(&paths.state)?;
         files::check_private(&paths.root).map_err(|error| vanished(error, configured))?;
         files::check_private_if_present(&paths.state)?;
+        let state = files::open_private_dir(&paths.state).map(|folder| State {
+            path: paths.state.clone(),
+            folder,
+        });
         paths.root = current_root(&paths.root, configured)?;
         refuse_older(&paths.root, &configured.root)?;
         check_root(&paths, &paths.root, Root::Check)?;
@@ -945,11 +1012,14 @@ impl Store {
             check_root(layout, &layout.root, Root::Check)?;
         }
         let sealed = list_sealed(&layout.root)?;
-        if lock.is_some()
-            && let Some(catalog) = kept_catalog(configured, layout, &sealed)
+        let reader_cache = judge_cache(configured, layout, lock.is_some());
+        if let Cache::Own(cache) = &reader_cache
+            && let Some(catalog) = kept_catalog(layout, cache, &sealed)
         {
             return Ok(Store {
                 layout: layout.clone(),
+                reader_cache,
+                state,
                 _writer: None,
                 _lock: lock,
                 writer: None,
@@ -996,6 +1066,8 @@ impl Store {
         )?;
         Ok(Store {
             layout: layout.clone(),
+            reader_cache,
+            state,
             _writer: None,
             _lock: lock,
             writer: None,
@@ -1031,6 +1103,16 @@ impl Store {
     /// The cache folder as this store validated it: what is rebuilt from the store lives there.
     pub fn cache(&self) -> &Path {
         &self.layout.cache
+    }
+
+    /// What a reader may do with the cache. A writer's store always answers `Own`.
+    pub fn reader_cache(&self) -> &Cache {
+        &self.reader_cache
+    }
+
+    /// A reader's state folder as this open opened and checked it; a writer's store has none.
+    pub fn state(&self) -> Option<&State> {
+        self.state.as_ref()
     }
 
     /// No seal and no rerun request taken: it stays for the next writer that closes.

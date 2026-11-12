@@ -4,6 +4,7 @@ pub mod help;
 #[cfg(test)]
 mod probe;
 pub mod read;
+pub mod recall;
 pub mod reindex;
 pub mod remember;
 
@@ -12,6 +13,7 @@ use std::ffi::OsString;
 use bilbo_kinds::kind::Kind;
 use bilbo_kinds::reader::Reader;
 use bilbo_search::index::Index;
+use bilbo_search::lookup::Lookup;
 use bilbo_search::tokenizer::Tokenizer;
 use clap::{Command, CommandFactory, Parser, Subcommand};
 
@@ -19,6 +21,7 @@ use crate::console::args::{Parsed, parse, typed, usage, verbs, with_verbs};
 use crate::console::env::Env;
 use crate::console::indexing::Indexing;
 use crate::console::outcome::{Failure, Outcome};
+use crate::console::reading;
 use crate::console::settings::{KindKey, Settings};
 use crate::help::overview;
 use crate::help::page::shape;
@@ -41,6 +44,7 @@ pub struct Cli {
 #[derive(Debug, Subcommand)]
 pub enum Verb {
     Remember(remember::Args),
+    Recall(recall::Args),
     Read(read::Args),
     Reindex(reindex::Args),
     Config(config::Args),
@@ -118,6 +122,11 @@ pub fn index(cache: &std::path::Path, search: &bilbo_search::keys::Section) -> B
             merge_deleted_share: search.merge_deleted_share(),
         },
     ))
+}
+
+/// The last commit of the index of a store's cache folder, read only.
+pub fn lookup(cache: &std::path::Path) -> Box<dyn Lookup> {
+    Box::new(bilbo_tantivy::Committed::at(bilbo_tantivy::folder(cache)))
 }
 
 pub fn indexing<'a>(
@@ -203,6 +212,20 @@ pub fn run_tuned(
                     let indexing =
                         tune(indexing(&settings, &readers, &rendering, &tokenizer, &disk));
                     remember::run(root, args, env, &settings, &kinds(), &indexing)
+                }
+                Verb::Recall(args) => {
+                    let readers = readers(&settings)?;
+                    let rendering = rendering(&settings)?;
+                    let disk = |cache: &std::path::Path| index(cache, &settings.search);
+                    let indexing =
+                        tune(indexing(&settings, &readers, &rendering, &tokenizer, &disk));
+                    recall::run(
+                        root,
+                        &args,
+                        env,
+                        &settings,
+                        &reading::of(&indexing, &lookup),
+                    )
                 }
                 Verb::Read(args) => {
                     let readers = readers(&settings)?;
@@ -375,7 +398,7 @@ mod tests {
             };
         assert_eq!(
             reason(&["bilbo", "help", "a\nb"]),
-            "unknown verb 'a\\nb'; the verbs are remember, read, reindex, config"
+            "unknown verb 'a\\nb'; the verbs are remember, recall, read, reindex, config"
         );
         assert_eq!(
             reason(&["bilbo", "help", "--a\nb"]),

@@ -1,5 +1,6 @@
 //! `expected.jsonl` is what the eval's bm25 `render_session` printed for `edges.jsonl` and `sample.jsonl`,
-//! written by `regenerate.py`, never by hand.
+//! written by `regenerate.py`, never by hand; `prefaces.jsonl` is the line the eval's `search.py` puts before a
+//! session's chunks, written the same way.
 
 use std::collections::BTreeMap;
 use std::ffi::OsString;
@@ -13,6 +14,7 @@ use serde_json::Value;
 const EDGES: &[u8] = include_bytes!("edges.jsonl");
 const SAMPLE: &str = include_str!("sample.jsonl");
 const EXPECTED: &str = include_str!("expected.jsonl");
+const PREFACES: &str = include_str!("prefaces.jsonl");
 
 type Message = (u64, String, Vec<(u64, String)>);
 
@@ -239,6 +241,69 @@ fn the_whole_corpus_reads_as_build_py_printed_it() {
     say(&format!(
         "corpus: {sessions} sessions, {messages} messages, {differing} differ"
     ));
+    assert!(sessions > 0, "the corpus is empty");
+    assert_eq!(differing, 0);
+}
+
+fn preface_of(session: &[u8]) -> Option<String> {
+    let records: Vec<&[u8]> = session.split_inclusive(|byte| *byte == b'\n').collect();
+    Session.preface(&records)
+}
+
+#[test]
+fn the_preface_is_the_line_the_eval_puts_before_a_sessions_chunks() {
+    let (mut stamped, mut unknown) = (0, 0);
+    for row in PREFACES.lines() {
+        let row: Value = serde_json::from_str(row).expect("a row of prefaces.jsonl");
+        let record = match row["timestamp"].as_str() {
+            Some(stamp) => {
+                stamped += 1;
+                serde_json::json!({ "type": "summary", "timestamp": stamp })
+            }
+            None => {
+                unknown += 1;
+                serde_json::json!({ "type": "summary" })
+            }
+        };
+        let line = format!("{record}\n");
+        assert_eq!(
+            preface_of(line.as_bytes()),
+            Some(text(&row, "preface")),
+            "{row}"
+        );
+    }
+    assert!(
+        stamped >= 50 && unknown >= 1,
+        "{stamped} stamped, {unknown} without a timestamp"
+    );
+    assert_eq!(
+        PREFACES.lines().count(),
+        SAMPLE.lines().count(),
+        "one row a session of the sample"
+    );
+}
+
+/// `CONTRACT_CORPUS` is the unpacked eval corpus, `CONTRACT_PREFACES` what `regenerate.py --whole` wrote beside its
+/// output (`*.prefaces.jsonl`). Prints counts only.
+#[test]
+#[ignore = "needs the unpacked eval corpus"]
+fn every_session_of_the_corpus_gets_the_evals_preface() {
+    let corpus = PathBuf::from(var("CONTRACT_CORPUS").expect("CONTRACT_CORPUS"));
+    let rows = fs::read_to_string(var("CONTRACT_PREFACES").expect("CONTRACT_PREFACES"))
+        .expect("read CONTRACT_PREFACES");
+    let (mut sessions, mut differing) = (0, 0);
+    for row in rows.lines() {
+        let row: Value = serde_json::from_str(row).expect("a row");
+        let name = text(&row, "file");
+        let session = fs::read(corpus.join(&name)).expect("read a session");
+        let found = preface_of(&session);
+        if found.as_deref() != row["preface"].as_str() {
+            differing += 1;
+            say(&format!("{name}: {found:?} against {}", row["preface"]));
+        }
+        sessions += 1;
+    }
+    say(&format!("corpus: {sessions} sessions, {differing} differ"));
     assert!(sessions > 0, "the corpus is empty");
     assert_eq!(differing, 0);
 }

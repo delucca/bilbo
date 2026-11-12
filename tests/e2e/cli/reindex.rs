@@ -4,15 +4,11 @@ use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
 use super::binary;
-use super::scratch::Scratch;
+use super::scratch::{NOTE, SESSION, Scratch};
 
-const SESSION: &[u8] = include_bytes!(
-    "../../../libs/rust/kinds/session/fixtures/8f2b6d4e-1a3c-4e5f-9b7a-2c4d6e8f0a1b.jsonl"
-);
-const NOTE: &str = include_str!("../../../libs/rust/kinds/markdown/fixtures/sections.md");
 const WAIT: Duration = Duration::from_secs(20);
 
-fn remembered(test: &str) -> Scratch {
+fn remembered_from_home(test: &str) -> Scratch {
     let scratch = Scratch::new(test);
     let session = scratch.dir.join(
         "home/.claude/projects/-home-me-src-garden/8f2b6d4e-1a3c-4e5f-9b7a-2c4d6e8f0a1b.jsonl",
@@ -54,7 +50,7 @@ fn counts(stdout: &str) -> [u64; 4] {
 
 #[test]
 fn a_remembered_store_is_indexed_and_a_deleted_cache_folder_comes_back() {
-    let scratch = remembered("reindex");
+    let scratch = remembered_from_home("reindex");
     let first = scratch.run(&["reindex"]);
     assert_eq!(
         (first.code, first.stderr.as_str()),
@@ -93,7 +89,7 @@ fn a_remembered_store_is_indexed_and_a_deleted_cache_folder_comes_back() {
 
 #[test]
 fn reindex_takes_no_argument_and_shares_every_verbs_exit_codes() {
-    let scratch = remembered("reindex_exits");
+    let scratch = remembered_from_home("reindex_exits");
     let extra = scratch.run(&["reindex", "now"]);
     assert_eq!((extra.code, extra.stdout.as_str()), (2, ""));
     assert_eq!(
@@ -149,7 +145,7 @@ fn reindex_takes_no_argument_and_shares_every_verbs_exit_codes() {
 
 #[test]
 fn a_reindex_waits_for_a_writer_and_a_bare_remember_does_not_wait_for_a_reindex() {
-    let scratch = remembered("reindex_lock");
+    let scratch = remembered_from_home("reindex_lock");
     let state = scratch.dir.join("state/bilbo");
     let lock = fs::File::open(state.join("store.lock")).expect("the lock file");
     lock.lock().expect("hold the store");
@@ -213,7 +209,7 @@ fn a_reindex_waits_for_a_writer_and_a_bare_remember_does_not_wait_for_a_reindex(
 /// The byte where the sstable version of the `.fast` file of an index made of `NOTE` alone sits,
 /// found by flipping each byte and reading what a run says: tantivy then refuses the segment with
 /// an error that is not a broken file's.
-const SSTABLE_VERSION_AT: usize = 312;
+const SSTABLE_VERSION_AT: usize = 405;
 
 #[test]
 fn a_reindex_repairs_an_index_an_update_could_not_read() {
@@ -265,7 +261,7 @@ fn a_reindex_repairs_an_index_an_update_could_not_read() {
 
 /// A byte inside a column of the `.fast` file of an index made of `NOTE` alone: the segment opens
 /// and the damage shows only when the entry's columns are read, where tantivy panics.
-const COLUMN_AT: usize = 65;
+const COLUMN_AT: usize = 70;
 
 #[test]
 fn a_reindex_repairs_an_index_whose_columns_an_update_could_not_read() {

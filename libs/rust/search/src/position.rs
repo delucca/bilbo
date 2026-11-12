@@ -4,7 +4,7 @@ use bilbo_store::id::Id;
 use crate::analyze;
 use crate::chunk::Size;
 
-const FORMAT: &str = "bilbo index 1";
+const FORMAT: &str = "bilbo index 2";
 
 /// The most entries a position lists as left out: about 120 KB of payload.
 pub const MAX_FAILED: usize = 4096;
@@ -214,7 +214,7 @@ mod tests {
             .collect()
     }
 
-    const ENCODED: &str = "bilbo index 1\nchunk_tokens 512\nchunk_overlap 64\nanalyzer bm25s-en/1\n\
+    const ENCODED: &str = "bilbo index 2\nchunk_tokens 512\nchunk_overlap 64\nanalyzer bm25s-en/1\n\
         tokenizer qwen3 97b0c614 def76fb0\nrender markdown/1/heading_width=100 session/1\ncatalog abababababababababababababababab\nseq 42\nfailed -\n";
 
     #[test]
@@ -324,6 +324,14 @@ mod tests {
     }
 
     #[test]
+    fn a_payload_of_format_1_is_no_position() {
+        assert_eq!(
+            Position::decode(&ENCODED.replace("bilbo index 2", "bilbo index 1")),
+            None
+        );
+    }
+
+    #[test]
     fn a_payload_that_is_not_exactly_a_position_is_none() {
         let cases = [
             String::new(),
@@ -331,7 +339,7 @@ mod tests {
             ENCODED.trim_end().to_owned(),
             format!("{ENCODED}\n"),
             format!("{ENCODED}extra 1\n"),
-            ENCODED.replace("bilbo index 1", "bilbo index 2"),
+            ENCODED.replace("bilbo index 2", "bilbo index 1"),
             ENCODED.replace("chunk_tokens 512", "chunk_tokens 0512"),
             ENCODED.replace("chunk_tokens 512", "chunk_tokens +512"),
             ENCODED.replace("chunk_tokens 512", "chunk_tokens"),

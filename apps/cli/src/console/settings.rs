@@ -52,7 +52,7 @@ pub const STATE: Key<PathBuf> = Key {
             under_xdg: "bilbo",
             under_home: ".local/state/bilbo",
         }),
-        doc: "This device's state: open.seg, the store lock and its store root.",
+        doc: "This device's state: open.seg, the store lock, its store root and the query log.",
         ..CONFIG.about
     },
     ..CONFIG
@@ -105,6 +105,7 @@ pub fn keys(kind: &[&'static KindKey]) -> Vec<&'static About> {
             &read::MATCHES_LISTED.about,
         ])
         .chain(bilbo_search::keys::ABOUT)
+        .chain(bilbo_search::recall::keys::ABOUT)
         .chain(kind.iter().map(|key| &key.about))
         .collect()
 }
@@ -163,6 +164,7 @@ pub struct Settings {
     pub read_outline_width: Resolved<usize>,
     pub read_matches_listed: Resolved<usize>,
     pub search: bilbo_search::keys::Section,
+    pub recall: bilbo_search::recall::keys::Section,
     pub kind: Vec<(&'static KindKey, Resolved<usize>)>,
 }
 
@@ -196,6 +198,7 @@ impl Settings {
         shown.push(read::OUTLINE_WIDTH.shown(&self.read_outline_width));
         shown.push(read::MATCHES_LISTED.shown(&self.read_matches_listed));
         shown.extend(self.search.shown());
+        shown.extend(self.recall.shown());
         shown.extend(self.kind.iter().map(|(key, resolved)| key.shown(resolved)));
         shown
     }
@@ -227,6 +230,7 @@ pub fn load(
         read_outline_width: read::OUTLINE_WIDTH.resolve(&source)?,
         read_matches_listed: read::MATCHES_LISTED.resolve(&source)?,
         search: bilbo_search::keys::section(&source)?,
+        recall: bilbo_search::recall::keys::section(&source)?,
         kind: kind
             .iter()
             .map(|key| Ok((*key, key.resolve(&source)?)))
@@ -273,7 +277,7 @@ mod tests {
     }
 
     #[test]
-    fn the_registry_is_the_three_folders_the_six_store_keys_the_follows_then_the_read_search_and_markdown_keys()
+    fn the_registry_is_the_three_folders_the_six_store_keys_the_follows_then_the_read_search_recall_and_markdown_keys()
      {
         let names: Vec<&str> = keys(&kind()).iter().map(|about| about.name).collect();
         assert_eq!(
@@ -298,6 +302,12 @@ mod tests {
                 "search.index_memory",
                 "search.merge_deleted_percent",
                 "search.entry_tries",
+                "recall.budget",
+                "recall.candidates",
+                "recall.cap",
+                "recall.question_words",
+                "recall.bm25_k1",
+                "recall.bm25_b",
                 "markdown.heading_width"
             ]
         );
@@ -359,7 +369,7 @@ mod tests {
             .err(),
             Some(
                 "/c.toml:3: unknown key store.sealat; the keys are paths.root, paths.state, \
-                 paths.cache, store.seal_at, store.seal_after, store.compression, store.tear_budget, store.wait, store.poll, follow, read.budget, read.outline_width, read.matches_listed, search.chunk_tokens, search.chunk_overlap, search.workers, search.index_memory, search.merge_deleted_percent, search.entry_tries, markdown.heading_width"
+                 paths.cache, store.seal_at, store.seal_after, store.compression, store.tear_budget, store.wait, store.poll, follow, read.budget, read.outline_width, read.matches_listed, search.chunk_tokens, search.chunk_overlap, search.workers, search.index_memory, search.merge_deleted_percent, search.entry_tries, recall.budget, recall.candidates, recall.cap, recall.question_words, recall.bm25_k1, recall.bm25_b, markdown.heading_width"
                     .to_owned()
             )
         );
@@ -501,6 +511,11 @@ mod tests {
                 "BILBO_READ_BUDGET",
                 "BILBO_READ_MATCHES_LISTED",
                 "BILBO_READ_OUTLINE_WIDTH",
+                "BILBO_RECALL_BM25_B",
+                "BILBO_RECALL_BM25_K1",
+                "BILBO_RECALL_BUDGET",
+                "BILBO_RECALL_CANDIDATES",
+                "BILBO_RECALL_CAP",
                 "BILBO_SEARCH_CHUNK_OVERLAP",
                 "BILBO_SEARCH_CHUNK_TOKENS",
                 "BILBO_SEARCH_ENTRY_TRIES",

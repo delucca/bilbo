@@ -9,34 +9,36 @@ use crate::error::Error;
 use crate::key::segment;
 
 /// A config file's keys, each with where it is written; no type of the toml crate leaks out.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub struct File {
     path: PathBuf,
     text: String,
     fields: Vec<Field>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub(crate) struct Field {
     pub(crate) name: String,
     pub(crate) key: Range<usize>,
     pub(crate) value: Node,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub(crate) struct Node {
     pub(crate) span: Range<usize>,
     pub(crate) kind: Kind,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub(crate) enum Kind {
     Text(String),
     /// `None` past the range of `i64`.
     Integer(Option<i64>),
+    /// `None` for `inf`, `nan` and a float past the range of `f64`.
+    Decimal(Option<f64>),
     List(Vec<Node>),
     Table(Vec<Field>),
-    /// A float, a boolean or a date and time.
+    /// A boolean or a date and time.
     Other,
 }
 
@@ -192,6 +194,9 @@ fn node(value: &Spanned<DeValue<'_>>) -> Node {
         DeValue::String(text) => Kind::Text(text.to_string()),
         DeValue::Integer(integer) => {
             Kind::Integer(i64::from_str_radix(integer.as_str(), integer.radix()).ok())
+        }
+        DeValue::Float(float) => {
+            Kind::Decimal(float.as_str().parse().ok().filter(|f: &f64| f.is_finite()))
         }
         DeValue::Array(items) => Kind::List(items.iter().map(node).collect()),
         DeValue::Table(table) => Kind::Table(fields(table)),

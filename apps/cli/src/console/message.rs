@@ -43,22 +43,22 @@ impl Message {
         let mut text = parts(&self.text);
         lines.push(format!(
             "{mark}  {}",
-            sanitize(text.next().unwrap_or_default())
+            line(view, text.next().unwrap_or_default())
         ));
-        for line in text {
-            lines.push(indented(&sanitize(line)));
+        for piece in text {
+            lines.push(indented(&line(view, piece)));
         }
         for detail in &self.details {
             match detail {
                 Detail::Text(text) => {
-                    for line in parts(text) {
-                        lines.push(indented(&paint(view, Style::Note, &sanitize(line))));
+                    for piece in parts(text) {
+                        lines.push(indented(&paint(view, Style::Note, &line(view, piece))));
                     }
                 }
                 Detail::Command { lead, command } => lines.push(format!(
                     "{INDENT}{} {}",
                     paint(view, Style::Note, lead),
-                    paint(view, Style::Command, &sanitize(command))
+                    paint(view, Style::Command, &line(view, command))
                 )),
             }
         }
@@ -108,10 +108,31 @@ pub fn group(number: u64) -> String {
     grouped
 }
 
+fn reorders(c: char) -> bool {
+    matches!(c, '\u{61c}' | '\u{200e}' | '\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}')
+}
+
 pub fn sanitize(line: &str) -> String {
     line.chars()
         .flat_map(|c| {
             if c.is_control() {
+                c.escape_default().collect::<Vec<_>>()
+            } else {
+                vec![c]
+            }
+        })
+        .collect()
+}
+
+pub fn line(view: &View, text: &str) -> String {
+    let escaped = sanitize(text);
+    if !view.terminal {
+        return escaped;
+    }
+    escaped
+        .chars()
+        .flat_map(|c| {
+            if reorders(c) {
                 c.escape_default().collect::<Vec<_>>()
             } else {
                 vec![c]
@@ -170,7 +191,35 @@ mod tests {
 
     use bilbo_store::segments::Notice;
 
-    use super::{Detail, Message, group, notice_message};
+    use super::{Detail, Message, group, line, notice_message, sanitize};
+
+    #[test]
+    fn a_bidirectional_control_is_shown_escaped_and_a_joiner_is_kept() {
+        let controls = [
+            '\u{61c}', '\u{200e}', '\u{200f}', '\u{202a}', '\u{202b}', '\u{202c}', '\u{202d}',
+            '\u{202e}', '\u{2066}', '\u{2067}', '\u{2068}', '\u{2069}',
+        ];
+        let kept = ['\u{200d}', '\u{200c}', '\u{ad}', '\u{feff}'];
+        for control in controls {
+            assert_eq!(
+                line(&View::HUMAN, &format!("a{control}b")),
+                format!("a{}b", control.escape_default()),
+                "{control:?}"
+            );
+        }
+        for character in kept {
+            assert_eq!(
+                line(&View::HUMAN, &format!("a{character}b")),
+                format!("a{character}b"),
+                "{character:?}"
+            );
+        }
+        for character in controls.into_iter().chain(kept) {
+            let text = format!("a{character}b");
+            assert_eq!(line(&View::PLAIN, &text), text, "{character:?}");
+            assert_eq!(sanitize(&text), text, "{character:?}");
+        }
+    }
 
     #[test]
     fn numbers_on_a_terminal_are_grouped_by_thousands() {

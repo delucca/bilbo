@@ -28,19 +28,35 @@ fn group_is_safe(meta: &fs::Metadata) -> bool {
     meta.mode() & 0o020 == 0 || meta.gid() == rustix::process::getegid().as_raw()
 }
 
+fn is_private(meta: &fs::Metadata) -> bool {
+    meta.mode() & 0o002 == 0
+        && group_is_safe(meta)
+        && meta.uid() == rustix::process::geteuid().as_raw()
+}
+
 /// Refuses a folder that another user owns, that others can write, or that a group other than
 /// the user's effective group can write: they could plant links in it. A folder that is gone is
 /// an error, so a check after creation proves it exists.
 pub fn check_private(path: &Path) -> Result<(), StoreError> {
     let meta = fs::metadata(path).map_err(|error| io_err("read", path, error))?;
-    if meta.mode() & 0o002 == 0
-        && group_is_safe(&meta)
-        && meta.uid() == rustix::process::geteuid().as_raw()
-    {
+    if is_private(&meta) {
         Ok(())
     } else {
         Err(StoreError::Unsafe(path.to_path_buf()))
     }
+}
+
+/// Opened read-only; a link as the last component is an error.
+pub fn open_no_follow(path: &Path, extra: rustix::fs::OFlags) -> io::Result<File> {
+    OpenOptions::new()
+        .read(true)
+        .custom_flags((extra | rustix::fs::OFlags::NOFOLLOW).bits() as i32)
+        .open(path)
+}
+
+pub fn open_private_dir(path: &Path) -> Option<File> {
+    let folder = open_no_follow(path, rustix::fs::OFlags::DIRECTORY).ok()?;
+    is_private(&folder.metadata().ok()?).then_some(folder)
 }
 
 /// `check_private` for a folder that may not exist.

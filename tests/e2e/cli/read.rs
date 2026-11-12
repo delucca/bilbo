@@ -1,31 +1,6 @@
-use std::fs;
+use super::scratch::{Scratch, UUID, remembered};
 
-use super::scratch::Scratch;
-
-const UUID: &str = "8f2b6d4e-1a3c-4e5f-9b7a-2c4d6e8f0a1b";
-const SESSION: &[u8] = include_bytes!(
-    "../../../libs/rust/kinds/session/fixtures/8f2b6d4e-1a3c-4e5f-9b7a-2c4d6e8f0a1b.jsonl"
-);
-const NOTE: &str = include_str!("../../../libs/rust/kinds/markdown/fixtures/sections.md");
 const NOTE_ID: &str = "01JC5Q3V7XKM4P8R2T6W9YB0DG";
-
-fn remembered(test: &str) -> Scratch {
-    let scratch = Scratch::new(test);
-    let session = scratch.dir.join(format!(
-        "home/.claude/projects/-home-me-src-garden/{UUID}.jsonl"
-    ));
-    fs::create_dir_all(session.parent().expect("a parent")).expect("folders");
-    fs::write(&session, SESSION).expect("a session");
-    scratch.write("sections.md", NOTE);
-    for target in [
-        session.to_str().expect("UTF-8").to_owned(),
-        scratch.path("notes"),
-    ] {
-        let run = scratch.run(&["remember", &target]);
-        assert_eq!(run.code, 0, "{}", run.stderr);
-    }
-    scratch
-}
 
 fn records(page: &str) -> Vec<u64> {
     page.lines()

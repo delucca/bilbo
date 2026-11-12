@@ -286,6 +286,36 @@ impl<'a> Value<'a> {
         }
     }
 
+    /// A TOML float or integer, or a variable's or flag's text of digits with at most one point
+    /// between digits.
+    pub fn decimal(&self) -> Option<f64> {
+        let number = match &self.given {
+            Given::Text(text) => {
+                let text = text.to_str()?;
+                let (whole, fraction) = text.split_once('.').unwrap_or((text, "0"));
+                let digits =
+                    |part: &str| !part.is_empty() && part.bytes().all(|b| b.is_ascii_digit());
+                (digits(whole) && digits(fraction)).then(|| text.parse().ok())?
+            }
+            Given::Node(
+                Node {
+                    kind: Kind::Decimal(number),
+                    ..
+                },
+                _,
+            ) => *number,
+            Given::Node(
+                Node {
+                    kind: Kind::Integer(number),
+                    ..
+                },
+                _,
+            ) => number.map(|integer| integer as f64),
+            Given::Node(..) => None,
+        };
+        number.filter(|number| number.is_finite())
+    }
+
     /// A TOML array's items, each with its own line.
     pub fn items(&self) -> Option<Vec<Value<'a>>> {
         let Given::Node(
@@ -509,6 +539,35 @@ mod tests {
         show: |pairs| format!("{pairs:?}"),
     };
 
+    const RATIO: Key<f64> = Key {
+        about: About {
+            name: "search.ratio",
+            variable: Some("BILBO_SEARCH_RATIO"),
+            default: Default::Toml("0.75"),
+            allowed: "a number from 0 to 1",
+            doc: "a decimal key",
+        },
+        parse: |value| {
+            value
+                .decimal()
+                .filter(|ratio| (0.0..=1.0).contains(ratio))
+                .ok_or_else(|| value.refuse())
+        },
+        show: f64::to_string,
+    };
+
+    const ANY: Key<f64> = Key {
+        about: About {
+            name: "search.any",
+            variable: Some("BILBO_SEARCH_ANY"),
+            default: Default::Toml("0.0"),
+            allowed: "a number",
+            doc: "a decimal key",
+        },
+        parse: |value| value.decimal().ok_or_else(|| value.refuse()),
+        show: f64::to_string,
+    };
+
     fn file(text: &str) -> File {
         File::parse(Path::new(PATH), text.as_bytes()).expect("toml")
     }
@@ -693,6 +752,104 @@ mod tests {
         assert_eq!(
             message(get(&LEVEL, &[("BILBO_STORE_COMPRESSION", "high")], "")),
             "BILBO_STORE_COMPRESSION must be a zstd level from 1 to 22, got \"high\""
+        );
+    }
+
+    #[test]
+    fn a_decimal_is_digits_with_at_most_one_point() {
+        let read = |text: &str| get(&ANY, &[("BILBO_SEARCH_ANY", text)], "").map(|r| r.value);
+        for (text, number) in [
+            ("1.2", 1.2),
+            ("0.75", 0.75),
+            ("1", 1.0),
+            ("0", 0.0),
+            ("10.50", 10.5),
+        ] {
+            assert_eq!(read(text), Ok(number), "{text:?}");
+        }
+        for text in [
+            "1e3", ".5", "5.", "-1", "+1", "1_0", "inf", "nan", "1,2", "1.2.3", " 1", "1 ", "1.5e2",
+        ] {
+            assert!(read(text).is_err(), "{text:?}");
+        }
+        assert_eq!(
+            flag_of(&ANY, "--any", "2.5").map(|flag| flag.value),
+            Ok(2.5)
+        );
+        assert!(flag_of(&ANY, "--any", "1e3").is_err());
+        assert_eq!(
+            get(&ANY, &[("BILBO_SEARCH_ANY", "")], "search.any = 3").map(|r| r.value),
+            Ok(3.0)
+        );
+    }
+
+    #[test]
+    fn a_toml_float_or_integer_is_a_decimal_and_inf_and_nan_are_not() {
+        let read = |text: &str| get(&RATIO, &[], text).map(|r| r.value);
+        for (text, number) in [
+            ("search.ratio = 0.5", 0.5),
+            ("search.ratio = 1", 1.0),
+            ("search.ratio = 0", 0.0),
+            ("search.ratio = 5e-1", 0.5),
+            ("search.ratio = 0.2_5", 0.25),
+        ] {
+            assert_eq!(read(text), Ok(number), "{text:?}");
+        }
+        for text in ["inf", "nan", "-inf", "+inf", "1e999"] {
+            let text = format!("search.any = {text}");
+            assert!(get(&ANY, &[], &text).is_err(), "{text:?}");
+        }
+        for text in [
+            "search.ratio = 1.5",
+            "search.ratio = -0.5",
+            "search.ratio = \"0.5\"",
+            "search.ratio = true",
+            "search.ratio = [0.5]",
+            "search.ratio = 99999999999999999999",
+        ] {
+            assert!(read(text).is_err(), "{text:?}");
+        }
+    }
+
+    #[test]
+    fn a_decimal_too_large_to_hold_is_refused_from_a_variable_and_a_flag() {
+        let big = "9".repeat(400);
+        assert_eq!(
+            message(get(&ANY, &[("BILBO_SEARCH_ANY", &big)], "")),
+            format!("BILBO_SEARCH_ANY must be a number, got {big:?}")
+        );
+        assert_eq!(
+            flag_of(&ANY, "--any", &big)
+                .expect_err("refused")
+                .to_string(),
+            format!("--any must be a number, got {big:?}")
+        );
+        assert_eq!(
+            message(get(&ANY, &[], "search.any = 1e999")),
+            "/c/config.toml:1: search.any must be a number, got 1e999"
+        );
+    }
+
+    #[test]
+    fn a_refused_decimal_names_where_it_was_set_and_what_was_given() {
+        assert_eq!(
+            message(get(&RATIO, &[], "# c\n[search]\nratio = 1.5\n")),
+            "/c/config.toml:3: search.ratio must be a number from 0 to 1, got 1.5"
+        );
+        assert_eq!(
+            message(get(&RATIO, &[("BILBO_SEARCH_RATIO", "1e3")], "")),
+            "BILBO_SEARCH_RATIO must be a number from 0 to 1, got \"1e3\""
+        );
+        let default = Key {
+            about: About {
+                default: Default::Toml("2.5"),
+                ..RATIO.about
+            },
+            ..RATIO
+        };
+        assert_eq!(
+            message(get(&default, &[], "")),
+            "the default of search.ratio must be a number from 0 to 1, got 2.5"
         );
     }
 

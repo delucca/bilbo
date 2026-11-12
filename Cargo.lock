@@ -126,6 +126,7 @@ dependencies = [
  "bilbo-store",
  "frostem",
  "serde_json",
+ "xxhash-rust",
  "zstd",
 ]
 

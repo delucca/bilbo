@@ -91,7 +91,7 @@ pub fn update(
 /// bilbo's is left alone by everything.
 fn describe(error: &Error) -> String {
     match error {
-        Error::Index(IndexError::Failed { .. }) => {
+        Error::Index(IndexError::Failed { .. } | IndexError::Inconsistent(_)) => {
             format!("{error}; bilbo reindex makes the index again")
         }
         _ => error.to_string(),
@@ -105,5 +105,26 @@ fn failed(error: &str) -> Updated {
         )))],
         refused: true,
         fatal: true,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+
+    use bilbo_search::index::IndexError;
+    use bilbo_search::work::Error;
+
+    use super::describe;
+
+    #[test]
+    fn remember_names_reindex_for_an_index_that_does_not_agree_with_itself() {
+        let remedy = "; bilbo reindex makes the index again";
+        let inconsistent = Error::Index(IndexError::Inconsistent(
+            "a posting names a document outside the index",
+        ));
+        assert!(describe(&inconsistent).ends_with(remedy));
+        let foreign = Error::Index(IndexError::Foreign(PathBuf::from("/c/index")));
+        assert!(!describe(&foreign).contains("reindex"));
     }
 }

@@ -1,0 +1,29 @@
+bilbo recall: search what bilbo keeps and print the chunks that match best.
+
+Usage:
+  bilbo recall <query>... [--kind <kind>]... [--budget <tokens>]
+
+Options:
+      --kind <kind>      Search entries of this kind only; repeat it for more
+      --budget <tokens>  Print at most this many tokens
+
+Output:
+  === <ref> <kind> <date> <n> lines  a hit's header, its fields tab-separated,
+                                     then exactly <n> lines of text
+  ... part <k>/<m>                   one piece of a record too long for a chunk
+  ... cut                            the last hit, cut to fit the budget
+The text is as it was kept, after a line its kind adds (a session's start).
+<ref> is what bilbo read takes. stderr says how many entries were searched.
+
+Each query that reaches the store is logged in the state folder's queries.log.
+
+Exit:
+  0  at least one hit
+  1  nothing matched, no store, no search index, or a store or index failure
+  2  usage or config error
+
+Examples:
+  bilbo recall how did we decide the index format
+  bilbo recall --kind markdown --budget 1500 -- release checklist
+
+Docs: https://github.com/delucca/bilbo/wiki/Commands#recall

@@ -81,7 +81,7 @@ pub const MERGE_DELETED_PERCENT: Key<u8> = Key {
         variable: Some("BILBO_SEARCH_MERGE_DELETED_PERCENT"),
         default: Default::Toml("20"),
         allowed: "a whole number from 1 to 100",
-        doc: "A segment of the index is merged when more than this share of its documents, in percent, was replaced; 100 never merges for that reason. It changes no document; it changes how far the ranking of an index kept by remember can drift from a rebuilt one's.",
+        doc: "A segment of the index is merged when more than this share of its documents, in percent, was replaced; 100 never merges for that reason. It changes no document and no ranking: only how much space replaced documents hold until a merge.",
     },
     parse: |value| {
         value

@@ -5,6 +5,7 @@ the pages they cite, and recalls them when a later session asks.
 
 [1mVerbs:[22m
   [1mremember[22m  Keep files as entries; a later run keeps what grew or changed
+  [1mrecall[22m    Search everything bilbo keeps and print the chunks that match best
   [1mread[22m      Print an entry: its outline, or its records a page at a time
   [1mreindex[22m   Rebuild the catalog and the search index from the store
   [1mconfig[22m    Show each setting, its value and where it came from

@@ -1,6 +1,6 @@
 use bilbo_settings::key::Shown;
 
-use crate::console::message::sanitize;
+use crate::console::message::{line, sanitize};
 use crate::console::theme::{Style, paint};
 use crate::console::view::View;
 
@@ -12,14 +12,10 @@ pub fn plain(shown: &[Shown]) -> String {
                 "{} = {} ({})\n",
                 one.name,
                 sanitize(&one.value),
-                origin(one)
+                sanitize(&one.origin.to_string())
             )
         })
         .collect()
-}
-
-fn origin(one: &Shown) -> String {
-    sanitize(&one.origin.to_string())
 }
 
 pub fn human(shown: &[Shown], view: &View) -> String {
@@ -34,8 +30,12 @@ pub fn human(shown: &[Shown], view: &View) -> String {
             format!(
                 "{:<width$} = {}  {}\n",
                 one.name,
-                sanitize(&one.value),
-                paint(view, Style::Note, &format!("({})", origin(one)))
+                line(view, &one.value),
+                paint(
+                    view,
+                    Style::Note,
+                    &format!("({})", line(view, &one.origin.to_string()))
+                )
             )
         })
         .collect()

@@ -5,8 +5,13 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use bilbo_kinds::reader::{Passage, Piece, Reader};
 use bilbo_kinds::tokens::Tokens;
+use bilbo_search::analyze;
+use bilbo_search::chunk;
 use bilbo_search::index::{Doc, Extent, Index, IndexError, Stats, millis};
+use bilbo_search::lookup::{Filter, Found, Lookup, Posting, Totals};
 use bilbo_search::position::Position;
+use bilbo_search::rank::{Candidate, Query, Ranker};
+use bilbo_search::recall::log::QueryLog;
 use bilbo_store::entries::{
     Capture, CaptureError, Captured, Change, Cursor, Entries, Generation, Head, Meta, Origin,
     RecordRange, StoreError,
@@ -297,6 +302,7 @@ pub struct Log {
     pub entries: Vec<Held>,
     pub log: Vec<Change>,
     pub changes_fail: bool,
+    pub reads: RefCell<Vec<Id>>,
 }
 
 pub struct Held {
@@ -315,6 +321,7 @@ impl Log {
             entries: Vec::new(),
             log: Vec::new(),
             changes_fail: false,
+            reads: RefCell::new(Vec::new()),
         }
     }
 
@@ -395,6 +402,7 @@ impl Entries for Log {
         generation: Generation,
         records: RecordRange,
     ) -> Result<Vec<Vec<u8>>, StoreError> {
+        self.reads.borrow_mut().push(id);
         let held = self
             .entries
             .iter()
@@ -594,5 +602,232 @@ impl Index for Docs {
     fn rollback(&mut self) {
         self.rolled_back += 1;
         self.pending.clear();
+    }
+}
+
+fn unreadable(method: &str) -> IndexError {
+    IndexError::Failed {
+        action: "read",
+        path: PathBuf::from("/c/index"),
+        error: format!("{method} failed"),
+    }
+}
+
+impl Docs {
+    fn terms_of(row: &Row) -> Vec<String> {
+        analyze::terms(&row.text)
+    }
+}
+
+impl Lookup for Docs {
+    fn position(&self) -> Result<Option<Position>, IndexError> {
+        Ok(self.position.clone())
+    }
+
+    fn totals(&self) -> Result<Totals, IndexError> {
+        let entries: std::collections::BTreeSet<Id> =
+            self.rows.iter().map(|row| row.entry).collect();
+        Ok(Totals {
+            documents: self.rows.len() as u64,
+            entries: entries.len() as u64,
+            length: self
+                .rows
+                .iter()
+                .map(|row| Docs::terms_of(row).len() as u64)
+                .sum(),
+            bound: self.rows.len() as u32,
+        })
+    }
+
+    fn postings(&self, term: &str) -> Result<Vec<Posting>, IndexError> {
+        let mut postings = Vec::new();
+        for (doc, row) in self.rows.iter().enumerate() {
+            let terms = Docs::terms_of(row);
+            let freq = terms.iter().filter(|candidate| *candidate == term).count();
+            if freq > 0 {
+                postings.push(Posting {
+                    doc: doc as u32,
+                    freq: freq as u32,
+                    length: terms.len() as u32,
+                });
+            }
+        }
+        Ok(postings)
+    }
+
+    fn holding(&self, filter: &Filter<'_>) -> Result<Vec<u32>, IndexError> {
+        let Filter::Kind(kind) = filter;
+        Ok(self
+            .rows
+            .iter()
+            .enumerate()
+            .filter(|(_, row)| row.kind == *kind)
+            .map(|(doc, _)| doc as u32)
+            .collect())
+    }
+
+    fn found(&self, docs: &[u32]) -> Result<Vec<Found>, IndexError> {
+        Ok(docs
+            .iter()
+            .map(|doc| {
+                let row = &self.rows[*doc as usize];
+                Found {
+                    entry: row.entry,
+                    kind: row.kind.clone(),
+                    extent: Extent {
+                        generation: Generation(row.generation),
+                        records: RecordRange {
+                            first: row.first,
+                            count: row.count,
+                        },
+                        part: row.part,
+                        date: row.date,
+                    },
+                    digest: chunk::digest(&row.text),
+                }
+            })
+            .collect())
+    }
+}
+
+pub struct Failing<'a>(pub &'a Docs, pub &'static str);
+
+impl Lookup for Failing<'_> {
+    fn position(&self) -> Result<Option<Position>, IndexError> {
+        if self.1 == "position" {
+            return Err(unreadable("position"));
+        }
+        self.0.position()
+    }
+
+    fn totals(&self) -> Result<Totals, IndexError> {
+        if self.1 == "totals" {
+            return Err(unreadable("totals"));
+        }
+        self.0.totals()
+    }
+
+    fn postings(&self, term: &str) -> Result<Vec<Posting>, IndexError> {
+        if self.1 == "postings" {
+            return Err(unreadable("postings"));
+        }
+        self.0.postings(term)
+    }
+
+    fn holding(&self, filter: &Filter<'_>) -> Result<Vec<u32>, IndexError> {
+        if self.1 == "holding" {
+            return Err(unreadable("holding"));
+        }
+        self.0.holding(filter)
+    }
+
+    fn found(&self, docs: &[u32]) -> Result<Vec<Found>, IndexError> {
+        if self.1 == "found" {
+            return Err(unreadable("found"));
+        }
+        self.0.found(docs)
+    }
+}
+
+pub struct Scripted {
+    pub candidates: Vec<Candidate>,
+    pub calls: Cell<u32>,
+    pub limits: RefCell<Vec<usize>>,
+}
+
+impl Scripted {
+    pub fn new(candidates: Vec<Candidate>) -> Scripted {
+        Scripted {
+            candidates,
+            calls: Cell::new(0),
+            limits: RefCell::new(Vec::new()),
+        }
+    }
+}
+
+impl Ranker for Scripted {
+    fn rank(&self, _query: &Query, limit: usize) -> Result<Vec<Candidate>, IndexError> {
+        self.calls.set(self.calls.get() + 1);
+        self.limits.borrow_mut().push(limit);
+        Ok(self.candidates.clone())
+    }
+}
+
+#[derive(Default)]
+pub struct Logged(pub Vec<String>);
+
+impl QueryLog for Logged {
+    fn append(&mut self, line: &str) -> std::io::Result<()> {
+        self.0.push(line.to_owned());
+        Ok(())
+    }
+}
+
+pub struct Broken;
+
+pub struct Never;
+
+impl Reader for Never {
+    fn kind(&self) -> &'static str {
+        unreachable!("no reader is asked its kind")
+    }
+
+    fn passages(&self, _records: &[&[u8]]) -> Vec<Passage> {
+        unreachable!("no reader reads a record")
+    }
+
+    fn appends_only(&self) -> bool {
+        unreachable!("no reader is asked")
+    }
+}
+
+impl QueryLog for Broken {
+    fn append(&mut self, _line: &str) -> std::io::Result<()> {
+        Err(std::io::Error::other("the disk is full"))
+    }
+}
+
+pub struct Dated(pub &'static str);
+
+impl Reader for Dated {
+    fn kind(&self) -> &'static str {
+        self.0
+    }
+
+    fn passages(&self, records: &[&[u8]]) -> Vec<Passage> {
+        Lines(self.0).passages(records)
+    }
+
+    fn appends_only(&self) -> bool {
+        true
+    }
+
+    fn preface(&self, records: &[&[u8]]) -> Option<String> {
+        Some(format!("{} records:", records.len()))
+    }
+}
+
+/// A record `!close` ends the first passage with ` (closed)`, as a fence closed by a later record
+/// turns earlier text into frontmatter.
+pub struct Fenced(pub &'static str);
+
+impl Reader for Fenced {
+    fn kind(&self) -> &'static str {
+        self.0
+    }
+
+    fn passages(&self, records: &[&[u8]]) -> Vec<Passage> {
+        let mut passages = Lines(self.0).passages(records);
+        if records.iter().any(|record| record.starts_with(b"!close"))
+            && let Some(first) = passages.first_mut()
+        {
+            first.text.push_str(" (closed)");
+            first.ends = vec![first.text.len()];
+        }
+        passages
+    }
+
+    fn appends_only(&self) -> bool {
+        false
     }
 }

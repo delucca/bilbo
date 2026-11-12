@@ -1,0 +1,9 @@
+[project]
+name = "retrieval-bilbo-next"
+version = "0"
+requires-python = "==3.12.*"
+dependencies = []
+
+[tool.uv]
+package = false
+exclude-newer = "2026-09-27T00:00:00Z"

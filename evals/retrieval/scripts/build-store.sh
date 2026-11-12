@@ -87,6 +87,12 @@ done
 # The containers get the LLM only through compose.yaml.
 uses_llm=
 grep -q BILBO_EVAL_LLM_ "$root/arms/$arm/compose.yaml" && uses_llm=1
+# An arm whose compose.yaml reads BILBO_EVAL_SCOPE builds one store of every repository (all) or one a repository (repo).
+uses_scope=
+if grep -q BILBO_EVAL_SCOPE "$root/arms/$arm/compose.yaml"; then
+  uses_scope=1
+  [[ ${BILBO_EVAL_SCOPE:-all} == all || ${BILBO_EVAL_SCOPE} == repo ]] || die "BILBO_EVAL_SCOPE must be all or repo"
+fi
 
 cache=${BILBO_EVALS_CACHE:-${XDG_CACHE_HOME:-$HOME/.cache}/bilbo-evals}/retrieval
 
@@ -108,6 +114,7 @@ inputs_for() {
   [[ -z $uses_llm ]] || echo "llm $1"
   [[ -z $uses_small || -z $2 || $2 == "$1" ]] || echo "llm-small $2"
   echo "sessions ${sessions:-all}"
+  [[ -z $uses_scope ]] || echo "scope ${BILBO_EVAL_SCOPE:-all}"
   [[ -z $seed_file ]] || echo "seed $seed_file $seed_sha"
   cd "$root/arms/$arm"
   find . -mindepth 1 \( -name '.*' -o -name __pycache__ \) -prune -o -type f ! -name compose.gpu.yaml ! -name check.py ! -name search.py \
@@ -302,6 +309,7 @@ fi
 
 export BILBO_UID=$(id -u) BILBO_GID=$(id -g) BILBO_EVAL_CORPUS=$corpus/corpus BILBO_EVAL_WORK=$work
 export BILBO_EVAL_EMBEDDER=$model BILBO_EVAL_DEVICE=$device BILBO_EVAL_SESSIONS=$sessions
+export BILBO_EVAL_SCOPE=${BILBO_EVAL_SCOPE:-all}
 # Compose warns about each unset variable, and a check has no LLM.
 export BILBO_EVAL_LLM_URL=${BILBO_EVAL_LLM_URL:-} BILBO_EVAL_LLM_KEY=${BILBO_EVAL_LLM_KEY:-}
 export BILBO_EVAL_LLM_MODEL=${BILBO_EVAL_LLM_MODEL:-}
