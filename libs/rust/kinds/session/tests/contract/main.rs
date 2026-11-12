@@ -1,6 +1,5 @@
 //! `expected.jsonl` is what the eval's bm25 `render_session` printed for `edges.jsonl` and `sample.jsonl`,
-//! written by `regenerate.py`, never by hand; `prefaces.jsonl` is the line the eval's `search.py` puts before a
-//! session's chunks, written the same way.
+//! written by `regenerate.py`, never by hand.
 
 use std::collections::BTreeMap;
 use std::ffi::OsString;
@@ -283,10 +282,8 @@ fn the_preface_is_the_line_the_eval_puts_before_a_sessions_chunks() {
     );
 }
 
-/// `CONTRACT_CORPUS` is the unpacked eval corpus, `CONTRACT_PREFACES` what `regenerate.py --whole` wrote beside its
-/// output (`*.prefaces.jsonl`). Prints counts only.
 #[test]
-#[ignore = "needs the unpacked eval corpus"]
+#[ignore = "needs CONTRACT_CORPUS, the unpacked eval corpus, and CONTRACT_PREFACES, the prefaces regenerate.py --whole wrote"]
 fn every_session_of_the_corpus_gets_the_evals_preface() {
     let corpus = PathBuf::from(var("CONTRACT_CORPUS").expect("CONTRACT_CORPUS"));
     let rows = fs::read_to_string(var("CONTRACT_PREFACES").expect("CONTRACT_PREFACES"))

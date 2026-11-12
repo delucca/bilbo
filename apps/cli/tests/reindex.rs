@@ -98,6 +98,7 @@ fn rank(cache: &Path, text: &str, limit: usize) -> Vec<Candidate> {
         k1: keys.bm25_k1.value,
         b: keys.bm25_b.value,
         dropped: &[],
+        batch: keys.read_batch.value,
     }
     .rank(
         &Query {

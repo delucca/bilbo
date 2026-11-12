@@ -57,6 +57,7 @@ Sizes are strings with a binary unit, `KiB`, `MiB` or `GiB`, with or without the
 | `recall.question_words` | none | `["what", "did", "we", "should", "how", "anything"]` | Words left out of a query before it is searched; they stay searchable in what was kept. An empty list leaves none out. Must be a list of lowercase words. Each is one word as the index's analyzer reads it: a word it drops, such as `the`, is refused. |
 | `recall.bm25_k1` | `BILBO_RECALL_BM25_K1` | `1.2` | How fast a word that repeats in a chunk stops adding to its score. At 0 every chunk holding a word would score the same. Must be a number from 0.01 to 10. |
 | `recall.bm25_b` | `BILBO_RECALL_BM25_B` | `0.75` | How much a chunk longer than the average is scored down: 0 not at all, 1 fully. Must be a number from 0 to 1. |
+| `recall.read_batch` | `BILBO_RECALL_READ_BATCH` | `4096` | The most chunks bilbo recall reads from the index at once. By default only a run of equal scores longer than the candidates reaches it. It changes no hit. Must be a whole number from 1 to 1000000. |
 | `markdown.heading_width` | `BILBO_MARKDOWN_HEADING_WIDTH` | `100` | The most characters a heading may have inside a section label of a Markdown file, an ellipsis included: a longer heading is cut and ends in one. Must be a whole number from 20 to 1000. A change takes a new index: run bilbo reindex. |
 
 An XDG variable moves a default only when it holds an absolute path.
@@ -89,7 +90,7 @@ A key the [Keys](#keys) table does not list, a key set twice, a value of the wro
 
 ```text
 bilbo: /home/me/.config/bilbo/config.toml:7: store.seal_at must be between 1 MiB and 1 GiB, got "0"
-bilbo: /home/me/.config/bilbo/config.toml:9: unknown key store.sealat; the keys are paths.root, paths.state, paths.cache, store.seal_at, store.seal_after, store.compression, store.tear_budget, store.wait, store.poll, follow, read.budget, read.outline_width, read.matches_listed, search.chunk_tokens, search.chunk_overlap, search.workers, search.index_memory, search.merge_deleted_percent, search.entry_tries, recall.budget, recall.candidates, recall.cap, recall.question_words, recall.bm25_k1, recall.bm25_b, markdown.heading_width
+bilbo: /home/me/.config/bilbo/config.toml:9: unknown key store.sealat; the keys are paths.root, paths.state, paths.cache, store.seal_at, store.seal_after, store.compression, store.tear_budget, store.wait, store.poll, follow, read.budget, read.outline_width, read.matches_listed, search.chunk_tokens, search.chunk_overlap, search.workers, search.index_memory, search.merge_deleted_percent, search.entry_tries, recall.budget, recall.candidates, recall.cap, recall.question_words, recall.bm25_k1, recall.bm25_b, recall.read_batch, markdown.heading_width
 bilbo: /home/me/.config/bilbo/config.toml:4: duplicate key seal_at
 bilbo: BILBO_STORE_SEAL_AT must be between 1 MiB and 1 GiB, got "0"
 bilbo: /home/me/.config/bilbo/config.toml:2: not valid UTF-8
@@ -110,7 +111,7 @@ bilbo: /home/me/.local/share/bilbo/notes belongs to bilbo 0.20; set BILBO_HOME o
 | `BILBO_STORE_SEAL_AT`, `BILBO_STORE_SEAL_AFTER`, `BILBO_STORE_COMPRESSION`, `BILBO_STORE_TEAR_BUDGET`, `BILBO_STORE_WAIT`, `BILBO_STORE_POLL` | Set `store.seal_at`, `store.seal_after`, `store.compression`, `store.tear_budget`, `store.wait` and `store.poll`. |
 | `BILBO_READ_BUDGET`, `BILBO_READ_OUTLINE_WIDTH`, `BILBO_READ_MATCHES_LISTED` | Set `read.budget`, `read.outline_width` and `read.matches_listed`. |
 | `BILBO_SEARCH_CHUNK_TOKENS`, `BILBO_SEARCH_CHUNK_OVERLAP`, `BILBO_SEARCH_WORKERS`, `BILBO_SEARCH_INDEX_MEMORY`, `BILBO_SEARCH_MERGE_DELETED_PERCENT`, `BILBO_SEARCH_ENTRY_TRIES` | Set `search.chunk_tokens`, `search.chunk_overlap`, `search.workers`, `search.index_memory`, `search.merge_deleted_percent` and `search.entry_tries`. |
-| `BILBO_RECALL_BUDGET`, `BILBO_RECALL_CANDIDATES`, `BILBO_RECALL_CAP`, `BILBO_RECALL_BM25_K1`, `BILBO_RECALL_BM25_B` | Set `recall.budget`, `recall.candidates`, `recall.cap`, `recall.bm25_k1` and `recall.bm25_b`. `recall.question_words` has no variable. |
+| `BILBO_RECALL_BUDGET`, `BILBO_RECALL_CANDIDATES`, `BILBO_RECALL_CAP`, `BILBO_RECALL_BM25_K1`, `BILBO_RECALL_BM25_B`, `BILBO_RECALL_READ_BATCH` | Set `recall.budget`, `recall.candidates`, `recall.cap`, `recall.bm25_k1`, `recall.bm25_b` and `recall.read_batch`. `recall.question_words` has no variable. |
 | `BILBO_MARKDOWN_HEADING_WIDTH` | Sets `markdown.heading_width`. |
 | `BILBO_CONFIG` | The config file's path. A file it names must exist. |
 | `XDG_DATA_HOME`, `XDG_CONFIG_HOME`, `XDG_CACHE_HOME`, `XDG_STATE_HOME` | Move the default store root, config file, cache and state folders, as [Keys](#keys) and [Folders](#folders) show. |

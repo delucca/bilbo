@@ -126,6 +126,7 @@ pub fn run(
         k1: settings.recall.bm25_k1.value,
         b: settings.recall.bm25_b.value,
         dropped: &settings.recall.question_words.value,
+        batch: settings.recall.read_batch.value,
     });
     let rankers: Vec<&dyn Ranker> = bm25.iter().map(|ranker| ranker as &dyn Ranker).collect();
     let request = Request {

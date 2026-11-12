@@ -95,6 +95,7 @@ fn ask_with(
         k1: 1.2,
         b: 0.75,
         dropped: &[],
+        batch: 4096,
     };
     run(
         request,

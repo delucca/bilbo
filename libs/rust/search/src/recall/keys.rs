@@ -118,13 +118,32 @@ pub const BM25_B: Key<f64> = Key {
     show: ToString::to_string,
 };
 
-pub const ABOUT: [&About; 6] = [
+pub const READ_BATCH: Key<usize> = Key {
+    about: About {
+        name: "recall.read_batch",
+        variable: Some("BILBO_RECALL_READ_BATCH"),
+        default: Default::Toml("4096"),
+        allowed: "a whole number from 1 to 1000000",
+        doc: "The most chunks bilbo recall reads from the index at once. By default only a run of equal scores longer than the candidates reaches it. It changes no hit.",
+    },
+    parse: |value| {
+        value
+            .integer()
+            .and_then(|rows| usize::try_from(rows).ok())
+            .filter(|rows| (1..=1_000_000).contains(rows))
+            .ok_or_else(|| value.refuse())
+    },
+    show: ToString::to_string,
+};
+
+pub const ABOUT: [&About; 7] = [
     &BUDGET.about,
     &CANDIDATES.about,
     &CAP.about,
     &QUESTION_WORDS.about,
     &BM25_K1.about,
     &BM25_B.about,
+    &READ_BATCH.about,
 ];
 
 #[derive(Debug, Clone, PartialEq)]
@@ -135,6 +154,7 @@ pub struct Section {
     pub question_words: Resolved<Vec<String>>,
     pub bm25_k1: Resolved<f64>,
     pub bm25_b: Resolved<f64>,
+    pub read_batch: Resolved<usize>,
 }
 
 pub fn section(source: &Source<'_>) -> Result<Section, Error> {
@@ -145,6 +165,7 @@ pub fn section(source: &Source<'_>) -> Result<Section, Error> {
         question_words: QUESTION_WORDS.resolve(source)?,
         bm25_k1: BM25_K1.resolve(source)?,
         bm25_b: BM25_B.resolve(source)?,
+        read_batch: READ_BATCH.resolve(source)?,
     })
 }
 
@@ -158,7 +179,7 @@ pub fn defaults() -> Section {
 }
 
 impl Section {
-    pub fn shown(&self) -> [Shown; 6] {
+    pub fn shown(&self) -> [Shown; 7] {
         [
             BUDGET.shown(&self.budget),
             CANDIDATES.shown(&self.candidates),
@@ -166,6 +187,7 @@ impl Section {
             QUESTION_WORDS.shown(&self.question_words),
             BM25_K1.shown(&self.bm25_k1),
             BM25_B.shown(&self.bm25_b),
+            READ_BATCH.shown(&self.read_batch),
         ]
     }
 }
@@ -214,6 +236,7 @@ mod tests {
         );
         assert!((section.bm25_k1.value - 1.2).abs() < f64::EPSILON);
         assert!((section.bm25_b.value - 0.75).abs() < f64::EPSILON);
+        assert_eq!(section.read_batch.value, 4096);
         assert_eq!(
             shown(&section),
             [
@@ -223,6 +246,7 @@ mod tests {
                 "recall.question_words = [\"what\", \"did\", \"we\", \"should\", \"how\", \"anything\"] (default)",
                 "recall.bm25_k1 = 1.2 (default)",
                 "recall.bm25_b = 0.75 (default)",
+                "recall.read_batch = 4096 (default)",
             ]
         );
         let variables: Vec<_> = ABOUT.iter().map(|about| about.variable).collect();
@@ -235,6 +259,7 @@ mod tests {
                 None,
                 Some("BILBO_RECALL_BM25_K1"),
                 Some("BILBO_RECALL_BM25_B"),
+                Some("BILBO_RECALL_READ_BATCH"),
             ]
         );
     }
@@ -267,6 +292,14 @@ mod tests {
                 "/c/config.toml:1: recall.cap must be a whole number from 0 to 1000, got 1001",
             ),
             (
+                "recall.read_batch = 0",
+                "/c/config.toml:1: recall.read_batch must be a whole number from 1 to 1000000, got 0",
+            ),
+            (
+                "recall.read_batch = 1000001",
+                "/c/config.toml:1: recall.read_batch must be a whole number from 1 to 1000000, got 1000001",
+            ),
+            (
                 "recall.budget = \"4000\"",
                 "/c/config.toml:1: recall.budget must be a whole number from 256 to 1000000, got \"4000\"",
             ),
@@ -277,6 +310,7 @@ mod tests {
             ("BILBO_RECALL_BUDGET", "12"),
             ("BILBO_RECALL_CANDIDATES", "1001"),
             ("BILBO_RECALL_CAP", "1001"),
+            ("BILBO_RECALL_READ_BATCH", "0"),
         ] {
             assert!(
                 resolve(&[(name, value)], "")
@@ -401,7 +435,7 @@ mod tests {
 
     #[test]
     fn the_keys_show_as_toml_that_reads_back() {
-        let text = "[recall]\nbudget = 777\ncandidates = 9\ncap = 2\nquestion_words = [\"why\", \"who\"]\nbm25_k1 = 1.5\nbm25_b = 0.4\n";
+        let text = "[recall]\nbudget = 777\ncandidates = 9\ncap = 2\nquestion_words = [\"why\", \"who\"]\nbm25_k1 = 1.5\nbm25_b = 0.4\nread_batch = 99\n";
         for section in [defaults(), resolve(&[], text).expect("valid")] {
             let mut written = String::from("[recall]\n");
             for shown in section.shown() {
@@ -415,6 +449,7 @@ mod tests {
             assert_eq!(again.question_words.value, section.question_words.value);
             assert!((again.bm25_k1.value - section.bm25_k1.value).abs() < f64::EPSILON);
             assert!((again.bm25_b.value - section.bm25_b.value).abs() < f64::EPSILON);
+            assert_eq!(again.read_batch.value, section.read_batch.value);
         }
     }
 }

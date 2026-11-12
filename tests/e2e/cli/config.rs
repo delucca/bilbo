@@ -8,7 +8,7 @@ use super::{Run, binary};
 const KEYS: &str = "paths.root, paths.state, paths.cache, store.seal_at, store.seal_after, \
                     store.compression, store.tear_budget, store.wait, store.poll, follow, read.budget, read.outline_width, \
                     read.matches_listed, search.chunk_tokens, search.chunk_overlap, search.workers, \
-                    search.index_memory, search.merge_deleted_percent, search.entry_tries, recall.budget, recall.candidates, recall.cap, recall.question_words, recall.bm25_k1, recall.bm25_b, markdown.heading_width";
+                    search.index_memory, search.merge_deleted_percent, search.entry_tries, recall.budget, recall.candidates, recall.cap, recall.question_words, recall.bm25_k1, recall.bm25_b, recall.read_batch, markdown.heading_width";
 
 #[test]
 fn each_key_shows_the_source_that_won_a_variable_over_the_file_over_the_default() {
@@ -48,6 +48,7 @@ fn each_key_shows_the_source_that_won_a_variable_over_the_file_over_the_default(
              recall.question_words = [\"what\", \"did\", \"we\", \"should\", \"how\", \"anything\"] (default)\n\
              recall.bm25_k1 = 1.2 (default)\n\
              recall.bm25_b = 0.75 (default)\n\
+             recall.read_batch = 4096 (default)\n\
              markdown.heading_width = 100 (default)\n",
             root = scratch.path("store"),
             home = scratch.path("home"),

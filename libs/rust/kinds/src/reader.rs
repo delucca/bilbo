@@ -30,7 +30,6 @@ pub trait Reader: Sync {
     /// Whether appending records to a generation changes no existing passage: the passages of the
     /// shorter generation are the first passages of the longer one.
     fn appends_only(&self) -> bool;
-    /// The line shown before any chunk of this entry. `records` is one whole generation.
     fn preface(&self, _records: &[&[u8]]) -> Option<String> {
         None
     }

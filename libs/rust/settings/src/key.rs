@@ -286,8 +286,6 @@ impl<'a> Value<'a> {
         }
     }
 
-    /// A TOML float or integer, or a variable's or flag's text of digits with at most one point
-    /// between digits.
     pub fn decimal(&self) -> Option<f64> {
         let number = match &self.given {
             Given::Text(text) => {

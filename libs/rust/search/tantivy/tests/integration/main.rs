@@ -159,6 +159,7 @@ fn rank(folder: &Path, text: &str, limit: usize) -> Vec<Candidate> {
         k1: 1.2,
         b: 0.75,
         dropped: &[],
+        batch: 4096,
     }
     .rank(&query, limit)
     .expect("a rank")
@@ -2447,6 +2448,7 @@ fn a_tie_of_every_document_is_cut_by_the_tie_order() {
         k1: 1.2,
         b: 0.75,
         dropped: &[],
+        batch: 4096,
     }
     .rank(&query, 50)
     .expect("a rank");

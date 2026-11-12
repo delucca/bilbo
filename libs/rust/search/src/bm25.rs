@@ -11,15 +11,13 @@ pub struct Bm25<'a> {
     pub k1: f64,
     pub b: f64,
     pub dropped: &'a [String],
+    pub batch: usize,
 }
-
-/// A safety bound on what one read of rows holds, not a tunable.
-const BATCH: usize = 4096;
 
 impl Bm25<'_> {
     fn read(&self, docs: &[u32], scores: &[f32]) -> Result<Vec<Candidate>, IndexError> {
         let mut read = Vec::with_capacity(docs.len());
-        for batch in docs.chunks(BATCH) {
+        for batch in docs.chunks(self.batch) {
             let found = self.index.found(batch)?;
             read.extend(found.into_iter().zip(batch).map(|(found, doc)| Candidate {
                 found,
@@ -115,7 +113,7 @@ impl Ranker for Bm25<'_> {
             let need = limit - above.len();
             let mut kept = self.read(&above, &scores)?;
             let mut ties: Vec<Candidate> = Vec::new();
-            for batch in tied.chunks(BATCH) {
+            for batch in tied.chunks(self.batch) {
                 ties.extend(self.read(batch, &scores)?);
                 ties.sort_by(order);
                 ties.truncate(need);
@@ -150,6 +148,7 @@ mod tests {
             k1: 1.2,
             b: 0.75,
             dropped: &[],
+            batch: 4096,
         };
         bm25.rank(&query(text, kinds), limit)
             .expect("a ranking")
@@ -241,6 +240,7 @@ mod tests {
             k1: 1.2,
             b: 0.75,
             dropped: &[],
+            batch: 4096,
         }
         .rank(&query("alpha", &[]), 10)
         .expect("a ranking")
@@ -302,9 +302,22 @@ mod tests {
         for first in (1..=10_000).rev() {
             table = table.doc("note", 1, first, "alpha");
         }
-        let found = ranked(&table, "alpha", &[], 3);
-        assert_eq!(found.iter().map(|hit| hit.1).collect::<Vec<_>>(), [1, 2, 3]);
-        assert!(table.asked.borrow().iter().all(|asked| *asked <= 4096));
+        let bm25 = Bm25 {
+            index: &table,
+            k1: 1.2,
+            b: 0.75,
+            dropped: &[],
+            batch: 1000,
+        };
+        let found = bm25.rank(&query("alpha", &[]), 3).expect("a ranking");
+        assert_eq!(
+            found
+                .iter()
+                .map(|hit| hit.found.extent.records.first)
+                .collect::<Vec<_>>(),
+            [1, 2, 3]
+        );
+        assert_eq!(table.asked.borrow().iter().max(), Some(&1000));
     }
 
     #[test]
@@ -323,6 +336,7 @@ mod tests {
             k1: 1.2,
             b: 0.75,
             dropped: &[],
+            batch: 4096,
         };
         assert!(matches!(
             bm25.rank(&query("alpha", &[]), 5),
@@ -338,6 +352,7 @@ mod tests {
                 k1: 1.2,
                 b: 0.75,
                 dropped: &[],
+                batch: 4096,
             };
             matches!(
                 bm25.rank(&query("alpha", kinds), 5),

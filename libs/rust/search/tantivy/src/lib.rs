@@ -1172,12 +1172,10 @@ impl Lookup for Committed {
 }
 
 impl Tantivy {
-    /// Of the last commit, sorted.
     pub fn documents(&self) -> Result<Vec<Row>, IndexError> {
         Committed::at(&self.folder).documents()
     }
 
-    /// Live documents of the last commit, sorted.
     pub fn terms(&self) -> Result<Vec<(Row, Words)>, IndexError> {
         Committed::at(&self.folder).terms()
     }

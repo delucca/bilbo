@@ -1036,6 +1036,65 @@ fn an_absent_cache_asks_for_no_lookup() {
     );
 }
 
+struct Widest {
+    inner: Box<dyn bilbo_search::lookup::Lookup>,
+    widest: std::rc::Rc<std::cell::Cell<usize>>,
+}
+
+impl bilbo_search::lookup::Lookup for Widest {
+    fn position(
+        &self,
+    ) -> Result<Option<bilbo_search::position::Position>, bilbo_search::index::IndexError> {
+        self.inner.position()
+    }
+
+    fn totals(&self) -> Result<bilbo_search::lookup::Totals, bilbo_search::index::IndexError> {
+        self.inner.totals()
+    }
+
+    fn postings(
+        &self,
+        term: &str,
+    ) -> Result<Vec<bilbo_search::lookup::Posting>, bilbo_search::index::IndexError> {
+        self.inner.postings(term)
+    }
+
+    fn holding(
+        &self,
+        filter: &bilbo_search::lookup::Filter<'_>,
+    ) -> Result<Vec<u32>, bilbo_search::index::IndexError> {
+        self.inner.holding(filter)
+    }
+
+    fn found(
+        &self,
+        docs: &[u32],
+    ) -> Result<Vec<bilbo_search::lookup::Found>, bilbo_search::index::IndexError> {
+        self.widest.set(self.widest.get().max(docs.len()));
+        self.inner.found(docs)
+    }
+}
+
+#[test]
+fn the_read_batch_key_bounds_each_read_of_the_index() {
+    let sandbox = Sandbox::filled("recall_read_batch");
+    let widest_read = |config: &str| {
+        fs::write(sandbox.dir.join("config/config.toml"), config).expect("a config file");
+        let widest = std::rc::Rc::new(std::cell::Cell::new(0));
+        let lookup = |path: &std::path::Path| -> Box<dyn bilbo_search::lookup::Lookup> {
+            Box::new(Widest {
+                inner: bilbo_cli::lookup(path),
+                widest: widest.clone(),
+            })
+        };
+        let outcome = run_with_reading(&sandbox, &shared_tokenizer, &lookup).expect("an outcome");
+        assert_eq!(outcome.exit_code(), 0);
+        widest.get()
+    };
+    assert!(widest_read("") > 1);
+    assert_eq!(widest_read("[recall]\nread_batch = 1\n"), 1);
+}
+
 fn long_note(word: &str) -> String {
     let lines: Vec<String> = (1..=200)
         .map(|n| format!("line {n} about {word} grown in the east bed with some more words"))

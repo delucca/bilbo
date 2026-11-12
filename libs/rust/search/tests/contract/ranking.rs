@@ -138,7 +138,6 @@ static CORPORA: LazyLock<HashMap<String, Table>> = LazyLock::new(|| {
         .collect()
 });
 
-/// Document, bm25s's score, the bits of that score.
 type Hit = (u32, f32, u32);
 
 fn hits(row: &Value) -> Vec<Hit> {
@@ -163,6 +162,7 @@ fn bilbos(index: &dyn Lookup, query: &str, limit: usize) -> Vec<(u32, f32)> {
         k1: 1.2,
         b: 0.75,
         dropped: &[],
+        batch: 4096,
     }
     .rank(
         &Query {
@@ -287,9 +287,8 @@ fn bilbos_order_is_bm25ss_wherever_bm25s_separates_two_documents() {
     }
 }
 
-/// `CONTRACT_STORE` is the unpacked eval store, `CONTRACT_WHOLE` the folder `regenerate.py --whole` wrote.
 #[test]
-#[ignore = "needs the unpacked eval store"]
+#[ignore = "needs CONTRACT_STORE, the unpacked eval store, and CONTRACT_WHOLE, the folder regenerate.py --whole wrote"]
 fn the_bm25_arms_286_rankings_are_bilbos_up_to_exact_ties() {
     let store = PathBuf::from(var("CONTRACT_STORE"));
     let folder = PathBuf::from(var("CONTRACT_WHOLE"));

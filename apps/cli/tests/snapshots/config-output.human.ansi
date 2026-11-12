@@ -23,4 +23,5 @@ recall.cap                   = 0  [2m(default)[22m
 recall.question_words        = ["what", "did", "we", "should", "how", "anything"]  [2m(default)[22m
 recall.bm25_k1               = 1.2  [2m(default)[22m
 recall.bm25_b                = 0.75  [2m(default)[22m
+recall.read_batch            = 4096  [2m(default)[22m
 markdown.heading_width       = 100  [2m(default)[22m

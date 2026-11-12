@@ -34,11 +34,9 @@ pub(crate) enum Kind {
     Text(String),
     /// `None` past the range of `i64`.
     Integer(Option<i64>),
-    /// `None` for `inf`, `nan` and a float past the range of `f64`.
     Decimal(Option<f64>),
     List(Vec<Node>),
     Table(Vec<Field>),
-    /// A boolean or a date and time.
     Other,
 }
 

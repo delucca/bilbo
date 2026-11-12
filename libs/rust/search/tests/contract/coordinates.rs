@@ -43,9 +43,8 @@ fn every_committed_chunk_is_recomputed_from_its_coordinates() {
     assert!(recomputed >= 60, "{recomputed}");
 }
 
-/// `CONTRACT_STORE` is the unpacked eval store, `CONTRACT_WHOLE` the folder `regenerate.py --whole` wrote.
 #[test]
-#[ignore = "needs the unpacked eval store"]
+#[ignore = "needs CONTRACT_STORE, the unpacked eval store, and CONTRACT_WHOLE, the folder regenerate.py --whole wrote"]
 fn every_chunk_of_the_eval_store_is_recomputed_from_its_coordinates() {
     let store = PathBuf::from(var("CONTRACT_STORE"));
     let folder = PathBuf::from(var("CONTRACT_WHOLE"));
