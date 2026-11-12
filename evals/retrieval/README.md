@@ -1,6 +1,6 @@
 # Retrieval eval
 
-Compare how well eleven memory strategies retrieve information from past coding sessions.
+Compare how well twelve memory strategies retrieve information from past coding sessions.
 Each strategy builds a **store** from the same corpus, then retrieves context for questions
 whose answers are in the sessions but absent from the project’s files.
 
@@ -35,7 +35,8 @@ Claude Opus 5.5 which facts are present. A question scores the fraction of its f
 The headline is the weighted mean of class scores on the `query` form.
 
 This measures retrieved context, not the quality of a generated answer. Searches are scoped
-to one project, and some adapters request more results than their tools’ defaults. Read the
+to one project, except that bilbo-next searches one store of every project, and some
+adapters request more results than their tools’ defaults. Read the
 [results and caveats](results/README.md) before comparing strategies.
 
 ## Find your way around

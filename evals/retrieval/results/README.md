@@ -22,6 +22,8 @@ not generated answers. No-answer questions are not scored yet.
 The corpus is selected, with later projects screened for operational procedures. Tools use
 different ingestion paths and models, and some return more results than their defaults.
 Claude-mem’s `prompt` score measures its session-start injection rather than a prompt search.
+bilbo-next searches one store of all 22 projects, and its contexts hold about 3,400 of the
+4,000 tokens; every other arm searches the question’s project alone.
 Query variations preserve project vocabulary, so they test framing rather than independence
 from the wording of the source sessions.
 

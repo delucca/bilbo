@@ -262,7 +262,8 @@ follows, which must report `unread 0` and `failed 0`, and then one `bilbo recall
 `entries.jsonl` (store, entry id, repo, session file).
 
 The scope is `BILBO_EVAL_SCOPE`, part of the key: `all` (the default) puts the 22 repositories in one store, the task's arm;
-`repo` makes one store a repository, for the comparison like for like. A store is a folder of `/work/store/stores/<name>/`
+`repo` makes one store a repository, for the comparison like for like. The judged run in [Results](#results) is the `all`
+scope; the `repo` scope has only the comparison with bm25 without a judge. A store is a folder of `/work/store/stores/<name>/`
 holding `root`, `state`, `cache`, `home` and `config.toml` (`follow = []`); every `bilbo` run sets `HOME`, `BILBO_HOME`,
 `XDG_STATE_HOME`, `XDG_CACHE_HOME` and `BILBO_CONFIG` to them, at the same paths in the build, the check and the search, since
 the catalog and the state folder record them. The sessions' frames are in `state`, which the archive holds with `cache`.
@@ -771,9 +772,9 @@ What the replay changes:
 - The writer is a simulated agent, so a notes store measures that simulation as much as it measures bilbo.
 
 Search is bilbo's own `bilbo recall`: BM25 over the notes' passages, fused with the embedder's vectors, one hit per
-note. bilbo searches every note it holds, of every project, but the eval scopes every arm to the question's project:
-before a project's questions, its notes (the manifest's `repos.<repo>.notes`) are copied into a store of their own at
-`/tmp/store`, with the store's `config`, and indexed on a fresh cache after a sentinel request, as the build indexes.
+note. bilbo searches every note it holds, of every project, but the eval scopes both bilbo 0.19 arms to the question's
+project: before a project's questions, its notes (the manifest's `repos.<repo>.notes`) are copied into a store of their
+own at `/tmp/store`, with the store's `config`, and indexed on a fresh cache after a sentinel request, as the build indexes.
 Each project's notes were written in its own container, so the split is clean; only BM25's statistics and the
 vectors' floating-point noise change. The eval reads that store the two ways bilbo 0.19.0 reads it for an agent:
 
@@ -1062,12 +1063,13 @@ To score an arm's store against the questions:
     evals/retrieval/scripts/eval.sh mem0
 
 The script gets the store as `build-store.sh` does, restores it into fresh services and searches it for every
-answerable question, once per form (`query` and `prompt`), in the question's project alone, for every arm: a store
-of every project is split by project at search time where the tool does not scope by project itself (each arm's
-section says how). A developer's bilbo or Graphiti holds every project they work on and searches it all, so this
-slightly flatters those two: other projects' notes and facts no longer compete for the budget. It packs what
-each search returns, in the tool's order and separated by blank lines, into 4,000 tokens counted with tiktoken's
-o200k_base, separators included, cutting the result that does not fit. Claude Opus 5.5, through `claude -p` on a Claude subscription, marks each fact and each older
+answerable question, once per form (`query` and `prompt`), in the question's project alone, for every arm but
+bilbo-next (see [bilbo next](#bilbo-next)): a store of every project is split by project at search time where the tool
+does not scope by project itself (each arm's section says how). A developer's bilbo 0.19 or Graphiti holds every
+project they work on and searches it all, so this slightly flatters those two: other projects' notes and facts no
+longer compete for the budget. It packs what each search returns, in the tool's order and separated by blank lines,
+into 4,000 tokens counted with tiktoken's o200k_base, separators included, cutting the result that does not fit.
+Claude Opus 5.5, through `claude -p` on a Claude subscription, marks each fact and each older
 value present or absent in each context, once per distinct context: a question's two forms that returned the same
 text share one verdict; when it writes prose before its JSON reply, its last verdict object counts.
 A script scores: a question's score is
@@ -1125,8 +1127,8 @@ Run once on 2026-11-05, the agent scored below the rule on all four arms: bilbo-
 read 1,750 to 4,000, and it opened fewer hits: 0.6 notes in bilbo, 0.7 pages in ai-memory, against the rule's 3. Where
 it opened one, it was mostly the rule's first. In claude-mem it chose mem_search's `auto` mode on 27 of 32 searches,
 not the guided mode the rule follows. The rules stay as they are. Every arm fills the same 4,000 tokens from its
-tool's own ranking, so the results measure what each tool can give in that budget, which is more than an agent that
-stops early takes from it.
+tool's own ranking (bilbo-next fills less, see [Caveats](#caveats)), so the results measure what each tool can give in
+that budget, which is more than an agent that stops early takes from it.
 
 The prompt writer used the developer's own words for each subject (`questions/methodology.md`, step 6), so the questions
 share vocabulary with the sessions, which may favour a keyword search: Lee, Chang and Toutanova (ACL 2019,
@@ -1172,10 +1174,12 @@ comparisons with their intervals.
 
 Each arm's `score.json` from its run is copied to `results/<arm>.json`. Share of facts present in what each arm
 returned, 4,000 tokens, all 143 answerable questions; `misled` counts questions with an older value, in brackets.
-These runs (2026-11-05, evening; the three marked \* on 2026-11-06) follow every fix of the audit: the harness bugs, each arm scoped to the question's
-project, the read rules, and auto-memory's rebuilt store. The judge passed both gates: gold 1.00, a dropped fact caught
-in 58 of 60, a swapped older value in 19 of 20, another project's gold 0.00; `gpt-6.1-sol` agreed with Opus on 150 verdicts at kappa 0.90 (0.93 on the first runs). That audit sampled the runs of
-2026-11-05, not the three rows marked \* or the variation runs.
+These runs (2026-11-05, evening; the three marked \* on 2026-11-06; the one marked ‡ on 2026-11-12) follow every fix
+of the audit: the harness bugs, each arm but bilbo-next scoped to the question's project, the read rules, and
+auto-memory's rebuilt store. The judge passed both gates: gold 1.00, a dropped fact caught in 58 of 60, a swapped older
+value in 19 of 20, another project's gold 0.00; `gpt-6.1-sol` agreed with Opus on 150 verdicts at kappa 0.90 (0.93 on
+the first runs). That audit sampled the runs of 2026-11-05, not the three rows marked \*, the row marked ‡ or the
+variation runs.
 
 | Arm | Store | overview | status | decision | rules | procedure | fact | refind | headline `query` | `prompt` | misled `query` |
 |---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
@@ -1187,6 +1191,7 @@ in 58 of 60, a swapped older value in 19 of 20, another project's gold 0.00; `gp
 | [auto-memory](results/auto-memory.json) | `c138c09fda93` | 0% | 0% | 0% | 40% | 29% | 17% | 0% | **12%** | 12% | 0 of 17 |
 | [bilbo-agent-v0_19](results/bilbo-agent-v0_19.json) | `1a3f9a5213f7` | 44% | 38% | 52% | 33% | 31% | 25% | 38% | **39%** | 11% | 3 of 17 |
 | [bilbo-assisted-v0_19](results/bilbo-assisted-v0_19.json) | `e21e81bb40d2` | 62% | 45% | 68% | 33% | 35% | 31% | 42% | **48%** | 14% | 1 of 17 |
+| [bilbo-next](results/bilbo-next.json)‡ | `be416c877262` | 39% | 40% | 78% | 69% | 46% | 61% | 65% | **55%** | 54% | 2 of 17 |
 | [bm25](results/bm25.json) | `cc0c68a903d7` | 41% | 44% | 81% | 69% | 62% | 72% | 72% | **60%** | 62% | 2 of 17 |
 | [claude-mem](results/claude-mem.json) | `c277bbdc782f` | 18% | 25% | 52% | 20% | 35% | 44% | 42% | **31%** | 4%† | 2 of 17 |
 | [dense](results/dense.json) | `0eac8883d38c` | 30% | 46% | 61% | 42% | 68% | 50% | 55% | **47%** | 50% | 6 of 17 |
@@ -1199,6 +1204,12 @@ first runs below.
 
 † claude-mem's `prompt` column is its SessionStart injection, the same text for every question of a project, not a
 search with the prompt. See [Caveats](#caveats).
+
+‡ bilbo-next was judged on 2026-11-12, from the binary built from `next` at `c5e85f3`, with one store of all 22 projects
+(`BILBO_EVAL_SCOPE=all`), so each search ranks every project's chunks; every other row searches the question's project
+alone. Its gold and random controls were judged again that day and gave the same per-question scores as the other
+rows' controls on all 143 questions for gold and 142 of 143 for random (gold 1.00; random 1.77% against their 1.93%).
+No gate ran that day. See [Caveats](#caveats).
 
 Class scores are on the `query` form. The questions per class: overview 27, status 21, decision 16, rules 15,
 procedure 26, fact 18, refind 20.
@@ -1228,9 +1239,10 @@ terms kept, the framing and the ordinary words changed. The judge read the origi
 returned differs. The headline above stays on the original wording.
 
 **On `query` the rule fails against all ten arms, which does not show there is no effect.** bm25 drops 1.5 points
-(-2.6 to 5.5), the largest `query` drop of the eleven though not significantly larger than any other; against nine
-of the ten arms the interval of bm25's extra drop still reaches past 5 points (upper bounds 4.6 to 8.2). What the
-result supports is narrower: bm25's lead survives a reframed question once an agent reduces it to a keyword query.
+(-2.6 to 5.5), the largest `query` drop of the eleven arms run with the variation though not significantly larger
+than any other; against nine of the ten arms the interval of bm25's extra drop still reaches past 5 points (upper
+bounds 4.6 to 8.2). What the result supports is narrower:
+bm25's lead survives a reframed question once an agent reduces it to a keyword query.
 Its own drop is also smaller than its lead over the third arm, bilbo-assisted, 11.8 points (2.4 to 21.2).
 
 The variation kept the topic vocabulary, so it tests framing, not the vocabulary the questions share with the
@@ -1310,13 +1322,25 @@ search file.
 
 ### Caveats
 
-Read each row with these. They come from the audit of 2026-11-05, and each arm's section has the detail.
+Read each row with these. They come from the audit of 2026-11-05, bilbo-next's from its run of 2026-11-12, and each
+arm's section has the detail.
 
-- **Every arm**: each fills the same 4,000 tokens from its tool's own ranking, which asks most tools for more than
-  their defaults give: mem0, Graphiti and MemPalace return 100 results where their tools return 3, 10 and 5 by
-  default, and Hindsight recalls up to 8,192 tokens where its tool asks for 4,096. The table measures what each tool
-  can give in that budget, not what a default install hands an agent. A real agent read less than the budget (600 to
-  1,800 tokens, see [Running the eval](#running-the-eval)).
+- **Every arm**: each fills the same 4,000 tokens from its tool's own ranking (bilbo-next less, see below), which
+  asks most tools for more than their defaults give: mem0, Graphiti and MemPalace return 100 results where their
+  tools return 3, 10 and 5 by default, and Hindsight recalls up to 8,192 tokens where its tool asks for 4,096. The
+  table measures what each tool can give in that budget, not what a default install hands an agent. A real agent
+  read less than the budget (600 to 1,800 tokens, see [Running the eval](#running-the-eval)).
+- **bilbo-next**: the row is recall over one store of all 22 projects, with no project filter, since `recall` has
+  none, so it is not like for like with the rows that search the question's project alone. 878 of its 1,196 `query`
+  results and 872 of its 1,208 `prompt` results are from the question's project, and 10 `query` and 8 `prompt`
+  questions got none from it. Its scores come from one run that the audit of 2026-11-05 did not sample, and it has no
+  query variation. `recall` stops at 4,000 tokens as the index's tokenizer counts them, headers included, so its
+  contexts hold fewer o200k tokens than the 4,000 budget: 3,380 on average (at most 3,658, none cut by the packer),
+  where the bm25 arm's hold 3,997 (at most 4,000, all cut). A comparison of one store a project with bm25 was made
+  without a judge, on an earlier build, and is not a score. With one store a project, `recall`'s budget lifted and no
+  question words, its contexts were byte-equal to the bm25 arm's in 271 of 286 forms and differed in the other 15
+  only in the order of chunks with equal scores. That build's run of this row's settings returned the same chunks as
+  the judged run, all but the last hit of 7 of the 286 lists.
 - **claude-mem**: `mem_search` sees only the 90 days before the repository's last session, and the 30 questions whose
   evidence all lies before that window (21 in readaloud, 5 in port-cli, 4 in bosarsalog) score 0. Its headline is
   30.9% on all 143 questions and 39.7% without those 30. The same cut moves the other arms by 3.5 points or less, in
