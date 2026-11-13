@@ -104,7 +104,7 @@ pub fn run(
 
     let layout = settings.layout();
     Store::check(&layout).map_err(|error| Failure::from(&error))?;
-    let (output, mut closing) = if plan.files.is_empty() {
+    let (output, mut closing) = if plan.claims.is_empty() {
         (Output::unkept(&plan), Closing::default())
     } else {
         let notice = &mut env.notice;

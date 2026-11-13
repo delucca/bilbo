@@ -2,12 +2,13 @@ use std::collections::{BTreeSet, HashMap};
 use std::path::PathBuf;
 use std::{fs, sync::LazyLock};
 
-use bilbo_search::analyze;
+use bilbo_search::analyze::{self, Detect, Language, Omit};
 use bilbo_search::bm25::Bm25;
 use bilbo_search::index::{Extent, IndexError};
 use bilbo_search::lookup::{Filter, Found, Lookup, Posting, Totals};
 use bilbo_search::position::Position;
 use bilbo_search::rank::{Query, Ranker};
+use bilbo_search::recall::keys;
 use bilbo_store::entries::{Generation, RecordRange};
 use bilbo_store::id::Id;
 use serde_json::Value;
@@ -140,6 +141,25 @@ static CORPORA: LazyLock<HashMap<String, Table>> = LazyLock::new(|| {
 
 type Hit = (u32, f32, u32);
 
+struct Never;
+
+impl Detect for Never {
+    fn language(&self, text: &str) -> Option<Language> {
+        panic!(
+            "no contract query holds a word that counts, yet the detector was asked about {text:?}"
+        );
+    }
+}
+
+fn omit() -> Omit<'static> {
+    static LANGUAGES: LazyLock<Vec<Language>> = LazyLock::new(|| keys::defaults().languages.value);
+    Omit {
+        words: &[],
+        languages: &LANGUAGES,
+        detect: Some(&Never),
+    }
+}
+
 fn hits(row: &Value) -> Vec<Hit> {
     row["top"]
         .as_array()
@@ -156,12 +176,12 @@ fn hits(row: &Value) -> Vec<Hit> {
         .collect()
 }
 
-fn bilbos(index: &dyn Lookup, query: &str, limit: usize) -> Vec<(u32, f32)> {
+fn bilbos(index: &dyn Lookup, query: &str, limit: usize, omit: Omit<'_>) -> Vec<(u32, f32)> {
     Bm25 {
         index,
         k1: 1.2,
         b: 0.75,
-        dropped: &[],
+        omit,
         batch: 4096,
     }
     .rank(
@@ -180,14 +200,14 @@ fn bilbos(index: &dyn Lookup, query: &str, limit: usize) -> Vec<(u32, f32)> {
 fn ranked(row: &Value) -> (Vec<Hit>, Vec<(u32, f32)>) {
     let wanted = hits(row);
     let table = &CORPORA[&text(row, "corpus")];
-    let found = bilbos(table, &text(row, "query"), wanted.len().max(10));
+    let found = bilbos(table, &text(row, "query"), wanted.len().max(10), omit());
     if wanted.is_empty() {
         assert!(found.is_empty(), "{row}");
     }
     let limit = wanted.len();
     let mut found = found;
     if limit > 0 {
-        found = bilbos(table, &text(row, "query"), limit);
+        found = bilbos(table, &text(row, "query"), limit, omit());
     }
     (wanted, found)
 }
@@ -198,7 +218,7 @@ fn a_query_is_analyzed_as_bm25s_tokenizes_it() {
     assert!(all.len() >= 50, "{}", all.len());
     for row in all {
         assert_eq!(
-            analyze::query(&text(&row, "query"), &[]),
+            analyze::query(&text(&row, "query"), &omit()),
             terms_of(&row["terms"]),
             "{}",
             row["query"]
@@ -324,7 +344,12 @@ fn the_bm25_arms_286_rankings_are_bilbos_up_to_exact_ties() {
                 )
             })
             .collect();
-        let found = bilbos(table, &text(row, "query"), 50.min(wanted.len()));
+        let found = bilbos(
+            table,
+            &text(row, "query"),
+            50.min(wanted.len()),
+            Omit::default(),
+        );
         assert_eq!(found.len(), 50.min(wanted.len()), "{}", row["id"]);
         for (place, (doc, score)) in found.iter().enumerate() {
             let at = wanted[place][1].as_f64().expect("a score");

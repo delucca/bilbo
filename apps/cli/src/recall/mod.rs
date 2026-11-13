@@ -3,6 +3,7 @@ pub mod view;
 
 use std::time::SystemTime;
 
+use bilbo_search::analyze::Omit;
 use bilbo_search::bm25::Bm25;
 use bilbo_search::position::Manifest;
 use bilbo_search::rank::{Query, Ranker};
@@ -125,7 +126,11 @@ pub fn run(
         index,
         k1: settings.recall.bm25_k1.value,
         b: settings.recall.bm25_b.value,
-        dropped: &settings.recall.question_words.value,
+        omit: Omit {
+            words: &settings.recall.question_words.value,
+            languages: &settings.recall.languages.value,
+            detect: Some(reading.detect),
+        },
         batch: settings.recall.read_batch.value,
     });
     let rankers: Vec<&dyn Ranker> = bm25.iter().map(|ranker| ranker as &dyn Ranker).collect();

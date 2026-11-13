@@ -19,6 +19,14 @@ const META: &[u8] =
 const CODEX: &[u8] = include_bytes!(
     "../../../libs/rust/kinds/session/fixtures/rollout-2026-11-06T09-10-00-019a4f2e-7c1d-7b3a-9e55-2d8c41f0a6b7.jsonl"
 );
+const CODEX_PACKED: &[u8] = include_bytes!(
+    "../../../libs/rust/kinds/session/fixtures/rollout-2026-11-06T09-10-00-019a4f2e-7c1d-7b3a-9e55-2d8c41f0a6b7.jsonl.zst"
+);
+const SECOND: &str = "rollout-2026-11-07T08-00-00-019a5b3c-2d4e-7f60-8a1b-3c5d7e9f0a2b.jsonl";
+const SECOND_PACKED: &[u8] = include_bytes!(
+    "../../../libs/rust/kinds/session/fixtures/rollout-2026-11-07T08-00-00-019a5b3c-2d4e-7f60-8a1b-3c5d7e9f0a2b.jsonl.zst"
+);
+const ROLLOUT_ID: &str = "019a4f2e-7c1d-7b3a-9e55-2d8c41f0a6b7";
 
 fn counts(new: u64, appended: u64, generation: u64, unchanged: u64, refused: u64) -> String {
     format!(
@@ -153,7 +161,7 @@ fn a_bare_run_with_declared_follows_runs_those_instead() {
     assert_eq!(
         run.stderr,
         format!(
-            "bilbo: skipped {}: no such folder\n",
+            "bilbo: skipped {}: no such file or folder\n",
             scratch.path("home/gone")
         )
     );
@@ -456,4 +464,65 @@ fn follow_that_cannot_write_leaves_the_files_bytes_and_no_temporary_file() {
         .collect();
     names.sort();
     assert_eq!(names, ["config.toml", "config.toml.lock"]);
+}
+
+fn put(scratch: &Scratch, name: &str, bytes: &[u8]) {
+    let path = scratch.dir.join("home/.codex/sessions").join(name);
+    fs::create_dir_all(path.parent().expect("a parent")).expect("folders");
+    fs::write(path, bytes).expect("a rollout");
+}
+
+#[test]
+fn a_sessions_folder_with_plain_and_packed_rollouts_keeps_each_once() {
+    let scratch = harness("packed_each_once");
+    let sessions = scratch.path("home/.codex/sessions");
+    fs::remove_dir_all(&sessions).expect("only the test's rollouts");
+    put(&scratch, &format!("2026/11/06/{ROLLOUT}"), CODEX);
+    put(&scratch, &format!("2026/11/07/{SECOND}.zst"), SECOND_PACKED);
+    let run = scratch.run(&["remember", &sessions]);
+    assert_eq!(
+        (run.code, first(&run)),
+        (0, counts(2, 0, 0, 0, 0).as_str()),
+        "{}",
+        run.stderr
+    );
+    let run = scratch.run(&["remember", &sessions]);
+    assert_eq!((run.code, first(&run)), (0, counts(0, 0, 0, 2, 0).as_str()));
+}
+
+#[test]
+fn a_packed_rollout_that_replaces_a_plain_one_stays_the_same_entry() {
+    let scratch = harness("packed_replaces_plain");
+    let sessions = scratch.path("home/.codex/sessions");
+    let plain = scratch
+        .dir
+        .join("home/.codex/sessions/2026/11/06")
+        .join(ROLLOUT);
+    let run = scratch.run(&["remember", &sessions]);
+    assert_eq!(first(&run), counts(1, 0, 0, 0, 0));
+    fs::remove_file(&plain).expect("Codex removes the plain file");
+    put(&scratch, &format!("2026/11/06/{ROLLOUT}.zst"), CODEX_PACKED);
+    let run = scratch.run(&["remember", &sessions]);
+    assert_eq!((run.code, first(&run)), (0, counts(0, 0, 0, 1, 0).as_str()));
+    assert!(
+        run.stdout
+            .lines()
+            .nth(1)
+            .is_some_and(|line| line.starts_with("records 0,")),
+        "{}",
+        run.stdout
+    );
+    let read = scratch.run(&["read", ROLLOUT_ID]);
+    assert_eq!(read.code, 0, "{}", read.stderr);
+    let origin = read
+        .stdout
+        .lines()
+        .find_map(|line| line.strip_prefix("origin: "))
+        .expect("an origin");
+    assert!(origin.ends_with(".jsonl"), "{origin}");
+    assert!(
+        read.stdout.lines().any(|line| line == "generation: 1"),
+        "{}",
+        read.stdout
+    );
 }

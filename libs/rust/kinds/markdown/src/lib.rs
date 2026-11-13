@@ -4,7 +4,7 @@ mod read;
 use std::path::{Path, PathBuf};
 
 use bilbo_kinds::files::{Files, Node};
-use bilbo_kinds::kind::{Claims, Kind, Proposal, Refusal};
+use bilbo_kinds::kind::{Claim, Claims, Kind, Proposal, Refusal};
 use bilbo_kinds::reader::{Passage, Reader};
 use bilbo_settings::file::File;
 use bilbo_settings::key::{About, Default, Key, Source};
@@ -86,7 +86,7 @@ impl Kind for Markdown {
         match files.node(target) {
             Ok(Node::File) => {
                 if is_markdown(target) {
-                    claims.files.push(target.to_path_buf());
+                    claims.entries.push(Claim::file(target.to_path_buf()));
                 }
             }
             Ok(Node::Folder) => walk(files, target, &mut claims),
@@ -141,7 +141,7 @@ fn walk(files: &dyn Files, folder: &Path, claims: &mut Claims) {
         }
         let path: PathBuf = folder.join(&name);
         match files.node(&path) {
-            Ok(Node::File) if is_markdown(&path) => claims.files.push(path),
+            Ok(Node::File) if is_markdown(&path) => claims.entries.push(Claim::file(path)),
             Ok(Node::Folder) => walk(files, &path, claims),
             Ok(_) => {}
             Err(error) => refuse(claims, &path, &error),
@@ -172,9 +172,9 @@ mod tests {
 
     fn paths(claims: &Claims) -> Vec<&str> {
         claims
-            .files
+            .entries
             .iter()
-            .map(|path| path.to_str().unwrap_or_default())
+            .map(|claim| claim.origin().to_str().unwrap_or_default())
             .collect()
     }
 
@@ -266,7 +266,7 @@ mod tests {
             ("a.MD", false),
         ] {
             let claims = Markdown::default().claims(&files, &Path::new("/n").join(name));
-            assert_eq!(claims.files.len(), usize::from(claimed), "{name}");
+            assert_eq!(claims.entries.len(), usize::from(claimed), "{name}");
             assert!(claims.refused.is_empty(), "{name}");
         }
     }
@@ -287,7 +287,7 @@ mod tests {
     #[test]
     fn a_missing_target_is_refused() {
         let claims = Markdown::default().claims(&Memory::new(), Path::new("/nope"));
-        assert!(claims.files.is_empty());
+        assert!(claims.entries.is_empty());
         assert_eq!(claims.refused.len(), 1);
     }
 

@@ -5,7 +5,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use bilbo_kinds::reader::{Passage, Piece, Reader};
 use bilbo_kinds::tokens::Tokens;
-use bilbo_search::analyze;
+use bilbo_search::analyze::{self, Detect, Language};
 use bilbo_search::chunk;
 use bilbo_search::index::{Doc, Extent, Index, IndexError, Stats, millis};
 use bilbo_search::lookup::{Filter, Found, Lookup, Posting, Totals};
@@ -764,6 +764,14 @@ impl QueryLog for Logged {
 }
 
 pub struct Broken;
+
+pub struct Says(pub Option<Language>);
+
+impl Detect for Says {
+    fn language(&self, _text: &str) -> Option<Language> {
+        self.0
+    }
+}
 
 pub struct Never;
 

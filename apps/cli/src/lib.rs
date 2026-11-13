@@ -12,6 +12,7 @@ use std::ffi::OsString;
 
 use bilbo_kinds::kind::Kind;
 use bilbo_kinds::reader::Reader;
+use bilbo_search::analyze::Detect;
 use bilbo_search::index::Index;
 use bilbo_search::lookup::Lookup;
 use bilbo_search::tokenizer::Tokenizer;
@@ -50,42 +51,56 @@ pub enum Verb {
     Config(config::Args),
 }
 
-pub fn kinds() -> Vec<Box<dyn Kind>> {
+/// A page that only names the kinds reads no setting.
+pub(crate) fn listed() -> Vec<Box<dyn Kind>> {
     vec![
         Box::new(bilbo_markdown::Markdown::default()),
-        Box::new(bilbo_session::Session),
+        Box::new(bilbo_session::Session::default()),
     ]
 }
 
+pub fn kinds(settings: &Settings) -> Result<Vec<Box<dyn Kind>>, Failure> {
+    Ok(vec![
+        Box::new(bilbo_markdown::Markdown::default()),
+        Box::new(session(settings)?),
+    ])
+}
+
 pub fn kind_keys() -> Vec<&'static KindKey> {
-    vec![&bilbo_markdown::HEADING_WIDTH]
+    vec![
+        &bilbo_markdown::HEADING_WIDTH,
+        &bilbo_session::UNPACK_FLOOR,
+        &bilbo_session::UNPACK_RATIO,
+    ]
+}
+
+fn registered(settings: &Settings, key: &'static KindKey) -> Result<usize, Failure> {
+    settings.kind_value(key).ok_or_else(|| {
+        Failure::Config(format!(
+            "{} was not registered with the settings",
+            key.about.name
+        ))
+    })
+}
+
+fn session(settings: &Settings) -> Result<bilbo_session::Session, Failure> {
+    Ok(bilbo_session::Session::new(
+        registered(settings, &bilbo_session::UNPACK_FLOOR)?,
+        registered(settings, &bilbo_session::UNPACK_RATIO)?,
+    ))
 }
 
 pub fn readers(settings: &Settings) -> Result<Vec<Box<dyn Reader>>, Failure> {
-    let width = settings
-        .kind_value(&bilbo_markdown::HEADING_WIDTH)
-        .ok_or_else(|| {
-            Failure::Config(format!(
-                "{} was not registered with the settings",
-                bilbo_markdown::HEADING_WIDTH.about.name
-            ))
-        })?;
+    let width = registered(settings, &bilbo_markdown::HEADING_WIDTH)?;
     Ok(vec![
         Box::new(bilbo_markdown::Markdown::new(width)),
-        Box::new(bilbo_session::Session),
+        Box::new(session(settings)?),
     ])
 }
 
 /// One item for each reader, in the order of `readers()`.
 pub fn rendering(settings: &Settings) -> Result<String, Failure> {
-    let width = settings
-        .kind_value(&bilbo_markdown::HEADING_WIDTH)
-        .ok_or_else(|| {
-            Failure::Config(format!(
-                "{} was not registered with the settings",
-                bilbo_markdown::HEADING_WIDTH.about.name
-            ))
-        })?;
+    let width = registered(settings, &bilbo_markdown::HEADING_WIDTH)?;
     let last = |name: &'static str| name.rsplit('.').next().unwrap_or(name);
     Ok([
         format!(
@@ -96,7 +111,7 @@ pub fn rendering(settings: &Settings) -> Result<String, Failure> {
         ),
         format!(
             "{}/{}",
-            bilbo_session::Session.kind(),
+            bilbo_session::Session::default().kind(),
             bilbo_session::RENDER
         ),
     ]
@@ -122,6 +137,10 @@ pub fn index(cache: &std::path::Path, search: &bilbo_search::keys::Section) -> B
             merge_deleted_share: search.merge_deleted_share(),
         },
     ))
+}
+
+pub fn detect() -> &'static dyn Detect {
+    &bilbo_whichlang::Whichlang
 }
 
 pub fn lookup(cache: &std::path::Path) -> Box<dyn Lookup> {
@@ -154,7 +173,7 @@ pub fn indexing<'a>(
 pub fn bilbo() -> Command {
     let root = Cli::command();
     verbs(&root).into_iter().fold(root, |root, name| {
-        let kinds = (name == "remember").then(|| remember::page(&kinds()));
+        let kinds = (name == "remember").then(|| remember::page(&listed()));
         root.mut_subcommand(name, |verb| {
             shape(match kinds {
                 Some(page) => verb.after_help(page),
@@ -210,7 +229,7 @@ pub fn run_tuned(
                     let disk = |cache: &std::path::Path| index(cache, &settings.search);
                     let indexing =
                         tune(indexing(&settings, &readers, &rendering, &tokenizer, &disk));
-                    remember::run(root, args, env, &settings, &kinds(), &indexing)
+                    remember::run(root, args, env, &settings, &kinds(&settings)?, &indexing)
                 }
                 Verb::Recall(args) => {
                     let readers = readers(&settings)?;
@@ -223,7 +242,7 @@ pub fn run_tuned(
                         &args,
                         env,
                         &settings,
-                        &reading::of(&indexing, &lookup),
+                        &reading::of(&indexing, &lookup, detect()),
                     )
                 }
                 Verb::Read(args) => {
@@ -233,7 +252,7 @@ pub fn run_tuned(
                 Verb::Reindex(args) => {
                     let readers = readers(&settings)?;
                     let rendering = rendering(&settings)?;
-                    let kinds = kinds();
+                    let kinds = kinds(&settings)?;
                     let disk = |cache: &std::path::Path| index(cache, &settings.search);
                     let indexing =
                         tune(indexing(&settings, &readers, &rendering, &tokenizer, &disk));
@@ -259,7 +278,7 @@ pub fn run_tuned(
 mod tests {
     use std::ffi::OsString;
 
-    use super::{bilbo, kinds, readers, rendering, run, run_command};
+    use super::{bilbo, kinds, listed, readers, rendering, run, run_command};
     use crate::console::env::Env;
     use crate::console::outcome::Failure;
     use crate::console::settings::Settings;
@@ -298,6 +317,25 @@ mod tests {
         }
     }
 
+    #[test]
+    fn a_kind_whose_key_was_not_registered_is_a_config_error_not_a_default() {
+        let settings = crate::console::settings::load(
+            &|name| (name == "HOME").then(|| OsString::from("/h")),
+            &|_| Err(std::io::ErrorKind::NotFound.into()),
+            &[],
+        )
+        .expect("settings with no kind key");
+        match kinds(&settings) {
+            Err(Failure::Config(text)) => {
+                assert_eq!(
+                    text,
+                    "session.unpack_floor was not registered with the settings"
+                );
+            }
+            other => panic!("{:?}", other.map(|list| list.len())),
+        }
+    }
+
     fn unread() -> Result<Settings, Failure> {
         Err(Failure::Config(
             "these tests never read a setting".to_owned(),
@@ -316,8 +354,14 @@ mod tests {
 
     #[test]
     fn every_kind_has_its_own_lowercase_name_and_its_reader() {
-        let names: Vec<&str> = kinds().iter().map(|kind| kind.name()).collect();
+        let kinds = kinds(&defaults()).expect("the kinds");
+        let names: Vec<&str> = kinds.iter().map(|kind| kind.name()).collect();
         assert!(!names.is_empty());
+        let listed = listed();
+        assert_eq!(
+            listed.iter().map(|kind| kind.name()).collect::<Vec<_>>(),
+            names
+        );
         for name in &names {
             assert!(
                 !name.is_empty() && name.chars().all(|c| c.is_ascii_lowercase()),
@@ -382,7 +426,7 @@ mod tests {
     fn the_remember_page_lists_every_kind() {
         let page = stdout(&bilbo(), &["bilbo", "remember", "--help"]);
         let at = page.find("\nKinds:\n").expect("a Kinds section");
-        for kind in kinds() {
+        for kind in listed() {
             let row = format!("  {:<8}  {}\n", kind.name(), kind.summary());
             assert!(page[at..].contains(&row), "{row:?} missing in\n{page}");
         }

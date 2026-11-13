@@ -1,7 +1,7 @@
 use std::cmp::Ordering;
 use std::collections::HashMap;
 
-use crate::analyze;
+use crate::analyze::{self, Omit};
 use crate::index::IndexError;
 use crate::lookup::{Filter, Lookup};
 use crate::rank::{Candidate, Query, Ranker, order};
@@ -10,7 +10,7 @@ pub struct Bm25<'a> {
     pub index: &'a dyn Lookup,
     pub k1: f64,
     pub b: f64,
-    pub dropped: &'a [String],
+    pub omit: Omit<'a>,
     pub batch: usize,
 }
 
@@ -30,7 +30,7 @@ impl Bm25<'_> {
 
 impl Ranker for Bm25<'_> {
     fn rank(&self, query: &Query, limit: usize) -> Result<Vec<Candidate>, IndexError> {
-        let terms = analyze::query(&query.text, self.dropped);
+        let terms = analyze::query(&query.text, &self.omit);
         if terms.is_empty() || limit == 0 {
             return Ok(Vec::new());
         }
@@ -129,9 +129,10 @@ impl Ranker for Bm25<'_> {
 
 #[cfg(test)]
 mod tests {
+    use crate::analyze::{Language, Omit};
     use crate::index::IndexError;
     use crate::rank::{Query, Ranker};
-    use crate::testing::{Table, id};
+    use crate::testing::{Says, Table, id};
 
     use super::Bm25;
 
@@ -147,7 +148,7 @@ mod tests {
             index: table,
             k1: 1.2,
             b: 0.75,
-            dropped: &[],
+            omit: Omit::default(),
             batch: 4096,
         };
         bm25.rank(&query(text, kinds), limit)
@@ -239,7 +240,7 @@ mod tests {
             index: &table,
             k1: 1.2,
             b: 0.75,
-            dropped: &[],
+            omit: Omit::default(),
             batch: 4096,
         }
         .rank(&query("alpha", &[]), 10)
@@ -306,7 +307,7 @@ mod tests {
             index: &table,
             k1: 1.2,
             b: 0.75,
-            dropped: &[],
+            omit: Omit::default(),
             batch: 1000,
         };
         let found = bm25.rank(&query("alpha", &[]), 3).expect("a ranking");
@@ -318,6 +319,33 @@ mod tests {
             [1, 2, 3]
         );
         assert_eq!(table.asked.borrow().iter().max(), Some(&1000));
+    }
+
+    #[test]
+    fn a_portuguese_querys_function_words_are_never_looked_up() {
+        let table = Table::new().doc("note", 1, 1, "status que pelo");
+        let says = Says::new(Some(Language::Portuguese));
+        let rank = |omit: Omit<'_>| {
+            table.looked_up.borrow_mut().clear();
+            Bm25 {
+                index: &table,
+                k1: 1.2,
+                b: 0.75,
+                omit,
+                batch: 4096,
+            }
+            .rank(&query("que pelo status", &[]), 10)
+            .expect("a ranking");
+            table.looked_up.borrow().clone()
+        };
+        let with = rank(Omit {
+            words: &[],
+            languages: &[Language::Portuguese],
+            detect: Some(&says),
+        });
+        assert_eq!(with, ["status"]);
+        let without = rank(Omit::default());
+        assert_eq!(without, ["que", "pelo", "status"]);
     }
 
     #[test]
@@ -335,7 +363,7 @@ mod tests {
             index: &table,
             k1: 1.2,
             b: 0.75,
-            dropped: &[],
+            omit: Omit::default(),
             batch: 4096,
         };
         assert!(matches!(
@@ -351,7 +379,7 @@ mod tests {
                 index: table,
                 k1: 1.2,
                 b: 0.75,
-                dropped: &[],
+                omit: Omit::default(),
                 batch: 4096,
             };
             matches!(

@@ -4,11 +4,13 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
-use bilbo_store::entries::{Capture, CaptureError, Captured, Entries, Meta, Origin, StoreError};
+use bilbo_store::entries::{
+    Capture, CaptureError, Captured, Entries, Head, Meta, Origin, StoreError,
+};
 use bilbo_store::id::Id;
 
-use crate::files::Files;
-use crate::kind::{Kind, Proposal};
+use crate::files::{Files, Node};
+use crate::kind::{Claim, Kind, Proposal};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Request {
@@ -17,12 +19,12 @@ pub struct Request {
 }
 
 pub struct Plan<'k> {
-    /// Canonical.
+    /// Canonical, or a file that is gone in a canonical folder.
     pub target: PathBuf,
     /// The kind that runs; `None` when no kind claimed files.
     pub kind: Option<&'k dyn Kind>,
-    /// The files it claimed.
-    pub files: Vec<PathBuf>,
+    /// The entries it claimed.
+    pub claims: Vec<Claim>,
     /// What the walk could not read.
     pub refused: Vec<(PathBuf, String)>,
 }
@@ -124,23 +126,59 @@ pub fn plan<'k>(
                     name: name.clone(),
                     known: kinds.iter().map(|kind| kind.name().to_string()).collect(),
                 })?;
-            Some(kind)
+            Some(&**kind)
         }
         None => None,
     };
-    let target = files
-        .canonical(&request.target)
-        .map_err(|error| Error::Target {
-            path: request.target.clone(),
-            error,
-        })?;
+    match files.canonical(&request.target) {
+        Ok(target) => claim_under(target, named, kinds, files),
+        Err(error) => {
+            if error.kind() == io::ErrorKind::NotFound
+                && let Some(plan) = claim_gone(&request.target, named, kinds, files)?
+            {
+                return Ok(plan);
+            }
+            Err(Error::Target {
+                path: request.target.clone(),
+                error,
+            })
+        }
+    }
+}
 
+/// A file that is gone may still be an entry a kind claims through another of its files.
+fn claim_gone<'k>(
+    target: &Path,
+    named: Option<&'k dyn Kind>,
+    kinds: &'k [Box<dyn Kind>],
+    files: &dyn Files,
+) -> Result<Option<Plan<'k>>, Error> {
+    let Some(name) = target.file_name() else {
+        return Ok(None);
+    };
+    let parent = target
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
+    let Ok(folder) = files.canonical(parent) else {
+        return Ok(None);
+    };
+    let plan = claim_under(folder.join(name), named, kinds, files)?;
+    Ok((!plan.claims.is_empty()).then_some(plan))
+}
+
+fn claim_under<'k>(
+    target: PathBuf,
+    named: Option<&'k dyn Kind>,
+    kinds: &'k [Box<dyn Kind>],
+    files: &dyn Files,
+) -> Result<Plan<'k>, Error> {
     if let Some(kind) = named {
         let claims = kind.claims(files, &target);
         return Ok(Plan {
             target,
-            kind: Some(&**kind),
-            files: claims.files,
+            kind: Some(kind),
+            claims: claims.entries,
             refused: claims.refused,
         });
     }
@@ -154,7 +192,7 @@ pub fn plan<'k>(
                 all_refused.push(refusal.clone());
             }
         }
-        if !claims.files.is_empty() {
+        if !claims.entries.is_empty() {
             claiming.push((kind, claims));
         }
     }
@@ -168,16 +206,20 @@ pub fn plan<'k>(
         });
     }
     let (kind, claimed, refused) = match claiming.pop() {
-        Some((kind, claims)) => (Some(&**kind), claims.files, claims.refused),
+        Some((kind, claims)) => (Some(&**kind), claims.entries, claims.refused),
         None => (None, Vec::new(), all_refused),
     };
     Ok(Plan {
         target,
         kind,
-        files: claimed,
+        claims: claimed,
         refused,
     })
 }
+
+/// At most what keeping an entry holds for each record beside its bytes: the end `split` gives and what `capture`
+/// keeps while it packs them. A kind that bounds what it unpacks counts it for every record.
+pub const RECORD_HELD: u64 = 64;
 
 /// Git's racy-index rule: a stamp this fresh may hide a same-size write in the same tick, so none
 /// is kept.
@@ -202,9 +244,10 @@ pub fn keep(
     let Some(kind) = plan.kind else {
         return Ok(output);
     };
-    output.claimed = u64::try_from(plan.files.len()).unwrap_or(u64::MAX);
-    for path in &plan.files {
-        let outcome = match keep_file(kind, path, files, entries)? {
+    output.claimed = u64::try_from(plan.claims.len()).unwrap_or(u64::MAX);
+    for claim in &plan.claims {
+        let (path, done) = keep_file(kind, claim, files, entries)?;
+        let outcome = match done {
             Done::Refused(reason) => Outcome::Refused(reason),
             Done::Kept(captured, adopted) => {
                 output.stored_bytes += adopted;
@@ -222,54 +265,104 @@ pub fn keep(
                 outcome
             }
         };
-        output.items.push(Item {
-            path: path.clone(),
-            outcome,
-        });
+        output.items.push(Item { path, outcome });
     }
     Ok(output)
 }
 
+enum Step {
+    Done(Done),
+    Gone(io::Error),
+    NotAFile,
+}
+
 /// Unchanged size and mtime: not read. The stamp is taken before the read, so a write during it
 /// shows next run. An entry without a parent proposes one again, so a subagent kept before its
-/// session gets it once it grows.
+/// session gets it once it grows. A kind may move an entry from one of its files to another
+/// between two looks, so a claim whose files are all gone is looked at once more.
 fn keep_file(
     kind: &dyn Kind,
-    path: &Path,
+    claim: &Claim,
     files: &dyn Files,
     entries: &mut dyn Entries,
-) -> Result<Done, Error> {
-    let Some(origin) = Origin::file(path) else {
-        return Ok(Done::Refused("its path is not UTF-8".into()));
+) -> Result<(PathBuf, Done), Error> {
+    let origin_path = claim.origin().to_path_buf();
+    let Some(origin) = Origin::file(claim.origin()) else {
+        return Ok((origin_path, Done::Refused("its path is not UTF-8".into())));
     };
-    let stamp = files.stamp(path).ok();
-    let taken = files.now();
     let head = entries.by_origin(&origin)?;
-    if let Some(head) = &head
+    let mut last = None;
+    let mut not_a_file = false;
+    for _ in 0..2 {
+        for file in claim.files() {
+            match look(kind, claim, file, &origin, head.as_ref(), files, entries)? {
+                Step::Done(done) => return Ok((file.clone(), done)),
+                Step::Gone(error) => last = Some(error),
+                Step::NotAFile => not_a_file = true,
+            }
+        }
+        if not_a_file {
+            break;
+        }
+    }
+    let reason = match last {
+        Some(error) if !not_a_file => format!("cannot read: {error}"),
+        _ => "it is not a regular file".to_owned(),
+    };
+    Ok((origin_path, Done::Refused(reason)))
+}
+
+fn look(
+    kind: &dyn Kind,
+    claim: &Claim,
+    file: &Path,
+    origin: &Origin,
+    head: Option<&Head>,
+    files: &dyn Files,
+    entries: &mut dyn Entries,
+) -> Result<Step, Error> {
+    match files.node(file) {
+        Ok(Node::File) => {}
+        Ok(_) => return Ok(Step::NotAFile),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Step::Gone(error)),
+        Err(error) => return Ok(refused(format!("cannot read: {error}"))),
+    }
+    let stamp = match files.stamp(file) {
+        Ok(stamp) => Some(stamp),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Step::Gone(error)),
+        Err(_) => None,
+    };
+    let taken = files.now();
+    if let Some(head) = head
         && stamp.is_some()
         && head.stamp == stamp
     {
-        return Ok(Done::Kept(Captured::Unchanged(head.id), 0));
+        return Ok(Step::Done(Done::Kept(Captured::Unchanged(head.id), 0)));
     }
-    let bytes = match files.read(path) {
+    let bytes = match files.read(file) {
         Ok(bytes) => bytes,
-        Err(error) => return Ok(Done::Refused(format!("cannot read: {error}"))),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Step::Gone(error)),
+        Err(error) => return Ok(refused(format!("cannot read: {error}"))),
+    };
+    let bytes = match kind.unpack(file, bytes) {
+        Ok(bytes) => bytes,
+        Err(refusal) => return Ok(refused(refusal.to_string())),
     };
     let ends = match kind.split(&bytes) {
         Ok(ends) => ends,
-        Err(refusal) => return Ok(Done::Refused(refusal.to_string())),
+        Err(refusal) => return Ok(refused(refusal.to_string())),
     };
     let Some(records) = bytes.get(..ends.last().copied().unwrap_or(0)) else {
-        return Ok(Done::Refused("its records do not cover it".into()));
+        return Ok(refused("its records do not cover it".into()));
     };
     let proposal = if head.is_some() {
         Proposal::default()
     } else {
         let entries: &dyn Entries = entries;
-        kind.propose(path, records, &|other| kept(entries, other))
+        kind.propose(claim.origin(), records, &|other| kept(entries, other))
     };
     let input = Capture {
-        origin: &origin,
+        origin,
         kind: kind.name(),
         id: proposal.id,
         parent: proposal.parent,
@@ -279,19 +372,23 @@ fn keep_file(
     };
     match entries.capture(&input) {
         Ok(captured) => {
-            let adopted = match &head {
-                Some(head) => adopt(kind, path, records, head.id, entries)?,
+            let adopted = match head {
+                Some(head) => adopt(kind, claim.origin(), records, head.id, entries)?,
                 None => 0,
             };
-            Ok(Done::Kept(captured, adopted))
+            Ok(Step::Done(Done::Kept(captured, adopted)))
         }
         Err(CaptureError::Store(error)) => Err(error.into()),
         Err(
             error @ (CaptureError::IdHeld { .. }
             | CaptureError::Records(_)
             | CaptureError::TooLarge),
-        ) => Ok(Done::Refused(error.to_string())),
+        ) => Ok(refused(error.to_string())),
     }
+}
+
+fn refused(reason: String) -> Step {
+    Step::Done(Done::Refused(reason))
 }
 
 fn adopt(
@@ -386,7 +483,7 @@ mod tests {
     use super::{Error, Output, Plan, Request, plan};
     use crate::fake::Suffix;
     use crate::files::{Files, Memory};
-    use crate::kind::Kind;
+    use crate::kind::{Claim, Claims, Kind, Proposal, Refusal};
 
     fn registry(kinds: Vec<Suffix>) -> Vec<Box<dyn Kind>> {
         kinds
@@ -410,6 +507,51 @@ mod tests {
             .file("/t/d.txt", "d")
     }
 
+    struct Resolving {
+        files: Memory,
+        from: PathBuf,
+        to: PathBuf,
+    }
+
+    impl Resolving {
+        fn new(files: Memory, from: &str, to: &str) -> Resolving {
+            Resolving {
+                files,
+                from: PathBuf::from(from),
+                to: PathBuf::from(to),
+            }
+        }
+    }
+
+    impl Files for Resolving {
+        fn canonical(&self, path: &Path) -> io::Result<PathBuf> {
+            if path == self.from {
+                Ok(self.to.clone())
+            } else {
+                self.files.canonical(path)
+            }
+        }
+        fn node(&self, path: &Path) -> io::Result<crate::files::Node> {
+            self.files.node(path)
+        }
+        fn list(&self, folder: &Path) -> io::Result<Vec<std::ffi::OsString>> {
+            self.files.list(folder)
+        }
+        fn read(&self, path: &Path) -> io::Result<Vec<u8>> {
+            self.files.read(path)
+        }
+        fn stamp(&self, path: &Path) -> io::Result<bilbo_store::entries::Stamp> {
+            self.files.stamp(path)
+        }
+    }
+
+    fn origins(plan: &Plan<'_>) -> Vec<PathBuf> {
+        plan.claims
+            .iter()
+            .map(|claim| claim.origin().to_path_buf())
+            .collect()
+    }
+
     fn running<'a>(plan: &'a Plan<'_>) -> Option<&'a str> {
         plan.kind.map(Kind::name)
     }
@@ -419,7 +561,7 @@ mod tests {
         let kinds = registry(vec![Suffix::new("one", ".one"), Suffix::new("two", ".two")]);
         let plan = plan(&request("/t/sub", None), &kinds, &tree()).expect("plan");
         assert_eq!(running(&plan), Some("one"));
-        assert_eq!(plan.files, vec![PathBuf::from("/t/sub/b.one")]);
+        assert_eq!(origins(&plan), vec![PathBuf::from("/t/sub/b.one")]);
         assert_eq!(plan.target, PathBuf::from("/t/sub"));
     }
 
@@ -436,7 +578,7 @@ mod tests {
         let kinds = registry(vec![one, two]);
         let plan = plan(&request("/t/d.txt", None), &kinds, &tree()).expect("plan");
         assert!(plan.kind.is_none());
-        assert!(plan.files.is_empty());
+        assert!(plan.claims.is_empty());
         assert_eq!(
             plan.refused,
             vec![
@@ -490,11 +632,11 @@ mod tests {
         let kinds = registry(vec![Suffix::new("one", ".one"), Suffix::new("two", ".two")]);
         let plan = plan(&request("/t", Some("two")), &kinds, &tree()).expect("plan");
         assert_eq!(running(&plan), Some("two"));
-        assert_eq!(plan.files, vec![PathBuf::from("/t/c.two")]);
+        assert_eq!(origins(&plan), vec![PathBuf::from("/t/c.two")]);
 
         let empty = self::plan(&request("/t/d.txt", Some("two")), &kinds, &tree()).expect("plan");
         assert_eq!(running(&empty), Some("two"));
-        assert!(empty.files.is_empty());
+        assert!(empty.claims.is_empty());
     }
 
     #[test]
@@ -517,32 +659,54 @@ mod tests {
 
     #[test]
     fn kinds_see_the_canonical_target() {
-        struct Links(Memory);
-        impl Files for Links {
-            fn canonical(&self, path: &Path) -> io::Result<PathBuf> {
-                if path == Path::new("/link") {
-                    Ok(PathBuf::from("/t/sub"))
-                } else {
-                    self.0.canonical(path)
+        let kinds = registry(vec![Suffix::new("one", ".one")]);
+        let plan = plan(
+            &request("/link", None),
+            &kinds,
+            &Resolving::new(tree(), "/link", "/t/sub"),
+        )
+        .expect("plan");
+        assert_eq!(plan.target, PathBuf::from("/t/sub"));
+        assert_eq!(origins(&plan), vec![PathBuf::from("/t/sub/b.one")]);
+    }
+
+    #[test]
+    fn a_bare_name_that_is_gone_is_looked_for_in_the_current_folder() {
+        struct Anything;
+        impl Kind for Anything {
+            fn name(&self) -> &'static str {
+                "anything"
+            }
+            fn summary(&self) -> &'static str {
+                ""
+            }
+            fn claims(&self, _: &dyn Files, target: &Path) -> Claims {
+                Claims {
+                    entries: vec![Claim::file(target.to_path_buf())],
+                    refused: Vec::new(),
                 }
             }
-            fn node(&self, path: &Path) -> io::Result<crate::files::Node> {
-                self.0.node(path)
+            fn split(&self, _: &[u8]) -> Result<Vec<usize>, Refusal> {
+                Ok(Vec::new())
             }
-            fn list(&self, folder: &Path) -> io::Result<Vec<std::ffi::OsString>> {
-                self.0.list(folder)
-            }
-            fn read(&self, path: &Path) -> io::Result<Vec<u8>> {
-                self.0.read(path)
-            }
-            fn stamp(&self, path: &Path) -> io::Result<bilbo_store::entries::Stamp> {
-                self.0.stamp(path)
+            fn propose(
+                &self,
+                _: &Path,
+                _: &[u8],
+                _: &dyn Fn(&Path) -> Option<bilbo_store::id::Id>,
+            ) -> Proposal {
+                Proposal::default()
             }
         }
-        let kinds = registry(vec![Suffix::new("one", ".one")]);
-        let plan = plan(&request("/link", None), &kinds, &Links(tree())).expect("plan");
-        assert_eq!(plan.target, PathBuf::from("/t/sub"));
-        assert_eq!(plan.files, vec![PathBuf::from("/t/sub/b.one")]);
+        let kinds: Vec<Box<dyn Kind>> = vec![Box::new(Anything)];
+        let plan = plan(
+            &request("gone.one", None),
+            &kinds,
+            &Resolving::new(tree(), ".", "/t"),
+        )
+        .expect("plan");
+        assert_eq!(plan.target, PathBuf::from("/t/gone.one"));
+        assert_eq!(origins(&plan), vec![PathBuf::from("/t/gone.one")]);
     }
 
     #[test]

@@ -91,7 +91,7 @@ mod tests {
                 "ready {} {} {}",
                 follow.path.display(),
                 plan.kind.map_or("none", Kind::name),
-                plan.files.len()
+                plan.claims.len()
             ),
         }
     }

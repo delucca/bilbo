@@ -19,7 +19,7 @@ type Message = (u64, String, Vec<(u64, String)>);
 
 fn read(session: &[u8]) -> Vec<Message> {
     let records: Vec<&[u8]> = session.split_inclusive(|byte| *byte == b'\n').collect();
-    Session
+    Session::default()
         .passages(&records)
         .into_iter()
         .map(|passage| {
@@ -125,13 +125,13 @@ const FIXTURES: &[(&str, &[u8])] = &[
 
 #[test]
 fn appending_records_changes_no_existing_passage() {
-    assert!(Session.appends_only());
+    assert!(Session::default().appends_only());
     let mut cuts = 0;
     for (name, bytes) in FIXTURES.iter().chain(&[("edges", EDGES)]) {
         let records: Vec<&[u8]> = bytes.split_inclusive(|byte| *byte == b'\n').collect();
-        let whole = Session.passages(&records);
+        let whole = Session::default().passages(&records);
         for cut in 0..=records.len() {
-            let part = Session.passages(&records[..cut]);
+            let part = Session::default().passages(&records[..cut]);
             assert!(
                 part.len() <= whole.len() && whole[..part.len()] == part[..],
                 "{name}: the passages of the first {cut} records are not the first passages of the whole"
@@ -246,7 +246,7 @@ fn the_whole_corpus_reads_as_build_py_printed_it() {
 
 fn preface_of(session: &[u8]) -> Option<String> {
     let records: Vec<&[u8]> = session.split_inclusive(|byte| *byte == b'\n').collect();
-    Session.preface(&records)
+    Session::default().preface(&records)
 }
 
 #[test]

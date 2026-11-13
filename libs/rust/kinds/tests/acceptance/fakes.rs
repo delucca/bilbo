@@ -1,4 +1,4 @@
-use std::cell::Cell;
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::ffi::OsString;
 use std::io;
@@ -6,14 +6,15 @@ use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
 use bilbo_kinds::files::{Files, Memory, Node};
-use bilbo_kinds::kind::{Claims, Kind, Proposal, Refusal};
+use bilbo_kinds::kind::{Claim, Claims, Kind, Proposal, Refusal};
 use bilbo_store::entries::{
     Capture, CaptureError, Captured, Change, Cursor, Entries, Generation, Head, Kept, Mark, Meta,
     Origin, RecordRange, Stamp, StoreError,
 };
 use bilbo_store::id::Id;
 
-/// Claims `*.fake`; records end at `|`; `!` refuses; `id=` sets the id; `<name>.sub.fake` takes
+/// Claims `*.fake` and `*.fake.z` as one entry; the `.z` file holds a `z` byte, then the bytes;
+/// records end at `|`; `!` refuses; `id=` sets the id; `<name>.sub.fake` takes
 /// `<name>.fake` as parent.
 pub struct FakeKind {
     pub refused: Vec<(PathBuf, String)>,
@@ -37,16 +38,52 @@ impl FakeKind {
 
     fn walk(files: &dyn Files, path: &Path, claims: &mut Claims) {
         match files.node(path) {
-            Ok(Node::File) if path.extension().is_some_and(|e| e == "fake") => {
-                claims.files.push(path.to_path_buf());
-            }
+            Ok(Node::File) => FakeKind::claim(path, claims),
             Ok(Node::Folder) => {
                 for name in files.list(path).unwrap_or_default() {
                     FakeKind::walk(files, &path.join(name), claims);
                 }
             }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                if matches!(files.node(&sibling(path)), Ok(Node::File)) {
+                    FakeKind::claim(path, claims);
+                }
+            }
             _ => {}
         }
+    }
+
+    fn claim(path: &Path, claims: &mut Claims) {
+        let Some(origin) = origin(path) else {
+            return;
+        };
+        if claims.entries.iter().all(|claim| claim.origin() != origin) {
+            claims
+                .entries
+                .push(Claim::file(origin.clone()).or(packed(&origin)));
+        }
+    }
+}
+
+fn origin(path: &Path) -> Option<PathBuf> {
+    let extension = path.extension()?;
+    if extension == "fake" {
+        return Some(path.to_path_buf());
+    }
+    let unpacked = path.with_extension("");
+    (extension == "z" && unpacked.extension().is_some_and(|e| e == "fake")).then_some(unpacked)
+}
+
+fn packed(origin: &Path) -> PathBuf {
+    let mut name = origin.as_os_str().to_owned();
+    name.push(".z");
+    PathBuf::from(name)
+}
+
+fn sibling(path: &Path) -> PathBuf {
+    match origin(path) {
+        Some(origin) if origin != path => origin,
+        _ => packed(path),
     }
 }
 
@@ -66,6 +103,16 @@ impl Kind for FakeKind {
         claims
     }
 
+    fn unpack(&self, file: &Path, bytes: Vec<u8>) -> Result<Vec<u8>, Refusal> {
+        if file.extension().is_some_and(|e| e == "z") {
+            return match bytes.split_first() {
+                Some((b'z', rest)) => Ok(rest.to_vec()),
+                _ => Err(Refusal("the fake kind cannot unpack it".into())),
+            };
+        }
+        Ok(bytes)
+    }
+
     fn split(&self, bytes: &[u8]) -> Result<Vec<usize>, Refusal> {
         if bytes.starts_with(b"!") {
             return Err(Refusal("the fake kind refuses it".into()));
@@ -81,13 +128,13 @@ impl Kind for FakeKind {
             .collect())
     }
 
-    fn propose(&self, path: &Path, bytes: &[u8], kept: &dyn Fn(&Path) -> Option<Id>) -> Proposal {
+    fn propose(&self, origin: &Path, bytes: &[u8], kept: &dyn Fn(&Path) -> Option<Id>) -> Proposal {
         let text = String::from_utf8_lossy(bytes);
         let id = text
             .split_once("id=")
             .and_then(|(_, rest)| rest.get(..26))
             .and_then(Id::parse);
-        let parent = path
+        let parent = origin
             .to_str()
             .and_then(|path| path.strip_suffix(".sub.fake"))
             .and_then(|stem| kept(Path::new(&format!("{stem}.fake"))));
@@ -97,15 +144,23 @@ impl Kind for FakeKind {
 
 pub struct Counting {
     pub files: Memory,
-    pub reads: Cell<usize>,
+    pub nodes: RefCell<Vec<PathBuf>>,
+    pub stamps: RefCell<Vec<PathBuf>>,
+    pub read_paths: RefCell<Vec<PathBuf>>,
 }
 
 impl Counting {
     pub fn new(files: Memory) -> Counting {
         Counting {
             files,
-            reads: Cell::new(0),
+            nodes: RefCell::default(),
+            stamps: RefCell::default(),
+            read_paths: RefCell::default(),
         }
+    }
+
+    pub fn count(calls: &RefCell<Vec<PathBuf>>, path: &str) -> usize {
+        calls.borrow().iter().filter(|seen| *seen == path).count()
     }
 }
 
@@ -115,6 +170,7 @@ impl Files for Counting {
     }
 
     fn node(&self, path: &Path) -> io::Result<Node> {
+        self.nodes.borrow_mut().push(path.to_path_buf());
         self.files.node(path)
     }
 
@@ -123,11 +179,12 @@ impl Files for Counting {
     }
 
     fn read(&self, path: &Path) -> io::Result<Vec<u8>> {
-        self.reads.set(self.reads.get() + 1);
+        self.read_paths.borrow_mut().push(path.to_path_buf());
         self.files.read(path)
     }
 
     fn stamp(&self, path: &Path) -> io::Result<Stamp> {
+        self.stamps.borrow_mut().push(path.to_path_buf());
         self.files.stamp(path)
     }
 

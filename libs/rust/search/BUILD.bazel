@@ -17,6 +17,7 @@ rust_library(
     visibility = [
         "//apps/cli:__pkg__",
         "//libs/rust/search/tantivy:__pkg__",
+        "//libs/rust/search/whichlang:__pkg__",
     ],
     deps = [
         "//libs/rust/kinds",

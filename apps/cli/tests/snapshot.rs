@@ -277,7 +277,7 @@ fn a_codex_session_as_the_store_keeps_it() {
         cache: dir.join("cache"),
     };
     let files = Memory::new().file(path, ROLLOUT);
-    let kinds = kinds();
+    let kinds = kinds(&defaults()).expect("the kinds");
     let request = Request {
         target: PathBuf::from(path),
         kind: None,

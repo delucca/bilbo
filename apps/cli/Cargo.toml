@@ -19,6 +19,7 @@ bilbo-session.workspace = true
 bilbo-settings.workspace = true
 bilbo-store.workspace = true
 bilbo-tantivy.workspace = true
+bilbo-whichlang.workspace = true
 clap.workspace = true
 rustix = { workspace = true, features = ["process"] }
 
@@ -27,6 +28,7 @@ proc-macro2.workspace = true
 runfiles.workspace = true
 serde_json.workspace = true
 syn.workspace = true
+zstd.workspace = true
 
 [[test]]
 name = "cli"

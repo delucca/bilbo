@@ -1,4 +1,5 @@
 use bilbo_kinds::reader::Reader;
+use bilbo_search::analyze::{Detect, Language, Omit};
 use bilbo_search::bm25::Bm25;
 use bilbo_search::chunk::Size;
 use bilbo_search::lookup::Lookup;
@@ -14,7 +15,7 @@ use bilbo_search::work::Request as Work;
 use bilbo_store::id::Id;
 
 use crate::fakes::{
-    Broken, Bytes, Dated, Docs, Failing, Fenced, Lines, Log, Logged, Never, Scripted, at, id,
+    Broken, Bytes, Dated, Docs, Failing, Fenced, Lines, Log, Logged, Never, Says, Scripted, at, id,
 };
 
 const SIZE: Size = Size {
@@ -94,7 +95,7 @@ fn ask_with(
         index: lookup,
         k1: 1.2,
         b: 0.75,
-        dropped: &[],
+        omit: Omit::default(),
         batch: 4096,
     };
     run(
@@ -830,4 +831,46 @@ fn the_use_case_reads_no_clock() {
     late.at = at(4_000_000_000);
     let (_, kept) = ask(&log, &index, &late);
     assert_eq!(fields(&kept)[1], "4000000000");
+}
+
+#[test]
+fn a_portuguese_query_ranks_by_its_content_words() {
+    let mut log = Log::new();
+    log.put(1, "note", &["a tarifa da luz subiu"]);
+    log.put(2, "note", &["que pelo nas que pelo nas"]);
+    log.put(3, "note", &[OTHER]);
+    let index = index_of(&log);
+    let hits = |languages: &[Language], detect: Option<&dyn Detect>| {
+        let bm25 = Bm25 {
+            index: &index,
+            k1: 1.2,
+            b: 0.75,
+            omit: Omit {
+                words: &[],
+                languages,
+                detect,
+            },
+            batch: 4096,
+        };
+        let mut kept = Logged::default();
+        let finished = run(
+            &request("que pelo nas sobre a tarifa luz"),
+            &log,
+            &readers(),
+            &Bytes,
+            Access::Read {
+                index: &index,
+                rankers: &[&bm25],
+            },
+            &shown,
+            &mut kept,
+        );
+        entries_of(&finished.result.expect("a run"))
+    };
+    let portuguese = [Language::Portuguese];
+    let says = Says(Some(Language::Portuguese));
+    assert!(hits(&portuguese, None).contains(&id(2)));
+    assert_eq!(hits(&portuguese, Some(&says)), [id(1)]);
+    assert!(hits(&portuguese, Some(&Says(None))).contains(&id(2)));
+    assert!(hits(&[], Some(&says)).contains(&id(2)));
 }

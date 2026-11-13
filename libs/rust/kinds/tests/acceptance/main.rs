@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 
 use std::time::{Duration, SystemTime};
 
-use bilbo_kinds::files::{Files, Memory, Node};
+use bilbo_kinds::files::{Call, Files, Memory, Node, Turning};
 use bilbo_kinds::follows::{self, Follow, Planned};
 use bilbo_kinds::kind::Kind;
 use bilbo_kinds::remember::{self, Error, Item, Outcome, Output, Request, Tally};
@@ -279,11 +279,11 @@ fn a_file_whose_size_and_time_did_not_change_is_not_read_again() {
     let mut entries = FakeEntries::new();
     let first = Counting::new(files.clone());
     run(FakeKind::new(), &first, &mut entries, &request("/t")).expect("first run");
-    assert_eq!(first.reads.get(), 2);
+    assert_eq!(first.read_paths.borrow().len(), 2);
 
     let again = Counting::new(files.clone());
     let output = run(FakeKind::new(), &again, &mut entries, &request("/t")).expect("again");
-    assert_eq!(again.reads.get(), 0);
+    assert_eq!(again.read_paths.borrow().len(), 0);
     assert_eq!(
         outcomes(&output),
         vec![
@@ -295,11 +295,15 @@ fn a_file_whose_size_and_time_did_not_change_is_not_read_again() {
 
     let grown = Counting::new(files.clone().file("/t/b.fake", "y|z|"));
     run(FakeKind::new(), &grown, &mut entries, &request("/t")).expect("grown");
-    assert_eq!(grown.reads.get(), 1);
+    assert_eq!(grown.read_paths.borrow().len(), 1);
 
     let touched = Counting::new(files.modified("/t/a.fake", later));
     run(FakeKind::new(), &touched, &mut entries, &request("/t")).expect("touched");
-    assert_eq!(touched.reads.get(), 2, "b changed in the run before");
+    assert_eq!(
+        touched.read_paths.borrow().len(),
+        2,
+        "b changed in the run before"
+    );
 }
 
 #[test]
@@ -433,11 +437,11 @@ fn a_file_written_within_two_seconds_of_its_stamp_is_read_again_next_run() {
 
     let second = Counting::new(memory(1));
     run(FakeKind::new(), &second, &mut entries, &request("/t")).expect("second");
-    assert_eq!(second.reads.get(), 1);
+    assert_eq!(second.read_paths.borrow().len(), 1);
 
     let settled = Counting::new(memory(3));
     run(FakeKind::new(), &settled, &mut entries, &request("/t")).expect("settled");
-    assert_eq!(settled.reads.get(), 1);
+    assert_eq!(settled.read_paths.borrow().len(), 1);
     assert_eq!(
         entries.seen.last().expect("a capture").stamp,
         Some(Stamp {
@@ -448,7 +452,7 @@ fn a_file_written_within_two_seconds_of_its_stamp_is_read_again_next_run() {
 
     let after = Counting::new(memory(3));
     run(FakeKind::new(), &after, &mut entries, &request("/t")).expect("after");
-    assert_eq!(after.reads.get(), 0);
+    assert_eq!(after.read_paths.borrow().len(), 0);
 }
 
 #[test]
@@ -475,7 +479,11 @@ fn a_racy_capture_clears_the_stamp_so_a_look_alike_restore_is_read_again() {
 
     let restored = memory("x|", written, rewritten + second(5));
     run(FakeKind::new(), &restored, &mut entries, &request("/t")).expect("restore");
-    assert_eq!(restored.reads.get(), 1, "the restore is read, not skipped");
+    assert_eq!(
+        restored.read_paths.borrow().len(),
+        1,
+        "the restore is read, not skipped"
+    );
 }
 
 #[test]
@@ -514,4 +522,378 @@ fn adopting_a_parent_counts_its_meta_frame_in_stored_bytes() {
         .map(|seen| seen.bytes.len() as u64 + 100)
         .sum();
     assert_eq!(output.stored_bytes, captured + ADOPTED);
+}
+
+fn paths(output: &Output) -> Vec<&str> {
+    output
+        .items
+        .iter()
+        .map(|item| item.path.to_str().expect("utf-8"))
+        .collect()
+}
+
+fn refusal(output: &Output) -> &str {
+    match &output.items[0].outcome {
+        Outcome::Refused(reason) => reason,
+        other => panic!("not refused: {other:?}"),
+    }
+}
+
+fn kept_under(files: &dyn Files, counting: &Counting, entries: &mut FakeEntries) -> Output {
+    let registry = kinds(FakeKind::new());
+    let plan = remember::plan(&request("/t"), &registry, files).expect("plan");
+    remember::keep(&plan, counting, entries).expect("keep")
+}
+
+#[test]
+fn an_entry_is_kept_under_its_claims_origin_whatever_file_was_read() {
+    let mut entries = FakeEntries::new().on("file:/t/x.fake", Script::Unchanged);
+    let plain = Memory::new().file("/t/x.fake", "a|");
+    let first = run(FakeKind::new(), &plain, &mut entries, &request("/t")).expect("plain");
+    assert_eq!(paths(&first), ["/t/x.fake"]);
+
+    let packed = Memory::new().file("/t/x.fake.z", "za|");
+    let second = run(FakeKind::new(), &packed, &mut entries, &request("/t")).expect("packed");
+    assert_eq!(paths(&second), ["/t/x.fake.z"]);
+    assert_eq!(second.items[0].outcome, Outcome::Unchanged(id(1)));
+    assert_eq!(entries.heads.len(), 1);
+    assert!(
+        entries
+            .seen
+            .iter()
+            .all(|seen| seen.origin == "file:/t/x.fake")
+    );
+}
+
+#[test]
+fn the_first_file_that_exists_is_the_one_read() {
+    let files = Memory::new()
+        .file("/t/x.fake", "a|")
+        .file("/t/x.fake.z", "zb|");
+    let counting = Counting::new(files.clone());
+    let output = kept_under(&files, &counting, &mut FakeEntries::new());
+    assert_eq!(paths(&output), ["/t/x.fake"]);
+    assert_eq!(*counting.read_paths.borrow(), [PathBuf::from("/t/x.fake")]);
+}
+
+#[test]
+fn a_file_that_gives_way_to_the_next_between_the_stamp_and_the_read_is_read_there() {
+    let files = Turning::new(
+        Memory::new().file("/t/x.fake", "a|"),
+        Memory::new().file("/t/x.fake.z", "za|"),
+        Call::Stamp,
+        "/t/x.fake",
+    );
+    let mut entries = FakeEntries::new();
+    let output = run(FakeKind::new(), &files, &mut entries, &request("/t")).expect("run");
+    assert_eq!(paths(&output), ["/t/x.fake.z"]);
+    assert_eq!(output.items[0].outcome, Outcome::New(id(1)));
+    assert_eq!(entries.seen[0].bytes, b"a|");
+}
+
+#[test]
+fn a_file_that_appears_after_it_was_looked_for_is_read_on_the_second_look() {
+    let files = Turning::new(
+        Memory::new().file("/t/x.fake.z", "za|"),
+        Memory::new().file("/t/x.fake", "a|"),
+        Call::Node,
+        "/t/x.fake",
+    );
+    let mut entries = FakeEntries::new();
+    let output = run(FakeKind::new(), &files, &mut entries, &request("/t")).expect("run");
+    assert_eq!(paths(&output), ["/t/x.fake"]);
+    assert_eq!(output.items[0].outcome, Outcome::New(id(1)));
+}
+
+#[test]
+fn a_claim_none_of_whose_files_is_there_is_refused_under_its_origin() {
+    let planned = Memory::new()
+        .file("/t/x.fake", "a|")
+        .file("/t/y.fake", "b|");
+    let counting = Counting::new(Memory::new().file("/t/y.fake", "b|"));
+    let output = kept_under(&planned, &counting, &mut FakeEntries::new());
+    assert_eq!(paths(&output), ["/t/x.fake", "/t/y.fake"]);
+    assert!(refusal(&output).starts_with("cannot read: "));
+    assert!(matches!(output.items[1].outcome, Outcome::New(_)));
+    assert_eq!(Counting::count(&counting.nodes, "/t/x.fake"), 2);
+    assert_eq!(Counting::count(&counting.nodes, "/t/x.fake.z"), 2);
+}
+
+#[test]
+fn a_file_that_cannot_be_read_is_refused_not_passed_over() {
+    let files = Memory::new()
+        .unreadable("/t/x.fake", Node::File)
+        .file("/t/x.fake.z", "za|");
+    let counting = Counting::new(files.clone());
+    let output = kept_under(&files, &counting, &mut FakeEntries::new());
+    assert_eq!(paths(&output), ["/t/x.fake"]);
+    assert_eq!(refusal(&output), "cannot read: permission denied");
+    assert_eq!(Counting::count(&counting.read_paths, "/t/x.fake.z"), 0);
+}
+
+#[test]
+fn a_candidate_that_is_not_a_file_is_never_stamped_or_read() {
+    for plain in [
+        Memory::new().other("/t/x.fake"),
+        Memory::new().folder("/t/x.fake"),
+    ] {
+        let files = plain.file("/t/x.fake.z", "za|");
+        let counting = Counting::new(files.clone());
+        let output = kept_under(&files, &counting, &mut FakeEntries::new());
+        assert_eq!(paths(&output), ["/t/x.fake.z"]);
+        assert!(matches!(output.items[0].outcome, Outcome::New(_)));
+        assert_eq!(Counting::count(&counting.stamps, "/t/x.fake"), 0);
+        assert_eq!(Counting::count(&counting.read_paths, "/t/x.fake"), 0);
+    }
+}
+
+#[test]
+fn a_claim_with_only_a_non_file_is_refused_as_not_a_regular_file() {
+    for node in [
+        Memory::new().other("/t/x.fake"),
+        Memory::new().folder("/t/x.fake"),
+    ] {
+        let planned = Memory::new().file("/t/x.fake", "a|");
+        let counting = Counting::new(node);
+        let output = kept_under(&planned, &counting, &mut FakeEntries::new());
+        assert_eq!(paths(&output), ["/t/x.fake"]);
+        assert_eq!(refusal(&output), "it is not a regular file");
+        assert_eq!(Counting::count(&counting.nodes, "/t/x.fake"), 1);
+    }
+}
+
+#[test]
+fn the_kind_unpacks_what_was_read_before_it_is_split() {
+    let files = Memory::new().file("/t/x.fake.z", "za|b|");
+    let mut entries = FakeEntries::new();
+    run(FakeKind::new(), &files, &mut entries, &request("/t")).expect("run");
+    assert_eq!(entries.seen[0].bytes, b"a|b|");
+    assert_eq!(entries.seen[0].ends, vec![2, 4]);
+}
+
+#[test]
+fn a_file_the_kind_cannot_unpack_is_refused_under_its_own_name() {
+    let files = Memory::new().file("/t/x.fake.z", "xa|");
+    let output = run(
+        FakeKind::new(),
+        &files,
+        &mut FakeEntries::new(),
+        &request("/t"),
+    )
+    .expect("run");
+    assert_eq!(paths(&output), ["/t/x.fake.z"]);
+    assert_eq!(refusal(&output), "the fake kind cannot unpack it");
+}
+
+#[test]
+fn the_capture_carries_the_stamp_of_the_file_read() {
+    let later = SystemTime::UNIX_EPOCH + Duration::from_secs(7);
+    let files = Memory::new()
+        .file("/t/x.fake.z", "za|")
+        .modified("/t/x.fake.z", later);
+    let mut entries = FakeEntries::new();
+    run(FakeKind::new(), &files, &mut entries, &request("/t")).expect("run");
+    assert_eq!(
+        entries.seen[0].stamp,
+        Some(Stamp {
+            size: 3,
+            modified: later
+        })
+    );
+}
+
+#[test]
+fn a_stamp_kept_from_the_other_file_does_not_skip_this_one() {
+    let mut entries = FakeEntries::new();
+    let packed = Memory::new().file("/t/x.fake.z", "za|");
+    run(FakeKind::new(), &packed, &mut entries, &request("/t")).expect("packed");
+    assert_eq!(entries.seen.len(), 1);
+
+    let both = Memory::new()
+        .file("/t/x.fake", "a|b|")
+        .file("/t/x.fake.z", "za|");
+    let counting = Counting::new(both.clone());
+    kept_under(&both, &counting, &mut entries);
+    assert_eq!(*counting.read_paths.borrow(), [PathBuf::from("/t/x.fake")]);
+    assert_eq!(entries.seen.len(), 2);
+}
+
+#[test]
+fn the_proposal_is_asked_for_the_origin() {
+    let mut entries = FakeEntries::new();
+    run(
+        FakeKind::new(),
+        &Memory::new().file("/t/a.fake", "x|"),
+        &mut entries,
+        &request("/t"),
+    )
+    .expect("session");
+    let files = Memory::new()
+        .file("/t/a.fake", "x|")
+        .file("/t/a.sub.fake.z", "zy|");
+    run(FakeKind::new(), &files, &mut entries, &request("/t")).expect("subagent");
+    assert_eq!(entries.seen.last().expect("capture").parent, Some(id(1)));
+}
+
+#[test]
+fn a_missing_target_is_planned_when_a_kind_claims_it_through_another_file() {
+    for (present, asked) in [("/t/x.fake.z", "/t/x.fake"), ("/t/x.fake", "/t/x.fake.z")] {
+        let files = Memory::new().file(present, "za|");
+        let registry = kinds(FakeKind::new());
+        let plan = remember::plan(&request(asked), &registry, &files).expect("plan");
+        assert_eq!(plan.target, PathBuf::from(asked));
+        assert_eq!(plan.claims.len(), 1);
+        assert_eq!(plan.claims[0].origin(), PathBuf::from("/t/x.fake"));
+    }
+}
+
+#[test]
+fn a_missing_target_no_kind_claims_is_the_error_it_was() {
+    let files = Memory::new()
+        .file("/t/x.fake", "a|")
+        .file("/t/other.txt", "b");
+    for target in [
+        "/t/y.fake",
+        "/nope/x.fake",
+        "/t/other.md",
+        "/nope/deeper/x.fake",
+        "/t/..",
+    ] {
+        for kind in [None, Some("fake")] {
+            let registry = kinds(FakeKind::new());
+            let request = Request {
+                target: PathBuf::from(target),
+                kind: kind.map(str::to_owned),
+            };
+            match remember::plan(&request, &registry, &files) {
+                Err(Error::Target { path, error }) => {
+                    assert_eq!(path, PathBuf::from(target));
+                    assert_eq!(error.kind(), std::io::ErrorKind::NotFound, "{target}");
+                }
+                Err(other) => panic!("{target}: {other}"),
+                Ok(_) => panic!("{target} was planned"),
+            }
+        }
+    }
+}
+
+#[test]
+fn a_followed_file_is_kept_after_it_changes_form() {
+    let registry = kinds(FakeKind::new());
+    let follows = [Follow {
+        path: "/t/x.fake".into(),
+        kind: None,
+    }];
+    let mut entries = FakeEntries::new();
+
+    let plain = Memory::new().file("/t/x.fake", "a|");
+    let planned = follows::plan(&follows, &registry, &plain);
+    let kept = follows::keep(&planned, &plain, &mut entries).expect("plain");
+    assert_eq!(kept[0].items[0].outcome, Outcome::New(id(1)));
+
+    entries
+        .script
+        .insert("file:/t/x.fake".into(), Script::Unchanged);
+    let packed = Memory::new().file("/t/x.fake.z", "za|");
+    let planned = follows::plan(&follows, &registry, &packed);
+    assert!(matches!(planned[0], Planned::Ready(..)));
+    let kept = follows::keep(&planned, &packed, &mut entries).expect("packed");
+    assert_eq!(kept[0].items[0].outcome, Outcome::Unchanged(id(1)));
+
+    entries
+        .script
+        .insert("file:/t/x.fake".into(), Script::Appended);
+    let grown = Memory::new().file("/t/x.fake", "a|b|");
+    let planned = follows::plan(&follows, &registry, &grown);
+    let kept = follows::keep(&planned, &grown, &mut entries).expect("grown");
+    assert_eq!(kept[0].items[0].outcome, Outcome::Appended(id(1)));
+    assert!(
+        entries
+            .seen
+            .iter()
+            .all(|seen| seen.origin == "file:/t/x.fake")
+    );
+
+    let gone = [Follow {
+        path: "/gone".into(),
+        kind: None,
+    }];
+    assert!(matches!(
+        follows::plan(&gone, &registry, &grown)[0],
+        Planned::Missing(_)
+    ));
+
+    let follows = [Follow {
+        path: "/t/x.fake.z".into(),
+        kind: None,
+    }];
+    let mut entries = FakeEntries::new();
+    let packed = Memory::new().file("/t/x.fake.z", "za|");
+    let planned = follows::plan(&follows, &registry, &packed);
+    let kept = follows::keep(&planned, &packed, &mut entries).expect("packed");
+    assert_eq!(kept[0].items[0].outcome, Outcome::New(id(1)));
+
+    entries
+        .script
+        .insert("file:/t/x.fake".into(), Script::Appended);
+    let grown = Memory::new().file("/t/x.fake", "a|b|");
+    let planned = follows::plan(&follows, &registry, &grown);
+    assert!(matches!(planned[0], Planned::Ready(..)));
+    let kept = follows::keep(&planned, &grown, &mut entries).expect("grown");
+    assert_eq!(kept[0].items[0].outcome, Outcome::Appended(id(1)));
+    assert_eq!(entries.heads.len(), 1);
+    assert!(
+        entries
+            .seen
+            .iter()
+            .all(|seen| seen.origin == "file:/t/x.fake")
+    );
+}
+
+#[test]
+fn a_file_read_in_its_second_form_is_not_read_again_while_it_is_unchanged() {
+    let files = Memory::new().file("/t/x.fake.z", "za|");
+    let mut entries = FakeEntries::new();
+    let first = Counting::new(files.clone());
+    kept_under(&files, &first, &mut entries);
+    assert_eq!(first.read_paths.borrow().len(), 1);
+
+    let again = Counting::new(files.clone());
+    let output = kept_under(&files, &again, &mut entries);
+    assert_eq!(again.read_paths.borrow().len(), 0);
+    assert_eq!(output.items[0].outcome, Outcome::Unchanged(id(1)));
+    assert_eq!(entries.seen.len(), 1);
+}
+
+#[test]
+fn a_file_whose_node_cannot_be_read_is_refused_and_no_other_is_tried() {
+    let planned = Memory::new()
+        .file("/t/x.fake", "a|")
+        .file("/t/x.fake.z", "za|");
+
+    let counting = Counting::new(Memory::new().denied("/t/x.fake").file("/t/x.fake.z", "za|"));
+    let output = kept_under(&planned, &counting, &mut FakeEntries::new());
+    assert_eq!(paths(&output), ["/t/x.fake"]);
+    assert_eq!(refusal(&output), "cannot read: permission denied");
+    assert_eq!(Counting::count(&counting.nodes, "/t/x.fake.z"), 0);
+
+    let counting = Counting::new(Memory::new().denied("/t/x.fake.z"));
+    let output = kept_under(&planned, &counting, &mut FakeEntries::new());
+    assert_eq!(paths(&output), ["/t/x.fake.z"]);
+    assert_eq!(refusal(&output), "cannot read: permission denied");
+    assert_eq!(Counting::count(&counting.nodes, "/t/x.fake"), 1);
+}
+
+#[test]
+fn a_child_read_from_its_second_file_gets_its_parent_when_it_is_next_read() {
+    let mut entries = FakeEntries::new();
+    let alone = Memory::new().file("/t/a.sub.fake.z", "zy|");
+    run(FakeKind::new(), &alone, &mut entries, &request("/t")).expect("child alone");
+    assert_eq!(entries.metas[&id(1)].parent, None);
+
+    let both = Memory::new()
+        .file("/t/a.fake", "x|")
+        .file("/t/a.sub.fake.z", "zy|z|");
+    run(FakeKind::new(), &both, &mut entries, &request("/t")).expect("both");
+    assert_eq!(entries.adopted, vec![(id(1), Some(id(2)))]);
 }

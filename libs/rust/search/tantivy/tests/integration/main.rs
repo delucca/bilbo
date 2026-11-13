@@ -6,7 +6,7 @@ use std::rc::Rc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, UNIX_EPOCH};
 
-use bilbo_search::analyze;
+use bilbo_search::analyze::{self, Omit};
 use bilbo_search::bm25::Bm25;
 use bilbo_search::chunk::{self, Chunk, Size};
 use bilbo_search::index::{Doc, Extent, Index, IndexError};
@@ -158,7 +158,7 @@ fn rank(folder: &Path, text: &str, limit: usize) -> Vec<Candidate> {
         index: &committed,
         k1: 1.2,
         b: 0.75,
-        dropped: &[],
+        omit: Omit::default(),
         batch: 4096,
     }
     .rank(&query, limit)
@@ -2447,7 +2447,7 @@ fn a_tie_of_every_document_is_cut_by_the_tie_order() {
         index: &counting,
         k1: 1.2,
         b: 0.75,
-        dropped: &[],
+        omit: Omit::default(),
         batch: 4096,
     }
     .rank(&query, 50)

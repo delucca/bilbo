@@ -8,7 +8,7 @@ use super::{Run, binary};
 const KEYS: &str = "paths.root, paths.state, paths.cache, store.seal_at, store.seal_after, \
                     store.compression, store.tear_budget, store.wait, store.poll, follow, read.budget, read.outline_width, \
                     read.matches_listed, search.chunk_tokens, search.chunk_overlap, search.workers, \
-                    search.index_memory, search.merge_deleted_percent, search.entry_tries, recall.budget, recall.candidates, recall.cap, recall.question_words, recall.bm25_k1, recall.bm25_b, recall.read_batch, markdown.heading_width";
+                    search.index_memory, search.merge_deleted_percent, search.entry_tries, recall.budget, recall.candidates, recall.cap, recall.question_words, recall.languages, recall.bm25_k1, recall.bm25_b, recall.read_batch, markdown.heading_width, session.unpack_floor, session.unpack_ratio";
 
 #[test]
 fn each_key_shows_the_source_that_won_a_variable_over_the_file_over_the_default() {
@@ -46,10 +46,13 @@ fn each_key_shows_the_source_that_won_a_variable_over_the_file_over_the_default(
              recall.candidates = 50 (default)\n\
              recall.cap = 0 (default)\n\
              recall.question_words = [\"what\", \"did\", \"we\", \"should\", \"how\", \"anything\"] (default)\n\
+             recall.languages = [\"pt\"] (default)\n\
              recall.bm25_k1 = 1.2 (default)\n\
              recall.bm25_b = 0.75 (default)\n\
              recall.read_batch = 4096 (default)\n\
-             markdown.heading_width = 100 (default)\n",
+             markdown.heading_width = 100 (default)\n\
+             session.unpack_floor = \"128 MiB\" (default)\n\
+             session.unpack_ratio = 256 (default)\n",
             root = scratch.path("store"),
             home = scratch.path("home"),
             cache = scratch.path("cache"),
@@ -80,6 +83,20 @@ fn a_bad_value_in_the_file_exits_2_naming_the_file_the_line_and_the_key() {
     for folder in ["store", "state", "cache"] {
         assert!(!scratch.dir.join(folder).exists(), "{folder}");
     }
+}
+
+#[test]
+fn a_language_bilbo_does_not_know_is_a_config_error() {
+    let scratch = Scratch::new("unknown_language");
+    let config = scratch.config("[recall]\nlanguages = [\"es\"]\n");
+    let run = scratch.run(&["config"]);
+    assert_eq!((run.code, run.stdout.as_str()), (2, ""));
+    assert_eq!(
+        run.stderr,
+        format!(
+            "bilbo: {config}:2: recall.languages must be a list of language codes; pt is the one bilbo knows, got \"es\"\n"
+        )
+    );
 }
 
 #[test]

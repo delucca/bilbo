@@ -8,7 +8,9 @@ description = "The session kind: Claude Code and Codex transcripts, one record p
 
 [dependencies]
 bilbo-kinds.workspace = true
+bilbo-settings.workspace = true
 bilbo-store.workspace = true
+zstd.workspace = true
 
 [dev-dependencies]
 serde_json.workspace = true

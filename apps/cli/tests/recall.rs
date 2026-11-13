@@ -1,9 +1,10 @@
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::ffi::OsString;
 use std::fs;
 use std::io;
 use std::os::unix::fs::{MetadataExt, PermissionsExt, symlink};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
@@ -18,7 +19,11 @@ use bilbo_cli::remember::disk::Disk;
 use bilbo_kinds::read::refs::{Ref, Target};
 use bilbo_kinds::remember::{self, Request};
 use bilbo_kinds::tokens::Tokens;
+use bilbo_search::analyze::{self, Detect, Language};
 use bilbo_search::chunk;
+use bilbo_search::index::IndexError;
+use bilbo_search::lookup::{Filter, Found, Lookup, Posting, Totals};
+use bilbo_search::position::Position;
 use bilbo_search::tokenizer::Tokenizer;
 use bilbo_store::entries::{Entries, RecordRange};
 use bilbo_store::segments::{Options, Store};
@@ -446,7 +451,7 @@ fn a_session_that_grew_and_was_not_indexed_still_recalls_its_old_chunks_and_says
     grown.push(b'\n');
     fs::write(&path, &grown).expect("append to the session");
     let settings = sandbox.settings();
-    let kinds = bilbo_cli::kinds();
+    let kinds = bilbo_cli::kinds(&settings).expect("the kinds");
     let plan = remember::plan(
         &Request {
             target: path,
@@ -848,6 +853,16 @@ fn run_with_reading(
     loader: &dyn Fn() -> Result<Tokenizer, Failure>,
     lookup: &dyn Fn(&std::path::Path) -> Box<dyn bilbo_search::lookup::Lookup>,
 ) -> Result<bilbo_cli::console::outcome::Outcome, Failure> {
+    run_with_detector(sandbox, loader, lookup, bilbo_cli::detect(), &["carrots"])
+}
+
+fn run_with_detector(
+    sandbox: &Sandbox,
+    loader: &dyn Fn() -> Result<Tokenizer, Failure>,
+    lookup: &dyn Fn(&std::path::Path) -> Box<dyn bilbo_search::lookup::Lookup>,
+    detect: &dyn bilbo_search::analyze::Detect,
+    query: &[&str],
+) -> Result<bilbo_cli::console::outcome::Outcome, Failure> {
     let settings = sandbox.settings();
     let readers = bilbo_cli::readers(&settings).expect("the readers");
     let render = bilbo_cli::rendering(&settings).expect("the rendering");
@@ -857,9 +872,10 @@ fn run_with_reading(
         render: &render,
         tokenizer: loader,
         lookup,
+        detect,
     };
     let args = bilbo_cli::recall::Args {
-        query: vec!["carrots".to_owned()],
+        query: query.iter().map(|word| (*word).to_owned()).collect(),
         kind: Vec::new(),
         budget: None,
     };
@@ -1036,60 +1052,16 @@ fn an_absent_cache_asks_for_no_lookup() {
     );
 }
 
-struct Widest {
-    inner: Box<dyn bilbo_search::lookup::Lookup>,
-    widest: std::rc::Rc<std::cell::Cell<usize>>,
-}
-
-impl bilbo_search::lookup::Lookup for Widest {
-    fn position(
-        &self,
-    ) -> Result<Option<bilbo_search::position::Position>, bilbo_search::index::IndexError> {
-        self.inner.position()
-    }
-
-    fn totals(&self) -> Result<bilbo_search::lookup::Totals, bilbo_search::index::IndexError> {
-        self.inner.totals()
-    }
-
-    fn postings(
-        &self,
-        term: &str,
-    ) -> Result<Vec<bilbo_search::lookup::Posting>, bilbo_search::index::IndexError> {
-        self.inner.postings(term)
-    }
-
-    fn holding(
-        &self,
-        filter: &bilbo_search::lookup::Filter<'_>,
-    ) -> Result<Vec<u32>, bilbo_search::index::IndexError> {
-        self.inner.holding(filter)
-    }
-
-    fn found(
-        &self,
-        docs: &[u32],
-    ) -> Result<Vec<bilbo_search::lookup::Found>, bilbo_search::index::IndexError> {
-        self.widest.set(self.widest.get().max(docs.len()));
-        self.inner.found(docs)
-    }
-}
-
 #[test]
 fn the_read_batch_key_bounds_each_read_of_the_index() {
     let sandbox = Sandbox::filled("recall_read_batch");
     let widest_read = |config: &str| {
         fs::write(sandbox.dir.join("config/config.toml"), config).expect("a config file");
-        let widest = std::rc::Rc::new(std::cell::Cell::new(0));
-        let lookup = |path: &std::path::Path| -> Box<dyn bilbo_search::lookup::Lookup> {
-            Box::new(Widest {
-                inner: bilbo_cli::lookup(path),
-                widest: widest.clone(),
-            })
-        };
+        let seen = Arc::new(Seen::default());
+        let lookup = recording(&seen);
         let outcome = run_with_reading(&sandbox, &shared_tokenizer, &lookup).expect("an outcome");
         assert_eq!(outcome.exit_code(), 0);
-        widest.get()
+        seen.widest.load(Ordering::Relaxed)
     };
     assert!(widest_read("") > 1);
     assert_eq!(widest_read("[recall]\nread_batch = 1\n"), 1);
@@ -1222,7 +1194,7 @@ fn the_eval_corpus_remembered_gives_the_eval_stores_chunks() {
     let (corpus, eval) = (folder("EVAL_CORPUS"), folder("EVAL_STORE"));
     let sandbox = Sandbox::new("eval_capture");
     let settings = sandbox.settings();
-    let kinds = bilbo_cli::kinds();
+    let kinds = bilbo_cli::kinds(&settings).expect("the kinds");
     let readers = bilbo_cli::readers(&settings).expect("the readers");
     let reader = readers
         .iter()
@@ -1335,4 +1307,107 @@ fn folder(name: &str) -> PathBuf {
 #[expect(clippy::disallowed_macros, reason = "the done check prints its counts")]
 fn say(line: &str) {
     eprintln!("{line}");
+}
+
+struct Portuguese(AtomicUsize);
+
+impl Detect for Portuguese {
+    fn language(&self, _: &str) -> Option<Language> {
+        self.0.fetch_add(1, Ordering::Relaxed);
+        Some(Language::Portuguese)
+    }
+}
+
+#[derive(Default)]
+struct Seen {
+    terms: Mutex<BTreeSet<String>>,
+    widest: AtomicUsize,
+}
+
+struct Recording {
+    inner: Box<dyn Lookup>,
+    seen: Arc<Seen>,
+}
+
+impl Lookup for Recording {
+    fn position(&self) -> Result<Option<Position>, IndexError> {
+        self.inner.position()
+    }
+
+    fn totals(&self) -> Result<Totals, IndexError> {
+        self.inner.totals()
+    }
+
+    fn postings(&self, term: &str) -> Result<Vec<Posting>, IndexError> {
+        self.seen
+            .terms
+            .lock()
+            .expect("terms")
+            .insert(term.to_owned());
+        self.inner.postings(term)
+    }
+
+    fn holding(&self, filter: &Filter<'_>) -> Result<Vec<u32>, IndexError> {
+        self.inner.holding(filter)
+    }
+
+    fn found(&self, docs: &[u32]) -> Result<Vec<Found>, IndexError> {
+        self.seen.widest.fetch_max(docs.len(), Ordering::Relaxed);
+        self.inner.found(docs)
+    }
+}
+
+fn recording(seen: &Arc<Seen>) -> impl Fn(&std::path::Path) -> Box<dyn Lookup> {
+    let seen = Arc::clone(seen);
+    move |path| {
+        Box::new(Recording {
+            inner: bilbo_cli::lookup(path),
+            seen: Arc::clone(&seen),
+        })
+    }
+}
+
+#[test]
+fn the_languages_key_reaches_the_search() {
+    let sandbox = Sandbox::filled("recall_languages_key");
+    let ask = || {
+        let detector = Portuguese(AtomicUsize::new(0));
+        let seen = Arc::new(Seen::default());
+        run_with_detector(
+            &sandbox,
+            &shared_tokenizer,
+            &recording(&seen),
+            &detector,
+            &["que", "pelo", "carrots"],
+        )
+        .expect("the run ends");
+        let terms = seen.terms.lock().expect("terms").clone();
+        (detector.0.load(Ordering::Relaxed), terms)
+    };
+    let terms = |text: &str| -> BTreeSet<String> { analyze::terms(text).into_iter().collect() };
+    assert_eq!(
+        ask(),
+        (1, terms("carrots")),
+        "the listed words are not looked up"
+    );
+    fs::write(
+        sandbox.dir.join("config/config.toml"),
+        "[recall]\nlanguages = []\n",
+    )
+    .expect("a config file");
+    assert_eq!(
+        ask(),
+        (0, terms("carrots pelo que")),
+        "the listed words are looked up"
+    );
+}
+
+#[test]
+fn the_cli_hands_recall_whichlang() {
+    let detect = bilbo_cli::detect();
+    assert_eq!(
+        detect.language("Olá feliz contribuinte"),
+        Some(Language::Portuguese)
+    );
+    assert_eq!(detect.language("Hello, happy tax payer"), None);
 }

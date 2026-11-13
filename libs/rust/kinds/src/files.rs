@@ -1,3 +1,4 @@
+use std::cell::Cell;
 use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::io;
@@ -36,6 +37,7 @@ enum Entry {
     Folder,
     Other,
     Unreadable(Node),
+    Denied,
 }
 
 /// An in-memory tree of absolute paths, for the tests of the use case and of every kind crate.
@@ -100,6 +102,16 @@ impl Memory {
         self
     }
 
+    /// Every call on `path` fails with `PermissionDenied`, as below a folder that cannot be
+    /// searched.
+    #[must_use]
+    pub fn denied(mut self, path: impl Into<PathBuf>) -> Memory {
+        let path = path.into();
+        self.parents(&path);
+        self.tree.insert(path, Entry::Denied);
+        self
+    }
+
     fn parents(&mut self, path: &Path) {
         for parent in path.ancestors().skip(1) {
             self.tree
@@ -109,9 +121,11 @@ impl Memory {
     }
 
     fn entry(&self, path: &Path) -> io::Result<&Entry> {
-        self.tree
-            .get(path)
-            .ok_or_else(|| io::Error::from(io::ErrorKind::NotFound))
+        match self.tree.get(path) {
+            Some(Entry::Denied) => Err(io::Error::from(io::ErrorKind::PermissionDenied)),
+            Some(entry) => Ok(entry),
+            None => Err(io::Error::from(io::ErrorKind::NotFound)),
+        }
     }
 }
 
@@ -133,6 +147,7 @@ impl Files for Memory {
             Entry::Folder => Node::Folder,
             Entry::Other => Node::Other,
             Entry::Unreadable(node) => *node,
+            Entry::Denied => unreachable!("entry() fails first"),
         })
     }
 
@@ -175,6 +190,73 @@ impl Files for Memory {
     }
 }
 
+/// The named call is still answered from `before`, every later call from `after`; `now` always
+/// from `before`.
+#[derive(Debug)]
+pub struct Turning {
+    before: Memory,
+    after: Memory,
+    at: (Call, PathBuf),
+    turned: Cell<bool>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Call {
+    Canonical,
+    Node,
+    List,
+    Stamp,
+    Read,
+}
+
+impl Turning {
+    #[must_use]
+    pub fn new(before: Memory, after: Memory, call: Call, path: impl Into<PathBuf>) -> Turning {
+        Turning {
+            before,
+            after,
+            at: (call, path.into()),
+            turned: Cell::new(false),
+        }
+    }
+
+    fn tree(&self, call: Call, path: &Path) -> &Memory {
+        if self.turned.get() {
+            return &self.after;
+        }
+        if self.at.0 == call && self.at.1 == path {
+            self.turned.set(true);
+        }
+        &self.before
+    }
+}
+
+impl Files for Turning {
+    fn now(&self) -> SystemTime {
+        self.before.now()
+    }
+
+    fn canonical(&self, path: &Path) -> io::Result<PathBuf> {
+        self.tree(Call::Canonical, path).canonical(path)
+    }
+
+    fn node(&self, path: &Path) -> io::Result<Node> {
+        self.tree(Call::Node, path).node(path)
+    }
+
+    fn list(&self, folder: &Path) -> io::Result<Vec<OsString>> {
+        self.tree(Call::List, folder).list(folder)
+    }
+
+    fn read(&self, path: &Path) -> io::Result<Vec<u8>> {
+        self.tree(Call::Read, path).read(path)
+    }
+
+    fn stamp(&self, path: &Path) -> io::Result<Stamp> {
+        self.tree(Call::Stamp, path).stamp(path)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::ffi::OsString;
@@ -184,7 +266,7 @@ mod tests {
 
     use bilbo_store::entries::Stamp;
 
-    use super::{Files, Memory, Node};
+    use super::{Call, Files, Memory, Node, Turning};
 
     #[test]
     fn memory_answers_like_a_disk_without_following_links() {
@@ -285,5 +367,49 @@ mod tests {
         );
         assert_eq!(stamp("/t"), Err(ErrorKind::InvalidInput));
         assert_eq!(stamp("/t/none.md"), Err(ErrorKind::NotFound));
+    }
+
+    #[test]
+    fn a_turning_tree_answers_from_the_second_tree_after_the_named_call() {
+        let before = Memory::new()
+            .file("/t/a", "1")
+            .clock(SystemTime::UNIX_EPOCH);
+        let after = Memory::new()
+            .file("/t/b", "2")
+            .clock(SystemTime::UNIX_EPOCH + Duration::from_secs(9));
+        let files = Turning::new(before, after, Call::Stamp, "/t/a");
+
+        assert_eq!(files.node(Path::new("/t/a")).ok(), Some(Node::File));
+        assert!(files.stamp(Path::new("/t/a")).is_ok());
+        assert_eq!(
+            files.node(Path::new("/t/a")).map_err(|e| e.kind()),
+            Err(ErrorKind::NotFound)
+        );
+        assert_eq!(files.node(Path::new("/t/b")).ok(), Some(Node::File));
+        assert_eq!(
+            files.canonical(Path::new("/t/a")).map_err(|e| e.kind()),
+            Err(ErrorKind::NotFound)
+        );
+        assert_eq!(files.read(Path::new("/t/b")).ok(), Some(b"2".to_vec()));
+        assert_eq!(files.now(), SystemTime::UNIX_EPOCH);
+    }
+
+    #[test]
+    fn a_denied_path_fails_every_call_with_permission_denied() {
+        let files = Memory::new().file("/t/a", "x").denied("/t/locked/b");
+        let denied = Path::new("/t/locked/b");
+        let kinds = [
+            files.canonical(denied).map_err(|e| e.kind()).err(),
+            files.node(denied).map_err(|e| e.kind()).err(),
+            files.list(denied).map_err(|e| e.kind()).err(),
+            files.read(denied).map_err(|e| e.kind()).err(),
+            files.stamp(denied).map_err(|e| e.kind()).err(),
+        ];
+        assert_eq!(kinds, [Some(ErrorKind::PermissionDenied); 5]);
+        assert_eq!(files.node(Path::new("/t/a")).ok(), Some(Node::File));
+        assert_eq!(
+            files.node(Path::new("/t/locked/c")).map_err(|e| e.kind()),
+            Err(ErrorKind::NotFound)
+        );
     }
 }

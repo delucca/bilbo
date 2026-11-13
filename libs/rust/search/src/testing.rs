@@ -11,9 +11,31 @@ use bilbo_store::entries::{
 };
 use bilbo_store::id::Id;
 
+use crate::analyze::{Detect, Language};
 use crate::index::{Doc, Extent, Index, IndexError, Stats};
 use crate::lookup::{Filter, Found, Lookup, Posting, Totals};
 use crate::position::Position;
+
+pub(crate) struct Says {
+    answer: Option<Language>,
+    pub(crate) asked: RefCell<Vec<String>>,
+}
+
+impl Says {
+    pub(crate) fn new(answer: Option<Language>) -> Says {
+        Says {
+            answer,
+            asked: RefCell::new(Vec::new()),
+        }
+    }
+}
+
+impl Detect for Says {
+    fn language(&self, text: &str) -> Option<Language> {
+        self.asked.borrow_mut().push(text.to_owned());
+        self.answer
+    }
+}
 
 pub(crate) fn id(n: u8) -> Id {
     Id::from_bytes([n; 16])
@@ -175,6 +197,7 @@ pub(crate) struct Table {
     posting_at: Option<u32>,
     holding_at: Option<u32>,
     pub(crate) asked: RefCell<Vec<usize>>,
+    pub(crate) looked_up: RefCell<Vec<String>>,
 }
 
 impl Table {
@@ -260,6 +283,7 @@ impl Lookup for Table {
 
     fn postings(&self, term: &str) -> Result<Vec<Posting>, IndexError> {
         self.check()?;
+        self.looked_up.borrow_mut().push(term.to_owned());
         let mut postings: Vec<Posting> = self
             .live()
             .filter_map(|(doc, row)| {

@@ -81,12 +81,14 @@ dependencies = [
  "bilbo-settings",
  "bilbo-store",
  "bilbo-tantivy",
+ "bilbo-whichlang",
  "clap",
  "proc-macro2",
  "runfiles",
  "rustix",
  "serde_json",
  "syn 3.0.9",
+ "zstd",
 ]
 
 [[package]]
@@ -126,6 +128,7 @@ dependencies = [
  "bilbo-store",
  "frostem",
  "serde_json",
+ "stop-words",
  "xxhash-rust",
  "zstd",
 ]
@@ -135,8 +138,10 @@ name = "bilbo-session"
 version = "0.0.0"
 dependencies = [
  "bilbo-kinds",
+ "bilbo-settings",
  "bilbo-store",
  "serde_json",
+ "zstd",
 ]
 
 [[package]]
@@ -167,6 +172,14 @@ dependencies = [
  "bilbo-search",
  "bilbo-store",
  "tantivy",
+]
+
+[[package]]
+name = "bilbo-whichlang"
+version = "0.0.0"
+dependencies = [
+ "bilbo-search",
+ "whichlang",
 ]
 
 [[package]]
@@ -1258,6 +1271,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a2eb9349b6444b326872e140eb1cf5e7c522154d69e7a0ffb0fb81c06b37543f"
 
 [[package]]
+name = "stop-words"
+version = "0.10.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c1ed527ae13a020ac2404e32746ecee62d632aafe64f8e0df2bb3545ae96f6d1"
+dependencies = [
+ "serde_json",
+]
+
+[[package]]
 name = "strsim"
 version = "0.11.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1713,6 +1735,12 @@ checksum = "3b1f9c3798725016c6ee5f2f57869ec0831e8bbc0ab0310a86e787e97f41389e"
 dependencies = [
  "unicode-ident",
 ]
+
+[[package]]
+name = "whichlang"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0b9aa3ad29c3d08283ac6b769e3ec15ad1ddb88af7d2e9bc402c574973b937e7"
 
 [[package]]
 name = "winapi"

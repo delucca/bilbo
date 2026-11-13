@@ -217,7 +217,7 @@ fn planned_messages(planned: &[Planned<'_>]) -> Vec<Message> {
         match planned {
             Planned::Missing(follow) => {
                 messages.push(info(&format!(
-                    "skipped {}: no such folder",
+                    "skipped {}: no such file or folder",
                     follow.path.display()
                 )));
             }
@@ -228,7 +228,7 @@ fn planned_messages(planned: &[Planned<'_>]) -> Vec<Message> {
                 )));
             }
             Planned::Ready(follow, plan) => {
-                if plan.files.is_empty() {
+                if plan.claims.is_empty() {
                     messages.push(info(&match plan.kind {
                         Some(kind) => format!(
                             "nothing to keep: {} claims no file under {}",
@@ -285,7 +285,7 @@ mod tests {
             path: PathBuf::from(path),
             kind: kind.map(str::to_owned),
         };
-        let kinds = crate::kinds();
+        let kinds = crate::listed();
         let planned = plan(
             &[
                 follow("/gone", Some("session")),
@@ -304,7 +304,10 @@ mod tests {
         assert_eq!(
             lines,
             [
-                (Mark::Info, "skipped /gone: no such folder".to_owned()),
+                (
+                    Mark::Info,
+                    "skipped /gone: no such file or folder".to_owned()
+                ),
                 (
                     Mark::Warning,
                     "follow /notes: unknown kind 'pdf'; kinds: markdown, session".to_owned()

@@ -226,3 +226,45 @@ fn a_run_that_never_opens_a_store_is_not_logged() {
     );
     assert_eq!(fs::read(&log).expect("the log"), before);
 }
+
+#[test]
+fn a_portuguese_query_is_searched_without_its_function_words() {
+    let scratch = Scratch::new("recall_portuguese_drop");
+    scratch.write(
+        "tarifa.md",
+        "# Tarifa\n\nA nota da tarifa de energia: 0,87 por kwh.\n",
+    );
+    scratch.write("filler.md", "# Filler\n\ntem de de tem\n");
+    let notes = scratch.path("notes");
+    assert_eq!(scratch.run(&["remember", &notes]).code, 0);
+    let query = [
+        "recall", "tem", "alguma", "nota", "sobre", "a", "tarifa", "de", "energia",
+    ];
+    let by_default = scratch.run(&query);
+    assert_eq!(by_default.code, 0, "{}", by_default.stderr);
+    assert!(
+        by_default.stdout.contains("0,87 por kwh"),
+        "{}",
+        by_default.stdout
+    );
+    assert!(
+        !by_default.stdout.contains("tem de de tem"),
+        "{}",
+        by_default.stdout
+    );
+    scratch.config("[recall]\nlanguages = []\n");
+    let off = scratch.run(&query);
+    assert_eq!(off.code, 0, "{}", off.stderr);
+    assert!(off.stdout.contains("tem de de tem"), "{}", off.stdout);
+}
+
+#[test]
+fn a_lone_listed_word_is_still_searched() {
+    let scratch = Scratch::new("recall_lone_listed_word");
+    scratch.write("nas.md", "# Rede\n\nO nas da sala guarda os backups.\n");
+    let notes = scratch.path("notes");
+    assert_eq!(scratch.run(&["remember", &notes]).code, 0);
+    let run = scratch.run(&["recall", "nas"]);
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    assert!(run.stdout.contains("guarda os backups"), "{}", run.stdout);
+}

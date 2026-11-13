@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 
 use crate::files::{Files, Node};
-use crate::kind::{Claims, Kind, Proposal, Refusal};
+use crate::kind::{Claim, Claims, Kind, Proposal, Refusal};
 
 /// Claims the files whose name ends with a suffix; each file is one record.
 pub struct Suffix {
@@ -22,7 +22,7 @@ impl Suffix {
     fn walk(&self, files: &dyn Files, path: &Path, claims: &mut Claims) {
         match files.node(path) {
             Ok(Node::File) if path.to_string_lossy().ends_with(self.suffix) => {
-                claims.files.push(path.to_path_buf());
+                claims.entries.push(Claim::file(path.to_path_buf()));
             }
             Ok(Node::Folder) => {
                 for name in files.list(path).unwrap_or_default() {

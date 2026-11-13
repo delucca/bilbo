@@ -8,6 +8,7 @@ members = [
     "libs/rust/search",
     "libs/rust/search/qwen",
     "libs/rust/search/tantivy",
+    "libs/rust/search/whichlang",
     "libs/rust/settings",
     "libs/rust/store",
 ]
@@ -27,6 +28,7 @@ bilbo-session = { path = "libs/rust/kinds/session" }
 bilbo-settings = { path = "libs/rust/settings" }
 bilbo-store = { path = "libs/rust/store" }
 bilbo-tantivy = { path = "libs/rust/search/tantivy" }
+bilbo-whichlang = { path = "libs/rust/search/whichlang" }
 clap = { version = "4.6.7", default-features = false, features = ["std", "derive", "help", "usage", "error-context"] }
 frostem = { version = "2.20261016.2", default-features = false, features = ["english"] }
 proc-macro2 = { version = "1.0.107", default-features = false }
@@ -35,10 +37,12 @@ rusqlite = { version = "0.41.1", default-features = false, features = ["bundled"
 rustix = { version = "1.1.5", default-features = false, features = ["std", "event", "fs", "pty"] }
 serde = { version = "1.0.229", default-features = false, features = ["std"] }
 serde_json = { version = "1.0.154", default-features = false, features = ["std"] }
+stop-words = { version = "0.10.1", default-features = false, features = ["nltk"] }
 syn = { version = "3.0.9", default-features = false, features = ["full", "parsing", "visit"] }
 tantivy = { version = "0.27.0", default-features = false, features = ["mmap"] }
 tokenizers = { version = "0.23.2", default-features = false, features = ["fancy-regex"] }
 toml = { version = "1.1.8", default-features = false, features = ["std", "parse"] }
+whichlang = "0.1.1"
 xxhash-rust = { version = "0.8.19", features = ["xxh3"] }
 zstd = { version = "0.14.3", default-features = false }
 

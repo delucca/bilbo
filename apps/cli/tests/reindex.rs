@@ -19,6 +19,7 @@ use bilbo_cli::console::settings;
 use bilbo_cli::console::view::View;
 use bilbo_kinds::reader::{Passage, Reader};
 use bilbo_kinds::tokens::Tokens;
+use bilbo_search::analyze::Omit;
 use bilbo_search::bm25::Bm25;
 use bilbo_search::index::{Doc, Extent, Index, IndexError, Stats, millis};
 use bilbo_search::lookup::Found;
@@ -97,7 +98,7 @@ fn rank(cache: &Path, text: &str, limit: usize) -> Vec<Candidate> {
         index: &index,
         k1: keys.bm25_k1.value,
         b: keys.bm25_b.value,
-        dropped: &[],
+        omit: Omit::default(),
         batch: keys.read_batch.value,
     }
     .rank(
@@ -367,7 +368,7 @@ impl Sandbox {
             args,
             &mut env,
             &settings,
-            &bilbo_cli::kinds(),
+            &bilbo_cli::kinds(&settings).expect("the kinds"),
             &indexing,
         )
         .expect("the remember");
@@ -846,7 +847,7 @@ fn a_reindex_holds_the_store_from_the_catalog_to_the_commit_and_a_bare_remember_
         .expect("settings");
     let readers = bilbo_cli::readers(&settings).expect("the readers");
     let rendering = bilbo_cli::rendering(&settings).expect("the rendering");
-    let kinds = bilbo_cli::kinds();
+    let kinds = bilbo_cli::kinds(&settings).expect("the kinds");
     let indexing = bilbo_cli::indexing(
         &settings,
         &readers,
@@ -1457,7 +1458,7 @@ fn an_update_that_fails_is_not_tried_again_by_the_close_loop() {
         ..settings.store.options()
     };
     let mut store = Store::open(&settings.layout(), options, &mut |_| {}).expect("open the store");
-    let kinds = bilbo_cli::kinds();
+    let kinds = bilbo_cli::kinds(&settings).expect("the kinds");
     let first = bilbo_kinds::remember::plan(
         &bilbo_kinds::remember::Request {
             target: sandbox.dir.join("notes/first.md"),

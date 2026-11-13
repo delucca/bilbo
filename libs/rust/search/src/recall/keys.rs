@@ -2,7 +2,7 @@ use bilbo_settings::error::Error;
 use bilbo_settings::file::File;
 use bilbo_settings::key::{About, Default, Key, Resolved, Shown, Source, quote};
 
-use crate::analyze;
+use crate::analyze::{self, Language};
 
 pub const BUDGET: Key<usize> = Key {
     about: About {
@@ -84,6 +84,36 @@ pub const QUESTION_WORDS: Key<Vec<String>> = Key {
     },
 };
 
+pub const LANGUAGES: Key<Vec<Language>> = Key {
+    about: About {
+        name: "recall.languages",
+        variable: None,
+        default: Default::Toml(r#"["pt"]"#),
+        allowed: "a list of language codes; pt is the one bilbo knows",
+        doc: "The languages whose function words bilbo recall leaves out of a query written in one of them; they stay searchable in what was kept. pt is Portuguese. An empty list leaves none out.",
+    },
+    parse: |value| {
+        let items = value.items().ok_or_else(|| value.refuse())?;
+        let mut languages = Vec::new();
+        for item in items {
+            let language = item
+                .text()
+                .and_then(Language::of)
+                .filter(|language| !languages.contains(language))
+                .ok_or_else(|| item.refuse())?;
+            languages.push(language);
+        }
+        Ok(languages)
+    },
+    show: |languages| {
+        let quoted: Vec<String> = languages
+            .iter()
+            .map(|language| quote(language.code()))
+            .collect();
+        format!("[{}]", quoted.join(", "))
+    },
+};
+
 pub const BM25_K1: Key<f64> = Key {
     about: About {
         name: "recall.bm25_k1",
@@ -136,11 +166,12 @@ pub const READ_BATCH: Key<usize> = Key {
     show: ToString::to_string,
 };
 
-pub const ABOUT: [&About; 7] = [
+pub const ABOUT: [&About; 8] = [
     &BUDGET.about,
     &CANDIDATES.about,
     &CAP.about,
     &QUESTION_WORDS.about,
+    &LANGUAGES.about,
     &BM25_K1.about,
     &BM25_B.about,
     &READ_BATCH.about,
@@ -152,6 +183,7 @@ pub struct Section {
     pub candidates: Resolved<usize>,
     pub cap: Resolved<usize>,
     pub question_words: Resolved<Vec<String>>,
+    pub languages: Resolved<Vec<Language>>,
     pub bm25_k1: Resolved<f64>,
     pub bm25_b: Resolved<f64>,
     pub read_batch: Resolved<usize>,
@@ -163,6 +195,7 @@ pub fn section(source: &Source<'_>) -> Result<Section, Error> {
         candidates: CANDIDATES.resolve(source)?,
         cap: CAP.resolve(source)?,
         question_words: QUESTION_WORDS.resolve(source)?,
+        languages: LANGUAGES.resolve(source)?,
         bm25_k1: BM25_K1.resolve(source)?,
         bm25_b: BM25_B.resolve(source)?,
         read_batch: READ_BATCH.resolve(source)?,
@@ -179,12 +212,13 @@ pub fn defaults() -> Section {
 }
 
 impl Section {
-    pub fn shown(&self) -> [Shown; 7] {
+    pub fn shown(&self) -> [Shown; 8] {
         [
             BUDGET.shown(&self.budget),
             CANDIDATES.shown(&self.candidates),
             CAP.shown(&self.cap),
             QUESTION_WORDS.shown(&self.question_words),
+            LANGUAGES.shown(&self.languages),
             BM25_K1.shown(&self.bm25_k1),
             BM25_B.shown(&self.bm25_b),
             READ_BATCH.shown(&self.read_batch),
@@ -199,6 +233,8 @@ mod tests {
 
     use bilbo_settings::file::File;
     use bilbo_settings::key::Source;
+
+    use crate::analyze::Language;
 
     use super::{ABOUT, Section, defaults, section};
 
@@ -234,6 +270,7 @@ mod tests {
             section.question_words.value,
             ["what", "did", "we", "should", "how", "anything"]
         );
+        assert_eq!(section.languages.value, [Language::Portuguese]);
         assert!((section.bm25_k1.value - 1.2).abs() < f64::EPSILON);
         assert!((section.bm25_b.value - 0.75).abs() < f64::EPSILON);
         assert_eq!(section.read_batch.value, 4096);
@@ -244,6 +281,7 @@ mod tests {
                 "recall.candidates = 50 (default)",
                 "recall.cap = 0 (default)",
                 "recall.question_words = [\"what\", \"did\", \"we\", \"should\", \"how\", \"anything\"] (default)",
+                "recall.languages = [\"pt\"] (default)",
                 "recall.bm25_k1 = 1.2 (default)",
                 "recall.bm25_b = 0.75 (default)",
                 "recall.read_batch = 4096 (default)",
@@ -256,6 +294,7 @@ mod tests {
                 Some("BILBO_RECALL_BUDGET"),
                 Some("BILBO_RECALL_CANDIDATES"),
                 Some("BILBO_RECALL_CAP"),
+                None,
                 None,
                 Some("BILBO_RECALL_BM25_K1"),
                 Some("BILBO_RECALL_BM25_B"),
@@ -434,8 +473,31 @@ mod tests {
     }
 
     #[test]
+    fn the_languages_are_a_list_of_known_codes_each_once() {
+        let languages = |text: &str| resolve(&[], text).map(|s| s.languages.value);
+        assert_eq!(
+            languages("recall.languages = [\"pt\"]"),
+            Ok(vec![Language::Portuguese])
+        );
+        assert_eq!(languages("recall.languages = []"), Ok(Vec::new()));
+        for text in [
+            "recall.languages = [\"es\"]",
+            "recall.languages = [\"PT\"]",
+            "recall.languages = [\"pt\", \"pt\"]",
+            "recall.languages = \"pt\"",
+            "recall.languages = [1]",
+        ] {
+            let error = resolve(&[], text).expect_err(text);
+            assert!(
+                error.contains("recall.languages must be a list of language codes"),
+                "{text}: {error}"
+            );
+        }
+    }
+
+    #[test]
     fn the_keys_show_as_toml_that_reads_back() {
-        let text = "[recall]\nbudget = 777\ncandidates = 9\ncap = 2\nquestion_words = [\"why\", \"who\"]\nbm25_k1 = 1.5\nbm25_b = 0.4\nread_batch = 99\n";
+        let text = "[recall]\nbudget = 777\ncandidates = 9\ncap = 2\nquestion_words = [\"why\", \"who\"]\nlanguages = []\nbm25_k1 = 1.5\nbm25_b = 0.4\nread_batch = 99\n";
         for section in [defaults(), resolve(&[], text).expect("valid")] {
             let mut written = String::from("[recall]\n");
             for shown in section.shown() {
@@ -447,6 +509,7 @@ mod tests {
             assert_eq!(again.candidates.value, section.candidates.value);
             assert_eq!(again.cap.value, section.cap.value);
             assert_eq!(again.question_words.value, section.question_words.value);
+            assert_eq!(again.languages.value, section.languages.value);
             assert!((again.bm25_k1.value - section.bm25_k1.value).abs() < f64::EPSILON);
             assert!((again.bm25_b.value - section.bm25_b.value).abs() < f64::EPSILON);
             assert_eq!(again.read_batch.value, section.read_batch.value);

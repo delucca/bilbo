@@ -11,7 +11,7 @@ use std::time::{Duration, SystemTime};
 use bilbo_cli::console::settings;
 use bilbo_cli::remember::save::{Saved, Saving, save_with};
 use bilbo_kinds::follows::Follow;
-use bilbo_store::entries::{Entries, Head, Meta, Origin, RecordRange};
+use bilbo_store::entries::{Entries, Generation, Head, Meta, Origin, RecordRange};
 use bilbo_store::layout::Layout;
 use bilbo_store::segments::{Options, Store};
 
@@ -33,6 +33,13 @@ const META: &[u8] =
     include_bytes!("../../../libs/rust/kinds/session/fixtures/agent-ad63c2b3c9e7a4b3d.meta.json");
 const CODEX: &[u8] = include_bytes!(
     "../../../libs/rust/kinds/session/fixtures/rollout-2026-11-06T09-10-00-019a4f2e-7c1d-7b3a-9e55-2d8c41f0a6b7.jsonl"
+);
+const CODEX_PACKED: &[u8] = include_bytes!(
+    "../../../libs/rust/kinds/session/fixtures/rollout-2026-11-06T09-10-00-019a4f2e-7c1d-7b3a-9e55-2d8c41f0a6b7.jsonl.zst"
+);
+const SECOND: &str = "rollout-2026-11-07T08-00-00-019a5b3c-2d4e-7f60-8a1b-3c5d7e9f0a2b.jsonl";
+const SECOND_BYTES: &[u8] = include_bytes!(
+    "../../../libs/rust/kinds/session/fixtures/rollout-2026-11-07T08-00-00-019a5b3c-2d4e-7f60-8a1b-3c5d7e9f0a2b.jsonl"
 );
 
 struct Sandbox {
@@ -99,6 +106,32 @@ impl Sandbox {
 
     fn rollout(&self) -> PathBuf {
         self.sessions().join("2026/11/06").join(ROLLOUT)
+    }
+
+    fn packed_rollout(&self) -> PathBuf {
+        let mut name = self.rollout().into_os_string();
+        name.push(".zst");
+        PathBuf::from(name)
+    }
+
+    fn head(&self, file: &Path) -> Head {
+        self.store()
+            .by_origin(&Origin::file(file).expect("origin"))
+            .expect("head")
+            .expect("an entry")
+    }
+
+    fn leave(&self, plain: Option<&[u8]>, packed: Option<&[u8]>) {
+        for (path, bytes) in [(self.rollout(), plain), (self.packed_rollout(), packed)] {
+            let _ = fs::remove_file(&path);
+            if let Some(bytes) = bytes {
+                write(&path, bytes);
+            }
+        }
+    }
+
+    fn keep_sessions(&self) -> Run {
+        self.run(&[text(&self.sessions())])
     }
 
     fn vars(&self) -> HashMap<String, OsString> {
@@ -338,7 +371,8 @@ fn done_check_var(name: &str) -> OsString {
 
 /// The files the kind must keep, found without its code: `*<uuid>.jsonl`, and `agent-*.jsonl` below
 /// `<uuid>/subagents/`. Hidden entries, `memory/`, `workflows/` and `tool-results/` are skipped
-/// outside `subagents/`.
+/// outside `subagents/`. It lists plain files only: over a folder with packed rollouts the done
+/// checks cover the plain ones.
 fn session_files(
     folder: &Path,
     session: Option<&Path>,
@@ -1123,7 +1157,7 @@ fn a_bare_run_whose_store_fails_still_says_what_it_planned() {
     assert_eq!(run.stderr.len(), 3, "{:?}", run.stderr);
     assert_eq!(
         run.stderr[0],
-        format!("bilbo: skipped {dir}/gone: no such folder")
+        format!("bilbo: skipped {dir}/gone: no such file or folder")
     );
     assert_eq!(
         run.stderr[1],
@@ -1169,4 +1203,274 @@ fn follow_refuses_an_inline_follow_array_and_names_the_table_to_add() {
         );
         assert_eq!(fs::read(&config).expect("the config"), declared.as_bytes());
     }
+}
+
+fn head(bytes: &[u8], count: usize) -> Vec<u8> {
+    bytes
+        .split_inclusive(|&byte| byte == b'\n')
+        .take(count)
+        .flatten()
+        .copied()
+        .collect()
+}
+
+fn packed(bytes: &[u8]) -> Vec<u8> {
+    zstd::bulk::compress(bytes, 3).expect("packed")
+}
+
+#[test]
+fn a_packed_rollout_is_kept_under_its_plain_path_and_reads_back_unpacked() {
+    let plain = Sandbox::new("packed_reference");
+    assert_eq!(plain.keep_sessions().code, 0);
+    let expected = plain.records(&plain.rollout());
+    let sandbox = Sandbox::new("packed_records");
+    sandbox.leave(None, Some(CODEX_PACKED));
+    let run = sandbox.keep_sessions();
+    assert_eq!(run.code, 0, "{:?}", run.stderr);
+    assert_eq!(
+        run.stdout.lines().next(),
+        Some(counts(1, 0, 0, 0, 0).as_str())
+    );
+    assert_eq!(expected.len(), lines(CODEX));
+    assert_eq!(sandbox.records(&sandbox.rollout()), expected);
+}
+
+#[test]
+fn a_rollout_keeps_its_entry_however_often_it_changes_form() {
+    let sandbox = Sandbox::new("forms");
+    let kept = |plain: Option<&[u8]>, packed: Option<&[u8]>, expected: String| {
+        sandbox.leave(plain, packed);
+        let run = sandbox.keep_sessions();
+        assert_eq!(run.code, 0, "{:?}", run.stderr);
+        assert_eq!(run.stdout.lines().next(), Some(expected.as_str()));
+    };
+    let first_lines = head(CODEX, 3);
+    kept(Some(&first_lines), None, counts(1, 0, 0, 0, 0));
+    let id = sandbox.head(&sandbox.rollout()).id;
+    kept(Some(CODEX), None, counts(0, 1, 0, 0, 0));
+    kept(None, Some(CODEX_PACKED), counts(0, 0, 0, 1, 0));
+    kept(Some(CODEX), None, counts(0, 0, 0, 1, 0));
+    kept(None, Some(CODEX_PACKED), counts(0, 0, 0, 1, 0));
+    kept(Some(CODEX), None, counts(0, 0, 0, 1, 0));
+    let last = sandbox.head(&sandbox.rollout());
+    assert_eq!((last.id, last.generation), (id, Generation(1)));
+    assert_eq!(last.records, lines(CODEX) as u64);
+}
+
+#[test]
+fn a_packed_rollout_that_holds_more_than_was_kept_appends() {
+    let sandbox = Sandbox::new("packed_grown");
+    sandbox.leave(Some(&head(CODEX, 3)), None);
+    assert_eq!(sandbox.keep_sessions().code, 0);
+    sandbox.leave(None, Some(CODEX_PACKED));
+    let run = sandbox.keep_sessions();
+    assert_eq!(
+        run.stdout.lines().next(),
+        Some(counts(0, 1, 0, 0, 0).as_str()),
+        "{:?}",
+        run.stderr
+    );
+    assert_eq!(sandbox.records(&sandbox.rollout()).len(), lines(CODEX));
+}
+
+#[test]
+fn a_plain_file_beside_its_packed_sibling_is_the_one_read() {
+    let sandbox = Sandbox::new("both_forms");
+    sandbox.leave(Some(&head(CODEX, 3)), None);
+    assert_eq!(sandbox.keep_sessions().code, 0);
+    sandbox.leave(Some(CODEX), Some(&packed(&head(CODEX, 3))));
+    let run = sandbox.keep_sessions();
+    assert_eq!(
+        run.stdout.lines().next(),
+        Some(counts(0, 1, 0, 0, 0).as_str()),
+        "{:?}",
+        run.stderr
+    );
+    assert_eq!(sandbox.head(&sandbox.rollout()).generation, Generation(1));
+}
+
+#[test]
+fn a_packed_file_that_does_not_unpack_is_refused_and_the_run_goes_on() {
+    let sandbox = Sandbox::new("packed_cut");
+    write(
+        &sandbox.sessions().join("2026/11/07").join(SECOND),
+        SECOND_BYTES,
+    );
+    sandbox.leave(None, Some(&CODEX_PACKED[..CODEX_PACKED.len() / 2]));
+    let run = sandbox.keep_sessions();
+    assert_eq!(run.code, 1, "{:?}", run.stderr);
+    assert_eq!(
+        run.stdout.lines().next(),
+        Some(counts(1, 0, 0, 0, 1).as_str())
+    );
+    let packed_name = format!("{}", sandbox.packed_rollout().display());
+    assert!(
+        run.stderr
+            .iter()
+            .any(|line| line.starts_with(&format!("bilbo: refused {packed_name}: cannot unpack"))),
+        "{:?}",
+        run.stderr
+    );
+    assert!(
+        sandbox
+            .store()
+            .by_origin(&Origin::file(&sandbox.rollout()).expect("origin"))
+            .expect("head")
+            .is_none()
+    );
+}
+
+#[test]
+fn a_packed_file_made_to_hold_far_more_than_its_size_is_refused_on_every_run() {
+    let sandbox = Sandbox::new("packed_bomb");
+    write(
+        &sandbox.sessions().join("2026/11/07").join(SECOND),
+        SECOND_BYTES,
+    );
+    let bomb = packed(&[head(CODEX, 1), vec![b'\n'; 14 << 20]].concat());
+    assert!(bomb.len() < 64 << 10, "{}", bomb.len());
+    sandbox.leave(None, Some(&bomb));
+    let refused = format!(
+        "bilbo: refused {}: would hold more than 134217728 bytes unpacked",
+        sandbox.packed_rollout().display()
+    );
+    for expected in [counts(1, 0, 0, 0, 1), counts(0, 0, 0, 1, 1)] {
+        let run = sandbox.keep_sessions();
+        assert_eq!(run.code, 1, "{:?}", run.stderr);
+        assert_eq!(run.stdout.lines().next(), Some(expected.as_str()));
+        assert!(run.stderr.contains(&refused), "{:?}", run.stderr);
+    }
+    assert!(
+        sandbox
+            .store()
+            .by_origin(&Origin::file(&sandbox.rollout()).expect("origin"))
+            .expect("head")
+            .is_none()
+    );
+}
+
+#[test]
+fn the_unpack_keys_reach_the_session_kind() {
+    let feeds = packed(&[head(CODEX, 1), vec![b'\n'; 1 << 20]].concat());
+    let mut state = 0x9e37_79b9_7f4a_7c15_u64;
+    let text_bytes: Vec<u8> = (0..256 << 10)
+        .map(|_| {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            b' ' + u8::try_from(state % 95).expect("a byte")
+        })
+        .collect();
+    let hard = packed(&[head(SECOND_BYTES, 1), text_bytes, vec![b'\n'; 600_000]].concat());
+    for (name, config, expected, code, refused) in [
+        (
+            "unpack_keys_default",
+            "",
+            counts(2, 0, 0, 0, 0),
+            0,
+            [false, false],
+        ),
+        (
+            "unpack_keys_floor",
+            "[session]\nunpack_floor = \"8 MiB\"\n",
+            counts(1, 0, 0, 0, 1),
+            1,
+            [true, false],
+        ),
+        (
+            "unpack_keys_floor_and_ratio",
+            "[session]\nunpack_floor = \"8 MiB\"\nunpack_ratio = 64\n",
+            counts(0, 0, 0, 0, 2),
+            1,
+            [true, true],
+        ),
+    ] {
+        let sandbox = Sandbox::new(name);
+        sandbox.leave(None, Some(&feeds));
+        let mut second = sandbox
+            .sessions()
+            .join("2026/11/07")
+            .join(SECOND)
+            .into_os_string();
+        second.push(".zst");
+        write(Path::new(&second), &hard);
+        write(&sandbox.dir.join("config/config.toml"), config.as_bytes());
+        let run = sandbox.keep_sessions();
+        assert_eq!(run.code, code, "{name}: {:?}", run.stderr);
+        assert_eq!(run.stdout.lines().next(), Some(expected.as_str()), "{name}");
+        for (file, refused) in [sandbox.packed_rollout(), PathBuf::from(second)]
+            .iter()
+            .zip(refused)
+        {
+            let line = format!("bilbo: refused {}: would hold more than ", file.display());
+            assert_eq!(
+                run.stderr.iter().any(|shown| shown.starts_with(&line)),
+                refused,
+                "{name}: {:?}",
+                run.stderr
+            );
+        }
+        if name == "unpack_keys_floor" {
+            let line = format!(
+                "bilbo: refused {}: would hold more than 8388608 bytes unpacked",
+                sandbox.packed_rollout().display()
+            );
+            assert!(
+                run.stderr.iter().any(|shown| shown == &line),
+                "{:?}",
+                run.stderr
+            );
+        }
+    }
+}
+
+#[test]
+fn a_link_under_a_rollouts_plain_name_is_never_read() {
+    let reference = Sandbox::new("link_reference");
+    assert_eq!(reference.keep_sessions().code, 0);
+    let expected = reference.records(&reference.rollout());
+    let sandbox = Sandbox::new("link");
+    sandbox.leave(None, Some(CODEX_PACKED));
+    let other = sandbox.dir.join("other.jsonl");
+    write(&other, SECOND_BYTES);
+    symlink(&other, sandbox.rollout()).expect("a link under the plain name");
+    let run = sandbox.keep_sessions();
+    assert_eq!(run.code, 0, "{:?}", run.stderr);
+    assert_eq!(sandbox.records(&sandbox.rollout()), expected);
+}
+
+#[test]
+fn a_followed_rollout_file_stays_followed_when_codex_packs_or_unpacks_it() {
+    let sandbox = Sandbox::new("followed_forms");
+    let followed = sandbox.dir.join("elsewhere").join(ROLLOUT);
+    write(&followed, head(CODEX, 3));
+    let run = sandbox.run(&[text(&followed), "--follow"]);
+    assert_eq!(run.code, 0, "{:?}", run.stderr);
+    let run = sandbox.run(&[]);
+    assert_eq!(
+        run.stdout.lines().next(),
+        Some(counts(4, 0, 0, 1, 0).as_str()),
+        "{:?}",
+        run.stderr
+    );
+    let mut name = followed.clone().into_os_string();
+    name.push(".zst");
+    fs::remove_file(&followed).expect("Codex packs it");
+    write(Path::new(&name), packed(&head(CODEX, 3)));
+    let run = sandbox.run(&[]);
+    assert_eq!(run.code, 0, "{:?}", run.stderr);
+    assert_eq!(
+        run.stdout.lines().next(),
+        Some(counts(0, 0, 0, 5, 0).as_str())
+    );
+    assert_eq!(run.stderr, Vec::<String>::new());
+    fs::remove_file(Path::new(&name)).expect("Codex unpacks it");
+    write(&followed, CODEX);
+    let run = sandbox.run(&[]);
+    assert_eq!(
+        run.stdout.lines().next(),
+        Some(counts(0, 1, 0, 4, 0).as_str()),
+        "{:?}",
+        run.stderr
+    );
 }
