@@ -3,6 +3,7 @@ use std::collections::BTreeSet;
 use bilbo_kinds::reader::Reader;
 use bilbo_store::entries::{Change, Cursor, Entries};
 use bilbo_store::id::Id;
+use bilbo_store::labels::Relabel;
 
 use crate::fill::Fill;
 use crate::index::Index;
@@ -10,19 +11,31 @@ use crate::position::{MAX_FAILED, Manifest, Position};
 use crate::tokenizer::Tokenizer;
 use crate::work::{Error, Output, Request};
 
+pub(crate) struct Stores<'a> {
+    pub entries: &'a dyn Entries,
+    pub labels: &'a dyn Relabel,
+}
+
 /// Empties the index and fills it with the newest generation of every entry, in entry id order
 /// and chunk order whatever `workers` is, then commits once with the store's cursor. An entry the
 /// store cannot read back is reported and left out; nothing else stops at one entry.
 pub fn run(
     request: &Request,
     entries: &dyn Entries,
+    labels: &dyn Relabel,
     readers: &[Box<dyn Reader>],
     tokenizer: &Tokenizer,
     index: &mut dyn Index,
 ) -> Result<Output, Error> {
     let manifest = Manifest::new(request.chunk, tokenizer.id, &request.render);
     let output = rebuild(
-        manifest, request, entries, readers, tokenizer, index, MAX_FAILED,
+        manifest,
+        request,
+        &Stores { entries, labels },
+        readers,
+        tokenizer,
+        index,
+        MAX_FAILED,
     );
     if output.is_err() {
         index.rollback();
@@ -33,12 +46,13 @@ pub fn run(
 pub(crate) fn rebuild(
     manifest: Manifest,
     request: &Request,
-    entries: &dyn Entries,
+    stores: &Stores<'_>,
     readers: &[Box<dyn Reader>],
     tokenizer: &Tokenizer,
     index: &mut dyn Index,
     max_failed: usize,
 ) -> Result<Output, Error> {
+    let Stores { entries, labels } = *stores;
     let (changes, cursor) = entries.changes(&Cursor::start())?;
     let mut position = Position {
         manifest,
@@ -54,6 +68,7 @@ pub(crate) fn rebuild(
         size: request.chunk,
         workers: request.workers,
         entries,
+        labels,
         readers,
         tokens: tokenizer.tokens.as_ref(),
         grown: None,
@@ -71,10 +86,10 @@ pub(crate) fn rebuild(
 mod tests {
     use bilbo_kinds::reader::Reader;
 
-    use super::rebuild;
+    use super::{Stores, rebuild};
     use crate::chunk::Size;
     use crate::position::Manifest;
-    use crate::testing::{Bytes, Commits, Four, OnePassage, id};
+    use crate::testing::{Bytes, Commits, Filings, Four, OnePassage, id};
     use crate::tokenizer::Tokenizer;
     use crate::work::{Error, Output, Request};
 
@@ -94,7 +109,16 @@ mod tests {
         };
         let manifest = Manifest::new(request.chunk, tokenizer.id, &request.render);
         rebuild(
-            manifest, &request, &Four, &readers, &tokenizer, index, max_failed,
+            manifest,
+            &request,
+            &Stores {
+                entries: &Four,
+                labels: &Filings::default(),
+            },
+            &readers,
+            &tokenizer,
+            index,
+            max_failed,
         )
     }
 

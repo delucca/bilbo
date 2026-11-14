@@ -7,7 +7,9 @@ use bilbo_search::analyze::Omit;
 use bilbo_search::bm25::Bm25;
 use bilbo_search::position::Manifest;
 use bilbo_search::rank::{Query, Ranker};
-use bilbo_search::recall::{self, Access, Error, Finished, Request, Stand};
+use bilbo_search::recall::scope::{self, Unnamed};
+use bilbo_search::recall::select::{Limits, Skipped};
+use bilbo_search::recall::{self, Access, Error, Finished, Request, Scoped, Stand};
 use bilbo_settings::file::File;
 use bilbo_settings::key::{Flag, Source};
 use bilbo_store::segments::{Cache, Notice, Store};
@@ -24,12 +26,20 @@ use crate::console::theme::Mark;
 
 const SUMMARY: &str = "Search everything bilbo keeps and print the chunks that match best";
 const ABOUT: &str = "bilbo recall: search what bilbo keeps and print the chunks that match best.";
-const USAGE: &str = "bilbo recall <query>... [--kind <kind>]... [--budget <tokens>]";
+const USAGE: &str = "bilbo recall <query>... [--in <label>]... [--kind <kind>]...
+               [--budget <tokens>]";
 const BUDGET_FLAG: &str = "--budget";
 
 #[derive(Debug, clap::Args)]
 #[command(about = SUMMARY, before_help = ABOUT, override_usage = USAGE, after_help = PAGE)]
 pub struct Args {
+    #[arg(
+        long = "in",
+        value_name = "label",
+        value_parser = NonEmptyStringValueParser::new(),
+        help = "Search what a label or an id names; repeat it for more"
+    )]
+    pub scope: Vec<String>,
     #[arg(
         value_name = "query",
         required = true,
@@ -55,14 +65,13 @@ pub struct Args {
 
 const PAGE: &str = "\
 Output:
-  === <ref> <kind> <date> <n> lines  a hit's header, its fields tab-separated,
-                                     then exactly <n> lines of text
-  ... part <k>/<m>                   one piece of a record too long for a chunk
-  ... cut                            the last hit, cut to fit the budget
-The text is as it was kept, after a line its kind adds (a session's start).
-<ref> is what bilbo read takes. stderr says how many entries were searched.
-
-Each query that reaches the store is logged in the state folder's queries.log.
+  === <ref> <n> lines   a hit's header (tab-separated), then <n> lines of text
+  ... part <k>/<m>      one piece of a record too long for a chunk
+  ... cut               the last hit, cut to fit the budget
+  <ref>                 bilbo read takes it: the end of the id and the records
+  queries.log           in the state folder: each query that reaches the store
+--in takes an id, whole or as a hit prints it, or words of a label (bilbo read
+<id> lists labels). A value that starts with - takes =: --in=-home-me-src-shed
 
 Exit:
   0  at least one hit
@@ -71,7 +80,7 @@ Exit:
 
 Examples:
   bilbo recall how did we decide the index format
-  bilbo recall --kind markdown --budget 1500 -- release checklist
+  bilbo recall --in bilbo --in notes --budget 1500 -- release checklist
 
 Docs: https://github.com/delucca/bilbo/wiki/Commands#recall";
 
@@ -93,6 +102,19 @@ pub fn run(
             sanitize(&format!(
                 "unknown kind '{unknown}'; kinds: {}",
                 known.join(", ")
+            )),
+            Some("recall"),
+        ));
+    }
+    if let Some(blank) = args
+        .scope
+        .iter()
+        .find(|value| scope::value(value).is_none())
+    {
+        return Err(usage(
+            root,
+            sanitize(&format!(
+                "--in '{blank}' has no letter or digit; give a word of a label, or an id as a hit prints it"
             )),
             Some("recall"),
         ));
@@ -138,11 +160,18 @@ pub fn run(
         query: Query {
             text: args.query.join(" "),
             kinds: args.kind.clone(),
+            entries: None,
         },
         manifest: Manifest::new(reading.chunk, tokenizer.id, reading.render),
         chunk: reading.chunk,
         candidates: settings.recall.candidates.value,
-        cap: settings.recall.cap.value,
+        limits: Limits {
+            per_entry: settings.recall.cap.value,
+            per_record: settings.recall.record_cap.value,
+            copy_share: settings.recall.copy_share.value,
+            copy_words: settings.recall.copy_words.value,
+        },
+        scope: args.scope.clone(),
         budget: budget.value,
         at: SystemTime::now(),
     };
@@ -156,7 +185,10 @@ pub fn run(
     };
     let finished = recall::run(
         &request,
-        &store,
+        &recall::Reads {
+            entries: &store,
+            labels: &store,
+        },
         reading.readers,
         &*tokenizer.tokens,
         access,
@@ -181,6 +213,72 @@ fn entries(count: u64) -> String {
         group(count),
         if count == 1 { "entry" } else { "entries" }
     )
+}
+
+fn passed_over(skipped: Skipped) -> Option<Message> {
+    let plural = |count: u64, one: &str, many: &str| {
+        format!("{} {}", group(count), if count == 1 { one } else { many })
+    };
+    let items: Vec<String> = [
+        (skipped.copies, "copy", "copies"),
+        (
+            skipped.parts,
+            "further part of a record",
+            "further parts of a record",
+        ),
+    ]
+    .into_iter()
+    .filter(|(count, ..)| *count > 0)
+    .map(|(count, one, many)| plural(count, one, many))
+    .chain((skipped.capped > 0).then(|| format!("{} over the entry cap", group(skipped.capped))))
+    .collect();
+    (!items.is_empty()).then(|| say(Mark::Info, format!("passed over: {}", items.join(", "))))
+}
+
+fn unnamed(scope: &Scoped) -> Vec<Message> {
+    scope
+        .unnamed
+        .iter()
+        .map(|(value, why)| {
+            let value = sanitize(value);
+            say(
+                Mark::Warning,
+                match why {
+                    Unnamed::Nothing => format!("--in '{value}' names no entry"),
+                    Unnamed::Several(ids) => {
+                        let ids: Vec<String> = ids.iter().map(ToString::to_string).collect();
+                        format!(
+                            "--in '{value}' ends the id of {} entries: {}; give one id in full",
+                            ids.len(),
+                            ids.join(", ")
+                        )
+                    }
+                },
+            )
+        })
+        .collect()
+}
+
+fn kept(scope: &Scoped) -> Message {
+    let outside: u64 = scope.outside.values().sum();
+    let mut text = format!("--in kept {}", entries(scope.kept));
+    if scope.best > 0 {
+        let left = if outside == 0 {
+            "none".to_owned()
+        } else {
+            group(outside)
+        };
+        text += &format!(" and left out {left} of the best {}", group(scope.best));
+        if outside > 0 {
+            let kinds: Vec<String> = scope
+                .outside
+                .iter()
+                .map(|(kind, count)| format!("{} {}", sanitize(kind), group(*count)))
+                .collect();
+            text += &format!(": {}", kinds.join(", "));
+        }
+    }
+    say(Mark::Info, text)
 }
 
 fn withheld(cache: &Cache) -> Option<String> {
@@ -244,11 +342,18 @@ pub fn outcome(finished: Finished, cache: &Cache) -> Result<Outcome, Failure> {
         Stand::Current | Stand::Behind(_) | Stand::Unknown
     );
     let mut diagnostics = Vec::new();
-    if ran {
+    let named_nothing = output.scope.as_ref().is_some_and(|scope| scope.kept == 0);
+    if ran && !named_nothing {
         diagnostics.push(say(
             Mark::Info,
             format!("searched {}", entries(output.searched)),
         ));
+    }
+    if let Some(scope) = &output.scope {
+        diagnostics.extend(unnamed(scope));
+        if scope.kept > 0 {
+            diagnostics.push(kept(scope));
+        }
     }
     match output.stand {
         Stand::Behind(count) => diagnostics.push(say(
@@ -265,6 +370,13 @@ pub fn outcome(finished: Finished, cache: &Cache) -> Result<Outcome, Failure> {
         )),
         _ => {}
     }
+    if output.stand == Stand::Unknown && output.scope.as_ref().is_some_and(|scope| scope.worded) {
+        diagnostics.push(say(
+            Mark::Warning,
+            "--in may name fewer entries than it should: labels are filed when the index is made; bilbo remember brings both up to date"
+                .to_owned(),
+        ));
+    }
     if output.left_out > 0 {
         diagnostics.push(say(
             Mark::Warning,
@@ -275,6 +387,7 @@ pub fn outcome(finished: Finished, cache: &Cache) -> Result<Outcome, Failure> {
             ),
         ));
     }
+    diagnostics.extend(passed_over(output.skipped));
     diagnostics.extend(unlogged);
     if ran && output.hits.is_empty() {
         diagnostics.push(say(Mark::Info, "nothing matched".to_owned()));
@@ -311,7 +424,9 @@ mod tests {
     use bilbo_search::index::{Extent, IndexError};
     use bilbo_search::lookup::Found;
     use bilbo_search::recall::hit::Hit;
-    use bilbo_search::recall::{Error, Finished, Output, Stand};
+    use bilbo_search::recall::scope::Unnamed;
+    use bilbo_search::recall::select::Skipped;
+    use bilbo_search::recall::{Error, Finished, Output, Scoped, Stand};
     use bilbo_store::entries::{Generation, RecordRange, StoreError};
     use bilbo_store::id::Id;
     use bilbo_store::segments::Cache;
@@ -336,6 +451,7 @@ mod tests {
             preface: None,
             text: "text".to_owned(),
             cut: false,
+            shared_short: false,
         }
     }
 
@@ -345,7 +461,27 @@ mod tests {
             searched,
             stand,
             left_out,
+            skipped: Skipped::default(),
+            scope: None,
         }
+    }
+
+    fn scoped(kept: u64, best: u64, outside: &[(&str, u64)]) -> Scoped {
+        Scoped {
+            kept,
+            unnamed: Vec::new(),
+            worded: false,
+            best,
+            outside: outside
+                .iter()
+                .map(|(kind, count)| ((*kind).to_owned(), *count))
+                .collect(),
+        }
+    }
+
+    fn with_scope(mut output: Output, scope: Scoped) -> Output {
+        output.scope = Some(scope);
+        output
     }
 
     fn finished(output: Output, unlogged: Option<&str>) -> Finished {
@@ -374,7 +510,139 @@ mod tests {
             done.stderr_lines(&View::PLAIN),
             ["bilbo: searched 1,412 entries"]
         );
-        assert!(done.stdout(&View::PLAIN).starts_with("=== bilbo:"));
+        assert!(
+            done.stdout(&View::PLAIN)
+                .starts_with("=== 2T6W9YB0DE#r1-2\t")
+        );
+    }
+
+    #[test]
+    fn the_passed_over_line_lists_only_what_was_passed_over() {
+        let said = |copies, parts, capped| {
+            let mut output = output(1, 4, Stand::Behind(2), 1);
+            output.skipped = Skipped {
+                copies,
+                parts,
+                capped,
+            };
+            lines(finished(output, Some("disk full")), &Cache::Absent).1
+        };
+        let stderr = said(3, 1, 0);
+        assert_eq!(
+            stderr[3..],
+            [
+                "bilbo: passed over: 3 copies, 1 further part of a record",
+                "bilbo: the query was not logged: disk full"
+            ]
+        );
+        assert!(stderr[2].starts_with("bilbo: left out 1 hit"), "{stderr:?}");
+        assert_eq!(
+            said(1, 0, 2)[3],
+            "bilbo: passed over: 1 copy, 2 over the entry cap"
+        );
+        assert_eq!(
+            said(0, 2, 0)[3],
+            "bilbo: passed over: 2 further parts of a record"
+        );
+        assert_eq!(said(0, 0, 0).len(), 4, "no line for zeros");
+    }
+
+    #[test]
+    fn the_scope_line_says_what_was_kept_and_what_was_left_out_by_kind() {
+        let said = |scope| {
+            lines(
+                finished(with_scope(output(1, 4, Stand::Current, 0), scope), None),
+                &Cache::Absent,
+            )
+            .1[1]
+                .clone()
+        };
+        assert_eq!(
+            said(scoped(1203, 400, &[("session", 24), ("markdown", 7)])),
+            "bilbo: --in kept 1,203 entries and left out 31 of the best 400: markdown 7, session 24"
+        );
+        assert_eq!(
+            said(scoped(1, 12, &[])),
+            "bilbo: --in kept 1 entry and left out none of the best 12"
+        );
+        assert_eq!(said(scoped(3, 0, &[])), "bilbo: --in kept 3 entries");
+    }
+
+    #[test]
+    fn a_value_that_names_nothing_and_a_short_id_of_several_each_get_their_line() {
+        let first = Id::parse("01JC5Q3V7XKM4P8R2T6W9YB0DE").expect("an id");
+        let second = Id::parse("01JC5Q3V7XKM4P8S2T6W9YB0DE").expect("an id");
+        let mut scope = scoped(2, 0, &[]);
+        scope.unnamed = vec![
+            ("sh'ed".to_owned(), Unnamed::Nothing),
+            (
+                "2T6W9YB0DE".to_owned(),
+                Unnamed::Several(vec![first, second]),
+            ),
+            ("gone\n".to_owned(), Unnamed::Nothing),
+        ];
+        let (_, stderr) = lines(
+            finished(with_scope(output(1, 4, Stand::Current, 0), scope), None),
+            &Cache::Absent,
+        );
+        assert_eq!(
+            stderr,
+            [
+                "bilbo: searched 4 entries".to_owned(),
+                "bilbo: --in 'sh'ed' names no entry".to_owned(),
+                format!(
+                    "bilbo: --in '2T6W9YB0DE' ends the id of 2 entries: {first}, {second}; give one id in full"
+                ),
+                "bilbo: --in 'gone\\n' names no entry".to_owned(),
+                "bilbo: --in kept 2 entries".to_owned(),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_scope_that_named_nothing_exits_1_with_no_searched_line() {
+        let mut scope = scoped(0, 0, &[]);
+        scope.unnamed = vec![("shed".to_owned(), Unnamed::Nothing)];
+        let (code, stderr) = lines(
+            finished(with_scope(output(0, 0, Stand::Current, 0), scope), None),
+            &Cache::Absent,
+        );
+        assert_eq!(code, 1);
+        assert_eq!(
+            stderr,
+            [
+                "bilbo: --in 'shed' names no entry",
+                "bilbo: nothing matched"
+            ]
+        );
+    }
+
+    #[test]
+    fn a_scope_by_words_on_an_index_that_cannot_be_compared_says_so() {
+        let line = "bilbo: --in may name fewer entries than it should: labels are filed when the index is made; bilbo remember brings both up to date";
+        let said = |stand, worded, left_out| {
+            let mut scope = scoped(2, 0, &[]);
+            scope.worded = worded;
+            lines(
+                finished(with_scope(output(1, 4, stand, left_out), scope), None),
+                &Cache::Absent,
+            )
+        };
+        let (code, stderr) = said(Stand::Unknown, true, 1);
+        assert_eq!(code, 0);
+        let at = stderr.iter().position(|text| text == line).expect(line);
+        assert!(stderr[at - 1].contains("cannot be compared"), "{stderr:?}");
+        assert!(
+            stderr[at + 1].starts_with("bilbo: left out 1 hit"),
+            "{stderr:?}"
+        );
+        for (stand, worded) in [
+            (Stand::Unknown, false),
+            (Stand::Current, true),
+            (Stand::Behind(1), true),
+        ] {
+            assert!(!said(stand, worded, 0).1.iter().any(|text| text == line));
+        }
     }
 
     #[test]

@@ -1,6 +1,6 @@
 bilbo:01JC5Q3V7XKM4P8R2T6W9YB0DG
 kind: markdown
-origin: file:/home/me/notes/garden-log.md
+label: file:/home/me/notes/garden-log.md (capture)
 captured: 2026-11-09 03:12 UTC
 records: 34
 generation: 1

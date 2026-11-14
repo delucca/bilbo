@@ -5,9 +5,10 @@ use bilbo_store::entries::{
     StoreError,
 };
 use bilbo_store::id::Id;
+use bilbo_store::labels::StoredLabels;
 
 use crate::scratch::{
-    Scratch, catalog, id_of, keep, keep_as, open, open_seg, origin, read_records, try_keep,
+    Scratch, capture_label, catalog, id_of, keep, keep_as, open, open_seg, read_records, try_keep,
 };
 
 #[test]
@@ -34,10 +35,10 @@ fn a_first_capture_is_new_and_reads_back_byte_for_byte() {
     assert_eq!(middle, vec![b"two\n".to_vec()]);
     let meta = store.meta(new.id).expect("meta").expect("some");
     assert_eq!(meta.kind, "markdown");
-    assert_eq!(meta.origin, Some(origin("a.md")));
-    assert_eq!(meta.parent, None);
+    assert_eq!(meta.labels.capture, Some(capture_label("a.md")));
+    assert_eq!(meta.labels.id, None);
     let head = store
-        .by_origin(&origin("a.md"))
+        .by_capture(&capture_label("a.md"))
         .expect("head")
         .expect("some");
     assert_eq!(head.id, new.id);
@@ -92,7 +93,7 @@ fn a_changed_prefix_starts_a_new_generation_and_the_old_one_stays_readable() {
     assert_eq!(read_records(&store, id, 1, 2), b"one\ntwo\n");
     assert_eq!(read_records(&store, id, 2, 3), b"one\nTWO\nthree\n");
     let head = store
-        .by_origin(&origin("a.md"))
+        .by_capture(&capture_label("a.md"))
         .expect("head")
         .expect("some");
     assert_eq!(head.generation, Generation(2));
@@ -160,7 +161,7 @@ fn a_given_id_is_used_at_first_capture_only() {
 }
 
 #[test]
-fn an_id_held_by_another_origin_is_refused() {
+fn an_id_held_by_another_capture_label_is_refused() {
     let scratch = Scratch::new("id_clash");
     let layout = scratch.layout();
     let mut store = open(&layout);
@@ -171,7 +172,7 @@ fn an_id_held_by_another_origin_is_refused() {
     match refused {
         Err(CaptureError::IdHeld { id, by }) => {
             assert_eq!(id, given);
-            assert_eq!(by, Some(origin("a.md")));
+            assert_eq!(by, Some(capture_label("a.md")));
         }
         other => panic!("expected IdHeld, got {other:?}"),
     }
@@ -179,19 +180,24 @@ fn an_id_held_by_another_origin_is_refused() {
         fs::metadata(open_seg(&layout)).expect("open.seg").len(),
         before
     );
-    assert!(store.by_origin(&origin("b.md")).expect("head").is_none());
+    assert!(
+        store
+            .by_capture(&capture_label("b.md"))
+            .expect("head")
+            .is_none()
+    );
 }
 
 #[test]
 fn records_that_do_not_cover_the_bytes_are_refused() {
     let scratch = Scratch::new("bad_records");
     let mut store = open(&scratch.layout());
-    let origin = origin("a.md");
+    let label = capture_label("a.md");
     let refused = store.capture(&Capture {
-        origin: &origin,
+        label: &label,
         kind: "markdown",
         id: None,
-        parent: None,
+        id_label: None,
         stamp: None,
         bytes: b"one\ntwo\n",
         ends: &[4],
@@ -221,14 +227,19 @@ fn set_meta_replaces_the_meta_and_survives_a_rebuild() {
     let id = id_of(&keep(&mut store, "a.md", b"one\n"));
     let mut meta = store.meta(id).expect("meta").expect("some");
     meta.kind = "other".into();
-    meta.parent = Some(Id::parse("01JC5Q3V7XKM4P8R2T6W9YB0DF").expect("id"));
-    meta.origin = Some(origin("moved.md"));
+    meta.labels.id = Some(Id::parse("01JC5Q3V7XKM4P8R2T6W9YB0DF").expect("id"));
+    meta.labels.capture = Some(capture_label("moved.md"));
     store.set_meta(id, &meta).expect("set_meta");
     assert_eq!(store.meta(id).expect("meta"), Some(meta.clone()));
-    assert!(store.by_origin(&origin("a.md")).expect("head").is_none());
+    assert!(
+        store
+            .by_capture(&capture_label("a.md"))
+            .expect("head")
+            .is_none()
+    );
     assert_eq!(
         store
-            .by_origin(&origin("moved.md"))
+            .by_capture(&capture_label("moved.md"))
             .expect("head")
             .map(|h| h.id),
         Some(id)
@@ -248,12 +259,17 @@ fn set_meta_replaces_the_meta_and_survives_a_rebuild() {
     ));
     let other = id_of(&keep(&mut store, "b.md", b"two\n"));
     let clash = Meta {
-        origin: Some(origin("moved.md")),
+        labels: StoredLabels {
+            capture: Some(capture_label("moved.md")),
+            id: None,
+        },
         ..store.meta(other).expect("meta").expect("some")
     };
     assert_eq!(
         store.set_meta(other, &clash).map_err(|e| e.to_string()),
-        Err(format!("origin file:/notes/moved.md is held by {id}"))
+        Err(format!(
+            "the capture label file:/notes/moved.md is held by {id}"
+        ))
     );
     drop(store);
 
@@ -314,18 +330,18 @@ fn a_cursor_from_another_catalog_starts_over() {
 }
 
 #[test]
-fn a_parent_is_kept_in_the_meta_and_survives_a_rebuild() {
-    let scratch = Scratch::new("parent");
+fn an_id_label_is_kept_in_the_meta_and_survives_a_rebuild() {
+    let scratch = Scratch::new("id_label");
     let layout = scratch.layout();
-    let parent = Id::parse("01JC5Q3V7XKM4P8R2T6W9YB0DF").expect("id");
+    let id_label = Id::parse("01JC5Q3V7XKM4P8R2T6W9YB0DF").expect("id");
     let mut store = open(&layout);
-    let origin = origin("agent-a.jsonl");
+    let label = capture_label("agent-a.jsonl");
     let captured = store
         .capture(&Capture {
-            origin: &origin,
+            label: &label,
             kind: "session",
             id: None,
-            parent: Some(parent),
+            id_label: Some(id_label),
             stamp: None,
             bytes: b"{}\n",
             ends: &[3],
@@ -333,12 +349,12 @@ fn a_parent_is_kept_in_the_meta_and_survives_a_rebuild() {
         .expect("capture");
     let id = id_of(&captured);
     assert_eq!(
-        store.meta(id).expect("meta").map(|m| m.parent),
-        Some(Some(parent))
+        store.meta(id).expect("meta").map(|m| m.labels.id),
+        Some(Some(id_label))
     );
     let plain = id_of(&keep(&mut store, "a.md", b"one\n"));
     assert_eq!(
-        store.meta(plain).expect("meta").map(|m| m.parent),
+        store.meta(plain).expect("meta").map(|m| m.labels.id),
         Some(None)
     );
     store.close().expect("close");
@@ -346,11 +362,11 @@ fn a_parent_is_kept_in_the_meta_and_survives_a_rebuild() {
     fs::remove_file(catalog(&layout)).expect("drop the catalog");
     let store = open(&layout);
     assert_eq!(
-        store.meta(id).expect("meta").map(|m| m.parent),
-        Some(Some(parent))
+        store.meta(id).expect("meta").map(|m| m.labels.id),
+        Some(Some(id_label))
     );
     assert_eq!(
-        store.meta(plain).expect("meta").map(|m| m.parent),
+        store.meta(plain).expect("meta").map(|m| m.labels.id),
         Some(None)
     );
 }
@@ -365,16 +381,16 @@ fn a_capture_without_a_stamp_clears_the_old_one_so_a_restore_is_a_new_generation
             + std::time::Duration::from_nanos(1_700_000_000_000_000_000),
     };
     let mut store = open(&layout);
-    let origin = origin("a.md");
+    let label = capture_label("a.md");
     let capture = |store: &mut bilbo_store::segments::Store,
                    bytes: &[u8],
                    stamp: Option<bilbo_store::entries::Stamp>| {
         store
             .capture(&Capture {
-                origin: &origin,
+                label: &label,
                 kind: "markdown",
                 id: None,
-                parent: None,
+                id_label: None,
                 stamp,
                 bytes,
                 ends: &crate::scratch::ends(bytes),
@@ -382,7 +398,7 @@ fn a_capture_without_a_stamp_clears_the_old_one_so_a_restore_is_a_new_generation
             .expect("capture")
     };
     let head = |store: &bilbo_store::segments::Store| {
-        store.by_origin(&origin).expect("head").expect("an entry")
+        store.by_capture(&label).expect("head").expect("an entry")
     };
     capture(&mut store, b"a\n", Some(settled));
     assert_eq!(head(&store).stamp, Some(settled));
@@ -426,14 +442,14 @@ fn a_stamp_is_kept_with_each_capture_and_a_rebuild_forgets_it() {
         modified: std::time::UNIX_EPOCH + std::time::Duration::from_nanos(seconds),
     };
     let mut store = open(&layout);
-    let origin = origin("a.md");
+    let label = capture_label("a.md");
     let capture = |store: &mut bilbo_store::segments::Store, bytes: &[u8], at| {
         store
             .capture(&Capture {
-                origin: &origin,
+                label: &label,
                 kind: "markdown",
                 id: None,
-                parent: None,
+                id_label: None,
                 stamp: Some(stamp(at)),
                 bytes,
                 ends: &crate::scratch::ends(bytes),
@@ -442,7 +458,7 @@ fn a_stamp_is_kept_with_each_capture_and_a_rebuild_forgets_it() {
     };
     let head = |store: &bilbo_store::segments::Store| {
         store
-            .by_origin(&origin)
+            .by_capture(&label)
             .expect("head")
             .and_then(|head| head.stamp)
     };
@@ -493,4 +509,22 @@ fn changes_from_a_cursor_ahead_of_the_catalog_give_the_catalogs_newest_sequence_
     assert!(none.is_empty(), "nothing follows a cursor ahead");
     assert_eq!(real.seq(), newest_seq, "the real newest number comes back");
     assert_eq!(real.catalog(), cursor.catalog());
+}
+
+#[test]
+fn a_capture_label_an_entry_holds_cannot_be_taken_by_another() {
+    let scratch = Scratch::new("capture_label_held");
+    let layout = scratch.layout();
+    let mut store = open(&layout);
+    let held = id_of(&keep(&mut store, "a.md", b"one\n"));
+    let other = id_of(&keep(&mut store, "b.md", b"two\n"));
+    let mut meta = store.meta(other).expect("meta").expect("some");
+    meta.labels.capture = Some(capture_label("a.md"));
+    match store.set_meta(other, &meta) {
+        Err(StoreError::CaptureHeld { label, by }) => {
+            assert_eq!(label, capture_label("a.md"));
+            assert_eq!(by, held);
+        }
+        other => panic!("expected CaptureHeld, got {other:?}"),
+    }
 }

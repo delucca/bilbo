@@ -1,59 +1,19 @@
 use std::error::Error;
 use std::fmt;
 use std::io;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::time::SystemTime;
 
-use crate::id::Id;
-
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct Origin(String);
-
-impl Origin {
-    /// `file:` and the path; `None` unless the path is absolute and UTF-8. No I/O: callers pass a canonical path.
-    #[must_use]
-    pub fn file(path: &Path) -> Option<Origin> {
-        if !path.is_absolute() {
-            return None;
-        }
-        Some(Origin(format!("file:{}", path.to_str()?)))
-    }
-
-    #[must_use]
-    pub fn new(text: String) -> Option<Origin> {
-        if text.is_empty() {
-            None
-        } else {
-            Some(Origin(text))
-        }
-    }
-
-    #[must_use]
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-
-    #[must_use]
-    pub fn path(&self) -> Option<&Path> {
-        self.0.strip_prefix("file:").map(Path::new)
-    }
-}
-
-impl fmt::Display for Origin {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.0)
-    }
-}
+use crate::id::{Id, Short};
+use crate::labels::{CaptureLabel, StoredLabels};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Meta {
     pub id: Id,
     pub kind: String,
-    pub origin: Option<Origin>,
+    pub labels: StoredLabels,
     /// Whole milliseconds: the store truncates before writing.
     pub captured: SystemTime,
-    /// The entry this one belongs to, such as a subagent's session.
-    pub parent: Option<Id>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -66,7 +26,7 @@ pub struct RecordRange {
     pub count: u64,
 }
 
-/// The origin mark: the origin's byte offset and a hash of its bytes up to it.
+/// What was captured: its byte offset and a hash of its bytes up to it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Mark {
     pub end: u64,
@@ -90,14 +50,14 @@ pub struct Head {
 }
 
 pub struct Capture<'a> {
-    pub origin: &'a Origin,
+    pub label: &'a CaptureLabel,
     /// Used at first capture only.
     pub kind: &'a str,
     /// Used at first capture only; `None` mints one.
     pub id: Option<Id>,
-    /// Used at first capture only.
-    pub parent: Option<Id>,
-    /// The origin as it was before its bytes were read.
+    /// The entry this one belongs to, such as a subagent's session. Used at first capture only.
+    pub id_label: Option<Id>,
+    /// What was captured, as it was before its bytes were read.
     pub stamp: Option<Stamp>,
     pub bytes: &'a [u8],
     /// Each record's end offset: strictly rising, the last equal to `bytes.len()`.
@@ -172,7 +132,7 @@ impl Cursor {
 #[derive(Debug)]
 pub enum CaptureError {
     /// Refused per file.
-    IdHeld { id: Id, by: Option<Origin> },
+    IdHeld { id: Id, by: Option<CaptureLabel> },
     /// Refused per file: the kind's records do not cover its bytes.
     Records(String),
     /// Refused per file: a frame holds at most 4 GiB.
@@ -186,9 +146,9 @@ impl fmt::Display for CaptureError {
         match self {
             Self::IdHeld {
                 id,
-                by: Some(origin),
+                by: Some(label),
             } => {
-                write!(f, "its id {id} is held by {origin}")
+                write!(f, "its id {id} is held by {label}")
             }
             Self::IdHeld { id, by: None } => write!(f, "its id {id} is held by another entry"),
             Self::Records(what) => write!(f, "its records do not cover it: {what}"),
@@ -245,8 +205,8 @@ pub enum StoreError {
         meta: Id,
         given: Id,
     },
-    OriginHeld {
-        origin: Origin,
+    CaptureHeld {
+        label: CaptureLabel,
         by: Id,
     },
     /// A folder that group or others can write: bilbo will not use it.
@@ -312,7 +272,9 @@ impl fmt::Display for StoreError {
             Self::MetaTooLarge => f.write_str("a meta field is larger than 4 GiB"),
             Self::IdTaken(id) => write!(f, "minted id {id} is already held"),
             Self::MetaMismatch { meta, given } => write!(f, "meta for {meta} given to {given}"),
-            Self::OriginHeld { origin, by } => write!(f, "origin {origin} is held by {by}"),
+            Self::CaptureHeld { label, by } => {
+                write!(f, "the capture label {label} is held by {by}")
+            }
             Self::OtherRoot {
                 state,
                 recorded,
@@ -351,47 +313,32 @@ pub trait Entries {
     ) -> Result<Vec<Vec<u8>>, StoreError>;
     fn meta(&self, id: Id) -> Result<Option<Meta>, StoreError>;
     fn changes(&self, since: &Cursor) -> Result<(Vec<Change>, Cursor), StoreError>;
-    fn by_origin(&self, origin: &Origin) -> Result<Option<Head>, StoreError>;
+    fn by_capture(&self, label: &CaptureLabel) -> Result<Option<Head>, StoreError>;
     /// `None` asks for the newest generation. `Ok(None)`: no such entry or generation.
     fn extent(
         &self,
         id: Id,
         generation: Option<Generation>,
     ) -> Result<Option<(Generation, u64)>, StoreError>;
-    /// The entries whose origin holds `part`, whatever the case of its ASCII letters, in id order.
-    fn origins_with(&self, part: &str) -> Result<Vec<(Id, Origin)>, StoreError>;
+    /// The entries whose capture label holds `part`, whatever the case of its ASCII letters, in id order.
+    fn captures_with(&self, part: &str) -> Result<Vec<(Id, CaptureLabel)>, StoreError>;
+    /// The entries whose id ends with one of them, in id order. One pass, whatever their number.
+    fn by_shorts(&self, shorts: &[Short]) -> Result<Vec<Id>, StoreError>;
 }
 
 #[cfg(test)]
 mod tests {
-    use std::ffi::OsString;
     use std::io;
-    use std::os::unix::ffi::OsStringExt;
     use std::path::{Path, PathBuf};
 
-    use super::{CaptureError, Cursor, Origin, StoreError};
+    use super::{CaptureError, Cursor, StoreError};
     use crate::id::Id;
-
-    #[test]
-    fn a_file_origin_is_its_absolute_utf8_path() {
-        let origin = Origin::file(Path::new("/notes/a.md")).expect("absolute");
-        assert_eq!(origin.as_str(), "file:/notes/a.md");
-        assert_eq!(origin.to_string(), "file:/notes/a.md");
-        assert_eq!(origin.path(), Some(Path::new("/notes/a.md")));
-        assert_eq!(Origin::file(Path::new("notes/a.md")), None);
-        let bytes = PathBuf::from(OsString::from_vec(b"/notes/\xFF.md".to_vec()));
-        assert_eq!(Origin::file(&bytes), None);
-        assert_eq!(Origin::new(String::new()), None);
-        assert_eq!(
-            Origin::new("stdin".into()).and_then(|o| o.path().map(Path::to_path_buf)),
-            None
-        );
-    }
+    use crate::labels::CaptureLabel;
 
     #[test]
     fn every_error_says_what_failed_and_where() {
         let id = Id::parse("01JC5Q3V7XKM4P8R2T6W9YB0DB").expect("id");
-        let origin = Origin::file(Path::new("/n/a.md")).expect("origin");
+        let label = CaptureLabel::file(Path::new("/n/a.md")).expect("label");
         let path = PathBuf::from("/s/open.seg");
         let cases = [
             (
@@ -443,7 +390,7 @@ mod tests {
             (
                 CaptureError::IdHeld {
                     id,
-                    by: Some(origin),
+                    by: Some(label),
                 }
                 .to_string(),
                 "its id 01JC5Q3V7XKM4P8R2T6W9YB0DB is held by file:/n/a.md",
@@ -493,12 +440,12 @@ mod tests {
                 "meta for 01JC5Q3V7XKM4P8R2T6W9YB0DB given to 01JC5Q3V7XKM4P8R2T6W9YB0DB",
             ),
             (
-                StoreError::OriginHeld {
-                    origin: Origin::file(Path::new("/n/a.md")).expect("origin"),
+                StoreError::CaptureHeld {
+                    label: CaptureLabel::file(Path::new("/n/a.md")).expect("label"),
                     by: id,
                 }
                 .to_string(),
-                "origin file:/n/a.md is held by 01JC5Q3V7XKM4P8R2T6W9YB0DB",
+                "the capture label file:/n/a.md is held by 01JC5Q3V7XKM4P8R2T6W9YB0DB",
             ),
             (
                 StoreError::OtherRoot {

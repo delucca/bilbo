@@ -64,6 +64,7 @@ pub fn update(
         work,
         &indexing.request,
         store,
+        store,
         indexing.readers,
         &tokenizer,
         index,

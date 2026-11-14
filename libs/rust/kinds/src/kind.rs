@@ -6,7 +6,7 @@ use crate::files::Files;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Claim {
-    origin: PathBuf,
+    label: PathBuf,
     files: Vec<PathBuf>,
 }
 
@@ -15,7 +15,7 @@ impl Claim {
     pub fn file(path: PathBuf) -> Claim {
         Claim {
             files: vec![path.clone()],
-            origin: path,
+            label: path,
         }
     }
 
@@ -26,8 +26,8 @@ impl Claim {
     }
 
     #[must_use]
-    pub fn origin(&self) -> &Path {
-        &self.origin
+    pub fn label(&self) -> &Path {
+        &self.label
     }
 
     /// Never empty: the first that is a file is read.
@@ -47,7 +47,7 @@ pub struct Claims {
 pub struct Proposal {
     pub id: Option<Id>,
     /// The entry this one belongs to, such as a subagent's session.
-    pub parent: Option<Id>,
+    pub id_label: Option<Id>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -65,7 +65,7 @@ pub trait Kind {
     fn name(&self) -> &'static str;
     /// One line for the help page.
     fn summary(&self) -> &'static str;
-    /// The entries under `target` this kind takes, in a stable order, one per origin. `target` is
+    /// The entries under `target` this kind takes, in a stable order, one per label. `target` is
     /// canonical, or names a file that is gone in a canonical folder.
     fn claims(&self, files: &dyn Files, target: &Path) -> Claims;
     /// What `file` holds once read: the entry's bytes.
@@ -75,8 +75,8 @@ pub trait Kind {
     /// Bytes after the last end are not a record yet (a line still being written): a later run
     /// keeps them.
     fn split(&self, bytes: &[u8]) -> Result<Vec<usize>, Refusal>;
-    /// `origin` is the claim's; `kept` gives the entry kept for another origin, if any.
-    fn propose(&self, origin: &Path, bytes: &[u8], kept: &dyn Fn(&Path) -> Option<Id>) -> Proposal;
+    /// `label` is the claim's; `kept` gives the entry kept for another label, if any.
+    fn propose(&self, label: &Path, bytes: &[u8], kept: &dyn Fn(&Path) -> Option<Id>) -> Proposal;
 }
 
 #[cfg(test)]
@@ -89,7 +89,7 @@ mod tests {
     #[test]
     fn a_plain_claim_is_kept_under_the_file_it_reads() {
         let claim = Claim::file(PathBuf::from("/t/a.md"));
-        assert_eq!(claim.origin(), Path::new("/t/a.md"));
+        assert_eq!(claim.label(), Path::new("/t/a.md"));
         assert_eq!(claim.files(), [PathBuf::from("/t/a.md")]);
     }
 
@@ -98,7 +98,7 @@ mod tests {
         let claim = Claim::file(PathBuf::from("/t/a"))
             .or(PathBuf::from("/t/a.z"))
             .or(PathBuf::from("/t/a.y"));
-        assert_eq!(claim.origin(), Path::new("/t/a"));
+        assert_eq!(claim.label(), Path::new("/t/a"));
         assert_eq!(
             claim.files(),
             [

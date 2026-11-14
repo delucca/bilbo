@@ -15,10 +15,13 @@ use bilbo_search::work::{Error, Output, Request};
 
 use bilbo_store::entries::Cursor;
 use bilbo_store::id::Id;
+use bilbo_store::labels::Labels;
 
 use crate::fakes::{
-    Bytes, CATALOG, Call, Kept, Lines, Log, Marked, Recorded, Watched, at, id, kept, shelf, unread,
+    Bytes, CATALOG, Call, Docs, Fault, Foldered, Kept, Lines, Log, Marked, Recorded, Watched, at,
+    id, kept, named, shelf, unread, wide,
 };
+use bilbo_search::analyze::label_words;
 
 const SMALL: Size = Size {
     tokens: 12,
@@ -41,11 +44,18 @@ fn tokenizer(tokens: impl Tokens + 'static) -> Tokenizer {
 }
 
 fn readers() -> Vec<Box<dyn Reader>> {
-    vec![Box::new(Lines("lines")), Box::new(Lines("notes"))]
+    vec![Box::new(Foldered("lines")), Box::new(Lines("notes"))]
 }
 
 fn reindex(shelf: &Log, index: &mut Recorded) -> Result<Output, Error> {
-    run(&request(), shelf, &readers(), &tokenizer(Bytes), index)
+    run(
+        &request(),
+        shelf,
+        shelf,
+        &readers(),
+        &tokenizer(Bytes),
+        index,
+    )
 }
 
 fn position(seq: u64) -> Position {
@@ -307,6 +317,7 @@ fn a_manifest_that_cannot_be_written_down_stops_the_run_before_the_index_is_touc
     let error = run(
         &request,
         &entries,
+        &entries,
         &readers(),
         &tokenizer(Bytes),
         &mut index,
@@ -344,9 +355,11 @@ fn the_index_gets_the_same_calls_in_the_same_order_however_many_workers_chunk() 
             workers,
             ..request()
         };
+        let log = shelf(entries());
         let output = run(
             &request,
-            &shelf(entries()),
+            &log,
+            &log,
             &readers(),
             &tokenizer(Bytes),
             &mut index,
@@ -373,9 +386,11 @@ fn a_failing_index_stops_a_run_of_several_workers_too() {
         workers: 4,
         ..request()
     };
+    let log = shelf(entries);
     let error = run(
         &request,
-        &shelf(entries),
+        &log,
+        &log,
         &readers(),
         &tokenizer(Bytes),
         &mut index,
@@ -400,9 +415,11 @@ fn run_marked(workers: usize, entries: fn() -> Vec<Kept>) -> Ran {
             workers,
             ..request()
         };
+        let log = shelf(entries());
         let ran = run(
             &request,
-            &shelf(entries()),
+            &log,
+            &log,
             &readers(),
             &tokenizer(Marked),
             &mut index,
@@ -593,9 +610,11 @@ fn an_entry_made_first_waits_for_the_one_before_it() {
             workers,
             ..request()
         };
+        let log = shelf(entries);
         run(
             &request,
-            &shelf(entries),
+            &log,
+            &log,
             &readers,
             &tokenizer(Bytes),
             &mut index,
@@ -633,9 +652,11 @@ fn an_entry_with_a_record_over_a_megabyte_is_indexed_whole_and_the_tokenizer_nev
         },
         ..request()
     };
+    let log = shelf(vec![kept(1, "lines", &["first\n", big, "last\n"])]);
     let output = run(
         &request,
-        &shelf(vec![kept(1, "lines", &["first\n", big, "last\n"])]),
+        &log,
+        &log,
         &readers(),
         &tokenizer(Watched(Arc::clone(&longest))),
         &mut index,
@@ -663,4 +684,478 @@ fn an_entry_with_a_record_over_a_megabyte_is_indexed_whole_and_the_tokenizer_nev
     assert!(firsts.iter().filter(|first| **first == 2).count() > 100);
     let longest = longest.load(Ordering::Relaxed);
     assert!(longest <= (1 << 20) + "line:\n".len(), "{longest}");
+}
+
+fn filed_text(log: &Log, entry: Id) -> Option<Vec<String>> {
+    log.filed
+        .borrow()
+        .get(&entry)
+        .map(|rows| rows.iter().map(|(text, _)| text.clone()).collect())
+}
+
+fn whole(log: &Log, index: &mut Docs) -> Result<Output, Error> {
+    run(&request(), log, log, &readers(), &tokenizer(Bytes), index)
+}
+
+fn shared(log: &Log) -> Docs {
+    let mut index = Docs::default();
+    index.events = log.events.clone();
+    index
+}
+
+#[test]
+fn labels_are_filed_before_the_index_commits() {
+    let mut log = shelf(vec![
+        kept(1, "lines", &["aaaa\n"]),
+        kept(2, "lines", &["bbbb\n"]),
+        kept(3, "lines", &["cccc\n"]),
+    ]);
+    log.label(1, "file:/home/me/src/garden");
+    let mut index = shared(&log);
+    whole(&log, &mut index).expect("a run");
+    let events = log.events.borrow();
+    assert_eq!(events[events.len() - 2..], ["relabel", "commit"]);
+    assert_eq!(
+        events.iter().filter(|event| **event == "relabel").count(),
+        1
+    );
+    assert_eq!(events.iter().filter(|event| **event == "commit").count(), 1);
+}
+
+#[test]
+fn an_entry_the_run_reads_is_filed_under_its_capture_label() {
+    let mut log = shelf(vec![
+        kept(1, "lines", &["aaaa\n"]),
+        kept(2, "lines", &["bbbb\n"]),
+    ]);
+    log.label(1, "file:/home/me/src/Garden");
+    log.filed.borrow_mut().insert(
+        id(2),
+        vec![("file:/stale".to_owned(), label_words("file:/stale"))],
+    );
+    let mut index = Docs::default();
+    whole(&log, &mut index).expect("a run");
+    assert_eq!(
+        log.filed.borrow().get(&id(1)),
+        Some(&vec![(
+            "file:/home/me/src/Garden".to_owned(),
+            label_words("file:/home/me/src/Garden")
+        )])
+    );
+    assert_eq!(label_words("file:/home/me/src/Garden").len(), 5);
+    assert_eq!(log.filed.borrow().get(&id(2)), None);
+    let calls = log.relabels.borrow();
+    assert_eq!(calls.len(), 1);
+    assert!(
+        calls[0]
+            .iter()
+            .any(|filed| filed.entry == id(2) && filed.labels.is_empty())
+    );
+}
+
+#[test]
+fn an_entry_no_reader_reads_is_in_no_call() {
+    let mut log = shelf(vec![
+        kept(1, "lines", &["aaaa\n"]),
+        kept(2, "strange", &["bbbb\n"]),
+    ]);
+    log.label(2, "file:/home/me/src/old");
+    let rows = vec![("file:/home/me/src/old".to_owned(), vec!["old".to_owned()])];
+    log.filed.borrow_mut().insert(id(2), rows.clone());
+    let mut index = Docs::default();
+    whole(&log, &mut index).expect("a run");
+    assert!(
+        log.relabels
+            .borrow()
+            .iter()
+            .flatten()
+            .all(|filed| filed.entry != id(2))
+    );
+    assert_eq!(log.filed.borrow().get(&id(2)), Some(&rows));
+}
+
+#[test]
+fn an_entry_whose_reader_fails_keeps_the_rows_it_had() {
+    let mut log = shelf(vec![
+        kept(1, "lines", &["fine\n"]),
+        kept(2, "lines", &["!panic\n"]),
+        kept(3, "lines", &["an UNSPLIT text\n"]),
+        kept(4, "lines", &["damaged\n"]),
+        kept(5, "lines", &["!panic\n"]),
+    ]);
+    for n in 1..=5 {
+        log.label(n, &format!("file:/home/me/src/place{n}"));
+    }
+    log.retouch(4, |held| held.damaged = true);
+    for n in [3, 4] {
+        let text = format!("file:/before/{n}");
+        log.filed
+            .borrow_mut()
+            .insert(id(n), vec![(text.clone(), label_words(&text))]);
+    }
+    let mut index = Docs::default();
+    run(
+        &request(),
+        &log,
+        &log,
+        &readers(),
+        &tokenizer(Marked),
+        &mut index,
+    )
+    .expect("a run");
+    let calls = log.relabels.borrow();
+    let in_calls: Vec<Id> = calls.iter().flatten().map(|filed| filed.entry).collect();
+    assert_eq!(in_calls, [id(1)]);
+    assert_eq!(filed_text(&log, id(2)), None);
+    assert_eq!(filed_text(&log, id(5)), None);
+    assert_eq!(
+        filed_text(&log, id(3)),
+        Some(vec!["file:/before/3".to_owned()])
+    );
+    assert_eq!(
+        filed_text(&log, id(4)),
+        Some(vec!["file:/before/4".to_owned()])
+    );
+
+    let mut log = shelf(vec![kept(
+        1,
+        "lines",
+        &["cwd:/home/me/src/garden\n", "cwd:/home/me/src/shed\n"],
+    )]);
+    let mut index = Docs::default();
+    whole(&log, &mut index).expect("a run");
+    let both = Some(vec![
+        "/home/me/src/garden".to_owned(),
+        "/home/me/src/shed".to_owned(),
+    ]);
+    assert_eq!(filed_text(&log, id(1)), both);
+    log.append(1, &["!panic"]);
+    log.relabels.borrow_mut().clear();
+    let output = whole(&log, &mut index).expect("a run");
+    assert_eq!(output.failed.len(), 1);
+    assert!(
+        log.relabels
+            .borrow()
+            .iter()
+            .flatten()
+            .all(|filed| filed.entry != id(1))
+    );
+    assert_eq!(filed_text(&log, id(1)), both);
+}
+
+#[test]
+fn what_a_reader_finds_is_filed_after_the_capture_label() {
+    let mut log = shelf(vec![
+        kept(
+            1,
+            "lines",
+            &[
+                "cwd:/home/me/src/shed\n",
+                "cwd:file:/home/me/src/garden\n",
+                "cwd:/home/me/src/shed\n",
+                "cwd:/home/me/Notes\n",
+            ],
+        ),
+        kept(2, "lines", &["cwd:/home/me/src/shed\n"]),
+    ]);
+    log.label(1, "file:/home/me/src/garden");
+    whole(&log, &mut Docs::default()).expect("a run");
+    let texts = [
+        "file:/home/me/src/garden",
+        "/home/me/src/shed",
+        "/home/me/Notes",
+    ];
+    assert_eq!(
+        log.filed.borrow().get(&id(1)),
+        Some(
+            &texts
+                .iter()
+                .map(|text| ((*text).to_owned(), label_words(text)))
+                .collect::<Vec<_>>()
+        )
+    );
+    assert_eq!(
+        log.filed.borrow().get(&id(2)),
+        Some(&vec![(
+            "/home/me/src/shed".to_owned(),
+            label_words("/home/me/src/shed")
+        )])
+    );
+    assert_eq!(label_words("/home/me/Notes"), ["home", "me", "note"]);
+}
+
+#[test]
+fn a_reader_that_panics_while_it_gives_labels_fails_the_entry() {
+    let mut log = shelf(vec![
+        kept(1, "lines", &["cwd:/home/me/src/garden\n"]),
+        kept(2, "lines", &["fine\n", "!labels-panic\n"]),
+        kept(3, "lines", &["cwd:/home/me/src/shed\n"]),
+    ]);
+    log.label(2, "file:/home/me/src/orchard");
+    let mut index = Docs::default();
+    let output = whole(&log, &mut index).expect("a run");
+    assert_eq!(output.failed.len(), 1);
+    assert_eq!(output.failed[0].0, id(2));
+    assert!(index.sorted().iter().all(|row| row.entry != id(2)));
+    assert!(index.sorted().iter().any(|row| row.entry == id(1)));
+    assert!(index.sorted().iter().any(|row| row.entry == id(3)));
+    let in_calls: Vec<Id> = log
+        .relabels
+        .borrow()
+        .iter()
+        .flatten()
+        .map(|filed| filed.entry)
+        .collect();
+    assert_eq!(in_calls, [id(1), id(3)]);
+    assert_eq!(filed_text(&log, id(2)), None);
+}
+
+#[test]
+fn an_entry_the_store_no_longer_has_loses_its_labels_when_the_fill_has_ended() {
+    let mut log = shelf(vec![
+        kept(1, "lines", &["aaaa\n"]),
+        kept(2, "lines", &["bbbb\n"]),
+        kept(3, "lines", &["cccc\n"]),
+    ]);
+    for n in 1..=3 {
+        log.label(n, &format!("file:/home/me/src/place{n}"));
+    }
+    let mut index = Docs::default();
+    whole(&log, &mut index).expect("a run");
+    log.remove(2);
+    log.relabels.borrow_mut().clear();
+    let mut again = Docs::default();
+    whole(&log, &mut again).expect("a run");
+    let calls = log.relabels.borrow();
+    assert_eq!(calls.len(), 1);
+    let order: Vec<(Id, bool)> = calls[0]
+        .iter()
+        .map(|filed| (filed.entry, filed.labels.is_empty()))
+        .collect();
+    assert_eq!(order, [(id(1), false), (id(3), false), (id(2), true)]);
+    assert_eq!(filed_text(&log, id(2)), None);
+}
+
+fn call_sizes(log: &Log) -> Vec<usize> {
+    log.relabels.borrow().iter().map(Vec::len).collect()
+}
+
+#[test]
+fn a_run_of_many_entries_files_them_in_id_order_a_batch_at_a_time() {
+    let log = Log::crowd(1100);
+    whole(&log, &mut Docs::default()).expect("a run");
+    assert_eq!(call_sizes(&log), [512, 512, 76]);
+    let order: Vec<Id> = log
+        .relabels
+        .borrow()
+        .iter()
+        .flatten()
+        .map(|filed| filed.entry)
+        .collect();
+    assert_eq!(order, (1..=1100).map(wide).collect::<Vec<_>>());
+    let log = Log::crowd(1024);
+    whole(&log, &mut Docs::default()).expect("a run");
+    assert_eq!(call_sizes(&log), [512, 512]);
+}
+
+#[test]
+fn a_rebuild_files_as_an_update_does_and_empties_nothing() {
+    let mut log = Log::crowd(600);
+    let mut index = Docs::default();
+    whole(&log, &mut index).expect("a run");
+    let before = log.filed.borrow().clone();
+    log.relabels.borrow_mut().clear();
+    log.relabel_all(|entry| format!("file:/new/{}", entry.to_bytes()[15]));
+    whole(&log, &mut index).expect("a rebuild");
+    let calls = log.relabels.borrow();
+    assert_eq!(calls.iter().map(Vec::len).collect::<Vec<_>>(), [512, 88]);
+    assert!(calls.iter().flatten().all(|filed| !filed.labels.is_empty()));
+    assert_eq!(log.filed.borrow().len(), before.len());
+}
+
+#[test]
+fn a_rebuild_stopped_after_it_emptied_the_index_changes_no_label() {
+    let mut log = shelf(vec![
+        kept(1, "lines", &["aaaa\n"]),
+        kept(2, "lines", &["bbbb\n"]),
+    ]);
+    log.label(1, "file:/home/me/src/garden");
+    log.label(2, "file:/home/me/src/shed");
+    let mut index = Docs::default();
+    whole(&log, &mut index).expect("a run");
+    let (rows, position, filed) = (
+        index.sorted(),
+        index.position.clone(),
+        log.filed.borrow().clone(),
+    );
+    let calls = log.relabels.borrow().len();
+    log.label(1, "file:/home/me/src/greenhouse");
+    index.fail_add = Some(index.adds);
+    let error = whole(&log, &mut index).expect_err("a refusal");
+    assert!(matches!(error, Error::Index(_)), "{error:?}");
+    assert_eq!((index.sorted(), index.position.clone()), (rows, position));
+    assert_eq!(log.relabels.borrow().len(), calls);
+    assert_eq!(*log.filed.borrow(), filed);
+    assert!(named(&index, &log));
+    index.fail_add = None;
+    whole(&log, &mut index).expect("a run");
+    assert_eq!(
+        filed_text(&log, id(1)),
+        Some(vec!["file:/home/me/src/greenhouse".to_owned()])
+    );
+    assert!(named(&index, &log));
+}
+
+#[test]
+fn a_rebuild_stopped_between_two_batches_leaves_every_entry_its_labels() {
+    let mut log = Log::crowd(1100);
+    let mut index = Docs::default();
+    whole(&log, &mut index).expect("a run");
+    let (rows, position) = (index.sorted(), index.position.clone());
+    let base = log.relabels.borrow().len();
+    log.relabel_all(|entry| {
+        format!(
+            "file:/new/{}",
+            u16::from_be_bytes([entry.to_bytes()[14], entry.to_bytes()[15]])
+        )
+    });
+    log.append_all("cwd:/home/me/src/new");
+    log.refuse_relabel.set(Some(base + 1));
+    let error = whole(&log, &mut index).expect_err("a refusal");
+    assert!(matches!(error, Error::Store(_)), "{error:?}");
+    let calls = log.relabels.borrow().clone();
+    assert_eq!(calls.len() - base, 2);
+    let first: Vec<Id> = calls[base].iter().map(|filed| filed.entry).collect();
+    assert_eq!(first, (1..=512).map(wide).collect::<Vec<_>>());
+    assert_eq!((index.sorted(), index.position.clone()), (rows, position));
+    assert_eq!(index.rolled_back, 1);
+    assert_eq!(
+        filed_text(&log, wide(1)),
+        Some(vec![
+            "file:/new/1".to_owned(),
+            "/home/me/src/new".to_owned()
+        ])
+    );
+    assert_eq!(
+        filed_text(&log, wide(513)),
+        Some(vec!["file:/home/me/src/place513".to_owned()])
+    );
+    assert!(named(&index, &log));
+    log.refuse_relabel.set(None);
+    whole(&log, &mut index).expect("a run");
+    assert_eq!(
+        filed_text(&log, wide(1100)),
+        Some(vec![
+            "file:/new/1100".to_owned(),
+            "/home/me/src/new".to_owned()
+        ])
+    );
+    assert!(named(&index, &log));
+}
+
+#[test]
+fn a_rebuild_whose_commit_is_refused_leaves_the_labels_filed_and_the_index_as_it_was() {
+    let mut log = shelf(vec![
+        kept(1, "lines", &["aaaa\n"]),
+        kept(2, "lines", &["bbbb\n"]),
+    ]);
+    log.label(1, "file:/home/me/src/garden");
+    let mut index = Docs::default();
+    whole(&log, &mut index).expect("a run");
+    let (rows, position) = (index.sorted(), index.position.clone());
+    log.put(3, "lines", &["cccc\n"]);
+    log.label(3, "file:/home/me/src/shed");
+    index.commit_fault = Fault::Refused;
+    let error = whole(&log, &mut index).expect_err("a refusal");
+    assert!(matches!(error, Error::Index(_)), "{error:?}");
+    assert_eq!((index.sorted(), index.position.clone()), (rows, position));
+    assert_eq!(index.rolled_back, 1);
+    assert_eq!(
+        filed_text(&log, id(3)),
+        Some(vec!["file:/home/me/src/shed".to_owned()])
+    );
+    assert!(named(&index, &log));
+}
+
+#[test]
+fn a_failed_relabel_ends_the_run_before_the_commit() {
+    let log = shelf(vec![kept(1, "lines", &["aaaa\n"])]);
+    log.refuse_relabel.set(Some(0));
+    let mut index = shared(&log);
+    let error = whole(&log, &mut index).expect_err("a refusal");
+    assert!(matches!(error, Error::Store(_)), "{error:?}");
+    assert!(!log.events.borrow().contains(&"commit"));
+    assert_eq!((index.commits, index.rolled_back), (0, 1));
+}
+
+#[test]
+fn the_check_of_a_stopped_run_refuses_older_labels_and_wrong_words() {
+    let mut log = shelf(vec![kept(
+        1,
+        "lines",
+        &["body\n", "cwd:/home/me/src/shed\n"],
+    )]);
+    log.label(1, "file:/home/me/src/garden");
+    let mut index = Docs::default();
+    whole(&log, &mut index).expect("a run");
+    assert!(named(&index, &log));
+    let row = |text: &str| (text.to_owned(), label_words(text));
+    let garden = "file:/home/me/src/garden";
+    log.filed.borrow_mut().insert(id(1), vec![row(garden)]);
+    assert!(!named(&index, &log), "the capture label alone");
+    log.filed.borrow_mut().insert(
+        id(1),
+        [garden, "/home/me/src/shed"]
+            .map(|text| (text.to_owned(), Vec::new()))
+            .to_vec(),
+    );
+    assert!(!named(&index, &log), "words emptied");
+    let shed = "/home/me/src/shed";
+    log.filed.borrow_mut().insert(id(1), vec![row(shed)]);
+    assert!(!named(&index, &log), "no capture label");
+    log.filed
+        .borrow_mut()
+        .insert(id(1), [shed, garden].map(row).to_vec());
+    assert!(named(&index, &log), "the labels in another order");
+    log.append(1, &["cwd:/home/me/src/greenhouse\n"]);
+    log.filed.borrow_mut().insert(
+        id(1),
+        [garden, "/home/me/src/shed", "/home/me/src/greenhouse"]
+            .map(row)
+            .to_vec(),
+    );
+    assert!(named(&index, &log), "a newer prefix");
+    log.rewrite(1, &["other\n", "cwd:/home/me/src/greenhouse\n"]);
+    whole(&log, &mut index).expect("a run");
+    assert!(named(&index, &log), "the second generation");
+    log.filed
+        .borrow_mut()
+        .insert(id(1), [garden, shed].map(row).to_vec());
+    assert!(!named(&index, &log), "the first generation's labels");
+}
+
+#[test]
+fn a_label_of_more_words_than_the_bound_is_filed_under_its_first_ones() {
+    let text = (0..70)
+        .map(|n| format!("w{n}"))
+        .collect::<Vec<_>>()
+        .join("/");
+    let mut log = Log::new();
+    log.put(1, "lines", &[&format!("cwd:{text}")]);
+    whole(&log, &mut Docs::default()).expect("a run");
+    let all = label_words(&text);
+    assert_eq!(all.len(), 70);
+    assert_eq!(
+        log.filed.borrow().get(&id(1)),
+        Some(&vec![(text, all[..analyze::MAX_LABEL_WORDS].to_vec())])
+    );
+    assert_eq!(
+        log.with_words(&["w63".to_owned()]).expect("entries"),
+        [id(1)]
+    );
+    assert!(
+        log.with_words(&["w64".to_owned()])
+            .expect("entries")
+            .is_empty()
+    );
 }

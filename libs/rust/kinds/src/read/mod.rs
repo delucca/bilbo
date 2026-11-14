@@ -7,8 +7,9 @@ use std::fmt;
 use std::time::SystemTime;
 
 use bilbo_settings::key::{About as KeyAbout, Default, Key};
-use bilbo_store::entries::{Entries, Generation, Meta, Origin, RecordRange, StoreError};
+use bilbo_store::entries::{Entries, Generation, Meta, RecordRange, StoreError};
 use bilbo_store::id::Id;
+use bilbo_store::labels::{CaptureLabel, Label};
 
 use crate::reader::Reader;
 use crate::tokens::Tokens;
@@ -131,9 +132,9 @@ pub struct Fetched {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct About {
     pub kind: String,
-    pub origin: Option<Origin>,
+    pub labels: Vec<Label>,
+    pub more_labels: u64,
     pub captured: SystemTime,
-    pub parent: Option<Id>,
     pub started: Option<SystemTime>,
     pub current: Generation,
 }
@@ -180,8 +181,8 @@ impl Output {
 pub enum Error {
     NoEntry(Target),
     Ambiguous {
-        session: String,
-        entries: Vec<(Id, Origin)>,
+        given: String,
+        entries: Vec<(Id, Option<CaptureLabel>)>,
         listed: usize,
     },
     NoGeneration {
@@ -204,18 +205,22 @@ impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::NoEntry(Target::Entry(id)) => write!(f, "no entry {id}"),
+            Self::NoEntry(Target::Short(short)) => write!(f, "no entry's id ends with {short}"),
             Self::NoEntry(Target::Session(session)) => {
                 write!(f, "no entry for the session {session}")
             }
             Self::Ambiguous {
-                session,
+                given,
                 entries,
                 listed,
             } => {
-                write!(f, "{session} names {} entries: ", entries.len())?;
-                for (at, (id, origin)) in entries.iter().take(*listed).enumerate() {
+                write!(f, "{given} names {} entries: ", entries.len())?;
+                for (at, (id, label)) in entries.iter().take(*listed).enumerate() {
                     let comma = if at == 0 { "" } else { ", " };
-                    write!(f, "{comma}{id} ({origin})")?;
+                    match label {
+                        Some(label) => write!(f, "{comma}{id} ({label})")?,
+                        None => write!(f, "{comma}{id}")?,
+                    }
                 }
                 if entries.len() > *listed {
                     write!(f, " and {} more", entries.len() - listed)?;
@@ -259,8 +264,8 @@ impl From<StoreError> for Error {
 }
 
 /// A note named for a UUID is no session.
-fn names(origin: &Origin, session: &str) -> bool {
-    let Some(name) = origin
+fn names(label: &CaptureLabel, session: &str) -> bool {
+    let Some(name) = label
         .path()
         .and_then(|path| path.file_name())
         .and_then(|name| name.to_str())
@@ -279,21 +284,32 @@ fn names(origin: &Origin, session: &str) -> bool {
 }
 
 fn resolve(target: &Target, listed: usize, entries: &dyn Entries) -> Result<Id, Error> {
-    let session = match target {
+    let (given, mut found): (String, Vec<(Id, Option<CaptureLabel>)>) = match target {
         Target::Entry(id) => return Ok(*id),
-        Target::Session(session) => session,
+        Target::Short(short) => {
+            let mut found = Vec::new();
+            for id in entries.by_shorts(&[*short])? {
+                let label = entries.meta(id)?.and_then(|meta| meta.labels.capture);
+                found.push((id, label));
+            }
+            (short.to_string(), found)
+        }
+        Target::Session(session) => (
+            session.clone(),
+            entries
+                .captures_with(session)?
+                .into_iter()
+                .filter(|(_, label)| names(label, session))
+                .map(|(id, label)| (id, Some(label)))
+                .collect(),
+        ),
     };
-    let mut found: Vec<(Id, Origin)> = entries
-        .origins_with(session)?
-        .into_iter()
-        .filter(|(_, origin)| names(origin, session))
-        .collect();
     found.sort_by_key(|(id, _)| *id);
     match found.len() {
         0 => Err(Error::NoEntry(target.clone())),
         1 => Ok(found.remove(0).0),
         _ => Err(Error::Ambiguous {
-            session: session.clone(),
+            given,
             entries: found,
             listed,
         }),
@@ -381,20 +397,64 @@ pub fn render(
     let locator = |records: RecordRange| output.locator(records).to_string();
     let budget = request.budget.tokens();
     let (body, more) = if request.outline || ranged.is_none() {
-        let about = ranged.is_none().then(|| About {
+        let about_with = |texts: &[String], more_labels: u64| About {
             kind: fetched.meta.kind.clone(),
-            origin: fetched.meta.origin.clone(),
+            labels: fetched
+                .meta
+                .labels
+                .list()
+                .into_iter()
+                .chain(texts.iter().cloned().map(Label::Text))
+                .collect(),
+            more_labels,
             captured: fetched.meta.captured,
-            parent: fetched.meta.parent,
             started: passages.iter().find_map(|passage| passage.at),
             current: fetched.current,
-        });
-        let frame = Output {
+        };
+        let framed = |about: Option<About>| Output {
             body: Body::Outline {
-                about: about.clone(),
+                about,
                 lines: Vec::new(),
             },
             ..output.clone()
+        };
+        let (about, frame) = if ranged.is_none() {
+            let mut texts = reader.entry_labels(&records);
+            texts.sort();
+            let capture = fetched
+                .meta
+                .labels
+                .capture
+                .as_ref()
+                .map(CaptureLabel::as_str);
+            texts.retain(|text| Some(text.as_str()) != capture);
+            let held = |k: usize| {
+                let about = about_with(
+                    &texts[..k],
+                    u64::try_from(texts.len() - k).unwrap_or(u64::MAX),
+                );
+                let frame = framed(Some(about.clone()));
+                (tokens.count(&(shown.beside)(&frame)), about, frame)
+            };
+            let fits = |cost: usize| cost <= budget / 2;
+            let all = held(texts.len());
+            let chosen = if fits(all.0) {
+                all
+            } else {
+                let (mut low, mut high) = (0, texts.len());
+                while high - low > 1 {
+                    let middle = low + (high - low) / 2;
+                    if fits(held(middle).0) {
+                        low = middle;
+                    } else {
+                        high = middle;
+                    }
+                }
+                held(low)
+            };
+            (Some(chosen.1), chosen.2)
+        } else {
+            (None, framed(None))
         };
         let budget = budget.saturating_sub(tokens.count(&(shown.beside)(&frame)));
         let listing = outline::outline(
@@ -432,8 +492,9 @@ mod tests {
 
     use bilbo_settings::file::File;
     use bilbo_settings::key::{Flag, Origin as From, Source};
-    use bilbo_store::entries::{Generation, Origin, RecordRange};
+    use bilbo_store::entries::{Generation, RecordRange};
     use bilbo_store::id::Id;
+    use bilbo_store::labels::CaptureLabel;
 
     use super::refs::Target;
     use super::{BUDGET, Budget, Error, MATCHES_LISTED, MOST, OUTLINE_WIDTH, OutOfRange, names};
@@ -620,10 +681,10 @@ mod tests {
     #[test]
     fn an_ambiguous_session_names_as_many_entries_as_were_asked() {
         let id = bilbo_store::id::Id::parse("01JC5Q3V7XKM4P8R2T6W9YB0DE").expect("id");
-        let origin = Origin::file(Path::new("/a")).expect("an origin");
+        let label = CaptureLabel::file(Path::new("/a")).expect("a label");
         let error = |listed| Error::Ambiguous {
-            session: "5c3a9e1f".to_owned(),
-            entries: vec![(id, origin.clone()); 4],
+            given: "5c3a9e1f".to_owned(),
+            entries: vec![(id, Some(label.clone())); 4],
             listed,
         };
         assert!(
@@ -636,18 +697,43 @@ mod tests {
     }
 
     #[test]
-    fn an_origin_names_a_session_when_its_file_name_ends_in_that_uuid() {
+    fn an_ambiguous_ref_lists_its_entries_with_or_without_a_capture_label() {
+        let id = Id::parse("01JC5Q3V7XKM4P8R2T6W9YB0DE").expect("id");
+        let other = Id::parse("01JC5Q3V7XKM4P8S2T6W9YB0DE").expect("id");
+        let error = |listed| Error::Ambiguous {
+            given: "2T6W9YB0DE".to_owned(),
+            entries: vec![
+                (
+                    id,
+                    Some(CaptureLabel::file(Path::new("/a")).expect("a label")),
+                ),
+                (other, None),
+                (id, None),
+                (other, None),
+            ],
+            listed,
+        };
+        assert_eq!(
+            error(2).to_string(),
+            "2T6W9YB0DE names 4 entries: 01JC5Q3V7XKM4P8R2T6W9YB0DE (file:/a), \
+             01JC5Q3V7XKM4P8S2T6W9YB0DE and 2 more; give the id of one"
+        );
+        assert!(!error(4).to_string().contains("()"));
+    }
+
+    #[test]
+    fn a_label_names_a_session_when_its_file_name_ends_in_that_uuid() {
         const UUID: &str = "5c3a9e1f-0b7d-4c2e-9a41-7f2d8e6b1c03";
-        let origin = |path: &str| Origin::file(Path::new(path)).expect("an origin");
+        let label = |path: &str| CaptureLabel::file(Path::new(path)).expect("a label");
         for path in [
             format!("/p/proj/{UUID}.jsonl"),
             format!("/s/2026/11/06/rollout-2026-11-06T09-10-00-{UUID}.jsonl"),
             format!("/c/repo/2026-02-14T233343Z--{UUID}.jsonl"),
             format!("/p/proj/{}.jsonl", UUID.to_uppercase()),
         ] {
-            assert!(names(&origin(&path), UUID), "{path}");
-            assert!(names(&origin(&path), &UUID[..8]), "{path}");
-            assert!(!names(&origin(&path), "5c3a9e1e"), "{path}");
+            assert!(names(&label(&path), UUID), "{path}");
+            assert!(names(&label(&path), &UUID[..8]), "{path}");
+            assert!(!names(&label(&path), "5c3a9e1e"), "{path}");
         }
         for path in [
             format!("/p/{UUID}/subagents/agent-ad63c2b3c9e7a4b3d.jsonl"),
@@ -659,9 +745,9 @@ mod tests {
             format!("/p/proj/é{}.jsonl", &UUID[2..]),
             "/p/proj/notes.jsonl".to_owned(),
         ] {
-            assert!(!names(&origin(&path), &UUID[..8]), "{path}");
+            assert!(!names(&label(&path), &UUID[..8]), "{path}");
         }
-        let stdin = Origin::new("stdin".to_owned()).expect("an origin");
+        let stdin = CaptureLabel::new("stdin".to_owned()).expect("a label");
         assert!(!names(&stdin, &UUID[..8]));
     }
 
@@ -669,7 +755,7 @@ mod tests {
     fn every_error_says_what_was_asked_and_what_the_entry_holds() {
         let id = Id::parse("01JC5Q3V7XKM4P8R2T6W9YB0DE").expect("id");
         let other = Id::parse("01JC5Q3V7XKM4P8R2T6W9YB0DF").expect("id");
-        let origin = |name: &str| Origin::file(Path::new(name)).expect("an origin");
+        let label = |name: &str| CaptureLabel::file(Path::new(name)).expect("a label");
         let cases = [
             (
                 Error::NoEntry(Target::Entry(id)),
@@ -681,8 +767,11 @@ mod tests {
             ),
             (
                 Error::Ambiguous {
-                    session: "5c3a9e1f".to_owned(),
-                    entries: vec![(id, origin("/a/x.jsonl")), (other, origin("/b/x.jsonl"))],
+                    given: "5c3a9e1f".to_owned(),
+                    entries: vec![
+                        (id, Some(label("/a/x.jsonl"))),
+                        (other, Some(label("/b/x.jsonl"))),
+                    ],
                     listed: 5,
                 },
                 "5c3a9e1f names 2 entries: 01JC5Q3V7XKM4P8R2T6W9YB0DE (file:/a/x.jsonl), \
@@ -691,8 +780,8 @@ mod tests {
             ),
             (
                 Error::Ambiguous {
-                    session: "5c3a9e1f".to_owned(),
-                    entries: vec![(id, origin("/a")); 7],
+                    given: "5c3a9e1f".to_owned(),
+                    entries: vec![(id, Some(label("/a"))); 7],
                     listed: 5,
                 },
                 format!(

@@ -269,31 +269,64 @@ scope; the `repo` scope has only the comparison with bm25 without a judge. A sto
 holding `root`, `state`, `cache`, `home` and `config.toml` (`follow = []`); every `bilbo` run sets `HOME`, `BILBO_HOME`,
 `XDG_STATE_HOME`, `XDG_CACHE_HOME` and `BILBO_CONFIG` to them, at the same paths in the build, the check and the search, since
 the catalog and the state folder record them. The sessions' frames are in `state`, which the archive holds with `cache`.
-`manifest.json` has the key and inputs, the scope, bilbo's version and the binary's sha256, and each store's repositories,
+`manifest.json` has the key and inputs, the scope, `remembered` (the folder the sessions were remembered from: `/corpus`, or `/tmp/staged` for a limited build), bilbo's version and the binary's sha256, and each store's repositories,
 entries, indexed (the entries recall searches), chunks and index bytes.
 
-Search runs `bilbo recall --budget 4000 -- <text>` once for each form, over the store of the question's repository (scope
-`repo`) or the one store, and returns the hits as recall prints them. `search.py` reads no setting from the environment:
-its `run(settings)` takes `budget`, `question_words` and `candidates` and stops on any other key; run as a script it uses the
-defaults (the key defaults of recall). A hit's text opens with its session's start time, as bm25's. Each result also names its
-entry, repository, session, records, part and whether it was cut, so a comparison finds the eval chunk it is.
+Search runs `bilbo recall --budget 8000 -- <text>` once for each form, over the store of the question's repository (scope
+`repo`) or the one store, and returns the hits as recall prints them. The budget is 8,000 so that the 4,000-token context
+`pack.py` builds is always full: recall's own packing spends tokens on headers and on text that `pack.py` counts again, so
+a smaller budget can end the answer before `pack.py` has its 4,000 (at the old header, 0 of 286 contexts were full at a
+budget of 4,000 and all were at 6,000). A hit's header is `=== <ref>\t<n> line(s)` and then `\tpart k/m` and `\tcut` when they
+apply; `<ref>` is `<id>#r<a>[-<b>]`, where `<id>` is the entry's short id (10 characters) or, when two entries of a store
+end alike, its whole id (26 characters). A hit's entry is the row of `entries.jsonl` with that whole id, or the one row
+of the store whose id ends with the short one; a short ref that two rows of one store end with stops the search, since
+bilbo must have printed the whole id. The only stderr lines are `bilbo: searched N entries` and `bilbo: passed over: ...`;
+any other stops the search. `search.py` reads no setting from the environment: its
+`run(settings, store=, questions=, out=, binary=)` takes `budget`, `question_words`, `candidates` and `in` and stops on any other
+key (run as a script it uses `DEFAULTS`: a budget of 8,000 and the other three `None`; `search.py loop` checks, with no store and no binary, that each question is searched once for each form, with that form's text, in its own repository's store, with its own repository's `--in` value when `in` is set), and the four paths are keyword arguments with the
+container's paths as defaults, so a run on the host is the same code with other paths. A result row holds `text`, `ref` (as
+printed), `entry` (the 26 characters), `repo`, `session`, `lines`, `part`, `rank` and `cut`, so a comparison finds the eval
+chunk it is.
 
-The comparison's variants are drivers, each calling `run` with its own settings, and run only as
-`evals/retrieval/scripts/build-store.sh bilbo-next --search <questions> <out> --driver evals/retrieval/scripts/variants/<name>`:
+The comparison's variants are drivers, each calling `run` with its own settings, and run as
+`evals/retrieval/scripts/build-store.sh bilbo-next --search <questions> <out> --driver evals/retrieval/scripts/variants/<name>`,
+or as `evals/retrieval/scripts/eval.sh bilbo-next --driver evals/retrieval/scripts/variants/<name>`, which keeps the run in a
+folder of its own (`<arm>-<store>-<search>-driver-<first 12 hex of the sha256 of drive.py>`), seeds its judge cache from the
+run without a driver, and writes `"driver"` into `score.json`:
 
 | Variant | Settings |
 |---|---|
 | `wide-no-words` | budget 1,000,000, question words none |
 | `wide` | budget 1,000,000, the default question words |
 | `budget-4600` | budget 4,600 |
+| `budget-4000` | budget 4,000, for the hits a 4,000-token answer holds |
 | `candidates-1000` | budget 1,000,000, question words none, 1,000 candidates |
+| `in-repo` | `in` = repo: each recall gets `--in <remembered>/<the question's repo>` |
+| `in-repo-wide` | `in` = repo, budget 16,000, 1,000 candidates: the same scoped search with twice the budget and the longest candidate list |
+| `in-repo-capped` | `in` = repo, 3 candidates: a search cut short on purpose, for `--exhausted` to refuse |
+
+With `in` = repo the stderr line `bilbo: --in kept N entries` is required and N must be the number of `entries.jsonl` rows
+of that repository in the store searched, every result must be of the question's repository, the scope's own `and left out M of the best K` part is accepted, but the stale-hit warning (`left out N hits the store no longer gives as indexed`) and
+`--in ... names no entry` are never accepted, and with no `in` the `--in kept` line is not accepted. Every row of a search
+holds, after `id`, `form`, `seconds` and `results`: `passed` (`copies`, `parts`, `capped`: the counts of the `passed over`
+line, 0 when absent) and `run` (`store`: the manifest's key; `driver`: the first 12 hex of the sha256 of the `drive.py` that
+ran, null with none; `settings`: every setting in force); a scoped row also holds `in` (the value passed) and `kept` (the
+count printed).
+
+`compare.py --exhausted <contexts-4000.jsonl> <search.jsonl> <wide search.jsonl>` gives each context `pack.py` did not cut a
+verdict, from the scoped row and the wide one (`in-repo-wide`): `not exhausted` (the scoped last result is cut, or the wide
+list opens with all of the scoped one and holds more), `exhausted` (the same results, none cut, and the wide search's results
+plus its `passed` counts fewer than its candidate limit), `cannot tell` (anything else). It exits 0 only when every
+verdict is `exhausted`.
 
 `--check` checks that the manifest's sessions and the entry rows are the corpus's (as many as the limit says) and that every
 store answers `bilbo recall --budget 4000 -- user assistant` with exit 0, as many searched entries as the build's own `recall` counted (`indexed` in the manifest, which can be below the entries when
-one has no chunk) and well-formed headers, that `bilbo read` takes the first hit's ref, and that a query of stopwords only exits 1 with `bilbo:
-nothing matched`.
+one has no chunk) and well-formed headers, that every ref of the probe is a short one unless another entry of the store ends alike, that `bilbo read` takes the first, that `recall --in <remembered>/<repo>` for the first repository exits 0 with `bilbo: --in kept N entries`, N the repository's entries, and that a query of stopwords only exits 1 with `bilbo: nothing matched`.
 
-`scripts/reference.py` and `scripts/compare.py` compare a run with the bm25 arm without a judge.
+`scripts/reference.py` and `scripts/compare.py` compare a run with the bm25 arm without a judge. `compare.py --proxy
+<contexts-4000.jsonl> <questions.jsonl> <classes.json>` prints the share of a question's facts whose evidence quote is whole
+in the packed context (plain, and weighted by class) and how many contexts `pack.py` cut; `compare.py --hits <search.jsonl>`
+prints the mean number of results a search.
 
 ### graphiti
 
@@ -1161,7 +1194,8 @@ reported the same way, without claude-mem, whose `prompt` form ignores the text.
 wording.
 
 `--rerun LABEL` searches and judges an arm again in a run dir of its own, `<run>-rerun-LABEL`, and leaves the cached
-run as it is. A search stopped by an error or a signal keeps the rows it wrote: `build-store.sh` adds them to the run's
+run as it is. A run dir's name is `<arm>-<store>-<search>[-driver-<d>][-reworded-<r>][-variation-<v>][-rerun-<label>]`
+(`judged.py`'s `run_parts` is its one parser; `python judged.py names` checks it). A search stopped by an error or a signal keeps the rows it wrote: `build-store.sh` adds them to the run's
 `search.jsonl` when it ends. After a `kill -9` or a reboot no trap runs, and `eval.sh` moves the rows with
 `build-store.sh <arm> --salvage` before it lists the questions to search, so running the same command again searches
 only the rest. A check or a search holds a lock on the arm's check state for as long as it lives, even if killed;

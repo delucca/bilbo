@@ -21,8 +21,8 @@ use crate::json::Value;
 
 const NAME: &str = "session";
 
-/// How this kind renders passages; changes with any change to that.
-pub const RENDER: &str = "1";
+/// What this kind renders: the passages, the preface and the entry's labels; changes with any change to that.
+pub const RENDER: &str = "2";
 
 pub const UNPACK_FLOOR: Key<usize> = Key {
     about: About {
@@ -109,6 +109,14 @@ impl Reader for Session {
         true
     }
 
+    fn entry_labels(&self, records: &[&[u8]]) -> Vec<String> {
+        match dialect::sniff(records.iter().copied()) {
+            Some(Dialect::ClaudeCode | Dialect::Cursor) => claude::read::labels(records),
+            Some(Dialect::Codex) => codex::read::labels(records),
+            None => Vec::new(),
+        }
+    }
+
     fn preface(&self, records: &[&[u8]]) -> Option<String> {
         let started = records
             .iter()
@@ -183,15 +191,10 @@ impl Kind for Session {
         }
     }
 
-    fn propose(
-        &self,
-        origin: &Path,
-        _bytes: &[u8],
-        kept: &dyn Fn(&Path) -> Option<Id>,
-    ) -> Proposal {
+    fn propose(&self, label: &Path, _bytes: &[u8], kept: &dyn Fn(&Path) -> Option<Id>) -> Proposal {
         Proposal {
             id: None,
-            parent: claude::session_of(origin).and_then(|session| kept(&session)),
+            id_label: claude::session_of(label).and_then(|session| kept(&session)),
         }
     }
 }
@@ -209,12 +212,12 @@ impl Walk {
     /// `<time>--<uuid>.jsonl`, each also packed. Codex publishes a rollout's other form before it removes the first,
     /// so one of the two is there at every instant, and a run that looks at them in turn can still miss both once.
     fn file(&mut self, path: &Path) {
-        let origin = packed::plain(path).unwrap_or_else(|| path.to_path_buf());
-        let subagent = claude::session_of(&origin).is_some();
-        if !(subagent || is_session_name(&origin)) || !self.seen.insert(origin.clone()) {
+        let label = packed::plain(path).unwrap_or_else(|| path.to_path_buf());
+        let subagent = claude::session_of(&label).is_some();
+        if !(subagent || is_session_name(&label)) || !self.seen.insert(label.clone()) {
             return;
         }
-        let claim = Claim::file(origin.clone()).or(packed::beside(&origin));
+        let claim = Claim::file(label.clone()).or(packed::beside(&label));
         if subagent {
             self.subagents.push(claim);
         } else {
@@ -225,9 +228,9 @@ impl Walk {
     /// A name that was there when listed or asked for and is not now may have changed form since.
     fn gone(&mut self, files: &dyn Files, path: &Path, error: &std::io::Error) {
         if error.kind() == std::io::ErrorKind::NotFound {
-            let origin = packed::plain(path).unwrap_or_else(|| path.to_path_buf());
+            let label = packed::plain(path).unwrap_or_else(|| path.to_path_buf());
             let other = packed::sibling(path);
-            if (claude::session_of(&origin).is_some() || is_session_name(&origin))
+            if (claude::session_of(&label).is_some() || is_session_name(&label))
                 && matches!(files.node(&other), Ok(Node::File))
             {
                 return self.file(&other);
@@ -268,8 +271,8 @@ impl Walk {
     }
 }
 
-fn is_session_name(origin: &Path) -> bool {
-    origin
+fn is_session_name(label: &Path) -> bool {
+    label
         .file_name()
         .and_then(|name| name.to_str())
         .and_then(|name| name.strip_suffix(".jsonl"))
@@ -324,7 +327,7 @@ mod tests {
             .claims(files, Path::new(target))
             .entries
             .iter()
-            .map(|claim| claim.origin().to_str().unwrap_or_default().to_owned())
+            .map(|claim| claim.label().to_str().unwrap_or_default().to_owned())
             .collect()
     }
 
@@ -544,12 +547,12 @@ mod tests {
     }
 
     #[test]
-    fn a_subagent_proposes_the_entry_kept_for_its_session_as_parent() {
-        let parent = Id::parse("01JC5Q3V7XKM4P8R2T6W9YB0DE").expect("id");
+    fn a_subagent_proposes_its_sessions_entry_as_its_id_label() {
+        let held = Id::parse("01JC5Q3V7XKM4P8R2T6W9YB0DE").expect("id");
         let asked = RefCell::new(Vec::new());
         let kept = |path: &Path| {
             asked.borrow_mut().push(path.to_path_buf());
-            Some(parent)
+            Some(held)
         };
         let p = "/h/.claude/projects/-h-src-garden";
         let subagent = format!("{p}/{MAIN}/subagents/agent-ad63c2b3c9e7a4b3d.jsonl");
@@ -557,7 +560,7 @@ mod tests {
             Session::default().propose(Path::new(&subagent), SUBAGENT, &kept),
             Proposal {
                 id: None,
-                parent: Some(parent)
+                id_label: Some(held)
             }
         );
         assert_eq!(
@@ -936,7 +939,7 @@ mod tests {
             .claims(files, Path::new(target))
             .entries
             .into_iter()
-            .map(|claim| (claim.origin().to_path_buf(), claim.files().to_vec()))
+            .map(|claim| (claim.label().to_path_buf(), claim.files().to_vec()))
             .collect()
     }
 
@@ -945,12 +948,12 @@ mod tests {
         let files = Memory::new().file(format!("{}.zst", rollout()), CODEX_PACKED);
         let claims = Session::default().claims(&files, Path::new(SESSIONS));
         assert_eq!(claims.entries.len(), 1);
-        assert_eq!(claims.entries[0].origin(), Path::new(&rollout()));
+        assert_eq!(claims.entries[0].label(), Path::new(&rollout()));
         assert!(claims.refused.is_empty());
     }
 
     #[test]
-    fn a_rollout_has_one_origin_whether_plain_or_packed() {
+    fn a_rollout_has_one_label_whether_plain_or_packed() {
         let plain = Memory::new().file(rollout(), CODEX);
         let packed = Memory::new().file(format!("{}.zst", rollout()), CODEX_PACKED);
         assert_eq!(entries(&plain, SESSIONS), entries(&packed, SESSIONS));
@@ -1043,7 +1046,7 @@ mod tests {
             let files = Turning::new(before, after, Call::List, SESSIONS);
             let claims = Session::default().claims(&files, Path::new(SESSIONS));
             assert_eq!(claims.entries.len(), 1);
-            assert_eq!(claims.entries[0].origin(), Path::new(&rollout()));
+            assert_eq!(claims.entries[0].label(), Path::new(&rollout()));
             assert!(claims.refused.is_empty());
         }
     }
@@ -1067,7 +1070,7 @@ mod tests {
         for (files, target) in [(&packed, rollout()), (&plain, format!("{}.zst", rollout()))] {
             let claims = Session::default().claims(files, Path::new(&target));
             assert_eq!(claims.entries.len(), 1, "{target}");
-            assert_eq!(claims.entries[0].origin(), Path::new(&rollout()));
+            assert_eq!(claims.entries[0].label(), Path::new(&rollout()));
             assert!(claims.refused.is_empty());
         }
     }
@@ -1375,5 +1378,119 @@ mod tests {
                 .map(|refusal| refusal.0.starts_with("would hold more than ")),
             Some(true)
         );
+    }
+
+    const CLAUDE_FOLDERS: &[u8] =
+        include_bytes!("../fixtures/7d1e4b9a-3c5f-4a2e-8b6d-0f9e1c2a3b4d.jsonl");
+    const CODEX_FOLDERS: &[u8] = include_bytes!(
+        "../fixtures/rollout-2026-11-08T10-00-00-019a6c4d-3e5f-7a71-9b2c-4d6e8fa0b1c3.jsonl"
+    );
+    const CODEX_LONG: &[u8] = include_bytes!(
+        "../fixtures/rollout-2026-11-07T08-00-00-019a5b3c-2d4e-7f60-8a1b-3c5d7e9f0a2b.jsonl"
+    );
+    const CLAUDE_LONG: &[u8] =
+        include_bytes!("../fixtures/8f2b6d4e-1a3c-4e5f-9b7a-2c4d6e8f0a1b.jsonl");
+
+    fn labels_of(bytes: &[u8]) -> Vec<String> {
+        use bilbo_kinds::reader::Reader;
+        let records: Vec<&[u8]> = bytes.split_inclusive(|&byte| byte == b'\n').collect();
+        Session::default().entry_labels(&records)
+    }
+
+    #[test]
+    fn a_claude_session_gives_each_cwd_and_its_added_directories() {
+        assert_eq!(
+            labels_of(CLAUDE_FOLDERS),
+            [
+                "/home/me/src/garden",
+                "/home/me/notes",
+                "/home/me/src/shed",
+                "/home/me/src/garden/beds",
+                "/home/me/src/greenhouse",
+            ]
+        );
+    }
+
+    #[test]
+    fn a_codex_session_gives_the_cwd_of_its_meta_and_its_turn_contexts() {
+        assert_eq!(
+            labels_of(CODEX_FOLDERS),
+            ["/home/me/src/garden", "/home/me/src/shed"]
+        );
+    }
+
+    #[test]
+    fn the_older_fixtures_give_their_one_cwd_and_cursor_gives_none() {
+        for bytes in [CLAUDE, CLAUDE_LONG, SUBAGENT, CODEX, CODEX_LONG] {
+            assert_eq!(labels_of(bytes), ["/home/me/src/garden"]);
+        }
+        assert!(labels_of(CURSOR).is_empty());
+        assert!(labels_of(NONE).is_empty());
+        assert!(labels_of(b"").is_empty());
+    }
+
+    #[test]
+    fn a_cursor_record_with_a_cwd_gives_it() {
+        let line = br#"{"role":"user","cwd":"/home/me/src/garden","message":{"content":[{"type":"text","text":"Water the beds."}]}}"#;
+        let bytes = [CURSOR, line.as_slice(), b"\n"].concat();
+        let records = bytes.split_inclusive(|&byte| byte == b'\n');
+        assert_eq!(
+            crate::dialect::sniff(records),
+            Some(crate::dialect::Dialect::Cursor)
+        );
+        assert_eq!(labels_of(&bytes), ["/home/me/src/garden"]);
+    }
+
+    #[test]
+    fn a_record_that_is_no_json_object_or_whose_cwd_is_no_text_gives_nothing() {
+        let bytes = [
+            &b"{\"type\":\"user\",\"cwd\":12,\"message\":{\"content\":\"a\"}}\n"[..],
+            b"{\"type\":\"user\",\"cwd\":[\"/a\"],\"message\":{\"content\":\"a\"}}\n",
+            b"{\"type\":\"user\",\"cwd\":\"\",\"message\":{\"content\":\"a\"}}\n",
+            b"{\"type\":\"user\",\"cwd\":null,\"message\":{\"content\":\"a\"}}\n",
+            b"[\"/b\"]\n",
+            b"7\n",
+            b"{\"type\":\"user\",\"cwd\":\"/c\" broken\n",
+            b"{\"type\":\"attachment\",\"attachment\":{\"type\":\"environment\",\"snapshot\":{\"additionalWorkingDirectories\":[3,\"\",null,\"/d\"]}}}\n",
+            b"{\"type\":\"attachment\",\"attachment\":{\"type\":\"environment\",\"snapshot\":{\"additionalWorkingDirectories\":\"/e\"}}}\n",
+        ]
+        .concat();
+        assert_eq!(labels_of(&bytes), ["/d"]);
+        let codex = [
+            &b"{\"type\":\"session_meta\",\"payload\":{\"cwd\":4}}\n"[..],
+            b"{\"type\":\"turn_context\",\"payload\":{\"cwd\":\"\"}}\n",
+            b"{\"type\":\"turn_context\",\"payload\":\"/f\"}\n",
+            b"{\"type\":\"turn_context\",\"payload\":{}}\n",
+        ]
+        .concat();
+        assert!(labels_of(&codex).is_empty());
+    }
+
+    #[test]
+    fn a_folder_the_store_replaced_gives_no_label() {
+        let long: String = "/ab".repeat(100);
+        let replaced = bilbo_store::opaque::placeholder(&long).expect("a long folder is replaced");
+        let claude = format!(
+            "{{\"type\":\"user\",\"cwd\":\"{replaced}\",\"message\":{{\"content\":\"a\"}}}}\n\
+             {{\"type\":\"user\",\"cwd\":\"/home/me/a\",\"message\":{{\"content\":\"b\"}}}}\n\
+             {{\"type\":\"attachment\",\"attachment\":{{\"type\":\"environment\",\"snapshot\":{{\"additionalWorkingDirectories\":[\"{replaced}\",\"/home/me/b\"]}}}}}}\n"
+        );
+        assert_eq!(labels_of(claude.as_bytes()), ["/home/me/a", "/home/me/b"]);
+        let codex = format!(
+            "{{\"type\":\"turn_context\",\"payload\":{{\"cwd\":\"{replaced}\"}}}}\n\
+             {{\"type\":\"turn_context\",\"payload\":{{\"cwd\":\"/home/me/c\"}}}}\n"
+        );
+        assert_eq!(labels_of(codex.as_bytes()), ["/home/me/c"]);
+    }
+
+    #[test]
+    fn an_attachment_that_is_no_environment_gives_nothing() {
+        let bytes = [
+            &b"{\"type\":\"attachment\",\"attachment\":{\"type\":\"hook_success\",\"snapshot\":{\"additionalWorkingDirectories\":[\"/a\"]}}}\n"[..],
+            b"{\"type\":\"user\",\"attachment\":{\"type\":\"environment\",\"snapshot\":{\"additionalWorkingDirectories\":[\"/b\"]}},\"message\":{\"content\":\"a\"}}\n",
+            b"{\"type\":\"attachment\",\"attachment\":{\"snapshot\":{\"additionalWorkingDirectories\":[\"/c\"]}}}\n",
+        ]
+        .concat();
+        assert!(labels_of(&bytes).is_empty());
     }
 }

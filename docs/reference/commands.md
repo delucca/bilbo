@@ -68,9 +68,9 @@ A kind picks the files under the target, splits each into records and proposes t
 | `markdown` | `.md` files | one per line, newline included; a final line without a newline is one record |
 | `session` | files whose name ends in a UUID and `.jsonl` (Claude Code's `<uuid>.jsonl`, Codex's `rollout-<time>-<uuid>.jsonl`), and every `agent-*.jsonl` under Claude Code's `<uuid>/subagents/`, workflow runs' included; each also when packed as `<name>.jsonl.zst`, as Codex packs its older rollouts | one per complete line, newline included; a line still being written waits for a later run |
 
-A `markdown` file that is not UTF-8 is refused. A valid ULID in the frontmatter `id` becomes the entry's id at its first capture; a file with no usable `id` gets a fresh one. An id already held by an entry of another origin is refused for that file.
+A `markdown` file that is not UTF-8 is refused. A valid ULID in the frontmatter `id` becomes the entry's id at its first capture; a file with no usable `id` gets a fresh one. An id already held by an entry kept under another capture label is refused for that file.
 
-A `session` folder walk skips Claude Code's `memory/`, `workflows/` and `tool-results/` folders (a project's memories, a session's workflow definitions and its large tool outputs), but nothing below a `subagents/` folder, where `workflows/wf_*/` holds the subagents of workflow runs. It never claims the `.meta.json` beside a subagent, and never reads it: it names no session. Main sessions are kept before subagents, so a subagent's entry names its session's entry as its parent: the session `<uuid>.jsonl` in the folder that holds `<uuid>/subagents/`, however deep below it the subagent sits. A subagent kept before its session, as a target of its own, gets its parent the next time a run actually reads it. Growth is one cause of a read, not the only one. A run skips a file only while the catalog keeps a trustworthy stamp for it, and a stamp taken within two seconds of the file's last write is not kept. Which harness wrote a file, Claude Code, Codex or Cursor (whose Claude-shaped lines carry `role` and no `type`), is read from its lines each time and never stored. A file that is not UTF-8, or whose lines are none of these, is refused.
+A `session` folder walk skips Claude Code's `memory/`, `workflows/` and `tool-results/` folders (a project's memories, a session's workflow definitions and its large tool outputs), but nothing below a `subagents/` folder, where `workflows/wf_*/` holds the subagents of workflow runs. It never claims the `.meta.json` beside a subagent, and never reads it: it names no session. Main sessions are kept before subagents, so a subagent's entry names its session's entry as its id label: the session `<uuid>.jsonl` in the folder that holds `<uuid>/subagents/`, however deep below it the subagent sits. A subagent kept before its session, as a target of its own, gets its id label the next time a run actually reads it. Growth is one cause of a read, not the only one. A run skips a file only while the catalog keeps a trustworthy stamp for it, and a stamp taken within two seconds of the file's last write is not kept. Which harness wrote a file, Claude Code, Codex or Cursor (whose Claude-shaped lines carry `role` and no `type`), is read from its lines each time and never stored. A file that is not UTF-8, or whose lines are none of these, is refused.
 
 ### Detection
 
@@ -80,13 +80,13 @@ Without `--kind`, every kind says which files it claims under the target. Exactl
 
 A folder is walked recursively. Hidden entries (names starting with `.`) and symbolic links that the walk finds are skipped, and the walk never follows a link, so it cannot loop.
 
-A target named on the command line is taken as given, even when it is a symbolic link or a hidden name, as `find -H` and `git add` treat their arguments. Its origin is the resolved path, and a kind tests the resolved file, not the name given: a `note.md` link to a file without `.md` keeps nothing.
+A target named on the command line is taken as given, even when it is a symbolic link or a hidden name, as `find -H` and `git add` treat their arguments. Its capture label is the resolved path, and a kind tests the resolved file, not the name given: a `note.md` link to a file without `.md` keeps nothing.
 
 ### Outcomes
 
-An entry is found again by its origin (`file:<absolute path>`). For each file:
+An entry is found again by its capture label (`file:<absolute path>`), the label the file was first kept under. For each file:
 
-- **new**: no entry has this origin yet.
+- **new**: no entry has this capture label yet.
 - **appended**: the earlier bytes are unchanged and the file gained records; only those are kept.
 - **new generation**: an earlier record changed, or the file shrank. The older generation stays readable.
 - **unchanged**: nothing to keep. A file whose size and modification time are those of its last capture is not even read, while the catalog holds that capture's stamp; a file written within two seconds before a run looked at it is read again by the next run.
@@ -96,7 +96,7 @@ A file that left the folder keeps its entry.
 
 ### Packed sessions
 
-Codex packs a rollout it has not written for a week into `<name>.jsonl.zst`, and unpacks it when the session is resumed. Both files are one entry, kept under the origin of the plain file (`file:<folder>/<name>.jsonl`), also while only the packed file is on disk. A run reads the plain file when it is there and the packed one otherwise, unpacked in memory; it writes neither. A rollout packed after it was kept is unchanged; one unpacked and grown is appended. A rollout named or followed as one file is found under its other form when Codex has packed or unpacked it since. A packed file that does not unpack is refused. So is one made to unpack to far more than it takes on disk: its unpacked bytes, with 64 more counted for each line, may come to `session.unpack_floor` (128 MiB by default), or to `session.unpack_ratio` (256 by default) times the packed file's size when that is more. A session packs to a fraction of its size; a file that unpacks to thousands of times its size was made to. That count is not all a run holds: to keep a session, packed or plain, it holds the bytes twice, some forty bytes more for each line and what it packs them to, and unpacking takes a window of its own, no larger than that limit rounded up to a power of two, from 8 MiB to 128 MiB. A file refused under one setting is tried again by the next run. A plain file has no such limit. A refusal names the file that was read or, when none could be, the plain file's name. A rollout moved to another followed folder, as Codex's archive does, has another origin there and becomes another entry.
+Codex packs a rollout it has not written for a week into `<name>.jsonl.zst`, and unpacks it when the session is resumed. Both files are one entry, kept under the capture label of the plain file (`file:<folder>/<name>.jsonl`), also while only the packed file is on disk. A run reads the plain file when it is there and the packed one otherwise, unpacked in memory; it writes neither. A rollout packed after it was kept is unchanged; one unpacked and grown is appended. A rollout named or followed as one file is found under its other form when Codex has packed or unpacked it since. A packed file that does not unpack is refused. So is one made to unpack to far more than it takes on disk: its unpacked bytes, with 64 more counted for each line, may come to `session.unpack_floor` (128 MiB by default), or to `session.unpack_ratio` (256 by default) times the packed file's size when that is more. A session packs to a fraction of its size; a file that unpacks to thousands of times its size was made to. That count is not all a run holds: to keep a session, packed or plain, it holds the bytes twice, some forty bytes more for each line and what it packs them to, and unpacking takes a window of its own, no larger than that limit rounded up to a power of two, from 8 MiB to 128 MiB. A file refused under one setting is tried again by the next run. A plain file has no such limit. A refusal names the file that was read or, when none could be, the plain file's name. A rollout moved to another followed folder, as Codex's archive does, has another capture label there and becomes another entry.
 
 ### Opaque strings
 
@@ -177,14 +177,15 @@ A second `remember` with a target waits for the first one to finish writing the 
 ## recall
 
 ```text
-bilbo recall <query>... [--kind <kind>]... [--budget <tokens>]
+bilbo recall <query>... [--in <label>]... [--kind <kind>]...
+               [--budget <tokens>]
 ```
 
-Searches everything `bilbo remember` kept and prints the chunks that match best, each with its text, read back from the store. It only reads: the one file it writes is the query log ([The query log](#the-query-log)).
+Searches everything `bilbo remember` kept, or the entries `--in` names, and prints the chunks that match best, each with its text, read back from the store. It only reads: the one file it writes is the query log ([The query log](#the-query-log)).
 
 ### The query
 
-The arguments are joined by one space: `bilbo recall how did we decide the index format` is one query. A query that starts with a dash needs `--` before it: `bilbo recall -- -x flag`. The query is cut into words as the index cut the chunks (lowercased, without the 33 English stopwords, stemmed), after the words of `recall.question_words` (`what`, `did`, `we`, `should`, `how` and `anything` by default) are taken out of it; they stay searchable in what the index holds. A query bilbo reads as Portuguese also loses its Portuguese function words: the 207 words of NLTK's list, compared without accents, so `nao` counts as `não`. A language detector reads the query as it was typed; it is asked only when the query has two words or more and one of them is such a word, and `do`, `me` and `so`, which are English words too, are not enough to ask it. A query of one word, as the analyzer cuts it, is not tested for Portuguese at all, so `bilbo recall nas` finds a NAS; `recall.question_words` still applies to it. A word that is kept is searched as typed. Like the question words, these stay searchable in what the index holds. The detector can be wrong, mostly on short queries: `recall.languages = []` turns this off. A query with no word left matches nothing. Chunks are ranked by BM25 with `recall.bm25_k1` and `recall.bm25_b`, from the exact length of each chunk and the statistics of every chunk in the index. Equal scores come in the order of entry id, generation, record and part. At most `recall.candidates` chunks are considered, at most `recall.cap` of them from one entry (no limit by default).
+The arguments are joined by one space: `bilbo recall how did we decide the index format` is one query. A query that starts with a dash needs `--` before it: `bilbo recall -- -x flag`. The query is cut into words as the index cut the chunks (lowercased, without the 33 English stopwords, stemmed), after the words of `recall.question_words` (`what`, `did`, `we`, `should`, `how` and `anything` by default) are taken out of it; they stay searchable in what the index holds. A query bilbo reads as Portuguese also loses its Portuguese function words: the 207 words of NLTK's list, compared without accents, so `nao` counts as `não`. A language detector reads the query as it was typed; it is asked only when the query has two words or more and one of them is such a word, and `do`, `me` and `so`, which are English words too, are not enough to ask it. A query of one word, as the analyzer cuts it, is not tested for Portuguese at all, so `bilbo recall nas` finds a NAS; `recall.question_words` still applies to it. A word that is kept is searched as typed. Like the question words, these stay searchable in what the index holds. The detector can be wrong, mostly on short queries: `recall.languages = []` turns this off. A query with no word left matches nothing. Chunks are ranked by BM25 with `recall.bm25_k1` and `recall.bm25_b`, from the exact length of each chunk and the statistics of every chunk in the index. Equal scores come in the order of entry id, generation, record and part. At most `recall.candidates` chunks are considered (400 by default); the rules of [Copies and long records](#copies-and-long-records) pass some of them over, and at most `recall.cap` hits are shown from one entry (no limit by default).
 
 ### Kinds
 
@@ -195,21 +196,50 @@ The arguments are joined by one space: `bilbo recall how did we decide the index
 Standard output is one hit after another, with no blank line between them:
 
 ```text
-=== bilbo:01JC5Q3V7XKM4P8R2T6W9YB0DE#r3-7<TAB>session<TAB>2026-11-07<TAB>4 lines
+=== 2T6W9YB0DE#r3-7<TAB>4 lines
 Session started 2026-11-07 08:01 UTC:
 user: Thin the carrot rows.
 ...
 ```
 
-The header is `=== `, the ref, the kind, the UTC day of the entry's first dated passage, or the day it was captured when none is dated (it is the entry's, not the hit's own), and the number of lines, apart by tabs. A chunk cut from a record too long for one chunk adds `part <k>/<m>`, the last hit of a run that was cut to the budget adds `cut`. The ref is what `bilbo read` takes: the entry and the records of the chunk, with no generation. After the header come exactly as many lines as it says. A line ends at a line feed and nowhere else: a carriage return is content. A line feed ends the hit; nothing scans the text for a header, so a chunk that quotes an earlier `recall` cannot forge one. A tool takes a header, then `<n>` lines, and so on to the end. The text is the store's, with one line feed between the passages a chunk joins, which the store does not hold, after a line its kind adds: a session's hit opens with `Session started <time> UTC:` (the time of its first record, or `Session date unknown:`); a note's has none. On a terminal each control character of a line prints as its escape, tabs kept, and so do the twelve bidirectional controls (U+061C, U+200E, U+200F, U+202A to U+202E, U+2066 to U+2069); plain output keeps them as they are.
+The header is `=== `, the ref and the number of lines, apart by tabs. A chunk cut from a record too long for one chunk adds `part <k>/<m>`, the last hit of a run that was cut to the budget adds `cut`. The header has no kind and no date. The ref is what `bilbo read` takes: the last 10 characters of the entry's id, then the records of the chunk, with no generation. When another entry's id ends with the same 10 characters (two notes can be given such ids by their frontmatter), the ref holds the whole 26-character id instead, so `bilbo read` takes every ref a header prints, as `recall` read the store, and each names one entry. A parser takes a ref of either length. A ref is the short id when no other entry's id ended with it at that moment: if an entry kept later ends alike, `bilbo read` says so and lists the entries. When a hit is from: a session's hit opens with `Session started <time> UTC:`, `bilbo read <ref>` prints `captured:` and `started:` in its outline, and a note's hit shows no date. After the header come exactly as many lines as it says. A line ends at a line feed and nowhere else: a carriage return is content. A line feed ends the hit; nothing scans the text for a header, so a chunk that quotes an earlier `recall` cannot forge one. A tool takes a header, then `<n>` lines, and so on to the end. The text is the store's, with one line feed between the passages a chunk joins, which the store does not hold, after a line its kind adds: a session's hit opens with `Session started <time> UTC:` (the time of its first record, or `Session date unknown:`); a note's has none. On a terminal each control character of a line prints as its escape, tabs kept, and so do the twelve bidirectional controls (U+061C, U+200E, U+200F, U+202A to U+202E, U+2066 to U+2069); plain output keeps them as they are.
+
+### Copies and long records
+
+Three rules keep an answer from holding the same text twice. They apply in rank order, to the text a hit is printed with, the cut last hit included.
+
+- A hit whose chunk equals the chunk of a hit above it is passed over.
+- A hit is passed over when half or more of its runs of 5 words in a row are in the hits above it (`recall.copy_share` and `recall.copy_words`; a `copy_share` of 0 turns the copy rules off). A hit that is a copy as a whole but does not fit the budget is judged by the part that would be printed, and is printed when that part is new.
+- No record is in more than `recall.record_cap` hits of its entry (2 by default; 0 sets no limit): the pieces of one long tool output are shown twice, not four times.
+
+A passed-over hit uses no budget, and the next one is tried. stderr says how many were passed over: `passed over: 3 copies, 1 further part of a record`.
 
 ### The budget
 
 `recall.budget` (4,000 tokens by default; `--budget <tokens>` sets it for one run, 256 at least) bounds the plain output as the index's tokenizer counts it, each hit's header included. On a terminal a control character, and each of the twelve bidirectional controls (U+061C, U+200E, U+200F, U+202A to U+202E, U+2066 to U+2069), prints as its escape, which the budget does not count, so the output can be longer there. Whole hits are printed while they fit. The first that does not is cut at a token and marked `cut`; nothing follows it. A hit that has room for no token of text is left out.
 
+### Keeping the search to some entries
+
+With no `--in` everything is searched: there is no project filter and nothing is read from where the command runs. `--in <value>` keeps the search to the entries its value names; the filter is applied inside the ranker, before the candidates are cut, so a small collection still fills its list. A value is one of:
+
+- an entry id, whole or as a hit prints it (its last 10 characters, in upper case), with or without `bilbo:` and a locator, which is ignored;
+- words of a label: every entry with a label that holds those words next to each other and in order. Words are cut at anything that is not a letter or a digit, lowercased and stemmed, so `--in bilbo` names an entry labelled `/home/me/src/bilbos`, and `--in home-me-src-shed` names one labelled `/home/me/src/shed`. A session is in the scope of every folder its records name, so `--in /home/me/src/shed` keeps the sessions that worked there. A label is found by its first 64 words, and a value of more than 64 words names no entry. `bilbo read <id>`, a ref without `#r`, lists an entry's labels.
+
+A value with a lower-case letter is never an id, so a word can always be given as one. A value that looks like an id (such as the word `REFERENCES`, which has the letters of a short id) and that no entry's id ends with is read as words. A value of ten digits that an entry's id ends with is that id. A short id that several entries end with names none of them: stderr lists them, and the value is not read as words.
+
+An entry that belongs to a kept entry through an id label comes with it, however deep: `--in <a session's id>` keeps the session and its subagents. Several values add up; `--kind` narrows the result. A project's notes are not in its scope unless the notes folder is named too: `--in bilbo --in notes`.
+
+A value that names nothing is said on stderr, `--in '<value>' names no entry`, and the search goes on with the other values; when no value names an entry nothing is searched, `nothing matched` and exit 1: `--in` never falls back to searching everything. A value with no letter or digit, such as `.`, is a usage error, exit 2, before the store is opened.
+
+A value that starts with a dash is read by the command line as an option: give it as `--in=-home-me-src-shed`, the form of the folder name Claude Code gives a project. After `--in` and a space such a value is a usage error, exit 2: `--in -home-me-src-shed` says `--in needs a value`.
+
+stderr says what the scope kept and what it cost: `--in kept 1,203 entries and left out 31 of the best 400: markdown 7, session 24` counts the entries kept, then how many of the 400 best matches without the scope fall outside it, by kind.
+
+Labels are filed when the index is made, by `bilbo remember` and `bilbo reindex`. An index that cannot be compared with the store's catalog (the catalog was made again) holds no label until the next run, so a value read as words can name fewer entries than it should: stderr says so, after the line about the index, and ids still work. An index behind the store knows the labels of what it indexed.
+
 ### What is searched
 
-Everything: there is no project filter and no scope. The index is searched as of its last commit. stderr says how many entries it holds: `searched 1,412 entries` counts the entries of the index, not of the store.
+The index is searched as of its last commit. stderr says how many entries it holds: `searched 1,412 entries` counts the entries of the index, not of the store, and is not printed when a scope named nothing.
 
 ### When the index is behind
 
@@ -217,7 +247,7 @@ Three lines on stderr say what stands between the index and the store. An index 
 
 ### The query log
 
-Each query that reaches the store is logged in `queries.log` in the state folder ([Configuration](configuration.md#folders)): whatever it finds, also an index that was refused or damaged. A run that ends before the store is open (a usage or config error, a tokenizer that does not load, no store, a store held past `store.wait`) is not logged. One line a query, fields apart by tabs: `q1`, the time in unix seconds, `hits`, `nothing`, `no-index`, `other-manifest`, `withheld` or `failed`, the number of entries searched, the kinds asked (`-` for none), the printed hits as `<id>#r<a>-<b>`, or `<id>#r<a>` for a ref of one record (a cut one followed by `!`), and the query's text, with `\`, tab, line feed and other control characters escaped. The file holds your questions, stays in the state folder, is made with mode 600, grows without a bound and can be deleted at any time. A line that cannot be written is one warning on stderr, `the query was not logged: <error>`; hits and the exit code do not change. A store with no state folder that bilbo checked is not logged and says `this store has no state folder that bilbo checked`. The line is appended under the state folder the store opened and checked at this run, and only a regular file of this user with one name and no group or other permission is written.
+Each query that reaches the store is logged in `queries.log` in the state folder ([Configuration](configuration.md#folders)): whatever it finds, also an index that was refused or damaged. A run that ends before the store is open (a usage or config error, a tokenizer that does not load, no store, a store held past `store.wait`) is not logged. One line a query, fields apart by tabs: `q2`, the time in unix seconds, `hits`, `nothing`, `no-index`, `other-manifest`, `withheld` or `failed`, the number of entries searched, the kinds asked (`-` for none), the `--in` values (`-` for none; a comma in a value is written `\,`), the number of entries they named (`-` for none, when the run ended `failed`, or when it ended `no-index`, `other-manifest` or `withheld` before it resolved them), the printed hits as `<id>#r<a>-<b>`, or `<id>#r<a>` for a ref of one record (a cut one followed by `!`), and the query's text, with `\`, tab, line feed and other control characters escaped. The file holds your questions, stays in the state folder, is made with mode 600, grows without a bound and can be deleted at any time. A line that cannot be written is one warning on stderr, `the query was not logged: <error>`; hits and the exit code do not change. A store with no state folder that bilbo checked is not logged and says `this store has no state folder that bilbo checked`. The line is appended under the state folder the store opened and checked at this run, and only a regular file of this user with one name and no group or other permission is written.
 
 ### Searching while bilbo writes
 
@@ -225,7 +255,7 @@ Each query that reaches the store is logged in `queries.log` in the state folder
 
 ### What stderr holds
 
-Off a terminal every line bilbo writes starts with `bilbo: `. On a run that searched: `searched <n> entries`, then the lines of the last section, `left out <n> hits ...`, `the query was not logged: <error>` and, with no hit, `nothing matched`. Where no search ran, an error line: `the store has no search index bilbo can use; bilbo reindex makes it`; `the search index was made with other settings or by another bilbo; bilbo reindex makes it again`; or the reason the index was not read: no `store.lock` in the state folder, a cache folder with no catalog of this store, with another store's catalog, or that is not this user's alone or could not be checked (`<path> is not this user's alone, or could not be checked; bilbo reads no search index under it`). A damaged index can make tantivy print a line of its own before bilbo's; bilbo's line is the last.
+Off a terminal every line bilbo writes starts with `bilbo: `. On a run that searched: `searched <n> entries`, `--in '<value>' names no entry` for each value that names none, `--in '<value>' ends the id of <n> entries: <id>, <id>; give one id in full` for a short id several entries end with, `--in kept <n> entries and left out <o> of the best <b>: <kind> <n>, ...`, then the lines of the last section (and, when a value was read as words at an index that cannot be compared, `--in may name fewer entries than it should: labels are filed when the index is made; bilbo remember brings both up to date`), `left out <n> hits ...`, `passed over: ...` (the copies, the further parts of a record and the hits over the entry cap that were passed over, each item only when it is over 0), `the query was not logged: <error>` and, with no hit, `nothing matched`. Where no search ran, an error line: `the store has no search index bilbo can use; bilbo reindex makes it`; `the search index was made with other settings or by another bilbo; bilbo reindex makes it again`; or the reason the index was not read: no `store.lock` in the state folder, a cache folder with no catalog of this store, with another store's catalog, or that is not this user's alone or could not be checked (`<path> is not this user's alone, or could not be checked; bilbo reads no search index under it`). A damaged index can make tantivy print a line of its own before bilbo's; bilbo's line is the last.
 
 ### Exit codes
 
@@ -233,7 +263,7 @@ Off a terminal every line bilbo writes starts with `bilbo: `. On a run that sear
 |---|---|
 | 0 | at least one hit |
 | 1 | nothing matched, there is no store, no search index or none that bilbo can read, the store is being written for longer than `store.wait`, or the store or the index could not be read |
-| 2 | usage or config error: no query, an unknown kind, a `--budget` outside 256 to 1,000,000, a store root that holds bilbo 0.20's `notes/` or `library/`, or a state or cache folder inside the root |
+| 2 | usage or config error: no query, an unknown kind, an `--in` value with no letter or digit, a `--budget` outside 256 to 1,000,000, a store root that holds bilbo 0.20's `notes/` or `library/`, or a state or cache folder inside the root |
 
 ## read
 
@@ -248,12 +278,13 @@ Prints an entry that `bilbo remember` kept: its metadata and its outline, or its
 
 ```text
 <ref>     = <entry> | <entry>#<locator>
-<entry>   = <id> | bilbo:<id> | <session id>
+<entry>   = <id> | bilbo:<id> | <short id> | <session id>
 <locator> = r<a> | r<a>-<b> | g<n> | g<n>:r<a> | g<n>:r<a>-<b>
 ```
 
 - `<id>` is the entry's id, 26 characters, with or without the `bilbo:` a citation gives it.
-- `<session id>` is the UUID a harness gave a session, or its first 8 characters or more: `bilbo read 2d6b1857`. It names the entry kept from the `.jsonl` file whose name ends in that UUID: Claude Code's `<uuid>.jsonl`, Codex's `rollout-<time>-<uuid>.jsonl`. A note named for a UUID is not a session: read it by its id. Upper or lower case. When it names several entries (one session kept from two folders, or a short prefix two sessions share), the run exits 2 and lists up to `read.matches_listed` of them (five by default) with their origins: give the id of one. A subagent has no UUID of its own: read it by its id, which its session's records name.
+- `<short id>` is the last 10 characters of an entry's id, in upper case, as `bilbo recall` prints it: `bilbo read 2T6W9YB0DE#r3-7`. When several entries end with it, the run exits 2 and lists them: give the id of one.
+- `<session id>` is the UUID a harness gave a session, or its first 8 characters or more: `bilbo read 2d6b1857`. It names the entry kept from the `.jsonl` file whose name ends in that UUID: Claude Code's `<uuid>.jsonl`, Codex's `rollout-<time>-<uuid>.jsonl`. A note named for a UUID is not a session: read it by its id. Upper or lower case. When it names several entries (one session kept from two folders, or a short prefix two sessions share), the run exits 2 and lists up to `read.matches_listed` of them (five by default) with their capture labels: give the id of one. A subagent has no UUID of its own: read it by its id, which its session's records name.
 - `r<a>-<b>` is the records from `a` to `b`, counted from 1; `r<a>` is one record. A record outside the entry is refused, exit 1, with the number of records the entry has.
 - `g<n>` is a generation: an entry whose file was rewritten keeps the old records as an older generation. With no `g`, the newest. A page of an older generation shows it in every locator (`#g1:r5`); a page of the newest shows the short form (`#r5`). The `more:` and `cut:` commands of the last line always name the generation that was read, so a file rewritten between two pages cannot make the next page read other records.
 
@@ -264,10 +295,11 @@ With no record range, `read` prints what it knows of the entry, then one line pe
 ```text
 bilbo:01M6ZGE4KTBYYH07AS2KVMSCAF
 kind: session
-origin: file:/home/me/.claude/projects/-home-me-src-garden/8f2b6d4e-1a3c-4e5f-9b7a-2c4d6e8f0a1b.jsonl
+label: file:/home/me/.claude/projects/-home-me-src-garden/8f2b6d4e-1a3c-4e5f-9b7a-2c4d6e8f0a1b.jsonl (capture)
+label: bilbo:01M6ZFZ0V5T2K1X8Q4W7N9R3HB
+label: /home/me/src/garden
 captured: 2026-11-09 03:12 UTC
 started: 2026-11-07 08:01 UTC
-parent: bilbo:01M6ZFZ0V5T2K1X8Q4W7N9R3HB
 records: 23
 generation: 1
 outline:
@@ -277,7 +309,7 @@ outline:
 end: #r1-23 of 23 records
 ```
 
-- `origin` is left out for an entry that has none, `started` for one whose records carry no time (a note), and `parent` unless the entry belongs to another: a subagent names its session.
+- A `label:` row is one label of the entry. The capture label, the one `remember` finds the file again by, comes first and is marked `(capture)`; `bilbo:<id>` is the entry this one belongs to (a subagent names its session); the rest are the texts the entry's records name, in byte order, as many as fit in half the page's budget, and then one row, `labels: <n> more; a larger --budget lists them`. A session names the folders it worked in: the `cwd` of its records and the added directories of Claude Code's environment records, or the `cwd` of a Codex rollout's `session_meta` and `turn_context` records. A text the store replaced by an opaque placeholder (a very long folder with no dot or space in it) is not a label. An entry with no label has no `label:` row. `started` is left out for an entry whose records carry no time (a note).
 - `generation` is `1 of 2` when the one shown is not the newest.
 - A session lists its user prompts, its compact summaries and, for Codex, the messages one agent sent another. A note lists its frontmatter, the text before its first heading, and each heading with the headings above it: `#r28-31 The garden log > Watering > Tools`.
 - An outline line is the prompt's first line, at most `read.outline_width` characters (100 by default); a longer one is cut to fit and ends in `…`. Inside a note's path, a heading over `markdown.heading_width` characters (100 by default) is cut to fit and ends in `…` too.
@@ -339,7 +371,7 @@ The cut falls between two characters. The budget of the `cut:` command is what t
 |---|---|
 | 0 | success, also when no record of the range renders |
 | 1 | no entry has the id or the session id, the range or the generation is outside the entry, the entry is of a kind this bilbo cannot read, there is no store, the store is being written for longer than `store.wait`, or the store could not be read |
-| 2 | usage or config error: a ref that does not parse, a session id that names several entries, a `--budget` under 256 |
+| 2 | usage or config error: a ref that does not parse, a session id or a short id that names several entries, a `--budget` under 256 |
 
 ## reindex
 
@@ -352,6 +384,7 @@ Makes the catalog and the search index again from the store. Both live in the ca
 ### What it makes
 
 - **The catalog**, `catalog.sqlite`: rebuilt from every segment and `open.seg`, as a `bilbo remember` rebuilds a missing one.
+- **The label tables**, in `catalog.sqlite`: the text labels of every entry the run read and indexed (for a session, the folders its records name), and their words, which `recall --in` matches. Only an index run files them: a catalog made again holds none until the next `remember` or `reindex`, and nothing takes a row from an entry the committed index still holds. The capture label and the id label are in the store's own meta and survive any rebuild.
 - **The index**, the folder `index/`: one document for each chunk of each entry's newest generation. A chunk is consecutive records packed up to `search.chunk_tokens` tokens of the Qwen3-Embedding tokenizer; a record longer than that is cut into chunks that share `search.chunk_overlap` tokens. A record that renders to more than 1 MiB is cut at line ends before it is counted. The index holds each chunk's words (lowercased, without 33 English stopwords, stemmed) and where its records are in the store (entry, generation, record range, date, kind), its length and the digest of its text, never its text. A word of more than 4,096 bytes is not indexed.
 
 An entry whose kind no reader reads is left out and counted as unread. Older generations of an entry are not indexed; `bilbo read` still prints them.

@@ -1,13 +1,13 @@
-=== bilbo:01JC5Q3V7XKM4P8R2T6W9YB0DE#r3-7	session	2026-11-07	4 lines
+=== 2T6W9YB0DE#r3-7	4 lines
 Session started 2026-11-07 08:01 UTC:
 user: Thin the carrot rows.
 assistant: Done.
-=== bilbo:01JC5Q3V7XKM4P8R2T6W9YB0DF#r1	session	2026-11-07	1 line
-=== bilbo:01JC5Q3V7XKM4P8R2T6W9YB0DG#r8	markdown	2026-11-07	4 lines	part 2/3
+=== 2T6W9YB0DF#r1	1 line
+=== 01JC5Q3V7XKM4P8R2T6W9YB0DG#r8	4 lines	part 2/3
 ## Beds
 
 The north bed holds the carrots.
 
-=== bilbo:01JC5Q3V7XKM4P8R2T6W9YB0DH#r2	session	2026-11-07	2 lines	cut
+=== 2T6W9YB0DH#r2	2 lines	cut
 Session date unknown:
 user: and the last one, cut at the budget

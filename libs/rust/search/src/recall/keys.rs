@@ -26,9 +26,9 @@ pub const CANDIDATES: Key<usize> = Key {
     about: About {
         name: "recall.candidates",
         variable: Some("BILBO_RECALL_CANDIDATES"),
-        default: Default::Toml("50"),
+        default: Default::Toml("400"),
         allowed: "a whole number from 1 to 1000",
-        doc: "How many of the best chunks bilbo recall considers before it fills the budget.",
+        doc: "How many of the best chunks bilbo recall considers before it fills the budget. The copies and the further parts of a record that it passes over are among them.",
     },
     parse: |value| {
         value
@@ -46,13 +46,66 @@ pub const CAP: Key<usize> = Key {
         variable: Some("BILBO_RECALL_CAP"),
         default: Default::Toml("0"),
         allowed: "a whole number from 0 to 1000",
-        doc: "The most hits bilbo recall takes from one entry; 0 sets no limit.",
+        doc: "The most hits bilbo recall shows from one entry; 0 sets no limit.",
     },
     parse: |value| {
         value
             .integer()
             .and_then(|count| usize::try_from(count).ok())
             .filter(|count| (0..=1000).contains(count))
+            .ok_or_else(|| value.refuse())
+    },
+    show: ToString::to_string,
+};
+
+pub const RECORD_CAP: Key<usize> = Key {
+    about: About {
+        name: "recall.record_cap",
+        variable: Some("BILBO_RECALL_RECORD_CAP"),
+        default: Default::Toml("2"),
+        allowed: "a whole number from 0 to 1000",
+        doc: "The most hits of an entry that bilbo recall shows with one same record in them, such as the pieces of one long tool output; 0 sets no limit.",
+    },
+    parse: |value| {
+        value
+            .integer()
+            .and_then(|count| usize::try_from(count).ok())
+            .filter(|count| (0..=1000).contains(count))
+            .ok_or_else(|| value.refuse())
+    },
+    show: ToString::to_string,
+};
+
+pub const COPY_SHARE: Key<f64> = Key {
+    about: About {
+        name: "recall.copy_share",
+        variable: Some("BILBO_RECALL_COPY_SHARE"),
+        default: Default::Toml("0.5"),
+        allowed: "a number from 0 to 1",
+        doc: "A hit is passed over when at least this share of its runs of words is in the hits above it; 0 passes over no copy.",
+    },
+    parse: |value| {
+        value
+            .decimal()
+            .filter(|share| (0.0..=1.0).contains(share))
+            .ok_or_else(|| value.refuse())
+    },
+    show: ToString::to_string,
+};
+
+pub const COPY_WORDS: Key<usize> = Key {
+    about: About {
+        name: "recall.copy_words",
+        variable: Some("BILBO_RECALL_COPY_WORDS"),
+        default: Default::Toml("5"),
+        allowed: "a whole number from 1 to 64",
+        doc: "How many words in a row make one run when bilbo recall looks for copies.",
+    },
+    parse: |value| {
+        value
+            .integer()
+            .and_then(|count| usize::try_from(count).ok())
+            .filter(|count| (1..=64).contains(count))
             .ok_or_else(|| value.refuse())
     },
     show: ToString::to_string,
@@ -166,10 +219,13 @@ pub const READ_BATCH: Key<usize> = Key {
     show: ToString::to_string,
 };
 
-pub const ABOUT: [&About; 8] = [
+pub const ABOUT: [&About; 11] = [
     &BUDGET.about,
     &CANDIDATES.about,
     &CAP.about,
+    &RECORD_CAP.about,
+    &COPY_SHARE.about,
+    &COPY_WORDS.about,
     &QUESTION_WORDS.about,
     &LANGUAGES.about,
     &BM25_K1.about,
@@ -182,6 +238,9 @@ pub struct Section {
     pub budget: Resolved<usize>,
     pub candidates: Resolved<usize>,
     pub cap: Resolved<usize>,
+    pub record_cap: Resolved<usize>,
+    pub copy_share: Resolved<f64>,
+    pub copy_words: Resolved<usize>,
     pub question_words: Resolved<Vec<String>>,
     pub languages: Resolved<Vec<Language>>,
     pub bm25_k1: Resolved<f64>,
@@ -194,6 +253,9 @@ pub fn section(source: &Source<'_>) -> Result<Section, Error> {
         budget: BUDGET.resolve(source)?,
         candidates: CANDIDATES.resolve(source)?,
         cap: CAP.resolve(source)?,
+        record_cap: RECORD_CAP.resolve(source)?,
+        copy_share: COPY_SHARE.resolve(source)?,
+        copy_words: COPY_WORDS.resolve(source)?,
         question_words: QUESTION_WORDS.resolve(source)?,
         languages: LANGUAGES.resolve(source)?,
         bm25_k1: BM25_K1.resolve(source)?,
@@ -212,11 +274,14 @@ pub fn defaults() -> Section {
 }
 
 impl Section {
-    pub fn shown(&self) -> [Shown; 8] {
+    pub fn shown(&self) -> [Shown; 11] {
         [
             BUDGET.shown(&self.budget),
             CANDIDATES.shown(&self.candidates),
             CAP.shown(&self.cap),
+            RECORD_CAP.shown(&self.record_cap),
+            COPY_SHARE.shown(&self.copy_share),
+            COPY_WORDS.shown(&self.copy_words),
             QUESTION_WORDS.shown(&self.question_words),
             LANGUAGES.shown(&self.languages),
             BM25_K1.shown(&self.bm25_k1),
@@ -264,8 +329,11 @@ mod tests {
     fn each_default_is_its_documented_value() {
         let section = defaults();
         assert_eq!(section.budget.value, 4000);
-        assert_eq!(section.candidates.value, 50);
+        assert_eq!(section.candidates.value, 400);
         assert_eq!(section.cap.value, 0);
+        assert_eq!(section.record_cap.value, 2);
+        assert!((section.copy_share.value - 0.5).abs() < f64::EPSILON);
+        assert_eq!(section.copy_words.value, 5);
         assert_eq!(
             section.question_words.value,
             ["what", "did", "we", "should", "how", "anything"]
@@ -278,8 +346,11 @@ mod tests {
             shown(&section),
             [
                 "recall.budget = 4000 (default)",
-                "recall.candidates = 50 (default)",
+                "recall.candidates = 400 (default)",
                 "recall.cap = 0 (default)",
+                "recall.record_cap = 2 (default)",
+                "recall.copy_share = 0.5 (default)",
+                "recall.copy_words = 5 (default)",
                 "recall.question_words = [\"what\", \"did\", \"we\", \"should\", \"how\", \"anything\"] (default)",
                 "recall.languages = [\"pt\"] (default)",
                 "recall.bm25_k1 = 1.2 (default)",
@@ -294,6 +365,9 @@ mod tests {
                 Some("BILBO_RECALL_BUDGET"),
                 Some("BILBO_RECALL_CANDIDATES"),
                 Some("BILBO_RECALL_CAP"),
+                Some("BILBO_RECALL_RECORD_CAP"),
+                Some("BILBO_RECALL_COPY_SHARE"),
+                Some("BILBO_RECALL_COPY_WORDS"),
                 None,
                 None,
                 Some("BILBO_RECALL_BM25_K1"),
@@ -380,6 +454,59 @@ mod tests {
             (high.budget.value, high.candidates.value, high.cap.value),
             (1_000_000, 1000, 1000)
         );
+    }
+
+    #[test]
+    fn a_record_cap_a_copy_share_or_copy_words_outside_its_range_is_refused() {
+        for (text, name, shape) in [
+            (
+                "recall.record_cap = 1001",
+                "recall.record_cap",
+                "a whole number from 0 to 1000",
+            ),
+            (
+                "recall.record_cap = -1",
+                "recall.record_cap",
+                "a whole number from 0 to 1000",
+            ),
+            (
+                "recall.copy_share = 1.5",
+                "recall.copy_share",
+                "a number from 0 to 1",
+            ),
+            (
+                "recall.copy_share = -0.1",
+                "recall.copy_share",
+                "a number from 0 to 1",
+            ),
+            (
+                "recall.copy_share = nan",
+                "recall.copy_share",
+                "a number from 0 to 1",
+            ),
+            (
+                "recall.copy_words = 0",
+                "recall.copy_words",
+                "a whole number from 1 to 64",
+            ),
+            (
+                "recall.copy_words = 65",
+                "recall.copy_words",
+                "a whole number from 1 to 64",
+            ),
+        ] {
+            let error = resolve(&[], text).expect_err(text);
+            assert!(
+                error.contains(&format!("{name} must be {shape}")),
+                "{text}: {error}"
+            );
+        }
+        let edges = resolve(
+            &[],
+            "recall.record_cap = 0\nrecall.copy_share = 1\nrecall.copy_words = 64",
+        )
+        .expect("valid");
+        assert_eq!((edges.record_cap.value, edges.copy_words.value), (0, 64));
     }
 
     #[test]
@@ -497,7 +624,7 @@ mod tests {
 
     #[test]
     fn the_keys_show_as_toml_that_reads_back() {
-        let text = "[recall]\nbudget = 777\ncandidates = 9\ncap = 2\nquestion_words = [\"why\", \"who\"]\nlanguages = []\nbm25_k1 = 1.5\nbm25_b = 0.4\nread_batch = 99\n";
+        let text = "[recall]\nbudget = 777\ncandidates = 9\ncap = 2\nrecord_cap = 3\ncopy_share = 0.25\ncopy_words = 7\nquestion_words = [\"why\", \"who\"]\nlanguages = []\nbm25_k1 = 1.5\nbm25_b = 0.4\nread_batch = 99\n";
         for section in [defaults(), resolve(&[], text).expect("valid")] {
             let mut written = String::from("[recall]\n");
             for shown in section.shown() {
@@ -508,6 +635,9 @@ mod tests {
             assert_eq!(again.budget.value, section.budget.value);
             assert_eq!(again.candidates.value, section.candidates.value);
             assert_eq!(again.cap.value, section.cap.value);
+            assert_eq!(again.record_cap.value, section.record_cap.value);
+            assert!((again.copy_share.value - section.copy_share.value).abs() < f64::EPSILON);
+            assert_eq!(again.copy_words.value, section.copy_words.value);
             assert_eq!(again.question_words.value, section.question_words.value);
             assert_eq!(again.languages.value, section.languages.value);
             assert!((again.bm25_k1.value - section.bm25_k1.value).abs() < f64::EPSILON);

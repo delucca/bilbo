@@ -1,13 +1,28 @@
 """The judge's verdicts as scoring reads them. A context's verdict is the last judged row for the hash of the full judge
 prompt that judge.py builds from the current question and that context, so a verdict given for other facts is never
-used. judge.py is a script: its prompt builder is read from its source, up to the argument parser."""
+used. judge.py is a script: its prompt builder is read from its source, up to the argument parser. `run_parts` is
+the one parser of a run folder's name; `python judged.py names` checks it against a table and needs no judge and no store."""
 
 import hashlib
 import json
+import re
+import sys
 from collections import defaultdict
 from pathlib import Path
 
 BUDGET = 4000
+PARTS = ("arm", "store", "search", "driver", "reworded", "variation", "rerun")
+RUN = re.compile(r"(?P<arm>.+)-(?P<store>[0-9a-f]{12})-(?P<search>[0-9a-f]{12})(?:-driver-(?P<driver>[0-9a-f]{12}))?"
+                 r"(?:-reworded-(?P<reworded>[0-9a-f]{12}))?(?:-variation-(?P<variation>[0-9a-f]{12}))?"
+                 r"(?:-rerun-(?P<rerun>[a-z0-9]+))?")
+
+
+def run_parts(name):
+    """(arm, store, search, driver, reworded, variation, rerun) of a run folder's name, an absent part as None."""
+    m = RUN.fullmatch(name)
+    if not m:
+        sys.exit(f"judged: {name!r} is not <arm>-<store>-<search>[-driver-<d>][-reworded-<r>][-variation-<v>][-rerun-<label>]")
+    return tuple(m[p] for p in PARTS)
 
 
 def rows(path):
@@ -40,3 +55,38 @@ def grade(q, v):
     stale = q.get("stale", [])
     misled = any(v["stale"][s["id"]] and not v["facts"][s["replaces"]] for s in stale) if stale else None
     return {"score": len(present) / len(q["facts"]), "present": present, "facts": len(q["facts"]), "misled": misled}
+
+
+def names():
+    a, b, c, d = "0123456789ab", "ba9876543210", "abcdef012345", "fedcba543210"
+    table = [
+        (f"bm25-{a}-{b}", ("bm25", a, b, None, None, None, None)),
+        (f"bilbo-next-{a}-{b}", ("bilbo-next", a, b, None, None, None, None)),
+        (f"bilbo-next-{a}-{b}-driver-{c}", ("bilbo-next", a, b, c, None, None, None)),
+        (f"bilbo-next-{a}-{b}-variation-{c}", ("bilbo-next", a, b, None, None, c, None)),
+        (f"bilbo-next-{a}-{b}-rerun-two", ("bilbo-next", a, b, None, None, None, "two")),
+        (f"bilbo-next-{a}-{b}-driver-{c}-reworded-{d}-variation-{a}-rerun-x1",
+         ("bilbo-next", a, b, c, d, a, "x1")),
+        (f"a-b-c-{a}-{b}-driver-{c}", ("a-b-c", a, b, c, None, None, None)),
+        (f"bilbo-next-{a}", None),
+        (f"bilbo-next-{a}-{b}-driver-{c}x", None),
+        (f"bilbo-next-{a}-{b}-driver-abc", None),
+        (f"bilbo-next-{a}-{b}-rerun-Two", None),
+        (f"bilbo-next-{a}-{b}-variation-{c}-driver-{d}", None),
+    ]
+    for name, want in table:
+        try:
+            got = run_parts(name)
+        except SystemExit:
+            got = None
+        if got != want:
+            print(f"names: {name}: got {got}, wanted {want}")
+            return 1
+    print("names: OK")
+    return 0
+
+
+if __name__ == "__main__":
+    if sys.argv[1:] != ["names"]:
+        sys.exit("usage: judged.py names")
+    sys.exit(names())

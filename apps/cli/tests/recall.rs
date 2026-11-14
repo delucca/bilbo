@@ -25,7 +25,7 @@ use bilbo_search::index::IndexError;
 use bilbo_search::lookup::{Filter, Found, Lookup, Posting, Totals};
 use bilbo_search::position::Position;
 use bilbo_search::tokenizer::Tokenizer;
-use bilbo_store::entries::{Entries, RecordRange};
+use bilbo_store::entries::{Entries, Meta, RecordRange};
 use bilbo_store::segments::{Options, Store};
 use rustix::fs::OFlags;
 
@@ -259,10 +259,37 @@ impl Sandbox {
 
 struct Hit {
     reference: String,
-    kind: String,
-    day: String,
     extras: Vec<String>,
     content: String,
+}
+
+fn entry_of(store: &Store, reference: &Ref) -> bilbo_store::id::Id {
+    match &reference.target {
+        Target::Entry(id) => *id,
+        Target::Short(short) => {
+            let ids = store.by_shorts(&[*short]).expect("a lookup");
+            assert_eq!(ids.len(), 1, "{short} ends one entry's id");
+            ids[0]
+        }
+        Target::Session(session) => panic!("a header prints no session id: {session}"),
+    }
+}
+
+fn meta_of(sandbox: &Sandbox, hit: &Hit) -> Meta {
+    let settings = sandbox.settings();
+    let store = Store::open_read_only(&settings.layout(), Options::default(), &mut |_| {})
+        .expect("open the store");
+    let reference = Ref::parse(hit.reference.as_str()).expect("a ref bilbo read takes");
+    let id = entry_of(&store, &reference);
+    store.meta(id).expect("meta").expect("an entry")
+}
+
+fn capture_of(sandbox: &Sandbox, hit: &Hit) -> String {
+    meta_of(sandbox, hit)
+        .labels
+        .capture
+        .expect("a capture label")
+        .to_string()
 }
 
 fn hits(stdout: &str) -> Vec<Hit> {
@@ -272,22 +299,22 @@ fn hits(stdout: &str) -> Vec<Hit> {
     let mut at = 0;
     while at < lines.len() {
         let fields: Vec<&str> = lines[at]
-            .strip_prefix("=== bilbo:")
+            .strip_prefix("=== ")
             .unwrap_or_else(|| panic!("a header at {:?}", lines[at]))
             .split('\t')
             .collect();
-        assert!(fields.len() >= 4, "{fields:?}");
-        let count: usize = fields[3]
+        assert!(fields.len() >= 2, "{fields:?}");
+        let id = fields[0].split('#').next().expect("an id");
+        assert!(matches!(id.len(), 10 | 26), "{fields:?}");
+        let count: usize = fields[1]
             .split(' ')
             .next()
             .and_then(|n| n.parse().ok())
             .expect("a line count");
         let content = lines[at + 1..at + 1 + count].join("\n");
         found.push(Hit {
-            reference: format!("bilbo:{}", fields[0]),
-            kind: fields[1].to_owned(),
-            day: fields[2].to_owned(),
-            extras: fields[4..]
+            reference: fields[0].to_owned(),
+            extras: fields[2..]
                 .iter()
                 .map(|field| (*field).to_owned())
                 .collect(),
@@ -320,9 +347,8 @@ fn a_remembered_store_is_recalled_with_the_text_read_gives() {
     let mut kinds = Vec::new();
     for hit in &found {
         let reference = Ref::parse(&hit.reference).expect("a ref bilbo read takes");
-        let Target::Entry(id) = reference.target else {
-            panic!("an entry id: {}", hit.reference);
-        };
+        let id = entry_of(&store, &reference);
+        let kind = store.meta(id).expect("meta").expect("an entry").kind;
         let records = reference.locator.records.expect("records");
         let (generation, count) = store.extent(id, None).expect("extent").expect("an entry");
         let stored = store
@@ -331,7 +357,7 @@ fn a_remembered_store_is_recalled_with_the_text_read_gives() {
         let stored: Vec<&[u8]> = stored.iter().map(Vec::as_slice).collect();
         let reader = readers
             .iter()
-            .find(|reader| reader.kind() == hit.kind)
+            .find(|reader| reader.kind() == kind)
             .expect("a reader of the kind");
         let part = hit.extras.iter().find_map(|extra| {
             let (at, of) = extra.strip_prefix("part ")?.split_once('/')?;
@@ -351,20 +377,19 @@ fn a_remembered_store_is_recalled_with_the_text_read_gives() {
             None => chunk.text,
         };
         assert_eq!(hit.content, expected, "{}", hit.reference);
-        assert_eq!(hit.day.len(), 10, "{}", hit.day);
-        kinds.push(hit.kind.as_str());
+        kinds.push(kind);
         let read = sandbox.run(&["read", &hit.reference]);
         assert_eq!(read.code, 0, "{:?}", read.stderr);
     }
-    assert!(
-        found
-            .iter()
-            .filter(|hit| hit.kind == "session")
-            .all(|hit| hit.content.starts_with("Session started 20")
-                || hit.content.starts_with("Session date unknown:")),
-        "a session's hit opens with its kind's line"
-    );
-    assert!(kinds.contains(&"session"), "{kinds:?}");
+    for (hit, kind) in found.iter().zip(&kinds) {
+        assert!(
+            kind != "session"
+                || hit.content.starts_with("Session started 20")
+                || hit.content.starts_with("Session date unknown:"),
+            "a session's hit opens with its kind's line"
+        );
+    }
+    assert!(kinds.iter().any(|kind| kind == "session"), "{kinds:?}");
 }
 
 #[test]
@@ -390,7 +415,7 @@ fn recall_writes_no_file_but_the_query_log() {
         .lines()
         .map(|line| {
             let fields: Vec<&str> = line.split('\t').collect();
-            assert_eq!(fields[0], "q1", "{log}");
+            assert_eq!(fields[0], "q2", "{log}");
             fields[2]
         })
         .collect();
@@ -488,6 +513,242 @@ fn an_unknown_kind_is_a_usage_error_naming_the_kinds() {
         run.stderr[0],
         "bilbo: unknown kind 'nope'; kinds: markdown, session"
     );
+}
+
+const MAIN_SESSION: &str = "5c3a9e1f-0b7d-4c2e-9a41-7f2d8e6b1c03";
+const SUBAGENT: &str = "agent-ad63c2b3c9e7a4b3d";
+
+fn with_a_session_and_its_subagent(test: &str) -> Sandbox {
+    let sandbox = Sandbox::new(test);
+    sandbox.write(
+        &format!("sessions/claude/p/{MAIN_SESSION}.jsonl"),
+        SESSIONS[1].1,
+    );
+    sandbox.write(
+        &format!("sessions/claude/p/{MAIN_SESSION}/subagents/{SUBAGENT}.jsonl"),
+        include_bytes!("../../../libs/rust/kinds/session/fixtures/agent-ad63c2b3c9e7a4b3d.jsonl"),
+    );
+    sandbox.write(
+        "sessions/claude/p/8f2b6d4e-1a3c-4e5f-9b7a-2c4d6e8f0a1b.jsonl",
+        SESSIONS[0].1,
+    );
+    sandbox.remember(&["sessions"]);
+    sandbox
+}
+
+fn entry_kept_from(sandbox: &Sandbox, file: &str) -> bilbo_store::id::Id {
+    let settings = sandbox.settings();
+    let store = Store::open_read_only(&settings.layout(), Options::default(), &mut |_| {})
+        .expect("open the store");
+    let label =
+        bilbo_store::labels::CaptureLabel::file(&sandbox.dir.join(file)).expect("a capture label");
+    store
+        .by_capture(&label)
+        .expect("a lookup")
+        .expect("an entry")
+        .id
+}
+
+#[test]
+fn a_scope_by_id_keeps_a_session_and_its_subagents() {
+    let sandbox = with_a_session_and_its_subagent("recall_in_id");
+    let main = entry_kept_from(&sandbox, &format!("sessions/claude/p/{MAIN_SESSION}.jsonl"));
+    let other = entry_kept_from(
+        &sandbox,
+        "sessions/claude/p/8f2b6d4e-1a3c-4e5f-9b7a-2c4d6e8f0a1b.jsonl",
+    );
+    for value in [main.to_string(), main.short().to_string()] {
+        let run = sandbox.run(&["recall", "--in", &value, "seed", "packets"]);
+        assert_eq!(run.code, 0, "{value}: {:?}", run.stderr);
+        assert!(
+            run.stderr
+                .iter()
+                .any(|line| line.starts_with("bilbo: --in kept 2 entries and left out ")),
+            "{:?}",
+            run.stderr
+        );
+        let found = hits(&run.stdout);
+        assert!(
+            found.iter().any(|hit| hit.content.contains("seed packets")),
+            "{}",
+            run.stdout
+        );
+        let subagent_path = format!("{MAIN_SESSION}/subagents/{SUBAGENT}.jsonl");
+        assert!(
+            found
+                .iter()
+                .any(|hit| capture_of(&sandbox, hit).ends_with(&subagent_path)),
+            "{}",
+            run.stdout
+        );
+    }
+    let outside = sandbox.run(&["recall", "--in", &other.to_string(), "seed", "packets"]);
+    for hit in hits(&outside.stdout) {
+        assert!(
+            capture_of(&sandbox, &hit).ends_with("8f2b6d4e-1a3c-4e5f-9b7a-2c4d6e8f0a1b.jsonl"),
+            "{}",
+            outside.stdout
+        );
+    }
+}
+
+#[test]
+fn a_scope_by_a_word_of_the_capture_label_keeps_those_entries() {
+    let sandbox = Sandbox::new("recall_in_words");
+    sandbox.write(
+        "notes/greenhouse/a.md",
+        b"# Beds\n\nSeville marmalade ripens beside the tomato vines, forty jars by October.\n",
+    );
+    sandbox.write(
+        "notes/pantry/b.md",
+        b"# Shelf\n\nQuince marmalade keeps on the top rack behind the flour bins, away from damp.\n",
+    );
+    sandbox.remember(&["notes"]);
+    let all = sandbox.run(&["recall", "marmalade"]);
+    assert_eq!(hits(&all.stdout).len(), 2, "{}", all.stdout);
+    for (word, folder) in [("greenhouse", "greenhouse/a.md"), ("pantry", "pantry/b.md")] {
+        let run = sandbox.run(&["recall", "--in", word, "marmalade"]);
+        assert_eq!(run.code, 0, "{word}: {:?}", run.stderr);
+        let found = hits(&run.stdout);
+        assert_eq!(found.len(), 1, "{}", run.stdout);
+        assert!(capture_of(&sandbox, &found[0]).ends_with(folder));
+        assert!(
+            run.stderr
+                .iter()
+                .any(|line| line.starts_with("bilbo: --in kept 1 entry")),
+            "{:?}",
+            run.stderr
+        );
+    }
+}
+
+const WORKED: &str = "7d1e4b9a-3c5f-4a2e-8b6d-0f9e1c2a3b4d";
+const ROLLOUT: &str = "rollout-2026-11-08T10-00-00-019a6c4d-3e5f-7a71-9b2c-4d6e8fa0b1c3";
+
+#[test]
+fn a_scope_by_a_folder_a_session_worked_in_keeps_it() {
+    let sandbox = Sandbox::new("recall_in_folder");
+    sandbox.write(
+        &format!("sessions/claude/p/{WORKED}.jsonl"),
+        include_bytes!(
+            "../../../libs/rust/kinds/session/fixtures/7d1e4b9a-3c5f-4a2e-8b6d-0f9e1c2a3b4d.jsonl"
+        ),
+    );
+    sandbox.write(
+        &format!("sessions/codex/2026/11/08/{ROLLOUT}.jsonl"),
+        include_bytes!(
+            "../../../libs/rust/kinds/session/fixtures/rollout-2026-11-08T10-00-00-019a6c4d-3e5f-7a71-9b2c-4d6e8fa0b1c3.jsonl"
+        ),
+    );
+    sandbox.write(FIRST_SESSION, SESSIONS[0].1);
+    sandbox.remember(&["sessions"]);
+    for value in ["--in=-home-me-src-shed", "--in=/home/me/src/shed"] {
+        let run = sandbox.run(&["recall", value, "frost", "compost", "heap", "greenhouse"]);
+        assert_eq!(run.code, 0, "{value}: {:?}", run.stderr);
+        assert!(
+            run.stderr
+                .iter()
+                .any(|line| line.starts_with("bilbo: --in kept 2 entries")),
+            "{value}: {:?}",
+            run.stderr
+        );
+        let captures: Vec<String> = hits(&run.stdout)
+            .iter()
+            .map(|hit| capture_of(&sandbox, hit))
+            .collect();
+        assert!(!captures.is_empty(), "{value}: {}", run.stdout);
+        for capture in &captures {
+            assert!(
+                capture.ends_with(&format!("{WORKED}.jsonl"))
+                    || capture.ends_with(&format!("{ROLLOUT}.jsonl")),
+                "{value}: {capture}"
+            );
+        }
+    }
+    let one = sandbox.run(&["recall", "--in", "/home/me/src/greenhouse", "frost"]);
+    assert_eq!(one.code, 0, "{:?}", one.stderr);
+    assert!(
+        one.stderr
+            .iter()
+            .any(|line| line.starts_with("bilbo: --in kept 1 entry")),
+        "{:?}",
+        one.stderr
+    );
+}
+
+#[test]
+fn a_value_with_no_letter_or_digit_is_a_usage_error() {
+    let sandbox = Sandbox::filled("recall_in_blank");
+    let before = sandbox.tree(false);
+    for given in [&["--in", "."][..], &["--in=--"]] {
+        let mut args = vec!["recall"];
+        args.extend_from_slice(given);
+        args.push("carrots");
+        let run = sandbox.run(&args);
+        assert_eq!((run.code, run.stdout.as_str()), (2, ""), "{given:?}");
+        let value = given.last().map(|value| value.trim_start_matches("--in="));
+        assert_eq!(
+            run.stderr[0],
+            format!(
+                "bilbo: --in '{}' has no letter or digit; give a word of a label, or an id as a hit prints it",
+                value.expect("a value")
+            )
+        );
+        assert!(
+            run.stderr[1].starts_with("bilbo: usage: bilbo recall"),
+            "{:?}",
+            run.stderr
+        );
+    }
+    assert!(!sandbox.log().exists(), "a usage error is not logged");
+    assert!(
+        sandbox.tree(false) == before,
+        "the store, state or cache changed"
+    );
+}
+
+#[test]
+fn in_with_no_value_needs_a_value() {
+    let sandbox = Sandbox::filled("recall_in_empty");
+    for args in [
+        &["recall", "--in=", "carrots"][..],
+        &["recall", "carrots", "--in"],
+        &["recall", "--in", "-home-me-src-shed", "carrots"],
+    ] {
+        let run = sandbox.run(args);
+        assert_eq!((run.code, run.stdout.as_str()), (2, ""), "{args:?}");
+        assert_eq!(run.stderr[0], "bilbo: --in needs a value", "{args:?}");
+    }
+}
+
+#[test]
+fn recall_with_a_scope_writes_no_file_but_the_query_log() {
+    let sandbox = Sandbox::filled("recall_in_writes");
+    let before = sandbox.tree(false);
+    let queries: [(&[&str], u8, &str); 3] = [
+        (&["recall", "--in", "notes", "carrots"], 0, "hits"),
+        (&["recall", "--in", "claude", "xyzzy"], 1, "nothing"),
+        (&["recall", "--in", "nowhere", "carrots"], 1, "nothing"),
+    ];
+    for (args, code, _) in queries {
+        let run = sandbox.run(args);
+        assert_eq!(run.code, code, "{args:?}: {:?}", run.stderr);
+    }
+    assert!(
+        sandbox.tree(true) == before,
+        "a scoped recall changed the store, the state or the cache"
+    );
+    let log = fs::read_to_string(sandbox.log()).expect("the query log");
+    let fields: Vec<Vec<&str>> = log.lines().map(|line| line.split('\t').collect()).collect();
+    assert_eq!(fields.len(), 3, "{log}");
+    assert_eq!(
+        fields
+            .iter()
+            .map(|line| (line[0], line[5]))
+            .collect::<Vec<_>>(),
+        [("q2", "notes"), ("q2", "claude"), ("q2", "nowhere")]
+    );
+    assert_eq!(fields[2][6], "0", "a value that named nothing: {log}");
 }
 
 #[test]
@@ -876,6 +1137,7 @@ fn run_with_detector(
     };
     let args = bilbo_cli::recall::Args {
         query: query.iter().map(|word| (*word).to_owned()).collect(),
+        scope: Vec::new(),
         kind: Vec::new(),
         budget: None,
     };
@@ -1082,7 +1344,7 @@ fn a_kind_narrows_the_hits_of_a_query_both_kinds_match() {
     let found = hits(&all.stdout);
     for kind in ["markdown", "session"] {
         assert!(
-            found.iter().any(|hit| hit.kind == kind),
+            found.iter().any(|hit| meta_of(&sandbox, hit).kind == kind),
             "no {kind} hit without --kind"
         );
         let narrowed = sandbox.run(&["recall", "--kind", kind, "carrots"]);
@@ -1090,7 +1352,7 @@ fn a_kind_narrows_the_hits_of_a_query_both_kinds_match() {
         let only = hits(&narrowed.stdout);
         assert!(!only.is_empty());
         assert!(
-            only.iter().all(|hit| hit.kind == kind),
+            only.iter().all(|hit| meta_of(&sandbox, hit).kind == kind),
             "{}",
             narrowed.stdout
         );
@@ -1120,6 +1382,100 @@ fn a_lower_budget_cuts_a_hit_and_prints_less() {
         .expect("the same hit");
     assert!(cut.content.lines().count() < same.content.lines().count());
     assert!(small.stdout.len() < full.stdout.len());
+}
+
+const SMALL_CHUNKS: (&str, &str) = ("BILBO_SEARCH_CHUNK_TOKENS", "256");
+
+fn words_around(word: &str, count: usize) -> String {
+    (0..count)
+        .map(|n| {
+            if n % 8 == 0 {
+                word.to_owned()
+            } else {
+                format!("zq{n}x")
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn remember_with(sandbox: &Sandbox, folder: &str, extra: &[(&str, &str)]) {
+    let run = sandbox.run_with(&["remember", &sandbox.path(folder)], extra);
+    assert_eq!((run.code, run.stderr), (0, Vec::<String>::new()));
+}
+
+fn passed_over(run: &Run) -> Option<&String> {
+    run.stderr
+        .iter()
+        .find(|line| line.starts_with("bilbo: passed over: "))
+}
+
+#[test]
+fn the_same_note_in_two_files_is_recalled_once() {
+    let sandbox = Sandbox::new("recall_copies");
+    let note = "# Beds\n\nThe turnips grew well in the east bed this year.\n";
+    sandbox.write("notes/a.md", note.as_bytes());
+    sandbox.write("notes/b.md", note.as_bytes());
+    sandbox.remember(&["notes"]);
+    let run = sandbox.run(&["recall", "turnips"]);
+    assert_eq!(run.code, 0, "{:?}", run.stderr);
+    assert_eq!(hits(&run.stdout).len(), 1, "{}", run.stdout);
+    assert_eq!(
+        passed_over(&run).map(String::as_str),
+        Some("bilbo: passed over: 1 copy")
+    );
+    let both = sandbox.run_with(&["recall", "turnips"], &[("BILBO_RECALL_COPY_SHARE", "0")]);
+    assert_eq!(hits(&both.stdout).len(), 2, "{}", both.stdout);
+    assert_eq!(passed_over(&both), None);
+}
+
+#[test]
+fn the_copy_and_record_keys_reach_the_search() {
+    let sandbox = Sandbox::new("recall_keys");
+    let line = words_around("turnips", 150);
+    sandbox.write("notes/long.md", format!("# Long\n\n{line}\n").as_bytes());
+    remember_with(&sandbox, "notes", &[SMALL_CHUNKS]);
+    let shown = |extra: &[(&str, &str)]| {
+        let mut vars = vec![SMALL_CHUNKS];
+        vars.extend_from_slice(extra);
+        let run = sandbox.run_with(&["recall", "turnips"], &vars);
+        assert_eq!(run.code, 0, "{:?}", run.stderr);
+        hits(&run.stdout).len()
+    };
+    assert_eq!(shown(&[]), 2);
+    assert_eq!(shown(&[("BILBO_RECALL_RECORD_CAP", "0")]), 4);
+    assert_eq!(shown(&[("BILBO_RECALL_RECORD_CAP", "1")]), 1);
+}
+
+#[test]
+fn a_long_section_of_several_lines_shows_no_line_in_more_than_two_hits() {
+    let sandbox = Sandbox::new("recall_record_cap");
+    let middle = words_around("turnips", 150);
+    sandbox.write(
+        "notes/section.md",
+        format!("# Beds\n\nturnips come first\n{middle}\nturnips end it\n").as_bytes(),
+    );
+    remember_with(&sandbox, "notes", &[SMALL_CHUNKS]);
+    let run = sandbox.run_with(&["recall", "turnips"], &[SMALL_CHUNKS]);
+    assert_eq!(run.code, 0, "{:?}", run.stderr);
+    let mut held: std::collections::BTreeMap<u64, usize> = std::collections::BTreeMap::new();
+    for hit in hits(&run.stdout) {
+        let records = Ref::parse(&hit.reference)
+            .expect("a ref")
+            .locator
+            .records
+            .expect("records");
+        for record in records.first..records.first + records.count {
+            *held.entry(record).or_default() += 1;
+        }
+    }
+    assert!(!held.is_empty());
+    assert!(held.values().all(|count| *count <= 2), "{held:?}");
+    assert!(
+        passed_over(&run).is_some_and(|line| line.contains("further part")),
+        "{:?}",
+        run.stderr
+    );
 }
 
 #[test]
@@ -1235,8 +1591,8 @@ fn the_eval_corpus_remembered_gives_the_eval_stores_chunks() {
     let (mut all, mut missing, mut differ) = (0u64, 0u64, 0u64);
     for ((repo, session), rows) in expected {
         let path = corpus.join(&repo).join(&session);
-        let head = bilbo_store::entries::Origin::file(&path)
-            .and_then(|origin| store.by_origin(&origin).expect("a lookup"));
+        let head = bilbo_store::labels::CaptureLabel::file(&path)
+            .and_then(|label| store.by_capture(&label).expect("a lookup"));
         let made: std::collections::HashMap<_, _> = head
             .map(|head| {
                 let stored = store

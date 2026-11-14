@@ -85,6 +85,37 @@ pub fn placeholder(text: &str) -> Option<String> {
     })
 }
 
+pub fn is_placeholder(text: &str) -> bool {
+    let Some(rest) = text.strip_prefix("[opaque") else {
+        return false;
+    };
+    let Some(rest) = rest.strip_suffix(']') else {
+        return false;
+    };
+    let rest = match rest.strip_prefix(": ") {
+        Some(rest) => rest,
+        None => {
+            let Some((media, rest)) = rest.strip_prefix(' ').and_then(|r| r.split_once(": "))
+            else {
+                return false;
+            };
+            if !is_media_type(media) {
+                return false;
+            }
+            rest
+        }
+    };
+    let Some((digits, digest)) = rest.split_once(" chars, xxh3 ") else {
+        return false;
+    };
+    !digits.is_empty()
+        && digits.bytes().all(|byte| byte.is_ascii_digit())
+        && digest.len() == 16
+        && digest
+            .bytes()
+            .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'))
+}
+
 /// `Some(None)` for an empty media type, `None` when the head is not one followed by
 /// `;<name>=<value>`.
 fn media_of(head: &str) -> Option<Option<&str>> {
@@ -125,7 +156,7 @@ fn is_media_type(text: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{THRESHOLD, filter, placeholder};
+    use super::{THRESHOLD, filter, is_placeholder, placeholder};
 
     fn base64(length: usize) -> String {
         "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
@@ -311,5 +342,33 @@ mod tests {
             assert!(kept(&text), "{text:?}");
         }
         assert!(!kept(&format!("\"{}\"\n", base64(300))));
+    }
+
+    #[test]
+    fn what_placeholder_writes_is_recognised_and_nothing_near_it() {
+        let uri = format!("data:image/png;base64,{}", base64(400));
+        for text in [base64(300), uri] {
+            let written = placeholder(&text).expect("opaque");
+            assert!(is_placeholder(&written), "{written}");
+        }
+        for text in [
+            "[opaque: 300 chars, xxh3 0123456789abcdef]",
+            "[opaque image/png: 4096 chars, xxh3 0123456789abcdef]",
+        ] {
+            assert!(is_placeholder(text), "{text}");
+        }
+        for text in [
+            "/home/me/shed",
+            "[opaque]",
+            "[opaque: 300 chars, xxh3 0123456789abcde]",
+            "[opaque: 300 chars, xxh3 0123456789ABCDEF]",
+            "[opaque: 300 chars, xxh3 0123456789abcdef] ",
+            "see [opaque: 300 chars, xxh3 0123456789abcdef]",
+            "[opaque: chars, xxh3 0123456789abcdef]",
+            "[opaque not-media: 300 chars, xxh3 0123456789abcdef]",
+            "[opaque: 300 chars, xxh3 0123456789abcdef0]",
+        ] {
+            assert!(!is_placeholder(text), "{text}");
+        }
     }
 }

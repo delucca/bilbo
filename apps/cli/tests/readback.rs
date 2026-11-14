@@ -4,8 +4,9 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use bilbo_cli::console::settings;
-use bilbo_store::entries::{Capture, Cursor, Entries, Origin, RecordRange};
+use bilbo_store::entries::{Capture, Cursor, Entries, RecordRange};
 use bilbo_store::id::Id;
+use bilbo_store::labels::CaptureLabel;
 use bilbo_store::layout::Layout;
 use bilbo_store::segments::{Options, Store};
 
@@ -75,7 +76,7 @@ fn frontmatter_id(file: &[u8]) -> Option<String> {
 struct Report {
     ids: usize,
     with_frontmatter_id: usize,
-    origins: BTreeSet<PathBuf>,
+    captures: BTreeSet<PathBuf>,
 }
 
 fn check(store: &Store) -> Result<Report, String> {
@@ -85,28 +86,29 @@ fn check(store: &Store) -> Result<Report, String> {
         .map(bilbo_store::entries::Change::id)
         .collect();
 
-    let mut origins = BTreeSet::new();
+    let mut captures = BTreeSet::new();
     let mut with_frontmatter_id = 0_usize;
     for id in &ids {
         let meta = store
             .meta(*id)
             .map_err(|e| e.to_string())?
             .ok_or_else(|| format!("entry {id} has no meta"))?;
-        let origin = meta
-            .origin
+        let label = meta
+            .labels
+            .capture
             .clone()
-            .ok_or_else(|| format!("entry {id} has no origin"))?;
-        let path = origin
+            .ok_or_else(|| format!("entry {id} has no capture label"))?;
+        let path = label
             .path()
-            .ok_or_else(|| format!("entry {id} has a non-file origin {origin}"))?
+            .ok_or_else(|| format!("entry {id} has a non-file capture label {label}"))?
             .to_path_buf();
         let file = fs::read(&path).map_err(|e| format!("{}: {e}", path.display()))?;
         let head = store
-            .by_origin(&origin)
+            .by_capture(&label)
             .map_err(|e| e.to_string())?
-            .ok_or_else(|| format!("{origin} has no head"))?;
+            .ok_or_else(|| format!("{label} has no head"))?;
         if head.id != *id {
-            return Err(format!("{origin}: head id {} is not {id}", head.id));
+            return Err(format!("{label}: head id {} is not {id}", head.id));
         }
         let records = store
             .read(
@@ -117,32 +119,30 @@ fn check(store: &Store) -> Result<Report, String> {
                     count: head.records,
                 },
             )
-            .map_err(|e| format!("{origin}: {e}"))?
+            .map_err(|e| format!("{label}: {e}"))?
             .concat();
         if records != file {
-            return Err(format!("{origin} differs from its entry {id}"));
+            return Err(format!("{label} differs from its entry {id}"));
         }
 
         if let Some(written) = frontmatter_id(&file) {
             if written != id.to_string() {
-                return Err(format!(
-                    "{origin}: the frontmatter id {written} is not {id}"
-                ));
+                return Err(format!("{label}: the frontmatter id {written} is not {id}"));
             }
             with_frontmatter_id += 1;
         }
-        origins.insert(path);
+        captures.insert(path);
     }
     Ok(Report {
         ids: ids.len(),
         with_frontmatter_id,
-        origins,
+        captures,
     })
 }
 
 #[test]
 #[ignore = "the done check's read-back: the lead runs it against a scratch store"]
-fn every_entry_reads_back_as_its_origin_file_with_its_frontmatter_id() {
+fn every_entry_reads_back_as_its_capture_label_file_with_its_frontmatter_id() {
     for name in [
         "BILBO_HOME",
         "XDG_STATE_HOME",
@@ -164,14 +164,14 @@ fn every_entry_reads_back_as_its_origin_file_with_its_frontmatter_id() {
     let mut found = BTreeSet::new();
     markdown_files(&target, &mut found);
     let message = format!(
-        "read back {} entries, {} with their frontmatter id, {} origins against {} files under {}",
+        "read back {} entries, {} with their frontmatter id, {} capture labels against {} files under {}",
         report.ids,
         report.with_frontmatter_id,
-        report.origins.len(),
+        report.captures.len(),
         found.len(),
         target.display()
     );
-    assert_eq!(report.origins, found, "{message}");
+    assert_eq!(report.captures, found, "{message}");
     if let Some(expected) = var("READBACK_ENTRIES") {
         let expected: usize = expected
             .to_str()
@@ -216,14 +216,14 @@ fn an_entry_at_generation_0_fails_the_read_back_even_with_nothing_to_read() {
     };
     let file = dir.join("empty.md");
     fs::write(&file, "").expect("an empty file");
-    let origin = Origin::file(&file).expect("an origin");
+    let label = CaptureLabel::file(&file).expect("a capture label");
     let mut store = Store::open(&layout, Options::default(), &mut |_| {}).expect("open");
     store
         .capture(&Capture {
-            origin: &origin,
+            label: &label,
             kind: "markdown",
             id: None,
-            parent: None,
+            id_label: None,
             stamp: None,
             bytes: b"",
             ends: &[],
@@ -271,7 +271,7 @@ fn an_entry_whose_id_the_frontmatter_contradicts_fails_the_read_back() {
     let file = dir.join("note.md");
     fs::write(&file, format!("---\nid: {VALID}\n---\nbody\n")).expect("a note");
     let other = Id::parse("01JC5Q3V7XKM4P8R2T6W9YB0DF").expect("an id");
-    let origin = Origin::file(&file).expect("an origin");
+    let label = CaptureLabel::file(&file).expect("a capture label");
     let bytes = fs::read(&file).expect("read");
     let ends: Vec<usize> = bytes
         .iter()
@@ -282,10 +282,10 @@ fn an_entry_whose_id_the_frontmatter_contradicts_fails_the_read_back() {
     let mut store = Store::open(&layout, Options::default(), &mut |_| {}).expect("open");
     store
         .capture(&Capture {
-            origin: &origin,
+            label: &label,
             kind: "markdown",
             id: Some(other),
-            parent: None,
+            id_label: None,
             stamp: None,
             bytes: &bytes,
             ends: &ends,

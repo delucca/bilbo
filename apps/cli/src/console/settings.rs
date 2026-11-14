@@ -305,6 +305,9 @@ mod tests {
                 "recall.budget",
                 "recall.candidates",
                 "recall.cap",
+                "recall.record_cap",
+                "recall.copy_share",
+                "recall.copy_words",
                 "recall.question_words",
                 "recall.languages",
                 "recall.bm25_k1",
@@ -373,7 +376,7 @@ mod tests {
             .err(),
             Some(
                 "/c.toml:3: unknown key store.sealat; the keys are paths.root, paths.state, \
-                 paths.cache, store.seal_at, store.seal_after, store.compression, store.tear_budget, store.wait, store.poll, follow, read.budget, read.outline_width, read.matches_listed, search.chunk_tokens, search.chunk_overlap, search.workers, search.index_memory, search.merge_deleted_percent, search.entry_tries, recall.budget, recall.candidates, recall.cap, recall.question_words, recall.languages, recall.bm25_k1, recall.bm25_b, recall.read_batch, markdown.heading_width, session.unpack_floor, session.unpack_ratio"
+                 paths.cache, store.seal_at, store.seal_after, store.compression, store.tear_budget, store.wait, store.poll, follow, read.budget, read.outline_width, read.matches_listed, search.chunk_tokens, search.chunk_overlap, search.workers, search.index_memory, search.merge_deleted_percent, search.entry_tries, recall.budget, recall.candidates, recall.cap, recall.record_cap, recall.copy_share, recall.copy_words, recall.question_words, recall.languages, recall.bm25_k1, recall.bm25_b, recall.read_batch, markdown.heading_width, session.unpack_floor, session.unpack_ratio"
                     .to_owned()
             )
         );
@@ -520,7 +523,10 @@ mod tests {
                 "BILBO_RECALL_BUDGET",
                 "BILBO_RECALL_CANDIDATES",
                 "BILBO_RECALL_CAP",
+                "BILBO_RECALL_COPY_SHARE",
+                "BILBO_RECALL_COPY_WORDS",
                 "BILBO_RECALL_READ_BATCH",
+                "BILBO_RECALL_RECORD_CAP",
                 "BILBO_SEARCH_CHUNK_OVERLAP",
                 "BILBO_SEARCH_CHUNK_TOKENS",
                 "BILBO_SEARCH_ENTRY_TRIES",

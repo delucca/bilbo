@@ -9,13 +9,17 @@ use bilbo_kinds::reader::{Passage, Reader};
 use bilbo_kinds::tokens::Tokens;
 use bilbo_store::entries::{Entries, Generation, Meta, RecordRange, StoreError};
 use bilbo_store::id::Id;
+use bilbo_store::labels::{Filed, Relabel, Worded};
 
+use crate::analyze;
 use crate::chunk::{self, Chunk};
 use crate::index::{Doc, Extent, Index, IndexError, millis};
 use crate::work::{Error, Output};
 
 /// How many entries a worker may be ahead of the one the index waits for.
 const AHEAD: usize = 4;
+
+const FILED_AT_ONCE: usize = 512;
 
 struct Growth {
     rows: Vec<Extent>,
@@ -28,6 +32,7 @@ struct Made {
     generation: Generation,
     date: SystemTime,
     chunks: Vec<Chunk>,
+    labels: Vec<Worded>,
     /// `None` in a rebuild.
     delete_from: Option<u64>,
 }
@@ -59,8 +64,28 @@ fn make(job: Job, reader: &dyn Reader, tokens: &dyn Tokens, size: chunk::Size) -
     let Ok(chunks) = chunk::chunks(&passages[from..], tokens, size) else {
         return Err((job.meta.id, "the tokenizer could not split a text of it"));
     };
+    let mut texts: Vec<String> = job
+        .meta
+        .labels
+        .capture
+        .iter()
+        .map(ToString::to_string)
+        .collect();
+    for text in reader.entry_labels(&records) {
+        if !texts.contains(&text) {
+            texts.push(text);
+        }
+    }
+    let labels = texts
+        .into_iter()
+        .map(|text| Worded {
+            words: analyze::filed_words(&text),
+            text,
+        })
+        .collect();
     Ok(Made {
         chunks,
+        labels,
         meta: job.meta,
         generation: job.generation,
         date,
@@ -140,7 +165,7 @@ fn guarded(
 }
 
 enum Msg {
-    Done(usize, Outcome),
+    Done(usize, Box<Outcome>),
     Died,
 }
 
@@ -161,6 +186,9 @@ struct Adder<'i> {
     output: Output,
     /// The index holds documents of earlier runs: what an entry gives is added after deleting its own.
     grown: bool,
+    labels: &'i dyn Relabel,
+    filed: Vec<Filed>,
+    gone: Vec<Id>,
 }
 
 impl Adder<'_> {
@@ -171,7 +199,7 @@ impl Adder<'_> {
         Ok(())
     }
 
-    fn take(&mut self, at: usize, outcome: Outcome) -> Result<(), IndexError> {
+    fn take(&mut self, at: usize, outcome: Outcome) -> Result<(), Error> {
         self.waiting.insert(at, outcome);
         while let Some(made) = self.waiting.remove(&self.next) {
             self.next += 1;
@@ -197,8 +225,27 @@ impl Adder<'_> {
             }
             self.output.entries += 1;
             self.output.chunks += made.chunks.len() as u64;
+            self.filed.push(Filed {
+                entry: made.meta.id,
+                labels: made.labels,
+            });
+            if self.filed.len() >= FILED_AT_ONCE {
+                self.labels.relabel(&mem::take(&mut self.filed))?;
+            }
         }
         Ok(())
+    }
+
+    fn finish(&mut self) -> Result<(), StoreError> {
+        let mut left = mem::take(&mut self.filed);
+        left.extend(mem::take(&mut self.gone).into_iter().map(|entry| Filed {
+            entry,
+            labels: Vec::new(),
+        }));
+        if left.is_empty() {
+            return Ok(());
+        }
+        self.labels.relabel(&left)
     }
 }
 
@@ -230,7 +277,7 @@ impl<'r> Feed<'_, '_, 'r> {
         self.jobs.send((job, reader)).map_err(|_| Error::Workers)?;
         while self.sent - self.adder.next > self.workers * AHEAD {
             match self.made.recv() {
-                Ok(Msg::Done(at, outcome)) => self.adder.take(at, outcome)?,
+                Ok(Msg::Done(at, outcome)) => self.adder.take(at, *outcome)?,
                 Ok(Msg::Died) | Err(_) => return Err(Error::Workers),
             }
         }
@@ -265,7 +312,7 @@ where
                             break;
                         };
                         let (at, outcome) = work(job, reader);
-                        if done.send(Msg::Done(at, outcome)).is_err() {
+                        if done.send(Msg::Done(at, Box::new(outcome))).is_err() {
                             break;
                         }
                     }
@@ -287,7 +334,7 @@ where
         let result = produced.and_then(|()| {
             for message in &made {
                 match message {
-                    Msg::Done(at, outcome) => adder.take(at, outcome)?,
+                    Msg::Done(at, outcome) => adder.take(at, *outcome)?,
                     Msg::Died => return Err(Error::Workers),
                 }
             }
@@ -312,6 +359,7 @@ pub(crate) struct Fill<'a> {
     pub entries: &'a dyn Entries,
     pub readers: &'a [Box<dyn Reader>],
     pub tokens: &'a dyn Tokens,
+    pub labels: &'a dyn Relabel,
     /// `None` when the index was just emptied. Otherwise it holds the entries' documents of an
     /// earlier commit, and this has the ids whose metadata changed since.
     pub grown: Option<&'a BTreeSet<Id>>,
@@ -320,7 +368,7 @@ pub(crate) struct Fill<'a> {
 impl Fill<'_> {
     /// Adds the newest generation of every entry of `ids` in id order whatever `workers` is. In a
     /// growth an entry the store no longer has, or no reader reads, or that failed, loses its
-    /// documents. Nothing is committed.
+    /// documents. Labels are filed as the entries are added, and nothing is committed.
     pub(crate) fn run(&self, ids: &BTreeSet<Id>, index: &mut dyn Index) -> Result<Output, Error> {
         let (entries, readers, size, tokens) = (self.entries, self.readers, self.size, self.tokens);
         let mut adder = Adder {
@@ -329,6 +377,9 @@ impl Fill<'_> {
             next: 0,
             output: Output::default(),
             grown: self.grown.is_some(),
+            labels: self.labels,
+            filed: Vec::new(),
+            gone: Vec::new(),
         };
         pool(
             self.workers.max(1),
@@ -337,6 +388,7 @@ impl Fill<'_> {
             |feed| {
                 for &id in ids {
                     let Some(meta) = entries.meta(id)? else {
+                        feed.adder.gone.push(id);
                         feed.adder.forget(id)?;
                         continue;
                     };
@@ -367,6 +419,7 @@ impl Fill<'_> {
                 Ok(())
             },
         )?;
+        adder.finish()?;
         let mut output = adder.output;
         output.failed.sort_by_key(|(id, _)| *id);
         Ok(output)
@@ -394,11 +447,13 @@ mod tests {
     use bilbo_kinds::reader::{Passage, Reader};
     use bilbo_store::entries::{Generation, Meta, RecordRange};
     use bilbo_store::id::Id;
+    use bilbo_store::labels::StoredLabels;
 
     use super::{Adder, Job, Made, Outcome, pool};
     use crate::chunk::Chunk;
     use crate::index::{Doc, Extent, Index, IndexError, Stats};
     use crate::position::Position;
+    use crate::testing::Filings;
     use crate::work::Error;
 
     #[derive(Default)]
@@ -441,9 +496,8 @@ mod tests {
         Meta {
             id: id(n),
             kind: "lines".to_owned(),
-            origin: None,
+            labels: StoredLabels::default(),
             captured: SystemTime::UNIX_EPOCH,
-            parent: None,
         }
     }
 
@@ -453,6 +507,7 @@ mod tests {
             generation: Generation(1),
             date: SystemTime::UNIX_EPOCH,
             delete_from: None,
+            labels: Vec::new(),
             chunks: texts
                 .iter()
                 .map(|text| Chunk {
@@ -465,9 +520,12 @@ mod tests {
         })
     }
 
-    fn adder(index: &mut Adds) -> Adder<'_> {
+    fn adder<'i>(index: &'i mut Adds, labels: &'i Filings) -> Adder<'i> {
         Adder {
             index,
+            labels,
+            filed: Vec::new(),
+            gone: Vec::new(),
             waiting: Default::default(),
             next: 0,
             output: Default::default(),
@@ -478,7 +536,8 @@ mod tests {
     #[test]
     fn results_that_arrive_out_of_order_are_added_in_the_order_they_were_sent() {
         let mut index = Adds::default();
-        let mut adder = adder(&mut index);
+        let labels = Filings::default();
+        let mut adder = adder(&mut index, &labels);
         adder.take(1, made(1, &["b1", "b2"])).expect("a take");
         assert_eq!((adder.output.entries, adder.next), (0, 0));
         adder.take(0, made(0, &["a"])).expect("a take");
@@ -523,7 +582,8 @@ mod tests {
         let (sent, received) = mpsc::channel();
         thread::spawn(move || {
             let mut index = Adds::default();
-            let mut adder = adder(&mut index);
+            let labels = Filings::default();
+            let mut adder = adder(&mut index, &labels);
             let result = pool(workers, &work, &mut adder, |feed| {
                 for n in 0..jobs {
                     feed.send(meta(n), Generation(1), Vec::new(), None, &Nothing)?;

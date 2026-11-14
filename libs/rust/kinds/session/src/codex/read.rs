@@ -1,4 +1,4 @@
-use bilbo_kinds::reader::Passage;
+use bilbo_kinds::reader::{EntryLabels, Passage};
 
 use crate::json::{self, Value};
 use crate::render::{self, Outline, Tools};
@@ -153,6 +153,25 @@ pub fn passages(records: &[&[u8]]) -> Vec<Passage> {
         passages.extend(render::passage(number, &pieces, at, Outline::of(prompt)));
     }
     passages
+}
+
+pub fn labels(records: &[&[u8]]) -> Vec<String> {
+    let mut found = EntryLabels::default();
+    for record in records {
+        let Some(record) = json::parse(record).filter(Value::is_dict) else {
+            continue;
+        };
+        if matches!(
+            field(&record, "type"),
+            Some("session_meta" | "turn_context")
+        ) && let Some(cwd) = record
+            .get("payload")
+            .and_then(|payload| field(payload, "cwd"))
+        {
+            found.add(cwd);
+        }
+    }
+    found.into_texts()
 }
 
 #[cfg(test)]

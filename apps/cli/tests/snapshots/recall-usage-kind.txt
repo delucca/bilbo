@@ -1,3 +1,4 @@
 bilbo: unknown kind 'nope'; kinds: markdown, session
-bilbo: usage: bilbo recall <query>... [--kind <kind>]... [--budget <tokens>]
+bilbo: usage: bilbo recall <query>... [--in <label>]... [--kind <kind>]...
+bilbo:        [--budget <tokens>]
 bilbo: see 'bilbo recall --help'

@@ -29,6 +29,8 @@ pub struct Found {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Filter<'a> {
     Kind(&'a str),
+    /// Sorted and distinct.
+    Entries(&'a [Id]),
 }
 
 /// The last commit, read only: no method creates, repairs, locks or writes a file.

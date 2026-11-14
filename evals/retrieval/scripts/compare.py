@@ -3,6 +3,9 @@ the standard library; --gate must run in the scripts' environment (see below).
 
   compare.py [options] <reference search.jsonl> <reference contexts> <run search.jsonl> <run contexts> <chunks.jsonl> <questions.jsonl>
   compare.py --gate [options] <reference dir> <run dir> <reference scores>
+  compare.py --proxy <contexts-4000.jsonl> <questions.jsonl> <classes.json>
+  compare.py --hits <search.jsonl>
+  compare.py --exhausted <contexts-4000.jsonl> <search.jsonl> <wide search.jsonl>
 
 Report: for all forms and by form, the contexts byte-equal to the reference's (sha), the share of the reference
 context's results that the run's context holds, the overlap of the first 8 results, the lists equal, and the fact-quote
@@ -26,6 +29,20 @@ score, at every rank the run's score has the bits of the reference's, and cuttin
 run's ids are the reference's set in every run but the last, in which each holds that score), else unexplained. The
 gate exits 1 when any pair fails.
 
+--proxy prints, for `query`, `prompt` and both, the judge-free score of a run's packed contexts (the share of a question's
+facts with an evidence quote whole in the context: the plain mean, and the mean of the class means weighted by classes.json,
+for both the mean of the two forms'), and how many contexts pack.py cut and how many it did not. --hits prints the mean
+number of results of a search, to two decimals, the same three ways. Neither needs the scripts' environment.
+
+--exhausted takes a scoped run's contexts and rows and the rows of the wide search (16,000 tokens, 1,000 candidates) and
+gives each context pack.py did not cut one verdict from the scoped row N and the wide row W; two results are the same when
+entry, record range, part, text and cut are. `not exhausted`: N's last result is cut, or W opens with all of N's results,
+in order, and holds more. `exhausted`: N and W are the same lists, none cut, and W's results plus its `passed` counts are
+fewer than its recorded candidate limit (then W's ranker gave every match the scope holds, and W was not ended by its
+budget, since N printed the same hits inside half of it). `cannot tell`: anything else, a missing W row or limit included.
+It prints each context's question, form, verdict, the two numbers of results and what W considered of its limit, then the
+totals; exit 0 only when every verdict is `exhausted`.
+
 Options: --corpus <dir> (the unpacked corpus, for the first line of a text; required by --gate), --chunks <file> and
 --questions <file> (the gate's inputs)."""
 
@@ -37,6 +54,8 @@ from pathlib import Path
 from statistics import mean
 
 sys.dont_write_bytecode = True
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from questions import answerable
 
 FORMS = ("query", "prompt")
 
@@ -119,17 +138,17 @@ def norm(text):
     return " ".join(text.split())
 
 
+def share(context, question):
+    text, facts = norm(context["text"]), question["facts"]
+    found = 0
+    for f in facts:
+        quotes = [norm(e["quote"]).rstrip(". ").removesuffix("...").strip() for e in f["evidence"]]
+        found += any(q and q in text for q in quotes)
+    return found / len(facts)
+
+
 def covered(contexts, questions, keys, form):
-    shares = []
-    for k in keys:
-        if k[1] != form:
-            continue
-        text, facts = norm(contexts[k]["text"]), questions[k[0]]["facts"]
-        found = 0
-        for f in facts:
-            quotes = [norm(e["quote"]).rstrip(". ").removesuffix("...").strip() for e in f["evidence"]]
-            found += any(q and q in text for q in quotes)
-        shares.append(found / len(facts))
+    shares = [share(contexts[k], questions[k[0]]) for k in keys if k[1] == form]
     return mean(shares) if shares else None
 
 
@@ -146,7 +165,7 @@ def parse(argv):
                 sys.exit(__doc__)
             flags[a[2:]] = argv[i + 1]
             i += 2
-        elif a in ("--gate", "--only-question-repo"):
+        elif a in ("--gate", "--only-question-repo", "--proxy", "--hits", "--exhausted"):
             flags[a[2:]] = True
             i += 1
         elif a.startswith("--"):
@@ -155,6 +174,95 @@ def parse(argv):
             positional.append(a)
             i += 1
     return flags, positional
+
+
+def proxy_rows(contexts_path, questions_path, classes_path):
+    """(form, contexts, plain, weighted, cut) for query, prompt and both, the scores as fractions."""
+    contexts = read_strict(contexts_path)
+    questions = {q["id"]: q for q in answerable(questions_path)}
+    weights = {c["name"]: c["weight"] for c in json.loads(Path(classes_path).read_text())["classes"]}
+    unknown = sorted({k[0] for k in contexts} - questions.keys())
+    if unknown:
+        sys.exit(f"compare: {unknown[0]} is not an answerable question of {questions_path}")
+
+    def weighted(form):
+        num = den = 0.0
+        for name, w in weights.items():
+            xs = [share(c, questions[k[0]]) for k, c in contexts.items() if k[1] == form and questions[k[0]]["class"] == name]
+            if xs:
+                num, den = num + w * mean(xs), den + w
+        return num / den
+
+    out = []
+    for name, forms in (*((f, (f,)) for f in FORMS), ("both", FORMS)):
+        ks = [k for k in contexts if k[1] in forms]
+        if not ks:
+            sys.exit(f"compare: no context of the form {name}")
+        out.append((name, len(ks), mean(covered(contexts, questions, ks, f) for f in forms),
+                    mean(weighted(f) for f in forms), sum(bool(contexts[k]["cut"]) for k in ks)))
+    return out
+
+
+def proxy(positional):
+    print(f"{'forms':<8}{'contexts':>10}{'plain':>9}{'weighted':>10}{'cut':>6}{'not cut':>9}")
+    for name, n, plain, weighted, cut in proxy_rows(*positional):
+        print(f"{name:<8}{n:>10}{pct(plain):>9}{pct(weighted):>10}{cut:>6}{n - cut:>9}")
+    return 0
+
+
+def hits(positional):
+    rows = read_strict(positional[0])
+    print(f"{'forms':<8}{'searches':>10}{'hits':>8}")
+    for name, forms in (*((f, (f,)) for f in FORMS), ("both", FORMS)):
+        counts = [len(r["results"]) for k, r in rows.items() if k[1] in forms]
+        if not counts:
+            sys.exit(f"compare: no search of the form {name}")
+        print(f"{name:<8}{len(counts):>10}{mean(counts):>8.2f}")
+    return 0
+
+
+SAME = ("entry", "lines", "part", "text", "cut")
+
+
+def same_result(a, b):
+    return all(a.get(k) == b.get(k) for k in SAME)
+
+
+def verdict(n, w):
+    """('exhausted' | 'not exhausted' | 'cannot tell', what W considered, W's limit) from the scoped row n and the wide row w."""
+    nr = n["results"]
+    if nr and nr[-1].get("cut"):
+        return "not exhausted", None, None
+    if w is None:
+        return "cannot tell", None, None
+    wr = w["results"]
+    if len(wr) > len(nr) and all(same_result(a, b) for a, b in zip(nr, wr)):
+        return "not exhausted", None, None
+    limit = w.get("run", {}).get("settings", {}).get("candidates")
+    passed = w.get("passed")
+    considered = len(wr) + sum(passed.values()) if isinstance(passed, dict) else None
+    if (len(wr) == len(nr) and all(same_result(a, b) for a, b in zip(nr, wr)) and not any(r.get("cut") for r in wr)
+            and isinstance(limit, int) and considered is not None and considered < limit):
+        return "exhausted", considered, limit
+    return "cannot tell", considered, limit
+
+
+def exhausted(positional):
+    contexts = read_strict(positional[0])
+    scoped, wide = read_strict(positional[1]), read_strict(positional[2])
+    totals = {"exhausted": 0, "not exhausted": 0, "cannot tell": 0}
+    for k in sorted(contexts):
+        if contexts[k]["cut"]:
+            continue
+        if k not in scoped:
+            sys.exit(f"compare: {k[0]} {k[1]} has a context but no scoped row")
+        v, considered, limit = verdict(scoped[k], wide.get(k))
+        totals[v] += 1
+        w = wide.get(k)
+        print(f"{k[0]} {k[1]}: {v}; results {len(scoped[k]['results'])} scoped, {'-' if w is None else len(w['results'])} wide; "
+              f"wide considered {'-' if considered is None else considered} of {'-' if limit is None else limit}")
+    print(f"exhausted {totals['exhausted']}, not exhausted {totals['not exhausted']}, cannot tell {totals['cannot tell']}")
+    return 0 if totals["not exhausted"] == 0 and totals["cannot tell"] == 0 else 1
 
 
 def lists_of(rows, chunks, questions, only_repo):
@@ -304,9 +412,7 @@ def ties(a, b, sa, held):
 
 
 def gate(flags, positional):
-    sys.path.insert(0, str(Path(__file__).resolve().parent))
     from pack import pack
-    from questions import answerable
 
     ref_dir, run_dir, scores_path = positional
     for need in ("chunks", "questions", "corpus"):
@@ -359,6 +465,12 @@ if __name__ == "__main__":
     opts, args = parse(sys.argv[1:])
     if opts.get("gate") and len(args) == 3:
         sys.exit(gate(opts, args))
-    if not opts.get("gate") and len(args) == 6:
+    if opts.get("proxy") and len(opts) == 1 and len(args) == 3:
+        sys.exit(proxy(args))
+    if opts.get("hits") and len(opts) == 1 and len(args) == 1:
+        sys.exit(hits(args))
+    if opts.get("exhausted") and len(opts) == 1 and len(args) == 3:
+        sys.exit(exhausted(args))
+    if not (opts.get("gate") or opts.get("proxy") or opts.get("hits") or opts.get("exhausted")) and len(args) == 6:
         sys.exit(report(opts, args))
     sys.exit(__doc__)

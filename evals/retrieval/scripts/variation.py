@@ -19,7 +19,6 @@ bm25 arm tokenizes, that the variation still holds."""
 import hashlib
 import json
 import random
-import re
 import sys
 from pathlib import Path
 
@@ -34,8 +33,6 @@ RESAMPLES = 10_000
 SEED = 20261105
 RULE_POINTS = 0.05
 NO_PROMPT_RULE = {"claude-mem": "its prompt form is the SessionStart injection, which ignores the question's text"}
-RUN = re.compile(r"(?P<arm>.+)-(?P<store>[0-9a-f]{12})-(?P<search>[0-9a-f]{12})"
-                 r"(?:-variation-(?P<variation>[0-9a-f]{12}))?(?:-rerun-(?P<rerun>[a-z0-9]+))?")
 
 questions_file, classes_file, out = sys.argv[1:4]
 weights = {c["name"]: c["weight"] for c in json.loads(Path(classes_file).read_text())["classes"]}
@@ -86,21 +83,21 @@ def stale_scores(d):
 def pair(arm, original, variation):
     """Both runs' scores, after the checks the docstring lists; any mismatch stops the comparison."""
     o, v = Path(original), Path(variation)
-    mo, mv = RUN.fullmatch(o.name), RUN.fullmatch(v.name)
+    mo, mv = (dict(zip(judged.PARTS, judged.run_parts(d.name))) for d in (o, v))
     problems = []
-    if not mo or not mv:
-        sys.exit(f"variation: {arm}: run dirs must be named <arm>-<store>-<search>[-variation-<key>][-rerun-<label>]")
     if mo["arm"] != arm or mv["arm"] != arm:
         problems.append("a run dir is not this arm's")
-    if (mo["store"], mo["search"]) != (mv["store"], mv["search"]):
-        problems.append("the two runs differ in store or search")
+    if (mo["store"], mo["search"], mo["driver"]) != (mv["store"], mv["search"], mv["driver"]):
+        problems.append("the two runs differ in store, search or driver")
+    if mo["reworded"] or mv["reworded"]:
+        problems.append("a run is a reworded run")
     if mo["variation"]:
         problems.append("the original run is a variation run")
     if mv["variation"] != variation_key:
         problems.append(f"the variation run is keyed {mv['variation']}, the questions' variation is {variation_key}")
     for d, m in ((o, mo), (v, mv)):
         s = json.loads((d / "score.json").read_text())
-        if (s["arm"], s["store"], s["search"], s.get("variation")) != (arm, m["store"], m["search"], m["variation"]):
+        if (s["arm"], s["store"], s["search"], s.get("driver"), s.get("variation")) != (arm, m["store"], m["search"], m["driver"], m["variation"]):
             problems.append(f"{d.name}/score.json names another run")
         if (d / "selected.jsonl").read_text() != selected_now:
             problems.append(f"{d.name}/selected.jsonl is not the answerable questions as they are now")

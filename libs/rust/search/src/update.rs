@@ -3,11 +3,12 @@ use std::collections::{BTreeMap, BTreeSet};
 use bilbo_kinds::reader::Reader;
 use bilbo_store::entries::{Change, Cursor, Entries};
 use bilbo_store::id::Id;
+use bilbo_store::labels::Relabel;
 
 use crate::fill::Fill;
 use crate::index::Index;
 use crate::position::{self, MAX_FAILED, Manifest, Position, Standing};
-use crate::reindex;
+use crate::reindex::{self, Stores};
 use crate::tokenizer::Tokenizer;
 use crate::work::{Error, Request};
 
@@ -139,19 +140,26 @@ pub fn apply(
     work: Work,
     request: &Request,
     entries: &dyn Entries,
+    labels: &dyn Relabel,
     readers: &[Box<dyn Reader>],
     tokenizer: &Tokenizer,
     index: &mut dyn Index,
 ) -> Result<Output, Error> {
     apply_within(
-        work, request, entries, readers, tokenizer, index, MAX_FAILED,
+        work,
+        request,
+        &Stores { entries, labels },
+        readers,
+        tokenizer,
+        index,
+        MAX_FAILED,
     )
 }
 
 fn apply_within(
     work: Work,
     request: &Request,
-    entries: &dyn Entries,
+    stores: &Stores<'_>,
     readers: &[Box<dyn Reader>],
     tokenizer: &Tokenizer,
     index: &mut dyn Index,
@@ -167,7 +175,7 @@ fn apply_within(
     } = *work.0;
     let done = match kind {
         Kind::Rebuild(_) => reindex::rebuild(
-            manifest, request, entries, readers, tokenizer, index, max_failed,
+            manifest, request, stores, readers, tokenizer, index, max_failed,
         )
         .map(|made| Output {
             entries: made.entries,
@@ -184,7 +192,7 @@ fn apply_within(
         } => grow(
             (found, changes, now, ids, manifest),
             request,
-            entries,
+            stores,
             readers,
             tokenizer,
             index,
@@ -202,12 +210,13 @@ type Found = (Position, Vec<Change>, Cursor, BTreeSet<Id>, Manifest);
 fn grow(
     (found, changes, now, ids, manifest): Found,
     request: &Request,
-    entries: &dyn Entries,
+    stores: &Stores<'_>,
     readers: &[Box<dyn Reader>],
     tokenizer: &Tokenizer,
     index: &mut dyn Index,
     max_failed: usize,
 ) -> Result<Output, Error> {
+    let Stores { entries, labels } = *stores;
     let mut position = Position {
         manifest,
         cursor: now,
@@ -227,6 +236,7 @@ fn grow(
         size: request.chunk,
         workers: request.workers,
         entries,
+        labels,
         readers,
         tokens: tokenizer.tokens.as_ref(),
         grown: Some(&meta_changed),
@@ -266,10 +276,10 @@ mod tests {
     use bilbo_kinds::reader::Reader;
     use bilbo_store::entries::{Change, Cursor};
 
-    use super::{Kind, Parts, Work, apply_within};
+    use super::{Kind, Parts, Stores, Work, apply_within};
     use crate::chunk::Size;
     use crate::position::{Manifest, Position};
-    use crate::testing::{Bytes, Commits, Four, OnePassage, id};
+    use crate::testing::{Bytes, Commits, Filings, Four, OnePassage, id};
     use crate::tokenizer::Tokenizer;
     use crate::work::{Error, Request};
 
@@ -308,7 +318,10 @@ mod tests {
         let error = apply_within(
             work.clone(),
             &request,
-            &Four,
+            &Stores {
+                entries: &Four,
+                labels: &Filings::default(),
+            },
             &readers,
             &tokenizer,
             &mut index,
@@ -317,8 +330,19 @@ mod tests {
         .expect_err("a failure");
         assert!(matches!(error, Error::Failed(3)), "{error:?}");
         assert_eq!((index.rollbacks, index.commits.len()), (1, 0));
-        apply_within(work, &request, &Four, &readers, &tokenizer, &mut index, 3)
-            .expect("a growth at the bound");
+        apply_within(
+            work,
+            &request,
+            &Stores {
+                entries: &Four,
+                labels: &Filings::default(),
+            },
+            &readers,
+            &tokenizer,
+            &mut index,
+            3,
+        )
+        .expect("a growth at the bound");
         assert_eq!(index.commits[0].failed.len(), 3);
     }
 }

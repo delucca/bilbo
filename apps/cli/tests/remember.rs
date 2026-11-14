@@ -10,8 +10,9 @@ use std::time::{Duration, SystemTime};
 
 use bilbo_cli::remember::disk::Disk;
 use bilbo_kinds::files::{Files, Node};
-use bilbo_store::entries::{Cursor, Entries, Generation, Head, Meta, Origin, RecordRange};
+use bilbo_store::entries::{Cursor, Entries, Generation, Head, Meta, RecordRange};
 use bilbo_store::id::Id;
+use bilbo_store::labels::CaptureLabel;
 use bilbo_store::layout::Layout;
 use bilbo_store::segments::{Options, Store};
 
@@ -99,10 +100,10 @@ impl Sandbox {
         let mut found = Vec::new();
         for id in ids {
             let meta = store.meta(id).expect("meta").expect("a meta");
-            let origin = meta.origin.clone().expect("an origin");
+            let label = meta.labels.capture.clone().expect("a capture label");
             let head = store
-                .by_origin(&origin)
-                .expect("by_origin")
+                .by_capture(&label)
+                .expect("by_capture")
                 .expect("a head");
             found.push((meta, head));
         }
@@ -110,10 +111,10 @@ impl Sandbox {
     }
 
     fn entry(&self, file: &Path) -> (Meta, Head) {
-        let origin = Origin::file(file).expect("an origin");
+        let label = CaptureLabel::file(file).expect("a capture label");
         self.entries()
             .into_iter()
-            .find(|(meta, _)| meta.origin.as_ref() == Some(&origin))
+            .find(|(meta, _)| meta.labels.capture.as_ref() == Some(&label))
             .unwrap_or_else(|| panic!("no entry for {}", file.display()))
     }
 
@@ -296,7 +297,7 @@ fn hidden_entries_and_symbolic_links_the_walk_finds_are_skipped() {
 }
 
 #[test]
-fn a_named_link_to_a_file_is_taken_and_its_origin_is_the_resolved_path() {
+fn a_named_link_to_a_file_is_taken_and_its_capture_label_is_the_resolved_path() {
     for kind in [None, Some("markdown")] {
         let sandbox = Sandbox::new("named_file_link");
         let target = sandbox.write("a.md", "a\n");
@@ -312,7 +313,12 @@ fn a_named_link_to_a_file_is_taken_and_its_origin_is_the_resolved_path() {
         let entries = sandbox.entries();
         assert_eq!(entries.len(), 1);
         assert_eq!(
-            entries[0].0.origin.as_ref().map(Origin::as_str),
+            entries[0]
+                .0
+                .labels
+                .capture
+                .as_ref()
+                .map(CaptureLabel::as_str),
             Some(format!("file:{}", text(&target)).as_str())
         );
         assert_eq!(sandbox.remember_notes().counts(), counts(0, 0, 0, 1, 0));
@@ -334,8 +340,8 @@ fn a_named_link_to_a_folder_is_walked_and_links_inside_it_are_not() {
     assert_eq!(run.code, 0, "{:?}", run.stderr);
     assert_eq!(run.counts(), counts(1, 0, 0, 0, 0));
     for (meta, _) in sandbox.entries() {
-        let origin = meta.origin.expect("an origin");
-        let path = origin.path().expect("a file origin");
+        let label = meta.labels.capture.expect("a capture label");
+        let path = label.path().expect("a file capture label");
         assert!(path.starts_with(sandbox.notes()), "{path:?}");
     }
 }
@@ -498,19 +504,19 @@ fn a_missing_target_is_refused() {
 }
 
 #[test]
-fn the_origin_files_are_never_written() {
-    let sandbox = Sandbox::new("origins_untouched");
+fn the_captured_files_are_never_written() {
+    let sandbox = Sandbox::new("captures_untouched");
     sandbox.write("a.md", format!("---\nid: {ID_A}\n---\nbody\n"));
     sandbox.write("b.md", "no newline");
     sandbox.write("sub/c.md", "c\n");
-    let before = origin_state(&sandbox.notes());
+    let before = captured_state(&sandbox.notes());
     for _ in 0..3 {
         assert_eq!(sandbox.remember_notes().code, 0);
     }
-    assert_eq!(origin_state(&sandbox.notes()), before);
+    assert_eq!(captured_state(&sandbox.notes()), before);
 }
 
-fn origin_state(folder: &Path) -> BTreeMap<PathBuf, (Vec<u8>, SystemTime)> {
+fn captured_state(folder: &Path) -> BTreeMap<PathBuf, (Vec<u8>, SystemTime)> {
     fn walk(folder: &Path, into: &mut BTreeMap<PathBuf, (Vec<u8>, SystemTime)>) {
         for entry in fs::read_dir(folder).expect("list") {
             let path = entry.expect("entry").path();

@@ -1,28 +1,41 @@
 use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
+use std::rc::Rc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use bilbo_kinds::reader::{Passage, Piece, Reader};
+use bilbo_kinds::reader::{EntryLabels, Passage, Piece, Reader};
 use bilbo_kinds::tokens::Tokens;
 use bilbo_search::analyze::{self, Detect, Language};
 use bilbo_search::chunk;
 use bilbo_search::index::{Doc, Extent, Index, IndexError, Stats, millis};
 use bilbo_search::lookup::{Filter, Found, Lookup, Posting, Totals};
 use bilbo_search::position::Position;
-use bilbo_search::rank::{Candidate, Query, Ranker};
+use bilbo_search::rank::{Candidate, Query, Ranked, Ranker};
 use bilbo_search::recall::log::QueryLog;
 use bilbo_store::entries::{
-    Capture, CaptureError, Captured, Change, Cursor, Entries, Generation, Head, Meta, Origin,
-    RecordRange, StoreError,
+    Capture, CaptureError, Captured, Change, Cursor, Entries, Generation, Head, Meta, RecordRange,
+    StoreError,
 };
-use bilbo_store::id::Id;
+use bilbo_store::id::{Id, Short};
+use bilbo_store::labels::{CaptureLabel, Filed, Labels, Relabel, StoredLabels};
 
 pub const CATALOG: [u8; 16] = [7; 16];
+
+pub type Rows = BTreeMap<Id, Vec<(String, Vec<String>)>>;
+
+pub type Events = Rc<RefCell<Vec<&'static str>>>;
 
 pub fn id(n: u8) -> Id {
     let mut bytes = [0; 16];
     bytes[15] = n;
+    Id::from_bytes(bytes)
+}
+
+/// Room for more than 255 entries.
+pub fn wide(n: u16) -> Id {
+    let mut bytes = [0; 16];
+    bytes[14..].copy_from_slice(&n.to_be_bytes());
     Id::from_bytes(bytes)
 }
 
@@ -59,7 +72,9 @@ pub fn shelf(kept: Vec<Kept>) -> Log {
             id: entry.id,
             kind: entry.kind.to_owned(),
             captured: entry.captured,
-            parent: None,
+            capture: None,
+            earlier: Vec::new(),
+            id_label: None,
             generations: entry
                 .generations
                 .iter()
@@ -121,6 +136,84 @@ impl Reader for Lines {
             });
         }
         passages
+    }
+
+    fn appends_only(&self) -> bool {
+        true
+    }
+}
+
+pub struct Foldered(pub &'static str);
+
+impl Reader for Foldered {
+    fn kind(&self) -> &'static str {
+        self.0
+    }
+
+    fn passages(&self, records: &[&[u8]]) -> Vec<Passage> {
+        Lines(self.0).passages(records)
+    }
+
+    fn appends_only(&self) -> bool {
+        true
+    }
+
+    fn entry_labels(&self, records: &[&[u8]]) -> Vec<String> {
+        assert!(
+            !records
+                .iter()
+                .any(|record| record.starts_with(b"!labels-panic")),
+            "a reader that panics while it gives labels"
+        );
+        folders(
+            records
+                .iter()
+                .map(|record| String::from_utf8_lossy(record).into_owned()),
+        )
+    }
+}
+
+pub fn folders(records: impl Iterator<Item = String>) -> Vec<String> {
+    let mut labels = EntryLabels::default();
+    for record in records {
+        if let Some(text) = record.trim_end_matches('\n').strip_prefix("cwd:") {
+            labels.add(text);
+        }
+    }
+    labels.into_texts()
+}
+
+pub struct Joined(pub &'static str);
+
+impl Reader for Joined {
+    fn kind(&self) -> &'static str {
+        self.0
+    }
+
+    fn passages(&self, records: &[&[u8]]) -> Vec<Passage> {
+        let mut text = String::new();
+        let mut ends = Vec::new();
+        for record in records {
+            if !text.is_empty() {
+                text.push('\n');
+            }
+            text.push_str(String::from_utf8_lossy(record).trim_end_matches('\n'));
+            ends.push(text.len());
+        }
+        vec![Passage {
+            range: RecordRange {
+                first: 1,
+                count: records.len() as u64,
+            },
+            text,
+            pieces: vec![Piece {
+                start: 0,
+                label: "line:".to_owned(),
+            }],
+            ends,
+            at: None,
+            outline: None,
+        }]
     }
 
     fn appends_only(&self) -> bool {
@@ -217,10 +310,17 @@ pub struct Recorded {
     pub calls: RefCell<Vec<Call>>,
     pub fail_at: Option<usize>,
     pub bytes: u64,
+    pub events: Events,
 }
 
 impl Recorded {
     fn record(&self, call: Call) -> Result<(), IndexError> {
+        self.events.borrow_mut().push(match call {
+            Call::Clear => "clear",
+            Call::Add { .. } => "add",
+            Call::Commit(_) => "commit",
+            Call::Delete { .. } => "delete",
+        });
         let mut calls = self.calls.borrow_mut();
         if self.fail_at == Some(calls.len()) {
             return Err(IndexError::Failed {
@@ -303,13 +403,23 @@ pub struct Log {
     pub log: Vec<Change>,
     pub changes_fail: bool,
     pub reads: RefCell<Vec<Id>>,
+    pub shorts: RefCell<Vec<usize>>,
+    pub events: Events,
+    pub filed: RefCell<Rows>,
+    pub relabels: RefCell<Vec<Vec<Filed>>>,
+    pub refuse_relabel: Cell<Option<usize>>,
+    pub asked_words: RefCell<Vec<Vec<String>>>,
+    pub asked_belonging: RefCell<Vec<Vec<Id>>>,
+    pub labels_fail: Cell<bool>,
 }
 
 pub struct Held {
     pub id: Id,
     pub kind: String,
     pub captured: SystemTime,
-    pub parent: Option<Id>,
+    pub capture: Option<String>,
+    pub earlier: Vec<Option<String>>,
+    pub id_label: Option<Id>,
     pub generations: Vec<Vec<String>>,
     pub damaged: bool,
 }
@@ -322,13 +432,21 @@ impl Log {
             log: Vec::new(),
             changes_fail: false,
             reads: RefCell::new(Vec::new()),
+            shorts: RefCell::new(Vec::new()),
+            events: Events::default(),
+            filed: RefCell::new(BTreeMap::new()),
+            relabels: RefCell::new(Vec::new()),
+            refuse_relabel: Cell::new(None),
+            asked_words: RefCell::new(Vec::new()),
+            asked_belonging: RefCell::new(Vec::new()),
+            labels_fail: Cell::new(false),
         }
     }
 
-    fn held(&mut self, n: u8) -> &mut Held {
+    fn held(&mut self, entry: Id) -> &mut Held {
         self.entries
             .iter_mut()
-            .find(|held| held.id == id(n))
+            .find(|held| held.id == entry)
             .expect("an entry")
     }
 
@@ -341,31 +459,77 @@ impl Log {
     }
 
     pub fn put(&mut self, n: u8, kind: &str, records: &[&str]) {
+        self.put_id(id(n), kind, records);
+    }
+
+    pub fn put_id(&mut self, entry: Id, kind: &str, records: &[&str]) {
+        let n = entry.to_bytes()[15];
         self.entries.push(Held {
-            id: id(n),
+            id: entry,
             kind: kind.to_owned(),
             captured: at(1000 + u64::from(n)),
-            parent: None,
+            capture: None,
+            earlier: Vec::new(),
+            id_label: None,
             generations: vec![records.iter().map(|record| (*record).to_owned()).collect()],
             damaged: false,
         });
-        self.log.push(Change::Meta(id(n)));
+        self.log.push(Change::Meta(entry));
         if !records.is_empty() {
-            self.records(id(n), 1, 1, records.len() as u64);
+            self.records(entry, 1, 1, records.len() as u64);
         }
     }
 
+    pub fn crowd(count: u16) -> Log {
+        let mut log = Log::new();
+        for n in 1..=count {
+            log.put_id(wide(n), "lines", &[&format!("record {n}")]);
+            log.entries.last_mut().expect("an entry").capture =
+                Some(format!("file:/home/me/src/place{n}"));
+        }
+        log
+    }
+
+    pub fn relabel_all(&mut self, text: impl Fn(Id) -> String) {
+        for held in &mut self.entries {
+            let before = held.capture.replace(text(held.id));
+            if held.capture != before && before.is_some() {
+                held.earlier.push(before);
+            }
+            self.log.push(Change::Meta(held.id));
+        }
+    }
+
+    pub fn append_all(&mut self, record: &str) {
+        let ids: Vec<Id> = self.entries.iter().map(|held| held.id).collect();
+        for entry in ids {
+            self.append_id(entry, &[record]);
+        }
+    }
+
+    pub fn label(&mut self, n: u8, capture: &str) {
+        self.retouch(n, |held| held.capture = Some(capture.to_owned()));
+    }
+
+    pub fn belong(&mut self, n: u8, to: u8) {
+        self.retouch(n, |held| held.id_label = Some(id(to)));
+    }
+
     pub fn append(&mut self, n: u8, records: &[&str]) {
-        let held = self.held(n);
+        self.append_id(id(n), records);
+    }
+
+    pub fn append_id(&mut self, entry: Id, records: &[&str]) {
+        let held = self.held(entry);
         let generation = held.generations.len();
         let newest = held.generations.last_mut().expect("a generation");
         let first = newest.len() as u64 + 1;
         newest.extend(records.iter().map(|record| (*record).to_owned()));
-        self.records(id(n), generation as u32, first, records.len() as u64);
+        self.records(entry, generation as u32, first, records.len() as u64);
     }
 
     pub fn rewrite(&mut self, n: u8, records: &[&str]) {
-        let held = self.held(n);
+        let held = self.held(id(n));
         held.generations
             .push(records.iter().map(|record| (*record).to_owned()).collect());
         let generation = held.generations.len();
@@ -373,7 +537,12 @@ impl Log {
     }
 
     pub fn retouch(&mut self, n: u8, change: impl FnOnce(&mut Held)) {
-        change(self.held(n));
+        let held = self.held(id(n));
+        let before = held.capture.clone();
+        change(held);
+        if held.capture != before && before.is_some() {
+            held.earlier.push(before);
+        }
         self.log.push(Change::Meta(id(n)));
     }
 
@@ -438,9 +607,11 @@ impl Entries for Log {
             .map(|held| Meta {
                 id,
                 kind: held.kind.clone(),
-                origin: None,
+                labels: StoredLabels {
+                    capture: held.capture.clone().and_then(CaptureLabel::new),
+                    id: held.id_label,
+                },
                 captured: held.captured,
-                parent: held.parent,
             }))
     }
 
@@ -459,7 +630,7 @@ impl Entries for Log {
         Ok((self.log[from..].to_vec(), self.cursor()))
     }
 
-    fn by_origin(&self, _origin: &Origin) -> Result<Option<Head>, StoreError> {
+    fn by_capture(&self, _label: &CaptureLabel) -> Result<Option<Head>, StoreError> {
         Err(unused())
     }
 
@@ -478,9 +649,145 @@ impl Entries for Log {
         }))
     }
 
-    fn origins_with(&self, _part: &str) -> Result<Vec<(Id, Origin)>, StoreError> {
+    fn captures_with(&self, _part: &str) -> Result<Vec<(Id, CaptureLabel)>, StoreError> {
         Err(unused())
     }
+
+    fn by_shorts(&self, shorts: &[Short]) -> Result<Vec<Id>, StoreError> {
+        self.shorts.borrow_mut().push(shorts.len());
+        let mut ids: Vec<Id> = self
+            .entries
+            .iter()
+            .map(|held| held.id)
+            .filter(|id| shorts.iter().any(|short| short.ends(*id)))
+            .collect();
+        ids.sort();
+        Ok(ids)
+    }
+}
+
+fn refused() -> StoreError {
+    StoreError::Missing("the label tables refused".to_owned())
+}
+
+impl Labels for Log {
+    fn with_words(&self, words: &[String]) -> Result<Vec<Id>, StoreError> {
+        self.asked_words.borrow_mut().push(words.to_vec());
+        if self.labels_fail.get() {
+            return Err(StoreError::Poisoned);
+        }
+        if words.is_empty() {
+            return Ok(Vec::new());
+        }
+        Ok(self
+            .filed
+            .borrow()
+            .iter()
+            .filter(|(_, labels)| {
+                labels
+                    .iter()
+                    .any(|(_, held)| held.windows(words.len()).any(|run| run == words))
+            })
+            .map(|(entry, _)| *entry)
+            .collect())
+    }
+
+    fn belonging_to(&self, entries: &[Id]) -> Result<Vec<Id>, StoreError> {
+        self.asked_belonging.borrow_mut().push(entries.to_vec());
+        if self.labels_fail.get() {
+            return Err(StoreError::Poisoned);
+        }
+        let mut found: Vec<Id> = Vec::new();
+        let mut above: Vec<Id> = entries.to_vec();
+        while let Some(target) = above.pop() {
+            for held in &self.entries {
+                if held.id_label == Some(target)
+                    && !entries.contains(&held.id)
+                    && !found.contains(&held.id)
+                {
+                    found.push(held.id);
+                    above.push(held.id);
+                }
+            }
+        }
+        found.sort();
+        Ok(found)
+    }
+}
+
+impl Relabel for Log {
+    fn relabel(&self, filed: &[Filed]) -> Result<(), StoreError> {
+        self.events.borrow_mut().push("relabel");
+        let call = self.relabels.borrow().len();
+        self.relabels.borrow_mut().push(filed.to_vec());
+        if self.refuse_relabel.get() == Some(call) {
+            return Err(refused());
+        }
+        let mut rows = self.filed.borrow_mut();
+        for each in filed {
+            if each.labels.is_empty() {
+                rows.remove(&each.entry);
+            } else {
+                rows.insert(
+                    each.entry,
+                    each.labels
+                        .iter()
+                        .map(|label| (label.text.clone(), label.words.clone()))
+                        .collect(),
+                );
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Whether every entry the index holds and the store still has holds the labels of the generation
+/// indexed, or of a newer one.
+pub fn named(docs: &Docs, log: &Log) -> bool {
+    let filed = log.filed.borrow();
+    log.entries.iter().all(|held| {
+        let rows: Vec<&Row> = docs
+            .rows
+            .iter()
+            .filter(|row| row.entry == held.id)
+            .collect();
+        let Some(newest) = rows.iter().map(|row| row.generation).max() else {
+            return true;
+        };
+        let reached = rows
+            .iter()
+            .filter(|row| row.generation == newest)
+            .map(|row| row.first + row.count - 1)
+            .max()
+            .unwrap_or(0) as usize;
+        let mut possible = Vec::new();
+        for (at, generation) in held.generations.iter().enumerate() {
+            let number = at as u32 + 1;
+            if number < newest {
+                continue;
+            }
+            let from = if number == newest { reached } else { 0 };
+            for upto in from..=generation.len() {
+                possible.push(folders(generation[..upto].iter().cloned()));
+            }
+        }
+        let held_rows: BTreeMap<String, Vec<String>> = filed
+            .get(&held.id)
+            .map(|rows| rows.iter().cloned().collect())
+            .unwrap_or_default();
+        std::iter::once(&held.capture)
+            .chain(&held.earlier)
+            .any(|capture| {
+                possible.iter().any(|texts| {
+                    let expected: BTreeMap<String, Vec<String>> = capture
+                        .iter()
+                        .chain(texts)
+                        .map(|text| (text.clone(), analyze::filed_words(text)))
+                        .collect();
+                    held_rows == expected
+                })
+            })
+    })
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -512,8 +819,19 @@ pub struct Docs {
     pub rolled_back: u32,
     pub commits: u32,
     pub fail_add: Option<u32>,
-    adds: u32,
+    pub fail_entry: Option<Id>,
+    pub adds: u32,
     pub deletes: Vec<(Id, u64)>,
+    pub events: Events,
+    pub commit_fault: Fault,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Fault {
+    #[default]
+    None,
+    Refused,
+    AfterPublishing,
 }
 
 impl Docs {
@@ -530,14 +848,16 @@ impl Index for Docs {
     }
 
     fn clear(&mut self) -> Result<(), IndexError> {
+        self.events.borrow_mut().push("clear");
         self.writes += 1;
         self.pending.push(Op::Clear);
         Ok(())
     }
 
     fn add(&mut self, doc: &Doc<'_>) -> Result<(), IndexError> {
+        self.events.borrow_mut().push("add");
         self.writes += 1;
-        if self.fail_add == Some(self.adds) {
+        if self.fail_add == Some(self.adds) || self.fail_entry == Some(doc.entry) {
             return Err(IndexError::Failed {
                 action: "write",
                 path: PathBuf::from("/c/index"),
@@ -559,7 +879,15 @@ impl Index for Docs {
     }
 
     fn commit(&mut self, position: &Position) -> Result<Stats, IndexError> {
+        self.events.borrow_mut().push("commit");
         self.writes += 1;
+        if self.commit_fault == Fault::Refused {
+            return Err(IndexError::Failed {
+                action: "write",
+                path: PathBuf::from("/c/index"),
+                error: "the position cannot be written".to_owned(),
+            });
+        }
         self.commits += 1;
         for op in self.pending.drain(..) {
             match op {
@@ -572,6 +900,13 @@ impl Index for Docs {
             }
         }
         self.position = Some(position.clone());
+        if self.commit_fault == Fault::AfterPublishing {
+            return Err(IndexError::Failed {
+                action: "measure",
+                path: PathBuf::from("/c/index"),
+                error: "the folder cannot be measured".to_owned(),
+            });
+        }
         Ok(Stats { bytes: 0 })
     }
 
@@ -593,6 +928,7 @@ impl Index for Docs {
     }
 
     fn delete(&mut self, entry: Id, from: u64) -> Result<(), IndexError> {
+        self.events.borrow_mut().push("delete");
         self.writes += 1;
         self.deletes.push((entry, from));
         self.pending.push(Op::Delete(entry, from));
@@ -656,12 +992,14 @@ impl Lookup for Docs {
     }
 
     fn holding(&self, filter: &Filter<'_>) -> Result<Vec<u32>, IndexError> {
-        let Filter::Kind(kind) = filter;
         Ok(self
             .rows
             .iter()
             .enumerate()
-            .filter(|(_, row)| row.kind == *kind)
+            .filter(|(_, row)| match filter {
+                Filter::Kind(kind) => row.kind == *kind,
+                Filter::Entries(ids) => ids.binary_search(&row.entry).is_ok(),
+            })
             .map(|(doc, _)| doc as u32)
             .collect())
     }
@@ -746,10 +1084,13 @@ impl Scripted {
 }
 
 impl Ranker for Scripted {
-    fn rank(&self, _query: &Query, limit: usize) -> Result<Vec<Candidate>, IndexError> {
+    fn rank(&self, _query: &Query, limit: usize) -> Result<Ranked, IndexError> {
         self.calls.set(self.calls.get() + 1);
         self.limits.borrow_mut().push(limit);
-        Ok(self.candidates.clone())
+        Ok(Ranked {
+            candidates: self.candidates.clone(),
+            unscoped: Vec::new(),
+        })
     }
 }
 

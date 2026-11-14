@@ -9,7 +9,8 @@ use bilbo_kinds::files::{Call, Files, Memory, Node, Turning};
 use bilbo_kinds::follows::{self, Follow, Planned};
 use bilbo_kinds::kind::Kind;
 use bilbo_kinds::remember::{self, Error, Item, Outcome, Output, Request, Tally};
-use bilbo_store::entries::{Origin, Stamp};
+use bilbo_store::entries::Stamp;
+use bilbo_store::labels::{CaptureLabel, StoredLabels};
 use fakes::{ADOPTED, Counting, FakeEntries, FakeKind, Script, id};
 
 const HELD: &str = "01JC5Q3V7XKM4P8R2T6W9YB0DE";
@@ -105,10 +106,10 @@ fn the_kinds_proposal_reaches_the_capture() {
 
     assert_eq!(entries.seen.len(), 2);
     let first = &entries.seen[0];
-    assert_eq!(first.origin, "file:/t/a.fake");
+    assert_eq!(first.label, "file:/t/a.fake");
     assert_eq!(first.kind, "fake");
     assert_eq!(first.id, bilbo_store::id::Id::parse(HELD));
-    assert_eq!(first.parent, None);
+    assert_eq!(first.id_label, None);
     assert_eq!(first.bytes, body.as_bytes());
     assert_eq!(
         first.ends,
@@ -133,7 +134,7 @@ fn a_file_is_refused_for_its_reason_and_the_run_goes_on() {
     let mut entries = FakeEntries::new()
         .on(
             "file:/t/c-held.fake",
-            Script::IdHeld(Origin::new("file:/t/other.md".into())),
+            Script::IdHeld(CaptureLabel::new("file:/t/other.md".into())),
         )
         .on(
             "file:/t/d-records.fake",
@@ -232,7 +233,7 @@ fn files_are_kept_in_the_order_the_kind_claims_them() {
         .iter()
         .map(|item| item.path.to_str().expect("utf-8"))
         .collect();
-    let seen: Vec<&str> = entries.seen.iter().map(|s| s.origin.as_str()).collect();
+    let seen: Vec<&str> = entries.seen.iter().map(|s| s.label.as_str()).collect();
     assert_eq!(order, vec!["/t/a/z.fake", "/t/a.fake", "/t/b.fake"]);
     assert_eq!(
         seen,
@@ -334,20 +335,20 @@ fn the_bytes_after_the_last_record_are_left_for_a_later_run() {
 }
 
 #[test]
-fn a_file_proposes_as_its_parent_the_entry_kept_for_another() {
+fn a_file_proposes_as_its_id_label_the_entry_kept_for_another() {
     let files = Memory::new()
         .file("/t/a.fake", "main|")
         .file("/t/a.sub.fake", "sub|")
         .file("/t/z.sub.fake", "orphan|");
     let mut entries = FakeEntries::new();
     run(FakeKind::new(), &files, &mut entries, &request("/t")).expect("run");
-    let parents: Vec<(&str, Option<bilbo_store::id::Id>)> = entries
+    let id_labels: Vec<(&str, Option<bilbo_store::id::Id>)> = entries
         .seen
         .iter()
-        .map(|seen| (seen.origin.as_str(), seen.parent))
+        .map(|seen| (seen.label.as_str(), seen.id_label))
         .collect();
     assert_eq!(
-        parents,
+        id_labels,
         vec![
             ("file:/t/a.fake", None),
             ("file:/t/a.sub.fake", Some(id(1))),
@@ -357,12 +358,12 @@ fn a_file_proposes_as_its_parent_the_entry_kept_for_another() {
 }
 
 #[test]
-fn a_subagent_kept_before_its_session_gets_its_parent_when_it_is_next_read() {
+fn a_subagent_kept_before_its_session_gets_its_id_label_when_it_is_next_read() {
     let mut entries = FakeEntries::new();
     let alone = Memory::new().file("/t/a.sub.fake", "sub|");
     run(FakeKind::new(), &alone, &mut entries, &request("/t")).expect("the child alone");
     let child = id(1);
-    assert_eq!(entries.metas[&child].parent, None);
+    assert_eq!(entries.metas[&child].labels.id, None);
 
     let unchanged = Memory::new()
         .file("/t/a.fake", "main|")
@@ -379,13 +380,33 @@ fn a_subagent_kept_before_its_session_gets_its_parent_when_it_is_next_read() {
     run(FakeKind::new(), &grown, &mut entries, &request("/t")).expect("a sweep");
     let main = entries.heads["file:/t/a.fake"].id;
     assert_eq!(entries.adopted, vec![(child, Some(main))]);
-    assert_eq!(entries.metas[&child].parent, Some(main));
+    assert_eq!(entries.metas[&child].labels.id, Some(main));
 
     let more = Memory::new()
         .file("/t/a.fake", "main|")
         .file("/t/a.sub.fake", "sub|more|again|");
     run(FakeKind::new(), &more, &mut entries, &request("/t")).expect("a sweep");
-    assert_eq!(entries.adopted.len(), 1, "a parent once given is kept");
+    assert_eq!(entries.adopted.len(), 1, "an id label once given is kept");
+}
+
+#[test]
+fn adopting_a_subagent_keeps_its_capture_label() {
+    let mut entries = FakeEntries::new();
+    let alone = Memory::new().file("/t/a.sub.fake", "sub|");
+    run(FakeKind::new(), &alone, &mut entries, &request("/t")).expect("the child alone");
+    let child = id(1);
+    let grown = Memory::new()
+        .file("/t/a.fake", "main|")
+        .file("/t/a.sub.fake", "sub|more|");
+    run(FakeKind::new(), &grown, &mut entries, &request("/t")).expect("a sweep");
+    let main = entries.heads["file:/t/a.fake"].id;
+    assert_eq!(
+        entries.metas[&child].labels,
+        StoredLabels {
+            capture: CaptureLabel::new("file:/t/a.sub.fake".into()),
+            id: Some(main),
+        }
+    );
 }
 
 #[test]
@@ -417,7 +438,7 @@ fn a_bare_run_keeps_each_follow_in_order_and_skips_a_missing_folder() {
         .map(|output| (output.target.as_path(), output.records))
         .collect();
     assert_eq!(kept, vec![(Path::new("/b"), 1), (Path::new("/a"), 2)]);
-    let seen: Vec<&str> = entries.seen.iter().map(|s| s.origin.as_str()).collect();
+    let seen: Vec<&str> = entries.seen.iter().map(|s| s.label.as_str()).collect();
     assert_eq!(seen, vec!["file:/b/one.fake", "file:/a/two.fake"]);
 }
 
@@ -508,7 +529,7 @@ fn a_kind_whose_last_end_is_past_the_bytes_is_refused() {
 }
 
 #[test]
-fn adopting_a_parent_counts_its_meta_frame_in_stored_bytes() {
+fn adopting_an_id_label_counts_its_meta_frame_in_stored_bytes() {
     let mut entries = FakeEntries::new();
     let alone = Memory::new().file("/t/a.sub.fake", "sub|");
     run(FakeKind::new(), &alone, &mut entries, &request("/t")).expect("the child alone");
@@ -546,7 +567,7 @@ fn kept_under(files: &dyn Files, counting: &Counting, entries: &mut FakeEntries)
 }
 
 #[test]
-fn an_entry_is_kept_under_its_claims_origin_whatever_file_was_read() {
+fn a_file_already_kept_is_found_by_its_capture_label() {
     let mut entries = FakeEntries::new().on("file:/t/x.fake", Script::Unchanged);
     let plain = Memory::new().file("/t/x.fake", "a|");
     let first = run(FakeKind::new(), &plain, &mut entries, &request("/t")).expect("plain");
@@ -561,7 +582,7 @@ fn an_entry_is_kept_under_its_claims_origin_whatever_file_was_read() {
         entries
             .seen
             .iter()
-            .all(|seen| seen.origin == "file:/t/x.fake")
+            .all(|seen| seen.label == "file:/t/x.fake")
     );
 }
 
@@ -606,7 +627,7 @@ fn a_file_that_appears_after_it_was_looked_for_is_read_on_the_second_look() {
 }
 
 #[test]
-fn a_claim_none_of_whose_files_is_there_is_refused_under_its_origin() {
+fn a_claim_none_of_whose_files_is_there_is_refused_under_its_label() {
     let planned = Memory::new()
         .file("/t/x.fake", "a|")
         .file("/t/y.fake", "b|");
@@ -719,7 +740,7 @@ fn a_stamp_kept_from_the_other_file_does_not_skip_this_one() {
 }
 
 #[test]
-fn the_proposal_is_asked_for_the_origin() {
+fn a_subagent_gets_its_sessions_id_as_its_id_label() {
     let mut entries = FakeEntries::new();
     run(
         FakeKind::new(),
@@ -732,7 +753,7 @@ fn the_proposal_is_asked_for_the_origin() {
         .file("/t/a.fake", "x|")
         .file("/t/a.sub.fake.z", "zy|");
     run(FakeKind::new(), &files, &mut entries, &request("/t")).expect("subagent");
-    assert_eq!(entries.seen.last().expect("capture").parent, Some(id(1)));
+    assert_eq!(entries.seen.last().expect("capture").id_label, Some(id(1)));
 }
 
 #[test]
@@ -743,7 +764,7 @@ fn a_missing_target_is_planned_when_a_kind_claims_it_through_another_file() {
         let plan = remember::plan(&request(asked), &registry, &files).expect("plan");
         assert_eq!(plan.target, PathBuf::from(asked));
         assert_eq!(plan.claims.len(), 1);
-        assert_eq!(plan.claims[0].origin(), PathBuf::from("/t/x.fake"));
+        assert_eq!(plan.claims[0].label(), PathBuf::from("/t/x.fake"));
     }
 }
 
@@ -811,7 +832,7 @@ fn a_followed_file_is_kept_after_it_changes_form() {
         entries
             .seen
             .iter()
-            .all(|seen| seen.origin == "file:/t/x.fake")
+            .all(|seen| seen.label == "file:/t/x.fake")
     );
 
     let gone = [Follow {
@@ -846,7 +867,7 @@ fn a_followed_file_is_kept_after_it_changes_form() {
         entries
             .seen
             .iter()
-            .all(|seen| seen.origin == "file:/t/x.fake")
+            .all(|seen| seen.label == "file:/t/x.fake")
     );
 }
 
@@ -885,11 +906,11 @@ fn a_file_whose_node_cannot_be_read_is_refused_and_no_other_is_tried() {
 }
 
 #[test]
-fn a_child_read_from_its_second_file_gets_its_parent_when_it_is_next_read() {
+fn a_child_read_from_its_second_file_gets_its_id_label_when_it_is_next_read() {
     let mut entries = FakeEntries::new();
     let alone = Memory::new().file("/t/a.sub.fake.z", "zy|");
     run(FakeKind::new(), &alone, &mut entries, &request("/t")).expect("child alone");
-    assert_eq!(entries.metas[&id(1)].parent, None);
+    assert_eq!(entries.metas[&id(1)].labels.id, None);
 
     let both = Memory::new()
         .file("/t/a.fake", "x|")

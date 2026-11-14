@@ -3,15 +3,15 @@ bilbo read: print an entry's outline, or its records a page at a time.
 [1mUsage:[22m
   [36mbilbo read [39m[2m<ref>[22m[36m [--budget [39m[2m<tokens>[22m[36m][39m
   [36mbilbo read [39m[2m<ref>[22m[36m --outline [--budget [39m[2m<tokens>[22m[36m][39m
-[2m<ref> is an entry id or a session id, then #r<a>-<b> for records a to b, #g<n>[22m
-[2mfor an older generation, or #g<n>:r<a>-<b>.[22m
+[2m<ref> is an entry id, its last 10 characters or a session id, then #r<a>-<b>[22m
+[2mfor records a to b, #g<n> for an older generation, or #g<n>:r<a>-<b>.[22m
 
 [1mOptions:[22m
       [1m--outline[22m          List the prompts or sections of the range, not its text
       [1m--budget [22m[2m<tokens>[22m  Print at most this many tokens a page
 
 [1mOutput:[22m
-  [1m#r[22m[2m<n>[22m[1m [22m[2m<label>[22m[1m: [22m[2m<text>[22m  each record after its locator, as it was kept
+  [1m#r[22m[2m<n>[22m[1m [22m[2m<head>[22m[1m: [22m[2m<text>[22m   each record after its locator, as it was kept
   [1mmore: bilbo read ...[22m   the last line: the command for the next page
   [1mend: ...[22m               the last line: nothing is left of what was asked
   [1mcut: ...; more: ...[22m    the last line after a cut record: how to read it whole
@@ -20,11 +20,11 @@ bilbo read: print an entry's outline, or its records a page at a time.
 [1mExit:[22m
   [1m0[22m  success, also when no record of the range renders
   [1m1[22m  no such entry, a range outside it, or no store
-  [1m2[22m  usage or config error, or a session id that names several entries
+  [1m2[22m  usage or config error, or a session id or short id of several entries
 
 [1mExamples:[22m
   [36mbilbo read 01M6ZGE4KTBYYH07AS2KVMSCAF[39m
-  [36mbilbo read 01M6ZGE4KTBYYH07AS2KVMSCAF#r120-184[39m
+  [36mbilbo read AS2KVMSCAF#r120-184[39m
   [36mbilbo read 2d6b1857 --outline[39m
 
 [1mDocs:[22m [2mhttps://github.com/delucca/bilbo/wiki/Commands#read[22m

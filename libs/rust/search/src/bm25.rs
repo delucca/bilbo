@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use crate::analyze::{self, Omit};
 use crate::index::IndexError;
 use crate::lookup::{Filter, Lookup};
-use crate::rank::{Candidate, Query, Ranker, order};
+use crate::rank::{Candidate, Query, Ranked, Ranker, order};
 
 pub struct Bm25<'a> {
     pub index: &'a dyn Lookup,
@@ -26,17 +26,55 @@ impl Bm25<'_> {
         }
         Ok(read)
     }
+
+    fn best(
+        &self,
+        mut matched: Vec<(u32, f32)>,
+        limit: usize,
+        scores: &[f32],
+    ) -> Result<Vec<Candidate>, IndexError> {
+        let mut best = if matched.len() <= limit {
+            let docs: Vec<u32> = matched.iter().map(|(doc, _)| *doc).collect();
+            self.read(&docs, scores)?
+        } else {
+            matched.select_nth_unstable_by(limit - 1, |a, b| b.1.total_cmp(&a.1));
+            let last = matched[limit - 1].1;
+            let mut above = Vec::new();
+            let mut tied = Vec::new();
+            for (doc, score) in &matched {
+                match score.total_cmp(&last) {
+                    Ordering::Greater => above.push(*doc),
+                    Ordering::Equal => tied.push(*doc),
+                    Ordering::Less => {}
+                }
+            }
+            let need = limit - above.len();
+            let mut kept = self.read(&above, scores)?;
+            let mut ties: Vec<Candidate> = Vec::new();
+            for batch in tied.chunks(self.batch) {
+                ties.extend(self.read(batch, scores)?);
+                ties.sort_by(order);
+                ties.truncate(need);
+            }
+            kept.extend(ties);
+            kept
+        };
+        best.sort_by(order);
+        best.truncate(limit);
+        Ok(best)
+    }
 }
 
 impl Ranker for Bm25<'_> {
-    fn rank(&self, query: &Query, limit: usize) -> Result<Vec<Candidate>, IndexError> {
+    fn rank(&self, query: &Query, limit: usize) -> Result<Ranked, IndexError> {
         let terms = analyze::query(&query.text, &self.omit);
-        if terms.is_empty() || limit == 0 {
-            return Ok(Vec::new());
+        let nobody = query.entries.as_ref().is_some_and(Vec::is_empty);
+        if terms.is_empty() || limit == 0 || nobody {
+            return Ok(Ranked::default());
         }
         let totals = self.index.totals()?;
         if totals.documents == 0 {
-            return Ok(Vec::new());
+            return Ok(Ranked::default());
         }
         let documents = totals.documents as f64;
         let average = totals.length as f64 / documents;
@@ -86,7 +124,7 @@ impl Ranker for Bm25<'_> {
             }
             Some(allowed)
         };
-        let mut matched: Vec<(u32, f32)> = (0..totals.bound)
+        let matched: Vec<(u32, f32)> = (0..totals.bound)
             .filter(|doc| {
                 scores[*doc as usize] > 0.0
                     && allowed
@@ -95,35 +133,28 @@ impl Ranker for Bm25<'_> {
             })
             .map(|doc| (doc, scores[doc as usize]))
             .collect();
-        let mut best = if matched.len() <= limit {
-            let docs: Vec<u32> = matched.iter().map(|(doc, _)| *doc).collect();
-            self.read(&docs, &scores)?
-        } else {
-            matched.select_nth_unstable_by(limit - 1, |a, b| b.1.total_cmp(&a.1));
-            let last = matched[limit - 1].1;
-            let mut above = Vec::new();
-            let mut tied = Vec::new();
-            for (doc, score) in &matched {
-                match score.total_cmp(&last) {
-                    Ordering::Greater => above.push(*doc),
-                    Ordering::Equal => tied.push(*doc),
-                    Ordering::Less => {}
-                }
-            }
-            let need = limit - above.len();
-            let mut kept = self.read(&above, &scores)?;
-            let mut ties: Vec<Candidate> = Vec::new();
-            for batch in tied.chunks(self.batch) {
-                ties.extend(self.read(batch, &scores)?);
-                ties.sort_by(order);
-                ties.truncate(need);
-            }
-            kept.extend(ties);
-            kept
+        let Some(ids) = &query.entries else {
+            let candidates = self.best(matched, limit, &scores)?;
+            return Ok(Ranked {
+                candidates,
+                unscoped: Vec::new(),
+            });
         };
-        best.sort_by(order);
-        best.truncate(limit);
-        Ok(best)
+        let mut held = vec![false; scores.len()];
+        for doc in self.index.holding(&Filter::Entries(ids))? {
+            *held.get_mut(doc as usize).ok_or(IndexError::Inconsistent(
+                "an entry names a document outside the index",
+            ))? = true;
+        }
+        let scoped = matched
+            .iter()
+            .copied()
+            .filter(|(doc, _)| held[*doc as usize])
+            .collect();
+        Ok(Ranked {
+            candidates: self.best(scoped, limit, &scores)?,
+            unscoped: self.best(matched, limit, &scores)?,
+        })
     }
 }
 
@@ -131,7 +162,7 @@ impl Ranker for Bm25<'_> {
 mod tests {
     use crate::analyze::{Language, Omit};
     use crate::index::IndexError;
-    use crate::rank::{Query, Ranker};
+    use crate::rank::{Candidate, Query, Ranker};
     use crate::testing::{Says, Table, id};
 
     use super::Bm25;
@@ -140,7 +171,31 @@ mod tests {
         Query {
             text: text.to_owned(),
             kinds: kinds.iter().map(|kind| (*kind).to_owned()).collect(),
+            entries: None,
         }
+    }
+
+    fn scoped(text: &str, kinds: &[&str], entries: &[u8]) -> Query {
+        Query {
+            entries: Some(entries.iter().map(|n| id(*n)).collect()),
+            ..query(text, kinds)
+        }
+    }
+
+    fn bm25(table: &Table) -> Bm25<'_> {
+        Bm25 {
+            index: table,
+            k1: 1.2,
+            b: 0.75,
+            omit: Omit::default(),
+            batch: 4096,
+        }
+    }
+
+    fn entries_of(list: &[Candidate]) -> Vec<(u8, u64)> {
+        list.iter()
+            .map(|c| (c.found.entry.to_bytes()[0], c.found.extent.records.first))
+            .collect()
     }
 
     fn ranked(table: &Table, text: &str, kinds: &[&str], limit: usize) -> Vec<(u8, u64, f32)> {
@@ -153,6 +208,7 @@ mod tests {
         };
         bm25.rank(&query(text, kinds), limit)
             .expect("a ranking")
+            .candidates
             .into_iter()
             .map(|candidate| {
                 let entry = (1..=255)
@@ -245,6 +301,7 @@ mod tests {
         }
         .rank(&query("alpha", &[]), 10)
         .expect("a ranking")
+        .candidates
         .iter()
         .take(3)
         .map(|candidate| candidate.found.extent.part)
@@ -313,6 +370,7 @@ mod tests {
         let found = bm25.rank(&query("alpha", &[]), 3).expect("a ranking");
         assert_eq!(
             found
+                .candidates
                 .iter()
                 .map(|hit| hit.found.extent.records.first)
                 .collect::<Vec<_>>(),
@@ -374,7 +432,7 @@ mod tests {
 
     #[test]
     fn a_posting_outside_the_bound_is_an_index_error() {
-        let inconsistent = |table: &Table, kinds: &[&str]| {
+        let inconsistent_for = |table: &Table, query: &Query| {
             let bm25 = Bm25 {
                 index: table,
                 k1: 1.2,
@@ -382,11 +440,10 @@ mod tests {
                 omit: Omit::default(),
                 batch: 4096,
             };
-            matches!(
-                bm25.rank(&query("alpha", kinds), 5),
-                Err(IndexError::Inconsistent(_))
-            )
+            matches!(bm25.rank(query, 5), Err(IndexError::Inconsistent(_)))
         };
+        let inconsistent =
+            |table: &Table, kinds: &[&str]| inconsistent_for(table, &query("alpha", kinds));
         for doc in [3, 4_000_000] {
             let table = small().posting_at(doc);
             assert!(inconsistent(&table, &[]), "a posting at {doc}");
@@ -395,8 +452,138 @@ mod tests {
         for doc in [3, 4_000_000] {
             let table = small().holding_at(doc);
             assert!(inconsistent(&table, &["note"]), "a holding at {doc}");
+            assert!(
+                inconsistent_for(&table, &scoped("alpha", &[], &[1])),
+                "a holding of entries at {doc}"
+            );
         }
         assert!(!inconsistent(&small().posting_at(2), &["note"]));
         assert!(!inconsistent(&small().holding_at(2), &["note"]));
+        assert!(!inconsistent_for(
+            &small().holding_at(2),
+            &scoped("alpha", &[], &[1])
+        ));
+    }
+
+    #[test]
+    fn a_small_entry_among_a_large_one_still_fills_its_list() {
+        let mut table = Table::new();
+        for first in 1..=60 {
+            table = table.doc("note", 1, first, "alpha alpha alpha");
+        }
+        for first in 1..=5 {
+            table = table.doc("note", 2, first, "alpha beta beta beta beta beta beta");
+        }
+        let ranked = bm25(&table)
+            .rank(&scoped("alpha", &[], &[2]), 5)
+            .expect("a ranking");
+        assert_eq!(ranked.candidates.len(), 5);
+        assert!(ranked.candidates.iter().all(|c| c.found.entry == id(2)));
+        assert!(ranked.unscoped.iter().all(|c| c.found.entry == id(1)));
+    }
+
+    #[test]
+    fn an_entry_filter_changes_no_score() {
+        let table = Table::new()
+            .doc("note", 1, 1, "alpha beta")
+            .doc("note", 2, 1, "alpha alpha gamma delta")
+            .doc("note", 3, 1, "alpha gamma gamma gamma")
+            .doc("note", 3, 2, "gamma");
+        let wide = bm25(&table)
+            .rank(&query("alpha gamma", &[]), 10)
+            .expect("a ranking")
+            .candidates;
+        let narrow = bm25(&table)
+            .rank(&scoped("alpha gamma", &[], &[2]), 10)
+            .expect("a ranking")
+            .candidates;
+        let bits = |list: &[Candidate]| {
+            list.iter()
+                .find(|c| c.found.entry == id(2))
+                .map(|c| c.score.to_bits())
+        };
+        assert!(bits(&narrow).is_some());
+        assert_eq!(bits(&narrow), bits(&wide));
+    }
+
+    #[test]
+    fn the_unscoped_list_is_empty_with_no_scope_and_the_best_of_everything_with_one() {
+        let table = small();
+        let without = bm25(&table)
+            .rank(&query("alpha gamma", &[]), 2)
+            .expect("a ranking");
+        assert!(without.unscoped.is_empty());
+        assert_eq!(without.candidates.len(), 2);
+        let with = bm25(&table)
+            .rank(&scoped("alpha gamma", &[], &[3]), 2)
+            .expect("a ranking");
+        assert_eq!(with.unscoped, without.candidates);
+        assert_eq!(entries_of(&with.candidates), [(3, 1)]);
+    }
+
+    #[test]
+    fn the_unscoped_list_keeps_the_kinds_asked() {
+        let table = Table::new()
+            .doc("note", 1, 1, "alpha alpha alpha")
+            .doc("session", 2, 1, "alpha beta")
+            .doc("session", 3, 1, "alpha beta gamma");
+        let ranked = bm25(&table)
+            .rank(&scoped("alpha", &["session"], &[3]), 10)
+            .expect("a ranking");
+        assert_eq!(entries_of(&ranked.unscoped), [(2, 1), (3, 1)]);
+        assert_eq!(entries_of(&ranked.candidates), [(3, 1)]);
+    }
+
+    #[test]
+    fn a_scope_and_a_kind_narrow_together() {
+        let table = Table::new()
+            .doc("note", 1, 1, "alpha")
+            .doc("session", 2, 1, "alpha")
+            .doc("session", 3, 1, "alpha")
+            .doc("note", 4, 1, "alpha");
+        let ranked = bm25(&table)
+            .rank(&scoped("alpha", &["session"], &[1, 2]), 10)
+            .expect("a ranking");
+        assert_eq!(entries_of(&ranked.candidates), [(2, 1)]);
+    }
+
+    #[test]
+    fn a_scope_of_no_entry_finds_nothing_and_asks_the_index_for_nothing() {
+        let table = small();
+        let ranked = bm25(&table)
+            .rank(&scoped("alpha", &[], &[]), 10)
+            .expect("a ranking");
+        assert!(ranked.candidates.is_empty() && ranked.unscoped.is_empty());
+        let ranked = bm25(&table)
+            .rank(&scoped("alpha", &["note"], &[]), 10)
+            .expect("a ranking");
+        assert!(ranked.candidates.is_empty() && ranked.unscoped.is_empty());
+        assert_eq!(table.holdings.get(), 0);
+    }
+
+    #[test]
+    fn the_entry_filter_is_asked_once_and_never_with_no_scope() {
+        let table = small();
+        bm25(&table)
+            .rank(&query("alpha", &[]), 10)
+            .expect("a ranking");
+        assert_eq!(table.holdings.get(), 0);
+        bm25(&table)
+            .rank(&scoped("alpha gamma", &[], &[1, 2, 3]), 10)
+            .expect("a ranking");
+        assert_eq!(table.holdings.get(), 1);
+    }
+
+    #[test]
+    fn a_tie_across_the_limit_is_cut_by_the_tie_order_in_both_lists() {
+        let mut table = Table::new();
+        for entry in (1..=9).rev() {
+            table = table.doc("note", entry, 1, "alpha");
+        }
+        let ranked = bm25(&table)
+            .rank(&scoped("alpha", &[], &[3, 5, 7, 9]), 2)
+            .expect("a ranking");
+        assert_eq!(entries_of(&ranked.candidates), [(3, 1), (5, 1)]);
+        assert_eq!(entries_of(&ranked.unscoped), [(1, 1), (2, 1)]);
     }
 }

@@ -1,0 +1,5 @@
+bilbo: searched 1,412 entries
+bilbo: --in 'shd' names no entry
+bilbo: --in '2T6W9YB0DE' ends the id of 2 entries: 01JC5Q3V7XKM4P8R2T6W9YB0DE, 01JC5Q3V7XKM4P8S2T6W9YB0DE; give one id in full
+bilbo: --in kept 1,203 entries and left out 31 of the best 400: markdown 7, session 24
+bilbo: passed over: 3 copies, 1 further part of a record

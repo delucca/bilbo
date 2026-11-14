@@ -67,6 +67,7 @@ pub fn run(
     let ran = reindex::run(
         &indexing.request,
         &store,
+        &store,
         indexing.readers,
         &tokenizer,
         index.as_mut(),

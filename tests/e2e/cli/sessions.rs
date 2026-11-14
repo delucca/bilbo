@@ -4,16 +4,10 @@ use std::os::unix::fs::{PermissionsExt, symlink};
 use std::path::PathBuf;
 
 use super::Run;
-use super::scratch::Scratch;
+use super::scratch::{CLAUDE, MAIN, SUBAGENT, Scratch};
 
-const MAIN: &str = "5c3a9e1f-0b7d-4c2e-9a41-7f2d8e6b1c03";
 const OTHER: &str = "9b1d2c3e-4f5a-4b6c-8d7e-0f1a2b3c4d5e";
 const ROLLOUT: &str = "rollout-2026-11-06T09-10-00-019a4f2e-7c1d-7b3a-9e55-2d8c41f0a6b7.jsonl";
-const CLAUDE: &[u8] = include_bytes!(
-    "../../../libs/rust/kinds/session/fixtures/5c3a9e1f-0b7d-4c2e-9a41-7f2d8e6b1c03.jsonl"
-);
-const SUBAGENT: &[u8] =
-    include_bytes!("../../../libs/rust/kinds/session/fixtures/agent-ad63c2b3c9e7a4b3d.jsonl");
 const META: &[u8] =
     include_bytes!("../../../libs/rust/kinds/session/fixtures/agent-ad63c2b3c9e7a4b3d.meta.json");
 const CODEX: &[u8] = include_bytes!(
@@ -514,12 +508,12 @@ fn a_packed_rollout_that_replaces_a_plain_one_stays_the_same_entry() {
     );
     let read = scratch.run(&["read", ROLLOUT_ID]);
     assert_eq!(read.code, 0, "{}", read.stderr);
-    let origin = read
+    let label = read
         .stdout
         .lines()
-        .find_map(|line| line.strip_prefix("origin: "))
-        .expect("an origin");
-    assert!(origin.ends_with(".jsonl"), "{origin}");
+        .find_map(|line| line.strip_prefix("label: "))
+        .expect("a label");
+    assert!(label.ends_with(".jsonl (capture)"), "{label}");
     assert!(
         read.stdout.lines().any(|line| line == "generation: 1"),
         "{}",

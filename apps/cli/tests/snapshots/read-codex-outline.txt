@@ -1,9 +1,10 @@
 bilbo:01JC5Q3V7XKM4P8R2T6W9YB0DG
 kind: session
-origin: file:/home/me/.codex/sessions/2026/11/07/rollout-2026-11-07T08-00-00-019a5b3c-2d4e-7f60-8a1b-3c5d7e9f0a2b.jsonl
+label: file:/home/me/.codex/sessions/2026/11/07/rollout-2026-11-07T08-00-00-019a5b3c-2d4e-7f60-8a1b-3c5d7e9f0a2b.jsonl (capture)
+label: bilbo:01JC5Q3V7XKM4P8R2T6W9YB0DF
+label: /home/me/src/garden
 captured: 2026-11-09 03:12 UTC
 started: 2026-11-07 09:02 UTC
-parent: bilbo:01JC5Q3V7XKM4P8R2T6W9YB0DF
 records: 25
 generation: 1
 outline:

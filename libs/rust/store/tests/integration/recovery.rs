@@ -7,7 +7,8 @@ use bilbo_store::segments::{Notice, Options, Store};
 
 use crate::frames::{frames, spans};
 use crate::scratch::{
-    Scratch, catalog, flip, id_of, keep, open, open_seg, origin, read_records, sealed, sealing,
+    Scratch, capture_label, catalog, flip, id_of, keep, open, open_seg, read_records, sealed,
+    sealing,
 };
 
 fn reopen(layout: &bilbo_store::layout::Layout) -> Result<(Store, Vec<Notice>), StoreError> {
@@ -149,7 +150,7 @@ fn a_crash_between_the_fsync_and_the_catalog_commit_is_caught_up() {
 
     let (mut store, _) = reopen(&layout).expect("open");
     let head = store
-        .by_origin(&origin("a.md"))
+        .by_capture(&capture_label("a.md"))
         .expect("head")
         .expect("caught up");
     assert_eq!(head.records, 2);
@@ -184,8 +185,8 @@ fn a_deleted_catalog_is_rebuilt_from_the_segments_and_open_seg() {
     let b = id_of(&keep(&mut store, "b.md", b"three\n"));
     keep(&mut store, "a.md", b"one\ntwo\nmore\n");
     let heads = (
-        store.by_origin(&origin("a.md")).expect("head"),
-        store.by_origin(&origin("b.md")).expect("head"),
+        store.by_capture(&capture_label("a.md")).expect("head"),
+        store.by_capture(&capture_label("b.md")).expect("head"),
     );
     drop(store);
     fs::remove_file(catalog(&layout)).expect("delete");
@@ -200,8 +201,8 @@ fn a_deleted_catalog_is_rebuilt_from_the_segments_and_open_seg() {
     );
     assert_eq!(
         (
-            store.by_origin(&origin("a.md")).expect("head"),
-            store.by_origin(&origin("b.md")).expect("head")
+            store.by_capture(&capture_label("a.md")).expect("head"),
+            store.by_capture(&capture_label("b.md")).expect("head")
         ),
         heads
     );
@@ -301,7 +302,7 @@ fn an_entry_whose_body_frame_was_torn_away_is_new_on_the_next_capture() {
     let (mut store, notices) = reopen(&layout).expect("open");
     assert!(matches!(notices.first(), Some(Notice::CutTornTail { .. })));
     let head = store
-        .by_origin(&origin("a.md"))
+        .by_capture(&capture_label("a.md"))
         .expect("head")
         .expect("meta survives");
     assert_eq!(head.id, id);
@@ -372,7 +373,7 @@ fn a_new_capture_stopped_between_its_two_syncs_is_completed_by_the_next_one() {
     let (mut store, notices) = reopen(&layout).expect("open");
     assert!(notices.is_empty());
     let head = store
-        .by_origin(&origin("a.md"))
+        .by_capture(&capture_label("a.md"))
         .expect("head")
         .expect("meta caught up");
     assert_eq!(head.generation, Generation(0));
@@ -406,9 +407,8 @@ fn a_stopped_store_refuses_more_writes_and_seals_nothing() {
         let meta = bilbo_store::entries::Meta {
             id: bilbo_store::id::Id::parse("01JC5Q3V7XKM4P8R2T6W9YB0DE").expect("id"),
             kind: "k".into(),
-            origin: None,
+            labels: bilbo_store::labels::StoredLabels::default(),
             captured: std::time::UNIX_EPOCH,
-            parent: None,
         };
         assert!(matches!(
             store.set_meta(meta.id, &meta),
@@ -599,7 +599,12 @@ fn a_catalog_offset_that_is_not_a_frame_boundary_falls_back_to_a_rebuild() {
         read_records(&store, id, 1, 1),
         b"a longer note than the other one\n"
     );
-    assert!(store.by_origin(&origin("a.md")).expect("head").is_none());
+    assert!(
+        store
+            .by_capture(&capture_label("a.md"))
+            .expect("head")
+            .is_none()
+    );
 }
 
 #[test]
@@ -716,7 +721,10 @@ fn a_writer_that_finds_a_catalog_missing_a_sealed_segment_rebuilds_it() {
 
     let store = open(&layout);
     assert!(
-        store.by_origin(&origin("b.md")).expect("head").is_some(),
+        store
+            .by_capture(&capture_label("b.md"))
+            .expect("head")
+            .is_some(),
         "the rebuilt catalog holds the later file"
     );
     store.close().expect("close");
@@ -732,13 +740,13 @@ fn a_catch_up_after_an_interrupted_capture_drops_the_stale_stamp() {
         modified: std::time::UNIX_EPOCH
             + std::time::Duration::from_nanos(1_700_000_000_000_000_000),
     };
-    let origin = origin("a.md");
+    let label = capture_label("a.md");
     let capture = |store: &mut Store, bytes: &[u8], stamp: Option<Stamp>| {
         store.capture(&Capture {
-            origin: &origin,
+            label: &label,
             kind: "markdown",
             id: None,
-            parent: None,
+            id_label: None,
             stamp,
             bytes,
             ends: &crate::scratch::ends(bytes),
@@ -749,7 +757,7 @@ fn a_catch_up_after_an_interrupted_capture_drops_the_stale_stamp() {
     capture(&mut store, b"a\n", Some(settled)).expect("capture");
     assert_eq!(
         store
-            .by_origin(&origin)
+            .by_capture(&label)
             .expect("head")
             .expect("entry")
             .stamp,
@@ -762,7 +770,7 @@ fn a_catch_up_after_an_interrupted_capture_drops_the_stale_stamp() {
     drop(store);
 
     let (mut store, _) = reopen(&layout).expect("open");
-    let head = store.by_origin(&origin).expect("head").expect("entry");
+    let head = store.by_capture(&label).expect("head").expect("entry");
     assert_eq!(head.generation.0, 2, "the catch-up recovered the capture");
     assert_eq!(head.stamp, None, "the stale stamp must not survive");
 
@@ -771,7 +779,7 @@ fn a_catch_up_after_an_interrupted_capture_drops_the_stale_stamp() {
         matches!(restored, Captured::NewGeneration(_)),
         "{restored:?}"
     );
-    let head = store.by_origin(&origin).expect("head").expect("entry");
+    let head = store.by_capture(&label).expect("head").expect("entry");
     assert_eq!(head.generation.0, 3);
     assert_eq!(head.stamp, Some(settled));
 }

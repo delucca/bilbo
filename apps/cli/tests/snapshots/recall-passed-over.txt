@@ -1,0 +1,2 @@
+bilbo: searched 1,412 entries
+bilbo: passed over: 3 copies, 1 further part of a record

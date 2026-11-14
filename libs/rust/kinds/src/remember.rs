@@ -4,10 +4,9 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
-use bilbo_store::entries::{
-    Capture, CaptureError, Captured, Entries, Head, Meta, Origin, StoreError,
-};
+use bilbo_store::entries::{Capture, CaptureError, Captured, Entries, Head, Meta, StoreError};
 use bilbo_store::id::Id;
+use bilbo_store::labels::{CaptureLabel, StoredLabels};
 
 use crate::files::{Files, Node};
 use crate::kind::{Claim, Kind, Proposal};
@@ -156,11 +155,11 @@ fn claim_gone<'k>(
     let Some(name) = target.file_name() else {
         return Ok(None);
     };
-    let parent = target
+    let dir = target
         .parent()
-        .filter(|parent| !parent.as_os_str().is_empty())
+        .filter(|dir| !dir.as_os_str().is_empty())
         .unwrap_or(Path::new("."));
-    let Ok(folder) = files.canonical(parent) else {
+    let Ok(folder) = files.canonical(dir) else {
         return Ok(None);
     };
     let plan = claim_under(folder.join(name), named, kinds, files)?;
@@ -229,7 +228,7 @@ fn racy(modified: SystemTime, taken: SystemTime) -> bool {
     !taken.duration_since(modified).is_ok_and(|age| age >= RACY)
 }
 
-/// `Kept` carries the bytes a parent repair added.
+/// `Kept` carries the bytes an id label repair added.
 enum Done {
     Kept(Captured, u64),
     Refused(String),
@@ -277,7 +276,7 @@ enum Step {
 }
 
 /// Unchanged size and mtime: not read. The stamp is taken before the read, so a write during it
-/// shows next run. An entry without a parent proposes one again, so a subagent kept before its
+/// shows next run. An entry without an id label proposes one again, so a subagent kept before its
 /// session gets it once it grows. A kind may move an entry from one of its files to another
 /// between two looks, so a claim whose files are all gone is looked at once more.
 fn keep_file(
@@ -286,16 +285,16 @@ fn keep_file(
     files: &dyn Files,
     entries: &mut dyn Entries,
 ) -> Result<(PathBuf, Done), Error> {
-    let origin_path = claim.origin().to_path_buf();
-    let Some(origin) = Origin::file(claim.origin()) else {
-        return Ok((origin_path, Done::Refused("its path is not UTF-8".into())));
+    let label_path = claim.label().to_path_buf();
+    let Some(label) = CaptureLabel::file(claim.label()) else {
+        return Ok((label_path, Done::Refused("its path is not UTF-8".into())));
     };
-    let head = entries.by_origin(&origin)?;
+    let head = entries.by_capture(&label)?;
     let mut last = None;
     let mut not_a_file = false;
     for _ in 0..2 {
         for file in claim.files() {
-            match look(kind, claim, file, &origin, head.as_ref(), files, entries)? {
+            match look(kind, claim, file, &label, head.as_ref(), files, entries)? {
                 Step::Done(done) => return Ok((file.clone(), done)),
                 Step::Gone(error) => last = Some(error),
                 Step::NotAFile => not_a_file = true,
@@ -309,14 +308,14 @@ fn keep_file(
         Some(error) if !not_a_file => format!("cannot read: {error}"),
         _ => "it is not a regular file".to_owned(),
     };
-    Ok((origin_path, Done::Refused(reason)))
+    Ok((label_path, Done::Refused(reason)))
 }
 
 fn look(
     kind: &dyn Kind,
     claim: &Claim,
     file: &Path,
-    origin: &Origin,
+    label: &CaptureLabel,
     head: Option<&Head>,
     files: &dyn Files,
     entries: &mut dyn Entries,
@@ -359,13 +358,13 @@ fn look(
         Proposal::default()
     } else {
         let entries: &dyn Entries = entries;
-        kind.propose(claim.origin(), records, &|other| kept(entries, other))
+        kind.propose(claim.label(), records, &|other| kept(entries, other))
     };
     let input = Capture {
-        origin,
+        label,
         kind: kind.name(),
         id: proposal.id,
-        parent: proposal.parent,
+        id_label: proposal.id_label,
         stamp: stamp.filter(|stamp| !racy(stamp.modified, taken)),
         bytes: records,
         ends: &ends,
@@ -373,7 +372,7 @@ fn look(
     match entries.capture(&input) {
         Ok(captured) => {
             let adopted = match head {
-                Some(head) => adopt(kind, claim.origin(), records, head.id, entries)?,
+                Some(head) => adopt(kind, claim.label(), records, head.id, entries)?,
                 None => 0,
             };
             Ok(Step::Done(Done::Kept(captured, adopted)))
@@ -398,22 +397,25 @@ fn adopt(
     id: Id,
     entries: &mut dyn Entries,
 ) -> Result<u64, Error> {
-    let Some(meta) = entries.meta(id)?.filter(|meta| meta.parent.is_none()) else {
+    let Some(meta) = entries.meta(id)?.filter(|meta| meta.labels.id.is_none()) else {
         return Ok(0);
     };
-    let parent = {
+    let found = {
         let entries: &dyn Entries = entries;
         kind.propose(path, records, &|other| kept(entries, other))
-            .parent
-            .filter(|parent| *parent != id)
+            .id_label
+            .filter(|found| *found != id)
     };
-    let Some(parent) = parent else {
+    let Some(found) = found else {
         return Ok(0);
     };
     Ok(entries.set_meta(
         id,
         &Meta {
-            parent: Some(parent),
+            labels: StoredLabels {
+                id: Some(found),
+                ..meta.labels
+            },
             ..meta
         },
     )?)
@@ -421,9 +423,9 @@ fn adopt(
 
 /// A failed lookup gives no id: the capture that follows reads the same catalog and reports it.
 fn kept(entries: &dyn Entries, path: &Path) -> Option<Id> {
-    let origin = Origin::file(path)?;
+    let label = CaptureLabel::file(path)?;
     entries
-        .by_origin(&origin)
+        .by_capture(&label)
         .ok()
         .flatten()
         .map(|head| head.id)
@@ -545,10 +547,10 @@ mod tests {
         }
     }
 
-    fn origins(plan: &Plan<'_>) -> Vec<PathBuf> {
+    fn labels(plan: &Plan<'_>) -> Vec<PathBuf> {
         plan.claims
             .iter()
-            .map(|claim| claim.origin().to_path_buf())
+            .map(|claim| claim.label().to_path_buf())
             .collect()
     }
 
@@ -561,7 +563,7 @@ mod tests {
         let kinds = registry(vec![Suffix::new("one", ".one"), Suffix::new("two", ".two")]);
         let plan = plan(&request("/t/sub", None), &kinds, &tree()).expect("plan");
         assert_eq!(running(&plan), Some("one"));
-        assert_eq!(origins(&plan), vec![PathBuf::from("/t/sub/b.one")]);
+        assert_eq!(labels(&plan), vec![PathBuf::from("/t/sub/b.one")]);
         assert_eq!(plan.target, PathBuf::from("/t/sub"));
     }
 
@@ -632,7 +634,7 @@ mod tests {
         let kinds = registry(vec![Suffix::new("one", ".one"), Suffix::new("two", ".two")]);
         let plan = plan(&request("/t", Some("two")), &kinds, &tree()).expect("plan");
         assert_eq!(running(&plan), Some("two"));
-        assert_eq!(origins(&plan), vec![PathBuf::from("/t/c.two")]);
+        assert_eq!(labels(&plan), vec![PathBuf::from("/t/c.two")]);
 
         let empty = self::plan(&request("/t/d.txt", Some("two")), &kinds, &tree()).expect("plan");
         assert_eq!(running(&empty), Some("two"));
@@ -667,7 +669,7 @@ mod tests {
         )
         .expect("plan");
         assert_eq!(plan.target, PathBuf::from("/t/sub"));
-        assert_eq!(origins(&plan), vec![PathBuf::from("/t/sub/b.one")]);
+        assert_eq!(labels(&plan), vec![PathBuf::from("/t/sub/b.one")]);
     }
 
     #[test]
@@ -706,7 +708,7 @@ mod tests {
         )
         .expect("plan");
         assert_eq!(plan.target, PathBuf::from("/t/gone.one"));
-        assert_eq!(origins(&plan), vec![PathBuf::from("/t/gone.one")]);
+        assert_eq!(labels(&plan), vec![PathBuf::from("/t/gone.one")]);
     }
 
     #[test]

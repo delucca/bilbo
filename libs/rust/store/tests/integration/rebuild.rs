@@ -3,10 +3,14 @@ use std::time::{Duration, UNIX_EPOCH};
 
 use bilbo_store::entries::{Capture, Captured, Cursor, Entries, Head, Stamp};
 use bilbo_store::id::Id;
+use bilbo_store::labels::{Labels, Relabel};
 use bilbo_store::layout::Layout;
-use bilbo_store::segments::{Notice, Options, Rebuild, Step, Store};
+use bilbo_store::segments::{Cache, Notice, Options, Rebuild, Step, Store};
 
-use crate::scratch::{Scratch, catalog, ends, open, open_with, origin, read_records, sealing};
+use crate::scratch::{
+    Scratch, capture_label, catalog, ends, filed, label_rows, open, open_with, read_records,
+    sealing, words,
+};
 use crate::seal::stopping_at;
 
 fn stamp(seconds: u64) -> Stamp {
@@ -17,13 +21,13 @@ fn stamp(seconds: u64) -> Stamp {
 }
 
 fn capture(store: &mut Store, name: &str, bytes: &[u8], stamp: Option<Stamp>) {
-    let origin = origin(name);
+    let label = capture_label(name);
     store
         .capture(&Capture {
-            origin: &origin,
+            label: &label,
             kind: "markdown",
             id: None,
-            parent: None,
+            id_label: None,
             stamp,
             bytes,
             ends: &ends(bytes),
@@ -33,7 +37,7 @@ fn capture(store: &mut Store, name: &str, bytes: &[u8], stamp: Option<Stamp>) {
 
 fn head(store: &Store, name: &str) -> Head {
     store
-        .by_origin(&origin(name))
+        .by_capture(&capture_label(name))
         .expect("a head")
         .expect("an entry")
 }
@@ -108,12 +112,12 @@ fn a_stamp_comes_back_only_for_a_head_that_comes_back_the_same() {
         ..sealing()
     };
     let mut store = open_with(&layout, behind);
-    let origin = origin("grown.md");
+    let label = capture_label("grown.md");
     let cut = store.capture(&Capture {
-        origin: &origin,
+        label: &label,
         kind: "markdown",
         id: None,
-        parent: None,
+        id_label: None,
         stamp: Some(stamp(3)),
         bytes: b"one\ntwo\n",
         ends: &ends(b"one\ntwo\n"),
@@ -166,15 +170,15 @@ fn a_stamp_is_not_carried_to_a_head_whose_mark_alone_differs() {
 }
 
 #[test]
-fn a_stamp_is_not_carried_to_an_entry_whose_origin_changed_under_the_old_catalog() {
-    let scratch = Scratch::new("anew-origin-moved");
+fn a_stamp_is_not_carried_to_an_entry_whose_capture_label_changed_under_the_old_catalog() {
+    let scratch = Scratch::new("anew-capture-label-moved");
     let layout = scratch.layout();
     let mut store = open(&layout);
     capture(&mut store, "a.md", b"one\n", Some(stamp(1)));
     let id = head(&store, "a.md").id;
     let mut meta = store.meta(id).expect("meta").expect("some");
     drop(store);
-    meta.origin = Some(origin("b.md"));
+    meta.labels.capture = Some(capture_label("b.md"));
     let behind = Options {
         hook: Some(stopping_at(Step::Appended)),
         ..sealing()
@@ -187,13 +191,13 @@ fn a_stamp_is_not_carried_to_an_entry_whose_origin_changed_under_the_old_catalog
     let moved = head(&store, "b.md");
     assert_eq!(moved.id, id);
     assert_eq!(moved.stamp, None);
-    let origin = origin("b.md");
+    let label = capture_label("b.md");
     let again = store
         .capture(&Capture {
-            origin: &origin,
+            label: &label,
             kind: "markdown",
             id: None,
-            parent: None,
+            id_label: None,
             stamp: Some(stamp(1)),
             bytes: b"two\n",
             ends: &ends(b"two\n"),
@@ -203,7 +207,7 @@ fn a_stamp_is_not_carried_to_an_entry_whose_origin_changed_under_the_old_catalog
 }
 
 #[test]
-fn a_meta_update_that_changes_the_origin_drops_the_stamp_and_one_that_keeps_it_does_not() {
+fn a_meta_update_that_changes_the_capture_label_drops_the_stamp_and_one_that_keeps_it_does_not() {
     let scratch = Scratch::new("meta-stamp");
     let layout = scratch.layout();
     let mut store = open(&layout);
@@ -213,12 +217,12 @@ fn a_meta_update_that_changes_the_origin_drops_the_stamp_and_one_that_keeps_it_d
     let c = head(&store, "c.md").id;
 
     let mut meta = store.meta(c).expect("meta").expect("some");
-    meta.parent = Some(Id::parse("01JC5Q3V7XKM4P8R2T6W9YB0DF").expect("id"));
+    meta.labels.id = Some(Id::parse("01JC5Q3V7XKM4P8R2T6W9YB0DF").expect("id"));
     store.set_meta(c, &meta).expect("set_meta");
     assert_eq!(head(&store, "c.md").stamp, Some(stamp(2)));
 
     let mut meta = store.meta(a).expect("meta").expect("some");
-    meta.origin = Some(origin("new.md"));
+    meta.labels.capture = Some(capture_label("new.md"));
     store.set_meta(a, &meta).expect("set_meta");
     assert_eq!(head(&store, "new.md").stamp, None);
 }
@@ -267,4 +271,75 @@ fn an_empty_store_gets_its_catalog_made_without_a_word() {
     assert_eq!(notices, []);
     assert_eq!(store.changes(&Cursor::start()).expect("changes").0, []);
     assert!(catalog(&scratch.layout()).exists());
+}
+
+#[test]
+fn a_catalog_made_again_has_no_text_label_and_a_new_id() {
+    let scratch = Scratch::new("anew-no-text-labels");
+    let layout = scratch.layout();
+    let mut store = open(&layout);
+    capture(&mut store, "agent.jsonl", b"{}\n", None);
+    capture(&mut store, "session.jsonl", b"{}\n", None);
+    let agent = head(&store, "agent.jsonl").id;
+    let session = head(&store, "session.jsonl").id;
+    let mut meta = store.meta(agent).expect("meta").expect("some");
+    meta.labels.id = Some(session);
+    store.set_meta(agent, &meta).expect("set_meta");
+    store
+        .relabel(&[filed(agent, &["home me shed"])])
+        .expect("relabel");
+    let before = catalog_id(&store);
+    store.close().expect("close");
+    let (store, _) = anew(&layout);
+    assert_ne!(catalog_id(&store), before);
+    assert_eq!(store.with_words(&words("shed")).expect("find"), []);
+    assert_eq!(label_rows(&layout), (0, 0, 0));
+    assert_eq!(head(&store, "agent.jsonl").id, agent);
+    assert_eq!(store.belonging_to(&[session]).expect("found"), [agent]);
+    assert_eq!(store.meta(agent).expect("meta").expect("some"), meta);
+}
+
+#[test]
+fn a_catalog_of_an_older_version_is_made_again_with_the_label_tables() {
+    for older in [2, 3, 4] {
+        let scratch = Scratch::new("anew-older-version");
+        let layout = scratch.layout();
+        let mut store = open(&layout);
+        capture(&mut store, "a.md", b"one\n", None);
+        let a = head(&store, "a.md").id;
+        store.relabel(&[filed(a, &["shed"])]).expect("relabel");
+        let before = catalog_id(&store);
+        store.close().expect("close");
+        crate::scratch::sql(&layout, &format!("PRAGMA user_version = {older}"));
+        let store = open(&layout);
+        assert_ne!(catalog_id(&store), before, "{older}");
+        assert_eq!(head(&store, "a.md").id, a);
+        assert_eq!(label_rows(&layout), (0, 0, 0), "{older}");
+        drop(store);
+        let version: i64 = rusqlite::Connection::open(catalog(&layout))
+            .expect("open")
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .expect("version");
+        assert_eq!(version, 5);
+    }
+}
+
+#[test]
+fn a_reader_finds_no_kept_catalog_in_a_file_of_an_older_version() {
+    let scratch = Scratch::new("reader-older-version");
+    let layout = scratch.layout();
+    let mut store = open(&layout);
+    capture(&mut store, "a.md", b"one\n", None);
+    let a = head(&store, "a.md").id;
+    store.relabel(&[filed(a, &["shed"])]).expect("relabel");
+    store.close().expect("close");
+    crate::scratch::sql(&layout, "PRAGMA user_version = 4");
+    let held = fs::read(catalog(&layout)).expect("read");
+    let canonical = fs::canonicalize(&layout.cache).expect("canonical");
+    let store = Store::open_read_only(&layout, sealing(), &mut |_| {}).expect("read-only open");
+    assert_eq!(store.reader_cache(), &Cache::NoCatalog(canonical));
+    assert_eq!(read_records(&store, a, 1, 1), b"one\n");
+    assert_eq!(store.with_words(&words("shed")).expect("find"), []);
+    drop(store);
+    assert_eq!(fs::read(catalog(&layout)).expect("read"), held);
 }

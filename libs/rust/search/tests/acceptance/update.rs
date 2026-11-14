@@ -8,7 +8,11 @@ use bilbo_search::work::{Error, Request};
 use bilbo_store::entries::Cursor;
 use bilbo_store::id::Id;
 
-use crate::fakes::{Bytes, CATALOG, Docs, Lines, Log, Row, Whole, id, unread};
+use crate::fakes::{
+    Bytes, CATALOG, Docs, Fault, Foldered, Lines, Log, Row, Whole, id, named, unread, wide,
+};
+use bilbo_search::analyze::label_words;
+use bilbo_store::labels::Labels;
 
 const SMALL: Size = Size {
     tokens: 12,
@@ -42,7 +46,7 @@ fn tokenizer() -> Tokenizer {
 
 fn readers() -> Vec<Box<dyn Reader>> {
     vec![
-        Box::new(Lines("lines")),
+        Box::new(Foldered("lines")),
         Box::new(Lines("notes")),
         Box::new(Whole("plain")),
     ]
@@ -59,7 +63,9 @@ fn keep_with(
     tries: u8,
 ) -> Result<Option<Output>, Error> {
     match plan(&manifest_of(request), tries, log, index)? {
-        Plan::Work(work) => apply(work, request, log, &readers(), &tokenizer(), index).map(Some),
+        Plan::Work(work) => {
+            apply(work, request, log, log, &readers(), &tokenizer(), index).map(Some)
+        }
         Plan::Current => Ok(None),
     }
 }
@@ -72,7 +78,7 @@ fn keep(log: &Log, index: &mut Docs) -> Output {
 
 fn rebuilt_with(request: &Request, log: &Log) -> Vec<Row> {
     let mut fresh = Docs::default();
-    reindex::run(request, log, &readers(), &tokenizer(), &mut fresh).expect("a rebuild");
+    reindex::run(request, log, log, &readers(), &tokenizer(), &mut fresh).expect("a rebuild");
     fresh.sorted()
 }
 
@@ -241,7 +247,7 @@ fn a_meta_change_does_the_whole_entry_again() {
     log.put(2, "lines", &["xxxxx"]);
     let mut index = Docs::default();
     keep(&log, &mut index);
-    log.retouch(1, |held| held.parent = Some(id(2)));
+    log.retouch(1, |held| held.id_label = Some(id(2)));
     keep(&log, &mut index);
     assert_eq!(index.deletes, [(id(1), 1)]);
     assert_eq!(index.sorted(), rebuilt(&log));
@@ -592,7 +598,7 @@ fn apply_refuses_a_tokenizer_the_plan_was_not_made_for() {
         id: "other/1",
     };
     let error =
-        apply(work, &request(), &log, &readers(), &other, &mut index).expect_err("a refusal");
+        apply(work, &request(), &log, &log, &readers(), &other, &mut index).expect_err("a refusal");
     assert!(matches!(error, Error::Manifest), "{error:?}");
     assert_eq!((index.writes, index.commits), (0, 0));
     assert_eq!(index.position, None);
@@ -697,8 +703,16 @@ fn apply_refuses_a_request_whose_chunk_size_or_rendering_the_plan_was_not_made_f
         else {
             panic!("work");
         };
-        let error =
-            apply(work, &other, &log, &readers(), &tokenizer(), &mut index).expect_err("a refusal");
+        let error = apply(
+            work,
+            &other,
+            &log,
+            &log,
+            &readers(),
+            &tokenizer(),
+            &mut index,
+        )
+        .expect_err("a refusal");
         assert!(matches!(error, Error::Manifest), "{error:?}");
         assert_eq!((index.writes, index.commits), (0, 0));
         assert_eq!(index.position, None);
@@ -708,4 +722,184 @@ fn apply_refuses_a_request_whose_chunk_size_or_rendering_the_plan_was_not_made_f
         };
         assert_eq!(work.rebuilds(), Some(Reason::Unmade));
     }
+}
+
+fn two_filed() -> (Log, Docs) {
+    let mut log = Log::new();
+    log.put(1, "lines", &["aaaaa", "bbbbb"]);
+    log.put(2, "lines", &["xxxxx", "yyyyy"]);
+    log.label(1, "file:/home/me/src/garden");
+    log.label(2, "file:/home/me/src/shed");
+    let mut index = Docs::default();
+    index.events = log.events.clone();
+    keep(&log, &mut index);
+    (log, index)
+}
+
+#[test]
+fn labels_are_filed_before_the_index_commits() {
+    let (mut log, mut index) = two_filed();
+    log.events.borrow_mut().clear();
+    log.append(1, &["ccccc"]);
+    keep(&log, &mut index);
+    let events = log.events.borrow();
+    assert_eq!(events[events.len() - 2..], ["relabel", "commit"]);
+    assert_eq!(
+        events.iter().filter(|event| **event == "relabel").count(),
+        1
+    );
+}
+
+#[test]
+fn a_failed_relabel_ends_the_run_before_the_commit() {
+    let (mut log, mut index) = two_filed();
+    log.events.borrow_mut().clear();
+    log.append(1, &["ccccc"]);
+    log.refuse_relabel.set(Some(log.relabels.borrow().len()));
+    let error = keep_with(&request(), &log, &mut index, TRIES).expect_err("a refusal");
+    assert!(matches!(error, Error::Store(_)), "{error:?}");
+    assert!(!log.events.borrow().contains(&"commit"));
+    assert_eq!(index.rolled_back, 1);
+}
+
+#[test]
+fn an_update_stopped_before_it_files_anything_changes_no_label() {
+    let (mut log, mut index) = two_filed();
+    let (rows, position) = (index.sorted(), index.position.clone());
+    let (calls, filed) = (log.relabels.borrow().len(), log.filed.borrow().clone());
+    let adds = index.adds;
+    log.append(1, &["ccccc"]);
+    log.append(2, &["zzzzz"]);
+    index.fail_entry = Some(id(2));
+    let error = keep_with(&request(), &log, &mut index, TRIES).expect_err("a refusal");
+    assert!(
+        index.adds > adds,
+        "entry 1 was added whole before the refusal"
+    );
+    assert!(matches!(error, Error::Index(_)), "{error:?}");
+    assert_eq!(log.relabels.borrow().len(), calls);
+    assert_eq!(*log.filed.borrow(), filed);
+    assert_eq!((index.sorted(), index.position.clone()), (rows, position));
+    assert!(named(&index, &log));
+}
+
+#[test]
+fn an_update_stopped_between_two_batches_leaves_every_entry_its_labels() {
+    let mut log = Log::crowd(1100);
+    let mut index = Docs::default();
+    keep(&log, &mut index);
+    let (rows, position) = (index.sorted(), index.position.clone());
+    let base = log.relabels.borrow().len();
+    log.append_all("more words");
+    log.refuse_relabel.set(Some(base + 1));
+    let error = keep_with(&request(), &log, &mut index, TRIES).expect_err("a refusal");
+    assert!(matches!(error, Error::Store(_)), "{error:?}");
+    let calls = log.relabels.borrow().clone();
+    assert_eq!(calls.len() - base, 2);
+    assert_eq!(calls[base].len(), 512);
+    assert_eq!((index.sorted(), index.position.clone()), (rows, position));
+    assert_eq!(index.rolled_back, 1);
+    assert!(named(&index, &log));
+    log.refuse_relabel.set(None);
+    keep(&log, &mut index);
+    assert_eq!(index.sorted(), rebuilt(&log));
+    assert!(named(&index, &log));
+}
+
+#[test]
+fn an_update_whose_commit_is_refused_leaves_the_labels_filed_and_the_index_as_it_was() {
+    let (mut log, mut index) = two_filed();
+    let (rows, position) = (index.sorted(), index.position.clone());
+    log.put(3, "lines", &["ccccc"]);
+    log.label(3, "file:/home/me/src/greenhouse");
+    log.append(1, &["ddddd"]);
+    index.commit_fault = Fault::Refused;
+    let error = keep_with(&request(), &log, &mut index, TRIES).expect_err("a refusal");
+    assert!(matches!(error, Error::Index(_)), "{error:?}");
+    assert_eq!((index.sorted(), index.position.clone()), (rows, position));
+    assert_eq!(index.rolled_back, 1);
+    assert!(log.filed.borrow().contains_key(&id(3)));
+    assert!(named(&index, &log));
+}
+
+#[test]
+fn a_commit_that_publishes_and_then_reports_an_error_leaves_the_new_index_and_its_labels() {
+    let (mut log, mut index) = two_filed();
+    log.put(3, "lines", &["ccccc"]);
+    log.label(3, "file:/home/me/src/greenhouse");
+    log.append(1, &["ddddd"]);
+    log.append(2, &["eeeee"]);
+    index.commit_fault = Fault::AfterPublishing;
+    let error = keep_with(&request(), &log, &mut index, TRIES).expect_err("an error");
+    assert!(matches!(error, Error::Index(_)), "{error:?}");
+    assert_eq!(index.rolled_back, 1);
+    assert_eq!(index.sorted(), rebuilt(&log));
+    assert_eq!(
+        index
+            .position
+            .as_ref()
+            .map(|position| position.cursor.clone()),
+        Some(log.cursor())
+    );
+    assert!(log.filed.borrow().contains_key(&id(3)));
+    assert!(named(&index, &log));
+    index.commit_fault = Fault::None;
+    assert_eq!(plan_of(&log, &mut index, TRIES), Plan::Current);
+}
+
+#[test]
+fn a_rebuild_stopped_under_another_setting_leaves_the_first_index_current_and_its_labels_whole() {
+    let log = Log::crowd(1100);
+    let mut index = Docs::default();
+    keep(&log, &mut index);
+    let (rows, position) = (index.sorted(), index.position.clone());
+    let other = request_of(
+        Size {
+            tokens: 16,
+            overlap: 2,
+        },
+        1,
+    );
+    let base = log.relabels.borrow().len();
+    log.refuse_relabel.set(Some(base + 1));
+    let error = keep_with(&other, &log, &mut index, TRIES).expect_err("a refusal");
+    assert!(matches!(error, Error::Store(_)), "{error:?}");
+    assert_eq!(log.relabels.borrow().len() - base, 2);
+    assert_eq!((index.sorted(), index.position.clone()), (rows, position));
+    assert_eq!(plan_of(&log, &mut index, TRIES), Plan::Current);
+    assert!(named(&index, &log));
+    for n in [1u16, 300, 513, 1100] {
+        let word = label_words(&format!("place{n}"));
+        assert_eq!(log.with_words(&word).expect("entries"), [wide(n)], "{n}");
+    }
+}
+
+#[test]
+fn a_session_that_grows_and_names_a_new_folder_is_filed_under_it_by_the_next_update() {
+    let mut log = Log::new();
+    log.put(1, "lines", &["aaaaa", "cwd:/home/me/src/garden"]);
+    log.label(1, "file:/home/me/.claude/projects/garden/one.jsonl");
+    let mut index = Docs::default();
+    keep(&log, &mut index);
+    assert!(
+        log.with_words(&label_words("shed"))
+            .expect("entries")
+            .is_empty()
+    );
+    log.append(1, &["cwd:/home/me/src/shed"]);
+    keep(&log, &mut index);
+    let texts: Vec<String> = log.filed.borrow()[&id(1)]
+        .iter()
+        .map(|(text, _)| text.clone())
+        .collect();
+    assert_eq!(
+        texts,
+        [
+            "file:/home/me/.claude/projects/garden/one.jsonl",
+            "/home/me/src/garden",
+            "/home/me/src/shed"
+        ]
+    );
+    assert_eq!(index.sorted(), rebuilt(&log));
+    assert!(named(&index, &log));
 }

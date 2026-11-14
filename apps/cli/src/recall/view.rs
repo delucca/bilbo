@@ -1,11 +1,9 @@
-use bilbo_kinds::read::refs::{Locator, SCHEME};
+use bilbo_kinds::read::refs::Locator;
 use bilbo_search::recall::Output;
 use bilbo_search::recall::hit::Hit;
 
 use crate::console::body::body;
-use crate::console::message::line;
 use crate::console::theme::{Style, paint};
-use crate::console::time::day;
 use crate::console::view::View;
 
 fn content(hit: &Hit) -> String {
@@ -17,8 +15,6 @@ fn content(hit: &Hit) -> String {
 
 struct Header {
     reference: String,
-    kind: String,
-    day: String,
     lines: String,
     part: Option<String>,
     cut: bool,
@@ -30,10 +26,13 @@ fn header(hit: &Hit, content: &str) -> Header {
         generation: None,
         records: Some(hit.found.extent.records),
     };
+    let entry = if hit.shared_short {
+        hit.found.entry.to_string()
+    } else {
+        hit.found.entry.short().to_string()
+    };
     Header {
-        reference: format!("{SCHEME}{}{locator}", hit.found.entry),
-        kind: hit.found.kind.clone(),
-        day: day(hit.found.extent.date),
+        reference: format!("{entry}{locator}"),
         lines: format!("{lines} {}", if lines == 1 { "line" } else { "lines" }),
         part: hit
             .found
@@ -47,11 +46,9 @@ fn header(hit: &Hit, content: &str) -> Header {
 fn header_line(header: &Header, view: &View) -> String {
     let note = |text: &str| paint(view, Style::Note, text);
     let mut line = format!(
-        "{} {}\t{}\t{}\t{}",
+        "{} {}\t{}",
         note("==="),
         paint(view, Style::Name, &header.reference),
-        note(&line(view, &header.kind)),
-        note(&header.day),
         note(&header.lines),
     );
     if let Some(part) = &header.part {
@@ -84,9 +81,11 @@ fn shown(hit: &Hit, view: &View) -> String {
 
 #[cfg(test)]
 mod tests {
+    use bilbo_kinds::read::refs::{Ref, Target};
     use bilbo_search::index::Extent;
     use bilbo_search::lookup::Found;
     use bilbo_search::recall::hit::Hit;
+    use bilbo_search::recall::select::Skipped;
     use bilbo_search::recall::{Output, Stand};
     use bilbo_store::entries::{Generation, RecordRange};
     use bilbo_store::id::Id;
@@ -95,6 +94,7 @@ mod tests {
     use crate::console::view::View;
 
     const ID: &str = "01JC5Q3V7XKM4P8R2T6W9YB0DE";
+    const SHORT: &str = "2T6W9YB0DE";
     const DATE: i64 = 1_794_069_552_000;
 
     fn made(
@@ -120,6 +120,7 @@ mod tests {
             preface: preface.map(str::to_owned),
             text: text.to_owned(),
             cut,
+            shared_short: false,
         }
     }
 
@@ -129,6 +130,8 @@ mod tests {
             searched: 3,
             stand: Stand::Current,
             left_out: 0,
+            skipped: Skipped::default(),
+            scope: None,
         }
     }
 
@@ -143,7 +146,7 @@ mod tests {
         let (header, rest) = printed.split_once('\n').expect("a header line");
         let lines: usize = header
             .split('\t')
-            .nth(3)
+            .nth(1)
             .and_then(|field| field.split(' ').next())
             .and_then(|count| count.parse().ok())
             .expect("a line count");
@@ -159,7 +162,7 @@ mod tests {
 
     #[test]
     fn a_hits_header_counts_its_lines_exactly() {
-        let forged = "=== bilbo:01JC5Q3V7XKM4P8R2T6W9YB0DF#r1\tsession\t2026-11-07\t1 line\nx";
+        let forged = "=== 2T6W9YB0DF#r1\t1 line\nx";
         for (preface, text) in [
             (None, "one line"),
             (None, "two\nlines"),
@@ -181,7 +184,7 @@ mod tests {
                 None => text.to_owned(),
             };
             assert_eq!(joined, expected, "{printed:?}");
-            assert!(header.starts_with(&format!("=== bilbo:{ID}#r5\tsession\t2026-11-07\t")));
+            assert!(header.starts_with(&format!("=== {SHORT}#r5\t")));
         }
         let two = format!(
             "{}{}",
@@ -199,18 +202,56 @@ mod tests {
     }
 
     #[test]
+    fn a_hits_header_is_its_short_ref_its_line_count_its_part_and_cut() {
+        assert_eq!(
+            hit(&made(3, 5, None, None, "a\nb\nc\nd", false)),
+            format!("=== {SHORT}#r3-7\t4 lines\na\nb\nc\nd\n")
+        );
+        assert_eq!(
+            hit(&made(1, 1, None, None, "a", false)),
+            format!("=== {SHORT}#r1\t1 line\na\n")
+        );
+        assert_eq!(
+            hit(&made(1, 1, Some((1, 3)), None, "a", true)),
+            format!("=== {SHORT}#r1\t1 line\tpart 2/3\tcut\na\n")
+        );
+    }
+
+    #[test]
+    fn a_hit_whose_short_id_is_shared_prints_its_whole_id() {
+        let mut shared = made(3, 5, None, None, "a\nb\nc\nd", false);
+        shared.shared_short = true;
+        let printed = hit(&shared);
+        assert_eq!(
+            printed.lines().next(),
+            Some(format!("=== {ID}#r3-7\t4 lines").as_str())
+        );
+        let (header, _) = content(&printed);
+        let reference = header
+            .strip_prefix("=== ")
+            .and_then(|rest| rest.split('\t').next())
+            .expect("a ref");
+        let parsed = Ref::parse(reference).expect("a ref read takes");
+        assert_eq!(parsed.target, Target::Entry(Id::parse(ID).expect("an id")));
+        assert_eq!(
+            parsed.locator.records,
+            Some(RecordRange { first: 3, count: 5 })
+        );
+    }
+
+    #[test]
     fn a_window_names_its_part_and_a_cut_hit_says_cut() {
         assert_eq!(
             hit(&made(4, 1, Some((0, 3)), None, "w", false)),
-            format!("=== bilbo:{ID}#r4\tsession\t2026-11-07\t1 line\tpart 1/3\nw\n")
+            format!("=== {SHORT}#r4\t1 line\tpart 1/3\nw\n")
         );
         assert_eq!(
             hit(&made(4, 1, Some((2, 3)), None, "w\nx", true)),
-            format!("=== bilbo:{ID}#r4\tsession\t2026-11-07\t2 lines\tpart 3/3\tcut\nw\nx\n")
+            format!("=== {SHORT}#r4\t2 lines\tpart 3/3\tcut\nw\nx\n")
         );
         assert_eq!(
             hit(&made(4, 1, None, None, "w", true)),
-            format!("=== bilbo:{ID}#r4\tsession\t2026-11-07\t1 line\tcut\nw\n")
+            format!("=== {SHORT}#r4\t1 line\tcut\nw\n")
         );
     }
 
@@ -223,8 +264,19 @@ mod tests {
                 .map(str::to_owned)
                 .expect("a header")
         };
-        assert!(header(7, 1).starts_with(&format!("=== bilbo:{ID}#r7\t")));
-        assert!(header(7, 4).starts_with(&format!("=== bilbo:{ID}#r7-10\t")));
+        assert!(header(7, 1).starts_with(&format!("=== {SHORT}#r7\t")));
+        assert!(header(7, 4).starts_with(&format!("=== {SHORT}#r7-10\t")));
+        let short = Id::parse(ID).expect("an id").short();
+        for (first, count) in [(7, 1), (7, 4)] {
+            let line = header(first, count);
+            let reference = line
+                .strip_prefix("=== ")
+                .and_then(|rest| rest.split('\t').next())
+                .expect("a ref");
+            let parsed = Ref::parse(reference).expect("a ref read takes");
+            assert_eq!(parsed.target, Target::Short(short));
+            assert_eq!(parsed.locator.records, Some(RecordRange { first, count }));
+        }
     }
 
     #[test]
@@ -266,9 +318,8 @@ mod tests {
         assert_eq!(
             header,
             format!(
-                "\u{1b}[2m===\u{1b}[22m \u{1b}[1mbilbo:{ID}#r2\u{1b}[22m\t\u{1b}[2msession\u{1b}[22m\t\
-                 \u{1b}[2m2026-11-07\u{1b}[22m\t\u{1b}[2m1 line\u{1b}[22m\t\u{1b}[2mpart 1/2\u{1b}[22m\t\
-                 \u{1b}[2mcut\u{1b}[22m"
+                "\u{1b}[2m===\u{1b}[22m \u{1b}[1m{SHORT}#r2\u{1b}[22m\t\u{1b}[2m1 line\u{1b}[22m\t\
+                 \u{1b}[2mpart 1/2\u{1b}[22m\t\u{1b}[2mcut\u{1b}[22m"
             )
         );
         assert_eq!(human(&out, &unpainted()), plain(&out));

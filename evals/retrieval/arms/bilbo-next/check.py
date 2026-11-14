@@ -1,7 +1,8 @@
 """Check the bilbo stores unpacked in /work/store: the manifest's sessions are the corpus's (as many as the limit says),
 entries.jsonl has one row a session with distinct ids in a store, and every store answers `bilbo recall`: exit 0, its
-stderr counts the entries the build's own recall counted (`indexed` in the manifest), every header is followed by its
-lines, and `bilbo read` takes the first hit's ref; a query of stopwords only exits 1 with `bilbo: nothing matched`. build-store.sh --check runs it in the build
+stderr counts the entries the build's own recall counted (`indexed` in the manifest) and holds no other line than that and
+`passed over`, every header is followed by its lines, every ref of the probe is a short one unless another entry of the store ends alike, and `bilbo read` takes the first; a query of stopwords only exits 1 with `bilbo: nothing matched`; and `recall --in <remembered>/<repo>` for the store's first
+repository exits 0 with `bilbo: --in kept N entries`, N the repository's rows of entries.jsonl. build-store.sh --check runs it in the build
 service."""
 
 import json
@@ -14,8 +15,10 @@ from pathlib import Path
 STORE = Path("/work/store")
 CORPUS = Path("/corpus")
 BILBO = "/usr/local/bin/bilbo"
-HEADER = re.compile(r"^=== (bilbo:[0-9A-Z]{26}#r\d+(?:-\d+)?)\t([a-z]+)\t(\d{4}-\d{2}-\d{2})\t(\d+) lines?(?:\t[^\t\n]+)*$")
+HEADER = re.compile(r"^=== (([0-9A-HJKMNP-TV-Z]{10}|[0-9A-HJKMNP-TV-Z]{26})#r(\d+)(?:-(\d+))?)\t(\d+) lines?((?:\t[^\t\n]+)*)$")
 SEARCHED = re.compile(r"^bilbo: searched ([\d,]+) entr(?:y|ies)$")
+PASSED_OVER = re.compile(r"^bilbo: passed over: .+$")
+IN_KEPT = re.compile(r"^bilbo: --in kept ([\d,]+) entr(?:y|ies)( and left out (?:none|[\d,]+) of the best [\d,]+(?:: .+)?)?$")
 
 
 def stamp(path):
@@ -55,10 +58,10 @@ def headers(stdout):
     found, i = [], 0
     while i < len(lines):
         m = HEADER.match(lines[i])
-        if not m or i + int(m.group(4)) >= len(lines):
+        if not m or i + int(m.group(5)) >= len(lines):
             return None
         found.append(m.group(1))
-        i += 1 + int(m.group(4))
+        i += 1 + int(m.group(5))
     return found
 
 
@@ -102,14 +105,27 @@ def main(binary=BILBO, store=STORE):
         code, out, err = run(name, "recall", "--budget", "4000", "--", "user", "assistant", binary=binary, store=store)
         count = [m for m in map(SEARCHED.match, err.splitlines()) if m]
         found = headers(out) if code == 0 else None
-        ok = (code == 0 and err.splitlines() == [m.string for m in count] and len(count) == 1
+        other = [line for line in err.splitlines() if not (SEARCHED.match(line) or PASSED_OVER.match(line))]
+        ok = (code == 0 and not other and len(count) == 1
               and int(count[0].group(1).replace(",", "")) == manifest["stores"][name]["indexed"] and bool(found))
         if not ok:
             bad(f"{name}: recall exited {code}; stderr {err.strip()[:300]!r}; hits {found and len(found)}")
             continue
+        ids = [r["id"] for r in by_store[name]]
+        for ref in found:
+            whole = ref.split("#")[0]
+            if len(whole) == 26 and not any(i != whole and i.endswith(whole[-10:]) for i in ids):
+                bad(f"{name}: the ref {ref} prints a whole id no other entry's id ends like")
         read_code, _, read_err = run(name, "read", found[0], "--budget", "256", binary=binary, store=store)
         if read_code != 0:
             bad(f"{name}: read {found[0]} exited {read_code}: {read_err.strip()[:300]}")
+        repo = by_store[name][0]["repo"]
+        want = sum(r["repo"] == repo for r in by_store[name])
+        code, out, err = run(name, "recall", "--in", f"{manifest.get('remembered', '')}/{repo}", "--budget", "4000", "--", "user", "assistant",
+                             binary=binary, store=store)
+        scoped = [m for m in map(IN_KEPT.match, err.splitlines()) if m]
+        if "remembered" not in manifest or code != 0 or len(scoped) != 1 or int(scoped[0].group(1).replace(",", "")) != want:
+            bad(f"{name}: recall --in {repo} exited {code}; stderr {err.strip()[:300]!r}; the repository has {want} entries")
         code, out, err = run(name, "recall", "--", "the", "and", "of", "to", binary=binary, store=store)
         if code != 1 or out or not err.splitlines() or err.splitlines()[-1] != "bilbo: nothing matched":
             bad(f"{name}: a query of stopwords exited {code}; stderr {err.strip()[:300]!r}")

@@ -984,18 +984,16 @@ impl Committed {
     fn live_postings(
         &self,
         loaded: &Loaded,
-        field: Field,
-        term: &str,
+        term: &Term,
         option: IndexRecordOption,
         mut each: impl FnMut(usize, DocId, u32),
     ) -> Result<(), IndexError> {
-        let term = Term::from_field_text(field, term);
         for (ordinal, segment) in loaded.readers.iter().enumerate() {
             let inverted = segment
-                .inverted_index(field)
+                .inverted_index(term.field())
                 .map_err(|error| self.read_error(&error))?;
             let Some(mut postings) = inverted
-                .read_postings(&term, option)
+                .read_postings(term, option)
                 .map_err(|error| self.read_error(&error))?
             else {
                 continue;
@@ -1114,8 +1112,7 @@ impl Lookup for Committed {
             }
             self.live_postings(
                 &loaded,
-                loaded.fields.text,
-                term,
+                &Term::from_field_text(loaded.fields.text, term),
                 IndexRecordOption::WithFreqs,
                 |ordinal, doc, freq| {
                     let length = lengths[ordinal].first(doc).unwrap_or_default();
@@ -1133,17 +1130,26 @@ impl Lookup for Committed {
     fn holding(&self, filter: &Filter<'_>) -> Result<Vec<u32>, IndexError> {
         self.guard(|| {
             let loaded = self.required()?;
-            let Filter::Kind(kind) = filter;
             let mut found = Vec::new();
-            self.live_postings(
-                &loaded,
-                loaded.fields.kind,
-                kind,
-                IndexRecordOption::Basic,
-                |ordinal, doc, _| {
-                    found.push(loaded.offsets[ordinal] + doc);
-                },
-            )?;
+            match filter {
+                Filter::Kind(kind) => self.live_postings(
+                    &loaded,
+                    &Term::from_field_text(loaded.fields.kind, kind),
+                    IndexRecordOption::Basic,
+                    |ordinal, doc, _| found.push(loaded.offsets[ordinal] + doc),
+                )?,
+                Filter::Entries(ids) => {
+                    for id in *ids {
+                        self.live_postings(
+                            &loaded,
+                            &Term::from_field_bytes(loaded.fields.entry, &id.to_bytes()),
+                            IndexRecordOption::Basic,
+                            |ordinal, doc, _| found.push(loaded.offsets[ordinal] + doc),
+                        )?;
+                    }
+                    found.sort_unstable();
+                }
+            }
             Ok(found)
         })
     }

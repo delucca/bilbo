@@ -166,6 +166,7 @@ def main():
         "key": inputs[0],
         "inputs": inputs[1:],
         "scope": scope,
+        "remembered": str(STAGED if limited else CORPUS),
         "bilbo": version,
         "binary_sha256": hashlib.sha256(Path(BILBO).read_bytes()).hexdigest(),
         "sessions": len(plan),

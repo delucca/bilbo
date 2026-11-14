@@ -4,6 +4,7 @@ mod capture;
 mod filter;
 mod frames;
 mod guards;
+mod labels;
 mod lock;
 mod lookup;
 mod read_only;

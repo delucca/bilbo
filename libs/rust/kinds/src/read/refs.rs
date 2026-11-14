@@ -1,7 +1,7 @@
 use std::fmt;
 
 use bilbo_store::entries::{Generation, RecordRange};
-use bilbo_store::id::Id;
+use bilbo_store::id::{Id, Short};
 
 pub const SCHEME: &str = "bilbo:";
 pub(crate) const SHORTEST: usize = 8;
@@ -11,6 +11,7 @@ const DASHES: [usize; 4] = [8, 13, 18, 23];
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Target {
     Entry(Id),
+    Short(Short),
     Session(String),
 }
 
@@ -57,11 +58,15 @@ fn parse_target(text: &str) -> Result<Target, Malformed> {
     if let Some(id) = Id::parse(bare) {
         return Ok(Target::Entry(id));
     }
+    if let Some(short) = Short::parse(bare) {
+        return Ok(Target::Short(short));
+    }
     if bare.len() == text.len() && is_session(text) {
         return Ok(Target::Session(text.to_ascii_lowercase()));
     }
     Err(Malformed(format!(
-        "'{text}' is not an entry id, a session id or {SHORTEST} or more characters of one"
+        "'{text}' is not an entry id, its last {} characters, a session id or {SHORTEST} or more characters of one",
+        Short::LENGTH
     )))
 }
 
@@ -159,7 +164,7 @@ impl fmt::Display for Locator {
 #[cfg(test)]
 mod tests {
     use bilbo_store::entries::{Generation, RecordRange};
-    use bilbo_store::id::Id;
+    use bilbo_store::id::{Id, Short};
 
     use super::{Locator, Ref, Target, last};
 
@@ -184,6 +189,46 @@ mod tests {
             assert_eq!(parsed.target, Target::Entry(id));
             assert_eq!(parsed.locator, Locator::default());
         }
+    }
+
+    #[test]
+    fn a_short_id_is_a_ref_with_or_without_the_citation_prefix_and_a_locator() {
+        let short = Short::parse("2T6W9YB0DE").expect("short");
+        for (text, locator) in [
+            ("2T6W9YB0DE", Locator::default()),
+            ("bilbo:2T6W9YB0DE", Locator::default()),
+            (
+                "2T6W9YB0DE#r3-7",
+                Locator {
+                    generation: None,
+                    records: range(3, 5),
+                },
+            ),
+            (
+                "2T6W9YB0DE#g1:r3",
+                Locator {
+                    generation: Some(Generation(1)),
+                    records: range(3, 1),
+                },
+            ),
+        ] {
+            let parsed = Ref::parse(text).unwrap_or_else(|error| panic!("{text}: {error}"));
+            assert_eq!(parsed.target, Target::Short(short), "{text}");
+            assert_eq!(parsed.locator, locator, "{text}");
+        }
+    }
+
+    #[test]
+    fn ten_hex_characters_are_a_short_id_and_eight_are_a_session_id() {
+        let target = |text: &str| Ref::parse(text).map(|parsed| parsed.target);
+        assert_eq!(
+            target("ABCDEF0123"),
+            Ok(Target::Short(Short::parse("ABCDEF0123").expect("short")))
+        );
+        for text in ["ABCDEF01", "abcdef01"] {
+            assert_eq!(target(text), Ok(Target::Session("abcdef01".to_owned())));
+        }
+        assert!(target("abcdef0123").is_err());
     }
 
     #[test]
@@ -242,7 +287,9 @@ mod tests {
     #[test]
     fn a_malformed_ref_says_what_is_wrong() {
         let not_a_target = |text: &str| {
-            format!("'{text}' is not an entry id, a session id or 8 or more characters of one")
+            format!(
+                "'{text}' is not an entry id, its last 10 characters, a session id or 8 or more characters of one"
+            )
         };
         let not_a_locator = |text: &str| {
             format!("'{text}' is not a locator: use #r<a>, #r<a>-<b>, #g<n> or #g<n>:r<a>-<b>")

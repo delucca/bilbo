@@ -600,6 +600,108 @@ fn entry(scratch: &Scratch, name: &str) -> Id {
     Id::parse(id.expect("the entry's id")).expect("an id")
 }
 
+fn first_ref(stdout: &str) -> String {
+    stdout
+        .lines()
+        .next()
+        .and_then(|header| header.strip_prefix("=== "))
+        .and_then(|header| header.split('\t').next())
+        .expect("a header with a ref")
+        .to_owned()
+}
+
+#[test]
+fn a_hit_is_read_by_the_ref_recall_printed() {
+    let scratch = Scratch::remembered("read_recalled_ref");
+    let recalled = scratch.bilbo.run(&["recall", "carrots"]);
+    assert_eq!(recalled.code, 0, "{:?}", recalled.stderr);
+    let reference = first_ref(&recalled.stdout);
+    let (short, records) = reference.split_once('#').expect("a locator");
+    assert_eq!(short.len(), 10, "{reference}");
+    let read = scratch.bilbo.run(&["read", &reference]);
+    assert_eq!(read.code, 0, "{:?}", read.stderr);
+    assert!(
+        read.stdout.starts_with(&format!(
+            "#{}",
+            records.split('-').next().unwrap_or(records)
+        )),
+        "{}",
+        read.stdout
+    );
+    let outline = scratch.bilbo.run(&["read", short]);
+    assert_eq!(outline.code, 0, "{:?}", outline.stderr);
+    let first = outline.stdout.lines().next().expect("a first line");
+    assert_eq!(first.len(), "bilbo:".len() + 26, "{first}");
+    assert!(
+        first.starts_with("bilbo:") && first.ends_with(short),
+        "{first}"
+    );
+}
+
+#[test]
+fn two_notes_whose_ids_end_alike_are_recalled_by_whole_ids_that_read_takes() {
+    let scratch = Scratch::new("read_shared_short");
+    let note = |id: Option<&str>, text: &str| match id {
+        Some(id) => format!("---\nid: {id}\n---\n\n# Beds\n\n{text}\n"),
+        None => format!("# Beds\n\n{text}\n"),
+    };
+    let (first, second) = ("01JC5Q3V7XKM4P8R2T6W9YB0DE", "01JC5Q3V7XKM4P8S2T6W9YB0DE");
+    scratch.write(
+        "notes/first.md",
+        note(Some(first), "Turnips need cold nights, so sow them early.").as_bytes(),
+    );
+    scratch.write(
+        "notes/second.md",
+        note(
+            Some(second),
+            "Turnips shrivel under hot sun and want water daily.",
+        )
+        .as_bytes(),
+    );
+    scratch.write(
+        "notes/third.md",
+        note(
+            None,
+            "Turnips keep well in sand when the cellar stays cool.",
+        )
+        .as_bytes(),
+    );
+    let remembered = scratch.bilbo.run(&["remember", &scratch.path("notes")]);
+    assert_eq!(remembered.code, 0, "{:?}", remembered.stderr);
+
+    let recalled = scratch.bilbo.run(&["recall", "turnips"]);
+    assert_eq!(recalled.code, 0, "{:?}", recalled.stderr);
+    let refs: Vec<String> = recalled
+        .stdout
+        .lines()
+        .filter_map(|line| line.strip_prefix("=== "))
+        .map(|header| header.split('\t').next().unwrap_or_default().to_owned())
+        .collect();
+    assert_eq!(refs.len(), 3, "{}", recalled.stdout);
+    let mut lengths: Vec<(usize, &str)> = Vec::new();
+    for reference in &refs {
+        let id = reference.split('#').next().unwrap_or_default();
+        lengths.push((id.len(), id));
+        let read = scratch.bilbo.run(&["read", reference]);
+        assert_eq!(read.code, 0, "{reference}: {:?}", read.stderr);
+        let text = match id {
+            id if id == first => "cold nights",
+            id if id == second => "hot sun",
+            _ => "cellar",
+        };
+        assert!(read.stdout.contains(text), "{reference}: {}", read.stdout);
+    }
+    lengths.sort_unstable();
+    assert_eq!(lengths[0].0, 10, "{lengths:?}");
+    assert_eq!(lengths[1], (26, first), "{lengths:?}");
+    assert_eq!(lengths[2], (26, second), "{lengths:?}");
+
+    let ambiguous = scratch.bilbo.run(&["read", "2T6W9YB0DE"]);
+    assert_eq!(ambiguous.code, 2, "{:?}", ambiguous.stderr);
+    let said = ambiguous.stderr.join("\n");
+    assert!(said.contains(first) && said.contains(second), "{said}");
+}
+
 #[test]
 fn following_more_prints_each_record_of_every_fixture_exactly_once_at_any_budget() {
     let scratch = Scratch::remembered("read_chain");
@@ -815,9 +917,9 @@ fn a_session_reads_by_its_uuid_or_eight_characters_of_it() {
 }
 
 #[test]
-fn a_subagent_names_its_parent_and_reads_as_its_own_thread() {
+fn a_subagent_names_its_session_as_an_id_label_and_reads_as_its_own_thread() {
     let scratch = Scratch::remembered("read_subagent");
-    let parent = entry(&scratch, OLDER);
+    let session = entry(&scratch, OLDER);
     let all = kept(&scratch.bilbo.settings());
     let subagent = all
         .iter()
@@ -832,15 +934,166 @@ fn a_subagent_names_its_parent_and_reads_as_its_own_thread() {
     let run = scratch.bilbo.run(&["read", &subagent.id.to_string()]);
     assert_eq!(run.code, 0);
     assert!(
-        run.stdout.contains(&format!("\nparent: bilbo:{parent}\n")),
+        run.stdout.contains(&format!("\nlabel: bilbo:{session}\n")),
         "{}",
         run.stdout
     );
     assert!(run.stdout.ends_with(
         "outline:\n#r1 user: Count the seed packets in the shed.\nend: #r1-2 of 2 records\n"
     ));
-    let main = scratch.bilbo.run(&["read", &parent.to_string()]);
-    assert!(!main.stdout.contains("parent:"), "{}", main.stdout);
+    let main = scratch.bilbo.run(&["read", &session.to_string()]);
+    assert!(!main.stdout.contains("label: bilbo:"), "{}", main.stdout);
+}
+
+const MANY: &str = "3b9d5f21-7a4c-4e08-9d16-2f8a6c0e4b57";
+
+fn session_of(cwds: &[String]) -> Vec<u8> {
+    let mut text = String::new();
+    for (at, cwd) in cwds.iter().enumerate() {
+        text += &format!(
+            "{{\"parentUuid\":null,\"isSidechain\":false,\"type\":\"user\",\"uuid\":\"c1c2c3c4-{at:04x}-4a5b-8c6d-7e8f9a0b1c2d\",\"timestamp\":\"2026-11-08T10:{:02}:{:02}.000Z\",\"userType\":\"external\",\"entrypoint\":\"cli\",\"cwd\":\"{cwd}\",\"sessionId\":\"{MANY}\",\"version\":\"2.1.300\",\"gitBranch\":\"main\",\"message\":{{\"role\":\"user\",\"content\":\"Weed bed number {at}, then report.\"}}}}\n",
+            (at / 60) % 60,
+            at % 60,
+        );
+    }
+    text.into_bytes()
+}
+
+fn kept_records(scratch: &Scratch, id: Id) -> Vec<String> {
+    let store = Store::open_read_only(
+        &scratch.bilbo.settings().layout(),
+        Options::default(),
+        &mut |_| {},
+    )
+    .expect("open the store");
+    let (generation, total) = store.extent(id, None).expect("extent").expect("an entry");
+    let records = store
+        .read(
+            id,
+            generation,
+            RecordRange {
+                first: 1,
+                count: total,
+            },
+        )
+        .expect("read");
+    records
+        .iter()
+        .map(|record| String::from_utf8_lossy(record).into_owned())
+        .collect()
+}
+
+#[test]
+fn a_session_with_the_most_labels_reads_within_its_budget() {
+    let scratch = Scratch::new("read_most_labels");
+    let folders: Vec<String> = (0..256)
+        .map(|at| {
+            let head = format!("/home/me/v1.0/n{at:03}");
+            let mut folder = head.clone();
+            while folder.len() < 4096 {
+                folder.push_str("/bed");
+            }
+            folder.truncate(4096);
+            folder
+        })
+        .collect();
+    scratch.write(
+        &format!("sessions/claude/p/{MANY}.jsonl"),
+        &session_of(&folders),
+    );
+    let run = scratch.bilbo.run(&["remember", &scratch.path("sessions")]);
+    assert_eq!(run.code, 0, "{:?}", run.stderr);
+    let id = entry(&scratch, MANY);
+    let records = kept_records(&scratch, id);
+    for folder in &folders {
+        assert!(
+            records
+                .iter()
+                .any(|record| record.contains(folder.as_str())),
+            "capture kept {} bytes of a folder whole",
+            folder.len()
+        );
+    }
+
+    let least = scratch
+        .bilbo
+        .run(&["read", &id.to_string(), "--budget", "256"]);
+    assert_eq!(least.code, 0, "{:?}", least.stderr);
+    assert!(least.stdout.len() < 2048, "{} bytes", least.stdout.len());
+    assert!(
+        least
+            .stdout
+            .lines()
+            .any(|line| line == "labels: 256 more; a larger --budget lists them"),
+        "{}",
+        least.stdout
+    );
+    assert!(
+        least.stdout.lines().any(|line| line.starts_with("#r")),
+        "an outline line: {}",
+        least.stdout
+    );
+
+    let wide = scratch
+        .bilbo
+        .run(&["read", &id.to_string(), "--budget", "20000"]);
+    assert_eq!(wide.code, 0, "{:?}", wide.stderr);
+    let listed = wide
+        .stdout
+        .lines()
+        .filter(|line| line.starts_with("label: /home/me/v1.0/"))
+        .count();
+    let more: usize = wide
+        .stdout
+        .lines()
+        .find_map(|line| line.strip_prefix("labels: "))
+        .and_then(|rest| rest.split(' ').next())
+        .and_then(|count| count.parse().ok())
+        .expect("a count of the labels left");
+    assert!(listed > 0 && more > 0, "{listed} listed, {more} more");
+    assert_eq!(listed + more, 256);
+}
+
+#[test]
+fn a_long_folder_capture_replaced_is_no_label_of_its_session() {
+    let scratch = Scratch::new("read_long_folder");
+    let folder = format!("/{}", "abcdefghij/".repeat(30));
+    assert!(folder.len() >= 256 && !folder.contains('.'));
+    scratch.write(
+        &format!("sessions/claude/p/{MANY}.jsonl"),
+        &session_of(std::slice::from_ref(&folder)),
+    );
+    let run = scratch.bilbo.run(&["remember", &scratch.path("sessions")]);
+    assert_eq!(run.code, 0, "{:?}", run.stderr);
+    let id = entry(&scratch, MANY);
+    assert!(
+        kept_records(&scratch, id)
+            .iter()
+            .all(|record| !record.contains("abcdefghij") && record.contains("[opaque: ")),
+        "capture replaced the folder"
+    );
+    let outline = scratch.bilbo.run(&["read", &id.to_string()]);
+    assert_eq!(outline.code, 0, "{:?}", outline.stderr);
+    let labels: Vec<&str> = outline
+        .stdout
+        .lines()
+        .filter(|line| line.starts_with("label: "))
+        .collect();
+    assert_eq!(labels.len(), 1, "{}", outline.stdout);
+    assert!(labels[0].ends_with("(capture)"), "{}", labels[0]);
+    assert!(!outline.stdout.contains("labels: "), "{}", outline.stdout);
+    let scoped = scratch
+        .bilbo
+        .run(&["recall", "--in", "opaque", "--", "weed"]);
+    assert_eq!(scoped.code, 1, "{:?}", scoped.stderr);
+    assert!(
+        scoped
+            .stderr
+            .iter()
+            .any(|line| line == "bilbo: --in 'opaque' names no entry"),
+        "{:?}",
+        scoped.stderr
+    );
 }
 
 #[test]
@@ -851,7 +1104,7 @@ fn a_note_reads_back_by_heading_and_a_range_inside_a_section_prints_its_lines() 
     assert!(
         outline
             .stdout
-            .starts_with(&format!("bilbo:{SECTIONS}\nkind: markdown\norigin: file:"))
+            .starts_with(&format!("bilbo:{SECTIONS}\nkind: markdown\nlabel: file:"))
     );
     assert!(!outline.stdout.contains("started:"), "a note has no time");
     assert!(
@@ -994,7 +1247,7 @@ fn what_cannot_be_read_exits_1_and_what_cannot_be_meant_exits_2() {
         (
             &["nope"],
             2,
-            "bilbo: 'nope' is not an entry id, a session id or 8 or more characters of one",
+            "bilbo: 'nope' is not an entry id, its last 10 characters, a session id or 8 or more characters of one",
         ),
         (
             &["01JC5Q3V7XKM4P8R2T6W9YB0DG#r9-5"],
@@ -1367,15 +1620,18 @@ fn a_command_of_a_page_reads_the_generation_the_page_read_also_after_the_file_wa
     assert!(!whole.stdout.contains("\ncut: "));
 }
 
-fn headings(origin: String, line: usize) -> bilbo_kinds::read::Fetched {
-    use bilbo_store::entries::{Generation, Meta, Origin};
+fn headings(label: String, line: usize) -> bilbo_kinds::read::Fetched {
+    use bilbo_store::entries::{Generation, Meta};
+    use bilbo_store::labels::{CaptureLabel, StoredLabels};
     bilbo_kinds::read::Fetched {
         meta: Meta {
             id: Id::parse(SECTIONS).expect("id"),
             kind: "markdown".to_owned(),
-            origin: Origin::new(origin),
+            labels: StoredLabels {
+                capture: CaptureLabel::new(label),
+                id: None,
+            },
             captured: std::time::UNIX_EPOCH,
-            parent: None,
         },
         generation: Generation(1),
         current: Generation(1),
@@ -1429,10 +1685,10 @@ fn default_pages(fetched: &bilbo_kinds::read::Fetched, first: &str, outline: boo
 }
 
 #[test]
-fn an_outline_page_stays_under_the_cut_whatever_its_origin_holds() {
+fn an_outline_page_stays_under_the_cut_whatever_its_capture_label_holds() {
     // A path may hold escape characters, and each prints as six.
-    let origin = format!("file:/{}", "\u{1b}".repeat(900));
-    let fetched = headings(origin, 110);
+    let label = format!("file:/{}", "\u{1b}".repeat(900));
+    let fetched = headings(label, 110);
     assert_eq!(default_pages(&fetched, SECTIONS, true), 600);
 }
 

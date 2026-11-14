@@ -153,6 +153,7 @@ fn rank(folder: &Path, text: &str, limit: usize) -> Vec<Candidate> {
     let query = Query {
         text: text.to_owned(),
         kinds: Vec::new(),
+        entries: None,
     };
     Bm25 {
         index: &committed,
@@ -163,6 +164,7 @@ fn rank(folder: &Path, text: &str, limit: usize) -> Vec<Candidate> {
     }
     .rank(&query, limit)
     .expect("a rank")
+    .candidates
 }
 
 fn key(candidate: &Candidate) -> (u64, u64) {
@@ -2282,6 +2284,9 @@ fn read_everything(folder: &Path) {
     let totals = reader.totals().expect("totals");
     reader.postings(&term_of("garden")).expect("postings");
     reader.holding(&Filter::Kind("session")).expect("holding");
+    reader
+        .holding(&Filter::Entries(&[id(1), id(2)]))
+        .expect("holding");
     let all: Vec<u32> = (0..totals.bound).collect();
     reader.found(&all).expect("found");
     reader.documents().expect("documents");
@@ -2442,6 +2447,7 @@ fn a_tie_of_every_document_is_cut_by_the_tie_order() {
     let query = Query {
         text: "same words".to_owned(),
         kinds: Vec::new(),
+        entries: None,
     };
     let hits = Bm25 {
         index: &counting,
@@ -2451,7 +2457,8 @@ fn a_tie_of_every_document_is_cut_by_the_tie_order() {
         batch: 4096,
     }
     .rank(&query, 50)
-    .expect("a rank");
+    .expect("a rank")
+    .candidates;
     let wanted: Vec<u32> = (0..50).collect();
     let entries: Vec<u32> = hits
         .iter()
@@ -2464,6 +2471,178 @@ fn a_tie_of_every_document_is_cut_by_the_tie_order() {
     assert_eq!(reader.totals().expect("totals").documents, count as u64);
     assert!(counting.widest.get() <= 4096, "{}", counting.widest.get());
     assert!(counting.widest.get() > 0);
+}
+
+fn scoped(scratch: &Scratch, entries: Option<Vec<Id>>, text: &str) -> bilbo_search::rank::Ranked {
+    let reader = committed(scratch);
+    Bm25 {
+        index: &reader,
+        k1: 1.2,
+        b: 0.75,
+        omit: Omit::default(),
+        batch: 4096,
+    }
+    .rank(
+        &Query {
+            text: text.to_owned(),
+            kinds: Vec::new(),
+            entries,
+        },
+        100,
+    )
+    .expect("a rank")
+}
+
+#[test]
+fn the_documents_of_an_entry_are_its_live_ones_across_segments() {
+    let scratch = Scratch::new("entry-live");
+    let mut index = scratch.fresh();
+    for first in 1..=3 {
+        add(
+            &mut index,
+            1,
+            "session",
+            100,
+            &chunk(first, 1, None, "zebra"),
+        );
+    }
+    add(&mut index, 2, "session", 100, &chunk(1, 1, None, "yak"));
+    for first in 1..=20 {
+        add(
+            &mut index,
+            4,
+            "session",
+            100,
+            &chunk(first, 1, None, "filler"),
+        );
+    }
+    index.commit(&position(1)).expect("commit");
+    index.delete(id(1), 2).expect("delete");
+    add(
+        &mut index,
+        1,
+        "session",
+        100,
+        &chunk(2, 1, None, "zebra again"),
+    );
+    index.delete(id(2), 1).expect("delete");
+    add(
+        &mut index,
+        2,
+        "session",
+        100,
+        &chunk(1, 1, None, "yak again"),
+    );
+    index.commit(&position(2)).expect("commit");
+    assert_eq!(
+        names(&scratch.folder())
+            .iter()
+            .filter(|name| name.ends_with(".term"))
+            .count(),
+        2,
+        "no merge has happened"
+    );
+    let reader = committed(&scratch);
+    assert_eq!(reader.totals().expect("totals").bound, 26);
+    assert_eq!(
+        reader.holding(&Filter::Entries(&[id(1)])).expect("holding"),
+        [0, 24]
+    );
+    assert_eq!(
+        reader.holding(&Filter::Entries(&[id(2)])).expect("holding"),
+        [25]
+    );
+}
+
+#[test]
+fn the_documents_of_several_entries_come_together_by_rising_number() {
+    let scratch = Scratch::new("entries-together");
+    let mut index = scratch.fresh();
+    for (entry, first) in [(3, 1), (1, 1), (3, 2), (2, 1), (1, 2)] {
+        add(
+            &mut index,
+            entry,
+            "session",
+            100,
+            &chunk(first, 1, None, "zebra"),
+        );
+    }
+    index.commit(&position(1)).expect("commit");
+    add(&mut index, 3, "session", 100, &chunk(3, 1, None, "zebra"));
+    add(&mut index, 1, "session", 100, &chunk(3, 1, None, "zebra"));
+    index.commit(&position(2)).expect("commit");
+    let reader = committed(&scratch);
+    assert_eq!(
+        reader
+            .holding(&Filter::Entries(&[id(1), id(3), id(9)]))
+            .expect("holding"),
+        [0, 1, 2, 4, 5, 6]
+    );
+    assert_eq!(
+        reader.holding(&Filter::Entries(&[id(9)])).expect("holding"),
+        Vec::<u32>::new()
+    );
+    assert_eq!(
+        reader.holding(&Filter::Entries(&[])).expect("holding"),
+        Vec::<u32>::new()
+    );
+}
+
+#[test]
+fn an_entry_filter_changes_no_total() {
+    let scratch = Scratch::new("entries-totals");
+    built(&scratch.folder());
+    let reader = committed(&scratch);
+    let held = reader.holding(&Filter::Entries(&[id(2)])).expect("holding");
+    assert_eq!(held.len(), 1);
+    let unfiltered = Committed::at(scratch.folder()).totals().expect("totals");
+    assert!(unfiltered.documents > held.len() as u64);
+    assert_eq!(reader.totals().expect("totals"), unfiltered);
+}
+
+#[test]
+fn a_scoped_ranking_is_the_unscoped_one_without_the_other_entries() {
+    let scratch = Scratch::new("scoped-ranking");
+    let mut index = scratch.fresh();
+    for (n, entry) in [1u8, 2, 3, 1, 2, 3, 2, 1, 3, 2].into_iter().enumerate() {
+        let text = format!("garden {}tools", "zebra ".repeat(n % 3));
+        add(
+            &mut index,
+            entry,
+            "session",
+            100,
+            &chunk(n as u64 + 1, 1, None, &text),
+        );
+        if n % 3 == 2 {
+            index.commit(&position(n as u64)).expect("commit");
+        }
+    }
+    index.commit(&position(99)).expect("commit");
+    let scope = vec![id(1), id(3)];
+    let all = scoped(&scratch, None, "garden zebra");
+    assert!(all.unscoped.is_empty());
+    assert!(all.candidates.len() > 4);
+    let narrowed = scoped(&scratch, Some(scope.clone()), "garden zebra");
+    let bits = |list: &[Candidate]| -> Vec<(u64, u64, u32)> {
+        list.iter()
+            .map(|c| {
+                (
+                    c.found.extent.records.first,
+                    u64::from(c.found.entry.to_bytes()[15]),
+                    c.score.to_bits(),
+                )
+            })
+            .collect()
+    };
+    let expected: Vec<Candidate> = all
+        .candidates
+        .iter()
+        .filter(|c| scope.contains(&c.found.entry))
+        .cloned()
+        .collect();
+    assert!(!expected.is_empty());
+    assert_eq!(bits(&narrowed.candidates), bits(&expected));
+    assert_eq!(narrowed.unscoped, all.candidates);
 }
 
 fn template() -> Scratch {
@@ -2550,6 +2729,9 @@ fn a_damaged_postings_or_term_file_is_an_index_error_from_every_read() {
                 reader.totals().map(|_| ()),
                 reader.postings(&term_of("garden")).map(|_| ()),
                 reader.holding(&Filter::Kind("session")).map(|_| ()),
+                reader
+                    .holding(&Filter::Entries(&[id(1), id(2)]))
+                    .map(|_| ()),
                 reader.found(&all).map(|_| ()),
                 reader.documents().map(|_| ()),
                 reader.terms().map(|_| ()),

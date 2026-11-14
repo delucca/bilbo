@@ -393,7 +393,7 @@ mod tests {
     fn the_rendering_names_each_reader_its_version_and_its_settings() {
         assert_eq!(
             rendering(&defaults()).expect("the rendering"),
-            "markdown/1/heading_width=100 session/1"
+            "markdown/1/heading_width=100 session/2"
         );
         let wide = crate::console::settings::load(
             &|name| match name {
@@ -407,7 +407,7 @@ mod tests {
         .expect("settings");
         assert_eq!(
             rendering(&wide).expect("the rendering"),
-            "markdown/1/heading_width=40 session/1"
+            "markdown/1/heading_width=40 session/2"
         );
     }
 

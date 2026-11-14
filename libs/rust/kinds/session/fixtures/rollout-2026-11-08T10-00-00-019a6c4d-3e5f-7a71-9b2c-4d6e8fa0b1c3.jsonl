@@ -1,0 +1,5 @@
+{"timestamp":"2026-11-08T10:00:00.000Z","ordinal":0,"type":"session_meta","payload":{"session_id":"019a6c4d-3e5f-7a71-9b2c-4d6e8fa0b1c3","id":"019a6c4d-3e5f-7a71-9b2c-4d6e8fa0b1c3","timestamp":"2026-11-08T10:00:00.000Z","cwd":"/home/me/src/garden","originator":"codex_cli_rs","cli_version":"0.170.0","source":"cli","model_provider":"openai"}}
+{"timestamp":"2026-11-08T10:00:01.000Z","ordinal":1,"type":"turn_context","payload":{"turn_id":"0b000000-0000-4000-8000-000000000001","cwd":"/home/me/src/garden","approval_policy":"on-request","model":"gpt-6"}}
+{"timestamp":"2026-11-08T10:01:00.000Z","ordinal":2,"type":"response_item","payload":{"type":"message","id":"msg_01","role":"user","cwd":"/home/me/src/elsewhere","content":[{"type":"input_text","text":"Look at the compost heap."}]}}
+{"timestamp":"2026-11-08T10:02:00.000Z","ordinal":3,"type":"turn_context","payload":{"turn_id":"0b000000-0000-4000-8000-000000000002","cwd":"/home/me/src/shed","approval_policy":"on-request","model":"gpt-6"}}
+this line is no json

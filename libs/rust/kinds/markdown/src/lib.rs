@@ -115,7 +115,7 @@ impl Kind for Markdown {
     fn propose(&self, _path: &Path, bytes: &[u8], _kept: &dyn Fn(&Path) -> Option<Id>) -> Proposal {
         Proposal {
             id: std::str::from_utf8(bytes).ok().and_then(frontmatter::id),
-            parent: None,
+            id_label: None,
         }
     }
 }
@@ -174,7 +174,7 @@ mod tests {
         claims
             .entries
             .iter()
-            .map(|claim| claim.origin().to_str().unwrap_or_default())
+            .map(|claim| claim.label().to_str().unwrap_or_default())
             .collect()
     }
 
@@ -348,10 +348,10 @@ mod tests {
     }
 
     #[test]
-    fn a_note_proposes_its_frontmatter_id_and_no_parent() {
+    fn a_note_proposes_its_frontmatter_id_and_no_id_label() {
         assert!(propose(FIXTURES[0].1).id.is_some());
         assert_eq!(
-            propose(FIXTURES[0].1).parent,
+            propose(FIXTURES[0].1).id_label,
             None,
             "even with another entry kept"
         );

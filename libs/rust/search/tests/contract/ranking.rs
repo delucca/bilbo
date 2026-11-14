@@ -83,8 +83,13 @@ impl Lookup for Table {
         Ok(self.postings.get(term).cloned().unwrap_or_default())
     }
 
-    fn holding(&self, _filter: &Filter<'_>) -> Result<Vec<u32>, IndexError> {
-        Ok((0..self.lengths.len() as u32).collect())
+    fn holding(&self, filter: &Filter<'_>) -> Result<Vec<u32>, IndexError> {
+        Ok((0..self.lengths.len() as u32)
+            .filter(|doc| match filter {
+                Filter::Kind(_) => true,
+                Filter::Entries(ids) => ids.binary_search(&entry(*doc)).is_ok(),
+            })
+            .collect())
     }
 
     fn found(&self, docs: &[u32]) -> Result<Vec<Found>, IndexError> {
@@ -188,10 +193,12 @@ fn bilbos(index: &dyn Lookup, query: &str, limit: usize, omit: Omit<'_>) -> Vec<
         &Query {
             text: query.to_owned(),
             kinds: Vec::new(),
+            entries: None,
         },
         limit,
     )
     .expect("a ranking")
+    .candidates
     .into_iter()
     .map(|candidate| (doc_of(candidate.found.entry), candidate.score))
     .collect()

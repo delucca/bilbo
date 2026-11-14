@@ -1,5 +1,7 @@
+use std::collections::BTreeMap;
+
 use bilbo_kinds::reader::Reader;
-use bilbo_search::analyze::{Detect, Language, Omit};
+use bilbo_search::analyze::{Detect, Language, MAX_LABEL_WORDS, Omit, label_words};
 use bilbo_search::bm25::Bm25;
 use bilbo_search::chunk::Size;
 use bilbo_search::lookup::Lookup;
@@ -7,7 +9,9 @@ use bilbo_search::position::Manifest;
 use bilbo_search::rank::{Candidate, Query};
 use bilbo_search::recall::hit::Hit;
 use bilbo_search::recall::log::QueryLog;
-use bilbo_search::recall::{Access, Error, Finished, Output, Request, Stand, run};
+use bilbo_search::recall::scope::Unnamed;
+use bilbo_search::recall::select::{Limits, Skipped};
+use bilbo_search::recall::{Access, Error, Finished, Output, Reads, Request, Scoped, Stand, run};
 use bilbo_search::reindex;
 use bilbo_search::tokenizer::Tokenizer;
 use bilbo_search::update::{self, Plan};
@@ -15,7 +19,8 @@ use bilbo_search::work::Request as Work;
 use bilbo_store::id::Id;
 
 use crate::fakes::{
-    Broken, Bytes, Dated, Docs, Failing, Fenced, Lines, Log, Logged, Never, Says, Scripted, at, id,
+    Broken, Bytes, Dated, Docs, Failing, Fenced, Joined, Lines, Log, Logged, Never, Says, Scripted,
+    at, id,
 };
 
 const SIZE: Size = Size {
@@ -24,6 +29,20 @@ const SIZE: Size = Size {
 };
 
 const SHOWN_HEADER: usize = 4 + 26 + 1;
+
+const OFF: Limits = Limits {
+    per_entry: 0,
+    per_record: 0,
+    copy_share: 0.0,
+    copy_words: 5,
+};
+
+const PASS: Limits = Limits {
+    per_entry: 0,
+    per_record: 2,
+    copy_share: 0.5,
+    copy_words: 5,
+};
 
 fn manifest() -> Manifest {
     Manifest::new(SIZE, "bytes/1", "lines/1")
@@ -42,6 +61,7 @@ fn readers() -> Vec<Box<dyn Reader>> {
         Box::new(Dated("session")),
         Box::new(Lines("memo")),
         Box::new(Fenced("fenced")),
+        Box::new(Joined("joined")),
     ]
 }
 
@@ -55,7 +75,15 @@ fn work_request() -> Work {
 
 fn index_of(log: &Log) -> Docs {
     let mut index = Docs::default();
-    reindex::run(&work_request(), log, &readers(), &tokenizer(), &mut index).expect("a run");
+    reindex::run(
+        &work_request(),
+        log,
+        log,
+        &readers(),
+        &tokenizer(),
+        &mut index,
+    )
+    .expect("a run");
     log.reads.borrow_mut().clear();
     index
 }
@@ -65,11 +93,13 @@ fn request(text: &str) -> Request {
         query: Query {
             text: text.to_owned(),
             kinds: Vec::new(),
+            entries: None,
         },
         manifest: manifest(),
         chunk: SIZE,
-        candidates: 50,
-        cap: 0,
+        candidates: 400,
+        limits: OFF,
+        scope: Vec::new(),
         budget: 100_000,
         at: at(1_700_000_000),
     }
@@ -100,7 +130,10 @@ fn ask_with(
     };
     run(
         request,
-        log,
+        &Reads {
+            entries: log,
+            labels: log,
+        },
         &readers(),
         &Bytes,
         Access::Read {
@@ -123,8 +156,8 @@ fn fields(kept: &Logged) -> Vec<String> {
     assert_eq!(kept.0.len(), 1, "one line a query: {:?}", kept.0);
     let line = kept.0[0].strip_suffix('\n').expect("a whole line");
     let fields: Vec<String> = line.split('\t').map(str::to_owned).collect();
-    assert_eq!(fields.len(), 7, "{line:?}");
-    assert_eq!(fields[0], "q1");
+    assert_eq!(fields.len(), 9, "{line:?}");
+    assert_eq!(fields[0], "q2");
     fields
 }
 
@@ -236,7 +269,9 @@ fn a_query_that_matches_nothing_ends_with_no_hit_and_the_count_searched() {
                 hits: Vec::new(),
                 searched: 6,
                 stand: Stand::Current,
-                left_out: 0
+                left_out: 0,
+                skipped: Skipped::default(),
+                scope: None,
             },
             "{text}"
         );
@@ -274,7 +309,10 @@ fn a_store_with_no_index_is_not_searched() {
     let mut kept = Logged::default();
     let finished = run(
         &request("release"),
-        &log,
+        &Reads {
+            entries: &log,
+            labels: &log,
+        },
         &readers(),
         &Bytes,
         Access::Read {
@@ -291,7 +329,9 @@ fn a_store_with_no_index_is_not_searched() {
             hits: Vec::new(),
             searched: 0,
             stand: Stand::NoIndex,
-            left_out: 0
+            left_out: 0,
+            skipped: Skipped::default(),
+            scope: None,
         }
     );
     assert_eq!(scripted.calls.get(), 0);
@@ -305,7 +345,10 @@ fn no_index_by_the_callers_word_is_the_no_index_answer_and_the_query_is_logged()
     let mut kept = Logged::default();
     let finished = run(
         &request("release"),
-        &log,
+        &Reads {
+            entries: &log,
+            labels: &log,
+        },
         &[Box::new(Never) as Box<dyn Reader>],
         &Bytes,
         Access::NoIndex,
@@ -319,7 +362,9 @@ fn no_index_by_the_callers_word_is_the_no_index_answer_and_the_query_is_logged()
             hits: Vec::new(),
             searched: 0,
             stand: Stand::NoIndex,
-            left_out: 0
+            left_out: 0,
+            skipped: Skipped::default(),
+            scope: None,
         }
     );
     assert!(log.reads.borrow().is_empty());
@@ -344,7 +389,10 @@ fn an_index_of_another_manifest_is_refused_before_any_search() {
     let mut kept = Logged::default();
     let finished = run(
         &other,
-        &log,
+        &Reads {
+            entries: &log,
+            labels: &log,
+        },
         &readers(),
         &Bytes,
         Access::Read {
@@ -363,7 +411,10 @@ fn an_index_of_another_manifest_is_refused_before_any_search() {
     other.manifest = Manifest::new(SIZE, "bytes/2", "lines/1");
     let again = run(
         &other,
-        &log,
+        &Reads {
+            entries: &log,
+            labels: &log,
+        },
         &readers(),
         &Bytes,
         Access::Read {
@@ -460,7 +511,15 @@ fn a_hit_whose_entry_is_gone_or_whose_kind_no_reader_reads_is_left_out() {
     let mut index = Docs::default();
     let mut every = readers();
     every.push(Box::new(Lines("unread")));
-    reindex::run(&work_request(), &log, &every, &tokenizer(), &mut index).expect("a run");
+    reindex::run(
+        &work_request(),
+        &log,
+        &log,
+        &every,
+        &tokenizer(),
+        &mut index,
+    )
+    .expect("a run");
     log.remove(1);
     let mut kept = Logged::default();
     let finished = ask_with(&log, &index, &request("release checklist"), &mut kept);
@@ -573,12 +632,15 @@ fn the_cap_and_the_candidates_bound_what_is_read() {
     assert_eq!(index.rows.len(), 4);
     let scripted = Scripted::new(candidates(&index, &[0, 1, 2, 3]));
     let mut bounded = request("release checklist");
-    bounded.cap = 1;
+    bounded.limits.per_entry = 1;
     bounded.candidates = 7;
     let mut kept = Logged::default();
     let finished = run(
         &bounded,
-        &log,
+        &Reads {
+            entries: &log,
+            labels: &log,
+        },
         &readers(),
         &Bytes,
         Access::Read {
@@ -592,10 +654,13 @@ fn the_cap_and_the_candidates_bound_what_is_read() {
     assert_eq!(entries_of(&output), [id(1), id(2)]);
     assert_eq!(scripted.limits.borrow().as_slice(), [7]);
     assert_eq!(log.reads.borrow().len(), 2);
-    bounded.cap = 2;
+    bounded.limits.per_entry = 2;
     let finished = run(
         &bounded,
-        &log,
+        &Reads {
+            entries: &log,
+            labels: &log,
+        },
         &readers(),
         &Bytes,
         Access::Read {
@@ -623,7 +688,10 @@ fn two_rankers_are_fused_in_order() {
     let mut kept = Logged::default();
     let finished = run(
         &request("release"),
-        &log,
+        &Reads {
+            entries: &log,
+            labels: &log,
+        },
         &readers(),
         &Bytes,
         Access::Read {
@@ -669,7 +737,10 @@ fn every_query_is_logged_also_one_that_matches_nothing() {
     let mut kept = Logged::default();
     let finished = run(
         &request("index"),
-        &log,
+        &Reads {
+            entries: &log,
+            labels: &log,
+        },
         &readers(),
         &Bytes,
         Access::Withheld,
@@ -687,8 +758,8 @@ fn every_query_is_logged_also_one_that_matches_nothing() {
     assert_eq!(fields(&cases[0].1)[3], "6");
     assert_eq!(fields(&cases[1].1)[3], "6");
     assert_eq!(fields(&cases[2].1)[3], "0");
-    assert!(fields(&cases[0].1)[5].starts_with(&id(2).to_string()));
-    assert_eq!(fields(&cases[1].1)[5], "-");
+    assert!(fields(&cases[0].1)[7].starts_with(&id(2).to_string()));
+    assert_eq!(fields(&cases[1].1)[7], "-");
 }
 
 #[test]
@@ -738,8 +809,8 @@ fn an_index_that_fails_at_any_read_ends_the_run_with_its_error_and_a_logged_line
         assert_eq!(fields[1], "1700000000", "{method}");
         assert_eq!(fields[2], "failed", "{method}");
         assert_eq!(fields[3], "0", "{method}");
-        assert_eq!(fields[5], "-", "{method}");
-        assert_eq!(fields[6], "bilbo index format", "{method}");
+        assert_eq!(fields[7], "-", "{method}");
+        assert_eq!(fields[8], "bilbo index format", "{method}");
     }
     let mut unreadable = shelf_of_six();
     let index = index_of(&unreadable);
@@ -758,7 +829,10 @@ fn an_index_the_caller_withholds_is_not_read_and_the_query_is_logged() {
     let mut kept = Logged::default();
     let finished = run(
         &request("release\tchecklist"),
-        &log,
+        &Reads {
+            entries: &log,
+            labels: &log,
+        },
         &readers(),
         &Bytes,
         Access::Withheld,
@@ -772,14 +846,16 @@ fn an_index_the_caller_withholds_is_not_read_and_the_query_is_logged() {
             hits: Vec::new(),
             searched: 0,
             stand: Stand::Withheld,
-            left_out: 0
+            left_out: 0,
+            skipped: Skipped::default(),
+            scope: None,
         }
     );
     assert_eq!(scripted.calls.get(), 0);
     assert!(log.reads.borrow().is_empty());
     let fields = fields(&kept);
     assert_eq!(fields[2], "withheld");
-    assert_eq!(fields[6], "release\\tchecklist");
+    assert_eq!(fields[8], "release\\tchecklist");
 }
 
 #[test]
@@ -794,7 +870,16 @@ fn the_same_store_and_query_give_the_same_hits_whatever_built_the_index() {
         let Plan::Work(job) = update::plan(&manifest, 3, log, index).expect("a plan") else {
             return;
         };
-        update::apply(job, &work_request(), log, &readers(), &tokenizer(), index).expect("a run");
+        update::apply(
+            job,
+            &work_request(),
+            log,
+            log,
+            &readers(),
+            &tokenizer(),
+            index,
+        )
+        .expect("a run");
     };
     steps(&log, &mut grown);
     log.append(1, &["release checklist again, a third record here"]);
@@ -855,7 +940,10 @@ fn a_portuguese_query_ranks_by_its_content_words() {
         let mut kept = Logged::default();
         let finished = run(
             &request("que pelo nas sobre a tarifa luz"),
-            &log,
+            &Reads {
+                entries: &log,
+                labels: &log,
+            },
             &readers(),
             &Bytes,
             Access::Read {
@@ -873,4 +961,441 @@ fn a_portuguese_query_ranks_by_its_content_words() {
     assert_eq!(hits(&portuguese, Some(&says)), [id(1)]);
     assert!(hits(&portuguese, Some(&Says(None))).contains(&id(2)));
     assert!(hits(&[], Some(&says)).contains(&id(2)));
+}
+
+fn passed(copies: u64, parts: u64, capped: u64) -> Skipped {
+    Skipped {
+        copies,
+        parts,
+        capped,
+    }
+}
+
+fn words(prefix: &str, count: usize) -> String {
+    (1..=count)
+        .map(|n| {
+            if n % 3 == 1 {
+                format!("release {prefix}{n:02}")
+            } else {
+                format!("{prefix}{n:02}")
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+#[test]
+fn what_was_passed_over_is_counted_by_reason() {
+    let mut log = Log::new();
+    log.put(1, "note", &[RELEASE]);
+    log.put(2, "note", &[RELEASE]);
+    log.put(3, "note", &[&words("a", 20)]);
+    let index = index_of(&log);
+    assert_eq!(
+        index.rows.iter().filter(|row| row.entry == id(3)).count(),
+        3
+    );
+    let mut limited = request("release checklist");
+    limited.limits = PASS;
+    let (output, _) = ask(&log, &index, &limited);
+    assert_eq!(output.skipped, passed(1, 1, 0));
+    assert_eq!(output.hits.len(), 3);
+}
+
+#[test]
+fn an_equal_chunk_is_passed_over_and_its_entry_never_read() {
+    let mut log = Log::new();
+    log.put(1, "note", &[RELEASE]);
+    log.put(2, "note", &[RELEASE]);
+    let index = index_of(&log);
+    let mut limited = request("release checklist");
+    limited.limits = PASS;
+    let (output, _) = ask(&log, &index, &limited);
+    assert_eq!(entries_of(&output), [id(1)]);
+    assert_eq!(log.reads.borrow().as_slice(), [id(1)]);
+    assert_eq!(output.skipped.copies, 1);
+}
+
+#[test]
+fn a_hit_passed_over_makes_room_for_the_next_candidate() {
+    let mut log = Log::new();
+    let later = [
+        "release checklist for the quarterly planning review meeting agenda",
+        "release checklist for the yearly budget review meeting minutes",
+    ];
+    for n in 1..=3 {
+        log.put(n, "note", &[RELEASE]);
+    }
+    log.put(4, "note", &[later[0]]);
+    log.put(5, "note", &[later[1]]);
+    let index = index_of(&log);
+    let mut limited = request("release checklist");
+    limited.limits = PASS;
+    limited.budget = 3 * SHOWN_HEADER + RELEASE.len() + later[0].len() + later[1].len();
+    let (output, _) = ask(&log, &index, &limited);
+    let mut found = entries_of(&output);
+    found.sort();
+    assert_eq!(found, [id(1), id(4), id(5)]);
+    assert!(output.hits.iter().all(|hit| !hit.cut));
+    assert_eq!(output.skipped.copies, 2);
+}
+
+#[test]
+fn a_cut_hit_that_repeats_a_hit_above_is_not_printed_and_the_next_is_tried() {
+    let a = "a1 b2 c3 d4 e5 f6";
+    let b = "a1 b2 c3 d4 e5 f6 x1 y1 z1 x2 y2 z2 x3 y3 z3 x4 y4 z4 x5 y5";
+    let c = "u1 v2 w3 q4 r5 s6";
+    let mut log = Log::new();
+    log.put(1, "note", &[a]);
+    log.put(2, "note", &[b]);
+    log.put(3, "note", &[c]);
+    let index = index_of(&log);
+    let scripted = Scripted::new(candidates(&index, &[0, 1, 2]));
+    let mut limited = request("unused");
+    limited.limits = PASS;
+    limited.budget = 2 * SHOWN_HEADER + a.len() + 24;
+    let finished = run(
+        &limited,
+        &Reads {
+            entries: &log,
+            labels: &log,
+        },
+        &readers(),
+        &Bytes,
+        Access::Read {
+            index: &index,
+            rankers: &[&scripted],
+        },
+        &shown,
+        &mut Logged::default(),
+    );
+    let output = finished.result.expect("a run");
+    assert_eq!(entries_of(&output), [id(1), id(3)]);
+    assert_eq!(output.skipped, passed(1, 0, 0));
+}
+
+#[test]
+fn no_record_is_in_more_than_two_hits_of_its_entry() {
+    let long = words("l", 22);
+    let records = [words("a", 9), long, words("c", 9)];
+    let mut log = Log::new();
+    log.put(
+        1,
+        "joined",
+        &[
+            records[0].as_str(),
+            records[1].as_str(),
+            records[2].as_str(),
+        ],
+    );
+    let index = index_of(&log);
+    let ranges: Vec<(u64, u64)> = index
+        .rows
+        .iter()
+        .map(|row| (row.first, row.first + row.count - 1))
+        .collect();
+    assert!(
+        ranges.contains(&(1, 2)) && ranges.contains(&(2, 2)) && ranges.contains(&(2, 3)),
+        "{ranges:?}"
+    );
+    let mut limited = request("release");
+    limited.limits = PASS;
+    let (output, _) = ask(&log, &index, &limited);
+    for record in 1..=3 {
+        let holding = output
+            .hits
+            .iter()
+            .filter(|hit| {
+                let range = hit.found.extent.records;
+                (range.first..range.first + range.count).contains(&record)
+            })
+            .count();
+        assert!(holding <= 2, "record {record} is in {holding} hits");
+    }
+    assert!(output.skipped.parts > 0);
+}
+
+#[test]
+fn a_hit_whose_short_id_another_entry_shares_is_marked() {
+    let mut first = [0u8; 16];
+    first[0] = 1;
+    first[15] = 5;
+    let mut second = first;
+    second[0] = 2;
+    let mut log = Log::new();
+    log.put_id(Id::from_bytes(first), "note", &["release checklist one"]);
+    log.put_id(Id::from_bytes(second), "note", &["release checklist two"]);
+    log.put(6, "note", &["release checklist three"]);
+    let index = index_of(&log);
+    let (output, _) = ask(&log, &index, &request("release checklist"));
+    assert_eq!(output.hits.len(), 3);
+    for hit in &output.hits {
+        let shares = hit.found.entry != id(6);
+        assert_eq!(hit.shared_short, shares, "{}", hit.found.entry);
+    }
+}
+
+#[test]
+fn the_short_ids_are_looked_up_once_a_recall_and_never_with_no_candidate() {
+    let mut log = Log::new();
+    for n in 1..=5u8 {
+        let records: Vec<String> = (0..4)
+            .map(|k| format!("release checklist {}", words(&format!("e{n}k{k}"), 4)))
+            .collect();
+        let records: Vec<&str> = records.iter().map(String::as_str).collect();
+        log.put(n, "note", &records);
+    }
+    let index = index_of(&log);
+    let (output, _) = ask(&log, &index, &request("release checklist"));
+    assert_eq!(output.hits.len(), 20);
+    assert_eq!(log.shorts.borrow().as_slice(), [5]);
+    log.shorts.borrow_mut().clear();
+    let (output, _) = ask(&log, &index, &request("zzzzqqqq"));
+    assert!(output.hits.is_empty());
+    assert!(log.shorts.borrow().is_empty());
+}
+
+fn scoped(text: &str, values: &[&str]) -> Request {
+    let mut request = request(text);
+    request.scope = values.iter().map(|value| (*value).to_owned()).collect();
+    request
+}
+
+fn shelf_of_places() -> Log {
+    let mut log = Log::new();
+    log.put(1, "note", &[RELEASE]);
+    log.put(2, "note", &[RELEASE]);
+    log.put(3, "session", &[RELEASE]);
+    log.put(4, "memo", &[RELEASE]);
+    log.label(1, "file:/home/me/src/shed");
+    log.label(2, "file:/home/me/src/garden");
+    log.label(3, "file:/home/me/src/shed");
+    log
+}
+
+#[test]
+fn a_scope_narrows_the_hits_to_the_entries_it_names() {
+    let log = shelf_of_places();
+    let index = index_of(&log);
+    let (output, _) = ask(&log, &index, &scoped("release checklist", &["garden"]));
+    assert_eq!(entries_of(&output), [id(2)]);
+    let (output, _) = ask(
+        &log,
+        &index,
+        &scoped("release checklist", &["shed", "garden"]),
+    );
+    let mut found = entries_of(&output);
+    found.sort();
+    assert_eq!(found, [id(1), id(2), id(3)]);
+    let (output, _) = ask(&log, &index, &request("release checklist"));
+    assert_eq!(output.hits.len(), 4);
+    assert_eq!(output.scope, None);
+}
+
+#[test]
+fn a_scope_that_names_nothing_searches_nothing() {
+    let log = shelf_of_places();
+    let index = index_of(&log);
+    let scripted = Scripted::new(candidates(&index, &[0, 1]));
+    let mut kept = Logged::default();
+    let finished = run(
+        &scoped("release", &["greenhouse"]),
+        &Reads {
+            entries: &log,
+            labels: &log,
+        },
+        &readers(),
+        &Bytes,
+        Access::Read {
+            index: &index,
+            rankers: &[&scripted],
+        },
+        &shown,
+        &mut kept,
+    );
+    let output = finished.result.expect("a run");
+    assert_eq!(scripted.calls.get(), 0);
+    assert!(output.hits.is_empty());
+    assert_eq!(output.searched, 0);
+    assert_eq!(
+        output.scope,
+        Some(Scoped {
+            kept: 0,
+            unnamed: vec![("greenhouse".to_owned(), Unnamed::Nothing)],
+            worded: true,
+            best: 0,
+            outside: BTreeMap::new(),
+        })
+    );
+    assert_eq!(fields(&kept)[2], "nothing");
+}
+
+#[test]
+fn a_label_is_found_by_its_first_64_words_and_a_longer_value_names_nothing() {
+    let words = |count: usize| {
+        (0..count)
+            .map(|n| format!("w{n}"))
+            .collect::<Vec<_>>()
+            .join("/")
+    };
+    let long = words(70);
+    let mut log = Log::new();
+    log.put(1, "note", &[RELEASE]);
+    log.label(1, &long);
+    let index = index_of(&log);
+    assert_eq!(
+        log.filed.borrow()[&id(1)],
+        [(long.clone(), label_words(&long)[..MAX_LABEL_WORDS].to_vec())]
+    );
+    let (output, _) = ask(&log, &index, &scoped("release checklist", &[&long]));
+    assert!(output.hits.is_empty());
+    assert_eq!(
+        output.scope,
+        Some(Scoped {
+            kept: 0,
+            unnamed: vec![(long.clone(), Unnamed::Nothing)],
+            worded: true,
+            best: 0,
+            outside: BTreeMap::new(),
+        })
+    );
+    assert_eq!(log.asked_words.borrow().last().map(Vec::len), Some(70));
+    let (output, _) = ask(
+        &log,
+        &index,
+        &scoped("release checklist", &[&words(MAX_LABEL_WORDS)]),
+    );
+    assert_eq!(entries_of(&output), [id(1)]);
+}
+
+#[test]
+fn the_best_matches_outside_a_scope_are_counted_by_kind() {
+    let log = shelf_of_places();
+    let index = index_of(&log);
+    let (output, _) = ask(&log, &index, &scoped("release checklist", &["garden"]));
+    let scope = output.scope.expect("a scope");
+    assert_eq!((scope.kept, scope.best), (1, 4));
+    assert_eq!(
+        scope.outside,
+        BTreeMap::from([
+            ("memo".to_owned(), 1),
+            ("note".to_owned(), 1),
+            ("session".to_owned(), 1)
+        ])
+    );
+    let (output, _) = ask(&log, &index, &scoped("release checklist", &["shed"]));
+    let scope = output.scope.expect("a scope");
+    assert_eq!((scope.kept, scope.best), (2, 4));
+    assert_eq!(
+        scope.outside,
+        BTreeMap::from([("memo".to_owned(), 1), ("note".to_owned(), 1)])
+    );
+}
+
+#[test]
+fn a_kind_narrows_a_scope() {
+    let log = shelf_of_places();
+    let index = index_of(&log);
+    let mut both = scoped("release checklist", &["shed", &id(4).to_string()]);
+    both.query.kinds = vec!["note".to_owned()];
+    let (output, _) = ask(&log, &index, &both);
+    assert_eq!(entries_of(&output), [id(1)]);
+    let scope = output.scope.expect("a scope");
+    assert_eq!((scope.kept, scope.best), (3, 2));
+    assert_eq!(scope.outside, BTreeMap::from([("note".to_owned(), 1)]));
+}
+
+#[test]
+fn an_id_takes_a_sessions_subagents() {
+    let mut log = shelf_of_places();
+    log.put(5, "session", &[RELEASE]);
+    log.put(6, "session", &[RELEASE]);
+    log.belong(5, 3);
+    log.belong(6, 5);
+    let index = index_of(&log);
+    let (output, _) = ask(
+        &log,
+        &index,
+        &scoped("release checklist", &[&id(3).to_string()]),
+    );
+    let mut found = entries_of(&output);
+    found.sort();
+    assert_eq!(found, [id(3), id(5), id(6)]);
+    assert_eq!(log.asked_belonging.borrow().as_slice(), [vec![id(3)]]);
+}
+
+#[test]
+fn a_scope_says_whether_words_were_asked() {
+    let log = shelf_of_places();
+    let index = index_of(&log);
+    let (output, _) = ask(&log, &index, &scoped("release checklist", &["garden"]));
+    assert!(output.scope.expect("a scope").worded);
+    let (output, _) = ask(
+        &log,
+        &index,
+        &scoped("release checklist", &[&id(2).to_string()]),
+    );
+    assert!(!output.scope.expect("a scope").worded);
+}
+
+#[test]
+fn the_query_log_holds_the_values_and_how_many_entries_they_named() {
+    let log = shelf_of_places();
+    let index = index_of(&log);
+    let (_, kept) = ask(
+        &log,
+        &index,
+        &scoped("release checklist", &["shed", "garden"]),
+    );
+    let line = fields(&kept);
+    assert_eq!(line[5], "shed,garden");
+    assert_eq!(line[6], "3");
+    let (_, kept) = ask(&log, &index, &scoped("release checklist", &["nowhere"]));
+    let line = fields(&kept);
+    assert_eq!(
+        (line[2].as_str(), line[5].as_str(), line[6].as_str()),
+        ("nothing", "nowhere", "0")
+    );
+    let (_, kept) = ask(&log, &index, &request("release checklist"));
+    let line = fields(&kept);
+    assert_eq!((line[5].as_str(), line[6].as_str()), ("-", "-"));
+    let mut kept = Logged::default();
+    let finished = run(
+        &scoped("release checklist", &["shed", "garden"]),
+        &Reads {
+            entries: &log,
+            labels: &log,
+        },
+        &readers(),
+        &Bytes,
+        Access::NoIndex,
+        &shown,
+        &mut kept,
+    );
+    assert!(finished.result.is_ok());
+    let line = fields(&kept);
+    assert_eq!(
+        (line[2].as_str(), line[5].as_str(), line[6].as_str()),
+        ("no-index", "shed,garden", "-")
+    );
+}
+
+#[test]
+fn a_store_that_fails_while_a_scope_resolves_ends_the_run_logged() {
+    let log = shelf_of_places();
+    let index = index_of(&log);
+    log.labels_fail.set(true);
+    let mut kept = Logged::default();
+    let finished = ask_with(
+        &log,
+        &index,
+        &scoped("release checklist", &["shed"]),
+        &mut kept,
+    );
+    assert!(matches!(finished.result, Err(Error::Store(_))));
+    let line = fields(&kept);
+    assert_eq!(
+        (line[2].as_str(), line[5].as_str(), line[6].as_str()),
+        ("failed", "shed", "-")
+    );
 }

@@ -1,13 +1,14 @@
 use std::fs;
 
 use bilbo_store::entries::{CaptureError, Entries, Generation, Meta, RecordRange, StoreError};
+use bilbo_store::labels::{Labels, Relabel, StoredLabels};
 use bilbo_store::layout::Layout;
 use bilbo_store::segments::{Cache, Options, Step, Store};
 
 use crate::frames::spans;
 use crate::scratch::{
-    Scratch, catalog, chmod, id_of, keep, open, open_seg, open_with, origin, read_records, sealing,
-    snapshot, snapshot_of, sql, try_keep,
+    Scratch, capture_label, catalog, chmod, filed, id_of, keep, label_rows, open, open_seg,
+    open_with, read_records, sealing, snapshot, snapshot_of, sql, try_keep, words,
 };
 use crate::seal::stopping_at;
 
@@ -39,12 +40,12 @@ fn a_read_only_store_reads_everything_and_writes_nothing() {
     assert_eq!(read_records(&store, a, 1, 2), b"one\ntwo\n");
     assert_eq!(read_records(&store, b, 1, 1), b"three\n");
     assert_eq!(
-        store.meta(b).expect("meta").map(|m| m.origin),
-        Some(Some(origin("b.md")))
+        store.meta(b).expect("meta").map(|m| m.labels.capture),
+        Some(Some(capture_label("b.md")))
     );
     assert_eq!(
         store
-            .by_origin(&origin("a.md"))
+            .by_capture(&capture_label("a.md"))
             .expect("head")
             .map(|h| h.id),
         Some(a)
@@ -78,7 +79,10 @@ fn a_read_only_open_without_a_lock_file_or_a_state_folder_reads_the_sealed_segme
         let store = Store::open_read_only(&layout, sealing(), &mut |_| {}).expect("read-only open");
         assert_eq!(read_records(&store, a, 1, 2), b"one\ntwo\n", "{case}");
         assert!(
-            store.by_origin(&origin("b.md")).expect("head").is_none(),
+            store
+                .by_capture(&capture_label("b.md"))
+                .expect("head")
+                .is_none(),
             "{case}: open.seg is treated as absent"
         );
         drop(store);
@@ -99,7 +103,10 @@ fn a_read_only_store_refuses_writes() {
         Err(CaptureError::Store(StoreError::ReadOnly))
     ));
     let meta = Meta {
-        parent: Some(a),
+        labels: StoredLabels {
+            id: Some(a),
+            ..store.meta(a).expect("meta").expect("some").labels
+        },
         ..store.meta(a).expect("meta").expect("some")
     };
     assert!(matches!(
@@ -194,7 +201,7 @@ fn a_read_only_open_with_a_current_catalog_walks_no_segment_and_writes_nothing()
     assert_eq!(read_records(&store, b, 1, 1), b"three\n");
     assert_eq!(
         store
-            .by_origin(&origin("a.md"))
+            .by_capture(&capture_label("a.md"))
             .expect("head")
             .map(|head| head.id),
         Some(a)
@@ -340,7 +347,12 @@ fn a_cache_bound_to_another_store_is_not_this_readers() {
     for layout in [direct, through_link] {
         let store = reader(&layout);
         assert_eq!(store.reader_cache(), &Cache::OtherStore(canonical.clone()));
-        assert!(store.by_origin(&origin("a.md")).expect("head").is_some());
+        assert!(
+            store
+                .by_capture(&capture_label("a.md"))
+                .expect("head")
+                .is_some()
+        );
         drop(store);
         assert_eq!(snapshot(&theirs.cache), held);
         assert_eq!(fs::read_dir(&theirs.cache).expect("list").count(), listing);
@@ -355,7 +367,7 @@ fn a_cache_with_no_catalog_or_one_of_another_version_has_no_catalog() {
             fs::remove_file(catalog(layout)).expect("delete");
         }),
         ("another version", |layout| {
-            sql(layout, "PRAGMA user_version = 3");
+            sql(layout, "PRAGMA user_version = 99");
         }),
         ("not a database", |layout| {
             fs::write(catalog(layout), b"not sqlite").expect("write");
@@ -366,7 +378,7 @@ fn a_cache_with_no_catalog_or_one_of_another_version_has_no_catalog() {
         }),
         ("the magic and another user_version", |layout| {
             let mut bytes = fs::read(catalog(layout)).expect("read");
-            bytes[60..64].copy_from_slice(&3u32.to_be_bytes());
+            bytes[60..64].copy_from_slice(&99u32.to_be_bytes());
             fs::write(catalog(layout), bytes).expect("write");
         }),
         ("no binding rows", |layout| {
@@ -407,7 +419,7 @@ fn a_stale_catalog_of_this_store_is_still_this_stores() {
         &Cache::Own(fs::canonicalize(&layout.cache).expect("canonical"))
     );
     let late = store
-        .by_origin(&origin("c.md"))
+        .by_capture(&capture_label("c.md"))
         .expect("head")
         .expect("the segments hold it");
     assert_eq!(read_records(&store, late.id, 1, 1), b"late\n");
@@ -700,9 +712,9 @@ fn a_catalog_whose_hot_journal_restores_another_version_is_rebuilt() {
     let saved = layout.cache.with_file_name("saved-journal");
     {
         let conn = rusqlite::Connection::open(catalog(&layout)).expect("open");
-        conn.execute_batch("PRAGMA synchronous = OFF; PRAGMA user_version = 3;")
-            .expect("version 3");
-        conn.execute_batch("BEGIN; PRAGMA user_version = 2;")
+        conn.execute_batch("PRAGMA synchronous = OFF; PRAGMA user_version = 4;")
+            .expect("version 4");
+        conn.execute_batch("BEGIN; PRAGMA user_version = 5;")
             .expect("begin");
         fs::copy(&journal, &saved).expect("the journal of the open transaction");
         conn.execute_batch("COMMIT;").expect("commit");
@@ -728,5 +740,24 @@ fn a_catalog_whose_hot_journal_restores_another_version_is_rebuilt() {
         .expect("open")
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .expect("version");
-    assert_eq!(version, 2, "the catalog was made again");
+    assert_eq!(version, 5, "the catalog was made again");
+}
+
+#[test]
+fn a_reader_cannot_relabel() {
+    let scratch = Scratch::new("read_only_relabel");
+    let layout = scratch.layout();
+    let (a, _) = two_places(&layout);
+    let writer = open(&layout);
+    writer.relabel(&[filed(a, &["kept"])]).expect("relabel");
+    writer.close().expect("close");
+    let before = label_rows(&layout);
+    let store = Store::open_read_only(&layout, sealing(), &mut |_| {}).expect("read-only open");
+    assert!(matches!(
+        store.relabel(&[filed(a, &["other"])]),
+        Err(StoreError::ReadOnly)
+    ));
+    assert_eq!(store.with_words(&words("kept")).expect("find"), [a]);
+    drop(store);
+    assert_eq!(label_rows(&layout), before);
 }

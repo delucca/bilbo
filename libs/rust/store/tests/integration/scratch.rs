@@ -66,8 +66,8 @@ pub fn open_with(layout: &Layout, options: Options) -> Store {
     Store::open(layout, options, &mut |_| {}).expect("open the store")
 }
 
-pub fn origin(name: &str) -> bilbo_store::entries::Origin {
-    bilbo_store::entries::Origin::file(Path::new(&format!("/notes/{name}"))).expect("origin")
+pub fn capture_label(name: &str) -> bilbo_store::labels::CaptureLabel {
+    bilbo_store::labels::CaptureLabel::file(Path::new(&format!("/notes/{name}"))).expect("label")
 }
 
 pub fn ends(bytes: &[u8]) -> Vec<usize> {
@@ -97,12 +97,12 @@ pub fn try_keep(
     bytes: &[u8],
     id: Option<Id>,
 ) -> Result<Captured, bilbo_store::entries::CaptureError> {
-    let origin = origin(name);
+    let label = capture_label(name);
     store.capture(&Capture {
-        origin: &origin,
+        label: &label,
         kind: "markdown",
         id,
-        parent: None,
+        id_label: None,
         stamp: None,
         bytes,
         ends: &ends(bytes),
@@ -194,4 +194,61 @@ pub fn sql(layout: &Layout, statement: &str) {
 pub fn chmod(path: &Path, mode: u32) {
     use std::os::unix::fs::PermissionsExt;
     fs::set_permissions(path, fs::Permissions::from_mode(mode)).expect("chmod");
+}
+
+pub fn filed(entry: Id, texts: &[&str]) -> bilbo_store::labels::Filed {
+    bilbo_store::labels::Filed {
+        entry,
+        labels: texts
+            .iter()
+            .map(|text| bilbo_store::labels::Worded {
+                text: (*text).into(),
+                words: text.split(' ').map(String::from).collect(),
+            })
+            .collect(),
+    }
+}
+
+pub fn count(layout: &Layout, query: &str) -> i64 {
+    rusqlite::Connection::open(catalog(layout))
+        .expect("open the catalog")
+        .query_row(query, [], |row| row.get(0))
+        .expect("count")
+}
+
+pub fn label_tables(layout: &Layout) -> Vec<String> {
+    let conn = rusqlite::Connection::open(catalog(layout)).expect("open the catalog");
+    let mut lines = Vec::new();
+    for query in [
+        "SELECT id, text FROM labels ORDER BY id",
+        "SELECT word, label, at FROM label_words ORDER BY word, label, at",
+        "SELECT entry, label FROM entry_labels ORDER BY entry, label",
+    ] {
+        let mut statement = conn.prepare(query).expect("prepare");
+        let columns = statement.column_count();
+        let rows = statement
+            .query_map([], |row| {
+                (0..columns)
+                    .map(|column| row.get_ref(column).map(|value| format!("{value:?}")))
+                    .collect::<rusqlite::Result<Vec<_>>>()
+            })
+            .expect("query");
+        for row in rows {
+            lines.push(row.expect("row").join("|"));
+        }
+        lines.push(String::new());
+    }
+    lines
+}
+
+pub fn words(text: &str) -> Vec<String> {
+    text.split(' ').map(String::from).collect()
+}
+
+pub fn label_rows(layout: &Layout) -> (i64, i64, i64) {
+    (
+        count(layout, "SELECT count(*) FROM labels"),
+        count(layout, "SELECT count(*) FROM label_words"),
+        count(layout, "SELECT count(*) FROM entry_labels"),
+    )
 }

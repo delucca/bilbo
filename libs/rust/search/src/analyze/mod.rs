@@ -53,27 +53,47 @@ fn lower(text: &str) -> String {
     }
 }
 
+fn runs(lowered: &str) -> impl Iterator<Item = &str> {
+    lowered
+        .split(|c: char| !is_word(c))
+        .filter(|run| !run.is_empty())
+}
+
 /// As bm25s splits with `\b\w\w+\b`, lowercased, without its stopwords.
 fn words(text: &str) -> Vec<String> {
     let lowered = lower(text);
-    let mut words = Vec::new();
-    let mut start = None;
-    let mut chars = 0;
-    for (at, c) in lowered.char_indices().chain([(lowered.len(), ' ')]) {
-        if is_word(c) {
-            start.get_or_insert(at);
-            chars += 1;
-            continue;
-        }
-        if let Some(from) = start.take() {
-            let word = &lowered[from..at];
-            if chars >= 2 && word.len() <= MAX_TERM_BYTES && !STOPWORDS.contains(&word) {
-                words.push(word.to_owned());
-            }
-        }
-        chars = 0;
-    }
-    words
+    runs(&lowered)
+        .filter(|word| {
+            word.chars().nth(1).is_some()
+                && word.len() <= MAX_TERM_BYTES
+                && !STOPWORDS.contains(word)
+        })
+        .map(str::to_owned)
+        .collect()
+}
+
+/// A safety bound on the label tables: the index run files a label under its first words up to it.
+pub const MAX_LABEL_WORDS: usize = 64;
+
+pub fn every_word(text: &str) -> Vec<String> {
+    runs(&lower(text)).map(str::to_owned).collect()
+}
+
+fn label_words_upto(text: &str, most: usize) -> Vec<String> {
+    runs(&lower(text))
+        .flat_map(|run| run.split('_'))
+        .filter(|part| !part.is_empty())
+        .take(most)
+        .map(stem)
+        .collect()
+}
+
+pub fn label_words(text: &str) -> Vec<String> {
+    label_words_upto(text, usize::MAX)
+}
+
+pub fn filed_words(text: &str) -> Vec<String> {
+    label_words_upto(text, MAX_LABEL_WORDS)
 }
 
 pub fn stem(word: &str) -> String {
@@ -182,8 +202,8 @@ mod tests {
     use crate::testing::Says;
 
     use super::{
-        Language, MAX_TERM_BYTES, Omit, STOPWORDS, is_word, lower, portuguese, query, stem, terms,
-        word, words,
+        Language, MAX_LABEL_WORDS, MAX_TERM_BYTES, Omit, STOPWORDS, every_word, filed_words,
+        is_word, label_words, lower, portuguese, query, stem, terms, word, words,
     };
 
     fn portuguese_says() -> Says {
@@ -219,6 +239,54 @@ mod tests {
         ] {
             assert_eq!(words(text), found, "{text:?}");
         }
+    }
+
+    #[test]
+    fn every_word_keeps_stopwords_single_letters_and_underscores() {
+        assert_eq!(
+            every_word("The a x_y  It's 3 \u{c9}"),
+            ["the", "a", "x_y", "it", "s", "3", "\u{e9}"]
+        );
+        assert!(every_word("").is_empty());
+        assert!(every_word(" .,;-- ").is_empty());
+    }
+
+    fn stemmed(words: &[&str]) -> Vec<String> {
+        words.iter().map(|word| stem(word)).collect()
+    }
+
+    #[test]
+    fn a_label_is_cut_at_anything_that_is_no_letter_or_digit() {
+        assert_eq!(
+            label_words("/home/me/src/garden"),
+            label_words("-home-me-src-garden")
+        );
+        assert_eq!(
+            label_words("/home/me/src/garden"),
+            stemmed(&["home", "me", "src", "garden"])
+        );
+        assert_eq!(
+            label_words("https://docs.rs/tantivy/0.27.0/"),
+            stemmed(&["https", "docs", "rs", "tantivy", "0", "27", "0"])
+        );
+        assert_eq!(
+            label_words("20261107T141906Z--bilbo-recall__personal"),
+            stemmed(&["20261107t141906z", "bilbo", "recall", "personal"])
+        );
+        assert_eq!(label_words("x_y"), stemmed(&["x", "y"]));
+        assert_eq!(label_words("Bilbo.NEXT"), stemmed(&["bilbo", "next"]));
+        assert!(label_words("\u{2026}").is_empty());
+    }
+
+    #[test]
+    fn a_plural_gives_the_word_of_its_singular() {
+        assert_eq!(label_words("bilbos"), ["bilbo"]);
+        assert_eq!(label_words("Notebooks"), label_words("notebook"));
+    }
+
+    #[test]
+    fn a_label_keeps_stopwords_and_single_letters() {
+        assert_eq!(label_words("/in/a/the"), stemmed(&["in", "a", "the"]));
     }
 
     #[test]
@@ -330,6 +398,34 @@ mod tests {
             assert_eq!(found[1], stem(&kept));
         }
         assert_eq!(words(&"é".repeat(2049)), Vec::<String>::new());
+    }
+
+    #[test]
+    fn a_label_is_filed_under_its_first_64_words_and_a_value_under_all() {
+        assert_eq!(
+            MAX_LABEL_WORDS, 64,
+            "the bound is part of what the index run files: change the catalog's VERSION (libs/rust/store/src/catalog.rs) with it"
+        );
+        let long = (0..70)
+            .map(|n| format!("w{n}"))
+            .collect::<Vec<_>>()
+            .join("/");
+        let all = label_words(&long);
+        assert_eq!(all.len(), 70);
+        assert_eq!(filed_words(&long), all[..64]);
+        for joiner in ["_", "__"] {
+            let joined = (0..70)
+                .map(|n| format!("w{n}"))
+                .collect::<Vec<_>>()
+                .join(joiner);
+            let all = label_words(&joined);
+            assert_eq!(all.len(), 70, "{joiner:?}");
+            assert_eq!(filed_words(&joined), all[..64], "{joiner:?}");
+        }
+        assert_eq!(
+            filed_words("/home/me/src/shed"),
+            label_words("/home/me/src/shed")
+        );
     }
 
     #[test]

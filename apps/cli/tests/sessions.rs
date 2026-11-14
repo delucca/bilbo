@@ -11,7 +11,8 @@ use std::time::{Duration, SystemTime};
 use bilbo_cli::console::settings;
 use bilbo_cli::remember::save::{Saved, Saving, save_with};
 use bilbo_kinds::follows::Follow;
-use bilbo_store::entries::{Entries, Generation, Head, Meta, Origin, RecordRange};
+use bilbo_store::entries::{Entries, Generation, Head, Meta, RecordRange};
+use bilbo_store::labels::CaptureLabel;
 use bilbo_store::layout::Layout;
 use bilbo_store::segments::{Options, Store};
 
@@ -116,7 +117,7 @@ impl Sandbox {
 
     fn head(&self, file: &Path) -> Head {
         self.store()
-            .by_origin(&Origin::file(file).expect("origin"))
+            .by_capture(&CaptureLabel::file(file).expect("capture label"))
             .expect("head")
             .expect("an entry")
     }
@@ -157,7 +158,7 @@ impl Sandbox {
     fn meta(&self, file: &Path) -> Meta {
         let store = self.store();
         let head = store
-            .by_origin(&Origin::file(file).expect("origin"))
+            .by_capture(&CaptureLabel::file(file).expect("capture label"))
             .expect("head")
             .unwrap_or_else(|| panic!("no entry for {}", file.display()));
         store.meta(head.id).expect("meta").expect("a meta")
@@ -166,7 +167,7 @@ impl Sandbox {
     fn records(&self, file: &Path) -> Vec<Vec<u8>> {
         let store = self.store();
         let head = store
-            .by_origin(&Origin::file(file).expect("origin"))
+            .by_capture(&CaptureLabel::file(file).expect("capture label"))
             .expect("head")
             .expect("an entry");
         store
@@ -220,7 +221,7 @@ fn lines(bytes: &[u8]) -> usize {
 }
 
 #[test]
-fn a_projects_folder_keeps_its_sessions_and_each_subagent_names_its_session_as_parent() {
+fn a_projects_folder_keeps_its_sessions_and_each_subagent_names_its_session_as_its_id_label() {
     let sandbox = Sandbox::new("projects");
     let run = sandbox.run(&[text(&sandbox.projects()), "--kind", "session"]);
     assert_eq!(run.code, 0, "{:?}", run.stderr);
@@ -232,11 +233,11 @@ fn a_projects_folder_keeps_its_sessions_and_each_subagent_names_its_session_as_p
     let main = sandbox.meta(&sandbox.main());
     let subagent = sandbox.meta(&sandbox.subagent());
     assert_eq!(main.kind, "session");
-    assert_eq!(main.parent, None);
+    assert_eq!(main.labels.id, None);
     assert_eq!(subagent.kind, "session");
-    assert_eq!(subagent.parent, Some(main.id));
+    assert_eq!(subagent.labels.id, Some(main.id));
     assert_eq!(
-        sandbox.meta(&sandbox.workflow_subagent()).parent,
+        sandbox.meta(&sandbox.workflow_subagent()).labels.id,
         Some(main.id)
     );
 }
@@ -506,7 +507,7 @@ struct Counted {
     gone: usize,
 }
 
-/// Kind `session`; a subagent's parent is its session's entry once kept; one record per complete
+/// Kind `session`; a subagent's id label is its session's entry once kept; one record per complete
 /// line, each the independent filter's form (`digests`), 40+ hex strings kept. A settled file is
 /// whole, a live one may have grown; gone counts, any other read error fails.
 #[expect(
@@ -531,8 +532,8 @@ fn read_back(
         counted.subagents += 1;
         match head_of(store, main) {
             None => counted.unresolved += 1,
-            Some(session) if meta.parent != Some(session.id) => {
-                problems.push(format!("parent: {}", file.display()));
+            Some(session) if meta.labels.id != Some(session.id) => {
+                problems.push(format!("id label: {}", file.display()));
             }
             Some(_) => {}
         }
@@ -629,7 +630,7 @@ fn read_back(
 
 fn head_of(store: &Store, file: &Path) -> Option<Head> {
     store
-        .by_origin(&Origin::file(file).expect("origin"))
+        .by_capture(&CaptureLabel::file(file).expect("capture label"))
         .expect("head")
 }
 
@@ -885,13 +886,13 @@ fn hex_strings(line: &[u8]) -> Vec<&[u8]> {
 }
 
 #[test]
-fn a_subagent_kept_before_its_session_gets_its_parent_when_a_sweep_finds_it_grown() {
+fn a_subagent_kept_before_its_session_gets_its_id_label_when_a_sweep_finds_it_grown() {
     let sandbox = Sandbox::new("child_first");
     let child = sandbox.subagent();
     settle(&child);
     assert_eq!(sandbox.run(&[text(&child)]).code, 0);
     assert_eq!(
-        sandbox.meta(&child).parent,
+        sandbox.meta(&child).labels.id,
         None,
         "its session is not kept yet"
     );
@@ -901,7 +902,11 @@ fn a_subagent_kept_before_its_session_gets_its_parent_when_a_sweep_finds_it_grow
         run.stdout.lines().next(),
         Some(counts(2, 0, 0, 1, 0).as_str())
     );
-    assert_eq!(sandbox.meta(&child).parent, None, "not read, so it waits");
+    assert_eq!(
+        sandbox.meta(&child).labels.id,
+        None,
+        "not read, so it waits"
+    );
     write(
         &child,
         [SUBAGENT, b"{\"type\":\"user\",\"sessionId\":\"s\"}\n"].concat(),
@@ -912,7 +917,7 @@ fn a_subagent_kept_before_its_session_gets_its_parent_when_a_sweep_finds_it_grow
         Some(counts(0, 1, 0, 2, 0).as_str())
     );
     assert_eq!(
-        sandbox.meta(&child).parent,
+        sandbox.meta(&child).labels.id,
         Some(sandbox.meta(&sandbox.main()).id)
     );
 }
@@ -1314,7 +1319,7 @@ fn a_packed_file_that_does_not_unpack_is_refused_and_the_run_goes_on() {
     assert!(
         sandbox
             .store()
-            .by_origin(&Origin::file(&sandbox.rollout()).expect("origin"))
+            .by_capture(&CaptureLabel::file(&sandbox.rollout()).expect("capture label"))
             .expect("head")
             .is_none()
     );
@@ -1343,7 +1348,7 @@ fn a_packed_file_made_to_hold_far_more_than_its_size_is_refused_on_every_run() {
     assert!(
         sandbox
             .store()
-            .by_origin(&Origin::file(&sandbox.rollout()).expect("origin"))
+            .by_capture(&CaptureLabel::file(&sandbox.rollout()).expect("capture label"))
             .expect("head")
             .is_none()
     );

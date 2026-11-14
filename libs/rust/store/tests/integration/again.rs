@@ -7,7 +7,7 @@ use bilbo_store::entries::{Entries, StoreError};
 use bilbo_store::layout::Layout;
 use bilbo_store::segments::{Closed, Held, Hook, Notice, Options, Step, Store};
 
-use crate::scratch::{Scratch, keep, open_seg, origin, sealed, sealing};
+use crate::scratch::{Scratch, capture_label, keep, open_seg, sealed, sealing};
 
 const WAIT: Duration = Duration::from_secs(10);
 
@@ -78,7 +78,10 @@ fn a_writer_that_finds_the_store_held_asks_the_holder_to_run_again_and_returns_a
     let store = Store::open_read_only(&layout, sealing(), &mut |_| {}).expect("read");
     for name in ["a.md", "b.md"] {
         assert!(
-            store.by_origin(&origin(name)).expect("head").is_some(),
+            store
+                .by_capture(&capture_label(name))
+                .expect("head")
+                .is_some(),
             "{name}"
         );
     }
@@ -228,5 +231,10 @@ fn a_writer_that_finds_only_readers_waits_for_them_and_asks_nobody_to_run_again(
     assert!(writer.join().expect("writer"), "released without a rerun");
 
     let store = Store::open_read_only(&layout, sealing(), &mut |_| {}).expect("read");
-    assert!(store.by_origin(&origin("b.md")).expect("head").is_some());
+    assert!(
+        store
+            .by_capture(&capture_label("b.md"))
+            .expect("head")
+            .is_some()
+    );
 }

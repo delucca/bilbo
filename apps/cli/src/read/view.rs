@@ -5,6 +5,7 @@ use bilbo_kinds::read::page::Block;
 use bilbo_kinds::read::refs::SCHEME;
 use bilbo_kinds::read::{About, Body, Budget, Output};
 use bilbo_store::entries::RecordRange;
+use bilbo_store::labels::Label;
 
 use crate::console::body::body;
 use crate::console::message::{group, line};
@@ -83,15 +84,21 @@ fn render(output: &Output, budget: Option<Budget>, show: &Show<'_>) -> String {
 
 fn about_lines(output: &Output, about: &About, show: &Show<'_>) -> String {
     let mut rows = vec![("kind", line(show.view, &about.kind))];
-    if let Some(origin) = &about.origin {
-        rows.push(("origin", line(show.view, origin.as_str())));
+    for label in &about.labels {
+        rows.push((
+            "label",
+            match label {
+                Label::Capture(capture) => {
+                    format!("{} (capture)", line(show.view, capture.as_str()))
+                }
+                Label::Id(id) => format!("{SCHEME}{id}"),
+                Label::Text(text) => line(show.view, text),
+            },
+        ));
     }
     rows.push(("captured", utc(about.captured)));
     if let Some(started) = about.started {
         rows.push(("started", utc(started)));
-    }
-    if let Some(parent) = about.parent {
-        rows.push(("parent", format!("{SCHEME}{parent}")));
     }
     rows.push(("records", show.number(output.total)));
     rows.push((
@@ -102,6 +109,15 @@ fn about_lines(output: &Output, about: &About, show: &Show<'_>) -> String {
             output.generation.0.to_string()
         },
     ));
+    if about.more_labels > 0 {
+        rows.push((
+            "labels",
+            format!(
+                "{} more; a larger --budget lists them",
+                show.number(about.more_labels)
+            ),
+        ));
+    }
     let mut text = show.painted(Style::Name, &format!("{SCHEME}{}", output.id)) + "\n";
     for (name, value) in rows {
         let _ = writeln!(
@@ -194,8 +210,9 @@ mod tests {
     use bilbo_kinds::read::outline::Line;
     use bilbo_kinds::read::page::{Block, Cut};
     use bilbo_kinds::read::{About, Body, Budget, Output};
-    use bilbo_store::entries::{Generation, Origin, RecordRange};
+    use bilbo_store::entries::{Generation, RecordRange};
     use bilbo_store::id::Id;
+    use bilbo_store::labels::{CaptureLabel, Label};
 
     use super::{beside, plain, shown};
     use crate::console::view::View;
@@ -248,9 +265,15 @@ mod tests {
     fn about() -> About {
         About {
             kind: "session".to_owned(),
-            origin: Origin::file(Path::new("/h/.claude/projects/p/5c3a9e1f.jsonl")),
+            labels: vec![
+                Label::Capture(
+                    CaptureLabel::file(Path::new("/h/.claude/projects/p/5c3a9e1f.jsonl"))
+                        .expect("a label"),
+                ),
+                Label::Id(Id::parse("01JC5Q3V7XKM4P8R2T6W9YB0DF").expect("id")),
+            ],
+            more_labels: 0,
             captured: SystemTime::UNIX_EPOCH + Duration::from_secs(1_794_193_920),
-            parent: Id::parse("01JC5Q3V7XKM4P8R2T6W9YB0DF"),
             started: Some(SystemTime::UNIX_EPOCH + Duration::from_secs(1_794_069_552)),
             current: Generation(2),
         }
@@ -410,10 +433,10 @@ mod tests {
             plain(&outline(Some(about()), None), None),
             "bilbo:01JC5Q3V7XKM4P8R2T6W9YB0DE\n\
              kind: session\n\
-             origin: file:/h/.claude/projects/p/5c3a9e1f.jsonl\n\
+             label: file:/h/.claude/projects/p/5c3a9e1f.jsonl (capture)\n\
+             label: bilbo:01JC5Q3V7XKM4P8R2T6W9YB0DF\n\
              captured: 2026-11-09 03:12 UTC\n\
              started: 2026-11-07 16:39 UTC\n\
-             parent: bilbo:01JC5Q3V7XKM4P8R2T6W9YB0DF\n\
              records: 4970\n\
              generation: 2\n\
              outline:\n\
@@ -424,10 +447,9 @@ mod tests {
     }
 
     #[test]
-    fn an_outline_without_an_origin_a_start_or_a_parent_leaves_their_lines_out() {
+    fn an_entry_with_no_label_has_no_label_row() {
         let bare = About {
-            origin: None,
-            parent: None,
+            labels: Vec::new(),
             started: None,
             ..about()
         };
@@ -459,13 +481,65 @@ mod tests {
     }
 
     #[test]
-    fn an_origin_with_a_newline_stays_one_line() {
+    fn a_label_with_a_newline_stays_one_line() {
         let hostile = About {
-            origin: Origin::new("file:/a\nend: forged".to_owned()),
+            labels: vec![Label::Capture(
+                CaptureLabel::new("file:/a\nend: forged".to_owned()).expect("a label"),
+            )],
             ..about()
         };
         let text = plain(&outline(Some(hostile), None), None);
-        assert!(text.contains("origin: file:/a\\nend: forged\n"), "{text}");
+        assert!(
+            text.contains("label: file:/a\\nend: forged (capture)\n"),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn the_capture_label_comes_first_and_is_marked() {
+        let text = plain(&outline(Some(about()), None), None);
+        let capture = text.find("label: file:/h/.claude/projects/p/5c3a9e1f.jsonl (capture)\n");
+        let id = text.find("label: bilbo:01JC5Q3V7XKM4P8R2T6W9YB0DF\n");
+        assert!(capture.is_some() && id.is_some() && capture < id, "{text}");
+    }
+
+    #[test]
+    fn an_id_label_is_printed_as_the_ref_of_its_entry() {
+        let text = plain(&outline(Some(about()), None), None);
+        assert!(
+            text.contains("label: bilbo:01JC5Q3V7XKM4P8R2T6W9YB0DF\n"),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn a_text_label_is_printed_as_it_is() {
+        let texts = About {
+            labels: vec![Label::Text("/home/me/src/garden".to_owned())],
+            ..about()
+        };
+        let text = plain(&outline(Some(texts), None), None);
+        assert!(
+            text.contains("\nlabel: /home/me/src/garden\ncaptured:"),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn a_row_counts_the_labels_that_are_not_listed() {
+        let many = About {
+            more_labels: 12,
+            ..about()
+        };
+        let row = "labels: 12 more; a larger --budget lists them\n";
+        let full = outline(Some(many), None);
+        let text = plain(&full, None);
+        assert!(
+            text.contains(&format!("generation: 2\n{row}outline:\n")),
+            "{text}"
+        );
+        assert!(beside(&full, None).contains(row), "left out of beside");
+        assert!(!plain(&outline(Some(about()), None), None).contains("labels:"));
     }
 
     #[test]

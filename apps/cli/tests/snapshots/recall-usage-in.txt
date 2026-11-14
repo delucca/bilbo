@@ -1,0 +1,4 @@
+bilbo: --in '.' has no letter or digit; give a word of a label, or an id as a hit prints it
+bilbo: usage: bilbo recall <query>... [--in <label>]... [--kind <kind>]...
+bilbo:        [--budget <tokens>]
+bilbo: see 'bilbo recall --help'

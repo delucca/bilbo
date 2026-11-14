@@ -1,7 +1,7 @@
 //! Renders as the eval's bm25 `build.py` does (`render_session`, `render_entry`); where that script would stop on
 //! an unexpected shape, the block or the entry renders nothing.
 
-use bilbo_kinds::reader::Passage;
+use bilbo_kinds::reader::{EntryLabels, Passage};
 
 use crate::json::{self, Value};
 use crate::render::{self, Outline, Tools};
@@ -166,6 +166,37 @@ pub fn passages(records: &[&[u8]]) -> Vec<Passage> {
         passages.extend(render::passage(number, &pieces, at, Outline::of(prompt)));
     }
     passages
+}
+
+pub fn labels(records: &[&[u8]]) -> Vec<String> {
+    let mut found = EntryLabels::default();
+    for record in records {
+        let Some(record) = json::parse(record).filter(Value::is_dict) else {
+            continue;
+        };
+        if let Some(cwd) = record.get("cwd").and_then(Value::as_str) {
+            found.add(cwd);
+        }
+        let environment = record.get("type").and_then(Value::as_str) == Some("attachment")
+            && record
+                .get("attachment")
+                .and_then(|attachment| attachment.get("type"))
+                .and_then(Value::as_str)
+                == Some("environment");
+        if !environment {
+            continue;
+        }
+        let added = record
+            .get("attachment")
+            .and_then(|attachment| attachment.get("snapshot"))
+            .and_then(|snapshot| snapshot.get("additionalWorkingDirectories"));
+        if let Some(Value::List(folders)) = added {
+            for folder in folders.iter().filter_map(Value::as_str) {
+                found.add(folder);
+            }
+        }
+    }
+    found.into_texts()
 }
 
 #[cfg(test)]

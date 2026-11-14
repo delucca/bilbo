@@ -38,6 +38,8 @@ pub struct Record<'a> {
     pub ended: Ended,
     pub searched: u64,
     pub kinds: &'a [String],
+    pub scope: &'a [String],
+    pub named: Option<u64>,
     pub hits: &'a [Hit],
     pub query: &'a str,
 }
@@ -68,6 +70,10 @@ fn escaped(query: &str) -> String {
     text
 }
 
+fn value(value: &str) -> String {
+    escaped(value).replace(',', "\\,")
+}
+
 fn shown(hit: &Hit) -> String {
     let locator = Locator {
         generation: None,
@@ -83,10 +89,14 @@ pub fn line(record: &Record<'_>) -> String {
         .duration_since(UNIX_EPOCH)
         .map_or(0, |after| after.as_secs());
     format!(
-        "q1\t{seconds}\t{}\t{}\t{}\t{}\t{}\n",
+        "q2\t{seconds}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\n",
         record.ended.word(),
         record.searched,
         joined(record.kinds.iter().cloned()),
+        joined(record.scope.iter().map(|each| value(each))),
+        record
+            .named
+            .map_or_else(|| "-".to_owned(), |named| named.to_string()),
         joined(record.hits.iter().map(shown)),
         escaped(record.query),
     )
@@ -123,6 +133,7 @@ mod tests {
             preface: None,
             text: String::new(),
             cut,
+            shared_short: false,
         }
     }
 
@@ -137,13 +148,15 @@ mod tests {
             ended,
             searched: 7,
             kinds,
+            scope: &[],
+            named: None,
             hits,
             query,
         }
     }
 
     #[test]
-    fn a_line_has_its_seven_fields_in_order() {
+    fn a_line_has_its_nine_fields_in_order() {
         let kinds = ["markdown".to_owned(), "session".to_owned()];
         let hits = [hit(FIRST, 3, 1, false), hit(SECOND, 2, 5, true)];
         for (ended, word) in [
@@ -157,18 +170,58 @@ mod tests {
             assert_eq!(
                 line(&record(ended, &kinds, &hits, "release checklist")),
                 format!(
-                    "q1\t1700000000\t{word}\t7\tmarkdown,session\t{FIRST}#r3,{SECOND}#r2-6!\trelease checklist\n"
+                    "q2\t1700000000\t{word}\t7\tmarkdown,session\t-\t-\t{FIRST}#r3,{SECOND}#r2-6!\trelease checklist\n"
                 )
             );
         }
         assert_eq!(
             line(&record(Ended::Nothing, &[], &[], "x")),
-            "q1\t1700000000\tnothing\t7\t-\t-\tx\n"
+            "q2\t1700000000\tnothing\t7\t-\t-\t-\t-\tx\n"
         );
+        let scope = ["bilbo".to_owned(), "notes".to_owned()];
+        let mut scoped = record(Ended::Hits, &kinds[..1], &hits[1..], "x");
+        scoped.scope = &scope;
+        scoped.named = Some(12);
         assert_eq!(
-            line(&record(Ended::Hits, &kinds[..1], &hits[1..], "x")),
-            format!("q1\t1700000000\thits\t7\tmarkdown\t{SECOND}#r2-6!\tx\n")
+            line(&scoped),
+            format!("q2\t1700000000\thits\t7\tmarkdown\tbilbo,notes\t12\t{SECOND}#r2-6!\tx\n")
         );
+        let mut nothing = record(Ended::Nothing, &[], &[], "x");
+        nothing.scope = &scope[..1];
+        nothing.named = Some(0);
+        assert_eq!(
+            line(&nothing),
+            "q2\t1700000000\tnothing\t7\t-\tbilbo\t0\t-\tx\n"
+        );
+        let mut failed = record(Ended::Failed, &[], &[], "x");
+        failed.scope = &scope[..1];
+        assert_eq!(
+            line(&failed),
+            "q2\t1700000000\tfailed\t7\t-\tbilbo\t-\t-\tx\n"
+        );
+    }
+
+    #[test]
+    fn an_in_value_cannot_end_the_line_or_add_a_field() {
+        for (given, written) in [
+            ("a\tb", "a\\tb"),
+            ("a\nb", "a\\nb"),
+            ("a,b", "a\\,b"),
+            ("a\\b", "a\\\\b"),
+            ("a\\,b", "a\\\\\\,b"),
+        ] {
+            let scope = [given.to_owned(), "z".to_owned()];
+            let mut each = record(Ended::Hits, &[], &[], "x");
+            each.scope = &scope;
+            each.named = Some(1);
+            let text = line(&each);
+            assert_eq!(
+                text,
+                format!("q2\t1700000000\thits\t7\t-\t{written},z\t1\t-\tx\n")
+            );
+            assert_eq!(text.matches('\n').count(), 1, "{given:?}");
+            assert_eq!(text.split('\t').count(), 9, "{given:?}");
+        }
     }
 
     #[test]
@@ -187,9 +240,12 @@ mod tests {
             ("ação ünï", "ação ünï"),
         ] {
             let text = line(&record(Ended::Hits, &[], &[], query));
-            assert_eq!(text, format!("q1\t1700000000\thits\t7\t-\t-\t{written}\n"));
+            assert_eq!(
+                text,
+                format!("q2\t1700000000\thits\t7\t-\t-\t-\t-\t{written}\n")
+            );
             assert_eq!(text.matches('\n').count(), 1, "{query:?}");
-            assert_eq!(text.split('\t').count(), 7, "{query:?}");
+            assert_eq!(text.split('\t').count(), 9, "{query:?}");
         }
         let long = "word ".repeat(10_000);
         let text = line(&record(Ended::Hits, &[], &[], &long));
@@ -200,8 +256,8 @@ mod tests {
     fn a_time_before_1970_is_second_0() {
         let mut before = record(Ended::Nothing, &[], &[], "x");
         before.at = UNIX_EPOCH - Duration::from_secs(5);
-        assert!(line(&before).starts_with("q1\t0\t"));
+        assert!(line(&before).starts_with("q2\t0\t"));
         before.at = UNIX_EPOCH;
-        assert!(line(&before).starts_with("q1\t0\t"));
+        assert!(line(&before).starts_with("q2\t0\t"));
     }
 }

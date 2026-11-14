@@ -9,10 +9,11 @@ use bilbo_kinds::read::{self, About, Body, Budget, Error, Output, Request, Shown
 use bilbo_kinds::reader::{Passage, Piece, Reader};
 use bilbo_kinds::tokens::Tokens;
 use bilbo_store::entries::{
-    Capture, CaptureError, Captured, Change, Cursor, Entries, Generation, Head, Meta, Origin,
-    RecordRange, StoreError,
+    Capture, CaptureError, Captured, Change, Cursor, Entries, Generation, Head, Meta, RecordRange,
+    StoreError,
 };
-use bilbo_store::id::Id;
+use bilbo_store::id::{Id, Short};
+use bilbo_store::labels::{CaptureLabel, Label, StoredLabels};
 
 use crate::fakes::id;
 
@@ -111,14 +112,26 @@ struct Shelf {
 }
 
 impl Shelf {
-    fn with(mut self, n: u8, kind: &str, origin: Option<&str>, records: &[&'static str]) -> Shelf {
+    fn with(self, n: u8, kind: &str, label: Option<&str>, records: &[&'static str]) -> Shelf {
+        self.with_id(id(n), kind, label, records)
+    }
+
+    fn with_id(
+        mut self,
+        id: Id,
+        kind: &str,
+        label: Option<&str>,
+        records: &[&'static str],
+    ) -> Shelf {
         self.kept.push(Kept {
             meta: Meta {
-                id: id(n),
+                id,
                 kind: kind.to_owned(),
-                origin: origin.and_then(|path| Origin::file(Path::new(path))),
+                labels: StoredLabels {
+                    capture: label.and_then(|path| CaptureLabel::file(Path::new(path))),
+                    id: None,
+                },
                 captured: SystemTime::UNIX_EPOCH + Duration::from_secs(1000),
-                parent: None,
             },
             generations: vec![records.to_vec()],
         });
@@ -175,8 +188,8 @@ impl Entries for Shelf {
         panic!("read must not call changes")
     }
 
-    fn by_origin(&self, _origin: &Origin) -> Result<Option<Head>, StoreError> {
-        panic!("read must not call by_origin")
+    fn by_capture(&self, _label: &CaptureLabel) -> Result<Option<Head>, StoreError> {
+        panic!("read must not call by_capture")
     }
 
     fn extent(
@@ -199,13 +212,24 @@ impl Entries for Shelf {
             .map(|records| (Generation(asked), records.len() as u64)))
     }
 
-    fn origins_with(&self, part: &str) -> Result<Vec<(Id, Origin)>, StoreError> {
+    fn captures_with(&self, part: &str) -> Result<Vec<(Id, CaptureLabel)>, StoreError> {
         Ok(self
             .kept
             .iter()
-            .filter_map(|kept| Some((kept.meta.id, kept.meta.origin.clone()?)))
-            .filter(|(_, origin)| origin.as_str().to_lowercase().contains(part))
+            .filter_map(|kept| Some((kept.meta.id, kept.meta.labels.capture.clone()?)))
+            .filter(|(_, label)| label.as_str().to_lowercase().contains(part))
             .collect())
+    }
+
+    fn by_shorts(&self, shorts: &[Short]) -> Result<Vec<Id>, StoreError> {
+        let mut found: Vec<Id> = self
+            .kept
+            .iter()
+            .map(|kept| kept.meta.id)
+            .filter(|id| shorts.iter().any(|short| short.ends(*id)))
+            .collect();
+        found.sort();
+        Ok(found)
     }
 }
 
@@ -222,9 +246,9 @@ const RECORDS: [&str; 9] = [
 ];
 
 fn shelf() -> Shelf {
-    let origin = format!("/h/.claude/projects/p/{SESSION}.jsonl");
+    let label = format!("/h/.claude/projects/p/{SESSION}.jsonl");
     Shelf::default()
-        .with(1, "lines", Some(&origin), &RECORDS)
+        .with(1, "lines", Some(&label), &RECORDS)
         .with(2, "lines", None, &["user: a note"])
         .with(3, "pdf", Some("/h/a.pdf"), &["x"])
         .with(4, "lines", Some("/h/empty.lines"), &[])
@@ -312,9 +336,12 @@ fn an_entry_with_no_locator_reads_as_its_metadata_and_its_outline() {
         about.as_ref(),
         Some(&About {
             kind: "lines".to_owned(),
-            origin: Origin::file(Path::new(&format!("/h/.claude/projects/p/{SESSION}.jsonl"))),
+            labels: vec![Label::Capture(
+                CaptureLabel::file(Path::new(&format!("/h/.claude/projects/p/{SESSION}.jsonl")))
+                    .expect("a label")
+            )],
+            more_labels: 0,
             captured: SystemTime::UNIX_EPOCH + Duration::from_secs(1000),
-            parent: None,
             started: Some(SystemTime::UNIX_EPOCH + Duration::from_secs(60)),
             current: Generation(1),
         })
@@ -476,26 +503,35 @@ fn an_older_generation_is_read_by_its_number_and_marks_every_locator() {
 }
 
 #[test]
-fn a_subagent_names_its_parent() {
+fn the_outline_lists_the_capture_label_then_the_id_label() {
     let mut shelf = shelf();
-    shelf.kept[1].meta.parent = Some(id(1));
+    let capture = CaptureLabel::file(Path::new("/h/sub.jsonl")).expect("a label");
+    shelf.kept[1].meta.labels = StoredLabels {
+        capture: Some(capture.clone()),
+        id: Some(id(1)),
+    };
     let output = run(&shelf, &id(2).to_string()).expect("an outline");
     assert_eq!(
-        lines(&output).0.as_ref().and_then(|about| about.parent),
-        Some(id(1))
+        lines(&output).0.as_ref().map(|about| about.labels.clone()),
+        Some(vec![Label::Capture(capture), Label::Id(id(1))])
     );
     let main = run(&shelf, &first()).expect("an outline");
-    assert_eq!(lines(&main).0.as_ref().and_then(|about| about.parent), None);
+    assert_eq!(
+        lines(&main).0.as_ref().map(|about| about.labels.len()),
+        Some(1)
+    );
 }
 
 #[test]
-fn an_entry_with_no_origin_or_no_record_still_reads() {
+fn an_entry_with_no_stored_label_lists_none() {
     let shelf = shelf();
     let note = run(&shelf, &id(2).to_string()).expect("an outline");
     let (about, listed) = lines(&note);
     assert_eq!(
-        about.as_ref().map(|about| (&about.origin, about.started)),
-        Some((&None, None))
+        about
+            .as_ref()
+            .map(|about| (about.labels.clone(), about.started)),
+        Some((Vec::new(), None))
     );
     assert_eq!(listed, [(1, "user: a note")]);
     let empty = run(&shelf, &id(4).to_string()).expect("an outline");
@@ -552,7 +588,7 @@ fn the_caller_says_what_it_prints_around_an_outline_and_the_lines_get_the_rest()
 }
 
 #[test]
-fn a_session_id_or_eight_characters_of_it_reads_the_entry_kept_from_its_file() {
+fn a_session_id_names_the_entry_whose_capture_label_ends_in_it() {
     let shelf = shelf();
     for reference in [
         SESSION.to_owned(),
@@ -577,9 +613,9 @@ fn a_session_id_or_eight_characters_of_it_reads_the_entry_kept_from_its_file() {
 
 #[test]
 fn a_session_id_that_names_no_entry_or_several_is_refused() {
-    let origin = |uuid: &str| format!("/h/.claude/projects/p/{uuid}.jsonl");
+    let label = |uuid: &str| format!("/h/.claude/projects/p/{uuid}.jsonl");
     let shelf = shelf()
-        .with(5, "lines", Some(&origin(OTHER)), &["user: other"])
+        .with(5, "lines", Some(&label(OTHER)), &["user: other"])
         .with(
             6,
             "lines",
@@ -593,10 +629,8 @@ fn a_session_id_that_names_no_entry_or_several_is_refused() {
             &["user: copy"],
         );
     match run(&shelf, &SESSION[..8]) {
-        Err(Error::Ambiguous {
-            session, entries, ..
-        }) => {
-            assert_eq!(session, &SESSION[..8]);
+        Err(Error::Ambiguous { given, entries, .. }) => {
+            assert_eq!(given, &SESSION[..8]);
             let ids: Vec<Id> = entries.iter().map(|(id, _)| *id).collect();
             assert_eq!(
                 ids,
@@ -618,6 +652,62 @@ fn a_session_id_that_names_no_entry_or_several_is_refused() {
         }
     }
     assert_eq!(shelf.reads.get(), 1, "a refused ref reads no record");
+}
+
+const SHORT: &str = "2T6W9YB0DE";
+const WHOLE: &str = "01JC5Q3V7XKM4P8R2T6W9YB0DE";
+const ALIKE: &str = "01JC5Q3V7XKM4P8S2T6W9YB0DE";
+
+fn kept_by(ids: &[&str]) -> Shelf {
+    ids.iter().fold(Shelf::default(), |shelf, text| {
+        let id = Id::parse(text).expect("an id");
+        shelf.with_id(
+            id,
+            "lines",
+            Some(&format!("/h/{text}.lines")),
+            &["user: hi"],
+        )
+    })
+}
+
+#[test]
+fn an_entry_is_read_by_its_short_id_as_by_its_id() {
+    let shelf = kept_by(&[WHOLE, "01JC5Q3V7XKM4P8R2T6W9YB0DF"]);
+    let whole = run(&shelf, WHOLE).expect("an outline");
+    for reference in [SHORT.to_owned(), format!("bilbo:{SHORT}")] {
+        let short = run(&shelf, &reference).expect("an outline");
+        assert_eq!(short.id, Id::parse(WHOLE).expect("id"), "{reference}");
+        assert_eq!(short.total, whole.total, "{reference}");
+        assert_eq!(lines(&short), lines(&whole), "{reference}");
+    }
+    let page = run(&shelf, &format!("{SHORT}#r1")).expect("a page");
+    assert_eq!(blocks(&page), [block(1, "user: hi")]);
+}
+
+#[test]
+fn a_short_id_two_entries_end_with_is_refused_and_both_are_listed() {
+    let shelf = kept_by(&[ALIKE, WHOLE, "01JC5Q3V7XKM4P8R2T6W9YB0DF"]);
+    match run(&shelf, SHORT) {
+        Err(Error::Ambiguous { given, entries, .. }) => {
+            assert_eq!(given, SHORT);
+            let ids: Vec<String> = entries.iter().map(|(id, _)| id.to_string()).collect();
+            assert_eq!(ids, [WHOLE, ALIKE]);
+            assert!(entries.iter().all(|(_, label)| label.is_some()));
+        }
+        other => panic!("{other:?}"),
+    }
+    assert_eq!(shelf.reads.get(), 0, "a refused ref reads no record");
+}
+
+#[test]
+fn a_short_id_no_entry_ends_with_is_no_entry() {
+    let shelf = shelf().with(5, "lines", Some(&format!("/h/{SESSION}.jsonl")), &["x"]);
+    match run(&shelf, SHORT) {
+        Err(error @ Error::NoEntry(Target::Short(_))) => {
+            assert_eq!(error.to_string(), "no entry's id ends with 2T6W9YB0DE");
+        }
+        other => panic!("{other:?}"),
+    }
 }
 
 #[test]
@@ -719,4 +809,191 @@ fn an_entry_of_a_kind_with_no_reader_is_refused() {
         }
         other => panic!("{other:?}"),
     }
+}
+
+/// `#label <text>` records name a label each and render nothing; the rest read as `Lines` does.
+struct Folders;
+
+impl Reader for Folders {
+    fn kind(&self) -> &'static str {
+        "folders"
+    }
+
+    fn passages(&self, records: &[&[u8]]) -> Vec<Passage> {
+        Lines.passages(records)
+    }
+
+    fn appends_only(&self) -> bool {
+        true
+    }
+
+    fn entry_labels(&self, records: &[&[u8]]) -> Vec<String> {
+        records
+            .iter()
+            .filter_map(|record| std::str::from_utf8(record).ok())
+            .filter_map(|line| line.trim_end_matches('\n').strip_prefix("#label "))
+            .map(str::to_owned)
+            .collect()
+    }
+}
+
+struct Bytes;
+
+impl Tokens for Bytes {
+    fn ends(&self, text: &str) -> Vec<usize> {
+        text.char_indices()
+            .flat_map(|(at, c)| std::iter::repeat_n(at + c.len_utf8(), c.len_utf8()))
+            .collect()
+    }
+}
+
+fn row(frame: &Output) -> String {
+    let Body::Outline {
+        about: Some(about), ..
+    } = &frame.body
+    else {
+        return String::new();
+    };
+    let mut text = String::new();
+    for label in &about.labels {
+        match label {
+            Label::Capture(label) => text += &format!("label: {label} (capture)\n"),
+            Label::Id(id) => text += &format!("label: bilbo:{id}\n"),
+            Label::Text(label) => text += &format!("label: {label}\n"),
+        }
+    }
+    if about.more_labels > 0 {
+        text += &format!("labels: {} more\n", about.more_labels);
+    }
+    text
+}
+
+fn folders(label: Option<&str>, found: &[String]) -> Shelf {
+    let mut records: Vec<&'static str> = found
+        .iter()
+        .map(|text| &*Box::leak(format!("#label {text}").into_boxed_str()))
+        .collect();
+    records.push("user: a note");
+    Shelf::default().with(1, "folders", label, &records)
+}
+
+fn outlined(shelf: &Shelf, budget: usize) -> Output {
+    let request = Request {
+        reference: Ref::parse(&first()).expect("a ref"),
+        outline: false,
+        budget: Budget::try_from(budget).expect("a budget"),
+        outline_width: 100,
+        matches_listed: 5,
+    };
+    let fetched = read::fetch(&request, shelf).expect("the entry");
+    let shown = Shown {
+        tokens: &Bytes,
+        beside: &row,
+    };
+    let readers: Vec<Box<dyn Reader>> = vec![Box::new(Folders)];
+    read::render(&fetched, &request, &readers, &shown).expect("an outline")
+}
+
+fn texts(output: &Output) -> Vec<&str> {
+    lines(output)
+        .0
+        .as_ref()
+        .expect("an outline with its metadata")
+        .labels
+        .iter()
+        .filter_map(|label| match label {
+            Label::Text(text) => Some(text.as_str()),
+            _ => None,
+        })
+        .collect()
+}
+
+fn more(output: &Output) -> u64 {
+    lines(output)
+        .0
+        .as_ref()
+        .map_or(0, |about| about.more_labels)
+}
+
+#[test]
+fn the_outline_lists_what_the_reader_finds_in_byte_order() {
+    let capture = CaptureLabel::file(Path::new("/h/x.folders")).expect("a label");
+    let found = [
+        "/h/src/shed".to_owned(),
+        "/h/notes".to_owned(),
+        capture.as_str().to_owned(),
+        "/h/Zed".to_owned(),
+    ];
+    let mut shelf = folders(Some("/h/x.folders"), &found);
+    shelf.kept[0].meta.labels.id = Some(id(9));
+    let output = outlined(&shelf, 7000);
+    let about = lines(&output).0.clone().expect("an outline");
+    assert_eq!(
+        about.labels,
+        [
+            Label::Capture(capture),
+            Label::Id(id(9)),
+            Label::Text("/h/Zed".to_owned()),
+            Label::Text("/h/notes".to_owned()),
+            Label::Text("/h/src/shed".to_owned()),
+        ]
+    );
+    assert_eq!(about.more_labels, 0);
+}
+
+#[test]
+fn a_reader_with_no_label_leaves_the_stored_ones() {
+    let mut shelf = shelf();
+    shelf.kept[0].meta.labels.id = Some(id(9));
+    let output = run(&shelf, &first()).expect("an outline");
+    let about = lines(&output).0.clone().expect("an outline");
+    assert_eq!(about.labels.len(), 2);
+    assert!(matches!(about.labels[0], Label::Capture(_)));
+    assert_eq!(about.labels[1], Label::Id(id(9)));
+    assert_eq!(about.more_labels, 0);
+}
+
+#[test]
+fn the_texts_listed_cost_at_most_half_the_budget_and_the_rest_are_counted() {
+    let found: Vec<String> = (0..20)
+        .map(|n| format!("/t/{n:02}{}", "x".repeat(35)))
+        .collect();
+    let shelf = folders(None, &found);
+    let output = outlined(&shelf, 1000);
+    assert_eq!(
+        texts(&output),
+        found[..10].iter().map(String::as_str).collect::<Vec<_>>()
+    );
+    assert_eq!(more(&output), 10);
+    assert!(Bytes.count(&row(&output)) <= 500);
+    assert!(!lines(&output).1.is_empty());
+    let output = outlined(&shelf, 2000);
+    assert_eq!(texts(&output).len(), 20);
+    assert_eq!(more(&output), 0);
+}
+
+#[test]
+fn the_stored_labels_are_listed_whatever_the_budget() {
+    let path = format!("/h/{}", "d/".repeat(100));
+    let found: Vec<String> = (0..5).map(|n| format!("/t/{n}")).collect();
+    let mut shelf = folders(Some(&path), &found);
+    shelf.kept[0].meta.labels.id = Some(id(9));
+    let output = outlined(&shelf, 256);
+    let about = lines(&output).0.clone().expect("an outline");
+    assert_eq!(about.labels.len(), 2);
+    assert!(matches!(about.labels[0], Label::Capture(_)));
+    assert_eq!(about.labels[1], Label::Id(id(9)));
+    assert_eq!(about.more_labels, 5);
+}
+
+#[test]
+fn the_most_labels_a_reader_can_give_are_bounded_at_the_smallest_budget() {
+    let found: Vec<String> = (0..256)
+        .map(|n| format!("/{n:04}{}", "d".repeat(4091)))
+        .collect();
+    let shelf = folders(None, &found);
+    let output = outlined(&shelf, 256);
+    assert!(texts(&output).is_empty());
+    assert_eq!(more(&output), 256);
+    assert_eq!(lines(&output).1, [(257, "user: a note")]);
 }

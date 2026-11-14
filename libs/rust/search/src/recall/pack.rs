@@ -6,6 +6,7 @@ pub fn pack<E>(
     mut hits: impl Iterator<Item = Result<Hit, E>>,
     tokens: &dyn Tokens,
     shown: &dyn Fn(&Hit) -> String,
+    keep: &mut dyn FnMut(&Hit) -> bool,
     budget: usize,
 ) -> Result<Vec<Hit>, E> {
     let mut packed = Vec::new();
@@ -15,14 +16,19 @@ pub fn pack<E>(
         let mut hit = next?;
         let cost = tokens.count(&shown(&hit));
         if cost <= left {
-            left -= cost;
-            packed.push(hit);
+            if keep(&hit) {
+                left -= cost;
+                packed.push(hit);
+            }
             continue;
         }
-        if cut(&mut hit, tokens, shown, left) {
-            packed.push(hit);
+        if !cut(&mut hit, tokens, shown, left) {
+            break;
         }
-        break;
+        if keep(&hit) {
+            packed.push(hit);
+            break;
+        }
     }
     Ok(packed)
 }
@@ -82,6 +88,7 @@ mod tests {
             preface: None,
             text: text.to_owned(),
             cut: false,
+            shared_short: false,
         }
     }
 
@@ -102,7 +109,7 @@ mod tests {
     }
 
     fn packed(texts_in: &[&str], budget: usize) -> Vec<Hit> {
-        let Ok(hits) = pack(ok(texts_in), &Bytes, &shown, budget);
+        let Ok(hits) = pack(ok(texts_in), &Bytes, &shown, &mut |_| true, budget);
         hits
     }
 
@@ -174,24 +181,73 @@ mod tests {
     fn no_hit_is_read_after_the_budget_is_full() {
         let all = ["aaaa", "bbbb", "cccc"];
         let pulled = Cell::new(0);
-        let Ok(whole) = pack(counted(&pulled, &all), &Bytes, &shown, 14);
+        let Ok(whole) = pack(counted(&pulled, &all), &Bytes, &shown, &mut |_| true, 14);
         assert_eq!(whole.len(), 2);
         assert_eq!(pulled.get(), 2);
         pulled.set(0);
-        let Ok(cut) = pack(counted(&pulled, &all), &Bytes, &shown, 13);
+        let Ok(cut) = pack(counted(&pulled, &all), &Bytes, &shown, &mut |_| true, 13);
         assert_eq!(texts(&cut), ["aaaa", "bb"]);
         assert_eq!(pulled.get(), 2);
         pulled.set(0);
-        let Ok(none) = pack(counted(&pulled, &all), &Bytes, &shown, 0);
+        let Ok(none) = pack(counted(&pulled, &all), &Bytes, &shown, &mut |_| true, 0);
         assert!(none.is_empty());
         assert_eq!(pulled.get(), 0);
+    }
+
+    #[test]
+    fn a_hit_keep_refuses_is_not_packed_and_costs_nothing() {
+        let mut seen = 0;
+        let mut keep = |_: &Hit| {
+            seen += 1;
+            seen != 2
+        };
+        let Ok(hits) = pack(ok(&["aaaa", "bbbb", "cccc"]), &Bytes, &shown, &mut keep, 14);
+        assert_eq!(texts(&hits), ["aaaa", "cccc"]);
+        assert!(hits.iter().all(|hit| !hit.cut));
+    }
+
+    #[test]
+    fn keep_sees_a_cut_hit_as_it_is_printed() {
+        let mut asked = Vec::new();
+        let mut keep = |hit: &Hit| {
+            asked.push((hit.text.clone(), hit.cut));
+            true
+        };
+        let Ok(_) = pack(ok(&["aaaa", "bbbbbbbbbb"]), &Bytes, &shown, &mut keep, 15);
+        assert_eq!(
+            asked,
+            [("aaaa".to_owned(), false), ("bbbb".to_owned(), true)]
+        );
+    }
+
+    #[test]
+    fn a_refused_cut_hit_does_not_end_the_packing() {
+        let mut keep = |hit: &Hit| !(hit.cut && hit.text.starts_with('b'));
+        let Ok(hits) = pack(
+            ok(&["aaaa", "bbbbbbbbbb", "cccccccccc"]),
+            &Bytes,
+            &shown,
+            &mut keep,
+            15,
+        );
+        assert_eq!(texts(&hits), ["aaaa", "cccc"]);
+        assert!(hits[1].cut);
+    }
+
+    #[test]
+    fn a_cut_hit_that_is_kept_ends_the_packing() {
+        let pulled = Cell::new(0);
+        let all = ["aaaa", "bbbbbbbbbb", "cccc", "dddd"];
+        let Ok(hits) = pack(counted(&pulled, &all), &Bytes, &shown, &mut |_| true, 15);
+        assert_eq!(texts(&hits), ["aaaa", "bbbb"]);
+        assert_eq!(pulled.get(), 2);
     }
 
     #[test]
     fn an_error_from_the_iterator_is_returned() {
         let hits = vec![Ok(hit("aaaa")), Err("gone"), Ok(hit("bbbb"))];
         assert_eq!(
-            pack(hits.into_iter(), &Bytes, &shown, 100).expect_err("an error"),
+            pack(hits.into_iter(), &Bytes, &shown, &mut |_| true, 100).expect_err("an error"),
             "gone"
         );
     }

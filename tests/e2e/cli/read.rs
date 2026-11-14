@@ -123,7 +123,7 @@ fn read_exits_1_for_what_is_not_there_and_2_for_what_cannot_be_meant() {
         (
             vec!["read", "nope"],
             2,
-            "bilbo: 'nope' is not an entry id, a session id or 8 or more characters of one\n\
+            "bilbo: 'nope' is not an entry id, its last 10 characters, a session id or 8 or more characters of one\n\
              bilbo: usage: bilbo read <ref> [--budget <tokens>]\n\
              bilbo:        bilbo read <ref> --outline [--budget <tokens>]\n\
              bilbo: see 'bilbo read --help'\n"
@@ -147,4 +147,21 @@ fn read_exits_1_for_what_is_not_there_and_2_for_what_cannot_be_meant() {
         format!("bilbo: no store at {}\n", none.path("store"))
     );
     assert!(!none.dir.join("store").exists());
+}
+
+#[test]
+fn an_entry_is_read_by_the_last_ten_characters_of_its_id() {
+    let scratch = remembered("read_short");
+    let short = &NOTE_ID[NOTE_ID.len() - 10..];
+    let outline = scratch.run(&["read", short]);
+    assert_eq!((outline.code, outline.stderr.as_str()), (0, ""));
+    assert_eq!(
+        outline.stdout.lines().next(),
+        Some(format!("bilbo:{NOTE_ID}").as_str())
+    );
+    let section = scratch.run(&["read", &format!("{short}#r32-34")]);
+    assert_eq!(
+        section.stdout,
+        "#r32-34 ## Harvest\n\nNothing yet.\nend: #r32-34 of 34 records\n"
+    );
 }

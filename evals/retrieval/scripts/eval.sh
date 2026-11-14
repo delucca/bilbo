@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Score an arm's store against the answerable questions: search each one in both forms, pack what came back into 4,000
 # tokens, judge it with Claude Opus 5.5 through `claude -p`, and print the scores.
-#   eval.sh <arm> [--limit N] [--questions id,id,...] [--jobs N] [--variation] [--rerun LABEL]
+#   eval.sh <arm> [--limit N] [--questions id,id,...] [--jobs N] [--variation] [--driver DIR] [--rerun LABEL]
 # --questions or --limit runs a few questions; --jobs N sets the judge calls at once (default 4). Searches, contexts
 # and verdicts are kept in $cache/eval/<arm>-<storekey>-<searchkey>, and the controls in
 # $cache/eval/{gold,random}-<corpus>-<controlskey> (the cache is BILBO_EVALS_CACHE, as for build-store.sh), so a rerun
@@ -9,9 +9,11 @@
 # leaves out; the controls key hashes controls.py. --variation searches with each question's query variation (vary.sh)
 # instead, in a run dir keyed by the variation's text too; the judge still reads the original question, so only what
 # the search returns differs. --rerun LABEL searches and judges again in a run dir of its own, <run>-rerun-LABEL, and
-# leaves the cached run as it is. Every row handed to a search is also appended to <run>/searched.jsonl, the exact
-# text each search read. A run of either kind starts its judge cache from the cached run of the same store and search,
-# so a context the search returned again is not judged again.
+# leaves the cached run as it is. --driver DIR searches through DIR/drive.py (build-store.sh --search --driver) in a run
+# dir of its own, <run>-driver-<the first 12 hex of the sha256 of DIR/drive.py>, so the arm with a driver and without are
+# two runs. Every row handed to a search is also appended to <run>/searched.jsonl, the exact text each search read. A
+# run of any kind starts its judge cache from the cached run of the same store and search, so a context the search
+# returned again is not judged again.
 # Not built: the answer run, the 16,000-token run, the paired comparisons. The judge's gates are gates.sh.
 set -euo pipefail
 
@@ -24,15 +26,16 @@ sha() { sha256sum "$1" | cut -d' ' -f1; }
 
 arm=${1:-}
 [[ -n $arm && -f $root/arms/$arm/search.py ]] ||
-  die "usage: eval.sh <arm> [--limit N] [--questions id,id,...] [--jobs N] [--variation] [--rerun LABEL] (the arm needs arms/<arm>/search.py)"
+  die "usage: eval.sh <arm> [--limit N] [--questions id,id,...] [--jobs N] [--variation] [--driver DIR] [--rerun LABEL] (the arm needs arms/<arm>/search.py)"
 shift
-limit='' ids='' jobs=4 wording=original rerun=''
+limit='' ids='' jobs=4 wording=original rerun='' driver=''
 while (($#)); do
   case $1 in
     --limit) [[ ${2:-} =~ ^[1-9][0-9]*$ ]] || die "--limit needs a number"; limit=$2; shift ;;
     --questions) [[ ${2:-} =~ ^[A-Za-z0-9_.-]+(,[A-Za-z0-9_.-]+)*$ ]] || die "--questions needs id,id"; ids=$2; shift ;;
     --jobs) [[ ${2:-} =~ ^[1-9][0-9]*$ ]] || die "--jobs needs a number"; jobs=$2; shift ;;
     --variation) wording=variation ;;
+    --driver) [[ -f ${2:-}/drive.py ]] || die "--driver needs a directory holding drive.py"; driver=$(realpath "$2"); shift ;;
     --rerun) [[ ${2:-} =~ ^[a-z0-9]+$ ]] || die "--rerun needs a label of lower-case letters and digits"; rerun=$2; shift ;;
     *) die "unknown option $1" ;;
   esac
@@ -59,6 +62,7 @@ key=$("$root/scripts/build-store.sh" "$arm" --key)
 search_sha=$(sha "$root/arms/$arm/search.py")
 controls_sha=$(sha "$root/scripts/controls.py")
 run=$cache/eval/$arm-$key-${search_sha:0:12}
+[[ -z $driver ]] || run=$run-driver-$(sha "$driver/drive.py" | cut -c1-12)
 if [[ $wording == variation ]]; then
   variation_key=$(questions key)
   run=$run-variation-$variation_key
@@ -90,7 +94,7 @@ done < "$run/selected.jsonl"
 ((${#unsearched[@]} == 0)) || questions flat --wording "$wording" --ids "$(IFS=,; echo "${unsearched[*]}")" > "$run/todo.jsonl"
 if [[ -s $run/todo.jsonl ]]; then
   cat "$run/todo.jsonl" >> "$run/searched.jsonl"
-  "$root/scripts/build-store.sh" "$arm" --search "$run/todo.jsonl" "$run/search.jsonl"
+  "$root/scripts/build-store.sh" "$arm" --search "$run/todo.jsonl" "$run/search.jsonl" ${driver:+--driver "$driver"}
 else
   log "nothing to search"
 fi

@@ -1,4 +1,4 @@
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::BTreeSet;
 use std::path::PathBuf;
 use std::time::SystemTime;
@@ -6,10 +6,11 @@ use std::time::SystemTime;
 use bilbo_kinds::reader::{Passage, Piece, Reader};
 use bilbo_kinds::tokens::Tokens;
 use bilbo_store::entries::{
-    Capture, CaptureError, Captured, Change, Cursor, Entries, Generation, Head, Meta, Origin,
-    RecordRange, StoreError,
+    Capture, CaptureError, Captured, Change, Cursor, Entries, Generation, Head, Meta, RecordRange,
+    StoreError,
 };
-use bilbo_store::id::Id;
+use bilbo_store::id::{Id, Short};
+use bilbo_store::labels::{CaptureLabel, Filed, Relabel, StoredLabels};
 
 use crate::analyze::{Detect, Language};
 use crate::index::{Doc, Extent, Index, IndexError, Stats};
@@ -43,7 +44,7 @@ pub(crate) fn id(n: u8) -> Id {
 
 pub(crate) struct Four;
 
-fn unused() -> StoreError {
+pub(crate) fn unused() -> StoreError {
     StoreError::Missing("not called".to_owned())
 }
 
@@ -76,9 +77,8 @@ impl Entries for Four {
         Ok(Some(Meta {
             id,
             kind: "lines".to_owned(),
-            origin: None,
+            labels: StoredLabels::default(),
             captured: SystemTime::UNIX_EPOCH,
-            parent: None,
         }))
     }
 
@@ -89,7 +89,7 @@ impl Entries for Four {
         ))
     }
 
-    fn by_origin(&self, _origin: &Origin) -> Result<Option<Head>, StoreError> {
+    fn by_capture(&self, _label: &CaptureLabel) -> Result<Option<Head>, StoreError> {
         Err(unused())
     }
 
@@ -101,8 +101,27 @@ impl Entries for Four {
         Ok(Some((Generation(1), 1)))
     }
 
-    fn origins_with(&self, _part: &str) -> Result<Vec<(Id, Origin)>, StoreError> {
+    fn captures_with(&self, _part: &str) -> Result<Vec<(Id, CaptureLabel)>, StoreError> {
         Err(unused())
+    }
+
+    fn by_shorts(&self, shorts: &[Short]) -> Result<Vec<Id>, StoreError> {
+        Ok((1..=4)
+            .map(id)
+            .filter(|id| shorts.iter().any(|short| short.ends(*id)))
+            .collect())
+    }
+}
+
+#[derive(Default)]
+pub(crate) struct Filings {
+    pub(crate) calls: RefCell<Vec<Vec<Filed>>>,
+}
+
+impl Relabel for Filings {
+    fn relabel(&self, filed: &[Filed]) -> Result<(), StoreError> {
+        self.calls.borrow_mut().push(filed.to_vec());
+        Ok(())
     }
 }
 
@@ -197,6 +216,7 @@ pub(crate) struct Table {
     posting_at: Option<u32>,
     holding_at: Option<u32>,
     pub(crate) asked: RefCell<Vec<usize>>,
+    pub(crate) holdings: Cell<usize>,
     pub(crate) looked_up: RefCell<Vec<String>>,
 }
 
@@ -307,10 +327,13 @@ impl Lookup for Table {
 
     fn holding(&self, filter: &Filter<'_>) -> Result<Vec<u32>, IndexError> {
         self.check()?;
-        let Filter::Kind(kind) = filter;
+        self.holdings.set(self.holdings.get() + 1);
         let mut held: Vec<u32> = self
             .live()
-            .filter(|(_, row)| row.kind == *kind)
+            .filter(|(_, row)| match filter {
+                Filter::Kind(kind) => row.kind == *kind,
+                Filter::Entries(ids) => ids.binary_search(&row.entry).is_ok(),
+            })
             .map(|(doc, _)| u32::try_from(doc).expect("a small table"))
             .collect();
         held.extend(self.holding_at);

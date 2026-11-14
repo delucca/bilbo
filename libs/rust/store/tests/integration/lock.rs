@@ -51,7 +51,7 @@ fn a_second_writer_waits_for_the_first_and_says_so() {
         })
         .expect("second open");
         let found = store
-            .by_origin(&crate::scratch::origin("a.md"))
+            .by_capture(&crate::scratch::capture_label("a.md"))
             .expect("head")
             .is_some();
         opened_tx.send(found).ok();
@@ -113,7 +113,7 @@ fn a_reader_waits_for_a_writer_and_sees_its_seal_whole() {
         let mut found = Vec::new();
         for name in ["a.md", "b.md"] {
             let head = store
-                .by_origin(&crate::scratch::origin(name))
+                .by_capture(&crate::scratch::capture_label(name))
                 .expect("head")
                 .expect("entry");
             found.push(
@@ -234,7 +234,7 @@ fn a_reader_gives_up_on_a_writer_after_the_wait_it_was_given() {
     .expect("nobody holds the store");
     assert!(
         store
-            .by_origin(&crate::scratch::origin("a.md"))
+            .by_capture(&crate::scratch::capture_label("a.md"))
             .expect("head")
             .is_some()
     );

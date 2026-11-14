@@ -26,8 +26,9 @@ use bilbo_search::lookup::Found;
 use bilbo_search::position::Position;
 use bilbo_search::rank::{Candidate, Query, Ranker};
 use bilbo_search::tokenizer::Tokenizer;
-use bilbo_store::entries::{Entries, Generation, Origin};
+use bilbo_store::entries::{Entries, Generation};
 use bilbo_store::id::Id;
+use bilbo_store::labels::{CaptureLabel, Labels};
 use bilbo_store::segments::{Options, Store};
 use bilbo_tantivy::{Committed, Row, Tantivy};
 
@@ -105,10 +106,12 @@ fn rank(cache: &Path, text: &str, limit: usize) -> Vec<Candidate> {
         &Query {
             text: text.to_owned(),
             kinds: Vec::new(),
+            entries: None,
         },
         limit,
     )
     .expect("a search")
+    .candidates
 }
 
 fn disk(cache: &Path) -> Box<dyn Index> {
@@ -333,6 +336,27 @@ impl Sandbox {
         panicky: bool,
         said: &Arc<Mutex<Vec<String>>>,
     ) -> Run {
+        self.remember_rendered(&Remembering {
+            target,
+            extra,
+            render: None,
+            index,
+            load,
+            panicky,
+            said,
+        })
+    }
+
+    fn remember_rendered(&self, run: &Remembering<'_>) -> Run {
+        let Remembering {
+            target,
+            extra,
+            render,
+            index,
+            load,
+            panicky,
+            said,
+        } = *run;
         let sink = Arc::clone(said);
         let mut vars = self.vars();
         vars.extend(
@@ -356,7 +380,10 @@ impl Sandbox {
                 .map(|reader| Box::new(Poisoned(reader)) as Box<dyn Reader>)
                 .collect();
         }
-        let rendering = bilbo_cli::rendering(&settings).expect("the rendering");
+        let rendering = match render {
+            Some(render) => render.to_owned(),
+            None => bilbo_cli::rendering(&settings).expect("the rendering"),
+        };
         let indexing = bilbo_cli::indexing(&settings, &readers, &rendering, load, index);
         let args = bilbo_cli::remember::Args {
             target: Some(PathBuf::from(target)),
@@ -577,7 +604,7 @@ fn the_index_records_the_manifest_it_was_made_with_and_the_stores_cursor() {
             "chunk_overlap 64",
             "analyzer bm25s-en/2",
             "tokenizer qwen3-embedding-0.6b/97b0c614be4d/def76fb08697/raw",
-            "render markdown/1/heading_width=100 session/1",
+            "render markdown/1/heading_width=100 session/2",
         ]
     );
     let store = sandbox.store();
@@ -624,7 +651,7 @@ fn the_index_records_the_manifest_it_was_made_with_and_the_stores_cursor() {
     assert!(
         sandbox
             .payload()
-            .contains("\nrender markdown/1/heading_width=40 session/1\n")
+            .contains("\nrender markdown/1/heading_width=40 session/2\n")
     );
 }
 
@@ -664,9 +691,9 @@ fn a_reindex_keeps_the_growth_stamps_so_the_next_remember_reads_no_unchanged_fil
             .iter()
             .map(|(name, _)| {
                 let path = sandbox.dir.join("notes").join(name);
-                let origin = Origin::file(&path).expect("an origin");
+                let label = CaptureLabel::file(&path).expect("a capture label");
                 store
-                    .by_origin(&origin)
+                    .by_capture(&label)
                     .expect("a head")
                     .expect("an entry")
                     .stamp
@@ -963,8 +990,8 @@ fn named_terms(sandbox: &Sandbox, files: &[&str]) -> Named {
     let ids: Vec<([u8; 16], &str, i64)> = files
         .iter()
         .map(|name| {
-            let origin = Origin::file(&sandbox.dir.join(name)).expect("an origin");
-            let head = store.by_origin(&origin).expect("a head").expect("an entry");
+            let label = CaptureLabel::file(&sandbox.dir.join(name)).expect("a capture label");
+            let head = store.by_capture(&label).expect("a head").expect("an entry");
             let meta = store
                 .meta(head.id)
                 .expect("a meta")
@@ -1204,11 +1231,11 @@ fn an_index_folder_that_is_not_bilbos_fails_the_run_after_the_capture_is_kept() 
         )]
     );
     assert_eq!(names(&folder), ["models"]);
-    let origin = Origin::file(&sandbox.dir.join("notes/a.md")).expect("an origin");
+    let label = CaptureLabel::file(&sandbox.dir.join("notes/a.md")).expect("a capture label");
     assert!(
         sandbox
             .store()
-            .by_origin(&origin)
+            .by_capture(&label)
             .expect("a head")
             .is_some()
     );
@@ -1411,6 +1438,515 @@ impl Index for Refusing {
     }
 }
 
+struct Remembering<'a> {
+    target: &'a str,
+    extra: &'a [(&'a str, &'a str)],
+    render: Option<&'a str>,
+    index: &'a dyn Fn(&Path) -> Box<dyn Index>,
+    load: &'a dyn Fn() -> Result<Tokenizer, Failure>,
+    panicky: bool,
+    said: &'a Arc<Mutex<Vec<String>>>,
+}
+
+struct Failing {
+    inner: Box<dyn Index>,
+    adds: Arc<AtomicU64>,
+    fail_add: Option<u64>,
+}
+
+impl Index for Failing {
+    fn position(&mut self) -> Result<Option<Position>, IndexError> {
+        self.inner.position()
+    }
+
+    fn clear(&mut self) -> Result<(), IndexError> {
+        self.inner.clear()
+    }
+
+    fn add(&mut self, doc: &Doc<'_>) -> Result<(), IndexError> {
+        let nth = self.adds.fetch_add(1, Ordering::Relaxed) + 1;
+        if self.fail_add == Some(nth) {
+            self.inner.rollback();
+            return Err(IndexError::Failed {
+                action: "add",
+                path: PathBuf::from("/refused"),
+                error: "refused".to_owned(),
+            });
+        }
+        self.inner.add(doc)
+    }
+
+    fn commit(&mut self, position: &Position) -> Result<Stats, IndexError> {
+        self.inner.commit(position)
+    }
+
+    fn extents(&mut self, entry: Id) -> Result<Vec<Extent>, IndexError> {
+        self.inner.extents(entry)
+    }
+
+    fn delete(&mut self, entry: Id, from: u64) -> Result<(), IndexError> {
+        self.inner.delete(entry, from)
+    }
+
+    fn rollback(&mut self) {
+        self.inner.rollback();
+    }
+}
+
+fn failing(
+    adds: &Arc<AtomicU64>,
+    fail_add: Option<u64>,
+    refuse_commit: bool,
+) -> impl Fn(&Path) -> Box<dyn Index> {
+    let adds = Arc::clone(adds);
+    move |cache| {
+        let inner: Box<dyn Index> = if refuse_commit {
+            Box::new(Refusing {
+                inner: disk(cache),
+                clears: Arc::default(),
+            })
+        } else {
+            disk(cache)
+        };
+        Box::new(Failing {
+            inner,
+            adds: Arc::clone(&adds),
+            fail_add,
+        })
+    }
+}
+
+type Filed = (
+    std::collections::BTreeMap<String, Vec<Id>>,
+    Vec<(Id, Vec<Id>)>,
+);
+
+fn filed(sandbox: &Sandbox) -> Filed {
+    let store = sandbox.store();
+    let captures = store.captures_with("file:").expect("the capture labels");
+    let mut words = std::collections::BTreeMap::new();
+    for (_, label) in &captures {
+        for word in bilbo_search::analyze::label_words(label.as_str()) {
+            let named = store
+                .with_words(std::slice::from_ref(&word))
+                .expect("with_words");
+            words.insert(word, named);
+        }
+    }
+    for word in FOLDER_WORDS {
+        let named = store
+            .with_words(&bilbo_search::analyze::label_words(word))
+            .expect("with_words");
+        words.insert(word.to_owned(), named);
+    }
+    let children = captures
+        .iter()
+        .map(|(id, _)| (*id, store.belonging_to(&[*id]).expect("belonging_to")))
+        .collect();
+    (words, children)
+}
+
+const SMALL: (&str, &str) = ("BILBO_SEARCH_CHUNK_TOKENS", "256");
+const NO_REBUILD_LINE: &str = "rebuilding the search index";
+const WORKED: &str = "sessions/claude/p/7d1e4b9a-3c5f-4a2e-8b6d-0f9e1c2a3b4d.jsonl";
+const ROLLOUT: &str = "sessions/codex/2026/11/08/rollout-2026-11-08T10-00-00-019a6c4d-3e5f-7a71-9b2c-4d6e8fa0b1c3.jsonl";
+const WORKED_BYTES: &[u8] = include_bytes!(
+    "../../../libs/rust/kinds/session/fixtures/7d1e4b9a-3c5f-4a2e-8b6d-0f9e1c2a3b4d.jsonl"
+);
+const ROLLOUT_BYTES: &[u8] = include_bytes!(
+    "../../../libs/rust/kinds/session/fixtures/rollout-2026-11-08T10-00-00-019a6c4d-3e5f-7a71-9b2c-4d6e8fa0b1c3.jsonl"
+);
+const FOLDER_WORDS: [&str; 4] = ["shed", "greenhouse", "beds", "garden"];
+const SHED: [&str; 6] = [
+    "recall",
+    "--in",
+    "/home/me/src/shed",
+    "--",
+    "frost",
+    "compost",
+];
+
+fn write_the_workers(sandbox: &Sandbox) {
+    sandbox.write(WORKED, WORKED_BYTES);
+    sandbox.write(ROLLOUT, ROLLOUT_BYTES);
+}
+
+fn kept_by(run: &Run, entries: &str) -> bool {
+    let line = format!("bilbo: --in kept {entries}");
+    run.stderr.iter().any(|said| said.starts_with(&line))
+}
+
+fn remember_through(
+    sandbox: &Sandbox,
+    target: &str,
+    extra: &[(&str, &str)],
+    index: &dyn Fn(&Path) -> Box<dyn Index>,
+) -> Run {
+    sandbox.remember_with_vars(
+        target,
+        extra,
+        index,
+        &shared_tokenizer,
+        false,
+        &Arc::default(),
+    )
+}
+
+#[test]
+fn a_deleted_cache_comes_back_with_the_same_labels_through_reindex() {
+    let sandbox = Sandbox::filled("labels_same");
+    write_the_workers(&sandbox);
+    assert_eq!(
+        sandbox.run(&["remember", &sandbox.path("sessions")]).code,
+        0
+    );
+    let held = filed(&sandbox);
+    assert!(
+        held.0["shed"].len() == 2 && held.0["greenhouse"].len() == 1,
+        "the folders the readers found are filed: {:?}",
+        held.0
+    );
+    assert!(
+        held.0.values().any(|named| !named.is_empty()),
+        "the sandbox files some label"
+    );
+    fs::remove_dir_all(sandbox.dir.join("cache")).expect("delete the cache folder");
+    let gone = filed(&sandbox);
+    assert!(
+        gone.0.values().all(Vec::is_empty),
+        "a cache made again holds no text label"
+    );
+    sandbox.reindex();
+    assert!(filed(&sandbox) == held, "after reindex");
+}
+
+#[test]
+fn an_index_update_files_what_it_indexes() {
+    let sandbox = Sandbox::new("labels_update");
+    sandbox.write("notes/a.md", b"# One\n\nthe first text about zebras\n");
+    assert_eq!(sandbox.run(&["remember", &sandbox.path("notes")]).code, 0);
+    let named = |sandbox: &Sandbox, word: &str| {
+        sandbox
+            .store()
+            .with_words(&[word.to_owned()])
+            .expect("with_words")
+    };
+    assert!(named(&sandbox, "orchard").is_empty());
+    sandbox.write(
+        "notes/orchard/b.md",
+        b"# Two\n\nthe second text about giraffes\n",
+    );
+    assert_eq!(sandbox.run(&["remember", &sandbox.path("notes")]).code, 0);
+    let label = CaptureLabel::file(&sandbox.dir.join("notes/orchard/b.md")).expect("a label");
+    let id = sandbox
+        .store()
+        .by_capture(&label)
+        .expect("a lookup")
+        .expect("an entry")
+        .id;
+    assert_eq!(named(&sandbox, "orchard"), [id]);
+}
+
+#[test]
+fn a_rebuild_stopped_at_any_step_leaves_the_scope_of_the_index_it_left() {
+    let sandbox = Sandbox::filled("labels_rebuild");
+    write_the_workers(&sandbox);
+    assert_eq!(
+        sandbox.run(&["remember", &sandbox.path("sessions")]).code,
+        0
+    );
+    let recalled = || sandbox.run(&["recall", "--in", "notes", "--", "garden"]);
+    let in_shed = || sandbox.run(&SHED);
+    let before = recalled();
+    assert_eq!(before.code, 0, "{:?}", before.stderr);
+    assert!(kept_by(&before, "3 entries"), "{:?}", before.stderr);
+    let shed = in_shed();
+    assert_eq!(shed.code, 0, "{:?}", shed.stderr);
+    assert!(kept_by(&shed, "2 entries"), "{:?}", shed.stderr);
+    let held = filed(&sandbox);
+    for (case, fail_add, refuse_commit) in [
+        ("a", Some(1), false),
+        ("b", Some(5), false),
+        ("c", None, true),
+    ] {
+        let adds = Arc::new(AtomicU64::new(0));
+        let run = remember_through(
+            &sandbox,
+            &sandbox.path("notes"),
+            &[SMALL],
+            &failing(&adds, fail_add, refuse_commit),
+        );
+        assert_eq!(run.code, 1, "{case}: {:?}", run.stderr);
+        assert!(
+            adds.load(Ordering::Relaxed) >= fail_add.unwrap_or(1),
+            "{case}: the run reached its stop"
+        );
+        let after = recalled();
+        assert_eq!(after.code, 0, "{case}: {:?}", after.stderr);
+        assert_eq!(after.stdout, before.stdout, "{case}");
+        assert_eq!(after.stderr, before.stderr, "{case}");
+        let after_shed = in_shed();
+        assert_eq!(after_shed.code, 0, "{case}: {:?}", after_shed.stderr);
+        assert_eq!(after_shed.stdout, shed.stdout, "{case}");
+        assert_eq!(after_shed.stderr, shed.stderr, "{case}");
+        assert!(
+            filed(&sandbox) == held,
+            "{case}: the rows of every capture label and every folder"
+        );
+        let plain = sandbox.run(&["remember", &sandbox.path("notes")]);
+        assert_eq!(
+            (plain.code, plain.stderr),
+            (0, Vec::<String>::new()),
+            "{case}"
+        );
+    }
+    let honest = sandbox.run_with(&["remember", &sandbox.path("notes")], &[SMALL], None);
+    assert_eq!(honest.code, 0, "{:?}", honest.stderr);
+    assert!(
+        honest
+            .stderr
+            .iter()
+            .any(|line| line.contains(NO_REBUILD_LINE)),
+        "{:?}",
+        honest.stderr
+    );
+    assert!(filed(&sandbox) == held, "after an honest rebuild");
+}
+
+#[test]
+fn an_update_stopped_at_any_step_leaves_the_scope_of_the_index_it_left() {
+    for (case, fail_add, refuse_commit) in [("a", Some(1), false), ("b", None, true)] {
+        let sandbox = Sandbox::filled(&format!("labels_update_{case}"));
+        let first = sandbox.run(&["recall", "--in", "notes", "--", "garden"]);
+        assert_eq!(first.code, 0, "{:?}", first.stderr);
+        let held = filed(&sandbox);
+        sandbox.write(
+            "notes/orchard/c.md",
+            b"# Three\n\nthe third text about zebras\n",
+        );
+        let adds = Arc::new(AtomicU64::new(0));
+        let run = remember_through(
+            &sandbox,
+            &sandbox.path("notes/orchard/c.md"),
+            &[],
+            &failing(&adds, fail_add, refuse_commit),
+        );
+        assert_eq!(run.code, 1, "{case}: {:?}", run.stderr);
+        let after = sandbox.run(&["recall", "--in", "notes", "--", "garden"]);
+        assert_eq!(after.code, 0, "{case}: {:?}", after.stderr);
+        assert_eq!(after.stdout, first.stdout, "{case}");
+        let named = sandbox
+            .store()
+            .with_words(&["orchard".to_owned()])
+            .expect("with_words");
+        if refuse_commit {
+            assert_eq!(
+                named.len(),
+                1,
+                "{case}: filed before the commit was refused"
+            );
+            let new = sandbox.run(&["recall", "--in", "orchard", "--", "zebras"]);
+            assert_eq!(new.code, 1, "{:?}", new.stderr);
+            for line in [
+                "bilbo: the index is behind the store by 1 entry; bilbo remember brings it up to date",
+                "bilbo: --in kept 1 entry",
+                "bilbo: nothing matched",
+            ] {
+                assert!(
+                    new.stderr.iter().any(|said| said.starts_with(line)),
+                    "{line}: {:?}",
+                    new.stderr
+                );
+            }
+        } else {
+            assert!(
+                named.is_empty(),
+                "{case}: nothing filed before the first add"
+            );
+            let children = filed(&sandbox).1;
+            assert!(held.1.iter().all(|row| children.contains(row)));
+        }
+        let plain = sandbox.run(&["remember", &sandbox.path("notes")]);
+        assert_eq!(
+            (plain.code, plain.stderr),
+            (0, Vec::<String>::new()),
+            "{case}"
+        );
+        let found = sandbox.run(&["recall", "--in", "orchard", "--", "zebras"]);
+        assert_eq!(found.code, 0, "{case}: {:?}", found.stderr);
+    }
+}
+
+#[test]
+fn an_index_made_before_readers_gave_labels_is_made_again() {
+    let sandbox = Sandbox::new("labels_render");
+    write_the_workers(&sandbox);
+    let before = sandbox.remember_rendered(&Remembering {
+        target: &sandbox.path("sessions"),
+        extra: &[],
+        render: Some("markdown/1/heading_width=100 session/1"),
+        index: &disk,
+        load: &shared_tokenizer,
+        panicky: false,
+        said: &Arc::default(),
+    });
+    assert_eq!(before.code, 0, "{:?}", before.stderr);
+    assert!(
+        sandbox
+            .payload()
+            .contains("\nrender markdown/1/heading_width=100 session/1\n"),
+        "{}",
+        sandbox.payload()
+    );
+    let run = sandbox.run(&["remember", &sandbox.path("sessions")]);
+    assert_eq!(run.code, 0, "{:?}", run.stderr);
+    assert!(
+        run.stderr.iter().any(|line| line.contains(NO_REBUILD_LINE)),
+        "{:?}",
+        run.stderr
+    );
+    assert!(
+        sandbox
+            .payload()
+            .contains("\nrender markdown/1/heading_width=100 session/2\n")
+    );
+}
+
+#[test]
+fn a_session_that_grew_and_named_a_new_directory_is_found_by_it_after_the_next_remember() {
+    let sandbox = Sandbox::new("labels_grown");
+    let lines: Vec<&[u8]> = WORKED_BYTES
+        .split_inclusive(|byte| *byte == b'\n')
+        .collect();
+    let start: Vec<u8> = lines[..2].concat();
+    sandbox.write(WORKED, &start);
+    assert_eq!(
+        sandbox.run(&["remember", &sandbox.path("sessions")]).code,
+        0
+    );
+    let greenhouse = ["recall", "--in", "/home/me/src/greenhouse", "--", "frost"];
+    let before = sandbox.run(&greenhouse);
+    assert_eq!(before.code, 1, "{:?}", before.stderr);
+    assert!(
+        before
+            .stderr
+            .iter()
+            .any(|line| line.contains("names no entry")),
+        "{:?}",
+        before.stderr
+    );
+    assert!(kept_by(&sandbox.run(&SHED), "1 entry"));
+    sandbox.write(WORKED, WORKED_BYTES);
+    let run = sandbox.run(&["remember", &sandbox.path("sessions")]);
+    assert_eq!(run.code, 0, "{:?}", run.stderr);
+    let after = sandbox.run(&greenhouse);
+    assert_eq!(after.code, 0, "{:?}", after.stderr);
+    assert!(kept_by(&after, "1 entry"), "{:?}", after.stderr);
+}
+
+#[test]
+fn a_cache_whose_catalog_an_older_bilbo_left_is_refused_and_made_again() {
+    let sandbox = Sandbox::new("labels_older_catalog");
+    write_the_workers(&sandbox);
+    assert_eq!(
+        sandbox.run(&["remember", &sandbox.path("sessions")]).code,
+        0
+    );
+    let first = sandbox.run(&SHED);
+    assert_eq!(first.code, 0, "{:?}", first.stderr);
+    assert!(kept_by(&first, "2 entries"), "{:?}", first.stderr);
+
+    let catalog = sandbox.cache().join("catalog.sqlite");
+    let mut bytes = fs::read(&catalog).expect("the catalog");
+    assert_eq!(bytes[60..64], 5u32.to_be_bytes(), "this bilbo's version");
+    bytes[60..64].copy_from_slice(&4u32.to_be_bytes());
+    fs::write(&catalog, bytes).expect("a catalog round 4 made");
+
+    let refused = sandbox.run(&SHED);
+    assert_eq!((refused.code, refused.stdout.as_str()), (1, ""));
+    assert_eq!(
+        refused.stderr,
+        [format!(
+            "bilbo: the cache folder {} holds no catalog of this store, so its search index cannot be trusted; bilbo remember makes both again",
+            sandbox.cache().display()
+        )]
+    );
+    let run = sandbox.run(&["remember", &sandbox.path("sessions")]);
+    assert_eq!(run.code, 0, "{:?}", run.stderr);
+    assert!(
+        run.stderr.iter().any(|line| line
+            == "bilbo: rebuilding the search index: the store's catalog is not the one it was made from"),
+        "{:?}",
+        run.stderr
+    );
+    let again = sandbox.run(&SHED);
+    assert_eq!(again.code, 0, "{:?}", again.stderr);
+    assert!(kept_by(&again, "2 entries"), "{:?}", again.stderr);
+}
+
+#[test]
+fn words_on_a_catalog_made_again_are_said_to_be_incomplete() {
+    let sandbox = Sandbox::filled("labels_catalog");
+    fs::remove_file(sandbox.cache().join("catalog.sqlite")).expect("remove the catalog");
+    sandbox.write("notes/extra.md", b"# Extra\n\nmore about the garden\n");
+    let adds = Arc::new(AtomicU64::new(0));
+    let run = remember_through(
+        &sandbox,
+        &sandbox.path("notes/extra.md"),
+        &[],
+        &failing(&adds, Some(1), false),
+    );
+    assert_eq!(run.code, 1, "{:?}", run.stderr);
+    let unknown = "bilbo: the index cannot be compared with the store's catalog, so each hit was checked against the store; bilbo remember brings both up to date";
+    let worded = "bilbo: --in may name fewer entries than it should: labels are filed when the index is made; bilbo remember brings both up to date";
+    let words = sandbox.run(&["recall", "--in", "notes", "--", "garden"]);
+    assert_eq!((words.code, words.stdout.as_str()), (1, ""));
+    for line in ["bilbo: --in 'notes' names no entry", unknown, worded] {
+        assert!(
+            words.stderr.iter().any(|said| said == line),
+            "{line}: {:?}",
+            words.stderr
+        );
+    }
+    let sections = CaptureLabel::file(&sandbox.dir.join("notes/sections.md")).expect("a label");
+    let id = sandbox
+        .store()
+        .by_capture(&sections)
+        .expect("a lookup")
+        .expect("an entry")
+        .id;
+    let by_id = sandbox.run(&["recall", "--in", &id.short().to_string(), "--", "garden"]);
+    assert_eq!(by_id.code, 0, "{:?}", by_id.stderr);
+    assert!(
+        by_id.stderr.iter().any(|said| said == unknown),
+        "{:?}",
+        by_id.stderr
+    );
+    assert!(
+        !by_id.stderr.iter().any(|said| said == worded),
+        "{:?}",
+        by_id.stderr
+    );
+    let plain = sandbox.run(&["remember", &sandbox.path("notes")]);
+    assert_eq!(plain.code, 0, "{:?}", plain.stderr);
+    let words = sandbox.run(&["recall", "--in", "notes", "--", "garden"]);
+    assert_eq!(words.code, 0, "{:?}", words.stderr);
+    assert!(
+        !words
+            .stderr
+            .iter()
+            .any(|said| said == unknown || said == worded)
+    );
+    assert!(
+        words
+            .stderr
+            .iter()
+            .any(|said| said.starts_with("bilbo: --in kept 3 entries")),
+        "{:?}",
+        words.stderr
+    );
+}
+
 #[test]
 fn an_update_that_fails_is_not_tried_again_by_the_close_loop() {
     let sandbox = Sandbox::filled("fatal");
@@ -1532,8 +2068,8 @@ fn an_entry_the_reader_fails_on_is_named_and_the_run_exits_1_with_the_capture_ke
         Some("new 2, appended 0, new generation 0, unchanged 0, refused 0")
     );
     let store = sandbox.store();
-    let origin = Origin::file(&sandbox.dir.join("notes/b.md")).expect("an origin");
-    let head = store.by_origin(&origin).expect("a head").expect("kept");
+    let label = CaptureLabel::file(&sandbox.dir.join("notes/b.md")).expect("a capture label");
+    let head = store.by_capture(&label).expect("a head").expect("kept");
     assert_eq!(
         run.stderr,
         [format!(

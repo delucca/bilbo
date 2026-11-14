@@ -1,7 +1,8 @@
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use crate::entries::{Meta, Origin};
+use crate::entries::Meta;
 use crate::id::Id;
+use crate::labels::{CaptureLabel, StoredLabels};
 
 const ID: u8 = 1;
 const KIND: u8 = 2;
@@ -54,12 +55,12 @@ pub fn encode(meta: &Meta) -> Option<Vec<u8>> {
     let mut out = Vec::new();
     field(&mut out, ID, &meta.id.to_bytes())?;
     field(&mut out, KIND, meta.kind.as_bytes())?;
-    if let Some(origin) = &meta.origin {
-        field(&mut out, ORIGIN, origin.as_str().as_bytes())?;
+    if let Some(label) = &meta.labels.capture {
+        field(&mut out, ORIGIN, label.as_str().as_bytes())?;
     }
     field(&mut out, CAPTURED, &millis(meta.captured).to_le_bytes())?;
-    if let Some(parent) = meta.parent {
-        field(&mut out, PARENT, &parent.to_bytes())?;
+    if let Some(label) = meta.labels.id {
+        field(&mut out, PARENT, &label.to_bytes())?;
     }
     Some(out)
 }
@@ -101,8 +102,10 @@ pub fn decode(entry: Id, bytes: &[u8]) -> Result<Meta, String> {
         Some((KIND, value)) => text(value)?,
         _ => return Err("the meta has no kind after its id".into()),
     };
-    let origin = match found.next_if(|(tag, _)| *tag == ORIGIN) {
-        Some((_, value)) => Some(Origin::new(text(value)?).ok_or("the origin is empty")?),
+    let capture = match found.next_if(|(tag, _)| *tag == ORIGIN) {
+        Some((_, value)) => {
+            Some(CaptureLabel::new(text(value)?).ok_or("the capture label is empty")?)
+        }
         None => None,
     };
     let captured = match found.next() {
@@ -112,9 +115,11 @@ pub fn decode(entry: Id, bytes: &[u8]) -> Result<Meta, String> {
         }
         _ => return Err("the meta has no captured time in its place".into()),
     };
-    let parent = match found.next() {
+    let id_label = match found.next() {
         Some((PARENT, value)) => {
-            let raw: [u8; 16] = value.try_into().map_err(|_| "the parent is not 16 bytes")?;
+            let raw: [u8; 16] = value
+                .try_into()
+                .map_err(|_| "the id label is not 16 bytes")?;
             Some(Id::from_bytes(raw))
         }
         Some((tag, _)) => return Err(format!("unexpected meta field {tag}")),
@@ -126,9 +131,11 @@ pub fn decode(entry: Id, bytes: &[u8]) -> Result<Meta, String> {
     Ok(Meta {
         id,
         kind,
-        origin,
+        labels: StoredLabels {
+            capture,
+            id: id_label,
+        },
         captured,
-        parent,
     })
 }
 
@@ -137,32 +144,35 @@ mod tests {
     use std::path::Path;
 
     use super::*;
+    use crate::labels::{CaptureLabel, StoredLabels};
 
     fn id() -> Id {
         Id::parse("01JC5Q3V7XKM4P8R2T6W9YB0DE").expect("id")
     }
 
-    fn parent() -> Id {
+    fn id_label() -> Id {
         Id::parse("01JC5Q3V7XKM4P8R2T6W9YB0DF").expect("id")
     }
 
-    fn meta(origin: Option<Origin>, parent: Option<Id>) -> Meta {
+    fn meta(capture: Option<CaptureLabel>, id_label: Option<Id>) -> Meta {
         Meta {
             id: id(),
             kind: "markdown".into(),
-            origin,
+            labels: StoredLabels {
+                capture,
+                id: id_label,
+            },
             captured: time_of(1_762_560_000_123),
-            parent,
         }
     }
 
     #[test]
-    fn a_meta_round_trips_with_and_without_an_origin_and_a_parent() {
-        let origin = Origin::file(Path::new("/notes/a.md"));
+    fn a_meta_round_trips_with_and_without_a_capture_label_and_an_id_label() {
+        let capture = CaptureLabel::file(Path::new("/notes/a.md"));
         for meta in [
-            meta(origin.clone(), Some(parent())),
-            meta(origin, None),
-            meta(None, Some(parent())),
+            meta(capture.clone(), Some(id_label())),
+            meta(capture, None),
+            meta(None, Some(id_label())),
             meta(None, None),
         ] {
             let bytes = encode(&meta).expect("encode");
@@ -177,9 +187,41 @@ mod tests {
     }
 
     #[test]
+    fn the_meta_frame_is_the_bytes_it_always_was() {
+        let both = meta(
+            CaptureLabel::file(Path::new("/notes/a.md")),
+            Some(id_label()),
+        );
+        let mut expected: Vec<u8> = vec![1, 16, 0, 0, 0];
+        expected.extend_from_slice(&id().to_bytes());
+        expected.extend_from_slice(&[2, 8, 0, 0, 0]);
+        expected.extend_from_slice(b"markdown");
+        expected.extend_from_slice(&[3, 16, 0, 0, 0]);
+        expected.extend_from_slice(b"file:/notes/a.md");
+        expected.extend_from_slice(&[4, 8, 0, 0, 0]);
+        expected.extend_from_slice(&1_762_560_000_123i64.to_le_bytes());
+        expected.extend_from_slice(&[5, 16, 0, 0, 0]);
+        expected.extend_from_slice(&id_label().to_bytes());
+        assert_eq!(encode(&both), Some(expected.clone()));
+        assert_eq!(decode(id(), &expected), Ok(both));
+        let neither = meta(None, None);
+        let mut plain: Vec<u8> = vec![1, 16, 0, 0, 0];
+        plain.extend_from_slice(&id().to_bytes());
+        plain.extend_from_slice(&[2, 8, 0, 0, 0]);
+        plain.extend_from_slice(b"markdown");
+        plain.extend_from_slice(&[4, 8, 0, 0, 0]);
+        plain.extend_from_slice(&1_762_560_000_123i64.to_le_bytes());
+        assert_eq!(encode(&neither), Some(plain.clone()));
+        assert_eq!(decode(id(), &plain), Ok(neither));
+    }
+
+    #[test]
     fn a_meta_with_an_unknown_field_or_a_missing_one_is_damaged() {
-        let good =
-            encode(&meta(Origin::file(Path::new("/n/a.md")), Some(parent()))).expect("encode");
+        let good = encode(&meta(
+            CaptureLabel::file(Path::new("/n/a.md")),
+            Some(id_label()),
+        ))
+        .expect("encode");
         let mut unknown = good.clone();
         unknown.extend_from_slice(&[9, 0, 0, 0, 0]);
         let mut out_of_order = Vec::new();
@@ -201,11 +243,11 @@ mod tests {
         field(&mut bad_utf8, ID, &id().to_bytes());
         field(&mut bad_utf8, KIND, &[0xFF]);
         field(&mut bad_utf8, CAPTURED, &0i64.to_le_bytes());
-        let mut empty_origin = Vec::new();
-        field(&mut empty_origin, ID, &id().to_bytes());
-        field(&mut empty_origin, KIND, b"k");
-        field(&mut empty_origin, ORIGIN, b"");
-        field(&mut empty_origin, CAPTURED, &0i64.to_le_bytes());
+        let mut empty_capture = Vec::new();
+        field(&mut empty_capture, ID, &id().to_bytes());
+        field(&mut empty_capture, KIND, b"k");
+        field(&mut empty_capture, ORIGIN, b"");
+        field(&mut empty_capture, CAPTURED, &0i64.to_le_bytes());
         let mut repeated_kind = good.clone();
         field(&mut repeated_kind, KIND, b"again");
         let mut short_time = Vec::new();
@@ -215,13 +257,13 @@ mod tests {
         let cut = good[..good.len() - 1].to_vec();
         let mut trailing = good.clone();
         trailing.push(1);
-        let mut two_parents = good.clone();
-        field(&mut two_parents, PARENT, &parent().to_bytes());
-        let mut short_parent = encode(&meta(None, None)).expect("encode");
-        field(&mut short_parent, PARENT, &[1, 2, 3]);
+        let mut two_id_labels = good.clone();
+        field(&mut two_id_labels, PARENT, &id_label().to_bytes());
+        let mut short_id_label = encode(&meta(None, None)).expect("encode");
+        field(&mut short_id_label, PARENT, &[1, 2, 3]);
         for (name, bytes) in [
-            ("two parents", two_parents),
-            ("short parent", short_parent),
+            ("two id labels", two_id_labels),
+            ("short id label", short_id_label.clone()),
             ("unknown tag", unknown),
             ("out of order", out_of_order),
             ("no kind", no_kind),
@@ -229,7 +271,7 @@ mod tests {
             ("short id", short_id),
             ("another entry's id", other_id),
             ("bad utf-8", bad_utf8),
-            ("empty origin", empty_origin),
+            ("empty capture label", empty_capture.clone()),
             ("repeated kind", repeated_kind),
             ("short time", short_time),
             ("cut field", cut),
@@ -238,5 +280,13 @@ mod tests {
         ] {
             assert!(decode(id(), &bytes).is_err(), "{name}");
         }
+        assert_eq!(
+            decode(id(), &empty_capture),
+            Err("the capture label is empty".to_string())
+        );
+        assert_eq!(
+            decode(id(), &short_id_label),
+            Err("the id label is not 16 bytes".to_string())
+        );
     }
 }

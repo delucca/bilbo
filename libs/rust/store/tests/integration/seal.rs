@@ -4,6 +4,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use bilbo_store::entries::{Change, Cursor, Entries, Generation, Meta, RecordRange, StoreError};
+use bilbo_store::labels::StoredLabels;
 use bilbo_store::layout::Layout;
 use bilbo_store::segments::{Hook, Notice, Options, Step, Store};
 
@@ -46,7 +47,10 @@ pub fn fill(layout: &Layout, hook: Option<Hook>) -> (Store, Before) {
     keep(&mut store, "e.md", b"");
     keep(&mut store, "a.md", b"one\ntwo\nthree\n");
     let meta = Meta {
-        parent: Some(a),
+        labels: StoredLabels {
+            id: Some(a),
+            ..store.meta(a).expect("meta").expect("some").labels
+        },
         ..store.meta(a).expect("meta").expect("some")
     };
     store.set_meta(a, &meta).expect("set_meta");

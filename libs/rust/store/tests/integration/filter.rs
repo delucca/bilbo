@@ -1,7 +1,7 @@
 use bilbo_store::entries::{Capture, Captured, Entries};
 use xxhash_rust::xxh3;
 
-use crate::scratch::{Scratch, ends, id_of, open, origin, read_records};
+use crate::scratch::{Scratch, capture_label, ends, id_of, open, read_records};
 
 fn base64(length: usize) -> String {
     "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
@@ -12,13 +12,13 @@ fn base64(length: usize) -> String {
 }
 
 fn capture(store: &mut bilbo_store::segments::Store, bytes: &[u8]) -> Captured {
-    let origin = origin("s.jsonl");
+    let label = capture_label("s.jsonl");
     store
         .capture(&Capture {
-            origin: &origin,
+            label: &label,
             kind: "session",
             id: None,
-            parent: None,
+            id_label: None,
             stamp: None,
             bytes,
             ends: &ends(bytes),

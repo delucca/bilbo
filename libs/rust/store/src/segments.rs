@@ -10,12 +10,13 @@ use std::time::{Duration, Instant, SystemTime};
 use crate::capture::{self, Action};
 use crate::catalog::{self, Catalog, Fresh, Owner, Place};
 use crate::entries::{
-    Capture, CaptureError, Captured, Change, Cursor, Entries, Generation, Head, Kept, Meta, Origin,
+    Capture, CaptureError, Captured, Change, Cursor, Entries, Generation, Head, Kept, Meta,
     RecordRange, Stamp, StoreError,
 };
 use crate::files::{self, Create};
 use crate::frame;
-use crate::id::Id;
+use crate::id::{Id, Short};
+use crate::labels::{CaptureLabel, Filed, Labels, Relabel, StoredLabels};
 use crate::layout::Layout;
 use crate::limits::{Compression, TearBudget};
 use crate::meta;
@@ -1326,7 +1327,7 @@ impl Entries for Store {
         self.writable()?;
         capture::validate(input.bytes, input.ends)
             .map_err(|bad| CaptureError::Records(bad.to_string()))?;
-        let head = self.catalog.head_by_origin(input.origin)?;
+        let head = self.catalog.head_by_capture(input.label)?;
         let id = match &head {
             Some(head) => head.id,
             None => match input.id {
@@ -1375,9 +1376,11 @@ impl Entries for Store {
             let meta = Meta {
                 id,
                 kind: input.kind.to_string(),
-                origin: Some(input.origin.clone()),
+                labels: StoredLabels {
+                    capture: Some(input.label.clone()),
+                    id: input.id_label,
+                },
                 captured: meta::time_of(meta::millis(SystemTime::now())),
-                parent: input.parent,
             };
             let plain = meta::encode(&meta).ok_or(CaptureError::TooLarge)?;
             let payload = self.pack(&plain)?;
@@ -1434,12 +1437,12 @@ impl Entries for Store {
         if !self.catalog.entry_exists(id)? {
             return Err(StoreError::Missing(format!("no entry {id}")));
         }
-        if let Some(origin) = &meta.origin
-            && let Some(other) = self.catalog.holder_of_origin(origin)?
+        if let Some(label) = &meta.labels.capture
+            && let Some(other) = self.catalog.holder_of_capture(label)?
             && other != id
         {
-            return Err(StoreError::OriginHeld {
-                origin: origin.clone(),
+            return Err(StoreError::CaptureHeld {
+                label: label.clone(),
                 by: other,
             });
         }
@@ -1585,8 +1588,8 @@ impl Entries for Store {
         Ok((changes, Cursor::at(id, last)))
     }
 
-    fn by_origin(&self, origin: &Origin) -> Result<Option<Head>, StoreError> {
-        self.catalog.head_by_origin(origin)
+    fn by_capture(&self, label: &CaptureLabel) -> Result<Option<Head>, StoreError> {
+        self.catalog.head_by_capture(label)
     }
 
     fn extent(
@@ -1609,8 +1612,29 @@ impl Entries for Store {
         }
     }
 
-    fn origins_with(&self, part: &str) -> Result<Vec<(Id, Origin)>, StoreError> {
-        self.catalog.origins_with(part)
+    fn captures_with(&self, part: &str) -> Result<Vec<(Id, CaptureLabel)>, StoreError> {
+        self.catalog.captures_with(part)
+    }
+
+    fn by_shorts(&self, shorts: &[Short]) -> Result<Vec<Id>, StoreError> {
+        self.catalog.ids_ending(shorts)
+    }
+}
+
+impl Labels for Store {
+    fn with_words(&self, words: &[String]) -> Result<Vec<Id>, StoreError> {
+        self.catalog.with_words(words)
+    }
+
+    fn belonging_to(&self, entries: &[Id]) -> Result<Vec<Id>, StoreError> {
+        self.catalog.belonging_to(entries)
+    }
+}
+
+impl Relabel for Store {
+    fn relabel(&self, filed: &[Filed]) -> Result<(), StoreError> {
+        self.writable()?;
+        self.catalog.relabel(filed)
     }
 }
 

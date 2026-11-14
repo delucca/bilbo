@@ -311,7 +311,7 @@ fn recall_shows_its_human_view_on_an_agents_terminal() {
     let scratch = scratch_with_an_escape("tty_recall");
     let piped = scratch.run(&["recall", "clear", "screen"]);
     assert_eq!(piped.code, 0, "{}", piped.stderr);
-    assert!(piped.stdout.starts_with("=== bilbo:"), "{}", piped.stdout);
+    assert!(piped.stdout.starts_with("=== "), "{}", piped.stdout);
     assert!(
         piped
             .stdout
@@ -344,7 +344,7 @@ fn recall_shows_its_human_view_on_an_agents_terminal() {
             seen.terminal
         );
         assert!(
-            seen.terminal.contains("=== bilbo:") || !agent,
+            seen.terminal.contains("=== ") || !agent,
             "an agent's terminal gets the plain header: {:?}",
             seen.terminal
         );

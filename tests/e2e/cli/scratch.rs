@@ -151,6 +151,12 @@ pub(crate) const UUID: &str = "8f2b6d4e-1a3c-4e5f-9b7a-2c4d6e8f0a1b";
 pub(crate) const SESSION: &[u8] = include_bytes!(
     "../../../libs/rust/kinds/session/fixtures/8f2b6d4e-1a3c-4e5f-9b7a-2c4d6e8f0a1b.jsonl"
 );
+pub(crate) const MAIN: &str = "5c3a9e1f-0b7d-4c2e-9a41-7f2d8e6b1c03";
+pub(crate) const CLAUDE: &[u8] = include_bytes!(
+    "../../../libs/rust/kinds/session/fixtures/5c3a9e1f-0b7d-4c2e-9a41-7f2d8e6b1c03.jsonl"
+);
+pub(crate) const SUBAGENT: &[u8] =
+    include_bytes!("../../../libs/rust/kinds/session/fixtures/agent-ad63c2b3c9e7a4b3d.jsonl");
 pub(crate) const NOTE: &str =
     include_str!("../../../libs/rust/kinds/markdown/fixtures/sections.md");
 

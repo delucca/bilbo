@@ -21,8 +21,8 @@ const SUMMARY: &str = "Print an entry: its outline, or its records a page at a t
 const ABOUT: &str = "bilbo read: print an entry's outline, or its records a page at a time.";
 const USAGE: &str = "bilbo read <ref> [--budget <tokens>]
   bilbo read <ref> --outline [--budget <tokens>]
-<ref> is an entry id or a session id, then #r<a>-<b> for records a to b, #g<n>
-for an older generation, or #g<n>:r<a>-<b>.";
+<ref> is an entry id, its last 10 characters or a session id, then #r<a>-<b>
+for records a to b, #g<n> for an older generation, or #g<n>:r<a>-<b>.";
 const BUDGET_FLAG: &str = "--budget";
 
 #[derive(Debug, clap::Args)]
@@ -43,7 +43,7 @@ pub struct Args {
 
 const PAGE: &str = "\
 Output:
-  #r<n> <label>: <text>  each record after its locator, as it was kept
+  #r<n> <head>: <text>   each record after its locator, as it was kept
   more: bilbo read ...   the last line: the command for the next page
   end: ...               the last line: nothing is left of what was asked
   cut: ...; more: ...    the last line after a cut record: how to read it whole
@@ -52,11 +52,11 @@ With no #r: metadata and outline. Only the last line is bilbo's own.
 Exit:
   0  success, also when no record of the range renders
   1  no such entry, a range outside it, or no store
-  2  usage or config error, or a session id that names several entries
+  2  usage or config error, or a session id or short id of several entries
 
 Examples:
   bilbo read 01M6ZGE4KTBYYH07AS2KVMSCAF
-  bilbo read 01M6ZGE4KTBYYH07AS2KVMSCAF#r120-184
+  bilbo read AS2KVMSCAF#r120-184
   bilbo read 2d6b1857 --outline
 
 Docs: https://github.com/delucca/bilbo/wiki/Commands#read";

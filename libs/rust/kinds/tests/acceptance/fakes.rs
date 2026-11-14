@@ -9,13 +9,14 @@ use bilbo_kinds::files::{Files, Memory, Node};
 use bilbo_kinds::kind::{Claim, Claims, Kind, Proposal, Refusal};
 use bilbo_store::entries::{
     Capture, CaptureError, Captured, Change, Cursor, Entries, Generation, Head, Kept, Mark, Meta,
-    Origin, RecordRange, Stamp, StoreError,
+    RecordRange, Stamp, StoreError,
 };
-use bilbo_store::id::Id;
+use bilbo_store::id::{Id, Short};
+use bilbo_store::labels::{CaptureLabel, StoredLabels};
 
 /// Claims `*.fake` and `*.fake.z` as one entry; the `.z` file holds a `z` byte, then the bytes;
 /// records end at `|`; `!` refuses; `id=` sets the id; `<name>.sub.fake` takes
-/// `<name>.fake` as parent.
+/// `<name>.fake` as its id label.
 pub struct FakeKind {
     pub refused: Vec<(PathBuf, String)>,
     pub overrun: bool,
@@ -54,18 +55,18 @@ impl FakeKind {
     }
 
     fn claim(path: &Path, claims: &mut Claims) {
-        let Some(origin) = origin(path) else {
+        let Some(label) = label(path) else {
             return;
         };
-        if claims.entries.iter().all(|claim| claim.origin() != origin) {
+        if claims.entries.iter().all(|claim| claim.label() != label) {
             claims
                 .entries
-                .push(Claim::file(origin.clone()).or(packed(&origin)));
+                .push(Claim::file(label.clone()).or(packed(&label)));
         }
     }
 }
 
-fn origin(path: &Path) -> Option<PathBuf> {
+fn label(path: &Path) -> Option<PathBuf> {
     let extension = path.extension()?;
     if extension == "fake" {
         return Some(path.to_path_buf());
@@ -74,15 +75,15 @@ fn origin(path: &Path) -> Option<PathBuf> {
     (extension == "z" && unpacked.extension().is_some_and(|e| e == "fake")).then_some(unpacked)
 }
 
-fn packed(origin: &Path) -> PathBuf {
-    let mut name = origin.as_os_str().to_owned();
+fn packed(label: &Path) -> PathBuf {
+    let mut name = label.as_os_str().to_owned();
     name.push(".z");
     PathBuf::from(name)
 }
 
 fn sibling(path: &Path) -> PathBuf {
-    match origin(path) {
-        Some(origin) if origin != path => origin,
+    match label(path) {
+        Some(label) if label != path => label,
         _ => packed(path),
     }
 }
@@ -128,17 +129,17 @@ impl Kind for FakeKind {
             .collect())
     }
 
-    fn propose(&self, origin: &Path, bytes: &[u8], kept: &dyn Fn(&Path) -> Option<Id>) -> Proposal {
+    fn propose(&self, label: &Path, bytes: &[u8], kept: &dyn Fn(&Path) -> Option<Id>) -> Proposal {
         let text = String::from_utf8_lossy(bytes);
         let id = text
             .split_once("id=")
             .and_then(|(_, rest)| rest.get(..26))
             .and_then(Id::parse);
-        let parent = origin
+        let id_label = label
             .to_str()
             .and_then(|path| path.strip_suffix(".sub.fake"))
             .and_then(|stem| kept(Path::new(&format!("{stem}.fake"))));
-        Proposal { id, parent }
+        Proposal { id, id_label }
     }
 }
 
@@ -193,14 +194,14 @@ impl Files for Counting {
     }
 }
 
-/// What `FakeEntries` answers for an origin.
+/// What `FakeEntries` answers for a label.
 #[derive(Clone)]
 pub enum Script {
     New,
     Appended,
     NewGeneration,
     Unchanged,
-    IdHeld(Option<Origin>),
+    IdHeld(Option<CaptureLabel>),
     Records(String),
     Failure,
 }
@@ -208,10 +209,10 @@ pub enum Script {
 /// One `capture` call, as owned data.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Seen {
-    pub origin: String,
+    pub label: String,
     pub kind: String,
     pub id: Option<Id>,
-    pub parent: Option<Id>,
+    pub id_label: Option<Id>,
     pub stamp: Option<Stamp>,
     pub bytes: Vec<u8>,
     pub ends: Vec<usize>,
@@ -232,8 +233,8 @@ impl FakeEntries {
     }
 
     #[must_use]
-    pub fn on(mut self, origin: &str, script: Script) -> FakeEntries {
-        self.script.insert(origin.to_string(), script);
+    pub fn on(mut self, label: &str, script: Script) -> FakeEntries {
+        self.script.insert(label.to_string(), script);
         self
     }
 }
@@ -248,16 +249,16 @@ pub fn id(n: u8) -> Id {
 impl Entries for FakeEntries {
     fn capture(&mut self, input: &Capture<'_>) -> Result<Captured, CaptureError> {
         self.seen.push(Seen {
-            origin: input.origin.to_string(),
+            label: input.label.to_string(),
             kind: input.kind.to_string(),
             id: input.id,
-            parent: input.parent,
+            id_label: input.id_label,
             stamp: input.stamp,
             bytes: input.bytes.to_vec(),
             ends: input.ends.to_vec(),
         });
         let n = u8::try_from(self.seen.len()).unwrap_or(u8::MAX);
-        let held = self.heads.get(input.origin.as_str()).map(|head| head.id);
+        let held = self.heads.get(input.label.as_str()).map(|head| head.id);
         let kept = Kept {
             id: held.or(input.id).unwrap_or_else(|| id(n)),
             generation: Generation(1),
@@ -270,7 +271,7 @@ impl Entries for FakeEntries {
         };
         let script = self
             .script
-            .get(input.origin.as_str())
+            .get(input.label.as_str())
             .cloned()
             .unwrap_or(Script::New);
         if matches!(
@@ -280,12 +281,14 @@ impl Entries for FakeEntries {
             self.metas.entry(kept.id).or_insert_with(|| Meta {
                 id: kept.id,
                 kind: input.kind.to_string(),
-                origin: Some(input.origin.clone()),
+                labels: StoredLabels {
+                    capture: Some(input.label.clone()),
+                    id: input.id_label,
+                },
                 captured: std::time::SystemTime::UNIX_EPOCH,
-                parent: input.parent,
             });
             self.heads.insert(
-                input.origin.to_string(),
+                input.label.to_string(),
                 Head {
                     id: kept.id,
                     generation: Generation(1),
@@ -307,7 +310,7 @@ impl Entries for FakeEntries {
     }
 
     fn set_meta(&mut self, id: Id, meta: &Meta) -> Result<u64, StoreError> {
-        self.adopted.push((id, meta.parent));
+        self.adopted.push((id, meta.labels.id));
         self.metas.insert(id, meta.clone());
         Ok(ADOPTED)
     }
@@ -329,8 +332,8 @@ impl Entries for FakeEntries {
         panic!("remember must not call changes")
     }
 
-    fn by_origin(&self, origin: &Origin) -> Result<Option<Head>, StoreError> {
-        Ok(self.heads.get(origin.as_str()).copied())
+    fn by_capture(&self, label: &CaptureLabel) -> Result<Option<Head>, StoreError> {
+        Ok(self.heads.get(label.as_str()).copied())
     }
 
     fn extent(
@@ -341,7 +344,11 @@ impl Entries for FakeEntries {
         panic!("remember must not call extent")
     }
 
-    fn origins_with(&self, _part: &str) -> Result<Vec<(Id, Origin)>, StoreError> {
-        panic!("remember must not call origins_with")
+    fn captures_with(&self, _part: &str) -> Result<Vec<(Id, CaptureLabel)>, StoreError> {
+        panic!("remember must not call captures_with")
+    }
+
+    fn by_shorts(&self, _shorts: &[Short]) -> Result<Vec<Id>, StoreError> {
+        panic!("remember must not call by_shorts")
     }
 }

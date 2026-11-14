@@ -16,12 +16,6 @@ fn civil(days: u64) -> (u64, u64, u64) {
     (year_of_era + era * 400 + u64::from(month <= 2), month, day)
 }
 
-pub fn day(millis: i64) -> String {
-    let seconds = u64::try_from(millis).map_or(0, |millis| millis / 1000);
-    let (year, month, day) = civil(seconds / 86_400);
-    format!("{year:04}-{month:02}-{day:02}")
-}
-
 pub fn utc(time: SystemTime) -> String {
     let seconds = time
         .duration_since(SystemTime::UNIX_EPOCH)
@@ -39,7 +33,7 @@ pub fn utc(time: SystemTime) -> String {
 mod tests {
     use std::time::{Duration, SystemTime};
 
-    use super::{day, utc};
+    use super::utc;
 
     #[test]
     fn a_time_prints_as_a_utc_date_and_minute() {
@@ -55,16 +49,5 @@ mod tests {
             utc(SystemTime::UNIX_EPOCH - Duration::from_secs(1)),
             "1970-01-01 00:00 UTC"
         );
-    }
-
-    #[test]
-    fn a_day_is_utc_and_never_before_1970() {
-        assert_eq!(day(0), "1970-01-01");
-        assert_eq!(day(86_399_999), "1970-01-01");
-        assert_eq!(day(86_400_000), "1970-01-02");
-        assert_eq!(day(1_794_069_552_000), "2026-11-07");
-        assert_eq!(day(1_709_164_800_000), "2024-02-29");
-        assert_eq!(day(-1), "1970-01-01");
-        assert_eq!(day(i64::MIN), "1970-01-01");
     }
 }

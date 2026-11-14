@@ -12,8 +12,8 @@ use bilbo_store::segments::{Hook, Notice, Options, Step, Store};
 
 use crate::frames::{frames, spans};
 use crate::scratch::{
-    Scratch, catalog, chmod, id_of, keep, open, open_seg, open_with, origin, read_records, sealed,
-    sealing, snapshot, snapshot_of, sql, try_keep,
+    Scratch, capture_label, catalog, chmod, id_of, keep, label_rows, open, open_seg, open_with,
+    read_records, sealed, sealing, snapshot, snapshot_of, sql, try_keep,
 };
 use crate::seal::{fill, stopping_at};
 
@@ -47,7 +47,7 @@ fn a_catalog_is_never_trusted_by_another_store_that_shares_its_cache_folder() {
     for (layout, id) in [(&one, first), (&two, second)] {
         let store = open(layout);
         let head = store
-            .by_origin(&origin("a.md"))
+            .by_capture(&capture_label("a.md"))
             .expect("head")
             .expect("entry");
         assert_eq!(head.id, id);
@@ -955,7 +955,10 @@ fn a_root_link_repointed_after_the_guard_never_lets_a_reader_read_a_0_20_root() 
     let reader = Store::open_read_only(&layout, repoint_at_the_guard(&link, &older), &mut |_| {})
         .expect("reader");
     assert!(
-        reader.by_origin(&origin("a.md")).expect("lookup").is_none(),
+        reader
+            .by_capture(&capture_label("a.md"))
+            .expect("lookup")
+            .is_none(),
         "the reader must read the checked folder"
     );
 }
@@ -1519,4 +1522,25 @@ fn a_state_folder_beneath_the_target_of_a_dangling_root_link_is_refused() {
     refused_by_all_three(&layout, "state", "state beneath the root link's target");
     assert!(!target.exists());
     assert_eq!(listing(&base), before);
+}
+
+#[test]
+fn the_store_never_writes_a_text_label() {
+    let scratch = Scratch::new("never_labels");
+    let layout = scratch.layout();
+    let mut store = open(&layout);
+    let a = id_of(&keep(&mut store, "a.md", b"one\n"));
+    let b = id_of(&keep(&mut store, "b.md", b"two\n"));
+    keep(&mut store, "a.md", b"one\ntwo\n");
+    let mut meta = store.meta(b).expect("meta").expect("some");
+    meta.labels.id = Some(a);
+    store.set_meta(b, &meta).expect("set_meta");
+    store.close().expect("close");
+    assert_eq!(label_rows(&layout), (0, 0, 0));
+    let mut store = open(&layout);
+    keep(&mut store, "c.md", b"three\n");
+    drop(store);
+    let store = open(&layout);
+    drop(store);
+    assert_eq!(label_rows(&layout), (0, 0, 0));
 }

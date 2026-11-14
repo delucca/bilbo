@@ -1,7 +1,27 @@
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 
-use super::scratch::{NOTE, Scratch, remembered};
+use super::scratch::{CLAUDE, MAIN, NOTE, SUBAGENT, Scratch, UUID, remembered};
+
+fn hit_refs(stdout: &str) -> Vec<&str> {
+    stdout
+        .lines()
+        .filter_map(|line| line.strip_prefix("=== "))
+        .filter_map(|header| header.split('\t').next())
+        .collect()
+}
+
+fn capture_label_of(scratch: &Scratch, reference: &str) -> String {
+    let entry = reference.split('#').next().expect("an entry");
+    let read = scratch.run(&["read", entry]);
+    assert_eq!(read.code, 0, "{}", read.stderr);
+    read.stdout
+        .lines()
+        .find_map(|line| line.strip_prefix("label: "))
+        .and_then(|label| label.strip_suffix(" (capture)"))
+        .expect("a capture label")
+        .to_owned()
+}
 
 const EVERY_PASSAGE_ENDS_IN_A_LINE_FEED: bool = true;
 const BETWEEN_PASSAGES: &str = "\n";
@@ -15,16 +35,17 @@ fn a_remembered_store_is_recalled_and_a_hits_ref_reads() {
     let header = lines.next().expect("a header");
     let fields: Vec<&str> = header.split('\t').collect();
     let reference = fields[0].strip_prefix("=== ").expect("a header");
-    assert!(reference.starts_with("bilbo:"), "{header}");
-    assert!(
-        fields[2].len() == 10 && fields[2].starts_with("20"),
+    assert_eq!(
+        reference.split('#').next().map(str::len),
+        Some(10),
         "{header}"
     );
+    assert_eq!(fields.len(), 2, "no kind, no date: {header}");
     assert!(
         !fields.iter().any(|field| field.starts_with("part ")),
         "the fixtures hold no record too long for a chunk: {header}"
     );
-    let count: usize = fields[3]
+    let count: usize = fields[1]
         .split(' ')
         .next()
         .and_then(|n| n.parse().ok())
@@ -37,7 +58,6 @@ fn a_remembered_store_is_recalled_and_a_hits_ref_reads() {
         run.stderr
     );
 
-    assert_eq!(fields[1], "markdown", "{header}");
     assert!(NOTE.ends_with('\n'));
     assert!(NOTE.lines().all(|line| !line.starts_with("#r")));
     let (_, records) = reference.split_once("#r").expect("records in the ref");
@@ -168,10 +188,11 @@ fn every_recall_adds_one_line_to_the_query_log() {
         .collect();
     assert_eq!(
         fields.iter().map(|f| (f[0], f[2])).collect::<Vec<_>>(),
-        [("q1", "hits"), ("q1", "nothing"), ("q1", "hits")]
+        [("q2", "hits"), ("q2", "nothing"), ("q2", "hits")]
     );
     assert_eq!(fields[2][4], "markdown");
-    assert_eq!(fields[2][6], "heading");
+    assert_eq!(fields[2][5], "-");
+    assert_eq!(fields[2][8], "heading");
     assert_eq!(
         fs::metadata(&log).expect("the log").permissions().mode() & 0o777,
         0o600
@@ -267,4 +288,212 @@ fn a_lone_listed_word_is_still_searched() {
     let run = scratch.run(&["recall", "nas"]);
     assert_eq!(run.code, 0, "{}", run.stderr);
     assert!(run.stdout.contains("guarda os backups"), "{}", run.stdout);
+}
+
+#[test]
+fn a_text_kept_twice_is_shown_once() {
+    let scratch = Scratch::new("recall_copies");
+    let note = "# Beds\n\nThe turnips grew well in the east bed this year.\n";
+    scratch.write("a.md", note);
+    scratch.write("b.md", note);
+    let kept = scratch.run(&["remember", &scratch.path("notes")]);
+    assert_eq!(kept.code, 0, "{}", kept.stderr);
+    let run = scratch.run(&["recall", "turnips"]);
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    assert_eq!(
+        run.stdout.matches("\n=== ").count() + 1,
+        1,
+        "{}",
+        run.stdout
+    );
+    assert!(
+        run.stderr.contains("bilbo: passed over: 1 copy\n"),
+        "{}",
+        run.stderr
+    );
+}
+
+#[test]
+fn a_small_collection_among_a_large_one_still_fills_its_list_with_in() {
+    let scratch = Scratch::new("recall_in_fills");
+    for n in 0..5 {
+        scratch.write(
+            &format!("tillage/row{n}.md"),
+            &format!("# Row {n}\n\nturnips turnips turnips turnips lie in furrow number{n} beside marker{n}\n"),
+        );
+    }
+    for n in 0..3 {
+        scratch.write(
+            &format!("glasshouse/pane{n}.md"),
+            &format!(
+                "# Pane {n}\n\nOne turnips seedling sits on shelf{n} under lamp{n} and fan{n}\n"
+            ),
+        );
+    }
+    let kept = scratch.run(&["remember", &scratch.path("notes")]);
+    assert_eq!(kept.code, 0, "{}", kept.stderr);
+    let few = [("BILBO_RECALL_CANDIDATES", "3")];
+    let all = scratch.run_with(&["recall", "turnips"], &few);
+    assert_eq!(all.code, 0, "{}", all.stderr);
+    let refs = hit_refs(&all.stdout);
+    assert_eq!(refs.len(), 3, "{}", all.stdout);
+    for reference in refs {
+        assert!(capture_label_of(&scratch, reference).contains("/tillage/"));
+    }
+    let scoped = scratch.run_with(&["recall", "--in", "glasshouse", "turnips"], &few);
+    assert_eq!(scoped.code, 0, "{}", scoped.stderr);
+    let refs = hit_refs(&scoped.stdout);
+    assert_eq!(refs.len(), 3, "{}", scoped.stdout);
+    for reference in refs {
+        assert!(capture_label_of(&scratch, reference).contains("/glasshouse/"));
+    }
+}
+
+#[test]
+fn a_scope_that_drops_a_kind_says_so() {
+    let scratch = remembered("recall_in_kind");
+    let run = scratch.run(&["recall", "--in=-home-me-src-garden", "carrots"]);
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    let line = run
+        .stderr
+        .lines()
+        .find(|line| line.starts_with("bilbo: --in kept "))
+        .unwrap_or_else(|| panic!("a scope line in {}", run.stderr));
+    assert!(
+        line.starts_with("bilbo: --in kept 1 entry and left out ")
+            && line.ends_with(": markdown 1"),
+        "{line}"
+    );
+}
+
+#[test]
+fn in_with_an_id_takes_a_sessions_subagents() {
+    let scratch = Scratch::new("recall_in_subagents");
+    let project = scratch
+        .dir
+        .join("home/.claude/projects/-home-me-src-garden");
+    let files: [(String, &[u8]); 3] = [
+        (format!("{MAIN}.jsonl"), CLAUDE),
+        (
+            format!("{MAIN}/subagents/agent-ad63c2b3c9e7a4b3d.jsonl"),
+            SUBAGENT,
+        ),
+        (format!("{UUID}.jsonl"), super::scratch::SESSION),
+    ];
+    for (name, bytes) in files {
+        let path = project.join(name);
+        fs::create_dir_all(path.parent().expect("a parent")).expect("folders");
+        fs::write(path, bytes).expect("a session");
+    }
+    let kept = scratch.run(&["remember", project.to_str().expect("UTF-8")]);
+    assert_eq!(kept.code, 0, "{}", kept.stderr);
+    let main = scratch.run(&["read", MAIN]);
+    assert_eq!(main.code, 0, "{}", main.stderr);
+    let id = main
+        .stdout
+        .lines()
+        .next()
+        .and_then(|line| line.strip_prefix("bilbo:"))
+        .expect("the id");
+    let short = &id[16..];
+    let run = scratch.run(&["recall", "--in", short, "packets"]);
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    let refs = hit_refs(&run.stdout);
+    assert!(!refs.is_empty(), "{}", run.stdout);
+    for reference in refs {
+        assert!(capture_label_of(&scratch, reference).contains("/subagents/agent-"));
+    }
+    let other = scratch.run(&["recall", "--in", "8f2b6d4e-1a3c", "packets"]);
+    assert_eq!(
+        (other.code, other.stdout.as_str()),
+        (1, ""),
+        "{}",
+        other.stderr
+    );
+}
+
+#[test]
+fn a_value_that_names_nothing_never_searches_everything() {
+    let scratch = remembered("recall_in_nothing");
+    let alone = scratch.run(&["recall", "--in", "zzqqxx", "carrots"]);
+    assert_eq!((alone.code, alone.stdout.as_str()), (1, ""));
+    assert_eq!(
+        alone.stderr,
+        "bilbo: --in 'zzqqxx' names no entry\nbilbo: nothing matched\n"
+    );
+    let beside = scratch.run(&["recall", "--in", "zzqqxx", "--in", "notes", "carrots"]);
+    assert_eq!(beside.code, 0, "{}", beside.stderr);
+    assert!(
+        beside
+            .stderr
+            .contains("bilbo: --in 'zzqqxx' names no entry\n"),
+        "{}",
+        beside.stderr
+    );
+    assert!(
+        beside.stderr.contains("bilbo: --in kept 1 entry"),
+        "{}",
+        beside.stderr
+    );
+    assert!(!hit_refs(&beside.stdout).is_empty());
+}
+
+#[test]
+fn in_with_a_folder_keeps_the_sessions_that_worked_there() {
+    let scratch = Scratch::new("recall_in_folder");
+    let claude = scratch
+        .dir
+        .join("home/.claude/projects/-home-me-src-garden");
+    let codex = scratch.dir.join("home/.codex/sessions/2026/11/08");
+    let files = [
+        (
+            claude.join("7d1e4b9a-3c5f-4a2e-8b6d-0f9e1c2a3b4d.jsonl"),
+            include_bytes!(
+                "../../../libs/rust/kinds/session/fixtures/7d1e4b9a-3c5f-4a2e-8b6d-0f9e1c2a3b4d.jsonl"
+            )
+            .as_slice(),
+        ),
+        (
+            claude.join(format!("{UUID}.jsonl")),
+            super::scratch::SESSION,
+        ),
+        (
+            codex.join("rollout-2026-11-08T10-00-00-019a6c4d-3e5f-7a71-9b2c-4d6e8fa0b1c3.jsonl"),
+            include_bytes!(
+                "../../../libs/rust/kinds/session/fixtures/rollout-2026-11-08T10-00-00-019a6c4d-3e5f-7a71-9b2c-4d6e8fa0b1c3.jsonl"
+            )
+            .as_slice(),
+        ),
+    ];
+    for (path, bytes) in files {
+        fs::create_dir_all(path.parent().expect("a parent")).expect("folders");
+        fs::write(path, bytes).expect("a session");
+    }
+    for folder in [&claude, &codex] {
+        let kept = scratch.run(&["remember", folder.to_str().expect("UTF-8")]);
+        assert_eq!(kept.code, 0, "{}", kept.stderr);
+    }
+    let run = scratch.run(&["recall", "--in", "/home/me/src/shed", "frost", "compost"]);
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    assert!(
+        run.stderr.contains("bilbo: --in kept 2 entries"),
+        "{}",
+        run.stderr
+    );
+    let refs = hit_refs(&run.stdout);
+    assert!(!refs.is_empty(), "{}", run.stdout);
+    for reference in refs {
+        let capture = capture_label_of(&scratch, reference);
+        assert!(
+            capture.contains("7d1e4b9a-3c5f") || capture.contains("019a6c4d-3e5f"),
+            "{capture}"
+        );
+    }
+    let one = scratch.run(&["recall", "--in", "/home/me/src/greenhouse", "frost"]);
+    assert_eq!(one.code, 0, "{}", one.stderr);
+    assert!(
+        one.stderr.contains("bilbo: --in kept 1 entry"),
+        "{}",
+        one.stderr
+    );
 }

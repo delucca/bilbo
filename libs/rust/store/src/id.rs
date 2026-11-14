@@ -5,6 +5,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 const ALPHABET: &[u8; 32] = b"0123456789ABCDEFGHJKMNPQRSTVWXYZ";
 const LENGTH: usize = 26;
+const SHORT_BITS: u32 = 50;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Id(u128);
@@ -66,16 +67,65 @@ impl Id {
     pub fn to_bytes(self) -> [u8; 16] {
         self.0.to_be_bytes()
     }
+
+    #[must_use]
+    pub fn short(self) -> Short {
+        Short((self.0 & ((1 << SHORT_BITS) - 1)) as u64)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct Short(u64);
+
+impl Short {
+    pub const LENGTH: usize = 10;
+
+    /// 10 characters of the id alphabet, upper case only.
+    #[must_use]
+    pub fn parse(text: &str) -> Option<Short> {
+        let bytes = text.as_bytes();
+        if bytes.len() != Short::LENGTH {
+            return None;
+        }
+        let mut value: u64 = 0;
+        for &byte in bytes {
+            let digit = ALPHABET.iter().position(|&c| c == byte)?;
+            value = (value << 5) | digit as u64;
+        }
+        Some(Short(value))
+    }
+
+    #[must_use]
+    pub fn ends(self, id: Id) -> bool {
+        id.short() == self
+    }
+
+    /// The low 48 bits, the six bytes a catalog key ends with.
+    #[must_use]
+    pub(crate) fn tail(self) -> [u8; 6] {
+        let bytes = self.0.to_be_bytes();
+        [bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7]]
+    }
+}
+
+fn written<const N: usize>(value: u128, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    let mut text = [0u8; N];
+    for (index, slot) in text.iter_mut().enumerate() {
+        let shift = 5 * (N - 1 - index);
+        *slot = ALPHABET[((value >> shift) & 31) as usize];
+    }
+    f.write_str(std::str::from_utf8(&text).map_err(|_| fmt::Error)?)
+}
+
+impl fmt::Display for Short {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        written::<{ Short::LENGTH }>(u128::from(self.0), f)
+    }
 }
 
 impl fmt::Display for Id {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let mut text = [0u8; LENGTH];
-        for (index, slot) in text.iter_mut().enumerate() {
-            let shift = 125 - 5 * index;
-            *slot = ALPHABET[((self.0 >> shift) & 31) as usize];
-        }
-        f.write_str(std::str::from_utf8(&text).map_err(|_| fmt::Error)?)
+        written::<LENGTH>(self.0, f)
     }
 }
 
@@ -83,7 +133,55 @@ impl fmt::Display for Id {
 mod tests {
     use std::collections::HashSet;
 
-    use super::Id;
+    use super::{Id, Short};
+
+    #[test]
+    fn a_short_id_is_the_end_of_its_ids_text() {
+        let id = Id::parse("01JC5Q3V7XKM4P8R2T6W9YB0DE").expect("id");
+        assert_eq!(id.short().to_string(), "2T6W9YB0DE");
+        let zero = Id::from_bytes([0; 16]);
+        assert_eq!(zero.short().to_string(), "0000000000");
+        let greatest = Id::from_bytes([0xFF; 16]);
+        assert_eq!(greatest.short().to_string(), "ZZZZZZZZZZ");
+    }
+
+    #[test]
+    fn a_short_id_is_ten_upper_case_characters_of_the_id_alphabet() {
+        for text in ["2T6W9YB0DE", "0000000000", "ZZZZZZZZZZ"] {
+            let short = Short::parse(text).expect(text);
+            assert_eq!(short.to_string(), text);
+        }
+        let cases = [
+            "2t6w9yb0de",
+            "2T6W9YB0D",
+            "2T6W9YB0DEE",
+            "2T6W9YB0DI",
+            "2T6W9YB0DL",
+            "2T6W9YB0DO",
+            "2T6W9YB0DU",
+            "2T6W9YB0D\u{e9}",
+            "",
+        ];
+        for case in cases {
+            assert_eq!(Short::parse(case), None, "{case:?}");
+        }
+    }
+
+    #[test]
+    fn a_short_id_ends_the_ids_that_share_its_fifty_bits_and_no_other() {
+        let base = u128::from_be_bytes(
+            Id::parse("01JC5Q3V7XKM4P8R2T6W9YB0DE")
+                .expect("id")
+                .to_bytes(),
+        );
+        let short = Id::from_bytes(base.to_be_bytes()).short();
+        let id = |value: u128| Id::from_bytes(value.to_be_bytes());
+        assert!(short.ends(id(base)));
+        assert!(short.ends(id(base ^ (1 << 50))));
+        assert!(short.ends(id(base ^ (1 << 120))));
+        assert!(!short.ends(id(base ^ (1 << 49))));
+        assert!(!short.ends(id(base ^ 1)));
+    }
 
     #[test]
     fn a_ulid_reads_back_as_the_same_text_and_bytes() {

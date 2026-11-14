@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 
 use bilbo_store::entries::Generation;
 use bilbo_store::id::Id;
@@ -10,6 +10,8 @@ use crate::lookup::Found;
 pub struct Query {
     pub text: String,
     pub kinds: Vec<String>,
+    /// `None`: every entry. Sorted, distinct.
+    pub entries: Option<Vec<Id>>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -18,8 +20,14 @@ pub struct Candidate {
     pub score: f32,
 }
 
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Ranked {
+    pub candidates: Vec<Candidate>,
+    pub unscoped: Vec<Candidate>,
+}
+
 pub trait Ranker {
-    fn rank(&self, query: &Query, limit: usize) -> Result<Vec<Candidate>, IndexError>;
+    fn rank(&self, query: &Query, limit: usize) -> Result<Ranked, IndexError>;
 }
 
 type Place = (Id, Generation, u64, u64, Option<(u32, u32)>);
@@ -35,7 +43,7 @@ fn place(found: &Found) -> Place {
     )
 }
 
-pub fn fuse(lists: Vec<Vec<Candidate>>) -> Vec<Candidate> {
+fn merge(lists: Vec<Vec<Candidate>>) -> Vec<Candidate> {
     let mut seen = HashSet::new();
     let mut fused = Vec::new();
     let single = lists.len() == 1;
@@ -49,19 +57,15 @@ pub fn fuse(lists: Vec<Vec<Candidate>>) -> Vec<Candidate> {
     fused
 }
 
-pub fn cap(ranked: Vec<Candidate>, per_entry: usize) -> Vec<Candidate> {
-    if per_entry == 0 {
-        return ranked;
-    }
-    let mut taken: HashMap<Id, usize> = HashMap::new();
-    ranked
+pub fn fuse(lists: Vec<Ranked>) -> Ranked {
+    let (candidates, unscoped) = lists
         .into_iter()
-        .filter(|candidate| {
-            let count = taken.entry(candidate.found.entry).or_default();
-            *count += 1;
-            *count <= per_entry
-        })
-        .collect()
+        .map(|ranked| (ranked.candidates, ranked.unscoped))
+        .unzip();
+    Ranked {
+        candidates: merge(candidates),
+        unscoped: merge(unscoped),
+    }
 }
 
 pub(crate) fn order(a: &Candidate, b: &Candidate) -> std::cmp::Ordering {
@@ -78,7 +82,7 @@ mod tests {
     use crate::lookup::Found;
     use crate::testing::id;
 
-    use super::{Candidate, cap, fuse};
+    use super::{Candidate, Ranked, fuse};
 
     fn candidate(entry: u8, first: u64, score: f32) -> Candidate {
         Candidate {
@@ -103,15 +107,25 @@ mod tests {
             .collect()
     }
 
+    fn ranked(candidates: Vec<Candidate>) -> Ranked {
+        Ranked {
+            candidates,
+            unscoped: Vec::new(),
+        }
+    }
+
     #[test]
-    fn one_list_fuses_to_itself() {
-        let list = vec![
-            candidate(1, 1, 3.0),
-            candidate(1, 1, 2.0),
-            candidate(2, 1, 1.0),
-        ];
+    fn one_ranked_fuses_to_itself() {
+        let list = Ranked {
+            candidates: vec![
+                candidate(1, 1, 3.0),
+                candidate(1, 1, 2.0),
+                candidate(2, 1, 1.0),
+            ],
+            unscoped: vec![candidate(1, 1, 3.0), candidate(1, 1, 3.0)],
+        };
         assert_eq!(fuse(vec![list.clone()]), list);
-        assert_eq!(fuse(Vec::new()), []);
+        assert_eq!(fuse(Vec::new()), Ranked::default());
     }
 
     #[test]
@@ -122,35 +136,31 @@ mod tests {
             candidate(3, 1, 1.0),
             candidate(1, 1, 8.0),
         ];
-        let fused = fuse(vec![first, second]);
+        let fused = fuse(vec![ranked(first), ranked(second)]).candidates;
         assert_eq!(places(&fused), [(1, 1), (2, 1), (3, 1)]);
         assert!((fused[1].score - 2.0).abs() < f32::EPSILON);
         let mut other_part = candidate(1, 1, 1.0);
         other_part.found.extent.part = Some((0, 2));
-        let fused = fuse(vec![vec![candidate(1, 1, 3.0)], vec![other_part]]);
-        assert_eq!(fused.len(), 2);
+        let fused = fuse(vec![
+            ranked(vec![candidate(1, 1, 3.0)]),
+            ranked(vec![other_part]),
+        ]);
+        assert_eq!(fused.candidates.len(), 2);
     }
 
     #[test]
-    fn no_cap_keeps_the_list() {
-        let list = vec![
-            candidate(1, 1, 3.0),
-            candidate(1, 2, 2.0),
-            candidate(1, 3, 1.0),
-        ];
-        assert_eq!(cap(list.clone(), 0), list);
-    }
-
-    #[test]
-    fn a_cap_keeps_each_entrys_first_hits_in_rank_order() {
-        let list = vec![
-            candidate(1, 1, 5.0),
-            candidate(2, 1, 4.0),
-            candidate(1, 2, 3.0),
-            candidate(1, 3, 2.0),
-            candidate(2, 2, 1.0),
-        ];
-        assert_eq!(places(&cap(list.clone(), 1)), [(1, 1), (2, 1)]);
-        assert_eq!(places(&cap(list, 2)), [(1, 1), (2, 1), (1, 2), (2, 2)]);
+    fn two_rankers_unscoped_lists_are_fused_as_their_candidates_are() {
+        let one = Ranked {
+            candidates: Vec::new(),
+            unscoped: vec![candidate(1, 1, 3.0), candidate(2, 1, 2.0)],
+        };
+        let other = Ranked {
+            candidates: Vec::new(),
+            unscoped: vec![candidate(2, 1, 9.0), candidate(3, 1, 1.0)],
+        };
+        let fused = fuse(vec![one, other]);
+        assert_eq!(places(&fused.unscoped), [(1, 1), (2, 1), (3, 1)]);
+        assert!((fused.unscoped[1].score - 2.0).abs() < f32::EPSILON);
+        assert!(fused.candidates.is_empty());
     }
 }

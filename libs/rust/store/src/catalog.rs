@@ -1,14 +1,14 @@
+use std::collections::{BTreeSet, HashSet};
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use rusqlite::{Connection, OpenFlags, OptionalExtension, Transaction, params};
 
-use crate::entries::{
-    Change, Generation, Head, Mark, Meta, Origin, RecordRange, Stamp, StoreError,
-};
+use crate::entries::{Change, Generation, Head, Mark, Meta, RecordRange, Stamp, StoreError};
 use crate::files;
 use crate::frame;
-use crate::id::Id;
+use crate::id::{Id, Short};
+use crate::labels::{self, CaptureLabel, Filed, StoredLabels};
 use crate::meta;
 
 const SCHEMA: &str = "
@@ -32,9 +32,18 @@ CREATE INDEX frames_by_entry ON frames (entry, generation, first);
 CREATE TABLE changes (
   seq INTEGER PRIMARY KEY, entry BLOB NOT NULL, generation INTEGER, first INTEGER, count INTEGER
 );
+CREATE TABLE labels (id INTEGER PRIMARY KEY, text TEXT NOT NULL UNIQUE);
+CREATE TABLE label_words (
+  word TEXT NOT NULL, label INTEGER NOT NULL, at INTEGER NOT NULL, PRIMARY KEY (word, label, at)
+) WITHOUT ROWID;
+CREATE TABLE entry_labels (
+  entry BLOB NOT NULL, label INTEGER NOT NULL, PRIMARY KEY (entry, label)
+) WITHOUT ROWID;
+CREATE INDEX entry_labels_by_label ON entry_labels (label);
+CREATE INDEX label_words_by_label ON label_words (label);
 ";
 
-const VERSION: u32 = 2;
+const VERSION: u32 = 5;
 
 pub const OPEN: &str = "open";
 
@@ -365,14 +374,14 @@ impl Catalog {
         head_in(&self.conn, id).map_err(|error| self.err(&error))
     }
 
-    pub fn head_by_origin(&self, origin: &Origin) -> Result<Option<Head>, StoreError> {
-        self.holder_of_origin(origin)?
+    pub fn head_by_capture(&self, label: &CaptureLabel) -> Result<Option<Head>, StoreError> {
+        self.holder_of_capture(label)?
             .map(|id| self.head_of(id))
             .transpose()
     }
 
-    /// `Some(origin)` when an entry holds `id`; the origin is `None` when that entry has none.
-    pub fn holder_of_id(&self, id: Id) -> Result<Option<Option<Origin>>, StoreError> {
+    /// `Some(label)` when an entry holds `id`; the label is `None` when that entry has no capture label.
+    pub fn holder_of_id(&self, id: Id) -> Result<Option<Option<CaptureLabel>>, StoreError> {
         let found: Option<Option<String>> = self
             .conn
             .query_row(
@@ -382,15 +391,15 @@ impl Catalog {
             )
             .optional()
             .map_err(|error| self.err(&error))?;
-        Ok(found.map(|origin| origin.and_then(Origin::new)))
+        Ok(found.map(|label| label.and_then(CaptureLabel::new)))
     }
 
-    pub fn holder_of_origin(&self, origin: &Origin) -> Result<Option<Id>, StoreError> {
+    pub fn holder_of_capture(&self, label: &CaptureLabel) -> Result<Option<Id>, StoreError> {
         let found: Option<Vec<u8>> = self
             .conn
             .query_row(
                 "SELECT id FROM entries WHERE origin = ?1",
-                params![origin.as_str()],
+                params![label.as_str()],
                 |row| row.get(0),
             )
             .optional()
@@ -402,8 +411,8 @@ impl Catalog {
     }
 
     /// `instr`, not `LIKE`: no character of `part` is a wildcard.
-    pub fn origins_with(&self, part: &str) -> Result<Vec<(Id, Origin)>, StoreError> {
-        let run = || -> rusqlite::Result<Vec<(Id, Origin)>> {
+    pub fn captures_with(&self, part: &str) -> Result<Vec<(Id, CaptureLabel)>, StoreError> {
+        let run = || -> rusqlite::Result<Vec<(Id, CaptureLabel)>> {
             let mut statement = self.conn.prepare(
                 "SELECT id, origin FROM entries
                  WHERE origin IS NOT NULL AND instr(lower(origin), lower(?1)) > 0 ORDER BY id",
@@ -416,9 +425,37 @@ impl Catalog {
             })?;
             let mut found = Vec::new();
             for row in rows {
-                let (id, origin) = row?;
-                if let Some(origin) = Origin::new(origin) {
-                    found.push((id, origin));
+                let (id, label) = row?;
+                if let Some(label) = CaptureLabel::new(label) {
+                    found.push((id, label));
+                }
+            }
+            Ok(found)
+        };
+        run().map_err(|error| self.err(&error))
+    }
+
+    pub fn ids_ending(&self, shorts: &[Short]) -> Result<Vec<Id>, StoreError> {
+        let mut tails: Vec<[u8; 6]> = shorts.iter().map(|short| short.tail()).collect();
+        tails.sort_unstable();
+        tails.dedup();
+        if tails.is_empty() {
+            return Ok(Vec::new());
+        }
+        let run = || -> rusqlite::Result<Vec<Id>> {
+            let marks = vec!["?"; tails.len()].join(", ");
+            let mut statement = self.conn.prepare(&format!(
+                "SELECT id FROM entries WHERE substr(id, 11) IN ({marks}) ORDER BY id"
+            ))?;
+            let rows = statement.query_map(
+                rusqlite::params_from_iter(tails.iter().map(<[u8; 6]>::as_slice)),
+                |row| id_of(&row.get::<_, Vec<u8>>(0)?, 0),
+            )?;
+            let mut found = Vec::new();
+            for row in rows {
+                let id = row?;
+                if shorts.iter().any(|short| short.ends(id)) {
+                    found.push(id);
                 }
             }
             Ok(found)
@@ -436,15 +473,17 @@ impl Catalog {
                     |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
                 )
                 .optional()?;
-            let Some((kind, origin, captured, parent)) = row else {
+            let Some((kind, capture, captured, id_label)) = row else {
                 return Ok(None);
             };
             Ok(Some(Meta {
                 id,
                 kind,
-                origin: origin.and_then(Origin::new),
+                labels: StoredLabels {
+                    capture: capture.and_then(CaptureLabel::new),
+                    id: id_label.map(|raw| id_of(&raw, 3)).transpose()?,
+                },
                 captured: meta::time_of(captured),
-                parent: parent.map(|raw| id_of(&raw, 3)).transpose()?,
             }))
         };
         run().map_err(|error| self.err(&error))
@@ -455,9 +494,9 @@ impl Catalog {
         stamp_in(&self.conn, id, stamp).map_err(|error| self.err(&error))
     }
 
-    /// The head of every entry that has a stamp, with the origin the entry has now.
-    pub fn stamped(&self) -> Result<Vec<(Head, Option<Origin>)>, StoreError> {
-        let run = || -> rusqlite::Result<Vec<(Head, Option<Origin>)>> {
+    /// The head of every entry that has a stamp, with the capture label the entry has now.
+    pub fn stamped(&self) -> Result<Vec<(Head, Option<CaptureLabel>)>, StoreError> {
+        let run = || -> rusqlite::Result<Vec<(Head, Option<CaptureLabel>)>> {
             let mut statement = self
                 .conn
                 .prepare("SELECT entry FROM stamps ORDER BY entry")?;
@@ -465,21 +504,21 @@ impl Catalog {
                 .query_map([], |row| id_of(&row.get::<_, Vec<u8>>(0)?, 0))?
                 .collect::<rusqlite::Result<Vec<Id>>>()?;
             ids.into_iter()
-                .map(|id| Ok((head_in(&self.conn, id)?, origin_in(&self.conn, id)?)))
+                .map(|id| Ok((head_in(&self.conn, id)?, capture_in(&self.conn, id)?)))
                 .collect()
         };
         run().map_err(|error| self.err(&error))
     }
 
-    /// Gives each head its stamp back when this catalog holds the same head and the same origin,
-    /// stamp aside. An entry with no origin gets none.
-    pub fn restamp(&mut self, stamped: &[(Head, Option<Origin>)]) -> Result<(), StoreError> {
+    /// Gives each head its stamp back when this catalog holds the same head and the same capture
+    /// label, stamp aside. An entry with no capture label gets none.
+    pub fn restamp(&mut self, stamped: &[(Head, Option<CaptureLabel>)]) -> Result<(), StoreError> {
         let mut same = Vec::new();
-        for (old, origin) in stamped {
+        for (old, label) in stamped {
             let now = self.head_of(old.id)?;
-            let holder = origin_in(&self.conn, old.id).map_err(|error| self.err(&error))?;
-            if origin.is_some()
-                && holder == *origin
+            let holder = capture_in(&self.conn, old.id).map_err(|error| self.err(&error))?;
+            if label.is_some()
+                && holder == *label
                 && (now.generation, now.records, now.mark)
                     == (old.generation, old.records, old.mark)
             {
@@ -598,6 +637,140 @@ impl Catalog {
         };
         run().map_err(|error| self.err(&error))
     }
+
+    pub fn belonging_to(&self, entries: &[Id]) -> Result<Vec<Id>, StoreError> {
+        if entries.is_empty() {
+            return Ok(Vec::new());
+        }
+        let run = || -> rusqlite::Result<Vec<(Id, Id)>> {
+            let mut statement = self
+                .conn
+                .prepare("SELECT id, parent FROM entries WHERE parent IS NOT NULL")?;
+            let rows = statement.query_map([], |row| {
+                Ok((
+                    id_of(&row.get::<_, Vec<u8>>(0)?, 0)?,
+                    id_of(&row.get::<_, Vec<u8>>(1)?, 1)?,
+                ))
+            })?;
+            rows.collect()
+        };
+        let links = run().map_err(|error| self.err(&error))?;
+        Ok(labels::descendants(&links, entries))
+    }
+
+    pub fn with_words(&self, words: &[String]) -> Result<Vec<Id>, StoreError> {
+        if words.is_empty() {
+            return Ok(Vec::new());
+        }
+        let run = || -> rusqlite::Result<Vec<Id>> {
+            let mut places = self
+                .conn
+                .prepare("SELECT label, at FROM label_words WHERE word = ?1")?;
+            let mut starts: Option<HashSet<(i64, i64)>> = None;
+            for (position, word) in words.iter().enumerate() {
+                let position = i64::try_from(position).unwrap_or(i64::MAX);
+                let at: HashSet<(i64, i64)> = places
+                    .query_map(params![word], |row| Ok((row.get(0)?, row.get(1)?)))?
+                    .collect::<rusqlite::Result<_>>()?;
+                starts = Some(match starts {
+                    None => at,
+                    Some(starts) => starts
+                        .into_iter()
+                        .filter(|(label, start)| at.contains(&(*label, start + position)))
+                        .collect(),
+                });
+                if starts.as_ref().is_some_and(HashSet::is_empty) {
+                    return Ok(Vec::new());
+                }
+            }
+            let matching: BTreeSet<i64> = starts
+                .unwrap_or_default()
+                .into_iter()
+                .map(|(label, _)| label)
+                .collect();
+            let mut holders = self
+                .conn
+                .prepare("SELECT entry FROM entry_labels WHERE label = ?1")?;
+            let mut found = BTreeSet::new();
+            for label in matching {
+                for row in
+                    holders.query_map(params![label], |row| id_of(&row.get::<_, Vec<u8>>(0)?, 0))?
+                {
+                    found.insert(row?);
+                }
+            }
+            Ok(found.into_iter().collect())
+        };
+        run().map_err(|error| self.err(&error))
+    }
+
+    pub fn relabel(&self, filed: &[Filed]) -> Result<(), StoreError> {
+        let run = || -> rusqlite::Result<()> {
+            let tx = self.conn.unchecked_transaction()?;
+            relabel_in(&tx, filed)?;
+            tx.commit()
+        };
+        run().map_err(|error| self.err(&error))
+    }
+}
+
+fn relabel_in(conn: &Connection, filed: &[Filed]) -> rusqlite::Result<()> {
+    let mut released = HashSet::new();
+    let mut held = conn.prepare("SELECT label FROM entry_labels WHERE entry = ?1")?;
+    let mut release = conn.prepare("DELETE FROM entry_labels WHERE entry = ?1")?;
+    let mut find = conn.prepare("SELECT id FROM labels WHERE text = ?1")?;
+    let mut add = conn.prepare("INSERT INTO labels (text) VALUES (?1)")?;
+    let mut known = conn.prepare("SELECT word, at FROM label_words WHERE label = ?1")?;
+    let mut clear = conn.prepare("DELETE FROM label_words WHERE label = ?1")?;
+    let mut put = conn.prepare("INSERT INTO label_words (word, label, at) VALUES (?1, ?2, ?3)")?;
+    let mut file =
+        conn.prepare("INSERT OR IGNORE INTO entry_labels (entry, label) VALUES (?1, ?2)")?;
+    for one in filed {
+        let entry = one.entry.to_bytes();
+        for label in held.query_map(params![entry.as_slice()], |row| row.get::<_, i64>(0))? {
+            released.insert(label?);
+        }
+        release.execute(params![entry.as_slice()])?;
+        for worded in &one.labels {
+            let found: Option<i64> = find
+                .query_row(params![worded.text], |row| row.get(0))
+                .optional()?;
+            let (label, rewrite) = match found {
+                None => {
+                    add.execute(params![worded.text])?;
+                    (conn.last_insert_rowid(), true)
+                }
+                Some(label) => {
+                    let rows = known
+                        .query_map(params![label], |row| {
+                            Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+                        })?
+                        .collect::<rusqlite::Result<HashSet<_>>>()?;
+                    let given: HashSet<(String, i64)> =
+                        worded.words.iter().cloned().zip(0i64..).collect();
+                    let same = rows == given;
+                    if !same {
+                        clear.execute(params![label])?;
+                    }
+                    (label, !same)
+                }
+            };
+            if rewrite {
+                for (word, at) in worded.words.iter().zip(0i64..) {
+                    put.execute(params![word, label, at])?;
+                }
+            }
+            file.execute(params![entry.as_slice(), label])?;
+        }
+    }
+    let mut taken = conn.prepare("SELECT 1 FROM entry_labels WHERE label = ?1 LIMIT 1")?;
+    for label in released {
+        if !taken.exists(params![label])? {
+            clear.execute(params![label])?;
+            conn.execute("DELETE FROM labels WHERE id = ?1", params![label])?;
+        }
+    }
+    Ok(())
 }
 
 fn sql_error(path: &Path, error: &rusqlite::Error) -> StoreError {
@@ -627,7 +800,7 @@ fn stamp_in(conn: &Connection, id: Id, stamp: Option<&Stamp>) -> rusqlite::Resul
     .map(|_| ())
 }
 
-fn origin_in(conn: &Connection, id: Id) -> rusqlite::Result<Option<Origin>> {
+fn capture_in(conn: &Connection, id: Id) -> rusqlite::Result<Option<CaptureLabel>> {
     let found: Option<Option<String>> = conn
         .query_row(
             "SELECT origin FROM entries WHERE id = ?1",
@@ -635,7 +808,7 @@ fn origin_in(conn: &Connection, id: Id) -> rusqlite::Result<Option<Origin>> {
             |row| row.get(0),
         )
         .optional()?;
-    Ok(found.flatten().and_then(Origin::new))
+    Ok(found.flatten().and_then(CaptureLabel::new))
 }
 
 fn stamp_of(conn: &Connection, id: Id) -> rusqlite::Result<Option<Stamp>> {
@@ -747,23 +920,23 @@ impl Batch<'_> {
 
 fn meta_in(conn: &Connection, meta: &Meta) -> Result<(), ApplyFault> {
     let id = meta.id.to_bytes();
-    if let Some(origin) = &meta.origin {
+    if let Some(label) = &meta.labels.capture {
         let other: Option<Vec<u8>> = conn
             .query_row(
                 "SELECT id FROM entries WHERE origin = ?1 AND id != ?2",
-                params![origin.as_str(), id.as_slice()],
+                params![label.as_str(), id.as_slice()],
                 |row| row.get(0),
             )
             .optional()?;
         if let Some(other) = other {
             return Err(ApplyFault::Damaged(format!(
-                "origin {origin} is held by {}",
+                "the capture label {label} is held by {}",
                 id_of(&other, 0)?
             )));
         }
     }
-    let held = origin_in(conn, meta.id)?;
-    if held != meta.origin {
+    let held = capture_in(conn, meta.id)?;
+    if held != meta.labels.capture {
         conn.execute(
             "DELETE FROM stamps WHERE entry = ?1",
             params![id.as_slice()],
@@ -774,9 +947,13 @@ fn meta_in(conn: &Connection, meta: &Meta) -> Result<(), ApplyFault> {
         params![
             id.as_slice(),
             meta.kind,
-            meta.origin.as_ref().map(Origin::as_str),
+            meta.labels.capture.as_ref().map(CaptureLabel::as_str),
             meta::millis(meta.captured),
-            meta.parent.map(Id::to_bytes).as_ref().map(<[u8; 16]>::as_slice)
+            meta.labels
+                .id
+                .map(Id::to_bytes)
+                .as_ref()
+                .map(<[u8; 16]>::as_slice)
         ],
     )?;
     conn.execute(

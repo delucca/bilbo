@@ -11,8 +11,9 @@ use bilbo_kinds::files::Memory;
 use bilbo_kinds::read::refs::Ref;
 use bilbo_kinds::read::{self, Fetched};
 use bilbo_kinds::remember::{self, Item, Outcome, Output, Request};
-use bilbo_store::entries::{Entries, Generation, Meta, Origin, RecordRange};
+use bilbo_store::entries::{Entries, Generation, Meta, RecordRange};
 use bilbo_store::id::Id;
+use bilbo_store::labels::{CaptureLabel, StoredLabels};
 use bilbo_store::layout::Layout;
 use bilbo_store::segments::{Options, Store};
 
@@ -286,7 +287,7 @@ fn a_codex_session_as_the_store_keeps_it() {
     let mut store = Store::open(&layout, Options::default(), &mut |_| {}).expect("open");
     remember::keep(&plan, &files, &mut store).expect("keep");
     let head = store
-        .by_origin(&Origin::new(format!("file:{path}")).expect("origin"))
+        .by_capture(&CaptureLabel::new(format!("file:{path}")).expect("capture label"))
         .expect("head")
         .expect("an entry");
     let records = store
@@ -344,7 +345,7 @@ const NOTE: &[u8] = include_bytes!("../../../libs/rust/kinds/markdown/fixtures/s
 
 fn read_output(
     kind: &str,
-    origin: &str,
+    label: &str,
     file: &[u8],
     locator: &str,
     budget: usize,
@@ -353,9 +354,11 @@ fn read_output(
         meta: Meta {
             id: Id::parse(READ_ID).expect("id"),
             kind: kind.to_owned(),
-            origin: Origin::new(format!("file:{origin}")),
+            labels: StoredLabels {
+                capture: CaptureLabel::new(format!("file:{label}")),
+                id: Id::parse("01JC5Q3V7XKM4P8R2T6W9YB0DF").filter(|_| kind == "session"),
+            },
             captured: std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_794_193_920),
-            parent: Id::parse("01JC5Q3V7XKM4P8R2T6W9YB0DF").filter(|_| kind == "session"),
         },
         generation: Generation(1),
         current: Generation(1),
@@ -387,14 +390,14 @@ fn read_output(
 }
 
 fn claude(locator: &str, budget: usize) -> (String, String) {
-    let origin =
+    let label =
         "/home/me/.claude/projects/-home-me-src-garden/8f2b6d4e-1a3c-4e5f-9b7a-2c4d6e8f0a1b.jsonl";
-    read_output("session", origin, CLAUDE_SESSION, locator, budget)
+    read_output("session", label, CLAUDE_SESSION, locator, budget)
 }
 
 fn codex(locator: &str) -> (String, String) {
-    let origin = "/home/me/.codex/sessions/2026/11/07/rollout-2026-11-07T08-00-00-019a5b3c-2d4e-7f60-8a1b-3c5d7e9f0a2b.jsonl";
-    read_output("session", origin, CODEX_SESSION, locator, 7000)
+    let label = "/home/me/.codex/sessions/2026/11/07/rollout-2026-11-07T08-00-00-019a5b3c-2d4e-7f60-8a1b-3c5d7e9f0a2b.jsonl";
+    read_output("session", label, CODEX_SESSION, locator, 7000)
 }
 
 fn note(locator: &str, budget: usize) -> (String, String) {
@@ -522,23 +525,31 @@ fn recalled() -> bilbo_search::recall::Output {
     use bilbo_search::index::Extent;
     use bilbo_search::lookup::Found;
     use bilbo_search::recall::hit::Hit;
-    let hit =
-        |entry: &str, kind: &str, first, count, part, preface: Option<&str>, text: &str, cut| Hit {
-            found: Found {
-                entry: Id::parse(entry).expect("an id"),
-                kind: kind.to_owned(),
-                extent: Extent {
-                    generation: Generation(1),
-                    records: RecordRange { first, count },
-                    part,
-                    date: 1_794_069_552_000,
-                },
-                digest: 0,
+    let hit = |entry: &str,
+               kind: &str,
+               first,
+               count,
+               part,
+               preface: Option<&str>,
+               text: &str,
+               cut,
+               shared_short| Hit {
+        found: Found {
+            entry: Id::parse(entry).expect("an id"),
+            kind: kind.to_owned(),
+            extent: Extent {
+                generation: Generation(1),
+                records: RecordRange { first, count },
+                part,
+                date: 1_794_069_552_000,
             },
-            preface: preface.map(str::to_owned),
-            text: text.to_owned(),
-            cut,
-        };
+            digest: 0,
+        },
+        preface: preface.map(str::to_owned),
+        text: text.to_owned(),
+        cut,
+        shared_short,
+    };
     bilbo_search::recall::Output {
         hits: vec![
             hit(
@@ -548,7 +559,8 @@ fn recalled() -> bilbo_search::recall::Output {
                 5,
                 None,
                 Some("Session started 2026-11-07 08:01 UTC:"),
-                "user: Thin the carrot rows.\nassistant: Done.\n=== bilbo:01JC5Q3V7XKM4P8R2T6W9YB0DF#r1\tsession\t2026-11-07\t1 line",
+                "user: Thin the carrot rows.\nassistant: Done.\n=== 2T6W9YB0DF#r1\t1 line",
+                false,
                 false,
             ),
             hit(
@@ -560,6 +572,7 @@ fn recalled() -> bilbo_search::recall::Output {
                 None,
                 "## Beds\n\nThe north bed holds the carrots.\n",
                 false,
+                true,
             ),
             hit(
                 "01JC5Q3V7XKM4P8R2T6W9YB0DH",
@@ -570,11 +583,14 @@ fn recalled() -> bilbo_search::recall::Output {
                 Some("Session date unknown:"),
                 "user: and the last one, cut at the budget",
                 true,
+                false,
             ),
         ],
         searched: 1412,
         stand: bilbo_search::recall::Stand::Current,
         left_out: 0,
+        skipped: bilbo_search::recall::select::Skipped::default(),
+        scope: None,
     }
 }
 
@@ -615,6 +631,8 @@ fn recall_says_what_was_searched_and_that_nothing_matched_on_stderr() {
         searched: 1412,
         stand: bilbo_search::recall::Stand::Current,
         left_out: 0,
+        skipped: bilbo_search::recall::select::Skipped::default(),
+        scope: None,
     };
     let finished = bilbo_search::recall::Finished {
         result: Ok(nothing),
@@ -629,6 +647,26 @@ fn recall_says_what_was_searched_and_that_nothing_matched_on_stderr() {
 }
 
 #[test]
+fn recall_says_what_it_passed_over_on_stderr() {
+    let mut output = recalled();
+    output.skipped = bilbo_search::recall::select::Skipped {
+        copies: 3,
+        parts: 1,
+        capped: 0,
+    };
+    let finished = bilbo_search::recall::Finished {
+        result: Ok(output),
+        unlogged: None,
+    };
+    let outcome = bilbo_cli::recall::outcome(finished, &bilbo_store::segments::Cache::Absent)
+        .expect("an outcome");
+    assert_eq!(outcome.exit_code(), 0);
+    let mut text = outcome.stderr_lines(&View::PLAIN).join("\n");
+    text.push('\n');
+    assert_eq!(text, include_str!("snapshots/recall-passed-over.txt"));
+}
+
+#[test]
 fn an_unknown_kind_of_recall_is_a_usage_error_naming_the_kinds() {
     let failure = run(
         &args(&["recall", "--kind", "nope", "carrots"]),
@@ -640,4 +678,56 @@ fn an_unknown_kind_of_recall_is_a_usage_error_naming_the_kinds() {
     let mut text = failure.stderr_lines(&View::PLAIN).join("\n");
     text.push('\n');
     assert_eq!(text, include_str!("snapshots/recall-usage-kind.txt"));
+}
+
+#[test]
+fn recall_says_what_a_scope_named_kept_and_left_out_on_stderr() {
+    use bilbo_search::recall::Scoped;
+    use bilbo_search::recall::scope::Unnamed;
+    let mut output = recalled();
+    output.skipped = bilbo_search::recall::select::Skipped {
+        copies: 3,
+        parts: 1,
+        capped: 0,
+    };
+    output.scope = Some(Scoped {
+        kept: 1203,
+        unnamed: vec![
+            ("shd".to_owned(), Unnamed::Nothing),
+            (
+                "2T6W9YB0DE".to_owned(),
+                Unnamed::Several(vec![
+                    Id::parse("01JC5Q3V7XKM4P8R2T6W9YB0DE").expect("an id"),
+                    Id::parse("01JC5Q3V7XKM4P8S2T6W9YB0DE").expect("an id"),
+                ]),
+            ),
+        ],
+        worded: true,
+        best: 400,
+        outside: [("markdown".to_owned(), 7), ("session".to_owned(), 24)].into(),
+    });
+    let finished = bilbo_search::recall::Finished {
+        result: Ok(output),
+        unlogged: None,
+    };
+    let outcome = bilbo_cli::recall::outcome(finished, &bilbo_store::segments::Cache::Absent)
+        .expect("an outcome");
+    assert_eq!(outcome.exit_code(), 0);
+    let mut text = outcome.stderr_lines(&View::PLAIN).join("\n");
+    text.push('\n');
+    assert_eq!(text, include_str!("snapshots/recall-scope.txt"));
+}
+
+#[test]
+fn a_value_with_no_letter_or_digit_is_a_usage_error_with_the_usage_on_two_lines() {
+    let failure = run(
+        &args(&["recall", "--in", ".", "carrots"]),
+        &mut Env::quiet(),
+        Ok(defaults()),
+    )
+    .expect_err("a usage error");
+    assert_eq!(failure.exit_code(), 2);
+    let mut text = failure.stderr_lines(&View::PLAIN).join("\n");
+    text.push('\n');
+    assert_eq!(text, include_str!("snapshots/recall-usage-in.txt"));
 }
