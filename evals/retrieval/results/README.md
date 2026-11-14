@@ -1,7 +1,8 @@
 # Retrieval results
 
 Saved scores from the retrieval eval. Each arm’s JSON file is a copy of its run’s
-`score.json`; the [results table](../reference.md#results) records the run dates, store keys,
+`score.json`, and `bilbo-next-in-repo.json` is bilbo-next’s run with the `in-repo` driver;
+the [results table](../reference.md#results) records the run dates, store keys,
 class scores, and judge checks. The [variation analysis](../reference.md#query-variation)
 reports sensitivity to question wording separately.
 
@@ -22,8 +23,9 @@ not generated answers. No-answer questions are not scored yet.
 The corpus is selected, with later projects screened for operational procedures. Tools use
 different ingestion paths and models, and some return more results than their defaults.
 Claude-mem’s `prompt` score measures its session-start injection rather than a prompt search.
-bilbo-next searches one store of all 22 projects, and its contexts hold about 3,400 of the
-4,000 tokens; every other arm searches the question’s project alone.
+bilbo-next has two rows over one store of all 22 projects: with no scope each search ranks
+every project, and with `--in` it searches the question’s project alone, as every other arm
+does.
 Query variations preserve project vocabulary, so they test framing rather than independence
 from the wording of the source sessions.
 

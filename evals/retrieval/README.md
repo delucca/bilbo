@@ -35,8 +35,8 @@ Claude Opus 5.5 which facts are present. A question scores the fraction of its f
 The headline is the weighted mean of class scores on the `query` form.
 
 This measures retrieved context, not the quality of a generated answer. Searches are scoped
-to one project, except that bilbo-next searches one store of every project, and some
-adapters request more results than their tools’ defaults. Read the
+to one project, except bilbo-next’s unscoped row, which searches one store of every project,
+and some adapters request more results than their tools’ defaults. Read the
 [results and caveats](results/README.md) before comparing strategies.
 
 ## Find your way around

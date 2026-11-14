@@ -1210,11 +1210,11 @@ comparisons with their intervals.
 
 Each arm's `score.json` from its run is copied to `results/<arm>.json`. Share of facts present in what each arm
 returned, 4,000 tokens, all 143 answerable questions; `misled` counts questions with an older value, in brackets.
-These runs (2026-11-05, evening; the three marked \* on 2026-11-06; the one marked ‡ on 2026-11-12) follow every fix
-of the audit: the harness bugs, each arm but bilbo-next scoped to the question's project, the read rules, and
-auto-memory's rebuilt store. The judge passed both gates: gold 1.00, a dropped fact caught in 58 of 60, a swapped older
-value in 19 of 20, another project's gold 0.00; `gpt-6.1-sol` agreed with Opus on 150 verdicts at kappa 0.90 (0.93 on
-the first runs). That audit sampled the runs of 2026-11-05, not the three rows marked \*, the row marked ‡ or the
+These runs (2026-11-05, evening; the three marked \* on 2026-11-06; the two marked ‡ on 2026-11-14) follow every fix of
+the audit: the harness bugs, each arm but bilbo-next's unscoped row scoped to the question's project, the read rules,
+and auto-memory's rebuilt store. The judge passed both gates: gold 1.00, a dropped fact caught in 58 of 60, a swapped
+older value in 19 of 20, another project's gold 0.00; `gpt-6.1-sol` agreed with Opus on 150 verdicts at kappa 0.90 (0.93
+on the first runs). That audit sampled the runs of 2026-11-05, not the three rows marked \*, the rows marked ‡ or the
 variation runs.
 
 | Arm | Store | overview | status | decision | rules | procedure | fact | refind | headline `query` | `prompt` | misled `query` |
@@ -1227,7 +1227,8 @@ variation runs.
 | [auto-memory](results/auto-memory.json) | `c138c09fda93` | 0% | 0% | 0% | 40% | 29% | 17% | 0% | **12%** | 12% | 0 of 17 |
 | [bilbo-agent-v0_19](results/bilbo-agent-v0_19.json) | `1a3f9a5213f7` | 44% | 38% | 52% | 33% | 31% | 25% | 38% | **39%** | 11% | 3 of 17 |
 | [bilbo-assisted-v0_19](results/bilbo-assisted-v0_19.json) | `e21e81bb40d2` | 62% | 45% | 68% | 33% | 35% | 31% | 42% | **48%** | 14% | 1 of 17 |
-| [bilbo-next](results/bilbo-next.json)‡ | `be416c877262` | 39% | 40% | 78% | 69% | 46% | 61% | 65% | **55%** | 54% | 2 of 17 |
+| [bilbo-next](results/bilbo-next.json)‡ | `94bdbd6a8eea` | 43% | 45% | 78% | 69% | 49% | 67% | 75% | **58%** | 58% | 2 of 17 |
+| [bilbo-next, `--in`](results/bilbo-next-in-repo.json)‡ | `94bdbd6a8eea` | 46% | 52% | 78% | 76% | 66% | 72% | 82% | **64%** | 68% | 3 of 17 |
 | [bm25](results/bm25.json) | `cc0c68a903d7` | 41% | 44% | 81% | 69% | 62% | 72% | 72% | **60%** | 62% | 2 of 17 |
 | [claude-mem](results/claude-mem.json) | `c277bbdc782f` | 18% | 25% | 52% | 20% | 35% | 44% | 42% | **31%** | 4%† | 2 of 17 |
 | [dense](results/dense.json) | `0eac8883d38c` | 30% | 46% | 61% | 42% | 68% | 50% | 55% | **47%** | 50% | 6 of 17 |
@@ -1241,11 +1242,14 @@ first runs below.
 † claude-mem's `prompt` column is its SessionStart injection, the same text for every question of a project, not a
 search with the prompt. See [Caveats](#caveats).
 
-‡ bilbo-next was judged on 2026-11-12, from the binary built from `next` at `c5e85f3`, with one store of all 22 projects
-(`BILBO_EVAL_SCOPE=all`), so each search ranks every project's chunks; every other row searches the question's project
-alone. Its gold and random controls were judged again that day and gave the same per-question scores as the other
-rows' controls on all 143 questions for gold and 142 of 143 for random (gold 1.00; random 1.77% against their 1.93%).
-No gate ran that day. See [Caveats](#caveats).
+‡ bilbo-next was judged on 2026-11-14, from the binary built from the sources of `next` at `db43ad3`, with one store of
+all 22 projects (`BILBO_EVAL_SCOPE=all`). Its first row searches with no scope, so each search ranks every project's
+chunks. Its second row is the driver `scripts/variants/in-repo`, which passes `--in` with the question's project folder,
+so it searches that project alone, as every other row does. Both rows read the gold and random controls judged on
+2026-11-12, which gave the same per-question scores as the other rows' controls on all 143 questions for gold and 142 of
+143 for random (gold 1.00; random 1.77% against their 1.93%). No gate ran on either day. The run of 2026-11-12, from
+`c5e85f3`, before `recall` had `--in`, the shorter header and the copy rule, gave 55% and 54% with no scope (store
+`be416c877262`). See [Caveats](#caveats).
 
 Class scores are on the `query` form. The questions per class: overview 27, status 21, decision 16, rules 15,
 procedure 26, fact 18, refind 20.
@@ -1366,17 +1370,16 @@ arm's section has the detail.
   tools return 3, 10 and 5 by default, and Hindsight recalls up to 8,192 tokens where its tool asks for 4,096. The
   table measures what each tool can give in that budget, not what a default install hands an agent. A real agent
   read less than the budget (600 to 1,800 tokens, see [Running the eval](#running-the-eval)).
-- **bilbo-next**: the row is recall over one store of all 22 projects, with no project filter, since `recall` has
-  none, so it is not like for like with the rows that search the question's project alone. 878 of its 1,196 `query`
-  results and 872 of its 1,208 `prompt` results are from the question's project, and 10 `query` and 8 `prompt`
-  questions got none from it. Its scores come from one run that the audit of 2026-11-05 did not sample, and it has no
-  query variation. `recall` stops at 4,000 tokens as the index's tokenizer counts them, headers included, so its
-  contexts hold fewer o200k tokens than the 4,000 budget: 3,380 on average (at most 3,658, none cut by the packer),
-  where the bm25 arm's hold 3,997 (at most 4,000, all cut). A comparison of one store a project with bm25 was made
-  without a judge, on an earlier build, and is not a score. With one store a project, `recall`'s budget lifted and no
-  question words, its contexts were byte-equal to the bm25 arm's in 271 of 286 forms and differed in the other 15
-  only in the order of chunks with equal scores. That build's run of this row's settings returned the same chunks as
-  the judged run, all but the last hit of 7 of the 286 lists.
+- **bilbo-next**: both rows are recall over one store of all 22 projects. The first has no scope, so it is not like
+  for like with the rows that search the question's project alone: 1,694 of its 2,482 `query` results and 1,677 of
+  its 2,490 `prompt` results are from the question's project, and 8 `query` and 3 `prompt` questions got none from
+  it. The second passes `--in` with the question's project folder: every one of its results is from that project, so
+  it is like for like. Each row's scores come from one run that the audit of 2026-11-05 did not sample, and neither
+  has a query variation. The arm asks `recall` for 8,000 tokens and the packer cuts every context of both rows at
+  4,000 (3,997 and 3,996 on average), as it cuts the bm25 arm's (3,997). A comparison of one store a project with
+  bm25 was made without a judge on the build of 2026-11-12, before `recall` passed over copies, and is not a score:
+  with `recall`'s budget lifted and no question words, its contexts were byte-equal to the bm25 arm's in 271 of 286
+  forms and differed in the other 15 only in the order of chunks with equal scores.
 - **claude-mem**: `mem_search` sees only the 90 days before the repository's last session, and the 30 questions whose
   evidence all lies before that window (21 in readaloud, 5 in port-cli, 4 in bosarsalog) score 0. Its headline is
   30.9% on all 143 questions and 39.7% without those 30. The same cut moves the other arms by 3.5 points or less, in
