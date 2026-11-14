@@ -32,7 +32,6 @@ pub fn id(n: u8) -> Id {
     Id::from_bytes(bytes)
 }
 
-/// Room for more than 255 entries.
 pub fn wide(n: u16) -> Id {
     let mut bytes = [0; 16];
     bytes[14..].copy_from_slice(&n.to_be_bytes());

@@ -80,7 +80,6 @@ pub struct Short(u64);
 impl Short {
     pub const LENGTH: usize = 10;
 
-    /// 10 characters of the id alphabet, upper case only.
     #[must_use]
     pub fn parse(text: &str) -> Option<Short> {
         let bytes = text.as_bytes();

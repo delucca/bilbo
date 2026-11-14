@@ -17,6 +17,7 @@ search.workers               = 0  [2m(default)[22m
 search.index_memory          = "64 MiB"  [2m(default)[22m
 search.merge_deleted_percent = 20  [2m(default)[22m
 search.entry_tries           = 3  [2m(default)[22m
+search.label_batch           = 512  [2m(default)[22m
 recall.budget                = 4000  [2m(default)[22m
 recall.candidates            = 400  [2m(default)[22m
 recall.cap                   = 0  [2m(default)[22m

@@ -87,7 +87,7 @@ pub trait Labels {
     /// No word: no entry.
     fn with_words(&self, words: &[String]) -> Result<Vec<Id>, StoreError>;
     /// The entries that belong to one of `entries` through id labels, however deep, without those given,
-    /// in id order. The id labels are read once.
+    /// in id order.
     fn belonging_to(&self, entries: &[Id]) -> Result<Vec<Id>, StoreError>;
 }
 
@@ -97,7 +97,6 @@ pub trait Relabel {
     fn relabel(&self, filed: &[Filed]) -> Result<(), StoreError>;
 }
 
-/// `links`: an entry, then the entry its id label names.
 pub(crate) fn descendants(links: &[(Id, Id)], of: &[Id]) -> Vec<Id> {
     let mut below: HashMap<Id, Vec<Id>> = HashMap::new();
     for &(entry, above) in links {

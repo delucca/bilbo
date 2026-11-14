@@ -322,7 +322,6 @@ pub trait Entries {
     ) -> Result<Option<(Generation, u64)>, StoreError>;
     /// The entries whose capture label holds `part`, whatever the case of its ASCII letters, in id order.
     fn captures_with(&self, part: &str) -> Result<Vec<(Id, CaptureLabel)>, StoreError>;
-    /// The entries whose id ends with one of them, in id order. One pass, whatever their number.
     fn by_shorts(&self, shorts: &[Short]) -> Result<Vec<Id>, StoreError>;
 }
 

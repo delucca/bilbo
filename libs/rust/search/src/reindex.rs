@@ -69,6 +69,7 @@ pub(crate) fn rebuild(
         workers: request.workers,
         entries,
         labels,
+        label_batch: request.label_batch,
         readers,
         tokens: tokenizer.tokens.as_ref(),
         grown: None,
@@ -101,6 +102,7 @@ mod tests {
             },
             render: "lines/1".to_owned(),
             workers: 1,
+            label_batch: 512,
         };
         let readers: Vec<Box<dyn Reader>> = vec![Box::new(OnePassage)];
         let tokenizer = Tokenizer {

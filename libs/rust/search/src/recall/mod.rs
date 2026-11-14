@@ -33,7 +33,6 @@ pub struct Request {
     pub chunk: Size,
     pub candidates: usize,
     pub limits: Limits,
-    /// Empty: every entry.
     pub scope: Vec<String>,
     pub budget: usize,
     pub at: SystemTime,

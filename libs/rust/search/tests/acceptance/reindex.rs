@@ -33,6 +33,7 @@ fn request() -> Request {
         chunk: SMALL,
         render: "lines/1".to_owned(),
         workers: 1,
+        label_batch: 512,
     }
 }
 
@@ -956,6 +957,31 @@ fn a_run_of_many_entries_files_them_in_id_order_a_batch_at_a_time() {
     let log = Log::crowd(1024);
     whole(&log, &mut Docs::default()).expect("a run");
     assert_eq!(call_sizes(&log), [512, 512]);
+}
+
+#[test]
+fn the_label_batch_bounds_the_entries_filed_at_once() {
+    let log = Log::crowd(5);
+    let request = Request {
+        label_batch: 2,
+        ..request()
+    };
+    let mut index = Docs::default();
+    run(
+        &request,
+        &log,
+        &log,
+        &readers(),
+        &tokenizer(Bytes),
+        &mut index,
+    )
+    .expect("a run");
+    assert_eq!(call_sizes(&log), [2, 2, 1]);
+    assert!(named(&index, &log));
+    for n in 1..=5u16 {
+        let word = label_words(&format!("place{n}"));
+        assert_eq!(log.with_words(&word).expect("entries"), [wide(n)], "{n}");
+    }
 }
 
 #[test]

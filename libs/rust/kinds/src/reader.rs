@@ -60,8 +60,7 @@ pub trait Reader: Sync {
     fn preface(&self, _records: &[&[u8]]) -> Option<String> {
         None
     }
-    /// The texts this entry's records file it under: folders, URLs. `records` is one whole generation. Pure, as
-    /// `passages`. Distinct, in the order first seen, at most `MAX_ENTRY_LABELS`: what an `EntryLabels` gives.
+    /// Distinct, in the order first seen, at most `MAX_ENTRY_LABELS`: what an `EntryLabels` gives.
     fn entry_labels(&self, _records: &[&[u8]]) -> Vec<String> {
         Vec::new()
     }

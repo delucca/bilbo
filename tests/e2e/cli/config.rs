@@ -8,7 +8,7 @@ use super::{Run, binary};
 const KEYS: &str = "paths.root, paths.state, paths.cache, store.seal_at, store.seal_after, \
                     store.compression, store.tear_budget, store.wait, store.poll, follow, read.budget, read.outline_width, \
                     read.matches_listed, search.chunk_tokens, search.chunk_overlap, search.workers, \
-                    search.index_memory, search.merge_deleted_percent, search.entry_tries, recall.budget, recall.candidates, recall.cap, recall.record_cap, recall.copy_share, recall.copy_words, recall.question_words, recall.languages, recall.bm25_k1, recall.bm25_b, recall.read_batch, markdown.heading_width, session.unpack_floor, session.unpack_ratio";
+                    search.index_memory, search.merge_deleted_percent, search.entry_tries, search.label_batch, recall.budget, recall.candidates, recall.cap, recall.record_cap, recall.copy_share, recall.copy_words, recall.question_words, recall.languages, recall.bm25_k1, recall.bm25_b, recall.read_batch, markdown.heading_width, session.unpack_floor, session.unpack_ratio";
 
 #[test]
 fn each_key_shows_the_source_that_won_a_variable_over_the_file_over_the_default() {
@@ -42,6 +42,7 @@ fn each_key_shows_the_source_that_won_a_variable_over_the_file_over_the_default(
              search.index_memory = \"64 MiB\" (default)\n\
              search.merge_deleted_percent = 20 (default)\n\
              search.entry_tries = 3 (default)\n\
+             search.label_batch = 512 (default)\n\
              recall.budget = 4000 (default)\n\
              recall.candidates = 400 (default)\n\
              recall.cap = 0 (default)\n\

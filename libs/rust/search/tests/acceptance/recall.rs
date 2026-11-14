@@ -70,6 +70,7 @@ fn work_request() -> Work {
         chunk: SIZE,
         render: "lines/1".to_owned(),
         workers: 1,
+        label_batch: 512,
     }
 }
 

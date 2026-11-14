@@ -39,7 +39,7 @@ fn ends(found: &Found) -> (u64, u64) {
     )
 }
 
-/// The most kept ranges that hold one record of `first..=last`, found from the ranges' ends.
+/// The most kept ranges that hold one record of `first..=last`.
 fn deepest(kept: &[(u64, u64)], first: u64, last: u64) -> usize {
     let mut events: Vec<(u128, i8)> = Vec::new();
     for &(from, to) in kept {

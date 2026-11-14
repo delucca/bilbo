@@ -811,7 +811,6 @@ fn an_entry_of_a_kind_with_no_reader_is_refused() {
     }
 }
 
-/// `#label <text>` records name a label each and render nothing; the rest read as `Lines` does.
 struct Folders;
 
 impl Reader for Folders {

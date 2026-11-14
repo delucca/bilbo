@@ -19,8 +19,6 @@ use crate::work::{Error, Output};
 /// How many entries a worker may be ahead of the one the index waits for.
 const AHEAD: usize = 4;
 
-const FILED_AT_ONCE: usize = 512;
-
 struct Growth {
     rows: Vec<Extent>,
     meta_changed: bool,
@@ -187,6 +185,7 @@ struct Adder<'i> {
     /// The index holds documents of earlier runs: what an entry gives is added after deleting its own.
     grown: bool,
     labels: &'i dyn Relabel,
+    label_batch: usize,
     filed: Vec<Filed>,
     gone: Vec<Id>,
 }
@@ -229,7 +228,7 @@ impl Adder<'_> {
                 entry: made.meta.id,
                 labels: made.labels,
             });
-            if self.filed.len() >= FILED_AT_ONCE {
+            if self.filed.len() >= self.label_batch {
                 self.labels.relabel(&mem::take(&mut self.filed))?;
             }
         }
@@ -360,6 +359,7 @@ pub(crate) struct Fill<'a> {
     pub readers: &'a [Box<dyn Reader>],
     pub tokens: &'a dyn Tokens,
     pub labels: &'a dyn Relabel,
+    pub label_batch: usize,
     /// `None` when the index was just emptied. Otherwise it holds the entries' documents of an
     /// earlier commit, and this has the ids whose metadata changed since.
     pub grown: Option<&'a BTreeSet<Id>>,
@@ -378,6 +378,7 @@ impl Fill<'_> {
             output: Output::default(),
             grown: self.grown.is_some(),
             labels: self.labels,
+            label_batch: self.label_batch,
             filed: Vec::new(),
             gone: Vec::new(),
         };
@@ -524,6 +525,7 @@ mod tests {
         Adder {
             index,
             labels,
+            label_batch: 512,
             filed: Vec::new(),
             gone: Vec::new(),
             waiting: Default::default(),

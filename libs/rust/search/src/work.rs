@@ -13,6 +13,7 @@ pub struct Request {
     pub render: String,
     /// 0 is 1.
     pub workers: usize,
+    pub label_batch: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]

@@ -26,6 +26,7 @@ fn request_of(chunk: Size, workers: usize) -> Request {
         chunk,
         render: "lines/1".to_owned(),
         workers,
+        label_batch: 512,
     }
 }
 

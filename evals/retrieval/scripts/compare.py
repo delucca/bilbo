@@ -177,7 +177,6 @@ def parse(argv):
 
 
 def proxy_rows(contexts_path, questions_path, classes_path):
-    """(form, contexts, plain, weighted, cut) for query, prompt and both, the scores as fractions."""
     contexts = read_strict(contexts_path)
     questions = {q["id"]: q for q in answerable(questions_path)}
     weights = {c["name"]: c["weight"] for c in json.loads(Path(classes_path).read_text())["classes"]}
@@ -229,7 +228,6 @@ def same_result(a, b):
 
 
 def verdict(n, w):
-    """('exhausted' | 'not exhausted' | 'cannot tell', what W considered, W's limit) from the scoped row n and the wide row w."""
     nr = n["results"]
     if nr and nr[-1].get("cut"):
         return "not exhausted", None, None

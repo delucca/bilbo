@@ -111,13 +111,32 @@ pub const ENTRY_TRIES: Key<u8> = Key {
     show: ToString::to_string,
 };
 
-pub const ABOUT: [&About; 6] = [
+pub const LABEL_BATCH: Key<usize> = Key {
+    about: About {
+        name: "search.label_batch",
+        variable: Some("BILBO_SEARCH_LABEL_BATCH"),
+        default: Default::Toml("512"),
+        allowed: "a whole number from 1 to 1000000",
+        doc: "The most entries whose labels bilbo files in the catalog at once when the index is built or brought up to date. It changes no label.",
+    },
+    parse: |value| {
+        value
+            .integer()
+            .and_then(|entries| usize::try_from(entries).ok())
+            .filter(|entries| (1..=1_000_000).contains(entries))
+            .ok_or_else(|| value.refuse())
+    },
+    show: ToString::to_string,
+};
+
+pub const ABOUT: [&About; 7] = [
     &CHUNK_TOKENS.about,
     &CHUNK_OVERLAP.about,
     &WORKERS.about,
     &INDEX_MEMORY.about,
     &MERGE_DELETED_PERCENT.about,
     &ENTRY_TRIES.about,
+    &LABEL_BATCH.about,
 ];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -128,6 +147,7 @@ pub struct Section {
     pub index_memory: Resolved<u64>,
     pub merge_deleted_percent: Resolved<u8>,
     pub entry_tries: Resolved<u8>,
+    pub label_batch: Resolved<usize>,
 }
 
 pub fn section(source: &Source<'_>) -> Result<Section, Error> {
@@ -138,6 +158,7 @@ pub fn section(source: &Source<'_>) -> Result<Section, Error> {
         index_memory: INDEX_MEMORY.resolve(source)?,
         merge_deleted_percent: MERGE_DELETED_PERCENT.resolve(source)?,
         entry_tries: ENTRY_TRIES.resolve(source)?,
+        label_batch: LABEL_BATCH.resolve(source)?,
     })
 }
 
@@ -178,7 +199,7 @@ impl Section {
         self.entry_tries.value
     }
 
-    pub fn shown(&self) -> [Shown; 6] {
+    pub fn shown(&self) -> [Shown; 7] {
         [
             CHUNK_TOKENS.shown(&self.chunk_tokens),
             CHUNK_OVERLAP.shown(&self.chunk_overlap),
@@ -186,6 +207,7 @@ impl Section {
             INDEX_MEMORY.shown(&self.index_memory),
             MERGE_DELETED_PERCENT.shown(&self.merge_deleted_percent),
             ENTRY_TRIES.shown(&self.entry_tries),
+            LABEL_BATCH.shown(&self.label_batch),
         ]
     }
 }
@@ -250,7 +272,7 @@ mod tests {
         assert!((section.merge_deleted_share() - 0.2).abs() < f32::EPSILON);
         assert_eq!(section.tries(), 3);
         assert_eq!(
-            shown(&section)[2..],
+            shown(&section)[2..6],
             [
                 "search.workers = 0 (default)",
                 "search.index_memory = \"64 MiB\" (default)",
@@ -261,8 +283,15 @@ mod tests {
     }
 
     #[test]
+    fn the_default_label_batch_is_512_entries() {
+        let section = defaults();
+        assert_eq!(section.label_batch.value, 512);
+        assert_eq!(shown(&section)[6], "search.label_batch = 512 (default)");
+    }
+
+    #[test]
     fn each_key_takes_its_variable_over_the_file() {
-        let text = "[search]\nchunk_tokens = 1024\nchunk_overlap = 0\nworkers = 2\nindex_memory = \"32 MiB\"\nmerge_deleted_percent = 50\nentry_tries = 9\n";
+        let text = "[search]\nchunk_tokens = 1024\nchunk_overlap = 0\nworkers = 2\nindex_memory = \"32 MiB\"\nmerge_deleted_percent = 50\nentry_tries = 9\nlabel_batch = 1\n";
         let size = |tokens, overlap| Size { tokens, overlap };
         let from_file = resolve(&[], text).expect("valid");
         assert_eq!(from_file.chunk(), size(1024, 0));
@@ -270,6 +299,7 @@ mod tests {
         assert_eq!(from_file.memory() as u64, 32 * MIB);
         assert!((from_file.merge_deleted_share() - 0.5).abs() < f32::EPSILON);
         assert_eq!(from_file.tries(), 9);
+        assert_eq!(from_file.label_batch.value, 1);
         let env = [
             ("BILBO_SEARCH_CHUNK_TOKENS", "256"),
             ("BILBO_SEARCH_CHUNK_OVERLAP", "128"),
@@ -277,6 +307,7 @@ mod tests {
             ("BILBO_SEARCH_INDEX_MEMORY", "1GiB"),
             ("BILBO_SEARCH_MERGE_DELETED_PERCENT", "100"),
             ("BILBO_SEARCH_ENTRY_TRIES", "1"),
+            ("BILBO_SEARCH_LABEL_BATCH", "1000000"),
         ];
         let from_env = resolve(&env, text).expect("valid");
         assert_eq!(from_env.chunk(), size(256, 128));
@@ -284,6 +315,7 @@ mod tests {
         assert_eq!(from_env.memory() as u64, 1024 * MIB);
         assert!((from_env.merge_deleted_share() - 1.0).abs() < f32::EPSILON);
         assert_eq!(from_env.tries(), 1);
+        assert_eq!(from_env.label_batch.value, 1_000_000);
         assert_eq!(
             resolve(&[], "search.chunk_tokens = 8192")
                 .expect("valid")
@@ -364,6 +396,14 @@ mod tests {
                 "search.entry_tries = 10",
                 "/c/config.toml:1: search.entry_tries must be a whole number from 1 to 9, got 10",
             ),
+            (
+                "search.label_batch = 0",
+                "/c/config.toml:1: search.label_batch must be a whole number from 1 to 1000000, got 0",
+            ),
+            (
+                "search.label_batch = 1000001",
+                "/c/config.toml:1: search.label_batch must be a whole number from 1 to 1000000, got 1000001",
+            ),
         ] {
             assert_eq!(resolve(&[], text).expect_err("refused"), message, "{text}");
         }
@@ -393,6 +433,11 @@ mod tests {
                 "10",
                 "must be a whole number from 1 to 9",
             ),
+            (
+                "BILBO_SEARCH_LABEL_BATCH",
+                "0",
+                "must be a whole number from 1 to 1000000",
+            ),
         ] {
             assert_eq!(
                 resolve(&[(name, value)], "").expect_err("refused"),
@@ -402,7 +447,7 @@ mod tests {
     }
 
     #[test]
-    fn the_search_section_declares_six_keys_each_with_its_own_variable() {
+    fn the_search_section_declares_seven_keys_each_with_its_own_variable() {
         let names: Vec<(&str, Option<&str>)> = ABOUT
             .iter()
             .map(|about| (about.name, about.variable))
@@ -419,6 +464,7 @@ mod tests {
                     Some("BILBO_SEARCH_MERGE_DELETED_PERCENT")
                 ),
                 ("search.entry_tries", Some("BILBO_SEARCH_ENTRY_TRIES")),
+                ("search.label_batch", Some("BILBO_SEARCH_LABEL_BATCH")),
             ]
         );
     }

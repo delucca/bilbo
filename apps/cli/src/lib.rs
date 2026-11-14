@@ -162,6 +162,7 @@ pub fn indexing<'a>(
             workers: settings
                 .search
                 .workers(std::thread::available_parallelism().map_or(1, usize::from)),
+            label_batch: settings.search.label_batch.value,
         },
         tries: settings.search.tries(),
         tokenizer_id: bilbo_qwen::ID,
@@ -292,6 +293,28 @@ mod tests {
             &super::kind_keys(),
         )
         .expect("the defaults")
+    }
+
+    #[test]
+    fn the_label_batch_key_reaches_the_index_request() {
+        let batch_of = |variable: Option<&str>| {
+            let settings = crate::console::settings::load(
+                &|name| match name {
+                    "HOME" => Some(OsString::from("/h")),
+                    "BILBO_SEARCH_LABEL_BATCH" => variable.map(OsString::from),
+                    _ => None,
+                },
+                &|_| Err(std::io::ErrorKind::NotFound.into()),
+                &super::kind_keys(),
+            )
+            .expect("the settings");
+            let disk = |cache: &std::path::Path| super::index(cache, &settings.search);
+            super::indexing(&settings, &[], "lines/1", &super::tokenizer, &disk)
+                .request
+                .label_batch
+        };
+        assert_eq!(batch_of(None), 512);
+        assert_eq!(batch_of(Some("7")), 7);
     }
 
     #[test]

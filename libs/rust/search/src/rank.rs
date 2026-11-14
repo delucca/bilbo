@@ -10,7 +10,7 @@ use crate::lookup::Found;
 pub struct Query {
     pub text: String,
     pub kinds: Vec<String>,
-    /// `None`: every entry. Sorted, distinct.
+    /// Sorted, distinct.
     pub entries: Option<Vec<Id>>,
 }
 

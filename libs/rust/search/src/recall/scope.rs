@@ -33,9 +33,7 @@ pub enum Unnamed {
 pub struct Scope {
     /// Sorted, distinct.
     pub entries: Vec<Id>,
-    /// By value, in the order given.
     pub unnamed: Vec<(String, Unnamed)>,
-    /// A value was read as words: the label tables were asked.
     pub worded: bool,
 }
 

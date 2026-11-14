@@ -302,6 +302,7 @@ mod tests {
                 "search.index_memory",
                 "search.merge_deleted_percent",
                 "search.entry_tries",
+                "search.label_batch",
                 "recall.budget",
                 "recall.candidates",
                 "recall.cap",
@@ -376,7 +377,7 @@ mod tests {
             .err(),
             Some(
                 "/c.toml:3: unknown key store.sealat; the keys are paths.root, paths.state, \
-                 paths.cache, store.seal_at, store.seal_after, store.compression, store.tear_budget, store.wait, store.poll, follow, read.budget, read.outline_width, read.matches_listed, search.chunk_tokens, search.chunk_overlap, search.workers, search.index_memory, search.merge_deleted_percent, search.entry_tries, recall.budget, recall.candidates, recall.cap, recall.record_cap, recall.copy_share, recall.copy_words, recall.question_words, recall.languages, recall.bm25_k1, recall.bm25_b, recall.read_batch, markdown.heading_width, session.unpack_floor, session.unpack_ratio"
+                 paths.cache, store.seal_at, store.seal_after, store.compression, store.tear_budget, store.wait, store.poll, follow, read.budget, read.outline_width, read.matches_listed, search.chunk_tokens, search.chunk_overlap, search.workers, search.index_memory, search.merge_deleted_percent, search.entry_tries, search.label_batch, recall.budget, recall.candidates, recall.cap, recall.record_cap, recall.copy_share, recall.copy_words, recall.question_words, recall.languages, recall.bm25_k1, recall.bm25_b, recall.read_batch, markdown.heading_width, session.unpack_floor, session.unpack_ratio"
                     .to_owned()
             )
         );
@@ -531,6 +532,7 @@ mod tests {
                 "BILBO_SEARCH_CHUNK_TOKENS",
                 "BILBO_SEARCH_ENTRY_TRIES",
                 "BILBO_SEARCH_INDEX_MEMORY",
+                "BILBO_SEARCH_LABEL_BATCH",
                 "BILBO_SEARCH_MERGE_DELETED_PERCENT",
                 "BILBO_SEARCH_WORKERS",
                 "BILBO_SESSION_UNPACK_FLOOR",

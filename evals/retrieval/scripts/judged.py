@@ -1,7 +1,6 @@
 """The judge's verdicts as scoring reads them. A context's verdict is the last judged row for the hash of the full judge
 prompt that judge.py builds from the current question and that context, so a verdict given for other facts is never
-used. judge.py is a script: its prompt builder is read from its source, up to the argument parser. `run_parts` is
-the one parser of a run folder's name; `python judged.py names` checks it against a table and needs no judge and no store."""
+used. judge.py is a script: its prompt builder is read from its source, up to the argument parser."""
 
 import hashlib
 import json
@@ -18,7 +17,6 @@ RUN = re.compile(r"(?P<arm>.+)-(?P<store>[0-9a-f]{12})-(?P<search>[0-9a-f]{12})(
 
 
 def run_parts(name):
-    """(arm, store, search, driver, reworded, variation, rerun) of a run folder's name, an absent part as None."""
     m = RUN.fullmatch(name)
     if not m:
         sys.exit(f"judged: {name!r} is not <arm>-<store>-<search>[-driver-<d>][-reworded-<r>][-variation-<v>][-rerun-<label>]")
