@@ -372,8 +372,6 @@ def edges_of_words():
 
 
 def folds_row():
-    """Every character outside the Hangul syllables that a compatibility decomposition changes or whose combining
-    class is not 0 (the ones the fold changes and the ones it leaves), and every 13th syllable with the last."""
     found = [c for c in range(sys.maxunicode + 1)
              if c not in SURROGATES and c not in SYLLABLES
              and (unicodedata.normalize("NFKD", chr(c)) != chr(c) or unicodedata.combining(chr(c)))]
@@ -500,7 +498,6 @@ def fold_source():
     source = (
         f"//! The fold of Unicode {UNICODE} by character, without the Hangul syllables: written by\n"
         "//! `tests/contract/regenerate.py --fold`, never by hand.\n\n"
-        "/// Rising by character: the character, where its fold starts in `FOLDED`, and the fold's bytes; 0 bytes drop it.\n"
         f"pub static FOLDS: [(u32, u32, u8); {len(rows)}] = [\n{table}];\n\n"
         f'pub const FOLDED: &str = "\\\n{body}";\n'
     )

@@ -255,6 +255,24 @@ pub const TYPO_LETTERS: Key<usize> = Key {
     show: ToString::to_string,
 };
 
+pub const TYPO_MAX_LETTERS: Key<usize> = Key {
+    about: About {
+        name: "recall.typo_max_letters",
+        variable: Some("BILBO_RECALL_TYPO_MAX_LETTERS"),
+        default: Default::Toml("64"),
+        allowed: "a whole number from 2 to 64",
+        doc: "The longest query word, in letters after stemming, that bilbo recall takes for misspelt when no chunk holds it. The search for near terms holds memory for each letter of the word, so 64 is the most.",
+    },
+    parse: |value| {
+        value
+            .integer()
+            .and_then(|count| usize::try_from(count).ok())
+            .filter(|count| (2..=64).contains(count))
+            .ok_or_else(|| value.refuse())
+    },
+    show: ToString::to_string,
+};
+
 pub const TYPO_TWO_EDITS: Key<usize> = Key {
     about: About {
         name: "recall.typo_two_edits",
@@ -290,7 +308,7 @@ pub const PAIR_WEIGHT: Key<f64> = Key {
     show: ToString::to_string,
 };
 
-pub const ABOUT: [&About; 15] = [
+pub const ABOUT: [&About; 16] = [
     &BUDGET.about,
     &CANDIDATES.about,
     &CAP.about,
@@ -304,6 +322,7 @@ pub const ABOUT: [&About; 15] = [
     &READ_BATCH.about,
     &TYPO_TERMS.about,
     &TYPO_LETTERS.about,
+    &TYPO_MAX_LETTERS.about,
     &TYPO_TWO_EDITS.about,
     &PAIR_WEIGHT.about,
 ];
@@ -323,6 +342,7 @@ pub struct Section {
     pub read_batch: Resolved<usize>,
     pub typo_terms: Resolved<usize>,
     pub typo_letters: Resolved<usize>,
+    pub typo_max_letters: Resolved<usize>,
     pub typo_two_edits: Resolved<usize>,
     pub pair_weight: Resolved<f64>,
 }
@@ -342,6 +362,7 @@ pub fn section(source: &Source<'_>) -> Result<Section, Error> {
         read_batch: READ_BATCH.resolve(source)?,
         typo_terms: TYPO_TERMS.resolve(source)?,
         typo_letters: TYPO_LETTERS.resolve(source)?,
+        typo_max_letters: TYPO_MAX_LETTERS.resolve(source)?,
         typo_two_edits: TYPO_TWO_EDITS.resolve(source)?,
         pair_weight: PAIR_WEIGHT.resolve(source)?,
     })
@@ -357,7 +378,7 @@ pub fn defaults() -> Section {
 }
 
 impl Section {
-    pub fn shown(&self) -> [Shown; 15] {
+    pub fn shown(&self) -> [Shown; 16] {
         [
             BUDGET.shown(&self.budget),
             CANDIDATES.shown(&self.candidates),
@@ -372,6 +393,7 @@ impl Section {
             READ_BATCH.shown(&self.read_batch),
             TYPO_TERMS.shown(&self.typo_terms),
             TYPO_LETTERS.shown(&self.typo_letters),
+            TYPO_MAX_LETTERS.shown(&self.typo_max_letters),
             TYPO_TWO_EDITS.shown(&self.typo_two_edits),
             PAIR_WEIGHT.shown(&self.pair_weight),
         ]
@@ -431,6 +453,7 @@ mod tests {
         assert_eq!(section.read_batch.value, 4096);
         assert_eq!(section.typo_terms.value, 3);
         assert_eq!(section.typo_letters.value, 4);
+        assert_eq!(section.typo_max_letters.value, 64);
         assert_eq!(section.typo_two_edits.value, 8);
         assert!((section.pair_weight.value - 0.25).abs() < f64::EPSILON);
         assert_eq!(
@@ -449,6 +472,7 @@ mod tests {
                 "recall.read_batch = 4096 (default)",
                 "recall.typo_terms = 3 (default)",
                 "recall.typo_letters = 4 (default)",
+                "recall.typo_max_letters = 64 (default)",
                 "recall.typo_two_edits = 8 (default)",
                 "recall.pair_weight = 0.25 (default)",
             ]
@@ -470,6 +494,7 @@ mod tests {
                 Some("BILBO_RECALL_READ_BATCH"),
                 Some("BILBO_RECALL_TYPO_TERMS"),
                 Some("BILBO_RECALL_TYPO_LETTERS"),
+                Some("BILBO_RECALL_TYPO_MAX_LETTERS"),
                 Some("BILBO_RECALL_TYPO_TWO_EDITS"),
                 Some("BILBO_RECALL_PAIR_WEIGHT"),
             ]
@@ -765,6 +790,16 @@ mod tests {
                 "a whole number from 2 to 64",
             ),
             (
+                "recall.typo_max_letters = 1",
+                "recall.typo_max_letters",
+                "a whole number from 2 to 64",
+            ),
+            (
+                "recall.typo_max_letters = 65",
+                "recall.typo_max_letters",
+                "a whole number from 2 to 64",
+            ),
+            (
                 "recall.typo_two_edits = 1",
                 "recall.typo_two_edits",
                 "a whole number from 2 to 65",
@@ -790,6 +825,7 @@ mod tests {
         for (name, value) in [
             ("BILBO_RECALL_TYPO_TERMS", "11"),
             ("BILBO_RECALL_TYPO_LETTERS", "1"),
+            ("BILBO_RECALL_TYPO_MAX_LETTERS", "65"),
             ("BILBO_RECALL_TYPO_TWO_EDITS", "66"),
         ] {
             assert!(
@@ -801,21 +837,23 @@ mod tests {
         }
         let low = resolve(
             &[],
-            "recall.typo_terms = 0\nrecall.typo_letters = 2\nrecall.typo_two_edits = 2",
+            "recall.typo_terms = 0\nrecall.typo_letters = 2\nrecall.typo_max_letters = 2\nrecall.typo_two_edits = 2",
         )
         .expect("valid");
         assert_eq!(
             (
                 low.typo_terms.value,
                 low.typo_letters.value,
+                low.typo_max_letters.value,
                 low.typo_two_edits.value
             ),
-            (0, 2, 2)
+            (0, 2, 2, 2)
         );
         let high = resolve(
             &[
                 ("BILBO_RECALL_TYPO_TERMS", "10"),
                 ("BILBO_RECALL_TYPO_LETTERS", "64"),
+                ("BILBO_RECALL_TYPO_MAX_LETTERS", "64"),
                 ("BILBO_RECALL_TYPO_TWO_EDITS", "65"),
             ],
             "recall.typo_terms = 1",
@@ -825,9 +863,10 @@ mod tests {
             (
                 high.typo_terms.value,
                 high.typo_letters.value,
+                high.typo_max_letters.value,
                 high.typo_two_edits.value
             ),
-            (10, 64, 65)
+            (10, 64, 64, 65)
         );
     }
 
@@ -871,7 +910,7 @@ mod tests {
 
     #[test]
     fn the_keys_show_as_toml_that_reads_back() {
-        let text = "[recall]\nbudget = 777\ncandidates = 9\ncap = 2\nrecord_cap = 3\ncopy_share = 0.25\ncopy_words = 7\nquestion_words = [\"why\", \"who\"]\nlanguages = []\nbm25_k1 = 1.5\nbm25_b = 0.4\nread_batch = 99\ntypo_terms = 5\ntypo_letters = 6\ntypo_two_edits = 10\npair_weight = 0.25\n";
+        let text = "[recall]\nbudget = 777\ncandidates = 9\ncap = 2\nrecord_cap = 3\ncopy_share = 0.25\ncopy_words = 7\nquestion_words = [\"why\", \"who\"]\nlanguages = []\nbm25_k1 = 1.5\nbm25_b = 0.4\nread_batch = 99\ntypo_terms = 5\ntypo_letters = 6\ntypo_max_letters = 12\ntypo_two_edits = 10\npair_weight = 0.25\n";
         for section in [defaults(), resolve(&[], text).expect("valid")] {
             let mut written = String::from("[recall]\n");
             for shown in section.shown() {
@@ -892,6 +931,7 @@ mod tests {
             assert_eq!(again.read_batch.value, section.read_batch.value);
             assert_eq!(again.typo_terms.value, section.typo_terms.value);
             assert_eq!(again.typo_letters.value, section.typo_letters.value);
+            assert_eq!(again.typo_max_letters.value, section.typo_max_letters.value);
             assert_eq!(again.typo_two_edits.value, section.typo_two_edits.value);
             assert!((again.pair_weight.value - section.pair_weight.value).abs() < f64::EPSILON);
         }

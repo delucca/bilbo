@@ -685,6 +685,7 @@ mod tests {
         typo::Rule {
             terms: section.typo_terms.value,
             letters: section.typo_letters.value,
+            max_letters: section.typo_max_letters.value,
             two_edits: section.typo_two_edits.value,
         }
     }
@@ -840,19 +841,25 @@ mod tests {
     }
 
     #[test]
-    fn a_word_of_more_than_64_letters_asks_for_no_near_term() {
+    fn a_word_longer_than_the_rule_allows_asks_for_no_near_term() {
         let table = carrots();
         let rank = |letters: usize| {
-            typed(&table)
-                .rank(&query(&"q".repeat(letters), &[]), 10)
-                .expect("a ranking");
+            Bm25 {
+                typos: typo::Rule {
+                    max_letters: 6,
+                    ..default_rule()
+                },
+                ..bm25(&table)
+            }
+            .rank(&query(&"q".repeat(letters), &[]), 10)
+            .expect("a ranking");
         };
-        rank(65);
+        rank(7);
         assert!(table.near_asked.borrow().is_empty());
-        rank(64);
+        rank(6);
         assert_eq!(
             table.near_asked.borrow().as_slice(),
-            [("q".repeat(64), Edits::Two)]
+            [("q".repeat(6), Edits::One)]
         );
     }
 

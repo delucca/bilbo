@@ -527,6 +527,10 @@ fn the_typo_keys_reach_the_search() {
         (1, Vec::new())
     );
     assert_eq!(
+        ask("carots", &[("BILBO_RECALL_TYPO_MAX_LETTERS", "4")]),
+        (1, Vec::new())
+    );
+    assert_eq!(
         ask("carots", &[("BILBO_RECALL_TYPO_TWO_EDITS", "5")]),
         (0, vec![carot(Edits::Two)])
     );

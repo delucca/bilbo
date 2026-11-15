@@ -128,7 +128,6 @@ fn a_remembered_store_is_recalled_and_a_hits_ref_reads() {
 #[test]
 fn a_misspelt_query_finds_its_session() {
     let scratch = remembered("recall_typo_session");
-    // Leans on the fixture: "seedl" is its only term within an edit of "sedl".
     let run = scratch.run(&["recall", "sedlings"]);
     assert_eq!(run.code, 0, "{}", run.stderr);
     assert!(

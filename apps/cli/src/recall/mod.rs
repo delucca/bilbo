@@ -158,6 +158,7 @@ pub fn run(
         typos: typo::Rule {
             terms: settings.recall.typo_terms.value,
             letters: settings.recall.typo_letters.value,
+            max_letters: settings.recall.typo_max_letters.value,
             two_edits: settings.recall.typo_two_edits.value,
         },
         pair_weight: settings.recall.pair_weight.value,

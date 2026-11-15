@@ -48,9 +48,9 @@ pub enum Filter<'a> {
 /// The last commit, read only: no method creates, repairs, locks or writes a file.
 ///
 /// A `doc` is a number below `Totals.bound`, the same for one value of the port and meaningless
-/// outside it. `postings` and `holding` give live documents only, by rising `doc`;
+/// outside it. `postings`, `pairs` and `holding` give live documents only, by rising `doc`;
 /// `Posting.length` is the document's exact number of terms, saturating at `u32::MAX`; `found`
-/// answers in the order asked. `Totals` counts live documents of the last commit.
+/// answers in the order asked. `Totals` and `near` count live documents of the last commit.
 pub trait Lookup {
     /// `None`: no index there (the folder is absent or empty), or one that is broken or of another
     /// schema. A folder holding files that are not bilbo's index is `Err(Foreign)` from every
@@ -59,12 +59,7 @@ pub trait Lookup {
     fn position(&self) -> Result<Option<Position>, IndexError>;
     fn totals(&self) -> Result<Totals, IndexError>;
     fn postings(&self, term: &str) -> Result<Vec<Posting>, IndexError>;
-    /// For a `term` of `a` to `z`: every term a live document holds within `edits` of it as
-    /// `typo::distance` counts, `term` itself among them when held, each with its live documents, by
-    /// rising term.
     fn near(&self, term: &str, edits: Edits) -> Result<Vec<Near>, IndexError>;
-    /// The live documents where `second` stands at the place right after `first`, by rising `doc`:
-    /// `freq` is how many times, `length` as `postings` gives it.
     fn pairs(&self, first: &str, second: &str) -> Result<Vec<Posting>, IndexError>;
     /// Returns a list because filtering inside `postings` would need a column read for every
     /// posting, and would change the document frequency unless both counts crossed the port.
@@ -72,7 +67,6 @@ pub trait Lookup {
     fn found(&self, docs: &[u32]) -> Result<Vec<Found>, IndexError>;
 }
 
-/// How many places of `firsts` have the next place in `seconds`; both rising.
 pub fn adjacent(firsts: &[u32], seconds: &[u32]) -> u32 {
     debug_assert!(firsts.is_sorted() && seconds.is_sorted());
     let mut count = 0;

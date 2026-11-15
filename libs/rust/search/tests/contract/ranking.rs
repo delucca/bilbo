@@ -395,6 +395,7 @@ fn with_typo_matching_on_a_query_with_no_word_to_expand_ranks_as_bm25s() {
     let rule = typo::Rule {
         terms: settings.typo_terms.value,
         letters: settings.typo_letters.value,
+        max_letters: settings.typo_max_letters.value,
         two_edits: settings.typo_two_edits.value,
     };
     let (mut qualified, mut holding_absent) = (0, 0);

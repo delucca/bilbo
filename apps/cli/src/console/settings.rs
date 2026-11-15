@@ -316,6 +316,7 @@ mod tests {
                 "recall.read_batch",
                 "recall.typo_terms",
                 "recall.typo_letters",
+                "recall.typo_max_letters",
                 "recall.typo_two_edits",
                 "recall.pair_weight",
                 "markdown.heading_width",
@@ -381,7 +382,7 @@ mod tests {
             .err(),
             Some(
                 "/c.toml:3: unknown key store.sealat; the keys are paths.root, paths.state, \
-                 paths.cache, store.seal_at, store.seal_after, store.compression, store.tear_budget, store.wait, store.poll, follow, read.budget, read.outline_width, read.matches_listed, search.chunk_tokens, search.chunk_overlap, search.workers, search.index_memory, search.merge_deleted_percent, search.entry_tries, search.label_batch, recall.budget, recall.candidates, recall.cap, recall.record_cap, recall.copy_share, recall.copy_words, recall.question_words, recall.languages, recall.bm25_k1, recall.bm25_b, recall.read_batch, recall.typo_terms, recall.typo_letters, recall.typo_two_edits, recall.pair_weight, markdown.heading_width, session.unpack_floor, session.unpack_ratio"
+                 paths.cache, store.seal_at, store.seal_after, store.compression, store.tear_budget, store.wait, store.poll, follow, read.budget, read.outline_width, read.matches_listed, search.chunk_tokens, search.chunk_overlap, search.workers, search.index_memory, search.merge_deleted_percent, search.entry_tries, search.label_batch, recall.budget, recall.candidates, recall.cap, recall.record_cap, recall.copy_share, recall.copy_words, recall.question_words, recall.languages, recall.bm25_k1, recall.bm25_b, recall.read_batch, recall.typo_terms, recall.typo_letters, recall.typo_max_letters, recall.typo_two_edits, recall.pair_weight, markdown.heading_width, session.unpack_floor, session.unpack_ratio"
                     .to_owned()
             )
         );
@@ -534,6 +535,7 @@ mod tests {
                 "BILBO_RECALL_READ_BATCH",
                 "BILBO_RECALL_RECORD_CAP",
                 "BILBO_RECALL_TYPO_LETTERS",
+                "BILBO_RECALL_TYPO_MAX_LETTERS",
                 "BILBO_RECALL_TYPO_TERMS",
                 "BILBO_RECALL_TYPO_TWO_EDITS",
                 "BILBO_SEARCH_CHUNK_OVERLAP",

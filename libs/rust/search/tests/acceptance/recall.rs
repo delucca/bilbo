@@ -131,6 +131,7 @@ fn default_rule() -> typo::Rule {
     typo::Rule {
         terms: section.typo_terms.value,
         letters: section.typo_letters.value,
+        max_letters: section.typo_max_letters.value,
         two_edits: section.typo_two_edits.value,
     }
 }

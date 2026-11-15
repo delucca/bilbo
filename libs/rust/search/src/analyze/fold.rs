@@ -1,7 +1,6 @@
 //! The fold of Unicode 15.0.0 by character, without the Hangul syllables: written by
 //! `tests/contract/regenerate.py --fold`, never by hand.
 
-/// Rising by character: the character, where its fold starts in `FOLDED`, and the fold's bytes; 0 bytes drop it.
 pub static FOLDS: [(u32, u32, u8); 5444] = [
     (0x00AA, 0, 1),
     (0x00B2, 1, 1),

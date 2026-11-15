@@ -1,27 +1,26 @@
 use crate::lookup::{Edits, Near};
 
-/// The automaton an index walks costs up to 1 KiB a state and 68 states a letter at two edits.
-pub const MAX_LETTERS: usize = 64;
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Rule {
     pub terms: usize,
     pub letters: usize,
+    pub max_letters: usize,
     pub two_edits: usize,
 }
 
 impl Rule {
     pub const OFF: Rule = Rule {
         terms: 0,
-        letters: 4,
-        two_edits: 8,
+        letters: 0,
+        max_letters: 0,
+        two_edits: 0,
     };
 
     pub fn edits(&self, term: &str) -> Option<Edits> {
         if self.terms == 0
             || !term.bytes().all(|byte| byte.is_ascii_lowercase())
             || term.len() < self.letters
-            || term.len() > MAX_LETTERS
+            || term.len() > self.max_letters
         {
             return None;
         }
@@ -57,7 +56,6 @@ impl Rule {
     }
 }
 
-/// Restricted: a swapped pair is not edited again, as the index's automaton counts.
 pub fn distance(a: &str, b: &str) -> usize {
     strsim::osa_distance(a, b)
 }
@@ -66,11 +64,12 @@ pub fn distance(a: &str, b: &str) -> usize {
 mod tests {
     use crate::lookup::{Edits, Near};
 
-    use super::{MAX_LETTERS, Rule, distance};
+    use super::{Rule, distance};
 
     const RULE: Rule = Rule {
         terms: 3,
         letters: 4,
+        max_letters: 64,
         two_edits: 8,
     };
 
@@ -129,8 +128,8 @@ mod tests {
         assert_eq!(edits(&RULE, "abcd"), Some(Edits::One));
         assert_eq!(edits(&RULE, "abcdefg"), Some(Edits::One));
         assert_eq!(edits(&RULE, "abcdefgh"), Some(Edits::Two));
-        assert_eq!(edits(&RULE, &"a".repeat(MAX_LETTERS)), Some(Edits::Two));
-        assert_eq!(edits(&RULE, &"a".repeat(MAX_LETTERS + 1)), None);
+        assert_eq!(edits(&RULE, &"a".repeat(64)), Some(Edits::Two));
+        assert_eq!(edits(&RULE, &"a".repeat(65)), None);
         for term in ["carot1", "car_ot", "Carot", "carót", "ca rot", ""] {
             assert_eq!(edits(&RULE, term), None, "{term}");
         }
@@ -147,7 +146,13 @@ mod tests {
             two_edits: 65,
             ..RULE
         };
-        assert_eq!(edits(&never, &"a".repeat(MAX_LETTERS)), Some(Edits::One));
+        assert_eq!(edits(&never, &"a".repeat(64)), Some(Edits::One));
+        let narrow = Rule {
+            max_letters: 6,
+            ..RULE
+        };
+        assert_eq!(edits(&narrow, "abcdef"), Some(Edits::One));
+        assert_eq!(edits(&narrow, "abcdefg"), None);
     }
 
     #[test]
@@ -155,6 +160,7 @@ mod tests {
         for term in ["carot", "carotte", "carottes", "carrotsoup"] {
             assert!(RULE.edits(term).is_some(), "{term}");
             assert_eq!(Rule::OFF.edits(term), None, "{term}");
+            assert_eq!(Rule { terms: 0, ..RULE }.edits(term), None, "{term}");
         }
     }
 
