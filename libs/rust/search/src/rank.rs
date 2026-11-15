@@ -20,10 +20,17 @@ pub struct Candidate {
     pub score: f32,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Expanded {
+    pub term: String,
+    pub near: Vec<String>,
+}
+
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Ranked {
     pub candidates: Vec<Candidate>,
     pub unscoped: Vec<Candidate>,
+    pub expanded: Vec<Expanded>,
 }
 
 pub trait Ranker {
@@ -58,6 +65,12 @@ fn merge(lists: Vec<Vec<Candidate>>) -> Vec<Candidate> {
 }
 
 pub fn fuse(lists: Vec<Ranked>) -> Ranked {
+    let mut expanded: Vec<Expanded> = Vec::new();
+    for item in lists.iter().flat_map(|ranked| &ranked.expanded) {
+        if !expanded.contains(item) {
+            expanded.push(item.clone());
+        }
+    }
     let (candidates, unscoped) = lists
         .into_iter()
         .map(|ranked| (ranked.candidates, ranked.unscoped))
@@ -65,6 +78,7 @@ pub fn fuse(lists: Vec<Ranked>) -> Ranked {
     Ranked {
         candidates: merge(candidates),
         unscoped: merge(unscoped),
+        expanded,
     }
 }
 
@@ -82,7 +96,7 @@ mod tests {
     use crate::lookup::Found;
     use crate::testing::id;
 
-    use super::{Candidate, Ranked, fuse};
+    use super::{Candidate, Expanded, Ranked, fuse};
 
     fn candidate(entry: u8, first: u64, score: f32) -> Candidate {
         Candidate {
@@ -111,6 +125,7 @@ mod tests {
         Ranked {
             candidates,
             unscoped: Vec::new(),
+            expanded: Vec::new(),
         }
     }
 
@@ -123,6 +138,7 @@ mod tests {
                 candidate(2, 1, 1.0),
             ],
             unscoped: vec![candidate(1, 1, 3.0), candidate(1, 1, 3.0)],
+            expanded: Vec::new(),
         };
         assert_eq!(fuse(vec![list.clone()]), list);
         assert_eq!(fuse(Vec::new()), Ranked::default());
@@ -153,14 +169,39 @@ mod tests {
         let one = Ranked {
             candidates: Vec::new(),
             unscoped: vec![candidate(1, 1, 3.0), candidate(2, 1, 2.0)],
+            expanded: Vec::new(),
         };
         let other = Ranked {
             candidates: Vec::new(),
             unscoped: vec![candidate(2, 1, 9.0), candidate(3, 1, 1.0)],
+            expanded: Vec::new(),
         };
         let fused = fuse(vec![one, other]);
         assert_eq!(places(&fused.unscoped), [(1, 1), (2, 1), (3, 1)]);
         assert!((fused.unscoped[1].score - 2.0).abs() < f32::EPSILON);
         assert!(fused.candidates.is_empty());
+    }
+
+    #[test]
+    fn two_rankers_expansions_are_joined_and_an_equal_one_taken_once() {
+        let carot = Expanded {
+            term: "carot".to_owned(),
+            near: vec!["carrot".to_owned()],
+        };
+        let setin = Expanded {
+            term: "setin".to_owned(),
+            near: vec!["set".to_owned(), "setton".to_owned()],
+        };
+        let with = |expanded: Vec<Expanded>| Ranked {
+            expanded,
+            ..Ranked::default()
+        };
+        let fused = fuse(vec![
+            with(vec![carot.clone()]),
+            with(vec![carot.clone(), setin.clone()]),
+        ]);
+        assert_eq!(fused.expanded, [carot.clone(), setin.clone()]);
+        let alone = fuse(vec![with(vec![setin.clone(), carot.clone()])]);
+        assert_eq!(alone.expanded, [setin, carot]);
     }
 }

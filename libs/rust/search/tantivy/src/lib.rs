@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
 use bilbo_search::index::{Doc, Extent, Index, IndexError, Stats, millis};
-use bilbo_search::lookup::{Filter, Found, Lookup, Posting, Totals};
+use bilbo_search::lookup::{Edits, Filter, Found, Lookup, Near, Posting, Totals};
 use bilbo_search::position::Position;
 use bilbo_search::{analyze, chunk};
 use bilbo_store::entries::{Generation, RecordRange};
@@ -18,7 +18,9 @@ use tantivy::TERMINATED;
 use tantivy::index::SegmentComponent;
 use tantivy::merge_policy::LogMergePolicy;
 use tantivy::postings::Postings;
-use tantivy::query::{BooleanQuery, EnableScoring, Occur, Query, RangeQuery, TermQuery};
+use tantivy::query::{
+    BooleanQuery, EnableScoring, FuzzyTermQuery, Occur, Query, RangeQuery, TermQuery,
+};
 use tantivy::schema::{
     BytesOptions, FAST, Field, FieldType, INDEXED, IndexRecordOption, STRING, Schema,
     TextFieldIndexing, TextOptions,
@@ -1124,6 +1126,63 @@ impl Lookup for Committed {
                 },
             )?;
             Ok(found)
+        })
+    }
+
+    fn near(&self, term: &str, edits: Edits) -> Result<Vec<Near>, IndexError> {
+        self.guard(|| {
+            let loaded = self.required()?;
+            let distance = match edits {
+                Edits::One => 1,
+                Edits::Two => 2,
+            };
+            let automaton = FuzzyTermQuery::new(
+                Term::from_field_text(loaded.fields.text, term),
+                distance,
+                true,
+            )
+            .automaton()
+            .map_err(|error| self.read_error(&error))?;
+            let mut found: BTreeMap<Vec<u8>, u64> = BTreeMap::new();
+            for segment in &loaded.readers {
+                let inverted = segment
+                    .inverted_index(loaded.fields.text)
+                    .map_err(|error| self.read_error(&error))?;
+                let mut stream = inverted
+                    .terms()
+                    .search(&automaton)
+                    .into_stream()
+                    .map_err(|error| self.read_error(&error))?;
+                while stream.advance() {
+                    let live = if segment.has_deletes() {
+                        let mut postings = inverted
+                            .read_postings_from_terminfo(stream.value(), IndexRecordOption::Basic)
+                            .map_err(|error| self.read_error(&error))?;
+                        let mut live = 0u64;
+                        let mut doc = postings.doc();
+                        while doc != TERMINATED {
+                            within(segment, doc)?;
+                            if !segment.is_deleted(doc) {
+                                live += 1;
+                            }
+                            doc = postings.advance();
+                        }
+                        live
+                    } else {
+                        u64::from(stream.value().doc_freq)
+                    };
+                    if live > 0 {
+                        *found.entry(stream.key().to_vec()).or_default() += live;
+                    }
+                }
+            }
+            found
+                .into_iter()
+                .map(|(term, documents)| {
+                    let term = String::from_utf8(term).map_err(|error| self.read_error(&error))?;
+                    Ok(Near { term, documents })
+                })
+                .collect()
         })
     }
 

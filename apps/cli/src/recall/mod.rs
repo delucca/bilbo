@@ -6,10 +6,11 @@ use std::time::SystemTime;
 use bilbo_search::analyze::Omit;
 use bilbo_search::bm25::Bm25;
 use bilbo_search::position::Manifest;
-use bilbo_search::rank::{Query, Ranker};
+use bilbo_search::rank::{Expanded, Query, Ranker};
 use bilbo_search::recall::scope::{self, Unnamed};
 use bilbo_search::recall::select::{Limits, Skipped};
 use bilbo_search::recall::{self, Access, Error, Finished, Request, Scoped, Stand};
+use bilbo_search::typo;
 use bilbo_settings::file::File;
 use bilbo_settings::key::{Flag, Source};
 use bilbo_store::segments::{Cache, Notice, Store};
@@ -154,6 +155,11 @@ pub fn run(
             detect: Some(reading.detect),
         },
         batch: settings.recall.read_batch.value,
+        typos: typo::Rule {
+            terms: settings.recall.typo_terms.value,
+            letters: settings.recall.typo_letters.value,
+            two_edits: settings.recall.typo_two_edits.value,
+        },
     });
     let rankers: Vec<&dyn Ranker> = bm25.iter().map(|ranker| ranker as &dyn Ranker).collect();
     let request = Request {
@@ -233,6 +239,14 @@ fn passed_over(skipped: Skipped) -> Option<Message> {
     .chain((skipped.capped > 0).then(|| format!("{} over the entry cap", group(skipped.capped))))
     .collect();
     (!items.is_empty()).then(|| say(Mark::Info, format!("passed over: {}", items.join(", "))))
+}
+
+fn typos(expanded: &[Expanded]) -> Option<Message> {
+    let items: Vec<String> = expanded
+        .iter()
+        .map(|item| format!("{} as {}", item.term, item.near.join(", ")))
+        .collect();
+    (!items.is_empty()).then(|| say(Mark::Info, format!("typos: {}", items.join("; "))))
 }
 
 fn unnamed(scope: &Scoped) -> Vec<Message> {
@@ -355,6 +369,7 @@ pub fn outcome(finished: Finished, cache: &Cache) -> Result<Outcome, Failure> {
             diagnostics.push(kept(scope));
         }
     }
+    diagnostics.extend(typos(&output.expanded));
     match output.stand {
         Stand::Behind(count) => diagnostics.push(say(
             Mark::Info,
@@ -423,6 +438,7 @@ mod tests {
 
     use bilbo_search::index::{Extent, IndexError};
     use bilbo_search::lookup::Found;
+    use bilbo_search::rank::Expanded;
     use bilbo_search::recall::hit::Hit;
     use bilbo_search::recall::scope::Unnamed;
     use bilbo_search::recall::select::Skipped;
@@ -463,7 +479,19 @@ mod tests {
             left_out,
             skipped: Skipped::default(),
             scope: None,
+            expanded: Vec::new(),
         }
+    }
+
+    fn expanding(mut output: Output, items: &[(&str, &[&str])]) -> Output {
+        output.expanded = items
+            .iter()
+            .map(|(term, near)| Expanded {
+                term: (*term).to_owned(),
+                near: near.iter().map(|word| (*word).to_owned()).collect(),
+            })
+            .collect();
+        output
     }
 
     fn scoped(kept: u64, best: u64, outside: &[(&str, u64)]) -> Scoped {
@@ -679,6 +707,55 @@ mod tests {
             [
                 "bilbo: the search index was made with other settings or by another bilbo; bilbo reindex makes it again"
             ]
+        );
+    }
+
+    #[test]
+    fn the_typos_line_names_each_word_and_the_terms_searched_in_its_place() {
+        let said = |output| lines(finished(output, None), &Cache::Absent).1;
+        assert_eq!(
+            said(expanding(
+                output(1, 4, Stand::Current, 0),
+                &[("carot", &["carrot"])]
+            )),
+            ["bilbo: searched 4 entries", "bilbo: typos: carot as carrot"]
+        );
+        assert_eq!(
+            said(expanding(
+                output(1, 4, Stand::Current, 0),
+                &[("carot", &["carrot"]), ("setin", &["set", "setton"])]
+            )),
+            [
+                "bilbo: searched 4 entries",
+                "bilbo: typos: carot as carrot; setin as set, setton"
+            ]
+        );
+        assert_eq!(
+            said(output(1, 4, Stand::Current, 0)).len(),
+            1,
+            "no line when nothing was expanded"
+        );
+        assert_eq!(
+            said(expanding(
+                output(0, 4, Stand::Current, 0),
+                &[("carot", &["carrot"])]
+            )),
+            [
+                "bilbo: searched 4 entries",
+                "bilbo: typos: carot as carrot",
+                "bilbo: nothing matched"
+            ]
+        );
+        let scope = scoped(2, 0, &[]);
+        let stderr = said(expanding(
+            with_scope(output(1, 4, Stand::Behind(3), 0), scope),
+            &[("carot", &["carrot"])],
+        ));
+        assert_eq!(stderr[1], "bilbo: --in kept 2 entries");
+        assert_eq!(stderr[2], "bilbo: typos: carot as carrot");
+        assert!(
+            stderr[3].starts_with("bilbo: the index is behind"),
+            "{stderr:?}"
         );
     }
 

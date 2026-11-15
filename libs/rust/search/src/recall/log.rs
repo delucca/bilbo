@@ -4,6 +4,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use bilbo_kinds::read::refs::Locator;
 
 use super::hit::Hit;
+use crate::rank::Expanded;
 
 pub trait QueryLog {
     fn append(&mut self, line: &str) -> std::io::Result<()>;
@@ -41,6 +42,7 @@ pub struct Record<'a> {
     pub scope: &'a [String],
     pub named: Option<u64>,
     pub hits: &'a [Hit],
+    pub expanded: &'a [Expanded],
     pub query: &'a str,
 }
 
@@ -89,7 +91,7 @@ pub fn line(record: &Record<'_>) -> String {
         .duration_since(UNIX_EPOCH)
         .map_or(0, |after| after.as_secs());
     format!(
-        "q2\t{seconds}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\n",
+        "q3\t{seconds}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\n",
         record.ended.word(),
         record.searched,
         joined(record.kinds.iter().cloned()),
@@ -98,6 +100,12 @@ pub fn line(record: &Record<'_>) -> String {
             .named
             .map_or_else(|| "-".to_owned(), |named| named.to_string()),
         joined(record.hits.iter().map(shown)),
+        joined(
+            record
+                .expanded
+                .iter()
+                .map(|each| format!("{}>{}", each.term, each.near.join("+")))
+        ),
         escaped(record.query),
     )
 }
@@ -112,6 +120,7 @@ mod tests {
     use super::{Ended, Record, line};
     use crate::index::Extent;
     use crate::lookup::Found;
+    use crate::rank::Expanded;
     use crate::recall::hit::Hit;
 
     const FIRST: &str = "01JC5Q3V7XKM4P8R2T6W9YB0DB";
@@ -151,12 +160,13 @@ mod tests {
             scope: &[],
             named: None,
             hits,
+            expanded: &[],
             query,
         }
     }
 
     #[test]
-    fn a_line_has_its_nine_fields_in_order() {
+    fn a_line_has_its_ten_fields_in_order() {
         let kinds = ["markdown".to_owned(), "session".to_owned()];
         let hits = [hit(FIRST, 3, 1, false), hit(SECOND, 2, 5, true)];
         for (ended, word) in [
@@ -170,13 +180,13 @@ mod tests {
             assert_eq!(
                 line(&record(ended, &kinds, &hits, "release checklist")),
                 format!(
-                    "q2\t1700000000\t{word}\t7\tmarkdown,session\t-\t-\t{FIRST}#r3,{SECOND}#r2-6!\trelease checklist\n"
+                    "q3\t1700000000\t{word}\t7\tmarkdown,session\t-\t-\t{FIRST}#r3,{SECOND}#r2-6!\t-\trelease checklist\n"
                 )
             );
         }
         assert_eq!(
             line(&record(Ended::Nothing, &[], &[], "x")),
-            "q2\t1700000000\tnothing\t7\t-\t-\t-\t-\tx\n"
+            "q3\t1700000000\tnothing\t7\t-\t-\t-\t-\t-\tx\n"
         );
         let scope = ["bilbo".to_owned(), "notes".to_owned()];
         let mut scoped = record(Ended::Hits, &kinds[..1], &hits[1..], "x");
@@ -184,20 +194,43 @@ mod tests {
         scoped.named = Some(12);
         assert_eq!(
             line(&scoped),
-            format!("q2\t1700000000\thits\t7\tmarkdown\tbilbo,notes\t12\t{SECOND}#r2-6!\tx\n")
+            format!("q3\t1700000000\thits\t7\tmarkdown\tbilbo,notes\t12\t{SECOND}#r2-6!\t-\tx\n")
         );
         let mut nothing = record(Ended::Nothing, &[], &[], "x");
         nothing.scope = &scope[..1];
         nothing.named = Some(0);
         assert_eq!(
             line(&nothing),
-            "q2\t1700000000\tnothing\t7\t-\tbilbo\t0\t-\tx\n"
+            "q3\t1700000000\tnothing\t7\t-\tbilbo\t0\t-\t-\tx\n"
         );
         let mut failed = record(Ended::Failed, &[], &[], "x");
         failed.scope = &scope[..1];
         assert_eq!(
             line(&failed),
-            "q2\t1700000000\tfailed\t7\t-\tbilbo\t-\t-\tx\n"
+            "q3\t1700000000\tfailed\t7\t-\tbilbo\t-\t-\t-\tx\n"
+        );
+        let carot = Expanded {
+            term: "carot".to_owned(),
+            near: vec!["carrot".to_owned()],
+        };
+        let setin = Expanded {
+            term: "setin".to_owned(),
+            near: vec!["set".to_owned(), "setton".to_owned()],
+        };
+        let mut typos = record(Ended::Hits, &[], &hits[..1], "carot setin");
+        let one = [carot.clone()];
+        typos.expanded = &one;
+        assert_eq!(
+            line(&typos),
+            format!("q3\t1700000000\thits\t7\t-\t-\t-\t{FIRST}#r3\tcarot>carrot\tcarot setin\n")
+        );
+        let two = [carot, setin];
+        typos.expanded = &two;
+        assert_eq!(
+            line(&typos),
+            format!(
+                "q3\t1700000000\thits\t7\t-\t-\t-\t{FIRST}#r3\tcarot>carrot,setin>set+setton\tcarot setin\n"
+            )
         );
     }
 
@@ -217,10 +250,10 @@ mod tests {
             let text = line(&each);
             assert_eq!(
                 text,
-                format!("q2\t1700000000\thits\t7\t-\t{written},z\t1\t-\tx\n")
+                format!("q3\t1700000000\thits\t7\t-\t{written},z\t1\t-\t-\tx\n")
             );
             assert_eq!(text.matches('\n').count(), 1, "{given:?}");
-            assert_eq!(text.split('\t').count(), 9, "{given:?}");
+            assert_eq!(text.split('\t').count(), 10, "{given:?}");
         }
     }
 
@@ -242,10 +275,10 @@ mod tests {
             let text = line(&record(Ended::Hits, &[], &[], query));
             assert_eq!(
                 text,
-                format!("q2\t1700000000\thits\t7\t-\t-\t-\t-\t{written}\n")
+                format!("q3\t1700000000\thits\t7\t-\t-\t-\t-\t-\t{written}\n")
             );
             assert_eq!(text.matches('\n').count(), 1, "{query:?}");
-            assert_eq!(text.split('\t').count(), 9, "{query:?}");
+            assert_eq!(text.split('\t').count(), 10, "{query:?}");
         }
         let long = "word ".repeat(10_000);
         let text = line(&record(Ended::Hits, &[], &[], &long));
@@ -256,8 +289,8 @@ mod tests {
     fn a_time_before_1970_is_second_0() {
         let mut before = record(Ended::Nothing, &[], &[], "x");
         before.at = UNIX_EPOCH - Duration::from_secs(5);
-        assert!(line(&before).starts_with("q2\t0\t"));
+        assert!(line(&before).starts_with("q3\t0\t"));
         before.at = UNIX_EPOCH;
-        assert!(line(&before).starts_with("q2\t0\t"));
+        assert!(line(&before).starts_with("q3\t0\t"));
     }
 }

@@ -328,3 +328,30 @@ fn every_word_of_the_eval_store_stems_as_pystemmer_stemmed_it() {
     assert!(rows >= 180_000, "{rows} rows");
     assert!(differ.is_empty());
 }
+
+#[test]
+fn a_stem_is_all_letters_exactly_when_its_word_is() {
+    let table = zstd::bulk::decompress(STEMS, 8 << 20).expect("stems.tsv.zst unpacks");
+    let table = String::from_utf8(table).expect("utf-8");
+    let letters = |text: &str| text.bytes().all(|byte| byte.is_ascii_lowercase());
+    let (mut rows, mut differ) = (0, Vec::new());
+    for word in table
+        .lines()
+        .map(|line| line.split('\t').next().expect("a word"))
+    {
+        rows += 1;
+        let stem = analyze::stem(word);
+        if letters(word) != letters(&stem) {
+            differ.push((word.to_owned(), stem));
+        }
+    }
+    if !differ.is_empty() {
+        say(&format!(
+            "{} of {rows} words differ in being all letters; the first: {:?}",
+            differ.len(),
+            &differ[..differ.len().min(10)]
+        ));
+    }
+    assert!(rows >= 180_000, "{rows} rows");
+    assert!(differ.is_empty());
+}

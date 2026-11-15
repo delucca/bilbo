@@ -10,9 +10,11 @@ use bilbo_search::analyze::{self, Omit};
 use bilbo_search::bm25::Bm25;
 use bilbo_search::chunk::{self, Chunk, Size};
 use bilbo_search::index::{Doc, Extent, Index, IndexError};
-use bilbo_search::lookup::{Filter, Lookup};
+use bilbo_search::lookup::{Edits, Filter, Lookup, Near};
 use bilbo_search::position::{Manifest, Position};
 use bilbo_search::rank::{Candidate, Query, Ranker};
+use bilbo_search::recall::keys as recall;
+use bilbo_search::typo::{self, Rule};
 use bilbo_store::entries::{Cursor, Generation, RecordRange};
 use bilbo_store::id::Id;
 use bilbo_tantivy::{Committed, Options, Row, Tantivy};
@@ -148,7 +150,16 @@ fn committed(scratch: &Scratch) -> Committed {
     Committed::at(scratch.folder())
 }
 
-fn rank(folder: &Path, text: &str, limit: usize) -> Vec<Candidate> {
+fn default_rule() -> Rule {
+    let section = recall::defaults();
+    Rule {
+        terms: section.typo_terms.value,
+        letters: section.typo_letters.value,
+        two_edits: section.typo_two_edits.value,
+    }
+}
+
+fn rank(folder: &Path, text: &str, limit: usize, typos: Rule) -> Vec<Candidate> {
     let committed = Committed::at(folder);
     let query = Query {
         text: text.to_owned(),
@@ -161,6 +172,7 @@ fn rank(folder: &Path, text: &str, limit: usize) -> Vec<Candidate> {
         b: 0.75,
         omit: Omit::default(),
         batch: 4096,
+        typos,
     }
     .rank(&query, limit)
     .expect("a rank")
@@ -325,7 +337,7 @@ fn a_search_matches_the_analyzers_terms_and_ranks_by_how_often_and_how_rare() {
     index.commit(&position(5)).expect("commit");
     drop(index);
     let found = |text: &str| -> Vec<(u64, u64)> {
-        let hits = rank(&scratch.folder(), text, 10);
+        let hits = rank(&scratch.folder(), text, 10, Rule::OFF);
         assert!(
             hits.windows(2).all(|pair| pair[0].score >= pair[1].score),
             "{hits:?}"
@@ -347,8 +359,8 @@ fn a_search_matches_the_analyzers_terms_and_ranks_by_how_often_and_how_rare() {
     assert_eq!(found("the and of"), [], "a stopword is no term");
     assert_eq!(found("unknown"), []);
     assert_eq!(found(""), []);
-    assert_eq!(rank(&scratch.folder(), "garden", 2).len(), 2);
-    assert_eq!(rank(&scratch.folder(), "garden", 0).len(), 0);
+    assert_eq!(rank(&scratch.folder(), "garden", 2, Rule::OFF).len(), 2);
+    assert_eq!(rank(&scratch.folder(), "garden", 0, Rule::OFF).len(), 0);
 }
 
 #[test]
@@ -813,8 +825,8 @@ fn two_indexes_of_the_same_documents_have_the_same_rows_and_the_same_hits_whatev
     for query in ["garden", "zebra tools", "running shed", "nothing"] {
         for limit in [1, 2, 10] {
             assert_eq!(
-                rank(&one.folder(), query, limit),
-                rank(&two.folder(), query, limit),
+                rank(&one.folder(), query, limit, Rule::OFF),
+                rank(&two.folder(), query, limit, Rule::OFF),
                 "{query} {limit}"
             );
         }
@@ -838,7 +850,7 @@ fn of_documents_with_one_score_the_lowest_rows_are_kept_whatever_order_they_were
     }
     for limit in 1..=4 {
         let entries = |scratch: &Scratch| -> Vec<u8> {
-            rank(&scratch.folder(), "same words", limit)
+            rank(&scratch.folder(), "same words", limit, Rule::OFF)
                 .iter()
                 .map(|hit| hit.found.entry.to_bytes()[15])
                 .collect()
@@ -863,9 +875,9 @@ fn a_document_is_found_by_its_longest_term_and_a_longer_word_is_in_no_document()
         &chunk(1, 1, None, &format!("{longest} {longer} zebra")),
     );
     index.commit(&position(5)).expect("commit");
-    assert_eq!(rank(&scratch.folder(), &longest, 10).len(), 1);
-    assert_eq!(rank(&scratch.folder(), &longer, 10).len(), 0);
-    assert_eq!(rank(&scratch.folder(), "zebra", 10).len(), 1);
+    assert_eq!(rank(&scratch.folder(), &longest, 10, Rule::OFF).len(), 1);
+    assert_eq!(rank(&scratch.folder(), &longer, 10, Rule::OFF).len(), 0);
+    assert_eq!(rank(&scratch.folder(), "zebra", 10, Rule::OFF).len(), 1);
 
     let opened = tantivy::Index::open_in_dir(scratch.folder()).expect("the index");
     let field = opened.schema().get_field("text").expect("the text field");
@@ -1198,8 +1210,8 @@ fn a_rollback_drops_what_was_added_and_deleted_and_frees_the_writer() {
 fn same_scores(grown: &Scratch, rebuilt: &Scratch, queries: &[&str]) {
     for query in queries {
         for limit in [1, 5, 50] {
-            let grown_hits = rank(&grown.folder(), query, limit);
-            let rebuilt_hits = rank(&rebuilt.folder(), query, limit);
+            let grown_hits = rank(&grown.folder(), query, limit, default_rule());
+            let rebuilt_hits = rank(&rebuilt.folder(), query, limit, default_rule());
             assert_eq!(grown_hits, rebuilt_hits, "{query} {limit}");
         }
     }
@@ -1225,7 +1237,11 @@ fn same_scores(grown: &Scratch, rebuilt: &Scratch, queries: &[&str]) {
 #[test]
 fn a_grown_index_ranks_as_a_rebuilt_one_scores_included() {
     let one = |word: &str| chunk(1, 1, None, word);
-    let word = |entry: u8| if entry <= 20 { "zebra" } else { "apple" };
+    let word = |entry: u8| match entry {
+        1..=20 => "zebra",
+        21..=25 => "rebar",
+        _ => "apple",
+    };
     let grown = Scratch::new("grown");
     let mut index = grown.fresh();
     for entry in 1..=100 {
@@ -1251,11 +1267,16 @@ fn a_grown_index_ranks_as_a_rebuilt_one_scores_included() {
         fresh.documents().expect("documents")
     );
     assert_eq!(index.terms().expect("terms"), fresh.terms().expect("terms"));
-    assert_eq!(rank(&grown.folder(), "zebra", 10).len(), 1);
+    assert_eq!(rank(&grown.folder(), "zebra", 10, Rule::OFF).len(), 1);
+    assert_eq!(
+        rank(&grown.folder(), "zebar", 100, default_rule()).len(),
+        6,
+        "zebar finds the five rebar chunks and the one live zebra chunk"
+    );
     same_scores(
         &grown,
         &rebuilt,
-        &["zebra", "yak", "apple", "zebra yak apple"],
+        &["zebra", "yak", "apple", "zebra yak apple", "zebar", "appel"],
     );
 }
 
@@ -1295,6 +1316,201 @@ fn a_grown_session_ranks_as_a_rebuilt_one_scores_included() {
         &rebuilt,
         &["garden", "tools", "zebra shed", "question"],
     );
+}
+
+fn near_fixture() -> (Scratch, Vec<String>) {
+    let alphabet: Vec<char> = "abcdefgh".chars().collect();
+    let mut state = 12345u32;
+    let mut roll = |bound: usize| {
+        state = state.wrapping_mul(1_103_515_245).wrapping_add(12345);
+        (state >> 16) as usize % bound
+    };
+    let mut pool: Vec<String> = Vec::new();
+    for base in [
+        "width", "carrot", "garden", "zebra", "shed", "tools", "runner", "bridge", "pocket",
+        "silver", "planet", "window",
+    ] {
+        let letters: Vec<char> = base.chars().collect();
+        let mut swapped = letters.clone();
+        swapped.swap(2, 3);
+        let mut between = swapped.clone();
+        between.insert(4, 'x');
+        let mut substituted = letters.clone();
+        substituted[1] = 'q';
+        let mut deleted = letters.clone();
+        deleted.remove(2);
+        let mut inserted = letters.clone();
+        inserted.insert(3, 'k');
+        let mut twice = letters.clone();
+        twice[0] = 'v';
+        twice.remove(3);
+        for variant in [
+            letters,
+            swapped,
+            between,
+            substituted,
+            deleted,
+            inserted,
+            twice,
+        ] {
+            pool.push(variant.into_iter().collect());
+        }
+    }
+    while pool.len() < 200 {
+        let length = 4 + roll(4);
+        pool.push(
+            (0..length)
+                .map(|_| alphabet[roll(alphabet.len())])
+                .collect(),
+        );
+    }
+    let scratch = Scratch::new("near");
+    let mut index = scratch.fresh();
+    for n in 0..60usize {
+        let words: Vec<&str> = (0..5)
+            .map(|k| pool[(n * 5 + k) % pool.len()].as_str())
+            .collect();
+        add(
+            &mut index,
+            n as u8 + 1,
+            "session",
+            100,
+            &chunk(n as u64 + 1, 1, None, &words.join(" ")),
+        );
+        if n % 15 == 14 {
+            index.commit(&position(n as u64 + 1)).expect("commit");
+        }
+    }
+    (scratch, pool)
+}
+
+#[test]
+fn the_terms_near_a_word_are_the_ones_the_core_distance_gives_across_segments() {
+    let (scratch, pool) = near_fixture();
+    let terms = names(&scratch.folder())
+        .iter()
+        .filter(|name| name.ends_with(".term"))
+        .count();
+    assert!(terms >= 3, "{terms} segments");
+    let reader = committed(&scratch);
+    let mut dictionary: Vec<String> = reader
+        .terms()
+        .expect("terms")
+        .into_iter()
+        .flat_map(|(_, words)| words.into_iter().map(|(term, _)| term))
+        .collect();
+    dictionary.sort();
+    dictionary.dedup();
+    assert!(dictionary.len() >= 100, "{}", dictionary.len());
+    let probes = [
+        "width",
+        "widht",
+        "widtxh",
+        "carot",
+        "garden",
+        "gradn",
+        "zebr",
+        "shedd",
+        "toolz",
+        "bridgee",
+        "nothingnear",
+        "planetx",
+        "wndow",
+    ];
+    let mut held = 0;
+    for probe in probes
+        .iter()
+        .map(|probe| (*probe).to_owned())
+        .chain(pool.iter().take(3).cloned())
+    {
+        for (edits, within) in [(Edits::One, 1), (Edits::Two, 2)] {
+            let expected: Vec<Near> = dictionary
+                .iter()
+                .filter(|term| typo::distance(&probe, term) <= within)
+                .map(|term| Near {
+                    term: term.clone(),
+                    documents: reader.postings(term).expect("postings").len() as u64,
+                })
+                .collect();
+            held += usize::from(expected.len() > 1);
+            assert_eq!(
+                reader.near(&probe, edits).expect("near"),
+                expected,
+                "{probe} {edits:?}"
+            );
+        }
+    }
+    assert!(held >= 10, "only {held} probes found a neighbour");
+}
+
+#[test]
+fn a_near_term_counts_its_live_chunks_and_one_only_deleted_chunks_hold_is_not_given() {
+    let scratch = Scratch::new("near-deletes");
+    let mut index = scratch.fresh_with(Options {
+        merge_deleted_share: 1.0,
+        ..options()
+    });
+    for entry in 1..=4 {
+        add(
+            &mut index,
+            entry,
+            "session",
+            100,
+            &chunk(1, 1, None, "carrot"),
+        );
+    }
+    for entry in 5..=6 {
+        add(
+            &mut index,
+            entry,
+            "session",
+            100,
+            &chunk(1, 1, None, "carrat"),
+        );
+    }
+    add(&mut index, 7, "session", 100, &chunk(1, 1, None, "carret"));
+    index.commit(&position(1)).expect("commit");
+    add(&mut index, 8, "session", 100, &chunk(1, 1, None, "carrot"));
+    index.commit(&position(2)).expect("commit");
+    let reader = committed(&scratch);
+    let near = |edits| reader.near("carrot", edits).expect("near");
+    let counts = |near: Vec<Near>| -> Vec<(String, u64)> {
+        near.into_iter()
+            .map(|each| (each.term, each.documents))
+            .collect()
+    };
+    assert_eq!(
+        counts(near(Edits::One)),
+        [
+            ("carrat".to_owned(), 2),
+            ("carret".to_owned(), 1),
+            ("carrot".to_owned(), 5)
+        ]
+    );
+
+    for entry in [1, 5, 6] {
+        index.delete(id(entry), 1).expect("delete");
+    }
+    index.commit(&position(3)).expect("commit");
+    assert!(
+        names(&scratch.folder())
+            .iter()
+            .any(|name| name.ends_with(".del")),
+        "the deletes stayed in their own file"
+    );
+    let reader = committed(&scratch);
+    let after = counts(reader.near("carrot", Edits::One).expect("near"));
+    assert_eq!(
+        after,
+        [("carret".to_owned(), 1), ("carrot".to_owned(), 4)],
+        "carrat has no live chunk and carrot lost one"
+    );
+    for (term, documents) in after {
+        assert_eq!(
+            reader.postings(&term).expect("postings").len() as u64,
+            documents
+        );
+    }
 }
 
 fn deletes_left_after(options: Options, deleted: u8) -> (usize, usize) {
@@ -2243,8 +2459,8 @@ fn the_same_documents_rank_the_same_in_one_segment_and_in_many() {
     for query in ["garden", "zebra", "zebra shed", "tools garden shed", "none"] {
         for limit in [1, 3, 20] {
             assert_eq!(
-                rank(&one.folder(), query, limit),
-                rank(&many.folder(), query, limit),
+                rank(&one.folder(), query, limit, Rule::OFF),
+                rank(&many.folder(), query, limit, Rule::OFF),
                 "{query} {limit}"
             );
         }
@@ -2283,6 +2499,7 @@ fn read_everything(folder: &Path) {
     assert!(reader.position().expect("position").is_some());
     let totals = reader.totals().expect("totals");
     reader.postings(&term_of("garden")).expect("postings");
+    reader.near("gardin", Edits::One).expect("near");
     reader.holding(&Filter::Kind("session")).expect("holding");
     reader
         .holding(&Filter::Entries(&[id(1), id(2)]))
@@ -2323,6 +2540,7 @@ fn nothing_to_read(reader: &Committed, what: &str) {
     let errors = [
         reader.totals().map(|_| ()),
         reader.postings("garden").map(|_| ()),
+        reader.near("garden", Edits::One).map(|_| ()),
         reader.holding(&Filter::Kind("session")).map(|_| ()),
         reader.found(&[0]).map(|_| ()),
         reader.documents().map(|_| ()),
@@ -2427,6 +2645,9 @@ impl Lookup for Counting<'_> {
     fn postings(&self, term: &str) -> Result<Vec<bilbo_search::lookup::Posting>, IndexError> {
         self.inner.postings(term)
     }
+    fn near(&self, term: &str, edits: Edits) -> Result<Vec<Near>, IndexError> {
+        self.inner.near(term, edits)
+    }
     fn holding(&self, filter: &Filter<'_>) -> Result<Vec<u32>, IndexError> {
         self.inner.holding(filter)
     }
@@ -2455,6 +2676,7 @@ fn a_tie_of_every_document_is_cut_by_the_tie_order() {
         b: 0.75,
         omit: Omit::default(),
         batch: 4096,
+        typos: Rule::OFF,
     }
     .rank(&query, 50)
     .expect("a rank")
@@ -2481,6 +2703,7 @@ fn scoped(scratch: &Scratch, entries: Option<Vec<Id>>, text: &str) -> bilbo_sear
         b: 0.75,
         omit: Omit::default(),
         batch: 4096,
+        typos: Rule::OFF,
     }
     .rank(
         &Query {
@@ -2661,6 +2884,45 @@ fn flipped(template: &Scratch, extension: &str, at: usize) -> Scratch {
     scratch
 }
 
+#[test]
+fn a_damaged_key_that_is_not_utf8_is_a_failed_read_from_near() {
+    let template = Scratch::new("near-utf8-template");
+    let mut index = template.fresh();
+    add(&mut index, 1, "session", 100, &chunk(1, 1, None, "garden"));
+    add(&mut index, 2, "session", 100, &chunk(1, 1, None, "garten"));
+    index.commit(&position(1)).expect("commit");
+    let size = length_of(".term", &template);
+    let mut not_utf8 = 0;
+    for at in 0..size {
+        let scratch = Scratch::new("near-utf8");
+        copy_files(&template.folder(), &scratch.folder());
+        let file = component(&scratch.folder(), ".term");
+        let mut bytes = fs::read(&file).expect("read");
+        if bytes[at] == 0x80 {
+            continue;
+        }
+        bytes[at] = 0x80;
+        fs::write(&file, bytes).expect("write");
+        match committed(&scratch).near("garden", Edits::One) {
+            Ok(found) => {
+                for each in found {
+                    assert!(
+                        !each.term.contains('\u{fffd}'),
+                        "offset {at}: {}",
+                        each.term
+                    );
+                }
+            }
+            Err(IndexError::Failed { error, .. }) if error.contains("invalid utf-8") => {
+                not_utf8 += 1;
+            }
+            Err(IndexError::Failed { .. } | IndexError::Inconsistent(_)) => {}
+            Err(error) => panic!("offset {at}: {error}"),
+        }
+    }
+    assert!(not_utf8 > 0, "no damaged byte made a key that is not utf-8");
+}
+
 fn length_of(extension: &str, template: &Scratch) -> usize {
     fs::metadata(component(&template.folder(), extension))
         .expect("a file")
@@ -2728,6 +2990,7 @@ fn a_damaged_postings_or_term_file_is_an_index_error_from_every_read() {
             let results = [
                 reader.totals().map(|_| ()),
                 reader.postings(&term_of("garden")).map(|_| ()),
+                reader.near("gardin", Edits::Two).map(|_| ()),
                 reader.holding(&Filter::Kind("session")).map(|_| ()),
                 reader
                     .holding(&Filter::Entries(&[id(1), id(2)]))

@@ -591,6 +591,7 @@ fn recalled() -> bilbo_search::recall::Output {
         left_out: 0,
         skipped: bilbo_search::recall::select::Skipped::default(),
         scope: None,
+        expanded: Vec::new(),
     }
 }
 
@@ -633,6 +634,7 @@ fn recall_says_what_was_searched_and_that_nothing_matched_on_stderr() {
         left_out: 0,
         skipped: bilbo_search::recall::select::Skipped::default(),
         scope: None,
+        expanded: Vec::new(),
     };
     let finished = bilbo_search::recall::Finished {
         result: Ok(nothing),
@@ -644,6 +646,30 @@ fn recall_says_what_was_searched_and_that_nothing_matched_on_stderr() {
     let mut text = outcome.stderr_lines(&View::PLAIN).join("\n");
     text.push('\n');
     assert_eq!(text, include_str!("snapshots/recall-nothing.txt"));
+}
+
+#[test]
+fn the_typos_line_in_the_plain_view() {
+    use bilbo_search::rank::Expanded;
+    let expanded = |term: &str, near: &[&str]| Expanded {
+        term: term.to_owned(),
+        near: near.iter().map(|word| (*word).to_owned()).collect(),
+    };
+    let mut output = recalled();
+    output.expanded = vec![
+        expanded("carot", &["carrot"]),
+        expanded("setin", &["set", "setton"]),
+    ];
+    let finished = bilbo_search::recall::Finished {
+        result: Ok(output),
+        unlogged: None,
+    };
+    let outcome = bilbo_cli::recall::outcome(finished, &bilbo_store::segments::Cache::Absent)
+        .expect("an outcome");
+    assert_eq!(outcome.exit_code(), 0);
+    let mut text = outcome.stderr_lines(&View::PLAIN).join("\n");
+    text.push('\n');
+    assert_eq!(text, include_str!("snapshots/recall-typos.txt"));
 }
 
 #[test]

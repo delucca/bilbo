@@ -1,7 +1,7 @@
 """Check the bilbo stores unpacked in /work/store: the manifest's sessions are the corpus's (as many as the limit says),
 entries.jsonl has one row a session with distinct ids in a store, and every store answers `bilbo recall`: exit 0, its
-stderr counts the entries the build's own recall counted (`indexed` in the manifest) and holds no other line than that and
-`passed over`, every header is followed by its lines, every ref of the probe is a short one unless another entry of the store ends alike, and `bilbo read` takes the first; a query of stopwords only exits 1 with `bilbo: nothing matched`; and `recall --in <remembered>/<repo>` for the store's first
+stderr counts the entries the build's own recall counted (`indexed` in the manifest) and holds no other line than that,
+`passed over` and `typos:`, every header is followed by its lines, every ref of the probe is a short one unless another entry of the store ends alike, and `bilbo read` takes the first; a query of stopwords only exits 1 with `bilbo: nothing matched`; and `recall --in <remembered>/<repo>` for the store's first
 repository exits 0 with `bilbo: --in kept N entries`, N the repository's rows of entries.jsonl. build-store.sh --check runs it in the build
 service."""
 
@@ -18,6 +18,7 @@ BILBO = "/usr/local/bin/bilbo"
 HEADER = re.compile(r"^=== (([0-9A-HJKMNP-TV-Z]{10}|[0-9A-HJKMNP-TV-Z]{26})#r(\d+)(?:-(\d+))?)\t(\d+) lines?((?:\t[^\t\n]+)*)$")
 SEARCHED = re.compile(r"^bilbo: searched ([\d,]+) entr(?:y|ies)$")
 PASSED_OVER = re.compile(r"^bilbo: passed over: .+$")
+TYPOS = re.compile(r"^bilbo: typos: .+$")
 IN_KEPT = re.compile(r"^bilbo: --in kept ([\d,]+) entr(?:y|ies)( and left out (?:none|[\d,]+) of the best [\d,]+(?:: .+)?)?$")
 
 
@@ -105,7 +106,7 @@ def main(binary=BILBO, store=STORE):
         code, out, err = run(name, "recall", "--budget", "4000", "--", "user", "assistant", binary=binary, store=store)
         count = [m for m in map(SEARCHED.match, err.splitlines()) if m]
         found = headers(out) if code == 0 else None
-        other = [line for line in err.splitlines() if not (SEARCHED.match(line) or PASSED_OVER.match(line))]
+        other = [line for line in err.splitlines() if not (SEARCHED.match(line) or PASSED_OVER.match(line) or TYPOS.match(line))]
         ok = (code == 0 and not other and len(count) == 1
               and int(count[0].group(1).replace(",", "")) == manifest["stores"][name]["indexed"] and bool(found))
         if not ok:

@@ -22,7 +22,7 @@ use bilbo_kinds::tokens::Tokens;
 use bilbo_search::analyze::{self, Detect, Language};
 use bilbo_search::chunk;
 use bilbo_search::index::IndexError;
-use bilbo_search::lookup::{Filter, Found, Lookup, Posting, Totals};
+use bilbo_search::lookup::{Edits, Filter, Found, Lookup, Near, Posting, Totals};
 use bilbo_search::position::Position;
 use bilbo_search::tokenizer::Tokenizer;
 use bilbo_store::entries::{Entries, Meta, RecordRange};
@@ -202,23 +202,33 @@ impl Sandbox {
         vars
     }
 
-    fn run(&self, args: &[&str]) -> Run {
-        self.run_with(args, &[])
-    }
-
-    fn run_with(&self, args: &[&str], extra: &[(&str, &str)]) -> Run {
+    fn vars_with(&self, extra: &[(&str, &str)]) -> HashMap<String, OsString> {
         let mut vars = self.vars();
         vars.extend(
             extra
                 .iter()
                 .map(|(name, value)| ((*name).to_owned(), OsString::from(value))),
         );
+        vars
+    }
+
+    fn run(&self, args: &[&str]) -> Run {
+        self.run_with(args, &[])
+    }
+
+    fn run_with(&self, args: &[&str], extra: &[(&str, &str)]) -> Run {
+        let vars = self.vars_with(extra);
         bilbo(vars, args)
     }
 
     fn settings(&self) -> Settings {
+        self.settings_with(&[])
+    }
+
+    fn settings_with(&self, extra: &[(&str, &str)]) -> Settings {
+        let vars = self.vars_with(extra);
         settings::load(
-            &|name| self.vars().get(name).cloned(),
+            &|name| vars.get(name).cloned(),
             &|path| fs::read(path),
             &bilbo_cli::kind_keys(),
         )
@@ -397,8 +407,9 @@ fn recall_writes_no_file_but_the_query_log() {
     let sandbox = Sandbox::filled("recall_writes");
     let before = sandbox.tree(false);
     assert!(!sandbox.log().exists());
-    let queries: [(&[&str], u8, &str); 3] = [
+    let queries: [(&[&str], u8, &str); 4] = [
         (&["recall", "carrots"], 0, "hits"),
+        (&["recall", "carots"], 0, "hits"),
         (&["recall", "heading"], 0, "hits"),
         (&["recall", "xyzzy"], 1, "nothing"),
     ];
@@ -415,7 +426,7 @@ fn recall_writes_no_file_but_the_query_log() {
         .lines()
         .map(|line| {
             let fields: Vec<&str> = line.split('\t').collect();
-            assert_eq!(fields[0], "q2", "{log}");
+            assert_eq!((fields[0], fields.len()), ("q3", 10), "{log}");
             fields[2]
         })
         .collect();
@@ -427,6 +438,97 @@ fn recall_writes_no_file_but_the_query_log() {
             .mode()
             & 0o777,
         0o600
+    );
+}
+
+fn typo_notes(test: &str) -> Sandbox {
+    let sandbox = Sandbox::new(test);
+    sandbox.write(
+        "notes/garden.md",
+        b"# Garden\n\nPlanted carrots in the north bed.\n",
+    );
+    sandbox.write(
+        "notes/aviary.md",
+        b"# Aviary\n\nThe parrots sit by the window.\n",
+    );
+    sandbox.remember(&["notes"]);
+    sandbox
+}
+
+#[test]
+fn a_misspelt_query_finds_its_note_and_says_so() {
+    let sandbox = typo_notes("recall_typo_note");
+    let run = sandbox.run(&["recall", "carots"]);
+    assert_eq!(run.code, 0, "{:?}", run.stderr);
+    let found = hits(&run.stdout);
+    assert_eq!(found.len(), 1, "{}", run.stdout);
+    assert!(found[0].content.contains("carrots"), "{}", run.stdout);
+    assert!(
+        run.stderr
+            .contains(&"bilbo: typos: carot as carrot".to_owned()),
+        "{:?}",
+        run.stderr
+    );
+
+    let right = sandbox.run(&["recall", "carrots"]);
+    assert_eq!(right.code, 0, "{:?}", right.stderr);
+    let found = hits(&right.stdout);
+    assert_eq!(found.len(), 1, "{}", right.stdout);
+    assert!(found[0].content.contains("carrots"), "{}", right.stdout);
+    assert!(
+        right.stderr.iter().all(|line| !line.contains("typos:")),
+        "{:?}",
+        right.stderr
+    );
+
+    let log = fs::read_to_string(sandbox.log()).expect("the query log");
+    let typos: Vec<(String, String)> = log
+        .lines()
+        .map(|line| {
+            let fields: Vec<&str> = line.split('\t').collect();
+            assert_eq!((fields[0], fields.len()), ("q3", 10), "{log}");
+            (fields[8].to_owned(), fields[9].to_owned())
+        })
+        .collect();
+    assert_eq!(
+        typos,
+        [
+            ("carot>carrot".to_owned(), "carots".to_owned()),
+            ("-".to_owned(), "carrots".to_owned())
+        ]
+    );
+}
+
+#[test]
+fn the_typo_keys_reach_the_search() {
+    let sandbox = typo_notes("recall_typo_keys");
+    let ask = |query: &str, extra: &[(&str, &str)]| {
+        let seen = Arc::new(Seen::default());
+        let done = run_with_settings(
+            &sandbox.settings_with(extra),
+            &shared_tokenizer,
+            &recording(&seen),
+            bilbo_cli::detect(),
+            &[query],
+        )
+        .expect("the run ends");
+        let near = seen.near.lock().expect("near").clone();
+        (done.exit_code(), near)
+    };
+    let carot = |edits| ("carot".to_owned(), edits);
+    assert_eq!(ask("carots", &[]), (0, vec![carot(Edits::One)]));
+    assert_eq!(ask("carrots", &[]), (0, Vec::new()));
+    assert_eq!(
+        ask("carots", &[("BILBO_RECALL_TYPO_TERMS", "0")]),
+        (1, Vec::new())
+    );
+    assert_eq!(
+        ask("carots", &[("BILBO_RECALL_TYPO_LETTERS", "6")]),
+        (1, Vec::new())
+    );
+    assert_eq!(
+        ask("carots", &[("BILBO_RECALL_TYPO_TWO_EDITS", "5")]),
+        (0, vec![carot(Edits::Two)])
     );
 }
 
@@ -746,7 +848,7 @@ fn recall_with_a_scope_writes_no_file_but_the_query_log() {
             .iter()
             .map(|line| (line[0], line[5]))
             .collect::<Vec<_>>(),
-        [("q2", "notes"), ("q2", "claude"), ("q2", "nowhere")]
+        [("q3", "notes"), ("q3", "claude"), ("q3", "nowhere")]
     );
     assert_eq!(fields[2][6], "0", "a value that named nothing: {log}");
 }
@@ -1124,9 +1226,18 @@ fn run_with_detector(
     detect: &dyn bilbo_search::analyze::Detect,
     query: &[&str],
 ) -> Result<bilbo_cli::console::outcome::Outcome, Failure> {
-    let settings = sandbox.settings();
-    let readers = bilbo_cli::readers(&settings).expect("the readers");
-    let render = bilbo_cli::rendering(&settings).expect("the rendering");
+    run_with_settings(&sandbox.settings(), loader, lookup, detect, query)
+}
+
+fn run_with_settings(
+    settings: &Settings,
+    loader: &dyn Fn() -> Result<Tokenizer, Failure>,
+    lookup: &dyn Fn(&std::path::Path) -> Box<dyn bilbo_search::lookup::Lookup>,
+    detect: &dyn bilbo_search::analyze::Detect,
+    query: &[&str],
+) -> Result<bilbo_cli::console::outcome::Outcome, Failure> {
+    let readers = bilbo_cli::readers(settings).expect("the readers");
+    let render = bilbo_cli::rendering(settings).expect("the rendering");
     let reading = bilbo_cli::console::reading::Reading {
         readers: &readers,
         chunk: settings.search.chunk(),
@@ -1145,7 +1256,7 @@ fn run_with_detector(
         &bilbo_cli::bilbo(),
         &args,
         &mut Env::quiet(),
-        &settings,
+        settings,
         &reading,
     )
 }
@@ -1677,6 +1788,7 @@ impl Detect for Portuguese {
 #[derive(Default)]
 struct Seen {
     terms: Mutex<BTreeSet<String>>,
+    near: Mutex<Vec<(String, Edits)>>,
     widest: AtomicUsize,
 }
 
@@ -1701,6 +1813,15 @@ impl Lookup for Recording {
             .expect("terms")
             .insert(term.to_owned());
         self.inner.postings(term)
+    }
+
+    fn near(&self, term: &str, edits: Edits) -> Result<Vec<Near>, IndexError> {
+        self.seen
+            .near
+            .lock()
+            .expect("near")
+            .push((term.to_owned(), edits));
+        self.inner.near(term, edits)
     }
 
     fn holding(&self, filter: &Filter<'_>) -> Result<Vec<u32>, IndexError> {

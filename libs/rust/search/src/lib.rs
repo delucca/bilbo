@@ -12,5 +12,6 @@ pub mod reindex;
 #[cfg(test)]
 mod testing;
 pub mod tokenizer;
+pub mod typo;
 pub mod update;
 pub mod work;

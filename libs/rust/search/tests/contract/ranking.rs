@@ -1,3 +1,4 @@
+use std::cell::Cell;
 use std::collections::{BTreeSet, HashMap};
 use std::path::PathBuf;
 use std::{fs, sync::LazyLock};
@@ -5,10 +6,11 @@ use std::{fs, sync::LazyLock};
 use bilbo_search::analyze::{self, Detect, Language, Omit};
 use bilbo_search::bm25::Bm25;
 use bilbo_search::index::{Extent, IndexError};
-use bilbo_search::lookup::{Filter, Found, Lookup, Posting, Totals};
+use bilbo_search::lookup::{Edits, Filter, Found, Lookup, Near, Posting, Totals};
 use bilbo_search::position::Position;
 use bilbo_search::rank::{Query, Ranker};
 use bilbo_search::recall::keys;
+use bilbo_search::typo;
 use bilbo_store::entries::{Generation, RecordRange};
 use bilbo_store::id::Id;
 use serde_json::Value;
@@ -83,6 +85,10 @@ impl Lookup for Table {
         Ok(self.postings.get(term).cloned().unwrap_or_default())
     }
 
+    fn near(&self, _term: &str, _edits: Edits) -> Result<Vec<Near>, IndexError> {
+        panic!("the bm25s contract asks for no near term");
+    }
+
     fn holding(&self, filter: &Filter<'_>) -> Result<Vec<u32>, IndexError> {
         Ok((0..self.lengths.len() as u32)
             .filter(|doc| match filter {
@@ -110,6 +116,53 @@ impl Lookup for Table {
                 digest: 0,
             })
             .collect())
+    }
+}
+
+struct Truthful<'a> {
+    table: &'a Table,
+    asked: Cell<usize>,
+}
+
+impl Lookup for Truthful<'_> {
+    fn position(&self) -> Result<Option<Position>, IndexError> {
+        self.table.position()
+    }
+
+    fn totals(&self) -> Result<Totals, IndexError> {
+        self.table.totals()
+    }
+
+    fn postings(&self, term: &str) -> Result<Vec<Posting>, IndexError> {
+        self.table.postings(term)
+    }
+
+    fn near(&self, term: &str, edits: Edits) -> Result<Vec<Near>, IndexError> {
+        self.asked.set(self.asked.get() + 1);
+        let reach = match edits {
+            Edits::One => 1,
+            Edits::Two => 2,
+        };
+        let mut found: Vec<Near> = self
+            .table
+            .postings
+            .iter()
+            .filter(|(each, _)| typo::distance(term, each) <= reach)
+            .map(|(each, postings)| Near {
+                term: each.clone(),
+                documents: postings.len() as u64,
+            })
+            .collect();
+        found.sort_by(|a, b| a.term.cmp(&b.term));
+        Ok(found)
+    }
+
+    fn holding(&self, filter: &Filter<'_>) -> Result<Vec<u32>, IndexError> {
+        self.table.holding(filter)
+    }
+
+    fn found(&self, docs: &[u32]) -> Result<Vec<Found>, IndexError> {
+        self.table.found(docs)
     }
 }
 
@@ -181,13 +234,20 @@ fn hits(row: &Value) -> Vec<Hit> {
         .collect()
 }
 
-fn bilbos(index: &dyn Lookup, query: &str, limit: usize, omit: Omit<'_>) -> Vec<(u32, f32)> {
+fn bilbos(
+    index: &dyn Lookup,
+    query: &str,
+    limit: usize,
+    omit: Omit<'_>,
+    typos: typo::Rule,
+) -> Vec<(u32, f32)> {
     Bm25 {
         index,
         k1: 1.2,
         b: 0.75,
         omit,
         batch: 4096,
+        typos,
     }
     .rank(
         &Query {
@@ -207,14 +267,20 @@ fn bilbos(index: &dyn Lookup, query: &str, limit: usize, omit: Omit<'_>) -> Vec<
 fn ranked(row: &Value) -> (Vec<Hit>, Vec<(u32, f32)>) {
     let wanted = hits(row);
     let table = &CORPORA[&text(row, "corpus")];
-    let found = bilbos(table, &text(row, "query"), wanted.len().max(10), omit());
+    let found = bilbos(
+        table,
+        &text(row, "query"),
+        wanted.len().max(10),
+        omit(),
+        typo::Rule::OFF,
+    );
     if wanted.is_empty() {
         assert!(found.is_empty(), "{row}");
     }
     let limit = wanted.len();
     let mut found = found;
     if limit > 0 {
-        found = bilbos(table, &text(row, "query"), limit, omit());
+        found = bilbos(table, &text(row, "query"), limit, omit(), typo::Rule::OFF);
     }
     (wanted, found)
 }
@@ -315,6 +381,59 @@ fn bilbos_order_is_bm25ss_wherever_bm25s_separates_two_documents() {
 }
 
 #[test]
+fn with_typo_matching_on_a_query_with_no_word_to_expand_ranks_as_bm25s() {
+    let settings = keys::defaults();
+    let rule = typo::Rule {
+        terms: settings.typo_terms.value,
+        letters: settings.typo_letters.value,
+        two_edits: settings.typo_two_edits.value,
+    };
+    let (mut qualified, mut holding_absent) = (0, 0);
+    for row in rows(RANKS) {
+        let table = &CORPORA[&text(&row, "corpus")];
+        let truthful = Truthful {
+            table,
+            asked: Cell::new(0),
+        };
+        let query = text(&row, "query");
+        let absent: BTreeSet<String> = analyze::query(&query, &omit())
+            .into_iter()
+            .filter(|term| !table.postings.contains_key(term) && rule.edits(term).is_some())
+            .collect();
+        let expands = absent.iter().any(|term| {
+            let edits = rule.edits(term).expect("a word taken for misspelt");
+            let near = truthful.near(term, edits).expect("near terms");
+            !rule.choose(term, near).is_empty()
+        });
+        if expands {
+            continue;
+        }
+        truthful.asked.set(0);
+        qualified += 1;
+        holding_absent += usize::from(!absent.is_empty());
+        let (wanted, off) = ranked(&row);
+        let limit = if wanted.is_empty() { 10 } else { wanted.len() };
+        let on = bilbos(&truthful, &query, limit, omit(), rule);
+        assert_eq!(truthful.asked.get(), absent.len(), "{query}");
+        let bits = |list: &[(u32, f32)]| {
+            list.iter()
+                .map(|hit| (hit.0, hit.1.to_bits()))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(bits(&on), bits(&off), "{query}");
+        if row["corpus"] != "sample" {
+            for (found, wanted) in on.iter().zip(&wanted) {
+                assert_eq!(found.1.to_bits(), wanted.2, "{query}");
+            }
+        }
+    }
+    say(&format!(
+        "typo matching on: {qualified} rows qualified, {holding_absent} hold a word no chunk holds"
+    ));
+    assert!(holding_absent > 0, "near was never truly asked");
+}
+
+#[test]
 #[ignore = "needs CONTRACT_STORE, the unpacked eval store, and CONTRACT_WHOLE, the folder regenerate.py --whole wrote"]
 fn the_bm25_arms_286_rankings_are_bilbos_up_to_exact_ties() {
     let store = PathBuf::from(var("CONTRACT_STORE"));
@@ -356,6 +475,7 @@ fn the_bm25_arms_286_rankings_are_bilbos_up_to_exact_ties() {
             &text(row, "query"),
             50.min(wanted.len()),
             Omit::default(),
+            typo::Rule::OFF,
         );
         assert_eq!(found.len(), 50.min(wanted.len()), "{}", row["id"]);
         for (place, (doc, score)) in found.iter().enumerate() {

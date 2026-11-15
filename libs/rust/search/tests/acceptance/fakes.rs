@@ -9,10 +9,11 @@ use bilbo_kinds::tokens::Tokens;
 use bilbo_search::analyze::{self, Detect, Language};
 use bilbo_search::chunk;
 use bilbo_search::index::{Doc, Extent, Index, IndexError, Stats, millis};
-use bilbo_search::lookup::{Filter, Found, Lookup, Posting, Totals};
+use bilbo_search::lookup::{Edits, Filter, Found, Lookup, Near, Posting, Totals};
 use bilbo_search::position::Position;
 use bilbo_search::rank::{Candidate, Query, Ranked, Ranker};
 use bilbo_search::recall::log::QueryLog;
+use bilbo_search::typo;
 use bilbo_store::entries::{
     Capture, CaptureError, Captured, Change, Cursor, Entries, Generation, Head, Meta, RecordRange,
     StoreError,
@@ -990,6 +991,27 @@ impl Lookup for Docs {
         Ok(postings)
     }
 
+    fn near(&self, term: &str, edits: Edits) -> Result<Vec<Near>, IndexError> {
+        let reach = match edits {
+            Edits::One => 1,
+            Edits::Two => 2,
+        };
+        let mut held: BTreeMap<String, u64> = BTreeMap::new();
+        for row in &self.rows {
+            let mut once = Docs::terms_of(row);
+            once.sort();
+            once.dedup();
+            for each in once {
+                *held.entry(each).or_default() += 1;
+            }
+        }
+        Ok(held
+            .into_iter()
+            .filter(|(each, _)| typo::distance(term, each) <= reach)
+            .map(|(term, documents)| Near { term, documents })
+            .collect())
+    }
+
     fn holding(&self, filter: &Filter<'_>) -> Result<Vec<u32>, IndexError> {
         Ok(self
             .rows
@@ -1051,6 +1073,13 @@ impl Lookup for Failing<'_> {
         self.0.postings(term)
     }
 
+    fn near(&self, term: &str, edits: Edits) -> Result<Vec<Near>, IndexError> {
+        if self.1 == "near" {
+            return Err(unreadable("near"));
+        }
+        self.0.near(term, edits)
+    }
+
     fn holding(&self, filter: &Filter<'_>) -> Result<Vec<u32>, IndexError> {
         if self.1 == "holding" {
             return Err(unreadable("holding"));
@@ -1089,6 +1118,7 @@ impl Ranker for Scripted {
         Ok(Ranked {
             candidates: self.candidates.clone(),
             unscoped: Vec::new(),
+            expanded: Vec::new(),
         })
     }
 }

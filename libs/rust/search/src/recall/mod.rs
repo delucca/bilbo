@@ -20,7 +20,7 @@ use crate::chunk::Size;
 use crate::index::IndexError;
 use crate::lookup::Lookup;
 use crate::position::{self, Manifest, Standing};
-use crate::rank::{self, Query, Ranker};
+use crate::rank::{self, Expanded, Query, Ranker};
 use hit::{Hit, Readback};
 use log::{Ended, QueryLog, Record};
 use scope::Unnamed;
@@ -75,6 +75,7 @@ pub struct Output {
     pub left_out: u64,
     pub skipped: Skipped,
     pub scope: Option<Scoped>,
+    pub expanded: Vec<Expanded>,
 }
 
 impl Output {
@@ -86,6 +87,7 @@ impl Output {
             left_out: 0,
             skipped: Skipped::default(),
             scope: None,
+            expanded: Vec::new(),
         }
     }
 }
@@ -147,8 +149,8 @@ pub fn run(
     log: &mut dyn QueryLog,
 ) -> Finished {
     let result = search(request, reads, readers, tokens, access, shown);
-    let (ended, searched, hits, named) = match &result {
-        Err(_) => (Ended::Failed, 0, [].as_slice(), None),
+    let (ended, searched, hits, named, expanded) = match &result {
+        Err(_) => (Ended::Failed, 0, [].as_slice(), None, [].as_slice()),
         Ok(output) => {
             let ended = match output.stand {
                 Stand::Withheld => Ended::Withheld,
@@ -162,6 +164,7 @@ pub fn run(
                 output.searched,
                 output.hits.as_slice(),
                 output.scope.as_ref().map(|scoped| scoped.kept),
+                output.expanded.as_slice(),
             )
         }
     };
@@ -173,6 +176,7 @@ pub fn run(
         scope: &request.scope,
         named,
         hits,
+        expanded,
         query: &request.query.text,
     });
     let unlogged = log.append(&line).err().map(|error| error.to_string());
@@ -241,6 +245,7 @@ fn search(
         lists.push(ranker.rank(query, request.candidates)?);
     }
     let fused = rank::fuse(lists);
+    let expanded = fused.expanded;
     let scoped = scope.map(|scope| {
         let mut outside: BTreeMap<String, u64> = BTreeMap::new();
         for candidate in &fused.unscoped {
@@ -307,5 +312,6 @@ fn search(
         left_out,
         skipped,
         scope: scoped,
+        expanded,
     })
 }

@@ -5,13 +5,15 @@ question and form to /work/search.jsonl. build-store.sh --search runs it in the 
 
 It reads no setting from the environment. `run(settings, store=, questions=, out=, binary=)` takes them: `budget`
 (recall's --budget), `question_words` (None keeps the key's default; a list of words is written to a config file of its
-own), `candidates` (None keeps the key's default; a number is passed as BILBO_RECALL_CANDIDATES) and `in` (None, or "repo":
+own), `candidates` (None keeps the key's default; a number is passed as BILBO_RECALL_CANDIDATES), `typo_terms` (None keeps the key's
+default; a number is passed as BILBO_RECALL_TYPO_TERMS) and `in` (None, or "repo":
 each recall is scoped with --in <remembered folder>/<the question's repository>, and its `--in kept` line must count the
-entries of that repository). Every row also holds `passed`, `run` (the store's key, the driver's 12 hex and the settings
+entries of that repository). Every row also holds `passed`, `typos` (`[[term, [near, ...]], ...]` from recall's `typos:` line,
+empty without one), `run` (the store's key, the driver's 12 hex and the settings
 in force) and, scoped, `in` and `kept`. The four paths
 default to the container's, so a native run is the same code with other paths. Run as a script it uses DEFAULTS; the
 comparison's variants are drivers (scripts/variants/<name>/drive.py) that call `run` with their own. `search.py loop`
-checks the question loop with no store and no binary."""
+checks the question loop with no store and no binary; `search.py lines` checks the `typos:` line's parser."""
 
 import hashlib
 import json
@@ -30,11 +32,13 @@ HEADER = re.compile(r"^=== (([0-9A-HJKMNP-TV-Z]{10}|[0-9A-HJKMNP-TV-Z]{26})#r(\d
 PART = re.compile(r"^part (\d+)/(\d+)$")
 SEARCHED = re.compile(r"^bilbo: searched [\d,]+ entr(?:y|ies)$")
 PASSED_OVER = re.compile(r"^bilbo: passed over: .+$")
+TYPOS = re.compile(r"^bilbo: typos: (.+)$")
+TYPO_ITEM = re.compile(r"^([a-z]+) as ([a-z]+(?:, [a-z]+)*)$")
 IN_KEPT = re.compile(r"^bilbo: --in kept ([\d,]+) entr(?:y|ies)( and left out (?:none|[\d,]+) of the best [\d,]+(?:: .+)?)?$")
 PASSED_ITEMS = (("copies", re.compile(r"^([\d,]+) cop(?:y|ies)$")),
                 ("parts", re.compile(r"^([\d,]+) further parts? of a record$")),
                 ("capped", re.compile(r"^([\d,]+) over the entry cap$")))
-DEFAULTS = {"budget": 8000, "question_words": None, "candidates": None, "in": None}
+DEFAULTS = {"budget": 8000, "question_words": None, "candidates": None, "typo_terms": None, "in": None}
 
 
 def environment(name, settings, store=STORE):
@@ -45,6 +49,8 @@ def environment(name, settings, store=STORE):
         env["BILBO_CONFIG"] = str(VARIANT_CONFIG)
     if settings["candidates"] is not None:
         env["BILBO_RECALL_CANDIDATES"] = str(settings["candidates"])
+    if settings["typo_terms"] is not None:
+        env["BILBO_RECALL_TYPO_TERMS"] = str(settings["typo_terms"])
     return env
 
 
@@ -90,8 +96,18 @@ def passed_over(question, form, line):
     return counts
 
 
+def typos(question, form, line):
+    found = []
+    for item in TYPOS.match(line).group(1).split("; "):
+        m = TYPO_ITEM.match(item)
+        if not m:
+            sys.exit(f"search: {question}/{form}: typos: an item the arm does not know: {item[:200]!r}")
+        found.append([m.group(1), m.group(2).split(", ")])
+    return found
+
+
 def recall(question, form, name, text, settings, binary=BILBO, store=STORE, scope=None):
-    """(hits, seconds, passed, kept): `scope` is the --in value, None for no scope; `kept` is the count its line printed."""
+    """(hits, seconds, passed, kept, typos): `scope` is the --in value, None for no scope; `kept` is the count its line printed."""
     began = time.monotonic()
     flags = ["--in", scope] if scope is not None else []
     done = subprocess.run([binary, "recall", *flags, "--budget", str(settings["budget"]), "--", text],
@@ -107,20 +123,22 @@ def recall(question, form, name, text, settings, binary=BILBO, store=STORE, scop
     else:
         sys.exit(f"search: {question}/{form}: recall exited {done.returncode}: {stderr.strip()[:500]}")
     kept, passed = None, {key: 0 for key, _ in PASSED_ITEMS}
-    stray = []
+    stray, misspelt = [], []
     for line in err:
         m = IN_KEPT.match(line) if scope is not None else None
         if m:
             kept = int(m.group(1).replace(",", ""))
         elif PASSED_OVER.match(line):
             passed = passed_over(question, form, line)
+        elif TYPOS.match(line):
+            misspelt = typos(question, form, line)
         elif not SEARCHED.match(line):
             stray.append(line)
     if stray:
         sys.exit(f"search: {question}/{form}: stderr: {stray[0][:300]}")
     if scope is not None and kept is None:
         sys.exit(f"search: {question}/{form}: --in {scope} printed no `--in kept` line")
-    return hits, seconds, passed, kept
+    return hits, seconds, passed, kept, misspelt
 
 
 def result(entries, question, form, name, rank, hit):
@@ -172,7 +190,7 @@ def run(settings, store=STORE, questions=QUESTIONS, out=OUT, binary=BILBO):
                 sys.exit(f"search: {q['id']}: the manifest has no store {name}")
             for form in ("query", "prompt"):
                 scope = f"{manifest['remembered']}/{q['repo']}" if settings["in"] else None
-                hits, seconds, passed, kept = recall(q["id"], form, name, q[form], settings, binary=binary, store=store, scope=scope)
+                hits, seconds, passed, kept, misspelt = recall(q["id"], form, name, q[form], settings, binary=binary, store=store, scope=scope)
                 found = [result(entries, q["id"], form, name, rank, h) for rank, h in enumerate(hits, 1)]
                 if scope is not None:
                     if kept != per_repo.get((name, q["repo"]), 0):
@@ -181,7 +199,7 @@ def run(settings, store=STORE, questions=QUESTIONS, out=OUT, binary=BILBO):
                     if other:
                         sys.exit(f"search: {q['id']}/{form}: a result of {other[0]['repo']}, the question's repo is {q['repo']}")
                 row = {"id": q["id"], "form": form, "seconds": round(seconds, 3), "results": found, "passed": passed,
-                       "run": run_id}
+                       "typos": misspelt, "run": run_id}
                 if scope is not None:
                     row |= {"in": scope, "kept": kept}
                 sink.write(json.dumps(row, ensure_ascii=False) + "\n")
@@ -194,7 +212,7 @@ def loop():
 
     def stand_in(question, form, name, text, settings, binary=BILBO, store=STORE, scope=None):
         seen.append((question, form, name, text, scope))
-        return [], 0.0, {key: 0 for key, _ in PASSED_ITEMS}, (1 if scope is not None else None)
+        return [], 0.0, {key: 0 for key, _ in PASSED_ITEMS}, (1 if scope is not None else None), []
 
     seen = []
     with tempfile.TemporaryDirectory() as tmp:
@@ -226,7 +244,32 @@ def loop():
     return 0
 
 
+def lines():
+    table = [("bilbo: typos: carot as carrot", [["carot", ["carrot"]]]),
+             ("bilbo: typos: carot as carrot; setin as set, setton", [["carot", ["carrot"]], ["setin", ["set", "setton"]]])]
+    for line, expected in table:
+        if typos("q", "query", line) != expected:
+            print(f"lines: {line!r} gave {typos('q', 'query', line)}, expected {expected}")
+            return 1
+    for line in ("bilbo: typos: carot2 as carrot", "bilbo: typos: carot as carrot2", "bilbo: typos: carot as carrot; x1 as y"):
+        try:
+            typos("q", "query", line)
+        except SystemExit:
+            continue
+        print(f"lines: {line!r} was accepted")
+        return 1
+    for value, want in ((0, "0"), (3, "3"), (None, None)):
+        got = environment("n", DEFAULTS | {"typo_terms": value}).get("BILBO_RECALL_TYPO_TERMS")
+        if got != want:
+            print(f"lines: typo_terms {value!r} gave the variable {got!r}, expected {want!r}")
+            return 1
+    print("lines: OK")
+    return 0
+
+
 if __name__ == "__main__":
     if sys.argv[1:] == ["loop"]:
         sys.exit(loop())
+    if sys.argv[1:] == ["lines"]:
+        sys.exit(lines())
     run(DEFAULTS)

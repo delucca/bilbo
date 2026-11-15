@@ -3,8 +3,9 @@ use std::collections::HashMap;
 
 use crate::analyze::{self, Omit};
 use crate::index::IndexError;
-use crate::lookup::{Filter, Lookup};
-use crate::rank::{Candidate, Query, Ranked, Ranker, order};
+use crate::lookup::{Filter, Lookup, Posting};
+use crate::rank::{Candidate, Expanded, Query, Ranked, Ranker, order};
+use crate::typo;
 
 pub struct Bm25<'a> {
     pub index: &'a dyn Lookup,
@@ -12,9 +13,40 @@ pub struct Bm25<'a> {
     pub b: f64,
     pub omit: Omit<'a>,
     pub batch: usize,
+    pub typos: typo::Rule,
+}
+
+struct Postings<'a> {
+    index: &'a dyn Lookup,
+    seen: HashMap<String, Vec<Posting>>,
+}
+
+impl Postings<'_> {
+    fn of(&mut self, term: &str) -> Result<&[Posting], IndexError> {
+        if !self.seen.contains_key(term) {
+            self.seen
+                .insert(term.to_owned(), self.index.postings(term)?);
+        }
+        Ok(&self.seen[term])
+    }
 }
 
 impl Bm25<'_> {
+    fn parts(&self, postings: &[Posting], documents: f64, average: f64) -> Vec<(u32, f32)> {
+        let frequency = postings.len() as f64;
+        let idf = (1.0 + (documents - frequency + 0.5) / (frequency + 0.5)).ln() as f32;
+        postings
+            .iter()
+            .map(|posting| {
+                let freq = f64::from(posting.freq);
+                let denominator = self.k1
+                    * ((1.0 - self.b) + ((self.b * f64::from(posting.length)) / average))
+                    + freq;
+                (posting.doc, (f64::from(idf) * (freq / denominator)) as f32)
+            })
+            .collect()
+    }
+
     fn read(&self, docs: &[u32], scores: &[f32]) -> Result<Vec<Candidate>, IndexError> {
         let mut read = Vec::with_capacity(docs.len());
         for batch in docs.chunks(self.batch) {
@@ -79,23 +111,36 @@ impl Ranker for Bm25<'_> {
         let documents = totals.documents as f64;
         let average = totals.length as f64 / documents;
         let mut weighed: HashMap<&str, Vec<(u32, f32)>> = HashMap::new();
+        let mut expanded = Vec::new();
+        let mut read = Postings {
+            index: self.index,
+            seen: HashMap::new(),
+        };
         for term in &terms {
             if weighed.contains_key(term.as_str()) {
                 continue;
             }
-            let postings = self.index.postings(term)?;
-            let frequency = postings.len() as f64;
-            let idf = (1.0 + (documents - frequency + 0.5) / (frequency + 0.5)).ln() as f32;
-            let parts = postings
-                .iter()
-                .map(|posting| {
-                    let freq = f64::from(posting.freq);
-                    let denominator = self.k1
-                        * ((1.0 - self.b) + ((self.b * f64::from(posting.length)) / average))
-                        + freq;
-                    (posting.doc, (f64::from(idf) * (freq / denominator)) as f32)
-                })
-                .collect();
+            let absent = read.of(term)?.is_empty();
+            let parts = if absent && let Some(edits) = self.typos.edits(term) {
+                let kept = self.typos.choose(term, self.index.near(term, edits)?);
+                let mut parts = Vec::new();
+                for (near, weight) in &kept {
+                    parts.extend(
+                        self.parts(read.of(near)?, documents, average)
+                            .into_iter()
+                            .map(|(doc, part)| (doc, part * weight)),
+                    );
+                }
+                if !kept.is_empty() {
+                    expanded.push(Expanded {
+                        term: term.clone(),
+                        near: kept.into_iter().map(|(near, _)| near).collect(),
+                    });
+                }
+                parts
+            } else {
+                self.parts(read.of(term)?, documents, average)
+            };
             weighed.insert(term, parts);
         }
         let mut scores = vec![0.0_f32; totals.bound as usize];
@@ -138,6 +183,7 @@ impl Ranker for Bm25<'_> {
             return Ok(Ranked {
                 candidates,
                 unscoped: Vec::new(),
+                expanded,
             });
         };
         let mut held = vec![false; scores.len()];
@@ -154,6 +200,7 @@ impl Ranker for Bm25<'_> {
         Ok(Ranked {
             candidates: self.best(scoped, limit, &scores)?,
             unscoped: self.best(matched, limit, &scores)?,
+            expanded,
         })
     }
 }
@@ -162,8 +209,10 @@ impl Ranker for Bm25<'_> {
 mod tests {
     use crate::analyze::{Language, Omit};
     use crate::index::IndexError;
-    use crate::rank::{Candidate, Query, Ranker};
+    use crate::lookup::Edits;
+    use crate::rank::{Candidate, Expanded, Query, Ranker};
     use crate::testing::{Says, Table, id};
+    use crate::typo;
 
     use super::Bm25;
 
@@ -189,6 +238,7 @@ mod tests {
             b: 0.75,
             omit: Omit::default(),
             batch: 4096,
+            typos: typo::Rule::OFF,
         }
     }
 
@@ -205,6 +255,7 @@ mod tests {
             b: 0.75,
             omit: Omit::default(),
             batch: 4096,
+            typos: typo::Rule::OFF,
         };
         bm25.rank(&query(text, kinds), limit)
             .expect("a ranking")
@@ -298,6 +349,7 @@ mod tests {
             b: 0.75,
             omit: Omit::default(),
             batch: 4096,
+            typos: typo::Rule::OFF,
         }
         .rank(&query("alpha", &[]), 10)
         .expect("a ranking")
@@ -366,6 +418,7 @@ mod tests {
             b: 0.75,
             omit: Omit::default(),
             batch: 1000,
+            typos: typo::Rule::OFF,
         };
         let found = bm25.rank(&query("alpha", &[]), 3).expect("a ranking");
         assert_eq!(
@@ -391,6 +444,7 @@ mod tests {
                 b: 0.75,
                 omit,
                 batch: 4096,
+                typos: typo::Rule::OFF,
             }
             .rank(&query("que pelo status", &[]), 10)
             .expect("a ranking");
@@ -423,6 +477,7 @@ mod tests {
             b: 0.75,
             omit: Omit::default(),
             batch: 4096,
+            typos: typo::Rule::OFF,
         };
         assert!(matches!(
             bm25.rank(&query("alpha", &[]), 5),
@@ -439,6 +494,7 @@ mod tests {
                 b: 0.75,
                 omit: Omit::default(),
                 batch: 4096,
+                typos: typo::Rule::OFF,
             };
             matches!(bm25.rank(query, 5), Err(IndexError::Inconsistent(_)))
         };
@@ -585,5 +641,229 @@ mod tests {
             .expect("a ranking");
         assert_eq!(entries_of(&ranked.candidates), [(3, 1), (5, 1)]);
         assert_eq!(entries_of(&ranked.unscoped), [(1, 1), (2, 1)]);
+    }
+
+    fn default_rule() -> typo::Rule {
+        let section = crate::recall::keys::defaults();
+        typo::Rule {
+            terms: section.typo_terms.value,
+            letters: section.typo_letters.value,
+            two_edits: section.typo_two_edits.value,
+        }
+    }
+
+    fn typed(table: &Table) -> Bm25<'_> {
+        Bm25 {
+            typos: default_rule(),
+            ..bm25(table)
+        }
+    }
+
+    fn bits(list: &[Candidate]) -> Vec<(u8, u32)> {
+        list.iter()
+            .map(|c| (c.found.entry.to_bytes()[0], c.score.to_bits()))
+            .collect()
+    }
+
+    fn part(documents: f64, held: f64, length: f64, average: f64) -> f64 {
+        let idf = (1.0 + (documents - held + 0.5) / (held + 0.5)).ln();
+        idf * (1.0 / (1.2 * (0.25 + 0.75 * length / average) + 1.0))
+    }
+
+    fn carrots() -> Table {
+        Table::new()
+            .doc("note", 1, 1, "carrot soup")
+            .doc("note", 2, 1, "carrot")
+            .doc("note", 3, 1, "bread butter")
+    }
+
+    #[test]
+    fn a_misspelt_word_finds_its_term() {
+        let table = carrots();
+        let right = typed(&table)
+            .rank(&query("carrot", &[]), 10)
+            .expect("a ranking");
+        let typo = typed(&table)
+            .rank(&query("carot", &[]), 10)
+            .expect("a ranking");
+        assert_eq!(entries_of(&typo.candidates), [(2, 1), (1, 1)]);
+        assert_eq!(bits(&typo.candidates), bits(&right.candidates));
+    }
+
+    #[test]
+    fn a_word_some_chunk_holds_is_left_alone() {
+        let table = Table::new()
+            .doc("note", 1, 1, "carrot soup")
+            .doc("note", 2, 1, "parrot")
+            .doc("note", 3, 1, "carrow bread");
+        let with = typed(&table)
+            .rank(&query("carrot", &[]), 10)
+            .expect("a ranking");
+        let off = bm25(&table)
+            .rank(&query("carrot", &[]), 10)
+            .expect("a ranking");
+        assert!(table.near_asked.borrow().is_empty());
+        assert_eq!(bits(&with.candidates), bits(&off.candidates));
+        assert_eq!(entries_of(&with.candidates), [(1, 1)]);
+        assert_eq!(with.expanded, []);
+    }
+
+    #[test]
+    fn near_terms_add_their_parts_at_their_weights() {
+        let table = Table::new()
+            .doc("note", 1, 1, "carrot")
+            .doc("note", 2, 1, "carrot")
+            .doc("note", 3, 1, "carrot")
+            .doc("note", 4, 1, "carat")
+            .doc("note", 5, 1, "bread");
+        let found = typed(&table)
+            .rank(&query("carot", &[]), 10)
+            .expect("a ranking");
+        let score_of = |entry: u8| {
+            found
+                .candidates
+                .iter()
+                .find(|c| c.found.entry == id(entry))
+                .map(|c| c.score)
+                .expect("a hit")
+        };
+        let average = 1.0;
+        near(score_of(1), (0.75 * part(5.0, 3.0, 1.0, average)) as f32);
+        near(score_of(4), (0.25 * part(5.0, 1.0, 1.0, average)) as f32);
+        assert_eq!(
+            found.expanded,
+            [Expanded {
+                term: "carot".to_owned(),
+                near: vec!["carrot".to_owned(), "carat".to_owned()],
+            }]
+        );
+    }
+
+    #[test]
+    fn a_repeated_misspelt_word_counts_at_each_place() {
+        let table = carrots();
+        let once = typed(&table)
+            .rank(&query("carot", &[]), 10)
+            .expect("a ranking");
+        let twice = typed(&table)
+            .rank(&query("carot carot", &[]), 10)
+            .expect("a ranking");
+        for (one, two) in once.candidates.iter().zip(&twice.candidates) {
+            assert_eq!(two.score.to_bits(), (one.score * 2.0).to_bits());
+        }
+        assert_eq!(twice.candidates.len(), 2);
+    }
+
+    #[test]
+    fn an_expanded_word_is_reported_once_with_the_terms_searched_in_its_place() {
+        let table = carrots().doc("note", 4, 1, "parrot");
+        let carot = Expanded {
+            term: "carot".to_owned(),
+            near: vec!["carrot".to_owned()],
+        };
+        let parrt = Expanded {
+            term: "parrt".to_owned(),
+            near: vec!["parrot".to_owned()],
+        };
+        let expanded = |text: &str| {
+            typed(&table)
+                .rank(&query(text, &[]), 10)
+                .expect("a ranking")
+                .expanded
+        };
+        assert_eq!(expanded("carot carot"), std::slice::from_ref(&carot));
+        assert_eq!(expanded("carot parrt"), [carot.clone(), parrt.clone()]);
+        assert_eq!(expanded("parrt carot"), [parrt, carot]);
+        assert_eq!(expanded("carrot soup"), []);
+        assert_eq!(expanded("zzzzzz"), []);
+    }
+
+    #[test]
+    fn a_word_with_no_near_term_is_searched_as_today_and_not_reported() {
+        let table = carrots();
+        let with = typed(&table)
+            .rank(&query("carrot zzzzzz", &[]), 10)
+            .expect("a ranking");
+        let off = bm25(&table)
+            .rank(&query("carrot zzzzzz", &[]), 10)
+            .expect("a ranking");
+        assert_eq!(table.near_asked.borrow().len(), 1);
+        assert_eq!(bits(&with.candidates), bits(&off.candidates));
+        assert_eq!(with.expanded, []);
+    }
+
+    #[test]
+    fn with_typo_matching_off_no_near_term_is_asked_for() {
+        let table = carrots();
+        let found = bm25(&table)
+            .rank(&query("carot", &[]), 10)
+            .expect("a ranking");
+        assert!(table.near_asked.borrow().is_empty());
+        assert!(found.candidates.is_empty() && found.expanded.is_empty());
+    }
+
+    #[test]
+    fn a_word_of_more_than_64_letters_asks_for_no_near_term() {
+        let table = carrots();
+        let rank = |letters: usize| {
+            typed(&table)
+                .rank(&query(&"q".repeat(letters), &[]), 10)
+                .expect("a ranking");
+        };
+        rank(65);
+        assert!(table.near_asked.borrow().is_empty());
+        rank(64);
+        assert_eq!(
+            table.near_asked.borrow().as_slice(),
+            [("q".repeat(64), Edits::Two)]
+        );
+    }
+
+    #[test]
+    fn a_word_is_judged_over_the_whole_index_whatever_the_scope() {
+        let table = Table::new()
+            .doc("note", 1, 1, "carrot soup")
+            .doc("session", 2, 1, "carrot bread")
+            .doc("note", 3, 1, "carat bread")
+            .doc("note", 4, 1, "butter");
+        let held = typed(&table)
+            .rank(&scoped("bread", &[], &[1]), 10)
+            .expect("a ranking");
+        assert!(held.candidates.is_empty());
+        assert!(table.near_asked.borrow().is_empty());
+        let wide = typed(&table)
+            .rank(&query("carot", &[]), 10)
+            .expect("a ranking");
+        table.near_asked.borrow_mut().clear();
+        let narrow = typed(&table)
+            .rank(&scoped("carot", &[], &[3]), 10)
+            .expect("a ranking");
+        assert_eq!(table.near_asked.borrow().len(), 1);
+        assert_eq!(entries_of(&narrow.candidates), [(3, 1)]);
+        assert_eq!(narrow.expanded, wide.expanded);
+        let of = |list: &[Candidate], entry: u8| {
+            bits(list)
+                .into_iter()
+                .find(|hit| hit.0 == entry)
+                .expect("a hit")
+        };
+        assert_eq!(of(&narrow.candidates, 3), of(&wide.candidates, 3));
+        assert_eq!(of(&narrow.unscoped, 3), of(&wide.candidates, 3));
+        let kind = typed(&table)
+            .rank(&query("carot", &["session"]), 10)
+            .expect("a ranking");
+        assert_eq!(entries_of(&kind.candidates), [(2, 1)]);
+        assert_eq!(of(&kind.candidates, 2), of(&wide.candidates, 2));
+        assert_eq!(kind.expanded, wide.expanded);
+    }
+
+    #[test]
+    fn a_near_that_fails_is_returned_not_hidden() {
+        let table = carrots().near_failing();
+        assert!(matches!(
+            typed(&table).rank(&query("carot", &[]), 5),
+            Err(IndexError::Failed { .. })
+        ));
+        assert!(typed(&table).rank(&query("carrot", &[]), 5).is_ok());
     }
 }

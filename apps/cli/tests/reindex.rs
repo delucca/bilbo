@@ -26,6 +26,7 @@ use bilbo_search::lookup::Found;
 use bilbo_search::position::Position;
 use bilbo_search::rank::{Candidate, Query, Ranker};
 use bilbo_search::tokenizer::Tokenizer;
+use bilbo_search::typo::Rule;
 use bilbo_store::entries::{Entries, Generation};
 use bilbo_store::id::Id;
 use bilbo_store::labels::{CaptureLabel, Labels};
@@ -101,6 +102,7 @@ fn rank(cache: &Path, text: &str, limit: usize) -> Vec<Candidate> {
         b: keys.bm25_b.value,
         omit: Omit::default(),
         batch: keys.read_batch.value,
+        typos: Rule::OFF,
     }
     .rank(
         &Query {

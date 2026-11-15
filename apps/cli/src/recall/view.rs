@@ -132,6 +132,7 @@ mod tests {
             left_out: 0,
             skipped: Skipped::default(),
             scope: None,
+            expanded: Vec::new(),
         }
     }
 

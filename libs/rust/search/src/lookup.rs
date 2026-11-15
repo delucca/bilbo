@@ -11,6 +11,18 @@ pub struct Posting {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Edits {
+    One,
+    Two,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Near {
+    pub term: String,
+    pub documents: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Totals {
     pub documents: u64,
     pub entries: u64,
@@ -47,6 +59,10 @@ pub trait Lookup {
     fn position(&self) -> Result<Option<Position>, IndexError>;
     fn totals(&self) -> Result<Totals, IndexError>;
     fn postings(&self, term: &str) -> Result<Vec<Posting>, IndexError>;
+    /// For a `term` of `a` to `z`: every term a live document holds within `edits` of it as
+    /// `typo::distance` counts, `term` itself among them when held, each with its live documents, by
+    /// rising term.
+    fn near(&self, term: &str, edits: Edits) -> Result<Vec<Near>, IndexError>;
     /// Returns a list because filtering inside `postings` would need a column read for every
     /// posting, and would change the document frequency unless both counts crossed the port.
     fn holding(&self, filter: &Filter<'_>) -> Result<Vec<u32>, IndexError>;

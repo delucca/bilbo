@@ -1,5 +1,5 @@
 use std::cell::{Cell, RefCell};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 use std::time::SystemTime;
 
@@ -14,8 +14,9 @@ use bilbo_store::labels::{CaptureLabel, Filed, Relabel, StoredLabels};
 
 use crate::analyze::{Detect, Language};
 use crate::index::{Doc, Extent, Index, IndexError, Stats};
-use crate::lookup::{Filter, Found, Lookup, Posting, Totals};
+use crate::lookup::{Edits, Filter, Found, Lookup, Near, Posting, Totals};
 use crate::position::Position;
+use crate::typo;
 
 pub(crate) struct Says {
     answer: Option<Language>,
@@ -218,6 +219,8 @@ pub(crate) struct Table {
     pub(crate) asked: RefCell<Vec<usize>>,
     pub(crate) holdings: Cell<usize>,
     pub(crate) looked_up: RefCell<Vec<String>>,
+    pub(crate) near_asked: RefCell<Vec<(String, Edits)>>,
+    near_failing: bool,
 }
 
 impl Table {
@@ -253,6 +256,11 @@ impl Table {
 
     pub(crate) fn failing(mut self) -> Table {
         self.failing = true;
+        self
+    }
+
+    pub(crate) fn near_failing(mut self) -> Table {
+        self.near_failing = true;
         self
     }
 
@@ -323,6 +331,36 @@ impl Lookup for Table {
             });
         }
         Ok(postings)
+    }
+
+    fn near(&self, term: &str, edits: Edits) -> Result<Vec<Near>, IndexError> {
+        self.check()?;
+        self.near_asked.borrow_mut().push((term.to_owned(), edits));
+        if self.near_failing {
+            return Err(IndexError::Failed {
+                action: "read",
+                path: PathBuf::from("/c/index"),
+                error: "near is broken".to_owned(),
+            });
+        }
+        let reach = match edits {
+            Edits::One => 1,
+            Edits::Two => 2,
+        };
+        let mut held: BTreeMap<&str, u64> = BTreeMap::new();
+        for (_, row) in self.live() {
+            for each in row.terms.iter().collect::<BTreeSet<_>>() {
+                *held.entry(each).or_default() += 1;
+            }
+        }
+        Ok(held
+            .into_iter()
+            .filter(|(each, _)| typo::distance(term, each) <= reach)
+            .map(|(each, documents)| Near {
+                term: each.to_owned(),
+                documents,
+            })
+            .collect())
     }
 
     fn holding(&self, filter: &Filter<'_>) -> Result<Vec<u32>, IndexError> {

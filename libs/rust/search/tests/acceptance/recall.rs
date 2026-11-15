@@ -6,7 +6,7 @@ use bilbo_search::bm25::Bm25;
 use bilbo_search::chunk::Size;
 use bilbo_search::lookup::Lookup;
 use bilbo_search::position::Manifest;
-use bilbo_search::rank::{Candidate, Query};
+use bilbo_search::rank::{Candidate, Expanded, Query};
 use bilbo_search::recall::hit::Hit;
 use bilbo_search::recall::log::QueryLog;
 use bilbo_search::recall::scope::Unnamed;
@@ -14,6 +14,7 @@ use bilbo_search::recall::select::{Limits, Skipped};
 use bilbo_search::recall::{Access, Error, Finished, Output, Reads, Request, Scoped, Stand, run};
 use bilbo_search::reindex;
 use bilbo_search::tokenizer::Tokenizer;
+use bilbo_search::typo;
 use bilbo_search::update::{self, Plan};
 use bilbo_search::work::Request as Work;
 use bilbo_store::id::Id;
@@ -122,12 +123,32 @@ fn ask_with(
     request: &Request,
     kept: &mut dyn QueryLog,
 ) -> Finished {
+    ask_with_rule(log, lookup, request, kept, typo::Rule::OFF)
+}
+
+fn default_rule() -> typo::Rule {
+    let section = bilbo_search::recall::keys::defaults();
+    typo::Rule {
+        terms: section.typo_terms.value,
+        letters: section.typo_letters.value,
+        two_edits: section.typo_two_edits.value,
+    }
+}
+
+fn ask_with_rule(
+    log: &Log,
+    lookup: &dyn Lookup,
+    request: &Request,
+    kept: &mut dyn QueryLog,
+    typos: typo::Rule,
+) -> Finished {
     let bm25 = Bm25 {
         index: lookup,
         k1: 1.2,
         b: 0.75,
         omit: Omit::default(),
         batch: 4096,
+        typos,
     };
     run(
         request,
@@ -157,8 +178,8 @@ fn fields(kept: &Logged) -> Vec<String> {
     assert_eq!(kept.0.len(), 1, "one line a query: {:?}", kept.0);
     let line = kept.0[0].strip_suffix('\n').expect("a whole line");
     let fields: Vec<String> = line.split('\t').map(str::to_owned).collect();
-    assert_eq!(fields.len(), 9, "{line:?}");
-    assert_eq!(fields[0], "q2");
+    assert_eq!(fields.len(), 10, "{line:?}");
+    assert_eq!(fields[0], "q3");
     fields
 }
 
@@ -273,6 +294,7 @@ fn a_query_that_matches_nothing_ends_with_no_hit_and_the_count_searched() {
                 left_out: 0,
                 skipped: Skipped::default(),
                 scope: None,
+                expanded: Vec::new(),
             },
             "{text}"
         );
@@ -333,6 +355,7 @@ fn a_store_with_no_index_is_not_searched() {
             left_out: 0,
             skipped: Skipped::default(),
             scope: None,
+            expanded: Vec::new(),
         }
     );
     assert_eq!(scripted.calls.get(), 0);
@@ -366,6 +389,7 @@ fn no_index_by_the_callers_word_is_the_no_index_answer_and_the_query_is_logged()
             left_out: 0,
             skipped: Skipped::default(),
             scope: None,
+            expanded: Vec::new(),
         }
     );
     assert!(log.reads.borrow().is_empty());
@@ -811,7 +835,8 @@ fn an_index_that_fails_at_any_read_ends_the_run_with_its_error_and_a_logged_line
         assert_eq!(fields[2], "failed", "{method}");
         assert_eq!(fields[3], "0", "{method}");
         assert_eq!(fields[7], "-", "{method}");
-        assert_eq!(fields[8], "bilbo index format", "{method}");
+        assert_eq!(fields[8], "-", "{method}");
+        assert_eq!(fields[9], "bilbo index format", "{method}");
     }
     let mut unreadable = shelf_of_six();
     let index = index_of(&unreadable);
@@ -850,13 +875,14 @@ fn an_index_the_caller_withholds_is_not_read_and_the_query_is_logged() {
             left_out: 0,
             skipped: Skipped::default(),
             scope: None,
+            expanded: Vec::new(),
         }
     );
     assert_eq!(scripted.calls.get(), 0);
     assert!(log.reads.borrow().is_empty());
     let fields = fields(&kept);
     assert_eq!(fields[2], "withheld");
-    assert_eq!(fields[8], "release\\tchecklist");
+    assert_eq!(fields[9], "release\\tchecklist");
 }
 
 #[test]
@@ -937,6 +963,7 @@ fn a_portuguese_query_ranks_by_its_content_words() {
                 detect,
             },
             batch: 4096,
+            typos: typo::Rule::OFF,
         };
         let mut kept = Logged::default();
         let finished = run(
@@ -1399,4 +1426,80 @@ fn a_store_that_fails_while_a_scope_resolves_ends_the_run_logged() {
         (line[2].as_str(), line[5].as_str(), line[6].as_str()),
         ("failed", "shed", "-")
     );
+}
+
+#[test]
+fn a_word_taken_for_a_typo_is_in_the_output_and_in_the_log() {
+    let mut log = Log::new();
+    log.put(1, "note", &["carrot soup for the dinner"]);
+    log.put(2, "note", &[OTHER]);
+    let index = index_of(&log);
+    let mut kept = Logged::default();
+    let finished = ask_with_rule(
+        &log,
+        &index,
+        &request("carot soup"),
+        &mut kept,
+        default_rule(),
+    );
+    let output = finished.result.expect("a run");
+    assert_eq!(entries_of(&output), [id(1)]);
+    assert_eq!(
+        output.expanded,
+        [Expanded {
+            term: "carot".to_owned(),
+            near: vec!["carrot".to_owned()],
+        }]
+    );
+    let line = fields(&kept);
+    assert_eq!(line[2], "hits");
+    assert_eq!(line[8], "carot>carrot");
+    assert_eq!(line[9], "carot soup");
+    let mut kept = Logged::default();
+    let finished = ask_with_rule(
+        &log,
+        &index,
+        &request("carrot soup"),
+        &mut kept,
+        default_rule(),
+    );
+    assert_eq!(finished.result.expect("a run").expanded, []);
+    assert_eq!(fields(&kept)[8], "-");
+    let mut kept = Logged::default();
+    let finished = ask_with_rule(
+        &log,
+        &index,
+        &request("carot soup"),
+        &mut kept,
+        typo::Rule::OFF,
+    );
+    assert_eq!(finished.result.expect("a run").expanded, []);
+    assert_eq!(fields(&kept)[8], "-");
+}
+
+#[test]
+fn a_near_that_fails_ends_the_run_as_failed() {
+    let mut log = Log::new();
+    log.put(1, "note", &["carrot soup for the dinner"]);
+    let index = index_of(&log);
+    let failing = Failing(&index, "near");
+    let mut kept = Logged::default();
+    let finished = ask_with_rule(&log, &failing, &request("carot"), &mut kept, default_rule());
+    let Err(Error::Index(error)) = finished.result else {
+        panic!("an index error");
+    };
+    assert!(error.to_string().contains("near failed"));
+    let line = fields(&kept);
+    assert_eq!(line[2], "failed");
+    assert_eq!(line[8], "-");
+    assert_eq!(line[9], "carot");
+    let mut kept = Logged::default();
+    let finished = ask_with_rule(
+        &log,
+        &failing,
+        &request("carrot"),
+        &mut kept,
+        default_rule(),
+    );
+    assert!(finished.result.is_ok());
 }

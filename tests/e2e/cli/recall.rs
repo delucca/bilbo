@@ -126,6 +126,27 @@ fn a_remembered_store_is_recalled_and_a_hits_ref_reads() {
 }
 
 #[test]
+fn a_misspelt_query_finds_its_session() {
+    let scratch = remembered("recall_typo_session");
+    // Leans on the fixture: "seedl" is its only term within an edit of "sedl".
+    let run = scratch.run(&["recall", "sedlings"]);
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    assert!(
+        run.stderr.contains("bilbo: typos: sedl as seedl\n"),
+        "{}",
+        run.stderr
+    );
+    let refs = hit_refs(&run.stdout);
+    assert!(!refs.is_empty(), "{}", run.stdout);
+    for reference in refs {
+        assert!(
+            capture_label_of(&scratch, reference).contains(UUID),
+            "{reference}"
+        );
+    }
+}
+
+#[test]
 fn recall_exits_1_when_nothing_matches() {
     let scratch = remembered("recall_nothing");
     let none = scratch.run(&["recall", "xyzzy"]);
@@ -188,11 +209,12 @@ fn every_recall_adds_one_line_to_the_query_log() {
         .collect();
     assert_eq!(
         fields.iter().map(|f| (f[0], f[2])).collect::<Vec<_>>(),
-        [("q2", "hits"), ("q2", "nothing"), ("q2", "hits")]
+        [("q3", "hits"), ("q3", "nothing"), ("q3", "hits")]
     );
     assert_eq!(fields[2][4], "markdown");
     assert_eq!(fields[2][5], "-");
-    assert_eq!(fields[2][8], "heading");
+    assert_eq!(fields[2][8], "-");
+    assert_eq!(fields[2][9], "heading");
     assert_eq!(
         fs::metadata(&log).expect("the log").permissions().mode() & 0o777,
         0o600

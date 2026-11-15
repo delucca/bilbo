@@ -280,10 +280,10 @@ budget of 4,000 and all were at 6,000). A hit's header is `=== <ref>\t<n> line(s
 apply; `<ref>` is `<id>#r<a>[-<b>]`, where `<id>` is the entry's short id (10 characters) or, when two entries of a store
 end alike, its whole id (26 characters). A hit's entry is the row of `entries.jsonl` with that whole id, or the one row
 of the store whose id ends with the short one; a short ref that two rows of one store end with stops the search, since
-bilbo must have printed the whole id. The only stderr lines are `bilbo: searched N entries` and `bilbo: passed over: ...`;
-any other stops the search. `search.py` reads no setting from the environment: its
-`run(settings, store=, questions=, out=, binary=)` takes `budget`, `question_words`, `candidates` and `in` and stops on any other
-key (run as a script it uses `DEFAULTS`: a budget of 8,000 and the other three `None`; `search.py loop` checks, with no store and no binary, that each question is searched once for each form, with that form's text, in its own repository's store, with its own repository's `--in` value when `in` is set), and the four paths are keyword arguments with the
+bilbo must have printed the whole id. The only stderr lines are `bilbo: searched N entries`, `bilbo: passed over: ...` and `bilbo: typos: <term> as <near>[, <near>]...[; ...]` (terms of `a` to `z`);
+any other, or a `typos:` item of another shape, stops the search. `search.py` reads no setting from the environment: its
+`run(settings, store=, questions=, out=, binary=)` takes `budget`, `question_words`, `candidates`, `typo_terms` (a number is passed as `BILBO_RECALL_TYPO_TERMS`) and `in` and stops on any other
+key (run as a script it uses `DEFAULTS`: a budget of 8,000 and the other four `None`; `search.py lines` checks the `typos:` line's parser; `search.py loop` checks, with no store and no binary, that each question is searched once for each form, with that form's text, in its own repository's store, with its own repository's `--in` value when `in` is set), and the four paths are keyword arguments with the
 container's paths as defaults, so a run on the host is the same code with other paths. A result row holds `text`, `ref` (as
 printed), `entry` (the 26 characters), `repo`, `session`, `lines`, `part`, `rank` and `cut`, so a comparison finds the eval
 chunk it is.
@@ -309,7 +309,7 @@ With `in` = repo the stderr line `bilbo: --in kept N entries` is required and N 
 of that repository in the store searched, every result must be of the question's repository, the scope's own `and left out M of the best K` part is accepted, but the stale-hit warning (`left out N hits the store no longer gives as indexed`) and
 `--in ... names no entry` are never accepted, and with no `in` the `--in kept` line is not accepted. Every row of a search
 holds, after `id`, `form`, `seconds` and `results`: `passed` (`copies`, `parts`, `capped`: the counts of the `passed over`
-line, 0 when absent) and `run` (`store`: the manifest's key; `driver`: the first 12 hex of the sha256 of the `drive.py` that
+line, 0 when absent), `typos` (`[[term, [near, ...]], ...]` from the `typos:` line, empty when absent) and `run` (`store`: the manifest's key; `driver`: the first 12 hex of the sha256 of the `drive.py` that
 ran, null with none; `settings`: every setting in force); a scoped row also holds `in` (the value passed) and `kept` (the
 count printed).
 
