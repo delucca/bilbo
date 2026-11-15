@@ -4,8 +4,8 @@ use std::path::PathBuf;
 use std::rc::Rc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use bilbo_kinds::reader::{EntryLabels, Passage, Piece, Reader};
-use bilbo_kinds::tokens::Tokens;
+use bilbo_entries::reader::{EntryLabels, Passage, Piece, Reader};
+use bilbo_entries::tokens::Tokens;
 use bilbo_search::analyze::{self, Detect, Language};
 use bilbo_search::chunk;
 use bilbo_search::index::{Doc, Extent, Index, IndexError, Stats, millis};

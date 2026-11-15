@@ -1,4 +1,4 @@
-use bilbo_kinds::tokens::Tokens;
+use bilbo_entries::tokens::Tokens;
 use std::collections::HashMap;
 use tokenizers::{NormalizerWrapper, Tokenizer};
 
@@ -74,7 +74,7 @@ impl Tokens for Qwen {
 mod tests {
     use std::sync::LazyLock;
 
-    use bilbo_kinds::tokens::Tokens;
+    use bilbo_entries::tokens::Tokens;
 
     use super::{ID, PACKED, Qwen, SIZE, Unloaded};
 

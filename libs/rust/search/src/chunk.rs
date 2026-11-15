@@ -1,7 +1,7 @@
 use std::fmt;
 
-use bilbo_kinds::reader::Passage;
-use bilbo_kinds::tokens::Tokens;
+use bilbo_entries::reader::Passage;
+use bilbo_entries::tokens::Tokens;
 use bilbo_store::entries::RecordRange;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -336,8 +336,8 @@ fn cuts(
 
 #[cfg(test)]
 mod tests {
-    use bilbo_kinds::reader::{Passage, Piece};
-    use bilbo_kinds::tokens::Tokens;
+    use bilbo_entries::reader::{Passage, Piece};
+    use bilbo_entries::tokens::Tokens;
     use bilbo_store::entries::RecordRange;
 
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};

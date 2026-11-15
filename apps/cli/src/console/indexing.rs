@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use bilbo_kinds::reader::Reader;
+use bilbo_entries::reader::Reader;
 use bilbo_search::index::Index;
 use bilbo_search::tokenizer::Tokenizer;
 use bilbo_search::work::Request;

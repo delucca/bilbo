@@ -17,8 +17,8 @@ use bilbo_cli::console::message::Message;
 use bilbo_cli::console::outcome::Failure;
 use bilbo_cli::console::settings;
 use bilbo_cli::console::view::View;
-use bilbo_kinds::reader::{Passage, Reader};
-use bilbo_kinds::tokens::Tokens;
+use bilbo_entries::reader::{Passage, Reader};
+use bilbo_entries::tokens::Tokens;
 use bilbo_search::analyze::Omit;
 use bilbo_search::bm25::Bm25;
 use bilbo_search::index::{Doc, Extent, Index, IndexError, Stats, millis};
@@ -37,34 +37,34 @@ const SESSIONS: [(&str, &[u8]); 4] = [
     (
         "claude/p/8f2b6d4e-1a3c-4e5f-9b7a-2c4d6e8f0a1b.jsonl",
         include_bytes!(
-            "../../../libs/rust/kinds/session/fixtures/8f2b6d4e-1a3c-4e5f-9b7a-2c4d6e8f0a1b.jsonl"
+            "../../../libs/rust/entries/session/fixtures/8f2b6d4e-1a3c-4e5f-9b7a-2c4d6e8f0a1b.jsonl"
         ),
     ),
     (
         "claude/p/5c3a9e1f-0b7d-4c2e-9a41-7f2d8e6b1c03/subagents/agent-ad63c2b3c9e7a4b3d.jsonl",
-        include_bytes!("../../../libs/rust/kinds/session/fixtures/agent-ad63c2b3c9e7a4b3d.jsonl"),
+        include_bytes!("../../../libs/rust/entries/session/fixtures/agent-ad63c2b3c9e7a4b3d.jsonl"),
     ),
     (
         "claude/p/5c3a9e1f-0b7d-4c2e-9a41-7f2d8e6b1c03.jsonl",
         include_bytes!(
-            "../../../libs/rust/kinds/session/fixtures/5c3a9e1f-0b7d-4c2e-9a41-7f2d8e6b1c03.jsonl"
+            "../../../libs/rust/entries/session/fixtures/5c3a9e1f-0b7d-4c2e-9a41-7f2d8e6b1c03.jsonl"
         ),
     ),
     (
         "codex/2026/11/07/rollout-2026-11-07T08-00-00-019a5b3c-2d4e-7f60-8a1b-3c5d7e9f0a2b.jsonl",
         include_bytes!(
-            "../../../libs/rust/kinds/session/fixtures/rollout-2026-11-07T08-00-00-019a5b3c-2d4e-7f60-8a1b-3c5d7e9f0a2b.jsonl"
+            "../../../libs/rust/entries/session/fixtures/rollout-2026-11-07T08-00-00-019a5b3c-2d4e-7f60-8a1b-3c5d7e9f0a2b.jsonl"
         ),
     ),
 ];
 const NOTES: [(&str, &[u8]); 2] = [
     (
         "sections.md",
-        include_bytes!("../../../libs/rust/kinds/markdown/fixtures/sections.md"),
+        include_bytes!("../../../libs/rust/entries/markdown/fixtures/sections.md"),
     ),
     (
         "bare.md",
-        include_bytes!("../../../libs/rust/kinds/markdown/fixtures/no-frontmatter.md"),
+        include_bytes!("../../../libs/rust/entries/markdown/fixtures/no-frontmatter.md"),
     ),
 ];
 const QUERIES: [&str; 5] = [
@@ -1554,10 +1554,10 @@ const NO_REBUILD_LINE: &str = "rebuilding the search index";
 const WORKED: &str = "sessions/claude/p/7d1e4b9a-3c5f-4a2e-8b6d-0f9e1c2a3b4d.jsonl";
 const ROLLOUT: &str = "sessions/codex/2026/11/08/rollout-2026-11-08T10-00-00-019a6c4d-3e5f-7a71-9b2c-4d6e8fa0b1c3.jsonl";
 const WORKED_BYTES: &[u8] = include_bytes!(
-    "../../../libs/rust/kinds/session/fixtures/7d1e4b9a-3c5f-4a2e-8b6d-0f9e1c2a3b4d.jsonl"
+    "../../../libs/rust/entries/session/fixtures/7d1e4b9a-3c5f-4a2e-8b6d-0f9e1c2a3b4d.jsonl"
 );
 const ROLLOUT_BYTES: &[u8] = include_bytes!(
-    "../../../libs/rust/kinds/session/fixtures/rollout-2026-11-08T10-00-00-019a6c4d-3e5f-7a71-9b2c-4d6e8fa0b1c3.jsonl"
+    "../../../libs/rust/entries/session/fixtures/rollout-2026-11-08T10-00-00-019a6c4d-3e5f-7a71-9b2c-4d6e8fa0b1c3.jsonl"
 );
 const FOLDER_WORDS: [&str; 4] = ["shed", "greenhouse", "beds", "garden"];
 const SHED: [&str; 6] = [
@@ -1998,8 +1998,8 @@ fn an_update_that_fails_is_not_tried_again_by_the_close_loop() {
     };
     let mut store = Store::open(&settings.layout(), options, &mut |_| {}).expect("open the store");
     let kinds = bilbo_cli::kinds(&settings).expect("the kinds");
-    let first = bilbo_kinds::remember::plan(
-        &bilbo_kinds::remember::Request {
+    let first = bilbo_entries::remember::plan(
+        &bilbo_entries::remember::Request {
             target: sandbox.dir.join("notes/first.md"),
             kind: None,
         },
@@ -2007,7 +2007,7 @@ fn an_update_that_fails_is_not_tried_again_by_the_close_loop() {
         &bilbo_cli::remember::disk::Disk,
     )
     .expect("a plan");
-    bilbo_kinds::remember::keep(&first, &bilbo_cli::remember::disk::Disk, &mut store)
+    bilbo_entries::remember::keep(&first, &bilbo_cli::remember::disk::Disk, &mut store)
         .expect("the first capture");
     let notices = Mutex::new(Vec::new());
     let closing = bilbo_cli::remember::follows::finish(

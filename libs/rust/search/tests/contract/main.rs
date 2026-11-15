@@ -6,7 +6,7 @@ use std::ffi::OsString;
 use std::fs;
 use std::sync::LazyLock;
 
-use bilbo_kinds::reader::{Passage, Piece};
+use bilbo_entries::reader::{Passage, Piece};
 use bilbo_qwen::Qwen;
 use bilbo_search::analyze;
 use bilbo_search::chunk::{Chunk, Size, chunks};

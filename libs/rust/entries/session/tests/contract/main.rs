@@ -6,7 +6,7 @@ use std::ffi::OsString;
 use std::fs;
 use std::path::PathBuf;
 
-use bilbo_kinds::reader::Reader;
+use bilbo_entries::reader::Reader;
 use bilbo_session::Session;
 use serde_json::Value;
 

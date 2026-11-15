@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
-use bilbo_kinds::reader::{Passage, Reader};
-use bilbo_kinds::tokens::Tokens;
+use bilbo_entries::reader::{Passage, Reader};
+use bilbo_entries::tokens::Tokens;
 use bilbo_store::entries::{Entries, Generation, RecordRange};
 use bilbo_store::id::Id;
 

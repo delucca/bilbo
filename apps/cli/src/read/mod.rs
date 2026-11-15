@@ -1,9 +1,9 @@
 pub mod view;
 
-use bilbo_kinds::read::refs::Ref;
-use bilbo_kinds::read::{self, BUDGET, Budget, Fetched, Output, Request, Shown};
-use bilbo_kinds::reader::Reader;
-use bilbo_kinds::tokens::Estimate;
+use bilbo_entries::read::refs::Ref;
+use bilbo_entries::read::{self, BUDGET, Budget, Fetched, Output, Request, Shown};
+use bilbo_entries::reader::Reader;
+use bilbo_entries::tokens::Estimate;
 use bilbo_settings::file::File;
 use bilbo_settings::key::{Flag, Origin, Source};
 use bilbo_store::segments::{Notice, Store};

@@ -4,7 +4,7 @@ use std::io;
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 
-use bilbo_kinds::files::{Files, Node};
+use bilbo_entries::files::{Files, Node};
 use bilbo_store::entries::Stamp;
 
 /// Reads the disk and never writes it.

@@ -1,6 +1,6 @@
-use bilbo_kinds::follows::{self, Follow, Planned};
-use bilbo_kinds::kind::Kind;
-use bilbo_kinds::remember::{self, Output};
+use bilbo_entries::follows::{self, Follow, Planned};
+use bilbo_entries::kind::Kind;
+use bilbo_entries::remember::{self, Output};
 use bilbo_search::index::Index;
 use bilbo_store::entries::{Entries, StoreError};
 use bilbo_store::segments::{Closed, Held, Options, Store};
@@ -248,7 +248,7 @@ fn planned_messages(planned: &[Planned<'_>]) -> Vec<Message> {
 }
 
 fn outcome(
-    outputs: &[bilbo_kinds::remember::Output],
+    outputs: &[bilbo_entries::remember::Output],
     diagnostics: Vec<Message>,
     failed: bool,
 ) -> Outcome {
@@ -269,8 +269,8 @@ fn outcome(
 mod tests {
     use std::path::PathBuf;
 
-    use bilbo_kinds::files::{Memory, Node};
-    use bilbo_kinds::follows::{Follow, plan};
+    use bilbo_entries::files::{Memory, Node};
+    use bilbo_entries::follows::{Follow, plan};
 
     use super::planned_messages;
     use crate::console::theme::Mark;

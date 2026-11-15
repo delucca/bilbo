@@ -1,4 +1,4 @@
-use bilbo_kinds::tokens::Tokens;
+use bilbo_entries::tokens::Tokens;
 
 pub struct Tokenizer {
     pub tokens: Box<dyn Tokens>,

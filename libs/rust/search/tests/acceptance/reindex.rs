@@ -4,8 +4,8 @@ use std::sync::{Arc, Condvar, Mutex, mpsc};
 use std::thread;
 use std::time::Duration;
 
-use bilbo_kinds::reader::{Passage, Reader};
-use bilbo_kinds::tokens::Tokens;
+use bilbo_entries::reader::{Passage, Reader};
+use bilbo_entries::tokens::Tokens;
 use bilbo_search::analyze;
 use bilbo_search::chunk::Size;
 use bilbo_search::position::{Manifest, Position};

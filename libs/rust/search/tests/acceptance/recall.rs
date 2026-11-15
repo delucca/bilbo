@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use bilbo_kinds::reader::Reader;
+use bilbo_entries::reader::Reader;
 use bilbo_search::analyze::{Detect, Language, MAX_LABEL_WORDS, Omit, label_words};
 use bilbo_search::bm25::Bm25;
 use bilbo_search::chunk::Size;

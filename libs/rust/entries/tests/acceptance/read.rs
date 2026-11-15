@@ -2,12 +2,12 @@ use std::cell::Cell;
 use std::path::Path;
 use std::time::{Duration, SystemTime};
 
-use bilbo_kinds::read::outline::Line;
-use bilbo_kinds::read::page::{Block, Cut};
-use bilbo_kinds::read::refs::{Ref, Target};
-use bilbo_kinds::read::{self, About, Body, Budget, Error, Output, Request, Shown};
-use bilbo_kinds::reader::{Passage, Piece, Reader};
-use bilbo_kinds::tokens::Tokens;
+use bilbo_entries::read::outline::Line;
+use bilbo_entries::read::page::{Block, Cut};
+use bilbo_entries::read::refs::{Ref, Target};
+use bilbo_entries::read::{self, About, Body, Budget, Error, Output, Request, Shown};
+use bilbo_entries::reader::{Passage, Piece, Reader};
+use bilbo_entries::tokens::Tokens;
 use bilbo_store::entries::{
     Capture, CaptureError, Captured, Change, Cursor, Entries, Generation, Head, Meta, RecordRange,
     StoreError,

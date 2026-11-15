@@ -1,4 +1,4 @@
-use bilbo_kinds::remember::{Output, Tally};
+use bilbo_entries::remember::{Output, Tally};
 
 use crate::console::message::{Detail, Message, group};
 use crate::console::theme::Mark;
@@ -109,7 +109,7 @@ pub fn human_totals(totals: &Totals, view: &View) -> String {
 mod tests {
     use std::path::PathBuf;
 
-    use bilbo_kinds::remember::{Item, Outcome, Output};
+    use bilbo_entries::remember::{Item, Outcome, Output};
     use bilbo_store::id::Id;
 
     use super::{Totals, human, plain, plain_totals};

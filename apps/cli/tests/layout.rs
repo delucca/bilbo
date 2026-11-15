@@ -13,7 +13,7 @@ const ROOTS: [&str; 2] = ["crate", "bilbo_cli"];
 /// bilbo's own crates that any file may name. Every other `bilbo_` crate is a kind's or an
 /// adapter's: `lib.rs` alone names it.
 const SHARED: [&str; 4] = [
-    "bilbo_kinds",
+    "bilbo_entries",
     "bilbo_search",
     "bilbo_settings",
     "bilbo_store",
@@ -902,9 +902,9 @@ fn a_kind_crate_named_outside_lib_rs_is_found() {
     }
     assert_silent(&with(&[(
         "lib.rs",
-        &format!("{registry}use bilbo_markdown::Markdown;\npub use bilbo_kinds::kind::Kind;\n"),
+        &format!("{registry}use bilbo_markdown::Markdown;\npub use bilbo_entries::kind::Kind;\n"),
     )]));
-    let shared = "use crate::console::view;\nuse bilbo_kinds::kind::Kind;\npub fn run() { view::show(); bilbo_store::id::Id::mint(); bilbo_settings::file::File::default(); }\n";
+    let shared = "use crate::console::view;\nuse bilbo_entries::kind::Kind;\npub fn run() { view::show(); bilbo_store::id::Id::mint(); bilbo_settings::file::File::default(); }\n";
     assert_silent(&with(&[("help/mod.rs", shared)]));
     let tested = "use crate::console::view;\npub fn run() { view::show(); }\n#[cfg(test)]\nmod tests { fn kind() { bilbo_markdown::Markdown; } }\n";
     assert_silent(&with(&[("help/mod.rs", tested)]));

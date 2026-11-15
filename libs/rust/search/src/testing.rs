@@ -3,8 +3,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 use std::time::SystemTime;
 
-use bilbo_kinds::reader::{Passage, Piece, Reader};
-use bilbo_kinds::tokens::Tokens;
+use bilbo_entries::reader::{Passage, Piece, Reader};
+use bilbo_entries::tokens::Tokens;
 use bilbo_store::entries::{
     Capture, CaptureError, Captured, Change, Cursor, Entries, Generation, Head, Meta, RecordRange,
     StoreError,

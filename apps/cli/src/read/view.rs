@@ -1,9 +1,9 @@
 use std::fmt::Write;
 
-use bilbo_kinds::read::outline::Line;
-use bilbo_kinds::read::page::Block;
-use bilbo_kinds::read::refs::SCHEME;
-use bilbo_kinds::read::{About, Body, Budget, Output};
+use bilbo_entries::read::outline::Line;
+use bilbo_entries::read::page::Block;
+use bilbo_entries::read::refs::SCHEME;
+use bilbo_entries::read::{About, Body, Budget, Output};
 use bilbo_store::entries::RecordRange;
 use bilbo_store::labels::Label;
 
@@ -207,9 +207,9 @@ mod tests {
     use std::path::Path;
     use std::time::{Duration, SystemTime};
 
-    use bilbo_kinds::read::outline::Line;
-    use bilbo_kinds::read::page::{Block, Cut};
-    use bilbo_kinds::read::{About, Body, Budget, Output};
+    use bilbo_entries::read::outline::Line;
+    use bilbo_entries::read::page::{Block, Cut};
+    use bilbo_entries::read::{About, Body, Budget, Output};
     use bilbo_store::entries::{Generation, RecordRange};
     use bilbo_store::id::Id;
     use bilbo_store::labels::{CaptureLabel, Label};

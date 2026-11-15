@@ -1,4 +1,4 @@
-use bilbo_kinds::tokens::Tokens;
+use bilbo_entries::tokens::Tokens;
 
 use super::hit::Hit;
 
@@ -56,7 +56,7 @@ mod tests {
     use std::cell::Cell;
     use std::convert::Infallible;
 
-    use bilbo_kinds::tokens::Tokens;
+    use bilbo_entries::tokens::Tokens;
     use bilbo_store::entries::{Generation, RecordRange};
     use bilbo_store::id::Id;
 

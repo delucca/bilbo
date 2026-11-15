@@ -6,7 +6,7 @@ use std::ffi::OsString;
 use std::fs;
 use std::sync::LazyLock;
 
-use bilbo_kinds::tokens::Tokens;
+use bilbo_entries::tokens::Tokens;
 use bilbo_qwen::Qwen;
 use serde_json::Value;
 

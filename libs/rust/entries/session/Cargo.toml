@@ -7,7 +7,7 @@ publish.workspace = true
 description = "The session kind: Claude Code and Codex transcripts, one record per JSONL line."
 
 [dependencies]
-bilbo-kinds.workspace = true
+bilbo-entries.workspace = true
 bilbo-settings.workspace = true
 bilbo-store.workspace = true
 zstd.workspace = true

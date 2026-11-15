@@ -10,8 +10,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::time::SystemTime;
 
-use bilbo_kinds::reader::Reader;
-use bilbo_kinds::tokens::Tokens;
+use bilbo_entries::reader::Reader;
+use bilbo_entries::tokens::Tokens;
 use bilbo_store::entries::{Change, Entries, StoreError};
 use bilbo_store::id::Short;
 use bilbo_store::labels::Labels;

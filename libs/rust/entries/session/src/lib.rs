@@ -8,9 +8,9 @@ mod render;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
-use bilbo_kinds::files::{Files, Node};
-use bilbo_kinds::kind::{Claim, Claims, Kind, Proposal, Refusal};
-use bilbo_kinds::reader::{Passage, Reader};
+use bilbo_entries::files::{Files, Node};
+use bilbo_entries::kind::{Claim, Claims, Kind, Proposal, Refusal};
+use bilbo_entries::reader::{Passage, Reader};
 use bilbo_settings::file::File;
 use bilbo_settings::key::{About, Default, Key, Source};
 use bilbo_settings::size;
@@ -296,9 +296,9 @@ mod tests {
     use std::io::Write;
     use std::path::{Path, PathBuf};
 
-    use bilbo_kinds::files::{Call, Files, Memory, Node, Turning};
-    use bilbo_kinds::kind::{Kind, Proposal, Refusal};
-    use bilbo_kinds::reader::{Passage, Reader};
+    use bilbo_entries::files::{Call, Files, Memory, Node, Turning};
+    use bilbo_entries::kind::{Kind, Proposal, Refusal};
+    use bilbo_entries::reader::{Passage, Reader};
     use bilbo_store::id::Id;
 
     use bilbo_settings::file::File;
@@ -485,7 +485,7 @@ mod tests {
     /// A departure from the eval's render, which read a lone carriage return as a line end.
     #[test]
     fn a_lone_carriage_return_does_not_end_a_record() {
-        use bilbo_kinds::reader::Reader;
+        use bilbo_entries::reader::Reader;
         let entry =
             |text: &str| format!("{{\"type\":\"user\",\"message\":{{\"content\":\"{text}\"}}}}");
         let bytes = format!("{}\r{}\n{}\r\n", entry("a"), entry("b"), entry("c")).into_bytes();
@@ -589,7 +589,7 @@ mod tests {
 
     #[test]
     fn a_session_is_read_by_the_dialect_its_records_show() {
-        use bilbo_kinds::reader::Reader;
+        use bilbo_entries::reader::Reader;
         let first = |bytes: &[u8]| {
             let records: Vec<&[u8]> = bytes.split_inclusive(|&byte| byte == b'\n').collect();
             Session::default()
@@ -627,7 +627,7 @@ mod tests {
 
     #[test]
     fn a_session_whose_only_evidence_is_odd_still_reaches_its_reader() {
-        use bilbo_kinds::reader::Reader;
+        use bilbo_entries::reader::Reader;
         let texts = |bytes: &[u8]| -> Vec<String> {
             let records: Vec<&[u8]> = bytes.split_inclusive(|&byte| byte == b'\n').collect();
             assert!(
@@ -768,7 +768,7 @@ mod tests {
 
     #[test]
     fn no_record_makes_a_reader_panic_or_leave_its_generation() {
-        use bilbo_kinds::reader::Reader;
+        use bilbo_entries::reader::Reader;
         let lines: Vec<&[u8]> = [CLAUDE, SUBAGENT, CODEX, CURSOR, NONE, NOT_UTF8]
             .into_iter()
             .flat_map(|file| file.split_inclusive(|&byte| byte == b'\n'))
@@ -1392,7 +1392,7 @@ mod tests {
         include_bytes!("../fixtures/8f2b6d4e-1a3c-4e5f-9b7a-2c4d6e8f0a1b.jsonl");
 
     fn labels_of(bytes: &[u8]) -> Vec<String> {
-        use bilbo_kinds::reader::Reader;
+        use bilbo_entries::reader::Reader;
         let records: Vec<&[u8]> = bytes.split_inclusive(|&byte| byte == b'\n').collect();
         Session::default().entry_labels(&records)
     }

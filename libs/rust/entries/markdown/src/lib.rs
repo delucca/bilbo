@@ -3,9 +3,9 @@ mod read;
 
 use std::path::{Path, PathBuf};
 
-use bilbo_kinds::files::{Files, Node};
-use bilbo_kinds::kind::{Claim, Claims, Kind, Proposal, Refusal};
-use bilbo_kinds::reader::{Passage, Reader};
+use bilbo_entries::files::{Files, Node};
+use bilbo_entries::kind::{Claim, Claims, Kind, Proposal, Refusal};
+use bilbo_entries::reader::{Passage, Reader};
 use bilbo_settings::file::File;
 use bilbo_settings::key::{About, Default, Key, Source};
 use bilbo_store::id::Id;
@@ -151,7 +151,7 @@ fn walk(files: &dyn Files, folder: &Path, claims: &mut Claims) {
 
 #[cfg(test)]
 mod tests {
-    use bilbo_kinds::files::Memory;
+    use bilbo_entries::files::Memory;
 
     use super::*;
 

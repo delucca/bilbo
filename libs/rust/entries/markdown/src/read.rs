@@ -2,7 +2,7 @@
 
 use std::borrow::Cow;
 
-use bilbo_kinds::reader::{Passage, Piece};
+use bilbo_entries::reader::{Passage, Piece};
 use bilbo_store::entries::RecordRange;
 
 use crate::frontmatter;
@@ -274,7 +274,7 @@ fn extend(passage: &mut Passage, records: &[&[u8]]) {
 
 #[cfg(test)]
 mod tests {
-    use bilbo_kinds::reader::Passage;
+    use bilbo_entries::reader::Passage;
 
     use super::{atx, passages, underline};
 

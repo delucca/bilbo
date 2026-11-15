@@ -9,14 +9,14 @@ extract_cargo_lints(
 )
 
 rust_library(
-    name = "kinds",
+    name = "entries",
     srcs = glob(["src/**/*.rs"]),
-    crate_name = "bilbo_kinds",
+    crate_name = "bilbo_entries",
     lint_config = ":lints",
     visibility = [
         "//apps/cli:__pkg__",
-        "//libs/rust/kinds/markdown:__pkg__",
-        "//libs/rust/kinds/session:__pkg__",
+        "//libs/rust/entries/markdown:__pkg__",
+        "//libs/rust/entries/session:__pkg__",
         "//libs/rust/search:__pkg__",
         "//libs/rust/search/qwen:__pkg__",
     ],
@@ -28,7 +28,7 @@ rust_library(
 
 bilbo_rust_test(
     name = "unit",
-    crate = ":kinds",
+    crate = ":entries",
     layer = "unit",
     lint_config = ":lints",
 )
@@ -40,7 +40,7 @@ bilbo_rust_test(
     layer = "acceptance",
     lint_config = ":lints",
     deps = [
-        ":kinds",
+        ":entries",
         "//libs/rust/store",
     ],
 )

@@ -9,7 +9,7 @@ use std::thread;
 use std::time::{Duration, SystemTime};
 
 use bilbo_cli::remember::disk::Disk;
-use bilbo_kinds::files::{Files, Node};
+use bilbo_entries::files::{Files, Node};
 use bilbo_store::entries::{Cursor, Entries, Generation, Head, Meta, RecordRange};
 use bilbo_store::id::Id;
 use bilbo_store::labels::CaptureLabel;

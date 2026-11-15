@@ -10,8 +10,8 @@ pub mod remember;
 
 use std::ffi::OsString;
 
-use bilbo_kinds::kind::Kind;
-use bilbo_kinds::reader::Reader;
+use bilbo_entries::kind::Kind;
+use bilbo_entries::reader::Reader;
 use bilbo_search::analyze::Detect;
 use bilbo_search::index::Index;
 use bilbo_search::lookup::Lookup;

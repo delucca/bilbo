@@ -1,4 +1,4 @@
-use bilbo_kinds::read::refs::Locator;
+use bilbo_entries::read::refs::Locator;
 use bilbo_search::recall::Output;
 use bilbo_search::recall::hit::Hit;
 
@@ -81,7 +81,7 @@ fn shown(hit: &Hit, view: &View) -> String {
 
 #[cfg(test)]
 mod tests {
-    use bilbo_kinds::read::refs::{Ref, Target};
+    use bilbo_entries::read::refs::{Ref, Target};
     use bilbo_search::index::Extent;
     use bilbo_search::lookup::Found;
     use bilbo_search::recall::hit::Hit;

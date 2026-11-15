@@ -1,4 +1,4 @@
-use bilbo_kinds::read::refs::{Ref, Target};
+use bilbo_entries::read::refs::{Ref, Target};
 use bilbo_store::entries::{Entries, StoreError};
 use bilbo_store::id::{Id, Short};
 use bilbo_store::labels::Labels;

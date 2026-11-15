@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use bilbo_kinds::reader::Reader;
+use bilbo_entries::reader::Reader;
 use bilbo_store::entries::{Change, Cursor, Entries};
 use bilbo_store::id::Id;
 use bilbo_store::labels::Relabel;
@@ -274,7 +274,7 @@ fn grow(
 mod tests {
     use std::collections::BTreeSet;
 
-    use bilbo_kinds::reader::Reader;
+    use bilbo_entries::reader::Reader;
     use bilbo_store::entries::{Change, Cursor};
 
     use super::{Kind, Parts, Stores, Work, apply_within};

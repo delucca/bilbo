@@ -5,10 +5,10 @@ use std::path::{Path, PathBuf};
 
 use std::time::{Duration, SystemTime};
 
-use bilbo_kinds::files::{Call, Files, Memory, Node, Turning};
-use bilbo_kinds::follows::{self, Follow, Planned};
-use bilbo_kinds::kind::Kind;
-use bilbo_kinds::remember::{self, Error, Item, Outcome, Output, Request, Tally};
+use bilbo_entries::files::{Call, Files, Memory, Node, Turning};
+use bilbo_entries::follows::{self, Follow, Planned};
+use bilbo_entries::kind::Kind;
+use bilbo_entries::remember::{self, Error, Item, Outcome, Output, Request, Tally};
 use bilbo_store::entries::Stamp;
 use bilbo_store::labels::{CaptureLabel, StoredLabels};
 use fakes::{ADOPTED, Counting, FakeEntries, FakeKind, Script, id};

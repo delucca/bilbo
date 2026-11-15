@@ -1,7 +1,7 @@
 //! Renders as the eval's bm25 `build.py` does (`render_session`, `render_entry`); where that script would stop on
 //! an unexpected shape, the block or the entry renders nothing.
 
-use bilbo_kinds::reader::{EntryLabels, Passage};
+use bilbo_entries::reader::{EntryLabels, Passage};
 
 use crate::json::{self, Value};
 use crate::render::{self, Outline, Tools};
@@ -203,7 +203,7 @@ pub fn labels(records: &[&[u8]]) -> Vec<String> {
 mod tests {
     use std::time::{Duration, SystemTime};
 
-    use bilbo_kinds::reader::{Passage, Piece};
+    use bilbo_entries::reader::{Passage, Piece};
 
     use super::passages;
 

@@ -7,9 +7,9 @@ pub mod view;
 
 use std::path::PathBuf;
 
-use bilbo_kinds::follows::Follow;
-use bilbo_kinds::kind::Kind;
-use bilbo_kinds::remember::{self, Output, Request};
+use bilbo_entries::follows::Follow;
+use bilbo_entries::kind::Kind;
+use bilbo_entries::remember::{self, Output, Request};
 use bilbo_store::segments::Store;
 use clap::Command;
 use clap::builder::NonEmptyStringValueParser;

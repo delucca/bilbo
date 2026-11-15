@@ -2,8 +2,8 @@ use std::ffi::OsString;
 use std::io;
 use std::path::{Path, PathBuf};
 
-use bilbo_kinds::follows::Follow;
-use bilbo_kinds::read;
+use bilbo_entries::follows::Follow;
+use bilbo_entries::read;
 use bilbo_settings::error::Error;
 use bilbo_settings::file::{File, Named};
 use bilbo_settings::folder::{self, Folder};
@@ -248,7 +248,7 @@ mod tests {
 
     use bilbo_settings::key::{Default, Origin};
 
-    use bilbo_kinds::follows::Follow;
+    use bilbo_entries::follows::Follow;
 
     use super::{CACHE, CONFIG, FOLLOW, ROOT, STATE, keys, load, show_follows};
 

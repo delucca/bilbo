@@ -7,10 +7,10 @@ use bilbo_cli::console::settings::{self, Settings};
 use bilbo_cli::console::view::View;
 use bilbo_cli::remember::view;
 use bilbo_cli::{kinds, readers, run};
-use bilbo_kinds::files::Memory;
-use bilbo_kinds::read::refs::Ref;
-use bilbo_kinds::read::{self, Fetched};
-use bilbo_kinds::remember::{self, Item, Outcome, Output, Request};
+use bilbo_entries::files::Memory;
+use bilbo_entries::read::refs::Ref;
+use bilbo_entries::read::{self, Fetched};
+use bilbo_entries::remember::{self, Item, Outcome, Output, Request};
 use bilbo_store::entries::{Entries, Generation, Meta, RecordRange};
 use bilbo_store::id::Id;
 use bilbo_store::labels::{CaptureLabel, StoredLabels};
@@ -267,7 +267,7 @@ fn scratch(name: &str) -> PathBuf {
 #[test]
 fn a_codex_session_as_the_store_keeps_it() {
     const ROLLOUT: &[u8] = include_bytes!(
-        "../../../libs/rust/kinds/session/fixtures/rollout-2026-11-06T09-10-00-019a4f2e-7c1d-7b3a-9e55-2d8c41f0a6b7.jsonl"
+        "../../../libs/rust/entries/session/fixtures/rollout-2026-11-06T09-10-00-019a4f2e-7c1d-7b3a-9e55-2d8c41f0a6b7.jsonl"
     );
     let path =
         "/s/2026/11/06/rollout-2026-11-06T09-10-00-019a4f2e-7c1d-7b3a-9e55-2d8c41f0a6b7.jsonl";
@@ -336,12 +336,12 @@ fn the_read_page_is_the_same_from_every_help_form() {
 
 const READ_ID: &str = "01JC5Q3V7XKM4P8R2T6W9YB0DG";
 const CLAUDE_SESSION: &[u8] = include_bytes!(
-    "../../../libs/rust/kinds/session/fixtures/8f2b6d4e-1a3c-4e5f-9b7a-2c4d6e8f0a1b.jsonl"
+    "../../../libs/rust/entries/session/fixtures/8f2b6d4e-1a3c-4e5f-9b7a-2c4d6e8f0a1b.jsonl"
 );
 const CODEX_SESSION: &[u8] = include_bytes!(
-    "../../../libs/rust/kinds/session/fixtures/rollout-2026-11-07T08-00-00-019a5b3c-2d4e-7f60-8a1b-3c5d7e9f0a2b.jsonl"
+    "../../../libs/rust/entries/session/fixtures/rollout-2026-11-07T08-00-00-019a5b3c-2d4e-7f60-8a1b-3c5d7e9f0a2b.jsonl"
 );
-const NOTE: &[u8] = include_bytes!("../../../libs/rust/kinds/markdown/fixtures/sections.md");
+const NOTE: &[u8] = include_bytes!("../../../libs/rust/entries/markdown/fixtures/sections.md");
 
 fn read_output(
     kind: &str,

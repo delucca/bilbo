@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use bilbo_kinds::reader::Reader;
+use bilbo_entries::reader::Reader;
 use bilbo_search::analyze::Detect;
 use bilbo_search::chunk::Size;
 use bilbo_search::lookup::Lookup;

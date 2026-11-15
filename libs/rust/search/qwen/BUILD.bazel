@@ -19,7 +19,7 @@ rust_library(
         "//apps/cli:__pkg__",
         "//libs/rust/search:__pkg__",
     ],
-    deps = ["//libs/rust/kinds"] + all_crate_deps(normal = True),
+    deps = ["//libs/rust/entries"] + all_crate_deps(normal = True),
 )
 
 bilbo_rust_test(
@@ -39,6 +39,6 @@ bilbo_rust_test(
     lint_config = ":lints",
     deps = [
         ":qwen",
-        "//libs/rust/kinds",
+        "//libs/rust/entries",
     ] + all_crate_deps(normal_dev = True),
 )

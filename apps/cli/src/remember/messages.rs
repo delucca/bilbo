@@ -1,4 +1,4 @@
-use bilbo_kinds::remember::{self, Output};
+use bilbo_entries::remember::{self, Output};
 
 use crate::console::message::{Message, sanitize};
 use crate::console::theme::Mark;

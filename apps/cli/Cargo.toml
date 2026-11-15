@@ -11,7 +11,7 @@ name = "bilbo"
 path = "src/main.rs"
 
 [dependencies]
-bilbo-kinds.workspace = true
+bilbo-entries.workspace = true
 bilbo-markdown.workspace = true
 bilbo-qwen.workspace = true
 bilbo-search.workspace = true

@@ -5,8 +5,8 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
-use bilbo_kinds::files::{Files, Memory, Node};
-use bilbo_kinds::kind::{Claim, Claims, Kind, Proposal, Refusal};
+use bilbo_entries::files::{Files, Memory, Node};
+use bilbo_entries::kind::{Claim, Claims, Kind, Proposal, Refusal};
 use bilbo_store::entries::{
     Capture, CaptureError, Captured, Change, Cursor, Entries, Generation, Head, Kept, Mark, Meta,
     RecordRange, Stamp, StoreError,

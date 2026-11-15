@@ -1,7 +1,7 @@
 use std::fmt::Write;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use bilbo_kinds::read::refs::Locator;
+use bilbo_entries::read::refs::Locator;
 
 use super::hit::Hit;
 use crate::rank::Expanded;

@@ -16,9 +16,9 @@ use bilbo_cli::console::outcome::Failure;
 use bilbo_cli::console::settings::{self, Settings};
 use bilbo_cli::console::view::View;
 use bilbo_cli::remember::disk::Disk;
-use bilbo_kinds::read::refs::{Ref, Target};
-use bilbo_kinds::remember::{self, Request};
-use bilbo_kinds::tokens::Tokens;
+use bilbo_entries::read::refs::{Ref, Target};
+use bilbo_entries::remember::{self, Request};
+use bilbo_entries::tokens::Tokens;
 use bilbo_search::analyze::{self, Detect, Language};
 use bilbo_search::chunk;
 use bilbo_search::index::IndexError;
@@ -39,30 +39,30 @@ const SESSIONS: [(&str, &[u8]); 3] = [
     (
         "claude/p/8f2b6d4e-1a3c-4e5f-9b7a-2c4d6e8f0a1b.jsonl",
         include_bytes!(
-            "../../../libs/rust/kinds/session/fixtures/8f2b6d4e-1a3c-4e5f-9b7a-2c4d6e8f0a1b.jsonl"
+            "../../../libs/rust/entries/session/fixtures/8f2b6d4e-1a3c-4e5f-9b7a-2c4d6e8f0a1b.jsonl"
         ),
     ),
     (
         "claude/p/5c3a9e1f-0b7d-4c2e-9a41-7f2d8e6b1c03.jsonl",
         include_bytes!(
-            "../../../libs/rust/kinds/session/fixtures/5c3a9e1f-0b7d-4c2e-9a41-7f2d8e6b1c03.jsonl"
+            "../../../libs/rust/entries/session/fixtures/5c3a9e1f-0b7d-4c2e-9a41-7f2d8e6b1c03.jsonl"
         ),
     ),
     (
         "codex/2026/11/07/rollout-2026-11-07T08-00-00-019a5b3c-2d4e-7f60-8a1b-3c5d7e9f0a2b.jsonl",
         include_bytes!(
-            "../../../libs/rust/kinds/session/fixtures/rollout-2026-11-07T08-00-00-019a5b3c-2d4e-7f60-8a1b-3c5d7e9f0a2b.jsonl"
+            "../../../libs/rust/entries/session/fixtures/rollout-2026-11-07T08-00-00-019a5b3c-2d4e-7f60-8a1b-3c5d7e9f0a2b.jsonl"
         ),
     ),
 ];
 const NOTES: [(&str, &[u8]); 2] = [
     (
         "sections.md",
-        include_bytes!("../../../libs/rust/kinds/markdown/fixtures/sections.md"),
+        include_bytes!("../../../libs/rust/entries/markdown/fixtures/sections.md"),
     ),
     (
         "bare.md",
-        include_bytes!("../../../libs/rust/kinds/markdown/fixtures/no-frontmatter.md"),
+        include_bytes!("../../../libs/rust/entries/markdown/fixtures/no-frontmatter.md"),
     ),
 ];
 const FIRST_SESSION: &str = "sessions/claude/p/8f2b6d4e-1a3c-4e5f-9b7a-2c4d6e8f0a1b.jsonl";
@@ -680,7 +680,7 @@ fn with_a_session_and_its_subagent(test: &str) -> Sandbox {
     );
     sandbox.write(
         &format!("sessions/claude/p/{MAIN_SESSION}/subagents/{SUBAGENT}.jsonl"),
-        include_bytes!("../../../libs/rust/kinds/session/fixtures/agent-ad63c2b3c9e7a4b3d.jsonl"),
+        include_bytes!("../../../libs/rust/entries/session/fixtures/agent-ad63c2b3c9e7a4b3d.jsonl"),
     );
     sandbox.write(
         "sessions/claude/p/8f2b6d4e-1a3c-4e5f-9b7a-2c4d6e8f0a1b.jsonl",
@@ -813,13 +813,13 @@ fn a_scope_by_a_folder_a_session_worked_in_keeps_it() {
     sandbox.write(
         &format!("sessions/claude/p/{WORKED}.jsonl"),
         include_bytes!(
-            "../../../libs/rust/kinds/session/fixtures/7d1e4b9a-3c5f-4a2e-8b6d-0f9e1c2a3b4d.jsonl"
+            "../../../libs/rust/entries/session/fixtures/7d1e4b9a-3c5f-4a2e-8b6d-0f9e1c2a3b4d.jsonl"
         ),
     );
     sandbox.write(
         &format!("sessions/codex/2026/11/08/{ROLLOUT}.jsonl"),
         include_bytes!(
-            "../../../libs/rust/kinds/session/fixtures/rollout-2026-11-08T10-00-00-019a6c4d-3e5f-7a71-9b2c-4d6e8fa0b1c3.jsonl"
+            "../../../libs/rust/entries/session/fixtures/rollout-2026-11-08T10-00-00-019a6c4d-3e5f-7a71-9b2c-4d6e8fa0b1c3.jsonl"
         ),
     );
     sandbox.write(FIRST_SESSION, SESSIONS[0].1);

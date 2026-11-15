@@ -21,9 +21,9 @@ rust_library(
     lint_config = ":lints",
     version = BILBO_VERSION,
     deps = [
-        "//libs/rust/kinds",
-        "//libs/rust/kinds/markdown",
-        "//libs/rust/kinds/session",
+        "//libs/rust/entries",
+        "//libs/rust/entries/markdown",
+        "//libs/rust/entries/session",
         "//libs/rust/search",
         "//libs/rust/search/qwen",
         "//libs/rust/search/tantivy",
@@ -73,15 +73,15 @@ bilbo_rust_test(
     name = "snapshot",
     srcs = ["tests/snapshot.rs"],
     compile_data = glob(["tests/snapshots/*"]) + [
-        "//libs/rust/kinds/markdown:fixtures",
-        "//libs/rust/kinds/session:fixtures",
+        "//libs/rust/entries/markdown:fixtures",
+        "//libs/rust/entries/session:fixtures",
     ],
     layer = "snapshot",
     lint_config = ":lints",
     version = BILBO_VERSION,
     deps = [
         ":bilbo_cli",
-        "//libs/rust/kinds",
+        "//libs/rust/entries",
         "//libs/rust/search",
         "//libs/rust/store",
     ],
@@ -98,7 +98,7 @@ bilbo_rust_test(
     lint_config = ":lints",
     deps = [
         ":bilbo_cli",
-        "//libs/rust/kinds",
+        "//libs/rust/entries",
         "//libs/rust/store",
     ],
 )
@@ -110,12 +110,12 @@ bilbo_rust_test(
         "tests/sessions.rs",
     ],
     crate_root = "tests/sessions.rs",
-    compile_data = ["//libs/rust/kinds/session:fixtures"],
+    compile_data = ["//libs/rust/entries/session:fixtures"],
     layer = "integration",
     lint_config = ":lints",
     deps = [
         ":bilbo_cli",
-        "//libs/rust/kinds",
+        "//libs/rust/entries",
         "//libs/rust/store",
     ] + all_crate_deps(normal_dev = True),
 )
@@ -124,14 +124,14 @@ bilbo_rust_test(
     name = "read",
     srcs = ["tests/read.rs"],
     compile_data = [
-        "//libs/rust/kinds/markdown:fixtures",
-        "//libs/rust/kinds/session:fixtures",
+        "//libs/rust/entries/markdown:fixtures",
+        "//libs/rust/entries/session:fixtures",
     ],
     layer = "integration",
     lint_config = ":lints",
     deps = [
         ":bilbo_cli",
-        "//libs/rust/kinds",
+        "//libs/rust/entries",
         "//libs/rust/store",
     ],
 )
@@ -144,14 +144,14 @@ bilbo_rust_test(
     ],
     crate_root = "tests/recall.rs",
     compile_data = [
-        "//libs/rust/kinds/markdown:fixtures",
-        "//libs/rust/kinds/session:fixtures",
+        "//libs/rust/entries/markdown:fixtures",
+        "//libs/rust/entries/session:fixtures",
     ],
     layer = "integration",
     lint_config = ":lints",
     deps = [
         ":bilbo_cli",
-        "//libs/rust/kinds",
+        "//libs/rust/entries",
         "//libs/rust/search",
         "//libs/rust/store",
         "@crates//:rustix",
@@ -162,14 +162,14 @@ bilbo_rust_test(
     name = "reindex",
     srcs = ["tests/reindex.rs"],
     compile_data = [
-        "//libs/rust/kinds/markdown:fixtures",
-        "//libs/rust/kinds/session:fixtures",
+        "//libs/rust/entries/markdown:fixtures",
+        "//libs/rust/entries/session:fixtures",
     ],
     layer = "integration",
     lint_config = ":lints",
     deps = [
         ":bilbo_cli",
-        "//libs/rust/kinds",
+        "//libs/rust/entries",
         "//libs/rust/search",
         "//libs/rust/search/qwen",
         "//libs/rust/search/tantivy",
@@ -197,7 +197,7 @@ bilbo_rust_test(
     lint_config = ":lints",
     deps = [
         ":bilbo_cli",
-        "//libs/rust/kinds",
+        "//libs/rust/entries",
         "//libs/rust/store",
     ],
 )

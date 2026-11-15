@@ -2,7 +2,7 @@ use std::ffi::OsString;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use bilbo_kinds::follows::Follow;
+use bilbo_entries::follows::Follow;
 use bilbo_settings::edit;
 use bilbo_settings::folder;
 use bilbo_settings::key::{Origin, quote};
@@ -205,7 +205,7 @@ fn declares_inline(config: &Path, origin: &Origin) -> bool {
 mod tests {
     use std::path::PathBuf;
 
-    use bilbo_kinds::follows::Follow;
+    use bilbo_entries::follows::Follow;
 
     use super::{Refusal, Remedy, Saved, table};
     use crate::console::theme::Mark;

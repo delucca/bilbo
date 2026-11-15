@@ -1,4 +1,4 @@
-use bilbo_kinds::reader::Reader;
+use bilbo_entries::reader::Reader;
 use bilbo_search::chunk::Size;
 use bilbo_search::position::Manifest;
 use bilbo_search::reindex;

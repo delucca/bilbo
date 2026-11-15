@@ -10,7 +10,7 @@ use std::time::{Duration, SystemTime};
 
 use bilbo_cli::console::settings;
 use bilbo_cli::remember::save::{Saved, Saving, save_with};
-use bilbo_kinds::follows::Follow;
+use bilbo_entries::follows::Follow;
 use bilbo_store::entries::{Entries, Generation, Head, Meta, RecordRange};
 use bilbo_store::labels::CaptureLabel;
 use bilbo_store::layout::Layout;
@@ -26,21 +26,21 @@ const WAIT: Duration = Duration::from_secs(10);
 const AGENT: &str = "agent-ad63c2b3c9e7a4b3d";
 const ROLLOUT: &str = "rollout-2026-11-06T09-10-00-019a4f2e-7c1d-7b3a-9e55-2d8c41f0a6b7.jsonl";
 const CLAUDE: &[u8] = include_bytes!(
-    "../../../libs/rust/kinds/session/fixtures/5c3a9e1f-0b7d-4c2e-9a41-7f2d8e6b1c03.jsonl"
+    "../../../libs/rust/entries/session/fixtures/5c3a9e1f-0b7d-4c2e-9a41-7f2d8e6b1c03.jsonl"
 );
 const SUBAGENT: &[u8] =
-    include_bytes!("../../../libs/rust/kinds/session/fixtures/agent-ad63c2b3c9e7a4b3d.jsonl");
+    include_bytes!("../../../libs/rust/entries/session/fixtures/agent-ad63c2b3c9e7a4b3d.jsonl");
 const META: &[u8] =
-    include_bytes!("../../../libs/rust/kinds/session/fixtures/agent-ad63c2b3c9e7a4b3d.meta.json");
+    include_bytes!("../../../libs/rust/entries/session/fixtures/agent-ad63c2b3c9e7a4b3d.meta.json");
 const CODEX: &[u8] = include_bytes!(
-    "../../../libs/rust/kinds/session/fixtures/rollout-2026-11-06T09-10-00-019a4f2e-7c1d-7b3a-9e55-2d8c41f0a6b7.jsonl"
+    "../../../libs/rust/entries/session/fixtures/rollout-2026-11-06T09-10-00-019a4f2e-7c1d-7b3a-9e55-2d8c41f0a6b7.jsonl"
 );
 const CODEX_PACKED: &[u8] = include_bytes!(
-    "../../../libs/rust/kinds/session/fixtures/rollout-2026-11-06T09-10-00-019a4f2e-7c1d-7b3a-9e55-2d8c41f0a6b7.jsonl.zst"
+    "../../../libs/rust/entries/session/fixtures/rollout-2026-11-06T09-10-00-019a4f2e-7c1d-7b3a-9e55-2d8c41f0a6b7.jsonl.zst"
 );
 const SECOND: &str = "rollout-2026-11-07T08-00-00-019a5b3c-2d4e-7f60-8a1b-3c5d7e9f0a2b.jsonl";
 const SECOND_BYTES: &[u8] = include_bytes!(
-    "../../../libs/rust/kinds/session/fixtures/rollout-2026-11-07T08-00-00-019a5b3c-2d4e-7f60-8a1b-3c5d7e9f0a2b.jsonl"
+    "../../../libs/rust/entries/session/fixtures/rollout-2026-11-07T08-00-00-019a5b3c-2d4e-7f60-8a1b-3c5d7e9f0a2b.jsonl"
 );
 
 struct Sandbox {

@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::time::{Duration, SystemTime};
 
-use bilbo_kinds::reader::{Passage, Piece};
+use bilbo_entries::reader::{Passage, Piece};
 use bilbo_store::entries::RecordRange;
 
 use crate::json::{self, Value};
@@ -263,7 +263,7 @@ pub fn minute(time: SystemTime) -> String {
 mod tests {
     use std::time::{Duration, SystemTime};
 
-    use bilbo_kinds::reader::Piece;
+    use bilbo_entries::reader::Piece;
 
     use super::{Outline, Tools, head_of, passage, strip, time};
     use crate::json::{Value, parse};

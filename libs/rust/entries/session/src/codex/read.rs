@@ -1,4 +1,4 @@
-use bilbo_kinds::reader::{EntryLabels, Passage};
+use bilbo_entries::reader::{EntryLabels, Passage};
 
 use crate::json::{self, Value};
 use crate::render::{self, Outline, Tools};
@@ -178,7 +178,7 @@ pub fn labels(records: &[&[u8]]) -> Vec<String> {
 mod tests {
     use std::time::{Duration, SystemTime};
 
-    use bilbo_kinds::reader::Passage;
+    use bilbo_entries::reader::Passage;
 
     use super::passages;
 

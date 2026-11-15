@@ -5,8 +5,8 @@ use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
 use std::time::SystemTime;
 
-use bilbo_kinds::reader::{Passage, Reader};
-use bilbo_kinds::tokens::Tokens;
+use bilbo_entries::reader::{Passage, Reader};
+use bilbo_entries::tokens::Tokens;
 use bilbo_store::entries::{Entries, Generation, Meta, RecordRange, StoreError};
 use bilbo_store::id::Id;
 use bilbo_store::labels::{Filed, Relabel, Worded};
@@ -445,7 +445,7 @@ mod tests {
     use std::thread;
     use std::time::{Duration, SystemTime};
 
-    use bilbo_kinds::reader::{Passage, Reader};
+    use bilbo_entries::reader::{Passage, Reader};
     use bilbo_store::entries::{Generation, Meta, RecordRange};
     use bilbo_store::id::Id;
     use bilbo_store::labels::StoredLabels;
@@ -633,8 +633,8 @@ mod tests {
     mod redo {
         use std::time::{Duration, SystemTime};
 
-        use bilbo_kinds::reader::{Passage, Piece};
-        use bilbo_kinds::tokens::Tokens;
+        use bilbo_entries::reader::{Passage, Piece};
+        use bilbo_entries::tokens::Tokens;
         use bilbo_store::entries::{Generation, RecordRange};
 
         use super::super::{Growth, redo};

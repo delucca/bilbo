@@ -7,7 +7,7 @@ publish.workspace = true
 description = "The Qwen3-Embedding tokenizer behind the Tokens port."
 
 [dependencies]
-bilbo-kinds.workspace = true
+bilbo-entries.workspace = true
 tokenizers.workspace = true
 zstd.workspace = true
 

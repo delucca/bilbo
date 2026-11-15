@@ -2,9 +2,9 @@
 resolver = "3"
 members = [
     "apps/cli",
-    "libs/rust/kinds",
-    "libs/rust/kinds/markdown",
-    "libs/rust/kinds/session",
+    "libs/rust/entries",
+    "libs/rust/entries/markdown",
+    "libs/rust/entries/session",
     "libs/rust/search",
     "libs/rust/search/qwen",
     "libs/rust/search/tantivy",
@@ -20,11 +20,11 @@ rust-version = "1.99"
 publish = false
 
 [workspace.dependencies]
-bilbo-kinds = { path = "libs/rust/kinds" }
-bilbo-markdown = { path = "libs/rust/kinds/markdown" }
+bilbo-entries = { path = "libs/rust/entries" }
+bilbo-markdown = { path = "libs/rust/entries/markdown" }
 bilbo-qwen = { path = "libs/rust/search/qwen" }
 bilbo-search = { path = "libs/rust/search" }
-bilbo-session = { path = "libs/rust/kinds/session" }
+bilbo-session = { path = "libs/rust/entries/session" }
 bilbo-settings = { path = "libs/rust/settings" }
 bilbo-store = { path = "libs/rust/store" }
 bilbo-tantivy = { path = "libs/rust/search/tantivy" }
