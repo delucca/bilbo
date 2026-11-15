@@ -301,7 +301,7 @@ fn a_catalog_made_again_has_no_text_label_and_a_new_id() {
 
 #[test]
 fn a_catalog_of_an_older_version_is_made_again_with_the_label_tables() {
-    for older in [2, 3, 4] {
+    for older in [2, 3, 4, 5] {
         let scratch = Scratch::new("anew-older-version");
         let layout = scratch.layout();
         let mut store = open(&layout);
@@ -320,7 +320,7 @@ fn a_catalog_of_an_older_version_is_made_again_with_the_label_tables() {
             .expect("open")
             .query_row("PRAGMA user_version", [], |row| row.get(0))
             .expect("version");
-        assert_eq!(version, 5);
+        assert_eq!(version, 6);
     }
 }
 
@@ -333,7 +333,7 @@ fn a_reader_finds_no_kept_catalog_in_a_file_of_an_older_version() {
     let a = head(&store, "a.md").id;
     store.relabel(&[filed(a, &["shed"])]).expect("relabel");
     store.close().expect("close");
-    crate::scratch::sql(&layout, "PRAGMA user_version = 4");
+    crate::scratch::sql(&layout, "PRAGMA user_version = 5");
     let held = fs::read(catalog(&layout)).expect("read");
     let canonical = fs::canonicalize(&layout.cache).expect("canonical");
     let store = Store::open_read_only(&layout, sealing(), &mut |_| {}).expect("read-only open");

@@ -129,6 +129,7 @@ dependencies = [
  "frostem",
  "serde_json",
  "stop-words",
+ "strsim",
  "xxhash-rust",
  "zstd",
 ]

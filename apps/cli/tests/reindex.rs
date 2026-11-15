@@ -604,7 +604,7 @@ fn the_index_records_the_manifest_it_was_made_with_and_the_stores_cursor() {
             "bilbo index 2",
             "chunk_tokens 512",
             "chunk_overlap 64",
-            "analyzer bm25s-en/2",
+            "analyzer bm25s-en/3",
             "tokenizer qwen3-embedding-0.6b/97b0c614be4d/def76fb08697/raw",
             "render markdown/1/heading_width=100 session/2",
         ]
@@ -1860,9 +1860,9 @@ fn a_cache_whose_catalog_an_older_bilbo_left_is_refused_and_made_again() {
 
     let catalog = sandbox.cache().join("catalog.sqlite");
     let mut bytes = fs::read(&catalog).expect("the catalog");
-    assert_eq!(bytes[60..64], 5u32.to_be_bytes(), "this bilbo's version");
-    bytes[60..64].copy_from_slice(&4u32.to_be_bytes());
-    fs::write(&catalog, bytes).expect("a catalog round 4 made");
+    assert_eq!(bytes[60..64], 6u32.to_be_bytes(), "this bilbo's version");
+    bytes[60..64].copy_from_slice(&5u32.to_be_bytes());
+    fs::write(&catalog, bytes).expect("a catalog the last release made");
 
     let refused = sandbox.run(&SHED);
     assert_eq!((refused.code, refused.stdout.as_str()), (1, ""));

@@ -147,6 +147,29 @@ fn a_misspelt_query_finds_its_session() {
 }
 
 #[test]
+fn a_note_with_accents_is_found_by_a_query_without_them() {
+    let scratch = Scratch::new("recall_accents");
+    scratch.write(
+        "decisao.md",
+        "# Decis\u{e3}o\n\nDecis\u{e3}o: usar p\u{e3}o de queijo na configura\u{e7}\u{e3}o\n",
+    );
+    scratch.write("filler.md", "# Filler\n\nusar queijo e pao ou nada\n");
+    assert_eq!(scratch.run(&["remember", &scratch.path("notes")]).code, 0);
+    let plain = scratch.run(&["recall", "decisao", "configuracao"]);
+    assert_eq!(plain.code, 0, "{}", plain.stderr);
+    let plain_refs = hit_refs(&plain.stdout);
+    assert!(!plain_refs.is_empty(), "{}", plain.stdout);
+    assert!(
+        plain.stdout.contains("p\u{e3}o de queijo"),
+        "{}",
+        plain.stdout
+    );
+    let accented = scratch.run(&["recall", "decis\u{e3}o", "configura\u{e7}\u{e3}o"]);
+    assert_eq!(accented.code, 0, "{}", accented.stderr);
+    assert_eq!(hit_refs(&accented.stdout)[0], plain_refs[0]);
+}
+
+#[test]
 fn recall_exits_1_when_nothing_matches() {
     let scratch = remembered("recall_nothing");
     let none = scratch.run(&["recall", "xyzzy"]);

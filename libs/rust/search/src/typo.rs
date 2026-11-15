@@ -59,26 +59,7 @@ impl Rule {
 
 /// Restricted: a swapped pair is not edited again, as the index's automaton counts.
 pub fn distance(a: &str, b: &str) -> usize {
-    let a: Vec<char> = a.chars().collect();
-    let b: Vec<char> = b.chars().collect();
-    let mut before = vec![0; b.len() + 1];
-    let mut previous: Vec<usize> = (0..=b.len()).collect();
-    for i in 1..=a.len() {
-        let mut row = vec![i; b.len() + 1];
-        for j in 1..=b.len() {
-            let cost = usize::from(a[i - 1] != b[j - 1]);
-            let mut best = (previous[j] + 1)
-                .min(row[j - 1] + 1)
-                .min(previous[j - 1] + cost);
-            if i > 1 && j > 1 && a[i - 1] == b[j - 2] && a[i - 2] == b[j - 1] {
-                best = best.min(before[j - 2] + 1);
-            }
-            row[j] = best;
-        }
-        before = previous;
-        previous = row;
-    }
-    previous[b.len()]
+    strsim::osa_distance(a, b)
 }
 
 #[cfg(test)]

@@ -1,6 +1,6 @@
 use std::sync::LazyLock;
 
-use super::{Language, word};
+use super::{Language, fold, word};
 
 struct Table {
     words: Vec<String>,
@@ -11,33 +11,19 @@ pub(super) fn published() -> &'static [&'static str] {
     stop_words::lookup(Language::Portuguese.code()).expect("the crate holds the nltk lists")
 }
 
-fn unaccent(word: &str) -> String {
-    word.chars()
-        .map(|c| match c {
-            'á' | 'à' | 'â' | 'ã' => 'a',
-            'é' | 'ê' => 'e',
-            'í' => 'i',
-            'ó' | 'ô' | 'õ' => 'o',
-            'ú' | 'ü' => 'u',
-            'ç' => 'c',
-            other => other,
-        })
-        .collect()
-}
-
 fn table() -> &'static Table {
     static TABLE: LazyLock<Table> = LazyLock::new(|| {
         let mut words: Vec<String> = published()
             .iter()
-            .filter(|spelling| word(spelling).is_some())
-            .map(|spelling| unaccent(spelling))
+            .map(|spelling| fold(spelling).into_owned())
+            .filter(|folded| word(folded).is_some())
             .collect();
         words.sort();
         words.dedup();
         let english = stop_words::lookup("en").expect("the crate holds the nltk lists");
         let shared = words
             .iter()
-            .filter(|each| word(each).is_some() && english.contains(&each.as_str()))
+            .filter(|each| english.contains(&each.as_str()))
             .cloned()
             .collect();
         Table { words, shared }
@@ -46,17 +32,19 @@ fn table() -> &'static Table {
 }
 
 pub(super) fn leaves(word: &str) -> bool {
-    table().words.binary_search(&unaccent(word)).is_ok()
+    table()
+        .words
+        .binary_search_by(|each| each.as_str().cmp(word))
+        .is_ok()
 }
 
 pub(super) fn counts(word: &str) -> bool {
-    let word = unaccent(word);
-    table().words.binary_search(&word).is_ok() && !table().shared.contains(&word)
+    leaves(word) && !table().shared.iter().any(|each| each == word)
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{published, table, unaccent};
+    use super::{published, table};
 
     #[test]
     fn the_published_list_is_the_207_words_the_drop_was_measured_on() {
@@ -86,17 +74,14 @@ tua tuas tém tínhamos um uma você vocês vos à às é éramos
     }
 
     #[test]
-    fn the_table_has_195_words_and_the_english_three_are_do_me_and_so() {
+    fn the_table_has_194_words_and_the_english_three_are_do_me_and_so() {
         let table = table();
-        assert_eq!(table.words.len(), 195);
+        assert_eq!(table.words.len(), 194);
         assert!(table.words.windows(2).all(|pair| pair[0] < pair[1]));
         for word in &table.words {
-            assert!(
-                word.chars().all(|c| c.is_ascii_lowercase()) && unaccent(word) == *word,
-                "{word}"
-            );
+            assert!(word.chars().all(|c| c.is_ascii_lowercase()), "{word}");
         }
-        assert!(table.words.iter().any(|word| word == "as"));
+        assert!(!table.words.iter().any(|word| word == "as"));
         assert_eq!(table.shared, ["do", "me", "so"]);
     }
 }

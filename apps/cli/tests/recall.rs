@@ -724,6 +724,34 @@ fn a_scope_by_a_word_of_the_capture_label_keeps_those_entries() {
     }
 }
 
+#[test]
+fn a_folder_with_an_accent_is_named_without_it() {
+    let sandbox = Sandbox::new("recall_in_accents");
+    sandbox.write(
+        "notes/reunia\u{303}o/a.md",
+        b"# Beds\n\nSeville marmalade ripens beside the tomato vines, forty jars by October.\n",
+    );
+    sandbox.write(
+        "notes/pantry/b.md",
+        b"# Shelf\n\nQuince marmalade keeps on the top rack behind the flour bins, away from damp.\n",
+    );
+    sandbox.remember(&["notes"]);
+    for value in ["reuniao", "reuni\u{e3}o", "reunia\u{303}o"] {
+        let run = sandbox.run(&["recall", "--in", value, "marmalade"]);
+        assert_eq!(run.code, 0, "{value:?}: {:?}", run.stderr);
+        let found = hits(&run.stdout);
+        assert_eq!(found.len(), 1, "{value:?}: {}", run.stdout);
+        assert!(capture_of(&sandbox, &found[0]).contains("reunia"));
+        assert!(
+            run.stderr
+                .iter()
+                .any(|line| line.starts_with("bilbo: --in kept 1 entry")),
+            "{value:?}: {:?}",
+            run.stderr
+        );
+    }
+}
+
 const WORKED: &str = "7d1e4b9a-3c5f-4a2e-8b6d-0f9e1c2a3b4d";
 const ROLLOUT: &str = "rollout-2026-11-08T10-00-00-019a6c4d-3e5f-7a71-9b2c-4d6e8fa0b1c3";
 
@@ -982,6 +1010,20 @@ fn the_question_words_key_changes_what_a_prompt_finds() {
         kept.stdout.contains("anything goes in the garden shed"),
         "{}",
         kept.stdout
+    );
+    fs::write(
+        sandbox.dir.join("config/config.toml"),
+        "[recall]\nquestion_words = [\"n\u{e3}o\"]\n",
+    )
+    .expect("a config file");
+    let refused = sandbox.run(&["recall", "anything"]);
+    assert_eq!(refused.code, 2, "{:?}", refused.stderr);
+    assert!(
+        refused.stderr.iter().any(|line| line.contains(
+            "recall.question_words must be a list of words as the analyzer reads them: lowercase, with no accent or other mark, no compatibility form it folds, and Hangul as jamo, got \"n\u{e3}o\""
+        )),
+        "{:?}",
+        refused.stderr
     );
 }
 

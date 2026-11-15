@@ -1,6 +1,8 @@
+mod fold;
 mod portuguese;
 mod word;
 
+use std::borrow::Cow;
 use std::sync::LazyLock;
 
 use frostem::{Algorithm, Stemmer};
@@ -59,9 +61,33 @@ fn runs(lowered: &str) -> impl Iterator<Item = &str> {
         .filter(|run| !run.is_empty())
 }
 
+fn fold(text: &str) -> Cow<'_, str> {
+    if text.is_ascii() {
+        return Cow::Borrowed(text);
+    }
+    let mut folded = String::with_capacity(text.len());
+    for c in text.chars() {
+        let code = u32::from(c);
+        if (0xAC00..=0xD7A3).contains(&code) {
+            let s = code - 0xAC00;
+            folded.extend(char::from_u32(0x1100 + s / 588));
+            folded.extend(char::from_u32(0x1161 + s % 588 / 28));
+            if s % 28 != 0 {
+                folded.extend(char::from_u32(0x11A7 + s % 28));
+            }
+        } else if let Ok(row) = fold::FOLDS.binary_search_by_key(&code, |row| row.0) {
+            let (_, start, len) = fold::FOLDS[row];
+            folded.push_str(&fold::FOLDED[start as usize..(start + u32::from(len)) as usize]);
+        } else {
+            folded.push(c);
+        }
+    }
+    Cow::Owned(folded)
+}
+
 /// As bm25s splits with `\b\w\w+\b`, lowercased, without its stopwords.
 fn words(text: &str) -> Vec<String> {
-    let lowered = lower(text);
+    let lowered = lower(&fold(text));
     runs(&lowered)
         .filter(|word| {
             word.chars().nth(1).is_some()
@@ -80,7 +106,7 @@ pub fn every_word(text: &str) -> Vec<String> {
 }
 
 fn label_words_upto(text: &str, most: usize) -> Vec<String> {
-    runs(&lower(text))
+    runs(&lower(&fold(text)))
         .flat_map(|run| run.split('_'))
         .filter(|part| !part.is_empty())
         .take(most)
@@ -149,7 +175,7 @@ pub trait Detect {
 
 #[derive(Clone, Copy, Default)]
 pub struct Omit<'a> {
-    /// Left out of every query, matched as typed.
+    /// Left out of every query, matched after the fold and before stemming.
     pub words: &'a [String],
     /// The languages whose function words leave a query written in one of them.
     pub languages: &'a [Language],
@@ -195,15 +221,18 @@ pub fn word(text: &str) -> Option<String> {
 }
 
 /// Names these rules in the index's manifest. Change it with any of them, the stemmer's version included.
-pub const ID: &str = "bm25s-en/2";
+pub const ID: &str = "bm25s-en/3";
 
 #[cfg(test)]
 mod tests {
     use crate::testing::Says;
 
+    use std::borrow::Cow;
+    use std::collections::HashSet;
+
     use super::{
-        Language, MAX_LABEL_WORDS, MAX_TERM_BYTES, Omit, STOPWORDS, every_word, filed_words,
-        is_word, label_words, lower, portuguese, query, stem, terms, word, words,
+        Language, MAX_LABEL_WORDS, MAX_TERM_BYTES, Omit, STOPWORDS, every_word, filed_words, fold,
+        is_word, label_words, lower, portuguese, query, runs, stem, terms, word, words,
     };
 
     fn portuguese_says() -> Says {
@@ -235,7 +264,11 @@ mod tests {
             ("file.rs:42", &["file", "rs", "42"]),
             ("foo::bar(&baz)?", &["foo", "bar", "baz"]),
             ("日本語 五", &["日本語"]),
-            ("x² ½⅓ Ⅷ", &["x²", "½⅓"]),
+            (
+                "x\u{b2} \u{bd}\u{2153} \u{2167}",
+                &["x2", "\u{bd}\u{2153}", "viii"],
+            ),
+            ("\u{e9}", &[]),
         ] {
             assert_eq!(words(text), found, "{text:?}");
         }
@@ -292,31 +325,198 @@ mod tests {
     #[test]
     fn a_word_is_lowercased_before_it_is_split_or_compared() {
         assert_eq!(
-            words("CamelCase ÉCOLE Straße ǅungla"),
-            ["camelcase", "école", "straße", "ǆungla"]
+            words("CamelCase \u{c9}COLE Stra\u{df}e \u{1c5}ungla"),
+            ["camelcase", "ecole", "stra\u{df}e", "dzungla"]
         );
         assert_eq!(words("THE The tHe NOT No"), Vec::<String>::new());
     }
 
     #[test]
-    fn a_mark_is_no_word_character_so_a_decomposed_letter_splits_its_word() {
-        assert_eq!(words("café"), ["café"]);
-        assert_eq!(words("cafe\u{301}s"), ["cafe"]);
-        assert_eq!(words("nai\u{308}ve"), ["nai", "ve"]);
+    fn cafe_with_its_accent_without_it_and_decomposed_is_one_term() {
+        for text in ["caf\u{e9}", "cafe", "cafe\u{301}", "CAF\u{c9}"] {
+            assert_eq!(words(text), ["cafe"], "{text:?}");
+        }
+        assert_eq!(words("cafe\u{301}s"), ["cafes"]);
+        assert_eq!(words("nai\u{308}ve"), ["naive"]);
+        for text in ["n\u{e3}o", "nao", "na\u{303}o"] {
+            assert_eq!(words(text), ["nao"], "{text:?}");
+        }
         assert_eq!(words("ab\u{200d}cd ab\u{ad}cd"), ["ab", "cd", "ab", "cd"]);
-        // Python lowers İ to i and a combining dot, which then ends the word.
-        assert_eq!(words("İstanbul"), ["stanbul"]);
-        assert_eq!(words("aİb"), ["ai"]);
+        assert_eq!(words("\u{130}stanbul"), ["istanbul"]);
+        assert_eq!(words("a\u{130}b"), ["aib"]);
+    }
+
+    #[test]
+    fn a_ligature_a_full_width_letter_and_a_letter_with_no_lowercase_fold_to_plain_lowercase_letters()
+     {
+        for (text, folded) in [
+            ("con\u{fb01}guration", "configuration"),
+            ("\u{ff21}\u{ff22}\u{ff23}", "abc"),
+            ("x\u{b2}", "x2"),
+            ("\u{2167}", "viii"),
+            ("1\u{ba}", "1o"),
+            ("\u{1d400}\u{1d401}\u{1d402}", "abc"),
+            ("\u{210b}ello", "hello"),
+        ] {
+            assert_eq!(words(text), [folded], "{text:?}");
+        }
+    }
+
+    #[test]
+    fn a_character_that_is_no_word_character_or_whose_fold_holds_one_is_left_as_it_is() {
+        for (text, found) in [
+            ("Windows\u{2122}", &["windows"][..]),
+            ("x5\u{338f}", &["x5"]),
+            ("a\u{a0}b", &[]),
+            ("2\u{bc}", &["2\u{bc}"]),
+            ("\u{fdfa}\u{fdfa}", &["\u{fdfa}\u{fdfa}"]),
+            ("\u{e01}\u{e33}", &["\u{e01}\u{e33}"]),
+        ] {
+            assert_eq!(words(text), found, "{text:?}");
+        }
+    }
+
+    #[test]
+    fn the_fold_moves_a_word_boundary_only_where_it_drops_a_character_and_at_the_dotted_capital_i()
+    {
+        let mut dropped = 0;
+        for code in 0..=0x10_ffff_u32 {
+            let Some(c) = char::from_u32(code) else {
+                continue;
+            };
+            let text = format!("ab{c}cd");
+            let before = every_word(&text).len();
+            let after = runs(&lower(&fold(&text))).count();
+            let drops = fold::FOLDS
+                .binary_search_by_key(&code, |row| row.0)
+                .is_ok_and(|row| fold::FOLDS[row].2 == 0);
+            if code == 0x130 {
+                assert_eq!((before, after), (2, 1));
+            } else if drops {
+                dropped += 1;
+                if is_word(c) {
+                    assert!(matches!(code, 0xFF9E | 0xFF9F), "U+{code:04X}");
+                    assert_eq!(before, after, "U+{code:04X}");
+                } else {
+                    assert_eq!((before, after), (2, 1), "U+{code:04X}");
+                }
+            } else {
+                assert_eq!(before, after, "U+{code:04X}");
+            }
+        }
+        assert_eq!(dropped, 924);
+    }
+
+    #[test]
+    fn a_hangul_word_and_its_decomposed_form_are_one_term() {
+        let syllables = words("\u{d55c}\u{ae00}");
+        assert_eq!(
+            syllables,
+            words("\u{1112}\u{1161}\u{11ab}\u{1100}\u{1173}\u{11af}")
+        );
+        assert_eq!(syllables.len(), 1);
+        assert_eq!(words("\u{ac00}"), ["\u{1100}\u{1161}"]);
+        assert_eq!(
+            words("\u{65e5}\u{672c}\u{8a9e} \u{4e94}"),
+            ["\u{65e5}\u{672c}\u{8a9e}"]
+        );
+    }
+
+    #[test]
+    fn every_hangul_syllable_folds_to_jamo_of_their_blocks_and_no_two_alike() {
+        let mut seen = HashSet::new();
+        for code in 0xAC00..=0xD7A3_u32 {
+            let c = char::from_u32(code).expect("a syllable");
+            let folded: Vec<u32> = fold(&c.to_string()).chars().map(u32::from).collect();
+            assert!((0x1100..=0x1112).contains(&folded[0]), "U+{code:04X}");
+            assert!((0x1161..=0x1175).contains(&folded[1]), "U+{code:04X}");
+            assert!(
+                folded.len() == 2 || (folded.len() == 3 && (0x11A8..=0x11C2).contains(&folded[2]))
+            );
+            assert!(seen.insert(folded), "U+{code:04X}");
+        }
+        assert_eq!(fold("\u{ac00}"), "\u{1100}\u{1161}");
+        assert_eq!(fold("\u{d7a3}"), "\u{1112}\u{1175}\u{11c2}");
+        assert_eq!(fold("\u{d55c}"), "\u{1112}\u{1161}\u{11ab}");
+    }
+
+    #[test]
+    fn an_ascii_text_is_folded_without_a_copy() {
+        assert!(matches!(fold("Hello, World 42"), Cow::Borrowed(_)));
+        assert_eq!(fold("\u{65e5}\u{672c}\u{8a9e}"), "\u{65e5}\u{672c}\u{8a9e}");
+        assert_eq!(fold("caf\u{e9}"), "cafe");
+    }
+
+    #[test]
+    fn the_fold_table_is_rising_and_its_folds_lie_in_the_text() {
+        let mut offset = 0;
+        for window in fold::FOLDS.windows(2) {
+            assert!(window[0].0 < window[1].0);
+        }
+        for &(code, start, len) in &fold::FOLDS {
+            assert!(
+                !(0xAC00..=0xD7A3).contains(&code) && code > 0x7f,
+                "U+{code:04X}"
+            );
+            let (start, end) = (start as usize, start as usize + usize::from(len));
+            assert_eq!(start, offset, "U+{code:04X}");
+            assert!(fold::FOLDED.is_char_boundary(start) && fold::FOLDED.is_char_boundary(end));
+            offset = end;
+            if len > 0 {
+                let c = char::from_u32(code).expect("a character");
+                assert!(is_word(c), "U+{code:04X}");
+            }
+        }
+        assert_eq!(offset, fold::FOLDED.len());
+        assert!(fold::FOLDED.chars().all(is_word));
+    }
+
+    #[test]
+    fn a_word_the_analyzer_gave_is_given_again_as_itself() {
+        for code in 0..=0x10_ffff_u32 {
+            let Some(c) = char::from_u32(code) else {
+                continue;
+            };
+            for word in words(&format!("x{c}x")) {
+                assert_eq!(words(&word), [word.as_str()], "U+{code:04X}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_voiced_kana_and_its_half_width_form_fold_alike() {
+        for text in [
+            "\u{30ac}\u{30ac}",
+            "\u{30ab}\u{3099}\u{30ab}\u{3099}",
+            "\u{ff76}\u{ff9e}\u{ff76}\u{ff9e}",
+        ] {
+            assert_eq!(words(text), ["\u{30ab}\u{30ab}"], "{text:?}");
+        }
+    }
+
+    #[test]
+    fn a_label_with_accents_is_filed_under_its_folded_words() {
+        let composed = "/home/me/reuni\u{e3}o";
+        let decomposed = "/home/me/reunia\u{303}o";
+        let plain = "/home/me/reuniao";
+        assert_eq!(label_words(composed), stemmed(&["home", "me", "reuniao"]));
+        assert_eq!(label_words(composed), label_words(plain));
+        assert_eq!(label_words(decomposed), label_words(plain));
+        assert_eq!(filed_words(composed), filed_words(plain));
+        assert_eq!(filed_words(decomposed), filed_words(plain));
     }
 
     #[test]
     fn a_final_sigma_is_lowered_as_python_lowers_it() {
-        assert_eq!(words("ΑΣ ΑΣΑ ΌΣΟΣ"), ["ας", "ασα", "όσος"]);
+        assert_eq!(
+            words("\u{391}\u{3a3} \u{391}\u{3a3}\u{391} \u{38c}\u{3a3}\u{39f}\u{3a3}"),
+            ["ας", "ασα", "οσος"]
+        );
         assert_eq!(lower("ΑΣ'Α Σ"), "ασ'α σ");
     }
 
     #[test]
-    fn a_character_newer_than_the_table_is_no_word_character_whatever_it_lowercases_to() {
+    fn a_character_newer_than_the_table_is_left_alone_and_cut_at() {
         // U+1C89 and U+A7CB came with Unicode 16; the second lowercases to U+0264, a letter since 1.1.
         assert!(!is_word('\u{1c89}') && !is_word('\u{a7cb}') && is_word('\u{264}'));
         assert_eq!(
@@ -324,6 +524,8 @@ mod tests {
             ["\u{264}\u{264}"]
         );
         assert_eq!(lower("A\u{a7cb}"), "a\u{fffd}");
+        assert_eq!(words("ab\u{1ccd6}cd"), ["ab", "cd"]);
+        assert_eq!(words("ab\u{897}cd"), ["ab", "cd"]);
     }
 
     #[test]
@@ -385,7 +587,7 @@ mod tests {
 
     #[test]
     fn a_word_over_the_longest_term_is_dropped_and_one_of_exactly_that_length_is_kept() {
-        for (letter, long) in [("x", MAX_TERM_BYTES), ("é", MAX_TERM_BYTES / 2)] {
+        for (letter, long) in [("x", MAX_TERM_BYTES), ("\u{f8}", MAX_TERM_BYTES / 2)] {
             let kept = letter.repeat(long);
             let dropped = letter.repeat(long + 1);
             assert_eq!(kept.len(), MAX_TERM_BYTES);
@@ -397,7 +599,18 @@ mod tests {
             assert!(found.iter().all(|term| term.len() <= MAX_TERM_BYTES));
             assert_eq!(found[1], stem(&kept));
         }
-        assert_eq!(words(&"é".repeat(2049)), Vec::<String>::new());
+        assert_eq!(words(&"\u{f8}".repeat(2049)), Vec::<String>::new());
+        assert_eq!(words(&"\u{e9}".repeat(2049)), ["e".repeat(2049)]);
+    }
+
+    #[test]
+    fn a_word_the_fold_lengthens_past_the_longest_term_is_dropped() {
+        let kept = "\u{ac01}".repeat(455);
+        let dropped = "\u{ac01}".repeat(456);
+        assert_eq!((kept.len(), dropped.len()), (1365, 1368));
+        let found = words(&format!("{kept} {dropped}"));
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].len(), 4095);
     }
 
     #[test]
@@ -484,44 +697,56 @@ mod tests {
     }
 
     #[test]
-    fn one_word_is_a_word_and_two_or_an_uppercase_one_are_not() {
+    fn one_word_is_a_word_and_two_an_uppercase_or_an_accented_one_are_not() {
         assert_eq!(word("decide").as_deref(), Some("decide"));
         assert_eq!(word("x_y").as_deref(), Some("x_y"));
-        for text in ["", "a", "Decide", "two words", " decide", "decide!", "the"] {
+        assert_eq!(word("nao").as_deref(), Some("nao"));
+        for text in [
+            "",
+            "a",
+            "Decide",
+            "two words",
+            " decide",
+            "decide!",
+            "the",
+            "n\u{e3}o",
+            "\u{fb01}x",
+        ] {
             assert_eq!(word(text), None, "{text:?}");
         }
     }
 
     #[test]
-    fn every_published_spelling_a_query_can_hold_leaves_a_portuguese_query() {
+    fn every_published_spelling_leaves_a_portuguese_query() {
         let says = portuguese_says();
-        let holdable: Vec<_> = portuguese::published()
-            .iter()
-            .filter(|spelling| word(spelling).is_some())
-            .collect();
-        assert_eq!(holdable.len(), 199);
-        for spelling in holdable {
+        assert_eq!(portuguese::published().len(), 207);
+        for spelling in portuguese::published() {
             assert_eq!(
                 query(&format!("{spelling} que pelo"), &with(&says)),
                 Vec::<String>::new(),
                 "{spelling}"
             );
         }
+        let kept = portuguese::published()
+            .iter()
+            .filter(|spelling| !words(spelling).is_empty())
+            .count();
+        assert_eq!(kept, 198);
     }
 
     #[test]
-    fn an_accented_an_unaccented_and_a_capital_spelling_leave_alike() {
+    fn an_accented_an_unaccented_a_capital_and_a_decomposed_spelling_leave_alike() {
         let says = portuguese_says();
-        for (accented, plain) in [
-            ("há", "ha"),
-            ("não", "nao"),
-            ("éramos", "eramos"),
-            ("você", "voce"),
-            ("tínhamos", "tinhamos"),
-            ("nós", "nos"),
-            ("fôramos", "foramos"),
+        for (accented, plain, decomposed) in [
+            ("h\u{e1}", "ha", "ha\u{301}"),
+            ("n\u{e3}o", "nao", "na\u{303}o"),
+            ("\u{e9}ramos", "eramos", "e\u{301}ramos"),
+            ("voc\u{ea}", "voce", "voce\u{302}"),
+            ("t\u{ed}nhamos", "tinhamos", "ti\u{301}nhamos"),
+            ("n\u{f3}s", "nos", "no\u{301}s"),
+            ("f\u{f4}ramos", "foramos", "fo\u{302}ramos"),
         ] {
-            for spelling in [accented, plain] {
+            for spelling in [accented, plain, decomposed] {
                 for typed in [spelling.to_owned(), spelling.to_uppercase()] {
                     assert_eq!(
                         query(&format!("{typed} que pelo"), &with(&says)),
@@ -590,10 +815,10 @@ mod tests {
     }
 
     #[test]
-    fn a_spelling_that_unaccents_to_an_english_stopword_still_leaves_and_counts() {
+    fn a_spelling_that_folds_to_an_english_stopword_is_dropped_as_that_stopword() {
         let says = portuguese_says();
-        assert_eq!(query("às backup", &with(&says)), [stem("backup")]);
-        assert_eq!(says.asked.borrow().len(), 1);
+        assert_eq!(query("\u{e0}s backup", &with(&says)), [stem("backup")]);
+        assert!(says.asked.borrow().is_empty());
     }
 
     #[test]
@@ -612,20 +837,20 @@ mod tests {
     }
 
     #[test]
-    fn a_kept_word_is_stemmed_as_typed() {
+    fn a_kept_word_is_folded_before_it_is_stemmed() {
         let says = portuguese_says();
-        assert_eq!(query("café que", &with(&says)), terms("café"));
-        assert_ne!(terms("café"), terms("cafe"));
+        assert_eq!(query("caf\u{e9} que", &with(&says)), terms("cafe"));
+        assert_eq!(terms("caf\u{e9}"), terms("cafe"));
     }
 
     #[test]
-    fn the_words_the_user_omits_are_matched_as_typed() {
+    fn the_words_the_user_omits_are_matched_after_the_fold() {
         let omit = Omit {
             words: &["nao".to_owned()],
             languages: &[Language::Portuguese],
             detect: None,
         };
-        assert_eq!(query("não", &omit), [stem("não")]);
+        assert_eq!(query("n\u{e3}o", &omit), Vec::<String>::new());
         assert_eq!(query("nao", &omit), Vec::<String>::new());
     }
 

@@ -175,13 +175,17 @@ fn the_sample_holds_every_shape_of_a_chunk() {
 fn every_text_has_the_terms_bm25s_gave_it() {
     let edges = rows(EDGES);
     let (mut chunks, mut by_hand, mut generated) = (0, 0, 0);
+    let mut folds = String::new();
     for row in rows(EXPECTED) {
         let text = if let Some(edge) = row["edge"].as_u64() {
             by_hand += 1;
             text(&edges[usize::try_from(edge).expect("an edge")], "text")
         } else {
-            if row.get("generated").is_some() {
+            if let Some(name) = row.get("generated") {
                 generated += 1;
+                if name == "folds" {
+                    folds = text(&row, "text");
+                }
             } else {
                 chunks += 1;
             }
@@ -206,7 +210,19 @@ fn every_text_has_the_terms_bm25s_gave_it() {
         }
     }
     assert_eq!(by_hand, edges.len());
-    assert!(chunks >= 60 && generated == 2, "{chunks} {generated}");
+    assert_eq!(edges.len(), 37);
+    assert!(chunks >= 60 && generated == 3, "{chunks} {generated}");
+    for held in [
+        "x\u{e9}x",
+        "x\u{301}x",
+        "x\u{fb01}x",
+        "x\u{2122}x",
+        "x\u{a0}x",
+        "x\u{ac00}x",
+        "x\u{d7a3}x",
+    ] {
+        assert!(folds.contains(held), "the folds row lacks {held:?}");
+    }
 }
 
 #[expect(

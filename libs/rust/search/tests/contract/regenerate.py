@@ -2,7 +2,7 @@
 The eval lives outside this tree: every run names what it reads. Nothing here runs in a test.
 
     regenerate.py --store <folder>                    write expected.jsonl from sample.jsonl and edges.jsonl
-    regenerate.py --store <folder> --check            fail when expected.jsonl or stems.tsv.zst is not what this writes now
+    regenerate.py --store <folder> --check            fail when expected.jsonl, stems.tsv.zst or src/analyze/fold.rs is not what this writes now
     regenerate.py --store <folder> --stems            write stems.tsv.zst: every distinct word of the store's chunks
                                                       with PyStemmer's stem, as word<TAB>n<TAB>suffix (the stem is the
                                                       word without its last n characters, then suffix), zstd level 19
@@ -18,6 +18,7 @@ The eval lives outside this tree: every run names what it reads. Nothing here ru
                                                       documents of rank-docs.jsonl and the queries: the first 40 question
                                                       texts with a term in the sample's vocabulary, then rank-edges.jsonl
     regenerate.py --table                             write src/analyze/word.rs
+    regenerate.py --fold [--check]                    write src/analyze/fold.rs, or fail when it is not what this writes
     --out <folder>                                    with --corpus: write sample.jsonl and expected.jsonl there
 
 <folder> of --store is the unpacked eval store (store-bm25-cc0c68a903d7: chunks.jsonl); of --corpus the
@@ -35,6 +36,7 @@ documents (lists of terms, in corpora named by `corpus`) and the queries that ra
 ranks.jsonl and ranks-whole.jsonl are never written by hand."""
 
 import collections
+import functools
 import importlib.util
 import json
 import pathlib
@@ -46,6 +48,7 @@ import unicodedata
 HERE = pathlib.Path(__file__).resolve().parent
 TOKENIZER = HERE.parent.parent / "qwen" / "tokenizer.json.zst"
 TABLE = HERE.parent.parent / "src" / "analyze" / "word.rs"
+FOLD = HERE.parent.parent / "src" / "analyze" / "fold.rs"
 STEMS = HERE / "stems.tsv.zst"
 UNICODE = "15.0.0"
 BUDGET, OVERLAP = 512, 64
@@ -53,6 +56,9 @@ EACH = 3  # spans picked per shape
 LIMIT = 24000  # bytes of message text a span may hold
 PATTERN = r"(?u)\b\w\w+\b"
 MAX_TERM_BYTES = 4096
+WORD = re.compile(r"\w")
+SYLLABLES = range(0xAC00, 0xD7A4)
+SURROGATES = range(0xD800, 0xE000)
 
 
 def fits(term):
@@ -61,6 +67,22 @@ def fits(term):
 
 def fail(message):
     sys.exit(f"regenerate: {message}")
+
+
+def is_word(c):
+    return WORD.fullmatch(c) is not None
+
+
+@functools.cache
+def fold_char(c):
+    if unicodedata.combining(c):
+        return ""
+    decomposed = "".join(x for x in unicodedata.normalize("NFKD", c) if not unicodedata.combining(x))
+    return decomposed if is_word(c) and all(is_word(x) for x in decomposed) else c
+
+
+def fold(text):
+    return text if text.isascii() else "".join(fold_char(c) for c in text)
 
 
 def dump(rows):
@@ -95,7 +117,7 @@ def store_chunks(store):
 
 
 class Analyzer:
-    """bm25s's terms, as the eval's manifest set it up, without the words of more than MAX_TERM_BYTES
+    """bm25s's terms over the folded texts, as the eval's manifest set it up, without the words of more than MAX_TERM_BYTES
     bytes (UTF-8) and without the stems of more than that: an index holds no longer term."""
 
     def __init__(self):
@@ -105,8 +127,8 @@ class Analyzer:
         self.bm25s, self.stemmer = bm25s, Stemmer.Stemmer("english")
 
     def tokenize(self, texts, stemmer):
-        return self.bm25s.tokenize(texts, lower=True, token_pattern=PATTERN, stopwords="en",
-                                   stemmer=stemmer, return_ids=False, show_progress=False)
+        return self.bm25s.tokenize([fold(text) for text in texts], lower=True, token_pattern=PATTERN,
+                                   stopwords="en", stemmer=stemmer, return_ids=False, show_progress=False)
 
     def terms(self, texts, stemmed=True):
         words = self.tokenize(texts, None)
@@ -334,20 +356,29 @@ def ranks_whole(store, questions, out):
 def lowercase_row():
     """Every character Python lowercases, between two letters."""
     return " ".join(f"x{chr(c)}x" for c in range(sys.maxunicode + 1)
-                    if not 0xD800 <= c <= 0xDFFF and chr(c).lower() != chr(c))
+                    if c not in SURROGATES and chr(c).lower() != chr(c))
 
 
 def edges_of_words():
     """The first and last character of every run of word characters, and the ones just outside, each between
     two letters: the table of src/analyze/word.rs against Python's own `\\w`."""
-    word = re.compile(r"\w")
     found, was = [], False
     for c in range(sys.maxunicode + 2):
-        now = c <= sys.maxunicode and not 0xD800 <= c <= 0xDFFF and bool(word.match(chr(c)))
+        now = c <= sys.maxunicode and c not in SURROGATES and bool(WORD.match(chr(c)))
         if now != was:
             found += [c - 1, c]
         was = now
-    return " ".join(f"x{chr(c)}x" for c in found if 0 <= c <= sys.maxunicode and not 0xD800 <= c <= 0xDFFF)
+    return " ".join(f"x{chr(c)}x" for c in found if 0 <= c <= sys.maxunicode and c not in SURROGATES)
+
+
+def folds_row():
+    """Every character outside the Hangul syllables that a compatibility decomposition changes or whose combining
+    class is not 0 (the ones the fold changes and the ones it leaves), and every 13th syllable with the last."""
+    found = [c for c in range(sys.maxunicode + 1)
+             if c not in SURROGATES and c not in SYLLABLES
+             and (unicodedata.normalize("NFKD", chr(c)) != chr(c) or unicodedata.combining(chr(c)))]
+    found += [SYLLABLES[at] for at in range(0, len(SYLLABLES), 13)] + [SYLLABLES[-1]]
+    return " ".join(f"x{chr(c)}x" for c in found)
 
 
 def expected(store, sample, edges):
@@ -368,7 +399,7 @@ def expected(store, sample, edges):
     texts = [edge["text"] for edge in edges]
     for at, terms in enumerate(analyzer.terms(texts)):
         rows.append({"edge": at, "terms": terms})
-    for name, text in (("lowercase", lowercase_row()), ("words", edges_of_words())):
+    for name, text in (("lowercase", lowercase_row()), ("words", edges_of_words()), ("folds", folds_row())):
         rows.append({"generated": name, "text": text, "terms": analyzer.terms([text])[0]})
     return rows
 
@@ -419,10 +450,9 @@ def stems(store):
 
 
 def table():
-    word = re.compile(r"\w")
     ranges, start = [], None
     for c in range(sys.maxunicode + 2):
-        now = c <= sys.maxunicode and bool(word.match(chr(c)))
+        now = c <= sys.maxunicode and bool(WORD.match(chr(c)))
         if now and start is None:
             start = c
         if not now and start is not None:
@@ -434,12 +464,63 @@ def table():
         f"/// Inclusive, rising.\npub const WORD: [(u32, u32); {len(ranges)}] = [\n{rows}];\n", encoding="utf-8")
 
 
+def hangul(c):
+    s = c - SYLLABLES[0]
+    return chr(0x1100 + s // 588) + chr(0x1161 + s % 588 // 28) + (chr(0x11A7 + s % 28) if s % 28 else "")
+
+
+def fold_source():
+    rows, folded = [], []
+    for c in range(sys.maxunicode + 1):
+        if c in SURROGATES or c in SYLLABLES:
+            continue
+        found = fold_char(chr(c))
+        if found != chr(c):
+            if len(found.encode()) > 255:
+                fail(f"the fold of U+{c:04X} is over 255 bytes")
+            if not all(is_word(x) for x in found):
+                fail(f"the fold of U+{c:04X} holds a character that is no word character")
+            rows.append((c, len("".join(folded).encode()), len(found.encode())))
+            folded.append(found)
+    for c in SYLLABLES:
+        if fold_char(chr(c)) != hangul(c):
+            fail(f"U+{c:04X} does not fold by the arithmetic of D3")
+    text = "".join(folded)
+    escaped = "".join(x if x.isascii() and x.isalnum() else f"\\u{{{ord(x):x}}}" for x in text)
+    pieces = re.findall(r"\\u\{[0-9a-f]+\}|.", escaped)
+    lines, line = [], ""
+    for piece in pieces:
+        if len(line) + len(piece) > 96:
+            lines.append(line)
+            line = ""
+        line += piece
+    lines.append(line)
+    body = "\\\n".join(f"        {each}" for each in lines)
+    table = "".join(f"    (0x{c:04X}, {start}, {length}),\n" for c, start, length in rows)
+    source = (
+        f"//! The fold of Unicode {UNICODE} by character, without the Hangul syllables: written by\n"
+        "//! `tests/contract/regenerate.py --fold`, never by hand.\n\n"
+        "/// Rising by character: the character, where its fold starts in `FOLDED`, and the fold's bytes; 0 bytes drop it.\n"
+        f"pub static FOLDS: [(u32, u32, u8); {len(rows)}] = [\n{table}];\n\n"
+        f'pub const FOLDED: &str = "\\\n{body}";\n'
+    )
+    return source
+
+
 def main():
     args = sys.argv[1:]
     if unicodedata.unidata_version != UNICODE:
         fail(f"this Python has Unicode {unicodedata.unidata_version}; the eval ran {UNICODE} (Python 3.12)")
     if args == ["--table"]:
         return table()
+    if args in (["--fold"], ["--fold", "--check"]):
+        source = fold_source()
+        if args == ["--fold"]:
+            FOLD.write_text(source, encoding="utf-8")
+            return print(f"regenerate: {len(source)} bytes of fold.rs")
+        if FOLD.read_text(encoding="utf-8") != source:
+            fail("fold.rs is not what the Unicode data gives now")
+        return print("regenerate: fold.rs is current")
 
     def value(flag, count=1):
         if flag not in args:
@@ -499,7 +580,9 @@ def main():
             fail("expected.jsonl is not what the eval's store and bm25s give now")
         if STEMS.read_bytes() != stems(store):
             fail("stems.tsv.zst is not what the eval's store and PyStemmer give now")
-        return print("regenerate: expected.jsonl and stems.tsv.zst are current")
+        if FOLD.read_text(encoding="utf-8") != fold_source():
+            fail("fold.rs is not what the Unicode data gives now")
+        return print("regenerate: expected.jsonl, stems.tsv.zst and fold.rs are current")
     (target / "expected.jsonl").write_bytes(data)
     print(f"regenerate: {len(sample)} spans, {len(data)} bytes of expected.jsonl")
 

@@ -12,6 +12,7 @@ bilbo-settings.workspace = true
 bilbo-store.workspace = true
 frostem.workspace = true
 stop-words.workspace = true
+strsim.workspace = true
 xxhash-rust.workspace = true
 
 [dev-dependencies]

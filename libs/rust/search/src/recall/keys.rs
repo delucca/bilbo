@@ -116,7 +116,7 @@ pub const QUESTION_WORDS: Key<Vec<String>> = Key {
         name: "recall.question_words",
         variable: None,
         default: Default::Toml(r#"["what", "did", "we", "should", "how", "anything"]"#),
-        allowed: "a list of lowercase words",
+        allowed: "a list of words as the analyzer reads them: lowercase, with no accent or other mark, no compatibility form it folds, and Hangul as jamo",
         doc: "Words left out of a query before it is searched; they stay searchable in what was kept. An empty list leaves none out.",
     },
     parse: |value| {
@@ -645,15 +645,33 @@ mod tests {
     }
 
     #[test]
-    fn the_question_words_are_a_list_of_single_lowercase_words() {
+    fn the_question_words_are_words_as_the_analyzer_reads_them() {
         let words = |text: &str| resolve(&[], text).map(|s| s.question_words.value);
         assert_eq!(words("recall.question_words = []"), Ok(Vec::new()));
+        assert_eq!(
+            words("recall.question_words = [\"nao\"]"),
+            Ok(vec!["nao".to_owned()])
+        );
+        assert_eq!(
+            words("recall.question_words = [\"\u{1112}\u{1161}\u{11ab}\"]"),
+            Ok(vec!["\u{1112}\u{1161}\u{11ab}".to_owned()])
+        );
+        assert_eq!(
+            words("recall.question_words = [\"2\u{bc}\"]"),
+            Ok(vec!["2\u{bc}".to_owned()])
+        );
         assert_eq!(
             words("recall.question_words = [\"why\", \"anything\"]"),
             Ok(vec!["why".to_owned(), "anything".to_owned()])
         );
         for text in [
             "recall.question_words = [\"What\"]",
+            "recall.question_words = [\"n\u{e3}o\"]",
+            "recall.question_words = [\"na\u{303}o\"]",
+            "recall.question_words = [\"\u{fb01}x\"]",
+            "recall.question_words = [\"\u{ff46}\u{ff58}\"]",
+            "recall.question_words = [\"\u{bb34}\u{c5c7}\"]",
+            "recall.question_words = [\"\u{3069}\u{3046}\"]",
             "recall.question_words = [\"what did\"]",
             "recall.question_words = [\"\"]",
             "recall.question_words = [\"the\"]",
@@ -664,13 +682,15 @@ mod tests {
         ] {
             let error = resolve(&[], text).expect_err(text);
             assert!(
-                error.contains("recall.question_words must be a list of lowercase words"),
+                error.contains(
+                    "recall.question_words must be a list of words as the analyzer reads them: lowercase, with no accent or other mark, no compatibility form it folds, and Hangul as jamo"
+                ),
                 "{text}: {error}"
             );
         }
         assert_eq!(
             resolve(&[], "recall.question_words = [\"what\", \"Did\"]").expect_err("refused"),
-            "/c/config.toml:1: recall.question_words must be a list of lowercase words, got \"Did\""
+            "/c/config.toml:1: recall.question_words must be a list of words as the analyzer reads them: lowercase, with no accent or other mark, no compatibility form it folds, and Hangul as jamo, got \"Did\""
         );
     }
 

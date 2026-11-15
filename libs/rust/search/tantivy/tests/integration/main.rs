@@ -88,7 +88,7 @@ fn position(seq: u64) -> Position {
                 tokens: 512,
                 overlap: 64,
             },
-            analyzer: "bm25s-en/2".to_owned(),
+            analyzer: "bm25s-en/3".to_owned(),
             tokenizer: "qwen/1".to_owned(),
             render: "markdown/1/heading_width=100 session/1".to_owned(),
         },
@@ -361,6 +361,50 @@ fn a_search_matches_the_analyzers_terms_and_ranks_by_how_often_and_how_rare() {
     assert_eq!(found(""), []);
     assert_eq!(rank(&scratch.folder(), "garden", 2, Rule::OFF).len(), 2);
     assert_eq!(rank(&scratch.folder(), "garden", 0, Rule::OFF).len(), 0);
+}
+
+#[test]
+fn a_chunk_with_accents_is_found_without_them_and_the_other_way() {
+    let scratch = Scratch::new("accents");
+    let mut index = scratch.fresh();
+    add(
+        &mut index,
+        1,
+        "markdown",
+        100,
+        &chunk(1, 1, None, "p\u{e3}o de queijo"),
+    );
+    add(
+        &mut index,
+        1,
+        "markdown",
+        100,
+        &chunk(2, 1, None, "pa\u{303}o caseiro"),
+    );
+    index.commit(&position(3)).expect("commit");
+    drop(index);
+    let found = |text: &str| -> Vec<((u64, u64), f32)> {
+        rank(&scratch.folder(), text, 10, Rule::OFF)
+            .iter()
+            .map(|hit| (key(hit), hit.score))
+            .collect()
+    };
+    let plain = found("pao");
+    assert_eq!(
+        plain.iter().map(|(key, _)| *key).collect::<Vec<_>>(),
+        [(2, 0), (1, 0)],
+        "the shorter chunk scores higher"
+    );
+    assert_eq!(found("p\u{e3}o"), plain);
+    assert_eq!(found("pa\u{303}o"), plain);
+    let terms: Vec<String> = committed(&scratch)
+        .terms()
+        .expect("terms")
+        .into_iter()
+        .flat_map(|(_, words)| words.into_iter().map(|(term, _)| term))
+        .collect();
+    assert!(terms.iter().any(|term| term == "pao"), "{terms:?}");
+    assert!(terms.iter().all(|term| term.is_ascii()), "{terms:?}");
 }
 
 #[test]

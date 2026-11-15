@@ -43,7 +43,7 @@ CREATE INDEX entry_labels_by_label ON entry_labels (label);
 CREATE INDEX label_words_by_label ON label_words (label);
 ";
 
-const VERSION: u32 = 5;
+const VERSION: u32 = 6;
 
 pub const OPEN: &str = "open";
 
