@@ -12,12 +12,9 @@ path = "src/main.rs"
 
 [dependencies]
 bilbo-entries.workspace = true
-bilbo-qwen.workspace = true
 bilbo-search.workspace = true
 bilbo-settings.workspace = true
 bilbo-store.workspace = true
-bilbo-tantivy.workspace = true
-bilbo-whichlang.workspace = true
 clap.workspace = true
 rustix = { workspace = true, features = ["process"] }
 

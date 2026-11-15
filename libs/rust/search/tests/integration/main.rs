@@ -14,10 +14,10 @@ use bilbo_search::lookup::{self, Edits, Filter, Lookup, Near, Posting};
 use bilbo_search::position::{Manifest, Position};
 use bilbo_search::rank::{Candidate, Query, Ranker};
 use bilbo_search::recall::keys as recall;
+use bilbo_search::tantivy::{Committed, Options, Row, Tantivy};
 use bilbo_search::typo::{self, Rule};
 use bilbo_store::entries::{Cursor, Generation, RecordRange};
 use bilbo_store::id::Id;
-use bilbo_tantivy::{Committed, Options, Row, Tantivy};
 use tantivy::schema::{
     BytesOptions, FAST, INDEXED, IndexRecordOption, STRING, Schema, TextFieldIndexing, TextOptions,
 };
@@ -54,7 +54,7 @@ impl Scratch {
     }
 
     fn folder(&self) -> PathBuf {
-        bilbo_tantivy::folder(&self.0)
+        bilbo_search::tantivy::folder(&self.0)
     }
 
     fn index(&self) -> Tantivy {
@@ -2259,9 +2259,9 @@ fn what_was_added_comes_back_as_postings_lengths_kinds_and_rows() {
     assert_eq!(reader.postings("nowhere").expect("postings"), []);
 
     let sessions = reader.holding(&Filter::Kind("session")).expect("holding");
-    let markdown = reader.holding(&Filter::Kind("markdown")).expect("holding");
+    let notes = reader.holding(&Filter::Kind("markdown")).expect("holding");
     assert_eq!(sessions.len(), 3);
-    assert_eq!(markdown.len(), 1);
+    assert_eq!(notes.len(), 1);
     assert!(
         reader
             .holding(&Filter::Kind("none"))
@@ -2274,7 +2274,7 @@ fn what_was_added_comes_back_as_postings_lengths_kinds_and_rows() {
         (4, 2, 3 + 3 + 2 + 3, 4)
     );
 
-    let mut asked: Vec<u32> = sessions.iter().chain(&markdown).copied().collect();
+    let mut asked: Vec<u32> = sessions.iter().chain(&notes).copied().collect();
     asked.reverse();
     let rows = reader.found(&asked).expect("found");
     assert_eq!(rows.len(), 4);

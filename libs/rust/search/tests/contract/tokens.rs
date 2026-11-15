@@ -1,25 +1,12 @@
-//! The chunks of `expected.jsonl`, beside the chunker's contract test, carry the token count llama.cpp
-//! gave each text when the retrieval eval's bm25 arm built its store.
+//! The chunks of `expected.jsonl` carry the token count llama.cpp gave each text when the retrieval
+//! eval's bm25 arm built its store.
 
 use std::collections::BTreeMap;
-use std::ffi::OsString;
 use std::fs;
-use std::sync::LazyLock;
 
 use bilbo_entries::tokens::Tokens;
-use bilbo_qwen::Qwen;
-use serde_json::Value;
 
-const EXPECTED: &str = include_str!("../../../tests/contract/expected.jsonl");
-
-static QWEN: LazyLock<Qwen> = LazyLock::new(|| Qwen::load().expect("the tokenizer loads"));
-
-fn rows(text: &str) -> Vec<Value> {
-    text.split('\n')
-        .filter(|row| !row.is_empty())
-        .map(|row| serde_json::from_str(row).expect("a row"))
-        .collect()
-}
+use super::{EXPECTED, QWEN, fnv, rows, say, var};
 
 fn joins(text: &str, ends: &[usize]) -> bool {
     ends.last().copied().unwrap_or(0) == text.len()
@@ -62,30 +49,7 @@ fn every_text_of_the_fixture_joins_back_from_its_tokens() {
     );
 }
 
-#[expect(
-    clippy::disallowed_methods,
-    reason = "the whole-store check is told its files by the environment"
-)]
-fn var(name: &str) -> OsString {
-    std::env::var_os(name).unwrap_or_else(|| panic!("{name}"))
-}
-
-#[expect(
-    clippy::disallowed_macros,
-    reason = "the whole-store check prints its counts"
-)]
-fn say(line: &str) {
-    eprintln!("{line}");
-}
-
-fn fnv(data: &[u8]) -> u64 {
-    data.iter().fold(0xcbf2_9ce4_8422_2325, |hash, byte| {
-        (hash ^ u64::from(*byte)).wrapping_mul(0x0100_0000_01b3)
-    })
-}
-
-/// `CONTRACT_STORE` is the unpacked eval store, `CONTRACT_WHOLE` the folder `regenerate.py --whole` of
-/// the chunker's contract test wrote.
+/// `CONTRACT_STORE` is the unpacked eval store, `CONTRACT_WHOLE` the folder `regenerate.py --whole` wrote.
 #[test]
 #[ignore = "needs the unpacked eval store"]
 fn every_chunk_of_the_eval_store_has_the_tokens_llama_counted() {

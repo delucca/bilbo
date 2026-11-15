@@ -10,7 +10,7 @@ The eval lives outside this tree: every run names what it reads. Nothing here ru
                                                       pick sample.jsonl again, then write expected.jsonl
     regenerate.py --store <folder> --build <build.py> --whole <corpus> <out> [--questions <questions.jsonl>]
                                                       write messages.jsonl and digests.tsv for the ignored
-                                                      whole-store tests of this crate and of the qwen crate, and with
+                                                      whole-store tests of this suite, and with
                                                       --questions ranks-whole.jsonl: the 200 best chunks of each of the
                                                       eval's answerable questions' two forms in the question's repo
     regenerate.py --store <folder> --ranks --questions <questions.jsonl> [--check]
@@ -46,7 +46,7 @@ import types
 import unicodedata
 
 HERE = pathlib.Path(__file__).resolve().parent
-TOKENIZER = HERE.parent.parent / "qwen" / "tokenizer.json.zst"
+TOKENIZER = HERE.parent.parent / "src" / "qwen" / "tokenizer.json.zst"
 TABLE = HERE.parent.parent / "src" / "analyze" / "word.rs"
 FOLD = HERE.parent.parent / "src" / "analyze" / "fold.rs"
 STEMS = HERE / "stems.tsv.zst"

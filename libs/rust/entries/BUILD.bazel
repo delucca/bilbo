@@ -17,7 +17,6 @@ rust_library(
     visibility = [
         "//apps/cli:__pkg__",
         "//libs/rust/search:__pkg__",
-        "//libs/rust/search/qwen:__pkg__",
     ],
     deps = [
         "//libs/rust/settings",

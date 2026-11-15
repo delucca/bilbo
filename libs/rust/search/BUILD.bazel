@@ -12,13 +12,10 @@ extract_cargo_lints(
 rust_library(
     name = "search",
     srcs = glob(["src/**/*.rs"]),
+    compile_data = ["src/qwen/tokenizer.json.zst"],
     crate_name = "bilbo_search",
     lint_config = ":lints",
-    visibility = [
-        "//apps/cli:__pkg__",
-        "//libs/rust/search/tantivy:__pkg__",
-        "//libs/rust/search/whichlang:__pkg__",
-    ],
+    visibility = ["//apps/cli:__pkg__"],
     deps = [
         "//libs/rust/entries",
         "//libs/rust/settings",
@@ -26,17 +23,9 @@ rust_library(
     ] + all_crate_deps(normal = True),
 )
 
-filegroup(
-    name = "contract_fixtures",
-    srcs = glob([
-        "tests/contract/*.jsonl",
-        "tests/contract/*.zst",
-    ]),
-    visibility = ["//libs/rust/search/qwen:__pkg__"],
-)
-
 bilbo_rust_test(
     name = "unit",
+    compile_data = ["src/qwen/tokenizer.json.zst"],
     crate = ":search",
     layer = "unit",
     lint_config = ":lints",
@@ -58,14 +47,44 @@ bilbo_rust_test(
 bilbo_rust_test(
     name = "contract",
     srcs = glob(["tests/contract/*.rs"]),
-    compile_data = [":contract_fixtures"],
+    compile_data = glob([
+        "tests/contract/*.jsonl",
+        "tests/contract/*.zst",
+    ]),
     crate_root = "tests/contract/main.rs",
     layer = "contract",
     lint_config = ":lints",
     deps = [
         ":search",
         "//libs/rust/entries",
-        "//libs/rust/search/qwen",
         "//libs/rust/store",
-    ] + all_crate_deps(normal_dev = True),
+    ] + all_crate_deps(
+        normal = True,
+        normal_dev = True,
+    ),
+)
+
+bilbo_rust_test(
+    name = "integration",
+    srcs = glob(["tests/integration/*.rs"]),
+    crate_root = "tests/integration/main.rs",
+    layer = "integration",
+    lint_config = ":lints",
+    deps = [
+        ":search",
+        "//libs/rust/store",
+    ] + all_crate_deps(normal = True),
+)
+
+bilbo_rust_test(
+    name = "layout",
+    srcs = ["tests/layout.rs"],
+    data = glob([
+        "src/**/*.rs",
+        "tests/**/*.rs",
+    ]) + ["Cargo.toml"],
+    env = {"LAYOUT_ROOT": "$(rlocationpath Cargo.toml)"},
+    layer = "integration",
+    lint_config = ":lints",
+    deps = all_crate_deps(normal_dev = True),
 )

@@ -23,9 +23,6 @@ rust_library(
     deps = [
         "//libs/rust/entries",
         "//libs/rust/search",
-        "//libs/rust/search/qwen",
-        "//libs/rust/search/tantivy",
-        "//libs/rust/search/whichlang",
         "//libs/rust/settings",
         "//libs/rust/store",
     ] + all_crate_deps(normal = True),
@@ -169,8 +166,6 @@ bilbo_rust_test(
         ":bilbo_cli",
         "//libs/rust/entries",
         "//libs/rust/search",
-        "//libs/rust/search/qwen",
-        "//libs/rust/search/tantivy",
         "//libs/rust/store",
     ] + all_crate_deps(normal_dev = True),
 )

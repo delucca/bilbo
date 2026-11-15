@@ -6,12 +6,15 @@ pub mod index;
 pub mod keys;
 pub mod lookup;
 pub mod position;
+pub mod qwen;
 pub mod rank;
 pub mod recall;
 pub mod reindex;
+pub mod tantivy;
 #[cfg(test)]
 mod testing;
 pub mod tokenizer;
 pub mod typo;
 pub mod update;
+pub mod whichlang;
 pub mod work;

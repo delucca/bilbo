@@ -7,14 +7,15 @@ use std::fs;
 use std::sync::LazyLock;
 
 use bilbo_entries::reader::{Passage, Piece};
-use bilbo_qwen::Qwen;
 use bilbo_search::analyze;
 use bilbo_search::chunk::{Chunk, Size, chunks};
+use bilbo_search::qwen::Qwen;
 use bilbo_store::entries::RecordRange;
 use serde_json::Value;
 
 mod coordinates;
 mod ranking;
+mod tokens;
 
 const SAMPLE: &str = include_str!("sample.jsonl");
 const EDGES: &str = include_str!("edges.jsonl");

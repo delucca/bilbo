@@ -7,10 +7,10 @@ use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
-use bilbo_search::index::{Doc, Extent, Index, IndexError, Stats, millis};
-use bilbo_search::lookup::{self, Edits, Filter, Found, Lookup, Near, Posting, Totals};
-use bilbo_search::position::Position;
-use bilbo_search::{analyze, chunk};
+use crate::index::{Doc, Extent, Index, IndexError, Stats, millis};
+use crate::lookup::{self, Edits, Filter, Found, Lookup, Near, Posting, Totals};
+use crate::position::Position;
+use crate::{analyze, chunk};
 use bilbo_store::entries::{Generation, RecordRange};
 use bilbo_store::id::Id;
 use tantivy::DocSet;
@@ -1379,7 +1379,7 @@ mod tests {
 
     #[test]
     fn the_analyzers_longest_term_is_one_tantivy_keeps() {
-        const { assert!(bilbo_search::analyze::MAX_TERM_BYTES <= tantivy::tokenizer::MAX_TOKEN_LEN) };
+        const { assert!(crate::analyze::MAX_TERM_BYTES <= tantivy::tokenizer::MAX_TOKEN_LEN) };
     }
 
     #[test]

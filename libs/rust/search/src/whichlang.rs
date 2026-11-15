@@ -1,4 +1,4 @@
-use bilbo_search::analyze::{Detect, Language};
+use crate::analyze::{Detect, Language};
 use whichlang::{Lang, detect_language};
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -29,7 +29,7 @@ impl Detect for Whichlang {
 
 #[cfg(test)]
 mod tests {
-    use bilbo_search::analyze::{Detect, Language};
+    use crate::analyze::{Detect, Language};
 
     use super::Whichlang;
 

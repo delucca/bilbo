@@ -120,19 +120,19 @@ pub fn rendering(settings: &Settings) -> Result<String, Failure> {
 
 /// Loading it costs a tenth of a second: a verb that does not chunk never calls this.
 pub fn tokenizer() -> Result<Tokenizer, Failure> {
-    let qwen = bilbo_qwen::Qwen::load()
+    let qwen = bilbo_search::qwen::Qwen::load()
         .map_err(|error| Failure::Refused(format!("cannot load the tokenizer: {error}")))?;
     Ok(Tokenizer {
         tokens: Box::new(qwen),
-        id: bilbo_qwen::ID,
+        id: bilbo_search::qwen::ID,
     })
 }
 
 /// The index of a store's cache folder: nothing is opened or made before its first use.
 pub fn index(cache: &std::path::Path, search: &bilbo_search::keys::Section) -> Box<dyn Index> {
-    Box::new(bilbo_tantivy::Tantivy::at(
-        bilbo_tantivy::folder(cache),
-        bilbo_tantivy::Options {
+    Box::new(bilbo_search::tantivy::Tantivy::at(
+        bilbo_search::tantivy::folder(cache),
+        bilbo_search::tantivy::Options {
             memory: search.memory(),
             merge_deleted_share: search.merge_deleted_share(),
         },
@@ -140,11 +140,13 @@ pub fn index(cache: &std::path::Path, search: &bilbo_search::keys::Section) -> B
 }
 
 pub fn detect() -> &'static dyn Detect {
-    &bilbo_whichlang::Whichlang
+    &bilbo_search::whichlang::Whichlang
 }
 
 pub fn lookup(cache: &std::path::Path) -> Box<dyn Lookup> {
-    Box::new(bilbo_tantivy::Committed::at(bilbo_tantivy::folder(cache)))
+    Box::new(bilbo_search::tantivy::Committed::at(
+        bilbo_search::tantivy::folder(cache),
+    ))
 }
 
 pub fn indexing<'a>(
@@ -165,7 +167,7 @@ pub fn indexing<'a>(
             label_batch: settings.search.label_batch.value,
         },
         tries: settings.search.tries(),
-        tokenizer_id: bilbo_qwen::ID,
+        tokenizer_id: bilbo_search::qwen::ID,
         tokenizer,
         index,
     }

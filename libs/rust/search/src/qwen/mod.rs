@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use tokenizers::{NormalizerWrapper, Tokenizer};
 
 /// `tokenizer.json` of Qwen/Qwen3-Embedding-0.6B at the revision `ID` names, packed with zstd.
-static PACKED: &[u8] = include_bytes!("../tokenizer.json.zst");
+static PACKED: &[u8] = include_bytes!("tokenizer.json.zst");
 const SIZE: usize = 11_423_705;
 
 /// The model, the revision of its repository and the SHA-256 of `tokenizer.json`, each cut to 12

@@ -728,13 +728,7 @@ fn top_level_entries_form_no_cycle() {
 
 #[test]
 fn a_kind_or_adapter_crate_is_named_only_by_lib_rs() {
-    let report = real();
-    assert_clean(report, Rule::KindNamedOutside);
-    assert!(
-        report.kinds.len() >= 3,
-        "the scan no longer sees the kind and adapter crates lib.rs names: {:?}",
-        report.kinds
-    );
+    assert_clean(real(), Rule::KindNamedOutside);
 }
 
 #[test]

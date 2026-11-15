@@ -18,7 +18,6 @@ rust_library(
         "//apps/cli:__pkg__",
         "//libs/rust/entries:__pkg__",
         "//libs/rust/search:__pkg__",
-        "//libs/rust/search/tantivy:__pkg__",
     ],
     deps = ["//libs/rust/settings"] + all_crate_deps(normal = True),
 )

@@ -74,12 +74,9 @@ name = "bilbo-cli"
 version = "0.0.0"
 dependencies = [
  "bilbo-entries",
- "bilbo-qwen",
  "bilbo-search",
  "bilbo-settings",
  "bilbo-store",
- "bilbo-tantivy",
- "bilbo-whichlang",
  "clap",
  "proc-macro2",
  "runfiles",
@@ -103,27 +100,22 @@ dependencies = [
 ]
 
 [[package]]
-name = "bilbo-qwen"
-version = "0.0.0"
-dependencies = [
- "bilbo-entries",
- "serde_json",
- "tokenizers",
- "zstd",
-]
-
-[[package]]
 name = "bilbo-search"
 version = "0.0.0"
 dependencies = [
  "bilbo-entries",
- "bilbo-qwen",
  "bilbo-settings",
  "bilbo-store",
  "frostem",
+ "proc-macro2",
+ "runfiles",
  "serde_json",
  "stop-words",
  "strsim",
+ "tantivy",
+ "tokenizers",
+ "toml",
+ "whichlang",
  "xxhash-rust",
  "zstd",
 ]
@@ -147,23 +139,6 @@ dependencies = [
  "serde_json",
  "xxhash-rust",
  "zstd",
-]
-
-[[package]]
-name = "bilbo-tantivy"
-version = "0.0.0"
-dependencies = [
- "bilbo-search",
- "bilbo-store",
- "tantivy",
-]
-
-[[package]]
-name = "bilbo-whichlang"
-version = "0.0.0"
-dependencies = [
- "bilbo-search",
- "whichlang",
 ]
 
 [[package]]

@@ -1,4 +1,4 @@
-//! This file and `lib.rs` are the only ones that name the index's crate: a test of what the index holds has to read it.
+//! This file and `lib.rs` are the only ones that name the index's module: a test of what the index holds has to read it.
 
 use std::collections::HashMap;
 use std::ffi::OsString;
@@ -25,13 +25,13 @@ use bilbo_search::index::{Doc, Extent, Index, IndexError, Stats, millis};
 use bilbo_search::lookup::Found;
 use bilbo_search::position::Position;
 use bilbo_search::rank::{Candidate, Query, Ranker};
+use bilbo_search::tantivy::{Committed, Row, Tantivy};
 use bilbo_search::tokenizer::Tokenizer;
 use bilbo_search::typo::Rule;
 use bilbo_store::entries::{Entries, Generation};
 use bilbo_store::id::Id;
 use bilbo_store::labels::{CaptureLabel, Labels};
 use bilbo_store::segments::{Options, Store};
-use bilbo_tantivy::{Committed, Row, Tantivy};
 
 const SESSIONS: [(&str, &[u8]); 4] = [
     (
@@ -80,14 +80,14 @@ static COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// Loading the tokenizer costs a second in a test build: the tests that are not about the loader
 /// share one for the whole binary.
-static QWEN: LazyLock<bilbo_qwen::Qwen> =
-    LazyLock::new(|| bilbo_qwen::Qwen::load().expect("the tokenizer"));
+static QWEN: LazyLock<bilbo_search::qwen::Qwen> =
+    LazyLock::new(|| bilbo_search::qwen::Qwen::load().expect("the tokenizer"));
 
 const WORKERS: &str = "2";
 
-fn options() -> bilbo_tantivy::Options {
+fn options() -> bilbo_search::tantivy::Options {
     let search = bilbo_search::keys::defaults();
-    bilbo_tantivy::Options {
+    bilbo_search::tantivy::Options {
         memory: search.memory(),
         merge_deleted_share: search.merge_deleted_share(),
     }
@@ -95,7 +95,7 @@ fn options() -> bilbo_tantivy::Options {
 
 fn rank(cache: &Path, text: &str, limit: usize) -> Vec<Candidate> {
     let keys = bilbo_search::recall::keys::defaults();
-    let index = Committed::at(bilbo_tantivy::folder(cache));
+    let index = Committed::at(bilbo_search::tantivy::folder(cache));
     Bm25 {
         index: &index,
         k1: keys.bm25_k1.value,
@@ -140,7 +140,7 @@ impl Tokens for Shared {
 fn shared_tokenizer() -> Result<Tokenizer, Failure> {
     Ok(Tokenizer {
         tokens: Box::new(Shared),
-        id: bilbo_qwen::ID,
+        id: bilbo_search::qwen::ID,
     })
 }
 
@@ -236,7 +236,7 @@ impl Sandbox {
     }
 
     fn index(&self) -> Tantivy {
-        Tantivy::at(bilbo_tantivy::folder(&self.cache()), options())
+        Tantivy::at(bilbo_search::tantivy::folder(&self.cache()), options())
     }
 
     fn rank(&self, text: &str, limit: usize) -> Vec<Candidate> {
@@ -263,8 +263,9 @@ impl Sandbox {
     }
 
     fn payload(&self) -> String {
-        let meta = fs::read_to_string(bilbo_tantivy::folder(&self.cache()).join("meta.json"))
-            .expect("meta.json");
+        let meta =
+            fs::read_to_string(bilbo_search::tantivy::folder(&self.cache()).join("meta.json"))
+                .expect("meta.json");
         let meta: serde_json::Value = serde_json::from_str(&meta).expect("JSON");
         meta["payload"].as_str().expect("a payload").to_owned()
     }
@@ -549,10 +550,10 @@ fn every_remembered_entry_is_indexed_and_the_output_counts_them() {
     let (rows, hits) = sandbox.held();
     assert_eq!(rows.len() as u64, chunks);
     assert!(chunks >= entries, "{chunks}");
-    let on_disk: u64 = names(&bilbo_tantivy::folder(&sandbox.cache()))
+    let on_disk: u64 = names(&bilbo_search::tantivy::folder(&sandbox.cache()))
         .iter()
         .map(|name| {
-            fs::metadata(bilbo_tantivy::folder(&sandbox.cache()).join(name))
+            fs::metadata(bilbo_search::tantivy::folder(&sandbox.cache()).join(name))
                 .expect("a file")
                 .len()
         })
@@ -589,7 +590,8 @@ fn a_deleted_cache_folder_comes_back_the_same_and_so_does_a_second_run() {
     assert_eq!(numbers(&rebuilt.stdout)[..4], numbers(&first.stdout)[..4]);
     assert_eq!(sandbox.held(), held, "after the cache folder was deleted");
     assert_eq!(names(&sandbox.cache()), ["catalog.sqlite", "index"]);
-    fs::remove_dir_all(bilbo_tantivy::folder(&sandbox.cache())).expect("delete the index alone");
+    fs::remove_dir_all(bilbo_search::tantivy::folder(&sandbox.cache()))
+        .expect("delete the index alone");
     sandbox.reindex();
     assert_eq!(sandbox.held(), held, "after the index alone was deleted");
 }
@@ -729,7 +731,7 @@ fn a_reindex_keeps_the_growth_stamps_so_the_next_remember_reads_no_unchanged_fil
 #[test]
 fn a_cache_folder_whose_index_folder_is_not_bilbos_is_refused_and_left_as_it_is() {
     let sandbox = Sandbox::filled("foreign");
-    let folder = bilbo_tantivy::folder(&sandbox.cache());
+    let folder = bilbo_search::tantivy::folder(&sandbox.cache());
     fs::remove_dir_all(&folder).expect("delete the index remember made");
     fs::create_dir_all(folder.join("models")).expect("a folder of someone else's");
     fs::write(folder.join("4887fa5108fbc055.vectors"), b"not bilbo's").expect("a file");
@@ -761,7 +763,7 @@ fn an_empty_store_reindexes_to_an_empty_index() {
 #[test]
 fn a_reindex_waits_for_a_writer_of_the_store_and_says_so() {
     let sandbox = Sandbox::filled("waits");
-    fs::remove_dir_all(bilbo_tantivy::folder(&sandbox.cache())).expect("delete the index");
+    fs::remove_dir_all(bilbo_search::tantivy::folder(&sandbox.cache())).expect("delete the index");
     let state = sandbox.dir.join("state/bilbo");
     let lock = fs::File::open(state.join("store.lock")).expect("the lock file");
     lock.lock().expect("hold the store");
@@ -775,7 +777,7 @@ fn a_reindex_waits_for_a_writer_of_the_store_and_says_so() {
         "bilbo: waiting for another bilbo to finish writing the store"
     );
     assert!(
-        !bilbo_tantivy::folder(&sandbox.cache()).exists(),
+        !bilbo_search::tantivy::folder(&sandbox.cache()).exists(),
         "nothing is made while it waits"
     );
     writer.unlock().expect("release");
@@ -1217,7 +1219,7 @@ fn a_changed_setting_rebuilds_on_the_next_remember_and_says_so() {
 #[test]
 fn an_index_folder_that_is_not_bilbos_fails_the_run_after_the_capture_is_kept() {
     let sandbox = Sandbox::new("foreign_remember");
-    let folder = bilbo_tantivy::folder(&sandbox.cache());
+    let folder = bilbo_search::tantivy::folder(&sandbox.cache());
     fs::create_dir_all(folder.join("models")).expect("a folder of someone else's");
     sandbox.write("notes/a.md", b"# One\n\nsome text\n");
     let run = sandbox.run(&["remember", &sandbox.path("notes")]);
@@ -1359,7 +1361,8 @@ fn a_first_remember_builds_the_index_and_says_nothing_of_it() {
 #[test]
 fn a_remember_that_finds_a_filled_store_with_no_index_says_how_many_entries_it_builds() {
     let sandbox = Sandbox::filled("no_index");
-    fs::remove_dir_all(bilbo_tantivy::folder(&sandbox.cache())).expect("move the index away");
+    fs::remove_dir_all(bilbo_search::tantivy::folder(&sandbox.cache()))
+        .expect("move the index away");
     sandbox.write("notes/new.md", b"# Fresh\n\na note about giraffes\n");
     let run = sandbox.run(&["remember", &sandbox.path("notes")]);
     assert_eq!((run.code, run.stderr), (0, vec![BUILDING_SEVEN.to_owned()]));
@@ -1369,7 +1372,8 @@ fn a_remember_that_finds_a_filled_store_with_no_index_says_how_many_entries_it_b
 #[test]
 fn the_line_that_an_index_is_being_built_is_written_before_the_tokenizer_is_loaded() {
     let sandbox = Sandbox::filled("line_first");
-    fs::remove_dir_all(bilbo_tantivy::folder(&sandbox.cache())).expect("move the index away");
+    fs::remove_dir_all(bilbo_search::tantivy::folder(&sandbox.cache()))
+        .expect("move the index away");
     sandbox.write("notes/new.md", b"# Fresh\n\na note about giraffes\n");
     let said = Arc::new(Mutex::new(Vec::new()));
     let seen = Mutex::new(None);
@@ -1961,7 +1965,8 @@ fn an_update_that_fails_is_not_tried_again_by_the_close_loop() {
         ),
     )
     .expect("a config that follows the notes");
-    fs::remove_dir_all(bilbo_tantivy::folder(&sandbox.cache())).expect("move the index away");
+    fs::remove_dir_all(bilbo_search::tantivy::folder(&sandbox.cache()))
+        .expect("move the index away");
     sandbox.write("notes/first.md", b"# First\n\na note about zebras\n");
     sandbox.write("notes/second.md", b"# Second\n\na note about giraffes\n");
     let vars = sandbox.vars();
@@ -2138,7 +2143,7 @@ fn say(line: &str) {
 fn what_an_index_of_the_done_check_store_holds() {
     const START: u64 = 0xcbf2_9ce4_8422_2325;
     let cache = folder("DONE_CACHE");
-    let index = Tantivy::at(bilbo_tantivy::folder(&cache), options());
+    let index = Tantivy::at(bilbo_search::tantivy::folder(&cache), options());
     let rows = index.documents().expect("the documents");
     let mut digest = START;
     for row in &rows {
