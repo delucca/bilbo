@@ -1,6 +1,3 @@
-//! The chunks of `expected.jsonl` carry the token count llama.cpp gave each text when the retrieval
-//! eval's bm25 arm built its store.
-
 use std::collections::BTreeMap;
 use std::fs;
 
@@ -49,9 +46,8 @@ fn every_text_of_the_fixture_joins_back_from_its_tokens() {
     );
 }
 
-/// `CONTRACT_STORE` is the unpacked eval store, `CONTRACT_WHOLE` the folder `regenerate.py --whole` wrote.
 #[test]
-#[ignore = "needs the unpacked eval store"]
+#[ignore = "needs CONTRACT_STORE, the unpacked eval store, and CONTRACT_WHOLE, the folder regenerate.py --whole wrote"]
 fn every_chunk_of_the_eval_store_has_the_tokens_llama_counted() {
     let store = std::path::PathBuf::from(var("CONTRACT_STORE"));
     let folder = std::path::PathBuf::from(var("CONTRACT_WHOLE"));

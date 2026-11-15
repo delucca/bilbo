@@ -40,7 +40,7 @@ Keep e2e to a few smoke flows:
 
 CLI/serve e2e need no desktop.
 
-The CLI e2e target and `//libs/rust/store:unit` are `size = "medium"` whatever their layer says, both sized for a full parallel run (the store's unit tests take 8 s alone and up to 40 s beside the rest). The e2e target runs the real binary, which loads the tokenizer in every indexing run and cannot share one, so it takes about 20 s alone and over 50 s beside the rest of the suite, too near the 60 s of `small`. `apps/cli/tests/reindex.rs` loads one tokenizer for the whole binary and asks for two workers, for the same reason.
+The CLI e2e target, `//libs/rust/store:unit` and `//libs/rust/search:unit` are `size = "medium"` whatever their layer says, all sized for a full parallel run (the store's unit tests take 8 s alone and up to 40 s beside the rest; search's, which load the tokenizer, 4 s alone, up to 30 s beside the rest and 51 s with two other builds running). The e2e target runs the real binary, which loads the tokenizer in every indexing run and cannot share one, so it takes about 20 s alone and over 50 s beside the rest of the suite, too near the 60 s of `small`. `apps/cli/tests/reindex.rs` loads one tokenizer for the whole binary and asks for two workers, for the same reason.
 
 ## Run tests
 

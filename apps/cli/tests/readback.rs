@@ -42,7 +42,6 @@ fn markdown_files(folder: &Path, into: &mut BTreeSet<PathBuf>) {
     }
 }
 
-/// The `id:` of a leading `---` block when it is a canonical ULID; read here, not by the Markdown kind.
 fn frontmatter_id(file: &[u8]) -> Option<String> {
     const DIGITS: &str = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
     let text = std::str::from_utf8(file).ok()?;

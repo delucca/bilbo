@@ -10,8 +10,6 @@ const COMPONENTS: [&str; 6] = ["config", "help", "read", "recall", "reindex", "r
 const MODULE: &str = "console";
 const THEME: [&str; 2] = ["console", "theme"];
 const ROOTS: [&str; 2] = ["crate", "bilbo_cli"];
-/// bilbo's own crates that any file may name. Every other `bilbo_` crate is a kind's or an
-/// adapter's: `lib.rs` alone names it.
 const SHARED: [&str; 4] = [
     "bilbo_entries",
     "bilbo_search",
@@ -167,8 +165,16 @@ fn path_in_tokens(
 
 fn has_ident(stream: TokenStream, name: &str) -> bool {
     stream.into_iter().any(|tree| match tree {
-        TokenTree::Ident(ident) => ident == name,
+        TokenTree::Ident(ident) => id(&ident) == name,
         TokenTree::Group(group) => has_ident(group.stream(), name),
+        _ => false,
+    })
+}
+
+fn has_punct(stream: TokenStream, ch: char) -> bool {
+    stream.into_iter().any(|tree| match tree {
+        TokenTree::Punct(punct) => punct.as_char() == ch,
+        TokenTree::Group(group) => has_punct(group.stream(), ch),
         _ => false,
     })
 }
@@ -207,6 +213,47 @@ fn is_adapter(krate: &str, module: &str) -> bool {
         .any(|(name, modules)| *name == krate && modules.contains(&module))
 }
 
+fn bound(krate: &str, module: &str, rest: &[TokenTree]) -> Option<String> {
+    let stops = || {
+        Some(format!(
+            "`{krate}::{module}` stops at the module, which gives it a name of the file's own: go on to an item"
+        ))
+    };
+    let selfed = || {
+        Some(format!(
+            "`{krate}::{module}::{{self}}` gives the module a name of the file's own: name its items"
+        ))
+    };
+    let globbed = || {
+        Some(format!(
+            "`{krate}::{module}::*` brings in all the module holds without naming it: name its items"
+        ))
+    };
+    if matches!(rest.first(), Some(TokenTree::Ident(next)) if next == "as") {
+        return Some(format!(
+            "`{krate}::{module} as …` gives the module a name of the file's own: write the path to its item where it is used"
+        ));
+    }
+    if !colon2(rest, 0) {
+        return stops();
+    }
+    match rest.get(2) {
+        Some(TokenTree::Ident(item)) if item == "self" => selfed(),
+        Some(TokenTree::Ident(_)) => None,
+        Some(TokenTree::Group(group)) if group.delimiter() == Delimiter::Brace => {
+            if has_ident(group.stream(), "self") {
+                selfed()
+            } else if has_punct(group.stream(), '*') {
+                globbed()
+            } else {
+                None
+            }
+        }
+        Some(TokenTree::Punct(star)) if star.as_char() == '*' => globbed(),
+        _ => stops(),
+    }
+}
+
 fn adapter_element(
     krate: &str,
     modules: &[&str],
@@ -217,6 +264,7 @@ fn adapter_element(
     match element {
         [TokenTree::Ident(ident), ..] if modules.contains(&id(ident).as_str()) => {
             named.insert(format!("{krate}::{}", id(ident)));
+            hidden.extend(bound(krate, &id(ident), &element[1..]));
         }
         [TokenTree::Ident(ident), TokenTree::Ident(alias), ..]
             if ident == "self" && alias == "as" =>
@@ -245,8 +293,51 @@ fn adapters_in(stream: TokenStream, named: &mut BTreeSet<String>, hidden: &mut V
     for (at, token) in tokens.iter().enumerate() {
         match token {
             TokenTree::Group(group) => adapters_in(group.stream(), named, hidden),
+            TokenTree::Punct(punct) if punct.as_char() == '#' => {
+                let mut next = at + 1;
+                if matches!(tokens.get(next), Some(TokenTree::Punct(bang)) if bang.as_char() == '!')
+                {
+                    next += 1;
+                }
+                if let Some(TokenTree::Group(group)) = tokens.get(next)
+                    && group.delimiter() == Delimiter::Bracket
+                {
+                    let first = match group.stream().into_iter().next() {
+                        Some(TokenTree::Ident(first)) => id(&first),
+                        _ => String::new(),
+                    };
+                    if first == "path" || (first == "cfg_attr" && has_ident(group.stream(), "path"))
+                    {
+                        hidden.push(
+                            "a `#[path]` attribute puts a module where the scan does not look"
+                                .to_owned(),
+                        );
+                    }
+                }
+            }
             TokenTree::Ident(ident) => {
                 let name = id(ident);
+                if name == "include"
+                    && matches!(tokens.get(at + 1), Some(TokenTree::Punct(p)) if p.as_char() == '!')
+                {
+                    hidden.push("`include!` pulls in a file the scan cannot follow".to_owned());
+                }
+                if name == "include"
+                    && matches!(tokens.get(at + 1), Some(TokenTree::Ident(next)) if next == "as")
+                {
+                    hidden.push(
+                        "`include as …` gives `include!` a second name, and the scan would not see what it pulls in: write the code out"
+                            .to_owned(),
+                    );
+                }
+                if ident == "macro_rules"
+                    && matches!(tokens.get(at + 1), Some(TokenTree::Punct(p)) if p.as_char() == '!')
+                {
+                    hidden.push(
+                        "`macro_rules!` can write a pair the scan never reads: write the code out"
+                            .to_owned(),
+                    );
+                }
                 let Some((krate, modules)) = ADAPTERS.iter().find(|(krate, _)| *krate == name)
                 else {
                     continue;
@@ -263,14 +354,8 @@ fn adapters_in(stream: TokenStream, named: &mut BTreeSet<String>, hidden: &mut V
                                 adapter_element(krate, modules, chunk, named, hidden);
                             }
                         }
-                        Some(rest) => {
-                            adapter_element(
-                                krate,
-                                modules,
-                                std::slice::from_ref(rest),
-                                named,
-                                hidden,
-                            );
+                        Some(_) => {
+                            adapter_element(krate, modules, &tokens[at + 3..], named, hidden);
                         }
                         None => {}
                     }
@@ -1278,16 +1363,310 @@ fn an_alias_or_a_glob_of_a_crate_with_adapter_modules_is_found() {
 }
 
 #[test]
+fn an_adapter_module_given_a_name_is_found_in_every_file() {
+    let everywhere = |source: &str| {
+        [
+            appended(&[("help/mod.rs", source)], &[]),
+            appended(&[("lib.rs", source)], &[]),
+            with_tests(&[("reindex.rs", source)]),
+            with_tests(&[("recall.rs", source)]),
+        ]
+    };
+    for (source, needle) in [
+        (
+            "use bilbo_search::tantivy as engine;",
+            "`bilbo_search::tantivy as",
+        ),
+        (
+            "use bilbo_entries::{session as kind};",
+            "`bilbo_entries::session as",
+        ),
+        (
+            "pub use bilbo_search::whichlang as detector;",
+            "`bilbo_search::whichlang as",
+        ),
+        (
+            "use bilbo_search::tantivy;",
+            "`bilbo_search::tantivy` stops at the module",
+        ),
+        (
+            "use bilbo_search::{index::Index, tantivy};",
+            "`bilbo_search::tantivy` stops at the module",
+        ),
+        (
+            "fn f() { let _ = bilbo_search::tantivy; }",
+            "`bilbo_search::tantivy` stops at the module",
+        ),
+        (
+            "fn f() { wrap!(bilbo_search::tantivy); }",
+            "`bilbo_search::tantivy` stops at the module",
+        ),
+        (
+            "use bilbo_search::tantivy::{self, Tantivy};",
+            "`bilbo_search::tantivy::{self}`",
+        ),
+        (
+            "use bilbo_search::tantivy::{self as engine};",
+            "`bilbo_search::tantivy::{self}`",
+        ),
+        (
+            "use bilbo_search::{qwen::{Qwen, {self}}};",
+            "`bilbo_search::qwen::{self}`",
+        ),
+        (
+            "use bilbo_search::tantivy::self;",
+            "`bilbo_search::tantivy::{self}`",
+        ),
+        (
+            "use bilbo_search::tantivy::*;",
+            "`bilbo_search::tantivy::*` brings in all the module holds",
+        ),
+        (
+            "use bilbo_search::tantivy::{Tantivy, *};",
+            "`bilbo_search::tantivy::*` brings in all the module holds",
+        ),
+        (
+            "use bilbo_entries::{markdown::*};",
+            "`bilbo_entries::markdown::*`",
+        ),
+        (
+            "macro_rules! bind { ($k:ident, $m:ident) => { use $k::$m as engine; } } bind!(bilbo_search, tantivy);",
+            "`macro_rules!` can write a pair",
+        ),
+        (
+            "#[path = \"../bindings.inc\"] mod bridge;",
+            "a `#[path]` attribute puts a module",
+        ),
+        (
+            "#[cfg_attr(test, path = \"../bindings.inc\")] mod bridge;",
+            "a `#[path]` attribute puts a module",
+        ),
+        (
+            "#[cfg_attr(all(), r#path = \"engine.rs\")] mod other;",
+            "a `#[path]` attribute puts a module",
+        ),
+        (
+            "#[cfg_attr(all(), cfg_attr(all(), r#path = \"engine.rs\"))] mod other;",
+            "a `#[path]` attribute puts a module",
+        ),
+        (
+            "include!(\"../bindings.inc\");",
+            "`include!` pulls in a file",
+        ),
+        (
+            "fn f() { std::include!(\"../bindings.inc\"); }",
+            "`include!` pulls in a file",
+        ),
+        (
+            "r#include!(\"../bindings.inc\");",
+            "`include!` pulls in a file",
+        ),
+        (
+            "#[cfg(test)] mod tests { include!(\"../bindings.inc\"); }",
+            "`include!` pulls in a file",
+        ),
+        (
+            "use std::include as load; load!(\"../bindings.inc\");",
+            "`include as",
+        ),
+        ("use std::{include as load};", "`include as"),
+    ] {
+        for report in everywhere(source) {
+            fires(&report, Rule::AdapterNamedOutside, needle);
+        }
+    }
+
+    let report = appended(
+        &[
+            (
+                "lib.rs",
+                "use bilbo_search::tantivy as engine;\npub use self::engine as exposed;\n",
+            ),
+            ("main.rs", "fn open() { bilbo_cli::exposed::folder; }\n"),
+        ],
+        &[],
+    );
+    fires(
+        &report,
+        Rule::AdapterNamedOutside,
+        "src/lib.rs: `bilbo_search::tantivy as",
+    );
+    assert!(
+        report
+            .of(Rule::AdapterNamedOutside)
+            .iter()
+            .all(|text| !text.contains("main.rs")),
+        "{:#?}",
+        report.violations
+    );
+
+    let report = appended(
+        &[
+            (
+                "lib.rs",
+                "#[cfg(test)]\nuse bilbo_search::tantivy as engine;\n#[cfg(test)]\nmod probe;\n",
+            ),
+            (
+                "probe.rs",
+                "pub fn verb() { let _ = crate::engine::folder; }\n",
+            ),
+        ],
+        &[],
+    );
+    fires(
+        &report,
+        Rule::AdapterNamedOutside,
+        "src/lib.rs: `bilbo_search::tantivy as",
+    );
+    assert!(
+        report.of(Rule::Cycle).is_empty(),
+        "{:#?}",
+        report.violations
+    );
+
+    let report = with_tests(&[
+        (
+            "reindex.rs",
+            "use bilbo_search::tantivy as engine;\nmod index_probe;\n",
+        ),
+        (
+            "index_probe/mod.rs",
+            "fn probe() { let _ = super::engine::folder; }\n",
+        ),
+    ]);
+    fires(
+        &report,
+        Rule::AdapterNamedOutside,
+        "tests/reindex.rs: `bilbo_search::tantivy as",
+    );
+    assert!(
+        report
+            .of(Rule::AdapterNamedOutside)
+            .iter()
+            .all(|text| !text.contains("index_probe")),
+        "{:#?}",
+        report.violations
+    );
+
+    let report = with_tests(&[
+        (
+            "reindex.rs",
+            "#[path = \"../bindings.inc\"]\nmod bridge;\nmod index_probe;\n",
+        ),
+        (
+            "index_probe/mod.rs",
+            "fn probe() { let _ = super::bridge::engine::folder; }\n",
+        ),
+    ]);
+    fires(
+        &report,
+        Rule::AdapterNamedOutside,
+        "tests/reindex.rs: a `#[path]` attribute",
+    );
+    assert!(
+        report
+            .of(Rule::AdapterNamedOutside)
+            .iter()
+            .all(|text| !text.contains("index_probe")),
+        "{:#?}",
+        report.violations
+    );
+
+    let report = appended(
+        &[
+            (
+                "lib.rs",
+                "#[cfg(test)]\ninclude!(\"../bindings.inc\");\n#[cfg(test)]\nmod probe;\n",
+            ),
+            (
+                "probe.rs",
+                "pub fn verb() { let _ = crate::engine::folder; }\n",
+            ),
+        ],
+        &[],
+    );
+    fires(
+        &report,
+        Rule::AdapterNamedOutside,
+        "src/lib.rs: `include!` pulls in a file",
+    );
+    assert!(
+        report
+            .of(Rule::Tree)
+            .iter()
+            .all(|text| !text.contains("include!")),
+        "{:#?}",
+        report.violations
+    );
+
+    let report = appended(
+        &[
+            (
+                "lib.rs",
+                "use std::include as load;\nload!(\"../bindings.inc\");\n",
+            ),
+            ("main.rs", "fn open() { bilbo_cli::engine::folder; }\n"),
+        ],
+        &[],
+    );
+    fires(
+        &report,
+        Rule::AdapterNamedOutside,
+        "src/lib.rs: `include as",
+    );
+    assert!(
+        report
+            .of(Rule::Tree)
+            .iter()
+            .all(|text| !text.contains("pulls in a file")),
+        "{:#?}",
+        report.violations
+    );
+
+    for source in [
+        "fn open(path: &std::path::Path) -> std::path::PathBuf { let path = path.to_path_buf(); path }",
+        "#[derive(Debug)] struct Probe { path: std::path::PathBuf }",
+        "fn include(include: bool) -> bool { include }",
+    ] {
+        for report in everywhere(source) {
+            assert_silent(&report);
+        }
+    }
+    let embedded = "const T: &str = include_str!(\"x\"); const B: &[u8] = include_bytes!(\"x\");";
+    assert_silent(&with_tests(&[("reindex.rs", embedded)]));
+    assert_silent(&with_tests(&[("recall.rs", embedded)]));
+    for report in [
+        appended(&[("help/mod.rs", embedded)], &[]),
+        appended(&[("lib.rs", embedded)], &[]),
+    ] {
+        assert!(
+            report.of(Rule::AdapterNamedOutside).is_empty(),
+            "{:#?}",
+            report.violations
+        );
+    }
+
+    for source in [
+        "use bilbo_search::tantivy::{Committed, Row, Tantivy};",
+        "use bilbo_search::{index::Index, tantivy::Tantivy};",
+        "fn at(cache: &std::path::Path) { bilbo_search::tantivy::Tantivy::at(bilbo_search::tantivy::folder(cache), bilbo_search::tantivy::Options { memory: 1, merge_deleted_share: 1 }); }",
+        "const ID: &str = bilbo_search::qwen::ID; fn load() { let _ = bilbo_search::qwen::Qwen::load(); }",
+        "fn kinds() { bilbo_entries::markdown::Markdown::default(); let _: bilbo_entries::session::Session; }",
+        "use bilbo_search::tantivy::Tantivy as Index;",
+    ] {
+        assert_silent(&appended(&[("lib.rs", source)], &[]));
+        assert_silent(&with_tests(&[("reindex.rs", source)]));
+    }
+}
+
+#[test]
 fn a_cycle_through_lib_rs_is_found() {
     let report = with(&[("console/view.rs", "pub fn show() { crate::run(); }\n")]);
     assert_eq!(report.of(Rule::Cycle).len(), 1, "{:#?}", report.violations);
     let report = appended(
         &[
-            ("lib.rs", "use bilbo_search::tantivy as engine;\n"),
-            (
-                "help/mod.rs",
-                "pub fn open() { self::super::engine::folder; }\n",
-            ),
+            ("lib.rs", "use bilbo_search::tantivy::folder;\n"),
+            ("help/mod.rs", "pub fn open() { self::super::folder; }\n"),
         ],
         &[],
     );

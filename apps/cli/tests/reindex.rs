@@ -1,5 +1,3 @@
-//! This file and `lib.rs` are the only ones that name the index's module: a test of what the index holds has to read it.
-
 use std::collections::HashMap;
 use std::ffi::OsString;
 use std::fs;

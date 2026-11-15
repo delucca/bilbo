@@ -29,6 +29,7 @@ bilbo_rust_test(
     crate = ":search",
     layer = "unit",
     lint_config = ":lints",
+    size = "medium",
 )
 
 bilbo_rust_test(
@@ -58,10 +59,8 @@ bilbo_rust_test(
         ":search",
         "//libs/rust/entries",
         "//libs/rust/store",
-    ] + all_crate_deps(
-        normal = True,
-        normal_dev = True,
-    ),
+        "@crates//:zstd",
+    ] + all_crate_deps(normal_dev = True),
 )
 
 bilbo_rust_test(

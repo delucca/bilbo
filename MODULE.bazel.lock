@@ -514,10 +514,10 @@
           "FILE:@@//Cargo.lock aba93c00eb6d95170b8889377f40c5456c444d538d962a4438d45ccb354774c0",
           "FILE:@@//Cargo.toml 95bc47bc1b9b2326f2c94f39df8f49fedc9420e7445d888710f869a574405f93",
           "FILE:@@//apps/cli/Cargo.toml 5d95df05bddd535d122fc3928b1dec07f672bd6b9e2ad62c225dda6e69fb7a78",
-          "FILE:@@//libs/rust/entries/Cargo.toml 2d297b0835dc14109d9f9f0f37754e7ff8f969d9fa4a9871d77f297f6df53efd",
+          "FILE:@@//libs/rust/entries/Cargo.toml fc885f4f2aaf613ef33f93379a5ce36ba682262de5bc5ba21d60d8b1a9733463",
           "FILE:@@//libs/rust/settings/Cargo.toml 3e885efc99c425dbdc4775ffae4ecd306870d86f016d15e57b20dafd4372e755",
           "FILE:@@//libs/rust/store/Cargo.toml 28814746757cc488e6877d1eb1acbd03d3cabac3843d87b90da0412ab84a45ec",
-          "FILE:@@//libs/rust/search/Cargo.toml 2f172504b4b56ff31cddfc45d32b076679e6dfb8ce73743bad398b240757510c"
+          "FILE:@@//libs/rust/search/Cargo.toml 79fe29d4c7fd5a271f5a35b8ed7fc564daba38aed93f4fb93eea5a00322fbfad"
         ],
         "generatedRepoSpecs": {
           "crates": {

@@ -47,7 +47,6 @@ helper = \"1\"
 serde_json.workspace = true
 ";
 
-#[derive(Clone, Copy)]
 struct Tables<'a> {
     placement: &'a [(&'a str, &'a [&'a str])],
     core: &'a [&'a str],
@@ -250,14 +249,6 @@ fn idents(tokens: &[TokenTree], found: &mut BTreeSet<String>) {
     }
 }
 
-fn holds_ident(tokens: &[TokenTree], wanted: &str) -> bool {
-    tokens.iter().any(|token| match token {
-        TokenTree::Ident(ident) => name(ident) == wanted,
-        TokenTree::Group(group) => holds_ident(&children(group), wanted),
-        _ => false,
-    })
-}
-
 fn words(tree: &Tree, tables: &Tables) -> Vec<String> {
     let mut named = BTreeMap::new();
     for (file, text) in &tree.files {
@@ -305,13 +296,10 @@ fn words(tree: &Tree, tables: &Tables) -> Vec<String> {
 }
 
 fn table<'a, 'i>(parent: &'a DeTable<'i>, key: &str) -> Option<&'a DeTable<'i>> {
-    parent
-        .iter()
-        .find(|(name, _)| name.get_ref().as_ref() == key)
-        .and_then(|(_, value)| match value.get_ref() {
-            DeValue::Table(inner) => Some(inner),
-            _ => None,
-        })
+    parent.get(key).and_then(|value| match value.get_ref() {
+        DeValue::Table(inner) => Some(inner),
+        _ => None,
+    })
 }
 
 fn dependencies(manifest: &str) -> BTreeSet<String> {
@@ -484,10 +472,7 @@ fn whole(tree: &Tree, tables: &Tables, found: &mut Vec<String>) {
         }
         tops.insert(file.as_str(), top);
     }
-    let mut pending: Vec<String> = Vec::new();
-    if tree.files.contains_key("src/lib.rs") {
-        pending.push("src/lib.rs".to_owned());
-    }
+    let mut pending = vec!["src/lib.rs".to_owned()];
     for root in tables.suites {
         if tree.files.contains_key(*root) {
             pending.push((*root).to_owned());
@@ -528,57 +513,38 @@ fn whole(tree: &Tree, tables: &Tables, found: &mut Vec<String>) {
     }
 }
 
-fn brace_use(file: &str, root: &str, group: &Group, found: &mut Vec<String>) {
+fn renamed_in(group: &Group, alias: &str, glob: Option<&str>, found: &mut Vec<String>) {
     let tokens = children(group);
     for element in tokens.split(|token| is(Some(token), ',')) {
         match element.first() {
             Some(TokenTree::Ident(ident))
                 if name(ident) == "self" && word(element.get(1)).as_deref() == Some("as") =>
             {
-                found.push(format!(
-                    "{file}: `{root} as …` gives the crate root a second name"
-                ));
+                found.push(alias.to_owned());
             }
-            Some(TokenTree::Punct(p)) if p.as_char() == '*' => found.push(format!(
-                "{file}: `{root}::*` brings in every module without naming one"
-            )),
+            Some(TokenTree::Punct(p)) if p.as_char() == '*' => {
+                found.extend(glob.map(str::to_owned));
+            }
             Some(TokenTree::Group(inner)) if inner.delimiter() == Delimiter::Brace => {
-                brace_use(file, root, inner, found);
+                renamed_in(inner, alias, glob, found);
             }
             _ => {}
         }
     }
 }
 
-fn root_use(file: &str, root: &str, rest: &[TokenTree], found: &mut Vec<String>) {
-    if word(rest.first()).as_deref() == Some("as") {
-        found.push(format!(
-            "{file}: `{root} as …` gives the crate root a second name"
-        ));
+fn renamed(rest: &[TokenTree], alias: &str, glob: Option<&str>, found: &mut Vec<String>) {
+    let first = word(rest.first());
+    let after_self = first.as_deref() == Some("self") && word(rest.get(1)).as_deref() == Some("as");
+    if first.as_deref() == Some("as") || after_self {
+        found.push(alias.to_owned());
     } else if is_path_sep(rest) {
         match rest.get(2) {
-            Some(TokenTree::Punct(p)) if p.as_char() == '*' => found.push(format!(
-                "{file}: `{root}::*` brings in every module without naming one"
-            )),
+            Some(TokenTree::Punct(p)) if p.as_char() == '*' => {
+                found.extend(glob.map(str::to_owned));
+            }
             Some(TokenTree::Group(group)) if group.delimiter() == Delimiter::Brace => {
-                brace_use(file, root, group, found);
-            }
-            _ => {}
-        }
-    }
-}
-
-fn brace_alias(file: &str, used: &str, group: &Group, found: &mut Vec<String>) {
-    let tokens = children(group);
-    for element in tokens.split(|token| is(Some(token), ',')) {
-        match element.first() {
-            Some(TokenTree::Ident(ident))
-                if name(ident) == "self" && word(element.get(1)).as_deref() == Some("as") =>
-            {
-                found.push(second_name(file, used));
-            }
-            Some(TokenTree::Group(inner)) if inner.delimiter() == Delimiter::Brace => {
-                brace_alias(file, used, inner, found);
+                renamed_in(group, alias, glob, found);
             }
             _ => {}
         }
@@ -587,17 +553,6 @@ fn brace_alias(file: &str, used: &str, group: &Group, found: &mut Vec<String>) {
 
 fn second_name(file: &str, used: &str) -> String {
     format!("{file}: `{used} as …` gives `{used}` a second name: write `{used}` where it is used")
-}
-
-fn word_use(file: &str, used: &str, rest: &[TokenTree], found: &mut Vec<String>) {
-    if word(rest.first()).as_deref() == Some("as") {
-        found.push(second_name(file, used));
-    } else if is_path_sep(rest)
-        && let Some(TokenTree::Group(group)) = rest.get(2)
-        && group.delimiter() == Delimiter::Brace
-    {
-        brace_alias(file, used, group, found);
-    }
 }
 
 fn attribute(file: &str, rest: &[TokenTree], found: &mut Vec<String>) {
@@ -615,7 +570,11 @@ fn attribute(file: &str, rest: &[TokenTree], found: &mut Vec<String>) {
     let inner = children(group);
     let path = match word(inner.first()).as_deref() {
         Some("path") => true,
-        Some("cfg_attr") => holds_ident(&inner, "path"),
+        Some("cfg_attr") => {
+            let mut held = BTreeSet::new();
+            idents(&inner, &mut held);
+            held.contains("path")
+        }
         _ => false,
     };
     if path {
@@ -643,11 +602,28 @@ fn scan(file: &str, tokens: &[TokenTree], tables: &Tables, found: &mut Vec<Strin
                         "{file}: `include!` pulls in a file the scan does not read"
                     ));
                 }
+                if ident == "include" {
+                    renamed(
+                        rest,
+                        &format!(
+                            "{file}: `include as …` gives `include!` a second name, and the scan would not see what it pulls in: write the code out"
+                        ),
+                        None,
+                        found,
+                    );
+                }
                 if tables.roots.contains(&ident.as_str()) {
-                    root_use(file, &ident, rest, found);
+                    renamed(
+                        rest,
+                        &format!("{file}: `{ident} as …` gives the crate root a second name"),
+                        Some(&format!(
+                            "{file}: `{ident}::*` brings in every module without naming one"
+                        )),
+                        found,
+                    );
                 }
                 if tables.placement.iter().any(|(row, _)| *row == ident) {
-                    word_use(file, &ident, rest, found);
+                    renamed(rest, &second_name(file, &ident), None, found);
                 }
             }
             _ => {}
@@ -681,27 +657,24 @@ fn silent(found: &[String]) {
 
 #[test]
 fn a_word_stands_only_in_the_files_of_its_row() {
-    let found = words(real(), &real_tables());
-    assert!(found.is_empty(), "{found:#?}");
+    silent(&words(real(), &real_tables()));
 }
 
 #[test]
 fn every_dependency_has_a_row_and_every_top_level_module_is_classed() {
-    let found = complete(real(), &real_tables());
-    assert!(found.is_empty(), "{found:#?}");
+    silent(&complete(real(), &real_tables()));
 }
 
 #[test]
 fn lib_rs_holds_mod_lines_only_and_nothing_hides_a_name() {
-    let found = bans(real(), &real_tables());
-    assert!(found.is_empty(), "{found:#?}");
+    silent(&bans(real(), &real_tables()));
 }
 
 #[test]
 fn a_word_outside_its_row_is_found_in_every_spelling_and_text_is_no_word() {
     let tables = toy_tables();
     silent(&words(&toy(), &tables));
-    let leak = "names `engine`";
+    let leak = "src/core.rs: names `engine`";
     let cases = [
         (
             "src/core.rs",
@@ -999,6 +972,19 @@ fn an_item_in_lib_rs_a_macro_a_path_attribute_an_include_an_alias_and_a_glob_are
         ),
         (
             "src/core.rs",
+            "use std::include as load; load!(\"engine.rs\");",
+            "`include as",
+        ),
+        (
+            "tests/integration/main.rs",
+            "use std::{include as load};",
+            "`include as",
+        ),
+        ("src/core.rs", "r#include!(\"engine.rs\");", "include!"),
+        ("src/core.rs", "std::include!(\"engine.rs\");", "include!"),
+        ("src/core.rs", "extern crate self as root;", "crate as"),
+        (
+            "src/core.rs",
             "use helper as aid;",
             "gives `helper` a second name",
         ),
@@ -1014,7 +1000,7 @@ fn an_item_in_lib_rs_a_macro_a_path_attribute_an_include_an_alias_and_a_glob_are
     let passes = toy()
         .file(
             "src/core.rs",
-            "const T: &str = include_str!(\"x\"); const B: &[u8] = include_bytes!(\"x\"); use std::error::Error as StdError; use crate::core::*; use helper::help as aid; mod tests { use super::*; }",
+            "const T: &str = include_str!(\"x\"); const B: &[u8] = include_bytes!(\"x\"); use std::error::Error as StdError; use crate::core::*; use helper::help as aid; fn include(include: bool) -> bool { include } mod tests { use super::*; }",
         )
         .file(
             "tests/integration/main.rs",
@@ -1025,6 +1011,7 @@ fn an_item_in_lib_rs_a_macro_a_path_attribute_an_include_an_alias_and_a_glob_are
 
 #[test]
 fn a_row_that_lists_a_missing_place_or_sees_nothing_is_found() {
+    silent(&words(&toy(), &toy_tables()));
     let gone = [
         ("engine", &["src/engine.rs", "tests/gone/"] as &[&str]),
         ("helper", &["src/core.rs"]),
