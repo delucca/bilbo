@@ -731,7 +731,7 @@ fn a_kind_or_adapter_crate_is_named_only_by_lib_rs() {
     let report = real();
     assert_clean(report, Rule::KindNamedOutside);
     assert!(
-        report.kinds.len() >= 4,
+        report.kinds.len() >= 3,
         "the scan no longer sees the kind and adapter crates lib.rs names: {:?}",
         report.kinds
     );

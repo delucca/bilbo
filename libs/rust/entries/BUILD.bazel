@@ -1,3 +1,4 @@
+load("@crates//:defs.bzl", "all_crate_deps")
 load("@rules_rust//cargo:defs.bzl", "extract_cargo_lints")
 load("@rules_rust//rust:defs.bzl", "rust_library")
 load("//tools/bazel:rust.bzl", "bilbo_rust_test")
@@ -15,19 +16,39 @@ rust_library(
     lint_config = ":lints",
     visibility = [
         "//apps/cli:__pkg__",
-        "//libs/rust/entries/markdown:__pkg__",
-        "//libs/rust/entries/session:__pkg__",
         "//libs/rust/search:__pkg__",
         "//libs/rust/search/qwen:__pkg__",
     ],
     deps = [
         "//libs/rust/settings",
         "//libs/rust/store",
+    ] + all_crate_deps(normal = True),
+)
+
+filegroup(
+    name = "markdown_fixtures",
+    srcs = glob(["fixtures/markdown/*"]),
+    visibility = [
+        "//apps/cli:__pkg__",
+        "//tests/e2e/cli:__pkg__",
+    ],
+)
+
+filegroup(
+    name = "session_fixtures",
+    srcs = glob(["fixtures/session/*"]),
+    visibility = [
+        "//apps/cli:__pkg__",
+        "//tests/e2e/cli:__pkg__",
     ],
 )
 
 bilbo_rust_test(
     name = "unit",
+    compile_data = [
+        ":markdown_fixtures",
+        ":session_fixtures",
+    ],
     crate = ":entries",
     layer = "unit",
     lint_config = ":lints",
@@ -43,4 +64,27 @@ bilbo_rust_test(
         ":entries",
         "//libs/rust/store",
     ],
+)
+
+bilbo_rust_test(
+    name = "contract",
+    srcs = glob(["tests/contract/*.rs"]),
+    compile_data = glob(["tests/contract/*.jsonl"]) + [":session_fixtures"],
+    crate_root = "tests/contract/main.rs",
+    layer = "contract",
+    lint_config = ":lints",
+    deps = [":entries"] + all_crate_deps(normal_dev = True),
+)
+
+bilbo_rust_test(
+    name = "layout",
+    srcs = ["tests/layout.rs"],
+    data = glob([
+        "src/**/*.rs",
+        "tests/**/*.rs",
+    ]) + ["Cargo.toml"],
+    env = {"LAYOUT_ROOT": "$(rlocationpath Cargo.toml)"},
+    layer = "integration",
+    lint_config = ":lints",
+    deps = all_crate_deps(normal_dev = True),
 )

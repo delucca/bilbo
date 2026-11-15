@@ -74,10 +74,8 @@ name = "bilbo-cli"
 version = "0.0.0"
 dependencies = [
  "bilbo-entries",
- "bilbo-markdown",
  "bilbo-qwen",
  "bilbo-search",
- "bilbo-session",
  "bilbo-settings",
  "bilbo-store",
  "bilbo-tantivy",
@@ -97,15 +95,11 @@ version = "0.0.0"
 dependencies = [
  "bilbo-settings",
  "bilbo-store",
-]
-
-[[package]]
-name = "bilbo-markdown"
-version = "0.0.0"
-dependencies = [
- "bilbo-entries",
- "bilbo-settings",
- "bilbo-store",
+ "proc-macro2",
+ "runfiles",
+ "serde_json",
+ "toml",
+ "zstd",
 ]
 
 [[package]]
@@ -131,17 +125,6 @@ dependencies = [
  "stop-words",
  "strsim",
  "xxhash-rust",
- "zstd",
-]
-
-[[package]]
-name = "bilbo-session"
-version = "0.0.0"
-dependencies = [
- "bilbo-entries",
- "bilbo-settings",
- "bilbo-store",
- "serde_json",
  "zstd",
 ]
 

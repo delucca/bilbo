@@ -1,7 +1,7 @@
 pub mod read;
 
-use crate::dialect::{Dialect, Evidence};
-use crate::json::Value;
+use crate::session::dialect::{Dialect, Evidence};
+use crate::session::json::Value;
 
 pub fn dialect(line: &Value) -> Option<Evidence> {
     match (line.get("type"), line.get("payload")) {

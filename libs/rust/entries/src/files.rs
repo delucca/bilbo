@@ -40,7 +40,7 @@ enum Entry {
     Denied,
 }
 
-/// An in-memory tree of absolute paths, for the tests of the use case and of every kind crate.
+/// An in-memory tree of absolute paths, for the tests of the use case and of every kind.
 #[derive(Debug, Clone, Default)]
 pub struct Memory {
     tree: BTreeMap<PathBuf, Entry>,

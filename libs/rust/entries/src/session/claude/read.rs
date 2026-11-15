@@ -1,10 +1,10 @@
 //! Renders as the eval's bm25 `build.py` does (`render_session`, `render_entry`); where that script would stop on
 //! an unexpected shape, the block or the entry renders nothing.
 
-use bilbo_entries::reader::{EntryLabels, Passage};
+use crate::reader::{EntryLabels, Passage};
 
-use crate::json::{self, Value};
-use crate::render::{self, Outline, Tools};
+use crate::session::json::{self, Value};
+use crate::session::render::{self, Outline, Tools};
 
 /// `None` where the eval's `media()` would stop: a `source` that is not an object.
 fn media(block: &Value) -> Option<String> {
@@ -203,14 +203,16 @@ pub fn labels(records: &[&[u8]]) -> Vec<String> {
 mod tests {
     use std::time::{Duration, SystemTime};
 
-    use bilbo_entries::reader::{Passage, Piece};
+    use crate::reader::{Passage, Piece};
 
     use super::passages;
 
-    const SESSION: &str = include_str!("../../fixtures/8f2b6d4e-1a3c-4e5f-9b7a-2c4d6e8f0a1b.jsonl");
-    const OLDER: &str = include_str!("../../fixtures/5c3a9e1f-0b7d-4c2e-9a41-7f2d8e6b1c03.jsonl");
-    const SUBAGENT: &str = include_str!("../../fixtures/agent-ad63c2b3c9e7a4b3d.jsonl");
-    const CURSOR: &str = include_str!("../../fixtures/cursor-session.jsonl");
+    const SESSION: &str =
+        include_str!("../../../fixtures/session/8f2b6d4e-1a3c-4e5f-9b7a-2c4d6e8f0a1b.jsonl");
+    const OLDER: &str =
+        include_str!("../../../fixtures/session/5c3a9e1f-0b7d-4c2e-9a41-7f2d8e6b1c03.jsonl");
+    const SUBAGENT: &str = include_str!("../../../fixtures/session/agent-ad63c2b3c9e7a4b3d.jsonl");
+    const CURSOR: &str = include_str!("../../../fixtures/session/cursor-session.jsonl");
 
     fn read(text: &str) -> Vec<Passage> {
         let records: Vec<&[u8]> = text.split_inclusive('\n').map(str::as_bytes).collect();

@@ -1,8 +1,8 @@
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
-use bilbo_entries::kind::Refusal;
-use bilbo_entries::remember::RECORD_HELD;
+use crate::kind::Refusal;
+use crate::remember::RECORD_HELD;
 use zstd::stream::read::Decoder;
 
 pub const SUFFIX: &str = ".zst";

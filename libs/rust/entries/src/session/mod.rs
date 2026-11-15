@@ -8,16 +8,16 @@ mod render;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
-use bilbo_entries::files::{Files, Node};
-use bilbo_entries::kind::{Claim, Claims, Kind, Proposal, Refusal};
-use bilbo_entries::reader::{Passage, Reader};
+use crate::files::{Files, Node};
+use crate::kind::{Claim, Claims, Kind, Proposal, Refusal};
+use crate::reader::{Passage, Reader};
 use bilbo_settings::file::File;
 use bilbo_settings::key::{About, Default, Key, Source};
 use bilbo_settings::size;
 use bilbo_store::id::Id;
 
-use crate::dialect::Dialect;
-use crate::json::Value;
+use crate::session::dialect::Dialect;
+use crate::session::json::Value;
 
 const NAME: &str = "session";
 
@@ -296,9 +296,9 @@ mod tests {
     use std::io::Write;
     use std::path::{Path, PathBuf};
 
-    use bilbo_entries::files::{Call, Files, Memory, Node, Turning};
-    use bilbo_entries::kind::{Kind, Proposal, Refusal};
-    use bilbo_entries::reader::{Passage, Reader};
+    use crate::files::{Call, Files, Memory, Node, Turning};
+    use crate::kind::{Kind, Proposal, Refusal};
+    use crate::reader::{Passage, Reader};
     use bilbo_store::id::Id;
 
     use bilbo_settings::file::File;
@@ -306,18 +306,19 @@ mod tests {
 
     use super::{Session, UNPACK_FLOOR, UNPACK_RATIO, is_uuid, packed};
 
-    const CLAUDE: &[u8] = include_bytes!("../fixtures/5c3a9e1f-0b7d-4c2e-9a41-7f2d8e6b1c03.jsonl");
-    const SUBAGENT: &[u8] = include_bytes!("../fixtures/agent-ad63c2b3c9e7a4b3d.jsonl");
-    const META: &[u8] = include_bytes!("../fixtures/agent-ad63c2b3c9e7a4b3d.meta.json");
+    const CLAUDE: &[u8] =
+        include_bytes!("../../fixtures/session/5c3a9e1f-0b7d-4c2e-9a41-7f2d8e6b1c03.jsonl");
+    const SUBAGENT: &[u8] = include_bytes!("../../fixtures/session/agent-ad63c2b3c9e7a4b3d.jsonl");
+    const META: &[u8] = include_bytes!("../../fixtures/session/agent-ad63c2b3c9e7a4b3d.meta.json");
     const CODEX: &[u8] = include_bytes!(
-        "../fixtures/rollout-2026-11-06T09-10-00-019a4f2e-7c1d-7b3a-9e55-2d8c41f0a6b7.jsonl"
+        "../../fixtures/session/rollout-2026-11-06T09-10-00-019a4f2e-7c1d-7b3a-9e55-2d8c41f0a6b7.jsonl"
     );
     const CODEX_PACKED: &[u8] = include_bytes!(
-        "../fixtures/rollout-2026-11-06T09-10-00-019a4f2e-7c1d-7b3a-9e55-2d8c41f0a6b7.jsonl.zst"
+        "../../fixtures/session/rollout-2026-11-06T09-10-00-019a4f2e-7c1d-7b3a-9e55-2d8c41f0a6b7.jsonl.zst"
     );
-    const CURSOR: &[u8] = include_bytes!("../fixtures/cursor-session.jsonl");
-    const NONE: &[u8] = include_bytes!("../fixtures/not-a-session.jsonl");
-    const NOT_UTF8: &[u8] = include_bytes!("../fixtures/not-utf8.jsonl");
+    const CURSOR: &[u8] = include_bytes!("../../fixtures/session/cursor-session.jsonl");
+    const NONE: &[u8] = include_bytes!("../../fixtures/session/not-a-session.jsonl");
+    const NOT_UTF8: &[u8] = include_bytes!("../../fixtures/session/not-utf8.jsonl");
 
     const MAIN: &str = "5c3a9e1f-0b7d-4c2e-9a41-7f2d8e6b1c03";
     const OTHER: &str = "0e1d2c3b-4a59-4687-b6a5-a4b3c2d1e0f9";
@@ -485,7 +486,7 @@ mod tests {
     /// A departure from the eval's render, which read a lone carriage return as a line end.
     #[test]
     fn a_lone_carriage_return_does_not_end_a_record() {
-        use bilbo_entries::reader::Reader;
+        use crate::reader::Reader;
         let entry =
             |text: &str| format!("{{\"type\":\"user\",\"message\":{{\"content\":\"{text}\"}}}}");
         let bytes = format!("{}\r{}\n{}\r\n", entry("a"), entry("b"), entry("c")).into_bytes();
@@ -589,7 +590,7 @@ mod tests {
 
     #[test]
     fn a_session_is_read_by_the_dialect_its_records_show() {
-        use bilbo_entries::reader::Reader;
+        use crate::reader::Reader;
         let first = |bytes: &[u8]| {
             let records: Vec<&[u8]> = bytes.split_inclusive(|&byte| byte == b'\n').collect();
             Session::default()
@@ -627,7 +628,7 @@ mod tests {
 
     #[test]
     fn a_session_whose_only_evidence_is_odd_still_reaches_its_reader() {
-        use bilbo_entries::reader::Reader;
+        use crate::reader::Reader;
         let texts = |bytes: &[u8]| -> Vec<String> {
             let records: Vec<&[u8]> = bytes.split_inclusive(|&byte| byte == b'\n').collect();
             assert!(
@@ -768,7 +769,7 @@ mod tests {
 
     #[test]
     fn no_record_makes_a_reader_panic_or_leave_its_generation() {
-        use bilbo_entries::reader::Reader;
+        use crate::reader::Reader;
         let lines: Vec<&[u8]> = [CLAUDE, SUBAGENT, CODEX, CURSOR, NONE, NOT_UTF8]
             .into_iter()
             .flat_map(|file| file.split_inclusive(|&byte| byte == b'\n'))
@@ -789,8 +790,8 @@ mod tests {
             let records: Vec<&[u8]> = records.iter().map(Vec::as_slice).collect();
             for passages in [
                 Session::default().passages(&records),
-                crate::claude::read::passages(&records),
-                crate::codex::read::passages(&records),
+                crate::session::claude::read::passages(&records),
+                crate::session::codex::read::passages(&records),
             ] {
                 sound(&passages, records.len(), case);
                 assert!(passages.iter().all(|passage| passage.range.count == 1));
@@ -1104,10 +1105,10 @@ mod tests {
     #[test]
     fn the_packed_fixtures_unpack_to_the_plain_ones_byte_for_byte() {
         const OTHER_PLAIN: &[u8] = include_bytes!(
-            "../fixtures/rollout-2026-11-07T08-00-00-019a5b3c-2d4e-7f60-8a1b-3c5d7e9f0a2b.jsonl"
+            "../../fixtures/session/rollout-2026-11-07T08-00-00-019a5b3c-2d4e-7f60-8a1b-3c5d7e9f0a2b.jsonl"
         );
         const OTHER_PACKED: &[u8] = include_bytes!(
-            "../fixtures/rollout-2026-11-07T08-00-00-019a5b3c-2d4e-7f60-8a1b-3c5d7e9f0a2b.jsonl.zst"
+            "../../fixtures/session/rollout-2026-11-07T08-00-00-019a5b3c-2d4e-7f60-8a1b-3c5d7e9f0a2b.jsonl.zst"
         );
         for (plain, packed) in [(CODEX, CODEX_PACKED), (OTHER_PLAIN, OTHER_PACKED)] {
             assert_eq!(
@@ -1381,18 +1382,18 @@ mod tests {
     }
 
     const CLAUDE_FOLDERS: &[u8] =
-        include_bytes!("../fixtures/7d1e4b9a-3c5f-4a2e-8b6d-0f9e1c2a3b4d.jsonl");
+        include_bytes!("../../fixtures/session/7d1e4b9a-3c5f-4a2e-8b6d-0f9e1c2a3b4d.jsonl");
     const CODEX_FOLDERS: &[u8] = include_bytes!(
-        "../fixtures/rollout-2026-11-08T10-00-00-019a6c4d-3e5f-7a71-9b2c-4d6e8fa0b1c3.jsonl"
+        "../../fixtures/session/rollout-2026-11-08T10-00-00-019a6c4d-3e5f-7a71-9b2c-4d6e8fa0b1c3.jsonl"
     );
     const CODEX_LONG: &[u8] = include_bytes!(
-        "../fixtures/rollout-2026-11-07T08-00-00-019a5b3c-2d4e-7f60-8a1b-3c5d7e9f0a2b.jsonl"
+        "../../fixtures/session/rollout-2026-11-07T08-00-00-019a5b3c-2d4e-7f60-8a1b-3c5d7e9f0a2b.jsonl"
     );
     const CLAUDE_LONG: &[u8] =
-        include_bytes!("../fixtures/8f2b6d4e-1a3c-4e5f-9b7a-2c4d6e8f0a1b.jsonl");
+        include_bytes!("../../fixtures/session/8f2b6d4e-1a3c-4e5f-9b7a-2c4d6e8f0a1b.jsonl");
 
     fn labels_of(bytes: &[u8]) -> Vec<String> {
-        use bilbo_entries::reader::Reader;
+        use crate::reader::Reader;
         let records: Vec<&[u8]> = bytes.split_inclusive(|&byte| byte == b'\n').collect();
         Session::default().entry_labels(&records)
     }
@@ -1435,8 +1436,8 @@ mod tests {
         let bytes = [CURSOR, line.as_slice(), b"\n"].concat();
         let records = bytes.split_inclusive(|&byte| byte == b'\n');
         assert_eq!(
-            crate::dialect::sniff(records),
-            Some(crate::dialect::Dialect::Cursor)
+            crate::session::dialect::sniff(records),
+            Some(crate::session::dialect::Dialect::Cursor)
         );
         assert_eq!(labels_of(&bytes), ["/home/me/src/garden"]);
     }

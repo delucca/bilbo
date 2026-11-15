@@ -43,7 +43,7 @@ mod tests {
 
     #[test]
     fn a_frontmatter_id_that_is_a_canonical_ulid_is_proposed() {
-        let note = include_str!("../fixtures/note.md");
+        let note = include_str!("../../fixtures/markdown/note.md");
         assert_eq!(id(note), valid());
         assert!(valid().is_some());
     }
@@ -102,7 +102,7 @@ mod tests {
 
     #[test]
     fn a_bom_and_crlf_lines_do_not_hide_the_id() {
-        assert_eq!(id(include_str!("../fixtures/bom.md")), valid());
-        assert_eq!(id(include_str!("../fixtures/crlf.md")), valid());
+        assert_eq!(id(include_str!("../../fixtures/markdown/bom.md")), valid());
+        assert_eq!(id(include_str!("../../fixtures/markdown/crlf.md")), valid());
     }
 }

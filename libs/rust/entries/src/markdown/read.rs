@@ -2,10 +2,10 @@
 
 use std::borrow::Cow;
 
-use bilbo_entries::reader::{Passage, Piece};
+use crate::reader::{Passage, Piece};
 use bilbo_store::entries::RecordRange;
 
-use crate::frontmatter;
+use crate::markdown::frontmatter;
 
 const FRONTMATTER: &str = "frontmatter";
 const UNDER: &str = " > ";
@@ -274,7 +274,7 @@ fn extend(passage: &mut Passage, records: &[&[u8]]) {
 
 #[cfg(test)]
 mod tests {
-    use bilbo_entries::reader::Passage;
+    use crate::reader::Passage;
 
     use super::{atx, passages, underline};
 
@@ -322,7 +322,7 @@ mod tests {
 
     #[test]
     fn a_note_reads_as_its_frontmatter_then_one_passage_per_heading() {
-        let note = include_str!("../fixtures/note.md");
+        let note = include_str!("../../fixtures/markdown/note.md");
         let found = read(note);
         let labels: Vec<&str> = found.iter().map(|p| p.pieces[0].label.as_str()).collect();
         assert_eq!(labels[0], "frontmatter");
@@ -337,7 +337,7 @@ mod tests {
     #[test]
     fn the_sections_of_a_note_are_its_headings_in_both_styles_outside_code() {
         assert_eq!(
-            shape(include_str!("../fixtures/sections.md")),
+            shape(include_str!("../../fixtures/markdown/sections.md")),
             [
                 row(1, 7, "frontmatter"),
                 row(8, 11, "The garden log"),
@@ -566,13 +566,13 @@ mod tests {
     #[test]
     fn every_line_is_in_exactly_one_passage_and_the_ends_are_its_lines() {
         for text in [
-            include_str!("../fixtures/note.md"),
-            include_str!("../fixtures/crlf.md"),
-            include_str!("../fixtures/bom.md"),
-            include_str!("../fixtures/no-final-newline.md"),
-            include_str!("../fixtures/no-frontmatter.md"),
-            include_str!("../fixtures/bad-id.md"),
-            include_str!("../fixtures/sections.md"),
+            include_str!("../../fixtures/markdown/note.md"),
+            include_str!("../../fixtures/markdown/crlf.md"),
+            include_str!("../../fixtures/markdown/bom.md"),
+            include_str!("../../fixtures/markdown/no-final-newline.md"),
+            include_str!("../../fixtures/markdown/no-frontmatter.md"),
+            include_str!("../../fixtures/markdown/bad-id.md"),
+            include_str!("../../fixtures/markdown/sections.md"),
             "\n\n",
             "a\n===\n---\n===\n# b\n```\n",
         ] {
@@ -722,10 +722,10 @@ mod tests {
     #[test]
     fn no_record_makes_the_reader_panic_or_leave_a_line_out() {
         let files = [
-            include_str!("../fixtures/sections.md"),
-            include_str!("../fixtures/note.md"),
-            include_str!("../fixtures/crlf.md"),
-            include_str!("../fixtures/bom.md"),
+            include_str!("../../fixtures/markdown/sections.md"),
+            include_str!("../../fixtures/markdown/note.md"),
+            include_str!("../../fixtures/markdown/crlf.md"),
+            include_str!("../../fixtures/markdown/bom.md"),
             "- item\n  more\n---\n> quote\nlazy\n===\n```\n# code\n~~~\n",
         ];
         let lines: Vec<&[u8]> = files

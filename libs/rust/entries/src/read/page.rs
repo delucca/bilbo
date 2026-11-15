@@ -217,7 +217,7 @@ mod tests {
         }
     }
 
-    fn session() -> Vec<Passage> {
+    fn transcript() -> Vec<Passage> {
         vec![
             single(2, "user: one"),
             single(3, "assistant: two\nlines"),
@@ -248,7 +248,7 @@ mod tests {
 
     #[test]
     fn a_page_holds_each_rendered_record_of_the_range_after_its_locator() {
-        let page = paged(&session(), range(1, 9), 1000);
+        let page = paged(&transcript(), range(1, 9), 1000);
         assert_eq!(
             page.blocks,
             [
@@ -264,35 +264,35 @@ mod tests {
     #[test]
     fn a_range_prints_only_its_records_and_one_with_no_rendered_record_prints_nothing() {
         assert_eq!(
-            paged(&session(), range(3, 5), 1000).blocks,
+            paged(&transcript(), range(3, 5), 1000).blocks,
             [
                 block(3, 3, "assistant: two\nlines"),
                 block(5, 5, "tool_use Bash:\nls")
             ]
         );
-        assert_eq!(paged(&session(), range(6, 8), 1000), Page::default());
-        assert_eq!(paged(&session(), range(4, 4), 1000), Page::default());
+        assert_eq!(paged(&transcript(), range(6, 8), 1000), Page::default());
+        assert_eq!(paged(&transcript(), range(4, 4), 1000), Page::default());
         assert_eq!(paged(&[], range(1, 9), 1000), Page::default());
     }
 
     #[test]
     fn a_page_stops_before_the_record_that_does_not_fit_and_more_starts_there() {
         // "#r2 user: one\n" is 14 characters, "#r3 assistant: two\nlines\n" 25.
-        let page = paged(&session(), range(1, 9), 14 + 25);
+        let page = paged(&transcript(), range(1, 9), 14 + 25);
         assert_eq!(printed(std::slice::from_ref(&page)), [2, 3]);
         assert_eq!(page.more, Some(range(5, 9)));
-        let page = paged(&session(), range(1, 9), 14 + 24);
+        let page = paged(&transcript(), range(1, 9), 14 + 24);
         assert_eq!(printed(std::slice::from_ref(&page)), [2]);
         assert_eq!(page.more, Some(range(3, 9)));
     }
 
     #[test]
     fn more_names_the_next_record_that_renders_and_stops_at_the_end_of_the_range() {
-        let page = paged(&session(), range(1, 6), 14);
+        let page = paged(&transcript(), range(1, 6), 14);
         assert_eq!(page.more, Some(range(3, 6)));
-        let page = paged(&session(), range(3, 6), 25);
+        let page = paged(&transcript(), range(3, 6), 25);
         assert_eq!(page.more, Some(range(5, 6)));
-        let page = paged(&session(), range(5, 6), 100);
+        let page = paged(&transcript(), range(5, 6), 100);
         assert_eq!(page.more, None, "records 6 renders nothing");
     }
 
@@ -300,7 +300,7 @@ mod tests {
     fn following_more_prints_each_rendered_record_exactly_once_at_any_budget() {
         for budget in [1, 5, 14, 20, 26, 40, 64, 1000] {
             for asked in [range(1, 9), range(2, 5), range(3, 3), range(4, 9)] {
-                let pages = chain(&session(), asked, budget);
+                let pages = chain(&transcript(), asked, budget);
                 let expected: Vec<u64> = [2, 3, 5, 9]
                     .into_iter()
                     .filter(|record| (asked.first..=last(asked)).contains(record))
@@ -431,7 +431,7 @@ mod tests {
 
     #[test]
     fn a_budget_smaller_than_the_locator_still_moves_on() {
-        let pages = chain(&session(), range(1, 9), 1);
+        let pages = chain(&transcript(), range(1, 9), 1);
         assert_eq!(printed(&pages), [2, 3, 5, 9]);
         assert!(pages.iter().all(|page| page.blocks[0].text.is_empty()));
     }

@@ -206,8 +206,8 @@ impl fmt::Display for Error {
         match self {
             Self::NoEntry(Target::Entry(id)) => write!(f, "no entry {id}"),
             Self::NoEntry(Target::Short(short)) => write!(f, "no entry's id ends with {short}"),
-            Self::NoEntry(Target::Session(session)) => {
-                write!(f, "no entry for the session {session}")
+            Self::NoEntry(Target::Session(prefix)) => {
+                write!(f, "no entry for the session {prefix}")
             }
             Self::Ambiguous {
                 given,
@@ -264,7 +264,7 @@ impl From<StoreError> for Error {
 }
 
 /// A note named for a UUID is no session.
-fn names(label: &CaptureLabel, session: &str) -> bool {
+fn names(label: &CaptureLabel, prefix: &str) -> bool {
     let Some(name) = label
         .path()
         .and_then(|path| path.file_name())
@@ -278,9 +278,7 @@ fn names(label: &CaptureLabel, session: &str) -> bool {
     stem.len()
         .checked_sub(refs::UUID)
         .and_then(|start| stem.get(start..))
-        .is_some_and(|uuid| {
-            refs::is_session(uuid) && uuid.to_ascii_lowercase().starts_with(session)
-        })
+        .is_some_and(|uuid| refs::is_session(uuid) && uuid.to_ascii_lowercase().starts_with(prefix))
 }
 
 fn resolve(target: &Target, listed: usize, entries: &dyn Entries) -> Result<Id, Error> {
@@ -294,12 +292,12 @@ fn resolve(target: &Target, listed: usize, entries: &dyn Entries) -> Result<Id, 
             }
             (short.to_string(), found)
         }
-        Target::Session(session) => (
-            session.clone(),
+        Target::Session(prefix) => (
+            prefix.clone(),
             entries
-                .captures_with(session)?
+                .captures_with(prefix)?
                 .into_iter()
-                .filter(|(_, label)| names(label, session))
+                .filter(|(_, label)| names(label, prefix))
                 .map(|(id, label)| (id, Some(label)))
                 .collect(),
         ),

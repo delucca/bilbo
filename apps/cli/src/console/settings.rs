@@ -90,7 +90,7 @@ pub const FOLLOW: Key<Vec<Follow>> = Key {
 
 const PATHS: [&About; 3] = [&ROOT.about, &STATE.about, &CACHE.about];
 
-/// A key a kind crate declares; `lib.rs`, the one file that names a kind crate, hands them in.
+/// A key a kind declares; `lib.rs`, the one file that names a kind module, hands them in.
 pub type KindKey = Key<usize>;
 
 /// Every key, in the order `bilbo config` lists them.
@@ -177,7 +177,7 @@ impl Settings {
         }
     }
 
-    /// The value a kind crate's key resolved to, if `load` was given that key.
+    /// The value a kind's key resolved to, if `load` was given that key.
     pub fn kind_value(&self, key: &KindKey) -> Option<usize> {
         self.kind
             .iter()

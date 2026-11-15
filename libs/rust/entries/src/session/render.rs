@@ -1,10 +1,10 @@
 use std::collections::HashMap;
 use std::time::{Duration, SystemTime};
 
-use bilbo_entries::reader::{Passage, Piece};
+use crate::reader::{Passage, Piece};
 use bilbo_store::entries::RecordRange;
 
-use crate::json::{self, Value};
+use crate::session::json::{self, Value};
 
 /// What Python's `str.isspace` adds to Rust's `char::is_whitespace`: the four separators.
 fn is_space(c: char) -> bool {
@@ -263,10 +263,10 @@ pub fn minute(time: SystemTime) -> String {
 mod tests {
     use std::time::{Duration, SystemTime};
 
-    use bilbo_entries::reader::Piece;
+    use crate::reader::Piece;
 
     use super::{Outline, Tools, head_of, passage, strip, time};
-    use crate::json::{Value, parse};
+    use crate::session::json::{Value, parse};
 
     #[test]
     fn strip_takes_what_pythons_isspace_takes_and_nothing_else() {

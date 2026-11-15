@@ -22,8 +22,6 @@ rust_library(
     version = BILBO_VERSION,
     deps = [
         "//libs/rust/entries",
-        "//libs/rust/entries/markdown",
-        "//libs/rust/entries/session",
         "//libs/rust/search",
         "//libs/rust/search/qwen",
         "//libs/rust/search/tantivy",
@@ -73,8 +71,8 @@ bilbo_rust_test(
     name = "snapshot",
     srcs = ["tests/snapshot.rs"],
     compile_data = glob(["tests/snapshots/*"]) + [
-        "//libs/rust/entries/markdown:fixtures",
-        "//libs/rust/entries/session:fixtures",
+        "//libs/rust/entries:markdown_fixtures",
+        "//libs/rust/entries:session_fixtures",
     ],
     layer = "snapshot",
     lint_config = ":lints",
@@ -110,7 +108,7 @@ bilbo_rust_test(
         "tests/sessions.rs",
     ],
     crate_root = "tests/sessions.rs",
-    compile_data = ["//libs/rust/entries/session:fixtures"],
+    compile_data = ["//libs/rust/entries:session_fixtures"],
     layer = "integration",
     lint_config = ":lints",
     deps = [
@@ -124,8 +122,8 @@ bilbo_rust_test(
     name = "read",
     srcs = ["tests/read.rs"],
     compile_data = [
-        "//libs/rust/entries/markdown:fixtures",
-        "//libs/rust/entries/session:fixtures",
+        "//libs/rust/entries:markdown_fixtures",
+        "//libs/rust/entries:session_fixtures",
     ],
     layer = "integration",
     lint_config = ":lints",
@@ -144,8 +142,8 @@ bilbo_rust_test(
     ],
     crate_root = "tests/recall.rs",
     compile_data = [
-        "//libs/rust/entries/markdown:fixtures",
-        "//libs/rust/entries/session:fixtures",
+        "//libs/rust/entries:markdown_fixtures",
+        "//libs/rust/entries:session_fixtures",
     ],
     layer = "integration",
     lint_config = ":lints",
@@ -162,8 +160,8 @@ bilbo_rust_test(
     name = "reindex",
     srcs = ["tests/reindex.rs"],
     compile_data = [
-        "//libs/rust/entries/markdown:fixtures",
-        "//libs/rust/entries/session:fixtures",
+        "//libs/rust/entries:markdown_fixtures",
+        "//libs/rust/entries:session_fixtures",
     ],
     layer = "integration",
     lint_config = ":lints",

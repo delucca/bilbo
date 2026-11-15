@@ -7,7 +7,7 @@ use std::fs;
 use std::path::PathBuf;
 
 use bilbo_entries::reader::Reader;
-use bilbo_session::Session;
+use bilbo_entries::session::Session;
 use serde_json::Value;
 
 const EDGES: &[u8] = include_bytes!("edges.jsonl");
@@ -95,30 +95,30 @@ fn compare(name: &str, found: &[Message], wanted: &[Message]) -> usize {
 const FIXTURES: &[(&str, &[u8])] = &[
     (
         "claude",
-        include_bytes!("../../fixtures/5c3a9e1f-0b7d-4c2e-9a41-7f2d8e6b1c03.jsonl"),
+        include_bytes!("../../fixtures/session/5c3a9e1f-0b7d-4c2e-9a41-7f2d8e6b1c03.jsonl"),
     ),
     (
         "claude, long",
-        include_bytes!("../../fixtures/8f2b6d4e-1a3c-4e5f-9b7a-2c4d6e8f0a1b.jsonl"),
+        include_bytes!("../../fixtures/session/8f2b6d4e-1a3c-4e5f-9b7a-2c4d6e8f0a1b.jsonl"),
     ),
     (
         "subagent",
-        include_bytes!("../../fixtures/agent-ad63c2b3c9e7a4b3d.jsonl"),
+        include_bytes!("../../fixtures/session/agent-ad63c2b3c9e7a4b3d.jsonl"),
     ),
     (
         "cursor",
-        include_bytes!("../../fixtures/cursor-session.jsonl"),
+        include_bytes!("../../fixtures/session/cursor-session.jsonl"),
     ),
     (
         "codex",
         include_bytes!(
-            "../../fixtures/rollout-2026-11-06T09-10-00-019a4f2e-7c1d-7b3a-9e55-2d8c41f0a6b7.jsonl"
+            "../../fixtures/session/rollout-2026-11-06T09-10-00-019a4f2e-7c1d-7b3a-9e55-2d8c41f0a6b7.jsonl"
         ),
     ),
     (
         "codex, long",
         include_bytes!(
-            "../../fixtures/rollout-2026-11-07T08-00-00-019a5b3c-2d4e-7f60-8a1b-3c5d7e9f0a2b.jsonl"
+            "../../fixtures/session/rollout-2026-11-07T08-00-00-019a5b3c-2d4e-7f60-8a1b-3c5d7e9f0a2b.jsonl"
         ),
     ),
 ];

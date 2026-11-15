@@ -3,9 +3,9 @@ mod read;
 
 use std::path::{Path, PathBuf};
 
-use bilbo_entries::files::{Files, Node};
-use bilbo_entries::kind::{Claim, Claims, Kind, Proposal, Refusal};
-use bilbo_entries::reader::{Passage, Reader};
+use crate::files::{Files, Node};
+use crate::kind::{Claim, Claims, Kind, Proposal, Refusal};
+use crate::reader::{Passage, Reader};
 use bilbo_settings::file::File;
 use bilbo_settings::key::{About, Default, Key, Source};
 use bilbo_store::id::Id;
@@ -151,23 +151,26 @@ fn walk(files: &dyn Files, folder: &Path, claims: &mut Claims) {
 
 #[cfg(test)]
 mod tests {
-    use bilbo_entries::files::Memory;
+    use crate::files::Memory;
 
     use super::*;
 
     const FIXTURES: [(&str, &[u8]); 6] = [
-        ("note.md", include_bytes!("../fixtures/note.md")),
+        ("note.md", include_bytes!("../../fixtures/markdown/note.md")),
         (
             "no-final-newline.md",
-            include_bytes!("../fixtures/no-final-newline.md"),
+            include_bytes!("../../fixtures/markdown/no-final-newline.md"),
         ),
-        ("bad-id.md", include_bytes!("../fixtures/bad-id.md")),
+        (
+            "bad-id.md",
+            include_bytes!("../../fixtures/markdown/bad-id.md"),
+        ),
         (
             "no-frontmatter.md",
-            include_bytes!("../fixtures/no-frontmatter.md"),
+            include_bytes!("../../fixtures/markdown/no-frontmatter.md"),
         ),
-        ("crlf.md", include_bytes!("../fixtures/crlf.md")),
-        ("bom.md", include_bytes!("../fixtures/bom.md")),
+        ("crlf.md", include_bytes!("../../fixtures/markdown/crlf.md")),
+        ("bom.md", include_bytes!("../../fixtures/markdown/bom.md")),
     ];
 
     fn paths(claims: &Claims) -> Vec<&str> {

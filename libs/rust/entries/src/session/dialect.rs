@@ -1,5 +1,5 @@
-use crate::json::{self, Value};
-use crate::{claude, codex};
+use crate::session::json::{self, Value};
+use crate::session::{claude, codex};
 
 /// Sniffed on each read and never stored, so it cannot go stale.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -38,13 +38,14 @@ fn line(record: &[u8]) -> Option<Evidence> {
 mod tests {
     use super::{Dialect, sniff};
 
-    const CLAUDE: &[u8] = include_bytes!("../fixtures/5c3a9e1f-0b7d-4c2e-9a41-7f2d8e6b1c03.jsonl");
-    const SUBAGENT: &[u8] = include_bytes!("../fixtures/agent-ad63c2b3c9e7a4b3d.jsonl");
+    const CLAUDE: &[u8] =
+        include_bytes!("../../fixtures/session/5c3a9e1f-0b7d-4c2e-9a41-7f2d8e6b1c03.jsonl");
+    const SUBAGENT: &[u8] = include_bytes!("../../fixtures/session/agent-ad63c2b3c9e7a4b3d.jsonl");
     const CODEX: &[u8] = include_bytes!(
-        "../fixtures/rollout-2026-11-06T09-10-00-019a4f2e-7c1d-7b3a-9e55-2d8c41f0a6b7.jsonl"
+        "../../fixtures/session/rollout-2026-11-06T09-10-00-019a4f2e-7c1d-7b3a-9e55-2d8c41f0a6b7.jsonl"
     );
-    const CURSOR: &[u8] = include_bytes!("../fixtures/cursor-session.jsonl");
-    const NONE: &[u8] = include_bytes!("../fixtures/not-a-session.jsonl");
+    const CURSOR: &[u8] = include_bytes!("../../fixtures/session/cursor-session.jsonl");
+    const NONE: &[u8] = include_bytes!("../../fixtures/session/not-a-session.jsonl");
 
     fn of(bytes: &[u8]) -> Option<Dialect> {
         sniff(bytes.split_inclusive(|&byte| byte == b'\n'))

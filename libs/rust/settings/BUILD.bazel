@@ -17,8 +17,6 @@ rust_library(
     visibility = [
         "//apps/cli:__pkg__",
         "//libs/rust/entries:__pkg__",
-        "//libs/rust/entries/markdown:__pkg__",
-        "//libs/rust/entries/session:__pkg__",
         "//libs/rust/search:__pkg__",
         "//libs/rust/store:__pkg__",
     ],

@@ -2,8 +2,8 @@ pub mod read;
 
 use std::path::{Path, PathBuf};
 
-use crate::dialect::{Dialect, Evidence};
-use crate::json::Value;
+use crate::session::dialect::{Dialect, Evidence};
+use crate::session::json::Value;
 
 /// Skipped outside `subagents/`: memories, workflow definitions and tool outputs.
 /// `subagents/workflows/wf_*/` holds workflow runs' subagents and is kept.
@@ -45,7 +45,8 @@ pub fn session_of(subagent: &Path) -> Option<PathBuf> {
         .find_map(|subagents| {
             let session = subagents.parent()?;
             let uuid = session.file_name()?.to_str()?;
-            crate::is_uuid(uuid.as_bytes()).then(|| session.with_file_name(format!("{uuid}.jsonl")))
+            crate::session::is_uuid(uuid.as_bytes())
+                .then(|| session.with_file_name(format!("{uuid}.jsonl")))
         })
 }
 

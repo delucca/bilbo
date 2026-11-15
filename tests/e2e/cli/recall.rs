@@ -493,7 +493,7 @@ fn in_with_a_folder_keeps_the_sessions_that_worked_there() {
         (
             claude.join("7d1e4b9a-3c5f-4a2e-8b6d-0f9e1c2a3b4d.jsonl"),
             include_bytes!(
-                "../../../libs/rust/entries/session/fixtures/7d1e4b9a-3c5f-4a2e-8b6d-0f9e1c2a3b4d.jsonl"
+                "../../../libs/rust/entries/fixtures/session/7d1e4b9a-3c5f-4a2e-8b6d-0f9e1c2a3b4d.jsonl"
             )
             .as_slice(),
         ),
@@ -504,7 +504,7 @@ fn in_with_a_folder_keeps_the_sessions_that_worked_there() {
         (
             codex.join("rollout-2026-11-08T10-00-00-019a6c4d-3e5f-7a71-9b2c-4d6e8fa0b1c3.jsonl"),
             include_bytes!(
-                "../../../libs/rust/entries/session/fixtures/rollout-2026-11-08T10-00-00-019a6c4d-3e5f-7a71-9b2c-4d6e8fa0b1c3.jsonl"
+                "../../../libs/rust/entries/fixtures/session/rollout-2026-11-08T10-00-00-019a6c4d-3e5f-7a71-9b2c-4d6e8fa0b1c3.jsonl"
             )
             .as_slice(),
         ),

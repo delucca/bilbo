@@ -1,7 +1,7 @@
-use bilbo_entries::reader::{EntryLabels, Passage};
+use crate::reader::{EntryLabels, Passage};
 
-use crate::json::{self, Value};
-use crate::render::{self, Outline, Tools};
+use crate::session::json::{self, Value};
+use crate::session::render::{self, Outline, Tools};
 
 const INJECTED: [&str; 4] = [
     "# AGENTS.md instructions",
@@ -178,15 +178,15 @@ pub fn labels(records: &[&[u8]]) -> Vec<String> {
 mod tests {
     use std::time::{Duration, SystemTime};
 
-    use bilbo_entries::reader::Passage;
+    use crate::reader::Passage;
 
     use super::passages;
 
     const ROLLOUT: &str = include_str!(
-        "../../fixtures/rollout-2026-11-07T08-00-00-019a5b3c-2d4e-7f60-8a1b-3c5d7e9f0a2b.jsonl"
+        "../../../fixtures/session/rollout-2026-11-07T08-00-00-019a5b3c-2d4e-7f60-8a1b-3c5d7e9f0a2b.jsonl"
     );
     const OLDER: &str = include_str!(
-        "../../fixtures/rollout-2026-11-06T09-10-00-019a4f2e-7c1d-7b3a-9e55-2d8c41f0a6b7.jsonl"
+        "../../../fixtures/session/rollout-2026-11-06T09-10-00-019a4f2e-7c1d-7b3a-9e55-2d8c41f0a6b7.jsonl"
     );
 
     fn read(text: &str) -> Vec<Passage> {

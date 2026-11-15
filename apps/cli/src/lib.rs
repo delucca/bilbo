@@ -54,23 +54,23 @@ pub enum Verb {
 /// A page that only names the kinds reads no setting.
 pub(crate) fn listed() -> Vec<Box<dyn Kind>> {
     vec![
-        Box::new(bilbo_markdown::Markdown::default()),
-        Box::new(bilbo_session::Session::default()),
+        Box::new(bilbo_entries::markdown::Markdown::default()),
+        Box::new(bilbo_entries::session::Session::default()),
     ]
 }
 
 pub fn kinds(settings: &Settings) -> Result<Vec<Box<dyn Kind>>, Failure> {
     Ok(vec![
-        Box::new(bilbo_markdown::Markdown::default()),
+        Box::new(bilbo_entries::markdown::Markdown::default()),
         Box::new(session(settings)?),
     ])
 }
 
 pub fn kind_keys() -> Vec<&'static KindKey> {
     vec![
-        &bilbo_markdown::HEADING_WIDTH,
-        &bilbo_session::UNPACK_FLOOR,
-        &bilbo_session::UNPACK_RATIO,
+        &bilbo_entries::markdown::HEADING_WIDTH,
+        &bilbo_entries::session::UNPACK_FLOOR,
+        &bilbo_entries::session::UNPACK_RATIO,
     ]
 }
 
@@ -83,36 +83,36 @@ fn registered(settings: &Settings, key: &'static KindKey) -> Result<usize, Failu
     })
 }
 
-fn session(settings: &Settings) -> Result<bilbo_session::Session, Failure> {
-    Ok(bilbo_session::Session::new(
-        registered(settings, &bilbo_session::UNPACK_FLOOR)?,
-        registered(settings, &bilbo_session::UNPACK_RATIO)?,
+fn session(settings: &Settings) -> Result<bilbo_entries::session::Session, Failure> {
+    Ok(bilbo_entries::session::Session::new(
+        registered(settings, &bilbo_entries::session::UNPACK_FLOOR)?,
+        registered(settings, &bilbo_entries::session::UNPACK_RATIO)?,
     ))
 }
 
 pub fn readers(settings: &Settings) -> Result<Vec<Box<dyn Reader>>, Failure> {
-    let width = registered(settings, &bilbo_markdown::HEADING_WIDTH)?;
+    let width = registered(settings, &bilbo_entries::markdown::HEADING_WIDTH)?;
     Ok(vec![
-        Box::new(bilbo_markdown::Markdown::new(width)),
+        Box::new(bilbo_entries::markdown::Markdown::new(width)),
         Box::new(session(settings)?),
     ])
 }
 
 /// One item for each reader, in the order of `readers()`.
 pub fn rendering(settings: &Settings) -> Result<String, Failure> {
-    let width = registered(settings, &bilbo_markdown::HEADING_WIDTH)?;
+    let width = registered(settings, &bilbo_entries::markdown::HEADING_WIDTH)?;
     let last = |name: &'static str| name.rsplit('.').next().unwrap_or(name);
     Ok([
         format!(
             "{}/{}/{}={width}",
-            bilbo_markdown::Markdown::new(width).kind(),
-            bilbo_markdown::RENDER,
-            last(bilbo_markdown::HEADING_WIDTH.about.name)
+            bilbo_entries::markdown::Markdown::new(width).kind(),
+            bilbo_entries::markdown::RENDER,
+            last(bilbo_entries::markdown::HEADING_WIDTH.about.name)
         ),
         format!(
             "{}/{}",
-            bilbo_session::Session::default().kind(),
-            bilbo_session::RENDER
+            bilbo_entries::session::Session::default().kind(),
+            bilbo_entries::session::RENDER
         ),
     ]
     .join(" "))

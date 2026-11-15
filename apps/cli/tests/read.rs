@@ -25,49 +25,49 @@ const SESSIONS: [(&str, &[u8]); 6] = [
     (
         "claude/p/8f2b6d4e-1a3c-4e5f-9b7a-2c4d6e8f0a1b.jsonl",
         include_bytes!(
-            "../../../libs/rust/entries/session/fixtures/8f2b6d4e-1a3c-4e5f-9b7a-2c4d6e8f0a1b.jsonl"
+            "../../../libs/rust/entries/fixtures/session/8f2b6d4e-1a3c-4e5f-9b7a-2c4d6e8f0a1b.jsonl"
         ),
     ),
     (
         "claude/p/5c3a9e1f-0b7d-4c2e-9a41-7f2d8e6b1c03.jsonl",
         include_bytes!(
-            "../../../libs/rust/entries/session/fixtures/5c3a9e1f-0b7d-4c2e-9a41-7f2d8e6b1c03.jsonl"
+            "../../../libs/rust/entries/fixtures/session/5c3a9e1f-0b7d-4c2e-9a41-7f2d8e6b1c03.jsonl"
         ),
     ),
     (
         "claude/p/5c3a9e1f-0b7d-4c2e-9a41-7f2d8e6b1c03/subagents/agent-ad63c2b3c9e7a4b3d.jsonl",
-        include_bytes!("../../../libs/rust/entries/session/fixtures/agent-ad63c2b3c9e7a4b3d.jsonl"),
+        include_bytes!("../../../libs/rust/entries/fixtures/session/agent-ad63c2b3c9e7a4b3d.jsonl"),
     ),
     (
         "codex/2026/11/07/rollout-2026-11-07T08-00-00-019a5b3c-2d4e-7f60-8a1b-3c5d7e9f0a2b.jsonl",
         include_bytes!(
-            "../../../libs/rust/entries/session/fixtures/rollout-2026-11-07T08-00-00-019a5b3c-2d4e-7f60-8a1b-3c5d7e9f0a2b.jsonl"
+            "../../../libs/rust/entries/fixtures/session/rollout-2026-11-07T08-00-00-019a5b3c-2d4e-7f60-8a1b-3c5d7e9f0a2b.jsonl"
         ),
     ),
     (
         "codex/2026/11/06/rollout-2026-11-06T09-10-00-019a4f2e-7c1d-7b3a-9e55-2d8c41f0a6b7.jsonl",
         include_bytes!(
-            "../../../libs/rust/entries/session/fixtures/rollout-2026-11-06T09-10-00-019a4f2e-7c1d-7b3a-9e55-2d8c41f0a6b7.jsonl"
+            "../../../libs/rust/entries/fixtures/session/rollout-2026-11-06T09-10-00-019a4f2e-7c1d-7b3a-9e55-2d8c41f0a6b7.jsonl"
         ),
     ),
     (
         "cursor/0e1d2c3b-4a59-4687-b6a5-a4b3c2d1e0f9.jsonl",
-        include_bytes!("../../../libs/rust/entries/session/fixtures/cursor-session.jsonl"),
+        include_bytes!("../../../libs/rust/entries/fixtures/session/cursor-session.jsonl"),
     ),
 ];
 /// One frontmatter id each: the other Markdown fixtures share `crlf.md`'s.
 const NOTES: [(&str, &[u8]); 4] = [
     (
         "sections.md",
-        include_bytes!("../../../libs/rust/entries/markdown/fixtures/sections.md"),
+        include_bytes!("../../../libs/rust/entries/fixtures/markdown/sections.md"),
     ),
     (
         "crlf.md",
-        include_bytes!("../../../libs/rust/entries/markdown/fixtures/crlf.md"),
+        include_bytes!("../../../libs/rust/entries/fixtures/markdown/crlf.md"),
     ),
     (
         "bare.md",
-        include_bytes!("../../../libs/rust/entries/markdown/fixtures/no-frontmatter.md"),
+        include_bytes!("../../../libs/rust/entries/fixtures/markdown/no-frontmatter.md"),
     ),
     (
         "open.md",

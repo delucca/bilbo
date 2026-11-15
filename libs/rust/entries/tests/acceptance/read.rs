@@ -647,7 +647,7 @@ fn a_session_id_that_names_no_entry_or_several_is_refused() {
     assert_eq!(run(&shelf, &OTHER[..13]).expect("one entry").id, id(5));
     for unknown in ["0e1d2c3b", "0e1d2c3b-4a59-4687-b6a5-a4b3c2d1e0f9"] {
         match run(&shelf, unknown) {
-            Err(Error::NoEntry(Target::Session(session))) => assert_eq!(session, unknown),
+            Err(Error::NoEntry(Target::Session(prefix))) => assert_eq!(prefix, unknown),
             other => panic!("{other:?}"),
         }
     }

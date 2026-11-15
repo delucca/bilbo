@@ -115,7 +115,7 @@ mod tests {
         }
     }
 
-    fn session() -> Vec<Passage> {
+    fn transcript() -> Vec<Passage> {
         vec![
             prompt(2, "user: first prompt\nits second line"),
             single(3, "assistant: an answer"),
@@ -134,7 +134,7 @@ mod tests {
 
     #[test]
     fn an_outline_lists_the_passages_their_reader_gave_a_line() {
-        let listing = listed(&session(), range(1, 12), 1000);
+        let listing = listed(&transcript(), range(1, 12), 1000);
         assert_eq!(
             listing.lines,
             [
@@ -161,13 +161,13 @@ mod tests {
     #[test]
     fn an_outline_is_paged_by_the_budget_and_more_starts_at_the_next_listed_passage() {
         // "#r2 user: first prompt\n" is 23 characters, "#r7 user: second prompt\n" 24.
-        let listing = listed(&session(), range(1, 12), 23 + 24);
+        let listing = listed(&transcript(), range(1, 12), 23 + 24);
         assert_eq!(listing.lines.len(), 2);
         assert_eq!(listing.more, Some(range(12, 12)));
-        let listing = listed(&session(), range(1, 12), 23 + 23);
+        let listing = listed(&transcript(), range(1, 12), 23 + 23);
         assert_eq!(listing.lines.len(), 1);
         assert_eq!(listing.more, Some(range(7, 12)));
-        let rest = listed(&session(), range(7, 12), 1000);
+        let rest = listed(&transcript(), range(7, 12), 1000);
         assert_eq!(rest.lines.len(), 2);
         assert_eq!(rest.more, None);
     }
@@ -177,7 +177,7 @@ mod tests {
         let mut next = Some(range(1, 12));
         let mut seen = Vec::new();
         while let Some(asked) = next {
-            let listing = listed(&session(), asked, 1);
+            let listing = listed(&transcript(), asked, 1);
             assert_eq!(listing.lines.len(), 1);
             seen.push(listing.lines[0].records.first);
             next = listing.more;
@@ -187,8 +187,8 @@ mod tests {
 
     #[test]
     fn only_passages_that_start_in_the_range_are_listed() {
-        assert_eq!(listed(&session(), range(3, 11), 1000).lines.len(), 1);
-        assert_eq!(listed(&session(), range(3, 6), 1000), Listing::default());
+        assert_eq!(listed(&transcript(), range(3, 11), 1000).lines.len(), 1);
+        assert_eq!(listed(&transcript(), range(3, 6), 1000), Listing::default());
         assert_eq!(listed(&[], range(1, 9), 1000), Listing::default());
     }
 
