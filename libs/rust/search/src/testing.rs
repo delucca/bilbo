@@ -14,7 +14,7 @@ use bilbo_store::labels::{CaptureLabel, Filed, Relabel, StoredLabels};
 
 use crate::analyze::{Detect, Language};
 use crate::index::{Doc, Extent, Index, IndexError, Stats};
-use crate::lookup::{Edits, Filter, Found, Lookup, Near, Posting, Totals};
+use crate::lookup::{Edits, Filter, Found, Lookup, Near, Posting, Totals, adjacent};
 use crate::position::Position;
 use crate::typo;
 
@@ -220,7 +220,10 @@ pub(crate) struct Table {
     pub(crate) holdings: Cell<usize>,
     pub(crate) looked_up: RefCell<Vec<String>>,
     pub(crate) near_asked: RefCell<Vec<(String, Edits)>>,
+    pub(crate) pairs_asked: RefCell<Vec<(String, String)>>,
     near_failing: bool,
+    pairs_failing: bool,
+    pairs_at: Option<u32>,
 }
 
 impl Table {
@@ -261,6 +264,16 @@ impl Table {
 
     pub(crate) fn near_failing(mut self) -> Table {
         self.near_failing = true;
+        self
+    }
+
+    pub(crate) fn pairs_failing(mut self) -> Table {
+        self.pairs_failing = true;
+        self
+    }
+
+    pub(crate) fn pairs_at(mut self, doc: u32) -> Table {
+        self.pairs_at = Some(doc);
         self
     }
 
@@ -361,6 +374,47 @@ impl Lookup for Table {
                 documents,
             })
             .collect())
+    }
+
+    fn pairs(&self, first: &str, second: &str) -> Result<Vec<Posting>, IndexError> {
+        self.check()?;
+        self.pairs_asked
+            .borrow_mut()
+            .push((first.to_owned(), second.to_owned()));
+        if self.pairs_failing {
+            return Err(IndexError::Failed {
+                action: "read",
+                path: PathBuf::from("/c/index"),
+                error: "pairs is broken".to_owned(),
+            });
+        }
+        let places = |row: &Row, term: &str| -> Vec<u32> {
+            row.terms
+                .iter()
+                .enumerate()
+                .filter(|(_, each)| *each == term)
+                .map(|(place, _)| u32::try_from(place).expect("a small table"))
+                .collect()
+        };
+        let mut postings: Vec<Posting> = self
+            .live()
+            .filter_map(|(doc, row)| {
+                let freq = adjacent(&places(row, first), &places(row, second));
+                (freq > 0).then(|| Posting {
+                    doc: u32::try_from(doc).expect("a small table"),
+                    freq,
+                    length: u32::try_from(row.terms.len()).expect("a small count"),
+                })
+            })
+            .collect();
+        if let Some(doc) = self.pairs_at {
+            postings.push(Posting {
+                doc,
+                freq: 1,
+                length: 1,
+            });
+        }
+        Ok(postings)
     }
 
     fn holding(&self, filter: &Filter<'_>) -> Result<Vec<u32>, IndexError> {

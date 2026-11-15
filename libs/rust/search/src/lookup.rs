@@ -63,8 +63,43 @@ pub trait Lookup {
     /// `typo::distance` counts, `term` itself among them when held, each with its live documents, by
     /// rising term.
     fn near(&self, term: &str, edits: Edits) -> Result<Vec<Near>, IndexError>;
+    /// The live documents where `second` stands at the place right after `first`, by rising `doc`:
+    /// `freq` is how many times, `length` as `postings` gives it.
+    fn pairs(&self, first: &str, second: &str) -> Result<Vec<Posting>, IndexError>;
     /// Returns a list because filtering inside `postings` would need a column read for every
     /// posting, and would change the document frequency unless both counts crossed the port.
     fn holding(&self, filter: &Filter<'_>) -> Result<Vec<u32>, IndexError>;
     fn found(&self, docs: &[u32]) -> Result<Vec<Found>, IndexError>;
+}
+
+/// How many places of `firsts` have the next place in `seconds`; both rising.
+pub fn adjacent(firsts: &[u32], seconds: &[u32]) -> u32 {
+    debug_assert!(firsts.is_sorted() && seconds.is_sorted());
+    let mut count = 0;
+    let mut next = seconds.iter().peekable();
+    for place in firsts {
+        let Some(after) = place.checked_add(1) else {
+            continue;
+        };
+        while next.next_if(|second| **second < after).is_some() {}
+        if next.peek().is_some_and(|second| **second == after) {
+            count += 1;
+        }
+    }
+    count
+}
+
+#[cfg(test)]
+mod tests {
+    use super::adjacent;
+
+    #[test]
+    fn adjacent_counts_the_places_whose_next_place_is_in_the_second_list() {
+        assert_eq!(adjacent(&[1, 5, 9], &[2, 6, 11]), 2);
+        assert_eq!(adjacent(&[3, 4, 5], &[3, 4, 5]), 2);
+        assert_eq!(adjacent(&[2], &[1]), 0);
+        assert_eq!(adjacent(&[], &[1]), 0);
+        assert_eq!(adjacent(&[1], &[]), 0);
+        assert_eq!(adjacent(&[u32::MAX], &[0]), 0);
+    }
 }

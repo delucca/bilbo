@@ -1,5 +1,6 @@
 use std::cmp::Ordering;
 use std::collections::HashMap;
+use std::collections::hash_map::Entry;
 
 use crate::analyze::{self, Omit};
 use crate::index::IndexError;
@@ -14,6 +15,7 @@ pub struct Bm25<'a> {
     pub omit: Omit<'a>,
     pub batch: usize,
     pub typos: typo::Rule,
+    pub pair_weight: f64,
 }
 
 struct Postings<'a> {
@@ -154,6 +156,34 @@ impl Ranker for Bm25<'_> {
                 *score += part;
             }
         }
+        if self.pair_weight > 0.0 {
+            let mut bonus = vec![0.0_f32; scores.len()];
+            let mut weighed: HashMap<(&str, &str), Vec<(u32, f32)>> = HashMap::new();
+            for pair in terms.windows(2) {
+                let (first, second) = (pair[0].as_str(), pair[1].as_str());
+                if read.of(first)?.is_empty() || read.of(second)?.is_empty() {
+                    continue;
+                }
+                let parts = match weighed.entry((first, second)) {
+                    Entry::Occupied(held) => held.into_mut(),
+                    Entry::Vacant(room) => {
+                        let postings = self.index.pairs(first, second)?;
+                        room.insert(self.parts(&postings, documents, average))
+                    }
+                };
+                for (doc, part) in parts.iter() {
+                    *bonus
+                        .get_mut(*doc as usize)
+                        .ok_or(IndexError::Inconsistent(
+                            "a pair names a document outside the index",
+                        ))? += part;
+                }
+            }
+            let weight = self.pair_weight as f32;
+            for (score, bonus) in scores.iter_mut().zip(&bonus) {
+                *score += weight * bonus;
+            }
+        }
         let allowed = if query.kinds.is_empty() {
             None
         } else {
@@ -207,9 +237,9 @@ impl Ranker for Bm25<'_> {
 
 #[cfg(test)]
 mod tests {
-    use crate::analyze::{Language, Omit};
+    use crate::analyze::{self, Language, Omit};
     use crate::index::IndexError;
-    use crate::lookup::Edits;
+    use crate::lookup::{Edits, Posting};
     use crate::rank::{Candidate, Expanded, Query, Ranker};
     use crate::testing::{Says, Table, id};
     use crate::typo;
@@ -239,6 +269,7 @@ mod tests {
             omit: Omit::default(),
             batch: 4096,
             typos: typo::Rule::OFF,
+            pair_weight: 0.0,
         }
     }
 
@@ -256,6 +287,7 @@ mod tests {
             omit: Omit::default(),
             batch: 4096,
             typos: typo::Rule::OFF,
+            pair_weight: 0.0,
         };
         bm25.rank(&query(text, kinds), limit)
             .expect("a ranking")
@@ -350,6 +382,7 @@ mod tests {
             omit: Omit::default(),
             batch: 4096,
             typos: typo::Rule::OFF,
+            pair_weight: 0.0,
         }
         .rank(&query("alpha", &[]), 10)
         .expect("a ranking")
@@ -419,6 +452,7 @@ mod tests {
             omit: Omit::default(),
             batch: 1000,
             typos: typo::Rule::OFF,
+            pair_weight: 0.0,
         };
         let found = bm25.rank(&query("alpha", &[]), 3).expect("a ranking");
         assert_eq!(
@@ -445,6 +479,7 @@ mod tests {
                 omit,
                 batch: 4096,
                 typos: typo::Rule::OFF,
+                pair_weight: 0.0,
             }
             .rank(&query("que pelo status", &[]), 10)
             .expect("a ranking");
@@ -478,6 +513,7 @@ mod tests {
             omit: Omit::default(),
             batch: 4096,
             typos: typo::Rule::OFF,
+            pair_weight: 0.0,
         };
         assert!(matches!(
             bm25.rank(&query("alpha", &[]), 5),
@@ -495,6 +531,7 @@ mod tests {
                 omit: Omit::default(),
                 batch: 4096,
                 typos: typo::Rule::OFF,
+                pair_weight: 0.0,
             };
             matches!(bm25.rank(query, 5), Err(IndexError::Inconsistent(_)))
         };
@@ -865,5 +902,312 @@ mod tests {
             Err(IndexError::Failed { .. })
         ));
         assert!(typed(&table).rank(&query("carrot", &[]), 5).is_ok());
+    }
+
+    fn paired(table: &Table, weight: f64) -> Bm25<'_> {
+        Bm25 {
+            pair_weight: weight,
+            ..bm25(table)
+        }
+    }
+
+    fn scores_of(table: &Table, text: &str, weight: f64) -> Vec<(u8, f32)> {
+        paired(table, weight)
+            .rank(&query(text, &[]), 10)
+            .expect("a ranking")
+            .candidates
+            .iter()
+            .map(|c| (c.found.entry.to_bytes()[0], c.score))
+            .collect()
+    }
+
+    fn score(list: &[(u8, f32)], entry: u8) -> f32 {
+        list.iter()
+            .find(|hit| hit.0 == entry)
+            .map(|hit| hit.1)
+            .expect("a hit")
+    }
+
+    #[test]
+    fn a_pair_in_a_row_in_order_scores_and_a_reversed_one_does_not() {
+        let table = Table::new()
+            .doc("note", 1, 1, "alpha beta")
+            .doc("note", 2, 1, "beta alpha")
+            .doc("note", 3, 1, "alpha gamma beta");
+        let off = scores_of(&table, "alpha beta", 0.0);
+        let on = scores_of(&table, "alpha beta", 0.25);
+        assert_eq!(on[0].0, 1);
+        assert!(on[0].1 > off.iter().map(|hit| hit.1).fold(f32::MIN, f32::max));
+        for entry in [2, 3] {
+            assert_eq!(score(&on, entry).to_bits(), score(&off, entry).to_bits());
+        }
+    }
+
+    #[test]
+    fn a_pairs_part_is_a_terms_part_with_the_pair_in_its_place_times_the_weight() {
+        let table = Table::new()
+            .doc("note", 1, 1, "alpha beta")
+            .doc("note", 2, 1, "beta alpha")
+            .doc("note", 3, 1, "alpha gamma beta");
+        let average = 7.0 / 3.0;
+        let off = score(&scores_of(&table, "alpha beta", 0.0), 1);
+        let quarter = score(&scores_of(&table, "alpha beta", 0.25), 1) - off;
+        near(quarter, (0.25 * part(3.0, 1.0, 2.0, average)) as f32);
+        let whole = score(&scores_of(&table, "alpha beta", 1.0), 1) - off;
+        near(whole, part(3.0, 1.0, 2.0, average) as f32);
+    }
+
+    #[test]
+    fn several_pairs_are_added_up_and_the_sum_is_weighed_once() {
+        let words = ["alpha", "beta", "gamma", "delta", "epsilon", "zeta"];
+        let table = Table::new()
+            .doc("note", 1, 1, &words.join(" "))
+            .doc("note", 2, 1, "alpha beta")
+            .doc("note", 3, 1, "gamma delta")
+            .doc("note", 4, 1, "delta gamma delta")
+            .doc("note", 5, 1, "omega");
+        let text = words.join(" ");
+        let weight = 0.43_f64;
+        let plain = score(&scores_of(&table, &text, 0.0), 1);
+        let average = 14.0 / 5.0;
+        let parts: Vec<f32> = [2_usize, 1, 3, 1, 1]
+            .iter()
+            .map(|held| {
+                let postings: Vec<Posting> = (0..*held)
+                    .map(|_| Posting {
+                        doc: 0,
+                        freq: 1,
+                        length: 6,
+                    })
+                    .collect();
+                bm25(&table).parts(&postings, 5.0, average)[0].1
+            })
+            .collect();
+        let w = weight as f32;
+        let sum = parts[1..].iter().fold(parts[0], |sum, part| sum + part);
+        let once = plain + w * sum;
+        let each = parts.iter().fold(plain, |score, part| score + w * part);
+        let summed = plain
+            + parts[1..]
+                .iter()
+                .fold(w * parts[0], |sum, part| sum + w * part);
+        assert_ne!(
+            once.to_bits(),
+            each.to_bits(),
+            "the fixture tells once from each"
+        );
+        assert_ne!(
+            once.to_bits(),
+            summed.to_bits(),
+            "the fixture tells once from summed"
+        );
+        let ranked = score(&scores_of(&table, &text, weight), 1);
+        assert_eq!(ranked.to_bits(), once.to_bits());
+    }
+
+    #[test]
+    fn at_weight_0_no_pair_is_asked_for_and_the_ranking_is_bm25s() {
+        let table = small();
+        let found = scores_of(&table, "alpha gamma", 0.0);
+        assert!(table.pairs_asked.borrow().is_empty());
+        assert_eq!(
+            found
+                .iter()
+                .map(|hit| (hit.0, hit.1.to_bits()))
+                .collect::<Vec<_>>(),
+            [(2, 1_053_942_678), (3, 1_049_542_895), (1, 1_047_025_672)]
+        );
+    }
+
+    #[test]
+    fn a_kind_filter_changes_no_pair_score() {
+        let table = Table::new()
+            .doc("note", 1, 1, "alpha beta")
+            .doc("session", 2, 1, "alpha beta gamma")
+            .doc("note", 3, 1, "beta alpha");
+        let rank = |weight: f64, kinds: &[&str]| {
+            paired(&table, weight)
+                .rank(&query("alpha beta", kinds), 10)
+                .expect("a ranking")
+                .candidates
+                .iter()
+                .map(|c| (c.found.entry.to_bytes()[0], c.score))
+                .collect::<Vec<_>>()
+        };
+        let kinds = ["session"];
+        let filtered = rank(0.25, &kinds);
+        assert_eq!(filtered.iter().map(|hit| hit.0).collect::<Vec<_>>(), [2]);
+        assert_eq!(
+            filtered[0].1.to_bits(),
+            score(&rank(0.25, &[]), 2).to_bits()
+        );
+        assert!(filtered[0].1 > rank(0.0, &kinds)[0].1);
+    }
+
+    #[test]
+    fn a_word_the_query_drops_and_the_chunk_keeps_stands_between_the_pair() {
+        let terms = analyze::terms("banco dados");
+        let table = Table::new()
+            .doc("note", 1, 1, &format!("{} de {}", terms[0], terms[1]))
+            .doc("note", 2, 1, &terms.join(" "))
+            .doc("note", 3, 1, "status");
+        let says = Says::new(Some(Language::Portuguese));
+        let omit = Omit {
+            words: &[],
+            languages: &[Language::Portuguese],
+            detect: Some(&says),
+        };
+        let rank = |weight: f64| {
+            Bm25 {
+                omit,
+                ..paired(&table, weight)
+            }
+            .rank(&query("banco de dados", &[]), 10)
+            .expect("a ranking")
+            .candidates
+            .iter()
+            .map(|c| (c.found.entry.to_bytes()[0], c.score))
+            .collect::<Vec<_>>()
+        };
+        let off = rank(0.0);
+        table.pairs_asked.borrow_mut().clear();
+        let on = rank(0.25);
+        assert_eq!(
+            table.pairs_asked.borrow().as_slice(),
+            [(terms[0].clone(), terms[1].clone())]
+        );
+        assert!(score(&on, 2) > score(&off, 2));
+        assert_eq!(score(&on, 1).to_bits(), score(&off, 1).to_bits());
+    }
+
+    #[test]
+    fn a_pair_repeated_counts_at_each_place_and_a_word_no_chunk_holds_pairs_with_nothing() {
+        let table = Table::new()
+            .doc("note", 1, 1, "alpha beta alpha beta")
+            .doc("note", 2, 1, "alpha")
+            .doc("note", 3, 1, "beta");
+        let off = score(&scores_of(&table, "alpha beta alpha beta", 0.0), 1);
+        let on = score(&scores_of(&table, "alpha beta alpha beta", 1.0), 1);
+        assert_eq!(
+            table.pairs_asked.borrow().as_slice(),
+            [
+                ("alpha".to_owned(), "beta".to_owned()),
+                ("beta".to_owned(), "alpha".to_owned())
+            ]
+        );
+        let average = 2.0;
+        let part_of = |freq: u32| {
+            bm25(&table).parts(
+                &[Posting {
+                    doc: 0,
+                    freq,
+                    length: 4,
+                }],
+                3.0,
+                average,
+            )[0]
+            .1
+        };
+        near(on - off, 2.0 * part_of(2) + part_of(1));
+        table.pairs_asked.borrow_mut().clear();
+        scores_of(&table, "alpha unheard beta", 1.0);
+        assert!(table.pairs_asked.borrow().is_empty());
+    }
+
+    #[test]
+    fn a_word_twice_in_a_row_pairs_with_itself() {
+        let table = Table::new()
+            .doc("note", 1, 1, "alpha alpha alpha")
+            .doc("note", 2, 1, "alpha");
+        let off = score(&scores_of(&table, "alpha alpha", 0.0), 1);
+        let on = score(&scores_of(&table, "alpha alpha", 0.25), 1);
+        let wanted = bm25(&table).parts(
+            &[Posting {
+                doc: 0,
+                freq: 2,
+                length: 3,
+            }],
+            2.0,
+            2.0,
+        )[0]
+        .1;
+        near(on - off, 0.25 * wanted);
+        assert_eq!(table.pairs_asked.borrow().len(), 1);
+    }
+
+    #[test]
+    fn a_near_term_takes_part_in_no_pair() {
+        let table = Table::new()
+            .doc("note", 1, 1, "carrot soup")
+            .doc("note", 2, 1, "bread butter");
+        let bm25 = Bm25 {
+            pair_weight: 0.25,
+            ..typed(&table)
+        };
+        let found = bm25.rank(&query("carot soup", &[]), 10).expect("a ranking");
+        assert_eq!(found.expanded.len(), 1);
+        assert_eq!(entries_of(&found.candidates), [(1, 1)]);
+        assert!(table.pairs_asked.borrow().is_empty());
+    }
+
+    #[test]
+    fn a_scope_changes_no_pair_score_and_both_lists_hold_the_bonus() {
+        let table = Table::new()
+            .doc("note", 1, 1, "alpha beta")
+            .doc("note", 2, 1, "alpha beta gamma")
+            .doc("note", 3, 1, "beta alpha");
+        let wide = paired(&table, 0.25)
+            .rank(&query("alpha beta", &[]), 10)
+            .expect("a ranking");
+        let narrow = paired(&table, 0.25)
+            .rank(&scoped("alpha beta", &[], &[2]), 10)
+            .expect("a ranking");
+        let of = |list: &[Candidate]| {
+            list.iter()
+                .find(|c| c.found.entry == id(2))
+                .map(|c| c.score.to_bits())
+        };
+        assert!(of(&narrow.candidates).is_some());
+        assert_eq!(of(&narrow.candidates), of(&wide.candidates));
+        assert_eq!(of(&narrow.unscoped), of(&wide.candidates));
+        assert_eq!(bits(&narrow.unscoped), bits(&wide.candidates));
+    }
+
+    #[test]
+    fn a_pair_outside_the_bound_is_an_index_error() {
+        let inconsistent = |table: &Table| {
+            matches!(
+                paired(table, 0.25).rank(&query("alpha beta", &[]), 5),
+                Err(IndexError::Inconsistent(_))
+            )
+        };
+        for doc in [3, 4_000_000] {
+            assert!(inconsistent(&small().pairs_at(doc)), "a pair at {doc}");
+        }
+        assert!(!inconsistent(&small().pairs_at(2)));
+        assert!(
+            paired(&small().pairs_at(4_000_000), 0.0)
+                .rank(&query("alpha beta", &[]), 5)
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn a_pairs_that_fails_is_returned_not_hidden() {
+        let table = small().pairs_failing();
+        assert!(matches!(
+            paired(&table, 0.25).rank(&query("alpha beta", &[]), 5),
+            Err(IndexError::Failed { .. })
+        ));
+        assert!(
+            paired(&table, 0.0)
+                .rank(&query("alpha beta", &[]), 5)
+                .is_ok()
+        );
+        assert!(
+            paired(&table, 0.25)
+                .rank(&query("alpha unheard", &[]), 5)
+                .is_ok()
+        );
     }
 }

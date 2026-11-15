@@ -282,8 +282,8 @@ end alike, its whole id (26 characters). A hit's entry is the row of `entries.js
 of the store whose id ends with the short one; a short ref that two rows of one store end with stops the search, since
 bilbo must have printed the whole id. The only stderr lines are `bilbo: searched N entries`, `bilbo: passed over: ...` and `bilbo: typos: <term> as <near>[, <near>]...[; ...]` (terms of `a` to `z`);
 any other, or a `typos:` item of another shape, stops the search. `search.py` reads no setting from the environment: its
-`run(settings, store=, questions=, out=, binary=)` takes `budget`, `question_words`, `candidates`, `typo_terms` (a number is passed as `BILBO_RECALL_TYPO_TERMS`) and `in` and stops on any other
-key (run as a script it uses `DEFAULTS`: a budget of 8,000 and the other four `None`; `search.py lines` checks the `typos:` line's parser; `search.py loop` checks, with no store and no binary, that each question is searched once for each form, with that form's text, in its own repository's store, with its own repository's `--in` value when `in` is set), and the four paths are keyword arguments with the
+`run(settings, store=, questions=, out=, binary=)` takes `budget`, `question_words`, `candidates`, `typo_terms` (a number is passed as `BILBO_RECALL_TYPO_TERMS`), `pair_weight` (a number, 0 included, is passed as `BILBO_RECALL_PAIR_WEIGHT`) and `in` and stops on any other
+key (run as a script it uses `DEFAULTS`: a budget of 8,000 and the other five `None`; `search.py lines` checks the `typos:` line's parser; `search.py loop` checks, with no store and no binary, that each question is searched once for each form, with that form's text, in its own repository's store, with its own repository's `--in` value when `in` is set), and the four paths are keyword arguments with the
 container's paths as defaults, so a run on the host is the same code with other paths. A result row holds `text`, `ref` (as
 printed), `entry` (the 26 characters), `repo`, `session`, `lines`, `part`, `rank` and `cut`, so a comparison finds the eval
 chunk it is.
@@ -304,6 +304,8 @@ run without a driver, and writes `"driver"` into `score.json`:
 | `in-repo` | `in` = repo: each recall gets `--in <remembered>/<the question's repo>` |
 | `in-repo-wide` | `in` = repo, budget 16,000, 1,000 candidates: the same scoped search with twice the budget and the longest candidate list |
 | `in-repo-capped` | `in` = repo, 3 candidates: a search cut short on purpose, for `--exhausted` to refuse |
+| `pair-weight` | `pair_weight` = 0.25: the bonus for two query words in a row, at the key's default, said: the same ranking as a run with no driver, with its weight in each row's `run.settings` |
+| `pair-weight-off` | `pair_weight` = 0: the bonus off, the other side of every comparison of it; each row says its weight in `run.settings` |
 
 With `in` = repo the stderr line `bilbo: --in kept N entries` is required and N must be the number of `entries.jsonl` rows
 of that repository in the store searched, every result must be of the question's repository, the scope's own `and left out M of the best K` part is accepted, but the stale-hit warning (`left out N hits the store no longer gives as indexed`) and
@@ -312,6 +314,8 @@ holds, after `id`, `form`, `seconds` and `results`: `passed` (`copies`, `parts`,
 line, 0 when absent), `typos` (`[[term, [near, ...]], ...]` from the `typos:` line, empty when absent) and `run` (`store`: the manifest's key; `driver`: the first 12 hex of the sha256 of the `drive.py` that
 ran, null with none; `settings`: every setting in force); a scoped row also holds `in` (the value passed) and `kept` (the
 count printed).
+
+A run with no weight set has the bonus on, since `recall.pair_weight` defaults to 0.25; `pair-weight-off` is the run without it.
 
 `compare.py --exhausted <contexts-4000.jsonl> <search.jsonl> <wide search.jsonl>` gives each context `pack.py` did not cut a
 verdict, from the scoped row and the wide one (`in-repo-wide`): `not exhausted` (the scoped last result is cut, or the wide
@@ -1249,7 +1253,7 @@ so it searches that project alone, as every other row does. Both rows read the g
 2026-11-12, which gave the same per-question scores as the other rows' controls on all 143 questions for gold and 142 of
 143 for random (gold 1.00; random 1.77% against their 1.93%). No gate ran on either day. The run of 2026-11-12, from
 `c5e85f3`, before `recall` had `--in`, the shorter header and the copy rule, gave 55% and 54% with no scope (store
-`be416c877262`). See [Caveats](#caveats).
+`be416c877262`). Those two rows are the ranking without the bonus (`recall.pair_weight` defaults to 0.25 since); this build publishes nothing and leaves `results/` as it is. See [Caveats](#caveats).
 
 Class scores are on the `query` form. The questions per class: overview 27, status 21, decision 16, rules 15,
 procedure 26, fact 18, refind 20.

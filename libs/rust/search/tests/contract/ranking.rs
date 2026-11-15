@@ -89,6 +89,10 @@ impl Lookup for Table {
         panic!("the bm25s contract asks for no near term");
     }
 
+    fn pairs(&self, _first: &str, _second: &str) -> Result<Vec<Posting>, IndexError> {
+        panic!("the contract asks for no pair");
+    }
+
     fn holding(&self, filter: &Filter<'_>) -> Result<Vec<u32>, IndexError> {
         Ok((0..self.lengths.len() as u32)
             .filter(|doc| match filter {
@@ -155,6 +159,10 @@ impl Lookup for Truthful<'_> {
             .collect();
         found.sort_by(|a, b| a.term.cmp(&b.term));
         Ok(found)
+    }
+
+    fn pairs(&self, _first: &str, _second: &str) -> Result<Vec<Posting>, IndexError> {
+        panic!("the contract asks for no pair");
     }
 
     fn holding(&self, filter: &Filter<'_>) -> Result<Vec<u32>, IndexError> {
@@ -248,6 +256,7 @@ fn bilbos(
         omit,
         batch: 4096,
         typos,
+        pair_weight: 0.0,
     }
     .rank(
         &Query {

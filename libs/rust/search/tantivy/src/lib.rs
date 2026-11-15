@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
 use bilbo_search::index::{Doc, Extent, Index, IndexError, Stats, millis};
-use bilbo_search::lookup::{Edits, Filter, Found, Lookup, Near, Posting, Totals};
+use bilbo_search::lookup::{self, Edits, Filter, Found, Lookup, Near, Posting, Totals};
 use bilbo_search::position::Position;
 use bilbo_search::{analyze, chunk};
 use bilbo_store::entries::{Generation, RecordRange};
@@ -88,7 +88,7 @@ fn schema() -> (Schema, Fields) {
     let words = TextFieldIndexing::default()
         .set_tokenizer("raw")
         .set_fieldnorms(true)
-        .set_index_option(IndexRecordOption::WithFreqs);
+        .set_index_option(IndexRecordOption::WithFreqsAndPositions);
     let fields = Fields {
         text: builder.add_text_field("text", TextOptions::default().set_indexing_options(words)),
         entry: builder.add_bytes_field("entry", BytesOptions::default().set_indexed().set_fast()),
@@ -451,8 +451,7 @@ impl Place<'_> {
 
     /// Whether a component file of a committed segment is shorter than tantivy's footer, which
     /// `Footer::extract_footer` slices without checking and so panics on. A file that is absent
-    /// is left to tantivy, which names it broken; `.pos` is absent from an index without
-    /// positions.
+    /// is left to tantivy, which names it broken.
     fn cut_short(&self, segment: &tantivy::Segment) -> Result<bool, IndexError> {
         let mut components = vec![
             SegmentComponent::Postings,
@@ -577,6 +576,14 @@ fn is_managed_list(bytes: &[u8]) -> bool {
                             .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'))
                 })
         })
+}
+
+fn posting(loaded: &Loaded, ordinal: usize, doc: DocId, freq: u32, length: u64) -> Posting {
+    Posting {
+        doc: loaded.offsets[ordinal] + doc,
+        freq,
+        length: u32::try_from(length).unwrap_or(u32::MAX),
+    }
 }
 
 fn within(segment: &SegmentReader, doc: DocId) -> Result<(), IndexError> {
@@ -1118,11 +1125,7 @@ impl Lookup for Committed {
                 IndexRecordOption::WithFreqs,
                 |ordinal, doc, freq| {
                     let length = lengths[ordinal].first(doc).unwrap_or_default();
-                    found.push(Posting {
-                        doc: loaded.offsets[ordinal] + doc,
-                        freq,
-                        length: u32::try_from(length).unwrap_or(u32::MAX),
-                    });
+                    found.push(posting(&loaded, ordinal, doc, freq, length));
                 },
             )?;
             Ok(found)
@@ -1183,6 +1186,95 @@ impl Lookup for Committed {
                     Ok(Near { term, documents })
                 })
                 .collect()
+        })
+    }
+
+    fn pairs(&self, first: &str, second: &str) -> Result<Vec<Posting>, IndexError> {
+        self.guard(|| {
+            let loaded = self.required()?;
+            let field = loaded.fields.text;
+            let mut found = Vec::new();
+            let (mut firsts, mut seconds) = (Vec::new(), Vec::new());
+            for (ordinal, segment) in loaded.readers.iter().enumerate() {
+                let inverted = segment
+                    .inverted_index(field)
+                    .map_err(|error| self.read_error(&error))?;
+                let read = |word: &str| {
+                    inverted
+                        .read_postings(
+                            &Term::from_field_text(field, word),
+                            IndexRecordOption::WithFreqsAndPositions,
+                        )
+                        .map_err(|error| self.read_error(&error))
+                };
+                let Some(mut left) = read(first)? else {
+                    continue;
+                };
+                let mut right = if first == second {
+                    None
+                } else if let Some(right) = read(second)? {
+                    Some(right)
+                } else {
+                    continue;
+                };
+                let lengths = segment
+                    .fast_fields()
+                    .u64("length")
+                    .map_err(|error| self.read_error(&error))?;
+                let mut doc = left.doc();
+                let mut before = None;
+                while doc != TERMINATED {
+                    within(segment, doc)?;
+                    // A damaged block is not in order, and `seek` can return to a document already read.
+                    if before.is_some_and(|before| doc <= before) {
+                        return Err(IndexError::Inconsistent(
+                            "a posting list's documents do not rise",
+                        ));
+                    }
+                    before = Some(doc);
+                    if let Some(right) = right.as_mut() {
+                        let at = if right.doc() > doc {
+                            right.doc()
+                        } else {
+                            right.seek(doc)
+                        };
+                        if at == TERMINATED {
+                            break;
+                        }
+                        // A `seek` to a document above `TERMINATED` never returns.
+                        within(segment, at)?;
+                        if at != doc {
+                            doc = left.seek(at);
+                            continue;
+                        }
+                    }
+                    if !segment.is_deleted(doc) {
+                        let length = lengths.first(doc).unwrap_or_default();
+                        // tantivy sizes the positions buffer by the frequency.
+                        let freq = right.as_ref().map_or(left.term_freq(), |right| {
+                            left.term_freq().max(right.term_freq())
+                        });
+                        if u64::from(freq) > length {
+                            return Err(IndexError::Inconsistent(
+                                "a posting counts more terms than its document holds",
+                            ));
+                        }
+                        left.positions(&mut firsts);
+                        let count = match right.as_mut() {
+                            Some(right) => {
+                                right.positions(&mut seconds);
+                                lookup::adjacent(&firsts, &seconds)
+                            }
+                            None => lookup::adjacent(&firsts, &firsts),
+                        };
+                        if count > 0 {
+                            found.push(posting(&loaded, ordinal, doc, count, length));
+                        }
+                    }
+                    doc = left.advance();
+                }
+            }
+            Ok(found)
         })
     }
 

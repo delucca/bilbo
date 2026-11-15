@@ -10,7 +10,7 @@ use bilbo_search::analyze::{self, Omit};
 use bilbo_search::bm25::Bm25;
 use bilbo_search::chunk::{self, Chunk, Size};
 use bilbo_search::index::{Doc, Extent, Index, IndexError};
-use bilbo_search::lookup::{Edits, Filter, Lookup, Near};
+use bilbo_search::lookup::{self, Edits, Filter, Lookup, Near, Posting};
 use bilbo_search::position::{Manifest, Position};
 use bilbo_search::rank::{Candidate, Query, Ranker};
 use bilbo_search::recall::keys as recall;
@@ -18,6 +18,9 @@ use bilbo_search::typo::{self, Rule};
 use bilbo_store::entries::{Cursor, Generation, RecordRange};
 use bilbo_store::id::Id;
 use bilbo_tantivy::{Committed, Options, Row, Tantivy};
+use tantivy::schema::{
+    BytesOptions, FAST, INDEXED, IndexRecordOption, STRING, Schema, TextFieldIndexing, TextOptions,
+};
 
 static COUNTER: AtomicU64 = AtomicU64::new(0);
 
@@ -160,6 +163,16 @@ fn default_rule() -> Rule {
 }
 
 fn rank(folder: &Path, text: &str, limit: usize, typos: Rule) -> Vec<Candidate> {
+    weighted(folder, text, limit, typos, 0.0)
+}
+
+fn weighted(
+    folder: &Path,
+    text: &str,
+    limit: usize,
+    typos: Rule,
+    pair_weight: f64,
+) -> Vec<Candidate> {
     let committed = Committed::at(folder);
     let query = Query {
         text: text.to_owned(),
@@ -173,6 +186,7 @@ fn rank(folder: &Path, text: &str, limit: usize, typos: Rule) -> Vec<Candidate> 
         omit: Omit::default(),
         batch: 4096,
         typos,
+        pair_weight,
     }
     .rank(&query, limit)
     .expect("a rank")
@@ -512,6 +526,10 @@ fn refused(scratch: &Scratch, what: &str) {
         reader.position().map(|_| ()).expect_err("refused"),
         reader.totals().map(|_| ()).expect_err("refused"),
         reader.postings("text").map(|_| ()).expect_err("refused"),
+        reader
+            .pairs("text", "text")
+            .map(|_| ())
+            .expect_err("refused"),
         reader
             .holding(&Filter::Kind("session"))
             .map(|_| ())
@@ -944,29 +962,49 @@ fn a_document_is_found_by_its_longest_term_and_a_longer_word_is_in_no_document()
     );
 }
 
+fn text_field(folder: &Path) -> String {
+    let meta = fs::read_to_string(folder.join("meta.json")).expect("meta.json");
+    let from = meta.find(r#""name": "text""#).expect("the text field");
+    let field = &meta[from..];
+    field[..field[1..]
+        .find(r#""name":"#)
+        .map_or(field.len(), |end| end + 1)]
+        .to_owned()
+}
+
 #[test]
-fn the_text_field_keeps_frequencies_and_no_positions() {
+fn the_text_field_keeps_frequencies_and_positions() {
     let scratch = Scratch::new("freq");
     let mut index = scratch.index();
     index.clear().expect("clear");
     fill(&mut index);
+    let long: Vec<String> = (0..1000u32)
+        .map(|n| format!("word{}", n.wrapping_mul(2_654_435_761) >> 27))
+        .collect();
+    add(
+        &mut index,
+        3,
+        "session",
+        100,
+        &chunk(9, 1, None, &long.join(" ")),
+    );
     index.commit(&position(5)).expect("commit");
-    let meta = fs::read_to_string(scratch.folder().join("meta.json")).expect("meta.json");
-    let from = meta.find(r#""name": "text""#).expect("the text field");
-    let field = &meta[from..];
-    let field = &field[..field[1..]
-        .find(r#""name":"#)
-        .map_or(field.len(), |end| end + 1)];
-    assert!(field.contains(r#""record": "freq""#), "{field}");
+    let field = text_field(&scratch.folder());
+    assert!(field.contains(r#""record": "position""#), "{field}");
     assert!(field.contains(r#""stored": false"#), "{field}");
-    for name in names(&scratch.folder()) {
-        if name.ends_with(".pos") {
-            let size = fs::metadata(scratch.folder().join(&name))
+    let sizes: Vec<u64> = names(&scratch.folder())
+        .iter()
+        .filter(|name| name.ends_with(".pos"))
+        .map(|name| {
+            fs::metadata(scratch.folder().join(name))
                 .expect("file")
-                .len();
-            assert!(size < 500, "{name} is {size} bytes");
-        }
-    }
+                .len()
+        })
+        .collect();
+    assert!(
+        sizes.iter().any(|size| *size > 500),
+        "no .pos file holds positions: {sizes:?}"
+    );
 }
 
 fn extent(
@@ -1254,9 +1292,12 @@ fn a_rollback_drops_what_was_added_and_deleted_and_frees_the_writer() {
 fn same_scores(grown: &Scratch, rebuilt: &Scratch, queries: &[&str]) {
     for query in queries {
         for limit in [1, 5, 50] {
-            let grown_hits = rank(&grown.folder(), query, limit, default_rule());
-            let rebuilt_hits = rank(&rebuilt.folder(), query, limit, default_rule());
-            assert_eq!(grown_hits, rebuilt_hits, "{query} {limit}");
+            for weight in [0.0, 0.25] {
+                let grown_hits = weighted(&grown.folder(), query, limit, default_rule(), weight);
+                let rebuilt_hits =
+                    weighted(&rebuilt.folder(), query, limit, default_rule(), weight);
+                assert_eq!(grown_hits, rebuilt_hits, "{query} {limit} {weight}");
+            }
         }
     }
     let (grown_totals, rebuilt_totals) = (
@@ -1282,7 +1323,7 @@ fn same_scores(grown: &Scratch, rebuilt: &Scratch, queries: &[&str]) {
 fn a_grown_index_ranks_as_a_rebuilt_one_scores_included() {
     let one = |word: &str| chunk(1, 1, None, word);
     let word = |entry: u8| match entry {
-        1..=20 => "zebra",
+        1..=20 => "zebra mule",
         21..=25 => "rebar",
         _ => "apple",
     };
@@ -1294,14 +1335,14 @@ fn a_grown_index_ranks_as_a_rebuilt_one_scores_included() {
     index.commit(&position(1)).expect("commit");
     for entry in 1..=19 {
         index.delete(id(entry), 1).expect("delete");
-        add(&mut index, entry, "session", 100, &one("yak"));
+        add(&mut index, entry, "session", 100, &one("yak mule"));
     }
     index.commit(&position(2)).expect("commit");
 
     let rebuilt = Scratch::new("rebuilt");
     let mut fresh = rebuilt.fresh();
     for entry in 1..=100 {
-        let text = if entry <= 19 { "yak" } else { word(entry) };
+        let text = if entry <= 19 { "yak mule" } else { word(entry) };
         add(&mut fresh, entry, "session", 100, &one(text));
     }
     fresh.commit(&position(2)).expect("commit");
@@ -1320,7 +1361,18 @@ fn a_grown_index_ranks_as_a_rebuilt_one_scores_included() {
     same_scores(
         &grown,
         &rebuilt,
-        &["zebra", "yak", "apple", "zebra yak apple", "zebar", "appel"],
+        &[
+            "zebra",
+            "yak",
+            "apple",
+            "zebra yak apple",
+            "zebar",
+            "appel",
+            "zebra mule",
+            "yak mule",
+            "mule yak",
+            "mule zebra yak",
+        ],
     );
 }
 
@@ -1358,7 +1410,15 @@ fn a_grown_session_ranks_as_a_rebuilt_one_scores_included() {
     same_scores(
         &grown,
         &rebuilt,
-        &["garden", "tools", "zebra shed", "question"],
+        &[
+            "garden",
+            "tools",
+            "zebra shed",
+            "question",
+            "tools garden",
+            "shed hold",
+            "garden question",
+        ],
     );
 }
 
@@ -1959,76 +2019,13 @@ fn two_entries_at_the_same_generation_and_records_keep_their_own_terms() {
 
 const PART_1_PAYLOAD: &str = "bilbo index 1\nchunk_tokens 512\nchunk_overlap 64\nanalyzer bm25s-en/2\ntokenizer qwen/1\nrender markdown/1/heading_width=100 session/1\ncatalog 09090909090909090909090909090909\nseq 5\nfailed -\n";
 
-fn part_1_schema() -> tantivy::schema::Schema {
-    use tantivy::schema::{
-        BytesOptions, FAST, INDEXED, IndexRecordOption, STRING, Schema, TextFieldIndexing,
-        TextOptions,
-    };
-    let mut builder = Schema::builder();
-    let words = TextFieldIndexing::default()
-        .set_tokenizer("raw")
-        .set_fieldnorms(true)
-        .set_index_option(IndexRecordOption::WithFreqs);
-    builder.add_text_field("text", TextOptions::default().set_indexing_options(words));
-    builder.add_bytes_field("entry", BytesOptions::default().set_indexed().set_fast());
-    builder.add_u64_field("generation", FAST);
-    builder.add_u64_field("first", FAST);
-    builder.add_u64_field("count", FAST);
-    builder.add_u64_field("part", FAST);
-    builder.add_u64_field("parts", FAST);
-    builder.add_i64_field("date", INDEXED | FAST);
-    builder.add_text_field("kind", STRING | FAST);
-    builder.build()
-}
-
 #[test]
 fn an_index_of_the_older_format_has_no_position() {
-    use tantivy::tokenizer::{PreTokenizedString, Token};
     let scratch = Scratch::new("part-1");
     fs::create_dir_all(scratch.folder()).expect("create");
     marker(&scratch.folder());
-    let schema = part_1_schema();
-    let settings = tantivy::IndexSettings {
-        docstore_compression: tantivy::store::Compressor::None,
-        ..tantivy::IndexSettings::default()
-    };
-    let old = tantivy::Index::builder()
-        .schema(schema.clone())
-        .settings(settings)
-        .create_in_dir(scratch.folder())
-        .expect("an index");
-    let mut writer: tantivy::IndexWriter = old.writer(15_000_000).expect("a writer");
-    let field = |name: &str| schema.get_field(name).expect(name);
-    for row in filled() {
-        let mut document = tantivy::TantivyDocument::default();
-        document.add_pre_tokenized_text(
-            field("text"),
-            PreTokenizedString {
-                text: String::new(),
-                tokens: vec![Token {
-                    offset_from: 0,
-                    offset_to: 0,
-                    position: 0,
-                    text: "word".to_owned(),
-                    position_length: 1,
-                }],
-            },
-        );
-        document.add_bytes(field("entry"), &row.entry);
-        document.add_u64(field("generation"), row.generation);
-        document.add_u64(field("first"), row.first);
-        document.add_u64(field("count"), row.count);
-        document.add_u64(field("part"), row.part);
-        document.add_u64(field("parts"), row.parts);
-        document.add_i64(field("date"), row.date);
-        document.add_text(field("kind"), &row.kind);
-        writer.add_document(document).expect("add");
-    }
-    let mut prepared = writer.prepare_commit().expect("prepare");
-    prepared.set_payload(PART_1_PAYLOAD);
-    prepared.commit().expect("commit");
-    drop(writer);
-    drop(old);
+    let schema = hand_schema(IndexRecordOption::WithFreqs, &[]);
+    hand_made(&scratch.folder(), &schema, PART_1_PAYLOAD);
 
     let before = snapshot(&scratch.0);
     let mut index = scratch.index();
@@ -2063,38 +2060,14 @@ fn an_index_of_the_older_format_has_no_position() {
         .expect("the adapter's index")
         .schema();
     assert_ne!(made, schema);
-    for (_, entry) in schema.fields() {
+    let wanted = hand_schema(IndexRecordOption::WithFreqsAndPositions, &[]);
+    for (_, entry) in wanted.fields() {
         let found = made.get_field(entry.name()).expect("the field");
         assert_eq!(made.get_field_entry(found), entry, "{}", entry.name());
     }
-    assert_eq!(made.fields().count(), schema.fields().count() + 2);
-    for name in ["length", "digest"] {
-        assert!(made.get_field(name).is_ok(), "{name}");
-    }
-}
-
-#[test]
-fn an_index_of_this_schema_with_a_format_1_payload_has_no_position() {
-    let scratch = Scratch::new("format-1");
-    built(&scratch.folder());
-    assert_eq!(
-        committed(&scratch).position().expect("a position"),
-        Some(position(5))
-    );
-    let raw = tantivy::Index::open_in_dir(scratch.folder()).expect("the index");
-    let mut writer: tantivy::IndexWriter = raw.writer(15_000_000).expect("a writer");
-    let mut prepared = writer.prepare_commit().expect("prepare");
-    prepared.set_payload(PART_1_PAYLOAD);
-    prepared.commit().expect("commit");
-    drop(writer);
-    drop(raw);
-    assert_eq!(committed(&scratch).position().expect("a position"), None);
-    let mut index = scratch.index();
-    assert_eq!(index.position().expect("a position"), None);
-    index.clear().expect("clear");
-    fill(&mut index);
-    index.commit(&position(5)).expect("commit");
-    assert_eq!(index.position().expect("a position"), Some(position(5)));
+    let names: Vec<_> = made.fields().map(|(_, entry)| entry.name()).collect();
+    let older: Vec<_> = wanted.fields().map(|(_, entry)| entry.name()).collect();
+    assert_eq!(names, [older, vec!["length", "digest"]].concat());
 }
 
 #[test]
@@ -2500,13 +2473,23 @@ fn the_same_documents_rank_the_same_in_one_segment_and_in_many() {
         committed(&one).totals().expect("totals"),
         committed(&many).totals().expect("totals")
     );
-    for query in ["garden", "zebra", "zebra shed", "tools garden shed", "none"] {
+    for query in [
+        "garden",
+        "zebra",
+        "zebra shed",
+        "tools garden shed",
+        "none",
+        "garden zebra",
+        "tools shed",
+    ] {
         for limit in [1, 3, 20] {
-            assert_eq!(
-                rank(&one.folder(), query, limit, Rule::OFF),
-                rank(&many.folder(), query, limit, Rule::OFF),
-                "{query} {limit}"
-            );
+            for weight in [0.0, 0.25] {
+                assert_eq!(
+                    weighted(&one.folder(), query, limit, Rule::OFF, weight),
+                    weighted(&many.folder(), query, limit, Rule::OFF, weight),
+                    "{query} {limit} {weight}"
+                );
+            }
         }
     }
 }
@@ -2544,6 +2527,7 @@ fn read_everything(folder: &Path) {
     let totals = reader.totals().expect("totals");
     reader.postings(&term_of("garden")).expect("postings");
     reader.near("gardin", Edits::One).expect("near");
+    reader.pairs("garden", "tool").expect("pairs");
     reader.holding(&Filter::Kind("session")).expect("holding");
     reader
         .holding(&Filter::Entries(&[id(1), id(2)]))
@@ -2585,6 +2569,7 @@ fn nothing_to_read(reader: &Committed, what: &str) {
         reader.totals().map(|_| ()),
         reader.postings("garden").map(|_| ()),
         reader.near("garden", Edits::One).map(|_| ()),
+        reader.pairs("garden", "tool").map(|_| ()),
         reader.holding(&Filter::Kind("session")).map(|_| ()),
         reader.found(&[0]).map(|_| ()),
         reader.documents().map(|_| ()),
@@ -2692,6 +2677,9 @@ impl Lookup for Counting<'_> {
     fn near(&self, term: &str, edits: Edits) -> Result<Vec<Near>, IndexError> {
         self.inner.near(term, edits)
     }
+    fn pairs(&self, first: &str, second: &str) -> Result<Vec<Posting>, IndexError> {
+        self.inner.pairs(first, second)
+    }
     fn holding(&self, filter: &Filter<'_>) -> Result<Vec<u32>, IndexError> {
         self.inner.holding(filter)
     }
@@ -2721,6 +2709,7 @@ fn a_tie_of_every_document_is_cut_by_the_tie_order() {
         omit: Omit::default(),
         batch: 4096,
         typos: Rule::OFF,
+        pair_weight: 0.0,
     }
     .rank(&query, 50)
     .expect("a rank")
@@ -2748,6 +2737,7 @@ fn scoped(scratch: &Scratch, entries: Option<Vec<Id>>, text: &str) -> bilbo_sear
         omit: Omit::default(),
         batch: 4096,
         typos: Rule::OFF,
+        pair_weight: 0.0,
     }
     .rank(
         &Query {
@@ -2918,14 +2908,18 @@ fn template() -> Scratch {
     scratch
 }
 
-fn flipped(template: &Scratch, extension: &str, at: usize) -> Scratch {
-    let scratch = Scratch::new("flipped");
+fn damaged(template: &Scratch, extension: &str, write: impl FnOnce(&mut [u8])) -> Scratch {
+    let scratch = Scratch::new("damaged");
     copy_files(&template.folder(), &scratch.folder());
     let file = component(&scratch.folder(), extension);
     let mut bytes = fs::read(&file).expect("read");
-    bytes[at] ^= 0x55;
+    write(&mut bytes);
     fs::write(&file, bytes).expect("write");
     scratch
+}
+
+fn flipped(template: &Scratch, extension: &str, at: usize) -> Scratch {
+    damaged(template, extension, |bytes| bytes[at] ^= 0x55)
 }
 
 #[test]
@@ -2935,18 +2929,13 @@ fn a_damaged_key_that_is_not_utf8_is_a_failed_read_from_near() {
     add(&mut index, 1, "session", 100, &chunk(1, 1, None, "garden"));
     add(&mut index, 2, "session", 100, &chunk(1, 1, None, "garten"));
     index.commit(&position(1)).expect("commit");
-    let size = length_of(".term", &template);
+    let original = fs::read(component(&template.folder(), ".term")).expect("read");
     let mut not_utf8 = 0;
-    for at in 0..size {
-        let scratch = Scratch::new("near-utf8");
-        copy_files(&template.folder(), &scratch.folder());
-        let file = component(&scratch.folder(), ".term");
-        let mut bytes = fs::read(&file).expect("read");
-        if bytes[at] == 0x80 {
+    for at in 0..original.len() {
+        if original[at] == 0x80 {
             continue;
         }
-        bytes[at] = 0x80;
-        fs::write(&file, bytes).expect("write");
+        let scratch = damaged(&template, ".term", |bytes| bytes[at] = 0x80);
         match committed(&scratch).near("garden", Edits::One) {
             Ok(found) => {
                 for each in found {
@@ -3035,6 +3024,8 @@ fn a_damaged_postings_or_term_file_is_an_index_error_from_every_read() {
                 reader.totals().map(|_| ()),
                 reader.postings(&term_of("garden")).map(|_| ()),
                 reader.near("gardin", Edits::Two).map(|_| ()),
+                reader.pairs("garden", "tool").map(|_| ()),
+                reader.pairs("garden", "garden").map(|_| ()),
                 reader.holding(&Filter::Kind("session")).map(|_| ()),
                 reader
                     .holding(&Filter::Entries(&[id(1), id(2)]))
@@ -3325,7 +3316,7 @@ fn a_posting_outside_its_segment_is_an_index_error() {
             entry,
             "session",
             100,
-            &chunk(1, 1, None, "zebra"),
+            &chunk(1, 1, None, "zebra crossing"),
         );
     }
     index.commit(&position(5)).expect("commit");
@@ -3334,7 +3325,7 @@ fn a_posting_outside_its_segment_is_an_index_error() {
     two_documents(&short);
     let untouched = Scratch::new("postings-of-two-untouched");
     copy_files(&short.folder(), &untouched.folder());
-    for extension in [".idx", ".term"] {
+    for extension in [".idx", ".term", ".pos"] {
         fs::copy(
             component(&long.folder(), extension),
             component(&short.folder(), extension),
@@ -3353,6 +3344,16 @@ fn a_posting_outside_its_segment_is_an_index_error() {
         .holding(&Filter::Kind("session"))
         .expect_err("a posting past the segment");
     assert!(matches!(error, IndexError::Inconsistent(_)), "{error}");
+    let error = reader
+        .pairs(&term_of("zebra"), &term_of("zebra"))
+        .expect_err("a pair past the segment");
+    assert!(
+        matches!(
+            error,
+            IndexError::Inconsistent("a posting names a document outside its segment")
+        ),
+        "{error}"
+    );
     let errors = [
         committed(&short).totals().map(|_| ()),
         committed(&short).terms().map(|_| ()),
@@ -3367,4 +3368,502 @@ fn a_posting_outside_its_segment_is_an_index_error() {
     assert_eq!(reader.totals().expect("totals").entries, 2);
     assert_eq!(reader.terms().expect("terms").len(), 2);
     assert_eq!(untouched.index().extents(id(1)).expect("extents").len(), 1);
+}
+
+const PAIR_TEXTS: [&str; 13] = [
+    "state of the art software",
+    "the art of state craft",
+    "state and big art",
+    "alpha beta alpha beta gamma",
+    "beta alpha gamma",
+    "alpha gamma beta",
+    "alpha alpha alpha",
+    "garden tools garden tools",
+    "tools garden shed",
+    "state of art",
+    "alpha beta",
+    "garden tools shed garden",
+    "gamma beta alpha beta",
+];
+
+fn pair_fixture() -> Scratch {
+    let scratch = Scratch::new("pairs");
+    let mut index = scratch.fresh_with(Options {
+        merge_deleted_share: 1.0,
+        ..options()
+    });
+    for (n, text) in PAIR_TEXTS.iter().enumerate() {
+        let at = n as u64 + 1;
+        add(
+            &mut index,
+            at as u8,
+            "session",
+            100,
+            &chunk(at, 1, None, text),
+        );
+        if matches!(at, 4 | 8 | 11 | 13) {
+            index.commit(&position(at)).expect("commit");
+        }
+    }
+    index.delete(id(10), 10).expect("delete");
+    index.commit(&position(14)).expect("commit");
+    scratch
+}
+
+fn adjacent_in(text: &str, first: &str, second: &str) -> (u32, usize) {
+    let terms = analyze::terms(text);
+    let at = |word: &str| -> Vec<u32> {
+        terms
+            .iter()
+            .enumerate()
+            .filter(|(_, each)| *each == word)
+            .map(|(place, _)| u32::try_from(place).expect("a small text"))
+            .collect()
+    };
+    (lookup::adjacent(&at(first), &at(second)), terms.len())
+}
+
+#[test]
+fn the_pairs_of_two_words_are_the_chunks_where_the_second_follows_the_first() {
+    let scratch = pair_fixture();
+    let segments = names(&scratch.folder())
+        .iter()
+        .filter(|name| name.ends_with(".term"))
+        .count();
+    assert!(segments >= 3, "{segments} segments");
+    assert!(
+        names(&scratch.folder())
+            .iter()
+            .any(|name| name.ends_with(".del")),
+        "the delete stayed in its own file"
+    );
+    let reader = committed(&scratch);
+    let docs = reader.holding(&Filter::Kind("session")).expect("holding");
+    assert_eq!(docs.len(), PAIR_TEXTS.len() - 1);
+    let text_of: Vec<&str> = reader
+        .found(&docs)
+        .expect("found")
+        .iter()
+        .map(|found| PAIR_TEXTS[found.extent.records.first as usize - 1])
+        .collect();
+    let probes = [
+        ("state", "art"),
+        ("art", "state"),
+        ("state", "big"),
+        ("alpha", "beta"),
+        ("beta", "alpha"),
+        ("alpha", "gamma"),
+        ("gamma", "beta"),
+        ("alpha", "alpha"),
+        ("garden", "tool"),
+        ("tool", "garden"),
+        ("beta", "beta"),
+        ("shed", "garden"),
+        ("nothing", "alpha"),
+    ];
+    let mut held = 0;
+    for (first, second) in probes {
+        let expected: Vec<Posting> = docs
+            .iter()
+            .zip(&text_of)
+            .filter_map(|(doc, text)| {
+                let (count, length) = adjacent_in(text, first, second);
+                (count > 0).then_some(Posting {
+                    doc: *doc,
+                    freq: count,
+                    length: length as u32,
+                })
+            })
+            .collect();
+        held += usize::from(!expected.is_empty());
+        let found = reader.pairs(first, second).expect("pairs");
+        assert_eq!(found, expected, "{first} {second}");
+        let alone = reader.postings(first).expect("postings");
+        for posting in &found {
+            let own = alone.iter().find(|each| each.doc == posting.doc);
+            assert_eq!(own.map(|each| each.length), Some(posting.length));
+        }
+    }
+    assert!(held >= 9, "only {held} probes found a chunk");
+    let state_art = reader.pairs("state", "art").expect("pairs");
+    assert_eq!(
+        state_art.iter().map(|posting| posting.freq).sum::<u32>(),
+        1,
+        "state of the art is one pair, the reversed chunk and the deleted one are none"
+    );
+    assert_eq!(
+        reader.pairs("art", "state").expect("pairs").len(),
+        1,
+        "the reversed pair is the other chunk"
+    );
+    assert_eq!(
+        reader.pairs("garden", "tool").expect("pairs")[0].freq,
+        2,
+        "a chunk counts each place"
+    );
+}
+
+fn hand_schema(record: IndexRecordOption, extra: &[&str]) -> Schema {
+    let mut builder = Schema::builder();
+    let words = TextFieldIndexing::default()
+        .set_tokenizer("raw")
+        .set_fieldnorms(true)
+        .set_index_option(record);
+    builder.add_text_field("text", TextOptions::default().set_indexing_options(words));
+    builder.add_bytes_field("entry", BytesOptions::default().set_indexed().set_fast());
+    builder.add_u64_field("generation", FAST);
+    builder.add_u64_field("first", FAST);
+    builder.add_u64_field("count", FAST);
+    builder.add_u64_field("part", FAST);
+    builder.add_u64_field("parts", FAST);
+    builder.add_i64_field("date", INDEXED | FAST);
+    builder.add_text_field("kind", STRING | FAST);
+    for name in extra {
+        builder.add_u64_field(name, FAST);
+    }
+    builder.build()
+}
+
+fn hand_made(folder: &Path, schema: &Schema, payload: &str) {
+    use tantivy::tokenizer::{PreTokenizedString, Token};
+    let settings = tantivy::IndexSettings {
+        docstore_compression: tantivy::store::Compressor::None,
+        ..tantivy::IndexSettings::default()
+    };
+    let made = tantivy::Index::builder()
+        .schema(schema.clone())
+        .settings(settings)
+        .create_in_dir(folder)
+        .expect("an index");
+    let mut writer: tantivy::IndexWriter = made.writer(15_000_000).expect("a writer");
+    let field = |name: &str| schema.get_field(name).expect(name);
+    for row in filled() {
+        let mut document = tantivy::TantivyDocument::default();
+        document.add_pre_tokenized_text(
+            field("text"),
+            PreTokenizedString {
+                text: String::new(),
+                tokens: vec![Token {
+                    offset_from: 0,
+                    offset_to: 0,
+                    position: 0,
+                    text: "word".to_owned(),
+                    position_length: 1,
+                }],
+            },
+        );
+        document.add_bytes(field("entry"), &row.entry);
+        document.add_u64(field("generation"), row.generation);
+        document.add_u64(field("first"), row.first);
+        document.add_u64(field("count"), row.count);
+        document.add_u64(field("part"), row.part);
+        document.add_u64(field("parts"), row.parts);
+        document.add_i64(field("date"), row.date);
+        document.add_text(field("kind"), &row.kind);
+        if schema.get_field("length").is_ok() {
+            document.add_u64(field("length"), row.length);
+            document.add_u64(field("digest"), row.digest);
+        }
+        writer.add_document(document).expect("add");
+    }
+    let mut prepared = writer.prepare_commit().expect("prepare");
+    prepared.set_payload(payload);
+    prepared.commit().expect("commit");
+}
+
+#[test]
+fn an_index_made_without_positions_has_no_position_though_its_payload_is_this_formats() {
+    let scratch = Scratch::new("no-positions");
+    fs::create_dir_all(scratch.folder()).expect("create");
+    marker(&scratch.folder());
+    let payload = position(5).encode().expect("a payload");
+    hand_made(
+        &scratch.folder(),
+        &hand_schema(IndexRecordOption::WithFreqs, &["length", "digest"]),
+        &payload,
+    );
+    assert!(text_field(&scratch.folder()).contains(r#""record": "freq""#));
+
+    let before = snapshot(&scratch.0);
+    assert_eq!(committed(&scratch).position().expect("a position"), None);
+    nothing_to_read(&committed(&scratch), "an index made without positions");
+    let mut index = scratch.index();
+    assert_eq!(index.position().expect("a position"), None);
+    assert_eq!(snapshot(&scratch.0), before, "looking changed a file");
+
+    index.clear().expect("clear");
+    fill(&mut index);
+    index.commit(&position(5)).expect("commit");
+    assert_eq!(index.position().expect("a position"), Some(position(5)));
+    assert_eq!(
+        committed(&scratch).position().expect("a position"),
+        Some(position(5))
+    );
+    let field = text_field(&scratch.folder());
+    assert!(field.contains(r#""record": "position""#), "{field}");
+    let made = tantivy::Index::open_in_dir(scratch.folder())
+        .expect("the adapter's index")
+        .schema();
+    let wanted = hand_schema(
+        IndexRecordOption::WithFreqsAndPositions,
+        &["length", "digest"],
+    );
+    assert_eq!(made, wanted);
+}
+
+#[test]
+fn an_index_of_this_schema_with_an_older_formats_payload_has_no_position() {
+    let current = position(5).encode().expect("a payload");
+    let format_2 = current.replacen("bilbo index 3\n", "bilbo index 2\n", 1);
+    assert_ne!(format_2, current);
+    for (name, older) in [
+        ("format-1", PART_1_PAYLOAD),
+        ("format-2", format_2.as_str()),
+    ] {
+        let scratch = Scratch::new(name);
+        built(&scratch.folder());
+        assert_eq!(
+            committed(&scratch).position().expect("a position"),
+            Some(position(5)),
+            "{name}"
+        );
+        let raw = tantivy::Index::open_in_dir(scratch.folder()).expect("the index");
+        let mut writer: tantivy::IndexWriter = raw.writer(15_000_000).expect("a writer");
+        let mut prepared = writer.prepare_commit().expect("prepare");
+        prepared.set_payload(older);
+        prepared.commit().expect("commit");
+        drop(writer);
+        drop(raw);
+        assert_eq!(
+            committed(&scratch).position().expect("a position"),
+            None,
+            "{name}"
+        );
+        let mut index = scratch.index();
+        assert_eq!(index.position().expect("a position"), None, "{name}");
+        index.clear().expect("clear");
+        fill(&mut index);
+        index.commit(&position(5)).expect("commit");
+        assert_eq!(
+            index.position().expect("a position"),
+            Some(position(5)),
+            "{name}"
+        );
+        assert_eq!(
+            committed(&scratch).position().expect("a position"),
+            Some(position(5)),
+            "{name}"
+        );
+    }
+}
+
+#[test]
+fn a_damaged_positions_file_is_an_index_error_from_pairs() {
+    let template = template();
+    let size = length_of(".pos", &template);
+    let (mut only_pairs, mut both) = (Vec::new(), Vec::new());
+    for at in 0..size {
+        let scratch = flipped(&template, ".pos", at);
+        let before = snapshot(&scratch.0);
+        let reader = committed(&scratch);
+        if !matches!(reader.position(), Ok(Some(_))) {
+            continue;
+        }
+        match reader.pairs("garden", "tool") {
+            Ok(_) => {}
+            Err(IndexError::Failed { .. } | IndexError::Inconsistent(_)) => {
+                if reader.postings(&term_of("garden")).is_ok() {
+                    only_pairs.push(at);
+                } else {
+                    both.push(at);
+                }
+            }
+            Err(error) => panic!("offset {at}: {error}"),
+        }
+        assert_eq!(snapshot(&scratch.0), before, "offset {at}");
+    }
+    say(&format!(
+        "of {size} offsets of .pos, pairs alone fails at {only_pairs:?}, pairs and postings at {both:?}"
+    ));
+    assert!(
+        !only_pairs.is_empty(),
+        "no offset damaged the positions and left postings readable"
+    );
+}
+
+#[test]
+fn a_frequency_above_its_documents_length_is_an_index_error_from_pairs() {
+    let template = template();
+    let shared = committed(&template).pairs("garden", "tool").expect("pairs");
+    assert_eq!(shared.len(), 1);
+    let size = length_of(".idx", &template);
+    let mut damaged = 0;
+    for at in 0..size {
+        let scratch = flipped(&template, ".idx", at);
+        let reader = committed(&scratch);
+        if !matches!(reader.position(), Ok(Some(_))) {
+            continue;
+        }
+        let Ok(garden) = reader.postings(&term_of("garden")) else {
+            continue;
+        };
+        if !garden
+            .iter()
+            .any(|each| each.doc == shared[0].doc && each.freq > each.length)
+        {
+            continue;
+        }
+        damaged += 1;
+        for (first, second) in [("garden", "tool"), ("tool", "garden")] {
+            let error = reader.pairs(first, second).expect_err("a damaged count");
+            assert!(
+                matches!(
+                    error,
+                    IndexError::Inconsistent("a posting counts more terms than its document holds")
+                ),
+                "offset {at}, {first} {second}: {error}"
+            );
+        }
+    }
+    say(&format!(
+        "offsets of .idx that raise the frequency: {damaged}"
+    ));
+    assert!(damaged > 0, "no offset put a frequency above its length");
+}
+
+#[test]
+fn a_posting_list_that_does_not_rise_is_an_index_error_from_pairs() {
+    let template = template();
+    let original = fs::read(component(&template.folder(), ".idx")).expect("read");
+    let mut found = 0;
+    for at in 0..original.len() {
+        if original[at] == 0x80 {
+            continue;
+        }
+        let scratch = damaged(&template, ".idx", |bytes| bytes[at] = 0x80);
+        let reader = committed(&scratch);
+        if !matches!(reader.position(), Ok(Some(_))) {
+            continue;
+        }
+        let Ok(garden) = reader.postings(&term_of("garden")) else {
+            continue;
+        };
+        if garden.windows(2).all(|two| two[0].doc < two[1].doc) {
+            continue;
+        }
+        found += 1;
+        let error = reader
+            .pairs("garden", "garden")
+            .expect_err("documents that do not rise");
+        assert!(
+            matches!(
+                error,
+                IndexError::Inconsistent("a posting list's documents do not rise")
+            ),
+            "offset {at}: {error}"
+        );
+    }
+    say(&format!("offsets of .idx that do not rise: {found}"));
+    assert!(found > 0, "no offset made a list that does not rise");
+
+    let long = Scratch::new("not-rising-long");
+    let mut index = long.fresh();
+    for entry in 1..=130 {
+        add(
+            &mut index,
+            entry,
+            "session",
+            100,
+            &chunk(1, 1, None, "garden"),
+        );
+    }
+    index.commit(&position(5)).expect("commit");
+    drop(index);
+    let size = length_of(".idx", &long);
+    let mut down = 0;
+    for at in 0..size {
+        let scratch = flipped(&long, ".idx", at);
+        let reader = committed(&scratch);
+        if !matches!(reader.position(), Ok(Some(_))) {
+            continue;
+        }
+        let Ok(garden) = reader.postings(&term_of("garden")) else {
+            continue;
+        };
+        if garden.windows(2).all(|two| two[0].doc <= two[1].doc) {
+            continue;
+        }
+        down += 1;
+        let error = reader
+            .pairs("garden", "garden")
+            .expect_err("documents that go down");
+        assert!(
+            matches!(
+                error,
+                IndexError::Inconsistent("a posting list's documents do not rise")
+            ),
+            "offset {at}: {error}"
+        );
+    }
+    say(&format!("offsets of a long .idx that go down: {down}"));
+    assert!(down > 0, "no offset made a list that goes down");
+}
+
+#[test]
+fn a_second_list_that_names_a_document_outside_its_segment_is_an_index_error_from_pairs() {
+    let template = Scratch::new("second-list");
+    let mut index = template.fresh();
+    for (entry, text) in ["beta", "beta beta", "beta beta beta", "alpha beta", "gamma"]
+        .into_iter()
+        .enumerate()
+    {
+        let entry = u8::try_from(entry).expect("a few") + 1;
+        add(&mut index, entry, "session", 100, &chunk(1, 1, None, text));
+    }
+    index.commit(&position(5)).expect("commit");
+    drop(index);
+    let list = [0x80, 0x81, 0x81, 0x81, 0x81, 0x82, 0x83, 0x81];
+    let original = fs::read(component(&template.folder(), ".idx")).expect("read");
+    let places: Vec<_> = original
+        .windows(list.len())
+        .enumerate()
+        .filter(|(_, bytes)| *bytes == list)
+        .map(|(at, _)| at)
+        .collect();
+    assert_eq!(
+        places.len(),
+        1,
+        "the list of beta is not found exactly once"
+    );
+    let start = places[0];
+    let damages: [(&str, Vec<u8>); 5] = [
+        ("first gap", vec![0xE4, 0x81, 0x81, 0x81]),
+        ("second gap", vec![0x80, 0xE4, 0x81, 0x81]),
+        ("third gap", vec![0x80, 0x81, 0xE4, 0x81]),
+        ("fourth gap", vec![0x80, 0x81, 0x81, 0xE4]),
+        (
+            "above the end",
+            vec![0x80, 0x00, 0x00, 0x00, 0x00, 0x88, 0x80, 0x80],
+        ),
+    ];
+    for (what, bytes) in damages {
+        let scratch = damaged(&template, ".idx", |file| {
+            file[start..start + bytes.len()].copy_from_slice(&bytes);
+        });
+        let reader = committed(&scratch);
+        assert!(
+            matches!(reader.position(), Ok(Some(_))),
+            "{what}: the folder does not open"
+        );
+        let error = reader
+            .pairs(&term_of("alpha"), &term_of("beta"))
+            .expect_err(what);
+        assert!(
+            matches!(
+                error,
+                IndexError::Inconsistent("a posting names a document outside its segment")
+            ),
+            "{what}: {error}"
+        );
+    }
 }

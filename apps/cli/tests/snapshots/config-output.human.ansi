@@ -32,6 +32,7 @@ recall.read_batch            = 4096  [2m(default)[22m
 recall.typo_terms            = 3  [2m(default)[22m
 recall.typo_letters          = 4  [2m(default)[22m
 recall.typo_two_edits        = 8  [2m(default)[22m
+recall.pair_weight           = 0.25  [2m(default)[22m
 markdown.heading_width       = 100  [2m(default)[22m
 session.unpack_floor         = "128 MiB"  [2m(default)[22m
 session.unpack_ratio         = 256  [2m(default)[22m

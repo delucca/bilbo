@@ -103,6 +103,7 @@ fn rank(cache: &Path, text: &str, limit: usize) -> Vec<Candidate> {
         omit: Omit::default(),
         batch: keys.read_batch.value,
         typos: Rule::OFF,
+        pair_weight: 0.0,
     }
     .rank(
         &Query {
@@ -601,7 +602,7 @@ fn the_index_records_the_manifest_it_was_made_with_and_the_stores_cursor() {
     assert_eq!(
         lines[..6],
         [
-            "bilbo index 2",
+            "bilbo index 3",
             "chunk_tokens 512",
             "chunk_overlap 64",
             "analyzer bm25s-en/3",

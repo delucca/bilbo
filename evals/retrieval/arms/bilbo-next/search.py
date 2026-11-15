@@ -6,7 +6,8 @@ question and form to /work/search.jsonl. build-store.sh --search runs it in the 
 It reads no setting from the environment. `run(settings, store=, questions=, out=, binary=)` takes them: `budget`
 (recall's --budget), `question_words` (None keeps the key's default; a list of words is written to a config file of its
 own), `candidates` (None keeps the key's default; a number is passed as BILBO_RECALL_CANDIDATES), `typo_terms` (None keeps the key's
-default; a number is passed as BILBO_RECALL_TYPO_TERMS) and `in` (None, or "repo":
+default; a number is passed as BILBO_RECALL_TYPO_TERMS), `pair_weight` (None keeps the key's default; a number, 0 included, is passed as
+BILBO_RECALL_PAIR_WEIGHT) and `in` (None, or "repo":
 each recall is scoped with --in <remembered folder>/<the question's repository>, and its `--in kept` line must count the
 entries of that repository). Every row also holds `passed`, `typos` (`[[term, [near, ...]], ...]` from recall's `typos:` line,
 empty without one), `run` (the store's key, the driver's 12 hex and the settings
@@ -16,6 +17,7 @@ comparison's variants are drivers (scripts/variants/<name>/drive.py) that call `
 checks the question loop with no store and no binary; `search.py lines` checks the `typos:` line's parser."""
 
 import hashlib
+from decimal import Decimal
 import json
 import re
 import subprocess
@@ -38,7 +40,7 @@ IN_KEPT = re.compile(r"^bilbo: --in kept ([\d,]+) entr(?:y|ies)( and left out (?
 PASSED_ITEMS = (("copies", re.compile(r"^([\d,]+) cop(?:y|ies)$")),
                 ("parts", re.compile(r"^([\d,]+) further parts? of a record$")),
                 ("capped", re.compile(r"^([\d,]+) over the entry cap$")))
-DEFAULTS = {"budget": 8000, "question_words": None, "candidates": None, "typo_terms": None, "in": None}
+DEFAULTS = {"budget": 8000, "question_words": None, "candidates": None, "typo_terms": None, "pair_weight": None, "in": None}
 
 
 def environment(name, settings, store=STORE):
@@ -51,6 +53,8 @@ def environment(name, settings, store=STORE):
         env["BILBO_RECALL_CANDIDATES"] = str(settings["candidates"])
     if settings["typo_terms"] is not None:
         env["BILBO_RECALL_TYPO_TERMS"] = str(settings["typo_terms"])
+    if settings["pair_weight"] is not None:
+        env["BILBO_RECALL_PAIR_WEIGHT"] = format(Decimal(str(settings["pair_weight"])), "f")
     return env
 
 
@@ -164,6 +168,9 @@ def run(settings, store=STORE, questions=QUESTIONS, out=OUT, binary=BILBO):
     settings = DEFAULTS | settings
     if settings["in"] not in (None, "repo"):
         sys.exit(f"search: in must be None or \"repo\", not {settings['in']!r}")
+    weight = settings["pair_weight"]
+    if weight is not None and (isinstance(weight, bool) or not isinstance(weight, (int, float))):
+        sys.exit(f"search: pair_weight must be None or a number, not {weight!r}")
     words = settings["question_words"]
     if words is not None and not (isinstance(words, list) and all(isinstance(w, str) for w in words)):
         sys.exit(f"search: question_words must be None or a list of strings, not {words!r}")
@@ -258,11 +265,23 @@ def lines():
             continue
         print(f"lines: {line!r} was accepted")
         return 1
-    for value, want in ((0, "0"), (3, "3"), (None, None)):
-        got = environment("n", DEFAULTS | {"typo_terms": value}).get("BILBO_RECALL_TYPO_TERMS")
-        if got != want:
-            print(f"lines: typo_terms {value!r} gave the variable {got!r}, expected {want!r}")
-            return 1
+    for key, variable, cases in (("typo_terms", "BILBO_RECALL_TYPO_TERMS", ((0, "0"), (3, "3"), (None, None))),
+                                 ("pair_weight", "BILBO_RECALL_PAIR_WEIGHT", ((0, "0"), (0.25, "0.25"), (0.00005, "0.00005"), (10, "10"), (None, None)))):
+        for value, want in cases:
+            got = environment("n", DEFAULTS | {key: value}).get(variable)
+            if got != want:
+                print(f"lines: {key} {value!r} gave the variable {got!r}, expected {want!r}")
+                return 1
+    for value in (True, False):
+        try:
+            run({"pair_weight": value}, store=Path("/nonexistent"))
+        except SystemExit as stop:
+            if str(stop) != f"search: pair_weight must be None or a number, not {value!r}":
+                print(f"lines: pair_weight {value!r} stopped with {stop}")
+                return 1
+            continue
+        print(f"lines: pair_weight {value!r} was accepted")
+        return 1
     print("lines: OK")
     return 0
 

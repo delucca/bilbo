@@ -9,7 +9,7 @@ use bilbo_kinds::tokens::Tokens;
 use bilbo_search::analyze::{self, Detect, Language};
 use bilbo_search::chunk;
 use bilbo_search::index::{Doc, Extent, Index, IndexError, Stats, millis};
-use bilbo_search::lookup::{Edits, Filter, Found, Lookup, Near, Posting, Totals};
+use bilbo_search::lookup::{Edits, Filter, Found, Lookup, Near, Posting, Totals, adjacent};
 use bilbo_search::position::Position;
 use bilbo_search::rank::{Candidate, Query, Ranked, Ranker};
 use bilbo_search::recall::log::QueryLog;
@@ -824,6 +824,7 @@ pub struct Docs {
     pub deletes: Vec<(Id, u64)>,
     pub events: Events,
     pub commit_fault: Fault,
+    pub pairs_asked: RefCell<Vec<(String, String)>>,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -1012,6 +1013,33 @@ impl Lookup for Docs {
             .collect())
     }
 
+    fn pairs(&self, first: &str, second: &str) -> Result<Vec<Posting>, IndexError> {
+        self.pairs_asked
+            .borrow_mut()
+            .push((first.to_owned(), second.to_owned()));
+        let places = |terms: &[String], term: &str| -> Vec<u32> {
+            terms
+                .iter()
+                .enumerate()
+                .filter(|(_, each)| *each == term)
+                .map(|(place, _)| u32::try_from(place).expect("a small text"))
+                .collect()
+        };
+        let mut postings = Vec::new();
+        for (doc, row) in self.rows.iter().enumerate() {
+            let terms = Docs::terms_of(row);
+            let freq = adjacent(&places(&terms, first), &places(&terms, second));
+            if freq > 0 {
+                postings.push(Posting {
+                    doc: doc as u32,
+                    freq,
+                    length: terms.len() as u32,
+                });
+            }
+        }
+        Ok(postings)
+    }
+
     fn holding(&self, filter: &Filter<'_>) -> Result<Vec<u32>, IndexError> {
         Ok(self
             .rows
@@ -1078,6 +1106,13 @@ impl Lookup for Failing<'_> {
             return Err(unreadable("near"));
         }
         self.0.near(term, edits)
+    }
+
+    fn pairs(&self, first: &str, second: &str) -> Result<Vec<Posting>, IndexError> {
+        if self.1 == "pairs" {
+            return Err(unreadable("pairs"));
+        }
+        self.0.pairs(first, second)
     }
 
     fn holding(&self, filter: &Filter<'_>) -> Result<Vec<u32>, IndexError> {

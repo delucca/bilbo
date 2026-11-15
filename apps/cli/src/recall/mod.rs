@@ -160,6 +160,7 @@ pub fn run(
             letters: settings.recall.typo_letters.value,
             two_edits: settings.recall.typo_two_edits.value,
         },
+        pair_weight: settings.recall.pair_weight.value,
     });
     let rankers: Vec<&dyn Ranker> = bm25.iter().map(|ranker| ranker as &dyn Ranker).collect();
     let request = Request {

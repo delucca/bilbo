@@ -142,6 +142,17 @@ fn ask_with_rule(
     kept: &mut dyn QueryLog,
     typos: typo::Rule,
 ) -> Finished {
+    ask_weighted(log, lookup, request, kept, typos, 0.0)
+}
+
+fn ask_weighted(
+    log: &Log,
+    lookup: &dyn Lookup,
+    request: &Request,
+    kept: &mut dyn QueryLog,
+    typos: typo::Rule,
+    pair_weight: f64,
+) -> Finished {
     let bm25 = Bm25 {
         index: lookup,
         k1: 1.2,
@@ -149,6 +160,7 @@ fn ask_with_rule(
         omit: Omit::default(),
         batch: 4096,
         typos,
+        pair_weight,
     };
     run(
         request,
@@ -964,6 +976,7 @@ fn a_portuguese_query_ranks_by_its_content_words() {
             },
             batch: 4096,
             typos: typo::Rule::OFF,
+            pair_weight: 0.0,
         };
         let mut kept = Logged::default();
         let finished = run(
@@ -1500,6 +1513,73 @@ fn a_near_that_fails_ends_the_run_as_failed() {
         &request("carrot"),
         &mut kept,
         default_rule(),
+    );
+    assert!(finished.result.is_ok());
+}
+
+fn pair_shelf() -> Log {
+    let mut log = Log::new();
+    log.put(1, "note", &["beta alpha"]);
+    log.put(2, "note", &["alpha beta filler"]);
+    log.put(3, "note", &[OTHER]);
+    log.put(4, "note", &[RELEASE]);
+    log
+}
+
+#[test]
+fn words_in_a_row_come_first_when_the_pair_weight_is_set() {
+    let log = pair_shelf();
+    let index = index_of(&log);
+    let order = |weight: f64| {
+        let mut kept = Logged::default();
+        let finished = ask_weighted(
+            &log,
+            &index,
+            &request("alpha beta"),
+            &mut kept,
+            typo::Rule::OFF,
+            weight,
+        );
+        entries_of(&finished.result.expect("a run"))
+    };
+    assert_eq!(order(0.0), [id(1), id(2)]);
+    assert!(index.pairs_asked.borrow().is_empty());
+    assert_eq!(order(0.25), [id(2), id(1)]);
+    assert_eq!(
+        index.pairs_asked.borrow().as_slice(),
+        [("alpha".to_owned(), "beta".to_owned())]
+    );
+}
+
+#[test]
+fn a_pairs_that_fails_ends_the_run_as_failed() {
+    let log = pair_shelf();
+    let index = index_of(&log);
+    let failing = Failing(&index, "pairs");
+    let mut kept = Logged::default();
+    let finished = ask_weighted(
+        &log,
+        &failing,
+        &request("alpha beta"),
+        &mut kept,
+        typo::Rule::OFF,
+        0.25,
+    );
+    let Err(Error::Index(error)) = finished.result else {
+        panic!("an index error");
+    };
+    assert!(error.to_string().contains("pairs failed"));
+    let line = fields(&kept);
+    assert_eq!(line[2], "failed");
+    assert_eq!(line[9], "alpha beta");
+    let mut kept = Logged::default();
+    let finished = ask_weighted(
+        &log,
+        &failing,
+        &request("alpha beta"),
+        &mut kept,
+        typo::Rule::OFF,
+        0.0,
     );
     assert!(finished.result.is_ok());
 }

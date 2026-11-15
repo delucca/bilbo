@@ -533,6 +533,54 @@ fn the_typo_keys_reach_the_search() {
 }
 
 #[test]
+fn the_pair_weight_key_reaches_the_search() {
+    let sandbox = Sandbox::new("recall_pair_weight");
+    sandbox.write(
+        "notes/pair.md",
+        b"Pair: the release checklist covers dates, owners and every other item.\n",
+    );
+    sandbox.write(
+        "notes/twice.md",
+        b"Twice: release dates slip, checklist items slip, release owners and checklist owners differ.\n",
+    );
+    for name in [
+        "alpha", "bravo", "charlie", "delta", "echo", "foxtrot", "golf", "hotel", "india",
+    ] {
+        sandbox.write(
+            &format!("notes/{name}.md"),
+            format!("Apart {name}: release dates slip while the checklist items stay put.\n")
+                .as_bytes(),
+        );
+    }
+    sandbox.remember(&["notes"]);
+    let ask = |weight: Option<&str>| {
+        let seen = Arc::new(Seen::default());
+        let set: Vec<_> = weight
+            .map(|weight| ("BILBO_RECALL_PAIR_WEIGHT", weight))
+            .into_iter()
+            .collect();
+        let done = run_with_settings(
+            &sandbox.settings_with(&set),
+            &shared_tokenizer,
+            &recording(&seen),
+            bilbo_cli::detect(),
+            &["release", "checklist"],
+        )
+        .expect("the run ends");
+        let stdout = done.stdout(&View::PLAIN);
+        let first = hits(&stdout).remove(0).content;
+        let pairs = seen.pairs.lock().expect("pairs").clone();
+        (first.split(':').next().map(str::to_owned), pairs)
+    };
+    let (first, pairs) = ask(Some("0"));
+    assert_eq!(first.as_deref(), Some("Twice"), "weight 0");
+    assert_eq!(pairs, Vec::<(String, String)>::new());
+    let (first, pairs) = ask(None);
+    assert_eq!(first.as_deref(), Some("Pair"), "weight unset");
+    assert_eq!(pairs, [("releas".to_owned(), "checklist".to_owned())]);
+}
+
+#[test]
 fn a_store_with_no_index_or_an_index_of_other_settings_names_reindex() {
     let sandbox = Sandbox::filled("recall_no_index");
     let reindex = "bilbo: the store has no search index bilbo can use; bilbo reindex makes it";
@@ -1690,7 +1738,11 @@ fn k1_and_b_each_change_which_note_comes_first() {
     let low = |k1: &'static str| {
         sandbox.run_with(
             &["recall", "zorblat", "quimby"],
-            &[("BILBO_RECALL_BM25_B", "0"), ("BILBO_RECALL_BM25_K1", k1)],
+            &[
+                ("BILBO_RECALL_BM25_B", "0"),
+                ("BILBO_RECALL_BM25_K1", k1),
+                ("BILBO_RECALL_PAIR_WEIGHT", "0"),
+            ],
         )
     };
     assert_eq!(first_marker(&low("0.01"), &markers), "cnote");
@@ -1831,6 +1883,7 @@ impl Detect for Portuguese {
 struct Seen {
     terms: Mutex<BTreeSet<String>>,
     near: Mutex<Vec<(String, Edits)>>,
+    pairs: Mutex<Vec<(String, String)>>,
     widest: AtomicUsize,
 }
 
@@ -1864,6 +1917,15 @@ impl Lookup for Recording {
             .expect("near")
             .push((term.to_owned(), edits));
         self.inner.near(term, edits)
+    }
+
+    fn pairs(&self, first: &str, second: &str) -> Result<Vec<Posting>, IndexError> {
+        self.seen
+            .pairs
+            .lock()
+            .expect("pairs")
+            .push((first.to_owned(), second.to_owned()));
+        self.inner.pairs(first, second)
     }
 
     fn holding(&self, filter: &Filter<'_>) -> Result<Vec<u32>, IndexError> {
