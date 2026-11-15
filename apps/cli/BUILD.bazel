@@ -57,7 +57,10 @@ bilbo_rust_test(
 bilbo_rust_test(
     name = "layout",
     srcs = ["tests/layout.rs"],
-    data = glob(["src/**/*.rs"]),
+    data = glob([
+        "src/**/*.rs",
+        "tests/**/*.rs",
+    ]),
     env = {"LAYOUT_ROOT": "$(rlocationpath src/lib.rs)"},
     layer = "integration",
     lint_config = ":lints",

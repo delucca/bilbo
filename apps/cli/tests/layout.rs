@@ -19,6 +19,11 @@ const SHARED: [&str; 4] = [
     "bilbo_store",
 ];
 const OWN: &str = "bilbo_";
+const ADAPTERS: [(&str, &[&str]); 2] = [
+    ("bilbo_entries", &["markdown", "session"]),
+    ("bilbo_search", &["qwen", "tantivy", "whichlang"]),
+];
+const INDEX_TEST: &str = "reindex.rs";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Rule {
@@ -28,6 +33,7 @@ enum Rule {
     Cycle,
     Escape,
     KindNamedOutside,
+    AdapterNamedOutside,
 }
 
 #[derive(Default)]
@@ -36,6 +42,8 @@ struct Report {
     edges: BTreeMap<String, BTreeSet<String>>,
     theme_escape: bool,
     kinds: BTreeSet<String>,
+    adapters: BTreeSet<String>,
+    tested: BTreeSet<String>,
 }
 
 impl Report {
@@ -189,6 +197,86 @@ fn scan_tokens(stream: TokenStream, found: &mut Found) {
                 at += 1;
             }
             _ => at += 1,
+        }
+    }
+}
+
+fn is_adapter(krate: &str, module: &str) -> bool {
+    ADAPTERS
+        .iter()
+        .any(|(name, modules)| *name == krate && modules.contains(&module))
+}
+
+fn adapter_element(
+    krate: &str,
+    modules: &[&str],
+    element: &[TokenTree],
+    named: &mut BTreeSet<String>,
+    hidden: &mut Vec<String>,
+) {
+    match element {
+        [TokenTree::Ident(ident), ..] if modules.contains(&id(ident).as_str()) => {
+            named.insert(format!("{krate}::{}", id(ident)));
+        }
+        [TokenTree::Ident(ident), TokenTree::Ident(alias), ..]
+            if ident == "self" && alias == "as" =>
+        {
+            hidden.push(format!(
+                "`{krate}::{{self as …}}` gives the crate a second name"
+            ));
+        }
+        [TokenTree::Punct(star), ..] if star.as_char() == '*' => {
+            hidden.push(format!(
+                "`{krate}::*` brings in every module without naming one"
+            ));
+        }
+        [TokenTree::Group(group), ..] => {
+            let inner: Vec<TokenTree> = group.stream().into_iter().collect();
+            for chunk in inner.split(|t| matches!(t, TokenTree::Punct(p) if p.as_char() == ',')) {
+                adapter_element(krate, modules, chunk, named, hidden);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn adapters_in(stream: TokenStream, named: &mut BTreeSet<String>, hidden: &mut Vec<String>) {
+    let tokens: Vec<TokenTree> = stream.into_iter().collect();
+    for (at, token) in tokens.iter().enumerate() {
+        match token {
+            TokenTree::Group(group) => adapters_in(group.stream(), named, hidden),
+            TokenTree::Ident(ident) => {
+                let name = id(ident);
+                let Some((krate, modules)) = ADAPTERS.iter().find(|(krate, _)| *krate == name)
+                else {
+                    continue;
+                };
+                if matches!(tokens.get(at + 1), Some(TokenTree::Ident(next)) if next == "as") {
+                    hidden.push(format!("`{krate} as …` gives the crate a second name"));
+                } else if colon2(&tokens, at + 1) {
+                    match tokens.get(at + 3) {
+                        Some(TokenTree::Group(group)) if group.delimiter() == Delimiter::Brace => {
+                            let inner: Vec<TokenTree> = group.stream().into_iter().collect();
+                            for chunk in inner
+                                .split(|t| matches!(t, TokenTree::Punct(p) if p.as_char() == ','))
+                            {
+                                adapter_element(krate, modules, chunk, named, hidden);
+                            }
+                        }
+                        Some(rest) => {
+                            adapter_element(
+                                krate,
+                                modules,
+                                std::slice::from_ref(rest),
+                                named,
+                                hidden,
+                            );
+                        }
+                        None => {}
+                    }
+                }
+            }
+            _ => {}
         }
     }
 }
@@ -405,12 +493,21 @@ fn resolve(
     let first = raw.first()?;
     match first.as_str() {
         "crate" | "bilbo_cli" => Some(raw[1..].to_vec()),
-        "self" => Some([module, &raw[1..]].concat()),
-        "super" => {
-            let ups = raw.iter().take_while(|s| *s == "super").count();
-            let rest = raw[ups..].iter().skip_while(|s| *s == "self").cloned();
-            let keep = module.len().checked_sub(ups)?;
-            Some(module[..keep].iter().cloned().chain(rest).collect())
+        "self" | "super" => {
+            let mut kept = module.to_vec();
+            let mut rest = raw;
+            while let [head, tail @ ..] = rest {
+                match head.as_str() {
+                    "self" => {}
+                    "super" => {
+                        kept.pop()?;
+                    }
+                    _ => break,
+                }
+                rest = tail;
+            }
+            kept.extend(rest.iter().cloned());
+            Some(kept)
         }
         name => {
             let mut child = module.to_vec();
@@ -459,7 +556,11 @@ fn cycle(edges: &BTreeMap<String, BTreeSet<String>>) -> Option<Vec<String>> {
         .find_map(|node| visit(node, edges, &mut Vec::new(), &mut done))
 }
 
-fn analyze(sources: &BTreeMap<String, String>, components: &[&str]) -> Report {
+fn analyze(
+    sources: &BTreeMap<String, String>,
+    components: &[&str],
+    tests: &BTreeMap<String, String>,
+) -> Report {
     let mut report = Report::default();
     let parse = |rel: &str, report: &mut Report| -> Option<syn::File> {
         let text = sources.get(rel)?;
@@ -590,6 +691,14 @@ fn analyze(sources: &BTreeMap<String, String>, components: &[&str]) -> Report {
                 );
             }
         }
+        for raw in &found.reexports {
+            if raw.windows(2).any(|pair| is_adapter(&pair[0], &pair[1])) {
+                report.add(
+                    Rule::AdapterNamedOutside,
+                    format!("src/{file}: re-exports `{}`", raw.join("::")),
+                );
+            }
+        }
         for raw in &found.paths {
             if let Some(first) = raw.first().filter(|first| is_kind_crate(first)) {
                 if file == "lib.rs" {
@@ -631,6 +740,55 @@ fn analyze(sources: &BTreeMap<String, String>, components: &[&str]) -> Report {
             }
         }
     }
+    let mut adapters = BTreeSet::new();
+    let mut tested = BTreeSet::new();
+    for (dir, files, home, holds, advice) in [
+        (
+            "src",
+            sources,
+            "lib.rs",
+            &mut adapters,
+            "src/lib.rs alone names an adapter module; take what it builds as an argument"
+                .to_owned(),
+        ),
+        (
+            "tests",
+            tests,
+            INDEX_TEST,
+            &mut tested,
+            format!(
+                "among the tests tests/{INDEX_TEST} alone names an adapter module; go through the binary or a fake"
+            ),
+        ),
+    ] {
+        for (rel, text) in files {
+            let stream = match text.parse::<TokenStream>() {
+                Ok(stream) => stream,
+                Err(error) => {
+                    report.add(Rule::Tree, format!("{dir}/{rel}: does not lex: {error}"));
+                    continue;
+                }
+            };
+            let mut named = BTreeSet::new();
+            let mut hidden = Vec::new();
+            adapters_in(stream, &mut named, &mut hidden);
+            for pair in named {
+                if rel == home {
+                    holds.insert(pair);
+                } else {
+                    report.add(
+                        Rule::AdapterNamedOutside,
+                        format!("{dir}/{rel}: names `{pair}`: {advice}"),
+                    );
+                }
+            }
+            for text in hidden {
+                report.add(Rule::AdapterNamedOutside, format!("{dir}/{rel}: {text}"));
+            }
+        }
+    }
+    report.adapters = adapters;
+    report.tested = tested;
     if let Some(found) = cycle(&report.edges) {
         report.add(Rule::Cycle, found.join(" -> "));
     }
@@ -666,7 +824,7 @@ fn walk(src: &Path, dir: &Path, found: &mut BTreeMap<String, String>) {
                 .unwrap_or_else(|e| panic!("cannot read {}: {e}", path.display()));
             let rel = path
                 .strip_prefix(src)
-                .expect("a file under src/")
+                .expect("a file under the walked folder")
                 .to_string_lossy()
                 .replace('\\', "/");
             found.insert(rel, text);
@@ -688,7 +846,15 @@ fn analyze_src() -> Report {
         "the scan did not find src/: {}",
         src.display()
     );
-    analyze(&sources, &COMPONENTS)
+    let tests = src.parent().expect("src/ has a parent").join("tests");
+    let mut test_files = BTreeMap::new();
+    walk(&tests, &tests, &mut test_files);
+    assert!(
+        test_files.contains_key("layout.rs") && test_files.contains_key(INDEX_TEST),
+        "the scan did not find tests/: {}",
+        tests.display()
+    );
+    analyze(&sources, &COMPONENTS, &test_files)
 }
 
 fn assert_clean(report: &Report, rule: Rule) {
@@ -732,6 +898,29 @@ fn a_kind_or_adapter_crate_is_named_only_by_lib_rs() {
 }
 
 #[test]
+fn an_adapter_module_is_named_only_by_lib_rs_and_the_index_test() {
+    let report = real();
+    assert_clean(report, Rule::AdapterNamedOutside);
+    let missing: Vec<String> = ADAPTERS
+        .iter()
+        .flat_map(|(krate, modules)| {
+            modules
+                .iter()
+                .map(move |module| format!("{krate}::{module}"))
+        })
+        .filter(|pair| !report.adapters.contains(pair))
+        .collect();
+    assert!(
+        missing.is_empty(),
+        "src/lib.rs no longer names {missing:?}: drop it from ADAPTERS, or the scan stopped seeing it"
+    );
+    assert!(
+        report.tested.contains("bilbo_search::tantivy"),
+        "the scan no longer sees tests/reindex.rs name the index"
+    );
+}
+
+#[test]
 fn escape_codes_live_only_in_the_theme() {
     let report = real();
     assert_clean(report, Rule::Escape);
@@ -760,7 +949,15 @@ fn with(edits: &[(&str, &str)]) -> Report {
     for (rel, text) in edits {
         sources.insert((*rel).to_owned(), (*text).to_owned());
     }
-    analyze(&sources, &["help", "ingest"])
+    analyze(&sources, &["help", "ingest"], &BTreeMap::new())
+}
+
+fn with_tests(files: &[(&str, &str)]) -> Report {
+    let tests: BTreeMap<String, String> = files
+        .iter()
+        .map(|(rel, text)| ((*rel).to_owned(), (*text).to_owned()))
+        .collect();
+    analyze(&base(), &["help", "ingest"], &tests)
 }
 
 fn fires(report: &Report, rule: Rule, needle: &str) {
@@ -787,6 +984,10 @@ fn a_clean_tree_has_no_violation() {
 fn paths_resolve_through_super_self_use_trees_globs_and_relative_names() {
     for (name, source) in [
         ("super::super", "pub fn f() { super::super::help::run(); }"),
+        (
+            "self::super::super",
+            "pub fn f() { self::super::super::help::run(); }",
+        ),
         (
             "a use group",
             "pub use crate::{console::view::*, help::run};",
@@ -847,38 +1048,38 @@ fn a_component_naming_another_component_or_a_non_lib_file_naming_one_is_found() 
 
 #[test]
 fn a_kind_crate_named_outside_lib_rs_is_found() {
-    let registry = "pub mod console;\npub mod help;\npub fn kinds() { bilbo_markdown::Markdown; let _: bilbo_session::Session; }\npub fn run() { help::run(); console::view::show(); }\n";
+    let registry = "pub mod console;\npub mod help;\npub fn kinds() { bilbo_pdf::Pdf; let _: bilbo_epub::Epub; }\npub fn run() { help::run(); console::view::show(); }\n";
     let clean = with(&[("lib.rs", registry)]);
     assert_silent(&clean);
     assert_eq!(
         clean.kinds.iter().map(String::as_str).collect::<Vec<_>>(),
-        ["bilbo_markdown", "bilbo_session"]
+        ["bilbo_epub", "bilbo_pdf"]
     );
     for (rel, text, named) in [
         (
             "help/mod.rs",
-            "use crate::console::view;\nuse bilbo_markdown::Markdown;\npub fn run() { view::show(); }\n",
-            "bilbo_markdown::Markdown",
-        ),
-        (
-            "help/mod.rs",
-            "use crate::console::view;\npub fn run() { view::show(); bilbo_session::Session; }\n",
-            "bilbo_session::Session",
-        ),
-        (
-            "console/view.rs",
-            "pub fn show() { let _ = bilbo_pdf::Pdf; }\n",
+            "use crate::console::view;\nuse bilbo_pdf::Pdf;\npub fn run() { view::show(); }\n",
             "bilbo_pdf::Pdf",
         ),
         (
             "help/mod.rs",
-            "use crate::console::view;\npub fn run() { view::show(); vec![Box::new(bilbo_markdown::Markdown)]; }\n",
-            "bilbo_markdown::Markdown",
+            "use crate::console::view;\npub fn run() { view::show(); bilbo_epub::Epub; }\n",
+            "bilbo_epub::Epub",
+        ),
+        (
+            "console/view.rs",
+            "pub fn show() { let _ = bilbo_djvu::Djvu; }\n",
+            "bilbo_djvu::Djvu",
+        ),
+        (
+            "help/mod.rs",
+            "use crate::console::view;\npub fn run() { view::show(); vec![Box::new(bilbo_pdf::Pdf)]; }\n",
+            "bilbo_pdf::Pdf",
         ),
         (
             "main.rs",
-            "use bilbo_cli::console::view;\nfn main() { view::show(); bilbo_cli::run(); bilbo_markdown::Markdown; }\n",
-            "bilbo_markdown::Markdown",
+            "use bilbo_cli::console::view;\nfn main() { view::show(); bilbo_cli::run(); bilbo_pdf::Pdf; }\n",
+            "bilbo_pdf::Pdf",
         ),
     ] {
         let report = with(&[(rel, text)]);
@@ -886,9 +1087,9 @@ fn a_kind_crate_named_outside_lib_rs_is_found() {
         fires(&report, Rule::KindNamedOutside, rel);
     }
     for reexport in [
-        "pub use bilbo_markdown as markdown;",
-        "pub use bilbo_markdown::Markdown;",
-        "pub(crate) use bilbo_session::{self, Session};",
+        "pub use bilbo_pdf as pdf;",
+        "pub use bilbo_pdf::Pdf;",
+        "pub(crate) use bilbo_epub::{self, Epub};",
     ] {
         let report = with(&[("lib.rs", &format!("{registry}{reexport}\n"))]);
         fires(&report, Rule::KindNamedOutside, "re-exports `bilbo_");
@@ -896,18 +1097,207 @@ fn a_kind_crate_named_outside_lib_rs_is_found() {
     }
     assert_silent(&with(&[(
         "lib.rs",
-        &format!("{registry}use bilbo_markdown::Markdown;\npub use bilbo_entries::kind::Kind;\n"),
+        &format!("{registry}use bilbo_pdf::Pdf;\npub use bilbo_entries::kind::Kind;\n"),
     )]));
     let shared = "use crate::console::view;\nuse bilbo_entries::kind::Kind;\npub fn run() { view::show(); bilbo_store::id::Id::mint(); bilbo_settings::file::File::default(); }\n";
     assert_silent(&with(&[("help/mod.rs", shared)]));
-    let tested = "use crate::console::view;\npub fn run() { view::show(); }\n#[cfg(test)]\nmod tests { fn kind() { bilbo_markdown::Markdown; } }\n";
+    let tested = "use crate::console::view;\npub fn run() { view::show(); }\n#[cfg(test)]\nmod tests { fn kind() { bilbo_pdf::Pdf; } }\n";
     assert_silent(&with(&[("help/mod.rs", tested)]));
+}
+
+#[test]
+fn an_adapter_module_named_outside_lib_rs_is_found() {
+    let registry = "pub mod console;\npub mod help;\npub fn kinds() { bilbo_entries::markdown::Markdown; let _: bilbo_entries::session::Session; }\npub fn run() { help::run(); console::view::show(); }\n";
+    let clean = with(&[("lib.rs", registry)]);
+    assert_silent(&clean);
+    assert_eq!(
+        clean
+            .adapters
+            .iter()
+            .map(String::as_str)
+            .collect::<Vec<_>>(),
+        ["bilbo_entries::markdown", "bilbo_entries::session"]
+    );
+    for (rel, text, named) in [
+        (
+            "help/mod.rs",
+            "use crate::console::view;\nuse bilbo_entries::markdown::Markdown;\npub fn run() { view::show(); }\n",
+            &["bilbo_entries::markdown"][..],
+        ),
+        (
+            "help/mod.rs",
+            "use crate::console::view;\npub fn run() { view::show(); bilbo_entries::session::Session; }\n",
+            &["bilbo_entries::session"],
+        ),
+        (
+            "console/view.rs",
+            "pub fn show() { let _ = bilbo_search::tantivy::Tantivy::at; }\n",
+            &["bilbo_search::tantivy"],
+        ),
+        (
+            "help/mod.rs",
+            "use crate::console::view;\npub fn run() { view::show(); vec![Box::new(bilbo_search::qwen::Qwen)]; }\n",
+            &["bilbo_search::qwen"],
+        ),
+        (
+            "main.rs",
+            "use bilbo_cli::console::view;\nfn main() { view::show(); bilbo_cli::run(); bilbo_search::whichlang::Whichlang; }\n",
+            &["bilbo_search::whichlang"],
+        ),
+        (
+            "help/mod.rs",
+            "use crate::console::view;\nuse bilbo_search::{index::Index, tantivy::{Committed, Tantivy}};\npub fn run() { view::show(); }\n",
+            &["bilbo_search::tantivy"],
+        ),
+        (
+            "help/mod.rs",
+            "use crate::console::view;\nuse bilbo_entries::{{session}};\npub fn run() { view::show(); }\n",
+            &["bilbo_entries::session"],
+        ),
+        (
+            "console/view.rs",
+            "pub fn show() {}\npub fn f() { let _ = self::super::bilbo_search::tantivy::Tantivy; }\n",
+            &["bilbo_search::tantivy"],
+        ),
+        (
+            "console/view.rs",
+            "pub fn show() {}\nmod inner { pub fn f() { bilbo_search::tantivy::folder; } }\n",
+            &["bilbo_search::tantivy"],
+        ),
+        (
+            "console/view.rs",
+            "pub fn show() {}\npub fn f() { bilbo_search::r#tantivy::folder; r#bilbo_entries::session::RENDER; }\n",
+            &["bilbo_search::tantivy", "bilbo_entries::session"],
+        ),
+        (
+            "console/view.rs",
+            "pub fn show() {}\npub fn f() { ::bilbo_search::tantivy::folder; }\n",
+            &["bilbo_search::tantivy"],
+        ),
+        (
+            "help/mod.rs",
+            "use crate::console::view;\npub fn run() { view::show(); }\n#[cfg(test)]\nmod tests { fn index() { bilbo_search::tantivy::Tantivy; } }\n",
+            &["bilbo_search::tantivy"],
+        ),
+    ] {
+        let report = with(&[(rel, text)]);
+        for pair in named {
+            fires(&report, Rule::AdapterNamedOutside, &format!("`{pair}`"));
+        }
+        fires(&report, Rule::AdapterNamedOutside, rel);
+    }
+    for reexport in [
+        "pub use bilbo_entries::markdown::Markdown;",
+        "pub(crate) use bilbo_entries::session::{self, Session};",
+        "pub use bilbo_search::tantivy as index;",
+    ] {
+        let report = with(&[("lib.rs", &format!("{registry}{reexport}\n"))]);
+        fires(&report, Rule::AdapterNamedOutside, "re-exports `bilbo_");
+        fires(&report, Rule::AdapterNamedOutside, "lib.rs");
+    }
+    assert_silent(&with(&[(
+        "lib.rs",
+        &format!(
+            "{registry}use bilbo_entries::markdown::Markdown;\npub use bilbo_entries::kind::Kind;\n"
+        ),
+    )]));
+    let shared = "use crate::console::view;\nuse bilbo_entries::kind::Kind;\npub fn run() { view::show(); bilbo_search::index::Index; bilbo_store::id::Id::mint(); bilbo_settings::file::File::default(); }\n";
+    assert_silent(&with(&[("help/mod.rs", shared)]));
+    let words = "use crate::console::view;\npub fn run() { view::show(); let session = 1; let markdown = session; fn tantivy() {} }\n";
+    assert_silent(&with(&[("help/mod.rs", words)]));
+    let variant = "use crate::console::view;\npub fn run() { view::show(); bilbo_entries::read::refs::Target::Session; }\n";
+    assert_silent(&with(&[("help/mod.rs", variant)]));
+    let data = "use crate::console::view;\n// bilbo_search::tantivy\nconst S: &str = \"bilbo_entries::session\";\npub fn run() { view::show(); }\n";
+    assert_silent(&with(&[("help/mod.rs", data)]));
+}
+
+#[test]
+fn a_test_other_than_the_index_test_naming_an_adapter_module_is_found() {
+    let index = with_tests(&[(
+        "reindex.rs",
+        "use bilbo_search::tantivy::{Committed, Tantivy}; static QWEN: bilbo_search::qwen::Qwen;",
+    )]);
+    assert_silent(&index);
+    assert_eq!(
+        index.tested.iter().map(String::as_str).collect::<Vec<_>>(),
+        ["bilbo_search::qwen", "bilbo_search::tantivy"]
+    );
+    for (rel, text) in [
+        ("recall.rs", "use bilbo_search::tantivy::Committed;"),
+        (
+            "sandbox/mod.rs",
+            "fn kind() { bilbo_entries::session::Session; }",
+        ),
+    ] {
+        fires(
+            &with_tests(&[(rel, text)]),
+            Rule::AdapterNamedOutside,
+            &format!("tests/{rel}"),
+        );
+    }
+    assert_silent(&with_tests(&[(
+        "sessions.rs",
+        "fn session() { let session = 1; }",
+    )]));
+    fires(
+        &with_tests(&[("recall.rs", "fn broken() {")]),
+        Rule::Tree,
+        "tests/recall.rs: does not lex",
+    );
+}
+
+#[test]
+fn an_alias_or_a_glob_of_a_crate_with_adapter_modules_is_found() {
+    let everywhere = |source: &str| {
+        [
+            appended(&[("help/mod.rs", source)], &[]),
+            appended(&[("lib.rs", source)], &[]),
+            with_tests(&[("recall.rs", source)]),
+        ]
+    };
+    for (source, needle) in [
+        ("use bilbo_search as search;", "second name"),
+        ("use bilbo_search::{self as search};", "second name"),
+        ("use bilbo_entries::*;", "without naming one"),
+        ("use bilbo_entries::{read, *};", "without naming one"),
+        ("fn f() { wrap!(use bilbo_search as s;); }", "second name"),
+    ] {
+        for report in everywhere(source) {
+            fires(&report, Rule::AdapterNamedOutside, needle);
+        }
+    }
+    for source in [
+        "use bilbo_search::recall::keys as recall;",
+        "use bilbo_search::index::*;",
+        "use bilbo_search::{self, index::Index};",
+    ] {
+        for report in everywhere(source) {
+            assert_silent(&report);
+        }
+    }
 }
 
 #[test]
 fn a_cycle_through_lib_rs_is_found() {
     let report = with(&[("console/view.rs", "pub fn show() { crate::run(); }\n")]);
     assert_eq!(report.of(Rule::Cycle).len(), 1, "{:#?}", report.violations);
+    let report = appended(
+        &[
+            ("lib.rs", "use bilbo_search::tantivy as engine;\n"),
+            (
+                "help/mod.rs",
+                "pub fn open() { self::super::engine::folder; }\n",
+            ),
+        ],
+        &[],
+    );
+    assert_eq!(report.of(Rule::Cycle).len(), 1, "{:#?}", report.violations);
+    fires(&report, Rule::Cycle, "help -> lib.rs");
+    assert!(
+        report.of(Rule::AdapterNamedOutside).is_empty(),
+        "{:#?}",
+        report.violations
+    );
 }
 
 #[test]
@@ -988,7 +1378,7 @@ fn appended(edits: &[(&str, &str)], removed: &[&str]) -> Report {
     for rel in removed {
         sources.remove(*rel);
     }
-    analyze(&sources, &["help", "ingest"])
+    analyze(&sources, &["help", "ingest"], &BTreeMap::new())
 }
 
 type Case = (
@@ -999,7 +1389,7 @@ type Case = (
 
 #[test]
 fn modules_are_files_reached_from_lib_rs_without_path_attributes_includes_aliases_or_macros() {
-    let cases: [Case; 18] = [
+    let cases: [Case; 19] = [
         ("a stray file", &[("stray.rs", "")], "stray.rs: not reached"),
         (
             "a path target",
@@ -1097,6 +1487,11 @@ fn modules_are_files_reached_from_lib_rs_without_path_attributes_includes_aliase
             "a macro definition",
             &[("lib.rs", "macro_rules! m { () => {} }")],
             "macro_rules!",
+        ),
+        (
+            "a file that does not lex",
+            &[("console/view.rs", "pub fn broken() {")],
+            "does not lex",
         ),
     ];
     for (name, edits, needle) in cases {
