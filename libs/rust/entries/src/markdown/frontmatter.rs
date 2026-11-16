@@ -103,6 +103,11 @@ mod tests {
     #[test]
     fn a_bom_and_crlf_lines_do_not_hide_the_id() {
         assert_eq!(id(include_str!("../../fixtures/markdown/bom.md")), valid());
-        assert_eq!(id(include_str!("../../fixtures/markdown/crlf.md")), valid());
+        let crlf = include_str!("../../fixtures/markdown/crlf.md");
+        assert!(
+            crlf.matches("\r\n").count() == 6 && crlf.matches('\n').count() == 6,
+            "crlf.md must end each of its six lines in CR LF: .gitattributes keeps them with -text"
+        );
+        assert_eq!(id(crlf), valid());
     }
 }

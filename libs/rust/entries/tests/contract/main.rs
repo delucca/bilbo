@@ -144,6 +144,14 @@ fn appending_records_changes_no_existing_passage() {
 
 #[test]
 fn every_branch_the_corpus_does_not_reach_reads_as_build_py_printed_it() {
+    assert!(
+        EDGES.iter().filter(|byte| **byte == b'\r').count() == 1
+            && std::str::from_utf8(EDGES)
+                .expect("edges.jsonl is text")
+                .split('\n')
+                .any(|line| line.contains("crlf line ending") && line.ends_with("}\r")),
+        "edges.jsonl must keep the CR LF of its crlf line: .gitattributes keeps it with -text"
+    );
     let expected = expected(EXPECTED);
     let wanted = &expected["edges"];
     assert!(wanted.len() > 100, "the edges are in expected.jsonl");
