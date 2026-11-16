@@ -85,5 +85,5 @@ bilbo_rust_test(
     env = {"LAYOUT_ROOT": "$(rlocationpath Cargo.toml)"},
     layer = "integration",
     lint_config = ":lints",
-    deps = all_crate_deps(normal_dev = True),
+    deps = ["//tools/rust/layout"] + all_crate_deps(normal_dev = True),
 )

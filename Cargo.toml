@@ -6,6 +6,7 @@ members = [
     "libs/rust/search",
     "libs/rust/settings",
     "libs/rust/store",
+    "tools/rust/layout",
 ]
 
 [workspace.package]
@@ -16,6 +17,7 @@ publish = false
 
 [workspace.dependencies]
 bilbo-entries = { path = "libs/rust/entries" }
+bilbo-layout = { path = "tools/rust/layout" }
 bilbo-search = { path = "libs/rust/search" }
 bilbo-settings = { path = "libs/rust/settings" }
 bilbo-store = { path = "libs/rust/store" }

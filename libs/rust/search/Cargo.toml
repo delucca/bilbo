@@ -20,10 +20,8 @@ xxhash-rust.workspace = true
 zstd.workspace = true
 
 [dev-dependencies]
-proc-macro2.workspace = true
-runfiles.workspace = true
+bilbo-layout.workspace = true
 serde_json.workspace = true
-toml.workspace = true
 
 [lints]
 workspace = true

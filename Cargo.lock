@@ -90,13 +90,20 @@ dependencies = [
 name = "bilbo-entries"
 version = "0.0.0"
 dependencies = [
+ "bilbo-layout",
  "bilbo-settings",
  "bilbo-store",
+ "serde_json",
+ "zstd",
+]
+
+[[package]]
+name = "bilbo-layout"
+version = "0.0.0"
+dependencies = [
  "proc-macro2",
  "runfiles",
- "serde_json",
  "toml",
- "zstd",
 ]
 
 [[package]]
@@ -104,17 +111,15 @@ name = "bilbo-search"
 version = "0.0.0"
 dependencies = [
  "bilbo-entries",
+ "bilbo-layout",
  "bilbo-settings",
  "bilbo-store",
  "frostem",
- "proc-macro2",
- "runfiles",
  "serde_json",
  "stop-words",
  "strsim",
  "tantivy",
  "tokenizers",
- "toml",
  "whichlang",
  "xxhash-rust",
  "zstd",
