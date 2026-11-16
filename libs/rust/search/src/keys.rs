@@ -129,7 +129,23 @@ pub const LABEL_BATCH: Key<usize> = Key {
     show: ToString::to_string,
 };
 
-pub const ABOUT: [&About; 7] = [
+pub const LIST_LIMIT: Key<u64> = Key {
+    about: About {
+        name: "search.list_limit",
+        variable: Some("BILBO_SEARCH_LIST_LIMIT"),
+        default: Default::Toml(r#""64 MiB""#),
+        allowed: "between 1 MiB and 2 GiB",
+        doc: "The largest the index's list of its segments, or of its files, may be for bilbo to read it. An index with a larger list is taken for broken and made again by the next bilbo remember or bilbo reindex.",
+    },
+    parse: |value| {
+        size::read(value)
+            .filter(|bytes| (MIB..=2 * GIB).contains(bytes))
+            .ok_or_else(|| value.refuse())
+    },
+    show: |bytes| size::show(*bytes),
+};
+
+pub const ABOUT: [&About; 8] = [
     &CHUNK_TOKENS.about,
     &CHUNK_OVERLAP.about,
     &WORKERS.about,
@@ -137,6 +153,7 @@ pub const ABOUT: [&About; 7] = [
     &MERGE_DELETED_PERCENT.about,
     &ENTRY_TRIES.about,
     &LABEL_BATCH.about,
+    &LIST_LIMIT.about,
 ];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -148,6 +165,7 @@ pub struct Section {
     pub merge_deleted_percent: Resolved<u8>,
     pub entry_tries: Resolved<u8>,
     pub label_batch: Resolved<usize>,
+    pub list_limit: Resolved<u64>,
 }
 
 pub fn section(source: &Source<'_>) -> Result<Section, Error> {
@@ -159,6 +177,7 @@ pub fn section(source: &Source<'_>) -> Result<Section, Error> {
         merge_deleted_percent: MERGE_DELETED_PERCENT.resolve(source)?,
         entry_tries: ENTRY_TRIES.resolve(source)?,
         label_batch: LABEL_BATCH.resolve(source)?,
+        list_limit: LIST_LIMIT.resolve(source)?,
     })
 }
 
@@ -199,7 +218,7 @@ impl Section {
         self.entry_tries.value
     }
 
-    pub fn shown(&self) -> [Shown; 7] {
+    pub fn shown(&self) -> [Shown; 8] {
         [
             CHUNK_TOKENS.shown(&self.chunk_tokens),
             CHUNK_OVERLAP.shown(&self.chunk_overlap),
@@ -208,6 +227,7 @@ impl Section {
             MERGE_DELETED_PERCENT.shown(&self.merge_deleted_percent),
             ENTRY_TRIES.shown(&self.entry_tries),
             LABEL_BATCH.shown(&self.label_batch),
+            LIST_LIMIT.shown(&self.list_limit),
         ]
     }
 }
@@ -290,8 +310,18 @@ mod tests {
     }
 
     #[test]
+    fn the_default_list_limit_is_64_mib() {
+        let section = defaults();
+        assert_eq!(section.list_limit.value, 64 * MIB);
+        assert_eq!(
+            shown(&section)[7],
+            "search.list_limit = \"64 MiB\" (default)"
+        );
+    }
+
+    #[test]
     fn each_key_takes_its_variable_over_the_file() {
-        let text = "[search]\nchunk_tokens = 1024\nchunk_overlap = 0\nworkers = 2\nindex_memory = \"32 MiB\"\nmerge_deleted_percent = 50\nentry_tries = 9\nlabel_batch = 1\n";
+        let text = "[search]\nchunk_tokens = 1024\nchunk_overlap = 0\nworkers = 2\nindex_memory = \"32 MiB\"\nmerge_deleted_percent = 50\nentry_tries = 9\nlabel_batch = 1\nlist_limit = \"1 MiB\"\n";
         let size = |tokens, overlap| Size { tokens, overlap };
         let from_file = resolve(&[], text).expect("valid");
         assert_eq!(from_file.chunk(), size(1024, 0));
@@ -300,6 +330,7 @@ mod tests {
         assert!((from_file.merge_deleted_share() - 0.5).abs() < f32::EPSILON);
         assert_eq!(from_file.tries(), 9);
         assert_eq!(from_file.label_batch.value, 1);
+        assert_eq!(from_file.list_limit.value, MIB);
         let env = [
             ("BILBO_SEARCH_CHUNK_TOKENS", "256"),
             ("BILBO_SEARCH_CHUNK_OVERLAP", "128"),
@@ -308,6 +339,7 @@ mod tests {
             ("BILBO_SEARCH_MERGE_DELETED_PERCENT", "100"),
             ("BILBO_SEARCH_ENTRY_TRIES", "1"),
             ("BILBO_SEARCH_LABEL_BATCH", "1000000"),
+            ("BILBO_SEARCH_LIST_LIMIT", "2GiB"),
         ];
         let from_env = resolve(&env, text).expect("valid");
         assert_eq!(from_env.chunk(), size(256, 128));
@@ -316,6 +348,7 @@ mod tests {
         assert!((from_env.merge_deleted_share() - 1.0).abs() < f32::EPSILON);
         assert_eq!(from_env.tries(), 1);
         assert_eq!(from_env.label_batch.value, 1_000_000);
+        assert_eq!(from_env.list_limit.value, 2048 * MIB);
         assert_eq!(
             resolve(&[], "search.chunk_tokens = 8192")
                 .expect("valid")
@@ -404,6 +437,14 @@ mod tests {
                 "search.label_batch = 1000001",
                 "/c/config.toml:1: search.label_batch must be a whole number from 1 to 1000000, got 1000001",
             ),
+            (
+                "search.list_limit = 1048575",
+                "/c/config.toml:1: search.list_limit must be between 1 MiB and 2 GiB, got 1048575",
+            ),
+            (
+                "search.list_limit = \"3 GiB\"",
+                "/c/config.toml:1: search.list_limit must be between 1 MiB and 2 GiB, got \"3 GiB\"",
+            ),
         ] {
             assert_eq!(resolve(&[], text).expect_err("refused"), message, "{text}");
         }
@@ -438,6 +479,11 @@ mod tests {
                 "0",
                 "must be a whole number from 1 to 1000000",
             ),
+            (
+                "BILBO_SEARCH_LIST_LIMIT",
+                "512 KiB",
+                "must be between 1 MiB and 2 GiB",
+            ),
         ] {
             assert_eq!(
                 resolve(&[(name, value)], "").expect_err("refused"),
@@ -447,7 +493,7 @@ mod tests {
     }
 
     #[test]
-    fn the_search_section_declares_seven_keys_each_with_its_own_variable() {
+    fn the_search_section_declares_eight_keys_each_with_its_own_variable() {
         let names: Vec<(&str, Option<&str>)> = ABOUT
             .iter()
             .map(|about| (about.name, about.variable))
@@ -465,6 +511,7 @@ mod tests {
                 ),
                 ("search.entry_tries", Some("BILBO_SEARCH_ENTRY_TRIES")),
                 ("search.label_batch", Some("BILBO_SEARCH_LABEL_BATCH")),
+                ("search.list_limit", Some("BILBO_SEARCH_LIST_LIMIT")),
             ]
         );
     }

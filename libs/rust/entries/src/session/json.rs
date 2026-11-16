@@ -5,9 +5,18 @@
 use std::collections::HashMap;
 use std::fmt::Write;
 
+#[cfg(test)]
+thread_local! {
+    static TABLED: std::cell::RefCell<Vec<usize>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+#[cfg(test)]
+pub fn tabled() -> Vec<usize> {
+    TABLED.take()
+}
+
 /// Nesting past this is not read: the walk is recursive.
 const DEPTH: usize = 128;
-const WIDE: usize = 32;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Value {
@@ -248,12 +257,13 @@ fn repr_str(text: &str, out: &mut String) {
 
 /// As `json.loads` reads it: `NaN`, `Infinity` and `-Infinity` are numbers; a lone surrogate escape reads as U+FFFD.
 /// `None` for anything it refuses, and for nesting past `DEPTH`.
-pub fn parse(record: &[u8]) -> Option<Value> {
+pub fn parse(record: &[u8], wide: usize) -> Option<Value> {
     let text = std::str::from_utf8(record).ok()?;
     let mut walk = Walk {
         text,
         bytes: text.as_bytes(),
         at: 0,
+        wide,
     };
     walk.space();
     let value = walk.value(0)?;
@@ -265,6 +275,7 @@ struct Walk<'t> {
     text: &'t str,
     bytes: &'t [u8],
     at: usize,
+    wide: usize,
 }
 
 impl Walk<'_> {
@@ -343,7 +354,9 @@ impl Walk<'_> {
                     fields.push((key, value));
                 }
             }
-            if places.is_none() && fields.len() >= WIDE {
+            if places.is_none() && fields.len() >= self.wide {
+                #[cfg(test)]
+                TABLED.with_borrow_mut(|tabled| tabled.push(fields.len()));
                 let known = fields.iter().enumerate();
                 places = Some(known.map(|(at, (name, _))| (name.clone(), at)).collect());
             }
@@ -500,7 +513,7 @@ mod tests {
     use super::{Value, parse};
 
     fn dumped(text: &str) -> Option<String> {
-        parse(text.as_bytes()).map(|value| value.dumps())
+        parse(text.as_bytes(), 32).map(|value| value.dumps())
     }
 
     #[test]
@@ -530,18 +543,20 @@ mod tests {
             "{{{},\"k3\":\"x\",\"k39\":\"y\",\"new\":1}}",
             wide.join(",")
         );
-        let Some(Value::Dict(fields)) = parse(text.as_bytes()) else {
-            panic!("an object");
-        };
-        assert_eq!(fields.len(), 41);
-        assert_eq!(fields[3], ("k3".to_owned(), Value::Str("x".to_owned())));
-        assert_eq!(fields[39], ("k39".to_owned(), Value::Str("y".to_owned())));
-        assert_eq!(fields[40].0, "new");
+        for wide in [1, 32, 1000] {
+            let Some(Value::Dict(fields)) = parse(text.as_bytes(), wide) else {
+                panic!("an object");
+            };
+            assert_eq!(fields.len(), 41, "{wide}");
+            assert_eq!(fields[3], ("k3".to_owned(), Value::Str("x".to_owned())));
+            assert_eq!(fields[39], ("k39".to_owned(), Value::Str("y".to_owned())));
+            assert_eq!(fields[40].0, "new");
+        }
 
         let keys: Vec<String> = (0..200_000).map(|n| format!("\"{n}\":0")).collect();
         let text = format!("{{{}}}", keys.join(","));
         let started = std::time::Instant::now();
-        let Some(Value::Dict(fields)) = parse(text.as_bytes()) else {
+        let Some(Value::Dict(fields)) = parse(text.as_bytes(), 32) else {
             panic!("an object");
         };
         assert_eq!(fields.len(), 200_000);
@@ -663,20 +678,20 @@ mod tests {
             "\u{feff}{}",
             "\u{a0}{}",
         ] {
-            assert_eq!(parse(text.as_bytes()), None, "{text:?}");
+            assert_eq!(parse(text.as_bytes(), 32), None, "{text:?}");
         }
-        assert_eq!(parse(b"\xff"), None);
-        assert_eq!(parse(b"\"\xc3\""), None);
+        assert_eq!(parse(b"\xff", 32), None);
+        assert_eq!(parse(b"\"\xc3\"", 32), None);
     }
 
     #[test]
     fn nesting_is_read_to_a_depth_and_refused_past_it() {
         let nested = |depth: usize| format!("{}{}", "[".repeat(depth), "]".repeat(depth));
-        assert!(parse(nested(128).as_bytes()).is_some());
-        assert_eq!(parse(nested(129).as_bytes()), None);
-        assert_eq!(parse("[".repeat(100_000).as_bytes()), None);
+        assert!(parse(nested(128).as_bytes(), 32).is_some());
+        assert_eq!(parse(nested(129).as_bytes(), 32), None);
+        assert_eq!(parse("[".repeat(100_000).as_bytes(), 32), None);
         let objects = format!("{}1{}", "{\"a\":".repeat(129), "}".repeat(129));
-        assert_eq!(parse(objects.as_bytes()), None);
+        assert_eq!(parse(objects.as_bytes(), 32), None);
     }
 
     #[test]
@@ -703,7 +718,7 @@ mod tests {
             ("{\"a\":null}", true),
         ] {
             assert_eq!(
-                parse(text.as_bytes()).map(|v| v.truthy()),
+                parse(text.as_bytes(), 32).map(|v| v.truthy()),
                 Some(truth),
                 "{text}"
             );
@@ -731,7 +746,7 @@ mod tests {
             ("[\"a\\nb\\\\\\u0001\"]", "['a\\nb\\\\\\x01']"),
         ] {
             assert_eq!(
-                parse(text.as_bytes()).map(|value| value.python_str()),
+                parse(text.as_bytes(), 32).map(|value| value.python_str()),
                 Some(printed.to_owned()),
                 "{text}"
             );
@@ -740,7 +755,7 @@ mod tests {
 
     #[test]
     fn a_field_is_found_by_its_key_in_an_object_only() {
-        let value = parse(br#"{"a": "x", "b": {"c": 1}}"#).expect("an object");
+        let value = parse(br#"{"a": "x", "b": {"c": 1}}"#, 32).expect("an object");
         assert_eq!(value.get("a").and_then(Value::as_str), Some("x"));
         assert!(value.get("b").is_some_and(Value::is_dict));
         assert_eq!(value.get("z"), None);

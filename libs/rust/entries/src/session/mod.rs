@@ -59,18 +59,63 @@ pub const UNPACK_RATIO: Key<usize> = Key {
     show: ToString::to_string,
 };
 
+pub const UNPACK_WINDOW: Key<usize> = Key {
+    about: About {
+        name: "session.unpack_window",
+        variable: Some("BILBO_SESSION_UNPACK_WINDOW"),
+        default: Default::Toml(r#""128 MiB""#),
+        allowed: "a power of two between 8 MiB and 2 GiB",
+        doc: "The largest window a packed session file may ask the unpacker to hold, whatever session.unpack_floor and session.unpack_ratio allow: a file that asks for more is refused. By default zstd itself refuses more than 128 MiB.",
+    },
+    parse: |value| {
+        size::read(value)
+            .filter(|bytes| (8 * size::MIB..=2 * size::GIB).contains(bytes))
+            .filter(|bytes| bytes.is_power_of_two())
+            .and_then(|bytes| usize::try_from(bytes).ok())
+            .ok_or_else(|| value.refuse())
+    },
+    show: |bytes| size::show(u64::try_from(*bytes).unwrap_or(u64::MAX)),
+};
+
+pub const WIDE_FIELDS: Key<usize> = Key {
+    about: About {
+        name: "session.wide_fields",
+        variable: Some("BILBO_SESSION_WIDE_FIELDS"),
+        default: Default::Toml("32"),
+        allowed: "a whole number from 1 to 4096",
+        doc: "The fields a JSON object of a session record may hold before bilbo looks each key up in a table instead of comparing it with every field read so far. It changes no passage: only how fast a record with many fields is read.",
+    },
+    parse: |value| {
+        value
+            .integer()
+            .and_then(|fields| usize::try_from(fields).ok())
+            .filter(|fields| (1..=4096).contains(fields))
+            .ok_or_else(|| value.refuse())
+    },
+    show: ToString::to_string,
+};
+
 /// Claude Code's and Codex's transcripts, and Cursor's Claude-shaped ones: one record per line.
 #[derive(Debug, Clone, Copy)]
 pub struct Session {
     unpack_floor: u64,
     unpack_ratio: u64,
+    unpack_window: u32,
+    wide_fields: usize,
 }
 
 impl Session {
-    pub fn new(unpack_floor: usize, unpack_ratio: usize) -> Self {
+    pub fn new(
+        unpack_floor: usize,
+        unpack_ratio: usize,
+        unpack_window: usize,
+        wide_fields: usize,
+    ) -> Self {
         Self {
             unpack_floor: u64::try_from(unpack_floor).unwrap_or(u64::MAX),
             unpack_ratio: u64::try_from(unpack_ratio).unwrap_or(u64::MAX),
+            unpack_window: unpack_window.checked_ilog2().unwrap_or(0),
+            wide_fields,
         }
     }
 }
@@ -88,7 +133,13 @@ impl std::default::Default for Session {
         let ratio = UNPACK_RATIO
             .resolve(&source)
             .expect("the default is a literal its key's unit test parses");
-        Self::new(floor.value, ratio.value)
+        let window = UNPACK_WINDOW
+            .resolve(&source)
+            .expect("the default is a literal its key's unit test parses");
+        let wide = WIDE_FIELDS
+            .resolve(&source)
+            .expect("the default is a literal its key's unit test parses");
+        Self::new(floor.value, ratio.value, window.value, wide.value)
     }
 }
 
@@ -98,9 +149,11 @@ impl Reader for Session {
     }
 
     fn passages(&self, records: &[&[u8]]) -> Vec<Passage> {
-        match dialect::sniff(records.iter().copied()) {
-            Some(Dialect::ClaudeCode | Dialect::Cursor) => claude::read::passages(records),
-            Some(Dialect::Codex) => codex::read::passages(records),
+        match dialect::sniff(records.iter().copied(), self.wide_fields) {
+            Some(Dialect::ClaudeCode | Dialect::Cursor) => {
+                claude::read::passages(records, self.wide_fields)
+            }
+            Some(Dialect::Codex) => codex::read::passages(records, self.wide_fields),
             None => Vec::new(),
         }
     }
@@ -110,9 +163,11 @@ impl Reader for Session {
     }
 
     fn entry_labels(&self, records: &[&[u8]]) -> Vec<String> {
-        match dialect::sniff(records.iter().copied()) {
-            Some(Dialect::ClaudeCode | Dialect::Cursor) => claude::read::labels(records),
-            Some(Dialect::Codex) => codex::read::labels(records),
+        match dialect::sniff(records.iter().copied(), self.wide_fields) {
+            Some(Dialect::ClaudeCode | Dialect::Cursor) => {
+                claude::read::labels(records, self.wide_fields)
+            }
+            Some(Dialect::Codex) => codex::read::labels(records, self.wide_fields),
             None => Vec::new(),
         }
     }
@@ -120,7 +175,7 @@ impl Reader for Session {
     fn preface(&self, records: &[&[u8]]) -> Option<String> {
         let started = records
             .iter()
-            .filter_map(|record| json::parse(record).filter(Value::is_dict))
+            .filter_map(|record| json::parse(record, self.wide_fields).filter(Value::is_dict))
             .find_map(|record| render::time(record.get("timestamp")));
         Some(match started {
             Some(time) => format!("Session started {} UTC:", render::minute(time)),
@@ -167,7 +222,7 @@ impl Kind for Session {
             return Err(Refusal(format!("not UTF-8 (byte {})", error.valid_up_to())));
         }
         let lines = || bytes[..complete].split_inclusive(|&byte| byte == b'\n');
-        if complete > 0 && dialect::sniff(lines()).is_none() {
+        if complete > 0 && dialect::sniff(lines(), self.wide_fields).is_none() {
             return Err(Refusal(
                 "no line is a Claude Code, Codex or Cursor record".to_owned(),
             ));
@@ -185,6 +240,7 @@ impl Kind for Session {
             packed::unpack(
                 &bytes,
                 packed::bound(bytes.len(), self.unpack_floor, self.unpack_ratio),
+                self.unpack_window,
             )
         } else {
             Ok(bytes)
@@ -304,7 +360,7 @@ mod tests {
     use bilbo_settings::file::File;
     use bilbo_settings::key::Source;
 
-    use super::{Session, UNPACK_FLOOR, UNPACK_RATIO, is_uuid, packed};
+    use super::{Session, UNPACK_FLOOR, UNPACK_RATIO, UNPACK_WINDOW, WIDE_FIELDS, is_uuid, packed};
 
     const CLAUDE: &[u8] =
         include_bytes!("../../fixtures/session/5c3a9e1f-0b7d-4c2e-9a41-7f2d8e6b1c03.jsonl");
@@ -790,8 +846,8 @@ mod tests {
             let records: Vec<&[u8]> = records.iter().map(Vec::as_slice).collect();
             for passages in [
                 Session::default().passages(&records),
-                crate::session::claude::read::passages(&records),
-                crate::session::codex::read::passages(&records),
+                crate::session::claude::read::passages(&records, 32),
+                crate::session::codex::read::passages(&records, 32),
             ] {
                 sound(&passages, records.len(), case);
                 assert!(passages.iter().all(|passage| passage.range.count == 1));
@@ -1112,7 +1168,7 @@ mod tests {
         );
         for (plain, packed) in [(CODEX, CODEX_PACKED), (OTHER_PLAIN, OTHER_PACKED)] {
             assert_eq!(
-                packed::unpack(packed, packed::bound(packed.len(), 128 << 20, 256))
+                packed::unpack(packed, packed::bound(packed.len(), 128 << 20, 256), 27)
                     .expect("unpacks"),
                 plain
             );
@@ -1155,9 +1211,12 @@ mod tests {
     #[test]
     fn a_file_of_exactly_the_bound_passes_and_one_byte_more_is_refused() {
         let limit = u64::try_from(CODEX.len()).expect("fits") + 64 * lines(CODEX);
-        assert_eq!(packed::unpack(CODEX_PACKED, limit).expect("passes"), CODEX);
         assert_eq!(
-            packed::unpack(CODEX_PACKED, limit - 1),
+            packed::unpack(CODEX_PACKED, limit, 27).expect("passes"),
+            CODEX
+        );
+        assert_eq!(
+            packed::unpack(CODEX_PACKED, limit - 1, 27),
             Err(Refusal(format!(
                 "would hold more than {} bytes unpacked",
                 limit - 1
@@ -1170,7 +1229,7 @@ mod tests {
         let mut bytes = CODEX_PACKED.to_vec();
         bytes.extend_from_slice(b"not zstd at all");
         assert_eq!(
-            packed::unpack(&bytes, 16),
+            packed::unpack(&bytes, 16, 27),
             Err(Refusal("would hold more than 16 bytes unpacked".to_owned()))
         );
     }
@@ -1178,11 +1237,11 @@ mod tests {
     #[test]
     fn the_bound_counts_what_keeping_holds_for_every_line() {
         let many = zstd::bulk::compress(&b"x\n".repeat(100), 3).expect("packs");
-        assert!(packed::unpack(&many, 6600).is_ok());
-        assert!(packed::unpack(&many, 6599).is_err());
+        assert!(packed::unpack(&many, 6600, 27).is_ok());
+        assert!(packed::unpack(&many, 6599, 27).is_err());
         let one = zstd::bulk::compress(&[&[b'x'; 199][..], b"\n"].concat(), 3).expect("packs");
-        assert!(packed::unpack(&one, 264).is_ok());
-        assert!(packed::unpack(&one, 263).is_err());
+        assert!(packed::unpack(&one, 264, 27).is_ok());
+        assert!(packed::unpack(&one, 263, 27).is_err());
     }
 
     #[test]
@@ -1230,13 +1289,19 @@ mod tests {
     }
 
     #[test]
-    fn a_frame_that_asks_for_a_window_over_128_mib_is_refused() {
-        let refusal = packed::unpack(&frame(28), 128 << 20).expect_err("refused");
+    fn a_frame_that_asks_for_a_window_over_the_ceiling_is_refused() {
+        let refusal = packed::unpack(&frame(28), 128 << 20, 27).expect_err("refused");
         assert!(refusal.0.starts_with("cannot unpack: "), "{}", refusal.0);
         assert_eq!(
-            packed::unpack(&frame(27), 128 << 20).expect("unpacks"),
+            packed::unpack(&frame(27), 128 << 20, 27).expect("unpacks"),
             b"some bytes\nsome more bytes\n"
         );
+        assert_eq!(
+            packed::unpack(&frame(24), 128 << 20, 24).expect("unpacks"),
+            b"some bytes\nsome more bytes\n"
+        );
+        let refusal = packed::unpack(&frame(25), 128 << 20, 24).expect_err("refused");
+        assert!(refusal.0.starts_with("cannot unpack: "), "{}", refusal.0);
     }
 
     fn frame(window_log: u32) -> Vec<u8> {
@@ -1257,8 +1322,8 @@ mod tests {
             (1000, 23, 24),
             (2 << 30, 27, 28),
         ] {
-            assert!(packed::unpack(&frame(fits), limit).is_ok(), "{limit}");
-            let refusal = packed::unpack(&frame(too_big), limit).expect_err("refused");
+            assert!(packed::unpack(&frame(fits), limit, 27).is_ok(), "{limit}");
+            let refusal = packed::unpack(&frame(too_big), limit, 27).expect_err("refused");
             assert!(refusal.0.starts_with("cannot unpack: "), "{}", refusal.0);
         }
     }
@@ -1336,6 +1401,156 @@ mod tests {
     }
 
     #[test]
+    fn the_unpack_window_is_a_power_of_two_from_8_mib_to_2_gib_and_defaults_to_128_mib() {
+        assert_eq!(setting(&UNPACK_WINDOW, None, ""), Ok(134_217_728));
+        assert_eq!(
+            setting(&UNPACK_WINDOW, None, "session.unpack_window = \"16 MiB\""),
+            Ok(16 << 20)
+        );
+        assert_eq!(
+            setting(
+                &UNPACK_WINDOW,
+                Some("32 MiB"),
+                "session.unpack_window = \"16 MiB\""
+            ),
+            Ok(32 << 20)
+        );
+        for (text, bytes) in [("8 MiB", 8 << 20), ("2 GiB", 2 << 30), ("8388608", 8 << 20)] {
+            assert_eq!(setting(&UNPACK_WINDOW, Some(text), ""), Ok(bytes), "{text}");
+        }
+        for text in ["100 MiB", "12 MiB", "4 MiB", "4 GiB", "0"] {
+            assert_eq!(
+                setting(&UNPACK_WINDOW, Some(text), ""),
+                Err(format!(
+                    "BILBO_SESSION_UNPACK_WINDOW must be a power of two between 8 MiB and 2 GiB, got \"{text}\""
+                )),
+                "{text}"
+            );
+        }
+        assert_eq!(
+            setting(&UNPACK_WINDOW, None, "session.unpack_window = \"12 MiB\""),
+            Err("/c/config.toml:1: session.unpack_window must be a power of two between 8 MiB and 2 GiB, got \"12 MiB\"".to_owned())
+        );
+    }
+
+    #[test]
+    fn the_wide_fields_are_1_to_4096_and_default_to_32() {
+        assert_eq!(setting(&WIDE_FIELDS, None, ""), Ok(32));
+        assert_eq!(setting(&WIDE_FIELDS, Some("1"), ""), Ok(1));
+        assert_eq!(setting(&WIDE_FIELDS, Some("4096"), ""), Ok(4096));
+        for text in ["0", "4097", "-5", "wide", "32.5"] {
+            assert_eq!(
+                setting(&WIDE_FIELDS, Some(text), ""),
+                Err(format!(
+                    "BILBO_SESSION_WIDE_FIELDS must be a whole number from 1 to 4096, got \"{text}\""
+                )),
+                "{text}"
+            );
+        }
+        assert_eq!(
+            setting(&WIDE_FIELDS, None, "session.wide_fields = 4097"),
+            Err("/c/config.toml:1: session.wide_fields must be a whole number from 1 to 4096, got 4097".to_owned())
+        );
+    }
+
+    #[test]
+    fn a_session_unpacks_up_to_the_window_it_is_built_with() {
+        let name = PathBuf::from(format!("{}.zst", rollout()));
+        assert_eq!(
+            Session::default().unpack(&name, frame(25)),
+            Ok(b"some bytes\nsome more bytes\n".to_vec())
+        );
+        let refusal = Session::new(128 << 20, 256, 16 << 20, 32)
+            .unpack(&name, frame(25))
+            .expect_err("refused");
+        assert!(refusal.0.starts_with("cannot unpack: "), "{}", refusal.0);
+        let refusal = Session::default()
+            .unpack(&name, frame(28))
+            .expect_err("refused");
+        assert!(refusal.0.starts_with("cannot unpack: "), "{}", refusal.0);
+        assert_eq!(
+            Session::new(256 << 20, 256, 256 << 20, 32).unpack(&name, frame(28)),
+            Ok(b"some bytes\nsome more bytes\n".to_vec())
+        );
+    }
+
+    #[test]
+    fn a_window_that_is_no_power_of_two_counts_as_the_one_below_and_never_under_8_mib() {
+        let name = PathBuf::from(format!("{}.zst", rollout()));
+        let unpack = |window: usize, log: u32| {
+            Session::new(128 << 20, 256, window, 32).unpack(&name, frame(log))
+        };
+        let bytes = Ok(b"some bytes\nsome more bytes\n".to_vec());
+        assert_eq!(unpack(24 << 20, 24), bytes);
+        assert!(unpack(24 << 20, 25).is_err());
+        for window in [12 << 20, 4 << 20, 0] {
+            assert_eq!(unpack(window, 23), bytes, "{window}");
+            assert!(unpack(window, 24).is_err(), "{window}");
+        }
+        let refusal = packed::unpack(&frame(23), u64::MAX, 40).expect_err("refused");
+        assert!(refusal.0.starts_with("cannot unpack: "), "{}", refusal.0);
+    }
+
+    #[test]
+    fn every_read_of_a_session_takes_an_object_to_a_table_at_its_wide_fields() {
+        use crate::reader::Reader;
+        let fields = |count: usize| {
+            (0..count)
+                .map(|n| format!("\"f{n}\":{n}"))
+                .collect::<Vec<_>>()
+                .join(",")
+        };
+        let claude = format!(
+            "{{\"type\":\"user\",\"timestamp\":\"2026-11-07T08:00:00Z\",\"message\":{{\"content\":\"hello\"}},{}}}\n",
+            fields(37)
+        );
+        let arguments = format!("{{{}}}", fields(40)).replace('"', "\\\"");
+        let codex = format!(
+            "{{\"type\":\"response_item\",\"payload\":{{\"type\":\"function_call\",\"name\":\"t\",\"arguments\":\"{arguments}\"}},{}}}\n",
+            fields(38)
+        );
+        let (claude_records, codex_records) = ([claude.as_bytes()], [codex.as_bytes()]);
+        for wide in [4, 5, 64] {
+            let session = Session::new(128 << 20, 256, 128 << 20, wide);
+            let tabled = |times: usize, what: &str| {
+                let times = if wide == 64 { 0 } else { times };
+                assert_eq!(
+                    crate::session::json::tabled(),
+                    vec![wide; times],
+                    "{what} at {wide}"
+                );
+            };
+            session.split(claude.as_bytes()).expect("a session");
+            tabled(1, "split");
+            assert!(!session.passages(&claude_records).is_empty());
+            tabled(2, "claude passages");
+            session.entry_labels(&claude_records);
+            tabled(2, "claude labels");
+            session.preface(&claude_records);
+            tabled(1, "preface");
+            assert!(!session.passages(&codex_records).is_empty());
+            tabled(3, "codex passages");
+            session.entry_labels(&codex_records);
+            tabled(2, "codex labels");
+        }
+    }
+
+    #[test]
+    fn a_session_reads_the_same_at_any_wide_fields() {
+        use crate::reader::Reader;
+        let narrow = Session::new(128 << 20, 256, 128 << 20, 1);
+        let wide = Session::default();
+        for bytes in [CLAUDE, SUBAGENT, CODEX, CURSOR] {
+            let records: Vec<&[u8]> = bytes.split_inclusive(|&byte| byte == b'\n').collect();
+            assert!(!wide.passages(&records).is_empty());
+            assert_eq!(narrow.passages(&records), wide.passages(&records));
+            assert_eq!(narrow.entry_labels(&records), wide.entry_labels(&records));
+            assert_eq!(narrow.preface(&records), wide.preface(&records));
+            assert_eq!(narrow.split(bytes), wide.split(bytes));
+        }
+    }
+
+    #[test]
     fn a_session_built_with_a_lower_floor_or_ratio_refuses_what_the_default_keeps() {
         let name = PathBuf::from(format!("{}.zst", rollout()));
         let first = CODEX
@@ -1347,7 +1562,9 @@ mod tests {
         let feeds = zstd::bulk::compress(&feeds, 3).expect("packs");
         assert!(Session::default().unpack(&name, feeds.clone()).is_ok());
         assert_eq!(
-            Session::new(8 << 20, 256).unpack(&name, feeds).err(),
+            Session::new(8 << 20, 256, 128 << 20, 32)
+                .unpack(&name, feeds)
+                .err(),
             Some(Refusal(
                 "would hold more than 8388608 bytes unpacked".to_owned()
             ))
@@ -1368,12 +1585,12 @@ mod tests {
         hard.resize(hard.len() + 600_000, b'\n');
         let hard = zstd::bulk::compress(&hard, 3).expect("packs");
         assert!(
-            Session::new(8 << 20, 256)
+            Session::new(8 << 20, 256, 128 << 20, 32)
                 .unpack(&name, hard.clone())
                 .is_ok()
         );
         assert_eq!(
-            Session::new(8 << 20, 64)
+            Session::new(8 << 20, 64, 128 << 20, 32)
                 .unpack(&name, hard)
                 .err()
                 .map(|refusal| refusal.0.starts_with("would hold more than ")),
@@ -1436,7 +1653,7 @@ mod tests {
         let bytes = [CURSOR, line.as_slice(), b"\n"].concat();
         let records = bytes.split_inclusive(|&byte| byte == b'\n');
         assert_eq!(
-            crate::session::dialect::sniff(records),
+            crate::session::dialect::sniff(records, 32),
             Some(crate::session::dialect::Dialect::Cursor)
         );
         assert_eq!(labels_of(&bytes), ["/home/me/src/garden"]);

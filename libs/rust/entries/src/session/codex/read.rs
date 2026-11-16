@@ -60,12 +60,12 @@ fn message(payload: &Value) -> Vec<String> {
 }
 
 /// A custom tool's `input` is text of its own (a script, a patch) and prints as written, JSON or not.
-fn call(payload: &Value, given: &str, tools: &mut Tools) -> Option<String> {
+fn call(payload: &Value, given: &str, tools: &mut Tools, wide: usize) -> Option<String> {
     let name = field(payload, "name")?;
     tools.name(payload.get("call_id"), name.to_owned());
     let written = field(payload, given).unwrap_or_default();
     let object = (given == "arguments")
-        .then(|| json::parse(written.as_bytes()))
+        .then(|| json::parse(written.as_bytes(), wide))
         .flatten()
         .filter(Value::is_dict);
     let args = match object {
@@ -112,11 +112,11 @@ fn agent_message(payload: &Value) -> Option<String> {
     (!text.is_empty()).then(|| format!("agent_message {author} to {recipient}: {text}"))
 }
 
-pub fn passages(records: &[&[u8]]) -> Vec<Passage> {
+pub fn passages(records: &[&[u8]], wide: usize) -> Vec<Passage> {
     let mut tools = Tools::default();
     let mut passages = Vec::new();
     for (record, number) in records.iter().zip(1u64..) {
-        let Some(line) = json::parse(record) else {
+        let Some(line) = json::parse(record, wide) else {
             continue;
         };
         let Some(payload) = line.get("payload").filter(|payload| payload.is_dict()) else {
@@ -127,11 +127,15 @@ pub fn passages(records: &[&[u8]]) -> Vec<Passage> {
                 (message(payload), field(payload, "role") == Some("user"))
             }
             (Some("response_item"), Some("function_call")) => (
-                call(payload, "arguments", &mut tools).into_iter().collect(),
+                call(payload, "arguments", &mut tools, wide)
+                    .into_iter()
+                    .collect(),
                 false,
             ),
             (Some("response_item"), Some("custom_tool_call")) => (
-                call(payload, "input", &mut tools).into_iter().collect(),
+                call(payload, "input", &mut tools, wide)
+                    .into_iter()
+                    .collect(),
                 false,
             ),
             (Some("response_item"), Some("function_call_output" | "custom_tool_call_output")) => {
@@ -155,10 +159,10 @@ pub fn passages(records: &[&[u8]]) -> Vec<Passage> {
     passages
 }
 
-pub fn labels(records: &[&[u8]]) -> Vec<String> {
+pub fn labels(records: &[&[u8]], wide: usize) -> Vec<String> {
     let mut found = EntryLabels::default();
     for record in records {
-        let Some(record) = json::parse(record).filter(Value::is_dict) else {
+        let Some(record) = json::parse(record, wide).filter(Value::is_dict) else {
             continue;
         };
         if matches!(
@@ -191,7 +195,7 @@ mod tests {
 
     fn read(text: &str) -> Vec<Passage> {
         let records: Vec<&[u8]> = text.split_inclusive('\n').map(str::as_bytes).collect();
-        passages(&records)
+        passages(&records, 32)
     }
 
     fn texts(text: &str) -> Vec<(u64, String)> {
@@ -461,6 +465,6 @@ mod tests {
         assert_eq!(texts(&lines.concat()), []);
         let string = item("{\"type\":\"message\",\"role\":\"user\",\"content\":\" a string \"}");
         assert_eq!(texts(&string), [(1, "user: a string".to_owned())]);
-        assert!(passages(&[b"\xff\n"]).is_empty());
+        assert!(passages(&[b"\xff\n"], 32).is_empty());
     }
 }

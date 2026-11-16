@@ -140,12 +140,12 @@ pub fn renders(entry: &Value) -> bool {
 /// The thread is the `isSidechain` value of the first entry that renders; entries of the other value are left out,
 /// as in the eval. A subagent's file marks every entry, so it reads as its own. An entry left out for another reason
 /// (`isMeta`, nothing to say) never chooses the thread.
-pub fn passages(records: &[&[u8]]) -> Vec<Passage> {
+pub fn passages(records: &[&[u8]], wide: usize) -> Vec<Passage> {
     let mut tools = Tools::default();
     let mut thread = None;
     let mut passages = Vec::new();
     for (record, number) in records.iter().zip(1u64..) {
-        let Some(entry) = json::parse(record).filter(Value::is_dict) else {
+        let Some(entry) = json::parse(record, wide).filter(Value::is_dict) else {
             continue;
         };
         let Some(role) = role(&entry) else {
@@ -168,10 +168,10 @@ pub fn passages(records: &[&[u8]]) -> Vec<Passage> {
     passages
 }
 
-pub fn labels(records: &[&[u8]]) -> Vec<String> {
+pub fn labels(records: &[&[u8]], wide: usize) -> Vec<String> {
     let mut found = EntryLabels::default();
     for record in records {
-        let Some(record) = json::parse(record).filter(Value::is_dict) else {
+        let Some(record) = json::parse(record, wide).filter(Value::is_dict) else {
             continue;
         };
         if let Some(cwd) = record.get("cwd").and_then(Value::as_str) {
@@ -216,7 +216,7 @@ mod tests {
 
     fn read(text: &str) -> Vec<Passage> {
         let records: Vec<&[u8]> = text.split_inclusive('\n').map(str::as_bytes).collect();
-        passages(&records)
+        passages(&records, 32)
     }
 
     fn texts(text: &str) -> Vec<(u64, String)> {
@@ -676,8 +676,8 @@ mod tests {
             b"\xff\xfe\n{\"type\":\"user\",\"message\":{\"content\":\"\xc3\"}}\n",
         );
         let records: Vec<&[u8]> = bytes.split_inclusive(|byte| *byte == b'\n').collect();
-        assert_eq!(passages(&records).len(), 3);
-        assert!(passages(&[]).is_empty());
+        assert_eq!(passages(&records, 32).len(), 3);
+        assert!(passages(&[], 32).is_empty());
     }
 
     #[test]

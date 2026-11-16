@@ -31,6 +31,7 @@ fn options() -> Options {
     Options {
         memory: section.memory(),
         merge_deleted_share: section.merge_deleted_share(),
+        list_limit: section.list_limit.value,
     }
 }
 
@@ -150,7 +151,7 @@ fn row(
 }
 
 fn committed(scratch: &Scratch) -> Committed {
-    Committed::at(scratch.folder())
+    Committed::at(scratch.folder(), options().list_limit)
 }
 
 fn default_rule() -> Rule {
@@ -174,7 +175,7 @@ fn weighted(
     typos: Rule,
     pair_weight: f64,
 ) -> Vec<Candidate> {
-    let committed = Committed::at(folder);
+    let committed = Committed::at(folder, options().list_limit);
     let query = Query {
         text: text.to_owned(),
         kinds: Vec::new(),
@@ -2523,7 +2524,7 @@ fn stamps(folder: &Path) -> Stamp {
 }
 
 fn read_everything(folder: &Path) {
-    let reader = Committed::at(folder);
+    let reader = Committed::at(folder, options().list_limit);
     assert!(reader.position().expect("position").is_some());
     let totals = reader.totals().expect("totals");
     reader.postings(&term_of("garden")).expect("postings");
@@ -2853,7 +2854,9 @@ fn an_entry_filter_changes_no_total() {
     let reader = committed(&scratch);
     let held = reader.holding(&Filter::Entries(&[id(2)])).expect("holding");
     assert_eq!(held.len(), 1);
-    let unfiltered = Committed::at(scratch.folder()).totals().expect("totals");
+    let unfiltered = Committed::at(scratch.folder(), options().list_limit)
+        .totals()
+        .expect("totals");
     assert!(unfiltered.documents > held.len() as u64);
     assert_eq!(reader.totals().expect("totals"), unfiltered);
 }
@@ -3096,6 +3099,7 @@ fn counted(folder: &Path, each: impl Fn(u32) + 'static) -> (Committed, Rc<Cell<u
     let seen = Rc::clone(&looks);
     let reader = Committed::watched(
         folder,
+        options().list_limit,
         Box::new(move || {
             seen.set(seen.get() + 1);
             each(seen.get());
@@ -3104,11 +3108,11 @@ fn counted(folder: &Path, each: impl Fn(u32) + 'static) -> (Committed, Rc<Cell<u
     (reader, looks)
 }
 
-fn pad_meta(scratch: &Scratch, size: u64) {
+fn pad(scratch: &Scratch, name: &str, size: u64) {
     let file = fs::OpenOptions::new()
         .append(true)
-        .open(scratch.folder().join("meta.json"))
-        .expect("meta.json");
+        .open(scratch.folder().join(name))
+        .expect(name);
     let held = file.metadata().expect("metadata").len();
     std::io::Write::write_all(
         &mut &file,
@@ -3118,23 +3122,103 @@ fn pad_meta(scratch: &Scratch, size: u64) {
 }
 
 #[test]
-fn a_meta_file_over_the_bound_is_no_usable_index() {
-    const BOUND: u64 = 64 * 1024 * 1024;
-    let under = Scratch::new("meta-under");
-    built(&under.folder());
-    pad_meta(&under, BOUND);
+fn a_list_over_the_limit_is_no_usable_index() {
+    const LIMIT: u64 = 8 * 1024;
+    let reader = |scratch: &Scratch| Committed::at(scratch.folder(), LIMIT);
+    let built_size = Scratch::new("list-built");
+    built(&built_size.folder());
+    for name in ["meta.json", ".managed.json"] {
+        let held = fs::metadata(built_size.folder().join(name))
+            .expect(name)
+            .len();
+        assert!(held < LIMIT, "{name}: {held}");
+    }
     assert_eq!(
-        committed(&under).position().expect("a position"),
+        Committed::at(built_size.folder(), u64::MAX)
+            .position()
+            .expect("a position"),
         Some(position(5))
     );
-    assert_eq!(committed(&under).documents().expect("documents"), filled());
+    for name in ["meta.json", ".managed.json"] {
+        let under = Scratch::new("list-under");
+        built(&under.folder());
+        pad(&under, name, LIMIT);
+        assert_eq!(
+            reader(&under).position().expect("a position"),
+            Some(position(5)),
+            "{name}"
+        );
+        assert_eq!(
+            reader(&under).documents().expect("documents"),
+            filled(),
+            "{name}"
+        );
 
-    let over = Scratch::new("meta-over");
-    built(&over.folder());
-    pad_meta(&over, BOUND + 1);
-    let before = snapshot(&over.0);
-    nothing_to_read(&committed(&over), "a meta.json over the bound");
-    assert_eq!(snapshot(&over.0), before);
+        let over = Scratch::new("list-over");
+        built(&over.folder());
+        pad(&over, name, LIMIT + 1);
+        let before = snapshot(&over.0);
+        nothing_to_read(&reader(&over), name);
+        let extents = |list_limit| {
+            Tantivy::at(
+                over.folder(),
+                Options {
+                    list_limit,
+                    ..options()
+                },
+            )
+            .extents(id(1))
+            .expect("extents")
+        };
+        assert_eq!(extents(LIMIT), [], "{name}");
+        assert_eq!(extents(options().list_limit).len(), 3, "{name}");
+        assert_eq!(snapshot(&over.0), before, "{name}");
+    }
+    let large = Scratch::new("list-large");
+    built(&large.folder());
+    pad(&large, "meta.json", (64 << 20) + 1);
+    let managed = large.folder().join(".managed.json");
+    let listed = fs::read_to_string(&managed).expect(".managed.json");
+    let rest = listed.strip_prefix('[').expect("a list");
+    fs::write(&managed, format!("[{}{rest}", " ".repeat((64 << 20) + 1))).expect("write");
+    assert_eq!(
+        Committed::at(large.folder(), 128 << 20)
+            .position()
+            .expect("a position"),
+        Some(position(5))
+    );
+}
+
+#[test]
+fn a_meta_file_over_the_list_limit_makes_the_index_again() {
+    const LIMIT: u64 = 8 * 1024;
+    let scratch = Scratch::new("list-again");
+    built(&scratch.folder());
+    let segments: Vec<String> = names(&scratch.folder())
+        .into_iter()
+        .filter(|name| name != "meta.json" && name != "bilbo-index" && !name.starts_with('.'))
+        .collect();
+    assert!(!segments.is_empty());
+    pad(&scratch, "meta.json", LIMIT + 1);
+    let mut index = Tantivy::at(
+        scratch.folder(),
+        Options {
+            list_limit: LIMIT,
+            ..options()
+        },
+    );
+    index.clear().expect("clear");
+    let held = names(&scratch.folder());
+    let meta = fs::metadata(scratch.folder().join("meta.json")).expect("meta.json");
+    assert!(meta.len() < LIMIT, "meta.json");
+    for name in &segments {
+        assert!(!held.contains(name), "{name}");
+    }
+    fill(&mut index);
+    index.commit(&position(5)).expect("commit");
+    let reader = Committed::at(scratch.folder(), LIMIT);
+    assert_eq!(reader.position().expect("a position"), Some(position(5)));
+    assert_eq!(reader.documents().expect("documents"), filled());
 }
 
 fn other_index(scratch: &Scratch) {

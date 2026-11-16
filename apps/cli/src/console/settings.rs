@@ -301,6 +301,7 @@ mod tests {
                 "search.merge_deleted_percent",
                 "search.entry_tries",
                 "search.label_batch",
+                "search.list_limit",
                 "recall.budget",
                 "recall.candidates",
                 "recall.cap",
@@ -319,7 +320,9 @@ mod tests {
                 "recall.pair_weight",
                 "markdown.heading_width",
                 "session.unpack_floor",
-                "session.unpack_ratio"
+                "session.unpack_ratio",
+                "session.unpack_window",
+                "session.wide_fields"
             ]
         );
     }
@@ -380,7 +383,7 @@ mod tests {
             .err(),
             Some(
                 "/c.toml:3: unknown key store.sealat; the keys are paths.root, paths.state, \
-                 paths.cache, store.seal_at, store.seal_after, store.compression, store.tear_budget, store.wait, store.poll, follow, read.budget, read.outline_width, read.matches_listed, search.chunk_tokens, search.chunk_overlap, search.workers, search.index_memory, search.merge_deleted_percent, search.entry_tries, search.label_batch, recall.budget, recall.candidates, recall.cap, recall.record_cap, recall.copy_share, recall.copy_words, recall.question_words, recall.languages, recall.bm25_k1, recall.bm25_b, recall.read_batch, recall.typo_terms, recall.typo_letters, recall.typo_max_letters, recall.typo_two_edits, recall.pair_weight, markdown.heading_width, session.unpack_floor, session.unpack_ratio"
+                 paths.cache, store.seal_at, store.seal_after, store.compression, store.tear_budget, store.wait, store.poll, follow, read.budget, read.outline_width, read.matches_listed, search.chunk_tokens, search.chunk_overlap, search.workers, search.index_memory, search.merge_deleted_percent, search.entry_tries, search.label_batch, search.list_limit, recall.budget, recall.candidates, recall.cap, recall.record_cap, recall.copy_share, recall.copy_words, recall.question_words, recall.languages, recall.bm25_k1, recall.bm25_b, recall.read_batch, recall.typo_terms, recall.typo_letters, recall.typo_max_letters, recall.typo_two_edits, recall.pair_weight, markdown.heading_width, session.unpack_floor, session.unpack_ratio, session.unpack_window, session.wide_fields"
                     .to_owned()
             )
         );
@@ -541,10 +544,13 @@ mod tests {
                 "BILBO_SEARCH_ENTRY_TRIES",
                 "BILBO_SEARCH_INDEX_MEMORY",
                 "BILBO_SEARCH_LABEL_BATCH",
+                "BILBO_SEARCH_LIST_LIMIT",
                 "BILBO_SEARCH_MERGE_DELETED_PERCENT",
                 "BILBO_SEARCH_WORKERS",
                 "BILBO_SESSION_UNPACK_FLOOR",
                 "BILBO_SESSION_UNPACK_RATIO",
+                "BILBO_SESSION_UNPACK_WINDOW",
+                "BILBO_SESSION_WIDE_FIELDS",
                 "BILBO_STORE_COMPRESSION",
                 "BILBO_STORE_POLL",
                 "BILBO_STORE_SEAL_AFTER",

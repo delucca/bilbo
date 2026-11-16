@@ -71,6 +71,8 @@ pub fn kind_keys() -> Vec<&'static KindKey> {
         &bilbo_entries::markdown::HEADING_WIDTH,
         &bilbo_entries::session::UNPACK_FLOOR,
         &bilbo_entries::session::UNPACK_RATIO,
+        &bilbo_entries::session::UNPACK_WINDOW,
+        &bilbo_entries::session::WIDE_FIELDS,
     ]
 }
 
@@ -87,6 +89,8 @@ fn session(settings: &Settings) -> Result<bilbo_entries::session::Session, Failu
     Ok(bilbo_entries::session::Session::new(
         registered(settings, &bilbo_entries::session::UNPACK_FLOOR)?,
         registered(settings, &bilbo_entries::session::UNPACK_RATIO)?,
+        registered(settings, &bilbo_entries::session::UNPACK_WINDOW)?,
+        registered(settings, &bilbo_entries::session::WIDE_FIELDS)?,
     ))
 }
 
@@ -135,6 +139,7 @@ pub fn index(cache: &std::path::Path, search: &bilbo_search::keys::Section) -> B
         bilbo_search::tantivy::Options {
             memory: search.memory(),
             merge_deleted_share: search.merge_deleted_share(),
+            list_limit: search.list_limit.value,
         },
     ))
 }
@@ -143,9 +148,10 @@ pub fn detect() -> &'static dyn Detect {
     &bilbo_search::whichlang::Whichlang
 }
 
-pub fn lookup(cache: &std::path::Path) -> Box<dyn Lookup> {
+pub fn lookup(cache: &std::path::Path, search: &bilbo_search::keys::Section) -> Box<dyn Lookup> {
     Box::new(bilbo_search::tantivy::Committed::at(
         bilbo_search::tantivy::folder(cache),
+        search.list_limit.value,
     ))
 }
 
@@ -240,12 +246,13 @@ pub fn run_tuned(
                     let disk = |cache: &std::path::Path| index(cache, &settings.search);
                     let indexing =
                         tune(indexing(&settings, &readers, &rendering, &tokenizer, &disk));
+                    let committed = |cache: &std::path::Path| lookup(cache, &settings.search);
                     recall::run(
                         root,
                         &args,
                         env,
                         &settings,
-                        &reading::of(&indexing, &lookup, detect()),
+                        &reading::of(&indexing, &committed, detect()),
                     )
                 }
                 Verb::Read(args) => {

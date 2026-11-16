@@ -609,6 +609,30 @@ fn a_store_with_no_index_or_an_index_of_other_settings_names_reindex() {
 }
 
 #[test]
+fn the_list_limit_key_reaches_the_index_recall_reads() {
+    use std::io::Write;
+    let sandbox = Sandbox::filled("recall_list_limit_key");
+    fs::OpenOptions::new()
+        .append(true)
+        .open(sandbox.cache().join("index/meta.json"))
+        .expect("meta.json")
+        .write_all(&vec![b' '; 2 << 20])
+        .expect("pad");
+    let run = sandbox.run(&["recall", "carrots"]);
+    assert_eq!(run.code, 0, "{:?}", run.stderr);
+    assert!(!hits(&run.stdout).is_empty());
+    let run = sandbox.run_with(
+        &["recall", "carrots"],
+        &[("BILBO_SEARCH_LIST_LIMIT", "1 MiB")],
+    );
+    assert_eq!((run.code, run.stdout.as_str()), (1, ""));
+    assert_eq!(
+        run.stderr,
+        ["bilbo: the store has no search index bilbo can use; bilbo reindex makes it"]
+    );
+}
+
+#[test]
 fn a_session_that_grew_and_was_not_indexed_still_recalls_its_old_chunks_and_says_it_is_behind() {
     let sandbox = Sandbox::filled("recall_behind");
     let current = sandbox.run(&["recall", "carrots", "beans"]);
@@ -1376,7 +1400,7 @@ fn a_folder_or_link_put_at_the_state_path_after_the_open_gets_no_log() {
                 fs::create_dir(&state).expect("a new folder");
                 fs::set_permissions(&state, fs::Permissions::from_mode(0o700)).expect("a mode");
             }
-            bilbo_cli::lookup(path)
+            bilbo_cli::lookup(path, &bilbo_search::keys::defaults())
         };
         let outcome = run_with_reading(&sandbox, &shared_tokenizer, &lookup);
         let said = outcome
@@ -1481,7 +1505,10 @@ fn the_manifest_names_the_tokenizer_that_counts() {
             id: "another-tokenizer/1",
         })
     };
-    let outcome = run_with_reading(&sandbox, &other, &bilbo_cli::lookup).expect("an outcome");
+    let outcome = run_with_reading(&sandbox, &other, &|path| {
+        bilbo_cli::lookup(path, &bilbo_search::keys::defaults())
+    })
+    .expect("an outcome");
     assert_eq!(outcome.exit_code(), 1);
     assert_eq!(
         outcome.stderr_lines(&View::PLAIN),
@@ -1489,8 +1516,10 @@ fn the_manifest_names_the_tokenizer_that_counts() {
             "bilbo: the search index was made with other settings or by another bilbo; bilbo reindex makes it again"
         ]
     );
-    let real =
-        run_with_reading(&sandbox, &shared_tokenizer, &bilbo_cli::lookup).expect("an outcome");
+    let real = run_with_reading(&sandbox, &shared_tokenizer, &|path| {
+        bilbo_cli::lookup(path, &bilbo_search::keys::defaults())
+    })
+    .expect("an outcome");
     assert_eq!(real.exit_code(), 0, "{:?}", real.stderr_lines(&View::PLAIN));
 }
 
@@ -1502,7 +1531,7 @@ fn an_absent_cache_asks_for_no_lookup() {
     let calls = Cell::new(0usize);
     let lookup = |path: &std::path::Path| {
         calls.set(calls.get() + 1);
-        bilbo_cli::lookup(path)
+        bilbo_cli::lookup(path, &bilbo_search::keys::defaults())
     };
     let outcome = run_with_reading(&sandbox, &shared_tokenizer, &lookup).expect("an outcome");
     assert_eq!(outcome.exit_code(), 1);
@@ -1946,7 +1975,7 @@ fn recording(seen: &Arc<Seen>) -> impl Fn(&std::path::Path) -> Box<dyn Lookup> {
     let seen = Arc::clone(seen);
     move |path| {
         Box::new(Recording {
-            inner: bilbo_cli::lookup(path),
+            inner: bilbo_cli::lookup(path, &bilbo_search::keys::defaults()),
             seen: Arc::clone(&seen),
         })
     }

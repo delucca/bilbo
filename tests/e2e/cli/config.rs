@@ -8,7 +8,7 @@ use super::{Run, binary};
 const KEYS: &str = "paths.root, paths.state, paths.cache, store.seal_at, store.seal_after, \
                     store.compression, store.tear_budget, store.wait, store.poll, follow, read.budget, read.outline_width, \
                     read.matches_listed, search.chunk_tokens, search.chunk_overlap, search.workers, \
-                    search.index_memory, search.merge_deleted_percent, search.entry_tries, search.label_batch, recall.budget, recall.candidates, recall.cap, recall.record_cap, recall.copy_share, recall.copy_words, recall.question_words, recall.languages, recall.bm25_k1, recall.bm25_b, recall.read_batch, recall.typo_terms, recall.typo_letters, recall.typo_max_letters, recall.typo_two_edits, recall.pair_weight, markdown.heading_width, session.unpack_floor, session.unpack_ratio";
+                    search.index_memory, search.merge_deleted_percent, search.entry_tries, search.label_batch, search.list_limit, recall.budget, recall.candidates, recall.cap, recall.record_cap, recall.copy_share, recall.copy_words, recall.question_words, recall.languages, recall.bm25_k1, recall.bm25_b, recall.read_batch, recall.typo_terms, recall.typo_letters, recall.typo_max_letters, recall.typo_two_edits, recall.pair_weight, markdown.heading_width, session.unpack_floor, session.unpack_ratio, session.unpack_window, session.wide_fields";
 
 #[test]
 fn each_key_shows_the_source_that_won_a_variable_over_the_file_over_the_default() {
@@ -43,6 +43,7 @@ fn each_key_shows_the_source_that_won_a_variable_over_the_file_over_the_default(
              search.merge_deleted_percent = 20 (default)\n\
              search.entry_tries = 3 (default)\n\
              search.label_batch = 512 (default)\n\
+             search.list_limit = \"64 MiB\" (default)\n\
              recall.budget = 4000 (default)\n\
              recall.candidates = 400 (default)\n\
              recall.cap = 0 (default)\n\
@@ -61,7 +62,9 @@ fn each_key_shows_the_source_that_won_a_variable_over_the_file_over_the_default(
              recall.pair_weight = 0.25 (default)\n\
              markdown.heading_width = 100 (default)\n\
              session.unpack_floor = \"128 MiB\" (default)\n\
-             session.unpack_ratio = 256 (default)\n",
+             session.unpack_ratio = 256 (default)\n\
+             session.unpack_window = \"128 MiB\" (default)\n\
+             session.wide_fields = 32 (default)\n",
             root = scratch.path("store"),
             home = scratch.path("home"),
             cache = scratch.path("cache"),
@@ -473,6 +476,11 @@ fn a_search_key_out_of_range_is_a_config_error() {
             "BILBO_SEARCH_ENTRY_TRIES",
             "10",
             "a whole number from 1 to 9",
+        ),
+        (
+            "BILBO_SEARCH_LIST_LIMIT",
+            "512 KiB",
+            "between 1 MiB and 2 GiB",
         ),
     ] {
         let run = scratch.run_with(&["config"], &[(variable, value)]);

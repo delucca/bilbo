@@ -17,10 +17,10 @@ pub enum Evidence {
 }
 
 /// Lines are read as the readers read them, so what a reader renders is never refused here.
-pub fn sniff<'r>(records: impl IntoIterator<Item = &'r [u8]>) -> Option<Dialect> {
+pub fn sniff<'r>(records: impl IntoIterator<Item = &'r [u8]>, wide: usize) -> Option<Dialect> {
     let mut maybe = None;
     for record in records {
-        match line(record) {
+        match line(record, wide) {
             Some(Evidence::Sure(dialect)) => return Some(dialect),
             Some(Evidence::Maybe(dialect)) => maybe = maybe.or(Some(dialect)),
             None => {}
@@ -29,8 +29,8 @@ pub fn sniff<'r>(records: impl IntoIterator<Item = &'r [u8]>) -> Option<Dialect>
     maybe
 }
 
-fn line(record: &[u8]) -> Option<Evidence> {
-    let value = json::parse(record).filter(Value::is_dict)?;
+fn line(record: &[u8], wide: usize) -> Option<Evidence> {
+    let value = json::parse(record, wide).filter(Value::is_dict)?;
     codex::dialect(&value).or_else(|| claude::dialect(&value))
 }
 
@@ -48,7 +48,7 @@ mod tests {
     const NONE: &[u8] = include_bytes!("../../fixtures/session/not-a-session.jsonl");
 
     fn of(bytes: &[u8]) -> Option<Dialect> {
-        sniff(bytes.split_inclusive(|&byte| byte == b'\n'))
+        sniff(bytes.split_inclusive(|&byte| byte == b'\n'), 32)
     }
 
     #[test]

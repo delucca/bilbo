@@ -32,7 +32,6 @@ use tantivy::{DocId, IndexSettings, IndexWriter, SegmentReader, TantivyDocument,
 const MARKER_NAME: &str = "bilbo-index";
 const MARKER: &[u8] = b"bilbo index\n";
 const MANAGED: &str = ".managed.json";
-const LIST_LIMIT: u64 = 64 * 1024 * 1024;
 
 /// The footer's fixed part, `<(u32, u32)>::SIZE_IN_BYTES` in tantivy 0.27's `directory/footer.rs`:
 /// a file shorter than this makes `Footer::extract_footer` panic.
@@ -55,6 +54,7 @@ pub struct Options {
     /// A segment whose deleted share is over this is merged, where tantivy's default waits for all
     /// of it.
     pub merge_deleted_share: f32,
+    pub list_limit: u64,
 }
 
 struct Fields {
@@ -132,7 +132,10 @@ impl Tantivy {
     }
 
     fn place(&self) -> Place<'_> {
-        Place(&self.folder)
+        Place {
+            folder: &self.folder,
+            list_limit: self.options.list_limit,
+        }
     }
 
     /// The writer holds the store's lock, so a folder with nothing to read is not looked at twice.
@@ -203,9 +206,12 @@ impl Tantivy {
                 Ok(None)
             }
             Folder::Marked(names) => {
-                if self.place().managed_is_safe(&names)?
-                    && names.iter().any(|name| name == "meta.json")
-                {
+                let open = match self.place().may_open(&names)? {
+                    Ok(open) => open,
+                    Err(error) if reads_as_broken(&error) => false,
+                    Err(error) => return Err(self.failed("read", &error)),
+                };
+                if open {
                     match tantivy::Index::open_in_dir(&self.folder) {
                         Ok(index) if index.schema() == *schema => return Ok(Some(index)),
                         Ok(_) => {}
@@ -262,6 +268,7 @@ impl Tantivy {
                     .map_err(|error| self.failed("create", &error))?
             }
         };
+        // One thread: documents fill one segment at a time, in the order added, and the memory is not split.
         let writer: IndexWriter<TantivyDocument> = index
             .writer_with_num_threads(1, self.options.memory)
             .map_err(|error| self.failed("write", &error))?;
@@ -300,7 +307,10 @@ impl Tantivy {
 }
 
 /// A folder judged for reading: nothing here creates, repairs or removes a file.
-struct Place<'a>(&'a Path);
+struct Place<'a> {
+    folder: &'a Path,
+    list_limit: u64,
+}
 
 struct Opened {
     index: tantivy::Index,
@@ -318,19 +328,19 @@ impl Place<'_> {
     fn failed(&self, action: &'static str, error: &dyn std::fmt::Display) -> IndexError {
         IndexError::Failed {
             action,
-            path: self.0.to_path_buf(),
+            path: self.folder.to_path_buf(),
             error: error.to_string(),
         }
     }
 
     fn inspect(&self) -> Result<Folder, IndexError> {
-        match fs::symlink_metadata(self.0) {
+        match fs::symlink_metadata(self.folder) {
             Ok(meta) if meta.file_type().is_dir() => {}
-            Ok(_) => return Err(IndexError::Foreign(self.0.to_path_buf())),
+            Ok(_) => return Err(IndexError::Foreign(self.folder.to_path_buf())),
             Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Folder::Absent),
             Err(error) => return Err(self.failed("read", &error)),
         }
-        let listed = fs::read_dir(self.0).map_err(|error| self.failed("read", &error))?;
+        let listed = fs::read_dir(self.folder).map_err(|error| self.failed("read", &error))?;
         let mut entries = Vec::new();
         for entry in listed {
             let entry = entry.map_err(|error| self.failed("read", &error))?;
@@ -339,7 +349,7 @@ impl Place<'_> {
                 .map_err(|error| self.failed("read", &error))?
                 .is_file();
             let Ok(name) = entry.file_name().into_string() else {
-                return Err(IndexError::Foreign(self.0.to_path_buf()));
+                return Err(IndexError::Foreign(self.folder.to_path_buf()));
             };
             entries.push((name, plain));
         }
@@ -351,7 +361,7 @@ impl Place<'_> {
             .find(|(name, _)| name == MARKER_NAME)
             .filter(|(_, plain)| *plain);
         let Some(_) = marker else {
-            return Err(IndexError::Foreign(self.0.to_path_buf()));
+            return Err(IndexError::Foreign(self.folder.to_path_buf()));
         };
         let found = self.marker_bytes()?;
         if found == MARKER {
@@ -361,7 +371,7 @@ impl Place<'_> {
                     continue;
                 }
                 if !plain || !is_tantivy_name(&name) {
-                    return Err(IndexError::Foreign(self.0.to_path_buf()));
+                    return Err(IndexError::Foreign(self.folder.to_path_buf()));
                 }
                 names.push(name);
             }
@@ -370,13 +380,13 @@ impl Place<'_> {
         } else if entries.len() == 1 && MARKER.starts_with(&found) {
             Ok(Folder::Unmarked { cut_marker: true })
         } else {
-            Err(IndexError::Foreign(self.0.to_path_buf()))
+            Err(IndexError::Foreign(self.folder.to_path_buf()))
         }
     }
 
     fn marker_bytes(&self) -> Result<Vec<u8>, IndexError> {
         let mut found = Vec::new();
-        fs::File::open(self.0.join(MARKER_NAME))
+        fs::File::open(self.folder.join(MARKER_NAME))
             .and_then(|file| file.take(MARKER.len() as u64 + 1).read_to_end(&mut found))
             .map_err(|error| self.failed("read", &error))?;
         Ok(found)
@@ -388,10 +398,20 @@ impl Place<'_> {
             return Ok(true);
         }
         let mut bytes = Vec::new();
-        fs::File::open(self.0.join(MANAGED))
-            .and_then(|file| file.take(LIST_LIMIT + 1).read_to_end(&mut bytes))
+        fs::File::open(self.folder.join(MANAGED))
+            .and_then(|file| {
+                file.take(self.list_limit.saturating_add(1))
+                    .read_to_end(&mut bytes)
+            })
             .map_err(|error| self.failed("read", &error))?;
-        Ok(bytes.len() as u64 <= LIST_LIMIT && is_managed_list(&bytes))
+        Ok(bytes.len() as u64 <= self.list_limit && is_managed_list(&bytes))
+    }
+
+    fn may_open(&self, names: &[String]) -> Result<io::Result<bool>, IndexError> {
+        if !self.managed_is_safe(names)? || !names.iter().any(|name| name == "meta.json") {
+            return Ok(Ok(false));
+        }
+        Ok(fs::metadata(self.folder.join("meta.json")).map(|meta| meta.len() <= self.list_limit))
     }
 
     /// An error when tantivy could not look, which says nothing about the content.
@@ -401,15 +421,12 @@ impl Place<'_> {
         schema: &Schema,
         between: &dyn Fn(),
     ) -> Result<Look, IndexError> {
-        if !self.managed_is_safe(names)? || !names.iter().any(|name| name == "meta.json") {
-            return Ok(Look::Unusable);
-        }
-        match fs::metadata(self.0.join("meta.json")) {
-            Ok(meta) if meta.len() > LIST_LIMIT => return Ok(Look::Unusable),
-            Ok(_) => {}
+        match self.may_open(names)? {
+            Ok(true) => {}
+            Ok(false) => return Ok(Look::Unusable),
             Err(error) => return Err(self.failed("read", &error)),
         }
-        let Some(index) = self.looked(tantivy::Index::open_in_dir(self.0))? else {
+        let Some(index) = self.looked(tantivy::Index::open_in_dir(self.folder))? else {
             return Ok(Look::Unusable);
         };
         let Some(metas) = self.looked(index.load_metas())? else {
@@ -465,7 +482,7 @@ impl Place<'_> {
             components.push(SegmentComponent::Delete);
         }
         for component in components {
-            let file = self.0.join(segment.relative_path(component));
+            let file = self.folder.join(segment.relative_path(component));
             match fs::metadata(&file) {
                 Ok(meta) if meta.len() < FOOTER_FIXED_BYTES => return Ok(true),
                 Ok(_) => {}
@@ -645,7 +662,7 @@ fn opens(segment: &tantivy::Segment) -> Option<tantivy::Result<SegmentReader>> {
 
 impl Index for Tantivy {
     fn position(&mut self) -> Result<Option<Position>, IndexError> {
-        Committed::at(&self.folder).position()
+        Committed::at(&self.folder, self.options.list_limit).position()
     }
 
     fn clear(&mut self) -> Result<(), IndexError> {
@@ -854,27 +871,32 @@ struct Loaded {
 /// Read through its segments with no searcher: `Index::reader` takes a lock and creates its file.
 pub struct Committed {
     folder: PathBuf,
+    list_limit: u64,
     between: Box<dyn Fn()>,
     loaded: RefCell<Option<Rc<Loaded>>>,
 }
 
 impl Committed {
-    pub fn at(folder: impl AsRef<Path>) -> Committed {
-        Committed::watched(folder.as_ref(), Box::new(|| {}))
+    pub fn at(folder: impl AsRef<Path>, list_limit: u64) -> Committed {
+        Committed::watched(folder.as_ref(), list_limit, Box::new(|| {}))
     }
 
     /// `between` runs once a look, after the metadata is read and before any component of a
     /// segment is looked at.
-    pub fn watched(folder: &Path, between: Box<dyn Fn()>) -> Committed {
+    pub fn watched(folder: &Path, list_limit: u64, between: Box<dyn Fn()>) -> Committed {
         Committed {
             folder: folder.to_path_buf(),
+            list_limit,
             between,
             loaded: RefCell::new(None),
         }
     }
 
     fn place(&self) -> Place<'_> {
-        Place(&self.folder)
+        Place {
+            folder: &self.folder,
+            list_limit: self.list_limit,
+        }
     }
 
     /// Every method runs its whole body here: a tantivy panic raised while a component is read is
@@ -1328,11 +1350,11 @@ impl Lookup for Committed {
 
 impl Tantivy {
     pub fn documents(&self) -> Result<Vec<Row>, IndexError> {
-        Committed::at(&self.folder).documents()
+        Committed::at(&self.folder, self.options.list_limit).documents()
     }
 
     pub fn terms(&self) -> Result<Vec<(Row, Words)>, IndexError> {
-        Committed::at(&self.folder).terms()
+        Committed::at(&self.folder, self.options.list_limit).terms()
     }
 }
 

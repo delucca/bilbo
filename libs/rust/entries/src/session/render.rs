@@ -304,7 +304,7 @@ mod tests {
     }
 
     fn value(text: &str) -> Value {
-        parse(text.as_bytes()).expect("JSON")
+        parse(text.as_bytes(), 32).expect("JSON")
     }
 
     #[test]

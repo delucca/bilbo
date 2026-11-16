@@ -1430,6 +1430,42 @@ fn the_unpack_keys_reach_the_session_kind() {
 }
 
 #[test]
+fn the_unpack_window_reaches_the_session_kind() {
+    use std::io::Write;
+    let mut feeds = Vec::new();
+    let mut encoder = zstd::stream::write::Encoder::new(&mut feeds, 3).expect("encoder");
+    encoder.window_log(24).expect("window");
+    encoder.write_all(CODEX).expect("write");
+    encoder.finish().expect("finish");
+    for (name, config, expected, code) in [
+        ("unpack_window_default", "", counts(1, 0, 0, 0, 0), 0),
+        (
+            "unpack_window_8_mib",
+            "[session]\nunpack_window = \"8 MiB\"\n",
+            counts(0, 0, 0, 0, 1),
+            1,
+        ),
+    ] {
+        let sandbox = Sandbox::new(name);
+        sandbox.leave(None, Some(&feeds));
+        write(&sandbox.dir.join("config/config.toml"), config.as_bytes());
+        let run = sandbox.keep_sessions();
+        assert_eq!(run.code, code, "{name}: {:?}", run.stderr);
+        assert_eq!(run.stdout.lines().next(), Some(expected.as_str()), "{name}");
+        let line = format!(
+            "bilbo: refused {}: cannot unpack",
+            sandbox.packed_rollout().display()
+        );
+        assert_eq!(
+            run.stderr.iter().any(|shown| shown.starts_with(&line)),
+            code == 1,
+            "{name}: {:?}",
+            run.stderr
+        );
+    }
+}
+
+#[test]
 fn a_link_under_a_rollouts_plain_name_is_never_read() {
     let reference = Sandbox::new("link_reference");
     assert_eq!(reference.keep_sessions().code, 0);

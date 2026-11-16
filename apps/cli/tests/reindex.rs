@@ -88,12 +88,13 @@ fn options() -> bilbo_search::tantivy::Options {
     bilbo_search::tantivy::Options {
         memory: search.memory(),
         merge_deleted_share: search.merge_deleted_share(),
+        list_limit: search.list_limit.value,
     }
 }
 
 fn rank(cache: &Path, text: &str, limit: usize) -> Vec<Candidate> {
     let keys = bilbo_search::recall::keys::defaults();
-    let index = Committed::at(bilbo_search::tantivy::folder(cache));
+    let index = Committed::at(bilbo_search::tantivy::folder(cache), options().list_limit);
     Bm25 {
         index: &index,
         k1: keys.bm25_k1.value,
@@ -2265,4 +2266,43 @@ fn the_tries_key_reaches_the_update() {
     let again = second_run_of(&[]);
     assert_eq!(again.code, 1, "{:?}", again.stderr);
     assert_eq!(again.stderr.len(), 1, "{:?}", again.stderr);
+}
+
+#[test]
+fn the_list_limit_reaches_the_index_and_the_lookup() {
+    use std::io::Write;
+    let sandbox = Sandbox::filled("list_limit_key");
+    sandbox.reindex();
+    let folder = bilbo_search::tantivy::folder(&sandbox.cache());
+    fs::OpenOptions::new()
+        .append(true)
+        .open(folder.join("meta.json"))
+        .expect("meta.json")
+        .write_all(&vec![b' '; 2 << 20])
+        .expect("pad");
+    let section = |limit: Option<&str>| {
+        settings::load(
+            &|name| match name {
+                "BILBO_SEARCH_LIST_LIMIT" => limit.map(OsString::from),
+                _ => sandbox.vars().get(name).cloned(),
+            },
+            &|path| fs::read(path),
+            &bilbo_cli::kind_keys(),
+        )
+        .expect("settings")
+        .search
+    };
+    let positions = |limit: Option<&str>| {
+        let search = section(limit);
+        (
+            bilbo_cli::index(&sandbox.cache(), &search).position(),
+            bilbo_cli::lookup(&sandbox.cache(), &search).position(),
+        )
+    };
+    let (indexed, looked) = positions(None);
+    assert!(indexed.expect("a position").is_some());
+    assert!(looked.expect("a position").is_some());
+    let (indexed, looked) = positions(Some("1 MiB"));
+    assert_eq!(indexed.expect("a position"), None);
+    assert_eq!(looked.expect("a position"), None);
 }

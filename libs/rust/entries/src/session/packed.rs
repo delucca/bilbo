@@ -30,17 +30,17 @@ pub fn bound(packed: usize, floor: u64, ratio: u64) -> u64 {
 }
 
 /// A packer that knows its input's size asks for a window up to the next power of two above it, so
-/// a file that passes the count must not fail on its window; zstd's own tools refuse more than 128 MiB.
-fn window_log(limit: u64) -> u32 {
-    (64 - limit.saturating_sub(1).leading_zeros()).clamp(23, 27)
+/// a file that passes the count fails on its window only above the ceiling; zstd recommends that a decoder take 8 MiB.
+fn window_log(limit: u64, ceiling: u32) -> u32 {
+    (64 - limit.saturating_sub(1).leading_zeros()).clamp(23, ceiling.max(23))
 }
 
-pub fn unpack(bytes: &[u8], limit: u64) -> Result<Vec<u8>, Refusal> {
+pub fn unpack(bytes: &[u8], limit: u64, ceiling: u32) -> Result<Vec<u8>, Refusal> {
     let mut unpacked = Vec::new();
     let mut decoder =
         Decoder::with_buffer(bytes).map_err(|error| Refusal(format!("cannot unpack: {error}")))?;
     decoder
-        .window_log_max(window_log(limit))
+        .window_log_max(window_log(limit, ceiling))
         .map_err(|error| Refusal(format!("cannot unpack: {error}")))?;
     decoder
         .take(limit.saturating_add(1))
