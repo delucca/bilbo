@@ -931,7 +931,6 @@ impl Committed {
         self.place().failed("read", error)
     }
 
-    /// Of the last commit, sorted.
     pub fn documents(&self) -> Result<Vec<Row>, IndexError> {
         self.guard(|| {
             let loaded = self.required()?;
@@ -946,7 +945,6 @@ impl Committed {
         })
     }
 
-    /// Live documents of the last commit, sorted.
     pub fn terms(&self) -> Result<Vec<(Row, Words)>, IndexError> {
         self.guard(|| {
             let loaded = self.required()?;

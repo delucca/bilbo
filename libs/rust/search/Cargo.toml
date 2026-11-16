@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 publish.workspace = true
-description = "The chunker, the analyzer, the Index port, reindex and adapters."
+description = "The use cases that build the index and recall from it, their ports and the adapters."
 
 [dependencies]
 bilbo-entries.workspace = true

@@ -240,9 +240,8 @@ fn fnv(data: &[u8]) -> u64 {
     })
 }
 
-/// `CONTRACT_STORE` is the unpacked eval store, `CONTRACT_WHOLE` the folder `regenerate.py --whole` wrote.
 #[test]
-#[ignore = "needs the unpacked eval store"]
+#[ignore = "needs CONTRACT_STORE, the unpacked eval store, and CONTRACT_WHOLE, the folder regenerate.py --whole wrote"]
 fn the_whole_corpus_chunks_as_the_eval_store_has_it() {
     let store = std::path::PathBuf::from(var("CONTRACT_STORE"));
     let folder = std::path::PathBuf::from(var("CONTRACT_WHOLE"));
@@ -272,7 +271,7 @@ fn the_whole_corpus_chunks_as_the_eval_store_has_it() {
 }
 
 #[test]
-#[ignore = "needs the unpacked eval store"]
+#[ignore = "needs CONTRACT_STORE, the unpacked eval store, and CONTRACT_WHOLE, the folder regenerate.py --whole wrote"]
 fn every_chunk_of_the_eval_store_has_the_terms_bm25s_gave_it() {
     let store = std::path::PathBuf::from(var("CONTRACT_STORE"));
     let folder = std::path::PathBuf::from(var("CONTRACT_WHOLE"));

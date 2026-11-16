@@ -517,7 +517,7 @@
           "FILE:@@//libs/rust/entries/Cargo.toml fc885f4f2aaf613ef33f93379a5ce36ba682262de5bc5ba21d60d8b1a9733463",
           "FILE:@@//libs/rust/settings/Cargo.toml 3e885efc99c425dbdc4775ffae4ecd306870d86f016d15e57b20dafd4372e755",
           "FILE:@@//libs/rust/store/Cargo.toml 28814746757cc488e6877d1eb1acbd03d3cabac3843d87b90da0412ab84a45ec",
-          "FILE:@@//libs/rust/search/Cargo.toml 79fe29d4c7fd5a271f5a35b8ed7fc564daba38aed93f4fb93eea5a00322fbfad"
+          "FILE:@@//libs/rust/search/Cargo.toml 1478dea03b3c7300bb3c0bd69e2cd92b8e5c898ee1497ca0ac2f46a0af7b4877"
         ],
         "generatedRepoSpecs": {
           "crates": {

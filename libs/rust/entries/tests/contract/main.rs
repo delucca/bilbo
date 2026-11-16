@@ -222,9 +222,8 @@ fn var(name: &str) -> Option<OsString> {
     std::env::var_os(name)
 }
 
-/// `CONTRACT_CORPUS` is the unpacked eval corpus, `CONTRACT_EXPECTED` what `regenerate.py --whole` wrote. Prints counts only.
 #[test]
-#[ignore = "needs the unpacked eval corpus"]
+#[ignore = "needs CONTRACT_CORPUS, the unpacked eval corpus, and CONTRACT_EXPECTED, what regenerate.py --whole wrote"]
 fn the_whole_corpus_reads_as_build_py_printed_it() {
     let corpus = PathBuf::from(var("CONTRACT_CORPUS").expect("CONTRACT_CORPUS"));
     let rows = fs::read_to_string(var("CONTRACT_EXPECTED").expect("CONTRACT_EXPECTED"))
