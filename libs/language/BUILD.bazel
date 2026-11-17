@@ -1,7 +1,7 @@
 alias(
     name = "rust",
     actual = "//libs/language/rust",
-    visibility = ["//libs/rust/search:__pkg__"],
+    visibility = ["//libs/search/rust:__pkg__"],
 )
 
 filegroup(

@@ -1,4 +1,4 @@
 # Fixtures are test input byte for byte: crlf.md must keep its CRLF endings.
-libs/rust/entries/fixtures/markdown/*.md -text
-libs/rust/entries/fixtures/session/* -text
-libs/rust/entries/tests/contract/*.jsonl -text
+libs/entries/rust/fixtures/markdown/*.md -text
+libs/entries/rust/fixtures/session/* -text
+libs/entries/rust/tests/contract/*.jsonl -text

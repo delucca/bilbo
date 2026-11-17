@@ -9,16 +9,16 @@ use super::scratch::{CLAUDE, MAIN, SUBAGENT, Scratch};
 const OTHER: &str = "9b1d2c3e-4f5a-4b6c-8d7e-0f1a2b3c4d5e";
 const ROLLOUT: &str = "rollout-2026-11-06T09-10-00-019a4f2e-7c1d-7b3a-9e55-2d8c41f0a6b7.jsonl";
 const META: &[u8] =
-    include_bytes!("../../../libs/rust/entries/fixtures/session/agent-ad63c2b3c9e7a4b3d.meta.json");
+    include_bytes!("../../../libs/entries/rust/fixtures/session/agent-ad63c2b3c9e7a4b3d.meta.json");
 const CODEX: &[u8] = include_bytes!(
-    "../../../libs/rust/entries/fixtures/session/rollout-2026-11-06T09-10-00-019a4f2e-7c1d-7b3a-9e55-2d8c41f0a6b7.jsonl"
+    "../../../libs/entries/rust/fixtures/session/rollout-2026-11-06T09-10-00-019a4f2e-7c1d-7b3a-9e55-2d8c41f0a6b7.jsonl"
 );
 const CODEX_PACKED: &[u8] = include_bytes!(
-    "../../../libs/rust/entries/fixtures/session/rollout-2026-11-06T09-10-00-019a4f2e-7c1d-7b3a-9e55-2d8c41f0a6b7.jsonl.zst"
+    "../../../libs/entries/rust/fixtures/session/rollout-2026-11-06T09-10-00-019a4f2e-7c1d-7b3a-9e55-2d8c41f0a6b7.jsonl.zst"
 );
 const SECOND: &str = "rollout-2026-11-07T08-00-00-019a5b3c-2d4e-7f60-8a1b-3c5d7e9f0a2b.jsonl";
 const SECOND_PACKED: &[u8] = include_bytes!(
-    "../../../libs/rust/entries/fixtures/session/rollout-2026-11-07T08-00-00-019a5b3c-2d4e-7f60-8a1b-3c5d7e9f0a2b.jsonl.zst"
+    "../../../libs/entries/rust/fixtures/session/rollout-2026-11-07T08-00-00-019a5b3c-2d4e-7f60-8a1b-3c5d7e9f0a2b.jsonl.zst"
 );
 const ROLLOUT_ID: &str = "019a4f2e-7c1d-7b3a-9e55-2d8c41f0a6b7";
 

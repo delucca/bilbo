@@ -149,16 +149,16 @@ impl Drop for Scratch {
 
 pub(crate) const UUID: &str = "8f2b6d4e-1a3c-4e5f-9b7a-2c4d6e8f0a1b";
 pub(crate) const SESSION: &[u8] = include_bytes!(
-    "../../../libs/rust/entries/fixtures/session/8f2b6d4e-1a3c-4e5f-9b7a-2c4d6e8f0a1b.jsonl"
+    "../../../libs/entries/rust/fixtures/session/8f2b6d4e-1a3c-4e5f-9b7a-2c4d6e8f0a1b.jsonl"
 );
 pub(crate) const MAIN: &str = "5c3a9e1f-0b7d-4c2e-9a41-7f2d8e6b1c03";
 pub(crate) const CLAUDE: &[u8] = include_bytes!(
-    "../../../libs/rust/entries/fixtures/session/5c3a9e1f-0b7d-4c2e-9a41-7f2d8e6b1c03.jsonl"
+    "../../../libs/entries/rust/fixtures/session/5c3a9e1f-0b7d-4c2e-9a41-7f2d8e6b1c03.jsonl"
 );
 pub(crate) const SUBAGENT: &[u8] =
-    include_bytes!("../../../libs/rust/entries/fixtures/session/agent-ad63c2b3c9e7a4b3d.jsonl");
+    include_bytes!("../../../libs/entries/rust/fixtures/session/agent-ad63c2b3c9e7a4b3d.jsonl");
 pub(crate) const NOTE: &str =
-    include_str!("../../../libs/rust/entries/fixtures/markdown/sections.md");
+    include_str!("../../../libs/entries/rust/fixtures/markdown/sections.md");
 
 pub(crate) fn remembered(test: &str) -> Scratch {
     let scratch = Scratch::new(test);

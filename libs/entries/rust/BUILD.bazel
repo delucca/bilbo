@@ -10,27 +10,44 @@ extract_cargo_lints(
 )
 
 rust_library(
-    name = "search",
+    name = "rust",
     srcs = glob(["src/**/*.rs"]),
-    compile_data = ["src/qwen/tokenizer.json.zst"],
-    crate_name = "bilbo_search",
+    crate_name = "bilbo_entries",
     lint_config = ":lints",
-    visibility = ["//apps/cli:__pkg__"],
+    visibility = ["//libs/entries:__pkg__"],
     deps = [
-        "//libs/rust/entries",
-        "//libs/language:rust",
-        "//libs/rust/settings",
-        "//libs/rust/store",
+        "//libs/settings:rust",
+        "//libs/store:rust",
     ] + all_crate_deps(normal = True),
+)
+
+filegroup(
+    name = "markdown_fixtures",
+    srcs = glob(["fixtures/markdown/*"]),
+    visibility = [
+        "//apps/cli:__pkg__",
+        "//tests/e2e/cli:__pkg__",
+    ],
+)
+
+filegroup(
+    name = "session_fixtures",
+    srcs = glob(["fixtures/session/*"]),
+    visibility = [
+        "//apps/cli:__pkg__",
+        "//tests/e2e/cli:__pkg__",
+    ],
 )
 
 bilbo_rust_test(
     name = "unit",
-    compile_data = ["src/qwen/tokenizer.json.zst"],
-    crate = ":search",
+    compile_data = [
+        ":markdown_fixtures",
+        ":session_fixtures",
+    ],
+    crate = ":rust",
     layer = "unit",
     lint_config = ":lints",
-    size = "medium",
 )
 
 bilbo_rust_test(
@@ -40,40 +57,19 @@ bilbo_rust_test(
     layer = "acceptance",
     lint_config = ":lints",
     deps = [
-        ":search",
-        "//libs/rust/entries",
-        "//libs/rust/store",
+        ":rust",
+        "//libs/store:rust",
     ],
 )
 
 bilbo_rust_test(
     name = "contract",
     srcs = glob(["tests/contract/*.rs"]),
-    compile_data = glob([
-        "tests/contract/*.jsonl",
-        "tests/contract/*.zst",
-    ]),
+    compile_data = glob(["tests/contract/*.jsonl"]) + [":session_fixtures"],
     crate_root = "tests/contract/main.rs",
     layer = "contract",
     lint_config = ":lints",
-    deps = [
-        ":search",
-        "//libs/rust/entries",
-        "//libs/rust/store",
-        "@crates//:zstd",
-    ] + all_crate_deps(normal_dev = True),
-)
-
-bilbo_rust_test(
-    name = "integration",
-    srcs = glob(["tests/integration/*.rs"]),
-    crate_root = "tests/integration/main.rs",
-    layer = "integration",
-    lint_config = ":lints",
-    deps = [
-        ":search",
-        "//libs/rust/store",
-    ] + all_crate_deps(normal = True),
+    deps = [":rust"] + all_crate_deps(normal_dev = True),
 )
 
 bilbo_rust_test(

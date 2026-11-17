@@ -15,8 +15,8 @@ bilbo_rust_test(
         "tty.rs",
     ],
     compile_data = [
-        "//libs/rust/entries:markdown_fixtures",
-        "//libs/rust/entries:session_fixtures",
+        "//libs/entries/rust:markdown_fixtures",
+        "//libs/entries/rust:session_fixtures",
     ],
     crate_root = "cli.rs",
     data = ["//apps/cli:bilbo"],

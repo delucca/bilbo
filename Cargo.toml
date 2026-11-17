@@ -2,11 +2,11 @@
 resolver = "3"
 members = [
     "apps/cli",
-    "libs/rust/entries",
+    "libs/entries/rust",
     "libs/language/rust",
-    "libs/rust/search",
-    "libs/rust/settings",
-    "libs/rust/store",
+    "libs/search/rust",
+    "libs/settings/rust",
+    "libs/store/rust",
     "tools/rust/layout",
 ]
 
@@ -17,12 +17,12 @@ rust-version = "1.99"
 publish = false
 
 [workspace.dependencies]
-bilbo-entries = { path = "libs/rust/entries" }
+bilbo-entries = { path = "libs/entries/rust" }
 bilbo-language = { path = "libs/language/rust" }
 bilbo-layout = { path = "tools/rust/layout" }
-bilbo-search = { path = "libs/rust/search" }
-bilbo-settings = { path = "libs/rust/settings" }
-bilbo-store = { path = "libs/rust/store" }
+bilbo-search = { path = "libs/search/rust" }
+bilbo-settings = { path = "libs/settings/rust" }
+bilbo-store = { path = "libs/store/rust" }
 clap = { version = "4.6.7", default-features = false, features = ["std", "derive", "help", "usage", "error-context"] }
 frostem = { version = "2.20261016.2", default-features = false, features = ["english"] }
 proc-macro2 = { version = "1.0.107", default-features = false }

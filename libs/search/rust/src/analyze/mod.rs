@@ -626,7 +626,7 @@ mod tests {
     fn a_label_is_filed_under_its_first_64_words_and_a_value_under_all() {
         assert_eq!(
             MAX_LABEL_WORDS, 64,
-            "the bound is part of what the index run files: change the catalog's VERSION (libs/rust/store/src/catalog.rs) with it"
+            "the bound is part of what the index run files: change the catalog's VERSION (libs/store/rust/src/catalog.rs) with it"
         );
         let long = (0..70)
             .map(|n| format!("w{n}"))
