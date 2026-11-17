@@ -1908,7 +1908,7 @@ struct Portuguese(AtomicUsize);
 impl Detect for Portuguese {
     fn language(&self, _: &str) -> Option<Language> {
         self.0.fetch_add(1, Ordering::Relaxed);
-        Some(Language::Portuguese)
+        Some(Language::of("pt").expect("a Portuguese language"))
     }
 }
 
@@ -2021,7 +2021,7 @@ fn the_cli_hands_recall_whichlang() {
     let detect = bilbo_cli::detect();
     assert_eq!(
         detect.language("Olá feliz contribuinte"),
-        Some(Language::Portuguese)
+        Some(Language::of("pt").expect("a Portuguese language"))
     );
     assert_eq!(detect.language("Hello, happy tax payer"), None);
 }

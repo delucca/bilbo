@@ -18,6 +18,7 @@ rust_library(
     visibility = ["//apps/cli:__pkg__"],
     deps = [
         "//libs/rust/entries",
+        "//libs/language:rust",
         "//libs/rust/settings",
         "//libs/rust/store",
     ] + all_crate_deps(normal = True),

@@ -1,5 +1,5 @@
 mod fold;
-mod portuguese;
+mod language;
 mod word;
 
 use std::borrow::Cow;
@@ -136,35 +136,42 @@ pub fn terms(text: &str) -> Vec<String> {
 }
 
 /// A language whose function words a query can lose.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Language {
-    Portuguese,
+#[derive(Clone, Copy)]
+pub struct Language(&'static language::Table);
+
+impl PartialEq for Language {
+    fn eq(&self, other: &Language) -> bool {
+        self.code() == other.code()
+    }
+}
+
+impl Eq for Language {}
+
+impl std::fmt::Debug for Language {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.code())
+    }
 }
 
 impl Language {
     pub fn code(self) -> &'static str {
-        match self {
-            Language::Portuguese => "pt",
-        }
+        self.0.code
+    }
+
+    pub fn all() -> impl Iterator<Item = Language> {
+        language::tables().iter().map(Language)
     }
 
     pub fn of(code: &str) -> Option<Language> {
-        match code {
-            "pt" => Some(Language::Portuguese),
-            _ => None,
-        }
+        Language::all().find(|language| language.code() == code)
     }
 
     fn counts(self, word: &str) -> bool {
-        match self {
-            Language::Portuguese => portuguese::counts(word),
-        }
+        self.0.counts(word)
     }
 
     fn leaves(self, word: &str) -> bool {
-        match self {
-            Language::Portuguese => portuguese::leaves(word),
-        }
+        self.0.leaves(word)
     }
 }
 
@@ -225,24 +232,26 @@ pub const ID: &str = "bm25s-en/3";
 
 #[cfg(test)]
 mod tests {
-    use crate::testing::Says;
+    use crate::testing::{Says, portuguese};
 
     use std::borrow::Cow;
     use std::collections::HashSet;
+    use std::sync::LazyLock;
 
     use super::{
         Language, MAX_LABEL_WORDS, MAX_TERM_BYTES, Omit, STOPWORDS, every_word, filed_words, fold,
-        is_word, label_words, lower, portuguese, query, runs, stem, terms, word, words,
+        is_word, label_words, language, lower, query, runs, stem, terms, word, words,
     };
 
     fn portuguese_says() -> Says {
-        Says::new(Some(Language::Portuguese))
+        Says::new(Some(portuguese()))
     }
 
     fn with(says: &Says) -> Omit<'_> {
+        static LANGUAGES: LazyLock<[Language; 1]> = LazyLock::new(|| [portuguese()]);
         Omit {
             words: &[],
-            languages: &[Language::Portuguese],
+            languages: &*LANGUAGES,
             detect: Some(says),
         }
     }
@@ -657,7 +666,7 @@ mod tests {
                 "What did we decide? Decide the index index",
                 &Omit {
                     words: &dropped,
-                    languages: &[Language::Portuguese],
+                    languages: &[portuguese()],
                     detect: None
                 }
             ),
@@ -665,7 +674,7 @@ mod tests {
         );
         let omit = Omit {
             words: &dropped,
-            languages: &[Language::Portuguese],
+            languages: &[portuguese()],
             detect: None,
         };
         assert_eq!(query("what did we", &omit), Vec::<String>::new());
@@ -681,7 +690,7 @@ mod tests {
         let dropped = ["anything".to_owned()];
         let omit = Omit {
             words: &dropped,
-            languages: &[Language::Portuguese],
+            languages: &[portuguese()],
             detect: None,
         };
         assert_eq!(query("anything", &omit), Vec::<String>::new());
@@ -719,15 +728,16 @@ mod tests {
     #[test]
     fn every_published_spelling_leaves_a_portuguese_query() {
         let says = portuguese_says();
-        assert_eq!(portuguese::published().len(), 207);
-        for spelling in portuguese::published() {
+        let published = language::published("pt").expect("a Portuguese list");
+        assert_eq!(published.len(), 207);
+        for spelling in published {
             assert_eq!(
                 query(&format!("{spelling} que pelo"), &with(&says)),
                 Vec::<String>::new(),
                 "{spelling}"
             );
         }
-        let kept = portuguese::published()
+        let kept = published
             .iter()
             .filter(|spelling| !words(spelling).is_empty())
             .count();
@@ -767,7 +777,7 @@ mod tests {
         assert!(says.asked.borrow().is_empty());
         let omit = Omit {
             words: &["nas".to_owned()],
-            languages: &[Language::Portuguese],
+            languages: &[portuguese()],
             detect: Some(&says),
         };
         assert_eq!(query("nas", &omit), Vec::<String>::new());
@@ -828,7 +838,7 @@ mod tests {
                 "que pelo nas",
                 &Omit {
                     words: &[],
-                    languages: &[Language::Portuguese],
+                    languages: &[portuguese()],
                     detect: None,
                 }
             ),
@@ -847,7 +857,7 @@ mod tests {
     fn the_words_the_user_omits_are_matched_after_the_fold() {
         let omit = Omit {
             words: &["nao".to_owned()],
-            languages: &[Language::Portuguese],
+            languages: &[portuguese()],
             detect: None,
         };
         assert_eq!(query("n\u{e3}o", &omit), Vec::<String>::new());
@@ -877,12 +887,12 @@ mod tests {
         let words = ["we".to_owned()];
         let omit = Omit {
             words: &words,
-            languages: &[Language::Portuguese],
+            languages: &[portuguese()],
             detect: Some(&Says::new(None)),
         };
         assert_eq!(
             format!("{omit:?}"),
-            r#"Omit { words: ["we"], languages: [Portuguese], .. }"#
+            r#"Omit { words: ["we"], languages: [pt], .. }"#
         );
     }
 }

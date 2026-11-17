@@ -39,6 +39,10 @@ impl Detect for Says {
     }
 }
 
+pub(crate) fn portuguese() -> Language {
+    Language::of("pt").expect("a Portuguese language")
+}
+
 pub(crate) fn id(n: u8) -> Id {
     Id::from_bytes([n; 16])
 }

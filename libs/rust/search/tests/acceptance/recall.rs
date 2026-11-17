@@ -997,8 +997,9 @@ fn a_portuguese_query_ranks_by_its_content_words() {
         );
         entries_of(&finished.result.expect("a run"))
     };
-    let portuguese = [Language::Portuguese];
-    let says = Says(Some(Language::Portuguese));
+    let language = Language::of("pt").expect("a Portuguese language");
+    let portuguese = [language];
+    let says = Says(Some(language));
     assert!(hits(&portuguese, None).contains(&id(2)));
     assert_eq!(hits(&portuguese, Some(&says)), [id(1)]);
     assert!(hits(&portuguese, Some(&Says(None))).contains(&id(2)));

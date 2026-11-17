@@ -142,8 +142,8 @@ pub const LANGUAGES: Key<Vec<Language>> = Key {
         name: "recall.languages",
         variable: None,
         default: Default::Toml(r#"["pt"]"#),
-        allowed: "a list of language codes; pt is the one bilbo knows",
-        doc: "The languages whose function words bilbo recall leaves out of a query written in one of them; they stay searchable in what was kept. pt is Portuguese. An empty list leaves none out.",
+        allowed: "a list of language codes bilbo knows, each once",
+        doc: "The languages whose function words bilbo recall leaves out of a query written in one of them; they stay searchable in what was kept. An empty list leaves none out.",
     },
     parse: |value| {
         let items = value.items().ok_or_else(|| value.refuse())?;
@@ -408,7 +408,7 @@ mod tests {
     use bilbo_settings::file::File;
     use bilbo_settings::key::Source;
 
-    use crate::analyze::Language;
+    use crate::testing::portuguese;
 
     use super::{ABOUT, Section, defaults, section};
 
@@ -447,7 +447,7 @@ mod tests {
             section.question_words.value,
             ["what", "did", "we", "should", "how", "anything"]
         );
-        assert_eq!(section.languages.value, [Language::Portuguese]);
+        assert_eq!(section.languages.value, [portuguese()]);
         assert!((section.bm25_k1.value - 1.2).abs() < f64::EPSILON);
         assert!((section.bm25_b.value - 0.75).abs() < f64::EPSILON);
         assert_eq!(section.read_batch.value, 4096);
@@ -748,11 +748,12 @@ mod tests {
         let languages = |text: &str| resolve(&[], text).map(|s| s.languages.value);
         assert_eq!(
             languages("recall.languages = [\"pt\"]"),
-            Ok(vec![Language::Portuguese])
+            Ok(vec![portuguese()])
         );
         assert_eq!(languages("recall.languages = []"), Ok(Vec::new()));
         for text in [
-            "recall.languages = [\"es\"]",
+            "recall.languages = [\"zxx\"]",
+            "recall.languages = [\"en\"]",
             "recall.languages = [\"PT\"]",
             "recall.languages = [\"pt\", \"pt\"]",
             "recall.languages = \"pt\"",

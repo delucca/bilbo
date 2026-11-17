@@ -18,6 +18,7 @@ publish = false
 
 [workspace.dependencies]
 bilbo-entries = { path = "libs/rust/entries" }
+bilbo-language = { path = "libs/language/rust" }
 bilbo-layout = { path = "tools/rust/layout" }
 bilbo-search = { path = "libs/rust/search" }
 bilbo-settings = { path = "libs/rust/settings" }

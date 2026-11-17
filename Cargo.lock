@@ -119,12 +119,12 @@ name = "bilbo-search"
 version = "0.0.0"
 dependencies = [
  "bilbo-entries",
+ "bilbo-language",
  "bilbo-layout",
  "bilbo-settings",
  "bilbo-store",
  "frostem",
  "serde_json",
- "stop-words",
  "strsim",
  "tantivy",
  "tokenizers",

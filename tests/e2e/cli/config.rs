@@ -100,13 +100,13 @@ fn a_bad_value_in_the_file_exits_2_naming_the_file_the_line_and_the_key() {
 #[test]
 fn a_language_bilbo_does_not_know_is_a_config_error() {
     let scratch = Scratch::new("unknown_language");
-    let config = scratch.config("[recall]\nlanguages = [\"es\"]\n");
+    let config = scratch.config("[recall]\nlanguages = [\"zxx\"]\n");
     let run = scratch.run(&["config"]);
     assert_eq!((run.code, run.stdout.as_str()), (2, ""));
     assert_eq!(
         run.stderr,
         format!(
-            "bilbo: {config}:2: recall.languages must be a list of language codes; pt is the one bilbo knows, got \"es\"\n"
+            "bilbo: {config}:2: recall.languages must be a list of language codes bilbo knows, each once, got \"zxx\"\n"
         )
     );
 }

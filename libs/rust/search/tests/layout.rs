@@ -8,13 +8,16 @@ const PLACEMENT: &[(&str, &[&str])] = &[
     ("qwen", &["src/qwen/", "tests/contract/"]),
     ("whichlang", &["src/whichlang.rs"]),
     ("zstd", &["src/qwen/", "tests/contract/"]),
-    ("stop_words", &["src/analyze/portuguese.rs"]),
     ("frostem", &["src/analyze/mod.rs"]),
     ("strsim", &["src/typo.rs"]),
     ("xxhash_rust", &["src/chunk.rs"]),
     ("markdown", &[]),
     ("session", &[]),
     ("bilbo_entries", &["src/", "tests/"]),
+    (
+        "bilbo_language",
+        &["src/analyze/language.rs", "src/whichlang.rs"],
+    ),
     ("bilbo_settings", &["src/", "tests/"]),
     ("bilbo_store", &["src/", "tests/"]),
 ];

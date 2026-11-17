@@ -8,10 +8,10 @@ description = "The use cases that build the index and recall from it, their port
 
 [dependencies]
 bilbo-entries.workspace = true
+bilbo-language.workspace = true
 bilbo-settings.workspace = true
 bilbo-store.workspace = true
 frostem.workspace = true
-stop-words.workspace = true
 strsim.workspace = true
 tantivy.workspace = true
 tokenizers.workspace = true

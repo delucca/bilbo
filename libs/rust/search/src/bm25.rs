@@ -237,11 +237,11 @@ impl Ranker for Bm25<'_> {
 
 #[cfg(test)]
 mod tests {
-    use crate::analyze::{self, Language, Omit};
+    use crate::analyze::{self, Omit};
     use crate::index::IndexError;
     use crate::lookup::{Edits, Posting};
     use crate::rank::{Candidate, Expanded, Query, Ranker};
-    use crate::testing::{Says, Table, id};
+    use crate::testing::{Says, Table, id, portuguese};
     use crate::typo;
 
     use super::Bm25;
@@ -469,7 +469,7 @@ mod tests {
     #[test]
     fn a_portuguese_querys_function_words_are_never_looked_up() {
         let table = Table::new().doc("note", 1, 1, "status que pelo");
-        let says = Says::new(Some(Language::Portuguese));
+        let says = Says::new(Some(portuguese()));
         let rank = |omit: Omit<'_>| {
             table.looked_up.borrow_mut().clear();
             Bm25 {
@@ -487,7 +487,7 @@ mod tests {
         };
         let with = rank(Omit {
             words: &[],
-            languages: &[Language::Portuguese],
+            languages: &[portuguese()],
             detect: Some(&says),
         });
         assert_eq!(with, ["status"]);
@@ -1058,10 +1058,10 @@ mod tests {
             .doc("note", 1, 1, &format!("{} de {}", terms[0], terms[1]))
             .doc("note", 2, 1, &terms.join(" "))
             .doc("note", 3, 1, "status");
-        let says = Says::new(Some(Language::Portuguese));
+        let says = Says::new(Some(portuguese()));
         let omit = Omit {
             words: &[],
-            languages: &[Language::Portuguese],
+            languages: &[portuguese()],
             detect: Some(&says),
         };
         let rank = |weight: f64| {
