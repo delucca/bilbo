@@ -60,7 +60,7 @@ Sizes are strings with a binary unit, `KiB`, `MiB` or `GiB`, with or without the
 | `recall.copy_share` | `BILBO_RECALL_COPY_SHARE` | `0.5` | A hit is passed over when at least this share of its runs of words is in the hits above it; 0 passes over no copy. Must be a number from 0 to 1. |
 | `recall.copy_words` | `BILBO_RECALL_COPY_WORDS` | `5` | How many words in a row make one run when bilbo recall looks for copies. Must be a whole number from 1 to 64. |
 | `recall.question_words` | none | `["what", "did", "we", "should", "how", "anything"]` | Words left out of a query before it is searched; they stay searchable in what was kept. An empty list leaves none out. Must be a list of words as the analyzer reads them: lowercase, with no accent or other mark, no compatibility form it folds, and Hangul as jamo. A word the analyzer drops, such as `the`, is refused, and a listed `nao` leaves `não` too. |
-| `recall.languages` | none | `["pt"]` | The languages whose function words bilbo recall leaves out of a query written in one of them; they stay searchable in what was kept. An empty list leaves none out. Must be a list of language codes bilbo knows, each once. `pt` is Portuguese. |
+| `recall.languages` | none | `["pt"]` | The languages whose function words bilbo recall leaves out of a query written in one of them; they stay searchable in what was kept. An empty list leaves none out. Must be a list of language codes bilbo knows, each once. [Languages](#languages) lists them. |
 | `recall.bm25_k1` | `BILBO_RECALL_BM25_K1` | `1.2` | How fast a word that repeats in a chunk stops adding to its score. At 0 every chunk holding a word would score the same. Must be a number from 0.01 to 10. |
 | `recall.bm25_b` | `BILBO_RECALL_BM25_B` | `0.75` | How much a chunk longer than the average is scored down: 0 not at all, 1 fully. Must be a number from 0 to 1. |
 | `recall.read_batch` | `BILBO_RECALL_READ_BATCH` | `4096` | The most chunks bilbo recall reads from the index at once. By default only a run of equal scores longer than the candidates reaches it. It changes no hit. Must be a whole number from 1 to 1000000. |
@@ -76,6 +76,14 @@ Sizes are strings with a binary unit, `KiB`, `MiB` or `GiB`, with or without the
 | `session.wide_fields` | `BILBO_SESSION_WIDE_FIELDS` | `32` | The fields a JSON object of a session record may hold before bilbo looks each key up in a table instead of comparing it with every field read so far. It changes no passage: only how fast a record with many fields is read. Must be a whole number from 1 to 4096. |
 
 An XDG variable moves a default only when it holds an absolute path.
+
+## Languages
+
+The codes `recall.languages` takes; [Commands](commands.md#the-query) says when a query loses a language's function words.
+
+| Code | Language |
+| --- | --- |
+| `pt` | Portuguese |
 
 ## Folders
 

@@ -166,6 +166,10 @@ impl Language {
         Language::all().find(|language| language.code() == code)
     }
 
+    pub fn name(self) -> &'static str {
+        self.0.name
+    }
+
     fn counts(self, word: &str) -> bool {
         self.0.counts(word)
     }

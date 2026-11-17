@@ -247,6 +247,7 @@ mod tests {
     use bilbo_settings::key::{Default, Origin};
 
     use bilbo_entries::follows::Follow;
+    use bilbo_search::analyze::Language;
 
     use super::{CACHE, CONFIG, FOLLOW, ROOT, STATE, keys, load, show_follows};
 
@@ -491,6 +492,57 @@ mod tests {
                 about.allowed
             );
         }
+    }
+
+    #[test]
+    fn the_reference_page_lists_every_language() {
+        let page: Vec<&str> = PAGE.lines().collect();
+        let mut headings = (0..page.len()).filter(|&at| page[at] == "## Languages");
+        let heading = headings
+            .next()
+            .expect("docs/reference/configuration.md has no \"## Languages\" section");
+        assert!(
+            headings.next().is_none(),
+            "docs/reference/configuration.md holds more than one \"## Languages\" section"
+        );
+        let lines: Vec<&str> = page[heading + 1..]
+            .iter()
+            .copied()
+            .take_while(|line| !line.starts_with("## "))
+            .collect();
+        let headers: Vec<usize> = (0..lines.len())
+            .filter(|&at| lines[at].trim() == "| Code | Language |")
+            .collect();
+        assert_eq!(
+            headers.len(),
+            1,
+            "the Languages section of docs/reference/configuration.md must hold exactly one table headed \"| Code | Language |\""
+        );
+        assert_eq!(
+            lines.get(headers[0] + 1).map(|line| line.trim()),
+            Some("| --- | --- |"),
+            "the header of the Languages table must be followed by \"| --- | --- |\""
+        );
+        let found: Vec<Vec<String>> = lines[headers[0] + 2..]
+            .iter()
+            .take_while(|line| line.starts_with('|'))
+            .map(|line| {
+                let row = line.trim();
+                let row = row.strip_prefix('|').unwrap_or(row);
+                row.strip_suffix('|')
+                    .unwrap_or(row)
+                    .split('|')
+                    .map(|cell| cell.trim().to_owned())
+                    .collect()
+            })
+            .collect();
+        let expected: Vec<Vec<String>> = Language::all()
+            .map(|language| vec![format!("`{}`", language.code()), language.name().to_owned()])
+            .collect();
+        assert_eq!(
+            found, expected,
+            "the Languages table must list every code recall.languages takes, in code order"
+        );
     }
 
     fn names_in(text: &str) -> BTreeSet<String> {

@@ -8,6 +8,7 @@ const ENGLISH: &str = "en";
 
 pub(super) struct Table {
     pub(super) code: &'static str,
+    pub(super) name: &'static str,
     words: Vec<String>,
     shared: Vec<String>,
 }
@@ -51,6 +52,7 @@ pub(super) fn tables() -> &'static [Table] {
                     .collect();
                 Table {
                     code: language.code,
+                    name: language.name,
                     words,
                     shared,
                 }
@@ -107,6 +109,7 @@ mod tests {
     fn a_language_equals_itself_and_no_language_of_another_code() {
         static OTHER: Table = Table {
             code: "zxx",
+            name: "No linguistic content",
             words: Vec::new(),
             shared: Vec::new(),
         };
