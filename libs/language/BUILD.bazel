@@ -1,0 +1,10 @@
+alias(
+    name = "rust",
+    actual = "//libs/language/rust",
+)
+
+filegroup(
+    name = "locales",
+    srcs = glob(["locales/*.toml"]),
+    visibility = ["//libs/language/rust:__pkg__"],
+)

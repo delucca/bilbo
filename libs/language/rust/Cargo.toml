@@ -1,0 +1,16 @@
+[package]
+name = "bilbo-language"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+description = "What bilbo knows about each natural language, one file a language."
+
+[build-dependencies]
+toml.workspace = true
+
+[dev-dependencies]
+stop-words.workspace = true
+
+[lints]
+workspace = true

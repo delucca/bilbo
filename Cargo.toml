@@ -3,6 +3,7 @@ resolver = "3"
 members = [
     "apps/cli",
     "libs/rust/entries",
+    "libs/language/rust",
     "libs/rust/search",
     "libs/rust/settings",
     "libs/rust/store",
