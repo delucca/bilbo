@@ -1,9 +1,9 @@
 """Judge what each context states. Usage: judge.py <selected.jsonl> <contexts.jsonl> <judged.jsonl> [--jobs N] [--model M].
 One call per distinct prompt marks each fact and each older value present or absent: contexts with the same prompt (a
-question's two forms that returned the same text) share one verdict, and a prompt already in judged.jsonl is not judged
-again. A claude-* model runs through `claude -p`, any other through `codex exec`. BILBO_EVAL_JUDGE_CWD is the empty
-directory the judge runs in; BILBO_EVAL_CODEX_HOME is a CODEX_HOME that holds only auth.json, so the user's AGENTS.md,
-hooks and plugins never reach a Codex judge."""
+question's two forms that returned the same text) share one verdict, and a prompt this JUDGE already marked in
+judged.jsonl is not judged again. A claude-* model runs through `claude -p`, any other through `codex exec`.
+BILBO_EVAL_JUDGE_CWD is the empty directory the judge runs in; BILBO_EVAL_CODEX_HOME is a CODEX_HOME that holds only
+auth.json, so the user's AGENTS.md, hooks and plugins never reach a Codex judge."""
 
 import argparse
 import hashlib
@@ -18,6 +18,10 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 SYSTEM = "You check whether a text states given facts. You reply with JSON only."
+# Raise it with any change to what a judge runs with: a verdict of another JUDGE is never reused. Rows without it are 1.
+JUDGE = 2
+CLAUDE_EFFORT = "medium"
+CLAUDE_KEEPS = ("HOME", "USER", "PATH", "LANG", "TMPDIR")
 TRIES = 3
 STOP_AFTER = 3
 CODEX_EFFORT = "high"
@@ -63,11 +67,15 @@ def build_prompt(q, context):
 
 
 def ask_claude(model, prompt):
+    """--safe-mode keeps the user's CLAUDE.md and memory out of the prompt, which --setting-sources does not. Hooks of
+    managed settings still run, so the child gets none of the caller's variables. A prompt is read once, and the
+    default writes it to the one-hour cache at twice the input price."""
     p = subprocess.run(
-        ["claude", "-p", "--model", model, "--output-format", "json", "--tools", "", "--disable-slash-commands",
-         "--strict-mcp-config", "--setting-sources", "project", "--settings", '{"disableAllHooks": true}',
-         "--no-session-persistence", "--system-prompt", SYSTEM],
-        input=prompt, capture_output=True, text=True, timeout=600, cwd=os.environ["BILBO_EVAL_JUDGE_CWD"])
+        ["claude", "-p", "--model", model, "--effort", CLAUDE_EFFORT, "--output-format", "json", "--tools", "",
+         "--disable-slash-commands", "--strict-mcp-config", "--setting-sources", "project", "--settings",
+         '{"disableAllHooks": true}', "--no-session-persistence", "--safe-mode", "--system-prompt", SYSTEM],
+        input=prompt, capture_output=True, text=True, timeout=600, cwd=os.environ["BILBO_EVAL_JUDGE_CWD"],
+        env={**{k: os.environ[k] for k in CLAUDE_KEEPS if k in os.environ}, "DISABLE_PROMPT_CACHING": "1"})
     reply = json.loads(p.stdout)
     if reply.get("is_error"):
         raise ValueError(f"is_error: {str(reply.get('result'))[:200]}")
@@ -137,6 +145,8 @@ questions = {q["id"]: q for q in lines(args.selected)}
 judged = Path(args.judged)
 cached, verdicts = set(), {}
 for r in lines(judged) if judged.exists() else []:
+    if r.get("judge", 1) != JUDGE:
+        continue
     cached.add((r["id"], r["form"], r["prompt"]))
     verdicts.setdefault(r["prompt"], {"facts": r["facts"], "stale": r["stale"]})
 todo, reuse, hits = {}, [], 0
@@ -156,7 +166,8 @@ for c in lines(args.contexts):
 done = failures = 0
 with judged.open("a") as out, ThreadPoolExecutor(args.jobs) as pool:
     def row(c, sha, marks, usage):
-        out.write(json.dumps({"id": c["id"], "form": c["form"], "ctx": c["sha"], "prompt": sha, **marks, "usage": usage}) + "\n")
+        out.write(json.dumps({"id": c["id"], "form": c["form"], "ctx": c["sha"], "prompt": sha, **marks, "usage": usage,
+                              "judge": JUDGE}) + "\n")
         out.flush()
 
     for c, sha in reuse:

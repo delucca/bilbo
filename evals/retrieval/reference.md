@@ -1111,6 +1111,9 @@ into 4,000 tokens counted with tiktoken's o200k_base, separators included, cutti
 Claude Opus 5.5, through `claude -p` on a Claude subscription, marks each fact and each older
 value present or absent in each context, once per distinct context: a question's two forms that returned the same
 text share one verdict; when it writes prose before its JSON reply, its last verdict object counts.
+The judge runs with `--safe-mode`, at medium effort, with none of the caller's variables and with prompt caching off,
+in an empty folder: the user's `CLAUDE.md`, memory and plugins stay out of its prompt. About 600 tokens of Claude
+Code's own remain around it, the folder's path, the date and the account's email among them.
 A script scores: a question's score is
 the share of its facts present, and misled counts a question whose older value is present while the fact that
 replaced it is not. The headline weights the class means by `questions/classes.json`, on the `query` form, with the
@@ -1118,8 +1121,9 @@ replaced it is not. The headline weights the class means by `questions/classes.j
 `random`, random lines of the same project at the same budget.
 
 Searches, contexts and verdicts are kept in `~/.cache/bilbo-evals/retrieval/eval` (or `BILBO_EVALS_CACHE`), so a
-rerun repeats no search and no judge call already made. `--questions id,id` or `--limit N` runs a few questions;
-`--jobs N` sets the judge calls at once (default 4). Each arm searches with `arms/<arm>/search.py`, which is not part
+rerun repeats no search and no judge call already made. A verdict is reused only when the judge that gave it ran as
+the judge runs now (`JUDGE` in `scripts/judge.py`, kept in each row). `--questions id,id` or `--limit N` runs a few
+questions; `--jobs N` sets the judge calls at once (default 4). Each arm searches with `arms/<arm>/search.py`, which is not part
 of the store's key but is part of the run's: a changed adapter searches again, and a changed `scripts/controls.py`
 rebuilds the controls.
 
