@@ -223,8 +223,8 @@ mod tests {
 
     #[test]
     fn a_reader_clips_the_headings_of_a_label_at_its_width() {
-        let note = format!("# {}\n## a\n", "h".repeat(30));
-        let records: Vec<&[u8]> = note.split_inclusive('\n').map(str::as_bytes).collect();
+        let document = format!("# {}\n## a\n", "h".repeat(30));
+        let records: Vec<&[u8]> = document.split_inclusive('\n').map(str::as_bytes).collect();
         for (width, clipped) in [(20, true), (30, false)] {
             let label = Markdown::new(width).passages(&records)[1].pieces[0]
                 .label

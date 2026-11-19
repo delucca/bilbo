@@ -1,12 +1,10 @@
 use std::fs;
 use std::io::{self, Write};
-use std::os::unix::fs::MetadataExt;
-use std::path::Path;
 
 use bilbo_search::recall::log::QueryLog;
 use bilbo_store::segments::State;
-use rustix::fs::{Mode, OFlags, openat};
-use rustix::process::geteuid;
+
+use crate::console::private::{self, How};
 
 const NAME: &str = "queries.log";
 
@@ -63,42 +61,12 @@ impl QueryLog for File<'_> {
         let state = self
             .state
             .ok_or_else(|| io::Error::other("this store has no state folder that bilbo checked"))?;
-        let refuse = || refused(&state.path().join(NAME));
-        let descriptor = openat(
-            state.folder(),
-            NAME,
-            OFlags::WRONLY
-                | OFlags::APPEND
-                | OFlags::CREATE
-                | OFlags::NOFOLLOW
-                | OFlags::NONBLOCK
-                | OFlags::CLOEXEC,
-            Mode::from_raw_mode(0o600),
-        )?;
-        let mut file = fs::File::from(descriptor);
-        if !private(&file.metadata()?) {
-            return Err(refuse());
-        }
+        let path = state.path().join(NAME);
+        let mut file = private::open(state.folder(), NAME, &path, How::Append)?;
         file.lock()?;
-        if !private(&file.metadata()?) {
-            return Err(refuse());
-        }
+        private::checked(&file, &path)?;
         append(&mut file, line)
     }
-}
-
-fn private(meta: &fs::Metadata) -> bool {
-    meta.is_file()
-        && meta.mode() & 0o077 == 0
-        && meta.nlink() == 1
-        && meta.uid() == geteuid().as_raw()
-}
-
-fn refused(path: &Path) -> io::Error {
-    io::Error::other(format!(
-        "{} is not a private file of this user in a folder of this user",
-        path.display()
-    ))
 }
 
 #[cfg(test)]

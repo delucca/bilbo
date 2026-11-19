@@ -95,6 +95,23 @@ impl fmt::Debug for Outcome {
     }
 }
 
+impl Outcome {
+    pub fn stopped(
+        mut diagnostics: Vec<Message>,
+        failure: &Failure,
+        plain: impl Into<String>,
+    ) -> Outcome {
+        diagnostics.push(failure.message());
+        let exit = match failure {
+            Failure::Usage { .. } | Failure::Config(_) => Exit::Config,
+            Failure::Refused(_) | Failure::Output(_) => Exit::Refused,
+        };
+        Outcome::new(plain)
+            .with_diagnostics(diagnostics)
+            .with_exit(exit)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Failure {
     Usage {
@@ -131,6 +148,25 @@ impl From<&StoreError> for Failure {
             }
             _ => Self::Refused(crate::console::message::sanitize(&error.to_string())),
         }
+    }
+}
+
+impl From<&bilbo_search::index::IndexError> for Failure {
+    fn from(error: &bilbo_search::index::IndexError) -> Self {
+        let text = match error {
+            bilbo_search::index::IndexError::Failed { .. }
+            | bilbo_search::index::IndexError::Inconsistent(_) => {
+                format!("{error}; bilbo reindex makes the index again")
+            }
+            _ => error.to_string(),
+        };
+        Self::Refused(crate::console::message::sanitize(&text))
+    }
+}
+
+impl From<StoreError> for Failure {
+    fn from(error: StoreError) -> Self {
+        Self::from(&error)
     }
 }
 

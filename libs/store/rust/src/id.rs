@@ -1,7 +1,7 @@
 use std::fmt;
 use std::fs::File;
 use std::io::{self, Read};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 const ALPHABET: &[u8; 32] = b"0123456789ABCDEFGHJKMNPQRSTVWXYZ";
 const LENGTH: usize = 26;
@@ -56,6 +56,11 @@ impl Id {
                 .ok_or_else(|| io::Error::other("no id is greater than the greatest id")),
             _ => Ok(minted),
         }
+    }
+
+    #[must_use]
+    pub fn minted(self) -> SystemTime {
+        UNIX_EPOCH + Duration::from_millis((self.0 >> 80) as u64)
     }
 
     #[must_use]
@@ -132,7 +137,30 @@ impl fmt::Display for Id {
 mod tests {
     use std::collections::HashSet;
 
+    use std::time::{SystemTime, UNIX_EPOCH};
+
     use super::{Id, Short};
+
+    #[test]
+    fn the_time_an_id_was_minted_is_its_first_48_bits() {
+        let id = Id::parse("01ARZ3NDEKTSV4RRFFQ69G5FAV").expect("id");
+        assert_eq!(
+            id.minted().duration_since(UNIX_EPOCH).expect("after 1970"),
+            std::time::Duration::from_millis(1_469_922_850_259)
+        );
+        let millis = |at: SystemTime| {
+            at.duration_since(UNIX_EPOCH)
+                .expect("after 1970")
+                .as_millis()
+        };
+        let before = millis(SystemTime::now());
+        let minted = millis(Id::mint().expect("mint").minted());
+        let after = millis(SystemTime::now());
+        assert!(
+            (before..=after).contains(&minted),
+            "{before} {minted} {after}"
+        );
+    }
 
     #[test]
     fn a_short_id_is_the_end_of_its_ids_text() {

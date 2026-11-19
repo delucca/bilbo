@@ -12,6 +12,7 @@ const PLACEMENT: &[(&str, &[&str])] = &[
     ("strsim", &["src/typo.rs"]),
     ("xxhash_rust", &["src/chunk.rs"]),
     ("markdown", &[]),
+    ("note", &[]),
     ("session", &[]),
     ("bilbo_entries", &["src/", "tests/"]),
     (

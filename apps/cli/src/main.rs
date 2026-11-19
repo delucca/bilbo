@@ -26,7 +26,7 @@ fn main() -> ExitCode {
         std::env::var_os(name)
     });
     let mut env = Env {
-        var: Box::new(|name| std::env::var_os(name)),
+        var: std::rc::Rc::new(|name| std::env::var_os(name)),
         stdin: Box::new(io::stdin()),
         notice: Box::new(move |message| {
             for line in message.lines(&err) {
@@ -34,8 +34,13 @@ fn main() -> ExitCode {
             }
         }),
     };
-    let settings = settings::load(&*env.var, &edit::read_regular, &bilbo_cli::kind_keys())
-        .map_err(Failure::from);
+    let settings = settings::load(
+        &*env.var,
+        &edit::read_regular,
+        &bilbo_cli::kind_keys(),
+        &bilbo_cli::provider_keys(),
+    )
+    .map_err(Failure::from);
     let plan = streams::plan(&bilbo_cli::run(&args, &mut env, settings), &out, &err);
     ExitCode::from(streams::execute(&plan, &err, &mut perform))
 }

@@ -7,7 +7,6 @@ use bilbo_settings::edit;
 use bilbo_settings::folder;
 use bilbo_settings::key::{Origin, quote};
 
-use super::messages::{info, warning};
 use crate::console::message::{Detail, Message, sanitize};
 use crate::console::settings::{self, Settings};
 use crate::console::theme::Mark;
@@ -37,13 +36,15 @@ impl Saved {
                     text.push_str(", after the default follows it would replace");
                 }
                 match unsynced {
-                    Some(error) => {
-                        warning(&format!("{text}; its folder could not be synced: {error}"))
-                    }
-                    None => info(&text),
+                    Some(error) => Message::warning(&format!(
+                        "{text}; its folder could not be synced: {error}"
+                    )),
+                    None => Message::info(&text),
                 }
             }
-            Self::Already(path) => info(&format!("{} is followed already", path.display())),
+            Self::Already(path) => {
+                Message::info(&format!("{} is followed already", path.display()))
+            }
         }
     }
 }
@@ -127,7 +128,7 @@ pub fn save_with(
     lock.lock()
         .map_err(|error| refusal(error.to_string(), first_lines.clone()))?;
     let kind: Vec<_> = settings.kind.iter().map(|(key, _)| *key).collect();
-    let current = settings::load(var, &edit::read_regular, &kind)
+    let current = settings::load(var, &edit::read_regular, &kind, &settings.group)
         .map_err(|error| refusal(error.to_string(), first_lines.clone()))?;
     if current.follow.value.iter().any(|declared| {
         fs::canonicalize(&declared.path).unwrap_or_else(|_| declared.path.clone()) == follow.path
@@ -159,6 +160,7 @@ pub fn save_with(
             }
         },
         &kind,
+        &settings.group,
     )
     .map_err(|error| refuse(error.to_string()))?;
     if !loaded.follow.value.contains(follow) {
@@ -207,7 +209,12 @@ mod tests {
 
     use bilbo_entries::follows::Follow;
 
-    use super::{Refusal, Remedy, Saved, table};
+    use std::fs;
+
+    use bilbo_settings::key::{About, Default, Key, quote};
+
+    use super::{Refusal, Remedy, Saved, save_with, table};
+    use crate::console::settings::{self, Group};
     use crate::console::theme::Mark;
     use crate::console::view::View;
 
@@ -216,6 +223,50 @@ mod tests {
             path: PathBuf::from(path),
             kind: kind.map(str::to_owned),
         }
+    }
+
+    const MARK: Key<String> = Key {
+        about: About {
+            name: "test.mark",
+            variable: None,
+            default: Default::Toml(r#""""#),
+            allowed: "a word",
+            doc: "a text key",
+        },
+        parse: |value| {
+            value
+                .text()
+                .map(str::to_owned)
+                .ok_or_else(|| value.refuse())
+        },
+        show: |text| quote(text),
+    };
+
+    static GROUP: Group = Group {
+        about: &[&MARK.about],
+        resolve: |source| Ok(vec![MARK.shown(&MARK.resolve(source)?)]),
+    };
+
+    #[test]
+    fn a_save_loads_with_the_groups_the_settings_were_loaded_with() {
+        let dir = std::env::temp_dir().join(format!("bilbo-save-group-{}", std::process::id()));
+        fs::create_dir_all(&dir).expect("a folder");
+        let config = dir.join("config.toml");
+        let old = "[test]\nmark = \"a\"\n";
+        fs::write(&config, old).expect("a config");
+        let var = |name: &str| match name {
+            "BILBO_CONFIG" => Some(config.clone().into_os_string()),
+            "HOME" => Some("/h".into()),
+            _ => None,
+        };
+        let loaded = settings::load(&var, &|path| fs::read(path), &crate::kind_keys(), &[&GROUP])
+            .expect("loads");
+        let added = follow(&dir.display().to_string(), Some("markdown"));
+        let saved = save_with(&loaded, &added, &var, &mut |_| {}).expect("saves");
+        assert!(matches!(saved, Saved::Added { .. }));
+        let text = fs::read_to_string(&config).expect("the file");
+        let defaults = "[[follow]]\npath = \"/h/.claude/projects\"\nkind = \"session\"\n\n[[follow]]\npath = \"/h/.codex/sessions\"\nkind = \"session\"\n\n";
+        assert_eq!(text, format!("{old}\n{defaults}{}", table(&added)));
     }
 
     #[test]

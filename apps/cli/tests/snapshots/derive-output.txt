@@ -1,0 +1,2 @@
+entries 3, calls 4, notes 31, dropped 2, refused 0, failed 0
+tokens in 91806, tokens out 7340, seconds 48

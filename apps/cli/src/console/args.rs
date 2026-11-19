@@ -235,7 +235,7 @@ mod tests {
         reason
     }
 
-    const VERBS: &str = "; the verbs are remember, recall, read, reindex, config";
+    const VERBS: &str = "; the verbs are remember, recall, read, reindex, derive, config";
 
     #[test]
     fn the_definition_is_valid() {

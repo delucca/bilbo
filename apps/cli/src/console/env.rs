@@ -1,9 +1,10 @@
 use std::ffi::OsString;
 use std::io::{self, Read};
+use std::rc::Rc;
 
 use crate::console::message::Message;
 
-type Var = Box<dyn Fn(&str) -> Option<OsString>>;
+pub type Var = Rc<dyn Fn(&str) -> Option<OsString>>;
 
 pub struct Env {
     pub var: Var,
@@ -15,7 +16,7 @@ pub struct Env {
 impl Env {
     pub fn quiet() -> Env {
         Env {
-            var: Box::new(|_| None),
+            var: Rc::new(|_| None),
             stdin: Box::new(io::empty()),
             notice: Box::new(|_| {}),
         }

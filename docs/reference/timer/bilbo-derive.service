@@ -1,0 +1,8 @@
+[Unit]
+Description=Write notes about the entries bilbo keeps
+
+[Service]
+Type=oneshot
+ExecStart="@BILBO@" derive
+StandardOutput=append:@LOG@
+StandardError=append:@LOG@

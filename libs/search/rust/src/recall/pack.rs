@@ -35,9 +35,10 @@ pub fn pack<E>(
 
 fn cut(hit: &mut Hit, tokens: &dyn Tokens, shown: &dyn Fn(&Hit) -> String, left: usize) -> bool {
     hit.cut = true;
+    let first_line = hit.text.find('\n').unwrap_or(hit.text.len());
     for budget in (1..=left).rev() {
         let at = tokens.prefix(&hit.text, budget);
-        if at == 0 {
+        if at == 0 || (hit.headed && at <= first_line + 1) {
             return false;
         }
         if at == hit.text.len() {
@@ -88,6 +89,8 @@ mod tests {
             preface: None,
             text: text.to_owned(),
             cut: false,
+            apart: false,
+            headed: false,
             shared_short: false,
         }
     }
@@ -146,6 +149,44 @@ mod tests {
             7 + Bytes.count(&shown(&longer)) > 15,
             "one more byte would not fit"
         );
+    }
+
+    #[test]
+    fn a_hit_that_opens_with_its_head_is_never_cut_inside_it() {
+        let apart = |text: &str| Hit {
+            apart: true,
+            headed: true,
+            ..hit(text)
+        };
+        let run = |hits: Vec<Hit>, budget: usize| {
+            let Ok(packed) = pack(
+                hits.into_iter().map(Ok::<Hit, Infallible>),
+                &Bytes,
+                &shown,
+                &mut |_| true,
+                budget,
+            );
+            packed
+        };
+        let text = "first\nsecond";
+        assert!(run(vec![apart(text), apart("next")], 9).is_empty());
+        assert!(run(vec![apart(text), apart("next")], 10).is_empty());
+        let cut = run(vec![apart(text), apart("next")], 11);
+        assert_eq!(texts(&cut), ["first\ns"]);
+        assert!(cut[0].cut);
+        let plain = run(vec![hit(text)], 9);
+        assert_eq!(texts(&plain), ["first"]);
+        assert!(plain[0].cut);
+        assert!(run(vec![apart("oneline")], 6).is_empty());
+        let unheaded = run(
+            vec![Hit {
+                apart: true,
+                ..hit(text)
+            }],
+            9,
+        );
+        assert_eq!(texts(&unheaded), texts(&plain));
+        assert!(unheaded[0].cut);
     }
 
     #[test]

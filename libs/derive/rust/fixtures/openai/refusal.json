@@ -1,0 +1,1 @@
+{"id":"resp_fixture_2","object":"response","status":"completed","model":"gpt-test-1","output":[{"type":"message","id":"msg_fixture_2","role":"assistant","status":"completed","content":[{"type":"refusal","refusal":"CANARY-REFUSAL the assistant will not do that."}]}],"usage":{"input_tokens":80,"output_tokens":9,"total_tokens":89},"error":null,"incomplete_details":null}

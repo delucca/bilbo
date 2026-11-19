@@ -43,8 +43,8 @@ mod tests {
 
     #[test]
     fn a_frontmatter_id_that_is_a_canonical_ulid_is_proposed() {
-        let note = include_str!("../../fixtures/markdown/note.md");
-        assert_eq!(id(note), valid());
+        let document = include_str!("../../fixtures/markdown/note.md");
+        assert_eq!(id(document), valid());
         assert!(valid().is_some());
     }
 

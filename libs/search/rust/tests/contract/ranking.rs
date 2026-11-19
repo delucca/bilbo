@@ -102,6 +102,10 @@ impl Lookup for Table {
             .collect())
     }
 
+    fn length(&self, _kind: &str) -> Result<u64, IndexError> {
+        panic!("the contract asks for no length");
+    }
+
     fn found(&self, docs: &[u32]) -> Result<Vec<Found>, IndexError> {
         Ok(docs
             .iter()
@@ -167,6 +171,10 @@ impl Lookup for Truthful<'_> {
 
     fn holding(&self, filter: &Filter<'_>) -> Result<Vec<u32>, IndexError> {
         self.table.holding(filter)
+    }
+
+    fn length(&self, kind: &str) -> Result<u64, IndexError> {
+        self.table.length(kind)
     }
 
     fn found(&self, docs: &[u32]) -> Result<Vec<Found>, IndexError> {
@@ -262,6 +270,7 @@ fn bilbos(
         &Query {
             text: query.to_owned(),
             kinds: Vec::new(),
+            apart: Vec::new(),
             entries: None,
         },
         limit,

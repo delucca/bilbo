@@ -51,7 +51,7 @@ pub fn run(
     let started = Instant::now();
     let tokenizer = (indexing.tokenizer)()?;
     let layout = settings.layout();
-    Store::check(&layout).map_err(|error| Failure::from(&error))?;
+    Store::check(&layout)?;
     let options = Options {
         rebuild: Rebuild::Always,
         ..settings.store.options()
@@ -61,8 +61,7 @@ pub fn run(
         if !matches!(heard, Notice::RebuiltCatalog { .. }) {
             notice(&notice_message(&heard));
         }
-    })
-    .map_err(|error| Failure::from(&error))?;
+    })?;
     let mut index = (indexing.index)(store.cache());
     let ran = reindex::run(
         &indexing.request,
@@ -77,7 +76,7 @@ pub fn run(
         Err(error) => {
             store.release();
             return Err(match error {
-                Error::Store(error) => Failure::from(&error),
+                Error::Store(error) => Failure::from(error),
                 other => Failure::Refused(sanitize(&other.to_string())),
             });
         }

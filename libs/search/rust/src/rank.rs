@@ -10,6 +10,7 @@ use crate::lookup::Found;
 pub struct Query {
     pub text: String,
     pub kinds: Vec<String>,
+    pub apart: Vec<String>,
     /// Sorted, distinct.
     pub entries: Option<Vec<Id>>,
 }
@@ -30,6 +31,7 @@ pub struct Expanded {
 pub struct Ranked {
     pub candidates: Vec<Candidate>,
     pub unscoped: Vec<Candidate>,
+    pub apart: Vec<Candidate>,
     pub expanded: Vec<Expanded>,
 }
 
@@ -71,13 +73,18 @@ pub fn fuse(lists: Vec<Ranked>) -> Ranked {
             expanded.push(item.clone());
         }
     }
-    let (candidates, unscoped) = lists
-        .into_iter()
-        .map(|ranked| (ranked.candidates, ranked.unscoped))
-        .unzip();
+    let mut candidates = Vec::new();
+    let mut unscoped = Vec::new();
+    let mut apart = Vec::new();
+    for ranked in lists {
+        candidates.push(ranked.candidates);
+        unscoped.push(ranked.unscoped);
+        apart.push(ranked.apart);
+    }
     Ranked {
         candidates: merge(candidates),
         unscoped: merge(unscoped),
+        apart: merge(apart),
         expanded,
     }
 }
@@ -125,6 +132,7 @@ mod tests {
         Ranked {
             candidates,
             unscoped: Vec::new(),
+            apart: Vec::new(),
             expanded: Vec::new(),
         }
     }
@@ -138,6 +146,7 @@ mod tests {
                 candidate(2, 1, 1.0),
             ],
             unscoped: vec![candidate(1, 1, 3.0), candidate(1, 1, 3.0)],
+            apart: Vec::new(),
             expanded: Vec::new(),
         };
         assert_eq!(fuse(vec![list.clone()]), list);
@@ -165,15 +174,32 @@ mod tests {
     }
 
     #[test]
+    fn fusing_merges_the_lists_apart_as_it_merges_the_candidates() {
+        let with = |apart: Vec<Candidate>| Ranked {
+            apart,
+            ..Ranked::default()
+        };
+        let fused = fuse(vec![
+            with(vec![candidate(1, 1, 3.0), candidate(2, 1, 2.0)]),
+            with(vec![candidate(2, 1, 9.0), candidate(3, 1, 1.0)]),
+        ]);
+        assert_eq!(places(&fused.apart), [(1, 1), (2, 1), (3, 1)]);
+        assert!((fused.apart[1].score - 2.0).abs() < f32::EPSILON);
+        assert!(fused.candidates.is_empty() && fused.unscoped.is_empty());
+    }
+
+    #[test]
     fn two_rankers_unscoped_lists_are_fused_as_their_candidates_are() {
         let one = Ranked {
             candidates: Vec::new(),
             unscoped: vec![candidate(1, 1, 3.0), candidate(2, 1, 2.0)],
+            apart: Vec::new(),
             expanded: Vec::new(),
         };
         let other = Ranked {
             candidates: Vec::new(),
             unscoped: vec![candidate(2, 1, 9.0), candidate(3, 1, 1.0)],
+            apart: Vec::new(),
             expanded: Vec::new(),
         };
         let fused = fuse(vec![one, other]);

@@ -4,15 +4,17 @@ use bilbo_layout::{Tables, Tree, bans, complete, words};
 
 const PLACEMENT: &[(&str, &[&str])] = &[
     ("markdown", &["src/markdown/"]),
+    ("note", &["src/note/"]),
     ("session", &["src/session/", "tests/contract/"]),
+    ("serde_json", &["src/note/", "tests/contract/"]),
     ("zstd", &["src/session/"]),
     ("bilbo_settings", &["src/", "tests/"]),
     ("bilbo_store", &["src/", "tests/"]),
 ];
 const CORE: &[&str] = &[
-    "fake", "files", "follows", "kind", "read", "reader", "remember", "tokens",
+    "day", "fake", "files", "follows", "kind", "read", "reader", "remember", "tokens",
 ];
-const ADAPTERS: &[&str] = &["markdown", "session"];
+const ADAPTERS: &[&str] = &["markdown", "note", "session"];
 const ROOTS: &[&str] = &["crate", "bilbo_entries"];
 const SUITES: &[&str] = &[
     "tests/acceptance/main.rs",

@@ -3,6 +3,7 @@ alias(
     actual = "//libs/store/rust",
     visibility = [
         "//apps/cli:__pkg__",
+        "//libs/derive/rust:__pkg__",
         "//libs/entries/rust:__pkg__",
         "//libs/search/rust:__pkg__",
     ],

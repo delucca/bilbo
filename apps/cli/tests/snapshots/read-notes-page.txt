@@ -1,0 +1,12 @@
+#r1 01M6ZGE4KTBYYH07AS2KVMSCAF#g1:r3-19 2026-11-07
+The user asked to thin the carrot rows in the north bed and was told to wait for the second leaves.
+#r2 01M6ZGE4KTBYYH07AS2KVMSCAF#g1:r20-31 01M6ZGE4KTBYYH07AS2KVMSCAF#g1:r40-41 2026-11-07
+The user planted the beans along the south fence and noted that the soil there stayed wet.
+Still open: whether to add a second row.
+#r3 01M6ZGE4KTBYYH07AS2KVMSCAF#g1:r42 2026-11-07
+Nothing was decided about the compost bin; the question is still unresolved.
+#r5 01M6ZGE4KTBYYH07AS2KVMSCAF#g1:r50-60 2026-11-08
+The tomato cages were moved to the greenhouse.
+#r6 01M6ZGE4KTBYYH07AS2KVMSCAF#g2:r61-70 2026-11-08
+The watering schedule was skipped for a week because of the rain.
+end: #r1-7 of 7 records

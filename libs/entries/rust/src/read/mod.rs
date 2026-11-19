@@ -281,7 +281,7 @@ fn names(label: &CaptureLabel, prefix: &str) -> bool {
         .is_some_and(|uuid| refs::is_session(uuid) && uuid.to_ascii_lowercase().starts_with(prefix))
 }
 
-fn resolve(target: &Target, listed: usize, entries: &dyn Entries) -> Result<Id, Error> {
+pub fn resolve(target: &Target, listed: usize, entries: &dyn Entries) -> Result<Id, Error> {
     let (given, mut found): (String, Vec<(Id, Option<CaptureLabel>)>) = match target {
         Target::Entry(id) => return Ok(*id),
         Target::Short(short) => {

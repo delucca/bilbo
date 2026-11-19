@@ -6,7 +6,7 @@ use std::os::unix::fs::{MetadataExt, PermissionsExt, symlink};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, SystemTime};
 
@@ -29,11 +29,12 @@ use bilbo_store::entries::{Entries, Meta, RecordRange};
 use bilbo_store::segments::{Options, Store};
 use rustix::fs::OFlags;
 
-#[expect(
-    dead_code,
-    reason = "this target uses two helpers of the shared module"
-)]
-mod sandbox;
+mod note_line;
+mod notes;
+mod runner;
+mod scratch;
+
+use runner::{Run, Sandbox, Shared};
 
 const SESSIONS: [(&str, &[u8]); 3] = [
     (
@@ -67,96 +68,22 @@ const NOTES: [(&str, &[u8]); 2] = [
 ];
 const FIRST_SESSION: &str = "sessions/claude/p/8f2b6d4e-1a3c-4e5f-9b7a-2c4d6e8f0a1b.jsonl";
 
-fn tokenizer() -> &'static Tokenizer {
-    static LOADED: OnceLock<&'static Tokenizer> = OnceLock::new();
-    LOADED.get_or_init(|| Box::leak(Box::new(bilbo_cli::tokenizer().expect("the tokenizer"))))
-}
-
-struct Shared;
-
-impl Tokens for Shared {
-    fn ends(&self, text: &str) -> Vec<usize> {
-        tokenizer().tokens.ends(text)
-    }
-
-    fn count(&self, text: &str) -> usize {
-        tokenizer().tokens.count(text)
-    }
-
-    fn prefix(&self, text: &str, budget: usize) -> usize {
-        tokenizer().tokens.prefix(text, budget)
-    }
-}
-
-fn shared_tokenizer() -> Result<Tokenizer, Failure> {
-    Ok(Tokenizer {
-        tokens: Box::new(Shared),
-        id: tokenizer().id,
-    })
-}
-
 fn tune(mut indexing: Indexing<'_>) -> Indexing<'_> {
-    indexing.tokenizer = &shared_tokenizer;
+    indexing.tokenizer = &runner::shared_tokenizer;
     indexing
 }
 
-struct Run {
-    code: u8,
-    stdout: String,
-    stderr: Vec<String>,
-}
-
 fn bilbo(vars: HashMap<String, OsString>, args: &[&str]) -> Run {
-    let said = Arc::new(Mutex::new(Vec::new()));
-    let sink = Arc::clone(&said);
-    let mut env = Env {
-        var: Box::new(move |name| vars.get(name).cloned()),
-        stdin: Box::new(io::empty()),
-        notice: Box::new(move |message| {
-            sink.lock().expect("notices").extend(message.plain_lines());
-        }),
-    };
-    let argv: Vec<OsString> = std::iter::once("bilbo")
-        .chain(args.iter().copied())
-        .map(OsString::from)
-        .collect();
-    let settings = settings::load(&*env.var, &|path| fs::read(path), &bilbo_cli::kind_keys())
-        .map_err(Failure::from);
-    let (code, stdout, lines) =
-        match bilbo_cli::run_tuned(&bilbo_cli::bilbo(), &argv, &mut env, settings, &tune) {
-            Ok(outcome) => (
-                outcome.exit_code(),
-                outcome.stdout(&View::PLAIN),
-                outcome.stderr_lines(&View::PLAIN),
-            ),
-            Err(failure) => (
-                failure.exit_code(),
-                String::new(),
-                failure.stderr_lines(&View::PLAIN),
-            ),
-        };
-    let mut stderr = said.lock().expect("notices").clone();
-    stderr.extend(lines);
-    Run {
-        code,
-        stdout,
-        stderr,
-    }
-}
-
-struct Sandbox {
-    dir: PathBuf,
-}
-
-impl Drop for Sandbox {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.dir);
-    }
+    runner::bilbo_with(
+        std::rc::Rc::new(move |name| vars.get(name).cloned()),
+        args,
+        &tune,
+    )
 }
 
 impl Sandbox {
     fn new(test: &str) -> Sandbox {
-        let dir = sandbox::scratch_dir(test);
+        let dir = scratch::scratch_dir(test);
         for folder in ["home", "config", "sessions", "notes"] {
             fs::create_dir_all(dir.join(folder)).expect("create scratch");
         }
@@ -197,7 +124,7 @@ impl Sandbox {
     }
 
     fn vars(&self) -> HashMap<String, OsString> {
-        let mut vars = sandbox::vars(&self.dir);
+        let mut vars = scratch::vars(&self.dir);
         vars.insert("BILBO_SEARCH_WORKERS".to_owned(), OsString::from("2"));
         vars
     }
@@ -231,6 +158,7 @@ impl Sandbox {
             &|name| vars.get(name).cloned(),
             &|path| fs::read(path),
             &bilbo_cli::kind_keys(),
+            &bilbo_cli::provider_keys(),
         )
         .expect("settings")
     }
@@ -271,6 +199,7 @@ struct Hit {
     reference: String,
     extras: Vec<String>,
     content: String,
+    printed: String,
 }
 
 fn entry_of(store: &Store, reference: &Ref) -> bilbo_store::id::Id {
@@ -283,6 +212,19 @@ fn entry_of(store: &Store, reference: &Ref) -> bilbo_store::id::Id {
         }
         Target::Session(session) => panic!("a header prints no session id: {session}"),
     }
+}
+
+fn entries_named(sandbox: &Sandbox, run: &Run) -> Vec<bilbo_store::id::Id> {
+    let store = Store::open_read_only(
+        &sandbox.settings().layout(),
+        Options::default(),
+        &mut |_| {},
+    )
+    .expect("open the store");
+    hits(&run.stdout)
+        .iter()
+        .map(|hit| entry_of(&store, &Ref::parse(&hit.reference).expect("a ref")))
+        .collect()
 }
 
 fn meta_of(sandbox: &Sandbox, hit: &Hit) -> Meta {
@@ -322,6 +264,7 @@ fn hits(stdout: &str) -> Vec<Hit> {
             .and_then(|n| n.parse().ok())
             .expect("a line count");
         let content = lines[at + 1..at + 1 + count].join("\n");
+        let printed = format!("{}\n{content}\n", lines[at]);
         found.push(Hit {
             reference: fields[0].to_owned(),
             extras: fields[2..]
@@ -329,6 +272,7 @@ fn hits(stdout: &str) -> Vec<Hit> {
                 .map(|field| (*field).to_owned())
                 .collect(),
             content,
+            printed,
         });
         at += 1 + count;
     }
@@ -506,7 +450,7 @@ fn the_typo_keys_reach_the_search() {
         let seen = Arc::new(Seen::default());
         let done = run_with_settings(
             &sandbox.settings_with(extra),
-            &shared_tokenizer,
+            &runner::shared_tokenizer,
             &recording(&seen),
             bilbo_cli::detect(),
             &[query],
@@ -565,7 +509,7 @@ fn the_pair_weight_key_reaches_the_search() {
             .collect();
         let done = run_with_settings(
             &sandbox.settings_with(&set),
-            &shared_tokenizer,
+            &runner::shared_tokenizer,
             &recording(&seen),
             bilbo_cli::detect(),
             &["release", "checklist"],
@@ -689,7 +633,7 @@ fn an_unknown_kind_is_a_usage_error_naming_the_kinds() {
     assert_eq!((run.code, run.stdout.as_str()), (2, ""));
     assert_eq!(
         run.stderr[0],
-        "bilbo: unknown kind 'nope'; kinds: markdown, session"
+        "bilbo: unknown kind 'nope'; kinds: markdown, session, note"
     );
 }
 
@@ -1363,6 +1307,7 @@ fn run_with_settings(
         tokenizer: loader,
         lookup,
         detect,
+        apart: &[],
     };
     let args = bilbo_cli::recall::Args {
         query: query.iter().map(|word| (*word).to_owned()).collect(),
@@ -1402,7 +1347,7 @@ fn a_folder_or_link_put_at_the_state_path_after_the_open_gets_no_log() {
             }
             bilbo_cli::lookup(path, &bilbo_search::keys::defaults())
         };
-        let outcome = run_with_reading(&sandbox, &shared_tokenizer, &lookup);
+        let outcome = run_with_reading(&sandbox, &runner::shared_tokenizer, &lookup);
         let said = outcome
             .map(|outcome| outcome.stderr_lines(&View::PLAIN))
             .unwrap_or_default();
@@ -1516,7 +1461,7 @@ fn the_manifest_names_the_tokenizer_that_counts() {
             "bilbo: the search index was made with other settings or by another bilbo; bilbo reindex makes it again"
         ]
     );
-    let real = run_with_reading(&sandbox, &shared_tokenizer, &|path| {
+    let real = run_with_reading(&sandbox, &runner::shared_tokenizer, &|path| {
         bilbo_cli::lookup(path, &bilbo_search::keys::defaults())
     })
     .expect("an outcome");
@@ -1533,7 +1478,8 @@ fn an_absent_cache_asks_for_no_lookup() {
         calls.set(calls.get() + 1);
         bilbo_cli::lookup(path, &bilbo_search::keys::defaults())
     };
-    let outcome = run_with_reading(&sandbox, &shared_tokenizer, &lookup).expect("an outcome");
+    let outcome =
+        run_with_reading(&sandbox, &runner::shared_tokenizer, &lookup).expect("an outcome");
     assert_eq!(outcome.exit_code(), 1);
     assert_eq!(
         outcome.stderr_lines(&View::PLAIN),
@@ -1555,7 +1501,8 @@ fn the_read_batch_key_bounds_each_read_of_the_index() {
         fs::write(sandbox.dir.join("config/config.toml"), config).expect("a config file");
         let seen = Arc::new(Seen::default());
         let lookup = recording(&seen);
-        let outcome = run_with_reading(&sandbox, &shared_tokenizer, &lookup).expect("an outcome");
+        let outcome =
+            run_with_reading(&sandbox, &runner::shared_tokenizer, &lookup).expect("an outcome");
         assert_eq!(outcome.exit_code(), 0);
         seen.widest.load(Ordering::Relaxed)
     };
@@ -1965,6 +1912,10 @@ impl Lookup for Recording {
         self.inner.holding(filter)
     }
 
+    fn length(&self, kind: &str) -> Result<u64, IndexError> {
+        self.inner.length(kind)
+    }
+
     fn found(&self, docs: &[u32]) -> Result<Vec<Found>, IndexError> {
         self.seen.widest.fetch_max(docs.len(), Ordering::Relaxed);
         self.inner.found(docs)
@@ -1989,7 +1940,7 @@ fn the_languages_key_reaches_the_search() {
         let seen = Arc::new(Seen::default());
         run_with_detector(
             &sandbox,
-            &shared_tokenizer,
+            &runner::shared_tokenizer,
             &recording(&seen),
             &detector,
             &["que", "pelo", "carrots"],
@@ -2024,4 +1975,544 @@ fn the_cli_hands_recall_whichlang() {
         Some(Language::of("pt").expect("a Portuguese language"))
     );
     assert_eq!(detect.language("Hello, happy tax payer"), None);
+}
+
+const FILLERS: [&str; 8] = [
+    "The thinning left a hand's width between plants and the second sowing was set for March with zucchini beside them.",
+    "Radishes went into the cold frame beside the shed while the compost heap was turned and covered with straw for winter.",
+    "Pole beans climbed the old fence after the neighbour lent a ladder, and the wet corner drained once a trench was cut.",
+    "Lettuce seedlings were hardened off on the porch each afternoon before moving out under the cloth tunnel at dusk.",
+    "Garlic cloves were pushed in rows near the herb spiral, mulched thickly, and marked with painted sticks along the path.",
+    "The rain barrel overflowed twice during the storm so a second hose was fitted to carry water down toward the pond.",
+    "Tomato plants outgrew their cages, which prompted a trip for taller stakes and soft ties made from strips of old cotton.",
+    "Strawberry runners were pinned into small pots filled with sand and loam, then kept shaded until roots had taken hold.",
+];
+
+fn note_line(parent: bilbo_store::id::Id, number: u64, sources: &[(u64, u64)]) -> Vec<u8> {
+    note_line::line(
+        parent,
+        &format!(
+            "The user asked about the carrot rows, number {number}. {}",
+            FILLERS[number as usize % FILLERS.len()]
+        ),
+        Some(1_794_039_249),
+        sources,
+    )
+}
+
+struct Noted {
+    sandbox: Sandbox,
+    parent: bilbo_store::id::Id,
+    note: bilbo_store::id::Id,
+    before: Before,
+}
+
+struct Before {
+    plain: Run,
+    sessions: Run,
+    scoped: Run,
+}
+
+fn with_notes(test: &str, count: u64) -> Noted {
+    let sandbox = Sandbox::filled(test);
+    let parent = entry_kept_from(&sandbox, FIRST_SESSION);
+    let before = Before {
+        plain: sandbox.run(&["recall", "carrot", "rows"]),
+        sessions: sandbox.run(&["recall", "--kind", "session", "carrot", "rows"]),
+        scoped: sandbox.run(&[
+            "recall",
+            "--in",
+            &parent.short().to_string(),
+            "carrot",
+            "rows",
+        ]),
+    };
+    let lines: Vec<Vec<u8>> = (1..=count)
+        .map(|number| {
+            note_line(
+                parent,
+                number,
+                &[(3, 3), (5, 6)][..(1 + (number % 2)) as usize],
+            )
+        })
+        .collect();
+    let note = notes::noted(&sandbox.settings().layout(), parent, &lines);
+    let run = sandbox.run(&["reindex"]);
+    assert_eq!(run.code, 0, "{:?}", run.stderr);
+    Noted {
+        sandbox,
+        parent,
+        note,
+        before,
+    }
+}
+
+fn is_note(hit: &Hit) -> bool {
+    hit.extras.first().is_some_and(|extra| extra == "note")
+}
+
+fn notes_part(stdout: &str) -> (String, String) {
+    let at = stdout
+        .lines()
+        .scan(0, |offset, line| {
+            let start = *offset;
+            *offset += line.len() + 1;
+            Some((start, line))
+        })
+        .find(|(_, line)| line.starts_with("=== ") && line.ends_with("\tnote"))
+        .map_or(stdout.len(), |(start, _)| start);
+    (stdout[..at].to_owned(), stdout[at..].to_owned())
+}
+
+fn note_text(noted: &Noted, number: u64, sources: &str) -> String {
+    format!(
+        "=== {}#r{number}\t2 lines\tnote\n{}\nThe user asked about the carrot rows, number {number}. {}\n",
+        noted.note.short(),
+        sources,
+        FILLERS[number as usize % FILLERS.len()]
+    )
+}
+
+fn notes_printed(noted: &Noted) -> [String; 2] {
+    let line = format!("{}#g1:r3", noted.parent);
+    [
+        note_text(noted, 2, &format!("{line} 2026-11-07")),
+        note_text(
+            noted,
+            1,
+            &format!("{line} {}#g1:r5-6 2026-11-07", noted.parent),
+        ),
+    ]
+}
+
+#[test]
+fn a_store_with_notes_answers_the_chunks_then_the_notes() {
+    let noted = with_notes("recall_notes", 2);
+    let run = noted.sandbox.run(&["recall", "carrot", "rows"]);
+    assert_eq!(run.code, 0, "{:?}", run.stderr);
+    let expected = format!(
+        "{}{}",
+        noted.before.plain.stdout,
+        notes_printed(&noted).concat()
+    );
+    assert_eq!(run.stdout, expected);
+    let count = |run: &Run| -> u64 {
+        run.stderr
+            .iter()
+            .find_map(|line| {
+                line.strip_prefix("bilbo: searched ")?
+                    .strip_suffix(" entries")?
+                    .parse()
+                    .ok()
+            })
+            .expect("a count")
+    };
+    assert_eq!(count(&run), count(&noted.before.plain) + 1);
+    let found = hits(&run.stdout);
+    let reference = Ref::parse(&found[4].reference).expect("a ref");
+    let store = Store::open_read_only(
+        &noted.sandbox.settings().layout(),
+        Options::default(),
+        &mut |_| {},
+    )
+    .expect("open the store");
+    assert_eq!(entry_of(&store, &reference), noted.note);
+}
+
+#[test]
+fn a_word_only_a_note_holds_leaves_the_chunks_as_they_were() {
+    let sandbox = Sandbox::filled("recall_notes_typo");
+    let parent = entry_kept_from(&sandbox, FIRST_SESSION);
+    let before = sandbox.run(&["recall", "carot", "rows"]);
+    assert_eq!(before.code, 0, "{:?}", before.stderr);
+    assert!(before.stderr.iter().any(|line| line.contains("typos:")));
+    let text = "The user wrote carot where the carrot rows were meant.";
+    let line = format!(
+        "{{\"text\":\"{text}\",\"at\":1794039249,\"from\":[{{\"entry\":\"{parent}\",\"generation\":1,\"records\":[3,3]}}]}}\n"
+    );
+    let note = notes::noted(&sandbox.settings().layout(), parent, &[line.into_bytes()]);
+    let run = sandbox.run(&["reindex"]);
+    assert_eq!(run.code, 0, "{:?}", run.stderr);
+    let after = sandbox.run(&["recall", "carot", "rows"]);
+    assert_eq!(after.code, 0, "{:?}", after.stderr);
+    assert_eq!(
+        after.stdout,
+        format!(
+            "{}=== {}#r1\t2 lines\tnote\n{parent}#g1:r3 2026-11-07\n{text}\n",
+            before.stdout,
+            note.short()
+        )
+    );
+    let typos = |run: &Run| -> Vec<String> {
+        run.stderr
+            .iter()
+            .filter(|line| line.contains("typos:"))
+            .cloned()
+            .collect()
+    };
+    assert_eq!(typos(&after), typos(&before));
+}
+
+#[test]
+fn the_budget_flag_bounds_the_chunks_and_the_key_bounds_the_notes() {
+    let noted = with_notes("recall_notes_budget", 6);
+    let base = noted.sandbox.run(&["recall", "carrot", "rows"]);
+    let (chunks, notes) = notes_part(&base.stdout);
+    assert!(!chunks.is_empty() && !notes.is_empty());
+    let flagged = noted
+        .sandbox
+        .run(&["recall", "--budget", "300", "carrot", "rows"]);
+    let (flagged_chunks, flagged_notes) = notes_part(&flagged.stdout);
+    assert_ne!(flagged_chunks, chunks);
+    assert_eq!(flagged_notes, notes);
+    let keyed = noted.sandbox.run_with(
+        &["recall", "carrot", "rows"],
+        &[("BILBO_RECALL_NOTES_BUDGET", "256")],
+    );
+    let (keyed_chunks, keyed_notes) = notes_part(&keyed.stdout);
+    assert_eq!(keyed_chunks, chunks);
+    let cost = |part: &str| -> usize {
+        hits(part)
+            .iter()
+            .map(|hit| Shared.count(&hit.printed))
+            .sum()
+    };
+    assert!(!hits(&keyed_notes).is_empty(), "{keyed_notes}");
+    assert!(cost(&keyed_notes) <= 256, "{}", cost(&keyed_notes));
+    assert!(cost(&notes) > 256, "{}", cost(&notes));
+}
+
+#[test]
+fn a_notes_budget_of_zero_prints_no_note_and_no_note_among_the_chunks() {
+    let noted = with_notes("recall_notes_zero", 3);
+    let base = noted.sandbox.run(&["recall", "carrot", "rows"]);
+    let zero = noted.sandbox.run_with(
+        &["recall", "carrot", "rows"],
+        &[("BILBO_RECALL_NOTES_BUDGET", "0")],
+    );
+    assert_eq!(zero.code, 0, "{:?}", zero.stderr);
+    assert!(!entries_named(&noted.sandbox, &zero).contains(&noted.note));
+    assert_eq!(zero.stdout, notes_part(&base.stdout).0);
+}
+
+#[test]
+fn kind_note_prints_the_notes_alone_and_another_kind_prints_none() {
+    let noted = with_notes("recall_notes_kind", 2);
+    let printed = |args: &[&str]| -> String {
+        let mut all = vec!["recall"];
+        all.extend_from_slice(args);
+        all.extend(["carrot", "rows"]);
+        let run = noted.sandbox.run(&all);
+        assert_eq!(run.code, 0, "{:?}", run.stderr);
+        run.stdout
+    };
+    let notes = notes_printed(&noted).concat();
+    assert_eq!(printed(&["--kind", "note"]), notes);
+    assert_eq!(
+        printed(&["--kind", "session"]),
+        noted.before.sessions.stdout
+    );
+    assert_eq!(
+        printed(&["--kind", "note", "--kind", "session"]),
+        format!("{}{}", noted.before.sessions.stdout, notes)
+    );
+}
+
+#[test]
+fn in_an_entry_brings_its_notes_and_counts_them() {
+    let noted = with_notes("recall_notes_in", 2);
+    let run = noted.sandbox.run(&[
+        "recall",
+        "--in",
+        &noted.parent.short().to_string(),
+        "carrot",
+        "rows",
+    ]);
+    assert_eq!(run.code, 0, "{:?}", run.stderr);
+    let counted = |line: &String| -> String {
+        let bump = |text: &str, prefix: &str| -> Option<String> {
+            let rest = text.strip_prefix(prefix)?;
+            let (number, tail) = rest.split_once(' ')?;
+            let number = number.parse::<u64>().ok()? + 1;
+            let tail = match tail.strip_prefix("entry") {
+                Some(rest) if number != 1 => format!("entries{rest}"),
+                _ => tail.to_owned(),
+            };
+            Some(format!("{prefix}{number} {tail}"))
+        };
+        bump(line, "bilbo: searched ")
+            .or_else(|| bump(line, "bilbo: --in kept "))
+            .unwrap_or_else(|| line.clone())
+    };
+    let expected: Vec<String> = noted.before.scoped.stderr.iter().map(counted).collect();
+    assert_eq!(run.stderr, expected);
+    assert_eq!(
+        run.stdout,
+        format!(
+            "{}{}",
+            noted.before.scoped.stdout,
+            notes_printed(&noted).concat()
+        )
+    );
+    let other = noted
+        .sandbox
+        .run(&["recall", "--in", "codex", "carrot", "rows"]);
+    assert!(!hits(&other.stdout).iter().any(is_note), "{}", other.stdout);
+}
+
+#[test]
+fn a_notes_source_line_opens_the_records_it_names() {
+    let noted = with_notes("recall_notes_source", 2);
+    let run = noted
+        .sandbox
+        .run(&["recall", "--kind", "note", "carrot", "rows"]);
+    let found = hits(&run.stdout);
+    assert!(found.len() >= 2, "{}", run.stdout);
+    for hit in &found {
+        let line = hit.content.lines().next().expect("a source line");
+        let sources: Vec<&str> = line
+            .split(' ')
+            .take_while(|part| part.contains('#'))
+            .collect();
+        assert!(!sources.is_empty(), "{line}");
+        for source in sources {
+            let (_, records) = source.split_once(":r").expect("a locator");
+            let first = records.split('-').next().expect("a first record");
+            let read = noted.sandbox.run(&["read", source]);
+            assert_eq!(read.code, 0, "{source}: {:?}", read.stderr);
+            assert!(
+                read.stdout.starts_with(&format!("#r{first}")),
+                "{source}: {}",
+                read.stdout
+            );
+        }
+    }
+    assert!(found.iter().any(|hit| {
+        hit.content
+            .lines()
+            .next()
+            .is_some_and(|line| line.matches('#').count() == 2)
+    }));
+}
+
+#[test]
+fn a_note_printed_without_its_source_line_is_passed_over_as_a_copy() {
+    let sandbox = Sandbox::new("recall_notes_copy");
+    sandbox.write("notes/garden.md", b"alpha beta gamma delta epsilon zeta\n");
+    sandbox.remember(&["notes"]);
+    let parent = entry_kept_from(&sandbox, "notes/garden.md");
+    let sources: Vec<(u64, u64)> = (1..=100).map(|n| (n, n)).collect();
+    let line = note_line::line(
+        parent,
+        "alpha beta gamma delta epsilon zeta eta",
+        Some(1_794_039_249),
+        &sources,
+    );
+    notes::noted(&sandbox.settings().layout(), parent, &[line]);
+    let run = sandbox.run(&["reindex"]);
+    assert_eq!(run.code, 0, "{:?}", run.stderr);
+    let run = sandbox.run(&[
+        "recall", "alpha", "beta", "gamma", "delta", "epsilon", "zeta",
+    ]);
+    assert_eq!(run.code, 0, "{:?}", run.stderr);
+    assert!(!hits(&run.stdout).is_empty(), "{}", run.stdout);
+    assert!(!hits(&run.stdout).iter().any(is_note), "{}", run.stdout);
+    assert!(
+        run.stderr
+            .contains(&"bilbo: passed over: 1 copy".to_owned()),
+        "{:?}",
+        run.stderr
+    );
+}
+
+#[test]
+fn a_long_note_is_printed_in_parts_under_its_whole_source_line_or_under_none() {
+    let sandbox = Sandbox::filled("recall_notes_long");
+    let parent = entry_kept_from(&sandbox, FIRST_SESSION);
+    let sentences: Vec<String> = (1..=40)
+        .map(|n| match n {
+            1 | 40 => format!("Sentence {n} names the kohlrabi by the south fence."),
+            _ => format!("Sentence {n} says the beans were tied up and the compost turned."),
+        })
+        .collect();
+    let paragraph = sentences.join(" ");
+    let single = "One sentence names the kohlrabi.";
+    let long = format!(
+        "{{\"text\":\"{paragraph}\",\"at\":1794039249,\"from\":[{{\"entry\":\"{parent}\",\"generation\":1,\"records\":[3,3]}}]}}\n"
+    );
+    let many: Vec<String> = (1..=100)
+        .map(|n| format!("{{\"entry\":\"{parent}\",\"generation\":1,\"records\":[{n},{n}]}}"))
+        .collect();
+    let crowded = format!(
+        "{{\"text\":\"{single}\",\"at\":1794039249,\"from\":[{}]}}\n",
+        many.join(",")
+    );
+    let note = notes::noted(
+        &sandbox.settings().layout(),
+        parent,
+        &[long.into_bytes(), crowded.into_bytes()],
+    );
+    let run = sandbox.run(&["reindex"]);
+    assert_eq!(run.code, 0, "{:?}", run.stderr);
+    let run = sandbox.run_with(
+        &["recall", "--kind", "note", "kohlrabi"],
+        &[
+            ("BILBO_RECALL_RECORD_CAP", "0"),
+            ("BILBO_RECALL_NOTES_BUDGET", "20000"),
+        ],
+    );
+    assert_eq!(run.code, 0, "{:?}", run.stderr);
+    let found = hits(&run.stdout);
+    let first_record = found
+        .iter()
+        .filter(|hit| hit.reference.ends_with("#r1"))
+        .collect::<Vec<_>>();
+    assert!(first_record.len() >= 2, "{}", run.stdout);
+    assert!(
+        first_record
+            .iter()
+            .any(|hit| hit.extras.iter().any(|extra| extra.starts_with("part 1/"))),
+        "{}",
+        run.stdout
+    );
+    for hit in &first_record {
+        assert_eq!(
+            hit.content.lines().next(),
+            Some(format!("{parent}#g1:r3 2026-11-07").as_str()),
+            "{}",
+            hit.printed
+        );
+    }
+    let second: Vec<&Hit> = found
+        .iter()
+        .filter(|hit| hit.reference.ends_with("#r2"))
+        .collect();
+    assert_eq!(second.len(), 1, "{}", run.stdout);
+    assert_eq!(second[0].extras, ["note", "part 1/1"]);
+    assert_eq!(second[0].content, single);
+    assert!(!second[0].content.lines().any(|line| line.contains("#g")));
+    let read = sandbox.run(&["read", &format!("{}#r2", note.short())]);
+    assert_eq!(read.code, 0, "{:?}", read.stderr);
+    let line = read
+        .stdout
+        .lines()
+        .find(|line| line.contains("#g1:r1"))
+        .expect("the source line");
+    assert_eq!(line.matches("#g1:r").count(), 100, "{line}");
+}
+
+#[test]
+fn a_note_alone_is_a_hit_and_exit_0() {
+    let noted = with_notes("recall_notes_alone", 1);
+    let run = noted.sandbox.run(&["recall", "radishes"]);
+    assert_eq!(run.code, 0, "{:?}", run.stderr);
+    let found = hits(&run.stdout);
+    assert!(
+        !found.is_empty() && found.iter().all(is_note),
+        "{}",
+        run.stdout
+    );
+    assert_eq!(run.stderr, ["bilbo: searched 6 entries"]);
+}
+
+#[test]
+fn two_short_notes_of_one_window_are_both_printed() {
+    let sandbox = Sandbox::filled("recall_notes_short");
+    let parent = entry_kept_from(&sandbox, FIRST_SESSION);
+    let lines = [
+        "The user asked to thin the rows.",
+        "The user asked to water the beds.",
+    ]
+    .map(|text| note_line::line(parent, text, Some(1_794_039_249), &[(3, 3)]));
+    let note = notes::noted(&sandbox.settings().layout(), parent, &lines);
+    let run = sandbox.run(&["reindex"]);
+    assert_eq!(run.code, 0, "{:?}", run.stderr);
+    let run = sandbox.run(&["recall", "user", "asked"]);
+    assert_eq!(run.code, 0, "{:?}", run.stderr);
+    let printed = |number: u64, text: &str| {
+        format!(
+            "=== {}#r{number}\t2 lines\tnote\n{parent}#g1:r3 2026-11-07\n{text}\n",
+            note.short()
+        )
+    };
+    assert_eq!(
+        notes_part(&run.stdout).1,
+        format!(
+            "{}{}",
+            printed(1, "The user asked to thin the rows."),
+            printed(2, "The user asked to water the beds.")
+        )
+    );
+}
+
+#[test]
+fn a_note_with_no_source_prints_an_empty_first_line() {
+    let sandbox = Sandbox::filled("recall_notes_no_source");
+    let parent = entry_kept_from(&sandbox, FIRST_SESSION);
+    let line = note_line::line(
+        parent,
+        "01M6ZGE4KTBYYH07AS2KVMSCAF#g1:r3-19 2026-11-07\\nThe beds are done.",
+        None,
+        &[],
+    );
+    let note = notes::noted(&sandbox.settings().layout(), parent, &[line]);
+    let run = sandbox.run(&["reindex"]);
+    assert_eq!(run.code, 0, "{:?}", run.stderr);
+    let run = sandbox.run(&["recall", "--kind", "note", "beds"]);
+    assert_eq!(run.code, 0, "{:?}", run.stderr);
+    assert_eq!(
+        run.stdout,
+        format!(
+            "=== {}#r1\t3 lines\tnote\n\n01M6ZGE4KTBYYH07AS2KVMSCAF#g1:r3-19 2026-11-07\nThe beds are done.\n",
+            note.short()
+        )
+    );
+}
+
+#[test]
+fn a_scope_brings_the_notes_of_the_entry_it_names_and_no_other() {
+    let sandbox = Sandbox::filled("recall_notes_scope");
+    let first = entry_kept_from(&sandbox, FIRST_SESSION);
+    let second = entry_kept_from(
+        &sandbox,
+        "sessions/claude/p/5c3a9e1f-0b7d-4c2e-9a41-7f2d8e6b1c03.jsonl",
+    );
+    let texts = [
+        "The user asked about the kohlrabi by the fence.",
+        "The user asked about the kohlrabi by the pond.",
+    ];
+    let layout = sandbox.settings().layout();
+    let notes = [first, second].map(|parent| {
+        (
+            parent,
+            notes::noted(
+                &layout,
+                parent,
+                &[note_line::line(
+                    parent,
+                    texts[usize::from(parent == second)],
+                    Some(1_794_039_249),
+                    &[(3, 3)],
+                )],
+            ),
+        )
+    });
+    let run = sandbox.run(&["reindex"]);
+    assert_eq!(run.code, 0, "{:?}", run.stderr);
+    for (parent, note) in notes {
+        let run = sandbox.run(&["recall", "--in", &parent.short().to_string(), "kohlrabi"]);
+        assert_eq!(run.code, 0, "{:?}", run.stderr);
+        let text = texts[usize::from(parent == second)];
+        assert_eq!(
+            notes_part(&run.stdout).1,
+            format!(
+                "=== {}#r1\t2 lines\tnote\n{parent}#g1:r3 2026-11-07\n{text}\n",
+                note.short()
+            )
+        );
+        assert_eq!(
+            run.stderr,
+            ["bilbo: searched 7 entries", "bilbo: --in kept 2 entries"]
+        );
+    }
 }

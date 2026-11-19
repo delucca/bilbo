@@ -35,6 +35,7 @@ pub(crate) enum Kind {
     /// `None` past the range of `i64`.
     Integer(Option<i64>),
     Decimal(Option<f64>),
+    Boolean(bool),
     List(Vec<Node>),
     Table(Vec<Field>),
     Other,
@@ -196,6 +197,7 @@ fn node(value: &Spanned<DeValue<'_>>) -> Node {
         DeValue::Float(float) => {
             Kind::Decimal(float.as_str().parse().ok().filter(|f: &f64| f.is_finite()))
         }
+        DeValue::Boolean(boolean) => Kind::Boolean(*boolean),
         DeValue::Array(items) => Kind::List(items.iter().map(node).collect()),
         DeValue::Table(table) => Kind::Table(fields(table)),
         _ => Kind::Other,
@@ -461,5 +463,14 @@ mod tests {
         assert_eq!(integer("b"), Some(8_388_608));
         assert_eq!(integer("c"), Some(-3));
         assert_eq!(integer("d"), None);
+    }
+
+    #[test]
+    fn a_boolean_is_its_own_kind_of_value() {
+        let file = parse("a = true\nb = false\nc = 1979-05-27\n").expect("toml");
+        let kind = |name: &str| file.find(name).map(|node| node.kind.clone());
+        assert_eq!(kind("a"), Some(super::Kind::Boolean(true)));
+        assert_eq!(kind("b"), Some(super::Kind::Boolean(false)));
+        assert_eq!(kind("c"), Some(super::Kind::Other));
     }
 }

@@ -19,6 +19,29 @@ pub trait Tokens: Sync {
     }
 }
 
+pub fn stretches(text: &str, bound: usize) -> Vec<(usize, usize)> {
+    let mut found = Vec::new();
+    let mut at = 0;
+    while at < text.len() {
+        if text.len() - at <= bound {
+            found.push((at, text.len()));
+            break;
+        }
+        let hard = text.floor_char_boundary(at + bound);
+        let half = at + bound / 2;
+        let mut end = text.as_bytes()[half..hard]
+            .iter()
+            .rposition(|byte| *byte == b'\n')
+            .map_or(hard, |line_feed| half + line_feed + 1);
+        if end == at {
+            end = at + text[at..].chars().next().map_or(1, char::len_utf8);
+        }
+        found.push((at, end));
+        at = end;
+    }
+    found
+}
+
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Estimate;
 
@@ -42,7 +65,37 @@ impl Tokens for Estimate {
 
 #[cfg(test)]
 mod tests {
-    use super::{Estimate, Tokens};
+    use super::{Estimate, Tokens, stretches};
+
+    #[test]
+    fn the_stretches_of_a_text_over_the_bound_end_at_line_feeds() {
+        let text: String = (0..10).map(|line| format!("line {line:04}xx\n")).collect();
+        assert_eq!(
+            stretches(&text, 32),
+            (0..5).map(|at| (at * 24, at * 24 + 24)).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn a_stretch_with_no_line_feed_ends_on_a_character() {
+        let text = "é".repeat(100);
+        let found = stretches(&text, 33);
+        assert_eq!(found.first().map(|stretch| stretch.0), Some(0));
+        assert_eq!(found.last().map(|stretch| stretch.1), Some(200));
+        for (first, last) in &found {
+            assert!(text.is_char_boundary(*first) && text.is_char_boundary(*last));
+            assert!((1..=33).contains(&(last - first)));
+        }
+        assert!(found.windows(2).all(|pair| pair[0].1 == pair[1].0));
+    }
+
+    #[test]
+    fn a_line_feed_in_the_first_half_of_a_stretch_does_not_end_it() {
+        let text = format!("aaaa\n{}", "b".repeat(35));
+        assert_eq!(stretches(&text, 32), [(0, 32), (32, 40)]);
+        let late = format!("{}\n{}", "a".repeat(20), "b".repeat(30));
+        assert_eq!(stretches(&late, 32), [(0, 21), (21, 51)]);
+    }
 
     #[test]
     fn a_token_is_four_bytes_rounded_up() {

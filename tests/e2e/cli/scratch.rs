@@ -7,6 +7,19 @@ use super::{Run, bilbo};
 
 static COUNTER: AtomicU64 = AtomicU64::new(0);
 
+pub(crate) fn closed(text: &str) -> String {
+    let mut whole = String::new();
+    for provider in ["anthropic", "openai"] {
+        if !text.contains(&format!("derive.{provider}.endpoint")) {
+            whole.push_str(&format!(
+                "derive.{provider}.endpoint = \"http://127.0.0.1:9/\"\n"
+            ));
+        }
+    }
+    whole.push_str(text);
+    whole
+}
+
 #[expect(
     clippy::disallowed_methods,
     reason = "Bazel gives each test its scratch folder in TEST_TMPDIR"
@@ -32,7 +45,7 @@ impl Scratch {
         fs::create_dir_all(dir.join("home")).expect("home");
         fs::create_dir_all(dir.join("notes")).expect("notes");
         fs::create_dir_all(dir.join("config")).expect("config");
-        fs::write(dir.join("config/config.toml"), "").expect("an empty config file");
+        fs::write(dir.join("config/config.toml"), closed("")).expect("a config file");
         Scratch { dir }
     }
 

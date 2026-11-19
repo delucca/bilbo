@@ -101,8 +101,7 @@ pub fn run(
                 details: Vec::new(),
             });
         }
-    })
-    .map_err(|error| Failure::from(&error))?;
+    })?;
     let fetched = read::fetch(&request, &store);
     drop(store);
 

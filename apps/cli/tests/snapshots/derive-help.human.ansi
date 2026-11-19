@@ -1,0 +1,30 @@
+bilbo derive: write notes about entries that stopped growing, with a model.
+
+[1mUsage:[22m
+  [36mbilbo derive [--dry-run] [--redo] [--calls [39m[2m<n>[22m[36m] [[39m[2m<entry>[22m[36m...][39m
+
+[1mOptions:[22m
+      [1m--dry-run[22m    Say what a run would send, and send nothing
+      [1m--redo[22m       Redo what other settings wrote and what was passed over
+      [1m--calls [22m[2m<n>[22m  Make at most this many calls
+
+[1mKinds:[22m
+  [1msession[22m  bilbo ships an instruction for it
+[1mProviders:[22m
+  [1manthropic[22m  the Anthropic API, with a key
+  [1mopenai[22m     the OpenAI API, with a key
+  [1mclaude[22m     the tool claude, with its own login and no key
+
+[1mOutput:[22m
+  entries [2m<n>[22m, calls [2m<n>[22m, notes [2m<n>[22m, dropped [2m<n>[22m, refused [2m<n>[22m, failed [2m<n>[22m
+  tokens in [2m<n>[22m, tokens out [2m<n>[22m, seconds [2m<n>[22m
+
+[1mExit:[22m
+  [1m0[22m  done, also when derive is off, nothing is due or another derive runs
+  [1m1[22m  a failed call, a refused entry, a busy or stopped provider, a store failure
+  [1m2[22m  usage or config error
+
+[1mExamples:[22m
+  [36mbilbo derive --dry-run[39m
+
+[1mDocs:[22m [2mhttps://github.com/delucca/bilbo/wiki/Commands#derive[22m

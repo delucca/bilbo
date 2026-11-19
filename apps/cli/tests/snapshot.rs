@@ -36,6 +36,7 @@ fn defaults() -> Settings {
         &|name| (name == "HOME").then(|| "/home/u".into()),
         &|_| Err(std::io::ErrorKind::NotFound.into()),
         &bilbo_cli::kind_keys(),
+        &bilbo_cli::provider_keys(),
     )
     .expect("the defaults")
 }
@@ -149,7 +150,7 @@ fn a_usage_error_on_a_terminal_is_a_marked_message() {
     );
     assert_eq!(
         stderr(&["frob"], &unpainted()),
-        "■  unknown verb 'frob'; the verbs are remember, recall, read, reindex, config\n   see bilbo --help\n"
+        "■  unknown verb 'frob'; the verbs are remember, recall, read, reindex, derive, config\n   see bilbo --help\n"
     );
 }
 
@@ -548,6 +549,8 @@ fn recalled() -> bilbo_search::recall::Output {
         preface: preface.map(str::to_owned),
         text: text.to_owned(),
         cut,
+        apart: false,
+        headed: false,
         shared_short,
     };
     bilbo_search::recall::Output {
@@ -591,6 +594,7 @@ fn recalled() -> bilbo_search::recall::Output {
         left_out: 0,
         skipped: bilbo_search::recall::select::Skipped::default(),
         scope: None,
+        apart: Vec::new(),
         expanded: Vec::new(),
     }
 }
@@ -605,6 +609,67 @@ fn the_recall_output_in_the_plain_view_and_on_a_terminal() {
         bilbo_cli::recall::view::human(&recalled(), &View::HUMAN),
         include_str!("snapshots/recall-output.human.ansi")
     );
+}
+
+fn recalled_with_notes() -> bilbo_search::recall::Output {
+    use bilbo_search::index::Extent;
+    use bilbo_search::lookup::Found;
+    use bilbo_search::recall::hit::Hit;
+    let mut output = recalled();
+    output.hits.truncate(2);
+    let note = |entry: &str, first, text: &str, cut| Hit {
+        found: Found {
+            entry: Id::parse(entry).expect("an id"),
+            kind: "note".to_owned(),
+            extent: Extent {
+                generation: Generation(1),
+                records: RecordRange { first, count: 1 },
+                part: None,
+                date: 1_794_069_552_000,
+            },
+            digest: 0,
+        },
+        preface: None,
+        text: text.to_owned(),
+        cut,
+        apart: true,
+        headed: false,
+        shared_short: false,
+    };
+    output.apart = vec![
+        note(
+            "01M6ZGE4KTBYYH07AS2KVMSCAF",
+            3,
+            "01JC5Q3V7XKM4P8R2T6W9YB0DE#g1:r3-19 2026-11-07\nThe user asked to thin the carrot rows.",
+            false,
+        ),
+        note(
+            "01M6ZGE4KTBYYH07AS2KVMSCAG",
+            1,
+            "01JC5Q3V7XKM4P8R2T6W9YB0DE#g1:r20-31 01JC5Q3V7XKM4P8R2T6W9YB0DE#g1:r40 2026-11-08\nThe beans were sown along the south fence, and the",
+            true,
+        ),
+    ];
+    output
+}
+
+#[test]
+fn the_recall_output_with_notes_in_the_plain_view_and_on_a_terminal() {
+    assert_eq!(
+        bilbo_cli::recall::view::plain(&recalled_with_notes()),
+        include_str!("snapshots/recall-notes.txt")
+    );
+    assert_eq!(
+        bilbo_cli::recall::view::human(&recalled_with_notes(), &View::HUMAN),
+        include_str!("snapshots/recall-notes.human.ansi")
+    );
+}
+
+#[test]
+fn a_note_entry_as_read_prints_it() {
+    let derived = include_bytes!("../../../libs/entries/rust/fixtures/note/derived.jsonl");
+    let (plain, _) = read_output("note", "/derive/parent", derived, "#r1-7", 7000);
+    assert_eq!(plain, include_str!("snapshots/read-notes-page.txt"));
 }
 
 #[test]
@@ -634,6 +699,7 @@ fn recall_says_what_was_searched_and_that_nothing_matched_on_stderr() {
         left_out: 0,
         skipped: bilbo_search::recall::select::Skipped::default(),
         scope: None,
+        apart: Vec::new(),
         expanded: Vec::new(),
     };
     let finished = bilbo_search::recall::Finished {
@@ -756,4 +822,96 @@ fn a_value_with_no_letter_or_digit_is_a_usage_error_with_the_usage_on_two_lines(
     let mut text = failure.stderr_lines(&View::PLAIN).join("\n");
     text.push('\n');
     assert_eq!(text, include_str!("snapshots/recall-usage-in.txt"));
+}
+
+#[test]
+fn the_derive_page_is_the_same_from_every_help_form_and_on_a_terminal() {
+    let page = include_str!("snapshots/derive-help.txt");
+    for form in [
+        &["derive", "--help"][..],
+        &["derive", "-h"],
+        &["help", "derive"],
+        &["help", "derive", "--help"],
+    ] {
+        assert_eq!(stdout(form, &View::PLAIN), page, "{form:?}");
+    }
+    assert_eq!(
+        stdout(&["derive", "--help"], &View::HUMAN),
+        include_str!("snapshots/derive-help.human.ansi")
+    );
+    assert_eq!(stdout(&["derive", "--help"], &unpainted()), page);
+}
+
+fn derived() -> bilbo_derive::run::Counts {
+    bilbo_derive::run::Counts {
+        entries: 3,
+        calls: 4,
+        notes: 31,
+        dropped: 2,
+        refused: 0,
+        failed: 0,
+        passed: 1,
+        tokens_in: 91_806,
+        tokens_out: 7_340,
+    }
+}
+
+#[test]
+fn the_derive_output_in_the_plain_view_and_on_a_terminal() {
+    assert_eq!(
+        bilbo_cli::derive::view::plain(&derived(), 48),
+        include_str!("snapshots/derive-output.txt")
+    );
+    assert_eq!(
+        bilbo_cli::derive::view::human(&derived(), 48, &View::HUMAN),
+        include_str!("snapshots/derive-output.human.ansi")
+    );
+}
+
+#[test]
+fn the_dry_run_in_the_plain_view() {
+    use bilbo_cli::derive::view::{Dry, KindRow, NotDue, lines};
+    use bilbo_derive::instruction::Origin;
+    let dry = Dry {
+        off: vec!["derive.enabled is false".to_owned()],
+        kinds: vec![
+            KindRow {
+                kind: "session".to_owned(),
+                origin: Origin::Shipped,
+                instruction: "9f86d081884c7d65".to_owned(),
+            },
+            KindRow {
+                kind: "markdown".to_owned(),
+                origin: Origin::File(PathBuf::from("/home/me/notes/markdown.txt")),
+                instruction: "4c1a70b9e2d355f0".to_owned(),
+            },
+        ],
+        named: 412,
+        left_out: 14,
+        due: 37,
+        not_due: NotDue {
+            growing: 12,
+            covered: 340,
+            belongs: 9,
+            passed: 2,
+            labels: 1,
+        },
+        calls: 20,
+        entries: 14,
+        tokens: 380_122,
+        limit: 20,
+        provider: vec![
+            "provider: anthropic, model claude-haiku-5-5, at https://api.anthropic.com/v1/messages"
+                .to_owned(),
+            "version: 2026-10-21".to_owned(),
+            "key: the variable ANTHROPIC_API_KEY, which is set".to_owned(),
+        ],
+        entry_lines: vec![
+            "entry\t01M6ZGE4KTBYYH07AS2KVMSCAF\tcovered\t01M7Q9TDMQ9SBDXT8T7VKDGZVH\t12".to_owned(),
+            "entry\t01M6ZGF2D0XH5T0S4B7W1N9RQK\tleft out: derive.not_in\t-\t0".to_owned(),
+        ],
+    };
+    let mut text = lines(&dry).join("\n");
+    text.push('\n');
+    assert_eq!(text, include_str!("snapshots/derive-dry-run.txt"));
 }

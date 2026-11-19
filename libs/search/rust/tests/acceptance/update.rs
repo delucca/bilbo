@@ -9,7 +9,7 @@ use bilbo_store::entries::Cursor;
 use bilbo_store::id::Id;
 
 use crate::fakes::{
-    Bytes, CATALOG, Docs, Fault, Foldered, Lines, Log, Row, Whole, id, named, unread, wide,
+    Alone, Bytes, CATALOG, Docs, Fault, Foldered, Lines, Log, Row, Whole, id, named, unread, wide,
 };
 use bilbo_search::analyze::label_words;
 use bilbo_store::labels::Labels;
@@ -50,6 +50,7 @@ fn readers() -> Vec<Box<dyn Reader>> {
         Box::new(Foldered("lines")),
         Box::new(Lines("notes")),
         Box::new(Whole("plain")),
+        Box::new(Alone("alone")),
     ]
 }
 
@@ -313,6 +314,20 @@ fn an_entry_the_store_no_longer_has_loses_its_documents() {
     log.remove(1);
     keep(&log, &mut index);
     assert_eq!(index.deletes, [(id(1), 1)]);
+    assert_eq!(index.sorted(), rebuilt(&log));
+}
+
+#[test]
+fn an_entry_whose_passages_stand_alone_grows_as_a_rebuilt_one() {
+    let mut log = Log::new();
+    log.put(1, "alone", &["aa", "bb", "cc"]);
+    let mut index = Docs::default();
+    keep(&log, &mut index);
+    assert_eq!(index.rows.len(), 3);
+    log.append(1, &["dd", "ee"]);
+    keep(&log, &mut index);
+    assert_eq!(index.deletes, [(id(1), 3)]);
+    assert_eq!(index.sorted().len(), 5);
     assert_eq!(index.sorted(), rebuilt(&log));
 }
 

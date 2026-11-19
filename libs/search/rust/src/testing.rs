@@ -222,6 +222,8 @@ pub(crate) struct Table {
     holding_at: Option<u32>,
     pub(crate) asked: RefCell<Vec<usize>>,
     pub(crate) holdings: Cell<usize>,
+    pub(crate) lengths: Cell<usize>,
+    length_extra: u64,
     pub(crate) looked_up: RefCell<Vec<String>>,
     pub(crate) near_asked: RefCell<Vec<(String, Edits)>>,
     pub(crate) pairs_asked: RefCell<Vec<(String, String)>>,
@@ -273,6 +275,11 @@ impl Table {
 
     pub(crate) fn pairs_failing(mut self) -> Table {
         self.pairs_failing = true;
+        self
+    }
+
+    pub(crate) fn length_over(mut self, extra: u64) -> Table {
+        self.length_extra = extra;
         self
     }
 
@@ -434,6 +441,17 @@ impl Lookup for Table {
             .collect();
         held.extend(self.holding_at);
         Ok(held)
+    }
+
+    fn length(&self, kind: &str) -> Result<u64, IndexError> {
+        self.check()?;
+        self.lengths.set(self.lengths.get() + 1);
+        Ok(self
+            .live()
+            .filter(|(_, row)| row.kind == kind)
+            .map(|(_, row)| row.terms.len() as u64)
+            .sum::<u64>()
+            + self.length_extra)
     }
 
     fn found(&self, docs: &[u32]) -> Result<Vec<Found>, IndexError> {

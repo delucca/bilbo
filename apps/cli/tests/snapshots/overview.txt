@@ -5,9 +5,10 @@ Usage: bilbo <verb> [<args>]
 
 Verbs:
   remember  Keep files as entries; a later run keeps what grew or changed
-  recall    Search everything bilbo keeps and print the chunks that match best
+  recall    Search everything bilbo keeps and print the best chunks and notes
   read      Print an entry: its outline, or its records a page at a time
   reindex   Rebuild the catalog and the search index from the store
+  derive    Write notes about entries that stopped growing, with a model
   config    Show each setting, its value and where it came from
 
 Run 'bilbo <verb> --help' for its options, output and exit codes.

@@ -6,19 +6,23 @@ use std::sync::OnceLock;
 use proc_macro2::{Delimiter, TokenStream, TokenTree};
 use syn::visit::{self, Visit};
 
-const COMPONENTS: [&str; 6] = ["config", "help", "read", "recall", "reindex", "remember"];
+const COMPONENTS: [&str; 7] = [
+    "config", "derive", "help", "read", "recall", "reindex", "remember",
+];
 const MODULE: &str = "console";
 const THEME: [&str; 2] = ["console", "theme"];
 const ROOTS: [&str; 2] = ["crate", "bilbo_cli"];
-const SHARED: [&str; 4] = [
+const SHARED: [&str; 5] = [
+    "bilbo_derive",
     "bilbo_entries",
     "bilbo_search",
     "bilbo_settings",
     "bilbo_store",
 ];
 const OWN: &str = "bilbo_";
-const ADAPTERS: [(&str, &[&str]); 2] = [
-    ("bilbo_entries", &["markdown", "session"]),
+const ADAPTERS: [(&str, &[&str]); 3] = [
+    ("bilbo_derive", &["anthropic", "openai", "claude"]),
+    ("bilbo_entries", &["markdown", "note", "session"]),
     ("bilbo_search", &["qwen", "tantivy", "whichlang"]),
 ];
 const INDEX_TEST: &str = "reindex.rs";

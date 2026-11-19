@@ -6,6 +6,7 @@ bilbo_rust_test(
     srcs = [
         "cli.rs",
         "config.rs",
+        "derive.rs",
         "read.rs",
         "recall.rs",
         "reindex.rs",
@@ -28,7 +29,9 @@ bilbo_rust_test(
     size = "medium",
     version = BILBO_VERSION,
     deps = [
+        "//tools/rust/provider",
         "@crates//:runfiles",
         "@crates//:rustix",
+        "@crates//:serde_json",
     ],
 )

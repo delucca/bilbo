@@ -16,12 +16,14 @@ pub struct Reading<'a> {
     pub tokenizer: &'a dyn Fn() -> Result<Tokenizer, Failure>,
     pub lookup: &'a dyn Fn(&Path) -> Box<dyn Lookup>,
     pub detect: &'a dyn Detect,
+    pub apart: &'a [&'static str],
 }
 
 pub fn of<'a>(
     indexing: &'a Indexing<'a>,
     lookup: &'a dyn Fn(&Path) -> Box<dyn Lookup>,
     detect: &'a dyn Detect,
+    apart: &'a [&'static str],
 ) -> Reading<'a> {
     Reading {
         readers: indexing.readers,
@@ -30,5 +32,6 @@ pub fn of<'a>(
         tokenizer: indexing.tokenizer,
         lookup,
         detect,
+        apart,
     }
 }

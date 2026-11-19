@@ -1,3 +1,4 @@
+use bilbo_search::recall::scope::Unnamed;
 use bilbo_store::segments::Notice;
 
 use crate::console::theme::{Mark, Style, paint};
@@ -25,6 +26,22 @@ impl Message {
         Self {
             mark: Mark::Error,
             text: text.into(),
+            details: Vec::new(),
+        }
+    }
+
+    pub fn warning(text: &str) -> Self {
+        Self::marked(Mark::Warning, text)
+    }
+
+    pub fn info(text: &str) -> Self {
+        Self::marked(Mark::Info, text)
+    }
+
+    fn marked(mark: Mark, text: &str) -> Self {
+        Self {
+            mark,
+            text: sanitize(text),
             details: Vec::new(),
         }
     }
@@ -110,6 +127,20 @@ pub fn group(number: u64) -> String {
 
 fn reorders(c: char) -> bool {
     matches!(c, '\u{61c}' | '\u{200e}' | '\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}')
+}
+
+pub fn unnamed_value(name: &str, value: &str, why: &Unnamed, then: &str) -> Message {
+    Message::warning(&match why {
+        Unnamed::Nothing => format!("{name} '{value}' names no entry"),
+        Unnamed::Several(ids) => {
+            let ids: Vec<String> = ids.iter().map(ToString::to_string).collect();
+            format!(
+                "{name} '{value}' ends the id of {} entries: {}; {then}",
+                ids.len(),
+                ids.join(", ")
+            )
+        }
+    })
 }
 
 pub fn sanitize(line: &str) -> String {

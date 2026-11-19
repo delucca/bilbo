@@ -372,19 +372,19 @@ mod tests {
     #[test]
     fn a_record_that_fits_under_its_own_locator_is_not_cut_for_the_wider_one() {
         let long = format!("{}\n", "x".repeat(40));
-        let note = [section(1, &[&long, "y\n"])];
+        let document = [section(1, &[&long, "y\n"])];
         // "#r1-2 " and the line are 47 characters, "#r1 " and the line 45.
-        let page = paged(&note, range(1, 2), 45);
+        let page = paged(&document, range(1, 2), 45);
         assert_eq!(page.blocks, [block(1, 1, &long)]);
         assert_eq!(page.more, Some(range(2, 2)));
-        let page = paged(&note, range(1, 2), 44);
+        let page = paged(&document, range(1, 2), 44);
         assert!(
             page.blocks[0].cut.is_some(),
             "one less and it is over the budget alone"
         );
-        let pages = chain(&note, range(1, 2), 45);
+        let pages = chain(&document, range(1, 2), 45);
         assert_eq!(printed(&pages), [1, 2]);
-        let roomy = paged(&note, range(1, 2), 49);
+        let roomy = paged(&document, range(1, 2), 49);
         assert_eq!(roomy.blocks, [block(1, 2, &format!("{long}y\n"))]);
     }
 
@@ -436,7 +436,7 @@ mod tests {
         assert!(pages.iter().all(|page| page.blocks[0].text.is_empty()));
     }
 
-    fn note() -> Vec<Passage> {
+    fn document() -> Vec<Passage> {
         vec![
             section(1, &["# One\n", "first\n", "\n"]),
             section(4, &["## Two\n", "second\n", "third"]),
@@ -446,7 +446,7 @@ mod tests {
     #[test]
     fn a_section_is_one_block_under_the_locator_of_its_records() {
         assert_eq!(
-            paged(&note(), range(1, 6), 1000).blocks,
+            paged(&document(), range(1, 6), 1000).blocks,
             [
                 block(1, 3, "# One\nfirst\n\n"),
                 block(4, 6, "## Two\nsecond\nthird"),
@@ -457,11 +457,11 @@ mod tests {
     #[test]
     fn a_range_that_starts_or_ends_inside_a_section_prints_the_records_it_holds() {
         assert_eq!(
-            paged(&note(), range(2, 5), 1000).blocks,
+            paged(&document(), range(2, 5), 1000).blocks,
             [block(2, 3, "first\n\n"), block(4, 5, "## Two\nsecond\n")]
         );
         assert_eq!(
-            paged(&note(), range(5, 5), 1000).blocks,
+            paged(&document(), range(5, 5), 1000).blocks,
             [block(5, 5, "second\n")]
         );
     }
@@ -469,11 +469,11 @@ mod tests {
     #[test]
     fn a_section_over_the_budget_goes_on_at_a_record_inside_it_and_is_not_cut() {
         // "#r1-3 # One\n" is 12 characters, "first\n" 6.
-        let page = paged(&note(), range(1, 6), 18);
+        let page = paged(&document(), range(1, 6), 18);
         assert_eq!(page.blocks, [block(1, 2, "# One\nfirst\n")]);
         assert_eq!(page.more, Some(range(3, 6)));
         for budget in [8, 12, 18, 19, 30, 1000] {
-            let pages = chain(&note(), range(1, 6), budget);
+            let pages = chain(&document(), range(1, 6), budget);
             assert_eq!(printed(&pages), [1, 2, 3, 4, 5, 6], "budget {budget}");
             let cuts = pages
                 .iter()

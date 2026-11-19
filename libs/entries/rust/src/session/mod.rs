@@ -820,6 +820,10 @@ mod tests {
                 passage.pieces.iter().map(|piece| piece.start).is_sorted(),
                 "case {case}"
             );
+            assert!(
+                passage.pieces.first().is_none_or(|piece| piece.start == 0),
+                "case {case}"
+            );
         }
     }
 

@@ -7,7 +7,7 @@ It reads no setting from the environment. `run(settings, store=, questions=, out
 (recall's --budget), `question_words` (None keeps the key's default; a list of words is written to a config file of its
 own), `candidates` (None keeps the key's default; a number is passed as BILBO_RECALL_CANDIDATES), `typo_terms` (None keeps the key's
 default; a number is passed as BILBO_RECALL_TYPO_TERMS), `pair_weight` (None keeps the key's default; a number, 0 included, is passed as
-BILBO_RECALL_PAIR_WEIGHT) and `in` (None, or "repo":
+BILBO_RECALL_PAIR_WEIGHT), `notes_budget` (the same, as BILBO_RECALL_NOTES_BUDGET) and `in` (None, or "repo":
 each recall is scoped with --in <remembered folder>/<the question's repository>, and its `--in kept` line must count the
 entries of that repository). Every row also holds `passed`, `typos` (`[[term, [near, ...]], ...]` from recall's `typos:` line,
 empty without one), `run` (the store's key, the driver's 12 hex and the settings
@@ -30,17 +30,18 @@ BILBO = "/usr/local/bin/bilbo"
 VARIANT_CONFIG = Path("/tmp/bilbo-question-words.toml")
 QUESTIONS = Path("/work/questions.jsonl")
 OUT = Path("/work/search.jsonl")
-HEADER = re.compile(r"^=== (([0-9A-HJKMNP-TV-Z]{10}|[0-9A-HJKMNP-TV-Z]{26})#r(\d+)(?:-(\d+))?)\t(\d+) lines?((?:\t[^\t\n]+)*)$")
-PART = re.compile(r"^part (\d+)/(\d+)$")
+HEADER = re.compile(r"^=== (([0-9A-HJKMNP-TV-Z]{10}|[0-9A-HJKMNP-TV-Z]{26})#r(\d+)(?:-(\d+))?)\t(\d+) lines?(?:\t(?!cut(?:\t|$))([a-z]+))?(?:\tpart (\d+)/(\d+))?(\tcut)?$")
 SEARCHED = re.compile(r"^bilbo: searched [\d,]+ entr(?:y|ies)$")
 PASSED_OVER = re.compile(r"^bilbo: passed over: .+$")
 TYPOS = re.compile(r"^bilbo: typos: (.+)$")
 TYPO_ITEM = re.compile(r"^([a-z]+) as ([a-z]+(?:, [a-z]+)*)$")
 IN_KEPT = re.compile(r"^bilbo: --in kept ([\d,]+) entr(?:y|ies)( and left out (?:none|[\d,]+) of the best [\d,]+(?:: .+)?)?$")
+SOURCE = r"[0-9A-HJKMNP-TV-Z]{26}#g(\d+):r(\d+)(?:-(\d+))?"
+NOTE_LINE = re.compile(rf"^({SOURCE})(?: {SOURCE})*(?: \d{{4}}-\d{{2}}-\d{{2}})?$")
 PASSED_ITEMS = (("copies", re.compile(r"^([\d,]+) cop(?:y|ies)$")),
                 ("parts", re.compile(r"^([\d,]+) further parts? of a record$")),
                 ("capped", re.compile(r"^([\d,]+) over the entry cap$")))
-DEFAULTS = {"budget": 8000, "question_words": None, "candidates": None, "typo_terms": None, "pair_weight": None, "in": None}
+DEFAULTS = {"budget": 8000, "question_words": None, "candidates": None, "typo_terms": None, "pair_weight": None, "notes_budget": None, "in": None}
 
 
 def environment(name, settings, store=STORE):
@@ -55,7 +56,18 @@ def environment(name, settings, store=STORE):
         env["BILBO_RECALL_TYPO_TERMS"] = str(settings["typo_terms"])
     if settings["pair_weight"] is not None:
         env["BILBO_RECALL_PAIR_WEIGHT"] = format(Decimal(str(settings["pair_weight"])), "f")
+    if settings["notes_budget"] is not None:
+        env["BILBO_RECALL_NOTES_BUDGET"] = str(settings["notes_budget"])
     return env
+
+
+def source(line):
+    m = NOTE_LINE.match(line)
+    if not m:
+        return None
+    parent, generation = line[:26], int(m.group(2))
+    first = int(m.group(3))
+    return {"parent": parent, "generation": generation, "first": first, "last": int(m.group(4) or first)}
 
 
 def parse(question, form, stdout):
@@ -68,21 +80,13 @@ def parse(question, form, stdout):
         m = HEADER.match(lines[i])
         if not m:
             sys.exit(f"search: {question}/{form}: line {i + 1} is not a header: {lines[i][:200]!r}")
-        ref, entry, a, b, n, extra = m.groups()
+        ref, entry, a, b, n, kind, k, parts, cut = m.groups()
         n = int(n)
         body = lines[i + 1: i + 1 + n]
         if len(body) != n:
             sys.exit(f"search: {question}/{form}: the hit {ref} says {n} lines, {len(body)} are left")
-        part, cut = None, False
-        for field in extra.split("\t")[1:]:
-            p = PART.match(field)
-            if p:
-                part = [int(p.group(1)) - 1, int(p.group(2))]
-            elif field == "cut":
-                cut = True
-            else:
-                sys.exit(f"search: {question}/{form}: the header of {ref} has the field {field!r}")
-        hits.append({"ref": ref, "entry": entry, "lines": [int(a), int(b or a)], "part": part, "cut": cut, "text": "\n".join(body)})
+        part = [int(k) - 1, int(parts)] if k else None
+        hits.append({"ref": ref, "entry": entry, "lines": [int(a), int(b or a)], "part": part, "cut": cut is not None, "kind": kind, "text": "\n".join(body)})
         i += 1 + n
     return hits
 
@@ -161,6 +165,18 @@ def result(entries, question, form, name, rank, hit):
             "session": entry["session"], "lines": hit["lines"], "part": hit["part"], "rank": rank, "cut": hit["cut"]}
 
 
+def note(entries, question, form, name, rank, hit):
+    found = source(hit["text"].split("\n", 1)[0])
+    if found is None:
+        sys.exit(f"search: {question}/{form}: the first line of the note {hit['ref']} is no source line: {hit['text'][:200]!r}")
+    entry = entries.get((name, found["parent"]))
+    if entry is None:
+        sys.exit(f"search: {question}/{form}: the note {hit['ref']} was written from {found['parent']}, which is no entry of the store {name}")
+    return {"text": hit["text"], "ref": hit["ref"], "lines": hit["lines"], "cut": hit["cut"], "rank": rank, "entry": found["parent"],
+            "repo": entry["repo"], "session": entry["session"], "generation": found["generation"],
+            "records": [found["first"], found["last"]]}
+
+
 def run(settings, store=STORE, questions=QUESTIONS, out=OUT, binary=BILBO):
     unknown = sorted(set(settings) - set(DEFAULTS))
     if unknown:
@@ -179,6 +195,7 @@ def run(settings, store=STORE, questions=QUESTIONS, out=OUT, binary=BILBO):
         VARIANT_CONFIG.write_text(f"follow = []\n\n[recall]\nquestion_words = [{quoted}]\n", encoding="utf-8")
     manifest = json.loads((store / "manifest.json").read_text())
     store_scope = manifest["scope"]
+    note_entries = {repo: info["note_entries"] for repo, info in manifest.get("derive", {}).get("repos", {}).items()}
     entries, per_repo = {}, {}
     for line in (store / "entries.jsonl").open(encoding="utf-8"):
         row = json.loads(line)
@@ -198,14 +215,17 @@ def run(settings, store=STORE, questions=QUESTIONS, out=OUT, binary=BILBO):
             for form in ("query", "prompt"):
                 scope = f"{manifest['remembered']}/{q['repo']}" if settings["in"] else None
                 hits, seconds, passed, kept, misspelt = recall(q["id"], form, name, q[form], settings, binary=binary, store=store, scope=scope)
-                found = [result(entries, q["id"], form, name, rank, h) for rank, h in enumerate(hits, 1)]
+                chunks = [h for h in hits if h["kind"] != "note"]
+                found = [result(entries, q["id"], form, name, rank, h) for rank, h in enumerate(chunks, 1)]
+                notes = [note(entries, q["id"], form, name, rank, h) for rank, h in enumerate((h for h in hits if h["kind"] == "note"), 1)]
                 if scope is not None:
-                    if kept != per_repo.get((name, q["repo"]), 0):
-                        sys.exit(f"search: {q['id']}/{form}: --in kept {kept} entries, entries.jsonl has {per_repo.get((name, q['repo']), 0)} of {q['repo']}")
-                    other = [r for r in found if r["repo"] != q["repo"]]
+                    want = per_repo.get((name, q["repo"]), 0) + note_entries.get(q["repo"], 0)
+                    if kept != want:
+                        sys.exit(f"search: {q['id']}/{form}: --in kept {kept} entries, entries.jsonl has {per_repo.get((name, q['repo']), 0)} sessions of {q['repo']} and the manifest {note_entries.get(q['repo'], 0)} note entries")
+                    other = [r for r in found + notes if r["repo"] != q["repo"]]
                     if other:
                         sys.exit(f"search: {q['id']}/{form}: a result of {other[0]['repo']}, the question's repo is {q['repo']}")
-                row = {"id": q["id"], "form": form, "seconds": round(seconds, 3), "results": found, "passed": passed,
+                row = {"id": q["id"], "form": form, "seconds": round(seconds, 3), "results": found, "notes": notes, "passed": passed,
                        "typos": misspelt, "run": run_id}
                 if scope is not None:
                     row |= {"in": scope, "kept": kept}
@@ -251,7 +271,35 @@ def loop():
     return 0
 
 
+HEADER_TAKEN = [("", (None, None, False)), ("note", ("note", None, False)), ("part 1/2", (None, [0, 2], False)),
+                ("cut", (None, None, True)), ("note\tpart 1/2", ("note", [0, 2], False)), ("note\tcut", ("note", None, True)),
+                ("part 1/2\tcut", (None, [0, 2], True)), ("note\tpart 1/2\tcut", ("note", [0, 2], True))]
+HEADER_REFUSED = ["note\tcut\tpart 1/2\tcut", "part 1/2\tpart 2/2", "cut\tcut", "note\tnote", "cut\tpart 1/2",
+                  "part 1/2\tnote", "cut\tnote", "Note", "note\t", "note\tcut\tpart 1/2"]
+
+
+def header_lines():
+    ref = "2T6W9YB0DE#r1"
+    for fields, want in HEADER_TAKEN:
+        out = f"=== {ref}\t1 line{chr(9) + fields if fields else ''}\nbody\n"
+        got = parse("q", "query", out)
+        found = (got[0]["kind"], got[0]["part"], got[0]["cut"]) if len(got) == 1 else None
+        if found != want:
+            print(f"lines: the header fields {fields!r} gave {found}, expected {want}")
+            return 1
+    for fields in HEADER_REFUSED:
+        try:
+            parse("q", "query", f"=== {ref}\t1 line\t{fields}\nbody\n")
+        except SystemExit:
+            continue
+        print(f"lines: the header fields {fields!r} were accepted")
+        return 1
+    return 0
+
+
 def lines():
+    if header_lines():
+        return 1
     table = [("bilbo: typos: carot as carrot", [["carot", ["carrot"]]]),
              ("bilbo: typos: carot as carrot; setin as set, setton", [["carot", ["carrot"]], ["setin", ["set", "setton"]]])]
     for line, expected in table:
@@ -272,6 +320,11 @@ def lines():
             if got != want:
                 print(f"lines: {key} {value!r} gave the variable {got!r}, expected {want!r}")
                 return 1
+    for value, want in ((0, "0"), (2500, "2500"), (None, None)):
+        got = environment("n", DEFAULTS | {"notes_budget": value}).get("BILBO_RECALL_NOTES_BUDGET")
+        if got != want:
+            print(f"lines: notes_budget {value!r} gave the variable {got!r}, expected {want!r}")
+            return 1
     for value in (True, False):
         try:
             run({"pair_weight": value}, store=Path("/nonexistent"))

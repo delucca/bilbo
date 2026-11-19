@@ -1,0 +1,9 @@
+[Unit]
+Description=Run bilbo derive every 30 min
+
+[Timer]
+OnActiveSec=30min
+OnUnitActiveSec=30min
+
+[Install]
+WantedBy=timers.target

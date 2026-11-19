@@ -536,6 +536,20 @@ impl Catalog {
         Ok(self.holder_of_id(id)?.is_some())
     }
 
+    pub fn newest_segment(&self, id: Id) -> Result<Option<String>, StoreError> {
+        self.conn
+            .query_row(
+                "SELECT segment FROM frames
+                 WHERE entry = ?1
+                   AND generation = (SELECT max(generation) FROM generations WHERE entry = ?1)
+                 ORDER BY first DESC, count DESC LIMIT 1",
+                params![id.to_bytes().as_slice()],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+            .map_err(|error| self.err(&error))
+    }
+
     pub fn generation_records(&self, id: Id, generation: u32) -> Result<Option<u64>, StoreError> {
         self.conn
             .query_row(

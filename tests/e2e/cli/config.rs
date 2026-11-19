@@ -8,7 +8,7 @@ use super::{Run, binary};
 const KEYS: &str = "paths.root, paths.state, paths.cache, store.seal_at, store.seal_after, \
                     store.compression, store.tear_budget, store.wait, store.poll, follow, read.budget, read.outline_width, \
                     read.matches_listed, search.chunk_tokens, search.chunk_overlap, search.workers, \
-                    search.index_memory, search.merge_deleted_percent, search.entry_tries, search.label_batch, search.list_limit, recall.budget, recall.candidates, recall.cap, recall.record_cap, recall.copy_share, recall.copy_words, recall.question_words, recall.languages, recall.bm25_k1, recall.bm25_b, recall.read_batch, recall.typo_terms, recall.typo_letters, recall.typo_max_letters, recall.typo_two_edits, recall.pair_weight, markdown.heading_width, session.unpack_floor, session.unpack_ratio, session.unpack_window, session.wide_fields";
+                    search.index_memory, search.merge_deleted_percent, search.entry_tries, search.label_batch, search.list_limit, recall.budget, recall.notes_budget, recall.candidates, recall.cap, recall.record_cap, recall.copy_share, recall.copy_words, recall.question_words, recall.languages, recall.bm25_k1, recall.bm25_b, recall.read_batch, recall.typo_terms, recall.typo_letters, recall.typo_max_letters, recall.typo_two_edits, recall.pair_weight, derive.enabled, derive.provider, derive.in, derive.not_in, derive.instructions, derive.quiet, derive.window, derive.passage, derive.passage_head, derive.earlier, derive.names, derive.answer_tokens, derive.response, derive.calls, derive.timeout, derive.poll, derive.retries, derive.retry_wait, derive.retry_factor, derive.retry_limit, derive.tries, derive.failures, markdown.heading_width, session.unpack_floor, session.unpack_ratio, session.unpack_window, session.wide_fields, derive.anthropic.model, derive.anthropic.endpoint, derive.anthropic.version, derive.anthropic.key_env, derive.anthropic.key_command, derive.anthropic.headers, derive.anthropic.extra, derive.openai.model, derive.openai.endpoint, derive.openai.key_env, derive.openai.key_command, derive.openai.headers, derive.openai.extra, derive.claude.program, derive.claude.model, derive.claude.effort, derive.claude.arguments, derive.claude.inherit, derive.claude.environment, derive.claude.project_files";
 
 #[test]
 fn each_key_shows_the_source_that_won_a_variable_over_the_file_over_the_default() {
@@ -45,6 +45,7 @@ fn each_key_shows_the_source_that_won_a_variable_over_the_file_over_the_default(
              search.label_batch = 512 (default)\n\
              search.list_limit = \"64 MiB\" (default)\n\
              recall.budget = 4000 (default)\n\
+             recall.notes_budget = 2500 (default)\n\
              recall.candidates = 400 (default)\n\
              recall.cap = 0 (default)\n\
              recall.record_cap = 2 (default)\n\
@@ -60,11 +61,53 @@ fn each_key_shows_the_source_that_won_a_variable_over_the_file_over_the_default(
              recall.typo_max_letters = 64 (default)\n\
              recall.typo_two_edits = 8 (default)\n\
              recall.pair_weight = 0.25 (default)\n\
+             derive.enabled = false (default)\n\
+             derive.provider = \"\" (default)\n\
+             derive.in = [] (default)\n\
+             derive.not_in = [] (default)\n\
+             derive.instructions = {{}} (default)\n\
+             derive.quiet = \"30m\" (default)\n\
+             derive.window = 20000 (default)\n\
+             derive.passage = 300 (default)\n\
+             derive.passage_head = 0.5 (default)\n\
+             derive.earlier = 3000 (default)\n\
+             derive.names = 0.5 (default)\n\
+             derive.answer_tokens = 16000 (default)\n\
+             derive.response = \"4 MiB\" (default)\n\
+             derive.calls = 20 (default)\n\
+             derive.timeout = \"5m\" (default)\n\
+             derive.poll = \"5ms\" (default)\n\
+             derive.retries = 2 (default)\n\
+             derive.retry_wait = \"30s\" (default)\n\
+             derive.retry_factor = 2 (default)\n\
+             derive.retry_limit = \"5m\" (default)\n\
+             derive.tries = 3 (default)\n\
+             derive.failures = 3 (default)\n\
              markdown.heading_width = 100 (default)\n\
              session.unpack_floor = \"128 MiB\" (default)\n\
              session.unpack_ratio = 256 (default)\n\
              session.unpack_window = \"128 MiB\" (default)\n\
-             session.wide_fields = 32 (default)\n",
+             session.wide_fields = 32 (default)\n\
+             derive.anthropic.model = \"\" (default)\n\
+             derive.anthropic.endpoint = \"https://api.anthropic.com/v1/messages\" (default)\n\
+             derive.anthropic.version = \"2026-10-21\" (default)\n\
+             derive.anthropic.key_env = \"ANTHROPIC_API_KEY\" (default)\n\
+             derive.anthropic.key_command = [] (default)\n\
+             derive.anthropic.headers = {{}} (default)\n\
+             derive.anthropic.extra = {{}} (default)\n\
+             derive.openai.model = \"\" (default)\n\
+             derive.openai.endpoint = \"https://api.openai.com/v1/responses\" (default)\n\
+             derive.openai.key_env = \"OPENAI_API_KEY\" (default)\n\
+             derive.openai.key_command = [] (default)\n\
+             derive.openai.headers = {{}} (default)\n\
+             derive.openai.extra = {{}} (default)\n\
+             derive.claude.program = \"claude\" (default)\n\
+             derive.claude.model = \"\" (default)\n\
+             derive.claude.effort = \"medium\" (default)\n\
+             derive.claude.arguments = [\"-p\", \"--model\", \"{{model}}\", \"--effort\", \"{{effort}}\", \"--output-format\", \"json\", \"--tools\", \"\", \"--disable-slash-commands\", \"--strict-mcp-config\", \"--setting-sources\", \"project\", \"--settings\", \"{{\\\"disableAllHooks\\\": true}}\", \"--no-session-persistence\", \"--safe-mode\", \"--system-prompt\", \"{{instruction}}\"] (default)\n\
+             derive.claude.inherit = [\"HOME\", \"USER\", \"PATH\", \"TMPDIR\"] (default)\n\
+             derive.claude.environment = {{ DISABLE_PROMPT_CACHING = \"1\", LANG = \"en_US.UTF-8\" }} (default)\n\
+             derive.claude.project_files = [\"CLAUDE.md\", \"CLAUDE.local.md\", \"AGENTS.md\", \".mcp.json\", \".claude/CLAUDE.md\", \".claude/rules\", \".claude/skills\", \".claude/commands\", \".claude/settings.json\", \".claude/settings.local.json\"] (default)\n",
             root = scratch.path("store"),
             home = scratch.path("home"),
             cache = scratch.path("cache"),
@@ -238,6 +281,7 @@ fn an_unknown_key_named_on_the_command_line_is_a_usage_error() {
         format!(
             "bilbo: unknown key 'store.sealat'; the keys are {KEYS}\n\
              bilbo: usage: bilbo config [<key>]\n\
+             bilbo:        bilbo config set <key> <value>\n\
              bilbo: see 'bilbo config --help'\n"
         )
     );
@@ -502,4 +546,47 @@ fn a_config_value_with_a_bidirectional_control_prints_as_given_off_a_terminal() 
     let run = scratch.run_with(&["config", "paths.root"], &[("BILBO_HOME", path)]);
     assert_eq!(run.code, 0, "{}", run.stderr);
     assert_eq!(run.stdout, format!("{path}\n"));
+}
+
+#[test]
+fn config_set_then_config_shows_the_value_and_its_line() {
+    let scratch = Scratch::new("e2e_config_set");
+    let config = scratch.config("");
+    let run = scratch.run(&["config", "set", "derive.quiet", "30m"]);
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    assert_eq!(run.stdout, "");
+    assert_eq!(run.stderr, format!("bilbo: set derive.quiet in {config}\n"));
+    assert_eq!(
+        fs::read_to_string(&config).expect("the file"),
+        "[derive]\nquiet = \"30m\"\n"
+    );
+    let shown = scratch.run(&["config"]);
+    assert!(
+        shown
+            .stdout
+            .contains(&format!("derive.quiet = \"30m\" ({config}:2)\n")),
+        "{}",
+        shown.stdout
+    );
+    assert_eq!(scratch.run(&["config", "derive.quiet"]).stdout, "30m\n");
+}
+
+#[test]
+fn config_set_on_a_linked_file_exits_2_and_prints_the_line() {
+    let scratch = Scratch::new("e2e_config_linked");
+    let config = scratch.config("");
+    let managed = scratch.path("managed.toml");
+    fs::write(&managed, "").expect("a target");
+    fs::remove_file(&config).expect("unlink");
+    std::os::unix::fs::symlink(&managed, &config).expect("a link");
+    let run = scratch.run(&["config", "set", "derive.enabled", "true"]);
+    assert_eq!(run.code, 2, "{}", run.stderr);
+    assert_eq!(run.stdout, "derive.enabled = true\n");
+    assert_eq!(
+        run.stderr,
+        format!(
+            "bilbo: cannot set derive.enabled in {config}: it is a symbolic link; set it by hand:\n"
+        )
+    );
+    assert_eq!(fs::read_to_string(&managed).expect("kept"), "");
 }

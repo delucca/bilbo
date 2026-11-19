@@ -11,6 +11,7 @@ name = "bilbo"
 path = "src/main.rs"
 
 [dependencies]
+bilbo-derive.workspace = true
 bilbo-entries.workspace = true
 bilbo-search.workspace = true
 bilbo-settings.workspace = true
@@ -19,6 +20,7 @@ clap.workspace = true
 rustix = { workspace = true, features = ["process"] }
 
 [dev-dependencies]
+bilbo-provider.workspace = true
 proc-macro2.workspace = true
 runfiles.workspace = true
 serde_json.workspace = true

@@ -7,7 +7,7 @@ use bilbo_search::analyze::Omit;
 use bilbo_search::bm25::Bm25;
 use bilbo_search::position::Manifest;
 use bilbo_search::rank::{Expanded, Query, Ranker};
-use bilbo_search::recall::scope::{self, Unnamed};
+use bilbo_search::recall::scope;
 use bilbo_search::recall::select::{Limits, Skipped};
 use bilbo_search::recall::{self, Access, Error, Finished, Request, Scoped, Stand};
 use bilbo_search::typo;
@@ -19,14 +19,14 @@ use clap::builder::NonEmptyStringValueParser;
 
 use crate::console::args::usage;
 use crate::console::env::Env;
-use crate::console::message::{Message, group, notice_message, sanitize};
+use crate::console::message::{Message, group, notice_message, sanitize, unnamed_value};
 use crate::console::outcome::{Exit, Failure, Outcome};
 use crate::console::reading::Reading;
 use crate::console::settings::Settings;
 use crate::console::theme::Mark;
 
-const SUMMARY: &str = "Search everything bilbo keeps and print the chunks that match best";
-const ABOUT: &str = "bilbo recall: search what bilbo keeps and print the chunks that match best.";
+const SUMMARY: &str = "Search everything bilbo keeps and print the best chunks and notes";
+const ABOUT: &str = "bilbo recall: search what bilbo keeps and print the best chunks and notes.";
 const USAGE: &str = "bilbo recall <query>... [--in <label>]... [--kind <kind>]...
                [--budget <tokens>]";
 const BUDGET_FLAG: &str = "--budget";
@@ -59,7 +59,7 @@ pub struct Args {
         long,
         value_name = "tokens",
         value_parser = NonEmptyStringValueParser::new(),
-        help = "Print at most this many tokens"
+        help = "Print at most this many tokens of chunks"
     )]
     pub budget: Option<String>,
 }
@@ -67,8 +67,9 @@ pub struct Args {
 const PAGE: &str = "\
 Output:
   === <ref> <n> lines   a hit's header (tab-separated), then <n> lines of text
+  ... note              a note; its first line: its records, then their day
   ... part <k>/<m>      one piece of a record too long for a chunk
-  ... cut               the last hit, cut to fit the budget
+  ... cut               the last hit of a list, cut to fit its room
   <ref>                 bilbo read takes it: the end of the id and the records
   queries.log           in the state folder: each query that reaches the store
 --in takes an id, whole or as a hit prints it, or words of a label (bilbo read
@@ -80,7 +81,6 @@ Exit:
   2  usage or config error
 
 Examples:
-  bilbo recall how did we decide the index format
   bilbo recall --in bilbo --in notes --budget 1500 -- release checklist
 
 Docs: https://github.com/delucca/bilbo/wiki/Commands#recall";
@@ -138,8 +138,7 @@ pub fn run(
         if said == Notice::Waiting {
             notice(&notice_message(&Notice::Waiting));
         }
-    })
-    .map_err(|error| Failure::from(&error))?;
+    })?;
     let cache = store.reader_cache().clone();
     let index = match &cache {
         Cache::Own(path) => Some((reading.lookup)(path)),
@@ -168,6 +167,11 @@ pub fn run(
         query: Query {
             text: args.query.join(" "),
             kinds: args.kind.clone(),
+            apart: reading
+                .apart
+                .iter()
+                .map(|kind| (*kind).to_owned())
+                .collect(),
             entries: None,
         },
         manifest: Manifest::new(reading.chunk, tokenizer.id, reading.render),
@@ -181,6 +185,7 @@ pub fn run(
         },
         scope: args.scope.clone(),
         budget: budget.value,
+        apart_budget: settings.recall.notes_budget.value,
         at: SystemTime::now(),
     };
     let access = match (&cache, index.as_deref()) {
@@ -255,23 +260,7 @@ fn unnamed(scope: &Scoped) -> Vec<Message> {
     scope
         .unnamed
         .iter()
-        .map(|(value, why)| {
-            let value = sanitize(value);
-            say(
-                Mark::Warning,
-                match why {
-                    Unnamed::Nothing => format!("--in '{value}' names no entry"),
-                    Unnamed::Several(ids) => {
-                        let ids: Vec<String> = ids.iter().map(ToString::to_string).collect();
-                        format!(
-                            "--in '{value}' ends the id of {} entries: {}; give one id in full",
-                            ids.len(),
-                            ids.join(", ")
-                        )
-                    }
-                },
-            )
-        })
+        .map(|(value, why)| unnamed_value("--in", value, why, "give one id in full"))
         .collect()
 }
 
@@ -322,13 +311,7 @@ fn withheld(cache: &Cache) -> Option<String> {
 fn failure(error: &Error) -> Failure {
     match error {
         Error::Store(error) => Failure::from(error),
-        Error::Index(
-            bilbo_search::index::IndexError::Failed { .. }
-            | bilbo_search::index::IndexError::Inconsistent(_),
-        ) => Failure::Refused(sanitize(&format!(
-            "{error}; bilbo reindex makes the index again"
-        ))),
-        Error::Index(_) => Failure::Refused(sanitize(&error.to_string())),
+        Error::Index(error) => Failure::from(error),
     }
 }
 
@@ -406,7 +389,7 @@ pub fn outcome(finished: Finished, cache: &Cache) -> Result<Outcome, Failure> {
     }
     diagnostics.extend(passed_over(output.skipped));
     diagnostics.extend(unlogged);
-    if ran && output.hits.is_empty() {
+    if ran && output.hits.is_empty() && output.apart.is_empty() {
         diagnostics.push(say(Mark::Info, "nothing matched".to_owned()));
     }
     match output.stand {
@@ -421,7 +404,7 @@ pub fn outcome(finished: Finished, cache: &Cache) -> Result<Outcome, Failure> {
     }
     let exit = if !ran {
         Exit::Refused
-    } else if output.hits.is_empty() {
+    } else if output.hits.is_empty() && output.apart.is_empty() {
         Exit::NothingMatched
     } else {
         Exit::Success
@@ -469,6 +452,8 @@ mod tests {
             preface: None,
             text: "text".to_owned(),
             cut: false,
+            apart: false,
+            headed: false,
             shared_short: false,
         }
     }
@@ -481,6 +466,7 @@ mod tests {
             left_out,
             skipped: Skipped::default(),
             scope: None,
+            apart: Vec::new(),
             expanded: Vec::new(),
         }
     }

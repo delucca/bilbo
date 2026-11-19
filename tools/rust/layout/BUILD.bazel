@@ -16,6 +16,7 @@ rust_library(
     crate_name = "bilbo_layout",
     lint_config = ":lints",
     visibility = [
+        "//libs/derive/rust:__pkg__",
         "//libs/entries/rust:__pkg__",
         "//libs/search/rust:__pkg__",
     ],

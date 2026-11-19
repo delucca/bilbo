@@ -18,6 +18,9 @@ use bilbo_store::entries::{Change, Cursor, Entries, RecordRange};
 use bilbo_store::id::Id;
 use bilbo_store::segments::{Options, Store};
 
+mod note_line;
+mod notes;
+
 const CLAUDE: &str = "8f2b6d4e-1a3c-4e5f-9b7a-2c4d6e8f0a1b";
 const OLDER: &str = "5c3a9e1f-0b7d-4c2e-9a41-7f2d8e6b1c03";
 const CODEX: &str = "019a5b3c-2d4e-7f60-8a1b-3c5d7e9f0a2b";
@@ -104,6 +107,7 @@ impl Bilbo {
             &|name| self.vars.get(name).cloned(),
             &|path| fs::read(path),
             &bilbo_cli::kind_keys(),
+            &bilbo_cli::provider_keys(),
         )
         .expect("settings")
     }
@@ -129,7 +133,7 @@ impl Bilbo {
         let said = Arc::new(Mutex::new(Vec::new()));
         let sink = Arc::clone(&said);
         let mut env = Env {
-            var: Box::new(move |name| vars.get(name).cloned()),
+            var: std::rc::Rc::new(move |name| vars.get(name).cloned()),
             stdin: Box::new(io::empty()),
             notice: Box::new(move |message| {
                 sink.lock().expect("notices").extend(message.plain_lines());
@@ -139,8 +143,13 @@ impl Bilbo {
             .chain(args.iter().copied())
             .map(OsString::from)
             .collect();
-        let settings = settings::load(&*env.var, &|path| fs::read(path), &bilbo_cli::kind_keys())
-            .map_err(Failure::from);
+        let settings = settings::load(
+            &*env.var,
+            &|path| fs::read(path),
+            &bilbo_cli::kind_keys(),
+            &bilbo_cli::provider_keys(),
+        )
+        .map_err(Failure::from);
         let (code, stdout, lines) = match bilbo_cli::run(&argv, &mut env, settings) {
             Ok(outcome) => (
                 outcome.exit_code(),
@@ -1922,5 +1931,59 @@ fn every_entry_of_a_store_reads_to_its_end_with_each_record_once() {
     assert!(
         total.longest <= 30_000,
         "a default page is over Claude Code's cut"
+    );
+}
+
+#[test]
+fn a_note_entry_reads_as_any_entry() {
+    let scratch = Scratch::remembered("read_note_entry");
+    let parent = entry(&scratch, CLAUDE);
+    let note = |number: u64, sources: &[(u64, u64)]| {
+        note_line::line(
+            parent,
+            &format!("The carrot rows were thinned, number {number}.\\nStill open: the beans."),
+            Some(1_794_039_249),
+            sources,
+        )
+    };
+    let lines = vec![
+        note(1, &[(3, 19)]),
+        note(2, &[(3, 3), (5, 6)]),
+        b"{\"run\":{\"count\":2}}\n".to_vec(),
+    ];
+    let id = notes::noted(&scratch.bilbo.settings().layout(), parent, &lines);
+    let outline = scratch.bilbo.run(&["read", &id.to_string()]);
+    assert_eq!(outline.code, 0, "{:?}", outline.stderr);
+    assert!(
+        outline
+            .stdout
+            .contains(&format!("\nlabel: derive:{parent} (capture)\n")),
+        "{}",
+        outline.stdout
+    );
+    assert!(
+        outline
+            .stdout
+            .contains(&format!("\nlabel: bilbo:{parent}\n")),
+        "{}",
+        outline.stdout
+    );
+    assert!(
+        outline.stdout.ends_with(
+            "outline:\n#r1 The carrot rows were thinned, number 1.\n\
+             #r2 The carrot rows were thinned, number 2.\nend: #r1-3 of 3 records\n"
+        ),
+        "{}",
+        outline.stdout
+    );
+    let page = scratch.bilbo.run(&["read", &format!("{id}#r1-3")]);
+    assert_eq!(page.code, 0, "{:?}", page.stderr);
+    assert_eq!(
+        page.stdout,
+        format!(
+            "#r1 {parent}#g1:r3-19 2026-11-07\nThe carrot rows were thinned, number 1.\nStill open: the beans.\n\
+             #r2 {parent}#g1:r3 {parent}#g1:r5-6 2026-11-07\nThe carrot rows were thinned, number 2.\nStill open: the beans.\n\
+             end: #r1-3 of 3 records\n"
+        )
     );
 }

@@ -4,7 +4,6 @@ use bilbo_search::update::{self, Plan, Reason};
 use bilbo_search::work::Error;
 use bilbo_store::segments::Store;
 
-use super::messages::{info, warning};
 use crate::console::indexing::Indexing;
 use crate::console::message::{Message, sanitize};
 
@@ -38,14 +37,14 @@ pub fn update(
     };
     let mut updated = Updated::default();
     match work.rebuilds() {
-        Some(Reason::Unmade) if work.entries() as u64 > kept => notice(&info(&format!(
+        Some(Reason::Unmade) if work.entries() as u64 > kept => notice(&Message::info(&format!(
             "building the search index: {} entries",
             work.entries()
         ))),
-        Some(Reason::Manifest) => notice(&info(
+        Some(Reason::Manifest) => notice(&Message::info(
             "rebuilding the search index: its settings or this bilbo's rules changed",
         )),
-        Some(Reason::Catalog) => notice(&info(
+        Some(Reason::Catalog) => notice(&Message::info(
             "rebuilding the search index: the store's catalog is not the one it was made from",
         )),
         _ => {}
@@ -75,7 +74,7 @@ pub fn update(
                 output
                     .failed
                     .iter()
-                    .map(|(id, why)| warning(&sanitize(&format!("left out {id}: {why}")))),
+                    .map(|(id, why)| Message::warning(&format!("left out {id}: {why}"))),
             );
         }
         Err(error) => {

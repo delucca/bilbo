@@ -59,7 +59,12 @@ fn make(job: Job, reader: &dyn Reader, tokens: &dyn Tokens, size: chunk::Size) -
             (Some(delete_from), from)
         }
     };
-    let Ok(chunks) = chunk::chunks(&passages[from..], tokens, size) else {
+    let chunked = if reader.stands_alone() {
+        chunk::alone(&passages[from..], tokens, size)
+    } else {
+        chunk::chunks(&passages[from..], tokens, size)
+    };
+    let Ok(chunks) = chunked else {
         return Err((job.meta.id, "the tokenizer could not split a text of it"));
     };
     let mut texts: Vec<String> = job
@@ -516,6 +521,7 @@ mod tests {
                     part: None,
                     tokens: 1,
                     text: (*text).to_owned(),
+                    headed: false,
                 })
                 .collect(),
         })
@@ -631,13 +637,14 @@ mod tests {
     }
 
     mod redo {
+        use super::meta;
         use std::time::{Duration, SystemTime};
 
-        use bilbo_entries::reader::{Passage, Piece};
+        use bilbo_entries::reader::{Passage, Piece, Reader};
         use bilbo_entries::tokens::Tokens;
         use bilbo_store::entries::{Generation, RecordRange};
 
-        use super::super::{Growth, redo};
+        use super::super::{Growth, Job, Made, make, redo};
         use crate::chunk::{self, Size};
         use crate::index::{Extent, millis};
 
@@ -719,6 +726,52 @@ mod tests {
         }
 
         const WHOLE: (u64, usize) = (1, 0);
+
+        struct Sentences(bool);
+
+        impl Reader for Sentences {
+            fn kind(&self) -> &'static str {
+                "lines"
+            }
+
+            fn passages(&self, records: &[&[u8]]) -> Vec<Passage> {
+                (1..)
+                    .zip(records)
+                    .map(|(record, bytes)| one(record, &String::from_utf8_lossy(bytes)))
+                    .collect()
+            }
+
+            fn appends_only(&self) -> bool {
+                true
+            }
+
+            fn stands_alone(&self) -> bool {
+                self.0
+            }
+        }
+
+        fn job() -> Job {
+            Job {
+                at: 0,
+                meta: meta(1),
+                generation: Generation(1),
+                records: vec![b"aa".to_vec(), b"bb".to_vec(), b"cc".to_vec()],
+                growth: None,
+            }
+        }
+
+        #[test]
+        fn a_reader_whose_passages_stand_alone_gets_a_document_a_passage() {
+            let made = |alone| make(job(), &Sentences(alone), &Bytes, SIZE).expect("made");
+            let spans = |made: Made| -> Vec<(u64, u64)> {
+                made.chunks
+                    .iter()
+                    .map(|chunk| (chunk.records.first, chunk.records.count))
+                    .collect()
+            };
+            assert_eq!(spans(made(true)), [(1, 1), (2, 1), (3, 1)]);
+            assert_eq!(spans(made(false)), [(1, 3)]);
+        }
 
         #[test]
         fn the_boundary_is_the_last_packed_chunks_first_record() {

@@ -16,9 +16,10 @@ Results go to standard output; diagnostics go to standard error, each line prefi
 
 ```text
 bilbo config [<key>]
+bilbo config set <key> <value>
 ```
 
-Shows every setting: its key, its value and where the value came from. With a key, it prints that key's value alone, for scripts. It never changes a setting: edit the config file. [Configuration](configuration.md) lists the keys, their variables and their defaults.
+Shows every setting: its key, its value and where the value came from. With a key, it prints that key's value alone, for scripts. `bilbo config set <key> <value>` writes one key into the config file and leaves every other byte as it was; the value is one TOML value, and a text that is not TOML is taken as text (`30m`, `anthropic`). A value its key refuses is said in the key's words and nothing is written. When it does not write it says why, prints the key with its whole path and the value, and exits 2; putting that line in the file is yours. It runs even when the file holds a value bilbo refuses, and says so after it wrote: a file with two bad values is mended one key at a time. It takes turns with other writes of the file on the lock beside it. Otherwise edit the config file. [Configuration](configuration.md) lists the keys, their variables and their defaults.
 
 ### Output
 
@@ -43,12 +44,38 @@ The value is TOML, as the config file would hold it. The origin is `default`, th
 
 A config file or variable that bilbo refuses fails `bilbo config` as it fails every other verb, with the same message, except the 0.20-root refusal and the refusal of a state or cache folder inside the store root, which a verb runs when it opens the store (`the state folder <path> is inside the store root <root>, which holds only segments; set paths.state to a folder outside the root`). `bilbo config` runs neither. So `bilbo config` checks a file you edited.
 
+### set
+
+`bilbo config set <key> <value>` writes only when the file read again is the old one with that key set. The value is one TOML value; a text that is not TOML is taken as text, and so is a text the key takes only as a text (`bilbo config set derive.anthropic.version 2026-10-21` writes `"2026-10-21"`). A byte-order mark and a file's own line end are kept. When it does not write, the file is as it was and no temporary is left in its folder, except that the lock's file, `<config>.lock`, stays there once it was made; it exits 2 with this on standard error:
+
+```text
+bilbo: cannot set <key> in <file>: <why>; set it by hand:
+```
+
+and the key with its whole path and the value alone on standard output (`derive.enabled = true`): the line is what the file must come to say, and where it goes is yours. `<why>` is one of these:
+
+| Reason | `<why>` |
+|---|---|
+| The file is a link | `it is a symbolic link` |
+| The file is no regular file | `it is not a regular file` |
+| The file cannot be written | `it is read-only` |
+| The lock's folder or file cannot be made, the lock cannot be taken, the file cannot be read again, the temporary cannot be made, or the rename fails | the system's error |
+| The file holds the key as a dotted key | `line <n> sets it with a dotted key` |
+| The file makes the key's table with a dotted key | `line <n> sets its table with a dotted key` |
+| The file holds the key inside braces | `line <n> sets it inside braces` |
+| The file makes the key's table inside braces | `line <n> sets its table inside braces` |
+| The file holds the key as a table of its own | `line <n> sets it as a table of its own` |
+| The new text does not parse or would change another key | `bilbo could not place it` |
+
+The line number is the first line of what the clause names. A file that did not load before the edit is said as `cannot set <key>: <the error as load says it>; set it by hand:`. After a write that lands, a variable that sets the same key wins over the file and a warning says so, without its value: `<VARIABLE> is set and wins over <key> in <file>`.
+
 ### Exit codes
 
 | Code | Meaning |
 |---|---|
 | 0 | success |
-| 2 | usage or config error: an unknown key, or a config file or variable bilbo refuses |
+| 1 | refused, problems found or nothing matched |
+| 2 | usage or config error |
 
 ## remember
 
@@ -181,7 +208,7 @@ bilbo recall <query>... [--in <label>]... [--kind <kind>]...
                [--budget <tokens>]
 ```
 
-Searches everything `bilbo remember` kept, or the entries `--in` names, and prints the chunks that match best, each with its text, read back from the store. It only reads: the one file it writes is the query log ([The query log](#the-query-log)).
+Searches everything `bilbo remember` kept, or the entries `--in` names, and prints the chunks and the notes that match best, each with its text, read back from the store. It only reads: the one file it writes is the query log ([The query log](#the-query-log)).
 
 ### The query
 
@@ -191,13 +218,13 @@ The arguments are joined by one space: `bilbo recall how did we decide the index
 
 A query word no chunk of the index holds is taken for misspelt when it is made of the letters `a` to `z` only, after stemming, and has at least `recall.typo_letters` of them (4 by default) and at most `recall.typo_max_letters` (64 by default, the highest it goes; set below `recall.typo_letters`, no word is taken). The index's nearest terms are searched in its place: terms one edit away, or two when the word has `recall.typo_two_edits` letters or more (8 by default). An edit is a letter added, dropped or changed, or two neighbouring letters swapped. Of those terms the nearest `recall.typo_terms` are kept (3 by default), the nearest first and, among equals, the one more chunks hold; each weighs its share of the chunks the kept terms are in, so together they weigh as one word. A word some chunk of the index holds is never touched, whatever `--in` and `--kind` ask, and a word with no term near it is searched as it is. `recall.typo_terms = 0` turns this off.
 
-The terms are the index's, so stems: `bilbo recall carots` searches `carrot`, which a note about carrots holds. stderr names each word that was read this way, once, and the terms searched in its place:
+The terms are the index's, so stems: `bilbo recall carots` searches `carrot`, which a Markdown file about carrots holds. stderr names each word that was read this way, once, and the terms searched in its place:
 
 ```text
 bilbo: typos: carot as carrot, cart; pyton as python
 ```
 
-Only a word no chunk holds is read this way: a misspelt word that some chunk holds is searched as typed and not expanded.
+Only a word no chunk holds is read this way: a misspelt word that some chunk holds is searched as typed and not expanded. The notes follow the chunks: a word some note holds is searched among the notes as typed, and a word no note holds is searched there as the terms chosen for the chunks, when there are any.
 
 ### Words in a row
 
@@ -205,7 +232,7 @@ Two query words that stand next to each other in a chunk, in the query's order, 
 
 ### Kinds
 
-`--kind <kind>` searches only entries of that kind; repeat it to search several. A kind no reader reads is a usage error, exit 2, naming the kinds. The filter changes no score: a chunk scores the same with it and without.
+`--kind <kind>` searches only entries of that kind; repeat it to search several. `note` is a kind too: `--kind note` prints the notes alone, and naming only other kinds prints no note. A kind no reader reads is a usage error, exit 2, naming the kinds. The filter changes no score: a chunk scores the same with it and without.
 
 ### A hit
 
@@ -218,11 +245,23 @@ user: Thin the carrot rows.
 ...
 ```
 
-The header is `=== `, the ref and the number of lines, apart by tabs. A chunk cut from a record too long for one chunk adds `part <k>/<m>`, the last hit of a run that was cut to the budget adds `cut`. The header has no kind and no date. The ref is what `bilbo read` takes: the last 10 characters of the entry's id, then the records of the chunk, with no generation. When another entry's id ends with the same 10 characters (two notes can be given such ids by their frontmatter), the ref holds the whole 26-character id instead, so `bilbo read` takes every ref a header prints, as `recall` read the store, and each names one entry. A parser takes a ref of either length. A ref is the short id when no other entry's id ended with it at that moment: if an entry kept later ends alike, `bilbo read` says so and lists the entries. When a hit is from: a session's hit opens with `Session started <time> UTC:`, `bilbo read <ref>` prints `captured:` and `started:` in its outline, and a note's hit shows no date. After the header come exactly as many lines as it says. A line ends at a line feed and nowhere else: a carriage return is content. A line feed ends the hit; nothing scans the text for a header, so a chunk that quotes an earlier `recall` cannot forge one. A tool takes a header, then `<n>` lines, and so on to the end. The text is the store's, with one line feed between the passages a chunk joins, which the store does not hold, after a line its kind adds: a session's hit opens with `Session started <time> UTC:` (the time of its first record, or `Session date unknown:`); a note's has none. On a terminal each control character of a line prints as its escape, tabs kept, and so do the twelve bidirectional controls (U+061C, U+200E, U+200F, U+202A to U+202E, U+2066 to U+2069); plain output keeps them as they are.
+The header is `=== `, the ref and the number of lines, apart by tabs. A chunk cut from a record too long for one chunk adds `part <k>/<m>`, the last hit of a run that was cut to the budget adds `cut`. A note's header adds its kind, `note`, after the number of lines; a chunk's has no kind. No header has a date. The ref is what `bilbo read` takes: the last 10 characters of the entry's id, then the records of the chunk, with no generation. When another entry's id ends with the same 10 characters (two Markdown files can be given such ids by their frontmatter), the ref holds the whole 26-character id instead, so `bilbo read` takes every ref a header prints, as `recall` read the store, and each names one entry. A parser takes a ref of either length. A ref is the short id when no other entry's id ended with it at that moment: if an entry kept later ends alike, `bilbo read` says so and lists the entries. When a hit is from: a session's hit opens with `Session started <time> UTC:`, `bilbo read <ref>` prints `captured:` and `started:` in its outline, and a Markdown file's hit shows no date. After the header come exactly as many lines as it says. A line ends at a line feed and nowhere else: a carriage return is content. A line feed ends the hit; nothing scans the text for a header, so a chunk that quotes an earlier `recall` cannot forge one. A tool takes a header, then `<n>` lines, and so on to the end. The text is the store's, with one line feed between the passages a chunk joins, which the store does not hold, after a line its kind adds: a session's hit opens with `Session started <time> UTC:` (the time of its first record, or `Session date unknown:`); a Markdown file's has none. On a terminal each control character of a line prints as its escape, tabs kept, and so do the twelve bidirectional controls (U+061C, U+200E, U+200F, U+202A to U+202E, U+2066 to U+2069); plain output keeps them as they are.
+
+### Notes
+
+When the store holds notes, the answer is the chunks, then the notes. A note is a paragraph a model wrote about records of an entry (`bilbo derive`). The two lists are ranked apart: a note is never among the chunks and takes no room from them. Each list is scored over its own documents: the chunks score exactly as they would in a store with no note, and a note is scored among the notes. So the chunks are the same hits, in the same order, with the same text. One thing can differ: a chunk's header gives its entry's id in full when another entry of the store ends in the same ten characters, and a note's entry counts there too, since `bilbo read` takes a ref against the whole store.
+
+```text
+=== 5N3K8QW1ZX#r4<TAB>2 lines<TAB>note
+01M6ZGE4KTBYYH07AS2KVMSCAF#g1:r3-19 2026-11-07
+The user asked to thin the carrot rows ...
+```
+
+The header's ref is the note itself. Its first line is what it was written from: the entry's whole id, the generation and the records, then the day of those records. A note bilbo holds no source and no time for has an empty first line. `bilbo read 01M6ZGE4KTBYYH07AS2KVMSCAF#g1:r3-19` prints them. A note too long for one chunk is printed in parts, each under that line. A note with so many sources that the line leaves no room in a chunk is printed without it: bilbo read of the hit's ref prints the note whole.
 
 ### Copies and long records
 
-Three rules keep an answer from holding the same text twice. They apply in rank order, to the text a hit is printed with, the cut last hit included.
+Three rules keep an answer from holding the same text twice. They apply in rank order, to the text a hit is printed with, the cut last hit included. The rules run over both lists, the chunks first: a note that repeats a hit above it is passed over, and a chunk is never passed over for a note.
 
 - A hit whose chunk equals the chunk of a hit above it is passed over.
 - A hit is passed over when half or more of its runs of 5 words in a row are in the hits above it (`recall.copy_share` and `recall.copy_words`; a `copy_share` of 0 turns the copy rules off). A hit that is a copy as a whole but does not fit the budget is judged by the part that would be printed, and is printed when that part is new.
@@ -232,7 +271,7 @@ A passed-over hit uses no budget, and the next one is tried. stderr says how man
 
 ### The budget
 
-`recall.budget` (4,000 tokens by default; `--budget <tokens>` sets it for one run, 256 at least) bounds the plain output as the index's tokenizer counts it, each hit's header included. On a terminal a control character, and each of the twelve bidirectional controls (U+061C, U+200E, U+200F, U+202A to U+202E, U+2066 to U+2069), prints as its escape, which the budget does not count, so the output can be longer there. Whole hits are printed while they fit. The first that does not is cut at a token and marked `cut`; nothing follows it. A hit that has room for no token of text is left out.
+`recall.budget` (4,000 tokens by default; `--budget <tokens>` sets it for one run, 256 at least) bounds the chunks of the plain output as the index's tokenizer counts it, each hit's header included. `recall.notes_budget` (2,500 tokens by default; 0 prints no note; it has no flag) bounds the notes the same way. On a terminal a control character, and each of the twelve bidirectional controls (U+061C, U+200E, U+200F, U+202A to U+202E, U+2066 to U+2069), prints as its escape, which the budget does not count, so the output can be longer there. In each list whole hits are printed while they fit. The first that does not is cut at a token and marked `cut`, and its list ends there; a cut hit that is passed over as a copy does not end it. A note is never cut inside its source line, when it has one: one whose source line does not fit is left out. A note whose source line leaves its part no room, a hand-written one of about 25 sources or more at the defaults, has its paragraph on line 1. A hit that has room for no token of text is left out.
 
 ### Keeping the search to some entries
 
@@ -243,7 +282,7 @@ With no `--in` everything is searched: there is no project filter and nothing is
 
 A value with a lower-case letter is never an id, so a word can always be given as one. A value that looks like an id (such as the word `REFERENCES`, which has the letters of a short id) and that no entry's id ends with is read as words. A value of ten digits that an entry's id ends with is that id. A short id that several entries end with names none of them: stderr lists them, and the value is not read as words.
 
-An entry that belongs to a kept entry through an id label comes with it, however deep: `--in <a session's id>` keeps the session and its subagents. Several values add up; `--kind` narrows the result. A project's notes are not in its scope unless the notes folder is named too: `--in bilbo --in notes`.
+An entry that belongs to a kept entry through an id label comes with it, however deep: `--in <a session's id>` keeps the session and its subagents. Several values add up; `--kind` narrows the result. A project's Markdown files are not in its scope unless their folder is named too: `--in bilbo --in notes`. An entry's notes come with it.
 
 A value that names nothing is said on stderr, `--in '<value>' names no entry`, and the search goes on with the other values; when no value names an entry nothing is searched, `nothing matched` and exit 1: `--in` never falls back to searching everything. A value with no letter or digit, such as `.`, is a usage error, exit 2, before the store is opened.
 
@@ -259,7 +298,7 @@ The index is searched as of its last commit. stderr says how many entries it hol
 
 ### When the index is behind
 
-Three lines on stderr say what stands between the index and the store. An index behind the store says by how many entries (`bilbo remember` brings it up to date); an index that cannot be compared with the store's catalog says each hit was checked against the store; hits the store no longer gives as indexed (a note that grew in place, an entry rewritten or gone) are left out and counted. A hit is shown only when the store still gives the text the index ranked: its chunk is recomputed from the entry's records and compared with a digest the index holds. A session that only grew still gives its indexed chunks.
+Three lines on stderr say what stands between the index and the store. An index behind the store says by how many entries (`bilbo remember` brings it up to date); an index that cannot be compared with the store's catalog says each hit was checked against the store; hits the store no longer gives as indexed (a Markdown file that grew in place, an entry rewritten or gone) are left out and counted. A hit is shown only when the store still gives the text the index ranked: its chunk is recomputed from the entry's records and compared with a digest the index holds. A session that only grew still gives its indexed chunks. The first search after an upgrade that adds a kind says the index was made by another bilbo, prints no hit and exits 1, until `bilbo remember` makes the index again.
 
 ### The query log
 
@@ -300,13 +339,13 @@ Prints an entry that `bilbo remember` kept: its metadata and its outline, or its
 
 - `<id>` is the entry's id, 26 characters, with or without the `bilbo:` a citation gives it.
 - `<short id>` is the last 10 characters of an entry's id, in upper case, as `bilbo recall` prints it: `bilbo read 2T6W9YB0DE#r3-7`. When several entries end with it, the run exits 2 and lists them: give the id of one.
-- `<session id>` is the UUID a harness gave a session, or its first 8 characters or more: `bilbo read 2d6b1857`. It names the entry kept from the `.jsonl` file whose name ends in that UUID: Claude Code's `<uuid>.jsonl`, Codex's `rollout-<time>-<uuid>.jsonl`. A note named for a UUID is not a session: read it by its id. Upper or lower case. When it names several entries (one session kept from two folders, or a short prefix two sessions share), the run exits 2 and lists up to `read.matches_listed` of them (five by default) with their capture labels: give the id of one. A subagent has no UUID of its own: read it by its id, which its session's records name.
+- `<session id>` is the UUID a harness gave a session, or its first 8 characters or more: `bilbo read 2d6b1857`. It names the entry kept from the `.jsonl` file whose name ends in that UUID: Claude Code's `<uuid>.jsonl`, Codex's `rollout-<time>-<uuid>.jsonl`. A Markdown file named for a UUID is not a session: read it by its id. Upper or lower case. When it names several entries (one session kept from two folders, or a short prefix two sessions share), the run exits 2 and lists up to `read.matches_listed` of them (five by default) with their capture labels: give the id of one. A subagent has no UUID of its own: read it by its id, which its session's records name.
 - `r<a>-<b>` is the records from `a` to `b`, counted from 1; `r<a>` is one record. A record outside the entry is refused, exit 1, with the number of records the entry has.
 - `g<n>` is a generation: an entry whose file was rewritten keeps the old records as an older generation. With no `g`, the newest. A page of an older generation shows it in every locator (`#g1:r5`); a page of the newest shows the short form (`#r5`). The `more:` and `cut:` commands of the last line always name the generation that was read, so a file rewritten between two pages cannot make the next page read other records.
 
 ### The outline
 
-With no record range, `read` prints what it knows of the entry, then one line per prompt of a session or per heading section of a note, each after the locator that reads it:
+With no record range, `read` prints what it knows of the entry, then one line per prompt of a session or per heading section of a Markdown file, each after the locator that reads it:
 
 ```text
 bilbo:01M6ZGE4KTBYYH07AS2KVMSCAF
@@ -325,10 +364,10 @@ outline:
 end: #r1-23 of 23 records
 ```
 
-- A `label:` row is one label of the entry. The capture label, the one `remember` finds the file again by, comes first and is marked `(capture)`; `bilbo:<id>` is the entry this one belongs to (a subagent names its session); the rest are the texts the entry's records name, in byte order, as many as fit in half the page's budget, and then one row, `labels: <n> more; a larger --budget lists them`. A session names the folders it worked in: the `cwd` of its records and the added directories of Claude Code's environment records, or the `cwd` of a Codex rollout's `session_meta` and `turn_context` records. A text the store replaced by an opaque placeholder (a very long folder with no dot or space in it) is not a label. An entry with no label has no `label:` row. `started` is left out for an entry whose records carry no time (a note).
+- A `label:` row is one label of the entry. The capture label, the one `remember` finds the file again by, comes first and is marked `(capture)`; `bilbo:<id>` is the entry this one belongs to (a subagent names its session); the rest are the texts the entry's records name, in byte order, as many as fit in half the page's budget, and then one row, `labels: <n> more; a larger --budget lists them`. A session names the folders it worked in: the `cwd` of its records and the added directories of Claude Code's environment records, or the `cwd` of a Codex rollout's `session_meta` and `turn_context` records. A text the store replaced by an opaque placeholder (a very long folder with no dot or space in it) is not a label. An entry with no label has no `label:` row. `started` is left out for an entry whose records carry no time (a Markdown file).
 - `generation` is `1 of 2` when the one shown is not the newest.
-- A session lists its user prompts, its compact summaries and, for Codex, the messages one agent sent another. A note lists its frontmatter, the text before its first heading, and each heading with the headings above it: `#r28-31 The garden log > Watering > Tools`.
-- An outline line is the prompt's first line, at most `read.outline_width` characters (100 by default); a longer one is cut to fit and ends in `…`. Inside a note's path, a heading over `markdown.heading_width` characters (100 by default) is cut to fit and ends in `…` too.
+- A session lists its user prompts, its compact summaries and, for Codex, the messages one agent sent another. A note entry lists the first line of each note's paragraph that is not blank; a Markdown file lists its frontmatter, the text before its first heading, and each heading with the headings above it: `#r28-31 The garden log > Watering > Tools`.
+- An outline line is the prompt's first line, at most `read.outline_width` characters (100 by default); a longer one is cut to fit and ends in `…`. Inside a Markdown file's path, a heading over `markdown.heading_width` characters (100 by default) is cut to fit and ends in `…` too.
 - A long outline is paged by the budget like the records, its metadata counted in: it ends with `more: bilbo read <id>#g<n>:r<a>-<b> --outline`. `--outline` with a range lists the passages that start in that range, without the metadata.
 
 ### A page
@@ -345,7 +384,8 @@ more: bilbo read 01M6ZGE4KTBYYH07AS2KVMSCAF#g1:r8-23
 ```
 
 - A session record is one message: `user:`, `assistant:`, `tool_use <name>:` with the call's input a line per key, `tool_result <name>:` or `tool_error <name>:` with what came back, `compact summary:`. Thinking, the harness's own injections (Claude Code's `isMeta` entries, Codex's developer messages, its `AGENTS.md` and environment messages), entries of another thread and every bookkeeping line render nothing: they are never printed and never counted as missing. The thread of a Claude Code file is that of its first entry that renders: a session's file leaves out the entries marked `isSidechain`, and a subagent's file, where every entry is marked, reads as its own thread. An older Codex rollout does not say which user items the harness wrote; there an item is left out when its text starts with `# AGENTS.md instructions`, `<environment_context>`, `<recommended_plugins>` or `<skill>`, also when a person typed it. A rollout of Codex's first format, whose lines are bare items with no `payload`, reads as an empty outline. A range that holds none of the records that render prints its last line alone and exits 0.
-- A note's records are its lines. They are printed a section at a time under the locator of the lines printed: `#r28-31`. A range that starts or ends inside a section prints the lines it holds. Headings are found by scanning lines, not by parsing Markdown's containers: inside or right after a list, a quote or indented code a section can start at the wrong line or carry the wrong label, but every line is printed, once.
+- A Markdown file's records are its lines. They are printed a section at a time under the locator of the lines printed: `#r28-31`. A range that starts or ends inside a section prints the lines it holds. Headings are found by scanning lines, not by parsing Markdown's containers: inside or right after a list, a quote or indented code a section can start at the wrong line or carry the wrong label, but every line is printed, once.
+- A note entry's records are one note each. A page prints each note under `#r<n>`, its first line the note's source line, empty when it has none; a record that holds no note prints nothing.
 - A pipe or a file gets each record's text as it is. A terminal gets its control characters and the twelve bidirectional controls (U+061C, U+200E, U+200F, U+202A to U+202E, U+2066 to U+2069) escaped (`\u{1b}`), also when an agent runs bilbo there; a person's terminal also gets the locators in bold and the commands in colour.
 
 The last line of every output is bilbo's, on a line of its own also when the last record has no line end, and nothing else is: a record prints as it was kept, so a line above the last can look like a locator or like any line of bilbo's. It is one of two:
@@ -373,7 +413,7 @@ row 021 of the seed log: sown, wat
 cut: 1885 more characters; bilbo read 01M6ZGE4KTBYYH07AS2KVMSCAF#g1:r21 --budget 1000; more: bilbo read 01M6ZGE4KTBYYH07AS2KVMSCAF#g1:r22-23 --budget 256
 ```
 
-The cut falls between two characters. The budget of the `cut:` command is what the whole record counts under the locator of that command, rounded up to the next thousand; it is always one `--budget` accepts, and it prints the record whole also after the file was rewritten. The cut record counts as printed: `more:` goes on after it. A long section of a note is not cut: it goes on at its next line on the next page. Only a single line over the budget is cut.
+The cut falls between two characters. The budget of the `cut:` command is what the whole record counts under the locator of that command, rounded up to the next thousand; it is always one `--budget` accepts, and it prints the record whole also after the file was rewritten. The cut record counts as printed: `more:` goes on after it. A long section of a Markdown file is not cut: it goes on at its next line on the next page. Only a single line over the budget is cut.
 
 ### Reading while bilbo writes
 
@@ -439,3 +479,167 @@ A store that cannot be read, or a damaged frame found while the catalog is rebui
 | 0 | success, also when entries of a kind no reader reads were left out |
 | 1 | an entry could not be read back, the `index/` folder is not bilbo's, or the store or the index could not be read or written |
 | 2 | usage or config error, a store root that holds bilbo 0.20's `notes/` or `library/`, or a state or cache folder inside the root |
+
+## derive
+
+```text
+bilbo derive [--dry-run] [--redo] [--calls <n>] [<entry>...]
+```
+
+Writes notes about entries that stopped growing, with a model you configure, and keeps them as entries of their own. With no `<entry>` it takes every entry `derive.in` names that is due; with some it takes those alone. An `<entry>` is an id, the end of an id or a session's id, as `bilbo read` takes one, with no records after it: the page has no room for that. A ref that names records, `#r3-9` or `#g1`, is a usage error.
+
+Whatever the kind and whatever the instruction, what derive writes is notes: paragraphs that each point at a range of records of the entry they were written from. An instruction changes what the paragraphs say, not what they are.
+
+### Turning it on
+
+Three keys must be set before anything is sent: `derive.enabled`, `derive.provider` and `derive.in`. No bilbo verb but `derive` sends anything, and `derive` sends nothing while one of the three is unset. For an API provider:
+
+```sh
+bilbo config set derive.provider anthropic
+bilbo config set derive.anthropic.model claude-haiku-5-5
+bilbo config set derive.in '["<a word of a label, or an id>"]'
+bilbo derive --dry-run
+bilbo config set derive.enabled true
+```
+
+Run `--dry-run` before `derive.enabled`: it says what a run would send, and sends nothing, whether derive is on or not. The providers are `anthropic`, `openai` and `claude`.
+
+### Providers
+
+`anthropic` needs a `model` and a key; its table is `[derive.anthropic]`, with `model`, `endpoint`, `version`, `key_env`, `key_command`, `headers` and `extra`. `openai` needs the same, in `[derive.openai]`, without `version`. Each key is in the [configuration page](configuration.md#keys). `extra` adds fields to the body of every request, and `headers` adds headers:
+
+```toml
+[derive.anthropic]
+model = "claude-haiku-5-5"
+extra = { output_config = { effort = "low" } }
+```
+
+```toml
+# Refusals of a safeguard answered by another model, on the provider's side.
+# The header and the field are the provider's; bilbo turns nothing of it on.
+[derive.anthropic]
+model = "claude-haiku-5-5"
+headers = { anthropic-beta = "server-side-fallback-2026-07-01" }
+extra = { fallbacks = "default" }
+```
+
+bilbo refuses a field of `extra` that it writes itself, that offers the model a tool or that makes the provider keep the records, and a header that it writes itself. `extra` may ask the provider to cache the prompt.
+
+With the second the model that answered can differ from the one named; the log has both. `derive.answer_tokens` counts the model's thinking, and a low value is spent on thinking first: an answer cut there holds no note.
+
+`claude` is the tool claude, with its own login and no key: its table is `[derive.claude]`, with `program`, `model`, `effort`, `arguments`, `inherit`, `environment` and `project_files`. `derive.claude.model` has no default, and bilbo asks for none. bilbo runs the tool with no tool the model can call, and does not start it otherwise: `derive.claude.arguments` is read as flags bilbo knows, each with its values: `-p`, `--model`, `--effort`, `--output-format`, `--tools`, `--disable-slash-commands`, `--strict-mcp-config`, `--setting-sources`, `--settings`, `--no-session-persistence`, `--safe-mode`, `--system-prompt`, `--append-system-prompt`, `--fallback-model` and `--max-budget-usd`. Any other item is refused, and so is a flag written with `=`. The list must hold `--tools` followed by `""`, `--strict-mcp-config` and `--safe-mode`, and `{instruction}` only as the value of `--system-prompt` or `--append-system-prompt`. A flag of a later version of the tool waits for bilbo to know it. Two things no argument rules: what `derive.claude.environment` or a settings value makes the tool do, and the hooks of the machine's managed settings, which the tool runs with the prompt whatever its arguments are. A reply that shows a tool was reached is a failed call: more than one turn, a denied permission, or a count above 0 of a server tool or of a subagent. A reply without one of the fields bilbo reads for that is a failed call too, and charges nothing: bilbo reads the reply as claude 2.1.327 prints it, and the run names the field. The list must also hold `--no-session-persistence`: without it the tool would save every call as a session under `~/.claude/projects`, which `bilbo remember` follows by default.
+
+The tool runs in an empty folder of bilbo's state folder, `<state>/derive/work`, with only the variables `derive.claude.inherit` names: its own login is found through `HOME`, and nothing of the caller's session reaches it. bilbo does not start it when a folder above that one holds a file the tool reads as a project's (`derive.claude.project_files`): set `paths.state` outside any project. `DISABLE_PROMPT_CACHING` is set because the tool would otherwise pay to cache a prompt it never sends twice. bilbo stops the tool at `derive.timeout`, with what it started in its process group; a process that starts a session of its own is not stopped. A tool may make more than one request of its own for one call; with no tool on offer it makes one. A timer's run has no shell environment: give `derive.claude.program` its full path.
+
+`codex` is not a provider: bilbo could not run it with no tool the model can call.
+
+### The key
+
+An API key is never a value of the config file: `bilbo config` prints every value. Name the variable that holds it with `key_env`, or a program that prints it with `key_command`; the program's output is in no message. The program is your own: it gets bilbo's environment as it is and runs in bilbo's state folder, within `derive.timeout`. An endpoint is printed by `bilbo config` and in errors like any value, so no key belongs in it. When a run has read the key, a setting of the same provider that holds it stops the run before anything is sent, and the message names the setting, never its value; the endpoint is the exception, which the guard does not read, so no key belongs in it.
+
+A timer's run has no shell environment, so a variable your shell sets is not there. Give the key through `key_command`, with the program's full path. With systemd the unit can instead name a file of your own with `EnvironmentFile=`. Make that file private before the key goes into it:
+
+```sh
+install -m 600 /dev/null <the file>
+```
+
+Then write one line in it with an editor, the variable `key_env` names, `=`, and the key (`ANTHROPIC_API_KEY=<the key>` with the default), and add `EnvironmentFile=<the file>` to the unit. Never write the key into the unit's file or the agent's plist. A launchd agent can name no such file, so on macOS `key_command` is the one private way: a program that reads the key from your keychain.
+
+### Where a request goes
+
+An `https` endpoint follows the proxy the environment names, as other programs do; the tunnel keeps the request encrypted to the provider. A plain `http` endpoint is taken only at `127.0.0.1` or `[::1]`, written as an address and not as `localhost`, and is reached with no proxy: the key is in the request. No redirect is followed.
+
+### What is due
+
+Each entry is in one state, the first that holds: its labels are not current (the index failed on it, or on the entry it belongs to); its kind has no instruction; it belongs to another entry, as a subagent's session does; `derive.in` does not name it; `derive.not_in` does; it is still growing; it is covered; it is passed over; or it is due. An entry is still growing until its newest records were sealed `derive.quiet` ago, so a note appears one to two hours after an entry's last record with the defaults; naming the entry skips that test and no other. An entry is covered when the runs of its newest notes cover every record, whichever instruction, provider or model wrote them: only `--redo` compares those with the ones in force. An entry whose kind's reader cannot promise that new records leave earlier text as it was (Markdown) is derived again from its first record each time it grows: an instruction added for such a kind costs a full pass at every change of the file.
+
+### A call
+
+An entry's uncovered records are cut into windows of at most `derive.window` tokens, of whole passages; a passage over `derive.passage` tokens is sent as its start and its end. `derive.window` counts the records' text alone: the request is that plus the instruction and up to `derive.earlier` tokens of the entry's newest earlier notes. Windows are called in order, and a window is called only when every record before it is covered. `derive.calls` counts requests sent to an API and runs of a tool's program, retries included.
+
+### When a call does not give notes
+
+What bilbo does with a call that gave no note depends on whose the failure is.
+
+- **Refused:** the provider declined. The window is charged at once, its entry waits for the next run, and the run goes on.
+- **The window's own:** the answer held no note bilbo can keep, reached a tool, or held the key. The window is charged at once, its entry waits for the next run, and the run goes on.
+- **The provider's or the settings':** the provider is busy, limits the rate, had an error of its own or could not be reached; or the key, the credit, a permission, the model or the address is wrong; or the connection could not be made secure; or its program could not be started. A busy provider is asked again, up to `derive.retries` times, after the wait it named or `derive.retry_wait`, multiplied by `derive.retry_factor` at each retry after the first; a wait over `derive.retry_limit` ends the run. Otherwise the run ends at once. Nothing is charged.
+- **Either's:** no answer within `derive.timeout` after the retries, a request the provider rejected, an answer bilbo cannot read or one over `derive.response`, an answer that was cut or ended for a reason bilbo does not take, a tool's error. The entry waits for the next run and the run goes on. The window is charged once another call of the same run is answered, which shows the provider was working. `derive.failures` such calls in a row with no answer between them end the run. Any answered call of a run is the proof, so a setting that fails only the longest windows passes them over, and `--redo` takes them again once the setting is mended. A setting that makes every call give a cut answer or an unknown stop reason costs `derive.failures` calls a run and charges nothing. With `derive.calls` no larger than `derive.retries` plus one, a window that is always busy or slow is called at every run and never passed over: the calls end the run before its retries do, and nothing is charged.
+
+A run with a failed call exits 1. The newest entry comes first. A run that made a call and neither answered nor charged begins the next run one entry further, so no entry that fails keeps the others from their call. A run the provider ended leaves the failures that still wait uncharged. A run that is killed between an answer and the charges that answer proves loses those charges, never the answer: the windows are called once more and charged at the next proof. A pass's record names no model.
+
+A window charged `derive.tries` times is passed over: a run record says so, with no call, and the entry goes on. A request the provider rejects is said with its status, the provider's own error identifiers and the request's id, never with the provider's sentence: an error can hold text of the entry.
+
+### --redo
+
+`--redo` makes due every entry whose newest notes were written under another instruction, provider or model than the ones in force, and every entry with a stretch that was passed over, as a new generation of its notes from its first record. It never writes again what the instruction, provider and model in force wrote in full.
+
+### --dry-run
+
+A dry run builds the same plan and prints it, and does nothing else: it takes no lock of its own (it reads the store as `recall` does), starts no program, writes no file and calls no provider; of the key it says only whether its variable is set. Its lines, each absent when it has nothing to say:
+
+```text
+off: derive.enabled is false; a run would send nothing
+kinds: session (built in, 9f86d081884c7d65)
+named: 412 entries by derive.in, 14 of them left out by derive.not_in
+due: 37 entries
+not due: 12 still growing, 340 covered, 9 belong to another entry, 2 passed over, 1 with labels not current
+this run: 20 calls for 14 entries, 380122 tokens of records to send (derive.calls 20)
+provider: anthropic, model claude-haiku-5-5, at https://api.anthropic.com/v1/messages
+version: 2026-10-21
+key: the variable ANTHROPIC_API_KEY, which is set
+```
+
+`headers:` and `extra:` follow when they are set.
+
+With refs, every count is of the refs alone, and each ref has one more line, `entry`, in five fields apart by tabs: the entry's id, its state (`due`, `covered`, `passed over` or `left out: ` and why), the id of its note entry or `-`, and how many notes its newest generation holds.
+
+### The timer
+
+A timer runs `bilbo derive` every 30 minutes. Nothing installs it yet: its files are in [`docs/reference/timer/`](timer/), with `@BILBO@` for the absolute path of `bilbo` and `@LOG@` for the log file. Run these from a checkout of the bilbo repository.
+
+The timer sets no variable: a unit installed as written reads the default config file and the default folders, not the ones your shell's `BILBO_*` or `XDG_*` variables name. Set `derive.*` and `paths.*` in the config file.
+
+On macOS, with launchd:
+
+```sh
+mkdir -p ~/Library/LaunchAgents ~/Library/Logs
+sed -e "s|@BILBO@|$(command -v bilbo)|" -e "s|@LOG@|$HOME/Library/Logs/bilbo-derive.log|" \
+  docs/reference/timer/io.github.delucca.bilbo.derive.plist \
+  > ~/Library/LaunchAgents/io.github.delucca.bilbo.derive.plist
+launchctl bootstrap "gui/$(id -u)" ~/Library/LaunchAgents/io.github.delucca.bilbo.derive.plist
+```
+
+On Linux, with systemd:
+
+```sh
+mkdir -p ~/.config/systemd/user ~/.cache
+sed -e "s|@BILBO@|$(command -v bilbo)|" -e "s|@LOG@|$HOME/.cache/bilbo-derive.log|" \
+  docs/reference/timer/bilbo-derive.service > ~/.config/systemd/user/bilbo-derive.service
+cp docs/reference/timer/bilbo-derive.timer ~/.config/systemd/user/
+systemctl --user daemon-reload
+systemctl --user enable --now bilbo-derive.timer
+```
+
+### Files
+
+`<state>/derive/` holds five paths: `lock` (the run's lock, held to its end), `spool/` (a block for each call, kept until the notes are in the store), `failed` (the windows charged, one line each, and one line that marks the entry the next run begins after), `log` (one line for each attempt, mode 600) and `work/` (where the tool runs). The log holds no text of a record. bilbo refuses the lock, a block and the file of charges when it is a link, has a second name, is no regular file or is not yours alone; the folders are not checked. A line of `failed` goes when its window is answered or passed over, and when its entry's windows have moved on. If a run dies between keeping its notes and bringing the index up to date, the notes are in the store and the next `bilbo remember` indexes them; until then `bilbo derive` says the index is behind and sends nothing.
+
+### Output
+
+Standard output, two lines:
+
+```text
+entries <n>, calls <n>, notes <n>, dropped <n>, refused <n>, failed <n>
+tokens in <n>, tokens out <n>, seconds <n>
+```
+
+`entries` are the entries a call was made for, `calls` every attempt, `notes` the paragraphs kept, `dropped` the paragraphs a check dropped, `refused` the calls the provider declined and `failed` the failed calls, the cut answers and the answers with no note kept. Each refusal, each failed call and each window passed over has a line on stderr. A run that is off, that finds another derive running, or that cannot trust the labels prints nothing on standard output. On a terminal the two lines come as one marked message.
+
+### Exit codes
+
+| Code | Meaning |
+|---|---|
+| 0 | done, also when derive is off, nothing is due or another derive runs; a second derive that finds the store held longer than `store.wait` exits 1 with `another bilbo is writing the store` |
+| 1 | a failed call, a ref that is refused, a provider that stays busy or stops the run, labels that cannot be trusted, a store or index failure, or a file refused while derive ran the follows again for another bilbo |
+| 2 | usage or config error |

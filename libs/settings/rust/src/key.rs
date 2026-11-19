@@ -286,6 +286,24 @@ impl<'a> Value<'a> {
         }
     }
 
+    pub fn boolean(&self) -> Option<bool> {
+        match &self.given {
+            Given::Text(text) => match text.to_str()? {
+                "true" => Some(true),
+                "false" => Some(false),
+                _ => None,
+            },
+            Given::Node(
+                Node {
+                    kind: Kind::Boolean(boolean),
+                    ..
+                },
+                _,
+            ) => Some(*boolean),
+            Given::Node(..) => None,
+        }
+    }
+
     pub fn decimal(&self) -> Option<f64> {
         let number = match &self.given {
             Given::Text(text) => {
@@ -375,6 +393,13 @@ impl<'a> Value<'a> {
         }
     }
 
+    pub fn refused(&self, reason: &str) -> Error {
+        Error::Refused {
+            at: self.at.clone(),
+            reason: reason.to_owned(),
+        }
+    }
+
     fn key(&self) -> &str {
         match &self.at {
             At::Line { key, .. } => key,
@@ -410,7 +435,7 @@ impl<'a> Value<'a> {
 }
 
 /// A key name as it is written in a dotted path: bare when it can be, else quoted.
-pub(crate) fn segment(name: &str) -> String {
+pub fn segment(name: &str) -> String {
     let bare = !name.is_empty()
         && name
             .chars()
@@ -444,9 +469,9 @@ mod tests {
     use std::ffi::OsString;
     use std::path::{Path, PathBuf};
 
-    use super::{About, Default, Flag, Key, Origin, Resolved, Source, quote};
-    use crate::error::Error;
-    use crate::file::File;
+    use super::{About, Default, Flag, Given, Key, Origin, Resolved, Source, Value, quote};
+    use crate::error::{At, Error};
+    use crate::file::{self, File};
     use crate::folder::{self, Folder};
     use crate::size::{self, GIB, MIB};
 
@@ -535,6 +560,18 @@ mod tests {
             Ok(pairs)
         },
         show: |pairs| format!("{pairs:?}"),
+    };
+
+    const SWITCH: Key<bool> = Key {
+        about: About {
+            name: "derive.enabled",
+            variable: Some("BILBO_DERIVE_ENABLED"),
+            default: Default::Toml("false"),
+            allowed: "true or false",
+            doc: "a boolean key",
+        },
+        parse: |value| value.boolean().ok_or_else(|| value.refuse()),
+        show: bool::to_string,
     };
 
     const RATIO: Key<f64> = Key {
@@ -1192,5 +1229,122 @@ mod tests {
             resolved.map(|r| r.value),
             Ok(PathBuf::from(OsString::from_vec(b"/x/\xff".to_vec())))
         );
+    }
+
+    #[test]
+    fn a_boolean_is_true_or_false_in_the_file_and_in_a_variable() {
+        let resolved = |value, origin| Ok(Resolved { value, origin });
+        let var = |text| [("BILBO_DERIVE_ENABLED", text)];
+        let variable = Origin::Variable("BILBO_DERIVE_ENABLED");
+        assert_eq!(
+            get(&SWITCH, &[], "derive.enabled = true"),
+            resolved(true, in_file(1))
+        );
+        assert_eq!(
+            get(&SWITCH, &[], "[derive]\nenabled = false"),
+            resolved(false, in_file(2))
+        );
+        assert_eq!(
+            get(&SWITCH, &var("true"), "derive.enabled = false"),
+            resolved(true, variable.clone())
+        );
+        assert_eq!(
+            get(&SWITCH, &var("false"), "derive.enabled = true"),
+            resolved(false, variable)
+        );
+        assert_eq!(get(&SWITCH, &[], ""), resolved(false, Origin::Default));
+    }
+
+    #[test]
+    fn a_boolean_written_another_way_is_refused_as_written() {
+        for (text, got) in [
+            ("derive.enabled = \"true\"", "\"true\""),
+            ("derive.enabled = 1", "1"),
+            ("derive.enabled = [true]", "[true]"),
+        ] {
+            assert_eq!(
+                message(get(&SWITCH, &[], text)),
+                format!("/c/config.toml:1: derive.enabled must be true or false, got {got}"),
+                "{text:?}"
+            );
+        }
+        for text in ["TRUE", "True", "yes", "1", " true"] {
+            assert_eq!(
+                message(get(&SWITCH, &[("BILBO_DERIVE_ENABLED", text)], "")),
+                format!("BILBO_DERIVE_ENABLED must be true or false, got {text:?}"),
+                "{text:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_boolean_shows_as_toml_that_reads_back() {
+        for value in [true, false] {
+            let shown = SWITCH.shown(&Resolved {
+                value,
+                origin: Origin::Default,
+            });
+            assert_eq!(shown.value, value.to_string());
+            assert_eq!(shown.to_bare(), value.to_string());
+            let node = file::literal(&shown.value).expect("toml");
+            let source = Source {
+                var: &|_| None,
+                file: &file(""),
+            };
+            let read = Value::new(
+                &SWITCH.about,
+                &source,
+                At::Default("derive.enabled"),
+                Given::Node(&node, &shown.value),
+            );
+            assert_eq!((SWITCH.parse)(&read), Ok(value));
+        }
+    }
+
+    #[test]
+    fn a_parser_can_refuse_with_a_sentence_of_its_own_at_the_values_origin() {
+        const SECRET: Key<String> = Key {
+            about: About {
+                name: "derive.secret",
+                variable: Some("BILBO_DERIVE_SECRET"),
+                default: Default::Toml("\"sk-default-PLUM\""),
+                allowed: "never",
+                doc: "a key that refuses with its own sentence",
+            },
+            parse: |value| Err(value.refused("must hold nothing of this")),
+            show: Clone::clone,
+        };
+        let reason = "must hold nothing of this";
+        let from_file = get(&SECRET, &[], "derive.secret = \"sk-file-PLUM\"");
+        assert_eq!(
+            from_file.as_ref().err(),
+            Some(&Error::Refused {
+                at: At::Line {
+                    path: PathBuf::from(PATH),
+                    line: 1,
+                    key: "derive.secret".to_owned(),
+                },
+                reason: reason.to_owned(),
+            })
+        );
+        let from_variable = get(&SECRET, &[("BILBO_DERIVE_SECRET", "sk-var-PLUM")], "");
+        assert_eq!(
+            from_variable.as_ref().err(),
+            Some(&Error::Refused {
+                at: At::Variable("BILBO_DERIVE_SECRET"),
+                reason: reason.to_owned(),
+            })
+        );
+        let from_default = get(&SECRET, &[], "");
+        assert_eq!(
+            from_default.as_ref().err(),
+            Some(&Error::Refused {
+                at: At::Default("derive.secret"),
+                reason: reason.to_owned(),
+            })
+        );
+        for refused in [from_file, from_variable, from_default] {
+            assert!(!message(refused).contains("PLUM"));
+        }
     }
 }

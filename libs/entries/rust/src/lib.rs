@@ -1,7 +1,9 @@
+pub mod day;
 pub mod files;
 pub mod follows;
 pub mod kind;
 pub mod markdown;
+pub mod note;
 pub mod read;
 pub mod reader;
 pub mod remember;

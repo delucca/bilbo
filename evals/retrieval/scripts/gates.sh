@@ -35,6 +35,9 @@ mkdir -p "$BILBO_EVAL_JUDGE_CWD" "$TIKTOKEN_CACHE_DIR" "$BILBO_EVAL_CODEX_HOME"
 ln -sfn "${CODEX_HOME:-$HOME/.codex}/auth.json" "$BILBO_EVAL_CODEX_HOME/auth.json"
 py() { uv run --project "$root/scripts" --locked --quiet python "$@"; }
 
+log "self-test of the arm bilbo-next"
+(cd "$root/arms/bilbo-next" && py selftest.py) || die "the self-test of the arm bilbo-next failed"
+
 selected=$cache/eval/answerable.jsonl
 py "$root/scripts/questions.py" flat "$root/questions/questions.jsonl" > "$selected"
 

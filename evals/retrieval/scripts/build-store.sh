@@ -116,6 +116,7 @@ inputs_for() {
   echo "sessions ${sessions:-all}"
   [[ -z $uses_scope ]] || echo "scope ${BILBO_EVAL_SCOPE:-all}"
   [[ -z $seed_file ]] || echo "seed $seed_file $seed_sha"
+  [[ -z ${BILBO_EVAL_DERIVE:-} ]] || echo "derive $(printf '%s' "$BILBO_EVAL_DERIVE" | sha256sum | cut -d' ' -f1)"
   cd "$root/arms/$arm"
   find . -mindepth 1 \( -name '.*' -o -name __pycache__ \) -prune -o -type f ! -name compose.gpu.yaml ! -name check.py ! -name search.py \
     -print | LC_ALL=C sort | while read -r f; do echo "file ${f#./} $(sha "$f")"; done
@@ -285,6 +286,11 @@ if [[ ! -f $model || $(sha "$model") != "$EMBEDDER_SHA256" ]]; then
 fi
 
 work=$cache/work/$arm-$key
+# The answers an arm was paid for outlive --rebuild.
+if grep -q BILBO_EVAL_ANSWERS "$root/arms/$arm/compose.yaml"; then
+  export BILBO_EVAL_ANSWERS=$cache/answers/$arm
+  mkdir -p "$BILBO_EVAL_ANSWERS"
+fi
 
 files=(-f "$root/arms/$arm/compose.yaml")
 gpu_file=$root/arms/$arm/compose.gpu.yaml

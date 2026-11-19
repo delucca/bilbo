@@ -1,5 +1,6 @@
 pub mod config;
 pub mod console;
+pub mod derive;
 pub mod help;
 #[cfg(test)]
 mod probe;
@@ -9,6 +10,7 @@ pub mod reindex;
 pub mod remember;
 
 use std::ffi::OsString;
+use std::rc::Rc;
 
 use bilbo_entries::kind::Kind;
 use bilbo_entries::reader::Reader;
@@ -19,11 +21,11 @@ use bilbo_search::tokenizer::Tokenizer;
 use clap::{Command, CommandFactory, Parser, Subcommand};
 
 use crate::console::args::{Parsed, parse, typed, usage, verbs, with_verbs};
-use crate::console::env::Env;
+use crate::console::env::{Env, Var};
 use crate::console::indexing::Indexing;
 use crate::console::outcome::{Failure, Outcome};
 use crate::console::reading;
-use crate::console::settings::{KindKey, Settings};
+use crate::console::settings::{Group, KindKey, Settings};
 use crate::help::overview;
 use crate::help::page::shape;
 
@@ -48,6 +50,7 @@ pub enum Verb {
     Recall(recall::Args),
     Read(read::Args),
     Reindex(reindex::Args),
+    Derive(derive::Args),
     Config(config::Args),
 }
 
@@ -76,6 +79,97 @@ pub fn kind_keys() -> Vec<&'static KindKey> {
     ]
 }
 
+static ANTHROPIC: Group = Group {
+    about: &bilbo_derive::anthropic::ABOUT,
+    resolve: bilbo_derive::anthropic::shown,
+};
+
+static OPENAI: Group = Group {
+    about: &bilbo_derive::openai::ABOUT,
+    resolve: bilbo_derive::openai::shown,
+};
+
+static CLAUDE: Group = Group {
+    about: &bilbo_derive::claude::ABOUT,
+    resolve: bilbo_derive::claude::shown,
+};
+
+pub fn provider_keys() -> Vec<&'static Group> {
+    vec![&ANTHROPIC, &OPENAI, &CLAUDE]
+}
+
+pub fn providers() -> Vec<(&'static str, &'static str)> {
+    vec![
+        (
+            bilbo_derive::anthropic::NAME,
+            bilbo_derive::anthropic::SUMMARY,
+        ),
+        (bilbo_derive::openai::NAME, bilbo_derive::openai::SUMMARY),
+        (bilbo_derive::claude::NAME, bilbo_derive::claude::SUMMARY),
+    ]
+}
+
+pub fn writer(settings: &Settings, var: &Var) -> Result<derive::Built, Failure> {
+    let state = settings.state.value.clone();
+    let timeout = settings.derive.timeout.value;
+    let response = usize::try_from(settings.derive.response.value).unwrap_or(usize::MAX);
+    let poll = settings.derive.poll.value;
+    let reading = |names: Vec<String>| -> bilbo_derive::writer::Variables {
+        let var = Rc::clone(var);
+        Box::new(move |asked: &str| {
+            if names.iter().any(|name| name == asked) {
+                var(asked).and_then(|text| text.into_string().ok())
+            } else {
+                None
+            }
+        })
+    };
+    let source = settings.source(&**var);
+    let name = settings.derive.provider.value.as_str();
+    let (writer, api): (Box<dyn bilbo_derive::writer::Writer>, bool) = match name {
+        bilbo_derive::anthropic::NAME => {
+            let section = bilbo_derive::anthropic::section(&source)?;
+            let variables = reading(vec![section.key_env.value.clone()]);
+            (
+                Box::new(bilbo_derive::anthropic::Anthropic::new(
+                    section, variables, state, timeout, response, poll,
+                )),
+                true,
+            )
+        }
+        bilbo_derive::openai::NAME => {
+            let section = bilbo_derive::openai::section(&source)?;
+            let variables = reading(vec![section.key_env.value.clone()]);
+            (
+                Box::new(bilbo_derive::openai::OpenAi::new(
+                    section, variables, state, timeout, response, poll,
+                )),
+                true,
+            )
+        }
+        bilbo_derive::claude::NAME => {
+            let section = bilbo_derive::claude::section(&source)?;
+            let variables = reading(section.inherit.value.clone());
+            (
+                Box::new(bilbo_derive::claude::Claude::new(
+                    section,
+                    variables,
+                    derive::disk::work(&state),
+                )),
+                false,
+            )
+        }
+        other => {
+            let names: Vec<&str> = providers().iter().map(|(name, _)| *name).collect();
+            return Err(Failure::Config(format!(
+                "derive.provider must be one of {}, got \"{other}\"",
+                names.join(", ")
+            )));
+        }
+    };
+    Ok(derive::Built { writer, api })
+}
+
 fn registered(settings: &Settings, key: &'static KindKey) -> Result<usize, Failure> {
     settings.kind_value(key).ok_or_else(|| {
         Failure::Config(format!(
@@ -94,11 +188,73 @@ fn session(settings: &Settings) -> Result<bilbo_entries::session::Session, Failu
     ))
 }
 
+pub fn apart() -> Vec<&'static str> {
+    vec![notes().kind]
+}
+
+pub struct Notes {
+    pub kind: &'static str,
+    pub write: fn(&bilbo_entries::note::record::Record) -> Vec<u8>,
+    pub line: fn(&bilbo_derive::view::Paragraph) -> Vec<u8>,
+    pub paragraph: fn(&[u8]) -> Option<bilbo_derive::view::Paragraph>,
+}
+
+pub fn notes() -> Notes {
+    Notes {
+        kind: bilbo_entries::note::NAME,
+        write: bilbo_entries::note::record::write,
+        line: note_line,
+        paragraph: note_paragraph,
+    }
+}
+
+fn note_line(paragraph: &bilbo_derive::view::Paragraph) -> Vec<u8> {
+    let record = bilbo_entries::note::record::Record {
+        text: paragraph.text.clone(),
+        at: paragraph.at.and_then(|time| {
+            time.duration_since(std::time::UNIX_EPOCH)
+                .ok()
+                .map(|since| since.as_secs())
+        }),
+        from: vec![bilbo_entries::note::record::Source {
+            entry: paragraph.source.parent,
+            generation: paragraph.source.generation.0,
+            first: paragraph.source.first,
+            last: paragraph.source.last,
+        }],
+    };
+    let mut bytes = bilbo_entries::note::record::write(&record);
+    if bytes.last() == Some(&b'\n') {
+        bytes.pop();
+    }
+    bytes
+}
+
+fn note_paragraph(bytes: &[u8]) -> Option<bilbo_derive::view::Paragraph> {
+    let record = bilbo_entries::note::record::read(bytes)?;
+    let [source] = record.from.as_slice() else {
+        return None;
+    };
+    Some(bilbo_derive::view::Paragraph {
+        text: record.text.clone(),
+        at: record
+            .at
+            .map(|at| std::time::UNIX_EPOCH + std::time::Duration::from_secs(at)),
+        source: bilbo_derive::tries::Extent {
+            parent: source.entry,
+            generation: bilbo_store::entries::Generation(source.generation),
+            first: source.first,
+            last: source.last,
+        },
+    })
+}
+
 pub fn readers(settings: &Settings) -> Result<Vec<Box<dyn Reader>>, Failure> {
     let width = registered(settings, &bilbo_entries::markdown::HEADING_WIDTH)?;
     Ok(vec![
         Box::new(bilbo_entries::markdown::Markdown::new(width)),
         Box::new(session(settings)?),
+        Box::new(bilbo_entries::note::Note),
     ])
 }
 
@@ -117,6 +273,11 @@ pub fn rendering(settings: &Settings) -> Result<String, Failure> {
             "{}/{}",
             bilbo_entries::session::Session::default().kind(),
             bilbo_entries::session::RENDER
+        ),
+        format!(
+            "{}/{}",
+            bilbo_entries::note::NAME,
+            bilbo_entries::note::RENDER
         ),
     ]
     .join(" "))
@@ -182,9 +343,17 @@ pub fn indexing<'a>(
 pub fn bilbo() -> Command {
     let root = Cli::command();
     verbs(&root).into_iter().fold(root, |root, name| {
-        let kinds = (name == "remember").then(|| remember::page(&listed()));
+        let page = match name.as_str() {
+            "remember" => Some(remember::page(&listed())),
+            "derive" => {
+                let shipped = bilbo_derive::instruction::shipped();
+                let kinds: Vec<&str> = shipped.iter().map(|(kind, _)| *kind).collect();
+                Some(derive::page(&kinds, &providers()))
+            }
+            _ => None,
+        };
         root.mut_subcommand(name, |verb| {
-            shape(match kinds {
+            shape(match page {
                 Some(page) => verb.after_help(page),
                 None => verb,
             })
@@ -230,6 +399,11 @@ pub fn run_tuned(
             let Some(verb) = typed::<Cli>(root, &matches)?.verb else {
                 return Err(usage(root, with_verbs(root, "missing verb"), None));
             };
+            if let Verb::Config(args) = &verb
+                && let Some(config::Sub::Set(set)) = &args.set
+            {
+                return config::set::run(root, set, &*env.var, &kind_keys(), &provider_keys());
+            }
             let settings = settings?;
             match verb {
                 Verb::Remember(args) => {
@@ -252,7 +426,7 @@ pub fn run_tuned(
                         &args,
                         env,
                         &settings,
-                        &reading::of(&indexing, &committed, detect()),
+                        &reading::of(&indexing, &committed, detect(), &apart()),
                     )
                 }
                 Verb::Read(args) => {
@@ -278,6 +452,40 @@ pub fn run_tuned(
                         )
                     })
                 }
+                Verb::Derive(args) => {
+                    let readers = readers(&settings)?;
+                    let rendering = rendering(&settings)?;
+                    let kinds = kinds(&settings)?;
+                    let disk = |cache: &std::path::Path| index(cache, &settings.search);
+                    let indexing =
+                        tune(indexing(&settings, &readers, &rendering, &tokenizer, &disk));
+                    let committed = |cache: &std::path::Path| lookup(cache, &settings.search);
+                    let note = notes();
+                    let hand = derive::Hand {
+                        readers: &readers,
+                        tokenizer: &tokenizer,
+                        lookup: &committed,
+                        chunk: indexing.request.chunk,
+                        render: &rendering,
+                        format: bilbo_derive::view::Format {
+                            kind: note.kind,
+                            write: &note.line,
+                            read: &note.paragraph,
+                        },
+                        writer: &|var| writer(&settings, var),
+                        finish: &|store, kept, notice| {
+                            remember::follows::finish(
+                                store,
+                                &settings.follow.value,
+                                &kinds,
+                                &indexing,
+                                notice,
+                                kept,
+                            )
+                        },
+                    };
+                    derive::run(root, &args, env, &settings, &hand)
+                }
                 Verb::Config(args) => config::run(root, args, &settings),
             }
         }
@@ -286,9 +494,11 @@ pub fn run_tuned(
 
 #[cfg(test)]
 mod tests {
+    use std::cell::RefCell;
     use std::ffi::OsString;
+    use std::rc::Rc;
 
-    use super::{bilbo, kinds, listed, readers, rendering, run, run_command};
+    use super::{apart, bilbo, kinds, listed, notes, readers, rendering, run, run_command};
     use crate::console::env::Env;
     use crate::console::outcome::Failure;
     use crate::console::settings::Settings;
@@ -300,8 +510,186 @@ mod tests {
             &|name| (name == "HOME").then(|| OsString::from("/h")),
             &|_| Err(std::io::ErrorKind::NotFound.into()),
             &super::kind_keys(),
+            &super::provider_keys(),
         )
         .expect("the defaults")
+    }
+
+    fn with_provider(name: &str) -> Settings {
+        let name = name.to_owned();
+        crate::console::settings::load(
+            &move |variable| match variable {
+                "HOME" => Some(OsString::from("/h")),
+                "BILBO_DERIVE_PROVIDER" => Some(OsString::from(name.clone())),
+                _ => None,
+            },
+            &|_| Err(std::io::ErrorKind::NotFound.into()),
+            &super::kind_keys(),
+            &super::provider_keys(),
+        )
+        .expect("settings")
+    }
+
+    #[test]
+    fn every_shipped_instruction_is_for_a_kind_some_reader_reads() {
+        let read: Vec<&str> = readers(&defaults())
+            .expect("the readers")
+            .iter()
+            .map(|reader| reader.kind())
+            .collect();
+        let shipped = bilbo_derive::instruction::shipped();
+        assert!(!shipped.is_empty());
+        for (kind, _) in shipped {
+            assert!(read.contains(&kind), "{kind}");
+            assert_ne!(kind, notes().kind);
+        }
+    }
+
+    #[test]
+    fn the_writer_is_the_provider_the_settings_name() {
+        for (name, _) in super::providers() {
+            let settings = with_provider(name);
+            let var: crate::console::env::Var = Rc::new(|_| None);
+            let built = super::writer(&settings, &var).expect("a writer");
+            assert!(
+                built.writer.describe()[0].starts_with(&format!("provider: {name}")),
+                "{name}"
+            );
+            assert_eq!(built.api, name != "claude");
+        }
+    }
+
+    fn recording(
+        set: Vec<(&'static str, &'static str)>,
+    ) -> (crate::console::env::Var, Rc<RefCell<Vec<String>>>) {
+        let asked = Rc::new(RefCell::new(Vec::new()));
+        let sink = Rc::clone(&asked);
+        let var: crate::console::env::Var = Rc::new(move |name| {
+            sink.borrow_mut().push(name.to_owned());
+            set.iter()
+                .find(|(held, _)| *held == name)
+                .map(|(_, value)| OsString::from(*value))
+        });
+        (var, asked)
+    }
+
+    #[test]
+    fn writer_builds_an_adapter_and_reads_no_variable_of_its_own() {
+        for (name, key_env) in [
+            ("anthropic", "BILBO_DERIVE_ANTHROPIC_KEY_ENV"),
+            ("openai", "BILBO_DERIVE_OPENAI_KEY_ENV"),
+        ] {
+            let settings = with_provider(name);
+            let (var, asked) = recording(vec![(key_env, "PLUM_KEY"), ("PLUM_KEY", "sk-test")]);
+            let built = super::writer(&settings, &var).expect("a writer");
+            assert!(
+                asked.borrow().iter().all(|name| name.starts_with("BILBO_")),
+                "{name}: {:?}",
+                asked.borrow()
+            );
+            asked.borrow_mut().clear();
+            built.writer.describe();
+            assert_eq!(*asked.borrow(), ["PLUM_KEY"], "{name}");
+        }
+        let settings = crate::console::settings::load(
+            &|variable| match variable {
+                "HOME" => Some(OsString::from("/h")),
+                "BILBO_DERIVE_PROVIDER" => Some(OsString::from("claude")),
+                _ => None,
+            },
+            &|_| Ok(b"[derive.claude]\ninherit = [\"PLUM_TOKEN\"]\n".to_vec()),
+            &super::kind_keys(),
+            &super::provider_keys(),
+        )
+        .expect("settings");
+        let (var, asked) = recording(vec![("PLUM_TOKEN", "t"), ("HOME", "/h")]);
+        super::writer(&settings, &var).expect("a writer");
+        assert!(
+            asked
+                .borrow()
+                .iter()
+                .all(|name| name != "HOME" && name != "PLUM_TOKEN"),
+            "{:?}",
+            asked.borrow()
+        );
+    }
+
+    #[test]
+    fn the_tools_reader_is_given_the_names_of_inherit() {
+        let state = std::env::temp_dir().join(format!("tool-names-{}", std::process::id()));
+        std::fs::create_dir_all(&state).expect("a folder");
+        let settings = crate::console::settings::load(
+            &|variable| match variable {
+                "HOME" => Some(OsString::from("/h")),
+                "XDG_STATE_HOME" => Some(state.clone().into_os_string()),
+                "BILBO_DERIVE_PROVIDER" => Some(OsString::from("claude")),
+                _ => None,
+            },
+            &|_| {
+                Ok(b"[derive.claude]\nprogram = \"/bin/sh\"\nmodel = \"m\"\ninherit = [\"HOME\", \"PLUM_TOKEN\"]\n".to_vec())
+            },
+            &super::kind_keys(),
+            &super::provider_keys(),
+        )
+        .expect("settings");
+        let (var, asked) = recording(vec![("PLUM_TOKEN", "t"), ("HOME", "/h"), ("OTHER", "o")]);
+        let mut built = super::writer(&settings, &var).expect("a writer");
+        asked.borrow_mut().clear();
+        built.writer.prepare().expect("a prepared writer");
+        let mut names = asked.borrow().clone();
+        names.sort();
+        names.dedup();
+        assert_eq!(names, ["HOME", "PLUM_TOKEN"]);
+        let _ = std::fs::remove_dir_all(&state);
+    }
+
+    #[test]
+    fn an_unknown_provider_is_a_config_error_that_lists_the_providers() {
+        let var: crate::console::env::Var = Rc::new(|_| None);
+        match super::writer(&with_provider("gemini"), &var) {
+            Err(Failure::Config(text)) => assert_eq!(
+                text,
+                "derive.provider must be one of anthropic, openai, claude, got \"gemini\""
+            ),
+            other => panic!("{:?}", other.map(|built| built.api)),
+        }
+    }
+
+    #[test]
+    fn the_providers_keys_are_registered_in_the_providers_order() {
+        let names: Vec<&str> =
+            crate::console::settings::keys(&super::kind_keys(), &super::provider_keys())
+                .iter()
+                .map(|about| about.name)
+                .collect();
+        let tail: Vec<&str> = names[names.len() - 20..].to_vec();
+        assert_eq!(
+            tail,
+            [
+                "derive.anthropic.model",
+                "derive.anthropic.endpoint",
+                "derive.anthropic.version",
+                "derive.anthropic.key_env",
+                "derive.anthropic.key_command",
+                "derive.anthropic.headers",
+                "derive.anthropic.extra",
+                "derive.openai.model",
+                "derive.openai.endpoint",
+                "derive.openai.key_env",
+                "derive.openai.key_command",
+                "derive.openai.headers",
+                "derive.openai.extra",
+                "derive.claude.program",
+                "derive.claude.model",
+                "derive.claude.effort",
+                "derive.claude.arguments",
+                "derive.claude.inherit",
+                "derive.claude.environment",
+                "derive.claude.project_files",
+            ]
+        );
+        let order: Vec<&str> = super::providers().iter().map(|(name, _)| *name).collect();
+        assert_eq!(order, ["anthropic", "openai", "claude"]);
     }
 
     #[test]
@@ -315,6 +703,7 @@ mod tests {
                 },
                 &|_| Err(std::io::ErrorKind::NotFound.into()),
                 &super::kind_keys(),
+                &super::provider_keys(),
             )
             .expect("the settings");
             let disk = |cache: &std::path::Path| super::index(cache, &settings.search);
@@ -336,6 +725,7 @@ mod tests {
             },
             &|_| Err(std::io::ErrorKind::NotFound.into()),
             &[],
+            &super::provider_keys(),
         )
         .expect("settings with no kind key");
         match readers(&settings) {
@@ -355,6 +745,7 @@ mod tests {
             &|name| (name == "HOME").then(|| OsString::from("/h")),
             &|_| Err(std::io::ErrorKind::NotFound.into()),
             &[],
+            &super::provider_keys(),
         )
         .expect("settings with no kind key");
         match kinds(&settings) {
@@ -409,8 +800,10 @@ mod tests {
             .iter()
             .map(|reader| reader.kind())
             .collect();
+        let mut kept = names.clone();
+        kept.push(notes().kind);
         assert_eq!(
-            read, names,
+            read, kept,
             "a kind that is kept and cannot be read, or the reverse"
         );
         let rendered = rendering(&defaults()).expect("the rendering");
@@ -418,14 +811,63 @@ mod tests {
             .split(' ')
             .map(|item| item.split('/').next().unwrap_or_default())
             .collect();
-        assert_eq!(named, names, "{rendered:?}");
+        assert_eq!(named, kept, "{rendered:?}");
+    }
+
+    #[test]
+    fn the_kind_bilbo_writes_is_read_and_listed_apart_and_claims_no_file() {
+        let written = notes();
+        let last = readers(&defaults())
+            .expect("the readers")
+            .last()
+            .map(|reader| reader.kind());
+        assert_eq!(last, Some(written.kind));
+        assert!(apart().contains(&written.kind));
+        let claimed: Vec<&str> = kinds(&defaults())
+            .expect("the kinds")
+            .iter()
+            .map(|kind| kind.name())
+            .collect();
+        assert!(!claimed.contains(&written.kind));
+        let source = bilbo_derive::tries::Extent {
+            parent: bilbo_store::id::Id::from_bytes([4; 16]),
+            generation: bilbo_store::entries::Generation(2),
+            first: 3,
+            last: 9,
+        };
+        let paragraph = bilbo_derive::view::Paragraph {
+            text: "a paragraph".to_owned(),
+            at: Some(std::time::UNIX_EPOCH + std::time::Duration::from_secs(86_400)),
+            source,
+        };
+        let line = (written.line)(&paragraph);
+        assert!(!line.ends_with(b"\n"));
+        let back = (written.paragraph)(&line).expect("a paragraph");
+        assert_eq!(
+            (back.text, back.at, back.source),
+            (paragraph.text, paragraph.at, source)
+        );
+        let one = bilbo_entries::note::record::Source {
+            entry: source.parent,
+            generation: 1,
+            first: 1,
+            last: 1,
+        };
+        for from in [vec![one.clone(), one], Vec::new()] {
+            let record = bilbo_entries::note::record::Record {
+                text: "a note".to_owned(),
+                at: None,
+                from,
+            };
+            assert!((written.paragraph)(&(written.write)(&record)).is_none());
+        }
     }
 
     #[test]
     fn the_rendering_names_each_reader_its_version_and_its_settings() {
         assert_eq!(
             rendering(&defaults()).expect("the rendering"),
-            "markdown/1/heading_width=100 session/2"
+            "markdown/1/heading_width=100 session/2 note/1"
         );
         let wide = crate::console::settings::load(
             &|name| match name {
@@ -435,11 +877,12 @@ mod tests {
             },
             &|_| Err(std::io::ErrorKind::NotFound.into()),
             &super::kind_keys(),
+            &super::provider_keys(),
         )
         .expect("settings");
         assert_eq!(
             rendering(&wide).expect("the rendering"),
-            "markdown/1/heading_width=40 session/2"
+            "markdown/1/heading_width=40 session/2 note/1"
         );
     }
 
@@ -449,6 +892,7 @@ mod tests {
             &|name| (name == "HOME").then(|| OsString::from("/h")),
             &|_| Err(std::io::ErrorKind::NotFound.into()),
             &[],
+            &super::provider_keys(),
         )
         .expect("settings with no kind key");
         assert!(matches!(rendering(&settings), Err(Failure::Config(_))));
@@ -473,7 +917,7 @@ mod tests {
             };
         assert_eq!(
             reason(&["bilbo", "help", "a\nb"]),
-            "unknown verb 'a\\nb'; the verbs are remember, recall, read, reindex, config"
+            "unknown verb 'a\\nb'; the verbs are remember, recall, read, reindex, derive, config"
         );
         assert_eq!(
             reason(&["bilbo", "help", "--a\nb"]),

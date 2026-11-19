@@ -17,8 +17,12 @@ use bilbo_store::layout::Layout;
 use bilbo_store::segments::{Options, Store};
 
 mod sandbox;
+mod scratch;
+mod stores;
 
-use sandbox::{Run, backdate, counts, layout, run, scratch_dir, text, vars, write};
+use sandbox::{Run, counts, run, text, write};
+use scratch::{scratch_dir, vars};
+use stores::{backdate, layout};
 
 const MAIN: &str = "5c3a9e1f-0b7d-4c2e-9a41-7f2d8e6b1c03";
 const OTHER: &str = "9b1d2c3e-4f5a-4b6c-8d7e-0f1a2b3c4d5e";
@@ -489,6 +493,7 @@ fn done_check_store() -> Store {
         &|name| vars.get(name).cloned(),
         &|path| fs::read(path),
         &bilbo_cli::kind_keys(),
+        &bilbo_cli::provider_keys(),
     )
     .expect("settings")
     .layout();
@@ -1011,8 +1016,13 @@ fn two_follow_saves_at_once_keep_both_follows_and_the_files_own_bytes() {
     write(&config, b"# mine\n[store]\ncompression = 3");
     let vars = sandbox.vars();
     let var = move |name: &str| vars.get(name).cloned();
-    let settings =
-        settings::load(&var, &|path| fs::read(path), &bilbo_cli::kind_keys()).expect("settings");
+    let settings = settings::load(
+        &var,
+        &|path| fs::read(path),
+        &bilbo_cli::kind_keys(),
+        &bilbo_cli::provider_keys(),
+    )
+    .expect("settings");
     let follow = |name: &str| Follow {
         path: sandbox.dir.join(name),
         kind: Some("markdown".to_owned()),

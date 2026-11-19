@@ -1,3 +1,4 @@
+pub mod set;
 pub mod view;
 
 use clap::Command;
@@ -12,14 +13,31 @@ const SUMMARY: &str = "Show each setting, its value and where it came from";
 const ABOUT: &str = "bilbo config: show each setting, its value and where the value came from.";
 const USAGE: &str = "\
 bilbo config [<key>]
+  bilbo config set <key> <value>
 The config file is $BILBO_CONFIG, else $XDG_CONFIG_HOME/bilbo/config.toml,
 else ~/.config/bilbo/config.toml.";
 
 #[derive(Debug, clap::Args)]
-#[command(about = SUMMARY, before_help = ABOUT, override_usage = USAGE, after_help = PAGE)]
+#[command(about = SUMMARY, before_help = ABOUT, override_usage = USAGE, after_help = PAGE, args_conflicts_with_subcommands = true)]
 pub struct Args {
     #[arg(value_name = "key", value_parser = NonEmptyStringValueParser::new())]
     pub key: Option<String>,
+    #[command(subcommand)]
+    pub set: Option<Sub>,
+}
+
+#[derive(Debug, clap::Subcommand)]
+pub enum Sub {
+    #[command(name = "set", about = "Write one key into the config file")]
+    Set(Set),
+}
+
+#[derive(Debug, clap::Args)]
+pub struct Set {
+    #[arg(value_name = "key", value_parser = NonEmptyStringValueParser::new())]
+    pub key: String,
+    #[arg(value_name = "value", allow_hyphen_values = true)]
+    pub value: String,
 }
 
 const PAGE: &str = "\
@@ -27,14 +45,17 @@ Output:
   <key> = <value> (<origin>)
 One line per key, the value as TOML; the origin is default, <file>:<line>, a
 variable or a flag. With <key>, its value alone, a string without its quotes.
+  set <key> in <file>
+After set: the key is written in the config file; every other byte stays.
 
 Exit:
   0  success
-  2  usage or config error: an unknown key, or a file or variable bilbo refuses
+  2  usage or config error: a key, value or file bilbo refuses
 
 Examples:
   bilbo config
   bilbo config paths.root
+  bilbo config set derive.enabled true
 
 Docs: https://github.com/delucca/bilbo/wiki/Configuration";
 
@@ -48,17 +69,21 @@ pub fn run(root: &Command, args: Args, settings: &Settings) -> Result<Outcome, F
     shown.iter().find(|one| one.name == name).map_or_else(
         || {
             let names: Vec<&str> = shown.iter().map(|one| one.name).collect();
-            Err(usage(
-                root,
-                format!(
-                    "unknown key '{}'; the keys are {}",
-                    sanitize(&name),
-                    names.join(", ")
-                ),
-                Some("config"),
-            ))
+            Err(unknown_key(root, &name, &names))
         },
         |one| Ok(Outcome::new(format!("{}\n", sanitize(&one.to_bare())))),
+    )
+}
+
+pub fn unknown_key(root: &Command, name: &str, names: &[&str]) -> Failure {
+    usage(
+        root,
+        format!(
+            "unknown key '{}'; the keys are {}",
+            sanitize(name),
+            names.join(", ")
+        ),
+        Some("config"),
     )
 }
 
@@ -79,6 +104,7 @@ mod tests {
             &|name| (name == "HOME").then(|| OsString::from("/h")),
             &|_| Err(std::io::ErrorKind::NotFound.into()),
             &crate::kind_keys(),
+            &crate::provider_keys(),
         )
         .expect("the defaults")
     }
@@ -86,6 +112,7 @@ mod tests {
     fn key(name: &str) -> Args {
         Args {
             key: Some(name.to_owned()),
+            set: None,
         }
     }
 
@@ -108,7 +135,7 @@ mod tests {
                 assert_eq!(
                     reason,
                     "unknown key 'store.sealat'; the keys are paths.root, paths.state, \
-                     paths.cache, store.seal_at, store.seal_after, store.compression, store.tear_budget, store.wait, store.poll, follow, read.budget, read.outline_width, read.matches_listed, search.chunk_tokens, search.chunk_overlap, search.workers, search.index_memory, search.merge_deleted_percent, search.entry_tries, search.label_batch, search.list_limit, recall.budget, recall.candidates, recall.cap, recall.record_cap, recall.copy_share, recall.copy_words, recall.question_words, recall.languages, recall.bm25_k1, recall.bm25_b, recall.read_batch, recall.typo_terms, recall.typo_letters, recall.typo_max_letters, recall.typo_two_edits, recall.pair_weight, markdown.heading_width, session.unpack_floor, session.unpack_ratio, session.unpack_window, session.wide_fields"
+                     paths.cache, store.seal_at, store.seal_after, store.compression, store.tear_budget, store.wait, store.poll, follow, read.budget, read.outline_width, read.matches_listed, search.chunk_tokens, search.chunk_overlap, search.workers, search.index_memory, search.merge_deleted_percent, search.entry_tries, search.label_batch, search.list_limit, recall.budget, recall.notes_budget, recall.candidates, recall.cap, recall.record_cap, recall.copy_share, recall.copy_words, recall.question_words, recall.languages, recall.bm25_k1, recall.bm25_b, recall.read_batch, recall.typo_terms, recall.typo_letters, recall.typo_max_letters, recall.typo_two_edits, recall.pair_weight, derive.enabled, derive.provider, derive.in, derive.not_in, derive.instructions, derive.quiet, derive.window, derive.passage, derive.passage_head, derive.earlier, derive.names, derive.answer_tokens, derive.response, derive.calls, derive.timeout, derive.poll, derive.retries, derive.retry_wait, derive.retry_factor, derive.retry_limit, derive.tries, derive.failures, markdown.heading_width, session.unpack_floor, session.unpack_ratio, session.unpack_window, session.wide_fields, derive.anthropic.model, derive.anthropic.endpoint, derive.anthropic.version, derive.anthropic.key_env, derive.anthropic.key_command, derive.anthropic.headers, derive.anthropic.extra, derive.openai.model, derive.openai.endpoint, derive.openai.key_env, derive.openai.key_command, derive.openai.headers, derive.openai.extra, derive.claude.program, derive.claude.model, derive.claude.effort, derive.claude.arguments, derive.claude.inherit, derive.claude.environment, derive.claude.project_files"
                 );
                 assert_eq!(page, "bilbo config --help");
             }
@@ -127,8 +154,9 @@ mod tests {
             folder.describe()
         );
         let note = USAGE
-            .split_once('\n')
-            .map(|(_, note)| note.replace('\n', " "));
+            .splitn(3, '\n')
+            .nth(2)
+            .map(|note| note.replace('\n', " "));
         assert_eq!(note, Some(declared));
     }
 
@@ -142,11 +170,25 @@ mod tests {
             },
             &|_| Err(std::io::ErrorKind::NotFound.into()),
             &crate::kind_keys(),
+            &crate::provider_keys(),
         )
         .expect("a path with control bytes");
         let stdout = run(&bilbo(), key("paths.root"), &hostile)
             .expect("a value")
             .stdout(&View::PLAIN);
         assert_eq!(stdout, "/x/\\u{1b}]0;t\\u{7}\\nbilbo: forged\n");
+    }
+
+    #[test]
+    fn set_is_a_form_of_config_with_two_values() {
+        let parse = |words: &[&str]| {
+            let mut argv = vec!["bilbo", "config"];
+            argv.extend_from_slice(words);
+            bilbo().try_get_matches_from(argv).is_ok()
+        };
+        assert!(parse(&["set", "derive.enabled", "true"]));
+        assert!(!parse(&["set", "derive.enabled"]));
+        assert!(!parse(&["set"]));
+        assert!(parse(&["derive.enabled"]));
     }
 }

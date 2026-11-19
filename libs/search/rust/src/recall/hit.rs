@@ -14,6 +14,8 @@ pub struct Hit {
     pub preface: Option<String>,
     pub text: String,
     pub cut: bool,
+    pub apart: bool,
+    pub headed: bool,
     pub shared_short: bool,
 }
 
@@ -89,6 +91,8 @@ impl<'a> Readback<'a> {
             preface: held.preface.clone(),
             text: chunk.text,
             cut: false,
+            apart: false,
+            headed: chunk.headed,
             shared_short: false,
             found,
         })

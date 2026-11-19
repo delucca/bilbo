@@ -1,0 +1,1 @@
+{"id":"resp_fixture_4","object":"response","status":"incomplete","model":"gpt-test-1","output":[],"usage":{"input_tokens":70,"output_tokens":3,"total_tokens":73},"error":null,"incomplete_details":{"reason":"content_filter"}}

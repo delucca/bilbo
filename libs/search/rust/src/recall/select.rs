@@ -103,7 +103,14 @@ impl Selection {
     pub(super) fn keeps(&mut self, hit: &Hit) -> bool {
         let mut runs = HashSet::new();
         if self.limits.copy_share > 0.0 {
-            runs = runs_of(&hit.text, self.limits.copy_words);
+            let body = if hit.headed {
+                hit.text
+                    .split_once('\n')
+                    .map_or("", |(_, paragraph)| paragraph)
+            } else {
+                &hit.text
+            };
+            runs = runs_of(body, self.limits.copy_words);
             if !runs.is_empty() {
                 let shared = runs.iter().filter(|run| self.runs.contains(*run)).count();
                 if shared as f64 / runs.len() as f64 >= self.limits.copy_share {
@@ -163,6 +170,8 @@ mod tests {
             preface: None,
             text: text.to_owned(),
             cut: false,
+            apart: false,
+            headed: false,
             shared_short: false,
         }
     }
@@ -190,6 +199,49 @@ mod tests {
         });
         assert!(keep(&mut strict, &plain(1, 1, TEN)));
         assert!(keep(&mut strict, &plain(2, 2, "a b c d e f g x y z")));
+    }
+
+    #[test]
+    fn a_hit_that_opens_with_its_head_is_compared_by_the_text_after_it() {
+        let apart = |entry: u8, text: &str| Hit {
+            apart: true,
+            headed: true,
+            ..plain(entry, u64::from(entry), text)
+        };
+        let mut selection = Selection::new(LIMITS);
+        let first = "alpha beta gamma delta epsilon zeta";
+        let second = "eta theta iota kappa lambda mu";
+        assert!(keep(
+            &mut selection,
+            &apart(1, &format!("src one two three\n{first}"))
+        ));
+        assert!(keep(
+            &mut selection,
+            &apart(2, &format!("src one two three\n{second}"))
+        ));
+        assert_eq!(selection.skipped().copies, 0);
+        assert!(!keep(
+            &mut selection,
+            &apart(3, &format!("other source line here\n{first}"))
+        ));
+        assert_eq!(selection.skipped().copies, 1);
+        assert!(keep(&mut selection, &apart(4, "one line alone")));
+        assert!(keep(&mut selection, &plain(5, 5, "one line alone")));
+        let mut again = Selection::new(LIMITS);
+        assert!(keep(
+            &mut again,
+            &plain(1, 1, "src one two three alpha beta")
+        ));
+        assert!(keep(&mut again, &apart(2, "src one two three alpha beta")));
+        assert_eq!(again.skipped().copies, 0);
+        let line = "alpha beta gamma delta epsilon zeta eta";
+        let unheaded = Hit {
+            apart: true,
+            ..plain(6, 6, line)
+        };
+        assert!(!keep(&mut selection, &unheaded));
+        assert_eq!(selection.skipped().copies, 2);
+        assert!(keep(&mut selection, &apart(7, line)));
     }
 
     #[test]

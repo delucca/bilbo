@@ -1,0 +1,11 @@
+alias(
+    name = "rust",
+    actual = "//libs/derive/rust",
+    visibility = ["//apps/cli:__pkg__"],
+)
+
+filegroup(
+    name = "instructions",
+    srcs = glob(["instructions/*.txt"]),
+    visibility = ["//libs/derive/rust:__pkg__"],
+)

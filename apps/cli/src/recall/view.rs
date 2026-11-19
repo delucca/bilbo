@@ -16,6 +16,7 @@ fn content(hit: &Hit) -> String {
 struct Header {
     reference: String,
     lines: String,
+    kind: Option<String>,
     part: Option<String>,
     cut: bool,
 }
@@ -34,6 +35,7 @@ fn header(hit: &Hit, content: &str) -> Header {
     Header {
         reference: format!("{entry}{locator}"),
         lines: format!("{lines} {}", if lines == 1 { "line" } else { "lines" }),
+        kind: hit.apart.then(|| hit.found.kind.clone()),
         part: hit
             .found
             .extent
@@ -51,6 +53,9 @@ fn header_line(header: &Header, view: &View) -> String {
         paint(view, Style::Name, &header.reference),
         note(&header.lines),
     );
+    if let Some(kind) = &header.kind {
+        line = format!("{line}\t{}", note(kind));
+    }
     if let Some(part) = &header.part {
         line = format!("{line}\t{}", note(part));
     }
@@ -66,11 +71,16 @@ pub fn hit(hit: &Hit) -> String {
 }
 
 pub fn plain(output: &Output) -> String {
-    output.hits.iter().map(hit).collect()
+    output.hits.iter().chain(&output.apart).map(hit).collect()
 }
 
 pub fn human(output: &Output, view: &View) -> String {
-    output.hits.iter().map(|hit| shown(hit, view)).collect()
+    output
+        .hits
+        .iter()
+        .chain(&output.apart)
+        .map(|hit| shown(hit, view))
+        .collect()
 }
 
 fn shown(hit: &Hit, view: &View) -> String {
@@ -120,6 +130,8 @@ mod tests {
             preface: preface.map(str::to_owned),
             text: text.to_owned(),
             cut,
+            apart: false,
+            headed: false,
             shared_short: false,
         }
     }
@@ -127,6 +139,7 @@ mod tests {
     fn output(hits: Vec<Hit>) -> Output {
         Output {
             hits,
+            apart: Vec::new(),
             searched: 3,
             stand: Stand::Current,
             left_out: 0,
@@ -216,6 +229,49 @@ mod tests {
             hit(&made(1, 1, Some((1, 3)), None, "a", true)),
             format!("=== {SHORT}#r1\t1 line\tpart 2/3\tcut\na\n")
         );
+    }
+
+    #[test]
+    fn a_hit_apart_carries_its_kind_after_the_line_count() {
+        let apart = |part, cut| {
+            let mut one = made(4, 1, part, None, "a\nb", cut);
+            one.found.kind = "note".to_owned();
+            one.apart = true;
+            one
+        };
+        assert_eq!(
+            hit(&apart(None, false)),
+            format!("=== {SHORT}#r4\t2 lines\tnote\na\nb\n")
+        );
+        assert_eq!(
+            hit(&apart(Some((1, 3)), true)),
+            format!("=== {SHORT}#r4\t2 lines\tnote\tpart 2/3\tcut\na\nb\n")
+        );
+        let mut plain_hit = apart(None, false);
+        plain_hit.apart = false;
+        assert_eq!(hit(&plain_hit), format!("=== {SHORT}#r4\t2 lines\na\nb\n"));
+        let painted = human(
+            &Output {
+                apart: vec![apart(Some((1, 3)), true)],
+                ..output(Vec::new())
+            },
+            &View::HUMAN,
+        );
+        assert_eq!(
+            painted,
+            format!(
+                "\u{1b}[2m===\u{1b}[22m \u{1b}[1m{SHORT}#r4\u{1b}[22m\t\u{1b}[2m2 lines\u{1b}[22m\t\
+                 \u{1b}[2mnote\u{1b}[22m\t\u{1b}[2mpart 2/3\u{1b}[22m\t\u{1b}[2mcut\u{1b}[22m\na\nb\n"
+            )
+        );
+        let unpainted = human(
+            &Output {
+                apart: vec![apart(None, false)],
+                ..output(Vec::new())
+            },
+            &unpainted(),
+        );
+        assert_eq!(unpainted, hit(&apart(None, false)));
     }
 
     #[test]

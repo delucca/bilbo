@@ -42,6 +42,7 @@ pub struct Record<'a> {
     pub scope: &'a [String],
     pub named: Option<u64>,
     pub hits: &'a [Hit],
+    pub apart: &'a [Hit],
     pub expanded: &'a [Expanded],
     pub query: &'a str,
 }
@@ -99,7 +100,7 @@ pub fn line(record: &Record<'_>) -> String {
         record
             .named
             .map_or_else(|| "-".to_owned(), |named| named.to_string()),
-        joined(record.hits.iter().map(shown)),
+        joined(record.hits.iter().chain(record.apart).map(shown)),
         joined(
             record
                 .expanded
@@ -142,6 +143,8 @@ mod tests {
             preface: None,
             text: String::new(),
             cut,
+            apart: false,
+            headed: false,
             shared_short: false,
         }
     }
@@ -160,6 +163,7 @@ mod tests {
             scope: &[],
             named: None,
             hits,
+            apart: &[],
             expanded: &[],
             query,
         }
@@ -231,6 +235,28 @@ mod tests {
             format!(
                 "q3\t1700000000\thits\t7\t-\t-\t-\t{FIRST}#r3\tcarot>carrot,setin>set+setton\tcarot setin\n"
             )
+        );
+    }
+
+    #[test]
+    fn the_hits_field_lists_the_main_hits_then_the_hits_apart() {
+        let main = [hit(FIRST, 3, 1, false)];
+        let apart = [hit(SECOND, 2, 5, true)];
+        let mut both = record(Ended::Hits, &[], &main, "x");
+        both.apart = &apart;
+        assert_eq!(
+            line(&both),
+            format!("q3\t1700000000\thits\t7\t-\t-\t-\t{FIRST}#r3,{SECOND}#r2-6!\t-\tx\n")
+        );
+        let mut alone = record(Ended::Hits, &[], &[], "x");
+        alone.apart = &apart;
+        assert_eq!(
+            line(&alone),
+            format!("q3\t1700000000\thits\t7\t-\t-\t-\t{SECOND}#r2-6!\t-\tx\n")
+        );
+        assert_eq!(
+            line(&record(Ended::Hits, &[], &main, "x")),
+            format!("q3\t1700000000\thits\t7\t-\t-\t-\t{FIRST}#r3\t-\tx\n")
         );
     }
 

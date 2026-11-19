@@ -1,0 +1,1 @@
+{"id":"resp_fixture_6","object":"response","status":"failed","model":"gpt-test-1","output":[],"usage":null,"error":{"code":"bio_policy","message":"CANARY-MESSAGE blocked by a policy."},"incomplete_details":null}

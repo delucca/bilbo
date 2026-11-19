@@ -12,3 +12,4 @@ mod rebuild;
 mod recovery;
 mod scratch;
 mod seal;
+mod sealed;

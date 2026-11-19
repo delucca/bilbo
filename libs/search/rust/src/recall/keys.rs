@@ -10,13 +10,31 @@ pub const BUDGET: Key<usize> = Key {
         variable: Some("BILBO_RECALL_BUDGET"),
         default: Default::Toml("4000"),
         allowed: "a whole number from 256 to 1000000",
-        doc: "The most tokens bilbo recall prints, as the index's tokenizer counts them, each hit's header included.",
+        doc: "The most tokens of chunks bilbo recall prints, as the index's tokenizer counts them, each hit's header included.",
     },
     parse: |value| {
         value
             .integer()
             .and_then(|tokens| usize::try_from(tokens).ok())
             .filter(|tokens| (256..=1_000_000).contains(tokens))
+            .ok_or_else(|| value.refuse())
+    },
+    show: ToString::to_string,
+};
+
+pub const NOTES_BUDGET: Key<usize> = Key {
+    about: About {
+        name: "recall.notes_budget",
+        variable: Some("BILBO_RECALL_NOTES_BUDGET"),
+        default: Default::Toml("2500"),
+        allowed: "0, or a whole number from 256 to 1000000",
+        doc: "The most tokens of notes bilbo recall prints after the chunks, as the index's tokenizer counts them, each note's header included.",
+    },
+    parse: |value| {
+        value
+            .integer()
+            .and_then(|tokens| usize::try_from(tokens).ok())
+            .filter(|tokens| *tokens == 0 || (256..=1_000_000).contains(tokens))
             .ok_or_else(|| value.refuse())
     },
     show: ToString::to_string,
@@ -308,8 +326,9 @@ pub const PAIR_WEIGHT: Key<f64> = Key {
     show: ToString::to_string,
 };
 
-pub const ABOUT: [&About; 16] = [
+pub const ABOUT: [&About; 17] = [
     &BUDGET.about,
+    &NOTES_BUDGET.about,
     &CANDIDATES.about,
     &CAP.about,
     &RECORD_CAP.about,
@@ -330,6 +349,7 @@ pub const ABOUT: [&About; 16] = [
 #[derive(Debug, Clone, PartialEq)]
 pub struct Section {
     pub budget: Resolved<usize>,
+    pub notes_budget: Resolved<usize>,
     pub candidates: Resolved<usize>,
     pub cap: Resolved<usize>,
     pub record_cap: Resolved<usize>,
@@ -350,6 +370,7 @@ pub struct Section {
 pub fn section(source: &Source<'_>) -> Result<Section, Error> {
     Ok(Section {
         budget: BUDGET.resolve(source)?,
+        notes_budget: NOTES_BUDGET.resolve(source)?,
         candidates: CANDIDATES.resolve(source)?,
         cap: CAP.resolve(source)?,
         record_cap: RECORD_CAP.resolve(source)?,
@@ -378,9 +399,10 @@ pub fn defaults() -> Section {
 }
 
 impl Section {
-    pub fn shown(&self) -> [Shown; 16] {
+    pub fn shown(&self) -> [Shown; 17] {
         [
             BUDGET.shown(&self.budget),
+            NOTES_BUDGET.shown(&self.notes_budget),
             CANDIDATES.shown(&self.candidates),
             CAP.shown(&self.cap),
             RECORD_CAP.shown(&self.record_cap),
@@ -438,6 +460,7 @@ mod tests {
     fn each_default_is_its_documented_value() {
         let section = defaults();
         assert_eq!(section.budget.value, 4000);
+        assert_eq!(section.notes_budget.value, 2500);
         assert_eq!(section.candidates.value, 400);
         assert_eq!(section.cap.value, 0);
         assert_eq!(section.record_cap.value, 2);
@@ -460,6 +483,7 @@ mod tests {
             shown(&section),
             [
                 "recall.budget = 4000 (default)",
+                "recall.notes_budget = 2500 (default)",
                 "recall.candidates = 400 (default)",
                 "recall.cap = 0 (default)",
                 "recall.record_cap = 2 (default)",
@@ -482,6 +506,7 @@ mod tests {
             variables,
             [
                 Some("BILBO_RECALL_BUDGET"),
+                Some("BILBO_RECALL_NOTES_BUDGET"),
                 Some("BILBO_RECALL_CANDIDATES"),
                 Some("BILBO_RECALL_CAP"),
                 Some("BILBO_RECALL_RECORD_CAP"),
@@ -498,6 +523,35 @@ mod tests {
                 Some("BILBO_RECALL_TYPO_TWO_EDITS"),
                 Some("BILBO_RECALL_PAIR_WEIGHT"),
             ]
+        );
+    }
+
+    #[test]
+    fn the_notes_budget_is_zero_or_a_whole_number_from_256_to_1000000() {
+        for number in [0, 256, 2500, 2501, 1_000_000] {
+            let from_file = resolve(&[], &format!("recall.notes_budget = {number}"));
+            assert_eq!(from_file.map(|s| s.notes_budget.value), Ok(number));
+            let from_variable = resolve(&[("BILBO_RECALL_NOTES_BUDGET", &number.to_string())], "");
+            assert_eq!(from_variable.map(|s| s.notes_budget.value), Ok(number));
+        }
+        let allowed = "recall.notes_budget must be 0, or a whole number from 256 to 1000000";
+        for (text, got) in [
+            ("1", "1"),
+            ("255", "255"),
+            ("1000001", "1000001"),
+            ("-1", "-1"),
+            ("\"2500\"", "\"2500\""),
+            ("2.5", "2.5"),
+        ] {
+            assert_eq!(
+                resolve(&[], &format!("recall.notes_budget = {text}")).err(),
+                Some(format!("/c/config.toml:1: {allowed}, got {got}")),
+                "{text}"
+            );
+        }
+        assert_eq!(
+            resolve(&[("BILBO_RECALL_NOTES_BUDGET", "255")], "").err(),
+            Some("BILBO_RECALL_NOTES_BUDGET must be 0, or a whole number from 256 to 1000000, got \"255\"".to_owned())
         );
     }
 
@@ -911,7 +965,7 @@ mod tests {
 
     #[test]
     fn the_keys_show_as_toml_that_reads_back() {
-        let text = "[recall]\nbudget = 777\ncandidates = 9\ncap = 2\nrecord_cap = 3\ncopy_share = 0.25\ncopy_words = 7\nquestion_words = [\"why\", \"who\"]\nlanguages = []\nbm25_k1 = 1.5\nbm25_b = 0.4\nread_batch = 99\ntypo_terms = 5\ntypo_letters = 6\ntypo_max_letters = 12\ntypo_two_edits = 10\npair_weight = 0.25\n";
+        let text = "[recall]\nbudget = 777\nnotes_budget = 888\ncandidates = 9\ncap = 2\nrecord_cap = 3\ncopy_share = 0.25\ncopy_words = 7\nquestion_words = [\"why\", \"who\"]\nlanguages = []\nbm25_k1 = 1.5\nbm25_b = 0.4\nread_batch = 99\ntypo_terms = 5\ntypo_letters = 6\ntypo_max_letters = 12\ntypo_two_edits = 10\npair_weight = 0.25\n";
         for section in [defaults(), resolve(&[], text).expect("valid")] {
             let mut written = String::from("[recall]\n");
             for shown in section.shown() {
@@ -920,6 +974,7 @@ mod tests {
             }
             let again = resolve(&[], &written).expect("reads back");
             assert_eq!(again.budget.value, section.budget.value);
+            assert_eq!(again.notes_budget.value, section.notes_budget.value);
             assert_eq!(again.candidates.value, section.candidates.value);
             assert_eq!(again.cap.value, section.cap.value);
             assert_eq!(again.record_cap.value, section.record_cap.value);

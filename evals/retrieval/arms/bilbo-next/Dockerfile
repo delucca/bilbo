@@ -10,5 +10,5 @@ COPY bin/bilbo /usr/local/bin/bilbo
 RUN bilbo --version
 
 ENV PATH=/app/.venv/bin:$PATH HOME=/tmp PYTHONUNBUFFERED=1
-COPY build.py ./
+COPY build.py cache.py ./
 ENTRYPOINT ["python", "/app/build.py"]

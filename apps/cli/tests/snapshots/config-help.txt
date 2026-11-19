@@ -2,6 +2,7 @@ bilbo config: show each setting, its value and where the value came from.
 
 Usage:
   bilbo config [<key>]
+  bilbo config set <key> <value>
 The config file is $BILBO_CONFIG, else $XDG_CONFIG_HOME/bilbo/config.toml,
 else ~/.config/bilbo/config.toml.
 
@@ -9,13 +10,16 @@ Output:
   <key> = <value> (<origin>)
 One line per key, the value as TOML; the origin is default, <file>:<line>, a
 variable or a flag. With <key>, its value alone, a string without its quotes.
+  set <key> in <file>
+After set: the key is written in the config file; every other byte stays.
 
 Exit:
   0  success
-  2  usage or config error: an unknown key, or a file or variable bilbo refuses
+  2  usage or config error: a key, value or file bilbo refuses
 
 Examples:
   bilbo config
   bilbo config paths.root
+  bilbo config set derive.enabled true
 
 Docs: https://github.com/delucca/bilbo/wiki/Configuration

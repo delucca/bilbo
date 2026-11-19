@@ -64,6 +64,10 @@ pub enum Error {
         at: At,
         reason: String,
     },
+    Refused {
+        at: At,
+        reason: String,
+    },
     Unset(&'static str),
     Empty(&'static str),
     Missing {
@@ -112,6 +116,7 @@ impl fmt::Display for Error {
                 value.to_string_lossy()
             ),
             Self::NeedsHome { at, reason } => write!(f, "{at} needs HOME, which {reason}"),
+            Self::Refused { at, reason } => write!(f, "{at} {reason}"),
             Self::Unset(name) => write!(f, "{name} is not set"),
             Self::Empty(name) => write!(f, "{name} is empty"),
             Self::Missing { variable, path } => write!(
@@ -219,6 +224,20 @@ mod tests {
                     value: "/x/../s".into(),
                 },
                 "BILBO_HOME has a . or .. component: /x/../s",
+            ),
+            (
+                Error::Refused {
+                    at: line("store.seal_at"),
+                    reason: "must be written another way".to_owned(),
+                },
+                "/c/config.toml:7: store.seal_at must be written another way",
+            ),
+            (
+                Error::Refused {
+                    at: At::Variable("BILBO_STORE_SEAL_AT"),
+                    reason: "must be written another way".to_owned(),
+                },
+                "BILBO_STORE_SEAL_AT must be written another way",
             ),
             (Error::Unset("HOME"), "HOME is not set"),
             (Error::Empty("HOME"), "HOME is empty"),

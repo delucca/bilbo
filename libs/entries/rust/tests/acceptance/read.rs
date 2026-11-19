@@ -525,8 +525,8 @@ fn the_outline_lists_the_capture_label_then_the_id_label() {
 #[test]
 fn an_entry_with_no_stored_label_lists_none() {
     let shelf = shelf();
-    let note = run(&shelf, &id(2).to_string()).expect("an outline");
-    let (about, listed) = lines(&note);
+    let document = run(&shelf, &id(2).to_string()).expect("an outline");
+    let (about, listed) = lines(&document);
     assert_eq!(
         about
             .as_ref()

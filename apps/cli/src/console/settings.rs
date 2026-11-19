@@ -92,8 +92,14 @@ const PATHS: [&About; 3] = [&ROOT.about, &STATE.about, &CACHE.about];
 
 pub type KindKey = Key<usize>;
 
+#[derive(Debug)]
+pub struct Group {
+    pub about: &'static [&'static About],
+    pub resolve: fn(&Source<'_>) -> Result<Vec<Shown>, Error>,
+}
+
 /// Every key, in the order `bilbo config` lists them.
-pub fn keys(kind: &[&'static KindKey]) -> Vec<&'static About> {
+pub fn keys(kind: &[&'static KindKey], groups: &[&'static Group]) -> Vec<&'static About> {
     PATHS
         .into_iter()
         .chain(keys::ABOUT)
@@ -105,7 +111,9 @@ pub fn keys(kind: &[&'static KindKey]) -> Vec<&'static About> {
         ])
         .chain(bilbo_search::keys::ABOUT)
         .chain(bilbo_search::recall::keys::ABOUT)
+        .chain(bilbo_derive::keys::ABOUT)
         .chain(kind.iter().map(|key| &key.about))
+        .chain(groups.iter().flat_map(|group| group.about.iter().copied()))
         .collect()
 }
 
@@ -164,7 +172,11 @@ pub struct Settings {
     pub read_matches_listed: Resolved<usize>,
     pub search: bilbo_search::keys::Section,
     pub recall: bilbo_search::recall::keys::Section,
+    pub derive: bilbo_derive::keys::Section,
     pub kind: Vec<(&'static KindKey, Resolved<usize>)>,
+    pub group: Vec<&'static Group>,
+    shown: Vec<Shown>,
+    file: File,
 }
 
 impl Settings {
@@ -183,6 +195,13 @@ impl Settings {
             .map(|(_, resolved)| resolved.value)
     }
 
+    pub fn source<'a>(&'a self, var: &'a dyn Fn(&str) -> Option<OsString>) -> Source<'a> {
+        Source {
+            var,
+            file: &self.file,
+        }
+    }
+
     /// Every key with its value and origin, in the order of `keys`.
     pub fn shown(&self) -> Vec<Shown> {
         let mut shown = vec![
@@ -197,9 +216,53 @@ impl Settings {
         shown.push(read::MATCHES_LISTED.shown(&self.read_matches_listed));
         shown.extend(self.search.shown());
         shown.extend(self.recall.shown());
+        shown.extend(self.derive.shown());
         shown.extend(self.kind.iter().map(|(key, resolved)| key.shown(resolved)));
+        shown.extend(self.shown.iter().cloned());
         shown
     }
+}
+
+pub fn config_path(var: &dyn Fn(&str) -> Option<OsString>) -> Result<PathBuf, Error> {
+    let none = File::default();
+    Ok(CONFIG.resolve(&Source { var, file: &none })?.value)
+}
+
+pub fn allowed_value(
+    name: &str,
+    text: &str,
+    home: Option<&OsString>,
+    kind: &[&'static KindKey],
+    groups: &[&'static Group],
+) -> Result<(), String> {
+    const PATH: &str = "/allowed.toml";
+    let var = |asked: &str| match asked {
+        "HOME" => home.cloned(),
+        "BILBO_CONFIG" => Some(OsString::from(PATH)),
+        _ => None,
+    };
+    let held = format!("{name} = {text}\n").into_bytes();
+    load(
+        &var,
+        &|path| {
+            if path == Path::new(PATH) {
+                Ok(held.clone())
+            } else {
+                Err(io::ErrorKind::NotFound.into())
+            }
+        },
+        kind,
+        groups,
+    )
+    .map(|_| ())
+    .map_err(|error| {
+        let said = error.to_string();
+        said.strip_prefix(PATH)
+            .and_then(|rest| rest.strip_prefix(':'))
+            .map(|rest| rest.trim_start_matches(|c: char| c.is_ascii_digit()))
+            .and_then(|rest| rest.strip_prefix(": "))
+            .map_or(said.clone(), str::to_owned)
+    })
 }
 
 /// The config file's path from the environment, then the file, then every key.
@@ -207,6 +270,7 @@ pub fn load(
     var: &dyn Fn(&str) -> Option<OsString>,
     read: &dyn Fn(&Path) -> io::Result<Vec<u8>>,
     kind: &[&'static KindKey],
+    groups: &[&'static Group],
 ) -> Result<Settings, Error> {
     let none = File::default();
     let config = CONFIG.resolve(&Source { var, file: &none })?;
@@ -215,7 +279,7 @@ pub fn load(
         _ => Named::ByDefault,
     };
     let file = File::load(&config.value, named, read(&config.value))?;
-    let names: Vec<&'static str> = keys(kind).iter().map(|about| about.name).collect();
+    let names: Vec<&'static str> = keys(kind, groups).iter().map(|about| about.name).collect();
     file.check(&names)?;
     let source = Source { var, file: &file };
     Ok(Settings {
@@ -229,11 +293,21 @@ pub fn load(
         read_matches_listed: read::MATCHES_LISTED.resolve(&source)?,
         search: bilbo_search::keys::section(&source)?,
         recall: bilbo_search::recall::keys::section(&source)?,
+        derive: bilbo_derive::keys::section(&source)?,
         kind: kind
             .iter()
             .map(|key| Ok((*key, key.resolve(&source)?)))
             .collect::<Result<_, Error>>()?,
+        group: groups.to_vec(),
+        shown: groups
+            .iter()
+            .map(|group| (group.resolve)(&source))
+            .collect::<Result<Vec<_>, Error>>()?
+            .into_iter()
+            .flatten()
+            .collect(),
         config,
+        file,
     })
 }
 
@@ -244,12 +318,85 @@ mod tests {
     use std::io;
     use std::path::{Path, PathBuf};
 
-    use bilbo_settings::key::{Default, Origin};
+    use std::os::unix::ffi::OsStringExt;
+
+    use bilbo_settings::error::{At, Error};
+    use bilbo_settings::key::{About, Default, Key, Origin, Shown, Source};
 
     use bilbo_entries::follows::Follow;
     use bilbo_search::analyze::Language;
 
-    use super::{CACHE, CONFIG, FOLLOW, ROOT, STATE, keys, load, show_follows};
+    use super::{CACHE, CONFIG, FOLLOW, Group, ROOT, STATE, keys, load, show_follows};
+
+    const WORD: Key<String> = Key {
+        about: About {
+            name: "test.word",
+            variable: Some("BILBO_TEST_WORD"),
+            default: Default::Toml(r#""""#),
+            allowed: "a word",
+            doc: "a text key",
+        },
+        parse: |value| {
+            value
+                .text()
+                .map(str::to_owned)
+                .ok_or_else(|| value.refuse())
+        },
+        show: |text| bilbo_settings::key::quote(text),
+    };
+
+    const TABLE: Key<Vec<(String, String)>> = Key {
+        about: About {
+            name: "test.table",
+            variable: None,
+            default: Default::Toml("{}"),
+            allowed: "a table of words",
+            doc: "a table key",
+        },
+        parse: |value| {
+            let fields = value.fields().ok_or_else(|| value.refuse())?;
+            fields
+                .into_iter()
+                .map(|(name, field)| {
+                    let text = field.text().ok_or_else(|| field.refuse())?;
+                    Ok((name.to_owned(), text.to_owned()))
+                })
+                .collect()
+        },
+        show: |pairs| format!("{pairs:?}"),
+    };
+
+    static GROUP: Group = Group {
+        about: &[&WORD.about, &TABLE.about],
+        resolve: |source| {
+            Ok(vec![
+                WORD.shown(&WORD.resolve(source)?),
+                TABLE.shown(&TABLE.resolve(source)?),
+            ])
+        },
+    };
+
+    fn grouped(
+        env: &[(&str, &str)],
+        text: &str,
+        groups: &[&'static Group],
+    ) -> Result<super::Settings, Error> {
+        let env: HashMap<String, OsString> = env
+            .iter()
+            .map(|(name, value)| ((*name).to_owned(), OsString::from(value)))
+            .collect();
+        let read = |_: &Path| Ok(text.as_bytes().to_vec());
+        load(
+            &|name| {
+                env.get(name)
+                    .cloned()
+                    .or_else(|| (name == "HOME").then(|| OsString::from("/h")))
+            },
+            &read,
+            &kind(),
+            groups,
+        )
+    }
 
     fn kind() -> Vec<&'static super::KindKey> {
         crate::kind_keys()
@@ -272,13 +419,19 @@ mod tests {
                 .cloned()
                 .ok_or_else(|| io::Error::from(io::ErrorKind::NotFound))
         };
-        load(&|name| env.get(name).cloned(), &read, &kind()).map_err(|error| error.to_string())
+        load(
+            &|name| env.get(name).cloned(),
+            &read,
+            &kind(),
+            &crate::provider_keys(),
+        )
+        .map_err(|error| error.to_string())
     }
 
     #[test]
-    fn the_registry_is_the_three_folders_the_six_store_keys_the_follows_then_the_read_search_recall_and_markdown_keys()
+    fn the_registry_is_the_three_folders_the_six_store_keys_the_follows_then_the_read_search_recall_derive_and_markdown_keys()
      {
-        let names: Vec<&str> = keys(&kind()).iter().map(|about| about.name).collect();
+        let names: Vec<&str> = keys(&kind(), &[]).iter().map(|about| about.name).collect();
         assert_eq!(
             names,
             [
@@ -304,6 +457,7 @@ mod tests {
                 "search.label_batch",
                 "search.list_limit",
                 "recall.budget",
+                "recall.notes_budget",
                 "recall.candidates",
                 "recall.cap",
                 "recall.record_cap",
@@ -319,6 +473,28 @@ mod tests {
                 "recall.typo_max_letters",
                 "recall.typo_two_edits",
                 "recall.pair_weight",
+                "derive.enabled",
+                "derive.provider",
+                "derive.in",
+                "derive.not_in",
+                "derive.instructions",
+                "derive.quiet",
+                "derive.window",
+                "derive.passage",
+                "derive.passage_head",
+                "derive.earlier",
+                "derive.names",
+                "derive.answer_tokens",
+                "derive.response",
+                "derive.calls",
+                "derive.timeout",
+                "derive.poll",
+                "derive.retries",
+                "derive.retry_wait",
+                "derive.retry_factor",
+                "derive.retry_limit",
+                "derive.tries",
+                "derive.failures",
                 "markdown.heading_width",
                 "session.unpack_floor",
                 "session.unpack_ratio",
@@ -384,7 +560,7 @@ mod tests {
             .err(),
             Some(
                 "/c.toml:3: unknown key store.sealat; the keys are paths.root, paths.state, \
-                 paths.cache, store.seal_at, store.seal_after, store.compression, store.tear_budget, store.wait, store.poll, follow, read.budget, read.outline_width, read.matches_listed, search.chunk_tokens, search.chunk_overlap, search.workers, search.index_memory, search.merge_deleted_percent, search.entry_tries, search.label_batch, search.list_limit, recall.budget, recall.candidates, recall.cap, recall.record_cap, recall.copy_share, recall.copy_words, recall.question_words, recall.languages, recall.bm25_k1, recall.bm25_b, recall.read_batch, recall.typo_terms, recall.typo_letters, recall.typo_max_letters, recall.typo_two_edits, recall.pair_weight, markdown.heading_width, session.unpack_floor, session.unpack_ratio, session.unpack_window, session.wide_fields"
+                 paths.cache, store.seal_at, store.seal_after, store.compression, store.tear_budget, store.wait, store.poll, follow, read.budget, read.outline_width, read.matches_listed, search.chunk_tokens, search.chunk_overlap, search.workers, search.index_memory, search.merge_deleted_percent, search.entry_tries, search.label_batch, search.list_limit, recall.budget, recall.notes_budget, recall.candidates, recall.cap, recall.record_cap, recall.copy_share, recall.copy_words, recall.question_words, recall.languages, recall.bm25_k1, recall.bm25_b, recall.read_batch, recall.typo_terms, recall.typo_letters, recall.typo_max_letters, recall.typo_two_edits, recall.pair_weight, derive.enabled, derive.provider, derive.in, derive.not_in, derive.instructions, derive.quiet, derive.window, derive.passage, derive.passage_head, derive.earlier, derive.names, derive.answer_tokens, derive.response, derive.calls, derive.timeout, derive.poll, derive.retries, derive.retry_wait, derive.retry_factor, derive.retry_limit, derive.tries, derive.failures, markdown.heading_width, session.unpack_floor, session.unpack_ratio, session.unpack_window, session.wide_fields, derive.anthropic.model, derive.anthropic.endpoint, derive.anthropic.version, derive.anthropic.key_env, derive.anthropic.key_command, derive.anthropic.headers, derive.anthropic.extra, derive.openai.model, derive.openai.endpoint, derive.openai.key_env, derive.openai.key_command, derive.openai.headers, derive.openai.extra, derive.claude.program, derive.claude.model, derive.claude.effort, derive.claude.arguments, derive.claude.inherit, derive.claude.environment, derive.claude.project_files"
                     .to_owned()
             )
         );
@@ -452,7 +628,7 @@ mod tests {
 
     #[test]
     fn the_reference_page_lists_every_key_with_its_variable_and_default() {
-        let expected: Vec<Vec<String>> = keys(&kind())
+        let expected: Vec<Vec<String>> = keys(&kind(), &crate::provider_keys())
             .iter()
             .map(|about| {
                 vec![
@@ -477,8 +653,8 @@ mod tests {
             .into_iter()
             .map(|row| row[3].replace('`', ""))
             .collect();
-        assert_eq!(meanings.len(), keys(&kind()).len());
-        for (about, meaning) in keys(&kind()).iter().zip(&meanings) {
+        assert_eq!(meanings.len(), keys(&kind(), &crate::provider_keys()).len());
+        for (about, meaning) in keys(&kind(), &crate::provider_keys()).iter().zip(&meanings) {
             assert!(
                 meaning.starts_with(about.doc),
                 "{}: the Meaning cell must start with {:?}, got {meaning:?}",
@@ -553,7 +729,9 @@ mod tests {
     }
 
     fn expected_names() -> BTreeSet<String> {
-        let variables = keys(&kind()).into_iter().filter_map(|about| about.variable);
+        let variables = keys(&kind(), &crate::provider_keys())
+            .into_iter()
+            .filter_map(|about| about.variable);
         let folders = [&ROOT, &STATE, &CACHE, &CONFIG].map(|key| match key.about.default {
             Default::Folder(folder) => folder.xdg,
             Default::Toml(_) => unreachable!("a folder key"),
@@ -572,6 +750,35 @@ mod tests {
             expected.iter().map(String::as_str).collect::<Vec<_>>(),
             [
                 "BILBO_CONFIG",
+                "BILBO_DERIVE_ANSWER_TOKENS",
+                "BILBO_DERIVE_ANTHROPIC_ENDPOINT",
+                "BILBO_DERIVE_ANTHROPIC_KEY_ENV",
+                "BILBO_DERIVE_ANTHROPIC_MODEL",
+                "BILBO_DERIVE_ANTHROPIC_VERSION",
+                "BILBO_DERIVE_CALLS",
+                "BILBO_DERIVE_CLAUDE_EFFORT",
+                "BILBO_DERIVE_CLAUDE_MODEL",
+                "BILBO_DERIVE_CLAUDE_PROGRAM",
+                "BILBO_DERIVE_EARLIER",
+                "BILBO_DERIVE_ENABLED",
+                "BILBO_DERIVE_FAILURES",
+                "BILBO_DERIVE_NAMES",
+                "BILBO_DERIVE_OPENAI_ENDPOINT",
+                "BILBO_DERIVE_OPENAI_KEY_ENV",
+                "BILBO_DERIVE_OPENAI_MODEL",
+                "BILBO_DERIVE_PASSAGE",
+                "BILBO_DERIVE_PASSAGE_HEAD",
+                "BILBO_DERIVE_POLL",
+                "BILBO_DERIVE_PROVIDER",
+                "BILBO_DERIVE_QUIET",
+                "BILBO_DERIVE_RESPONSE",
+                "BILBO_DERIVE_RETRIES",
+                "BILBO_DERIVE_RETRY_FACTOR",
+                "BILBO_DERIVE_RETRY_LIMIT",
+                "BILBO_DERIVE_RETRY_WAIT",
+                "BILBO_DERIVE_TIMEOUT",
+                "BILBO_DERIVE_TRIES",
+                "BILBO_DERIVE_WINDOW",
                 "BILBO_HOME",
                 "BILBO_MARKDOWN_HEADING_WIDTH",
                 "BILBO_READ_BUDGET",
@@ -584,6 +791,7 @@ mod tests {
                 "BILBO_RECALL_CAP",
                 "BILBO_RECALL_COPY_SHARE",
                 "BILBO_RECALL_COPY_WORDS",
+                "BILBO_RECALL_NOTES_BUDGET",
                 "BILBO_RECALL_PAIR_WEIGHT",
                 "BILBO_RECALL_READ_BATCH",
                 "BILBO_RECALL_RECORD_CAP",
@@ -715,5 +923,226 @@ mod tests {
             "[{ path = \"/h/a\", kind = \"session\" }, { path = \"/h/b \\\"q\\\"\" }]"
         );
         assert_eq!(FOLLOW.about.variable, None);
+    }
+
+    #[test]
+    fn a_group_is_listed_after_the_kinds_keys_in_its_own_order() {
+        let names = |groups: &[&'static Group]| -> Vec<&str> {
+            keys(&kind(), groups)
+                .iter()
+                .map(|about| about.name)
+                .collect()
+        };
+        let without = names(&[]);
+        let mut with = without.clone();
+        with.extend(["test.word", "test.table"]);
+        assert_eq!(names(&[&GROUP]), with);
+    }
+
+    #[test]
+    fn a_groups_keys_are_known_to_the_file_and_shown_with_their_origin() {
+        let text = "[test]\nword = \"a\"\n\n[test.table]\nx = \"1\"\n";
+        let settings = grouped(&[("BILBO_CONFIG", "/c.toml")], text, &[&GROUP]).expect("loads");
+        let config = PathBuf::from("/c.toml");
+        let shown = settings.shown();
+        assert_eq!(
+            shown[shown.len() - 2..],
+            [
+                Shown {
+                    name: "test.word",
+                    value: "\"a\"".to_owned(),
+                    origin: Origin::File {
+                        path: config.clone(),
+                        line: 2
+                    },
+                },
+                Shown {
+                    name: "test.table",
+                    value: "[(\"x\", \"1\")]".to_owned(),
+                    origin: Origin::File {
+                        path: config,
+                        line: 4
+                    },
+                },
+            ]
+        );
+        match grouped(&[("BILBO_CONFIG", "/c.toml")], text, &[]) {
+            Err(Error::Unknown { line, key, .. }) => {
+                assert_eq!((line, key.as_str()), (2, "test.word"));
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_value_a_groups_key_refuses_is_a_config_error_at_load() {
+        let refused = |env: &[(&str, &str)], text: &str| {
+            grouped(env, text, &[&GROUP])
+                .err()
+                .map(|error| error.to_string())
+        };
+        assert_eq!(
+            refused(&[("BILBO_CONFIG", "/c.toml")], "[test]\nword = 5\n"),
+            Some("/c.toml:2: test.word must be a word, got 5".to_owned())
+        );
+        assert_eq!(
+            refused(&[("BILBO_CONFIG", "/c.toml")], "[test.table]\nx = 5\n"),
+            Some("/c.toml:2: test.table.x must be a table of words, got 5".to_owned())
+        );
+        let var = |name: &str| match name {
+            "BILBO_CONFIG" => Some(OsString::from("/c.toml")),
+            "HOME" => Some(OsString::from("/h")),
+            "BILBO_TEST_WORD" => Some(OsString::from_vec(vec![0xFF])),
+            _ => None,
+        };
+        let read = |_: &Path| Ok(b"[test]\nword = \"a\"\n".to_vec());
+        let error = load(&var, &read, &kind(), &[&GROUP]).expect_err("a refusal");
+        match &error {
+            Error::Invalid { at, allowed, got } => {
+                assert_eq!(*at, At::Variable("BILBO_TEST_WORD"));
+                assert_eq!(*allowed, "a word");
+                assert_eq!(got, "\"\u{FFFD}\"");
+            }
+            other => panic!("{other:?}"),
+        }
+        assert_eq!(
+            error.to_string(),
+            "BILBO_TEST_WORD must be a word, got \"\u{FFFD}\""
+        );
+    }
+
+    #[test]
+    fn the_settings_keep_the_file_so_a_group_resolves_again_as_load_did() {
+        let both = |env: &[(&str, &str)], text: &str| -> (Shown, Shown) {
+            let settings = grouped(env, text, &[&GROUP]).expect("loads");
+            let loaded = settings
+                .shown()
+                .into_iter()
+                .find(|shown| shown.name == "test.word")
+                .expect("the row load kept");
+            let env: HashMap<String, OsString> = env
+                .iter()
+                .map(|(name, value)| ((*name).to_owned(), OsString::from(value)))
+                .collect();
+            let var = |name: &str| env.get(name).cloned();
+            let source: Source<'_> = settings.source(&var);
+            let again = WORD.shown(&WORD.resolve(&source).expect("resolves"));
+            (loaded, again)
+        };
+        let config = [("BILBO_CONFIG", "/c.toml")];
+        let word = |value: &str, origin: Origin| Shown {
+            name: "test.word",
+            value: value.to_owned(),
+            origin,
+        };
+        let cases = [
+            (
+                both(&config, "[test]\nword = \"a\"\n"),
+                word(
+                    "\"a\"",
+                    Origin::File {
+                        path: PathBuf::from("/c.toml"),
+                        line: 2,
+                    },
+                ),
+            ),
+            (
+                both(
+                    &[("BILBO_CONFIG", "/c.toml"), ("BILBO_TEST_WORD", "b")],
+                    "[test]\nword = \"a\"\n",
+                ),
+                word("\"b\"", Origin::Variable("BILBO_TEST_WORD")),
+            ),
+            (both(&config, ""), word("\"\"", Origin::Default)),
+        ];
+        for ((loaded, again), expected) in cases {
+            assert_eq!(loaded, again);
+            assert_eq!(loaded, expected);
+        }
+    }
+
+    fn repeated(listed: &[&'static About]) -> Vec<&'static str> {
+        let mut found: Vec<&'static str> = Vec::new();
+        for (at, about) in listed.iter().enumerate() {
+            let again = listed[at + 1..]
+                .iter()
+                .any(|later| later.name == about.name);
+            if again && !found.contains(&about.name) {
+                found.push(about.name);
+            }
+        }
+        found
+    }
+
+    static CORE_AGAIN: Group = Group {
+        about: &[&ROOT.about],
+        resolve: |_| Ok(Vec::new()),
+    };
+
+    const KIND_ABOUT: About = About {
+        name: "markdown.heading_width",
+        variable: None,
+        default: Default::Toml("100"),
+        allowed: "a number",
+        doc: "a kind's key, named again",
+    };
+
+    static KIND_AGAIN: Group = Group {
+        about: &[&KIND_ABOUT],
+        resolve: |_| Ok(Vec::new()),
+    };
+
+    fn resolved_names(group: &'static Group) -> Vec<&'static str> {
+        let none = bilbo_settings::file::File::default();
+        let source = Source {
+            var: &|_| None,
+            file: &none,
+        };
+        (group.resolve)(&source)
+            .expect("a group resolves over no file and no variable")
+            .iter()
+            .map(|shown| shown.name)
+            .collect()
+    }
+
+    fn declared_names(group: &'static Group) -> Vec<&'static str> {
+        group.about.iter().map(|about| about.name).collect()
+    }
+
+    #[test]
+    fn every_group_resolves_the_keys_it_declares_in_their_order() {
+        for group in crate::provider_keys() {
+            assert_eq!(resolved_names(group), declared_names(group));
+        }
+        assert_eq!(resolved_names(&GROUP), declared_names(&GROUP));
+        assert_eq!(declared_names(&GROUP), ["test.word", "test.table"]);
+        assert_eq!(declared_names(&CORE_AGAIN), ["paths.root"]);
+        assert!(resolved_names(&CORE_AGAIN).is_empty());
+    }
+
+    #[test]
+    fn every_key_of_the_registry_has_a_name_of_its_own() {
+        assert!(repeated(&keys(&kind(), &crate::provider_keys())).is_empty());
+        assert_eq!(repeated(&keys(&kind(), &[&CORE_AGAIN])), ["paths.root"]);
+        assert_eq!(
+            repeated(&keys(&kind(), &[&KIND_AGAIN])),
+            ["markdown.heading_width"]
+        );
+        let listed = [&ROOT.about, &STATE.about, &STATE.about, &ROOT.about];
+        assert_eq!(repeated(&listed), ["paths.root", "paths.state"]);
+    }
+
+    #[test]
+    fn a_value_refused_on_a_later_line_names_no_file() {
+        let said = super::allowed_value(
+            "derive.in",
+            "[\n  \"a\",\n  \"b\",\n  \"!!\",\n]",
+            Some(&OsString::from("/h")),
+            &crate::kind_keys(),
+            &crate::provider_keys(),
+        )
+        .expect_err("a refused item");
+        assert!(said.starts_with("derive.in must be "), "{said}");
+        assert!(!said.contains("/allowed.toml"), "{said}");
     }
 }

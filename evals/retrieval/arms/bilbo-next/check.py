@@ -3,7 +3,8 @@ entries.jsonl has one row a session with distinct ids in a store, and every stor
 stderr counts the entries the build's own recall counted (`indexed` in the manifest) and holds no other line than that,
 `passed over` and `typos:`, every header is followed by its lines, every ref of the probe is a short one unless another entry of the store ends alike, and `bilbo read` takes the first; a query of stopwords only exits 1 with `bilbo: nothing matched`; and `recall --in <remembered>/<repo>` for the store's first
 repository exits 0 with `bilbo: --in kept N entries`, N the repository's rows of entries.jsonl. build-store.sh --check runs it in the build
-service."""
+service. A store whose `noted` is over 0 also answers a probe with `--kind note` with the field `note` on every hit, prints
+no note with BILBO_RECALL_NOTES_BUDGET=0, and its `--in kept` counts a repository's note entries too."""
 
 import json
 import re
@@ -15,11 +16,15 @@ from pathlib import Path
 STORE = Path("/work/store")
 CORPUS = Path("/corpus")
 BILBO = "/usr/local/bin/bilbo"
-HEADER = re.compile(r"^=== (([0-9A-HJKMNP-TV-Z]{10}|[0-9A-HJKMNP-TV-Z]{26})#r(\d+)(?:-(\d+))?)\t(\d+) lines?((?:\t[^\t\n]+)*)$")
+HEADER = re.compile(r"^=== (([0-9A-HJKMNP-TV-Z]{10}|[0-9A-HJKMNP-TV-Z]{26})#r(\d+)(?:-(\d+))?)\t(\d+) lines?(?:\t(?!cut(?:\t|$))([a-z]+))?(?:\tpart \d+/\d+)?(?:\tcut)?$")
 SEARCHED = re.compile(r"^bilbo: searched ([\d,]+) entr(?:y|ies)$")
 PASSED_OVER = re.compile(r"^bilbo: passed over: .+$")
 TYPOS = re.compile(r"^bilbo: typos: .+$")
 IN_KEPT = re.compile(r"^bilbo: --in kept ([\d,]+) entr(?:y|ies)( and left out (?:none|[\d,]+) of the best [\d,]+(?:: .+)?)?$")
+
+
+def has_notes(manifest, name):
+    return manifest["stores"][name].get("noted", 0) > 0
 
 
 def stamp(path):
@@ -47,12 +52,12 @@ def environment(name, store=STORE):
             "XDG_CACHE_HOME": f"{d}/cache", "BILBO_CONFIG": f"{d}/config.toml", "PATH": "/usr/bin:/bin", "NO_COLOR": "1"}
 
 
-def run(name, *args, binary=BILBO, store=STORE):
-    done = subprocess.run([binary, *args], env=environment(name, store), capture_output=True, check=False)
+def run(name, *args, binary=BILBO, store=STORE, env=None):
+    done = subprocess.run([binary, *args], env=environment(name, store) | (env or {}), capture_output=True, check=False)
     return done.returncode, done.stdout.decode(), done.stderr.decode()
 
 
-def headers(stdout):
+def parsed(stdout):
     lines = stdout.split("\n")
     if lines.pop() != "":
         return None
@@ -61,9 +66,14 @@ def headers(stdout):
         m = HEADER.match(lines[i])
         if not m or i + int(m.group(5)) >= len(lines):
             return None
-        found.append(m.group(1))
+        found.append((m.group(1), m.group(6)))
         i += 1 + int(m.group(5))
     return found
+
+
+def headers(stdout):
+    found = parsed(stdout)
+    return None if found is None else [ref for ref, _ in found]
 
 
 def main(binary=BILBO, store=STORE):
@@ -121,7 +131,8 @@ def main(binary=BILBO, store=STORE):
         if read_code != 0:
             bad(f"{name}: read {found[0]} exited {read_code}: {read_err.strip()[:300]}")
         repo = by_store[name][0]["repo"]
-        want = sum(r["repo"] == repo for r in by_store[name])
+        derived = manifest.get("derive", {}).get("repos", {})
+        want = sum(r["repo"] == repo for r in by_store[name]) + derived.get(repo, {}).get("note_entries", 0)
         code, out, err = run(name, "recall", "--in", f"{manifest.get('remembered', '')}/{repo}", "--budget", "4000", "--", "user", "assistant",
                              binary=binary, store=store)
         scoped = [m for m in map(IN_KEPT.match, err.splitlines()) if m]
@@ -130,6 +141,16 @@ def main(binary=BILBO, store=STORE):
         code, out, err = run(name, "recall", "--", "the", "and", "of", "to", binary=binary, store=store)
         if code != 1 or out or not err.splitlines() or err.splitlines()[-1] != "bilbo: nothing matched":
             bad(f"{name}: a query of stopwords exited {code}; stderr {err.strip()[:300]!r}")
+        if has_notes(manifest, name):
+            code, out, err = run(name, "recall", "--kind", "note", "--budget", "4000", "--", "user", "assistant", binary=binary, store=store)
+            notes = parsed(out) if code == 0 else None
+            if code != 0 or not notes or any(kind != "note" for _, kind in notes):
+                bad(f"{name}: recall --kind note exited {code}; stderr {err.strip()[:300]!r}; hits {notes}")
+            code, out, err = run(name, "recall", "--budget", "4000", "--", "user", "assistant", binary=binary, store=store,
+                                 env={"BILBO_RECALL_NOTES_BUDGET": "0"})
+            shown = parsed(out) if code == 0 else None
+            if code != 0 or not shown or any(kind == "note" for _, kind in shown):
+                bad(f"{name}: recall with BILBO_RECALL_NOTES_BUDGET=0 exited {code} or printed a note: {shown}")
         kept = manifest["stores"][name]
         print(f"store {name}: {kept['entries']} entries, {kept['indexed']} searched, {kept['entries'] - kept['indexed']} "
               f"with no chunk, {len(found)} hits for the probe, first {found[0]}")
@@ -138,5 +159,26 @@ def main(binary=BILBO, store=STORE):
     return 1 if problems else 0
 
 
+HEADER_TAKEN = ["", "note", "part 1/2", "cut", "note\tpart 1/2", "note\tcut", "part 1/2\tcut", "note\tpart 1/2\tcut"]
+HEADER_REFUSED = ["note\tcut\tpart 1/2\tcut", "part 1/2\tpart 2/2", "cut\tcut", "note\tnote", "cut\tpart 1/2",
+                  "part 1/2\tnote", "cut\tnote", "Note", "note\t", "note\tcut\tpart 1/2"]
+
+
+def lines():
+    ref = "2T6W9YB0DE#r1"
+    for fields in HEADER_TAKEN:
+        if headers(f"=== {ref}\t1 line{chr(9) + fields if fields else ''}\nbody\n") != [ref]:
+            print(f"lines: the header fields {fields!r} were refused")
+            return 1
+    for fields in HEADER_REFUSED:
+        if headers(f"=== {ref}\t1 line\t{fields}\nbody\n") is not None:
+            print(f"lines: the header fields {fields!r} were accepted")
+            return 1
+    print("lines: OK")
+    return 0
+
+
 if __name__ == "__main__":
+    if sys.argv[1:] == ["lines"]:
+        sys.exit(lines())
     sys.exit(main())

@@ -1,10 +1,11 @@
 use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::collections::hash_map::Entry;
+use std::rc::Rc;
 
 use crate::analyze::{self, Omit};
 use crate::index::IndexError;
-use crate::lookup::{Filter, Lookup, Posting};
+use crate::lookup::{Filter, Lookup, Near, Posting, Totals};
 use crate::rank::{Candidate, Expanded, Query, Ranked, Ranker, order};
 use crate::typo;
 
@@ -20,16 +21,16 @@ pub struct Bm25<'a> {
 
 struct Postings<'a> {
     index: &'a dyn Lookup,
-    seen: HashMap<String, Vec<Posting>>,
+    seen: HashMap<String, Rc<[Posting]>>,
 }
 
 impl Postings<'_> {
-    fn of(&mut self, term: &str) -> Result<&[Posting], IndexError> {
+    fn of(&mut self, term: &str) -> Result<Rc<[Posting]>, IndexError> {
         if !self.seen.contains_key(term) {
             self.seen
-                .insert(term.to_owned(), self.index.postings(term)?);
+                .insert(term.to_owned(), self.index.postings(term)?.into());
         }
-        Ok(&self.seen[term])
+        Ok(Rc::clone(&self.seen[term]))
     }
 }
 
@@ -99,6 +100,224 @@ impl Bm25<'_> {
     }
 }
 
+struct Shape {
+    documents: f64,
+    average: f64,
+}
+
+struct Lists {
+    mask: Option<Vec<bool>>,
+    main: Shape,
+    apart: Shape,
+}
+
+impl Lists {
+    fn partition(&self, postings: &[Posting]) -> Result<(Vec<Posting>, Vec<Posting>), IndexError> {
+        let mut main = Vec::new();
+        let mut apart = Vec::new();
+        for posting in postings {
+            let inside = match &self.mask {
+                Some(mask) => *mask
+                    .get(posting.doc as usize)
+                    .ok_or(IndexError::Inconsistent(
+                        "a posting names a document outside the index",
+                    ))?,
+                None => false,
+            };
+            if inside {
+                apart.push(*posting);
+            } else {
+                main.push(*posting);
+            }
+        }
+        Ok((main, apart))
+    }
+}
+
+impl Bm25<'_> {
+    fn mask<'k>(
+        &self,
+        kinds: &'k [String],
+        bound: u32,
+    ) -> Result<(Vec<bool>, Vec<&'k str>), IndexError> {
+        let mut marked = vec![false; bound as usize];
+        let mut held = Vec::new();
+        let mut asked: Vec<&str> = Vec::new();
+        for kind in kinds {
+            if asked.contains(&kind.as_str()) {
+                continue;
+            }
+            asked.push(kind.as_str());
+            let docs = self.index.holding(&Filter::Kind(kind))?;
+            if !docs.is_empty() {
+                held.push(kind.as_str());
+            }
+            for doc in docs {
+                *marked
+                    .get_mut(doc as usize)
+                    .ok_or(IndexError::Inconsistent(
+                        "a kind names a document outside the index",
+                    ))? = true;
+            }
+        }
+        Ok((marked, held))
+    }
+
+    fn lists(&self, query: &Query, totals: &Totals) -> Result<Lists, IndexError> {
+        let (mask, kinds) = if query.apart.is_empty() {
+            (None, Vec::new())
+        } else {
+            let (mask, kinds) = self.mask(&query.apart, totals.bound)?;
+            (Some(mask), kinds)
+        };
+        let documents = mask.as_ref().map_or(0, |mask| {
+            mask.iter().filter(|marked| **marked).count() as u64
+        });
+        if documents == 0 {
+            return Ok(Lists {
+                mask: None,
+                main: Shape {
+                    documents: totals.documents as f64,
+                    average: totals.length as f64 / totals.documents as f64,
+                },
+                apart: Shape {
+                    documents: 0.0,
+                    average: 0.0,
+                },
+            });
+        }
+        let mut length = 0u64;
+        for kind in kinds {
+            length = length.saturating_add(self.index.length(kind)?);
+        }
+        let main_documents =
+            totals
+                .documents
+                .checked_sub(documents)
+                .ok_or(IndexError::Inconsistent(
+                    "the documents apart hold more than the index",
+                ))?;
+        let main_length = totals
+            .length
+            .checked_sub(length)
+            .ok_or(IndexError::Inconsistent(
+                "the documents apart hold more than the index",
+            ))?;
+        Ok(Lists {
+            mask,
+            main: Shape {
+                documents: main_documents as f64,
+                average: if main_documents == 0 {
+                    0.0
+                } else {
+                    main_length as f64 / main_documents as f64
+                },
+            },
+            apart: Shape {
+                documents: documents as f64,
+                average: length as f64 / documents as f64,
+            },
+        })
+    }
+
+    fn listed(&self, postings: &[Posting], lists: &Lists) -> Result<Vec<(u32, f32)>, IndexError> {
+        if lists.mask.is_none() {
+            return Ok(self.parts(postings, lists.main.documents, lists.main.average));
+        }
+        let (main, apart) = lists.partition(postings)?;
+        let mut parts = self.parts(&main, lists.main.documents, lists.main.average);
+        parts.extend(self.parts(&apart, lists.apart.documents, lists.apart.average));
+        Ok(parts)
+    }
+
+    fn judged(
+        &self,
+        term: &str,
+        read: &mut Postings<'_>,
+        lists: &Lists,
+        expanded: &mut Vec<Expanded>,
+    ) -> Result<Vec<(u32, f32)>, IndexError> {
+        let own = read.of(term)?;
+        if lists.mask.is_none() {
+            let edits = if own.is_empty() {
+                self.typos.edits(term)
+            } else {
+                None
+            };
+            let Some(edits) = edits else {
+                return Ok(self.parts(&own, lists.main.documents, lists.main.average));
+            };
+            let kept = self.typos.choose(term, self.index.near(term, edits)?);
+            let mut parts = Vec::new();
+            for (near, weight) in &kept {
+                parts.extend(
+                    self.parts(&read.of(near)?, lists.main.documents, lists.main.average)
+                        .into_iter()
+                        .map(|(doc, part)| (doc, part * weight)),
+                );
+            }
+            if !kept.is_empty() {
+                expanded.push(Expanded {
+                    term: term.to_owned(),
+                    near: kept.into_iter().map(|(near, _)| near).collect(),
+                });
+            }
+            return Ok(parts);
+        }
+        let (own_main, own_apart) = lists.partition(&own)?;
+        let edits = if own_main.is_empty() && lists.main.documents > 0.0 {
+            self.typos.edits(term)
+        } else {
+            None
+        };
+        let Some(edits) = edits else {
+            return self.listed(&own, lists);
+        };
+        let mut split = HashMap::new();
+        let mut counted = Vec::new();
+        for each in self.index.near(term, edits)? {
+            let (main, apart) = lists.partition(&read.of(&each.term)?)?;
+            if !main.is_empty() {
+                counted.push(Near {
+                    term: each.term.clone(),
+                    documents: main.len() as u64,
+                });
+                split.insert(each.term, (main, apart));
+            }
+        }
+        let kept = self.typos.choose(term, counted);
+        if kept.is_empty() {
+            return self.listed(&own, lists);
+        }
+        let weighted = |parts: Vec<(u32, f32)>, weight: &f32| -> Vec<(u32, f32)> {
+            parts
+                .into_iter()
+                .map(|(doc, part)| (doc, part * weight))
+                .collect()
+        };
+        let mut parts = Vec::new();
+        for (near, weight) in &kept {
+            let (main, apart) = &split[near];
+            parts.extend(weighted(
+                self.parts(main, lists.main.documents, lists.main.average),
+                weight,
+            ));
+            if own_apart.is_empty() {
+                parts.extend(weighted(
+                    self.parts(apart, lists.apart.documents, lists.apart.average),
+                    weight,
+                ));
+            }
+        }
+        parts.extend(self.parts(&own_apart, lists.apart.documents, lists.apart.average));
+        expanded.push(Expanded {
+            term: term.to_owned(),
+            near: kept.into_iter().map(|(near, _)| near).collect(),
+        });
+        Ok(parts)
+    }
+}
+
 impl Ranker for Bm25<'_> {
     fn rank(&self, query: &Query, limit: usize) -> Result<Ranked, IndexError> {
         let terms = analyze::query(&query.text, &self.omit);
@@ -110,8 +329,7 @@ impl Ranker for Bm25<'_> {
         if totals.documents == 0 {
             return Ok(Ranked::default());
         }
-        let documents = totals.documents as f64;
-        let average = totals.length as f64 / documents;
+        let lists = self.lists(query, &totals)?;
         let mut weighed: HashMap<&str, Vec<(u32, f32)>> = HashMap::new();
         let mut expanded = Vec::new();
         let mut read = Postings {
@@ -122,27 +340,7 @@ impl Ranker for Bm25<'_> {
             if weighed.contains_key(term.as_str()) {
                 continue;
             }
-            let absent = read.of(term)?.is_empty();
-            let parts = if absent && let Some(edits) = self.typos.edits(term) {
-                let kept = self.typos.choose(term, self.index.near(term, edits)?);
-                let mut parts = Vec::new();
-                for (near, weight) in &kept {
-                    parts.extend(
-                        self.parts(read.of(near)?, documents, average)
-                            .into_iter()
-                            .map(|(doc, part)| (doc, part * weight)),
-                    );
-                }
-                if !kept.is_empty() {
-                    expanded.push(Expanded {
-                        term: term.clone(),
-                        near: kept.into_iter().map(|(near, _)| near).collect(),
-                    });
-                }
-                parts
-            } else {
-                self.parts(read.of(term)?, documents, average)
-            };
+            let parts = self.judged(term, &mut read, &lists, &mut expanded)?;
             weighed.insert(term, parts);
         }
         let mut scores = vec![0.0_f32; totals.bound as usize];
@@ -168,7 +366,7 @@ impl Ranker for Bm25<'_> {
                     Entry::Occupied(held) => held.into_mut(),
                     Entry::Vacant(room) => {
                         let postings = self.index.pairs(first, second)?;
-                        room.insert(self.parts(&postings, documents, average))
+                        room.insert(self.listed(&postings, &lists)?)
                     }
                 };
                 for (doc, part) in parts.iter() {
@@ -187,17 +385,7 @@ impl Ranker for Bm25<'_> {
         let allowed = if query.kinds.is_empty() {
             None
         } else {
-            let mut allowed = vec![false; scores.len()];
-            for kind in &query.kinds {
-                for doc in self.index.holding(&Filter::Kind(kind))? {
-                    *allowed
-                        .get_mut(doc as usize)
-                        .ok_or(IndexError::Inconsistent(
-                            "a kind names a document outside the index",
-                        ))? = true;
-                }
-            }
-            Some(allowed)
+            Some(self.mask(&query.kinds, totals.bound)?.0)
         };
         let matched: Vec<(u32, f32)> = (0..totals.bound)
             .filter(|doc| {
@@ -208,11 +396,18 @@ impl Ranker for Bm25<'_> {
             })
             .map(|doc| (doc, scores[doc as usize]))
             .collect();
+        let (apart, matched) = match &lists.mask {
+            None => (Vec::new(), matched),
+            Some(separate) => matched
+                .into_iter()
+                .partition(|(doc, _)| separate[*doc as usize]),
+        };
         let Some(ids) = &query.entries else {
             let candidates = self.best(matched, limit, &scores)?;
             return Ok(Ranked {
                 candidates,
                 unscoped: Vec::new(),
+                apart: self.best(apart, limit, &scores)?,
                 expanded,
             });
         };
@@ -227,9 +422,14 @@ impl Ranker for Bm25<'_> {
             .copied()
             .filter(|(doc, _)| held[*doc as usize])
             .collect();
+        let apart = apart
+            .into_iter()
+            .filter(|(doc, _)| held[*doc as usize])
+            .collect();
         Ok(Ranked {
             candidates: self.best(scoped, limit, &scores)?,
             unscoped: self.best(matched, limit, &scores)?,
+            apart: self.best(apart, limit, &scores)?,
             expanded,
         })
     }
@@ -239,7 +439,7 @@ impl Ranker for Bm25<'_> {
 mod tests {
     use crate::analyze::{self, Omit};
     use crate::index::IndexError;
-    use crate::lookup::{Edits, Posting};
+    use crate::lookup::{Edits, Lookup, Posting};
     use crate::rank::{Candidate, Expanded, Query, Ranker};
     use crate::testing::{Says, Table, id, portuguese};
     use crate::typo;
@@ -250,6 +450,7 @@ mod tests {
         Query {
             text: text.to_owned(),
             kinds: kinds.iter().map(|kind| (*kind).to_owned()).collect(),
+            apart: Vec::new(),
             entries: None,
         }
     }
@@ -597,6 +798,112 @@ mod tests {
         };
         assert!(bits(&narrow).is_some());
         assert_eq!(bits(&narrow), bits(&wide));
+    }
+
+    fn kinds_table() -> Table {
+        Table::new()
+            .doc("note", 1, 1, "alpha beta")
+            .doc("note", 2, 1, "alpha alpha")
+            .doc("session", 3, 1, "alpha gamma")
+            .doc("session", 4, 1, "alpha alpha alpha")
+    }
+
+    fn apart(kinds: &[&str], entries: Option<&[u8]>) -> Query {
+        Query {
+            apart: vec!["note".to_owned()],
+            entries: entries.map(|entries| entries.iter().map(|n| id(*n)).collect()),
+            ..query("alpha", kinds)
+        }
+    }
+
+    fn scores(list: &[Candidate]) -> Vec<(u8, u32)> {
+        list.iter()
+            .map(|c| (c.found.entry.to_bytes()[0], c.score.to_bits()))
+            .collect()
+    }
+
+    #[test]
+    fn a_kind_ranked_apart_is_in_no_main_list_and_its_best_are_a_list_of_their_own() {
+        let table = kinds_table();
+        let ranked = bm25(&table).rank(&apart(&[], None), 10).expect("a ranking");
+        let alone = |kind: &str, entries: [u8; 2]| {
+            let rows = Table::new()
+                .doc(
+                    kind,
+                    entries[0],
+                    1,
+                    if kind == "note" {
+                        "alpha beta"
+                    } else {
+                        "alpha gamma"
+                    },
+                )
+                .doc(
+                    kind,
+                    entries[1],
+                    1,
+                    if kind == "note" {
+                        "alpha alpha"
+                    } else {
+                        "alpha alpha alpha"
+                    },
+                );
+            bm25(&rows)
+                .rank(&query("alpha", &[]), 10)
+                .expect("a ranking")
+                .candidates
+        };
+        assert_eq!(entries_of(&ranked.candidates), [(4, 1), (3, 1)]);
+        assert_eq!(entries_of(&ranked.apart), [(2, 1), (1, 1)]);
+        assert_eq!(
+            scores(&ranked.candidates),
+            scores(&alone("session", [3, 4]))
+        );
+        assert_eq!(scores(&ranked.apart), scores(&alone("note", [1, 2])));
+        assert!(ranked.unscoped.is_empty());
+    }
+
+    #[test]
+    fn a_list_apart_takes_no_place_from_the_main_list() {
+        let table = Table::new()
+            .doc("session", 1, 1, "alpha beta beta beta")
+            .doc("session", 2, 1, "alpha gamma gamma gamma")
+            .doc("note", 3, 1, "alpha")
+            .doc("note", 4, 1, "alpha alpha")
+            .doc("note", 5, 1, "alpha beta");
+        let ranked = bm25(&table).rank(&apart(&[], None), 2).expect("a ranking");
+        assert_eq!(entries_of(&ranked.candidates), [(1, 1), (2, 1)]);
+        assert_eq!(entries_of(&ranked.apart), [(4, 1), (3, 1)]);
+    }
+
+    #[test]
+    fn a_kind_filter_narrows_both_lists() {
+        let table = kinds_table();
+        let rank = |kinds: &[&str]| {
+            bm25(&table)
+                .rank(&apart(kinds, None), 10)
+                .expect("a ranking")
+        };
+        let only_apart = rank(&["note"]);
+        assert!(only_apart.candidates.is_empty());
+        assert_eq!(entries_of(&only_apart.apart), [(2, 1), (1, 1)]);
+        let only_main = rank(&["session"]);
+        assert_eq!(entries_of(&only_main.candidates), [(4, 1), (3, 1)]);
+        assert!(only_main.apart.is_empty());
+        let both = rank(&["note", "session"]);
+        assert_eq!(entries_of(&both.candidates), [(4, 1), (3, 1)]);
+        assert_eq!(entries_of(&both.apart), [(2, 1), (1, 1)]);
+    }
+
+    #[test]
+    fn an_entry_filter_narrows_both_lists_and_the_unscoped_list_holds_nothing_apart() {
+        let table = kinds_table();
+        let ranked = bm25(&table)
+            .rank(&apart(&[], Some(&[2, 3])), 10)
+            .expect("a ranking");
+        assert_eq!(entries_of(&ranked.candidates), [(3, 1)]);
+        assert_eq!(entries_of(&ranked.apart), [(2, 1)]);
+        assert_eq!(entries_of(&ranked.unscoped), [(4, 1), (3, 1)]);
     }
 
     #[test]
@@ -1216,5 +1523,380 @@ mod tests {
                 .rank(&query("alpha unheard", &[]), 5)
                 .is_ok()
         );
+    }
+
+    fn full(list: &[Candidate]) -> Vec<(u8, u64, u32)> {
+        list.iter()
+            .map(|c| {
+                (
+                    c.found.entry.to_bytes()[0],
+                    c.found.extent.records.first,
+                    c.score.to_bits(),
+                )
+            })
+            .collect()
+    }
+
+    fn apart_of(text: &str) -> Query {
+        Query {
+            apart: vec!["note".to_owned()],
+            ..query(text, &[])
+        }
+    }
+
+    fn mixed() -> Table {
+        Table::new()
+            .doc("note", 4, 1, "alpha")
+            .doc("session", 1, 1, "alpha beta")
+            .doc("note", 5, 1, "alpha gamma gamma epsilon zeta eta")
+            .doc("session", 2, 1, "alpha alpha gamma delta")
+            .doc("session", 3, 1, "gamma")
+            .doc("note", 6, 1, "beta")
+            .doc("note", 7, 1, "gamma gamma")
+            .dead()
+    }
+
+    fn sessions() -> Table {
+        Table::new()
+            .doc("session", 1, 1, "alpha beta")
+            .doc("session", 2, 1, "alpha alpha gamma delta")
+            .doc("session", 3, 1, "gamma")
+    }
+
+    fn notes() -> Table {
+        Table::new()
+            .doc("note", 4, 1, "alpha")
+            .doc("note", 5, 1, "alpha gamma gamma epsilon zeta eta")
+            .doc("note", 6, 1, "beta")
+    }
+
+    fn alone(table: &Table, text: &str) -> Vec<(u8, u64, u32)> {
+        full(
+            &bm25(table)
+                .rank(&query(text, &[]), 10)
+                .expect("a ranking")
+                .candidates,
+        )
+    }
+
+    #[test]
+    fn each_list_is_ranked_as_if_its_documents_were_the_whole_index() {
+        let table = mixed();
+        let ranked = bm25(&table)
+            .rank(&apart_of("alpha gamma"), 10)
+            .expect("a ranking");
+        assert_eq!(entries_of(&ranked.candidates), [(2, 1), (3, 1), (1, 1)]);
+        assert_eq!(full(&ranked.candidates), alone(&sessions(), "alpha gamma"));
+        for (hit, wanted) in
+            ranked
+                .candidates
+                .iter()
+                .zip([0.409_939_47, 0.278_815_72, 0.226_898_31])
+        {
+            near(hit.score, wanted);
+        }
+        assert_eq!(entries_of(&ranked.apart), [(5, 1), (4, 1)]);
+        assert_eq!(full(&ranked.apart), alone(&notes(), "alpha gamma"));
+        assert!(ranked.unscoped.is_empty());
+    }
+
+    #[test]
+    fn the_means_of_the_two_lists_are_one_division_of_whole_numbers() {
+        let table = Table::new()
+            .doc("session", 1, 1, "alpha beta")
+            .doc("session", 2, 1, "alpha alpha gamma delta epsilon")
+            .doc("session", 3, 1, "gamma zeta eta theta iota kappa")
+            .doc("note", 4, 1, "alpha")
+            .doc("note", 5, 1, "alpha gamma gamma lambda mu nu xi omicron")
+            .doc("note", 6, 1, "beta gamma")
+            .doc("note", 7, 1, "alpha gamma pi rho sigma");
+        assert_ne!(29.0_f64 / 7.0 * 7.0, 29.0);
+        let totals = table.totals().expect("totals");
+        let lists = bm25(&table)
+            .lists(&apart_of("alpha"), &totals)
+            .expect("lists");
+        assert_eq!(lists.main.average.to_bits(), (13.0_f64 / 3.0).to_bits());
+        assert_eq!(lists.apart.average.to_bits(), (16.0_f64 / 4.0).to_bits());
+    }
+
+    #[test]
+    fn a_pair_is_counted_in_its_own_list() {
+        let table = Table::new()
+            .doc("session", 1, 1, "alpha beta")
+            .doc("note", 4, 1, "alpha beta alpha beta")
+            .doc("session", 2, 1, "alpha beta gamma")
+            .doc("session", 3, 1, "beta alpha")
+            .doc("note", 5, 1, "beta alpha gamma");
+        let ranked = paired(&table, 0.25)
+            .rank(&apart_of("alpha beta"), 10)
+            .expect("a ranking");
+        let on = |rows: Table| {
+            full(
+                &paired(&rows, 0.25)
+                    .rank(&query("alpha beta", &[]), 10)
+                    .expect("a ranking")
+                    .candidates,
+            )
+        };
+        let sessions = Table::new()
+            .doc("session", 1, 1, "alpha beta")
+            .doc("session", 2, 1, "alpha beta gamma")
+            .doc("session", 3, 1, "beta alpha");
+        let notes = Table::new().doc("note", 4, 1, "alpha beta alpha beta").doc(
+            "note",
+            5,
+            1,
+            "beta alpha gamma",
+        );
+        assert_eq!(full(&ranked.candidates), on(sessions));
+        assert_eq!(full(&ranked.apart), on(notes));
+        assert_eq!(
+            table.pairs_asked.borrow().as_slice(),
+            [("alpha".to_owned(), "beta".to_owned())]
+        );
+    }
+
+    #[test]
+    fn a_word_is_judged_over_the_main_list_whatever_the_list_apart_holds() {
+        let rank = |table: &Table| {
+            typed(table)
+                .rank(&apart_of("carot"), 10)
+                .expect("a ranking")
+        };
+        let alone_typed = |table: &Table| {
+            full(
+                &typed(table)
+                    .rank(&query("carot", &[]), 10)
+                    .expect("a ranking")
+                    .candidates,
+            )
+        };
+
+        let first = Table::new()
+            .doc("session", 1, 1, "carrot soup")
+            .doc("session", 2, 1, "bread butter")
+            .doc("note", 3, 1, "carot carrot stew");
+        let found = rank(&first);
+        assert_eq!(
+            first.near_asked.borrow().as_slice(),
+            [("carot".to_owned(), Edits::One)]
+        );
+        assert_eq!(
+            found.expanded,
+            [Expanded {
+                term: "carot".to_owned(),
+                near: vec!["carrot".to_owned()],
+            }]
+        );
+        let sessions =
+            Table::new()
+                .doc("session", 1, 1, "carrot soup")
+                .doc("session", 2, 1, "bread butter");
+        assert_eq!(full(&found.candidates), alone_typed(&sessions));
+        let lone = Table::new().doc("note", 3, 1, "carot carrot stew");
+        assert_eq!(entries_of(&found.apart), [(3, 1)]);
+        assert_eq!(full(&found.apart), alone(&lone, "carot"));
+
+        let second = Table::new()
+            .doc("session", 1, 1, "carrot soup")
+            .doc("note", 2, 1, "carat ring")
+            .doc("note", 3, 1, "carrot cake");
+        let found = rank(&second);
+        assert_eq!(
+            found.expanded,
+            [Expanded {
+                term: "carot".to_owned(),
+                near: vec!["carrot".to_owned()],
+            }]
+        );
+        let one = Table::new().doc("session", 1, 1, "carrot soup");
+        assert_eq!(full(&found.candidates), alone_typed(&one));
+        let notes = Table::new()
+            .doc("note", 2, 1, "carat ring")
+            .doc("note", 3, 1, "carrot cake");
+        assert_eq!(entries_of(&found.apart), [(3, 1)]);
+        assert_eq!(full(&found.apart), alone(&notes, "carrot"));
+
+        let third =
+            Table::new()
+                .doc("session", 1, 1, "carot soup")
+                .doc("note", 2, 1, "carrot cake");
+        let found = rank(&third);
+        assert!(third.near_asked.borrow().is_empty());
+        assert_eq!(entries_of(&found.candidates), [(1, 1)]);
+        assert!(found.apart.is_empty());
+
+        let fourth = Table::new().doc("note", 1, 1, "carrot soup");
+        let found = rank(&fourth);
+        assert!(fourth.near_asked.borrow().is_empty());
+        assert!(found.candidates.is_empty() && found.apart.is_empty());
+    }
+
+    #[test]
+    fn with_no_document_apart_the_scores_and_the_reads_are_todays() {
+        let rows = || {
+            Table::new()
+                .doc("session", 1, 1, "carrot soup")
+                .doc("session", 2, 1, "carrot")
+                .doc("session", 3, 1, "bread butter soup carrot")
+        };
+        let rank = |table: &Table, apart: &[&str]| {
+            Bm25 {
+                pair_weight: 0.25,
+                ..typed(table)
+            }
+            .rank(
+                &Query {
+                    apart: apart.iter().map(|kind| (*kind).to_owned()).collect(),
+                    ..query("carot soup carrot", &[])
+                },
+                10,
+            )
+            .expect("a ranking")
+        };
+        let plain = rows();
+        let first = rank(&plain, &[]);
+        let listed = rows();
+        let second = rank(&listed, &["note"]);
+        assert_eq!(first, second);
+        assert!(!first.candidates.is_empty());
+        assert_eq!(
+            plain.looked_up.borrow().as_slice(),
+            listed.looked_up.borrow().as_slice()
+        );
+        assert_eq!(
+            plain.near_asked.borrow().as_slice(),
+            listed.near_asked.borrow().as_slice()
+        );
+        assert_eq!(
+            plain.pairs_asked.borrow().as_slice(),
+            listed.pairs_asked.borrow().as_slice()
+        );
+        assert_eq!(plain.lengths.get(), 0);
+        assert_eq!(listed.lengths.get(), 0);
+        assert_eq!(plain.holdings.get(), 0);
+        assert_eq!(listed.holdings.get(), 1);
+    }
+
+    #[test]
+    fn documents_apart_that_hold_more_than_the_index_are_an_index_error() {
+        let wanted = "the documents apart hold more than the index";
+        let over = Table::new()
+            .doc("note", 1, 1, "alpha beta")
+            .doc("note", 2, 1, "alpha")
+            .length_over(1);
+        assert!(matches!(
+            bm25(&over).rank(&apart_of("alpha"), 10),
+            Err(IndexError::Inconsistent(text)) if text == wanted
+        ));
+        let dead = Table::new()
+            .doc("note", 1, 1, "alpha beta")
+            .doc("note", 2, 1, "alpha")
+            .doc("note", 3, 1, "alpha gamma")
+            .dead()
+            .holding_at(2);
+        assert!(matches!(
+            bm25(&dead).rank(&apart_of("alpha"), 10),
+            Err(IndexError::Inconsistent(text)) if text == wanted
+        ));
+    }
+
+    #[test]
+    fn a_kind_filter_and_a_scope_change_no_score_in_either_list() {
+        let table = mixed();
+        let whole = bm25(&table)
+            .rank(&apart_of("alpha gamma"), 10)
+            .expect("a ranking");
+        let kinds = |kinds: &[&str]| {
+            bm25(&table)
+                .rank(
+                    &Query {
+                        kinds: kinds.iter().map(|kind| (*kind).to_owned()).collect(),
+                        ..apart_of("alpha gamma")
+                    },
+                    10,
+                )
+                .expect("a ranking")
+        };
+        let sessions = kinds(&["session"]);
+        assert_eq!(full(&sessions.candidates), full(&whole.candidates));
+        assert!(sessions.apart.is_empty());
+        let notes = kinds(&["note"]);
+        assert!(notes.candidates.is_empty());
+        assert_eq!(full(&notes.apart), full(&whole.apart));
+        let scoped = bm25(&table)
+            .rank(
+                &Query {
+                    entries: Some(vec![id(2), id(5)]),
+                    ..apart_of("alpha gamma")
+                },
+                10,
+            )
+            .expect("a ranking");
+        let only = |list: &[Candidate], entry: u8| -> Vec<(u8, u64, u32)> {
+            full(list)
+                .into_iter()
+                .filter(|hit| hit.0 == entry)
+                .collect()
+        };
+        assert_eq!(entries_of(&scoped.candidates), [(2, 1)]);
+        assert_eq!(full(&scoped.candidates), only(&whole.candidates, 2));
+        assert_eq!(entries_of(&scoped.apart), [(5, 1)]);
+        assert_eq!(full(&scoped.apart), only(&whole.apart, 5));
+        assert_eq!(full(&scoped.unscoped), full(&whole.candidates));
+    }
+
+    #[test]
+    fn two_near_terms_are_weighed_by_the_main_lists_counts() {
+        let table = Table::new()
+            .doc("session", 1, 1, "carrot soup")
+            .doc("session", 2, 1, "carat ring")
+            .doc("note", 3, 1, "carrot cake");
+        let found = typed(&table)
+            .rank(&apart_of("carot"), 10)
+            .expect("a ranking");
+        let main =
+            Table::new()
+                .doc("session", 1, 1, "carrot soup")
+                .doc("session", 2, 1, "carat ring");
+        let alone = typed(&main)
+            .rank(&query("carot", &[]), 10)
+            .expect("a ranking");
+        assert_eq!(found.expanded, alone.expanded);
+        assert_eq!(found.expanded[0].near, ["carat", "carrot"]);
+        assert_eq!(full(&found.candidates), full(&alone.candidates));
+    }
+
+    #[test]
+    fn a_kind_listed_twice_is_read_once() {
+        let rows = || {
+            Table::new()
+                .doc("session", 1, 1, "alpha beta")
+                .doc("note", 2, 1, "alpha")
+        };
+        let once = rows();
+        let twice = rows();
+        let rank = |table: &Table, apart: &[&str]| {
+            bm25(table)
+                .rank(
+                    &Query {
+                        apart: apart.iter().map(|kind| (*kind).to_owned()).collect(),
+                        ..query("alpha", &[])
+                    },
+                    10,
+                )
+                .expect("a ranking")
+        };
+        assert_eq!(rank(&once, &["note"]), rank(&twice, &["note", "note"]));
+        assert_eq!(once.holdings.get(), 1);
+        assert_eq!(twice.holdings.get(), 1);
+        let none = rows();
+        rank(&none, &["other", "other"]);
+        assert_eq!(none.holdings.get(), 1);
+        let kinds = rows();
+        bm25(&kinds)
+            .rank(&query("alpha", &["note", "note"]), 10)
+            .expect("a ranking");
+        assert_eq!(kinds.holdings.get(), 1);
     }
 }

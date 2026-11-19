@@ -5,11 +5,19 @@ const PLIST: &str =
     include_str!("../../../docs/reference/timer/io.github.delucca.bilbo.remember.plist");
 const SERVICE: &str = include_str!("../../../docs/reference/timer/bilbo-remember.service");
 const TIMER: &str = include_str!("../../../docs/reference/timer/bilbo-remember.timer");
+const DERIVE_PLIST: &str =
+    include_str!("../../../docs/reference/timer/io.github.delucca.bilbo.derive.plist");
+const DERIVE_SERVICE: &str = include_str!("../../../docs/reference/timer/bilbo-derive.service");
+const DERIVE_TIMER: &str = include_str!("../../../docs/reference/timer/bilbo-derive.timer");
 const COMMANDS: &str = include_str!("../../../docs/reference/commands.md");
 
 fn plist_value<'a>(name: &str) -> Vec<&'a str> {
+    value_in(PLIST, name)
+}
+
+fn value_in<'a>(plist: &'a str, name: &str) -> Vec<&'a str> {
     let key = format!("<key>{name}</key>");
-    let mut lines = PLIST.lines().skip_while(|line| line.trim() != key).skip(1);
+    let mut lines = plist.lines().skip_while(|line| line.trim() != key).skip(1);
     let first = lines.next().unwrap_or_default().trim();
     if first == "<array>" {
         lines
@@ -99,5 +107,94 @@ fn the_install_steps_name_each_unit_file() {
         "systemctl --user enable --now bilbo-remember.timer",
     ] {
         assert!(COMMANDS.contains(needle), "{needle}");
+    }
+}
+
+#[test]
+fn the_launchd_job_runs_a_bare_derive_every_30_minutes() {
+    assert_eq!(
+        value_in(DERIVE_PLIST, "Label"),
+        ["<string>io.github.delucca.bilbo.derive</string>"]
+    );
+    assert_eq!(
+        value_in(DERIVE_PLIST, "ProgramArguments"),
+        ["@BILBO@", "derive"]
+    );
+    assert_eq!(
+        value_in(DERIVE_PLIST, "StartInterval"),
+        ["<integer>1800</integer>"]
+    );
+    assert_eq!(value_in(DERIVE_PLIST, "RunAtLoad"), ["<false/>"]);
+    assert_eq!(
+        value_in(DERIVE_PLIST, "StandardErrorPath"),
+        ["<string>@LOG@</string>"]
+    );
+    assert_eq!(
+        value_in(DERIVE_PLIST, "StandardOutPath"),
+        ["<string>@LOG@</string>"]
+    );
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn the_derive_launchd_job_is_a_property_list_plutil_accepts() {
+    let path = scratch().join(format!("derive-{}.plist", std::process::id()));
+    fs::write(&path, DERIVE_PLIST).expect("write the plist");
+    let output = std::process::Command::new("/usr/bin/plutil")
+        .arg("-lint")
+        .arg(&path)
+        .output()
+        .expect("plutil runs");
+    let _ = fs::remove_file(&path);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+}
+
+#[test]
+fn the_systemd_timer_starts_the_derive_service_every_30_minutes() {
+    let lines = |text: &'static str| text.lines().collect::<Vec<_>>();
+    let service = lines(DERIVE_SERVICE);
+    for line in [
+        "[Service]",
+        "Type=oneshot",
+        "ExecStart=\"@BILBO@\" derive",
+        "StandardOutput=append:@LOG@",
+        "StandardError=append:@LOG@",
+    ] {
+        assert!(service.contains(&line), "{line}");
+    }
+    let timer = lines(DERIVE_TIMER);
+    for line in [
+        "[Timer]",
+        "OnActiveSec=30min",
+        "OnUnitActiveSec=30min",
+        "[Install]",
+        "WantedBy=timers.target",
+    ] {
+        assert!(timer.contains(&line), "{line}");
+    }
+}
+
+#[test]
+fn the_install_steps_name_each_derive_unit_file() {
+    let section = COMMANDS
+        .split("\n## derive\n")
+        .nth(1)
+        .and_then(|rest| rest.split("\n## ").next())
+        .expect("a derive section");
+    let timer = section
+        .split("\n### The timer\n")
+        .nth(1)
+        .and_then(|rest| rest.split("\n### ").next())
+        .expect("a timer part");
+    for needle in [
+        "docs/reference/timer/io.github.delucca.bilbo.derive.plist",
+        "docs/reference/timer/bilbo-derive.service",
+        "docs/reference/timer/bilbo-derive.timer",
+    ] {
+        assert!(timer.contains(needle), "{needle}");
     }
 }

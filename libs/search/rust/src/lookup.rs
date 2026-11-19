@@ -51,6 +51,7 @@ pub enum Filter<'a> {
 /// outside it. `postings`, `pairs` and `holding` give live documents only, by rising `doc`;
 /// `Posting.length` is the document's exact number of terms, saturating at `u32::MAX`; `found`
 /// answers in the order asked. `Totals` and `near` count live documents of the last commit.
+/// `length` sums the lengths of a kind's live documents.
 pub trait Lookup {
     /// `None`: no index there (the folder is absent or empty), or one that is broken or of another
     /// schema. A folder holding files that are not bilbo's index is `Err(Foreign)` from every
@@ -64,6 +65,7 @@ pub trait Lookup {
     /// Returns a list because filtering inside `postings` would need a column read for every
     /// posting, and would change the document frequency unless both counts crossed the port.
     fn holding(&self, filter: &Filter<'_>) -> Result<Vec<u32>, IndexError>;
+    fn length(&self, kind: &str) -> Result<u64, IndexError>;
     fn found(&self, docs: &[u32]) -> Result<Vec<Found>, IndexError>;
 }
 

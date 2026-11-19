@@ -1,0 +1,30 @@
+bilbo derive: write notes about entries that stopped growing, with a model.
+
+Usage:
+  bilbo derive [--dry-run] [--redo] [--calls <n>] [<entry>...]
+
+Options:
+      --dry-run    Say what a run would send, and send nothing
+      --redo       Redo what other settings wrote and what was passed over
+      --calls <n>  Make at most this many calls
+
+Kinds:
+  session  bilbo ships an instruction for it
+Providers:
+  anthropic  the Anthropic API, with a key
+  openai     the OpenAI API, with a key
+  claude     the tool claude, with its own login and no key
+
+Output:
+  entries <n>, calls <n>, notes <n>, dropped <n>, refused <n>, failed <n>
+  tokens in <n>, tokens out <n>, seconds <n>
+
+Exit:
+  0  done, also when derive is off, nothing is due or another derive runs
+  1  a failed call, a refused entry, a busy or stopped provider, a store failure
+  2  usage or config error
+
+Examples:
+  bilbo derive --dry-run
+
+Docs: https://github.com/delucca/bilbo/wiki/Commands#derive

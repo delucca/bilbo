@@ -14,6 +14,7 @@
 # two runs. Every row handed to a search is also appended to <run>/searched.jsonl, the exact text each search read. A
 # run of any kind starts its judge cache from the cached run of the same store and search, so a context the search
 # returned again is not judged again.
+# BILBO_EVAL_ROWS lists the rows judged, comma apart, 4000 alone by default (scripts/README.md, Rows).
 # Not built: the answer run, the 16,000-token run, the paired comparisons. The judge's gates are gates.sh.
 set -euo pipefail
 
@@ -101,20 +102,36 @@ fi
 rm "$run/todo.jsonl"
 
 py "$root/scripts/controls.py" "$corpus/corpus" "$run/selected.jsonl" "$gold/search.jsonl" "$random/search.jsonl"
+IFS=, read -ra rows <<< "${BILBO_EVAL_ROWS:-4000}"
+for row in "${rows[@]}"; do
+  [[ $row =~ ^[1-9][0-9]*(-[0-9]+)?$ ]] || die "BILBO_EVAL_ROWS holds $row, not <chunks>[-<notes>]"
+done
 for d in "$run" "$gold" "$random"; do
   py "$root/scripts/pack.py" "$d/search.jsonl" "$d/contexts-4000.jsonl" 4000
 done
+for row in "${rows[@]}"; do
+  [[ $row == 4000 ]] && continue
+  numbers=("${row%%-*}")
+  [[ $row != *-* ]] || numbers+=("${row#*-}")
+  py "$root/scripts/pack.py" "$run/search.jsonl" "$run/contexts-$row.jsonl" "${numbers[@]}"
+done
 
 base=$cache/eval/$arm-$key-${search_sha:0:12}
-if [[ $run != "$base" && -s $base/judged.jsonl && ! -e $run/judged.jsonl ]]; then
-  cp "$base/judged.jsonl" "$run/judged.jsonl"
-  log "judge cache seeded from ${base##*/}"
-fi
-
 failed=''
-for d in "$run" "$gold" "$random"; do
+for row in "${rows[@]}"; do
+  file=judged.jsonl
+  [[ $row == 4000 ]] || file=judged-$row.jsonl
+  if [[ $run != "$base" && -s $base/$file && ! -e $run/$file ]]; then
+    cp "$base/$file" "$run/$file"
+    log "judge cache of the row $row seeded from ${base##*/}"
+  fi
+  py "$root/scripts/judge.py" "$run/selected.jsonl" "$run/contexts-$row.jsonl" "$run/$file" --jobs "$jobs" || failed=1
+done
+for d in "$gold" "$random"; do
   py "$root/scripts/judge.py" "$run/selected.jsonl" "$d/contexts-4000.jsonl" "$d/judged.jsonl" --jobs "$jobs" || failed=1
 done
 [[ -z $failed ]] || die "some contexts are not judged; run again to judge the rest"
 
-py "$root/scripts/score.py" "$run/selected.jsonl" "$root/questions/classes.json" "$run" "$gold" "$random"
+for row in "${rows[@]}"; do
+  py "$root/scripts/score.py" "$run/selected.jsonl" "$root/questions/classes.json" "$run" "$gold" "$random" "$row"
+done

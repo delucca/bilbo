@@ -18,11 +18,11 @@ use crate::console::args::usage;
 use crate::console::closing::Closing;
 use crate::console::env::Env;
 use crate::console::indexing::Indexing;
-use crate::console::message::{notice_message, sanitize};
+use crate::console::message::{Message, notice_message, sanitize};
 use crate::console::outcome::{Exit, Failure, Outcome};
 use crate::console::settings::Settings;
 use disk::Disk;
-use messages::{refusals, warning};
+use messages::refusals;
 
 const SUMMARY: &str = "Keep files as entries; a later run keeps what grew or changed";
 const ABOUT: &str =
@@ -103,15 +103,14 @@ pub fn run(
     })?;
 
     let layout = settings.layout();
-    Store::check(&layout).map_err(|error| Failure::from(&error))?;
+    Store::check(&layout)?;
     let (output, mut closing) = if plan.claims.is_empty() {
         (Output::unkept(&plan), Closing::default())
     } else {
         let notice = &mut env.notice;
         let mut store = Store::open(&layout, settings.store.options(), &mut |n| {
             notice(&notice_message(&n));
-        })
-        .map_err(|error| Failure::from(&error))?;
+        })?;
         let output = remember::keep(&plan, &Disk, &mut store).map_err(|error| refused(&error))?;
         let kept = view::Totals::of(std::slice::from_ref(&output)).kept();
         let closing = follows::finish(
@@ -145,7 +144,7 @@ fn outcome(output: Output, closing: Closing, config: bool) -> Outcome {
     let mut diagnostics = refusals(std::slice::from_ref(&output));
     if output.claimed == 0 {
         let target = output.target.display();
-        diagnostics.push(warning(&match &output.kind {
+        diagnostics.push(Message::warning(&match &output.kind {
             None => format!("nothing to keep: no kind claims a file under {target}"),
             Some(kind) => format!("nothing to keep: {kind} claims no file under {target}"),
         }));

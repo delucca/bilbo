@@ -39,10 +39,20 @@ filegroup(
     ],
 )
 
+filegroup(
+    name = "note_fixtures",
+    srcs = glob(["fixtures/note/*"]),
+    visibility = [
+        "//apps/cli:__pkg__",
+        "//tests/e2e/cli:__pkg__",
+    ],
+)
+
 bilbo_rust_test(
     name = "unit",
     compile_data = [
         ":markdown_fixtures",
+        ":note_fixtures",
         ":session_fixtures",
     ],
     crate = ":rust",
@@ -69,7 +79,7 @@ bilbo_rust_test(
     crate_root = "tests/contract/main.rs",
     layer = "contract",
     lint_config = ":lints",
-    deps = [":rust"] + all_crate_deps(normal_dev = True),
+    deps = [":rust"] + all_crate_deps(normal = True, normal_dev = True),
 )
 
 bilbo_rust_test(

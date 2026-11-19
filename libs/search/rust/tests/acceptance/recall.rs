@@ -6,7 +6,7 @@ use bilbo_search::bm25::Bm25;
 use bilbo_search::chunk::Size;
 use bilbo_search::lookup::Lookup;
 use bilbo_search::position::Manifest;
-use bilbo_search::rank::{Candidate, Expanded, Query};
+use bilbo_search::rank::{Candidate, Expanded, Query, Ranker};
 use bilbo_search::recall::hit::Hit;
 use bilbo_search::recall::log::QueryLog;
 use bilbo_search::recall::scope::Unnamed;
@@ -95,6 +95,7 @@ fn request(text: &str) -> Request {
         query: Query {
             text: text.to_owned(),
             kinds: Vec::new(),
+            apart: Vec::new(),
             entries: None,
         },
         manifest: manifest(),
@@ -103,6 +104,7 @@ fn request(text: &str) -> Request {
         limits: OFF,
         scope: Vec::new(),
         budget: 100_000,
+        apart_budget: 100_000,
         at: at(1_700_000_000),
     }
 }
@@ -114,7 +116,21 @@ fn of_kinds(text: &str, kinds: &[&str]) -> Request {
 }
 
 fn shown(hit: &Hit) -> String {
-    format!("=== {}\n{}", hit.found.entry, hit.text)
+    if hit.apart {
+        format!(
+            "=== {}\t{} lines\t{}\n{}",
+            hit.found.entry,
+            hit.text.lines().count(),
+            hit.found.kind,
+            hit.text
+        )
+    } else {
+        format!("=== {}\n{}", hit.found.entry, hit.text)
+    }
+}
+
+fn apart_header(lines: usize) -> usize {
+    SHOWN_HEADER + format!("\t{lines} lines\tjoined").len()
 }
 
 fn ask_with(
@@ -307,6 +323,7 @@ fn a_query_that_matches_nothing_ends_with_no_hit_and_the_count_searched() {
                 left_out: 0,
                 skipped: Skipped::default(),
                 scope: None,
+                apart: Vec::new(),
                 expanded: Vec::new(),
             },
             "{text}"
@@ -368,6 +385,7 @@ fn a_store_with_no_index_is_not_searched() {
             left_out: 0,
             skipped: Skipped::default(),
             scope: None,
+            apart: Vec::new(),
             expanded: Vec::new(),
         }
     );
@@ -402,6 +420,7 @@ fn no_index_by_the_callers_word_is_the_no_index_answer_and_the_query_is_logged()
             left_out: 0,
             skipped: Skipped::default(),
             scope: None,
+            apart: Vec::new(),
             expanded: Vec::new(),
         }
     );
@@ -888,6 +907,7 @@ fn an_index_the_caller_withholds_is_not_read_and_the_query_is_logged() {
             left_out: 0,
             skipped: Skipped::default(),
             scope: None,
+            apart: Vec::new(),
             expanded: Vec::new(),
         }
     );
@@ -1175,6 +1195,91 @@ fn a_hit_whose_short_id_another_entry_shares_is_marked() {
     for hit in &output.hits {
         let shares = hit.found.entry != id(6);
         assert_eq!(hit.shared_short, shares, "{}", hit.found.entry);
+    }
+}
+
+#[test]
+fn a_hit_apart_whose_short_id_another_entry_shares_is_marked() {
+    let mut first = [0u8; 16];
+    first[0] = 1;
+    first[15] = 5;
+    let mut second = first;
+    second[0] = 2;
+    let mut log = Log::new();
+    log.put_id(Id::from_bytes(first), "joined", &["release checklist one"]);
+    log.put_id(Id::from_bytes(second), "joined", &["release checklist two"]);
+    log.put(6, "joined", &["release checklist three"]);
+    let index = index_of(&log);
+    let (output, _) = ask(&log, &index, &with_apart("release checklist"));
+    assert_eq!(output.apart.len(), 3);
+    for hit in &output.apart {
+        let shares = hit.found.entry != id(6);
+        assert_eq!(hit.shared_short, shares, "{}", hit.found.entry);
+    }
+}
+
+#[test]
+fn an_entry_apart_that_ends_in_a_hits_short_id_makes_its_ref_whole_and_moves_nothing_else() {
+    let mut picked = [0u8; 16];
+    picked[0] = 1;
+    picked[15] = 5;
+    let mut alike = picked;
+    alike[0] = 2;
+    let log_of = |apart: bool| {
+        let mut log = Log::new();
+        log.put_id(Id::from_bytes(picked), "note", &["release checklist one"]);
+        log.put(6, "note", &["release checklist two and more"]);
+        log.put(7, "note", &["release checklist three"]);
+        if apart {
+            log.put_id(Id::from_bytes(alike), "joined", &["unrelated words only"]);
+        }
+        log
+    };
+    let ranked = |index: &Docs| {
+        let bm25 = Bm25 {
+            index,
+            k1: 1.2,
+            b: 0.75,
+            omit: Omit::default(),
+            batch: 4096,
+            typos: typo::Rule::OFF,
+            pair_weight: 0.0,
+        };
+        let found = bm25
+            .rank(&with_apart("release checklist").query, 10)
+            .expect("a ranking")
+            .candidates;
+        found
+            .iter()
+            .map(|candidate| {
+                (
+                    candidate.found.entry,
+                    candidate.found.extent,
+                    candidate.score.to_bits(),
+                )
+            })
+            .collect::<Vec<_>>()
+    };
+    let without = log_of(false);
+    let with = log_of(true);
+    let (index_without, index_with) = (index_of(&without), index_of(&with));
+    assert_eq!(ranked(&index_without), ranked(&index_with));
+    let (before, _) = ask(&without, &index_without, &with_apart("release checklist"));
+    let (after, _) = ask(&with, &index_with, &with_apart("release checklist"));
+    assert_eq!(before.hits.len(), 3);
+    assert_eq!(before.hits.len(), after.hits.len());
+    assert!(after.apart.is_empty());
+    for (one, other) in before.hits.iter().zip(&after.hits) {
+        assert_eq!(
+            (&one.found, &one.preface, &one.text, one.cut),
+            (&other.found, &other.preface, &other.text, other.cut)
+        );
+        assert!(!one.apart && !other.apart);
+        assert!(!one.shared_short);
+        assert_eq!(
+            other.shared_short,
+            other.found.entry == Id::from_bytes(picked)
+        );
     }
 }
 
@@ -1584,4 +1689,322 @@ fn a_pairs_that_fails_ends_the_run_as_failed() {
         0.0,
     );
     assert!(finished.result.is_ok());
+}
+
+const ALONE: [&str; 2] = ["release checklist alpha", "second line here release"];
+
+fn with_apart(text: &str) -> Request {
+    let mut request = request(text);
+    request.query.apart = vec!["joined".to_owned()];
+    request
+}
+
+fn apart_entries(output: &Output) -> Vec<Id> {
+    output.apart.iter().map(|hit| hit.found.entry).collect()
+}
+
+fn cost(hits: &[Hit]) -> usize {
+    hits.iter().map(|hit| shown(hit).len()).sum()
+}
+
+fn notes_and_apart(notes: u8, apart: u8) -> Log {
+    let mut log = Log::new();
+    for n in 1..=notes {
+        log.put(n, "note", &[RELEASE]);
+    }
+    for n in 1..=apart {
+        log.put(10 + n, "joined", &ALONE);
+    }
+    log
+}
+
+#[test]
+fn a_kind_listed_apart_is_answered_in_a_second_list_with_its_own_room() {
+    let log = notes_and_apart(2, 2);
+    let index = index_of(&log);
+    let mut asked = with_apart("release checklist");
+    asked.budget = 2 * (SHOWN_HEADER + RELEASE.len());
+    asked.apart_budget = 2 * (apart_header(2) + ALONE.join("\n").len());
+    let (output, _) = ask(&log, &index, &asked);
+    assert_eq!(entries_of(&output), [id(1), id(2)]);
+    assert_eq!(apart_entries(&output), [id(11), id(12)]);
+    assert!(output.hits.iter().all(|hit| !hit.apart));
+    assert!(output.apart.iter().all(|hit| hit.apart));
+    assert!(output.hits.iter().all(|hit| hit.found.kind == "note"));
+    assert!(output.apart.iter().all(|hit| hit.found.kind == "joined"));
+    assert!(cost(&output.hits) <= asked.budget);
+    assert!(cost(&output.apart) <= asked.apart_budget);
+}
+
+#[test]
+fn documents_apart_never_move_the_main_list_and_are_ranked_among_themselves() {
+    const MAIN: [&str; 3] = [
+        "release qa qb qc qd",
+        "release zeta zeta qa",
+        "release release zeta zeta qa",
+    ];
+    const APART: [&str; 3] = [
+        "release release release zeta qa qb qc qd qe",
+        "release release zeta qa qb qc qd",
+        "release release release zeta qa",
+    ];
+    let log_of = |main: bool, apart: bool| {
+        let mut log = Log::new();
+        if main {
+            for (n, text) in MAIN.iter().enumerate() {
+                log.put(n as u8 + 1, "note", &[text]);
+            }
+        }
+        if apart {
+            for (n, text) in APART.iter().enumerate() {
+                log.put(n as u8 + 11, "joined", &[text]);
+            }
+        }
+        log
+    };
+    let run = |log: &Log| {
+        let index = index_of(log);
+        ask(log, &index, &with_apart("release zeta")).0
+    };
+    let both = run(&log_of(true, true));
+    let main = run(&log_of(true, false));
+    let apart = run(&log_of(false, true));
+    assert_eq!(entries_of(&main), [id(2), id(3), id(1)]);
+    assert_eq!(apart_entries(&apart), [id(13), id(11), id(12)]);
+    assert_eq!(both.hits, main.hits);
+    assert_eq!(both.apart, apart.apart);
+}
+
+#[test]
+fn a_length_that_fails_ends_the_run_as_failed() {
+    let log = notes_and_apart(2, 2);
+    let index = index_of(&log);
+    let failing = Failing(&index, "length");
+    let mut kept = Logged::default();
+    let finished = ask_with(&log, &failing, &with_apart("release checklist"), &mut kept);
+    let Err(Error::Index(error)) = finished.result else {
+        panic!("an index error");
+    };
+    assert!(error.to_string().contains("length failed"));
+    assert_eq!(fields(&kept)[2], "failed");
+}
+
+#[test]
+fn a_kind_not_listed_apart_stays_in_the_one_list() {
+    let log = notes_and_apart(2, 2);
+    let index = index_of(&log);
+    let (output, _) = ask(&log, &index, &request("release checklist"));
+    assert_eq!(output.hits.len(), 4);
+    assert!(output.apart.is_empty());
+    assert!(output.hits.iter().all(|hit| !hit.apart));
+}
+
+#[test]
+fn the_room_of_one_list_never_moves_to_the_other() {
+    let log = notes_and_apart(12, 12);
+    let index = index_of(&log);
+    let run = |budget: usize, apart_budget: usize| {
+        let mut asked = with_apart("release checklist");
+        asked.budget = budget;
+        asked.apart_budget = apart_budget;
+        ask(&log, &index, &asked).0
+    };
+    let main = run(256, 256).hits;
+    assert!(!main.is_empty());
+    for apart_budget in [256, 2500, 100_000] {
+        assert_eq!(run(256, apart_budget).hits, main, "{apart_budget}");
+    }
+    let apart = run(256, 256).apart;
+    assert!(!apart.is_empty());
+    for budget in [256, 100_000] {
+        assert_eq!(run(budget, 256).apart, apart, "{budget}");
+    }
+}
+
+#[test]
+fn the_last_hit_of_each_list_is_cut_to_its_own_room() {
+    let log = notes_and_apart(5, 5);
+    let index = index_of(&log);
+    let mut asked = with_apart("release checklist");
+    asked.budget = 2 * (SHOWN_HEADER + RELEASE.len()) + SHOWN_HEADER + 5;
+    asked.apart_budget =
+        2 * (apart_header(2) + ALONE.join("\n").len()) + apart_header(2) + ALONE[0].len() + 3;
+    let (output, _) = ask(&log, &index, &asked);
+    assert_eq!(output.hits.len(), 3);
+    assert_eq!(output.apart.len(), 3);
+    assert_eq!(
+        output.hits.iter().map(|hit| hit.cut).collect::<Vec<_>>(),
+        [false, false, true]
+    );
+    assert_eq!(
+        output.apart.iter().map(|hit| hit.cut).collect::<Vec<_>>(),
+        [false, false, true]
+    );
+    assert_eq!(cost(&output.hits), asked.budget);
+    assert_eq!(cost(&output.apart), asked.apart_budget);
+}
+
+#[test]
+fn an_apart_budget_of_zero_reads_nothing_apart_and_keeps_it_out_of_the_main_list() {
+    let log = notes_and_apart(2, 2);
+    let index = index_of(&log);
+    let mut asked = with_apart("release checklist");
+    asked.apart_budget = 0;
+    let (output, _) = ask(&log, &index, &asked);
+    assert!(output.apart.is_empty());
+    assert_eq!(entries_of(&output), [id(1), id(2)]);
+    assert!(
+        log.reads
+            .borrow()
+            .iter()
+            .all(|read| *read != id(11) && *read != id(12))
+    );
+}
+
+#[test]
+fn a_hit_apart_that_repeats_a_hit_above_it_is_passed_over() {
+    let mut log = Log::new();
+    log.put(1, "note", &[RELEASE]);
+    log.put(2, "joined", &["zzz", RELEASE]);
+    let index = index_of(&log);
+    let mut asked = with_apart("release checklist");
+    asked.limits = PASS;
+    let (output, _) = ask(&log, &index, &asked);
+    assert_eq!(entries_of(&output), [id(1)]);
+    assert!(output.apart.is_empty());
+    assert_eq!(output.skipped.copies, 1);
+
+    let mut log = Log::new();
+    log.put(1, "joined", &["zzz", RELEASE]);
+    log.put(2, "joined", &["zzz", RELEASE]);
+    let index = index_of(&log);
+    let (output, _) = ask(&log, &index, &asked);
+    assert!(output.hits.is_empty());
+    assert_eq!(apart_entries(&output), [id(1)]);
+    assert_eq!(output.skipped.copies, 1);
+
+    let mut log = Log::new();
+    log.put(
+        1,
+        "joined",
+        &["zzz", "release alpha beta gamma delta epsilon"],
+    );
+    log.put(2, "joined", &["zzz", "release eta theta iota kappa lambda"]);
+    let index = index_of(&log);
+    let (output, _) = ask(&log, &index, &asked);
+    assert_eq!(apart_entries(&output), [id(1), id(2)]);
+    assert_eq!(output.skipped.copies, 0);
+}
+
+#[test]
+fn the_caps_count_an_entry_apart_as_its_own_entry() {
+    let long = "release checklist and release checklist and release checklist and release checklist and release checklist and release checklist";
+    let mut log = Log::new();
+    log.put(
+        1,
+        "note",
+        &[
+            "release checklist first part of this note, long enough",
+            "release checklist second part of this note, long enough",
+        ],
+    );
+    log.put(2, "joined", &[long, long]);
+    let index = index_of(&log);
+    let windows = index.rows.iter().filter(|row| row.entry == id(2)).count();
+    assert!(windows > 1);
+    let mut asked = with_apart("release checklist");
+    asked.limits.per_entry = 1;
+    let (output, _) = ask(&log, &index, &asked);
+    assert_eq!(entries_of(&output), [id(1)]);
+    assert_eq!(apart_entries(&output), [id(2)]);
+    assert_eq!(output.skipped.capped, 1 + (windows as u64 - 1));
+}
+
+#[test]
+fn a_scope_keeps_both_lists_to_the_entries_named_and_counts_the_main_ranking() {
+    let mut log = Log::new();
+    log.put(1, "note", &[RELEASE]);
+    log.put(2, "note", &[RELEASE]);
+    log.put(3, "joined", &ALONE);
+    log.put(4, "joined", &ALONE);
+    log.label(1, "file:/home/me/src/garden");
+    log.label(2, "file:/home/me/src/shed");
+    log.label(3, "file:/home/me/src/garden");
+    log.label(4, "file:/home/me/src/shed");
+    let index = index_of(&log);
+    let mut asked = with_apart("release checklist");
+    asked.scope = vec!["garden".to_owned()];
+    let (output, _) = ask(&log, &index, &asked);
+    assert_eq!(entries_of(&output), [id(1)]);
+    assert_eq!(apart_entries(&output), [id(3)]);
+    let scope = output.scope.expect("a scope");
+    assert_eq!((scope.kept, scope.best), (2, 2));
+    assert_eq!(scope.outside, BTreeMap::from([("note".to_owned(), 1)]));
+}
+
+#[test]
+fn a_hit_in_either_list_is_hits_and_none_in_both_is_nothing() {
+    let mut log = Log::new();
+    log.put(1, "joined", &ALONE);
+    let index = index_of(&log);
+    let (output, kept) = ask(&log, &index, &with_apart("release checklist"));
+    assert!(output.hits.is_empty());
+    assert_eq!(apart_entries(&output), [id(1)]);
+    let logged = fields(&kept);
+    assert_eq!(logged[2], "hits");
+    assert!(logged[7].starts_with(&id(1).to_string()), "{logged:?}");
+    let (output, kept) = ask(&log, &index, &with_apart("zzzzzz"));
+    assert!(output.hits.is_empty() && output.apart.is_empty());
+    assert_eq!(fields(&kept)[2], "nothing");
+}
+
+#[test]
+fn a_hit_apart_that_cannot_be_read_back_is_left_out_and_counted() {
+    let mut log = notes_and_apart(1, 2);
+    let index = index_of(&log);
+    log.retouch(11, |held| held.damaged = true);
+    let (output, _) = ask(&log, &index, &with_apart("release checklist"));
+    assert_eq!(apart_entries(&output), [id(12)]);
+    assert_eq!(output.left_out, 1);
+}
+
+#[test]
+fn a_position_stands_against_a_manifest_and_a_store() {
+    use bilbo_search::position::Position;
+    use bilbo_search::recall::stand;
+    use bilbo_store::entries::Cursor;
+
+    let mut log = Log::new();
+    log.entries = Vec::new();
+    log.log = Vec::new();
+    let held = |cursor: Cursor, manifest: Manifest| Position {
+        manifest,
+        cursor,
+        failed: Vec::new(),
+    };
+    let other = Manifest::new(SIZE, "bytes/1", "other/1");
+    assert_eq!(
+        stand(None, &manifest(), &log).expect("a stand"),
+        Stand::NoIndex
+    );
+    assert_eq!(
+        stand(Some(&held(log.cursor(), other)), &manifest(), &log).expect("a stand"),
+        Stand::OtherManifest
+    );
+    let current = held(log.cursor(), manifest());
+    assert_eq!(
+        stand(Some(&current), &manifest(), &log).expect("a stand"),
+        Stand::Current
+    );
+    log.log.push(bilbo_store::entries::Change::Meta(id(1)));
+    log.log.push(bilbo_store::entries::Change::Meta(id(2)));
+    assert_eq!(
+        stand(Some(&current), &manifest(), &log).expect("a stand"),
+        Stand::Behind(2)
+    );
+    let elsewhere = held(Cursor::at([5; 16], 0), manifest());
+    assert_eq!(
+        stand(Some(&elsewhere), &manifest(), &log).expect("a stand"),
+        Stand::Unknown
+    );
 }

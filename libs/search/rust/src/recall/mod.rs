@@ -19,8 +19,8 @@ use bilbo_store::labels::Labels;
 use crate::chunk::Size;
 use crate::index::IndexError;
 use crate::lookup::Lookup;
-use crate::position::{self, Manifest, Standing};
-use crate::rank::{self, Expanded, Query, Ranker};
+use crate::position::{self, Manifest, Position, Standing};
+use crate::rank::{self, Candidate, Expanded, Query, Ranker};
 use hit::{Hit, Readback};
 use log::{Ended, QueryLog, Record};
 use scope::Unnamed;
@@ -35,6 +35,7 @@ pub struct Request {
     pub limits: Limits,
     pub scope: Vec<String>,
     pub budget: usize,
+    pub apart_budget: usize,
     pub at: SystemTime,
 }
 
@@ -70,6 +71,7 @@ pub enum Access<'a> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Output {
     pub hits: Vec<Hit>,
+    pub apart: Vec<Hit>,
     pub searched: u64,
     pub stand: Stand,
     pub left_out: u64,
@@ -82,6 +84,7 @@ impl Output {
     fn without_hits(stand: Stand) -> Output {
         Output {
             hits: Vec::new(),
+            apart: Vec::new(),
             searched: 0,
             stand,
             left_out: 0,
@@ -149,20 +152,28 @@ pub fn run(
     log: &mut dyn QueryLog,
 ) -> Finished {
     let result = search(request, reads, readers, tokens, access, shown);
-    let (ended, searched, hits, named, expanded) = match &result {
-        Err(_) => (Ended::Failed, 0, [].as_slice(), None, [].as_slice()),
+    let (ended, searched, hits, apart, named, expanded) = match &result {
+        Err(_) => (
+            Ended::Failed,
+            0,
+            [].as_slice(),
+            [].as_slice(),
+            None,
+            [].as_slice(),
+        ),
         Ok(output) => {
             let ended = match output.stand {
                 Stand::Withheld => Ended::Withheld,
                 Stand::NoIndex => Ended::NoIndex,
                 Stand::OtherManifest => Ended::OtherManifest,
-                _ if output.hits.is_empty() => Ended::Nothing,
+                _ if output.hits.is_empty() && output.apart.is_empty() => Ended::Nothing,
                 _ => Ended::Hits,
             };
             (
                 ended,
                 output.searched,
                 output.hits.as_slice(),
+                output.apart.as_slice(),
                 output.scope.as_ref().map(|scoped| scoped.kept),
                 output.expanded.as_slice(),
             )
@@ -176,11 +187,34 @@ pub fn run(
         scope: &request.scope,
         named,
         hits,
+        apart,
         expanded,
         query: &request.query.text,
     });
     let unlogged = log.append(&line).err().map(|error| error.to_string());
     Finished { result, unlogged }
+}
+
+pub fn stand(
+    found: Option<&Position>,
+    manifest: &Manifest,
+    entries: &dyn Entries,
+) -> Result<Stand, StoreError> {
+    let Some(found) = found else {
+        return Ok(Stand::NoIndex);
+    };
+    if found.manifest != *manifest {
+        return Ok(Stand::OtherManifest);
+    }
+    let (changes, now) = entries.changes(&found.cursor)?;
+    Ok(match position::standing(Some(found), manifest, &now) {
+        Standing::At(_) if changes.is_empty() => Stand::Current,
+        Standing::At(_) => {
+            let changed: BTreeSet<_> = changes.iter().map(Change::id).collect();
+            Stand::Behind(changed.len() as u64)
+        }
+        _ => Stand::Unknown,
+    })
 }
 
 fn search(
@@ -197,20 +231,11 @@ fn search(
         Access::NoIndex => return Ok(Output::without_hits(Stand::NoIndex)),
         Access::Withheld => return Ok(Output::without_hits(Stand::Withheld)),
     };
-    let Some(found) = index.position()? else {
-        return Ok(Output::without_hits(Stand::NoIndex));
-    };
-    if found.manifest != request.manifest {
-        return Ok(Output::without_hits(Stand::OtherManifest));
-    }
-    let (changes, now) = entries.changes(&found.cursor)?;
-    let stand = match position::standing(Some(&found), &request.manifest, &now) {
-        Standing::At(_) if changes.is_empty() => Stand::Current,
-        Standing::At(_) => {
-            let changed: BTreeSet<_> = changes.iter().map(Change::id).collect();
-            Stand::Behind(changed.len() as u64)
-        }
-        _ => Stand::Unknown,
+    let found = index.position()?;
+    let stand = match stand(found.as_ref(), &request.manifest, entries)? {
+        Stand::NoIndex => return Ok(Output::without_hits(Stand::NoIndex)),
+        Stand::OtherManifest => return Ok(Output::without_hits(Stand::OtherManifest)),
+        other => other,
     };
     let scope = if request.scope.is_empty() {
         None
@@ -262,8 +287,10 @@ fn search(
         }
     });
     let candidates = fused.candidates;
+    let apart = fused.apart;
     let mut shorts: Vec<Short> = candidates
         .iter()
+        .chain(&apart)
         .map(|candidate| candidate.found.entry.short())
         .collect();
     shorts.sort_unstable();
@@ -284,29 +311,39 @@ fn search(
     let selection = RefCell::new(Selection::new(request.limits));
     let mut left_out = 0u64;
     let mut back = Readback::new(entries, readers, tokens, request.chunk);
-    let read = candidates
-        .into_iter()
-        .filter(|candidate| selection.borrow_mut().admits(&candidate.found))
-        .filter_map(|candidate| match back.hit(candidate.found) {
-            Some(mut hit) => {
-                hit.shared_short = shared.contains(&hit.found.entry.short());
-                Some(Ok::<Hit, Error>(hit))
-            }
-            None => {
-                left_out += 1;
-                None
-            }
-        });
-    let hits = pack::pack(
-        read,
-        tokens,
-        shown,
-        &mut |hit| selection.borrow_mut().keeps(hit),
-        request.budget,
-    )?;
+    let mut gather = |candidates: Vec<Candidate>, apart: bool, budget: usize| {
+        let read = candidates
+            .into_iter()
+            .filter(|candidate| selection.borrow_mut().admits(&candidate.found))
+            .filter_map(|candidate| match back.hit(candidate.found) {
+                Some(mut hit) => {
+                    hit.shared_short = shared.contains(&hit.found.entry.short());
+                    hit.apart = apart;
+                    Some(Ok::<Hit, Error>(hit))
+                }
+                None => {
+                    left_out += 1;
+                    None
+                }
+            });
+        pack::pack(
+            read,
+            tokens,
+            shown,
+            &mut |hit| selection.borrow_mut().keeps(hit),
+            budget,
+        )
+    };
+    let hits = gather(candidates, false, request.budget)?;
+    let apart_hits = if request.apart_budget == 0 {
+        Vec::new()
+    } else {
+        gather(apart, true, request.apart_budget)?
+    };
     let skipped = selection.borrow().skipped();
     Ok(Output {
         hits,
+        apart: apart_hits,
         searched,
         stand,
         left_out,

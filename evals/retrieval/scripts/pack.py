@@ -1,6 +1,7 @@
-"""Pack an arm's results into one context per question and form. Usage: pack.py <search.jsonl> <contexts.jsonl> <budget>.
+"""Pack an arm's results into one context per question and form. Usage: pack.py <search.jsonl> <contexts.jsonl> <budget> [<notes budget>].
 Results go in whole, in the tool's order, joined by a blank line, until one does not fit: that one is cut to the tokens
-left. The separators count toward the budget."""
+left. The separators count toward the budget. With a notes budget the row's `notes` are packed into it by the same rule,
+after the chunks and a blank line; the row then holds `notes` (how many went in) and `notes_cut`."""
 
 import hashlib
 import json
@@ -46,8 +47,16 @@ def pack(texts, budget):
             "cut": cut}
 
 
+def with_notes(chunks, notes, budget, notes_budget):
+    first, second = pack(chunks, budget), pack(notes, notes_budget)
+    text = SEP.join(p["text"] for p in (first, second) if p["text"])
+    return {"text": text, "sha": hashlib.sha256(text.encode()).hexdigest(), "tokens": len(tokens(text)),
+            "results": first["results"], "cut": first["cut"], "notes": second["results"], "notes_cut": second["cut"]}
+
+
 def main():
     search, contexts, budget = Path(sys.argv[1]), Path(sys.argv[2]), int(sys.argv[3])
+    notes_budget = int(sys.argv[4]) if len(sys.argv) > 4 else None
     seen, rows = set(), []
     for line in search.read_text().split("\n"):
         if not line.strip():
@@ -56,9 +65,14 @@ def main():
         if (row["id"], row["form"]) in seen:
             continue
         seen.add((row["id"], row["form"]))
-        packed = pack([r["text"] for r in row["results"]], budget)
+        if notes_budget is None:
+            packed = pack([r["text"] for r in row["results"]], budget)
+            extra = {}
+        else:
+            packed = with_notes([r["text"] for r in row["results"]], [n["text"] for n in row.get("notes", [])], budget, notes_budget)
+            extra = {"notes": packed["notes"], "notes_cut": packed["notes_cut"]}
         rows.append({"id": row["id"], "form": row["form"], "sha": packed["sha"], "tokens": packed["tokens"],
-                     "results": packed["results"], "cut": packed["cut"], "text": packed["text"]})
+                     "results": packed["results"], "cut": packed["cut"], **extra, "text": packed["text"]})
 
     tmp = contexts.with_name(contexts.name + ".part")
     tmp.write_text("".join(json.dumps(r, ensure_ascii=False) + "\n" for r in rows))

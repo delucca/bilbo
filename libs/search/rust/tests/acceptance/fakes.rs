@@ -237,6 +237,26 @@ impl Reader for Whole {
     }
 }
 
+pub struct Alone(pub &'static str);
+
+impl Reader for Alone {
+    fn kind(&self) -> &'static str {
+        self.0
+    }
+
+    fn passages(&self, records: &[&[u8]]) -> Vec<Passage> {
+        Lines(self.0).passages(records)
+    }
+
+    fn appends_only(&self) -> bool {
+        true
+    }
+
+    fn stands_alone(&self) -> bool {
+        true
+    }
+}
+
 struct Bomb;
 
 impl Drop for Bomb {
@@ -1053,6 +1073,15 @@ impl Lookup for Docs {
             .collect())
     }
 
+    fn length(&self, kind: &str) -> Result<u64, IndexError> {
+        Ok(self
+            .rows
+            .iter()
+            .filter(|row| row.kind == kind)
+            .map(|row| Docs::terms_of(row).len() as u64)
+            .sum())
+    }
+
     fn found(&self, docs: &[u32]) -> Result<Vec<Found>, IndexError> {
         Ok(docs
             .iter()
@@ -1122,6 +1151,13 @@ impl Lookup for Failing<'_> {
         self.0.holding(filter)
     }
 
+    fn length(&self, kind: &str) -> Result<u64, IndexError> {
+        if self.1 == "length" {
+            return Err(unreadable("length"));
+        }
+        self.0.length(kind)
+    }
+
     fn found(&self, docs: &[u32]) -> Result<Vec<Found>, IndexError> {
         if self.1 == "found" {
             return Err(unreadable("found"));
@@ -1153,6 +1189,7 @@ impl Ranker for Scripted {
         Ok(Ranked {
             candidates: self.candidates.clone(),
             unscoped: Vec::new(),
+            apart: Vec::new(),
             expanded: Vec::new(),
         })
     }

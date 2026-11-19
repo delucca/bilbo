@@ -5,6 +5,7 @@ pub mod env;
 pub mod indexing;
 pub mod message;
 pub mod outcome;
+pub mod private;
 pub mod reading;
 pub mod settings;
 pub mod streams;

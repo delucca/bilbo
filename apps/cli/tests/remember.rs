@@ -17,8 +17,12 @@ use bilbo_store::layout::Layout;
 use bilbo_store::segments::{Options, Store};
 
 mod sandbox;
+mod scratch;
+mod stores;
 
-use sandbox::{Run, backdate, counts, layout, run, scratch_dir, text, vars, write};
+use sandbox::{Run, counts, run, text, write};
+use scratch::{scratch_dir, vars};
+use stores::{backdate, layout};
 
 const ID_A: &str = "01JC5Q3V7XKM4P8R2T6W9YB0DE";
 const ID_B: &str = "01JC5Q3V7XKM4P8R2T6W9YB0DF";

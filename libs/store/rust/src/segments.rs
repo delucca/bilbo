@@ -5,7 +5,7 @@ use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::os::unix::fs::FileExt;
 use std::path::{Component, Path, PathBuf};
 use std::thread;
-use std::time::{Duration, Instant, SystemTime};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crate::capture::{self, Action};
 use crate::catalog::{self, Catalog, Fresh, Owner, Place};
@@ -21,6 +21,7 @@ use crate::layout::Layout;
 use crate::limits::{Compression, TearBudget};
 use crate::meta;
 use crate::opaque;
+use crate::sealed::Sealed;
 
 pub type Hook = Box<dyn FnMut(Step) -> io::Result<()> + Send>;
 
@@ -1628,6 +1629,16 @@ impl Labels for Store {
 
     fn belonging_to(&self, entries: &[Id]) -> Result<Vec<Id>, StoreError> {
         self.catalog.belonging_to(entries)
+    }
+}
+
+impl Sealed for Store {
+    fn sealed_at(&self, id: Id) -> Result<Option<SystemTime>, StoreError> {
+        Ok(self
+            .catalog
+            .newest_segment(id)?
+            .filter(|name| name != catalog::OPEN)
+            .map(|name| Id::parse(&name).map_or(UNIX_EPOCH, Id::minted)))
     }
 }
 

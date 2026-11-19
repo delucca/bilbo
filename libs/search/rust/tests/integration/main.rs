@@ -107,6 +107,7 @@ fn chunk(first: u64, count: u64, part: Option<(u32, u32)>, text: &str) -> Chunk 
         part,
         tokens: text.len(),
         text: text.to_owned(),
+        headed: false,
     }
 }
 
@@ -179,6 +180,7 @@ fn weighted(
     let query = Query {
         text: text.to_owned(),
         kinds: Vec::new(),
+        apart: Vec::new(),
         entries: None,
     };
     Bm25 {
@@ -536,6 +538,7 @@ fn refused(scratch: &Scratch, what: &str) {
             .holding(&Filter::Kind("session"))
             .map(|_| ())
             .expect_err("refused"),
+        reader.length("session").map(|_| ()).expect_err("refused"),
         reader.found(&[0]).map(|_| ()).expect_err("refused"),
         reader.documents().map(|_| ()).expect_err("refused"),
         reader.terms().map(|_| ()).expect_err("refused"),
@@ -2269,6 +2272,9 @@ fn what_was_added_comes_back_as_postings_lengths_kinds_and_rows() {
             .expect("holding")
             .is_empty()
     );
+    assert_eq!(reader.length("session").expect("length"), 8);
+    assert_eq!(reader.length("markdown").expect("length"), 3);
+    assert_eq!(reader.length("none").expect("length"), 0);
     let all = reader.totals().expect("totals");
     assert_eq!(
         (all.documents, all.entries, all.length, u64::from(all.bound)),
@@ -2371,6 +2377,75 @@ fn a_replaced_document_is_in_no_posting_and_no_total() {
             totals.bound
         ),
         (10, 10, 19, 11)
+    );
+}
+
+#[test]
+fn the_length_of_a_kind_is_the_sum_over_its_live_documents_across_segments() {
+    let scratch = Scratch::new("kind-length");
+    let mut index = scratch.fresh();
+    for record in 1..=3 {
+        add(
+            &mut index,
+            1,
+            "session",
+            100,
+            &chunk(record, 1, None, "zebra"),
+        );
+    }
+    add(
+        &mut index,
+        2,
+        "markdown",
+        100,
+        &chunk(1, 1, None, "yak yak"),
+    );
+    for record in 1..=20 {
+        add(
+            &mut index,
+            4,
+            "session",
+            100,
+            &chunk(record, 1, None, "filler"),
+        );
+    }
+    index.commit(&position(1)).expect("commit");
+    index.delete(id(1), 2).expect("delete");
+    add(
+        &mut index,
+        1,
+        "session",
+        100,
+        &chunk(2, 1, None, "zebra again"),
+    );
+    index.delete(id(2), 1).expect("delete");
+    add(
+        &mut index,
+        2,
+        "markdown",
+        100,
+        &chunk(1, 1, None, "yak again later"),
+    );
+    add(&mut index, 3, "markdown", 100, &chunk(1, 1, None, "gnu"));
+    index.commit(&position(2)).expect("commit");
+    let reader = committed(&scratch);
+    assert_eq!(reader.length("session").expect("length"), 23);
+    assert_eq!(reader.length("markdown").expect("length"), 4);
+    assert_eq!(reader.length("none").expect("length"), 0);
+    assert_eq!(reader.totals().expect("totals").length, 27);
+    assert_eq!(
+        reader
+            .holding(&Filter::Kind("session"))
+            .expect("holding")
+            .len(),
+        22
+    );
+    assert_eq!(
+        reader
+            .holding(&Filter::Kind("markdown"))
+            .expect("holding")
+            .len(),
+        2
     );
 }
 
@@ -2534,6 +2609,7 @@ fn read_everything(folder: &Path) {
     reader
         .holding(&Filter::Entries(&[id(1), id(2)]))
         .expect("holding");
+    reader.length("session").expect("length");
     let all: Vec<u32> = (0..totals.bound).collect();
     reader.found(&all).expect("found");
     reader.documents().expect("documents");
@@ -2573,6 +2649,7 @@ fn nothing_to_read(reader: &Committed, what: &str) {
         reader.near("garden", Edits::One).map(|_| ()),
         reader.pairs("garden", "tool").map(|_| ()),
         reader.holding(&Filter::Kind("session")).map(|_| ()),
+        reader.length("session").map(|_| ()),
         reader.found(&[0]).map(|_| ()),
         reader.documents().map(|_| ()),
         reader.terms().map(|_| ()),
@@ -2685,6 +2762,9 @@ impl Lookup for Counting<'_> {
     fn holding(&self, filter: &Filter<'_>) -> Result<Vec<u32>, IndexError> {
         self.inner.holding(filter)
     }
+    fn length(&self, kind: &str) -> Result<u64, IndexError> {
+        self.inner.length(kind)
+    }
     fn found(&self, docs: &[u32]) -> Result<Vec<bilbo_search::lookup::Found>, IndexError> {
         self.widest.set(self.widest.get().max(docs.len()));
         self.inner.found(docs)
@@ -2702,6 +2782,7 @@ fn a_tie_of_every_document_is_cut_by_the_tie_order() {
     let query = Query {
         text: "same words".to_owned(),
         kinds: Vec::new(),
+        apart: Vec::new(),
         entries: None,
     };
     let hits = Bm25 {
@@ -2745,6 +2826,7 @@ fn scoped(scratch: &Scratch, entries: Option<Vec<Id>>, text: &str) -> bilbo_sear
         &Query {
             text: text.to_owned(),
             kinds: Vec::new(),
+            apart: Vec::new(),
             entries,
         },
         100,
@@ -2994,6 +3076,17 @@ fn a_damaged_length_column_is_an_index_error_from_totals_and_postings() {
             matches!(posting_error, IndexError::Failed { .. }),
             "offset {at}"
         );
+        let failed: Vec<IndexError> = ["session", "markdown"]
+            .iter()
+            .filter_map(|kind| reader.length(kind).err())
+            .collect();
+        assert!(!failed.is_empty(), "offset {at}: no length failed");
+        assert!(
+            failed
+                .iter()
+                .all(|error| matches!(error, IndexError::Failed { .. })),
+            "offset {at}"
+        );
         both.push(at);
         assert_eq!(snapshot(&scratch.0), before, "offset {at}");
     }
@@ -3034,6 +3127,7 @@ fn a_damaged_postings_or_term_file_is_an_index_error_from_every_read() {
                 reader
                     .holding(&Filter::Entries(&[id(1), id(2)]))
                     .map(|_| ()),
+                reader.length("session").map(|_| ()),
                 reader.found(&all).map(|_| ()),
                 reader.documents().map(|_| ()),
                 reader.terms().map(|_| ()),
@@ -3427,6 +3521,10 @@ fn a_posting_outside_its_segment_is_an_index_error() {
     assert!(matches!(error, IndexError::Inconsistent(_)), "{error}");
     let error = reader
         .holding(&Filter::Kind("session"))
+        .expect_err("a posting past the segment");
+    assert!(matches!(error, IndexError::Inconsistent(_)), "{error}");
+    let error = reader
+        .length("session")
         .expect_err("a posting past the segment");
     assert!(matches!(error, IndexError::Inconsistent(_)), "{error}");
     let error = reader

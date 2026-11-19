@@ -1,0 +1,1 @@
+{"model":"test-model-1","id":"msg_TESTREFUSAL01","type":"message","role":"assistant","content":[],"stop_reason":"refusal","stop_sequence":null,"stop_details":{"type":"refusal","category":"cyber","explanation":"invented explanation"},"container":null,"usage":{"input_tokens":50,"output_tokens":0,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}}

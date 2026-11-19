@@ -29,6 +29,7 @@ use bilbo_search::typo::Rule;
 use bilbo_store::entries::{Entries, Generation};
 use bilbo_store::id::Id;
 use bilbo_store::labels::{CaptureLabel, Labels};
+use bilbo_store::layout::Layout;
 use bilbo_store::segments::{Options, Store};
 
 const SESSIONS: [(&str, &[u8]); 4] = [
@@ -81,6 +82,8 @@ static COUNTER: AtomicU64 = AtomicU64::new(0);
 static QWEN: LazyLock<bilbo_search::qwen::Qwen> =
     LazyLock::new(|| bilbo_search::qwen::Qwen::load().expect("the tokenizer"));
 
+mod notes;
+
 const WORKERS: &str = "2";
 
 fn options() -> bilbo_search::tantivy::Options {
@@ -108,6 +111,7 @@ fn rank(cache: &Path, text: &str, limit: usize) -> Vec<Candidate> {
         &Query {
             text: text.to_owned(),
             kinds: Vec::new(),
+            apart: Vec::new(),
             entries: None,
         },
         limit,
@@ -368,14 +372,19 @@ impl Sandbox {
                 .map(|(name, value)| ((*name).to_owned(), OsString::from(value))),
         );
         let mut env = Env {
-            var: Box::new(move |name| vars.get(name).cloned()),
+            var: std::rc::Rc::new(move |name| vars.get(name).cloned()),
             stdin: Box::new(io::empty()),
             notice: Box::new(move |message| {
                 sink.lock().expect("notices").extend(message.plain_lines());
             }),
         };
-        let settings = settings::load(&*env.var, &|path| fs::read(path), &bilbo_cli::kind_keys())
-            .expect("settings");
+        let settings = settings::load(
+            &*env.var,
+            &|path| fs::read(path),
+            &bilbo_cli::kind_keys(),
+            &bilbo_cli::provider_keys(),
+        )
+        .expect("settings");
         let mut readers = bilbo_cli::readers(&settings).expect("the readers");
         if panicky {
             readers = readers
@@ -417,15 +426,20 @@ impl Sandbox {
         run
     }
 
-    fn store(&self) -> Store {
-        let layout = settings::load(
+    fn layout(&self) -> Layout {
+        settings::load(
             &|name| self.vars().get(name).cloned(),
             &|path| fs::read(path),
             &bilbo_cli::kind_keys(),
+            &bilbo_cli::provider_keys(),
         )
         .expect("settings")
-        .layout();
-        Store::open_read_only(&layout, Options::default(), &mut |_| {}).expect("open the store")
+        .layout()
+    }
+
+    fn store(&self) -> Store {
+        Store::open_read_only(&self.layout(), Options::default(), &mut |_| {})
+            .expect("open the store")
     }
 
     fn held(&self) -> (Vec<Row>, Vec<Vec<(u32, Found)>>) {
@@ -463,13 +477,17 @@ impl Reader for Poisoned {
     fn appends_only(&self) -> bool {
         self.0.appends_only()
     }
+
+    fn stands_alone(&self) -> bool {
+        self.0.stands_alone()
+    }
 }
 
 fn bilbo(vars: HashMap<String, OsString>, args: &[&str], notices: Option<Sender<String>>) -> Run {
     let said = Arc::new(Mutex::new(Vec::new()));
     let sink = Arc::clone(&said);
     let mut env = Env {
-        var: Box::new(move |name| vars.get(name).cloned()),
+        var: std::rc::Rc::new(move |name| vars.get(name).cloned()),
         stdin: Box::new(io::empty()),
         notice: Box::new(move |message| {
             let lines = message.plain_lines();
@@ -483,8 +501,13 @@ fn bilbo(vars: HashMap<String, OsString>, args: &[&str], notices: Option<Sender<
         .chain(args.iter().copied())
         .map(OsString::from)
         .collect();
-    let settings = settings::load(&*env.var, &|path| fs::read(path), &bilbo_cli::kind_keys())
-        .map_err(Failure::from);
+    let settings = settings::load(
+        &*env.var,
+        &|path| fs::read(path),
+        &bilbo_cli::kind_keys(),
+        &bilbo_cli::provider_keys(),
+    )
+    .map_err(Failure::from);
     let (code, stdout, lines) =
         match bilbo_cli::run_tuned(&bilbo_cli::bilbo(), &argv, &mut env, settings, &tune) {
             Ok(outcome) => (
@@ -608,7 +631,7 @@ fn the_index_records_the_manifest_it_was_made_with_and_the_stores_cursor() {
             "chunk_overlap 64",
             "analyzer bm25s-en/3",
             "tokenizer qwen3-embedding-0.6b/97b0c614be4d/def76fb08697/raw",
-            "render markdown/1/heading_width=100 session/2",
+            "render markdown/1/heading_width=100 session/2 note/1",
         ]
     );
     let store = sandbox.store();
@@ -655,7 +678,7 @@ fn the_index_records_the_manifest_it_was_made_with_and_the_stores_cursor() {
     assert!(
         sandbox
             .payload()
-            .contains("\nrender markdown/1/heading_width=40 session/2\n")
+            .contains("\nrender markdown/1/heading_width=40 session/2 note/1\n")
     );
 }
 
@@ -867,15 +890,20 @@ fn a_reindex_holds_the_store_from_the_catalog_to_the_commit_and_a_bare_remember_
         }
     };
     let mut env = Env {
-        var: Box::new({
+        var: std::rc::Rc::new({
             let vars = sandbox.vars();
             move |name| vars.get(name).cloned()
         }),
         stdin: Box::new(io::empty()),
         notice: Box::new(|_| {}),
     };
-    let settings = settings::load(&*env.var, &|path| fs::read(path), &bilbo_cli::kind_keys())
-        .expect("settings");
+    let settings = settings::load(
+        &*env.var,
+        &|path| fs::read(path),
+        &bilbo_cli::kind_keys(),
+        &bilbo_cli::provider_keys(),
+    )
+    .expect("settings");
     let readers = bilbo_cli::readers(&settings).expect("the readers");
     let rendering = bilbo_cli::rendering(&settings).expect("the rendering");
     let kinds = bilbo_cli::kinds(&settings).expect("the kinds");
@@ -1814,7 +1842,7 @@ fn an_index_made_before_readers_gave_labels_is_made_again() {
     assert!(
         sandbox
             .payload()
-            .contains("\nrender markdown/1/heading_width=100 session/2\n")
+            .contains("\nrender markdown/1/heading_width=100 session/2 note/1\n")
     );
 }
 
@@ -1973,6 +2001,7 @@ fn an_update_that_fails_is_not_tried_again_by_the_close_loop() {
         &|name| vars.get(name).cloned(),
         &|path| fs::read(path),
         &bilbo_cli::kind_keys(),
+        &bilbo_cli::provider_keys(),
     )
     .expect("settings");
     let readers = bilbo_cli::readers(&settings).expect("the readers");
@@ -2186,6 +2215,7 @@ fn what_an_index_of_the_done_check_store_holds() {
         &|name| (name == "HOME").then(|| "/nowhere".into()),
         &|_| Err(io::ErrorKind::NotFound.into()),
         &bilbo_cli::kind_keys(),
+        &bilbo_cli::provider_keys(),
     )
     .expect("the defaults");
     let readers = bilbo_cli::readers(&settings).expect("the readers");
@@ -2288,6 +2318,7 @@ fn the_list_limit_reaches_the_index_and_the_lookup() {
             },
             &|path| fs::read(path),
             &bilbo_cli::kind_keys(),
+            &bilbo_cli::provider_keys(),
         )
         .expect("settings")
         .search
@@ -2305,4 +2336,123 @@ fn the_list_limit_reaches_the_index_and_the_lookup() {
     let (indexed, looked) = positions(Some("1 MiB"));
     assert_eq!(indexed.expect("a position"), None);
     assert_eq!(looked.expect("a position"), None);
+}
+
+fn note_lines(parent: Id, count: u64) -> Vec<Vec<u8>> {
+    let mut lines = Vec::new();
+    for number in 1..=count {
+        let record = bilbo_entries::note::record::Record {
+            text: format!("The carrot rows were thinned, number {number}."),
+            at: Some(1_794_039_249),
+            from: vec![bilbo_entries::note::record::Source {
+                entry: parent,
+                generation: 1,
+                first: 1,
+                last: 2,
+            }],
+        };
+        lines.push((bilbo_cli::notes().write)(&record));
+        if number == 1 {
+            lines.push(b"{\"run\":{\"count\":1}}\n".to_vec());
+        }
+    }
+    lines
+}
+
+fn parent_of(sandbox: &Sandbox) -> Id {
+    let label = bilbo_store::labels::CaptureLabel::file(&sandbox.dir.join(WORKED))
+        .expect("a capture label");
+    sandbox
+        .store()
+        .by_capture(&label)
+        .expect("a lookup")
+        .expect("an entry")
+        .id
+}
+
+#[test]
+fn a_note_entry_is_indexed_a_document_a_note_and_grows_as_a_rebuilt_one() {
+    let sandbox = Sandbox::new("note_entry");
+    write_the_workers(&sandbox);
+    assert_eq!(
+        sandbox.run(&["remember", &sandbox.path("sessions")]).code,
+        0
+    );
+    let parent = parent_of(&sandbox);
+    let layout = sandbox.layout();
+    let note = notes::noted(&layout, parent, &note_lines(parent, 2));
+    sandbox.reindex();
+    let held = |sandbox: &Sandbox| -> Vec<(u64, u64)> {
+        sandbox
+            .index()
+            .documents()
+            .expect("the documents")
+            .iter()
+            .filter(|row| row.entry == note.to_bytes())
+            .map(|row| (row.first, row.count))
+            .collect()
+    };
+    let mut firsts = held(&sandbox);
+    firsts.sort_unstable();
+    assert_eq!(firsts, [(1, 1), (3, 1)]);
+    notes::noted(&layout, parent, &note_lines(parent, 4));
+    let run = sandbox.run(&["remember", &sandbox.path("sessions")]);
+    assert_eq!(run.code, 0, "{:?}", run.stderr);
+    let grown = sandbox.index().documents().expect("the documents");
+    sandbox.reindex();
+    assert_eq!(sandbox.index().documents().expect("the documents"), grown);
+    let mut after = held(&sandbox);
+    after.sort_unstable();
+    assert_eq!(after, [(1, 1), (3, 1), (4, 1), (5, 1)]);
+}
+
+#[test]
+fn an_index_made_before_the_note_reader_is_made_again_once() {
+    let sandbox = Sandbox::new("note_render");
+    write_the_workers(&sandbox);
+    let before = sandbox.remember_rendered(&Remembering {
+        target: &sandbox.path("sessions"),
+        extra: &[],
+        render: Some("markdown/1/heading_width=100 session/2"),
+        index: &disk,
+        load: &shared_tokenizer,
+        panicky: false,
+        said: &Arc::default(),
+    });
+    assert_eq!(before.code, 0, "{:?}", before.stderr);
+    let recall = sandbox.run(&["recall", "--", "zebras"]);
+    assert_eq!(recall.code, 1, "{:?}", recall.stderr);
+    assert!(
+        recall
+            .stderr
+            .iter()
+            .any(|line| line.contains("by another bilbo")),
+        "{:?}",
+        recall.stderr
+    );
+    let again = sandbox.run(&["remember", &sandbox.path("sessions")]);
+    assert_eq!(again.code, 0, "{:?}", again.stderr);
+    assert!(
+        again
+            .stderr
+            .iter()
+            .any(|line| line.contains(NO_REBUILD_LINE)),
+        "{:?}",
+        again.stderr
+    );
+    assert!(
+        sandbox
+            .payload()
+            .contains("\nrender markdown/1/heading_width=100 session/2 note/1\n")
+    );
+    let once = sandbox.run(&["remember", &sandbox.path("sessions")]);
+    assert_eq!(once.code, 0, "{:?}", once.stderr);
+    assert!(
+        !once
+            .stderr
+            .iter()
+            .any(|line| line.contains(NO_REBUILD_LINE)),
+        "{:?}",
+        once.stderr
+    );
 }

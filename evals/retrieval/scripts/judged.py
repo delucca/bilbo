@@ -9,7 +9,6 @@ import sys
 from collections import defaultdict
 from pathlib import Path
 
-BUDGET = 4000
 PARTS = ("arm", "store", "search", "driver", "reworded", "variation", "rerun")
 RUN = re.compile(r"(?P<arm>.+)-(?P<store>[0-9a-f]{12})-(?P<search>[0-9a-f]{12})(?:-driver-(?P<driver>[0-9a-f]{12}))?"
                  r"(?:-reworded-(?P<reworded>[0-9a-f]{12}))?(?:-variation-(?P<variation>[0-9a-f]{12}))?"
@@ -34,13 +33,17 @@ def prompt_builder():
     return scope["build_prompt"]
 
 
-def verdicts(d, questions):
-    """(id, form) -> the verdict in d/judged.jsonl for the current prompt of each of d's contexts, `questions` by id."""
+def judged_file(row="4000"):
+    return "judged.jsonl" if row == "4000" else f"judged-{row}.jsonl"
+
+
+def verdicts(d, questions, row="4000"):
+    """(id, form) -> the row's verdict in d for the current prompt of each of d/contexts-<row>.jsonl's contexts, `questions` by id."""
     build, judged = prompt_builder(), defaultdict(list)
-    for r in rows(d / "judged.jsonl"):
+    for r in rows(d / judged_file(row)):
         judged[(r["id"], r["form"], r["ctx"], r["prompt"])].append(r)
     out = {}
-    for c in rows(d / f"contexts-{BUDGET}.jsonl"):
+    for c in rows(d / f"contexts-{row}.jsonl"):
         if c["id"] in questions:
             sha = hashlib.sha256(build(questions[c["id"]], c["text"]).encode()).hexdigest()
             if judged[(c["id"], c["form"], c["sha"], sha)]:

@@ -7,7 +7,7 @@ use bilbo_store::segments::{Closed, Held, Options, Store};
 
 use super::disk::Disk;
 use super::index::update;
-use super::messages::{info, refusals, warning};
+use super::messages::refusals;
 use super::view;
 use crate::console::closing::Closing;
 use crate::console::env::Env;
@@ -63,7 +63,7 @@ pub fn run(
     let mut diagnostics = pass.messages.clone();
     let layout = settings.layout();
     if let Err(error) = Store::check(&layout) {
-        return Ok(stopped(diagnostics, &Failure::from(&error)));
+        return Ok(Outcome::stopped(diagnostics, &Failure::from(error), ""));
     }
     let options = Options {
         held: Held::Flag,
@@ -73,17 +73,18 @@ pub fn run(
     let mut store = match Store::open(&layout, options, &mut |n| notice(&notice_message(&n))) {
         Ok(store) => store,
         Err(StoreError::Busy) => {
-            diagnostics.push(info(BUSY));
+            diagnostics.push(Message::info(BUSY));
             return Ok(Outcome::new("").with_diagnostics(diagnostics));
         }
-        Err(error) => return Ok(stopped(diagnostics, &Failure::from(&error))),
+        Err(error) => return Ok(Outcome::stopped(diagnostics, &Failure::from(error), "")),
     };
     let outputs = match pass.keep(&mut store) {
         Ok(outputs) => outputs,
         Err(error) => {
-            return Ok(stopped(
+            return Ok(Outcome::stopped(
                 diagnostics,
                 &Failure::Refused(sanitize(&error.to_string())),
+                "",
             ));
         }
     };
@@ -103,18 +104,6 @@ pub fn run(
         diagnostics,
         pass.failed || closing.failed || closing.refused,
     ))
-}
-
-fn stopped(mut diagnostics: Vec<Message>, failure: &Failure) -> Outcome {
-    diagnostics.push(failure.message());
-    let exit = if failure.exit_code() == 2 {
-        Exit::Config
-    } else {
-        Exit::Refused
-    };
-    Outcome::new("")
-        .with_diagnostics(diagnostics)
-        .with_exit(exit)
 }
 
 pub fn finish(
@@ -178,7 +167,7 @@ pub fn close(
                         let totals = view::Totals::of(&outputs);
                         closing.refused |= totals.tally.refused > 0;
                         closing.messages.extend(refusals(&outputs));
-                        closing.messages.push(info(&format!(
+                        closing.messages.push(Message::info(&format!(
                             "ran the follows again for another bilbo: {}",
                             view::counts(&totals)
                         )));
@@ -216,20 +205,20 @@ fn planned_messages(planned: &[Planned<'_>]) -> Vec<Message> {
     for planned in planned {
         match planned {
             Planned::Missing(follow) => {
-                messages.push(info(&format!(
+                messages.push(Message::info(&format!(
                     "skipped {}: no such file or folder",
                     follow.path.display()
                 )));
             }
             Planned::Failed(follow, error) => {
-                messages.push(warning(&format!(
+                messages.push(Message::warning(&format!(
                     "follow {}: {error}",
                     follow.path.display()
                 )));
             }
             Planned::Ready(follow, plan) => {
                 if plan.claims.is_empty() {
-                    messages.push(info(&match plan.kind {
+                    messages.push(Message::info(&match plan.kind {
                         Some(kind) => format!(
                             "nothing to keep: {} claims no file under {}",
                             kind.name(),

@@ -1,7 +1,7 @@
 use std::fmt;
 
 use bilbo_entries::reader::Passage;
-use bilbo_entries::tokens::Tokens;
+use bilbo_entries::tokens::{Tokens, stretches};
 use bilbo_store::entries::RecordRange;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -11,6 +11,7 @@ pub struct Chunk {
     pub part: Option<(u32, u32)>,
     pub tokens: usize,
     pub text: String,
+    pub headed: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -33,7 +34,7 @@ pub struct Size {
 /// A text is never handed to the tokenizer whole above this: one call costs about 180 bytes of
 /// memory a byte of text. The real tokenizer's longest ordinary token is 128 bytes and a chunk
 /// holds at most 8,192 tokens, so no chunk of a text over this size could fit anyway.
-const MAX_ENCODE_BYTES: usize = 1 << 20;
+pub const MAX_ENCODE_BYTES: usize = 1 << 20;
 
 /// Consecutive passages packed while they fit, a passage over the size as windows of its own.
 /// A passage with no text is in no chunk. A text the tokenizer cannot split is `Unsplit`.
@@ -43,6 +44,14 @@ pub fn chunks(
     size: Size,
 ) -> Result<Vec<Chunk>, Unsplit> {
     chunks_within(passages, tokens, size, MAX_ENCODE_BYTES)
+}
+
+pub fn alone(passages: &[Passage], tokens: &dyn Tokens, size: Size) -> Result<Vec<Chunk>, Unsplit> {
+    let mut found = Vec::new();
+    for passage in passages {
+        found.extend(chunks(std::slice::from_ref(passage), tokens, size)?);
+    }
+    Ok(found)
 }
 
 /// A packed extent whose passages are whole and consecutive is recomputed from them, also when a
@@ -141,6 +150,7 @@ fn chunks_within(
             part: None,
             tokens: count,
             text: passage.text.clone(),
+            headed: passage.pieces.first().is_some_and(|piece| piece.start > 0),
         });
     }
     chunks.extend(packed);
@@ -186,36 +196,13 @@ fn records_of(passage: &Passage, from: usize, to: usize) -> RecordRange {
     }
 }
 
-/// The byte ranges `text` is tokenized in: none longer than `bound`, in order, each ending at the
-/// last line feed of its second half, or else on a character.
-fn stretches(text: &str, bound: usize) -> Vec<(usize, usize)> {
-    let mut found = Vec::new();
-    let mut at = 0;
-    while at < text.len() {
-        if text.len() - at <= bound {
-            found.push((at, text.len()));
-            break;
-        }
-        let hard = text.floor_char_boundary(at + bound);
-        let half = at + bound / 2;
-        let mut end = text.as_bytes()[half..hard]
-            .iter()
-            .rposition(|byte| *byte == b'\n')
-            .map_or(hard, |line_feed| half + line_feed + 1);
-        if end == at {
-            end = at + text[at..].chars().next().map_or(1, char::len_utf8);
-        }
-        found.push((at, end));
-        at = end;
-    }
-    found
-}
-
 /// Windows of the passage's tokens, each starting `overlap` tokens before the last one's end. Every
 /// window but the first opens with the label line of the piece it starts in, unless that line
 /// leaves no room to move on. A window's edge inside a character moves out to the character, and a
 /// window those bytes push over the size loses its last token until it fits. A text over `bound`
 /// is windowed a stretch at a time, and no window crosses the end of a stretch.
+/// A passage with a head is windowed after it: every window opens with the head, or with none of
+/// it when it leaves no room, and takes no label.
 fn windows(
     passage: &Passage,
     tokens: &dyn Tokens,
@@ -232,12 +219,14 @@ fn windows(
             part: Some((part, parts)),
             tokens: cut.tokens,
             text: cut.text,
+            headed: cut.headed,
         })
         .collect())
 }
 
 struct Cut {
     text: String,
+    headed: bool,
     tokens: usize,
     from: usize,
     to: usize,
@@ -275,12 +264,29 @@ fn cuts(
         room[piece] = Some(cost);
         Ok(cost)
     };
-    let width = room_of(piece_at(passage, 0))?
+    let head = passage.pieces.first().map_or(0, |piece| piece.start);
+    let head_cost = if head == 0 || head >= bound {
+        None
+    } else {
+        let cost = counted(tokens, &text[..head])?;
+        size.tokens
+            .checked_sub(cost)
+            .is_some_and(|width| width > size.overlap)
+            .then_some(cost)
+    };
+    let opening = if head > 0 {
+        head_cost
+    } else {
+        room_of(piece_at(passage, 0))?
+    };
+    let width = opening
         .map_or(size.tokens, |cost| size.tokens - cost)
         .max(size.overlap + 1);
     let is_inside = |at: usize| at < data.len() && data[at] & 0xC0 == 0x80;
     let mut found: Vec<Cut> = Vec::new();
-    for (begin, finish) in stretches(text, bound) {
+    for (shift, finish) in stretches(&text[head..], bound) {
+        let begin = head + shift;
+        let finish = head + finish;
         let ends = tokens.ends(&text[begin..finish]);
         if ends.last() != Some(&(finish - begin)) || ends.windows(2).any(|pair| pair[0] > pair[1]) {
             return Err(Unsplit);
@@ -302,8 +308,12 @@ fn cuts(
                 }
                 let piece = piece_at(passage, from);
                 let label = label_of(piece);
-                let labelled = from > 0 && room_of(piece)?.is_some();
-                let body = if labelled {
+                let body = if head > 0 {
+                    match head_cost {
+                        Some(_) => format!("{}{}", &text[..head], &text[from..to]),
+                        None => text[from..to].to_owned(),
+                    }
+                } else if from > 0 && room_of(piece)?.is_some() {
                     format!("{label}\n{}", &text[from..to])
                 } else {
                     text[from..to].to_owned()
@@ -317,6 +327,7 @@ fn cuts(
             if from < to {
                 found.push(Cut {
                     text: body,
+                    headed: head_cost.is_some(),
                     tokens: count,
                     from,
                     to,
@@ -342,7 +353,8 @@ mod tests {
 
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
-    use super::{Chunk, Cut, MAX_ENCODE_BYTES, Size, Unsplit, stretches};
+    use super::{Chunk, Cut, MAX_ENCODE_BYTES, Size, Unsplit, alone};
+    use bilbo_entries::tokens::stretches;
 
     fn chunks(passages: &[Passage], tokens: &dyn Tokens, size: Size) -> Vec<Chunk> {
         super::chunks(passages, tokens, size).expect("chunks")
@@ -395,6 +407,7 @@ mod tests {
             part: None,
             tokens,
             text: text.to_owned(),
+            headed: false,
         }
     }
 
@@ -410,6 +423,55 @@ mod tests {
             [packed(1, 2, 9, "aaaa\nbbbb"), packed(4, 1, 4, "cccc")]
         );
         assert_eq!(chunks(&[], &Every(1), SMALL), []);
+    }
+
+    #[test]
+    fn passages_that_stand_alone_are_never_packed_together() {
+        let passages = [passage(1, "aa"), passage(2, "bb"), passage(4, "cc")];
+        assert_eq!(
+            chunks(&passages, &Every(1), SMALL),
+            [packed(1, 4, 8, "aa\nbb\ncc")]
+        );
+        assert_eq!(
+            alone(&passages, &Every(1), SMALL).expect("alone"),
+            [
+                packed(1, 1, 2, "aa"),
+                packed(2, 1, 2, "bb"),
+                packed(4, 1, 2, "cc")
+            ]
+        );
+    }
+
+    #[test]
+    fn a_passage_that_stands_alone_and_passes_the_size_is_cut_as_before() {
+        let long = passage(2, "u: abcdefghijklmnopqrst");
+        let by_itself = chunks(std::slice::from_ref(&long), &Every(1), SMALL);
+        assert!(by_itself.len() > 1);
+        let passages = [passage(1, "aaaa"), long, passage(3, "cccc")];
+        let mut expected = vec![packed(1, 1, 4, "aaaa")];
+        expected.extend(by_itself);
+        expected.push(packed(3, 1, 4, "cccc"));
+        assert_eq!(alone(&passages, &Every(1), SMALL).expect("alone"), expected);
+    }
+
+    #[test]
+    fn a_passage_with_no_text_is_in_no_chunk_alone_either() {
+        let passages = [passage(1, "aaaa"), passage(2, ""), passage(3, "bbbb")];
+        assert_eq!(
+            alone(&passages, &Every(1), SMALL).expect("alone"),
+            [packed(1, 1, 4, "aaaa"), packed(3, 1, 4, "bbbb")]
+        );
+        assert_eq!(alone(&[passage(1, "")], &Every(1), SMALL), Ok(vec![]));
+    }
+
+    #[test]
+    fn a_chunk_of_a_passage_that_stands_alone_is_read_back_by_its_records() {
+        let passages = [passage(1, "aa"), passage(2, "bb"), passage(3, "cc")];
+        let held = alone(&passages, &Every(1), SMALL).expect("alone");
+        let read = super::at(&passages, &Every(1), SMALL, range(2, 1), None).expect("at");
+        assert_eq!(read, Some(held[1].clone()));
+        assert_eq!(read, Some(packed(2, 1, 2, "bb")));
+        assert_eq!(chunks(&passages, &Every(1), SMALL).len(), 1);
     }
 
     #[test]
@@ -598,6 +660,77 @@ mod tests {
         assert_eq!(found[11].text, "ijklmnopqrst");
     }
 
+    fn headed(head: &str, rest: &str) -> Passage {
+        let text = format!("{head}{rest}");
+        labelled(range(1, 1), &text, &[(head.len(), "label")])
+    }
+
+    #[test]
+    fn every_part_of_a_passage_with_a_head_opens_with_the_whole_head() {
+        let found = chunks(
+            &[headed("s1 d\n", "abcdefghijklmnopqrst")],
+            &Every(1),
+            SMALL,
+        );
+        assert_eq!(
+            texts(&found),
+            [
+                "s1 d\nabcdefg",
+                "s1 d\nfghijkl",
+                "s1 d\nklmnopq",
+                "s1 d\npqrst"
+            ]
+        );
+        assert_eq!(
+            found.iter().map(|chunk| chunk.tokens).collect::<Vec<_>>(),
+            [12, 12, 12, 10]
+        );
+        assert_eq!(
+            found.iter().map(|chunk| chunk.part).collect::<Vec<_>>(),
+            [Some((0, 4)), Some((1, 4)), Some((2, 4)), Some((3, 4))]
+        );
+        assert!(found.iter().all(|chunk| chunk.records == range(1, 1)));
+        let whole = chunks(&[headed("s1 d\n", "abcdefg")], &Every(1), SMALL);
+        assert_eq!(
+            whole,
+            [Chunk {
+                headed: true,
+                ..packed(1, 1, 12, "s1 d\nabcdefg")
+            }]
+        );
+        assert!(found.iter().all(|chunk| chunk.headed));
+        let bare = chunks(&[passage(1, "abcdefghijklmnopqrst")], &Every(1), SMALL);
+        assert!(bare.iter().all(|chunk| !chunk.headed));
+    }
+
+    #[test]
+    fn a_head_that_leaves_no_room_is_in_no_part_and_the_rest_is_all_there() {
+        let found = chunks(
+            &[headed("s1 s2 s3 d\n", "abcdefghijklmnopqrst")],
+            &Every(1),
+            SMALL,
+        );
+        assert_eq!(texts(&found), ["abcdefghijkl", "klmnopqrst"]);
+        assert!(found.iter().all(|chunk| !chunk.headed));
+        let short = chunks(&[headed("s1 s2 s3 d\n", "ab")], &Every(1), SMALL);
+        assert_eq!(texts(&short), ["ab"]);
+        assert_eq!(short[0].part, Some((0, 1)));
+        assert!(!short[0].headed);
+    }
+
+    #[test]
+    fn a_part_under_a_head_is_read_back_by_its_records_and_part() {
+        let passages = [headed("s1 d\n", "abcdefghijklmnopqrst")];
+        let found = chunks(&passages, &Every(1), SMALL);
+        for (part, chunk) in (0..).zip(&found) {
+            let read = super::at(&passages, &Every(1), SMALL, range(1, 1), Some((part, 4)));
+            assert_eq!(read, Ok(Some(chunk.clone())));
+            assert!(chunk.headed);
+        }
+        let wrong = super::at(&passages, &Every(1), SMALL, range(1, 1), Some((1, 3)));
+        assert_eq!(wrong, Ok(None));
+    }
+
     #[test]
     fn a_tokenizer_that_cannot_split_a_text_fails_the_passages_and_never_panics() {
         struct Broken(Vec<usize>, usize);
@@ -678,7 +811,7 @@ mod tests {
     }
 
     impl Spy {
-        fn note(&self, text: &str) {
+        fn document(&self, text: &str) {
             if !self.needle.is_empty() && text.contains(self.needle) {
                 self.saw_needle.store(true, Ordering::Relaxed);
             }
@@ -687,13 +820,13 @@ mod tests {
 
     impl Tokens for Spy {
         fn ends(&self, text: &str) -> Vec<usize> {
-            self.note(text);
+            self.document(text);
             self.longest_ends.fetch_max(text.len(), Ordering::Relaxed);
             (1..=text.len()).collect()
         }
 
         fn count(&self, text: &str) -> usize {
-            self.note(text);
+            self.document(text);
             self.longest_count.fetch_max(text.len(), Ordering::Relaxed);
             text.len()
         }
@@ -736,13 +869,61 @@ mod tests {
         assert_eq!(texts(&two), ["aaaa", "#bbb"]);
     }
 
+    fn assert_covers_after(head: usize, text: &str, cuts: &[Cut], case: &str) {
+        let mut covered = head;
+        for (at, cut) in cuts.iter().enumerate() {
+            assert!(
+                (at > 0 || cut.from == head) && cut.from <= covered && cut.from < cut.to,
+                "{case}: window {at} is {}..{} after byte {covered} of {text:?}",
+                cut.from,
+                cut.to
+            );
+            assert!(
+                cut.text.ends_with(&text[cut.from..cut.to]),
+                "{case}: {:?}",
+                cut.text
+            );
+            covered = covered.max(cut.to);
+        }
+        assert_eq!(covered, text.len(), "{case}: {text:?}");
+    }
+
     #[test]
-    fn a_passage_over_the_bound_is_cut_at_line_feeds_and_no_longer_text_reaches_the_tokenizer() {
-        let text: String = (0..10).map(|line| format!("line {line:04}xx\n")).collect();
-        assert_eq!(text.len(), 120);
-        let passage = labelled(range(1, 1), &text, &[(0, "l:")]);
+    fn a_head_as_long_as_the_byte_bound_has_no_room() {
+        let head = format!("{}\n", "h".repeat(31));
+        let rest = "abcdefghijklmnop".repeat(3);
+        let text = format!("{head}{rest}");
+        let passage = headed(&head, &rest);
+        let found = within(std::slice::from_ref(&passage), &Every(16), SMALL, 32);
+        assert!(found.len() > 1);
+        assert!(
+            found
+                .iter()
+                .all(|chunk| !chunk.headed && !chunk.text.starts_with(&head))
+        );
+        assert_covers_after(
+            head.len(),
+            &text,
+            &cuts_of(&passage, &Every(16), SMALL, 32),
+            "a head of the bound",
+        );
+        let shorter = format!("{}\n", "h".repeat(30));
+        let under = headed(&shorter, &rest);
+        let found = within(std::slice::from_ref(&under), &Every(16), SMALL, 32);
+        assert!(
+            found
+                .iter()
+                .all(|chunk| chunk.headed && chunk.text.starts_with(&shorter))
+        );
+    }
+
+    #[test]
+    fn a_head_over_a_byte_bounded_stretch_is_not_counted_whole() {
+        let lines: String = (0..10).map(|line| format!("line {line:04}xx\n")).collect();
+        assert_eq!(lines.len(), 120);
+        let bare = labelled(range(1, 1), &lines, &[(0, "l:")]);
         let spy = Spy::default();
-        let found = within(std::slice::from_ref(&passage), &spy, SMALL, 32);
+        let found = within(std::slice::from_ref(&bare), &spy, SMALL, 32);
         assert!(spy.longest_ends.load(Ordering::Relaxed) <= 32);
         assert!(spy.longest_count.load(Ordering::Relaxed) <= 32 + "l:\n".len());
         let parts = u32::try_from(found.len()).expect("a few");
@@ -750,37 +931,53 @@ mod tests {
             assert_eq!(chunk.part, Some((u32::try_from(at).expect("a few"), parts)));
         }
         assert!(parts > 4);
-        assert_covers(&text, &cuts_of(&passage, &spy, SMALL, 32), "ten lines");
-        assert_eq!(
-            stretches(&text, 32),
-            (0..5).map(|at| (at * 24, at * 24 + 24)).collect::<Vec<_>>()
+        assert_covers(&lines, &cuts_of(&bare, &spy, SMALL, 32), "ten lines");
+
+        let head = "s:\n";
+        let text = format!("{head}{lines}");
+        let passage = headed(head, &lines);
+        let spy = Spy::default();
+        let found = within(std::slice::from_ref(&passage), &spy, SMALL, 32);
+        assert!(spy.longest_ends.load(Ordering::Relaxed) <= 32);
+        assert!(spy.longest_count.load(Ordering::Relaxed) <= 32 + head.len());
+        assert!(found.len() > 4);
+        assert!(
+            found
+                .iter()
+                .all(|chunk| chunk.headed && chunk.text.starts_with(head))
+        );
+        assert_covers_after(
+            head.len(),
+            &text,
+            &cuts_of(&passage, &spy, SMALL, 32),
+            "a head and ten lines",
         );
     }
 
     #[test]
-    fn a_stretch_with_no_line_feed_ends_on_a_character() {
-        let text = "é".repeat(100);
-        let found = stretches(&text, 33);
-        assert_eq!(found.first().map(|stretch| stretch.0), Some(0));
-        assert_eq!(found.last().map(|stretch| stretch.1), Some(200));
-        for (first, last) in &found {
-            assert!(text.is_char_boundary(*first) && text.is_char_boundary(*last));
-            assert!((1..=33).contains(&(last - first)));
-        }
-        assert!(found.windows(2).all(|pair| pair[0].1 == pair[1].0));
+    fn a_character_of_several_bytes_right_after_a_head_is_not_cut() {
+        let accents = "é".repeat(100);
         let spy = Spy::default();
-        let whole = passage(1, &text);
-        within(std::slice::from_ref(&whole), &spy, SMALL, 33);
+        let bare = passage(1, &accents);
+        within(std::slice::from_ref(&bare), &spy, SMALL, 33);
         assert!(spy.longest_ends.load(Ordering::Relaxed) <= 33);
-        assert_covers(&text, &cuts_of(&whole, &spy, SMALL, 33), "no line feed");
-    }
+        assert_covers(&accents, &cuts_of(&bare, &spy, SMALL, 33), "no line feed");
 
-    #[test]
-    fn a_line_feed_in_the_first_half_of_a_stretch_does_not_end_it() {
-        let text = format!("aaaa\n{}", "b".repeat(35));
-        assert_eq!(stretches(&text, 32), [(0, 32), (32, 40)]);
-        let late = format!("{}\n{}", "a".repeat(20), "b".repeat(30));
-        assert_eq!(stretches(&late, 32), [(0, 21), (21, 51)]);
+        let head = "s1\n";
+        let text = format!("{head}{}", "é".repeat(30));
+        let passage = headed(head, &"é".repeat(30));
+        let cuts = cuts_of(&passage, &Every(1), SMALL, 33);
+        assert_eq!(cuts[0].from, head.len());
+        assert!(
+            cuts.iter()
+                .all(|cut| text.is_char_boundary(cut.from) && text.is_char_boundary(cut.to))
+        );
+        assert_covers_after(head.len(), &text, &cuts, "a character after a head");
+        assert!(
+            within(&[passage], &Every(1), SMALL, 33)
+                .iter()
+                .all(|chunk| chunk.headed && chunk.text.starts_with(head))
+        );
     }
 
     #[test]

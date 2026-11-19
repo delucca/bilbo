@@ -18,8 +18,8 @@ use bilbo_store::id::Id;
 use bilbo_store::labels::Labels;
 
 use crate::fakes::{
-    Bytes, CATALOG, Call, Docs, Fault, Foldered, Kept, Lines, Log, Marked, Recorded, Watched, at,
-    id, kept, named, shelf, unread, wide,
+    Alone, Bytes, CATALOG, Call, Docs, Fault, Foldered, Kept, Lines, Log, Marked, Recorded,
+    Watched, at, id, kept, named, shelf, unread, wide,
 };
 use bilbo_search::analyze::label_words;
 
@@ -45,7 +45,11 @@ fn tokenizer(tokens: impl Tokens + 'static) -> Tokenizer {
 }
 
 fn readers() -> Vec<Box<dyn Reader>> {
-    vec![Box::new(Foldered("lines")), Box::new(Lines("notes"))]
+    vec![
+        Box::new(Foldered("lines")),
+        Box::new(Lines("notes")),
+        Box::new(Alone("alone")),
+    ]
 }
 
 fn reindex(shelf: &Log, index: &mut Recorded) -> Result<Output, Error> {
@@ -532,6 +536,35 @@ fn an_entry_the_tokenizer_cannot_split_is_reported_and_none_of_its_chunks_is_ind
             [(id(1), "one".to_owned()), (id(3), "three".to_owned())]
         );
     }
+}
+
+#[test]
+fn an_entry_whose_passages_stand_alone_and_cannot_be_split_is_reported_and_not_indexed() {
+    let Ran {
+        output,
+        added,
+        calls,
+    } = run_marked(1, || {
+        vec![
+            kept(1, "alone", &["one\n"]),
+            kept(2, "alone", &["fine\n", "has UNSPLIT in it\n"]),
+            kept(3, "alone", &["three\n"]),
+        ]
+    });
+    let output = output.expect("a run");
+    assert_eq!(
+        output.failed,
+        [(
+            id(2),
+            "the tokenizer could not split a text of it".to_owned()
+        )]
+    );
+    assert_eq!((output.entries, output.chunks), (2, 2));
+    assert_eq!(committed_by(&calls).failed, [(id(2), 1)]);
+    assert_eq!(
+        added,
+        [(id(1), "one".to_owned()), (id(3), "three".to_owned())]
+    );
 }
 
 #[test]

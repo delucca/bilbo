@@ -322,8 +322,8 @@ mod tests {
 
     #[test]
     fn a_note_reads_as_its_frontmatter_then_one_passage_per_heading() {
-        let note = include_str!("../../fixtures/markdown/note.md");
-        let found = read(note);
+        let document = include_str!("../../fixtures/markdown/note.md");
+        let found = read(document);
         let labels: Vec<&str> = found.iter().map(|p| p.pieces[0].label.as_str()).collect();
         assert_eq!(labels[0], "frontmatter");
         assert!(labels.len() > 1, "{labels:?}");
@@ -331,7 +331,7 @@ mod tests {
         let listed: Vec<Option<&str>> = found.iter().map(|p| p.outline.as_deref()).collect();
         assert_eq!(listed, [Some("frontmatter"), Some("A synthetic note")]);
         let joined: String = found.iter().map(|passage| passage.text.as_str()).collect();
-        assert_eq!(joined, note, "the passages join back to the file");
+        assert_eq!(joined, document, "the passages join back to the file");
     }
 
     #[test]
@@ -446,8 +446,8 @@ mod tests {
     #[test]
     fn the_labels_of_a_note_stay_within_a_small_multiple_of_its_size() {
         let long = "x".repeat(20_000);
-        let note = format!("# {long}\n{}", "## a\n".repeat(2_000));
-        let found = read(&note);
+        let document = format!("# {long}\n{}", "## a\n".repeat(2_000));
+        let found = read(&document);
         assert_eq!(found.len(), 2_001);
         let held: usize = found
             .iter()
@@ -455,7 +455,7 @@ mod tests {
                 passage.pieces[0].label.len() + passage.outline.as_ref().map_or(0, String::len)
             })
             .sum();
-        assert!(held <= 20 * note.len(), "{held} bytes of labels");
+        assert!(held <= 20 * document.len(), "{held} bytes of labels");
         assert_eq!(
             found[1].pieces[0].label,
             format!("{}… > a", "x".repeat(99)),
@@ -467,8 +467,8 @@ mod tests {
 
     #[test]
     fn the_width_decides_where_a_heading_is_clipped_in_a_label() {
-        let note = format!("# {}\n## a\n", "h".repeat(60));
-        let label = |width| read_at(&note, width)[1].pieces[0].label.clone();
+        let document = format!("# {}\n## a\n", "h".repeat(60));
+        let label = |width| read_at(&document, width)[1].pieces[0].label.clone();
         assert_eq!(label(20), format!("{}… > a", "h".repeat(19)));
         assert_eq!(label(59), format!("{}… > a", "h".repeat(58)));
         assert_eq!(label(60), format!("{} > a", "h".repeat(60)));
@@ -714,6 +714,10 @@ mod tests {
             );
             assert!(
                 passage.pieces.iter().map(|piece| piece.start).is_sorted(),
+                "case {case}"
+            );
+            assert!(
+                passage.pieces.first().is_none_or(|piece| piece.start == 0),
                 "case {case}"
             );
         }

@@ -1325,6 +1325,31 @@ impl Lookup for Committed {
         })
     }
 
+    fn length(&self, kind: &str) -> Result<u64, IndexError> {
+        self.guard(|| {
+            let loaded = self.required()?;
+            let mut lengths = Vec::with_capacity(loaded.readers.len());
+            for segment in &loaded.readers {
+                lengths.push(
+                    segment
+                        .fast_fields()
+                        .u64("length")
+                        .map_err(|error| self.read_error(&error))?,
+                );
+            }
+            let mut length = 0u64;
+            self.live_postings(
+                &loaded,
+                &Term::from_field_text(loaded.fields.kind, kind),
+                IndexRecordOption::Basic,
+                |ordinal, doc, _| {
+                    length = length.saturating_add(lengths[ordinal].first(doc).unwrap_or_default());
+                },
+            )?;
+            Ok(length)
+        })
+    }
+
     fn found(&self, docs: &[u32]) -> Result<Vec<Found>, IndexError> {
         self.guard(|| {
             let loaded = self.required()?;

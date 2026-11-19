@@ -10,7 +10,7 @@ pub const MAX_ENTRY_LABEL_BYTES: usize = 4096;
 pub struct Passage {
     pub range: RecordRange,
     pub text: String,
-    /// Each labelled piece of `text`, in order; the first starts at 0.
+    /// Each labelled piece of `text`, in order; text before the first is the passage's head.
     pub pieces: Vec<Piece>,
     /// Where each record of `range` ends in `text`: rising char boundaries, the last `text.len()`.
     pub ends: Vec<usize>,
@@ -57,6 +57,9 @@ pub trait Reader: Sync {
     /// Whether appending records to a generation changes no existing passage: the passages of the
     /// shorter generation are the first passages of the longer one.
     fn appends_only(&self) -> bool;
+    fn stands_alone(&self) -> bool {
+        false
+    }
     fn preface(&self, _records: &[&[u8]]) -> Option<String> {
         None
     }
@@ -84,6 +87,11 @@ mod tests {
         fn appends_only(&self) -> bool {
             true
         }
+    }
+
+    #[test]
+    fn a_reader_packs_its_passages_unless_it_says_otherwise() {
+        assert!(!Silent.stands_alone());
     }
 
     #[test]
