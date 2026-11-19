@@ -1,13 +1,19 @@
 """A local HTTP server that stands at a provider's `endpoint` and keeps the answers that judge a request (../README.md).
-Usage: cache.py --dir DIR --upstream URL --record FILE --timeout SECONDS [--write] [--ceiling N] [--port N]. It prints
-`port <n>` on standard output when it listens. With --write the real key is in its environment, as BILBO_EVAL_CACHE_KEY."""
+Usage: cache.py --dir DIR --upstream URL --record FILE --timeout SECONDS [--write] [--ceiling N] [--port N]
+[--tool PROGRAM]. It prints `port <n>` on standard output when it listens. With --write the real key is in its
+environment, as BILBO_EVAL_CACHE_KEY. With --tool the provider is a tool: a request is what tool.py sends, the upstream
+is the tool's name and version, PROGRAM is started for an ask, and the key is the token it is given."""
 
 import argparse
+import contextlib
 import hashlib
 import http.client
 import json
 import os
+import signal
+import subprocess
 import sys
+import tempfile
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -23,6 +29,9 @@ FAILED = ("rate_limit_exceeded", "server_error", "data_residency_mismatch")
 MISS = b'{"type":"error","error":{"type":"not_found_error","message":"no stored answer"}}'
 TIMED_OUT = b'{"type":"error","error":{"type":"timeout_error","message":"the cache stopped waiting for the provider"}}'
 UNREACHED = b'{"type":"error","error":{"type":"api_error","message":"the cache could not reach the provider"}}'
+TOKEN_VARIABLE = "CLAUDE_CODE_OAUTH_TOKEN"
+QUIET = {"DISABLE_AUTOUPDATER": "1", "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1", "DISABLE_TELEMETRY": "1"}
+SHOWN = 200
 
 
 def name_of(upstream, path, headers, body):
@@ -50,6 +59,41 @@ def judged(status, data):
     return 400 <= status < 500 and status not in REJECTED_NOT
 
 
+def told(code, out):
+    try:
+        reply = json.loads(out)
+    except ValueError:
+        return False
+    if not isinstance(reply, dict):
+        return False
+    if reply.get("stop_reason") == "refusal":
+        return True
+    return code == 0 and reply.get("is_error") is not True and isinstance(reply.get("stop_reason"), str)
+
+
+def status_of(code, out):
+    """A reply `told` does not take has the status the API gave the tool, so `judged` keeps a rejection of the request."""
+    if told(code, out):
+        return 200
+    try:
+        status = json.loads(out).get("api_error_status")
+    except (ValueError, AttributeError):
+        return 500
+    return status if isinstance(status, int) and 400 <= status < 600 else 500
+
+
+def said(out, key):
+    try:
+        reply = json.loads(out)
+        words = ": ".join(reply[field][:SHOWN] for field in ("subtype", "result") if isinstance(reply.get(field), str))
+    except (ValueError, AttributeError):
+        return "a reply that is no JSON object"
+    words = words.encode(errors="replace")
+    if holds(key, out) or holds(key, words):
+        return "a reply that holds the key"
+    return words.decode() or "a reply that says nothing of it"
+
+
 def sync_file(handle):
     handle.flush()
     os.fsync(handle.fileno())
@@ -73,9 +117,10 @@ def asks_in(folder):
 
 
 class Cache:
-    def __init__(self, folder, upstream, write, record, ceiling, timeout, key=None, clock=time.monotonic):
+    def __init__(self, folder, upstream, write, record, ceiling, timeout, key=None, clock=time.monotonic, tool=None):
         self.folder, self.upstream, self.write = Path(folder), upstream.rstrip("/"), write
         self.record, self.ceiling, self.timeout, self.key, self.clock = Path(record), ceiling, timeout, key, clock
+        self.tool, self.home = tool, None
         self.given, self.locks, self.busy = {}, {}, set()
         self.guard, self.spend = threading.Lock(), threading.Lock()
         self.asks = asks_in(self.folder)
@@ -110,7 +155,7 @@ class Cache:
         return sorted(int(p.name) for p in folder.iterdir() if p.name.isdigit()) if folder.is_dir() else []
 
     def answer(self, path, headers, body):
-        name = name_of(self.upstream, path, headers, body)
+        name = name_of(self.upstream, path, () if self.tool else headers, body)
         with self.lock_of(name):
             k, numbers = self.given.get(name, 0), self.numbers(name)
             if k < len(numbers):
@@ -155,6 +200,9 @@ class Cache:
             return status, data, relayed
 
     def with_key(self, path, headers, body):
+        if self.tool:
+            carried = holds(self.key, body) or any(holds(self.key, value.encode()) for _, value in headers)
+            return headers if self.key and not carried else None
         sent, replaced = [], 0
         for name, value in headers:
             if name.lower() == "x-api-key" and value == STAND_IN:
@@ -199,7 +247,38 @@ class Cache:
                 return None, TIMED_OUT, 408
         return ask["result"]
 
+    def start(self, headers, body):
+        asked = json.loads(body)
+        run = json.loads(next(value for name, value in headers if name.lower() == "x-run"))
+        with self.guard:
+            if self.home is None:
+                self.home = tempfile.mkdtemp()
+        environment = run["env"] | asked["env"] | QUIET | {"HOME": self.home, TOKEN_VARIABLE: self.key}
+        # Files, not pipes: a process the tool leaves behind then holds nothing the cache waits for.
+        with tempfile.TemporaryFile() as given, tempfile.TemporaryFile() as printed:
+            given.write(asked["stdin"].encode())
+            given.seek(0)
+            tool = subprocess.Popen([self.tool, *asked["argv"]], stdin=given, stdout=printed, stderr=subprocess.DEVNULL,
+                                    env=environment, cwd=run["folder"], start_new_session=True)
+            try:
+                code = tool.wait(self.timeout)
+            except subprocess.TimeoutExpired:
+                raise TimeoutError from None
+            finally:
+                # As bilbo's own start of a tool, the group is stopped on every end: what is left of it holds the token.
+                with contextlib.suppress(ProcessLookupError):
+                    os.killpg(tool.pid, signal.SIGKILL)
+                tool.wait()
+            printed.seek(0)
+            out = printed.read()
+        status = status_of(code, out)
+        if status != 200:
+            print(f"cache: the tool ended with exit {code}: {said(out, self.key)}", file=sys.stderr, flush=True)
+        return status, json.dumps({"exit": code, "stdout": out.decode(errors="surrogateescape")}).encode(), {}
+
     def fetch(self, path, headers, body):
+        if self.tool:
+            return self.start(headers, body)
         sent = {k: v for k, v in headers if k.lower() not in ("host", "content-length", "connection", "accept-encoding")}
         target = urlsplit(self.upstream + path)
         kind = http.client.HTTPSConnection if target.scheme == "https" else http.client.HTTPConnection
@@ -257,8 +336,10 @@ def main():
     ap.add_argument("--ceiling", type=int)
     ap.add_argument("--timeout", type=int, required=True)
     ap.add_argument("--port", type=int, default=0)
+    ap.add_argument("--tool")
     args = ap.parse_args()
-    cache = Cache(args.dir, args.upstream, args.write, args.record, args.ceiling, args.timeout, os.environ.get("BILBO_EVAL_CACHE_KEY"))
+    cache = Cache(args.dir, args.upstream, args.write, args.record, args.ceiling, args.timeout, os.environ.get("BILBO_EVAL_CACHE_KEY"),
+                  tool=args.tool)
     server = serve(cache, args.port)
     print(f"port {server.server_address[1]}", flush=True)
     server.serve_forever()

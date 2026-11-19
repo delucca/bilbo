@@ -18,12 +18,28 @@ import build
 import cache
 import check as arm_check
 import search
+import tool
 
-HERE = Path(__file__).parent
+HERE = Path(__file__).resolve().parent
 FAKE_KEY = "sk-fake-key-0123456789"
 PARENT = "01M6ZGE4KTBYYH07AS2KVMSCAF"
 REFUSAL = '{"stop_reason":"refusal","content":[]}'
 ANSWER = '{"stop_reason":"end_turn","content":[{"type":"text","text":"a note"}]}'
+FAKE_TOKEN = "sk-ant-oat01-fake-token-0123456789"
+TOLD = '{"is_error":false,"stop_reason":"end_turn","result":"a note"}'
+FAKE_TOOL = """#!{python}
+import json, os, sys, time
+if sys.argv[1:] == ["--version"]:
+    print("9.9.9 (Fake)")
+    sys.exit(0)
+with open({seen!r}, "a") as seen:
+    seen.write(json.dumps({{"argv": sys.argv[1:], "env": dict(os.environ), "folder": os.getcwd(), "stdin": sys.stdin.read(), "pid": os.getpid()}}) + "\\n")
+code, out, delay = json.loads(open({plan!r}).read())[sum(1 for _ in open({seen!r})) - 1]
+time.sleep(delay)
+sys.stdout.buffer.write(out.encode("latin-1"))
+sys.exit(code)
+"""
+CLAUDE_FIXTURES = HERE.parents[3] / "libs" / "derive" / "rust" / "fixtures" / "claude"
 
 
 def check(name, ok, detail=""):
@@ -541,7 +557,7 @@ def bilbo_starts():
 
     def one_life(groups, by_repo, derive, life):
         life.record.write_text("")
-        settings, _ = build.start_cache(derive)
+        settings, _, _ = build.start_cache(derive)
         build.give_key(derive, settings)
         build.bilbo("s0", "config")
         return [], {}, {}
@@ -694,6 +710,253 @@ def api_key_is_the_caches():
         again.stop()
     check("a kept answer that holds the stand-in's text is given back as the same bytes with a writer and with none (P4)",
           kept[0] == kept[1] == (200, '{"echo":"%s"}' % cache.STAND_IN), kept)
+
+
+class ToolRig:
+    def __init__(self, tmp, plan=(), write=True, ceiling=None, timeout=5, answers=None, key=FAKE_TOKEN, upstream="claude 9.9.9 (Fake)"):
+        mine = Path(tempfile.mkdtemp(dir=tmp))
+        self.seen, self.program, self.folder, self.record = mine / "seen", mine / "claude", Path(answers or mine / "answers"), mine / "life"
+        (mine / "plan").write_text(json.dumps(list(plan)))
+        self.seen.write_text("")
+        self.record.write_text("")
+        self.program.write_text(FAKE_TOOL.format(python=sys.executable, seen=str(self.seen), plan=str(mine / "plan")))
+        self.program.chmod(0o755)
+        self.cache = cache.Cache(self.folder, upstream, write, self.record, ceiling, timeout, key if write else None, tool=str(self.program))
+        self.server = cache.serve(self.cache)
+        self.url = serving(self.server) + "/"
+
+    def call(self, *arguments, env=None, stdin="the material", folder=None, command=None):
+        return subprocess.run(command or [sys.executable, str(HERE / "tool.py"), self.url, *(arguments or ("-p",))], input=stdin.encode(),
+                              env={"HOME": "/nowhere", "PATH": "/usr/bin:/bin"} if env is None else env, cwd=folder, capture_output=True, timeout=30)
+
+    def started(self):
+        return [json.loads(line) for line in self.seen.read_text().splitlines()]
+
+    def record_lines(self):
+        return [line.split() for line in self.record.read_text().splitlines()]
+
+    def files(self):
+        return sorted(p for p in self.folder.rglob("*") if p.is_file() and p.name != "spent")
+
+    def stop(self):
+        self.server.shutdown()
+
+
+def ended(done):
+    return done.returncode, done.stdout.decode("latin-1")
+
+
+def running(pid):
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    return True
+
+
+def tool_cache():
+    tmp = Path(tempfile.mkdtemp())
+    api = '{"is_error":true,"stop_reason":"stop_sequence","api_error_status":%d}'
+    rows = [("an answer", 0, TOLD, 200), ("a refusal, which the tool reports as an error", 1, '{"is_error":true,"stop_reason":"refusal"}', 200),
+            ("a cut answer", 0, '{"is_error":false,"stop_reason":"max_tokens"}', 200),
+            ("an unknown stop reason", 0, '{"is_error":false,"stop_reason":"pause_turn"}', 200),
+            ("a request the API rejects", 1, api % 400, 400), ("a request the API finds too large", 1, api % 413, 413),
+            ("a login the API refuses", 1, api % 401, None), ("a limit", 1, api % 429, None), ("an overloaded API", 1, api % 529, None),
+            ("an error with no status", 1, '{"is_error":true,"subtype":"error_during_execution","result":"a limit"}', None),
+            ("an error with a status that is none", 1, api.replace("%d", "200") , None),
+            ("an error that exits 0", 0, '{"is_error":true,"stop_reason":"end_turn"}', None),
+            ("an answer that exits 1", 1, TOLD, None), ("a reply with no stop reason", 0, '{"is_error":false}', None),
+            ("a reply that is no JSON", 0, "not json", None), ("a reply that is a list", 0, "[]", None), ("no reply", 2, "", None),
+            ("an answer that is not UTF-8", 0, TOLD.replace("a note", "caf\xe9"), None)]
+    for label, code, out, kept in rows:
+        rig = ToolRig(tmp, [(code, out, 0)])
+        got = ended(rig.call())
+        check(f"the tool, {label}: the caller ends as the tool ended, byte for byte", got == (code, out), got)
+        first = [p.read_bytes().split(b"\n", 1)[0] for p in rig.files()]
+        check(f"the tool, {label}: {'kept as a %d' % kept if kept else 'not kept'}", first == ([str(kept).encode()] if kept else [])
+              and cache.told(code, out.encode("latin-1")) is (kept == 200), first)
+        replay = ToolRig(tmp, write=False, answers=rig.folder)
+        again = ended(replay.call())
+        check(f"the tool, {label}: a replay {'ends the same' if kept else 'misses, and the caller ends with no reply'} and starts no tool",
+              again == ((code, out) if kept else (tool.NO_ANSWER, "")) and not replay.started(), again)
+        if kept == 400:
+            build.drop_failures(rig.folder)
+            check("a build with a writer removes the tool's kept rejection, as it removes an API's", not rig.files(), rig.files())
+        rig.stop(); replay.stop()
+    told_at = {code: sorted(p.name for p in CLAUDE_FIXTURES.glob("*.json") if cache.told(code, p.read_bytes())) for code in (0, 1)}
+    every = sorted(p.name for p in CLAUDE_FIXTURES.glob("*.json"))
+    check("bilbo's own fixtures of the tool's replies: at exit 0 all are kept but the error and the one with no stop reason; at exit 1 the refusals alone",
+          every and told_at[0] == [n for n in every if n not in ("error.json", "no-stop-reason.json")]
+          and told_at[1] == [n for n in every if n.startswith("refusal")], told_at)
+
+    rig = ToolRig(tmp, [(0, TOLD, 0)])
+    folder = Path(tempfile.mkdtemp(dir=tmp)).resolve()
+    os.environ["BILBO_EVAL_CACHE_KEY"] = "the cache's own"
+    try:
+        rig.call("-p", "--model", "m", env={"HOME": "/nowhere", "PATH": "/usr/bin:/bin", "A_B": "1"}, folder=folder)
+    finally:
+        del os.environ["BILBO_EVAL_CACHE_KEY"]
+    got = rig.started()[0]
+    home = got["env"]["HOME"]
+    check("the tool is started with the caller's arguments, standard input and folder",
+          (got["argv"], got["stdin"], got["folder"]) == (["-p", "--model", "m"], "the material", str(folder)), got)
+    check("the tool gets the caller's variables, the token, the quiet ones and a home of the cache's own",
+          got["env"]["A_B"] == "1" and got["env"]["PATH"] == "/usr/bin:/bin" and got["env"][cache.TOKEN_VARIABLE] == FAKE_TOKEN
+          and cache.QUIET.items() <= got["env"].items() and home != "/nowhere" and Path(home).is_dir(), got["env"])
+    check("the tool gets no other variable, the cache's own environment least of all (Python and macOS add two to the fake's)",
+          set(got["env"]) - {"LC_CTYPE", "__CF_USER_TEXT_ENCODING"} == {"A_B", "PATH", "HOME", cache.TOKEN_VARIABLE, *cache.QUIET}, sorted(got["env"]))
+    check("the token is in no file of the answers and in no line of the record",
+          all(FAKE_TOKEN.encode() not in p.read_bytes() for p in rig.files()) and FAKE_TOKEN not in rig.record.read_text() and rig.files())
+    name = rig.record_lines()[0][1]
+    check("the record of an ask that is kept is the API cache's", rig.record_lines() == [["asked", name, "kept", "0"], ["given", name, "0"]], rig.record_lines())
+    kept = (rig.folder / name / "0").read_bytes()
+    check("a kept answer is a 200 and the tool's exit code and output", kept == b"200\n" + json.dumps({"exit": 0, "stdout": TOLD}).encode(), kept)
+
+    def replayed(upstream="claude 9.9.9 (Fake)", **call):
+        replay = ToolRig(tmp, write=False, answers=rig.folder, upstream=upstream)
+        try:
+            return ended(replay.call("-p", "--model", "m", **{"env": {"HOME": "/nowhere", "PATH": "/usr/bin:/bin", "A_B": "1"}, "folder": folder} | call))
+        finally:
+            replay.stop()
+
+    other = Path(tempfile.mkdtemp(dir=tmp))
+    check("a request's name holds no HOME, USER, PATH or TMPDIR and no folder: another machine finds the answer",
+          replayed(env={"HOME": "/elsewhere", "USER": "u", "PATH": "/bin", "TMPDIR": "/t", "A_B": "1"}, folder=other) == (0, TOLD))
+    for label, call in (("another variable", {"env": {"HOME": "/nowhere", "PATH": "/usr/bin:/bin", "A_B": "2"}}),
+                        ("another standard input", {"stdin": "other material"}), ("another version of the tool", {"upstream": "claude 9.9.10 (Fake)"})):
+        check(f"a request's name holds its variables, its standard input and the tool's version: {label} misses", replayed(**call) == (tool.NO_ANSWER, ""))
+    replay = ToolRig(tmp, write=False, answers=rig.folder)
+    check("a request's name holds its arguments: another model misses",
+          ended(replay.call("-p", "--model", "n", env={"HOME": "/nowhere", "PATH": "/usr/bin:/bin", "A_B": "1"}, folder=folder)) == (tool.NO_ANSWER, ""))
+    check("a miss is recorded as the API cache's", [line[0] for line in replay.record_lines()] == ["missed"], replay.record_lines())
+    rig.stop(); replay.stop()
+
+    rig = ToolRig(tmp, [(0, TOLD.replace("a note", FAKE_TOKEN), 0)])
+    got = ended(rig.call())
+    check("a reply that holds the token is given to no one and kept nowhere, and the record says so",
+          got == (tool.NO_ANSWER, "") and not rig.files() and [line[0::2] for line in rig.record_lines()] == [["asked", "key"]], (got, rig.record_lines()))
+    rig.stop()
+    check("the build's log gets nothing of a failure that holds the token, and the tool's own words of another",
+          FAKE_TOKEN not in cache.said(f'{{"result":"{FAKE_TOKEN}"}}'.encode(), FAKE_TOKEN)
+          and FAKE_TOKEN not in cache.said(f'{{"result":"{FAKE_TOKEN}"}}'.replace("-", "\\u002d").encode(), FAKE_TOKEN)
+          and cache.said(b'{"subtype":"error_during_execution","result":"a limit"}', FAKE_TOKEN) == "error_during_execution: a limit"
+          and FAKE_TOKEN not in cache.said(b"[]", FAKE_TOKEN) and cache.said(b'{"result":"\\udc80"}', FAKE_TOKEN) == "?")
+
+    rig = ToolRig(tmp, [(0, TOLD, 0)], key=None)
+    got = ended(rig.call())
+    check("a writer with no token starts no tool", got == (tool.NO_ANSWER, "") and not rig.started() and [line[0] for line in rig.record_lines()] == ["unkeyed"], rig.record_lines())
+    rig.stop()
+    for label, call in (("its standard input", {"stdin": f"material {FAKE_TOKEN}"}), ("a variable", {"env": {"HOME": "/nowhere", "PATH": "/usr/bin:/bin", "A_B": FAKE_TOKEN}}),
+                        ("its home", {"env": {"HOME": f"/{FAKE_TOKEN}", "PATH": "/usr/bin:/bin"}})):
+        rig = ToolRig(tmp, [(0, TOLD, 0)])
+        got = ended(rig.call(**call))
+        check(f"a request that holds the token in {label} starts no tool and spends no ask",
+              got == (tool.NO_ANSWER, "") and not rig.started() and [line[0] for line in rig.record_lines()] == ["unkeyed"] and not (rig.folder / "spent").exists(), rig.record_lines())
+        rig.stop()
+
+    rig = ToolRig(tmp, [(0, TOLD, 0), (0, TOLD, 0)], ceiling=1)
+    got = [ended(rig.call()), ended(rig.call(stdin="other material"))]
+    check("the ceiling of calls holds for the tool: the second ask starts nothing", got == [(0, TOLD), (tool.NO_ANSWER, "")] and len(rig.started()) == 1
+          and (rig.folder / "spent").read_text().count("ask ") == 1, got)
+    rig.stop()
+
+    rig = ToolRig(tmp, [(0, TOLD, 4)], timeout=1)
+    began = time.monotonic()
+    got = ended(rig.call())
+    check("a tool that is not done by the deadline: the caller ends with no reply then, and nothing is kept",
+          got == (tool.NO_ANSWER, "") and time.monotonic() - began < 3 and not rig.files() and [line[0::2] for line in rig.record_lines()] == [["asked", "none"]], (got, rig.record_lines()))
+    pid = rig.started()[0]["pid"]
+    until = time.monotonic() + 2
+    while running(pid) and time.monotonic() < until:
+        time.sleep(0.05)
+    check("the tool that passed the deadline is stopped", not running(pid))
+    rig.stop()
+
+    left = tmp / "left"
+    leaver = "import os, sys, time\nif os.fork() == 0:\n    open(sys.argv[1], 'w').write(str(os.getpid()))\n    time.sleep(30)\n    os._exit(0)\n"
+    rig = ToolRig(tmp, [(0, TOLD, 0)], timeout=20)
+    rig.program.write_text(f"#!{sys.executable}\nimport os, sys\n{leaver.replace('sys.argv[1]', repr(str(left)))}"
+                           f"while not os.path.exists({str(left)!r}):\n    pass\nsys.stdout.write({TOLD!r})\n")
+    began = time.monotonic()
+    got = ended(rig.call())
+    check("a tool that ends and leaves a process behind: its reply is taken at once, and the process is stopped",
+          got == (0, TOLD) and time.monotonic() - began < 10 and not running(int(left.read_text())), got)
+    rig.stop()
+
+    block = tmp / "environ"
+    block.write_bytes(b"A=1\0B=x=y\0LANG=en_US.UTF-8\0")
+    check("the variables a start was given are read from the kernel's block, and from Python's own where there is none",
+          tool.started_with(block) == {"A": "1", "B": "x=y", "LANG": "en_US.UTF-8"} and tool.started_with(tmp / "none") == dict(os.environ))
+
+    body, run = tool.request(["-p"], {"HOME": "/h", "LANG": "C", "PATH": "/p"}, "in", "/f")
+    check("what the caller sends: the request in the body, and what a machine alone decides in a header",
+          (json.loads(body), json.loads(run)) == ({"argv": ["-p"], "env": {"LANG": "C"}, "stdin": "in"}, {"folder": "/f", "env": {"HOME": "/h", "PATH": "/p"}}), (body, run))
+
+
+def tool_starts():
+    tmp = Path(tempfile.mkdtemp())
+    rig = ToolRig(tmp, [(0, TOLD, 0)])
+    saved = {name: getattr(build, name) for name in ("LAUNCHER", "ANSWERS", "LIFE", "DERIVING")}
+    saved_env = os.environ.get("BILBO_EVAL_DERIVE_KEY")
+    saved_popen, saved_run = build.subprocess.Popen, build.subprocess.run
+    popens, runs = [], []
+    port = rig.url.rsplit(":", 1)[1].rstrip("/")
+    build.LAUNCHER, build.ANSWERS, build.LIFE, build.DERIVING = tmp / "launcher", tmp / "answers", tmp / "life", True
+    started = type("Started", (), {"stdout": type("Out", (), {"readline": staticmethod(lambda: f"port {port}\n")})()})
+
+    def popen(command, **options):
+        if str(HERE / "cache.py") not in command:
+            return saved_popen(command, **options)
+        popens.append((command, options.get("env")))
+        return started()
+
+    build.subprocess.Popen = popen
+    derive = {"provider": "claude", "settings": {"derive.claude.model": "m", "derive.claude.program": str(rig.program)},
+              "cache": {"write": True, "timeout": 240}, "ceilings": {"calls": 7}}
+    os.environ["BILBO_EVAL_DERIVE_KEY"] = FAKE_TOKEN
+    try:
+        settings, _, upstream = build.start_cache(derive)
+        build.give_key(derive, settings)
+        build.subprocess.run = lambda command, **options: (runs.append(options["env"]), type("Done", (), {"returncode": 0, "stdout": "", "stderr": ""})())[1]
+        build.bilbo("all", "config")
+        build.subprocess.run = saved_run
+        command, env = popens[0]
+        check("the cache of the tool is started with the real program, its name and version as the upstream, and the ceiling of calls",
+              command[command.index("--tool") + 1] == str(rig.program) and command[command.index("--upstream") + 1] == upstream == "claude 9.9.9 (Fake)"
+              and command[command.index("--ceiling") + 1] == "7" and "--write" in command, command)
+        check("the token is in the cache's environment alone: bilbo's holds no key and no stand-in",
+              env.get("BILBO_EVAL_CACHE_KEY") == FAKE_TOKEN and "BILBO_EVAL_DERIVE_KEY" not in env and not build.KEYS
+              and FAKE_TOKEN not in json.dumps(runs[0]) and cache.STAND_IN not in json.dumps(runs[0]), runs)
+        check("the store's program is the file the build wrote, and the settings' other keys are as given",
+              settings == {"derive.claude.model": "m", "derive.claude.program": str(build.LAUNCHER)}, settings)
+        got = ended(rig.call(command=[str(build.LAUNCHER), "-p"]))
+        check("bilbo's start of that file reaches the tool behind the cache and ends as it ended",
+              got == (0, TOLD) and rig.started()[0]["argv"] == ["-p"] and os.access(build.LAUNCHER, os.X_OK), got)
+        broken = tmp / "broken"
+        broken.write_text("#!/bin/sh\nexit 3\n")
+        broken.chmod(0o755)
+        try:
+            build.start_cache(derive | {"settings": {"derive.claude.program": str(broken)}})
+        except SystemExit as stopped:
+            check("a program that cannot say its version stops the build at its start", "--version exited 3" in str(stopped), stopped)
+        else:
+            check("a program that cannot say its version stops the build at its start", False)
+        try:
+            build.start_cache(derive | {"settings": {"derive.claude.program": str(tmp / "none")}})
+        except SystemExit as stopped:
+            check("a program that is not there stops the build at its start", "to stand behind the cache" in str(stopped), stopped)
+        else:
+            check("a program that is not there stops the build at its start", False)
+    finally:
+        build.subprocess.Popen, build.subprocess.run = saved_popen, saved_run
+        build.KEYS.clear()
+        for name, value in saved.items():
+            setattr(build, name, value)
+        if saved_env is None:
+            os.environ.pop("BILBO_EVAL_DERIVE_KEY", None)
+        else:
+            os.environ["BILBO_EVAL_DERIVE_KEY"] = saved_env
+        rig.stop()
 
 
 class Raw(threading.Thread):
@@ -1057,8 +1320,9 @@ def settings_stops():
                 os.environ["BILBO_EVAL_DERIVE"] = saved
         return None
 
-    error = refused({"provider": "claude"})
-    check("the provider claude is refused with its reason", error and "cannot be built here" in error and "the image holds no claude" in error, error)
+    check("the provider claude is taken", refused({"provider": "claude"}) is None)
+    error = refused({"provider": "gemini"})
+    check("another provider is refused by name", error and "'gemini' is none of anthropic, openai and claude" in error, error)
     secret = "https://user:hunter2@api.example.com/v1"
     error = refused({"provider": "anthropic", "settings": {"derive.anthropic.endpoint": secret}})
     check("an endpoint with an @ is refused, and its value is in no text", error and "no user name or password" in error and "hunter2" not in error, error)
@@ -1161,6 +1425,8 @@ def main():
     lives_begin()
     lives_end()
     settings_stops()
+    tool_cache()
+    tool_starts()
     print("selftest: ALL OK")
 
 

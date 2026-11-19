@@ -6,8 +6,10 @@ Every `bilbo` run has its own HOME, store, state and cache folders under /work/s
 check and the search use again, since the catalog and the state folder record them. /work/store/entries.jsonl maps each
 session file to its entry id; manifest.json is written last.
 
-BILBO_EVAL_DERIVE, when set, is a JSON object: `provider` (anthropic or openai; claude is refused); `settings`, a flat object of
-dotted derive.* keys written into the store's config.toml (the provider's real `endpoint`, an https URL or an http URL at a loopback address, goes here); `cache`, `{"write": false}` to replay or `{"write": true}` with the real provider behind, and
+BILBO_EVAL_DERIVE, when set, is a JSON object: `provider` (anthropic, openai or claude); `settings`, a flat object of
+dotted derive.* keys written into the store's config.toml (the provider's real `endpoint`, an https URL or an http URL at a
+loopback address, goes here, or the real `program` of the tool claude, the image's by default); `cache`, `{"write": false}` to
+replay or `{"write": true}` with the real provider behind, and
 `timeout`, the seconds the cache waits for the provider, under the store's derive.timeout; `ceilings`, `{"calls", "tokens",
 "refusals"}` the build stops at, held against /answers/<provider>/spent; `calls_per_run`. A folder STOP in /work/store stops
 the loop."""
@@ -54,6 +56,8 @@ STATES = ("due", "covered", "passed over", "left out: labels not current", "left
 DERIVE_DEFAULTS = {"calls_per_run": 20, "ceilings": {"calls": 1000, "tokens": 10000000, "refusals": 100},
                    "cache": {"write": False, "timeout": 240}}
 KEY_VARIABLES = {"anthropic": "ANTHROPIC_API_KEY", "openai": "OPENAI_API_KEY"}
+TOOL = "claude"
+LAUNCHER = Path("/tmp/claude")
 RUN_FIELDS = ("entries", "calls", "notes", "dropped", "refused", "failed", "tokens_in", "tokens_out", "seconds")
 DERIVE_TIMEOUT = re.compile(r'^derive\.timeout = "(\d+)(ms|s|m)"', re.M)
 HIDDEN = re.compile(r"^(derive\.[a-z]+\.(?:headers|environment)) = ")
@@ -116,11 +120,8 @@ def derive_env():
     unknown = sorted(set(given) - {"provider", "settings", "cache", "ceilings", "calls_per_run"})
     if unknown or not given.get("provider"):
         sys.exit(f"bilbo-next: BILBO_EVAL_DERIVE: {'unknown key ' + unknown[0] if unknown else 'no provider'}")
-    if given["provider"] == "claude":
-        sys.exit("bilbo-next: BILBO_EVAL_DERIVE: the provider claude cannot be built here: the image holds no claude of the version "
-                 "bilbo's guards were read from")
-    if given["provider"] not in KEY_VARIABLES:
-        sys.exit(f"bilbo-next: BILBO_EVAL_DERIVE: the provider {given['provider']!r} is neither anthropic nor openai")
+    if given["provider"] not in (*KEY_VARIABLES, TOOL):
+        sys.exit(f"bilbo-next: BILBO_EVAL_DERIVE: the provider {given['provider']!r} is none of anthropic, openai and claude")
     endpoint = given.get("settings", {}).get(f"derive.{given['provider']}.endpoint", "")
     if "@" in endpoint:
         sys.exit("bilbo-next: BILBO_EVAL_DERIVE: the endpoint must hold no user name or password")
@@ -154,7 +155,8 @@ def toml_tables(settings):
 
 
 def give_key(derive, settings):
-    KEYS[key_variable(derive, settings)] = cache.STAND_IN
+    if derive["provider"] != TOOL:
+        KEYS[key_variable(derive, settings)] = cache.STAND_IN
 
 
 def loopback_or_https(where):
@@ -172,14 +174,40 @@ def loopback_or_https(where):
         return False
 
 
+def tool_behind(settings):
+    program = settings.get(f"derive.{TOOL}.program", TOOL)
+    real = shutil.which(program)
+    if not real:
+        sys.exit(f"bilbo-next: BILBO_EVAL_DERIVE: no program {program!r} to stand behind the cache")
+    done = subprocess.run([real, "--version"], env=environment(None) | {"HOME": "/tmp", "DISABLE_AUTOUPDATER": "1"},
+                          capture_output=True, text=True, check=False)
+    if done.returncode or not done.stdout.strip():
+        sys.exit(f"bilbo-next: {real} --version exited {done.returncode}\nstdout: {done.stdout}\nstderr: {done.stderr}")
+    return real, f"{TOOL} {done.stdout.strip()}"
+
+
+def launcher(port, here):
+    """By no shell, which would add variables of its own to what tool.py sends; -I, since it stands in a folder others write."""
+    LAUNCHER.write_text(f"#!{sys.executable} -I\nimport runpy\nimport sys\n\nsys.argv[:1] = [{str(here / 'tool.py')!r}, "
+                        f"'http://127.0.0.1:{port}/']\nrunpy.run_path(sys.argv[0], run_name='__main__')\n")
+    LAUNCHER.chmod(0o755)
+
+
 def start_cache(derive):
     settings, option, here = dict(derive["settings"]), derive["cache"], Path(__file__).parent
-    key = f"derive.{derive['provider']}.endpoint"
-    if key not in settings:
-        sys.exit(f"bilbo-next: BILBO_EVAL_DERIVE: settings hold no {key}")
-    real = urlsplit(settings[key])
-    command = [sys.executable, str(here / "cache.py"), "--dir", str(ANSWERS / derive["provider"]), "--upstream",
-               f"{real.scheme}://{real.netloc}", "--record", str(LIFE), "--timeout", str(option["timeout"])]
+    command = [sys.executable, str(here / "cache.py"), "--dir", str(ANSWERS / derive["provider"]), "--record", str(LIFE),
+               "--timeout", str(option["timeout"])]
+    if derive["provider"] == TOOL:
+        key = f"derive.{TOOL}.program"
+        program, upstream = tool_behind(settings)
+        command += ["--upstream", upstream, "--tool", program]
+    else:
+        key = f"derive.{derive['provider']}.endpoint"
+        if key not in settings:
+            sys.exit(f"bilbo-next: BILBO_EVAL_DERIVE: settings hold no {key}")
+        real = urlsplit(settings[key])
+        upstream = f"{real.scheme}://{real.netloc}"
+        command += ["--upstream", upstream]
     if option["write"]:
         command += ["--write", "--ceiling", str(derive["ceilings"]["calls"])]
     environment = dict(os.environ)
@@ -195,8 +223,13 @@ def start_cache(derive):
     if not line.startswith("port "):
         server.kill()
         sys.exit(f"bilbo-next: cache.py printed {line!r}, not its port")
-    settings[key] = f"http://127.0.0.1:{line.split()[1]}{real.path}" + (f"?{real.query}" if real.query else "")
-    return settings, server
+    port = line.split()[1]
+    if derive["provider"] == TOOL:
+        launcher(port, here)
+        settings[key] = str(LAUNCHER)
+    else:
+        settings[key] = f"http://127.0.0.1:{port}{real.path}" + (f"?{real.query}" if real.query else "")
+    return settings, server, upstream
 
 
 def dry_run(out):
@@ -402,9 +435,9 @@ def begin(life):
 def one_life(groups, by_repo, derive, life):
     begin(life)
     server, settings = None, None
-    if derive:
-        settings, server = start_cache(derive)
     entries, stores, derived = [], {}, {"repos": {}, "totals": {}, "config": [], "kinds": []}
+    if derive:
+        settings, server, derived["upstream"] = start_cache(derive)
     try:
         for name, repos in groups.items():
             prepare(name)
