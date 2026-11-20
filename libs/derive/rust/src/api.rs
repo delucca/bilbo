@@ -73,9 +73,9 @@ impl fmt::Debug for Call<'_> {
 
 fn key(call: &Call<'_>, guarded: &[(&str, Vec<&str>)]) -> Result<Secret, String> {
     let name = if call.command.is_empty() {
-        "key_env"
+        "api.key_env"
     } else {
-        "key_command"
+        "api.key_command"
     };
     let found = secret::read(
         secret::Source::choose(call.env, call.command),
@@ -108,8 +108,8 @@ pub fn prepare(
         .collect();
     let mut guarded: Vec<(&str, Vec<&str>)> = vec![("model", vec![model])];
     guarded.extend(ahead.iter().map(|(name, text)| (*name, vec![*text])));
-    guarded.push(("headers", named));
-    guarded.push(("extra", extra.iter().map(String::as_str).collect()));
+    guarded.push(("api.headers", named));
+    guarded.push(("api.extra", extra.iter().map(String::as_str).collect()));
     key(call, &guarded)
 }
 
@@ -414,13 +414,13 @@ mod tests {
         for value in ["sk-test-PLUM\nx", "sk-test-PLUM\tx", "sk-test-PLUM\u{1b}x"] {
             assert_eq!(
                 read(value, &[]),
-                "MY_KEY holds a control character (derive.test.key_env)"
+                "MY_KEY holds a control character (derive.test.api.key_env)"
             );
         }
         let program = ["/bin/sh", "-c", "printf 'sk-test-PLUM\\tx\\n'"].map(str::to_owned);
         assert_eq!(
             read("", &program),
-            "derive.test.key_command printed a key with a control character"
+            "derive.test.api.key_command printed a key with a control character"
         );
     }
 }

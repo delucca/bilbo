@@ -56,7 +56,7 @@ pub const PROVIDER: Key<String> = Key {
         variable: Some("BILBO_DERIVE_PROVIDER"),
         default: Default::Toml(r#""""#),
         allowed: "the name of a provider, at most 32 lower-case letters, or the empty text for none",
-        doc: "The provider bilbo derive reaches a model through. bilbo derive --help lists the providers.",
+        doc: "The provider whose models bilbo derive calls. derive.<provider>.via names the way bilbo reaches them. bilbo derive --help lists the providers.",
     },
     parse: |value| {
         value
@@ -214,7 +214,7 @@ pub const ANSWER_TOKENS: Key<usize> = Key {
         variable: Some("BILBO_DERIVE_ANSWER_TOKENS"),
         default: Default::Toml("16000"),
         allowed: "a whole number from 256 to 1000000",
-        doc: "The most tokens of an answer an API provider may write, its thinking included.",
+        doc: "The most tokens of an answer a provider reached by its API may write, its thinking included.",
     },
     parse: |value| count(value, 256..=1_000_000),
     show: ToString::to_string,

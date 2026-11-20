@@ -46,7 +46,7 @@ A config file or variable that bilbo refuses fails `bilbo config` as it fails ev
 
 ### set
 
-`bilbo config set <key> <value>` writes only when the file read again is the old one with that key set. The value is one TOML value; a text that is not TOML is taken as text, and so is a text the key takes only as a text (`bilbo config set derive.anthropic.version 2026-10-21` writes `"2026-10-21"`). A byte-order mark and a file's own line end are kept. When it does not write, the file is as it was and no temporary is left in its folder, except that the lock's file, `<config>.lock`, stays there once it was made; it exits 2 with this on standard error:
+`bilbo config set <key> <value>` writes only when the file read again is the old one with that key set. The value is one TOML value; a text that is not TOML is taken as text, and so is a text the key takes only as a text (`bilbo config set derive.anthropic.api.version 2026-10-21` writes `"2026-10-21"`). A byte-order mark and a file's own line end are kept. When it does not write, the file is as it was and no temporary is left in its folder, except that the lock's file, `<config>.lock`, stays there once it was made; it exits 2 with this on standard error:
 
 ```text
 bilbo: cannot set <key> in <file>: <why>; set it by hand:
@@ -492,7 +492,7 @@ Whatever the kind and whatever the instruction, what derive writes is notes: par
 
 ### Turning it on
 
-Three keys must be set before anything is sent: `derive.enabled`, `derive.provider` and `derive.in`. No bilbo verb but `derive` sends anything, and `derive` sends nothing while one of the three is unset. For an API provider:
+Three keys must be set before anything is sent: `derive.enabled`, `derive.provider` and `derive.in`. No bilbo verb but `derive` sends anything, and `derive` sends nothing while one of the three is unset. For a provider reached by its API:
 
 ```sh
 bilbo config set derive.provider anthropic
@@ -502,15 +502,19 @@ bilbo derive --dry-run
 bilbo config set derive.enabled true
 ```
 
-Run `--dry-run` before `derive.enabled`: it says what a run would send, and sends nothing, whether derive is on or not. The providers are `anthropic`, `openai` and `claude`.
+Run `--dry-run` before `derive.enabled`: it says what a run would send, and sends nothing, whether derive is on or not. The providers are `anthropic` and `openai`. A provider is reached by the way its `via` names: `api`, a request with a key, unless you set another. `bilbo config set derive.anthropic.via tool` takes Anthropic's tool, `claude`, with its own login. The dry run's `provider:` line says the way.
 
 ### Providers
 
-`anthropic` needs a `model` and a key; its table is `[derive.anthropic]`, with `model`, `endpoint`, `version`, `key_env`, `key_command`, `headers` and `extra`. `openai` needs the same, in `[derive.openai]`, without `version`. Each key is in the [configuration page](configuration.md#keys). `extra` adds fields to the body of every request, and `headers` adds headers:
+A provider is who makes the models, and `derive.<provider>.via` is the way bilbo reaches them: `api` sends a request to the provider's API with a key, `tool` starts the provider's tool with its own login. `anthropic` takes both. `openai` takes `api` alone: bilbo could not run its tool, `codex`, with no tool the model can call. The provider's table, `[derive.anthropic]` or `[derive.openai]`, holds `model` and `via`. `model` has no default, and both ways read it. Each way has a table of its own under it, and only the one `via` names is used; a value in the other is still checked. Each key is in the [configuration page](configuration.md#keys).
+
+By `api` a provider needs a `model` and a key. `[derive.anthropic.api]` holds `endpoint`, `version`, `key_env`, `key_command`, `headers` and `extra`; `[derive.openai.api]` holds the same without `version`. `extra` adds fields to the body of every request, and `headers` adds headers:
 
 ```toml
 [derive.anthropic]
 model = "claude-haiku-5-5"
+
+[derive.anthropic.api]
 extra = { output_config = { effort = "low" } }
 ```
 
@@ -519,6 +523,8 @@ extra = { output_config = { effort = "low" } }
 # The header and the field are the provider's; bilbo turns nothing of it on.
 [derive.anthropic]
 model = "claude-haiku-5-5"
+
+[derive.anthropic.api]
 headers = { anthropic-beta = "server-side-fallback-2026-07-01" }
 extra = { fallbacks = "default" }
 ```
@@ -527,15 +533,13 @@ bilbo refuses a field of `extra` that it writes itself, that offers the model a 
 
 With the second the model that answered can differ from the one named; the log has both. `derive.answer_tokens` counts the model's thinking, and a low value is spent on thinking first: an answer cut there holds no note.
 
-`claude` is the tool claude, with its own login and no key: its table is `[derive.claude]`, with `program`, `model`, `effort`, `arguments`, `inherit`, `environment` and `project_files`. `derive.claude.model` has no default, and bilbo asks for none. bilbo runs the tool with no tool the model can call, and does not start it otherwise: `derive.claude.arguments` is read as flags bilbo knows, each with its values: `-p`, `--model`, `--effort`, `--output-format`, `--tools`, `--disable-slash-commands`, `--strict-mcp-config`, `--setting-sources`, `--settings`, `--no-session-persistence`, `--safe-mode`, `--system-prompt`, `--append-system-prompt`, `--fallback-model` and `--max-budget-usd`. Any other item is refused, and so is a flag written with `=`. The list must hold `--tools` followed by `""`, `--strict-mcp-config` and `--safe-mode`, and `{instruction}` only as the value of `--system-prompt` or `--append-system-prompt`. A flag of a later version of the tool waits for bilbo to know it. Two things no argument rules: what `derive.claude.environment` or a settings value makes the tool do, and the hooks of the machine's managed settings, which the tool runs with the prompt whatever its arguments are. A reply that shows a tool was reached is a failed call: more than one turn, a denied permission, or a count above 0 of a server tool or of a subagent. A reply without one of the fields bilbo reads for that is a failed call too, and charges nothing: bilbo reads the reply as claude 2.1.327 prints it, and the run names the field. The list must also hold `--no-session-persistence`: without it the tool would save every call as a session under `~/.claude/projects`, which `bilbo remember` follows by default.
+By `tool`, `anthropic` is the tool claude, with its own login and no key: `[derive.anthropic.tool]` holds `program`, `effort`, `arguments`, `inherit`, `environment` and `project_files`. bilbo runs the tool with no tool the model can call, and does not start it otherwise: `derive.anthropic.tool.arguments` is read as flags bilbo knows, each with its values: `-p`, `--model`, `--effort`, `--output-format`, `--tools`, `--disable-slash-commands`, `--strict-mcp-config`, `--setting-sources`, `--settings`, `--no-session-persistence`, `--safe-mode`, `--system-prompt`, `--append-system-prompt`, `--fallback-model` and `--max-budget-usd`. Any other item is refused, and so is a flag written with `=`. The list must hold `--tools` followed by `""`, `--strict-mcp-config` and `--safe-mode`, and `{instruction}` only as the value of `--system-prompt` or `--append-system-prompt`. A flag of a later version of the tool waits for bilbo to know it. Two things no argument rules: what `derive.anthropic.tool.environment` or a settings value makes the tool do, and the hooks of the machine's managed settings, which the tool runs with the prompt whatever its arguments are. A reply that shows a tool was reached is a failed call: more than one turn, a denied permission, or a count above 0 of a server tool or of a subagent. A reply without one of the fields bilbo reads for that is a failed call too, and charges nothing: bilbo reads the reply as claude 2.1.327 prints it, and the run names the field. The list must also hold `--no-session-persistence`: without it the tool would save every call as a session under `~/.claude/projects`, which `bilbo remember` follows by default.
 
-The tool runs in an empty folder of bilbo's state folder, `<state>/derive/work`, with only the variables `derive.claude.inherit` names: its own login is found through `HOME`, and nothing of the caller's session reaches it. bilbo does not start it when a folder above that one holds a file the tool reads as a project's (`derive.claude.project_files`): set `paths.state` outside any project. `DISABLE_PROMPT_CACHING` is set because the tool would otherwise pay to cache a prompt it never sends twice. bilbo stops the tool at `derive.timeout`, with what it started in its process group; a process that starts a session of its own is not stopped. A tool may make more than one request of its own for one call; with no tool on offer it makes one. A timer's run has no shell environment: give `derive.claude.program` its full path.
-
-`codex` is not a provider: bilbo could not run it with no tool the model can call.
+The tool runs in an empty folder of bilbo's state folder, `<state>/derive/work`, with only the variables `derive.anthropic.tool.inherit` names: its own login is found through `HOME`, and nothing of the caller's session reaches it. bilbo does not start it when a folder above that one holds a file the tool reads as a project's (`derive.anthropic.tool.project_files`): set `paths.state` outside any project. `DISABLE_PROMPT_CACHING` is set because the tool would otherwise pay to cache a prompt it never sends twice. bilbo stops the tool at `derive.timeout`, with what it started in its process group; a process that starts a session of its own is not stopped. A tool may make more than one request of its own for one call; with no tool on offer it makes one. A timer's run has no shell environment: give `derive.anthropic.tool.program` its full path.
 
 ### The key
 
-An API key is never a value of the config file: `bilbo config` prints every value. Name the variable that holds it with `key_env`, or a program that prints it with `key_command`; the program's output is in no message. The program is your own: it gets bilbo's environment as it is and runs in bilbo's state folder, within `derive.timeout`. An endpoint is printed by `bilbo config` and in errors like any value, so no key belongs in it. When a run has read the key, a setting of the same provider that holds it stops the run before anything is sent, and the message names the setting, never its value; the endpoint is the exception, which the guard does not read, so no key belongs in it.
+An API key is never a value of the config file: `bilbo config` prints every value. Name the variable that holds it with `key_env`, or a program that prints it with `key_command`, both in the provider's `api` table; the program's output is in no message. The program is your own: it gets bilbo's environment as it is and runs in bilbo's state folder, within `derive.timeout`. An endpoint is printed by `bilbo config` and in errors like any value, so no key belongs in it. When a run has read the key, a setting that goes into the request and holds it (`model`, or `version`, `headers` or `extra` of the `api` table) stops the run before anything is sent, and the message names the setting, never its value; the endpoint is the exception, which the guard does not read, so no key belongs in it.
 
 A timer's run has no shell environment, so a variable your shell sets is not there. Give the key through `key_command`, with the program's full path. With systemd the unit can instead name a file of your own with `EnvironmentFile=`. Make that file private before the key goes into it:
 
@@ -572,7 +576,7 @@ A window charged `derive.tries` times is passed over: a run record says so, with
 
 ### --redo
 
-`--redo` makes due every entry whose newest notes were written under another instruction, provider or model than the ones in force, and every entry with a stretch that was passed over, as a new generation of its notes from its first record. It never writes again what the instruction, provider and model in force wrote in full.
+`--redo` makes due every entry whose newest notes were written under another instruction, provider or model than the ones in force, and every entry with a stretch that was passed over, as a new generation of its notes from its first record. It never writes again what the instruction, provider and model in force wrote in full. The way is no part of this: the same model of the same provider, reached by `tool` after `api`, is the same writer, and nothing is redone.
 
 ### --dry-run
 
@@ -585,12 +589,12 @@ named: 412 entries by derive.in, 14 of them left out by derive.not_in
 due: 37 entries
 not due: 12 still growing, 340 covered, 9 belong to another entry, 2 passed over, 1 with labels not current
 this run: 20 calls for 14 entries, 380122 tokens of records to send (derive.calls 20)
-provider: anthropic, model claude-haiku-5-5, at https://api.anthropic.com/v1/messages
+provider: anthropic, via api, model claude-haiku-5-5, at https://api.anthropic.com/v1/messages
 version: 2026-10-21
 key: the variable ANTHROPIC_API_KEY, which is set
 ```
 
-`headers:` and `extra:` follow when they are set.
+`headers:` and `extra:` follow when they are set. By the way `tool` the lines after `this run:` are `provider: anthropic, via tool, model <model>, effort <effort>, program <program>`, then `arguments:`, `inherit:`, `environment:` and `project_files:`, each with its value.
 
 With refs, every count is of the refs alone, and each ref has one more line, `entry`, in five fields apart by tabs: the entry's id, its state (`due`, `covered`, `passed over` or `left out: ` and why), the id of its note entry or `-`, and how many notes its newest generation holds.
 

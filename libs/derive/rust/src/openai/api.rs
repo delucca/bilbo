@@ -12,12 +12,8 @@ use crate::http::{self, Endpoint, Response};
 use crate::secret::Secret;
 use crate::table;
 use crate::writer::{
-    Cause, Limits, MODEL_ALLOWED, Outcome, Prompt, Usage, Variables, What, Writer, answered_model,
-    identifier,
+    Cause, Limits, Outcome, Prompt, Usage, Variables, Way, What, Writer, answered_model, identifier,
 };
-
-pub const NAME: &str = "openai";
-pub const SUMMARY: &str = "the OpenAI API, with a key";
 
 const HEADERS_BILBO_WRITES: [&str; 6] = [
     "authorization",
@@ -78,22 +74,10 @@ const ITEMS_OF_A_TOOL: [&str; 25] = [
     "program_output",
 ];
 
-pub const MODEL: Key<String> = Key {
-    about: About {
-        name: "derive.openai.model",
-        variable: Some("BILBO_DERIVE_OPENAI_MODEL"),
-        default: Default::Toml(r#""""#),
-        allowed: MODEL_ALLOWED,
-        doc: "The model bilbo derive asks the OpenAI API for. bilbo names none.",
-    },
-    parse: api::model,
-    show: |id| quote(id),
-};
-
 pub const ENDPOINT: Key<Endpoint> = Key {
     about: About {
-        name: "derive.openai.endpoint",
-        variable: Some("BILBO_DERIVE_OPENAI_ENDPOINT"),
+        name: "derive.openai.api.endpoint",
+        variable: Some("BILBO_DERIVE_OPENAI_API_ENDPOINT"),
         default: Default::Toml(r#""https://api.openai.com/v1/responses""#),
         allowed: api::ENDPOINT_ALLOWED,
         doc: "Where bilbo derive sends a request for the OpenAI API.",
@@ -104,8 +88,8 @@ pub const ENDPOINT: Key<Endpoint> = Key {
 
 pub const KEY_ENV: Key<String> = Key {
     about: About {
-        name: "derive.openai.key_env",
-        variable: Some("BILBO_DERIVE_OPENAI_KEY_ENV"),
+        name: "derive.openai.api.key_env",
+        variable: Some("BILBO_DERIVE_OPENAI_API_KEY_ENV"),
         default: Default::Toml(r#""OPENAI_API_KEY""#),
         allowed: api::KEY_ENV_ALLOWED,
         doc: "The variable bilbo derive reads the OpenAI API key from when key_command is empty.",
@@ -116,7 +100,7 @@ pub const KEY_ENV: Key<String> = Key {
 
 pub const KEY_COMMAND: Key<Vec<String>> = Key {
     about: About {
-        name: "derive.openai.key_command",
+        name: "derive.openai.api.key_command",
         variable: None,
         default: Default::Toml("[]"),
         allowed: api::KEY_COMMAND_ALLOWED,
@@ -128,7 +112,7 @@ pub const KEY_COMMAND: Key<Vec<String>> = Key {
 
 pub const HEADERS: Key<Vec<(String, String)>> = Key {
     about: About {
-        name: "derive.openai.headers",
+        name: "derive.openai.api.headers",
         variable: None,
         default: Default::Toml("{}"),
         allowed: api::HEADERS_ALLOWED,
@@ -140,7 +124,7 @@ pub const HEADERS: Key<Vec<(String, String)>> = Key {
 
 pub const EXTRA: Key<Map<String, Json>> = Key {
     about: About {
-        name: "derive.openai.extra",
+        name: "derive.openai.api.extra",
         variable: None,
         default: Default::Toml("{}"),
         allowed: api::EXTRA_ALLOWED,
@@ -150,8 +134,7 @@ pub const EXTRA: Key<Map<String, Json>> = Key {
     show: |map| table::show_fields(map),
 };
 
-pub const ABOUT: [&About; 6] = [
-    &MODEL.about,
+pub const ABOUT: [&About; 5] = [
     &ENDPOINT.about,
     &KEY_ENV.about,
     &KEY_COMMAND.about,
@@ -171,7 +154,7 @@ pub struct Section {
 
 pub fn section(source: &Source<'_>) -> Result<Section, Error> {
     Ok(Section {
-        model: MODEL.resolve(source)?,
+        model: super::MODEL.resolve(source)?,
         endpoint: ENDPOINT.resolve(source)?,
         key_env: KEY_ENV.resolve(source)?,
         key_command: KEY_COMMAND.resolve(source)?,
@@ -185,9 +168,8 @@ pub fn shown(source: &Source<'_>) -> Result<Vec<Shown>, Error> {
 }
 
 impl Section {
-    pub fn shown(&self) -> [Shown; 6] {
+    pub fn shown(&self) -> [Shown; 5] {
         [
-            MODEL.shown(&self.model),
             ENDPOINT.shown(&self.endpoint),
             KEY_ENV.shown(&self.key_env),
             KEY_COMMAND.shown(&self.key_command),
@@ -487,7 +469,7 @@ impl Writer for OpenAi {
         let section = &self.section;
         let extra = table::texts(&section.extra.value);
         let call = Call {
-            provider: NAME,
+            provider: super::NAME,
             env: &section.key_env.value,
             command: &section.key_command.value,
             variables: &*self.variables,
@@ -553,7 +535,9 @@ impl Writer for OpenAi {
     fn describe(&self) -> Vec<String> {
         let section = &self.section;
         let head = vec![format!(
-            "provider: {NAME}, model {}, at {}",
+            "provider: {}, via {}, model {}, at {}",
+            super::NAME,
+            Way::Api.word(),
             section.model.value,
             section.endpoint.value.as_str()
         )];
@@ -619,9 +603,8 @@ mod tests {
         assert_eq!(
             variables,
             [
-                Some("BILBO_DERIVE_OPENAI_MODEL"),
-                Some("BILBO_DERIVE_OPENAI_ENDPOINT"),
-                Some("BILBO_DERIVE_OPENAI_KEY_ENV"),
+                Some("BILBO_DERIVE_OPENAI_API_ENDPOINT"),
+                Some("BILBO_DERIVE_OPENAI_API_KEY_ENV"),
                 None,
                 None,
                 None
@@ -653,31 +636,31 @@ mod tests {
 
     #[test]
     fn the_endpoint_is_https_or_plain_http_at_a_literal_loopback_address() {
-        let local = given("derive.openai.endpoint = \"http://127.0.0.1:9/v1/responses\"");
+        let local = given("derive.openai.api.endpoint = \"http://127.0.0.1:9/v1/responses\"");
         assert_eq!(
             local.endpoint.value.as_str(),
             "http://127.0.0.1:9/v1/responses"
         );
         assert_eq!(
-            refused("derive.openai.endpoint = \"http://example.com\""),
-            "/c/config.toml:1: derive.openai.endpoint must be an https URL, or an http URL at 127.0.0.1 or [::1]"
+            refused("derive.openai.api.endpoint = \"http://example.com\""),
+            "/c/config.toml:1: derive.openai.api.endpoint must be an https URL, or an http URL at 127.0.0.1 or [::1]"
         );
         assert_eq!(
-            refused("derive.openai.endpoint = \"http://localhost:9\""),
-            "/c/config.toml:1: derive.openai.endpoint must name the address in place of localhost: 127.0.0.1"
+            refused("derive.openai.api.endpoint = \"http://localhost:9\""),
+            "/c/config.toml:1: derive.openai.api.endpoint must name the address in place of localhost: 127.0.0.1"
         );
     }
 
     #[test]
     fn the_variables_name_is_a_short_name() {
         assert_eq!(
-            given("derive.openai.key_env = \"A_B1\"").key_env.value,
+            given("derive.openai.api.key_env = \"A_B1\"").key_env.value,
             "A_B1"
         );
         for name in ["A-B", ""] {
             assert_eq!(
-                refused(&format!("derive.openai.key_env = {name:?}")),
-                "/c/config.toml:1: derive.openai.key_env must be the name of a variable: letters, digits and _"
+                refused(&format!("derive.openai.api.key_env = {name:?}")),
+                "/c/config.toml:1: derive.openai.api.key_env must be the name of a variable: letters, digits and _"
             );
         }
     }
@@ -685,26 +668,29 @@ mod tests {
     #[test]
     fn the_key_command_is_a_program_and_its_arguments() {
         assert!(
-            given("derive.openai.key_command = []")
+            given("derive.openai.api.key_command = []")
                 .key_command
                 .value
                 .is_empty()
         );
         assert_eq!(
-            given("derive.openai.key_command = [\"op\"]")
+            given("derive.openai.api.key_command = [\"op\"]")
                 .key_command
                 .value,
             ["op"]
         );
         assert_eq!(
-            given("derive.openai.key_command = [\"op\", \"read\", \"x\"]")
+            given("derive.openai.api.key_command = [\"op\", \"read\", \"x\"]")
                 .key_command
                 .value,
             ["op", "read", "x"]
         );
         for text in ["[\"\", \"x\"]", "\"op\"", "[1]"] {
-            let message = refused(&format!("derive.openai.key_command = {text}"));
-            assert!(message.contains("derive.openai.key_command"), "{message}");
+            let message = refused(&format!("derive.openai.api.key_command = {text}"));
+            assert!(
+                message.contains("derive.openai.api.key_command"),
+                "{message}"
+            );
         }
     }
 
@@ -720,22 +706,25 @@ mod tests {
         ] {
             for written in [name.to_owned(), name.to_ascii_uppercase()] {
                 assert_eq!(
-                    refused(&format!("derive.openai.headers = {{ {written} = \"x\" }}")),
+                    refused(&format!(
+                        "derive.openai.api.headers = {{ {written} = \"x\" }}"
+                    )),
                     format!(
-                        "/c/config.toml:1: derive.openai.headers must not hold {name}, a header bilbo writes itself"
+                        "/c/config.toml:1: derive.openai.api.headers must not hold {name}, a header bilbo writes itself"
                     )
                 );
             }
         }
         assert_eq!(
-            refused("derive.openai.headers = { \"a b\" = \"x\" }"),
-            "/c/config.toml:1: derive.openai.headers must name its headers with letters, digits and dashes"
+            refused("derive.openai.api.headers = { \"a b\" = \"x\" }"),
+            "/c/config.toml:1: derive.openai.api.headers must name its headers with letters, digits and dashes"
         );
         assert_eq!(
-            refused("derive.openai.headers = { A = \"x\\ny\" }"),
-            "/c/config.toml:1: derive.openai.headers must hold no line end or control character"
+            refused("derive.openai.api.headers = { A = \"x\\ny\" }"),
+            "/c/config.toml:1: derive.openai.api.headers must hold no line end or control character"
         );
-        let taken = given("derive.openai.headers = { User-Agent = \"x\", OpenAI-Project = \"p\" }");
+        let taken =
+            given("derive.openai.api.headers = { User-Agent = \"x\", OpenAI-Project = \"p\" }");
         assert_eq!(
             taken.headers.value,
             [
@@ -765,20 +754,22 @@ mod tests {
         ] {
             for written in [name.to_owned(), name.to_ascii_uppercase()] {
                 assert_eq!(
-                    refused(&format!("derive.openai.extra = {{ {written} = \"x\" }}")),
+                    refused(&format!(
+                        "derive.openai.api.extra = {{ {written} = \"x\" }}"
+                    )),
                     format!(
-                        "/c/config.toml:1: derive.openai.extra must not hold {name}: a field bilbo writes itself, one that offers the model a tool, or one that keeps the records at the provider"
+                        "/c/config.toml:1: derive.openai.api.extra must not hold {name}: a field bilbo writes itself, one that offers the model a tool, or one that keeps the records at the provider"
                     )
                 );
             }
         }
         assert_eq!(
-            refused("derive.openai.extra = { outer = { when = 1979-05-27 } }"),
-            "/c/config.toml:1: derive.openai.extra must hold no date, inf or nan"
+            refused("derive.openai.api.extra = { outer = { when = 1979-05-27 } }"),
+            "/c/config.toml:1: derive.openai.api.extra must hold no date, inf or nan"
         );
         assert_eq!(
-            refused("derive.openai.extra = \"x\""),
-            "/c/config.toml:1: derive.openai.extra must be a table of fields"
+            refused("derive.openai.api.extra = \"x\""),
+            "/c/config.toml:1: derive.openai.api.extra must be a table of fields"
         );
         for name in [
             "prompt_cache_key",
@@ -803,11 +794,11 @@ mod tests {
             "user",
         ] {
             assert!(
-                resolve(&[], &format!("derive.openai.extra = {{ {name} = 1 }}")).is_ok(),
+                resolve(&[], &format!("derive.openai.api.extra = {{ {name} = 1 }}")).is_ok(),
                 "{name}"
             );
         }
-        let taken = given("derive.openai.extra = { reasoning = { effort = \"low\" } }");
+        let taken = given("derive.openai.api.extra = { reasoning = { effort = \"low\" } }");
         assert_eq!(
             serde_json::Value::Object(taken.extra.value),
             json!({"reasoning": {"effort": "low"}})
@@ -815,8 +806,8 @@ mod tests {
     }
 
     #[test]
-    fn the_keys_show_as_toml_that_reads_back_and_the_group_lists_six() {
-        let text = "derive.openai.model = \"m\"\nderive.openai.endpoint = \"http://127.0.0.1:9/x\"\nderive.openai.key_env = \"K1\"\nderive.openai.key_command = [\"op\", \"read\"]\nderive.openai.headers = { OpenAI-Project = \"p\" }\nderive.openai.extra = { reasoning = { effort = \"low\" }, n = 2, list = [1, \"a\"], \"a.b\" = 1 }\n";
+    fn the_keys_show_as_toml_that_reads_back_and_the_way_lists_five() {
+        let text = "derive.openai.model = \"m\"\nderive.openai.api.endpoint = \"http://127.0.0.1:9/x\"\nderive.openai.api.key_env = \"K1\"\nderive.openai.api.key_command = [\"op\", \"read\"]\nderive.openai.api.headers = { OpenAI-Project = \"p\" }\nderive.openai.api.extra = { reasoning = { effort = \"low\" }, n = 2, list = [1, \"a\"], \"a.b\" = 1 }\n";
         let file = File::parse(Path::new("/c/config.toml"), text.as_bytes()).expect("toml");
         let var = |_: &str| None;
         let list = shown(&Source {
@@ -830,7 +821,6 @@ mod tests {
         assert_eq!(
             values,
             [
-                "\"m\"",
                 "\"http://127.0.0.1:9/x\"",
                 "\"K1\"",
                 "[\"op\", \"read\"]",
@@ -858,40 +848,40 @@ mod tests {
         let mut cases: Vec<(String, String)> = Vec::new();
         cases.push((
             refused(&format!(
-                "derive.openai.endpoint = \"https://u:{SECRET}@example.com\""
+                "derive.openai.api.endpoint = \"https://u:{SECRET}@example.com\""
             )),
-            format!("/c/config.toml:1: derive.openai.endpoint {endpoint}"),
+            format!("/c/config.toml:1: derive.openai.api.endpoint {endpoint}"),
         ));
         cases.push((
             resolve(
                 &[(
-                    "BILBO_DERIVE_OPENAI_ENDPOINT",
+                    "BILBO_DERIVE_OPENAI_API_ENDPOINT",
                     &format!("https://u:{SECRET}@example.com"),
                 )],
                 "",
             )
             .expect_err("refused"),
-            format!("BILBO_DERIVE_OPENAI_ENDPOINT {endpoint}"),
+            format!("BILBO_DERIVE_OPENAI_API_ENDPOINT {endpoint}"),
         ));
         cases.push((
-            refused(&format!("derive.openai.endpoint = [\"{SECRET}\"]")),
-            "/c/config.toml:1: derive.openai.endpoint must be an https URL, or an http URL at 127.0.0.1 or [::1]"
+            refused(&format!("derive.openai.api.endpoint = [\"{SECRET}\"]")),
+            "/c/config.toml:1: derive.openai.api.endpoint must be an https URL, or an http URL at 127.0.0.1 or [::1]"
                 .to_owned(),
         ));
         cases.push((
             refused(&format!(
-                "derive.openai.headers = {{ authorization = \"{SECRET}\" }}"
+                "derive.openai.api.headers = {{ authorization = \"{SECRET}\" }}"
             )),
-            "/c/config.toml:1: derive.openai.headers must not hold authorization, a header bilbo writes itself"
+            "/c/config.toml:1: derive.openai.api.headers must not hold authorization, a header bilbo writes itself"
                 .to_owned(),
         ));
         cases.push((
-            refused(&format!("derive.openai.key_env = \"{SECRET}\"")),
-            format!("/c/config.toml:1: derive.openai.key_env {name}"),
+            refused(&format!("derive.openai.api.key_env = \"{SECRET}\"")),
+            format!("/c/config.toml:1: derive.openai.api.key_env {name}"),
         ));
         cases.push((
-            resolve(&[("BILBO_DERIVE_OPENAI_KEY_ENV", SECRET)], "").expect_err("refused"),
-            format!("BILBO_DERIVE_OPENAI_KEY_ENV {name}"),
+            resolve(&[("BILBO_DERIVE_OPENAI_API_KEY_ENV", SECRET)], "").expect_err("refused"),
+            format!("BILBO_DERIVE_OPENAI_API_KEY_ENV {name}"),
         ));
         cases.push((
             refused(&format!("derive.openai.model = \"{SECRET} x\"")),

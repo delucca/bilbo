@@ -1,3 +1,4 @@
+use std::path::PathBuf;
 use std::time::Duration;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -152,6 +153,38 @@ pub enum Outcome {
 
 pub type Variables = Box<dyn Fn(&str) -> Option<String>>;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Way {
+    Api,
+    Tool,
+}
+
+impl Way {
+    #[must_use]
+    pub fn word(self) -> &'static str {
+        match self {
+            Way::Api => "api",
+            Way::Tool => "tool",
+        }
+    }
+
+    #[must_use]
+    pub(crate) fn named(text: &str) -> Option<Way> {
+        [Way::Api, Way::Tool]
+            .into_iter()
+            .find(|way| way.word() == text)
+    }
+}
+
+pub struct Host {
+    pub variables: Variables,
+    pub state: PathBuf,
+    pub work: PathBuf,
+    pub timeout: Duration,
+    pub response: usize,
+    pub poll: Duration,
+}
+
 pub trait Writer {
     fn prepare(&mut self) -> Result<(), String>;
     fn write(&mut self, prompt: &Prompt, limits: &Limits) -> Outcome;
@@ -203,7 +236,7 @@ pub fn answered_model(text: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{What, Whose, identifier};
+    use super::{Way, What, Whose, identifier};
 
     #[test]
     fn a_vendors_text_is_a_short_identifier_or_unknown() {
@@ -221,6 +254,17 @@ mod tests {
             ("é", "unknown"),
         ] {
             assert_eq!(identifier(text), kept, "{text:?}");
+        }
+    }
+
+    #[test]
+    fn a_way_is_read_from_its_word() {
+        assert_eq!(Way::named("api"), Some(Way::Api));
+        assert_eq!(Way::named("tool"), Some(Way::Tool));
+        assert_eq!(Way::Api.word(), "api");
+        assert_eq!(Way::Tool.word(), "tool");
+        for text in ["", "API", "tool ", "cli"] {
+            assert_eq!(Way::named(text), None, "{text:?}");
         }
     }
 

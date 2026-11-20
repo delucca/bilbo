@@ -1,4 +1,4 @@
-# Claude Code 2.1.327, the `claude` bilbo's guards were read from, for a build whose provider is the tool, checked
+# Claude Code 2.1.327, the `claude` bilbo's guards were read from, for a build through the tool, checked
 # against the sha256 in its GPG-signed manifest (https://downloads.claude.ai/claude-code-releases/2.1.327/manifest.json).
 # One stage a machine, so a build fetches its own alone.
 FROM scratch AS claude-amd64

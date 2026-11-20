@@ -174,7 +174,7 @@ fn a_value_the_key_refuses_is_said_in_the_keys_words_and_nothing_is_written() {
     let sandbox = Sandbox::new("config-set-refused");
     let before = "[derive]\nquiet = \"1h\"\n";
     sandbox.put(before);
-    let cases: [(&str, &str, &str); 5] = [
+    let cases: [(&str, &str, &str); 7] = [
         (
             "recall.budget",
             "255",
@@ -191,14 +191,24 @@ fn a_value_the_key_refuses_is_said_in_the_keys_words_and_nothing_is_written() {
             "derive.enabled must be true or false, got \"yes\"",
         ),
         (
-            "derive.anthropic.endpoint",
+            "derive.anthropic.api.endpoint",
             "http://localhost:1",
-            "derive.anthropic.endpoint must name the address in place of localhost: 127.0.0.1",
+            "derive.anthropic.api.endpoint must name the address in place of localhost: 127.0.0.1",
         ),
         (
-            "derive.anthropic.endpoint",
+            "derive.anthropic.api.endpoint",
             "https://u:hunter2@example.com",
-            "derive.anthropic.endpoint must hold no user name or password, got one",
+            "derive.anthropic.api.endpoint must hold no user name or password, got one",
+        ),
+        (
+            "derive.openai.via",
+            "tool",
+            "derive.openai.via must be api: tool is not built for openai",
+        ),
+        (
+            "derive.anthropic.via",
+            "cli",
+            "derive.anthropic.via must be api or tool, got \"cli\"",
         ),
     ];
     for (key, value, line) in cases {
@@ -208,6 +218,33 @@ fn a_value_the_key_refuses_is_said_in_the_keys_words_and_nothing_is_written() {
         assert!(!run.stdout.contains("hunter2"));
         assert_eq!(sandbox.text(), before);
     }
+}
+
+#[test]
+fn config_set_writes_a_key_of_a_ways_table() {
+    let sandbox = Sandbox::new("config-set-way");
+    sandbox.put("[derive.anthropic]\nmodel = \"m\"\n");
+    let run = sandbox.run(&[
+        "config",
+        "set",
+        "derive.anthropic.api.endpoint",
+        "https://e.test/v1",
+    ]);
+    assert_eq!(run.code, 0, "{:?}", run.stderr);
+    assert_eq!(
+        sandbox.text(),
+        "[derive.anthropic]\nmodel = \"m\"\n\n[derive.anthropic.api]\nendpoint = \"https://e.test/v1\"\n"
+    );
+    let sandbox = Sandbox::new("config-set-via");
+    sandbox.put("[derive.anthropic.api]\nendpoint = \"https://example.test/v1\"\n");
+    let run = sandbox.run(&["config", "set", "derive.anthropic.via", "tool"]);
+    assert_eq!(run.code, 0, "{:?}", run.stderr);
+    assert_eq!(
+        sandbox.text(),
+        "[derive.anthropic.api]\nendpoint = \"https://example.test/v1\"\n\n[derive.anthropic]\nvia = \"tool\"\n"
+    );
+    let read = sandbox.run(&["config", "derive.anthropic.via"]);
+    assert_eq!((read.code, read.stdout.as_str()), (0, "tool\n"));
 }
 
 #[test]
@@ -483,13 +520,18 @@ fn set_takes_its_turn_on_the_lock_and_reads_the_file_again() {
 #[test]
 fn a_text_the_key_takes_only_as_a_text_is_written_as_one() {
     let sandbox = Sandbox::new("config-set-date");
-    let run = sandbox.run(&["config", "set", "derive.anthropic.version", "2026-10-21"]);
+    let run = sandbox.run(&[
+        "config",
+        "set",
+        "derive.anthropic.api.version",
+        "2026-10-21",
+    ]);
     assert_eq!(run.code, 0, "{:?}", run.stderr);
     assert_eq!(
         sandbox.text(),
-        "[derive.anthropic]\nversion = \"2026-10-21\"\n"
+        "[derive.anthropic.api]\nversion = \"2026-10-21\"\n"
     );
-    let read = sandbox.run(&["config", "derive.anthropic.version"]);
+    let read = sandbox.run(&["config", "derive.anthropic.api.version"]);
     assert_eq!((read.code, read.stdout.as_str()), (0, "2026-10-21\n"));
 }
 

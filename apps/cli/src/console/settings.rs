@@ -560,10 +560,45 @@ mod tests {
             .err(),
             Some(
                 "/c.toml:3: unknown key store.sealat; the keys are paths.root, paths.state, \
-                 paths.cache, store.seal_at, store.seal_after, store.compression, store.tear_budget, store.wait, store.poll, follow, read.budget, read.outline_width, read.matches_listed, search.chunk_tokens, search.chunk_overlap, search.workers, search.index_memory, search.merge_deleted_percent, search.entry_tries, search.label_batch, search.list_limit, recall.budget, recall.notes_budget, recall.candidates, recall.cap, recall.record_cap, recall.copy_share, recall.copy_words, recall.question_words, recall.languages, recall.bm25_k1, recall.bm25_b, recall.read_batch, recall.typo_terms, recall.typo_letters, recall.typo_max_letters, recall.typo_two_edits, recall.pair_weight, derive.enabled, derive.provider, derive.in, derive.not_in, derive.instructions, derive.quiet, derive.window, derive.passage, derive.passage_head, derive.earlier, derive.names, derive.answer_tokens, derive.response, derive.calls, derive.timeout, derive.poll, derive.retries, derive.retry_wait, derive.retry_factor, derive.retry_limit, derive.tries, derive.failures, markdown.heading_width, session.unpack_floor, session.unpack_ratio, session.unpack_window, session.wide_fields, derive.anthropic.model, derive.anthropic.endpoint, derive.anthropic.version, derive.anthropic.key_env, derive.anthropic.key_command, derive.anthropic.headers, derive.anthropic.extra, derive.openai.model, derive.openai.endpoint, derive.openai.key_env, derive.openai.key_command, derive.openai.headers, derive.openai.extra, derive.claude.program, derive.claude.model, derive.claude.effort, derive.claude.arguments, derive.claude.inherit, derive.claude.environment, derive.claude.project_files"
+                 paths.cache, store.seal_at, store.seal_after, store.compression, store.tear_budget, store.wait, store.poll, follow, read.budget, read.outline_width, read.matches_listed, search.chunk_tokens, search.chunk_overlap, search.workers, search.index_memory, search.merge_deleted_percent, search.entry_tries, search.label_batch, search.list_limit, recall.budget, recall.notes_budget, recall.candidates, recall.cap, recall.record_cap, recall.copy_share, recall.copy_words, recall.question_words, recall.languages, recall.bm25_k1, recall.bm25_b, recall.read_batch, recall.typo_terms, recall.typo_letters, recall.typo_max_letters, recall.typo_two_edits, recall.pair_weight, derive.enabled, derive.provider, derive.in, derive.not_in, derive.instructions, derive.quiet, derive.window, derive.passage, derive.passage_head, derive.earlier, derive.names, derive.answer_tokens, derive.response, derive.calls, derive.timeout, derive.poll, derive.retries, derive.retry_wait, derive.retry_factor, derive.retry_limit, derive.tries, derive.failures, markdown.heading_width, session.unpack_floor, session.unpack_ratio, session.unpack_window, session.wide_fields, derive.anthropic.model, derive.anthropic.via, derive.anthropic.api.endpoint, derive.anthropic.api.version, derive.anthropic.api.key_env, derive.anthropic.api.key_command, derive.anthropic.api.headers, derive.anthropic.api.extra, derive.anthropic.tool.program, derive.anthropic.tool.effort, derive.anthropic.tool.arguments, derive.anthropic.tool.inherit, derive.anthropic.tool.environment, derive.anthropic.tool.project_files, derive.openai.model, derive.openai.via, derive.openai.api.endpoint, derive.openai.api.key_env, derive.openai.api.key_command, derive.openai.api.headers, derive.openai.api.extra"
                     .to_owned()
             )
         );
+    }
+
+    #[test]
+    fn a_key_of_the_old_names_is_an_unknown_key() {
+        for (file, line, name) in [
+            (
+                "[derive.claude]\nprogram = \"x\"\n",
+                2,
+                "derive.claude.program",
+            ),
+            ("[derive.claude]\n", 1, "derive.claude"),
+            (
+                "derive.anthropic.endpoint = \"https://e.test\"\n",
+                1,
+                "derive.anthropic.endpoint",
+            ),
+            (
+                "[derive.anthropic.headers]\nX-A = \"1\"\n",
+                2,
+                "derive.anthropic.headers.X-A",
+            ),
+            (
+                "[derive.openai]\nkey_env = \"K\"\n",
+                2,
+                "derive.openai.key_env",
+            ),
+        ] {
+            let said = settings(
+                &[("HOME", "/h"), ("BILBO_CONFIG", "/c.toml")],
+                &[("/c.toml", file)],
+            )
+            .expect_err("refused");
+            let start = format!("/c.toml:{line}: unknown key {name}; the keys are paths.root, ");
+            assert!(said.starts_with(&start), "{said}");
+        }
     }
 
     #[test]
@@ -751,21 +786,22 @@ mod tests {
             [
                 "BILBO_CONFIG",
                 "BILBO_DERIVE_ANSWER_TOKENS",
-                "BILBO_DERIVE_ANTHROPIC_ENDPOINT",
-                "BILBO_DERIVE_ANTHROPIC_KEY_ENV",
+                "BILBO_DERIVE_ANTHROPIC_API_ENDPOINT",
+                "BILBO_DERIVE_ANTHROPIC_API_KEY_ENV",
+                "BILBO_DERIVE_ANTHROPIC_API_VERSION",
                 "BILBO_DERIVE_ANTHROPIC_MODEL",
-                "BILBO_DERIVE_ANTHROPIC_VERSION",
+                "BILBO_DERIVE_ANTHROPIC_TOOL_EFFORT",
+                "BILBO_DERIVE_ANTHROPIC_TOOL_PROGRAM",
+                "BILBO_DERIVE_ANTHROPIC_VIA",
                 "BILBO_DERIVE_CALLS",
-                "BILBO_DERIVE_CLAUDE_EFFORT",
-                "BILBO_DERIVE_CLAUDE_MODEL",
-                "BILBO_DERIVE_CLAUDE_PROGRAM",
                 "BILBO_DERIVE_EARLIER",
                 "BILBO_DERIVE_ENABLED",
                 "BILBO_DERIVE_FAILURES",
                 "BILBO_DERIVE_NAMES",
-                "BILBO_DERIVE_OPENAI_ENDPOINT",
-                "BILBO_DERIVE_OPENAI_KEY_ENV",
+                "BILBO_DERIVE_OPENAI_API_ENDPOINT",
+                "BILBO_DERIVE_OPENAI_API_KEY_ENV",
                 "BILBO_DERIVE_OPENAI_MODEL",
+                "BILBO_DERIVE_OPENAI_VIA",
                 "BILBO_DERIVE_PASSAGE",
                 "BILBO_DERIVE_PASSAGE_HEAD",
                 "BILBO_DERIVE_POLL",

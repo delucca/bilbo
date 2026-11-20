@@ -101,7 +101,7 @@ fn config(program: &str, script: &Path, after: &[&str], tail: &str) -> String {
         program.to_owned()
     };
     format!(
-        "[derive.claude]\nprogram = {program:?}\nmodel = \"test-model-1\"\narguments = {}\n{tail}",
+        "[derive.anthropic]\nmodel = \"test-model-1\"\n\n[derive.anthropic.tool]\nprogram = {program:?}\narguments = {}\n{tail}",
         quoted(after)
     )
 }
@@ -140,6 +140,76 @@ fn limits() -> Limits {
         response: 1 << 20,
         poll: Duration::from_millis(5),
     }
+}
+
+#[test]
+fn the_tool_gets_the_default_arguments_and_environment() {
+    let rig = rig("claude-defaults");
+    let out = rig.out.display();
+    let script = rig.scratch.executable(
+        "tool.sh",
+        &format!(
+            "ls -A > {out}/ls\npwd > {out}/pwd\nprintf '%s\\n' \"$@\" > {out}/args\nenv > {out}/env\ncat > {out}/stdin\ncat {out}/../reply.txt"
+        ),
+    );
+    fs::write(rig.scratch.path().join("reply.txt"), ANSWER).expect("reply");
+    let home = rig.scratch.path().join("home");
+    let text = format!(
+        "[derive.anthropic]\nmodel = \"test-model-1\"\n\n[derive.anthropic.tool]\nprogram = {:?}\nproject_files = [\"{MARKER}\"]\n",
+        script.display().to_string()
+    );
+    let mut writer = tool(&text, &rig.work, Some(&home));
+    writer.prepare().expect("prepare");
+    assert!(matches!(
+        writer.write(&prompt(), &limits()),
+        Outcome::Answer { .. }
+    ));
+    let read = |name: &str| fs::read_to_string(rig.out.join(name)).expect(name);
+    assert_eq!(
+        read("args").lines().collect::<Vec<_>>(),
+        [
+            "-p",
+            "--model",
+            "test-model-1",
+            "--effort",
+            "medium",
+            "--output-format",
+            "json",
+            "--tools",
+            "",
+            "--disable-slash-commands",
+            "--strict-mcp-config",
+            "--setting-sources",
+            "project",
+            "--settings",
+            "{\"disableAllHooks\": true}",
+            "--no-session-persistence",
+            "--safe-mode",
+            "--system-prompt",
+            "Write paragraphs.",
+        ]
+    );
+    let mut env: Vec<String> = read("env")
+        .lines()
+        .filter(|line| {
+            !["PWD=", "SHLVL=", "_=", "OLDPWD="]
+                .iter()
+                .any(|skip| line.starts_with(skip))
+        })
+        .map(str::to_owned)
+        .collect();
+    env.sort();
+    assert_eq!(
+        env,
+        [
+            "DISABLE_PROMPT_CACHING=1".to_owned(),
+            format!("HOME={}", home.display()),
+            "LANG=en_US.UTF-8".to_owned(),
+        ]
+    );
+    assert_eq!(read("pwd").trim_end(), rig.work.display().to_string());
+    assert_eq!(read("ls"), "");
+    assert_eq!(read("stdin"), "#r1 hello");
 }
 
 fn marked(rig: &Rig, project_files: &str) -> (String, PathBuf) {
@@ -205,7 +275,7 @@ fn the_tool_is_started_as_the_settings_say() {
     );
     fs::write(rig.scratch.path().join("reply.txt"), ANSWER).expect("reply");
     let tail = format!(
-        "inherit = [\"HOME\", \"TEST_ONE\", \"TEST_TWO\", \"TEST_UNSET\"]\nproject_files = [\"{MARKER}\"]\n\n[derive.claude.environment]\nDISABLE_PROMPT_CACHING = \"1\"\nTEST_TWO = \"table\"\n"
+        "inherit = [\"HOME\", \"TEST_ONE\", \"TEST_TWO\", \"TEST_UNSET\"]\nproject_files = [\"{MARKER}\"]\n\n[derive.anthropic.tool.environment]\nDISABLE_PROMPT_CACHING = \"1\"\nTEST_TWO = \"table\"\n"
     );
     let home = rig.scratch.path().join("home");
     let mut writer = tool(
@@ -268,11 +338,11 @@ fn arguments_that_could_give_the_model_a_tool_start_no_child() {
     for (after, text) in [
         (
             no_tools,
-            "derive.claude.arguments must keep the model without tools: it needs \"--tools\" followed by \"\"",
+            "derive.anthropic.tool.arguments must keep the model without tools: it needs \"--tools\" followed by \"\"",
         ),
         (
             with_mcp,
-            "derive.claude.arguments must keep the model without tools: it must not hold \"--mcp-config\"",
+            "derive.anthropic.tool.arguments must keep the model without tools: it must not hold \"--mcp-config\"",
         ),
     ] {
         let rig = rig("claude-nottools");
@@ -304,7 +374,7 @@ fn a_project_file_above_the_work_folder_starts_no_child() {
         .executable("tool.sh", &format!("touch {}/MADE", rig.out.display()));
     let mut writer = tool(&config("/bin/sh", &script, &AFTER, ""), &rig.work, None);
     let text = format!(
-        "derive.claude: {0}/CLAUDE.md is above the folder the tool runs in, and claude reads it as a project's; set paths.state outside {0}",
+        "derive.anthropic.tool: {0}/CLAUDE.md is above the folder the tool runs in, and claude reads it as a project's; set paths.state outside {0}",
         rig.scratch.path().display()
     );
     assert_eq!(writer.prepare().unwrap_err(), text);
@@ -330,7 +400,7 @@ fn a_project_file_above_a_work_folder_that_already_exists_starts_no_child() {
         .executable("tool.sh", &format!("touch {}/MADE", rig.out.display()));
     let mut writer = tool(&config("/bin/sh", &script, &AFTER, ""), &rig.work, None);
     let text = format!(
-        "derive.claude: {0}/.claude/settings.json is above the folder the tool runs in, and claude reads it as a project's; set paths.state outside {0}",
+        "derive.anthropic.tool: {0}/.claude/settings.json is above the folder the tool runs in, and claude reads it as a project's; set paths.state outside {0}",
         rig.scratch.path().display()
     );
     assert_eq!(writer.prepare().unwrap_err(), text);
@@ -362,7 +432,7 @@ fn the_users_own_claude_folder_in_home_is_no_project() {
     assert_eq!(
         writer.prepare().unwrap_err(),
         format!(
-            "derive.claude: {0}/{MARKER} is above the folder the tool runs in, and claude reads it as a project's; set paths.state outside {0}",
+            "derive.anthropic.tool: {0}/{MARKER} is above the folder the tool runs in, and claude reads it as a project's; set paths.state outside {0}",
             home.display()
         )
     );
@@ -372,7 +442,7 @@ fn the_users_own_claude_folder_in_home_is_no_project() {
     assert_eq!(
         writer.prepare().unwrap_err(),
         format!(
-            "derive.claude: {0}/.claude/{MARKER} is above the folder the tool runs in, and claude reads it as a project's; set paths.state outside {0}",
+            "derive.anthropic.tool: {0}/.claude/{MARKER} is above the folder the tool runs in, and claude reads it as a project's; set paths.state outside {0}",
             home.display()
         )
     );
@@ -391,7 +461,7 @@ fn the_project_files_are_the_settings() {
     assert_eq!(
         error,
         format!(
-            "derive.claude: {0}/marker.txt is above the folder the tool runs in, and claude reads it as a project's; set paths.state outside {0}",
+            "derive.anthropic.tool: {0}/marker.txt is above the folder the tool runs in, and claude reads it as a project's; set paths.state outside {0}",
             rig.scratch.path().display()
         )
     );
@@ -652,7 +722,7 @@ fn the_work_folder_is_made_private_and_emptied_before_each_run() {
 fn the_lines_for_the_dry_run_show_the_arguments_as_written() {
     let file = File::parse(
         Path::new("/c/config.toml"),
-        b"[derive.claude]\nmodel = \"m\"\n",
+        b"[derive.anthropic]\nmodel = \"m\"\n",
     )
     .expect("toml");
     let section = tool::section(&Source {
@@ -664,7 +734,7 @@ fn the_lines_for_the_dry_run_show_the_arguments_as_written() {
     assert_eq!(
         writer.describe(),
         [
-            "provider: claude, model m, effort medium, program claude",
+            "provider: anthropic, via tool, model m, effort medium, program claude",
             r#"arguments: ["-p", "--model", "{model}", "--effort", "{effort}", "--output-format", "json", "--tools", "", "--disable-slash-commands", "--strict-mcp-config", "--setting-sources", "project", "--settings", "{\"disableAllHooks\": true}", "--no-session-persistence", "--safe-mode", "--system-prompt", "{instruction}"]"#,
             r#"inherit: ["HOME", "USER", "PATH", "TMPDIR"]"#,
             r#"environment: { DISABLE_PROMPT_CACHING = "1", LANG = "en_US.UTF-8" }"#,
@@ -691,7 +761,7 @@ fn a_placeholder_that_makes_a_flag_starts_no_child() {
     let mut writer = tool(&text, &rig.work, None);
     assert_eq!(
         writer.prepare().unwrap_err(),
-        "derive.claude.arguments must keep the model without tools: it must not hold \"--{model}\""
+        "derive.anthropic.tool.arguments must keep the model without tools: it must not hold \"--{model}\""
     );
     assert_eq!(
         writer.write(&prompt(), &limits()),
@@ -722,7 +792,7 @@ fn a_project_file_above_the_work_folders_real_path_starts_no_child() {
             assert_eq!(
                 writer.prepare().unwrap_err(),
                 format!(
-                    "derive.claude: {0}/project/CLAUDE.md is above the folder the tool runs in, and claude reads it as a project's; set paths.state outside {0}/project",
+                    "derive.anthropic.tool: {0}/project/CLAUDE.md is above the folder the tool runs in, and claude reads it as a project's; set paths.state outside {0}/project",
                     root.display()
                 )
             );
@@ -749,11 +819,11 @@ fn the_claude_folder_exception_is_for_the_home_the_child_gets() {
     fs::write(home.join(".claude").join("settings.json"), "{}").expect("file");
     let (text, made) = marked(&rig, files);
     let refused = format!(
-        "derive.claude: {0}/.claude/settings.json is above the folder the tool runs in, and claude reads it as a project's; set paths.state outside {0}",
+        "derive.anthropic.tool: {0}/.claude/settings.json is above the folder the tool runs in, and claude reads it as a project's; set paths.state outside {0}",
         home.display()
     );
     let elsewhere = format!(
-        "{text}\n[derive.claude.environment]\nHOME = \"{}\"\n",
+        "{text}\n[derive.anthropic.tool.environment]\nHOME = \"{}\"\n",
         rig.scratch.path().join("elsewhere").display()
     );
     assert_eq!(
@@ -785,7 +855,7 @@ fn a_skills_folder_above_the_work_folder_starts_no_child() {
         assert_eq!(
             writer.prepare().unwrap_err(),
             format!(
-                "derive.claude: {0}/.claude/{folder} is above the folder the tool runs in, and claude reads it as a project's; set paths.state outside {0}",
+                "derive.anthropic.tool: {0}/.claude/{folder} is above the folder the tool runs in, and claude reads it as a project's; set paths.state outside {0}",
                 rig.scratch.path().display()
             )
         );
@@ -893,7 +963,7 @@ fn an_empty_model_is_refused_before_any_child() {
     let mut writer = tool(&text, &rig.work, None);
     assert_eq!(
         writer.prepare().unwrap_err(),
-        "derive.claude.model is not set"
+        "derive.anthropic.model is not set"
     );
     assert!(!made.exists());
 }
@@ -975,7 +1045,7 @@ fn why_the_tool_was_not_started_is_kept_for_the_run() {
         writer.why(),
         Some(
             format!(
-                "derive.claude: {0}/{MARKER} is above the folder the tool runs in, and claude reads it as a project's; set paths.state outside {0}",
+                "derive.anthropic.tool: {0}/{MARKER} is above the folder the tool runs in, and claude reads it as a project's; set paths.state outside {0}",
                 rig.scratch.path().display()
             )
             .as_str()

@@ -41,7 +41,7 @@ fn limits() -> Limits {
 
 fn config(url: &str, keys: &str, tables: &str) -> String {
     format!(
-        "[derive.anthropic]\nmodel = \"test-model-1\"\nendpoint = \"{url}/v1/messages\"\n{keys}\n{tables}"
+        "[derive.anthropic]\nmodel = \"test-model-1\"\n\n[derive.anthropic.api]\nendpoint = \"{url}/v1/messages\"\n{keys}\n{tables}"
     )
 }
 
@@ -178,7 +178,7 @@ fn extra_fields_and_headers_are_added_as_they_are() {
     let text = config(
         &provider.url(),
         "",
-        "[derive.anthropic.extra]\noutput_config = { effort = \"low\" }\n\n[derive.anthropic.headers]\nanthropic-beta = \"beta-1\"\nUser-Agent = \"mine\"\n",
+        "[derive.anthropic.api.extra]\noutput_config = { effort = \"low\" }\n\n[derive.anthropic.api.headers]\nanthropic-beta = \"beta-1\"\nUser-Agent = \"mine\"\n",
     );
     ready(&text).write(&prompt(), &limits());
     let seen = provider.requests();
@@ -731,7 +731,7 @@ fn prepare_reads_the_key_once_and_refuses_what_is_missing() {
         writer_with(&config(url, "", ""), scratch.path(), |_| None)
             .prepare()
             .unwrap_err(),
-        "ANTHROPIC_API_KEY is not set (derive.anthropic.key_env)"
+        "ANTHROPIC_API_KEY is not set (derive.anthropic.api.key_env)"
     );
     let counter = scratch.path().join("runs");
     let script = scratch.script(
@@ -806,7 +806,7 @@ fn the_key_is_in_one_header_and_in_nothing_else_the_run_gives() {
         writer.describe(),
         [
             format!(
-                "provider: anthropic, model test-model-1, at {}/v1/messages",
+                "provider: anthropic, via api, model test-model-1, at {}/v1/messages",
                 provider.url()
             ),
             "version: 2026-10-21".to_owned(),
@@ -939,8 +939,9 @@ fn a_setting_that_holds_the_key_is_refused_by_its_keys_name_and_nothing_is_sent(
     let provider = Provider::start(vec![Reply::answer(200, ANSWER)]);
     let url = provider.url();
     let with_model = |model: &str| config(&url, "", "").replace("test-model-1", model);
-    let extra =
-        |text: &str| format!("[derive.anthropic.extra]\nmetadata = {{ user_id = \"{text}\" }}\n");
+    let extra = |text: &str| {
+        format!("[derive.anthropic.api.extra]\nmetadata = {{ user_id = \"{text}\" }}\n")
+    };
     let script = scratch.script("key.sh", &format!("echo {KEY}"));
     let command = format!("key_command = [\"/bin/sh\", \"{}\"]", script.display());
     let cases: Vec<(String, Reader, &str)> = vec![
@@ -949,47 +950,47 @@ fn a_setting_that_holds_the_key_is_refused_by_its_keys_name_and_nothing_is_sent(
         (
             config(&url, &format!("version = \"{KEY}\""), ""),
             variables,
-            "version",
+            "api.version",
         ),
         (
             config(
                 &url,
                 "",
-                "[derive.anthropic.headers]\nx-trace = \"id sk-test-PLUM-7391\"\n",
+                "[derive.anthropic.api.headers]\nx-trace = \"id sk-test-PLUM-7391\"\n",
             ),
             variables,
-            "headers",
+            "api.headers",
         ),
         (
             config(
                 &url,
                 "",
-                &format!("[derive.anthropic.headers]\n{KEY} = \"1\"\n"),
+                &format!("[derive.anthropic.api.headers]\n{KEY} = \"1\"\n"),
             ),
             variables,
-            "headers",
+            "api.headers",
         ),
-        (config(&url, "", &extra(KEY)), variables, "extra"),
+        (config(&url, "", &extra(KEY)), variables, "api.extra"),
         (
             config(
                 &url,
                 "",
                 &format!(
-                    "[derive.anthropic.headers]\nx-trace = \"{KEY}\"\n{}",
+                    "[derive.anthropic.api.headers]\nx-trace = \"{KEY}\"\n{}",
                     extra(KEY)
                 ),
             ),
             variables,
-            "headers",
+            "api.headers",
         ),
         (
             config(
                 &url,
                 &format!("version = \"{KEY}\""),
-                "[derive.anthropic.headers]\nx-trace = \"sk-test-PLUM-7391\"\n",
+                "[derive.anthropic.api.headers]\nx-trace = \"sk-test-PLUM-7391\"\n",
             ),
             variables,
-            "version",
+            "api.version",
         ),
         (
             with_model(KEY),
@@ -1032,7 +1033,7 @@ fn a_setting_that_holds_the_key_is_refused_by_its_keys_name_and_nothing_is_sent(
 
 #[test]
 fn describe_says_the_settings_in_force_and_how_the_key_is_read() {
-    let tables = "[derive.anthropic.headers]\nX-A = \"1\"\nX-B = \"2\"\n\n[derive.anthropic.extra]\noutput_config = { effort = \"low\" }\n";
+    let tables = "[derive.anthropic.api.headers]\nX-A = \"1\"\nX-B = \"2\"\n\n[derive.anthropic.api.extra]\noutput_config = { effort = \"low\" }\n";
     let url = "http://127.0.0.1:9";
     let writer = writer_with(
         &config(url, "key_command = [\"op\", \"read\"]", tables),
@@ -1043,7 +1044,7 @@ fn describe_says_the_settings_in_force_and_how_the_key_is_read() {
     assert_eq!(
         writer.describe(),
         [
-            "provider: anthropic, model test-model-1, at http://127.0.0.1:9/v1/messages",
+            "provider: anthropic, via api, model test-model-1, at http://127.0.0.1:9/v1/messages",
             "version: 2026-10-21",
             "headers: { X-A = \"1\", X-B = \"2\" }",
             "extra: { output_config = { effort = \"low\" } }",

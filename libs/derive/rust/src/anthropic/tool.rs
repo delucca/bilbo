@@ -9,15 +9,11 @@ use serde_json::Value as Json;
 use crate::child::{self, Bounds, End, Environment};
 use crate::table::{show_list, show_texts};
 use crate::writer::{
-    Cause, Limits, MODEL_ALLOWED, Outcome, Prompt, Usage, Variables, What, Writer, answered_model,
-    identifier, is_model_name,
+    Cause, Limits, Outcome, Prompt, Usage, Variables, Way, What, Writer, answered_model, identifier,
 };
 
-pub const NAME: &str = "claude";
-pub const SUMMARY: &str = "the tool claude, with its own login and no key";
-
 const INSTRUCTION: &str = "{instruction}";
-const WITHOUT_TOOLS: &str = "derive.claude.arguments must keep the model without tools: ";
+const WITHOUT_TOOLS: &str = "derive.anthropic.tool.arguments must keep the model without tools: ";
 const SYSTEM_PROMPTS: [&str; 2] = ["--system-prompt", "--append-system-prompt"];
 const FLAGS: [(&[&str], usize); 15] = [
     (&["-p", "--print"], 0),
@@ -54,8 +50,8 @@ fn texts(value: &Value<'_>) -> Result<Vec<String>, Error> {
 
 pub const PROGRAM: Key<String> = Key {
     about: About {
-        name: "derive.claude.program",
-        variable: Some("BILBO_DERIVE_CLAUDE_PROGRAM"),
+        name: "derive.anthropic.tool.program",
+        variable: Some("BILBO_DERIVE_ANTHROPIC_TOOL_PROGRAM"),
         default: Default::Toml(r#""claude""#),
         allowed: "a program's name or path, not empty",
         doc: "The program bilbo derive starts for the tool claude. A timer's run needs its full path.",
@@ -70,28 +66,10 @@ pub const PROGRAM: Key<String> = Key {
     show: |program| quote(program),
 };
 
-pub const MODEL: Key<String> = Key {
-    about: About {
-        name: "derive.claude.model",
-        variable: Some("BILBO_DERIVE_CLAUDE_MODEL"),
-        default: Default::Toml(r#""""#),
-        allowed: MODEL_ALLOWED,
-        doc: "The model bilbo derive asks the tool claude for. bilbo names none.",
-    },
-    parse: |value| {
-        value
-            .text()
-            .filter(|id| is_model_name(id))
-            .map(str::to_owned)
-            .ok_or_else(|| value.refuse())
-    },
-    show: |id| quote(id),
-};
-
 pub const EFFORT: Key<String> = Key {
     about: About {
-        name: "derive.claude.effort",
-        variable: Some("BILBO_DERIVE_CLAUDE_EFFORT"),
+        name: "derive.anthropic.tool.effort",
+        variable: Some("BILBO_DERIVE_ANTHROPIC_TOOL_EFFORT"),
         default: Default::Toml(r#""medium""#),
         allowed: "a word of lower-case letters",
         doc: "The effort bilbo derive asks the tool claude for.",
@@ -108,7 +86,7 @@ pub const EFFORT: Key<String> = Key {
 
 pub const ARGUMENTS: Key<Vec<String>> = Key {
     about: About {
-        name: "derive.claude.arguments",
+        name: "derive.anthropic.tool.arguments",
         variable: None,
         default: Default::Toml(
             r##"["-p", "--model", "{model}", "--effort", "{effort}", "--output-format", "json", "--tools", "", "--disable-slash-commands", "--strict-mcp-config", "--setting-sources", "project", "--settings", '{"disableAllHooks": true}', "--no-session-persistence", "--safe-mode", "--system-prompt", "{instruction}"]"##,
@@ -122,7 +100,7 @@ pub const ARGUMENTS: Key<Vec<String>> = Key {
 
 pub const INHERIT: Key<Vec<String>> = Key {
     about: About {
-        name: "derive.claude.inherit",
+        name: "derive.anthropic.tool.inherit",
         variable: None,
         default: Default::Toml(r#"["HOME", "USER", "PATH", "TMPDIR"]"#),
         allowed: "a list of variables' names: letters, digits and _",
@@ -149,7 +127,7 @@ pub const INHERIT: Key<Vec<String>> = Key {
 
 pub const ENVIRONMENT: Key<Vec<(String, String)>> = Key {
     about: About {
-        name: "derive.claude.environment",
+        name: "derive.anthropic.tool.environment",
         variable: None,
         default: Default::Toml(r#"{ DISABLE_PROMPT_CACHING = "1", LANG = "en_US.UTF-8" }"#),
         allowed: "a table of texts whose names are letters, digits and _",
@@ -175,7 +153,7 @@ pub const ENVIRONMENT: Key<Vec<(String, String)>> = Key {
 
 pub const PROJECT_FILES: Key<Vec<String>> = Key {
     about: About {
-        name: "derive.claude.project_files",
+        name: "derive.anthropic.tool.project_files",
         variable: None,
         default: Default::Toml(
             r#"["CLAUDE.md", "CLAUDE.local.md", "AGENTS.md", ".mcp.json", ".claude/CLAUDE.md", ".claude/rules", ".claude/skills", ".claude/commands", ".claude/settings.json", ".claude/settings.local.json"]"#,
@@ -202,9 +180,8 @@ pub const PROJECT_FILES: Key<Vec<String>> = Key {
     show: |items| show_list(items),
 };
 
-pub const ABOUT: [&About; 7] = [
+pub const ABOUT: [&About; 6] = [
     &PROGRAM.about,
-    &MODEL.about,
     &EFFORT.about,
     &ARGUMENTS.about,
     &INHERIT.about,
@@ -226,7 +203,7 @@ pub struct Section {
 pub fn section(source: &Source<'_>) -> Result<Section, Error> {
     Ok(Section {
         program: PROGRAM.resolve(source)?,
-        model: MODEL.resolve(source)?,
+        model: super::MODEL.resolve(source)?,
         effort: EFFORT.resolve(source)?,
         arguments: ARGUMENTS.resolve(source)?,
         inherit: INHERIT.resolve(source)?,
@@ -239,7 +216,6 @@ pub fn shown(source: &Source<'_>) -> Result<Vec<Shown>, Error> {
     let section = section(source)?;
     Ok(vec![
         PROGRAM.shown(&section.program),
-        MODEL.shown(&section.model),
         EFFORT.shown(&section.effort),
         ARGUMENTS.shown(&section.arguments),
         INHERIT.shown(&section.inherit),
@@ -289,7 +265,7 @@ pub fn without_tools(arguments: &[String]) -> Result<(), String> {
         }
     }
     if !stood.contains(&"--no-session-persistence") {
-        return Err("derive.claude.arguments needs \"--no-session-persistence\": without it the tool saves every call as a session, and bilbo remember would keep the records a second time".to_owned());
+        return Err("derive.anthropic.tool.arguments needs \"--no-session-persistence\": without it the tool saves every call as a session, and bilbo remember would keep the records a second time".to_owned());
     }
     Ok(())
 }
@@ -297,7 +273,7 @@ pub fn without_tools(arguments: &[String]) -> Result<(), String> {
 pub fn above(work: &Path, files: &[String], home: Option<&str>) -> Result<(), String> {
     let real = fs::canonicalize(work).map_err(|error| {
         format!(
-            "derive.claude: {} cannot be resolved: {error}",
+            "derive.anthropic.tool: {} cannot be resolved: {error}",
             work.display()
         )
     })?;
@@ -311,7 +287,7 @@ pub fn above(work: &Path, files: &[String], home: Option<&str>) -> Result<(), St
             let found = folder.join(file);
             if fs::symlink_metadata(&found).is_ok() {
                 return Err(format!(
-                    "derive.claude: {} is above the folder the tool runs in, and claude reads it as a project's; set paths.state outside {}",
+                    "derive.anthropic.tool: {} is above the folder the tool runs in, and claude reads it as a project's; set paths.state outside {}",
                     found.display(),
                     folder.display()
                 ));
@@ -427,7 +403,7 @@ impl Claude {
 impl Writer for Claude {
     fn prepare(&mut self) -> Result<(), String> {
         if self.section.model.value.is_empty() {
-            return Err("derive.claude.model is not set".to_owned());
+            return Err("derive.anthropic.model is not set".to_owned());
         }
         let environment = self.inherited();
         self.environment = Some(environment.clone());
@@ -487,8 +463,12 @@ impl Writer for Claude {
         let section = &self.section;
         vec![
             format!(
-                "provider: {NAME}, model {}, effort {}, program {}",
-                section.model.value, section.effort.value, section.program.value
+                "provider: {}, via {}, model {}, effort {}, program {}",
+                super::NAME,
+                Way::Tool.word(),
+                section.model.value,
+                section.effort.value,
+                section.program.value
             ),
             format!("arguments: {}", show_list(&section.arguments.value)),
             format!("inherit: {}", show_list(&section.inherit.value)),
@@ -696,7 +676,7 @@ mod tests {
     }
 
     fn with(key: &str, value: &str) -> String {
-        format!("[derive.claude]\n{key} = {value}\n")
+        format!("[derive.anthropic.tool]\n{key} = {value}\n")
     }
 
     fn items(list: &[&str]) -> Vec<String> {
@@ -767,9 +747,8 @@ mod tests {
         assert_eq!(
             variables,
             [
-                Some("BILBO_DERIVE_CLAUDE_PROGRAM"),
-                Some("BILBO_DERIVE_CLAUDE_MODEL"),
-                Some("BILBO_DERIVE_CLAUDE_EFFORT"),
+                Some("BILBO_DERIVE_ANTHROPIC_TOOL_PROGRAM"),
+                Some("BILBO_DERIVE_ANTHROPIC_TOOL_EFFORT"),
                 None,
                 None,
                 None,
@@ -815,24 +794,26 @@ mod tests {
     #[test]
     fn the_inherited_names_and_the_environments_names_are_variables_names() {
         assert!(resolve(&with("inherit", "[\"A_B1\"]")).is_ok());
-        assert!(resolve("[derive.claude.environment]\nA_B1 = \"x\"\n").is_ok());
+        assert!(resolve("[derive.anthropic.tool.environment]\nA_B1 = \"x\"\n").is_ok());
         let said = |text: &str| resolve(text).expect_err("refused").to_string();
         let cases = [
             (
-                "derive.claude.environment = \"sk-test-PLUM-7391\"\n".to_owned(),
-                "/c/config.toml:1: derive.claude.environment must be a table of texts",
+                "derive.anthropic.tool.environment = \"sk-test-PLUM-7391\"\n".to_owned(),
+                "/c/config.toml:1: derive.anthropic.tool.environment must be a table of texts",
             ),
             (
-                "[derive.claude.environment]\nA = 1\n".to_owned(),
-                "/c/config.toml:1: derive.claude.environment must hold texts alone",
+                "[derive.anthropic.tool.environment]\nA = 1\n".to_owned(),
+                "/c/config.toml:1: derive.anthropic.tool.environment must hold texts alone",
             ),
             (
-                "[derive.claude.environment]\nMY-TOKEN = \"sk-test-PLUM-7391\"\n".to_owned(),
-                "/c/config.toml:1: derive.claude.environment must name its variables with letters, digits and _",
+                "[derive.anthropic.tool.environment]\nMY-TOKEN = \"sk-test-PLUM-7391\"\n"
+                    .to_owned(),
+                "/c/config.toml:1: derive.anthropic.tool.environment must name its variables with letters, digits and _",
             ),
             (
-                "derive.claude.inherit = \"ANTHROPIC_API_KEY=sk-test-PLUM-7391\"\n".to_owned(),
-                "/c/config.toml:1: derive.claude.inherit must be a list of variables' names",
+                "derive.anthropic.tool.inherit = \"ANTHROPIC_API_KEY=sk-test-PLUM-7391\"\n"
+                    .to_owned(),
+                "/c/config.toml:1: derive.anthropic.tool.inherit must be a list of variables' names",
             ),
         ];
         for (text, line) in cases {
@@ -846,10 +827,10 @@ mod tests {
             "[\"KEY=sk-test-PLUM-7391\"]",
             "[1]",
         ] {
-            let line = said(&format!("derive.claude.inherit = {bad}\n"));
+            let line = said(&format!("derive.anthropic.tool.inherit = {bad}\n"));
             assert_eq!(
                 line,
-                "/c/config.toml:1: derive.claude.inherit must hold variables' names alone: letters, digits and _"
+                "/c/config.toml:1: derive.anthropic.tool.inherit must hold variables' names alone: letters, digits and _"
             );
             assert!(!line.contains("PLUM"), "{line}");
         }
@@ -871,7 +852,7 @@ mod tests {
     #[test]
     fn each_placeholder_is_replaced_once_wherever_it_stands() {
         let text = format!(
-            "[derive.claude]\nmodel = \"m1\"\neffort = \"low\"\narguments = {}\n",
+            "[derive.anthropic]\nmodel = \"m1\"\n\n[derive.anthropic.tool]\neffort = \"low\"\narguments = {}\n",
             "[\"x={model}\", \"--effort={effort}\", \"{instruction}\", \"{model}{model}\", \"{other}\"]"
         );
         let section = resolve(&text).expect("section");
@@ -906,7 +887,7 @@ mod tests {
     }
 
     fn text(rest: &str) -> String {
-        format!("derive.claude.arguments must keep the model without tools: {rest}")
+        format!("derive.anthropic.tool.arguments must keep the model without tools: {rest}")
     }
 
     fn edit(change: &dyn Fn(&mut Vec<String>)) -> Result<(), String> {
@@ -970,7 +951,7 @@ mod tests {
         );
         assert_eq!(
             edit(&|list| list.retain(|item| item != "--no-session-persistence")),
-            Err("derive.claude.arguments needs \"--no-session-persistence\": without it the tool saves every call as a session, and bilbo remember would keep the records a second time".to_owned())
+            Err("derive.anthropic.tool.arguments needs \"--no-session-persistence\": without it the tool saves every call as a session, and bilbo remember would keep the records a second time".to_owned())
         );
         let hidden = items(&[
             "--model",
@@ -1060,7 +1041,7 @@ mod tests {
 
     #[test]
     fn what_a_value_holds_changes_no_reading() {
-        let text = "[derive.claude]\nmodel = \"--chrome\"\n";
+        let text = "[derive.anthropic]\nmodel = \"--chrome\"\n";
         let section = resolve(text).expect("section");
         assert_eq!(without_tools(&section.arguments.value), Ok(()));
         let prompt = Prompt {
@@ -1102,8 +1083,8 @@ mod tests {
     }
 
     #[test]
-    fn the_keys_show_as_toml_that_reads_back_and_the_group_lists_seven() {
-        let text = "[derive.claude]\nprogram = \"/bin/c\"\nmodel = \"m\"\neffort = \"low\"\narguments = [\"--tools\", \"\", \"--strict-mcp-config\", \"{\\\"a\\\": 1}\"]\ninherit = [\"HOME\"]\nproject_files = [\"X.md\"]\n\n[derive.claude.environment]\nA = \"1\"\n";
+    fn the_keys_show_as_toml_that_reads_back_and_the_way_lists_six() {
+        let text = "[derive.anthropic.tool]\nprogram = \"/bin/c\"\neffort = \"low\"\narguments = [\"--tools\", \"\", \"--strict-mcp-config\", \"{\\\"a\\\": 1}\"]\ninherit = [\"HOME\"]\nproject_files = [\"X.md\"]\n\n[derive.anthropic.tool.environment]\nA = \"1\"\n";
         let file = File::parse(Path::new("/c/config.toml"), text.as_bytes()).expect("toml");
         let first = shown(&Source {
             var: &|_| None,
@@ -1128,13 +1109,13 @@ mod tests {
             list.iter().map(|item| item.value.clone()).collect()
         };
         assert_eq!(values(&first), values(&second));
-        assert_eq!(first[5].value, "{ A = \"1\" }");
+        assert_eq!(first[4].value, "{ A = \"1\" }");
     }
 
     #[test]
     fn the_debug_of_a_call_and_of_the_tools_adapter_prints_no_secret() {
         let section = resolve(
-            "[derive.claude]\nmodel = \"m\"\n[derive.claude.environment]\nTOKEN = \"sk-test-PLUM-7391\"\n",
+            "[derive.anthropic]\nmodel = \"m\"\n[derive.anthropic.tool.environment]\nTOKEN = \"sk-test-PLUM-7391\"\n",
         )
         .expect("section");
         let tool = super::Claude::new(

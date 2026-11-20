@@ -31,7 +31,7 @@ fn answer() -> Reply {
 
 fn config(url: &str, extra: &str) -> String {
     format!(
-        "derive.enabled = true\nderive.provider = \"anthropic\"\nderive.in = [\"projects\"]\nderive.quiet = \"0s\"\nderive.anthropic.model = \"claude-test-1\"\nderive.anthropic.endpoint = \"{url}/v1/messages\"\n{extra}"
+        "derive.enabled = true\nderive.provider = \"anthropic\"\nderive.in = [\"projects\"]\nderive.quiet = \"0s\"\nderive.anthropic.model = \"claude-test-1\"\nderive.anthropic.api.endpoint = \"{url}/v1/messages\"\n{extra}"
     )
 }
 
@@ -108,7 +108,7 @@ fn derive_is_off_by_default_and_sends_nothing() {
     put(
         &scratch,
         &format!(
-            "derive.anthropic.endpoint = \"{}/v1/messages\"\n",
+            "derive.anthropic.api.endpoint = \"{}/v1/messages\"\n",
             provider.url()
         ),
     );
@@ -140,7 +140,7 @@ fn a_dry_run_prints_its_lines_and_sends_nothing() {
         "named: 1 entries by derive.in, 0 of them left out by derive.not_in"
     );
     assert_eq!(lines[2], "due: 1 entries");
-    assert!(lines[4].starts_with("provider: anthropic, model claude-test-1, at "));
+    assert!(lines[4].starts_with("provider: anthropic, via api, model claude-test-1, at "));
     assert!(provider.requests().is_empty());
 }
 
@@ -184,7 +184,7 @@ fn the_key_comes_from_a_program_and_is_in_nothing_the_binary_wrote() {
         &config(
             &provider.url(),
             &format!(
-                "derive.anthropic.key_command = [\"/bin/sh\", \"{}\"]\n",
+                "derive.anthropic.api.key_command = [\"/bin/sh\", \"{}\"]\n",
                 program.display()
             ),
         ),
@@ -254,7 +254,7 @@ fn the_help_page_lists_the_kinds_and_the_providers() {
     assert_eq!(run.code, 0, "{}", run.stderr);
     assert!(
         run.stdout.contains(
-            "Kinds:\n  session  bilbo ships an instruction for it\nProviders:\n  anthropic  the Anthropic API, with a key\n  openai     the OpenAI API, with a key\n  claude     the tool claude, with its own login and no key\n"
+            "Kinds:\n  session  bilbo ships an instruction for it\nProviders:\n  anthropic  Anthropic's models: via api, with a key; via tool, the tool claude\n  openai     OpenAI's models: via api, with a key\n"
         ),
         "{}",
         run.stdout
@@ -294,7 +294,7 @@ fn derive_through_a_tool_needs_no_key() {
     put(
         &scratch,
         &format!(
-            "derive.enabled = true\nderive.provider = \"claude\"\nderive.in = [\"projects\"]\nderive.quiet = \"0s\"\n\n[derive.claude]\nprogram = {:?}\nmodel = \"claude-test-1\"\nproject_files = [\"zz-marker.md\"]\narguments = [\"-p\", \"--tools\", \"\", \"--strict-mcp-config\", \"--safe-mode\", \"--no-session-persistence\", \"--system-prompt\", \"{{instruction}}\"]\n",
+            "derive.enabled = true\nderive.provider = \"anthropic\"\nderive.in = [\"projects\"]\nderive.quiet = \"0s\"\nderive.anthropic.via = \"tool\"\nderive.anthropic.model = \"claude-test-1\"\n\n[derive.anthropic.tool]\nprogram = {:?}\nproject_files = [\"zz-marker.md\"]\narguments = [\"-p\", \"--tools\", \"\", \"--strict-mcp-config\", \"--safe-mode\", \"--no-session-persistence\", \"--system-prompt\", \"{{instruction}}\"]\n",
             script.display().to_string()
         ),
     );

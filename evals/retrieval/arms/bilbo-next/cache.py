@@ -1,7 +1,7 @@
-"""A local HTTP server that stands at a provider's `endpoint` and keeps the answers that judge a request (../README.md).
+"""A local HTTP server that stands at a provider's endpoint and keeps the answers that judge a request (../README.md).
 Usage: cache.py --dir DIR --upstream URL --record FILE --timeout SECONDS [--write] [--ceiling N] [--port N]
 [--tool PROGRAM]. It prints `port <n>` on standard output when it listens. With --write the real key is in its
-environment, as BILBO_EVAL_CACHE_KEY. With --tool the provider is a tool: a request is what tool.py sends, the upstream
+environment, as BILBO_EVAL_CACHE_KEY. With --tool the way is `tool`: a request is what tool.py sends, the upstream
 is the tool's name and version, PROGRAM is started for an ask, and the key is the token it is given."""
 
 import argparse

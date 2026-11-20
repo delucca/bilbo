@@ -901,7 +901,7 @@ fn the_dry_run_in_the_plain_view() {
         tokens: 380_122,
         limit: 20,
         provider: vec![
-            "provider: anthropic, model claude-haiku-5-5, at https://api.anthropic.com/v1/messages"
+            "provider: anthropic, via api, model claude-haiku-5-5, at https://api.anthropic.com/v1/messages"
                 .to_owned(),
             "version: 2026-10-21".to_owned(),
             "key: the variable ANTHROPIC_API_KEY, which is set".to_owned(),

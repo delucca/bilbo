@@ -6,13 +6,13 @@ Every `bilbo` run has its own HOME, store, state and cache folders under /work/s
 check and the search use again, since the catalog and the state folder record them. /work/store/entries.jsonl maps each
 session file to its entry id; manifest.json is written last.
 
-BILBO_EVAL_DERIVE, when set, is a JSON object: `provider` (anthropic, openai or claude); `settings`, a flat object of
-dotted derive.* keys written into the store's config.toml (the provider's real `endpoint`, an https URL or an http URL at a
-loopback address, goes here, or the real `program` of the tool claude, the image's by default); `cache`, `{"write": false}` to
-replay or `{"write": true}` with the real provider behind, and
+BILBO_EVAL_DERIVE, when set, is a JSON object: `provider` (anthropic or openai); `settings`, a flat object of
+dotted derive.* keys written into the store's config.toml (the provider's real `derive.<provider>.api.endpoint`, an https
+URL or an http URL at a loopback address, goes here, or the real `derive.anthropic.tool.program`, the image's tool by
+default); `cache`, `{"write": false}` to replay or `{"write": true}` with the real provider behind, and
 `timeout`, the seconds the cache waits for the provider, under the store's derive.timeout; `ceilings`, `{"calls", "tokens",
-"refusals"}` the build stops at, held against /answers/<provider>/spent; `calls_per_run`. A folder STOP in /work/store stops
-the loop."""
+"refusals"}` the build stops at, held against /answers/<provider>-<way>/spent; `calls_per_run`. A folder STOP in /work/store
+stops the loop."""
 
 import fcntl
 import hashlib
@@ -56,11 +56,11 @@ STATES = ("due", "covered", "passed over", "left out: labels not current", "left
 DERIVE_DEFAULTS = {"calls_per_run": 20, "ceilings": {"calls": 1000, "tokens": 10000000, "refusals": 100},
                    "cache": {"write": False, "timeout": 240}}
 KEY_VARIABLES = {"anthropic": "ANTHROPIC_API_KEY", "openai": "OPENAI_API_KEY"}
-TOOL = "claude"
+TOOLS = {"anthropic": "claude"}
 LAUNCHER = Path("/tmp/claude")
 RUN_FIELDS = ("entries", "calls", "notes", "dropped", "refused", "failed", "tokens_in", "tokens_out", "seconds")
 DERIVE_TIMEOUT = re.compile(r'^derive\.timeout = "(\d+)(ms|s|m)"', re.M)
-HIDDEN = re.compile(r"^(derive\.[a-z]+\.(?:headers|environment)) = ")
+HIDDEN = re.compile(r"^(derive\.[a-z]+\.[a-z]+\.(?:headers|environment)) = ")
 DRY_CALLS = 100000
 REINDEX = re.compile(r"^entries (\d+), chunks (\d+), unread (\d+), failed (\d+)\nindex bytes (\d+), milliseconds (\d+)$")
 
@@ -120,15 +120,28 @@ def derive_env():
     unknown = sorted(set(given) - {"provider", "settings", "cache", "ceilings", "calls_per_run"})
     if unknown or not given.get("provider"):
         sys.exit(f"bilbo-next: BILBO_EVAL_DERIVE: {'unknown key ' + unknown[0] if unknown else 'no provider'}")
-    if given["provider"] not in (*KEY_VARIABLES, TOOL):
-        sys.exit(f"bilbo-next: BILBO_EVAL_DERIVE: the provider {given['provider']!r} is none of anthropic, openai and claude")
-    endpoint = given.get("settings", {}).get(f"derive.{given['provider']}.endpoint", "")
+    if given["provider"] not in tuple(KEY_VARIABLES):
+        sys.exit(f"bilbo-next: BILBO_EVAL_DERIVE: the provider {given['provider']!r} is none of anthropic and openai")
+    way = way_of(given)
+    if way not in ("api", "tool"):
+        sys.exit(f"bilbo-next: BILBO_EVAL_DERIVE: the way {way!r} is none of api and tool")
+    if way == "tool" and given["provider"] not in TOOLS:
+        sys.exit(f"bilbo-next: BILBO_EVAL_DERIVE: the provider {given['provider']!r} has no way 'tool'")
+    endpoint = given.get("settings", {}).get(f"derive.{given['provider']}.api.endpoint", "")
     if "@" in endpoint:
         sys.exit("bilbo-next: BILBO_EVAL_DERIVE: the endpoint must hold no user name or password")
     if endpoint and not loopback_or_https(urlsplit(endpoint)):
         sys.exit("bilbo-next: BILBO_EVAL_DERIVE: the endpoint must be an https URL, or an http URL at a loopback address")
     return DERIVE_DEFAULTS | given | {"ceilings": DERIVE_DEFAULTS["ceilings"] | given.get("ceilings", {}),
                                       "cache": DERIVE_DEFAULTS["cache"] | given.get("cache", {})}
+
+
+def way_of(derive):
+    return derive.get("settings", {}).get(f"derive.{derive['provider']}.via", "api")
+
+
+def folder_of(derive):
+    return f"{derive['provider']}-{way_of(derive)}"
 
 
 def toml_value(value):
@@ -155,7 +168,7 @@ def toml_tables(settings):
 
 
 def give_key(derive, settings):
-    if derive["provider"] != TOOL:
+    if way_of(derive) != "tool":
         KEYS[key_variable(derive, settings)] = cache.STAND_IN
 
 
@@ -174,8 +187,8 @@ def loopback_or_https(where):
         return False
 
 
-def tool_behind(settings):
-    program = settings.get(f"derive.{TOOL}.program", TOOL)
+def tool_behind(provider, settings):
+    program = settings.get(f"derive.{provider}.tool.program", TOOLS[provider])
     real = shutil.which(program)
     if not real:
         sys.exit(f"bilbo-next: BILBO_EVAL_DERIVE: no program {program!r} to stand behind the cache")
@@ -183,7 +196,7 @@ def tool_behind(settings):
                           capture_output=True, text=True, check=False)
     if done.returncode or not done.stdout.strip():
         sys.exit(f"bilbo-next: {real} --version exited {done.returncode}\nstdout: {done.stdout}\nstderr: {done.stderr}")
-    return real, f"{TOOL} {done.stdout.strip()}"
+    return real, f"{TOOLS[provider]} {done.stdout.strip()}"
 
 
 def launcher(port, here):
@@ -195,14 +208,14 @@ def launcher(port, here):
 
 def start_cache(derive):
     settings, option, here = dict(derive["settings"]), derive["cache"], Path(__file__).parent
-    command = [sys.executable, str(here / "cache.py"), "--dir", str(ANSWERS / derive["provider"]), "--record", str(LIFE),
+    command = [sys.executable, str(here / "cache.py"), "--dir", str(ANSWERS / folder_of(derive)), "--record", str(LIFE),
                "--timeout", str(option["timeout"])]
-    if derive["provider"] == TOOL:
-        key = f"derive.{TOOL}.program"
-        program, upstream = tool_behind(settings)
+    if way_of(derive) == "tool":
+        key = f"derive.{derive['provider']}.tool.program"
+        program, upstream = tool_behind(derive["provider"], settings)
         command += ["--upstream", upstream, "--tool", program]
     else:
-        key = f"derive.{derive['provider']}.endpoint"
+        key = f"derive.{derive['provider']}.api.endpoint"
         if key not in settings:
             sys.exit(f"bilbo-next: BILBO_EVAL_DERIVE: settings hold no {key}")
         real = urlsplit(settings[key])
@@ -224,7 +237,7 @@ def start_cache(derive):
         server.kill()
         sys.exit(f"bilbo-next: cache.py printed {line!r}, not its port")
     port = line.split()[1]
-    if derive["provider"] == TOOL:
+    if way_of(derive) == "tool":
         launcher(port, here)
         settings[key] = str(LAUNCHER)
     else:
@@ -299,7 +312,8 @@ def derive_step(name, repos, ids, derive, settings, life):
     d = folders(name)
     ceilings, per_run = derive["ceilings"], derive["calls_per_run"]
     labels = [f"{STAGED if LIMITED else CORPUS}/{repo}" for repo in repos]
-    config = {"derive.enabled": True, "derive.provider": derive["provider"], "derive.in": labels, **settings}
+    config = {"derive.enabled": True, "derive.provider": derive["provider"], "derive.in": labels,
+              f"derive.{derive['provider']}.via": way_of(derive), **settings}
     (d / "config.toml").write_text("follow = []\n" + toml_tables(config))
     totals = {"runs": 0, "calls": 0, "notes": 0, "dropped": 0, "refused": 0, "failed": 0, "tokens_in": 0, "tokens_out": 0}
     code, out, err = bilbo(name, "config")
@@ -414,7 +428,7 @@ def entry_of(name, repo, path):
 
 
 def key_variable(derive, settings):
-    return settings.get(f"derive.{derive['provider']}.key_env", KEY_VARIABLES[derive["provider"]])
+    return settings.get(f"derive.{derive['provider']}.api.key_env", KEY_VARIABLES[derive["provider"]])
 
 
 def config_line(line):
@@ -535,7 +549,7 @@ def drop_failures(folder):
 
 
 def archive(derive, life):
-    kept = STORE / "answers" / derive["provider"]
+    kept = STORE / "answers" / folder_of(derive)
     for line in life.record.read_text().splitlines():
         words = line.split()
         if words[:1] == ["given"]:
@@ -560,8 +574,8 @@ def main():
     STORE.mkdir(exist_ok=True)
     started = time.monotonic()
     derive = derive_env()
-    life = Life(ANSWERS / derive["provider"] if derive else ANSWERS, LIFE, bool(derive and derive["cache"]["write"]))
-    lock = hold(life.folder, derive["provider"]) if derive else None
+    life = Life(ANSWERS / folder_of(derive) if derive else ANSWERS, LIFE, bool(derive and derive["cache"]["write"]))
+    lock = hold(life.folder, folder_of(derive)) if derive else None
     if life.writer:
         drop_failures(life.folder)
     (entries, stores, derived), found = lives(derive, life, lambda: one_life(groups, by_repo, derive, life))

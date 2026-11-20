@@ -1,4 +1,4 @@
-"""Stands at `derive.claude.program` in a build: sends cache.py what bilbo started it with, and ends as the tool behind the
+"""Stands at `derive.anthropic.tool.program` in a build: sends cache.py what bilbo started it with, and ends as the tool behind the
 cache ended (../README.md). Usage: tool.py <the cache's URL> <the tool's arguments>, the tool's standard input on its own."""
 
 import http.client

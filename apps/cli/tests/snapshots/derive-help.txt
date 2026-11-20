@@ -11,9 +11,8 @@ Options:
 Kinds:
   session  bilbo ships an instruction for it
 Providers:
-  anthropic  the Anthropic API, with a key
-  openai     the OpenAI API, with a key
-  claude     the tool claude, with its own login and no key
+  anthropic  Anthropic's models: via api, with a key; via tool, the tool claude
+  openai     OpenAI's models: via api, with a key
 
 Output:
   entries <n>, calls <n>, notes <n>, dropped <n>, refused <n>, failed <n>

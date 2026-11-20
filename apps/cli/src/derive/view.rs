@@ -406,7 +406,7 @@ mod tests {
             entries: 14,
             tokens: 380_122,
             limit: 20,
-            provider: vec!["provider: anthropic, model m, at https://x".to_owned()],
+            provider: vec!["provider: anthropic, via api, model m, at https://x".to_owned()],
             entry_lines: vec!["entry\tA\tcovered\t-\t0".to_owned()],
             ..Dry::default()
         };
@@ -418,7 +418,7 @@ mod tests {
                 "due: 37 entries",
                 "not due: 12 still growing, 340 covered, 9 belong to another entry, 2 passed over, 1 with labels not current",
                 "this run: 20 calls for 14 entries, 380122 tokens of records to send (derive.calls 20)",
-                "provider: anthropic, model m, at https://x",
+                "provider: anthropic, via api, model m, at https://x",
                 "entry\tA\tcovered\t-\t0",
             ]
         );

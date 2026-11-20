@@ -4,7 +4,7 @@ named: 412 entries by derive.in, 14 of them left out by derive.not_in
 due: 37 entries
 not due: 12 still growing, 340 covered, 9 belong to another entry, 2 passed over, 1 with labels not current
 this run: 20 calls for 14 entries, 380122 tokens of records to send (derive.calls 20)
-provider: anthropic, model claude-haiku-5-5, at https://api.anthropic.com/v1/messages
+provider: anthropic, via api, model claude-haiku-5-5, at https://api.anthropic.com/v1/messages
 version: 2026-10-21
 key: the variable ANTHROPIC_API_KEY, which is set
 entry	01M6ZGE4KTBYYH07AS2KVMSCAF	covered	01M7Q9TDMQ9SBDXT8T7VKDGZVH	12
