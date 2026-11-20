@@ -15,6 +15,7 @@ pub mod scope;
 pub mod secret;
 pub mod spool;
 pub mod table;
+pub mod tool;
 pub mod tries;
 pub mod view;
 pub mod window;

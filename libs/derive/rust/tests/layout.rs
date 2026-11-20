@@ -35,6 +35,15 @@ const PLACEMENT: &[(&str, &[&str])] = &[
             "tests/integration/",
         ],
     ),
+    (
+        "tool",
+        &[
+            "src/tool.rs",
+            "src/anthropic/",
+            "src/openai/",
+            "tests/integration/",
+        ],
+    ),
     ("anthropic", &["src/anthropic/", "tests/integration/"]),
     ("openai", &["src/openai/", "tests/integration/"]),
     ("claude", &[]),
@@ -60,7 +69,7 @@ const CORE: &[&str] = &[
     "window",
     "writer",
 ];
-const ADAPTERS: &[&str] = &["api", "anthropic", "openai"];
+const ADAPTERS: &[&str] = &["api", "tool", "anthropic", "openai"];
 const ROOTS: &[&str] = &["crate", "bilbo_derive"];
 const SUITES: &[&str] = &[
     "tests/acceptance/main.rs",

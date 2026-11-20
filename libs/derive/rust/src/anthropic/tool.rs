@@ -3,7 +3,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use bilbo_settings::error::Error;
-use bilbo_settings::key::{About, Default, Key, Resolved, Shown, Source, Value, quote};
+use bilbo_settings::key::{About, Default, Key, Resolved, Shown, Source, quote};
 use serde_json::Value as Json;
 
 use crate::child::{self, Bounds, End, Environment};
@@ -35,34 +35,15 @@ const FLAGS: [(&[&str], usize); 15] = [
 const REPLY: &str = "bilbo reads the reply as claude 2.1.327 prints it";
 const SETUP: &str = ".claude/";
 
-fn variable_name(name: &str) -> bool {
-    !name.is_empty() && name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
-}
-
-fn texts(value: &Value<'_>) -> Result<Vec<String>, Error> {
-    value
-        .items()
-        .ok_or_else(|| value.refuse())?
-        .iter()
-        .map(|item| item.text().map(str::to_owned).ok_or_else(|| item.refuse()))
-        .collect()
-}
-
 pub const PROGRAM: Key<String> = Key {
     about: About {
         name: "derive.anthropic.tool.program",
         variable: Some("BILBO_DERIVE_ANTHROPIC_TOOL_PROGRAM"),
         default: Default::Toml(r#""claude""#),
-        allowed: "a program's name or path, not empty",
+        allowed: crate::tool::PROGRAM_ALLOWED,
         doc: "The program bilbo derive starts for the tool claude. A timer's run needs its full path.",
     },
-    parse: |value| {
-        value
-            .text()
-            .filter(|program| !program.is_empty())
-            .map(str::to_owned)
-            .ok_or_else(|| value.refuse())
-    },
+    parse: crate::tool::program,
     show: |program| quote(program),
 };
 
@@ -71,16 +52,10 @@ pub const EFFORT: Key<String> = Key {
         name: "derive.anthropic.tool.effort",
         variable: Some("BILBO_DERIVE_ANTHROPIC_TOOL_EFFORT"),
         default: Default::Toml(r#""medium""#),
-        allowed: "a word of lower-case letters",
+        allowed: crate::tool::EFFORT_ALLOWED,
         doc: "The effort bilbo derive asks the tool claude for.",
     },
-    parse: |value| {
-        value
-            .text()
-            .filter(|word| !word.is_empty() && word.bytes().all(|b| b.is_ascii_lowercase()))
-            .map(str::to_owned)
-            .ok_or_else(|| value.refuse())
-    },
+    parse: crate::tool::effort,
     show: |word| quote(word),
 };
 
@@ -91,10 +66,10 @@ pub const ARGUMENTS: Key<Vec<String>> = Key {
         default: Default::Toml(
             r##"["-p", "--model", "{model}", "--effort", "{effort}", "--output-format", "json", "--tools", "", "--disable-slash-commands", "--strict-mcp-config", "--setting-sources", "project", "--settings", '{"disableAllHooks": true}', "--no-session-persistence", "--safe-mode", "--system-prompt", "{instruction}"]"##,
         ),
-        allowed: "a list of texts",
+        allowed: crate::tool::ARGUMENTS_ALLOWED,
         doc: "Every argument the tool claude is started with. {model} and {effort} are replaced once, wherever a value stands. {instruction} stands as the value of --system-prompt or --append-system-prompt, or in none: the instruction then goes first on standard input. The list must keep the model without tools.",
     },
-    parse: texts,
+    parse: crate::tool::arguments,
     show: |items| show_list(items),
 };
 
@@ -103,25 +78,10 @@ pub const INHERIT: Key<Vec<String>> = Key {
         name: "derive.anthropic.tool.inherit",
         variable: None,
         default: Default::Toml(r#"["HOME", "USER", "PATH", "TMPDIR"]"#),
-        allowed: "a list of variables' names: letters, digits and _",
+        allowed: crate::tool::INHERIT_ALLOWED,
         doc: "The variables of bilbo's own environment the tool claude gets. It gets no other.",
     },
-    parse: |value| {
-        let items = value
-            .items()
-            .ok_or_else(|| value.refused("must be a list of variables' names"))?;
-        items
-            .iter()
-            .map(|item| {
-                item.text()
-                    .filter(|name| variable_name(name))
-                    .map(str::to_owned)
-                    .ok_or_else(|| {
-                        value.refused("must hold variables' names alone: letters, digits and _")
-                    })
-            })
-            .collect()
-    },
+    parse: crate::tool::inherit,
     show: |items| show_list(items),
 };
 
@@ -130,24 +90,10 @@ pub const ENVIRONMENT: Key<Vec<(String, String)>> = Key {
         name: "derive.anthropic.tool.environment",
         variable: None,
         default: Default::Toml(r#"{ DISABLE_PROMPT_CACHING = "1", LANG = "en_US.UTF-8" }"#),
-        allowed: "a table of texts whose names are letters, digits and _",
+        allowed: crate::tool::ENVIRONMENT_ALLOWED,
         doc: "Variables the tool claude is given beside the inherited ones.",
     },
-    parse: |value| {
-        let fields = value
-            .fields()
-            .ok_or_else(|| value.refused("must be a table of texts"))?;
-        fields
-            .into_iter()
-            .map(|(name, item)| match item.text() {
-                Some(_) if !variable_name(name) => {
-                    Err(value.refused("must name its variables with letters, digits and _"))
-                }
-                Some(text) => Ok((name.to_owned(), text.to_owned())),
-                None => Err(value.refused("must hold texts alone")),
-            })
-            .collect()
-    },
+    parse: crate::tool::environment,
     show: |items| show_texts(items),
 };
 
@@ -384,20 +330,6 @@ impl Claude {
             .map(|(_, value)| value.as_str());
         above(&self.folder, &self.section.project_files.value, home)
     }
-
-    fn inherited(&self) -> Vec<(String, String)> {
-        let mut variables: Vec<(String, String)> = Vec::new();
-        for name in &self.section.inherit.value {
-            if let Some(value) = (self.variables)(name) {
-                variables.push((name.clone(), value));
-            }
-        }
-        for (name, value) in &self.section.environment.value {
-            variables.retain(|(kept, _)| kept != name);
-            variables.push((name.clone(), value.clone()));
-        }
-        variables
-    }
 }
 
 impl Writer for Claude {
@@ -405,7 +337,11 @@ impl Writer for Claude {
         if self.section.model.value.is_empty() {
             return Err("derive.anthropic.model is not set".to_owned());
         }
-        let environment = self.inherited();
+        let environment = crate::tool::inherited(
+            &self.section.inherit.value,
+            &self.section.environment.value,
+            &self.variables,
+        );
         self.environment = Some(environment.clone());
         self.checks(&environment)
     }
