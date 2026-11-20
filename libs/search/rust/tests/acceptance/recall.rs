@@ -104,7 +104,7 @@ fn request(text: &str) -> Request {
         limits: OFF,
         scope: Vec::new(),
         budget: 100_000,
-        apart_budget: 100_000,
+        apart_budget: 0,
         at: at(1_700_000_000),
     }
 }
@@ -1696,6 +1696,7 @@ const ALONE: [&str; 2] = ["release checklist alpha", "second line here release"]
 fn with_apart(text: &str) -> Request {
     let mut request = request(text);
     request.query.apart = vec!["joined".to_owned()];
+    request.apart_budget = 100_000;
     request
 }
 
@@ -1793,14 +1794,50 @@ fn a_length_that_fails_ends_the_run_as_failed() {
 fn a_kind_not_listed_apart_stays_in_the_one_list() {
     let log = notes_and_apart(2, 2);
     let index = index_of(&log);
-    let (output, _) = ask(&log, &index, &request("release checklist"));
+    let mut asked = request("release checklist");
+    asked.apart_budget = 100_000;
+    let (output, _) = ask(&log, &index, &asked);
     assert_eq!(output.hits.len(), 4);
     assert!(output.apart.is_empty());
     assert!(output.hits.iter().all(|hit| !hit.apart));
 }
 
 #[test]
-fn the_room_of_one_list_never_moves_to_the_other() {
+fn the_main_list_takes_the_room_apart_when_nothing_apart_matches() {
+    let one = SHOWN_HEADER + RELEASE.len();
+    let rooms = |mut asked: Request| {
+        asked.budget = one;
+        asked.apart_budget = 2 * one;
+        asked
+    };
+    let run = |log: &Log, asked: Request| ask(log, &index_of(log), &rooms(asked)).0;
+    let both = notes_and_apart(5, 2);
+    let mut main_kind = with_apart("release checklist");
+    main_kind.query.kinds = vec!["note".to_owned()];
+    for output in [
+        run(&notes_and_apart(5, 0), with_apart("release checklist")),
+        run(&notes_and_apart(5, 0), request("release checklist")),
+        run(&both, with_apart("build publish")),
+        run(&both, main_kind),
+    ] {
+        assert_eq!(output.hits.len(), 3);
+        assert!(output.apart.is_empty());
+        assert_eq!(cost(&output.hits), 3 * one);
+    }
+    let some_matching = run(&both, with_apart("release checklist"));
+    assert_eq!(some_matching.hits.len(), 1);
+    assert!(!some_matching.apart.is_empty());
+    let mut left_out = notes_and_apart(5, 1);
+    let index = index_of(&left_out);
+    left_out.retouch(11, |held| held.damaged = true);
+    let (output, _) = ask(&left_out, &index, &rooms(with_apart("release checklist")));
+    assert_eq!(output.hits.len(), 1);
+    assert!(output.apart.is_empty());
+    assert_eq!(output.left_out, 1);
+}
+
+#[test]
+fn the_room_of_one_list_never_moves_to_the_other_while_both_have_candidates() {
     let log = notes_and_apart(12, 12);
     let index = index_of(&log);
     let run = |budget: usize, apart_budget: usize| {

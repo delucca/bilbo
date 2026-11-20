@@ -39,7 +39,7 @@ gives each context pack.py did not cut one verdict from the scoped row N and the
 entry, record range, part, text and cut are. `not exhausted`: N's last result is cut, or W opens with all of N's results,
 in order, and holds more. `exhausted`: N and W are the same lists, none cut, and W's results plus its `passed` counts are
 fewer than its recorded candidate limit (then W's ranker gave every match the scope holds, and W was not ended by its
-budget, since N printed the same hits inside half of it). `cannot tell`: anything else, a missing W row or limit included.
+budget, since N printed the same hits in less room). `cannot tell`: anything else, a missing W row or limit included.
 It prints each context's question, form, verdict, the two numbers of results and what W considered of its limit, then the
 totals; exit 0 only when every verdict is `exhausted`.
 

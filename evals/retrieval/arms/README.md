@@ -119,4 +119,4 @@ where a limit of the subscription or a failed login shows. An ask is one start o
 again inside it. The deadline, the ceilings, `spent`, the lives and the record are the API cache's.
 
 `selftest.py` checks what needs no store and no binary: `uv run python selftest.py` in `arms/bilbo-next`. `moved.py` compares
-the chunk lists of two searches (a store with notes searched with `notes_budget` 0, and a store without) with no judge.
+the chunk lists of two searches (a store with notes and a store without, both searched with `notes_budget` 0) with no judge.

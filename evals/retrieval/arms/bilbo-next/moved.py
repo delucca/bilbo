@@ -1,7 +1,7 @@
 """Compare the chunk lists of two searches of the same questions, with no judge. Usage: moved.py <search.jsonl of the store
-with notes, searched with notes_budget 0> <search.jsonl of the store without notes>. It prints the questions compared, the
-share whose list differs, the share whose first result differs, and how many lists lost every hit: each is 0 when the notes
-never move the chunks' list."""
+with notes> <search.jsonl of the store without notes>, both searched with notes_budget 0. It prints the questions compared,
+the share whose list differs, the share whose first result differs, and how many lists lost every hit: each is 0 when the
+notes never move the chunks' list."""
 
 import json
 import sys
@@ -13,6 +13,8 @@ def lists(path):
     for line in Path(path).read_text().split("\n"):
         if line.strip():
             row = json.loads(line)
+            if row["run"]["settings"].get("notes_budget") != 0:
+                sys.exit(f"moved.py: {path} was not searched with notes_budget 0")
             found.setdefault((row["id"], row["form"]), [(r["session"], tuple(r["lines"])) for r in row["results"]])
     return found
 

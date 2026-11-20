@@ -1552,7 +1552,10 @@ fn a_lower_budget_cuts_a_hit_and_prints_less() {
     sandbox.write("notes/long.md", long_note("turnips").as_bytes());
     sandbox.remember(&["notes"]);
     let full = sandbox.run(&["recall", "turnips"]);
-    let small = sandbox.run(&["recall", "--budget", "256", "turnips"]);
+    let small = sandbox.run_with(
+        &["recall", "--budget", "256", "turnips"],
+        &[("BILBO_RECALL_NOTES_BUDGET", "0")],
+    );
     assert_eq!((full.code, small.code), (0, 0), "{:?}", small.stderr);
     let (full_hits, small_hits) = (hits(&full.stdout), hits(&small.stdout));
     let cut = small_hits.last().expect("a hit");
@@ -1563,6 +1566,31 @@ fn a_lower_budget_cuts_a_hit_and_prints_less() {
         .expect("the same hit");
     assert!(cut.content.lines().count() < same.content.lines().count());
     assert!(small.stdout.len() < full.stdout.len());
+}
+
+fn cost(stdout: &str) -> usize {
+    hits(stdout)
+        .iter()
+        .map(|hit| Shared.count(&hit.printed))
+        .sum()
+}
+
+#[test]
+fn the_chunks_take_the_notes_room_when_no_note_matches() {
+    let sandbox = Sandbox::new("recall_budget_notes_room");
+    sandbox.write("notes/long.md", long_note("turnips").as_bytes());
+    sandbox.remember(&["notes"]);
+    let run = |notes: &str| {
+        sandbox.run_with(
+            &["recall", "--budget", "256", "turnips"],
+            &[("BILBO_RECALL_NOTES_BUDGET", notes)],
+        )
+    };
+    let (alone, joined) = (run("0"), run("512"));
+    assert_eq!((alone.code, joined.code), (0, 0), "{:?}", joined.stderr);
+    assert!(cost(&alone.stdout) <= 256, "{}", cost(&alone.stdout));
+    assert!(cost(&joined.stdout) > 256, "{}", cost(&joined.stdout));
+    assert!(cost(&joined.stdout) <= 768, "{}", cost(&joined.stdout));
 }
 
 const SMALL_CHUNKS: (&str, &str) = ("BILBO_SEARCH_CHUNK_TOKENS", "256");
@@ -2171,12 +2199,6 @@ fn the_budget_flag_bounds_the_chunks_and_the_key_bounds_the_notes() {
     );
     let (keyed_chunks, keyed_notes) = notes_part(&keyed.stdout);
     assert_eq!(keyed_chunks, chunks);
-    let cost = |part: &str| -> usize {
-        hits(part)
-            .iter()
-            .map(|hit| Shared.count(&hit.printed))
-            .sum()
-    };
     assert!(!hits(&keyed_notes).is_empty(), "{keyed_notes}");
     assert!(cost(&keyed_notes) <= 256, "{}", cost(&keyed_notes));
     assert!(cost(&notes) > 256, "{}", cost(&notes));

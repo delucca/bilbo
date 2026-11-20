@@ -334,7 +334,12 @@ fn search(
             budget,
         )
     };
-    let hits = gather(candidates, false, request.budget)?;
+    let room = if apart.is_empty() {
+        request.budget + request.apart_budget
+    } else {
+        request.budget
+    };
+    let hits = gather(candidates, false, room)?;
     let apart_hits = if request.apart_budget == 0 {
         Vec::new()
     } else {

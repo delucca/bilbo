@@ -298,11 +298,11 @@ run without a driver, and writes `"driver"` into `score.json`:
 |---|---|
 | `wide-no-words` | budget 1,000,000, question words none |
 | `wide` | budget 1,000,000, the default question words |
-| `budget-4600` | budget 4,600 |
-| `budget-4000` | budget 4,000, for the hits a 4,000-token answer holds |
+| `budget-4600` | budget 4,600, notes budget 0 |
+| `budget-4000` | budget 4,000, notes budget 0, for the hits a 4,000-token answer holds |
 | `candidates-1000` | budget 1,000,000, question words none, 1,000 candidates |
 | `in-repo` | `in` = repo: each recall gets `--in <remembered>/<the question's repo>` |
-| `in-repo-wide` | `in` = repo, budget 16,000, 1,000 candidates: the same scoped search with twice the budget and the longest candidate list |
+| `in-repo-wide` | `in` = repo, budget 16,000, 1,000 candidates: the same scoped search with twice `--budget` and the longest candidate list |
 | `in-repo-capped` | `in` = repo, 3 candidates: a search cut short on purpose, for `--exhausted` to refuse |
 | `pair-weight` | `pair_weight` = 0.25: the bonus for two query words in a row, at the key's default, said: the same ranking as a run with no driver, with its weight in each row's `run.settings` |
 | `pair-weight-off` | `pair_weight` = 0: the bonus off, the other side of every comparison of it; each row says its weight in `run.settings` |

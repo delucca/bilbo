@@ -59,7 +59,7 @@ pub struct Args {
         long,
         value_name = "tokens",
         value_parser = NonEmptyStringValueParser::new(),
-        help = "Print at most this many tokens of chunks"
+        help = "Cap chunks at this many tokens, more if no note matches"
     )]
     pub budget: Option<String>,
 }

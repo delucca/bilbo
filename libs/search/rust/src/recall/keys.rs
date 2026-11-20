@@ -10,7 +10,7 @@ pub const BUDGET: Key<usize> = Key {
         variable: Some("BILBO_RECALL_BUDGET"),
         default: Default::Toml("4000"),
         allowed: "a whole number from 256 to 1000000",
-        doc: "The most tokens of chunks bilbo recall prints, as the index's tokenizer counts them, each hit's header included.",
+        doc: "The most tokens of chunks bilbo recall prints, as the index's tokenizer counts them, each hit's header included. With no note among the matches, the chunks also take the room of recall.notes_budget.",
     },
     parse: |value| {
         value

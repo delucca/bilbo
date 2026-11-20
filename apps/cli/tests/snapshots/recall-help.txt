@@ -7,7 +7,7 @@ Usage:
 Options:
       --in <label>       Search what a label or an id names; repeat it for more
       --kind <kind>      Search entries of this kind only; repeat it for more
-      --budget <tokens>  Print at most this many tokens of chunks
+      --budget <tokens>  Cap chunks at this many tokens, more if no note matches
 
 Output:
   === <ref> <n> lines   a hit's header (tab-separated), then <n> lines of text
