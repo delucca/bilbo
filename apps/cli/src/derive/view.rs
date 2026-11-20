@@ -117,6 +117,18 @@ pub fn what(cause: &Cause, api: bool) -> String {
             tail(cause, api)
         );
     }
+    if cause.what == What::Unauthorized && !api {
+        return format!(
+            "the tool is not logged in, or its login is no longer taken{}",
+            tail(cause, api)
+        );
+    }
+    if cause.what == What::Billing && !api {
+        return format!(
+            "the plan's usage limit is reached, or the account has no credit{}",
+            tail(cause, api)
+        );
+    }
     format!("{}{}", sentence(cause.what), tail(cause, api))
 }
 
@@ -490,6 +502,42 @@ mod tests {
         assert_eq!(
             what(&cut, false),
             "the answer was cut by the tool; lower derive.window"
+        );
+    }
+
+    #[test]
+    fn a_lost_login_and_a_spent_plan_of_the_tool_have_their_own_words() {
+        let unauthorized = Cause::new(What::Unauthorized);
+        assert_eq!(
+            what(&unauthorized, false),
+            "the tool is not logged in, or its login is no longer taken"
+        );
+        assert_eq!(what(&unauthorized, true), "it does not take the key");
+        let coded = Cause {
+            status: Some(1),
+            code: Some("401".to_owned()),
+            ..Cause::new(What::Unauthorized)
+        };
+        assert_eq!(
+            what(&coded, false),
+            "the tool is not logged in, or its login is no longer taken (exit 1 401)"
+        );
+        let billing = Cause::new(What::Billing);
+        assert_eq!(
+            what(&billing, false),
+            "the plan's usage limit is reached, or the account has no credit"
+        );
+        assert_eq!(
+            what(&billing, true),
+            "the account has no credit or reached a spend limit"
+        );
+        assert_eq!(
+            stopped(&unauthorized, false, Some("x")),
+            "the tool is not logged in, or its login is no longer taken"
+        );
+        assert_eq!(
+            why_after(&Ended::Stopped(unauthorized), Some("x")),
+            Some("x".to_owned())
         );
     }
 

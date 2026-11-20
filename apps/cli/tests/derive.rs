@@ -2993,3 +2993,342 @@ fn the_run_names_the_field_a_reply_lacks() {
         "{held}"
     );
 }
+
+fn codex_reply(text: &str) -> String {
+    [
+        json!({"type": "thread.started", "thread_id": "00000000-0000-7000-8000-000000000001"}),
+        json!({"type": "turn.started"}),
+        json!({"type": "item.completed", "item": {"id": "item_0", "type": "agent_message", "text": text}}),
+        json!({"type": "turn.completed", "usage": {
+            "input_tokens": 1200,
+            "cached_input_tokens": 0,
+            "cache_write_input_tokens": 0,
+            "output_tokens": 80,
+            "reasoning_output_tokens": 30
+        }}),
+    ]
+    .iter()
+    .map(|line| format!("{line}\n"))
+    .collect()
+}
+
+fn codex_failure(message: &str) -> String {
+    [
+        json!({"type": "thread.started", "thread_id": "00000000-0000-7000-8000-000000000001"}),
+        json!({"type": "turn.started"}),
+        json!({"type": "error", "message": message}),
+        json!({"type": "turn.failed", "error": {"message": message}}),
+    ]
+    .iter()
+    .map(|line| format!("{line}\n"))
+    .collect()
+}
+
+fn codex_home(sandbox: &Sandbox) -> PathBuf {
+    sandbox.derive_dir().join("codex")
+}
+
+fn codex_config(sandbox: &Sandbox, reply: &str) -> String {
+    let script = sandbox.dir.join("tool.sh");
+    let out = sandbox.dir.join("out");
+    fs::create_dir_all(&out).expect("a folder");
+    fs::write(sandbox.dir.join("reply.jsonl"), reply).expect("a reply");
+    let models = json!({"models": [{
+        "slug": "model-a",
+        "display_name": "Model A",
+        "supported_reasoning_levels": [
+            {"effort": "low", "description": "a"},
+            {"effort": "medium", "description": "b"},
+            {"effort": "high", "description": "c"}
+        ],
+        "tool_mode": "code_mode_only",
+        "apply_patch_tool_type": "freeform",
+        "experimental_supported_tools": ["clock"],
+        "supports_search_tool": true
+    }]});
+    fs::write(sandbox.dir.join("models.json"), models.to_string()).expect("a catalog");
+    fs::write(
+        &script,
+        format!(
+            "#!/bin/sh\necho \"$1\" >> {out}/calls\ncase \"$1\" in\n  --version) echo 'codex-cli 0.169.0' ;;\n  debug) cat {dir}/models.json ;;\n  exec) echo ran >> {out}/ran\n        n=$(wc -l < {out}/ran | tr -d ' ')\n        printf '%s\\n' \"$@\" > {out}/args; pwd > {out}/pwd; env > {out}/env\n        cat > /dev/null\n        r={dir}/reply.jsonl; if [ -f {dir}/reply-$n.jsonl ]; then r={dir}/reply-$n.jsonl; fi\n        c=0; if [ -f {dir}/exit-$n ]; then c=$(cat {dir}/exit-$n); fi\n        cat $r; exit $c ;;\nesac\n",
+            out = out.display(),
+            dir = sandbox.dir.display()
+        ),
+    )
+    .expect("a script");
+    fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).expect("a mode");
+    let home = codex_home(sandbox);
+    codex_login(&home);
+    format!(
+        "derive.enabled = true\nderive.provider = \"openai\"\nderive.in = [\"sessions\"]\nderive.quiet = \"0s\"\nderive.openai.via = \"tool\"\nderive.openai.model = \"model-a\"\n\n[derive.openai.tool]\nprogram = {:?}\nsystem_files = []\n",
+        script.display().to_string()
+    )
+}
+
+fn codex_login(home: &Path) {
+    fs::create_dir_all(home).expect("a home");
+    fs::set_permissions(home, fs::Permissions::from_mode(0o700)).expect("a mode");
+    fs::write(home.join("auth.json"), "").expect("a login");
+}
+
+fn logged_server_error(sandbox: &Sandbox) -> bool {
+    fs::read_to_string(sandbox.derive_dir().join("log"))
+        .expect("a log")
+        .lines()
+        .any(|line| line.contains("server-error"))
+}
+
+fn ran(sandbox: &Sandbox) -> usize {
+    fs::read_to_string(sandbox.dir.join("out/ran")).map_or(0, |text| text.lines().count())
+}
+
+#[test]
+fn a_run_through_codex_writes_notes_and_reads_no_key() {
+    let _alone = alone();
+    let sandbox = Sandbox::filled("derive-codex", false);
+    sandbox.configure(&codex_config(&sandbox, &codex_reply(NOTE_TEXT)));
+    let run = sandbox.run_with(&["derive"], &[("OPENAI_API_KEY", KEY)]);
+    assert_eq!(run.code, 0, "{:?}", run.stderr);
+    assert!(
+        run.stdout
+            .starts_with("entries 3, calls 3, notes 3, dropped 0, refused 0, failed 0\n"),
+        "{}",
+        run.stdout
+    );
+    let first = sandbox.session(FIRST);
+    let (_, _, records) = sandbox.notes_of(first).expect("notes");
+    assert!(records[0].contains("The user asked about the garden fence."));
+    let work = sandbox.derive_dir().join("work");
+    let ran_in = fs::read_to_string(sandbox.dir.join("out/pwd")).expect("pwd");
+    assert_eq!(
+        fs::canonicalize(ran_in.trim()).expect("the folder it ran in"),
+        fs::canonicalize(&work).expect("the work folder")
+    );
+    let env = fs::read_to_string(sandbox.dir.join("out/env")).expect("env");
+    assert!(
+        env.lines()
+            .any(|line| line == format!("CODEX_HOME={}", codex_home(&sandbox).display())),
+        "{env}"
+    );
+    assert!(
+        !env.lines().any(|line| line.starts_with("OPENAI_API_KEY=")),
+        "{env}"
+    );
+    let args = fs::read_to_string(sandbox.dir.join("out/args")).expect("args");
+    assert!(args.lines().any(|line| line == "model-a"), "{args}");
+    assert_eq!(ran(&sandbox), 3);
+}
+
+#[test]
+fn the_run_says_why_codex_was_not_started() {
+    let _alone = alone();
+    let sandbox = Sandbox::filled("derive-codex-not-started", false);
+    sandbox.configure(&codex_config(&sandbox, &codex_reply(NOTE_TEXT)));
+    let home = codex_home(&sandbox);
+    fs::remove_dir_all(&home).expect("no home");
+    let run = sandbox.run(&["derive"]);
+    assert_eq!(run.code, 2, "{:?}", run.stderr);
+    assert_eq!(
+        run.stderr.last().map(String::as_str),
+        Some(
+            format!(
+                "bilbo: derive.openai.tool.home: {0} does not exist: make it, then log in with CODEX_HOME={0} codex login",
+                home.display()
+            )
+            .as_str()
+        )
+    );
+    assert_eq!(ran(&sandbox), 0);
+    assert!(!sandbox.dir.join("out/calls").exists());
+    codex_login(&home);
+    fs::write(home.join("AGENTS.md"), "x").expect("a setup file");
+    let run = sandbox.run(&["derive"]);
+    assert_eq!(run.code, 2, "{:?}", run.stderr);
+    assert!(
+        run.stderr.last().is_some_and(|line| line.ends_with(&format!(
+            "derive.openai.tool.home: {}/AGENTS.md is the user's setup for codex, and bilbo's codex home holds none",
+            home.display()
+        ))),
+        "{:?}",
+        run.stderr
+    );
+    assert_eq!(ran(&sandbox), 0);
+    assert!(!sandbox.dir.join("out/calls").exists());
+}
+
+#[test]
+fn the_dry_run_of_codex_names_its_home_and_starts_nothing() {
+    let sandbox = Sandbox::filled("derive-codex-dry", false);
+    sandbox.configure(&codex_config(&sandbox, &codex_reply(NOTE_TEXT)));
+    let home = codex_home(&sandbox);
+    fs::remove_dir_all(&home).expect("no home");
+    let run = sandbox.run(&["derive", "--dry-run"]);
+    assert_eq!(run.code, 0, "{:?}", run.stderr);
+    let script = sandbox.dir.join("tool.sh");
+    assert!(
+        run.stdout.lines().any(|line| line
+            == format!(
+                "provider: openai, via tool, model model-a, effort medium, program {}",
+                script.display()
+            )),
+        "{}",
+        run.stdout
+    );
+    assert!(
+        run.stdout
+            .lines()
+            .any(|line| line == format!("home: {}", home.display())),
+        "{}",
+        run.stdout
+    );
+    assert_eq!(ran(&sandbox), 0);
+    assert!(!sandbox.dir.join("out/calls").exists());
+    assert!(!home.exists());
+}
+
+#[test]
+fn a_lost_login_stops_the_run_in_the_tools_words() {
+    let _alone = alone();
+    let sandbox = Sandbox::filled("derive-codex-login", false);
+    sandbox.configure(&codex_config(
+        &sandbox,
+        &codex_failure("unexpected status 401 Unauthorized: x"),
+    ));
+    fs::write(sandbox.dir.join("exit-1"), "1").expect("an exit");
+    let run = sandbox.run(&["derive"]);
+    assert_eq!(run.code, 1, "{:?}", run.stderr);
+    assert!(
+        run.stderr.iter().any(|line| line
+            == "bilbo: the provider stopped the run: the tool is not logged in, or its login is no longer taken (exit 1 401)"),
+        "{:?}",
+        run.stderr
+    );
+    assert!(
+        run.stderr.iter().any(|line| line.ends_with(&format!(
+            "log in again with CODEX_HOME={} codex login",
+            codex_home(&sandbox).display()
+        ))),
+        "{:?}",
+        run.stderr
+    );
+    assert_eq!(ran(&sandbox), 1);
+    assert!(
+        run.stderr
+            .iter()
+            .all(|line| !line.contains("Unauthorized: x")),
+        "{:?}",
+        run.stderr
+    );
+    for (path, bytes) in sandbox.files() {
+        assert!(
+            !bytes
+                .windows(b"Unauthorized: x".len())
+                .any(|window| window == b"Unauthorized: x"),
+            "{}",
+            path.display()
+        );
+    }
+}
+
+#[test]
+fn an_error_codex_does_not_explain_ends_the_run_and_charges_no_window() {
+    let _alone = alone();
+    let sandbox = Sandbox::filled("derive-codex-unknown", false);
+    let config = codex_config(&sandbox, &codex_reply(NOTE_TEXT)).replace(
+        "derive.quiet = \"0s\"\n",
+        "derive.quiet = \"0s\"\nderive.tries = 1\n",
+    );
+    sandbox.configure(&config);
+    fs::write(
+        sandbox.dir.join("reply-2.jsonl"),
+        codex_failure("SENTINEL-7f3a not a sentence bilbo knows"),
+    )
+    .expect("a failed turn");
+    fs::write(sandbox.dir.join("exit-2"), "1").expect("an exit");
+    let run = sandbox.run(&["derive"]);
+    assert_eq!(run.code, 1, "{:?}", run.stderr);
+    assert_eq!(
+        run.stderr.last().map(String::as_str),
+        Some("bilbo: the provider stopped the run: it had an error of its own (exit 1)")
+    );
+    assert_eq!(ran(&sandbox), 2);
+    assert!(!run.stdout.contains("SENTINEL-7f3a"));
+    assert!(
+        run.stderr
+            .iter()
+            .all(|line| !line.contains("SENTINEL-7f3a"))
+    );
+    for (path, bytes) in sandbox.files() {
+        assert!(
+            !bytes
+                .windows(b"SENTINEL-7f3a".len())
+                .any(|window| window == b"SENTINEL-7f3a"),
+            "{}",
+            path.display()
+        );
+    }
+    assert!(logged_server_error(&sandbox));
+    fs::remove_file(sandbox.dir.join("reply-2.jsonl")).expect("a reply");
+    fs::remove_file(sandbox.dir.join("exit-2")).expect("an exit");
+    let run = sandbox.run(&["derive"]);
+    assert_eq!(run.code, 0, "{:?}", run.stderr);
+    assert!(
+        run.stdout
+            .starts_with("entries 2, calls 2, notes 2, dropped 0, refused 0, failed 0\n"),
+        "{}",
+        run.stdout
+    );
+    assert_eq!(ran(&sandbox), 4);
+}
+
+#[test]
+fn a_tool_codex_reached_ends_the_run_and_charges_no_window() {
+    let _alone = alone();
+    let sandbox = Sandbox::filled("derive-codex-reached", false);
+    let config = codex_config(&sandbox, &codex_reply(NOTE_TEXT)).replace(
+        "derive.quiet = \"0s\"\n",
+        "derive.quiet = \"0s\"\nderive.tries = 1\n",
+    );
+    sandbox.configure(&config);
+    let reached = codex_reply(NOTE_TEXT).replacen(
+        "{\"item\"",
+        "{\"item\":{\"id\":\"item_0\",\"type\":\"command_execution\"},\"type\":\"item.started\"}\n{\"item\"",
+        1,
+    );
+    fs::write(sandbox.dir.join("reply-2.jsonl"), reached).expect("a reply");
+    let run = sandbox.run(&["derive"]);
+    assert_eq!(run.code, 1, "{:?}", run.stderr);
+    let stop = run
+        .stderr
+        .iter()
+        .position(|line| {
+            line == "bilbo: the provider stopped the run: it had an error of its own (exit 0)"
+        })
+        .unwrap_or_else(|| panic!("{:?}", run.stderr));
+    assert!(
+        run.stderr[stop + 1..]
+            .last()
+            .is_some_and(|line| line.ends_with(
+                "codex reached a tool of its own: bilbo's arguments did not keep it without tools"
+            )),
+        "{:?}",
+        run.stderr
+    );
+    assert_eq!(ran(&sandbox), 2);
+    let kept = sandbox
+        .sessions()
+        .into_iter()
+        .filter(|id| sandbox.notes_of(*id).is_some())
+        .count();
+    assert_eq!(kept, 1);
+    assert!(logged_server_error(&sandbox));
+    fs::remove_file(sandbox.dir.join("reply-2.jsonl")).expect("a reply");
+    let run = sandbox.run(&["derive"]);
+    assert_eq!(run.code, 0, "{:?}", run.stderr);
+    assert!(
+        run.stdout
+            .starts_with("entries 2, calls 2, notes 2, dropped 0, refused 0, failed 0\n"),
+        "{}",
+        run.stdout
+    );
+}

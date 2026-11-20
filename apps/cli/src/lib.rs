@@ -652,7 +652,7 @@ mod tests {
                 .iter()
                 .map(|about| about.name)
                 .collect();
-        let tail: Vec<&str> = names[names.len() - 21..].to_vec();
+        let tail: Vec<&str> = names[names.len() - 28..].to_vec();
         assert_eq!(
             tail,
             [
@@ -677,6 +677,13 @@ mod tests {
                 "derive.openai.api.key_command",
                 "derive.openai.api.headers",
                 "derive.openai.api.extra",
+                "derive.openai.tool.program",
+                "derive.openai.tool.effort",
+                "derive.openai.tool.arguments",
+                "derive.openai.tool.inherit",
+                "derive.openai.tool.environment",
+                "derive.openai.tool.home",
+                "derive.openai.tool.system_files",
             ]
         );
         let order: Vec<&str> = super::providers().iter().map(|(name, _)| *name).collect();
@@ -721,6 +728,9 @@ mod tests {
         let openai = built("openai", b"");
         assert!(openai.writer.describe()[0].starts_with("provider: openai, via api, "));
         assert!(openai.api);
+        let codex = built("openai", b"[derive.openai]\nvia = \"tool\"\n");
+        assert!(codex.writer.describe()[0].starts_with("provider: openai, via tool, "));
+        assert!(!codex.api);
     }
 
     #[test]

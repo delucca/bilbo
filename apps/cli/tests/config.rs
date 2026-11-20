@@ -202,8 +202,8 @@ fn a_value_the_key_refuses_is_said_in_the_keys_words_and_nothing_is_written() {
         ),
         (
             "derive.openai.via",
-            "tool",
-            "derive.openai.via must be api: tool is not built for openai",
+            "cli",
+            "derive.openai.via must be api or tool, got \"cli\"",
         ),
         (
             "derive.anthropic.via",
@@ -244,6 +244,20 @@ fn config_set_writes_a_key_of_a_ways_table() {
         "[derive.anthropic.api]\nendpoint = \"https://example.test/v1\"\n\n[derive.anthropic]\nvia = \"tool\"\n"
     );
     let read = sandbox.run(&["config", "derive.anthropic.via"]);
+    assert_eq!((read.code, read.stdout.as_str()), (0, "tool\n"));
+}
+
+#[test]
+fn config_set_takes_the_tool_for_openai() {
+    let sandbox = Sandbox::new("config-set-openai-tool");
+    sandbox.put("[derive.openai.api]\nendpoint = \"https://example.test/v1\"\n");
+    let run = sandbox.run(&["config", "set", "derive.openai.via", "tool"]);
+    assert_eq!(run.code, 0, "{:?}", run.stderr);
+    assert_eq!(
+        sandbox.text(),
+        "[derive.openai.api]\nendpoint = \"https://example.test/v1\"\n\n[derive.openai]\nvia = \"tool\"\n"
+    );
+    let read = sandbox.run(&["config", "derive.openai.via"]);
     assert_eq!((read.code, read.stdout.as_str()), (0, "tool\n"));
 }
 

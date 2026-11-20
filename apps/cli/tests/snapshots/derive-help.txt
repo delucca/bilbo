@@ -12,7 +12,7 @@ Kinds:
   session  bilbo ships an instruction for it
 Providers:
   anthropic  Anthropic's models: via api, with a key; via tool, the tool claude
-  openai     OpenAI's models: via api, with a key
+  openai     OpenAI's models: via api, with a key; via tool, the tool codex
 
 Output:
   entries <n>, calls <n>, notes <n>, dropped <n>, refused <n>, failed <n>

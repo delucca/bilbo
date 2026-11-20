@@ -1,0 +1,54 @@
+{
+  "models": [
+    {
+      "slug": "model-a",
+      "display_name": "Model A",
+      "supported_reasoning_levels": [
+        {
+          "effort": "low",
+          "description": "low"
+        },
+        {
+          "effort": "medium",
+          "description": "medium"
+        },
+        {
+          "effort": "high",
+          "description": "high"
+        }
+      ],
+      "tool_mode": "code_mode_only",
+      "apply_patch_tool_type": "freeform",
+      "experimental_supported_tools": [
+        "clock"
+      ],
+      "supports_search_tool": true,
+      "use_responses_lite": true,
+      "zz_kept": {
+        "b": 1,
+        "a": 2
+      }
+    },
+    {
+      "slug": "model-b",
+      "display_name": "Model B",
+      "supported_reasoning_levels": [
+        {
+          "effort": "low",
+          "description": "low"
+        }
+      ],
+      "tool_mode": "code_mode_only",
+      "apply_patch_tool_type": "freeform",
+      "experimental_supported_tools": [
+        "clock"
+      ],
+      "supports_search_tool": true,
+      "use_responses_lite": true,
+      "zz_kept": {
+        "b": 1,
+        "a": 2
+      }
+    }
+  ]
+}

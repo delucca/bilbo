@@ -159,6 +159,10 @@ pub fn folder(path: &Path) -> Result<(), String> {
     cleaned(path, getuid().as_raw())
 }
 
+pub fn own(path: &Path, meta: &fs::Metadata) -> Result<(), String> {
+    owned(path, meta.uid(), getuid().as_raw())
+}
+
 fn cleaned(path: &Path, user: u32) -> Result<(), String> {
     let failed = |error: io::Error| format!("{}: {error}", path.display());
     let meta = match fs::symlink_metadata(path) {
@@ -221,7 +225,7 @@ mod tests {
 
     use rustix::process::getuid;
 
-    use super::{cleaned, owned};
+    use super::{cleaned, own, owned};
 
     #[test]
     fn a_folder_of_another_user_is_refused() {
@@ -246,6 +250,15 @@ mod tests {
         assert!(folder.join("held").exists());
         assert_eq!(cleaned(&folder, mine), Ok(()));
         assert!(!folder.join("held").exists());
+        fs::remove_dir(&folder).expect("the folder");
+    }
+
+    #[test]
+    fn a_folder_of_the_users_own_is_owned() {
+        let folder = std::env::temp_dir().join(format!("bilbo-child-own-{}", std::process::id()));
+        fs::create_dir_all(&folder).expect("a folder");
+        let metadata = fs::symlink_metadata(&folder).expect("its metadata");
+        assert_eq!(own(&folder, &metadata), Ok(()));
         fs::remove_dir(&folder).expect("the folder");
     }
 }

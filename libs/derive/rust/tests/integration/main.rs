@@ -3,6 +3,7 @@ mod anthropic_tool;
 mod child;
 mod http;
 mod openai_api;
+mod openai_tool;
 mod secret;
 
 use std::fs;

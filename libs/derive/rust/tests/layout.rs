@@ -12,6 +12,7 @@ const PLACEMENT: &[(&str, &[&str])] = &[
             "src/anthropic/api.rs",
             "src/anthropic/tool.rs",
             "src/openai/api.rs",
+            "src/openai/tool.rs",
             "tests/acceptance/",
         ],
     ),

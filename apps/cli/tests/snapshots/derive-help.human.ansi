@@ -12,7 +12,7 @@ bilbo derive: write notes about entries that stopped growing, with a model.
   [1msession[22m  bilbo ships an instruction for it
 [1mProviders:[22m
   [1manthropic[22m  Anthropic's models: via api, with a key; via tool, the tool claude
-  [1mopenai[22m     OpenAI's models: via api, with a key
+  [1mopenai[22m     OpenAI's models: via api, with a key; via tool, the tool codex
 
 [1mOutput:[22m
   entries [2m<n>[22m, calls [2m<n>[22m, notes [2m<n>[22m, dropped [2m<n>[22m, refused [2m<n>[22m, failed [2m<n>[22m

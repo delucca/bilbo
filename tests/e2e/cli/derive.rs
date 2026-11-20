@@ -254,7 +254,7 @@ fn the_help_page_lists_the_kinds_and_the_providers() {
     assert_eq!(run.code, 0, "{}", run.stderr);
     assert!(
         run.stdout.contains(
-            "Kinds:\n  session  bilbo ships an instruction for it\nProviders:\n  anthropic  Anthropic's models: via api, with a key; via tool, the tool claude\n  openai     OpenAI's models: via api, with a key\n"
+            "Kinds:\n  session  bilbo ships an instruction for it\nProviders:\n  anthropic  Anthropic's models: via api, with a key; via tool, the tool claude\n  openai     OpenAI's models: via api, with a key; via tool, the tool codex\n"
         ),
         "{}",
         run.stdout
@@ -295,6 +295,76 @@ fn derive_through_a_tool_needs_no_key() {
         &scratch,
         &format!(
             "derive.enabled = true\nderive.provider = \"anthropic\"\nderive.in = [\"projects\"]\nderive.quiet = \"0s\"\nderive.anthropic.via = \"tool\"\nderive.anthropic.model = \"claude-test-1\"\n\n[derive.anthropic.tool]\nprogram = {:?}\nproject_files = [\"zz-marker.md\"]\narguments = [\"-p\", \"--tools\", \"\", \"--strict-mcp-config\", \"--safe-mode\", \"--no-session-persistence\", \"--system-prompt\", \"{{instruction}}\"]\n",
+            script.display().to_string()
+        ),
+    );
+    let run = scratch.run(&["derive"]);
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    assert!(
+        run.stdout
+            .starts_with("entries 1, calls 1, notes 1, dropped 0, refused 0, failed 0\n"),
+        "{}",
+        run.stdout
+    );
+    let found = scratch.run(&["recall", "garden", "fence"]);
+    assert!(
+        found
+            .stdout
+            .contains("The user asked about the garden fence.")
+    );
+}
+
+#[test]
+fn derive_through_codex_needs_no_key() {
+    let scratch = sealed("e2e_derive_codex");
+    let script = scratch.dir.join("tool.sh");
+    let events: String = [
+        json!({"type": "thread.started", "thread_id": "00000000-0000-7000-8000-000000000001"}),
+        json!({"type": "turn.started"}),
+        json!({"type": "item.completed", "item": {
+            "id": "item_0",
+            "type": "agent_message",
+            "text": "r1-7\nThe user asked about the garden fence."
+        }}),
+        json!({"type": "turn.completed", "usage": {
+            "input_tokens": 1200,
+            "cached_input_tokens": 0,
+            "cache_write_input_tokens": 0,
+            "output_tokens": 80,
+            "reasoning_output_tokens": 30
+        }}),
+    ]
+    .iter()
+    .map(|line| format!("{line}\n"))
+    .collect();
+    let models = json!({"models": [{
+        "slug": "model-a",
+        "display_name": "Model A",
+        "supported_reasoning_levels": [{"effort": "medium", "description": "b"}],
+        "tool_mode": "code_mode_only",
+        "apply_patch_tool_type": "freeform",
+        "experimental_supported_tools": ["clock"],
+        "supports_search_tool": true
+    }]});
+    fs::write(scratch.dir.join("reply.jsonl"), events).expect("a reply");
+    fs::write(scratch.dir.join("models.json"), models.to_string()).expect("a catalog");
+    fs::write(
+        &script,
+        format!(
+            "#!/bin/sh\ncase \"$1\" in\n  --version) echo 'codex-cli 0.169.0' ;;\n  debug) cat {dir}/models.json ;;\n  exec) cat > /dev/null; cat {dir}/reply.jsonl ;;\nesac\n",
+            dir = scratch.dir.display()
+        ),
+    )
+    .expect("a script");
+    fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).expect("a mode");
+    let home = scratch.dir.join("state/bilbo/derive/codex");
+    fs::create_dir_all(&home).expect("a home");
+    fs::set_permissions(&home, fs::Permissions::from_mode(0o700)).expect("a mode");
+    fs::write(home.join("auth.json"), "").expect("a login");
+    put(
+        &scratch,
+        &format!(
+            "derive.enabled = true\nderive.provider = \"openai\"\nderive.in = [\"projects\"]\nderive.quiet = \"0s\"\nderive.openai.via = \"tool\"\nderive.openai.model = \"model-a\"\n\n[derive.openai.tool]\nprogram = {:?}\nsystem_files = []\n",
             script.display().to_string()
         ),
     );
