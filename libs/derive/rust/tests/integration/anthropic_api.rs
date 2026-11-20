@@ -1,7 +1,7 @@
 use std::path::Path;
 use std::time::{Duration, Instant};
 
-use bilbo_derive::anthropic::{self, Anthropic};
+use bilbo_derive::anthropic::api::{self, Anthropic};
 use bilbo_derive::writer::{Cause, Limits, Outcome, Prompt, Usage, What, Writer};
 use bilbo_provider::{Provider, Reply, Request};
 use bilbo_settings::file::File;
@@ -12,16 +12,16 @@ use crate::Scratch;
 type Reader = fn(&str) -> Option<String>;
 
 const KEY: &str = "sk-test-PLUM-7391";
-const ANSWER: &str = include_str!("../../fixtures/anthropic/answer.json");
-const CUT: &str = include_str!("../../fixtures/anthropic/cut.json");
-const REFUSAL: &str = include_str!("../../fixtures/anthropic/refusal.json");
-const REFUSAL_NULL: &str = include_str!("../../fixtures/anthropic/refusal-null.json");
-const ERROR_404: &str = include_str!("../../fixtures/anthropic/error-404.json");
-const ERROR_400: &str = include_str!("../../fixtures/anthropic/error-400.json");
-const ERROR_429: &str = include_str!("../../fixtures/anthropic/error-429.json");
-const ERROR_429_SPEND: &str = include_str!("../../fixtures/anthropic/error-429-spend.json");
-const NO_STOP_REASON: &str = include_str!("../../fixtures/anthropic/no-stop-reason.json");
-const ERROR_529: &str = include_str!("../../fixtures/anthropic/error-529.json");
+const ANSWER: &str = include_str!("../../fixtures/anthropic/api/answer.json");
+const CUT: &str = include_str!("../../fixtures/anthropic/api/cut.json");
+const REFUSAL: &str = include_str!("../../fixtures/anthropic/api/refusal.json");
+const REFUSAL_NULL: &str = include_str!("../../fixtures/anthropic/api/refusal-null.json");
+const ERROR_404: &str = include_str!("../../fixtures/anthropic/api/error-404.json");
+const ERROR_400: &str = include_str!("../../fixtures/anthropic/api/error-400.json");
+const ERROR_429: &str = include_str!("../../fixtures/anthropic/api/error-429.json");
+const ERROR_429_SPEND: &str = include_str!("../../fixtures/anthropic/api/error-429-spend.json");
+const NO_STOP_REASON: &str = include_str!("../../fixtures/anthropic/api/no-stop-reason.json");
+const ERROR_529: &str = include_str!("../../fixtures/anthropic/api/error-529.json");
 
 fn prompt() -> Prompt {
     Prompt {
@@ -51,7 +51,7 @@ fn variables(name: &str) -> Option<String> {
 
 fn writer_with(text: &str, folder: &Path, variables: fn(&str) -> Option<String>) -> Anthropic {
     let file = File::parse(Path::new("/c/config.toml"), text.as_bytes()).expect("toml");
-    let section = anthropic::section(&Source {
+    let section = api::section(&Source {
         var: &|_| None,
         file: &file,
     })

@@ -3,7 +3,6 @@ pub mod anthropic;
 pub mod api;
 mod check;
 pub mod child;
-pub mod claude;
 pub mod http;
 pub mod instruction;
 pub mod keys;

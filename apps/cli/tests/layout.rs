@@ -21,7 +21,7 @@ const SHARED: [&str; 5] = [
 ];
 const OWN: &str = "bilbo_";
 const ADAPTERS: [(&str, &[&str]); 3] = [
-    ("bilbo_derive", &["anthropic", "openai", "claude"]),
+    ("bilbo_derive", &["anthropic", "openai"]),
     ("bilbo_entries", &["markdown", "note", "session"]),
     ("bilbo_search", &["qwen", "tantivy", "whichlang"]),
 ];

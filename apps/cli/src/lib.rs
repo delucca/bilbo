@@ -80,18 +80,18 @@ pub fn kind_keys() -> Vec<&'static KindKey> {
 }
 
 static ANTHROPIC: Group = Group {
-    about: &bilbo_derive::anthropic::ABOUT,
-    resolve: bilbo_derive::anthropic::shown,
+    about: &bilbo_derive::anthropic::api::ABOUT,
+    resolve: bilbo_derive::anthropic::api::shown,
 };
 
 static OPENAI: Group = Group {
-    about: &bilbo_derive::openai::ABOUT,
-    resolve: bilbo_derive::openai::shown,
+    about: &bilbo_derive::openai::api::ABOUT,
+    resolve: bilbo_derive::openai::api::shown,
 };
 
 static CLAUDE: Group = Group {
-    about: &bilbo_derive::claude::ABOUT,
-    resolve: bilbo_derive::claude::shown,
+    about: &bilbo_derive::anthropic::tool::ABOUT,
+    resolve: bilbo_derive::anthropic::tool::shown,
 };
 
 pub fn provider_keys() -> Vec<&'static Group> {
@@ -101,11 +101,17 @@ pub fn provider_keys() -> Vec<&'static Group> {
 pub fn providers() -> Vec<(&'static str, &'static str)> {
     vec![
         (
-            bilbo_derive::anthropic::NAME,
-            bilbo_derive::anthropic::SUMMARY,
+            bilbo_derive::anthropic::api::NAME,
+            bilbo_derive::anthropic::api::SUMMARY,
         ),
-        (bilbo_derive::openai::NAME, bilbo_derive::openai::SUMMARY),
-        (bilbo_derive::claude::NAME, bilbo_derive::claude::SUMMARY),
+        (
+            bilbo_derive::openai::api::NAME,
+            bilbo_derive::openai::api::SUMMARY,
+        ),
+        (
+            bilbo_derive::anthropic::tool::NAME,
+            bilbo_derive::anthropic::tool::SUMMARY,
+        ),
     ]
 }
 
@@ -127,31 +133,31 @@ pub fn writer(settings: &Settings, var: &Var) -> Result<derive::Built, Failure> 
     let source = settings.source(&**var);
     let name = settings.derive.provider.value.as_str();
     let (writer, api): (Box<dyn bilbo_derive::writer::Writer>, bool) = match name {
-        bilbo_derive::anthropic::NAME => {
-            let section = bilbo_derive::anthropic::section(&source)?;
+        bilbo_derive::anthropic::api::NAME => {
+            let section = bilbo_derive::anthropic::api::section(&source)?;
             let variables = reading(vec![section.key_env.value.clone()]);
             (
-                Box::new(bilbo_derive::anthropic::Anthropic::new(
+                Box::new(bilbo_derive::anthropic::api::Anthropic::new(
                     section, variables, state, timeout, response, poll,
                 )),
                 true,
             )
         }
-        bilbo_derive::openai::NAME => {
-            let section = bilbo_derive::openai::section(&source)?;
+        bilbo_derive::openai::api::NAME => {
+            let section = bilbo_derive::openai::api::section(&source)?;
             let variables = reading(vec![section.key_env.value.clone()]);
             (
-                Box::new(bilbo_derive::openai::OpenAi::new(
+                Box::new(bilbo_derive::openai::api::OpenAi::new(
                     section, variables, state, timeout, response, poll,
                 )),
                 true,
             )
         }
-        bilbo_derive::claude::NAME => {
-            let section = bilbo_derive::claude::section(&source)?;
+        bilbo_derive::anthropic::tool::NAME => {
+            let section = bilbo_derive::anthropic::tool::section(&source)?;
             let variables = reading(section.inherit.value.clone());
             (
-                Box::new(bilbo_derive::claude::Claude::new(
+                Box::new(bilbo_derive::anthropic::tool::Claude::new(
                     section,
                     variables,
                     derive::disk::work(&state),

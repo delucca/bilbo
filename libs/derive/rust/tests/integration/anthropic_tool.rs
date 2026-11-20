@@ -3,49 +3,51 @@ use std::os::unix::fs::{PermissionsExt, symlink};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use bilbo_derive::claude::{self, Claude};
+use bilbo_derive::anthropic::tool::{self, Claude};
 use bilbo_derive::writer::{Cause, Limits, Outcome, Prompt, Usage, Variables, What, Writer};
 use bilbo_settings::file::File;
 use bilbo_settings::key::Source;
 
 use crate::Scratch;
 
-const ANSWER: &str = include_str!("../../fixtures/claude/answer.json");
-const REFUSAL: &str = include_str!("../../fixtures/claude/refusal.json");
-const REFUSAL_TWO_TURNS: &str = include_str!("../../fixtures/claude/refusal-two-turns.json");
-const ERROR: &str = include_str!("../../fixtures/claude/error.json");
-const TWO_TURNS: &str = include_str!("../../fixtures/claude/two-turns.json");
-const DENIED: &str = include_str!("../../fixtures/claude/denied.json");
-const CUT: &str = include_str!("../../fixtures/claude/cut.json");
-const SEARCHED: &str = include_str!("../../fixtures/claude/searched.json");
-const FETCHED: &str = include_str!("../../fixtures/claude/fetched.json");
-const SEARCHED_BY_MODEL: &str = include_str!("../../fixtures/claude/searched-by-model.json");
-const SUBAGENT: &str = include_str!("../../fixtures/claude/subagent.json");
-const SUBAGENT_REFUSED: &str = include_str!("../../fixtures/claude/subagent-refused.json");
-const REFUSAL_SEARCHED: &str = include_str!("../../fixtures/claude/refusal-searched.json");
+const ANSWER: &str = include_str!("../../fixtures/anthropic/tool/answer.json");
+const REFUSAL: &str = include_str!("../../fixtures/anthropic/tool/refusal.json");
+const REFUSAL_TWO_TURNS: &str =
+    include_str!("../../fixtures/anthropic/tool/refusal-two-turns.json");
+const ERROR: &str = include_str!("../../fixtures/anthropic/tool/error.json");
+const TWO_TURNS: &str = include_str!("../../fixtures/anthropic/tool/two-turns.json");
+const DENIED: &str = include_str!("../../fixtures/anthropic/tool/denied.json");
+const CUT: &str = include_str!("../../fixtures/anthropic/tool/cut.json");
+const SEARCHED: &str = include_str!("../../fixtures/anthropic/tool/searched.json");
+const FETCHED: &str = include_str!("../../fixtures/anthropic/tool/fetched.json");
+const SEARCHED_BY_MODEL: &str =
+    include_str!("../../fixtures/anthropic/tool/searched-by-model.json");
+const SUBAGENT: &str = include_str!("../../fixtures/anthropic/tool/subagent.json");
+const SUBAGENT_REFUSED: &str = include_str!("../../fixtures/anthropic/tool/subagent-refused.json");
+const REFUSAL_SEARCHED: &str = include_str!("../../fixtures/anthropic/tool/refusal-searched.json");
 const WITHOUT: [(&str, &str); 6] = [
     (
-        include_str!("../../fixtures/claude/no-turns.json"),
+        include_str!("../../fixtures/anthropic/tool/no-turns.json"),
         "num_turns",
     ),
     (
-        include_str!("../../fixtures/claude/no-denials.json"),
+        include_str!("../../fixtures/anthropic/tool/no-denials.json"),
         "permission_denials",
     ),
     (
-        include_str!("../../fixtures/claude/no-server-tools.json"),
+        include_str!("../../fixtures/anthropic/tool/no-server-tools.json"),
         "usage.server_tool_use",
     ),
     (
-        include_str!("../../fixtures/claude/no-search-count.json"),
+        include_str!("../../fixtures/anthropic/tool/no-search-count.json"),
         "modelUsage.*.webSearchRequests",
     ),
     (
-        include_str!("../../fixtures/claude/no-subagents.json"),
+        include_str!("../../fixtures/anthropic/tool/no-subagents.json"),
         "subagent_stats",
     ),
     (
-        include_str!("../../fixtures/claude/no-stop-reason.json"),
+        include_str!("../../fixtures/anthropic/tool/no-stop-reason.json"),
         "stop_reason",
     ),
 ];
@@ -116,7 +118,7 @@ fn variables(home: Option<&Path>) -> Variables {
 
 fn tool(text: &str, work: &Path, home: Option<&Path>) -> Claude {
     let file = File::parse(Path::new("/c/config.toml"), text.as_bytes()).expect("toml");
-    let section = claude::section(&Source {
+    let section = tool::section(&Source {
         var: &|_| None,
         file: &file,
     })
@@ -653,7 +655,7 @@ fn the_lines_for_the_dry_run_show_the_arguments_as_written() {
         b"[derive.claude]\nmodel = \"m\"\n",
     )
     .expect("toml");
-    let section = claude::section(&Source {
+    let section = tool::section(&Source {
         var: &|_| None,
         file: &file,
     })

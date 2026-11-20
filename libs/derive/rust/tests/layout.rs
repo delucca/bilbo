@@ -9,9 +9,9 @@ const PLACEMENT: &[(&str, &[&str])] = &[
         &[
             "src/record.rs",
             "src/table.rs",
-            "src/anthropic.rs",
-            "src/openai.rs",
-            "src/claude.rs",
+            "src/anthropic/api.rs",
+            "src/anthropic/tool.rs",
+            "src/openai/api.rs",
             "tests/acceptance/",
         ],
     ),
@@ -28,13 +28,16 @@ const PLACEMENT: &[(&str, &[&str])] = &[
         &[
             "src/api.rs",
             "src/http.rs",
-            "src/anthropic.rs",
-            "src/openai.rs",
+            "src/anthropic/mod.rs",
+            "src/anthropic/api.rs",
+            "src/openai/mod.rs",
+            "src/openai/api.rs",
+            "tests/integration/",
         ],
     ),
-    ("anthropic", &["src/anthropic.rs", "tests/integration/"]),
-    ("openai", &["src/openai.rs", "tests/integration/"]),
-    ("claude", &["src/claude.rs", "tests/integration/"]),
+    ("anthropic", &["src/anthropic/", "tests/integration/"]),
+    ("openai", &["src/openai/", "tests/integration/"]),
+    ("claude", &[]),
     ("codex", &[]),
 ];
 const CORE: &[&str] = &[
@@ -57,7 +60,7 @@ const CORE: &[&str] = &[
     "window",
     "writer",
 ];
-const ADAPTERS: &[&str] = &["api", "anthropic", "openai", "claude"];
+const ADAPTERS: &[&str] = &["api", "anthropic", "openai"];
 const ROOTS: &[&str] = &["crate", "bilbo_derive"];
 const SUITES: &[&str] = &[
     "tests/acceptance/main.rs",

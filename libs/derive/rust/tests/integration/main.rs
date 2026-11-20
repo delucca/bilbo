@@ -1,8 +1,8 @@
-mod anthropic;
+mod anthropic_api;
+mod anthropic_tool;
 mod child;
-mod claude;
 mod http;
-mod openai;
+mod openai_api;
 mod secret;
 
 use std::fs;

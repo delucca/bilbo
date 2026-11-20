@@ -2,7 +2,7 @@ use std::net::TcpListener;
 use std::path::Path;
 use std::time::Duration;
 
-use bilbo_derive::openai::{self, OpenAi};
+use bilbo_derive::openai::api::{self, OpenAi};
 use bilbo_derive::writer::{Cause, Limits, Outcome, Prompt, Usage, What, Writer};
 use bilbo_provider::{Provider, Reply};
 use bilbo_settings::file::File;
@@ -13,17 +13,17 @@ use crate::Scratch;
 type Reader = fn(&str) -> Option<String>;
 
 const KEY: &str = "sk-test-PLUM-7391";
-const COMPLETED: &str = include_str!("../../fixtures/openai/completed.json");
-const REFUSAL: &str = include_str!("../../fixtures/openai/refusal.json");
-const INCOMPLETE_MAX: &str = include_str!("../../fixtures/openai/incomplete-max.json");
-const INCOMPLETE_FILTER: &str = include_str!("../../fixtures/openai/incomplete-filter.json");
-const FAILED_SERVER: &str = include_str!("../../fixtures/openai/failed-server.json");
-const FAILED_POLICY: &str = include_str!("../../fixtures/openai/failed-policy.json");
-const FUNCTION_CALL: &str = include_str!("../../fixtures/openai/function-call.json");
-const ERROR_401: &str = include_str!("../../fixtures/openai/error-401.json");
-const ERROR_429_SLOW: &str = include_str!("../../fixtures/openai/error-429-slow.json");
-const ERROR_429_CREDIT: &str = include_str!("../../fixtures/openai/error-429-credit.json");
-const ERROR_503: &str = include_str!("../../fixtures/openai/error-503.json");
+const COMPLETED: &str = include_str!("../../fixtures/openai/api/completed.json");
+const REFUSAL: &str = include_str!("../../fixtures/openai/api/refusal.json");
+const INCOMPLETE_MAX: &str = include_str!("../../fixtures/openai/api/incomplete-max.json");
+const INCOMPLETE_FILTER: &str = include_str!("../../fixtures/openai/api/incomplete-filter.json");
+const FAILED_SERVER: &str = include_str!("../../fixtures/openai/api/failed-server.json");
+const FAILED_POLICY: &str = include_str!("../../fixtures/openai/api/failed-policy.json");
+const FUNCTION_CALL: &str = include_str!("../../fixtures/openai/api/function-call.json");
+const ERROR_401: &str = include_str!("../../fixtures/openai/api/error-401.json");
+const ERROR_429_SLOW: &str = include_str!("../../fixtures/openai/api/error-429-slow.json");
+const ERROR_429_CREDIT: &str = include_str!("../../fixtures/openai/api/error-429-credit.json");
+const ERROR_503: &str = include_str!("../../fixtures/openai/api/error-503.json");
 
 const ANSWER_TEXT: &str = "r1-2\nThe user asked about the garden fence.";
 
@@ -57,7 +57,7 @@ fn variable(name: &str) -> Option<String> {
 fn adapter_from(text: &str, scratch: &Scratch, reader: fn(&str) -> Option<String>) -> OpenAi {
     let file = File::parse(Path::new("/c/config.toml"), text.as_bytes()).expect("toml");
     let var = |_: &str| None;
-    let section = openai::section(&Source {
+    let section = api::section(&Source {
         var: &var,
         file: &file,
     })
@@ -744,7 +744,7 @@ fn prepare_reads_the_key_once_and_refuses_what_is_missing() {
     let scratch = Scratch::new("openai");
     let file = File::parse(Path::new("/c/config.toml"), b"").expect("toml");
     let var = |_: &str| None;
-    let section = openai::section(&Source {
+    let section = api::section(&Source {
         var: &var,
         file: &file,
     })
@@ -762,7 +762,7 @@ fn prepare_reads_the_key_once_and_refuses_what_is_missing() {
         Err("derive.openai.model is not set".to_owned())
     );
     let mut no_variable = OpenAi::new(
-        openai::section(&Source {
+        api::section(&Source {
             var: &var,
             file: &File::parse(Path::new("/c/config.toml"), b"derive.openai.model = \"m\"")
                 .expect("toml"),

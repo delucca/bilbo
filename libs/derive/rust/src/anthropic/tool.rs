@@ -675,7 +675,7 @@ mod tests {
     use super::{ABOUT, Section, invocation, read, section, shown, without_tools};
     use crate::writer::{Outcome, Prompt};
 
-    const ANSWER: &str = include_str!("../fixtures/claude/answer.json");
+    const ANSWER: &str = include_str!("../../fixtures/anthropic/tool/answer.json");
 
     fn resolve(text: &str) -> Result<Section, Error> {
         let file = File::parse(Path::new("/c/config.toml"), text.as_bytes()).expect("toml");
