@@ -85,7 +85,7 @@ fn version_prints_bilbo_and_the_build_version() {
 
 #[test]
 fn no_arguments_is_a_usage_error() {
-    let run = bilbo::<&str>(&[], &[]);
+    let run = scratch::Scratch::new("no_arguments").run(&[]);
     assert_eq!(run.code, 2);
     assert_eq!(run.stdout, "");
     assert_eq!(run.stderr, format!("bilbo: missing verb{VERBS}\n{SEE}"));
@@ -104,8 +104,9 @@ fn an_unknown_option_is_a_usage_error() {
 
 #[test]
 fn an_unknown_verb_is_a_usage_error_with_or_without_help() {
+    let scratch = scratch::Scratch::new("unknown_verb");
     for form in [&["frob"][..], &["help", "frob"], &["frob", "--help"]] {
-        let run = bilbo(form, &[]);
+        let run = scratch.run(form);
         assert_eq!(run.code, 2, "{form:?}");
         assert_eq!(run.stdout, "", "{form:?}");
         assert_eq!(
@@ -127,12 +128,11 @@ fn a_pipe_gets_no_escape_byte_whatever_the_environment_says() {
     let help = bilbo(&["--help"], &env);
     assert!(!help.stdout.contains('\x1b'), "{}", help.stdout);
     assert_eq!(help.stdout, bilbo(&["--help"], &[]).stdout);
-    let error = bilbo(&["frob"], &env);
-    assert!(!error.stderr.contains('\x1b'), "{}", error.stderr);
-    assert!(
-        error.stderr.lines().all(|line| line.starts_with("bilbo: ")),
-        "{}",
-        error.stderr
+    let error = scratch::Scratch::new("pipe_error").run_with(&["frob"], &env);
+    assert_eq!(error.code, 2);
+    assert_eq!(
+        error.stderr,
+        format!("bilbo: unknown verb 'frob'{VERBS}\n{SEE}")
     );
 }
 

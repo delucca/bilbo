@@ -1,20 +1,24 @@
 pub mod view;
 
 use std::collections::BTreeSet;
+use std::time::Duration;
 
 use bilbo_entries::read;
 use bilbo_entries::read::refs::{Locator, Ref};
 use bilbo_entries::tag::{self, ChangeError, Request};
 use bilbo_store::labels::{Labels, Tag};
-use bilbo_store::segments::Store;
+use bilbo_store::segments::{Options, Store};
 use clap::Command;
 use clap::builder::NonEmptyStringValueParser;
 
 use crate::console::args::usage;
+use crate::console::closing::Closer;
 use crate::console::env::Env;
-use crate::console::message::{Message, notice_message, sanitize};
-use crate::console::outcome::{Failure, Outcome};
+use crate::console::indexing::Indexing;
+use crate::console::message::{Message, new_tags, not_a_tag, notice_message, sanitize};
+use crate::console::outcome::{Exit, Failure, Outcome};
 use crate::console::settings::Settings;
+use crate::console::view::View;
 
 const SUMMARY: &str = "List the tags, or change the tags of entries";
 const ABOUT: &str = "bilbo tag: list the tags, list the entries of one, or change entries' tags.";
@@ -45,9 +49,9 @@ pub struct Args {
 
 const PAGE: &str = "\
 Output:
-  tag:<name>  <n> entries  <kind> <n>, ...     one row a tag
-  <id>  <kind>  <capture label>  person|model  one row an entry of a tag
-  changed <n>, unchanged <n>                   after --add or --remove
+  tag:<name> <n> entries <kind> <n>, ...  one row a tag, its fields by tabs
+  <id> <kind> <capture> person|model      one row an entry of a tag, by tabs
+  changed <n>, unchanged <n>              after --add or --remove
 
 Exit:
   0  success, also when nothing changed and when no entry carries a tag
@@ -73,61 +77,82 @@ pub fn run(
     args: &Args,
     env: &mut Env,
     settings: &Settings,
+    indexing: &Indexing<'_>,
+    closing: &Closer<'_>,
 ) -> Result<Outcome, Failure> {
     let misuse = |reason: String| usage(root, sanitize(&reason), Some("tag"));
     match form(args, settings.read_matches_listed.value).map_err(misuse)? {
         Form::Tags => {
-            let store = open_read_only(env, settings)?;
+            let store = open_read_only(env, settings, settings.store.options())?;
             let found = store.tags().map_err(|error| Failure::from(&error))?;
-            Ok(listing(view::tags(&found), "no entry carries a tag"))
+            let outcome = Outcome::new(view::tags(&found, &View::PLAIN));
+            let outcome = if found.is_empty() {
+                outcome.with_diagnostics(vec![Message::info("no entry carries a tag")])
+            } else {
+                outcome
+            };
+            Ok(outcome
+                .with_human(move |view| view::tags(&found, view))
+                .on_every_terminal())
         }
         Form::Entries(tag) => {
-            let store = open_read_only(env, settings)?;
+            let store = open_read_only(env, settings, settings.store.options())?;
             let found =
                 tag::carriers(&tag, &store, &store).map_err(|error| Failure::from(&error))?;
             if found.is_empty() {
                 return Err(Failure::Refused(format!("{tag} names no entry")));
             }
-            Ok(Outcome::new(view::entries(&found)))
+            Ok(Outcome::new(view::entries(&found, &View::PLAIN))
+                .with_human(move |view| view::entries(&found, view))
+                .on_every_terminal())
         }
         Form::Change(request) => {
+            let cap = settings.tag_cap.value;
+            let waiting = Options {
+                wait: Duration::MAX,
+                ..settings.store.options()
+            };
+            let probe = open_read_only(env, settings, waiting)?;
+            tag::resolve(&request, &probe)
+                .map_err(|error| change_failure(root, &ChangeError::from(error), cap))?;
+            drop(probe);
             let layout = settings.layout();
             Store::check(&layout)?;
             let notice = &mut env.notice;
             let mut store = Store::open(&layout, settings.store.options(), &mut |said| {
                 notice(&notice_message(&said));
             })?;
-            let cap = settings.tag_cap.value;
-            let output = tag::change(&request, cap, &mut store)
-                .map_err(|error| change_failure(root, &error, cap))?;
-            drop(store);
-            Ok(Outcome::new(view::changed(&output)).with_diagnostics(view::new(&output.new)))
+            let output = match tag::change(&request, cap, &mut store) {
+                Ok(output) => output,
+                Err(error) => {
+                    store.release();
+                    return Err(change_failure(root, &error, cap));
+                }
+            };
+            let mut index = (indexing.index)(store.cache());
+            let closed = closing(store, index.as_mut(), &mut *env.notice);
+            drop(index);
+            let exit = if closed.failed || closed.refused {
+                Exit::Refused
+            } else {
+                Exit::Success
+            };
+            let mut diagnostics = new_tags(&output.new);
+            diagnostics.extend(closed.messages);
+            Ok(Outcome::new(view::changed(&output))
+                .with_diagnostics(diagnostics)
+                .with_exit(exit))
         }
     }
 }
 
-fn listing(text: String, none: &str) -> Outcome {
-    if text.is_empty() {
-        Outcome::new(text).with_diagnostics(vec![Message::info(none)])
-    } else {
-        Outcome::new(text)
-    }
-}
-
-fn open_read_only(env: &mut Env, settings: &Settings) -> Result<Store, Failure> {
+fn open_read_only(env: &mut Env, settings: &Settings, options: Options) -> Result<Store, Failure> {
     let notice = &mut env.notice;
     Ok(Store::open_read_only(
         &settings.layout(),
-        settings.store.options(),
+        options,
         &mut |said| notice(&notice_message(&said)),
     )?)
-}
-
-fn not_a_tag(subject: &str) -> String {
-    format!(
-        "{subject} is not a tag: parts of a to z and digits joined by single hyphens, at most {} bytes",
-        Tag::MAX_BYTES
-    )
 }
 
 fn names(option: &str, texts: &[String]) -> Result<BTreeSet<Tag>, String> {
@@ -193,10 +218,10 @@ fn change_failure(root: &Command, error: &ChangeError, cap: usize) -> Failure {
         ChangeError::Ref(read::Error::Store(error))
         | ChangeError::Tag(tag::Error::Store(error)) => Failure::from(error),
         ChangeError::Ref(error) => Failure::Refused(sanitize(&error.to_string())),
-        ChangeError::Tag(tag::Error::Full(id)) => Failure::Refused(format!(
-            "{id} would carry more than tag.cap tags ({cap}); nothing was changed"
-        )),
-        ChangeError::Tag(tag::Error::Gone(id)) => Failure::Refused(format!("no entry {id}")),
+        ChangeError::Tag(tag::Error::Full(_)) => {
+            Failure::Refused(format!("{error} ({cap}); nothing was changed"))
+        }
+        ChangeError::Tag(tag::Error::Gone(_)) => Failure::Refused(error.to_string()),
     }
 }
 

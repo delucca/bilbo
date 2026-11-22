@@ -57,7 +57,6 @@ pub struct Capture<'a> {
     pub id: Option<Id>,
     /// The entry this one belongs to, such as a subagent's session. Used at first capture only.
     pub id_label: Option<Id>,
-    /// Used at first capture only.
     pub tags: &'a Tags,
     /// What was captured, as it was before its bytes were read.
     pub stamp: Option<Stamp>,

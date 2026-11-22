@@ -422,6 +422,8 @@ fn adopting_a_subagent_keeps_its_capture_label() {
     let alone = Memory::new().file("/t/a.sub.fake", "sub|");
     run(FakeKind::new(), &alone, &mut entries, &request("/t")).expect("the child alone");
     let child = id(1);
+    let held = carried(&[("a", by_person()), ("b", Some(Standing::Removed))]);
+    entries.metas.get_mut(&child).expect("a meta").labels.tags = held.clone();
     let grown = Memory::new()
         .file("/t/a.fake", "main|")
         .file("/t/a.sub.fake", "sub|more|");
@@ -432,7 +434,7 @@ fn adopting_a_subagent_keeps_its_capture_label() {
         StoredLabels {
             capture: CaptureLabel::new("file:/t/a.sub.fake".into()),
             id: Some(main),
-            tags: Tags::default(),
+            tags: held,
         }
     );
 }
@@ -1048,6 +1050,10 @@ fn remember_with_tags_adds_to_an_entry_whose_file_changed() {
         carried(&[("a", by_person()), ("b", by_person())])
     );
     assert_eq!(output.tagged, 1);
+    assert_eq!(
+        output.stored_bytes,
+        entries.seen[1].bytes.len() as u64 + 100 + ADOPTED
+    );
 }
 
 #[test]

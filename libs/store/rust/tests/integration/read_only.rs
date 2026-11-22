@@ -712,9 +712,9 @@ fn a_catalog_whose_hot_journal_restores_another_version_is_rebuilt() {
     let saved = layout.cache.with_file_name("saved-journal");
     {
         let conn = rusqlite::Connection::open(catalog(&layout)).expect("open");
-        conn.execute_batch("PRAGMA synchronous = OFF; PRAGMA user_version = 5;")
-            .expect("version 5");
-        conn.execute_batch("BEGIN; PRAGMA user_version = 6;")
+        conn.execute_batch("PRAGMA synchronous = OFF; PRAGMA user_version = 6;")
+            .expect("version 6");
+        conn.execute_batch("BEGIN; PRAGMA user_version = 7;")
             .expect("begin");
         fs::copy(&journal, &saved).expect("the journal of the open transaction");
         conn.execute_batch("COMMIT;").expect("commit");

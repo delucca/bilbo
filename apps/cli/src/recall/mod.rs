@@ -13,14 +13,13 @@ use bilbo_search::recall::{self, Access, Error, Finished, Request, Scoped, Stand
 use bilbo_search::typo;
 use bilbo_settings::file::File;
 use bilbo_settings::key::{Flag, Source};
-use bilbo_store::labels::Tag;
 use bilbo_store::segments::{Cache, Notice, Store};
 use clap::Command;
 use clap::builder::NonEmptyStringValueParser;
 
 use crate::console::args::usage;
 use crate::console::env::Env;
-use crate::console::message::{Message, group, notice_message, sanitize, unnamed_value};
+use crate::console::message::{Message, group, not_a_tag, notice_message, sanitize, unnamed_value};
 use crate::console::outcome::{Exit, Failure, Outcome};
 use crate::console::reading::Reading;
 use crate::console::settings::Settings;
@@ -73,8 +72,8 @@ Output:
   ... cut               the last hit of a list, cut to fit its room
   <ref>                 bilbo read takes it: the end of the id and the records
   queries.log           in the state folder: each query that reaches the store
---in takes an id, whole or as a hit prints it, or words of a label (bilbo read
-<id> lists labels). A value that starts with - takes =: --in=-home-me-src-shed
+--in takes an id, whole or as a hit prints it, tag:<name>, or words of a label
+(bilbo read lists them). A value starting with - takes =: --in=-home-me-src-shed
 
 Exit:
   0  at least one hit
@@ -114,10 +113,7 @@ pub fn run(
             Err(scope::NoValue::Blank) => format!(
                 "--in '{given}' has no letter or digit; give a word of a label, or an id as a hit prints it"
             ),
-            Err(scope::NoValue::NotATag(_)) => format!(
-                "--in '{given}' is not a tag: parts of a to z and digits joined by single hyphens, at most {} bytes",
-                Tag::MAX_BYTES
-            ),
+            Err(scope::NoValue::NotATag(_)) => not_a_tag(&format!("--in '{given}'")),
         };
         return Err(usage(root, sanitize(&reason), Some("recall")));
     }

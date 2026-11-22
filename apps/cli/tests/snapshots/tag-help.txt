@@ -10,9 +10,9 @@ Options:
       --remove <tag>  Take this tag off each entry named
 
 Output:
-  tag:<name>  <n> entries  <kind> <n>, ...     one row a tag
-  <id>  <kind>  <capture label>  person|model  one row an entry of a tag
-  changed <n>, unchanged <n>                   after --add or --remove
+  tag:<name> <n> entries <kind> <n>, ...  one row a tag, its fields by tabs
+  <id> <kind> <capture> person|model      one row an entry of a tag, by tabs
+  changed <n>, unchanged <n>              after --add or --remove
 
 Exit:
   0  success, also when nothing changed and when no entry carries a tag

@@ -879,9 +879,17 @@ fn remember_with_a_tag_says_tagged_and_new_and_the_entry_carries_the_tag() {
     assert_eq!(sandbox.tags(&file), ["tag:rust"]);
 
     sandbox.write("b.md", "two\n");
-    let more = sandbox.remember_tagged(&["rust"]);
+    let more = sandbox.remember_tagged(&["rust", "garden"]);
     assert_eq!(more.code, 0, "{:?}", more.stderr);
-    assert_eq!(more.stderr, ["bilbo: tagged 1 entries"]);
+    assert_eq!(
+        more.stderr,
+        ["bilbo: tagged 2 entries", "bilbo: tag:garden is new"]
+    );
+
+    sandbox.write("c.md", "three\n");
+    let mixed = sandbox.remember_tagged(&["rust", "garden"]);
+    assert_eq!(mixed.code, 0, "{:?}", mixed.stderr);
+    assert_eq!(mixed.stderr, ["bilbo: tagged 1 entries"]);
 }
 
 #[test]

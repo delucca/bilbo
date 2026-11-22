@@ -1,10 +1,10 @@
 use bilbo_entries::tag::{Carrier, Output};
-use bilbo_store::labels::{By, Tag, Tagged};
+use bilbo_store::labels::{By, Tagged};
 
-use crate::console::message::{Message, line};
+use crate::console::message::line;
 use crate::console::view::View;
 
-pub fn tags(items: &[Tagged]) -> String {
+pub fn tags(items: &[Tagged], view: &View) -> String {
     let mut text = String::new();
     let mut at = 0;
     while at < items.len() {
@@ -16,7 +16,7 @@ pub fn tags(items: &[Tagged]) -> String {
         let entries: u64 = kinds.iter().map(|item| item.entries).sum();
         let by_kind: Vec<String> = kinds
             .iter()
-            .map(|item| format!("{} {}", item.kind, item.entries))
+            .map(|item| format!("{} {}", line(view, &item.kind), item.entries))
             .collect();
         text.push_str(&format!(
             "{tag}\t{entries} entries\t{}\n",
@@ -27,19 +27,23 @@ pub fn tags(items: &[Tagged]) -> String {
     text
 }
 
-pub fn entries(carriers: &[Carrier]) -> String {
+pub fn entries(carriers: &[Carrier], view: &View) -> String {
     carriers
         .iter()
         .map(|carrier| {
-            let capture = carrier.capture.as_ref().map_or_else(
-                || "-".to_owned(),
-                |label| line(&View::PLAIN, label.as_str()),
-            );
+            let capture = carrier
+                .capture
+                .as_ref()
+                .map_or_else(|| "-".to_owned(), |label| line(view, label.as_str()));
             let by = match carrier.by {
                 By::Person => "person",
                 By::Model => "model",
             };
-            format!("{}\t{}\t{capture}\t{by}\n", carrier.id, carrier.kind)
+            format!(
+                "{}\t{}\t{capture}\t{by}\n",
+                carrier.id,
+                line(view, &carrier.kind)
+            )
         })
         .collect()
 }
@@ -51,12 +55,6 @@ pub fn changed(output: &Output) -> String {
     )
 }
 
-pub fn new(tags: &[Tag]) -> Vec<Message> {
-    tags.iter()
-        .map(|tag| Message::info(&format!("{tag} is new")))
-        .collect()
-}
-
 #[cfg(test)]
 mod tests {
     use bilbo_entries::tag::Carrier;
@@ -64,6 +62,7 @@ mod tests {
     use bilbo_store::labels::{By, CaptureLabel, Tag, Tagged};
 
     use super::{entries, tags};
+    use crate::console::view::View;
 
     fn tagged(name: &str, kind: &str, entries: u64) -> Tagged {
         Tagged {
@@ -89,7 +88,7 @@ mod tests {
             tagged("garden", "session", 209),
         ];
         assert_eq!(
-            tags(&items),
+            tags(&items, &View::PLAIN),
             "tag:garden\t213 entries\tmarkdown 4, session 209\n"
         );
     }
@@ -97,10 +96,13 @@ mod tests {
     #[test]
     fn an_entry_of_a_tag_is_four_fields_by_tabs() {
         assert_eq!(
-            entries(&[
-                carrier(Some("file:/n/a.jsonl"), By::Model),
-                carrier(None, By::Person)
-            ]),
+            entries(
+                &[
+                    carrier(Some("file:/n/a.jsonl"), By::Model),
+                    carrier(None, By::Person)
+                ],
+                &View::PLAIN
+            ),
             "01JC5Q3V7XKM4P8R2T6W9YB0DB\tsession\tfile:/n/a.jsonl\tmodel\n\
              01JC5Q3V7XKM4P8R2T6W9YB0DB\tsession\t-\tperson\n"
         );
@@ -108,10 +110,39 @@ mod tests {
 
     #[test]
     fn a_capture_label_with_a_tab_or_a_line_feed_stays_one_field_of_one_row() {
-        let text = entries(&[carrier(Some("file:/n/a\tb\nc"), By::Person)]);
+        let text = entries(
+            &[carrier(Some("file:/n/a\tb\nc"), By::Person)],
+            &View::PLAIN,
+        );
         assert_eq!(text.lines().count(), 1);
         let fields: Vec<&str> = text.trim_end_matches('\n').split('\t').collect();
         assert_eq!(fields.len(), 4);
         assert_eq!(fields[2], "file:/n/a\\tb\\nc");
+    }
+
+    #[test]
+    fn a_kind_is_escaped_in_both_listings_as_read_escapes_it() {
+        let kind = "mark\tdown\nx";
+        let listed = tags(&[tagged("garden", kind, 4)], &View::PLAIN);
+        assert_eq!(listed, "tag:garden\t4 entries\tmark\\tdown\\nx 4\n");
+        let mut one = carrier(Some("file:/n/a"), By::Person);
+        one.kind = kind.to_owned();
+        let row = entries(&[one], &View::PLAIN);
+        assert_eq!(row.lines().count(), 1);
+        assert_eq!(row.trim_end_matches('\n').split('\t').count(), 4);
+        assert_eq!(
+            row.trim_end_matches('\n').split('\t').nth(1),
+            Some("mark\\tdown\\nx")
+        );
+
+        let bidi = "mark\u{202e}down";
+        let shown = tags(&[tagged("garden", bidi, 4)], &View::HUMAN);
+        assert!(!shown.contains('\u{202e}'), "{shown:?}");
+        assert!(shown.contains("mark\\u{202e}down"), "{shown:?}");
+        let mut two = carrier(Some("file:/n/a"), By::Person);
+        two.kind = bidi.to_owned();
+        let shown = entries(&[two], &View::HUMAN);
+        assert!(!shown.contains('\u{202e}'), "{shown:?}");
+        assert_eq!(shown.split('\t').nth(1), Some("mark\\u{202e}down"));
     }
 }

@@ -1018,11 +1018,27 @@ fn the_stored_labels_are_listed_whatever_the_budget() {
     let found: Vec<String> = (0..5).map(|n| format!("/t/{n}")).collect();
     let mut shelf = folders(Some(&path), &found);
     shelf.kept[0].meta.labels.id = Some(id(9));
+    let name = |prefix: &str, n: usize| Tag::new(&format!("{prefix}{n:02}")).expect("a tag");
+    let mut tags = Tags::default();
+    for n in 0..40 {
+        tags.set(name("t", n), Some(Standing::Carried(By::Person)));
+        tags.set(name("r", n), Some(Standing::Removed));
+    }
+    shelf.kept[0].meta.labels.tags = tags;
     let output = outlined(&shelf, 256);
     let about = lines(&output).0.clone().expect("an outline");
-    assert_eq!(about.labels.len(), 2);
+    assert_eq!(about.labels.len(), 42);
     assert!(matches!(about.labels[0], Label::Capture(_)));
     assert_eq!(about.labels[1], Label::Id(id(9)));
+    for n in 0..40 {
+        assert_eq!(
+            about.labels[2 + n],
+            Label::Tag(name("t", n), By::Person),
+            "{n}"
+        );
+    }
+    let removed: Vec<Tag> = (0..40).map(|n| name("r", n)).collect();
+    assert_eq!(about.removed, removed);
     assert_eq!(about.more_labels, 5);
 }
 

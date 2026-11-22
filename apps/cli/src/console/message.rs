@@ -1,4 +1,5 @@
 use bilbo_search::recall::scope::Unnamed;
+use bilbo_store::labels::Tag;
 use bilbo_store::segments::Notice;
 
 use crate::console::theme::{Mark, Style, paint};
@@ -141,6 +142,16 @@ pub fn unnamed_value(name: &str, value: &str, why: &Unnamed, then: &str) -> Mess
             )
         }
     })
+}
+
+pub fn not_a_tag(subject: &str) -> String {
+    format!("{subject} is not a tag: {}", Tag::grammar())
+}
+
+pub fn new_tags(tags: &[Tag]) -> Vec<Message> {
+    tags.iter()
+        .map(|tag| Message::info(&format!("{tag} is new")))
+        .collect()
 }
 
 pub fn sanitize(line: &str) -> String {

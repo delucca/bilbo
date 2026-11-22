@@ -12,7 +12,7 @@ use crate::scratch::{
     sealing,
 };
 
-fn reopen(layout: &bilbo_store::layout::Layout) -> Result<(Store, Vec<Notice>), StoreError> {
+pub fn reopen(layout: &bilbo_store::layout::Layout) -> Result<(Store, Vec<Notice>), StoreError> {
     let mut notices = Vec::new();
     Store::open(layout, sealing(), &mut |notice| {
         notices.push(notice);

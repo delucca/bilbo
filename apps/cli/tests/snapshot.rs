@@ -237,12 +237,15 @@ fn the_tag_listings_in_the_plain_view() {
         kind: kind.to_owned(),
         entries,
     };
-    let list = bilbo_cli::tag::view::tags(&[
-        tagged("carpentry-docs", "markdown", 40),
-        tagged("garden", "markdown", 4),
-        tagged("garden", "session", 209),
-        tagged("rust", "markdown", 117),
-    ]);
+    let list = bilbo_cli::tag::view::tags(
+        &[
+            tagged("carpentry-docs", "markdown", 40),
+            tagged("garden", "markdown", 4),
+            tagged("garden", "session", 209),
+            tagged("rust", "markdown", 117),
+        ],
+        &View::PLAIN,
+    );
     assert_eq!(list, include_str!("snapshots/tag-list.txt"));
     let carrier = |id: &str, kind: &str, capture: Option<&str>, by| Carrier {
         id: Id::parse(id).expect("an id"),
@@ -250,23 +253,26 @@ fn the_tag_listings_in_the_plain_view() {
         capture: capture.and_then(|text| CaptureLabel::new(text.to_owned())),
         by,
     };
-    let entries = bilbo_cli::tag::view::entries(&[
-        carrier(
-            "01JC5Q3V7XKM4P8R2T6W9YB0DB",
-            "session",
-            Some(
-                "file:/home/me/.claude/projects/-home-me-src-garden/8f2b6d4e-1a3c-4e5f-9b7a-2c4d6e8f0a1b.jsonl",
+    let entries = bilbo_cli::tag::view::entries(
+        &[
+            carrier(
+                "01JC5Q3V7XKM4P8R2T6W9YB0DB",
+                "session",
+                Some(
+                    "file:/home/me/.claude/projects/-home-me-src-garden/8f2b6d4e-1a3c-4e5f-9b7a-2c4d6e8f0a1b.jsonl",
+                ),
+                By::Person,
             ),
-            By::Person,
-        ),
-        carrier(
-            "01JC5Q3V7XKM4P8R2T6W9YB0DC",
-            "markdown",
-            Some("file:/home/me/notes/garden-log.md"),
-            By::Model,
-        ),
-        carrier("01JC5Q3V7XKM4P8R2T6W9YB0DD", "markdown", None, By::Person),
-    ]);
+            carrier(
+                "01JC5Q3V7XKM4P8R2T6W9YB0DC",
+                "markdown",
+                Some("file:/home/me/notes/garden-log.md"),
+                By::Model,
+            ),
+            carrier("01JC5Q3V7XKM4P8R2T6W9YB0DD", "markdown", None, By::Person),
+        ],
+        &View::PLAIN,
+    );
     assert_eq!(entries, include_str!("snapshots/tag-entries.txt"));
 }
 

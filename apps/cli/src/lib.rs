@@ -420,7 +420,32 @@ pub fn run_tuned(
                     let readers = readers(&settings)?;
                     read::run(root, &args, env, &settings, &readers)
                 }
-                Verb::Tag(args) => tag::run(root, &args, env, &settings),
+                Verb::Tag(args) => {
+                    let readers = readers(&settings)?;
+                    let rendering = rendering(&settings)?;
+                    let kinds = kinds(&settings)?;
+                    let disk = |cache: &std::path::Path| index(cache, &settings.search);
+                    let indexing =
+                        tune(indexing(&settings, &readers, &rendering, &tokenizer, &disk));
+                    tag::run(
+                        root,
+                        &args,
+                        env,
+                        &settings,
+                        &indexing,
+                        &|store, index, notice| {
+                            remember::follows::close(
+                                store,
+                                index,
+                                &settings.follow.value,
+                                &kinds,
+                                &indexing,
+                                notice,
+                                remember::follows::Progress::default(),
+                            )
+                        },
+                    )
+                }
                 Verb::Reindex(args) => {
                     let readers = readers(&settings)?;
                     let rendering = rendering(&settings)?;

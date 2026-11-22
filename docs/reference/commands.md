@@ -139,7 +139,11 @@ A config file that is a symbolic link, or that this user cannot write (read-only
 
 ### Tags
 
-`--tag <tag>` declares a tag for every entry the run keeps under the target: a new entry is kept with it, and an entry kept before gets it added, whether or not its file changed. A run never takes a tag away. A tag is parts of the letters `a` to `z` and digits joined by single hyphens, at most 64 bytes: `rust`, `carpentry-docs`. A tag an entry does not carry yet is refused when it would leave the entry with more than `tag.cap` tags, 32 unless set: the file is refused, as any refused file is, before anything of it is kept, and the files kept before it stay kept. A tag the entry already carries is never refused, whatever the number of its tags. `--tag` needs a target and does not stand with `--follow`: a follow keeps no tag. Standard output does not change. With `--tag`, stderr says `tagged <n> entries`, the entries whose tags the run changed. A tag no entry carried before the run is said too: `tag:<name> is new`.
+`--tag <tag>` declares a tag for every entry the run keeps under the target: a new entry is kept with it, and an entry kept before gets it added, whether or not its file changed. A run never takes a tag away. A tag is parts of the letters `a` to `z` and digits joined by single hyphens, at most 64 bytes: `rust`, `carpentry-docs`. A tag an entry does not carry yet is refused when it would leave the entry with more than `tag.cap` tags, 32 unless set: the file is refused, as any refused file is, before anything of it is kept, and the files kept before it stay kept. A tag the entry already carries is never refused, whatever the number of its tags. `--tag` needs a target and does not stand with `--follow`: a follow keeps no tag. Standard output does not change. With `--tag`, stderr says `tagged <n> entries`, the entries whose tags the run changed, when there is one or more. A tag no entry carried before the run is said too: `tag:<name> is new`.
+
+```text
+bilbo remember ~/library/rust --tag rust
+```
 
 ### The index
 
@@ -151,7 +155,7 @@ An index kept current by `remember` holds the same documents as one `reindex` bu
 
 ### Sealing
 
-New records go to `open.seg` in the state folder. A run seals `open.seg` into a segment of the store when it ends, if `open.seg` holds frames and has reached `store.seal_at` or its oldest frame is `store.seal_after` old (60 minutes by default); during a run, `store.seal_at` alone seals. `open.since` in the state folder records when `open.seg` got its oldest frame. A bare run opens the store and seals what is due even when no follow claims a file, so the timer's pass seals by age and rebuilds a lost catalog; a run whose target claims nothing does not open the store. See [Configuration](configuration.md#keys).
+New records go to `open.seg` in the state folder. A run seals `open.seg` into a segment of the store when it ends, if `open.seg` holds frames and has reached `store.seal_at` or its oldest frame is `store.seal_after` old (60 minutes by default); during a run, `store.seal_at` alone seals. The first run that writes a store whose `open.seg` an earlier bilbo wrote (segment format 1) seals that `open.seg` at once if it holds frames, whatever its size or age, and writes format 2 from then on. `open.since` in the state folder records when `open.seg` got its oldest frame. A bare run opens the store and seals what is due even when no follow claims a file, so the timer's pass seals by age and rebuilds a lost catalog; a run whose target claims nothing does not open the store. See [Configuration](configuration.md#keys).
 
 ### Two runs at once
 
@@ -282,12 +286,12 @@ A passed-over hit uses no budget, and the next one is tried. stderr says how man
 With no `--in` everything is searched: there is no project filter and nothing is read from where the command runs. `--in <value>` keeps the search to the entries its value names; the filter is applied inside the ranker, before the candidates are cut, so a small collection still fills its list. A value is one of:
 
 - an entry id, whole or as a hit prints it (its last 10 characters, in upper case), with or without `bilbo:` and a locator, which is ignored;
-- a tag, written `tag:<name>` as `bilbo tag` and `bilbo read` print it: every entry that carries exactly that tag. `--in tag:carpentry` names no entry tagged `carpentry-docs`, and no session that worked in a folder named `carpentry`. What follows `tag:` must be a tag's name, or the run ends with a usage error, exit 2;
+- a tag, written `tag:<name>` as `bilbo tag` and `bilbo read` print it: every entry that carries exactly that tag. `--in tag:carpentry` does not name an entry for being tagged `carpentry-docs`, nor a session for having worked in a folder named `carpentry`: only the tag `carpentry` does, on the entry or on one it belongs to. What follows `tag:` must be a tag's name, or the run ends with a usage error, exit 2;
 - words of a label: every entry with a label that holds those words next to each other and in order. Words are folded as a query's are (accents are dropped), cut at anything that is not a letter or a digit, lowercased and stemmed, so `--in reuniao` and `--in reunião` both name an entry labelled `/home/me/reunião`, `--in bilbo` names an entry labelled `/home/me/src/bilbos`, and `--in home-me-src-shed` names one labelled `/home/me/src/shed`. A session is in the scope of every folder its records name, so `--in /home/me/src/shed` keeps the sessions that worked there. A label is found by its first 64 words, and a value of more than 64 words names no entry. `bilbo read <id>`, a ref without `#r`, lists an entry's labels. A tag is a label too: `--in rust` names the entries tagged `rust` or `rust-async` with the entries whose other labels hold the word.
 
 A value with a lower-case letter is never an id, so a word can always be given as one. A value that looks like an id (such as the word `REFERENCES`, which has the letters of a short id) and that no entry's id ends with is read as words. A value of ten digits that an entry's id ends with is that id. A short id that several entries end with names none of them: stderr lists them, and the value is not read as words.
 
-A value is read as a tag first, then as an id, then as words. A tag's name can be 26 digits, which also spell an id: `--in tag:<digits>` names the tag and the bare digits name the entry.
+A value is read as a tag first, then as an id, then as words. A tag's name can be 26 digits, which can also be an entry's id: `--in tag:<digits>` names the tag, and the bare digits name the entry with that id when the store holds one, and are read as words otherwise.
 
 An entry that belongs to a kept entry through an id label comes with it, however deep: `--in <a session's id>` keeps the session and its subagents. Several values add up; `--kind` narrows the result. A project's Markdown files are not in its scope unless their folder is named too: `--in bilbo --in notes`. An entry's notes come with it.
 
@@ -471,9 +475,9 @@ With no tag in the store it prints nothing, says `no entry carries a tag` on std
 
 A `<ref>` is what `read` takes for an entry, with no `#` part: a tag is on an entry, not on records. Every ref is resolved, and every entry checked, before anything is written; an entry named by two refs is one entry. A ref gets the answer `read` gives it, in `read`'s words, and nothing is written: one that names no entry ends the run with exit 1; one that names several entries, or that does not parse, is a usage error, exit 2. Each entry then carries the tags it had, with those of `--add` and without those of `--remove`. Adding a tag an entry does not carry yet, when that would leave it with more than `tag.cap` tags, 32 unless set, ends the run with exit 1 and nothing written. A tag the entry already carries can always be made yours, whatever the number of its tags.
 
-`--add` makes a tag yours, whoever declared it. `--remove` takes a tag off an entry and keeps its name with the entry: `bilbo derive` never declares a name you removed from an entry, until you `--add` it there again. Removing a tag the entry does not carry changes nothing. `bilbo read` shows both, the tags and the removed names.
+`--add` makes a tag yours, whoever declared it. `--remove` takes a tag off an entry and keeps its name with the entry: `bilbo derive` never declares a name you removed from an entry, until you declare it there again, with `--add` or with `bilbo remember --tag`. Removing a tag the entry does not carry changes nothing. `bilbo read` shows both, the tags and the removed names.
 
-Standard output, one line: `changed <n>, unchanged <n>`. An entry is changed when anything of its tags was written, so an `--add` that makes a model's tag yours counts. A tag no entry carried before the run is said on stderr, `tag:<name> is new`: a typo makes a tag. Changing tags writes the store, so it waits for another bilbo that writes it, as `remember` with a target does. It makes no index again: `recall --in tag:<name>` sees the change at once.
+Standard output, one line: `changed <n>, unchanged <n>`. An entry is changed when anything of its tags was written, so an `--add` that makes a model's tag yours counts. A tag no entry carried before the run is said on stderr, `tag:<name> is new`: a typo makes a tag. Changing tags writes the store, so it waits for another bilbo that writes it, as `remember` with a target does, and it closes as `remember` does: it serves a request another bilbo left for one more pass over the follows ([Two runs at once](#two-runs-at-once)), with `remember`'s lines on stderr, and seals when a seal is due. The change itself makes no index again: `recall --in tag:<name>` sees it at once.
 
 `derive.in` and `derive.not_in` are read when a `derive` run plans. A tag you add or remove while a run is under way counts from the next run: to keep an entry from a provider, tag it before the run that would send it.
 
@@ -484,7 +488,7 @@ The store only grows: a tag that was removed is no longer the entry's, and the f
 | Code | Meaning |
 |---|---|
 | 0 | success, also when nothing changed and when the store has no tag |
-| 1 | a ref that names no entry, a tag no entry carries, a new tag that would leave an entry with more than `tag.cap` tags, a store failure |
+| 1 | a ref that names no entry, a tag no entry carries, a new tag that would leave an entry with more than `tag.cap` tags, a store failure, or a pass over the follows run again for another bilbo failed or refused a file |
 | 2 | usage or config error: refs with neither `--add` nor `--remove`, either of them with no ref, a name that is no tag, a tag both added and removed, a ref with a `#` part, a ref that does not parse, a session id or a short id that names several entries, `tag:<name>` beside another argument |
 
 ## reindex

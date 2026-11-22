@@ -1163,6 +1163,44 @@ fn read_prints_a_persons_tag_a_models_tag_and_a_removed_name_and_a_range_prints_
 }
 
 #[test]
+fn read_prints_every_tag_and_every_removed_name_at_the_smallest_budget_whatever_the_cap() {
+    let scratch = Scratch::remembered("read_many_tags");
+    let id = Id::parse(SECTIONS).expect("an id");
+    let name = |n: usize| Tag::new(&format!("t{n:03}")).expect("a tag");
+    let mut store = Store::open(
+        &scratch.bilbo.settings().layout(),
+        Options::default(),
+        &mut |_| {},
+    )
+    .expect("open the store");
+    let all: std::collections::BTreeSet<Tag> = (0..105).map(name).collect();
+    let first: std::collections::BTreeSet<Tag> = (0..40).map(name).collect();
+    let none = std::collections::BTreeSet::new();
+    for (add, remove) in [(&all, &none), (&none, &first)] {
+        tag::declare(id, &Tagging::Person { add, remove }, 200, &mut store).expect("declare");
+    }
+    drop(store);
+    fs::remove_file(scratch.dir.join("cache/bilbo/catalog.sqlite")).expect("remove the catalog");
+    fs::write(scratch.dir.join("config/config.toml"), "tag.cap = 1\n").expect("a config");
+
+    let outline = scratch.bilbo.run(&["read", SECTIONS, "--budget", "256"]);
+
+    assert_eq!(outline.code, 0, "{:?}", outline.stderr);
+    let rows = |prefix: &str| -> Vec<String> {
+        outline
+            .stdout
+            .lines()
+            .filter(|line| line.starts_with(prefix))
+            .map(str::to_owned)
+            .collect()
+    };
+    let carried: Vec<String> = (40..105).map(|n| format!("label: {}", name(n))).collect();
+    let removed: Vec<String> = (0..40).map(|n| format!("removed: {}", name(n))).collect();
+    assert_eq!(rows("label: tag:"), carried);
+    assert_eq!(rows("removed: tag:"), removed);
+}
+
+#[test]
 fn a_note_reads_back_by_heading_and_a_range_inside_a_section_prints_its_lines() {
     let scratch = Scratch::remembered("read_note");
     let outline = scratch.bilbo.run(&["read", SECTIONS]);

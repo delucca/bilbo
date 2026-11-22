@@ -6,12 +6,13 @@ use bilbo_store::labels::{By, Labels, Standing, Tag, Tags};
 use bilbo_store::layout::Layout;
 use bilbo_store::segments::{Notice, Options, Step, Store};
 
-use crate::frames::{Summary, frames, spans};
+use crate::frames::{frames, spans};
+use crate::recovery::reopen;
 use crate::scratch::{
     Scratch, capture_label, catalog, id_of, keep, keep_tagged, open, open_seg, read_records,
     sealed, sealing,
 };
-use crate::seal::stopping_at;
+use crate::seal::{all_frames, stopping_at};
 
 const HEADER_1: [u8; 12] = *b"BILBOSEG\x01\0\0\0";
 const HEADER_2: [u8; 12] = *b"BILBOSEG\x02\0\0\0";
@@ -20,20 +21,6 @@ fn set_format(path: &Path, format: u32) {
     let mut bytes = fs::read(path).expect("read");
     bytes[8..12].copy_from_slice(&format.to_le_bytes());
     fs::write(path, bytes).expect("write");
-}
-
-fn all_frames(layout: &Layout) -> Vec<Summary> {
-    let mut found = Vec::new();
-    for segment in sealed(layout) {
-        found.extend(frames(&segment));
-    }
-    found.extend(frames(&open_seg(layout)));
-    found
-}
-
-fn reopen(layout: &Layout) -> Result<(Store, Vec<Notice>), StoreError> {
-    let mut notices = Vec::new();
-    Store::open(layout, sealing(), &mut |notice| notices.push(notice)).map(|store| (store, notices))
 }
 
 fn three(layout: &Layout) -> Vec<bilbo_store::id::Id> {
@@ -259,6 +246,69 @@ fn a_tag_under_a_format_1_header_is_damage_in_each_walk() {
     set_format(&open_seg(&layout), 1);
     fs::copy(&saved, catalog(&layout)).expect("put the catalog back");
     assert_tag_damage(&layout, &open_seg(&layout));
+}
+
+fn assert_untouched_refusal(layout: &Layout) {
+    let path = open_seg(layout);
+    let before = fs::read(&path).expect("read");
+    assert_tag_damage(layout, &path);
+    assert!(sealed(layout).is_empty(), "nothing is sealed");
+    assert_eq!(
+        fs::read(&path).expect("read"),
+        before,
+        "open.seg is as it was"
+    );
+}
+
+#[test]
+fn a_tag_under_a_format_1_header_is_damage_though_the_catalog_holds_its_frame() {
+    let scratch = Scratch::new("tag_format_1_kept_catalog");
+    let layout = scratch.layout();
+    tagged_entry(&layout, false);
+    set_format(&open_seg(&layout), 1);
+    assert_untouched_refusal(&layout);
+
+    let scratch = Scratch::new("tag_format_1_behind_catalog");
+    let layout = scratch.layout();
+    tagged_entry(&layout, false);
+    let saved = layout.cache.with_file_name("saved-catalog");
+    fs::copy(catalog(&layout), &saved).expect("copy the catalog");
+    let mut store = open(&layout);
+    keep(&mut store, "b.md", b"two\n");
+    drop(store);
+    fs::copy(&saved, catalog(&layout)).expect("put the catalog back");
+    set_format(&open_seg(&layout), 1);
+    assert_untouched_refusal(&layout);
+}
+
+#[test]
+fn a_reader_takes_no_kept_catalog_over_an_older_open_segment_that_holds_frames() {
+    let scratch = Scratch::new("tag_format_1_reader");
+    let layout = scratch.layout();
+    let id = tagged_entry(&layout, false);
+    set_format(&open_seg(&layout), 1);
+    let path = open_seg(&layout);
+    let offset = spans(&path)[0].offset;
+    match Store::open_read_only(&layout, sealing(), &mut |_| {}) {
+        Err(StoreError::Damaged {
+            path: at,
+            offset: found,
+            what,
+        }) => {
+            assert_eq!(at, path);
+            assert_eq!(found, offset as u64);
+            assert_eq!(what, "a tag stands in a format 1 segment");
+        }
+        Ok(_) => panic!("must be refused"),
+        Err(other) => panic!("expected Damaged, got {other}"),
+    }
+    set_format(&path, 2);
+    let store = Store::open_read_only(&layout, sealing(), &mut |_| {}).expect("read-only");
+    let meta = store.meta(id).expect("meta").expect("a meta");
+    assert_eq!(
+        meta.labels.tags.standing(&Tag::new("a").expect("tag")),
+        Some(Standing::Carried(By::Person))
+    );
 }
 
 #[test]

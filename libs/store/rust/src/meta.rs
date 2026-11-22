@@ -65,15 +65,28 @@ pub fn encode(meta: &Meta) -> Option<Vec<u8>> {
         field(&mut out, PARENT, &label.to_bytes())?;
     }
     for (tag, standing) in meta.labels.tags.all() {
-        let mut value = vec![match standing {
-            Standing::Carried(By::Person) => 1,
-            Standing::Carried(By::Model) => 2,
-            Standing::Removed => 3,
-        }];
+        let mut value = vec![number(standing)];
         value.extend_from_slice(tag.as_str().as_bytes());
         field(&mut out, TAGS, &value)?;
     }
     Some(out)
+}
+
+pub(crate) fn number(standing: Standing) -> u8 {
+    match standing {
+        Standing::Carried(By::Person) => 1,
+        Standing::Carried(By::Model) => 2,
+        Standing::Removed => 3,
+    }
+}
+
+pub(crate) fn standing_of(number: u8) -> Option<Standing> {
+    match number {
+        1 => Some(Standing::Carried(By::Person)),
+        2 => Some(Standing::Carried(By::Model)),
+        3 => Some(Standing::Removed),
+        _ => None,
+    }
 }
 
 fn fields(bytes: &[u8]) -> Result<Vec<(u8, &[u8])>, String> {
@@ -141,16 +154,11 @@ pub fn decode(entry: Id, bytes: &[u8], format: u32) -> Result<Meta, String> {
         if format <= frame::OLDEST {
             return Err("a tag stands in a format 1 segment".into());
         }
-        let Some((&standing, name)) = value.split_first() else {
+        let Some((&number, name)) = value.split_first() else {
             return Err("a tag field is empty".into());
         };
-        let standing = match standing {
-            1 => Standing::Carried(By::Person),
-            2 => Standing::Carried(By::Model),
-            3 => Standing::Removed,
-            other => {
-                return Err(format!("a tag's standing is {other}, not 1, 2 or 3"));
-            }
+        let Some(standing) = standing_of(number) else {
+            return Err(format!("a tag's standing is {number}, not 1, 2 or 3"));
         };
         let tag = std::str::from_utf8(name)
             .ok()
@@ -334,7 +342,7 @@ mod tests {
         tags.set(Tag::new("a").unwrap(), Some(Standing::Carried(By::Person)));
         tags.set(Tag::new("b").unwrap(), Some(Standing::Carried(By::Model)));
         tags.set(Tag::new("c").unwrap(), Some(Standing::Removed));
-        let mut meta = meta(None, None);
+        let mut meta = meta(None, Some(Id::from_bytes([9; 16])));
         meta.labels.tags = tags;
         meta
     }
@@ -351,12 +359,17 @@ mod tests {
     fn a_meta_round_trips_with_each_standing_of_a_tag() {
         let meta = tagged();
         let bytes = encode(&meta).expect("encode");
+        let mut untagged = meta.clone();
+        untagged.labels.tags = Tags::default();
         assert_eq!(decode(id(), &bytes, 2), Ok(meta));
-        let plain = encode(&self::meta(None, None)).expect("encode");
-        let tail = &bytes[plain.len()..];
-        let standings: Vec<u8> = [0usize, 7, 14].iter().map(|at| tail[at + 5]).collect();
-        assert_eq!(standings, vec![1, 2, 3]);
-        assert_eq!(tail.len(), 3 * 7);
+        let plain = encode(&untagged).expect("encode");
+        assert_eq!(bytes[..plain.len()], plain[..]);
+        assert_eq!(
+            bytes[plain.len()..],
+            [
+                6, 2, 0, 0, 0, 1, b'a', 6, 2, 0, 0, 0, 2, b'b', 6, 2, 0, 0, 0, 3, b'c'
+            ]
+        );
     }
 
     #[test]

@@ -1,4 +1,6 @@
 use std::collections::BTreeSet;
+use std::error::Error as StdError;
+use std::fmt;
 
 use bilbo_settings::key::{About as KeyAbout, Default, Key};
 use bilbo_store::entries::{Entries, Meta, StoreError};
@@ -47,6 +49,14 @@ pub struct Applied {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Full;
+
+impl fmt::Display for Full {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("more tags than the cap")
+    }
+}
+
+impl StdError for Full {}
 
 pub fn apply(tags: &Tags, change: &Change<'_>, cap: usize) -> Result<Applied, Full> {
     let mut applied = Applied {
@@ -126,6 +136,25 @@ pub enum Error {
     Store(StoreError),
 }
 
+impl fmt::Display for Error {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Full(id) => write!(f, "{id} would carry more than tag.cap tags"),
+            Self::Gone(id) => write!(f, "no entry {id}"),
+            Self::Store(error) => write!(f, "{error}"),
+        }
+    }
+}
+
+impl StdError for Error {
+    fn source(&self) -> Option<&(dyn StdError + 'static)> {
+        match self {
+            Self::Store(error) => Some(error),
+            Self::Full(_) | Self::Gone(_) => None,
+        }
+    }
+}
+
 impl From<StoreError> for Error {
     fn from(error: StoreError) -> Self {
         Self::Store(error)
@@ -183,45 +212,67 @@ pub enum ChangeError {
     Tag(Error),
 }
 
+impl fmt::Display for ChangeError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Ref(error) => write!(f, "{error}"),
+            Self::Tag(error) => write!(f, "{error}"),
+        }
+    }
+}
+
+impl StdError for ChangeError {
+    fn source(&self) -> Option<&(dyn StdError + 'static)> {
+        match self {
+            Self::Ref(error) => Some(error),
+            Self::Tag(error) => Some(error),
+        }
+    }
+}
+
+impl From<read::Error> for ChangeError {
+    fn from(error: read::Error) -> Self {
+        Self::Ref(error)
+    }
+}
+
+impl From<Error> for ChangeError {
+    fn from(error: Error) -> Self {
+        Self::Tag(error)
+    }
+}
+
+pub fn resolve(request: &Request, entries: &dyn Entries) -> Result<Vec<(Id, Meta)>, read::Error> {
+    let mut found: Vec<(Id, Meta)> = Vec::new();
+    for target in &request.targets {
+        let id = read::resolve(target, request.listed, entries)?;
+        let meta = entries
+            .meta(id)?
+            .ok_or(read::Error::NoEntry(Target::Entry(id)))?;
+        if found.iter().all(|(held, _)| *held != id) {
+            found.push((id, meta));
+        }
+    }
+    Ok(found)
+}
+
 pub fn change<S: Entries + Labels>(
     request: &Request,
     cap: usize,
     store: &mut S,
 ) -> Result<Output, ChangeError> {
-    let mut ids: Vec<Id> = Vec::new();
-    for target in &request.targets {
-        let id = read::resolve(target, request.listed, &*store).map_err(ChangeError::Ref)?;
-        if store
-            .meta(id)
-            .map_err(|error| ChangeError::Ref(error.into()))?
-            .is_none()
-        {
-            return Err(ChangeError::Ref(read::Error::NoEntry(Target::Entry(id))));
-        }
-        if !ids.contains(&id) {
-            ids.push(id);
-        }
-    }
+    let resolved = resolve(request, &*store)?;
     let change = Change::Person {
         add: &request.add,
         remove: &request.remove,
     };
-    for id in &ids {
-        let meta = store
-            .meta(*id)
-            .map_err(|error| ChangeError::Tag(Error::Store(error)))?
-            .ok_or(ChangeError::Tag(Error::Gone(*id)))?;
-        apply(&meta.labels.tags, &change, cap)
-            .map_err(|Full| ChangeError::Tag(Error::Full(*id)))?;
+    for (id, meta) in &resolved {
+        apply(&meta.labels.tags, &change, cap).map_err(|Full| Error::Full(*id))?;
     }
-    let new =
-        unused(&request.add, &*store).map_err(|error| ChangeError::Tag(Error::Store(error)))?;
+    let new = unused(&request.add, &*store).map_err(Error::Store)?;
     let (mut changed, mut unchanged) = (0, 0);
-    for id in ids {
-        if declare(id, &change, cap, store)
-            .map_err(ChangeError::Tag)?
-            .wrote
-        {
+    for (id, _) in resolved {
+        if declare(id, &change, cap, store)?.wrote {
             changed += 1;
         } else {
             unchanged += 1;
@@ -537,6 +588,26 @@ mod tests {
                 (by_person.clone(), Vec::new(), 1)
             );
         }
+        let crowded = tags(&[("a", person()), ("b", removed()), ("c", removed())]);
+        let room = apply_at(&crowded, &["d"], false, 2);
+        assert_eq!(
+            (room.tags, room.added, room.left_off),
+            (
+                tags(&[
+                    ("a", person()),
+                    ("b", removed()),
+                    ("c", removed()),
+                    ("d", model())
+                ]),
+                vec![tag("d")],
+                0
+            )
+        );
+        let order = apply_at(&Tags::default(), &["c", "b"], false, 1);
+        assert_eq!(
+            (order.tags, order.added, order.left_off),
+            (tags(&[("c", model())]), vec![tag("c")], 1)
+        );
         every_model_case(|before, _, _, cap, applied| {
             let carried = |tags: &Tags| tags.carried().count();
             assert!(carried(&applied.tags) <= cap.max(carried(before)));
@@ -574,6 +645,50 @@ mod tests {
         let mixed = tags(&[("a", model()), ("b", person()), ("c", person())]);
         let promoted = at(&mixed, &["a"], &[], 1).expect("a promotion over the cap");
         assert_eq!(promoted.tags, over);
+        let crowded = tags(&[("a", person()), ("b", removed()), ("c", removed())]);
+        let room = at(&crowded, &["d"], &[], 2).expect("removed names are not carried");
+        assert_eq!(
+            room.tags
+                .carried()
+                .map(|(name, _)| name.as_str())
+                .collect::<Vec<_>>(),
+            ["a", "d"]
+        );
+        let swapped = at(&full, &["b"], &["a"], 1).expect("the removal comes first");
+        assert_eq!(swapped.tags, tags(&[("a", removed()), ("b", person())]));
+        let again = at(&swapped.tags, &["b"], &["a"], 1).expect("the same change again");
+        assert_eq!(
+            (again.tags, again.added, again.taken),
+            (swapped.tags, Vec::new(), Vec::new())
+        );
+    }
+
+    #[test]
+    fn the_errors_say_what_a_person_reads() {
+        use std::error::Error as _;
+
+        use bilbo_store::id::Id;
+
+        use super::{ChangeError, Error};
+        use crate::read;
+        use crate::read::refs::Target;
+
+        let id = Id::parse("01JC5Q3V7XKM4P8R2T6W9YB0DE").expect("an id");
+        assert_eq!(
+            Error::Full(id).to_string(),
+            format!("{id} would carry more than tag.cap tags")
+        );
+        assert_eq!(Error::Gone(id).to_string(), format!("no entry {id}"));
+        assert_eq!(
+            ChangeError::Tag(Error::Gone(id)).to_string(),
+            format!("no entry {id}")
+        );
+        assert_eq!(
+            ChangeError::Ref(read::Error::NoEntry(Target::Entry(id))).to_string(),
+            format!("no entry {id}")
+        );
+        assert_eq!(Full.to_string(), "more tags than the cap");
+        assert!(ChangeError::Tag(Error::Gone(id)).source().is_some());
     }
 
     #[test]

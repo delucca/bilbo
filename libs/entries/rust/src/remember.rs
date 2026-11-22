@@ -244,7 +244,7 @@ fn racy(modified: SystemTime, taken: SystemTime) -> bool {
     !taken.duration_since(modified).is_ok_and(|age| age >= RACY)
 }
 
-/// `Kept` carries the bytes an id label repair added.
+/// `Kept` carries the bytes an id label repair and a declaration added, then whether tags were declared.
 enum Done {
     Kept(Captured, u64, bool),
     Refused(String),

@@ -895,11 +895,19 @@ mod tests {
                 continue;
             }
             let variables = code(cells[0]);
-            let effect = effect.replace(
-                " `recall.question_words` and `recall.languages` have no variable.",
-                "",
-            );
-            let keys_named = code(&effect);
+            let effect = if variables
+                .iter()
+                .any(|name| name.starts_with("BILBO_RECALL_"))
+            {
+                effect
+                    .strip_suffix(
+                        " `recall.question_words` and `recall.languages` have no variable.",
+                    )
+                    .unwrap_or(effect)
+            } else {
+                effect
+            };
+            let keys_named = code(effect);
             assert_eq!(variables.len(), keys_named.len(), "{line}");
             for (variable, key) in variables.iter().zip(&keys_named) {
                 let about = all

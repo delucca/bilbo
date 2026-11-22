@@ -16,8 +16,8 @@ bilbo recall: search what bilbo keeps and print the best chunks and notes.
   [1m... cut[22m               the last hit of a list, cut to fit its room
   [2m<ref>[22m                 bilbo read takes it: the end of the id and the records
   [1mqueries.log[22m           in the state folder: each query that reaches the store
-[2m--in takes an id, whole or as a hit prints it, or words of a label (bilbo read[22m
-[2m<id> lists labels). A value that starts with - takes =: --in=-home-me-src-shed[22m
+[2m--in takes an id, whole or as a hit prints it, tag:<name>, or words of a label[22m
+[2m(bilbo read lists them). A value starting with - takes =: --in=-home-me-src-shed[22m
 
 [1mExit:[22m
   [1m0[22m  at least one hit

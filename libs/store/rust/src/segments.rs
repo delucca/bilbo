@@ -512,12 +512,30 @@ fn kept_catalog(layout: &Layout, cache: &Path, sealed: &[(String, u64)]) -> Opti
         return None;
     }
     let open_len = fs::metadata(open_seg(layout)).ok()?.len();
+    if open_len > frame::SEGMENT_HEADER as u64 {
+        let mut head = [0u8; frame::SEGMENT_HEADER];
+        File::open(open_seg(layout))
+            .ok()?
+            .read_exact_at(&mut head, 0)
+            .ok()?;
+        if holds_older_frames(&head) {
+            return None;
+        }
+    }
     Catalog::open_unchanged(
         &cache.join("catalog.sqlite"),
         &binding(layout).ok()?,
         sealed,
         open_len,
     )
+}
+
+fn holds_older_frames(open: &[u8]) -> bool {
+    open.len() >= frame::SEGMENT_HEADER
+        && matches!(
+            frame::check_segment_header(open),
+            Ok(frame::HeaderState::Whole(format)) if format < frame::FORMAT
+        )
 }
 
 fn judge_cache(configured: &Layout, layout: &Layout, locked: bool) -> Cache {
@@ -744,6 +762,12 @@ fn load_catalog(
         catalog.restamp(&stamped)?;
         return Ok(catalog);
     }
+    let fresh = if open.len() > frame::SEGMENT_HEADER && holds_older_frames(&open) {
+        drop(fresh);
+        Fresh::Rebuild
+    } else {
+        fresh
+    };
     match fresh {
         Fresh::Current(catalog) => Ok(catalog),
         Fresh::CatchUp(mut catalog, from) => {

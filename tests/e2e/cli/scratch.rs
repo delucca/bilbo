@@ -7,6 +7,14 @@ use super::{Run, bilbo};
 
 static COUNTER: AtomicU64 = AtomicU64::new(0);
 
+struct Probe(PathBuf);
+
+impl Drop for Probe {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.0);
+    }
+}
+
 pub(crate) fn closed(text: &str) -> String {
     let dir = base()
         .canonicalize()
@@ -16,6 +24,8 @@ pub(crate) fn closed(text: &str) -> String {
             std::process::id(),
             COUNTER.fetch_add(1, Ordering::Relaxed)
         ));
+    let probe = Probe(dir);
+    let dir = &probe.0;
     fs::create_dir_all(dir.join("home")).expect("home");
     fs::write(dir.join("config.toml"), text).expect("a config file");
     let path = |name: &str| dir.join(name).to_str().expect("UTF-8").to_owned();

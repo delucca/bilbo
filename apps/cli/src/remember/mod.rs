@@ -21,7 +21,7 @@ use crate::console::args::usage;
 use crate::console::closing::Closing;
 use crate::console::env::Env;
 use crate::console::indexing::Indexing;
-use crate::console::message::{Message, notice_message, sanitize};
+use crate::console::message::{Message, not_a_tag, notice_message, sanitize};
 use crate::console::outcome::{Exit, Failure, Outcome};
 use crate::console::settings::Settings;
 use disk::Disk;
@@ -108,10 +108,7 @@ pub fn run(
         let Some(name) = Tag::new(text) else {
             return Err(usage(
                 root,
-                sanitize(&format!(
-                    "--tag '{text}' is not a tag: parts of a to z and digits joined by single hyphens, at most {} bytes",
-                    Tag::MAX_BYTES
-                )),
+                sanitize(&not_a_tag(&format!("--tag '{text}'"))),
                 Some("remember"),
             ));
         };

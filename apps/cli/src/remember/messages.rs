@@ -1,7 +1,7 @@
 use bilbo_entries::remember::{self, Output};
 use bilbo_store::labels::Tag;
 
-use crate::console::message::Message;
+use crate::console::message::{Message, new_tags};
 
 pub fn refusals(outputs: &[Output]) -> Vec<Message> {
     outputs
@@ -22,10 +22,6 @@ pub fn tagged(output: &Output, fresh: &[Tag]) -> Vec<Message> {
         return Vec::new();
     }
     std::iter::once(Message::info(&format!("tagged {} entries", output.tagged)))
-        .chain(
-            fresh
-                .iter()
-                .map(|tag| Message::info(&format!("{tag} is new"))),
-        )
+        .chain(new_tags(fresh))
         .collect()
 }

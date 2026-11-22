@@ -10,9 +10,9 @@ bilbo tag: list the tags, list the entries of one, or change entries' tags.
       [1m--remove [22m[2m<tag>[22m  Take this tag off each entry named
 
 [1mOutput:[22m
-  [1mtag:[22m[2m<name>[22m  [2m<n>[22m entries  [2m<kind>[22m [2m<n>[22m, ...     one row a tag
-  [2m<id>[22m  [2m<kind>[22m  <capture label>  person|model  one row an entry of a tag
-  [1mchanged [22m[2m<n>[22m[1m, unchanged [22m[2m<n>[22m                   after --add or --remove
+  [1mtag:[22m[2m<name>[22m[1m [22m[2m<n>[22m[1m entries [22m[2m<kind>[22m[1m [22m[2m<n>[22m[1m, ...[22m  one row a tag, its fields by tabs
+  [2m<id>[22m[1m [22m[2m<kind>[22m[1m [22m[2m<capture>[22m[1m person|model[22m      one row an entry of a tag, by tabs
+  [1mchanged [22m[2m<n>[22m[1m, unchanged [22m[2m<n>[22m              after --add or --remove
 
 [1mExit:[22m
   [1m0[22m  success, also when nothing changed and when no entry carries a tag

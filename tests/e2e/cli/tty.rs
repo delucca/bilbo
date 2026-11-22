@@ -107,7 +107,17 @@ fn capture_within(mut command: Command, tty: &Tty, other: Stdio, deadline: Durat
 
 fn run(args: &[&str], tty: &Tty) -> Seen {
     let mut command = Command::new(binary());
-    command.env_clear().envs(ENV).args(args);
+    let scratch = super::scratch::Scratch::new("tty_run");
+    command
+        .env_clear()
+        .envs(
+            scratch
+                .env()
+                .iter()
+                .map(|(name, value)| (*name, value.as_str())),
+        )
+        .envs(ENV)
+        .args(args);
     capture(command, tty)
 }
 

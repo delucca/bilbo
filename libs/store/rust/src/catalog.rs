@@ -469,15 +469,7 @@ impl Catalog {
 
     pub fn meta(&self, id: Id) -> Result<Option<Meta>, StoreError> {
         let run = || -> rusqlite::Result<Option<Meta>> {
-            let row: Option<EntryRow> = self
-                .conn
-                .query_row(
-                    "SELECT kind, origin, captured, parent FROM entries WHERE id = ?1",
-                    params![id.to_bytes().as_slice()],
-                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
-                )
-                .optional()?;
-            let Some((kind, capture, captured, id_label)) = row else {
+            let Some((kind, capture, captured, id_label)) = entry_row(&self.conn, id)? else {
                 return Ok(None);
             };
             Ok(Some(Meta {
@@ -682,7 +674,8 @@ impl Catalog {
             let mut statement = self.conn.prepare(
                 "SELECT entry FROM entry_tags WHERE tag = ?1 AND standing IN (?2, ?3) ORDER BY entry",
             )?;
-            let rows = statement.query_map(params![tag.as_str(), PERSON, MODEL], |row| {
+            let (person, model) = carried_numbers();
+            let rows = statement.query_map(params![tag.as_str(), person, model], |row| {
                 id_of(&row.get::<_, Vec<u8>>(0)?, 0)
             })?;
             rows.collect()
@@ -696,7 +689,8 @@ impl Catalog {
                 "SELECT t.tag, e.kind, COUNT(*) FROM entry_tags t JOIN entries e ON e.id = t.entry
                  WHERE t.standing IN (?1, ?2) GROUP BY t.tag, e.kind ORDER BY t.tag, e.kind",
             )?;
-            let rows = statement.query_map(params![PERSON, MODEL], |row| {
+            let (person, model) = carried_numbers();
+            let rows = statement.query_map(params![person, model], |row| {
                 let name: String = row.get(0)?;
                 Ok(Tagged {
                     tag: tag_of(&name, 0)?,
@@ -969,9 +963,21 @@ impl Batch<'_> {
     }
 }
 
-const PERSON: i64 = 1;
-const MODEL: i64 = 2;
-const REMOVED: i64 = 3;
+fn carried_numbers() -> (i64, i64) {
+    (
+        i64::from(meta::number(Standing::Carried(By::Person))),
+        i64::from(meta::number(Standing::Carried(By::Model))),
+    )
+}
+
+fn entry_row(conn: &Connection, id: Id) -> rusqlite::Result<Option<EntryRow>> {
+    conn.query_row(
+        "SELECT kind, origin, captured, parent FROM entries WHERE id = ?1",
+        params![id.to_bytes().as_slice()],
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+    )
+    .optional()
+}
 
 fn tag_of(name: &str, column: usize) -> rusqlite::Result<Tag> {
     Tag::new(name).ok_or_else(|| {
@@ -988,12 +994,11 @@ fn tags_of(conn: &Connection, id: Id) -> rusqlite::Result<Tags> {
         conn.prepare("SELECT tag, standing FROM entry_tags WHERE entry = ?1 ORDER BY tag")?;
     let rows = statement.query_map(params![id.to_bytes().as_slice()], |row| {
         let name: String = row.get(0)?;
-        let standing = match row.get::<_, i64>(1)? {
-            PERSON => Standing::Carried(By::Person),
-            MODEL => Standing::Carried(By::Model),
-            REMOVED => Standing::Removed,
-            other => return Err(rusqlite::Error::IntegralValueOutOfRange(1, other)),
-        };
+        let number: i64 = row.get(1)?;
+        let standing = u8::try_from(number)
+            .ok()
+            .and_then(meta::standing_of)
+            .ok_or(rusqlite::Error::IntegralValueOutOfRange(1, number))?;
         Ok((tag_of(&name, 0)?, standing))
     })?;
     let mut tags = Tags::default();
@@ -1028,13 +1033,7 @@ fn meta_in(conn: &Connection, meta: &Meta) -> Result<(), ApplyFault> {
             params![id.as_slice()],
         )?;
     }
-    let before: Option<EntryRow> = conn
-        .query_row(
-            "SELECT kind, origin, captured, parent FROM entries WHERE id = ?1",
-            params![id.as_slice()],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
-        )
-        .optional()?;
+    let before = entry_row(conn, meta.id)?;
     let held_tags = tags_of(conn, meta.id)?;
     let parent = meta.labels.id.map(Id::to_bytes);
     let tags_only = held_tags != meta.labels.tags
@@ -1068,11 +1067,7 @@ fn meta_in(conn: &Connection, meta: &Meta) -> Result<(), ApplyFault> {
             params![
                 id.as_slice(),
                 tag.as_str(),
-                match standing {
-                    Standing::Carried(By::Person) => PERSON,
-                    Standing::Carried(By::Model) => MODEL,
-                    Standing::Removed => REMOVED,
-                }
+                i64::from(meta::number(standing))
             ],
         )?;
     }
@@ -1282,15 +1277,19 @@ mod tests {
     }
 
     fn meta_with(tags: Tags, kind: &str) -> Meta {
+        meta_of(tags, kind, "file:/n/a.md", 1_762_560_000_123, None)
+    }
+
+    fn meta_of(tags: Tags, kind: &str, capture: &str, captured: i64, id_label: Option<Id>) -> Meta {
         Meta {
             id: Id::parse("01JC5Q3V7XKM4P8R2T6W9YB0DE").expect("id"),
             kind: kind.into(),
             labels: StoredLabels {
-                capture: CaptureLabel::new("file:/n/a.md".into()),
-                id: None,
+                capture: CaptureLabel::new(capture.into()),
+                id: id_label,
                 tags,
             },
-            captured: meta::time_of(1_762_560_000_123),
+            captured: meta::time_of(captured),
         }
     }
 
@@ -1357,5 +1356,67 @@ mod tests {
         seen += 1;
         file(&mut catalog, &meta_with(tags, "session"));
         assert_eq!(changes(&catalog), seen + 1, "another kind");
+
+        let held = tags_of_names(&[("a", Standing::Carried(By::Person))]);
+        let other = tags_of_names(&[("b", Standing::Carried(By::Model))]);
+        let parent = Id::parse("01JC5Q3V7XKM4P8R2T6W9YB0DF").expect("id");
+        let frames = [
+            (
+                "the kind",
+                meta_of(
+                    other.clone(),
+                    "session",
+                    "file:/n/a.md",
+                    1_762_560_000_123,
+                    None,
+                ),
+            ),
+            (
+                "the capture label",
+                meta_of(
+                    other.clone(),
+                    "markdown",
+                    "file:/n/b.md",
+                    1_762_560_000_123,
+                    None,
+                ),
+            ),
+            (
+                "the captured time",
+                meta_of(
+                    other.clone(),
+                    "markdown",
+                    "file:/n/a.md",
+                    1_762_560_000_456,
+                    None,
+                ),
+            ),
+            (
+                "the id label",
+                meta_of(
+                    other,
+                    "markdown",
+                    "file:/n/a.md",
+                    1_762_560_000_123,
+                    Some(parent),
+                ),
+            ),
+        ];
+        for (field, frame) in frames {
+            let mut catalog = Catalog::in_memory().expect("catalog");
+            file(
+                &mut catalog,
+                &meta_of(
+                    held.clone(),
+                    "markdown",
+                    "file:/n/a.md",
+                    1_762_560_000_123,
+                    None,
+                ),
+            );
+            let before = changes(&catalog);
+            file(&mut catalog, &frame);
+            assert_eq!(changes(&catalog), before + 1, "tags and {field}");
+        }
     }
 }

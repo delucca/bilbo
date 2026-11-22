@@ -9,12 +9,14 @@ use std::thread;
 use std::time::{Duration, SystemTime};
 
 use bilbo_cli::console::env::Env;
-use bilbo_cli::console::outcome::Failure;
+use bilbo_cli::console::message::Message;
+use bilbo_cli::console::outcome::{Failure, Outcome};
 use bilbo_cli::console::settings;
 use bilbo_cli::console::view::View;
 use bilbo_entries::tag::{self, Change};
+use bilbo_store::entries::{Capture, Entries};
 use bilbo_store::id::Id;
-use bilbo_store::labels::Tag;
+use bilbo_store::labels::{CaptureLabel, Tag, Tags};
 use bilbo_store::segments::{Options, Store};
 
 mod runner;
@@ -378,6 +380,36 @@ fn tag_waits_for_another_writer_and_changes_after_it() {
     assert_eq!(finished.stdout, "changed 1, unchanged 0\n");
 }
 
+#[test]
+fn a_change_waits_for_another_writer_whatever_store_wait_says() {
+    let sandbox = Sandbox::with_notes("tag_waits_without_bound", &[("a.md", ID_A)]);
+    let layout = sandbox.layout();
+    let held: Vec<fs::File> = ["store.lock", "store.writer"]
+        .into_iter()
+        .map(|name| {
+            let file = fs::File::create(layout.state.join(name)).expect("a lock file");
+            file.lock().expect("take the lock");
+            file
+        })
+        .collect();
+
+    let (sender, receiver) = mpsc::channel();
+    let vars = sandbox.vars(&[("BILBO_STORE_WAIT", "0s")]);
+    let args = ["tag", ID_A, "--add", "garden"].map(str::to_owned);
+    let runner = thread::spawn(move || run_noticed(vars, &args, sender));
+
+    assert_eq!(
+        receiver.recv_timeout(WAIT).expect("a waiting notice"),
+        WAITING
+    );
+    for file in &held {
+        file.unlock().expect("release the lock");
+    }
+    let finished = runner.join().expect("the run finishes");
+    assert_eq!(finished.code, 0, "{:?}", finished.stderr);
+    assert_eq!(finished.stdout, "changed 1, unchanged 0\n");
+}
+
 fn files_under(root: &Path) -> Vec<(PathBuf, Vec<u8>)> {
     let mut found = Vec::new();
     let mut stack = vec![root.to_path_buf()];
@@ -417,4 +449,177 @@ fn a_tag_change_makes_no_index_run_and_recall_sees_it_at_once() {
         "{:?}",
         run.stderr
     );
+}
+
+fn outcome_of(
+    vars: HashMap<String, OsString>,
+    args: &[&str],
+    notice: Box<dyn FnMut(&Message)>,
+) -> Result<Outcome, Failure> {
+    let argv: Vec<OsString> = std::iter::once("bilbo")
+        .chain(args.iter().copied())
+        .map(OsString::from)
+        .collect();
+    let mut env = Env {
+        var: Rc::new(move |name| vars.get(name).cloned()),
+        stdin: Box::new(io::empty()),
+        notice,
+    };
+    let settings = settings::load(
+        &*env.var,
+        &|path| fs::read(path),
+        &bilbo_cli::kind_keys(),
+        &bilbo_cli::provider_keys(),
+    )
+    .map_err(Failure::from);
+    bilbo_cli::run_tuned(&bilbo_cli::bilbo(), &argv, &mut env, settings, &tune)
+}
+
+#[test]
+fn tag_serves_a_bare_remember_that_found_it_holding_the_store() {
+    let sandbox = Sandbox::with_notes("tag_serves", &[("a.md", ID_A)]);
+    let followed = sandbox.dir.join("follow");
+    fs::create_dir_all(&followed).expect("a folder");
+    let file = followed.join("new.md");
+    fs::write(&file, "# New\n\nA note kept by the pass that tag serves.\n").expect("write");
+    fs::File::options()
+        .write(true)
+        .open(&file)
+        .expect("open")
+        .set_modified(SystemTime::now() - Duration::from_secs(3600))
+        .expect("backdate");
+    fs::write(
+        sandbox.dir.join("config/config.toml"),
+        format!("[[follow]]\npath = {:?}\nkind = \"markdown\"\n", followed),
+    )
+    .expect("a config that follows a folder");
+    let layout = sandbox.layout();
+    let mut open_seg = fs::OpenOptions::new()
+        .append(true)
+        .open(layout.state.join("open.seg"))
+        .expect("open.seg");
+    io::Write::write_all(&mut open_seg, &[1, 0, 0]).expect("a torn tail");
+    drop(open_seg);
+
+    let bare = Rc::new(std::cell::RefCell::new(None));
+    let vars = sandbox.vars(&[]);
+    let notice = {
+        let (bare, vars) = (Rc::clone(&bare), vars.clone());
+        Box::new(move |message: &Message| {
+            let said = message.plain_lines().join("\n");
+            if said.contains("torn frame") && bare.borrow().is_none() {
+                let vars = vars.clone();
+                *bare.borrow_mut() = Some(runner::bilbo_with(
+                    Rc::new(move |name| vars.get(name).cloned()),
+                    &["remember"],
+                    &tune,
+                ));
+            }
+        })
+    };
+    let outcome = outcome_of(vars, &["tag", ID_A, "--add", "garden"], notice).expect("the tag run");
+
+    let bare = bare.borrow();
+    let bare = bare.as_ref().expect("the bare run");
+    assert_eq!(bare.code, 0, "{:?}", bare.stderr);
+    assert_eq!(bare.stdout, "");
+    assert_eq!(
+        bare.stderr,
+        ["bilbo: another bilbo is writing the store; requested another pass over the follows"]
+    );
+    assert_eq!(outcome.exit_code(), 0);
+    assert_eq!(outcome.stdout(&View::PLAIN), "changed 1, unchanged 0\n");
+    let said = outcome.stderr_lines(&View::PLAIN);
+    assert_eq!(said.len(), 2, "{said:?}");
+    assert_eq!(said[0], "bilbo: tag:garden is new");
+    assert!(
+        said[1].starts_with("bilbo: ran the follows again for another bilbo: new 1, "),
+        "{said:?}"
+    );
+    assert_eq!(
+        fs::metadata(layout.state.join("store.again"))
+            .expect("the flag")
+            .len(),
+        0
+    );
+    let store = Store::open_read_only(&layout, Options::default(), &mut |_| {}).expect("open");
+    let label = CaptureLabel::file(&file.canonicalize().expect("canonical")).expect("a label");
+    assert!(store.by_capture(&label).expect("a lookup").is_some());
+}
+
+#[test]
+fn a_change_opens_nothing_for_writing_until_every_ref_is_known_good() {
+    let sandbox = Sandbox::new("tag_known_good");
+    let layout = sandbox.layout();
+    let before = files_under(&sandbox.dir);
+    let run = sandbox.run(&["tag", ID_A, "--add", "garden"]);
+    let read = sandbox.run(&["read", ID_A]);
+    assert_eq!(run.code, 1, "{:?}", run.stderr);
+    assert_eq!(run.code, read.code);
+    assert_eq!(run.stderr, read.stderr);
+    assert!(
+        run.stderr[0].starts_with("bilbo: no store at"),
+        "{:?}",
+        run.stderr
+    );
+    assert!(files_under(&sandbox.dir) == before);
+    assert!(!layout.root.exists(), "no root was made");
+    assert!(!layout.state.join("open.seg").exists());
+
+    let sandbox = Sandbox::with_notes("tag_known_good_catalog", &[("a.md", ID_A)]);
+    let catalog = sandbox.dir.join("cache/bilbo/catalog.sqlite");
+    fs::remove_file(&catalog).expect("remove the catalog");
+    let run = sandbox.run(&["tag", ID_GONE, "--add", "garden"]);
+    assert_eq!(run.code, 1, "{:?}", run.stderr);
+    assert_eq!(run.stderr, [format!("bilbo: no entry {ID_GONE}")]);
+    assert!(!catalog.exists(), "the catalog was not made again");
+}
+
+#[test]
+fn the_listings_escape_for_the_terminal_they_are_shown_on() {
+    let sandbox = Sandbox::with_notes("tag_terminal", &[("a.md", ID_A)]);
+    let label = CaptureLabel::new("file:/n/\u{202e}a.md".to_owned()).expect("a label");
+    let tags = Tags::default();
+    let mut store = sandbox.store();
+    let kept = store
+        .capture(&Capture {
+            label: &label,
+            kind: "markdown",
+            id: None,
+            id_label: None,
+            tags: &tags,
+            stamp: None,
+            bytes: b"one\n",
+            ends: &[4],
+        })
+        .expect("kept");
+    let bilbo_store::entries::Captured::New(kept) = kept else {
+        panic!("a new entry");
+    };
+    let add = std::collections::BTreeSet::from([name("garden")]);
+    let none = std::collections::BTreeSet::new();
+    tag::declare(
+        kept.id,
+        &Change::Person {
+            add: &add,
+            remove: &none,
+        },
+        32,
+        &mut store,
+    )
+    .expect("declare");
+    drop(store);
+
+    let outcome = outcome_of(sandbox.vars(&[]), &["tag", "tag:garden"], Box::new(|_| {}))
+        .expect("the listing");
+    let terminal = View {
+        terminal: true,
+        human: false,
+        paint: false,
+        unicode: false,
+    };
+    let shown = outcome.stdout(&terminal);
+    assert!(!shown.contains('\u{202e}'), "{shown:?}");
+    assert!(shown.contains("\\u{202e}"), "{shown:?}");
+    assert!(outcome.stdout(&View::PLAIN).contains('\u{202e}'));
 }

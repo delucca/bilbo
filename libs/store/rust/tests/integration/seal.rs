@@ -62,7 +62,7 @@ pub fn fill(layout: &Layout, hook: Option<Hook>) -> (Store, Before) {
     (store, before)
 }
 
-fn all_frames(layout: &Layout) -> Vec<Summary> {
+pub fn all_frames(layout: &Layout) -> Vec<Summary> {
     let mut found = Vec::new();
     for segment in sealed(layout) {
         found.extend(frames(&segment));

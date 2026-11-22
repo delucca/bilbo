@@ -52,18 +52,21 @@ pub struct NotATag(pub String);
 
 impl fmt::Display for NotATag {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "'{}' is not a tag's name: parts of a to z and digits joined by single hyphens, at most {} bytes",
-            self.0,
-            Tag::MAX_BYTES
-        )
+        write!(f, "'{}' is not a tag's name: {}", self.0, Tag::grammar())
     }
 }
 
 impl Tag {
     pub const MAX_BYTES: usize = 64;
     pub const SCHEME: &'static str = "tag:";
+
+    #[must_use]
+    pub fn grammar() -> String {
+        format!(
+            "parts of a to z and digits joined by single hyphens, at most {} bytes",
+            Tag::MAX_BYTES
+        )
+    }
 
     #[must_use]
     pub fn new(name: &str) -> Option<Tag> {
@@ -160,7 +163,6 @@ pub enum Label {
     Text(String),
 }
 
-/// The meta frame has one field for each.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct StoredLabels {
     pub capture: Option<CaptureLabel>,
@@ -211,9 +213,7 @@ pub trait Labels {
     /// The entries that belong to one of `entries` through id labels, however deep, without those given,
     /// in id order.
     fn belonging_to(&self, entries: &[Id]) -> Result<Vec<Id>, StoreError>;
-    /// The entries that carry `tag`, in id order.
     fn tagged(&self, tag: &Tag) -> Result<Vec<Id>, StoreError>;
-    /// One item for each tag and kind that has a carrier, in tag order, then kind order.
     fn tags(&self) -> Result<Vec<Tagged>, StoreError>;
 }
 

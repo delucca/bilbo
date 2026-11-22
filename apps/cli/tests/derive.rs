@@ -3452,15 +3452,42 @@ fn derive_in_takes_a_tag_and_derive_not_in_leaves_a_tagged_entry_out() {
         "derive.in = [\"sessions\"]",
         "derive.in = [\"tag:a\"]\nderive.not_in = [\"tag:private\"]",
     ));
-    declare_through_the_store(&sandbox, sandbox.session(FIRST), &["a"]);
-    declare_through_the_store(&sandbox, sandbox.session(SECOND), &["a", "private"]);
+    let first = sandbox.session(FIRST);
+    let second = sandbox.session(SECOND);
+    declare_through_the_store(&sandbox, first, &["a"]);
+    declare_through_the_store(&sandbox, second, &["a", "private"]);
 
-    let run = sandbox.run(&["derive", "--dry-run"]);
+    let all = sandbox.run(&["derive", "--dry-run"]);
+    assert_eq!(all.code, 0, "{:?}", all.stderr);
+    assert_eq!(
+        all.stdout.lines().nth(1),
+        Some("named: 2 entries by derive.in, 1 of them left out by derive.not_in")
+    );
+    assert_eq!(all.stdout.lines().nth(2), Some("due: 1 entries"));
+
+    let run = sandbox.run(&[
+        "derive",
+        "--dry-run",
+        &first.to_string(),
+        &second.to_string(),
+    ]);
 
     assert_eq!(run.code, 0, "{:?}", run.stderr);
     assert_eq!(
         run.stdout.lines().nth(1),
         Some("named: 2 entries by derive.in, 1 of them left out by derive.not_in")
+    );
+    let entries: Vec<&str> = run
+        .stdout
+        .lines()
+        .filter(|line| line.starts_with("entry\t"))
+        .collect();
+    assert_eq!(
+        entries,
+        [
+            format!("entry\t{first}\tdue\t-\t0"),
+            format!("entry\t{second}\tleft out: derive.not_in\t-\t0"),
+        ]
     );
 }
 

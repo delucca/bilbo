@@ -16,9 +16,9 @@ Options:
       --remove <tag>  Take this tag off each entry named
 
 Output:
-  tag:<name>  <n> entries  <kind> <n>, ...     one row a tag
-  <id>  <kind>  <capture label>  person|model  one row an entry of a tag
-  changed <n>, unchanged <n>                   after --add or --remove
+  tag:<name> <n> entries <kind> <n>, ...  one row a tag, its fields by tabs
+  <id> <kind> <capture> person|model      one row an entry of a tag, by tabs
+  changed <n>, unchanged <n>              after --add or --remove
 
 Exit:
   0  success, also when nothing changed and when no entry carries a tag
@@ -89,10 +89,25 @@ fn the_tag_page_is_printed_by_help_and_by_dash_dash_help() {
 #[test]
 fn a_tag_is_kept_across_a_reindex() {
     let scratch = notes("tag_reindex");
-    scratch.run(&["remember", &scratch.path("notes"), "--tag", "docs"]);
-    scratch.run(&["tag", ID_A, "--add", "garden"]);
+    let kept = scratch.run(&["remember", &scratch.path("notes"), "--tag", "docs"]);
+    assert_eq!(kept.code, 0, "{}", kept.stderr);
+    let added = scratch.run(&["tag", ID_A, "--add", "garden"]);
+    assert_eq!(added.code, 0, "{}", added.stderr);
     let listed = scratch.run(&["tag"]);
+    assert_eq!(listed.code, 0, "{}", listed.stderr);
+    assert_eq!(
+        listed.stdout,
+        "tag:docs\t2 entries\tmarkdown 2\ntag:garden\t1 entries\tmarkdown 1\n"
+    );
     let garden = scratch.run(&["tag", "tag:garden"]);
+    assert_eq!(garden.code, 0, "{}", garden.stderr);
+    assert_eq!(garden.stdout.lines().count(), 1, "{}", garden.stdout);
+    assert!(
+        garden.stdout.starts_with(&format!("{ID_A}\tmarkdown\t")),
+        "{}",
+        garden.stdout
+    );
+    assert!(garden.stdout.ends_with("\tperson\n"), "{}", garden.stdout);
 
     let again = scratch.run(&["reindex"]);
     assert_eq!(again.code, 0, "{}", again.stderr);
