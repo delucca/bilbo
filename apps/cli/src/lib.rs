@@ -8,6 +8,7 @@ pub mod read;
 pub mod recall;
 pub mod reindex;
 pub mod remember;
+pub mod tag;
 
 use std::ffi::OsString;
 use std::rc::Rc;
@@ -49,6 +50,7 @@ pub enum Verb {
     Remember(remember::Args),
     Recall(recall::Args),
     Read(read::Args),
+    Tag(tag::Args),
     Reindex(reindex::Args),
     Derive(derive::Args),
     Config(config::Args),
@@ -418,6 +420,7 @@ pub fn run_tuned(
                     let readers = readers(&settings)?;
                     read::run(root, &args, env, &settings, &readers)
                 }
+                Verb::Tag(args) => tag::run(root, &args, env, &settings),
                 Verb::Reindex(args) => {
                     let readers = readers(&settings)?;
                     let rendering = rendering(&settings)?;
@@ -959,7 +962,7 @@ mod tests {
             };
         assert_eq!(
             reason(&["bilbo", "help", "a\nb"]),
-            "unknown verb 'a\\nb'; the verbs are remember, recall, read, reindex, derive, config"
+            "unknown verb 'a\\nb'; the verbs are remember, recall, read, tag, reindex, derive, config"
         );
         assert_eq!(
             reason(&["bilbo", "help", "--a\nb"]),

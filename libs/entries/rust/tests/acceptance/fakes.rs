@@ -225,6 +225,7 @@ pub struct FakeEntries {
     pub heads: HashMap<String, Head>,
     pub metas: HashMap<Id, Meta>,
     pub adopted: Vec<(Id, Option<Id>)>,
+    pub resolving: bool,
 }
 
 impl FakeEntries {
@@ -235,6 +236,12 @@ impl FakeEntries {
     #[must_use]
     pub fn on(mut self, label: &str, script: Script) -> FakeEntries {
         self.script.insert(label.to_string(), script);
+        self
+    }
+
+    #[must_use]
+    pub fn resolving(mut self) -> FakeEntries {
+        self.resolving = true;
         self
     }
 
@@ -363,12 +370,34 @@ impl Entries for FakeEntries {
         panic!("remember must not call extent")
     }
 
-    fn captures_with(&self, _part: &str) -> Result<Vec<(Id, CaptureLabel)>, StoreError> {
-        panic!("remember must not call captures_with")
+    fn captures_with(&self, part: &str) -> Result<Vec<(Id, CaptureLabel)>, StoreError> {
+        assert!(self.resolving, "remember must not call captures_with");
+        let mut found: Vec<(Id, CaptureLabel)> = self
+            .metas
+            .values()
+            .filter_map(|meta| {
+                let label = meta.labels.capture.clone()?;
+                label
+                    .as_str()
+                    .to_ascii_lowercase()
+                    .contains(&part.to_ascii_lowercase())
+                    .then_some((meta.id, label))
+            })
+            .collect();
+        found.sort_by_key(|(id, _)| *id);
+        Ok(found)
     }
 
-    fn by_shorts(&self, _shorts: &[Short]) -> Result<Vec<Id>, StoreError> {
-        panic!("remember must not call by_shorts")
+    fn by_shorts(&self, shorts: &[Short]) -> Result<Vec<Id>, StoreError> {
+        assert!(self.resolving, "remember must not call by_shorts");
+        let mut found: Vec<Id> = self
+            .metas
+            .keys()
+            .copied()
+            .filter(|id| shorts.iter().any(|short| short.ends(*id)))
+            .collect();
+        found.sort();
+        Ok(found)
     }
 }
 

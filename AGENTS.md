@@ -18,6 +18,7 @@
 - A `read` test that needs a page to end or a record to be cut passes `--budget 256`, the smallest: the fixtures fit the default page.
 - A test that holds `store.lock` to stand for another writer also holds `store.writer` in the state folder; with `store.lock` alone it stands for a reader, and a bare run waits for it instead of setting the again flag.
 - In `apps/cli/tests/derive.rs` every bilbo run is inside the test's process, and a child process holds every open file of that process until it executes, another test's `store.lock` included: a test in which a process is started, by bilbo or by the test itself, holds `alone()`, and one that runs two bilbo runs at once holds `together()` and calls `held_by_the_test()` in the thread it starts. No test sees a mark left out: a busy machine does, at a setup's `remember` that says it waits for another bilbo.
+- A test that needs a format 1 store makes one with this tree and writes 1 into the four bytes of a segment's header that hold its format: no binary of this tree writes a format 1 header, and `frame` and `meta` are private to the store, so only their own unit tests call `header_of`.
 
 ## Rust
 
@@ -71,3 +72,7 @@
 - `stretches` and its three tests are in `libs/entries/rust/src/tokens.rs`.
 - `view::material` escapes its own tags in what it puts in: a change of it or of an instruction changes every request, so the eval's kept answers no longer match.
 - `bilbo_entries::tag::apply` is the only code that decides a name's standing for an entry, and `declare` the only code that writes one into a meta that exists: a person's change and a model's are its two arguments. A change of either table of the rule changes its table test, which holds every cell.
+- A tag is a stored label. `entry_tags` is filled by the catalog from meta frames, never by the index run, and nothing the index run files holds a tag. A meta frame that differs from the entry's row only in its tags files no change: `a_meta_frame_that_changes_only_tags_files_no_change` and `set_meta_that_changes_only_tags_moves_no_cursor` hold it.
+- A tag is compared whole. Words match a tag at query time, from the tags in use: no word of a tag is filed, so a change to `analyze::label_words` needs nothing for tags.
+- `Tag::new`, `Tag::MAX_BYTES` and the form `tag:<name>` are formats: configs, skills and agents hold them.
+- The meta's field 6 and segment format 2 go together, and a field 6's first byte is the name's standing: a change of what a byte means is a new segment format. A header of either format is read wherever a header is read, and the format reaches `meta::decode` from each walk.

@@ -1,0 +1,28 @@
+bilbo tag: list the tags, list the entries of one, or change entries' tags.
+
+[1mUsage:[22m
+  [36mbilbo tag[39m
+  [36mbilbo tag tag:[39m[2m<name>[22m
+  [36mbilbo tag [39m[2m<ref>[22m[36m... [--add [39m[2m<tag>[22m[36m]... [--remove [39m[2m<tag>[22m[36m]...[39m
+
+[1mOptions:[22m
+      [1m--add [22m[2m<tag>[22m     Declare this tag for each entry named
+      [1m--remove [22m[2m<tag>[22m  Take this tag off each entry named
+
+[1mOutput:[22m
+  [1mtag:[22m[2m<name>[22m  [2m<n>[22m entries  [2m<kind>[22m [2m<n>[22m, ...     one row a tag
+  [2m<id>[22m  [2m<kind>[22m  <capture label>  person|model  one row an entry of a tag
+  [1mchanged [22m[2m<n>[22m[1m, unchanged [22m[2m<n>[22m                   after --add or --remove
+
+[1mExit:[22m
+  [1m0[22m  success, also when nothing changed and when no entry carries a tag
+  [1m1[22m  a ref that names no entry, a tag no entry carries, an entry that would
+     pass tag.cap, a store failure
+  [1m2[22m  usage or config error, or a ref that names several entries
+
+[1mExamples:[22m
+  [36mbilbo tag[39m
+  [36mbilbo tag tag:rust[39m
+  [36mbilbo tag 01M6ZGE4KTBYYH07AS2KVMSCAF --add garden --remove shed[39m
+
+[1mDocs:[22m [2mhttps://github.com/delucca/bilbo/wiki/Commands#tag[22m

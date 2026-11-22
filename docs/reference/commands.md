@@ -439,6 +439,54 @@ The cut falls between two characters. The budget of the `cut:` command is what t
 | 1 | no entry has the id or the session id, the range or the generation is outside the entry, the entry is of a kind this bilbo cannot read, there is no store, the store is being written for longer than `store.wait`, or the store could not be read |
 | 2 | usage or config error: a ref that does not parse, a session id or a short id that names several entries, a `--budget` under 256 |
 
+## tag
+
+```text
+bilbo tag
+bilbo tag tag:<name>
+bilbo tag <ref>... [--add <tag>]... [--remove <tag>]...
+```
+
+Lists the tags, lists the entries that carry one, or changes the tags of entries.
+
+A tag is a label somebody declared for an entry: a person, an agent that passes it, or `bilbo derive` from a model's answer when you turn that on. bilbo reads no tag from what an entry holds. There is no list of allowed tags: a tag exists while an entry carries it.
+
+### The tags
+
+`bilbo tag` prints one row a tag, in name order, its fields apart by tabs: the tag as `--in` takes it, how many entries carry it, and how many of each kind.
+
+```text
+tag:carpentry-docs	40 entries	markdown 40
+tag:garden	213 entries	markdown 4, session 209
+tag:rust	117 entries	markdown 117
+```
+
+With no tag in the store it prints nothing, says `no entry carries a tag` on stderr and exits 0.
+
+### The entries of a tag
+
+`bilbo tag tag:<name>` prints one row an entry that carries the tag, in id order, its fields apart by tabs: its id, its kind, its capture label, or `-` for an entry with none, and who declared the tag for it, `person` or `model`. A tab or a line feed in a capture label is written `\t` or `\n`, as `bilbo read` writes it, so a row is always four fields on one line. `bilbo read <id>` reads one. A tag no entry carries is `tag:<name> names no entry`, exit 1.
+
+### Changing tags
+
+A `<ref>` is what `read` takes for an entry, with no `#` part: a tag is on an entry, not on records. Every ref is resolved, and every entry checked, before anything is written; an entry named by two refs is one entry. A ref gets the answer `read` gives it, in `read`'s words, and nothing is written: one that names no entry ends the run with exit 1; one that names several entries, or that does not parse, is a usage error, exit 2. Each entry then carries the tags it had, with those of `--add` and without those of `--remove`. Adding a tag an entry does not carry yet, when that would leave it with more than `tag.cap` tags, 32 unless set, ends the run with exit 1 and nothing written. A tag the entry already carries can always be made yours, whatever the number of its tags.
+
+`--add` makes a tag yours, whoever declared it. `--remove` takes a tag off an entry and keeps its name with the entry: `bilbo derive` never declares a name you removed from an entry, until you `--add` it there again. Removing a tag the entry does not carry changes nothing. `bilbo read` shows both, the tags and the removed names.
+
+Standard output, one line: `changed <n>, unchanged <n>`. An entry is changed when anything of its tags was written, so an `--add` that makes a model's tag yours counts. A tag no entry carried before the run is said on stderr, `tag:<name> is new`: a typo makes a tag. Changing tags writes the store, so it waits for another bilbo that writes it, as `remember` with a target does. It makes no index again: `recall --in tag:<name>` sees the change at once.
+
+`derive.in` and `derive.not_in` are read when a `derive` run plans. A tag you add or remove while a run is under way counts from the next run: to keep an entry from a provider, tag it before the run that would send it.
+
+The store only grows: a tag that was removed is no longer the entry's, and the frame that held it stays in the store.
+
+### Exit codes
+
+| Code | Meaning |
+|---|---|
+| 0 | success, also when nothing changed and when the store has no tag |
+| 1 | a ref that names no entry, a tag no entry carries, a new tag that would leave an entry with more than `tag.cap` tags, a store failure |
+| 2 | usage or config error: refs with neither `--add` nor `--remove`, either of them with no ref, a name that is no tag, a tag both added and removed, a ref with a `#` part, a ref that does not parse, a session id or a short id that names several entries, `tag:<name>` beside another argument |
+
 ## reindex
 
 ```text

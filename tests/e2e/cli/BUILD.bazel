@@ -13,6 +13,7 @@ bilbo_rust_test(
         "remember.rs",
         "scratch.rs",
         "sessions.rs",
+        "tag.rs",
         "tty.rs",
     ],
     compile_data = [

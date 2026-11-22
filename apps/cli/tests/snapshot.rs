@@ -150,7 +150,7 @@ fn a_usage_error_on_a_terminal_is_a_marked_message() {
     );
     assert_eq!(
         stderr(&["frob"], &unpainted()),
-        "■  unknown verb 'frob'; the verbs are remember, recall, read, reindex, derive, config\n   see bilbo --help\n"
+        "■  unknown verb 'frob'; the verbs are remember, recall, read, tag, reindex, derive, config\n   see bilbo --help\n"
     );
 }
 
@@ -208,6 +208,66 @@ fn the_remember_page_is_the_same_from_every_help_form() {
     ] {
         assert_eq!(stdout(form, &View::PLAIN), page, "{form:?}");
     }
+}
+
+#[test]
+fn the_tag_page_is_the_same_from_every_help_form_and_on_a_terminal() {
+    let page = include_str!("snapshots/tag-help.txt");
+    for form in [
+        &["tag", "--help"][..],
+        &["tag", "-h"],
+        &["help", "tag"],
+        &["help", "tag", "--help"],
+    ] {
+        assert_eq!(stdout(form, &View::PLAIN), page, "{form:?}");
+    }
+    assert_eq!(
+        stdout(&["tag", "--help"], &View::HUMAN),
+        include_str!("snapshots/tag-help.human.ansi")
+    );
+    assert_eq!(stdout(&["tag", "--help"], &unpainted()), page);
+}
+
+#[test]
+fn the_tag_listings_in_the_plain_view() {
+    use bilbo_entries::tag::Carrier;
+    use bilbo_store::labels::{By, Tagged};
+    let tagged = |name: &str, kind: &str, entries: u64| Tagged {
+        tag: Tag::new(name).expect("a tag"),
+        kind: kind.to_owned(),
+        entries,
+    };
+    let list = bilbo_cli::tag::view::tags(&[
+        tagged("carpentry-docs", "markdown", 40),
+        tagged("garden", "markdown", 4),
+        tagged("garden", "session", 209),
+        tagged("rust", "markdown", 117),
+    ]);
+    assert_eq!(list, include_str!("snapshots/tag-list.txt"));
+    let carrier = |id: &str, kind: &str, capture: Option<&str>, by| Carrier {
+        id: Id::parse(id).expect("an id"),
+        kind: kind.to_owned(),
+        capture: capture.and_then(|text| CaptureLabel::new(text.to_owned())),
+        by,
+    };
+    let entries = bilbo_cli::tag::view::entries(&[
+        carrier(
+            "01JC5Q3V7XKM4P8R2T6W9YB0DB",
+            "session",
+            Some(
+                "file:/home/me/.claude/projects/-home-me-src-garden/8f2b6d4e-1a3c-4e5f-9b7a-2c4d6e8f0a1b.jsonl",
+            ),
+            By::Person,
+        ),
+        carrier(
+            "01JC5Q3V7XKM4P8R2T6W9YB0DC",
+            "markdown",
+            Some("file:/home/me/notes/garden-log.md"),
+            By::Model,
+        ),
+        carrier("01JC5Q3V7XKM4P8R2T6W9YB0DD", "markdown", None, By::Person),
+    ]);
+    assert_eq!(entries, include_str!("snapshots/tag-entries.txt"));
 }
 
 fn configured(list: &[&str], view: &View) -> String {

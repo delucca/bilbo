@@ -192,6 +192,24 @@ bilbo_rust_test(
 )
 
 bilbo_rust_test(
+    name = "tag",
+    srcs = [
+        "tests/tag.rs",
+        "tests/runner/mod.rs",
+        "tests/scratch/mod.rs",
+    ],
+    crate_root = "tests/tag.rs",
+    layer = "integration",
+    lint_config = ":lints",
+    deps = [
+        ":bilbo_cli",
+        "//libs/entries:rust",
+        "//libs/search:rust",
+        "//libs/store:rust",
+    ] + all_crate_deps(normal_dev = True),
+)
+
+bilbo_rust_test(
     name = "recall",
     srcs = [
         "tests/recall.rs",

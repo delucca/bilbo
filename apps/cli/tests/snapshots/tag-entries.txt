@@ -1,0 +1,3 @@
+01JC5Q3V7XKM4P8R2T6W9YB0DB	session	file:/home/me/.claude/projects/-home-me-src-garden/8f2b6d4e-1a3c-4e5f-9b7a-2c4d6e8f0a1b.jsonl	person
+01JC5Q3V7XKM4P8R2T6W9YB0DC	markdown	file:/home/me/notes/garden-log.md	model
+01JC5Q3V7XKM4P8R2T6W9YB0DD	markdown	-	person

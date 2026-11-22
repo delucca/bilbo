@@ -3,7 +3,9 @@ use std::collections::BTreeSet;
 use bilbo_settings::key::{About as KeyAbout, Default, Key};
 use bilbo_store::entries::{Entries, Meta, StoreError};
 use bilbo_store::id::Id;
-use bilbo_store::labels::{By, Labels, Standing, StoredLabels, Tag, Tags};
+use bilbo_store::labels::{By, CaptureLabel, Labels, Standing, StoredLabels, Tag, Tags};
+
+use crate::read::{self, refs::Target};
 
 pub const CAP: Key<usize> = Key {
     about: KeyAbout {
@@ -158,6 +160,108 @@ pub fn declare(
         wrote,
         bytes,
     })
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Request {
+    pub targets: Vec<Target>,
+    pub add: BTreeSet<Tag>,
+    pub remove: BTreeSet<Tag>,
+    pub listed: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Output {
+    pub changed: u64,
+    pub unchanged: u64,
+    pub new: Vec<Tag>,
+}
+
+#[derive(Debug)]
+pub enum ChangeError {
+    Ref(read::Error),
+    Tag(Error),
+}
+
+pub fn change<S: Entries + Labels>(
+    request: &Request,
+    cap: usize,
+    store: &mut S,
+) -> Result<Output, ChangeError> {
+    let mut ids: Vec<Id> = Vec::new();
+    for target in &request.targets {
+        let id = read::resolve(target, request.listed, &*store).map_err(ChangeError::Ref)?;
+        if store
+            .meta(id)
+            .map_err(|error| ChangeError::Ref(error.into()))?
+            .is_none()
+        {
+            return Err(ChangeError::Ref(read::Error::NoEntry(Target::Entry(id))));
+        }
+        if !ids.contains(&id) {
+            ids.push(id);
+        }
+    }
+    let change = Change::Person {
+        add: &request.add,
+        remove: &request.remove,
+    };
+    for id in &ids {
+        let meta = store
+            .meta(*id)
+            .map_err(|error| ChangeError::Tag(Error::Store(error)))?
+            .ok_or(ChangeError::Tag(Error::Gone(*id)))?;
+        apply(&meta.labels.tags, &change, cap)
+            .map_err(|Full| ChangeError::Tag(Error::Full(*id)))?;
+    }
+    let new =
+        unused(&request.add, &*store).map_err(|error| ChangeError::Tag(Error::Store(error)))?;
+    let (mut changed, mut unchanged) = (0, 0);
+    for id in ids {
+        if declare(id, &change, cap, store)
+            .map_err(ChangeError::Tag)?
+            .wrote
+        {
+            changed += 1;
+        } else {
+            unchanged += 1;
+        }
+    }
+    Ok(Output {
+        changed,
+        unchanged,
+        new,
+    })
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Carrier {
+    pub id: Id,
+    pub kind: String,
+    pub capture: Option<CaptureLabel>,
+    pub by: By,
+}
+
+pub fn carriers(
+    tag: &Tag,
+    entries: &dyn Entries,
+    labels: &dyn Labels,
+) -> Result<Vec<Carrier>, StoreError> {
+    let mut found = Vec::new();
+    for id in labels.tagged(tag)? {
+        let Some(meta) = entries.meta(id)? else {
+            continue;
+        };
+        if let Some(Standing::Carried(by)) = meta.labels.tags.standing(tag) {
+            found.push(Carrier {
+                id,
+                kind: meta.kind,
+                capture: meta.labels.capture,
+                by,
+            });
+        }
+    }
+    Ok(found)
 }
 
 pub fn unused(tags: &BTreeSet<Tag>, labels: &dyn Labels) -> Result<Vec<Tag>, StoreError> {

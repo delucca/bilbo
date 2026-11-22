@@ -7,6 +7,7 @@ Verbs:
   remember  Keep files as entries; a later run keeps what grew or changed
   recall    Search everything bilbo keeps and print the best chunks and notes
   read      Print an entry: its outline, or its records a page at a time
+  tag       List the tags, or change the tags of entries
   reindex   Rebuild the catalog and the search index from the store
   derive    Write notes about entries that stopped growing, with a model
   config    Show each setting, its value and where it came from
