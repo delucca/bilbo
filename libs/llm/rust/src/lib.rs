@@ -2,6 +2,7 @@ pub mod anthropic;
 pub mod api;
 pub mod child;
 pub mod http;
+pub mod keys;
 pub mod model;
 pub mod openai;
 pub mod secret;

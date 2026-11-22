@@ -31,7 +31,7 @@ fn answer() -> Reply {
 
 fn config(url: &str, extra: &str) -> String {
     format!(
-        "derive.enabled = true\nderive.provider = \"anthropic\"\nderive.in = [\"projects\"]\nderive.quiet = \"0s\"\nderive.anthropic.model = \"claude-test-1\"\nderive.anthropic.api.endpoint = \"{url}/v1/messages\"\n{extra}"
+        "derive.enabled = true\nllm.provider = \"anthropic\"\nderive.in = [\"projects\"]\nderive.quiet = \"0s\"\nllm.anthropic.model = \"claude-test-1\"\nllm.anthropic.api.endpoint = \"{url}/v1/messages\"\n{extra}"
     )
 }
 
@@ -108,7 +108,7 @@ fn derive_is_off_by_default_and_sends_nothing() {
     put(
         &scratch,
         &format!(
-            "derive.anthropic.api.endpoint = \"{}/v1/messages\"\n",
+            "llm.anthropic.api.endpoint = \"{}/v1/messages\"\n",
             provider.url()
         ),
     );
@@ -184,7 +184,7 @@ fn the_key_comes_from_a_program_and_is_in_nothing_the_binary_wrote() {
         &config(
             &provider.url(),
             &format!(
-                "derive.anthropic.api.key_command = [\"/bin/sh\", \"{}\"]\n",
+                "llm.anthropic.api.key_command = [\"/bin/sh\", \"{}\"]\n",
                 program.display()
             ),
         ),
@@ -239,11 +239,11 @@ fn a_failed_call_exits_1_and_a_config_error_exits_2() {
     assert_eq!(run.code, 1, "{}", run.stderr);
     put(
         &scratch,
-        &config(&provider.url(), "").replace("derive.anthropic.model = \"claude-test-1\"\n", ""),
+        &config(&provider.url(), "").replace("llm.anthropic.model = \"claude-test-1\"\n", ""),
     );
     let run = derive(&scratch, &["derive"]);
     assert_eq!(run.code, 2, "{}", run.stderr);
-    assert_eq!(run.stderr, "bilbo: derive.anthropic.model is not set\n");
+    assert_eq!(run.stderr, "bilbo: llm.anthropic.model is not set\n");
     scratch.config(&closed(""));
 }
 
@@ -294,7 +294,7 @@ fn derive_through_a_tool_needs_no_key() {
     put(
         &scratch,
         &format!(
-            "derive.enabled = true\nderive.provider = \"anthropic\"\nderive.in = [\"projects\"]\nderive.quiet = \"0s\"\nderive.anthropic.via = \"tool\"\nderive.anthropic.model = \"claude-test-1\"\n\n[derive.anthropic.tool]\nprogram = {:?}\nproject_files = [\"zz-marker.md\"]\narguments = [\"-p\", \"--tools\", \"\", \"--strict-mcp-config\", \"--safe-mode\", \"--no-session-persistence\", \"--system-prompt\", \"{{instruction}}\"]\n",
+            "derive.enabled = true\nllm.provider = \"anthropic\"\nderive.in = [\"projects\"]\nderive.quiet = \"0s\"\nllm.anthropic.via = \"tool\"\nllm.anthropic.model = \"claude-test-1\"\n\n[llm.anthropic.tool]\nprogram = {:?}\nproject_files = [\"zz-marker.md\"]\narguments = [\"-p\", \"--tools\", \"\", \"--strict-mcp-config\", \"--safe-mode\", \"--no-session-persistence\", \"--system-prompt\", \"{{instruction}}\"]\n",
             script.display().to_string()
         ),
     );
@@ -364,7 +364,7 @@ fn derive_through_codex_needs_no_key() {
     put(
         &scratch,
         &format!(
-            "derive.enabled = true\nderive.provider = \"openai\"\nderive.in = [\"projects\"]\nderive.quiet = \"0s\"\nderive.openai.via = \"tool\"\nderive.openai.model = \"model-a\"\n\n[derive.openai.tool]\nprogram = {:?}\nsystem_files = []\n",
+            "derive.enabled = true\nllm.provider = \"openai\"\nderive.in = [\"projects\"]\nderive.quiet = \"0s\"\nllm.openai.via = \"tool\"\nllm.openai.model = \"model-a\"\n\n[llm.openai.tool]\nprogram = {:?}\nsystem_files = []\n",
             script.display().to_string()
         ),
     );

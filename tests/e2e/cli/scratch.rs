@@ -10,9 +10,9 @@ static COUNTER: AtomicU64 = AtomicU64::new(0);
 pub(crate) fn closed(text: &str) -> String {
     let mut whole = String::new();
     for provider in ["anthropic", "openai"] {
-        if !text.contains(&format!("derive.{provider}.api.endpoint")) {
+        if !text.contains(&format!("llm.{provider}.api.endpoint")) {
             whole.push_str(&format!(
-                "derive.{provider}.api.endpoint = \"http://127.0.0.1:9/\"\n"
+                "llm.{provider}.api.endpoint = \"http://127.0.0.1:9/\"\n"
             ));
         }
     }

@@ -103,7 +103,7 @@ pub fn read(
                     "{key} did not end in {}",
                     duration::show(bounds.timeout)
                 )),
-                End::OverLimit => Err(format!("{key} printed more than derive.response allows")),
+                End::OverLimit => Err(format!("{key} printed more than llm.response allows")),
             }
         }
     }

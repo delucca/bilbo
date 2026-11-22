@@ -5,10 +5,7 @@ use std::time::{Duration, Instant, SystemTime};
 use super::scratch::Scratch;
 use super::{Run, binary};
 
-const KEYS: &str = "paths.root, paths.state, paths.cache, store.seal_at, store.seal_after, \
-                    store.compression, store.tear_budget, store.wait, store.poll, follow, read.budget, read.outline_width, \
-                    read.matches_listed, search.chunk_tokens, search.chunk_overlap, search.workers, \
-                    search.index_memory, search.merge_deleted_percent, search.entry_tries, search.label_batch, search.list_limit, recall.budget, recall.notes_budget, recall.candidates, recall.cap, recall.record_cap, recall.copy_share, recall.copy_words, recall.question_words, recall.languages, recall.bm25_k1, recall.bm25_b, recall.read_batch, recall.typo_terms, recall.typo_letters, recall.typo_max_letters, recall.typo_two_edits, recall.pair_weight, derive.enabled, derive.provider, derive.in, derive.not_in, derive.instructions, derive.quiet, derive.window, derive.passage, derive.passage_head, derive.earlier, derive.names, derive.answer_tokens, derive.response, derive.calls, derive.timeout, derive.poll, derive.retries, derive.retry_wait, derive.retry_factor, derive.retry_limit, derive.tries, derive.failures, markdown.heading_width, session.unpack_floor, session.unpack_ratio, session.unpack_window, session.wide_fields, derive.anthropic.model, derive.anthropic.via, derive.anthropic.api.endpoint, derive.anthropic.api.version, derive.anthropic.api.key_env, derive.anthropic.api.key_command, derive.anthropic.api.headers, derive.anthropic.api.extra, derive.anthropic.tool.program, derive.anthropic.tool.effort, derive.anthropic.tool.arguments, derive.anthropic.tool.inherit, derive.anthropic.tool.environment, derive.anthropic.tool.project_files, derive.openai.model, derive.openai.via, derive.openai.api.endpoint, derive.openai.api.key_env, derive.openai.api.key_command, derive.openai.api.headers, derive.openai.api.extra, derive.openai.tool.program, derive.openai.tool.effort, derive.openai.tool.arguments, derive.openai.tool.inherit, derive.openai.tool.environment, derive.openai.tool.home, derive.openai.tool.system_files";
+const KEYS: &str = "paths.root, paths.state, paths.cache, store.seal_at, store.seal_after, store.compression, store.tear_budget, store.wait, store.poll, follow, read.budget, read.outline_width, read.matches_listed, search.chunk_tokens, search.chunk_overlap, search.workers, search.index_memory, search.merge_deleted_percent, search.entry_tries, search.label_batch, search.list_limit, recall.budget, recall.notes_budget, recall.candidates, recall.cap, recall.record_cap, recall.copy_share, recall.copy_words, recall.question_words, recall.languages, recall.bm25_k1, recall.bm25_b, recall.read_batch, recall.typo_terms, recall.typo_letters, recall.typo_max_letters, recall.typo_two_edits, recall.pair_weight, llm.provider, llm.response, llm.timeout, llm.poll, llm.anthropic.model, llm.anthropic.via, llm.anthropic.api.endpoint, llm.anthropic.api.version, llm.anthropic.api.key_env, llm.anthropic.api.key_command, llm.anthropic.api.headers, llm.anthropic.api.extra, llm.anthropic.tool.program, llm.anthropic.tool.effort, llm.anthropic.tool.arguments, llm.anthropic.tool.inherit, llm.anthropic.tool.environment, llm.anthropic.tool.project_files, llm.openai.model, llm.openai.via, llm.openai.api.endpoint, llm.openai.api.key_env, llm.openai.api.key_command, llm.openai.api.headers, llm.openai.api.extra, llm.openai.tool.program, llm.openai.tool.effort, llm.openai.tool.arguments, llm.openai.tool.inherit, llm.openai.tool.environment, llm.openai.tool.home, llm.openai.tool.system_files, derive.enabled, derive.in, derive.not_in, derive.instructions, derive.quiet, derive.window, derive.passage, derive.passage_head, derive.earlier, derive.names, derive.answer_tokens, derive.calls, derive.retries, derive.retry_wait, derive.retry_factor, derive.retry_limit, derive.tries, derive.failures, markdown.heading_width, session.unpack_floor, session.unpack_ratio, session.unpack_window, session.wide_fields";
 
 #[test]
 fn each_key_shows_the_source_that_won_a_variable_over_the_file_over_the_default() {
@@ -61,8 +58,39 @@ fn each_key_shows_the_source_that_won_a_variable_over_the_file_over_the_default(
              recall.typo_max_letters = 64 (default)\n\
              recall.typo_two_edits = 8 (default)\n\
              recall.pair_weight = 0.25 (default)\n\
+             llm.provider = \"\" (default)\n\
+             llm.response = \"4 MiB\" (default)\n\
+             llm.timeout = \"5m\" (default)\n\
+             llm.poll = \"5ms\" (default)\n\
+             llm.anthropic.model = \"\" (default)\n\
+             llm.anthropic.via = \"api\" (default)\n\
+             llm.anthropic.api.endpoint = \"https://api.anthropic.com/v1/messages\" (default)\n\
+             llm.anthropic.api.version = \"2026-10-21\" (default)\n\
+             llm.anthropic.api.key_env = \"ANTHROPIC_API_KEY\" (default)\n\
+             llm.anthropic.api.key_command = [] (default)\n\
+             llm.anthropic.api.headers = {{}} (default)\n\
+             llm.anthropic.api.extra = {{}} (default)\n\
+             llm.anthropic.tool.program = \"claude\" (default)\n\
+             llm.anthropic.tool.effort = \"medium\" (default)\n\
+             llm.anthropic.tool.arguments = [\"-p\", \"--model\", \"{{model}}\", \"--effort\", \"{{effort}}\", \"--output-format\", \"json\", \"--tools\", \"\", \"--disable-slash-commands\", \"--strict-mcp-config\", \"--setting-sources\", \"project\", \"--settings\", \"{{\\\"disableAllHooks\\\": true}}\", \"--no-session-persistence\", \"--safe-mode\", \"--system-prompt\", \"{{instruction}}\"] (default)\n\
+             llm.anthropic.tool.inherit = [\"HOME\", \"USER\", \"PATH\", \"TMPDIR\"] (default)\n\
+             llm.anthropic.tool.environment = {{ DISABLE_PROMPT_CACHING = \"1\", LANG = \"en_US.UTF-8\" }} (default)\n\
+             llm.anthropic.tool.project_files = [\"CLAUDE.md\", \"CLAUDE.local.md\", \"AGENTS.md\", \".mcp.json\", \".claude/CLAUDE.md\", \".claude/rules\", \".claude/skills\", \".claude/commands\", \".claude/settings.json\", \".claude/settings.local.json\"] (default)\n\
+             llm.openai.model = \"\" (default)\n\
+             llm.openai.via = \"api\" (default)\n\
+             llm.openai.api.endpoint = \"https://api.openai.com/v1/responses\" (default)\n\
+             llm.openai.api.key_env = \"OPENAI_API_KEY\" (default)\n\
+             llm.openai.api.key_command = [] (default)\n\
+             llm.openai.api.headers = {{}} (default)\n\
+             llm.openai.api.extra = {{}} (default)\n\
+             llm.openai.tool.program = \"codex\" (default)\n\
+             llm.openai.tool.effort = \"medium\" (default)\n\
+             llm.openai.tool.arguments = [\"exec\", \"--json\", \"--ephemeral\", \"--ignore-user-config\", \"--ignore-rules\", \"--skip-git-repo-check\", \"--strict-config\", \"-s\", \"read-only\", \"-m\", \"{{model}}\", \"-c\", \"model_catalog_json=\\\"{{catalog}}\\\"\", \"-c\", \"model_instructions_file=\\\"{{instruction}}\\\"\", \"-c\", \"model_reasoning_effort=\\\"{{effort}}\\\"\", \"--disable\", \"shell_tool\", \"--disable\", \"unified_exec\", \"--disable\", \"view_image\", \"--disable\", \"sleep_tool\", \"--disable\", \"apps\", \"--disable\", \"plugins\", \"--disable\", \"tool_suggest\", \"--disable\", \"hooks\", \"--disable\", \"image_generation\", \"--disable\", \"goals\", \"--disable\", \"shell_snapshot\", \"--disable\", \"incremental_tools\", \"--disable\", \"unbounded_connection_retries\", \"-c\", \"agents.enabled=false\", \"-c\", \"tools.experimental_request_user_input.enabled=false\", \"-c\", \"web_search=\\\"disabled\\\"\", \"-c\", \"cloud.skills.enabled=false\", \"-c\", \"skills.include_instructions=false\", \"-c\", \"skills.bundled.enabled=false\", \"-c\", \"include_environment_context=false\", \"-c\", \"include_permissions_instructions=false\", \"-c\", \"include_apps_instructions=false\", \"-c\", \"include_collaboration_mode_instructions=false\", \"-c\", \"project_doc_max_bytes=0\", \"-c\", \"project_root_markers=[]\", \"-c\", \"history.persistence=\\\"none\\\"\", \"-c\", \"analytics.enabled=false\", \"-c\", \"otel.metrics_exporter=\\\"none\\\"\", \"-\"] (default)\n\
+             llm.openai.tool.inherit = [\"PATH\", \"TMPDIR\"] (default)\n\
+             llm.openai.tool.environment = {{}} (default)\n\
+             llm.openai.tool.home = \"\" (default)\n\
+             llm.openai.tool.system_files = [\"/etc/codex/config.toml\", \"/etc/codex/managed_config.toml\", \"/etc/codex/requirements.toml\", \"/etc/codex/skills\", \"/Library/Managed Preferences/com.openai.codex.plist\", \"/Library/Managed Preferences/*/com.openai.codex.plist\"] (default)\n\
              derive.enabled = false (default)\n\
-             derive.provider = \"\" (default)\n\
              derive.in = [] (default)\n\
              derive.not_in = [] (default)\n\
              derive.instructions = {{}} (default)\n\
@@ -73,10 +101,7 @@ fn each_key_shows_the_source_that_won_a_variable_over_the_file_over_the_default(
              derive.earlier = 3000 (default)\n\
              derive.names = 0.5 (default)\n\
              derive.answer_tokens = 16000 (default)\n\
-             derive.response = \"4 MiB\" (default)\n\
              derive.calls = 20 (default)\n\
-             derive.timeout = \"5m\" (default)\n\
-             derive.poll = \"5ms\" (default)\n\
              derive.retries = 2 (default)\n\
              derive.retry_wait = \"30s\" (default)\n\
              derive.retry_factor = 2 (default)\n\
@@ -87,35 +112,7 @@ fn each_key_shows_the_source_that_won_a_variable_over_the_file_over_the_default(
              session.unpack_floor = \"128 MiB\" (default)\n\
              session.unpack_ratio = 256 (default)\n\
              session.unpack_window = \"128 MiB\" (default)\n\
-             session.wide_fields = 32 (default)\n\
-             derive.anthropic.model = \"\" (default)\n\
-             derive.anthropic.via = \"api\" (default)\n\
-             derive.anthropic.api.endpoint = \"https://api.anthropic.com/v1/messages\" (default)\n\
-             derive.anthropic.api.version = \"2026-10-21\" (default)\n\
-             derive.anthropic.api.key_env = \"ANTHROPIC_API_KEY\" (default)\n\
-             derive.anthropic.api.key_command = [] (default)\n\
-             derive.anthropic.api.headers = {{}} (default)\n\
-             derive.anthropic.api.extra = {{}} (default)\n\
-             derive.anthropic.tool.program = \"claude\" (default)\n\
-             derive.anthropic.tool.effort = \"medium\" (default)\n\
-             derive.anthropic.tool.arguments = [\"-p\", \"--model\", \"{{model}}\", \"--effort\", \"{{effort}}\", \"--output-format\", \"json\", \"--tools\", \"\", \"--disable-slash-commands\", \"--strict-mcp-config\", \"--setting-sources\", \"project\", \"--settings\", \"{{\\\"disableAllHooks\\\": true}}\", \"--no-session-persistence\", \"--safe-mode\", \"--system-prompt\", \"{{instruction}}\"] (default)\n\
-             derive.anthropic.tool.inherit = [\"HOME\", \"USER\", \"PATH\", \"TMPDIR\"] (default)\n\
-             derive.anthropic.tool.environment = {{ DISABLE_PROMPT_CACHING = \"1\", LANG = \"en_US.UTF-8\" }} (default)\n\
-             derive.anthropic.tool.project_files = [\"CLAUDE.md\", \"CLAUDE.local.md\", \"AGENTS.md\", \".mcp.json\", \".claude/CLAUDE.md\", \".claude/rules\", \".claude/skills\", \".claude/commands\", \".claude/settings.json\", \".claude/settings.local.json\"] (default)\n\
-             derive.openai.model = \"\" (default)\n\
-             derive.openai.via = \"api\" (default)\n\
-             derive.openai.api.endpoint = \"https://api.openai.com/v1/responses\" (default)\n\
-             derive.openai.api.key_env = \"OPENAI_API_KEY\" (default)\n\
-             derive.openai.api.key_command = [] (default)\n\
-             derive.openai.api.headers = {{}} (default)\n\
-             derive.openai.api.extra = {{}} (default)\n\
-             derive.openai.tool.program = \"codex\" (default)\n\
-             derive.openai.tool.effort = \"medium\" (default)\n\
-             derive.openai.tool.arguments = [\"exec\", \"--json\", \"--ephemeral\", \"--ignore-user-config\", \"--ignore-rules\", \"--skip-git-repo-check\", \"--strict-config\", \"-s\", \"read-only\", \"-m\", \"{{model}}\", \"-c\", \"model_catalog_json=\\\"{{catalog}}\\\"\", \"-c\", \"model_instructions_file=\\\"{{instruction}}\\\"\", \"-c\", \"model_reasoning_effort=\\\"{{effort}}\\\"\", \"--disable\", \"shell_tool\", \"--disable\", \"unified_exec\", \"--disable\", \"view_image\", \"--disable\", \"sleep_tool\", \"--disable\", \"apps\", \"--disable\", \"plugins\", \"--disable\", \"tool_suggest\", \"--disable\", \"hooks\", \"--disable\", \"image_generation\", \"--disable\", \"goals\", \"--disable\", \"shell_snapshot\", \"--disable\", \"incremental_tools\", \"--disable\", \"unbounded_connection_retries\", \"-c\", \"agents.enabled=false\", \"-c\", \"tools.experimental_request_user_input.enabled=false\", \"-c\", \"web_search=\\\"disabled\\\"\", \"-c\", \"cloud.skills.enabled=false\", \"-c\", \"skills.include_instructions=false\", \"-c\", \"skills.bundled.enabled=false\", \"-c\", \"include_environment_context=false\", \"-c\", \"include_permissions_instructions=false\", \"-c\", \"include_apps_instructions=false\", \"-c\", \"include_collaboration_mode_instructions=false\", \"-c\", \"project_doc_max_bytes=0\", \"-c\", \"project_root_markers=[]\", \"-c\", \"history.persistence=\\\"none\\\"\", \"-c\", \"analytics.enabled=false\", \"-c\", \"otel.metrics_exporter=\\\"none\\\"\", \"-\"] (default)\n\
-             derive.openai.tool.inherit = [\"PATH\", \"TMPDIR\"] (default)\n\
-             derive.openai.tool.environment = {{}} (default)\n\
-             derive.openai.tool.home = \"\" (default)\n\
-             derive.openai.tool.system_files = [\"/etc/codex/config.toml\", \"/etc/codex/managed_config.toml\", \"/etc/codex/requirements.toml\", \"/etc/codex/skills\", \"/Library/Managed Preferences/com.openai.codex.plist\", \"/Library/Managed Preferences/*/com.openai.codex.plist\"] (default)\n",
+             session.wide_fields = 32 (default)\n",
             root = scratch.path("store"),
             home = scratch.path("home"),
             cache = scratch.path("cache"),
@@ -597,4 +594,24 @@ fn config_set_on_a_linked_file_exits_2_and_prints_the_line() {
         )
     );
     assert_eq!(fs::read_to_string(&managed).expect("kept"), "");
+}
+
+#[test]
+fn the_scratch_config_closes_both_providers() {
+    let scratch = Scratch::new("closed-providers");
+    let config = scratch.config(&super::scratch::closed(""));
+    let run = scratch.run(&["config"]);
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    let endpoints: Vec<&str> = run
+        .stdout
+        .lines()
+        .filter(|line| line.contains(".api.endpoint = "))
+        .collect();
+    assert_eq!(
+        endpoints,
+        [
+            format!("llm.anthropic.api.endpoint = \"http://127.0.0.1:9/\" ({config}:1)"),
+            format!("llm.openai.api.endpoint = \"http://127.0.0.1:9/\" ({config}:2)"),
+        ]
+    );
 }

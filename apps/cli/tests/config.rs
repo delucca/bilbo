@@ -191,24 +191,24 @@ fn a_value_the_key_refuses_is_said_in_the_keys_words_and_nothing_is_written() {
             "derive.enabled must be true or false, got \"yes\"",
         ),
         (
-            "derive.anthropic.api.endpoint",
+            "llm.anthropic.api.endpoint",
             "http://localhost:1",
-            "derive.anthropic.api.endpoint must name the address in place of localhost: 127.0.0.1",
+            "llm.anthropic.api.endpoint must name the address in place of localhost: 127.0.0.1",
         ),
         (
-            "derive.anthropic.api.endpoint",
+            "llm.anthropic.api.endpoint",
             "https://u:hunter2@example.com",
-            "derive.anthropic.api.endpoint must hold no user name or password, got one",
+            "llm.anthropic.api.endpoint must hold no user name or password, got one",
         ),
         (
-            "derive.openai.via",
+            "llm.openai.via",
             "cli",
-            "derive.openai.via must be api or tool, got \"cli\"",
+            "llm.openai.via must be api or tool, got \"cli\"",
         ),
         (
-            "derive.anthropic.via",
+            "llm.anthropic.via",
             "cli",
-            "derive.anthropic.via must be api or tool, got \"cli\"",
+            "llm.anthropic.via must be api or tool, got \"cli\"",
         ),
     ];
     for (key, value, line) in cases {
@@ -223,41 +223,41 @@ fn a_value_the_key_refuses_is_said_in_the_keys_words_and_nothing_is_written() {
 #[test]
 fn config_set_writes_a_key_of_a_ways_table() {
     let sandbox = Sandbox::new("config-set-way");
-    sandbox.put("[derive.anthropic]\nmodel = \"m\"\n");
+    sandbox.put("[llm.anthropic]\nmodel = \"m\"\n");
     let run = sandbox.run(&[
         "config",
         "set",
-        "derive.anthropic.api.endpoint",
+        "llm.anthropic.api.endpoint",
         "https://e.test/v1",
     ]);
     assert_eq!(run.code, 0, "{:?}", run.stderr);
     assert_eq!(
         sandbox.text(),
-        "[derive.anthropic]\nmodel = \"m\"\n\n[derive.anthropic.api]\nendpoint = \"https://e.test/v1\"\n"
+        "[llm.anthropic]\nmodel = \"m\"\n\n[llm.anthropic.api]\nendpoint = \"https://e.test/v1\"\n"
     );
     let sandbox = Sandbox::new("config-set-via");
-    sandbox.put("[derive.anthropic.api]\nendpoint = \"https://example.test/v1\"\n");
-    let run = sandbox.run(&["config", "set", "derive.anthropic.via", "tool"]);
+    sandbox.put("[llm.anthropic.api]\nendpoint = \"https://example.test/v1\"\n");
+    let run = sandbox.run(&["config", "set", "llm.anthropic.via", "tool"]);
     assert_eq!(run.code, 0, "{:?}", run.stderr);
     assert_eq!(
         sandbox.text(),
-        "[derive.anthropic.api]\nendpoint = \"https://example.test/v1\"\n\n[derive.anthropic]\nvia = \"tool\"\n"
+        "[llm.anthropic.api]\nendpoint = \"https://example.test/v1\"\n\n[llm.anthropic]\nvia = \"tool\"\n"
     );
-    let read = sandbox.run(&["config", "derive.anthropic.via"]);
+    let read = sandbox.run(&["config", "llm.anthropic.via"]);
     assert_eq!((read.code, read.stdout.as_str()), (0, "tool\n"));
 }
 
 #[test]
 fn config_set_takes_the_tool_for_openai() {
     let sandbox = Sandbox::new("config-set-openai-tool");
-    sandbox.put("[derive.openai.api]\nendpoint = \"https://example.test/v1\"\n");
-    let run = sandbox.run(&["config", "set", "derive.openai.via", "tool"]);
+    sandbox.put("[llm.openai.api]\nendpoint = \"https://example.test/v1\"\n");
+    let run = sandbox.run(&["config", "set", "llm.openai.via", "tool"]);
     assert_eq!(run.code, 0, "{:?}", run.stderr);
     assert_eq!(
         sandbox.text(),
-        "[derive.openai.api]\nendpoint = \"https://example.test/v1\"\n\n[derive.openai]\nvia = \"tool\"\n"
+        "[llm.openai.api]\nendpoint = \"https://example.test/v1\"\n\n[llm.openai]\nvia = \"tool\"\n"
     );
-    let read = sandbox.run(&["config", "derive.openai.via"]);
+    let read = sandbox.run(&["config", "llm.openai.via"]);
     assert_eq!((read.code, read.stdout.as_str()), (0, "tool\n"));
 }
 
@@ -334,7 +334,7 @@ fn every_reason_set_does_not_write_has_its_clause_its_line_and_leaves_the_file()
         ),
         (
             "table by a dotted key",
-            |s| s.put("derive.enabled = true\n\n[derive.anthropic]\nmodel = \"m\"\n"),
+            |s| s.put("derive.enabled = true\n\n[llm.anthropic]\nmodel = \"m\"\n"),
             "derive.quiet",
             "45m",
             "line 1 sets its table with a dotted key",
@@ -350,8 +350,8 @@ fn every_reason_set_does_not_write_has_its_clause_its_line_and_leaves_the_file()
         ),
         (
             "table in braces",
-            |s| s.put("derive = { anthropic = {} }\n"),
-            "derive.anthropic.model",
+            |s| s.put("llm = { anthropic = {} }\n"),
+            "llm.anthropic.model",
             "m",
             "line 1 sets its table inside braces",
             true,
@@ -477,13 +477,13 @@ fn a_table_is_set_whole() {
 #[test]
 fn a_text_that_is_no_toml_is_taken_as_text() {
     let sandbox = Sandbox::new("config-set-text");
-    for (key, value) in [("derive.quiet", "30m"), ("derive.provider", "anthropic")] {
+    for (key, value) in [("derive.quiet", "30m"), ("llm.provider", "anthropic")] {
         let run = sandbox.run(&["config", "set", key, value]);
         assert_eq!(run.code, 0, "{:?}", run.stderr);
     }
     assert_eq!(
         sandbox.text(),
-        "[derive]\nquiet = \"30m\"\nprovider = \"anthropic\"\n"
+        "[derive]\nquiet = \"30m\"\n\n[llm]\nprovider = \"anthropic\"\n"
     );
 }
 
@@ -491,8 +491,8 @@ fn a_text_that_is_no_toml_is_taken_as_text() {
 fn the_commands_that_turn_derive_on_run_in_order() {
     let sandbox = Sandbox::new("config-set-on");
     for args in [
-        ["derive.provider", "anthropic"],
-        ["derive.anthropic.model", "claude-haiku-5-5"],
+        ["llm.provider", "anthropic"],
+        ["llm.anthropic.model", "claude-haiku-5-5"],
         ["derive.in", "[\"sessions\"]"],
         ["derive.quiet", "0s"],
         ["derive.enabled", "true"],
@@ -534,18 +534,13 @@ fn set_takes_its_turn_on_the_lock_and_reads_the_file_again() {
 #[test]
 fn a_text_the_key_takes_only_as_a_text_is_written_as_one() {
     let sandbox = Sandbox::new("config-set-date");
-    let run = sandbox.run(&[
-        "config",
-        "set",
-        "derive.anthropic.api.version",
-        "2026-10-21",
-    ]);
+    let run = sandbox.run(&["config", "set", "llm.anthropic.api.version", "2026-10-21"]);
     assert_eq!(run.code, 0, "{:?}", run.stderr);
     assert_eq!(
         sandbox.text(),
-        "[derive.anthropic.api]\nversion = \"2026-10-21\"\n"
+        "[llm.anthropic.api]\nversion = \"2026-10-21\"\n"
     );
-    let read = sandbox.run(&["config", "derive.anthropic.api.version"]);
+    let read = sandbox.run(&["config", "llm.anthropic.api.version"]);
     assert_eq!((read.code, read.stdout.as_str()), (0, "2026-10-21\n"));
 }
 

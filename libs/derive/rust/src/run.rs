@@ -79,6 +79,8 @@ pub struct Sinks<'a> {
 
 pub struct Context<'a> {
     pub section: &'a Section,
+    pub provider: &'a str,
+    pub limits: Limits,
     pub format: &'a Format<'a>,
     pub counter: &'a Counter<'a>,
 }
@@ -322,13 +324,12 @@ impl Machine<'_> {
         made: Made,
         sent: u64,
     ) -> Run {
-        let section = self.context.section;
         let model = if made.passed {
             String::new()
         } else {
             self.writer.id().to_owned()
         };
-        let provider = section.provider.value.clone();
+        let provider = self.context.provider.to_owned();
         Run {
             kind: entry.parent.kind.clone(),
             instruction: entry.instruction.id.clone(),
@@ -421,7 +422,7 @@ impl Machine<'_> {
             parent: entry.parent.id,
             first: planned.window.first,
             last: planned.window.last,
-            provider: self.context.section.provider.value.clone(),
+            provider: self.context.provider.to_owned(),
             asked: if line.verdict == Verdict::Passed {
                 String::new()
             } else {
@@ -469,12 +470,6 @@ impl Machine<'_> {
             material: view::material(earlier, entry.preface.as_deref(), &planned.window.text),
         };
         let grounds = view::grounds(earlier, entry.preface.as_deref(), &planned.window.text);
-        let limits = Limits {
-            answer_tokens: section.answer_tokens.value,
-            timeout: section.timeout.value,
-            response: section.response.value,
-            poll: section.poll.value,
-        };
         let sent = size_of_window(planned);
         let mut retries = 0u32;
         loop {
@@ -489,7 +484,7 @@ impl Machine<'_> {
             }
             let attempt = Some(retries + 1);
             let started = self.clock.now();
-            let outcome = self.writer.call(&prompt, &limits);
+            let outcome = self.writer.call(&prompt, &self.context.limits);
             let millis = self.clock.now().duration_since(started).map_or(0, |taken| {
                 u64::try_from(taken.as_millis()).unwrap_or(u64::MAX)
             });

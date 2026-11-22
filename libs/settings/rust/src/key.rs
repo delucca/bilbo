@@ -464,12 +464,37 @@ pub fn quote(text: &str) -> String {
     quoted
 }
 
+pub fn show_list(items: &[String]) -> String {
+    let quoted: Vec<String> = items.iter().map(|item| quote(item)).collect();
+    format!("[{}]", quoted.join(", "))
+}
+
+pub fn show_texts(headers: &[(String, String)]) -> String {
+    inline(
+        headers
+            .iter()
+            .map(|(name, text)| format!("{} = {}", segment(name), quote(text))),
+    )
+}
+
+pub fn inline(items: impl Iterator<Item = String>) -> String {
+    let items: Vec<String> = items.collect();
+    if items.is_empty() {
+        "{}".to_owned()
+    } else {
+        format!("{{ {} }}", items.join(", "))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::ffi::OsString;
     use std::path::{Path, PathBuf};
 
-    use super::{About, Default, Flag, Given, Key, Origin, Resolved, Source, Value, quote};
+    use super::{
+        About, Default, Flag, Given, Key, Origin, Resolved, Source, Value, quote, show_list,
+        show_texts,
+    };
     use crate::error::{At, Error};
     use crate::file::{self, File};
     use crate::folder::{self, Folder};
@@ -1346,5 +1371,19 @@ mod tests {
         for refused in [from_file, from_variable, from_default] {
             assert!(!message(refused).contains("PLUM"));
         }
+    }
+
+    #[test]
+    fn a_list_and_a_table_of_texts_are_printed_as_toml_that_reads_back() {
+        assert_eq!(
+            show_list(&["a".to_owned(), "b c".to_owned()]),
+            "[\"a\", \"b c\"]"
+        );
+        let texts = [
+            ("X-A".to_owned(), "1".to_owned()),
+            ("a.b".to_owned(), "2".to_owned()),
+        ];
+        assert_eq!(show_texts(&texts), "{ X-A = \"1\", \"a.b\" = \"2\" }");
+        assert_eq!(show_texts(&[]), "{}");
     }
 }

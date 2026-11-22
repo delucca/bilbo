@@ -7,10 +7,10 @@ check and the search use again, since the catalog and the state folder record th
 session file to its entry id; manifest.json is written last.
 
 BILBO_EVAL_DERIVE, when set, is a JSON object: `provider` (anthropic or openai); `settings`, a flat object of
-dotted derive.* keys written into the store's config.toml (the provider's real `derive.<provider>.api.endpoint`, an https
-URL or an http URL at a loopback address, goes here, or the real `derive.anthropic.tool.program`, the image's tool by
+dotted llm.* and derive.* keys written into the store's config.toml (the provider's real `llm.<provider>.api.endpoint`, an https
+URL or an http URL at a loopback address, goes here, or the real `llm.anthropic.tool.program`, the image's tool by
 default); `cache`, `{"write": false}` to replay or `{"write": true}` with the real provider behind, and
-`timeout`, the seconds the cache waits for the provider, under the store's derive.timeout; `ceilings`, `{"calls", "tokens",
+`timeout`, the seconds the cache waits for the provider, under the store's llm.timeout; `ceilings`, `{"calls", "tokens",
 "refusals"}` the build stops at, held against /answers/<provider>-<way>/spent; `calls_per_run`. A folder STOP in /work/store
 stops the loop."""
 
@@ -59,8 +59,8 @@ KEY_VARIABLES = {"anthropic": "ANTHROPIC_API_KEY", "openai": "OPENAI_API_KEY"}
 TOOLS = {"anthropic": "claude"}
 LAUNCHER = Path("/tmp/claude")
 RUN_FIELDS = ("entries", "calls", "notes", "dropped", "refused", "failed", "tokens_in", "tokens_out", "seconds")
-DERIVE_TIMEOUT = re.compile(r'^derive\.timeout = "(\d+)(ms|s|m)"', re.M)
-HIDDEN = re.compile(r"^(derive\.[a-z]+\.[a-z]+\.(?:headers|environment)) = ")
+DERIVE_TIMEOUT = re.compile(r'^llm\.timeout = "(\d+)(ms|s|m)"', re.M)
+HIDDEN = re.compile(r"^(llm\.[a-z]+\.[a-z]+\.(?:headers|environment)) = ")
 DRY_CALLS = 100000
 REINDEX = re.compile(r"^entries (\d+), chunks (\d+), unread (\d+), failed (\d+)\nindex bytes (\d+), milliseconds (\d+)$")
 
@@ -127,7 +127,7 @@ def derive_env():
         sys.exit(f"bilbo-next: BILBO_EVAL_DERIVE: the way {way!r} is none of api and tool")
     if way == "tool" and given["provider"] not in TOOLS:
         sys.exit(f"bilbo-next: BILBO_EVAL_DERIVE: the provider {given['provider']!r} has no way 'tool'")
-    endpoint = given.get("settings", {}).get(f"derive.{given['provider']}.api.endpoint", "")
+    endpoint = given.get("settings", {}).get(f"llm.{given['provider']}.api.endpoint", "")
     if "@" in endpoint:
         sys.exit("bilbo-next: BILBO_EVAL_DERIVE: the endpoint must hold no user name or password")
     if endpoint and not loopback_or_https(urlsplit(endpoint)):
@@ -137,7 +137,7 @@ def derive_env():
 
 
 def way_of(derive):
-    return derive.get("settings", {}).get(f"derive.{derive['provider']}.via", "api")
+    return derive.get("settings", {}).get(f"llm.{derive['provider']}.via", "api")
 
 
 def folder_of(derive):
@@ -188,7 +188,7 @@ def loopback_or_https(where):
 
 
 def tool_behind(provider, settings):
-    program = settings.get(f"derive.{provider}.tool.program", TOOLS[provider])
+    program = settings.get(f"llm.{provider}.tool.program", TOOLS[provider])
     real = shutil.which(program)
     if not real:
         sys.exit(f"bilbo-next: BILBO_EVAL_DERIVE: no program {program!r} to stand behind the cache")
@@ -211,11 +211,11 @@ def start_cache(derive):
     command = [sys.executable, str(here / "cache.py"), "--dir", str(ANSWERS / folder_of(derive)), "--record", str(LIFE),
                "--timeout", str(option["timeout"])]
     if way_of(derive) == "tool":
-        key = f"derive.{derive['provider']}.tool.program"
+        key = f"llm.{derive['provider']}.tool.program"
         program, upstream = tool_behind(derive["provider"], settings)
         command += ["--upstream", upstream, "--tool", program]
     else:
-        key = f"derive.{derive['provider']}.api.endpoint"
+        key = f"llm.{derive['provider']}.api.endpoint"
         if key not in settings:
             sys.exit(f"bilbo-next: BILBO_EVAL_DERIVE: settings hold no {key}")
         real = urlsplit(settings[key])
@@ -304,7 +304,7 @@ def spend(folder, line):
 def seconds_of(config):
     found = DERIVE_TIMEOUT.search(config)
     if not found:
-        sys.exit(f"bilbo-next: bilbo config printed no derive.timeout: {config!r}")
+        sys.exit(f"bilbo-next: bilbo config printed no llm.timeout: {config!r}")
     return int(found.group(1)) * {"ms": 0.001, "s": 1, "m": 60}[found.group(2)]
 
 
@@ -312,8 +312,8 @@ def derive_step(name, repos, ids, derive, settings, life):
     d = folders(name)
     ceilings, per_run = derive["ceilings"], derive["calls_per_run"]
     labels = [f"{STAGED if LIMITED else CORPUS}/{repo}" for repo in repos]
-    config = {"derive.enabled": True, "derive.provider": derive["provider"], "derive.in": labels,
-              f"derive.{derive['provider']}.via": way_of(derive), **settings}
+    config = {"derive.enabled": True, "llm.provider": derive["provider"], "derive.in": labels,
+              f"llm.{derive['provider']}.via": way_of(derive), **settings}
     (d / "config.toml").write_text("follow = []\n" + toml_tables(config))
     totals = {"runs": 0, "calls": 0, "notes": 0, "dropped": 0, "refused": 0, "failed": 0, "tokens_in": 0, "tokens_out": 0}
     code, out, err = bilbo(name, "config")
@@ -324,7 +324,7 @@ def derive_step(name, repos, ids, derive, settings, life):
     tries = int(tries.group(1))
     allowed = seconds_of(out)
     if derive["cache"]["timeout"] >= allowed:
-        sys.exit(f"bilbo-next: BILBO_EVAL_DERIVE: cache.timeout {derive['cache']['timeout']} is not under derive.timeout, {allowed:g} seconds")
+        sys.exit(f"bilbo-next: BILBO_EVAL_DERIVE: cache.timeout {derive['cache']['timeout']} is not under llm.timeout, {allowed:g} seconds")
     for repo in repos:
         before, wrote, still, last = None, 0, 0, ""
         while True:
@@ -428,7 +428,7 @@ def entry_of(name, repo, path):
 
 
 def key_variable(derive, settings):
-    return settings.get(f"derive.{derive['provider']}.api.key_env", KEY_VARIABLES[derive["provider"]])
+    return settings.get(f"llm.{derive['provider']}.api.key_env", KEY_VARIABLES[derive["provider"]])
 
 
 def config_line(line):
@@ -476,7 +476,7 @@ def one_life(groups, by_repo, derive, life):
                 code, out, err = bilbo(name, "config")
                 sure("config", code, out, err)
                 derived["config"] += [config_line(line)
-                                      for line in out.splitlines() if line.startswith(("derive.", "recall.notes_budget"))]
+                                      for line in out.splitlines() if line.startswith(("derive.", "llm.", "recall.notes_budget"))]
             code, out, err = bilbo(name, "reindex")
             sure("reindex", code, out, err)
             m = REINDEX.match(out.strip())

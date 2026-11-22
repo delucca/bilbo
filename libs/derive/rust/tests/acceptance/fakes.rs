@@ -706,6 +706,7 @@ pub struct World {
     pub lines: Lines,
     pub watch: Watch,
     pub section: Section,
+    pub limits: Limits,
     pub instructions: Vec<Instruction>,
     pub bound: usize,
     pub redo: bool,
@@ -733,7 +734,6 @@ impl World {
     pub fn new() -> World {
         let mut section = keys::defaults();
         section.enabled.value = true;
-        section.provider.value = "fake".to_owned();
         section.named.value = vec!["in".to_owned()];
         section.left_out.value = vec!["out".to_owned()];
         section.quiet.value = Duration::from_secs(30 * 60);
@@ -751,6 +751,12 @@ impl World {
                 slept: RefCell::new(Vec::new()),
             },
             section,
+            limits: Limits {
+                answer_tokens: 16_000,
+                timeout: Duration::from_secs(300),
+                response: 4 << 20,
+                poll: Duration::from_millis(5),
+            },
             instructions: ["plain", "folded", "rewrite", "headed"]
                 .into_iter()
                 .map(instruction_for)
@@ -888,6 +894,7 @@ impl World {
                 tokens: &*self.tokens,
                 bound: self.bound,
                 model: "model-a",
+                provider: "fake",
                 redo: self.redo,
                 now: self.watch.now.get(),
             },
@@ -914,6 +921,8 @@ impl World {
             },
             &Context {
                 section: &self.section,
+                provider: "fake",
+                limits: self.limits,
                 format: &format,
                 counter: &counter,
             },

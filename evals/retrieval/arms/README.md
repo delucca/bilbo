@@ -51,7 +51,7 @@ notes between remembering and reindexing: it writes the `derive.*` settings into
 `bilbo derive --calls <n> <the repository's entry ids>` while a run makes progress (it wrote a note, or the dry run after it
 differs from the one before) until `bilbo derive --dry-run` says `due: 0 entries`, reads the `entry` lines of the dry run (every
 entry must be `covered` or `passed over`), and then reindexes. `derive.tries` runs in a row that change nothing end the build.
-The reindex must count the sessions plus the note entries. The provider is `anthropic` or `openai`. The way is the setting `derive.<provider>.via`, `api` when the settings name none, and the build writes it into every store's config; `openai` has `api` alone. The endpoint of a provider is an `https` URL, or an `http` URL at a literal loopback address (not a name), with a port that is a number or none, and holds no `@` anywhere (no user name, no password, no secret in its query or fragment). A file `STOP` in `/work/store` stops the loop.
+The reindex must count the sessions plus the note entries. The provider is `anthropic` or `openai`. The way is the setting `llm.<provider>.via`, `api` when the settings name none, and the build writes it into every store's config; `openai` has `api` alone. The endpoint of a provider is an `https` URL, or an `http` URL at a literal loopback address (not a name), with a port that is a number or none, and holds no `@` anywhere (no user name, no password, no secret in its query or fragment). A file `STOP` in `/work/store` stops the loop.
 
 **Lives.** A build is made of lives. A life makes every store from nothing and counts every request's asks from 0. The build
 ends on a life in which the provider was asked nothing, and its stores and answers are the archive: a replay of it is that
@@ -86,14 +86,14 @@ this start (`lives`), `spent` (the folder's sums), `upstream` (the API's address
 A change of an instruction, of the frame of a request (`view::material`) or, by the way `tool`, of the tool's version changes every request, so answers kept before it no longer match and none is found: a paid build then asks again. An answer kept before the providers were folded is found once its folder has its new name, `anthropic-api` for `anthropic` and `anthropic-tool` for `claude`: a request's name holds no key's name. Give a folder its new name before the first build of the changed arm, and only while no folder of that name is there. A build before the rename finds none of the old answers, and with a writer it pays for each again. Any build that derives makes the folder of its provider and its way, and `mv` puts a folder inside one that is already there: the old answers would then sit one folder too deep, and none would be found.
 
 **The numbers that bound a paid build:** 20 calls a run; ceilings of 1,000 calls, 10,000,000 tokens and 100 refusals;
-`cache.timeout` 240 seconds, which must be under the store's `derive.timeout` (300 seconds by default): the cache's own answer then
+`cache.timeout` 240 seconds, which must be under the store's `llm.timeout` (300 seconds by default): the cache's own answer then
 reaches bilbo before bilbo stops waiting. `BILBO_EVAL_DERIVE` joins the store's key. **The cache alone holds the real key:** `BILBO_EVAL_DERIVE_KEY` goes to the cache's process
 (as `BILBO_EVAL_CACHE_KEY`), by the way `tool` from there to the tool it starts, and to nothing else, and a build with a writer behind the cache stops at its start without it. By the way `api`, bilbo gets the
-stand-in `replay-key-not-a-secret` in every life and in a replay, in the variable of the setting `derive.<provider>.api.key_env`, else `ANTHROPIC_API_KEY` for
+stand-in `replay-key-not-a-secret` in every life and in a replay, in the variable of the setting `llm.<provider>.api.key_env`, else `ANTHROPIC_API_KEY` for
 `anthropic` and `OPENAI_API_KEY` for `openai`; the cache puts the real key in its place in the request it sends on (the whole of
 `x-api-key`, or what follows `Bearer` alone in `authorization`), and a request that carries the stand-in in neither, or in any other place (another header, the path, the body), is not sent. 
 
-`cache.py` stands at `derive.<provider>.api.endpoint` on `127.0.0.1`, one for the whole life, with a lock for each request. It asks the
+`cache.py` stands at `llm.<provider>.api.endpoint` on `127.0.0.1`, one for the whole life, with a lock for each request. It asks the
 provider in a thread of its own, with the standard client and the body read whole, and follows no redirect (a 3xx is given back as it
 came and kept nowhere). **The deadline is for the caller:** an ask that is not whole by `cache.timeout` seconds gets the cache's 408 then, whatever
 the ask is doing, and is abandoned: what it ends with is dropped and never kept, and the same request is not asked again while it
@@ -101,11 +101,11 @@ runs (a 408 and a `busy` line). A response is whole only if the client's own rea
 another machine, copy the archive's `store/answers/` over `<cache>/answers/<arm>/` and build with `"cache": {"write": false}`.
 
 **The way `tool`.** The image holds Claude Code 2.1.327, the version bilbo's guards were read from. The store's
-`derive.anthropic.tool.program` is a file the build writes, `/tmp/claude`, which runs `tool.py` with the cache's address: it sends the
+`llm.anthropic.tool.program` is a file the build writes, `/tmp/claude`, which runs `tool.py` with the cache's address: it sends the
 cache the arguments, the variables and the standard input bilbo started it with, and ends with the exit code and the output the
 cache gives back, or with exit 70 and no output when the cache gives none (a miss, the deadline, a reply that holds the token).
 bilbo reads that end as an unreadable reply, where it reads the API cache's own 408 as a timeout and its 404 as a stop. The
-cache, started with `--tool`, starts the real program (`derive.anthropic.tool.program` of the settings, else the image's `claude`) in the
+cache, started with `--tool`, starts the real program (`llm.anthropic.tool.program` of the settings, else the image's `claude`) in the
 folder bilbo ran the file in, in a process group it stops when the program ends, with those variables, a home of its own in
 place of `HOME`, the token in `CLAUDE_CODE_OAUTH_TOKEN`, and the three variables that keep the tool from updating itself and from
 sending telemetry. **`BILBO_EVAL_DERIVE_KEY` is the token of `claude setup-token`**, and bilbo's environment holds no key and no

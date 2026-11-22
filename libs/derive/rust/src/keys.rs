@@ -2,15 +2,15 @@ use std::ops::RangeInclusive;
 use std::path::PathBuf;
 use std::time::Duration;
 
-use bilbo_settings::duration::{self, DAY, HOUR, MILLISECOND, MINUTE, SECOND};
+use bilbo_settings::duration::{self, DAY, HOUR, MINUTE, SECOND};
 use bilbo_settings::error::Error;
 use bilbo_settings::file::File;
 use bilbo_settings::folder;
-use bilbo_settings::key::{About, Default, Key, Resolved, Shown, Source, Value, quote};
-use bilbo_settings::size::{self, MIB};
+use bilbo_settings::key::{
+    About, Default, Key, Resolved, Shown, Source, Value, show_list, show_texts,
+};
 
 use crate::tries;
-use bilbo_llm::table;
 
 fn count(value: &Value<'_>, range: RangeInclusive<usize>) -> Result<usize, Error> {
     value
@@ -51,24 +51,6 @@ pub const ENABLED: Key<bool> = Key {
     show: ToString::to_string,
 };
 
-pub const PROVIDER: Key<String> = Key {
-    about: About {
-        name: "derive.provider",
-        variable: Some("BILBO_DERIVE_PROVIDER"),
-        default: Default::Toml(r#""""#),
-        allowed: "the name of a provider, at most 32 lower-case letters, or the empty text for none",
-        doc: "The provider whose models bilbo derive calls. derive.<provider>.via names the way bilbo reaches them. bilbo derive --help lists the providers.",
-    },
-    parse: |value| {
-        value
-            .text()
-            .filter(|name| name.len() <= 32 && name.bytes().all(|byte| byte.is_ascii_lowercase()))
-            .map(str::to_owned)
-            .ok_or_else(|| value.refuse())
-    },
-    show: |name| quote(name),
-};
-
 pub const IN: Key<Vec<String>> = Key {
     about: About {
         name: "derive.in",
@@ -78,7 +60,7 @@ pub const IN: Key<Vec<String>> = Key {
         doc: "The entries bilbo derive may send, each value as recall --in takes it. Empty: nothing is sent.",
     },
     parse: entries,
-    show: |entries| table::show_list(entries),
+    show: |entries| show_list(entries),
 };
 
 pub const NOT_IN: Key<Vec<String>> = Key {
@@ -90,7 +72,7 @@ pub const NOT_IN: Key<Vec<String>> = Key {
         doc: "The entries bilbo derive never sends, whatever derive.in names, each value as recall --in takes it.",
     },
     parse: entries,
-    show: |entries| table::show_list(entries),
+    show: |entries| show_list(entries),
 };
 
 pub const INSTRUCTIONS: Key<Vec<(String, PathBuf)>> = Key {
@@ -118,7 +100,7 @@ pub const INSTRUCTIONS: Key<Vec<(String, PathBuf)>> = Key {
             .iter()
             .map(|(kind, path)| (kind.clone(), path.to_string_lossy().into_owned()))
             .collect();
-        table::show_texts(&paths)
+        show_texts(&paths)
     },
 };
 
@@ -221,22 +203,6 @@ pub const ANSWER_TOKENS: Key<usize> = Key {
     show: ToString::to_string,
 };
 
-pub const RESPONSE: Key<u64> = Key {
-    about: About {
-        name: "derive.response",
-        variable: Some("BILBO_DERIVE_RESPONSE"),
-        default: Default::Toml(r#""4 MiB""#),
-        allowed: "between 1 KiB and 64 MiB",
-        doc: "The most bytes bilbo derive reads of a provider's response or of a tool's output.",
-    },
-    parse: |value| {
-        size::read(value)
-            .filter(|bytes| (1024..=64 * MIB).contains(bytes))
-            .ok_or_else(|| value.refuse())
-    },
-    show: |bytes| size::show(*bytes),
-};
-
 pub const CALLS: Key<usize> = Key {
     about: About {
         name: "derive.calls",
@@ -247,30 +213,6 @@ pub const CALLS: Key<usize> = Key {
     },
     parse: |value| count(value, 1..=100_000),
     show: ToString::to_string,
-};
-
-pub const TIMEOUT: Key<Duration> = Key {
-    about: About {
-        name: "derive.timeout",
-        variable: Some("BILBO_DERIVE_TIMEOUT"),
-        default: Default::Toml(r#""5m""#),
-        allowed: "between 1s and 10m",
-        doc: "How long one call may take, and one run of a program that prints a key.",
-    },
-    parse: |value| within(value, SECOND..=10 * MINUTE),
-    show: |length| duration::show(*length),
-};
-
-pub const POLL: Key<Duration> = Key {
-    about: About {
-        name: "derive.poll",
-        variable: Some("BILBO_DERIVE_POLL"),
-        default: Default::Toml(r#""5ms""#),
-        allowed: "between 1ms and 1s",
-        doc: "How often a call looks whether the program it started has ended: a child has no timed wait.",
-    },
-    parse: |value| within(value, MILLISECOND..=SECOND),
-    show: |length| duration::show(*length),
 };
 
 pub const RETRIES: Key<usize> = Key {
@@ -343,9 +285,8 @@ pub const FAILURES: Key<usize> = Key {
     parse: |value| count(value, 1..=100),
     show: ToString::to_string,
 };
-pub const ABOUT: [&About; 22] = [
+pub const ABOUT: [&About; 18] = [
     &ENABLED.about,
-    &PROVIDER.about,
     &IN.about,
     &NOT_IN.about,
     &INSTRUCTIONS.about,
@@ -356,10 +297,7 @@ pub const ABOUT: [&About; 22] = [
     &EARLIER.about,
     &NAMES.about,
     &ANSWER_TOKENS.about,
-    &RESPONSE.about,
     &CALLS.about,
-    &TIMEOUT.about,
-    &POLL.about,
     &RETRIES.about,
     &RETRY_WAIT.about,
     &RETRY_FACTOR.about,
@@ -371,7 +309,6 @@ pub const ABOUT: [&About; 22] = [
 #[derive(Debug, Clone, PartialEq)]
 pub struct Section {
     pub enabled: Resolved<bool>,
-    pub provider: Resolved<String>,
     pub named: Resolved<Vec<String>>,
     pub left_out: Resolved<Vec<String>>,
     pub instructions: Resolved<Vec<(String, PathBuf)>>,
@@ -382,10 +319,7 @@ pub struct Section {
     pub earlier: Resolved<usize>,
     pub names: Resolved<f64>,
     pub answer_tokens: Resolved<usize>,
-    pub response: Resolved<u64>,
     pub calls: Resolved<usize>,
-    pub timeout: Resolved<Duration>,
-    pub poll: Resolved<Duration>,
     pub retries: Resolved<usize>,
     pub retry_wait: Resolved<Duration>,
     pub retry_factor: Resolved<usize>,
@@ -397,7 +331,6 @@ pub struct Section {
 pub fn section(source: &Source<'_>) -> Result<Section, Error> {
     Ok(Section {
         enabled: ENABLED.resolve(source)?,
-        provider: PROVIDER.resolve(source)?,
         named: IN.resolve(source)?,
         left_out: NOT_IN.resolve(source)?,
         instructions: INSTRUCTIONS.resolve(source)?,
@@ -408,10 +341,7 @@ pub fn section(source: &Source<'_>) -> Result<Section, Error> {
         earlier: EARLIER.resolve(source)?,
         names: NAMES.resolve(source)?,
         answer_tokens: ANSWER_TOKENS.resolve(source)?,
-        response: RESPONSE.resolve(source)?,
         calls: CALLS.resolve(source)?,
-        timeout: TIMEOUT.resolve(source)?,
-        poll: POLL.resolve(source)?,
         retries: RETRIES.resolve(source)?,
         retry_wait: RETRY_WAIT.resolve(source)?,
         retry_factor: RETRY_FACTOR.resolve(source)?,
@@ -431,12 +361,12 @@ pub fn defaults() -> Section {
 }
 
 impl Section {
-    pub fn gate(&self) -> Result<(), &'static str> {
+    pub fn gate(&self, provider: &str) -> Result<(), &'static str> {
         if !self.enabled.value {
             return Err("derive.enabled is false");
         }
-        if self.provider.value.is_empty() {
-            return Err("derive.provider is not set");
+        if provider.is_empty() {
+            return Err("llm.provider is not set");
         }
         if self.named.value.is_empty() {
             return Err("derive.in is empty");
@@ -444,10 +374,9 @@ impl Section {
         Ok(())
     }
 
-    pub fn shown(&self) -> [Shown; 22] {
+    pub fn shown(&self) -> [Shown; 18] {
         [
             ENABLED.shown(&self.enabled),
-            PROVIDER.shown(&self.provider),
             IN.shown(&self.named),
             NOT_IN.shown(&self.left_out),
             INSTRUCTIONS.shown(&self.instructions),
@@ -458,10 +387,7 @@ impl Section {
             EARLIER.shown(&self.earlier),
             NAMES.shown(&self.names),
             ANSWER_TOKENS.shown(&self.answer_tokens),
-            RESPONSE.shown(&self.response),
             CALLS.shown(&self.calls),
-            TIMEOUT.shown(&self.timeout),
-            POLL.shown(&self.poll),
             RETRIES.shown(&self.retries),
             RETRY_WAIT.shown(&self.retry_wait),
             RETRY_FACTOR.shown(&self.retry_factor),
@@ -513,7 +439,6 @@ mod tests {
     fn each_default_is_its_documented_value() {
         let section = defaults();
         assert!(!section.enabled.value);
-        assert_eq!(section.provider.value, "");
         assert!(section.named.value.is_empty());
         assert!(section.left_out.value.is_empty());
         assert!(section.instructions.value.is_empty());
@@ -524,10 +449,7 @@ mod tests {
         assert_eq!(section.earlier.value, 3000);
         assert!((section.names.value - 0.5).abs() < f64::EPSILON);
         assert_eq!(section.answer_tokens.value, 16_000);
-        assert_eq!(section.response.value, 4 << 20);
         assert_eq!(section.calls.value, 20);
-        assert_eq!(section.timeout.value, seconds(300));
-        assert_eq!(section.poll.value, Duration::from_millis(5));
         assert_eq!(section.retries.value, 2);
         assert_eq!(section.retry_wait.value, seconds(30));
         assert_eq!(section.retry_factor.value, 2);
@@ -543,7 +465,6 @@ mod tests {
             shown,
             [
                 "derive.enabled = false (default)",
-                "derive.provider = \"\" (default)",
                 "derive.in = [] (default)",
                 "derive.not_in = [] (default)",
                 "derive.instructions = {} (default)",
@@ -554,10 +475,7 @@ mod tests {
                 "derive.earlier = 3000 (default)",
                 "derive.names = 0.5 (default)",
                 "derive.answer_tokens = 16000 (default)",
-                "derive.response = \"4 MiB\" (default)",
                 "derive.calls = 20 (default)",
-                "derive.timeout = \"5m\" (default)",
-                "derive.poll = \"5ms\" (default)",
                 "derive.retries = 2 (default)",
                 "derive.retry_wait = \"30s\" (default)",
                 "derive.retry_factor = 2 (default)",
@@ -571,7 +489,6 @@ mod tests {
             variables,
             [
                 Some("BILBO_DERIVE_ENABLED"),
-                Some("BILBO_DERIVE_PROVIDER"),
                 None,
                 None,
                 None,
@@ -582,10 +499,7 @@ mod tests {
                 Some("BILBO_DERIVE_EARLIER"),
                 Some("BILBO_DERIVE_NAMES"),
                 Some("BILBO_DERIVE_ANSWER_TOKENS"),
-                Some("BILBO_DERIVE_RESPONSE"),
                 Some("BILBO_DERIVE_CALLS"),
-                Some("BILBO_DERIVE_TIMEOUT"),
-                Some("BILBO_DERIVE_POLL"),
                 Some("BILBO_DERIVE_RETRIES"),
                 Some("BILBO_DERIVE_RETRY_WAIT"),
                 Some("BILBO_DERIVE_RETRY_FACTOR"),
@@ -615,20 +529,6 @@ mod tests {
             assert_eq!(
                 var(value).expect_err("refused"),
                 format!("BILBO_DERIVE_ENABLED must be true or false, got {value:?}")
-            );
-        }
-    }
-
-    #[test]
-    fn the_provider_is_lower_case_letters_or_nothing() {
-        for name in ["", "anthropic", &"a".repeat(32)] {
-            let section = given(&format!("derive.provider = {name:?}"));
-            assert_eq!(section.provider.value, name);
-        }
-        for name in ["Anthropic", "a b", "x1", &"a".repeat(33)] {
-            assert!(
-                resolve(&[], &format!("derive.provider = {name:?}")).is_err(),
-                "{name}"
             );
         }
     }
@@ -725,8 +625,6 @@ mod tests {
     #[test]
     fn the_durations_stand_in_their_ranges() {
         durations("derive.quiet", &["0s", "30m", "31m", "24h"], &["25h"]);
-        durations("derive.timeout", &["1s", "5m", "6m", "10m"], &["0s", "11m"]);
-        durations("derive.poll", &["1ms", "5ms", "6ms", "1s"], &["0ms", "2s"]);
         durations(
             "derive.retry_wait",
             &["1s", "30s", "31s", "10m"],
@@ -793,22 +691,6 @@ mod tests {
     }
 
     #[test]
-    fn the_response_size_stands_in_its_range() {
-        for text in ["\"1 KiB\"", "\"4 MiB\"", "\"5 MiB\"", "\"64 MiB\"", "1024"] {
-            assert!(
-                resolve(&[], &format!("derive.response = {text}")).is_ok(),
-                "{text}"
-            );
-        }
-        for text in ["1023", "\"65 MiB\""] {
-            assert!(
-                resolve(&[], &format!("derive.response = {text}")).is_err(),
-                "{text}"
-            );
-        }
-    }
-
-    #[test]
     fn the_counts_stand_in_their_ranges() {
         integers("derive.calls", &[1, 20, 21, 100_000], &[0, 100_001]);
         integers("derive.retries", &[0, 2, 3, 10], &[-1, 11]);
@@ -819,11 +701,10 @@ mod tests {
 
     #[test]
     fn the_keys_show_as_toml_that_reads_back() {
-        let text = "derive.enabled = true\nderive.provider = \"anthropic\"\nderive.in = [\"a b\", \"c\\\"d\"]\nderive.not_in = [\"x1\"]\nderive.instructions = { plain = \"/a/b.txt\", folded = \"~/c.txt\" }\nderive.quiet = \"90s\"\nderive.window = 1500\nderive.passage = 0\nderive.passage_head = 0.75\nderive.earlier = 7\nderive.names = 0.25\nderive.answer_tokens = 300\nderive.response = \"2 KiB\"\nderive.calls = 3\nderive.timeout = \"2m\"\nderive.poll = \"20ms\"\nderive.retries = 0\nderive.retry_wait = \"45s\"\nderive.retry_factor = 3\nderive.retry_limit = \"1h\"\nderive.tries = 9\nderive.failures = 2\n";
+        let text = "derive.enabled = true\nderive.in = [\"a b\", \"c\\\"d\"]\nderive.not_in = [\"x1\"]\nderive.instructions = { plain = \"/a/b.txt\", folded = \"~/c.txt\" }\nderive.quiet = \"90s\"\nderive.window = 1500\nderive.passage = 0\nderive.passage_head = 0.75\nderive.earlier = 7\nderive.names = 0.25\nderive.answer_tokens = 300\nderive.calls = 3\nderive.retries = 0\nderive.retry_wait = \"45s\"\nderive.retry_factor = 3\nderive.retry_limit = \"1h\"\nderive.tries = 9\nderive.failures = 2\n";
         let section = given(text);
         let literals = [
             "true",
-            "\"anthropic\"",
             "[\"a b\", \"c\\\"d\"]",
             "[\"x1\"]",
             "{ plain = \"/a/b.txt\", folded = \"/home/me/c.txt\" }",
@@ -834,10 +715,7 @@ mod tests {
             "7",
             "0.25",
             "300",
-            "\"2 KiB\"",
             "3",
-            "\"2m\"",
-            "\"20ms\"",
             "0",
             "\"45s\"",
             "3",
@@ -866,14 +744,13 @@ mod tests {
     #[test]
     fn the_gate_names_the_first_key_that_is_unset() {
         let mut section = defaults();
-        assert_eq!(section.gate(), Err("derive.enabled is false"));
+        assert_eq!(section.gate(""), Err("derive.enabled is false"));
         section.enabled.value = true;
-        assert_eq!(section.gate(), Err("derive.provider is not set"));
-        section.provider.value = "anthropic".to_owned();
-        assert_eq!(section.gate(), Err("derive.in is empty"));
+        assert_eq!(section.gate(""), Err("llm.provider is not set"));
+        assert_eq!(section.gate("anthropic"), Err("derive.in is empty"));
         section.named.value = vec!["a".to_owned()];
-        assert_eq!(section.gate(), Ok(()));
+        assert_eq!(section.gate("anthropic"), Ok(()));
         section.enabled.value = false;
-        assert_eq!(section.gate(), Err("derive.enabled is false"));
+        assert_eq!(section.gate("anthropic"), Err("derive.enabled is false"));
     }
 }

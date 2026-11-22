@@ -49,33 +49,11 @@ pub fn headers(table: &Value<'_>, own: &[&str]) -> Result<Vec<(String, String)>,
     Ok(headers)
 }
 
-pub fn show_list(items: &[String]) -> String {
-    let quoted: Vec<String> = items.iter().map(|item| quote(item)).collect();
-    format!("[{}]", quoted.join(", "))
-}
-
-pub fn show_texts(headers: &[(String, String)]) -> String {
-    inline(
-        headers
-            .iter()
-            .map(|(name, text)| format!("{} = {}", segment(name), quote(text))),
-    )
-}
-
 pub fn show_fields(map: &Map<String, Json>) -> String {
-    inline(
+    bilbo_settings::key::inline(
         map.iter()
             .map(|(name, value)| format!("{} = {}", segment(name), show_value(value))),
     )
-}
-
-fn inline(items: impl Iterator<Item = String>) -> String {
-    let items: Vec<String> = items.collect();
-    if items.is_empty() {
-        "{}".to_owned()
-    } else {
-        format!("{{ {} }}", items.join(", "))
-    }
 }
 
 fn show_value(value: &Json) -> String {
@@ -157,7 +135,9 @@ mod tests {
     use bilbo_settings::key::{About, Default, Key, Source};
     use serde_json::json;
 
-    use super::{headers, reserved, show_fields, show_list, show_texts};
+    use bilbo_settings::key::show_texts;
+
+    use super::{headers, reserved, show_fields};
 
     const ABOUT: About = About {
         name: "t.table",
@@ -293,17 +273,11 @@ mod tests {
     }
 
     #[test]
-    fn a_list_and_a_table_are_printed_as_toml_that_reads_back() {
-        assert_eq!(
-            show_list(&["a".to_owned(), "b c".to_owned()]),
-            "[\"a\", \"b c\"]"
-        );
+    fn a_table_of_fields_is_printed_as_toml_that_reads_back() {
         let texts = [
             ("X-A".to_owned(), "1".to_owned()),
             ("a.b".to_owned(), "2".to_owned()),
         ];
-        assert_eq!(show_texts(&texts), "{ X-A = \"1\", \"a.b\" = \"2\" }");
-        assert_eq!(show_texts(&[]), "{}");
         let text = "[t.table]\neffort = \"low\"\nn = 2\ndeep = { list = [\"x\", true] }\n";
         let fields = read(super::json, text).unwrap();
         let shown = show_fields(&fields);

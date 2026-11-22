@@ -45,7 +45,7 @@ fn limits() -> Limits {
 
 fn adapter_at(url: &str, toml: &str, scratch: &Scratch) -> OpenAi {
     let text = format!(
-        "derive.openai.model = \"gpt-test-1\"\nderive.openai.api.endpoint = \"{url}/v1/responses\"\n{toml}"
+        "llm.openai.model = \"gpt-test-1\"\nllm.openai.api.endpoint = \"{url}/v1/responses\"\n{toml}"
     );
     adapter_from(&text, scratch, variable)
 }
@@ -180,7 +180,7 @@ fn the_same_prompt_gives_the_same_bytes() {
 fn extra_fields_and_headers_are_added_as_they_are() {
     let scratch = Scratch::new("openai");
     let provider = Provider::start(vec![Reply::answer(200, COMPLETED)]);
-    let toml = "derive.openai.api.extra = { reasoning = { effort = \"low\" } }\nderive.openai.api.headers = { OpenAI-Project = \"proj_1\", User-Agent = \"agent-x\" }\n";
+    let toml = "llm.openai.api.extra = { reasoning = { effort = \"low\" } }\nllm.openai.api.headers = { OpenAI-Project = \"proj_1\", User-Agent = \"agent-x\" }\n";
     ready(&provider, toml, &scratch).call(&prompt(), &limits());
     let seen = provider.requests();
     assert_eq!(
@@ -759,12 +759,12 @@ fn prepare_reads_the_key_once_and_refuses_what_is_missing() {
     );
     assert_eq!(
         bare.prepare(),
-        Err("derive.openai.model is not set".to_owned())
+        Err("llm.openai.model is not set".to_owned())
     );
     let mut no_variable = OpenAi::new(
         api::section(&Source {
             var: &var,
-            file: &File::parse(Path::new("/c/config.toml"), b"derive.openai.model = \"m\"")
+            file: &File::parse(Path::new("/c/config.toml"), b"llm.openai.model = \"m\"")
                 .expect("toml"),
         })
         .expect("a section"),
@@ -776,7 +776,7 @@ fn prepare_reads_the_key_once_and_refuses_what_is_missing() {
     );
     assert_eq!(
         no_variable.prepare(),
-        Err("OPENAI_API_KEY is not set (derive.openai.api.key_env)".to_owned())
+        Err("OPENAI_API_KEY is not set (llm.openai.api.key_env)".to_owned())
     );
 
     let counter = scratch.path().join("ran");
@@ -785,7 +785,7 @@ fn prepare_reads_the_key_once_and_refuses_what_is_missing() {
         &format!("echo ran >> '{}'\necho {KEY}", counter.display()),
     );
     let toml = format!(
-        "derive.openai.api.key_command = [\"/bin/sh\", \"{}\"]\n",
+        "llm.openai.api.key_command = [\"/bin/sh\", \"{}\"]\n",
         script.display()
     );
     let provider = Provider::start(vec![
@@ -818,7 +818,7 @@ fn the_key_is_in_one_header_and_in_nothing_else_the_run_gives() {
     ]);
     let mut writer = ready(
         &provider,
-        "derive.openai.api.headers = { OpenAI-Project = \"p\" }\n",
+        "llm.openai.api.headers = { OpenAI-Project = \"p\" }\n",
         &scratch,
     );
     let outcomes: Vec<String> = (0..3)
@@ -834,7 +834,7 @@ fn the_key_is_in_one_header_and_in_nothing_else_the_run_gives() {
     let second = Provider::start(vec![Reply::answer(200, COMPLETED)]);
     let spaced: Reader = |name| (name == "OPENAI_API_KEY").then(|| format!(" {KEY}\t"));
     let text = format!(
-        "derive.openai.model = \"gpt-test-1\"\nderive.openai.api.endpoint = \"{}/v1/responses\"\n",
+        "llm.openai.model = \"gpt-test-1\"\nllm.openai.api.endpoint = \"{}/v1/responses\"\n",
         second.url()
     );
     let mut trimmed = adapter_from(&text, &scratch, spaced);
@@ -979,15 +979,15 @@ fn a_setting_that_holds_the_key_is_refused_by_its_keys_name_and_nothing_is_sent(
     let url = provider.url();
     let with_model = |model: &str| {
         format!(
-            "derive.openai.model = \"{model}\"\nderive.openai.api.endpoint = \"{url}/v1/responses\"\n"
+            "llm.openai.model = \"{model}\"\nllm.openai.api.endpoint = \"{url}/v1/responses\"\n"
         )
     };
     let extra = |text: &str| {
-        format!("derive.openai.api.extra = {{ metadata = {{ user_id = \"{text}\" }} }}\n")
+        format!("llm.openai.api.extra = {{ metadata = {{ user_id = \"{text}\" }} }}\n")
     };
     let script = scratch.script("key.sh", &format!("echo {KEY}"));
     let command = format!(
-        "derive.openai.api.key_command = [\"/bin/sh\", \"{}\"]\n",
+        "llm.openai.api.key_command = [\"/bin/sh\", \"{}\"]\n",
         script.display()
     );
     let given: fn(&str) -> Option<String> = variable;
@@ -997,7 +997,7 @@ fn a_setting_that_holds_the_key_is_refused_by_its_keys_name_and_nothing_is_sent(
         (with_model("gw/sk-test-PLUM-7391/x"), given, "model"),
         (
             format!(
-                "{}derive.openai.api.headers = {{ openai-organization = \"id {KEY}\" }}\n",
+                "{}llm.openai.api.headers = {{ openai-organization = \"id {KEY}\" }}\n",
                 with_model("m")
             ),
             given,
@@ -1005,7 +1005,7 @@ fn a_setting_that_holds_the_key_is_refused_by_its_keys_name_and_nothing_is_sent(
         ),
         (
             format!(
-                "{}derive.openai.api.headers = {{ {KEY} = \"1\" }}\n",
+                "{}llm.openai.api.headers = {{ {KEY} = \"1\" }}\n",
                 with_model("m")
             ),
             given,
@@ -1018,7 +1018,7 @@ fn a_setting_that_holds_the_key_is_refused_by_its_keys_name_and_nothing_is_sent(
         ),
         (
             format!(
-                "{}derive.openai.api.headers = {{ x-trace = \"{KEY}\" }}\n{}",
+                "{}llm.openai.api.headers = {{ x-trace = \"{KEY}\" }}\n{}",
                 with_model("m"),
                 extra(KEY)
             ),
@@ -1037,7 +1037,7 @@ fn a_setting_that_holds_the_key_is_refused_by_its_keys_name_and_nothing_is_sent(
         let mut writer = adapter_from(&text, &scratch, reader);
         assert_eq!(
             writer.prepare().unwrap_err(),
-            format!("derive.openai.{key} holds the key")
+            format!("llm.openai.{key} holds the key")
         );
         let after = writer.call(&prompt(), &limits());
         assert_eq!(after, Outcome::Stopped(Cause::new(What::NotStarted)));
@@ -1059,7 +1059,7 @@ fn a_setting_that_holds_the_key_is_refused_by_its_keys_name_and_nothing_is_sent(
 #[test]
 fn describe_says_the_settings_in_force_and_how_the_key_is_read() {
     let scratch = Scratch::new("openai");
-    let toml = "derive.openai.api.headers = { X-A = \"1\", X-B = \"2\" }\nderive.openai.api.extra = { reasoning = { effort = \"low\" } }\nderive.openai.api.key_command = [\"op\", \"read\"]\n";
+    let toml = "llm.openai.api.headers = { X-A = \"1\", X-B = \"2\" }\nllm.openai.api.extra = { reasoning = { effort = \"low\" } }\nllm.openai.api.key_command = [\"op\", \"read\"]\n";
     let writer = adapter_at("http://127.0.0.1:9", toml, &scratch);
     assert_eq!(writer.id(), "gpt-test-1");
     assert_eq!(
@@ -1071,7 +1071,7 @@ fn describe_says_the_settings_in_force_and_how_the_key_is_read() {
             "key: the program [\"op\", \"read\"], not run",
         ]
     );
-    let text = "derive.openai.model = \"gpt-test-1\"\nderive.openai.api.key_env = \"MY_KEY\"\n";
+    let text = "llm.openai.model = \"gpt-test-1\"\nllm.openai.api.key_env = \"MY_KEY\"\n";
     let writer = adapter_from(text, &scratch, |_| None);
     assert_eq!(
         writer.describe().last().map(String::as_str),
@@ -1097,12 +1097,12 @@ fn a_key_split_over_two_parts_or_two_messages_is_not_kept() {
 fn the_guard_reads_the_model_before_the_headers() {
     let scratch = Scratch::new("openai");
     let text = format!(
-        "derive.openai.model = \"{KEY}\"\nderive.openai.api.endpoint = \"http://127.0.0.1:9/v1/responses\"\nderive.openai.api.headers = {{ x-trace = \"{KEY}\" }}\n"
+        "llm.openai.model = \"{KEY}\"\nllm.openai.api.endpoint = \"http://127.0.0.1:9/v1/responses\"\nllm.openai.api.headers = {{ x-trace = \"{KEY}\" }}\n"
     );
     let mut writer = adapter_from(&text, &scratch, variable);
     assert_eq!(
         writer.prepare().unwrap_err(),
-        "derive.openai.model holds the key"
+        "llm.openai.model holds the key"
     );
 }
 

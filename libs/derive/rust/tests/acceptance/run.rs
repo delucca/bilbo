@@ -629,7 +629,7 @@ fn each_call_is_shown_the_paragraphs_before_it_from_the_store_and_from_this_run(
 }
 
 #[test]
-fn the_writer_is_handed_the_limits_of_the_keys() {
+fn a_call_is_handed_the_limits_the_run_was_given() {
     let (mut world, _) = alone();
     let mut script = Script::new().then(good());
     let plan = world.plan(Asked::Every);
@@ -644,10 +644,12 @@ fn the_writer_is_handed_the_limits_of_the_keys() {
         }]
     );
     let (mut world, _) = alone();
-    world.section.answer_tokens.value = 16_001;
-    world.section.timeout.value = seconds(301);
-    world.section.response.value = (4 << 20) + 1;
-    world.section.poll.value = Duration::from_millis(6);
+    world.limits = Limits {
+        answer_tokens: 16_001,
+        timeout: seconds(301),
+        response: (4 << 20) + 1,
+        poll: Duration::from_millis(6),
+    };
     let mut script = Script::new().then(good());
     let plan = world.plan(Asked::Every);
     world.calls(&mut script, &plan);

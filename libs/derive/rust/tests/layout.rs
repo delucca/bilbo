@@ -9,10 +9,7 @@ const PLACEMENT: &[(&str, &[&str])] = &[
     ("session", &[]),
     ("note", &[]),
     ("bilbo_entries", &["src/", "tests/"]),
-    (
-        "bilbo_llm",
-        &["src/run.rs", "src/keys.rs", "tests/acceptance/"],
-    ),
+    ("bilbo_llm", &["src/run.rs", "tests/acceptance/"]),
     ("bilbo_settings", &["src/", "tests/"]),
     ("bilbo_store", &["src/", "tests/"]),
     ("anthropic", &[]),

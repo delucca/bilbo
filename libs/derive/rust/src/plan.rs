@@ -153,6 +153,7 @@ pub struct Rules<'a> {
     pub tokens: &'a dyn Tokens,
     pub bound: usize,
     pub model: &'a str,
+    pub provider: &'a str,
     pub redo: bool,
     pub now: SystemTime,
 }
@@ -360,7 +361,7 @@ fn cover(
         Some(head) => last_run(ports.entries, head)?,
         None => None,
     };
-    let provider = &rules.section.provider.value;
+    let provider = rules.provider;
     let mut opens = head.is_some() && last.is_none();
     let mut frontier = 0;
     let mut passes = 0;

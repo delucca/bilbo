@@ -102,9 +102,9 @@ pub fn providers() -> Vec<(&'static str, &'static str)> {
 
 pub fn model(settings: &Settings, var: &Var) -> Result<derive::Built, Failure> {
     let state = settings.state.value.clone();
-    let timeout = settings.derive.timeout.value;
-    let response = usize::try_from(settings.derive.response.value).unwrap_or(usize::MAX);
-    let poll = settings.derive.poll.value;
+    let timeout = settings.llm.timeout.value;
+    let response = usize::try_from(settings.llm.response.value).unwrap_or(usize::MAX);
+    let poll = settings.llm.poll.value;
     let reading = |names: Vec<String>| -> bilbo_llm::model::Variables {
         let var = Rc::clone(var);
         Box::new(move |asked: &str| {
@@ -116,7 +116,7 @@ pub fn model(settings: &Settings, var: &Var) -> Result<derive::Built, Failure> {
         })
     };
     let source = settings.source(&**var);
-    let name = settings.derive.provider.value.as_str();
+    let name = settings.llm.provider.value.as_str();
     let (writer, api): (Box<dyn bilbo_llm::model::Model>, bool) = match name {
         bilbo_llm::anthropic::NAME => {
             let section = bilbo_llm::anthropic::section(&source)?;
@@ -147,7 +147,7 @@ pub fn model(settings: &Settings, var: &Var) -> Result<derive::Built, Failure> {
         other => {
             let names: Vec<&str> = providers().iter().map(|(name, _)| *name).collect();
             return Err(Failure::Config(format!(
-                "derive.provider must be one of {}, got \"{other}\"",
+                "llm.provider must be one of {}, got \"{other}\"",
                 names.join(", ")
             )));
         }
@@ -505,7 +505,7 @@ mod tests {
         crate::console::settings::load(
             &move |variable| match variable {
                 "HOME" => Some(OsString::from("/h")),
-                "BILBO_DERIVE_PROVIDER" => Some(OsString::from(name.clone())),
+                "BILBO_LLM_PROVIDER" => Some(OsString::from(name.clone())),
                 _ => None,
             },
             &|_| Err(std::io::ErrorKind::NotFound.into()),
@@ -561,8 +561,8 @@ mod tests {
     #[test]
     fn writer_builds_an_adapter_and_reads_no_variable_of_its_own() {
         for (name, key_env) in [
-            ("anthropic", "BILBO_DERIVE_ANTHROPIC_API_KEY_ENV"),
-            ("openai", "BILBO_DERIVE_OPENAI_API_KEY_ENV"),
+            ("anthropic", "BILBO_LLM_ANTHROPIC_API_KEY_ENV"),
+            ("openai", "BILBO_LLM_OPENAI_API_KEY_ENV"),
         ] {
             let settings = with_provider(name);
             let (var, asked) = recording(vec![(key_env, "PLUM_KEY"), ("PLUM_KEY", "sk-test")]);
@@ -579,11 +579,11 @@ mod tests {
         let settings = crate::console::settings::load(
             &|variable| match variable {
                 "HOME" => Some(OsString::from("/h")),
-                "BILBO_DERIVE_PROVIDER" => Some(OsString::from("anthropic")),
+                "BILBO_LLM_PROVIDER" => Some(OsString::from("anthropic")),
                 _ => None,
             },
             &|_| {
-                Ok(b"[derive.anthropic]\nvia = \"tool\"\n\n[derive.anthropic.tool]\ninherit = [\"PLUM_TOKEN\"]\n".to_vec())
+                Ok(b"[llm.anthropic]\nvia = \"tool\"\n\n[llm.anthropic.tool]\ninherit = [\"PLUM_TOKEN\"]\n".to_vec())
             },
             &super::kind_keys(),
             &super::provider_keys(),
@@ -609,11 +609,11 @@ mod tests {
             &|variable| match variable {
                 "HOME" => Some(OsString::from("/h")),
                 "XDG_STATE_HOME" => Some(state.clone().into_os_string()),
-                "BILBO_DERIVE_PROVIDER" => Some(OsString::from("anthropic")),
+                "BILBO_LLM_PROVIDER" => Some(OsString::from("anthropic")),
                 _ => None,
             },
             &|_| {
-                Ok(b"[derive.anthropic]\nvia = \"tool\"\nmodel = \"m\"\n\n[derive.anthropic.tool]\nprogram = \"/bin/sh\"\ninherit = [\"HOME\", \"PLUM_TOKEN\"]\n".to_vec())
+                Ok(b"[llm.anthropic]\nvia = \"tool\"\nmodel = \"m\"\n\n[llm.anthropic.tool]\nprogram = \"/bin/sh\"\ninherit = [\"HOME\", \"PLUM_TOKEN\"]\n".to_vec())
             },
             &super::kind_keys(),
             &super::provider_keys(),
@@ -636,7 +636,7 @@ mod tests {
         match super::model(&with_provider("gemini"), &var) {
             Err(Failure::Config(text)) => assert_eq!(
                 text,
-                "derive.provider must be one of anthropic, openai, got \"gemini\""
+                "llm.provider must be one of anthropic, openai, got \"gemini\""
             ),
             other => panic!("{:?}", other.map(|built| built.api)),
         }
@@ -649,38 +649,42 @@ mod tests {
                 .iter()
                 .map(|about| about.name)
                 .collect();
-        let tail: Vec<&str> = names[names.len() - 28..].to_vec();
+        let from = names
+            .iter()
+            .position(|name| *name == "llm.anthropic.model")
+            .expect("llm.anthropic.model");
+        let tail: Vec<&str> = names[from..from + 28].to_vec();
         assert_eq!(
             tail,
             [
-                "derive.anthropic.model",
-                "derive.anthropic.via",
-                "derive.anthropic.api.endpoint",
-                "derive.anthropic.api.version",
-                "derive.anthropic.api.key_env",
-                "derive.anthropic.api.key_command",
-                "derive.anthropic.api.headers",
-                "derive.anthropic.api.extra",
-                "derive.anthropic.tool.program",
-                "derive.anthropic.tool.effort",
-                "derive.anthropic.tool.arguments",
-                "derive.anthropic.tool.inherit",
-                "derive.anthropic.tool.environment",
-                "derive.anthropic.tool.project_files",
-                "derive.openai.model",
-                "derive.openai.via",
-                "derive.openai.api.endpoint",
-                "derive.openai.api.key_env",
-                "derive.openai.api.key_command",
-                "derive.openai.api.headers",
-                "derive.openai.api.extra",
-                "derive.openai.tool.program",
-                "derive.openai.tool.effort",
-                "derive.openai.tool.arguments",
-                "derive.openai.tool.inherit",
-                "derive.openai.tool.environment",
-                "derive.openai.tool.home",
-                "derive.openai.tool.system_files",
+                "llm.anthropic.model",
+                "llm.anthropic.via",
+                "llm.anthropic.api.endpoint",
+                "llm.anthropic.api.version",
+                "llm.anthropic.api.key_env",
+                "llm.anthropic.api.key_command",
+                "llm.anthropic.api.headers",
+                "llm.anthropic.api.extra",
+                "llm.anthropic.tool.program",
+                "llm.anthropic.tool.effort",
+                "llm.anthropic.tool.arguments",
+                "llm.anthropic.tool.inherit",
+                "llm.anthropic.tool.environment",
+                "llm.anthropic.tool.project_files",
+                "llm.openai.model",
+                "llm.openai.via",
+                "llm.openai.api.endpoint",
+                "llm.openai.api.key_env",
+                "llm.openai.api.key_command",
+                "llm.openai.api.headers",
+                "llm.openai.api.extra",
+                "llm.openai.tool.program",
+                "llm.openai.tool.effort",
+                "llm.openai.tool.arguments",
+                "llm.openai.tool.inherit",
+                "llm.openai.tool.environment",
+                "llm.openai.tool.home",
+                "llm.openai.tool.system_files",
             ]
         );
         let order: Vec<&str> = super::providers().iter().map(|(name, _)| *name).collect();
@@ -693,7 +697,7 @@ mod tests {
         match super::model(&with_provider("claude"), &var) {
             Err(Failure::Config(text)) => assert_eq!(
                 text,
-                "derive.provider must be one of anthropic, openai, got \"claude\""
+                "llm.provider must be one of anthropic, openai, got \"claude\""
             ),
             other => panic!("{:?}", other.map(|built| built.api)),
         }
@@ -705,7 +709,7 @@ mod tests {
             let settings = crate::console::settings::load(
                 &move |variable| match variable {
                     "HOME" => Some(OsString::from("/h")),
-                    "BILBO_DERIVE_PROVIDER" => Some(OsString::from(provider)),
+                    "BILBO_LLM_PROVIDER" => Some(OsString::from(provider)),
                     _ => None,
                 },
                 &move |_| Ok(file.to_vec()),
@@ -716,7 +720,7 @@ mod tests {
             let var: crate::console::env::Var = Rc::new(|_| None);
             super::model(&settings, &var).expect("a writer")
         };
-        let tool = built("anthropic", b"[derive.anthropic]\nvia = \"tool\"\n");
+        let tool = built("anthropic", b"[llm.anthropic]\nvia = \"tool\"\n");
         assert!(tool.writer.describe()[0].starts_with("provider: anthropic, via tool, "));
         assert!(!tool.api);
         let api = built("anthropic", b"");
@@ -725,7 +729,7 @@ mod tests {
         let openai = built("openai", b"");
         assert!(openai.writer.describe()[0].starts_with("provider: openai, via api, "));
         assert!(openai.api);
-        let codex = built("openai", b"[derive.openai]\nvia = \"tool\"\n");
+        let codex = built("openai", b"[llm.openai]\nvia = \"tool\"\n");
         assert!(codex.writer.describe()[0].starts_with("provider: openai, via tool, "));
         assert!(!codex.api);
     }

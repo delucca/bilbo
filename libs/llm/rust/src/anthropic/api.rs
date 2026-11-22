@@ -3,7 +3,9 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use bilbo_settings::error::Error;
-use bilbo_settings::key::{About, Default, Key, Resolved, Shown, Source, quote};
+use bilbo_settings::key::{
+    About, Default, Key, Resolved, Shown, Source, quote, show_list, show_texts,
+};
 use serde_json::{Map, Value as Json};
 
 use crate::api::{self, Call};
@@ -59,11 +61,11 @@ const VERSION_BYTES: usize = 32;
 
 pub const ENDPOINT: Key<Endpoint> = Key {
     about: About {
-        name: "derive.anthropic.api.endpoint",
-        variable: Some("BILBO_DERIVE_ANTHROPIC_API_ENDPOINT"),
+        name: "llm.anthropic.api.endpoint",
+        variable: Some("BILBO_LLM_ANTHROPIC_API_ENDPOINT"),
         default: Default::Toml(r#""https://api.anthropic.com/v1/messages""#),
         allowed: api::ENDPOINT_ALLOWED,
-        doc: "Where bilbo derive sends a request for the Anthropic API.",
+        doc: "Where bilbo sends a request for the Anthropic API.",
     },
     parse: api::endpoint,
     show: |endpoint| quote(endpoint.as_str()),
@@ -71,8 +73,8 @@ pub const ENDPOINT: Key<Endpoint> = Key {
 
 pub const VERSION: Key<String> = Key {
     about: About {
-        name: "derive.anthropic.api.version",
-        variable: Some("BILBO_DERIVE_ANTHROPIC_API_VERSION"),
+        name: "llm.anthropic.api.version",
+        variable: Some("BILBO_LLM_ANTHROPIC_API_VERSION"),
         default: Default::Toml(r#""2026-10-21""#),
         allowed: "1 to 32 letters, digits and dashes",
         doc: "The value of the anthropic-version header.",
@@ -92,11 +94,11 @@ pub const VERSION: Key<String> = Key {
 
 pub const KEY_ENV: Key<String> = Key {
     about: About {
-        name: "derive.anthropic.api.key_env",
-        variable: Some("BILBO_DERIVE_ANTHROPIC_API_KEY_ENV"),
+        name: "llm.anthropic.api.key_env",
+        variable: Some("BILBO_LLM_ANTHROPIC_API_KEY_ENV"),
         default: Default::Toml(r#""ANTHROPIC_API_KEY""#),
         allowed: api::KEY_ENV_ALLOWED,
-        doc: "The variable bilbo derive reads the Anthropic API key from when key_command is empty.",
+        doc: "The variable bilbo reads the Anthropic API key from when key_command is empty.",
     },
     parse: api::key_env,
     show: |name| quote(name),
@@ -104,31 +106,31 @@ pub const KEY_ENV: Key<String> = Key {
 
 pub const KEY_COMMAND: Key<Vec<String>> = Key {
     about: About {
-        name: "derive.anthropic.api.key_command",
+        name: "llm.anthropic.api.key_command",
         variable: None,
         default: Default::Toml("[]"),
         allowed: api::KEY_COMMAND_ALLOWED,
-        doc: "A program and its arguments whose first line of standard output is the Anthropic API key. When it is set bilbo derive runs it and reads no variable.",
+        doc: "A program and its arguments whose first line of standard output is the Anthropic API key. When it is set bilbo runs it and reads no variable.",
     },
     parse: api::key_command,
-    show: |items| table::show_list(items),
+    show: |items| show_list(items),
 };
 
 pub const HEADERS: Key<Vec<(String, String)>> = Key {
     about: About {
-        name: "derive.anthropic.api.headers",
+        name: "llm.anthropic.api.headers",
         variable: None,
         default: Default::Toml("{}"),
         allowed: api::HEADERS_ALLOWED,
         doc: "Headers added to each request as they are. A secret never goes here: bilbo config prints every value.",
     },
     parse: |value| table::headers(value, &HEADERS_REFUSED),
-    show: |headers| table::show_texts(headers),
+    show: |headers| show_texts(headers),
 };
 
 pub const EXTRA: Key<Map<String, Json>> = Key {
     about: About {
-        name: "derive.anthropic.api.extra",
+        name: "llm.anthropic.api.extra",
         variable: None,
         default: Default::Toml("{}"),
         allowed: api::EXTRA_ALLOWED,
@@ -606,9 +608,9 @@ mod tests {
         assert_eq!(
             variables,
             [
-                Some("BILBO_DERIVE_ANTHROPIC_API_ENDPOINT"),
-                Some("BILBO_DERIVE_ANTHROPIC_API_VERSION"),
-                Some("BILBO_DERIVE_ANTHROPIC_API_KEY_ENV"),
+                Some("BILBO_LLM_ANTHROPIC_API_ENDPOINT"),
+                Some("BILBO_LLM_ANTHROPIC_API_VERSION"),
+                Some("BILBO_LLM_ANTHROPIC_API_KEY_ENV"),
                 None,
                 None,
                 None,
@@ -625,7 +627,7 @@ mod tests {
             &"m".repeat(200),
             &"é".repeat(200),
         ] {
-            let text = format!("[derive.anthropic]\nmodel = \"{good}\"\n");
+            let text = format!("[llm.anthropic]\nmodel = \"{good}\"\n");
             assert_eq!(resolve(&text).expect("taken").model.value, good);
         }
         for bad in [
@@ -635,10 +637,10 @@ mod tests {
             "a\\tb",
             "a\\u0007b",
         ] {
-            let text = format!("[derive.anthropic]\nmodel = \"{bad}\"\n");
+            let text = format!("[llm.anthropic]\nmodel = \"{bad}\"\n");
             assert_eq!(
                 refused(&text).to_string(),
-                format!("/c/config.toml:2: derive.anthropic.model {MODEL_REASON}"),
+                format!("/c/config.toml:2: llm.anthropic.model {MODEL_REASON}"),
                 "{bad}"
             );
         }
@@ -646,19 +648,18 @@ mod tests {
 
     #[test]
     fn the_endpoint_is_https_or_plain_http_at_a_literal_loopback_address() {
-        let taken =
-            resolve("[derive.anthropic.api]\nendpoint = \"http://127.0.0.1:9/v1/messages\"\n");
+        let taken = resolve("[llm.anthropic.api]\nendpoint = \"http://127.0.0.1:9/v1/messages\"\n");
         assert_eq!(
             taken.expect("taken").endpoint.value.as_str(),
             "http://127.0.0.1:9/v1/messages"
         );
         assert_eq!(
-            refused("[derive.anthropic.api]\nendpoint = \"http://example.com\"\n").to_string(),
-            "/c/config.toml:2: derive.anthropic.api.endpoint must be an https URL, or an http URL at 127.0.0.1 or [::1]"
+            refused("[llm.anthropic.api]\nendpoint = \"http://example.com\"\n").to_string(),
+            "/c/config.toml:2: llm.anthropic.api.endpoint must be an https URL, or an http URL at 127.0.0.1 or [::1]"
         );
         assert_eq!(
-            refused("[derive.anthropic.api]\nendpoint = \"http://localhost:9\"\n").to_string(),
-            "/c/config.toml:2: derive.anthropic.api.endpoint must name the address in place of localhost: 127.0.0.1"
+            refused("[llm.anthropic.api]\nendpoint = \"http://localhost:9\"\n").to_string(),
+            "/c/config.toml:2: llm.anthropic.api.endpoint must name the address in place of localhost: 127.0.0.1"
         );
     }
 
@@ -669,17 +670,17 @@ mod tests {
             ("key_env", ["A_B1", "X"], ["A-B", ""]),
         ] {
             for text in good {
-                let config = format!("[derive.anthropic.api]\n{key} = \"{text}\"\n");
+                let config = format!("[llm.anthropic.api]\n{key} = \"{text}\"\n");
                 assert!(resolve(&config).is_ok(), "{key} {text}");
             }
             for text in bad {
-                let config = format!("[derive.anthropic.api]\n{key} = \"{text}\"\n");
+                let config = format!("[llm.anthropic.api]\n{key} = \"{text}\"\n");
                 let error = refused(&config);
                 assert_eq!(at_line(&error), 2, "{key} {text}");
                 if key == "key_env" {
                     assert_eq!(
                         error.to_string(),
-                        "/c/config.toml:2: derive.anthropic.api.key_env must be the name of a variable: letters, digits and _"
+                        "/c/config.toml:2: llm.anthropic.api.key_env must be the name of a variable: letters, digits and _"
                     );
                 }
             }
@@ -688,8 +689,7 @@ mod tests {
 
     #[test]
     fn the_key_command_is_a_program_and_its_arguments() {
-        let command =
-            |text: &str| resolve(&format!("[derive.anthropic.api]\nkey_command = {text}\n"));
+        let command = |text: &str| resolve(&format!("[llm.anthropic.api]\nkey_command = {text}\n"));
         assert!(command("[]").expect("none").key_command.value.is_empty());
         assert_eq!(command("[\"op\"]").expect("one").key_command.value, ["op"]);
         assert_eq!(
@@ -717,11 +717,11 @@ mod tests {
             "accept-encoding",
         ] {
             for written in [name.to_owned(), name.to_ascii_uppercase()] {
-                let text = format!("[derive.anthropic.api.headers]\n{written} = \"v\"\n");
+                let text = format!("[llm.anthropic.api.headers]\n{written} = \"v\"\n");
                 assert_eq!(
                     refused(&text).to_string(),
                     format!(
-                        "/c/config.toml:1: derive.anthropic.api.headers must not hold {name}, a header bilbo writes itself"
+                        "/c/config.toml:1: llm.anthropic.api.headers must not hold {name}, a header bilbo writes itself"
                     ),
                     "{written}"
                 );
@@ -730,19 +730,18 @@ mod tests {
         for (bad, line) in [
             (
                 "\"X A\" = \"v\"",
-                "/c/config.toml:1: derive.anthropic.api.headers must name its headers with letters, digits and dashes",
+                "/c/config.toml:1: llm.anthropic.api.headers must name its headers with letters, digits and dashes",
             ),
             (
                 "X-A = \"a\\nb\"",
-                "/c/config.toml:1: derive.anthropic.api.headers must hold no line end or control character",
+                "/c/config.toml:1: llm.anthropic.api.headers must hold no line end or control character",
             ),
         ] {
-            let text = format!("[derive.anthropic.api.headers]\n{bad}\n");
+            let text = format!("[llm.anthropic.api.headers]\n{bad}\n");
             assert_eq!(refused(&text).to_string(), line, "{bad}");
         }
-        let taken = resolve(
-            "[derive.anthropic.api.headers]\nUser-Agent = \"mine\"\nanthropic-beta = \"x\"\n",
-        );
+        let taken =
+            resolve("[llm.anthropic.api.headers]\nUser-Agent = \"mine\"\nanthropic-beta = \"x\"\n");
         assert_eq!(taken.expect("taken").headers.value.len(), 2);
     }
 
@@ -761,23 +760,23 @@ mod tests {
             "thread",
         ] {
             for written in [name.to_owned(), name.to_ascii_uppercase()] {
-                let text = format!("[derive.anthropic.api.extra]\nzz = 1\n{written} = 1\n");
+                let text = format!("[llm.anthropic.api.extra]\nzz = 1\n{written} = 1\n");
                 assert_eq!(
                     refused(&text).to_string(),
                     format!(
-                        "/c/config.toml:1: derive.anthropic.api.extra must not hold {name}: a field bilbo writes itself, one that offers the model a tool, or one that keeps the records at the provider"
+                        "/c/config.toml:1: llm.anthropic.api.extra must not hold {name}: a field bilbo writes itself, one that offers the model a tool, or one that keeps the records at the provider"
                     ),
                     "{written}"
                 );
             }
         }
         assert_eq!(
-            refused("[derive.anthropic.api.extra]\nouter = { when = 1979-05-27 }\n").to_string(),
-            "/c/config.toml:1: derive.anthropic.api.extra must hold no date, inf or nan"
+            refused("[llm.anthropic.api.extra]\nouter = { when = 1979-05-27 }\n").to_string(),
+            "/c/config.toml:1: llm.anthropic.api.extra must hold no date, inf or nan"
         );
         assert_eq!(
-            refused("[derive.anthropic.api]\nextra = \"x\"\n").to_string(),
-            "/c/config.toml:2: derive.anthropic.api.extra must be a table of fields"
+            refused("[llm.anthropic.api]\nextra = \"x\"\n").to_string(),
+            "/c/config.toml:2: llm.anthropic.api.extra must be a table of fields"
         );
         for name in [
             "cache_control",
@@ -792,14 +791,14 @@ mod tests {
             "stop_sequences",
             "thinking",
         ] {
-            let text = format!("[derive.anthropic.api.extra]\n{name} = {{ type = \"x\" }}\n");
+            let text = format!("[llm.anthropic.api.extra]\n{name} = {{ type = \"x\" }}\n");
             assert!(resolve(&text).is_ok(), "{name}");
         }
     }
 
     #[test]
     fn the_keys_show_as_toml_that_reads_back_and_the_way_lists_six() {
-        let text = "[derive.anthropic.api]\nendpoint = \"http://127.0.0.1:9/x\"\nversion = \"2026-10-21\"\nkey_env = \"MY_KEY\"\nkey_command = [\"op\", \"read\"]\n\n[derive.anthropic.api.headers]\nX-A = \"1\"\n\n[derive.anthropic.api.extra]\noutput_config = { effort = \"low\" }\nlist = [1, 2.5, true, \"s\"]\n\"a.b\" = 3\n";
+        let text = "[llm.anthropic.api]\nendpoint = \"http://127.0.0.1:9/x\"\nversion = \"2026-10-21\"\nkey_env = \"MY_KEY\"\nkey_command = [\"op\", \"read\"]\n\n[llm.anthropic.api.headers]\nX-A = \"1\"\n\n[llm.anthropic.api.extra]\noutput_config = { effort = \"low\" }\nlist = [1, 2.5, true, \"s\"]\n\"a.b\" = 3\n";
         let file = File::parse(Path::new("/c/config.toml"), text.as_bytes()).expect("toml");
         let source = Source {
             var: &|_| None,
@@ -844,40 +843,37 @@ mod tests {
         let mut refusals: Vec<(Error, String)> = Vec::new();
         refusals.push((
             refused(&format!(
-                "[derive.anthropic.api]\nendpoint = \"https://u:{SECRET}@example.com\"\n"
+                "[llm.anthropic.api]\nendpoint = \"https://u:{SECRET}@example.com\"\n"
             )),
-            "/c/config.toml:2: derive.anthropic.api.endpoint must hold no user name or password, got one"
+            "/c/config.toml:2: llm.anthropic.api.endpoint must hold no user name or password, got one"
                 .to_owned(),
         ));
         refusals.push((
             resolve_with(
                 "",
                 (
-                    "BILBO_DERIVE_ANTHROPIC_API_ENDPOINT",
+                    "BILBO_LLM_ANTHROPIC_API_ENDPOINT",
                     &format!("https://u:{SECRET}@example.com"),
                 ),
             )
             .expect_err("refused"),
-            "BILBO_DERIVE_ANTHROPIC_API_ENDPOINT must hold no user name or password, got one"
+            "BILBO_LLM_ANTHROPIC_API_ENDPOINT must hold no user name or password, got one"
                 .to_owned(),
         ));
         refusals.push((
-            refused(&format!("[derive.anthropic.api.headers]\nx-api-key = \"{SECRET}\"\n")),
-            "/c/config.toml:1: derive.anthropic.api.headers must not hold x-api-key, a header bilbo writes itself"
+            refused(&format!("[llm.anthropic.api.headers]\nx-api-key = \"{SECRET}\"\n")),
+            "/c/config.toml:1: llm.anthropic.api.headers must not hold x-api-key, a header bilbo writes itself"
                 .to_owned(),
         ));
         refusals.push((
-            refused(&format!("[derive.anthropic.api]\nkey_env = \"{SECRET}\"\n")),
-            format!("/c/config.toml:2: derive.anthropic.api.key_env {name}"),
+            refused(&format!("[llm.anthropic.api]\nkey_env = \"{SECRET}\"\n")),
+            format!("/c/config.toml:2: llm.anthropic.api.key_env {name}"),
         ));
         refusals.push((
-            resolve_with("", ("BILBO_DERIVE_ANTHROPIC_API_KEY_ENV", SECRET)).expect_err("refused"),
-            format!("BILBO_DERIVE_ANTHROPIC_API_KEY_ENV {name}"),
+            resolve_with("", ("BILBO_LLM_ANTHROPIC_API_KEY_ENV", SECRET)).expect_err("refused"),
+            format!("BILBO_LLM_ANTHROPIC_API_KEY_ENV {name}"),
         ));
-        for (table, key) in [
-            ("derive.anthropic", "model"),
-            ("derive.anthropic.api", "version"),
-        ] {
+        for (table, key) in [("llm.anthropic", "model"), ("llm.anthropic.api", "version")] {
             let reason = if key == "model" {
                 MODEL_REASON
             } else {

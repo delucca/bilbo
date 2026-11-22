@@ -111,9 +111,10 @@ pub fn keys(kind: &[&'static KindKey], groups: &[&'static Group]) -> Vec<&'stati
         ])
         .chain(bilbo_search::keys::ABOUT)
         .chain(bilbo_search::recall::keys::ABOUT)
+        .chain(bilbo_llm::keys::ABOUT)
+        .chain(groups.iter().flat_map(|group| group.about.iter().copied()))
         .chain(bilbo_derive::keys::ABOUT)
         .chain(kind.iter().map(|key| &key.about))
-        .chain(groups.iter().flat_map(|group| group.about.iter().copied()))
         .collect()
 }
 
@@ -172,6 +173,7 @@ pub struct Settings {
     pub read_matches_listed: Resolved<usize>,
     pub search: bilbo_search::keys::Section,
     pub recall: bilbo_search::recall::keys::Section,
+    pub llm: bilbo_llm::keys::Section,
     pub derive: bilbo_derive::keys::Section,
     pub kind: Vec<(&'static KindKey, Resolved<usize>)>,
     pub group: Vec<&'static Group>,
@@ -216,9 +218,10 @@ impl Settings {
         shown.push(read::MATCHES_LISTED.shown(&self.read_matches_listed));
         shown.extend(self.search.shown());
         shown.extend(self.recall.shown());
+        shown.extend(self.llm.shown());
+        shown.extend(self.shown.iter().cloned());
         shown.extend(self.derive.shown());
         shown.extend(self.kind.iter().map(|(key, resolved)| key.shown(resolved)));
-        shown.extend(self.shown.iter().cloned());
         shown
     }
 }
@@ -293,6 +296,7 @@ pub fn load(
         read_matches_listed: read::MATCHES_LISTED.resolve(&source)?,
         search: bilbo_search::keys::section(&source)?,
         recall: bilbo_search::recall::keys::section(&source)?,
+        llm: bilbo_llm::keys::section(&source)?,
         derive: bilbo_derive::keys::section(&source)?,
         kind: kind
             .iter()
@@ -429,7 +433,7 @@ mod tests {
     }
 
     #[test]
-    fn the_registry_is_the_three_folders_the_six_store_keys_the_follows_then_the_read_search_recall_derive_and_markdown_keys()
+    fn the_registry_is_the_folders_the_store_the_follows_then_the_read_search_recall_llm_derive_and_kinds_keys()
      {
         let names: Vec<&str> = keys(&kind(), &[]).iter().map(|about| about.name).collect();
         assert_eq!(
@@ -473,8 +477,11 @@ mod tests {
                 "recall.typo_max_letters",
                 "recall.typo_two_edits",
                 "recall.pair_weight",
+                "llm.provider",
+                "llm.response",
+                "llm.timeout",
+                "llm.poll",
                 "derive.enabled",
-                "derive.provider",
                 "derive.in",
                 "derive.not_in",
                 "derive.instructions",
@@ -485,10 +492,7 @@ mod tests {
                 "derive.earlier",
                 "derive.names",
                 "derive.answer_tokens",
-                "derive.response",
                 "derive.calls",
-                "derive.timeout",
-                "derive.poll",
                 "derive.retries",
                 "derive.retry_wait",
                 "derive.retry_factor",
@@ -560,7 +564,7 @@ mod tests {
             .err(),
             Some(
                 "/c.toml:3: unknown key store.sealat; the keys are paths.root, paths.state, \
-                 paths.cache, store.seal_at, store.seal_after, store.compression, store.tear_budget, store.wait, store.poll, follow, read.budget, read.outline_width, read.matches_listed, search.chunk_tokens, search.chunk_overlap, search.workers, search.index_memory, search.merge_deleted_percent, search.entry_tries, search.label_batch, search.list_limit, recall.budget, recall.notes_budget, recall.candidates, recall.cap, recall.record_cap, recall.copy_share, recall.copy_words, recall.question_words, recall.languages, recall.bm25_k1, recall.bm25_b, recall.read_batch, recall.typo_terms, recall.typo_letters, recall.typo_max_letters, recall.typo_two_edits, recall.pair_weight, derive.enabled, derive.provider, derive.in, derive.not_in, derive.instructions, derive.quiet, derive.window, derive.passage, derive.passage_head, derive.earlier, derive.names, derive.answer_tokens, derive.response, derive.calls, derive.timeout, derive.poll, derive.retries, derive.retry_wait, derive.retry_factor, derive.retry_limit, derive.tries, derive.failures, markdown.heading_width, session.unpack_floor, session.unpack_ratio, session.unpack_window, session.wide_fields, derive.anthropic.model, derive.anthropic.via, derive.anthropic.api.endpoint, derive.anthropic.api.version, derive.anthropic.api.key_env, derive.anthropic.api.key_command, derive.anthropic.api.headers, derive.anthropic.api.extra, derive.anthropic.tool.program, derive.anthropic.tool.effort, derive.anthropic.tool.arguments, derive.anthropic.tool.inherit, derive.anthropic.tool.environment, derive.anthropic.tool.project_files, derive.openai.model, derive.openai.via, derive.openai.api.endpoint, derive.openai.api.key_env, derive.openai.api.key_command, derive.openai.api.headers, derive.openai.api.extra, derive.openai.tool.program, derive.openai.tool.effort, derive.openai.tool.arguments, derive.openai.tool.inherit, derive.openai.tool.environment, derive.openai.tool.home, derive.openai.tool.system_files"
+                 paths.cache, store.seal_at, store.seal_after, store.compression, store.tear_budget, store.wait, store.poll, follow, read.budget, read.outline_width, read.matches_listed, search.chunk_tokens, search.chunk_overlap, search.workers, search.index_memory, search.merge_deleted_percent, search.entry_tries, search.label_batch, search.list_limit, recall.budget, recall.notes_budget, recall.candidates, recall.cap, recall.record_cap, recall.copy_share, recall.copy_words, recall.question_words, recall.languages, recall.bm25_k1, recall.bm25_b, recall.read_batch, recall.typo_terms, recall.typo_letters, recall.typo_max_letters, recall.typo_two_edits, recall.pair_weight, llm.provider, llm.response, llm.timeout, llm.poll, llm.anthropic.model, llm.anthropic.via, llm.anthropic.api.endpoint, llm.anthropic.api.version, llm.anthropic.api.key_env, llm.anthropic.api.key_command, llm.anthropic.api.headers, llm.anthropic.api.extra, llm.anthropic.tool.program, llm.anthropic.tool.effort, llm.anthropic.tool.arguments, llm.anthropic.tool.inherit, llm.anthropic.tool.environment, llm.anthropic.tool.project_files, llm.openai.model, llm.openai.via, llm.openai.api.endpoint, llm.openai.api.key_env, llm.openai.api.key_command, llm.openai.api.headers, llm.openai.api.extra, llm.openai.tool.program, llm.openai.tool.effort, llm.openai.tool.arguments, llm.openai.tool.inherit, llm.openai.tool.environment, llm.openai.tool.home, llm.openai.tool.system_files, derive.enabled, derive.in, derive.not_in, derive.instructions, derive.quiet, derive.window, derive.passage, derive.passage_head, derive.earlier, derive.names, derive.answer_tokens, derive.calls, derive.retries, derive.retry_wait, derive.retry_factor, derive.retry_limit, derive.tries, derive.failures, markdown.heading_width, session.unpack_floor, session.unpack_ratio, session.unpack_window, session.wide_fields"
                     .to_owned()
             )
         );
@@ -590,6 +594,16 @@ mod tests {
                 2,
                 "derive.openai.key_env",
             ),
+            ("derive.provider = \"anthropic\"\n", 1, "derive.provider"),
+            ("derive.timeout = \"1m\"\n", 1, "derive.timeout"),
+            ("derive.response = \"2 KiB\"\n", 1, "derive.response"),
+            ("derive.poll = \"10ms\"\n", 1, "derive.poll"),
+            (
+                "[derive.anthropic]\nmodel = \"m\"\n",
+                2,
+                "derive.anthropic.model",
+            ),
+            ("[derive.openai]\nmodel = \"m\"\n", 2, "derive.openai.model"),
         ] {
             let said = settings(
                 &[("HOME", "/h"), ("BILBO_CONFIG", "/c.toml")],
@@ -786,39 +800,39 @@ mod tests {
             [
                 "BILBO_CONFIG",
                 "BILBO_DERIVE_ANSWER_TOKENS",
-                "BILBO_DERIVE_ANTHROPIC_API_ENDPOINT",
-                "BILBO_DERIVE_ANTHROPIC_API_KEY_ENV",
-                "BILBO_DERIVE_ANTHROPIC_API_VERSION",
-                "BILBO_DERIVE_ANTHROPIC_MODEL",
-                "BILBO_DERIVE_ANTHROPIC_TOOL_EFFORT",
-                "BILBO_DERIVE_ANTHROPIC_TOOL_PROGRAM",
-                "BILBO_DERIVE_ANTHROPIC_VIA",
                 "BILBO_DERIVE_CALLS",
                 "BILBO_DERIVE_EARLIER",
                 "BILBO_DERIVE_ENABLED",
                 "BILBO_DERIVE_FAILURES",
                 "BILBO_DERIVE_NAMES",
-                "BILBO_DERIVE_OPENAI_API_ENDPOINT",
-                "BILBO_DERIVE_OPENAI_API_KEY_ENV",
-                "BILBO_DERIVE_OPENAI_MODEL",
-                "BILBO_DERIVE_OPENAI_TOOL_EFFORT",
-                "BILBO_DERIVE_OPENAI_TOOL_HOME",
-                "BILBO_DERIVE_OPENAI_TOOL_PROGRAM",
-                "BILBO_DERIVE_OPENAI_VIA",
                 "BILBO_DERIVE_PASSAGE",
                 "BILBO_DERIVE_PASSAGE_HEAD",
-                "BILBO_DERIVE_POLL",
-                "BILBO_DERIVE_PROVIDER",
                 "BILBO_DERIVE_QUIET",
-                "BILBO_DERIVE_RESPONSE",
                 "BILBO_DERIVE_RETRIES",
                 "BILBO_DERIVE_RETRY_FACTOR",
                 "BILBO_DERIVE_RETRY_LIMIT",
                 "BILBO_DERIVE_RETRY_WAIT",
-                "BILBO_DERIVE_TIMEOUT",
                 "BILBO_DERIVE_TRIES",
                 "BILBO_DERIVE_WINDOW",
                 "BILBO_HOME",
+                "BILBO_LLM_ANTHROPIC_API_ENDPOINT",
+                "BILBO_LLM_ANTHROPIC_API_KEY_ENV",
+                "BILBO_LLM_ANTHROPIC_API_VERSION",
+                "BILBO_LLM_ANTHROPIC_MODEL",
+                "BILBO_LLM_ANTHROPIC_TOOL_EFFORT",
+                "BILBO_LLM_ANTHROPIC_TOOL_PROGRAM",
+                "BILBO_LLM_ANTHROPIC_VIA",
+                "BILBO_LLM_OPENAI_API_ENDPOINT",
+                "BILBO_LLM_OPENAI_API_KEY_ENV",
+                "BILBO_LLM_OPENAI_MODEL",
+                "BILBO_LLM_OPENAI_TOOL_EFFORT",
+                "BILBO_LLM_OPENAI_TOOL_HOME",
+                "BILBO_LLM_OPENAI_TOOL_PROGRAM",
+                "BILBO_LLM_OPENAI_VIA",
+                "BILBO_LLM_POLL",
+                "BILBO_LLM_PROVIDER",
+                "BILBO_LLM_RESPONSE",
+                "BILBO_LLM_TIMEOUT",
                 "BILBO_MARKDOWN_HEADING_WIDTH",
                 "BILBO_READ_BUDGET",
                 "BILBO_READ_MATCHES_LISTED",
@@ -965,7 +979,7 @@ mod tests {
     }
 
     #[test]
-    fn a_group_is_listed_after_the_kinds_keys_in_its_own_order() {
+    fn a_group_is_listed_after_the_librarys_own_keys_in_its_own_order() {
         let names = |groups: &[&'static Group]| -> Vec<&str> {
             keys(&kind(), groups)
                 .iter()
@@ -973,8 +987,12 @@ mod tests {
                 .collect()
         };
         let without = names(&[]);
+        let at = without
+            .iter()
+            .position(|name| *name == "derive.enabled")
+            .expect("derive.enabled");
         let mut with = without.clone();
-        with.extend(["test.word", "test.table"]);
+        with.splice(at..at, ["test.word", "test.table"]);
         assert_eq!(names(&[&GROUP]), with);
     }
 
@@ -984,8 +1002,12 @@ mod tests {
         let settings = grouped(&[("BILBO_CONFIG", "/c.toml")], text, &[&GROUP]).expect("loads");
         let config = PathBuf::from("/c.toml");
         let shown = settings.shown();
+        let at = shown
+            .iter()
+            .position(|item| item.name == "derive.enabled")
+            .expect("derive.enabled");
         assert_eq!(
-            shown[shown.len() - 2..],
+            shown[at - 2..at],
             [
                 Shown {
                     name: "test.word",

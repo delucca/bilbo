@@ -11,11 +11,11 @@ pub const SUMMARY: &str = "OpenAI's models: via api, with a key; via tool, the t
 
 pub const MODEL: Key<String> = Key {
     about: About {
-        name: "derive.openai.model",
-        variable: Some("BILBO_DERIVE_OPENAI_MODEL"),
+        name: "llm.openai.model",
+        variable: Some("BILBO_LLM_OPENAI_MODEL"),
         default: Default::Toml(r#""""#),
         allowed: MODEL_ALLOWED,
-        doc: "The model bilbo derive asks OpenAI for, by either way. bilbo names none.",
+        doc: "The model bilbo asks OpenAI for, by either way. bilbo names none.",
     },
     parse: crate::api::model,
     show: |id| quote(id),
@@ -23,11 +23,11 @@ pub const MODEL: Key<String> = Key {
 
 pub const VIA: Key<Way> = Key {
     about: About {
-        name: "derive.openai.via",
-        variable: Some("BILBO_DERIVE_OPENAI_VIA"),
+        name: "llm.openai.via",
+        variable: Some("BILBO_LLM_OPENAI_VIA"),
         default: Default::Toml(r#""api""#),
         allowed: "api or tool",
-        doc: "The way bilbo derive reaches OpenAI's models: api sends a request with a key, tool starts the tool codex with its own login.",
+        doc: "The way bilbo reaches OpenAI's models: api sends a request with a key, tool starts the tool codex with its own login.",
     },
     parse: |value| {
         value
@@ -126,20 +126,20 @@ mod tests {
     use crate::model::{Host, Way};
 
     const NAMES: [&str; 14] = [
-        "derive.openai.model",
-        "derive.openai.via",
-        "derive.openai.api.endpoint",
-        "derive.openai.api.key_env",
-        "derive.openai.api.key_command",
-        "derive.openai.api.headers",
-        "derive.openai.api.extra",
-        "derive.openai.tool.program",
-        "derive.openai.tool.effort",
-        "derive.openai.tool.arguments",
-        "derive.openai.tool.inherit",
-        "derive.openai.tool.environment",
-        "derive.openai.tool.home",
-        "derive.openai.tool.system_files",
+        "llm.openai.model",
+        "llm.openai.via",
+        "llm.openai.api.endpoint",
+        "llm.openai.api.key_env",
+        "llm.openai.api.key_command",
+        "llm.openai.api.headers",
+        "llm.openai.api.extra",
+        "llm.openai.tool.program",
+        "llm.openai.tool.effort",
+        "llm.openai.tool.arguments",
+        "llm.openai.tool.inherit",
+        "llm.openai.tool.environment",
+        "llm.openai.tool.home",
+        "llm.openai.tool.system_files",
     ];
 
     fn resolve_with(text: &str, variable: (&'static str, &str)) -> Result<Section, Error> {
@@ -169,7 +169,7 @@ mod tests {
 
     #[test]
     fn the_writer_is_the_api_way() {
-        let built = model(resolve("derive.openai.model = \"m\"\n").unwrap(), host());
+        let built = model(resolve("llm.openai.model = \"m\"\n").unwrap(), host());
         assert_eq!(
             built.describe(),
             [
@@ -183,7 +183,7 @@ mod tests {
     #[test]
     fn via_tool_builds_the_tool_way() {
         let built = model(
-            resolve("derive.openai.model = \"m\"\nderive.openai.via = \"tool\"\n").unwrap(),
+            resolve("llm.openai.model = \"m\"\nllm.openai.via = \"tool\"\n").unwrap(),
             host(),
         );
         let lines = built.describe();
@@ -200,10 +200,10 @@ mod tests {
         assert_eq!(resolve("").unwrap().via.value, Way::Api);
         assert_eq!(resolve("").unwrap().via.origin, Origin::Default);
         assert_eq!(
-            resolve("derive.openai.via = \"api\"\n").unwrap().via.value,
+            resolve("llm.openai.via = \"api\"\n").unwrap().via.value,
             Way::Api
         );
-        let file = resolve("derive.openai.via = \"tool\"\n").unwrap();
+        let file = resolve("llm.openai.via = \"tool\"\n").unwrap();
         assert_eq!(file.via.value, Way::Tool);
         assert_eq!(
             file.via.origin,
@@ -212,11 +212,8 @@ mod tests {
                 line: 1
             }
         );
-        let parsed = File::parse(
-            Path::new("/c/config.toml"),
-            b"derive.openai.via = \"tool\"\n",
-        )
-        .unwrap();
+        let parsed =
+            File::parse(Path::new("/c/config.toml"), b"llm.openai.via = \"tool\"\n").unwrap();
         let shown = VIA.shown(
             &VIA.resolve(&Source {
                 var: &|_| None,
@@ -226,31 +223,31 @@ mod tests {
         );
         assert_eq!(shown.value, "\"tool\"");
         let variable = resolve_with(
-            "derive.openai.via = \"api\"\n",
-            ("BILBO_DERIVE_OPENAI_VIA", "tool"),
+            "llm.openai.via = \"api\"\n",
+            ("BILBO_LLM_OPENAI_VIA", "tool"),
         )
         .unwrap();
         assert_eq!(variable.via.value, Way::Tool);
         assert_eq!(
             variable.via.origin,
-            Origin::Variable("BILBO_DERIVE_OPENAI_VIA")
+            Origin::Variable("BILBO_LLM_OPENAI_VIA")
         );
         for given in ["\"cli\"", "\"\"", "\"API\"", "1"] {
             assert_eq!(
-                resolve(&format!("derive.openai.via = {given}\n"))
+                resolve(&format!("llm.openai.via = {given}\n"))
                     .expect_err("refused")
                     .to_string(),
-                format!("/c/config.toml:1: derive.openai.via must be api or tool, got {given}")
+                format!("/c/config.toml:1: llm.openai.via must be api or tool, got {given}")
             );
         }
         assert_eq!(
-            resolve_with("", ("BILBO_DERIVE_OPENAI_VIA", "cli"))
+            resolve_with("", ("BILBO_LLM_OPENAI_VIA", "cli"))
                 .expect_err("refused")
                 .to_string(),
-            "BILBO_DERIVE_OPENAI_VIA must be api or tool, got \"cli\""
+            "BILBO_LLM_OPENAI_VIA must be api or tool, got \"cli\""
         );
         assert_eq!(
-            resolve_with("", ("BILBO_DERIVE_OPENAI_VIA", ""))
+            resolve_with("", ("BILBO_LLM_OPENAI_VIA", ""))
                 .unwrap()
                 .via
                 .value,
@@ -274,19 +271,19 @@ mod tests {
         assert_eq!(
             variables,
             [
-                Some("BILBO_DERIVE_OPENAI_MODEL"),
-                Some("BILBO_DERIVE_OPENAI_VIA"),
-                Some("BILBO_DERIVE_OPENAI_API_ENDPOINT"),
-                Some("BILBO_DERIVE_OPENAI_API_KEY_ENV"),
+                Some("BILBO_LLM_OPENAI_MODEL"),
+                Some("BILBO_LLM_OPENAI_VIA"),
+                Some("BILBO_LLM_OPENAI_API_ENDPOINT"),
+                Some("BILBO_LLM_OPENAI_API_KEY_ENV"),
                 None,
                 None,
                 None,
-                Some("BILBO_DERIVE_OPENAI_TOOL_PROGRAM"),
-                Some("BILBO_DERIVE_OPENAI_TOOL_EFFORT"),
+                Some("BILBO_LLM_OPENAI_TOOL_PROGRAM"),
+                Some("BILBO_LLM_OPENAI_TOOL_EFFORT"),
                 None,
                 None,
                 None,
-                Some("BILBO_DERIVE_OPENAI_TOOL_HOME"),
+                Some("BILBO_LLM_OPENAI_TOOL_HOME"),
                 None,
             ]
         );
@@ -296,16 +293,13 @@ mod tests {
     fn the_names_read_are_the_keys_variable_or_the_tools() {
         let reads = |text: &str| resolve(text).unwrap().reads();
         assert_eq!(reads(""), ["OPENAI_API_KEY"]);
+        assert_eq!(reads("llm.openai.api.key_env = \"MY_KEY\"\n"), ["MY_KEY"]);
         assert_eq!(
-            reads("derive.openai.api.key_env = \"MY_KEY\"\n"),
-            ["MY_KEY"]
-        );
-        assert_eq!(
-            reads("derive.openai.via = \"tool\"\n"),
+            reads("llm.openai.via = \"tool\"\n"),
             ["PATH", "TMPDIR", "CODEX_HOME", "HOME"]
         );
         assert_eq!(
-            reads("derive.openai.via = \"tool\"\n\n[derive.openai.tool]\ninherit = [\"A_B\"]\n"),
+            reads("llm.openai.via = \"tool\"\n\n[llm.openai.tool]\ninherit = [\"A_B\"]\n"),
             ["A_B", "PATH", "CODEX_HOME", "HOME"]
         );
     }
@@ -320,17 +314,16 @@ mod tests {
             })
         };
         assert_eq!(
-            listed("[derive.openai.tool]\neffort = \"High\"\n")
+            listed("[llm.openai.tool]\neffort = \"High\"\n")
                 .expect_err("refused")
                 .to_string(),
-            "/c/config.toml:2: derive.openai.tool.effort must be a word of lower-case letters, got \"High\""
+            "/c/config.toml:2: llm.openai.tool.effort must be a word of lower-case letters, got \"High\""
         );
-        let error =
-            listed("derive.openai.via = \"tool\"\nderive.openai.api.endpoint = \"ftp://x\"\n")
-                .expect_err("refused")
-                .to_string();
+        let error = listed("llm.openai.via = \"tool\"\nllm.openai.api.endpoint = \"ftp://x\"\n")
+            .expect_err("refused")
+            .to_string();
         assert!(error.starts_with("/c/config.toml:2: "), "{error}");
-        assert!(error.contains("derive.openai.api.endpoint"), "{error}");
-        assert!(listed("[derive.openai.tool]\narguments = [\"--bad\"]\n").is_ok());
+        assert!(error.contains("llm.openai.api.endpoint"), "{error}");
+        assert!(listed("[llm.openai.tool]\narguments = [\"--bad\"]\n").is_ok());
     }
 }

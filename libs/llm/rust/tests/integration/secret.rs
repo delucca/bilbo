@@ -127,7 +127,7 @@ fn a_program_that_prints_too_much_or_is_stopped_by_a_signal_is_refused() {
     let scratch = Scratch::new("secret");
     assert_eq!(
         run(&scratch, "printf '%01025d' 0", WAIT, 1024).unwrap_err(),
-        format!("{KEY} printed more than derive.response allows")
+        format!("{KEY} printed more than llm.response allows")
     );
     assert_eq!(
         run(&scratch, "kill -9 $$", WAIT, 1024).unwrap_err(),

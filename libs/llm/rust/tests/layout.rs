@@ -42,7 +42,7 @@ const PLACEMENT: &[(&str, &[&str])] = &[
     ("claude", &[]),
     ("codex", &[]),
 ];
-const CORE: &[&str] = &["child", "http", "secret", "table", "model"];
+const CORE: &[&str] = &["child", "http", "keys", "secret", "table", "model"];
 const ADAPTERS: &[&str] = &["api", "tool", "anthropic", "openai"];
 const ROOTS: &[&str] = &["crate", "bilbo_llm"];
 const SUITES: &[&str] = &["tests/integration/main.rs", "tests/layout.rs"];

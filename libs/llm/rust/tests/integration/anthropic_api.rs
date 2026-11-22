@@ -41,7 +41,7 @@ fn limits() -> Limits {
 
 fn config(url: &str, keys: &str, tables: &str) -> String {
     format!(
-        "[derive.anthropic]\nmodel = \"test-model-1\"\n\n[derive.anthropic.api]\nendpoint = \"{url}/v1/messages\"\n{keys}\n{tables}"
+        "[llm.anthropic]\nmodel = \"test-model-1\"\n\n[llm.anthropic.api]\nendpoint = \"{url}/v1/messages\"\n{keys}\n{tables}"
     )
 }
 
@@ -178,7 +178,7 @@ fn extra_fields_and_headers_are_added_as_they_are() {
     let text = config(
         &provider.url(),
         "",
-        "[derive.anthropic.api.extra]\noutput_config = { effort = \"low\" }\n\n[derive.anthropic.api.headers]\nanthropic-beta = \"beta-1\"\nUser-Agent = \"mine\"\n",
+        "[llm.anthropic.api.extra]\noutput_config = { effort = \"low\" }\n\n[llm.anthropic.api.headers]\nanthropic-beta = \"beta-1\"\nUser-Agent = \"mine\"\n",
     );
     ready(&text).call(&prompt(), &limits());
     let seen = provider.requests();
@@ -725,13 +725,13 @@ fn prepare_reads_the_key_once_and_refuses_what_is_missing() {
         writer_with(&no_model, scratch.path(), variables)
             .prepare()
             .unwrap_err(),
-        "derive.anthropic.model is not set"
+        "llm.anthropic.model is not set"
     );
     assert_eq!(
         writer_with(&config(url, "", ""), scratch.path(), |_| None)
             .prepare()
             .unwrap_err(),
-        "ANTHROPIC_API_KEY is not set (derive.anthropic.api.key_env)"
+        "ANTHROPIC_API_KEY is not set (llm.anthropic.api.key_env)"
     );
     let counter = scratch.path().join("runs");
     let script = scratch.script(
@@ -939,9 +939,8 @@ fn a_setting_that_holds_the_key_is_refused_by_its_keys_name_and_nothing_is_sent(
     let provider = Provider::start(vec![Reply::answer(200, ANSWER)]);
     let url = provider.url();
     let with_model = |model: &str| config(&url, "", "").replace("test-model-1", model);
-    let extra = |text: &str| {
-        format!("[derive.anthropic.api.extra]\nmetadata = {{ user_id = \"{text}\" }}\n")
-    };
+    let extra =
+        |text: &str| format!("[llm.anthropic.api.extra]\nmetadata = {{ user_id = \"{text}\" }}\n");
     let script = scratch.script("key.sh", &format!("echo {KEY}"));
     let command = format!("key_command = [\"/bin/sh\", \"{}\"]", script.display());
     let cases: Vec<(String, Reader, &str)> = vec![
@@ -956,7 +955,7 @@ fn a_setting_that_holds_the_key_is_refused_by_its_keys_name_and_nothing_is_sent(
             config(
                 &url,
                 "",
-                "[derive.anthropic.api.headers]\nx-trace = \"id sk-test-PLUM-7391\"\n",
+                "[llm.anthropic.api.headers]\nx-trace = \"id sk-test-PLUM-7391\"\n",
             ),
             variables,
             "api.headers",
@@ -965,7 +964,7 @@ fn a_setting_that_holds_the_key_is_refused_by_its_keys_name_and_nothing_is_sent(
             config(
                 &url,
                 "",
-                &format!("[derive.anthropic.api.headers]\n{KEY} = \"1\"\n"),
+                &format!("[llm.anthropic.api.headers]\n{KEY} = \"1\"\n"),
             ),
             variables,
             "api.headers",
@@ -976,7 +975,7 @@ fn a_setting_that_holds_the_key_is_refused_by_its_keys_name_and_nothing_is_sent(
                 &url,
                 "",
                 &format!(
-                    "[derive.anthropic.api.headers]\nx-trace = \"{KEY}\"\n{}",
+                    "[llm.anthropic.api.headers]\nx-trace = \"{KEY}\"\n{}",
                     extra(KEY)
                 ),
             ),
@@ -987,7 +986,7 @@ fn a_setting_that_holds_the_key_is_refused_by_its_keys_name_and_nothing_is_sent(
             config(
                 &url,
                 &format!("version = \"{KEY}\""),
-                "[derive.anthropic.api.headers]\nx-trace = \"sk-test-PLUM-7391\"\n",
+                "[llm.anthropic.api.headers]\nx-trace = \"sk-test-PLUM-7391\"\n",
             ),
             variables,
             "api.version",
@@ -1012,7 +1011,7 @@ fn a_setting_that_holds_the_key_is_refused_by_its_keys_name_and_nothing_is_sent(
         let mut writer = writer_with(&text, scratch.path(), reader);
         assert_eq!(
             writer.prepare().unwrap_err(),
-            format!("derive.anthropic.{key} holds the key")
+            format!("llm.anthropic.{key} holds the key")
         );
         let after = writer.call(&prompt(), &limits());
         assert_eq!(after, Outcome::Stopped(Cause::new(What::NotStarted)));
@@ -1033,7 +1032,7 @@ fn a_setting_that_holds_the_key_is_refused_by_its_keys_name_and_nothing_is_sent(
 
 #[test]
 fn describe_says_the_settings_in_force_and_how_the_key_is_read() {
-    let tables = "[derive.anthropic.api.headers]\nX-A = \"1\"\nX-B = \"2\"\n\n[derive.anthropic.api.extra]\noutput_config = { effort = \"low\" }\n";
+    let tables = "[llm.anthropic.api.headers]\nX-A = \"1\"\nX-B = \"2\"\n\n[llm.anthropic.api.extra]\noutput_config = { effort = \"low\" }\n";
     let url = "http://127.0.0.1:9";
     let writer = writer_with(
         &config(url, "key_command = [\"op\", \"read\"]", tables),
@@ -1080,6 +1079,6 @@ fn the_guard_reads_the_model_before_the_version() {
     let mut writer = writer_with(&text, scratch.path(), variables);
     assert_eq!(
         writer.prepare().unwrap_err(),
-        "derive.anthropic.model holds the key"
+        "llm.anthropic.model holds the key"
     );
 }

@@ -86,8 +86,8 @@ def derive_lines():
         check("a bad entry line stops the build", False)
     run = build.DERIVE_RUN.match("entries 3, calls 4, notes 31, dropped 2, refused 0, failed 0\ntokens in 91806, tokens out 7340, seconds 48")
     check("derive's two lines", run and tuple(map(int, run.groups())) == (3, 4, 31, 2, 0, 0, 91806, 7340, 48))
-    text = build.toml_tables({"derive.enabled": True, "derive.in": ["/c/a"], "derive.anthropic.model": "m", "derive.anthropic.tool.environment": {"A": "1"}})
-    check("the derive settings as tables", text == '\n[derive]\nenabled = true\nin = ["/c/a"]\n\n[derive.anthropic]\nmodel = "m"\n\n[derive.anthropic.tool]\nenvironment = { "A" = "1" }\n', text)
+    text = build.toml_tables({"derive.enabled": True, "derive.in": ["/c/a"], "llm.anthropic.model": "m", "llm.anthropic.tool.environment": {"A": "1"}})
+    check("the derive settings as tables", text == '\n[derive]\nenabled = true\nin = ["/c/a"]\n\n[llm.anthropic]\nmodel = "m"\n\n[llm.anthropic.tool]\nenvironment = { "A" = "1" }\n', text)
 
 
 ENTRY = "01M7R12WWJKJZK2510AVQDQ54R"
@@ -135,7 +135,7 @@ def loop(tries, dries, runs, derive=DERIVE, writer=True, timeout="5m", spent=(),
         def bilbo(name, *args):
             asked.append(args)
             if args[0] == "config":
-                return 0, f'derive.tries = {tries} (default)\nderive.timeout = "{timeout}" (default)\n', ""
+                return 0, f'derive.tries = {tries} (default)\nllm.timeout = "{timeout}" (default)\n', ""
             queue = dries if "--dry-run" in args else runs
             if not queue:
                 raise AssertionError(f"nothing scripted for {args}")
@@ -183,13 +183,13 @@ def derive_loop():
           result[2].runs[0] == {"store": "s0", "repo": "r", "exit": 0, "entries": 2, "calls": 2, "notes": 0, "dropped": 0, "refused": 2,
                                 "failed": 0, "tokens_in": 100, "tokens_out": 0, "seconds": 6}, result[2].runs)
     check("the config the build writes names the way, api when the settings name none",
-          '\n[derive.anthropic]\nvia = "api"\n' in result[2].config_text, result[2].config_text)
-    result = loop(1, [FINAL], [], derive=DERIVE | {"settings": {"derive.anthropic.via": "tool"}})
+          '\n[llm.anthropic]\nvia = "api"\n' in result[2].config_text, result[2].config_text)
+    result = loop(1, [FINAL], [], derive=DERIVE | {"settings": {"llm.anthropic.via": "tool"}})
     check("the config the build writes names the way tool when the settings name it",
-          '\n[derive.anthropic]\nvia = "tool"\n' in result[2].config_text, result[2].config_text)
+          '\n[llm.anthropic]\nvia = "tool"\n' in result[2].config_text, result[2].config_text)
     result = loop(1, [FINAL], [], derive=DERIVE | {"provider": "openai"})
     check("the config the build writes names the way api for openai",
-          '\n[derive.openai]\nvia = "api"\n' in result[2].config_text, result[2].config_text)
+          '\n[llm.openai]\nvia = "api"\n' in result[2].config_text, result[2].config_text)
     result = loop(3, [(0, dry(1, 1, DUE), "")] * 3 + [(0, dry(0, 0, DONE), ""), FINAL], [refused, refused, run(1, 1, 0, 0)])
     check("two refusals of one window at derive.tries 3 with the dry run unchanged: the loop goes on", result[1] is None, result[1])
     result = loop(3, [(0, dry(1, 1, DUE), "")] * 4, [refused] * 3)
@@ -244,7 +244,7 @@ def derive_allowance():
     check("a run in which the cache asked writes its `run` line to spent",
           result[1] is None and result[2].spent_text == "run 50 10 0\n", result[1])
     check("spent is summed from its lines", result[2].sums == {"asks": 0, "tokens_in": 50, "tokens_out": 10, "refused": 0}, result[2].sums)
-    expect_error("cache.timeout not under derive.timeout stops the build at its start", loop(3, [(0, dry(1, 1, DUE), "")], [], timeout="4m"), "cache.timeout")
+    expect_error("cache.timeout not under llm.timeout stops the build at its start", loop(3, [(0, dry(1, 1, DUE), "")], [], timeout="4m"), "cache.timeout")
 
 
 class Upstream(BaseHTTPRequestHandler):
@@ -323,7 +323,7 @@ def api_cache():
     check("the name of an API request is the one kept answers were found by",
           named == "58c113d4f99425941643b9e51b565c83f4e0d6c24108219089a8c8bfaebd9d46", named)
     rows = [("an answer", 200, ANSWER, True), ("a refusal", 200, REFUSAL, True), ("a cut answer", 200, '{"stop_reason":"max_tokens","content":[]}', True),
-            ("an unreadable 200", 200, "not json", True), ("a 200 over derive.response", 200, "x" * 3_000_000, True),
+            ("an unreadable 200", 200, "not json", True), ("a 200 over llm.response", 200, "x" * 3_000_000, True),
             ("a 400", 400, '{"error":"bad"}', True), ("a 422", 422, '{"error":"bad"}', True),
             ("a 408", 408, "{}", False), ("a 504", 504, "{}", False), ("a 429", 429, "{}", False), ("a 529", 529, "{}", False),
             ("a 503", 503, "{}", False), ("a 409", 409, "{}", False), ("a 500", 500, "{}", False), ("a 401", 401, "{}", False),
@@ -466,7 +466,7 @@ def api_deadline_and_redirect():
 def endpoint_rule():
     def refused(endpoint):
         saved = os.environ.get("BILBO_EVAL_DERIVE")
-        os.environ["BILBO_EVAL_DERIVE"] = json.dumps({"provider": "anthropic", "settings": {"derive.anthropic.api.endpoint": endpoint}})
+        os.environ["BILBO_EVAL_DERIVE"] = json.dumps({"provider": "anthropic", "settings": {"llm.anthropic.api.endpoint": endpoint}})
         try:
             build.derive_env()
         except SystemExit as stopped:
@@ -566,7 +566,7 @@ def bilbo_starts():
     os.environ["BILBO_EVAL_SCOPE"] = "all"
     os.environ["BILBO_EVAL_DERIVE_KEY"] = FAKE_KEY
     os.environ["BILBO_EVAL_DERIVE"] = json.dumps({"provider": "anthropic", "cache": {"write": True},
-                                                  "settings": {"derive.anthropic.api.endpoint": "http://127.0.0.1:1/v1/messages"}})
+                                                  "settings": {"llm.anthropic.api.endpoint": "http://127.0.0.1:1/v1/messages"}})
 
     def one_life(groups, by_repo, derive, life):
         life.record.write_text("")
@@ -665,7 +665,7 @@ def api_key_is_the_caches():
 
     saved_popen = build.subprocess.Popen
     build.subprocess.Popen = lambda command, **options: (launched.append((command, options.get("env"))), (_ for _ in ()).throw(Stopped()))[1]
-    derive = DERIVE | {"settings": {"derive.anthropic.api.endpoint": "http://127.0.0.1:1/v1/messages"}}
+    derive = DERIVE | {"settings": {"llm.anthropic.api.endpoint": "http://127.0.0.1:1/v1/messages"}}
     try:
         os.environ["BILBO_EVAL_DERIVE_KEY"] = FAKE_KEY
         for write in (True, False):
@@ -931,7 +931,7 @@ def tool_starts():
         return started()
 
     build.subprocess.Popen = popen
-    derive = {"provider": "anthropic", "settings": {"derive.anthropic.via": "tool", "derive.anthropic.model": "m", "derive.anthropic.tool.program": str(rig.program)},
+    derive = {"provider": "anthropic", "settings": {"llm.anthropic.via": "tool", "llm.anthropic.model": "m", "llm.anthropic.tool.program": str(rig.program)},
               "cache": {"write": True, "timeout": 240}, "ceilings": {"calls": 7}}
     os.environ["BILBO_EVAL_DERIVE_KEY"] = FAKE_TOKEN
     try:
@@ -949,7 +949,7 @@ def tool_starts():
               env.get("BILBO_EVAL_CACHE_KEY") == FAKE_TOKEN and "BILBO_EVAL_DERIVE_KEY" not in env and not build.KEYS
               and FAKE_TOKEN not in json.dumps(runs[0]) and cache.STAND_IN not in json.dumps(runs[0]), runs)
         check("the store's program is the file the build wrote, and the settings' other keys are as given",
-              settings == {"derive.anthropic.via": "tool", "derive.anthropic.model": "m", "derive.anthropic.tool.program": str(build.LAUNCHER)}, settings)
+              settings == {"llm.anthropic.via": "tool", "llm.anthropic.model": "m", "llm.anthropic.tool.program": str(build.LAUNCHER)}, settings)
         got = ended(rig.call(command=[str(build.LAUNCHER), "-p"]))
         check("bilbo's start of that file reaches the tool behind the cache and ends as it ended",
               got == (0, TOLD) and rig.started()[0]["argv"] == ["-p"] and os.access(build.LAUNCHER, os.X_OK), got)
@@ -957,13 +957,13 @@ def tool_starts():
         broken.write_text("#!/bin/sh\nexit 3\n")
         broken.chmod(0o755)
         try:
-            build.start_cache(derive | {"settings": {"derive.anthropic.via": "tool", "derive.anthropic.tool.program": str(broken)}})
+            build.start_cache(derive | {"settings": {"llm.anthropic.via": "tool", "llm.anthropic.tool.program": str(broken)}})
         except SystemExit as stopped:
             check("a program that cannot say its version stops the build at its start", "--version exited 3" in str(stopped), stopped)
         else:
             check("a program that cannot say its version stops the build at its start", False)
         try:
-            build.start_cache(derive | {"settings": {"derive.anthropic.via": "tool", "derive.anthropic.tool.program": str(tmp / "none")}})
+            build.start_cache(derive | {"settings": {"llm.anthropic.via": "tool", "llm.anthropic.tool.program": str(tmp / "none")}})
         except SystemExit as stopped:
             check("a program that is not there stops the build at its start", "to stand behind the cache" in str(stopped), stopped)
         else:
@@ -1345,26 +1345,26 @@ def settings_stops():
     check("the provider claude is refused by name", error and "'claude' is none of anthropic and openai" in error, error)
     errors = [refused({"provider": ["anthropic"]}), refused({"provider": {"anthropic": 1}})]
     check("a provider that is no text is refused by name", all(error and "is none of anthropic and openai" in error for error in errors), errors)
-    check("anthropic by the way tool is taken", refused({"provider": "anthropic", "settings": {"derive.anthropic.via": "tool"}}) is None)
-    error = refused({"provider": "openai", "settings": {"derive.openai.via": "tool"}})
+    check("anthropic by the way tool is taken", refused({"provider": "anthropic", "settings": {"llm.anthropic.via": "tool"}}) is None)
+    error = refused({"provider": "openai", "settings": {"llm.openai.via": "tool"}})
     check("openai by the way tool is refused", error and "the provider 'openai' has no way 'tool'" in error, error)
-    error = refused({"provider": "anthropic", "settings": {"derive.anthropic.via": "cli"}})
+    error = refused({"provider": "anthropic", "settings": {"llm.anthropic.via": "cli"}})
     check("a way that is none is refused by name", error and "the way 'cli' is none of api and tool" in error, error)
     check("the folder of a build is its provider and its way",
-          (build.folder_of({"provider": "anthropic"}), build.folder_of({"provider": "anthropic", "settings": {"derive.anthropic.via": "tool"}}),
+          (build.folder_of({"provider": "anthropic"}), build.folder_of({"provider": "anthropic", "settings": {"llm.anthropic.via": "tool"}}),
            build.folder_of({"provider": "openai", "settings": {}})) == ("anthropic-api", "anthropic-tool", "openai-api"))
     error = refused({"provider": "gemini"})
     check("another provider is refused by name", error and "'gemini' is none of anthropic and openai" in error, error)
     secret = "https://user:hunter2@api.example.com/v1"
-    error = refused({"provider": "anthropic", "settings": {"derive.anthropic.api.endpoint": secret}})
+    error = refused({"provider": "anthropic", "settings": {"llm.anthropic.api.endpoint": secret}})
     check("an endpoint with an @ is refused, and its value is in no text", error and "no user name or password" in error and "hunter2" not in error, error)
     for where in ("https://bob:2024?x@127.0.0.1/v1", "https://bob:2024#x@127.0.0.1/v1", "https://127.0.0.1/v1?a=b@c"):
-        error = refused({"provider": "anthropic", "settings": {"derive.anthropic.api.endpoint": where}})
+        error = refused({"provider": "anthropic", "settings": {"llm.anthropic.api.endpoint": where}})
         check(f"an endpoint with an @ anywhere is refused: {where.split('@')[0][-12:]}@", error and "no user name or password" in error and "2024" not in error, error)
-    check("an endpoint with no @ is taken", refused({"provider": "anthropic", "settings": {"derive.anthropic.api.endpoint": "https://api.example.com/v1"}}) is None)
+    check("an endpoint with no @ is taken", refused({"provider": "anthropic", "settings": {"llm.anthropic.api.endpoint": "https://api.example.com/v1"}}) is None)
     check("the key's variable is the setting's key_env, else the provider's own (L17)",
           (build.key_variable({"provider": "openai"}, {}), build.key_variable({"provider": "anthropic"}, {}),
-           build.key_variable({"provider": "openai"}, {"derive.openai.api.key_env": "MY_KEY"})) == ("OPENAI_API_KEY", "ANTHROPIC_API_KEY", "MY_KEY"))
+           build.key_variable({"provider": "openai"}, {"llm.openai.api.key_env": "MY_KEY"})) == ("OPENAI_API_KEY", "ANTHROPIC_API_KEY", "MY_KEY"))
     manifest = {"stores": {"a": {"note_entries": 2, "noted": 1}, "b": {"note_entries": 2, "noted": 0}}}
     check("a store is asked for a note when it holds a note, not when it holds a note entry (L18)",
           (arm_check.has_notes(manifest, "a"), arm_check.has_notes(manifest, "b")) == (True, False))
@@ -1374,12 +1374,13 @@ def settings_stops():
              ("nothing searched", (0, 0, 2), False)]
     for label, args, wanted in cases:
         check(f"the probe's count (L19): {label}", build.probe_counts(*args) is wanted, args)
-    for line in ('derive.anthropic.api.headers = { "x" = "hunter2" } (file)', 'derive.anthropic.tool.environment = { "T" = "hunter2" } (file)',
-                 'derive.openai.api.headers = { "x" = "hunter2" } (file)'):
+    for line in ('llm.anthropic.api.headers = { "x" = "hunter2" } (file)', 'llm.anthropic.tool.environment = { "T" = "hunter2" } (file)',
+                 'llm.openai.api.headers = { "x" = "hunter2" } (file)', 'llm.openai.tool.environment = { "T" = "hunter2" } (file)'):
         shown = build.config_line(line)
         check("the manifest keeps the name of a headers or environment setting and not its value (finding 38)",
               shown.startswith(line.split(" = ")[0]) and "hunter2" not in shown, shown)
     check("another setting is kept whole", build.config_line("derive.tries = 3 (default)") == "derive.tries = 3 (default)")
+    check("recall.notes_budget is kept whole", build.config_line("recall.notes_budget = 4000 (default)") == "recall.notes_budget = 4000 (default)")
 
 
 def api_key_in_a_kept_answer():

@@ -11,11 +11,11 @@ pub const SUMMARY: &str = "Anthropic's models: via api, with a key; via tool, th
 
 pub const MODEL: Key<String> = Key {
     about: About {
-        name: "derive.anthropic.model",
-        variable: Some("BILBO_DERIVE_ANTHROPIC_MODEL"),
+        name: "llm.anthropic.model",
+        variable: Some("BILBO_LLM_ANTHROPIC_MODEL"),
         default: Default::Toml(r#""""#),
         allowed: MODEL_ALLOWED,
-        doc: "The model bilbo derive asks Anthropic for, by either way. bilbo names none.",
+        doc: "The model bilbo asks Anthropic for, by either way. bilbo names none.",
     },
     parse: crate::api::model,
     show: |id| quote(id),
@@ -23,11 +23,11 @@ pub const MODEL: Key<String> = Key {
 
 pub const VIA: Key<Way> = Key {
     about: About {
-        name: "derive.anthropic.via",
-        variable: Some("BILBO_DERIVE_ANTHROPIC_VIA"),
+        name: "llm.anthropic.via",
+        variable: Some("BILBO_LLM_ANTHROPIC_VIA"),
         default: Default::Toml(r#""api""#),
         allowed: "api or tool",
-        doc: "The way bilbo derive reaches Anthropic's models: api sends a request with a key, tool starts the tool claude with its own login.",
+        doc: "The way bilbo reaches Anthropic's models: api sends a request with a key, tool starts the tool claude with its own login.",
     },
     parse: |value| {
         value
@@ -118,20 +118,20 @@ mod tests {
     use crate::model::{Host, Way};
 
     const NAMES: [&str; 14] = [
-        "derive.anthropic.model",
-        "derive.anthropic.via",
-        "derive.anthropic.api.endpoint",
-        "derive.anthropic.api.version",
-        "derive.anthropic.api.key_env",
-        "derive.anthropic.api.key_command",
-        "derive.anthropic.api.headers",
-        "derive.anthropic.api.extra",
-        "derive.anthropic.tool.program",
-        "derive.anthropic.tool.effort",
-        "derive.anthropic.tool.arguments",
-        "derive.anthropic.tool.inherit",
-        "derive.anthropic.tool.environment",
-        "derive.anthropic.tool.project_files",
+        "llm.anthropic.model",
+        "llm.anthropic.via",
+        "llm.anthropic.api.endpoint",
+        "llm.anthropic.api.version",
+        "llm.anthropic.api.key_env",
+        "llm.anthropic.api.key_command",
+        "llm.anthropic.api.headers",
+        "llm.anthropic.api.extra",
+        "llm.anthropic.tool.program",
+        "llm.anthropic.tool.effort",
+        "llm.anthropic.tool.arguments",
+        "llm.anthropic.tool.inherit",
+        "llm.anthropic.tool.environment",
+        "llm.anthropic.tool.project_files",
     ];
 
     fn resolve_with(text: &str, variable: (&'static str, &str)) -> Result<Section, Error> {
@@ -161,10 +161,7 @@ mod tests {
 
     #[test]
     fn the_writer_is_the_way_via_names() {
-        let api = model(
-            resolve("[derive.anthropic]\nmodel = \"m\"\n").unwrap(),
-            host(),
-        );
+        let api = model(resolve("[llm.anthropic]\nmodel = \"m\"\n").unwrap(), host());
         assert_eq!(
             api.describe(),
             [
@@ -175,7 +172,7 @@ mod tests {
         );
         assert_eq!(api.id(), "m");
         let tool = model(
-            resolve("[derive.anthropic]\nmodel = \"m\"\nvia = \"tool\"\n").unwrap(),
+            resolve("[llm.anthropic]\nmodel = \"m\"\nvia = \"tool\"\n").unwrap(),
             host(),
         );
         let lines = tool.describe();
@@ -192,17 +189,15 @@ mod tests {
         let reads = |text: &str| resolve(text).unwrap().reads();
         assert_eq!(reads(""), ["ANTHROPIC_API_KEY"]);
         assert_eq!(
-            reads("[derive.anthropic.api]\nkey_env = \"MY_KEY\"\n"),
+            reads("[llm.anthropic.api]\nkey_env = \"MY_KEY\"\n"),
             ["MY_KEY"]
         );
         assert_eq!(
-            reads("[derive.anthropic]\nvia = \"tool\"\n"),
+            reads("[llm.anthropic]\nvia = \"tool\"\n"),
             ["HOME", "USER", "PATH", "TMPDIR"]
         );
         assert_eq!(
-            reads(
-                "[derive.anthropic]\nvia = \"tool\"\n\n[derive.anthropic.tool]\ninherit = [\"A_B\"]\n"
-            ),
+            reads("[llm.anthropic]\nvia = \"tool\"\n\n[llm.anthropic.tool]\ninherit = [\"A_B\"]\n"),
             ["A_B"]
         );
     }
@@ -212,7 +207,7 @@ mod tests {
         let none = resolve("").unwrap();
         assert_eq!(none.via.value, Way::Api);
         assert_eq!(none.via.origin, Origin::Default);
-        let file = resolve("[derive.anthropic]\nvia = \"tool\"\n").unwrap();
+        let file = resolve("[llm.anthropic]\nvia = \"tool\"\n").unwrap();
         assert_eq!(file.via.value, Way::Tool);
         assert_eq!(
             file.via.origin,
@@ -232,20 +227,20 @@ mod tests {
             );
             shown.value
         };
-        assert_eq!(source("[derive.anthropic]\nvia = \"tool\"\n"), "\"tool\"");
+        assert_eq!(source("[llm.anthropic]\nvia = \"tool\"\n"), "\"tool\"");
         let variable = resolve_with(
-            "[derive.anthropic]\nvia = \"api\"\n",
-            ("BILBO_DERIVE_ANTHROPIC_VIA", "tool"),
+            "[llm.anthropic]\nvia = \"api\"\n",
+            ("BILBO_LLM_ANTHROPIC_VIA", "tool"),
         )
         .unwrap();
         assert_eq!(variable.via.value, Way::Tool);
         assert_eq!(
             variable.via.origin,
-            Origin::Variable("BILBO_DERIVE_ANTHROPIC_VIA")
+            Origin::Variable("BILBO_LLM_ANTHROPIC_VIA")
         );
         let empty_over_file = resolve_with(
-            "[derive.anthropic]\nvia = \"tool\"\n",
-            ("BILBO_DERIVE_ANTHROPIC_VIA", ""),
+            "[llm.anthropic]\nvia = \"tool\"\n",
+            ("BILBO_LLM_ANTHROPIC_VIA", ""),
         )
         .unwrap();
         assert_eq!(empty_over_file.via.value, Way::Tool);
@@ -256,20 +251,19 @@ mod tests {
                 line: 2
             }
         );
-        let empty = resolve_with("", ("BILBO_DERIVE_ANTHROPIC_VIA", "")).unwrap();
+        let empty = resolve_with("", ("BILBO_LLM_ANTHROPIC_VIA", "")).unwrap();
         assert_eq!(empty.via.value, Way::Api);
         for given in ["\"cli\"", "\"\"", "\"API\"", "\"tool \"", "1", "[\"api\"]"] {
-            let error =
-                resolve(&format!("[derive.anthropic]\nvia = {given}\n")).expect_err("refused");
+            let error = resolve(&format!("[llm.anthropic]\nvia = {given}\n")).expect_err("refused");
             assert_eq!(
                 error.to_string(),
-                format!("/c/config.toml:2: derive.anthropic.via must be api or tool, got {given}")
+                format!("/c/config.toml:2: llm.anthropic.via must be api or tool, got {given}")
             );
         }
-        let error = resolve_with("", ("BILBO_DERIVE_ANTHROPIC_VIA", "cli")).expect_err("refused");
+        let error = resolve_with("", ("BILBO_LLM_ANTHROPIC_VIA", "cli")).expect_err("refused");
         assert_eq!(
             error.to_string(),
-            "BILBO_DERIVE_ANTHROPIC_VIA must be api or tool, got \"cli\""
+            "BILBO_LLM_ANTHROPIC_VIA must be api or tool, got \"cli\""
         );
     }
 
@@ -289,16 +283,16 @@ mod tests {
         assert_eq!(
             variables,
             [
-                Some("BILBO_DERIVE_ANTHROPIC_MODEL"),
-                Some("BILBO_DERIVE_ANTHROPIC_VIA"),
-                Some("BILBO_DERIVE_ANTHROPIC_API_ENDPOINT"),
-                Some("BILBO_DERIVE_ANTHROPIC_API_VERSION"),
-                Some("BILBO_DERIVE_ANTHROPIC_API_KEY_ENV"),
+                Some("BILBO_LLM_ANTHROPIC_MODEL"),
+                Some("BILBO_LLM_ANTHROPIC_VIA"),
+                Some("BILBO_LLM_ANTHROPIC_API_ENDPOINT"),
+                Some("BILBO_LLM_ANTHROPIC_API_VERSION"),
+                Some("BILBO_LLM_ANTHROPIC_API_KEY_ENV"),
                 None,
                 None,
                 None,
-                Some("BILBO_DERIVE_ANTHROPIC_TOOL_PROGRAM"),
-                Some("BILBO_DERIVE_ANTHROPIC_TOOL_EFFORT"),
+                Some("BILBO_LLM_ANTHROPIC_TOOL_PROGRAM"),
+                Some("BILBO_LLM_ANTHROPIC_TOOL_EFFORT"),
                 None,
                 None,
                 None,
@@ -317,19 +311,17 @@ mod tests {
             })
         };
         assert_eq!(
-            listed("[derive.anthropic.tool]\neffort = \"High\"\n")
+            listed("[llm.anthropic.tool]\neffort = \"High\"\n")
                 .expect_err("refused")
                 .to_string(),
-            "/c/config.toml:2: derive.anthropic.tool.effort must be a word of lower-case letters, got \"High\""
+            "/c/config.toml:2: llm.anthropic.tool.effort must be a word of lower-case letters, got \"High\""
         );
         assert_eq!(
-            listed(
-                "[derive.anthropic]\nvia = \"tool\"\n\n[derive.anthropic.api]\nversion = \"a b\"\n"
-            )
-            .expect_err("refused")
-            .to_string(),
-            "/c/config.toml:5: derive.anthropic.api.version must be 1 to 32 letters, digits and dashes"
+            listed("[llm.anthropic]\nvia = \"tool\"\n\n[llm.anthropic.api]\nversion = \"a b\"\n")
+                .expect_err("refused")
+                .to_string(),
+            "/c/config.toml:5: llm.anthropic.api.version must be 1 to 32 letters, digits and dashes"
         );
-        assert!(listed("[derive.anthropic.tool]\narguments = [\"--bad\"]\n").is_ok());
+        assert!(listed("[llm.anthropic.tool]\narguments = [\"--bad\"]\n").is_ok());
     }
 }

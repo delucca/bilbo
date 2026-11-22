@@ -173,9 +173,9 @@ fn script(rig: &Rig) -> PathBuf {
 
 fn config_in(model: Option<&str>, program: &str, system: &str, tail: &str) -> String {
     let model = model.map_or_else(String::new, |model| {
-        format!("derive.openai.model = {model:?}\n\n")
+        format!("llm.openai.model = {model:?}\n\n")
     });
-    format!("{model}[derive.openai.tool]\nprogram = {program:?}\nsystem_files = {system}\n{tail}")
+    format!("{model}[llm.openai.tool]\nprogram = {program:?}\nsystem_files = {system}\n{tail}")
 }
 
 fn config(script: &Path, tail: &str) -> String {
@@ -310,21 +310,21 @@ fn refused(text: &str, rig: &Rig) -> String {
 
 fn t5e(home: &Path, name: &str) -> String {
     format!(
-        "derive.openai.tool.home: {}/{name} is the user's setup for codex, and bilbo's codex home holds none",
+        "llm.openai.tool.home: {}/{name} is the user's setup for codex, and bilbo's codex home holds none",
         home.display()
     )
 }
 
 fn t6(file: &Path) -> String {
     format!(
-        "derive.openai.tool: {} configures codex whatever its arguments are; read it, then take it out of derive.openai.tool.system_files to run with it",
+        "llm.openai.tool: {} configures codex whatever its arguments are; read it, then take it out of llm.openai.tool.system_files to run with it",
         file.display()
     )
 }
 
 fn t6b(path: &Path) -> String {
     format!(
-        "derive.openai.tool: {} is there and cannot be read ({}), so bilbo cannot tell whether a file there configures codex: name the files you can read in derive.openai.tool.system_files instead",
+        "llm.openai.tool: {} is there and cannot be read ({}), so bilbo cannot tell whether a file there configures codex: name the files you can read in llm.openai.tool.system_files instead",
         path.display(),
         std::io::Error::from_raw_os_error(13)
     )
@@ -332,7 +332,7 @@ fn t6b(path: &Path) -> String {
 
 fn t5h(home: &Path, own: &Path) -> String {
     format!(
-        "derive.openai.tool.home: {} and your own codex home, {}, are one folder or one is inside the other: bilbo's is a folder apart",
+        "llm.openai.tool.home: {} and your own codex home, {}, are one folder or one is inside the other: bilbo's is a folder apart",
         home.display(),
         own.display()
     )
@@ -340,7 +340,7 @@ fn t5h(home: &Path, own: &Path) -> String {
 
 fn t5i(home: &Path, work: &Path) -> String {
     format!(
-        "derive.openai.tool.home: {} and the folder the tool runs in, {}, are one folder or one is inside the other",
+        "llm.openai.tool.home: {} and the folder the tool runs in, {}, are one folder or one is inside the other",
         home.display(),
         work.display()
     )
@@ -348,25 +348,25 @@ fn t5i(home: &Path, work: &Path) -> String {
 
 fn t8b(program: &Path) -> String {
     format!(
-        "derive.openai.tool.program: {} is not codex 0.169.0, the release bilbo's arguments are read from",
+        "llm.openai.tool.program: {} is not codex 0.169.0, the release bilbo's arguments are read from",
         program.display()
     )
 }
 
 fn t8c(program: &str) -> String {
-    format!("derive.openai.tool.program: {program} is not on PATH")
+    format!("llm.openai.tool.program: {program} is not on PATH")
 }
 
 fn t8d(file: &Path) -> String {
     format!(
-        "derive.openai.tool.program: {} changed since bilbo asked it its release",
+        "llm.openai.tool.program: {} changed since bilbo asked it its release",
         file.display()
     )
 }
 
 fn t9a(program: &Path) -> String {
     format!(
-        "derive.openai.tool.program: {} printed no catalog of its models",
+        "llm.openai.tool.program: {} printed no catalog of its models",
         program.display()
     )
 }
@@ -386,21 +386,21 @@ const TOOL_LINE: &str =
 
 fn t5o(home: &Path) -> String {
     format!(
-        "derive.openai.tool.home: {0} can be written by others: make it yours alone with chmod 700 {0}",
+        "llm.openai.tool.home: {0} can be written by others: make it yours alone with chmod 700 {0}",
         home.display()
     )
 }
 
 fn t8e(program: &Path, what: &str) -> String {
     format!(
-        "derive.openai.tool.program: {} did not end within derive.timeout when asked {what}",
+        "llm.openai.tool.program: {} did not end within llm.timeout when asked {what}",
         program.display()
     )
 }
 
 fn t8f(program: &Path, what: &str) -> String {
     format!(
-        "derive.openai.tool.program: {} printed more than derive.response allows for {what}: raise derive.response",
+        "llm.openai.tool.program: {} printed more than llm.response allows for {what}: raise llm.response",
         program.display()
     )
 }
@@ -483,7 +483,7 @@ fn the_tool_gets_the_default_arguments_its_two_files_and_its_variables() {
 fn the_variables_are_the_settings_and_bilbos_two_come_last() {
     let rig = rig("openai-variables");
     let script = script(&rig);
-    let tail = "inherit = [\"TEST_ONE\"]\n\n[derive.openai.tool.environment]\nTEST_TWO = \"two\"\n";
+    let tail = "inherit = [\"TEST_ONE\"]\n\n[llm.openai.tool.environment]\nTEST_TWO = \"two\"\n";
     let env_of = |rig: &Rig| {
         let mut env: Vec<String> = read(rig, "env")
             .lines()
@@ -538,20 +538,17 @@ fn a_home_that_is_missing_a_link_or_no_folder_starts_no_child() {
         (
             &missing,
             format!(
-                "derive.openai.tool.home: {0} does not exist: make it, then log in with CODEX_HOME={0} codex login",
+                "llm.openai.tool.home: {0} does not exist: make it, then log in with CODEX_HOME={0} codex login",
                 missing.display()
             ),
         ),
         (
             &linked,
-            format!("derive.openai.tool.home: {} is a link", linked.display()),
+            format!("llm.openai.tool.home: {} is a link", linked.display()),
         ),
         (
             &file,
-            format!(
-                "derive.openai.tool.home: {} is not a folder",
-                file.display()
-            ),
+            format!("llm.openai.tool.home: {} is not a folder", file.display()),
         ),
     ] {
         let tail = format!("home = {:?}\n", home.display().to_string());
@@ -588,7 +585,7 @@ fn a_home_with_no_login_starts_no_child() {
     assert_eq!(
         refused(&config(&script, ""), &rig),
         format!(
-            "derive.openai.tool.home: {0} holds no login: run CODEX_HOME={0} codex login",
+            "llm.openai.tool.home: {0} holds no login: run CODEX_HOME={0} codex login",
             rig.home.display()
         )
     );
@@ -699,10 +696,7 @@ fn another_release_starts_no_call() {
     let missing = rig.scratch.path().join("missing");
     let error = refused(&config(&missing, ""), &rig);
     assert!(
-        error.starts_with(&format!(
-            "derive.openai.tool.program: {}: ",
-            missing.display()
-        )),
+        error.starts_with(&format!("llm.openai.tool.program: {}: ", missing.display())),
         "{error}"
     );
     no_call(&rig);
@@ -727,7 +721,7 @@ fn a_program_with_no_catalog_or_without_the_model_starts_no_call() {
     let text = config_in(Some("model-z"), &script.display().to_string(), "[]", "");
     assert_eq!(
         refused(&text, &rig),
-        "derive.openai.model: codex 0.169.0 has no such model; codex debug models --bundled prints the ones it has"
+        "llm.openai.model: codex 0.169.0 has no such model; codex debug models --bundled prints the ones it has"
     );
     assert_eq!(calls(&rig), ["--version", "debug"]);
     let rig = self::rig("openai-no-effort");
@@ -740,7 +734,7 @@ fn a_program_with_no_catalog_or_without_the_model_starts_no_call() {
     );
     assert_eq!(
         refused(&text, &rig),
-        "derive.openai.tool.effort: codex 0.169.0 lists no such effort for the model"
+        "llm.openai.tool.effort: codex 0.169.0 lists no such effort for the model"
     );
     assert_eq!(calls(&rig), ["--version", "debug"]);
 }
@@ -758,7 +752,7 @@ fn arguments_that_could_give_the_model_a_tool_start_no_child() {
     let tail = format!("arguments = {}\n", quoted(&items));
     assert_eq!(
         refused(&config(&script, &tail), &rig),
-        "derive.openai.tool.arguments must keep the model without tools: it needs \"--disable\" followed by \"goals\""
+        "llm.openai.tool.arguments must keep the model without tools: it needs \"--disable\" followed by \"goals\""
     );
     no_call(&rig);
 }
@@ -768,7 +762,7 @@ fn an_empty_model_is_refused_before_any_child() {
     let rig = rig("openai-no-model-set");
     let script = script(&rig);
     let text = config_in(None, &script.display().to_string(), "[]", "");
-    assert_eq!(refused(&text, &rig), "derive.openai.model is not set");
+    assert_eq!(refused(&text, &rig), "llm.openai.model is not set");
     no_call(&rig);
 }
 
@@ -975,7 +969,7 @@ fn a_path_that_cannot_stand_in_an_argument_starts_no_child() {
     assert_eq!(
         writer.prepare().unwrap_err(),
         format!(
-            "derive.openai.tool: {} cannot stand in an argument: it is not UTF-8 or holds a control character",
+            "llm.openai.tool: {} cannot stand in an argument: it is not UTF-8 or holds a control character",
             home.display()
         )
     );
@@ -1245,12 +1239,12 @@ fn a_home_that_clashes_with_the_users_own_or_with_the_work_folder_starts_no_chil
     let error = attempt(&rig, &script, &held, with_own(&rig, &unseen));
     drop(modes);
     assert!(
-        error.starts_with(&format!("derive.openai.tool.home: {}: ", unseen.display())),
+        error.starts_with(&format!("llm.openai.tool.home: {}: ", unseen.display())),
         "{error}"
     );
     no_call(&rig);
 
-    let neither = "derive.openai.tool.home: neither CODEX_HOME nor HOME is set, so bilbo cannot tell your own codex home from this one: set HOME";
+    let neither = "llm.openai.tool.home: neither CODEX_HOME nor HOME is set, so bilbo cannot tell your own codex home from this one: set HOME";
     for (home, codex_home) in [(None, None), (Some(""), Some(""))] {
         let mut writer = adapter_with(
             &config(&script, ""),
@@ -1284,21 +1278,21 @@ fn a_login_that_is_a_link_or_has_a_second_name_starts_no_child() {
             "link" => {
                 symlink(&other, &auth).expect("link");
                 format!(
-                    "derive.openai.tool.home: {}/auth.json is a link: the login is a file of this folder alone",
+                    "llm.openai.tool.home: {}/auth.json is a link: the login is a file of this folder alone",
                     rig.home.display()
                 )
             }
             "hard" => {
                 fs::hard_link(&other, &auth).expect("hard link");
                 format!(
-                    "derive.openai.tool.home: {}/auth.json has another name too: the login is a file of this folder alone",
+                    "llm.openai.tool.home: {}/auth.json has another name too: the login is a file of this folder alone",
                     rig.home.display()
                 )
             }
             _ => {
                 fs::create_dir(&auth).expect("folder");
                 format!(
-                    "derive.openai.tool.home: {}/auth.json is not a file",
+                    "llm.openai.tool.home: {}/auth.json is not a file",
                     rig.home.display()
                 )
             }
@@ -1419,7 +1413,7 @@ fn a_home_of_another_user_starts_no_child() {
     let tail = "home = \"/usr\"\n";
     assert_eq!(
         refused(&config(&script, tail), &rig),
-        "derive.openai.tool.home: /usr belongs to another user"
+        "llm.openai.tool.home: /usr belongs to another user"
     );
     no_call(&rig);
 }

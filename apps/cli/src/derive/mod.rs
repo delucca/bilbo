@@ -222,7 +222,7 @@ pub fn run(
     let mut section = settings.derive.clone();
     section.calls = section.calls.with_flag(flag);
     if !args.dry_run
-        && let Err(text) = section.gate()
+        && let Err(text) = section.gate(&settings.llm.provider.value)
     {
         return Ok(Outcome::new("")
             .with_diagnostics(vec![Message::info(&format!("derive is off: {text}"))]));
@@ -251,7 +251,7 @@ pub fn run(
         dry: args.dry_run,
     };
     if args.dry_run {
-        let built = if section.provider.value.is_empty() {
+        let built = if settings.llm.provider.value.is_empty() {
             None
         } else {
             Some((hand.writer)(&env.var)?)
@@ -374,6 +374,8 @@ fn go(
         },
         &Context {
             section,
+            provider: &settings.llm.provider.value,
+            limits: settings.llm.limits(section.answer_tokens.value),
             format: &hand.format,
             counter: &counter,
         },
@@ -604,6 +606,7 @@ fn look(
             tokens: &*tokenizer.tokens,
             bound: MAX_ENCODE_BYTES,
             model,
+            provider: &settings.llm.provider.value,
             redo,
             now: SystemTime::now(),
         },
@@ -669,6 +672,7 @@ fn dry(
     given: &[Given],
 ) -> Result<Outcome, Failure> {
     let Job {
+        settings,
         hand,
         section,
         instructions,
@@ -678,8 +682,8 @@ fn dry(
     if !section.enabled.value {
         off.push("derive.enabled is false".to_owned());
     }
-    if section.provider.value.is_empty() {
-        off.push("derive.provider is not set".to_owned());
+    if settings.llm.provider.value.is_empty() {
+        off.push("llm.provider is not set".to_owned());
     }
     if section.named.value.is_empty() {
         off.push("derive.in is empty".to_owned());

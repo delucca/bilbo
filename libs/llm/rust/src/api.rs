@@ -2,13 +2,12 @@ use std::fmt;
 use std::path::Path;
 
 use bilbo_settings::error::Error;
-use bilbo_settings::key::Value;
+use bilbo_settings::key::{Value, show_list, show_texts};
 
 use crate::child::Bounds;
 use crate::http::{self, Endpoint, Fault};
 use crate::model::{Cause, MODEL_REFUSED, Outcome, Usage, What, is_model_name};
 use crate::secret::{self, Secret};
-use crate::table;
 
 pub const ENDPOINT_ALLOWED: &str = "an https URL, or an http URL at 127.0.0.1 or [::1]";
 pub const KEY_ENV_ALLOWED: &str = "the name of a variable: letters, digits and _";
@@ -79,14 +78,14 @@ fn key(call: &Call<'_>, guarded: &[(&str, Vec<&str>)]) -> Result<Secret, String>
     };
     let found = secret::read(
         secret::Source::choose(call.env, call.command),
-        &format!("derive.{}.{name}", call.provider),
+        &format!("llm.{}.{name}", call.provider),
         call.variables,
         call.folder,
         call.bounds,
     )?;
     for (key, texts) in guarded {
         if found.hides(texts) {
-            return Err(format!("derive.{}.{key} holds the key", call.provider));
+            return Err(format!("llm.{}.{key} holds the key", call.provider));
         }
     }
     Ok(found)
@@ -100,7 +99,7 @@ pub fn prepare(
     extra: &[String],
 ) -> Result<Secret, String> {
     if model.is_empty() {
-        return Err(format!("derive.{}.model is not set", call.provider));
+        return Err(format!("llm.{}.model is not set", call.provider));
     }
     let named: Vec<&str> = headers
         .iter()
@@ -123,7 +122,7 @@ pub fn key_line(
         let state = if set { "is set" } else { "is not set" };
         format!("key: the variable {env}, which {state}")
     } else {
-        format!("key: the program {}, not run", table::show_list(command))
+        format!("key: the program {}, not run", show_list(command))
     }
 }
 
@@ -134,7 +133,7 @@ pub fn describe(
     key: String,
 ) -> Vec<String> {
     if !headers.is_empty() {
-        head.push(format!("headers: {}", table::show_texts(headers)));
+        head.push(format!("headers: {}", show_texts(headers)));
     }
     head.extend(extra.map(|shown| format!("extra: {shown}")));
     head.push(key);
@@ -414,13 +413,13 @@ mod tests {
         for value in ["sk-test-PLUM\nx", "sk-test-PLUM\tx", "sk-test-PLUM\u{1b}x"] {
             assert_eq!(
                 read(value, &[]),
-                "MY_KEY holds a control character (derive.test.api.key_env)"
+                "MY_KEY holds a control character (llm.test.api.key_env)"
             );
         }
         let program = ["/bin/sh", "-c", "printf 'sk-test-PLUM\\tx\\n'"].map(str::to_owned);
         assert_eq!(
             read("", &program),
-            "derive.test.api.key_command printed a key with a control character"
+            "llm.test.api.key_command printed a key with a control character"
         );
     }
 }

@@ -8,7 +8,9 @@ use std::time::Duration;
 
 use bilbo_settings::error::Error;
 use bilbo_settings::folder;
-use bilbo_settings::key::{About, Default, Key, Resolved, Shown, Source, quote};
+use bilbo_settings::key::{
+    About, Default, Key, Resolved, Shown, Source, quote, show_list, show_texts,
+};
 use serde_json::Value as Json;
 
 use super::{MODEL, NAME};
@@ -16,10 +18,9 @@ use crate::child::{self, Bounds, End, Environment};
 use crate::model::{
     Cause, Limits, Model, Outcome, Prompt, Usage, Variables, Way, What, answered_model, identifier,
 };
-use crate::table::{show_list, show_texts};
 
 const RELEASE: &str = "0.169.0";
-const WITHOUT_TOOLS: &str = "derive.openai.tool.arguments must keep the model without tools: ";
+const WITHOUT_TOOLS: &str = "llm.openai.tool.arguments must keep the model without tools: ";
 const KEPT_OUT_REFUSED: &str = "must not name HOME or a variable that starts with CODEX_ or OPENAI_: bilbo sets the tool's home, and such a variable can change its login or where it sends a request";
 const CATALOG: &str = "{catalog}";
 const INSTRUCTION: &str = "{instruction}";
@@ -120,11 +121,11 @@ const TOOL_REACHED: &str =
 
 pub const PROGRAM: Key<String> = Key {
     about: About {
-        name: "derive.openai.tool.program",
-        variable: Some("BILBO_DERIVE_OPENAI_TOOL_PROGRAM"),
+        name: "llm.openai.tool.program",
+        variable: Some("BILBO_LLM_OPENAI_TOOL_PROGRAM"),
         default: Default::Toml(r#""codex""#),
         allowed: crate::tool::PROGRAM_ALLOWED,
-        doc: "The program bilbo derive starts for the tool codex. It must be codex 0.169.0. A timer's run needs its full path.",
+        doc: "The program bilbo starts for the tool codex. It must be codex 0.169.0. A timer's run needs its full path.",
     },
     parse: crate::tool::program,
     show: |program| quote(program),
@@ -132,11 +133,11 @@ pub const PROGRAM: Key<String> = Key {
 
 pub const EFFORT: Key<String> = Key {
     about: About {
-        name: "derive.openai.tool.effort",
-        variable: Some("BILBO_DERIVE_OPENAI_TOOL_EFFORT"),
+        name: "llm.openai.tool.effort",
+        variable: Some("BILBO_LLM_OPENAI_TOOL_EFFORT"),
         default: Default::Toml(r#""medium""#),
         allowed: crate::tool::EFFORT_ALLOWED,
-        doc: "The effort bilbo derive asks the tool codex for.",
+        doc: "The effort bilbo asks the tool codex for.",
     },
     parse: crate::tool::effort,
     show: |word| quote(word),
@@ -144,7 +145,7 @@ pub const EFFORT: Key<String> = Key {
 
 pub const ARGUMENTS: Key<Vec<String>> = Key {
     about: About {
-        name: "derive.openai.tool.arguments",
+        name: "llm.openai.tool.arguments",
         variable: None,
         default: Default::Toml(
             r##"["exec", "--json", "--ephemeral", "--ignore-user-config", "--ignore-rules", "--skip-git-repo-check", "--strict-config", "-s", "read-only", "-m", "{model}", "-c", 'model_catalog_json="{catalog}"', "-c", 'model_instructions_file="{instruction}"', "-c", 'model_reasoning_effort="{effort}"', "--disable", "shell_tool", "--disable", "unified_exec", "--disable", "view_image", "--disable", "sleep_tool", "--disable", "apps", "--disable", "plugins", "--disable", "tool_suggest", "--disable", "hooks", "--disable", "image_generation", "--disable", "goals", "--disable", "shell_snapshot", "--disable", "incremental_tools", "--disable", "unbounded_connection_retries", "-c", "agents.enabled=false", "-c", "tools.experimental_request_user_input.enabled=false", "-c", 'web_search="disabled"', "-c", "cloud.skills.enabled=false", "-c", "skills.include_instructions=false", "-c", "skills.bundled.enabled=false", "-c", "include_environment_context=false", "-c", "include_permissions_instructions=false", "-c", "include_apps_instructions=false", "-c", "include_collaboration_mode_instructions=false", "-c", "project_doc_max_bytes=0", "-c", "project_root_markers=[]", "-c", 'history.persistence="none"', "-c", "analytics.enabled=false", "-c", 'otel.metrics_exporter="none"', "-"]"##,
@@ -158,7 +159,7 @@ pub const ARGUMENTS: Key<Vec<String>> = Key {
 
 pub const INHERIT: Key<Vec<String>> = Key {
     about: About {
-        name: "derive.openai.tool.inherit",
+        name: "llm.openai.tool.inherit",
         variable: None,
         default: Default::Toml(r#"["PATH", "TMPDIR"]"#),
         allowed: "a list of variables' names: letters, digits and _; not HOME, and none that starts with CODEX_ or OPENAI_",
@@ -176,7 +177,7 @@ pub const INHERIT: Key<Vec<String>> = Key {
 
 pub const ENVIRONMENT: Key<Vec<(String, String)>> = Key {
     about: About {
-        name: "derive.openai.tool.environment",
+        name: "llm.openai.tool.environment",
         variable: None,
         default: Default::Toml("{}"),
         allowed: "a table of texts whose names are letters, digits and _; not HOME, and none that starts with CODEX_ or OPENAI_",
@@ -194,11 +195,11 @@ pub const ENVIRONMENT: Key<Vec<(String, String)>> = Key {
 
 pub const HOME: Key<Option<PathBuf>> = Key {
     about: About {
-        name: "derive.openai.tool.home",
-        variable: Some("BILBO_DERIVE_OPENAI_TOOL_HOME"),
+        name: "llm.openai.tool.home",
+        variable: Some("BILBO_LLM_OPENAI_TOOL_HOME"),
         default: Default::Toml(r#""""#),
         allowed: "an absolute path or one starting with ~/, or the empty text for bilbo's own",
-        doc: "The folder the tool codex keeps its login and its state in. Empty: the folder codex beside the one the tool runs in. bilbo derive never makes it and never opens its login.",
+        doc: "The folder the tool codex keeps its login and its state in. Empty: the folder codex beside the one the tool runs in. bilbo never makes it and never opens its login.",
     },
     parse: |value| match value.os_text() {
         Some(text) if text.is_empty() => Ok(None),
@@ -209,13 +210,13 @@ pub const HOME: Key<Option<PathBuf>> = Key {
 
 pub const SYSTEM_FILES: Key<Vec<PathBuf>> = Key {
     about: About {
-        name: "derive.openai.tool.system_files",
+        name: "llm.openai.tool.system_files",
         variable: None,
         default: Default::Toml(
             r#"["/etc/codex/config.toml", "/etc/codex/managed_config.toml", "/etc/codex/requirements.toml", "/etc/codex/skills", "/Library/Managed Preferences/com.openai.codex.plist", "/Library/Managed Preferences/*/com.openai.codex.plist"]"#,
         ),
         allowed: "a list of absolute paths; a part that is * stands for every entry there",
-        doc: "The files of the machine that configure the tool codex whatever its arguments are. bilbo derive does not start the tool while one exists: read it, then take it out of this list.",
+        doc: "The files of the machine that configure the tool codex whatever its arguments are. bilbo does not start the tool while one exists: read it, then take it out of this list.",
     },
     parse: |value| {
         let items = value.items().ok_or_else(|| value.refuse())?;
@@ -396,12 +397,12 @@ pub fn without_tools(arguments: &[String]) -> Result<(), String> {
     }
     if !flags.contains(&"--json") {
         return Err(
-            "derive.openai.tool.arguments needs \"--json\": bilbo reads the events it prints"
+            "llm.openai.tool.arguments needs \"--json\": bilbo reads the events it prints"
                 .to_owned(),
         );
     }
     if !flags.contains(&"--ephemeral") {
-        return Err("derive.openai.tool.arguments needs \"--ephemeral\": without it the tool keeps every call as a session in its home".to_owned());
+        return Err("llm.openai.tool.arguments needs \"--ephemeral\": without it the tool keeps every call as a session in its home".to_owned());
     }
     Ok(())
 }
@@ -414,7 +415,7 @@ fn misplaced(value: &str, setting: &str) -> bool {
 }
 
 fn unreadable(path: &Path, error: &io::Error) -> String {
-    format!("derive.openai.tool.home: {}: {error}", path.display())
+    format!("llm.openai.tool.home: {}: {error}", path.display())
 }
 
 fn real(path: &Path) -> Result<PathBuf, String> {
@@ -456,7 +457,7 @@ pub fn own_home(variables: &Variables) -> Result<PathBuf, String> {
     }
     match set("HOME") {
         Some(home) => Ok(Path::new(&home).join(".codex")),
-        None => Err("derive.openai.tool.home: neither CODEX_HOME nor HOME is set, so bilbo cannot tell your own codex home from this one: set HOME".to_owned()),
+        None => Err("llm.openai.tool.home: neither CODEX_HOME nor HOME is set, so bilbo cannot tell your own codex home from this one: set HOME".to_owned()),
     }
 }
 
@@ -466,7 +467,7 @@ pub fn home(folder: &Path, own: &Path, work: &Path) -> Result<(), String> {
         Ok(meta) => meta,
         Err(error) if error.kind() == io::ErrorKind::NotFound => {
             return Err(format!(
-                "derive.openai.tool.home: {} does not exist: make it, then log in with CODEX_HOME={} codex login",
+                "llm.openai.tool.home: {} does not exist: make it, then log in with CODEX_HOME={} codex login",
                 folder.display(),
                 folder.display()
             ));
@@ -475,20 +476,20 @@ pub fn home(folder: &Path, own: &Path, work: &Path) -> Result<(), String> {
     };
     if meta.file_type().is_symlink() {
         return Err(format!(
-            "derive.openai.tool.home: {} is a link",
+            "llm.openai.tool.home: {} is a link",
             folder.display()
         ));
     }
     if !meta.is_dir() {
         return Err(format!(
-            "derive.openai.tool.home: {} is not a folder",
+            "llm.openai.tool.home: {} is not a folder",
             folder.display()
         ));
     }
-    child::own(folder, &meta).map_err(|sentence| format!("derive.openai.tool.home: {sentence}"))?;
+    child::own(folder, &meta).map_err(|sentence| format!("llm.openai.tool.home: {sentence}"))?;
     if meta.mode() & WRITABLE_BY_OTHERS != 0 {
         return Err(format!(
-            "derive.openai.tool.home: {} can be written by others: make it yours alone with chmod 700 {}",
+            "llm.openai.tool.home: {} can be written by others: make it yours alone with chmod 700 {}",
             folder.display(),
             folder.display()
         ));
@@ -496,14 +497,14 @@ pub fn home(folder: &Path, own: &Path, work: &Path) -> Result<(), String> {
     let real_home = real(folder)?;
     if clash(&real_home, &real(work)?) {
         return Err(format!(
-            "derive.openai.tool.home: {} and the folder the tool runs in, {}, are one folder or one is inside the other",
+            "llm.openai.tool.home: {} and the folder the tool runs in, {}, are one folder or one is inside the other",
             folder.display(),
             work.display()
         ));
     }
     if clash(&real_home, &real(own)?) {
         return Err(format!(
-            "derive.openai.tool.home: {} and your own codex home, {}, are one folder or one is inside the other: bilbo's is a folder apart",
+            "llm.openai.tool.home: {} and your own codex home, {}, are one folder or one is inside the other: bilbo's is a folder apart",
             folder.display(),
             own.display()
         ));
@@ -513,7 +514,7 @@ pub fn home(folder: &Path, own: &Path, work: &Path) -> Result<(), String> {
         match found(&held) {
             Ok(_) => {
                 return Err(format!(
-                    "derive.openai.tool.home: {} is the user's setup for codex, and bilbo's codex home holds none",
+                    "llm.openai.tool.home: {} is the user's setup for codex, and bilbo's codex home holds none",
                     held.display()
                 ));
             }
@@ -526,7 +527,7 @@ pub fn home(folder: &Path, own: &Path, work: &Path) -> Result<(), String> {
         Ok(meta) => meta,
         Err(error) if error.kind() == io::ErrorKind::NotFound => {
             return Err(format!(
-                "derive.openai.tool.home: {} holds no login: run CODEX_HOME={} codex login",
+                "llm.openai.tool.home: {} holds no login: run CODEX_HOME={} codex login",
                 folder.display(),
                 folder.display()
             ));
@@ -535,23 +536,23 @@ pub fn home(folder: &Path, own: &Path, work: &Path) -> Result<(), String> {
     };
     if meta.file_type().is_symlink() {
         return Err(format!(
-            "derive.openai.tool.home: {} is a link: the login is a file of this folder alone",
+            "llm.openai.tool.home: {} is a link: the login is a file of this folder alone",
             login.display()
         ));
     }
     if !meta.is_file() {
         return Err(format!(
-            "derive.openai.tool.home: {} is not a file",
+            "llm.openai.tool.home: {} is not a file",
             login.display()
         ));
     }
     if meta.nlink() > 1 {
         return Err(format!(
-            "derive.openai.tool.home: {} has another name too: the login is a file of this folder alone",
+            "llm.openai.tool.home: {} has another name too: the login is a file of this folder alone",
             login.display()
         ));
     }
-    child::own(&login, &meta).map_err(|sentence| format!("derive.openai.tool.home: {sentence}"))
+    child::own(&login, &meta).map_err(|sentence| format!("llm.openai.tool.home: {sentence}"))
 }
 
 pub fn resolve(program: &str, variables: &Variables) -> Result<PathBuf, String> {
@@ -563,10 +564,10 @@ pub fn resolve(program: &str, variables: &Variables) -> Result<PathBuf, String> 
             .filter(|folder| !folder.as_os_str().is_empty())
             .map(|folder| folder.join(program))
             .find(|file| file.is_file())
-            .ok_or_else(|| format!("derive.openai.tool.program: {program} is not on PATH"))?
+            .ok_or_else(|| format!("llm.openai.tool.program: {program} is not on PATH"))?
     };
     std::path::absolute(&file)
-        .map_err(|error| format!("derive.openai.tool.program: {program}: {error}"))
+        .map_err(|error| format!("llm.openai.tool.program: {program}: {error}"))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -594,7 +595,7 @@ pub fn system(files: &[PathBuf]) -> Result<(), String> {
         let parts: Vec<_> = file.components().collect();
         if let Some(found) = existing(PathBuf::new(), &parts)? {
             return Err(format!(
-                "derive.openai.tool: {} configures codex whatever its arguments are; read it, then take it out of derive.openai.tool.system_files to run with it",
+                "llm.openai.tool: {} configures codex whatever its arguments are; read it, then take it out of llm.openai.tool.system_files to run with it",
                 found.display()
             ));
         }
@@ -605,7 +606,7 @@ pub fn system(files: &[PathBuf]) -> Result<(), String> {
 fn existing(front: PathBuf, rest: &[Component<'_>]) -> Result<Option<PathBuf>, String> {
     let cannot = |at: &Path, error: &io::Error| {
         format!(
-            "derive.openai.tool: {} is there and cannot be read ({error}), so bilbo cannot tell whether a file there configures codex: name the files you can read in derive.openai.tool.system_files instead",
+            "llm.openai.tool: {} is there and cannot be read ({error}), so bilbo cannot tell whether a file there configures codex: name the files you can read in llm.openai.tool.system_files instead",
             at.display()
         )
     };
@@ -657,7 +658,7 @@ fn existing(front: PathBuf, rest: &[Component<'_>]) -> Result<Option<PathBuf>, S
 }
 
 fn no_catalog(program: &str) -> String {
-    format!("derive.openai.tool.program: {program} printed no catalog of its models")
+    format!("llm.openai.tool.program: {program} printed no catalog of its models")
 }
 
 pub fn catalog(program: &str, output: &[u8], model: &str, effort: &str) -> Result<Vec<u8>, String> {
@@ -672,7 +673,7 @@ pub fn catalog(program: &str, output: &[u8], model: &str, effort: &str) -> Resul
         .find(|entry| entry.get("slug").and_then(Json::as_str) == Some(model))
     else {
         return Err(format!(
-            "derive.openai.model: codex {RELEASE} has no such model; codex debug models --bundled prints the ones it has"
+            "llm.openai.model: codex {RELEASE} has no such model; codex debug models --bundled prints the ones it has"
         ));
     };
     let lists = entry
@@ -685,7 +686,7 @@ pub fn catalog(program: &str, output: &[u8], model: &str, effort: &str) -> Resul
         });
     if !lists {
         return Err(format!(
-            "derive.openai.tool.effort: codex {RELEASE} lists no such effort for the model"
+            "llm.openai.tool.effort: codex {RELEASE} lists no such effort for the model"
         ));
     }
     let mut entry = entry.clone();
@@ -700,7 +701,7 @@ pub fn catalog(program: &str, output: &[u8], model: &str, effort: &str) -> Resul
     let mut whole = serde_json::Map::new();
     whole.insert("models".to_owned(), Json::Array(vec![entry]));
     serde_json::to_vec(&Json::Object(whole))
-        .map_err(|error| format!("derive.openai.tool.program: {program}: {error}"))
+        .map_err(|error| format!("llm.openai.tool.program: {program}: {error}"))
 }
 
 fn standable(path: &Path) -> Result<&str, String> {
@@ -708,7 +709,7 @@ fn standable(path: &Path) -> Result<&str, String> {
         .filter(|text| !text.chars().any(char::is_control))
         .ok_or_else(|| {
             format!(
-                "derive.openai.tool: {} cannot stand in an argument: it is not UTF-8 or holds a control character",
+                "llm.openai.tool: {} cannot stand in an argument: it is not UTF-8 or holds a control character",
                 path.display()
             )
         })
@@ -849,17 +850,15 @@ impl Codex {
                 poll: self.poll,
             },
         )
-        .map_err(|error| format!("derive.openai.tool.program: {program}: {error}"))?;
+        .map_err(|error| format!("llm.openai.tool.program: {program}: {error}"))?;
         match run.end {
-            End::NotStarted(error) => {
-                Err(format!("derive.openai.tool.program: {program}: {error}"))
-            }
+            End::NotStarted(error) => Err(format!("llm.openai.tool.program: {program}: {error}")),
             End::Exited(0) => Ok(run.stdout),
             End::TimedOut => Err(format!(
-                "derive.openai.tool.program: {program} did not end within derive.timeout when asked {what}"
+                "llm.openai.tool.program: {program} did not end within llm.timeout when asked {what}"
             )),
             End::OverLimit => Err(format!(
-                "derive.openai.tool.program: {program} printed more than derive.response allows for {what}: raise derive.response"
+                "llm.openai.tool.program: {program} printed more than llm.response allows for {what}: raise llm.response"
             )),
             _ => Err(refused),
         }
@@ -868,7 +867,7 @@ impl Codex {
     fn release(&self, found: &Path, environment: &[(String, String)]) -> Result<(), String> {
         let program = &self.section.program.value;
         let not_codex = format!(
-            "derive.openai.tool.program: {program} is not codex {RELEASE}, the release bilbo's arguments are read from"
+            "llm.openai.tool.program: {program} is not codex {RELEASE}, the release bilbo's arguments are read from"
         );
         let release = self.asked(
             found,
@@ -892,7 +891,7 @@ impl Codex {
 impl Model for Codex {
     fn prepare(&mut self) -> Result<(), String> {
         if self.section.model.value.is_empty() {
-            return Err("derive.openai.model is not set".to_owned());
+            return Err("llm.openai.model is not set".to_owned());
         }
         let program = self.section.program.value.clone();
         let mut environment = crate::tool::inherited(
@@ -905,9 +904,9 @@ impl Model for Codex {
         self.checks()?;
         let found = resolve(&program, &self.variables)?;
         let file = fs::canonicalize(&found)
-            .map_err(|error| format!("derive.openai.tool.program: {program}: {error}"))?;
+            .map_err(|error| format!("llm.openai.tool.program: {program}: {error}"))?;
         let identity = identity(&file)
-            .map_err(|error| format!("derive.openai.tool.program: {program}: {error}"))?;
+            .map_err(|error| format!("llm.openai.tool.program: {program}: {error}"))?;
         self.release(&found, &environment)?;
         let models = self.asked(
             &found,
@@ -945,7 +944,7 @@ impl Model for Codex {
         });
         if !unchanged {
             return self.stopped(format!(
-                "derive.openai.tool.program: {} changed since bilbo asked it its release",
+                "llm.openai.tool.program: {} changed since bilbo asked it its release",
                 prepared.found.display()
             ));
         }
@@ -1364,7 +1363,7 @@ mod tests {
     const FAILED_LIMIT: &str = include_str!("../../fixtures/openai/tool/failed-limit.jsonl");
     const FAILED_401: &str = include_str!("../../fixtures/openai/tool/failed-401.jsonl");
     const FAILED_OTHER: &str = include_str!("../../fixtures/openai/tool/failed-other.jsonl");
-    const REST: &str = "derive.openai.tool.arguments must keep the model without tools: ";
+    const REST: &str = "llm.openai.tool.arguments must keep the model without tools: ";
     const READS: &str = "bilbo reads the reply as codex 0.169.0 prints it";
     const CAPACITY: &str = "Selected model is at capacity. Please try a different model.";
 
@@ -1391,7 +1390,7 @@ mod tests {
     }
 
     fn with(key: &str, value: &str) -> String {
-        format!("[derive.openai.tool]\n{key} = {value}\n")
+        format!("[llm.openai.tool]\n{key} = {value}\n")
     }
 
     fn items(list: &[&str]) -> Vec<String> {
@@ -1590,7 +1589,7 @@ mod tests {
         }
         assert_eq!(
             said(&with("effort", "\"High\"")),
-            "/c/config.toml:2: derive.openai.tool.effort must be a word of lower-case letters, got \"High\""
+            "/c/config.toml:2: llm.openai.tool.effort must be a word of lower-case letters, got \"High\""
         );
         let taken = resolve(&with("arguments", "[\"\", \"x\"]")).expect("taken");
         assert_eq!(taken.arguments.value, items(&["", "x"]));
@@ -1598,7 +1597,7 @@ mod tests {
 
     #[test]
     fn a_variable_that_changes_the_tools_home_login_or_address_is_refused() {
-        let inherit = "/c/config.toml:2: derive.openai.tool.inherit must not name HOME or a variable that starts with CODEX_ or OPENAI_: bilbo sets the tool's home, and such a variable can change its login or where it sends a request";
+        let inherit = "/c/config.toml:2: llm.openai.tool.inherit must not name HOME or a variable that starts with CODEX_ or OPENAI_: bilbo sets the tool's home, and such a variable can change its login or where it sends a request";
         let environment = inherit.replace("tool.inherit", "tool.environment");
         for list in [
             "[\"HOME\"]",
@@ -1618,18 +1617,18 @@ mod tests {
             assert_eq!(said(&with("environment", table)), environment, "{table}");
         }
         let taken = resolve(
-            "[derive.openai.tool]\ninherit = [\"HTTPS_PROXY\", \"NO_PROXY\", \"A_B\", \"XCODEX_A\", \"MY_OPENAI_KEY\", \"codex_home\"]\nenvironment = { SSL_CERT_FILE = \"/x\" }\n",
+            "[llm.openai.tool]\ninherit = [\"HTTPS_PROXY\", \"NO_PROXY\", \"A_B\", \"XCODEX_A\", \"MY_OPENAI_KEY\", \"codex_home\"]\nenvironment = { SSL_CERT_FILE = \"/x\" }\n",
         )
         .expect("taken");
         assert_eq!(taken.inherit.value.len(), 6);
         assert_eq!(taken.environment.value.len(), 1);
         assert_eq!(
             said(&with("inherit", "[\"A-B\"]")),
-            "/c/config.toml:2: derive.openai.tool.inherit must hold variables' names alone: letters, digits and _"
+            "/c/config.toml:2: llm.openai.tool.inherit must hold variables' names alone: letters, digits and _"
         );
         assert_eq!(
             said(&with("environment", "{ \"A-B\" = \"1\" }")),
-            "/c/config.toml:2: derive.openai.tool.environment must name its variables with letters, digits and _"
+            "/c/config.toml:2: llm.openai.tool.environment must name its variables with letters, digits and _"
         );
         assert_eq!(KEPT_OUT, ["CODEX_", "OPENAI_"]);
     }
@@ -1650,17 +1649,17 @@ mod tests {
         assert_eq!(tilde.home.value, Some(PathBuf::from("/h/x")));
         let variable = resolve_with(
             &with("home", "\"/a/b\""),
-            &[("BILBO_DERIVE_OPENAI_TOOL_HOME", "/v")],
+            &[("BILBO_LLM_OPENAI_TOOL_HOME", "/v")],
         )
         .expect("variable");
         assert_eq!(variable.home.value, Some(PathBuf::from("/v")));
         assert_eq!(
             said(&with("home", "\"a/b\"")),
-            "/c/config.toml:2: derive.openai.tool.home is not an absolute path: a/b"
+            "/c/config.toml:2: llm.openai.tool.home is not an absolute path: a/b"
         );
         assert_eq!(
             said(&with("home", "5")),
-            "/c/config.toml:2: derive.openai.tool.home must be an absolute path or one starting with ~/, or the empty text for bilbo's own, got 5"
+            "/c/config.toml:2: llm.openai.tool.home must be an absolute path or one starting with ~/, or the empty text for bilbo's own, got 5"
         );
     }
 
@@ -1668,11 +1667,11 @@ mod tests {
     fn the_machines_files_are_absolute_paths_with_whole_stars() {
         assert_eq!(
             said(&with("system_files", "[\"etc/x\"]")),
-            "/c/config.toml:2: derive.openai.tool.system_files is not an absolute path: etc/x"
+            "/c/config.toml:2: llm.openai.tool.system_files is not an absolute path: etc/x"
         );
         assert_eq!(
             said(&with("system_files", "[\"/a/x*/b\"]")),
-            "/c/config.toml:2: derive.openai.tool.system_files must hold * only as a whole part of a path"
+            "/c/config.toml:2: llm.openai.tool.system_files must hold * only as a whole part of a path"
         );
         assert!(resolve(&with("system_files", "[\"/a/*/b\", \"/c\"]")).is_ok());
         assert!(resolve(&with("system_files", "[\"/etc/codex/*\"]")).is_ok());
@@ -1688,16 +1687,16 @@ mod tests {
         assert_eq!(
             names,
             [
-                "derive.openai.tool.program",
-                "derive.openai.tool.effort",
-                "derive.openai.tool.arguments",
-                "derive.openai.tool.inherit",
-                "derive.openai.tool.environment",
-                "derive.openai.tool.home",
-                "derive.openai.tool.system_files",
+                "llm.openai.tool.program",
+                "llm.openai.tool.effort",
+                "llm.openai.tool.arguments",
+                "llm.openai.tool.inherit",
+                "llm.openai.tool.environment",
+                "llm.openai.tool.home",
+                "llm.openai.tool.system_files",
             ]
         );
-        let text = "[derive.openai.tool]\nprogram = \"/bin/c\"\neffort = \"low\"\narguments = [\"exec\", \"-c\", 'a=\"b\"', \"-\"]\ninherit = [\"PATH\"]\nhome = \"/h/c\"\nsystem_files = [\"/a/*/b\"]\n\n[derive.openai.tool.environment]\nA = \"1\"\n";
+        let text = "[llm.openai.tool]\nprogram = \"/bin/c\"\neffort = \"low\"\narguments = [\"exec\", \"-c\", 'a=\"b\"', \"-\"]\ninherit = [\"PATH\"]\nhome = \"/h/c\"\nsystem_files = [\"/a/*/b\"]\n\n[llm.openai.tool.environment]\nA = \"1\"\n";
         let file = File::parse(Path::new("/c/config.toml"), text.as_bytes()).expect("toml");
         let first = shown(&Source {
             var: &|_| None,
@@ -1713,9 +1712,11 @@ mod tests {
             .iter()
             .map(|item| format!("{} = {}\n", item.name, item.value))
             .collect();
-        assert!(again.contains(
-            "derive.openai.tool.arguments = [\"exec\", \"-c\", \"a=\\\"b\\\"\", \"-\"]\n"
-        ));
+        assert!(
+            again.contains(
+                "llm.openai.tool.arguments = [\"exec\", \"-c\", \"a=\\\"b\\\"\", \"-\"]\n"
+            )
+        );
         let reread = File::parse(Path::new("/c/again.toml"), again.as_bytes()).expect("reads back");
         let second = shown(&Source {
             var: &|_| None,
@@ -1966,9 +1967,8 @@ mod tests {
 
     #[test]
     fn the_events_and_the_session_have_sentences_of_their_own() {
-        let json =
-            "derive.openai.tool.arguments needs \"--json\": bilbo reads the events it prints";
-        let ephemeral = "derive.openai.tool.arguments needs \"--ephemeral\": without it the tool keeps every call as a session in its home";
+        let json = "llm.openai.tool.arguments needs \"--json\": bilbo reads the events it prints";
+        let ephemeral = "llm.openai.tool.arguments needs \"--ephemeral\": without it the tool keeps every call as a session in its home";
         assert_eq!(
             edit(&|list| list.retain(|item| item != "--json")),
             Err(json.to_owned())
@@ -2010,7 +2010,7 @@ mod tests {
     #[test]
     fn each_placeholder_is_replaced_once_wherever_it_stands() {
         let section =
-            resolve("derive.openai.model = \"m-1\"\n\n[derive.openai.tool]\neffort = \"high\"\n")
+            resolve("llm.openai.model = \"m-1\"\n\n[llm.openai.tool]\neffort = \"high\"\n")
                 .expect("section");
         let made = invocation(
             &section,
@@ -2038,14 +2038,14 @@ mod tests {
             wanted[i] = new.to_owned();
         }
         assert_eq!(made, wanted);
-        let braced = resolve("derive.openai.model = \"{effort}\"\n").expect("section");
+        let braced = resolve("llm.openai.model = \"{effort}\"\n").expect("section");
         let made = invocation(&braced, Path::new("/w/c"), Path::new("/w/i")).expect("arguments");
         assert_eq!(made[at(&default_arguments(), "{model}")], "{effort}");
     }
 
     #[test]
     fn a_path_stands_in_an_argument_as_toml_text() {
-        let section = resolve("derive.openai.model = \"m\"\n").expect("section");
+        let section = resolve("llm.openai.model = \"m\"\n").expect("section");
         let made = |catalog: &str| {
             invocation(
                 &section,
@@ -2064,7 +2064,7 @@ mod tests {
         );
         assert_eq!(
             made("/w/a\nb/catalog.json").expect_err("refused"),
-            "derive.openai.tool: /w/a\nb/catalog.json cannot stand in an argument: it is not UTF-8 or holds a control character"
+            "llm.openai.tool: /w/a\nb/catalog.json cannot stand in an argument: it is not UTF-8 or holds a control character"
         );
     }
 
@@ -2114,9 +2114,9 @@ mod tests {
 
     #[test]
     fn a_model_or_an_effort_the_catalog_lacks_is_refused_in_bilbos_words() {
-        let model = "derive.openai.model: codex 0.169.0 has no such model; codex debug models --bundled prints the ones it has";
-        let effort = "derive.openai.tool.effort: codex 0.169.0 lists no such effort for the model";
-        let none = "derive.openai.tool.program: codex printed no catalog of its models";
+        let model = "llm.openai.model: codex 0.169.0 has no such model; codex debug models --bundled prints the ones it has";
+        let effort = "llm.openai.tool.effort: codex 0.169.0 lists no such effort for the model";
+        let none = "llm.openai.tool.program: codex printed no catalog of its models";
         assert_eq!(
             catalog("codex", MODELS.as_bytes(), "model-z", "medium").expect_err("no model"),
             model
@@ -2615,7 +2615,7 @@ mod tests {
 
     #[test]
     fn the_lines_for_the_dry_run_show_the_home_in_force() {
-        let lines = adapter("derive.openai.model = \"m\"\n").describe();
+        let lines = adapter("llm.openai.model = \"m\"\n").describe();
         assert_eq!(lines.len(), 6);
         assert_eq!(
             lines[0],
@@ -2626,15 +2626,15 @@ mod tests {
         assert!(lines[3].starts_with("environment: "));
         assert_eq!(lines[4], "home: /s/derive/codex");
         assert!(lines[5].starts_with("system_files: ["));
-        let set = adapter("derive.openai.model = \"m\"\n\n[derive.openai.tool]\nhome = \"/h/c\"\n")
-            .describe();
+        let set =
+            adapter("llm.openai.model = \"m\"\n\n[llm.openai.tool]\nhome = \"/h/c\"\n").describe();
         assert_eq!(set[4], "home: /h/c");
     }
 
     #[test]
     fn the_debug_of_the_tools_adapter_prints_its_program_alone() {
         assert_eq!(
-            format!("{:?}", adapter("derive.openai.model = \"m\"\n")),
+            format!("{:?}", adapter("llm.openai.model = \"m\"\n")),
             "Codex { program: \"codex\", .. }"
         );
     }
@@ -2667,7 +2667,7 @@ mod tests {
             own_home(&given(&[("CODEX_HOME", ""), ("HOME", "/h")])),
             Ok(PathBuf::from("/h/.codex"))
         );
-        let neither = "derive.openai.tool.home: neither CODEX_HOME nor HOME is set, so bilbo cannot tell your own codex home from this one: set HOME";
+        let neither = "llm.openai.tool.home: neither CODEX_HOME nor HOME is set, so bilbo cannot tell your own codex home from this one: set HOME";
         assert_eq!(own_home(&given(&[])), Err(neither.to_owned()));
         assert_eq!(
             own_home(&given(&[("CODEX_HOME", ""), ("HOME", "")])),

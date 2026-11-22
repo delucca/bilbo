@@ -218,7 +218,7 @@ fn answers(count: usize) -> Vec<Reply> {
 
 fn config(url: &str, extra: &str) -> String {
     format!(
-        "derive.enabled = true\nderive.provider = \"anthropic\"\nderive.in = [\"sessions\"]\nderive.quiet = \"0s\"\nderive.anthropic.model = \"claude-test-1\"\nderive.anthropic.api.endpoint = \"{url}/v1/messages\"\n{extra}"
+        "derive.enabled = true\nllm.provider = \"anthropic\"\nderive.in = [\"sessions\"]\nderive.quiet = \"0s\"\nllm.anthropic.model = \"claude-test-1\"\nllm.anthropic.api.endpoint = \"{url}/v1/messages\"\n{extra}"
     )
 }
 
@@ -236,8 +236,8 @@ impl Sandbox {
     fn configure(&self, text: &str) {
         let mut whole = String::new();
         for provider in ["anthropic", "openai"] {
-            if !text.contains(&format!("derive.{provider}.api.endpoint")) {
-                whole.push_str(&format!("derive.{provider}.api.endpoint = \"{CLOSED}\"\n"));
+            if !text.contains(&format!("llm.{provider}.api.endpoint")) {
+                whole.push_str(&format!("llm.{provider}.api.endpoint = \"{CLOSED}\"\n"));
             }
         }
         whole.push_str(text);
@@ -469,7 +469,7 @@ fn derive_is_off_until_its_three_keys_are_set() {
     let provider = Provider::start(Vec::new());
     let made = sandbox.dir.join("key-ran");
     let program = script(&sandbox, &format!("touch '{}'\necho {KEY}", made.display()));
-    let command = format!("derive.anthropic.api.key_command = [\"/bin/sh\", \"{program}\"]\n");
+    let command = format!("llm.anthropic.api.key_command = [\"/bin/sh\", \"{program}\"]\n");
     let complete = config(&provider.url(), &command);
     let cases = [
         (
@@ -477,8 +477,8 @@ fn derive_is_off_until_its_three_keys_are_set() {
             "bilbo: derive is off: derive.enabled is false",
         ),
         (
-            complete.replace("derive.provider = \"anthropic\"", "derive.provider = \"\""),
-            "bilbo: derive is off: derive.provider is not set",
+            complete.replace("llm.provider = \"anthropic\"", "llm.provider = \"\""),
+            "bilbo: derive is off: llm.provider is not set",
         ),
         (
             complete.replace("derive.in = [\"sessions\"]", "derive.in = []"),
@@ -524,6 +524,41 @@ fn no_other_verb_sends_anything_with_derive_on() {
         assert_eq!(run.code, 0, "{refs:?}: {:?}", run.stderr);
     }
     assert!(requests(&provider).is_empty());
+}
+
+#[test]
+fn the_request_holds_the_answer_length_the_settings_give() {
+    let sandbox = Sandbox::filled("derive-answer-length", false);
+    let provider = Provider::start(answers(3));
+    sandbox.configure(&config(&provider.url(), "derive.answer_tokens = 1234\n"));
+    let run = sandbox.run(&["derive"]);
+    assert_eq!(run.code, 0, "{:?}", run.stderr);
+    let first = &requests(&provider)[0];
+    assert!(
+        String::from_utf8_lossy(&first.body).contains("\"max_tokens\":1234"),
+        "{}",
+        String::from_utf8_lossy(&first.body)
+    );
+}
+
+#[test]
+fn a_sandbox_with_no_endpoint_of_its_own_closes_both_providers() {
+    let sandbox = Sandbox::new("derive-closed");
+    let run = sandbox.run(&["config"]);
+    assert_eq!(run.code, 0, "{:?}", run.stderr);
+    let file = sandbox.path("config/config.toml");
+    let endpoints: Vec<&str> = run
+        .stdout
+        .lines()
+        .filter(|line| line.contains(".api.endpoint = "))
+        .collect();
+    assert_eq!(
+        endpoints,
+        [
+            format!("llm.anthropic.api.endpoint = \"{CLOSED}\" ({file}:1)"),
+            format!("llm.openai.api.endpoint = \"{CLOSED}\" ({file}:2)"),
+        ]
+    );
 }
 
 #[test]
@@ -592,7 +627,7 @@ fn a_dry_run_works_while_derive_is_off_and_names_each_key_unset() {
         run.stdout,
         format!(
             "off: derive.enabled is false; a run would send nothing\n\
-             off: derive.provider is not set; a run would send nothing\n\
+             off: llm.provider is not set; a run would send nothing\n\
              off: derive.in is empty; a run would send nothing\n\
              kinds: session (built in, {shipped})\n\
              named: 0 entries by derive.in, 0 of them left out by derive.not_in\n\
@@ -600,12 +635,12 @@ fn a_dry_run_works_while_derive_is_off_and_names_each_key_unset() {
              this run: 0 calls for 0 entries, 0 tokens of records to send (derive.calls 20)\n"
         )
     );
-    sandbox.configure("derive.provider = \"gemini\"\n");
+    sandbox.configure("llm.provider = \"gemini\"\n");
     let run = sandbox.run(&["derive", "--dry-run"]);
     assert_eq!(run.code, 2);
     assert_eq!(
         run.stderr,
-        ["bilbo: derive.provider must be one of anthropic, openai, got \"gemini\""]
+        ["bilbo: llm.provider must be one of anthropic, openai, got \"gemini\""]
     );
 }
 
@@ -617,7 +652,7 @@ fn a_dry_run_reads_no_key_and_runs_no_program() {
     let program = script(&sandbox, &format!("touch '{}'\necho {KEY}", made.display()));
     sandbox.configure(&config(
         &provider.url(),
-        &format!("derive.anthropic.api.key_command = [\"/bin/sh\", \"{program}\"]\n"),
+        &format!("llm.anthropic.api.key_command = [\"/bin/sh\", \"{program}\"]\n"),
     ));
     let (run, asked) = sandbox.run_asking(&["derive", "--dry-run"]);
     assert_eq!(run.code, 0, "{:?}", run.stderr);
@@ -634,7 +669,7 @@ fn the_keys_variable_is_asked_once_and_only_when_a_call_is_made() {
     let _alone = alone();
     let key_command = |sandbox: &Sandbox| {
         let program = script(sandbox, &format!("echo {KEY}"));
-        format!("derive.anthropic.api.key_command = [\"/bin/sh\", \"{program}\"]\n")
+        format!("llm.anthropic.api.key_command = [\"/bin/sh\", \"{program}\"]\n")
     };
     let sandbox = Sandbox::filled("derive-asks", false);
     let provider = Provider::start(answers(6));
@@ -1610,16 +1645,13 @@ fn an_incomplete_provider_is_a_config_error_and_nothing_is_sent() {
     let good = config(&provider.url(), "");
     let cases = [
         (
-            good.replace(
-                "derive.provider = \"anthropic\"",
-                "derive.provider = \"gemini\"",
-            ),
-            "bilbo: derive.provider must be one of anthropic, openai, got \"gemini\"".to_owned(),
+            good.replace("llm.provider = \"anthropic\"", "llm.provider = \"gemini\""),
+            "bilbo: llm.provider must be one of anthropic, openai, got \"gemini\"".to_owned(),
             KEY,
         ),
         (
-            good.replace("derive.anthropic.model = \"claude-test-1\"\n", ""),
-            "bilbo: derive.anthropic.model is not set".to_owned(),
+            good.replace("llm.anthropic.model = \"claude-test-1\"\n", ""),
+            "bilbo: llm.anthropic.model is not set".to_owned(),
             KEY,
         ),
     ];
@@ -1638,7 +1670,7 @@ fn an_incomplete_provider_is_a_config_error_and_nothing_is_sent() {
         run.stderr,
         [
             "bilbo: derive.in 'nowhere' names no entry",
-            "bilbo: ANTHROPIC_API_KEY is not set (derive.anthropic.api.key_env)"
+            "bilbo: ANTHROPIC_API_KEY is not set (llm.anthropic.api.key_env)"
         ]
     );
     let file = sandbox.path("config/config.toml");
@@ -1651,7 +1683,7 @@ fn an_incomplete_provider_is_a_config_error_and_nothing_is_sent() {
     assert_eq!(
         run.stderr,
         [format!(
-            "bilbo: {file}:7: derive.anthropic.api.endpoint must name the address in place of localhost: 127.0.0.1"
+            "bilbo: {file}:7: llm.anthropic.api.endpoint must name the address in place of localhost: 127.0.0.1"
         )]
     );
     let password = "must hold no user name or password, got one";
@@ -1659,7 +1691,7 @@ fn an_incomplete_provider_is_a_config_error_and_nothing_is_sent() {
         &format!("{}/v1/messages", provider.url()),
         "https://u:hunter2@example.com",
     ));
-    let from_file = format!("bilbo: {file}:7: derive.anthropic.api.endpoint {password}");
+    let from_file = format!("bilbo: {file}:7: llm.anthropic.api.endpoint {password}");
     for argv in [&["derive"][..], &["config"]] {
         let run = sandbox.run(argv);
         assert_eq!((run.code, run.stderr.clone()), (2, vec![from_file.clone()]));
@@ -1671,18 +1703,18 @@ fn an_incomplete_provider_is_a_config_error_and_nothing_is_sent() {
         &[
             ("ANTHROPIC_API_KEY", KEY),
             (
-                "BILBO_DERIVE_ANTHROPIC_API_ENDPOINT",
+                "BILBO_LLM_ANTHROPIC_API_ENDPOINT",
                 "https://u:hunter2@example.com",
             ),
         ],
     );
-    let from_variable = format!("bilbo: BILBO_DERIVE_ANTHROPIC_API_ENDPOINT {password}");
+    let from_variable = format!("bilbo: BILBO_LLM_ANTHROPIC_API_ENDPOINT {password}");
     assert_eq!((run.code, run.stderr), (2, vec![from_variable.clone()]));
     assert!(!run.stdout.contains("hunter2"));
     let run = sandbox.run_with(
         &["config"],
         &[(
-            "BILBO_DERIVE_ANTHROPIC_API_ENDPOINT",
+            "BILBO_LLM_ANTHROPIC_API_ENDPOINT",
             "https://u:hunter2@example.com",
         )],
     );
@@ -1694,7 +1726,7 @@ fn an_incomplete_provider_is_a_config_error_and_nothing_is_sent() {
         (run.code, run.stderr.clone()),
         (
             2,
-            vec!["bilbo: derive.anthropic.model holds the key".to_owned()]
+            vec!["bilbo: llm.anthropic.model holds the key".to_owned()]
         )
     );
     assert!(!run.stdout.contains("PLUM"));
@@ -1864,7 +1896,7 @@ fn a_part_file_left_by_a_dead_run_is_removed() {
 fn a_config_that_sets_no_endpoint_points_both_apis_at_a_closed_port() {
     let sandbox = Sandbox::filled("derive-closed", false);
     sandbox.configure(
-        "derive.enabled = true\nderive.provider = \"anthropic\"\nderive.in = [\"sessions\"]\nderive.anthropic.model = \"m\"\nderive.openai.model = \"m\"\n",
+        "derive.enabled = true\nllm.provider = \"anthropic\"\nderive.in = [\"sessions\"]\nllm.anthropic.model = \"m\"\nllm.openai.model = \"m\"\n",
     );
     let line = |run: &Run| {
         run.stdout
@@ -1878,7 +1910,7 @@ fn a_config_that_sets_no_endpoint_points_both_apis_at_a_closed_port() {
         Some("provider: anthropic, via api, model m, at http://127.0.0.1:9/")
     );
     sandbox.configure(
-        "derive.enabled = true\nderive.provider = \"openai\"\nderive.in = [\"sessions\"]\nderive.anthropic.model = \"m\"\nderive.openai.model = \"m\"\n",
+        "derive.enabled = true\nllm.provider = \"openai\"\nderive.in = [\"sessions\"]\nllm.anthropic.model = \"m\"\nllm.openai.model = \"m\"\n",
     );
     let run = sandbox.run(&["derive", "--dry-run"]);
     assert_eq!(
@@ -2145,7 +2177,7 @@ fn tool_config(sandbox: &Sandbox, arguments: &[&str]) -> String {
     fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).expect("a mode");
     let items: Vec<String> = arguments.iter().map(|item| format!("{item:?}")).collect();
     format!(
-        "derive.enabled = true\nderive.provider = \"anthropic\"\nderive.in = [\"sessions\"]\nderive.quiet = \"0s\"\nderive.anthropic.via = \"tool\"\nderive.anthropic.model = \"claude-test-1\"\n\n[derive.anthropic.tool]\nprogram = {:?}\nproject_files = [\"zz-marker.md\"]\narguments = [{}]\n",
+        "derive.enabled = true\nllm.provider = \"anthropic\"\nderive.in = [\"sessions\"]\nderive.quiet = \"0s\"\nllm.anthropic.via = \"tool\"\nllm.anthropic.model = \"claude-test-1\"\n\n[llm.anthropic.tool]\nprogram = {:?}\nproject_files = [\"zz-marker.md\"]\narguments = [{}]\n",
         script.display().to_string(),
         items.join(", ")
     )
@@ -2229,7 +2261,7 @@ fn the_tools_arguments_are_what_the_settings_say() {
     assert_eq!(
         run.stderr,
         [
-            "bilbo: derive.anthropic.tool.arguments must keep the model without tools: it needs \"--strict-mcp-config\""
+            "bilbo: llm.anthropic.tool.arguments must keep the model without tools: it needs \"--strict-mcp-config\""
         ]
     );
     assert!(!sandbox.dir.join("out/ran").exists());
@@ -2326,12 +2358,11 @@ fn a_keys_program_runs_in_the_state_folder() {
             &sandbox,
             &format!("pwd > '{}'\necho {KEY}", wrote.display()),
         );
-        let key =
-            format!("derive.{provider_name}.api.key_command = [\"/bin/sh\", \"{program}\"]\n");
+        let key = format!("llm.{provider_name}.api.key_command = [\"/bin/sh\", \"{program}\"]\n");
         sandbox.configure(&match provider_name {
             "anthropic" => config(&provider.url(), &key),
             _ => format!(
-                "derive.enabled = true\nderive.provider = \"openai\"\nderive.in = [\"sessions\"]\nderive.quiet = \"0s\"\nderive.openai.model = \"gpt-test-1\"\nderive.openai.api.endpoint = \"{}/v1/responses\"\n{key}",
+                "derive.enabled = true\nllm.provider = \"openai\"\nderive.in = [\"sessions\"]\nderive.quiet = \"0s\"\nllm.openai.model = \"gpt-test-1\"\nllm.openai.api.endpoint = \"{}/v1/responses\"\n{key}",
                 provider.url()
             ),
         });
@@ -2896,15 +2927,15 @@ fn a_run_of_passes_only_runs_no_key_program_and_writes_the_model_nowhere() {
     }
     let made = sandbox.dir.join("key-ran");
     let program = script(&sandbox, &format!("touch '{}'\necho {KEY}", made.display()));
-    let extra = format!("derive.anthropic.api.key_command = [\"/bin/sh\", \"{program}\"]\n");
+    let extra = format!("llm.anthropic.api.key_command = [\"/bin/sh\", \"{program}\"]\n");
     let settled = config(&provider.url(), &extra).replace(
         "derive.in = [\"sessions\"]",
         &format!("derive.in = [\"{first}\"]"),
     );
-    let at = settled.find("derive.anthropic.model").expect("a model");
+    let at = settled.find("llm.anthropic.model").expect("a model");
     let end = at + settled[at..].find('\n').expect("a line end");
     let settled = format!(
-        "{}derive.anthropic.model = \"{KEY}\"{}",
+        "{}llm.anthropic.model = \"{KEY}\"{}",
         &settled[..at],
         &settled[end..]
     );
@@ -3060,7 +3091,7 @@ fn codex_config(sandbox: &Sandbox, reply: &str) -> String {
     let home = codex_home(sandbox);
     codex_login(&home);
     format!(
-        "derive.enabled = true\nderive.provider = \"openai\"\nderive.in = [\"sessions\"]\nderive.quiet = \"0s\"\nderive.openai.via = \"tool\"\nderive.openai.model = \"model-a\"\n\n[derive.openai.tool]\nprogram = {:?}\nsystem_files = []\n",
+        "derive.enabled = true\nllm.provider = \"openai\"\nderive.in = [\"sessions\"]\nderive.quiet = \"0s\"\nllm.openai.via = \"tool\"\nllm.openai.model = \"model-a\"\n\n[llm.openai.tool]\nprogram = {:?}\nsystem_files = []\n",
         script.display().to_string()
     )
 }
@@ -3132,7 +3163,7 @@ fn the_run_says_why_codex_was_not_started() {
         run.stderr.last().map(String::as_str),
         Some(
             format!(
-                "bilbo: derive.openai.tool.home: {0} does not exist: make it, then log in with CODEX_HOME={0} codex login",
+                "bilbo: llm.openai.tool.home: {0} does not exist: make it, then log in with CODEX_HOME={0} codex login",
                 home.display()
             )
             .as_str()
@@ -3146,7 +3177,7 @@ fn the_run_says_why_codex_was_not_started() {
     assert_eq!(run.code, 2, "{:?}", run.stderr);
     assert!(
         run.stderr.last().is_some_and(|line| line.ends_with(&format!(
-            "derive.openai.tool.home: {}/AGENTS.md is the user's setup for codex, and bilbo's codex home holds none",
+            "llm.openai.tool.home: {}/AGENTS.md is the user's setup for codex, and bilbo's codex home holds none",
             home.display()
         ))),
         "{:?}",
