@@ -665,6 +665,16 @@ fn a_call_is_handed_the_limits_the_run_was_given() {
 }
 
 #[test]
+fn a_calls_line_names_the_provider_the_run_was_handed() {
+    let (mut world, _) = alone();
+    let mut script = Script::new().then(good());
+    let plan = world.plan(Asked::Every);
+    world.calls(&mut script, &plan);
+    assert_eq!(world.lines.0.len(), 1);
+    assert_eq!(field(&world.lines.0[0], 6), "fake");
+}
+
+#[test]
 fn the_writer_is_prepared_once_before_its_first_call_and_never_when_nothing_is_due() {
     let (mut world, _) = windowed(2);
     let mut script = Script::new().always(each_window(1, 2));

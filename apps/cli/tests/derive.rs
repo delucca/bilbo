@@ -235,14 +235,25 @@ impl Sandbox {
     }
 
     fn configure(&self, text: &str) {
+        let file = self.dir.join("config/config.toml");
+        fs::write(&file, text).expect("a config file");
+        let read = self.run(&["config"]);
         let mut whole = String::new();
         for provider in ["anthropic", "openai"] {
-            if !text.contains(&format!("llm.{provider}.api.endpoint")) {
+            let key = format!("llm.{provider}.api.endpoint = ");
+            let own = if read.code == 0 {
+                read.stdout
+                    .lines()
+                    .any(|line| line.starts_with(&key) && !line.ends_with("(default)"))
+            } else {
+                text.contains(key.trim_end_matches(" = "))
+            };
+            if !own {
                 whole.push_str(&format!("llm.{provider}.api.endpoint = \"{CLOSED}\"\n"));
             }
         }
         whole.push_str(text);
-        fs::write(self.dir.join("config/config.toml"), whole).expect("a config file");
+        fs::write(file, whole).expect("a config file");
     }
 
     fn filled(test: &str, subagent: bool) -> Sandbox {
@@ -535,31 +546,60 @@ fn the_request_holds_the_answer_length_the_settings_give() {
     let run = sandbox.run(&["derive"]);
     assert_eq!(run.code, 0, "{:?}", run.stderr);
     let first = &requests(&provider)[0];
+    let body: Value = serde_json::from_slice(&first.body).expect("a JSON body");
+    assert_eq!(body["max_tokens"], json!(1234), "{body}");
+}
+
+#[test]
+fn the_response_bound_of_the_settings_reaches_a_call() {
+    let sandbox = Sandbox::filled("derive-response-bound", false);
+    let long = format!("{NOTE_TEXT}{}", " plain words".repeat(200));
+    let provider = Provider::start(vec![answer(&long)]);
+    let first = sandbox.session(FIRST);
+    sandbox.configure(&only_ids(
+        &provider.url(),
+        &[first],
+        "llm.response = \"1 KiB\"\n",
+    ));
+    let run = sandbox.run(&["derive"]);
+    assert_eq!(run.code, 1, "{:?}", run.stderr);
     assert!(
-        String::from_utf8_lossy(&first.body).contains("\"max_tokens\":1234"),
-        "{}",
-        String::from_utf8_lossy(&first.body)
+        run.stdout
+            .starts_with("entries 1, calls 1, notes 0, dropped 0, refused 0, failed 1\n")
+    );
+    assert_eq!(
+        run.stderr,
+        [format!(
+            "bilbo: call failed for {first} #r1-23: what came back is over llm.response"
+        )]
     );
 }
 
 #[test]
 fn a_sandbox_with_no_endpoint_of_its_own_closes_both_providers() {
     let sandbox = Sandbox::new("derive-closed");
-    let run = sandbox.run(&["config"]);
-    assert_eq!(run.code, 0, "{:?}", run.stderr);
     let file = sandbox.path("config/config.toml");
-    let endpoints: Vec<&str> = run
-        .stdout
-        .lines()
-        .filter(|line| line.contains(".api.endpoint = "))
-        .collect();
-    assert_eq!(
-        endpoints,
-        [
-            format!("llm.anthropic.api.endpoint = \"{CLOSED}\" ({file}:1)"),
-            format!("llm.openai.api.endpoint = \"{CLOSED}\" ({file}:2)"),
-        ]
-    );
+    let endpoints = |sandbox: &Sandbox| -> Vec<String> {
+        let run = sandbox.run(&["config"]);
+        assert_eq!(run.code, 0, "{:?}", run.stderr);
+        run.stdout
+            .lines()
+            .filter(|line| line.contains(".api.endpoint = "))
+            .map(str::to_owned)
+            .collect()
+    };
+    let expected = [
+        format!("llm.anthropic.api.endpoint = \"{CLOSED}\" ({file}:1)"),
+        format!("llm.openai.api.endpoint = \"{CLOSED}\" ({file}:2)"),
+    ];
+    assert_eq!(endpoints(&sandbox), expected, "the constructor's config");
+    for text in [
+        "# llm.anthropic.api.endpoint and llm.openai.api.endpoint are set nowhere\n",
+        "[llm.openai.api.extra]\nllm.anthropic.api.endpoint = \"unused\"\n",
+    ] {
+        sandbox.configure(text);
+        assert_eq!(endpoints(&sandbox), expected, "{text:?}");
+    }
 }
 
 #[test]

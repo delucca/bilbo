@@ -882,6 +882,7 @@ mod tests {
     use super::{Said, event_line, finish};
     use crate::console::message::Message;
     use crate::console::outcome::Failure;
+    use crate::console::theme::Mark;
 
     #[test]
     fn an_answer_with_no_note_is_said_as_a_failed_call_with_its_sentence() {
@@ -899,6 +900,7 @@ mod tests {
                 extent.parent
             )]
         );
+        assert_eq!(line.mark, Mark::Warning);
     }
 
     #[test]

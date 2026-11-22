@@ -19,6 +19,10 @@ const PLACEMENT: &[(&str, &[&str])] = &[
     ("openai", &[]),
     ("claude", &[]),
     ("codex", &[]),
+    ("api", &[]),
+    ("tool", &[]),
+    ("http", &[]),
+    ("secret", &[]),
 ];
 const CORE: &[&str] = &[
     "answer",

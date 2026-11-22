@@ -8,9 +8,37 @@ use super::{Run, bilbo};
 static COUNTER: AtomicU64 = AtomicU64::new(0);
 
 pub(crate) fn closed(text: &str) -> String {
+    let dir = base()
+        .canonicalize()
+        .expect("canonical scratch base")
+        .join(format!(
+            "closed-{}-{}",
+            std::process::id(),
+            COUNTER.fetch_add(1, Ordering::Relaxed)
+        ));
+    fs::create_dir_all(dir.join("home")).expect("home");
+    fs::write(dir.join("config.toml"), text).expect("a config file");
+    let path = |name: &str| dir.join(name).to_str().expect("UTF-8").to_owned();
+    let env = [
+        ("HOME", path("home")),
+        ("BILBO_HOME", path("store")),
+        ("XDG_STATE_HOME", path("state")),
+        ("XDG_CACHE_HOME", path("cache")),
+        ("BILBO_CONFIG", path("config.toml")),
+    ];
+    let pairs: Vec<(&str, &str)> = env.iter().map(|(k, v)| (*k, v.as_str())).collect();
+    let read = bilbo(&["config"], &pairs);
     let mut whole = String::new();
     for provider in ["anthropic", "openai"] {
-        if !text.contains(&format!("llm.{provider}.api.endpoint")) {
+        let key = format!("llm.{provider}.api.endpoint = ");
+        let own = if read.code == 0 {
+            read.stdout
+                .lines()
+                .any(|line| line.starts_with(&key) && !line.ends_with("(default)"))
+        } else {
+            text.contains(key.trim_end_matches(" = "))
+        };
+        if !own {
             whole.push_str(&format!(
                 "llm.{provider}.api.endpoint = \"http://127.0.0.1:9/\"\n"
             ));

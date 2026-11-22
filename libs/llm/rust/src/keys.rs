@@ -106,7 +106,6 @@ impl Section {
         ]
     }
 
-    #[must_use]
     pub fn limits(&self, answer_tokens: usize) -> Limits {
         Limits {
             answer_tokens,

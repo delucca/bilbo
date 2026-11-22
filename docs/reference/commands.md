@@ -675,7 +675,7 @@ With refs, every count is of the refs alone, and each ref has one more line, `en
 
 A timer runs `bilbo derive` every 30 minutes. Nothing installs it yet: its files are in [`docs/reference/timer/`](timer/), with `@BILBO@` for the absolute path of `bilbo` and `@LOG@` for the log file. Run these from a checkout of the bilbo repository.
 
-The timer sets no variable: a unit installed as written reads the default config file and the default folders, not the ones your shell's `BILBO_*` or `XDG_*` variables name. Set `derive.*` and `paths.*` in the config file.
+The timer sets no variable: a unit installed as written reads the default config file and the default folders, not the ones your shell's `BILBO_*` or `XDG_*` variables name. Set `llm.*`, `derive.*` and `paths.*` in the config file.
 
 On macOS, with launchd:
 

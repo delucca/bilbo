@@ -96,6 +96,8 @@ impl std::fmt::Debug for Context<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Context")
             .field("section", &self.section)
+            .field("provider", &self.provider)
+            .field("limits", &self.limits)
             .field("format", &self.format)
             .field("counter", &self.counter)
             .finish()

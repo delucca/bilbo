@@ -47,7 +47,7 @@ search behavior, and deviations from a live installation.
 ## bilbo-next's derive step
 
 With `BILBO_EVAL_DERIVE` set (a JSON object; `arms/bilbo-next/build.py` documents its keys) the build of bilbo-next writes
-notes between remembering and reindexing: it writes the `derive.*` settings into each store's `config.toml`, runs
+notes between remembering and reindexing: it writes the `llm.*` and `derive.*` settings into each store's `config.toml`, runs
 `bilbo derive --calls <n> <the repository's entry ids>` while a run makes progress (it wrote a note, or the dry run after it
 differs from the one before) until `bilbo derive --dry-run` says `due: 0 entries`, reads the `entry` lines of the dry run (every
 entry must be `covered` or `passed over`), and then reindexes. `derive.tries` runs in a row that change nothing end the build.
@@ -80,7 +80,7 @@ every build through that folder, a trial and the full build together. **A new bu
 lowers or empties `spent`. A build can pass the ceiling of tokens by one run, at most `calls_per_run` calls, each at most a window,
 the earlier notes, the instruction and `derive.answer_tokens`; and the ceiling of refusals by one run's refusals. Every run, with a writer or with none, is asked for `calls_per_run` calls: the allowance is the cache's alone, which asks the provider nothing past the ceiling of calls, so a life that asked nothing runs exactly as a replay runs.
 The manifest's `derive` keeps each run of the last life (`runs`: store, repository, exit and derive's nine numbers), each life of
-this start (`lives`), `spent` (the folder's sums), `upstream` (the API's address, or the tool's name and version), the `derive.*` lines of `bilbo config` without the values of `headers` and
+this start (`lives`), `spent` (the folder's sums), `upstream` (the API's address, or the tool's name and version), the `llm.*` and `derive.*` lines of `bilbo config` and its `recall.notes_budget` line, without the values of `headers` and
 `environment`, the dry run's `kinds:` line and the totals.
 
 A change of an instruction, of the frame of a request (`view::material`) or, by the way `tool`, of the tool's version changes every request, so answers kept before it no longer match and none is found: a paid build then asks again. An answer kept before the providers were folded is found once its folder has its new name, `anthropic-api` for `anthropic` and `anthropic-tool` for `claude`: a request's name holds no key's name. Give a folder its new name before the first build of the changed arm, and only while no folder of that name is there. A build before the rename finds none of the old answers, and with a writer it pays for each again. Any build that derives makes the folder of its provider and its way, and `mv` puts a folder inside one that is already there: the old answers would then sit one folder too deep, and none would be found.

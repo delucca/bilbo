@@ -440,7 +440,10 @@ mod tests {
     #[test]
     fn the_registry_is_the_folders_the_store_the_follows_then_the_read_tag_search_recall_llm_derive_and_kinds_keys()
      {
-        let names: Vec<&str> = keys(&kind(), &[]).iter().map(|about| about.name).collect();
+        let names: Vec<&str> = keys(&kind(), &crate::provider_keys())
+            .iter()
+            .map(|about| about.name)
+            .collect();
         assert_eq!(
             names,
             [
@@ -487,6 +490,34 @@ mod tests {
                 "llm.response",
                 "llm.timeout",
                 "llm.poll",
+                "llm.anthropic.model",
+                "llm.anthropic.via",
+                "llm.anthropic.api.endpoint",
+                "llm.anthropic.api.version",
+                "llm.anthropic.api.key_env",
+                "llm.anthropic.api.key_command",
+                "llm.anthropic.api.headers",
+                "llm.anthropic.api.extra",
+                "llm.anthropic.tool.program",
+                "llm.anthropic.tool.effort",
+                "llm.anthropic.tool.arguments",
+                "llm.anthropic.tool.inherit",
+                "llm.anthropic.tool.environment",
+                "llm.anthropic.tool.project_files",
+                "llm.openai.model",
+                "llm.openai.via",
+                "llm.openai.api.endpoint",
+                "llm.openai.api.key_env",
+                "llm.openai.api.key_command",
+                "llm.openai.api.headers",
+                "llm.openai.api.extra",
+                "llm.openai.tool.program",
+                "llm.openai.tool.effort",
+                "llm.openai.tool.arguments",
+                "llm.openai.tool.inherit",
+                "llm.openai.tool.environment",
+                "llm.openai.tool.home",
+                "llm.openai.tool.system_files",
                 "derive.enabled",
                 "derive.in",
                 "derive.not_in",
@@ -622,6 +653,36 @@ mod tests {
     }
 
     #[test]
+    fn no_old_variable_of_a_moved_key_is_read() {
+        let alone = settings(&[("HOME", "/h")], &[]).expect("loads").shown();
+        let old = [
+            ("BILBO_DERIVE_PROVIDER", "anthropic"),
+            ("BILBO_DERIVE_TIMEOUT", "1s"),
+            ("BILBO_DERIVE_RESPONSE", "2 KiB"),
+            ("BILBO_DERIVE_POLL", "10ms"),
+            ("BILBO_DERIVE_ANTHROPIC_MODEL", "x"),
+            ("BILBO_DERIVE_ANTHROPIC_VIA", "x"),
+            ("BILBO_DERIVE_ANTHROPIC_API_ENDPOINT", "x"),
+            ("BILBO_DERIVE_ANTHROPIC_API_VERSION", "x"),
+            ("BILBO_DERIVE_ANTHROPIC_API_KEY_ENV", "x"),
+            ("BILBO_DERIVE_ANTHROPIC_TOOL_PROGRAM", "x"),
+            ("BILBO_DERIVE_ANTHROPIC_TOOL_EFFORT", "x"),
+            ("BILBO_DERIVE_OPENAI_MODEL", "x"),
+            ("BILBO_DERIVE_OPENAI_VIA", "x"),
+            ("BILBO_DERIVE_OPENAI_API_ENDPOINT", "x"),
+            ("BILBO_DERIVE_OPENAI_API_KEY_ENV", "x"),
+            ("BILBO_DERIVE_OPENAI_TOOL_PROGRAM", "x"),
+            ("BILBO_DERIVE_OPENAI_TOOL_EFFORT", "x"),
+            ("BILBO_DERIVE_OPENAI_TOOL_HOME", "x"),
+        ];
+        for (name, value) in old {
+            let found = settings(&[("HOME", "/h"), (name, value)], &[])
+                .unwrap_or_else(|error| panic!("{name}: {error}"));
+            assert_eq!(found.shown(), alone, "{name}");
+        }
+    }
+
+    #[test]
     fn the_folders_come_from_bilbo_home_the_file_and_xdg_in_that_order() {
         let at = |line| Origin::File {
             path: PathBuf::from("/c.toml"),
@@ -700,6 +761,18 @@ mod tests {
             .map(|row| row.into_iter().take(3).collect())
             .collect();
         assert_eq!(found, expected);
+        let names: Vec<&str> = keys(&kind(), &crate::provider_keys())
+            .iter()
+            .map(|about| about.name)
+            .collect();
+        let example = format!(
+            "bilbo: /home/me/.config/bilbo/config.toml:9: unknown key store.sealat; the keys are {}",
+            names.join(", ")
+        );
+        assert!(
+            PAGE.lines().any(|line| line == example),
+            "the page's unknown key example"
+        );
     }
 
     #[test]
@@ -801,6 +874,48 @@ mod tests {
     #[test]
     fn the_reference_page_names_exactly_the_variables_bilbo_reads() {
         let expected = expected_names();
+        let all = keys(&kind(), &crate::provider_keys());
+        let table = PAGE
+            .split("\n### Settings\n")
+            .nth(1)
+            .and_then(|rest| rest.split("\n### ").next())
+            .unwrap_or_default();
+        let code = |cell: &str| -> Vec<String> {
+            cell.split('`')
+                .skip(1)
+                .step_by(2)
+                .map(str::to_owned)
+                .collect()
+        };
+        let mut set = Vec::new();
+        for line in table.lines().filter(|line| line.starts_with("| `")) {
+            let cells: Vec<&str> = line.trim_matches('|').split(" | ").collect();
+            let effect = cells[1].trim();
+            if !(effect.starts_with("Set ") || effect.starts_with("Sets ")) {
+                continue;
+            }
+            let variables = code(cells[0]);
+            let effect = effect.replace(
+                " `recall.question_words` and `recall.languages` have no variable.",
+                "",
+            );
+            let keys_named = code(&effect);
+            assert_eq!(variables.len(), keys_named.len(), "{line}");
+            for (variable, key) in variables.iter().zip(&keys_named) {
+                let about = all
+                    .iter()
+                    .find(|about| about.name == key)
+                    .unwrap_or_else(|| panic!("{key} is no key"));
+                assert_eq!(about.variable, Some(variable.as_str()), "{key}");
+                set.push(key.clone());
+            }
+        }
+        for about in &all {
+            if about.variable.is_some() {
+                assert!(set.iter().any(|key| key == about.name), "{}", about.name);
+            }
+        }
+
         assert_eq!(
             expected.iter().map(String::as_str).collect::<Vec<_>>(),
             [

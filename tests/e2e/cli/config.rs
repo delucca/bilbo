@@ -5,7 +5,10 @@ use std::time::{Duration, Instant, SystemTime};
 use super::scratch::Scratch;
 use super::{Run, binary};
 
-const KEYS: &str = "paths.root, paths.state, paths.cache, store.seal_at, store.seal_after, store.compression, store.tear_budget, store.wait, store.poll, follow, read.budget, read.outline_width, read.matches_listed, tag.cap, search.chunk_tokens, search.chunk_overlap, search.workers, search.index_memory, search.merge_deleted_percent, search.entry_tries, search.label_batch, search.list_limit, recall.budget, recall.notes_budget, recall.candidates, recall.cap, recall.record_cap, recall.copy_share, recall.copy_words, recall.question_words, recall.languages, recall.bm25_k1, recall.bm25_b, recall.read_batch, recall.typo_terms, recall.typo_letters, recall.typo_max_letters, recall.typo_two_edits, recall.pair_weight, llm.provider, llm.response, llm.timeout, llm.poll, llm.anthropic.model, llm.anthropic.via, llm.anthropic.api.endpoint, llm.anthropic.api.version, llm.anthropic.api.key_env, llm.anthropic.api.key_command, llm.anthropic.api.headers, llm.anthropic.api.extra, llm.anthropic.tool.program, llm.anthropic.tool.effort, llm.anthropic.tool.arguments, llm.anthropic.tool.inherit, llm.anthropic.tool.environment, llm.anthropic.tool.project_files, llm.openai.model, llm.openai.via, llm.openai.api.endpoint, llm.openai.api.key_env, llm.openai.api.key_command, llm.openai.api.headers, llm.openai.api.extra, llm.openai.tool.program, llm.openai.tool.effort, llm.openai.tool.arguments, llm.openai.tool.inherit, llm.openai.tool.environment, llm.openai.tool.home, llm.openai.tool.system_files, derive.enabled, derive.in, derive.not_in, derive.instructions, derive.quiet, derive.window, derive.passage, derive.passage_head, derive.earlier, derive.names, derive.answer_tokens, derive.calls, derive.retries, derive.retry_wait, derive.retry_factor, derive.retry_limit, derive.tries, derive.failures, markdown.heading_width, session.unpack_floor, session.unpack_ratio, session.unpack_window, session.wide_fields";
+const KEYS: &str = "paths.root, paths.state, paths.cache, store.seal_at, store.seal_after, \
+                    store.compression, store.tear_budget, store.wait, store.poll, follow, read.budget, read.outline_width, \
+                    read.matches_listed, tag.cap, search.chunk_tokens, search.chunk_overlap, search.workers, \
+                    search.index_memory, search.merge_deleted_percent, search.entry_tries, search.label_batch, search.list_limit, recall.budget, recall.notes_budget, recall.candidates, recall.cap, recall.record_cap, recall.copy_share, recall.copy_words, recall.question_words, recall.languages, recall.bm25_k1, recall.bm25_b, recall.read_batch, recall.typo_terms, recall.typo_letters, recall.typo_max_letters, recall.typo_two_edits, recall.pair_weight, llm.provider, llm.response, llm.timeout, llm.poll, llm.anthropic.model, llm.anthropic.via, llm.anthropic.api.endpoint, llm.anthropic.api.version, llm.anthropic.api.key_env, llm.anthropic.api.key_command, llm.anthropic.api.headers, llm.anthropic.api.extra, llm.anthropic.tool.program, llm.anthropic.tool.effort, llm.anthropic.tool.arguments, llm.anthropic.tool.inherit, llm.anthropic.tool.environment, llm.anthropic.tool.project_files, llm.openai.model, llm.openai.via, llm.openai.api.endpoint, llm.openai.api.key_env, llm.openai.api.key_command, llm.openai.api.headers, llm.openai.api.extra, llm.openai.tool.program, llm.openai.tool.effort, llm.openai.tool.arguments, llm.openai.tool.inherit, llm.openai.tool.environment, llm.openai.tool.home, llm.openai.tool.system_files, derive.enabled, derive.in, derive.not_in, derive.instructions, derive.quiet, derive.window, derive.passage, derive.passage_head, derive.earlier, derive.names, derive.answer_tokens, derive.calls, derive.retries, derive.retry_wait, derive.retry_factor, derive.retry_limit, derive.tries, derive.failures, markdown.heading_width, session.unpack_floor, session.unpack_ratio, session.unpack_window, session.wide_fields";
 
 #[test]
 fn each_key_shows_the_source_that_won_a_variable_over_the_file_over_the_default() {
@@ -600,19 +603,26 @@ fn config_set_on_a_linked_file_exits_2_and_prints_the_line() {
 #[test]
 fn the_scratch_config_closes_both_providers() {
     let scratch = Scratch::new("closed-providers");
-    let config = scratch.config(&super::scratch::closed(""));
-    let run = scratch.run(&["config"]);
-    assert_eq!(run.code, 0, "{}", run.stderr);
-    let endpoints: Vec<&str> = run
-        .stdout
-        .lines()
-        .filter(|line| line.contains(".api.endpoint = "))
-        .collect();
-    assert_eq!(
-        endpoints,
-        [
-            format!("llm.anthropic.api.endpoint = \"http://127.0.0.1:9/\" ({config}:1)"),
-            format!("llm.openai.api.endpoint = \"http://127.0.0.1:9/\" ({config}:2)"),
-        ]
-    );
+    for text in [
+        "",
+        "# llm.anthropic.api.endpoint and llm.openai.api.endpoint are set nowhere\n",
+        "[llm.openai.api.extra]\nllm.anthropic.api.endpoint = \"unused\"\n",
+    ] {
+        let config = scratch.config(&super::scratch::closed(text));
+        let run = scratch.run(&["config"]);
+        assert_eq!(run.code, 0, "{}", run.stderr);
+        let endpoints: Vec<&str> = run
+            .stdout
+            .lines()
+            .filter(|line| line.contains(".api.endpoint = "))
+            .collect();
+        assert_eq!(
+            endpoints,
+            [
+                format!("llm.anthropic.api.endpoint = \"http://127.0.0.1:9/\" ({config}:1)"),
+                format!("llm.openai.api.endpoint = \"http://127.0.0.1:9/\" ({config}:2)"),
+            ],
+            "{text:?}"
+        );
+    }
 }

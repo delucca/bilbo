@@ -1355,6 +1355,16 @@ def settings_stops():
            build.folder_of({"provider": "openai", "settings": {}})) == ("anthropic-api", "anthropic-tool", "openai-api"))
     error = refused({"provider": "gemini"})
     check("another provider is refused by name", error and "'gemini' is none of anthropic and openai" in error, error)
+    error = refused({"provider": "anthropic", "settings": {"llm.provider": "openai"}})
+    check("settings that name another provider than the cache's are refused", error and "the settings name the provider 'openai', not 'anthropic'" in error, error)
+    check("settings that name the same provider are taken", refused({"provider": "anthropic", "settings": {"llm.provider": "anthropic"}}) is None)
+    error = refused({"provider": "anthropic", "settings": {'llm."provider"': "openai"}})
+    check("a leaf of the provider's key spelt in quotes makes a config that does not parse", error and "the settings make a config that does not parse" in error, error)
+    error = refused({"provider": "anthropic", "settings": {"llm": {"provider": "openai"}}})
+    check("a table given as a value makes a config that does not parse", error and "the settings make a config that does not parse" in error, error)
+    check("the config the build writes is the arm's keys, then the settings",
+          build.bilbo_config({"provider": "anthropic", "settings": {}}, ["a"], {"derive.tries": 2})
+          == 'follow = []\n\n[derive]\nenabled = true\nin = ["a"]\ntries = 2\n\n[llm]\nprovider = "anthropic"\n\n[llm.anthropic]\nvia = "api"\n')
     secret = "https://user:hunter2@api.example.com/v1"
     error = refused({"provider": "anthropic", "settings": {"llm.anthropic.api.endpoint": secret}})
     check("an endpoint with an @ is refused, and its value is in no text", error and "no user name or password" in error and "hunter2" not in error, error)
@@ -1381,6 +1391,17 @@ def settings_stops():
               shown.startswith(line.split(" = ")[0]) and "hunter2" not in shown, shown)
     check("another setting is kept whole", build.config_line("derive.tries = 3 (default)") == "derive.tries = 3 (default)")
     check("recall.notes_budget is kept whole", build.config_line("recall.notes_budget = 4000 (default)") == "recall.notes_budget = 4000 (default)")
+    listing = "".join(line + "\n" for line in [
+        'store.wait = "5s" (default)', 'recall.budget = 9000 (default)', 'recall.notes_budget = 4000 (default)',
+        'llm.provider = "anthropic" (file)', 'llm.anthropic.api.headers = { "x" = "hunter2" } (file)',
+        'llm.anthropic.tool.environment = { "A" = "a\u2028llm.leak = hunter2" } (file)',
+        'llm.openai.api.headers = { "x" = "hunter2" } (file)', 'llm.openai.tool.environment = { "T" = "hunter2" } (file)',
+        'derive.tries = 3 (default)'])
+    check("the manifest keeps the selected lines of a listing, cut at the line feed alone, with no value of a headers or environment setting",
+          build.manifest_lines(listing) == ['recall.notes_budget = 4000 (default)', 'llm.provider = "anthropic" (file)',
+                                            'llm.anthropic.api.headers = [left out]', 'llm.anthropic.tool.environment = [left out]',
+                                            'llm.openai.api.headers = [left out]', 'llm.openai.tool.environment = [left out]',
+                                            'derive.tries = 3 (default)'], build.manifest_lines(listing))
 
 
 def api_key_in_a_kept_answer():

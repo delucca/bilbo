@@ -194,6 +194,7 @@ fn the_install_steps_name_each_derive_unit_file() {
         "docs/reference/timer/io.github.delucca.bilbo.derive.plist",
         "docs/reference/timer/bilbo-derive.service",
         "docs/reference/timer/bilbo-derive.timer",
+        "Set `llm.*`, `derive.*` and `paths.*` in the config file.",
     ] {
         assert!(timer.contains(needle), "{needle}");
     }

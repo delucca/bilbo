@@ -24,6 +24,7 @@ import shutil
 import subprocess
 import sys
 import time
+import tomllib
 import uuid
 from urllib.parse import urlsplit
 
@@ -132,8 +133,26 @@ def derive_env():
         sys.exit("bilbo-next: BILBO_EVAL_DERIVE: the endpoint must hold no user name or password")
     if endpoint and not loopback_or_https(urlsplit(endpoint)):
         sys.exit("bilbo-next: BILBO_EVAL_DERIVE: the endpoint must be an https URL, or an http URL at a loopback address")
-    return DERIVE_DEFAULTS | given | {"ceilings": DERIVE_DEFAULTS["ceilings"] | given.get("ceilings", {}),
-                                      "cache": DERIVE_DEFAULTS["cache"] | given.get("cache", {})}
+    derive = DERIVE_DEFAULTS | given | {"ceilings": DERIVE_DEFAULTS["ceilings"] | given.get("ceilings", {}),
+                                        "cache": DERIVE_DEFAULTS["cache"] | given.get("cache", {})}
+    config_stops(derive)
+    return derive
+
+
+def bilbo_config(derive, labels, settings):
+    config = {"derive.enabled": True, "llm.provider": derive["provider"], "derive.in": labels,
+              f"llm.{derive['provider']}.via": way_of(derive), **settings}
+    return "follow = []\n" + toml_tables(config)
+
+
+def config_stops(derive):
+    try:
+        parsed = tomllib.loads(bilbo_config(derive, [], derive.get("settings", {})))
+    except tomllib.TOMLDecodeError:
+        sys.exit("bilbo-next: BILBO_EVAL_DERIVE: the settings make a config that does not parse")
+    named = parsed.get("llm", {}).get("provider")
+    if named != derive["provider"]:
+        sys.exit(f"bilbo-next: BILBO_EVAL_DERIVE: the settings name the provider {named!r}, not {derive['provider']!r}")
 
 
 def way_of(derive):
@@ -312,9 +331,7 @@ def derive_step(name, repos, ids, derive, settings, life):
     d = folders(name)
     ceilings, per_run = derive["ceilings"], derive["calls_per_run"]
     labels = [f"{STAGED if LIMITED else CORPUS}/{repo}" for repo in repos]
-    config = {"derive.enabled": True, "llm.provider": derive["provider"], "derive.in": labels,
-              f"llm.{derive['provider']}.via": way_of(derive), **settings}
-    (d / "config.toml").write_text("follow = []\n" + toml_tables(config))
+    (d / "config.toml").write_text(bilbo_config(derive, labels, settings))
     totals = {"runs": 0, "calls": 0, "notes": 0, "dropped": 0, "refused": 0, "failed": 0, "tokens_in": 0, "tokens_out": 0}
     code, out, err = bilbo(name, "config")
     sure("config", code, out, err)
@@ -436,6 +453,10 @@ def config_line(line):
     return f"{hidden.group(1)} = [left out]" if hidden else line
 
 
+def manifest_lines(out):
+    return [config_line(line) for line in out.split("\n") if line.startswith(("derive.", "llm.", "recall.notes_budget"))]
+
+
 def probe_counts(indexed, noted, sessions):
     return noted < indexed <= sessions + noted
 
@@ -475,8 +496,7 @@ def one_life(groups, by_repo, derive, life):
                 noted = sum(i["noted"] for i in info.values())
                 code, out, err = bilbo(name, "config")
                 sure("config", code, out, err)
-                derived["config"] += [config_line(line)
-                                      for line in out.splitlines() if line.startswith(("derive.", "llm.", "recall.notes_budget"))]
+                derived["config"] += manifest_lines(out)
             code, out, err = bilbo(name, "reindex")
             sure("reindex", code, out, err)
             m = REINDEX.match(out.strip())
