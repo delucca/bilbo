@@ -12,7 +12,10 @@ extract_cargo_lints(
 cargo_build_script(
     name = "build",
     srcs = ["build.rs"],
-    data = ["//libs/derive:instructions"],
+    data = [
+        "//libs/derive:instructions",
+        "//libs/derive:tags_instruction",
+    ],
     lint_config = ":lints",
     deps = all_crate_deps(build = True),
 )

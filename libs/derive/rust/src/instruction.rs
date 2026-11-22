@@ -39,6 +39,11 @@ pub fn id(text: &str) -> String {
     format!("{:016x}", xxh3_64(text.as_bytes()))
 }
 
+#[must_use]
+pub(crate) fn number(bytes: &[u8]) -> u64 {
+    xxh3_64(bytes)
+}
+
 fn instruction(kind: &str, text: &str, origin: Origin) -> Instruction {
     Instruction {
         kind: kind.to_owned(),

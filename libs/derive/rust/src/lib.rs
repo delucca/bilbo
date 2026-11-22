@@ -8,6 +8,7 @@ pub mod record;
 pub mod run;
 pub mod scope;
 pub mod spool;
+pub mod tags;
 pub mod tries;
 pub mod view;
 pub mod window;

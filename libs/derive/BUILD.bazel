@@ -9,3 +9,9 @@ filegroup(
     srcs = glob(["instructions/*.txt"]),
     visibility = ["//libs/derive/rust:__pkg__"],
 )
+
+filegroup(
+    name = "tags_instruction",
+    srcs = ["tags/instruction.txt"],
+    visibility = ["//libs/derive/rust:__pkg__"],
+)

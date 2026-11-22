@@ -105,7 +105,7 @@ pub fn line(first: u64, last: u64, text: &str) -> String {
     format!("#{} {text}", locator(first, last))
 }
 
-fn shown(paragraph: &Paragraph) -> String {
+pub(crate) fn shown(paragraph: &Paragraph) -> String {
     let source = &paragraph.source;
     let place = locator(source.first, source.last);
     let head = match paragraph.at {

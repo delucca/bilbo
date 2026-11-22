@@ -41,7 +41,12 @@ fn main() -> Result<(), String> {
         table.push_str(&format!("{stem}{FIELD}{text}{RECORD}"));
     }
     fs::write(out.join("instructions.dat"), table)
-        .map_err(|error| format!("{}: {error}", out.display()))
+        .map_err(|error| format!("{}: {error}", out.display()))?;
+    let tags = manifest.join("../tags");
+    watch(&tags);
+    let file = tags.join("instruction.txt");
+    let text = fs::read_to_string(&file).map_err(|error| format!("{}: {error}", file.display()))?;
+    fs::write(out.join("tags.dat"), text).map_err(|error| format!("{}: {error}", out.display()))
 }
 
 fn files(folder: &Path) -> Result<Vec<PathBuf>, String> {
