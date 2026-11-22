@@ -1,6 +1,6 @@
 use bilbo_store::entries::{Capture, Entries};
 use bilbo_store::id::Id;
-use bilbo_store::labels::CaptureLabel;
+use bilbo_store::labels::{CaptureLabel, Tags};
 use bilbo_store::layout::Layout;
 use bilbo_store::segments::{Options, Store};
 
@@ -23,6 +23,7 @@ pub fn noted(layout: &Layout, parent: Id, lines: &[Vec<u8>]) -> Id {
             stamp: None,
             bytes: &bytes,
             ends: &ends,
+            tags: &Tags::default(),
         })
         .expect("capture");
     store.close().expect("close");

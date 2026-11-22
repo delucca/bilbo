@@ -13,7 +13,7 @@ use bilbo_store::entries::{
     StoreError,
 };
 use bilbo_store::id::{Id, Short};
-use bilbo_store::labels::{CaptureLabel, Label, StoredLabels};
+use bilbo_store::labels::{By, CaptureLabel, Label, Standing, StoredLabels, Tag, Tags};
 
 use crate::fakes::id;
 
@@ -130,6 +130,7 @@ impl Shelf {
                 labels: StoredLabels {
                     capture: label.and_then(|path| CaptureLabel::file(Path::new(path))),
                     id: None,
+                    tags: Tags::default(),
                 },
                 captured: SystemTime::UNIX_EPOCH + Duration::from_secs(1000),
             },
@@ -340,6 +341,7 @@ fn an_entry_with_no_locator_reads_as_its_metadata_and_its_outline() {
                 CaptureLabel::file(Path::new(&format!("/h/.claude/projects/p/{SESSION}.jsonl")))
                     .expect("a label")
             )],
+            removed: Vec::new(),
             more_labels: 0,
             captured: SystemTime::UNIX_EPOCH + Duration::from_secs(1000),
             started: Some(SystemTime::UNIX_EPOCH + Duration::from_secs(60)),
@@ -509,6 +511,7 @@ fn the_outline_lists_the_capture_label_then_the_id_label() {
     shelf.kept[1].meta.labels = StoredLabels {
         capture: Some(capture.clone()),
         id: Some(id(1)),
+        tags: Tags::default(),
     };
     let output = run(&shelf, &id(2).to_string()).expect("an outline");
     assert_eq!(
@@ -520,6 +523,39 @@ fn the_outline_lists_the_capture_label_then_the_id_label() {
         lines(&main).0.as_ref().map(|about| about.labels.len()),
         Some(1)
     );
+}
+
+#[test]
+fn an_outline_lists_the_carried_tags_and_the_removed_names_and_a_range_lists_neither() {
+    let mut shelf = shelf();
+    let tag = |name: &str| Tag::new(name).expect("a tag");
+    let mut tags = Tags::default();
+    tags.set(tag("a"), Some(Standing::Carried(By::Model)));
+    tags.set(tag("b"), Some(Standing::Carried(By::Person)));
+    tags.set(tag("c"), Some(Standing::Removed));
+    shelf.kept[0].meta.labels.tags = tags;
+    for budget in [160_000, 256] {
+        let output = run_with(&shelf, &first(), true, budget).expect("an outline");
+        let about = lines(&output).0.as_ref().expect("an about");
+        assert_eq!(
+            about.labels[1..],
+            [
+                Label::Tag(tag("a"), By::Model),
+                Label::Tag(tag("b"), By::Person),
+            ][..],
+            "{budget}"
+        );
+        assert_eq!(
+            about.labels[0],
+            Label::Capture(
+                CaptureLabel::file(Path::new(&format!("/h/.claude/projects/p/{SESSION}.jsonl")))
+                    .expect("a label")
+            )
+        );
+        assert_eq!(about.removed, vec![tag("c")], "{budget}");
+    }
+    let ranged = run_with(&shelf, &format!("{}#r1", first()), true, 160_000).expect("an outline");
+    assert!(lines(&ranged).0.is_none());
 }
 
 #[test]
@@ -858,8 +894,13 @@ fn row(frame: &Output) -> String {
         match label {
             Label::Capture(label) => text += &format!("label: {label} (capture)\n"),
             Label::Id(id) => text += &format!("label: bilbo:{id}\n"),
+            Label::Tag(tag, By::Person) => text += &format!("label: {tag}\n"),
+            Label::Tag(tag, By::Model) => text += &format!("label: {tag} (model)\n"),
             Label::Text(label) => text += &format!("label: {label}\n"),
         }
+    }
+    for tag in &about.removed {
+        text += &format!("removed: {tag}\n");
     }
     if about.more_labels > 0 {
         text += &format!("labels: {} more\n", about.more_labels);

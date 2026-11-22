@@ -1,4 +1,5 @@
 use bilbo_store::entries::{Capture, Captured, Entries};
+use bilbo_store::labels::Tags;
 use xxhash_rust::xxh3;
 
 use crate::scratch::{Scratch, capture_label, ends, id_of, open, read_records};
@@ -22,6 +23,7 @@ fn capture(store: &mut bilbo_store::segments::Store, bytes: &[u8]) -> Captured {
             stamp: None,
             bytes,
             ends: &ends(bytes),
+            tags: &Tags::default(),
         })
         .expect("capture")
 }

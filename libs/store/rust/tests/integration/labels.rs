@@ -1,6 +1,6 @@
 use bilbo_store::entries::{Capture, Entries, StoreError};
 use bilbo_store::id::Id;
-use bilbo_store::labels::{Filed, Labels, Relabel, Worded};
+use bilbo_store::labels::{Filed, Labels, Relabel, Tags, Worded};
 
 use crate::scratch::{
     Scratch, capture_label, catalog, count, ends, filed, label_rows, label_tables, open, sql, words,
@@ -167,6 +167,7 @@ fn the_entries_that_belong_to_some_are_read_from_the_id_labels() {
                 stamp: None,
                 bytes: b"x\n",
                 ends: &ends(b"x\n"),
+                tags: &Tags::default(),
             })
             .expect("capture");
     }

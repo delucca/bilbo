@@ -22,7 +22,7 @@ fn u64_at(bytes: &[u8], at: usize) -> u64 {
 pub fn spans(path: &Path) -> Vec<Span> {
     let bytes = fs::read(path).expect("read segment");
     assert_eq!(&bytes[..8], b"BILBOSEG");
-    assert_eq!(u32_at(&bytes, 8), 1);
+    assert!([1, 2].contains(&u32_at(&bytes, 8)));
     let mut found = Vec::new();
     let mut at = 12;
     while at < bytes.len() {

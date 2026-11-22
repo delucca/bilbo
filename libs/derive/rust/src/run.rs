@@ -1,3 +1,4 @@
+use bilbo_store::labels::Tags;
 use std::time::{Duration, SystemTime};
 
 use bilbo_store::entries::{Capture, Entries};
@@ -886,6 +887,7 @@ fn replay_group(
             stamp: None,
             bytes: &bytes,
             ends: &ends,
+            tags: &Tags::default(),
         })?;
         return Ok(Group::Captured);
     }

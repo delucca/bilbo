@@ -13,7 +13,7 @@ use bilbo_entries::read::{self, Fetched};
 use bilbo_entries::remember::{self, Item, Outcome, Output, Request};
 use bilbo_store::entries::{Entries, Generation, Meta, RecordRange};
 use bilbo_store::id::Id;
-use bilbo_store::labels::{CaptureLabel, StoredLabels};
+use bilbo_store::labels::{CaptureLabel, StoredLabels, Tags};
 use bilbo_store::layout::Layout;
 use bilbo_store::segments::{Options, Store};
 
@@ -358,6 +358,7 @@ fn read_output(
             labels: StoredLabels {
                 capture: CaptureLabel::new(format!("file:{label}")),
                 id: Id::parse("01JC5Q3V7XKM4P8R2T6W9YB0DF").filter(|_| kind == "session"),
+                tags: Tags::default(),
             },
             captured: std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_794_193_920),
         },

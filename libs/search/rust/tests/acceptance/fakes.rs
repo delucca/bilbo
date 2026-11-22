@@ -19,7 +19,7 @@ use bilbo_store::entries::{
     StoreError,
 };
 use bilbo_store::id::{Id, Short};
-use bilbo_store::labels::{CaptureLabel, Filed, Labels, Relabel, StoredLabels};
+use bilbo_store::labels::{CaptureLabel, Filed, Labels, Relabel, StoredLabels, Tag, Tagged, Tags};
 
 pub const CATALOG: [u8; 16] = [7; 16];
 
@@ -630,6 +630,7 @@ impl Entries for Log {
                 labels: StoredLabels {
                     capture: held.capture.clone().and_then(CaptureLabel::new),
                     id: held.id_label,
+                    tags: Tags::default(),
                 },
                 captured: held.captured,
             }))
@@ -732,6 +733,14 @@ impl Labels for Log {
         }
         found.sort();
         Ok(found)
+    }
+
+    fn tagged(&self, _: &Tag) -> Result<Vec<Id>, StoreError> {
+        Ok(Vec::new())
+    }
+
+    fn tags(&self) -> Result<Vec<Tagged>, StoreError> {
+        Ok(Vec::new())
     }
 }
 

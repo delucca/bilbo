@@ -6,7 +6,7 @@ use std::time::{Duration, SystemTime};
 
 use bilbo_store::entries::{Capture, CaptureError, Captured, Entries, Head, Meta, StoreError};
 use bilbo_store::id::Id;
-use bilbo_store::labels::{CaptureLabel, StoredLabels};
+use bilbo_store::labels::{CaptureLabel, StoredLabels, Tags};
 
 use crate::files::{Files, Node};
 use crate::kind::{Claim, Kind, Proposal};
@@ -368,6 +368,7 @@ fn look(
         stamp: stamp.filter(|stamp| !racy(stamp.modified, taken)),
         bytes: records,
         ends: &ends,
+        tags: &Tags::default(),
     };
     match entries.capture(&input) {
         Ok(captured) => {

@@ -462,7 +462,7 @@ fn a_run_leaves_a_young_open_seg_open_and_seals_one_older_than_seal_after() {
     let segments = sandbox.segments();
     assert_eq!(segments.len(), 1, "{segments:?}");
     let bytes = fs::read(&segments[0]).expect("read the segment");
-    assert!(bytes.starts_with(b"BILBOSEG\x01\0\0\0"));
+    assert!(bytes.starts_with(b"BILBOSEG\x02\0\0\0"));
     assert_eq!(
         fs::metadata(sandbox.open_seg()).expect("open.seg").len(),
         12

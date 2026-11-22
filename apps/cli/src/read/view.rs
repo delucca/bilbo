@@ -5,7 +5,7 @@ use bilbo_entries::read::page::Block;
 use bilbo_entries::read::refs::SCHEME;
 use bilbo_entries::read::{About, Body, Budget, Output};
 use bilbo_store::entries::RecordRange;
-use bilbo_store::labels::Label;
+use bilbo_store::labels::{By, Label};
 
 use crate::console::body::body;
 use crate::console::message::{group, line};
@@ -92,9 +92,14 @@ fn about_lines(output: &Output, about: &About, show: &Show<'_>) -> String {
                     format!("{} (capture)", line(show.view, capture.as_str()))
                 }
                 Label::Id(id) => format!("{SCHEME}{id}"),
+                Label::Tag(tag, By::Person) => tag.to_string(),
+                Label::Tag(tag, By::Model) => format!("{tag} (model)"),
                 Label::Text(text) => line(show.view, text),
             },
         ));
+    }
+    for tag in &about.removed {
+        rows.push(("removed", tag.to_string()));
     }
     rows.push(("captured", utc(about.captured)));
     if let Some(started) = about.started {
@@ -212,7 +217,7 @@ mod tests {
     use bilbo_entries::read::{About, Body, Budget, Output};
     use bilbo_store::entries::{Generation, RecordRange};
     use bilbo_store::id::Id;
-    use bilbo_store::labels::{CaptureLabel, Label};
+    use bilbo_store::labels::{By, CaptureLabel, Label, Tag};
 
     use super::{beside, plain, shown};
     use crate::console::view::View;
@@ -272,6 +277,7 @@ mod tests {
                 ),
                 Label::Id(Id::parse("01JC5Q3V7XKM4P8R2T6W9YB0DF").expect("id")),
             ],
+            removed: Vec::new(),
             more_labels: 0,
             captured: SystemTime::UNIX_EPOCH + Duration::from_secs(1_794_193_920),
             started: Some(SystemTime::UNIX_EPOCH + Duration::from_secs(1_794_069_552)),
@@ -750,6 +756,27 @@ mod tests {
         assert_eq!(
             plain(&output(Body::Page(Vec::new()), range(5, 9), None), None),
             format!("{end}\n")
+        );
+    }
+
+    #[test]
+    fn a_tag_is_a_label_row_a_models_says_so_and_a_removed_name_has_its_own_row() {
+        let tag = |name: &str| Tag::new(name).expect("tag");
+        let tagged = About {
+            labels: vec![
+                Label::Tag(tag("a"), By::Model),
+                Label::Tag(tag("b"), By::Person),
+                Label::Text("shed".to_owned()),
+            ],
+            removed: vec![tag("c")],
+            ..about()
+        };
+        let text = plain(&outline(Some(tagged), None), None);
+        assert!(
+            text.contains(
+                "label: tag:a (model)\nlabel: tag:b\nlabel: shed\nremoved: tag:c\ncaptured:"
+            ),
+            "{text}"
         );
     }
 }

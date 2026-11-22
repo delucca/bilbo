@@ -16,7 +16,7 @@ use crate::entries::{
 use crate::files::{self, Create};
 use crate::frame;
 use crate::id::{Id, Short};
-use crate::labels::{CaptureLabel, Filed, Labels, Relabel, StoredLabels};
+use crate::labels::{CaptureLabel, Filed, Labels, Relabel, StoredLabels, Tag, Tagged};
 use crate::layout::Layout;
 use crate::limits::{Compression, TearBudget};
 use crate::meta;
@@ -611,6 +611,7 @@ fn apply_frame(
     path: &Path,
     offset: usize,
     frame: &frame::Frame<'_>,
+    format: u32,
 ) -> Result<(), StoreError> {
     let place = Place {
         segment,
@@ -621,7 +622,7 @@ fn apply_frame(
     match frame.header.kind {
         frame::Kind::Meta => {
             let decoded = frame::unpack(frame.payload)
-                .and_then(|plain| meta::decode(frame.header.entry, &plain))
+                .and_then(|plain| meta::decode(frame.header.entry, &plain, format))
                 .map_err(|what| damaged(path, offset as u64, what))?;
             batch.meta(&decoded, &place)
         }
@@ -640,11 +641,12 @@ fn apply_walk(
     path: &Path,
     bytes: &[u8],
     from: usize,
+    format: u32,
 ) -> Result<u64, StoreError> {
     let mut applied = 0;
     for item in frame::walk(bytes, from) {
         let (offset, frame) = item.map_err(|(at, fault)| damaged(path, at as u64, fault.what()))?;
-        apply_frame(batch, segment, path, offset, &frame)?;
+        apply_frame(batch, segment, path, offset, &frame, format)?;
         applied += 1;
     }
     Ok(applied)
@@ -663,20 +665,27 @@ fn populate(
     for (name, _) in sealed {
         let path = segment_file(layout, name);
         let bytes = files::read_file(&path)?;
-        match frame::check_segment_header(&bytes) {
-            Ok(frame::HeaderState::Whole) => {}
+        let format = match frame::check_segment_header(&bytes) {
+            Ok(frame::HeaderState::Whole(format)) => format,
             Ok(frame::HeaderState::Torn) => {
                 return Err(damaged(&path, 0, "the header is cut short"));
             }
             Err(fault) => return Err(header_fault(&path, fault)),
-        }
-        frames += apply_walk(&mut batch, name, &path, &bytes, frame::SEGMENT_HEADER)?;
+        };
+        frames += apply_walk(
+            &mut batch,
+            name,
+            &path,
+            &bytes,
+            frame::SEGMENT_HEADER,
+            format,
+        )?;
         batch.set_segment(name, bytes.len() as u64)?;
     }
     if let Some(bytes) = open {
         let path = open_seg(layout);
         match frame::check_segment_header(bytes) {
-            Ok(frame::HeaderState::Whole) => {
+            Ok(frame::HeaderState::Whole(format)) => {
                 let end = frame::good_end(bytes, budget)
                     .map_err(|damage| damaged(&path, damage.offset, damage.what))?;
                 frames += apply_walk(
@@ -685,6 +694,7 @@ fn populate(
                     &path,
                     &bytes[..end],
                     frame::SEGMENT_HEADER,
+                    format,
                 )?;
                 batch.set_segment(catalog::OPEN, end as u64)?;
             }
@@ -738,6 +748,13 @@ fn load_catalog(
         Fresh::Current(catalog) => Ok(catalog),
         Fresh::CatchUp(mut catalog, from) => {
             let caught_up = (|| {
+                let format = match frame::check_segment_header(&open) {
+                    Ok(frame::HeaderState::Whole(format)) => format,
+                    Ok(frame::HeaderState::Torn) => {
+                        return Err(damaged(&open_seg(layout), 0, "the header is cut short"));
+                    }
+                    Err(fault) => return Err(header_fault(&open_seg(layout), fault)),
+                };
                 let mut batch = catalog.batch()?;
                 apply_walk(
                     &mut batch,
@@ -745,6 +762,7 @@ fn load_catalog(
                     &open_seg(layout),
                     &open,
                     usize::try_from(from).unwrap_or(usize::MAX),
+                    format,
                 )?;
                 batch.set_segment(catalog::OPEN, open.len() as u64)?;
                 batch.commit()
@@ -790,7 +808,7 @@ fn recover(layout: &Layout, hook: &mut Option<Hook>) -> Result<(), StoreError> {
         }
     } else {
         match frame::check_segment_header(&sealed) {
-            Ok(frame::HeaderState::Whole) => {}
+            Ok(frame::HeaderState::Whole(_)) => {}
             Ok(frame::HeaderState::Torn) => {
                 return Err(damaged(&sealed_path, 0, "the header is cut short"));
             }
@@ -826,8 +844,9 @@ fn prepare_open_seg(
     layout: &Layout,
     budget: TearBudget,
     notice: &mut dyn FnMut(Notice),
-) -> Result<Writer, StoreError> {
+) -> Result<(Writer, u32), StoreError> {
     let path = open_seg(layout);
+    let mut format = frame::FORMAT;
     match files::read_optional(&path)? {
         None => {
             files::write_synced(&path, &frame::segment_header(), Create::New)?;
@@ -843,7 +862,8 @@ fn prepare_open_seg(
                     bytes: bytes.len() as u64,
                 });
             }
-            Ok(frame::HeaderState::Whole) => {
+            Ok(frame::HeaderState::Whole(found)) => {
+                format = found;
                 let end = frame::good_end(&bytes, budget)
                     .map_err(|damage| damaged(&path, damage.offset, damage.what))?;
                 if end < bytes.len() {
@@ -866,7 +886,7 @@ fn prepare_open_seg(
         .metadata()
         .map_err(|error| files::io_err("read", &path, error))?
         .len();
-    Ok(Writer { file, len })
+    Ok((Writer { file, len }, format))
 }
 
 struct Pending {
@@ -939,14 +959,14 @@ impl Store {
         check_root(layout, &layout.root, Root::Record)?;
         step(&mut options.hook, Step::Locked)?;
         recover(layout, &mut options.hook)?;
-        let writer = prepare_open_seg(layout, options.tear_budget, notice)?;
+        let (writer, format) = prepare_open_seg(layout, options.tear_budget, notice)?;
         let since = if writer.len > frame::SEGMENT_HEADER as u64 {
             Some(read_since(layout)?)
         } else {
             None
         };
         let catalog = load_catalog(layout, options.tear_budget, options.rebuild, notice)?;
-        Ok(Store {
+        let mut store = Store {
             layout: layout.clone(),
             reader_cache: Cache::Own(layout.cache.clone()),
             state: None,
@@ -958,7 +978,15 @@ impl Store {
             compressor: Some(new_compressor(&layout.state, options.compression)?),
             options,
             poisoned: false,
-        })
+        };
+        if format == frame::OLDEST {
+            if store.open_len() > frame::SEGMENT_HEADER as u64 {
+                store.seal()?;
+            }
+            files::write_synced(&open_seg(layout), &frame::segment_header(), Create::Replace)?;
+            files::sync_dir(&layout.state)?;
+        }
+        Ok(store)
     }
 
     /// The options' hook hears `Step::Checked` once the paths are validated.
@@ -1380,6 +1408,7 @@ impl Entries for Store {
                 labels: StoredLabels {
                     capture: Some(input.label.clone()),
                     id: input.id_label,
+                    tags: input.tags.clone(),
                 },
                 captured: meta::time_of(meta::millis(SystemTime::now())),
             };
@@ -1629,6 +1658,14 @@ impl Labels for Store {
 
     fn belonging_to(&self, entries: &[Id]) -> Result<Vec<Id>, StoreError> {
         self.catalog.belonging_to(entries)
+    }
+
+    fn tagged(&self, tag: &Tag) -> Result<Vec<Id>, StoreError> {
+        self.catalog.tagged(tag)
+    }
+
+    fn tags(&self) -> Result<Vec<Tagged>, StoreError> {
+        self.catalog.tags()
     }
 }
 

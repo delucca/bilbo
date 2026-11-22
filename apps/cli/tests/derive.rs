@@ -19,7 +19,7 @@ use bilbo_search::index::{Doc, Extent, Index, IndexError, Stats};
 use bilbo_search::position::Position;
 use bilbo_store::entries::{Capture, Cursor, Entries, Generation, RecordRange};
 use bilbo_store::id::Id;
-use bilbo_store::labels::CaptureLabel;
+use bilbo_store::labels::{CaptureLabel, Tags};
 use bilbo_store::segments::{Options, Store};
 use serde_json::{Value, json};
 
@@ -1948,6 +1948,7 @@ fn a_note_entry_cut_after_its_meta_frame_takes_its_block_at_the_next_run() {
         stamp: None,
         bytes: b"{\"text\":\"x\"}\n",
         ends: &[b"{\"text\":\"x\"}\n".len()],
+        tags: &Tags::default(),
     });
     assert!(matches!(
         cut,
@@ -2286,6 +2287,7 @@ fn capture_session(sandbox: &Sandbox, id: Id, id_label: Option<Id>, label: &str,
             stamp: None,
             bytes: text,
             ends: &ends,
+            tags: &Tags::default(),
         })
         .expect("capture");
     store.close().expect("close");

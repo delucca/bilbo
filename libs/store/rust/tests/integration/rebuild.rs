@@ -3,7 +3,7 @@ use std::time::{Duration, UNIX_EPOCH};
 
 use bilbo_store::entries::{Capture, Captured, Cursor, Entries, Head, Stamp};
 use bilbo_store::id::Id;
-use bilbo_store::labels::{Labels, Relabel};
+use bilbo_store::labels::{Labels, Relabel, Tags};
 use bilbo_store::layout::Layout;
 use bilbo_store::segments::{Cache, Notice, Options, Rebuild, Step, Store};
 
@@ -31,6 +31,7 @@ fn capture(store: &mut Store, name: &str, bytes: &[u8], stamp: Option<Stamp>) {
             stamp,
             bytes,
             ends: &ends(bytes),
+            tags: &Tags::default(),
         })
         .expect("capture");
 }
@@ -121,6 +122,7 @@ fn a_stamp_comes_back_only_for_a_head_that_comes_back_the_same() {
         stamp: Some(stamp(3)),
         bytes: b"one\ntwo\n",
         ends: &ends(b"one\ntwo\n"),
+        tags: &Tags::default(),
     });
     assert!(cut.is_err());
     drop(store);
@@ -201,6 +203,7 @@ fn a_stamp_is_not_carried_to_an_entry_whose_capture_label_changed_under_the_old_
             stamp: Some(stamp(1)),
             bytes: b"two\n",
             ends: &ends(b"two\n"),
+            tags: &Tags::default(),
         })
         .expect("capture");
     assert!(!matches!(again, Captured::Unchanged(_)));
@@ -301,7 +304,7 @@ fn a_catalog_made_again_has_no_text_label_and_a_new_id() {
 
 #[test]
 fn a_catalog_of_an_older_version_is_made_again_with_the_label_tables() {
-    for older in [2, 3, 4, 5] {
+    for older in [2, 3, 4, 5, 6] {
         let scratch = Scratch::new("anew-older-version");
         let layout = scratch.layout();
         let mut store = open(&layout);
@@ -320,7 +323,7 @@ fn a_catalog_of_an_older_version_is_made_again_with_the_label_tables() {
             .expect("open")
             .query_row("PRAGMA user_version", [], |row| row.get(0))
             .expect("version");
-        assert_eq!(version, 6);
+        assert_eq!(version, 7);
     }
 }
 

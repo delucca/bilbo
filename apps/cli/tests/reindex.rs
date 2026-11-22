@@ -1892,8 +1892,8 @@ fn a_cache_whose_catalog_an_older_bilbo_left_is_refused_and_made_again() {
 
     let catalog = sandbox.cache().join("catalog.sqlite");
     let mut bytes = fs::read(&catalog).expect("the catalog");
-    assert_eq!(bytes[60..64], 6u32.to_be_bytes(), "this bilbo's version");
-    bytes[60..64].copy_from_slice(&5u32.to_be_bytes());
+    assert_eq!(bytes[60..64], 7u32.to_be_bytes(), "this bilbo's version");
+    bytes[60..64].copy_from_slice(&6u32.to_be_bytes());
     fs::write(&catalog, bytes).expect("a catalog the last release made");
 
     let refused = sandbox.run(&SHED);

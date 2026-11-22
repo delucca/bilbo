@@ -1,14 +1,16 @@
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use crate::entries::Meta;
+use crate::frame;
 use crate::id::Id;
-use crate::labels::{CaptureLabel, StoredLabels};
+use crate::labels::{By, CaptureLabel, Standing, StoredLabels, Tag, Tags};
 
 const ID: u8 = 1;
 const KIND: u8 = 2;
 const ORIGIN: u8 = 3;
 const CAPTURED: u8 = 4;
 const PARENT: u8 = 5;
+const TAGS: u8 = 6;
 
 pub fn millis(time: SystemTime) -> i64 {
     match time.duration_since(UNIX_EPOCH) {
@@ -62,6 +64,15 @@ pub fn encode(meta: &Meta) -> Option<Vec<u8>> {
     if let Some(label) = meta.labels.id {
         field(&mut out, PARENT, &label.to_bytes())?;
     }
+    for (tag, standing) in meta.labels.tags.all() {
+        let mut value = vec![match standing {
+            Standing::Carried(By::Person) => 1,
+            Standing::Carried(By::Model) => 2,
+            Standing::Removed => 3,
+        }];
+        value.extend_from_slice(tag.as_str().as_bytes());
+        field(&mut out, TAGS, &value)?;
+    }
     Some(out)
 }
 
@@ -86,7 +97,7 @@ fn text(value: &[u8]) -> Result<String, String> {
     String::from_utf8(value.to_vec()).map_err(|_| "a field is not UTF-8".to_string())
 }
 
-pub fn decode(entry: Id, bytes: &[u8]) -> Result<Meta, String> {
+pub fn decode(entry: Id, bytes: &[u8], format: u32) -> Result<Meta, String> {
     let mut found = fields(bytes)?.into_iter().peekable();
     let id = match found.next() {
         Some((ID, value)) => {
@@ -115,16 +126,42 @@ pub fn decode(entry: Id, bytes: &[u8]) -> Result<Meta, String> {
         }
         _ => return Err("the meta has no captured time in its place".into()),
     };
-    let id_label = match found.next() {
-        Some((PARENT, value)) => {
+    let id_label = match found.next_if(|(tag, _)| *tag == PARENT) {
+        Some((_, value)) => {
             let raw: [u8; 16] = value
                 .try_into()
                 .map_err(|_| "the id label is not 16 bytes")?;
             Some(Id::from_bytes(raw))
         }
-        Some((tag, _)) => return Err(format!("unexpected meta field {tag}")),
         None => None,
     };
+    let mut tags = Tags::default();
+    let mut last: Option<Tag> = None;
+    while let Some((_, value)) = found.next_if(|(tag, _)| *tag == TAGS) {
+        if format <= frame::OLDEST {
+            return Err("a tag stands in a format 1 segment".into());
+        }
+        let Some((&standing, name)) = value.split_first() else {
+            return Err("a tag field is empty".into());
+        };
+        let standing = match standing {
+            1 => Standing::Carried(By::Person),
+            2 => Standing::Carried(By::Model),
+            3 => Standing::Removed,
+            other => {
+                return Err(format!("a tag's standing is {other}, not 1, 2 or 3"));
+            }
+        };
+        let tag = std::str::from_utf8(name)
+            .ok()
+            .and_then(Tag::new)
+            .ok_or("a tag field holds no tag's name")?;
+        if last.as_ref().is_some_and(|before| *before >= tag) {
+            return Err("the tags are out of order".into());
+        }
+        last = Some(tag.clone());
+        tags.set(tag, Some(standing));
+    }
     if let Some((tag, _)) = found.next() {
         return Err(format!("unexpected meta field {tag}"));
     }
@@ -134,6 +171,7 @@ pub fn decode(entry: Id, bytes: &[u8]) -> Result<Meta, String> {
         labels: StoredLabels {
             capture,
             id: id_label,
+            tags,
         },
         captured,
     })
@@ -161,6 +199,7 @@ mod tests {
             labels: StoredLabels {
                 capture,
                 id: id_label,
+                tags: Tags::default(),
             },
             captured: time_of(1_762_560_000_123),
         }
@@ -176,14 +215,14 @@ mod tests {
             meta(None, None),
         ] {
             let bytes = encode(&meta).expect("encode");
-            assert_eq!(decode(id(), &bytes), Ok(meta));
+            assert_eq!(decode(id(), &bytes, 2), Ok(meta));
         }
         let before_epoch = Meta {
             captured: time_of(-5),
             ..meta(None, None)
         };
         let bytes = encode(&before_epoch).expect("encode");
-        assert_eq!(decode(id(), &bytes), Ok(before_epoch));
+        assert_eq!(decode(id(), &bytes, 2), Ok(before_epoch));
     }
 
     #[test]
@@ -203,7 +242,7 @@ mod tests {
         expected.extend_from_slice(&[5, 16, 0, 0, 0]);
         expected.extend_from_slice(&id_label().to_bytes());
         assert_eq!(encode(&both), Some(expected.clone()));
-        assert_eq!(decode(id(), &expected), Ok(both));
+        assert_eq!(decode(id(), &expected, 2), Ok(both));
         let neither = meta(None, None);
         let mut plain: Vec<u8> = vec![1, 16, 0, 0, 0];
         plain.extend_from_slice(&id().to_bytes());
@@ -212,7 +251,7 @@ mod tests {
         plain.extend_from_slice(&[4, 8, 0, 0, 0]);
         plain.extend_from_slice(&1_762_560_000_123i64.to_le_bytes());
         assert_eq!(encode(&neither), Some(plain.clone()));
-        assert_eq!(decode(id(), &plain), Ok(neither));
+        assert_eq!(decode(id(), &plain, 2), Ok(neither));
     }
 
     #[test]
@@ -278,15 +317,80 @@ mod tests {
             ("trailing byte", trailing),
             ("empty", Vec::new()),
         ] {
-            assert!(decode(id(), &bytes).is_err(), "{name}");
+            assert!(decode(id(), &bytes, 2).is_err(), "{name}");
         }
         assert_eq!(
-            decode(id(), &empty_capture),
+            decode(id(), &empty_capture, 2),
             Err("the capture label is empty".to_string())
         );
         assert_eq!(
-            decode(id(), &short_id_label),
+            decode(id(), &short_id_label, 2),
             Err("the id label is not 16 bytes".to_string())
         );
+    }
+
+    fn tagged() -> Meta {
+        let mut tags = Tags::default();
+        tags.set(Tag::new("a").unwrap(), Some(Standing::Carried(By::Person)));
+        tags.set(Tag::new("b").unwrap(), Some(Standing::Carried(By::Model)));
+        tags.set(Tag::new("c").unwrap(), Some(Standing::Removed));
+        let mut meta = meta(None, None);
+        meta.labels.tags = tags;
+        meta
+    }
+
+    fn with_fields(values: &[&[u8]]) -> Vec<u8> {
+        let mut out = encode(&meta(None, None)).expect("encode");
+        for value in values {
+            field(&mut out, TAGS, value);
+        }
+        out
+    }
+
+    #[test]
+    fn a_meta_round_trips_with_each_standing_of_a_tag() {
+        let meta = tagged();
+        let bytes = encode(&meta).expect("encode");
+        assert_eq!(decode(id(), &bytes, 2), Ok(meta));
+        let plain = encode(&self::meta(None, None)).expect("encode");
+        let tail = &bytes[plain.len()..];
+        let standings: Vec<u8> = [0usize, 7, 14].iter().map(|at| tail[at + 5]).collect();
+        assert_eq!(standings, vec![1, 2, 3]);
+        assert_eq!(tail.len(), 3 * 7);
+    }
+
+    #[test]
+    fn a_tag_field_that_is_empty_of_no_standing_no_name_or_out_of_order_is_damaged() {
+        for (bytes, said) in [
+            (with_fields(&[b""]), "a tag field is empty"),
+            (
+                with_fields(&[b"\x04a"]),
+                "a tag's standing is 4, not 1, 2 or 3",
+            ),
+            (with_fields(&[b"\x01A"]), "a tag field holds no tag's name"),
+            (with_fields(&[b"\x01"]), "a tag field holds no tag's name"),
+            (
+                with_fields(&[b"\x01b", b"\x01a"]),
+                "the tags are out of order",
+            ),
+            (
+                with_fields(&[b"\x01a", b"\x02a"]),
+                "the tags are out of order",
+            ),
+        ] {
+            assert_eq!(decode(id(), &bytes, 2), Err(said.to_string()));
+        }
+    }
+
+    #[test]
+    fn a_tag_under_a_format_1_header_is_damaged() {
+        let bytes = encode(&tagged()).expect("encode");
+        assert_eq!(
+            decode(id(), &bytes, 1),
+            Err("a tag stands in a format 1 segment".to_string())
+        );
+        let plain = meta(None, None);
+        let bytes = encode(&plain).expect("encode");
+        assert_eq!(decode(id(), &bytes, 1), Ok(plain));
     }
 }

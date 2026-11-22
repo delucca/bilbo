@@ -6,21 +6,26 @@ use crate::id::Id;
 use crate::limits::TearBudget;
 
 pub const MAGIC: &[u8; 8] = b"BILBOSEG";
-pub const FORMAT: u32 = 1;
+pub const FORMAT: u32 = 2;
+pub const OLDEST: u32 = 1;
 pub const SEGMENT_HEADER: usize = 12;
 pub const FRAME_HEADER: usize = 77;
 const MIN_LENGTH: u32 = 73;
 
-pub fn segment_header() -> [u8; SEGMENT_HEADER] {
+pub fn header_of(format: u32) -> [u8; SEGMENT_HEADER] {
     let mut header = [0u8; SEGMENT_HEADER];
     header[..8].copy_from_slice(MAGIC);
-    header[8..].copy_from_slice(&FORMAT.to_le_bytes());
+    header[8..].copy_from_slice(&format.to_le_bytes());
     header
+}
+
+pub fn segment_header() -> [u8; SEGMENT_HEADER] {
+    header_of(FORMAT)
 }
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum HeaderState {
-    Whole,
+    Whole(u32),
     /// Shorter than a header and a prefix of one.
     Torn,
 }
@@ -33,7 +38,7 @@ pub enum HeaderFault {
 
 pub fn check_segment_header(bytes: &[u8]) -> Result<HeaderState, HeaderFault> {
     if bytes.len() < SEGMENT_HEADER {
-        return if segment_header().starts_with(bytes) {
+        return if header_of(OLDEST).starts_with(bytes) || header_of(FORMAT).starts_with(bytes) {
             Ok(HeaderState::Torn)
         } else {
             Err(HeaderFault::Bad("not a bilbo segment".into()))
@@ -44,7 +49,7 @@ pub fn check_segment_header(bytes: &[u8]) -> Result<HeaderState, HeaderFault> {
     }
     let version = u32::from_le_bytes([bytes[8], bytes[9], bytes[10], bytes[11]]);
     match version {
-        FORMAT => Ok(HeaderState::Whole),
+        OLDEST..=FORMAT => Ok(HeaderState::Whole(version)),
         0 => Err(HeaderFault::Bad("segment format 0".into())),
         _ => Err(HeaderFault::Newer(version)),
     }
@@ -499,11 +504,11 @@ mod tests {
     }
 
     #[test]
-    fn the_segment_header_is_the_magic_and_format_1() {
+    fn the_segment_header_is_the_magic_and_format_2() {
         let header = segment_header();
         assert_eq!(&header[..8], b"BILBOSEG");
-        assert_eq!(&header[8..], &[1, 0, 0, 0]);
-        assert_eq!(check_segment_header(&header), Ok(HeaderState::Whole));
+        assert_eq!(&header[8..], &[2, 0, 0, 0]);
+        assert_eq!(check_segment_header(&header), Ok(HeaderState::Whole(2)));
     }
 
     #[test]
@@ -930,8 +935,8 @@ mod tests {
     #[test]
     fn a_newer_format_is_newer_and_a_wrong_magic_is_damaged() {
         let mut newer = segment_header();
-        newer[8..].copy_from_slice(&2u32.to_le_bytes());
-        assert_eq!(check_segment_header(&newer), Err(HeaderFault::Newer(2)));
+        newer[8..].copy_from_slice(&3u32.to_le_bytes());
+        assert_eq!(check_segment_header(&newer), Err(HeaderFault::Newer(3)));
         let mut wrong = segment_header();
         wrong[0] = b'X';
         assert!(matches!(
@@ -945,6 +950,44 @@ mod tests {
         assert_eq!(check_segment_header(&[]), Ok(HeaderState::Torn));
         assert!(matches!(
             check_segment_header(b"NOPE"),
+            Err(HeaderFault::Bad(_))
+        ));
+    }
+
+    #[test]
+    fn a_header_of_either_format_is_whole_and_says_which() {
+        assert_eq!(
+            check_segment_header(&header_of(1)),
+            Ok(HeaderState::Whole(1))
+        );
+        assert_eq!(
+            check_segment_header(&header_of(2)),
+            Ok(HeaderState::Whole(2))
+        );
+        assert_eq!(
+            check_segment_header(&header_of(3)),
+            Err(HeaderFault::Newer(3))
+        );
+        assert_eq!(
+            check_segment_header(&header_of(0)),
+            Err(HeaderFault::Bad("segment format 0".into()))
+        );
+    }
+
+    #[test]
+    fn a_short_file_that_starts_either_header_is_torn() {
+        for format in [1, 2] {
+            let header = header_of(format);
+            for length in 0..SEGMENT_HEADER {
+                assert_eq!(
+                    check_segment_header(&header[..length]),
+                    Ok(HeaderState::Torn),
+                    "format {format}, {length} bytes"
+                );
+            }
+        }
+        assert!(matches!(
+            check_segment_header(&header_of(3)[..9]),
             Err(HeaderFault::Bad(_))
         ));
     }

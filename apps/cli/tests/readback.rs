@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use bilbo_cli::console::settings;
 use bilbo_store::entries::{Capture, Cursor, Entries, RecordRange};
 use bilbo_store::id::Id;
-use bilbo_store::labels::CaptureLabel;
+use bilbo_store::labels::{CaptureLabel, Tags};
 use bilbo_store::layout::Layout;
 use bilbo_store::segments::{Options, Store};
 
@@ -231,6 +231,7 @@ fn an_entry_at_generation_0_fails_the_read_back_even_with_nothing_to_read() {
             stamp: None,
             bytes: b"",
             ends: &[],
+            tags: &Tags::default(),
         })
         .expect("capture");
     drop(store);
@@ -293,6 +294,7 @@ fn an_entry_whose_id_the_frontmatter_contradicts_fails_the_read_back() {
             stamp: None,
             bytes: &bytes,
             ends: &ends,
+            tags: &Tags::default(),
         })
         .expect("capture");
     drop(store);

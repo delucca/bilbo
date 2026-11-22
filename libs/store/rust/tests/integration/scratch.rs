@@ -1,3 +1,4 @@
+use bilbo_store::labels::Tags;
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -106,7 +107,30 @@ pub fn try_keep(
         stamp: None,
         bytes,
         ends: &ends(bytes),
+        tags: &Tags::default(),
     })
+}
+
+pub fn keep_tagged(
+    store: &mut Store,
+    name: &str,
+    kind: &str,
+    bytes: &[u8],
+    tags: &Tags,
+) -> Captured {
+    let label = capture_label(name);
+    store
+        .capture(&Capture {
+            label: &label,
+            kind,
+            id: None,
+            id_label: None,
+            stamp: None,
+            bytes,
+            ends: &ends(bytes),
+            tags,
+        })
+        .expect("capture")
 }
 
 pub fn id_of(captured: &Captured) -> Id {

@@ -10,7 +10,7 @@ use bilbo_entries::follows::{self, Follow, Planned};
 use bilbo_entries::kind::Kind;
 use bilbo_entries::remember::{self, Error, Item, Outcome, Output, Request, Tally};
 use bilbo_store::entries::Stamp;
-use bilbo_store::labels::{CaptureLabel, StoredLabels};
+use bilbo_store::labels::{CaptureLabel, StoredLabels, Tags};
 use fakes::{ADOPTED, Counting, FakeEntries, FakeKind, Script, id};
 
 const HELD: &str = "01JC5Q3V7XKM4P8R2T6W9YB0DE";
@@ -405,6 +405,7 @@ fn adopting_a_subagent_keeps_its_capture_label() {
         StoredLabels {
             capture: CaptureLabel::new("file:/t/a.sub.fake".into()),
             id: Some(main),
+            tags: Tags::default(),
         }
     );
 }

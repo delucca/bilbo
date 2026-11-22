@@ -8,7 +8,7 @@ use crate::entries::{Change, Generation, Head, Mark, Meta, RecordRange, Stamp, S
 use crate::files;
 use crate::frame;
 use crate::id::{Id, Short};
-use crate::labels::{self, CaptureLabel, Filed, StoredLabels};
+use crate::labels::{self, By, CaptureLabel, Filed, Standing, StoredLabels, Tag, Tagged, Tags};
 use crate::meta;
 
 const SCHEMA: &str = "
@@ -41,9 +41,13 @@ CREATE TABLE entry_labels (
 ) WITHOUT ROWID;
 CREATE INDEX entry_labels_by_label ON entry_labels (label);
 CREATE INDEX label_words_by_label ON label_words (label);
+CREATE TABLE entry_tags (
+  entry BLOB NOT NULL, tag TEXT NOT NULL, standing INTEGER NOT NULL, PRIMARY KEY (entry, tag)
+) WITHOUT ROWID;
+CREATE INDEX entry_tags_by_tag ON entry_tags (tag, standing);
 ";
 
-const VERSION: u32 = 6;
+const VERSION: u32 = 7;
 
 pub const OPEN: &str = "open";
 
@@ -482,6 +486,7 @@ impl Catalog {
                 labels: StoredLabels {
                     capture: capture.and_then(CaptureLabel::new),
                     id: id_label.map(|raw| id_of(&raw, 3)).transpose()?,
+                    tags: tags_of(&self.conn, id)?,
                 },
                 captured: meta::time_of(captured),
             }))
@@ -670,6 +675,38 @@ impl Catalog {
         };
         let links = run().map_err(|error| self.err(&error))?;
         Ok(labels::descendants(&links, entries))
+    }
+
+    pub fn tagged(&self, tag: &Tag) -> Result<Vec<Id>, StoreError> {
+        let run = || -> rusqlite::Result<Vec<Id>> {
+            let mut statement = self.conn.prepare(
+                "SELECT entry FROM entry_tags WHERE tag = ?1 AND standing IN (?2, ?3) ORDER BY entry",
+            )?;
+            let rows = statement.query_map(params![tag.as_str(), PERSON, MODEL], |row| {
+                id_of(&row.get::<_, Vec<u8>>(0)?, 0)
+            })?;
+            rows.collect()
+        };
+        run().map_err(|error| self.err(&error))
+    }
+
+    pub fn tags(&self) -> Result<Vec<Tagged>, StoreError> {
+        let run = || -> rusqlite::Result<Vec<Tagged>> {
+            let mut statement = self.conn.prepare(
+                "SELECT t.tag, e.kind, COUNT(*) FROM entry_tags t JOIN entries e ON e.id = t.entry
+                 WHERE t.standing IN (?1, ?2) GROUP BY t.tag, e.kind ORDER BY t.tag, e.kind",
+            )?;
+            let rows = statement.query_map(params![PERSON, MODEL], |row| {
+                let name: String = row.get(0)?;
+                Ok(Tagged {
+                    tag: tag_of(&name, 0)?,
+                    kind: row.get(1)?,
+                    entries: uint(row.get(2)?, 2)?,
+                })
+            })?;
+            rows.collect()
+        };
+        run().map_err(|error| self.err(&error))
     }
 
     pub fn with_words(&self, words: &[String]) -> Result<Vec<Id>, StoreError> {
@@ -932,6 +969,41 @@ impl Batch<'_> {
     }
 }
 
+const PERSON: i64 = 1;
+const MODEL: i64 = 2;
+const REMOVED: i64 = 3;
+
+fn tag_of(name: &str, column: usize) -> rusqlite::Result<Tag> {
+    Tag::new(name).ok_or_else(|| {
+        rusqlite::Error::FromSqlConversionFailure(
+            column,
+            rusqlite::types::Type::Text,
+            "not a tag's name".into(),
+        )
+    })
+}
+
+fn tags_of(conn: &Connection, id: Id) -> rusqlite::Result<Tags> {
+    let mut statement =
+        conn.prepare("SELECT tag, standing FROM entry_tags WHERE entry = ?1 ORDER BY tag")?;
+    let rows = statement.query_map(params![id.to_bytes().as_slice()], |row| {
+        let name: String = row.get(0)?;
+        let standing = match row.get::<_, i64>(1)? {
+            PERSON => Standing::Carried(By::Person),
+            MODEL => Standing::Carried(By::Model),
+            REMOVED => Standing::Removed,
+            other => return Err(rusqlite::Error::IntegralValueOutOfRange(1, other)),
+        };
+        Ok((tag_of(&name, 0)?, standing))
+    })?;
+    let mut tags = Tags::default();
+    for row in rows {
+        let (tag, standing) = row?;
+        tags.set(tag, Some(standing));
+    }
+    Ok(tags)
+}
+
 fn meta_in(conn: &Connection, meta: &Meta) -> Result<(), ApplyFault> {
     let id = meta.id.to_bytes();
     if let Some(label) = &meta.labels.capture {
@@ -956,6 +1028,22 @@ fn meta_in(conn: &Connection, meta: &Meta) -> Result<(), ApplyFault> {
             params![id.as_slice()],
         )?;
     }
+    let before: Option<EntryRow> = conn
+        .query_row(
+            "SELECT kind, origin, captured, parent FROM entries WHERE id = ?1",
+            params![id.as_slice()],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )
+        .optional()?;
+    let held_tags = tags_of(conn, meta.id)?;
+    let parent = meta.labels.id.map(Id::to_bytes);
+    let tags_only = held_tags != meta.labels.tags
+        && before.is_some_and(|(kind, origin, captured, held_parent)| {
+            kind == meta.kind
+                && origin.as_deref() == meta.labels.capture.as_ref().map(CaptureLabel::as_str)
+                && captured == meta::millis(meta.captured)
+                && held_parent.as_deref() == parent.as_ref().map(<[u8; 16]>::as_slice)
+        });
     conn.execute(
         "INSERT OR REPLACE INTO entries (id, kind, origin, captured, parent) VALUES (?1, ?2, ?3, ?4, ?5)",
         params![
@@ -971,9 +1059,29 @@ fn meta_in(conn: &Connection, meta: &Meta) -> Result<(), ApplyFault> {
         ],
     )?;
     conn.execute(
-        "INSERT INTO changes (entry) VALUES (?1)",
+        "DELETE FROM entry_tags WHERE entry = ?1",
         params![id.as_slice()],
     )?;
+    for (tag, standing) in meta.labels.tags.all() {
+        conn.execute(
+            "INSERT INTO entry_tags (entry, tag, standing) VALUES (?1, ?2, ?3)",
+            params![
+                id.as_slice(),
+                tag.as_str(),
+                match standing {
+                    Standing::Carried(By::Person) => PERSON,
+                    Standing::Carried(By::Model) => MODEL,
+                    Standing::Removed => REMOVED,
+                }
+            ],
+        )?;
+    }
+    if !tags_only {
+        conn.execute(
+            "INSERT INTO changes (entry) VALUES (?1)",
+            params![id.as_slice()],
+        )?;
+    }
     Ok(())
 }
 
@@ -1159,5 +1267,95 @@ mod tests {
             catalog.head_of(id),
             Err(StoreError::Catalog { .. })
         ));
+    }
+
+    fn tag(name: &str) -> Tag {
+        Tag::new(name).expect("tag")
+    }
+
+    fn tags_of_names(standings: &[(&str, Standing)]) -> Tags {
+        let mut tags = Tags::default();
+        for (name, standing) in standings {
+            tags.set(tag(name), Some(*standing));
+        }
+        tags
+    }
+
+    fn meta_with(tags: Tags, kind: &str) -> Meta {
+        Meta {
+            id: Id::parse("01JC5Q3V7XKM4P8R2T6W9YB0DE").expect("id"),
+            kind: kind.into(),
+            labels: StoredLabels {
+                capture: CaptureLabel::new("file:/n/a.md".into()),
+                id: None,
+                tags,
+            },
+            captured: meta::time_of(1_762_560_000_123),
+        }
+    }
+
+    fn file(catalog: &mut Catalog, meta: &Meta) {
+        let mut batch = catalog.batch().expect("batch");
+        let place = Place {
+            segment: OPEN,
+            path: Path::new("/s/open.seg"),
+            offset: 12,
+            length: 80,
+        };
+        batch.meta(meta, &place).expect("meta");
+        batch.commit().expect("commit");
+    }
+
+    fn changes(catalog: &Catalog) -> usize {
+        catalog.changes_since(0).expect("changes").0.len()
+    }
+
+    #[test]
+    fn the_tag_rows_of_an_entry_follow_its_last_meta_frame() {
+        let mut catalog = Catalog::in_memory().expect("catalog");
+        let person = Standing::Carried(By::Person);
+        let model = Standing::Carried(By::Model);
+        let first = meta_with(tags_of_names(&[("a", person), ("c", model)]), "markdown");
+        file(&mut catalog, &first);
+        let second = meta_with(
+            tags_of_names(&[("a", Standing::Removed), ("b", model)]),
+            "markdown",
+        );
+        file(&mut catalog, &second);
+        let found = catalog.meta(second.id).expect("meta").expect("some");
+        assert_eq!(found.labels.tags, second.labels.tags);
+        assert_eq!(catalog.tagged(&tag("a")).expect("tagged"), vec![]);
+        assert_eq!(catalog.tagged(&tag("c")).expect("tagged"), vec![]);
+        assert_eq!(catalog.tagged(&tag("b")).expect("tagged"), vec![second.id]);
+    }
+
+    #[test]
+    fn a_meta_frame_that_changes_only_tags_files_no_change() {
+        let mut catalog = Catalog::in_memory().expect("catalog");
+        let person = Standing::Carried(By::Person);
+        file(&mut catalog, &meta_with(Tags::default(), "markdown"));
+        let before = changes(&catalog);
+        file(
+            &mut catalog,
+            &meta_with(tags_of_names(&[("a", person)]), "markdown"),
+        );
+        assert_eq!(changes(&catalog), before);
+        file(&mut catalog, &meta_with(Tags::default(), "markdown"));
+        assert_eq!(changes(&catalog), before);
+    }
+
+    #[test]
+    fn a_first_meta_frame_an_identical_one_and_one_that_changes_another_field_file_a_change() {
+        let mut catalog = Catalog::in_memory().expect("catalog");
+        let tags = tags_of_names(&[("a", Standing::Carried(By::Person))]);
+        let mut seen = changes(&catalog);
+        file(&mut catalog, &meta_with(tags.clone(), "markdown"));
+        assert_eq!(changes(&catalog), seen + 1, "a first frame");
+        seen += 1;
+        file(&mut catalog, &meta_with(tags.clone(), "markdown"));
+        assert_eq!(changes(&catalog), seen + 1, "an identical frame");
+        seen += 1;
+        file(&mut catalog, &meta_with(tags, "session"));
+        assert_eq!(changes(&catalog), seen + 1, "another kind");
     }
 }

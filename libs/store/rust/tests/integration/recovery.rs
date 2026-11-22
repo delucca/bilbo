@@ -1,3 +1,4 @@
+use bilbo_store::labels::Tags;
 use std::fs;
 use std::io::Write;
 
@@ -270,13 +271,13 @@ fn a_segment_of_a_newer_format_is_refused() {
     store.close().expect("close");
     let segment = sealed(&layout).pop().expect("sealed");
     let mut bytes = fs::read(&segment).expect("read");
-    bytes[8..12].copy_from_slice(&2u32.to_le_bytes());
+    bytes[8..12].copy_from_slice(&3u32.to_le_bytes());
     fs::write(&segment, &bytes).expect("write");
     fs::remove_file(catalog(&layout)).expect("delete");
     match reopen(&layout) {
         Err(StoreError::Newer { path, version }) => {
             assert_eq!(path, segment);
-            assert_eq!(version, 2);
+            assert_eq!(version, 3);
         }
         Ok(_) => panic!("must be refused"),
         Err(other) => panic!("expected Newer, got {other}"),
@@ -750,6 +751,7 @@ fn a_catch_up_after_an_interrupted_capture_drops_the_stale_stamp() {
             stamp,
             bytes,
             ends: &crate::scratch::ends(bytes),
+            tags: &Tags::default(),
         })
     };
 

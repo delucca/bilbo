@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use std::time::SystemTime;
 
 use crate::id::{Id, Short};
-use crate::labels::{CaptureLabel, StoredLabels};
+use crate::labels::{CaptureLabel, StoredLabels, Tags};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Meta {
@@ -57,6 +57,8 @@ pub struct Capture<'a> {
     pub id: Option<Id>,
     /// The entry this one belongs to, such as a subagent's session. Used at first capture only.
     pub id_label: Option<Id>,
+    /// Used at first capture only.
+    pub tags: &'a Tags,
     /// What was captured, as it was before its bytes were read.
     pub stamp: Option<Stamp>,
     pub bytes: &'a [u8],
@@ -246,7 +248,7 @@ impl fmt::Display for StoreError {
             }
             Self::Newer { path, version } => write!(
                 f,
-                "{} is segment format {version}; this bilbo reads format 1",
+                "{} is segment format {version}; this bilbo reads formats 1 and 2",
                 path.display()
             ),
             Self::Catalog { path, error } => {
@@ -361,10 +363,10 @@ mod tests {
             (
                 StoreError::Newer {
                     path: path.clone(),
-                    version: 2,
+                    version: 3,
                 }
                 .to_string(),
-                "/s/open.seg is segment format 2; this bilbo reads format 1",
+                "/s/open.seg is segment format 3; this bilbo reads formats 1 and 2",
             ),
             (
                 StoreError::Catalog {

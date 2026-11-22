@@ -22,7 +22,7 @@ use bilbo_store::entries::{
     RecordRange, StoreError,
 };
 use bilbo_store::id::{Id, Short};
-use bilbo_store::labels::{CaptureLabel, StoredLabels};
+use bilbo_store::labels::{CaptureLabel, StoredLabels, Tags};
 use bilbo_store::sealed::Sealed;
 use serde_json::{Value, json};
 
@@ -255,6 +255,7 @@ impl Entries for Shelf {
                 labels: StoredLabels {
                     capture: item.capture.clone(),
                     id: item.belongs,
+                    tags: Tags::default(),
                 },
                 captured: SystemTime::UNIX_EPOCH,
             }))

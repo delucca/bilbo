@@ -740,7 +740,7 @@ fn a_catalog_whose_hot_journal_restores_another_version_is_rebuilt() {
         .expect("open")
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .expect("version");
-    assert_eq!(version, 6, "the catalog was made again");
+    assert_eq!(version, 7, "the catalog was made again");
 }
 
 #[test]

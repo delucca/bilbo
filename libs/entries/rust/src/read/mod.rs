@@ -9,7 +9,7 @@ use std::time::SystemTime;
 use bilbo_settings::key::{About as KeyAbout, Default, Key};
 use bilbo_store::entries::{Entries, Generation, Meta, RecordRange, StoreError};
 use bilbo_store::id::Id;
-use bilbo_store::labels::{CaptureLabel, Label};
+use bilbo_store::labels::{CaptureLabel, Label, Tag};
 
 use crate::reader::Reader;
 use crate::tokens::Tokens;
@@ -133,6 +133,7 @@ pub struct Fetched {
 pub struct About {
     pub kind: String,
     pub labels: Vec<Label>,
+    pub removed: Vec<Tag>,
     pub more_labels: u64,
     pub captured: SystemTime,
     pub started: Option<SystemTime>,
@@ -404,6 +405,7 @@ pub fn render(
                 .into_iter()
                 .chain(texts.iter().cloned().map(Label::Text))
                 .collect(),
+            removed: fetched.meta.labels.tags.removed().cloned().collect(),
             more_labels,
             captured: fetched.meta.captured,
             started: passages.iter().find_map(|passage| passage.at),

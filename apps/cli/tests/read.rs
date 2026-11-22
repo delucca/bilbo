@@ -1631,7 +1631,7 @@ fn a_command_of_a_page_reads_the_generation_the_page_read_also_after_the_file_wa
 
 fn headings(label: String, line: usize) -> bilbo_entries::read::Fetched {
     use bilbo_store::entries::{Generation, Meta};
-    use bilbo_store::labels::{CaptureLabel, StoredLabels};
+    use bilbo_store::labels::{CaptureLabel, StoredLabels, Tags};
     bilbo_entries::read::Fetched {
         meta: Meta {
             id: Id::parse(SECTIONS).expect("id"),
@@ -1639,6 +1639,7 @@ fn headings(label: String, line: usize) -> bilbo_entries::read::Fetched {
             labels: StoredLabels {
                 capture: CaptureLabel::new(label),
                 id: None,
+                tags: Tags::default(),
             },
             captured: std::time::UNIX_EPOCH,
         },

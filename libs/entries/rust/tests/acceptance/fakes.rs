@@ -284,6 +284,7 @@ impl Entries for FakeEntries {
                 labels: StoredLabels {
                     capture: Some(input.label.clone()),
                     id: input.id_label,
+                    tags: input.tags.clone(),
                 },
                 captured: std::time::SystemTime::UNIX_EPOCH,
             });

@@ -5,7 +5,7 @@ use bilbo_store::entries::{
     StoreError,
 };
 use bilbo_store::id::Id;
-use bilbo_store::labels::StoredLabels;
+use bilbo_store::labels::{StoredLabels, Tags};
 
 use crate::scratch::{
     Scratch, capture_label, catalog, id_of, keep, keep_as, open, open_seg, read_records, try_keep,
@@ -201,6 +201,7 @@ fn records_that_do_not_cover_the_bytes_are_refused() {
         stamp: None,
         bytes: b"one\ntwo\n",
         ends: &[4],
+        tags: &Tags::default(),
     });
     assert!(matches!(refused, Err(CaptureError::Records(_))));
 }
@@ -262,6 +263,7 @@ fn set_meta_replaces_the_meta_and_survives_a_rebuild() {
         labels: StoredLabels {
             capture: Some(capture_label("moved.md")),
             id: None,
+            tags: Tags::default(),
         },
         ..store.meta(other).expect("meta").expect("some")
     };
@@ -345,6 +347,7 @@ fn an_id_label_is_kept_in_the_meta_and_survives_a_rebuild() {
             stamp: None,
             bytes: b"{}\n",
             ends: &[3],
+            tags: &Tags::default(),
         })
         .expect("capture");
     let id = id_of(&captured);
@@ -394,6 +397,7 @@ fn a_capture_without_a_stamp_clears_the_old_one_so_a_restore_is_a_new_generation
                 stamp,
                 bytes,
                 ends: &crate::scratch::ends(bytes),
+                tags: &Tags::default(),
             })
             .expect("capture")
     };
@@ -453,6 +457,7 @@ fn a_stamp_is_kept_with_each_capture_and_a_rebuild_forgets_it() {
                 stamp: Some(stamp(at)),
                 bytes,
                 ends: &crate::scratch::ends(bytes),
+                tags: &Tags::default(),
             })
             .expect("capture")
     };

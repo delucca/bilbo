@@ -105,7 +105,7 @@ mod tests {
         RecordRange, StoreError,
     };
     use bilbo_store::id::{Id, Short};
-    use bilbo_store::labels::{CaptureLabel, Labels, StoredLabels};
+    use bilbo_store::labels::{CaptureLabel, Labels, StoredLabels, Tag, Tagged};
 
     use super::{Scope, Unnamed, Value, resolve, value};
     use crate::analyze::label_words;
@@ -207,6 +207,14 @@ mod tests {
         fn belonging_to(&self, entries: &[Id]) -> Result<Vec<Id>, StoreError> {
             self.belonging.borrow_mut().push(entries.to_vec());
             Ok(self.below.clone())
+        }
+
+        fn tagged(&self, _: &Tag) -> Result<Vec<Id>, StoreError> {
+            Ok(Vec::new())
+        }
+
+        fn tags(&self) -> Result<Vec<Tagged>, StoreError> {
+            Ok(Vec::new())
         }
     }
 
