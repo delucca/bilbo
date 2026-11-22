@@ -244,9 +244,12 @@ fn racy(modified: SystemTime, taken: SystemTime) -> bool {
     !taken.duration_since(modified).is_ok_and(|age| age >= RACY)
 }
 
-/// `Kept` carries the bytes an id label repair and a declaration added, then whether tags were declared.
 enum Done {
-    Kept(Captured, u64, bool),
+    Kept {
+        captured: Captured,
+        adopted: u64,
+        tagged: bool,
+    },
     Refused(String),
 }
 
@@ -264,7 +267,11 @@ pub fn keep(
         let (path, done) = keep_file(kind, claim, &plan.tags, files, entries)?;
         let outcome = match done {
             Done::Refused(reason) => Outcome::Refused(reason),
-            Done::Kept(captured, adopted, tagged) => {
+            Done::Kept {
+                captured,
+                adopted,
+                tagged,
+            } => {
                 output.stored_bytes += adopted;
                 output.tagged += u64::from(tagged);
                 let (outcome, kept) = match captured {
@@ -369,9 +376,11 @@ fn look(
         && head.stamp == stamp
     {
         return Ok(match declared(entry.tags, head.id, entries)? {
-            Ok((tagged, bytes)) => {
-                Step::Done(Done::Kept(Captured::Unchanged(head.id), bytes, tagged))
-            }
+            Ok((tagged, bytes)) => Step::Done(Done::Kept {
+                captured: Captured::Unchanged(head.id),
+                adopted: bytes,
+                tagged,
+            }),
             Err(reason) => refused(reason),
         });
     }
@@ -422,7 +431,11 @@ fn look(
                     matches!(captured, Captured::New(_)) && !entry.tags.tags.is_empty(),
                 ),
             };
-            Ok(Step::Done(Done::Kept(captured, adopted, tagged)))
+            Ok(Step::Done(Done::Kept {
+                captured,
+                adopted,
+                tagged,
+            }))
         }
         Err(CaptureError::Store(error)) => Err(error.into()),
         Err(

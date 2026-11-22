@@ -222,6 +222,7 @@ pub struct TagsDry {
     pub tokens: u64,
     pub pick: usize,
     pub model: Option<String>,
+    pub instruction: Option<(Origin, String)>,
     pub lines: Vec<String>,
 }
 
@@ -253,6 +254,9 @@ pub fn tags_line(tags: &TagsDry) -> String {
         "tags: {} entries due; this run {} calls, {} tokens of notes to send; {} tags to pick from",
         tags.due, tags.calls, tags.tokens, tags.pick
     );
+    if let Some((held, id)) = &tags.instruction {
+        line.push_str(&format!("; instruction ({}, {id})", origin(held)));
+    }
     if let Some(model) = &tags.model {
         line.push_str(&format!("; model {model}"));
     }
@@ -630,23 +634,28 @@ mod tests {
     }
 
     #[test]
-    fn the_dry_runs_tags_line_has_its_two_forms_and_its_model() {
+    fn the_dry_runs_tags_line_has_its_two_forms_its_instruction_and_its_model() {
         use super::{TagsDry, tags_line};
         let mut tags = TagsDry {
             due: 37,
-            calls: 6,
+            calls: 16,
             tokens: 17212,
             pick: 5,
+            instruction: Some((Origin::Shipped, "a5d31572b3105b1b".to_owned())),
             ..TagsDry::default()
         };
         assert_eq!(
             tags_line(&tags),
-            "tags: 37 entries due; this run 6 calls, 17212 tokens of notes to send; 5 tags to pick from"
+            "tags: 37 entries due; this run 16 calls, 17212 tokens of notes to send; 5 tags to pick from; instruction (built in, a5d31572b3105b1b)"
         );
+        tags.instruction = Some((
+            Origin::File(PathBuf::from("/home/me/notes/tags.txt")),
+            "4c1a70b9e2d355f0".to_owned(),
+        ));
         tags.model = Some("claude-haiku-5-5".to_owned());
         assert_eq!(
             tags_line(&tags),
-            "tags: 37 entries due; this run 6 calls, 17212 tokens of notes to send; 5 tags to pick from; model claude-haiku-5-5"
+            "tags: 37 entries due; this run 16 calls, 17212 tokens of notes to send; 5 tags to pick from; instruction (/home/me/notes/tags.txt, 4c1a70b9e2d355f0); model claude-haiku-5-5"
         );
         assert_eq!(
             tags_line(&TagsDry::default()),

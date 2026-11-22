@@ -89,6 +89,7 @@ derive.tries                     = 3  [2m(default)[22m
 derive.failures                  = 3  [2m(default)[22m
 derive.tags.enabled              = false  [2m(default)[22m
 derive.tags.pick                 = []  [2m(default)[22m
+derive.tags.instruction          = ""  [2m(default)[22m
 derive.tags.model                = ""  [2m(default)[22m
 derive.tags.most                 = 3  [2m(default)[22m
 derive.tags.notes                = 6000  [2m(default)[22m

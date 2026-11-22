@@ -1698,3 +1698,37 @@ fn the_mark_is_the_entry_of_the_first_call_counted_and_not_of_a_free_pass() {
     let next = world.plan(Asked::Every);
     assert_eq!(next.due[0].parent.id, order[2]);
 }
+
+#[test]
+fn the_tags_call_sends_the_instruction_of_the_rules_and_numbers_its_asking_by_that_id() {
+    let text = "Pick the tags of the notes.\n";
+    let mut world = tagging(&["garden"]);
+    world.tags_text = text.to_owned();
+    world.tags_id = bilbo_derive::instruction::id(text);
+    let parent = noted(&mut world, &["aaaa"]);
+    let mut writer = Script::new().then(answer("garden"));
+    let plan = world.plan(Asked::Every);
+    world.calls(&mut writer, &plan);
+    assert_eq!(writer.prompts.len(), 1);
+    assert_eq!(writer.prompts[0].instruction, text);
+    let held = blocks(&world);
+    assert_eq!(held.len(), 1);
+    assert_eq!(held[0].instruction, world.tags_id);
+    let about = tags::asked::About {
+        generation: Generation(1),
+        records: 1,
+        notes: world.notes_digest(parent),
+    };
+    let asking = |id: &str| {
+        tags::asked::asking(
+            parent,
+            &about,
+            "fake",
+            "model-a",
+            id,
+            &writer.prompts[0].material,
+        )
+    };
+    assert_eq!(held[0].asking, asking(&world.tags_id));
+    assert_ne!(held[0].asking, asking(&tags::instruction::id()));
+}

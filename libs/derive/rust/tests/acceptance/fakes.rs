@@ -917,6 +917,7 @@ pub struct World {
     pub tokens: Box<dyn Tokens>,
     pub tags: Option<tags::keys::Section>,
     pub tags_id: String,
+    pub tags_text: String,
     pub tags_model: String,
     pub provider: String,
     pub memo: Memo,
@@ -977,6 +978,7 @@ impl World {
             tokens: Box::new(Estimate),
             tags: None,
             tags_id: tags::instruction::id(),
+            tags_text: tags::instruction::text().to_owned(),
             tags_model: "model-a".to_owned(),
             provider: "fake".to_owned(),
             memo: Memo::default(),
@@ -1130,7 +1132,7 @@ impl World {
             .filter(|section| section.enabled.value && !section.pick.value.is_empty())
             .map(|section| tags::Rules {
                 section,
-                instruction: tags::instruction::text(),
+                instruction: &self.tags_text,
                 id: &self.tags_id,
                 model: &self.tags_model,
                 cap: self.cap,
@@ -1193,7 +1195,7 @@ impl World {
             .filter(|section| section.enabled.value && !section.pick.value.is_empty())
             .map(|section| tags::Rules {
                 section,
-                instruction: tags::instruction::text(),
+                instruction: &self.tags_text,
                 id: &self.tags_id,
                 model: &self.tags_model,
                 cap: self.cap,

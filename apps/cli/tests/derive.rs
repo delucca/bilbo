@@ -4388,3 +4388,210 @@ fn a_replay_that_changes_nothing_does_no_index_work() {
     assert_eq!((again.code, again.stderr), (1, vec![behind.to_owned()]));
     assert_eq!(requests(&provider).len(), 1);
 }
+
+const OWN_INSTRUCTION: &str = "Pick the tags for these notes, one a line, or (none).\n";
+
+fn own_instruction(sandbox: &Sandbox) -> (PathBuf, String) {
+    let file = sandbox.dir.join("tags-instruction.txt");
+    fs::write(&file, OWN_INSTRUCTION).expect("an instruction");
+    let line = format!(
+        "derive.tags.instruction = {:?}\n",
+        file.display().to_string()
+    );
+    (file, line)
+}
+
+#[test]
+fn a_tags_instruction_of_the_settings_is_what_the_call_for_tags_sends() {
+    let sandbox = Sandbox::filled("derive-tags-own-instruction", false);
+    let first = sandbox.session(FIRST);
+    let (_, line) = own_instruction(&sandbox);
+    let provider = Provider::start(vec![answer(NOTE_TEXT), answer("garden")]);
+    sandbox.configure(&with_tags(
+        &provider.url(),
+        first,
+        &format!("{TAGS_ON}{line}"),
+    ));
+    let run = sandbox.run(&["derive"]);
+    assert_eq!(run.code, 0, "{:?}", run.stderr);
+    let seen = requests(&provider);
+    assert_eq!(seen.len(), 2);
+    assert_eq!(
+        field(&seen[0], "system").as_str(),
+        Some(instruction::shipped()[0].1)
+    );
+    assert_eq!(field(&seen[1], "system").as_str(), Some(OWN_INSTRUCTION));
+    assert!(!asks_for_tags(&seen[1]));
+    assert_eq!(
+        standing(&sandbox, first, "garden"),
+        Some(Standing::Carried(By::Model))
+    );
+    let asked = fs::read_to_string(sandbox.derive_dir().join("tagged")).expect("the file");
+    let id = instruction::id(OWN_INSTRUCTION);
+    assert!(asked.contains(&format!("\t{id}\t")), "{asked}");
+}
+
+#[test]
+fn a_bad_tags_instruction_file_is_a_config_error_only_while_the_tags_are_on() {
+    let sandbox = Sandbox::filled("derive-tags-bad-instruction", false);
+    let first = sandbox.session(FIRST);
+    let provider = Provider::start(vec![answer(NOTE_TEXT), answer(NOTE_TEXT)]);
+    let file = sandbox.dir.join("tags-instruction.txt");
+    let name = file.display().to_string();
+    let key = format!("derive.tags.instruction = {name:?}\n");
+    sandbox.configure(&with_tags(
+        &provider.url(),
+        first,
+        &format!("{TAGS_ON}{key}"),
+    ));
+    for (bytes, said) in [
+        (
+            None,
+            format!(
+                "bilbo: derive.tags.instruction: cannot read {name}: No such file or directory (os error 2)"
+            ),
+        ),
+        (
+            Some(b" \n".to_vec()),
+            format!("bilbo: derive.tags.instruction: {name} is empty"),
+        ),
+        (
+            Some(vec![0xff, 0xfe]),
+            format!("bilbo: derive.tags.instruction: {name} is not UTF-8"),
+        ),
+    ] {
+        if let Some(bytes) = bytes {
+            fs::write(&file, bytes).expect("a file");
+        }
+        for args in [&["derive"][..], &["derive", "--dry-run"][..]] {
+            let run = sandbox.run(args);
+            assert_eq!((run.code, run.stderr), (2, vec![said.clone()]), "{args:?}");
+        }
+    }
+    assert!(requests(&provider).is_empty());
+    fs::remove_file(&file).expect("removed");
+    for (extra, empty) in [
+        (
+            format!("derive.tags.enabled = false\nderive.tags.pick = [\"garden\"]\n{key}"),
+            false,
+        ),
+        (
+            format!("derive.tags.enabled = true\nderive.tags.pick = []\n{key}"),
+            true,
+        ),
+    ] {
+        let sandbox = Sandbox::filled("derive-tags-bad-instruction-off", false);
+        let first = sandbox.session(FIRST);
+        let provider = Provider::start(vec![answer(NOTE_TEXT)]);
+        sandbox.configure(&with_tags(&provider.url(), first, &extra));
+        let dry = sandbox.run(&["derive", "--dry-run"]);
+        assert_eq!(dry.code, 0, "{:?}", dry.stderr);
+        assert!(
+            dry.stderr
+                .iter()
+                .all(|line| !line.contains("derive.tags.instruction"))
+        );
+        assert!(requests(&provider).is_empty());
+        assert_eq!(
+            dry.stdout
+                .lines()
+                .any(|line| line == "tags: none to pick from: derive.tags.pick is empty"),
+            empty
+        );
+        let run = sandbox.run(&["derive"]);
+        assert_eq!(run.code, 0, "{:?}", run.stderr);
+        assert!(
+            run.stderr
+                .iter()
+                .all(|line| !line.contains("derive.tags.instruction"))
+        );
+        assert!(sandbox.notes_of(first).is_some());
+        assert_eq!(requests(&provider).len(), 1);
+    }
+    let sandbox = Sandbox::filled("derive-tags-bad-instruction-gate", false);
+    let first = sandbox.session(FIRST);
+    let provider = Provider::start(vec![answer(NOTE_TEXT)]);
+    sandbox.configure(
+        &with_tags(&provider.url(), first, &format!("{TAGS_ON}{key}"))
+            .replace("derive.enabled = true", "derive.enabled = false"),
+    );
+    let run = sandbox.run(&["derive"]);
+    assert_eq!(
+        (run.code, run.stderr),
+        (
+            0,
+            vec!["bilbo: derive is off: derive.enabled is false".to_owned()]
+        )
+    );
+    let dry = sandbox.run(&["derive", "--dry-run"]);
+    assert_eq!(
+        (dry.code, dry.stderr),
+        (
+            2,
+            vec![format!(
+                "bilbo: derive.tags.instruction: cannot read {name}: No such file or directory (os error 2)"
+            )]
+        )
+    );
+    assert!(requests(&provider).is_empty());
+}
+
+#[test]
+fn redo_asks_again_for_the_tags_another_instruction_gave_and_then_finds_nothing() {
+    let (sandbox, provider, first) = tagged_once("derive-tags-redo-instruction");
+    let (_, line) = own_instruction(&sandbox);
+    sandbox.configure(&with_tags(
+        &provider.url(),
+        first,
+        &format!("{TAGS_ON}{line}"),
+    ));
+    assert_eq!(sandbox.run(&["derive"]).code, 0);
+    assert_eq!(requests(&provider).len(), 2);
+    let redo = sandbox.run(&["derive", "--redo"]);
+    assert_eq!(redo.code, 0, "{:?}", redo.stderr);
+    let seen = requests(&provider);
+    assert_eq!(seen.len(), 3);
+    assert_eq!(field(&seen[2], "system").as_str(), Some(OWN_INSTRUCTION));
+    let asked = fs::read_to_string(sandbox.derive_dir().join("tagged")).expect("the file");
+    assert!(
+        asked.contains(&format!("\t{}\t", instruction::id(OWN_INSTRUCTION))),
+        "{asked}"
+    );
+    assert_eq!(sandbox.run(&["derive", "--redo"]).code, 0);
+    assert_eq!(requests(&provider).len(), 3);
+}
+
+#[test]
+fn the_dry_run_names_the_tags_instruction_in_force() {
+    let sandbox = Sandbox::filled("derive-tags-dry-instruction", false);
+    let first = sandbox.session(FIRST);
+    let provider = Provider::start(Vec::new());
+    sandbox.configure(&with_tags(&provider.url(), first, TAGS_ON));
+    let dry = sandbox.run(&["derive", "--dry-run", "--calls", "1"]);
+    assert_eq!(dry.code, 0, "{:?}", dry.stderr);
+    let (_, tags) = walk_numbers(&dry);
+    assert!(
+        tags.ends_with(&format!(
+            "; instruction (built in, {})",
+            bilbo_derive::tags::instruction::id()
+        )),
+        "{tags}"
+    );
+    let (file, line) = own_instruction(&sandbox);
+    sandbox.configure(&with_tags(
+        &provider.url(),
+        first,
+        &format!("{TAGS_ON}{line}"),
+    ));
+    let dry = sandbox.run(&["derive", "--dry-run", "--calls", "1"]);
+    assert_eq!(dry.code, 0, "{:?}", dry.stderr);
+    let (_, tags) = walk_numbers(&dry);
+    assert!(
+        tags.ends_with(&format!(
+            "; instruction ({}, {})",
+            file.display(),
+            instruction::id(OWN_INSTRUCTION)
+        )),
+        "{tags}"
+    );
+}

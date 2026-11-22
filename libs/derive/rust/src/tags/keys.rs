@@ -1,8 +1,10 @@
 use std::collections::BTreeSet;
 use std::ops::RangeInclusive;
+use std::path::PathBuf;
 
 use bilbo_llm::model::{MODEL_ALLOWED, MODEL_REFUSED, is_model_name};
 use bilbo_settings::error::Error;
+use bilbo_settings::folder;
 use bilbo_settings::key::{About, Default, Key, Resolved, Shown, Source, Value, quote, show_list};
 use bilbo_store::labels::Tag;
 
@@ -47,6 +49,21 @@ pub const PICK: Key<BTreeSet<Tag>> = Key {
     },
 };
 
+pub const INSTRUCTION: Key<Option<PathBuf>> = Key {
+    about: About {
+        name: "derive.tags.instruction",
+        variable: Some("BILBO_DERIVE_TAGS_INSTRUCTION"),
+        default: Default::Toml(r#""""#),
+        allowed: "an absolute path or one starting with ~/, or the empty text for the one bilbo ships",
+        doc: "The file whose text bilbo derive sends as the instruction of a call for tags, in place of the one bilbo ships. Empty: the one bilbo ships. The text must ask for the answer bilbo reads: a tag a line, or the one line (none).",
+    },
+    parse: |value| match value.os_text() {
+        Some(text) if text.is_empty() => Ok(None),
+        _ => folder::path(value).map(Some),
+    },
+    show: |path| path.as_deref().map_or_else(|| quote(""), folder::show),
+};
+
 pub const MODEL: Key<String> = Key {
     about: About {
         name: "derive.tags.model",
@@ -89,9 +106,10 @@ pub const NOTES: Key<usize> = Key {
     show: ToString::to_string,
 };
 
-pub const ABOUT: [&About; 5] = [
+pub const ABOUT: [&About; 6] = [
     &ENABLED.about,
     &PICK.about,
+    &INSTRUCTION.about,
     &MODEL.about,
     &MOST.about,
     &NOTES.about,
@@ -101,6 +119,7 @@ pub const ABOUT: [&About; 5] = [
 pub struct Section {
     pub enabled: Resolved<bool>,
     pub pick: Resolved<BTreeSet<Tag>>,
+    pub instruction: Resolved<Option<PathBuf>>,
     pub model: Resolved<String>,
     pub most: Resolved<usize>,
     pub notes: Resolved<usize>,
@@ -110,6 +129,7 @@ pub fn section(source: &Source<'_>) -> Result<Section, Error> {
     Ok(Section {
         enabled: ENABLED.resolve(source)?,
         pick: PICK.resolve(source)?,
+        instruction: INSTRUCTION.resolve(source)?,
         model: MODEL.resolve(source)?,
         most: MOST.resolve(source)?,
         notes: NOTES.resolve(source)?,
@@ -126,10 +146,11 @@ pub fn defaults() -> Section {
 }
 
 impl Section {
-    pub fn shown(&self) -> [Shown; 5] {
+    pub fn shown(&self) -> [Shown; 6] {
         [
             ENABLED.shown(&self.enabled),
             PICK.shown(&self.pick),
+            INSTRUCTION.shown(&self.instruction),
             MODEL.shown(&self.model),
             MOST.shown(&self.most),
             NOTES.shown(&self.notes),
@@ -180,6 +201,7 @@ mod tests {
         let section = given("");
         assert!(!section.enabled.value);
         assert!(section.pick.value.is_empty());
+        assert_eq!(section.instruction.value, None);
         assert_eq!(section.model.value, "");
         assert_eq!(section.most.value, 3);
         assert_eq!(section.notes.value, 6000);
@@ -193,6 +215,7 @@ mod tests {
             [
                 "derive.tags.enabled = false (default)",
                 "derive.tags.pick = [] (default)",
+                "derive.tags.instruction = \"\" (default)",
                 "derive.tags.model = \"\" (default)",
                 "derive.tags.most = 3 (default)",
                 "derive.tags.notes = 6000 (default)",
@@ -204,6 +227,7 @@ mod tests {
             [
                 Some("BILBO_DERIVE_TAGS_ENABLED"),
                 None,
+                Some("BILBO_DERIVE_TAGS_INSTRUCTION"),
                 Some("BILBO_DERIVE_TAGS_MODEL"),
                 Some("BILBO_DERIVE_TAGS_MOST"),
                 Some("BILBO_DERIVE_TAGS_NOTES"),
@@ -274,7 +298,7 @@ mod tests {
     #[test]
     fn the_keys_show_as_toml_that_reads_back() {
         let section = given(
-            "derive.tags.enabled = true\nderive.tags.pick = [\"b\", \"a\"]\nderive.tags.model = \"m\"\nderive.tags.most = 7\nderive.tags.notes = 2000",
+            "derive.tags.enabled = true\nderive.tags.pick = [\"b\", \"a\"]\nderive.tags.instruction = \"/c/tags.txt\"\nderive.tags.model = \"m\"\nderive.tags.most = 7\nderive.tags.notes = 2000",
         );
         let text: String = section
             .shown()
@@ -284,8 +308,61 @@ mod tests {
         let again = given(&text);
         assert!(again.enabled.value);
         assert_eq!(again.pick.value, tags(&["a", "b"]));
+        assert_eq!(
+            again.instruction.value,
+            Some(std::path::PathBuf::from("/c/tags.txt"))
+        );
         assert_eq!(again.model.value, "m");
         assert_eq!(again.most.value, 7);
         assert_eq!(again.notes.value, 2000);
+    }
+
+    #[test]
+    fn the_tags_instruction_is_a_path_or_the_empty_text() {
+        let env = |variables: &'static [(&'static str, &'static str)], text: &str| {
+            let var = |name: &str| {
+                variables
+                    .iter()
+                    .find(|(key, _)| *key == name)
+                    .map(|(_, value)| OsString::from(value))
+            };
+            let file = File::parse(Path::new("/c/config.toml"), text.as_bytes()).expect("toml");
+            section(&Source {
+                var: &var,
+                file: &file,
+            })
+            .map(|section| section.instruction.value)
+            .map_err(|error| error.to_string())
+        };
+        let home: &[(&str, &str)] = &[("HOME", "/home/me")];
+        assert_eq!(env(home, ""), Ok(None));
+        assert_eq!(env(home, "derive.tags.instruction = \"\""), Ok(None));
+        assert_eq!(
+            env(home, "derive.tags.instruction = \"/c/tags.txt\""),
+            Ok(Some(std::path::PathBuf::from("/c/tags.txt")))
+        );
+        assert_eq!(
+            env(home, "derive.tags.instruction = \"~/notes/tags.txt\""),
+            Ok(Some(std::path::PathBuf::from("/home/me/notes/tags.txt")))
+        );
+        let over: &[(&str, &str)] = &[
+            ("HOME", "/home/me"),
+            ("BILBO_DERIVE_TAGS_INSTRUCTION", "/v/tags.txt"),
+        ];
+        assert_eq!(
+            env(over, "derive.tags.instruction = \"/c/tags.txt\""),
+            Ok(Some(std::path::PathBuf::from("/v/tags.txt")))
+        );
+        for text in [
+            "derive.tags.instruction = \"tags.txt\"",
+            "derive.tags.instruction = \"/c/../tags.txt\"",
+            "derive.tags.instruction = 3",
+        ] {
+            let message = env(home, text).expect_err("refused");
+            assert!(
+                message.starts_with("/c/config.toml:1: derive.tags.instruction"),
+                "{message}"
+            );
+        }
     }
 }

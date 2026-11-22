@@ -433,23 +433,6 @@ impl Tries for Failed {
     }
 }
 
-fn reading(
-    again: bool,
-    path: &Path,
-    mut once: impl FnMut() -> io::Result<Vec<u8>>,
-) -> io::Result<Vec<u8>> {
-    let mut tries = if again { 2 } else { 1 };
-    loop {
-        tries -= 1;
-        match once() {
-            Ok(bytes) => return Ok(bytes),
-            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
-            Err(error) if tries > 0 && private::is_refusal(&error) => {}
-            Err(error) => return Err(said("read", path, &error)),
-        }
-    }
-}
-
 enum Place<'a> {
     Held(Rc<File>, PathBuf),
     State(&'a File, PathBuf),
@@ -486,13 +469,22 @@ impl<'a> Tagged<'a> {
         Ok(taken.clone().flatten())
     }
 
+    fn how(&self) -> How {
+        match self.place {
+            Place::State(..) => How::ReadAsOpened,
+            Place::Held(..) => How::Read,
+        }
+    }
+
     fn open(&self, derive: &File, path: &Path) -> io::Result<Vec<u8>> {
-        reading(matches!(self.place, Place::State(..)), path, || {
-            let mut bytes = Vec::new();
-            private::open(derive, TAGGED, path, How::Read)
-                .and_then(|mut file| file.read_to_end(&mut bytes))
-                .map(|_| bytes)
-        })
+        let mut bytes = Vec::new();
+        match private::open(derive, TAGGED, path, self.how())
+            .and_then(|mut file| file.read_to_end(&mut bytes))
+        {
+            Ok(_) => Ok(bytes),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(Vec::new()),
+            Err(error) => Err(said("read", path, &error)),
+        }
     }
 
     fn held(&self) -> io::Result<std::cell::RefMut<'_, Vec<Line>>> {
@@ -661,7 +653,7 @@ mod tests {
     use bilbo_store::entries::Generation;
     use bilbo_store::id::Id;
 
-    use super::{Folder, Sync};
+    use super::{Folder, Sync, private};
 
     static COUNTER: AtomicU64 = AtomicU64::new(0);
 
@@ -1106,30 +1098,107 @@ mod tests {
         ended_in_one_write(true);
     }
 
+    fn tagged_path(scratch: &Scratch) -> PathBuf {
+        scratch.0.join("derive/tagged")
+    }
+
+    fn private_file(path: &Path, text: &str) {
+        fs::write(path, text).expect("a file");
+        fs::set_permissions(path, fs::Permissions::from_mode(0o600)).expect("a mode");
+    }
+
     #[test]
-    fn a_file_replaced_under_its_reader_is_opened_again_once() {
-        use std::cell::Cell;
-        let path = Path::new("/state/derive/tagged");
-        let refusals = |count: u32| {
-            let seen = Cell::new(0);
-            let result = super::reading(true, path, || {
-                seen.set(seen.get() + 1);
-                if seen.get() <= count {
-                    Err(crate::console::private::refused(path))
-                } else {
-                    Ok(b"read".to_vec())
+    fn a_private_file_that_lost_its_name_is_read_by_the_reader_with_no_lock_and_refused_under_the_lock()
+     {
+        use std::io::Read;
+        let scratch = Scratch::new("as-opened-readers");
+        let (sync, _) = recording();
+        let held = folder(&scratch, sync)
+            .lock()
+            .expect("a lock")
+            .expect("held");
+        let handle = File::open(&scratch.0).expect("a folder");
+        let path = tagged_path(&scratch);
+        let sentence = format!(
+            "{} is not a private file of this user in a folder of this user",
+            path.display()
+        );
+        let free = super::reader(&handle, &scratch.0);
+        let locked = held.tagged();
+        for replaced in [true, false] {
+            private_file(&path, "one\n");
+            let open = File::open(&path).expect("open");
+            if replaced {
+                private_file(&scratch.0.join("derive/next"), "two\n");
+                fs::rename(scratch.0.join("derive/next"), &path).expect("a rename");
+            } else {
+                fs::remove_file(&path).expect("removed");
+            }
+            private::checked_for(&open, &path, free.how()).expect("no lock");
+            let mut text = String::new();
+            (&open).read_to_string(&mut text).expect("read");
+            assert_eq!(text, "one\n");
+            let error = private::checked_for(&open, &path, locked.how()).expect_err("locked");
+            assert_eq!(error.to_string(), sentence);
+        }
+        fs::write(&path, "x").expect("a file");
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).expect("a mode");
+        let open = File::open(&path).expect("open");
+        fs::remove_file(&path).expect("removed");
+        for reader in [&free, &locked] {
+            let error = private::checked_for(&open, &path, reader.how()).expect_err("open");
+            assert_eq!(error.to_string(), sentence);
+        }
+    }
+
+    #[test]
+    fn a_tags_file_that_is_no_private_file_is_refused_by_both_readers_and_no_file_is_the_empty_one()
+    {
+        use bilbo_derive::tags::asked::Asked;
+        let scratch = Scratch::new("both-readers");
+        let (sync, _) = recording();
+        let held = folder(&scratch, sync)
+            .lock()
+            .expect("a lock")
+            .expect("held");
+        let handle = File::open(&scratch.0).expect("a folder");
+        let path = tagged_path(&scratch);
+        let sentence = format!(
+            "{} is not a private file of this user in a folder of this user",
+            path.display()
+        );
+        let entry = Id::from_bytes([1; 16]);
+        private_file(&scratch.0.join("derive/mine"), "x");
+        for case in [
+            "no file",
+            "a link",
+            "a second name",
+            "a file open to others",
+        ] {
+            match case {
+                "a link" => symlink(scratch.0.join("derive/mine"), &path).expect("a link"),
+                "a second name" => {
+                    fs::hard_link(scratch.0.join("derive/mine"), &path).expect("a name");
                 }
-            });
-            (result, seen.get())
-        };
-        let (once_refused, opened) = refusals(1);
-        assert_eq!(once_refused.expect("read"), b"read");
-        assert_eq!(opened, 2);
-        let (twice, opened) = refusals(2);
-        assert_eq!(opened, 2);
-        assert!(twice.is_err());
-        let once = super::reading(false, path, || Err(crate::console::private::refused(path)));
-        assert!(once.is_err());
+                "a file open to others" => {
+                    fs::write(&path, "x").expect("a file");
+                    fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).expect("a mode");
+                }
+                _ => {}
+            }
+            let readers = [held.tagged(), super::reader(&handle, &scratch.0)];
+            for reader in readers {
+                let found = reader.answered(entry);
+                if case == "no file" {
+                    assert_eq!(found.expect("no error"), None, "{case}");
+                } else {
+                    assert_eq!(found.expect_err(case).to_string(), sentence, "{case}");
+                }
+            }
+            if case != "no file" {
+                fs::remove_file(&path).expect("removed");
+            }
+        }
     }
 
     #[test]

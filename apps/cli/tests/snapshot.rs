@@ -1040,6 +1040,7 @@ fn the_dry_run_with_the_tags_on_in_the_plain_view() {
             tokens: 17212,
             pick: 5,
             model: None,
+            instruction: Some((Origin::Shipped, "a5d31572b3105b1b".to_owned())),
             lines: Vec::new(),
         }),
         off: Vec::new(),

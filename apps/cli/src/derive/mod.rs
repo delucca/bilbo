@@ -143,6 +143,7 @@ struct Job<'a> {
     hand: &'a Hand<'a>,
     section: &'a Section,
     instructions: &'a [Instruction],
+    tags: Option<&'a tags::instruction::Instruction>,
     redo: bool,
     dry: bool,
 }
@@ -163,11 +164,28 @@ struct Looked {
     held_tags: Vec<(Id, Vec<String>)>,
 }
 
-fn tags_rules<'a>(settings: &'a Settings, id: &'a str, model: &'a str) -> Option<tags::Rules<'a>> {
-    (settings.tags.enabled.value && !settings.tags.pick.value.is_empty()).then(|| tags::Rules {
+fn tags_instruction(
+    settings: &Settings,
+) -> Result<Option<tags::instruction::Instruction>, Failure> {
+    if !settings.tags.enabled.value || settings.tags.pick.value.is_empty() {
+        return Ok(None);
+    }
+    tags::instruction::in_force(settings.tags.instruction.value.as_deref(), &|path| {
+        fs::read(path)
+    })
+    .map(Some)
+    .map_err(Failure::Config)
+}
+
+fn tags_rules<'a>(
+    settings: &'a Settings,
+    instruction: Option<&'a tags::instruction::Instruction>,
+    model: &'a str,
+) -> Option<tags::Rules<'a>> {
+    instruction.map(|held| tags::Rules {
         section: &settings.tags,
-        instruction: tags::instruction::text(),
-        id,
+        instruction: &held.text,
+        id: &held.id,
         model,
         cap: settings.tag_cap.value,
     })
@@ -256,11 +274,13 @@ pub fn run(
         &kinds,
     )
     .map_err(Failure::Config)?;
+    let in_force = tags_instruction(settings)?;
     let job = Job {
         settings,
         hand,
         section: &section,
         instructions: &instructions,
+        tags: in_force.as_ref(),
         redo: args.redo,
         dry: args.dry_run,
     };
@@ -341,8 +361,7 @@ fn go(
     let tokenizer = (hand.tokenizer)()?;
     let model = built.writer.id().to_owned();
     let mut tries = held.failed().map_err(|error| refused(&error))?;
-    let tags_id = tags::instruction::id();
-    let tags_model = model_that_tags(settings, &model);
+    let tags_model = model_that_tags(settings, job.tags, &model);
     let mut tagger = if tags_model == model {
         None
     } else {
@@ -421,7 +440,7 @@ fn go(
             limits: settings.llm.limits(section.answer_tokens.value),
             format: &hand.format,
             counter: &counter,
-            tags: tags_rules(settings, &tags_id, &tags_model),
+            tags: tags_rules(settings, job.tags, &tags_model),
             redo: job.redo,
         },
     )
@@ -596,6 +615,7 @@ fn look(
         hand,
         section,
         instructions,
+        tags,
         redo,
         dry,
     } = *job;
@@ -685,7 +705,6 @@ fn look(
             )
         }
     };
-    let tags_id = tags::instruction::id();
     let readers: Vec<&dyn Reader> = hand.readers.iter().map(|reader| &**reader).collect();
     let only: Vec<Id> = ids.iter().map(|(_, id)| *id).collect();
     let asked = if given.is_empty() {
@@ -712,7 +731,7 @@ fn look(
             provider: &settings.llm.provider.value,
             redo,
             now: SystemTime::now(),
-            tags: tags_rules(settings, &tags_id, tags_model),
+            tags: tags_rules(settings, tags, tags_model),
         },
         &everything,
         asked,
@@ -811,7 +830,7 @@ fn dry(
         .unwrap_or_default();
     let tokenizer = (hand.tokenizer)()?;
     let mut diagnostics = Vec::new();
-    let tags_model = model_that_tags(settings, &model);
+    let tags_model = model_that_tags(settings, job.tags, &model);
     let looked = look(
         env,
         job,
@@ -881,6 +900,7 @@ fn dry(
     let mut tags_dry = view::TagsDry {
         pick: settings.tags.pick.value.len(),
         model: (tags_model != model).then(|| tags_model.clone()),
+        instruction: job.tags.map(|held| (held.origin.clone(), held.id.clone())),
         due: looked
             .plan
             .tags
@@ -969,9 +989,12 @@ fn dry(
         .with_exit(exit))
 }
 
-fn model_that_tags(settings: &Settings, writer: &str) -> String {
-    let stands = tags_rules(settings, "", writer).is_some();
-    if stands && !settings.tags.model.value.is_empty() {
+fn model_that_tags(
+    settings: &Settings,
+    instruction: Option<&tags::instruction::Instruction>,
+    writer: &str,
+) -> String {
+    if instruction.is_some() && !settings.tags.model.value.is_empty() {
         settings.tags.model.value.clone()
     } else {
         writer.to_owned()
