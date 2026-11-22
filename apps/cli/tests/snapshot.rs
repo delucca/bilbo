@@ -985,6 +985,7 @@ fn the_dry_run_in_the_plain_view() {
     use bilbo_cli::derive::view::{Dry, KindRow, NotDue, lines};
     use bilbo_derive::instruction::Origin;
     let dry = Dry {
+        tags: None,
         off: vec!["derive.enabled is false".to_owned()],
         kinds: vec![
             KindRow {
@@ -1026,4 +1027,63 @@ fn the_dry_run_in_the_plain_view() {
     let mut text = lines(&dry).join("\n");
     text.push('\n');
     assert_eq!(text, include_str!("snapshots/derive-dry-run.txt"));
+}
+
+#[test]
+fn the_dry_run_with_the_tags_on_in_the_plain_view() {
+    use bilbo_cli::derive::view::{Dry, KindRow, NotDue, TagsDry, lines};
+    use bilbo_derive::instruction::Origin;
+    let dry = Dry {
+        tags: Some(TagsDry {
+            due: 37,
+            calls: 6,
+            tokens: 17212,
+            pick: 5,
+            model: None,
+            lines: vec![
+                "tags\t01M6ZGE4KTBYYH07AS2KVMSCAF\tasked\tgarden".to_owned(),
+                "tags\t01M6ZGF2D0XH5T0S4B7W1N9RQK\tnot due: left out: derive.not_in\t-".to_owned(),
+            ],
+        }),
+        off: Vec::new(),
+        kinds: vec![
+            KindRow {
+                kind: "session".to_owned(),
+                origin: Origin::Shipped,
+                instruction: "9f86d081884c7d65".to_owned(),
+            },
+            KindRow {
+                kind: "markdown".to_owned(),
+                origin: Origin::File(PathBuf::from("/home/me/notes/markdown.txt")),
+                instruction: "4c1a70b9e2d355f0".to_owned(),
+            },
+        ],
+        named: 412,
+        left_out: 14,
+        due: 37,
+        not_due: NotDue {
+            growing: 12,
+            covered: 340,
+            belongs: 9,
+            passed: 2,
+            labels: 1,
+        },
+        calls: 20,
+        entries: 14,
+        tokens: 380_122,
+        limit: 20,
+        provider: vec![
+            "provider: anthropic, via api, model claude-haiku-5-5, at https://api.anthropic.com/v1/messages"
+                .to_owned(),
+            "version: 2026-10-21".to_owned(),
+            "key: the variable ANTHROPIC_API_KEY, which is set".to_owned(),
+        ],
+        entry_lines: vec![
+            "entry\t01M6ZGE4KTBYYH07AS2KVMSCAF\tcovered\t01M7Q9TDMQ9SBDXT8T7VKDGZVH\t12".to_owned(),
+            "entry\t01M6ZGF2D0XH5T0S4B7W1N9RQK\tleft out: derive.not_in\t-\t0".to_owned(),
+        ],
+    };
+    let mut text = lines(&dry).join("\n");
+    text.push('\n');
+    assert_eq!(text, include_str!("snapshots/derive-dry-run-tags.txt"));
 }

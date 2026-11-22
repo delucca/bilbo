@@ -1,5 +1,5 @@
 use bilbo_derive::instruction::Origin;
-use bilbo_derive::plan::State;
+use bilbo_derive::plan::{State, TagsState};
 use bilbo_derive::run::{Counts, Ended};
 use bilbo_llm::model::{Cause, What};
 use bilbo_store::id::Id;
@@ -64,6 +64,8 @@ pub fn human(totals: &Counts, seconds: u64, view: &View) -> String {
 }
 
 pub const NO_NOTE: &str = "the answer holds no note bilbo can keep";
+pub const NO_TAG: &str = "the answer names no tag bilbo can keep";
+pub const BOTH: &str = "the answer picks a tag and says none fits";
 
 pub fn sentence(what: What) -> &'static str {
     match what {
@@ -133,6 +135,18 @@ pub fn what(cause: &Cause, api: bool) -> String {
     format!("{}{}", sentence(cause.what), tail(cause, api))
 }
 
+pub fn tags_what(cause: &Cause, api: bool) -> String {
+    if cause.what != What::Cut {
+        return what(cause, api);
+    }
+    let sentence = if api {
+        "the answer was cut at derive.answer_tokens; raise it or lower derive.tags.notes"
+    } else {
+        "the answer was cut by the tool; lower derive.tags.notes"
+    };
+    format!("{sentence}{}", tail(cause, api))
+}
+
 pub fn stopped(cause: &Cause, api: bool, why: Option<&str>) -> String {
     match (cause.what, why) {
         (What::NotStarted, Some(why)) => {
@@ -143,7 +157,7 @@ pub fn stopped(cause: &Cause, api: bool, why: Option<&str>) -> String {
 }
 
 pub fn why_after(ended: &Ended, why: Option<&str>) -> Option<String> {
-    let own = matches!(ended, Ended::Stopped(cause) if cause.what == What::NotStarted);
+    let own = matches!(ended, Ended::Stopped(cause, _) if cause.what == What::NotStarted);
     why.filter(|_| !own).map(str::to_owned)
 }
 
@@ -201,6 +215,51 @@ pub struct NotDue {
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct TagsDry {
+    pub due: u64,
+    pub calls: u64,
+    pub tokens: u64,
+    pub pick: usize,
+    pub model: Option<String>,
+    pub lines: Vec<String>,
+}
+
+pub fn tags_state(state: Option<TagsState>, entry: Option<State>) -> String {
+    match (state, entry) {
+        (Some(TagsState::Due), _) => "due".to_owned(),
+        (Some(TagsState::Asked), _) => "asked".to_owned(),
+        (Some(TagsState::PassedOver), _) => "passed over".to_owned(),
+        (Some(TagsState::NotComplete), _) => "not due: notes not complete".to_owned(),
+        (Some(TagsState::NoNote), _) => "not due: no note".to_owned(),
+        (None, Some(state)) => format!("not due: {}", state_text(state)),
+        (None, None) => "not due".to_owned(),
+    }
+}
+
+pub fn tags_ref_line(entry: Id, state: &str, held: &[String]) -> String {
+    let held = if held.is_empty() {
+        "-".to_owned()
+    } else {
+        held.join(",")
+    };
+    format!("tags\t{entry}\t{state}\t{held}")
+}
+
+pub fn tags_line(tags: &TagsDry) -> String {
+    if tags.pick == 0 {
+        return "tags: none to pick from: derive.tags.pick is empty".to_owned();
+    }
+    let mut line = format!(
+        "tags: {} entries due; this run {} calls, {} tokens of notes to send; {} tags to pick from",
+        tags.due, tags.calls, tags.tokens, tags.pick
+    );
+    if let Some(model) = &tags.model {
+        line.push_str(&format!("; model {model}"));
+    }
+    line
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Dry {
     pub off: Vec<String>,
     pub kinds: Vec<KindRow>,
@@ -214,6 +273,7 @@ pub struct Dry {
     pub limit: usize,
     pub provider: Vec<String>,
     pub entry_lines: Vec<String>,
+    pub tags: Option<TagsDry>,
 }
 
 fn origin(origin: &Origin) -> String {
@@ -271,8 +331,10 @@ pub fn lines(dry: &Dry) -> Vec<String> {
         "this run: {} calls for {} entries, {} tokens of records to send (derive.calls {})",
         dry.calls, dry.entries, dry.tokens, dry.limit
     ));
+    lines.extend(dry.tags.iter().map(tags_line));
     lines.extend(dry.provider.iter().cloned());
     lines.extend(dry.entry_lines.iter().cloned());
+    lines.extend(dry.tags.iter().flat_map(|tags| tags.lines.iter().cloned()));
     lines
 }
 
@@ -282,7 +344,7 @@ mod tests {
 
     use bilbo_derive::instruction::Origin;
     use bilbo_derive::plan::State;
-    use bilbo_derive::run::{Counts, Ended};
+    use bilbo_derive::run::{Counts, Ended, Which};
     use bilbo_llm::model::{Cause, What};
     use bilbo_store::id::Id;
 
@@ -536,7 +598,7 @@ mod tests {
             "the tool is not logged in, or its login is no longer taken"
         );
         assert_eq!(
-            why_after(&Ended::Stopped(unauthorized), Some("x")),
+            why_after(&Ended::Stopped(unauthorized, Which::Writer), Some("x")),
             Some("x".to_owned())
         );
     }
@@ -544,7 +606,7 @@ mod tests {
     #[test]
     fn why_a_call_gave_no_answer_is_said_after_the_runs_own_lines() {
         let not_started = Cause::new(What::NotStarted);
-        let ended = Ended::Stopped(not_started.clone());
+        let ended = Ended::Stopped(not_started.clone(), Which::Writer);
         assert_eq!(
             stopped(&not_started, false, Some("the work folder is not empty")),
             "its program could not be started: the work folder is not empty"
@@ -558,9 +620,71 @@ mod tests {
             None
         );
         assert_eq!(
-            why_after(&Ended::Failures, Some("a reply lacks num_turns")),
+            why_after(
+                &Ended::Failures(Which::Writer),
+                Some("a reply lacks num_turns")
+            ),
             Some("a reply lacks num_turns".to_owned())
         );
-        assert_eq!(why_after(&Ended::Failures, None), None);
+        assert_eq!(why_after(&Ended::Failures(Which::Writer), None), None);
+    }
+
+    #[test]
+    fn the_dry_runs_tags_line_has_its_two_forms_and_its_model() {
+        use super::{TagsDry, tags_line};
+        let mut tags = TagsDry {
+            due: 37,
+            calls: 6,
+            tokens: 17212,
+            pick: 5,
+            ..TagsDry::default()
+        };
+        assert_eq!(
+            tags_line(&tags),
+            "tags: 37 entries due; this run 6 calls, 17212 tokens of notes to send; 5 tags to pick from"
+        );
+        tags.model = Some("claude-haiku-5-5".to_owned());
+        assert_eq!(
+            tags_line(&tags),
+            "tags: 37 entries due; this run 6 calls, 17212 tokens of notes to send; 5 tags to pick from; model claude-haiku-5-5"
+        );
+        assert_eq!(
+            tags_line(&TagsDry::default()),
+            "tags: none to pick from: derive.tags.pick is empty"
+        );
+    }
+
+    #[test]
+    fn a_refs_tags_line_is_four_fields_by_tabs() {
+        use super::{tags_ref_line, tags_state};
+        use bilbo_derive::plan::TagsState;
+        let entry = Id::from_bytes([1; 16]);
+        for (state, entry_state, words) in [
+            (Some(TagsState::Due), None, "due"),
+            (Some(TagsState::Asked), None, "asked"),
+            (Some(TagsState::PassedOver), None, "passed over"),
+            (
+                Some(TagsState::NotComplete),
+                None,
+                "not due: notes not complete",
+            ),
+            (Some(TagsState::NoNote), None, "not due: no note"),
+            (
+                None,
+                Some(State::LeftOut),
+                "not due: left out: derive.not_in",
+            ),
+            (None, Some(State::StillGrowing), "not due: still growing"),
+        ] {
+            assert_eq!(tags_state(state, entry_state), words);
+        }
+        assert_eq!(
+            tags_ref_line(entry, "due", &["a".to_owned(), "b".to_owned()]),
+            format!("tags\t{entry}\tdue\ta,b")
+        );
+        assert_eq!(
+            tags_ref_line(entry, "asked", &[]),
+            format!("tags\t{entry}\tasked\t-")
+        );
     }
 }

@@ -1371,6 +1371,19 @@ def settings_stops():
     for where in ("https://bob:2024?x@127.0.0.1/v1", "https://bob:2024#x@127.0.0.1/v1", "https://127.0.0.1/v1?a=b@c"):
         error = refused({"provider": "anthropic", "settings": {"llm.anthropic.api.endpoint": where}})
         check(f"an endpoint with an @ anywhere is refused: {where.split('@')[0][-12:]}@", error and "no user name or password" in error and "2024" not in error, error)
+    counted = []
+    real_cache, real_run = build.start_cache, build.subprocess.run
+    build.start_cache = lambda *given: counted.append("cache")
+    build.subprocess.run = lambda *given, **named: counted.append("run")
+    try:
+        for spelling in ({"derive.tags.enabled": True}, {"derive.tags": {"enabled": True}}, {'derive."tags".enabled': True}, {"derive.tags": {}}):
+            error = refused({"provider": "anthropic", "settings": spelling})
+            check(f"a settings table that makes a tags table under derive stops the build: {list(spelling)[0]}",
+                  error == "bilbo-next: BILBO_EVAL_DERIVE: the arm does not tag", error)
+        check("a settings table with no tags builds as before", refused({"provider": "anthropic", "settings": {"derive.tries": 2}}) is None)
+    finally:
+        build.start_cache, build.subprocess.run = real_cache, real_run
+    check("the refusal of the tags starts no cache and asks no program its version", counted == [], counted)
     check("an endpoint with no @ is taken", refused({"provider": "anthropic", "settings": {"llm.anthropic.api.endpoint": "https://api.example.com/v1"}}) is None)
     check("the key's variable is the setting's key_env, else the provider's own (L17)",
           (build.key_variable({"provider": "openai"}, {}), build.key_variable({"provider": "anthropic"}, {}),

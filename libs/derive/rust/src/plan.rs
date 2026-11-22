@@ -15,6 +15,7 @@ use crate::keys::Section;
 use crate::record::{self, Run};
 use crate::scope::{Scope, Standing, Untrusted};
 use crate::spool::bare;
+use crate::tags;
 use crate::tries::{Extent, Tries};
 use crate::view::{Counter, Format, Paragraph};
 use crate::window::{Sent, Sizes, Window, windows};
@@ -129,6 +130,16 @@ pub struct Due {
     pub stored: Vec<Paragraph>,
     pub passages: Vec<Sent>,
     pub windows: Vec<Planned>,
+    pub tags: Option<tags::Planned>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TagsState {
+    Due,
+    Asked,
+    PassedOver,
+    NotComplete,
+    NoNote,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -136,6 +147,7 @@ pub struct Plan {
     pub untrusted: Option<Untrusted>,
     pub states: Vec<(Id, State)>,
     pub due: Vec<Due>,
+    pub tags: Vec<(Id, TagsState)>,
 }
 
 pub struct Ports<'a> {
@@ -143,6 +155,7 @@ pub struct Ports<'a> {
     pub sealed: &'a dyn Sealed,
     pub scope: &'a dyn Scope,
     pub tries: &'a dyn Tries,
+    pub asked: &'a dyn tags::asked::Asked,
 }
 
 pub struct Rules<'a> {
@@ -156,6 +169,7 @@ pub struct Rules<'a> {
     pub provider: &'a str,
     pub redo: bool,
     pub now: SystemTime,
+    pub tags: Option<tags::Rules<'a>>,
 }
 
 impl fmt::Debug for Ports<'_> {
@@ -181,11 +195,36 @@ impl fmt::Debug for Rules<'_> {
 struct Wanted {
     due: Due,
     raw: Vec<Window>,
+    head: Option<Head>,
 }
 
 enum Found {
     State(State),
     Due(Box<Wanted>),
+}
+
+#[derive(Default)]
+struct Looked {
+    parent: Option<Parent>,
+    instruction: Option<Instruction>,
+    head: Option<Head>,
+    last: Option<Run>,
+    opens: bool,
+    complete: bool,
+}
+
+struct Judged {
+    found: Found,
+    looked: Looked,
+}
+
+impl Judged {
+    fn plain(found: Found) -> Judged {
+        Judged {
+            found,
+            looked: Looked::default(),
+        }
+    }
 }
 
 struct Standings {
@@ -241,8 +280,54 @@ pub fn plan(
         seen.push(id);
         match judge(ports, rules, &standings, asked, id)? {
             None => {}
-            Some(Found::State(state)) => plan.states.push((id, state)),
-            Some(Found::Due(entry)) => {
+            Some(Judged {
+                found: Found::State(state),
+                looked,
+            }) => {
+                plan.states.push((id, state));
+                if let (Some(rules_tags), Some(parent), Some(instruction)) =
+                    (&rules.tags, &looked.parent, &looked.instruction)
+                {
+                    if !looked.complete {
+                        plan.tags.push((id, TagsState::NotComplete));
+                        continue;
+                    }
+                    {
+                        let (planned, shown, notes) = tagging(
+                            ports,
+                            rules,
+                            rules_tags,
+                            parent,
+                            looked.head.as_ref(),
+                            looked.opens,
+                            false,
+                        )?;
+                        plan.tags.push((id, shown));
+                        if let (Some(planned), Some(head)) = (planned, looked.head) {
+                            wanted.push(Wanted {
+                                due: Due {
+                                    parent: parent.clone(),
+                                    instruction: instruction.clone(),
+                                    preface: None,
+                                    held: Some((head.generation, head.records)),
+                                    opens: false,
+                                    last: looked.last.clone(),
+                                    stored: notes,
+                                    passages: Vec::new(),
+                                    windows: Vec::new(),
+                                    tags: Some(planned),
+                                },
+                                raw: Vec::new(),
+                                head: Some(head),
+                            });
+                        }
+                    }
+                }
+            }
+            Some(Judged {
+                found: Found::Due(entry),
+                ..
+            }) => {
                 plan.states.push((id, State::Due));
                 wanted.push(*entry);
             }
@@ -254,7 +339,7 @@ pub fn plan(
         |entry| entry.due.parent.id,
         ports.tries.mark()?,
     );
-    plan.due = schedule(ports.tries, rules.section, wanted)?;
+    plan.due = schedule(ports, rules, wanted, &mut plan.tags)?;
     Ok(plan)
 }
 
@@ -281,9 +366,9 @@ fn judge(
     standings: &Standings,
     asked: Asked<'_>,
     id: Id,
-) -> Result<Option<Found>, Error> {
+) -> Result<Option<Judged>, Error> {
     if standings.stale.contains(&id) {
-        return Ok(Some(Found::State(State::LabelsNotCurrent)));
+        return Ok(Some(Judged::plain(Found::State(State::LabelsNotCurrent))));
     }
     let Some(parent) = Parent::of(ports.entries, id)? else {
         return Ok(None);
@@ -297,7 +382,7 @@ fn judge(
         .iter()
         .find(|reader| reader.kind() == parent.kind);
     let (Some(instruction), Some(reader)) = (instruction, reader) else {
-        return Ok(Some(Found::State(State::NoInstruction)));
+        return Ok(Some(Judged::plain(Found::State(State::NoInstruction))));
     };
     let state = if parent.belongs {
         Some(State::BelongsToAnother)
@@ -311,7 +396,7 @@ fn judge(
         None
     };
     if let Some(state) = state {
-        return Ok(Some(Found::State(state)));
+        return Ok(Some(Judged::plain(Found::State(state))));
     }
     cover(ports, rules, parent, instruction, *reader).map(Some)
 }
@@ -345,7 +430,7 @@ fn cover(
     parent: Parent,
     instruction: &Instruction,
     reader: &dyn Reader,
-) -> Result<Found, Error> {
+) -> Result<Judged, Error> {
     let covered = |passes: u64| {
         Found::State(if passes > 0 {
             State::PassedOver
@@ -354,7 +439,14 @@ fn cover(
         })
     };
     if parent.records == 0 {
-        return Ok(covered(0));
+        return Ok(Judged {
+            found: covered(0),
+            looked: Looked {
+                parent: Some(parent),
+                instruction: Some(instruction.clone()),
+                ..Looked::default()
+            },
+        });
     }
     let head = held(ports.entries, parent.id)?;
     let last = match &head {
@@ -379,8 +471,25 @@ fn cover(
             opens = true;
         }
     }
+    let complete = |last: &Option<Run>, opens: bool| {
+        !opens
+            && last
+                .as_ref()
+                .is_some_and(|run| run.generation == parent.generation)
+    };
+    let looked = |opens: bool| Looked {
+        parent: Some(parent.clone()),
+        instruction: Some(instruction.clone()),
+        head,
+        last: last.clone(),
+        opens,
+        complete: complete(&last, opens),
+    };
     if !opens && frontier == parent.records {
-        return Ok(covered(passes));
+        return Ok(Judged {
+            found: covered(passes),
+            looked: looked(opens),
+        });
     }
     let range = RecordRange {
         first: 1,
@@ -406,32 +515,41 @@ fn cover(
     let passages = reader.passages(&records);
     let found = windows(&passages, frontier, parent.records, &counter, &sizes);
     if found.is_empty() {
-        return Ok(covered(passes));
+        return Ok(Judged {
+            found: covered(passes),
+            looked: looked(opens),
+        });
     }
     let stored = match &head {
         Some(head) if !opens => stored(ports.entries, head, rules.format)?,
         _ => Vec::new(),
     };
-    Ok(Found::Due(Box::new(Wanted {
-        due: Due {
-            instruction: instruction.clone(),
-            preface: reader.preface(&records),
-            held: head.map(|head| (head.generation, head.records)),
-            opens,
-            last: last.filter(|_| !opens),
-            stored,
-            passages: passages
-                .iter()
-                .map(|passage| Sent {
-                    range: passage.range,
-                    at: passage.at,
-                })
-                .collect(),
-            windows: Vec::new(),
-            parent,
-        },
-        raw: found,
-    })))
+    let kept_head = head;
+    Ok(Judged {
+        found: Found::Due(Box::new(Wanted {
+            due: Due {
+                instruction: instruction.clone(),
+                preface: reader.preface(&records),
+                held: head.map(|head| (head.generation, head.records)),
+                opens,
+                last: last.filter(|_| !opens),
+                stored,
+                passages: passages
+                    .iter()
+                    .map(|passage| Sent {
+                        range: passage.range,
+                        at: passage.at,
+                    })
+                    .collect(),
+                windows: Vec::new(),
+                tags: None,
+                parent,
+            },
+            raw: found,
+            head: kept_head,
+        })),
+        looked: Looked::default(),
+    })
 }
 
 pub(crate) fn records_of(entries: &dyn Entries, head: &Head) -> Result<Vec<Vec<u8>>, StoreError> {
@@ -457,9 +575,14 @@ fn stored(
         .collect())
 }
 
-fn schedule(tries: &dyn Tries, section: &Section, wanted: Vec<Wanted>) -> Result<Vec<Due>, Error> {
+fn schedule(
+    ports: &Ports<'_>,
+    rules: &Rules<'_>,
+    wanted: Vec<Wanted>,
+    shown: &mut Vec<(Id, TagsState)>,
+) -> Result<Vec<Due>, Error> {
     let mut scheduled = Vec::new();
-    for Wanted { mut due, raw } in wanted {
+    for Wanted { mut due, raw, head } in wanted {
         for window in raw {
             let extent = Extent {
                 parent: due.parent.id,
@@ -467,18 +590,192 @@ fn schedule(tries: &dyn Tries, section: &Section, wanted: Vec<Wanted>) -> Result
                 first: window.first,
                 last: window.last,
             };
-            let pass = usize::from(tries.charges(&extent)?) >= section.tries.value;
+            let pass = usize::from(ports.tries.charges(&extent)?) >= rules.section.tries.value;
             due.windows.push(Planned {
                 window,
                 extent,
                 pass,
             });
         }
-        if !due.windows.is_empty() {
+        if due.tags.is_none()
+            && let Some(tags_rules) = &rules.tags
+            && !due.windows.is_empty()
+        {
+            let calls = due.windows.iter().any(|planned| !planned.pass);
+            let (planned, state, notes) = tagging(
+                ports,
+                rules,
+                tags_rules,
+                &due.parent,
+                head.as_ref(),
+                due.opens,
+                calls,
+            )?;
+            shown.push((due.parent.id, state));
+            if planned.is_some() {
+                due.tags = planned;
+                if !calls {
+                    due.stored = notes;
+                }
+            }
+        }
+        if !due.windows.is_empty() || due.tags.is_some() {
             scheduled.push(due);
         }
     }
     Ok(scheduled)
+}
+
+type Records = Vec<Vec<u8>>;
+
+fn notes_of(
+    entries: &dyn Entries,
+    head: &Head,
+    format: &Format<'_>,
+) -> Result<(Records, Records), StoreError> {
+    let all = records_of(entries, head)?;
+    let notes = all
+        .iter()
+        .filter(|record| (format.read)(record).is_some())
+        .cloned()
+        .collect();
+    Ok((all, notes))
+}
+
+fn fold(notes: &[Vec<u8>]) -> Option<u64> {
+    notes.iter().fold(None, |before, record| {
+        Some(tags::asked::digest(before, record))
+    })
+}
+
+pub(crate) fn digest_of(
+    entries: &dyn Entries,
+    head: &Head,
+    format: &Format<'_>,
+) -> Result<Option<u64>, StoreError> {
+    Ok(fold(&notes_of(entries, head, format)?.1))
+}
+
+fn tagging(
+    ports: &Ports<'_>,
+    rules: &Rules<'_>,
+    tags_rules: &tags::Rules<'_>,
+    parent: &Parent,
+    head: Option<&Head>,
+    opens: bool,
+    calls: bool,
+) -> Result<(Option<tags::Planned>, TagsState, Vec<Paragraph>), Error> {
+    let none = |state| Ok((None, state, Vec::new()));
+    let answered = ports.asked.answered(parent.id)?;
+    let passed = ports.asked.passed(parent.id)?;
+    let list = &tags_rules.section.pick.value;
+    let in_force = (tags_rules.id, rules.provider, tags_rules.model);
+    let held = |planned: tags::Planned| Ok((Some(planned), TagsState::Due, Vec::new()));
+    if calls {
+        let (added, notes) = match head {
+            Some(head) if !opens => {
+                let (all, notes) = notes_of(ports.entries, head, rules.format)?;
+                let added = answered
+                    .as_ref()
+                    .is_some_and(|held| added_after(held, head, &all, rules.format));
+                (added, fold(&notes))
+            }
+            _ => (false, None),
+        };
+        return held(tags::Planned {
+            answered,
+            passed,
+            added,
+            notes,
+            state: None,
+            asking: None,
+            sent: 0,
+        });
+    }
+    let Some(head) = head.filter(|_| !opens) else {
+        return none(TagsState::NoNote);
+    };
+    if !tags::plan::unsettled(
+        answered.as_ref(),
+        passed,
+        (head.generation, head.records),
+        list,
+        in_force,
+        rules.redo,
+    ) {
+        return none(TagsState::Asked);
+    }
+    let (all, notes) = notes_of(ports.entries, head, rules.format)?;
+    if notes.is_empty() {
+        return none(TagsState::NoNote);
+    }
+    let paragraphs: Vec<Paragraph> = notes
+        .iter()
+        .filter_map(|record| (rules.format.read)(record))
+        .collect();
+    let added = answered
+        .as_ref()
+        .is_none_or(|held| added_after(held, head, &all, rules.format));
+    let counter = Counter {
+        tokens: rules.tokens,
+        bound: rules.bound,
+    };
+    let fit = tags::view::fitting(&paragraphs, tags_rules.section.notes.value, &counter);
+    let material = tags::view::material(fit, list, tags_rules.section.most.value);
+    let Some(digest) = fold(&notes) else {
+        return none(TagsState::NoNote);
+    };
+    let about = tags::asked::About {
+        generation: parent.generation,
+        records: parent.records,
+        notes: digest,
+    };
+    let asking = tags::asked::asking(
+        parent.id,
+        &about,
+        rules.provider,
+        tags_rules.model,
+        tags_rules.id,
+        &material,
+    );
+    let charges = ports.asked.charges(parent.id, asking)?;
+    let seen = tags::plan::Seen {
+        answered: answered.as_ref(),
+        passed,
+        added,
+        asking,
+    };
+    match tags::plan::state(&seen, list, in_force, rules.redo) {
+        tags::plan::State::Settled => none(TagsState::Asked),
+        tags::plan::State::PassedOver => none(TagsState::PassedOver),
+        tags::plan::State::Due => Ok((
+            Some(tags::Planned {
+                answered,
+                passed,
+                added,
+                notes: Some(digest),
+                state: Some(tags::plan::State::Due),
+                asking: Some((asking, charges)),
+                sent: counter.count(&material),
+            }),
+            TagsState::Due,
+            paragraphs,
+        )),
+    }
+}
+
+fn added_after(
+    answered: &tags::asked::Answered,
+    head: &Head,
+    all: &[Vec<u8>],
+    format: &Format<'_>,
+) -> bool {
+    if answered.notes.0 != head.generation {
+        return true;
+    }
+    let at = usize::try_from(answered.notes.1).unwrap_or(usize::MAX);
+    all.get(at..)
+        .is_some_and(|tail| tail.iter().any(|record| (format.read)(record).is_some()))
 }
 
 #[cfg(test)]

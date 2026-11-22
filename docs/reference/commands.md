@@ -42,7 +42,7 @@ The value is TOML, as the config file would hold it. The origin is `default`, th
 
 `bilbo config store.seal_at` prints `16 MiB`: a string without its quotes, any other value as TOML. A key bilbo does not know is a usage error.
 
-A config file or variable that bilbo refuses fails `bilbo config` as it fails every other verb, with the same message, except the 0.20-root refusal and the refusal of a state or cache folder inside the store root, which a verb runs when it opens the store (`the state folder <path> is inside the store root <root>, which holds only segments; set paths.state to a folder outside the root`). `bilbo config` runs neither. So `bilbo config` checks a file you edited.
+A config file or variable that bilbo refuses fails `bilbo config` as it fails every other verb, with the same message, except the 0.20-root refusal and the refusal of a state or cache folder inside the store root, which a verb runs when it opens the store (`the state folder <path> is inside the store root <root>, which holds only segments; set paths.state to a folder outside the root`). `bilbo config` runs neither. So `bilbo config` checks a file you edited. A call for tags counts in `entries`, `calls`, `refused`, `failed` and the tokens; `notes` and `dropped` are of notes alone.
 
 ### set
 
@@ -632,7 +632,7 @@ An `https` endpoint follows the proxy the environment names, as other programs d
 
 ### What is due
 
-Each entry is in one state, the first that holds: its labels are not current (the index failed on it, or on the entry it belongs to); its kind has no instruction; it belongs to another entry, as a subagent's session does; `derive.in` does not name it; `derive.not_in` does; it is still growing; it is covered; it is passed over; or it is due. An entry is still growing until its newest records were sealed `derive.quiet` ago, so a note appears one to two hours after an entry's last record with the defaults; naming the entry skips that test and no other. An entry is covered when the runs of its newest notes cover every record, whichever instruction, provider or model wrote them: only `--redo` compares those with the ones in force. An entry whose kind's reader cannot promise that new records leave earlier text as it was (Markdown) is derived again from its first record each time it grows: an instruction added for such a kind costs a full pass at every change of the file.
+Each entry is in one state, the first that holds: its labels are not current (the index failed on it, or on the entry it belongs to); its kind has no instruction; it belongs to another entry, as a subagent's session does; `derive.in` does not name it; `derive.not_in` does; it is still growing; it is covered; it is passed over; or it is due. An entry is still growing until its newest records were sealed `derive.quiet` ago, so a note appears one to two hours after an entry's last record with the defaults; naming the entry skips that test and no other. An entry is covered when the runs of its newest notes cover every record, whichever instruction, provider or model wrote them: only `--redo` compares those with the ones in force. An entry whose kind's reader cannot promise that new records leave earlier text as it was (Markdown) is derived again from its first record each time it grows: an instruction added for such a kind costs a full pass at every change of the file. `derive.in` and `derive.not_in` are read when a `derive` run plans. A tag you add or remove while a run is under way counts from the next run: to keep an entry from a provider, tag it before the run that would send it.
 
 ### A call
 
@@ -651,9 +651,30 @@ A run with a failed call exits 1. The newest entry comes first. A run that made 
 
 A window charged `derive.tries` times is passed over: a run record says so, with no call, and the entry goes on. A request the provider rejects is said with its status, the provider's own error identifiers and the request's id, never with the provider's sentence: an error can hold text of the entry.
 
+### Tags
+
+With `derive.tags.enabled`, a run also files each entry it has written notes for under tags, with one more call an entry. It is off unless you turn it on, and the three keys of "Turning it on" still decide whether anything is sent at all.
+
+```sh
+bilbo config set derive.tags.pick '["bilbo", "garden"]'
+bilbo config set derive.tags.enabled true
+```
+
+The model picks from `derive.tags.pick` and from nothing else: a name it writes that is not on the list is dropped, and with an empty list no call is made. A name on the list need not be a tag any entry carries yet. The call is sent the entry's notes, the newest that fit `derive.tags.notes` tokens and the newest one whatever its size, and the list. bilbo adds nothing of the entry to them, no id, no path and no label, and never sends the entry's records here; the notes hold whatever names and paths they noted. The call goes to the provider and by the way `[llm]` names, to the model `derive.tags.model` names, else to the one that writes the notes. An answer gives an entry at most `derive.tags.most` tags, and none that would leave it with more than `tag.cap`.
+
+An entry's tags are asked for once its notes cover every record, and again when a note is added to it or a name it has no answer about joins the list. They are declared as `bilbo tag <entry> --add` declares them, and `bilbo read` and `bilbo tag` show them as a model's. A tag you declared is never taken away, and a name you removed from an entry is never declared for it again. `--redo` asks again for an entry whose tags were picked under another instruction, provider or model, or were passed over, and takes back the model's tags that the new answer does not pick.
+
+A call for tags that is refused or fails is treated as a window's: after `derive.tries` charges that asking is passed over. The notes written before it are kept. By the tool `claude`, `llm.anthropic.tool.arguments` must give `--model` the value `{model}`, hold no `--fallback-model`, and give a system prompt no other value than `{instruction}`; the default does. A list that does not ends the run before its first call for tags, with the notes kept. A run whose calls end before that call is not stopped for it.
+
+Only an entry `derive` wrote notes for gets a tag this way. An entry `derive.in` does not name, one `derive.not_in` names, one still growing that you did not name on the command line, and one whose kind has no instruction get none. So `--in tag:<name>` names the part of the store that was tagged and says nothing of the rest: add the words or the id that name the rest. A session's subagents and its notes belong to it and come with it. A `derive.in` that names nothing but a tag the model itself declares sends nothing until you declare that tag for an entry yourself: the model only tags what `derive.in` already names.
+
+bilbo keeps what each entry was answered in a file of its state folder, `derive/tagged`. On another machine, or if that file alone is lost, each entry is asked once more. An ordinary run takes no tag away by it: the new answer can only give the entry a tag of the model's that it did not carry. A run with `--redo` asks each such entry again as well and, as `--redo` does, takes back the model's tags the new answer does not pick. Either way a tag you declared stays, and a name you removed does not come back. The state folder also holds what the store has not sealed yet: losing the whole folder can lose your latest changes of tags with it, as it loses any capture not yet sealed.
+
+Turned off again, a run asks for no tag. The tags already declared stay and still count, for `--in` and for `derive.in` alike, and an answer an earlier run had already been given is still kept.
+
 ### --redo
 
-`--redo` makes due every entry whose newest notes were written under another instruction, provider or model than the ones in force, and every entry with a stretch that was passed over, as a new generation of its notes from its first record. It never writes again what the instruction, provider and model in force wrote in full. The way is no part of this: the same model of the same provider, reached by `tool` after `api`, is the same writer, and nothing is redone.
+`--redo` makes due every entry whose newest notes were written under another instruction, provider or model than the ones in force, and every entry with a stretch that was passed over, as a new generation of its notes from its first record. It never writes again what the instruction, provider and model in force wrote in full. The way is no part of this: the same model of the same provider, reached by `tool` after `api`, is the same writer, and nothing is redone. With `derive.tags.enabled`, it also asks again for the tags of an entry whose last answer was under another instruction, provider or model, or whose asking was passed over.
 
 ### --dry-run
 
@@ -673,7 +694,7 @@ key: the variable ANTHROPIC_API_KEY, which is set
 
 `headers:` and `extra:` follow when they are set. By the way `tool` the lines after `this run:` are `provider: anthropic, via tool, model <model>, effort <effort>, program <program>`, then `arguments:`, `inherit:`, `environment:` and `project_files:`, each with its value.
 
-With refs, every count is of the refs alone, and each ref has one more line, `entry`, in five fields apart by tabs: the entry's id, its state (`due`, `covered`, `passed over` or `left out: ` and why), the id of its note entry or `-`, and how many notes its newest generation holds.
+With refs, every count is of the refs alone, and each ref has one more line, `entry`, in five fields apart by tabs: the entry's id, its state (`due`, `covered`, `passed over` or `left out: ` and why), the id of its note entry or `-`, and how many notes its newest generation holds. With `derive.tags.enabled`, a line that starts `tags:` follows `this run:`, and each ref has a `tags` line after its `entry` line; the walk that counts this run's calls gives the calls for tags their turn.
 
 ### The timer
 
@@ -704,7 +725,7 @@ systemctl --user enable --now bilbo-derive.timer
 
 ### Files
 
-`<state>/derive/` holds five paths: `lock` (the run's lock, held to its end), `spool/` (a block for each call, kept until the notes are in the store), `failed` (the windows charged, one line each, and one line that marks the entry the next run begins after), `log` (one line for each attempt, mode 600) and `work/` (where the tool runs). The log holds no text of a record. bilbo refuses the lock, a block and the file of charges when it is a link, has a second name, is no regular file or is not yours alone; the folders are not checked. A line of `failed` goes when its window is answered or passed over, and when its entry's windows have moved on. If a run dies between keeping its notes and bringing the index up to date, the notes are in the store and the next `bilbo remember` indexes them; until then `bilbo derive` says the index is behind and sends nothing.
+`<state>/derive/` holds six paths: `lock` (the run's lock, held to its end), `spool/` (a block for each call, kept until the notes are in the store), `failed` (the windows charged, one line each, and one line that marks the entry the next run begins after), `log` (one line for each attempt, mode 600) and `work/` (where the tool runs). The log holds no text of a record. bilbo refuses the lock, a block and the file of charges when it is a link, has a second name, is no regular file or is not yours alone; the folders are not checked. A line of `failed` goes when its window is answered or passed over, and when its entry's windows have moved on. If a run dies between keeping its notes and bringing the index up to date, the notes are in the store and the next `bilbo remember` indexes them; until then `bilbo derive` says the index is behind and sends nothing. It also holds `tagged`: what each entry was answered about tags, the asking that was passed over, and the charges of the asking that is failing. The log has a second line form, `t1`, for a call for tags.
 
 ### Output
 

@@ -16,6 +16,7 @@ pub struct Rules<'a> {
     pub cap: usize,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Planned {
     pub answered: Option<Answered>,
     pub passed: Option<u64>,
@@ -23,4 +24,5 @@ pub struct Planned {
     pub notes: Option<u64>,
     pub state: Option<plan::State>,
     pub asking: Option<(u64, u8)>,
+    pub sent: usize,
 }

@@ -8,12 +8,14 @@ use bilbo_store::opaque;
 use crate::answer;
 use crate::check::check;
 use crate::keys::Section;
-use crate::log::{self, Call, Log, Verdict};
+use crate::log::{self, Call, Log, TagVerdict, Tagged, Verdict};
 use crate::plan::{self, Due, Error, Planned};
 use crate::record::{self, Run, next_same};
 use crate::spool::{self, Block, Spool, bare};
+use crate::tags::{self, asked::Asked as TagsAsked};
 use crate::tries::{Extent, Tries};
 use crate::view::{self, Counter, Format, Paragraph};
+use bilbo_entries::tag as entry_tag;
 use bilbo_llm::model::{Cause, Limits, Model, Outcome, Prompt, Usage, What, Whose};
 
 pub trait Clock {
@@ -34,15 +36,30 @@ pub struct Counts {
     pub tokens_out: u64,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Which {
+    Writer,
+    Tagger,
+}
+
+impl Which {
+    fn at(self) -> usize {
+        match self {
+            Which::Writer => 0,
+            Which::Tagger => 1,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Ended {
     Done,
     Calls,
-    Failures,
-    Busy(Cause, u32),
-    Wait(Duration, Cause),
-    Stopped(Cause),
-    Prepare(String),
+    Failures(Which),
+    Busy(Cause, u32, Which),
+    Wait(Duration, Cause, Which),
+    Stopped(Cause, Which),
+    Prepare(String, Which),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -61,6 +78,22 @@ pub enum Event {
     Passed {
         extent: Extent,
     },
+    TagsRefused {
+        entry: Id,
+        category: Option<String>,
+    },
+    TagsFailed {
+        entry: Id,
+        cause: Cause,
+    },
+    NoTag {
+        entry: Id,
+        why: tags::answer::Why,
+    },
+    TagsPassed {
+        entry: Id,
+        charges: u8,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -72,6 +105,8 @@ pub struct Report {
 
 pub struct Sinks<'a> {
     pub writer: &'a mut dyn Model,
+    pub tagger: Option<&'a mut dyn Model>,
+    pub asked: &'a mut dyn TagsAsked,
     pub spool: &'a mut dyn Spool,
     pub tries: &'a mut dyn Tries,
     pub log: &'a mut dyn Log,
@@ -84,6 +119,8 @@ pub struct Context<'a> {
     pub limits: Limits,
     pub format: &'a Format<'a>,
     pub counter: &'a Counter<'a>,
+    pub tags: Option<tags::Rules<'a>>,
+    pub redo: bool,
 }
 
 impl std::fmt::Debug for Sinks<'_> {
@@ -100,6 +137,8 @@ impl std::fmt::Debug for Context<'_> {
             .field("limits", &self.limits)
             .field("format", &self.format)
             .field("counter", &self.counter)
+            .field("tags", &self.tags.is_some())
+            .field("redo", &self.redo)
             .finish()
     }
 }
@@ -155,8 +194,16 @@ struct Line {
     millis: u64,
 }
 
+#[derive(Clone, Copy)]
+enum Slot {
+    Window(Extent),
+    Asking(Id, u64),
+}
+
 struct Machine<'a> {
     writer: &'a mut dyn Model,
+    tagger: Option<&'a mut dyn Model>,
+    asked: &'a mut dyn TagsAsked,
     spool: &'a mut dyn Spool,
     tries: &'a mut dyn Tries,
     log: &'a mut dyn Log,
@@ -164,11 +211,14 @@ struct Machine<'a> {
     context: &'a Context<'a>,
     counts: Counts,
     attempts: usize,
-    streak: usize,
-    waiting: Vec<Extent>,
-    answered: bool,
+    streak: [usize; 2],
+    waiting: [Vec<Slot>; 2],
+    answered: [bool; 2],
+    prepared: [bool; 2],
+    bound: [bool; 2],
     events: Vec<Event>,
     counted: Option<Id>,
+    notes: Vec<Vec<u8>>,
 }
 
 fn size_of_window(planned: &Planned) -> u64 {
@@ -223,24 +273,28 @@ impl std::error::Error for Interrupted {}
 pub fn calls(due: &[Due], sinks: Sinks<'_>, context: &Context<'_>) -> Result<Report, Box<Halted>> {
     let Sinks {
         writer,
+        tagger,
+        asked,
         spool,
         tries,
         log,
         clock,
     } = sinks;
-    if due
+    let tagger = tagger.map(|tagger| -> &mut dyn Model { tagger });
+    let writer_ran = due
         .iter()
-        .any(|entry| entry.windows.iter().any(|planned| !planned.pass))
-        && let Err(text) = writer.prepare()
-    {
+        .any(|entry| entry.windows.iter().any(|planned| !planned.pass));
+    if writer_ran && let Err(text) = writer.prepare() {
         return Ok(Report {
             counts: Counts::default(),
-            ended: Ended::Prepare(text),
+            ended: Ended::Prepare(text, Which::Writer),
             events: Vec::new(),
         });
     }
     let mut machine = Machine {
         writer,
+        tagger,
+        asked,
         spool,
         tries,
         log,
@@ -248,19 +302,32 @@ pub fn calls(due: &[Due], sinks: Sinks<'_>, context: &Context<'_>) -> Result<Rep
         context,
         counts: Counts::default(),
         attempts: 0,
-        streak: 0,
-        waiting: Vec::new(),
-        answered: false,
+        streak: [0; 2],
+        waiting: [Vec::new(), Vec::new()],
+        answered: [false; 2],
+        prepared: [writer_ran, false],
+        bound: [false; 2],
         events: Vec::new(),
         counted: None,
+        notes: Vec::new(),
     };
     let first = due
         .iter()
-        .find(|entry| entry.windows.iter().any(|planned| !planned.pass))
+        .find(|entry| {
+            entry.windows.iter().any(|planned| !planned.pass)
+                || entry
+                    .tags
+                    .as_ref()
+                    .is_some_and(|planned| planned.state == Some(tags::plan::State::Due))
+        })
         .map(|entry| entry.parent.id);
     let ended = match machine.work(due).and_then(|ended| {
-        if matches!(ended, Ended::Done | Ended::Calls) && machine.answered {
-            machine.charge_waiting()?;
+        if matches!(ended, Ended::Done | Ended::Calls) {
+            for which in [Which::Writer, Which::Tagger] {
+                if machine.answered[which.at()] {
+                    machine.charge_waiting(which)?;
+                }
+            }
         }
         machine.mark(first)?;
         Ok(ended)
@@ -291,6 +358,7 @@ impl Machine<'_> {
     }
 
     fn entry(&mut self, entry: &Due) -> Result<Option<Ended>, Error> {
+        self.notes.clear();
         let mut previous = entry.last.clone();
         let mut mine: Vec<Paragraph> = Vec::new();
         for planned in &entry.windows {
@@ -341,7 +409,7 @@ impl Machine<'_> {
             mine.extend(paragraphs);
             previous = Some(run);
         }
-        Ok(None)
+        self.tagging(entry, &mine)
     }
 
     fn record(
@@ -402,6 +470,11 @@ impl Machine<'_> {
             .iter()
             .filter_map(|record| (self.context.format.read)(bare(record)))
             .collect();
+        for record in &records {
+            if (self.context.format.read)(bare(record)).is_some() {
+                self.notes.push(record.clone());
+            }
+        }
         let block = Block {
             parent: entry.parent.id,
             generation: entry.parent.generation,
@@ -415,7 +488,7 @@ impl Machine<'_> {
     }
 
     fn mark(&mut self, first: Option<Id>) -> Result<(), Error> {
-        if self.answered {
+        if self.answered.iter().any(|answered| *answered) {
             self.tries.set_mark(None)?;
         } else if self.counts.calls > 0 {
             self.tries.set_mark(first)?;
@@ -423,17 +496,36 @@ impl Machine<'_> {
         Ok(())
     }
 
-    fn charge_waiting(&mut self) -> Result<(), Error> {
-        for extent in std::mem::take(&mut self.waiting) {
-            self.tries.charge(&extent)?;
+    fn charge_waiting(&mut self, which: Which) -> Result<(), Error> {
+        for slot in std::mem::take(&mut self.waiting[which.at()]) {
+            self.charge(slot)?;
         }
         Ok(())
     }
 
-    fn answered(&mut self) -> Result<(), Error> {
-        self.answered = true;
-        self.streak = 0;
-        self.charge_waiting()
+    fn charge(&mut self, slot: Slot) -> Result<(), Error> {
+        match slot {
+            Slot::Window(extent) => self.tries.charge(&extent)?,
+            Slot::Asking(entry, asking) => self.asked.charge(entry, asking)?,
+        }
+        Ok(())
+    }
+
+    fn answered(&mut self, which: Which) -> Result<(), Error> {
+        self.answered[which.at()] = true;
+        self.streak[which.at()] = 0;
+        self.charge_waiting(which)
+    }
+
+    fn spent(&self) -> bool {
+        self.attempts >= self.context.section.calls.value
+    }
+
+    fn model(&mut self, which: Which) -> &mut dyn Model {
+        match (which, self.tagger.as_mut()) {
+            (Which::Tagger, Some(tagger)) => &mut **tagger,
+            _ => &mut *self.writer,
+        }
     }
 
     fn log(&mut self, entry: &Due, planned: &Planned, line: Line, sent: u64) {
@@ -501,6 +593,7 @@ impl Machine<'_> {
         let sent = size_of_window(planned);
         let context = self.context;
         let attempted = self.attempt(
+            Which::Writer,
             entry.parent.id,
             &prompt,
             &context.limits,
@@ -543,7 +636,7 @@ impl Machine<'_> {
                 self.add(usage);
                 self.counts.refused += 1;
                 self.tries.charge(&planned.extent)?;
-                self.answered()?;
+                self.answered(Which::Writer)?;
                 self.events.push(Event::Refused {
                     extent: planned.extent,
                     category: category.clone(),
@@ -570,6 +663,7 @@ impl Machine<'_> {
 
     fn attempt(
         &mut self,
+        which: Which,
         parent: Id,
         prompt: &Prompt,
         limits: &Limits,
@@ -578,7 +672,7 @@ impl Machine<'_> {
         let section = self.context.section;
         let mut retries = 0u32;
         loop {
-            if self.attempts >= section.calls.value {
+            if self.spent() {
                 return Attempted::Calls;
             }
             self.attempts += 1;
@@ -589,7 +683,7 @@ impl Machine<'_> {
             }
             let attempt = Some(retries + 1);
             let started = self.clock.now();
-            let outcome = self.writer.call(prompt, limits);
+            let outcome = self.model(which).call(prompt, limits);
             let millis = self.clock.now().duration_since(started).map_or(0, |taken| {
                 u64::try_from(taken.as_millis()).unwrap_or(u64::MAX)
             });
@@ -633,10 +727,10 @@ impl Machine<'_> {
                         },
                     );
                     if retries >= u32::try_from(section.retries.value).unwrap_or(u32::MAX) {
-                        let ended = Ended::Busy(cause.clone(), retries + 1);
+                        let ended = Ended::Busy(cause.clone(), retries + 1, which);
                         return Attempted::GaveUp(cause, ended);
                     }
-                    if self.attempts >= section.calls.value {
+                    if self.spent() {
                         return Attempted::Calls;
                     }
                     let times = u32::try_from(section.retry_factor.value)
@@ -645,7 +739,7 @@ impl Machine<'_> {
                     let delay =
                         wait.unwrap_or_else(|| section.retry_wait.value.saturating_mul(times));
                     if delay > section.retry_limit.value {
-                        let ended = Ended::Wait(delay, cause.clone());
+                        let ended = Ended::Wait(delay, cause.clone(), which);
                         return Attempted::GaveUp(cause, ended);
                     }
                     self.clock.sleep(delay);
@@ -665,7 +759,7 @@ impl Machine<'_> {
                             millis,
                         },
                     );
-                    let ended = Ended::Stopped(cause.clone());
+                    let ended = Ended::Stopped(cause.clone(), which);
                     return Attempted::GaveUp(cause, ended);
                 }
             }
@@ -686,7 +780,7 @@ impl Machine<'_> {
             extent: planned.extent,
             cause: cause.clone(),
         });
-        self.fails(planned, cause)
+        self.fails(Slot::Window(planned.extent), Which::Writer, cause)
     }
 
     fn failure(
@@ -719,18 +813,19 @@ impl Machine<'_> {
             },
             size_of_window(planned),
         );
-        self.fails(planned, &failed_cause)
+        self.fails(Slot::Window(planned.extent), Which::Writer, &failed_cause)
     }
 
-    fn fails(&mut self, planned: &Planned, cause: &Cause) -> Result<Step, Error> {
+    fn fails(&mut self, slot: Slot, which: Which, cause: &Cause) -> Result<Step, Error> {
         match cause.what.whose() {
-            Whose::Call => self.ends_charged(planned),
-            Whose::Provider => Ok(Step::Stop(Ended::Stopped(cause.clone()))),
+            Whose::Call => self.ends_charged(slot, which),
+            Whose::Provider => Ok(Step::Stop(Ended::Stopped(cause.clone(), which))),
             Whose::Either => {
-                self.waiting.push(planned.extent);
-                self.streak += 1;
-                Ok(if self.streak >= self.context.section.failures.value {
-                    Step::Stop(Ended::Failures)
+                let at = which.at();
+                self.waiting[at].push(slot);
+                self.streak[at] += 1;
+                Ok(if self.streak[at] >= self.context.section.failures.value {
+                    Step::Stop(Ended::Failures(which))
                 } else {
                     Step::EndEntry
                 })
@@ -738,9 +833,9 @@ impl Machine<'_> {
         }
     }
 
-    fn ends_charged(&mut self, planned: &Planned) -> Result<Step, Error> {
-        self.tries.charge(&planned.extent)?;
-        self.answered()?;
+    fn ends_charged(&mut self, slot: Slot, which: Which) -> Result<Step, Error> {
+        self.charge(slot)?;
+        self.answered(which)?;
         Ok(Step::EndEntry)
     }
 
@@ -794,7 +889,7 @@ impl Machine<'_> {
                     },
                     sent,
                 );
-                return self.ends_charged(planned);
+                return self.ends_charged(Slot::Window(planned.extent), Which::Writer);
             }
             (Verdict::Run, Some(checked))
         };
@@ -819,7 +914,7 @@ impl Machine<'_> {
         );
         let paragraphs = self.spool_records(entry, &paragraphs, &run)?;
         self.tries.forget(&planned.extent)?;
-        self.answered()?;
+        self.answered(Which::Writer)?;
         self.log(
             entry,
             planned,
@@ -837,11 +932,296 @@ impl Machine<'_> {
         );
         Ok(Step::Worked(paragraphs, run))
     }
+
+    fn tags_log(
+        &mut self,
+        entry: &Due,
+        asked: &str,
+        sent: u64,
+        verdict: TagVerdict,
+        line: Line,
+        counts: Option<(u64, u64)>,
+    ) {
+        let text = log::tags_line(&Tagged {
+            at: seconds(self.clock.now()),
+            verdict,
+            kind: entry.parent.kind.clone(),
+            entry: entry.parent.id,
+            provider: self.context.provider.to_owned(),
+            asked: if verdict == TagVerdict::Passed {
+                String::new()
+            } else {
+                asked.to_owned()
+            },
+            answered: line.answered,
+            attempt: line.attempt,
+            sent: (verdict != TagVerdict::Passed).then_some(sent),
+            tokens_in: line.usage.read,
+            tokens_out: line.usage.written,
+            picks: counts.map(|(picks, _)| picks),
+            dropped: counts.map(|(_, dropped)| dropped),
+            millis: line.millis,
+            reason: line.reason.or_else(|| line.cause.as_ref().map(reason)),
+            request: line.cause.and_then(|cause| cause.request),
+        });
+        self.log.append(&text);
+    }
+
+    fn tagging(&mut self, entry: &Due, mine: &[Paragraph]) -> Result<Option<Ended>, Error> {
+        let context = self.context;
+        let (Some(rules), Some(planned)) = (&context.tags, &entry.tags) else {
+            return Ok(None);
+        };
+        if entry.stored.is_empty() && mine.is_empty() {
+            return Ok(None);
+        }
+        let notes: Vec<Paragraph> = entry.stored.iter().chain(mine).cloned().collect();
+        let Some(digest) = self.notes.iter().fold(planned.notes, |before, record| {
+            Some(tags::asked::digest(before, record))
+        }) else {
+            return Ok(None);
+        };
+        let list = &rules.section.pick.value;
+        let fit = tags::view::fitting(&notes, rules.section.notes.value, context.counter);
+        let material = tags::view::material(fit, list, rules.section.most.value);
+        let about = tags::asked::About {
+            generation: entry.parent.generation,
+            records: entry.parent.records,
+            notes: digest,
+        };
+        let id = entry.parent.id;
+        let asking = tags::asked::asking(
+            id,
+            &about,
+            context.provider,
+            rules.model,
+            rules.id,
+            &material,
+        );
+        let charges = self.asked.charges(id, asking)?;
+        let seen = tags::plan::Seen {
+            answered: planned.answered.as_ref(),
+            passed: planned.passed,
+            added: planned.added || !self.notes.is_empty(),
+            asking,
+        };
+        let in_force = (rules.id, context.provider, rules.model);
+        if tags::plan::state(&seen, list, in_force, context.redo) != tags::plan::State::Due {
+            return Ok(None);
+        }
+        let sent = u64::try_from(context.counter.count(&material)).unwrap_or(u64::MAX);
+        let block = tags::block::Block {
+            entry: id,
+            about,
+            picks: Vec::new(),
+            takes_back: false,
+            names: std::collections::BTreeSet::new(),
+            instruction: rules.id.to_owned(),
+            provider: context.provider.to_owned(),
+            model: rules.model.to_owned(),
+            asking,
+            passed: false,
+        };
+        let idle = |reason: Option<String>| Line {
+            verdict: Verdict::Passed,
+            attempt: None,
+            answered: None,
+            usage: Usage::default(),
+            tallies: None,
+            cause: None,
+            reason,
+            millis: 0,
+        };
+        if usize::from(charges) >= context.section.tries.value {
+            self.spool.keep(&tags::block::write(&tags::block::Block {
+                passed: true,
+                ..block
+            }))?;
+            self.events.push(Event::TagsPassed { entry: id, charges });
+            self.tags_log(entry, "", sent, TagVerdict::Passed, idle(None), None);
+            return Ok(None);
+        }
+        if self.spent() {
+            return Ok(Some(Ended::Calls));
+        }
+        let which = if self.tagger.is_some() {
+            Which::Tagger
+        } else {
+            Which::Writer
+        };
+        let at = which.at();
+        if !self.prepared[at] {
+            if let Err(text) = self.model(which).prepare() {
+                return Ok(Some(Ended::Prepare(text, which)));
+            }
+            self.prepared[at] = true;
+        }
+        if !self.bound[at] {
+            if let Err(text) = self.model(which).bound() {
+                return Ok(Some(Ended::Prepare(text, which)));
+            }
+            self.bound[at] = true;
+        }
+        let asked = self.model(which).id().to_owned();
+        let prompt = Prompt {
+            instruction: rules.instruction.to_owned(),
+            material,
+        };
+        let attempted = self.attempt(which, id, &prompt, &context.limits, |machine, line| {
+            let verdict = if line.verdict == Verdict::Busy {
+                TagVerdict::Busy
+            } else {
+                TagVerdict::Stopped
+            };
+            machine.tags_log(entry, &asked, sent, verdict, line, None);
+        });
+        let slot = Slot::Asking(id, asking);
+        let step = match attempted {
+            Attempted::Calls => Step::Stop(Ended::Calls),
+            Attempted::GaveUp(cause, ended) => {
+                if cause.what.whose() == Whose::Provider {
+                    Step::Stop(ended)
+                } else {
+                    self.counts.failed += 1;
+                    self.events.push(Event::TagsFailed {
+                        entry: id,
+                        cause: cause.clone(),
+                    });
+                    self.fails(slot, which, &cause)?
+                }
+            }
+            Attempted::Cut { usage, taken } => self.tags_failure(
+                entry,
+                (which, &asked, sent, slot),
+                &Cause::new(What::Cut),
+                usage,
+                taken,
+            )?,
+            Attempted::Failed {
+                cause,
+                usage,
+                taken,
+            } => self.tags_failure(entry, (which, &asked, sent, slot), &cause, usage, taken)?,
+            Attempted::Refused {
+                category,
+                usage,
+                taken: (attempt, millis),
+            } => {
+                self.add(usage);
+                self.counts.refused += 1;
+                self.asked.charge(id, asking)?;
+                self.answered(which)?;
+                self.events.push(Event::TagsRefused {
+                    entry: id,
+                    category: category.clone(),
+                });
+                let line = Line {
+                    reason: Some(category.unwrap_or_else(|| "unknown".to_owned())),
+                    attempt,
+                    usage,
+                    millis,
+                    ..idle(None)
+                };
+                self.tags_log(entry, &asked, sent, TagVerdict::Refused, line, None);
+                Step::EndEntry
+            }
+            Attempted::Answer {
+                text,
+                usage,
+                model,
+                taken: (attempt, millis),
+            } => {
+                self.add(usage);
+                let line = Line {
+                    attempt,
+                    answered: model,
+                    usage,
+                    millis,
+                    ..idle(None)
+                };
+                match tags::answer::read(&text, list, rules.section.most.value) {
+                    tags::answer::Read::NoTag(why) => {
+                        self.counts.failed += 1;
+                        self.events.push(Event::NoTag { entry: id, why });
+                        self.asked.charge(id, asking)?;
+                        self.answered(which)?;
+                        let line = Line {
+                            reason: Some(format!("no-tag {}", why.word())),
+                            ..line
+                        };
+                        self.tags_log(entry, &asked, sent, TagVerdict::Failed, line, None);
+                    }
+                    read => {
+                        let (picks, dropped, verdict) = match read {
+                            tags::answer::Read::Picks { picks, dropped } => {
+                                (picks, dropped, TagVerdict::Tagged)
+                            }
+                            tags::answer::Read::NoneFits { dropped } => {
+                                (Vec::new(), dropped, TagVerdict::None)
+                            }
+                            tags::answer::Read::NoTag(_) => unreachable!(),
+                        };
+                        let counts = (u64::try_from(picks.len()).unwrap_or(u64::MAX), dropped);
+                        let seen = tags::plan::Seen {
+                            answered: planned.answered.as_ref(),
+                            passed: planned.passed,
+                            added: planned.added || !self.notes.is_empty(),
+                            asking,
+                        };
+                        let names = tags::plan::names(&seen, list);
+                        self.spool.keep(&tags::block::write(&tags::block::Block {
+                            picks,
+                            takes_back: context.redo,
+                            names,
+                            ..block
+                        }))?;
+                        self.answered(which)?;
+                        self.tags_log(entry, &asked, sent, verdict, line, Some(counts));
+                    }
+                }
+                Step::EndEntry
+            }
+        };
+        Ok(match step {
+            Step::Stop(ended) => Some(ended),
+            _ => None,
+        })
+    }
+
+    fn tags_failure(
+        &mut self,
+        entry: &Due,
+        aim: (Which, &str, u64, Slot),
+        cause: &Cause,
+        usage: Usage,
+        (attempt, millis): (Option<u32>, u64),
+    ) -> Result<Step, Error> {
+        let (which, asked, sent, slot) = aim;
+        self.add(usage);
+        self.counts.failed += 1;
+        self.events.push(Event::TagsFailed {
+            entry: entry.parent.id,
+            cause: cause.clone(),
+        });
+        let line = Line {
+            verdict: Verdict::Failed,
+            attempt,
+            answered: None,
+            usage,
+            tallies: None,
+            cause: Some(cause.clone()),
+            reason: None,
+            millis,
+        };
+        self.tags_log(entry, asked, sent, TagVerdict::Failed, line, None);
+        self.fails(slot, which, cause)
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Replayed {
     pub captured: u64,
+    pub tagged: u64,
     pub notices: Vec<String>,
 }
 
@@ -849,9 +1229,11 @@ pub fn replay(
     entries: &mut dyn Entries,
     spool: &mut dyn Spool,
     format: &Format<'_>,
+    asked: &mut dyn TagsAsked,
+    cap: usize,
 ) -> Result<Replayed, Box<Interrupted>> {
     let mut replayed = Replayed::default();
-    match replay_into(entries, spool, format, &mut replayed) {
+    match replay_into(entries, spool, format, asked, cap, &mut replayed) {
         Ok(()) => Ok(replayed),
         Err(error) => Err(Box::new(Interrupted {
             error,
@@ -864,26 +1246,40 @@ fn replay_into(
     entries: &mut dyn Entries,
     spool: &mut dyn Spool,
     format: &Format<'_>,
+    asked: &mut dyn TagsAsked,
+    cap: usize,
     replayed: &mut Replayed,
 ) -> Result<(), Error> {
     let mut blocks: Vec<(String, Block)> = Vec::new();
+    let mut tagged: Vec<(String, tags::block::Block)> = Vec::new();
     let mut unreadable: Vec<String> = Vec::new();
     for (name, bytes) in spool.list()? {
         match spool::read(&bytes) {
             Ok(block) => blocks.push((name, block)),
-            Err(_) => unreadable.push(name),
+            Err(_) => match tags::block::read(&bytes) {
+                Ok(block) => tagged.push((name, block)),
+                Err(_) => unreadable.push(name),
+            },
         }
     }
     let mut parents: Vec<Id> = Vec::new();
-    for (_, block) in &blocks {
-        if !parents.contains(&block.parent) {
-            parents.push(block.parent);
+    for parent in blocks
+        .iter()
+        .map(|(_, block)| block.parent)
+        .chain(tagged.iter().map(|(_, block)| block.entry))
+    {
+        if !parents.contains(&parent) {
+            parents.push(parent);
         }
     }
     for parent in parents {
         let mine: Vec<&(String, Block)> = blocks
             .iter()
             .filter(|(_, block)| block.parent == parent)
+            .collect();
+        let mut ours: Vec<&(String, tags::block::Block)> = tagged
+            .iter()
+            .filter(|(_, block)| block.entry == parent)
             .collect();
         let mut from = 0;
         while from < mine.len() {
@@ -901,14 +1297,26 @@ fn replay_into(
             match replay_group(entries, format, group)? {
                 Group::Captured => replayed.captured += 1,
                 Group::Held => {}
-                Group::Moved => replayed.notices.push(format!(
-                    "dropped a run kept for {parent}: the store holds other notes for it now"
-                )),
+                Group::Moved => {
+                    replayed.notices.push(format!(
+                        "dropped a run kept for {parent}: the store holds other notes for it now"
+                    ));
+                    for (name, _) in std::mem::take(&mut ours) {
+                        spool.remove(name)?;
+                        replayed.notices.push(format!(
+                            "dropped the tags kept for {parent}: its notes changed since they were asked"
+                        ));
+                    }
+                }
             }
             for (name, _) in group {
                 spool.remove(name)?;
             }
             from = to;
+        }
+        for (name, block) in ours {
+            replay_tags(entries, format, asked, cap, block, replayed)?;
+            spool.remove(name)?;
         }
     }
     for name in unreadable {
@@ -917,6 +1325,80 @@ fn replay_into(
             .notices
             .push(format!("dropped a spool file bilbo cannot read: {name}"));
     }
+    Ok(())
+}
+
+fn replay_tags(
+    entries: &mut dyn Entries,
+    format: &Format<'_>,
+    asked: &mut dyn TagsAsked,
+    cap: usize,
+    block: &tags::block::Block,
+    replayed: &mut Replayed,
+) -> Result<(), Error> {
+    let id = block.entry;
+    let drop = |replayed: &mut Replayed, why: &str| {
+        replayed
+            .notices
+            .push(format!("dropped the tags kept for {id}: {why}"));
+    };
+    let Some(parent) = plan::Parent::of(&*entries, id)? else {
+        drop(replayed, "the store no longer holds it");
+        return Ok(());
+    };
+    if (parent.generation, parent.records) != (block.about.generation, block.about.records) {
+        drop(replayed, "the entry changed since they were asked");
+        return Ok(());
+    }
+    let head = plan::held(&*entries, id)?;
+    let digest = match &head {
+        Some(head) => plan::digest_of(&*entries, head, format)?,
+        None => None,
+    };
+    let Some(head) = head.filter(|_| digest == Some(block.about.notes)) else {
+        drop(replayed, "its notes changed since they were asked");
+        return Ok(());
+    };
+    if block.passed {
+        asked.pass(id, block.asking)?;
+        return Ok(());
+    }
+    let declared = match entry_tag::declare(
+        id,
+        &entry_tag::Change::Model {
+            picks: &block.picks,
+            takes_back: block.takes_back,
+        },
+        cap,
+        entries,
+    ) {
+        Ok(declared) => declared,
+        Err(entry_tag::Error::Store(error)) => return Err(Error::Store(error)),
+        Err(_) => {
+            drop(replayed, "the store no longer holds it");
+            return Ok(());
+        }
+    };
+    if declared.wrote {
+        replayed.tagged += 1;
+    }
+    if declared.applied.left_off > 0 {
+        replayed.notices.push(format!(
+            "left {} tags off {id}: tag.cap is {cap}",
+            declared.applied.left_off
+        ));
+    }
+    asked.answer(
+        &tags::asked::Answered {
+            entry: id,
+            notes: (head.generation, head.records),
+            instruction: block.instruction.clone(),
+            provider: block.provider.clone(),
+            model: block.model.clone(),
+            names: block.names.clone(),
+        },
+        block.asking,
+    )?;
     Ok(())
 }
 

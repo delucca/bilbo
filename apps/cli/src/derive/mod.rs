@@ -12,9 +12,10 @@ use std::time::{Duration, Instant, SystemTime};
 use bilbo_derive::instruction::{self, Instruction};
 use bilbo_derive::keys::{CALLS, Section};
 use bilbo_derive::plan::{self, Asked, Plan, Ports, Rules, State};
-use bilbo_derive::run::{self, Clock, Context, Ended, Event, Sinks};
+use bilbo_derive::run::{self, Clock, Context, Ended, Event, Sinks, Which};
 use bilbo_derive::scope::Untrusted;
 use bilbo_derive::spool::bare;
+use bilbo_derive::tags;
 use bilbo_derive::tries::{Extent, Tries};
 use bilbo_derive::view::{Counter, Format};
 use bilbo_entries::read::refs::{Ref, Target};
@@ -41,7 +42,7 @@ use crate::console::message::{Message, notice_message, sanitize, unnamed_value};
 use crate::console::outcome::{Exit, Failure, Outcome};
 use crate::console::settings::Settings;
 use crate::console::theme::Mark;
-use disk::{Blocks, Failed, Folder, Held};
+use disk::{Blocks, Failed, Folder, Held, Tagged};
 use scope::Labelled;
 use view::Noted;
 
@@ -159,6 +160,17 @@ struct Looked {
     charges: Vec<(Extent, u8)>,
     noted: Vec<Noted>,
     kinds: Vec<(Id, String)>,
+    held_tags: Vec<(Id, Vec<String>)>,
+}
+
+fn tags_rules<'a>(settings: &'a Settings, id: &'a str, model: &'a str) -> Option<tags::Rules<'a>> {
+    (settings.tags.enabled.value && !settings.tags.pick.value.is_empty()).then(|| tags::Rules {
+        section: &settings.tags,
+        instruction: tags::instruction::text(),
+        id,
+        model,
+        cap: settings.tag_cap.value,
+    })
 }
 
 #[derive(Default)]
@@ -316,17 +328,41 @@ fn go(
     } = *job;
     let mut failed = false;
     let mut spool = held.blocks().map_err(|error| refused(&error))?;
-    replay(env, settings, hand, &mut spool, said, &mut failed)?;
+    let mut asked = held.tagged().map_err(|error| refused(&error))?;
+    replay(
+        env,
+        settings,
+        hand,
+        &mut spool,
+        &mut asked,
+        said,
+        &mut failed,
+    )?;
     let tokenizer = (hand.tokenizer)()?;
     let model = built.writer.id().to_owned();
     let mut tries = held.failed().map_err(|error| refused(&error))?;
+    let tags_id = tags::instruction::id();
+    let tagging = tags_rules(settings, &tags_id, &model).is_some();
+    let tags_model = if tagging && !settings.tags.model.value.is_empty() {
+        settings.tags.model.value.clone()
+    } else {
+        model.clone()
+    };
+    let mut tagger = if tagging && tags_model != model {
+        Some((hand.writer)(
+            &env.var,
+            Some(("derive.tags.model", &tags_model)),
+        )?)
+    } else {
+        None
+    };
     let looked = look(
         env,
         job,
         &tokenizer,
-        &model,
+        (&model, &tags_model),
         given,
-        Some(&tries),
+        Some((&tries, &asked)),
         &mut said.lines,
     )?;
     let mut exit = if looked.problems || failed {
@@ -357,8 +393,14 @@ fn go(
             exit = Exit::Refused;
         }
     }
+    let windowed: Vec<&bilbo_derive::plan::Due> = looked
+        .plan
+        .due
+        .iter()
+        .filter(|due| !due.windows.is_empty())
+        .collect();
     tries
-        .keep_only(&looked.plan.due)
+        .keep_only(&windowed)
         .map_err(|error| refused(&error))?;
     let mut log = held.log().map_err(|error| refused(&error))?;
     let counter = Counter {
@@ -369,6 +411,10 @@ fn go(
         &looked.plan.due,
         Sinks {
             writer: &mut *built.writer,
+            tagger: tagger
+                .as_mut()
+                .map(|built| -> &mut dyn Model { &mut *built.writer }),
+            asked: &mut asked,
             spool: &mut spool,
             tries: &mut tries,
             log: &mut log,
@@ -380,6 +426,8 @@ fn go(
             limits: settings.llm.limits(section.answer_tokens.value),
             format: &hand.format,
             counter: &counter,
+            tags: tags_rules(settings, &tags_id, &tags_model),
+            redo: job.redo,
         },
     )
     .map_err(|halted| {
@@ -391,8 +439,15 @@ fn go(
         );
         refused(&halted)
     })?;
-    if let Ended::Prepare(text) = &report.ended {
-        return Err(Failure::Config(sanitize(text)));
+    let prepare = match &report.ended {
+        Ended::Prepare(text, _) => Some(sanitize(text)),
+        _ => None,
+    };
+    if let Some(text) = &prepare
+        && report.counts.calls == 0
+        && report.events.is_empty()
+    {
+        return Err(Failure::Config(text.clone()));
     }
     let totals = report.counts;
     let seconds = started.elapsed().as_secs();
@@ -403,13 +458,30 @@ fn go(
         .map(|event| event_line(event, built.api, &looked.charges))
         .collect();
     let why = built.writer.why().map(str::to_owned);
+    let tagger_why = tagger
+        .as_ref()
+        .and_then(|built| built.writer.why().map(str::to_owned));
+    let whys = |which: Which| match which {
+        Which::Writer => why.clone(),
+        Which::Tagger => tagger_why.clone(),
+    };
+    let keys = tagger.as_ref().map(|_| {
+        (
+            format!("llm.{}.model", settings.llm.provider.value),
+            "derive.tags.model".to_owned(),
+        )
+    });
     tail.extend(ended_line(
         &report.ended,
         built.api,
         section,
-        why.as_deref(),
+        &whys,
+        keys.as_ref(),
     ));
-    tail.extend(view::why_after(&report.ended, why.as_deref()).map(|text| Message::warning(&text)));
+    let owner = ended_which(&report.ended);
+    tail.extend(
+        view::why_after(&report.ended, whys(owner).as_deref()).map(|text| Message::warning(&text)),
+    );
     if let Some(error) = log.error() {
         tail.push(Message::warning(&format!(
             "the calls were not logged: {error}"
@@ -417,11 +489,22 @@ fn go(
     }
     let listed = spool.is_empty();
     finish(listed, tail, said, |said| {
-        replay(env, settings, hand, &mut spool, said, &mut failed)
+        replay(
+            env,
+            settings,
+            hand,
+            &mut spool,
+            &mut asked,
+            said,
+            &mut failed,
+        )
     })?;
+    if let Some(text) = prepare {
+        return Err(Failure::Config(text));
+    }
     let hard = matches!(
         report.ended,
-        Ended::Failures | Ended::Busy(..) | Ended::Wait(..) | Ended::Stopped(_)
+        Ended::Failures(_) | Ended::Busy(..) | Ended::Wait(..) | Ended::Stopped(..)
     );
     if report.counts.failed > 0 || hard || failed {
         exit = Exit::Refused;
@@ -452,6 +535,7 @@ fn replay(
     settings: &Settings,
     hand: &Hand<'_>,
     spool: &mut Blocks,
+    asked: &mut Tagged,
     said: &mut Said,
     failed: &mut bool,
 ) -> Result<(), Failure> {
@@ -465,7 +549,13 @@ fn replay(
     let mut store = Store::open(&layout, settings.store.options(), &mut |heard| {
         notice(&notice_message(&heard));
     })?;
-    let replayed = match run::replay(&mut store, spool, &hand.format) {
+    let replayed = match run::replay(
+        &mut store,
+        spool,
+        &hand.format,
+        asked,
+        settings.tag_cap.value,
+    ) {
         Ok(replayed) => replayed,
         Err(interrupted) => {
             said.lines.extend(
@@ -480,8 +570,14 @@ fn replay(
     };
     said.lines
         .extend(replayed.notices.iter().map(|text| Message::warning(text)));
-    if replayed.captured > 0 {
-        let closing = (hand.finish)(store, replayed.captured, &mut *env.notice);
+    if replayed.tagged > 0 {
+        said.lines.push(Message::info(&format!(
+            "tagged {} entries",
+            replayed.tagged
+        )));
+    }
+    if replayed.captured > 0 || replayed.tagged > 0 {
+        let closing = (hand.finish)(store, replayed.captured + replayed.tagged, &mut *env.notice);
         *failed |= closing.failed || closing.refused;
         said.lines.extend(closing.messages);
     } else {
@@ -494,9 +590,9 @@ fn look(
     env: &mut Env,
     job: &Job<'_>,
     tokenizer: &Tokenizer,
-    model: &str,
+    (model, tags_model): (&str, &str),
     given: &[Given],
-    held: Option<&Failed>,
+    held: Option<(&Failed, &Tagged)>,
     lines: &mut Vec<Message>,
 ) -> Result<Looked, Failure> {
     let Job {
@@ -576,16 +672,18 @@ fn look(
     }
     lines.extend(problem_lines);
     let own;
-    let tries: &Failed = match held {
-        Some(held) => held,
+    let own_asked;
+    let (tries, asked_port): (&Failed, &Tagged) = match held {
+        Some((held, asked)) => (held, asked),
         None => {
             let (state, folder) = state_folder(&store)?;
-            own = Folder::at(&state, folder)
-                .charges()
-                .map_err(|error| refused(&error))?;
-            &own
+            let folder = Folder::at(&state, folder);
+            own = folder.charges().map_err(|error| refused(&error))?;
+            own_asked = folder.tagged().map_err(|error| refused(&error))?;
+            (&own, &own_asked)
         }
     };
+    let tags_id = tags::instruction::id();
     let readers: Vec<&dyn Reader> = hand.readers.iter().map(|reader| &**reader).collect();
     let only: Vec<Id> = ids.iter().map(|(_, id)| *id).collect();
     let asked = if given.is_empty() {
@@ -599,6 +697,7 @@ fn look(
             sealed: &store,
             scope: &labelled,
             tries,
+            asked: asked_port,
         },
         &Rules {
             readers: &readers,
@@ -611,6 +710,7 @@ fn look(
             provider: &settings.llm.provider.value,
             redo,
             now: SystemTime::now(),
+            tags: tags_rules(settings, &tags_id, tags_model),
         },
         &everything,
         asked,
@@ -627,8 +727,18 @@ fn look(
     }
     let mut noted = Vec::new();
     let mut kinds = Vec::new();
+    let mut held_tags = Vec::new();
     for id in &only {
         if let Some(meta) = store.meta(*id)? {
+            held_tags.push((
+                *id,
+                meta.labels
+                    .tags
+                    .carried()
+                    .filter(|(_, by)| *by == bilbo_store::labels::By::Model)
+                    .map(|(tag, _)| tag.as_str().to_owned())
+                    .collect(),
+            ));
             kinds.push((*id, meta.kind));
         }
         let head = plan::held(&store, *id)?;
@@ -664,6 +774,7 @@ fn look(
         charges,
         noted,
         kinds,
+        held_tags,
     })
 }
 
@@ -695,7 +806,20 @@ fn dry(
         .unwrap_or_default();
     let tokenizer = (hand.tokenizer)()?;
     let mut diagnostics = Vec::new();
-    let looked = look(env, job, &tokenizer, &model, given, None, &mut diagnostics)?;
+    let tags_model = if section_tags_model(settings).is_empty() {
+        model.clone()
+    } else {
+        section_tags_model(settings).to_owned()
+    };
+    let looked = look(
+        env,
+        job,
+        &tokenizer,
+        (&model, &tags_model),
+        given,
+        None,
+        &mut diagnostics,
+    )?;
     let mut dry = view::Dry {
         off,
         kinds: instructions
@@ -752,11 +876,25 @@ fn dry(
             State::NoInstruction | State::NotNamed => {}
         }
     }
+    let tags_on = settings.tags.enabled.value;
+    let mut tags_dry = view::TagsDry {
+        pick: settings.tags.pick.value.len(),
+        model: (tags_model != model).then(|| tags_model.clone()),
+        due: looked
+            .plan
+            .tags
+            .iter()
+            .filter(|(_, state)| *state == bilbo_derive::plan::TagsState::Due)
+            .count() as u64,
+        ..view::TagsDry::default()
+    };
     let mut left = section.calls.value;
     for due in &looked.plan.due {
         let mut any = false;
+        let mut reached = true;
         for planned in due.windows.iter().filter(|planned| !planned.pass) {
             if left == 0 {
+                reached = false;
                 break;
             }
             left -= 1;
@@ -766,6 +904,30 @@ fn dry(
         }
         if any {
             dry.entries += 1;
+        }
+        if !reached {
+            break;
+        }
+        if let Some(planned) = &due.tags {
+            let windowed = due.windows.iter().any(|planned| !planned.pass);
+            let (call, tokens) = if windowed {
+                (true, 0)
+            } else if planned.state == Some(tags::plan::State::Due) {
+                let spent = planned
+                    .asking
+                    .is_some_and(|(_, charges)| usize::from(charges) >= section.tries.value);
+                (!spent, planned.sent as u64)
+            } else {
+                (false, 0)
+            };
+            if call {
+                if left == 0 {
+                    break;
+                }
+                left -= 1;
+                tags_dry.calls += 1;
+                tags_dry.tokens += tokens;
+            }
         }
     }
     for noted in &looked.noted {
@@ -777,11 +939,34 @@ fn dry(
             .map(|(_, state)| *state);
         if let Some(state) = state {
             dry.entry_lines.push(view::entry_line(state, noted));
+            if tags_on && !settings.tags.pick.value.is_empty() {
+                let shown = looked
+                    .plan
+                    .tags
+                    .iter()
+                    .find(|(entry, _)| *entry == noted.entry)
+                    .map(|(_, shown)| *shown);
+                let held = looked
+                    .held_tags
+                    .iter()
+                    .find(|(entry, _)| *entry == noted.entry)
+                    .map_or(&[][..], |(_, held)| held.as_slice());
+                tags_dry.lines.push(view::tags_ref_line(
+                    noted.entry,
+                    &view::tags_state(shown, Some(state)),
+                    held,
+                ));
+            }
         }
     }
+    dry.tags = tags_on.then_some(tags_dry);
     Ok(Outcome::new(joined(&view::lines(&dry)))
         .with_diagnostics(diagnostics)
         .with_exit(exit))
+}
+
+fn section_tags_model(settings: &Settings) -> &str {
+    &settings.tags.model.value
 }
 
 fn joined(lines: &[String]) -> String {
@@ -841,34 +1026,80 @@ fn event_line(event: &Event, api: bool, charges: &[(Extent, u8)]) -> Message {
                 view::place(extent)
             ))
         }
+        Event::TagsRefused { entry, category } => Message::warning(&format!(
+            "refused the tags of {entry}: {}",
+            category.as_deref().unwrap_or("unknown")
+        )),
+        Event::TagsFailed { entry, cause } => Message::warning(&format!(
+            "call failed for the tags of {entry}: {}",
+            view::tags_what(cause, api)
+        )),
+        Event::NoTag { entry, why } => Message::warning(&format!(
+            "call failed for the tags of {entry}: {}",
+            if *why == tags::answer::Why::Both {
+                view::BOTH
+            } else {
+                view::NO_TAG
+            }
+        )),
+        Event::TagsPassed { entry, charges } => Message::info(&format!(
+            "passed over the tags of {entry}: refused or failed in {charges} runs"
+        )),
     }
 }
 
-fn ended_line(ended: &Ended, api: bool, section: &Section, why: Option<&str>) -> Option<Message> {
+fn ended_which(ended: &Ended) -> Which {
+    match ended {
+        Ended::Done | Ended::Calls => Which::Writer,
+        Ended::Failures(which)
+        | Ended::Busy(_, _, which)
+        | Ended::Wait(_, _, which)
+        | Ended::Stopped(_, which)
+        | Ended::Prepare(_, which) => *which,
+    }
+}
+
+fn ended_line(
+    ended: &Ended,
+    api: bool,
+    section: &Section,
+    whys: &dyn Fn(Which) -> Option<String>,
+    keys: Option<&(String, String)>,
+) -> Option<Message> {
     let line = |text: String| Message {
         mark: Mark::Error,
         text,
         details: Vec::new(),
     };
     match ended {
-        Ended::Done | Ended::Calls | Ended::Prepare(_) => None,
-        Ended::Busy(cause, attempt) => Some(line(format!(
+        Ended::Done | Ended::Calls | Ended::Prepare(..) => None,
+        Ended::Busy(cause, attempt, _) => Some(line(format!(
             "the provider is busy: {}; gave up after attempt {attempt}",
             view::what(cause, api)
         ))),
-        Ended::Wait(wait, cause) => Some(line(format!(
+        Ended::Wait(wait, cause, _) => Some(line(format!(
             "the provider is busy: {}; the next attempt would wait {}, more than derive.retry_limit",
             view::what(cause, api),
             duration::show(*wait)
         ))),
-        Ended::Stopped(cause) => Some(line(format!(
+        Ended::Stopped(cause, which) => Some(line(format!(
             "the provider stopped the run: {}",
-            view::stopped(cause, api, why)
+            view::stopped(cause, api, whys(*which).as_deref())
         ))),
-        Ended::Failures => Some(line(format!(
-            "stopped: {} calls failed in a row",
-            section.failures.value
-        ))),
+        Ended::Failures(which) => {
+            let whose = keys.map_or(String::new(), |(writer, tagger)| {
+                let key = if *which == Which::Writer {
+                    writer
+                } else {
+                    tagger
+                };
+                format!(", to the model of {key}")
+            });
+            Some(line(format!(
+                "stopped: {} calls failed in a row{whose}",
+                section.failures.value
+            )))
+        }
     }
 }
 
@@ -881,7 +1112,7 @@ mod tests {
     use bilbo_store::entries::Generation;
     use bilbo_store::id::Id;
 
-    use super::{Said, event_line, finish};
+    use super::{Said, ended_line, event_line, finish};
     use crate::console::message::Message;
     use crate::console::outcome::Failure;
     use crate::console::theme::Mark;
@@ -930,5 +1161,109 @@ mod tests {
                 "cannot list /spool: Permission denied (os error 13)".to_owned()
             ))
         );
+    }
+
+    #[test]
+    fn each_line_about_tags_has_its_words() {
+        use bilbo_derive::tags::answer::Why;
+        use bilbo_llm::model::{Cause, What};
+        let entry = Id::from_bytes([4; 16]);
+        let said = |event: Event, api: bool| event_line(&event, api, &[]).plain_lines();
+        assert_eq!(
+            said(
+                Event::TagsRefused {
+                    entry,
+                    category: None
+                },
+                true
+            ),
+            [format!("bilbo: refused the tags of {entry}: unknown")]
+        );
+        for (why, text) in [
+            (Why::Both, "the answer picks a tag and says none fits"),
+            (Why::Empty, "the answer names no tag bilbo can keep"),
+            (Why::Marks, "the answer names no tag bilbo can keep"),
+            (Why::Strays, "the answer names no tag bilbo can keep"),
+        ] {
+            assert_eq!(
+                said(Event::NoTag { entry, why }, true),
+                [format!(
+                    "bilbo: call failed for the tags of {entry}: {text}"
+                )]
+            );
+        }
+        for (api, text) in [
+            (
+                true,
+                "the answer was cut at derive.answer_tokens; raise it or lower derive.tags.notes",
+            ),
+            (
+                false,
+                "the answer was cut by the tool; lower derive.tags.notes",
+            ),
+        ] {
+            assert_eq!(
+                said(
+                    Event::TagsFailed {
+                        entry,
+                        cause: Cause::new(What::Cut)
+                    },
+                    api
+                ),
+                [format!(
+                    "bilbo: call failed for the tags of {entry}: {text}"
+                )]
+            );
+        }
+        assert_eq!(
+            said(Event::TagsPassed { entry, charges: 3 }, true),
+            [format!(
+                "bilbo: passed over the tags of {entry}: refused or failed in 3 runs"
+            )]
+        );
+    }
+
+    #[test]
+    fn the_line_a_run_ends_with_names_a_model_only_when_there_are_two() {
+        use bilbo_derive::keys::defaults;
+        use bilbo_derive::run::{Ended, Which};
+        let mut section = defaults();
+        section.failures.value = 3;
+        let no_why = |_: Which| None;
+        let one = ended_line(
+            &Ended::Failures(Which::Writer),
+            true,
+            &section,
+            &no_why,
+            None,
+        )
+        .expect("a line");
+        assert_eq!(
+            one.plain_lines(),
+            ["bilbo: stopped: 3 calls failed in a row"]
+        );
+        let keys = (
+            "llm.anthropic.model".to_owned(),
+            "derive.tags.model".to_owned(),
+        );
+        for (which, key) in [
+            (Which::Tagger, "derive.tags.model"),
+            (Which::Writer, "llm.anthropic.model"),
+        ] {
+            let two = ended_line(
+                &Ended::Failures(which),
+                true,
+                &section,
+                &no_why,
+                Some(&keys),
+            )
+            .expect("a line");
+            assert_eq!(
+                two.plain_lines(),
+                [format!(
+                    "bilbo: stopped: 3 calls failed in a row, to the model of {key}"
+                )]
+            );
+        }
     }
 }

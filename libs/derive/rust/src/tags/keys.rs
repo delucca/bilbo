@@ -116,6 +116,15 @@ pub fn section(source: &Source<'_>) -> Result<Section, Error> {
     })
 }
 
+pub fn defaults() -> Section {
+    let file = bilbo_settings::file::File::default();
+    section(&Source {
+        var: &|_| None,
+        file: &file,
+    })
+    .expect("each default is a literal its key's unit test parses")
+}
+
 impl Section {
     pub fn shown(&self) -> [Shown; 5] {
         [

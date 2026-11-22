@@ -103,6 +103,76 @@ pub fn line(call: &Call) -> String {
     fields.join("\t")
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TagVerdict {
+    Tagged,
+    None,
+    Refused,
+    Failed,
+    Busy,
+    Stopped,
+    Passed,
+}
+
+impl TagVerdict {
+    #[must_use]
+    pub fn word(self) -> &'static str {
+        match self {
+            TagVerdict::Tagged => "tagged",
+            TagVerdict::None => "none",
+            TagVerdict::Refused => "refused",
+            TagVerdict::Failed => "failed",
+            TagVerdict::Busy => "busy",
+            TagVerdict::Stopped => "stopped",
+            TagVerdict::Passed => "passed",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Tagged {
+    pub at: u64,
+    pub verdict: TagVerdict,
+    pub kind: String,
+    pub entry: Id,
+    pub provider: String,
+    pub asked: String,
+    pub answered: Option<String>,
+    pub attempt: Option<u32>,
+    pub sent: Option<u64>,
+    pub tokens_in: Option<u64>,
+    pub tokens_out: Option<u64>,
+    pub picks: Option<u64>,
+    pub dropped: Option<u64>,
+    pub millis: u64,
+    pub reason: Option<String>,
+    pub request: Option<String>,
+}
+
+#[must_use]
+pub fn tags_line(call: &Tagged) -> String {
+    let fields = [
+        "t1".to_owned(),
+        call.at.to_string(),
+        call.verdict.word().to_owned(),
+        text(&call.kind),
+        call.entry.to_string(),
+        text(&call.provider),
+        text(&call.asked),
+        text(call.answered.as_deref().unwrap_or("")),
+        number(call.attempt),
+        number(call.sent),
+        number(call.tokens_in),
+        number(call.tokens_out),
+        number(call.picks),
+        number(call.dropped),
+        call.millis.to_string(),
+        text(call.reason.as_deref().unwrap_or("")),
+        text(call.request.as_deref().unwrap_or("")),
+    ];
+    fields.join("\t")
+}
+
 #[cfg(test)]
 mod tests {
     use bilbo_store::id::Id;
@@ -196,5 +266,46 @@ mod tests {
         assert_eq!(fields[7], "a b c");
         assert_eq!(fields[18], "-");
         assert!(!found.contains('\n'));
+    }
+
+    #[test]
+    fn a_tags_line_is_t1_and_seventeen_fields() {
+        let entry = Id::parse("01JC5Q3V7XKM4P8R2T6W9YB0DB").expect("id");
+        let tagged = super::Tagged {
+            at: 1794107564,
+            verdict: super::TagVerdict::Tagged,
+            kind: "session".to_owned(),
+            entry,
+            provider: "anthropic".to_owned(),
+            asked: "model-a".to_owned(),
+            answered: Some("model-b".to_owned()),
+            attempt: Some(1),
+            sent: Some(2890),
+            tokens_in: Some(3120),
+            tokens_out: Some(12),
+            picks: Some(1),
+            dropped: Some(0),
+            millis: 1500,
+            reason: None,
+            request: None,
+        };
+        assert_eq!(
+            super::tags_line(&tagged),
+            "t1\t1794107564\ttagged\tsession\t01JC5Q3V7XKM4P8R2T6W9YB0DB\tanthropic\tmodel-a\tmodel-b\t1\t2890\t3120\t12\t1\t0\t1500\t-\t-"
+        );
+        let failed = super::Tagged {
+            verdict: super::TagVerdict::Failed,
+            tokens_out: Some(40),
+            picks: None,
+            dropped: None,
+            reason: Some("no-tag strays".to_owned()),
+            ..tagged
+        };
+        let line = super::tags_line(&failed);
+        assert_eq!(
+            line,
+            "t1\t1794107564\tfailed\tsession\t01JC5Q3V7XKM4P8R2T6W9YB0DB\tanthropic\tmodel-a\tmodel-b\t1\t2890\t3120\t40\t-\t-\t1500\tno-tag strays\t-"
+        );
+        assert_eq!(line.split('\t').count(), 17);
     }
 }

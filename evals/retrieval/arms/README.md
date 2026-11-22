@@ -50,7 +50,7 @@ With `BILBO_EVAL_DERIVE` set (a JSON object; `arms/bilbo-next/build.py` document
 notes between remembering and reindexing: it writes the `llm.*` and `derive.*` settings into each store's `config.toml`, runs
 `bilbo derive --calls <n> <the repository's entry ids>` while a run makes progress (it wrote a note, or the dry run after it
 differs from the one before) until `bilbo derive --dry-run` says `due: 0 entries`, reads the `entry` lines of the dry run (every
-entry must be `covered` or `passed over`), and then reindexes. `derive.tries` runs in a row that change nothing end the build.
+entry must be `covered` or `passed over`), and then reindexes. `derive.tries` runs in a row that change nothing end the build. The arm does not tag: a settings table that would make a tags table under derive stops the build.
 The reindex must count the sessions plus the note entries. The provider is `anthropic` or `openai`. The way is the setting `llm.<provider>.via`, `api` when the settings name none, and the build writes it into every store's config; `openai` has `api` alone. The endpoint of a provider is an `https` URL, or an `http` URL at a literal loopback address (not a name), with a port that is a number or none, and holds no `@` anywhere (no user name, no password, no secret in its query or fragment). A file `STOP` in `/work/store` stops the loop.
 
 **Lives.** A build is made of lives. A life makes every store from nothing and counts every request's asks from 0. The build

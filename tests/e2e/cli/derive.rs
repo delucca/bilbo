@@ -383,3 +383,39 @@ fn derive_through_codex_needs_no_key() {
             .contains("The user asked about the garden fence.")
     );
 }
+
+#[test]
+fn a_session_is_noted_and_tagged_and_found_by_its_tag() {
+    let scratch = sealed("e2e_derive_tags");
+    let tags = Reply::answer(200, &message("garden"));
+    let provider = Provider::start(vec![answer(), tags]);
+    put(
+        &scratch,
+        &config(
+            &provider.url(),
+            "derive.tags.enabled = true\nderive.tags.pick = [\"garden\", \"bilbo\"]\n",
+        ),
+    );
+    let run = derive(&scratch, &["derive"]);
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    assert!(
+        run.stdout
+            .starts_with("entries 1, calls 2, notes 1, dropped 0, refused 0, failed 0\n"),
+        "{}",
+        run.stdout
+    );
+    let found = scratch.run(&["recall", "--in", "tag:garden", "garden", "fence"]);
+    assert_eq!(found.code, 0, "{}", found.stderr);
+    let headers: Vec<&str> = found
+        .stdout
+        .lines()
+        .filter(|l| l.starts_with("=== "))
+        .collect();
+    assert_eq!(headers.len(), 2, "{}", found.stdout);
+    assert!(
+        headers.iter().any(|line| line.ends_with("\tnote")),
+        "{headers:?}"
+    );
+    let none = scratch.run(&["recall", "--in", "tag:bilbo", "garden", "fence"]);
+    assert!(!none.stdout.contains("=== "), "{}", none.stdout);
+}

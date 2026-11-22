@@ -20,7 +20,7 @@ use bilbo_search::index::{Doc, Extent, Index, IndexError, Stats};
 use bilbo_search::position::Position;
 use bilbo_store::entries::{Capture, Cursor, Entries, Generation, RecordRange};
 use bilbo_store::id::Id;
-use bilbo_store::labels::{CaptureLabel, Tag, Tags};
+use bilbo_store::labels::{By, CaptureLabel, Standing, Tag, Tags};
 use bilbo_store::segments::{Options, Store};
 use serde_json::{Value, json};
 
@@ -3516,4 +3516,644 @@ fn a_derive_in_value_that_is_no_tag_is_a_config_error_naming_the_key() {
             sandbox.dir.display()
         )]
     );
+}
+
+const TAGS_ON: &str = "derive.tags.enabled = true\nderive.tags.pick = [\"garden\", \"bilbo\"]\n";
+const TAGS_LAST_LINE: &str =
+    "</tags>\nWrite the tags for these notes now, one a line, at most 3, or (none).\n";
+
+fn with_tags(url: &str, id: Id, extra: &str) -> String {
+    only(id, url).replace(
+        "derive.quiet = \"0s\"\n",
+        &format!("derive.quiet = \"0s\"\n{extra}"),
+    )
+}
+
+fn field(request: &Request, name: &str) -> Value {
+    serde_json::from_str::<Value>(&body(request)).expect("a body")[name].clone()
+}
+
+fn asks_for_tags(request: &Request) -> bool {
+    field(request, "system").as_str() == Some(bilbo_derive::tags::instruction::text())
+}
+
+fn user_text(request: &Request) -> String {
+    field(request, "messages")[0]["content"]
+        .as_str()
+        .expect("a text")
+        .to_owned()
+}
+
+fn standing(sandbox: &Sandbox, id: Id, name: &str) -> Option<bilbo_store::labels::Standing> {
+    let store = sandbox.store();
+    let meta = store.meta(id).expect("meta").expect("an entry");
+    meta.labels.tags.standing(&Tag::new(name).expect("a tag"))
+}
+
+fn tagged_once(test: &str) -> (Sandbox, Provider, Id) {
+    let sandbox = Sandbox::filled(test, false);
+    let first = sandbox.session(FIRST);
+    let provider = Provider::start(vec![answer(NOTE_TEXT), answer("garden"), answer("garden")]);
+    sandbox.configure(&with_tags(&provider.url(), first, TAGS_ON));
+    let run = sandbox.run(&["derive"]);
+    assert_eq!(run.code, 0, "{:?}", run.stderr);
+    assert_eq!(requests(&provider).len(), 2);
+    (sandbox, provider, first)
+}
+
+fn another_model(provider: &Provider, first: Id) -> String {
+    with_tags(
+        &provider.url(),
+        first,
+        &format!("{TAGS_ON}derive.tags.model = \"claude-test-2\"\n"),
+    )
+}
+
+#[test]
+fn a_run_writes_notes_then_tags_and_read_tag_and_recall_show_them() {
+    let sandbox = Sandbox::filled("derive-tags-run", false);
+    let first = sandbox.session(FIRST);
+    let provider = Provider::start(vec![answer(NOTE_TEXT), answer("garden")]);
+    sandbox.configure(&with_tags(&provider.url(), first, TAGS_ON));
+    let run = sandbox.run(&["derive"]);
+    assert_eq!(run.code, 0, "{:?}", run.stderr);
+    let lines: Vec<&str> = run.stdout.lines().collect();
+    assert_eq!(
+        lines[0],
+        "entries 1, calls 2, notes 1, dropped 0, refused 0, failed 0"
+    );
+    assert_eq!(run.stderr, ["bilbo: tagged 1 entries".to_owned()]);
+    let read = sandbox.run(&["read", &first.to_string(), "--budget", "256"]);
+    assert!(
+        read.stdout
+            .lines()
+            .any(|line| line == "label: tag:garden (model)"),
+        "{}",
+        read.stdout
+    );
+    let listed = sandbox.run(&["tag", "tag:garden"]);
+    assert_eq!(listed.code, 0, "{:?}", listed.stderr);
+    assert!(listed.stdout.contains("model"), "{}", listed.stdout);
+    let found = sandbox.run(&["recall", "--in", "tag:garden", "garden", "fence"]);
+    assert_eq!(found.code, 0, "{:?}", found.stderr);
+    assert!(
+        found.stdout.contains(&first.short().to_string()),
+        "{}",
+        found.stdout
+    );
+}
+
+#[test]
+fn the_tags_request_holds_the_notes_and_the_list_and_nothing_bilbo_adds_of_the_entry() {
+    let sandbox = Sandbox::filled("derive-tags-request", false);
+    let first = sandbox.session(FIRST);
+    let provider = Provider::start(vec![answer(NOTE_TEXT), answer("garden")]);
+    sandbox.configure(&with_tags(&provider.url(), first, TAGS_ON));
+    assert_eq!(sandbox.run(&["derive"]).code, 0);
+    let seen = requests(&provider);
+    assert!(asks_for_tags(&seen[1]));
+    let text = user_text(&seen[1]);
+    assert!(text.starts_with("<notes>\n"), "{text}");
+    assert!(text.ends_with(TAGS_LAST_LINE), "{text}");
+    assert!(text.contains("bilbo\ngarden\n"), "{text}");
+    for absent in [
+        first.to_string(),
+        format!("derive:{first}"),
+        FIRST.to_owned(),
+        "bilbo:".to_owned(),
+    ] {
+        assert!(!text.contains(&absent), "{absent}");
+    }
+}
+
+#[test]
+fn a_tag_removed_by_hand_is_not_declared_again() {
+    let (sandbox, provider, first) = tagged_once("derive-tags-removed");
+    let id = first.to_string();
+    assert_eq!(sandbox.run(&["tag", &id, "--remove", "garden"]).code, 0);
+    sandbox.configure(&another_model(&provider, first));
+    let run = sandbox.run(&["derive", "--redo"]);
+    assert_eq!(run.code, 0, "{:?}", run.stderr);
+    let seen = requests(&provider);
+    assert_eq!(seen.len(), 3);
+    assert!(asks_for_tags(&seen[2]));
+    assert_eq!(
+        standing(&sandbox, first, "garden"),
+        Some(bilbo_store::labels::Standing::Removed)
+    );
+    let read = sandbox.run(&["read", &id, "--budget", "256"]);
+    assert!(
+        read.stdout
+            .lines()
+            .any(|line| line == "removed: tag:garden"),
+        "{}",
+        read.stdout
+    );
+    assert!(
+        !read.stdout.contains("label: tag:garden"),
+        "{}",
+        read.stdout
+    );
+}
+
+#[test]
+fn a_persons_tag_is_left_by_redo() {
+    let (sandbox, provider, first) = tagged_once("derive-tags-person");
+    let id = first.to_string();
+    assert_eq!(sandbox.run(&["tag", &id, "--add", "garden"]).code, 0);
+    sandbox.configure(&another_model(&provider, first));
+    let provider = Provider::start(vec![answer("(none)")]);
+    sandbox.configure(&another_model(&provider, first));
+    let run = sandbox.run(&["derive", "--redo"]);
+    assert_eq!(run.code, 0, "{:?}", run.stderr);
+    let seen = requests(&provider);
+    assert_eq!(seen.len(), 1);
+    assert!(asks_for_tags(&seen[0]));
+    assert_eq!(
+        standing(&sandbox, first, "garden"),
+        Some(bilbo_store::labels::Standing::Carried(
+            bilbo_store::labels::By::Person
+        ))
+    );
+    let read = sandbox.run(&["read", &id, "--budget", "256"]);
+    assert!(
+        read.stdout.lines().any(|line| line == "label: tag:garden"),
+        "{}",
+        read.stdout
+    );
+}
+
+fn the_new_session(sandbox: &Sandbox) {
+    sandbox.write(
+        &format!("sessions/claude/p/{LONG}.jsonl"),
+        &long_session(LONG, 2),
+    );
+    sandbox.seal();
+}
+
+fn plain_stdout(run: &Run) -> String {
+    run.stdout
+        .lines()
+        .map(|line| {
+            if line.starts_with("tokens in ") {
+                line.split(", seconds").next().unwrap_or(line).to_owned()
+            } else {
+                line.to_owned()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+#[test]
+fn with_the_tags_off_the_requests_and_the_output_are_those_of_a_run_that_never_tagged() {
+    let mut sent = Vec::new();
+    for (name, tagged) in [("derive-tags-never", false), ("derive-tags-before", true)] {
+        let sandbox = Sandbox::filled(name, false);
+        let first = sandbox.session(FIRST);
+        if tagged {
+            let provider = Provider::start(vec![answer(NOTE_TEXT), answer("garden")]);
+            sandbox.configure(&with_tags(&provider.url(), first, TAGS_ON));
+            assert_eq!(sandbox.run(&["derive"]).code, 0);
+        } else {
+            let provider = Provider::start(vec![answer(NOTE_TEXT)]);
+            sandbox.configure(&only(first, &provider.url()));
+            assert_eq!(sandbox.run(&["derive"]).code, 0);
+        }
+        the_new_session(&sandbox);
+        let provider =
+            Provider::start(vec![answer("r1-2\nThe user asked about the garden fence.")]);
+        let long = sandbox.session(LONG);
+        sandbox.configure(&with_tags(
+            &provider.url(),
+            long,
+            "derive.tags.pick = [\"garden\", \"bilbo\"]\n",
+        ));
+        let run = sandbox.run(&["derive"]);
+        assert_eq!(run.code, 0, "{:?}", run.stderr);
+        let seen = requests(&provider);
+        assert_eq!(seen.len(), 1, "{name}");
+        assert!(!asks_for_tags(&seen[0]), "{name}");
+        sent.push((body(&seen[0]), plain_stdout(&run), run.stderr));
+    }
+    assert_eq!(sent[0], sent[1]);
+}
+
+#[test]
+fn each_closed_gate_sends_nothing_with_the_tags_on() {
+    let cases = [
+        ("derive.enabled = false\n", "derive.enabled is false"),
+        ("llm.provider = \"\"\n", "llm.provider is not set"),
+        ("derive.in = []\n", "derive.in is empty"),
+    ];
+    for (gate, why) in cases {
+        let sandbox = Sandbox::filled("derive-tags-gates", false);
+        let first = sandbox.session(FIRST);
+        let provider = Provider::start(vec![answer(NOTE_TEXT), answer("garden")]);
+        sandbox.configure(&only(first, &provider.url()));
+        assert_eq!(sandbox.run(&["derive"]).code, 0);
+        assert_eq!(requests(&provider).len(), 1);
+        let marker = sandbox.dir.join("key-ran");
+        let key = script(&sandbox, &format!("touch {}\necho {KEY}", marker.display()));
+        let mut text = with_tags(
+            &provider.url(),
+            first,
+            &format!("{TAGS_ON}llm.anthropic.api.key_command = [\"/bin/sh\", \"{key}\"]\n"),
+        );
+        let leaf = gate.split(' ').next().expect("a key");
+        text = text
+            .lines()
+            .filter(|line| !line.starts_with(leaf))
+            .collect::<Vec<_>>()
+            .join("\n");
+        text.push('\n');
+        text.push_str(gate);
+        sandbox.configure(&text);
+        let run = sandbox.run(&["derive"]);
+        assert_eq!(run.code, 0, "{gate}: {:?}", run.stderr);
+        assert_eq!(
+            run.stderr,
+            [format!("bilbo: derive is off: {why}")],
+            "{gate}"
+        );
+        assert_eq!(requests(&provider).len(), 1, "{gate}");
+        assert!(!marker.exists(), "{gate}");
+        assert!(!sandbox.derive_dir().join("tagged").exists(), "{gate}");
+    }
+}
+
+#[test]
+fn a_tags_model_that_fails_its_prepare_exits_2_after_the_notes_are_kept_and_counted() {
+    let sandbox = Sandbox::filled("derive-tags-prepare", false);
+    let first = sandbox.session(FIRST);
+    let provider = Provider::start(vec![answer(NOTE_TEXT)]);
+    let extra = format!("{TAGS_ON}derive.tags.model = \"{KEY}\"\n");
+    sandbox.configure(&with_tags(&provider.url(), first, &extra));
+    let run = sandbox.run_with(&["derive", "--calls", "2"], &[("ANTHROPIC_API_KEY", KEY)]);
+    assert_eq!(run.code, 2, "{:?}", run.stderr);
+    let lines: Vec<&str> = run.stdout.lines().collect();
+    assert_eq!(
+        lines[0],
+        "entries 1, calls 1, notes 1, dropped 0, refused 0, failed 0"
+    );
+    assert!(
+        lines[1].starts_with("tokens in 100, tokens out 20, seconds "),
+        "{}",
+        lines[1]
+    );
+    assert_eq!(
+        run.stderr.last().map(String::as_str),
+        Some("bilbo: derive.tags.model holds the key")
+    );
+    assert!(!run.stdout.contains("PLUM") && !run.stderr.concat().contains("PLUM"));
+    assert!(sandbox.notes_of(first).is_some());
+}
+
+fn walk_numbers(run: &Run) -> (String, String) {
+    let at = |start: &str| {
+        run.stdout
+            .lines()
+            .find(|line| line.starts_with(start))
+            .expect("a line")
+            .to_owned()
+    };
+    (at("this run:"), at("tags:"))
+}
+
+fn two_by_id(sandbox: &Sandbox) -> (Id, Id) {
+    let ids = sandbox.sessions();
+    (ids[ids.len() - 1], ids[ids.len() - 2])
+}
+
+fn in_both(url: &str, newer: Id, older: Id, extra: &str) -> String {
+    only_ids(url, &[newer, older], extra)
+}
+
+#[test]
+fn the_walk_passes_an_exhausted_asking_for_free_and_reaches_the_next_window() {
+    let sandbox = Sandbox::filled("derive-walk-pass", false);
+    let (a, b) = two_by_id(&sandbox);
+    let tries = format!("{TAGS_ON}derive.tries = 1\n");
+    let provider = Provider::start(vec![
+        answer(NOTE_TEXT),
+        refusal("policy"),
+        answer(NOTE_TEXT),
+    ]);
+    sandbox.configure(&with_tags(&provider.url(), a, &tries));
+    sandbox.run(&["derive"]);
+    assert_eq!(requests(&provider).len(), 2);
+    sandbox.configure(&in_both(&provider.url(), a, b, &tries));
+    let dry = sandbox.run(&["derive", "--dry-run", "--calls", "1"]);
+    assert_eq!(dry.code, 0, "{:?}", dry.stderr);
+    let (this_run, tags) = walk_numbers(&dry);
+    assert!(
+        this_run.starts_with("this run: 1 calls for 1 entries,"),
+        "{this_run}"
+    );
+    assert!(tags.contains("; this run 0 calls,"), "{tags}");
+    let run = sandbox.run(&["derive", "--calls", "1"]);
+    assert_eq!(run.code, 0, "{:?}", run.stderr);
+    let seen = requests(&provider);
+    assert_eq!(seen.len(), 3);
+    assert!(!asks_for_tags(&seen[2]));
+}
+
+#[test]
+fn the_dry_walk_counts_the_calls_the_run_then_makes() {
+    let sandbox = Sandbox::filled("derive-walk-counts", false);
+    let ids = sandbox.sessions();
+    let (x, y, z) = (ids[ids.len() - 1], ids[ids.len() - 2], ids[ids.len() - 3]);
+    let provider = Provider::start(vec![
+        answer(NOTE_TEXT),
+        answer(NOTE_TEXT),
+        answer("garden"),
+        answer("garden"),
+        answer(NOTE_TEXT),
+    ]);
+    sandbox.configure(&only(y, &provider.url()));
+    assert_eq!(sandbox.run(&["derive"]).code, 0);
+    assert_eq!(requests(&provider).len(), 1);
+    let all = only_ids(&provider.url(), &[x, y, z], TAGS_ON);
+    sandbox.configure(&all);
+    let dry = sandbox.run(&["derive", "--dry-run", "--calls", "3"]);
+    assert_eq!(dry.code, 0, "{:?}", dry.stderr);
+    let (this_run, tags) = walk_numbers(&dry);
+    assert!(
+        this_run.starts_with("this run: 1 calls for 1 entries,"),
+        "{this_run}"
+    );
+    assert!(tags.contains("; this run 2 calls,"), "{tags}");
+    let run = sandbox.run(&["derive", "--calls", "3"]);
+    assert_eq!(run.code, 0, "{:?}", run.stderr);
+    let seen = requests(&provider);
+    assert_eq!(seen.len(), 4);
+    let kinds: Vec<bool> = seen[1..].iter().map(asks_for_tags).collect();
+    assert_eq!(kinds, [false, true, true]);
+}
+
+#[test]
+fn a_dry_run_adds_no_tags_call_for_an_entry_it_knows_has_no_note() {
+    let sandbox = Sandbox::filled("derive-walk-nonote", false);
+    let (a, b) = two_by_id(&sandbox);
+    let tries = format!("{TAGS_ON}derive.tries = 1\n");
+    let provider = Provider::start(vec![refusal("policy"), answer(NOTE_TEXT)]);
+    sandbox.configure(&with_tags(&provider.url(), a, &tries));
+    sandbox.run(&["derive"]);
+    assert_eq!(requests(&provider).len(), 1);
+    sandbox.configure(&in_both(&provider.url(), a, b, &tries));
+    let dry = sandbox.run(&["derive", "--dry-run", "--calls", "1"]);
+    assert_eq!(dry.code, 0, "{:?}", dry.stderr);
+    let (this_run, tags) = walk_numbers(&dry);
+    assert!(
+        this_run.starts_with("this run: 1 calls for 1 entries,"),
+        "{this_run}"
+    );
+    assert!(tags.contains("; this run 0 calls,"), "{tags}");
+    let run = sandbox.run(&["derive", "--calls", "1"]);
+    assert_eq!(run.code, 0, "{:?}", run.stderr);
+    let seen = requests(&provider);
+    assert_eq!(seen.len(), 2);
+    assert!(!asks_for_tags(&seen[1]));
+}
+
+#[test]
+fn a_name_added_to_the_list_asks_again_and_a_name_put_back_does_not() {
+    let sandbox = Sandbox::filled("derive-tags-names", false);
+    let first = sandbox.session(FIRST);
+    let provider = Provider::start(vec![answer(NOTE_TEXT), answer("a"), answer("b")]);
+    let list = |names: &str| {
+        with_tags(
+            &provider.url(),
+            first,
+            &format!("derive.tags.enabled = true\nderive.tags.pick = [{names}]\n"),
+        )
+    };
+    let mut counts = Vec::new();
+    for names in ["\"a\"", "\"a\", \"b\"", "\"a\"", "\"a\", \"b\""] {
+        sandbox.configure(&list(names));
+        assert_eq!(sandbox.run(&["derive"]).code, 0);
+        counts.push(requests(&provider).len());
+    }
+    assert_eq!(counts, [2, 3, 3, 3]);
+    let seen = requests(&provider);
+    assert!(asks_for_tags(&seen[1]) && asks_for_tags(&seen[2]));
+    let (one, two) = (user_text(&seen[1]), user_text(&seen[2]));
+    let notes = |text: &str| text.split("</notes>").next().unwrap_or("").to_owned();
+    assert!(notes(&one).contains("The user asked about the garden fence."));
+    assert_eq!(notes(&one), notes(&two));
+}
+
+#[test]
+fn the_tags_file_lost_asks_once_more_and_takes_nothing_a_person_set() {
+    let sandbox = Sandbox::filled("derive-tags-lost", false);
+    let first = sandbox.session(FIRST);
+    let id = first.to_string();
+    let provider = Provider::start(vec![
+        answer(NOTE_TEXT),
+        answer("(none)"),
+        answer("shed\ngarden"),
+    ]);
+    let extra = "derive.tags.enabled = true\nderive.tags.pick = [\"garden\", \"shed\", \"mine\"]\n";
+    sandbox.configure(&with_tags(&provider.url(), first, extra));
+    for (flag, name) in [("--add", "mine"), ("--add", "shed"), ("--remove", "shed")] {
+        assert_eq!(sandbox.run(&["tag", &id, flag, name]).code, 0);
+    }
+    assert_eq!(sandbox.run(&["derive"]).code, 0);
+    assert_eq!(requests(&provider).len(), 2);
+    assert!(sandbox.derive_dir().join("tagged").exists());
+    fs::remove_file(sandbox.derive_dir().join("tagged")).expect("the file");
+    let run = sandbox.run(&["derive"]);
+    assert_eq!(run.code, 0, "{:?}", run.stderr);
+    assert_eq!(requests(&provider).len(), 3);
+    assert_eq!(
+        standing(&sandbox, first, "mine"),
+        Some(Standing::Carried(By::Person))
+    );
+    assert_eq!(standing(&sandbox, first, "shed"), Some(Standing::Removed));
+    assert_eq!(
+        standing(&sandbox, first, "garden"),
+        Some(Standing::Carried(By::Model))
+    );
+}
+
+#[test]
+fn a_tag_added_while_a_run_is_under_way_counts_from_the_next_run() {
+    let _together = together();
+    let sandbox = Sandbox::filled("derive-tags-underway", false);
+    let ids = sandbox.sessions();
+    let (second, first) = (ids[ids.len() - 1], ids[ids.len() - 2]);
+    let slow = Reply::trickle(&message(NOTE_TEXT), Duration::from_millis(15));
+    let provider = Provider::start(vec![slow, answer(NOTE_TEXT)]);
+    sandbox.configure(&only_ids(
+        &provider.url(),
+        &[first, second],
+        "derive.not_in = [\"tag:private\"]\n",
+    ));
+    let vars = sandbox.vars();
+    let running = std::thread::spawn(move || {
+        held_by_the_test();
+        bilbo(vars, &["derive"])
+    });
+    waiting_for(&provider, 1);
+    let added = sandbox.run(&["tag", &second.to_string(), "--add", "private"]);
+    assert_eq!(added.code, 0, "{:?}", added.stderr);
+    let run = running.join().expect("the run");
+    assert_eq!(run.code, 0, "{:?}", run.stderr);
+    assert_eq!(requests(&provider).len(), 2);
+    let dry = sandbox.run(&["derive", "--dry-run", &second.to_string()]);
+    assert!(
+        dry.stdout
+            .lines()
+            .any(|line| line.starts_with(&format!("entry\t{second}\tleft out: derive.not_in"))),
+        "{}",
+        dry.stdout
+    );
+}
+
+#[test]
+fn an_entry_due_for_tags_alone_keeps_its_windows_charges() {
+    let sandbox = Sandbox::filled("derive-tags-charges", false);
+    let first = sandbox.session(FIRST);
+    let provider = Provider::start(vec![refusal("policy"), answer(NOTE_TEXT), answer("garden")]);
+    sandbox.configure(&only(first, &provider.url()));
+    assert_eq!(sandbox.run(&["derive"]).code, 0);
+    let copy = failed_file(&sandbox);
+    assert!(!copy.is_empty());
+    assert_eq!(sandbox.run(&["derive"]).code, 0);
+    let path = sandbox.derive_dir().join("failed");
+    fs::write(&path, &copy).expect("the copy back");
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).expect("a mode");
+    sandbox.configure(&with_tags(&provider.url(), first, TAGS_ON));
+    let run = sandbox.run(&["derive"]);
+    assert_eq!(run.code, 0, "{:?}", run.stderr);
+    assert_eq!(requests(&provider).len(), 3);
+    assert!(asks_for_tags(&requests(&provider)[2]));
+    assert_eq!(failed_file(&sandbox), copy);
+}
+
+#[test]
+fn a_tags_file_bilbo_may_not_open_fails_nothing_with_the_switch_off_or_the_list_empty() {
+    for (extra, then) in [
+        (
+            "derive.tags.enabled = false\nderive.tags.pick = [\"garden\"]\n",
+            true,
+        ),
+        ("derive.tags.enabled = true\nderive.tags.pick = []\n", true),
+        (TAGS_ON, false),
+    ] {
+        let sandbox = Sandbox::filled("derive-tags-link", false);
+        let first = sandbox.session(FIRST);
+        let provider = Provider::start(vec![answer(NOTE_TEXT), answer("garden")]);
+        sandbox.configure(&with_tags(&provider.url(), first, extra));
+        fs::create_dir_all(sandbox.derive_dir()).expect("a folder");
+        symlink(
+            sandbox.dir.join("nowhere"),
+            sandbox.derive_dir().join("tagged"),
+        )
+        .expect("a link");
+        let run = sandbox.run(&["derive"]);
+        if then {
+            assert_eq!(run.code, 0, "{extra}: {:?}", run.stderr);
+            assert!(sandbox.notes_of(first).is_some());
+            assert!(
+                run.stderr.iter().all(|line| !line.contains("tagged")),
+                "{:?}",
+                run.stderr
+            );
+        } else {
+            assert_eq!(run.code, 1, "{:?}", run.stderr);
+            assert!(
+                run.stderr.iter().any(|line| line.contains("tagged")),
+                "{:?}",
+                run.stderr
+            );
+            assert!(requests(&provider).is_empty());
+        }
+    }
+}
+
+fn unbound_list(sandbox: &Sandbox, extra: &str) -> String {
+    let mut items = with_instruction();
+    items.insert(0, "--fallback-model");
+    items.insert(1, "zz-value");
+    tool_config(sandbox, &items).replace(
+        "derive.quiet = \"0s\"\n",
+        &format!("derive.quiet = \"0s\"\n{extra}"),
+    )
+}
+
+const UNBOUND_MODEL: &str = "llm.anthropic.tool.arguments does not bind a call to its model: it needs \"--model\" followed by \"{model}\", and must not hold \"--fallback-model\"";
+
+#[test]
+fn a_tags_call_the_run_cannot_pay_is_not_refused_for_its_arguments() {
+    let _alone = alone();
+    let sandbox = Sandbox::filled("derive-tags-unpaid", false);
+    sandbox.configure(&unbound_list(
+        &sandbox,
+        "derive.tags.enabled = true\nderive.tags.pick = [\"garden\"]\n",
+    ));
+    let first = sandbox.session(FIRST).to_string();
+    let run = sandbox.run(&["derive", "--calls", "1", &first]);
+    assert_eq!(run.code, 0, "{:?}", run.stderr);
+    assert!(
+        run.stderr
+            .iter()
+            .all(|line| !line.contains("llm.anthropic.tool.arguments")),
+        "{:?}",
+        run.stderr
+    );
+    assert!(sandbox.notes_of(sandbox.session(FIRST)).is_some());
+}
+
+#[test]
+fn a_list_that_does_not_bind_ends_the_run_at_the_first_tags_call_with_the_notes_kept() {
+    let _alone = alone();
+    let sandbox = Sandbox::filled("derive-tags-unbound", false);
+    sandbox.configure(&unbound_list(
+        &sandbox,
+        "derive.tags.enabled = true\nderive.tags.pick = [\"garden\"]\n",
+    ));
+    let first = sandbox.session(FIRST).to_string();
+    let run = sandbox.run(&["derive", "--calls", "2", &first]);
+    assert_eq!(run.code, 2, "{:?}", run.stderr);
+    assert_eq!(
+        run.stderr.last().map(String::as_str),
+        Some(format!("bilbo: {UNBOUND_MODEL}").as_str())
+    );
+    assert!(sandbox.notes_of(sandbox.session(FIRST)).is_some());
+    let off = Sandbox::filled("derive-tags-unbound-off", false);
+    off.configure(&unbound_list(&off, ""));
+    let first = off.session(FIRST).to_string();
+    let run = off.run(&["derive", "--calls", "2", &first]);
+    assert_eq!(run.code, 0, "{:?}", run.stderr);
+    assert!(off.notes_of(off.session(FIRST)).is_some());
+}
+
+#[test]
+fn a_tags_prepare_that_fails_after_passes_alone_says_the_passes_and_exits_2() {
+    let sandbox = Sandbox::filled("derive-tags-passes", false);
+    let (a, b) = two_by_id(&sandbox);
+    let provider = Provider::start(vec![answer(NOTE_TEXT), refusal("policy")]);
+    sandbox.configure(&only(b, &provider.url()));
+    assert_eq!(sandbox.run(&["derive"]).code, 0);
+    sandbox.configure(&with_tags(&provider.url(), a, "derive.tries = 1\n"));
+    sandbox.run(&["derive"]);
+    assert_eq!(requests(&provider).len(), 2);
+    let extra = format!("{TAGS_ON}derive.tries = 1\nderive.tags.model = \"{KEY}\"\n");
+    sandbox.configure(&in_both(&provider.url(), a, b, &extra));
+    let run = sandbox.run(&["derive"]);
+    assert_eq!(run.code, 2, "{:?}", run.stderr);
+    let lines: Vec<&str> = run.stdout.lines().collect();
+    assert_eq!(
+        lines[0],
+        "entries 0, calls 0, notes 0, dropped 0, refused 0, failed 0"
+    );
+    assert_eq!(run.stderr.len(), 2, "{:?}", run.stderr);
+    assert!(
+        run.stderr[0].starts_with(&format!("bilbo: passed over {a} #r")),
+        "{:?}",
+        run.stderr
+    );
+    assert_eq!(run.stderr[1], "bilbo: derive.tags.model holds the key");
+    assert_eq!(requests(&provider).len(), 2);
 }

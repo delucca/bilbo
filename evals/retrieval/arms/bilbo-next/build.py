@@ -153,6 +153,8 @@ def config_stops(derive):
     named = parsed.get("llm", {}).get("provider")
     if named != derive["provider"]:
         sys.exit(f"bilbo-next: BILBO_EVAL_DERIVE: the settings name the provider {named!r}, not {derive['provider']!r}")
+    if "tags" in parsed.get("derive", {}):
+        sys.exit("bilbo-next: BILBO_EVAL_DERIVE: the arm does not tag")
 
 
 def way_of(derive):

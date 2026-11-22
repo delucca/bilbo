@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use bilbo_derive::plan::{self, Asked, State};
 use bilbo_derive::record::{self, Run};
-use bilbo_derive::run::{Ended, Event};
+use bilbo_derive::run::{Ended, Event, Which};
 use bilbo_derive::spool::{self, Block};
 use bilbo_derive::view::Paragraph;
 use bilbo_llm::model::{Cause, Limits, Outcome, Prompt, Usage, What};
@@ -169,7 +169,7 @@ fn a_refusal_is_charged_at_once_and_ends_the_entry_for_the_run() {
         .then(failed(What::Unreadable));
     let plan = world.plan(Asked::Every);
     let report = world.calls(&mut script, &plan);
-    assert_eq!(report.ended, Ended::Failures);
+    assert_eq!(report.ended, Ended::Failures(Which::Writer));
     assert_eq!(script.prompts.len(), 2);
     assert_eq!(world.held.of(&world.extent_of(refused_entry, 1, 1)), 1);
     assert_eq!(world.held.of(&world.extent_of(refused_entry, 2, 2)), 0);
@@ -181,7 +181,8 @@ fn a_refusal_is_charged_at_once_and_ends_the_entry_for_the_run() {
 
 #[test]
 fn a_refusal_is_no_part_of_the_streak() {
-    for (failures, prompts, ended) in [(2, 2, Ended::Failures), (3, 5, Ended::Done)] {
+    for (failures, prompts, ended) in [(2, 2, Ended::Failures(Which::Writer)), (3, 5, Ended::Done)]
+    {
         let mut world = World::new();
         world.section.failures.value = failures;
         for _ in 0..5 {
@@ -303,8 +304,10 @@ fn a_window_that_always_fails_is_passed_over_after_derive_tries_runs() {
 
 #[test]
 fn a_streak_of_derive_failures_stops_the_run_and_charges_nothing() {
-    for (failures, prompts, ended, charged) in [(3, 3, Ended::Failures, 0), (4, 4, Ended::Done, 1)]
-    {
+    for (failures, prompts, ended, charged) in [
+        (3, 3, Ended::Failures(Which::Writer), 0),
+        (4, 4, Ended::Done, 1),
+    ] {
         let mut world = World::new();
         world.section.failures.value = failures;
         let parents: Vec<Id> = (0..4).map(|_| world.entry("plain", &["alpha"])).collect();
@@ -335,7 +338,7 @@ fn a_streak_of_derive_failures_stops_the_run_and_charges_nothing() {
         .then(answer("r1\nThe user asked about a topic."));
     let plan = world.plan(Asked::Every);
     let report = world.calls(&mut script, &plan);
-    assert_eq!(report.ended, Ended::Failures);
+    assert_eq!(report.ended, Ended::Failures(Which::Writer));
     assert_eq!(script.prompts.len(), 4);
     assert_eq!(script.queue.len(), 1);
     for parent in parents {
@@ -436,7 +439,7 @@ fn a_wait_over_the_retry_limit_ends_the_run_at_once() {
     let mut script = Script::new().then(busy(Some(seconds(301)))).then(good());
     let plan = world.plan(Asked::Every);
     let report = world.calls(&mut script, &plan);
-    assert!(matches!(report.ended, Ended::Wait(wait, _) if wait == seconds(301)));
+    assert!(matches!(report.ended, Ended::Wait(wait, _, _) if wait == seconds(301)));
     assert!(world.watch.slept.borrow().is_empty());
     assert_eq!(script.prompts.len(), 1);
 
@@ -458,7 +461,7 @@ fn a_provider_still_busy_after_the_retries_stops_the_run_and_charges_nothing() {
         let report = world.calls(&mut script, &plan);
         assert_eq!(
             report.ended,
-            Ended::Busy(Cause::new(What::RateLimit), attempts as u32),
+            Ended::Busy(Cause::new(What::RateLimit), attempts as u32, Which::Writer),
             "retries {retries}"
         );
         assert_eq!(script.prompts.len(), attempts, "retries {retries}");
@@ -505,7 +508,10 @@ fn a_stop_ends_the_run_at_once_and_charges_nothing() {
     let mut script = Script::new().then(stopped()).then(good());
     let plan = world.plan(Asked::Every);
     let report = world.calls(&mut script, &plan);
-    assert_eq!(report.ended, Ended::Stopped(Cause::new(What::Unauthorized)));
+    assert_eq!(
+        report.ended,
+        Ended::Stopped(Cause::new(What::Unauthorized), Which::Writer)
+    );
     assert_eq!(script.prompts.len(), 1);
     assert!(world.held.charges.is_empty());
     assert_eq!(field(&world.lines.0[0], 2), "stopped");
@@ -521,7 +527,10 @@ fn a_failure_then_a_busy_stop_charges_the_failure() {
         let mut script = Script::new().then(first).then(busy(None));
         let plan = world.plan(Asked::Every);
         let report = world.calls(&mut script, &plan);
-        assert_eq!(report.ended, Ended::Busy(Cause::new(What::RateLimit), 1));
+        assert_eq!(
+            report.ended,
+            Ended::Busy(Cause::new(What::RateLimit), 1, Which::Writer)
+        );
         assert_eq!(world.held.of(&world.extent_of(higher, 1, 1)), charged);
         assert_eq!(world.held.of(&world.extent_of(lower, 1, 1)), 0);
     }
@@ -536,7 +545,7 @@ fn a_failure_then_a_stop_charges_the_failure() {
         let mut script = Script::new().then(first).then(stopped());
         let plan = world.plan(Asked::Every);
         let report = world.calls(&mut script, &plan);
-        assert!(matches!(report.ended, Ended::Stopped(_)));
+        assert!(matches!(report.ended, Ended::Stopped(..)));
         assert_eq!(world.held.of(&world.extent_of(higher, 1, 1)), charged);
         assert_eq!(world.held.of(&world.extent_of(lower, 1, 1)), 0);
     }
@@ -691,7 +700,10 @@ fn the_writer_is_prepared_once_before_its_first_call_and_never_when_nothing_is_d
     script.refuse_prepare = Some("no key is set".to_owned());
     let plan = world.plan(Asked::Every);
     let report = world.calls(&mut script, &plan);
-    assert_eq!(report.ended, Ended::Prepare("no key is set".to_owned()));
+    assert_eq!(
+        report.ended,
+        Ended::Prepare("no key is set".to_owned(), Which::Writer)
+    );
     assert!(script.prompts.is_empty());
     assert!(world.spooled.files.is_empty());
     assert_eq!(script.prepared, 1);
@@ -1457,7 +1469,13 @@ fn a_spool_file_bilbo_cannot_read_stays_when_the_replay_fails() {
         .push(("s9999".to_owned(), b"not a block".to_vec()));
     world.shelf.refuse_capture = true;
     let format = crate::fakes::format();
-    let failed = bilbo_derive::run::replay(&mut world.shelf, &mut world.spooled, &format);
+    let failed = bilbo_derive::run::replay(
+        &mut world.shelf,
+        &mut world.spooled,
+        &format,
+        &mut world.memo,
+        world.cap,
+    );
     assert!(failed.is_err());
     assert!(world.spooled.files.iter().any(|(name, _)| name == "s9999"));
     world.shelf.refuse_capture = false;
@@ -1606,7 +1624,7 @@ fn three_failing_entries_ahead_do_not_keep_the_fourth_from_its_call() {
         .then(failed(What::ToolError))
         .then(failed(What::ToolError));
     let one = world.derive(&mut script);
-    assert_eq!(one.report.ended, Ended::Failures);
+    assert_eq!(one.report.ended, Ended::Failures(Which::Writer));
     assert!(world.held.charges.is_empty());
     assert_eq!(world.held.mark, Some(first));
     let mut script = Script::new()
@@ -1641,7 +1659,7 @@ fn a_run_the_provider_ends_begins_the_next_one_entry_further() {
     let newest = world.entry("plain", &["alpha"]);
     let mut script = Script::new().then(stopped());
     let done = world.derive(&mut script);
-    assert!(matches!(done.report.ended, Ended::Stopped(_)));
+    assert!(matches!(done.report.ended, Ended::Stopped(..)));
     assert_eq!(world.held.mark, Some(newest));
     let mut script = Script::new().then(stopped());
     world.derive(&mut script);
@@ -1712,8 +1730,14 @@ fn a_replay_that_removed_a_file_and_then_fails_still_says_so() {
         .push(("zzzz".to_owned(), b"not a block".to_vec()));
     world.spooled.fail_removal = Some(2);
     let format = crate::fakes::format();
-    let error = bilbo_derive::run::replay(&mut world.shelf, &mut world.spooled, &format)
-        .expect_err("a removal that fails");
+    let error = bilbo_derive::run::replay(
+        &mut world.shelf,
+        &mut world.spooled,
+        &format,
+        &mut world.memo,
+        world.cap,
+    )
+    .expect_err("a removal that fails");
     assert!(
         error.to_string().contains("a removal that fails"),
         "{error}"
@@ -1736,7 +1760,7 @@ fn a_setting_that_cuts_every_answer_charges_nothing() {
         let mut script = Script::new().always(move |_, _| outcome());
         for _ in 0..world.section.tries.value + 1 {
             let done = world.derive(&mut script);
-            assert_eq!(done.report.ended, Ended::Failures);
+            assert_eq!(done.report.ended, Ended::Failures(Which::Writer));
             assert_eq!(done.report.counts.passed, 0);
         }
         assert!(world.held.charges.is_empty());
@@ -1834,7 +1858,7 @@ fn a_request_the_provider_rejects_ends_its_entry_and_waits_for_its_proof() {
     }
     let mut script = Script::new().always(move |_, _| rejected());
     let done = world.derive(&mut script);
-    assert_eq!(done.report.ended, Ended::Failures);
+    assert_eq!(done.report.ended, Ended::Failures(Which::Writer));
     assert!(world.held.charges.is_empty());
 }
 
@@ -2019,7 +2043,10 @@ fn a_failure_that_waits_is_not_charged_when_the_provider_stops_the_run() {
         .then(stopped());
     let plan = world.plan(Asked::Every);
     let report = world.calls(&mut script, &plan);
-    assert_eq!(report.ended, Ended::Stopped(Cause::new(What::Unauthorized)));
+    assert_eq!(
+        report.ended,
+        Ended::Stopped(Cause::new(What::Unauthorized), Which::Writer)
+    );
     assert_eq!(script.prompts.len(), 3);
     assert!(world.held.charges.is_empty());
     assert_eq!(world.held.of(&world.extent_of(waiting, 1, 1)), 0);

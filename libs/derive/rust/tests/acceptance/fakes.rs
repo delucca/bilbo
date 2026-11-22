@@ -12,6 +12,10 @@ use bilbo_derive::record::{self, Run};
 use bilbo_derive::run::{self, Clock, Context, Replayed, Report, Sinks};
 use bilbo_derive::scope::{Named, Scope, Standing};
 use bilbo_derive::spool::{self, Block, Spool};
+use bilbo_derive::tags::{
+    self,
+    asked::{Answered, Asked as TagsAsked, Line as AskedLine},
+};
 use bilbo_derive::tries::{Extent, Tries};
 use bilbo_derive::view::{Counter, Format, Paragraph};
 use bilbo_entries::reader::{Passage, Reader};
@@ -52,6 +56,7 @@ struct Item {
     capture: Option<CaptureLabel>,
     belongs: Option<Id>,
     generations: Vec<Vec<Vec<u8>>>,
+    tags: Tags,
 }
 
 #[derive(Default)]
@@ -62,6 +67,7 @@ pub struct Shelf {
     pub touched: Rc<Cell<usize>>,
     pub captures: Vec<(String, String, Option<Id>, Vec<u8>)>,
     pub refuse_capture: bool,
+    pub set_metas: Vec<Id>,
 }
 
 impl Shelf {
@@ -72,6 +78,7 @@ impl Shelf {
             capture: None,
             belongs: None,
             generations: vec![records.iter().map(|text| line(text)).collect()],
+            tags: Tags::default(),
         });
     }
 
@@ -103,6 +110,7 @@ impl Shelf {
                     .map(|record| with_line(&record))
                     .collect(),
             ],
+            tags: Tags::default(),
         });
     }
 
@@ -113,6 +121,60 @@ impl Shelf {
 
     pub fn unseal(&mut self, id: Id) {
         self.sealed.retain(|(held, _)| *held != id);
+    }
+
+    pub fn by_capture_head(&self, parent: Id) -> Option<(Generation, u64)> {
+        plan::held(self, parent)
+            .expect("a head")
+            .map(|head| (head.generation, head.records))
+    }
+
+    pub fn notes_item(&self, parent: Id) -> Id {
+        let label = CaptureLabel::new(format!("derive:{parent}"));
+        self.items
+            .iter()
+            .find(|item| item.capture == label)
+            .expect("a notes entry")
+            .id
+    }
+
+    pub fn regenerate_notes(&mut self, parent: Id, records: &[Vec<u8>]) {
+        let id = self.notes_item(parent);
+        self.item_mut(id)
+            .generations
+            .push(records.iter().map(|record| with_line(record)).collect());
+    }
+
+    pub fn append_notes(&mut self, parent: Id, records: &[Vec<u8>]) {
+        let id = self.notes_item(parent);
+        let newest = self
+            .item_mut(id)
+            .generations
+            .last_mut()
+            .expect("a generation");
+        newest.extend(records.iter().map(|record| with_line(record)));
+    }
+
+    pub fn rewrite_notes(&mut self, parent: Id, at: usize, record: &[u8]) {
+        let id = self.notes_item(parent);
+        let newest = self
+            .item_mut(id)
+            .generations
+            .last_mut()
+            .expect("a generation");
+        newest[at] = with_line(record);
+    }
+
+    pub fn tags_of(&self, id: Id) -> Tags {
+        self.items
+            .iter()
+            .find(|item| item.id == id)
+            .map(|item| item.tags.clone())
+            .unwrap_or_default()
+    }
+
+    pub fn put_tags(&mut self, id: Id, tags: Tags) {
+        self.item_mut(id).tags = tags;
     }
 
     pub fn ids(&self) -> Vec<Id> {
@@ -187,6 +249,7 @@ impl Entries for Shelf {
                 capture: Some(input.label.clone()),
                 belongs: input.id_label,
                 generations: vec![records.clone()],
+                tags: Tags::default(),
             });
             return Ok(Captured::New(kept(made, 1, 1, records.len())));
         };
@@ -220,8 +283,10 @@ impl Entries for Shelf {
         )))
     }
 
-    fn set_meta(&mut self, _id: Id, _meta: &Meta) -> Result<u64, StoreError> {
+    fn set_meta(&mut self, id: Id, meta: &Meta) -> Result<u64, StoreError> {
         self.touch();
+        self.set_metas.push(id);
+        self.item_mut(id).tags = meta.labels.tags.clone();
         Ok(0)
     }
 
@@ -255,7 +320,7 @@ impl Entries for Shelf {
                 labels: StoredLabels {
                     capture: item.capture.clone(),
                     id: item.belongs,
-                    tags: Tags::default(),
+                    tags: item.tags.clone(),
                 },
                 captured: SystemTime::UNIX_EPOCH,
             }))
@@ -557,8 +622,122 @@ impl Spooled {
     pub fn blocks(&self) -> Vec<Block> {
         self.files
             .iter()
-            .map(|(_, bytes)| spool::read(bytes).expect("a block"))
+            .filter_map(|(_, bytes)| spool::read(bytes).ok())
             .collect()
+    }
+}
+
+pub struct Memo {
+    pub lines: Vec<AskedLine>,
+    pub asks: Cell<usize>,
+    pub answers: usize,
+    pub fail_answer: Option<usize>,
+}
+
+impl Memo {
+    pub fn charges_of(&self, entry: Id) -> u8 {
+        self.lines
+            .iter()
+            .find_map(|line| match line {
+                AskedLine::Charged {
+                    entry: held,
+                    charges,
+                    ..
+                } if *held == entry => Some(*charges),
+                _ => None,
+            })
+            .unwrap_or(0)
+    }
+}
+
+impl Default for Memo {
+    fn default() -> Memo {
+        Memo {
+            lines: Vec::new(),
+            asks: Cell::new(0),
+            answers: 0,
+            fail_answer: None,
+        }
+    }
+}
+
+fn of(line: &AskedLine) -> Id {
+    match line {
+        AskedLine::Answered(answered) => answered.entry,
+        AskedLine::Passed { entry, .. } | AskedLine::Charged { entry, .. } => *entry,
+    }
+}
+
+impl TagsAsked for Memo {
+    fn answered(&self, entry: Id) -> io::Result<Option<Answered>> {
+        self.asks.set(self.asks.get() + 1);
+        Ok(self.lines.iter().find_map(|line| match line {
+            AskedLine::Answered(answered) if answered.entry == entry => Some(answered.clone()),
+            _ => None,
+        }))
+    }
+
+    fn passed(&self, entry: Id) -> io::Result<Option<u64>> {
+        self.asks.set(self.asks.get() + 1);
+        Ok(self.lines.iter().find_map(|line| match line {
+            AskedLine::Passed {
+                entry: held,
+                asking,
+            } if *held == entry => Some(*asking),
+            _ => None,
+        }))
+    }
+
+    fn charges(&self, entry: Id, asking: u64) -> io::Result<u8> {
+        self.asks.set(self.asks.get() + 1);
+        Ok(self
+            .lines
+            .iter()
+            .find_map(|line| match line {
+                AskedLine::Charged {
+                    entry: held,
+                    asking: charged,
+                    charges,
+                } if *held == entry && *charged == asking => Some(*charges),
+                _ => None,
+            })
+            .unwrap_or(0))
+    }
+
+    fn charge(&mut self, entry: Id, asking: u64) -> io::Result<()> {
+        let before = self.charges(entry, asking)?;
+        self.lines.retain(
+            |line| !matches!(line, AskedLine::Charged { entry: held, .. } if *held == entry),
+        );
+        self.lines.push(AskedLine::Charged {
+            entry,
+            asking,
+            charges: before + 1,
+        });
+        Ok(())
+    }
+
+    fn answer(&mut self, answered: &Answered, asking: u64) -> io::Result<()> {
+        self.answers += 1;
+        if self.fail_answer == Some(self.answers) {
+            return Err(io::Error::other("an answer that fails"));
+        }
+        let entry = answered.entry;
+        self.lines.retain(|line| match line {
+            AskedLine::Answered(_) | AskedLine::Charged { .. } => of(line) != entry,
+            AskedLine::Passed { asking: passed, .. } => of(line) != entry || *passed != asking,
+        });
+        self.lines.push(AskedLine::Answered(answered.clone()));
+        Ok(())
+    }
+
+    fn pass(&mut self, entry: Id, asking: u64) -> io::Result<()> {
+        self.lines.retain(|line| match line {
+            AskedLine::Passed { .. } | AskedLine::Charged { .. } => of(line) != entry,
+            AskedLine::Answered(_) => true,
+        });
+        self.lines.push(AskedLine::Passed { entry, asking });
+        Ok(())
     }
 }
 
@@ -597,6 +776,9 @@ pub struct Script {
     pub limits: Vec<Limits>,
     pub prepared: usize,
     pub refuse_prepare: Option<String>,
+    pub refuse_bound: Option<String>,
+    pub name: &'static str,
+    pub seen: Option<Rc<RefCell<Vec<String>>>>,
 }
 
 impl Script {
@@ -609,6 +791,15 @@ impl Script {
             limits: Vec::new(),
             prepared: 0,
             refuse_prepare: None,
+            refuse_bound: None,
+            name: "writer",
+            seen: None,
+        }
+    }
+
+    pub fn record(&self, what: &str) {
+        if let Some(seen) = &self.seen {
+            seen.borrow_mut().push(format!("{what}:{}", self.name));
         }
     }
 
@@ -626,10 +817,17 @@ impl Script {
 impl Model for Script {
     fn prepare(&mut self) -> Result<(), String> {
         self.prepared += 1;
+        self.record("prepare");
         self.refuse_prepare.clone().map_or(Ok(()), Err)
     }
 
+    fn bound(&self) -> Result<(), String> {
+        self.record("bound");
+        self.refuse_bound.clone().map_or(Ok(()), Err)
+    }
+
     fn call(&mut self, prompt: &Prompt, limits: &Limits) -> Outcome {
+        self.record("call");
         self.prompts.push(prompt.clone());
         self.limits.push(*limits);
         let called = self.prompts.len();
@@ -713,6 +911,12 @@ pub struct World {
     pub redo: bool,
     pub readers: Vec<Box<dyn Reader>>,
     pub tokens: Box<dyn Tokens>,
+    pub tags: Option<tags::keys::Section>,
+    pub tags_id: String,
+    pub tags_model: String,
+    pub provider: String,
+    pub memo: Memo,
+    pub cap: usize,
     next: u8,
 }
 
@@ -766,6 +970,12 @@ impl World {
             redo: false,
             readers: readers(),
             tokens: Box::new(Estimate),
+            tags: None,
+            tags_id: tags::instruction::id(),
+            tags_model: "model-a".to_owned(),
+            provider: "fake".to_owned(),
+            memo: Memo::default(),
+            cap: 32,
             next: 0,
         }
     }
@@ -877,6 +1087,50 @@ impl World {
         made
     }
 
+    pub fn notes_digest(&self, parent: Id) -> u64 {
+        let head = plan::held(&self.shelf, parent)
+            .expect("a head")
+            .expect("notes");
+        let held = self
+            .shelf
+            .read(
+                head.id,
+                head.generation,
+                RecordRange {
+                    first: 1,
+                    count: head.records,
+                },
+            )
+            .expect("the notes' records");
+        let format = format();
+        let mut digest = None;
+        for record in &held {
+            let bare = record
+                .strip_suffix(
+                    b"
+",
+                )
+                .unwrap_or(record);
+            if (format.read)(bare).is_some() {
+                digest = Some(tags::asked::digest(digest, bare));
+            }
+        }
+        digest.expect("a note")
+    }
+
+    pub fn tags_rules(&self) -> Option<tags::Rules<'_>> {
+        self.tags
+            .as_ref()
+            .filter(|section| section.enabled.value && !section.pick.value.is_empty())
+            .map(|section| tags::Rules {
+                section,
+                instruction: tags::instruction::text(),
+                id: &self.tags_id,
+                model: &self.tags_model,
+                cap: self.cap,
+            })
+    }
+
     pub fn plan(&self, asked: Asked<'_>) -> Plan {
         let format = format();
         let readers: Vec<&dyn Reader> = self.readers.iter().map(|reader| &**reader).collect();
@@ -886,6 +1140,7 @@ impl World {
                 sealed: &self.shelf,
                 scope: &self.table,
                 tries: &self.held,
+                asked: &self.memo,
             },
             &Rules {
                 readers: &readers,
@@ -895,9 +1150,10 @@ impl World {
                 tokens: &*self.tokens,
                 bound: self.bound,
                 model: "model-a",
-                provider: "fake",
+                provider: &self.provider,
                 redo: self.redo,
                 now: self.watch.now.get(),
+                tags: self.tags_rules(),
             },
             &self.shelf.ids(),
             asked,
@@ -906,7 +1162,27 @@ impl World {
     }
 
     pub fn calls(&mut self, writer: &mut Script, plan: &Plan) -> Report {
+        self.calls_with(writer, None, plan)
+    }
+
+    pub fn calls_with(
+        &mut self,
+        writer: &mut Script,
+        tagger: Option<&mut Script>,
+        plan: &Plan,
+    ) -> Report {
         let format = format();
+        let rules = self
+            .tags
+            .as_ref()
+            .filter(|section| section.enabled.value && !section.pick.value.is_empty())
+            .map(|section| tags::Rules {
+                section,
+                instruction: tags::instruction::text(),
+                id: &self.tags_id,
+                model: &self.tags_model,
+                cap: self.cap,
+            });
         let counter = Counter {
             tokens: &*self.tokens,
             bound: self.bound,
@@ -915,6 +1191,8 @@ impl World {
             &plan.due,
             Sinks {
                 writer,
+                tagger: tagger.map(|tagger| -> &mut dyn Model { tagger }),
+                asked: &mut self.memo,
                 spool: &mut self.spooled,
                 tries: &mut self.held,
                 log: &mut self.lines,
@@ -922,18 +1200,30 @@ impl World {
             },
             &Context {
                 section: &self.section,
-                provider: "fake",
+                provider: &self.provider,
                 limits: self.limits,
                 format: &format,
                 counter: &counter,
+                tags: rules,
+                redo: self.redo,
             },
         )
         .expect("calls")
     }
 
     pub fn replay(&mut self) -> Replayed {
+        self.try_replay().expect("replay")
+    }
+
+    pub fn try_replay(&mut self) -> Result<Replayed, Box<run::Interrupted>> {
         let format = format();
-        run::replay(&mut self.shelf, &mut self.spooled, &format).expect("replay")
+        run::replay(
+            &mut self.shelf,
+            &mut self.spooled,
+            &format,
+            &mut self.memo,
+            self.cap,
+        )
     }
 
     pub fn derive(&mut self, writer: &mut Script) -> Done {

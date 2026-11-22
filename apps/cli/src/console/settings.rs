@@ -116,6 +116,7 @@ pub fn keys(kind: &[&'static KindKey], groups: &[&'static Group]) -> Vec<&'stati
         .chain(bilbo_llm::keys::ABOUT)
         .chain(groups.iter().flat_map(|group| group.about.iter().copied()))
         .chain(bilbo_derive::keys::ABOUT)
+        .chain(bilbo_derive::tags::keys::ABOUT)
         .chain(kind.iter().map(|key| &key.about))
         .collect()
 }
@@ -178,6 +179,7 @@ pub struct Settings {
     pub recall: bilbo_search::recall::keys::Section,
     pub llm: bilbo_llm::keys::Section,
     pub derive: bilbo_derive::keys::Section,
+    pub tags: bilbo_derive::tags::keys::Section,
     pub kind: Vec<(&'static KindKey, Resolved<usize>)>,
     pub group: Vec<&'static Group>,
     shown: Vec<Shown>,
@@ -225,6 +227,7 @@ impl Settings {
         shown.extend(self.llm.shown());
         shown.extend(self.shown.iter().cloned());
         shown.extend(self.derive.shown());
+        shown.extend(self.tags.shown());
         shown.extend(self.kind.iter().map(|(key, resolved)| key.shown(resolved)));
         shown
     }
@@ -303,6 +306,7 @@ pub fn load(
         recall: bilbo_search::recall::keys::section(&source)?,
         llm: bilbo_llm::keys::section(&source)?,
         derive: bilbo_derive::keys::section(&source)?,
+        tags: bilbo_derive::tags::keys::section(&source)?,
         kind: kind
             .iter()
             .map(|key| Ok((*key, key.resolve(&source)?)))
@@ -536,6 +540,11 @@ mod tests {
                 "derive.retry_limit",
                 "derive.tries",
                 "derive.failures",
+                "derive.tags.enabled",
+                "derive.tags.pick",
+                "derive.tags.model",
+                "derive.tags.most",
+                "derive.tags.notes",
                 "markdown.heading_width",
                 "session.unpack_floor",
                 "session.unpack_ratio",
@@ -601,7 +610,7 @@ mod tests {
             .err(),
             Some(
                 "/c.toml:3: unknown key store.sealat; the keys are paths.root, paths.state, \
-                 paths.cache, store.seal_at, store.seal_after, store.compression, store.tear_budget, store.wait, store.poll, follow, read.budget, read.outline_width, read.matches_listed, tag.cap, search.chunk_tokens, search.chunk_overlap, search.workers, search.index_memory, search.merge_deleted_percent, search.entry_tries, search.label_batch, search.list_limit, recall.budget, recall.notes_budget, recall.candidates, recall.cap, recall.record_cap, recall.copy_share, recall.copy_words, recall.question_words, recall.languages, recall.bm25_k1, recall.bm25_b, recall.read_batch, recall.typo_terms, recall.typo_letters, recall.typo_max_letters, recall.typo_two_edits, recall.pair_weight, llm.provider, llm.response, llm.timeout, llm.poll, llm.anthropic.model, llm.anthropic.via, llm.anthropic.api.endpoint, llm.anthropic.api.version, llm.anthropic.api.key_env, llm.anthropic.api.key_command, llm.anthropic.api.headers, llm.anthropic.api.extra, llm.anthropic.tool.program, llm.anthropic.tool.effort, llm.anthropic.tool.arguments, llm.anthropic.tool.inherit, llm.anthropic.tool.environment, llm.anthropic.tool.project_files, llm.openai.model, llm.openai.via, llm.openai.api.endpoint, llm.openai.api.key_env, llm.openai.api.key_command, llm.openai.api.headers, llm.openai.api.extra, llm.openai.tool.program, llm.openai.tool.effort, llm.openai.tool.arguments, llm.openai.tool.inherit, llm.openai.tool.environment, llm.openai.tool.home, llm.openai.tool.system_files, derive.enabled, derive.in, derive.not_in, derive.instructions, derive.quiet, derive.window, derive.passage, derive.passage_head, derive.earlier, derive.names, derive.answer_tokens, derive.calls, derive.retries, derive.retry_wait, derive.retry_factor, derive.retry_limit, derive.tries, derive.failures, markdown.heading_width, session.unpack_floor, session.unpack_ratio, session.unpack_window, session.wide_fields"
+                 paths.cache, store.seal_at, store.seal_after, store.compression, store.tear_budget, store.wait, store.poll, follow, read.budget, read.outline_width, read.matches_listed, tag.cap, search.chunk_tokens, search.chunk_overlap, search.workers, search.index_memory, search.merge_deleted_percent, search.entry_tries, search.label_batch, search.list_limit, recall.budget, recall.notes_budget, recall.candidates, recall.cap, recall.record_cap, recall.copy_share, recall.copy_words, recall.question_words, recall.languages, recall.bm25_k1, recall.bm25_b, recall.read_batch, recall.typo_terms, recall.typo_letters, recall.typo_max_letters, recall.typo_two_edits, recall.pair_weight, llm.provider, llm.response, llm.timeout, llm.poll, llm.anthropic.model, llm.anthropic.via, llm.anthropic.api.endpoint, llm.anthropic.api.version, llm.anthropic.api.key_env, llm.anthropic.api.key_command, llm.anthropic.api.headers, llm.anthropic.api.extra, llm.anthropic.tool.program, llm.anthropic.tool.effort, llm.anthropic.tool.arguments, llm.anthropic.tool.inherit, llm.anthropic.tool.environment, llm.anthropic.tool.project_files, llm.openai.model, llm.openai.via, llm.openai.api.endpoint, llm.openai.api.key_env, llm.openai.api.key_command, llm.openai.api.headers, llm.openai.api.extra, llm.openai.tool.program, llm.openai.tool.effort, llm.openai.tool.arguments, llm.openai.tool.inherit, llm.openai.tool.environment, llm.openai.tool.home, llm.openai.tool.system_files, derive.enabled, derive.in, derive.not_in, derive.instructions, derive.quiet, derive.window, derive.passage, derive.passage_head, derive.earlier, derive.names, derive.answer_tokens, derive.calls, derive.retries, derive.retry_wait, derive.retry_factor, derive.retry_limit, derive.tries, derive.failures, derive.tags.enabled, derive.tags.pick, derive.tags.model, derive.tags.most, derive.tags.notes, markdown.heading_width, session.unpack_floor, session.unpack_ratio, session.unpack_window, session.wide_fields"
                     .to_owned()
             )
         );
@@ -941,6 +950,10 @@ mod tests {
                 "BILBO_DERIVE_RETRY_FACTOR",
                 "BILBO_DERIVE_RETRY_LIMIT",
                 "BILBO_DERIVE_RETRY_WAIT",
+                "BILBO_DERIVE_TAGS_ENABLED",
+                "BILBO_DERIVE_TAGS_MODEL",
+                "BILBO_DERIVE_TAGS_MOST",
+                "BILBO_DERIVE_TAGS_NOTES",
                 "BILBO_DERIVE_TRIES",
                 "BILBO_DERIVE_WINDOW",
                 "BILBO_HOME",
