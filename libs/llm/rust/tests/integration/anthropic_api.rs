@@ -1,8 +1,8 @@
 use std::path::Path;
 use std::time::{Duration, Instant};
 
-use bilbo_derive::anthropic::api::{self, Anthropic};
-use bilbo_derive::writer::{Cause, Limits, Outcome, Prompt, Usage, What, Writer};
+use bilbo_llm::anthropic::api::{self, Anthropic};
+use bilbo_llm::writer::{Cause, Limits, Outcome, Prompt, Usage, What, Writer};
 use bilbo_provider::{Provider, Reply, Request};
 use bilbo_settings::file::File;
 use bilbo_settings::key::Source;

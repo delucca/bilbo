@@ -75,6 +75,7 @@ version = "0.0.0"
 dependencies = [
  "bilbo-derive",
  "bilbo-entries",
+ "bilbo-llm",
  "bilbo-provider",
  "bilbo-search",
  "bilbo-settings",
@@ -94,12 +95,10 @@ version = "0.0.0"
 dependencies = [
  "bilbo-entries",
  "bilbo-layout",
- "bilbo-provider",
+ "bilbo-llm",
  "bilbo-settings",
  "bilbo-store",
- "rustix",
  "serde_json",
- "ureq",
  "xxhash-rust",
 ]
 
@@ -129,6 +128,18 @@ dependencies = [
  "proc-macro2",
  "runfiles",
  "toml",
+]
+
+[[package]]
+name = "bilbo-llm"
+version = "0.0.0"
+dependencies = [
+ "bilbo-layout",
+ "bilbo-provider",
+ "bilbo-settings",
+ "rustix",
+ "serde_json",
+ "ureq",
 ]
 
 [[package]]

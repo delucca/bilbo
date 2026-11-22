@@ -1,7 +1,7 @@
 use bilbo_derive::instruction::Origin;
 use bilbo_derive::plan::State;
 use bilbo_derive::run::{Counts, Ended};
-use bilbo_derive::writer::{Cause, What};
+use bilbo_llm::writer::{Cause, What};
 use bilbo_store::id::Id;
 
 use crate::console::message::{Detail, Message, group};
@@ -282,7 +282,7 @@ mod tests {
     use bilbo_derive::instruction::Origin;
     use bilbo_derive::plan::State;
     use bilbo_derive::run::{Counts, Ended};
-    use bilbo_derive::writer::{Cause, What};
+    use bilbo_llm::writer::{Cause, What};
     use bilbo_store::id::Id;
 
     use super::{

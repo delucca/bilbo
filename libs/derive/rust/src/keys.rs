@@ -9,7 +9,8 @@ use bilbo_settings::folder;
 use bilbo_settings::key::{About, Default, Key, Resolved, Shown, Source, Value, quote};
 use bilbo_settings::size::{self, MIB};
 
-use crate::{table, tries};
+use crate::tries;
+use bilbo_llm::table;
 
 fn count(value: &Value<'_>, range: RangeInclusive<usize>) -> Result<usize, Error> {
     value

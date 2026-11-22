@@ -3,7 +3,7 @@ use std::os::unix::fs::{PermissionsExt, symlink};
 use std::path::Path;
 use std::time::{Duration, Instant};
 
-use bilbo_derive::child::{self, Bounds, End, Environment};
+use bilbo_llm::child::{self, Bounds, End, Environment};
 
 use crate::{Scratch, gone, signalable};
 

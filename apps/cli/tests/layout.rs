@@ -12,16 +12,17 @@ const COMPONENTS: [&str; 7] = [
 const MODULE: &str = "console";
 const THEME: [&str; 2] = ["console", "theme"];
 const ROOTS: [&str; 2] = ["crate", "bilbo_cli"];
-const SHARED: [&str; 5] = [
+const SHARED: [&str; 6] = [
     "bilbo_derive",
     "bilbo_entries",
+    "bilbo_llm",
     "bilbo_search",
     "bilbo_settings",
     "bilbo_store",
 ];
 const OWN: &str = "bilbo_";
 const ADAPTERS: [(&str, &[&str]); 3] = [
-    ("bilbo_derive", &["anthropic", "openai"]),
+    ("bilbo_llm", &["anthropic", "openai"]),
     ("bilbo_entries", &["markdown", "note", "session"]),
     ("bilbo_search", &["qwen", "tantivy", "whichlang"]),
 ];

@@ -13,7 +13,7 @@ use crate::record::{self, Run, next_same};
 use crate::spool::{self, Block, Spool, bare};
 use crate::tries::{Extent, Tries};
 use crate::view::{self, Counter, Format, Paragraph};
-use crate::writer::{Cause, Limits, Outcome, Prompt, Usage, What, Whose, Writer};
+use bilbo_llm::writer::{Cause, Limits, Outcome, Prompt, Usage, What, Whose, Writer};
 
 pub trait Clock {
     fn now(&self) -> SystemTime;

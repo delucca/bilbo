@@ -14,9 +14,9 @@ use bilbo_derive::scope::{Named, Scope, Standing};
 use bilbo_derive::spool::{self, Block, Spool};
 use bilbo_derive::tries::{Extent, Tries};
 use bilbo_derive::view::{Counter, Format, Paragraph};
-use bilbo_derive::writer::{Cause, Limits, Outcome, Prompt, Usage, What, Writer};
 use bilbo_entries::reader::{Passage, Reader};
 use bilbo_entries::tokens::{Estimate, Tokens};
+use bilbo_llm::writer::{Cause, Limits, Outcome, Prompt, Usage, What, Writer};
 use bilbo_store::entries::{
     Capture, CaptureError, Captured, Change, Cursor, Entries, Generation, Head, Kept, Mark, Meta,
     RecordRange, StoreError,

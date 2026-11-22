@@ -31,6 +31,7 @@ rust_library(
     deps = [
         ":build",
         "//libs/entries:rust",
+        "//libs/llm:rust",
         "//libs/settings:rust",
         "//libs/store:rust",
     ] + all_crate_deps(normal = True),
@@ -38,7 +39,6 @@ rust_library(
 
 bilbo_rust_test(
     name = "unit",
-    compile_data = glob(["fixtures/**"]),
     crate = ":rust",
     layer = "unit",
     lint_config = ":lints",
@@ -54,22 +54,9 @@ bilbo_rust_test(
     deps = [
         ":rust",
         "//libs/entries:rust",
+        "//libs/llm:rust",
         "//libs/store:rust",
     ] + all_crate_deps(normal = True),
-)
-
-bilbo_rust_test(
-    name = "integration",
-    srcs = glob(["tests/integration/*.rs"]),
-    compile_data = glob(["fixtures/**"]),
-    crate_root = "tests/integration/main.rs",
-    layer = "integration",
-    lint_config = ":lints",
-    deps = [
-        ":rust",
-        "//libs/settings:rust",
-        "//tools/rust/provider",
-    ],
 )
 
 bilbo_rust_test(

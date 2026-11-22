@@ -3,8 +3,8 @@ use std::os::unix::fs::{PermissionsExt, symlink};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use bilbo_derive::anthropic::tool::{self, Claude};
-use bilbo_derive::writer::{Cause, Limits, Outcome, Prompt, Usage, Variables, What, Writer};
+use bilbo_llm::anthropic::tool::{self, Claude};
+use bilbo_llm::writer::{Cause, Limits, Outcome, Prompt, Usage, Variables, What, Writer};
 use bilbo_settings::file::File;
 use bilbo_settings::key::Source;
 

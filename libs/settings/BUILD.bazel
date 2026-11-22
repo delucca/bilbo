@@ -5,6 +5,7 @@ alias(
         "//apps/cli:__pkg__",
         "//libs/derive/rust:__pkg__",
         "//libs/entries/rust:__pkg__",
+        "//libs/llm/rust:__pkg__",
         "//libs/search/rust:__pkg__",
         "//libs/store/rust:__pkg__",
     ],

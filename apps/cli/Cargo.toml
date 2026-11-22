@@ -13,6 +13,7 @@ path = "src/main.rs"
 [dependencies]
 bilbo-derive.workspace = true
 bilbo-entries.workspace = true
+bilbo-llm.workspace = true
 bilbo-search.workspace = true
 bilbo-settings.workspace = true
 bilbo-store.workspace = true

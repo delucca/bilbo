@@ -23,6 +23,7 @@ rust_library(
     deps = [
         "//libs/derive:rust",
         "//libs/entries:rust",
+        "//libs/llm:rust",
         "//libs/search:rust",
         "//libs/settings:rust",
         "//libs/store:rust",
@@ -83,6 +84,7 @@ bilbo_rust_test(
         ":bilbo_cli",
         "//libs/derive:rust",
         "//libs/entries:rust",
+        "//libs/llm:rust",
         "//libs/search:rust",
         "//libs/store:rust",
     ],
@@ -142,6 +144,7 @@ bilbo_rust_test(
         ":bilbo_cli",
         "//libs/derive:rust",
         "//libs/entries:rust",
+        "//libs/llm:rust",
         "//libs/search:rust",
         "//libs/store:rust",
         "//tools/rust/provider",

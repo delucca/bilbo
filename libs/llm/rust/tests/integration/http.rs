@@ -1,6 +1,6 @@
 use std::time::{Duration, Instant};
 
-use bilbo_derive::http::{self, Endpoint, Fault, Response};
+use bilbo_llm::http::{self, Endpoint, Fault, Response};
 use bilbo_provider::{Provider, Reply};
 
 const WAIT: Duration = Duration::from_secs(5);

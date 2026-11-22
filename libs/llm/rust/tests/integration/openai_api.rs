@@ -2,8 +2,8 @@ use std::net::TcpListener;
 use std::path::Path;
 use std::time::Duration;
 
-use bilbo_derive::openai::api::{self, OpenAi};
-use bilbo_derive::writer::{Cause, Limits, Outcome, Prompt, Usage, What, Writer};
+use bilbo_llm::openai::api::{self, OpenAi};
+use bilbo_llm::writer::{Cause, Limits, Outcome, Prompt, Usage, What, Writer};
 use bilbo_provider::{Provider, Reply};
 use bilbo_settings::file::File;
 use bilbo_settings::key::Source;

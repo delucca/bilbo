@@ -9,7 +9,7 @@ use bilbo_derive::record::{self, Run};
 use bilbo_derive::run::{Ended, Event};
 use bilbo_derive::spool::{self, Block};
 use bilbo_derive::view::Paragraph;
-use bilbo_derive::writer::{Cause, Limits, Outcome, Prompt, Usage, What};
+use bilbo_llm::writer::{Cause, Limits, Outcome, Prompt, Usage, What};
 use bilbo_store::entries::{Entries, Generation};
 use bilbo_store::id::Id;
 use bilbo_store::opaque;
@@ -1676,7 +1676,7 @@ fn the_runs_totals_do_not_overflow() {
     let mut world = World::new();
     world.entry("plain", &["alpha"]);
     world.entry("plain", &["beta"]);
-    let huge = || bilbo_derive::writer::Outcome::Answer {
+    let huge = || bilbo_llm::writer::Outcome::Answer {
         text: "r1\nThe user asked about a topic.".to_owned(),
         usage: crate::fakes::usage(u64::MAX, u64::MAX),
         model: None,

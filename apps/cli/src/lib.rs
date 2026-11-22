@@ -80,13 +80,13 @@ pub fn kind_keys() -> Vec<&'static KindKey> {
 }
 
 static ANTHROPIC: Group = Group {
-    about: &bilbo_derive::anthropic::ABOUT,
-    resolve: bilbo_derive::anthropic::shown,
+    about: &bilbo_llm::anthropic::ABOUT,
+    resolve: bilbo_llm::anthropic::shown,
 };
 
 static OPENAI: Group = Group {
-    about: &bilbo_derive::openai::ABOUT,
-    resolve: bilbo_derive::openai::shown,
+    about: &bilbo_llm::openai::ABOUT,
+    resolve: bilbo_llm::openai::shown,
 };
 
 pub fn provider_keys() -> Vec<&'static Group> {
@@ -95,11 +95,8 @@ pub fn provider_keys() -> Vec<&'static Group> {
 
 pub fn providers() -> Vec<(&'static str, &'static str)> {
     vec![
-        (
-            bilbo_derive::anthropic::NAME,
-            bilbo_derive::anthropic::SUMMARY,
-        ),
-        (bilbo_derive::openai::NAME, bilbo_derive::openai::SUMMARY),
+        (bilbo_llm::anthropic::NAME, bilbo_llm::anthropic::SUMMARY),
+        (bilbo_llm::openai::NAME, bilbo_llm::openai::SUMMARY),
     ]
 }
 
@@ -108,7 +105,7 @@ pub fn writer(settings: &Settings, var: &Var) -> Result<derive::Built, Failure> 
     let timeout = settings.derive.timeout.value;
     let response = usize::try_from(settings.derive.response.value).unwrap_or(usize::MAX);
     let poll = settings.derive.poll.value;
-    let reading = |names: Vec<String>| -> bilbo_derive::writer::Variables {
+    let reading = |names: Vec<String>| -> bilbo_llm::writer::Variables {
         let var = Rc::clone(var);
         Box::new(move |asked: &str| {
             if names.iter().any(|name| name == asked) {
@@ -120,11 +117,11 @@ pub fn writer(settings: &Settings, var: &Var) -> Result<derive::Built, Failure> 
     };
     let source = settings.source(&**var);
     let name = settings.derive.provider.value.as_str();
-    let (writer, api): (Box<dyn bilbo_derive::writer::Writer>, bool) = match name {
-        bilbo_derive::anthropic::NAME => {
-            let section = bilbo_derive::anthropic::section(&source)?;
-            let api = section.via.value == bilbo_derive::writer::Way::Api;
-            let host = bilbo_derive::writer::Host {
+    let (writer, api): (Box<dyn bilbo_llm::writer::Writer>, bool) = match name {
+        bilbo_llm::anthropic::NAME => {
+            let section = bilbo_llm::anthropic::section(&source)?;
+            let api = section.via.value == bilbo_llm::writer::Way::Api;
+            let host = bilbo_llm::writer::Host {
                 variables: reading(section.reads()),
                 work: derive::disk::work(&state),
                 state,
@@ -132,12 +129,12 @@ pub fn writer(settings: &Settings, var: &Var) -> Result<derive::Built, Failure> 
                 response,
                 poll,
             };
-            (bilbo_derive::anthropic::writer(section, host), api)
+            (bilbo_llm::anthropic::writer(section, host), api)
         }
-        bilbo_derive::openai::NAME => {
-            let section = bilbo_derive::openai::section(&source)?;
-            let api = section.via.value == bilbo_derive::writer::Way::Api;
-            let host = bilbo_derive::writer::Host {
+        bilbo_llm::openai::NAME => {
+            let section = bilbo_llm::openai::section(&source)?;
+            let api = section.via.value == bilbo_llm::writer::Way::Api;
+            let host = bilbo_llm::writer::Host {
                 variables: reading(section.reads()),
                 work: derive::disk::work(&state),
                 state,
@@ -145,7 +142,7 @@ pub fn writer(settings: &Settings, var: &Var) -> Result<derive::Built, Failure> 
                 response,
                 poll,
             };
-            (bilbo_derive::openai::writer(section, host), api)
+            (bilbo_llm::openai::writer(section, host), api)
         }
         other => {
             let names: Vec<&str> = providers().iter().map(|(name, _)| *name).collect();

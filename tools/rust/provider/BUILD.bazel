@@ -16,7 +16,7 @@ rust_library(
     lint_config = ":lints",
     visibility = [
         "//apps/cli:__pkg__",
-        "//libs/derive/rust:__pkg__",
+        "//libs/llm/rust:__pkg__",
         "//tests/e2e/cli:__pkg__",
     ],
 )

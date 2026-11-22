@@ -1,0 +1,8 @@
+alias(
+    name = "rust",
+    actual = "//libs/llm/rust",
+    visibility = [
+        "//apps/cli:__pkg__",
+        "//libs/derive/rust:__pkg__",
+    ],
+)

@@ -1,8 +1,8 @@
 use std::fs;
 use std::time::Duration;
 
-use bilbo_derive::child::Bounds;
-use bilbo_derive::secret::{self, Secret, Source};
+use bilbo_llm::child::Bounds;
+use bilbo_llm::secret::{self, Secret, Source};
 
 use crate::Scratch;
 

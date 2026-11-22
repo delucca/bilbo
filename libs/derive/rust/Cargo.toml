@@ -8,16 +8,14 @@ description = "Derived entries: the notes a model writes from other entries."
 
 [dependencies]
 bilbo-entries.workspace = true
+bilbo-llm.workspace = true
 bilbo-settings.workspace = true
 bilbo-store.workspace = true
-rustix = { workspace = true, features = ["process"] }
 serde_json.workspace = true
-ureq.workspace = true
 xxhash-rust.workspace = true
 
 [dev-dependencies]
 bilbo-layout.workspace = true
-bilbo-provider.workspace = true
 
 [lints]
 workspace = true
