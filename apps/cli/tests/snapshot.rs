@@ -10,7 +10,7 @@ use bilbo_cli::{kinds, readers, run};
 use bilbo_entries::files::Memory;
 use bilbo_entries::read::refs::Ref;
 use bilbo_entries::read::{self, Fetched};
-use bilbo_entries::remember::{self, Item, Outcome, Output, Request};
+use bilbo_entries::remember::{self, Item, Outcome, Output, Request, Tagging};
 use bilbo_store::entries::{Entries, Generation, Meta, RecordRange};
 use bilbo_store::id::Id;
 use bilbo_store::labels::{CaptureLabel, StoredLabels, Tags};
@@ -177,6 +177,7 @@ fn remembered() -> Output {
         records: 1234,
         raw_bytes: 56789,
         stored_bytes: 12345,
+        tagged: 0,
     }
 }
 
@@ -283,6 +284,7 @@ fn a_codex_session_as_the_store_keeps_it() {
     let request = Request {
         target: PathBuf::from(path),
         kind: None,
+        tags: Tagging::default(),
     };
     let plan = remember::plan(&request, &kinds, &files).expect("plan");
     let mut store = Store::open(&layout, Options::default(), &mut |_| {}).expect("open");

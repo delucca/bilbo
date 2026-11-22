@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 
 use bilbo_entries::follows::Follow;
 use bilbo_entries::read;
+use bilbo_entries::tag;
 use bilbo_settings::error::Error;
 use bilbo_settings::file::{File, Named};
 use bilbo_settings::folder::{self, Folder};
@@ -108,6 +109,7 @@ pub fn keys(kind: &[&'static KindKey], groups: &[&'static Group]) -> Vec<&'stati
             &read::BUDGET.about,
             &read::OUTLINE_WIDTH.about,
             &read::MATCHES_LISTED.about,
+            &tag::CAP.about,
         ])
         .chain(bilbo_search::keys::ABOUT)
         .chain(bilbo_search::recall::keys::ABOUT)
@@ -171,6 +173,7 @@ pub struct Settings {
     pub read_budget: Resolved<read::Budget>,
     pub read_outline_width: Resolved<usize>,
     pub read_matches_listed: Resolved<usize>,
+    pub tag_cap: Resolved<usize>,
     pub search: bilbo_search::keys::Section,
     pub recall: bilbo_search::recall::keys::Section,
     pub llm: bilbo_llm::keys::Section,
@@ -216,6 +219,7 @@ impl Settings {
         shown.push(read::BUDGET.shown(&self.read_budget));
         shown.push(read::OUTLINE_WIDTH.shown(&self.read_outline_width));
         shown.push(read::MATCHES_LISTED.shown(&self.read_matches_listed));
+        shown.push(tag::CAP.shown(&self.tag_cap));
         shown.extend(self.search.shown());
         shown.extend(self.recall.shown());
         shown.extend(self.llm.shown());
@@ -294,6 +298,7 @@ pub fn load(
         read_budget: read::BUDGET.resolve(&source)?,
         read_outline_width: read::OUTLINE_WIDTH.resolve(&source)?,
         read_matches_listed: read::MATCHES_LISTED.resolve(&source)?,
+        tag_cap: tag::CAP.resolve(&source)?,
         search: bilbo_search::keys::section(&source)?,
         recall: bilbo_search::recall::keys::section(&source)?,
         llm: bilbo_llm::keys::section(&source)?,
@@ -433,7 +438,7 @@ mod tests {
     }
 
     #[test]
-    fn the_registry_is_the_folders_the_store_the_follows_then_the_read_search_recall_llm_derive_and_kinds_keys()
+    fn the_registry_is_the_folders_the_store_the_follows_then_the_read_tag_search_recall_llm_derive_and_kinds_keys()
      {
         let names: Vec<&str> = keys(&kind(), &[]).iter().map(|about| about.name).collect();
         assert_eq!(
@@ -452,6 +457,7 @@ mod tests {
                 "read.budget",
                 "read.outline_width",
                 "read.matches_listed",
+                "tag.cap",
                 "search.chunk_tokens",
                 "search.chunk_overlap",
                 "search.workers",
@@ -564,7 +570,7 @@ mod tests {
             .err(),
             Some(
                 "/c.toml:3: unknown key store.sealat; the keys are paths.root, paths.state, \
-                 paths.cache, store.seal_at, store.seal_after, store.compression, store.tear_budget, store.wait, store.poll, follow, read.budget, read.outline_width, read.matches_listed, search.chunk_tokens, search.chunk_overlap, search.workers, search.index_memory, search.merge_deleted_percent, search.entry_tries, search.label_batch, search.list_limit, recall.budget, recall.notes_budget, recall.candidates, recall.cap, recall.record_cap, recall.copy_share, recall.copy_words, recall.question_words, recall.languages, recall.bm25_k1, recall.bm25_b, recall.read_batch, recall.typo_terms, recall.typo_letters, recall.typo_max_letters, recall.typo_two_edits, recall.pair_weight, llm.provider, llm.response, llm.timeout, llm.poll, llm.anthropic.model, llm.anthropic.via, llm.anthropic.api.endpoint, llm.anthropic.api.version, llm.anthropic.api.key_env, llm.anthropic.api.key_command, llm.anthropic.api.headers, llm.anthropic.api.extra, llm.anthropic.tool.program, llm.anthropic.tool.effort, llm.anthropic.tool.arguments, llm.anthropic.tool.inherit, llm.anthropic.tool.environment, llm.anthropic.tool.project_files, llm.openai.model, llm.openai.via, llm.openai.api.endpoint, llm.openai.api.key_env, llm.openai.api.key_command, llm.openai.api.headers, llm.openai.api.extra, llm.openai.tool.program, llm.openai.tool.effort, llm.openai.tool.arguments, llm.openai.tool.inherit, llm.openai.tool.environment, llm.openai.tool.home, llm.openai.tool.system_files, derive.enabled, derive.in, derive.not_in, derive.instructions, derive.quiet, derive.window, derive.passage, derive.passage_head, derive.earlier, derive.names, derive.answer_tokens, derive.calls, derive.retries, derive.retry_wait, derive.retry_factor, derive.retry_limit, derive.tries, derive.failures, markdown.heading_width, session.unpack_floor, session.unpack_ratio, session.unpack_window, session.wide_fields"
+                 paths.cache, store.seal_at, store.seal_after, store.compression, store.tear_budget, store.wait, store.poll, follow, read.budget, read.outline_width, read.matches_listed, tag.cap, search.chunk_tokens, search.chunk_overlap, search.workers, search.index_memory, search.merge_deleted_percent, search.entry_tries, search.label_batch, search.list_limit, recall.budget, recall.notes_budget, recall.candidates, recall.cap, recall.record_cap, recall.copy_share, recall.copy_words, recall.question_words, recall.languages, recall.bm25_k1, recall.bm25_b, recall.read_batch, recall.typo_terms, recall.typo_letters, recall.typo_max_letters, recall.typo_two_edits, recall.pair_weight, llm.provider, llm.response, llm.timeout, llm.poll, llm.anthropic.model, llm.anthropic.via, llm.anthropic.api.endpoint, llm.anthropic.api.version, llm.anthropic.api.key_env, llm.anthropic.api.key_command, llm.anthropic.api.headers, llm.anthropic.api.extra, llm.anthropic.tool.program, llm.anthropic.tool.effort, llm.anthropic.tool.arguments, llm.anthropic.tool.inherit, llm.anthropic.tool.environment, llm.anthropic.tool.project_files, llm.openai.model, llm.openai.via, llm.openai.api.endpoint, llm.openai.api.key_env, llm.openai.api.key_command, llm.openai.api.headers, llm.openai.api.extra, llm.openai.tool.program, llm.openai.tool.effort, llm.openai.tool.arguments, llm.openai.tool.inherit, llm.openai.tool.environment, llm.openai.tool.home, llm.openai.tool.system_files, derive.enabled, derive.in, derive.not_in, derive.instructions, derive.quiet, derive.window, derive.passage, derive.passage_head, derive.earlier, derive.names, derive.answer_tokens, derive.calls, derive.retries, derive.retry_wait, derive.retry_factor, derive.retry_limit, derive.tries, derive.failures, markdown.heading_width, session.unpack_floor, session.unpack_ratio, session.unpack_window, session.wide_fields"
                     .to_owned()
             )
         );
@@ -870,6 +876,7 @@ mod tests {
                 "BILBO_STORE_SEAL_AT",
                 "BILBO_STORE_TEAR_BUDGET",
                 "BILBO_STORE_WAIT",
+                "BILBO_TAG_CAP",
                 "XDG_CACHE_HOME",
                 "XDG_CONFIG_HOME",
                 "XDG_DATA_HOME",

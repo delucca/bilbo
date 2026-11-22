@@ -80,7 +80,7 @@ The line number is the first line of what the clause names. A file that did not 
 ## remember
 
 ```text
-bilbo remember <file|folder> [--kind <kind>] [--follow]
+bilbo remember <file|folder> [--kind <kind>] [--tag <tag>]... [--follow]
 bilbo remember
 ```
 
@@ -136,6 +136,10 @@ Before a record is stored, every JSON string value in it of 256 or more base64 o
 A config file that is a symbolic link, or that this user cannot write (read-only, or another account's), as a Nix-managed one is, is not written, nor is one that cannot be replaced: the run exits 2, prints the lines to add and leaves the file as it was. A file that declares `follow` as an inline array (`follow = [...]`) is not written either: the run exits 2 and prints the inline table to add to that array. When the file is saved but its folder cannot be synced, the run says so in a warning; the follow is saved. Two `--follow` runs at once take turns on `config.toml.lock` beside the file, and each reads the file again before it appends, so both follows are saved. See [Configuration](configuration.md#keys).
 
 `bilbo remember` with no target keeps every follow in order, into one store. With no `[[follow]]` in the config file it follows `~/.claude/projects` and `~/.codex/sessions`, both as `session`. A follow whose folder or file is missing is skipped with one line on stderr, and one that claims nothing says so; neither is an error. A file or folder a follow cannot read is refused and counts in the totals, as under a target.
+
+### Tags
+
+`--tag <tag>` declares a tag for every entry the run keeps under the target: a new entry is kept with it, and an entry kept before gets it added, whether or not its file changed. A run never takes a tag away. A tag is parts of the letters `a` to `z` and digits joined by single hyphens, at most 64 bytes: `rust`, `carpentry-docs`. A tag an entry does not carry yet is refused when it would leave the entry with more than `tag.cap` tags, 32 unless set: the file is refused, as any refused file is, before anything of it is kept, and the files kept before it stay kept. A tag the entry already carries is never refused, whatever the number of its tags. `--tag` needs a target and does not stand with `--follow`: a follow keeps no tag. Standard output does not change. With `--tag`, stderr says `tagged <n> entries`, the entries whose tags the run changed. A tag no entry carried before the run is said too: `tag:<name> is new`.
 
 ### The index
 

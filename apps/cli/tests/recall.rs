@@ -17,7 +17,7 @@ use bilbo_cli::console::settings::{self, Settings};
 use bilbo_cli::console::view::View;
 use bilbo_cli::remember::disk::Disk;
 use bilbo_entries::read::refs::{Ref, Target};
-use bilbo_entries::remember::{self, Request};
+use bilbo_entries::remember::{self, Request, Tagging};
 use bilbo_entries::tokens::Tokens;
 use bilbo_search::analyze::{self, Detect, Language};
 use bilbo_search::chunk;
@@ -603,6 +603,7 @@ fn a_session_that_grew_and_was_not_indexed_still_recalls_its_old_chunks_and_says
         &Request {
             target: path,
             kind: None,
+            tags: Tagging::default(),
         },
         &kinds,
         &Disk,
@@ -1782,6 +1783,7 @@ fn the_eval_corpus_remembered_gives_the_eval_stores_chunks() {
             &Request {
                 target: repo.clone(),
                 kind: Some("session".to_owned()),
+                tags: Tagging::default(),
             },
             &kinds,
             &Disk,

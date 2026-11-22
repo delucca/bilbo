@@ -827,3 +827,160 @@ fn a_root_that_holds_0_20s_notes_exits_2_and_writes_nothing_even_with_nothing_to
         );
     }
 }
+
+const USAGE_LINES: [&str; 4] = [
+    "bilbo: usage: bilbo remember <file|folder> [--kind <kind>] [--tag <tag>]...",
+    "bilbo:        [--follow]",
+    "bilbo:        bilbo remember",
+    "bilbo: see 'bilbo remember --help'",
+];
+
+fn with_usage(reason: &str) -> Vec<String> {
+    std::iter::once(reason)
+        .chain(USAGE_LINES)
+        .map(str::to_owned)
+        .collect()
+}
+
+impl Sandbox {
+    fn remember_tagged(&self, tags: &[&str]) -> Run {
+        let notes = self.notes();
+        let mut args = vec![text(&notes)];
+        for tag in tags {
+            args.extend(["--tag", tag]);
+        }
+        self.remember(&args)
+    }
+
+    fn tags(&self, file: &Path) -> Vec<String> {
+        let (meta, _) = self.entry(file);
+        meta.labels
+            .tags
+            .carried()
+            .map(|(tag, _)| tag.to_string())
+            .collect()
+    }
+}
+
+#[test]
+fn remember_with_a_tag_says_tagged_and_new_and_the_entry_carries_the_tag() {
+    let sandbox = Sandbox::new("tag_says_tagged");
+    let file = sandbox.write("a.md", "one\n");
+
+    let run = sandbox.remember_tagged(&["rust"]);
+
+    assert_eq!(run.code, 0, "{:?}", run.stderr);
+    assert_eq!(run.counts(), counts(1, 0, 0, 0, 0));
+    assert_eq!(run.stdout.lines().count(), 2);
+    assert_eq!(
+        run.stderr,
+        ["bilbo: tagged 1 entries", "bilbo: tag:rust is new"]
+    );
+    assert_eq!(sandbox.tags(&file), ["tag:rust"]);
+
+    sandbox.write("b.md", "two\n");
+    let more = sandbox.remember_tagged(&["rust"]);
+    assert_eq!(more.code, 0, "{:?}", more.stderr);
+    assert_eq!(more.stderr, ["bilbo: tagged 1 entries"]);
+}
+
+#[test]
+fn a_second_run_with_a_tag_keeps_nothing_and_tags_what_was_not_tagged() {
+    let sandbox = Sandbox::new("tag_second_run");
+    sandbox.write("a.md", "one\n");
+    sandbox.write("b.md", "two\n");
+    assert_eq!(sandbox.remember_notes().counts(), counts(2, 0, 0, 0, 0));
+
+    let second = sandbox.remember_tagged(&["docs"]);
+    assert_eq!(second.code, 0, "{:?}", second.stderr);
+    assert_eq!(second.counts(), counts(0, 0, 0, 2, 0));
+    assert_eq!(
+        second.stderr,
+        ["bilbo: tagged 2 entries", "bilbo: tag:docs is new"]
+    );
+
+    let third = sandbox.remember_tagged(&["docs"]);
+    assert_eq!(third.code, 0, "{:?}", third.stderr);
+    assert_eq!(third.counts(), counts(0, 0, 0, 2, 0));
+    assert_eq!(third.stderr, Vec::<String>::new());
+}
+
+#[test]
+fn a_tag_that_is_no_tags_name_is_a_usage_error() {
+    let sandbox = Sandbox::new("tag_not_a_name");
+    sandbox.write("a.md", "one\n");
+
+    let run = sandbox.remember_tagged(&["Rust"]);
+
+    assert_eq!(run.code, 2);
+    assert_eq!(run.stdout, "");
+    assert_eq!(
+        run.stderr,
+        with_usage(
+            "bilbo: --tag 'Rust' is not a tag: parts of a to z and digits joined by single hyphens, at most 64 bytes"
+        )
+    );
+    assert!(!sandbox.layout().root.exists());
+}
+
+#[test]
+fn a_tag_does_not_stand_with_follow_and_needs_a_target() {
+    let sandbox = Sandbox::new("tag_follow");
+    sandbox.write("a.md", "one\n");
+    let notes = sandbox.notes();
+    let config = sandbox.dir.join("config/config.toml");
+
+    let together = sandbox.remember(&[text(&notes), "--tag", "a", "--follow"]);
+    assert_eq!(together.code, 2);
+    assert_eq!(
+        together.stderr,
+        with_usage("bilbo: --tag does not stand with --follow: a follow keeps no tag")
+    );
+    assert_eq!(fs::read_to_string(&config).expect("config"), "");
+
+    let bare = sandbox.remember(&["--tag", "a"]);
+    assert_eq!(bare.code, 2);
+    assert_eq!(bare.stderr[0], "bilbo: missing <file|folder>");
+}
+
+#[test]
+fn an_empty_tag_needs_a_value() {
+    let sandbox = Sandbox::new("tag_empty");
+    let notes = sandbox.notes();
+
+    let run = sandbox.remember(&[text(&notes), "--tag="]);
+
+    assert_eq!(run.code, 2);
+    assert_eq!(run.stderr[0], "bilbo: --tag needs a value");
+}
+
+#[test]
+fn a_file_past_the_cap_is_refused_with_its_reason_and_exit_1() {
+    let sandbox = Sandbox::new("tag_cap");
+    let file = sandbox.write("a.md", "one\n");
+    let notes = sandbox.notes();
+    let mut vars = sandbox.vars();
+    vars.insert("BILBO_TAG_CAP".to_owned(), "1".into());
+    let first = run(vars.clone(), &[text(&notes), "--tag", "a"], None);
+    assert_eq!(first.code, 0, "{:?}", first.stderr);
+    let (_, kept) = sandbox.entry(&file);
+    fs::write(&file, "one\ntwo\n").expect("grow");
+
+    let refused = run(vars, &[text(&notes), "--tag", "b"], None);
+
+    assert_eq!(refused.code, 1);
+    assert_eq!(refused.counts(), counts(0, 0, 0, 0, 1));
+    assert_eq!(
+        refused.stderr,
+        [format!(
+            "bilbo: refused {}: its entry would carry more than tag.cap tags (1)",
+            text(&file)
+        )]
+    );
+    let (_, head) = sandbox.entry(&file);
+    assert_eq!(
+        (head.generation, head.records),
+        (kept.generation, kept.records)
+    );
+    assert_eq!(sandbox.tags(&file), ["tag:a"]);
+}

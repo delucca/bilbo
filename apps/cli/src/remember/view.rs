@@ -130,6 +130,7 @@ mod tests {
             records: 3,
             raw_bytes: 40,
             stored_bytes: 50,
+            tagged: 0,
         }
     }
 

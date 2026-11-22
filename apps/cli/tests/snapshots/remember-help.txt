@@ -1,11 +1,13 @@
 bilbo remember: keep files as entries, and what grew or changed in them since.
 
 Usage:
-  bilbo remember <file|folder> [--kind <kind>] [--follow]
+  bilbo remember <file|folder> [--kind <kind>] [--tag <tag>]...
+                 [--follow]
   bilbo remember
 
 Options:
       --kind <kind>  Run this kind, not the one that claims the files
+      --tag <tag>    Declare this tag for every entry the run keeps
       --follow       Save the target in the config file, so a bare run keeps it
 
 Kinds:

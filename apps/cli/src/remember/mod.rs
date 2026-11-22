@@ -5,11 +5,14 @@ pub mod messages;
 pub mod save;
 pub mod view;
 
+use std::collections::BTreeSet;
 use std::path::PathBuf;
 
 use bilbo_entries::follows::Follow;
 use bilbo_entries::kind::Kind;
-use bilbo_entries::remember::{self, Output, Request};
+use bilbo_entries::remember::{self, Output, Request, Tagging};
+use bilbo_entries::tag;
+use bilbo_store::labels::Tag;
 use bilbo_store::segments::Store;
 use clap::Command;
 use clap::builder::NonEmptyStringValueParser;
@@ -22,12 +25,13 @@ use crate::console::message::{Message, notice_message, sanitize};
 use crate::console::outcome::{Exit, Failure, Outcome};
 use crate::console::settings::Settings;
 use disk::Disk;
-use messages::refusals;
+use messages::{refusals, tagged};
 
 const SUMMARY: &str = "Keep files as entries; a later run keeps what grew or changed";
 const ABOUT: &str =
     "bilbo remember: keep files as entries, and what grew or changed in them since.";
-const USAGE: &str = "bilbo remember <file|folder> [--kind <kind>] [--follow]
+const USAGE: &str = "bilbo remember <file|folder> [--kind <kind>] [--tag <tag>]...
+                 [--follow]
   bilbo remember";
 
 #[derive(Debug, clap::Args)]
@@ -43,6 +47,14 @@ pub struct Args {
         help = "Run this kind, not the one that claims the files"
     )]
     pub kind: Option<String>,
+    #[arg(
+        long = "tag",
+        value_name = "tag",
+        value_parser = NonEmptyStringValueParser::new(),
+        requires = "target",
+        help = "Declare this tag for every entry the run keeps"
+    )]
+    pub tags: Vec<String>,
     #[arg(
         long,
         requires = "target",
@@ -91,9 +103,34 @@ pub fn run(
     let Some(target) = args.target else {
         return follows::run(env, settings, kinds, indexing);
     };
+    let mut named = BTreeSet::new();
+    for text in &args.tags {
+        let Some(name) = Tag::new(text) else {
+            return Err(usage(
+                root,
+                sanitize(&format!(
+                    "--tag '{text}' is not a tag: parts of a to z and digits joined by single hyphens, at most {} bytes",
+                    Tag::MAX_BYTES
+                )),
+                Some("remember"),
+            ));
+        };
+        named.insert(name);
+    }
+    if args.follow && !named.is_empty() {
+        return Err(usage(
+            root,
+            "--tag does not stand with --follow: a follow keeps no tag".to_owned(),
+            Some("remember"),
+        ));
+    }
     let request = Request {
         target,
         kind: args.kind,
+        tags: Tagging {
+            tags: named,
+            cap: settings.tag_cap.value,
+        },
     };
     let plan = remember::plan(&request, kinds, &Disk).map_err(|error| match error {
         remember::Error::UnknownKind { .. } | remember::Error::SeveralKinds { .. } => {
@@ -104,6 +141,7 @@ pub fn run(
 
     let layout = settings.layout();
     Store::check(&layout)?;
+    let mut notes = Vec::new();
     let (output, mut closing) = if plan.claims.is_empty() {
         (Output::unkept(&plan), Closing::default())
     } else {
@@ -111,7 +149,13 @@ pub fn run(
         let mut store = Store::open(&layout, settings.store.options(), &mut |n| {
             notice(&notice_message(&n));
         })?;
+        let fresh = if plan.tags.tags.is_empty() {
+            Vec::new()
+        } else {
+            tag::unused(&plan.tags.tags, &store).map_err(|error| refused(&error))?
+        };
         let output = remember::keep(&plan, &Disk, &mut store).map_err(|error| refused(&error))?;
+        notes = tagged(&output, &fresh);
         let kept = view::Totals::of(std::slice::from_ref(&output)).kept();
         let closing = follows::finish(
             store,
@@ -137,11 +181,12 @@ pub fn run(
             }
         }
     }
-    Ok(outcome(output, closing, config))
+    Ok(outcome(output, notes, closing, config))
 }
 
-fn outcome(output: Output, closing: Closing, config: bool) -> Outcome {
+fn outcome(output: Output, notes: Vec<Message>, closing: Closing, config: bool) -> Outcome {
     let mut diagnostics = refusals(std::slice::from_ref(&output));
+    diagnostics.extend(notes);
     if output.claimed == 0 {
         let target = output.target.display();
         diagnostics.push(Message::warning(&match &output.kind {

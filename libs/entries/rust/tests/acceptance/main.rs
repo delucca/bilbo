@@ -1,5 +1,6 @@
 mod fakes;
 mod read;
+mod tag;
 
 use std::path::{Path, PathBuf};
 
@@ -8,9 +9,9 @@ use std::time::{Duration, SystemTime};
 use bilbo_entries::files::{Call, Files, Memory, Node, Turning};
 use bilbo_entries::follows::{self, Follow, Planned};
 use bilbo_entries::kind::Kind;
-use bilbo_entries::remember::{self, Error, Item, Outcome, Output, Request, Tally};
+use bilbo_entries::remember::{self, Error, Item, Outcome, Output, Request, Tagging, Tally};
 use bilbo_store::entries::Stamp;
-use bilbo_store::labels::{CaptureLabel, StoredLabels, Tags};
+use bilbo_store::labels::{By, CaptureLabel, Standing, StoredLabels, Tag, Tags};
 use fakes::{ADOPTED, Counting, FakeEntries, FakeKind, Script, id};
 
 const HELD: &str = "01JC5Q3V7XKM4P8R2T6W9YB0DE";
@@ -23,7 +24,33 @@ fn request(target: &str) -> Request {
     Request {
         target: PathBuf::from(target),
         kind: None,
+        tags: Tagging::default(),
     }
+}
+
+fn tagged_request(target: &str, names: &[&str], cap: usize) -> Request {
+    Request {
+        tags: Tagging {
+            tags: names
+                .iter()
+                .map(|name| Tag::new(name).expect("a tag"))
+                .collect(),
+            cap,
+        },
+        ..request(target)
+    }
+}
+
+fn carried(pairs: &[(&str, Option<Standing>)]) -> Tags {
+    let mut tags = Tags::default();
+    for (name, standing) in pairs {
+        tags.set(Tag::new(name).expect("a tag"), *standing);
+    }
+    tags
+}
+
+fn by_person() -> Option<Standing> {
+    Some(Standing::Carried(By::Person))
 }
 
 fn run(
@@ -786,6 +813,7 @@ fn a_missing_target_no_kind_claims_is_the_error_it_was() {
             let request = Request {
                 target: PathBuf::from(target),
                 kind: kind.map(str::to_owned),
+                tags: Tagging::default(),
             };
             match remember::plan(&request, &registry, &files) {
                 Err(Error::Target { path, error }) => {
@@ -918,4 +946,227 @@ fn a_child_read_from_its_second_file_gets_its_id_label_when_it_is_next_read() {
         .file("/t/a.sub.fake.z", "zy|z|");
     run(FakeKind::new(), &both, &mut entries, &request("/t")).expect("both");
     assert_eq!(entries.adopted, vec![(id(1), Some(id(2)))]);
+}
+
+#[test]
+fn remember_with_tags_keeps_a_new_entry_with_them_as_a_persons() {
+    let files = Memory::new().file("/t/a.fake", "x|");
+    let mut entries = FakeEntries::new();
+    let output = run(
+        FakeKind::new(),
+        &files,
+        &mut entries,
+        &tagged_request("/t", &["a", "b"], 32),
+    )
+    .expect("run");
+
+    assert_eq!(entries.seen.len(), 1);
+    assert!(entries.adopted.is_empty());
+    assert_eq!(
+        entries.metas[&id(1)].labels.tags,
+        carried(&[("a", by_person()), ("b", by_person())])
+    );
+    assert_eq!(output.tagged, 1);
+}
+
+#[test]
+fn remember_with_tags_declares_for_a_file_that_did_not_change_and_reads_no_file() {
+    let files = Memory::new().file("/t/a.fake", "x|");
+    let mut entries = FakeEntries::new();
+    run(
+        FakeKind::new(),
+        &Counting::new(files.clone()),
+        &mut entries,
+        &request("/t"),
+    )
+    .expect("first run");
+
+    let again = Counting::new(files);
+    let output = run(
+        FakeKind::new(),
+        &again,
+        &mut entries,
+        &tagged_request("/t", &["a"], 32),
+    )
+    .expect("again");
+
+    assert_eq!(
+        outcomes(&output),
+        vec![("/t/a.fake", &Outcome::Unchanged(id(1)))]
+    );
+    assert!(again.read_paths.borrow().is_empty());
+    assert_eq!(entries.seen.len(), 1);
+    assert_eq!(
+        entries.metas[&id(1)].labels.tags,
+        carried(&[("a", by_person())])
+    );
+    assert_eq!(output.tagged, 1);
+    assert_eq!(output.stored_bytes, ADOPTED);
+
+    let identical = Counting::new(Memory::new().file("/t/a.fake", "x|"));
+    let same = run(
+        FakeKind::new(),
+        &identical,
+        &mut entries,
+        &tagged_request("/t", &["a"], 32),
+    )
+    .expect("identical");
+    assert_eq!(same.tagged, 0);
+    assert_eq!(same.stored_bytes, 0);
+}
+
+#[test]
+fn remember_with_tags_adds_to_an_entry_whose_file_changed() {
+    let mut entries = FakeEntries::new();
+    run(
+        FakeKind::new(),
+        &Memory::new().file("/t/a.fake", "x|"),
+        &mut entries,
+        &tagged_request("/t", &["a"], 32),
+    )
+    .expect("first run");
+    entries
+        .script
+        .insert("file:/t/a.fake".to_owned(), Script::Appended);
+
+    let output = run(
+        FakeKind::new(),
+        &Memory::new().file("/t/a.fake", "x|y|"),
+        &mut entries,
+        &tagged_request("/t", &["b"], 32),
+    )
+    .expect("grown");
+
+    assert_eq!(
+        outcomes(&output),
+        vec![("/t/a.fake", &Outcome::Appended(id(1)))]
+    );
+    assert_eq!(entries.seen.len(), 2);
+    assert_eq!(entries.adopted.len(), 1);
+    assert_eq!(
+        entries.metas[&id(1)].labels.tags,
+        carried(&[("a", by_person()), ("b", by_person())])
+    );
+    assert_eq!(output.tagged, 1);
+}
+
+#[test]
+fn a_file_whose_entry_would_pass_the_cap_is_refused_before_anything_of_it_is_kept() {
+    let mut entries = FakeEntries::new();
+    run(
+        FakeKind::new(),
+        &Memory::new().file("/t/a.fake", "x|"),
+        &mut entries,
+        &tagged_request("/t", &["a"], 1),
+    )
+    .expect("first run");
+    entries
+        .script
+        .insert("file:/t/a.fake".to_owned(), Script::Appended);
+
+    let grown = Counting::new(Memory::new().file("/t/a.fake", "x|y|"));
+    let output = run(
+        FakeKind::new(),
+        &grown,
+        &mut entries,
+        &tagged_request("/t", &["b"], 1),
+    )
+    .expect("grown");
+
+    assert_eq!(
+        refusal(&output),
+        "its entry would carry more than tag.cap tags (1)"
+    );
+    assert_eq!(output.tagged, 0);
+    assert_eq!(entries.seen.len(), 1);
+    assert!(entries.adopted.is_empty());
+    assert!(grown.read_paths.borrow().is_empty());
+}
+
+#[test]
+fn the_files_kept_before_a_refused_one_stay_kept_and_tagged() {
+    let mut entries = FakeEntries::new();
+    let files = Memory::new()
+        .file("/t/a.fake", "x|")
+        .file("/t/b.fake", "x|")
+        .file("/t/c.fake", "x|");
+    run(
+        FakeKind::new(),
+        &files,
+        &mut entries,
+        &tagged_request("/t/b.fake", &["a"], 1),
+    )
+    .expect("b alone");
+
+    let output = run(
+        FakeKind::new(),
+        &files,
+        &mut entries,
+        &tagged_request("/t", &["z"], 1),
+    )
+    .expect("the folder");
+
+    assert_eq!(
+        outcomes(&output),
+        vec![
+            ("/t/a.fake", &Outcome::New(id(2))),
+            (
+                "/t/b.fake",
+                &Outcome::Refused("its entry would carry more than tag.cap tags (1)".to_owned())
+            ),
+            ("/t/c.fake", &Outcome::New(id(3))),
+        ]
+    );
+    assert_eq!(output.tagged, 2);
+    assert_eq!(
+        entries.metas[&id(1)].labels.tags,
+        carried(&[("a", by_person())])
+    );
+    assert_eq!(
+        entries.metas[&id(2)].labels.tags,
+        carried(&[("z", by_person())])
+    );
+    assert_eq!(
+        entries.metas[&id(3)].labels.tags,
+        carried(&[("z", by_person())])
+    );
+}
+
+#[test]
+fn remember_makes_a_models_tag_a_persons_and_counts_the_entry_tagged() {
+    let files = Memory::new().file("/t/a.fake", "x|");
+    let mut entries = FakeEntries::new();
+    run(FakeKind::new(), &files, &mut entries, &request("/t")).expect("first run");
+    let model = Some(Standing::Carried(By::Model));
+    entries.metas.get_mut(&id(1)).expect("meta").labels.tags = carried(&[("a", model)]);
+
+    let output = run(
+        FakeKind::new(),
+        &files,
+        &mut entries,
+        &tagged_request("/t", &["a"], 32),
+    )
+    .expect("a models tag");
+    assert_eq!(output.tagged, 1);
+    assert_eq!(entries.adopted.len(), 1);
+    assert_eq!(
+        entries.metas[&id(1)].labels.tags,
+        carried(&[("a", by_person())])
+    );
+
+    entries.metas.get_mut(&id(1)).expect("meta").labels.tags =
+        carried(&[("a", model), ("b", by_person()), ("c", by_person())]);
+    let lowered = run(
+        FakeKind::new(),
+        &files,
+        &mut entries,
+        &tagged_request("/t", &["a"], 1),
+    )
+    .expect("a lowered cap");
+    assert_eq!(lowered.tagged, 1);
+    assert_eq!(lowered.tally().refused, 0);
+    assert_eq!(
+        entries.metas[&id(1)].labels.tags,
+        carried(&[("a", by_person()), ("b", by_person()), ("c", by_person())])
+    );
 }

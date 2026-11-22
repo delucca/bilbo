@@ -12,7 +12,7 @@ use bilbo_store::entries::{
     RecordRange, Stamp, StoreError,
 };
 use bilbo_store::id::{Id, Short};
-use bilbo_store::labels::{CaptureLabel, StoredLabels};
+use bilbo_store::labels::{CaptureLabel, Labels, StoredLabels, Tag, Tagged, Tags};
 
 /// Claims `*.fake` and `*.fake.z` as one entry; the `.z` file holds a `z` byte, then the bytes;
 /// records end at `|`; `!` refuses; `id=` sets the id; `<name>.sub.fake` takes
@@ -237,6 +237,24 @@ impl FakeEntries {
         self.script.insert(label.to_string(), script);
         self
     }
+
+    #[must_use]
+    pub fn held(mut self, id: Id, kind: &str, tags: Tags) -> FakeEntries {
+        self.metas.insert(
+            id,
+            Meta {
+                id,
+                kind: kind.to_string(),
+                labels: StoredLabels {
+                    capture: None,
+                    id: None,
+                    tags,
+                },
+                captured: std::time::SystemTime::UNIX_EPOCH,
+            },
+        );
+        self
+    }
 }
 
 pub const ADOPTED: u64 = 64;
@@ -351,5 +369,45 @@ impl Entries for FakeEntries {
 
     fn by_shorts(&self, _shorts: &[Short]) -> Result<Vec<Id>, StoreError> {
         panic!("remember must not call by_shorts")
+    }
+}
+
+impl Labels for FakeEntries {
+    fn with_words(&self, _words: &[String]) -> Result<Vec<Id>, StoreError> {
+        panic!("remember must not call with_words")
+    }
+
+    fn belonging_to(&self, _entries: &[Id]) -> Result<Vec<Id>, StoreError> {
+        panic!("remember must not call belonging_to")
+    }
+
+    fn tagged(&self, tag: &Tag) -> Result<Vec<Id>, StoreError> {
+        let mut found: Vec<Id> = self
+            .metas
+            .values()
+            .filter(|meta| {
+                meta.labels
+                    .tags
+                    .carried()
+                    .any(|(carried, _)| carried == tag)
+            })
+            .map(|meta| meta.id)
+            .collect();
+        found.sort_unstable();
+        Ok(found)
+    }
+
+    fn tags(&self) -> Result<Vec<Tagged>, StoreError> {
+        let mut counts: std::collections::BTreeMap<(Tag, String), u64> =
+            std::collections::BTreeMap::new();
+        for meta in self.metas.values() {
+            for (tag, _) in meta.labels.tags.carried() {
+                *counts.entry((tag.clone(), meta.kind.clone())).or_default() += 1;
+            }
+        }
+        Ok(counts
+            .into_iter()
+            .map(|((tag, kind), entries)| Tagged { tag, kind, entries })
+            .collect())
     }
 }

@@ -12,7 +12,7 @@ const PLACEMENT: &[(&str, &[&str])] = &[
     ("bilbo_store", &["src/", "tests/"]),
 ];
 const CORE: &[&str] = &[
-    "day", "fake", "files", "follows", "kind", "read", "reader", "remember", "tokens",
+    "day", "fake", "files", "follows", "kind", "read", "reader", "remember", "tag", "tokens",
 ];
 const ADAPTERS: &[&str] = &["markdown", "note", "session"];
 const ROOTS: &[&str] = &["crate", "bilbo_entries"];

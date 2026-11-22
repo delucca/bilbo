@@ -8,6 +8,7 @@ pub mod read;
 pub mod reader;
 pub mod remember;
 pub mod session;
+pub mod tag;
 pub mod tokens;
 
 #[cfg(test)]

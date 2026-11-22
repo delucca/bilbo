@@ -1173,6 +1173,7 @@ fn poisoned_remember(sandbox: &Sandbox, folder: &str) {
     let args = bilbo_cli::remember::Args {
         target: Some(PathBuf::from(sandbox.path(folder))),
         kind: None,
+        tags: Vec::new(),
         follow: false,
     };
     bilbo_cli::remember::run(

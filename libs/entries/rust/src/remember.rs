@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::error::Error as StdError;
 use std::fmt;
 use std::io;
@@ -6,15 +7,23 @@ use std::time::{Duration, SystemTime};
 
 use bilbo_store::entries::{Capture, CaptureError, Captured, Entries, Head, Meta, StoreError};
 use bilbo_store::id::Id;
-use bilbo_store::labels::{CaptureLabel, StoredLabels, Tags};
+use bilbo_store::labels::{CaptureLabel, StoredLabels, Tag, Tags};
 
 use crate::files::{Files, Node};
 use crate::kind::{Claim, Kind, Proposal};
+use crate::tag::{self, Change};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Request {
     pub target: PathBuf,
     pub kind: Option<String>,
+    pub tags: Tagging,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Tagging {
+    pub tags: BTreeSet<Tag>,
+    pub cap: usize,
 }
 
 pub struct Plan<'k> {
@@ -26,6 +35,7 @@ pub struct Plan<'k> {
     pub claims: Vec<Claim>,
     /// What the walk could not read.
     pub refused: Vec<(PathBuf, String)>,
+    pub tags: Tagging,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -54,6 +64,7 @@ pub struct Output {
     pub records: u64,
     pub raw_bytes: u64,
     pub stored_bytes: u64,
+    pub tagged: u64,
 }
 
 impl Output {
@@ -75,6 +86,7 @@ impl Output {
             records: 0,
             raw_bytes: 0,
             stored_bytes: 0,
+            tagged: 0,
         }
     }
 
@@ -130,10 +142,10 @@ pub fn plan<'k>(
         None => None,
     };
     match files.canonical(&request.target) {
-        Ok(target) => claim_under(target, named, kinds, files),
+        Ok(target) => claim_under(target, named, kinds, files, &request.tags),
         Err(error) => {
             if error.kind() == io::ErrorKind::NotFound
-                && let Some(plan) = claim_gone(&request.target, named, kinds, files)?
+                && let Some(plan) = claim_gone(&request.target, named, kinds, files, &request.tags)?
             {
                 return Ok(plan);
             }
@@ -151,6 +163,7 @@ fn claim_gone<'k>(
     named: Option<&'k dyn Kind>,
     kinds: &'k [Box<dyn Kind>],
     files: &dyn Files,
+    tags: &Tagging,
 ) -> Result<Option<Plan<'k>>, Error> {
     let Some(name) = target.file_name() else {
         return Ok(None);
@@ -162,7 +175,7 @@ fn claim_gone<'k>(
     let Ok(folder) = files.canonical(dir) else {
         return Ok(None);
     };
-    let plan = claim_under(folder.join(name), named, kinds, files)?;
+    let plan = claim_under(folder.join(name), named, kinds, files, tags)?;
     Ok((!plan.claims.is_empty()).then_some(plan))
 }
 
@@ -171,6 +184,7 @@ fn claim_under<'k>(
     named: Option<&'k dyn Kind>,
     kinds: &'k [Box<dyn Kind>],
     files: &dyn Files,
+    tags: &Tagging,
 ) -> Result<Plan<'k>, Error> {
     if let Some(kind) = named {
         let claims = kind.claims(files, &target);
@@ -179,6 +193,7 @@ fn claim_under<'k>(
             kind: Some(kind),
             claims: claims.entries,
             refused: claims.refused,
+            tags: tags.clone(),
         });
     }
 
@@ -213,6 +228,7 @@ fn claim_under<'k>(
         kind,
         claims: claimed,
         refused,
+        tags: tags.clone(),
     })
 }
 
@@ -230,7 +246,7 @@ fn racy(modified: SystemTime, taken: SystemTime) -> bool {
 
 /// `Kept` carries the bytes an id label repair added.
 enum Done {
-    Kept(Captured, u64),
+    Kept(Captured, u64, bool),
     Refused(String),
 }
 
@@ -245,11 +261,12 @@ pub fn keep(
     };
     output.claimed = u64::try_from(plan.claims.len()).unwrap_or(u64::MAX);
     for claim in &plan.claims {
-        let (path, done) = keep_file(kind, claim, files, entries)?;
+        let (path, done) = keep_file(kind, claim, &plan.tags, files, entries)?;
         let outcome = match done {
             Done::Refused(reason) => Outcome::Refused(reason),
-            Done::Kept(captured, adopted) => {
+            Done::Kept(captured, adopted, tagged) => {
                 output.stored_bytes += adopted;
+                output.tagged += u64::from(tagged);
                 let (outcome, kept) = match captured {
                     Captured::New(kept) => (Outcome::New(kept.id), Some(kept)),
                     Captured::Appended(kept) => (Outcome::Appended(kept.id), Some(kept)),
@@ -282,6 +299,7 @@ enum Step {
 fn keep_file(
     kind: &dyn Kind,
     claim: &Claim,
+    tags: &Tagging,
     files: &dyn Files,
     entries: &mut dyn Entries,
 ) -> Result<(PathBuf, Done), Error> {
@@ -290,11 +308,16 @@ fn keep_file(
         return Ok((label_path, Done::Refused("its path is not UTF-8".into())));
     };
     let head = entries.by_capture(&label)?;
+    let entry = Held {
+        label: &label,
+        head: head.as_ref(),
+        tags,
+    };
     let mut last = None;
     let mut not_a_file = false;
     for _ in 0..2 {
         for file in claim.files() {
-            match look(kind, claim, file, &label, head.as_ref(), files, entries)? {
+            match look(kind, claim, file, &entry, files, entries)? {
                 Step::Done(done) => return Ok((file.clone(), done)),
                 Step::Gone(error) => last = Some(error),
                 Step::NotAFile => not_a_file = true,
@@ -311,12 +334,17 @@ fn keep_file(
     Ok((label_path, Done::Refused(reason)))
 }
 
+struct Held<'a> {
+    label: &'a CaptureLabel,
+    head: Option<&'a Head>,
+    tags: &'a Tagging,
+}
+
 fn look(
     kind: &dyn Kind,
     claim: &Claim,
     file: &Path,
-    label: &CaptureLabel,
-    head: Option<&Head>,
+    entry: &Held<'_>,
     files: &dyn Files,
     entries: &mut dyn Entries,
 ) -> Result<Step, Error> {
@@ -332,11 +360,20 @@ fn look(
         Err(_) => None,
     };
     let taken = files.now();
-    if let Some(head) = head
+    let first = match fits(entry.tags, entry.head, entries)? {
+        Ok(first) => first,
+        Err(reason) => return Ok(refused(reason)),
+    };
+    if let Some(head) = entry.head
         && stamp.is_some()
         && head.stamp == stamp
     {
-        return Ok(Step::Done(Done::Kept(Captured::Unchanged(head.id), 0)));
+        return Ok(match declared(entry.tags, head.id, entries)? {
+            Ok((tagged, bytes)) => {
+                Step::Done(Done::Kept(Captured::Unchanged(head.id), bytes, tagged))
+            }
+            Err(reason) => refused(reason),
+        });
     }
     let bytes = match files.read(file) {
         Ok(bytes) => bytes,
@@ -354,29 +391,38 @@ fn look(
     let Some(records) = bytes.get(..ends.last().copied().unwrap_or(0)) else {
         return Ok(refused("its records do not cover it".into()));
     };
-    let proposal = if head.is_some() {
+    let proposal = if entry.head.is_some() {
         Proposal::default()
     } else {
         let entries: &dyn Entries = entries;
         kind.propose(claim.label(), records, &|other| kept(entries, other))
     };
     let input = Capture {
-        label,
+        label: entry.label,
         kind: kind.name(),
         id: proposal.id,
         id_label: proposal.id_label,
         stamp: stamp.filter(|stamp| !racy(stamp.modified, taken)),
         bytes: records,
         ends: &ends,
-        tags: &Tags::default(),
+        tags: &first,
     };
     match entries.capture(&input) {
         Ok(captured) => {
-            let adopted = match head {
-                Some(head) => adopt(kind, claim.label(), records, head.id, entries)?,
-                None => 0,
+            let (adopted, tagged) = match entry.head {
+                Some(head) => {
+                    let adopted = adopt(kind, claim.label(), records, head.id, entries)?;
+                    match declared(entry.tags, head.id, entries)? {
+                        Ok((tagged, bytes)) => (adopted + bytes, tagged),
+                        Err(reason) => return Ok(refused(reason)),
+                    }
+                }
+                None => (
+                    0,
+                    matches!(captured, Captured::New(_)) && !entry.tags.tags.is_empty(),
+                ),
             };
-            Ok(Step::Done(Done::Kept(captured, adopted)))
+            Ok(Step::Done(Done::Kept(captured, adopted, tagged)))
         }
         Err(CaptureError::Store(error)) => Err(error.into()),
         Err(
@@ -389,6 +435,61 @@ fn look(
 
 fn refused(reason: String) -> Step {
     Step::Done(Done::Refused(reason))
+}
+
+fn full(tags: &Tagging) -> String {
+    format!(
+        "its entry would carry more than tag.cap tags ({})",
+        tags.cap
+    )
+}
+
+fn fits(
+    tags: &Tagging,
+    head: Option<&Head>,
+    entries: &dyn Entries,
+) -> Result<Result<Tags, String>, Error> {
+    if tags.tags.is_empty() {
+        return Ok(Ok(Tags::default()));
+    }
+    let held = match head {
+        Some(head) => entries
+            .meta(head.id)?
+            .map(|meta| meta.labels.tags)
+            .unwrap_or_default(),
+        None => Tags::default(),
+    };
+    let none = BTreeSet::new();
+    let change = Change::Person {
+        add: &tags.tags,
+        remove: &none,
+    };
+    Ok(match tag::apply(&held, &change, tags.cap) {
+        Ok(applied) if head.is_none() => Ok(applied.tags),
+        Ok(_) => Ok(Tags::default()),
+        Err(tag::Full) => Err(full(tags)),
+    })
+}
+
+fn declared(
+    tags: &Tagging,
+    id: Id,
+    entries: &mut dyn Entries,
+) -> Result<Result<(bool, u64), String>, Error> {
+    if tags.tags.is_empty() {
+        return Ok(Ok((false, 0)));
+    }
+    let none = BTreeSet::new();
+    let change = Change::Person {
+        add: &tags.tags,
+        remove: &none,
+    };
+    match tag::declare(id, &change, tags.cap, entries) {
+        Ok(declared) => Ok(Ok((declared.wrote, declared.bytes))),
+        Err(tag::Error::Full(_)) => Ok(Err(full(tags))),
+        Err(tag::Error::Gone(id)) => Err(StoreError::Missing(format!("no entry {id}")).into()),
+        Err(tag::Error::Store(error)) => Err(error.into()),
+    }
 }
 
 fn adopt(
@@ -483,7 +584,7 @@ mod tests {
 
     use bilbo_store::entries::StoreError;
 
-    use super::{Error, Output, Plan, Request, plan};
+    use super::{Error, Output, Plan, Request, Tagging, plan};
     use crate::fake::Suffix;
     use crate::files::{Files, Memory};
     use crate::kind::{Claim, Claims, Kind, Proposal, Refusal};
@@ -499,6 +600,7 @@ mod tests {
         Request {
             target: PathBuf::from(target),
             kind: kind.map(str::to_string),
+            tags: Tagging::default(),
         }
     }
 

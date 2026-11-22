@@ -11,6 +11,7 @@ follow = [{ path = "/home/u/.claude/projects", kind = "session" }, { path = "/ho
 read.budget = 7000 (default)
 read.outline_width = 100 (default)
 read.matches_listed = 5 (default)
+tag.cap = 32 (default)
 search.chunk_tokens = 512 (default)
 search.chunk_overlap = 64 (default)
 search.workers = 0 (default)

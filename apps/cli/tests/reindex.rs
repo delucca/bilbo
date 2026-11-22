@@ -400,6 +400,7 @@ impl Sandbox {
         let args = bilbo_cli::remember::Args {
             target: Some(PathBuf::from(target)),
             kind: None,
+            tags: Vec::new(),
             follow: false,
         };
         let outcome = bilbo_cli::remember::run(
@@ -2035,6 +2036,7 @@ fn an_update_that_fails_is_not_tried_again_by_the_close_loop() {
         &bilbo_entries::remember::Request {
             target: sandbox.dir.join("notes/first.md"),
             kind: None,
+            tags: bilbo_entries::remember::Tagging::default(),
         },
         &kinds,
         &bilbo_cli::remember::disk::Disk,

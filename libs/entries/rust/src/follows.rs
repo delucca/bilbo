@@ -5,7 +5,7 @@ use bilbo_store::entries::Entries;
 
 use crate::files::Files;
 use crate::kind::Kind;
-use crate::remember::{self, Error, Output, Plan, Request};
+use crate::remember::{self, Error, Output, Plan, Request, Tagging};
 
 /// A `None` kind is detected as a target's is.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -34,6 +34,7 @@ pub fn plan<'k>(
             let request = Request {
                 target: follow.path.clone(),
                 kind: follow.kind.clone(),
+                tags: Tagging::default(),
             };
             match remember::plan(&request, kinds, files) {
                 Ok(plan) => Planned::Ready(follow.clone(), plan),
