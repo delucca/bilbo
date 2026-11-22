@@ -1,0 +1,4 @@
+bilbo: --in 'tag:Rust' is not a tag: parts of a to z and digits joined by single hyphens, at most 64 bytes
+bilbo: usage: bilbo recall <query>... [--in <label>]... [--kind <kind>]...
+bilbo:        [--budget <tokens>]
+bilbo: see 'bilbo recall --help'

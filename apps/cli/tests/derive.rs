@@ -14,12 +14,13 @@ use bilbo_cli::console::indexing::Indexing;
 use bilbo_cli::console::settings;
 use bilbo_derive::instruction;
 use bilbo_derive::tries::Extent as Charged;
+use bilbo_entries::tag::{self, Change};
 use bilbo_provider::{Provider, Reply, Request};
 use bilbo_search::index::{Doc, Extent, Index, IndexError, Stats};
 use bilbo_search::position::Position;
 use bilbo_store::entries::{Capture, Cursor, Entries, Generation, RecordRange};
 use bilbo_store::id::Id;
-use bilbo_store::labels::{CaptureLabel, Tags};
+use bilbo_store::labels::{CaptureLabel, Tag, Tags};
 use bilbo_store::segments::{Options, Store};
 use serde_json::{Value, json};
 
@@ -3364,5 +3365,88 @@ fn a_tool_codex_reached_ends_the_run_and_charges_no_window() {
             .starts_with("entries 2, calls 2, notes 2, dropped 0, refused 0, failed 0\n"),
         "{}",
         run.stdout
+    );
+}
+
+fn declare_through_the_store(sandbox: &Sandbox, id: Id, add: &[&str]) {
+    let add: std::collections::BTreeSet<Tag> = add
+        .iter()
+        .map(|name| Tag::new(name).expect("a tag"))
+        .collect();
+    let none = std::collections::BTreeSet::new();
+    let layout = stores::layout(&sandbox.vars());
+    let mut store = Store::open(&layout, Options::default(), &mut |_| {}).expect("open the store");
+    tag::declare(
+        id,
+        &Change::Person {
+            add: &add,
+            remove: &none,
+        },
+        32,
+        &mut store,
+    )
+    .expect("declare");
+}
+
+#[test]
+fn a_tag_change_neither_stops_derive_nor_puts_the_index_behind() {
+    let sandbox = Sandbox::filled("derive-tag-change", false);
+    let provider = Provider::start(Vec::new());
+    sandbox.configure(&config(&provider.url(), ""));
+    declare_through_the_store(&sandbox, sandbox.session(FIRST), &["garden"]);
+
+    let run = sandbox.run(&["derive", "--dry-run"]);
+
+    assert_eq!(run.code, 0, "{:?}", run.stderr);
+    assert_eq!(run.stderr, Vec::<String>::new());
+    let lines: Vec<&str> = run.stdout.lines().collect();
+    assert_eq!(lines[2], "due: 3 entries");
+    assert!(!run.stdout.contains("labels not current"), "{}", run.stdout);
+}
+
+#[test]
+fn derive_in_takes_a_tag_and_derive_not_in_leaves_a_tagged_entry_out() {
+    let sandbox = Sandbox::filled("derive-tag-scope", false);
+    let provider = Provider::start(Vec::new());
+    sandbox.configure(&config(&provider.url(), "").replace(
+        "derive.in = [\"sessions\"]",
+        "derive.in = [\"tag:a\"]\nderive.not_in = [\"tag:private\"]",
+    ));
+    declare_through_the_store(&sandbox, sandbox.session(FIRST), &["a"]);
+    declare_through_the_store(&sandbox, sandbox.session(SECOND), &["a", "private"]);
+
+    let run = sandbox.run(&["derive", "--dry-run"]);
+
+    assert_eq!(run.code, 0, "{:?}", run.stderr);
+    assert_eq!(
+        run.stdout.lines().nth(1),
+        Some("named: 2 entries by derive.in, 1 of them left out by derive.not_in")
+    );
+}
+
+#[test]
+fn a_derive_in_value_that_is_no_tag_is_a_config_error_naming_the_key() {
+    let sandbox = Sandbox::filled("derive-tag-bad", false);
+    let provider = Provider::start(Vec::new());
+    sandbox.configure(
+        &config(&provider.url(), "")
+            .replace("derive.in = [\"sessions\"]", "derive.in = [\"tag:Rust\"]"),
+    );
+    let text = fs::read_to_string(sandbox.dir.join("config/config.toml")).expect("config");
+    let line = text
+        .lines()
+        .position(|line| line.starts_with("derive.in"))
+        .expect("the key")
+        + 1;
+
+    let run = sandbox.run(&["derive", "--dry-run"]);
+
+    assert_eq!(run.code, 2);
+    assert_eq!(
+        run.stderr,
+        [format!(
+            "bilbo: {}/config/config.toml:{line}: derive.in must be a list of texts, each with a letter or a digit, and after tag: a tag's name, got \"tag:Rust\"",
+            sandbox.dir.display()
+        )]
     );
 }

@@ -282,9 +282,12 @@ A passed-over hit uses no budget, and the next one is tried. stderr says how man
 With no `--in` everything is searched: there is no project filter and nothing is read from where the command runs. `--in <value>` keeps the search to the entries its value names; the filter is applied inside the ranker, before the candidates are cut, so a small collection still fills its list. A value is one of:
 
 - an entry id, whole or as a hit prints it (its last 10 characters, in upper case), with or without `bilbo:` and a locator, which is ignored;
-- words of a label: every entry with a label that holds those words next to each other and in order. Words are folded as a query's are (accents are dropped), cut at anything that is not a letter or a digit, lowercased and stemmed, so `--in reuniao` and `--in reunião` both name an entry labelled `/home/me/reunião`, `--in bilbo` names an entry labelled `/home/me/src/bilbos`, and `--in home-me-src-shed` names one labelled `/home/me/src/shed`. A session is in the scope of every folder its records name, so `--in /home/me/src/shed` keeps the sessions that worked there. A label is found by its first 64 words, and a value of more than 64 words names no entry. `bilbo read <id>`, a ref without `#r`, lists an entry's labels.
+- a tag, written `tag:<name>` as `bilbo tag` and `bilbo read` print it: every entry that carries exactly that tag. `--in tag:carpentry` names no entry tagged `carpentry-docs`, and no session that worked in a folder named `carpentry`. What follows `tag:` must be a tag's name, or the run ends with a usage error, exit 2;
+- words of a label: every entry with a label that holds those words next to each other and in order. Words are folded as a query's are (accents are dropped), cut at anything that is not a letter or a digit, lowercased and stemmed, so `--in reuniao` and `--in reunião` both name an entry labelled `/home/me/reunião`, `--in bilbo` names an entry labelled `/home/me/src/bilbos`, and `--in home-me-src-shed` names one labelled `/home/me/src/shed`. A session is in the scope of every folder its records name, so `--in /home/me/src/shed` keeps the sessions that worked there. A label is found by its first 64 words, and a value of more than 64 words names no entry. `bilbo read <id>`, a ref without `#r`, lists an entry's labels. A tag is a label too: `--in rust` names the entries tagged `rust` or `rust-async` with the entries whose other labels hold the word.
 
 A value with a lower-case letter is never an id, so a word can always be given as one. A value that looks like an id (such as the word `REFERENCES`, which has the letters of a short id) and that no entry's id ends with is read as words. A value of ten digits that an entry's id ends with is that id. A short id that several entries end with names none of them: stderr lists them, and the value is not read as words.
+
+A value is read as a tag first, then as an id, then as words. A tag's name can be 26 digits, which also spell an id: `--in tag:<digits>` names the tag and the bare digits name the entry.
 
 An entry that belongs to a kept entry through an id label comes with it, however deep: `--in <a session's id>` keeps the session and its subagents. Several values add up; `--kind` narrows the result. A project's Markdown files are not in its scope unless their folder is named too: `--in bilbo --in notes`. An entry's notes come with it.
 
@@ -294,7 +297,7 @@ A value that starts with a dash is read by the command line as an option: give i
 
 stderr says what the scope kept and what it cost: `--in kept 1,203 entries and left out 31 of the best 400: markdown 7, session 24` counts the entries kept, then how many of the 400 best matches without the scope fall outside it, by kind.
 
-Labels are filed when the index is made, by `bilbo remember` and `bilbo reindex`. An index that cannot be compared with the store's catalog (the catalog was made again) holds no label until the next run, so a value read as words can name fewer entries than it should: stderr says so, after the line about the index, and ids still work. An index behind the store knows the labels of what it indexed.
+Labels are filed when the index is made, by `bilbo remember` and `bilbo reindex`. An index that cannot be compared with the store's catalog (the catalog was made again) holds no label until the next run, so a value read as words can name fewer entries than it should: stderr says so, after the line about the index, and ids still work. An index behind the store knows the labels of what it indexed. Ids and tags are the store's own and work at once.
 
 ### What is searched
 
@@ -356,7 +359,9 @@ bilbo:01M6ZGE4KTBYYH07AS2KVMSCAF
 kind: session
 label: file:/home/me/.claude/projects/-home-me-src-garden/8f2b6d4e-1a3c-4e5f-9b7a-2c4d6e8f0a1b.jsonl (capture)
 label: bilbo:01M6ZFZ0V5T2K1X8Q4W7N9R3HB
+label: tag:garden
 label: /home/me/src/garden
+removed: tag:shed
 captured: 2026-11-09 03:12 UTC
 started: 2026-11-07 08:01 UTC
 records: 23
@@ -368,7 +373,8 @@ outline:
 end: #r1-23 of 23 records
 ```
 
-- A `label:` row is one label of the entry. The capture label, the one `remember` finds the file again by, comes first and is marked `(capture)`; `bilbo:<id>` is the entry this one belongs to (a subagent names its session); the rest are the texts the entry's records name, in byte order, as many as fit in half the page's budget, and then one row, `labels: <n> more; a larger --budget lists them`. A session names the folders it worked in: the `cwd` of its records and the added directories of Claude Code's environment records, or the `cwd` of a Codex rollout's `session_meta` and `turn_context` records. A text the store replaced by an opaque placeholder (a very long folder with no dot or space in it) is not a label. An entry with no label has no `label:` row. `started` is left out for an entry whose records carry no time (a Markdown file).
+- A `label:` row is one label of the entry. The capture label, the one `remember` finds the file again by, comes first and is marked `(capture)`; `bilbo:<id>` is the entry this one belongs to (a subagent names its session); `tag:<name>` is a tag the entry carries, in name order, and `(model)` marks one that `bilbo derive` declared from a model's answer; the rest are the texts the entry's records name, in byte order, as many as fit in half the page's budget, and then one row, `labels: <n> more; a larger --budget lists them`. A session names the folders it worked in: the `cwd` of its records and the added directories of Claude Code's environment records, or the `cwd` of a Codex rollout's `session_meta` and `turn_context` records. A text the store replaced by an opaque placeholder (a very long folder with no dot or space in it) is not a label. An entry with no label has no `label:` row. `started` is left out for an entry whose records carry no time (a Markdown file).
+- A `removed:` row is a name you took off the entry with `bilbo tag --remove`: `bilbo derive` will not declare it for this entry again. The tags and the removed names come from the store and are always listed, whatever the budget. A read of a record range prints no `label:` and no `removed:` row.
 - `generation` is `1 of 2` when the one shown is not the newest.
 - A session lists its user prompts, its compact summaries and, for Codex, the messages one agent sent another. A note entry lists the first line of each note's paragraph that is not blank; a Markdown file lists its frontmatter, the text before its first heading, and each heading with the headings above it: `#r28-31 The garden log > Watering > Tools`.
 - An outline line is the prompt's first line, at most `read.outline_width` characters (100 by default); a longer one is cut to fit and ends in `…`. Inside a Markdown file's path, a heading over `markdown.heading_width` characters (100 by default) is cut to fit and ends in `…` too.

@@ -9,6 +9,7 @@ use bilbo_settings::folder;
 use bilbo_settings::key::{
     About, Default, Key, Resolved, Shown, Source, Value, show_list, show_texts,
 };
+use bilbo_store::labels::Tag;
 
 use crate::tries;
 
@@ -33,6 +34,7 @@ fn entries(value: &Value<'_>) -> Result<Vec<String>, Error> {
         .map(|item| {
             item.text()
                 .filter(|text| text.chars().any(char::is_alphanumeric))
+                .filter(|text| !matches!(Tag::written(text), Some(Err(_))))
                 .map(str::to_owned)
                 .ok_or_else(|| item.refuse())
         })
@@ -56,7 +58,7 @@ pub const IN: Key<Vec<String>> = Key {
         name: "derive.in",
         variable: None,
         default: Default::Toml("[]"),
-        allowed: "a list of texts, each with a letter or a digit",
+        allowed: "a list of texts, each with a letter or a digit, and after tag: a tag's name",
         doc: "The entries bilbo derive may send, each value as recall --in takes it. Empty: nothing is sent.",
     },
     parse: entries,
@@ -68,7 +70,7 @@ pub const NOT_IN: Key<Vec<String>> = Key {
         name: "derive.not_in",
         variable: None,
         default: Default::Toml("[]"),
-        allowed: "a list of texts, each with a letter or a digit",
+        allowed: "a list of texts, each with a letter or a digit, and after tag: a tag's name",
         doc: "The entries bilbo derive never sends, whatever derive.in names, each value as recall --in takes it.",
     },
     parse: entries,
@@ -543,12 +545,16 @@ mod tests {
             ["01JC5Q3V7XKM4P8R2T6W9YB0DB", "garden notes", "7"]
         );
         assert_eq!(section.left_out.value, ["x"]);
+        let tagged = given("derive.in = [\"tag:rust\", \"tag:carpentry-docs\"]");
+        assert_eq!(tagged.named.value, ["tag:rust", "tag:carpentry-docs"]);
         for name in ["derive.in", "derive.not_in"] {
             for (text, bad) in [
                 ("[\"\"]", "\"\""),
                 ("[\"--\"]", "\"--\""),
                 ("[7]", "7"),
                 ("[\"ok\", \"--\"]", "\"--\""),
+                ("[\"tag:Rust\"]", "\"tag:Rust\""),
+                ("[\"tag:\"]", "\"tag:\""),
             ] {
                 let message = refused(&format!("{name} = {text}"));
                 assert!(

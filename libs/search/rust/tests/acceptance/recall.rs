@@ -1341,6 +1341,47 @@ fn a_scope_narrows_the_hits_to_the_entries_it_names() {
 }
 
 #[test]
+fn recall_in_a_tag_keeps_the_search_to_its_carriers_when_the_index_cannot_be_compared() {
+    let mut log = Log::new();
+    for n in 1..=4 {
+        log.put(n, "note", &[RELEASE]);
+    }
+    log.tag(1, "shed");
+    log.tag(2, "shed");
+    log.belong(3, 1);
+    log.label(4, "file:/home/me/src/shed");
+    let index = index_of(&log);
+    log.catalog = [9; 16];
+    let (output, _) = ask(&log, &index, &scoped("release checklist", &["tag:shed"]));
+    assert_eq!(output.stand, Stand::Unknown);
+    let mut found = entries_of(&output);
+    found.sort();
+    assert_eq!(found, [id(1), id(2), id(3)]);
+    let scope = output.scope.expect("a scope");
+    assert_eq!(scope.kept, 3);
+    assert!(!scope.worded);
+}
+
+#[test]
+fn recall_in_a_tag_and_in_words_add_up() {
+    let mut log = Log::new();
+    log.put(1, "note", &[RELEASE]);
+    log.put(2, "note", &[RELEASE]);
+    log.put(3, "note", &[RELEASE]);
+    log.tag(1, "shed");
+    log.label(2, "file:/home/me/src/garden");
+    let index = index_of(&log);
+    let (output, _) = ask(
+        &log,
+        &index,
+        &scoped("release checklist", &["tag:shed", "garden"]),
+    );
+    let mut found = entries_of(&output);
+    found.sort();
+    assert_eq!(found, [id(1), id(2)]);
+}
+
+#[test]
 fn a_scope_that_names_nothing_searches_nothing() {
     let log = shelf_of_places();
     let index = index_of(&log);

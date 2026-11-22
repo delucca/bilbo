@@ -13,7 +13,7 @@ use bilbo_entries::read::{self, Fetched};
 use bilbo_entries::remember::{self, Item, Outcome, Output, Request, Tagging};
 use bilbo_store::entries::{Entries, Generation, Meta, RecordRange};
 use bilbo_store::id::Id;
-use bilbo_store::labels::{CaptureLabel, StoredLabels, Tags};
+use bilbo_store::labels::{By, CaptureLabel, Standing, StoredLabels, Tag, Tags};
 use bilbo_store::layout::Layout;
 use bilbo_store::segments::{Options, Store};
 
@@ -353,6 +353,17 @@ fn read_output(
     locator: &str,
     budget: usize,
 ) -> (String, String) {
+    read_tagged(kind, label, file, locator, budget, Tags::default())
+}
+
+fn read_tagged(
+    kind: &str,
+    label: &str,
+    file: &[u8],
+    locator: &str,
+    budget: usize,
+    tags: Tags,
+) -> (String, String) {
     let fetched = Fetched {
         meta: Meta {
             id: Id::parse(READ_ID).expect("id"),
@@ -360,7 +371,7 @@ fn read_output(
             labels: StoredLabels {
                 capture: CaptureLabel::new(format!("file:{label}")),
                 id: Id::parse("01JC5Q3V7XKM4P8R2T6W9YB0DF").filter(|_| kind == "session"),
-                tags: Tags::default(),
+                tags,
             },
             captured: std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_794_193_920),
         },
@@ -412,6 +423,24 @@ fn note(locator: &str, budget: usize) -> (String, String) {
         locator,
         budget,
     )
+}
+
+#[test]
+fn an_outline_with_tags_as_read_prints_it() {
+    let mut tags = Tags::default();
+    tags.set(
+        Tag::new("garden").expect("a tag"),
+        Some(Standing::Carried(By::Person)),
+    );
+    tags.set(
+        Tag::new("rust").expect("a tag"),
+        Some(Standing::Carried(By::Model)),
+    );
+    tags.set(Tag::new("shed").expect("a tag"), Some(Standing::Removed));
+    let label =
+        "/home/me/.claude/projects/-home-me-src-garden/8f2b6d4e-1a3c-4e5f-9b7a-2c4d6e8f0a1b.jsonl";
+    let (plain, _) = read_tagged("session", label, CLAUDE_SESSION, "", 7000, tags);
+    assert_eq!(plain, include_str!("snapshots/read-tagged-outline.txt"));
 }
 
 #[test]
@@ -811,6 +840,20 @@ fn recall_says_what_a_scope_named_kept_and_left_out_on_stderr() {
     let mut text = outcome.stderr_lines(&View::PLAIN).join("\n");
     text.push('\n');
     assert_eq!(text, include_str!("snapshots/recall-scope.txt"));
+}
+
+#[test]
+fn a_tag_scheme_with_no_tags_name_is_a_usage_error_with_the_usage_on_two_lines() {
+    let failure = run(
+        &args(&["recall", "--in", "tag:Rust", "carrots"]),
+        &mut Env::quiet(),
+        Ok(defaults()),
+    )
+    .expect_err("a usage error");
+    assert_eq!(failure.exit_code(), 2);
+    let mut text = failure.stderr_lines(&View::PLAIN).join("\n");
+    text.push('\n');
+    assert_eq!(text, include_str!("snapshots/recall-usage-tag.txt"));
 }
 
 #[test]

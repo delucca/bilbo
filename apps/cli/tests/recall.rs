@@ -18,6 +18,7 @@ use bilbo_cli::console::view::View;
 use bilbo_cli::remember::disk::Disk;
 use bilbo_entries::read::refs::{Ref, Target};
 use bilbo_entries::remember::{self, Request, Tagging};
+use bilbo_entries::tag::{self, Change};
 use bilbo_entries::tokens::Tokens;
 use bilbo_search::analyze::{self, Detect, Language};
 use bilbo_search::chunk;
@@ -26,6 +27,7 @@ use bilbo_search::lookup::{Edits, Filter, Found, Lookup, Near, Posting, Totals};
 use bilbo_search::position::Position;
 use bilbo_search::tokenizer::Tokenizer;
 use bilbo_store::entries::{Entries, Meta, RecordRange};
+use bilbo_store::labels::Tag;
 use bilbo_store::segments::{Options, Store};
 use rustix::fs::OFlags;
 
@@ -2539,4 +2541,128 @@ fn a_scope_brings_the_notes_of_the_entry_it_names_and_no_other() {
             ["bilbo: searched 7 entries", "bilbo: --in kept 2 entries"]
         );
     }
+}
+
+const MARMALADE: &[u8] =
+    b"# Beds\n\nSeville marmalade ripens beside the tomato vines, forty jars by October.\n";
+
+fn declare_through_the_store(sandbox: &Sandbox, file: &str, add: &[&str], remove: &[&str]) {
+    let id = entry_kept_from(sandbox, file);
+    let names = |names: &[&str]| -> BTreeSet<Tag> {
+        names
+            .iter()
+            .map(|name| Tag::new(name).expect("a tag"))
+            .collect()
+    };
+    let (add, remove) = (names(add), names(remove));
+    let mut store = Store::open(
+        &sandbox.settings().layout(),
+        Options::default(),
+        &mut |_| {},
+    )
+    .expect("open the store");
+    tag::declare(
+        id,
+        &Change::Person {
+            add: &add,
+            remove: &remove,
+        },
+        32,
+        &mut store,
+    )
+    .expect("declare");
+}
+
+#[test]
+fn a_removed_name_is_named_by_neither_form() {
+    let sandbox = Sandbox::new("recall_in_removed");
+    sandbox.write("notes/shed/a.md", MARMALADE);
+    sandbox.remember(&["notes"]);
+    declare_through_the_store(&sandbox, "notes/shed/a.md", &["zinnia"], &[]);
+    declare_through_the_store(&sandbox, "notes/shed/a.md", &[], &["zinnia"]);
+
+    for (value, line) in [
+        ("tag:zinnia", "bilbo: --in 'tag:zinnia' names no entry"),
+        ("zinnia", "bilbo: --in 'zinnia' names no entry"),
+    ] {
+        let run = sandbox.run(&["recall", "--in", value, "marmalade"]);
+        assert_eq!(run.code, 1, "{value}: {:?}", run.stderr);
+        assert!(run.stderr.contains(&line.to_owned()), "{:?}", run.stderr);
+        assert!(hits(&run.stdout).is_empty(), "{}", run.stdout);
+    }
+}
+
+#[test]
+fn a_tag_declared_after_the_index_is_made_scopes_a_recall_with_no_index_run() {
+    let sandbox = Sandbox::new("recall_in_tag_at_once");
+    sandbox.write("notes/shed/a.md", MARMALADE);
+    sandbox.write(
+        "notes/pantry/b.md",
+        b"# Shelf\n\nQuince marmalade keeps on the top rack behind the flour bins, away from damp.\n",
+    );
+    sandbox.remember(&["notes"]);
+    declare_through_the_store(&sandbox, "notes/shed/a.md", &["x"], &[]);
+
+    let run = sandbox.run(&["recall", "--in", "tag:x", "marmalade"]);
+
+    assert_eq!(run.code, 0, "{:?}", run.stderr);
+    let found = hits(&run.stdout);
+    assert_eq!(found.len(), 1, "{}", run.stdout);
+    assert!(capture_of(&sandbox, &found[0]).ends_with("shed/a.md"));
+    assert!(
+        run.stderr
+            .iter()
+            .any(|line| line.starts_with("bilbo: --in kept 1 entry")),
+        "{:?}",
+        run.stderr
+    );
+    assert!(
+        run.stderr.iter().all(|line| {
+            !line.starts_with("bilbo: the index is behind")
+                && !line.starts_with("bilbo: --in may name fewer")
+        }),
+        "{:?}",
+        run.stderr
+    );
+}
+
+#[test]
+fn a_tag_scheme_with_no_tags_name_is_a_usage_error_before_the_store_is_opened() {
+    let sandbox = Sandbox::new("recall_in_tag_usage");
+    let nowhere = sandbox.path("nowhere");
+    let run = sandbox.run_with(
+        &["recall", "--in", "tag:Rust", "marmalade"],
+        &[("BILBO_HOME", &nowhere)],
+    );
+    assert_eq!((run.code, run.stdout.as_str()), (2, ""));
+    assert_eq!(
+        run.stderr[0],
+        "bilbo: --in 'tag:Rust' is not a tag: parts of a to z and digits joined by single hyphens, at most 64 bytes"
+    );
+    assert!(
+        run.stderr[1].starts_with("bilbo: usage: bilbo recall"),
+        "{:?}",
+        run.stderr
+    );
+}
+
+#[test]
+fn a_tag_no_entry_carries_is_said_and_nothing_is_searched() {
+    let sandbox = Sandbox::new("recall_in_tag_none");
+    sandbox.write("notes/shed/a.md", MARMALADE);
+    sandbox.remember(&["notes"]);
+
+    let run = sandbox.run(&["recall", "--in", "tag:shed", "marmalade"]);
+
+    assert_eq!(run.code, 1, "{:?}", run.stderr);
+    assert_eq!(run.stdout, "");
+    let said = run
+        .stderr
+        .iter()
+        .position(|line| line == "bilbo: --in 'tag:shed' names no entry")
+        .expect("the entry is said");
+    assert_eq!(
+        run.stderr.get(said + 1).map(String::as_str),
+        Some("bilbo: nothing matched")
+    );
 }

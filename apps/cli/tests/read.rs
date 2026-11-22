@@ -14,8 +14,10 @@ use bilbo_cli::console::outcome::Failure;
 use bilbo_cli::console::settings::{self, Settings};
 use bilbo_cli::console::view::View;
 use bilbo_entries::reader::{Passage, Reader};
+use bilbo_entries::tag::{self, Change as Tagging};
 use bilbo_store::entries::{Change, Cursor, Entries, RecordRange};
 use bilbo_store::id::Id;
+use bilbo_store::labels::Tag;
 use bilbo_store::segments::{Options, Store};
 
 mod note_line;
@@ -1103,6 +1105,61 @@ fn a_long_folder_capture_replaced_is_no_label_of_its_session() {
         "{:?}",
         scoped.stderr
     );
+}
+
+#[test]
+fn read_prints_a_persons_tag_a_models_tag_and_a_removed_name_and_a_range_prints_none() {
+    let scratch = Scratch::remembered("read_tags");
+    let id = Id::parse(SECTIONS).expect("an id");
+    let tag = |name: &str| Tag::new(name).expect("a tag");
+    let mut store = Store::open(
+        &scratch.bilbo.settings().layout(),
+        Options::default(),
+        &mut |_| {},
+    )
+    .expect("open the store");
+    let garden = std::collections::BTreeSet::from([tag("garden"), tag("shed")]);
+    let shed = std::collections::BTreeSet::from([tag("shed")]);
+    let none = std::collections::BTreeSet::new();
+    for (add, remove) in [(&garden, &none), (&none, &shed)] {
+        tag::declare(id, &Tagging::Person { add, remove }, 32, &mut store).expect("a person's");
+    }
+    tag::declare(
+        id,
+        &Tagging::Model {
+            picks: &[tag("rust")],
+            takes_back: false,
+        },
+        32,
+        &mut store,
+    )
+    .expect("a model's");
+    drop(store);
+
+    let outline = scratch.bilbo.run(&["read", SECTIONS]);
+    assert_eq!(outline.code, 0, "{:?}", outline.stderr);
+    let rows: Vec<&str> = outline
+        .stdout
+        .lines()
+        .filter(|line| line.starts_with("label: ") || line.starts_with("removed: "))
+        .collect();
+    assert_eq!(rows.len(), 4, "{}", outline.stdout);
+    assert!(rows[0].ends_with("(capture)"), "{}", outline.stdout);
+    assert_eq!(
+        rows[1..],
+        [
+            "label: tag:garden",
+            "label: tag:rust (model)",
+            "removed: tag:shed"
+        ]
+    );
+
+    let range = scratch
+        .bilbo
+        .run(&["read", &format!("bilbo:{SECTIONS}#r28-31")]);
+    assert_eq!(range.code, 0, "{:?}", range.stderr);
+    assert!(!range.stdout.contains("label:"), "{}", range.stdout);
+    assert!(!range.stdout.contains("removed:"), "{}", range.stdout);
 }
 
 #[test]

@@ -13,6 +13,7 @@ use bilbo_search::recall::{self, Access, Error, Finished, Request, Scoped, Stand
 use bilbo_search::typo;
 use bilbo_settings::file::File;
 use bilbo_settings::key::{Flag, Source};
+use bilbo_store::labels::Tag;
 use bilbo_store::segments::{Cache, Notice, Store};
 use clap::Command;
 use clap::builder::NonEmptyStringValueParser;
@@ -107,18 +108,18 @@ pub fn run(
             Some("recall"),
         ));
     }
-    if let Some(blank) = args
-        .scope
-        .iter()
-        .find(|value| scope::value(value).is_none())
-    {
-        return Err(usage(
-            root,
-            sanitize(&format!(
-                "--in '{blank}' has no letter or digit; give a word of a label, or an id as a hit prints it"
-            )),
-            Some("recall"),
-        ));
+    for given in &args.scope {
+        let reason = match scope::value(given) {
+            Ok(_) => continue,
+            Err(scope::NoValue::Blank) => format!(
+                "--in '{given}' has no letter or digit; give a word of a label, or an id as a hit prints it"
+            ),
+            Err(scope::NoValue::NotATag(_)) => format!(
+                "--in '{given}' is not a tag: parts of a to z and digits joined by single hyphens, at most {} bytes",
+                Tag::MAX_BYTES
+            ),
+        };
+        return Err(usage(root, sanitize(&reason), Some("recall")));
     }
     let none = File::default();
     let source = Source {

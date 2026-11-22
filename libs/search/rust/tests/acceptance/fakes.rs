@@ -431,6 +431,7 @@ pub struct Log {
     pub asked_words: RefCell<Vec<Vec<String>>>,
     pub asked_belonging: RefCell<Vec<Vec<Id>>>,
     pub labels_fail: Cell<bool>,
+    pub carried: Vec<(Tag, Id)>,
 }
 
 pub struct Held {
@@ -460,6 +461,7 @@ impl Log {
             asked_words: RefCell::new(Vec::new()),
             asked_belonging: RefCell::new(Vec::new()),
             labels_fail: Cell::new(false),
+            carried: Vec::new(),
         }
     }
 
@@ -529,6 +531,10 @@ impl Log {
 
     pub fn label(&mut self, n: u8, capture: &str) {
         self.retouch(n, |held| held.capture = Some(capture.to_owned()));
+    }
+
+    pub fn tag(&mut self, n: u8, name: &str) {
+        self.carried.push((Tag::new(name).expect("a tag"), id(n)));
     }
 
     pub fn belong(&mut self, n: u8, to: u8) {
@@ -735,12 +741,28 @@ impl Labels for Log {
         Ok(found)
     }
 
-    fn tagged(&self, _: &Tag) -> Result<Vec<Id>, StoreError> {
-        Ok(Vec::new())
+    fn tagged(&self, tag: &Tag) -> Result<Vec<Id>, StoreError> {
+        let mut found: Vec<Id> = self
+            .carried
+            .iter()
+            .filter(|(carried, _)| carried == tag)
+            .map(|(_, entry)| *entry)
+            .collect();
+        found.sort();
+        Ok(found)
     }
 
     fn tags(&self) -> Result<Vec<Tagged>, StoreError> {
-        Ok(Vec::new())
+        let mut counts: BTreeMap<(Tag, String), u64> = BTreeMap::new();
+        for (tag, entry) in &self.carried {
+            if let Some(held) = self.entries.iter().find(|held| held.id == *entry) {
+                *counts.entry((tag.clone(), held.kind.clone())).or_default() += 1;
+            }
+        }
+        Ok(counts
+            .into_iter()
+            .map(|((tag, kind), entries)| Tagged { tag, kind, entries })
+            .collect())
     }
 }
 
