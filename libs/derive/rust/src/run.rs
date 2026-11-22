@@ -108,6 +108,31 @@ enum Step {
     Stop(Ended),
 }
 
+enum Attempted {
+    Answer {
+        text: String,
+        usage: Usage,
+        model: Option<String>,
+        taken: (Option<u32>, u64),
+    },
+    Cut {
+        usage: Usage,
+        taken: (Option<u32>, u64),
+    },
+    Failed {
+        cause: Cause,
+        usage: Usage,
+        taken: (Option<u32>, u64),
+    },
+    Refused {
+        category: Option<String>,
+        usage: Usage,
+        taken: (Option<u32>, u64),
+    },
+    Calls,
+    GaveUp(Cause, Ended),
+}
+
 struct Made {
     answered: Option<String>,
     usage: Usage,
@@ -472,77 +497,128 @@ impl Machine<'_> {
         };
         let grounds = view::grounds(earlier, entry.preface.as_deref(), &planned.window.text);
         let sent = size_of_window(planned);
+        let context = self.context;
+        let attempted = self.attempt(
+            entry.parent.id,
+            &prompt,
+            &context.limits,
+            |machine, line| {
+                machine.log(entry, planned, line, sent);
+            },
+        );
+        match attempted {
+            Attempted::Calls => Ok(Step::Stop(Ended::Calls)),
+            Attempted::GaveUp(cause, ended) => self.not_asked_again(planned, &cause, ended),
+            Attempted::Answer {
+                text,
+                usage,
+                model,
+                taken,
+            } => {
+                self.add(usage);
+                self.answer(
+                    entry,
+                    planned,
+                    previous,
+                    &grounds,
+                    (text, usage, model),
+                    taken,
+                )
+            }
+            Attempted::Cut { usage, taken } => {
+                self.failure(entry, planned, Cause::new(What::Cut), usage, taken)
+            }
+            Attempted::Failed {
+                cause,
+                usage,
+                taken,
+            } => self.failure(entry, planned, cause, usage, taken),
+            Attempted::Refused {
+                category,
+                usage,
+                taken: (attempt, millis),
+            } => {
+                self.add(usage);
+                self.counts.refused += 1;
+                self.tries.charge(&planned.extent)?;
+                self.answered()?;
+                self.events.push(Event::Refused {
+                    extent: planned.extent,
+                    category: category.clone(),
+                });
+                self.log(
+                    entry,
+                    planned,
+                    Line {
+                        verdict: Verdict::Refused,
+                        attempt,
+                        answered: None,
+                        usage,
+                        tallies: None,
+                        cause: None,
+                        reason: Some(category.unwrap_or_else(|| "unknown".to_owned())),
+                        millis,
+                    },
+                    sent,
+                );
+                Ok(Step::EndEntry)
+            }
+        }
+    }
+
+    fn attempt(
+        &mut self,
+        parent: Id,
+        prompt: &Prompt,
+        limits: &Limits,
+        mut log: impl FnMut(&mut Self, Line),
+    ) -> Attempted {
+        let section = self.context.section;
         let mut retries = 0u32;
         loop {
             if self.attempts >= section.calls.value {
-                return Ok(Step::Stop(Ended::Calls));
+                return Attempted::Calls;
             }
             self.attempts += 1;
             self.counts.calls += 1;
-            if self.counted != Some(entry.parent.id) {
-                self.counted = Some(entry.parent.id);
+            if self.counted != Some(parent) {
+                self.counted = Some(parent);
                 self.counts.entries += 1;
             }
             let attempt = Some(retries + 1);
             let started = self.clock.now();
-            let outcome = self.writer.call(&prompt, &self.context.limits);
+            let outcome = self.writer.call(prompt, limits);
             let millis = self.clock.now().duration_since(started).map_or(0, |taken| {
                 u64::try_from(taken.as_millis()).unwrap_or(u64::MAX)
             });
+            let taken = (attempt, millis);
             match outcome {
                 Outcome::Answer { text, usage, model } => {
-                    self.add(usage);
-                    return self.answer(
-                        entry,
-                        planned,
-                        previous,
-                        &grounds,
-                        (text, usage, model),
-                        (attempt, millis),
-                    );
-                }
-                Outcome::Cut(usage) => {
-                    return self.failure(
-                        entry,
-                        planned,
-                        Cause::new(What::Cut),
+                    return Attempted::Answer {
+                        text,
                         usage,
-                        (attempt, millis),
-                    );
+                        model,
+                        taken,
+                    };
                 }
+                Outcome::Cut(usage) => return Attempted::Cut { usage, taken },
                 Outcome::Failed { cause, usage } => {
-                    return self.failure(entry, planned, cause, usage, (attempt, millis));
+                    return Attempted::Failed {
+                        cause,
+                        usage,
+                        taken,
+                    };
                 }
                 Outcome::Refused { category, usage } => {
-                    self.add(usage);
-                    self.counts.refused += 1;
-                    self.tries.charge(&planned.extent)?;
-                    self.answered()?;
-                    self.events.push(Event::Refused {
-                        extent: planned.extent,
-                        category: category.clone(),
-                    });
-                    self.log(
-                        entry,
-                        planned,
-                        Line {
-                            verdict: Verdict::Refused,
-                            attempt,
-                            answered: None,
-                            usage,
-                            tallies: None,
-                            cause: None,
-                            reason: Some(category.unwrap_or_else(|| "unknown".to_owned())),
-                            millis,
-                        },
-                        sent,
-                    );
-                    return Ok(Step::EndEntry);
+                    return Attempted::Refused {
+                        category,
+                        usage,
+                        taken,
+                    };
                 }
                 Outcome::Busy { wait, cause } => {
-                    self.log(
-                        entry,
-                        planned,
+                    log(
+                        self,
                         Line {
                             verdict: Verdict::Busy,
                             attempt,
@@ -553,14 +629,13 @@ impl Machine<'_> {
                             reason: None,
                             millis,
                         },
-                        sent,
                     );
                     if retries >= u32::try_from(section.retries.value).unwrap_or(u32::MAX) {
                         let ended = Ended::Busy(cause.clone(), retries + 1);
-                        return self.not_asked_again(planned, &cause, ended);
+                        return Attempted::GaveUp(cause, ended);
                     }
                     if self.attempts >= section.calls.value {
-                        return Ok(Step::Stop(Ended::Calls));
+                        return Attempted::Calls;
                     }
                     let times = u32::try_from(section.retry_factor.value)
                         .unwrap_or(u32::MAX)
@@ -569,15 +644,14 @@ impl Machine<'_> {
                         wait.unwrap_or_else(|| section.retry_wait.value.saturating_mul(times));
                     if delay > section.retry_limit.value {
                         let ended = Ended::Wait(delay, cause.clone());
-                        return self.not_asked_again(planned, &cause, ended);
+                        return Attempted::GaveUp(cause, ended);
                     }
                     self.clock.sleep(delay);
                     retries += 1;
                 }
                 Outcome::Stopped(cause) => {
-                    self.log(
-                        entry,
-                        planned,
+                    log(
+                        self,
                         Line {
                             verdict: Verdict::Stopped,
                             attempt,
@@ -588,9 +662,9 @@ impl Machine<'_> {
                             reason: None,
                             millis,
                         },
-                        sent,
                     );
-                    return self.not_asked_again(planned, &cause, Ended::Stopped(cause.clone()));
+                    let ended = Ended::Stopped(cause.clone());
+                    return Attempted::GaveUp(cause, ended);
                 }
             }
         }

@@ -1948,3 +1948,75 @@ fn a_name_the_record_wrote_with_a_tag_of_the_frame_is_found() {
         (0, 1)
     );
 }
+
+#[test]
+fn every_attempt_of_a_window_is_handed_the_same_limits_a_retry_included() {
+    let (mut world, _) = alone();
+    world.limits = Limits {
+        answer_tokens: 16_001,
+        timeout: seconds(301),
+        response: (4 << 20) + 1,
+        poll: Duration::from_millis(6),
+    };
+    let mut script = Script::new()
+        .then(busy(Some(seconds(1))))
+        .then(busy(Some(seconds(1))))
+        .then(good());
+    let plan = world.plan(Asked::Every);
+    world.calls(&mut script, &plan);
+    assert_eq!(script.limits, [world.limits; 3]);
+}
+
+#[test]
+fn a_retry_sends_the_prompt_the_first_attempt_sent() {
+    let (mut world, parent) = windowed(3);
+    world.notes_saying(parent, 1, "Stored words here.", |_| {});
+    let mut script = Script::new()
+        .then(busy(Some(seconds(1))))
+        .then(busy(Some(seconds(1))))
+        .then(answer(&para(2, 2, "Written words here.")))
+        .then(answer(&para(3, 3, "Final words here.")));
+    let plan = world.plan(Asked::Every);
+    world.calls(&mut script, &plan);
+    assert_eq!(script.prompts.len(), 4);
+    assert_eq!(script.prompts[0], script.prompts[1]);
+    assert_eq!(script.prompts[0], script.prompts[2]);
+    assert!(script.prompts[0].material.contains("Stored words here."));
+}
+
+#[test]
+fn a_run_out_of_calls_does_not_wait_for_a_retry_it_cannot_make() {
+    let (mut world, _) = alone();
+    world.section.calls.value = 1;
+    let mut script = Script::new().then(busy(None)).then(good());
+    let plan = world.plan(Asked::Every);
+    let report = world.calls(&mut script, &plan);
+    assert_eq!(report.ended, Ended::Calls);
+    assert_eq!(script.prompts.len(), 1);
+    assert!(world.watch.slept.borrow().is_empty());
+}
+
+#[test]
+fn a_failure_that_waits_is_not_charged_when_the_provider_stops_the_run() {
+    let mut world = World::new();
+    world.section.tries.value = 1;
+    world.entry("plain", &["alpha"]);
+    let waiting = world.entry("plain", &["alpha"]);
+    world.entry("plain", &["alpha"]);
+    let mut script = Script::new()
+        .then(good())
+        .then(failed(What::ToolError))
+        .then(stopped());
+    let plan = world.plan(Asked::Every);
+    let report = world.calls(&mut script, &plan);
+    assert_eq!(report.ended, Ended::Stopped(Cause::new(What::Unauthorized)));
+    assert_eq!(script.prompts.len(), 3);
+    assert!(world.held.charges.is_empty());
+    assert_eq!(world.held.of(&world.extent_of(waiting, 1, 1)), 0);
+
+    let mut script = Script::new().always(|_, _| good());
+    let plan = world.plan(Asked::Every);
+    let report = world.calls(&mut script, &plan);
+    assert_eq!(report.ended, Ended::Done);
+    assert_eq!(script.prompts.len(), 3);
+}
