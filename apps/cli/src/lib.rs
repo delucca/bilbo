@@ -102,7 +102,11 @@ pub fn providers() -> Vec<(&'static str, &'static str)> {
     ]
 }
 
-pub fn model(settings: &Settings, var: &Var) -> Result<derive::Built, Failure> {
+pub fn model(
+    settings: &Settings,
+    var: &Var,
+    named: Option<(&'static str, &str)>,
+) -> Result<derive::Built, Failure> {
     let state = settings.state.value.clone();
     let timeout = settings.llm.timeout.value;
     let response = usize::try_from(settings.llm.response.value).unwrap_or(usize::MAX);
@@ -122,6 +126,10 @@ pub fn model(settings: &Settings, var: &Var) -> Result<derive::Built, Failure> {
     let (writer, api): (Box<dyn bilbo_llm::model::Model>, bool) = match name {
         bilbo_llm::anthropic::NAME => {
             let section = bilbo_llm::anthropic::section(&source)?;
+            let section = match named {
+                Some((key, id)) => section.asking(key, id),
+                None => section,
+            };
             let api = section.via.value == bilbo_llm::model::Way::Api;
             let host = bilbo_llm::model::Host {
                 variables: reading(section.reads()),
@@ -135,6 +143,10 @@ pub fn model(settings: &Settings, var: &Var) -> Result<derive::Built, Failure> {
         }
         bilbo_llm::openai::NAME => {
             let section = bilbo_llm::openai::section(&source)?;
+            let section = match named {
+                Some((key, id)) => section.asking(key, id),
+                None => section,
+            };
             let api = section.via.value == bilbo_llm::model::Way::Api;
             let host = bilbo_llm::model::Host {
                 variables: reading(section.reads()),
@@ -485,7 +497,7 @@ pub fn run_tuned(
                             write: &note.line,
                             read: &note.paragraph,
                         },
-                        writer: &|var| model(&settings, var),
+                        writer: &|var, named| model(&settings, var, named),
                         finish: &|store, kept, notice| {
                             remember::follows::finish(
                                 store,
@@ -563,13 +575,25 @@ mod tests {
         for (name, _) in super::providers() {
             let settings = with_provider(name);
             let var: crate::console::env::Var = Rc::new(|_| None);
-            let built = super::model(&settings, &var).expect("a writer");
+            let built = super::model(&settings, &var, None).expect("a writer");
             assert!(
                 built.writer.describe()[0].starts_with(&format!("provider: {name}")),
                 "{name}"
             );
             assert!(built.api, "{name}");
         }
+    }
+
+    #[test]
+    fn the_root_builds_another_model_from_the_key_and_the_id_it_is_given() {
+        let settings = with_provider("anthropic");
+        let var: crate::console::env::Var =
+            Rc::new(|name| (name == "BILBO_LLM_ANTHROPIC_MODEL").then(|| OsString::from("m1")));
+        let own = super::model(&settings, &var, None).expect("the provider's model");
+        assert_eq!(own.writer.id(), "m1");
+        let other = super::model(&settings, &var, Some(("derive.tags.model", "m2")))
+            .expect("another model");
+        assert_eq!(other.writer.id(), "m2");
     }
 
     fn recording(
@@ -594,7 +618,7 @@ mod tests {
         ] {
             let settings = with_provider(name);
             let (var, asked) = recording(vec![(key_env, "PLUM_KEY"), ("PLUM_KEY", "sk-test")]);
-            let built = super::model(&settings, &var).expect("a writer");
+            let built = super::model(&settings, &var, None).expect("a writer");
             assert!(
                 asked.borrow().iter().all(|name| name.starts_with("BILBO_")),
                 "{name}: {:?}",
@@ -618,7 +642,7 @@ mod tests {
         )
         .expect("settings");
         let (var, asked) = recording(vec![("PLUM_TOKEN", "t"), ("HOME", "/h")]);
-        super::model(&settings, &var).expect("a writer");
+        super::model(&settings, &var, None).expect("a writer");
         assert!(
             asked
                 .borrow()
@@ -648,7 +672,7 @@ mod tests {
         )
         .expect("settings");
         let (var, asked) = recording(vec![("PLUM_TOKEN", "t"), ("HOME", "/h"), ("OTHER", "o")]);
-        let mut built = super::model(&settings, &var).expect("a writer");
+        let mut built = super::model(&settings, &var, None).expect("a writer");
         asked.borrow_mut().clear();
         built.writer.prepare().expect("a prepared writer");
         let mut names = asked.borrow().clone();
@@ -661,7 +685,7 @@ mod tests {
     #[test]
     fn an_unknown_provider_is_a_config_error_that_lists_the_providers() {
         let var: crate::console::env::Var = Rc::new(|_| None);
-        match super::model(&with_provider("gemini"), &var) {
+        match super::model(&with_provider("gemini"), &var, None) {
             Err(Failure::Config(text)) => assert_eq!(
                 text,
                 "llm.provider must be one of anthropic, openai, got \"gemini\""
@@ -722,7 +746,7 @@ mod tests {
     #[test]
     fn claude_is_no_provider() {
         let var: crate::console::env::Var = Rc::new(|_| None);
-        match super::model(&with_provider("claude"), &var) {
+        match super::model(&with_provider("claude"), &var, None) {
             Err(Failure::Config(text)) => assert_eq!(
                 text,
                 "llm.provider must be one of anthropic, openai, got \"claude\""
@@ -746,7 +770,7 @@ mod tests {
             )
             .expect("settings");
             let var: crate::console::env::Var = Rc::new(|_| None);
-            super::model(&settings, &var).expect("a writer")
+            super::model(&settings, &var, None).expect("a writer")
         };
         let tool = built("anthropic", b"[llm.anthropic]\nvia = \"tool\"\n");
         assert!(tool.writer.describe()[0].starts_with("provider: anthropic, via tool, "));

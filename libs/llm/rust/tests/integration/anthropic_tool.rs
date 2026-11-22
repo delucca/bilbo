@@ -331,6 +331,51 @@ fn the_tool_is_started_as_the_settings_say() {
 }
 
 #[test]
+fn a_list_that_does_not_bind_still_prepares_and_calls_for_the_notes() {
+    let rig = rig("claude-unbound");
+    let out = rig.out.display();
+    let script = rig.scratch.executable(
+        "tool.sh",
+        &format!("printf '%s\\n' \"$@\" > {out}/args\ncat > {out}/stdin\ncat {out}/../reply.txt"),
+    );
+    fs::write(rig.scratch.path().join("reply.txt"), ANSWER).expect("reply");
+    let mut list: Vec<&str> = AFTER.to_vec();
+    list[2] = "x";
+    list.extend(["--fallback-model", "y"]);
+    let tail = format!("project_files = [\"{MARKER}\"]\n");
+    let mut writer = tool(&config("/bin/sh", &script, &list, &tail), &rig.work, None);
+    assert_eq!(
+        writer.bound().unwrap_err(),
+        "llm.anthropic.tool.arguments does not bind a call to its model: it needs \"--model\" followed by \"{model}\", and must not hold \"--fallback-model\""
+    );
+    writer.prepare().expect("prepare");
+    assert!(matches!(
+        writer.call(&prompt(), &limits()),
+        Outcome::Answer { .. }
+    ));
+    let sent = fs::read_to_string(rig.out.join("args")).expect("args");
+    assert_eq!(
+        sent.lines().collect::<Vec<_>>(),
+        [
+            "-p",
+            "--model",
+            "x",
+            "--effort",
+            "medium",
+            "--tools",
+            "",
+            "--strict-mcp-config",
+            "--no-session-persistence",
+            "--safe-mode",
+            "--system-prompt",
+            "Write paragraphs.",
+            "--fallback-model",
+            "y",
+        ]
+    );
+}
+
+#[test]
 fn arguments_that_could_give_the_model_a_tool_start_no_child() {
     let no_tools: Vec<&str> = AFTER[..5].iter().chain(&AFTER[7..]).copied().collect();
     let mut with_mcp = AFTER.to_vec();

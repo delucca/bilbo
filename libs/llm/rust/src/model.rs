@@ -192,6 +192,10 @@ pub trait Model {
     fn why(&self) -> Option<&str> {
         None
     }
+
+    fn bound(&self) -> Result<(), String> {
+        Ok(())
+    }
 }
 
 const IDENTIFIER_BYTES: usize = 64;
@@ -234,7 +238,7 @@ pub fn answered_model(text: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{Way, What, Whose, identifier};
+    use super::{Limits, Model, Outcome, Prompt, Way, What, Whose, identifier};
 
     #[test]
     fn a_vendors_text_is_a_short_identifier_or_unknown() {
@@ -264,6 +268,31 @@ mod tests {
         for text in ["", "API", "tool ", "cli"] {
             assert_eq!(Way::named(text), None, "{text:?}");
         }
+    }
+
+    struct Plain;
+
+    impl Model for Plain {
+        fn prepare(&mut self) -> Result<(), String> {
+            Ok(())
+        }
+
+        fn call(&mut self, _: &Prompt, _: &Limits) -> Outcome {
+            Outcome::Cut(super::Usage::default())
+        }
+
+        fn id(&self) -> &str {
+            "m"
+        }
+
+        fn describe(&self) -> Vec<String> {
+            Vec::new()
+        }
+    }
+
+    #[test]
+    fn a_model_is_bound_unless_its_way_says_otherwise() {
+        assert_eq!(Plain.bound(), Ok(()));
     }
 
     #[test]

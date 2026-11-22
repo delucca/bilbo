@@ -54,6 +54,7 @@ pub fn key_command(value: &Value<'_>) -> Result<Vec<String>, Error> {
 
 pub struct Call<'a> {
     pub provider: &'a str,
+    pub model_key: &'a str,
     pub env: &'a str,
     pub command: &'a [String],
     pub variables: &'a dyn Fn(&str) -> Option<String>,
@@ -70,7 +71,7 @@ impl fmt::Debug for Call<'_> {
     }
 }
 
-fn key(call: &Call<'_>, guarded: &[(&str, Vec<&str>)]) -> Result<Secret, String> {
+fn key(call: &Call<'_>, guarded: &[(String, Vec<&str>)]) -> Result<Secret, String> {
     let name = if call.command.is_empty() {
         "api.key_env"
     } else {
@@ -85,7 +86,7 @@ fn key(call: &Call<'_>, guarded: &[(&str, Vec<&str>)]) -> Result<Secret, String>
     )?;
     for (key, texts) in guarded {
         if found.hides(texts) {
-            return Err(format!("llm.{}.{key} holds the key", call.provider));
+            return Err(format!("{key} holds the key"));
         }
     }
     Ok(found)
@@ -99,16 +100,20 @@ pub fn prepare(
     extra: &[String],
 ) -> Result<Secret, String> {
     if model.is_empty() {
-        return Err(format!("llm.{}.model is not set", call.provider));
+        return Err(format!("{} is not set", call.model_key));
     }
     let named: Vec<&str> = headers
         .iter()
         .flat_map(|(name, text)| [name.as_str(), text.as_str()])
         .collect();
-    let mut guarded: Vec<(&str, Vec<&str>)> = vec![("model", vec![model])];
-    guarded.extend(ahead.iter().map(|(name, text)| (*name, vec![*text])));
-    guarded.push(("api.headers", named));
-    guarded.push(("api.extra", extra.iter().map(String::as_str).collect()));
+    let whole = |suffix: &str| format!("llm.{}.{suffix}", call.provider);
+    let mut guarded: Vec<(String, Vec<&str>)> = vec![(call.model_key.to_owned(), vec![model])];
+    guarded.extend(ahead.iter().map(|(name, text)| (whole(name), vec![*text])));
+    guarded.push((whole("api.headers"), named));
+    guarded.push((
+        whole("api.extra"),
+        extra.iter().map(String::as_str).collect(),
+    ));
     key(call, &guarded)
 }
 
@@ -374,6 +379,7 @@ mod tests {
         let folder = std::env::temp_dir();
         let call = super::Call {
             provider: "anthropic",
+            model_key: "llm.anthropic.model",
             env: "MY_KEY",
             command: &command,
             variables: &variables,
@@ -398,6 +404,7 @@ mod tests {
             let variables = move |_: &str| Some(value.to_owned());
             let call = super::Call {
                 provider: "test",
+                model_key: "llm.test.model",
                 env: "MY_KEY",
                 command,
                 variables: &variables,

@@ -82,6 +82,15 @@ pub fn shown(source: &Source<'_>) -> Result<Vec<Shown>, Error> {
 
 impl Section {
     #[must_use]
+    pub fn asking(mut self, key: &'static str, model: &str) -> Section {
+        self.api.model.value = model.to_owned();
+        self.api.model_key = key;
+        self.tool.model.value = model.to_owned();
+        self.tool.model_key = key;
+        self
+    }
+
+    #[must_use]
     pub fn reads(&self) -> Vec<String> {
         match self.via.value {
             Way::Api => vec![self.api.key_env.value.clone()],
@@ -287,6 +296,20 @@ mod tests {
                 None,
             ]
         );
+    }
+
+    #[test]
+    fn asking_sets_the_model_of_both_ways_and_the_key_that_named_it() {
+        let section = resolve("[llm.openai]\nmodel = \"m\"\n").unwrap();
+        assert_eq!(section.api.model.value, "m");
+        assert_eq!(section.api.model_key, "llm.openai.model");
+        assert_eq!(section.tool.model.value, "m");
+        assert_eq!(section.tool.model_key, "llm.openai.model");
+        let asked = section.asking("derive.tags.model", "m2");
+        assert_eq!(asked.api.model.value, "m2");
+        assert_eq!(asked.api.model_key, "derive.tags.model");
+        assert_eq!(asked.tool.model.value, "m2");
+        assert_eq!(asked.tool.model_key, "derive.tags.model");
     }
 
     #[test]

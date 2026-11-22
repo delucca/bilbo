@@ -147,6 +147,7 @@ pub const ABOUT: [&About; 5] = [
 #[derive(Debug, Clone, PartialEq)]
 pub struct Section {
     pub model: Resolved<String>,
+    pub model_key: &'static str,
     pub endpoint: Resolved<Endpoint>,
     pub key_env: Resolved<String>,
     pub key_command: Resolved<Vec<String>>,
@@ -157,6 +158,7 @@ pub struct Section {
 pub fn section(source: &Source<'_>) -> Result<Section, Error> {
     Ok(Section {
         model: super::MODEL.resolve(source)?,
+        model_key: super::MODEL.about.name,
         endpoint: ENDPOINT.resolve(source)?,
         key_env: KEY_ENV.resolve(source)?,
         key_command: KEY_COMMAND.resolve(source)?,
@@ -472,6 +474,7 @@ impl Model for OpenAi {
         let extra = table::texts(&section.extra.value);
         let call = Call {
             provider: super::NAME,
+            model_key: section.model_key,
             env: &section.key_env.value,
             command: &section.key_command.value,
             variables: &*self.variables,

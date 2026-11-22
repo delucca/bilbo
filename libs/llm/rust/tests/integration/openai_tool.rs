@@ -440,7 +440,14 @@ fn the_tool_gets_the_default_arguments_its_two_files_and_its_variables() {
     assert_eq!(read(&rig, "instruction.txt"), "Write paragraphs.");
     assert_eq!(
         fs::read(rig.out.join("catalog.json")).expect("catalog"),
-        tool::catalog("x", MODELS.as_bytes(), "model-a", "medium").expect("a catalog")
+        tool::catalog(
+            "x",
+            MODELS.as_bytes(),
+            "model-a",
+            "medium",
+            "llm.openai.model"
+        )
+        .expect("a catalog")
     );
     let mut env: Vec<String> = read(&rig, "env")
         .lines()

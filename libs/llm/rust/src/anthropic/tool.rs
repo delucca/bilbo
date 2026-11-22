@@ -14,6 +14,10 @@ use crate::model::{
 };
 
 const INSTRUCTION: &str = "{instruction}";
+const MODEL_PLACEHOLDER: &str = "{model}";
+const FALLBACK_MODEL: &str = "--fallback-model";
+const UNBOUND_MODEL: &str = "llm.anthropic.tool.arguments does not bind a call to its model: it needs \"--model\" followed by \"{model}\", and must not hold \"--fallback-model\"";
+const UNBOUND_INSTRUCTION: &str = "llm.anthropic.tool.arguments does not bind a call to its instruction: the value of \"--system-prompt\" and of \"--append-system-prompt\" must be \"{instruction}\"";
 const WITHOUT_TOOLS: &str = "llm.anthropic.tool.arguments must keep the model without tools: ";
 const SYSTEM_PROMPTS: [&str; 2] = ["--system-prompt", "--append-system-prompt"];
 const FLAGS: [(&[&str], usize); 15] = [
@@ -140,6 +144,7 @@ pub const ABOUT: [&About; 6] = [
 pub struct Section {
     pub program: Resolved<String>,
     pub model: Resolved<String>,
+    pub model_key: &'static str,
     pub effort: Resolved<String>,
     pub arguments: Resolved<Vec<String>>,
     pub inherit: Resolved<Vec<String>>,
@@ -151,6 +156,7 @@ pub fn section(source: &Source<'_>) -> Result<Section, Error> {
     Ok(Section {
         program: PROGRAM.resolve(source)?,
         model: super::MODEL.resolve(source)?,
+        model_key: super::MODEL.about.name,
         effort: EFFORT.resolve(source)?,
         arguments: ARGUMENTS.resolve(source)?,
         inherit: INHERIT.resolve(source)?,
@@ -213,6 +219,38 @@ pub fn without_tools(arguments: &[String]) -> Result<(), String> {
     }
     if !stood.contains(&"--no-session-persistence") {
         return Err("llm.anthropic.tool.arguments needs \"--no-session-persistence\": without it the tool saves every call as a session, and bilbo remember would keep the records a second time".to_owned());
+    }
+    Ok(())
+}
+
+pub fn binds(arguments: &[String]) -> Result<(), String> {
+    let mut model = false;
+    let mut model_free = true;
+    let mut instruction_free = true;
+    let mut at = 0;
+    while let Some(item) = arguments.get(at) {
+        let values = FLAGS
+            .iter()
+            .find(|(names, _)| names.contains(&item.as_str()))
+            .map_or(0, |(_, values)| *values);
+        let given =
+            &arguments[(at + 1).min(arguments.len())..(at + 1 + values).min(arguments.len())];
+        match item.as_str() {
+            "--model" => {
+                model = true;
+                model_free &= given == [MODEL_PLACEHOLDER];
+            }
+            FALLBACK_MODEL => model_free = false,
+            flag if SYSTEM_PROMPTS.contains(&flag) => instruction_free &= given == [INSTRUCTION],
+            _ => {}
+        }
+        at += 1 + values;
+    }
+    if !model || !model_free {
+        return Err(UNBOUND_MODEL.to_owned());
+    }
+    if !instruction_free {
+        return Err(UNBOUND_INSTRUCTION.to_owned());
     }
     Ok(())
 }
@@ -336,7 +374,7 @@ impl Claude {
 impl Model for Claude {
     fn prepare(&mut self) -> Result<(), String> {
         if self.section.model.value.is_empty() {
-            return Err("llm.anthropic.model is not set".to_owned());
+            return Err(format!("{} is not set", self.section.model_key));
         }
         let environment = crate::tool::inherited(
             &self.section.inherit.value,
@@ -416,6 +454,10 @@ impl Model for Claude {
 
     fn why(&self) -> Option<&str> {
         self.why.as_deref()
+    }
+
+    fn bound(&self) -> Result<(), String> {
+        binds(&self.section.arguments.value)
     }
 }
 
@@ -589,8 +631,8 @@ mod tests {
     use bilbo_settings::file::File;
     use bilbo_settings::key::Source;
 
-    use super::{ABOUT, Section, invocation, read, section, shown, without_tools};
-    use crate::model::{Outcome, Prompt};
+    use super::{ABOUT, Claude, Section, invocation, read, section, shown, without_tools};
+    use crate::model::{Model, Outcome, Prompt};
 
     const ANSWER: &str = include_str!("../../fixtures/anthropic/tool/answer.json");
 
@@ -1045,6 +1087,93 @@ mod tests {
         };
         assert_eq!(values(&first), values(&second));
         assert_eq!(first[4].value, "{ A = \"1\" }");
+    }
+
+    const UNBOUND_MODEL: &str = "llm.anthropic.tool.arguments does not bind a call to its model: it needs \"--model\" followed by \"{model}\", and must not hold \"--fallback-model\"";
+    const UNBOUND_INSTRUCTION: &str = "llm.anthropic.tool.arguments does not bind a call to its instruction: the value of \"--system-prompt\" and of \"--append-system-prompt\" must be \"{instruction}\"";
+
+    fn bound_by(arguments: Vec<String>) -> Result<(), String> {
+        let mut section = resolve("").expect("defaults");
+        section.arguments.value = arguments;
+        Claude::new(
+            section,
+            Box::new(|_| None),
+            std::path::PathBuf::from("/s/derive/work"),
+        )
+        .bound()
+    }
+
+    fn without(list: &mut Vec<String>, flag: &str) {
+        let at = list.iter().position(|item| item == flag).expect(flag);
+        list.drain(at..=at + 1);
+    }
+
+    #[test]
+    fn the_default_arguments_bind_a_call() {
+        assert_eq!(bound_by(default_arguments()), Ok(()));
+    }
+
+    #[test]
+    fn a_list_that_names_a_model_itself_or_a_fallback_does_not_bind() {
+        let at =
+            |list: &[String], flag: &str| list.iter().position(|item| item == flag).expect(flag);
+        let mut other_model = default_arguments();
+        let model = at(&other_model, "--model");
+        other_model[model + 1] = "x".to_owned();
+        let mut no_model = default_arguments();
+        without(&mut no_model, "--model");
+        let mut fallback = default_arguments();
+        fallback.extend(items(&["--fallback-model", "y"]));
+        let mut both = default_arguments();
+        let model = at(&both, "--model");
+        both[model + 1] = "y".to_owned();
+        both.extend(items(&["--fallback-model", "{model}"]));
+        let mut twice = default_arguments();
+        twice.extend(items(&["--model", "x"]));
+        for (list, case) in [
+            (other_model, "another model"),
+            (no_model, "no model"),
+            (fallback, "a fallback"),
+            (both, "a model and a fallback"),
+            (twice, "a second model"),
+        ] {
+            assert_eq!(bound_by(list), Err(UNBOUND_MODEL.to_owned()), "{case}");
+        }
+    }
+
+    #[test]
+    fn a_system_prompt_with_a_text_of_its_own_does_not_bind() {
+        let prompt = |list: &[String]| {
+            list.iter()
+                .position(|item| item == "--system-prompt")
+                .expect("--system-prompt")
+        };
+        let mut text = default_arguments();
+        let at = prompt(&text);
+        text[at + 1] = "Write notes.".to_owned();
+        let mut mixed = default_arguments();
+        let at = prompt(&mixed);
+        mixed[at + 1] = "Write notes. {instruction}".to_owned();
+        let mut appended = default_arguments();
+        let at = prompt(&appended);
+        appended.splice(at..=at + 1, items(&["--append-system-prompt", "x"]));
+        let mut beside = default_arguments();
+        beside.extend(items(&["--append-system-prompt", "x"]));
+        for (list, case) in [
+            (text, "a text"),
+            (mixed, "a text around the instruction"),
+            (appended, "the other flag"),
+            (beside, "the other flag beside"),
+        ] {
+            assert_eq!(
+                bound_by(list),
+                Err(UNBOUND_INSTRUCTION.to_owned()),
+                "{case}"
+            );
+        }
+        let mut none = default_arguments();
+        without(&mut none, "--system-prompt");
+        assert_eq!(bound_by(none), Ok(()));
     }
 
     #[test]

@@ -262,6 +262,7 @@ fn kept_out(name: &str) -> bool {
 pub struct Section {
     pub program: Resolved<String>,
     pub model: Resolved<String>,
+    pub model_key: &'static str,
     pub effort: Resolved<String>,
     pub arguments: Resolved<Vec<String>>,
     pub inherit: Resolved<Vec<String>>,
@@ -287,6 +288,7 @@ pub fn section(source: &Source<'_>) -> Result<Section, Error> {
     Ok(Section {
         program: PROGRAM.resolve(source)?,
         model: MODEL.resolve(source)?,
+        model_key: MODEL.about.name,
         effort: EFFORT.resolve(source)?,
         arguments: ARGUMENTS.resolve(source)?,
         inherit: INHERIT.resolve(source)?,
@@ -661,7 +663,13 @@ fn no_catalog(program: &str) -> String {
     format!("llm.openai.tool.program: {program} printed no catalog of its models")
 }
 
-pub fn catalog(program: &str, output: &[u8], model: &str, effort: &str) -> Result<Vec<u8>, String> {
+pub fn catalog(
+    program: &str,
+    output: &[u8],
+    model: &str,
+    effort: &str,
+    model_key: &str,
+) -> Result<Vec<u8>, String> {
     let none = || no_catalog(program);
     let listed: Json = serde_json::from_slice(output).map_err(|_| none())?;
     let models = listed
@@ -673,7 +681,7 @@ pub fn catalog(program: &str, output: &[u8], model: &str, effort: &str) -> Resul
         .find(|entry| entry.get("slug").and_then(Json::as_str) == Some(model))
     else {
         return Err(format!(
-            "llm.openai.model: codex {RELEASE} has no such model; codex debug models --bundled prints the ones it has"
+            "{model_key}: codex {RELEASE} has no such model; codex debug models --bundled prints the ones it has"
         ));
     };
     let lists = entry
@@ -685,8 +693,13 @@ pub fn catalog(program: &str, output: &[u8], model: &str, effort: &str) -> Resul
                 .any(|level| level.get("effort").and_then(Json::as_str) == Some(effort))
         });
     if !lists {
+        let named = if model_key == MODEL.about.name {
+            String::new()
+        } else {
+            format!(" of {model_key}")
+        };
         return Err(format!(
-            "llm.openai.tool.effort: codex {RELEASE} lists no such effort for the model"
+            "llm.openai.tool.effort: codex {RELEASE} lists no such effort for the model{named}"
         ));
     }
     let mut entry = entry.clone();
@@ -891,7 +904,7 @@ impl Codex {
 impl Model for Codex {
     fn prepare(&mut self) -> Result<(), String> {
         if self.section.model.value.is_empty() {
-            return Err("llm.openai.model is not set".to_owned());
+            return Err(format!("{} is not set", self.section.model_key));
         }
         let program = self.section.program.value.clone();
         let mut environment = crate::tool::inherited(
@@ -920,6 +933,7 @@ impl Model for Codex {
             &models,
             &self.section.model.value,
             &self.section.effort.value,
+            self.section.model_key,
         )?;
         self.prepared = Some(Prepared {
             environment,
@@ -2070,7 +2084,14 @@ mod tests {
 
     #[test]
     fn the_catalog_is_the_models_entry_with_four_fields_set() {
-        let made = catalog("codex", MODELS.as_bytes(), "model-a", "medium").expect("catalog");
+        let made = catalog(
+            "codex",
+            MODELS.as_bytes(),
+            "model-a",
+            "medium",
+            "llm.openai.model",
+        )
+        .expect("catalog");
         let parsed: serde_json::Value = serde_json::from_slice(&made).expect("json");
         let models = parsed["models"].as_array().expect("models");
         assert_eq!(models.len(), 1);
@@ -2102,7 +2123,14 @@ mod tests {
         assert_eq!(entry["zz_kept"], serde_json::json!({"a": 2, "b": 1}));
         assert_eq!(
             made,
-            catalog("codex", MODELS.as_bytes(), "model-a", "medium").expect("again")
+            catalog(
+                "codex",
+                MODELS.as_bytes(),
+                "model-a",
+                "medium",
+                "llm.openai.model"
+            )
+            .expect("again")
         );
         let names: Vec<_> = entry.keys().collect();
         let mut sorted = names.clone();
@@ -2118,15 +2146,36 @@ mod tests {
         let effort = "llm.openai.tool.effort: codex 0.169.0 lists no such effort for the model";
         let none = "llm.openai.tool.program: codex printed no catalog of its models";
         assert_eq!(
-            catalog("codex", MODELS.as_bytes(), "model-z", "medium").expect_err("no model"),
+            catalog(
+                "codex",
+                MODELS.as_bytes(),
+                "model-z",
+                "medium",
+                "llm.openai.model"
+            )
+            .expect_err("no model"),
             model
         );
         assert_eq!(
-            catalog("codex", MODELS.as_bytes(), "model-b", "medium").expect_err("no effort"),
+            catalog(
+                "codex",
+                MODELS.as_bytes(),
+                "model-b",
+                "medium",
+                "llm.openai.model"
+            )
+            .expect_err("no effort"),
             effort
         );
         assert_eq!(
-            catalog("codex", MODELS.as_bytes(), "model-a", "ultra").expect_err("no effort"),
+            catalog(
+                "codex",
+                MODELS.as_bytes(),
+                "model-a",
+                "ultra",
+                "llm.openai.model"
+            )
+            .expect_err("no effort"),
             effort
         );
         for said in [model, effort] {
@@ -2136,15 +2185,77 @@ mod tests {
         }
         for output in ["not json", "[]", "{}", "{\"models\": 5}"] {
             assert_eq!(
-                catalog("codex", output.as_bytes(), "model-a", "medium").expect_err("none"),
+                catalog(
+                    "codex",
+                    output.as_bytes(),
+                    "model-a",
+                    "medium",
+                    "llm.openai.model"
+                )
+                .expect_err("none"),
                 none,
                 "{output}"
             );
         }
         let bare = "{\"models\":[{\"slug\":\"model-a\"}]}";
         assert_eq!(
-            catalog("codex", bare.as_bytes(), "model-a", "medium").expect_err("no levels"),
+            catalog(
+                "codex",
+                bare.as_bytes(),
+                "model-a",
+                "medium",
+                "llm.openai.model"
+            )
+            .expect_err("no levels"),
             effort
+        );
+    }
+
+    #[test]
+    fn codex_says_a_missing_model_and_an_effort_by_the_key_that_named_the_model() {
+        assert_eq!(
+            catalog(
+                "codex",
+                MODELS.as_bytes(),
+                "model-z",
+                "medium",
+                "derive.tags.model"
+            )
+            .expect_err("no model"),
+            "derive.tags.model: codex 0.169.0 has no such model; codex debug models --bundled prints the ones it has"
+        );
+        assert_eq!(
+            catalog(
+                "codex",
+                MODELS.as_bytes(),
+                "model-b",
+                "medium",
+                "derive.tags.model"
+            )
+            .expect_err("no effort"),
+            "llm.openai.tool.effort: codex 0.169.0 lists no such effort for the model of derive.tags.model"
+        );
+        assert_eq!(
+            catalog(
+                "codex",
+                MODELS.as_bytes(),
+                "model-z",
+                "medium",
+                "llm.openai.model"
+            )
+            .expect_err("no model"),
+            "llm.openai.model: codex 0.169.0 has no such model; codex debug models --bundled prints the ones it has"
+        );
+        assert_eq!(
+            catalog(
+                "codex",
+                MODELS.as_bytes(),
+                "model-b",
+                "medium",
+                "llm.openai.model"
+            )
+            .expect_err("no effort"),
+            "llm.openai.tool.effort: codex 0.169.0 lists no such effort for the model"
         );
     }
 

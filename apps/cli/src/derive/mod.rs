@@ -110,6 +110,8 @@ pub struct Built {
     pub api: bool,
 }
 
+pub type Named<'a> = Option<(&'static str, &'a str)>;
+
 pub type Finish<'a> = dyn Fn(Store, u64, &mut dyn FnMut(&Message)) -> Closing + 'a;
 
 pub struct Hand<'a> {
@@ -119,7 +121,7 @@ pub struct Hand<'a> {
     pub chunk: Size,
     pub render: &'a str,
     pub format: Format<'a>,
-    pub writer: &'a dyn Fn(&Var) -> Result<Built, Failure>,
+    pub writer: &'a dyn Fn(&Var, Named<'_>) -> Result<Built, Failure>,
     pub finish: &'a Finish<'a>,
 }
 
@@ -254,11 +256,11 @@ pub fn run(
         let built = if settings.llm.provider.value.is_empty() {
             None
         } else {
-            Some((hand.writer)(&env.var)?)
+            Some((hand.writer)(&env.var, None)?)
         };
         return dry(env, &job, built.as_ref(), &given);
     }
-    let mut built = (hand.writer)(&env.var)?;
+    let mut built = (hand.writer)(&env.var, None)?;
     let (state, state_folder) = state_of(env, settings)?;
     let folder = Folder::at(&state, state_folder);
     let held = match folder.lock() {

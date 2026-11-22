@@ -1031,6 +1031,47 @@ fn a_setting_that_holds_the_key_is_refused_by_its_keys_name_and_nothing_is_sent(
 }
 
 #[test]
+fn a_model_that_holds_the_key_is_said_by_the_key_that_named_it_and_never_by_its_value() {
+    let scratch = Scratch::new("anthropic-asked");
+    let asked = |text: &str, model: &str| {
+        let file = File::parse(Path::new("/c/config.toml"), text.as_bytes()).expect("toml");
+        let section = bilbo_llm::anthropic::section(&Source {
+            var: &|_| None,
+            file: &file,
+        })
+        .expect("a section")
+        .asking("derive.tags.model", model);
+        Anthropic::new(
+            section.api,
+            Box::new(variables),
+            scratch.path().to_path_buf(),
+            Duration::from_secs(5),
+            1 << 20,
+            Duration::from_millis(5),
+        )
+    };
+    let url = "http://127.0.0.1:9";
+    for model in [KEY, "gw/sk-test-PLUM-7391/x"] {
+        let said = asked(&config(url, "", ""), model).prepare().unwrap_err();
+        assert_eq!(said, "derive.tags.model holds the key");
+        assert!(!said.contains(model) && !said.contains("PLUM"), "{said}");
+    }
+    let header = config(
+        url,
+        "",
+        "[llm.anthropic.api.headers]\nx-trace = \"id sk-test-PLUM-7391\"\n",
+    );
+    assert_eq!(
+        asked(&header, "m2").prepare().unwrap_err(),
+        "llm.anthropic.api.headers holds the key"
+    );
+    assert_eq!(
+        asked(&config(url, "", ""), "").prepare().unwrap_err(),
+        "derive.tags.model is not set"
+    );
+}
+
+#[test]
 fn describe_says_the_settings_in_force_and_how_the_key_is_read() {
     let tables = "[llm.anthropic.api.headers]\nX-A = \"1\"\nX-B = \"2\"\n\n[llm.anthropic.api.extra]\noutput_config = { effort = \"low\" }\n";
     let url = "http://127.0.0.1:9";
