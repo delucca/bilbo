@@ -48,6 +48,13 @@ fn stripped(piece: &str) -> &str {
     piece.strip_prefix(Tag::SCHEME).unwrap_or(piece)
 }
 
+fn is_fence(piece: &str) -> bool {
+    piece
+        .trim()
+        .strip_prefix("```")
+        .is_some_and(|rest| !rest.contains(char::is_whitespace))
+}
+
 #[must_use]
 pub fn read(text: &str, list: &BTreeSet<Tag>, most: usize) -> Read {
     let mut none = false;
@@ -59,7 +66,7 @@ pub fn read(text: &str, list: &BTreeSet<Tag>, most: usize) -> Read {
             continue;
         }
         for piece in line.split(',') {
-            if piece.trim().starts_with("```") {
+            if is_fence(piece) {
                 continue;
             }
             let name = stripped(piece);
@@ -160,6 +167,9 @@ mod tests {
             (" \n\t\n", Read::NoTag(Why::Empty)),
             ("```\n```\n- \n", Read::NoTag(Why::Marks)),
             ("stray\nother, thing", Read::NoTag(Why::Strays)),
+            ("```two words\nbilbo", picks(&["bilbo"], 1)),
+            ("```two words", Read::NoTag(Why::Strays)),
+            ("```text", Read::NoTag(Why::Marks)),
         ] {
             assert_eq!(read(text, &list, 3), expected, "{text:?}");
         }

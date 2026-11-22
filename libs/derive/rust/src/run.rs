@@ -218,7 +218,10 @@ struct Machine<'a> {
     bound: [bool; 2],
     events: Vec<Event>,
     counted: Option<Id>,
-    notes: Vec<Vec<u8>>,
+    first_call: Option<Id>,
+    digest: Option<u64>,
+    kept: bool,
+    folding: bool,
 }
 
 fn size_of_window(planned: &Planned) -> u64 {
@@ -309,18 +312,11 @@ pub fn calls(due: &[Due], sinks: Sinks<'_>, context: &Context<'_>) -> Result<Rep
         bound: [false; 2],
         events: Vec::new(),
         counted: None,
-        notes: Vec::new(),
+        first_call: None,
+        digest: None,
+        kept: false,
+        folding: false,
     };
-    let first = due
-        .iter()
-        .find(|entry| {
-            entry.windows.iter().any(|planned| !planned.pass)
-                || entry
-                    .tags
-                    .as_ref()
-                    .is_some_and(|planned| planned.state == Some(tags::plan::State::Due))
-        })
-        .map(|entry| entry.parent.id);
     let ended = match machine.work(due).and_then(|ended| {
         if matches!(ended, Ended::Done | Ended::Calls) {
             for which in [Which::Writer, Which::Tagger] {
@@ -329,7 +325,7 @@ pub fn calls(due: &[Due], sinks: Sinks<'_>, context: &Context<'_>) -> Result<Rep
                 }
             }
         }
-        machine.mark(first)?;
+        machine.mark()?;
         Ok(ended)
     }) {
         Ok(ended) => ended,
@@ -358,7 +354,9 @@ impl Machine<'_> {
     }
 
     fn entry(&mut self, entry: &Due) -> Result<Option<Ended>, Error> {
-        self.notes.clear();
+        self.folding = self.context.tags.is_some() && entry.tags.is_some();
+        self.digest = entry.tags.as_ref().and_then(|planned| planned.notes);
+        self.kept = false;
         let mut previous = entry.last.clone();
         let mut mine: Vec<Paragraph> = Vec::new();
         for planned in &entry.windows {
@@ -466,13 +464,14 @@ impl Machine<'_> {
             .iter()
             .map(|record| opaque::filter(record).into_owned())
             .collect();
-        let stored = records
-            .iter()
-            .filter_map(|record| (self.context.format.read)(bare(record)))
-            .collect();
+        let mut stored = Vec::new();
         for record in &records {
-            if (self.context.format.read)(bare(record)).is_some() {
-                self.notes.push(record.clone());
+            if let Some(paragraph) = (self.context.format.read)(bare(record)) {
+                if self.folding {
+                    self.digest = Some(tags::asked::digest(self.digest, bare(record)));
+                    self.kept = true;
+                }
+                stored.push(paragraph);
             }
         }
         let block = Block {
@@ -487,11 +486,11 @@ impl Machine<'_> {
         Ok(stored)
     }
 
-    fn mark(&mut self, first: Option<Id>) -> Result<(), Error> {
+    fn mark(&mut self) -> Result<(), Error> {
         if self.answered.iter().any(|answered| *answered) {
             self.tries.set_mark(None)?;
         } else if self.counts.calls > 0 {
-            self.tries.set_mark(first)?;
+            self.tries.set_mark(self.first_call)?;
         }
         Ok(())
     }
@@ -677,6 +676,7 @@ impl Machine<'_> {
             }
             self.attempts += 1;
             self.counts.calls += 1;
+            self.first_call.get_or_insert(parent);
             if self.counted != Some(parent) {
                 self.counted = Some(parent);
                 self.counts.entries += 1;
@@ -948,11 +948,7 @@ impl Machine<'_> {
             kind: entry.parent.kind.clone(),
             entry: entry.parent.id,
             provider: self.context.provider.to_owned(),
-            asked: if verdict == TagVerdict::Passed {
-                String::new()
-            } else {
-                asked.to_owned()
-            },
+            asked: asked.to_owned(),
             answered: line.answered,
             attempt: line.attempt,
             sent: (verdict != TagVerdict::Passed).then_some(sent),
@@ -976,40 +972,35 @@ impl Machine<'_> {
             return Ok(None);
         }
         let notes: Vec<Paragraph> = entry.stored.iter().chain(mine).cloned().collect();
-        let Some(digest) = self.notes.iter().fold(planned.notes, |before, record| {
-            Some(tags::asked::digest(before, record))
-        }) else {
+        let Some(digest) = self.digest else {
             return Ok(None);
         };
         let list = &rules.section.pick.value;
-        let fit = tags::view::fitting(&notes, rules.section.notes.value, context.counter);
-        let material = tags::view::material(fit, list, rules.section.most.value);
-        let about = tags::asked::About {
+        let id = entry.parent.id;
+        let known = tags::Known {
+            id,
             generation: entry.parent.generation,
             records: entry.parent.records,
-            notes: digest,
-        };
-        let id = entry.parent.id;
-        let asking = tags::asked::asking(
-            id,
-            &about,
-            context.provider,
-            rules.model,
-            rules.id,
-            &material,
-        );
-        let charges = self.asked.charges(id, asking)?;
-        let seen = tags::plan::Seen {
+            notes: &notes,
+            digest,
             answered: planned.answered.as_ref(),
             passed: planned.passed,
-            added: planned.added || !self.notes.is_empty(),
-            asking,
+            added: planned.added || self.kept,
         };
-        let in_force = (rules.id, context.provider, rules.model);
-        if tags::plan::state(&seen, list, in_force, context.redo) != tags::plan::State::Due {
+        let made = tags::asking_of(
+            &known,
+            rules,
+            context.provider,
+            context.redo,
+            context.counter,
+        );
+        let asking = made.seen.asking;
+        let about = made.about;
+        let charges = self.asked.charges(id, asking)?;
+        if made.state != tags::plan::State::Due {
             return Ok(None);
         }
-        let sent = u64::try_from(context.counter.count(&material)).unwrap_or(u64::MAX);
+        let sent = u64::try_from(context.counter.count(&made.material)).unwrap_or(u64::MAX);
         let block = tags::block::Block {
             entry: id,
             about,
@@ -1022,14 +1013,14 @@ impl Machine<'_> {
             asking,
             passed: false,
         };
-        let idle = |reason: Option<String>| Line {
+        let idle = || Line {
             verdict: Verdict::Passed,
             attempt: None,
             answered: None,
             usage: Usage::default(),
             tallies: None,
             cause: None,
-            reason,
+            reason: None,
             millis: 0,
         };
         if usize::from(charges) >= context.section.tries.value {
@@ -1038,7 +1029,7 @@ impl Machine<'_> {
                 ..block
             }))?;
             self.events.push(Event::TagsPassed { entry: id, charges });
-            self.tags_log(entry, "", sent, TagVerdict::Passed, idle(None), None);
+            self.tags_log(entry, "", sent, TagVerdict::Passed, idle(), None);
             return Ok(None);
         }
         if self.spent() {
@@ -1065,7 +1056,7 @@ impl Machine<'_> {
         let asked = self.model(which).id().to_owned();
         let prompt = Prompt {
             instruction: rules.instruction.to_owned(),
-            material,
+            material: made.material,
         };
         let attempted = self.attempt(which, id, &prompt, &context.limits, |machine, line| {
             let verdict = if line.verdict == Verdict::Busy {
@@ -1109,7 +1100,7 @@ impl Machine<'_> {
             } => {
                 self.add(usage);
                 self.counts.refused += 1;
-                self.asked.charge(id, asking)?;
+                self.charge(slot)?;
                 self.answered(which)?;
                 self.events.push(Event::TagsRefused {
                     entry: id,
@@ -1120,7 +1111,7 @@ impl Machine<'_> {
                     attempt,
                     usage,
                     millis,
-                    ..idle(None)
+                    ..idle()
                 };
                 self.tags_log(entry, &asked, sent, TagVerdict::Refused, line, None);
                 Step::EndEntry
@@ -1137,48 +1128,39 @@ impl Machine<'_> {
                     answered: model,
                     usage,
                     millis,
-                    ..idle(None)
+                    ..idle()
                 };
-                match tags::answer::read(&text, list, rules.section.most.value) {
-                    tags::answer::Read::NoTag(why) => {
-                        self.counts.failed += 1;
-                        self.events.push(Event::NoTag { entry: id, why });
-                        self.asked.charge(id, asking)?;
-                        self.answered(which)?;
-                        let line = Line {
-                            reason: Some(format!("no-tag {}", why.word())),
-                            ..line
-                        };
-                        self.tags_log(entry, &asked, sent, TagVerdict::Failed, line, None);
-                    }
-                    read => {
-                        let (picks, dropped, verdict) = match read {
-                            tags::answer::Read::Picks { picks, dropped } => {
-                                (picks, dropped, TagVerdict::Tagged)
-                            }
-                            tags::answer::Read::NoneFits { dropped } => {
-                                (Vec::new(), dropped, TagVerdict::None)
-                            }
-                            tags::answer::Read::NoTag(_) => unreachable!(),
-                        };
-                        let counts = (u64::try_from(picks.len()).unwrap_or(u64::MAX), dropped);
-                        let seen = tags::plan::Seen {
-                            answered: planned.answered.as_ref(),
-                            passed: planned.passed,
-                            added: planned.added || !self.notes.is_empty(),
-                            asking,
-                        };
-                        let names = tags::plan::names(&seen, list);
-                        self.spool.keep(&tags::block::write(&tags::block::Block {
-                            picks,
-                            takes_back: context.redo,
-                            names,
-                            ..block
-                        }))?;
-                        self.answered(which)?;
-                        self.tags_log(entry, &asked, sent, verdict, line, Some(counts));
-                    }
-                }
+                let (picks, dropped, verdict) =
+                    match tags::answer::read(&text, list, rules.section.most.value) {
+                        tags::answer::Read::NoTag(why) => {
+                            self.counts.failed += 1;
+                            self.events.push(Event::NoTag { entry: id, why });
+                            self.charge(slot)?;
+                            self.answered(which)?;
+                            let line = Line {
+                                reason: Some(format!("no-tag {}", why.word())),
+                                ..line
+                            };
+                            self.tags_log(entry, &asked, sent, TagVerdict::Failed, line, None);
+                            return Ok(None);
+                        }
+                        tags::answer::Read::Picks { picks, dropped } => {
+                            (picks, dropped, TagVerdict::Tagged)
+                        }
+                        tags::answer::Read::NoneFits { dropped } => {
+                            (Vec::new(), dropped, TagVerdict::None)
+                        }
+                    };
+                let counts = (u64::try_from(picks.len()).unwrap_or(u64::MAX), dropped);
+                let names = tags::plan::names(&made.seen, list);
+                self.spool.keep(&tags::block::write(&tags::block::Block {
+                    picks,
+                    takes_back: context.redo,
+                    names,
+                    ..block
+                }))?;
+                self.answered(which)?;
+                self.tags_log(entry, &asked, sent, verdict, line, Some(counts));
                 Step::EndEntry
             }
         };

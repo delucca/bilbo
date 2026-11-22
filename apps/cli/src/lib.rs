@@ -499,6 +499,18 @@ pub fn run_tuned(
                         },
                         writer: &|var, named| model(&settings, var, named),
                         finish: &|store, kept, notice| {
+                            if kept == 0 {
+                                let mut index = (indexing.index)(store.cache());
+                                return remember::follows::close(
+                                    store,
+                                    index.as_mut(),
+                                    &settings.follow.value,
+                                    &kinds,
+                                    &indexing,
+                                    notice,
+                                    remember::follows::Progress::default(),
+                                );
+                            }
                             remember::follows::finish(
                                 store,
                                 &settings.follow.value,

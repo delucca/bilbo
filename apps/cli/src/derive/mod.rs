@@ -328,7 +328,7 @@ fn go(
     } = *job;
     let mut failed = false;
     let mut spool = held.blocks().map_err(|error| refused(&error))?;
-    let mut asked = held.tagged().map_err(|error| refused(&error))?;
+    let mut asked = held.tagged();
     replay(
         env,
         settings,
@@ -342,19 +342,14 @@ fn go(
     let model = built.writer.id().to_owned();
     let mut tries = held.failed().map_err(|error| refused(&error))?;
     let tags_id = tags::instruction::id();
-    let tagging = tags_rules(settings, &tags_id, &model).is_some();
-    let tags_model = if tagging && !settings.tags.model.value.is_empty() {
-        settings.tags.model.value.clone()
+    let tags_model = model_that_tags(settings, &model);
+    let mut tagger = if tags_model == model {
+        None
     } else {
-        model.clone()
-    };
-    let mut tagger = if tagging && tags_model != model {
         Some((hand.writer)(
             &env.var,
-            Some(("derive.tags.model", &tags_model)),
+            Some((tags::keys::MODEL.about.name, &tags_model)),
         )?)
-    } else {
-        None
     };
     let looked = look(
         env,
@@ -468,7 +463,7 @@ fn go(
     let keys = tagger.as_ref().map(|_| {
         (
             format!("llm.{}.model", settings.llm.provider.value),
-            "derive.tags.model".to_owned(),
+            tags::keys::MODEL.about.name.to_owned(),
         )
     });
     tail.extend(ended_line(
@@ -478,9 +473,10 @@ fn go(
         &whys,
         keys.as_ref(),
     ));
-    let owner = ended_which(&report.ended);
     tail.extend(
-        view::why_after(&report.ended, whys(owner).as_deref()).map(|text| Message::warning(&text)),
+        why_lines(&report.ended, why.as_deref(), tagger_why.as_deref())
+            .iter()
+            .map(|text| Message::warning(text)),
     );
     if let Some(error) = log.error() {
         tail.push(Message::warning(&format!(
@@ -488,7 +484,7 @@ fn go(
         )));
     }
     let listed = spool.is_empty();
-    finish(listed, tail, said, |said| {
+    let closed = finish(listed, tail, said, |said| {
         replay(
             env,
             settings,
@@ -498,10 +494,14 @@ fn go(
             said,
             &mut failed,
         )
-    })?;
+    });
     if let Some(text) = prepare {
+        if let Err(failure) = closed {
+            said.lines.push(failure.message());
+        }
         return Err(Failure::Config(text));
     }
+    closed?;
     let hard = matches!(
         report.ended,
         Ended::Failures(_) | Ended::Busy(..) | Ended::Wait(..) | Ended::Stopped(..)
@@ -576,13 +576,9 @@ fn replay(
             replayed.tagged
         )));
     }
-    if replayed.captured > 0 || replayed.tagged > 0 {
-        let closing = (hand.finish)(store, replayed.captured + replayed.tagged, &mut *env.notice);
-        *failed |= closing.failed || closing.refused;
-        said.lines.extend(closing.messages);
-    } else {
-        store.release();
-    }
+    let closing = (hand.finish)(store, replayed.captured + replayed.tagged, &mut *env.notice);
+    *failed |= closing.failed || closing.refused;
+    said.lines.extend(closing.messages);
     Ok(())
 }
 
@@ -672,15 +668,21 @@ fn look(
     }
     lines.extend(problem_lines);
     let own;
-    let own_asked;
-    let (tries, asked_port): (&Failed, &Tagged) = match held {
+    let mut own_asked = None;
+    let (tries, asked_port): (&Failed, &Tagged<'_>) = match held {
         Some((held, asked)) => (held, asked),
         None => {
             let (state, folder) = state_folder(&store)?;
-            let folder = Folder::at(&state, folder);
-            own = folder.charges().map_err(|error| refused(&error))?;
-            own_asked = folder.tagged().map_err(|error| refused(&error))?;
-            (&own, &own_asked)
+            own = Folder::at(&state, folder)
+                .charges()
+                .map_err(|error| refused(&error))?;
+            let owned = store.state().ok_or_else(|| {
+                Failure::Refused("this store has no state folder that bilbo checked".to_owned())
+            })?;
+            (
+                &own,
+                &*own_asked.insert(disk::reader(owned.folder(), &state)),
+            )
         }
     };
     let tags_id = tags::instruction::id();
@@ -730,15 +732,17 @@ fn look(
     let mut held_tags = Vec::new();
     for id in &only {
         if let Some(meta) = store.meta(*id)? {
-            held_tags.push((
-                *id,
-                meta.labels
-                    .tags
-                    .carried()
-                    .filter(|(_, by)| *by == bilbo_store::labels::By::Model)
-                    .map(|(tag, _)| tag.as_str().to_owned())
-                    .collect(),
-            ));
+            if dry && settings.tags.enabled.value {
+                held_tags.push((
+                    *id,
+                    meta.labels
+                        .tags
+                        .carried()
+                        .filter(|(_, by)| *by == bilbo_store::labels::By::Model)
+                        .map(|(tag, _)| tag.as_str().to_owned())
+                        .collect(),
+                ));
+            }
             kinds.push((*id, meta.kind));
         }
         let head = plan::held(&store, *id)?;
@@ -766,6 +770,7 @@ fn look(
             },
         });
     }
+    drop(own_asked);
     drop(store);
     Ok(Looked {
         plan,
@@ -806,11 +811,7 @@ fn dry(
         .unwrap_or_default();
     let tokenizer = (hand.tokenizer)()?;
     let mut diagnostics = Vec::new();
-    let tags_model = if section_tags_model(settings).is_empty() {
-        model.clone()
-    } else {
-        section_tags_model(settings).to_owned()
-    };
+    let tags_model = model_that_tags(settings, &model);
     let looked = look(
         env,
         job,
@@ -939,7 +940,7 @@ fn dry(
             .map(|(_, state)| *state);
         if let Some(state) = state {
             dry.entry_lines.push(view::entry_line(state, noted));
-            if tags_on && !settings.tags.pick.value.is_empty() {
+            if tags_on {
                 let shown = looked
                     .plan
                     .tags
@@ -951,11 +952,14 @@ fn dry(
                     .iter()
                     .find(|(entry, _)| *entry == noted.entry)
                     .map_or(&[][..], |(_, held)| held.as_slice());
-                tags_dry.lines.push(view::tags_ref_line(
-                    noted.entry,
-                    &view::tags_state(shown, Some(state)),
-                    held,
-                ));
+                let words = if settings.tags.pick.value.is_empty() {
+                    view::NONE_TO_PICK.to_owned()
+                } else {
+                    view::tags_state(shown, state)
+                };
+                tags_dry
+                    .lines
+                    .push(view::tags_ref_line(noted.entry, &words, held));
             }
         }
     }
@@ -965,8 +969,13 @@ fn dry(
         .with_exit(exit))
 }
 
-fn section_tags_model(settings: &Settings) -> &str {
-    &settings.tags.model.value
+fn model_that_tags(settings: &Settings, writer: &str) -> String {
+    let stands = tags_rules(settings, "", writer).is_some();
+    if stands && !settings.tags.model.value.is_empty() {
+        settings.tags.model.value.clone()
+    } else {
+        writer.to_owned()
+    }
 }
 
 fn joined(lines: &[String]) -> String {
@@ -1045,6 +1054,23 @@ fn event_line(event: &Event, api: bool, charges: &[(Extent, u8)]) -> Message {
         Event::TagsPassed { entry, charges } => Message::info(&format!(
             "passed over the tags of {entry}: refused or failed in {charges} runs"
         )),
+    }
+}
+
+fn why_lines(ended: &Ended, writer: Option<&str>, tagger: Option<&str>) -> Vec<String> {
+    match ended {
+        Ended::Done | Ended::Calls => [writer, tagger]
+            .into_iter()
+            .flatten()
+            .map(str::to_owned)
+            .collect(),
+        _ => {
+            let own = match ended_which(ended) {
+                Which::Writer => writer,
+                Which::Tagger => tagger,
+            };
+            view::why_after(ended, own).into_iter().collect()
+        }
     }
 }
 
@@ -1224,6 +1250,34 @@ mod tests {
     }
 
     #[test]
+    fn after_an_ordinary_end_each_model_says_its_own_reason() {
+        use super::why_lines;
+        use bilbo_derive::run::{Ended, Which};
+        use bilbo_llm::model::{Cause, What};
+        for ended in [Ended::Done, Ended::Calls] {
+            assert_eq!(
+                why_lines(&ended, Some("w"), Some("t")),
+                ["w".to_owned(), "t".to_owned()]
+            );
+            assert_eq!(why_lines(&ended, None, Some("t")), ["t".to_owned()]);
+            assert_eq!(why_lines(&ended, Some("w"), None), ["w".to_owned()]);
+        }
+        assert_eq!(
+            why_lines(&Ended::Failures(Which::Tagger), Some("w"), Some("t")),
+            ["t".to_owned()]
+        );
+        let not_started = Cause::new(What::NotStarted);
+        assert_eq!(
+            why_lines(
+                &Ended::Stopped(not_started, Which::Tagger),
+                Some("w"),
+                Some("t")
+            ),
+            Vec::<String>::new()
+        );
+    }
+
+    #[test]
     fn the_line_a_run_ends_with_names_a_model_only_when_there_are_two() {
         use bilbo_derive::keys::defaults;
         use bilbo_derive::run::{Ended, Which};
@@ -1262,6 +1316,26 @@ mod tests {
                 two.plain_lines(),
                 [format!(
                     "bilbo: stopped: 3 calls failed in a row, to the model of {key}"
+                )]
+            );
+        }
+        let own = |which: Which| Some(if which == Which::Writer { "wr" } else { "tg" }.to_owned());
+        for (which, reason) in [(Which::Tagger, "tg"), (Which::Writer, "wr")] {
+            let stopped = ended_line(
+                &Ended::Stopped(
+                    bilbo_llm::model::Cause::new(bilbo_llm::model::What::NotStarted),
+                    which,
+                ),
+                true,
+                &section,
+                &own,
+                Some(&keys),
+            )
+            .expect("a line");
+            assert_eq!(
+                stopped.plain_lines(),
+                [format!(
+                    "bilbo: the provider stopped the run: its program could not be started: {reason}"
                 )]
             );
         }

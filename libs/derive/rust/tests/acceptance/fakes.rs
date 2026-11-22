@@ -64,6 +64,7 @@ pub struct Shelf {
     items: Vec<Item>,
     sealed: Vec<(Id, SystemTime)>,
     pub reads: RefCell<Vec<Id>>,
+    pub ranges: RefCell<Vec<(Id, u32, u64, u64)>>,
     pub touched: Rc<Cell<usize>>,
     pub captures: Vec<(String, String, Option<Id>, Vec<u8>)>,
     pub refuse_capture: bool,
@@ -298,6 +299,9 @@ impl Entries for Shelf {
     ) -> Result<Vec<Vec<u8>>, StoreError> {
         self.touch();
         self.reads.borrow_mut().push(id);
+        self.ranges
+            .borrow_mut()
+            .push((id, generation.0, records.first, records.count));
         let item = self
             .items
             .iter()
@@ -917,6 +921,7 @@ pub struct World {
     pub provider: String,
     pub memo: Memo,
     pub cap: usize,
+    pub format_reads: Rc<Cell<usize>>,
     next: u8,
 }
 
@@ -976,6 +981,7 @@ impl World {
             provider: "fake".to_owned(),
             memo: Memo::default(),
             cap: 32,
+            format_reads: Rc::new(Cell::new(0)),
             next: 0,
         }
     }
@@ -1171,7 +1177,16 @@ impl World {
         tagger: Option<&mut Script>,
         plan: &Plan,
     ) -> Report {
-        let format = format();
+        let reads = Rc::clone(&self.format_reads);
+        let counting = move |bytes: &[u8]| {
+            reads.set(reads.get() + 1);
+            read_paragraph(bytes)
+        };
+        let format = Format {
+            kind: "summary",
+            write: &write_paragraph,
+            read: &counting,
+        };
         let rules = self
             .tags
             .as_ref()

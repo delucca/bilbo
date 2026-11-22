@@ -3,7 +3,7 @@ use std::collections::BTreeSet;
 use bilbo_store::labels::Tag;
 
 use super::answer::NONE;
-use crate::view::{Counter, Paragraph, earlier, shown};
+use crate::view::{Counter, Paragraph, shown};
 
 const TAGS: [&str; 4] = ["<notes", "</notes", "<tags", "</tags"];
 
@@ -30,11 +30,19 @@ pub fn fitting<'a>(
     budget: usize,
     counter: &Counter<'_>,
 ) -> &'a [Paragraph] {
-    let kept = earlier(notes, budget, counter);
-    if kept.is_empty() && !notes.is_empty() {
+    let mut used = 0;
+    let mut from = notes.len();
+    for paragraph in notes.iter().rev() {
+        used += counter.count(&escaped(&shown(paragraph)));
+        if used > budget {
+            break;
+        }
+        from -= 1;
+    }
+    if from == notes.len() && !notes.is_empty() {
         &notes[notes.len() - 1..]
     } else {
-        kept
+        &notes[from..]
     }
 }
 
@@ -132,6 +140,11 @@ mod tests {
         assert_eq!(firsts(fitting(&notes, 25, &counter)), [2, 3]);
         assert_eq!(firsts(fitting(&notes, 5, &counter)), [3]);
         assert!(fitting(&[], 5, &counter).is_empty());
+        let heavy = "<tags>".repeat(4);
+        let marked = [paragraph(4, &heavy), paragraph(5, &heavy)];
+        assert_eq!(counter.count(&crate::view::shown(&marked[0])), 10);
+        assert_eq!(firsts(fitting(&marked, 25, &counter)), [5]);
+        assert_eq!(firsts(fitting(&marked, 26, &counter)), [4, 5]);
     }
 
     #[test]

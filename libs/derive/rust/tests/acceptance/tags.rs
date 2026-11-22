@@ -61,7 +61,7 @@ fn blocks(world: &World) -> Vec<tags::block::Block> {
 #[test]
 fn with_the_tags_off_a_run_asks_the_model_and_the_tags_file_nothing_more() {
     let mut world = World::new();
-    let parent = noted(&mut world, &["aaaa"]);
+    noted(&mut world, &["aaaa"]);
     let mut section = tags::keys::defaults();
     section.pick.value = names(&["garden"]);
     world.tags = Some(section);
@@ -71,7 +71,30 @@ fn with_the_tags_off_a_run_asks_the_model_and_the_tags_file_nothing_more() {
     assert_eq!(world.memo.asks.get(), 0);
     assert_eq!(done.report.counts.calls, 0);
     assert!(world.plan(Asked::Every).due.is_empty());
-    let _ = parent;
+
+    let mut reference = World::new();
+    reference.entry("plain", &["aaaa"]);
+    let mut expected = Script::new().then(answer("r1\nThe user asked about a topic."));
+    let plan = reference.plan(Asked::Every);
+    reference.calls(&mut expected, &plan);
+
+    let mut world = World::new();
+    let carrying = world.entry("plain", &["aaaa"]);
+    let mut held = Tags::default();
+    held.set(tag("garden"), Some(Standing::Carried(By::Model)));
+    world.shelf.put_tags(carrying, held);
+    let mut section = tags::keys::defaults();
+    section.pick.value = names(&["garden"]);
+    world.tags = Some(section);
+    let mut writer = Script::new().then(answer("r1\nThe user asked about a topic."));
+    let plan = world.plan(Asked::Every);
+    world.format_reads.set(0);
+    world.calls(&mut writer, &plan);
+    assert_eq!(world.spooled.blocks().len(), 1);
+    assert_eq!(world.format_reads.get(), 2);
+    assert_eq!(writer.prompts, expected.prompts);
+    assert_eq!(writer.limits, expected.limits);
+    assert_eq!(world.memo.asks.get(), 0);
 }
 
 #[test]
@@ -204,17 +227,24 @@ fn notes_of_an_older_generation_alone_are_not_asked_about() {
 fn an_entry_with_no_record_is_not_asked_and_nothing_is_read_for_it() {
     let mut world = tagging(&["garden"]);
     let parent = world.entry("plain", &[]);
+    windows_noted(&mut world, parent, &[(1, "A note.")]);
+    let notes = world.shelf.notes_item(parent);
     let plan = world.plan(Asked::Every);
     assert!(plan.due.is_empty());
     assert!(plan.tags.contains(&(parent, TagsState::NotComplete)));
     assert_eq!(world.memo.asks.get(), 0);
+    assert_eq!(world.shelf.reads_of(notes), 0);
 }
 
 #[test]
 fn a_name_with_no_answer_asks_again_from_all_the_notes() {
     let mut world = tagging(&["a", "b"]);
-    let parent = noted(&mut world, &["aaaa"]);
-    let head = world.shelf.extent(parent, None).unwrap().unwrap();
+    let parent = world.entry("plain", &["aaaa", "bbbb"]);
+    windows_noted(
+        &mut world,
+        parent,
+        &[(1, "First note."), (2, "Second note.")],
+    );
     let notes_head = world
         .shelf
         .by_capture_head(parent)
@@ -233,13 +263,15 @@ fn a_name_with_no_answer_asks_again_from_all_the_notes() {
             1,
         )
         .unwrap();
-    let _ = head;
     let mut writer = Script::new().then(answer("b"));
     let plan = world.plan(Asked::Every);
     assert_eq!(plan.due.len(), 1);
     world.calls(&mut writer, &plan);
     assert_eq!(writer.prompts.len(), 1);
-    assert!(writer.prompts[0].material.contains("Earlier paragraph."));
+    assert_eq!(
+        writer.prompts[0].material,
+        "<notes>\nr1 2023-11-14\nFirst note.\n\nr2 2023-11-14\nSecond note.\n\n</notes>\n<tags>\na\nb\n</tags>\nWrite the tags for these notes now, one a line, at most 3, or (none).\n"
+    );
     world.replay();
     let line = world
         .memo
@@ -273,10 +305,16 @@ fn an_entry_its_answer_settles_costs_no_read_of_its_notes() {
         )
         .unwrap();
     world.shelf.reads.borrow_mut().clear();
+    world.shelf.ranges.borrow_mut().clear();
     let plan = world.plan(Asked::Every);
     assert!(plan.due.is_empty());
     assert!(plan.tags.contains(&(parent, TagsState::Asked)));
     assert_eq!(world.shelf.reads.borrow().len(), 1);
+    let notes = world.shelf.notes_item(parent);
+    assert_eq!(
+        *world.shelf.ranges.borrow(),
+        [(notes, notes_head.0.0, notes_head.1, 1)]
+    );
 }
 
 #[test]
@@ -324,26 +362,48 @@ fn the_tags_call_carries_the_tags_instruction_the_material_and_the_runs_limits()
     let plan = world.plan(Asked::Every);
     world.calls(&mut writer, &plan);
     assert_eq!(writer.prompts[0].instruction, tags::instruction::text());
-    assert!(writer.prompts[0].material.starts_with("<notes>\n"));
+    assert_eq!(
+        writer.prompts[0].material,
+        "<notes>\nr1 2023-11-14\nEarlier paragraph.\n\n</notes>\n<tags>\ngarden\n</tags>\nWrite the tags for these notes now, one a line, at most 3, or (none).\n"
+    );
     assert_eq!(writer.limits[0], world.limits);
 }
 
 #[test]
-fn an_answer_with_picks_spools_one_block_and_reaches_no_store_port() {
+fn an_answer_with_picks_spools_one_block_and_reaches_no_store() {
     let mut world = tagging(&["garden", "bilbo"]);
     let parent = noted(&mut world, &["aaaa"]);
-    let mut writer = Script::new().then(answer("garden"));
+    let mut writer = Script::new().then(answer("garden\nbilbo"));
     let plan = world.plan(Asked::Every);
     let touched = world.shelf.touched.get();
     world.calls(&mut writer, &plan);
     assert_eq!(world.shelf.touched.get(), touched);
+    assert_eq!(world.spooled.files.len(), 1);
     let held = blocks(&world);
     assert_eq!(held.len(), 1);
-    assert_eq!(held[0].entry, parent);
-    assert_eq!(held[0].picks, [tag("garden")]);
-    assert!(!held[0].takes_back && !held[0].passed);
-    assert_eq!(held[0].names, names(&["bilbo", "garden"]));
-    assert_eq!(held[0].instruction, world.tags_id);
+    let about = tags::asked::About {
+        generation: Generation(1),
+        records: 1,
+        notes: world.notes_digest(parent),
+    };
+    let material = "<notes>\nr1 2023-11-14\nEarlier paragraph.\n\n</notes>\n<tags>\nbilbo\ngarden\n</tags>\nWrite the tags for these notes now, one a line, at most 3, or (none).\n";
+    assert_eq!(writer.prompts[0].material, material);
+    let asking = tags::asked::asking(parent, &about, "fake", "model-a", &world.tags_id, material);
+    assert_eq!(
+        held[0],
+        tags::block::Block {
+            entry: parent,
+            about,
+            picks: vec![tag("garden"), tag("bilbo")],
+            takes_back: false,
+            names: names(&["bilbo", "garden"]),
+            instruction: world.tags_id.clone(),
+            provider: "fake".to_owned(),
+            model: "model-a".to_owned(),
+            asking,
+            passed: false,
+        }
+    );
 }
 
 #[test]
@@ -565,6 +625,21 @@ fn the_shared_model_is_asked_whether_it_is_bound_at_the_first_tags_call_and_not_
             "call:writer"
         ]
     );
+
+    let mut world = tagging(&["garden"]);
+    world.section.window.value = 3;
+    world.section.calls.value = 2;
+    world.entry("plain", &["aaaa", "bbbb"]);
+    let seen = Rc::new(RefCell::new(Vec::new()));
+    let mut writer = scripted("garden");
+    writer.seen = Some(Rc::clone(&seen));
+    let plan = world.plan(Asked::Every);
+    let report = world.calls(&mut writer, &plan);
+    assert_eq!(report.ended, Ended::Calls);
+    assert_eq!(
+        *seen.borrow(),
+        ["prepare:writer", "call:writer", "call:writer"]
+    );
 }
 
 #[test]
@@ -581,6 +656,18 @@ fn a_tags_call_the_budget_cannot_pay_prepares_and_binds_nothing() {
     let report = world.calls_with(&mut writer, Some(&mut tagger), &plan);
     assert_eq!(report.ended, Ended::Calls);
     assert!(seen.borrow().is_empty());
+
+    let mut world = tagging(&["garden"]);
+    world.section.calls.value = 1;
+    world.entry("plain", &["aaaa"]);
+    let seen = Rc::new(RefCell::new(Vec::new()));
+    let mut writer = Script::new().then(answer("r1\nA note."));
+    writer.refuse_bound = Some("unbound".to_owned());
+    writer.seen = Some(Rc::clone(&seen));
+    let plan = world.plan(Asked::Every);
+    let report = world.calls(&mut writer, &plan);
+    assert_eq!(report.ended, Ended::Calls);
+    assert_eq!(*seen.borrow(), ["prepare:writer", "call:writer"]);
 }
 
 #[test]
@@ -664,15 +751,44 @@ fn a_stop_of_the_tags_model_ends_the_run_and_says_whose() {
 fn one_models_answer_never_charges_the_other_models_slot() {
     let mut world = tagging(&["garden"]);
     world.section.window.value = 3;
+    world.entry("plain", &["bbbb"]);
     let tagged = noted(&mut world, &["aaaa"]);
-    let windowed = world.entry("plain", &["bbbb"]);
-    let _ = windowed;
+    let seen = Rc::new(RefCell::new(Vec::new()));
     let mut writer = Script::new().always(|_, _| answer("r1\nA note."));
+    writer.seen = Some(Rc::clone(&seen));
     let mut tagger = Script::new().always(|_, _| failed(What::Rejected));
+    tagger.name = "tagger";
+    tagger.seen = Some(Rc::clone(&seen));
     let plan = world.plan(Asked::Every);
+    assert_eq!(plan.due[0].parent.id, tagged);
     let report = world.calls_with(&mut writer, Some(&mut tagger), &plan);
     assert_eq!(report.ended, Ended::Done);
+    assert_eq!(
+        *seen.borrow(),
+        [
+            "prepare:writer",
+            "prepare:tagger",
+            "bound:tagger",
+            "call:tagger",
+            "call:writer",
+            "call:tagger"
+        ]
+    );
     assert_eq!(world.memo.charges_of(tagged), 0);
+
+    let mut world = tagging(&["garden"]);
+    world.section.window.value = 3;
+    noted(&mut world, &["aaaa"]);
+    world.entry("plain", &["bbbb"]);
+    let mut writer = Script::new().then(failed(What::Unreadable));
+    let mut tagger = Script::new().then(answer("garden"));
+    let plan = world.plan(Asked::Every);
+    let extent = plan.due[0].windows[0].extent;
+    let report = world.calls_with(&mut writer, Some(&mut tagger), &plan);
+    assert_eq!(report.ended, Ended::Done);
+    assert_eq!(writer.prompts.len(), 1);
+    assert_eq!(tagger.prompts.len(), 1);
+    assert_eq!(world.held.of(&extent), 0);
 }
 
 #[test]
@@ -717,7 +833,6 @@ fn a_replay_declares_the_picks_as_a_models_and_ends_the_asking_in_one_write() {
 }
 
 fn picked(world: &mut World, parent: Id, picks: &[&str], takes_back: bool) {
-    let notes = world.shelf.by_capture_head(parent).expect("notes");
     let block = tags::block::Block {
         entry: parent,
         about: tags::asked::About {
@@ -739,7 +854,6 @@ fn picked(world: &mut World, parent: Id, picks: &[&str], takes_back: bool) {
         asking: 7,
         passed: false,
     };
-    let _ = notes;
     world
         .spooled
         .keep(&tags::block::write(&block))
@@ -787,15 +901,26 @@ fn an_entry_the_store_no_longer_holds_drops_the_tags_block() {
     let mut gone = tags::block::read(&world.spooled.files[0].1).unwrap();
     gone.entry = Id::from_bytes([200; 16]);
     world.spooled.files[0].1 = tags::block::write(&gone);
+    let other = noted(&mut world, &["bbbb"]);
+    picked(&mut world, other, &["a"], false);
     let replayed = world.replay();
     assert_eq!(
         replayed.notices,
-        [
-            "dropped the tags kept for 6200000000000000000000000G: the store no longer holds it"
-                .replace("6200000000000000000000000G", &gone.entry.to_string())
-        ]
+        [format!(
+            "dropped the tags kept for {}: the store no longer holds it",
+            gone.entry
+        )]
+    );
+    assert_eq!(model_tags(&world, other), [("a".to_owned(), By::Model)]);
+    assert!(
+        world
+            .memo
+            .lines
+            .iter()
+            .any(|line| matches!(line, Line::Answered(answered) if answered.entry == other))
     );
     assert!(blocks(&world).is_empty());
+    assert!(world.spooled.files.is_empty());
 }
 
 #[test]
@@ -891,6 +1016,23 @@ fn a_tags_block_an_earlier_run_left_is_replayed_with_the_tags_off() {
     picked(&mut world, parent, &["a"], false);
     let replayed = world.replay();
     assert_eq!(replayed.tagged, 1);
+    assert_eq!(model_tags(&world, parent), [("a".to_owned(), By::Model)]);
+    let head = world
+        .shelf
+        .by_capture_head(parent)
+        .expect("the notes' head");
+    assert_eq!(
+        world.memo.lines,
+        [Line::Answered(Answered {
+            entry: parent,
+            notes: head,
+            instruction: world.tags_id.clone(),
+            provider: "fake".to_owned(),
+            model: "model-a".to_owned(),
+            names: names(&["a"]),
+        })]
+    );
+    assert_eq!(world.memo.answers, 1);
 }
 
 #[test]
@@ -904,7 +1046,23 @@ fn each_models_streak_is_its_own_and_either_ends_the_run() {
     let plan = world.plan(Asked::Every);
     let report = world.calls_with(&mut writer, Some(&mut tagger), &plan);
     assert_eq!(report.ended, Ended::Failures(Which::Tagger));
-    let _ = Cause::new(What::Cut);
+
+    let mut world = tagging(&["garden"]);
+    world.section.failures.value = 2;
+    world.section.window.value = 3;
+    world.entry("plain", &["bbbb"]);
+    let waiting = noted(&mut world, &["aaaa"]);
+    let plan = world.plan(Asked::Every);
+    let both = [plan.due[0].parent.id, plan.due[1].parent.id];
+    let mut writer = Script::new().always(|_, _| answer("r1\nThe user asked about a topic."));
+    let mut tagger = Script::new().always(|_, _| failed(What::Unreadable));
+    let report = world.calls_with(&mut writer, Some(&mut tagger), &plan);
+    assert_eq!(report.ended, Ended::Failures(Which::Tagger));
+    assert_eq!(writer.prompts.len(), 1);
+    assert_eq!(tagger.prompts.len(), 2);
+    assert_eq!(world.memo.charges_of(both[0]), 0);
+    assert_eq!(world.memo.charges_of(both[1]), 0);
+    assert_eq!(both[0], waiting);
 }
 
 fn asking_of(plan: &bilbo_derive::plan::Plan) -> (u64, u8) {
@@ -1223,9 +1381,9 @@ fn a_run_of_tags_calls_alone_is_scheduled_and_marked() {
 
 #[test]
 fn a_failure_that_waits_is_not_charged_when_its_model_stops_the_run() {
-    for (third, ended, charges) in [(false, true, 0), (true, false, 1)] {
+    for (entries, stop, charges) in [(3, true, 0), (2, false, 1)] {
         let mut world = tagging(&["garden"]);
-        for text in ["aaaa", "bbbb", "cccc"] {
+        for text in ["aaaa", "bbbb", "cccc"].into_iter().take(entries) {
             noted(&mut world, &[text]);
         }
         let plan = world.plan(Asked::Every);
@@ -1234,17 +1392,15 @@ fn a_failure_that_waits_is_not_charged_when_its_model_stops_the_run() {
         let mut tagger = Script::new()
             .then(answer("garden"))
             .then(failed(What::Unreadable));
-        tagger = if third {
-            tagger.then(answer("garden"))
-        } else {
-            tagger.then(stopped())
-        };
+        if stop {
+            tagger = tagger.then(stopped());
+        }
         let report = world.calls_with(&mut writer, Some(&mut tagger), &plan);
         assert_eq!(
             matches!(report.ended, Ended::Stopped(_, Which::Tagger)),
-            ended
+            stop
         );
-        assert_eq!(report.ended == Ended::Done, !ended);
+        assert_eq!(report.ended == Ended::Done, !stop);
         assert_eq!(world.memo.charges_of(waiting), charges);
     }
 }
@@ -1501,4 +1657,44 @@ fn the_same_notes_under_another_runs_record_drop_the_tags_block() {
     );
     no_frame_no_line_no_block(&world);
     assert!(world.spooled.files.is_empty());
+}
+
+#[test]
+fn the_mark_is_the_entry_of_the_first_call_counted_and_not_of_a_free_pass() {
+    let mut world = tagging(&["garden"]);
+    world.section.calls.value = 1;
+    world.section.tries.value = 2;
+    noted(&mut world, &["cccc"]);
+    let bees = world.entry("plain", &["bbbb"]);
+    windows_noted(&mut world, bees, &[(1, "Note about bees.")]);
+    noted(&mut world, &["aaaa"]);
+    let plan = world.plan(Asked::Every);
+    let order: Vec<Id> = plan.due.iter().map(|due| due.parent.id).collect();
+    assert_eq!(order[1], bees);
+    let (passed, _) = plan.due[0].tags.as_ref().unwrap().asking.unwrap();
+    world.memo.lines.push(Line::Charged {
+        entry: order[0],
+        asking: passed,
+        charges: 2,
+    });
+    let mut writer = Script::new().then(failed(What::Unreadable));
+    let report = world.calls(&mut writer, &plan);
+    assert_eq!(writer.prompts.len(), 1);
+    assert!(writer.prompts[0].material.contains("Note about bees."));
+    assert_eq!(
+        report.events,
+        [
+            Event::TagsPassed {
+                entry: order[0],
+                charges: 2
+            },
+            Event::TagsFailed {
+                entry: order[1],
+                cause: Cause::new(What::Unreadable)
+            }
+        ]
+    );
+    assert_eq!(world.held.mark, Some(order[1]));
+    let next = world.plan(Asked::Every);
+    assert_eq!(next.due[0].parent.id, order[2]);
 }

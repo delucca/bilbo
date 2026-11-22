@@ -6,7 +6,6 @@ use bilbo_store::id::Id;
 use bilbo_store::labels::Tag;
 
 use crate::instruction::number;
-use crate::spool::bare;
 use crate::tries;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -22,7 +21,7 @@ pub fn digest(before: Option<u64>, record: &[u8]) -> u64 {
     if let Some(before) = before {
         bytes.extend_from_slice(&before.to_le_bytes());
     }
-    bytes.extend_from_slice(bare(record));
+    bytes.extend_from_slice(record);
     number(&bytes)
 }
 
@@ -69,7 +68,7 @@ pub fn line(line: &Line) -> String {
     }
 }
 
-fn number_of(text: &str) -> Option<u64> {
+pub(crate) fn number_of(text: &str) -> Option<u64> {
     (text.len() == 16 && text.bytes().all(|byte| byte.is_ascii_hexdigit()))
         .then(|| u64::from_str_radix(text, 16).ok())
         .flatten()
@@ -375,6 +374,9 @@ mod tests {
         all.dedup();
         assert_eq!(all.len(), 5);
         assert_eq!(folded(&["a", "b"]), folded(&["a", "b"]));
-        assert_eq!(digest(None, b"a\n"), digest(None, b"a"));
+        assert_ne!(digest(None, b"a\n"), digest(None, b"a"));
+        let body: &[u8] = br#"{"text":"x","from":[1,1]}"#;
+        let ended = [body, b"\n"].concat();
+        assert_ne!(digest(None, body), digest(None, &ended));
     }
 }

@@ -808,6 +808,12 @@ mod tests {
     }
 
     #[test]
+    fn the_reference_page_holds_the_sentence_about_when_the_scope_is_read_exactly_twice() {
+        let sentence = "`derive.in` and `derive.not_in` are read when a `derive` run plans. A tag you add or remove while a run is under way counts from the next run: to keep an entry from a provider, tag it before the run that would send it.";
+        assert_eq!(PAGE.matches(sentence).count(), 2);
+    }
+
+    #[test]
     fn the_reference_page_lists_every_language() {
         let page: Vec<&str> = PAGE.lines().collect();
         let mut headings = (0..page.len()).filter(|&at| page[at] == "## Languages");

@@ -3809,6 +3809,46 @@ fn a_tags_model_that_fails_its_prepare_exits_2_after_the_notes_are_kept_and_coun
     assert!(sandbox.notes_of(first).is_some());
 }
 
+#[test]
+fn a_tags_model_that_fails_its_prepare_is_said_and_exits_2_though_the_closing_replay_fails() {
+    let sandbox = Sandbox::filled("derive-tags-prepare-replay", false);
+    let first = sandbox.session(FIRST);
+    let provider = Provider::start(vec![answer(NOTE_TEXT)]);
+    let extra = format!("{TAGS_ON}derive.tags.model = \"{KEY}\"\n");
+    sandbox.configure(&with_tags(&provider.url(), first, &extra));
+    let open_seg = stores::layout(&sandbox.vars()).state.join("open.seg");
+    fs::set_permissions(&open_seg, fs::Permissions::from_mode(0o400)).expect("a mode");
+    let run = sandbox.run(&["derive", "--calls", "2"]);
+    fs::set_permissions(&open_seg, fs::Permissions::from_mode(0o600)).expect("a mode");
+    assert_eq!(run.code, 2, "{:?}", run.stderr);
+    let lines: Vec<&str> = run.stdout.lines().collect();
+    assert_eq!(
+        lines[0],
+        "entries 1, calls 1, notes 1, dropped 0, refused 0, failed 0"
+    );
+    assert_eq!(lines.len(), 2, "{}", run.stdout);
+    assert!(
+        lines[1].starts_with("tokens in 100, tokens out 20, seconds "),
+        "{}",
+        lines[1]
+    );
+    let at = run
+        .stderr
+        .iter()
+        .position(|line| line.starts_with("bilbo: cannot write ") && line.contains("open.seg"))
+        .unwrap_or_else(|| panic!("{:?}", run.stderr));
+    assert!(at + 1 < run.stderr.len(), "{:?}", run.stderr);
+    assert_eq!(
+        run.stderr.last().map(String::as_str),
+        Some("bilbo: derive.tags.model holds the key")
+    );
+    assert!(
+        spool_names(&sandbox)
+            .iter()
+            .any(|name| name.ends_with(".block"))
+    );
+}
+
 fn walk_numbers(run: &Run) -> (String, String) {
     let at = |start: &str| {
         run.stdout
@@ -3980,13 +4020,17 @@ fn the_tags_file_lost_asks_once_more_and_takes_nothing_a_person_set() {
 fn a_tag_added_while_a_run_is_under_way_counts_from_the_next_run() {
     let _together = together();
     let sandbox = Sandbox::filled("derive-tags-underway", false);
-    let ids = sandbox.sessions();
-    let (second, first) = (ids[ids.len() - 1], ids[ids.len() - 2]);
-    let slow = Reply::trickle(&message(NOTE_TEXT), Duration::from_millis(15));
-    let provider = Provider::start(vec![slow, answer(NOTE_TEXT)]);
+    let mut pair = [
+        (sandbox.session(FIRST), "carrot"),
+        (sandbox.session(SECOND), "tomatoes"),
+    ];
+    pair.sort();
+    let ((smaller, only_here), (larger, first_word)) = (pair[0], pair[1]);
+    let (held, release) = Reply::held(&message(NOTE_TEXT));
+    let provider = Provider::start(vec![held, answer(NOTE_TEXT)]);
     sandbox.configure(&only_ids(
         &provider.url(),
-        &[first, second],
+        &[larger, smaller],
         "derive.not_in = [\"tag:private\"]\n",
     ));
     let vars = sandbox.vars();
@@ -3995,16 +4039,20 @@ fn a_tag_added_while_a_run_is_under_way_counts_from_the_next_run() {
         bilbo(vars, &["derive"])
     });
     waiting_for(&provider, 1);
-    let added = sandbox.run(&["tag", &second.to_string(), "--add", "private"]);
+    let added = sandbox.run(&["tag", &smaller.to_string(), "--add", "private"]);
     assert_eq!(added.code, 0, "{:?}", added.stderr);
+    release.release();
     let run = running.join().expect("the run");
     assert_eq!(run.code, 0, "{:?}", run.stderr);
-    assert_eq!(requests(&provider).len(), 2);
-    let dry = sandbox.run(&["derive", "--dry-run", &second.to_string()]);
+    let seen = requests(&provider);
+    assert_eq!(seen.len(), 2);
+    assert!(body(&seen[0]).contains(first_word), "{}", body(&seen[0]));
+    assert!(body(&seen[1]).contains(only_here), "{}", body(&seen[1]));
+    let dry = sandbox.run(&["derive", "--dry-run", &smaller.to_string()]);
     assert!(
         dry.stdout
             .lines()
-            .any(|line| line.starts_with(&format!("entry\t{second}\tleft out: derive.not_in"))),
+            .any(|line| line.starts_with(&format!("entry\t{smaller}\tleft out: derive.not_in"))),
         "{}",
         dry.stdout
     );
@@ -4156,4 +4204,187 @@ fn a_tags_prepare_that_fails_after_passes_alone_says_the_passes_and_exits_2() {
     );
     assert_eq!(run.stderr[1], "bilbo: derive.tags.model holds the key");
     assert_eq!(requests(&provider).len(), 2);
+}
+
+fn declared_by_a_model(sandbox: &Sandbox, id: Id, name: &str) {
+    let picks = [Tag::new(name).expect("a tag")];
+    let layout = stores::layout(&sandbox.vars());
+    let mut store = Store::open(&layout, Options::default(), &mut |_| {}).expect("open the store");
+    tag::declare(
+        id,
+        &Change::Model {
+            picks: &picks,
+            takes_back: false,
+        },
+        32,
+        &mut store,
+    )
+    .expect("declare");
+}
+
+#[test]
+fn a_dry_run_with_an_empty_list_still_gives_a_ref_its_tags_line() {
+    let sandbox = Sandbox::filled("derive-tags-empty-ref", false);
+    let first = sandbox.session(FIRST);
+    declared_by_a_model(&sandbox, first, "garden");
+    let provider = Provider::start(Vec::new());
+    sandbox.configure(&with_tags(
+        &provider.url(),
+        first,
+        "derive.tags.enabled = true\nderive.tags.pick = []\n",
+    ));
+    let run = sandbox.run(&["derive", "--dry-run", &first.to_string()]);
+    assert_eq!(run.code, 0, "{:?}", run.stderr);
+    let lines: Vec<&str> = run.stdout.lines().collect();
+    assert!(lines.contains(&"tags: none to pick from: derive.tags.pick is empty"));
+    let entry = lines
+        .iter()
+        .position(|line| line.starts_with("entry\t"))
+        .expect("an entry line");
+    assert_eq!(
+        lines[entry + 1],
+        format!("tags\t{first}\tnot due: none to pick from\tgarden")
+    );
+    assert!(!sandbox.derive_dir().join("tagged").exists());
+}
+
+fn outcome_of(
+    vars: HashMap<String, OsString>,
+    args: &[&str],
+    notice: Box<dyn FnMut(&bilbo_cli::console::message::Message)>,
+) -> Result<bilbo_cli::console::outcome::Outcome, bilbo_cli::console::outcome::Failure> {
+    let argv: Vec<OsString> = std::iter::once("bilbo")
+        .chain(args.iter().copied())
+        .map(OsString::from)
+        .collect();
+    let mut env = Env {
+        var: Rc::new(move |name| vars.get(name).cloned()),
+        stdin: Box::new(io::empty()),
+        notice,
+    };
+    let settings = settings::load(
+        &*env.var,
+        &|path| fs::read(path),
+        &bilbo_cli::kind_keys(),
+        &bilbo_cli::provider_keys(),
+    )
+    .map_err(bilbo_cli::console::outcome::Failure::from);
+    bilbo_cli::run_tuned(&bilbo_cli::bilbo(), &argv, &mut env, settings, &tune)
+}
+
+#[test]
+fn a_replay_that_changes_no_tag_serves_a_bare_remember_that_found_derive_holding_the_store() {
+    let _together = together();
+    let sandbox = Sandbox::filled("derive-serves", false);
+    let first = sandbox.session(FIRST);
+    let (held, release) = Reply::held(&message("garden"));
+    let provider = Provider::start(vec![answer(NOTE_TEXT), held]);
+    sandbox.configure(&only(first, &provider.url()));
+    assert_eq!(sandbox.run(&["derive"]).code, 0);
+    declare_through_the_store(&sandbox, first, &["garden"]);
+    let followed = sandbox.dir.join("follow");
+    fs::create_dir_all(&followed).expect("a folder");
+    let file = followed.join("new.md");
+    fs::write(&file, "# New\n\nA note kept by the pass derive serves.\n").expect("write");
+    fs::File::options()
+        .write(true)
+        .open(&file)
+        .expect("open")
+        .set_modified(SystemTime::now() - Duration::from_secs(3600))
+        .expect("backdate");
+    sandbox.configure(&format!(
+        "{}\n[[follow]]\npath = {:?}\nkind = \"markdown\"\n",
+        with_tags(&provider.url(), first, TAGS_ON),
+        followed
+    ));
+    let layout = stores::layout(&sandbox.vars());
+    let vars = sandbox.vars();
+    let running = std::thread::spawn(move || {
+        held_by_the_test();
+        let bare = Rc::new(RefCell::new(None));
+        let notice = {
+            let (bare, vars) = (Rc::clone(&bare), vars.clone());
+            Box::new(move |message: &bilbo_cli::console::message::Message| {
+                let said = message.plain_lines().join("\n");
+                if said.contains("torn frame") && bare.borrow().is_none() {
+                    let vars = vars.clone();
+                    let run =
+                        bilbo_with(Rc::new(move |name| vars.get(name).cloned()), &["remember"]);
+                    *bare.borrow_mut() = Some((run.code, run.stdout, run.stderr));
+                }
+            })
+        };
+        let outcome = outcome_of(vars, &["derive"], notice).expect("the derive run");
+        let said = outcome.stderr_lines(&bilbo_cli::console::view::View::PLAIN);
+        let bare = bare.borrow().clone();
+        (outcome.exit_code(), said, bare)
+    });
+    waiting_for(&provider, 2);
+    let mut open_seg = fs::OpenOptions::new()
+        .append(true)
+        .open(layout.state.join("open.seg"))
+        .expect("open.seg");
+    io::Write::write_all(&mut open_seg, &[1, 0, 0]).expect("a torn tail");
+    drop(open_seg);
+    release.release();
+    let (code, said, bare) = running.join().expect("the run");
+    let (bare_code, bare_out, bare_err) = bare.expect("the bare run");
+    assert_eq!(bare_code, 0, "{bare_err:?}");
+    assert_eq!(bare_out, "");
+    assert_eq!(
+        bare_err,
+        ["bilbo: another bilbo is writing the store; requested another pass over the follows"]
+    );
+    assert_eq!(code, 0, "{said:?}");
+    assert_eq!(said.len(), 1, "{said:?}");
+    assert!(
+        said[0].starts_with("bilbo: ran the follows again for another bilbo: new 1, "),
+        "{said:?}"
+    );
+    assert_eq!(
+        fs::metadata(layout.state.join("store.again"))
+            .expect("the flag")
+            .len(),
+        0
+    );
+    let store = Store::open_read_only(&layout, Options::default(), &mut |_| {}).expect("open");
+    let label = CaptureLabel::file(&file.canonicalize().expect("canonical")).expect("a label");
+    assert!(store.by_capture(&label).expect("a lookup").is_some());
+    let asked = fs::read_to_string(sandbox.derive_dir().join("tagged")).expect("the file");
+    assert!(
+        asked.starts_with(&format!("answered\t{first}\t")),
+        "{asked}"
+    );
+}
+
+#[test]
+fn a_replay_that_changes_nothing_does_no_index_work() {
+    let sandbox = Sandbox::filled("derive-no-index-work", false);
+    let first = sandbox.session(FIRST);
+    let second = sandbox.session(SECOND);
+    let provider = Provider::start(vec![answer(NOTE_TEXT)]);
+    sandbox.configure(&only(first, &provider.url()));
+    assert_eq!(sandbox.run(&["derive"]).code, 0);
+    let (_, generation, records) = sandbox.notes_of(first).expect("notes");
+    let block = bilbo_derive::spool::write(&bilbo_derive::spool::Block {
+        parent: first,
+        generation,
+        generation_before: None,
+        records_before: 0,
+        opens: false,
+        records: records
+            .iter()
+            .map(|record| record.trim_end_matches('\n').as_bytes().to_vec())
+            .collect(),
+    });
+    let layout = stores::layout(&sandbox.vars());
+    notes::noted(&layout, second, &[b"{\"text\":\"a note\"}\n".to_vec()]);
+    spooled(&sandbox, &block);
+    let behind = "bilbo: the index is behind the store, so labels may be missing; bilbo remember brings it up to date";
+    let run = sandbox.run(&["derive"]);
+    assert_eq!((run.code, run.stderr), (1, vec![behind.to_owned()]));
+    assert!(spool_names(&sandbox).is_empty());
+    let again = sandbox.run(&["derive"]);
+    assert_eq!((again.code, again.stderr), (1, vec![behind.to_owned()]));
+    assert_eq!(requests(&provider).len(), 1);
 }

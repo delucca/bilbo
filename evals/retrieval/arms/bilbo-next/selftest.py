@@ -603,6 +603,75 @@ def bilbo_starts():
     check("the cache's start alone has the real key", len(popens) == 1 and popens[0][1].get("BILBO_EVAL_CACHE_KEY") == FAKE_KEY, popens)
 
 
+def tags_refusals():
+    names = ("CORPUS", "WORK", "STORE", "ANSWERS", "LIFE", "BILBO", "LAUNCHER", "one_life", "hold", "drop_failures", "archive", "DERIVING")
+    env_names = ("BILBO_EVAL_SCOPE", "BILBO_EVAL_DERIVE", "BILBO_EVAL_DERIVE_KEY")
+
+    def attempt(tmp, settings):
+        saved = {name: getattr(build, name) for name in names}
+        saved_env = {name: os.environ.get(name) for name in env_names}
+        runs, popens, events = [], [], []
+
+        class Done:
+            returncode, stdout, stderr = 0, "claude 1\n", ""
+
+        class Started:
+            stdout = type("Out", (), {"readline": staticmethod(lambda: "port 1\n")})()
+
+        build.CORPUS, build.WORK, build.STORE, build.ANSWERS = tmp / "corpus", tmp / "work", tmp / "work" / "store", tmp / "answers"
+        build.LIFE, build.BILBO, build.DERIVING, build.LAUNCHER = build.WORK / "life", sys.executable, True, tmp / "claude"
+        build.CORPUS.mkdir(parents=True)
+        build.STORE.mkdir(parents=True)
+        (build.WORK / "key.txt").write_text("key\nsessions all\n")
+        os.environ["BILBO_EVAL_SCOPE"] = "all"
+        os.environ["BILBO_EVAL_DERIVE_KEY"] = FAKE_KEY
+        os.environ["BILBO_EVAL_DERIVE"] = json.dumps({"provider": "anthropic", "cache": {"write": True},
+                                                      "settings": {"llm.anthropic.via": "tool", "llm.anthropic.tool.program": "/bin/sh", **settings}})
+
+        def one_life(groups, by_repo, derive, life):
+            life.record.write_text("")
+            build.start_cache(derive)
+            return [], {}, {}
+
+        build.hold = lambda folder, provider: type("Held", (), {"close": staticmethod(lambda: None)})()
+        build.drop_failures = lambda folder: None
+        build.archive = lambda derive, life: None
+        build.one_life = one_life
+        saved_run, saved_popen = build.subprocess.run, build.subprocess.Popen
+        build.subprocess.run = lambda command, **options: (runs.append(command), events.append("run"), Done())[2]
+        build.subprocess.Popen = lambda command, **options: (popens.append(command), events.append("popen"), Started())[2]
+        stopped = None
+        try:
+            build.main()
+        except SystemExit as error:
+            stopped = str(error)
+        finally:
+            build.subprocess.run, build.subprocess.Popen = saved_run, saved_popen
+            build.KEYS.clear()
+            for name, value in saved.items():
+                setattr(build, name, value)
+            for name, value in saved_env.items():
+                if value is None:
+                    os.environ.pop(name, None)
+                else:
+                    os.environ[name] = value
+        return stopped, runs, popens, events
+
+    def drive(settings):
+        with tempfile.TemporaryDirectory() as raw:
+            return attempt(Path(raw), settings)
+
+    stopped, runs, popens, events = drive({})
+    probe = [at for at, command in enumerate(runs) if command[:2] == ["/bin/sh", "--version"]]
+    check("with no tags' table the build asks the tool, not bilbo, for --version before it starts the cache, and starts it",
+          stopped is None and len(probe) == 1 and len(popens) == 1 and events.index("run") <= events.index("popen"),
+          (stopped, runs, popens, events))
+    for spelling in ({"derive.tags.enabled": True}, {"derive.tags": {"enabled": True}}, {'derive."tags".enabled': True}, {"derive.tags": {}}):
+        stopped, runs, popens, events = drive(spelling)
+        check(f"a settings table that makes a tags table under derive stops the build before the cache is started: {list(spelling)[0]}",
+              stopped == "bilbo-next: BILBO_EVAL_DERIVE: the arm does not tag" and not runs and not popens, (stopped, runs, popens))
+
+
 def api_secret():
     tmp = Path(tempfile.mkdtemp())
     found = lambda where, key=FAKE_KEY: [p for p in where.rglob("*") if p.is_file() and key.encode() in p.read_bytes()]
@@ -1371,19 +1440,11 @@ def settings_stops():
     for where in ("https://bob:2024?x@127.0.0.1/v1", "https://bob:2024#x@127.0.0.1/v1", "https://127.0.0.1/v1?a=b@c"):
         error = refused({"provider": "anthropic", "settings": {"llm.anthropic.api.endpoint": where}})
         check(f"an endpoint with an @ anywhere is refused: {where.split('@')[0][-12:]}@", error and "no user name or password" in error and "2024" not in error, error)
-    counted = []
-    real_cache, real_run = build.start_cache, build.subprocess.run
-    build.start_cache = lambda *given: counted.append("cache")
-    build.subprocess.run = lambda *given, **named: counted.append("run")
-    try:
-        for spelling in ({"derive.tags.enabled": True}, {"derive.tags": {"enabled": True}}, {'derive."tags".enabled': True}, {"derive.tags": {}}):
-            error = refused({"provider": "anthropic", "settings": spelling})
-            check(f"a settings table that makes a tags table under derive stops the build: {list(spelling)[0]}",
-                  error == "bilbo-next: BILBO_EVAL_DERIVE: the arm does not tag", error)
-        check("a settings table with no tags builds as before", refused({"provider": "anthropic", "settings": {"derive.tries": 2}}) is None)
-    finally:
-        build.start_cache, build.subprocess.run = real_cache, real_run
-    check("the refusal of the tags starts no cache and asks no program its version", counted == [], counted)
+    for spelling in ({"derive.tags.enabled": True}, {"derive.tags": {"enabled": True}}, {'derive."tags".enabled': True}, {"derive.tags": {}}):
+        error = refused({"provider": "anthropic", "settings": spelling})
+        check(f"a settings table that makes a tags table under derive is refused by the default way: {list(spelling)[0]}",
+              error == "bilbo-next: BILBO_EVAL_DERIVE: the arm does not tag", error)
+    check("a settings table with no tags is taken by the default way", refused({"provider": "anthropic", "settings": {"derive.tries": 2}}) is None)
     check("an endpoint with no @ is taken", refused({"provider": "anthropic", "settings": {"llm.anthropic.api.endpoint": "https://api.example.com/v1"}}) is None)
     check("the key's variable is the setting's key_env, else the provider's own (L17)",
           (build.key_variable({"provider": "openai"}, {}), build.key_variable({"provider": "anthropic"}, {}),
@@ -1482,6 +1543,7 @@ def main():
     two_builds()
     main_order()
     bilbo_starts()
+    tags_refusals()
     api_secret()
     api_key_is_the_caches()
     api_key_in_a_kept_answer()

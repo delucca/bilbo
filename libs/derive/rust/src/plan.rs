@@ -292,35 +292,33 @@ pub fn plan(
                         plan.tags.push((id, TagsState::NotComplete));
                         continue;
                     }
-                    {
-                        let (planned, shown, notes) = tagging(
-                            ports,
-                            rules,
-                            rules_tags,
-                            parent,
-                            looked.head.as_ref(),
-                            looked.opens,
-                            false,
-                        )?;
-                        plan.tags.push((id, shown));
-                        if let (Some(planned), Some(head)) = (planned, looked.head) {
-                            wanted.push(Wanted {
-                                due: Due {
-                                    parent: parent.clone(),
-                                    instruction: instruction.clone(),
-                                    preface: None,
-                                    held: Some((head.generation, head.records)),
-                                    opens: false,
-                                    last: looked.last.clone(),
-                                    stored: notes,
-                                    passages: Vec::new(),
-                                    windows: Vec::new(),
-                                    tags: Some(planned),
-                                },
-                                raw: Vec::new(),
-                                head: Some(head),
-                            });
-                        }
+                    let (planned, shown, notes) = tagging(
+                        ports,
+                        rules,
+                        rules_tags,
+                        parent,
+                        looked.head.as_ref(),
+                        looked.opens,
+                        false,
+                    )?;
+                    plan.tags.push((id, shown));
+                    if let (Some(planned), Some(head)) = (planned, looked.head) {
+                        wanted.push(Wanted {
+                            due: Due {
+                                parent: parent.clone(),
+                                instruction: instruction.clone(),
+                                preface: None,
+                                held: Some((head.generation, head.records)),
+                                opens: false,
+                                last: looked.last.clone(),
+                                stored: notes,
+                                passages: Vec::new(),
+                                windows: Vec::new(),
+                                tags: Some(planned),
+                            },
+                            raw: Vec::new(),
+                            head: Some(head),
+                        });
                     }
                 }
             }
@@ -524,7 +522,6 @@ fn cover(
         Some(head) if !opens => stored(ports.entries, head, rules.format)?,
         _ => Vec::new(),
     };
-    let kept_head = head;
     Ok(Judged {
         found: Found::Due(Box::new(Wanted {
             due: Due {
@@ -546,7 +543,7 @@ fn cover(
                 parent,
             },
             raw: found,
-            head: kept_head,
+            head,
         })),
         looked: Looked::default(),
     })
@@ -597,8 +594,7 @@ fn schedule(
                 pass,
             });
         }
-        if due.tags.is_none()
-            && let Some(tags_rules) = &rules.tags
+        if let Some(tags_rules) = &rules.tags
             && !due.windows.is_empty()
         {
             let calls = due.windows.iter().any(|planned| !planned.pass);
@@ -626,26 +622,33 @@ fn schedule(
     Ok(scheduled)
 }
 
-type Records = Vec<Vec<u8>>;
+struct Scan {
+    digest: Option<u64>,
+    last: Option<usize>,
+    paragraphs: Vec<Paragraph>,
+}
 
-fn notes_of(
+fn scan(
     entries: &dyn Entries,
     head: &Head,
     format: &Format<'_>,
-) -> Result<(Records, Records), StoreError> {
-    let all = records_of(entries, head)?;
-    let notes = all
-        .iter()
-        .filter(|record| (format.read)(record).is_some())
-        .cloned()
-        .collect();
-    Ok((all, notes))
-}
-
-fn fold(notes: &[Vec<u8>]) -> Option<u64> {
-    notes.iter().fold(None, |before, record| {
-        Some(tags::asked::digest(before, record))
-    })
+    gather: bool,
+) -> Result<Scan, StoreError> {
+    let mut found = Scan {
+        digest: None,
+        last: None,
+        paragraphs: Vec::new(),
+    };
+    for (at, record) in records_of(entries, head)?.iter().enumerate() {
+        if let Some(paragraph) = (format.read)(record) {
+            found.digest = Some(tags::asked::digest(found.digest, record));
+            found.last = Some(at);
+            if gather {
+                found.paragraphs.push(paragraph);
+            }
+        }
+    }
+    Ok(found)
 }
 
 pub(crate) fn digest_of(
@@ -653,7 +656,7 @@ pub(crate) fn digest_of(
     head: &Head,
     format: &Format<'_>,
 ) -> Result<Option<u64>, StoreError> {
-    Ok(fold(&notes_of(entries, head, format)?.1))
+    Ok(scan(entries, head, format, false)?.digest)
 }
 
 fn tagging(
@@ -670,27 +673,30 @@ fn tagging(
     let passed = ports.asked.passed(parent.id)?;
     let list = &tags_rules.section.pick.value;
     let in_force = (tags_rules.id, rules.provider, tags_rules.model);
-    let held = |planned: tags::Planned| Ok((Some(planned), TagsState::Due, Vec::new()));
     if calls {
         let (added, notes) = match head {
             Some(head) if !opens => {
-                let (all, notes) = notes_of(ports.entries, head, rules.format)?;
+                let found = scan(ports.entries, head, rules.format, false)?;
                 let added = answered
                     .as_ref()
-                    .is_some_and(|held| added_after(held, head, &all, rules.format));
-                (added, fold(&notes))
+                    .is_some_and(|held| added_after(held, head, found.last));
+                (added, found.digest)
             }
             _ => (false, None),
         };
-        return held(tags::Planned {
-            answered,
-            passed,
-            added,
-            notes,
-            state: None,
-            asking: None,
-            sent: 0,
-        });
+        return Ok((
+            Some(tags::Planned {
+                answered,
+                passed,
+                added,
+                notes,
+                state: None,
+                asking: None,
+                sent: 0,
+            }),
+            TagsState::Due,
+            Vec::new(),
+        ));
     }
     let Some(head) = head.filter(|_| !opens) else {
         return none(TagsState::NoNote);
@@ -705,77 +711,60 @@ fn tagging(
     ) {
         return none(TagsState::Asked);
     }
-    let (all, notes) = notes_of(ports.entries, head, rules.format)?;
-    if notes.is_empty() {
+    let found = scan(ports.entries, head, rules.format, true)?;
+    let Some(digest) = found.digest else {
         return none(TagsState::NoNote);
-    }
-    let paragraphs: Vec<Paragraph> = notes
-        .iter()
-        .filter_map(|record| (rules.format.read)(record))
-        .collect();
+    };
+    let paragraphs = found.paragraphs;
     let added = answered
         .as_ref()
-        .is_none_or(|held| added_after(held, head, &all, rules.format));
+        .is_none_or(|held| added_after(held, head, found.last));
     let counter = Counter {
         tokens: rules.tokens,
         bound: rules.bound,
     };
-    let fit = tags::view::fitting(&paragraphs, tags_rules.section.notes.value, &counter);
-    let material = tags::view::material(fit, list, tags_rules.section.most.value);
-    let Some(digest) = fold(&notes) else {
-        return none(TagsState::NoNote);
-    };
-    let about = tags::asked::About {
+    let known = tags::Known {
+        id: parent.id,
         generation: parent.generation,
         records: parent.records,
-        notes: digest,
-    };
-    let asking = tags::asked::asking(
-        parent.id,
-        &about,
-        rules.provider,
-        tags_rules.model,
-        tags_rules.id,
-        &material,
-    );
-    let charges = ports.asked.charges(parent.id, asking)?;
-    let seen = tags::plan::Seen {
+        notes: &paragraphs,
+        digest,
         answered: answered.as_ref(),
         passed,
         added,
-        asking,
     };
-    match tags::plan::state(&seen, list, in_force, rules.redo) {
+    let made = tags::asking_of(&known, tags_rules, rules.provider, rules.redo, &counter);
+    let asking = made.seen.asking;
+    let state = made.state;
+    let charges = ports.asked.charges(parent.id, asking)?;
+    match state {
         tags::plan::State::Settled => none(TagsState::Asked),
         tags::plan::State::PassedOver => none(TagsState::PassedOver),
-        tags::plan::State::Due => Ok((
-            Some(tags::Planned {
-                answered,
-                passed,
-                added,
-                notes: Some(digest),
-                state: Some(tags::plan::State::Due),
-                asking: Some((asking, charges)),
-                sent: counter.count(&material),
-            }),
-            TagsState::Due,
-            paragraphs,
-        )),
+        tags::plan::State::Due => {
+            let sent = counter.count(&made.material);
+            Ok((
+                Some(tags::Planned {
+                    answered,
+                    passed,
+                    added,
+                    notes: Some(digest),
+                    state: Some(tags::plan::State::Due),
+                    asking: Some((asking, charges)),
+                    sent,
+                }),
+                TagsState::Due,
+                paragraphs,
+            ))
+        }
     }
 }
 
-fn added_after(
-    answered: &tags::asked::Answered,
-    head: &Head,
-    all: &[Vec<u8>],
-    format: &Format<'_>,
-) -> bool {
+fn added_after(answered: &tags::asked::Answered, head: &Head, last: Option<usize>) -> bool {
     if answered.notes.0 != head.generation {
         return true;
     }
     let at = usize::try_from(answered.notes.1).unwrap_or(usize::MAX);
-    all.get(at..)
-        .is_some_and(|tail| tail.iter().any(|record| (format.read)(record).is_some()))
+    last.is_some_and(|last| last >= at)
 }
 
 #[cfg(test)]

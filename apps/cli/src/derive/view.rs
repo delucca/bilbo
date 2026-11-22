@@ -65,6 +65,7 @@ pub fn human(totals: &Counts, seconds: u64, view: &View) -> String {
 
 pub const NO_NOTE: &str = "the answer holds no note bilbo can keep";
 pub const NO_TAG: &str = "the answer names no tag bilbo can keep";
+pub const NONE_TO_PICK: &str = "not due: none to pick from";
 pub const BOTH: &str = "the answer picks a tag and says none fits";
 
 pub fn sentence(what: What) -> &'static str {
@@ -224,15 +225,14 @@ pub struct TagsDry {
     pub lines: Vec<String>,
 }
 
-pub fn tags_state(state: Option<TagsState>, entry: Option<State>) -> String {
+pub fn tags_state(state: Option<TagsState>, entry: State) -> String {
     match (state, entry) {
         (Some(TagsState::Due), _) => "due".to_owned(),
         (Some(TagsState::Asked), _) => "asked".to_owned(),
         (Some(TagsState::PassedOver), _) => "passed over".to_owned(),
         (Some(TagsState::NotComplete), _) => "not due: notes not complete".to_owned(),
         (Some(TagsState::NoNote), _) => "not due: no note".to_owned(),
-        (None, Some(state)) => format!("not due: {}", state_text(state)),
-        (None, None) => "not due".to_owned(),
+        (None, state) => format!("not due: {}", state_text(state)),
     }
 }
 
@@ -660,21 +660,17 @@ mod tests {
         use bilbo_derive::plan::TagsState;
         let entry = Id::from_bytes([1; 16]);
         for (state, entry_state, words) in [
-            (Some(TagsState::Due), None, "due"),
-            (Some(TagsState::Asked), None, "asked"),
-            (Some(TagsState::PassedOver), None, "passed over"),
+            (Some(TagsState::Due), State::Due, "due"),
+            (Some(TagsState::Asked), State::Covered, "asked"),
+            (Some(TagsState::PassedOver), State::Covered, "passed over"),
             (
                 Some(TagsState::NotComplete),
-                None,
+                State::Covered,
                 "not due: notes not complete",
             ),
-            (Some(TagsState::NoNote), None, "not due: no note"),
-            (
-                None,
-                Some(State::LeftOut),
-                "not due: left out: derive.not_in",
-            ),
-            (None, Some(State::StillGrowing), "not due: still growing"),
+            (Some(TagsState::NoNote), State::Covered, "not due: no note"),
+            (None, State::LeftOut, "not due: left out: derive.not_in"),
+            (None, State::StillGrowing, "not due: still growing"),
         ] {
             assert_eq!(tags_state(state, entry_state), words);
         }
@@ -685,6 +681,10 @@ mod tests {
         assert_eq!(
             tags_ref_line(entry, "asked", &[]),
             format!("tags\t{entry}\tasked\t-")
+        );
+        assert_eq!(
+            tags_ref_line(entry, super::NONE_TO_PICK, &["garden".to_owned()]),
+            format!("tags\t{entry}\tnot due: none to pick from\tgarden")
         );
     }
 }

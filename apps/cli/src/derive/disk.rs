@@ -130,7 +130,7 @@ impl Folder {
         match lock.try_lock() {
             Ok(()) => Ok(Some(Held {
                 _lock: lock,
-                derive,
+                derive: Rc::new(derive),
                 derive_path,
                 spool,
                 spool_path,
@@ -141,14 +141,6 @@ impl Folder {
         }
     }
 
-    pub fn tagged(&self) -> io::Result<Tagged> {
-        Ok(Tagged::new(
-            existing(&self.folder, &self.state, FOLDER, "read")?,
-            &self.sync,
-            true,
-        ))
-    }
-
     pub fn charges(&self) -> io::Result<Failed> {
         Failed::read(
             existing(&self.folder, &self.state, FOLDER, "read")?,
@@ -157,9 +149,14 @@ impl Folder {
     }
 }
 
+pub fn reader<'a>(state: &'a File, path: &Path) -> Tagged<'a> {
+    let sync: Sync = Rc::new(flush);
+    Tagged::new(Place::State(state, path.to_owned()), &sync)
+}
+
 pub struct Held {
     _lock: File,
-    derive: File,
+    derive: Rc<File>,
     derive_path: PathBuf,
     spool: File,
     spool_path: PathBuf,
@@ -202,12 +199,11 @@ impl Held {
         )
     }
 
-    pub fn tagged(&self) -> io::Result<Tagged> {
-        Ok(Tagged::new(
-            Some((self.derive.try_clone()?, self.derive_path.clone())),
+    pub fn tagged(&self) -> Tagged<'static> {
+        Tagged::new(
+            Place::Held(Rc::clone(&self.derive), self.derive_path.clone()),
             &self.sync,
-            false,
-        ))
+        )
     }
 
     pub fn log(&self) -> io::Result<Calls> {
@@ -454,25 +450,44 @@ fn reading(
     }
 }
 
-pub struct Tagged {
-    folder: Option<(File, PathBuf)>,
+enum Place<'a> {
+    Held(Rc<File>, PathBuf),
+    State(&'a File, PathBuf),
+}
+
+type Taken = Option<(Rc<File>, PathBuf)>;
+
+pub struct Tagged<'a> {
+    place: Place<'a>,
+    folder: RefCell<Option<Taken>>,
     lines: RefCell<Option<Vec<Line>>>,
-    again: bool,
     sync: Sync,
 }
 
-impl Tagged {
-    fn new(folder: Option<(File, PathBuf)>, sync: &Sync, again: bool) -> Tagged {
+impl<'a> Tagged<'a> {
+    fn new(place: Place<'a>, sync: &Sync) -> Tagged<'a> {
         Tagged {
-            folder,
+            place,
+            folder: RefCell::new(None),
             lines: RefCell::new(None),
-            again,
             sync: Rc::clone(sync),
         }
     }
 
+    fn derive(&self) -> io::Result<Taken> {
+        let mut taken = self.folder.borrow_mut();
+        if taken.is_none() {
+            *taken = Some(match &self.place {
+                Place::Held(derive, path) => Some((Rc::clone(derive), path.clone())),
+                Place::State(state, path) => existing(state, path, FOLDER, "read")?
+                    .map(|(derive, derive_path)| (Rc::new(derive), derive_path)),
+            });
+        }
+        Ok(taken.clone().flatten())
+    }
+
     fn open(&self, derive: &File, path: &Path) -> io::Result<Vec<u8>> {
-        reading(self.again, path, || {
+        reading(matches!(self.place, Place::State(..)), path, || {
             let mut bytes = Vec::new();
             private::open(derive, TAGGED, path, How::Read)
                 .and_then(|mut file| file.read_to_end(&mut bytes))
@@ -484,10 +499,13 @@ impl Tagged {
         let mut lines = self.lines.borrow_mut();
         if lines.is_none() {
             let mut found = Vec::new();
-            if let Some((derive, derive_path)) = &self.folder {
-                let bytes = self.open(derive, &derive_path.join(TAGGED))?;
-                for line in bytes.split(|byte| *byte == b'\n') {
-                    if let Some(line) = std::str::from_utf8(line).ok().and_then(asked_lines::parse)
+            if let Some((derive, derive_path)) = self.derive()? {
+                let bytes = self.open(&derive, &derive_path.join(TAGGED))?;
+                for line in bytes.split_inclusive(|byte| *byte == b'\n') {
+                    if let Some(line) = line
+                        .strip_suffix(b"\n")
+                        .and_then(|line| std::str::from_utf8(line).ok())
+                        .and_then(asked_lines::parse)
                     {
                         found.push(line);
                     }
@@ -501,7 +519,7 @@ impl Tagged {
     }
 
     fn write(&self, lines: &[Line]) -> io::Result<()> {
-        let Some((derive, derive_path)) = &self.folder else {
+        let Some((derive, derive_path)) = self.derive()? else {
             return Err(io::Error::other("no folder to write what was asked in"));
         };
         let mut text = String::new();
@@ -510,8 +528,8 @@ impl Tagged {
             text.push('\n');
         }
         replace(
-            derive,
-            derive_path,
+            &derive,
+            &derive_path,
             (TAGGED_TEMPORARY, TAGGED),
             &text,
             &self.sync,
@@ -532,7 +550,7 @@ fn of(line: &Line) -> Id {
     }
 }
 
-impl Asked for Tagged {
+impl Asked for Tagged<'_> {
     fn answered(&self, entry: Id) -> io::Result<Option<Answered>> {
         Ok(self.held()?.iter().find_map(|line| match line {
             Line::Answered(answered) if answered.entry == entry => Some(answered.clone()),
@@ -566,18 +584,8 @@ impl Asked for Tagged {
     }
 
     fn charge(&mut self, entry: Id, asking: u64) -> io::Result<()> {
+        let before = self.charges(entry, asking)?;
         self.change(|lines| {
-            let before = lines
-                .iter()
-                .find_map(|line| match line {
-                    Line::Charged {
-                        entry: held,
-                        asking: charged,
-                        charges,
-                    } if *held == entry && *charged == asking => Some(*charges),
-                    _ => None,
-                })
-                .unwrap_or(0);
             lines.retain(
                 |line| !matches!(line, Line::Charged { entry: held, .. } if *held == entry),
             );
@@ -1004,6 +1012,12 @@ mod tests {
         );
     }
 
+    fn asked_line(answered: &bilbo_derive::tags::asked::Answered) -> String {
+        bilbo_derive::tags::asked::line(&bilbo_derive::tags::asked::Line::Answered(
+            answered.clone(),
+        ))
+    }
+
     fn answered(entry: Id, names: &[&str]) -> bilbo_derive::tags::asked::Answered {
         bilbo_derive::tags::asked::Answered {
             entry,
@@ -1032,7 +1046,7 @@ mod tests {
             Id::from_bytes([2; 16]),
             Id::from_bytes([3; 16]),
         );
-        let mut tagged = held.tagged().expect("the tags' file");
+        let mut tagged = held.tagged();
         tagged.answer(&answered(one, &["a"]), 5).expect("answered");
         tagged.pass(two, 6).expect("passed");
         tagged.charge(three, 7).expect("charged");
@@ -1043,7 +1057,7 @@ mod tests {
                 "answered\t{one}\t1\t4\ti\tp\tm\ta\npassed\t{two}\t0000000000000006\ncharged\t{three}\t0000000000000007\t1\n"
             )
         );
-        let again = held.tagged().expect("the tags' file");
+        let again = held.tagged();
         assert_eq!(
             again.answered(one).expect("read"),
             Some(answered(one, &["a"]))
@@ -1062,7 +1076,7 @@ mod tests {
             .expect("a lock")
             .expect("held");
         let entry = Id::from_bytes([1; 16]);
-        let mut tagged = held.tagged().expect("the tags' file");
+        let mut tagged = held.tagged();
         tagged.charge(entry, 5).expect("charged");
         seen.borrow_mut().clear();
         if pass {
@@ -1074,8 +1088,12 @@ mod tests {
         }
         assert_eq!(seen.borrow().len(), 1);
         let text = fs::read_to_string(scratch.0.join("derive/tagged")).expect("the file");
-        assert!(!text.contains("charged"), "{text}");
-        assert_eq!(text.starts_with("passed"), pass, "{text}");
+        let expected = if pass {
+            format!("passed\t{entry}\t0000000000000005\n")
+        } else {
+            format!("{}\n", asked_line(&answered(entry, &["a"])))
+        };
+        assert_eq!(text, expected);
     }
 
     #[test]
@@ -1115,6 +1133,54 @@ mod tests {
     }
 
     #[test]
+    fn a_last_line_with_no_line_feed_is_no_record_and_the_next_write_keeps_it_out() {
+        use bilbo_derive::tags::asked::Asked;
+        let scratch = Scratch::new("tagged-cut");
+        let (sync, _) = recording();
+        let held = folder(&scratch, sync)
+            .lock()
+            .expect("a lock")
+            .expect("held");
+        let (one, two) = (Id::from_bytes([1; 16]), Id::from_bytes([2; 16]));
+        let whole = asked_line(&answered(one, &["rust"]));
+        let cut = asked_line(&answered(two, &["garden-tools"]));
+        let cut = cut.replace("garden-tools", "garden");
+        fs::write(scratch.0.join("derive/tagged"), format!("{whole}\n{cut}")).expect("a file");
+        fs::set_permissions(
+            scratch.0.join("derive/tagged"),
+            fs::Permissions::from_mode(0o600),
+        )
+        .expect("a mode");
+        let mut tagged = held.tagged();
+        assert_eq!(tagged.answered(two).expect("read"), None);
+        assert_eq!(
+            tagged.answered(one).expect("read"),
+            Some(answered(one, &["rust"]))
+        );
+        tagged.pass(one, 5).expect("passed");
+        let text = fs::read_to_string(scratch.0.join("derive/tagged")).expect("the file");
+        assert!(text.ends_with('\n'), "{text}");
+        assert!(!text.contains(&two.to_string()), "{text}");
+    }
+
+    #[test]
+    fn a_tags_file_takes_no_folder_before_its_first_call() {
+        use bilbo_derive::tags::asked::Asked;
+        let scratch = Scratch::new("tagged-late");
+        let handle = File::open(&scratch.0).expect("open");
+        let tagged = super::reader(&handle, &scratch.0);
+        let entry = Id::from_bytes([1; 16]);
+        fs::create_dir_all(scratch.0.join("derive")).expect("a folder");
+        let file = scratch.0.join("derive/tagged");
+        fs::write(&file, format!("{}\n", asked_line(&answered(entry, &["a"])))).expect("a file");
+        fs::set_permissions(&file, fs::Permissions::from_mode(0o600)).expect("a mode");
+        assert_eq!(
+            tagged.answered(entry).expect("read"),
+            Some(answered(entry, &["a"]))
+        );
+    }
+
+    #[test]
     fn a_line_that_does_not_parse_is_dropped_and_the_entry_reads_as_never_answered() {
         use bilbo_derive::tags::asked::Asked;
         let scratch = Scratch::new("tagged-bad");
@@ -1136,7 +1202,7 @@ mod tests {
             fs::Permissions::from_mode(0o600),
         )
         .expect("a mode");
-        let mut tagged = held.tagged().expect("the tags' file");
+        let mut tagged = held.tagged();
         assert_eq!(tagged.passed(entry).expect("read"), Some(6));
         assert_eq!(tagged.passed(other).expect("read"), None);
         assert_eq!(tagged.answered(other).expect("read"), None);
@@ -1158,7 +1224,7 @@ mod tests {
             .expect("a lock")
             .expect("held");
         let entry = Id::from_bytes([1; 16]);
-        let mut tagged = held.tagged().expect("the tags' file");
+        let mut tagged = held.tagged();
         for _ in 0..12 {
             tagged.charge(entry, 5).expect("charged");
         }

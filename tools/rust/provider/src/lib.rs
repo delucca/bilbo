@@ -16,9 +16,39 @@ pub enum Reply {
         pause: Option<Duration>,
     },
     Stall,
+    Held {
+        body: Vec<u8>,
+        release: Release,
+    },
+}
+
+#[derive(Debug, Clone)]
+pub struct Release(Arc<AtomicBool>);
+
+impl PartialEq for Release {
+    fn eq(&self, other: &Release) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+impl Eq for Release {}
+
+impl Release {
+    pub fn release(&self) {
+        self.0.store(true, Ordering::SeqCst);
+    }
 }
 
 impl Reply {
+    pub fn held(body: &str) -> (Reply, Release) {
+        let release = Release(Arc::new(AtomicBool::new(false)));
+        let reply = Reply::Held {
+            body: body.as_bytes().to_vec(),
+            release: release.clone(),
+        };
+        (reply, release)
+    }
+
     pub fn answer(status: u16, body: &str) -> Reply {
         Reply::Answer {
             status,
@@ -198,6 +228,16 @@ fn answer(mut stream: TcpStream, reply: &Reply, stop: &AtomicBool) -> io::Result
             }
             Ok(())
         }
+        Reply::Held { body, release } => {
+            while !release.0.load(Ordering::SeqCst) {
+                if stop.load(Ordering::SeqCst) {
+                    return Ok(());
+                }
+                thread::sleep(PACE);
+            }
+            put(&mut stream, &head(200, &[], body.len()), stop)?;
+            put(&mut stream, body, stop)
+        }
         Reply::Answer {
             status,
             headers,
@@ -325,6 +365,27 @@ mod tests {
         );
         assert!(third.ends_with("\r\n\r\nno reply scripted"), "{third}");
         assert_eq!(provider.requests().len(), 3);
+    }
+
+    #[test]
+    fn a_held_reply_is_sent_when_the_test_releases_it_and_not_before() {
+        let (reply, release) = Reply::held("late");
+        let provider = Provider::start(vec![reply]);
+        let mut stream = connect(&provider);
+        stream
+            .write_all(b"GET / HTTP/1.1\r\nhost: h\r\n\r\n")
+            .unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_millis(300)))
+            .unwrap();
+        let mut byte = [0u8; 1];
+        assert!(stream.read(&mut byte).is_err());
+        release.release();
+        stream.set_read_timeout(None).unwrap();
+        let mut text = String::new();
+        stream.read_to_string(&mut text).unwrap();
+        assert!(text.starts_with("HTTP/1.1 200 OK\r\n"), "{text}");
+        assert!(text.ends_with("\r\n\r\nlate"), "{text}");
     }
 
     #[test]

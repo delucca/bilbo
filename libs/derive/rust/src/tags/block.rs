@@ -4,7 +4,7 @@ use bilbo_store::entries::Generation;
 use bilbo_store::id::Id;
 use bilbo_store::labels::Tag;
 
-use super::asked::About;
+use super::asked::{About, number_of};
 
 const MAGIC: &str = "g1";
 
@@ -116,10 +116,7 @@ pub fn read(bytes: &[u8]) -> Result<Block, String> {
         instruction: (*instruction).to_owned(),
         provider: (*provider).to_owned(),
         model: (*model).to_owned(),
-        asking: (asking.len() == 16 && asking.bytes().all(|byte| byte.is_ascii_hexdigit()))
-            .then(|| u64::from_str_radix(asking, 16).ok())
-            .flatten()
-            .ok_or("its asking is no 16 hex digits")?,
+        asking: number_of(asking).ok_or("its asking is no 16 hex digits")?,
         passed: flag(passed)?,
     })
 }
