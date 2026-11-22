@@ -13,10 +13,10 @@ use serde_json::Value as Json;
 
 use super::{MODEL, NAME};
 use crate::child::{self, Bounds, End, Environment};
-use crate::table::{show_list, show_texts};
-use crate::writer::{
-    Cause, Limits, Outcome, Prompt, Usage, Variables, Way, What, Writer, answered_model, identifier,
+use crate::model::{
+    Cause, Limits, Model, Outcome, Prompt, Usage, Variables, Way, What, answered_model, identifier,
 };
+use crate::table::{show_list, show_texts};
 
 const RELEASE: &str = "0.169.0";
 const WITHOUT_TOOLS: &str = "derive.openai.tool.arguments must keep the model without tools: ";
@@ -889,7 +889,7 @@ impl Codex {
     }
 }
 
-impl Writer for Codex {
+impl Model for Codex {
     fn prepare(&mut self) -> Result<(), String> {
         if self.section.model.value.is_empty() {
             return Err("derive.openai.model is not set".to_owned());
@@ -932,7 +932,7 @@ impl Writer for Codex {
         Ok(())
     }
 
-    fn write(&mut self, prompt: &Prompt, limits: &Limits) -> Outcome {
+    fn call(&mut self, prompt: &Prompt, limits: &Limits) -> Outcome {
         self.why = None;
         let Some(prepared) = self.prepared.clone() else {
             return Outcome::Stopped(Cause::new(What::NotStarted));
@@ -1019,7 +1019,7 @@ impl Writer for Codex {
         }
     }
 
-    fn model(&self) -> &str {
+    fn id(&self) -> &str {
         &self.section.model.value
     }
 
@@ -1350,7 +1350,7 @@ mod tests {
         ABOUT, Codex, FEATURES, KEPT_OUT, SETTINGS, Section, catalog, invocation, not_run,
         own_home, reached, read, section, shown, without_tools,
     };
-    use crate::writer::{Cause, Outcome, Usage, Variables, What, Writer};
+    use crate::model::{Cause, Model, Outcome, Usage, Variables, What};
 
     const MODELS: &str = include_str!("../../fixtures/openai/tool/models.json");
     const ANSWER: &str = include_str!("../../fixtures/openai/tool/answer.jsonl");

@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use bilbo_llm::anthropic::tool::{self, Claude};
-use bilbo_llm::writer::{Cause, Limits, Outcome, Prompt, Usage, Variables, What, Writer};
+use bilbo_llm::model::{Cause, Limits, Model, Outcome, Prompt, Usage, Variables, What};
 use bilbo_settings::file::File;
 use bilbo_settings::key::Source;
 
@@ -161,7 +161,7 @@ fn the_tool_gets_the_default_arguments_and_environment() {
     let mut writer = tool(&text, &rig.work, Some(&home));
     writer.prepare().expect("prepare");
     assert!(matches!(
-        writer.write(&prompt(), &limits()),
+        writer.call(&prompt(), &limits()),
         Outcome::Answer { .. }
     ));
     let read = |name: &str| fs::read_to_string(rig.out.join(name)).expect(name);
@@ -255,7 +255,7 @@ fn printing_why(output: &str, exit: i32) -> (Outcome, Option<String>) {
     );
     let mut writer = tool(&text, &rig.work, None);
     writer.prepare().expect("prepare");
-    let outcome = writer.write(&prompt(), &limits());
+    let outcome = writer.call(&prompt(), &limits());
     (outcome, writer.why().map(str::to_owned))
 }
 
@@ -285,7 +285,7 @@ fn the_tool_is_started_as_the_settings_say() {
     );
     writer.prepare().expect("prepare");
     assert!(matches!(
-        writer.write(&prompt(), &limits()),
+        writer.call(&prompt(), &limits()),
         Outcome::Answer { .. }
     ));
     let read = |name: &str| fs::read_to_string(rig.out.join(name)).expect(name);
@@ -358,7 +358,7 @@ fn arguments_that_could_give_the_model_a_tool_start_no_child() {
         let mut writer = tool(&config, &rig.work, None);
         assert_eq!(writer.prepare().unwrap_err(), text);
         assert_eq!(
-            writer.write(&prompt(), &limits()),
+            writer.call(&prompt(), &limits()),
             Outcome::Stopped(Cause::new(What::NotStarted))
         );
         assert!(!rig.out.join("MADE").exists());
@@ -379,7 +379,7 @@ fn a_project_file_above_the_work_folder_starts_no_child() {
     );
     assert_eq!(writer.prepare().unwrap_err(), text);
     assert_eq!(
-        writer.write(&prompt(), &limits()),
+        writer.call(&prompt(), &limits()),
         Outcome::Stopped(Cause::new(What::NotStarted))
     );
     assert!(!rig.out.join("MADE").exists());
@@ -405,7 +405,7 @@ fn a_project_file_above_a_work_folder_that_already_exists_starts_no_child() {
     );
     assert_eq!(writer.prepare().unwrap_err(), text);
     assert_eq!(
-        writer.write(&prompt(), &limits()),
+        writer.call(&prompt(), &limits()),
         Outcome::Stopped(Cause::new(What::NotStarted))
     );
     assert!(!rig.out.join("MADE").exists());
@@ -424,7 +424,7 @@ fn the_users_own_claude_folder_in_home_is_no_project() {
     writer
         .prepare()
         .expect("the user's own folder is no project");
-    writer.write(&prompt(), &limits());
+    writer.call(&prompt(), &limits());
     assert!(made.exists());
 
     fs::write(home.join(MARKER), "x").expect("file");
@@ -624,7 +624,7 @@ fn a_tool_that_does_not_end_in_time_is_busy_and_is_stopped() {
     );
     let mut writer = tool(&text, &rig.work, None);
     writer.prepare().expect("prepare");
-    let outcome = writer.write(
+    let outcome = writer.call(
         &prompt(),
         &Limits {
             timeout: Duration::from_secs(1),
@@ -658,7 +658,7 @@ fn output_over_the_limit_is_a_failed_call() {
     let mut writer = tool(&text, &rig.work, None);
     writer.prepare().expect("prepare");
     assert_eq!(
-        writer.write(
+        writer.call(
             &prompt(),
             &Limits {
                 response: 100,
@@ -685,7 +685,7 @@ fn a_program_that_is_not_there_stops_the_run() {
     let mut writer = tool(&text, &rig.work, None);
     writer.prepare().expect("prepare starts nothing");
     assert_eq!(
-        writer.write(&prompt(), &limits()),
+        writer.call(&prompt(), &limits()),
         Outcome::Stopped(Cause::new(What::NotStarted))
     );
 }
@@ -711,10 +711,10 @@ fn the_work_folder_is_made_private_and_emptied_before_each_run() {
         fs::metadata(&rig.work).expect("work").permissions().mode() & 0o777,
         0o700
     );
-    writer.write(&prompt(), &limits());
+    writer.call(&prompt(), &limits());
     assert!(rig.work.join("left").exists());
     fs::write(rig.work.join("extra"), "x").expect("extra");
-    writer.write(&prompt(), &limits());
+    writer.call(&prompt(), &limits());
     assert_eq!(fs::read_to_string(rig.out.join("ls")).expect("ls"), "");
 }
 
@@ -764,7 +764,7 @@ fn a_placeholder_that_makes_a_flag_starts_no_child() {
         "derive.anthropic.tool.arguments must keep the model without tools: it must not hold \"--{model}\""
     );
     assert_eq!(
-        writer.write(&prompt(), &limits()),
+        writer.call(&prompt(), &limits()),
         Outcome::Stopped(Cause::new(What::NotStarted))
     );
     assert!(!rig.out.join("MADE").exists());
@@ -797,13 +797,13 @@ fn a_project_file_above_the_work_folders_real_path_starts_no_child() {
                 )
             );
             assert_eq!(
-                writer.write(&prompt(), &limits()),
+                writer.call(&prompt(), &limits()),
                 Outcome::Stopped(Cause::new(What::NotStarted))
             );
             assert!(!made.exists());
         } else {
             writer.prepare().expect("nothing above");
-            writer.write(&prompt(), &limits());
+            writer.call(&prompt(), &limits());
             assert!(made.exists());
         }
     }
@@ -839,7 +839,7 @@ fn the_claude_folder_exception_is_for_the_home_the_child_gets() {
     );
     let mut writer = tool(&text, &work, Some(&home));
     writer.prepare().expect("the child's own home");
-    writer.write(&prompt(), &limits());
+    writer.call(&prompt(), &limits());
     assert!(made.exists());
 }
 
@@ -860,7 +860,7 @@ fn a_skills_folder_above_the_work_folder_starts_no_child() {
             )
         );
         assert_eq!(
-            writer.write(&prompt(), &limits()),
+            writer.call(&prompt(), &limits()),
             Outcome::Stopped(Cause::new(What::NotStarted))
         );
         assert!(!rig.out.join("MADE").exists());
@@ -985,7 +985,7 @@ fn a_tool_killed_after_it_printed_is_a_failed_call() {
     let mut writer = tool(&text, &rig.work, None);
     writer.prepare().expect("prepare");
     assert_eq!(
-        writer.write(&prompt(), &limits()),
+        writer.call(&prompt(), &limits()),
         Outcome::Failed {
             cause: cause(What::ToolError, None, Some("success"), None),
             usage: usage(108, 40)
@@ -1010,7 +1010,7 @@ fn why_the_tool_was_not_started_is_kept_for_the_run() {
     let mut writer = tool(&text, &rig.work, None);
     writer.prepare().expect("prepare");
     assert!(matches!(
-        writer.write(&prompt(), &limits()),
+        writer.call(&prompt(), &limits()),
         Outcome::Answer { .. }
     ));
     assert_eq!(writer.why(), None);
@@ -1021,7 +1021,7 @@ fn why_the_tool_was_not_started_is_kept_for_the_run() {
     fs::create_dir_all(rig.work.join("inner")).expect("inner");
     fs::write(rig.work.join("inner").join("file"), "x").expect("file");
     assert_eq!(
-        writer.write(&prompt(), &limits()),
+        writer.call(&prompt(), &limits()),
         Outcome::Stopped(Cause::new(What::NotStarted))
     );
     assert_eq!(
@@ -1038,7 +1038,7 @@ fn why_the_tool_was_not_started_is_kept_for_the_run() {
 
     fs::write(rig.scratch.path().join(MARKER), "x").expect("marker");
     assert_eq!(
-        writer.write(&prompt(), &limits()),
+        writer.call(&prompt(), &limits()),
         Outcome::Stopped(Cause::new(What::NotStarted))
     );
     assert_eq!(
@@ -1055,7 +1055,7 @@ fn why_the_tool_was_not_started_is_kept_for_the_run() {
 
     fs::remove_file(&script).expect("remove the program");
     assert_eq!(
-        writer.write(&prompt(), &limits()),
+        writer.call(&prompt(), &limits()),
         Outcome::Stopped(Cause::new(What::NotStarted))
     );
     assert_eq!(

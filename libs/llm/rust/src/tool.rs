@@ -1,7 +1,7 @@
 use bilbo_settings::error::Error;
 use bilbo_settings::key::Value;
 
-use crate::writer::Variables;
+use crate::model::Variables;
 
 pub const PROGRAM_ALLOWED: &str = "a program's name or path, not empty";
 pub const EFFORT_ALLOWED: &str = "a word of lower-case letters";

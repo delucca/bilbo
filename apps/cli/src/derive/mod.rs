@@ -20,7 +20,7 @@ use bilbo_derive::view::{Counter, Format};
 use bilbo_entries::read::refs::{Ref, Target};
 use bilbo_entries::read::{self, Error as ReadError};
 use bilbo_entries::reader::Reader;
-use bilbo_llm::writer::Writer;
+use bilbo_llm::model::Model;
 use bilbo_search::chunk::{MAX_ENCODE_BYTES, Size};
 use bilbo_search::lookup::Lookup;
 use bilbo_search::position::Manifest;
@@ -106,7 +106,7 @@ Examples:
 Docs: https://github.com/delucca/bilbo/wiki/Commands#derive";
 
 pub struct Built {
-    pub writer: Box<dyn Writer>,
+    pub writer: Box<dyn Model>,
     pub api: bool,
 }
 
@@ -316,7 +316,7 @@ fn go(
     let mut spool = held.blocks().map_err(|error| refused(&error))?;
     replay(env, settings, hand, &mut spool, said, &mut failed)?;
     let tokenizer = (hand.tokenizer)()?;
-    let model = built.writer.model().to_owned();
+    let model = built.writer.id().to_owned();
     let mut tries = held.failed().map_err(|error| refused(&error))?;
     let looked = look(
         env,
@@ -685,7 +685,7 @@ fn dry(
         off.push("derive.in is empty".to_owned());
     }
     let model = built
-        .map(|built| built.writer.model().to_owned())
+        .map(|built| built.writer.id().to_owned())
         .unwrap_or_default();
     let tokenizer = (hand.tokenizer)()?;
     let mut diagnostics = Vec::new();
@@ -820,6 +820,11 @@ fn event_line(event: &Event, api: bool, charges: &[(Extent, u8)]) -> Message {
             view::place(extent),
             view::what(cause, api)
         )),
+        Event::NoNote { extent } => Message::warning(&format!(
+            "call failed for {}: {}",
+            view::place(extent),
+            view::NO_NOTE
+        )),
         Event::Passed { extent } => {
             let held = charges
                 .iter()
@@ -865,9 +870,32 @@ fn ended_line(ended: &Ended, api: bool, section: &Section, why: Option<&str>) ->
 mod tests {
     use std::io;
 
-    use super::{Said, finish};
+    use bilbo_derive::run::Event;
+    use bilbo_derive::tries::Extent;
+    use bilbo_store::entries::Generation;
+    use bilbo_store::id::Id;
+
+    use super::{Said, event_line, finish};
     use crate::console::message::Message;
     use crate::console::outcome::Failure;
+
+    #[test]
+    fn an_answer_with_no_note_is_said_as_a_failed_call_with_its_sentence() {
+        let extent = Extent {
+            parent: Id::from_bytes([4; 16]),
+            generation: Generation(2),
+            first: 1,
+            last: 23,
+        };
+        let line = event_line(&Event::NoNote { extent }, true, &[]);
+        assert_eq!(
+            line.plain_lines(),
+            [format!(
+                "bilbo: call failed for {} #r1-23: the answer holds no note bilbo can keep",
+                extent.parent
+            )]
+        );
+    }
 
     #[test]
     fn what_was_said_before_an_error_of_the_listing_is_printed() {

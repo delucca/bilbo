@@ -4,7 +4,7 @@ pub mod tool;
 use bilbo_settings::error::Error;
 use bilbo_settings::key::{About, Default, Key, Resolved, Shown, Source, quote};
 
-use crate::writer::{Host, MODEL_ALLOWED, Way, Writer};
+use crate::model::{Host, MODEL_ALLOWED, Model, Way};
 
 pub const NAME: &str = "openai";
 pub const SUMMARY: &str = "OpenAI's models: via api, with a key; via tool, the tool codex";
@@ -91,7 +91,7 @@ impl Section {
 }
 
 #[must_use]
-pub fn writer(section: Section, host: Host) -> Box<dyn Writer> {
+pub fn model(section: Section, host: Host) -> Box<dyn Model> {
     match section.via.value {
         Way::Api => Box::new(api::OpenAi::new(
             section.api,
@@ -122,8 +122,8 @@ mod tests {
     use bilbo_settings::file::File;
     use bilbo_settings::key::{Origin, Source};
 
-    use super::{ABOUT, Section, VIA, section, shown, writer};
-    use crate::writer::{Host, Way};
+    use super::{ABOUT, Section, VIA, model, section, shown};
+    use crate::model::{Host, Way};
 
     const NAMES: [&str; 14] = [
         "derive.openai.model",
@@ -169,7 +169,7 @@ mod tests {
 
     #[test]
     fn the_writer_is_the_api_way() {
-        let built = writer(resolve("derive.openai.model = \"m\"\n").unwrap(), host());
+        let built = model(resolve("derive.openai.model = \"m\"\n").unwrap(), host());
         assert_eq!(
             built.describe(),
             [
@@ -177,12 +177,12 @@ mod tests {
                 "key: the variable OPENAI_API_KEY, which is not set",
             ]
         );
-        assert_eq!(built.model(), "m");
+        assert_eq!(built.id(), "m");
     }
 
     #[test]
     fn via_tool_builds_the_tool_way() {
-        let built = writer(
+        let built = model(
             resolve("derive.openai.model = \"m\"\nderive.openai.via = \"tool\"\n").unwrap(),
             host(),
         );
@@ -192,7 +192,7 @@ mod tests {
             lines[0],
             "provider: openai, via tool, model m, effort medium, program codex"
         );
-        assert_eq!(built.model(), "m");
+        assert_eq!(built.id(), "m");
     }
 
     #[test]

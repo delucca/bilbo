@@ -13,7 +13,7 @@ use crate::record::{self, Run, next_same};
 use crate::spool::{self, Block, Spool, bare};
 use crate::tries::{Extent, Tries};
 use crate::view::{self, Counter, Format, Paragraph};
-use bilbo_llm::writer::{Cause, Limits, Outcome, Prompt, Usage, What, Whose, Writer};
+use bilbo_llm::model::{Cause, Limits, Model, Outcome, Prompt, Usage, What, Whose};
 
 pub trait Clock {
     fn now(&self) -> SystemTime;
@@ -54,6 +54,9 @@ pub enum Event {
         extent: Extent,
         cause: Cause,
     },
+    NoNote {
+        extent: Extent,
+    },
     Passed {
         extent: Extent,
     },
@@ -67,7 +70,7 @@ pub struct Report {
 }
 
 pub struct Sinks<'a> {
-    pub writer: &'a mut dyn Writer,
+    pub writer: &'a mut dyn Model,
     pub spool: &'a mut dyn Spool,
     pub tries: &'a mut dyn Tries,
     pub log: &'a mut dyn Log,
@@ -123,7 +126,7 @@ struct Line {
 }
 
 struct Machine<'a> {
-    writer: &'a mut dyn Writer,
+    writer: &'a mut dyn Model,
     spool: &'a mut dyn Spool,
     tries: &'a mut dyn Tries,
     log: &'a mut dyn Log,
@@ -323,7 +326,7 @@ impl Machine<'_> {
         let model = if made.passed {
             String::new()
         } else {
-            self.writer.model().to_owned()
+            self.writer.id().to_owned()
         };
         let provider = section.provider.value.clone();
         Run {
@@ -422,7 +425,7 @@ impl Machine<'_> {
             asked: if line.verdict == Verdict::Passed {
                 String::new()
             } else {
-                self.writer.model().to_owned()
+                self.writer.id().to_owned()
             },
             answered: line.answered,
             attempt: line.attempt,
@@ -486,7 +489,7 @@ impl Machine<'_> {
             }
             let attempt = Some(retries + 1);
             let started = self.clock.now();
-            let outcome = self.writer.write(&prompt, &limits);
+            let outcome = self.writer.call(&prompt, &limits);
             let millis = self.clock.now().duration_since(started).map_or(0, |taken| {
                 u64::try_from(taken.as_millis()).unwrap_or(u64::MAX)
             });
@@ -649,11 +652,7 @@ impl Machine<'_> {
 
     fn fails(&mut self, planned: &Planned, cause: &Cause) -> Result<Step, Error> {
         match cause.what.whose() {
-            Whose::Window => {
-                self.tries.charge(&planned.extent)?;
-                self.answered()?;
-                Ok(Step::EndEntry)
-            }
+            Whose::Call => self.ends_charged(planned),
             Whose::Provider => Ok(Step::Stop(Ended::Stopped(cause.clone()))),
             Whose::Either => {
                 self.waiting.push(planned.extent);
@@ -665,6 +664,12 @@ impl Machine<'_> {
                 })
             }
         }
+    }
+
+    fn ends_charged(&mut self, planned: &Planned) -> Result<Step, Error> {
+        self.tries.charge(&planned.extent)?;
+        self.answered()?;
+        Ok(Step::EndEntry)
     }
 
     fn answer(
@@ -694,9 +699,8 @@ impl Machine<'_> {
             self.counts.dropped += checked.range + checked.names;
             if checked.kept.is_empty() {
                 self.counts.failed += 1;
-                self.events.push(Event::Failed {
+                self.events.push(Event::NoNote {
                     extent: planned.extent,
-                    cause: Cause::new(What::NoNote),
                 });
                 self.log(
                     entry,
@@ -712,13 +716,13 @@ impl Machine<'_> {
                             checked.range,
                             checked.names,
                         )),
-                        cause: Some(Cause::new(What::NoNote)),
-                        reason: None,
+                        cause: None,
+                        reason: Some("no-note".to_owned()),
                         millis,
                     },
                     sent,
                 );
-                return self.fails(planned, &Cause::new(What::NoNote));
+                return self.ends_charged(planned);
             }
             (Verdict::Run, Some(checked))
         };

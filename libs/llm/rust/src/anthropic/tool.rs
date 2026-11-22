@@ -7,10 +7,10 @@ use bilbo_settings::key::{About, Default, Key, Resolved, Shown, Source, quote};
 use serde_json::Value as Json;
 
 use crate::child::{self, Bounds, End, Environment};
-use crate::table::{show_list, show_texts};
-use crate::writer::{
-    Cause, Limits, Outcome, Prompt, Usage, Variables, Way, What, Writer, answered_model, identifier,
+use crate::model::{
+    Cause, Limits, Model, Outcome, Prompt, Usage, Variables, Way, What, answered_model, identifier,
 };
+use crate::table::{show_list, show_texts};
 
 const INSTRUCTION: &str = "{instruction}";
 const WITHOUT_TOOLS: &str = "derive.anthropic.tool.arguments must keep the model without tools: ";
@@ -332,7 +332,7 @@ impl Claude {
     }
 }
 
-impl Writer for Claude {
+impl Model for Claude {
     fn prepare(&mut self) -> Result<(), String> {
         if self.section.model.value.is_empty() {
             return Err("derive.anthropic.model is not set".to_owned());
@@ -346,7 +346,7 @@ impl Writer for Claude {
         self.checks(&environment)
     }
 
-    fn write(&mut self, prompt: &Prompt, limits: &Limits) -> Outcome {
+    fn call(&mut self, prompt: &Prompt, limits: &Limits) -> Outcome {
         self.why = None;
         let Some(environment) = self.environment.clone() else {
             return Outcome::Stopped(Cause::new(What::NotStarted));
@@ -391,7 +391,7 @@ impl Writer for Claude {
         }
     }
 
-    fn model(&self) -> &str {
+    fn id(&self) -> &str {
         &self.section.model.value
     }
 
@@ -589,7 +589,7 @@ mod tests {
     use bilbo_settings::key::Source;
 
     use super::{ABOUT, Section, invocation, read, section, shown, without_tools};
-    use crate::writer::{Outcome, Prompt};
+    use crate::model::{Outcome, Prompt};
 
     const ANSWER: &str = include_str!("../../fixtures/anthropic/tool/answer.json");
 

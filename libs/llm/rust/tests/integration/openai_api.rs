@@ -2,8 +2,8 @@ use std::net::TcpListener;
 use std::path::Path;
 use std::time::Duration;
 
+use bilbo_llm::model::{Cause, Limits, Model, Outcome, Prompt, Usage, What};
 use bilbo_llm::openai::api::{self, OpenAi};
-use bilbo_llm::writer::{Cause, Limits, Outcome, Prompt, Usage, What, Writer};
 use bilbo_provider::{Provider, Reply};
 use bilbo_settings::file::File;
 use bilbo_settings::key::Source;
@@ -81,7 +81,7 @@ fn ready(provider: &Provider, toml: &str, scratch: &Scratch) -> OpenAi {
 fn call(replies: Vec<Reply>) -> Outcome {
     let scratch = Scratch::new("openai");
     let provider = Provider::start(replies);
-    ready(&provider, "", &scratch).write(&prompt(), &limits())
+    ready(&provider, "", &scratch).call(&prompt(), &limits())
 }
 
 fn answered(body: &str) -> Outcome {
@@ -122,7 +122,7 @@ const BODY: &str = "{\"input\":\"#r1 hello\\n\",\"instructions\":\"Write notes.\
 fn the_request_is_the_documented_one_and_nothing_more() {
     let scratch = Scratch::new("openai");
     let provider = Provider::start(vec![Reply::answer(200, COMPLETED)]);
-    ready(&provider, "", &scratch).write(&prompt(), &limits());
+    ready(&provider, "", &scratch).call(&prompt(), &limits());
     let seen = provider.requests();
     assert_eq!(seen.len(), 1);
     assert_eq!(
@@ -170,8 +170,8 @@ fn the_same_prompt_gives_the_same_bytes() {
         Reply::answer(200, COMPLETED),
     ]);
     let mut writer = ready(&provider, "", &scratch);
-    writer.write(&prompt(), &limits());
-    writer.write(&prompt(), &limits());
+    writer.call(&prompt(), &limits());
+    writer.call(&prompt(), &limits());
     let seen = provider.requests();
     assert_eq!(seen[0].body, seen[1].body);
 }
@@ -181,7 +181,7 @@ fn extra_fields_and_headers_are_added_as_they_are() {
     let scratch = Scratch::new("openai");
     let provider = Provider::start(vec![Reply::answer(200, COMPLETED)]);
     let toml = "derive.openai.api.extra = { reasoning = { effort = \"low\" } }\nderive.openai.api.headers = { OpenAI-Project = \"proj_1\", User-Agent = \"agent-x\" }\n";
-    ready(&provider, toml, &scratch).write(&prompt(), &limits());
+    ready(&provider, toml, &scratch).call(&prompt(), &limits());
     let seen = provider.requests();
     assert_eq!(
         String::from_utf8_lossy(&seen[0].body),
@@ -219,13 +219,13 @@ fn the_limits_are_sent_and_kept() {
     let scratch = Scratch::new("openai");
     let provider = Provider::start(vec![Reply::answer(200, COMPLETED), Reply::Stall]);
     let mut writer = ready(&provider, "", &scratch);
-    writer.write(&prompt(), &limits());
+    writer.call(&prompt(), &limits());
     let more = Limits {
         answer_tokens: 16_001,
         timeout: Duration::from_secs(1),
         ..limits()
     };
-    let outcome = writer.write(&prompt(), &more);
+    let outcome = writer.call(&prompt(), &more);
     let seen = provider.requests();
     assert!(String::from_utf8_lossy(&seen[0].body).contains("\"max_output_tokens\":16000,"));
     assert!(String::from_utf8_lossy(&seen[1].body).contains("\"max_output_tokens\":16001,"));
@@ -684,7 +684,7 @@ fn a_response_over_the_limit_is_a_failed_call() {
         ..limits()
     };
     assert!(matches!(
-        writer.write(&prompt(), &at),
+        writer.call(&prompt(), &at),
         Outcome::Answer { .. }
     ));
     let under = Limits {
@@ -692,7 +692,7 @@ fn a_response_over_the_limit_is_a_failed_call() {
         ..limits()
     };
     assert_eq!(
-        writer.write(&prompt(), &under),
+        writer.call(&prompt(), &under),
         Outcome::Failed {
             cause: Cause::new(What::TooLarge),
             usage: Usage::default()
@@ -710,7 +710,7 @@ fn no_answer_in_time_and_no_connection_are_busy() {
     };
     let started = std::time::Instant::now();
     assert_eq!(
-        ready(&provider, "", &scratch).write(&prompt(), &short),
+        ready(&provider, "", &scratch).call(&prompt(), &short),
         Outcome::Busy {
             wait: None,
             cause: Cause::new(What::Timeout)
@@ -725,7 +725,7 @@ fn no_answer_in_time_and_no_connection_are_busy() {
     let mut writer = adapter_at(&format!("http://127.0.0.1:{port}"), "", &scratch);
     writer.prepare().expect("prepared");
     assert_eq!(
-        writer.write(&prompt(), &limits()),
+        writer.call(&prompt(), &limits()),
         Outcome::Busy {
             wait: None,
             cause: Cause::new(What::NoConnection)
@@ -734,7 +734,7 @@ fn no_answer_in_time_and_no_connection_are_busy() {
     let mut writer = adapter_at(&crate::untrusted_address(), "", &scratch);
     writer.prepare().expect("prepared");
     assert_eq!(
-        writer.write(&prompt(), &limits()),
+        writer.call(&prompt(), &limits()),
         Outcome::Stopped(Cause::new(What::Tls))
     );
 }
@@ -793,13 +793,13 @@ fn prepare_reads_the_key_once_and_refuses_what_is_missing() {
         Reply::answer(200, COMPLETED),
     ]);
     let mut writer = adapter_at(&provider.url(), &toml, &scratch);
-    let before = writer.write(&prompt(), &limits());
+    let before = writer.call(&prompt(), &limits());
     assert_eq!(before, Outcome::Stopped(Cause::new(What::NotStarted)));
     assert!(provider.requests().is_empty());
     writer.prepare().expect("prepared");
     writer.prepare().expect("prepared again");
-    writer.write(&prompt(), &limits());
-    writer.write(&prompt(), &limits());
+    writer.call(&prompt(), &limits());
+    writer.call(&prompt(), &limits());
     assert_eq!(
         std::fs::read_to_string(&counter).expect("a counter"),
         "ran\nran\n"
@@ -822,7 +822,7 @@ fn the_key_is_in_one_header_and_in_nothing_else_the_run_gives() {
         &scratch,
     );
     let outcomes: Vec<String> = (0..3)
-        .map(|_| format!("{:?}", writer.write(&prompt(), &limits())))
+        .map(|_| format!("{:?}", writer.call(&prompt(), &limits())))
         .collect();
     for text in &outcomes {
         assert!(!text.contains(KEY), "{text}");
@@ -839,7 +839,7 @@ fn the_key_is_in_one_header_and_in_nothing_else_the_run_gives() {
     );
     let mut trimmed = adapter_from(&text, &scratch, spaced);
     trimmed.prepare().expect("prepared");
-    trimmed.write(&prompt(), &limits());
+    trimmed.call(&prompt(), &limits());
     assert_eq!(
         second.requests()[0].header("authorization"),
         [format!("Bearer {KEY}")]
@@ -1039,7 +1039,7 @@ fn a_setting_that_holds_the_key_is_refused_by_its_keys_name_and_nothing_is_sent(
             writer.prepare().unwrap_err(),
             format!("derive.openai.{key} holds the key")
         );
-        let after = writer.write(&prompt(), &limits());
+        let after = writer.call(&prompt(), &limits());
         assert_eq!(after, Outcome::Stopped(Cause::new(What::NotStarted)));
     }
     let near = format!(
@@ -1050,7 +1050,7 @@ fn a_setting_that_holds_the_key_is_refused_by_its_keys_name_and_nothing_is_sent(
     let mut writer = adapter_from(&near, &scratch, given);
     writer.prepare().expect("no setting holds the whole key");
     assert!(matches!(
-        writer.write(&prompt(), &limits()),
+        writer.call(&prompt(), &limits()),
         Outcome::Answer { .. }
     ));
     assert_eq!(provider.requests().len(), 1);
@@ -1061,7 +1061,7 @@ fn describe_says_the_settings_in_force_and_how_the_key_is_read() {
     let scratch = Scratch::new("openai");
     let toml = "derive.openai.api.headers = { X-A = \"1\", X-B = \"2\" }\nderive.openai.api.extra = { reasoning = { effort = \"low\" } }\nderive.openai.api.key_command = [\"op\", \"read\"]\n";
     let writer = adapter_at("http://127.0.0.1:9", toml, &scratch);
-    assert_eq!(writer.model(), "gpt-test-1");
+    assert_eq!(writer.id(), "gpt-test-1");
     assert_eq!(
         writer.describe(),
         [

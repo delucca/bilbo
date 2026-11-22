@@ -16,7 +16,7 @@ use bilbo_derive::tries::{Extent, Tries};
 use bilbo_derive::view::{Counter, Format, Paragraph};
 use bilbo_entries::reader::{Passage, Reader};
 use bilbo_entries::tokens::{Estimate, Tokens};
-use bilbo_llm::writer::{Cause, Limits, Outcome, Prompt, Usage, What, Writer};
+use bilbo_llm::model::{Cause, Limits, Model, Outcome, Prompt, Usage, What};
 use bilbo_store::entries::{
     Capture, CaptureError, Captured, Change, Cursor, Entries, Generation, Head, Kept, Mark, Meta,
     RecordRange, StoreError,
@@ -622,13 +622,13 @@ impl Script {
     }
 }
 
-impl Writer for Script {
+impl Model for Script {
     fn prepare(&mut self) -> Result<(), String> {
         self.prepared += 1;
         self.refuse_prepare.clone().map_or(Ok(()), Err)
     }
 
-    fn write(&mut self, prompt: &Prompt, limits: &Limits) -> Outcome {
+    fn call(&mut self, prompt: &Prompt, limits: &Limits) -> Outcome {
         self.prompts.push(prompt.clone());
         self.limits.push(*limits);
         let called = self.prompts.len();
@@ -641,7 +641,7 @@ impl Writer for Script {
         }
     }
 
-    fn model(&self) -> &str {
+    fn id(&self) -> &str {
         &self.model
     }
 

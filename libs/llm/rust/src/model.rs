@@ -42,7 +42,6 @@ pub enum What {
     ToolError,
     HoldsKey,
     Cut,
-    NoNote,
 }
 
 impl What {
@@ -68,14 +67,13 @@ impl What {
             What::ToolError => "tool-error",
             What::HoldsKey => "holds-key",
             What::Cut => "cut",
-            What::NoNote => "no-note",
         }
     }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Whose {
-    Window,
+    Call,
     Provider,
     Either,
 }
@@ -84,7 +82,7 @@ impl What {
     #[must_use]
     pub fn whose(self) -> Whose {
         match self {
-            What::NoNote | What::HoldsKey | What::ToolUsed => Whose::Window,
+            What::HoldsKey | What::ToolUsed => Whose::Call,
             What::RateLimit
             | What::Overloaded
             | What::ServerError
@@ -185,10 +183,10 @@ pub struct Host {
     pub poll: Duration,
 }
 
-pub trait Writer {
+pub trait Model {
     fn prepare(&mut self) -> Result<(), String>;
-    fn write(&mut self, prompt: &Prompt, limits: &Limits) -> Outcome;
-    fn model(&self) -> &str;
+    fn call(&mut self, prompt: &Prompt, limits: &Limits) -> Outcome;
+    fn id(&self) -> &str;
     fn describe(&self) -> Vec<String>;
 
     fn why(&self) -> Option<&str> {
@@ -269,8 +267,8 @@ mod tests {
     }
 
     #[test]
-    fn each_cause_is_the_windows_the_providers_or_eithers() {
-        let window = [What::NoNote, What::HoldsKey, What::ToolUsed];
+    fn each_cause_is_the_calls_the_providers_or_eithers() {
+        let call = [What::HoldsKey, What::ToolUsed];
         let provider = [
             What::RateLimit,
             What::Overloaded,
@@ -293,7 +291,7 @@ mod tests {
             What::ToolError,
         ];
         for (whose, causes) in [
-            (Whose::Window, &window[..]),
+            (Whose::Call, &call[..]),
             (Whose::Provider, &provider[..]),
             (Whose::Either, &either[..]),
         ] {
@@ -301,7 +299,7 @@ mod tests {
                 assert_eq!(what.whose(), whose, "{}", what.word());
             }
         }
-        assert_eq!(window.len() + provider.len() + either.len(), 20);
+        assert_eq!(call.len() + provider.len() + either.len(), 19);
         assert_eq!(What::Tls.word(), "tls");
     }
 }

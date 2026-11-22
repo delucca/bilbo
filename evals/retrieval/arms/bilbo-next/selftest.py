@@ -39,7 +39,7 @@ time.sleep(delay)
 sys.stdout.buffer.write(out.encode("latin-1"))
 sys.exit(code)
 """
-CLAUDE_FIXTURES = HERE.parents[3] / "libs" / "derive" / "rust" / "fixtures" / "anthropic" / "tool"
+CLAUDE_FIXTURES = HERE.parents[3] / "libs" / "llm" / "rust" / "fixtures" / "anthropic" / "tool"
 
 
 def check(name, ok, detail=""):

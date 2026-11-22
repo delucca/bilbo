@@ -2,7 +2,7 @@ use std::path::Path;
 use std::time::{Duration, Instant};
 
 use bilbo_llm::anthropic::api::{self, Anthropic};
-use bilbo_llm::writer::{Cause, Limits, Outcome, Prompt, Usage, What, Writer};
+use bilbo_llm::model::{Cause, Limits, Model, Outcome, Prompt, Usage, What};
 use bilbo_provider::{Provider, Reply, Request};
 use bilbo_settings::file::File;
 use bilbo_settings::key::Source;
@@ -75,7 +75,7 @@ fn ready(text: &str) -> Anthropic {
 fn answer_of(provider: &Provider, replies: usize) -> Vec<Outcome> {
     let mut writer = ready(&config(&provider.url(), "", ""));
     (0..replies)
-        .map(|_| writer.write(&prompt(), &limits()))
+        .map(|_| writer.call(&prompt(), &limits()))
         .collect()
 }
 
@@ -180,7 +180,7 @@ fn extra_fields_and_headers_are_added_as_they_are() {
         "",
         "[derive.anthropic.api.extra]\noutput_config = { effort = \"low\" }\n\n[derive.anthropic.api.headers]\nanthropic-beta = \"beta-1\"\nUser-Agent = \"mine\"\n",
     );
-    ready(&text).write(&prompt(), &limits());
+    ready(&text).call(&prompt(), &limits());
     let seen = provider.requests();
     assert_eq!(
         String::from_utf8(seen[0].body.clone()).expect("utf8"),
@@ -220,8 +220,8 @@ fn the_limits_are_sent_and_kept() {
         Reply::Stall,
     ]);
     let mut writer = ready(&config(&provider.url(), "", ""));
-    writer.write(&prompt(), &limits());
-    writer.write(
+    writer.call(&prompt(), &limits());
+    writer.call(
         &prompt(),
         &Limits {
             answer_tokens: 16001,
@@ -232,7 +232,7 @@ fn the_limits_are_sent_and_kept() {
     assert!(String::from_utf8_lossy(&seen[0].body).contains("\"max_tokens\":16000,"));
     assert!(String::from_utf8_lossy(&seen[1].body).contains("\"max_tokens\":16001,"));
     let start = Instant::now();
-    let outcome = writer.write(
+    let outcome = writer.call(
         &prompt(),
         &Limits {
             timeout: Duration::from_secs(1),
@@ -658,7 +658,7 @@ fn a_response_over_the_limit_is_a_failed_call() {
     let mut writer = ready(&config(&provider.url(), "", ""));
     let length = ANSWER.len() as u64;
     assert!(matches!(
-        writer.write(
+        writer.call(
             &prompt(),
             &Limits {
                 response: length,
@@ -668,7 +668,7 @@ fn a_response_over_the_limit_is_a_failed_call() {
         Outcome::Answer { .. }
     ));
     assert_eq!(
-        writer.write(
+        writer.call(
             &prompt(),
             &Limits {
                 response: length - 1,
@@ -687,7 +687,7 @@ fn no_answer_in_time_and_no_connection_are_busy() {
     let stalled = Provider::start(vec![Reply::Stall]);
     let mut writer = ready(&config(&stalled.url(), "", ""));
     assert_eq!(
-        writer.write(
+        writer.call(
             &prompt(),
             &Limits {
                 timeout: Duration::from_secs(1),
@@ -703,7 +703,7 @@ fn no_answer_in_time_and_no_connection_are_busy() {
     let mut writer = ready(&config(&gone.url(), "", ""));
     drop(gone);
     assert_eq!(
-        writer.write(&prompt(), &limits()),
+        writer.call(&prompt(), &limits()),
         Outcome::Busy {
             wait: None,
             cause: Cause::new(What::NoConnection)
@@ -711,7 +711,7 @@ fn no_answer_in_time_and_no_connection_are_busy() {
     );
     let mut writer = ready(&config(&crate::untrusted_address(), "", ""));
     assert_eq!(
-        writer.write(&prompt(), &limits()),
+        writer.call(&prompt(), &limits()),
         Outcome::Stopped(Cause::new(What::Tls))
     );
 }
@@ -745,12 +745,12 @@ fn prepare_reads_the_key_once_and_refuses_what_is_missing() {
         &scratch.path().join("derive"),
         |_| None,
     );
-    let before = writer.write(&prompt(), &limits());
+    let before = writer.call(&prompt(), &limits());
     assert_eq!(before, Outcome::Stopped(Cause::new(What::NotStarted)));
     assert!(provider.requests().is_empty());
     writer.prepare().expect("the program's key");
-    writer.write(&prompt(), &limits());
-    writer.write(&prompt(), &limits());
+    writer.call(&prompt(), &limits());
+    writer.call(&prompt(), &limits());
     assert_eq!(
         std::fs::read_to_string(&counter)
             .expect("runs")
@@ -770,7 +770,7 @@ fn the_key_is_in_one_header_and_in_nothing_else_the_run_gives() {
         Reply::answer(200, REFUSAL),
     ]);
     let mut writer = ready(&config(&provider.url(), "", ""));
-    let outcomes = [(); 3].map(|()| writer.write(&prompt(), &limits()));
+    let outcomes = [(); 3].map(|()| writer.call(&prompt(), &limits()));
     for request in provider.requests() {
         let values: Vec<_> = request
             .headers
@@ -796,7 +796,7 @@ fn the_key_is_in_one_header_and_in_nothing_else_the_run_gives() {
         spaced,
     );
     trimmed.prepare().expect("the key is read");
-    trimmed.write(&prompt(), &limits());
+    trimmed.call(&prompt(), &limits());
     let seen = second.requests();
     assert_eq!(
         sent(&seen[0], &["x-api-key"]),
@@ -1014,7 +1014,7 @@ fn a_setting_that_holds_the_key_is_refused_by_its_keys_name_and_nothing_is_sent(
             writer.prepare().unwrap_err(),
             format!("derive.anthropic.{key} holds the key")
         );
-        let after = writer.write(&prompt(), &limits());
+        let after = writer.call(&prompt(), &limits());
         assert_eq!(after, Outcome::Stopped(Cause::new(What::NotStarted)));
     }
     let near = format!(
@@ -1025,7 +1025,7 @@ fn a_setting_that_holds_the_key_is_refused_by_its_keys_name_and_nothing_is_sent(
     let mut writer = writer_with(&near, scratch.path(), variables);
     writer.prepare().expect("no setting holds the whole key");
     assert!(matches!(
-        writer.write(&prompt(), &limits()),
+        writer.call(&prompt(), &limits()),
         Outcome::Answer { .. }
     ));
     assert_eq!(provider.requests().len(), 1);
@@ -1040,7 +1040,7 @@ fn describe_says_the_settings_in_force_and_how_the_key_is_read() {
         &std::env::temp_dir(),
         |_| None,
     );
-    assert_eq!(writer.model(), "test-model-1");
+    assert_eq!(writer.id(), "test-model-1");
     assert_eq!(
         writer.describe(),
         [

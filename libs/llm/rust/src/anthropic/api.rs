@@ -9,12 +9,12 @@ use serde_json::{Map, Value as Json};
 use crate::api::{self, Call};
 use crate::child::Bounds;
 use crate::http::{self, Endpoint, Response};
+use crate::model::{
+    Cause, Limits, Model, Outcome, Prompt, Usage, Variables, Way, What, answered_model, identifier,
+    is_identifier,
+};
 use crate::secret::Secret;
 use crate::table;
-use crate::writer::{
-    Cause, Limits, Outcome, Prompt, Usage, Variables, Way, What, Writer, answered_model,
-    identifier, is_identifier,
-};
 
 const HEADERS_REFUSED: [&str; 8] = [
     "x-api-key",
@@ -253,7 +253,7 @@ impl Anthropic {
     }
 }
 
-impl Writer for Anthropic {
+impl Model for Anthropic {
     fn prepare(&mut self) -> Result<(), String> {
         let section = &self.section;
         let extra = table::texts(&section.extra.value);
@@ -277,7 +277,7 @@ impl Writer for Anthropic {
         Ok(())
     }
 
-    fn write(&mut self, prompt: &Prompt, limits: &Limits) -> Outcome {
+    fn call(&mut self, prompt: &Prompt, limits: &Limits) -> Outcome {
         let Some(key) = &self.key else {
             return Outcome::Stopped(Cause::new(What::NotStarted));
         };
@@ -299,7 +299,7 @@ impl Writer for Anthropic {
         }
     }
 
-    fn model(&self) -> &str {
+    fn id(&self) -> &str {
         &self.section.model.value
     }
 

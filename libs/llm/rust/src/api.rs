@@ -6,9 +6,9 @@ use bilbo_settings::key::Value;
 
 use crate::child::Bounds;
 use crate::http::{self, Endpoint, Fault};
+use crate::model::{Cause, MODEL_REFUSED, Outcome, Usage, What, is_model_name};
 use crate::secret::{self, Secret};
 use crate::table;
-use crate::writer::{Cause, MODEL_REFUSED, Outcome, Usage, What, is_model_name};
 
 pub const ENDPOINT_ALLOWED: &str = "an https URL, or an http URL at 127.0.0.1 or [::1]";
 pub const KEY_ENV_ALLOWED: &str = "the name of a variable: letters, digits and _";

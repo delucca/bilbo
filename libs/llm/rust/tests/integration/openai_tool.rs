@@ -3,8 +3,8 @@ use std::os::unix::fs::{MetadataExt, PermissionsExt, symlink};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use bilbo_llm::model::{Cause, Limits, Model, Outcome, Prompt, Usage, Variables, What};
 use bilbo_llm::openai::tool::{self, Codex};
-use bilbo_llm::writer::{Cause, Limits, Outcome, Prompt, Usage, Variables, What, Writer};
 use bilbo_settings::file::File;
 use bilbo_settings::key::Source;
 
@@ -420,7 +420,7 @@ fn the_tool_gets_the_default_arguments_its_two_files_and_its_variables() {
     let rig = rig("openai-defaults");
     let script = script(&rig);
     let mut writer = start(&config(&script, ""), &rig);
-    let outcome = writer.write(&prompt(), &limits());
+    let outcome = writer.call(&prompt(), &limits());
     assert_eq!(answered(&outcome), ANSWER_TEXT);
     assert_eq!(calls(&rig), ["--version", "debug", "--version", "exec"]);
     let catalog = rig.work.join("catalog.json");
@@ -467,7 +467,7 @@ fn the_tool_gets_the_default_arguments_its_two_files_and_its_variables() {
     let through = lnk.join("derive").join("work");
     let mut writer = adapter_at(&config(&script, ""), &through, variables(&rig));
     writer.prepare().expect("prepare");
-    let outcome = writer.write(&prompt(), &limits());
+    let outcome = writer.call(&prompt(), &limits());
     assert_eq!(answered(&outcome), ANSWER_TEXT);
     let args = read(&rig, "args");
     assert!(args.contains(&format!("{}\"", catalog.display())), "{args}");
@@ -498,7 +498,7 @@ fn the_variables_are_the_settings_and_bilbos_two_come_last() {
         env
     };
     let mut writer = start(&config(&script, tail), &rig);
-    writer.write(&prompt(), &limits());
+    writer.call(&prompt(), &limits());
     assert_eq!(
         env_of(&rig),
         [
@@ -512,7 +512,7 @@ fn the_variables_are_the_settings_and_bilbos_two_come_last() {
     login(&other);
     let tail = format!("home = {:?}\n{tail}", other.display().to_string());
     let mut writer = start(&config(&script, &tail), &rig);
-    writer.write(&prompt(), &limits());
+    writer.call(&prompt(), &limits());
     assert_eq!(
         env_of(&rig),
         [
@@ -788,7 +788,7 @@ fn the_checks_run_again_before_each_call() {
     let mut writer = start(&text, &rig);
     fs::write(rig.home.join("AGENTS.md"), "x").expect("file");
     assert_eq!(
-        writer.write(&prompt(), &limits()),
+        writer.call(&prompt(), &limits()),
         Outcome::Stopped(Cause::new(What::NotStarted))
     );
     assert_eq!(writer.why(), Some(t5e(&rig.home, "AGENTS.md").as_str()));
@@ -796,7 +796,7 @@ fn the_checks_run_again_before_each_call() {
     fs::remove_file(rig.home.join("AGENTS.md")).expect("remove");
     fs::write(&listed, "x").expect("file");
     assert_eq!(
-        writer.write(&prompt(), &limits()),
+        writer.call(&prompt(), &limits()),
         Outcome::Stopped(Cause::new(What::NotStarted))
     );
     assert_eq!(writer.why(), Some(t6(&listed).as_str()));
@@ -813,10 +813,10 @@ fn the_work_folder_is_emptied_and_holds_the_two_files_at_each_call() {
         0o700
     );
     fs::write(rig.work.join("stale"), "x").expect("stale");
-    writer.write(&prompt(), &limits());
+    writer.call(&prompt(), &limits());
     assert_eq!(read(&rig, "ls"), "catalog.json\ninstruction.txt\n");
     assert_eq!(read(&rig, "instruction.txt"), "Write paragraphs.");
-    writer.write(
+    writer.call(
         &Prompt {
             instruction: "Write more.".to_owned(),
             material: "#r2 hi".to_owned(),
@@ -838,7 +838,7 @@ fn run_with(reply: &str, exit: i32) -> (Outcome, Option<String>, Rig) {
         &standard(&rig, exit),
     );
     let mut writer = start(&config(&script, ""), &rig);
-    let outcome = writer.write(&prompt(), &limits());
+    let outcome = writer.call(&prompt(), &limits());
     let why = writer.why().map(str::to_owned);
     (outcome, why, rig)
 }
@@ -886,7 +886,7 @@ fn a_tool_that_does_not_end_in_time_is_busy_and_is_stopped() {
         &format!("echo $$ > {}/pid\nsleep 30", rig.out.display()),
     );
     let mut writer = start(&config(&script, ""), &rig);
-    let outcome = writer.write(
+    let outcome = writer.call(
         &prompt(),
         &Limits {
             timeout: Duration::from_secs(1),
@@ -919,7 +919,7 @@ fn output_over_the_limit_is_a_failed_call() {
     );
     let mut writer = start(&config(&script, ""), &rig);
     assert_eq!(
-        writer.write(
+        writer.call(
             &prompt(),
             &Limits {
                 response: 100,
@@ -940,13 +940,13 @@ fn why_a_call_was_not_made_is_kept_for_that_call_alone() {
     let mut writer = start(&config(&script, ""), &rig);
     fs::create_dir(rig.home.join("rules")).expect("rules");
     assert_eq!(
-        writer.write(&prompt(), &limits()),
+        writer.call(&prompt(), &limits()),
         Outcome::Stopped(Cause::new(What::NotStarted))
     );
     assert_eq!(writer.why(), Some(t5e(&rig.home, "rules").as_str()));
     fs::remove_dir(rig.home.join("rules")).expect("remove");
     assert_eq!(
-        writer.write(
+        writer.call(
             &prompt(),
             &Limits {
                 response: 10,
@@ -959,7 +959,7 @@ fn why_a_call_was_not_made_is_kept_for_that_call_alone() {
         }
     );
     assert_eq!(writer.why(), None);
-    let outcome = writer.write(&prompt(), &limits());
+    let outcome = writer.call(&prompt(), &limits());
     assert_eq!(answered(&outcome), ANSWER_TEXT);
     assert_eq!(writer.why(), None);
 }
@@ -991,7 +991,7 @@ fn the_program_is_resolved_once_and_that_file_is_started() {
     let text = config_in(Some("model-a"), "tool.sh", "[]", "");
     let mut writer = adapter_with(&text, &rig, vars(Some(&path), Some(&user), None));
     writer.prepare().expect("prepare");
-    writer.write(&prompt(), &limits());
+    writer.call(&prompt(), &limits());
     let selves: Vec<String> = read(&rig, "self").lines().map(str::to_owned).collect();
     assert_eq!(selves.len(), 4);
     for line in &selves {
@@ -1026,7 +1026,7 @@ fn the_program_is_resolved_once_and_that_file_is_started() {
     symlink(rig.scratch.path().join("bin"), &link).expect("link");
     let through = link.join("tool.sh");
     let mut writer = start(&config(&through, ""), &rig);
-    let outcome = writer.write(&prompt(), &limits());
+    let outcome = writer.call(&prompt(), &limits());
     assert_eq!(answered(&outcome), ANSWER_TEXT);
     assert_eq!(calls(&rig), ["--version", "debug", "--version", "exec"]);
     for line in read(&rig, "self").lines() {
@@ -1046,13 +1046,13 @@ fn a_release_that_changed_behind_the_program_starts_no_call() {
     let mut writer = start(&config(&script, ""), &rig);
     fs::write(&switched, "").expect("a file");
     assert_eq!(
-        writer.write(&prompt(), &limits()),
+        writer.call(&prompt(), &limits()),
         Outcome::Stopped(Cause::new(What::NotStarted))
     );
     assert_eq!(writer.why(), Some(t8b(&script).as_str()));
     assert_eq!(calls(&rig), ["--version", "debug", "--version"]);
     fs::remove_file(&switched).expect("remove");
-    let outcome = writer.write(&prompt(), &limits());
+    let outcome = writer.call(&prompt(), &limits());
     assert_eq!(answered(&outcome), ANSWER_TEXT);
     assert_eq!(writer.why(), None);
     assert_eq!(
@@ -1075,14 +1075,14 @@ fn a_program_that_changed_after_prepare_starts_no_call() {
     );
     assert_eq!(again, script);
     assert_eq!(
-        writer.write(&prompt(), &limits()),
+        writer.call(&prompt(), &limits()),
         Outcome::Stopped(Cause::new(What::NotStarted))
     );
     assert_eq!(writer.why(), Some(t8d(&script).as_str()));
     assert_eq!(calls(&rig), ["--version", "debug"]);
     fs::remove_file(&script).expect("remove");
     assert_eq!(
-        writer.write(&prompt(), &limits()),
+        writer.call(&prompt(), &limits()),
         Outcome::Stopped(Cause::new(What::NotStarted))
     );
     assert_eq!(writer.why(), Some(t8d(&script).as_str()));
@@ -1101,7 +1101,7 @@ fn a_program_that_changed_after_prepare_starts_no_call() {
         u64::try_from(body.len()).expect("size")
     );
     assert_eq!(
-        writer.write(&prompt(), &limits()),
+        writer.call(&prompt(), &limits()),
         Outcome::Stopped(Cause::new(What::NotStarted))
     );
     assert_eq!(writer.why(), Some(t8d(&script).as_str()));
@@ -1129,7 +1129,7 @@ fn a_program_that_changed_after_prepare_starts_no_call() {
     fs::remove_file(&link).expect("remove");
     symlink(&second, &link).expect("link");
     assert_eq!(
-        writer.write(&prompt(), &limits()),
+        writer.call(&prompt(), &limits()),
         Outcome::Stopped(Cause::new(What::NotStarted))
     );
     assert_eq!(writer.why(), Some(t8d(&link).as_str()));
@@ -1315,12 +1315,12 @@ fn a_reached_tool_stops_the_run_and_says_so() {
     let script = script(&rig);
     let mut writer = start(&config(&script, ""), &rig);
     assert_eq!(
-        writer.write(&prompt(), &limits()),
+        writer.call(&prompt(), &limits()),
         Outcome::Stopped(cause(What::ServerError, Some(0), None))
     );
     assert_eq!(writer.why(), Some(T11C));
     fs::write(rig.scratch.path().join("reply.txt"), ANSWER).expect("reply");
-    let outcome = writer.write(&prompt(), &limits());
+    let outcome = writer.call(&prompt(), &limits());
     assert_eq!(answered(&outcome), ANSWER_TEXT);
     assert_eq!(writer.why(), None);
 }
@@ -1341,7 +1341,7 @@ fn a_tool_reached_before_a_timeout_or_an_overflow_stops_the_run() {
         ),
     );
     let mut writer = start(&config(&script, ""), &rig);
-    let outcome = writer.write(
+    let outcome = writer.call(
         &prompt(),
         &Limits {
             timeout: Duration::from_secs(1),
@@ -1371,7 +1371,7 @@ fn a_tool_reached_before_a_timeout_or_an_overflow_stops_the_run() {
         ),
     );
     let mut writer = start(&config(&script, ""), &rig);
-    let outcome = writer.write(
+    let outcome = writer.call(
         &prompt(),
         &Limits {
             response: 1000,

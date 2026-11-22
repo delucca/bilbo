@@ -1,7 +1,7 @@
 use bilbo_derive::instruction::Origin;
 use bilbo_derive::plan::State;
 use bilbo_derive::run::{Counts, Ended};
-use bilbo_llm::writer::{Cause, What};
+use bilbo_llm::model::{Cause, What};
 use bilbo_store::id::Id;
 
 use crate::console::message::{Detail, Message, group};
@@ -63,6 +63,8 @@ pub fn human(totals: &Counts, seconds: u64, view: &View) -> String {
     text
 }
 
+pub const NO_NOTE: &str = "the answer holds no note bilbo can keep";
+
 pub fn sentence(what: What) -> &'static str {
     match what {
         What::RateLimit => "it limits the rate of requests",
@@ -84,7 +86,6 @@ pub fn sentence(what: What) -> &'static str {
         What::ToolError => "the tool reported an error",
         What::HoldsKey => "what came back holds the key, and nothing of it was kept",
         What::Cut => "the answer was cut at derive.answer_tokens; raise it or lower derive.window",
-        What::NoNote => "the answer holds no note bilbo can keep",
     }
 }
 
@@ -282,7 +283,7 @@ mod tests {
     use bilbo_derive::instruction::Origin;
     use bilbo_derive::plan::State;
     use bilbo_derive::run::{Counts, Ended};
-    use bilbo_llm::writer::{Cause, What};
+    use bilbo_llm::model::{Cause, What};
     use bilbo_store::id::Id;
 
     use super::{
@@ -350,7 +351,6 @@ mod tests {
                 What::Cut,
                 "the answer was cut at derive.answer_tokens; raise it or lower derive.window",
             ),
-            (What::NoNote, "the answer holds no note bilbo can keep"),
         ];
         let said: Vec<(What, &str)> = all
             .iter()

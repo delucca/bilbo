@@ -100,12 +100,12 @@ pub fn providers() -> Vec<(&'static str, &'static str)> {
     ]
 }
 
-pub fn writer(settings: &Settings, var: &Var) -> Result<derive::Built, Failure> {
+pub fn model(settings: &Settings, var: &Var) -> Result<derive::Built, Failure> {
     let state = settings.state.value.clone();
     let timeout = settings.derive.timeout.value;
     let response = usize::try_from(settings.derive.response.value).unwrap_or(usize::MAX);
     let poll = settings.derive.poll.value;
-    let reading = |names: Vec<String>| -> bilbo_llm::writer::Variables {
+    let reading = |names: Vec<String>| -> bilbo_llm::model::Variables {
         let var = Rc::clone(var);
         Box::new(move |asked: &str| {
             if names.iter().any(|name| name == asked) {
@@ -117,11 +117,11 @@ pub fn writer(settings: &Settings, var: &Var) -> Result<derive::Built, Failure> 
     };
     let source = settings.source(&**var);
     let name = settings.derive.provider.value.as_str();
-    let (writer, api): (Box<dyn bilbo_llm::writer::Writer>, bool) = match name {
+    let (writer, api): (Box<dyn bilbo_llm::model::Model>, bool) = match name {
         bilbo_llm::anthropic::NAME => {
             let section = bilbo_llm::anthropic::section(&source)?;
-            let api = section.via.value == bilbo_llm::writer::Way::Api;
-            let host = bilbo_llm::writer::Host {
+            let api = section.via.value == bilbo_llm::model::Way::Api;
+            let host = bilbo_llm::model::Host {
                 variables: reading(section.reads()),
                 work: derive::disk::work(&state),
                 state,
@@ -129,12 +129,12 @@ pub fn writer(settings: &Settings, var: &Var) -> Result<derive::Built, Failure> 
                 response,
                 poll,
             };
-            (bilbo_llm::anthropic::writer(section, host), api)
+            (bilbo_llm::anthropic::model(section, host), api)
         }
         bilbo_llm::openai::NAME => {
             let section = bilbo_llm::openai::section(&source)?;
-            let api = section.via.value == bilbo_llm::writer::Way::Api;
-            let host = bilbo_llm::writer::Host {
+            let api = section.via.value == bilbo_llm::model::Way::Api;
+            let host = bilbo_llm::model::Host {
                 variables: reading(section.reads()),
                 work: derive::disk::work(&state),
                 state,
@@ -142,7 +142,7 @@ pub fn writer(settings: &Settings, var: &Var) -> Result<derive::Built, Failure> 
                 response,
                 poll,
             };
-            (bilbo_llm::openai::writer(section, host), api)
+            (bilbo_llm::openai::model(section, host), api)
         }
         other => {
             let names: Vec<&str> = providers().iter().map(|(name, _)| *name).collect();
@@ -457,7 +457,7 @@ pub fn run_tuned(
                             write: &note.line,
                             read: &note.paragraph,
                         },
-                        writer: &|var| writer(&settings, var),
+                        writer: &|var| model(&settings, var),
                         finish: &|store, kept, notice| {
                             remember::follows::finish(
                                 store,
@@ -535,7 +535,7 @@ mod tests {
         for (name, _) in super::providers() {
             let settings = with_provider(name);
             let var: crate::console::env::Var = Rc::new(|_| None);
-            let built = super::writer(&settings, &var).expect("a writer");
+            let built = super::model(&settings, &var).expect("a writer");
             assert!(
                 built.writer.describe()[0].starts_with(&format!("provider: {name}")),
                 "{name}"
@@ -566,7 +566,7 @@ mod tests {
         ] {
             let settings = with_provider(name);
             let (var, asked) = recording(vec![(key_env, "PLUM_KEY"), ("PLUM_KEY", "sk-test")]);
-            let built = super::writer(&settings, &var).expect("a writer");
+            let built = super::model(&settings, &var).expect("a writer");
             assert!(
                 asked.borrow().iter().all(|name| name.starts_with("BILBO_")),
                 "{name}: {:?}",
@@ -590,7 +590,7 @@ mod tests {
         )
         .expect("settings");
         let (var, asked) = recording(vec![("PLUM_TOKEN", "t"), ("HOME", "/h")]);
-        super::writer(&settings, &var).expect("a writer");
+        super::model(&settings, &var).expect("a writer");
         assert!(
             asked
                 .borrow()
@@ -620,7 +620,7 @@ mod tests {
         )
         .expect("settings");
         let (var, asked) = recording(vec![("PLUM_TOKEN", "t"), ("HOME", "/h"), ("OTHER", "o")]);
-        let mut built = super::writer(&settings, &var).expect("a writer");
+        let mut built = super::model(&settings, &var).expect("a writer");
         asked.borrow_mut().clear();
         built.writer.prepare().expect("a prepared writer");
         let mut names = asked.borrow().clone();
@@ -633,7 +633,7 @@ mod tests {
     #[test]
     fn an_unknown_provider_is_a_config_error_that_lists_the_providers() {
         let var: crate::console::env::Var = Rc::new(|_| None);
-        match super::writer(&with_provider("gemini"), &var) {
+        match super::model(&with_provider("gemini"), &var) {
             Err(Failure::Config(text)) => assert_eq!(
                 text,
                 "derive.provider must be one of anthropic, openai, got \"gemini\""
@@ -690,7 +690,7 @@ mod tests {
     #[test]
     fn claude_is_no_provider() {
         let var: crate::console::env::Var = Rc::new(|_| None);
-        match super::writer(&with_provider("claude"), &var) {
+        match super::model(&with_provider("claude"), &var) {
             Err(Failure::Config(text)) => assert_eq!(
                 text,
                 "derive.provider must be one of anthropic, openai, got \"claude\""
@@ -714,7 +714,7 @@ mod tests {
             )
             .expect("settings");
             let var: crate::console::env::Var = Rc::new(|_| None);
-            super::writer(&settings, &var).expect("a writer")
+            super::model(&settings, &var).expect("a writer")
         };
         let tool = built("anthropic", b"[derive.anthropic]\nvia = \"tool\"\n");
         assert!(tool.writer.describe()[0].starts_with("provider: anthropic, via tool, "));
