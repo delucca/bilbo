@@ -632,7 +632,7 @@ fn the_index_records_the_manifest_it_was_made_with_and_the_stores_cursor() {
             "chunk_overlap 64",
             "analyzer bm25s-en/3",
             "tokenizer qwen3-embedding-0.6b/97b0c614be4d/def76fb08697/raw",
-            "render markdown/1/heading_width=100 session/2 note/1",
+            "render markdown/1/heading_width=100 session/3 note/1",
         ]
     );
     let store = sandbox.store();
@@ -679,7 +679,7 @@ fn the_index_records_the_manifest_it_was_made_with_and_the_stores_cursor() {
     assert!(
         sandbox
             .payload()
-            .contains("\nrender markdown/1/heading_width=40 session/2 note/1\n")
+            .contains("\nrender markdown/1/heading_width=40 session/3 note/1\n")
     );
 }
 
@@ -1591,7 +1591,7 @@ const WORKED_BYTES: &[u8] = include_bytes!(
 const ROLLOUT_BYTES: &[u8] = include_bytes!(
     "../../../libs/entries/rust/fixtures/session/rollout-2026-11-08T10-00-00-019a6c4d-3e5f-7a71-9b2c-4d6e8fa0b1c3.jsonl"
 );
-const FOLDER_WORDS: [&str; 4] = ["shed", "greenhouse", "beds", "garden"];
+const FOLDER_WORDS: [&str; 6] = ["shed", "greenhouse", "beds", "garden", "hedges", "apiary"];
 const SHED: [&str; 6] = [
     "recall",
     "--in",
@@ -1637,7 +1637,10 @@ fn a_deleted_cache_comes_back_with_the_same_labels_through_reindex() {
     );
     let held = filed(&sandbox);
     assert!(
-        held.0["shed"].len() == 2 && held.0["greenhouse"].len() == 1,
+        held.0["shed"].len() == 2
+            && held.0["greenhouse"].len() == 1
+            && held.0["hedges"].len() == 1
+            && held.0["apiary"].len() == 1,
         "the folders the readers found are filed: {:?}",
         held.0
     );
@@ -1843,7 +1846,7 @@ fn an_index_made_before_readers_gave_labels_is_made_again() {
     assert!(
         sandbox
             .payload()
-            .contains("\nrender markdown/1/heading_width=100 session/2 note/1\n")
+            .contains("\nrender markdown/1/heading_width=100 session/3 note/1\n")
     );
 }
 
@@ -1893,8 +1896,8 @@ fn a_cache_whose_catalog_an_older_bilbo_left_is_refused_and_made_again() {
 
     let catalog = sandbox.cache().join("catalog.sqlite");
     let mut bytes = fs::read(&catalog).expect("the catalog");
-    assert_eq!(bytes[60..64], 7u32.to_be_bytes(), "this bilbo's version");
-    bytes[60..64].copy_from_slice(&6u32.to_be_bytes());
+    assert_eq!(bytes[60..64], 8u32.to_be_bytes(), "this bilbo's version");
+    bytes[60..64].copy_from_slice(&7u32.to_be_bytes());
     fs::write(&catalog, bytes).expect("a catalog the last release made");
 
     let refused = sandbox.run(&SHED);
@@ -2415,7 +2418,7 @@ fn an_index_made_before_the_note_reader_is_made_again_once() {
     let before = sandbox.remember_rendered(&Remembering {
         target: &sandbox.path("sessions"),
         extra: &[],
-        render: Some("markdown/1/heading_width=100 session/2"),
+        render: Some("markdown/1/heading_width=100 session/3"),
         index: &disk,
         load: &shared_tokenizer,
         panicky: false,
@@ -2445,7 +2448,48 @@ fn an_index_made_before_the_note_reader_is_made_again_once() {
     assert!(
         sandbox
             .payload()
-            .contains("\nrender markdown/1/heading_width=100 session/2 note/1\n")
+            .contains("\nrender markdown/1/heading_width=100 session/3 note/1\n")
+    );
+    let once = sandbox.run(&["remember", &sandbox.path("sessions")]);
+    assert_eq!(once.code, 0, "{:?}", once.stderr);
+    assert!(
+        !once
+            .stderr
+            .iter()
+            .any(|line| line.contains(NO_REBUILD_LINE)),
+        "{:?}",
+        once.stderr
+    );
+}
+
+#[test]
+fn an_index_made_before_sessions_named_the_folders_they_were_given_is_made_again_once() {
+    let sandbox = Sandbox::new("given_render");
+    write_the_workers(&sandbox);
+    let before = sandbox.remember_rendered(&Remembering {
+        target: &sandbox.path("sessions"),
+        extra: &[],
+        render: Some("markdown/1/heading_width=100 session/2 note/1"),
+        index: &disk,
+        load: &shared_tokenizer,
+        panicky: false,
+        said: &Arc::default(),
+    });
+    assert_eq!(before.code, 0, "{:?}", before.stderr);
+    let again = sandbox.run(&["remember", &sandbox.path("sessions")]);
+    assert_eq!(again.code, 0, "{:?}", again.stderr);
+    assert!(
+        again
+            .stderr
+            .iter()
+            .any(|line| line.contains(NO_REBUILD_LINE)),
+        "{:?}",
+        again.stderr
+    );
+    assert!(
+        sandbox
+            .payload()
+            .contains("\nrender markdown/1/heading_width=100 session/3 note/1\n")
     );
     let once = sandbox.run(&["remember", &sandbox.path("sessions")]);
     assert_eq!(once.code, 0, "{:?}", once.stderr);

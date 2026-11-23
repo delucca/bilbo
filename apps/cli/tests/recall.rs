@@ -830,6 +830,62 @@ fn a_scope_by_a_folder_a_session_worked_in_keeps_it() {
 }
 
 #[test]
+fn a_scope_by_a_folder_a_session_was_given_keeps_it() {
+    let sandbox = Sandbox::new("recall_in_given");
+    sandbox.write(
+        &format!("sessions/claude/p/{WORKED}.jsonl"),
+        include_bytes!(
+            "../../../libs/entries/rust/fixtures/session/7d1e4b9a-3c5f-4a2e-8b6d-0f9e1c2a3b4d.jsonl"
+        ),
+    );
+    sandbox.write(
+        &format!("sessions/codex/2026/11/08/{ROLLOUT}.jsonl"),
+        include_bytes!(
+            "../../../libs/entries/rust/fixtures/session/rollout-2026-11-08T10-00-00-019a6c4d-3e5f-7a71-9b2c-4d6e8fa0b1c3.jsonl"
+        ),
+    );
+    sandbox.write(FIRST_SESSION, SESSIONS[0].1);
+    sandbox.remember(&["sessions"]);
+    for (values, query, kept) in [
+        (
+            ["--in=apiary", "--in=/home/me/src/apiary"],
+            &["compost", "heap"][..],
+            ROLLOUT,
+        ),
+        (
+            ["--in=hedges", "--in=/home/me/src/garden/hedges"],
+            &["frost"][..],
+            WORKED,
+        ),
+    ] {
+        for value in values {
+            let mut args = vec!["recall", value];
+            args.extend_from_slice(query);
+            let run = sandbox.run(&args);
+            assert_eq!(run.code, 0, "{value}: {:?}", run.stderr);
+            assert!(
+                run.stderr
+                    .iter()
+                    .any(|line| line.starts_with("bilbo: --in kept 1 entry")),
+                "{value}: {:?}",
+                run.stderr
+            );
+            let captures: Vec<String> = hits(&run.stdout)
+                .iter()
+                .map(|hit| capture_of(&sandbox, hit))
+                .collect();
+            assert!(!captures.is_empty(), "{value}: {}", run.stdout);
+            for capture in &captures {
+                assert!(
+                    capture.ends_with(&format!("{kept}.jsonl")),
+                    "{value}: {capture}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
 fn a_value_with_no_letter_or_digit_is_a_usage_error() {
     let sandbox = Sandbox::filled("recall_in_blank");
     let before = sandbox.tree(false);

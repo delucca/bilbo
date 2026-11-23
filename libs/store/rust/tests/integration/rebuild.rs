@@ -304,7 +304,7 @@ fn a_catalog_made_again_has_no_text_label_and_a_new_id() {
 
 #[test]
 fn a_catalog_of_an_older_version_is_made_again_with_the_label_tables() {
-    for older in [2, 3, 4, 5, 6] {
+    for older in [2, 3, 4, 5, 6, 7] {
         let scratch = Scratch::new("anew-older-version");
         let layout = scratch.layout();
         let mut store = open(&layout);
@@ -323,7 +323,7 @@ fn a_catalog_of_an_older_version_is_made_again_with_the_label_tables() {
             .expect("open")
             .query_row("PRAGMA user_version", [], |row| row.get(0))
             .expect("version");
-        assert_eq!(version, 7);
+        assert_eq!(version, 8);
     }
 }
 

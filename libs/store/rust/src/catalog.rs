@@ -47,7 +47,7 @@ CREATE TABLE entry_tags (
 CREATE INDEX entry_tags_by_tag ON entry_tags (tag, standing);
 ";
 
-const VERSION: u32 = 7;
+const VERSION: u32 = 8;
 
 pub const OPEN: &str = "open";
 

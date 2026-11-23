@@ -22,7 +22,7 @@ use crate::session::json::Value;
 const NAME: &str = "session";
 
 /// What this kind renders: the passages, the preface and the entry's labels; changes with any change to that.
-pub const RENDER: &str = "2";
+pub const RENDER: &str = "3";
 
 pub const UNPACK_FLOOR: Key<usize> = Key {
     about: About {
@@ -354,7 +354,7 @@ mod tests {
 
     use crate::files::{Call, Files, Memory, Node, Turning};
     use crate::kind::{Kind, Proposal, Refusal};
-    use crate::reader::{Passage, Reader};
+    use crate::reader::{MAX_ENTRY_LABEL_BYTES, MAX_ENTRY_LABELS, Passage, Reader};
     use bilbo_store::id::Id;
 
     use bilbo_settings::file::File;
@@ -1513,7 +1513,17 @@ mod tests {
             "{{\"type\":\"response_item\",\"payload\":{{\"type\":\"function_call\",\"name\":\"t\",\"arguments\":\"{arguments}\"}},{}}}\n",
             fields(38)
         );
+        let meta = format!(
+            "{{\"type\":\"session_meta\",\"payload\":{{\"cwd\":\"/home/me/src/garden\",\"runtime_workspace_roots\":[\"/home/me/src/shed\"]}},{}}}\n",
+            fields(38)
+        );
         let (claude_records, codex_records) = ([claude.as_bytes()], [codex.as_bytes()]);
+        let given = format!(
+            "{{\"type\":\"attachment\",\"cwd\":\"/home/me/src/garden\",\"attachment\":{{\"type\":\"instructions\",\"files\":[{{\"type\":\"Project\",\"path\":\"/home/me/src/shed/CLAUDE.md\"}}]}},{}}}\n",
+            fields(38)
+        );
+        let meta_records = [meta.as_bytes()];
+        let given_records = [given.as_bytes()];
         for wide in [4, 5, 64] {
             let session = Session::new(128 << 20, 256, 128 << 20, wide);
             let tabled = |times: usize, what: &str| {
@@ -1530,12 +1540,22 @@ mod tests {
             tabled(2, "claude passages");
             session.entry_labels(&claude_records);
             tabled(2, "claude labels");
+            assert_eq!(
+                session.entry_labels(&given_records),
+                ["/home/me/src/garden", "/home/me/src/shed"]
+            );
+            tabled(2, "claude given labels");
             session.preface(&claude_records);
             tabled(1, "preface");
             assert!(!session.passages(&codex_records).is_empty());
             tabled(3, "codex passages");
             session.entry_labels(&codex_records);
             tabled(2, "codex labels");
+            assert_eq!(
+                session.entry_labels(&meta_records),
+                ["/home/me/src/garden", "/home/me/src/shed"]
+            );
+            tabled(2, "codex meta labels");
         }
     }
 
@@ -1620,7 +1640,7 @@ mod tests {
     }
 
     #[test]
-    fn a_claude_session_gives_each_cwd_and_its_added_directories() {
+    fn a_claude_session_gives_each_cwd_its_added_directories_and_the_folders_it_was_given() {
         assert_eq!(
             labels_of(CLAUDE_FOLDERS),
             [
@@ -1629,16 +1649,73 @@ mod tests {
                 "/home/me/src/shed",
                 "/home/me/src/garden/beds",
                 "/home/me/src/greenhouse",
+                "/home/me/src/garden/hedges",
+                "/home/me/src/nursery",
+                "/home/me/src/nursery/seedlings/trays",
+                "/home/me/src/nursery/seedlings/trays/oak",
             ]
         );
     }
 
     #[test]
-    fn a_codex_session_gives_the_cwd_of_its_meta_and_its_turn_contexts() {
+    fn a_codex_session_gives_its_cwds_and_the_workspace_roots_of_its_meta() {
         assert_eq!(
             labels_of(CODEX_FOLDERS),
-            ["/home/me/src/garden", "/home/me/src/shed"]
+            [
+                "/home/me/src/garden",
+                "/home/me/src/apiary",
+                "/home/me",
+                "/home/me/src/shed",
+            ]
         );
+    }
+
+    #[test]
+    fn every_session_meta_gives_its_roots_and_no_other_line_does() {
+        let bytes = [
+            &br#"{"type":"session_meta","payload":{"cwd":"/home/me/src/garden","runtime_workspace_roots":["/home/me/src/shed"]}}"#[..],
+            b"\n",
+            br#"{"type":"turn_context","payload":{"runtime_workspace_roots":["/home/me/src/orchard"]}}"#,
+            b"\n",
+            br#"{"type":"response_item","payload":{"runtime_workspace_roots":["/home/me/src/pond"]}}"#,
+            b"\n",
+            br#"{"type":"session_meta","runtime_workspace_roots":["/home/me/src/barn"],"payload":{"id":"a"}}"#,
+            b"\n",
+            br#"{"type":"session_meta","payload":{"runtime_workspace_roots":["/home/me/src/greenhouse","/home/me/src/shed"]}}"#,
+            b"\n",
+        ]
+        .concat();
+        assert_eq!(
+            labels_of(&bytes),
+            [
+                "/home/me/src/garden",
+                "/home/me/src/shed",
+                "/home/me/src/greenhouse",
+            ]
+        );
+    }
+
+    #[test]
+    fn workspace_roots_of_another_shape_give_no_label() {
+        let long: String = "/ab".repeat(100);
+        let replaced = bilbo_store::opaque::placeholder(&long).expect("a long folder is replaced");
+        let over = format!("/home/me/src/{}", "a".repeat(MAX_ENTRY_LABEL_BYTES + 1));
+        let mut text = String::new();
+        for roots in [
+            "null",
+            "\"/home/me/src/orchard\"",
+            "7",
+            "{\"a\":\"/home/me/src/pond\"}",
+            "[]",
+        ] {
+            text.push_str(&format!(
+                "{{\"type\":\"session_meta\",\"payload\":{{\"runtime_workspace_roots\":{roots}}}}}\n"
+            ));
+        }
+        text.push_str(&format!(
+            "{{\"type\":\"session_meta\",\"payload\":{{\"runtime_workspace_roots\":[7,null,[\"/home/me/src/barn\"],{{\"a\":\"/home/me/src/pond\"}},\"\",\"{replaced}\",\"{over}\",\"/home/me/src/shed\"]}}}}\n"
+        ));
+        assert_eq!(labels_of(text.as_bytes()), ["/home/me/src/shed"]);
     }
 
     #[test]
@@ -1705,8 +1782,413 @@ mod tests {
         assert_eq!(labels_of(codex.as_bytes()), ["/home/me/c"]);
     }
 
+    fn instructions(cwd: &str, files: &[(&str, &str)]) -> String {
+        let files = files
+            .iter()
+            .map(|(kind, path)| {
+                format!("{{\"type\":\"{kind}\",\"path\":\"{path}\",\"content\":\"A note.\"}}")
+            })
+            .collect::<Vec<_>>()
+            .join(",");
+        format!(
+            "{{\"type\":\"attachment\",\"cwd\":\"{cwd}\",\"attachment\":{{\"type\":\"instructions\",\"files\":[{files}]}}}}\n"
+        )
+    }
+
     #[test]
-    fn an_attachment_that_is_no_environment_gives_nothing() {
+    fn a_folder_above_the_cwd_of_its_record_is_not_given() {
+        const GARDEN: &str = "/home/me/src/garden";
+        for (cwd, path, given) in [
+            (GARDEN, "/home/me/src/garden/CLAUDE.md", None),
+            (GARDEN, "/home/me/src/CLAUDE.md", None),
+            (GARDEN, "/home/me/CLAUDE.md", None),
+            (GARDEN, "/CLAUDE.md", None),
+            (
+                GARDEN,
+                "/home/me/src/garden/beds/CLAUDE.md",
+                Some("/home/me/src/garden/beds"),
+            ),
+            (
+                GARDEN,
+                "/home/me/src/shed/CLAUDE.md",
+                Some("/home/me/src/shed"),
+            ),
+            (
+                GARDEN,
+                "/home/me/src/gard/CLAUDE.md",
+                Some("/home/me/src/gard"),
+            ),
+            (
+                GARDEN,
+                "/home/me/src/garden-tools/CLAUDE.md",
+                Some("/home/me/src/garden-tools"),
+            ),
+            (GARDEN, "/Home/me/CLAUDE.md", Some("/Home/me")),
+            ("/home/me/src/garden/", "/home/me/src/CLAUDE.md", None),
+            (
+                "/home/me/src/garden/",
+                "/home/me/src/garden/CLAUDE.md",
+                Some("/home/me/src/garden"),
+            ),
+            (GARDEN, "/home/me//src/CLAUDE.md", None),
+            (
+                GARDEN,
+                "/home/me/src/shed/CLAUDE.md/",
+                Some("/home/me/src/shed"),
+            ),
+            (GARDEN, "garden/CLAUDE.md", Some("garden")),
+            (GARDEN, "home/me/CLAUDE.md", Some("home/me")),
+        ] {
+            let mut labels = vec![cwd.to_owned()];
+            labels.extend(given.map(str::to_owned));
+            assert_eq!(
+                labels_of(instructions(cwd, &[("Project", path)]).as_bytes()),
+                labels,
+                "{cwd} {path}"
+            );
+        }
+
+        let long = format!(
+            "/home/me/src/garden/{}",
+            "a".repeat(MAX_ENTRY_LABEL_BYTES + 1)
+        );
+        let both = [
+            ("Project", "/home/me/src/garden/CLAUDE.md"),
+            ("Project", "/home/me/src/shed/CLAUDE.md"),
+        ];
+        assert_eq!(
+            labels_of(instructions(&long, &both).as_bytes()),
+            ["/home/me/src/shed"]
+        );
+
+        let subagent = instructions(
+            "/home/me/src/garden",
+            &[("Project", "/home/me/src/shed/CLAUDE.md")],
+        )
+        .replace(
+            "\"type\":\"attachment\"",
+            "\"type\":\"attachment\",\"isSidechain\":true,\"agentId\":\"a1b2c3d4e5f60718\"",
+        );
+        assert_eq!(
+            labels_of(subagent.as_bytes()),
+            ["/home/me/src/garden", "/home/me/src/shed"]
+        );
+
+        let twice = [
+            instructions("/home/me/src/garden/beds", &both),
+            instructions("/home/me/src/shed/bench", &both),
+        ]
+        .concat();
+        assert_eq!(
+            labels_of(twice.as_bytes()),
+            [
+                "/home/me/src/garden/beds",
+                "/home/me/src/shed",
+                "/home/me/src/shed/bench",
+                "/home/me/src/garden",
+            ]
+        );
+    }
+
+    #[test]
+    fn a_file_kept_in_a_claude_folder_stands_for_the_folder_that_holds_it() {
+        const GARDEN: &str = "/home/me/src/garden";
+        for (path, given) in [
+            ("/home/me/src/garden/.claude/CLAUDE.md", None),
+            ("/home/me/src/garden/.claude/rules/tools.md", None),
+            ("/home/me/src/garden/.claude/rules/beds/soil/tools.md", None),
+            ("/home/me/src/.claude/CLAUDE.md", None),
+            ("/home/me/src/.claude/rules/fences.md", None),
+            ("/home/me/.claude/CLAUDE.md", None),
+            (
+                "/home/me/src/nursery/.claude/CLAUDE.md",
+                Some("/home/me/src/nursery"),
+            ),
+            (
+                "/home/me/src/nursery/.claude/rules/pots.md",
+                Some("/home/me/src/nursery"),
+            ),
+            (
+                "/home/me/src/garden/beds/.claude/CLAUDE.md",
+                Some("/home/me/src/garden/beds"),
+            ),
+            (
+                "/home/me/src/garden/.claude/skills/pruning/CLAUDE.md",
+                Some("/home/me/src/garden/.claude/skills/pruning"),
+            ),
+            (
+                "/home/me/src/shed/.claude/notes/rules/a.md",
+                Some("/home/me/src/shed/.claude/notes/rules"),
+            ),
+            (
+                "/home/me/src/shed/rules/CLAUDE.md",
+                Some("/home/me/src/shed/rules"),
+            ),
+            (
+                "/home/me/src/shed/.claudette/CLAUDE.md",
+                Some("/home/me/src/shed/.claudette"),
+            ),
+            (
+                "/home/me/src/shed/.Claude/CLAUDE.md",
+                Some("/home/me/src/shed/.Claude"),
+            ),
+            (
+                "/home/me/src/shed/.claude/Rules/a.md",
+                Some("/home/me/src/shed/.claude/Rules"),
+            ),
+            (
+                "/home/me/src/shed/.claude/.claude/CLAUDE.md",
+                Some("/home/me/src/shed/.claude"),
+            ),
+            (
+                "/home/me/src/shed/.claude/rules/a/.claude/CLAUDE.md",
+                Some("/home/me/src/shed/.claude/rules/a"),
+            ),
+            (
+                "/home/me/src/shed/.claude/rules/a/.claude/rules/b/c.md",
+                Some("/home/me/src/shed/.claude/rules/a"),
+            ),
+            (
+                "/home/me/src/shed/.claude//CLAUDE.md",
+                Some("/home/me/src/shed"),
+            ),
+            ("/home/me/src/shed/.claude/rules", Some("/home/me/src/shed")),
+            ("/home/me/src/shed/.claude", Some("/home/me/src/shed")),
+            ("/.claude/CLAUDE.md", None),
+            (".claude/CLAUDE.md", None),
+            (".claude/rules/a.md", None),
+            ("shed/.claude/CLAUDE.md", Some("shed")),
+            ("shed/.claude/rules/f.md", Some("shed")),
+            (
+                "/home/me/src/nursery/.claude/rules/lang/rules/x.md",
+                Some("/home/me/src/nursery"),
+            ),
+            (
+                "/home/me/src/shed/x.claude/CLAUDE.md",
+                Some("/home/me/src/shed/x.claude"),
+            ),
+            (
+                "/home/me/src/shed/.claude/rules/a/b/c/t.md",
+                Some("/home/me/src/shed"),
+            ),
+            (
+                "/home/me/src/shed/.claude//rules/a.md",
+                Some("/home/me/src/shed"),
+            ),
+            (
+                "/home/me//src/shed/.claude/CLAUDE.md",
+                Some("/home/me//src/shed"),
+            ),
+            (
+                "/home/me/src/shed/.claude/rules2/a.md",
+                Some("/home/me/src/shed/.claude/rules2"),
+            ),
+            (
+                "/home/me/src/shed/.claude/myrules/a.md",
+                Some("/home/me/src/shed/.claude/myrules"),
+            ),
+            (
+                "/home/me/src/shed/.claude/rules/a/.claude/skills/s/CLAUDE.md",
+                Some("/home/me/src/shed"),
+            ),
+            (
+                "/home/me/src/shed/.claude/./rules/a.md",
+                Some("/home/me/src/shed"),
+            ),
+            (
+                "/home/me/src/shed/.claude/.claude/rules/a.md",
+                Some("/home/me/src/shed/.claude"),
+            ),
+        ] {
+            let mut labels = vec![GARDEN.to_owned()];
+            labels.extend(given.map(str::to_owned));
+            assert_eq!(
+                labels_of(instructions(GARDEN, &[("Project", path)]).as_bytes()),
+                labels,
+                "{path}"
+            );
+        }
+
+        assert_eq!(
+            labels_of(instructions("/.", &[("Project", "/.claude/CLAUDE.md")]).as_bytes()),
+            ["/.", "/"]
+        );
+
+        let deep = format!("/home/me/src/shed/.claude/rules{}/t.md", "/a".repeat(2048));
+        assert_eq!(
+            labels_of(instructions(GARDEN, &[("Project", &deep)]).as_bytes()),
+            [GARDEN, "/home/me/src/shed"]
+        );
+    }
+
+    #[test]
+    fn a_cwd_or_an_added_directory_in_a_claude_folder_stays_as_written() {
+        let text = "{\"type\":\"attachment\",\"cwd\":\"/home/me/src/garden/.claude\",\"attachment\":{\"type\":\"environment\",\"snapshot\":{\"additionalWorkingDirectories\":[\"/home/me/src/shed/.claude/rules\"]}}}\n";
+        assert_eq!(
+            labels_of(text.as_bytes()),
+            [
+                "/home/me/src/garden/.claude",
+                "/home/me/src/shed/.claude/rules"
+            ]
+        );
+    }
+
+    #[test]
+    fn only_the_project_files_of_an_instructions_attachment_give_a_folder() {
+        let mut text = instructions(
+            "/home/me/src/garden",
+            &[
+                ("User", "/home/me/.claude/CLAUDE.md"),
+                (
+                    "AutoMem",
+                    "/home/me/.claude/projects/-home-me-src-garden/memory/MEMORY.md",
+                ),
+                ("Other", "/home/me/src/a/CLAUDE.md"),
+                ("project", "/home/me/src/b/CLAUDE.md"),
+                ("Project", "/home/me/src/greenhouse/AGENTS.md"),
+            ],
+        );
+        for line in [
+            r#"{"type":"attachment","cwd":"/home/me/src/garden","attachment":{"type":"nested_memory","path":"/home/me/src/c/CLAUDE.md","displayPath":"../c/CLAUDE.md","content":{"type":"Project","path":"/home/me/src/c/CLAUDE.md","content":"Keep the compost covered.","contentDiffersFromDisk":false}}}"#,
+            r#"{"type":"attachment","cwd":"/home/me/src/garden","attachment":{"type":"nested_memory","files":[{"type":"Project","path":"/home/me/src/d/CLAUDE.md"}]}}"#,
+            r#"{"type":"attachment","cwd":"/home/me/src/garden","attachment":{"files":[{"type":"Project","path":"/home/me/src/e/CLAUDE.md"}]}}"#,
+            r#"{"type":"user","cwd":"/home/me/src/garden","attachment":{"type":"instructions","files":[{"type":"Project","path":"/home/me/src/f/CLAUDE.md"}]}}"#,
+        ] {
+            text.push_str(line);
+            text.push('\n');
+        }
+        assert_eq!(
+            labels_of(text.as_bytes()),
+            ["/home/me/src/garden", "/home/me/src/greenhouse"]
+        );
+    }
+
+    #[test]
+    fn an_instructions_attachment_of_another_shape_gives_no_label() {
+        let long: String = "/ab".repeat(100);
+        let replaced = bilbo_store::opaque::placeholder(&long).expect("a long folder is replaced");
+        let media =
+            bilbo_store::opaque::placeholder(&format!("data:image/png;base64,{}", "Z".repeat(300)))
+                .expect("a data URI is replaced");
+        assert!(media.contains('/'));
+        let over = format!("/home/me/src/{}", "a".repeat(MAX_ENTRY_LABEL_BYTES + 1));
+        let head = "{\"type\":\"attachment\",\"cwd\":\"/home/me/src/garden\",\"attachment\":";
+        let mut text = String::new();
+        for attachment in [
+            "\"text\"",
+            "7",
+            "null",
+            "[]",
+            "{\"type\":3}",
+            "{\"type\":\"instructions\"}",
+            "{\"type\":\"instructions\",\"files\":null}",
+            "{\"type\":\"instructions\",\"files\":\"/home/me/src/orchard/CLAUDE.md\"}",
+            "{\"type\":\"instructions\",\"files\":{\"type\":\"Project\",\"path\":\"/home/me/src/pond/CLAUDE.md\"}}",
+        ] {
+            text.push_str(&format!("{head}{attachment}}}\n"));
+        }
+        let files = [
+            "7".to_owned(),
+            "\"/home/me/src/orchard/CLAUDE.md\"".to_owned(),
+            "null".to_owned(),
+            "[{\"type\":\"Project\",\"path\":\"/home/me/src/pond/CLAUDE.md\"}]".to_owned(),
+            "{\"path\":\"/home/me/src/barn/CLAUDE.md\"}".to_owned(),
+            "{\"type\":4,\"path\":\"/home/me/src/barn/CLAUDE.md\"}".to_owned(),
+            "{\"type\":\"Project\"}".to_owned(),
+            "{\"type\":\"Project\",\"path\":5}".to_owned(),
+            "{\"type\":\"Project\",\"path\":null}".to_owned(),
+            "{\"type\":\"Project\",\"path\":\"\"}".to_owned(),
+            "{\"type\":\"Project\",\"path\":\"CLAUDE.md\"}".to_owned(),
+            "{\"type\":\"Project\",\"path\":\"/\"}".to_owned(),
+            format!("{{\"type\":\"Project\",\"path\":\"{replaced}\"}}"),
+            format!("{{\"type\":\"Project\",\"path\":\"{media}\"}}"),
+            format!("{{\"type\":\"Project\",\"path\":\"{over}/CLAUDE.md\"}}"),
+            "{\"type\":\"Project\",\"path\":\"/home/me/src/shed/CLAUDE.md\"}".to_owned(),
+        ]
+        .join(",");
+        text.push_str(&format!(
+            "{head}{{\"type\":\"instructions\",\"files\":[{files}]}}}}\n"
+        ));
+        assert_eq!(
+            labels_of(text.as_bytes()),
+            ["/home/me/src/garden", "/home/me/src/shed"]
+        );
+    }
+
+    #[test]
+    fn an_instructions_attachment_whose_record_has_no_cwd_gives_no_folder() {
+        let replaced = bilbo_store::opaque::placeholder(&"/ab".repeat(100))
+            .expect("a long folder is replaced");
+        let files = "\"attachment\":{\"type\":\"instructions\",\"files\":[{\"type\":\"Project\",\"path\":\"/home/me/src/shed/CLAUDE.md\"}]}";
+        let mut text =
+            "{\"type\":\"user\",\"cwd\":\"/home/me/src/garden\",\"message\":{\"content\":\"a\"}}\n"
+                .to_owned();
+        for cwd in [
+            String::new(),
+            "\"cwd\":7,".to_owned(),
+            "\"cwd\":null,".to_owned(),
+            "\"cwd\":\"\",".to_owned(),
+            format!("\"cwd\":\"{replaced}\","),
+        ] {
+            text.push_str(&format!("{{\"type\":\"attachment\",{cwd}{files}}}\n"));
+        }
+        text.push_str(&instructions(
+            "/home/me/src/garden",
+            &[("Project", "/home/me/src/greenhouse/CLAUDE.md")],
+        ));
+        assert_eq!(
+            labels_of(text.as_bytes()),
+            ["/home/me/src/garden", "/home/me/src/greenhouse"]
+        );
+    }
+
+    #[test]
+    fn no_record_makes_a_reader_fail_over_its_labels() {
+        use crate::reader::Reader;
+        let lines: Vec<&[u8]> = [CLAUDE_FOLDERS, CODEX_FOLDERS]
+            .into_iter()
+            .flat_map(|file| file.split_inclusive(|&byte| byte == b'\n'))
+            .collect();
+        let mut dice = Dice(0x9e37_79b9_7f4a_7c15);
+        let mut counted = 0;
+        for case in 0..4000 {
+            let records: Vec<Vec<u8>> = (0..dice.below(7))
+                .map(|_| match dice.below(5) {
+                    0 => dice.bytes(80),
+                    1 => lines[dice.below(lines.len())].to_vec(),
+                    _ => {
+                        let line = lines[dice.below(lines.len())];
+                        dice.spoiled(line)
+                    }
+                })
+                .collect();
+            let records: Vec<&[u8]> = records.iter().map(Vec::as_slice).collect();
+            for labels in [
+                Session::default().entry_labels(&records),
+                crate::session::claude::read::labels(&records, 32),
+                crate::session::codex::read::labels(&records, 32),
+            ] {
+                assert!(labels.len() <= MAX_ENTRY_LABELS, "case {case}");
+                for (at, label) in labels.iter().enumerate() {
+                    assert!(
+                        !label.is_empty()
+                            && label.len() <= MAX_ENTRY_LABEL_BYTES
+                            && !bilbo_store::opaque::is_placeholder(label)
+                            && !labels[..at].contains(label),
+                        "case {case}: {label}"
+                    );
+                }
+                counted += labels.len();
+            }
+        }
+        assert!(
+            counted > 4000,
+            "the cases still reach the readers: {counted}"
+        );
+    }
+
+    #[test]
+    fn an_attachment_of_another_type_gives_nothing() {
         let bytes = [
             &b"{\"type\":\"attachment\",\"attachment\":{\"type\":\"hook_success\",\"snapshot\":{\"additionalWorkingDirectories\":[\"/a\"]}}}\n"[..],
             b"{\"type\":\"user\",\"attachment\":{\"type\":\"environment\",\"snapshot\":{\"additionalWorkingDirectories\":[\"/b\"]}},\"message\":{\"content\":\"a\"}}\n",

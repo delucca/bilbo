@@ -1,6 +1,10 @@
 //! Renders as the eval's bm25 `build.py` does (`render_session`, `render_entry`); where that script would stop on
 //! an unexpected shape, the block or the entry renders nothing.
 
+use std::path::{Component, Path};
+
+use bilbo_store::opaque;
+
 use crate::reader::{EntryLabels, Passage};
 
 use crate::session::json::{self, Value};
@@ -168,32 +172,84 @@ pub fn passages(records: &[&[u8]], wide: usize) -> Vec<Passage> {
     passages
 }
 
+fn above(folder: &Path, cwd: &[Component]) -> bool {
+    cwd.len() > folder.components().count()
+        && folder
+            .components()
+            .zip(cwd)
+            .all(|(folder, cwd)| folder == *cwd)
+}
+
+fn holder(folder: &Path) -> Option<&Path> {
+    let named = |folder: &Path, name: &str| folder.file_name().is_some_and(|last| last == name);
+    if named(folder, ".claude") {
+        return folder.parent();
+    }
+    match folder.ancestors().find(|folder| {
+        named(folder, "rules") && folder.parent().is_some_and(|up| named(up, ".claude"))
+    }) {
+        Some(rules) => rules.parent()?.parent(),
+        None => Some(folder),
+    }
+}
+
+fn given(attachment: &Value, cwd: Option<&str>, found: &mut EntryLabels) {
+    let Some(cwd) = cwd.filter(|cwd| !cwd.is_empty() && !opaque::is_placeholder(cwd)) else {
+        return;
+    };
+    let Some(Value::List(files)) = attachment.get("files") else {
+        return;
+    };
+    let cwd: Vec<Component> = Path::new(cwd).components().collect();
+    for file in files {
+        if file.get("type").and_then(Value::as_str) != Some("Project") {
+            continue;
+        }
+        let Some(path) = file
+            .get("path")
+            .and_then(Value::as_str)
+            .filter(|path| !opaque::is_placeholder(path))
+        else {
+            continue;
+        };
+        if let Some(folder) = Path::new(path).parent().and_then(holder)
+            && !above(folder, &cwd)
+            && let Some(folder) = folder.to_str()
+        {
+            found.add(folder);
+        }
+    }
+}
+
 pub fn labels(records: &[&[u8]], wide: usize) -> Vec<String> {
     let mut found = EntryLabels::default();
     for record in records {
         let Some(record) = json::parse(record, wide).filter(Value::is_dict) else {
             continue;
         };
-        if let Some(cwd) = record.get("cwd").and_then(Value::as_str) {
+        let cwd = record.get("cwd").and_then(Value::as_str);
+        if let Some(cwd) = cwd {
             found.add(cwd);
         }
-        let environment = record.get("type").and_then(Value::as_str) == Some("attachment")
-            && record
-                .get("attachment")
-                .and_then(|attachment| attachment.get("type"))
-                .and_then(Value::as_str)
-                == Some("environment");
-        if !environment {
+        if record.get("type").and_then(Value::as_str) != Some("attachment") {
             continue;
         }
-        let added = record
-            .get("attachment")
-            .and_then(|attachment| attachment.get("snapshot"))
-            .and_then(|snapshot| snapshot.get("additionalWorkingDirectories"));
-        if let Some(Value::List(folders)) = added {
-            for folder in folders.iter().filter_map(Value::as_str) {
-                found.add(folder);
+        let Some(attachment) = record.get("attachment") else {
+            continue;
+        };
+        match attachment.get("type").and_then(Value::as_str) {
+            Some("instructions") => given(attachment, cwd, &mut found),
+            Some("environment") => {
+                let added = attachment
+                    .get("snapshot")
+                    .and_then(|snapshot| snapshot.get("additionalWorkingDirectories"));
+                if let Some(Value::List(folders)) = added {
+                    for folder in folders.iter().filter_map(Value::as_str) {
+                        found.add(folder);
+                    }
+                }
             }
+            _ => {}
         }
     }
     found.into_texts()

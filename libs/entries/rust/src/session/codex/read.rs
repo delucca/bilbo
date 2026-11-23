@@ -165,14 +165,20 @@ pub fn labels(records: &[&[u8]], wide: usize) -> Vec<String> {
         let Some(record) = json::parse(record, wide).filter(Value::is_dict) else {
             continue;
         };
-        if matches!(
-            field(&record, "type"),
-            Some("session_meta" | "turn_context")
-        ) && let Some(cwd) = record
-            .get("payload")
-            .and_then(|payload| field(payload, "cwd"))
+        let payload = record.get("payload");
+        let kind = field(&record, "type");
+        if matches!(kind, Some("session_meta" | "turn_context"))
+            && let Some(cwd) = payload.and_then(|payload| field(payload, "cwd"))
         {
             found.add(cwd);
+        }
+        if kind == Some("session_meta")
+            && let Some(Value::List(roots)) =
+                payload.and_then(|payload| payload.get("runtime_workspace_roots"))
+        {
+            for root in roots.iter().filter_map(Value::as_str) {
+                found.add(root);
+            }
         }
     }
     found.into_texts()
