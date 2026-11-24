@@ -4,7 +4,7 @@ the pages they cite, and recalls them when a later session asks.
 [1mUsage:[22m [36mbilbo [39m[2m<verb>[22m[36m [[39m[2m<args>[22m[36m][39m
 
 [1mVerbs:[22m
-  [1mremember[22m  Keep files as entries; a later run keeps what grew or changed
+  [1mremember[22m  Keep files or a note as entries; a later run keeps what changed
   [1mrefresh[22m   Keep what every follow gained or changed; a timer runs it
   [1mrecall[22m    Search everything bilbo keeps and print the best chunks and notes
   [1mread[22m      Print an entry: its outline, or its records a page at a time

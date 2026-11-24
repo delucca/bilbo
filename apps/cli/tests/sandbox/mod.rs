@@ -19,12 +19,31 @@ pub struct Run {
 }
 
 /// Notices also go to `notices`, for a test that waits on one.
-pub fn run(vars: HashMap<String, OsString>, args: &[&str], notices: Option<Sender<String>>) -> Run {
+pub fn run(
+    vars: HashMap<String, OsString>,
+    args: &[&str],
+    input: &[u8],
+    notices: Option<Sender<String>>,
+) -> Run {
+    run_reading(
+        vars,
+        args,
+        Box::new(io::Cursor::new(input.to_vec())),
+        notices,
+    )
+}
+
+pub fn run_reading(
+    vars: HashMap<String, OsString>,
+    args: &[&str],
+    input: Box<dyn io::Read>,
+    notices: Option<Sender<String>>,
+) -> Run {
     let said = Arc::new(Mutex::new(Vec::new()));
     let sink = Arc::clone(&said);
     let mut env = Env {
         var: std::rc::Rc::new(move |name| vars.get(name).cloned()),
-        stdin: Box::new(io::empty()),
+        stdin: input,
         notice: Box::new(move |message| {
             let lines = message.plain_lines();
             if let Some(notices) = &notices {

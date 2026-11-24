@@ -230,6 +230,7 @@ pub struct Seen {
     pub bytes: Vec<u8>,
     pub ends: Vec<usize>,
     pub head: Option<Head>,
+    pub lookups_before: usize,
 }
 
 #[derive(Default)]
@@ -240,6 +241,8 @@ pub struct FakeEntries {
     pub metas: HashMap<Id, Meta>,
     pub adopted: Vec<(Id, Option<Id>)>,
     pub labelled: Vec<(Id, Option<CaptureLabel>)>,
+    pub looked: RefCell<Vec<String>>,
+    pub lookup_fails: bool,
     pub resolving: bool,
 }
 
@@ -334,6 +337,7 @@ impl Entries for FakeEntries {
             bytes: input.bytes.to_vec(),
             ends: input.ends.to_vec(),
             head: self.heads.get(input.label.as_str()).copied(),
+            lookups_before: self.looked.borrow().len(),
         });
         let n = u8::try_from(self.seen.len()).unwrap_or(u8::MAX);
         let held = self.heads.get(input.label.as_str()).map(|head| head.id);
@@ -435,6 +439,10 @@ impl Entries for FakeEntries {
     }
 
     fn by_capture(&self, label: &CaptureLabel) -> Result<Option<Head>, StoreError> {
+        self.looked.borrow_mut().push(label.to_string());
+        if self.lookup_fails {
+            return Err(StoreError::Stopped("by_capture".into()));
+        }
         Ok(self.heads.get(label.as_str()).copied())
     }
 

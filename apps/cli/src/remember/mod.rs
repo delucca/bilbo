@@ -2,6 +2,7 @@ pub mod disk;
 pub mod follows;
 pub mod index;
 pub mod messages;
+pub mod note;
 pub mod save;
 pub mod view;
 
@@ -27,11 +28,12 @@ use crate::console::settings::Settings;
 use disk::Disk;
 use messages::{moves, refusals, tagged, withdrawals};
 
-const SUMMARY: &str = "Keep files as entries; a later run keeps what grew or changed";
+const SUMMARY: &str = "Keep files or a note as entries; a later run keeps what changed";
 const ABOUT: &str =
-    "bilbo remember: keep files as entries, and what grew or changed in them since.";
+    "bilbo remember: keep files or a note as entries, and what changed in them since.";
 const USAGE: &str = "bilbo remember <file|folder> [--kind <kind>] [--tag <tag>]...
-                 [--follow]";
+                 [--follow]
+  bilbo remember - [--tag <tag>]...";
 
 #[derive(Debug, clap::Args)]
 #[command(about = SUMMARY, before_help = ABOUT, override_usage = USAGE)]
@@ -82,12 +84,12 @@ Output:
 
 Exit:
   0  success
-  1  a refused file, nothing to keep, a missing target, a store or index failure
+  1  a refused file or note, nothing to keep, a store or index failure
   2  usage or config error, or a config file --follow cannot write
 
 Examples:
-  bilbo remember ~/.claude/projects --kind session
   bilbo remember ~/notes --follow
+  echo 'The beet seeds are in the drawer.' | bilbo remember - --tag garden
 
 Docs: https://github.com/delucca/bilbo/wiki/Commands#remember";
 
@@ -98,14 +100,30 @@ pub fn run(
     settings: &Settings,
     kinds: &[Box<dyn Kind>],
     indexing: &Indexing<'_>,
+    written: &note::Written,
 ) -> Result<Outcome, Failure> {
     let Some(target) = args.target else {
         return Err(usage(
             root,
-            "missing <file|folder>; bilbo refresh keeps every follow".to_owned(),
+            "missing <file|folder> or -; bilbo refresh keeps every follow".to_owned(),
             Some("remember"),
         ));
     };
+    let from_input = target.as_os_str() == "-";
+    if from_input && args.kind.is_some() {
+        return Err(usage(
+            root,
+            "--kind does not stand with a note: its kind is note".to_owned(),
+            Some("remember"),
+        ));
+    }
+    if from_input && args.follow {
+        return Err(usage(
+            root,
+            "--follow does not stand with a note: a follow is a file or folder".to_owned(),
+            Some("remember"),
+        ));
+    }
     let mut named = BTreeSet::new();
     for text in &args.tags {
         let Some(name) = Tag::new(text) else {
@@ -124,13 +142,18 @@ pub fn run(
             Some("remember"),
         ));
     }
+    let tags = Tagging {
+        tags: named,
+        cap: settings.tag_cap.value,
+    };
+    if from_input {
+        let text = note::from_input(&mut env.stdin)?;
+        return note::keep(&text, &tags, written, env, settings, kinds, indexing);
+    }
     let request = Request {
         target,
         kind: args.kind,
-        tags: Tagging {
-            tags: named,
-            cap: settings.tag_cap.value,
-        },
+        tags,
     };
     let plan = remember::plan(&request, kinds, &Disk).map_err(|error| match error {
         remember::Error::UnknownKind { .. } | remember::Error::SeveralKinds { .. } => {

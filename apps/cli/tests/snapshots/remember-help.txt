@@ -1,8 +1,9 @@
-bilbo remember: keep files as entries, and what grew or changed in them since.
+bilbo remember: keep files or a note as entries, and what changed in them since.
 
 Usage:
   bilbo remember <file|folder> [--kind <kind>] [--tag <tag>]...
                  [--follow]
+  bilbo remember - [--tag <tag>]...
 
 Options:
       --kind <kind>  Run this kind, not the one that claims the files
@@ -19,11 +20,11 @@ Output:
 
 Exit:
   0  success
-  1  a refused file, nothing to keep, a missing target, a store or index failure
+  1  a refused file or note, nothing to keep, a store or index failure
   2  usage or config error, or a config file --follow cannot write
 
 Examples:
-  bilbo remember ~/.claude/projects --kind session
   bilbo remember ~/notes --follow
+  echo 'The beet seeds are in the drawer.' | bilbo remember - --tag garden
 
 Docs: https://github.com/delucca/bilbo/wiki/Commands#remember

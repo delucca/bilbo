@@ -1,5 +1,6 @@
 pub mod record;
 mod render;
+pub mod written;
 
 use crate::reader::{Passage, Reader};
 

@@ -9,7 +9,9 @@ use std::time::{Duration, SystemTime};
 use bilbo_entries::files::{Call, Files, Memory, Node, Turning};
 use bilbo_entries::follows::{self, Follow, Planned};
 use bilbo_entries::kind::Kind;
-use bilbo_entries::remember::{self, Error, Item, Moved, Outcome, Output, Request, Tagging, Tally};
+use bilbo_entries::remember::{
+    self, Error, Item, Moved, Outcome, Output, Request, Tagging, Tally, Written, WrittenAnswer,
+};
 use bilbo_store::entries::{Generation, Head, Mark, Stamp};
 use bilbo_store::id::Id;
 use bilbo_store::labels::{By, CaptureLabel, Standing, StoredLabels, Tag, Tags};
@@ -2256,3 +2258,181 @@ fn a_withdrawal_the_store_does_not_make_is_a_refusal_of_the_gone_path() {
 }
 
 const NOT_WITHDRAWN: &str = "its file is gone, and the store did not withdraw its entry";
+
+fn document_label() -> CaptureLabel {
+    CaptureLabel::new(format!("doc:{}", id(5))).expect("a label")
+}
+
+fn document_record(text: &str) -> Vec<u8> {
+    format!("{{\"text\":\"{text}\"}}\n").into_bytes()
+}
+
+fn keep_document(entries: &mut FakeEntries, record: &[u8], tags: &Tagging) -> WrittenAnswer {
+    let label = document_label();
+    remember::keep_written(
+        entries,
+        &Written {
+            kind: "fake",
+            label: &label,
+            id: id(5),
+            record,
+            tags,
+        },
+    )
+}
+
+fn garden(cap: usize) -> Tagging {
+    Tagging {
+        tags: [Tag::new("garden").expect("a tag")].into(),
+        cap,
+    }
+}
+
+#[test]
+fn a_written_text_is_one_new_entry_under_the_label_and_the_id_it_is_given() {
+    let mut entries = FakeEntries::new();
+    let record = document_record("The beet seeds are in the drawer.");
+    let answer = keep_document(&mut entries, &record, &garden(3));
+
+    assert!(matches!(
+        answer,
+        WrittenAnswer::Kept {
+            tagged: true,
+            records: 1,
+            ..
+        }
+    ));
+    let WrittenAnswer::Kept {
+        id: kept,
+        raw_bytes,
+        stored_bytes,
+        ..
+    } = answer
+    else {
+        panic!("{answer:?}");
+    };
+    assert_eq!(kept, id(5));
+    assert_eq!(raw_bytes, record.len() as u64);
+    assert_eq!(stored_bytes, record.len() as u64 + 100);
+    assert_eq!(entries.seen.len(), 1);
+    let seen = &entries.seen[0];
+    assert_eq!(seen.label, document_label().as_str());
+    assert_eq!(seen.kind, "fake");
+    assert_eq!(
+        (seen.id, seen.id_label, seen.stamp),
+        (Some(id(5)), None, None)
+    );
+    assert_eq!(seen.bytes, record);
+    assert_eq!(seen.ends, [record.len()]);
+    assert_eq!(
+        entries.metas[&id(5)].labels.tags,
+        carried(&[("garden", by_person())])
+    );
+    assert_eq!(*entries.looked.borrow(), [document_label().to_string()]);
+    assert_eq!(seen.lookups_before, 1);
+    assert!(entries.labelled.is_empty() && entries.adopted.is_empty());
+}
+
+#[test]
+fn a_written_text_with_more_tags_than_the_cap_is_refused_before_the_store_is_asked() {
+    let mut entries = FakeEntries::new();
+    let tags = Tagging {
+        tags: [
+            Tag::new("garden").expect("a tag"),
+            Tag::new("beets").expect("a tag"),
+        ]
+        .into(),
+        cap: 1,
+    };
+    let answer = keep_document(&mut entries, &document_record("x"), &tags);
+    let WrittenAnswer::Refused(reason) = answer else {
+        panic!("{answer:?}");
+    };
+    assert_eq!(reason, "its entry would carry more than tag.cap tags (1)");
+    assert!(entries.seen.is_empty());
+    assert!(entries.looked.borrow().is_empty());
+}
+
+#[test]
+fn a_store_that_refuses_or_fails_a_written_text_says_so() {
+    let record = document_record("x");
+    let label = document_label().to_string();
+
+    let mut refusing = FakeEntries::new().on(&label, Script::Records("bad ends".to_string()));
+    let answer = keep_document(&mut refusing, &record, &Tagging::default());
+    assert!(
+        matches!(&answer, WrittenAnswer::Refused(text) if text == "its records do not cover it: bad ends"),
+        "{answer:?}"
+    );
+
+    let mut blind = FakeEntries::new();
+    blind.lookup_fails = true;
+    let answer = keep_document(&mut blind, &record, &Tagging::default());
+    assert!(
+        matches!(&answer, WrittenAnswer::BeforeCapture(error) if error.to_string() == "stopped at the test hook by_capture"),
+        "{answer:?}"
+    );
+    assert!(blind.seen.is_empty());
+
+    for script in [Script::Unchanged, Script::Appended, Script::NewGeneration] {
+        let mut entries = FakeEntries::new().on(&label, script);
+        let answer = keep_document(&mut entries, &record, &Tagging::default());
+        assert!(
+            matches!(&answer, WrittenAnswer::AtCapture { id: tried, error } if *tried == id(5) && error.to_string() == "the store did not make a new entry for the note"),
+            "{answer:?}"
+        );
+        assert_eq!(entries.seen.len(), 1);
+    }
+
+    let mut failing = FakeEntries::new().on(&label, Script::Failure);
+    let answer = keep_document(&mut failing, &record, &Tagging::default());
+    assert!(
+        matches!(&answer, WrittenAnswer::AtCapture { id: tried, error } if *tried == id(5) && error.to_string() == "stopped at the test hook Appended"),
+        "{answer:?}"
+    );
+}
+
+#[test]
+fn a_written_text_the_store_would_change_is_refused_before_the_store_is_asked() {
+    let mut entries = FakeEntries::new();
+    let answer = keep_document(
+        &mut entries,
+        &document_record(&"z".repeat(256)),
+        &Tagging::default(),
+    );
+    let WrittenAnswer::Refused(reason) = answer else {
+        panic!("{answer:?}");
+    };
+    assert_eq!(
+        reason,
+        "the store would keep only a placeholder for its text, which it takes for encoded data"
+    );
+    assert!(entries.looked.borrow().is_empty());
+    assert!(entries.seen.is_empty());
+
+    for text in ["0123456789abcdef".repeat(16), "word ".repeat(80)] {
+        let mut entries = FakeEntries::new();
+        let answer = keep_document(&mut entries, &document_record(&text), &Tagging::default());
+        assert!(matches!(answer, WrittenAnswer::Kept { .. }), "{answer:?}");
+        assert_eq!(entries.seen.len(), 1);
+    }
+}
+
+#[test]
+fn a_written_text_whose_label_holds_an_entry_is_refused() {
+    let label = document_label();
+    let mut entries =
+        FakeEntries::new().kept_under(Some(label.as_str()), id(7), "fake", Tags::default());
+    let head = entries.heads[label.as_str()];
+    let answer = keep_document(&mut entries, &document_record("x"), &Tagging::default());
+    let WrittenAnswer::Refused(reason) = answer else {
+        panic!("{answer:?}");
+    };
+    assert_eq!(
+        reason,
+        format!("its id {} is taken by another entry", id(5))
+    );
+    assert_eq!(*entries.looked.borrow(), [label.to_string()]);
+    assert!(entries.seen.is_empty());
+    assert_eq!(entries.heads[label.as_str()], head);
+}

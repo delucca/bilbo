@@ -507,12 +507,11 @@ fn a_session_whose_file_is_gone_stays_in_recall() {
 
     let run = scratch.run(&["refresh"]);
     assert_eq!((run.code, run.stderr.as_str()), (0, ""));
-    let line = first(&run);
-    assert!(
-        line.starts_with("new 0, appended 0, new generation 0, unchanged "),
-        "{line}"
+    assert_eq!(first(&run), counts(0, 0, 0, 4, 0));
+    assert_eq!(
+        run.stdout.lines().nth(1),
+        Some("records 0, raw bytes 0, stored bytes 0")
     );
-    assert!(line.ends_with(", refused 0"), "{line}");
     let after = scratch.run(&["recall", "--", "beans"]);
     assert_eq!(after.code, 0, "{}", after.stderr);
     let found = after

@@ -10,6 +10,7 @@ use bilbo_store::entries::{
 };
 use bilbo_store::id::Id;
 use bilbo_store::labels::{CaptureLabel, StoredLabels, Tag, Tags};
+use bilbo_store::opaque;
 
 use crate::files::{At, Files, Node, at};
 use crate::kind::{Claim, Kind, Proposal};
@@ -683,6 +684,86 @@ fn adopt(
             ..meta
         },
     )?)
+}
+
+pub struct Written<'a> {
+    pub kind: &'a str,
+    pub label: &'a CaptureLabel,
+    pub id: Id,
+    pub record: &'a [u8],
+    pub tags: &'a Tagging,
+}
+
+#[derive(Debug)]
+pub enum WrittenAnswer {
+    Kept {
+        id: Id,
+        records: u64,
+        raw_bytes: u64,
+        stored_bytes: u64,
+        tagged: bool,
+    },
+    Refused(String),
+    BeforeCapture(StoreError),
+    AtCapture {
+        id: Id,
+        error: StoreError,
+    },
+}
+
+pub fn keep_written(entries: &mut dyn Entries, written: &Written<'_>) -> WrittenAnswer {
+    let first = match fits(written.tags, None, entries) {
+        Ok(Ok(first)) => first,
+        Ok(Err(reason)) => return WrittenAnswer::Refused(reason),
+        Err(Error::Store(error)) => return WrittenAnswer::BeforeCapture(error),
+        Err(other) => return WrittenAnswer::BeforeCapture(StoreError::Missing(other.to_string())),
+    };
+    if opaque::filter(written.record).as_ref() != written.record {
+        return WrittenAnswer::Refused(
+            "the store would keep only a placeholder for its text, which it takes for encoded data"
+                .to_owned(),
+        );
+    }
+    match entries.by_capture(written.label) {
+        Ok(None) => {}
+        Ok(Some(_)) => {
+            return WrittenAnswer::Refused(format!(
+                "its id {} is taken by another entry",
+                written.id
+            ));
+        }
+        Err(error) => return WrittenAnswer::BeforeCapture(error),
+    }
+    let input = Capture {
+        label: written.label,
+        kind: written.kind,
+        id: Some(written.id),
+        id_label: None,
+        stamp: None,
+        bytes: written.record,
+        ends: &[written.record.len()],
+        tags: &first,
+    };
+    match entries.capture(&input) {
+        Ok(Captured::New(kept)) => WrittenAnswer::Kept {
+            id: kept.id,
+            records: kept.records.count,
+            raw_bytes: kept.raw_bytes,
+            stored_bytes: kept.stored_bytes,
+            tagged: !written.tags.tags.is_empty(),
+        },
+        Ok(_) => WrittenAnswer::AtCapture {
+            id: written.id,
+            error: StoreError::Missing(
+                "the store did not make a new entry for the note".to_owned(),
+            ),
+        },
+        Err(CaptureError::Store(error)) => WrittenAnswer::AtCapture {
+            id: written.id,
+            error,
+        },
+        Err(error) => WrittenAnswer::Refused(error.to_string()),
+    }
 }
 
 /// A failed lookup gives no id: the capture that follows reads the same catalog and reports it.

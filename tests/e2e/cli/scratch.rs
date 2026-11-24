@@ -1,9 +1,11 @@
 use std::fs;
-use std::path::PathBuf;
+use std::io::Write;
+use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime};
 
-use super::{Run, bilbo};
+use super::{Run, bilbo, binary};
 
 static COUNTER: AtomicU64 = AtomicU64::new(0);
 
@@ -115,6 +117,36 @@ impl Scratch {
         );
         let pairs: Vec<(&str, &str)> = env.iter().map(|(k, v)| (*k, v.as_str())).collect();
         bilbo(args, &pairs)
+    }
+
+    pub(crate) fn run_with_input(&self, args: &[&str], input: &[u8]) -> Run {
+        self.piped(args, input, None)
+    }
+
+    pub(crate) fn run_with_input_in(&self, args: &[&str], input: &[u8], folder: &Path) -> Run {
+        self.piped(args, input, Some(folder))
+    }
+
+    fn piped(&self, args: &[&str], input: &[u8], folder: Option<&Path>) -> Run {
+        let mut command = Command::new(fs::canonicalize(binary()).expect("the binary"));
+        command.env_clear().envs(self.env());
+        if let Some(folder) = folder {
+            command.current_dir(folder);
+        }
+        let mut child = command
+            .args(args)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("bilbo runs");
+        let _ = child.stdin.take().expect("a pipe").write_all(input);
+        let output = child.wait_with_output().expect("bilbo ends");
+        Run {
+            code: output.status.code().expect("an exit code"),
+            stdout: String::from_utf8(output.stdout).expect("UTF-8 stdout"),
+            stderr: String::from_utf8(output.stderr).expect("UTF-8 stderr"),
+        }
     }
 
     /// A run without `BILBO_HOME`, so the root comes from the file or the default.

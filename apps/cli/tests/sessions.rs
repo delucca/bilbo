@@ -149,15 +149,15 @@ impl Sandbox {
     }
 
     fn run(&self, args: &[&str]) -> Run {
-        run(self.vars(), &[&["remember"][..], args].concat(), None)
+        run(self.vars(), &[&["remember"][..], args].concat(), &[], None)
     }
 
     fn refresh(&self) -> Run {
-        run(self.vars(), &["refresh"], None)
+        run(self.vars(), &["refresh"], &[], None)
     }
 
     fn run_noticed(&self, args: &[&str], notices: Option<Sender<String>>) -> Run {
-        run(self.vars(), args, notices)
+        run(self.vars(), args, &[], notices)
     }
 
     fn store(&self) -> Store {

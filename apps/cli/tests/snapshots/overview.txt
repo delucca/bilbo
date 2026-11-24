@@ -4,7 +4,7 @@ the pages they cite, and recalls them when a later session asks.
 Usage: bilbo <verb> [<args>]
 
 Verbs:
-  remember  Keep files as entries; a later run keeps what grew or changed
+  remember  Keep files or a note as entries; a later run keeps what changed
   refresh   Keep what every follow gained or changed; a timer runs it
   recall    Search everything bilbo keeps and print the best chunks and notes
   read      Print an entry: its outline, or its records a page at a time

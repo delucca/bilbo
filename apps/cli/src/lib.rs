@@ -195,6 +195,8 @@ pub fn apart() -> Vec<&'static str> {
 
 pub struct Notes {
     pub kind: &'static str,
+    pub record: fn(&str, std::time::SystemTime) -> Option<Vec<u8>>,
+    pub label: fn(bilbo_store::id::Id) -> bilbo_store::labels::CaptureLabel,
     pub write: fn(&bilbo_entries::note::record::Record) -> Vec<u8>,
     pub line: fn(&bilbo_derive::view::Paragraph) -> Vec<u8>,
     pub paragraph: fn(&[u8]) -> Option<bilbo_derive::view::Paragraph>,
@@ -203,6 +205,8 @@ pub struct Notes {
 pub fn notes() -> Notes {
     Notes {
         kind: bilbo_entries::note::NAME,
+        record: bilbo_entries::note::written::record,
+        label: bilbo_entries::note::written::label,
         write: bilbo_entries::note::record::write,
         line: note_line,
         paragraph: note_paragraph,
@@ -413,7 +417,21 @@ pub fn run_tuned(
                     let disk = |cache: &std::path::Path| index(cache, &settings.search);
                     let indexing =
                         tune(indexing(&settings, &readers, &rendering, &tokenizer, &disk));
-                    remember::run(root, args, env, &settings, &kinds(&settings)?, &indexing)
+                    let note = notes();
+                    let written = remember::note::Written {
+                        kind: note.kind,
+                        record: note.record,
+                        label: note.label,
+                    };
+                    remember::run(
+                        root,
+                        args,
+                        env,
+                        &settings,
+                        &kinds(&settings)?,
+                        &indexing,
+                        &written,
+                    )
                 }
                 Verb::Refresh(args) => {
                     let readers = readers(&settings)?;
@@ -1045,13 +1063,14 @@ mod tests {
         };
         assert_eq!(
             reason,
-            "missing <file|folder>; bilbo refresh keeps every follow"
+            "missing <file|folder> or -; bilbo refresh keeps every follow"
         );
         assert_eq!(
             usage,
             &[
                 "usage: bilbo remember <file|folder> [--kind <kind>] [--tag <tag>]...",
-                "       [--follow]"
+                "       [--follow]",
+                "       bilbo remember - [--tag <tag>]..."
             ]
         );
         assert_eq!(page, "bilbo remember --help");

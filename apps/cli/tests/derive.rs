@@ -1217,6 +1217,12 @@ fn poisoned_remember(sandbox: &Sandbox, folder: &str) {
         tags: Vec::new(),
         follow: false,
     };
+    let note = bilbo_cli::notes();
+    let written = bilbo_cli::remember::note::Written {
+        kind: note.kind,
+        record: note.record,
+        label: note.label,
+    };
     bilbo_cli::remember::run(
         &bilbo_cli::bilbo(),
         args,
@@ -1224,6 +1230,7 @@ fn poisoned_remember(sandbox: &Sandbox, folder: &str) {
         &settings,
         &bilbo_cli::kinds(&settings).expect("the kinds"),
         &indexing,
+        &written,
     )
     .expect("the remember");
 }

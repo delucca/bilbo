@@ -81,9 +81,10 @@ The line number is the first line of what the clause names. A file that did not 
 
 ```text
 bilbo remember <file|folder> [--kind <kind>] [--tag <tag>]... [--follow]
+bilbo remember - [--tag <tag>]...
 ```
 
-Keeps files as entries in the store. An entry is a sequence of records, numbered from 1 per generation. Run it again and it keeps only what is new. It keeps the file or folder it is given; [`bilbo refresh`](#refresh) keeps every follow.
+Keeps files as entries in the store. An entry is a sequence of records, numbered from 1 per generation. Run it again on a file or folder and it keeps only what is new; a note with no file is a new entry each time. It keeps the file or folder it is given; [`bilbo refresh`](#refresh) keeps every follow. A lone `-` keeps a note from standard input ([A note with no file](#a-note-with-no-file)).
 
 ### Kinds
 
@@ -130,6 +131,18 @@ The pass keeps every follow's files first and looks for gone files after, so a n
 Each follow decides alone, for every entry kept under its folder: a follow above another one withdraws under it too. A subfolder that is a mount point and is not mounted looks like an empty folder, so the notes under it leave `recall` until it is back. A note is gone under its old path too when a file still answers there under another: on a volume that folds case, after its name or a folder above it changed only in case; or after a rename to a name its kind does not claim (`n.md` to `n.MD`). One limit: when the followed folder itself is renamed only in case, that follow no longer names the entries kept under its old spelling, as after any moved folder: a note with an `id` moves, and a note with none is kept again and stays twice, unless a follow above the folder still shows a file and withdraws the older entry.
 
 A run with a target withdraws nothing, and `bilbo remember <a file that is gone>` is an error.
+
+### A note with no file
+
+```text
+bilbo remember - [--tag <tag>]...
+```
+
+`bilbo remember -` keeps what it reads from standard input, to its end, as a note: an entry of the kind `note`, which [`recall`](#notes) lists apart from the chunks. Each call is a new entry: the same text piped twice is two notes. The text is kept as UTF-8, without the white space at its start and its end; a text with nothing left keeps nothing and exits 1. A note the store would keep only as a placeholder is refused: one that is nothing but encoded data, as the store judges it for any record (a long run of base64 characters, alone or after a `data:` head; a run of hex digits alone is kept). `--tag` works as for a file; `--kind` and `--follow` do not stand with a note. The `-` is taken as typed: a file named `-` is given as `./-`.
+
+A run that keeps a note prints the two lines of [Output](#output) with `new 1`, and `kept the note as <id>` on stderr. `bilbo read <id>` prints the note; its capture label is `note:<id>`. The run brings the search index up to date as any `remember` does, so `recall` finds the note at once. `bilbo derive` writes nothing about it.
+
+A note kept this way cannot be changed or taken back yet: it stays in `recall` until `bilbo forget` exists. A note you will want to edit is a Markdown file in a followed folder, which `remember` and `refresh` keep up with.
 
 ### Packed sessions
 
@@ -187,7 +200,7 @@ A second `remember` with a target waits for the first one to finish writing the 
 | Code | Meaning |
 |---|---|
 | 0 | success |
-| 1 | a file was refused, nothing was claimed under the target, a pass run again for another bilbo refused a file or could not run a follow, the search index could not be updated or an entry could not be indexed, or the target or the store could not be read |
+| 1 | a file was refused, nothing was claimed under the target, a note was refused or empty, a pass run again for another bilbo refused a file or could not run a follow, the search index could not be updated or an entry could not be indexed, or the target or the store could not be read |
 | 2 | usage or config error, a store root that holds bilbo 0.20's `notes/` or `library/`, a state or cache folder inside the root, or a config file `--follow` cannot write |
 
 ## refresh
@@ -287,7 +300,7 @@ The header is `=== `, the ref and the number of lines, apart by tabs. A chunk cu
 
 ### Notes
 
-When the store holds notes, the answer is the chunks, then the notes. A note is a paragraph a model wrote about records of an entry (`bilbo derive`). The two lists are ranked apart: a note is never among the chunks. Each list is scored over its own documents: the chunks score exactly as they would in a store with no note, and a note is scored among the notes. So the chunks are the same hits, in the same order, with the same text, up to where the list ends: with no note to rank, the chunks take the notes' room too ([The budget](#the-budget)). One more thing can differ: a chunk's header gives its entry's id in full when another entry of the store ends in the same ten characters, and a note's entry counts there too, since `bilbo read` takes a ref against the whole store.
+When the store holds notes, the answer is the chunks, then the notes. A note is a paragraph a model wrote about records of an entry (`bilbo derive`), or a text kept with no file ([`bilbo remember -`](#a-note-with-no-file)). The two lists are ranked apart: a note is never among the chunks. Each list is scored over its own documents: the chunks score exactly as they would in a store with no note, and a note is scored among the notes. So the chunks are the same hits, in the same order, with the same text, up to where the list ends: with no note to rank, the chunks take the notes' room too ([The budget](#the-budget)). One more thing can differ: a chunk's header gives its entry's id in full when another entry of the store ends in the same ten characters, and a note's entry counts there too, since `bilbo read` takes a ref against the whole store.
 
 ```text
 === 5N3K8QW1ZX#r4<TAB>2 lines<TAB>note
@@ -295,7 +308,7 @@ When the store holds notes, the answer is the chunks, then the notes. A note is 
 The user asked to thin the carrot rows ...
 ```
 
-The header's ref is the note itself. Its first line is what it was written from: the entry's whole id, the generation and the records, then the day of those records. A note bilbo holds no source and no time for has an empty first line. `bilbo read 01M6ZGE4KTBYYH07AS2KVMSCAF#g1:r3-19` prints them. A note too long for one chunk is printed in parts, each under that line. A note with so many sources that the line leaves no room in a chunk is printed without it: bilbo read of the hit's ref prints the note whole.
+The header's ref is the note itself. Its first line is what it was written from: the entry's whole id, the generation and the records, then the day of those records. A note bilbo holds no source and no time for has an empty first line. A note kept with no file has no source: its first line is the day it was kept. `bilbo read 01M6ZGE4KTBYYH07AS2KVMSCAF#g1:r3-19` prints them. A note too long for one chunk is printed in parts, each under that line. A note with so many sources that the line leaves no room in a chunk is printed without it: bilbo read of the hit's ref prints the note whole.
 
 ### Copies and long records
 
@@ -407,7 +420,7 @@ outline:
 end: #r1-23 of 23 records
 ```
 
-- A `label:` row is one label of the entry. The capture label, the one `remember` finds the file again by, comes first and is marked `(capture)`; `bilbo:<id>` is the entry this one belongs to (a subagent names its session); `tag:<name>` is a tag the entry carries, in name order, and `(model)` marks one that `bilbo derive` declared from a model's answer; the rest are the texts the entry's records name, in byte order, as many as fit in half the page's budget, and then one row, `labels: <n> more; a larger --budget lists them`. A session names the folders it worked in and the folders it was given. A Claude Code session names the `cwd` of its records, the added directories of its environment records, and the folders of the project instructions files that its instructions records list. A file in a `.claude` folder, or under the `rules` folder of one, counts as a file of the folder that holds that `.claude`, the nearest to the file when a path has several. Such a record lists every file Claude Code loaded on its way up from the record's `cwd`, so a folder above that `cwd` is not taken from it, and such a record with no `cwd` to compare with gives none. The instructions file Claude Code lists as the user's own and the memory file give no folder. A file that a project instructions file imports is listed as any other, so an import from another folder can make that folder a label. A Codex rollout names the `cwd` of its `session_meta` and `turn_context` records and the `runtime_workspace_roots` of its `session_meta` records. A text the store replaced by an opaque placeholder (a very long folder with no dot or space in it) is not a label. An entry with no label has no `label:` row. `started` is left out for an entry whose records carry no time (a Markdown file).
+- A `label:` row is one label of the entry. The capture label, the one `remember` finds the file again by, comes first and is marked `(capture)`. A note kept with no file has the capture label `note:<id>`, which names no file and is no ref. `bilbo:<id>` is the entry this one belongs to (a subagent names its session); `tag:<name>` is a tag the entry carries, in name order, and `(model)` marks one that `bilbo derive` declared from a model's answer; the rest are the texts the entry's records name, in byte order, as many as fit in half the page's budget, and then one row, `labels: <n> more; a larger --budget lists them`. A session names the folders it worked in and the folders it was given. A Claude Code session names the `cwd` of its records, the added directories of its environment records, and the folders of the project instructions files that its instructions records list. A file in a `.claude` folder, or under the `rules` folder of one, counts as a file of the folder that holds that `.claude`, the nearest to the file when a path has several. Such a record lists every file Claude Code loaded on its way up from the record's `cwd`, so a folder above that `cwd` is not taken from it, and such a record with no `cwd` to compare with gives none. The instructions file Claude Code lists as the user's own and the memory file give no folder. A file that a project instructions file imports is listed as any other, so an import from another folder can make that folder a label. A Codex rollout names the `cwd` of its `session_meta` and `turn_context` records and the `runtime_workspace_roots` of its `session_meta` records. A text the store replaced by an opaque placeholder (a very long folder with no dot or space in it) is not a label. An entry with no label has no `label:` row. `started` is left out for an entry whose records carry no time (a Markdown file).
 - A `removed:` row is a name you took off the entry with `bilbo tag --remove`: `bilbo derive` will not declare it for this entry again. The tags and the removed names come from the store and are always listed, whatever the budget. A read of a record range prints no `label:` and no `removed:` row.
 - `generation` is `1 of 2` when the one shown is not the newest.
 - A session lists its user prompts, its compact summaries and, for Codex, the messages one agent sent another. A note entry lists the first line of each note's paragraph that is not blank; a Markdown file lists its frontmatter, the text before its first heading, and each heading with the headings above it: `#r28-31 The garden log > Watering > Tools`.
