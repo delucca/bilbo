@@ -402,6 +402,7 @@ impl Sandbox {
             kind: None,
             tags: Vec::new(),
             follow: false,
+            edit: false,
         };
         let note = bilbo_cli::notes();
         let written = bilbo_cli::remember::note::Written {

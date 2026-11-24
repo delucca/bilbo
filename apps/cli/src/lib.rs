@@ -1038,11 +1038,9 @@ mod tests {
     #[test]
     fn the_remember_page_lists_every_kind() {
         let page = stdout(&bilbo(), &["bilbo", "remember", "--help"]);
-        let at = page.find("\nKinds:\n").expect("a Kinds section");
-        for kind in listed() {
-            let row = format!("  {:<8}  {}\n", kind.name(), kind.summary());
-            assert!(page[at..].contains(&row), "{row:?} missing in\n{page}");
-        }
+        let names: Vec<&str> = listed().iter().map(|kind| kind.name()).collect();
+        let line = format!("\nKinds: {}\n", names.join(", "));
+        assert!(page.contains(&line), "{line:?} missing in\n{page}");
     }
 
     #[test]
@@ -1063,14 +1061,15 @@ mod tests {
         };
         assert_eq!(
             reason,
-            "missing <file|folder> or -; bilbo refresh keeps every follow"
+            "missing <file|folder>, - or --edit; bilbo refresh keeps every follow"
         );
         assert_eq!(
             usage,
             &[
                 "usage: bilbo remember <file|folder> [--kind <kind>] [--tag <tag>]...",
                 "       [--follow]",
-                "       bilbo remember - [--tag <tag>]..."
+                "       bilbo remember - [--tag <tag>]...",
+                "       bilbo remember --edit [--tag <tag>]..."
             ]
         );
         assert_eq!(page, "bilbo remember --help");

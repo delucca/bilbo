@@ -3,13 +3,14 @@ use std::io;
 use std::os::unix::fs::MetadataExt;
 use std::path::Path;
 
-use rustix::fs::{AtFlags, FileType, Mode, OFlags, openat, statat};
+use rustix::fs::{AtFlags, FileType, Mode, OFlags, mkdirat, openat, statat, unlinkat};
 use rustix::process::geteuid;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum How {
     Read,
     ReadAsOpened,
+    Edited,
     Append,
     Write,
     New,
@@ -29,6 +30,13 @@ impl std::error::Error for Refused {}
 pub fn refused(path: &Path) -> io::Error {
     io::Error::other(Refused(format!(
         "{} is not a private file of this user in a folder of this user",
+        path.display()
+    )))
+}
+
+fn refused_folder(path: &Path) -> io::Error {
+    io::Error::other(Refused(format!(
+        "{} is not a private folder of this user",
         path.display()
     )))
 }
@@ -56,15 +64,35 @@ pub fn checked(file: &fs::File, path: &Path) -> io::Result<()> {
 }
 
 pub fn checked_for(file: &fs::File, path: &Path, how: How) -> io::Result<()> {
-    if how != How::ReadAsOpened {
-        return checked(file, path);
+    let meta = match how {
+        How::ReadAsOpened | How::Edited => file.metadata()?,
+        _ => return checked(file, path),
+    };
+    let held = match how {
+        How::Edited => meta.is_file() && meta.uid() == geteuid().as_raw() && meta.nlink() == 1,
+        _ => ordinary(&meta) && meta.nlink() <= 1,
+    };
+    if held { Ok(()) } else { Err(refused(path)) }
+}
+
+pub fn folder(parent: &fs::File, name: &str, path: &Path) -> io::Result<fs::File> {
+    mkdirat(parent, name, Mode::from_raw_mode(0o700))?;
+    let flags = OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC;
+    let seen = openat(parent, name, flags, Mode::empty())
+        .map(fs::File::from)
+        .map_err(io::Error::from)
+        .and_then(|made| {
+            let meta = made.metadata()?;
+            if meta.is_dir() && meta.uid() == geteuid().as_raw() && meta.mode() & 0o777 == 0o700 {
+                Ok(made)
+            } else {
+                Err(refused_folder(path))
+            }
+        });
+    if seen.is_err() {
+        let _ = unlinkat(parent, name, AtFlags::REMOVEDIR);
     }
-    let meta = file.metadata()?;
-    if ordinary(&meta) && meta.nlink() <= 1 {
-        Ok(())
-    } else {
-        Err(refused(path))
-    }
+    seen
 }
 
 pub fn open(folder: &fs::File, name: &str, path: &Path, how: How) -> io::Result<fs::File> {
@@ -79,7 +107,7 @@ pub fn open(folder: &fs::File, name: &str, path: &Path, how: How) -> io::Result<
         | OFlags::NONBLOCK
         | OFlags::CLOEXEC
         | match how {
-            How::Read | How::ReadAsOpened => OFlags::RDONLY,
+            How::Read | How::ReadAsOpened | How::Edited => OFlags::RDONLY,
             How::Append => OFlags::WRONLY | OFlags::APPEND | OFlags::CREATE,
             How::Write => OFlags::WRONLY | OFlags::CREATE,
             How::New => OFlags::WRONLY | OFlags::CREATE | OFlags::EXCL,
@@ -97,7 +125,7 @@ mod tests {
 
     use std::io::Read;
 
-    use super::{How, checked, checked_for, is_refusal, open};
+    use super::{How, checked, checked_for, folder as private_folder, is_refusal, open};
 
     fn folder(test: &str) -> (PathBuf, fs::File) {
         let base = std::env::temp_dir().join(format!("private-{test}-{}", std::process::id()));
@@ -222,6 +250,75 @@ mod tests {
         assert_eq!(text, "v0");
         let error = open(&dir, "none", &said("none"), How::ReadAsOpened).expect_err("none");
         assert_eq!(error.kind(), std::io::ErrorKind::NotFound);
+        let _ = fs::remove_dir_all(Path::new(&base));
+    }
+
+    #[test]
+    fn a_file_an_editor_wrote_anew_is_read_whatever_its_mode() {
+        let (base, dir) = folder("edited");
+        let said = |name: &str| base.join(name);
+        fs::write(said("saved"), "text").expect("a file");
+        mode(&said("saved"), 0o644);
+        let mut text = String::new();
+        open(&dir, "saved", &said("saved"), How::Edited)
+            .expect("a file of mode 0644")
+            .read_to_string(&mut text)
+            .expect("read");
+        assert_eq!(text, "text");
+        let error = open(&dir, "saved", &said("saved"), How::Read).expect_err("an open mode");
+        assert_eq!(error.to_string(), sentence(&said("saved")));
+
+        fs::hard_link(said("saved"), said("twin")).expect("a second name");
+        symlink(said("saved"), said("link")).expect("a link");
+        fs::create_dir(said("dir")).expect("a folder");
+        for name in ["saved", "twin", "link", "dir"] {
+            let error = open(&dir, name, &said(name), How::Edited).expect_err(name);
+            assert!(is_refusal(&error), "{name}");
+            assert_eq!(error.to_string(), sentence(&said(name)), "{name}");
+        }
+        fs::remove_file(said("twin")).expect("one name again");
+        let error = open(&dir, "none", &said("none"), How::Edited).expect_err("none");
+        assert_eq!(error.kind(), std::io::ErrorKind::NotFound);
+
+        let held = fs::File::open(said("saved")).expect("held");
+        checked_for(&held, &said("saved"), How::Edited).expect("one name");
+        fs::remove_file(said("saved")).expect("removed");
+        let error = checked_for(&held, &said("saved"), How::Edited).expect_err("no name left");
+        assert!(is_refusal(&error));
+        assert_eq!(error.to_string(), sentence(&said("saved")));
+        let _ = fs::remove_dir_all(Path::new(&base));
+    }
+
+    #[test]
+    fn a_private_folder_is_made_new_or_not_at_all() {
+        use std::os::unix::fs::MetadataExt;
+
+        let (base, dir) = folder("private-folder");
+        let said = |name: &str| base.join(name);
+        let made = private_folder(&dir, "free", &said("free")).expect("a new folder");
+        let meta = made.metadata().expect("meta");
+        assert!(meta.is_dir());
+        assert_eq!(meta.permissions().mode() & 0o777, 0o700);
+        assert_eq!(meta.uid(), rustix::process::geteuid().as_raw());
+        open(&made, "note.md", &said("free").join("note.md"), How::New).expect("a file in it");
+        assert!(said("free").join("note.md").is_file());
+
+        fs::create_dir(said("taken")).expect("a folder");
+        fs::write(said("taken").join("kept"), "x").expect("a file");
+        fs::write(said("file"), "y").expect("a file");
+        fs::create_dir(said("target")).expect("a folder");
+        symlink(said("target"), said("link")).expect("a link");
+        for name in ["taken", "file", "link"] {
+            let error = private_folder(&dir, name, &said(name)).expect_err(name);
+            assert_eq!(error.kind(), std::io::ErrorKind::AlreadyExists, "{name}");
+        }
+        assert_eq!(
+            fs::read_to_string(said("taken").join("kept")).expect("as it was"),
+            "x"
+        );
+        assert_eq!(fs::read_to_string(said("file")).expect("as it was"), "y");
+        assert!(said("link").is_symlink());
+        assert_eq!(fs::read_dir(said("target")).expect("as it was").count(), 0);
         let _ = fs::remove_dir_all(Path::new(&base));
     }
 }

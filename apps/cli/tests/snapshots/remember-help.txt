@@ -4,15 +4,15 @@ Usage:
   bilbo remember <file|folder> [--kind <kind>] [--tag <tag>]...
                  [--follow]
   bilbo remember - [--tag <tag>]...
+  bilbo remember --edit [--tag <tag>]...
 
 Options:
       --kind <kind>  Run this kind, not the one that claims the files
       --tag <tag>    Declare this tag for every entry the run keeps
       --follow       Save the target as a follow in the config file
+      --edit         Keep a note written in the editor VISUAL or EDITOR names
 
-Kinds:
-  markdown  .md files, one record per line
-  session   Claude Code and Codex sessions, one record per JSONL line
+Kinds: markdown, session
 
 Output:
   new <n>, appended <n>, new generation <n>, unchanged <n>, refused <n>
@@ -20,8 +20,8 @@ Output:
 
 Exit:
   0  success
-  1  a refused file or note, nothing to keep, a store or index failure
-  2  usage or config error, or a config file --follow cannot write
+  1  a refused file or note, nothing to keep, a store, index or editor failure
+  2  usage or config error, no editor for --edit, a config --follow cannot write
 
 Examples:
   bilbo remember ~/notes --follow

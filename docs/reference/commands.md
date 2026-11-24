@@ -82,6 +82,7 @@ The line number is the first line of what the clause names. A file that did not 
 ```text
 bilbo remember <file|folder> [--kind <kind>] [--tag <tag>]... [--follow]
 bilbo remember - [--tag <tag>]...
+bilbo remember --edit [--tag <tag>]...
 ```
 
 Keeps files as entries in the store. An entry is a sequence of records, numbered from 1 per generation. Run it again on a file or folder and it keeps only what is new; a note with no file is a new entry each time. It keeps the file or folder it is given; [`bilbo refresh`](#refresh) keeps every follow. A lone `-` keeps a note from standard input ([A note with no file](#a-note-with-no-file)).
@@ -136,11 +137,14 @@ A run with a target withdraws nothing, and `bilbo remember <a file that is gone>
 
 ```text
 bilbo remember - [--tag <tag>]...
+bilbo remember --edit [--tag <tag>]...
 ```
 
 `bilbo remember -` keeps what it reads from standard input, to its end, as a note: an entry of the kind `note`, which [`recall`](#notes) lists apart from the chunks. Each call is a new entry: the same text piped twice is two notes. The text is kept as UTF-8, without the white space at its start and its end; a text with nothing left keeps nothing and exits 1. A note the store would keep only as a placeholder is refused: one that is nothing but encoded data, as the store judges it for any record (a long run of base64 characters, alone or after a `data:` head; a run of hex digits alone is kept). `--tag` works as for a file; `--kind` and `--follow` do not stand with a note. The `-` is taken as typed: a file named `-` is given as `./-`.
 
 A run that keeps a note prints the two lines of [Output](#output) with `new 1`, and `kept the note as <id>` on stderr. `bilbo read <id>` prints the note; its capture label is `note:<id>`. The run brings the search index up to date as any `remember` does, so `recall` finds the note at once. `bilbo derive` writes nothing about it.
+
+`bilbo remember --edit` opens an editor on an empty file and keeps what was saved, as `git commit` does for a message. The editor is the command `VISUAL` names, else the one `EDITOR` names, run by `/bin/sh` with the file as its last argument; with neither, the run exits 2. The file is `note.md` in a folder bilbo makes for it, yours and of mode 0700, `.bilbo-note-<id>` in `$TMPDIR`, else `/tmp`. The mode is what keeps others out: bilbo does not look at an access list a temp folder hands down to what is made in it. A file that is empty or holds only white space keeps nothing and exits 1. An editor that exits with another code than 0, or that a signal ends, keeps nothing, whatever was saved. An editor that ran and whose end bilbo could not learn keeps nothing either, and its file stays where the line says. The folder is removed, with all it holds, when the note was kept or there was no text. When there was text and the note was not kept, it stays and the run's line says where the file is, so what you wrote is not lost; it is yours to remove. When the store failed at the write of the note itself, the line also gives the id the note may be under; a store that failed before that wrote nothing, and its line gives no id. An editor that failed is said first, whatever its file holds. The store is opened only after the editor is done, so no other bilbo waits while you write.
 
 A note kept this way cannot be changed or taken back yet: it stays in `recall` until `bilbo forget` exists. A note you will want to edit is a Markdown file in a followed folder, which `remember` and `refresh` keep up with.
 
@@ -200,8 +204,8 @@ A second `remember` with a target waits for the first one to finish writing the 
 | Code | Meaning |
 |---|---|
 | 0 | success |
-| 1 | a file was refused, nothing was claimed under the target, a note was refused or empty, a pass run again for another bilbo refused a file or could not run a follow, the search index could not be updated or an entry could not be indexed, or the target or the store could not be read |
-| 2 | usage or config error, a store root that holds bilbo 0.20's `notes/` or `library/`, a state or cache folder inside the root, or a config file `--follow` cannot write |
+| 1 | a file was refused, nothing was claimed under the target, a note was refused or empty, the editor failed, a pass run again for another bilbo refused a file or could not run a follow, the search index could not be updated or an entry could not be indexed, or the target or the store could not be read |
+| 2 | usage or config error, `--edit` with no editor named, a store root that holds bilbo 0.20's `notes/` or `library/`, a state or cache folder inside the root, or a config file `--follow` cannot write |
 
 ## refresh
 

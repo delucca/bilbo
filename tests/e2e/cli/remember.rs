@@ -52,12 +52,13 @@ fn remember_usage_errors_name_the_problem_and_touch_no_store() {
     const USAGE: &str = "bilbo: usage: bilbo remember <file|folder> [--kind <kind>] [--tag <tag>]...\n\
                          bilbo:        [--follow]\n\
                          bilbo:        bilbo remember - [--tag <tag>]...\n\
+                         bilbo:        bilbo remember --edit [--tag <tag>]...\n\
                          bilbo: see 'bilbo remember --help'\n";
     let scratch = Scratch::new("usage");
     let cases: [(&[&str], &str); 9] = [
         (
             &["remember"],
-            "bilbo: missing <file|folder> or -; bilbo refresh keeps every follow\n",
+            "bilbo: missing <file|folder>, - or --edit; bilbo refresh keeps every follow\n",
         ),
         (&["remember", "--follow"], "bilbo: missing <file|folder>\n"),
         (

@@ -4,15 +4,15 @@ bilbo remember: keep files or a note as entries, and what changed in them since.
   [36mbilbo remember [39m[2m<file|folder>[22m[36m [--kind [39m[2m<kind>[22m[36m] [--tag [39m[2m<tag>[22m[36m]...[39m
                  [--follow]
   [36mbilbo remember - [--tag [39m[2m<tag>[22m[36m]...[39m
+  [36mbilbo remember --edit [--tag [39m[2m<tag>[22m[36m]...[39m
 
 [1mOptions:[22m
       [1m--kind [22m[2m<kind>[22m  Run this kind, not the one that claims the files
       [1m--tag [22m[2m<tag>[22m    Declare this tag for every entry the run keeps
       [1m--follow[22m       Save the target as a follow in the config file
+      [1m--edit[22m         Keep a note written in the editor VISUAL or EDITOR names
 
-[1mKinds:[22m
-  [1mmarkdown[22m  .md files, one record per line
-  [1msession[22m   Claude Code and Codex sessions, one record per JSONL line
+[1mKinds:[22m [2mmarkdown, session[22m
 
 [1mOutput:[22m
   new [2m<n>[22m, appended [2m<n>[22m, new generation [2m<n>[22m, unchanged [2m<n>[22m, refused [2m<n>[22m
@@ -20,8 +20,8 @@ bilbo remember: keep files or a note as entries, and what changed in them since.
 
 [1mExit:[22m
   [1m0[22m  success
-  [1m1[22m  a refused file or note, nothing to keep, a store or index failure
-  [1m2[22m  usage or config error, or a config file --follow cannot write
+  [1m1[22m  a refused file or note, nothing to keep, a store, index or editor failure
+  [1m2[22m  usage or config error, no editor for --edit, a config --follow cannot write
 
 [1mExamples:[22m
   [36mbilbo remember ~/notes --follow[39m

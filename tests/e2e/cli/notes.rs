@@ -1,5 +1,6 @@
 use std::fs;
-use std::path::Path;
+use std::os::unix::fs::PermissionsExt;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use super::Run;
@@ -500,4 +501,454 @@ fn a_lone_dash_is_standard_input_only_as_it_was_typed() {
             );
         }
     }
+}
+
+struct Editor {
+    script: PathBuf,
+    tmp: PathBuf,
+    noted: PathBuf,
+}
+
+impl Editor {
+    fn new(scratch: &Scratch, body: &str) -> Editor {
+        let tmp = scratch.dir.join("tmp");
+        let noted = scratch.dir.join("noted");
+        fs::create_dir_all(&tmp).expect("a temp folder");
+        fs::create_dir_all(&noted).expect("a folder for what the script notes");
+        let script = scratch.dir.join("editor.sh");
+        fs::write(&script, format!("#!/bin/sh\n{body}\n")).expect("a script");
+        fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).expect("a mode");
+        Editor { script, tmp, noted }
+    }
+
+    fn visual(&self) -> &str {
+        self.script.to_str().expect("UTF-8")
+    }
+
+    fn drafts(&self) -> Vec<PathBuf> {
+        let mut found: Vec<PathBuf> = fs::read_dir(&self.tmp)
+            .expect("the temp folder")
+            .map(|entry| entry.expect("an entry").path())
+            .collect();
+        found.sort();
+        found
+    }
+
+    fn noted(&self, name: &str) -> String {
+        fs::read_to_string(self.noted.join(name)).expect("what the script noted")
+    }
+
+    fn run(&self, scratch: &Scratch, visual: &str, args: &[&str]) -> Run {
+        let binary = fs::canonicalize(super::binary()).expect("the binary");
+        scratch.run_with(
+            &[&["remember", "--edit"][..], args].concat(),
+            &[
+                ("VISUAL", visual),
+                ("TMPDIR", self.tmp.to_str().expect("UTF-8")),
+                ("NOTED", self.noted.to_str().expect("UTF-8")),
+                ("BILBO_BIN", binary.to_str().expect("UTF-8")),
+                ("PATH", "/usr/bin:/bin"),
+            ],
+        )
+    }
+}
+
+fn no_root(scratch: &Scratch) {
+    for folder in ["store", "state", "cache"] {
+        assert!(!scratch.dir.join(folder).exists(), "{folder}");
+    }
+}
+
+const NOTHING: &str = "new 0, appended 0, new generation 0, unchanged 0, refused 0\nrecords 0, raw bytes 0, stored bytes 0\n";
+
+fn last_line(run: &Run) -> &str {
+    run.stderr.lines().last().unwrap_or_default()
+}
+
+fn follow_the_temp_folder(scratch: &Scratch, editor: &Editor) {
+    let set_up = scratch.run(&[
+        "remember",
+        editor.tmp.to_str().expect("UTF-8"),
+        "--kind",
+        "markdown",
+        "--follow",
+    ]);
+    assert!(
+        set_up.stderr.contains("saved the follow in "),
+        "{}",
+        set_up.stderr
+    );
+}
+
+#[test]
+fn a_note_written_in_the_editor_is_kept_and_its_file_is_removed() {
+    let scratch = Scratch::new("edit_kept");
+    let editor = Editor::new(
+        &scratch,
+        r#"printf '%s\n' "$1" > "$NOTED/argument"
+/bin/ls -ld "$1" > "$NOTED/file"
+/bin/ls -ld "$(dirname "$1")" > "$NOTED/folder"
+printf 'The quince blooms early.\n' > "$1""#,
+    );
+    let run = editor.run(&scratch, editor.visual(), &["--tag", "garden"]);
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    assert_eq!(first(&run), counts(1, 0, 0, 0, 0));
+    let id = kept_note(&run);
+    assert!(
+        run.stderr.contains("bilbo: tagged 1 entries\n"),
+        "{}",
+        run.stderr
+    );
+    assert!(
+        run.stderr.contains("bilbo: tag:garden is new\n"),
+        "{}",
+        run.stderr
+    );
+
+    let argument = editor.noted("argument");
+    assert_eq!(
+        argument.trim_end(),
+        editor
+            .tmp
+            .join(format!(".bilbo-note-{id}"))
+            .join("note.md")
+            .to_str()
+            .expect("UTF-8")
+    );
+    let file = editor.noted("file");
+    let fields: Vec<&str> = file.split_whitespace().collect();
+    assert!(fields[0].starts_with("-rw-------"), "{file}");
+    assert_eq!(fields[4], "0", "{file}");
+    assert!(editor.noted("folder").starts_with("drwx------"));
+    assert!(editor.drafts().is_empty(), "{:?}", editor.drafts());
+
+    let found = scratch.run(&["recall", "--", "quince"]);
+    assert_eq!(found.code, 0, "{}", found.stderr);
+    assert_eq!(hits(&found), [id[id.len() - 10..].to_owned()]);
+}
+
+#[test]
+fn an_editor_that_saves_nothing_keeps_nothing() {
+    for body in ["exit 0", r#"printf '   \n\n  \t\n' > "$1""#] {
+        let scratch = Scratch::new("edit_empty");
+        let editor = Editor::new(&scratch, body);
+        let run = editor.run(&scratch, editor.visual(), &[]);
+        assert_eq!(run.code, 1, "{body}: {}", run.stderr);
+        assert_eq!(run.stdout, NOTHING, "{body}");
+        assert_eq!(
+            run.stderr, "bilbo: nothing to keep: the note is empty\n",
+            "{body}"
+        );
+        assert!(editor.drafts().is_empty(), "{body}");
+        no_root(&scratch);
+    }
+}
+
+#[test]
+fn an_editor_that_fails_keeps_nothing_whatever_it_saved() {
+    let scratch = Scratch::new("edit_failed");
+    let editor = Editor::new(&scratch, "printf 'A sentence.\\n' > \"$1\"\nexit 3");
+    let run = editor.run(&scratch, editor.visual(), &[]);
+    assert_eq!(run.code, 1, "{}", run.stderr);
+    let drafts = editor.drafts();
+    assert_eq!(drafts.len(), 1, "{drafts:?}");
+    let file = drafts[0].join("note.md");
+    assert_eq!(
+        last_line(&run),
+        format!(
+            "bilbo: the editor exited with 3; nothing was kept; what was saved stays in {}",
+            file.display()
+        )
+    );
+    assert_eq!(
+        fs::read_to_string(&file).expect("the draft"),
+        "A sentence.\n"
+    );
+    no_root(&scratch);
+
+    let scratch = Scratch::new("edit_missing");
+    let editor = Editor::new(&scratch, "exit 0");
+    let run = editor.run(&scratch, "bilbo-no-such-editor", &[]);
+    assert_eq!(run.code, 1, "{}", run.stderr);
+    assert_eq!(
+        last_line(&run),
+        "bilbo: the editor exited with 127; nothing was kept"
+    );
+    assert!(editor.drafts().is_empty());
+    no_root(&scratch);
+}
+
+#[test]
+fn an_editors_value_with_arguments_runs_as_a_command_line() {
+    let scratch = Scratch::new("edit_arguments");
+    let editor = Editor::new(
+        &scratch,
+        r#"printf '%s\n' "$#" "$1" "$2" > "$NOTED/arguments"
+printf 'The shed door sticks.\n' > "$2""#,
+    );
+    let visual = format!("{} word", editor.visual());
+    let run = scratch.run_with(
+        &["remember", "--edit"],
+        &[
+            ("VISUAL", &visual),
+            ("EDITOR", "false"),
+            ("TMPDIR", editor.tmp.to_str().expect("UTF-8")),
+            ("NOTED", editor.noted.to_str().expect("UTF-8")),
+            ("PATH", "/usr/bin:/bin"),
+        ],
+    );
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    let arguments = editor.noted("arguments");
+    let lines: Vec<&str> = arguments.lines().collect();
+    assert_eq!(lines[0], "2");
+    assert_eq!(lines[1], "word");
+    assert!(lines[2].ends_with("/note.md"), "{arguments}");
+}
+
+#[test]
+fn no_bilbo_waits_while_the_editor_is_open() {
+    let scratch = Scratch::new("edit_no_wait");
+    let editor = Editor::new(
+        &scratch,
+        r#"printf 'The quince blooms early.\n' > "$1"
+"$BILBO_BIN" refresh > "$NOTED/out" 2> "$NOTED/err"
+printf '%s\n' "$?" > "$NOTED/code""#,
+    );
+    follow_the_temp_folder(&scratch, &editor);
+    let run = editor.run(&scratch, editor.visual(), &[]);
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    assert_eq!(editor.noted("code").trim(), "0", "{}", editor.noted("err"));
+    let err = editor.noted("err");
+    assert!(!err.contains("waiting"), "{err}");
+    assert!(!err.contains("another bilbo is writing"), "{err}");
+    assert_eq!(editor.noted("out"), NOTHING);
+    let id = kept_note(&run);
+    let found = scratch.run(&["recall", "--", "quince"]);
+    assert_eq!(hits(&found), [id[id.len() - 10..].to_owned()]);
+    let read = scratch.run(&["read", &id]);
+    assert!(read.stdout.contains("kind: note\n"), "{}", read.stdout);
+}
+
+#[test]
+fn an_editor_that_saves_by_replacing_the_file_is_read() {
+    let scratch = Scratch::new("edit_replaced");
+    let editor = Editor::new(
+        &scratch,
+        r#"D="$(dirname "$1")"
+: > "$D/note.md~"
+printf 'The quince blooms early.\n' > "$D/new"
+chmod 644 "$D/new"
+mv "$D/new" "$1""#,
+    );
+    let run = editor.run(&scratch, editor.visual(), &[]);
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    let id = kept_note(&run);
+    let found = scratch.run(&["recall", "--", "quince"]);
+    assert_eq!(hits(&found), [id[id.len() - 10..].to_owned()]);
+    assert!(editor.drafts().is_empty(), "{:?}", editor.drafts());
+}
+
+#[test]
+fn a_scratch_file_swapped_for_a_link_is_no_note() {
+    let scratch = Scratch::new("edit_link");
+    let editor = Editor::new(
+        &scratch,
+        r#"printf 'The quince blooms early.\n' > "$NOTED/other.txt"
+rm "$1"
+ln -s "$NOTED/other.txt" "$1""#,
+    );
+    let run = editor.run(&scratch, editor.visual(), &[]);
+    assert_eq!(run.code, 1, "{}", run.stderr);
+    let drafts = editor.drafts();
+    assert_eq!(drafts.len(), 1, "{drafts:?}");
+    let file = drafts[0].join("note.md");
+    assert!(
+        last_line(&run).starts_with(&format!(
+            "bilbo: cannot read the note's file {}: ",
+            file.display()
+        )),
+        "{}",
+        run.stderr
+    );
+    assert!(file.is_symlink());
+    no_root(&scratch);
+}
+
+#[test]
+fn text_the_run_does_not_keep_stays_in_its_file() {
+    let scratch = Scratch::new("edit_not_utf8");
+    let editor = Editor::new(&scratch, r#"printf '\377\376' > "$1""#);
+    let run = editor.run(&scratch, editor.visual(), &[]);
+    assert_eq!(run.code, 1, "{}", run.stderr);
+    let drafts = editor.drafts();
+    assert_eq!(drafts.len(), 1, "{drafts:?}");
+    let file = drafts[0].join("note.md");
+    assert_eq!(
+        last_line(&run),
+        format!(
+            "bilbo: refused the note: it is not UTF-8; what was saved stays in {}",
+            file.display()
+        )
+    );
+    assert_eq!(fs::read(&file).expect("the draft"), [0xff, 0xfe]);
+
+    let scratch = Scratch::new("edit_opaque");
+    let body = format!("printf '%s' '{}' > \"$1\"", "z".repeat(256));
+    let editor = Editor::new(&scratch, &body);
+    let run = editor.run(&scratch, editor.visual(), &[]);
+    assert_eq!(run.code, 1, "{}", run.stderr);
+    assert_eq!(first(&run), counts(0, 0, 0, 0, 1));
+    let drafts = editor.drafts();
+    assert_eq!(drafts.len(), 1, "{drafts:?}");
+    let file = drafts[0].join("note.md");
+    assert_eq!(
+        last_line(&run),
+        format!(
+            "bilbo: refused the note: the store would keep only a placeholder for its text, which it takes for encoded data; what was saved stays in {}",
+            file.display()
+        )
+    );
+    assert_eq!(
+        fs::read_to_string(&file).expect("the draft"),
+        "z".repeat(256)
+    );
+}
+
+#[test]
+fn a_path_with_a_space_and_a_quoted_editor_are_one_argument_and_one_program() {
+    let scratch = Scratch::new("edit_space");
+    let editor = Editor::new(&scratch, "exit 0");
+    let tmp = scratch.dir.join("temp folder");
+    let tools = scratch.dir.join("tool box");
+    fs::create_dir_all(&tmp).expect("a temp folder with a space");
+    fs::create_dir_all(&tools).expect("a folder with a space");
+    let script = tools.join("editor.sh");
+    fs::write(
+        &script,
+        "#!/bin/sh\nprintf '%s\\n' \"$#\" \"$1\" \"$2\" > \"$NOTED/arguments\"\nprintf 'The quince blooms early.\\n' > \"$2\"\n",
+    )
+    .expect("a script");
+    fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).expect("a mode");
+    let visual = format!("'{}' word", script.display());
+    let run = scratch.run_with(
+        &["remember", "--edit"],
+        &[
+            ("VISUAL", &visual),
+            ("TMPDIR", tmp.to_str().expect("UTF-8")),
+            ("NOTED", editor.noted.to_str().expect("UTF-8")),
+            ("PATH", "/usr/bin:/bin"),
+        ],
+    );
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    let id = kept_note(&run);
+    let arguments = editor.noted("arguments");
+    let lines: Vec<&str> = arguments.lines().collect();
+    assert_eq!(lines[0], "2");
+    assert_eq!(lines[1], "word");
+    assert_eq!(
+        lines[2],
+        tmp.join(format!(".bilbo-note-{id}"))
+            .join("note.md")
+            .to_str()
+            .expect("UTF-8")
+    );
+}
+
+#[test]
+fn an_editor_ended_by_a_signal_keeps_nothing() {
+    let scratch = Scratch::new("edit_signal");
+    let editor = Editor::new(&scratch, "printf 'A sentence.\\n' > \"$1\"\nkill -9 $$");
+    let run = editor.run(&scratch, editor.visual(), &[]);
+    assert_eq!(run.code, 1, "{}", run.stderr);
+    let drafts = editor.drafts();
+    assert_eq!(drafts.len(), 1, "{drafts:?}");
+    let file = drafts[0].join("note.md");
+    let ending = format!(
+        "; nothing was kept; what was saved stays in {}",
+        file.display()
+    );
+    let by_signal = format!("bilbo: the editor was stopped by a signal{ending}");
+    let by_code = format!("bilbo: the editor exited with 137{ending}");
+    assert!(
+        last_line(&run) == by_signal || last_line(&run) == by_code,
+        "{}",
+        run.stderr
+    );
+    assert_eq!(
+        fs::read_to_string(&file).expect("the draft"),
+        "A sentence.\n"
+    );
+    no_root(&scratch);
+}
+
+#[test]
+fn a_draft_an_editor_failed_on_is_never_an_entry() {
+    let scratch = Scratch::new("edit_follow");
+    let editor = Editor::new(
+        &scratch,
+        "printf 'The quince blooms early.\\n' > \"$1\"\nexit 3",
+    );
+    follow_the_temp_folder(&scratch, &editor);
+    let run = editor.run(&scratch, editor.visual(), &[]);
+    assert_eq!(run.code, 1, "{}", run.stderr);
+    let drafts = editor.drafts();
+    assert_eq!(drafts.len(), 1, "{drafts:?}");
+    assert_eq!(
+        last_line(&run),
+        format!(
+            "bilbo: the editor exited with 3; nothing was kept; what was saved stays in {}",
+            drafts[0].join("note.md").display()
+        )
+    );
+    let pass = scratch.run(&["refresh"]);
+    assert_eq!(pass.code, 0, "{}", pass.stderr);
+    assert_eq!(pass.stdout, NOTHING);
+    let found = scratch.run(&["recall", "--", "quince"]);
+    assert_eq!(found.code, 1, "{}", found.stderr);
+    assert!(hits(&found).is_empty());
+}
+
+#[test]
+fn a_draft_folder_made_with_another_mode_is_removed_again() {
+    let scratch = Scratch::new("edit_umask");
+    let editor = Editor::new(&scratch, "printf 'ran\\n' > \"$NOTED/ran\"");
+    let binary = fs::canonicalize(super::binary()).expect("the binary");
+    let mut command = Command::new("/bin/sh");
+    command
+        .args(["-c", "umask 0200; exec \"$BILBO_BIN\" remember --edit"])
+        .env_clear();
+    for (name, value) in scratch.env() {
+        command.env(name, value);
+    }
+    let output = command
+        .env("VISUAL", editor.visual())
+        .env("TMPDIR", &editor.tmp)
+        .env("NOTED", &editor.noted)
+        .env("BILBO_BIN", &binary)
+        .env("PATH", "/usr/bin:/bin")
+        .output()
+        .expect("bilbo runs");
+    let stderr = String::from_utf8(output.stderr).expect("UTF-8");
+    assert_eq!(output.status.code(), Some(1), "{stderr}");
+    let line = stderr.lines().last().expect("a line");
+    let folder = line
+        .strip_prefix("bilbo: cannot make the note's folder ")
+        .and_then(|rest| rest.strip_suffix(" is not a private folder of this user"))
+        .and_then(|rest| rest.split_once(": "))
+        .map(|(folder, same)| {
+            assert_eq!(folder, same);
+            folder.to_owned()
+        })
+        .expect("the line of 5.1");
+    assert!(
+        Path::new(&folder).starts_with(&editor.tmp)
+            && Path::new(&folder)
+                .file_name()
+                .is_some_and(|name| name.to_string_lossy().starts_with(".bilbo-note-")),
+        "{folder}"
+    );
+    assert!(!Path::new(&folder).exists());
+    assert!(editor.drafts().is_empty());
+    assert!(!editor.noted.join("ran").exists());
+    no_root(&scratch);
 }

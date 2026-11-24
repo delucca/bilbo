@@ -577,7 +577,7 @@ fn a_pass_served_for_another_bilbo_says_what_it_moved_and_withdrew() {
     );
 }
 
-const BARE: &str = "bilbo: missing <file|folder> or -; bilbo refresh keeps every follow";
+const BARE: &str = "bilbo: missing <file|folder>, - or --edit; bilbo refresh keeps every follow";
 
 impl Sandbox {
     fn piped(&self, args: &[&str], input: &[u8]) -> Run {
@@ -893,7 +893,7 @@ fn the_parser_speaks_before_the_config_and_the_verb_after_it() {
         (follow.code, follow.stderr),
         (2, with_usage("bilbo: missing <file|folder>"))
     );
-    for args in [&["-", "--kind", "markdown"][..], &[]] {
+    for args in [&["-", "--kind", "markdown"][..], &[], &["--tag", "garden"]] {
         let run = sandbox.remember(args);
         assert_eq!(
             (run.code, run.stderr.as_slice()),
@@ -919,6 +919,8 @@ fn the_parser_speaks_before_the_config_and_the_verb_after_it() {
     );
     let bare = sandbox.remember(&[]);
     assert_eq!((bare.code, bare.stderr), (2, with_usage(BARE)));
+    let tag = sandbox.remember(&["--tag", "garden"]);
+    assert_eq!((tag.code, tag.stderr), (2, with_usage(BARE)));
     sandbox.no_store_folders();
 }
 
@@ -1504,10 +1506,11 @@ fn a_root_that_holds_0_20s_notes_exits_2_and_writes_nothing_even_with_nothing_to
     }
 }
 
-const USAGE_LINES: [&str; 4] = [
+const USAGE_LINES: [&str; 5] = [
     "bilbo: usage: bilbo remember <file|folder> [--kind <kind>] [--tag <tag>]...",
     "bilbo:        [--follow]",
     "bilbo:        bilbo remember - [--tag <tag>]...",
+    "bilbo:        bilbo remember --edit [--tag <tag>]...",
     "bilbo: see 'bilbo remember --help'",
 ];
 
@@ -1624,7 +1627,7 @@ fn a_tag_does_not_stand_with_follow_and_needs_a_target() {
 
     let bare = sandbox.remember(&["--tag", "a"]);
     assert_eq!(bare.code, 2);
-    assert_eq!(bare.stderr[0], "bilbo: missing <file|folder>");
+    assert_eq!(bare.stderr[0], BARE);
 }
 
 #[test]
@@ -1672,4 +1675,54 @@ fn a_file_past_the_cap_is_refused_with_its_reason_and_exit_1() {
         (kept.generation, kept.records)
     );
     assert_eq!(sandbox.tags(&file), ["tag:a"]);
+}
+
+#[test]
+fn edit_stands_with_tags_alone_and_needs_an_editor() {
+    let sandbox = Sandbox::new("edit_grammar");
+    let temp = sandbox.dir.join("tmp");
+    fs::create_dir_all(&temp).expect("a temp folder");
+    let with_temp = || {
+        let mut vars = sandbox.vars();
+        vars.insert("TMPDIR".to_owned(), temp.clone().into_os_string());
+        vars
+    };
+    let call = |args: &[&str]| run(with_temp(), &[&["remember"][..], args].concat(), &[], None);
+
+    for args in [&["--edit", "notes.md"][..], &["--edit", "-"]] {
+        let run = call(args);
+        assert_eq!(
+            (run.code, run.stderr),
+            (
+                2,
+                with_usage(
+                    "bilbo: --edit does not stand with a target: it keeps a note written in the editor"
+                )
+            ),
+            "{args:?}"
+        );
+    }
+    for args in [
+        &["--edit", "--kind", "markdown"][..],
+        &["--edit", "--follow"],
+    ] {
+        let run = call(args);
+        assert_eq!(
+            (run.code, run.stderr),
+            (2, with_usage("bilbo: missing <file|folder>")),
+            "{args:?}"
+        );
+    }
+    let tag = call(&["--tag", "garden"]);
+    assert_eq!((tag.code, tag.stderr), (2, with_usage(BARE)));
+
+    let none = call(&["--edit"]);
+    assert_eq!(none.code, 2);
+    assert_eq!(none.stdout, "");
+    assert_eq!(
+        none.stderr,
+        ["bilbo: --edit needs an editor: set VISUAL or EDITOR"]
+    );
+    assert_eq!(fs::read_dir(&temp).expect("the temp folder").count(), 0);
+    sandbox.no_store_folders();
 }

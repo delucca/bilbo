@@ -1,4 +1,5 @@
 pub mod disk;
+pub mod edit;
 pub mod follows;
 pub mod index;
 pub mod messages;
@@ -13,6 +14,7 @@ use bilbo_entries::follows::Follow;
 use bilbo_entries::kind::Kind;
 use bilbo_entries::remember::{self, Output, Request, Tagging};
 use bilbo_entries::tag;
+use bilbo_store::id::Id;
 use bilbo_store::labels::Tag;
 use bilbo_store::segments::Store;
 use clap::Command;
@@ -33,7 +35,8 @@ const ABOUT: &str =
     "bilbo remember: keep files or a note as entries, and what changed in them since.";
 const USAGE: &str = "bilbo remember <file|folder> [--kind <kind>] [--tag <tag>]...
                  [--follow]
-  bilbo remember - [--tag <tag>]...";
+  bilbo remember - [--tag <tag>]...
+  bilbo remember --edit [--tag <tag>]...";
 
 #[derive(Debug, clap::Args)]
 #[command(about = SUMMARY, before_help = ABOUT, override_usage = USAGE)]
@@ -52,7 +55,6 @@ pub struct Args {
         long = "tag",
         value_name = "tag",
         value_parser = NonEmptyStringValueParser::new(),
-        requires = "target",
         help = "Declare this tag for every entry the run keeps"
     )]
     pub tags: Vec<String>,
@@ -62,19 +64,16 @@ pub struct Args {
         help = "Save the target as a follow in the config file"
     )]
     pub follow: bool,
+    #[arg(
+        long,
+        help = "Keep a note written in the editor VISUAL or EDITOR names"
+    )]
+    pub edit: bool,
 }
 
 pub fn page(kinds: &[Box<dyn Kind>]) -> String {
-    let width = kinds
-        .iter()
-        .map(|kind| kind.name().len())
-        .max()
-        .unwrap_or_default();
-    let rows: String = kinds
-        .iter()
-        .map(|kind| format!("  {:<width$}  {}\n", kind.name(), kind.summary()))
-        .collect();
-    format!("Kinds:\n{rows}\n{PAGE}")
+    let names: Vec<&str> = kinds.iter().map(|kind| kind.name()).collect();
+    format!("Kinds: {}\n\n{PAGE}", names.join(", "))
 }
 
 const PAGE: &str = "\
@@ -84,8 +83,8 @@ Output:
 
 Exit:
   0  success
-  1  a refused file or note, nothing to keep, a store or index failure
-  2  usage or config error, or a config file --follow cannot write
+  1  a refused file or note, nothing to keep, a store, index or editor failure
+  2  usage or config error, no editor for --edit, a config --follow cannot write
 
 Examples:
   bilbo remember ~/notes --follow
@@ -102,14 +101,24 @@ pub fn run(
     indexing: &Indexing<'_>,
     written: &note::Written,
 ) -> Result<Outcome, Failure> {
-    let Some(target) = args.target else {
+    if args.target.is_none() && !args.edit {
         return Err(usage(
             root,
-            "missing <file|folder> or -; bilbo refresh keeps every follow".to_owned(),
+            "missing <file|folder>, - or --edit; bilbo refresh keeps every follow".to_owned(),
             Some("remember"),
         ));
-    };
-    let from_input = target.as_os_str() == "-";
+    }
+    if args.edit && args.target.is_some() {
+        return Err(usage(
+            root,
+            "--edit does not stand with a target: it keeps a note written in the editor".to_owned(),
+            Some("remember"),
+        ));
+    }
+    let from_input = args
+        .target
+        .as_ref()
+        .is_some_and(|target| target.as_os_str() == "-");
     if from_input && args.kind.is_some() {
         return Err(usage(
             root,
@@ -146,9 +155,24 @@ pub fn run(
         tags: named,
         cap: settings.tag_cap.value,
     };
+    let Some(target) = args.target else {
+        let Some(editor) = edit::editor(&|name| (env.var)(name)) else {
+            return Err(Failure::Config(
+                "--edit needs an editor: set VISUAL or EDITOR".to_owned(),
+            ));
+        };
+        return edit::run(&editor, &tags, written, env, settings, kinds, indexing);
+    };
     if from_input {
         let text = note::from_input(&mut env.stdin)?;
-        return note::keep(&text, &tags, written, env, settings, kinds, indexing);
+        let id = Id::mint().map_err(|error| refused(&error))?;
+        let note = note::Note {
+            text: &text,
+            id,
+            tags: &tags,
+            draft: None,
+        };
+        return note::keep(note, written, env, settings, kinds, indexing);
     }
     let request = Request {
         target,

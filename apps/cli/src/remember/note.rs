@@ -1,4 +1,5 @@
 use std::io::Read;
+use std::path::Path;
 use std::time::SystemTime;
 
 use bilbo_entries::kind::Kind;
@@ -23,6 +24,31 @@ pub struct Written {
     pub label: fn(Id) -> CaptureLabel,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Fate {
+    Goes,
+    Stays,
+}
+
+pub struct Draft<'a> {
+    pub path: &'a Path,
+    pub settle: &'a mut dyn FnMut(Fate) -> Option<Message>,
+}
+
+fn ending(draft: &Option<&mut Draft<'_>>) -> String {
+    draft.as_ref().map_or_else(String::new, |draft| {
+        format!("; what was saved stays in {}", draft.path.display())
+    })
+}
+
+fn with_ending(failure: Failure, ending: &str) -> Failure {
+    match failure {
+        Failure::Config(line) => Failure::Config(sanitize(&format!("{line}{ending}"))),
+        Failure::Refused(line) => Failure::Refused(sanitize(&format!("{line}{ending}"))),
+        other => other,
+    }
+}
+
 pub fn from_input(input: &mut dyn Read) -> Result<String, Failure> {
     let mut bytes = Vec::new();
     input.read_to_end(&mut bytes).map_err(|error| {
@@ -32,26 +58,39 @@ pub fn from_input(input: &mut dyn Read) -> Result<String, Failure> {
         .map_err(|_| Failure::Refused("refused the note: it is not UTF-8".to_owned()))
 }
 
+pub struct Note<'a, 'b> {
+    pub text: &'a str,
+    pub id: Id,
+    pub tags: &'a Tagging,
+    pub draft: Option<&'a mut Draft<'b>>,
+}
+
 pub fn keep(
-    text: &str,
-    tags: &Tagging,
+    note: Note<'_, '_>,
     written: &Written,
     env: &mut Env,
     settings: &Settings,
     kinds: &[Box<dyn Kind>],
     indexing: &Indexing<'_>,
 ) -> Result<Outcome, Failure> {
+    let Note {
+        text,
+        id,
+        tags,
+        draft,
+    } = note;
     if (written.record)(text, SystemTime::now()).is_none() {
-        return Ok(nothing_to_keep());
+        return Ok(nothing_to_keep(draft));
     }
-    let id = Id::mint().map_err(|error| Failure::Refused(sanitize(&error.to_string())))?;
+    let after = ending(&draft);
     let label = (written.label)(id);
     let layout = settings.layout();
-    Store::check(&layout)?;
+    Store::check(&layout).map_err(|error| with_ending(Failure::from(error), &after))?;
     let notice = &mut env.notice;
     let mut store = Store::open(&layout, settings.store.options(), &mut |n| {
         notice(&notice_message(&n));
-    })?;
+    })
+    .map_err(|error| with_ending(Failure::from(error), &after))?;
     let fresh = if tags.tags.is_empty() {
         Vec::new()
     } else {
@@ -59,13 +98,13 @@ pub fn keep(
             Ok(fresh) => fresh,
             Err(error) => {
                 store.release();
-                return Err(store_failed(&error, None));
+                return Err(store_failed(&error, None, &after));
             }
         }
     };
     let Some(record) = (written.record)(text, SystemTime::now()) else {
         store.release();
-        return Ok(nothing_to_keep());
+        return Ok(nothing_to_keep(draft));
     };
     let answer = remember::keep_written(
         &mut store,
@@ -99,26 +138,32 @@ pub fn keep(
             Closing::default()
         }
     };
-    answered(answer, &fresh, closing)
+    answered(answer, &fresh, closing, draft)
 }
 
-fn nothing_to_keep() -> Outcome {
-    outcome(
-        &Totals::default(),
-        vec![Message::warning("nothing to keep: the note is empty")],
-        Exit::Refused,
-    )
+pub fn nothing_to_keep(draft: Option<&mut Draft<'_>>) -> Outcome {
+    let mut diagnostics = vec![Message::warning("nothing to keep: the note is empty")];
+    if let Some(draft) = draft {
+        diagnostics.extend((draft.settle)(Fate::Goes));
+    }
+    outcome(&Totals::default(), diagnostics, Exit::Refused)
 }
 
-fn store_failed(error: &dyn std::fmt::Display, tried: Option<Id>) -> Failure {
+fn store_failed(error: &dyn std::fmt::Display, tried: Option<Id>, ending: &str) -> Failure {
     let line = match tried {
-        Some(id) => format!("{error}; the note may have been kept as {id}"),
-        None => error.to_string(),
+        Some(id) => format!("{error}; the note may have been kept as {id}{ending}"),
+        None => format!("{error}{ending}"),
     };
     Failure::Refused(sanitize(&line))
 }
 
-fn answered(answer: WrittenAnswer, fresh: &[Tag], closing: Closing) -> Result<Outcome, Failure> {
+pub fn answered(
+    answer: WrittenAnswer,
+    fresh: &[Tag],
+    closing: Closing,
+    draft: Option<&mut Draft<'_>>,
+) -> Result<Outcome, Failure> {
+    let after = ending(&draft);
     match answer {
         WrittenAnswer::Kept {
             id,
@@ -143,6 +188,9 @@ fn answered(answer: WrittenAnswer, fresh: &[Tag], closing: Closing) -> Result<Ou
                 diagnostics.extend(new_tags(fresh));
             }
             diagnostics.extend(closing.messages);
+            if let Some(draft) = draft {
+                diagnostics.extend((draft.settle)(Fate::Goes));
+            }
             let exit = if closing.failed || closing.refused {
                 Exit::Refused
             } else {
@@ -159,12 +207,14 @@ fn answered(answer: WrittenAnswer, fresh: &[Tag], closing: Closing) -> Result<Ou
                 claimed: 1,
                 ..Totals::default()
             };
-            let mut diagnostics = vec![Message::warning(&format!("refused the note: {reason}"))];
+            let mut diagnostics = vec![Message::warning(&format!(
+                "refused the note: {reason}{after}"
+            ))];
             diagnostics.extend(closing.messages);
             Ok(outcome(&totals, diagnostics, Exit::Refused))
         }
-        WrittenAnswer::BeforeCapture(error) => Err(store_failed(&error, None)),
-        WrittenAnswer::AtCapture { id, error } => Err(store_failed(&error, Some(id))),
+        WrittenAnswer::BeforeCapture(error) => Err(store_failed(&error, None, &after)),
+        WrittenAnswer::AtCapture { id, error } => Err(store_failed(&error, Some(id), &after)),
     }
 }
 
@@ -203,7 +253,7 @@ mod tests {
             tagged: true,
         };
         let fresh = [Tag::new("garden").expect("a tag")];
-        let outcome = answered(kept, &fresh, Closing::default()).expect("an outcome");
+        let outcome = answered(kept, &fresh, Closing::default(), None).expect("an outcome");
         assert_eq!(
             outcome.stdout(&View::PLAIN),
             "new 1, appended 0, new generation 0, unchanged 0, refused 0\nrecords 1, raw bytes 40, stored bytes 190\n"
@@ -222,6 +272,7 @@ mod tests {
             WrittenAnswer::Refused("its id x is taken by another entry".to_owned()),
             &[],
             Closing::default(),
+            None,
         )
         .expect("an outcome");
         assert_eq!(
@@ -238,6 +289,7 @@ mod tests {
             WrittenAnswer::BeforeCapture(StoreError::Missing("no store".to_owned())),
             &[],
             Closing::default(),
+            None,
         )
         .expect_err("a failure");
         assert_eq!(before.stderr_lines(&View::PLAIN), ["bilbo: no store"]);
@@ -250,6 +302,7 @@ mod tests {
             },
             &[],
             Closing::default(),
+            None,
         )
         .expect_err("a failure");
         assert_eq!(
