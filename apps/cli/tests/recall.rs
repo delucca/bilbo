@@ -748,6 +748,39 @@ fn a_scope_by_a_word_of_the_capture_label_keeps_those_entries() {
 }
 
 #[test]
+fn a_moved_entry_is_named_by_the_words_of_its_new_path_and_not_of_its_old() {
+    let sandbox = Sandbox::new("recall_moved_entry");
+    sandbox.write(
+        "notes/shed-plan.md",
+        b"---\nid: 01JC5Q3V7XKM4P8R2T6W9YB0DE\n---\n# Beds\n\nThe trellis stands against the south wall of the shed.\n",
+    );
+    sandbox.remember(&["notes"]);
+    let before = sandbox.run(&["recall", "--in", "shed-plan", "--", "trellis"]);
+    assert_eq!(before.code, 0, "{:?}", before.stderr);
+    let reference = hits(&before.stdout)[0].reference.clone();
+
+    let old = sandbox.dir.join("notes/shed-plan.md");
+    let new = sandbox.dir.join("notes/greenhouse-plan.md");
+    fs::rename(&old, &new).expect("rename");
+    let kept = sandbox.run(&["remember", &sandbox.path("notes/greenhouse-plan.md")]);
+    assert_eq!(kept.code, 0, "{:?}", kept.stderr);
+
+    let after = sandbox.run(&["recall", "--in", "greenhouse-plan", "--", "trellis"]);
+    assert_eq!(after.code, 0, "{:?}", after.stderr);
+    assert_eq!(hits(&after.stdout)[0].reference, reference);
+    let stale = sandbox.run(&["recall", "--in", "shed-plan", "--", "trellis"]);
+    assert_eq!(stale.code, 1, "{}", stale.stdout);
+    assert!(
+        stale
+            .stderr
+            .iter()
+            .any(|line| line == "bilbo: --in 'shed-plan' names no entry"),
+        "{:?}",
+        stale.stderr
+    );
+}
+
+#[test]
 fn a_folder_with_an_accent_is_named_without_it() {
     let sandbox = Sandbox::new("recall_in_accents");
     sandbox.write(

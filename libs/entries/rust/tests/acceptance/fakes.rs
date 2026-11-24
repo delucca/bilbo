@@ -216,6 +216,7 @@ pub struct Seen {
     pub stamp: Option<Stamp>,
     pub bytes: Vec<u8>,
     pub ends: Vec<usize>,
+    pub head: Option<Head>,
 }
 
 #[derive(Default)]
@@ -225,6 +226,7 @@ pub struct FakeEntries {
     pub heads: HashMap<String, Head>,
     pub metas: HashMap<Id, Meta>,
     pub adopted: Vec<(Id, Option<Id>)>,
+    pub labelled: Vec<(Id, Option<CaptureLabel>)>,
     pub resolving: bool,
 }
 
@@ -242,6 +244,43 @@ impl FakeEntries {
     #[must_use]
     pub fn resolving(mut self) -> FakeEntries {
         self.resolving = true;
+        self
+    }
+
+    #[must_use]
+    pub fn kept_under(
+        mut self,
+        label: Option<&str>,
+        id: Id,
+        kind: &str,
+        tags: Tags,
+    ) -> FakeEntries {
+        let capture = label.and_then(|label| CaptureLabel::new(label.to_string()));
+        if let Some(label) = &capture {
+            self.heads.insert(
+                label.to_string(),
+                Head {
+                    id,
+                    generation: Generation(1),
+                    records: 1,
+                    mark: Mark { end: 0, hash: 0 },
+                    stamp: None,
+                },
+            );
+        }
+        self.metas.insert(
+            id,
+            Meta {
+                id,
+                kind: kind.to_string(),
+                labels: StoredLabels {
+                    capture,
+                    id: None,
+                    tags,
+                },
+                captured: std::time::SystemTime::UNIX_EPOCH,
+            },
+        );
         self
     }
 
@@ -281,6 +320,7 @@ impl Entries for FakeEntries {
             stamp: input.stamp,
             bytes: input.bytes.to_vec(),
             ends: input.ends.to_vec(),
+            head: self.heads.get(input.label.as_str()).copied(),
         });
         let n = u8::try_from(self.seen.len()).unwrap_or(u8::MAX);
         let held = self.heads.get(input.label.as_str()).map(|head| head.id);
@@ -337,6 +377,18 @@ impl Entries for FakeEntries {
 
     fn set_meta(&mut self, id: Id, meta: &Meta) -> Result<u64, StoreError> {
         self.adopted.push((id, meta.labels.id));
+        self.labelled.push((id, meta.labels.capture.clone()));
+        let moved = self
+            .metas
+            .get(&id)
+            .and_then(|held| held.labels.capture.clone())
+            .filter(|old| Some(old) != meta.labels.capture.as_ref());
+        if let (Some(old), Some(new)) = (moved, &meta.labels.capture)
+            && let Some(mut head) = self.heads.remove(old.as_str())
+        {
+            head.stamp = None;
+            self.heads.insert(new.to_string(), head);
+        }
         self.metas.insert(id, meta.clone());
         Ok(ADOPTED)
     }

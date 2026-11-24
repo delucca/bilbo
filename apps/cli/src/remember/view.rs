@@ -125,6 +125,8 @@ mod tests {
                 .map(|outcome| Item {
                     path: PathBuf::from("/notes/a.md"),
                     outcome,
+                    moved: None,
+                    carried: None,
                 })
                 .collect(),
             records: 3,

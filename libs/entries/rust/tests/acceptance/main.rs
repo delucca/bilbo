@@ -9,8 +9,9 @@ use std::time::{Duration, SystemTime};
 use bilbo_entries::files::{Call, Files, Memory, Node, Turning};
 use bilbo_entries::follows::{self, Follow, Planned};
 use bilbo_entries::kind::Kind;
-use bilbo_entries::remember::{self, Error, Item, Outcome, Output, Request, Tagging, Tally};
-use bilbo_store::entries::Stamp;
+use bilbo_entries::remember::{self, Error, Item, Moved, Outcome, Output, Request, Tagging, Tally};
+use bilbo_store::entries::{Generation, Head, Mark, Stamp};
+use bilbo_store::id::Id;
 use bilbo_store::labels::{By, CaptureLabel, Standing, StoredLabels, Tag, Tags};
 use fakes::{ADOPTED, Counting, FakeEntries, FakeKind, Script, id};
 
@@ -154,11 +155,13 @@ fn a_file_is_refused_for_its_reason_and_the_run_goes_on() {
     let files = Memory::new()
         .unreadable("/t/a-locked.fake", Node::File)
         .file("/t/b-kind.fake", "!no")
-        .file("/t/c-held.fake", "x|")
+        .file("/t/c-held.fake", format!("id={}|", id(1)).as_bytes())
+        .file("/t/other.md", format!("id={}|", id(1)).as_bytes())
         .file("/t/d-records.fake", "x|")
         .file(bad.clone(), "x|")
         .file("/t/z-fine.fake", "x|");
     let mut entries = FakeEntries::new()
+        .kept_under(Some("file:/t/other.md"), id(1), "fake", Tags::default())
         .on(
             "file:/t/c-held.fake",
             Script::IdHeld(CaptureLabel::new("file:/t/other.md".into())),
@@ -205,6 +208,8 @@ fn a_file_is_refused_for_its_reason_and_the_run_goes_on() {
         Item {
             path,
             outcome: Outcome::New(_),
+            moved: None,
+            carried: None,
         } if path == Path::new("/t/z-fine.fake")
     )));
 }
@@ -1175,4 +1180,598 @@ fn remember_makes_a_models_tag_a_persons_and_counts_the_entry_tagged() {
         entries.metas[&id(1)].labels.tags,
         carried(&[("a", by_person()), ("b", by_person()), ("c", by_person())])
     );
+}
+
+fn held() -> Id {
+    Id::parse(HELD).expect("an id")
+}
+
+fn with_id(rest: &str) -> String {
+    format!("id={HELD}|{rest}")
+}
+
+fn old_label() -> CaptureLabel {
+    CaptureLabel::new("file:/t/old.fake".into()).expect("a label")
+}
+
+fn holder(label: &str) -> FakeEntries {
+    FakeEntries::new().kept_under(Some(label), held(), "fake", Tags::default())
+}
+
+fn seeded(entries: &mut FakeEntries) -> Head {
+    let head = entries
+        .heads
+        .get_mut("file:/t/old.fake")
+        .expect("the holder's head");
+    head.generation = Generation(3);
+    head.records = 2;
+    head.mark = Mark { end: 7, hash: 11 };
+    head.stamp = Some(Stamp {
+        size: 5,
+        modified: SystemTime::UNIX_EPOCH + Duration::from_secs(1000),
+    });
+    Head {
+        stamp: None,
+        ..*head
+    }
+}
+
+fn held_by(label: &str) -> Script {
+    Script::IdHeld(CaptureLabel::new(label.into()))
+}
+
+fn moves(entries: &FakeEntries) -> Vec<(Id, Option<String>)> {
+    entries
+        .labelled
+        .iter()
+        .map(|(id, label)| (*id, label.as_ref().map(ToString::to_string)))
+        .collect()
+}
+
+#[test]
+fn a_file_whose_id_is_held_where_no_file_is_left_moves_its_entry_to_its_label() {
+    let files = Memory::new().file("/t/new.fake", with_id("x|").as_bytes());
+    let mut entries = FakeEntries::new()
+        .kept_under(
+            Some("file:/t/old.fake"),
+            held(),
+            "fake",
+            carried(&[("a", by_person())]),
+        )
+        .on("file:/t/new.fake", Script::Unchanged);
+    {
+        let meta = entries.metas.get_mut(&held()).expect("the holder");
+        meta.labels.id = Some(id(8));
+        meta.captured = SystemTime::UNIX_EPOCH + Duration::from_secs(1000);
+    }
+    let before = entries.metas[&held()].clone();
+    let output = run(FakeKind::new(), &files, &mut entries, &request("/t")).expect("run");
+
+    let mut expected = before.clone();
+    expected.labels.capture = CaptureLabel::new("file:/t/new.fake".into());
+    assert_eq!(entries.metas[&held()], expected);
+    assert_eq!(entries.metas[&held()].labels.id, Some(id(8)));
+    assert_eq!((entries.seen[0].id, entries.seen[0].id_label), (None, None));
+
+    assert_eq!(
+        moves(&entries),
+        vec![(held(), Some("file:/t/new.fake".to_string()))]
+    );
+    let after = &entries.metas[&held()];
+    assert_eq!(after.kind, before.kind);
+    assert_eq!(after.captured, before.captured);
+    assert_eq!(after.labels.id, before.labels.id);
+    assert_eq!(after.labels.tags, before.labels.tags);
+    assert_eq!(
+        after.labels.capture.as_ref().map(ToString::to_string),
+        Some("file:/t/new.fake".to_string())
+    );
+    assert_eq!(entries.seen.len(), 1);
+    assert_eq!(entries.seen[0].label, "file:/t/new.fake");
+    assert_eq!(entries.seen[0].bytes, with_id("x|").as_bytes());
+    assert_eq!(
+        outcomes(&output),
+        vec![("/t/new.fake", &Outcome::Unchanged(held()))]
+    );
+    assert_eq!(
+        output.items[0].moved,
+        Some(Moved {
+            id: held(),
+            from: old_label(),
+            bytes: ADOPTED
+        })
+    );
+    assert_eq!(output.stored_bytes, ADOPTED);
+}
+
+#[test]
+fn a_file_whose_id_is_held_by_a_file_that_is_still_there_is_refused() {
+    let files = Memory::new()
+        .file("/t/new.fake", with_id("y|").as_bytes())
+        .file("/t/old.fake", with_id("x|").as_bytes());
+    let mut entries =
+        holder("file:/t/old.fake").on("file:/t/new.fake", held_by("file:/t/old.fake"));
+    let (heads, metas) = (entries.heads.clone(), entries.metas.clone());
+    let output = run(
+        FakeKind::new(),
+        &files,
+        &mut entries,
+        &request("/t/new.fake"),
+    )
+    .expect("run");
+
+    assert_eq!(
+        outcomes(&output),
+        vec![(
+            "/t/new.fake",
+            &Outcome::Refused(format!("its id {HELD} is held by file:/t/old.fake"))
+        )]
+    );
+    assert!(entries.labelled.is_empty());
+    assert_eq!((&entries.heads, &entries.metas), (&heads, &metas));
+}
+
+#[test]
+fn an_old_label_that_holds_a_folder_or_a_link_is_no_file() {
+    for old in [
+        Memory::new().folder("/t/old.fake"),
+        Memory::new().other("/t/old.fake"),
+    ] {
+        let files = old.file("/t/new.fake", with_id("x|").as_bytes());
+        let mut entries = holder("file:/t/old.fake");
+        let output = run(
+            FakeKind::new(),
+            &files,
+            &mut entries,
+            &request("/t/new.fake"),
+        )
+        .expect("run");
+        assert_eq!(moves(&entries).len(), 1);
+        assert!(output.items[0].moved.is_some());
+        assert_eq!(output.tally().refused, 0);
+    }
+}
+
+#[test]
+fn an_old_label_that_cannot_be_looked_at_refuses() {
+    let files = Memory::new()
+        .denied("/t/old.fake")
+        .file("/t/new.fake", with_id("x|").as_bytes());
+    let mut entries =
+        holder("file:/t/old.fake").on("file:/t/new.fake", held_by("file:/t/old.fake"));
+    let (heads, metas) = (entries.heads.clone(), entries.metas.clone());
+    let output = run(
+        FakeKind::new(),
+        &files,
+        &mut entries,
+        &request("/t/new.fake"),
+    )
+    .expect("run");
+    assert_eq!(output.tally().refused, 1);
+    assert_eq!(
+        outcomes(&output),
+        vec![(
+            "/t/new.fake",
+            &Outcome::Refused(format!("its id {HELD} is held by file:/t/old.fake"))
+        )]
+    );
+    assert!(entries.labelled.is_empty());
+    assert_eq!((&entries.heads, &entries.metas), (&heads, &metas));
+    assert!(output.items[0].moved.is_none());
+}
+
+#[test]
+fn an_id_held_with_no_file_label_or_by_another_kind_is_refused() {
+    let files = Memory::new().file("/t/new.fake", with_id("x|").as_bytes());
+    let rows = [
+        (
+            FakeEntries::new()
+                .kept_under(None, held(), "fake", Tags::default())
+                .on("file:/t/new.fake", Script::IdHeld(None)),
+            format!("its id {HELD} is held by another entry"),
+        ),
+        (
+            FakeEntries::new()
+                .kept_under(Some("tag:not-a-file"), held(), "fake", Tags::default())
+                .on("file:/t/new.fake", held_by("tag:not-a-file")),
+            format!("its id {HELD} is held by tag:not-a-file"),
+        ),
+        (
+            FakeEntries::new()
+                .kept_under(Some("file:/t/old.fake"), held(), "other", Tags::default())
+                .on("file:/t/new.fake", held_by("file:/t/old.fake")),
+            format!("its id {HELD} is held by file:/t/old.fake"),
+        ),
+    ];
+    for (mut entries, line) in rows {
+        let (heads, metas) = (entries.heads.clone(), entries.metas.clone());
+        let output = run(
+            FakeKind::new(),
+            &files,
+            &mut entries,
+            &request("/t/new.fake"),
+        )
+        .expect("run");
+        assert_eq!(
+            outcomes(&output),
+            vec![("/t/new.fake", &Outcome::Refused(line))]
+        );
+        assert!(entries.labelled.is_empty());
+        assert_eq!((&entries.heads, &entries.metas), (&heads, &metas));
+    }
+}
+
+#[test]
+fn a_moved_file_that_changed_counts_as_what_its_bytes_give() {
+    for (script, want) in [
+        (Script::Appended, "appended"),
+        (Script::NewGeneration, "new generation"),
+    ] {
+        let files = Memory::new().file("/t/new.fake", with_id("x|y|").as_bytes());
+        let mut entries = holder("file:/t/old.fake").on("file:/t/new.fake", script);
+        let head = seeded(&mut entries);
+        let output = run(
+            FakeKind::new(),
+            &files,
+            &mut entries,
+            &request("/t/new.fake"),
+        )
+        .expect("run");
+        assert_eq!(entries.seen.len(), 1, "{want}");
+        assert_eq!(entries.seen[0].label, "file:/t/new.fake", "{want}");
+        assert_eq!(entries.seen[0].id, None, "{want}");
+        assert_eq!(entries.seen[0].head, Some(head), "{want}");
+        assert!(!entries.heads.contains_key("file:/t/old.fake"), "{want}");
+        let tally = output.tally();
+        assert_eq!(tally.new, 0, "{want}");
+        assert_eq!(tally.appended + tally.new_generation, 1, "{want}");
+        assert_eq!(tally.appended, u64::from(want == "appended"), "{want}");
+        assert!(output.items[0].moved.is_some());
+        assert_eq!(
+            output.stored_bytes,
+            ADOPTED + with_id("x|y|").len() as u64 + 100,
+            "{want}"
+        );
+    }
+}
+
+#[test]
+fn a_file_moved_twice_and_back_is_one_entry_each_time() {
+    let mut entries = holder("file:/t/a.fake")
+        .on("file:/t/b.fake", Script::Unchanged)
+        .on("file:/t/c.fake", Script::Unchanged)
+        .on("file:/t/a.fake", Script::Unchanged);
+    for name in ["b", "c", "a"] {
+        let files = Memory::new().file(format!("/t/{name}.fake"), with_id("x|").as_bytes());
+        run(FakeKind::new(), &files, &mut entries, &request("/t")).expect("run");
+    }
+    assert_eq!(
+        moves(&entries),
+        vec![
+            (held(), Some("file:/t/b.fake".to_string())),
+            (held(), Some("file:/t/c.fake".to_string())),
+            (held(), Some("file:/t/a.fake".to_string())),
+        ]
+    );
+    assert_eq!(entries.metas.len(), 1);
+}
+
+#[test]
+fn a_tagged_run_declares_for_a_moved_entry_and_refuses_a_full_one_after_its_move() {
+    let files = Memory::new().file("/t/new.fake", with_id("x|").as_bytes());
+
+    let mut roomy = holder("file:/t/old.fake").on("file:/t/new.fake", Script::Unchanged);
+    let output = run(
+        FakeKind::new(),
+        &files,
+        &mut roomy,
+        &tagged_request("/t/new.fake", &["x"], 2),
+    )
+    .expect("run");
+    assert_eq!(output.tagged, 1);
+    assert!(output.items[0].moved.is_some());
+    assert!(
+        roomy.metas[&held()]
+            .labels
+            .tags
+            .carried()
+            .any(|(tag, _)| tag.as_str() == "x")
+    );
+
+    let mut full = FakeEntries::new()
+        .kept_under(
+            Some("file:/t/old.fake"),
+            held(),
+            "fake",
+            carried(&[("a", by_person()), ("b", by_person())]),
+        )
+        .on("file:/t/new.fake", Script::Unchanged);
+    let output = run(
+        FakeKind::new(),
+        &files,
+        &mut full,
+        &tagged_request("/t/new.fake", &["x"], 2),
+    )
+    .expect("run");
+    assert_eq!(
+        outcomes(&output),
+        vec![(
+            "/t/new.fake",
+            &Outcome::Refused("its entry would carry more than tag.cap tags (2)".to_string())
+        )]
+    );
+    assert_eq!(
+        output.items[0].moved.as_ref().map(|moved| moved.bytes),
+        Some(ADOPTED)
+    );
+    assert_eq!(output.stored_bytes, ADOPTED);
+    assert_eq!(moves(&full).len(), 1);
+}
+
+#[test]
+fn a_file_at_the_old_label_that_carries_another_id_or_none_does_not_hold_the_entry() {
+    let other = format!("id={}|z|", id(9));
+    let rows: [(Memory, bool); 4] = [
+        (Memory::new().file("/t/old.fake", other.as_bytes()), true),
+        (Memory::new().file("/t/old.fake", "z|"), true),
+        (Memory::new().file("/t/old.fake", "!refused"), false),
+        (Memory::new().unreadable("/t/old.fake", Node::File), false),
+    ];
+    for (old, moves_it) in rows {
+        let files = old.file("/t/new.fake", with_id("x|").as_bytes());
+        let mut entries = holder("file:/t/old.fake");
+        let output = run(
+            FakeKind::new(),
+            &files,
+            &mut entries,
+            &request("/t/new.fake"),
+        )
+        .expect("run");
+        assert_eq!(output.items[0].moved.is_some(), moves_it);
+        assert_eq!(moves(&entries).len(), usize::from(moves_it));
+        assert_eq!(output.tally().refused, u64::from(!moves_it));
+    }
+}
+
+#[test]
+fn a_file_whose_label_holds_one_entry_and_whose_id_another_holds_is_refused_and_nothing_is_written()
+{
+    let files = Memory::new().file("/t/s.fake", with_id("x|").as_bytes());
+    let mine = id(7);
+    for (label, line) in [
+        (
+            Some("file:/t/g.fake"),
+            format!(
+                "its id {HELD} is held by file:/t/g.fake, but this path was kept as entry {mine}"
+            ),
+        ),
+        (
+            None,
+            format!(
+                "its id {HELD} is held by another entry, but this path was kept as entry {mine}"
+            ),
+        ),
+    ] {
+        let mut entries = FakeEntries::new()
+            .kept_under(Some("file:/t/s.fake"), mine, "fake", Tags::default())
+            .kept_under(label, held(), "fake", Tags::default());
+        let output =
+            run(FakeKind::new(), &files, &mut entries, &request("/t/s.fake")).expect("run");
+        assert_eq!(
+            outcomes(&output),
+            vec![("/t/s.fake", &Outcome::Refused(line))]
+        );
+        assert_eq!(output.items[0].carried, Some(held()));
+        assert!(entries.labelled.is_empty());
+        assert!(entries.seen.is_empty());
+        assert_eq!(entries.heads["file:/t/s.fake"].id, mine);
+    }
+
+    let mut entries = FakeEntries::new()
+        .kept_under(Some("file:/t/s.fake"), mine, "fake", Tags::default())
+        .on("file:/t/s.fake", Script::Appended);
+    let output = run(FakeKind::new(), &files, &mut entries, &request("/t/s.fake")).expect("run");
+    assert_eq!(
+        outcomes(&output),
+        vec![("/t/s.fake", &Outcome::Appended(mine))]
+    );
+    assert_eq!(output.items[0].carried, None);
+    assert_eq!(entries.seen.len(), 1);
+    assert_eq!(entries.seen[0].id, None);
+    assert!(entries.labelled.is_empty());
+}
+
+#[test]
+fn a_moved_file_is_skipped_unread_by_a_later_run() {
+    let files = Memory::new().file("/t/new.fake", with_id("x|").as_bytes());
+    let mut entries = holder("file:/t/old.fake").on("file:/t/new.fake", Script::Unchanged);
+    run(FakeKind::new(), &files, &mut entries, &request("/t")).expect("the move");
+
+    let again = Counting::new(files);
+    let output = run(FakeKind::new(), &again, &mut entries, &request("/t")).expect("again");
+    assert_eq!(again.read_paths.borrow().len(), 0);
+    assert_eq!(
+        outcomes(&output),
+        vec![("/t/new.fake", &Outcome::Unchanged(held()))]
+    );
+    assert_eq!(moves(&entries).len(), 1);
+    assert_eq!(entries.seen.len(), 1);
+}
+
+#[test]
+fn a_rename_that_changes_only_the_case_of_a_name_moves_the_entry() {
+    let files = Counting::new(
+        Memory::new()
+            .file("/t/N.fake", with_id("x|").as_bytes())
+            .alias("/t/n.fake", "/t/N.fake"),
+    );
+    let mut entries = holder("file:/t/n.fake");
+    let output = run(FakeKind::new(), &files, &mut entries, &request("/t/N.fake")).expect("run");
+    assert_eq!(
+        moves(&entries),
+        vec![(held(), Some("file:/t/N.fake".to_string()))]
+    );
+    assert_eq!(output.tally().refused, 0);
+    assert_eq!(Counting::count(&files.read_paths, "/t/n.fake"), 0);
+}
+
+#[test]
+fn a_run_stopped_between_a_moves_two_writes_is_finished_by_the_next_run() {
+    let files = Memory::new().file("/t/new.fake", with_id("x|").as_bytes());
+    let mut entries = holder("file:/t/old.fake").on("file:/t/new.fake", Script::Failure);
+    let head = seeded(&mut entries);
+    let error = run(
+        FakeKind::new(),
+        &files,
+        &mut entries,
+        &request("/t/new.fake"),
+    )
+    .expect_err("the capture fails");
+    assert!(matches!(error, Error::Store(_)));
+    assert_eq!(error.to_string(), "stopped at the test hook Appended");
+    assert_eq!(entries.seen.len(), 1);
+    assert_eq!(entries.seen[0].head, Some(head));
+    assert_eq!(moves(&entries).len(), 1);
+    assert!(!entries.heads.contains_key("file:/t/old.fake"));
+    assert_eq!(entries.heads["file:/t/new.fake"], head);
+    assert_eq!(
+        entries.metas[&held()].labels.capture,
+        CaptureLabel::new("file:/t/new.fake".into())
+    );
+
+    entries
+        .script
+        .insert("file:/t/new.fake".to_string(), Script::Unchanged);
+    let output = run(
+        FakeKind::new(),
+        &files,
+        &mut entries,
+        &request("/t/new.fake"),
+    )
+    .expect("the next run");
+    assert_eq!(moves(&entries).len(), 1, "no second move");
+    assert_eq!(
+        outcomes(&output),
+        vec![("/t/new.fake", &Outcome::Unchanged(held()))]
+    );
+    assert!(output.items[0].moved.is_none());
+    assert_eq!(entries.seen.len(), 2);
+    assert_eq!(entries.seen[1].label, "file:/t/new.fake");
+    assert_eq!(entries.seen[1].id, None);
+    assert_eq!(entries.seen[1].head, Some(head));
+    assert_eq!(entries.metas.len(), 1);
+}
+
+#[test]
+fn tags_a_moved_entry_already_carries_are_taken_at_the_cap() {
+    let files = Memory::new().file("/t/new.fake", with_id("x|").as_bytes());
+    let mut entries = FakeEntries::new()
+        .kept_under(
+            Some("file:/t/old.fake"),
+            held(),
+            "fake",
+            carried(&[("a", by_person()), ("b", by_person())]),
+        )
+        .on("file:/t/new.fake", Script::Unchanged);
+    let output = run(
+        FakeKind::new(),
+        &files,
+        &mut entries,
+        &tagged_request("/t/new.fake", &["a", "b"], 1),
+    )
+    .expect("run");
+    assert_eq!(
+        outcomes(&output),
+        vec![("/t/new.fake", &Outcome::Unchanged(held()))]
+    );
+    assert_eq!(output.tally().refused, 0);
+    assert!(output.items[0].moved.is_some());
+    assert_eq!(
+        moves(&entries),
+        vec![(held(), Some("file:/t/new.fake".to_string()))]
+    );
+    assert_eq!(entries.seen.len(), 1);
+    assert_eq!(entries.seen[0].label, "file:/t/new.fake");
+    assert_eq!(
+        entries.metas[&held()].labels.tags,
+        carried(&[("a", by_person()), ("b", by_person())])
+    );
+}
+
+#[test]
+fn a_folder_renamed_only_in_case_moves_its_entries() {
+    let files = Memory::new()
+        .file("/t/shed/n.fake", with_id("x|").as_bytes())
+        .alias("/t/Shed/n.fake", "/t/shed/n.fake")
+        .alias("/t/Shed", "/t/shed");
+    assert_eq!(
+        files.list(Path::new("/t/Shed")).expect("a list"),
+        [std::ffi::OsString::from("n.fake")]
+    );
+    assert_eq!(
+        files.node(Path::new("/t/Shed/n.fake")).ok(),
+        Some(Node::File)
+    );
+    assert_eq!(
+        files.canonical(Path::new("/t/Shed/n.fake")).ok(),
+        Some(PathBuf::from("/t/shed/n.fake"))
+    );
+    let mut entries = holder("file:/t/Shed/n.fake");
+    let output = run(FakeKind::new(), &files, &mut entries, &request("/t/shed")).expect("run");
+    assert_eq!(
+        moves(&entries),
+        vec![(held(), Some("file:/t/shed/n.fake".to_string()))]
+    );
+    assert_eq!(output.tally().refused, 0);
+}
+
+#[test]
+fn a_third_file_with_the_id_is_refused_while_the_renamed_one_answers_at_the_old_spelling() {
+    let files = Memory::new()
+        .file("/t/N.fake", with_id("x|").as_bytes())
+        .alias("/t/n.fake", "/t/N.fake")
+        .file("/t/z.fake", with_id("z|").as_bytes());
+    let mut entries = holder("file:/t/n.fake");
+    let output = run(FakeKind::new(), &files, &mut entries, &request("/t/z.fake")).expect("z");
+    assert_eq!(
+        outcomes(&output),
+        vec![(
+            "/t/z.fake",
+            &Outcome::Refused(format!("its id {HELD} is held by file:/t/n.fake"))
+        )]
+    );
+    assert!(entries.labelled.is_empty());
+
+    let output = run(FakeKind::new(), &files, &mut entries, &request("/t/N.fake")).expect("N");
+    assert_eq!(moves(&entries).len(), 1);
+    assert!(output.items[0].moved.is_some());
+}
+
+#[test]
+fn a_cap_refusal_held_back_is_kept_when_the_file_is_gone_at_its_read() {
+    let cap = "its entry would carry more than tag.cap tags (1)".to_string();
+    for (file, bytes) in [("/t/new.fake", "x|"), ("/t/a.fake.z", "zx|")] {
+        let files = Turning::new(
+            Memory::new().file(file, bytes),
+            Memory::new(),
+            Call::Stamp,
+            file,
+        );
+        let mut entries = FakeEntries::new();
+        let output = run(
+            FakeKind::new(),
+            &files,
+            &mut entries,
+            &tagged_request(file, &["a", "b"], 1),
+        )
+        .expect("run");
+        assert_eq!(
+            outcomes(&output),
+            vec![(file, &Outcome::Refused(cap.clone()))],
+            "{file}"
+        );
+        assert!(output.items[0].moved.is_none(), "{file}");
+        assert!(entries.seen.is_empty(), "{file}");
+        assert!(entries.labelled.is_empty(), "{file}");
+    }
 }

@@ -9,7 +9,7 @@ use bilbo_store::entries::{Capture, CaptureError, Captured, Entries, Head, Meta,
 use bilbo_store::id::Id;
 use bilbo_store::labels::{CaptureLabel, StoredLabels, Tag, Tags};
 
-use crate::files::{Files, Node};
+use crate::files::{At, Files, Node, at};
 use crate::kind::{Claim, Kind, Proposal};
 use crate::tag::{self, Change};
 
@@ -48,9 +48,18 @@ pub enum Outcome {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Moved {
+    pub id: Id,
+    pub from: CaptureLabel,
+    pub bytes: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Item {
     pub path: PathBuf,
     pub outcome: Outcome,
+    pub moved: Option<Moved>,
+    pub carried: Option<Id>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -81,6 +90,8 @@ impl Output {
                 .map(|(path, reason)| Item {
                     path: path.clone(),
                     outcome: Outcome::Refused(reason.clone()),
+                    moved: None,
+                    carried: None,
                 })
                 .collect(),
             records: 0,
@@ -264,7 +275,8 @@ pub fn keep(
     };
     output.claimed = u64::try_from(plan.claims.len()).unwrap_or(u64::MAX);
     for claim in &plan.claims {
-        let (path, done) = keep_file(kind, claim, &plan.tags, files, entries)?;
+        let (path, done, trail) = keep_file(kind, claim, &plan.tags, files, entries)?;
+        output.stored_bytes += trail.moved.as_ref().map_or(0, |moved| moved.bytes);
         let outcome = match done {
             Done::Refused(reason) => Outcome::Refused(reason),
             Done::Kept {
@@ -288,9 +300,21 @@ pub fn keep(
                 outcome
             }
         };
-        output.items.push(Item { path, outcome });
+        output.items.push(Item {
+            path,
+            outcome,
+            moved: trail.moved,
+            carried: trail.carried,
+        });
     }
     Ok(output)
+}
+
+#[derive(Default)]
+struct Trail {
+    moved: Option<Moved>,
+    carried: Option<Id>,
+    cap: Option<(PathBuf, String)>,
 }
 
 enum Step {
@@ -309,10 +333,15 @@ fn keep_file(
     tags: &Tagging,
     files: &dyn Files,
     entries: &mut dyn Entries,
-) -> Result<(PathBuf, Done), Error> {
+) -> Result<(PathBuf, Done, Trail), Error> {
     let label_path = claim.label().to_path_buf();
+    let mut trail = Trail::default();
     let Some(label) = CaptureLabel::file(claim.label()) else {
-        return Ok((label_path, Done::Refused("its path is not UTF-8".into())));
+        return Ok((
+            label_path,
+            Done::Refused("its path is not UTF-8".into()),
+            trail,
+        ));
     };
     let head = entries.by_capture(&label)?;
     let entry = Held {
@@ -324,8 +353,8 @@ fn keep_file(
     let mut not_a_file = false;
     for _ in 0..2 {
         for file in claim.files() {
-            match look(kind, claim, file, &entry, files, entries)? {
-                Step::Done(done) => return Ok((file.clone(), done)),
+            match look(kind, claim, file, &entry, files, entries, &mut trail)? {
+                Step::Done(done) => return Ok((file.clone(), done, trail)),
                 Step::Gone(error) => last = Some(error),
                 Step::NotAFile => not_a_file = true,
             }
@@ -334,11 +363,14 @@ fn keep_file(
             break;
         }
     }
+    if let Some((path, reason)) = trail.cap.take() {
+        return Ok((path, Done::Refused(reason), trail));
+    }
     let reason = match last {
         Some(error) if !not_a_file => format!("cannot read: {error}"),
         _ => "it is not a regular file".to_owned(),
     };
-    Ok((label_path, Done::Refused(reason)))
+    Ok((label_path, Done::Refused(reason), trail))
 }
 
 struct Held<'a> {
@@ -354,6 +386,23 @@ fn look(
     entry: &Held<'_>,
     files: &dyn Files,
     entries: &mut dyn Entries,
+    trail: &mut Trail,
+) -> Result<Step, Error> {
+    let step = read_and_keep(kind, claim, file, entry, files, entries, trail)?;
+    Ok(match (&trail.cap, &trail.moved, step) {
+        (Some((_, reason)), None, Step::Done(Done::Refused(_))) => refused(reason.clone()),
+        (_, _, step) => step,
+    })
+}
+
+fn read_and_keep(
+    kind: &dyn Kind,
+    claim: &Claim,
+    file: &Path,
+    entry: &Held<'_>,
+    files: &dyn Files,
+    entries: &mut dyn Entries,
+    trail: &mut Trail,
 ) -> Result<Step, Error> {
     match files.node(file) {
         Ok(Node::File) => {}
@@ -367,9 +416,15 @@ fn look(
         Err(_) => None,
     };
     let taken = files.now();
-    let first = match fits(entry.tags, entry.head, entries)? {
+    let mut first = match fits(entry.tags, entry.head, entries)? {
         Ok(first) => first,
-        Err(reason) => return Ok(refused(reason)),
+        Err(reason) => {
+            if entry.head.is_some() {
+                return Ok(refused(reason));
+            }
+            trail.cap = Some((file.to_path_buf(), reason));
+            Tags::default()
+        }
     };
     if let Some(head) = entry.head
         && stamp.is_some()
@@ -400,17 +455,50 @@ fn look(
     let Some(records) = bytes.get(..ends.last().copied().unwrap_or(0)) else {
         return Ok(refused("its records do not cover it".into()));
     };
-    let proposal = if entry.head.is_some() {
-        Proposal::default()
+    let mut head = entry.head.copied();
+    let proposal = if head.is_some() {
+        Proposal {
+            id: kind.propose(claim.label(), records, &|_| None).id,
+            id_label: None,
+        }
     } else {
         let entries: &dyn Entries = entries;
         kind.propose(claim.label(), records, &|other| kept(entries, other))
     };
+    if let Some(id) = proposal.id
+        && head.is_none_or(|head| head.id != id)
+        && let Some(holder) = entries.meta(id)?
+    {
+        let by = holder.labels.capture.clone();
+        if let Some(head) = head {
+            trail.carried = Some(id);
+            return Ok(refused(format!(
+                "{}, but this path was kept as entry {}",
+                CaptureError::IdHeld { id, by },
+                head.id
+            )));
+        }
+        match moved(kind, holder, entry.label, file, files, entries, trail)? {
+            Ok(kept) => head = Some(kept),
+            Err(line) => return Ok(refused(line)),
+        }
+        first = match fits(entry.tags, head.as_ref(), entries)? {
+            Ok(first) => first,
+            Err(reason) => return Ok(refused(reason)),
+        };
+    }
+    if let Some((_, reason)) = trail.cap.take() {
+        return Ok(refused(reason));
+    }
     let input = Capture {
         label: entry.label,
         kind: kind.name(),
-        id: proposal.id,
-        id_label: proposal.id_label,
+        id: if head.is_some() { None } else { proposal.id },
+        id_label: if head.is_some() {
+            None
+        } else {
+            proposal.id_label
+        },
         stamp: stamp.filter(|stamp| !racy(stamp.modified, taken)),
         bytes: records,
         ends: &ends,
@@ -418,7 +506,7 @@ fn look(
     };
     match entries.capture(&input) {
         Ok(captured) => {
-            let (adopted, tagged) = match entry.head {
+            let (adopted, tagged) = match head {
                 Some(head) => {
                     let adopted = adopt(kind, claim.label(), records, head.id, entries)?;
                     match declared(entry.tags, head.id, entries)? {
@@ -443,6 +531,68 @@ fn look(
             | CaptureError::Records(_)
             | CaptureError::TooLarge),
         ) => Ok(refused(error.to_string())),
+    }
+}
+
+fn moved(
+    kind: &dyn Kind,
+    holder: Meta,
+    label: &CaptureLabel,
+    file: &Path,
+    files: &dyn Files,
+    entries: &mut dyn Entries,
+    trail: &mut Trail,
+) -> Result<Result<Head, String>, Error> {
+    let id = holder.id;
+    let by = holder.labels.capture.clone();
+    let from = by.clone().filter(|_| gives_way(kind, &holder, file, files));
+    let Some(from) = from else {
+        return Ok(Err(CaptureError::IdHeld { id, by }.to_string()));
+    };
+    let bytes = entries.set_meta(
+        id,
+        &Meta {
+            labels: StoredLabels {
+                capture: Some(label.clone()),
+                ..holder.labels.clone()
+            },
+            ..holder
+        },
+    )?;
+    trail.moved = Some(Moved { id, from, bytes });
+    trail.cap = None;
+    match entries.by_capture(label)? {
+        Some(head) => Ok(Ok(head)),
+        None => Err(StoreError::Missing(format!("no entry {id} under {label}")).into()),
+    }
+}
+
+fn gives_way(kind: &dyn Kind, holder: &Meta, file: &Path, files: &dyn Files) -> bool {
+    if holder.kind != kind.name() {
+        return false;
+    }
+    let Some(old) = holder.labels.capture.as_ref().and_then(CaptureLabel::path) else {
+        return false;
+    };
+    match at(files, old) {
+        At::Nothing | At::NoFile => true,
+        At::Elsewhere(canonical) if canonical == file => true,
+        At::Unseen => false,
+        At::File | At::Elsewhere(_) => {
+            let Ok(bytes) = files.read(old) else {
+                return false;
+            };
+            let Ok(bytes) = kind.unpack(old, bytes) else {
+                return false;
+            };
+            let Ok(ends) = kind.split(&bytes) else {
+                return false;
+            };
+            let Some(records) = bytes.get(..ends.last().copied().unwrap_or(0)) else {
+                return false;
+            };
+            kind.propose(old, records, &|_| None).id != Some(holder.id)
+        }
     }
 }
 

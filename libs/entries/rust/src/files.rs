@@ -15,6 +15,36 @@ pub enum Node {
     Other,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum At {
+    Nothing,
+    File,
+    Elsewhere(PathBuf),
+    NoFile,
+    Unseen,
+}
+
+#[must_use]
+pub fn at(files: &dyn Files, path: &Path) -> At {
+    match files.node(path) {
+        Ok(Node::File) => match files.canonical(path) {
+            Ok(canonical) if canonical == path => At::File,
+            Ok(canonical) => At::Elsewhere(canonical),
+            Err(_) => At::Unseen,
+        },
+        Ok(_) => At::NoFile,
+        Err(error)
+            if matches!(
+                error.kind(),
+                io::ErrorKind::NotFound | io::ErrorKind::NotADirectory
+            ) =>
+        {
+            At::Nothing
+        }
+        Err(_) => At::Unseen,
+    }
+}
+
 pub trait Files {
     /// Absolute, symbolic links resolved.
     fn canonical(&self, path: &Path) -> io::Result<PathBuf>;
@@ -43,6 +73,7 @@ enum Entry {
 #[derive(Debug, Clone, Default)]
 pub struct Memory {
     tree: BTreeMap<PathBuf, Entry>,
+    aliases: BTreeMap<PathBuf, PathBuf>,
     clock: Option<SystemTime>,
 }
 
@@ -111,6 +142,12 @@ impl Memory {
         self
     }
 
+    #[must_use]
+    pub fn alias(mut self, alias: impl Into<PathBuf>, file: impl Into<PathBuf>) -> Memory {
+        self.aliases.insert(alias.into(), file.into());
+        self
+    }
+
     fn parents(&mut self, path: &Path) {
         for parent in path.ancestors().skip(1) {
             self.tree
@@ -120,6 +157,7 @@ impl Memory {
     }
 
     fn entry(&self, path: &Path) -> io::Result<&Entry> {
+        let path = self.aliases.get(path).map_or(path, PathBuf::as_path);
         match self.tree.get(path) {
             Some(Entry::Denied) => Err(io::Error::from(io::ErrorKind::PermissionDenied)),
             Some(entry) => Ok(entry),
@@ -137,7 +175,12 @@ impl Files for Memory {
         if !path.is_absolute() {
             return Err(io::Error::from(io::ErrorKind::NotFound));
         }
-        self.entry(path).map(|_| path.to_path_buf())
+        self.entry(path).map(|_| {
+            self.aliases
+                .get(path)
+                .map_or(path, PathBuf::as_path)
+                .to_path_buf()
+        })
     }
 
     fn node(&self, path: &Path) -> io::Result<Node> {
@@ -151,6 +194,7 @@ impl Files for Memory {
     }
 
     fn list(&self, folder: &Path) -> io::Result<Vec<OsString>> {
+        let stands_for = self.aliases.get(folder).map_or(folder, PathBuf::as_path);
         match self.entry(folder)? {
             Entry::Folder => {}
             Entry::Unreadable(_) => return Err(io::Error::from(io::ErrorKind::PermissionDenied)),
@@ -159,7 +203,7 @@ impl Files for Memory {
         let mut names: Vec<OsString> = self
             .tree
             .keys()
-            .filter(|path| path.parent() == Some(folder))
+            .filter(|path| path.parent() == Some(stands_for))
             .filter_map(|path| path.file_name().map(OsString::from))
             .collect();
         names.sort_by(|a, b| {
@@ -265,7 +309,7 @@ mod tests {
 
     use bilbo_store::entries::Stamp;
 
-    use super::{Call, Files, Memory, Node, Turning};
+    use super::{At, Call, Files, Memory, Node, Turning, at};
 
     #[test]
     fn memory_answers_like_a_disk_without_following_links() {
@@ -410,5 +454,28 @@ mod tests {
             files.node(Path::new("/t/locked/c")).map_err(|e| e.kind()),
             Err(ErrorKind::NotFound)
         );
+    }
+
+    #[test]
+    fn a_name_the_volume_folds_is_no_file_at_that_path() {
+        let files = Memory::new()
+            .file("/t/N.fake", "n")
+            .alias("/t/n.fake", "/t/N.fake")
+            .folder("/t/dir")
+            .other("/t/link")
+            .denied("/t/locked/x");
+        assert_eq!(at(&files, Path::new("/t/N.fake")), At::File);
+        assert_eq!(
+            at(&files, Path::new("/t/n.fake")),
+            At::Elsewhere(PathBuf::from("/t/N.fake"))
+        );
+        assert_eq!(at(&files, Path::new("/t/dir")), At::NoFile);
+        assert_eq!(at(&files, Path::new("/t/link")), At::NoFile);
+        assert_eq!(at(&files, Path::new("/t/none")), At::Nothing);
+        assert_eq!(at(&files, Path::new("/t/locked/x")), At::Unseen);
+
+        let before = Memory::new().file("/t/a", "1");
+        let turning = Turning::new(before, Memory::new(), Call::Node, "/t/a");
+        assert_eq!(at(&turning, Path::new("/t/a")), At::Unseen);
     }
 }

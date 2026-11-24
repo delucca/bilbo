@@ -178,6 +178,8 @@ fn remembered() -> Output {
     let item = |name: &str, outcome| Item {
         path: PathBuf::from(name),
         outcome,
+        moved: None,
+        carried: None,
     };
     let id = |byte: u8| Id::from_bytes([byte; 16]);
     Output {

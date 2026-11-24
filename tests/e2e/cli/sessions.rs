@@ -137,6 +137,7 @@ fn refresh_with_no_follow_declared_runs_the_two_default_follows() {
     assert_eq!((run.code, run.stderr.as_str()), (0, ""));
     assert_eq!(first(&run), counts(4, 0, 0, 0, 0));
     let run = scratch.run(&["refresh"]);
+    assert_eq!((run.code, run.stderr.as_str()), (0, ""));
     assert_eq!(first(&run), counts(0, 0, 0, 4, 0));
 }
 
@@ -150,7 +151,7 @@ fn refresh_takes_no_argument_and_touches_no_store() {
         run.stderr,
         "bilbo: unexpected argument 'x'\nbilbo: usage: bilbo refresh\nbilbo: see 'bilbo refresh --help'\n"
     );
-    for folder in ["store", "state/bilbo", "cache/bilbo"] {
+    for folder in ["store", "state", "cache"] {
         assert!(!scratch.dir.join(folder).exists(), "{folder}");
     }
 }

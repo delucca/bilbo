@@ -1985,6 +1985,135 @@ fn words_on_a_catalog_made_again_are_said_to_be_incomplete() {
     );
 }
 
+type Indexer = Box<dyn Fn(&Path) -> Box<dyn Index>>;
+
+#[test]
+fn a_served_pass_says_its_moves_unless_the_store_fails() {
+    const NOTE_ID: &str = "01JC5Q3V7XKM4P8R2T6W9YB0DE";
+    for store_fails in [true, false] {
+        let sandbox = Sandbox::new(if store_fails {
+            "served_move_store"
+        } else {
+            "served_move_index"
+        });
+        fs::write(
+            sandbox.dir.join("config/config.toml"),
+            format!(
+                "[[follow]]\npath = {:?}\nkind = \"markdown\"\n",
+                sandbox.path("notes")
+            ),
+        )
+        .expect("a config that follows the notes");
+        sandbox.write(
+            "notes/a.md",
+            format!("---\nid: {NOTE_ID}\n---\n# A\n").as_bytes(),
+        );
+        let run = sandbox.run(&["remember", &sandbox.path("notes")]);
+        assert_eq!(run.code, 0, "{:?}", run.stderr);
+        fs::rename(
+            sandbox.dir.join("notes/a.md"),
+            sandbox.dir.join("notes/b.md"),
+        )
+        .expect("rename");
+
+        let vars = sandbox.vars();
+        let settings = settings::load(
+            &|name| vars.get(name).cloned(),
+            &|path| fs::read(path),
+            &bilbo_cli::kind_keys(),
+            &bilbo_cli::provider_keys(),
+        )
+        .expect("settings");
+        let readers = bilbo_cli::readers(&settings).expect("the readers");
+        let rendering = bilbo_cli::rendering(&settings).expect("the rendering");
+        let clears = Arc::new(AtomicU64::new(0));
+        let index: Indexer = if store_fails {
+            Box::new(disk)
+        } else {
+            let clears = Arc::clone(&clears);
+            Box::new(move |cache: &Path| -> Box<dyn Index> {
+                Box::new(Refusing {
+                    inner: disk(cache),
+                    clears: Arc::clone(&clears),
+                })
+            })
+        };
+        let indexing = bilbo_cli::indexing(
+            &settings,
+            &readers,
+            &rendering,
+            &bilbo_cli::tokenizer,
+            &*index,
+        );
+        let options = bilbo_store::segments::Options {
+            hook: store_fails.then(|| -> bilbo_store::segments::Hook {
+                Box::new(|step| {
+                    if step == bilbo_store::segments::Step::Releasing {
+                        Err(io::Error::other("released"))
+                    } else {
+                        Ok(())
+                    }
+                })
+            }),
+            ..settings.store.options()
+        };
+        let store = Store::open(&settings.layout(), options, &mut |_| {}).expect("open the store");
+        fs::write(sandbox.dir.join("state/bilbo/store.again"), b"1").expect("the flag");
+        let kinds = bilbo_cli::kinds(&settings).expect("the kinds");
+        let closing = bilbo_cli::remember::follows::finish(
+            store,
+            &settings.follow.value,
+            &kinds,
+            &indexing,
+            &mut |_: &Message| {},
+            0,
+        );
+        let lines: Vec<String> = closing
+            .messages
+            .iter()
+            .flat_map(Message::plain_lines)
+            .collect();
+        let ran = "bilbo: ran the follows again for another bilbo: new 0, appended 0, new generation 0, unchanged 1, refused 0";
+        if store_fails {
+            assert!(closing.failed, "{lines:?}");
+            assert_eq!(
+                lines,
+                [
+                    ran.to_owned(),
+                    "bilbo: stopped at the test hook Releasing".to_owned()
+                ]
+            );
+            let read = Store::open_read_only(&settings.layout(), Options::default(), &mut |_| {})
+                .expect("read");
+            let meta = read
+                .meta(Id::parse(NOTE_ID).expect("an id"))
+                .expect("a meta")
+                .expect("an entry");
+            assert_eq!(
+                meta.labels.capture,
+                CaptureLabel::file(&sandbox.dir.join("notes/b.md"))
+            );
+        } else {
+            assert!(closing.refused && !closing.failed, "{lines:?}");
+            assert_eq!(
+                lines[0],
+                format!(
+                    "bilbo: moved {}: its id {NOTE_ID} was held by file:{}",
+                    sandbox.path("notes/b.md"),
+                    sandbox.path("notes/a.md")
+                )
+            );
+            assert_eq!(lines[1], ran);
+            assert!(
+                lines[2..]
+                    .iter()
+                    .any(|line| line.starts_with("bilbo: the search index was not updated: ")),
+                "{lines:?}"
+            );
+        }
+    }
+}
+
 #[test]
 fn an_update_that_fails_is_not_tried_again_by_the_close_loop() {
     let sandbox = Sandbox::filled("fatal");

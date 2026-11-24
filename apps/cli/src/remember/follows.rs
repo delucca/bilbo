@@ -7,7 +7,7 @@ use bilbo_store::segments::{Closed, Held, Options, Store};
 
 use super::disk::Disk;
 use super::index::update;
-use super::messages::refusals;
+use super::messages::{moves, refusals};
 use super::view;
 use crate::console::closing::Closing;
 use crate::console::env::Env;
@@ -98,6 +98,9 @@ pub fn run(
         kept,
     );
     diagnostics.extend(refusals(&outputs));
+    if !closing.failed {
+        diagnostics.extend(moves(&outputs));
+    }
     diagnostics.extend(closing.messages);
     Ok(outcome(
         &outputs,
@@ -154,9 +157,10 @@ pub fn close(
     mut progress: Progress,
 ) -> Closing {
     let mut closing = Closing::default();
+    let mut said = Vec::new();
     loop {
         match store.close() {
-            Ok(Closed::Released) => return closing,
+            Ok(Closed::Released) => break,
             Ok(Closed::Again(again)) => {
                 store = *again;
                 let mut pass = Pass::plan(follows, kinds);
@@ -167,6 +171,7 @@ pub fn close(
                         let totals = view::Totals::of(&outputs);
                         closing.refused |= totals.tally.refused > 0;
                         closing.messages.extend(refusals(&outputs));
+                        said.push((closing.messages.len(), moves(&outputs)));
                         closing.messages.push(Message::info(&format!(
                             "ran the follows again for another bilbo: {}",
                             view::counts(&totals)
@@ -193,10 +198,16 @@ pub fn close(
                     .messages
                     .push(Message::error(sanitize(&error.to_string())));
                 closing.failed = true;
-                return closing;
+                break;
             }
         }
     }
+    if !closing.failed {
+        for (at, lines) in said.into_iter().rev() {
+            closing.messages.splice(at..at, lines);
+        }
+    }
+    closing
 }
 
 /// Refusals are not here: each follow's output carries them, so they count in the totals.

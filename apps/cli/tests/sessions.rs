@@ -1013,6 +1013,92 @@ fn a_rerun_with_a_follow_that_cannot_run_exits_1() {
     );
 }
 
+const NOTE_ID: &str = "01JC5Q3V7XKM4P8R2T6W9YB0DE";
+
+fn note_text() -> String {
+    format!("---\nid: {NOTE_ID}\n---\n# A\n")
+}
+
+fn moved_line(new: &Path, old: &Path) -> String {
+    format!(
+        "bilbo: moved {}: its id {NOTE_ID} was held by file:{}",
+        text(new),
+        text(old)
+    )
+}
+
+fn one_note_followed(test: &str) -> (Sandbox, PathBuf, PathBuf) {
+    let sandbox = Sandbox::new(test);
+    let notes = sandbox.dir.join("notes");
+    let old = notes.join("a.md");
+    write(&old, note_text().as_bytes());
+    write(
+        &sandbox.dir.join("config/config.toml"),
+        format!(
+            "[[follow]]\npath = \"{}\"\nkind = \"markdown\"\n",
+            text(&notes)
+        )
+        .as_bytes(),
+    );
+    let run = sandbox.refresh();
+    assert_eq!(run.code, 0, "{:?}", run.stderr);
+    assert_eq!(
+        run.stdout.lines().next(),
+        Some(counts(1, 0, 0, 0, 0).as_str())
+    );
+    let new = notes.join("b.md");
+    fs::rename(&old, &new).expect("rename");
+    (sandbox, old, new)
+}
+
+#[test]
+fn refresh_does_not_say_a_move_when_its_store_fails_at_the_close() {
+    let (sandbox, _, _) = one_note_followed("refresh_move_failed_close");
+    backdate(&sandbox.layout().state, 61);
+    let root = sandbox.layout().root;
+    fs::set_permissions(&root, fs::Permissions::from_mode(0o500)).expect("lock the root");
+    let run = sandbox.refresh();
+    fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).expect("unlock the root");
+    assert_eq!(run.code, 1, "{:?}", run.stderr);
+    assert_eq!(
+        run.stdout.lines().next(),
+        Some(counts(0, 0, 0, 1, 0).as_str())
+    );
+    assert_eq!(run.stderr.len(), 1, "{:?}", run.stderr);
+    assert!(
+        run.stderr[0].starts_with("bilbo: cannot "),
+        "{:?}",
+        run.stderr
+    );
+
+    let (sandbox, old, new) = one_note_followed("refresh_move_failed_follow");
+    let notes = sandbox.dir.join("notes");
+    write(
+        &sandbox.dir.join("config/config.toml"),
+        format!(
+            "[[follow]]\npath = \"{0}\"\nkind = \"markdown\"\n\n[[follow]]\npath = \"{0}\"\nkind = \"pdf\"\n",
+            text(&notes)
+        )
+        .as_bytes(),
+    );
+    let run = sandbox.refresh();
+    assert_eq!(run.code, 1, "{:?}", run.stderr);
+    assert_eq!(
+        run.stdout.lines().next(),
+        Some(counts(0, 0, 0, 1, 0).as_str())
+    );
+    assert_eq!(
+        run.stderr,
+        [
+            format!(
+                "bilbo: follow {}: unknown kind 'pdf'; kinds: markdown, session",
+                text(&notes)
+            ),
+            moved_line(&new, &old),
+        ]
+    );
+}
+
 #[test]
 fn two_follow_saves_at_once_keep_both_follows_and_the_files_own_bytes() {
     let sandbox = Sandbox::new("two_saves");

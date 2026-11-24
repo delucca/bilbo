@@ -266,6 +266,293 @@ fn an_id_another_file_holds_is_refused_and_the_run_goes_on() {
     assert!(run.stderr[0].ends_with(&format!("is held by file:{}", text(&first))));
 }
 
+fn note_with(id: &str, heading: &str) -> String {
+    format!("---\nid: {id}\n---\n# {heading}\n")
+}
+
+fn moved_line(new: &Path, id: &str, old: &Path) -> String {
+    format!(
+        "bilbo: moved {}: its id {id} was held by file:{}",
+        text(new),
+        text(old)
+    )
+}
+
+fn stored_bytes(run: &Run) -> u64 {
+    run.totals()
+        .rsplit(' ')
+        .next()
+        .and_then(|number| number.parse().ok())
+        .expect("a stored bytes count")
+}
+
+#[test]
+fn a_renamed_file_with_an_id_is_the_same_entry_under_its_new_label() {
+    let sandbox = Sandbox::new("renamed");
+    let old = sandbox.write("decision-x.md", note_with(ID_A, "A"));
+    assert_eq!(sandbox.remember_notes().counts(), counts(1, 0, 0, 0, 0));
+    let new = sandbox.notes().join("report-x.md");
+    fs::rename(&old, &new).expect("rename");
+
+    let run = sandbox.remember(&[text(&new)]);
+    assert_eq!(run.code, 0, "{:?}", run.stderr);
+    assert_eq!(run.counts(), counts(0, 0, 0, 1, 0));
+    assert!(
+        run.totals()
+            .starts_with("records 0, raw bytes 0, stored bytes ")
+    );
+    assert!(stored_bytes(&run) > 0);
+    assert_eq!(run.stderr, [moved_line(&new, ID_A, &old)]);
+    let entries = sandbox.entries();
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].0.id, Id::parse(ID_A).expect("an id"));
+    assert_eq!(entries[0].0.labels.capture, CaptureLabel::file(&new));
+
+    let again = sandbox.remember_notes();
+    assert_eq!(again.code, 0);
+    assert_eq!(again.counts(), counts(0, 0, 0, 1, 0));
+    assert_eq!(again.totals(), "records 0, raw bytes 0, stored bytes 0");
+    assert_eq!(again.stderr, Vec::<String>::new());
+}
+
+#[test]
+fn a_renamed_file_that_changed_keeps_its_older_text_as_the_older_generation() {
+    let sandbox = Sandbox::new("renamed_changed");
+    let old = sandbox.write("a.md", note_with(ID_A, "A"));
+    sandbox.remember_notes();
+    let new = sandbox.notes().join("b.md");
+    fs::rename(&old, &new).expect("rename");
+    fs::write(&new, note_with(ID_A, "B")).expect("edit");
+
+    let run = sandbox.remember(&[text(&new)]);
+    assert_eq!(run.code, 0, "{:?}", run.stderr);
+    assert_eq!(run.counts(), counts(0, 0, 1, 0, 0));
+    let (meta, head) = sandbox.entry(&new);
+    assert_eq!(meta.id, Id::parse(ID_A).expect("an id"));
+    assert_eq!(head.generation, Generation(2));
+    assert_eq!(
+        sandbox.generation(meta.id, Generation(2), 4),
+        note_with(ID_A, "B").into_bytes()
+    );
+    assert_eq!(
+        sandbox.generation(meta.id, Generation(1), 4),
+        note_with(ID_A, "A").into_bytes()
+    );
+}
+
+#[test]
+fn a_moved_folder_moves_every_entry_with_an_id_and_a_file_without_one_is_new() {
+    let sandbox = Sandbox::new("moved_folder");
+    sandbox.write("a.md", note_with(ID_A, "A"));
+    sandbox.write("b.md", note_with(ID_B, "B"));
+    sandbox.write("c.md", "# C\n");
+    assert_eq!(sandbox.remember_notes().counts(), counts(3, 0, 0, 0, 0));
+    let moved = sandbox.dir.join("moved");
+    fs::rename(sandbox.notes(), &moved).expect("rename the folder");
+
+    let run = sandbox.remember(&[text(&moved)]);
+    assert_eq!(run.code, 0, "{:?}", run.stderr);
+    assert_eq!(run.counts(), counts(1, 0, 0, 2, 0));
+    assert_eq!(
+        run.stderr,
+        [
+            moved_line(&moved.join("a.md"), ID_A, &sandbox.notes().join("a.md")),
+            moved_line(&moved.join("b.md"), ID_B, &sandbox.notes().join("b.md")),
+        ]
+    );
+    assert_eq!(sandbox.entries().len(), 4);
+}
+
+#[test]
+fn a_rename_and_a_new_file_under_the_old_name_are_two_entries_after_the_catalog_is_made_again() {
+    let sandbox = Sandbox::new("rename_and_reuse");
+    let old = sandbox.write("a.md", note_with(ID_A, "A"));
+    sandbox.remember_notes();
+    let new = sandbox.notes().join("b.md");
+    fs::rename(&old, &new).expect("rename");
+    assert_eq!(sandbox.remember_notes().code, 0);
+    sandbox.write("a.md", note_with(ID_B, "B"));
+    assert_eq!(sandbox.remember_notes().counts(), counts(1, 0, 0, 1, 0));
+    fs::remove_dir_all(sandbox.layout().cache).expect("delete the cache");
+
+    let run = sandbox.remember_notes();
+    assert_eq!(run.code, 0, "{:?}", run.stderr);
+    assert_eq!(run.counts(), counts(0, 0, 0, 2, 0));
+    let entries = sandbox.entries();
+    assert_eq!(entries.len(), 2);
+    for (id, path) in [(ID_A, &new), (ID_B, &old)] {
+        let found = entries
+            .iter()
+            .find(|(meta, _)| meta.id == Id::parse(id).expect("an id"))
+            .expect("an entry");
+        assert_eq!(found.0.labels.capture, CaptureLabel::file(path));
+    }
+}
+
+#[test]
+fn a_renamed_note_whose_old_name_already_holds_another_note_moves_at_the_first_look() {
+    let sandbox = Sandbox::new("rename_over_other");
+    let old = sandbox.write("a.md", note_with(ID_A, "A"));
+    sandbox.remember_notes();
+    let new = sandbox.notes().join("b.md");
+    fs::rename(&old, &new).expect("rename");
+    sandbox.write("a.md", note_with(ID_B, "B"));
+
+    let run = sandbox.remember_notes();
+    assert_eq!(run.code, 0, "{:?}", run.stderr);
+    assert_eq!(run.stderr, [moved_line(&new, ID_A, &old)]);
+    let second = sandbox.remember_notes();
+    assert_eq!(second.code, 0, "{:?}", second.stderr);
+    let entries = sandbox.entries();
+    assert_eq!(entries.len(), 2);
+    let (a, head) = sandbox.entry(&new);
+    assert_eq!(a.id, Id::parse(ID_A).expect("an id"));
+    assert_eq!(head.generation, Generation(3));
+    assert_eq!(
+        sandbox.generation(a.id, head.generation, 4),
+        note_with(ID_A, "A").into_bytes()
+    );
+    assert_eq!(
+        sandbox.generation(a.id, Generation(2), 4),
+        note_with(ID_B, "B").into_bytes()
+    );
+    assert_eq!(
+        sandbox.generation(a.id, Generation(1), 4),
+        note_with(ID_A, "A").into_bytes()
+    );
+    let (b, _) = sandbox.entry(&old);
+    assert_eq!(b.id, Id::parse(ID_B).expect("an id"));
+}
+
+#[test]
+fn a_note_renamed_onto_the_name_of_another_entry_is_refused_on_every_run() {
+    let sandbox = Sandbox::new("rename_onto_entry");
+    let a = sandbox.write("a.md", note_with(ID_A, "A"));
+    let b = sandbox.write("b.md", note_with(ID_B, "Bee, a longer one"));
+    assert_eq!(sandbox.remember_notes().counts(), counts(2, 0, 0, 0, 0));
+    fs::remove_file(&b).expect("remove");
+    fs::rename(&a, &b).expect("rename onto it");
+    let line = format!(
+        "bilbo: refused {}: its id {ID_A} is held by file:{}, but this path was kept as entry {ID_B}",
+        text(&b),
+        text(&a)
+    );
+    let before = (sandbox.entry(&a), sandbox.entry(&b));
+    for _ in 0..2 {
+        let run = sandbox.remember(&[text(&b)]);
+        assert_eq!(run.code, 1);
+        assert!(run.counts().ends_with("refused 1"), "{}", run.counts());
+        assert_eq!(run.stderr, std::slice::from_ref(&line));
+        let entries = sandbox.entries();
+        assert_eq!(entries.len(), 2);
+        assert_eq!(sandbox.entry(&a).0.id, Id::parse(ID_A).expect("an id"));
+        assert_eq!(sandbox.entry(&b).0.id, Id::parse(ID_B).expect("an id"));
+        assert_eq!((sandbox.entry(&a), sandbox.entry(&b)), before);
+    }
+
+    let swapped = Sandbox::new("swapped_names");
+    let x = swapped.write("x.md", note_with(ID_A, "A"));
+    let y = swapped.write("y.md", note_with(ID_B, "Bee, a longer one"));
+    swapped.remember_notes();
+    let kept = (swapped.entry(&x), swapped.entry(&y));
+    let aside = swapped.notes().join("aside.txt");
+    fs::rename(&x, &aside).expect("aside");
+    fs::rename(&y, &x).expect("y to x");
+    fs::rename(&aside, &y).expect("x to y");
+    let run = swapped.remember_notes();
+    assert_eq!(run.code, 1);
+    assert!(run.counts().ends_with("refused 2"), "{}", run.counts());
+    assert_eq!(run.stderr.len(), 2, "{:?}", run.stderr);
+    assert_eq!((swapped.entry(&x), swapped.entry(&y)), kept);
+}
+
+#[test]
+fn a_move_is_not_said_when_the_runs_store_fails_at_the_close() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let sandbox = Sandbox::new("move_failed_close");
+    let old = sandbox.write("a.md", note_with(ID_A, "A"));
+    assert_eq!(sandbox.remember_notes().counts(), counts(1, 0, 0, 0, 0));
+    let new = sandbox.notes().join("b.md");
+    fs::rename(&old, &new).expect("rename");
+    backdate(&sandbox.layout().state, 61);
+    let root = sandbox.layout().root;
+    fs::set_permissions(&root, fs::Permissions::from_mode(0o500)).expect("lock the root");
+    let run = sandbox.remember(&[text(&new)]);
+    fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).expect("unlock the root");
+
+    assert_eq!(run.code, 1, "{:?}", run.stderr);
+    assert_eq!(run.counts(), counts(0, 0, 0, 1, 0));
+    assert_eq!(run.stderr.len(), 1, "{:?}", run.stderr);
+    assert!(
+        run.stderr[0].starts_with("bilbo: cannot "),
+        "{:?}",
+        run.stderr
+    );
+
+    let next = sandbox.remember(&[text(&new)]);
+    assert_eq!(next.code, 0, "{:?}", next.stderr);
+    assert_eq!(next.counts(), counts(0, 0, 0, 1, 0));
+    assert!(
+        next.stderr
+            .iter()
+            .chain(&next.notices)
+            .all(|line| !line.starts_with("bilbo: moved")),
+        "{:?} {:?}",
+        next.stderr,
+        next.notices
+    );
+    let entries = sandbox.entries();
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].0.id, Id::parse(ID_A).expect("an id"));
+    assert_eq!(entries[0].0.labels.capture, CaptureLabel::file(&new));
+
+    let other = Sandbox::new("move_failed_follow");
+    let old = other.write("a.md", note_with(ID_A, "A"));
+    assert_eq!(other.remember_notes().counts(), counts(1, 0, 0, 0, 0));
+    let new = other.notes().join("b.md");
+    fs::rename(&old, &new).expect("rename");
+    write(
+        &other.dir.join("config/config.toml"),
+        format!(
+            "[[follow]]\npath = \"{}\"\nkind = \"pdf\"\n",
+            text(&other.notes())
+        )
+        .as_bytes(),
+    );
+    fs::write(other.layout().state.join("store.again"), b"1").expect("the flag another bilbo set");
+    let run = other.remember(&[text(&new)]);
+    assert_eq!(run.code, 1, "{:?}", run.stderr);
+    assert_eq!(run.counts(), counts(0, 0, 0, 1, 0));
+    assert_eq!(
+        run.stderr,
+        [
+            moved_line(&new, ID_A, &old),
+            format!(
+                "bilbo: follow {}: unknown kind 'pdf'; kinds: markdown, session",
+                text(&other.notes())
+            ),
+            "bilbo: ran the follows again for another bilbo: new 0, appended 0, new generation 0, unchanged 0, refused 0".to_owned(),
+        ]
+    );
+}
+
+#[test]
+fn a_note_moved_out_of_a_folder_that_became_a_file_moves_its_entry() {
+    let sandbox = Sandbox::new("moved_out_of_a_folder_that_became_a_file");
+    let old = sandbox.write("sub/n.md", note_with(ID_A, "A"));
+    assert_eq!(sandbox.remember_notes().counts(), counts(1, 0, 0, 0, 0));
+    let new = sandbox.notes().join("n.md");
+    fs::rename(&old, &new).expect("move up");
+    fs::remove_dir(sandbox.notes().join("sub")).expect("remove the folder");
+    fs::write(sandbox.notes().join("sub"), "now a file\n").expect("a file under that name");
+
+    let run = sandbox.remember(&[text(&new)]);
+    assert_eq!(run.code, 0, "{:?}", run.stderr);
+    assert_eq!(run.counts(), counts(0, 0, 0, 1, 0));
+    assert_eq!(run.stderr, [moved_line(&new, ID_A, &old)]);
+}
+
 #[test]
 fn a_file_that_is_not_utf8_is_refused_and_the_run_goes_on() {
     let sandbox = Sandbox::new("not_utf8");
