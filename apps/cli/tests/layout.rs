@@ -6,8 +6,8 @@ use std::sync::OnceLock;
 use proc_macro2::{Delimiter, TokenStream, TokenTree};
 use syn::visit::{self, Visit};
 
-const COMPONENTS: [&str; 8] = [
-    "config", "derive", "help", "read", "recall", "reindex", "remember", "tag",
+const COMPONENTS: [&str; 9] = [
+    "config", "derive", "help", "read", "recall", "refresh", "reindex", "remember", "tag",
 ];
 const MODULE: &str = "console";
 const THEME: [&str; 2] = ["console", "theme"];

@@ -1,0 +1,21 @@
+bilbo refresh: keep what every follow gained or changed since the last run.
+
+Usage:
+  bilbo refresh
+
+With no follow declared it keeps ~/.claude/projects and ~/.codex/sessions. When
+another bilbo is writing the store, it asks that one for the pass and exits 0.
+
+Output:
+  new <n>, appended <n>, new generation <n>, unchanged <n>, refused <n>
+  records <n>, raw bytes <n>, stored bytes <n>
+
+Exit:
+  0  success, also when it asked another bilbo for the pass
+  1  a refused file, a follow that cannot run, a store or index failure
+  2  usage or config error
+
+Examples:
+  bilbo refresh
+
+Docs: https://github.com/delucca/bilbo/wiki/Commands#refresh

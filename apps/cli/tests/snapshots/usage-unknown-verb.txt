@@ -1,2 +1,2 @@
-bilbo: unknown verb 'frob'; the verbs are remember, recall, read, tag, reindex, derive, config
+bilbo: unknown verb 'frob'; the verbs are remember, refresh, recall, read, tag, reindex, derive, config
 bilbo: see 'bilbo --help'

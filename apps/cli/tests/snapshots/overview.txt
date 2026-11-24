@@ -5,6 +5,7 @@ Usage: bilbo <verb> [<args>]
 
 Verbs:
   remember  Keep files as entries; a later run keeps what grew or changed
+  refresh   Keep what every follow gained or changed; a timer runs it
   recall    Search everything bilbo keeps and print the best chunks and notes
   read      Print an entry: its outline, or its records a page at a time
   tag       List the tags, or change the tags of entries

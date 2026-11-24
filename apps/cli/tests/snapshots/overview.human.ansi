@@ -5,6 +5,7 @@ the pages they cite, and recalls them when a later session asks.
 
 [1mVerbs:[22m
   [1mremember[22m  Keep files as entries; a later run keeps what grew or changed
+  [1mrefresh[22m   Keep what every follow gained or changed; a timer runs it
   [1mrecall[22m    Search everything bilbo keeps and print the best chunks and notes
   [1mread[22m      Print an entry: its outline, or its records a page at a time
   [1mtag[22m       List the tags, or change the tags of entries

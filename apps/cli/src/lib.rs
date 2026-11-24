@@ -6,6 +6,7 @@ pub mod help;
 mod probe;
 pub mod read;
 pub mod recall;
+pub mod refresh;
 pub mod reindex;
 pub mod remember;
 pub mod tag;
@@ -48,6 +49,7 @@ pub struct Cli {
 #[derive(Debug, Subcommand)]
 pub enum Verb {
     Remember(remember::Args),
+    Refresh(refresh::Args),
     Recall(recall::Args),
     Read(read::Args),
     Tag(tag::Args),
@@ -412,6 +414,17 @@ pub fn run_tuned(
                     let indexing =
                         tune(indexing(&settings, &readers, &rendering, &tokenizer, &disk));
                     remember::run(root, args, env, &settings, &kinds(&settings)?, &indexing)
+                }
+                Verb::Refresh(args) => {
+                    let readers = readers(&settings)?;
+                    let rendering = rendering(&settings)?;
+                    let kinds = kinds(&settings)?;
+                    let disk = |cache: &std::path::Path| index(cache, &settings.search);
+                    let indexing =
+                        tune(indexing(&settings, &readers, &rendering, &tokenizer, &disk));
+                    refresh::run(&args, env, &|env| {
+                        remember::follows::run(env, &settings, &kinds, &indexing)
+                    })
                 }
                 Verb::Recall(args) => {
                     let readers = readers(&settings)?;
@@ -1023,7 +1036,7 @@ mod tests {
             };
         assert_eq!(
             reason(&["bilbo", "help", "a\nb"]),
-            "unknown verb 'a\\nb'; the verbs are remember, recall, read, tag, reindex, derive, config"
+            "unknown verb 'a\\nb'; the verbs are remember, refresh, recall, read, tag, reindex, derive, config"
         );
         assert_eq!(
             reason(&["bilbo", "help", "--a\nb"]),

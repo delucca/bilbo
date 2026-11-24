@@ -123,7 +123,7 @@ mod tests {
         };
         assert_eq!(
             reason(&["frob"]),
-            "unknown verb 'frob'; the verbs are remember, recall, read, tag, reindex, derive, config, probe; bilbo --help"
+            "unknown verb 'frob'; the verbs are remember, refresh, recall, read, tag, reindex, derive, config, probe; bilbo --help"
         );
         assert_eq!(
             reason(&["--verbose"]),
@@ -135,7 +135,7 @@ mod tests {
         );
         assert_eq!(
             reason(&["a\nb"]),
-            "unknown verb 'a\\nb'; the verbs are remember, recall, read, tag, reindex, derive, config, probe; bilbo --help"
+            "unknown verb 'a\\nb'; the verbs are remember, refresh, recall, read, tag, reindex, derive, config, probe; bilbo --help"
         );
     }
 }

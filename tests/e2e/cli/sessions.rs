@@ -141,6 +141,16 @@ fn a_bare_run_with_no_follow_declared_runs_the_two_default_follows() {
 }
 
 #[test]
+fn refresh_with_no_follow_declared_runs_the_two_default_follows() {
+    let scratch = harness("refresh_defaults");
+    let run = scratch.run(&["refresh"]);
+    assert_eq!((run.code, run.stderr.as_str()), (0, ""));
+    assert_eq!(first(&run), counts(4, 0, 0, 0, 0));
+    let run = scratch.run(&["refresh"]);
+    assert_eq!(first(&run), counts(0, 0, 0, 4, 0));
+}
+
+#[test]
 fn a_bare_run_with_declared_follows_runs_those_instead() {
     let scratch = harness("bare_declared");
     scratch.write("a.md", "a\n");

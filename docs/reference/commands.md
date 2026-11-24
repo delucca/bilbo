@@ -209,6 +209,28 @@ A second `remember` with a target waits for the first one to finish writing the 
 | 1 | a file was refused, nothing was claimed under a target, a follow cannot run (also in a pass run again for another bilbo), the search index could not be updated or an entry could not be indexed, or the target or the store could not be read |
 | 2 | usage or config error, a store root that holds bilbo 0.20's `notes/` or `library/`, a state or cache folder inside the root, or a config file `--follow` cannot write |
 
+## refresh
+
+```text
+bilbo refresh
+```
+
+Keeps every follow, in order, into one store: what each followed folder or file gained or changed since the last run, as [`bilbo remember`](#remember) keeps a target. With no `[[follow]]` in the config file it follows `~/.claude/projects` and `~/.codex/sessions`, both as `session`. A follow whose folder or file is missing is skipped with one line on stderr, and one that claims nothing says so; neither is an error. A file or folder a follow cannot read is refused and counts in the totals, as under a target. `bilbo remember <target> --follow` declares a follow ([Follows](#follows)).
+
+It opens the store even when no follow claims a file, so it seals by age and rebuilds a lost catalog ([Sealing](#sealing)), and it brings the search index up to date as `remember` does ([The index](#the-index)). When another bilbo is writing the store it does not wait: it asks that bilbo for one more pass over the follows and exits 0 ([Two runs at once](#two-runs-at-once)).
+
+### Output
+
+The two lines of [`remember`](#remember), added up over every follow. On a terminal the same counts come as a marked message. When another bilbo is writing the store it prints nothing on standard output; its planning lines, if any, come before the busy line on stderr.
+
+### Exit codes
+
+| Code | Meaning |
+|---|---|
+| 0 | success, also when another bilbo holds the store and was asked for a pass |
+| 1 | a file was refused, a follow cannot run, the search index could not be updated or an entry could not be indexed, or the store could not be read |
+| 2 | usage or config error, a store root that holds bilbo 0.20's `notes/` or `library/`, or a state or cache folder inside the root |
+
 ## recall
 
 ```text

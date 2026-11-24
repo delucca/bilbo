@@ -150,7 +150,7 @@ fn a_usage_error_on_a_terminal_is_a_marked_message() {
     );
     assert_eq!(
         stderr(&["frob"], &unpainted()),
-        "■  unknown verb 'frob'; the verbs are remember, recall, read, tag, reindex, derive, config\n   see bilbo --help\n"
+        "■  unknown verb 'frob'; the verbs are remember, refresh, recall, read, tag, reindex, derive, config\n   see bilbo --help\n"
     );
 }
 
@@ -551,6 +551,31 @@ fn a_note_as_read_prints_it() {
     let (plain, human) = note("#r8-27", 300);
     assert_eq!(plain, include_str!("snapshots/read-note-page.txt"));
     assert_eq!(human, include_str!("snapshots/read-note-page.human.ansi"));
+}
+
+#[test]
+fn the_refresh_page_on_a_terminal() {
+    assert_eq!(
+        stdout(&["refresh", "--help"], &View::HUMAN),
+        include_str!("snapshots/refresh-help.human.ansi")
+    );
+    assert_eq!(
+        stdout(&["refresh", "--help"], &unpainted()),
+        include_str!("snapshots/refresh-help.txt")
+    );
+}
+
+#[test]
+fn the_refresh_page_is_the_same_from_every_help_form() {
+    let page = include_str!("snapshots/refresh-help.txt");
+    for form in [
+        &["refresh", "--help"][..],
+        &["refresh", "-h"],
+        &["help", "refresh"],
+        &["help", "refresh", "--help"],
+    ] {
+        assert_eq!(stdout(form, &View::PLAIN), page, "{form:?}");
+    }
 }
 
 #[test]
