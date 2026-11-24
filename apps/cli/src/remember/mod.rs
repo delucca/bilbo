@@ -27,7 +27,7 @@ use crate::console::env::{Env, Who};
 use crate::console::indexing::Indexing;
 use crate::console::message::{Message, not_a_tag, notice_message, sanitize};
 use crate::console::outcome::{Exit, Failure, Outcome};
-use crate::console::settings::Settings;
+use crate::console::settings::{EDITOR, Settings};
 use disk::Disk;
 use messages::{moves, refusals, tagged, withdrawals};
 
@@ -66,10 +66,7 @@ pub struct Args {
         help = "Save the target as a follow in the config file"
     )]
     pub follow: bool,
-    #[arg(
-        long,
-        help = "Keep a note written in the editor VISUAL or EDITOR names"
-    )]
+    #[arg(long, help = "Keep a note written in the editor remember.editor names")]
     pub edit: bool,
 }
 
@@ -182,12 +179,17 @@ fn edited(
     kinds: &[Box<dyn Kind>],
     indexing: &Indexing<'_>,
 ) -> Result<Outcome, Failure> {
-    let Some(editor) = edit::editor(&|name| (env.var)(name)) else {
-        return Err(Failure::Config(
-            "--edit needs an editor: set VISUAL or EDITOR".to_owned(),
-        ));
-    };
-    edit::run(&editor, tags, written, env, settings, kinds, indexing)
+    let editor = &settings.remember_editor.value;
+    if editor.is_empty() {
+        let mut names = vec![EDITOR.about.name];
+        names.extend(EDITOR.about.default.reads());
+        let last = names.pop().unwrap_or_default();
+        return Err(Failure::Config(format!(
+            "--edit needs an editor: set {} or {last}",
+            names.join(", ")
+        )));
+    }
+    edit::run(editor, tags, written, env, settings, kinds, indexing)
 }
 
 fn typed(

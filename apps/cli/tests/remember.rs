@@ -1707,7 +1707,7 @@ fn edit_stands_with_tags_alone_and_needs_an_editor() {
     assert_eq!(none.stdout, "");
     assert_eq!(
         none.stderr,
-        ["bilbo: --edit needs an editor: set VISUAL or EDITOR"]
+        ["bilbo: --edit needs an editor: set remember.editor, VISUAL or EDITOR"]
     );
     assert_eq!(fs::read_dir(&temp).expect("the temp folder").count(), 0);
     sandbox.no_store_folders();
@@ -1722,7 +1722,7 @@ fn edit_stands_with_tags_alone_and_needs_an_editor() {
     assert_eq!(absent.stdout, "");
     assert_eq!(
         absent.stderr,
-        ["bilbo: --edit needs an editor: set VISUAL or EDITOR"]
+        ["bilbo: --edit needs an editor: set remember.editor, VISUAL or EDITOR"]
     );
     sandbox.no_store_folders();
 }
@@ -1868,7 +1868,7 @@ fn the_editors_answer_with_no_editor_is_the_editors_error() {
     assert_eq!(run.notices, question_lines());
     assert_eq!(
         run.stderr,
-        ["bilbo: --edit needs an editor: set VISUAL or EDITOR"]
+        ["bilbo: --edit needs an editor: set remember.editor, VISUAL or EDITOR"]
     );
     sandbox.no_store_folders();
 }

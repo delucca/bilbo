@@ -46,7 +46,7 @@ pub fn at(files: &dyn Files, path: &Path) -> At {
 }
 
 pub trait Files {
-    /// Absolute, symbolic links resolved.
+    /// Absolute, symbolic links resolved, each name as the disk spells it.
     fn canonical(&self, path: &Path) -> io::Result<PathBuf>;
     /// What `path` is, without following a symbolic link.
     fn node(&self, path: &Path) -> io::Result<Node>;

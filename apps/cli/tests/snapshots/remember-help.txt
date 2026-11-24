@@ -11,7 +11,7 @@ Options:
       --kind <kind>  Run this kind, not the one that claims the files
       --tag <tag>    Declare this tag for every entry the run keeps
       --follow       Save the target as a follow in the config file
-      --edit         Keep a note written in the editor VISUAL or EDITOR names
+      --edit         Keep a note written in the editor remember.editor names
 
 Kinds: markdown, session
 

@@ -6,7 +6,7 @@ use toml::de::DeValue;
 
 use crate::error::{At, Error};
 use crate::file::{self, File, Kind, Node};
-use crate::folder::Folder;
+use crate::folder::{Absolute, Folder};
 
 /// Where a key's value came from, lowest precedence first.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -40,6 +40,14 @@ pub enum Default {
     /// A TOML value, read by the key as if the file held it: `"8 MiB"`, `19`, `["~/a"]`.
     Toml(&'static str),
     Folder(Folder),
+    First(First),
+    Absolute(Absolute),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct First {
+    pub variables: &'static [&'static str],
+    pub toml: &'static str,
 }
 
 impl Default {
@@ -48,6 +56,24 @@ impl Default {
         match self {
             Self::Toml(text) => (*text).to_owned(),
             Self::Folder(folder) => folder.describe(),
+            Self::First(first) => {
+                let names: Vec<String> = first
+                    .variables
+                    .iter()
+                    .map(|name| format!("${name}"))
+                    .collect();
+                format!("{}, else {}", names.join(", else "), first.toml)
+            }
+            Self::Absolute(absolute) => absolute.describe(),
+        }
+    }
+
+    pub fn reads(&self) -> Vec<&'static str> {
+        match self {
+            Self::Toml(_) => Vec::new(),
+            Self::Folder(folder) => vec![folder.xdg, "HOME"],
+            Self::First(first) => first.variables.to_vec(),
+            Self::Absolute(absolute) => vec![absolute.variable],
         }
     }
 }
@@ -92,9 +118,8 @@ impl<T> Key<T> {
         }
     }
 
-    /// Variable, then file, then default; an empty variable counts as unset. A flag goes on the
-    /// result through `Resolved::with_flag`. The file's value for the key is read whenever the
-    /// file holds one, so a bad value is an error whichever source wins.
+    /// A flag goes on the result through `Resolved::with_flag`. The file's value for the key is
+    /// read whenever the file holds one, so a bad value is an error whichever source wins.
     pub fn resolve(&self, source: &Source<'_>) -> Result<Resolved<T>, Error> {
         let about = &self.about;
         let from_file = source
@@ -128,18 +153,46 @@ impl<T> Key<T> {
             return Ok(resolved);
         }
         let at = At::Default(about.name);
+        let from_toml = |text: &str| {
+            let node = file::literal(text).ok_or_else(|| Error::Invalid {
+                at: at.clone(),
+                allowed: about.allowed,
+                got: text.to_owned(),
+            })?;
+            (self.parse)(&Value::new(
+                about,
+                source,
+                at.clone(),
+                Given::Node(&node, text),
+            ))
+        };
+        let located = |path: PathBuf| {
+            (self.parse)(&Value::new(
+                about,
+                source,
+                at.clone(),
+                Given::Text(path.into_os_string()),
+            ))
+        };
         let value = match about.default {
-            Default::Toml(text) => {
-                let node = file::literal(text).ok_or_else(|| Error::Invalid {
-                    at: at.clone(),
-                    allowed: about.allowed,
-                    got: text.to_owned(),
-                })?;
-                (self.parse)(&Value::new(about, source, at, Given::Node(&node, text)))?
-            }
-            Default::Folder(folder) => {
-                let path = folder.locate(source.var)?.into_os_string();
-                (self.parse)(&Value::new(about, source, at, Given::Text(path)))?
+            Default::Toml(text) => from_toml(text)?,
+            Default::Folder(folder) => located(folder.locate(source.var)?)?,
+            Default::Absolute(absolute) => located(absolute.locate(source.var)?)?,
+            Default::First(first) => {
+                let found = first.variables.iter().find_map(|name| {
+                    (source.var)(name)
+                        .filter(|text| !text.is_empty())
+                        .map(|text| (*name, text))
+                });
+                match found {
+                    Some((name, text)) => (self.parse)(&Value::new(
+                        about,
+                        source,
+                        At::Variable(name),
+                        Given::Text(text),
+                    ))?,
+                    None => from_toml(first.toml)?,
+                }
             }
         };
         Ok(Resolved {
@@ -492,7 +545,7 @@ mod tests {
     use std::path::{Path, PathBuf};
 
     use super::{
-        About, Default, Flag, Given, Key, Origin, Resolved, Source, Value, quote, show_list,
+        About, Default, First, Flag, Given, Key, Origin, Resolved, Source, Value, quote, show_list,
         show_texts,
     };
     use crate::error::{At, Error};
@@ -549,6 +602,27 @@ mod tests {
         },
         parse: folder::path,
         show: |path| folder::show(path),
+    };
+
+    const PICKED: Key<String> = Key {
+        about: About {
+            name: "test.pick",
+            variable: None,
+            default: Default::First(First {
+                variables: &["BILBO_TEST_FIRST", "BILBO_TEST_SECOND"],
+                toml: r#""fixed""#,
+            }),
+            allowed: "a word other than bad",
+            doc: "a located text key",
+        },
+        parse: |value| {
+            value
+                .text()
+                .filter(|text| *text != "bad")
+                .map(str::to_owned)
+                .ok_or_else(|| value.refuse())
+        },
+        show: |text| quote(text),
     };
 
     const PAIRS: Key<Vec<(String, i64)>> = Key {
@@ -654,6 +728,45 @@ mod tests {
             path: PathBuf::from(PATH),
             line,
         }
+    }
+
+    #[test]
+    fn a_default_is_the_first_standard_variable_that_is_set_and_not_empty() {
+        let said = |value: &str| {
+            Ok(Resolved {
+                value: value.to_owned(),
+                origin: Origin::Default,
+            })
+        };
+        let first = "BILBO_TEST_FIRST";
+        let second = "BILBO_TEST_SECOND";
+        assert_eq!(
+            get(&PICKED, &[(first, "one"), (second, "two")], ""),
+            said("one")
+        );
+        assert_eq!(
+            get(&PICKED, &[(first, ""), (second, "two")], ""),
+            said("two")
+        );
+        assert_eq!(get(&PICKED, &[(second, "two")], ""), said("two"));
+        assert_eq!(get(&PICKED, &[(second, "")], ""), said("fixed"));
+        assert_eq!(
+            get(&PICKED, &[(first, ""), (second, "")], ""),
+            said("fixed")
+        );
+        assert_eq!(get(&PICKED, &[], ""), said("fixed"));
+        assert_eq!(
+            message(get(&PICKED, &[(first, "bad"), (second, "two")], "")),
+            "BILBO_TEST_FIRST must be a word other than bad, got \"bad\""
+        );
+        assert_eq!(
+            PICKED.about.default.describe(),
+            "$BILBO_TEST_FIRST, else $BILBO_TEST_SECOND, else \"fixed\""
+        );
+        assert_eq!(
+            PICKED.about.default.reads(),
+            ["BILBO_TEST_FIRST", "BILBO_TEST_SECOND"]
+        );
     }
 
     #[test]

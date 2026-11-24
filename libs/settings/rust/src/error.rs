@@ -13,6 +13,7 @@ pub enum At {
     },
     Flag(&'static str),
     Default(&'static str),
+    Typed(String),
 }
 
 impl fmt::Display for At {
@@ -21,6 +22,7 @@ impl fmt::Display for At {
             Self::Variable(name) | Self::Flag(name) => f.write_str(name),
             Self::Line { path, line, key } => write!(f, "{}:{line}: {key}", path.display()),
             Self::Default(key) => write!(f, "the default of {key}"),
+            Self::Typed(text) => write!(f, "'{text}'"),
         }
     }
 }

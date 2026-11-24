@@ -38,18 +38,6 @@ pub trait Steps {
     fn keep(&mut self, text: &str, draft: &mut Draft<'_>) -> Result<Outcome, Failure>;
 }
 
-pub fn editor(var: &dyn Fn(&str) -> Option<OsString>) -> Option<OsString> {
-    ["VISUAL", "EDITOR"]
-        .into_iter()
-        .find_map(|name| var(name).filter(|value| !value.is_empty()))
-}
-
-pub fn temp(var: &dyn Fn(&str) -> Option<OsString>) -> PathBuf {
-    var("TMPDIR")
-        .filter(|value| !value.is_empty())
-        .map_or_else(|| PathBuf::from("/tmp"), PathBuf::from)
-}
-
 pub fn command(editor: &OsStr, file: &Path) -> (&'static str, Vec<OsString>) {
     let mut text = editor.to_os_string();
     text.push(" \"$@\"");
@@ -234,13 +222,10 @@ pub fn run(
 ) -> Result<Outcome, Failure> {
     let id = Id::mint().map_err(|error| refused(&error))?;
     let name = format!(".bilbo-note-{id}");
-    let temp = temp(&|name| (env.var)(name));
-    let given = std::path::absolute(&temp)
-        .unwrap_or_else(|_| temp.clone())
-        .join(&name);
-    let base = match fs::canonicalize(&temp) {
+    let temp = &settings.temp.value;
+    let base = match fs::canonicalize(temp) {
         Ok(base) => base,
-        Err(error) => return unmade(&given, &error, None),
+        Err(error) => return unmade(&temp.join(&name), &error, None),
     };
     let folder = base.join(&name);
     let paths = Paths {
@@ -283,7 +268,7 @@ mod tests {
     use bilbo_store::entries::StoreError;
     use bilbo_store::id::Id;
 
-    use super::{Ended, Paths, Started, Steps, command, editor, remove, session, temp, unmade};
+    use super::{Ended, Paths, Started, Steps, command, remove, session, unmade};
     use crate::console::closing::Closing;
     use crate::console::message::Message;
     use crate::console::outcome::{Failure, Outcome};
@@ -293,45 +278,6 @@ mod tests {
     const ID: &str = "01JC5Q3V7XKM4P8R2T6W9YB0DE";
     const FILE: &str = "/tmp/.bilbo-note-01JC5Q3V7XKM4P8R2T6W9YB0DE/note.md";
     const FOLDER: &str = "/tmp/.bilbo-note-01JC5Q3V7XKM4P8R2T6W9YB0DE";
-
-    fn values(pairs: &[(&str, &str)]) -> impl Fn(&str) -> Option<OsString> {
-        let pairs: Vec<(String, String)> = pairs
-            .iter()
-            .map(|(name, value)| ((*name).to_owned(), (*value).to_owned()))
-            .collect();
-        move |name| {
-            pairs
-                .iter()
-                .find(|(key, _)| key == name)
-                .map(|(_, value)| OsString::from(value))
-        }
-    }
-
-    #[test]
-    fn visual_is_asked_before_editor_and_an_empty_value_is_unset() {
-        let both = values(&[("VISUAL", "code --wait"), ("EDITOR", "vi")]);
-        assert_eq!(editor(&both), Some(OsString::from("code --wait")));
-        let empty_visual = values(&[("VISUAL", ""), ("EDITOR", "vi")]);
-        assert_eq!(editor(&empty_visual), Some(OsString::from("vi")));
-        let only_editor = values(&[("EDITOR", "vi")]);
-        assert_eq!(editor(&only_editor), Some(OsString::from("vi")));
-        assert_eq!(editor(&values(&[])), None);
-        assert_eq!(editor(&values(&[("VISUAL", ""), ("EDITOR", "")])), None);
-    }
-
-    #[test]
-    fn the_temp_folder_is_tmpdir_and_an_empty_value_is_unset() {
-        for (value, expected) in [
-            (Some("/var/scratch"), "/var/scratch"),
-            (Some("scratch"), "scratch"),
-            (Some(""), "/tmp"),
-            (None, "/tmp"),
-        ] {
-            let pairs: Vec<(&str, &str)> =
-                value.map(|value| ("TMPDIR", value)).into_iter().collect();
-            assert_eq!(temp(&values(&pairs)), PathBuf::from(expected), "{value:?}");
-        }
-    }
 
     #[test]
     fn the_scratch_file_is_an_argument_of_the_editor_and_never_part_of_its_command() {

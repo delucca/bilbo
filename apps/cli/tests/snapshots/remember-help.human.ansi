@@ -11,7 +11,7 @@ bilbo remember: keep files or a note as entries, and what changed in them since.
       [1m--kind [22m[2m<kind>[22m  Run this kind, not the one that claims the files
       [1m--tag [22m[2m<tag>[22m    Declare this tag for every entry the run keeps
       [1m--follow[22m       Save the target as a follow in the config file
-      [1m--edit[22m         Keep a note written in the editor VISUAL or EDITOR names
+      [1m--edit[22m         Keep a note written in the editor remember.editor names
 
 [1mKinds:[22m [2mmarkdown, session[22m
 

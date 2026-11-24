@@ -1,5 +1,6 @@
-use std::ffi::OsString;
+use std::ffi::{OsStr, OsString};
 use std::io;
+use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 
 use bilbo_entries::follows::Follow;
@@ -7,8 +8,10 @@ use bilbo_entries::read;
 use bilbo_entries::tag;
 use bilbo_settings::error::Error;
 use bilbo_settings::file::{File, Named};
-use bilbo_settings::folder::{self, Folder};
-use bilbo_settings::key::{About, Default, Key, Origin, Resolved, Shown, Source, Value, quote};
+use bilbo_settings::folder::{self, Absolute, Folder};
+use bilbo_settings::key::{
+    About, Default, First, Key, Origin, Resolved, Shown, Source, Value, quote,
+};
 use bilbo_store::keys;
 use bilbo_store::layout::Layout;
 
@@ -74,6 +77,41 @@ pub const CACHE: Key<PathBuf> = Key {
     ..CONFIG
 };
 
+pub const TEMP: Key<PathBuf> = Key {
+    about: About {
+        name: "paths.temp",
+        variable: None,
+        default: Default::Absolute(Absolute {
+            variable: "TMPDIR",
+            fallback: "/tmp",
+        }),
+        doc: "What bilbo keeps only for a moment: the draft of bilbo remember --edit, in a private folder of its own.",
+        ..CONFIG.about
+    },
+    ..CONFIG
+};
+
+pub const EDITOR: Key<OsString> = Key {
+    about: About {
+        name: "remember.editor",
+        variable: Some("BILBO_REMEMBER_EDITOR"),
+        default: Default::First(First {
+            variables: &["VISUAL", "EDITOR"],
+            toml: r#""""#,
+        }),
+        allowed: "a command line, or the empty text for no editor",
+        doc: "The command bilbo remember --edit starts as the editor: /bin/sh reads it as a command line, with the note's file as its last argument. Empty: no editor, and --edit says so.",
+    },
+    parse: |value| {
+        value
+            .os_text()
+            .filter(|text| !text.as_bytes().contains(&0))
+            .map(OsStr::to_os_string)
+            .ok_or_else(|| value.refuse())
+    },
+    show: |text| quote(&text.to_string_lossy()),
+};
+
 /// The composition root's: its default names a kind, which only the registry may.
 pub const FOLLOW: Key<Vec<Follow>> = Key {
     about: About {
@@ -89,7 +127,7 @@ pub const FOLLOW: Key<Vec<Follow>> = Key {
     show: |list| show_follows(list),
 };
 
-const PATHS: [&About; 3] = [&ROOT.about, &STATE.about, &CACHE.about];
+const PATHS: [&About; 4] = [&ROOT.about, &STATE.about, &CACHE.about, &TEMP.about];
 
 pub type KindKey = Key<usize>;
 
@@ -106,6 +144,7 @@ pub fn keys(kind: &[&'static KindKey], groups: &[&'static Group]) -> Vec<&'stati
         .chain(keys::ABOUT)
         .chain([
             &FOLLOW.about,
+            &EDITOR.about,
             &read::BUDGET.about,
             &read::OUTLINE_WIDTH.about,
             &read::MATCHES_LISTED.about,
@@ -169,8 +208,10 @@ pub struct Settings {
     pub root: Resolved<PathBuf>,
     pub state: Resolved<PathBuf>,
     pub cache: Resolved<PathBuf>,
+    pub temp: Resolved<PathBuf>,
     pub store: keys::Section,
     pub follow: Resolved<Vec<Follow>>,
+    pub remember_editor: Resolved<OsString>,
     pub read_budget: Resolved<read::Budget>,
     pub read_outline_width: Resolved<usize>,
     pub read_matches_listed: Resolved<usize>,
@@ -215,9 +256,11 @@ impl Settings {
             ROOT.shown(&self.root),
             STATE.shown(&self.state),
             CACHE.shown(&self.cache),
+            TEMP.shown(&self.temp),
         ];
         shown.extend(self.store.shown());
         shown.push(FOLLOW.shown(&self.follow));
+        shown.push(EDITOR.shown(&self.remember_editor));
         shown.push(read::BUDGET.shown(&self.read_budget));
         shown.push(read::OUTLINE_WIDTH.shown(&self.read_outline_width));
         shown.push(read::MATCHES_LISTED.shown(&self.read_matches_listed));
@@ -275,7 +318,6 @@ pub fn allowed_value(
     })
 }
 
-/// The config file's path from the environment, then the file, then every key.
 pub fn load(
     var: &dyn Fn(&str) -> Option<OsString>,
     read: &dyn Fn(&Path) -> io::Result<Vec<u8>>,
@@ -296,8 +338,10 @@ pub fn load(
         root: ROOT.resolve(&source)?,
         state: STATE.resolve(&source)?,
         cache: CACHE.resolve(&source)?,
+        temp: TEMP.resolve(&source)?,
         store: keys::section(&source)?,
         follow: FOLLOW.resolve(&source)?,
+        remember_editor: EDITOR.resolve(&source)?,
         read_budget: read::BUDGET.resolve(&source)?,
         read_outline_width: read::OUTLINE_WIDTH.resolve(&source)?,
         read_matches_listed: read::MATCHES_LISTED.resolve(&source)?,
@@ -339,7 +383,7 @@ mod tests {
     use bilbo_entries::follows::Follow;
     use bilbo_search::analyze::Language;
 
-    use super::{CACHE, CONFIG, FOLLOW, Group, ROOT, STATE, keys, load, show_follows};
+    use super::{CONFIG, FOLLOW, Group, ROOT, STATE, keys, load, show_follows};
 
     const WORD: Key<String> = Key {
         about: About {
@@ -454,6 +498,7 @@ mod tests {
                 "paths.root",
                 "paths.state",
                 "paths.cache",
+                "paths.temp",
                 "store.seal_at",
                 "store.seal_after",
                 "store.compression",
@@ -461,6 +506,7 @@ mod tests {
                 "store.wait",
                 "store.poll",
                 "follow",
+                "remember.editor",
                 "read.budget",
                 "read.outline_width",
                 "read.matches_listed",
@@ -611,7 +657,7 @@ mod tests {
             .err(),
             Some(
                 "/c.toml:3: unknown key store.sealat; the keys are paths.root, paths.state, \
-                 paths.cache, store.seal_at, store.seal_after, store.compression, store.tear_budget, store.wait, store.poll, follow, read.budget, read.outline_width, read.matches_listed, tag.cap, search.chunk_tokens, search.chunk_overlap, search.workers, search.index_memory, search.merge_deleted_percent, search.entry_tries, search.label_batch, search.list_limit, recall.budget, recall.notes_budget, recall.candidates, recall.cap, recall.record_cap, recall.copy_share, recall.copy_words, recall.question_words, recall.languages, recall.bm25_k1, recall.bm25_b, recall.read_batch, recall.typo_terms, recall.typo_letters, recall.typo_max_letters, recall.typo_two_edits, recall.pair_weight, llm.provider, llm.response, llm.timeout, llm.poll, llm.anthropic.model, llm.anthropic.via, llm.anthropic.api.endpoint, llm.anthropic.api.version, llm.anthropic.api.key_env, llm.anthropic.api.key_command, llm.anthropic.api.headers, llm.anthropic.api.extra, llm.anthropic.tool.program, llm.anthropic.tool.effort, llm.anthropic.tool.arguments, llm.anthropic.tool.inherit, llm.anthropic.tool.environment, llm.anthropic.tool.project_files, llm.openai.model, llm.openai.via, llm.openai.api.endpoint, llm.openai.api.key_env, llm.openai.api.key_command, llm.openai.api.headers, llm.openai.api.extra, llm.openai.tool.program, llm.openai.tool.effort, llm.openai.tool.arguments, llm.openai.tool.inherit, llm.openai.tool.environment, llm.openai.tool.home, llm.openai.tool.system_files, derive.enabled, derive.in, derive.not_in, derive.instructions, derive.quiet, derive.window, derive.passage, derive.passage_head, derive.earlier, derive.names, derive.answer_tokens, derive.calls, derive.retries, derive.retry_wait, derive.retry_factor, derive.retry_limit, derive.tries, derive.failures, derive.tags.enabled, derive.tags.pick, derive.tags.instruction, derive.tags.model, derive.tags.most, derive.tags.notes, markdown.heading_width, session.unpack_floor, session.unpack_ratio, session.unpack_window, session.wide_fields"
+                 paths.cache, paths.temp, store.seal_at, store.seal_after, store.compression, store.tear_budget, store.wait, store.poll, follow, remember.editor, read.budget, read.outline_width, read.matches_listed, tag.cap, search.chunk_tokens, search.chunk_overlap, search.workers, search.index_memory, search.merge_deleted_percent, search.entry_tries, search.label_batch, search.list_limit, recall.budget, recall.notes_budget, recall.candidates, recall.cap, recall.record_cap, recall.copy_share, recall.copy_words, recall.question_words, recall.languages, recall.bm25_k1, recall.bm25_b, recall.read_batch, recall.typo_terms, recall.typo_letters, recall.typo_max_letters, recall.typo_two_edits, recall.pair_weight, llm.provider, llm.response, llm.timeout, llm.poll, llm.anthropic.model, llm.anthropic.via, llm.anthropic.api.endpoint, llm.anthropic.api.version, llm.anthropic.api.key_env, llm.anthropic.api.key_command, llm.anthropic.api.headers, llm.anthropic.api.extra, llm.anthropic.tool.program, llm.anthropic.tool.effort, llm.anthropic.tool.arguments, llm.anthropic.tool.inherit, llm.anthropic.tool.environment, llm.anthropic.tool.project_files, llm.openai.model, llm.openai.via, llm.openai.api.endpoint, llm.openai.api.key_env, llm.openai.api.key_command, llm.openai.api.headers, llm.openai.api.extra, llm.openai.tool.program, llm.openai.tool.effort, llm.openai.tool.arguments, llm.openai.tool.inherit, llm.openai.tool.environment, llm.openai.tool.home, llm.openai.tool.system_files, derive.enabled, derive.in, derive.not_in, derive.instructions, derive.quiet, derive.window, derive.passage, derive.passage_head, derive.earlier, derive.names, derive.answer_tokens, derive.calls, derive.retries, derive.retry_wait, derive.retry_factor, derive.retry_limit, derive.tries, derive.failures, derive.tags.enabled, derive.tags.pick, derive.tags.instruction, derive.tags.model, derive.tags.most, derive.tags.notes, markdown.heading_width, session.unpack_floor, session.unpack_ratio, session.unpack_window, session.wide_fields"
                     .to_owned()
             )
         );
@@ -867,23 +913,89 @@ mod tests {
 
     fn names_in(text: &str) -> BTreeSet<String> {
         text.split(|c: char| !(c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_'))
-            .filter(|word| word.starts_with("BILBO_") || word.starts_with("XDG_"))
+            .filter(|word| {
+                (word.starts_with("BILBO_") || word.starts_with("XDG_"))
+                    && !matches!(*word, "BILBO_" | "XDG_")
+            })
+            .map(str::to_owned)
+            .collect()
+    }
+
+    fn read_names() -> BTreeSet<String> {
+        keys(&kind(), &crate::provider_keys())
+            .iter()
+            .flat_map(|about| about.default.reads())
+            .chain(CONFIG.about.default.reads())
             .map(str::to_owned)
             .collect()
     }
 
     fn expected_names() -> BTreeSet<String> {
-        let variables = keys(&kind(), &crate::provider_keys())
-            .into_iter()
-            .filter_map(|about| about.variable);
-        let folders = [&ROOT, &STATE, &CACHE, &CONFIG].map(|key| match key.about.default {
-            Default::Folder(folder) => folder.xdg,
-            Default::Toml(_) => unreachable!("a folder key"),
-        });
-        variables
+        let all = keys(&kind(), &crate::provider_keys());
+        all.iter()
+            .filter_map(|about| about.variable)
             .chain(CONFIG.about.variable)
-            .chain(folders)
             .map(str::to_owned)
+            .chain(read_names())
+            .collect()
+    }
+
+    fn is_prefixed(name: &str) -> bool {
+        name.starts_with("BILBO_") || name.starts_with("XDG_")
+    }
+
+    fn missing_and_foreign(page: &str) -> (Vec<String>, Vec<String>) {
+        let registry: BTreeSet<String> = expected_names()
+            .into_iter()
+            .filter(|name| is_prefixed(name))
+            .collect();
+        let found = names_in(page);
+        (
+            registry.difference(&found).cloned().collect(),
+            found.difference(&registry).cloned().collect(),
+        )
+    }
+
+    fn without_row(page: &str, first_cell: &str) -> String {
+        let table = settings_table(page);
+        let row = table
+            .lines()
+            .find(|line| line.starts_with(first_cell))
+            .expect("a row of the settings table");
+        page.replace(&format!("{row}\n"), "")
+    }
+
+    fn settings_table(page: &str) -> &str {
+        page.split("\n### Settings\n")
+            .nth(1)
+            .and_then(|rest| rest.split("\n### ").next())
+            .unwrap_or_default()
+    }
+
+    fn code_names(cell: &str) -> Vec<String> {
+        cell.split('`')
+            .skip(1)
+            .step_by(2)
+            .map(str::to_owned)
+            .collect()
+    }
+
+    fn read_names_lacking_in_the_first_cells(page: &str) -> Vec<String> {
+        let rows: Vec<Vec<String>> = settings_table(page)
+            .lines()
+            .filter(|line| line.starts_with("| `"))
+            .map(|line| {
+                code_names(
+                    line.trim_matches('|')
+                        .split(" | ")
+                        .next()
+                        .unwrap_or_default(),
+                )
+            })
+            .collect();
+        read_names()
+            .into_iter()
+            .filter(|name| !rows.iter().any(|row| row.contains(name)))
             .collect()
     }
 
@@ -891,18 +1003,8 @@ mod tests {
     fn the_reference_page_names_exactly_the_variables_bilbo_reads() {
         let expected = expected_names();
         let all = keys(&kind(), &crate::provider_keys());
-        let table = PAGE
-            .split("\n### Settings\n")
-            .nth(1)
-            .and_then(|rest| rest.split("\n### ").next())
-            .unwrap_or_default();
-        let code = |cell: &str| -> Vec<String> {
-            cell.split('`')
-                .skip(1)
-                .step_by(2)
-                .map(str::to_owned)
-                .collect()
-        };
+        let table = settings_table(PAGE);
+        let code = code_names;
         let mut set = Vec::new();
         for line in table.lines().filter(|line| line.starts_with("| `")) {
             let cells: Vec<&str> = line.trim_matches('|').split(" | ").collect();
@@ -1002,6 +1104,7 @@ mod tests {
                 "BILBO_RECALL_TYPO_MAX_LETTERS",
                 "BILBO_RECALL_TYPO_TERMS",
                 "BILBO_RECALL_TYPO_TWO_EDITS",
+                "BILBO_REMEMBER_EDITOR",
                 "BILBO_SEARCH_CHUNK_OVERLAP",
                 "BILBO_SEARCH_CHUNK_TOKENS",
                 "BILBO_SEARCH_ENTRY_TRIES",
@@ -1021,24 +1124,184 @@ mod tests {
                 "BILBO_STORE_TEAR_BUDGET",
                 "BILBO_STORE_WAIT",
                 "BILBO_TAG_CAP",
+                "EDITOR",
+                "HOME",
+                "TMPDIR",
+                "VISUAL",
                 "XDG_CACHE_HOME",
                 "XDG_CONFIG_HOME",
                 "XDG_DATA_HOME",
                 "XDG_STATE_HOME",
             ]
         );
-        assert_eq!(names_in(PAGE), expected);
+        assert!(read_names_lacking_in_the_first_cells(PAGE).is_empty());
+        assert_eq!(missing_and_foreign(PAGE), (Vec::new(), Vec::new()));
     }
 
     #[test]
     fn a_missing_foreign_or_lookalike_variable_fails_the_page_check() {
-        let expected = expected_names();
+        let none = || Vec::<String>::new();
+        assert_eq!(missing_and_foreign(PAGE), (none(), none()));
         let without = PAGE.replace("BILBO_CONFIG", "the config variable");
-        assert_ne!(names_in(&without), expected, "a missing name must fail");
+        assert_eq!(
+            missing_and_foreign(&without),
+            (vec!["BILBO_CONFIG".to_owned()], none())
+        );
         for foreign in ["BILBO_ROOT", "BILBO_HOME2", "XDG_RUNTIME_DIR"] {
             let with = format!("{PAGE}\n`{foreign}`\n");
-            assert_ne!(names_in(&with), expected, "{foreign} must fail");
+            assert_eq!(
+                missing_and_foreign(&with),
+                (none(), vec![foreign.to_owned()]),
+                "{foreign}"
+            );
         }
+        for (first_cell, lacking) in [
+            ("| `TMPDIR`", vec!["TMPDIR"]),
+            (
+                "| `XDG_DATA_HOME`",
+                vec![
+                    "XDG_CACHE_HOME",
+                    "XDG_CONFIG_HOME",
+                    "XDG_DATA_HOME",
+                    "XDG_STATE_HOME",
+                ],
+            ),
+            ("| `HOME`", vec!["HOME"]),
+        ] {
+            assert_eq!(
+                read_names_lacking_in_the_first_cells(&without_row(PAGE, first_cell)),
+                lacking,
+                "{first_cell}"
+            );
+        }
+    }
+
+    fn editor_with(env: &[(&str, &str)], file: Option<&str>) -> Result<super::Settings, String> {
+        let mut all = vec![("HOME", "/h"), ("BILBO_CONFIG", "/c.toml")];
+        all.extend_from_slice(env);
+        settings(&all, &[("/c.toml", file.unwrap_or(""))])
+    }
+
+    fn at_line_one() -> Origin {
+        Origin::File {
+            path: PathBuf::from("/c.toml"),
+            line: 1,
+        }
+    }
+
+    #[test]
+    fn the_editor_is_its_variable_then_the_file_then_visual_then_editor() {
+        let value = |settings: Result<super::Settings, String>| {
+            let settings = settings.expect("settings");
+            (
+                settings
+                    .remember_editor
+                    .value
+                    .to_string_lossy()
+                    .into_owned(),
+                settings.remember_editor.origin,
+            )
+        };
+        let file = Some("remember.editor = \"code --wait\"\n");
+        let both = [("VISUAL", "vim"), ("EDITOR", "vi")];
+        let with = |extra: &[(&'static str, &'static str)]| {
+            let mut all = both.to_vec();
+            all.extend_from_slice(extra);
+            all
+        };
+        assert_eq!(
+            value(editor_with(
+                &with(&[("BILBO_REMEMBER_EDITOR", "ed -s")]),
+                file
+            )),
+            (
+                "ed -s".to_owned(),
+                Origin::Variable("BILBO_REMEMBER_EDITOR")
+            )
+        );
+        assert_eq!(
+            value(editor_with(&with(&[("BILBO_REMEMBER_EDITOR", "")]), file)),
+            ("code --wait".to_owned(), at_line_one())
+        );
+        assert_eq!(
+            value(editor_with(&both, None)),
+            ("vim".to_owned(), Origin::Default)
+        );
+        assert_eq!(
+            value(editor_with(&[("VISUAL", ""), ("EDITOR", "vi")], None)),
+            ("vi".to_owned(), Origin::Default)
+        );
+        assert_eq!(
+            value(editor_with(&[("EDITOR", "vi")], None)),
+            ("vi".to_owned(), Origin::Default)
+        );
+        assert_eq!(
+            value(editor_with(&[], None)),
+            (String::new(), Origin::Default)
+        );
+        assert_eq!(
+            value(editor_with(&both, Some("remember.editor = \"\"\n"))),
+            (String::new(), at_line_one())
+        );
+        assert_eq!(
+            editor_with(&both, Some("remember.editor = 3\n")).expect_err("a number"),
+            "/c.toml:1: remember.editor must be a command line, or the empty text for no editor, got 3"
+        );
+        let shown = editor_with(&[("EDITOR", "vi")], None)
+            .expect("settings")
+            .shown();
+        let line = shown
+            .iter()
+            .find(|shown| shown.name == "remember.editor")
+            .expect("the key is shown");
+        assert_eq!(
+            (line.value.as_str(), &line.origin),
+            ("\"vi\"", &Origin::Default)
+        );
+    }
+
+    #[test]
+    fn the_temp_folder_is_the_file_then_tmpdir_then_tmp() {
+        let value = |env: &[(&str, &str)], file: &str| {
+            let settings = editor_with(env, Some(file)).expect("settings");
+            (settings.temp.value, settings.temp.origin)
+        };
+        assert_eq!(
+            value(&[("TMPDIR", "/scratch")], "paths.temp = \"/var/drafts\"\n"),
+            (PathBuf::from("/var/drafts"), at_line_one())
+        );
+        assert_eq!(
+            value(&[], "paths.temp = \"~/drafts\"\n"),
+            (PathBuf::from("/h/drafts"), at_line_one())
+        );
+        assert_eq!(
+            value(&[("TMPDIR", "/scratch")], ""),
+            (PathBuf::from("/scratch"), Origin::Default)
+        );
+        for env in [&[("TMPDIR", "scratch")][..], &[("TMPDIR", "")], &[]] {
+            assert_eq!(
+                value(env, ""),
+                (PathBuf::from("/tmp"), Origin::Default),
+                "{env:?}"
+            );
+        }
+        assert_eq!(
+            editor_with(&[("TMPDIR", "/a/../b")], None).expect_err("a dotted value"),
+            "TMPDIR has a . or .. component: /a/../b"
+        );
+        assert_eq!(
+            editor_with(&[], Some("paths.temp = \"drafts\"\n")).expect_err("a relative path"),
+            "/c.toml:1: paths.temp is not an absolute path: drafts"
+        );
+        let shown = editor_with(&[], None).expect("settings").shown();
+        let line = shown
+            .iter()
+            .find(|shown| shown.name == "paths.temp")
+            .expect("the key is shown");
+        assert_eq!(
+            (line.value.as_str(), &line.origin),
+            ("\"/tmp\"", &Origin::Default)
+        );
     }
 
     fn follow(path: &str, kind: Option<&str>) -> Follow {

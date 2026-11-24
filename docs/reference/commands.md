@@ -29,12 +29,14 @@ Standard output, one line per key, in the order [Configuration](configuration.md
 paths.root = "/home/me/.local/share/bilbo" (default)
 paths.state = "/home/me/.local/state/bilbo" (default)
 paths.cache = "/home/me/.cache/bilbo" (default)
+paths.temp = "/tmp" (default)
 store.seal_at = "16 MiB" (/home/me/.config/bilbo/config.toml:5)
 store.seal_after = "60m" (default)
 store.compression = 3 (BILBO_STORE_COMPRESSION)
 store.tear_budget = 4 (default)
 store.wait = "10s" (default)
 follow = [{ path = "/home/me/.claude/projects", kind = "session" }, { path = "/home/me/.codex/sessions", kind = "session" }] (default)
+remember.editor = "" (default)
 read.budget = 7000 (default)
 ```
 
@@ -145,7 +147,7 @@ bilbo remember --edit [--tag <tag>]...
 
 A run that keeps a note prints the two lines of [Output](#output) with `new 1`, and `kept the note as <id>` on stderr. `bilbo read <id>` prints the note; its capture label is `note:<id>`. The run brings the search index up to date as any `remember` does, so `recall` finds the note at once. `bilbo derive` writes nothing about it.
 
-`bilbo remember --edit` opens an editor on an empty file and keeps what was saved, as `git commit` does for a message. The editor is the command `VISUAL` names, else the one `EDITOR` names, run by `/bin/sh` with the file as its last argument; with neither, the run exits 2. The file is `note.md` in a folder bilbo makes for it, yours and of mode 0700, `.bilbo-note-<id>` in `$TMPDIR`, else `/tmp`. The mode is what keeps others out: bilbo does not look at an access list a temp folder hands down to what is made in it. A file that is empty or holds only white space keeps nothing and exits 1. An editor that exits with another code than 0, or that a signal ends, keeps nothing, whatever was saved. An editor that ran and whose end bilbo could not learn keeps nothing either, and its file stays where the line says. The folder is removed, with all it holds, when the note was kept or there was no text. When there was text and the note was not kept, it stays and the run's line says where the file is, so what you wrote is not lost; it is yours to remove. When the store failed at the write of the note itself, the line also gives the id the note may be under; a store that failed before that wrote nothing, and its line gives no id. An editor that failed is said first, whatever its file holds. The store is opened only after the editor is done, so no other bilbo waits while you write.
+`bilbo remember --edit` opens an editor on an empty file and keeps what was saved, as `git commit` does for a message. The editor is the command of [`remember.editor`](configuration.md#keys), which `bilbo config remember.editor` prints. `/bin/sh` runs it with the file as its last argument; with no editor, the run exits 2. The file is `note.md` in a folder bilbo makes for it, yours and of mode 0700, `.bilbo-note-<id>` in the folder of [`paths.temp`](configuration.md#keys), which `bilbo config paths.temp` prints. The mode is what keeps others out: bilbo does not look at an access list a temp folder hands down to what is made in it. A file that is empty or holds only white space keeps nothing and exits 1. An editor that exits with another code than 0, or that a signal ends, keeps nothing, whatever was saved. An editor that ran and whose end bilbo could not learn keeps nothing either, and its file stays where the line says. The folder is removed, with all it holds, when the note was kept or there was no text. When there was text and the note was not kept, it stays and the run's line says where the file is, so what you wrote is not lost; it is yours to remove. When the store failed at the write of the note itself, the line also gives the id the note may be under; a store that failed before that wrote nothing, and its line gives no id. An editor that failed is said first, whatever its file holds. The store is opened only after the editor is done, so no other bilbo waits while you write.
 
 A note kept this way cannot be changed or taken back yet: it stays in `recall` until `bilbo forget` exists. A note you will want to edit is a Markdown file in a followed folder, which `remember` and `refresh` keep up with.
 

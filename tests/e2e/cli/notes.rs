@@ -1079,7 +1079,13 @@ fn a_temp_folder_that_is_no_folder_or_cannot_be_found_is_said_at_once_by_its_who
     );
     let work = scratch.dir.join("work");
     fs::create_dir_all(&work).expect("a working folder");
-    let run = run_within(&scratch, &editor, "missing", &work, deadline);
+    let run = run_within(
+        &scratch,
+        &editor,
+        work.join("missing").to_str().expect("UTF-8"),
+        &work,
+        deadline,
+    );
     assert_eq!(run.code, 1, "{}", run.stderr);
     assert_eq!(run.stdout, "");
     the_folder_of(&run, &work.join("missing"), 2);
@@ -1095,7 +1101,13 @@ fn a_temp_folder_that_is_no_folder_or_cannot_be_found_is_said_at_once_by_its_who
     let work = scratch.dir.join("work");
     fs::create_dir_all(work.join("tmp")).expect("a temp folder");
     std::os::unix::fs::symlink("tmp", work.join("link")).expect("a link");
-    let run = run_within(&scratch, &editor, "link", &work, deadline);
+    let run = run_within(
+        &scratch,
+        &editor,
+        work.join("link").to_str().expect("UTF-8"),
+        &work,
+        deadline,
+    );
     assert_eq!(run.code, 0, "{}", run.stderr);
     let id = kept_note(&run);
     assert_eq!(
@@ -1147,4 +1159,125 @@ fn a_store_that_fails_before_the_note_is_kept_says_where_the_draft_is() {
             "row {row}"
         );
     }
+}
+
+fn folder_is_empty(folder: &Path) -> bool {
+    fs::read_dir(folder).expect("a folder").next().is_none()
+}
+
+struct Keys {
+    scratch: Scratch,
+    scripts: [PathBuf; 3],
+    drafts: PathBuf,
+    tmp: PathBuf,
+    noted: PathBuf,
+}
+
+impl Keys {
+    fn new(test: &str, editor_text: Option<&str>) -> Keys {
+        let scratch = Scratch::new(test);
+        let folder = scratch.dir.join("script folder");
+        fs::create_dir_all(&folder).expect("a folder with a space");
+        let noted = scratch.dir.join("noted");
+        let drafts = scratch.dir.join("drafts");
+        let tmp = scratch.dir.join("tmp");
+        for path in [&noted, &drafts, &tmp] {
+            fs::create_dir_all(path).expect("a folder");
+        }
+        let scripts = ["first", "second", "third"].map(|name| {
+            let script = folder.join(format!("{name}.sh"));
+            fs::write(
+                &script,
+                format!(
+                    "#!/bin/sh\nprintf '%s\\n' \"$1\" > \"$NOTED/{name}\"\nprintf 'The quince blooms early.\\n' > \"$1\"\n"
+                ),
+            )
+            .expect("a script");
+            fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).expect("a mode");
+            script
+        });
+        let toml = |text: &str| serde_json::to_string(text).expect("a quoted text");
+        let editor_value = editor_text.map_or_else(|| shell_word(&scripts[0]), str::to_owned);
+        scratch.config(&format!(
+            "remember.editor = {}\npaths.temp = {}\n",
+            toml(&editor_value),
+            toml(drafts.to_str().expect("UTF-8"))
+        ));
+        Keys {
+            scratch,
+            scripts,
+            drafts,
+            tmp,
+            noted,
+        }
+    }
+
+    fn run(&self, args: &[&str], extra: &[(&'static str, &str)]) -> Run {
+        let second = shell_word(&self.scripts[1]);
+        let mut env = vec![
+            ("VISUAL", second.as_str()),
+            ("EDITOR", second.as_str()),
+            ("TMPDIR", self.tmp.to_str().expect("UTF-8")),
+            ("NOTED", self.noted.to_str().expect("UTF-8")),
+            ("PATH", "/usr/bin:/bin"),
+        ];
+        env.extend_from_slice(extra);
+        self.scratch.run_with(args, &env)
+    }
+
+    fn noted(&self, name: &str) -> Option<String> {
+        fs::read_to_string(self.noted.join(name)).ok()
+    }
+}
+
+#[test]
+fn the_editors_key_and_the_temp_folders_key_win_over_the_standard_variables() {
+    let keys = Keys::new("edit_keys", None);
+    let run = keys.run(&["remember", "--edit"], &[]);
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    let id = kept_note(&run);
+    assert_eq!(
+        keys.noted("first")
+            .expect("the first script ran")
+            .trim_end(),
+        keys.drafts
+            .join(format!(".bilbo-note-{id}"))
+            .join("note.md")
+            .to_str()
+            .expect("UTF-8")
+    );
+    assert_eq!(keys.noted("second"), None);
+    assert!(folder_is_empty(&keys.tmp));
+    assert!(folder_is_empty(&keys.drafts));
+    the_record_is_the_sentence(&keys.scratch, &id);
+
+    let keys = Keys::new("edit_keys_variable", None);
+    let third = shell_word(&keys.scripts[2]);
+    let run = keys.run(
+        &["remember", "--edit"],
+        &[("BILBO_REMEMBER_EDITOR", &third)],
+    );
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    assert!(keys.noted("third").is_some());
+    assert_eq!(keys.noted("first"), None);
+    assert_eq!(keys.noted("second"), None);
+
+    let keys = Keys::new("edit_keys_shown", None);
+    let editor = keys.run(&["config", "remember.editor"], &[]);
+    assert_eq!(editor.stdout, format!("{}\n", shell_word(&keys.scripts[0])));
+    let temp = keys.run(&["config", "paths.temp"], &[]);
+    assert_eq!(temp.stdout, format!("{}\n", keys.drafts.display()));
+
+    let keys = Keys::new("edit_keys_off", Some(""));
+    let run = keys.run(&["remember", "--edit"], &[]);
+    assert_eq!(run.code, 2, "{}", run.stderr);
+    assert_eq!(
+        run.stderr,
+        "bilbo: --edit needs an editor: set remember.editor, VISUAL or EDITOR\n"
+    );
+    for name in ["first", "second", "third"] {
+        assert_eq!(keys.noted(name), None, "{name}");
+    }
+    assert!(folder_is_empty(&keys.tmp));
+    assert!(folder_is_empty(&keys.drafts));
 }

@@ -1,6 +1,8 @@
 use std::io::{self, BufRead};
 use std::path::PathBuf;
 
+use bilbo_settings::folder::typed;
+
 use super::refused;
 use crate::console::env::Env;
 use crate::console::message::{Detail, Message};
@@ -69,27 +71,16 @@ fn nothing() -> Outcome {
     Outcome::new("").with_diagnostics(vec![Message::info("nothing kept")])
 }
 
-fn path(env: &Env, text: &str) -> PathBuf {
-    let home = (env.var)("HOME").filter(|home| !home.is_empty());
-    match (text.strip_prefix('~'), home) {
-        (Some(rest), Some(mut home)) if rest.starts_with('/') => {
-            home.push(rest);
-            PathBuf::from(home)
-        }
-        _ => PathBuf::from(text),
-    }
-}
-
 fn file(env: &mut Env, input: &mut dyn BufRead, ways: &mut dyn Ways) -> Result<Outcome, Failure> {
     loop {
         (env.notice)(&Message::info("Which file or folder?"));
         match line(input)? {
             Line::End => return Ok(nothing()),
             Line::Text(text) if text.is_empty() => return Ok(nothing()),
-            Line::Text(text) => {
-                let target = path(env, &text);
-                return ways.file(env, target);
-            }
+            Line::Text(text) => match typed(&text, &*env.var) {
+                Ok(target) => return ways.file(env, target),
+                Err(fault) => (env.notice)(&Message::warning(&fault.to_string())),
+            },
             Line::NotText => (env.notice)(&Message::warning("that answer is not text")),
         }
     }
@@ -241,21 +232,41 @@ mod tests {
             [question(), warning("'x' is not 1, 2 or 3"), question()]
         );
 
-        let (_, ways, said) = run(Some("/home/me"), b"3\n~/notes\n");
-        assert_eq!(ways.ran, ["file /home/me/notes"]);
-        assert_eq!(said, [question(), info("Which file or folder?")]);
-        for (home, answer, path) in [
-            (Some("/home/me"), "~/notes", "/home/me/notes"),
-            (Some("/home/me"), "~//notes", "/home/me//notes"),
-            (Some("/home/me"), "~/", "/home/me/"),
-            (Some("/home/me"), "~", "~"),
-            (Some("/home/me"), "~notes", "~notes"),
-            (None, "~/notes", "~/notes"),
-            (Some(""), "~/notes", "~/notes"),
-            (Some("/home/me"), "/etc/x y", "/etc/x y"),
+        for (answer, path) in [
+            ("~/notes", "/home/me/notes"),
+            ("~//notes", "/home/me/notes"),
+            ("~/", "/home/me/"),
+            ("~", "~"),
+            ("~notes", "~notes"),
+            ("/etc/x y", "/etc/x y"),
+            ("notes/../x", "notes/../x"),
         ] {
-            let (_, ways, _) = run(home, format!("3\n{answer}\n").as_bytes());
-            assert_eq!(ways.ran, [format!("file {path}")], "{home:?} {answer}");
+            let (_, ways, said) = run(Some("/home/me"), format!("3\n{answer}\n").as_bytes());
+            assert_eq!(ways.ran, [format!("file {path}")], "{answer}");
+            assert_eq!(
+                said,
+                [question(), info("Which file or folder?")],
+                "{answer}"
+            );
+        }
+        for (home, said_of_home) in [
+            (None, "is not set"),
+            (Some(""), "is empty"),
+            (Some("home"), "is not an absolute path: home"),
+            (Some("/x/../me"), "has a . or .. component: /x/../me"),
+        ] {
+            let (_, ways, said) = run(home, b"3\n~/notes\n/x\n");
+            assert_eq!(ways.ran, ["file /x"], "{home:?}");
+            assert_eq!(
+                said,
+                [
+                    question(),
+                    info("Which file or folder?"),
+                    warning(&format!("'~/notes' needs HOME, which {said_of_home}")),
+                    info("Which file or folder?")
+                ],
+                "{home:?}"
+            );
         }
 
         let (result, ways, said) = run(None, b"3\n\n");
