@@ -2046,7 +2046,7 @@ fn an_entry_moved_from_one_follow_to_another_is_moved_and_not_withdrawn_in_eithe
 #[test]
 fn a_follow_whose_claimed_files_were_all_refused_withdraws_nothing() {
     let before = Memory::new().file("/t/a.fake", "x|");
-    let files = Turning::new(before, Memory::new(), Call::Stamp, "/t/a.fake");
+    let files = Turning::new(before, Memory::new().folder("/t"), Call::Stamp, "/t/a.fake");
     let mut entries = entry(
         entry(FakeEntries::new().resolving(), "file:/t/b.fake", 1),
         "file:/t/c.fake",

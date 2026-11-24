@@ -1,13 +1,14 @@
 use std::collections::BTreeSet;
+use std::ffi::OsStr;
 use std::io;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use bilbo_store::entries::{Capture, CaptureError, Captured, Entries};
 use bilbo_store::id::Id;
 use bilbo_store::labels::Tags;
 
 use crate::files::{At, Files, Node, at};
-use crate::kind::{Claim, Kind};
+use crate::kind::Kind;
 use crate::remember::{self, Error, Item, Outcome, Output, Plan, Request, Tagging};
 
 /// A `None` kind is detected as a target's is.
@@ -94,7 +95,11 @@ fn withdraw_gone(
     if !matches!(files.node(&plan.target), Ok(Node::Folder)) {
         return Ok(());
     }
-    let claimed: BTreeSet<&Path> = plan.claims.iter().map(Claim::label).collect();
+    let claimed: BTreeSet<&OsStr> = plan
+        .claims
+        .iter()
+        .map(|claim| claim.label().as_os_str())
+        .collect();
     let mut gone = Vec::new();
     for (id, label) in entries.captures_with(target)? {
         let Some(path) = label.path() else {
@@ -103,7 +108,7 @@ fn withdraw_gone(
         if !path
             .strip_prefix(&plan.target)
             .is_ok_and(|rest| !rest.as_os_str().is_empty())
-            || claimed.contains(path)
+            || claimed.contains(path.as_os_str())
             || protected.contains(&id)
         {
             continue;

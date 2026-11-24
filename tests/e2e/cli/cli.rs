@@ -5,6 +5,7 @@ use std::process::{Command, Stdio};
 
 mod config;
 mod derive;
+mod notes;
 mod read;
 mod recall;
 mod reindex;

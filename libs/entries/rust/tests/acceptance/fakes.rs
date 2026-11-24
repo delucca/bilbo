@@ -345,7 +345,12 @@ impl Entries for FakeEntries {
             },
         );
         let generation = match (&script, self.heads.get(input.label.as_str())) {
-            (Script::NewGeneration, Some(head)) => Generation(head.generation.0 + 1),
+            (Script::NewGeneration, Some(head)) => Generation(
+                head.generation
+                    .0
+                    .checked_add(1)
+                    .ok_or(CaptureError::Store(StoreError::TooManyGenerations(head.id)))?,
+            ),
             _ => Generation(1),
         };
         let kept = Kept {

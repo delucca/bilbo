@@ -483,6 +483,48 @@ fn put(scratch: &Scratch, name: &str, bytes: &[u8]) {
 }
 
 #[test]
+fn a_session_whose_file_is_gone_stays_in_recall() {
+    let scratch = harness("session_gone");
+    put(&scratch, &format!("2026/11/07/{SECOND}.zst"), SECOND_PACKED);
+    let run = scratch.run(&["refresh"]);
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    let before = scratch.run(&["recall", "--", "beans"]);
+    assert_eq!(before.code, 0, "{}", before.stderr);
+    let reference = before
+        .stdout
+        .lines()
+        .find_map(|line| line.strip_prefix("=== "))
+        .and_then(|header| header.split('\t').next())
+        .expect("a hit")
+        .to_owned();
+    fs::remove_file(
+        scratch
+            .dir
+            .join("home/.codex/sessions/2026/11/06")
+            .join(ROLLOUT),
+    )
+    .expect("the harness removes the rollout");
+
+    let run = scratch.run(&["refresh"]);
+    assert_eq!((run.code, run.stderr.as_str()), (0, ""));
+    let line = first(&run);
+    assert!(
+        line.starts_with("new 0, appended 0, new generation 0, unchanged "),
+        "{line}"
+    );
+    assert!(line.ends_with(", refused 0"), "{line}");
+    let after = scratch.run(&["recall", "--", "beans"]);
+    assert_eq!(after.code, 0, "{}", after.stderr);
+    let found = after
+        .stdout
+        .lines()
+        .find_map(|line| line.strip_prefix("=== "))
+        .and_then(|header| header.split('\t').next())
+        .expect("a hit");
+    assert_eq!(found, reference);
+}
+
+#[test]
 fn a_sessions_folder_with_plain_and_packed_rollouts_keeps_each_once() {
     let scratch = harness("packed_each_once");
     let sessions = scratch.path("home/.codex/sessions");
