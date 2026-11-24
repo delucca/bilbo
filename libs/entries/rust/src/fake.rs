@@ -39,10 +39,6 @@ impl Kind for Suffix {
         self.name
     }
 
-    fn summary(&self) -> &'static str {
-        "a fake kind"
-    }
-
     fn claims(&self, files: &dyn Files, target: &Path) -> Claims {
         let mut claims = Claims::default();
         self.walk(files, target, &mut claims);

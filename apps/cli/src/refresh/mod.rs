@@ -10,8 +10,8 @@ const USAGE: &str = "bilbo refresh";
 pub struct Args {}
 
 const PAGE: &str = "\
-With no follow declared it keeps ~/.claude/projects and ~/.codex/sessions. When
-another bilbo is writing the store, it asks that one for the pass and exits 0.
+The follows it keeps are the ones bilbo config follow prints. When another
+bilbo is writing the store, it asks that one for the pass and exits 0.
 
 Output:
   new <n>, appended <n>, new generation <n>, unchanged <n>, refused <n>

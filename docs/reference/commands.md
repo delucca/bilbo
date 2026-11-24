@@ -163,7 +163,7 @@ Before a record is stored, every JSON string value in it of 256 or more base64 o
 
 ### Follows
 
-`--follow` keeps the target now, then saves it and the kind that ran as a `[[follow]]` table at the end of the config file, leaving the rest of the file byte for byte. A target followed already is not saved again. While the file declares no follow, the two defaults apply ([`refresh`](#refresh)); a declared follow replaces them, so the first `--follow` writes the defaults first.
+`--follow` keeps the target now, then saves it and the kind that ran as a `[[follow]]` table at the end of the config file, leaving the rest of the file byte for byte. A target followed already is not saved again. While the file declares no follow, the defaults of [`follow`](configuration.md#keys) apply; a declared follow replaces them, so the first `--follow` writes the defaults first.
 
 A config file that is a symbolic link, or that this user cannot write (read-only, or another account's), as a Nix-managed one is, is not written, nor is one that cannot be replaced: the run exits 2, prints the lines to add and leaves the file as it was. A file that declares `follow` as an inline array (`follow = [...]`) is not written either: the run exits 2 and prints the inline table to add to that array. When the file is saved but its folder cannot be synced, the run says so in a warning; the follow is saved. Two `--follow` runs at once take turns on `config.toml.lock` beside the file, and each reads the file again before it appends, so both follows are saved. See [Configuration](configuration.md#keys).
 
@@ -218,7 +218,7 @@ A second `remember` with a target waits for the first one to finish writing the 
 bilbo refresh
 ```
 
-Keeps every follow, in order, into one store: what each followed folder or file gained or changed since the last run, as [`bilbo remember`](#remember) keeps a target. With no `[[follow]]` in the config file it follows `~/.claude/projects` and `~/.codex/sessions`, both as `session`. A follow whose folder or file is missing is skipped with one line on stderr, and one that claims nothing says so; neither is an error. A file or folder a follow cannot read is refused and counts in the totals, as under a target. `bilbo remember <target> --follow` declares a follow ([Follows](#follows)). A Markdown file that is gone from a followed folder withdraws its entry ([A file that is gone](#a-file-that-is-gone)).
+Keeps every follow, in order, into one store: what each followed folder or file gained or changed since the last run, as [`bilbo remember`](#remember) keeps a target. With no `[[follow]]` in the config file it keeps the default follows: [`follow`](configuration.md#keys) lists them, and `bilbo config follow` prints the ones a run keeps. A follow whose folder or file is missing is skipped with one line on stderr, and one that claims nothing says so; neither is an error. A file or folder a follow cannot read is refused and counts in the totals, as under a target. `bilbo remember <target> --follow` declares a follow ([Follows](#follows)). A Markdown file that is gone from a followed folder withdraws its entry ([A file that is gone](#a-file-that-is-gone)).
 
 It opens the store even when no follow claims a file, so it seals by age and rebuilds a lost catalog ([Sealing](#sealing)), and it brings the search index up to date as `remember` does ([The index](#the-index)). When another bilbo is writing the store it does not wait: it asks that bilbo for one more pass over the follows and exits 0 ([Two runs at once](#two-runs-at-once)).
 

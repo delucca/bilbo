@@ -77,10 +77,6 @@ impl Kind for Markdown {
         NAME
     }
 
-    fn summary(&self) -> &'static str {
-        ".md files, one record per line"
-    }
-
     fn withdraws_gone(&self) -> bool {
         true
     }
@@ -351,12 +347,8 @@ mod tests {
     }
 
     #[test]
-    fn the_kind_is_named_markdown_with_its_summary() {
+    fn the_kind_is_named_markdown() {
         assert_eq!(Markdown::default().name(), "markdown");
-        assert_eq!(
-            Markdown::default().summary(),
-            ".md files, one record per line"
-        );
     }
 
     #[test]

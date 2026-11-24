@@ -3,8 +3,8 @@ bilbo refresh: keep what every follow gained or changed since the last run.
 [1mUsage:[22m
   [36mbilbo refresh[39m
 
-[2mWith no follow declared it keeps ~/.claude/projects and ~/.codex/sessions. When[22m
-[2manother bilbo is writing the store, it asks that one for the pass and exits 0.[22m
+[2mThe follows it keeps are the ones bilbo config follow prints. When another[22m
+[2mbilbo is writing the store, it asks that one for the pass and exits 0.[22m
 
 [1mOutput:[22m
   new [2m<n>[22m, appended [2m<n>[22m, new generation [2m<n>[22m, unchanged [2m<n>[22m, refused [2m<n>[22m

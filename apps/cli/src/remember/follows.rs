@@ -51,8 +51,8 @@ impl<'k> Pass<'k> {
     }
 }
 
-/// Every follow into one store. The store is opened even when nothing is claimed, so the timer's
-/// pass seals and rebuilds; a bilbo that holds it is asked to rerun instead.
+/// The store is opened even when nothing is claimed, so the timer's pass seals and rebuilds; a
+/// bilbo that holds it is asked to rerun instead.
 pub fn run(
     env: &mut Env,
     settings: &Settings,

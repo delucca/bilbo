@@ -63,8 +63,6 @@ impl std::error::Error for Refusal {}
 
 pub trait Kind {
     fn name(&self) -> &'static str;
-    /// One line for the help page.
-    fn summary(&self) -> &'static str;
     /// The entries under `target` this kind takes, in a stable order, one per label. `target` is
     /// canonical, or names a file that is gone in a canonical folder.
     fn claims(&self, files: &dyn Files, target: &Path) -> Claims;
@@ -75,7 +73,7 @@ pub trait Kind {
     /// Bytes after the last end are not a record yet (a line still being written): a later run
     /// keeps them.
     fn split(&self, bytes: &[u8]) -> Result<Vec<usize>, Refusal>;
-    /// `label` is the claim's; `kept` gives the entry kept for another label, if any.
+    /// `kept` may know no entry: the id proposed never depends on it.
     fn propose(&self, label: &Path, bytes: &[u8], kept: &dyn Fn(&Path) -> Option<Id>) -> Proposal;
     fn withdraws_gone(&self) -> bool {
         false

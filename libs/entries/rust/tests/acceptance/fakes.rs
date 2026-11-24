@@ -102,10 +102,6 @@ impl Kind for FakeKind {
         "fake"
     }
 
-    fn summary(&self) -> &'static str {
-        "*.fake files, records split on |"
-    }
-
     fn claims(&self, files: &dyn Files, target: &Path) -> Claims {
         let mut claims = Claims::default();
         FakeKind::walk(files, target, &mut claims);
@@ -219,7 +215,6 @@ pub enum Script {
     Failure,
 }
 
-/// One `capture` call, as owned data.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Seen {
     pub label: String,

@@ -445,8 +445,6 @@ fn seal_after_from_the_file_decides_when_an_old_open_seg_is_sealed() {
     }
 }
 
-/// Runs bilbo with the scratch environment and fails the test, killing the child, if it has not
-/// exited within `limit`.
 fn run_within(
     scratch: &Scratch,
     args: &[&str],

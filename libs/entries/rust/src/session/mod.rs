@@ -189,10 +189,6 @@ impl Kind for Session {
         NAME
     }
 
-    fn summary(&self) -> &'static str {
-        "Claude Code and Codex sessions, one record per JSONL line"
-    }
-
     /// Main sessions first, then subagents, so a subagent's session is kept before it.
     fn claims(&self, files: &dyn Files, target: &Path) -> Claims {
         let mut walk = Walk::default();
@@ -986,12 +982,8 @@ mod tests {
     }
 
     #[test]
-    fn the_kind_is_named_session_with_its_summary() {
+    fn the_kind_is_named_session() {
         assert_eq!(Session::default().name(), "session");
-        assert_eq!(
-            Session::default().summary(),
-            "Claude Code and Codex sessions, one record per JSONL line"
-        );
     }
 
     const SESSIONS: &str = "/h/.codex/sessions/2026/11/06";

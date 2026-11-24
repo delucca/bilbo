@@ -72,7 +72,6 @@ pub struct Output {
     pub kind: Option<String>,
     /// 0 means nothing to keep.
     pub claimed: u64,
-    /// The walk's refusals first, then the claimed files in claim order.
     pub items: Vec<Item>,
     pub records: u64,
     pub raw_bytes: u64,
@@ -81,7 +80,6 @@ pub struct Output {
 }
 
 impl Output {
-    /// For a plan with no file: its refusals, `claimed` 0, zeros. Opens no store.
     #[must_use]
     pub fn unkept(plan: &Plan<'_>) -> Output {
         Output {
@@ -1057,9 +1055,6 @@ mod tests {
         impl Kind for Anything {
             fn name(&self) -> &'static str {
                 "anything"
-            }
-            fn summary(&self) -> &'static str {
-                ""
             }
             fn claims(&self, _: &dyn Files, target: &Path) -> Claims {
                 Claims {
