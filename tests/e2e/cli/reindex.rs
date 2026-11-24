@@ -144,7 +144,7 @@ fn reindex_takes_no_argument_and_shares_every_verbs_exit_codes() {
 }
 
 #[test]
-fn a_reindex_waits_for_a_writer_and_a_bare_remember_does_not_wait_for_a_reindex() {
+fn a_reindex_waits_for_a_writer_and_a_refresh_does_not_wait_for_a_reindex() {
     let scratch = remembered_from_home("reindex_lock");
     let state = scratch.dir.join("state/bilbo");
     let lock = fs::File::open(state.join("store.lock")).expect("the lock file");
@@ -175,7 +175,7 @@ fn a_reindex_waits_for_a_writer_and_a_bare_remember_does_not_wait_for_a_reindex(
     );
     assert!(child.try_wait().expect("a state").is_none(), "it waits");
 
-    let bare = scratch.run(&["remember"]);
+    let bare = scratch.run(&["refresh"]);
     assert_eq!((bare.code, bare.stdout.as_str()), (0, ""));
 
     writer.unlock().expect("release");

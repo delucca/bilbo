@@ -826,7 +826,7 @@ impl Watched {
                 "{name} is held at {point}"
             );
         }
-        let run = bilbo(self.vars.clone(), &["remember"], None);
+        let run = bilbo(self.vars.clone(), &["refresh"], None);
         self.bare.lock().expect("runs").push((point, run));
     }
 }
@@ -864,7 +864,7 @@ impl Index for Watched {
 }
 
 #[test]
-fn a_reindex_holds_the_store_from_the_catalog_to_the_commit_and_a_bare_remember_leaves_at_once() {
+fn a_reindex_holds_the_store_from_the_catalog_to_the_commit_and_a_refresh_leaves_at_once() {
     let sandbox = Sandbox::filled("holds");
     fs::write(
         sandbox.dir.join("config/config.toml"),
@@ -972,7 +972,7 @@ fn a_reindex_serves_the_again_flag_and_indexes_what_that_pass_kept() {
     sandbox.write("notes/new.md", b"# Fresh\n\na note about giraffes\n");
     let flag = sandbox.dir.join("state/bilbo/store.again");
     fs::write(&flag, b"1")
-        .expect("ask for one more run, as a bare run that found the store held does");
+        .expect("ask for one more run, as a refresh that found the store held does");
     let run = sandbox.reindex();
     assert_eq!(
         numbers(&run.stdout)[0],
@@ -1786,7 +1786,7 @@ fn an_update_stopped_at_any_step_leaves_the_scope_of_the_index_it_left() {
             let new = sandbox.run(&["recall", "--in", "orchard", "--", "zebras"]);
             assert_eq!(new.code, 1, "{:?}", new.stderr);
             for line in [
-                "bilbo: the index is behind the store by 1 entry; bilbo remember brings it up to date",
+                "bilbo: the index is behind the store by 1 entry; bilbo refresh brings it up to date",
                 "bilbo: --in kept 1 entry",
                 "bilbo: nothing matched",
             ] {
@@ -1905,7 +1905,7 @@ fn a_cache_whose_catalog_an_older_bilbo_left_is_refused_and_made_again() {
     assert_eq!(
         refused.stderr,
         [format!(
-            "bilbo: the cache folder {} holds no catalog of this store, so its search index cannot be trusted; bilbo remember makes both again",
+            "bilbo: the cache folder {} holds no catalog of this store, so its search index cannot be trusted; bilbo refresh makes both again",
             sandbox.cache().display()
         )]
     );
@@ -1935,8 +1935,8 @@ fn words_on_a_catalog_made_again_are_said_to_be_incomplete() {
         &failing(&adds, Some(1), false),
     );
     assert_eq!(run.code, 1, "{:?}", run.stderr);
-    let unknown = "bilbo: the index cannot be compared with the store's catalog, so each hit was checked against the store; bilbo remember brings both up to date";
-    let worded = "bilbo: --in may name fewer entries than it should: labels are filed when the index is made; bilbo remember brings both up to date";
+    let unknown = "bilbo: the index cannot be compared with the store's catalog, so each hit was checked against the store; bilbo refresh brings both up to date";
+    let worded = "bilbo: --in may name fewer entries than it should: labels are filed when the index is made; bilbo refresh brings both up to date";
     let words = sandbox.run(&["recall", "--in", "notes", "--", "garden"]);
     assert_eq!((words.code, words.stdout.as_str()), (1, ""));
     for line in ["bilbo: --in 'notes' names no entry", unknown, worded] {

@@ -1,5 +1,5 @@
 [Unit]
-Description=Run bilbo remember every 10 min
+Description=Run bilbo refresh every 10 min
 
 [Timer]
 OnActiveSec=10min

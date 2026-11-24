@@ -148,7 +148,11 @@ impl Sandbox {
     }
 
     fn run(&self, args: &[&str]) -> Run {
-        run(self.vars(), args, None)
+        run(self.vars(), &[&["remember"][..], args].concat(), None)
+    }
+
+    fn refresh(&self) -> Run {
+        run(self.vars(), &["refresh"], None)
     }
 
     fn run_noticed(&self, args: &[&str], notices: Option<Sender<String>>) -> Run {
@@ -343,14 +347,14 @@ fn indexed_to(sandbox: &Sandbox) -> u64 {
 }
 
 #[test]
-fn a_bare_remember_keeps_what_a_followed_session_gained_and_indexes_it() {
+fn refresh_keeps_what_a_followed_session_gained_and_indexes_it() {
     let sandbox = Sandbox::new("bare_grown");
-    let first = sandbox.run(&[]);
+    let first = sandbox.refresh();
     assert_eq!(first.code, 0, "{:?}", first.stderr);
     let seq = indexed_to(&sandbox);
     let more = b"{\"type\":\"user\",\"message\":{\"content\":\"one more\"}}\n";
     fs::write(sandbox.main(), [CLAUDE, more].concat()).expect("the session grows");
-    let next = sandbox.run(&[]);
+    let next = sandbox.refresh();
     assert_eq!((next.code, next.stderr.clone()), (0, Vec::<String>::new()));
     assert_eq!(
         next.stdout.lines().next(),
@@ -928,13 +932,13 @@ fn a_subagent_kept_before_its_session_gets_its_id_label_when_a_sweep_finds_it_gr
 }
 
 #[test]
-fn a_bare_run_that_finds_only_a_reader_waits_for_it_and_keeps() {
+fn a_refresh_that_finds_only_a_reader_waits_for_it_and_keeps() {
     let sandbox = Sandbox::new("reader_held");
     assert_eq!(sandbox.run(&[text(&sandbox.rollout())]).code, 0);
     let reader = sandbox.store();
     let (notices_tx, notices) = channel();
     let run = thread::scope(|scope| {
-        let bare = scope.spawn(|| sandbox.run_noticed(&[], Some(notices_tx)));
+        let bare = scope.spawn(|| sandbox.run_noticed(&["refresh"], Some(notices_tx)));
         let notice = notices.recv_timeout(WAIT).expect("the bare run waits");
         assert!(notice.contains("waiting for another bilbo"), "{notice}");
         assert_eq!(
@@ -965,7 +969,7 @@ fn a_follow_that_only_refuses_counts_its_refusals_once_and_exits_1() {
         .as_bytes(),
     );
     fs::set_permissions(locked.join("sub"), fs::Permissions::from_mode(0o000)).expect("lock");
-    let run = sandbox.run(&[]);
+    let run = sandbox.refresh();
     fs::set_permissions(locked.join("sub"), fs::Permissions::from_mode(0o700)).expect("unlock");
     assert_eq!(run.code, 1, "{:?}", run.stderr);
     assert_eq!(
@@ -1135,14 +1139,14 @@ fn follow_finds_a_folder_declared_through_a_link_followed_already() {
 }
 
 #[test]
-fn a_bare_run_over_follows_that_claim_nothing_opens_and_closes_the_store() {
+fn a_refresh_over_follows_that_claim_nothing_opens_and_closes_the_store() {
     let sandbox = Sandbox::new("bare_claims_nothing");
     let notes = sandbox.dir.join("notes");
     write(&notes.join("a.md"), b"a\n");
     assert_eq!(sandbox.run(&[text(&notes)]).code, 0);
     backdate(&sandbox.layout().state, 61);
     write(&sandbox.dir.join("config/config.toml"), b"follow = []\n");
-    let run = sandbox.run(&[]);
+    let run = sandbox.refresh();
     assert_eq!(run.code, 0, "{:?}", run.stderr);
     assert_eq!(
         run.stdout.lines().next(),
@@ -1154,7 +1158,7 @@ fn a_bare_run_over_follows_that_claim_nothing_opens_and_closes_the_store() {
 }
 
 #[test]
-fn a_bare_run_whose_store_fails_still_says_what_it_planned() {
+fn a_refresh_whose_store_fails_still_says_what_it_planned() {
     let sandbox = Sandbox::new("bare_store_fails");
     let dir = text(&sandbox.dir).to_owned();
     write(&sandbox.dir.join("notes/a.md"), b"a\n");
@@ -1167,7 +1171,7 @@ fn a_bare_run_whose_store_fails_still_says_what_it_planned() {
         )
         .as_bytes(),
     );
-    let run = sandbox.run(&[]);
+    let run = sandbox.refresh();
     assert_eq!(run.code, 2, "{:?}", run.stderr);
     assert_eq!(run.stderr.len(), 3, "{:?}", run.stderr);
     assert_eq!(
@@ -1497,7 +1501,7 @@ fn a_followed_rollout_file_stays_followed_when_codex_packs_or_unpacks_it() {
     write(&followed, head(CODEX, 3));
     let run = sandbox.run(&[text(&followed), "--follow"]);
     assert_eq!(run.code, 0, "{:?}", run.stderr);
-    let run = sandbox.run(&[]);
+    let run = sandbox.refresh();
     assert_eq!(
         run.stdout.lines().next(),
         Some(counts(4, 0, 0, 1, 0).as_str()),
@@ -1508,7 +1512,7 @@ fn a_followed_rollout_file_stays_followed_when_codex_packs_or_unpacks_it() {
     name.push(".zst");
     fs::remove_file(&followed).expect("Codex packs it");
     write(Path::new(&name), packed(&head(CODEX, 3)));
-    let run = sandbox.run(&[]);
+    let run = sandbox.refresh();
     assert_eq!(run.code, 0, "{:?}", run.stderr);
     assert_eq!(
         run.stdout.lines().next(),
@@ -1517,7 +1521,7 @@ fn a_followed_rollout_file_stays_followed_when_codex_packs_or_unpacks_it() {
     assert_eq!(run.stderr, Vec::<String>::new());
     fs::remove_file(Path::new(&name)).expect("Codex unpacks it");
     write(&followed, CODEX);
-    let run = sandbox.run(&[]);
+    let run = sandbox.refresh();
     assert_eq!(
         run.stdout.lines().next(),
         Some(counts(0, 1, 0, 4, 0).as_str()),

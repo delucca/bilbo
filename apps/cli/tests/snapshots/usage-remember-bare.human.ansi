@@ -1,0 +1,4 @@
+[31m■[39m  missing <file|folder>; bilbo refresh keeps every follow
+   [2musage: bilbo remember <file|folder> [--kind <kind>] [--tag <tag>]...[22m
+   [2m       [--follow][22m
+   [2msee[22m [36mbilbo remember --help[39m

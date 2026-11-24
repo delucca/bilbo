@@ -135,7 +135,7 @@ pub const LIST_LIMIT: Key<u64> = Key {
         variable: Some("BILBO_SEARCH_LIST_LIMIT"),
         default: Default::Toml(r#""64 MiB""#),
         allowed: "between 1 MiB and 2 GiB",
-        doc: "The largest the index's list of its segments, or of its files, may be for bilbo to read it. An index with a larger list is taken for broken and made again by the next bilbo remember or bilbo reindex.",
+        doc: "The largest the index's list of its segments, or of its files, may be for bilbo to read it. An index with a larger list is taken for broken and made again by the next bilbo refresh or bilbo reindex.",
     },
     parse: |value| {
         size::read(value)

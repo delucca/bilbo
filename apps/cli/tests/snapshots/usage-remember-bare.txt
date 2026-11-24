@@ -1,0 +1,4 @@
+bilbo: missing <file|folder>; bilbo refresh keeps every follow
+bilbo: usage: bilbo remember <file|folder> [--kind <kind>] [--tag <tag>]...
+bilbo:        [--follow]
+bilbo: see 'bilbo remember --help'

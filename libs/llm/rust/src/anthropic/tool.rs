@@ -218,7 +218,7 @@ pub fn without_tools(arguments: &[String]) -> Result<(), String> {
         }
     }
     if !stood.contains(&"--no-session-persistence") {
-        return Err("llm.anthropic.tool.arguments needs \"--no-session-persistence\": without it the tool saves every call as a session, and bilbo remember would keep the records a second time".to_owned());
+        return Err("llm.anthropic.tool.arguments needs \"--no-session-persistence\": without it the tool saves every call as a session, and bilbo refresh would keep the records a second time".to_owned());
     }
     Ok(())
 }
@@ -928,7 +928,7 @@ mod tests {
         );
         assert_eq!(
             edit(&|list| list.retain(|item| item != "--no-session-persistence")),
-            Err("llm.anthropic.tool.arguments needs \"--no-session-persistence\": without it the tool saves every call as a session, and bilbo remember would keep the records a second time".to_owned())
+            Err("llm.anthropic.tool.arguments needs \"--no-session-persistence\": without it the tool saves every call as a session, and bilbo refresh would keep the records a second time".to_owned())
         );
         let hidden = items(&[
             "--model",

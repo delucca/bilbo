@@ -31,8 +31,7 @@ const SUMMARY: &str = "Keep files as entries; a later run keeps what grew or cha
 const ABOUT: &str =
     "bilbo remember: keep files as entries, and what grew or changed in them since.";
 const USAGE: &str = "bilbo remember <file|folder> [--kind <kind>] [--tag <tag>]...
-                 [--follow]
-  bilbo remember";
+                 [--follow]";
 
 #[derive(Debug, clap::Args)]
 #[command(about = SUMMARY, before_help = ABOUT, override_usage = USAGE)]
@@ -58,7 +57,7 @@ pub struct Args {
     #[arg(
         long,
         requires = "target",
-        help = "Save the target in the config file, so a bare run keeps it"
+        help = "Save the target as a follow in the config file"
     )]
     pub follow: bool,
 }
@@ -101,7 +100,11 @@ pub fn run(
     indexing: &Indexing<'_>,
 ) -> Result<Outcome, Failure> {
     let Some(target) = args.target else {
-        return follows::run(env, settings, kinds, indexing);
+        return Err(usage(
+            root,
+            "missing <file|folder>; bilbo refresh keeps every follow".to_owned(),
+            Some("remember"),
+        ));
     };
     let mut named = BTreeSet::new();
     for text in &args.tags {

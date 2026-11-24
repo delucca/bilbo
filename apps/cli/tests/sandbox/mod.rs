@@ -33,7 +33,7 @@ pub fn run(vars: HashMap<String, OsString>, args: &[&str], notices: Option<Sende
             sink.lock().expect("notices").extend(lines);
         }),
     };
-    let argv: Vec<OsString> = ["bilbo", "remember"]
+    let argv: Vec<OsString> = ["bilbo"]
         .into_iter()
         .chain(args.iter().copied())
         .map(OsString::from)

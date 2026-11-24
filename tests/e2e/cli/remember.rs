@@ -51,10 +51,13 @@ fn remembering_a_folder_twice_keeps_everything_once() {
 fn remember_usage_errors_name_the_problem_and_touch_no_store() {
     const USAGE: &str = "bilbo: usage: bilbo remember <file|folder> [--kind <kind>] [--tag <tag>]...\n\
                          bilbo:        [--follow]\n\
-                         bilbo:        bilbo remember\n\
                          bilbo: see 'bilbo remember --help'\n";
     let scratch = Scratch::new("usage");
-    let cases: [(&[&str], &str); 8] = [
+    let cases: [(&[&str], &str); 9] = [
+        (
+            &["remember"],
+            "bilbo: missing <file|folder>; bilbo refresh keeps every follow\n",
+        ),
         (&["remember", "--follow"], "bilbo: missing <file|folder>\n"),
         (
             &["remember", "--kind", "session"],

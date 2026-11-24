@@ -131,16 +131,6 @@ fn a_grown_session_appends_only_its_new_lines() {
 }
 
 #[test]
-fn a_bare_run_with_no_follow_declared_runs_the_two_default_follows() {
-    let scratch = harness("bare_defaults");
-    let run = scratch.run(&["remember"]);
-    assert_eq!((run.code, run.stderr.as_str()), (0, ""));
-    assert_eq!(first(&run), counts(4, 0, 0, 0, 0));
-    let run = scratch.run(&["remember"]);
-    assert_eq!(first(&run), counts(0, 0, 0, 4, 0));
-}
-
-#[test]
 fn refresh_with_no_follow_declared_runs_the_two_default_follows() {
     let scratch = harness("refresh_defaults");
     let run = scratch.run(&["refresh"]);
@@ -151,7 +141,22 @@ fn refresh_with_no_follow_declared_runs_the_two_default_follows() {
 }
 
 #[test]
-fn a_bare_run_with_declared_follows_runs_those_instead() {
+fn refresh_takes_no_argument_and_touches_no_store() {
+    let scratch = harness("refresh_argument");
+    let run = scratch.run(&["refresh", "x"]);
+    assert_eq!(run.code, 2);
+    assert_eq!(run.stdout, "");
+    assert_eq!(
+        run.stderr,
+        "bilbo: unexpected argument 'x'\nbilbo: usage: bilbo refresh\nbilbo: see 'bilbo refresh --help'\n"
+    );
+    for folder in ["store", "state/bilbo", "cache/bilbo"] {
+        assert!(!scratch.dir.join(folder).exists(), "{folder}");
+    }
+}
+
+#[test]
+fn refresh_with_declared_follows_runs_those_instead() {
     let scratch = harness("bare_declared");
     scratch.write("a.md", "a\n");
     let config = format!(
@@ -159,7 +164,7 @@ fn a_bare_run_with_declared_follows_runs_those_instead() {
         scratch.path("notes")
     );
     scratch.config(&config);
-    let run = scratch.run(&["remember"]);
+    let run = scratch.run(&["refresh"]);
     assert_eq!(run.code, 0, "{}", run.stderr);
     assert_eq!(first(&run), counts(1, 0, 0, 0, 0));
     assert_eq!(
@@ -203,7 +208,7 @@ fn follow_saves_the_target_in_the_config_file_after_the_defaults() {
         format!("bilbo: {notes} is followed already\n")
     );
     scratch.write("b.md", "b\n");
-    let bare = scratch.run(&["remember"]);
+    let bare = scratch.run(&["refresh"]);
     assert_eq!(first(&bare), counts(5, 0, 0, 1, 0));
 }
 
@@ -273,9 +278,9 @@ fn seq(lines: &[String]) -> u64 {
 }
 
 #[test]
-fn the_index_follows_a_bare_remember_over_a_session_that_grew() {
+fn the_index_follows_a_refresh_over_a_session_that_grew() {
     let scratch = harness("index_follows");
-    let bare = scratch.run(&["remember"]);
+    let bare = scratch.run(&["refresh"]);
     assert_eq!(bare.code, 0, "{}", bare.stderr);
     let lines = payload(&scratch);
     assert_eq!(lines.last().map(String::as_str), Some("failed -"));
@@ -286,7 +291,7 @@ fn the_index_follows_a_bare_remember_over_a_session_that_grew() {
         .expect("open");
     file.write_all(b"{\"type\":\"user\",\"sessionId\":\"s\"}\n")
         .expect("grow");
-    let bare = scratch.run(&["remember"]);
+    let bare = scratch.run(&["refresh"]);
     assert_eq!(bare.code, 0, "{}", bare.stderr);
     assert_eq!(bare.stderr, "");
     assert_eq!(first(&bare), counts(0, 1, 0, 3, 0));
@@ -303,16 +308,16 @@ fn the_index_follows_a_bare_remember_over_a_session_that_grew() {
 }
 
 #[test]
-fn a_bare_run_that_finds_the_store_held_exits_0_at_once_asks_for_one_more_run_and_the_next_run_takes_it()
+fn a_refresh_that_finds_the_store_held_exits_0_at_once_asks_for_one_more_run_and_the_next_run_takes_it()
  {
     let scratch = harness("held");
-    assert_eq!(scratch.run(&["remember"]).code, 0);
+    assert_eq!(scratch.run(&["refresh"]).code, 0);
     let state = scratch.dir.join("state/bilbo");
     let lock = fs::File::open(state.join("store.lock")).expect("the lock file");
     lock.lock().expect("hold the store");
     let writer = fs::File::open(state.join("store.writer")).expect("the writer's lock file");
     writer.lock().expect("as a writer does");
-    let run = scratch.run(&["remember"]);
+    let run = scratch.run(&["refresh"]);
     assert_eq!((run.code, run.stdout.as_str()), (0, ""));
     assert_eq!(
         run.stderr,
@@ -324,7 +329,7 @@ fn a_bare_run_that_finds_the_store_held_exits_0_at_once_asks_for_one_more_run_an
     );
     writer.unlock().expect("release");
     lock.unlock().expect("release");
-    let run = scratch.run(&["remember"]);
+    let run = scratch.run(&["refresh"]);
     assert_eq!(run.code, 0, "{}", run.stderr);
     assert!(
         run.stderr

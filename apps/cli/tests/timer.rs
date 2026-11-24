@@ -34,12 +34,12 @@ fn value_in<'a>(plist: &'a str, name: &str) -> Vec<&'a str> {
 }
 
 #[test]
-fn the_launchd_job_runs_a_bare_remember_every_10_minutes() {
+fn the_launchd_job_runs_refresh_every_10_minutes() {
     assert_eq!(
         plist_value("Label"),
         ["<string>io.github.delucca.bilbo.remember</string>"]
     );
-    assert_eq!(plist_value("ProgramArguments"), ["@BILBO@", "remember"]);
+    assert_eq!(plist_value("ProgramArguments"), ["@BILBO@", "refresh"]);
     assert_eq!(plist_value("StartInterval"), ["<integer>600</integer>"]);
     assert_eq!(plist_value("RunAtLoad"), ["<false/>"]);
     assert_eq!(plist_value("StandardErrorPath"), ["<string>@LOG@</string>"]);
@@ -79,7 +79,7 @@ fn the_systemd_timer_starts_the_oneshot_service_every_10_minutes() {
     for line in [
         "[Service]",
         "Type=oneshot",
-        "ExecStart=\"@BILBO@\" remember",
+        "ExecStart=\"@BILBO@\" refresh",
         "StandardOutput=append:@LOG@",
         "StandardError=append:@LOG@",
     ] {

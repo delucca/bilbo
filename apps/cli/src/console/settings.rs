@@ -83,7 +83,7 @@ pub const FOLLOW: Key<Vec<Follow>> = Key {
             r#"[{ path = "~/.claude/projects", kind = "session" }, { path = "~/.codex/sessions", kind = "session" }]"#,
         ),
         allowed: "a list of [[follow]] tables, each with a path and an optional kind",
-        doc: "What a bare bilbo remember keeps up with: each folder or file, and the kind that runs there, else the one detected.",
+        doc: "What bilbo refresh keeps up with: each folder or file, and the kind that runs there, else the one detected.",
     },
     parse: follows,
     show: |list| show_follows(list),

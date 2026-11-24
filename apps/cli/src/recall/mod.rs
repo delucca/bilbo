@@ -287,11 +287,11 @@ fn withheld(cache: &Cache) -> Option<String> {
     match cache {
         Cache::Own(_) | Cache::Absent => None,
         Cache::Unlocked => Some(
-            "no bilbo has written this store from this state folder, so nothing protects its search index while it is read; bilbo remember sets it up"
+            "no bilbo has written this store from this state folder, so nothing protects its search index while it is read; bilbo refresh sets it up"
                 .to_owned(),
         ),
         Cache::NoCatalog(path) => Some(format!(
-            "the cache folder {} holds no catalog of this store, so its search index cannot be trusted; bilbo remember makes both again",
+            "the cache folder {} holds no catalog of this store, so its search index cannot be trusted; bilbo refresh makes both again",
             path.display()
         )),
         Cache::OtherStore(path) => Some(format!(
@@ -356,13 +356,13 @@ pub fn outcome(finished: Finished, cache: &Cache) -> Result<Outcome, Failure> {
         Stand::Behind(count) => diagnostics.push(say(
             Mark::Info,
             format!(
-                "the index is behind the store by {}; bilbo remember brings it up to date",
+                "the index is behind the store by {}; bilbo refresh brings it up to date",
                 entries(count)
             ),
         )),
         Stand::Unknown => diagnostics.push(say(
             Mark::Warning,
-            "the index cannot be compared with the store's catalog, so each hit was checked against the store; bilbo remember brings both up to date"
+            "the index cannot be compared with the store's catalog, so each hit was checked against the store; bilbo refresh brings both up to date"
                 .to_owned(),
         )),
         _ => {}
@@ -370,7 +370,7 @@ pub fn outcome(finished: Finished, cache: &Cache) -> Result<Outcome, Failure> {
     if output.stand == Stand::Unknown && output.scope.as_ref().is_some_and(|scope| scope.worded) {
         diagnostics.push(say(
             Mark::Warning,
-            "--in may name fewer entries than it should: labels are filed when the index is made; bilbo remember brings both up to date"
+            "--in may name fewer entries than it should: labels are filed when the index is made; bilbo refresh brings both up to date"
                 .to_owned(),
         ));
     }
@@ -378,7 +378,7 @@ pub fn outcome(finished: Finished, cache: &Cache) -> Result<Outcome, Failure> {
         diagnostics.push(say(
             Mark::Warning,
             format!(
-                "left out {} {} the store no longer gives as indexed; bilbo remember brings the index up to date",
+                "left out {} {} the store no longer gives as indexed; bilbo refresh brings the index up to date",
                 group(output.left_out),
                 if output.left_out == 1 { "hit" } else { "hits" }
             ),
@@ -632,7 +632,7 @@ mod tests {
 
     #[test]
     fn a_scope_by_words_on_an_index_that_cannot_be_compared_says_so() {
-        let line = "bilbo: --in may name fewer entries than it should: labels are filed when the index is made; bilbo remember brings both up to date";
+        let line = "bilbo: --in may name fewer entries than it should: labels are filed when the index is made; bilbo refresh brings both up to date";
         let said = |stand, worded, left_out| {
             let mut scope = scoped(2, 0, &[]);
             scope.worded = worded;
@@ -755,8 +755,8 @@ mod tests {
             stderr,
             [
                 "bilbo: searched 9 entries",
-                "bilbo: the index is behind the store by 4 entries; bilbo remember brings it up to date",
-                "bilbo: left out 3 hits the store no longer gives as indexed; bilbo remember brings the index up to date",
+                "bilbo: the index is behind the store by 4 entries; bilbo refresh brings it up to date",
+                "bilbo: left out 3 hits the store no longer gives as indexed; bilbo refresh brings the index up to date",
                 "bilbo: the query was not logged: disk full",
             ]
         );
@@ -766,7 +766,7 @@ mod tests {
         );
         assert_eq!(
             stderr[1],
-            "bilbo: the index cannot be compared with the store's catalog, so each hit was checked against the store; bilbo remember brings both up to date"
+            "bilbo: the index cannot be compared with the store's catalog, so each hit was checked against the store; bilbo refresh brings both up to date"
         );
         assert_eq!(stderr[2], "bilbo: nothing matched");
     }
@@ -794,11 +794,11 @@ mod tests {
         for (cache, line) in [
             (
                 Cache::Unlocked,
-                "no bilbo has written this store from this state folder, so nothing protects its search index while it is read; bilbo remember sets it up".to_owned(),
+                "no bilbo has written this store from this state folder, so nothing protects its search index while it is read; bilbo refresh sets it up".to_owned(),
             ),
             (
                 Cache::NoCatalog(path.clone()),
-                "the cache folder /c/bilbo holds no catalog of this store, so its search index cannot be trusted; bilbo remember makes both again".to_owned(),
+                "the cache folder /c/bilbo holds no catalog of this store, so its search index cannot be trusted; bilbo refresh makes both again".to_owned(),
             ),
             (
                 Cache::OtherStore(path.clone()),

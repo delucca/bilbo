@@ -81,10 +81,9 @@ The line number is the first line of what the clause names. A file that did not 
 
 ```text
 bilbo remember <file|folder> [--kind <kind>] [--tag <tag>]... [--follow]
-bilbo remember
 ```
 
-Keeps files as entries in the store. An entry is a sequence of records, numbered from 1 per generation. Run it again and it keeps only what is new. With a target, it keeps that file or folder; with none, it keeps every follow.
+Keeps files as entries in the store. An entry is a sequence of records, numbered from 1 per generation. Run it again and it keeps only what is new. It keeps the file or folder it is given; [`bilbo refresh`](#refresh) keeps every follow.
 
 ### Kinds
 
@@ -131,11 +130,9 @@ Before a record is stored, every JSON string value in it of 256 or more base64 o
 
 ### Follows
 
-`--follow` keeps the target now, then saves it and the kind that ran as a `[[follow]]` table at the end of the config file, leaving the rest of the file byte for byte. A target followed already is not saved again. While the file declares no follow, the defaults below apply; a declared follow replaces them, so the first `--follow` writes the defaults first.
+`--follow` keeps the target now, then saves it and the kind that ran as a `[[follow]]` table at the end of the config file, leaving the rest of the file byte for byte. A target followed already is not saved again. While the file declares no follow, the two defaults apply ([`refresh`](#refresh)); a declared follow replaces them, so the first `--follow` writes the defaults first.
 
 A config file that is a symbolic link, or that this user cannot write (read-only, or another account's), as a Nix-managed one is, is not written, nor is one that cannot be replaced: the run exits 2, prints the lines to add and leaves the file as it was. A file that declares `follow` as an inline array (`follow = [...]`) is not written either: the run exits 2 and prints the inline table to add to that array. When the file is saved but its folder cannot be synced, the run says so in a warning; the follow is saved. Two `--follow` runs at once take turns on `config.toml.lock` beside the file, and each reads the file again before it appends, so both follows are saved. See [Configuration](configuration.md#keys).
-
-`bilbo remember` with no target keeps every follow in order, into one store. With no `[[follow]]` in the config file it follows `~/.claude/projects` and `~/.codex/sessions`, both as `session`. A follow whose folder or file is missing is skipped with one line on stderr, and one that claims nothing says so; neither is an error. A file or folder a follow cannot read is refused and counts in the totals, as under a target.
 
 ### Tags
 
@@ -155,15 +152,46 @@ An index kept current by `remember` holds the same documents as one `reindex` bu
 
 ### Sealing
 
-New records go to `open.seg` in the state folder. A run seals `open.seg` into a segment of the store when it ends, if `open.seg` holds frames and has reached `store.seal_at` or its oldest frame is `store.seal_after` old (60 minutes by default); during a run, `store.seal_at` alone seals. The first run that writes a store whose `open.seg` an earlier bilbo wrote (segment format 1) seals that `open.seg` at once if it holds frames, whatever its size or age, and writes format 2 from then on. `open.since` in the state folder records when `open.seg` got its oldest frame. A bare run opens the store and seals what is due even when no follow claims a file, so the timer's pass seals by age and rebuilds a lost catalog; a run whose target claims nothing does not open the store. See [Configuration](configuration.md#keys).
+New records go to `open.seg` in the state folder. A run seals `open.seg` into a segment of the store when it ends, if `open.seg` holds frames and has reached `store.seal_at` or its oldest frame is `store.seal_after` old (60 minutes by default); during a run, `store.seal_at` alone seals. The first run that writes a store whose `open.seg` an earlier bilbo wrote (segment format 1) seals that `open.seg` at once if it holds frames, whatever its size or age, and writes format 2 from then on. `open.since` in the state folder records when `open.seg` got its oldest frame. `bilbo refresh` opens the store and seals what is due even when no follow claims a file, so the timer's pass seals by age and rebuilds a lost catalog; a `remember` whose target claims nothing does not open the store. See [Configuration](configuration.md#keys).
 
 ### Two runs at once
 
-One bilbo writes the store at a time: the writer holds `store.lock` and `store.writer` in the state folder, and a reader holds `store.lock` shared. A run with no target that finds another bilbo writing sets the again flag (`store.again`), prints `another bilbo is writing the store; requested another pass over the follows` and exits 0 at once; one that finds only readers waits for them, since a reader never runs the follows again. A `remember` or a `reindex` that reaches the end of its work takes the request: before it releases the store, it runs every follow once more for each request it finds, and brings the index up to what each pass kept. A run with a target waits for the store instead, and says so on stderr, since a rerun of the follows would not keep its target.
+One bilbo writes the store at a time: the writer holds `store.lock` and `store.writer` in the state folder, and a reader holds `store.lock` shared. A `bilbo refresh` that finds another bilbo writing sets the again flag (`store.again`), prints `another bilbo is writing the store; requested another pass over the follows` and exits 0 at once; one that finds only readers waits for them, since a reader never runs the follows again. A bilbo that writes the store takes the request when it reaches the end of its work: before it releases the store, it runs every follow once more for each request it finds, and brings the index up to what each pass kept. A `remember` waits for the store instead, and says so on stderr, since a pass over the follows would not keep what it was given.
+
+### Output
+
+Standard output, two lines:
+
+```text
+new <n>, appended <n>, new generation <n>, unchanged <n>, refused <n>
+records <n>, raw bytes <n>, stored bytes <n>
+```
+
+Raw bytes are the input bytes kept; stored bytes are what the store grew by. On a terminal the same counts come as a marked message. A run that also ran the follows again for another bilbo says what that pass kept in one line on stderr. The index adds lines on stderr only when it rebuilds, leaves an entry out or fails; stdout does not change.
+
+A second `remember` with a target waits for the first one to finish writing the store, and says so on stderr.
+
+### Exit codes
+
+| Code | Meaning |
+|---|---|
+| 0 | success |
+| 1 | a file was refused, nothing was claimed under the target, a pass run again for another bilbo refused a file or could not run a follow, the search index could not be updated or an entry could not be indexed, or the target or the store could not be read |
+| 2 | usage or config error, a store root that holds bilbo 0.20's `notes/` or `library/`, a state or cache folder inside the root, or a config file `--follow` cannot write |
+
+## refresh
+
+```text
+bilbo refresh
+```
+
+Keeps every follow, in order, into one store: what each followed folder or file gained or changed since the last run, as [`bilbo remember`](#remember) keeps a target. With no `[[follow]]` in the config file it follows `~/.claude/projects` and `~/.codex/sessions`, both as `session`. A follow whose folder or file is missing is skipped with one line on stderr, and one that claims nothing says so; neither is an error. A file or folder a follow cannot read is refused and counts in the totals, as under a target. `bilbo remember <target> --follow` declares a follow ([Follows](#follows)).
+
+It opens the store even when no follow claims a file, so it seals by age and rebuilds a lost catalog ([Sealing](#sealing)), and it brings the search index up to date as `remember` does ([The index](#the-index)). When another bilbo is writing the store it does not wait: it asks that bilbo for one more pass over the follows and exits 0 ([Two runs at once](#two-runs-at-once)).
 
 ### The timer
 
-A timer runs `bilbo remember` with no target every 10 minutes. Nothing installs it yet: its files are in [`docs/reference/timer/`](timer/), with `@BILBO@` for the absolute path of `bilbo` and `@LOG@` for the log file. Until the migration, set `paths.root`, `paths.state` and `paths.cache` in the config file, since the timer sets no variable and the default folders are bilbo 0.20's (see [Configuration](configuration.md#folders)). Run these from a checkout of the bilbo repository: the unit files are in it, not in an installed bilbo.
+A timer runs `bilbo refresh` every 10 minutes. Nothing installs it yet: its files are in [`docs/reference/timer/`](timer/), with `@BILBO@` for the absolute path of `bilbo` and `@LOG@` for the log file. Until the migration, set `paths.root`, `paths.state` and `paths.cache` in the config file, since the timer sets no variable and the default folders are bilbo 0.20's (see [Configuration](configuration.md#folders)). Run these from a checkout of the bilbo repository: the unit files are in it, not in an installed bilbo.
 
 On macOS, with launchd:
 
@@ -186,38 +214,7 @@ systemctl --user daemon-reload
 systemctl --user enable --now bilbo-remember.timer
 ```
 
-The timer is what keeps a session as it grows: a turn is kept and indexed by the next run after it is written, at most 10 minutes later while runs are short. The 10 minutes are the interval between the timer's starts, not a bound: a run that rebuilds the index takes minutes, and a failing or suspended run takes longer. Without a timer, nothing is kept until `bilbo remember` is run by hand.
-
-### Output
-
-Standard output, two lines:
-
-```text
-new <n>, appended <n>, new generation <n>, unchanged <n>, refused <n>
-records <n>, raw bytes <n>, stored bytes <n>
-```
-
-Raw bytes are the input bytes kept; stored bytes are what the store grew by. A run with no target adds up every follow. On a terminal the same counts come as a marked message. A run that also ran the follows again for another bilbo says what that pass kept in one line on stderr. The index adds lines on stderr only when it rebuilds, leaves an entry out or fails; stdout does not change. A bare run that finds another bilbo writing the store prints nothing on stdout; its planning lines, if any, come before the busy line on stderr.
-
-A second `remember` with a target waits for the first one to finish writing the store, and says so on stderr.
-
-### Exit codes
-
-| Code | Meaning |
-|---|---|
-| 0 | success, also when another bilbo holds the store and a run with no target asked it to run again |
-| 1 | a file was refused, nothing was claimed under a target, a follow cannot run (also in a pass run again for another bilbo), the search index could not be updated or an entry could not be indexed, or the target or the store could not be read |
-| 2 | usage or config error, a store root that holds bilbo 0.20's `notes/` or `library/`, a state or cache folder inside the root, or a config file `--follow` cannot write |
-
-## refresh
-
-```text
-bilbo refresh
-```
-
-Keeps every follow, in order, into one store: what each followed folder or file gained or changed since the last run, as [`bilbo remember`](#remember) keeps a target. With no `[[follow]]` in the config file it follows `~/.claude/projects` and `~/.codex/sessions`, both as `session`. A follow whose folder or file is missing is skipped with one line on stderr, and one that claims nothing says so; neither is an error. A file or folder a follow cannot read is refused and counts in the totals, as under a target. `bilbo remember <target> --follow` declares a follow ([Follows](#follows)).
-
-It opens the store even when no follow claims a file, so it seals by age and rebuilds a lost catalog ([Sealing](#sealing)), and it brings the search index up to date as `remember` does ([The index](#the-index)). When another bilbo is writing the store it does not wait: it asks that bilbo for one more pass over the follows and exits 0 ([Two runs at once](#two-runs-at-once)).
+The timer is what keeps a session as it grows: a turn is kept and indexed by the next run after it is written, at most 10 minutes later while runs are short. The 10 minutes are the interval between the timer's starts, not a bound: a run that rebuilds the index takes minutes, and a failing or suspended run takes longer. Without a timer, what the follows gained is kept only when `bilbo refresh` is run by hand, or `bilbo remember <target>` for one file or folder.
 
 ### Output
 
@@ -238,7 +235,7 @@ bilbo recall <query>... [--in <label>]... [--kind <kind>]...
                [--budget <tokens>]
 ```
 
-Searches everything `bilbo remember` kept, or the entries `--in` names, and prints the chunks and the notes that match best, each with its text, read back from the store. It only reads: the one file it writes is the query log ([The query log](#the-query-log)).
+Searches everything bilbo keeps, or the entries `--in` names, and prints the chunks and the notes that match best, each with its text, read back from the store. It only reads: the one file it writes is the query log ([The query log](#the-query-log)).
 
 ### The query
 
@@ -323,7 +320,7 @@ A value that starts with a dash is read by the command line as an option: give i
 
 stderr says what the scope kept and what it cost: `--in kept 1,203 entries and left out 31 of the best 400: markdown 7, session 24` counts the entries kept, then how many of the 400 best matches without the scope fall outside it, by kind.
 
-Labels are filed when the index is made, by `bilbo remember` and `bilbo reindex`. An index that cannot be compared with the store's catalog (the catalog was made again) holds no label until the next run, so a value read as words can name fewer entries than it should: stderr says so, after the line about the index, and ids still work. An index behind the store knows the labels of what it indexed. Ids and tags are the store's own and work at once.
+Labels are filed when the index is made, by `bilbo remember`, `bilbo refresh` and `bilbo reindex`. An index that cannot be compared with the store's catalog (the catalog was made again) holds no label until the next run, so a value read as words can name fewer entries than it should: stderr says so, after the line about the index, and ids still work. An index behind the store knows the labels of what it indexed. Ids and tags are the store's own and work at once.
 
 ### What is searched
 
@@ -331,7 +328,7 @@ The index is searched as of its last commit. stderr says how many entries it hol
 
 ### When the index is behind
 
-Three lines on stderr say what stands between the index and the store. An index behind the store says by how many entries (`bilbo remember` brings it up to date); an index that cannot be compared with the store's catalog says each hit was checked against the store; hits the store no longer gives as indexed (a Markdown file that grew in place, an entry rewritten or gone) are left out and counted. A hit is shown only when the store still gives the text the index ranked: its chunk is recomputed from the entry's records and compared with a digest the index holds. A session that only grew still gives its indexed chunks. The first search after an upgrade that adds a kind says the index was made by another bilbo, prints no hit and exits 1, until `bilbo remember` makes the index again.
+Three lines on stderr say what stands between the index and the store. An index behind the store says by how many entries (`bilbo refresh` brings it up to date); an index that cannot be compared with the store's catalog says each hit was checked against the store; hits the store no longer gives as indexed (a Markdown file that grew in place, an entry rewritten or gone) are left out and counted. A hit is shown only when the store still gives the text the index ranked: its chunk is recomputed from the entry's records and compared with a digest the index holds. A session that only grew still gives its indexed chunks. The first search after an upgrade that adds a kind says the index was made by another bilbo, prints no hit and exits 1, until `bilbo refresh` makes the index again.
 
 ### The query log
 
@@ -360,7 +357,7 @@ bilbo read <ref> [--budget <tokens>]
 bilbo read <ref> --outline [--budget <tokens>]
 ```
 
-Prints an entry that `bilbo remember` kept: its metadata and its outline, or its records a page at a time. Each page ends with the command that prints the next one, so a reader that follows those lines sees every record once.
+Prints an entry bilbo keeps: its metadata and its outline, or its records a page at a time. Each page ends with the command that prints the next one, so a reader that follows those lines sees every record once.
 
 ### The ref
 
@@ -455,7 +452,7 @@ The cut falls between two characters. The budget of the `cut:` command is what t
 
 `read` only reads: it creates and changes nothing in the store, the state or the cache folder. It holds the store's lock in shared mode for as long as it takes to fetch the entry's records, and lets it go before it renders or prints. While a `bilbo remember` holds the store, `read` waits up to `store.wait` (10 seconds by default), says so on stderr once, and then gives up with exit 1: `another bilbo is writing the store`. Run it again.
 
-`read` uses the catalog in the cache folder when it holds every frame of the store. When the catalog is missing or behind (the cache folder was deleted, say), `read` walks every segment instead, under the lock, which takes as long as the store is large: reads are slow until the next `bilbo remember` rebuilds the catalog. A `bilbo remember` that finds a reader on the store waits for it.
+`read` uses the catalog in the cache folder when it holds every frame of the store. When the catalog is missing or behind (the cache folder was deleted, say), `read` walks every segment instead, under the lock, which takes as long as the store is large: reads are slow until the next `bilbo refresh` rebuilds the catalog. A `bilbo remember` or a `bilbo refresh` that finds a reader on the store waits for it.
 
 ### Exit codes
 
@@ -499,7 +496,7 @@ A `<ref>` is what `read` takes for an entry, with no `#` part: a tag is on an en
 
 `--add` makes a tag yours, whoever declared it. `--remove` takes a tag off an entry and keeps its name with the entry: `bilbo derive` never declares a name you removed from an entry, until you declare it there again, with `--add` or with `bilbo remember --tag`. Removing a tag the entry does not carry changes nothing. `bilbo read` shows both, the tags and the removed names.
 
-Standard output, one line: `changed <n>, unchanged <n>`. An entry is changed when anything of its tags was written, so an `--add` that makes a model's tag yours counts. A tag no entry carried before the run is said on stderr, `tag:<name> is new`: a typo makes a tag. Changing tags writes the store, so it waits for another bilbo that writes it, as `remember` with a target does, and it closes as `remember` does: it serves a request another bilbo left for one more pass over the follows ([Two runs at once](#two-runs-at-once)), with `remember`'s lines on stderr, and seals when a seal is due. The change itself makes no index again: `recall --in tag:<name>` sees it at once.
+Standard output, one line: `changed <n>, unchanged <n>`. An entry is changed when anything of its tags was written, so an `--add` that makes a model's tag yours counts. A tag no entry carried before the run is said on stderr, `tag:<name> is new`: a typo makes a tag. Changing tags writes the store, so it waits for another bilbo that writes it, as `remember` does, and it closes as `remember` does: it serves a request another bilbo left for one more pass over the follows ([Two runs at once](#two-runs-at-once)), with `remember`'s lines on stderr, and seals when a seal is due. The change itself makes no index again: `recall --in tag:<name>` sees it at once.
 
 `derive.in` and `derive.not_in` are read when a `derive` run plans. A tag you add or remove while a run is under way counts from the next run: to keep an entry from a provider, tag it before the run that would send it.
 
@@ -524,7 +521,7 @@ Makes the catalog and the search index again from the store. Both live in the ca
 ### What it makes
 
 - **The catalog**, `catalog.sqlite`: rebuilt from every segment and `open.seg`, as a `bilbo remember` rebuilds a missing one.
-- **The label tables**, in `catalog.sqlite`: the text labels of every entry the run read and indexed (for a session, the folders its records name), and their words, which `recall --in` matches. Only an index run files them: a catalog made again holds none until the next `remember` or `reindex`, and nothing takes a row from an entry the committed index still holds. The capture label and the id label are in the store's own meta and survive any rebuild.
+- **The label tables**, in `catalog.sqlite`: the text labels of every entry the run read and indexed (for a session, the folders its records name), and their words, which `recall --in` matches. Only an index run files them: a catalog made again holds none until the next `remember`, `refresh` or `reindex`, and nothing takes a row from an entry the committed index still holds. The capture label and the id label are in the store's own meta and survive any rebuild.
 - **The index**, the folder `index/`: one document for each chunk of each entry's newest generation. A chunk is consecutive records packed up to `search.chunk_tokens` tokens of the Qwen3-Embedding tokenizer; a record longer than that is cut into chunks that share `search.chunk_overlap` tokens. A record that renders to more than 1 MiB is cut at line ends before it is counted. The index holds each chunk's words (lowercased, without 33 English stopwords, stemmed) and where each stands in the chunk, and where its records are in the store (entry, generation, record range, date, kind), its length and the digest of its text, never its text. A word of more than 4,096 bytes is not indexed.
 
 An entry whose kind no reader reads is left out and counted as unread. Older generations of an entry are not indexed; `bilbo read` still prints them.
@@ -533,15 +530,15 @@ An entry whose kind no reader reads is left out and counted as unread. Older gen
 
 ### What it keeps
 
-The catalog remembers the size and time of each file `remember` kept, so a later run skips a file that has neither changed. `reindex` carries those over from the old catalog. When the old catalog is missing, unreadable or another store's, they are lost, and the first `bilbo remember` after it reads every followed file once more to find that nothing changed.
+The catalog remembers the size and time of each file `remember` kept, so a later run skips a file that has neither changed. `reindex` carries those over from the old catalog. When the old catalog is missing, unreadable or another store's, they are lost, and the first `bilbo refresh` after it reads every followed file once more to find that nothing changed.
 
 ### While another bilbo runs
 
-`reindex` holds the store's lock from start to end, as a `bilbo remember` does, and waits for one that is writing, saying so on stderr. A `bilbo remember` with a target waits for `reindex`. One with no target that finds `reindex` running exits 0 and asks for one more run, as it asks any writer ([Two runs at once](#two-runs-at-once)). `reindex` closes as `remember` does: once it has committed the index it serves that request by running the follows, grows the index from the cursor it committed after each pass, and seals when a seal is due. Its lines for a pass are `remember`'s, on stderr; stdout counts only its own rebuild; the exit code is 1 also when a pass failed or refused a file. A `reindex` whose own rebuild fails releases the store as it is: it runs no close loop, does not seal and leaves another bilbo's request for the next writer. Only a failure inside its close loop follows `remember`'s rule that the run tries the index no more.
+`reindex` holds the store's lock from start to end, as a `bilbo remember` does, and waits for one that is writing, saying so on stderr. A `bilbo remember` waits for `reindex`. A `bilbo refresh` that finds `reindex` running exits 0 and asks for one more pass, as it asks any writer ([Two runs at once](#two-runs-at-once)). `reindex` closes as `remember` does: once it has committed the index it serves that request by running the follows, grows the index from the cursor it committed after each pass, and seals when a seal is due. Its lines for a pass are `remember`'s, on stderr; stdout counts only its own rebuild; the exit code is 1 also when a pass failed or refused a file. A `reindex` whose own rebuild fails releases the store as it is: it runs no close loop, does not seal and leaves another bilbo's request for the next writer. Only a failure inside its close loop follows `remember`'s rule that the run tries the index no more.
 
 ### When it is needed
 
-`remember` keeps the index current, so `reindex` is for an index in doubt, and after a store is restored from a copy, always: bilbo cannot tell an older or branched history that kept its catalog id from a current one. An index kept by `remember` ranks as a rebuilt one, scores included. An index of an older format is made again by the next `remember` or `reindex`: this bilbo folds accents, keeps where each word stands and labels a session with the folders it was given, so the first one after an upgrade makes the catalog, the labels and the index again, once. A failed entry is tried again by the next two runs of `remember`, then waits for a change or a `reindex`.
+`remember` and `refresh` keep the index current, so `reindex` is for an index in doubt, and after a store is restored from a copy, always: bilbo cannot tell an older or branched history that kept its catalog id from a current one. An index kept that way ranks as a rebuilt one, scores included. An index of an older format is made again by the next `remember`, `refresh` or `reindex`: this bilbo folds accents, keeps where each word stands and labels a session with the folders it was given, so the first one after an upgrade makes the catalog, the labels and the index again, once. A failed entry is tried again by the next two runs of `remember` or `refresh`, then waits for a change or a `reindex`.
 
 ### Output
 
@@ -619,7 +616,7 @@ bilbo refuses a field of `extra` that it writes itself, that offers the model a 
 
 With the second the model that answered can differ from the one named; the log has both. `derive.answer_tokens` counts the model's thinking, and a low value is spent on thinking first: an answer cut there holds no note.
 
-By `tool`, `anthropic` is the tool claude, with its own login and no key: `[llm.anthropic.tool]` holds `program`, `effort`, `arguments`, `inherit`, `environment` and `project_files`. bilbo runs the tool with no tool the model can call, and does not start it otherwise: `llm.anthropic.tool.arguments` is read as flags bilbo knows, each with its values: `-p`, `--model`, `--effort`, `--output-format`, `--tools`, `--disable-slash-commands`, `--strict-mcp-config`, `--setting-sources`, `--settings`, `--no-session-persistence`, `--safe-mode`, `--system-prompt`, `--append-system-prompt`, `--fallback-model` and `--max-budget-usd`. Any other item is refused, and so is a flag written with `=`. The list must hold `--tools` followed by `""`, `--strict-mcp-config` and `--safe-mode`, and `{instruction}` only as the value of `--system-prompt` or `--append-system-prompt`. A flag of a later version of the tool waits for bilbo to know it. Two things no argument rules: what `llm.anthropic.tool.environment` or a settings value makes the tool do, and the hooks of the machine's managed settings, which the tool runs with the prompt whatever its arguments are. A reply that shows a tool was reached is a failed call: more than one turn, a denied permission, or a count above 0 of a server tool or of a subagent. A reply without one of the fields bilbo reads for that is a failed call too, and charges nothing: bilbo reads the reply as claude 2.1.327 prints it, and the run names the field. The list must also hold `--no-session-persistence`: without it the tool would save every call as a session under `~/.claude/projects`, which `bilbo remember` follows by default.
+By `tool`, `anthropic` is the tool claude, with its own login and no key: `[llm.anthropic.tool]` holds `program`, `effort`, `arguments`, `inherit`, `environment` and `project_files`. bilbo runs the tool with no tool the model can call, and does not start it otherwise: `llm.anthropic.tool.arguments` is read as flags bilbo knows, each with its values: `-p`, `--model`, `--effort`, `--output-format`, `--tools`, `--disable-slash-commands`, `--strict-mcp-config`, `--setting-sources`, `--settings`, `--no-session-persistence`, `--safe-mode`, `--system-prompt`, `--append-system-prompt`, `--fallback-model` and `--max-budget-usd`. Any other item is refused, and so is a flag written with `=`. The list must hold `--tools` followed by `""`, `--strict-mcp-config` and `--safe-mode`, and `{instruction}` only as the value of `--system-prompt` or `--append-system-prompt`. A flag of a later version of the tool waits for bilbo to know it. Two things no argument rules: what `llm.anthropic.tool.environment` or a settings value makes the tool do, and the hooks of the machine's managed settings, which the tool runs with the prompt whatever its arguments are. A reply that shows a tool was reached is a failed call: more than one turn, a denied permission, or a count above 0 of a server tool or of a subagent. A reply without one of the fields bilbo reads for that is a failed call too, and charges nothing: bilbo reads the reply as claude 2.1.327 prints it, and the run names the field. The list must also hold `--no-session-persistence`: without it the tool would save every call as a session under `~/.claude/projects`, which `bilbo refresh` follows by default.
 
 The tool runs in an empty folder of bilbo's state folder, `<state>/derive/work`, with only the variables `llm.anthropic.tool.inherit` names: its own login is found through `HOME`, and nothing of the caller's session reaches it. bilbo does not start it when a folder above that one holds a file the tool reads as a project's (`llm.anthropic.tool.project_files`): set `paths.state` outside any project. `DISABLE_PROMPT_CACHING` is set because the tool would otherwise pay to cache a prompt it never sends twice. bilbo stops the tool at `llm.timeout`, with what it started in its process group; a process that starts a session of its own is not stopped. A tool may make more than one request of its own for one call; with no tool on offer it makes one. A timer's run has no shell environment: give `llm.anthropic.tool.program` its full path.
 
@@ -751,7 +748,7 @@ systemctl --user enable --now bilbo-derive.timer
 
 ### Files
 
-`<state>/derive/` holds six paths: `lock` (the run's lock, held to its end), `spool/` (a block for each call, kept until the notes are in the store), `failed` (the windows charged, one line each, and one line that marks the entry the next run begins after), `log` (one line for each attempt, mode 600) and `work/` (where the tool runs). The log holds no text of a record. bilbo refuses the lock, a block and the file of charges when it is a link, has a second name, is no regular file or is not yours alone; the folders are not checked. A line of `failed` goes when its window is answered or passed over, and when its entry's windows have moved on. If a run dies between keeping its notes and bringing the index up to date, the notes are in the store and the next `bilbo remember` indexes them; until then `bilbo derive` says the index is behind and sends nothing. It also holds `tagged`: what each entry was answered about tags, the asking that was passed over, and the charges of the asking that is failing. The log has a second line form, `t1`, for a call for tags.
+`<state>/derive/` holds six paths: `lock` (the run's lock, held to its end), `spool/` (a block for each call, kept until the notes are in the store), `failed` (the windows charged, one line each, and one line that marks the entry the next run begins after), `log` (one line for each attempt, mode 600) and `work/` (where the tool runs). The log holds no text of a record. bilbo refuses the lock, a block and the file of charges when it is a link, has a second name, is no regular file or is not yours alone; the folders are not checked. A line of `failed` goes when its window is answered or passed over, and when its entry's windows have moved on. If a run dies between keeping its notes and bringing the index up to date, the notes are in the store and the next `bilbo refresh` indexes them; until then `bilbo derive` says the index is behind and sends nothing. It also holds `tagged`: what each entry was answered about tags, the asking that was passed over, and the charges of the asking that is failing. The log has a second line form, `t1`, for a call for tags.
 
 ### Output
 

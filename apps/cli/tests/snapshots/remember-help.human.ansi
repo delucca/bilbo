@@ -3,12 +3,11 @@ bilbo remember: keep files as entries, and what grew or changed in them since.
 [1mUsage:[22m
   [36mbilbo remember [39m[2m<file|folder>[22m[36m [--kind [39m[2m<kind>[22m[36m] [--tag [39m[2m<tag>[22m[36m]...[39m
                  [--follow]
-  [36mbilbo remember[39m
 
 [1mOptions:[22m
       [1m--kind [22m[2m<kind>[22m  Run this kind, not the one that claims the files
       [1m--tag [22m[2m<tag>[22m    Declare this tag for every entry the run keeps
-      [1m--follow[22m       Save the target in the config file, so a bare run keeps it
+      [1m--follow[22m       Save the target as a follow in the config file
 
 [1mKinds:[22m
   [1mmarkdown[22m  .md files, one record per line

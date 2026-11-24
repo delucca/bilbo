@@ -1009,9 +1009,9 @@ fn joined(lines: &[String]) -> String {
 
 fn untrusted(why: Untrusted) -> String {
     match why {
-        Untrusted::Behind => "the index is behind the store, so labels may be missing; bilbo remember brings it up to date",
-        Untrusted::NoIndex => "there is no search index, so labels cannot be read; bilbo remember makes one",
-        Untrusted::OtherBilbo => "the search index was made by another bilbo, so labels cannot be read; bilbo remember makes it again",
+        Untrusted::Behind => "the index is behind the store, so labels may be missing; bilbo refresh brings it up to date",
+        Untrusted::NoIndex => "there is no search index, so labels cannot be read; bilbo refresh makes one",
+        Untrusted::OtherBilbo => "the search index was made by another bilbo, so labels cannot be read; bilbo refresh makes it again",
     }
     .to_owned()
 }
@@ -1019,7 +1019,7 @@ fn untrusted(why: Untrusted) -> String {
 fn not_sent(text: &str, state: State, kind: &str) -> Option<String> {
     match state {
         State::LabelsNotCurrent => Some(format!(
-            "{text} has labels that are not current; bilbo remember brings the index up to date"
+            "{text} has labels that are not current; bilbo refresh brings the index up to date"
         )),
         State::NoInstruction => Some(format!(
             "{text} is of the kind {kind}, which has no instruction"

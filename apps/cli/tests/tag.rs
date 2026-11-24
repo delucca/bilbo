@@ -476,7 +476,7 @@ fn outcome_of(
 }
 
 #[test]
-fn tag_serves_a_bare_remember_that_found_it_holding_the_store() {
+fn tag_serves_a_refresh_that_found_it_holding_the_store() {
     let sandbox = Sandbox::with_notes("tag_serves", &[("a.md", ID_A)]);
     let followed = sandbox.dir.join("follow");
     fs::create_dir_all(&followed).expect("a folder");
@@ -511,7 +511,7 @@ fn tag_serves_a_bare_remember_that_found_it_holding_the_store() {
                 let vars = vars.clone();
                 *bare.borrow_mut() = Some(runner::bilbo_with(
                     Rc::new(move |name| vars.get(name).cloned()),
-                    &["remember"],
+                    &["refresh"],
                     &tune,
                 ));
             }

@@ -440,7 +440,7 @@ fn adopting_a_subagent_keeps_its_capture_label() {
 }
 
 #[test]
-fn a_bare_run_keeps_each_follow_in_order_and_skips_a_missing_folder() {
+fn a_pass_keeps_each_follow_in_order_and_skips_a_missing_folder() {
     let files = Memory::new()
         .file("/b/one.fake", "x|")
         .file("/a/two.fake", "y|z|");

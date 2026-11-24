@@ -1028,6 +1028,37 @@ mod tests {
     }
 
     #[test]
+    fn a_bare_remember_is_a_usage_error_that_names_refresh() {
+        let failure = run(
+            &args(&["bilbo", "remember"]),
+            &mut Env::quiet(),
+            Ok(defaults()),
+        )
+        .expect_err("a usage error");
+        let Failure::Usage {
+            reason,
+            usage,
+            page,
+        } = &failure
+        else {
+            panic!("{failure:?}");
+        };
+        assert_eq!(
+            reason,
+            "missing <file|folder>; bilbo refresh keeps every follow"
+        );
+        assert_eq!(
+            usage,
+            &[
+                "usage: bilbo remember <file|folder> [--kind <kind>] [--tag <tag>]...",
+                "       [--follow]"
+            ]
+        );
+        assert_eq!(page, "bilbo remember --help");
+        assert_eq!(failure.exit_code(), 2);
+    }
+
+    #[test]
     fn a_newline_in_a_help_topic_cannot_cut_the_reason() {
         let reason =
             |list: &[&str]| match run_command(&bilbo(), &args(list), &mut Env::quiet(), unread()) {

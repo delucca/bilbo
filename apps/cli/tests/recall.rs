@@ -621,7 +621,7 @@ fn a_session_that_grew_and_was_not_indexed_still_recalls_its_old_chunks_and_says
     assert_eq!(run.stdout, current.stdout, "the same chunks as before");
     assert!(
         run.stderr.contains(
-            &"bilbo: the index is behind the store by 1 entry; bilbo remember brings it up to date"
+            &"bilbo: the index is behind the store by 1 entry; bilbo refresh brings it up to date"
                 .to_owned()
         ),
         "{:?}",
@@ -1033,7 +1033,7 @@ fn a_store_with_no_lock_file_is_not_searched_and_no_lock_is_made() {
     assert_eq!(
         run.stderr,
         [
-            "bilbo: no bilbo has written this store from this state folder, so nothing protects its search index while it is read; bilbo remember sets it up"
+            "bilbo: no bilbo has written this store from this state folder, so nothing protects its search index while it is read; bilbo refresh sets it up"
         ]
     );
     assert!(!lock.exists(), "recall made a lock file");

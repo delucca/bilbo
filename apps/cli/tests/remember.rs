@@ -75,7 +75,7 @@ impl Sandbox {
     }
 
     fn remember(&self, args: &[&str]) -> Run {
-        run(self.vars(), args, None)
+        run(self.vars(), &[&["remember"][..], args].concat(), None)
     }
 
     fn remember_notes(&self) -> Run {
@@ -434,7 +434,7 @@ fn a_second_run_waits_on_the_lock_and_says_so() {
     let (sender, receiver) = mpsc::channel();
     let vars = sandbox.vars();
     let notes = sandbox.notes();
-    let runner = thread::spawn(move || run(vars, &[text(&notes)], Some(sender)));
+    let runner = thread::spawn(move || run(vars, &["remember", text(&notes)], Some(sender)));
 
     let notice = receiver.recv_timeout(WAIT).expect("a waiting notice");
     assert_eq!(
@@ -596,7 +596,7 @@ fn a_config_error_with_a_file_to_keep_exits_2() {
     let mut vars = sandbox.vars();
     vars.insert("BILBO_HOME".to_owned(), "relative".into());
     let notes = sandbox.notes();
-    let run = run(vars, &[text(&notes)], None);
+    let run = run(vars, &["remember", text(&notes)], None);
     assert_eq!(run.code, 2);
     assert_eq!(run.stdout, "");
     assert_eq!(
@@ -617,7 +617,7 @@ fn a_store_that_cannot_open_exits_1_with_the_stores_message() {
         blocker.join("store").into_os_string(),
     );
     let notes = sandbox.notes();
-    let run = run(vars, &[text(&notes)], None);
+    let run = run(vars, &["remember", text(&notes)], None);
     assert_eq!(run.code, 1);
     assert_eq!(run.stdout, "");
     assert_eq!(run.stderr.len(), 1, "{:?}", run.stderr);
@@ -733,7 +733,7 @@ fn a_store_path_that_holds_a_newline_stays_one_line() {
         blocker.join("st\nbilbo: forged").into_os_string(),
     );
     let notes = sandbox.notes();
-    let run = run(vars, &[text(&notes)], None);
+    let run = run(vars, &["remember", text(&notes)], None);
     assert_eq!(run.code, 1);
     assert_eq!(run.stderr.len(), 1, "{:?}", run.stderr);
     assert!(
@@ -753,7 +753,7 @@ fn a_notice_naming_a_path_with_a_newline_stays_one_line() {
         sandbox.dir.join("st\nbilbo: forged").into_os_string(),
     );
     let notes = sandbox.notes();
-    assert_eq!(run(vars.clone(), &[text(&notes)], None).code, 0);
+    assert_eq!(run(vars.clone(), &["remember", text(&notes)], None).code, 0);
     let layout = layout(&vars);
     let mut file = fs::OpenOptions::new()
         .append(true)
@@ -763,7 +763,7 @@ fn a_notice_naming_a_path_with_a_newline_stays_one_line() {
     file.write_all(&[7; 16]).expect("junk");
     drop(file);
 
-    let run = run(vars, &[text(&notes)], None);
+    let run = run(vars, &["remember", text(&notes)], None);
     assert_eq!(run.code, 0, "{:?}", run.stderr);
     assert_eq!(run.notices.len(), 1, "{:?}", run.notices);
     assert!(
@@ -781,7 +781,7 @@ fn a_config_path_with_a_dotted_component_exits_2_and_creates_nothing() {
     let mut vars = sandbox.vars();
     vars.insert("BILBO_HOME".to_owned(), dotted.clone().into());
     let notes = sandbox.notes();
-    let run = run(vars, &[text(&notes)], None);
+    let run = run(vars, &["remember", text(&notes)], None);
     assert_eq!(run.code, 2);
     assert_eq!(run.stdout, "");
     assert_eq!(
@@ -828,10 +828,9 @@ fn a_root_that_holds_0_20s_notes_exits_2_and_writes_nothing_even_with_nothing_to
     }
 }
 
-const USAGE_LINES: [&str; 4] = [
+const USAGE_LINES: [&str; 3] = [
     "bilbo: usage: bilbo remember <file|folder> [--kind <kind>] [--tag <tag>]...",
     "bilbo:        [--follow]",
-    "bilbo:        bilbo remember",
     "bilbo: see 'bilbo remember --help'",
 ];
 
@@ -969,12 +968,16 @@ fn a_file_past_the_cap_is_refused_with_its_reason_and_exit_1() {
     let notes = sandbox.notes();
     let mut vars = sandbox.vars();
     vars.insert("BILBO_TAG_CAP".to_owned(), "1".into());
-    let first = run(vars.clone(), &[text(&notes), "--tag", "a"], None);
+    let first = run(
+        vars.clone(),
+        &["remember", text(&notes), "--tag", "a"],
+        None,
+    );
     assert_eq!(first.code, 0, "{:?}", first.stderr);
     let (_, kept) = sandbox.entry(&file);
     fs::write(&file, "one\ntwo\n").expect("grow");
 
-    let refused = run(vars, &[text(&notes), "--tag", "b"], None);
+    let refused = run(vars, &["remember", text(&notes), "--tag", "b"], None);
 
     assert_eq!(refused.code, 1);
     assert_eq!(refused.counts(), counts(0, 0, 0, 0, 1));

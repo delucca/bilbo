@@ -1147,7 +1147,7 @@ fn nothing_is_sent_while_the_index_is_behind_the_store() {
     assert_eq!(
         run.stderr,
         [
-            "bilbo: the index is behind the store, so labels may be missing; bilbo remember brings it up to date"
+            "bilbo: the index is behind the store, so labels may be missing; bilbo refresh brings it up to date"
         ]
     );
     assert!(requests(&provider).is_empty());
@@ -1268,7 +1268,7 @@ fn an_entry_whose_index_run_failed_is_not_sent() {
     assert_eq!(
         run.stderr,
         [format!(
-            "bilbo: {second} has labels that are not current; bilbo remember brings the index up to date"
+            "bilbo: {second} has labels that are not current; bilbo refresh brings the index up to date"
         )]
     );
     let run = sandbox.run(&["derive"]);
@@ -2496,7 +2496,7 @@ fn nothing_is_sent_with_no_index() {
     assert_eq!(run.code, 1);
     assert_eq!(
         run.stderr,
-        ["bilbo: there is no search index, so labels cannot be read; bilbo remember makes one"]
+        ["bilbo: there is no search index, so labels cannot be read; bilbo refresh makes one"]
     );
     assert_eq!(run.stdout, "");
     assert!(requests(&provider).is_empty());
@@ -2512,7 +2512,7 @@ fn nothing_is_sent_with_an_index_another_bilbo_made() {
     assert_eq!(
         run.stderr,
         [
-            "bilbo: the search index was made by another bilbo, so labels cannot be read; bilbo remember makes it again"
+            "bilbo: the search index was made by another bilbo, so labels cannot be read; bilbo refresh makes it again"
         ]
     );
     assert!(requests(&provider).is_empty());
@@ -4273,7 +4273,7 @@ fn outcome_of(
 }
 
 #[test]
-fn a_replay_that_changes_no_tag_serves_a_bare_remember_that_found_derive_holding_the_store() {
+fn a_replay_that_changes_no_tag_serves_a_refresh_that_found_derive_holding_the_store() {
     let _together = together();
     let sandbox = Sandbox::filled("derive-serves", false);
     let first = sandbox.session(FIRST);
@@ -4309,7 +4309,7 @@ fn a_replay_that_changes_no_tag_serves_a_bare_remember_that_found_derive_holding
                 if said.contains("torn frame") && bare.borrow().is_none() {
                     let vars = vars.clone();
                     let run =
-                        bilbo_with(Rc::new(move |name| vars.get(name).cloned()), &["remember"]);
+                        bilbo_with(Rc::new(move |name| vars.get(name).cloned()), &["refresh"]);
                     *bare.borrow_mut() = Some((run.code, run.stdout, run.stderr));
                 }
             })
@@ -4380,7 +4380,7 @@ fn a_replay_that_changes_nothing_does_no_index_work() {
     let layout = stores::layout(&sandbox.vars());
     notes::noted(&layout, second, &[b"{\"text\":\"a note\"}\n".to_vec()]);
     spooled(&sandbox, &block);
-    let behind = "bilbo: the index is behind the store, so labels may be missing; bilbo remember brings it up to date";
+    let behind = "bilbo: the index is behind the store, so labels may be missing; bilbo refresh brings it up to date";
     let run = sandbox.run(&["derive"]);
     assert_eq!((run.code, run.stderr), (1, vec![behind.to_owned()]));
     assert!(spool_names(&sandbox).is_empty());

@@ -154,6 +154,26 @@ fn a_usage_error_on_a_terminal_is_a_marked_message() {
     );
 }
 
+fn stderr_of_a_verb(list: &[&str], view: &View) -> String {
+    let failure = run(&args(list), &mut Env::quiet(), Ok(defaults())).expect_err("a failure");
+    assert_eq!(failure.exit_code(), 2, "{list:?}");
+    let mut text = failure.stderr_lines(view).join("\n");
+    text.push('\n');
+    text
+}
+
+#[test]
+fn a_bare_remember_in_both_views() {
+    assert_eq!(
+        stderr_of_a_verb(&["remember"], &View::PLAIN),
+        include_str!("snapshots/usage-remember-bare.txt")
+    );
+    assert_eq!(
+        stderr_of_a_verb(&["remember"], &View::HUMAN),
+        include_str!("snapshots/usage-remember-bare.human.ansi")
+    );
+}
+
 fn remembered() -> Output {
     let item = |name: &str, outcome| Item {
         path: PathBuf::from(name),
@@ -312,7 +332,7 @@ fn the_config_page_is_the_same_from_every_help_form() {
 }
 
 #[test]
-fn the_output_of_a_bare_run_adds_up_every_follow() {
+fn the_output_of_a_pass_adds_up_every_follow() {
     let mut sessions = remembered();
     sessions.target = PathBuf::from("/h/.claude/projects");
     sessions.kind = Some("session".to_owned());

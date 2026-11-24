@@ -3,6 +3,6 @@ Description=Remember what the bilbo follows gained
 
 [Service]
 Type=oneshot
-ExecStart="@BILBO@" remember
+ExecStart="@BILBO@" refresh
 StandardOutput=append:@LOG@
 StandardError=append:@LOG@
