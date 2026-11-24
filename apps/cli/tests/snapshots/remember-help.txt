@@ -5,6 +5,7 @@ Usage:
                  [--follow]
   bilbo remember - [--tag <tag>]...
   bilbo remember --edit [--tag <tag>]...
+  bilbo remember
 
 Options:
       --kind <kind>  Run this kind, not the one that claims the files
@@ -24,7 +25,6 @@ Exit:
   2  usage or config error, no editor for --edit, a config --follow cannot write
 
 Examples:
-  bilbo remember ~/notes --follow
   echo 'The beet seeds are in the drawer.' | bilbo remember - --tag garden
 
 Docs: https://github.com/delucca/bilbo/wiki/Commands#remember

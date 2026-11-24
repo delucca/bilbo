@@ -8,7 +8,7 @@ use std::sync::mpsc::{self, Sender};
 use std::thread;
 use std::time::{Duration, SystemTime};
 
-use bilbo_cli::console::env::Env;
+use bilbo_cli::console::env::{Env, Who};
 use bilbo_cli::console::message::Message;
 use bilbo_cli::console::outcome::{Failure, Outcome};
 use bilbo_cli::console::settings;
@@ -320,6 +320,7 @@ fn run_noticed(vars: HashMap<String, OsString>, args: &[String], notices: Sender
     let mut env = Env {
         var: Rc::new(move |name| vars.get(name).cloned()),
         stdin: Box::new(io::empty()),
+        who: Who::Nobody,
         notice: Box::new(move |message| {
             notices.send(message.plain_lines().join("\n")).ok();
         }),
@@ -463,6 +464,7 @@ fn outcome_of(
     let mut env = Env {
         var: Rc::new(move |name| vars.get(name).cloned()),
         stdin: Box::new(io::empty()),
+        who: Who::Nobody,
         notice,
     };
     let settings = settings::load(

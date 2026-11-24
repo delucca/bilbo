@@ -7,7 +7,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use bilbo_cli::console::env::Env;
+use bilbo_cli::console::env::{Env, Who};
 use bilbo_cli::console::outcome::Failure;
 use bilbo_cli::console::settings;
 use bilbo_cli::console::view::View;
@@ -26,6 +26,7 @@ fn bilbo(vars: HashMap<String, OsString>, args: &[&str]) -> Run {
     let mut env = Env {
         var: std::rc::Rc::new(move |name| vars.get(name).cloned()),
         stdin: Box::new(io::empty()),
+        who: Who::Nobody,
         notice: Box::new(move |message| {
             sink.lock().expect("notices").extend(message.plain_lines());
         }),

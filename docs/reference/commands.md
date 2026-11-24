@@ -83,9 +83,10 @@ The line number is the first line of what the clause names. A file that did not 
 bilbo remember <file|folder> [--kind <kind>] [--tag <tag>]... [--follow]
 bilbo remember - [--tag <tag>]...
 bilbo remember --edit [--tag <tag>]...
+bilbo remember
 ```
 
-Keeps files as entries in the store. An entry is a sequence of records, numbered from 1 per generation. Run it again on a file or folder and it keeps only what is new; a note with no file is a new entry each time. It keeps the file or folder it is given; [`bilbo refresh`](#refresh) keeps every follow. A lone `-` keeps a note from standard input ([A note with no file](#a-note-with-no-file)).
+Keeps files as entries in the store. An entry is a sequence of records, numbered from 1 per generation. Run it again on a file or folder and it keeps only what is new; a note with no file is a new entry each time. It keeps the file or folder it is given; [`bilbo refresh`](#refresh) keeps every follow. A lone `-` keeps a note from standard input ([A note with no file](#a-note-with-no-file)). With no argument, on a terminal, it asks what to keep ([The prompt](#the-prompt)).
 
 ### Kinds
 
@@ -147,6 +148,10 @@ A run that keeps a note prints the two lines of [Output](#output) with `new 1`, 
 `bilbo remember --edit` opens an editor on an empty file and keeps what was saved, as `git commit` does for a message. The editor is the command `VISUAL` names, else the one `EDITOR` names, run by `/bin/sh` with the file as its last argument; with neither, the run exits 2. The file is `note.md` in a folder bilbo makes for it, yours and of mode 0700, `.bilbo-note-<id>` in `$TMPDIR`, else `/tmp`. The mode is what keeps others out: bilbo does not look at an access list a temp folder hands down to what is made in it. A file that is empty or holds only white space keeps nothing and exits 1. An editor that exits with another code than 0, or that a signal ends, keeps nothing, whatever was saved. An editor that ran and whose end bilbo could not learn keeps nothing either, and its file stays where the line says. The folder is removed, with all it holds, when the note was kept or there was no text. When there was text and the note was not kept, it stays and the run's line says where the file is, so what you wrote is not lost; it is yours to remove. When the store failed at the write of the note itself, the line also gives the id the note may be under; a store that failed before that wrote nothing, and its line gives no id. An editor that failed is said first, whatever its file holds. The store is opened only after the editor is done, so no other bilbo waits while you write.
 
 A note kept this way cannot be changed or taken back yet: it stays in `recall` until `bilbo forget` exists. A note you will want to edit is a Markdown file in a followed folder, which `remember` and `refresh` keep up with.
+
+### The prompt
+
+`bilbo remember` with no argument asks what to keep when a person is at the terminal: standard input and stderr are terminals, and no agent runs bilbo. It offers a note typed there (ended with Ctrl-D on a line of its own), a note written in the editor, and a file or folder (a leading `~/` is your home folder), then does what `bilbo remember -`, `--edit` or `<file|folder>` does. An empty answer keeps nothing and exits 0, as does the end of input at a question. Anywhere else a bare `bilbo remember` is a usage error: it never runs the follows, which is [`bilbo refresh`](#refresh).
 
 ### Packed sessions
 

@@ -10,6 +10,7 @@ use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, SystemTime};
 
+use bilbo_cli::console::env::Who;
 use bilbo_cli::remember::disk::Disk;
 use bilbo_entries::files::{Files, Node};
 use bilbo_store::entries::{Cursor, Entries, Generation, Head, Meta, RecordRange};
@@ -22,7 +23,7 @@ mod sandbox;
 mod scratch;
 mod stores;
 
-use sandbox::{Run, counts, run, run_reading, text, write};
+use sandbox::{Run, counts, run, run_as, run_reading, text, write};
 use scratch::{scratch_dir, vars};
 use stores::{backdate, layout};
 
@@ -1506,11 +1507,12 @@ fn a_root_that_holds_0_20s_notes_exits_2_and_writes_nothing_even_with_nothing_to
     }
 }
 
-const USAGE_LINES: [&str; 5] = [
+const USAGE_LINES: [&str; 6] = [
     "bilbo: usage: bilbo remember <file|folder> [--kind <kind>] [--tag <tag>]...",
     "bilbo:        [--follow]",
     "bilbo:        bilbo remember - [--tag <tag>]...",
     "bilbo:        bilbo remember --edit [--tag <tag>]...",
+    "bilbo:        bilbo remember",
     "bilbo: see 'bilbo remember --help'",
 ];
 
@@ -1724,5 +1726,122 @@ fn edit_stands_with_tags_alone_and_needs_an_editor() {
         ["bilbo: --edit needs an editor: set VISUAL or EDITOR"]
     );
     assert_eq!(fs::read_dir(&temp).expect("the temp folder").count(), 0);
+    sandbox.no_store_folders();
+}
+
+fn question_text() -> String {
+    [
+        "bilbo: What should bilbo keep?",
+        "bilbo: 1  a note typed here",
+        "bilbo: 2  a note written in the editor",
+        "bilbo: 3  a file or folder",
+        "bilbo: Type 1, 2 or 3, then Enter. An empty answer keeps nothing.",
+    ]
+    .join("\n")
+}
+
+fn as_a_person(sandbox: &Sandbox, args: &[&str], input: &[u8]) -> (Run, Vec<String>) {
+    let (sender, receiver) = mpsc::channel();
+    let run = run_as(
+        sandbox.vars(),
+        &[&["remember"][..], args].concat(),
+        Who::Person,
+        Box::new(io::Cursor::new(input.to_vec())),
+        Some(sender),
+    );
+    (run, receiver.try_iter().collect())
+}
+
+#[test]
+fn a_note_typed_at_the_prompt_is_kept() {
+    let sandbox = Sandbox::new("prompt_typed");
+    let (run, notices) = as_a_person(&sandbox, &[], b"1\nThe beet seeds are in the drawer.\n");
+    assert_eq!(run.code, 0, "{:?}", run.stderr);
+    assert_eq!(run.counts(), counts(1, 0, 0, 0, 0));
+    let id = kept_id(&run);
+    assert_eq!(
+        notices,
+        [
+            question_text(),
+            "bilbo: Type the note, then Ctrl-D on a line of its own.".to_owned()
+        ]
+    );
+    assert_eq!(run.stderr, [format!("bilbo: kept the note as {id}")]);
+    let found = run_in(&sandbox, &["recall", "--", "beet"]);
+    assert_eq!(found.code, 0, "{:?}", found.stderr);
+    assert_eq!(hit_headers(&found.stdout).len(), 1, "{}", found.stdout);
+}
+
+#[test]
+fn a_file_or_folder_named_at_the_prompt_is_kept_as_a_target() {
+    let asked = Sandbox::new("prompt_file");
+    let file = asked.write("garden.md", "# Garden\n\nThe beds face south.\n");
+    let answers = format!("3\n{}\n", text(&file));
+    let (run, notices) = as_a_person(&asked, &[], answers.as_bytes());
+    assert_eq!(run.code, 0, "{:?}", run.stderr);
+
+    let direct = Sandbox::new("prompt_file_direct");
+    let same = direct.write("garden.md", "# Garden\n\nThe beds face south.\n");
+    let target = direct.remember(&[text(&same)]);
+    assert_eq!(run.counts(), target.counts());
+    assert_eq!(run.counts(), counts(1, 0, 0, 0, 0));
+    assert_eq!(
+        run.totals()
+            .rsplit_once(", stored bytes ")
+            .map(|(kept, _)| kept),
+        target
+            .totals()
+            .rsplit_once(", stored bytes ")
+            .map(|(kept, _)| kept)
+    );
+    assert_eq!(run.stderr, target.stderr);
+    let (kept, direct_kept) = (asked.entries(), direct.entries());
+    assert_eq!(kept.len(), 1);
+    assert_eq!(kept.len(), direct_kept.len());
+    assert_eq!(kept[0].0.kind, "markdown");
+    assert_eq!(kept[0].0.kind, direct_kept[0].0.kind);
+    assert_eq!(
+        notices,
+        [question_text(), "bilbo: Which file or folder?".to_owned()]
+    );
+}
+
+#[test]
+fn an_empty_answer_or_the_end_of_input_keeps_nothing() {
+    for input in [&b"\n"[..], b""] {
+        let sandbox = Sandbox::new("prompt_nothing");
+        let (run, notices) = as_a_person(&sandbox, &[], input);
+        assert_eq!(run.code, 0, "{input:?}: {:?}", run.stderr);
+        assert_eq!(run.stdout, "", "{input:?}");
+        assert_eq!(notices, [question_text()], "{input:?}");
+        assert_eq!(run.stderr, ["bilbo: nothing kept"], "{input:?}");
+        sandbox.no_store_folders();
+    }
+}
+
+#[test]
+fn a_bare_remember_with_nobody_at_the_terminal_or_with_an_option_never_asks() {
+    let sandbox = Sandbox::new("prompt_never");
+    let nobody = sandbox.piped(&[], b"1\nThe beet seeds are in the drawer.\n");
+    assert_eq!((nobody.code, nobody.stderr), (2, with_usage(BARE)));
+    assert_eq!(nobody.stdout, "");
+    let (tag, notices) = as_a_person(&sandbox, &["--tag", "garden"], b"1\nA note.\n");
+    assert_eq!((tag.code, tag.stderr), (2, with_usage(BARE)));
+    assert_eq!(tag.stdout, "");
+    assert!(notices.is_empty(), "{notices:?}");
+    sandbox.no_store_folders();
+}
+
+#[test]
+fn the_editors_answer_with_no_editor_is_the_editors_error() {
+    let sandbox = Sandbox::new("prompt_editor");
+    let (run, notices) = as_a_person(&sandbox, &[], b"2\n");
+    assert_eq!(run.code, 2);
+    assert_eq!(run.stdout, "");
+    assert_eq!(notices, [question_text()]);
+    assert_eq!(
+        run.stderr,
+        ["bilbo: --edit needs an editor: set VISUAL or EDITOR"]
+    );
     sandbox.no_store_folders();
 }

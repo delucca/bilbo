@@ -9,7 +9,7 @@ use std::rc::Rc;
 use std::sync::{PoisonError, RwLock, RwLockReadGuard, RwLockWriteGuard};
 use std::time::{Duration, SystemTime};
 
-use bilbo_cli::console::env::{Env, Var};
+use bilbo_cli::console::env::{Env, Var, Who};
 use bilbo_cli::console::indexing::Indexing;
 use bilbo_cli::console::settings;
 use bilbo_derive::instruction;
@@ -1188,6 +1188,7 @@ fn poisoned_remember(sandbox: &Sandbox, folder: &str) {
     let mut env = Env {
         var: std::rc::Rc::new(move |name| vars.get(name).cloned()),
         stdin: Box::new(io::empty()),
+        who: Who::Nobody,
         notice: Box::new(|_| {}),
     };
     let settings = settings::load(
@@ -4268,6 +4269,7 @@ fn outcome_of(
     let mut env = Env {
         var: Rc::new(move |name| vars.get(name).cloned()),
         stdin: Box::new(io::empty()),
+        who: Who::Nobody,
         notice,
     };
     let settings = settings::load(

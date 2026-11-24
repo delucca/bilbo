@@ -9,7 +9,7 @@ use std::sync::{Arc, LazyLock, Mutex};
 use std::thread;
 use std::time::{Duration, SystemTime};
 
-use bilbo_cli::console::env::Env;
+use bilbo_cli::console::env::{Env, Who};
 use bilbo_cli::console::indexing::Indexing;
 use bilbo_cli::console::message::Message;
 use bilbo_cli::console::outcome::Failure;
@@ -374,6 +374,7 @@ impl Sandbox {
         let mut env = Env {
             var: std::rc::Rc::new(move |name| vars.get(name).cloned()),
             stdin: Box::new(io::empty()),
+            who: Who::Nobody,
             notice: Box::new(move |message| {
                 sink.lock().expect("notices").extend(message.plain_lines());
             }),
@@ -498,6 +499,7 @@ fn bilbo(vars: HashMap<String, OsString>, args: &[&str], notices: Option<Sender<
     let mut env = Env {
         var: std::rc::Rc::new(move |name| vars.get(name).cloned()),
         stdin: Box::new(io::empty()),
+        who: Who::Nobody,
         notice: Box::new(move |message| {
             let lines = message.plain_lines();
             if let Some(notices) = &notices {
@@ -904,6 +906,7 @@ fn a_reindex_holds_the_store_from_the_catalog_to_the_commit_and_a_refresh_leaves
             move |name| vars.get(name).cloned()
         }),
         stdin: Box::new(io::empty()),
+        who: Who::Nobody,
         notice: Box::new(|_| {}),
     };
     let settings = settings::load(

@@ -4,7 +4,7 @@ use std::io;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, OnceLock};
 
-use bilbo_cli::console::env::{Env, Var};
+use bilbo_cli::console::env::{Env, Var, Who};
 use bilbo_cli::console::outcome::Failure;
 use bilbo_cli::console::settings;
 use bilbo_cli::console::view::View;
@@ -51,6 +51,7 @@ pub fn bilbo_with(var: Var, args: &[&str], tune: &bilbo_cli::Tune) -> Run {
     let mut env = Env {
         var,
         stdin: Box::new(io::empty()),
+        who: Who::Nobody,
         notice: Box::new(move |message| {
             sink.lock().expect("notices").extend(message.plain_lines());
         }),

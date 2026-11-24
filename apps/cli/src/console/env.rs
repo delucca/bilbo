@@ -6,9 +6,16 @@ use crate::console::message::Message;
 
 pub type Var = Rc<dyn Fn(&str) -> Option<OsString>>;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Who {
+    Person,
+    Nobody,
+}
+
 pub struct Env {
     pub var: Var,
     pub stdin: Box<dyn Read>,
+    pub who: Who,
     /// Written to stderr at once, not after the run.
     pub notice: Box<dyn FnMut(&Message)>,
 }
@@ -18,6 +25,7 @@ impl Env {
         Env {
             var: Rc::new(|_| None),
             stdin: Box::new(io::empty()),
+            who: Who::Nobody,
             notice: Box::new(|_| {}),
         }
     }
@@ -27,13 +35,14 @@ impl Env {
 mod tests {
     use std::io::Read;
 
-    use super::Env;
+    use super::{Env, Who};
     use crate::console::message::Message;
 
     #[test]
     fn a_quiet_env_has_no_variables_no_stdin_and_drops_notices() {
         let mut env = Env::quiet();
         assert_eq!((env.var)("HOME"), None);
+        assert_eq!(env.who, Who::Nobody);
         let mut text = String::new();
         env.stdin.read_to_string(&mut text).expect("empty stdin");
         assert_eq!(text, "");

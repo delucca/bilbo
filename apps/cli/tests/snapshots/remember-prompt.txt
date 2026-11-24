@@ -1,0 +1,5 @@
+i  What should bilbo keep?
+   1  a note typed here
+   2  a note written in the editor
+   3  a file or folder
+   Type 1, 2 or 3, then Enter. An empty answer keeps nothing.

@@ -4,10 +4,12 @@ pub mod follows;
 pub mod index;
 pub mod messages;
 pub mod note;
+pub mod prompt;
 pub mod save;
 pub mod view;
 
 use std::collections::BTreeSet;
+use std::io::{self, BufRead, BufReader};
 use std::path::PathBuf;
 
 use bilbo_entries::follows::Follow;
@@ -22,7 +24,7 @@ use clap::builder::NonEmptyStringValueParser;
 
 use crate::console::args::usage;
 use crate::console::closing::Closing;
-use crate::console::env::Env;
+use crate::console::env::{Env, Who};
 use crate::console::indexing::Indexing;
 use crate::console::message::{Message, not_a_tag, notice_message, sanitize};
 use crate::console::outcome::{Exit, Failure, Outcome};
@@ -36,7 +38,8 @@ const ABOUT: &str =
 const USAGE: &str = "bilbo remember <file|folder> [--kind <kind>] [--tag <tag>]...
                  [--follow]
   bilbo remember - [--tag <tag>]...
-  bilbo remember --edit [--tag <tag>]...";
+  bilbo remember --edit [--tag <tag>]...
+  bilbo remember";
 
 #[derive(Debug, clap::Args)]
 #[command(about = SUMMARY, before_help = ABOUT, override_usage = USAGE)]
@@ -87,7 +90,6 @@ Exit:
   2  usage or config error, no editor for --edit, a config --follow cannot write
 
 Examples:
-  bilbo remember ~/notes --follow
   echo 'The beet seeds are in the drawer.' | bilbo remember - --tag garden
 
 Docs: https://github.com/delucca/bilbo/wiki/Commands#remember";
@@ -102,6 +104,9 @@ pub fn run(
     written: &note::Written,
 ) -> Result<Outcome, Failure> {
     if args.target.is_none() && !args.edit {
+        if args.tags.is_empty() && env.who == Who::Person {
+            return prompted(root, env, settings, kinds, indexing, written);
+        }
         return Err(usage(
             root,
             "missing <file|folder>, - or --edit; bilbo refresh keeps every follow".to_owned(),
@@ -156,30 +161,140 @@ pub fn run(
         cap: settings.tag_cap.value,
     };
     let Some(target) = args.target else {
-        let Some(editor) = edit::editor(&|name| (env.var)(name)) else {
-            return Err(Failure::Config(
-                "--edit needs an editor: set VISUAL or EDITOR".to_owned(),
-            ));
-        };
-        return edit::run(&editor, &tags, written, env, settings, kinds, indexing);
+        return edited(&tags, written, env, settings, kinds, indexing);
     };
     if from_input {
         let text = note::from_input(&mut env.stdin)?;
-        let id = Id::mint().map_err(|error| refused(&error))?;
-        let note = note::Note {
-            text: &text,
-            id,
-            tags: &tags,
-            draft: None,
-        };
-        return note::keep(note, written, env, settings, kinds, indexing);
+        return typed(&text, &tags, written, env, settings, kinds, indexing);
     }
     let request = Request {
         target,
         kind: args.kind,
         tags,
     };
-    let plan = remember::plan(&request, kinds, &Disk).map_err(|error| match error {
+    keep_files(root, &request, args.follow, env, settings, kinds, indexing)
+}
+
+fn edited(
+    tags: &Tagging,
+    written: &note::Written,
+    env: &mut Env,
+    settings: &Settings,
+    kinds: &[Box<dyn Kind>],
+    indexing: &Indexing<'_>,
+) -> Result<Outcome, Failure> {
+    let Some(editor) = edit::editor(&|name| (env.var)(name)) else {
+        return Err(Failure::Config(
+            "--edit needs an editor: set VISUAL or EDITOR".to_owned(),
+        ));
+    };
+    edit::run(&editor, tags, written, env, settings, kinds, indexing)
+}
+
+fn typed(
+    text: &str,
+    tags: &Tagging,
+    written: &note::Written,
+    env: &mut Env,
+    settings: &Settings,
+    kinds: &[Box<dyn Kind>],
+    indexing: &Indexing<'_>,
+) -> Result<Outcome, Failure> {
+    let id = Id::mint().map_err(|error| refused(&error))?;
+    let note = note::Note {
+        text,
+        id,
+        tags,
+        draft: None,
+    };
+    note::keep(note, written, env, settings, kinds, indexing)
+}
+
+struct Chosen<'a, 'b> {
+    root: &'a Command,
+    written: &'a note::Written,
+    settings: &'a Settings,
+    kinds: &'a [Box<dyn Kind>],
+    indexing: &'a Indexing<'b>,
+    tags: Tagging,
+}
+
+impl prompt::Ways for Chosen<'_, '_> {
+    fn typed(&mut self, env: &mut Env, input: &mut dyn BufRead) -> Result<Outcome, Failure> {
+        let text = note::from_input(input)?;
+        typed(
+            &text,
+            &self.tags,
+            self.written,
+            env,
+            self.settings,
+            self.kinds,
+            self.indexing,
+        )
+    }
+
+    fn editor(&mut self, env: &mut Env) -> Result<Outcome, Failure> {
+        edited(
+            &self.tags,
+            self.written,
+            env,
+            self.settings,
+            self.kinds,
+            self.indexing,
+        )
+    }
+
+    fn file(&mut self, env: &mut Env, target: PathBuf) -> Result<Outcome, Failure> {
+        let request = Request {
+            target,
+            kind: None,
+            tags: self.tags.clone(),
+        };
+        keep_files(
+            self.root,
+            &request,
+            false,
+            env,
+            self.settings,
+            self.kinds,
+            self.indexing,
+        )
+    }
+}
+
+fn prompted(
+    root: &Command,
+    env: &mut Env,
+    settings: &Settings,
+    kinds: &[Box<dyn Kind>],
+    indexing: &Indexing<'_>,
+    written: &note::Written,
+) -> Result<Outcome, Failure> {
+    let mut ways = Chosen {
+        root,
+        written,
+        settings,
+        kinds,
+        indexing,
+        tags: Tagging {
+            tags: BTreeSet::new(),
+            cap: settings.tag_cap.value,
+        },
+    };
+    let stdin = std::mem::replace(&mut env.stdin, Box::new(io::empty()));
+    prompt::ask(env, &mut BufReader::new(stdin), &mut ways)
+}
+
+fn keep_files(
+    root: &Command,
+    request: &Request,
+    follow: bool,
+    env: &mut Env,
+    settings: &Settings,
+    kinds: &[Box<dyn Kind>],
+    indexing: &Indexing<'_>,
+) -> Result<Outcome, Failure> {
+    let plan = remember::plan(request, kinds, &Disk).map_err(|error| match error {
         remember::Error::UnknownKind { .. } | remember::Error::SeveralKinds { .. } => {
             usage(root, sanitize(&error.to_string()), Some("remember"))
         }
@@ -215,7 +330,7 @@ pub fn run(
         (output, closing)
     };
     let mut config = false;
-    if args.follow && !closing.failed {
+    if follow && !closing.failed {
         let follow = Follow {
             path: plan.target.clone(),
             kind: plan.kind.map(|kind| kind.name().to_owned()),

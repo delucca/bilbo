@@ -360,3 +360,14 @@ fn recall_shows_its_human_view_on_an_agents_terminal() {
         );
     }
 }
+
+#[test]
+fn a_bare_remember_whose_standard_input_is_no_terminal_is_the_usage_error() {
+    let seen = run(&["remember"], &Tty::Stderr);
+    assert_eq!(seen.code, 2);
+    assert_eq!(seen.piped, "");
+    assert_eq!(
+        seen.terminal,
+        "\x1b[31m■\x1b[39m  missing <file|folder>, - or --edit; bilbo refresh keeps every follow\n   \x1b[2musage: bilbo remember <file|folder> [--kind <kind>] [--tag <tag>]...\x1b[22m\n   \x1b[2m       [--follow]\x1b[22m\n   \x1b[2m       bilbo remember - [--tag <tag>]...\x1b[22m\n   \x1b[2m       bilbo remember --edit [--tag <tag>]...\x1b[22m\n   \x1b[2m       bilbo remember\x1b[22m\n   \x1b[2msee\x1b[22m \x1b[36mbilbo remember --help\x1b[39m\n"
+    );
+}

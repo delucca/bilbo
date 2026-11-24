@@ -1069,7 +1069,8 @@ mod tests {
                 "usage: bilbo remember <file|folder> [--kind <kind>] [--tag <tag>]...",
                 "       [--follow]",
                 "       bilbo remember - [--tag <tag>]...",
-                "       bilbo remember --edit [--tag <tag>]..."
+                "       bilbo remember --edit [--tag <tag>]...",
+                "       bilbo remember"
             ]
         );
         assert_eq!(page, "bilbo remember --help");

@@ -5,6 +5,7 @@ bilbo remember: keep files or a note as entries, and what changed in them since.
                  [--follow]
   [36mbilbo remember - [--tag [39m[2m<tag>[22m[36m]...[39m
   [36mbilbo remember --edit [--tag [39m[2m<tag>[22m[36m]...[39m
+  [36mbilbo remember[39m
 
 [1mOptions:[22m
       [1m--kind [22m[2m<kind>[22m  Run this kind, not the one that claims the files
@@ -24,7 +25,6 @@ bilbo remember: keep files or a note as entries, and what changed in them since.
   [1m2[22m  usage or config error, no editor for --edit, a config --follow cannot write
 
 [1mExamples:[22m
-  [36mbilbo remember ~/notes --follow[39m
   echo 'The beet seeds are in the drawer.' | bilbo remember - --tag garden
 
 [1mDocs:[22m [2mhttps://github.com/delucca/bilbo/wiki/Commands#remember[22m

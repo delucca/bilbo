@@ -53,6 +53,7 @@ fn remember_usage_errors_name_the_problem_and_touch_no_store() {
                          bilbo:        [--follow]\n\
                          bilbo:        bilbo remember - [--tag <tag>]...\n\
                          bilbo:        bilbo remember --edit [--tag <tag>]...\n\
+                         bilbo:        bilbo remember\n\
                          bilbo: see 'bilbo remember --help'\n";
     let scratch = Scratch::new("usage");
     let cases: [(&[&str], &str); 9] = [

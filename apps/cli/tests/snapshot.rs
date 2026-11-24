@@ -174,6 +174,25 @@ fn a_bare_remember_in_both_views() {
     );
 }
 
+#[test]
+fn the_prompt_in_both_views() {
+    let question = bilbo_cli::remember::prompt::question();
+    let shown = |view: &View| format!("{}\n", question.human_lines(view).join("\n"));
+    assert_eq!(
+        shown(&View::HUMAN),
+        include_str!("snapshots/remember-prompt.human.ansi")
+    );
+    let no_paint_no_unicode = View {
+        paint: false,
+        unicode: false,
+        ..View::HUMAN
+    };
+    assert_eq!(
+        shown(&no_paint_no_unicode),
+        include_str!("snapshots/remember-prompt.txt")
+    );
+}
+
 fn remembered() -> Output {
     let item = |name: &str, outcome| Item {
         path: PathBuf::from(name),

@@ -9,7 +9,7 @@ use std::io::{self, IsTerminal, Write};
 use std::os::fd::AsFd;
 use std::process::ExitCode;
 
-use bilbo_cli::console::env::Env;
+use bilbo_cli::console::env::{Env, Who};
 use bilbo_cli::console::outcome::Failure;
 use bilbo_cli::console::settings;
 use bilbo_cli::console::streams::{self, Emit};
@@ -28,6 +28,11 @@ fn main() -> ExitCode {
     let mut env = Env {
         var: std::rc::Rc::new(|name| std::env::var_os(name)),
         stdin: Box::new(io::stdin()),
+        who: if io::stdin().is_terminal() && err.human {
+            Who::Person
+        } else {
+            Who::Nobody
+        },
         notice: Box::new(move |message| {
             for line in message.lines(&err) {
                 let _ = writeln!(io::stderr().lock(), "{line}");

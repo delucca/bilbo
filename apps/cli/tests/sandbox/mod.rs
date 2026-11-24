@@ -6,7 +6,7 @@ use std::path::Path;
 use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex};
 
-use bilbo_cli::console::env::Env;
+use bilbo_cli::console::env::{Env, Who};
 use bilbo_cli::console::outcome::Failure;
 use bilbo_cli::console::settings;
 use bilbo_cli::console::view::View;
@@ -39,11 +39,22 @@ pub fn run_reading(
     input: Box<dyn io::Read>,
     notices: Option<Sender<String>>,
 ) -> Run {
+    run_as(vars, args, Who::Nobody, input, notices)
+}
+
+pub fn run_as(
+    vars: HashMap<String, OsString>,
+    args: &[&str],
+    who: Who,
+    input: Box<dyn io::Read>,
+    notices: Option<Sender<String>>,
+) -> Run {
     let said = Arc::new(Mutex::new(Vec::new()));
     let sink = Arc::clone(&said);
     let mut env = Env {
         var: std::rc::Rc::new(move |name| vars.get(name).cloned()),
         stdin: input,
+        who,
         notice: Box::new(move |message| {
             let lines = message.plain_lines();
             if let Some(notices) = &notices {
