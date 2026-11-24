@@ -33,6 +33,25 @@ pub fn moves(outputs: &[Output]) -> Vec<Message> {
         .collect()
 }
 
+pub fn withdrawals(outputs: &[Output]) -> Vec<Message> {
+    outputs
+        .iter()
+        .flat_map(|output| &output.items)
+        .filter_map(|item| {
+            let (remember::Outcome::NewGeneration(id), Some(generation)) =
+                (&item.outcome, item.withdrew)
+            else {
+                return None;
+            };
+            Some(Message::info(&format!(
+                "withdrew {}: its file is gone; bilbo read {id}#g{} prints the outline of what it held",
+                item.path.display(),
+                generation.0
+            )))
+        })
+        .collect()
+}
+
 pub fn tagged(output: &Output, fresh: &[Tag]) -> Vec<Message> {
     if output.tagged == 0 {
         return Vec::new();
@@ -47,10 +66,11 @@ mod tests {
     use std::path::PathBuf;
 
     use bilbo_entries::remember::{Item, Moved, Outcome, Output};
+    use bilbo_store::entries::Generation;
     use bilbo_store::id::Id;
     use bilbo_store::labels::CaptureLabel;
 
-    use super::{moves, refusals};
+    use super::{moves, refusals, withdrawals};
     use crate::console::theme::Mark;
 
     const ID: &str = "01JC5Q3V7XKM4P8R2T6W9YB0DE";
@@ -79,6 +99,7 @@ mod tests {
                 bytes: 90,
             }),
             carried: None,
+            withdrew: None,
         }
     }
 
@@ -133,6 +154,30 @@ mod tests {
             lines(&moves(std::slice::from_ref(&output))),
             [format!(
                 "bilbo: moved /home/me/notes/report-shed.md: its id {ID} was held by file:/home/me/notes/decision-shed.md"
+            )]
+        );
+    }
+
+    #[test]
+    fn a_withdrawn_entry_says_how_to_read_what_it_held() {
+        let id = Id::parse(ID).expect("an id");
+        let mut gone = item(
+            "/home/me/notes/decision-shed.md",
+            Outcome::NewGeneration(id),
+            false,
+        );
+        gone.withdrew = Some(Generation(2));
+        let output = output(vec![
+            item("/home/me/notes/a.md", Outcome::Unchanged(id), false),
+            item("/home/me/notes/b.md", Outcome::NewGeneration(id), false),
+            gone,
+        ]);
+        let messages = withdrawals(&[output]);
+        assert!(messages.iter().all(|message| message.mark == Mark::Info));
+        assert_eq!(
+            lines(&messages),
+            [format!(
+                "bilbo: withdrew /home/me/notes/decision-shed.md: its file is gone; bilbo read {ID}#g2 prints the outline of what it held"
             )]
         );
     }

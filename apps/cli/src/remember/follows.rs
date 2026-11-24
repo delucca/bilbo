@@ -7,7 +7,7 @@ use bilbo_store::segments::{Closed, Held, Options, Store};
 
 use super::disk::Disk;
 use super::index::update;
-use super::messages::{moves, refusals};
+use super::messages::{moves, refusals, withdrawals};
 use super::view;
 use crate::console::closing::Closing;
 use crate::console::env::Env;
@@ -100,6 +100,7 @@ pub fn run(
     diagnostics.extend(refusals(&outputs));
     if !closing.failed {
         diagnostics.extend(moves(&outputs));
+        diagnostics.extend(withdrawals(&outputs));
     }
     diagnostics.extend(closing.messages);
     Ok(outcome(
@@ -171,7 +172,9 @@ pub fn close(
                         let totals = view::Totals::of(&outputs);
                         closing.refused |= totals.tally.refused > 0;
                         closing.messages.extend(refusals(&outputs));
-                        said.push((closing.messages.len(), moves(&outputs)));
+                        let mut lines = moves(&outputs);
+                        lines.extend(withdrawals(&outputs));
+                        said.push((closing.messages.len(), lines));
                         closing.messages.push(Message::info(&format!(
                             "ran the follows again for another bilbo: {}",
                             view::counts(&totals)

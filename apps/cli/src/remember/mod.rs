@@ -25,7 +25,7 @@ use crate::console::message::{Message, not_a_tag, notice_message, sanitize};
 use crate::console::outcome::{Exit, Failure, Outcome};
 use crate::console::settings::Settings;
 use disk::Disk;
-use messages::{moves, refusals, tagged};
+use messages::{moves, refusals, tagged, withdrawals};
 
 const SUMMARY: &str = "Keep files as entries; a later run keeps what grew or changed";
 const ABOUT: &str =
@@ -188,6 +188,7 @@ fn outcome(output: Output, notes: Vec<Message>, closing: Closing, config: bool) 
     let mut diagnostics = refusals(std::slice::from_ref(&output));
     if !closing.failed {
         diagnostics.extend(moves(std::slice::from_ref(&output)));
+        diagnostics.extend(withdrawals(std::slice::from_ref(&output)));
     }
     diagnostics.extend(notes);
     if output.claimed == 0 {

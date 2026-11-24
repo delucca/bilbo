@@ -210,6 +210,7 @@ fn a_file_is_refused_for_its_reason_and_the_run_goes_on() {
             outcome: Outcome::New(_),
             moved: None,
             carried: None,
+            withdrew: None,
         } if path == Path::new("/t/z-fine.fake")
     )));
 }
@@ -1575,6 +1576,7 @@ fn a_file_whose_label_holds_one_entry_and_whose_id_another_holds_is_refused_and_
         outcomes(&output),
         vec![("/t/s.fake", &Outcome::Appended(mine))]
     );
+    assert_eq!(output.tally().appended, 1);
     assert_eq!(output.items[0].carried, None);
     assert_eq!(entries.seen.len(), 1);
     assert_eq!(entries.seen[0].id, None);
@@ -1750,13 +1752,25 @@ fn a_third_file_with_the_id_is_refused_while_the_renamed_one_answers_at_the_old_
 #[test]
 fn a_cap_refusal_held_back_is_kept_when_the_file_is_gone_at_its_read() {
     let cap = "its entry would carry more than tag.cap tags (1)".to_string();
-    for (file, bytes) in [("/t/new.fake", "x|"), ("/t/a.fake.z", "zx|")] {
-        let files = Turning::new(
-            Memory::new().file(file, bytes),
+    let rows = [
+        (
+            "/t/new.fake",
+            Memory::new().file("/t/new.fake", "x|"),
             Memory::new(),
-            Call::Stamp,
-            file,
-        );
+        ),
+        (
+            "/t/a.fake.z",
+            Memory::new().file("/t/a.fake.z", "zx|"),
+            Memory::new(),
+        ),
+        (
+            "/t/a.fake",
+            Memory::new().file("/t/a.fake", "x|"),
+            Memory::new().denied("/t/a.fake.z"),
+        ),
+    ];
+    for (file, before, after) in rows {
+        let files = Turning::new(before, after, Call::Stamp, file);
         let mut entries = FakeEntries::new();
         let output = run(
             FakeKind::new(),
@@ -1775,3 +1789,470 @@ fn a_cap_refusal_held_back_is_kept_when_the_file_is_gone_at_its_read() {
         assert!(entries.labelled.is_empty(), "{file}");
     }
 }
+
+fn pass(files: &dyn Files, entries: &mut FakeEntries, paths: &[&str]) -> Vec<Output> {
+    pass_of(FakeKind::promising(), files, entries, paths)
+}
+
+fn pass_of(
+    kind: FakeKind,
+    files: &dyn Files,
+    entries: &mut FakeEntries,
+    paths: &[&str],
+) -> Vec<Output> {
+    let registry = kinds(kind);
+    let paths: Vec<Follow> = paths
+        .iter()
+        .map(|path| Follow {
+            path: PathBuf::from(path),
+            kind: None,
+        })
+        .collect();
+    let planned = follows::plan(&paths, &registry, files);
+    follows::keep(&planned, files, entries).expect("a pass")
+}
+
+fn emptied(entries: &FakeEntries) -> Vec<&str> {
+    entries
+        .seen
+        .iter()
+        .filter(|seen| seen.ends.is_empty())
+        .map(|seen| seen.label.as_str())
+        .collect()
+}
+
+fn entry(entries: FakeEntries, label: &str, n: u8) -> FakeEntries {
+    entries.kept_under(Some(label), id(n), "fake", Tags::default())
+}
+
+#[test]
+fn a_follow_withdraws_the_entry_of_a_gone_file_when_its_kind_says_so() {
+    let files = Memory::new().file("/t/a.fake", "x|");
+    let mut entries = entry(
+        entry(FakeEntries::new().resolving(), "file:/t/a.fake", 5),
+        "file:/t/gone.fake",
+        6,
+    );
+    entries
+        .heads
+        .get_mut("file:/t/gone.fake")
+        .expect("a head")
+        .generation = Generation(4);
+    let outputs = pass(&files, &mut entries, &["/t"]);
+
+    assert_eq!(emptied(&entries), ["file:/t/gone.fake"]);
+    let after = entries.heads["file:/t/gone.fake"];
+    assert_eq!((after.generation, after.records), (Generation(5), 0));
+    let seen = entries
+        .seen
+        .iter()
+        .find(|seen| seen.ends.is_empty())
+        .expect("one");
+    assert_eq!((seen.stamp, seen.bytes.len(), seen.id), (None, 0, None));
+    assert!(entries.labelled.is_empty() && entries.adopted.is_empty());
+    let item = outputs[0].items.last().expect("an item");
+    assert_eq!(item.path, Path::new("/t/gone.fake"));
+    assert_eq!(item.outcome, Outcome::NewGeneration(id(6)));
+    assert_eq!(item.withdrew, Some(Generation(4)));
+}
+
+#[test]
+fn a_kind_that_does_not_say_so_keeps_every_entry_and_the_store_is_not_asked() {
+    let files = Memory::new().file("/t/a.fake", "x|");
+    let mut entries = entry(FakeEntries::new(), "file:/t/gone.fake", 6);
+    pass_of(FakeKind::new(), &files, &mut entries, &["/t"]);
+    assert_eq!(entries.seen.len(), 1);
+    assert!(emptied(&entries).is_empty());
+}
+
+#[test]
+fn a_follow_that_claims_no_file_withdraws_nothing() {
+    let files = Memory::new().folder("/t");
+    let mut entries = entry(
+        entry(FakeEntries::new().resolving(), "file:/t/a.fake", 1),
+        "file:/t/b.fake",
+        2,
+    );
+    let registry = kinds(FakeKind::promising());
+    let named = [Follow {
+        path: PathBuf::from("/t"),
+        kind: Some("fake".to_string()),
+    }];
+    let planned = follows::plan(&named, &registry, &files);
+    let outputs = follows::keep(&planned, &files, &mut entries).expect("a pass");
+    assert!(entries.seen.is_empty());
+    assert!(outputs[0].items.is_empty());
+}
+
+#[test]
+fn a_missing_follow_and_a_follow_of_one_file_withdraw_nothing() {
+    let files = Memory::new().file("/t/a.fake", "x|");
+    let mut entries = entry(
+        entry(FakeEntries::new().resolving(), "file:/gone/b.fake", 1),
+        "file:/t/gone.fake",
+        2,
+    );
+    pass(&files, &mut entries, &["/gone", "/t/a.fake"]);
+    assert!(emptied(&entries).is_empty());
+    assert_eq!(entries.seen.len(), 1);
+    assert_eq!(entries.seen[0].label, "file:/t/a.fake");
+
+    let files = Memory::new().file("/t/a.fake", "x|");
+    let mut entries = entry(
+        entry(FakeEntries::new().resolving(), "file:/t/a.fake/one.fake", 8),
+        "file:/t/a.fake/two.fake",
+        9,
+    );
+    let heads = entries.heads.clone();
+    pass(&files, &mut entries, &["/t/a.fake"]);
+    assert!(emptied(&entries).is_empty());
+    assert_eq!(
+        entries.heads["file:/t/a.fake/one.fake"],
+        heads["file:/t/a.fake/one.fake"]
+    );
+    assert_eq!(
+        entries.heads["file:/t/a.fake/two.fake"],
+        heads["file:/t/a.fake/two.fake"]
+    );
+    assert_eq!(entries.seen.len(), 1);
+    assert_eq!(entries.seen[0].label, "file:/t/a.fake");
+}
+
+#[test]
+fn only_a_path_with_nothing_at_it_is_gone() {
+    let files = Memory::new()
+        .file("/t/keep.fake", "x|")
+        .denied("/t/denied.fake")
+        .folder("/t/dir.fake")
+        .other("/t/link.fake");
+    let mut entries = FakeEntries::new().resolving();
+    for (n, label) in [
+        "file:/t/denied.fake",
+        "file:/t/dir.fake",
+        "file:/t/link.fake",
+        "file:/t/gone.fake",
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        entries = entry(entries, label, n as u8 + 1);
+    }
+    pass(&files, &mut entries, &["/t"]);
+    assert_eq!(emptied(&entries), ["file:/t/gone.fake"]);
+}
+
+#[test]
+fn an_entry_that_is_already_empty_is_left_alone() {
+    let files = Memory::new().file("/t/a.fake", "x|");
+    let mut entries = entry(FakeEntries::new().resolving(), "file:/t/gone.fake", 6);
+    entries
+        .heads
+        .get_mut("file:/t/gone.fake")
+        .expect("a head")
+        .records = 0;
+    let outputs = pass(&files, &mut entries, &["/t"]);
+    assert!(emptied(&entries).is_empty());
+    assert_eq!(outputs[0].items.len(), 1);
+}
+
+#[test]
+fn an_entry_of_another_kind_or_from_another_folder_is_left_alone() {
+    let files = Memory::new().file("/t/a.fake", "x|");
+    let mut entries = FakeEntries::new().resolving().kept_under(
+        Some("file:/t/other.fake"),
+        id(1),
+        "other",
+        Tags::default(),
+    );
+    for (n, label) in ["file:/t2/g.fake", "file:/T/g.fake", "file:/x/t/g.fake"]
+        .into_iter()
+        .enumerate()
+    {
+        entries = entry(entries, label, n as u8 + 2);
+    }
+    pass(&files, &mut entries, &["/t"]);
+    assert!(emptied(&entries).is_empty());
+}
+
+#[test]
+fn an_entry_claimed_under_another_of_its_files_is_not_gone() {
+    let files = Memory::new()
+        .file("/t/a.fake.z", "zx|")
+        .file("/t/keep.fake", "x|");
+    let mut entries = entry(FakeEntries::new().resolving(), "file:/t/a.fake", 3)
+        .on("file:/t/a.fake", Script::Appended);
+    let outputs = pass(&files, &mut entries, &["/t"]);
+    assert!(emptied(&entries).is_empty());
+    assert!(
+        entries
+            .seen
+            .iter()
+            .any(|seen| seen.label == "file:/t/a.fake" && seen.bytes == b"x|")
+    );
+    assert_eq!(outputs[0].items[0].path, Path::new("/t/a.fake.z"));
+    assert_eq!(outputs[0].items[0].outcome, Outcome::Appended(id(3)));
+    assert_eq!(outputs[0].tally().refused, 0);
+}
+
+#[test]
+fn an_entry_that_moved_in_this_pass_is_not_withdrawn() {
+    let files = Memory::new().file("/t/new.fake", with_id("x|").as_bytes());
+    let mut entries = holder("file:/t/old.fake").resolving();
+    pass(&files, &mut entries, &["/t"]);
+    assert_eq!(moves(&entries).len(), 1);
+    assert!(emptied(&entries).is_empty());
+}
+
+#[test]
+fn withdrawn_entries_are_items_after_the_claimed_files_in_path_order() {
+    let files = Memory::new().file("/t/x.fake", "x|");
+    let mut entries = entry(
+        entry(FakeEntries::new().resolving(), "file:/t/m.fake", 9),
+        "file:/t/z.fake",
+        2,
+    );
+    let outputs = pass(&files, &mut entries, &["/t"]);
+    let output = &outputs[0];
+    let paths: Vec<&str> = output
+        .items
+        .iter()
+        .map(|item| item.path.to_str().expect("utf-8"))
+        .collect();
+    assert_eq!(paths, ["/t/x.fake", "/t/m.fake", "/t/z.fake"]);
+    assert_eq!(output.tally().new_generation, 2);
+    assert_eq!((output.records, output.raw_bytes), (1, 2));
+    assert_eq!(output.stored_bytes, (2 + 100) + 100 + 100);
+}
+
+#[test]
+fn an_entry_moved_from_one_follow_to_another_is_moved_and_not_withdrawn_in_either_order() {
+    for order in [["/a", "/b"], ["/b", "/a"]] {
+        let files = Memory::new()
+            .file("/a/keep.fake", "x|")
+            .file("/b/new.fake", with_id("x|").as_bytes());
+        let mut entries = holder("file:/a/old.fake").resolving();
+        let outputs = pass(&files, &mut entries, &order);
+        assert_eq!(moves(&entries).len(), 1, "{order:?}");
+        assert!(emptied(&entries).is_empty(), "{order:?}");
+        let with_move: Vec<&Output> = outputs
+            .iter()
+            .filter(|output| output.items.iter().any(|item| item.moved.is_some()))
+            .collect();
+        assert_eq!(with_move.len(), 1, "{order:?}");
+        assert_eq!(with_move[0].target, Path::new("/b"), "{order:?}");
+    }
+}
+
+#[test]
+fn a_follow_whose_claimed_files_were_all_refused_withdraws_nothing() {
+    let before = Memory::new().file("/t/a.fake", "x|");
+    let files = Turning::new(before, Memory::new(), Call::Stamp, "/t/a.fake");
+    let mut entries = entry(
+        entry(FakeEntries::new().resolving(), "file:/t/b.fake", 1),
+        "file:/t/c.fake",
+        2,
+    );
+    let outputs = pass(&files, &mut entries, &["/t"]);
+    assert_eq!(outputs[0].tally().refused, 1);
+    assert!(emptied(&entries).is_empty());
+}
+
+#[test]
+fn a_follow_above_another_withdraws_under_it_when_it_still_shows_a_file() {
+    for sub_shows_a_file in [true, false] {
+        let mut files = Memory::new().file("/n/x.fake", "x|").folder("/n/sub");
+        if sub_shows_a_file {
+            files = files.file("/n/sub/y.fake", "x|");
+        }
+        let mut entries = entry(FakeEntries::new().resolving(), "file:/n/sub/gone.fake", 4);
+        let outputs = pass(&files, &mut entries, &["/n", "/n/sub"]);
+        assert_eq!(
+            emptied(&entries),
+            ["file:/n/sub/gone.fake"],
+            "{sub_shows_a_file}"
+        );
+        let said: Vec<(&Path, &Path)> = outputs
+            .iter()
+            .flat_map(|output| {
+                output
+                    .items
+                    .iter()
+                    .filter(|item| item.withdrew.is_some())
+                    .map(move |item| (output.target.as_path(), item.path.as_path()))
+            })
+            .collect();
+        assert_eq!(
+            said,
+            [(Path::new("/n"), Path::new("/n/sub/gone.fake"))],
+            "{sub_shows_a_file}"
+        );
+    }
+}
+
+#[test]
+fn an_entry_whose_name_the_volume_folds_onto_another_file_is_gone() {
+    let files = Memory::new()
+        .file("/t/N.fake", "x|")
+        .alias("/t/n.fake", "/t/N.fake");
+    let mut entries = entry(FakeEntries::new().resolving(), "file:/t/n.fake", 3);
+    pass(&files, &mut entries, &["/t"]);
+    assert_eq!(emptied(&entries), ["file:/t/n.fake"]);
+}
+
+#[test]
+fn a_follow_of_the_root_withdraws_under_it() {
+    let files = Memory::new().file("/a.fake", "x|");
+    let mut entries = entry(FakeEntries::new().resolving(), "file:/d/b.fake", 3);
+    pass(&files, &mut entries, &["/"]);
+    assert_eq!(emptied(&entries), ["file:/d/b.fake"]);
+}
+
+#[test]
+fn an_entry_whose_file_was_refused_under_another_name_is_not_withdrawn_in_that_pass() {
+    let files = Memory::new()
+        .file("/t/b.fake", with_id("x|").as_bytes())
+        .file("/t/c.fake", "x|");
+    let (a, b) = (held(), id(7));
+    let mut entries = FakeEntries::new()
+        .resolving()
+        .kept_under(Some("file:/t/a.fake"), a, "fake", Tags::default())
+        .kept_under(Some("file:/t/b.fake"), b, "fake", Tags::default());
+    entries
+        .heads
+        .get_mut("file:/t/b.fake")
+        .expect("a head")
+        .records = 0;
+    let (heads, metas) = (entries.heads.clone(), entries.metas.clone());
+    let outputs = pass(&files, &mut entries, &["/t"]);
+    let refused = outputs[0]
+        .items
+        .iter()
+        .find(|item| item.path == Path::new("/t/b.fake"))
+        .expect("an item");
+    assert_eq!(
+        refused.outcome,
+        Outcome::Refused(format!(
+            "its id {HELD} is held by file:/t/a.fake, but this path was kept as entry {b}"
+        ))
+    );
+    assert_eq!(refused.carried, Some(a));
+    assert_eq!(entries.metas[&b], metas[&b]);
+    assert!(emptied(&entries).is_empty());
+    assert_eq!(entries.heads["file:/t/a.fake"], heads["file:/t/a.fake"]);
+    assert_eq!(entries.heads["file:/t/b.fake"], heads["file:/t/b.fake"]);
+    assert_eq!(entries.metas[&a], metas[&a]);
+
+    for order in [["/a", "/b"], ["/b", "/a"]] {
+        let files = Memory::new()
+            .file("/b/b.fake", with_id("x|").as_bytes())
+            .file("/a/s.fake", "x|");
+        let mut entries = FakeEntries::new()
+            .resolving()
+            .kept_under(Some("file:/a/a.fake"), a, "fake", Tags::default())
+            .kept_under(Some("file:/b/b.fake"), b, "fake", Tags::default());
+        entries
+            .heads
+            .get_mut("file:/b/b.fake")
+            .expect("a head")
+            .records = 0;
+        let (heads, metas) = (entries.heads.clone(), entries.metas.clone());
+        let outputs = pass(&files, &mut entries, &order);
+        assert!(emptied(&entries).is_empty(), "{order:?}");
+        let refused = outputs
+            .iter()
+            .find(|output| output.target == Path::new("/b"))
+            .and_then(|output| {
+                output
+                    .items
+                    .iter()
+                    .find(|item| item.path == Path::new("/b/b.fake"))
+            })
+            .expect("an item of /b");
+        assert_eq!(
+            refused.outcome,
+            Outcome::Refused(format!(
+                "its id {HELD} is held by file:/a/a.fake, but this path was kept as entry {b}"
+            )),
+            "{order:?}"
+        );
+        assert_eq!(refused.carried, Some(a), "{order:?}");
+        for label in ["file:/a/a.fake", "file:/b/b.fake"] {
+            assert_eq!(entries.heads[label], heads[label], "{order:?}");
+        }
+        for entry in [a, b] {
+            assert_eq!(entries.metas[&entry], metas[&entry], "{order:?}");
+        }
+    }
+}
+
+#[test]
+fn an_entry_whose_file_took_a_name_its_kind_does_not_claim_is_gone() {
+    let files = Memory::new()
+        .file("/t/n.FAKE", "x|")
+        .alias("/t/n.fake", "/t/n.FAKE")
+        .file("/t/keep.fake", "x|");
+    let mut entries = entry(FakeEntries::new().resolving(), "file:/t/n.fake", 3);
+    pass(&files, &mut entries, &["/t"]);
+    assert_eq!(emptied(&entries), ["file:/t/n.fake"]);
+    assert!(
+        entries
+            .seen
+            .iter()
+            .all(|seen| seen.label != "file:/t/n.FAKE")
+    );
+}
+
+#[test]
+fn a_withdrawal_the_store_does_not_make_is_a_refusal_of_the_gone_path() {
+    let rows = [
+        (
+            Script::Records("bad ends".to_string()),
+            "its records do not cover it: bad ends".to_string(),
+        ),
+        (
+            Script::IdHeld(None),
+            format!("its id {} is held by another entry", id(6)),
+        ),
+        (Script::Unchanged, NOT_WITHDRAWN.to_string()),
+        (Script::Appended, NOT_WITHDRAWN.to_string()),
+        (Script::New, NOT_WITHDRAWN.to_string()),
+    ];
+    for (n, (script, reason)) in rows.into_iter().enumerate() {
+        let files = Memory::new().file("/t/a.fake", "x|");
+        let mut entries = entry(
+            entry(FakeEntries::new().resolving(), "file:/t/a.fake", 5),
+            "file:/t/gone.fake",
+            6,
+        )
+        .on("file:/t/gone.fake", script);
+        let head = entries.heads["file:/t/gone.fake"];
+        let outputs = pass(&files, &mut entries, &["/t"]);
+        let output = &outputs[0];
+        let item = output.items.last().expect("an item");
+        assert_eq!(item.path, Path::new("/t/gone.fake"), "row {}", n + 1);
+        assert_eq!(item.outcome, Outcome::Refused(reason), "row {}", n + 1);
+        assert_eq!(
+            (item.withdrew, item.moved.is_none(), item.carried),
+            (None, true, None),
+            "row {}",
+            n + 1
+        );
+        assert_eq!(
+            (output.tally().refused, output.tally().new_generation),
+            (1, 0),
+            "row {}",
+            n + 1
+        );
+        assert_eq!(
+            (output.records, output.raw_bytes, output.stored_bytes),
+            (1, 2, 102),
+            "row {}",
+            n + 1
+        );
+        if n < 2 {
+            assert_eq!(entries.heads["file:/t/gone.fake"], head, "row {}", n + 1);
+        }
+    }
+}
+
+const NOT_WITHDRAWN: &str = "its file is gone, and the store did not withdraw its entry";

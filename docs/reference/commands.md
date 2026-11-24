@@ -114,11 +114,22 @@ An entry is found again by its capture label (`file:<absolute path>`): the path 
 
 - **new**: no entry has this capture label yet, and none holds the file's `id`.
 - **appended**: the earlier bytes are unchanged and the file gained records; only those are kept.
-- **new generation**: an earlier record changed, or the file shrank. The older generation stays readable.
+- **new generation**: an earlier record changed, the file shrank, or the file is gone from a follow ([A file that is gone](#a-file-that-is-gone)). The older generation stays readable.
 - **unchanged**: nothing to keep. A file that was only renamed is unchanged too: the run writes its move alone, so `stored bytes` is over 0. A file whose size and modification time are those of its last capture is not even read, while the catalog holds that capture's stamp; a file written within two seconds before a run looked at it is read again by the next run.
 - **refused**: the file is named on stderr with its reason, and the run goes on.
 
-A file that left the folder keeps its entry.
+### A file that is gone
+
+Nothing is ever taken out of the store: an entry outlives its file, and `bilbo read` reads it. What a gone file does to `recall` depends on the kind, and only a pass over the follows looks: [`bilbo refresh`](#refresh), or the pass another bilbo runs for it.
+
+- A `session` file that is gone changes nothing. Harnesses delete old sessions, and keeping them is what bilbo is for: the entry stays as it was, in `recall` too.
+- A `markdown` file that is gone from a followed folder withdraws its entry: the entry gets a new generation with no record, so `recall` no longer gives that entry once the run has brought the index up to date. stderr says `withdrew <path>: its file is gone; bilbo read <id>#g<n> prints the outline of what it held`, and the entry counts in `new generation`. `bilbo read <id>#g<n>:r<a>-<b>` prints its records. When the file is back with text, the next run keeps it into the same entry, as `appended`.
+
+The pass keeps every follow's files first and looks for gone files after, so a note that was renamed or moved to another followed folder is moved, not withdrawn. A note whose file was refused in that pass because its new name was kept as another entry is not withdrawn either: its file is not gone. A follow withdraws only when it kept or found unchanged at least one of its files in that pass: a follow whose folder is missing, or shows no file, or whose files all vanished, withdraws nothing. So a folder that was emptied, or a disk that is not mounted, takes no note out of `recall`, and the last note a follow shows stays in `recall` when it is deleted, unless a follow above it still shows a file. Only a path the system says is not there is gone: one that cannot be looked at is left as it is. A follow of one file never withdraws.
+
+Each follow decides alone, for every entry kept under its folder: a follow above another one withdraws under it too. A subfolder that is a mount point and is not mounted looks like an empty folder, so the notes under it leave `recall` until it is back. A note is gone under its old path too when a file still answers there under another: on a volume that folds case, after its name or a folder above it changed only in case; or after a rename to a name its kind does not claim (`n.md` to `n.MD`). One limit: when the followed folder itself is renamed only in case, that follow no longer names the entries kept under its old spelling, as after any moved folder: a note with an `id` moves, and a note with none is kept again and stays twice, unless a follow above the folder still shows a file and withdraws the older entry.
+
+A run with a target withdraws nothing, and `bilbo remember <a file that is gone>` is an error.
 
 ### Packed sessions
 
@@ -185,7 +196,7 @@ A second `remember` with a target waits for the first one to finish writing the 
 bilbo refresh
 ```
 
-Keeps every follow, in order, into one store: what each followed folder or file gained or changed since the last run, as [`bilbo remember`](#remember) keeps a target. With no `[[follow]]` in the config file it follows `~/.claude/projects` and `~/.codex/sessions`, both as `session`. A follow whose folder or file is missing is skipped with one line on stderr, and one that claims nothing says so; neither is an error. A file or folder a follow cannot read is refused and counts in the totals, as under a target. `bilbo remember <target> --follow` declares a follow ([Follows](#follows)).
+Keeps every follow, in order, into one store: what each followed folder or file gained or changed since the last run, as [`bilbo remember`](#remember) keeps a target. With no `[[follow]]` in the config file it follows `~/.claude/projects` and `~/.codex/sessions`, both as `session`. A follow whose folder or file is missing is skipped with one line on stderr, and one that claims nothing says so; neither is an error. A file or folder a follow cannot read is refused and counts in the totals, as under a target. `bilbo remember <target> --follow` declares a follow ([Follows](#follows)). A Markdown file that is gone from a followed folder withdraws its entry ([A file that is gone](#a-file-that-is-gone)).
 
 It opens the store even when no follow claims a file, so it seals by age and rebuilds a lost catalog ([Sealing](#sealing)), and it brings the search index up to date as `remember` does ([The index](#the-index)). When another bilbo is writing the store it does not wait: it asks that bilbo for one more pass over the follows and exits 0 ([Two runs at once](#two-runs-at-once)).
 

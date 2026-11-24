@@ -5,7 +5,9 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
-use bilbo_store::entries::{Capture, CaptureError, Captured, Entries, Head, Meta, StoreError};
+use bilbo_store::entries::{
+    Capture, CaptureError, Captured, Entries, Generation, Head, Meta, StoreError,
+};
 use bilbo_store::id::Id;
 use bilbo_store::labels::{CaptureLabel, StoredLabels, Tag, Tags};
 
@@ -60,6 +62,7 @@ pub struct Item {
     pub outcome: Outcome,
     pub moved: Option<Moved>,
     pub carried: Option<Id>,
+    pub withdrew: Option<Generation>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -92,6 +95,7 @@ impl Output {
                     outcome: Outcome::Refused(reason.clone()),
                     moved: None,
                     carried: None,
+                    withdrew: None,
                 })
                 .collect(),
             records: 0,
@@ -305,6 +309,7 @@ pub fn keep(
             outcome,
             moved: trail.moved,
             carried: trail.carried,
+            withdrew: None,
         });
     }
     Ok(output)
@@ -354,7 +359,15 @@ fn keep_file(
     for _ in 0..2 {
         for file in claim.files() {
             match look(kind, claim, file, &entry, files, entries, &mut trail)? {
-                Step::Done(done) => return Ok((file.clone(), done, trail)),
+                Step::Done(done) => {
+                    if matches!(done, Done::Refused(_))
+                        && trail.moved.is_none()
+                        && let Some((path, reason)) = trail.cap.take()
+                    {
+                        return Ok((path, Done::Refused(reason), trail));
+                    }
+                    return Ok((file.clone(), done, trail));
+                }
                 Step::Gone(error) => last = Some(error),
                 Step::NotAFile => not_a_file = true,
             }
@@ -388,22 +401,6 @@ fn look(
     entries: &mut dyn Entries,
     trail: &mut Trail,
 ) -> Result<Step, Error> {
-    let step = read_and_keep(kind, claim, file, entry, files, entries, trail)?;
-    Ok(match (&trail.cap, &trail.moved, step) {
-        (Some((_, reason)), None, Step::Done(Done::Refused(_))) => refused(reason.clone()),
-        (_, _, step) => step,
-    })
-}
-
-fn read_and_keep(
-    kind: &dyn Kind,
-    claim: &Claim,
-    file: &Path,
-    entry: &Held<'_>,
-    files: &dyn Files,
-    entries: &mut dyn Entries,
-    trail: &mut Trail,
-) -> Result<Step, Error> {
     match files.node(file) {
         Ok(Node::File) => {}
         Ok(_) => return Ok(Step::NotAFile),
@@ -422,7 +419,9 @@ fn read_and_keep(
             if entry.head.is_some() {
                 return Ok(refused(reason));
             }
-            trail.cap = Some((file.to_path_buf(), reason));
+            if trail.cap.is_none() {
+                trail.cap = Some((file.to_path_buf(), reason));
+            }
             Tags::default()
         }
     };
@@ -487,8 +486,8 @@ fn read_and_keep(
             Err(reason) => return Ok(refused(reason)),
         };
     }
-    if let Some((_, reason)) = trail.cap.take() {
-        return Ok(refused(reason));
+    if let Some((_, reason)) = &trail.cap {
+        return Ok(refused(reason.clone()));
     }
     let input = Capture {
         label: entry.label,

@@ -20,6 +20,7 @@ use bilbo_store::labels::{CaptureLabel, Labels, StoredLabels, Tag, Tagged, Tags}
 pub struct FakeKind {
     pub refused: Vec<(PathBuf, String)>,
     pub overrun: bool,
+    pub promises: bool,
 }
 
 impl FakeKind {
@@ -27,6 +28,14 @@ impl FakeKind {
         FakeKind {
             refused: Vec::new(),
             overrun: false,
+            promises: false,
+        }
+    }
+
+    pub fn promising() -> FakeKind {
+        FakeKind {
+            promises: true,
+            ..FakeKind::new()
         }
     }
 
@@ -127,6 +136,10 @@ impl Kind for FakeKind {
             .filter(|(_, byte)| **byte == b'|')
             .map(|(at, _)| at + 1)
             .collect())
+    }
+
+    fn withdraws_gone(&self) -> bool {
+        self.promises
     }
 
     fn propose(&self, label: &Path, bytes: &[u8], kept: &dyn Fn(&Path) -> Option<Id>) -> Proposal {
@@ -324,9 +337,20 @@ impl Entries for FakeEntries {
         });
         let n = u8::try_from(self.seen.len()).unwrap_or(u8::MAX);
         let held = self.heads.get(input.label.as_str()).map(|head| head.id);
+        let script = self.script.get(input.label.as_str()).cloned().unwrap_or(
+            if input.ends.is_empty() && held.is_some() {
+                Script::NewGeneration
+            } else {
+                Script::New
+            },
+        );
+        let generation = match (&script, self.heads.get(input.label.as_str())) {
+            (Script::NewGeneration, Some(head)) => Generation(head.generation.0 + 1),
+            _ => Generation(1),
+        };
         let kept = Kept {
             id: held.or(input.id).unwrap_or_else(|| id(n)),
-            generation: Generation(1),
+            generation,
             records: RecordRange {
                 first: 1,
                 count: input.ends.len() as u64,
@@ -334,11 +358,6 @@ impl Entries for FakeEntries {
             raw_bytes: input.bytes.len() as u64,
             stored_bytes: input.bytes.len() as u64 + 100,
         };
-        let script = self
-            .script
-            .get(input.label.as_str())
-            .cloned()
-            .unwrap_or(Script::New);
         if matches!(
             script,
             Script::New | Script::Appended | Script::NewGeneration | Script::Unchanged
@@ -357,7 +376,7 @@ impl Entries for FakeEntries {
                 input.label.to_string(),
                 Head {
                     id: kept.id,
-                    generation: Generation(1),
+                    generation: kept.generation,
                     records: kept.records.count,
                     mark: Mark { end: 0, hash: 0 },
                     stamp: input.stamp,

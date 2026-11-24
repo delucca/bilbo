@@ -127,6 +127,7 @@ mod tests {
                     outcome,
                     moved: None,
                     carried: None,
+                    withdrew: None,
                 })
                 .collect(),
             records: 3,

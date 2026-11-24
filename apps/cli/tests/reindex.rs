@@ -1985,6 +1985,44 @@ fn words_on_a_catalog_made_again_are_said_to_be_incomplete() {
     );
 }
 
+#[test]
+fn a_withdrawn_entry_leaves_the_index_and_comes_back_with_its_file() {
+    let sandbox = Sandbox::new("withdrawn_index");
+    fs::write(
+        sandbox.dir.join("config/config.toml"),
+        format!(
+            "[[follow]]\npath = {:?}\nkind = \"markdown\"\n",
+            sandbox.path("notes")
+        ),
+    )
+    .expect("a config that follows the notes");
+    sandbox.write("notes/a.md", b"# A\n\na note about giraffes\n");
+    sandbox.write("notes/b.md", b"# B\n\na note about zebras\n");
+    assert_eq!(sandbox.run(&["refresh"]).code, 0);
+    let hits = sandbox.rank("zebras", 5);
+    assert_eq!(hits.len(), 1);
+    let entry = hits[0].found.entry;
+
+    fs::remove_file(sandbox.dir.join("notes/b.md")).expect("remove");
+    let run = sandbox.run(&["refresh"]);
+    assert_eq!(run.code, 0, "{:?}", run.stderr);
+    assert!(sandbox.rank("zebras", 5).is_empty());
+    let recalled = sandbox.run(&["recall", "--", "zebras"]);
+    assert_eq!(recalled.code, 1, "{:?}", recalled.stderr);
+    assert_eq!(recalled.stdout, "");
+    assert_eq!(
+        recalled.stderr.last().map(String::as_str),
+        Some("bilbo: nothing matched")
+    );
+
+    sandbox.write("notes/b.md", b"# B\n\na note about zebras\n");
+    let run = sandbox.run(&["refresh"]);
+    assert_eq!(run.code, 0, "{:?}", run.stderr);
+    let back = sandbox.rank("zebras", 5);
+    assert_eq!(back.len(), 1);
+    assert_eq!(back[0].found.entry, entry);
+}
+
 type Indexer = Box<dyn Fn(&Path) -> Box<dyn Index>>;
 
 #[test]

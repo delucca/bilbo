@@ -1,11 +1,14 @@
+use std::collections::BTreeSet;
 use std::io;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
-use bilbo_store::entries::Entries;
+use bilbo_store::entries::{Capture, CaptureError, Captured, Entries};
+use bilbo_store::id::Id;
+use bilbo_store::labels::Tags;
 
-use crate::files::Files;
-use crate::kind::Kind;
-use crate::remember::{self, Error, Output, Plan, Request, Tagging};
+use crate::files::{At, Files, Node, at};
+use crate::kind::{Claim, Kind};
+use crate::remember::{self, Error, Item, Outcome, Output, Plan, Request, Tagging};
 
 /// A `None` kind is detected as a target's is.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -52,13 +55,118 @@ pub fn keep(
     files: &dyn Files,
     entries: &mut dyn Entries,
 ) -> Result<Vec<Output>, Error> {
+    let mut plans = Vec::new();
     let mut outputs = Vec::new();
     for planned in planned {
         if let Planned::Ready(_, plan) = planned {
             outputs.push(remember::keep(plan, files, entries)?);
+            plans.push(plan);
         }
     }
+    let protected: BTreeSet<Id> = outputs
+        .iter()
+        .flat_map(|output| &output.items)
+        .filter_map(|item| item.carried)
+        .collect();
+    for (plan, output) in plans.into_iter().zip(&mut outputs) {
+        withdraw_gone(plan, output, &protected, files, entries)?;
+    }
     Ok(outputs)
+}
+
+fn withdraw_gone(
+    plan: &Plan<'_>,
+    output: &mut Output,
+    protected: &BTreeSet<Id>,
+    files: &dyn Files,
+    entries: &mut dyn Entries,
+) -> Result<(), Error> {
+    let Some(kind) = plan.kind.filter(|kind| kind.withdraws_gone()) else {
+        return Ok(());
+    };
+    let seen = output
+        .items
+        .iter()
+        .any(|item| !matches!(item.outcome, Outcome::Refused(_)));
+    let Some(target) = plan.target.to_str().filter(|_| seen) else {
+        return Ok(());
+    };
+    if !matches!(files.node(&plan.target), Ok(Node::Folder)) {
+        return Ok(());
+    }
+    let claimed: BTreeSet<&Path> = plan.claims.iter().map(Claim::label).collect();
+    let mut gone = Vec::new();
+    for (id, label) in entries.captures_with(target)? {
+        let Some(path) = label.path() else {
+            continue;
+        };
+        if !path
+            .strip_prefix(&plan.target)
+            .is_ok_and(|rest| !rest.as_os_str().is_empty())
+            || claimed.contains(path)
+            || protected.contains(&id)
+        {
+            continue;
+        }
+        if entries
+            .meta(id)?
+            .is_none_or(|meta| meta.kind != kind.name())
+        {
+            continue;
+        }
+        let Some(head) = entries.by_capture(&label)?.filter(|head| head.records > 0) else {
+            continue;
+        };
+        if matches!(at(files, path), At::Nothing | At::Elsewhere(_)) {
+            gone.push((path.to_path_buf(), label, head));
+        }
+    }
+    gone.sort_by(|a, b| {
+        a.0.as_os_str()
+            .as_encoded_bytes()
+            .cmp(b.0.as_os_str().as_encoded_bytes())
+    });
+    for (path, label, head) in gone {
+        let input = Capture {
+            label: &label,
+            kind: kind.name(),
+            id: None,
+            id_label: None,
+            tags: &Tags::default(),
+            stamp: None,
+            bytes: &[],
+            ends: &[],
+        };
+        match entries.capture(&input) {
+            Ok(Captured::NewGeneration(kept)) => {
+                output.stored_bytes += kept.stored_bytes;
+                output.items.push(Item {
+                    path,
+                    outcome: Outcome::NewGeneration(kept.id),
+                    moved: None,
+                    carried: None,
+                    withdrew: Some(head.generation),
+                });
+            }
+            Ok(_) => output.items.push(refusal(
+                path,
+                "its file is gone, and the store did not withdraw its entry".to_owned(),
+            )),
+            Err(CaptureError::Store(error)) => return Err(error.into()),
+            Err(error) => output.items.push(refusal(path, error.to_string())),
+        }
+    }
+    Ok(())
+}
+
+fn refusal(path: PathBuf, reason: String) -> Item {
+    Item {
+        path,
+        outcome: Outcome::Refused(reason),
+        moved: None,
+        carried: None,
+        withdrew: None,
+    }
 }
 
 #[cfg(test)]

@@ -77,6 +77,9 @@ pub trait Kind {
     fn split(&self, bytes: &[u8]) -> Result<Vec<usize>, Refusal>;
     /// `label` is the claim's; `kept` gives the entry kept for another label, if any.
     fn propose(&self, label: &Path, bytes: &[u8], kept: &dyn Fn(&Path) -> Option<Id>) -> Proposal;
+    fn withdraws_gone(&self) -> bool {
+        false
+    }
 }
 
 #[cfg(test)]
@@ -114,6 +117,11 @@ mod tests {
         let bytes = b"as read".to_vec();
         let kind = Suffix::new("one", ".one");
         assert_eq!(kind.unpack(Path::new("/t/a"), bytes.clone()), Ok(bytes));
+    }
+
+    #[test]
+    fn a_kind_keeps_the_entry_of_a_gone_file_unless_it_says_otherwise() {
+        assert!(!Suffix::new("one", ".one").withdraws_gone());
     }
 
     #[test]

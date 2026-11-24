@@ -180,6 +180,7 @@ fn remembered() -> Output {
         outcome,
         moved: None,
         carried: None,
+        withdrew: None,
     };
     let id = |byte: u8| Id::from_bytes([byte; 16]);
     Output {

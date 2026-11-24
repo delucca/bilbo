@@ -538,6 +538,44 @@ fn a_move_is_not_said_when_the_runs_store_fails_at_the_close() {
 }
 
 #[test]
+fn a_pass_served_for_another_bilbo_says_what_it_moved_and_withdrew() {
+    let sandbox = Sandbox::new("served_moved_withdrew");
+    let a = sandbox.write("a.md", note_with(ID_A, "A"));
+    let b = sandbox.write("b.md", "b\n");
+    sandbox.write("c.md", "c\n");
+    write(
+        &sandbox.dir.join("config/config.toml"),
+        format!(
+            "[[follow]]\npath = \"{}\"\nkind = \"markdown\"\n",
+            text(&sandbox.notes())
+        )
+        .as_bytes(),
+    );
+    assert_eq!(sandbox.remember_notes().counts(), counts(3, 0, 0, 0, 0));
+    let id = sandbox.entry(&b).0.id;
+    let renamed = sandbox.notes().join("a2.md");
+    fs::rename(&a, &renamed).expect("rename");
+    fs::remove_file(&b).expect("remove");
+    let other = sandbox.dir.join("other/x.md");
+    write(&other, b"x\n");
+    fs::write(sandbox.layout().state.join("store.again"), b"1").expect("the flag");
+
+    let run = sandbox.remember(&[text(&other)]);
+    assert_eq!(run.code, 0, "{:?}", run.stderr);
+    assert_eq!(
+        run.stderr,
+        [
+            moved_line(&renamed, ID_A, &a),
+            format!(
+                "bilbo: withdrew {}: its file is gone; bilbo read {id}#g1 prints the outline of what it held",
+                text(&b)
+            ),
+            "bilbo: ran the follows again for another bilbo: new 0, appended 0, new generation 1, unchanged 2, refused 0".to_owned(),
+        ]
+    );
+}
+
+#[test]
 fn a_note_moved_out_of_a_folder_that_became_a_file_moves_its_entry() {
     let sandbox = Sandbox::new("moved_out_of_a_folder_that_became_a_file");
     let old = sandbox.write("sub/n.md", note_with(ID_A, "A"));
@@ -647,7 +685,7 @@ fn a_named_hidden_file_is_taken() {
 }
 
 #[test]
-fn a_file_that_left_the_folder_keeps_its_entry() {
+fn a_target_run_withdraws_nothing_for_a_file_that_is_gone() {
     let sandbox = Sandbox::new("file_left");
     sandbox.write("a.md", "a\n");
     let gone = sandbox.write("b.md", "b\n");
@@ -657,6 +695,7 @@ fn a_file_that_left_the_folder_keeps_its_entry() {
     assert_eq!(run.code, 0);
     assert_eq!(run.counts(), counts(0, 0, 0, 1, 0));
     assert_eq!(sandbox.entries().len(), 2);
+    assert_eq!(sandbox.entry(&gone).1.records, 1);
 }
 
 #[test]

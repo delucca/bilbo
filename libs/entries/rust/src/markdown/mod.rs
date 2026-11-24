@@ -81,6 +81,10 @@ impl Kind for Markdown {
         ".md files, one record per line"
     }
 
+    fn withdraws_gone(&self) -> bool {
+        true
+    }
+
     fn claims(&self, files: &dyn Files, target: &Path) -> Claims {
         let mut claims = Claims::default();
         match files.node(target) {
@@ -154,6 +158,11 @@ mod tests {
     use crate::files::Memory;
 
     use super::*;
+
+    #[test]
+    fn a_file_that_is_gone_withdraws_its_entry() {
+        assert!(Markdown::default().withdraws_gone());
+    }
 
     const FIXTURES: [(&str, &[u8]); 6] = [
         ("note.md", include_bytes!("../../fixtures/markdown/note.md")),

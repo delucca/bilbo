@@ -12,6 +12,7 @@ use bilbo_cli::console::settings;
 use bilbo_cli::remember::save::{Saved, Saving, save_with};
 use bilbo_entries::follows::Follow;
 use bilbo_store::entries::{Entries, Generation, Head, Meta, RecordRange};
+use bilbo_store::id::Id;
 use bilbo_store::labels::CaptureLabel;
 use bilbo_store::layout::Layout;
 use bilbo_store::segments::{Options, Store};
@@ -1014,6 +1015,7 @@ fn a_rerun_with_a_follow_that_cannot_run_exits_1() {
 }
 
 const NOTE_ID: &str = "01JC5Q3V7XKM4P8R2T6W9YB0DE";
+const NOTE_ID_B: &str = "01JC5Q3V7XKM4P8R2T6W9YB0DF";
 
 fn note_text() -> String {
     format!("---\nid: {NOTE_ID}\n---\n# A\n")
@@ -1027,7 +1029,7 @@ fn moved_line(new: &Path, old: &Path) -> String {
     )
 }
 
-fn one_note_followed(test: &str) -> (Sandbox, PathBuf, PathBuf) {
+fn one_note_followed(test: &str, second: bool) -> (Sandbox, PathBuf, PathBuf) {
     let sandbox = Sandbox::new(test);
     let notes = sandbox.dir.join("notes");
     let old = notes.join("a.md");
@@ -1040,20 +1042,26 @@ fn one_note_followed(test: &str) -> (Sandbox, PathBuf, PathBuf) {
         )
         .as_bytes(),
     );
+    if second {
+        write(&notes.join("z.md"), b"z\n");
+    }
     let run = sandbox.refresh();
     assert_eq!(run.code, 0, "{:?}", run.stderr);
     assert_eq!(
         run.stdout.lines().next(),
-        Some(counts(1, 0, 0, 0, 0).as_str())
+        Some(counts(1 + u64::from(second), 0, 0, 0, 0).as_str())
     );
     let new = notes.join("b.md");
     fs::rename(&old, &new).expect("rename");
+    if second {
+        fs::remove_file(notes.join("z.md")).expect("remove the second note");
+    }
     (sandbox, old, new)
 }
 
 #[test]
 fn refresh_does_not_say_a_move_when_its_store_fails_at_the_close() {
-    let (sandbox, _, _) = one_note_followed("refresh_move_failed_close");
+    let (sandbox, _, _) = one_note_followed("refresh_move_failed_close", true);
     backdate(&sandbox.layout().state, 61);
     let root = sandbox.layout().root;
     fs::set_permissions(&root, fs::Permissions::from_mode(0o500)).expect("lock the root");
@@ -1062,7 +1070,7 @@ fn refresh_does_not_say_a_move_when_its_store_fails_at_the_close() {
     assert_eq!(run.code, 1, "{:?}", run.stderr);
     assert_eq!(
         run.stdout.lines().next(),
-        Some(counts(0, 0, 0, 1, 0).as_str())
+        Some(counts(0, 0, 1, 1, 0).as_str())
     );
     assert_eq!(run.stderr.len(), 1, "{:?}", run.stderr);
     assert!(
@@ -1071,13 +1079,16 @@ fn refresh_does_not_say_a_move_when_its_store_fails_at_the_close() {
         run.stderr
     );
 
-    let (sandbox, old, new) = one_note_followed("refresh_move_failed_follow");
+    let (sandbox, old, new) = one_note_followed("refresh_move_failed_follow", false);
     let notes = sandbox.dir.join("notes");
+    let other = sandbox.dir.join("other");
+    write(&other.join("x.md"), b"x\n");
     write(
         &sandbox.dir.join("config/config.toml"),
         format!(
-            "[[follow]]\npath = \"{0}\"\nkind = \"markdown\"\n\n[[follow]]\npath = \"{0}\"\nkind = \"pdf\"\n",
-            text(&notes)
+            "[[follow]]\npath = \"{}\"\nkind = \"markdown\"\n\n[[follow]]\npath = \"{}\"\nkind = \"pdf\"\n",
+            text(&notes),
+            text(&other)
         )
         .as_bytes(),
     );
@@ -1092,11 +1103,298 @@ fn refresh_does_not_say_a_move_when_its_store_fails_at_the_close() {
         [
             format!(
                 "bilbo: follow {}: unknown kind 'pdf'; kinds: markdown, session",
-                text(&notes)
+                text(&other)
             ),
             moved_line(&new, &old),
         ]
     );
+}
+
+fn followed_notes(test: &str, names: &[(&str, &str)]) -> (Sandbox, PathBuf) {
+    let sandbox = Sandbox::new(test);
+    let notes = sandbox.dir.join("notes");
+    for (name, text) in names {
+        write(&notes.join(name), text.as_bytes());
+    }
+    write(
+        &sandbox.dir.join("config/config.toml"),
+        format!(
+            "[[follow]]\npath = \"{}\"\nkind = \"markdown\"\n",
+            text(&notes)
+        )
+        .as_bytes(),
+    );
+    (sandbox, notes)
+}
+
+fn withdrew_line(path: &Path, id: Id, generation: u32) -> String {
+    format!(
+        "bilbo: withdrew {}: its file is gone; bilbo read {id}#g{generation} prints the outline of what it held",
+        text(path)
+    )
+}
+
+#[test]
+fn a_follow_withdraws_a_markdown_file_that_is_gone() {
+    let (sandbox, notes) = followed_notes("withdraws", &[("a.md", "a\n"), ("b.md", "b\n")]);
+    assert_eq!(
+        sandbox.refresh().stdout.lines().next(),
+        Some(counts(2, 0, 0, 0, 0).as_str())
+    );
+    let gone = notes.join("b.md");
+    let id = sandbox.meta(&gone).id;
+    fs::remove_file(&gone).expect("remove");
+
+    let run = sandbox.refresh();
+    assert_eq!(run.code, 0, "{:?}", run.stderr);
+    assert_eq!(
+        run.stdout.lines().next(),
+        Some(counts(0, 0, 1, 1, 0).as_str())
+    );
+    let totals = run.stdout.lines().nth(1).expect("totals");
+    let stored: u64 = totals
+        .strip_prefix("records 0, raw bytes 0, stored bytes ")
+        .and_then(|number| number.parse().ok())
+        .unwrap_or_else(|| panic!("{totals}"));
+    assert!(stored > 0, "{totals}");
+    assert_eq!(run.stderr, [withdrew_line(&gone, id, 1)]);
+    let head = sandbox.head(&gone);
+    assert_eq!((head.generation, head.records), (Generation(2), 0));
+
+    let seg = sandbox.layout().state.join("open.seg");
+    let before = fs::metadata(&seg).expect("open.seg").len();
+    let again = sandbox.refresh();
+    assert_eq!(
+        again.stdout.lines().next(),
+        Some(counts(0, 0, 0, 1, 0).as_str())
+    );
+    assert_eq!(again.stderr, Vec::<String>::new());
+    assert_eq!(fs::metadata(&seg).expect("open.seg").len(), before);
+}
+
+#[test]
+fn a_file_that_comes_back_is_appended_into_its_entry() {
+    let (sandbox, notes) = followed_notes("comes_back", &[("a.md", "a\n"), ("b.md", "b\n")]);
+    sandbox.refresh();
+    let file = notes.join("b.md");
+    let id = sandbox.meta(&file).id;
+    fs::remove_file(&file).expect("remove");
+    sandbox.refresh();
+    write(&file, b"b again\n");
+
+    let run = sandbox.refresh();
+    assert_eq!(run.code, 0, "{:?}", run.stderr);
+    assert_eq!(
+        run.stdout.lines().next(),
+        Some(counts(0, 1, 0, 1, 0).as_str())
+    );
+    assert_eq!(sandbox.meta(&file).id, id);
+    assert_eq!(sandbox.head(&file).generation, Generation(2));
+    assert_eq!(sandbox.records(&file), [b"b again\n".to_vec()]);
+}
+
+#[test]
+fn a_follow_whose_folder_holds_no_file_withdraws_nothing() {
+    let (sandbox, notes) = followed_notes("emptied", &[("a.md", "a\n"), ("b.md", "b\n")]);
+    sandbox.refresh();
+    let heads = (
+        sandbox.head(&notes.join("a.md")),
+        sandbox.head(&notes.join("b.md")),
+    );
+    fs::remove_file(notes.join("a.md")).expect("remove");
+    fs::remove_file(notes.join("b.md")).expect("remove");
+
+    let run = sandbox.refresh();
+    assert_eq!(run.code, 0, "{:?}", run.stderr);
+    assert_eq!(
+        run.stdout.lines().next(),
+        Some(counts(0, 0, 0, 0, 0).as_str())
+    );
+    assert_eq!(
+        run.stderr,
+        [format!(
+            "bilbo: nothing to keep: markdown claims no file under {}",
+            text(&notes)
+        )]
+    );
+    assert_eq!(
+        (
+            sandbox.head(&notes.join("a.md")),
+            sandbox.head(&notes.join("b.md"))
+        ),
+        heads
+    );
+}
+
+#[test]
+fn a_session_whose_file_is_gone_keeps_its_entry_and_its_records() {
+    let sandbox = Sandbox::new("session_gone");
+    write(
+        &sandbox.sessions().join("2026/11/07").join(SECOND),
+        SECOND_BYTES,
+    );
+    let first = sandbox.refresh();
+    assert_eq!(first.code, 0, "{:?}", first.stderr);
+    let kept: u64 = first
+        .stdout
+        .lines()
+        .next()
+        .and_then(|line| line.strip_prefix("new "))
+        .and_then(|rest| rest.split(',').next())
+        .and_then(|number| number.parse().ok())
+        .expect("a count");
+    let rollout = sandbox.rollout();
+    let main = sandbox.main();
+    let before = (sandbox.head(&main), sandbox.head(&rollout));
+    let main_id = sandbox.meta(&main).id;
+    fs::remove_file(&main).expect("remove the main session");
+    fs::remove_file(&rollout).expect("remove the first rollout");
+
+    let run = sandbox.refresh();
+    assert_eq!(run.code, 0, "{:?}", run.stderr);
+    assert_eq!(run.stderr, Vec::<String>::new());
+    assert_eq!(
+        run.stdout.lines().next(),
+        Some(counts(0, 0, 0, kept - 2, 0).as_str())
+    );
+    assert_eq!((sandbox.head(&main), sandbox.head(&rollout)), before);
+    assert_eq!(sandbox.head(&main).generation, Generation(1));
+    assert!(!sandbox.records(&main).is_empty());
+    assert_eq!(sandbox.head(&rollout).generation, Generation(1));
+    assert!(!sandbox.records(&rollout).is_empty());
+    assert_eq!(sandbox.meta(&sandbox.subagent()).labels.id, Some(main_id));
+}
+
+#[test]
+fn a_follow_that_is_a_link_withdraws_under_the_folder_it_resolves_to() {
+    let sandbox = Sandbox::new("link_follow");
+    let real = sandbox.dir.join("real");
+    write(&real.join("a.md"), b"a\n");
+    write(&real.join("b.md"), b"b\n");
+    let link = sandbox.dir.join("link");
+    symlink(&real, &link).expect("a link");
+    write(
+        &sandbox.dir.join("config/config.toml"),
+        format!(
+            "[[follow]]\npath = \"{}\"\nkind = \"markdown\"\n",
+            text(&link)
+        )
+        .as_bytes(),
+    );
+    assert_eq!(
+        sandbox.refresh().stdout.lines().next(),
+        Some(counts(2, 0, 0, 0, 0).as_str())
+    );
+    let gone = real.join("b.md");
+    let id = sandbox.meta(&gone).id;
+    fs::remove_file(&gone).expect("remove");
+    let run = sandbox.refresh();
+    assert_eq!(run.code, 0, "{:?}", run.stderr);
+    assert_eq!(
+        run.stdout.lines().next(),
+        Some(counts(0, 0, 1, 1, 0).as_str())
+    );
+    assert_eq!(run.stderr, [withdrew_line(&gone, id, 1)]);
+}
+
+#[test]
+fn a_withdrawn_entry_keeps_its_tags() {
+    let (sandbox, notes) = followed_notes("withdrawn_tags", &[("b.md", "b\n")]);
+    let tagged = notes.join("a.md");
+    write(&tagged, b"a\n");
+    let run = sandbox.run(&[text(&tagged), "--tag", "garden"]);
+    assert_eq!(run.code, 0, "{:?}", run.stderr);
+    assert_eq!(sandbox.refresh().code, 0);
+    fs::remove_file(&tagged).expect("remove");
+    let run = sandbox.refresh();
+    assert_eq!(run.code, 0, "{:?}", run.stderr);
+    let carries = |meta: &Meta| {
+        meta.labels
+            .tags
+            .carried()
+            .any(|(tag, _)| tag.as_str() == "garden")
+    };
+    assert!(carries(&sandbox.meta(&tagged)));
+    write(&tagged, b"a again\n");
+    let run = sandbox.refresh();
+    assert_eq!(
+        run.stdout.lines().next(),
+        Some(counts(0, 1, 0, 1, 0).as_str())
+    );
+    assert!(carries(&sandbox.meta(&tagged)));
+}
+
+#[test]
+fn a_note_refused_under_another_notes_name_is_unchanged_when_it_is_moved_back() {
+    let note = |id: &str| format!("---\nid: {id}\n---\n# {id}\n");
+    let (sandbox, notes) = followed_notes(
+        "moved_back",
+        &[
+            ("a.md", &note(NOTE_ID)),
+            ("b.md", &note(NOTE_ID_B)),
+            ("c.md", "c\n"),
+        ],
+    );
+    assert_eq!(
+        sandbox.refresh().stdout.lines().next(),
+        Some(counts(3, 0, 0, 0, 0).as_str())
+    );
+    let (a, b) = (notes.join("a.md"), notes.join("b.md"));
+    let shape = |head: Head| (head.id, head.generation, head.records, head.mark);
+    let head_a = shape(sandbox.head(&a));
+    fs::remove_file(&b).expect("remove b");
+    let run = sandbox.refresh();
+    assert_eq!(run.code, 0, "{:?}", run.stderr);
+    assert_eq!(sandbox.head(&b).records, 0);
+    fs::rename(&a, &b).expect("a takes b's name");
+
+    let run = sandbox.refresh();
+    assert_eq!(run.code, 1, "{:?}", run.stderr);
+    assert_eq!(
+        run.stderr,
+        [format!(
+            "bilbo: refused {}: its id {NOTE_ID} is held by file:{}, but this path was kept as entry {NOTE_ID_B}",
+            text(&b),
+            text(&a)
+        )]
+    );
+    assert_eq!(shape(sandbox.head(&a)), head_a);
+
+    fs::rename(&b, &a).expect("back again");
+    let run = sandbox.refresh();
+    assert_eq!(run.code, 0, "{:?}", run.stderr);
+    assert_eq!(
+        run.stdout.lines().next(),
+        Some(counts(0, 0, 0, 2, 0).as_str())
+    );
+    assert_eq!(run.stderr, Vec::<String>::new());
+    assert_eq!(shape(sandbox.head(&a)), head_a);
+}
+
+#[test]
+fn a_note_whose_folder_became_a_file_is_withdrawn() {
+    let (sandbox, notes) = followed_notes(
+        "folder_became_a_file",
+        &[("sub/n.md", "n\n"), ("c.md", "c\n")],
+    );
+    assert_eq!(
+        sandbox.refresh().stdout.lines().next(),
+        Some(counts(2, 0, 0, 0, 0).as_str())
+    );
+    let gone = notes.join("sub/n.md");
+    let id = sandbox.meta(&gone).id;
+    fs::remove_file(&gone).expect("remove");
+    fs::remove_dir(notes.join("sub")).expect("remove the folder");
+    fs::write(notes.join("sub"), "now a file\n").expect("a file under that name");
+
+    let run = sandbox.refresh();
+    assert_eq!(run.code, 0, "{:?}", run.stderr);
+    assert_eq!(
+        run.stdout.lines().next(),
+        Some(counts(0, 0, 1, 1, 0).as_str())
+    );
+    assert_eq!(run.stderr, [withdrew_line(&gone, id, 1)]);
+    assert_eq!(sandbox.head(&gone).records, 0);
 }
 
 #[test]

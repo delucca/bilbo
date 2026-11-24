@@ -360,6 +360,11 @@ mod tests {
     use bilbo_settings::file::File;
     use bilbo_settings::key::Source;
 
+    #[test]
+    fn a_file_that_is_gone_keeps_its_entry() {
+        assert!(!Session::default().withdraws_gone());
+    }
+
     use super::{Session, UNPACK_FLOOR, UNPACK_RATIO, UNPACK_WINDOW, WIDE_FIELDS, is_uuid, packed};
 
     const CLAUDE: &[u8] =
