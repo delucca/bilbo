@@ -264,16 +264,10 @@ impl FakeEntries {
     }
 
     #[must_use]
-    pub fn kept_under(
-        mut self,
-        label: Option<&str>,
-        id: Id,
-        kind: &str,
-        tags: Tags,
-    ) -> FakeEntries {
-        let capture = label.and_then(|label| CaptureLabel::new(label.to_string()));
-        if let Some(label) = &capture {
-            self.heads.insert(
+    pub fn kept_under(self, label: Option<&str>, id: Id, kind: &str, tags: Tags) -> FakeEntries {
+        let mut entries = self.held(id, kind, tags);
+        if let Some(label) = label.and_then(|label| CaptureLabel::new(label.to_string())) {
+            entries.heads.insert(
                 label.to_string(),
                 Head {
                     id,
@@ -283,21 +277,11 @@ impl FakeEntries {
                     stamp: None,
                 },
             );
+            if let Some(meta) = entries.metas.get_mut(&id) {
+                meta.labels.capture = Some(label);
+            }
         }
-        self.metas.insert(
-            id,
-            Meta {
-                id,
-                kind: kind.to_string(),
-                labels: StoredLabels {
-                    capture,
-                    id: None,
-                    tags,
-                },
-                captured: std::time::SystemTime::UNIX_EPOCH,
-            },
-        );
-        self
+        entries
     }
 
     #[must_use]

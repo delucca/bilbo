@@ -607,28 +607,41 @@ fn full(tags: &Tagging) -> String {
     )
 }
 
+fn first_tags(tags: &Tagging) -> Result<Tags, String> {
+    if tags.tags.is_empty() {
+        return Ok(Tags::default());
+    }
+    let none = BTreeSet::new();
+    let change = Change::Person {
+        add: &tags.tags,
+        remove: &none,
+    };
+    tag::apply(&Tags::default(), &change, tags.cap)
+        .map(|applied| applied.tags)
+        .map_err(|tag::Full| full(tags))
+}
+
 fn fits(
     tags: &Tagging,
     head: Option<&Head>,
     entries: &dyn Entries,
 ) -> Result<Result<Tags, String>, Error> {
+    let Some(head) = head else {
+        return Ok(first_tags(tags));
+    };
     if tags.tags.is_empty() {
         return Ok(Ok(Tags::default()));
     }
-    let held = match head {
-        Some(head) => entries
-            .meta(head.id)?
-            .map(|meta| meta.labels.tags)
-            .unwrap_or_default(),
-        None => Tags::default(),
-    };
+    let held = entries
+        .meta(head.id)?
+        .map(|meta| meta.labels.tags)
+        .unwrap_or_default();
     let none = BTreeSet::new();
     let change = Change::Person {
         add: &tags.tags,
         remove: &none,
     };
     Ok(match tag::apply(&held, &change, tags.cap) {
-        Ok(applied) if head.is_none() => Ok(applied.tags),
         Ok(_) => Ok(Tags::default()),
         Err(tag::Full) => Err(full(tags)),
     })
@@ -707,16 +720,38 @@ pub enum WrittenAnswer {
     BeforeCapture(StoreError),
     AtCapture {
         id: Id,
-        error: StoreError,
+        error: Attempt,
     },
 }
 
+#[derive(Debug)]
+pub enum Attempt {
+    Store(StoreError),
+    NoNewEntry,
+}
+
+impl StdError for Attempt {
+    fn source(&self) -> Option<&(dyn StdError + 'static)> {
+        match self {
+            Self::Store(error) => Some(error),
+            Self::NoNewEntry => None,
+        }
+    }
+}
+
+impl fmt::Display for Attempt {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Store(error) => write!(f, "{error}"),
+            Self::NoNewEntry => f.write_str("the store did not make a new entry for the note"),
+        }
+    }
+}
+
 pub fn keep_written(entries: &mut dyn Entries, written: &Written<'_>) -> WrittenAnswer {
-    let first = match fits(written.tags, None, entries) {
-        Ok(Ok(first)) => first,
-        Ok(Err(reason)) => return WrittenAnswer::Refused(reason),
-        Err(Error::Store(error)) => return WrittenAnswer::BeforeCapture(error),
-        Err(other) => return WrittenAnswer::BeforeCapture(StoreError::Missing(other.to_string())),
+    let first = match first_tags(written.tags) {
+        Ok(first) => first,
+        Err(reason) => return WrittenAnswer::Refused(reason),
     };
     if opaque::filter(written.record).as_ref() != written.record {
         return WrittenAnswer::Refused(
@@ -754,13 +789,11 @@ pub fn keep_written(entries: &mut dyn Entries, written: &Written<'_>) -> Written
         },
         Ok(_) => WrittenAnswer::AtCapture {
             id: written.id,
-            error: StoreError::Missing(
-                "the store did not make a new entry for the note".to_owned(),
-            ),
+            error: Attempt::NoNewEntry,
         },
         Err(CaptureError::Store(error)) => WrittenAnswer::AtCapture {
             id: written.id,
-            error,
+            error: Attempt::Store(error),
         },
         Err(error) => WrittenAnswer::Refused(error.to_string()),
     }

@@ -3,7 +3,7 @@ use std::os::unix::fs::PermissionsExt;
 
 use super::scratch::{CLAUDE, MAIN, NOTE, SUBAGENT, Scratch, UUID, remembered};
 
-fn hit_refs(stdout: &str) -> Vec<&str> {
+pub(crate) fn hit_refs(stdout: &str) -> Vec<&str> {
     stdout
         .lines()
         .filter_map(|line| line.strip_prefix("=== "))

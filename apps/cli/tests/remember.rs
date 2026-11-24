@@ -11,8 +11,10 @@ use std::thread;
 use std::time::{Duration, SystemTime};
 
 use bilbo_cli::console::env::Who;
+use bilbo_cli::console::settings::show_follows;
 use bilbo_cli::remember::disk::Disk;
 use bilbo_entries::files::{Files, Node};
+use bilbo_entries::follows::Follow;
 use bilbo_store::entries::{Cursor, Entries, Generation, Head, Meta, RecordRange};
 use bilbo_store::id::Id;
 use bilbo_store::labels::CaptureLabel;
@@ -23,12 +25,12 @@ mod sandbox;
 mod scratch;
 mod stores;
 
-use sandbox::{Run, counts, run, run_as, run_reading, text, write};
+use sandbox::{
+    ID_A, ID_B, Run, counts, moved_line, note_with, run, run_as, run_reading, text, write,
+};
 use scratch::{scratch_dir, vars};
 use stores::{backdate, layout};
 
-const ID_A: &str = "01JC5Q3V7XKM4P8R2T6W9YB0DE";
-const ID_B: &str = "01JC5Q3V7XKM4P8R2T6W9YB0DF";
 const WAIT: Duration = Duration::from_secs(10);
 
 impl Run {
@@ -78,7 +80,7 @@ impl Sandbox {
     }
 
     fn remember(&self, args: &[&str]) -> Run {
-        run(self.vars(), &[&["remember"][..], args].concat(), &[], None)
+        self.piped(args, &[])
     }
 
     fn remember_notes(&self) -> Run {
@@ -267,18 +269,6 @@ fn an_id_another_file_holds_is_refused_and_the_run_goes_on() {
         run.stderr
     );
     assert!(run.stderr[0].ends_with(&format!("is held by file:{}", text(&first))));
-}
-
-fn note_with(id: &str, heading: &str) -> String {
-    format!("---\nid: {id}\n---\n# {heading}\n")
-}
-
-fn moved_line(new: &Path, id: &str, old: &Path) -> String {
-    format!(
-        "bilbo: moved {}: its id {id} was held by file:{}",
-        text(new),
-        text(old)
-    )
 }
 
 fn stored_bytes(run: &Run) -> u64 {
@@ -693,17 +683,18 @@ impl io::Read for Asked {
     }
 }
 
-struct Breaking(bool);
+struct Breaking(usize);
 
 impl io::Read for Breaking {
     fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
-        if self.0 {
+        let bytes = b"The beet";
+        if self.0 == bytes.len() {
             return Err(io::Error::other("the pipe broke"));
         }
-        self.0 = true;
-        let bytes = b"The beet";
-        buffer[..bytes.len()].copy_from_slice(bytes);
-        Ok(bytes.len())
+        let count = buffer.len().min(bytes.len() - self.0);
+        buffer[..count].copy_from_slice(&bytes[self.0..self.0 + count]);
+        self.0 += count;
+        Ok(count)
     }
 }
 
@@ -713,7 +704,7 @@ fn a_read_of_standard_input_that_fails_keeps_nothing() {
     let run = run_reading(
         sandbox.vars(),
         &["remember", "-"],
-        Box::new(Breaking(false)),
+        Box::new(Breaking(0)),
         None,
     );
     assert_eq!(run.code, 1);
@@ -763,15 +754,8 @@ fn a_note_kept_after_a_wait_for_the_store_is_dated_from_the_keep() {
     let finished = runner.join().expect("the run finishes");
     assert_eq!(finished.code, 0, "{:?}", finished.stderr);
     let id = kept_id(&finished);
-    let store = Store::open_read_only(&layout, Options::default(), &mut |_| {}).expect("read");
-    let records = store
-        .read(
-            Id::parse(&id).expect("an id"),
-            Generation(1),
-            RecordRange { first: 1, count: 1 },
-        )
-        .expect("the record");
-    let record = String::from_utf8(records.concat()).expect("UTF-8");
+    let records = sandbox.generation(Id::parse(&id).expect("an id"), Generation(1), 1);
+    let record = String::from_utf8(records).expect("UTF-8");
     let at: u64 = record
         .split_once("\"at\":")
         .map(|(_, rest)| {
@@ -1727,9 +1711,23 @@ fn edit_stands_with_tags_alone_and_needs_an_editor() {
     );
     assert_eq!(fs::read_dir(&temp).expect("the temp folder").count(), 0);
     sandbox.no_store_folders();
+
+    let mut vars = sandbox.vars();
+    vars.insert(
+        "TMPDIR".to_owned(),
+        sandbox.dir.join("not-there").into_os_string(),
+    );
+    let absent = run(vars, &["remember", "--edit"], &[], None);
+    assert_eq!(absent.code, 2);
+    assert_eq!(absent.stdout, "");
+    assert_eq!(
+        absent.stderr,
+        ["bilbo: --edit needs an editor: set VISUAL or EDITOR"]
+    );
+    sandbox.no_store_folders();
 }
 
-fn question_text() -> String {
+fn question_lines() -> Vec<String> {
     [
         "bilbo: What should bilbo keep?",
         "bilbo: 1  a note typed here",
@@ -1737,54 +1735,78 @@ fn question_text() -> String {
         "bilbo: 3  a file or folder",
         "bilbo: Type 1, 2 or 3, then Enter. An empty answer keeps nothing.",
     ]
-    .join("\n")
+    .map(str::to_owned)
+    .to_vec()
 }
 
-fn as_a_person(sandbox: &Sandbox, args: &[&str], input: &[u8]) -> (Run, Vec<String>) {
-    let (sender, receiver) = mpsc::channel();
-    let run = run_as(
+fn question_then(lines: &[&str]) -> Vec<String> {
+    let mut all = question_lines();
+    all.extend(lines.iter().map(|line| (*line).to_owned()));
+    all
+}
+
+fn as_a_person(sandbox: &Sandbox, args: &[&str], input: &[u8]) -> Run {
+    run_as(
         sandbox.vars(),
         &[&["remember"][..], args].concat(),
         Who::Person,
         Box::new(io::Cursor::new(input.to_vec())),
-        Some(sender),
-    );
-    (run, receiver.try_iter().collect())
+        None,
+    )
 }
 
 #[test]
 fn a_note_typed_at_the_prompt_is_kept() {
     let sandbox = Sandbox::new("prompt_typed");
-    let (run, notices) = as_a_person(&sandbox, &[], b"1\nThe beet seeds are in the drawer.\n");
+    let run = as_a_person(&sandbox, &[], b"1\nThe beet seeds are in the drawer.\n");
     assert_eq!(run.code, 0, "{:?}", run.stderr);
     assert_eq!(run.counts(), counts(1, 0, 0, 0, 0));
     let id = kept_id(&run);
     assert_eq!(
-        notices,
-        [
-            question_text(),
-            "bilbo: Type the note, then Ctrl-D on a line of its own.".to_owned()
-        ]
+        run.notices,
+        question_then(&["bilbo: Type the note, then Ctrl-D on a line of its own."])
     );
     assert_eq!(run.stderr, [format!("bilbo: kept the note as {id}")]);
+    let entries = sandbox.entries();
+    assert_eq!(entries.len(), 1);
+    let (meta, head) = &entries[0];
+    assert_eq!(meta.id.to_string(), id);
+    assert_eq!(meta.kind, "note");
+    assert_eq!(
+        meta.labels.capture.as_ref().map(ToString::to_string),
+        Some(format!("note:{id}"))
+    );
+    assert_eq!(head.records, 1);
     let found = run_in(&sandbox, &["recall", "--", "beet"]);
     assert_eq!(found.code, 0, "{:?}", found.stderr);
-    assert_eq!(hit_headers(&found.stdout).len(), 1, "{}", found.stdout);
+    let headers = hit_headers(&found.stdout);
+    assert_eq!(headers.len(), 1, "{}", found.stdout);
+    assert_eq!(headers[0][0], format!("{}#r1", &id[id.len() - 10..]));
+    assert_eq!(headers[0][2], "note", "{headers:?}");
 }
 
 #[test]
 fn a_file_or_folder_named_at_the_prompt_is_kept_as_a_target() {
     let asked = Sandbox::new("prompt_file");
     let file = asked.write("garden.md", "# Garden\n\nThe beds face south.\n");
+    asked.write("other.md", "# Garden\n\nThe beds face north.\n");
     let answers = format!("3\n{}\n", text(&file));
-    let (run, notices) = as_a_person(&asked, &[], answers.as_bytes());
+    let run = as_a_person(&asked, &[], answers.as_bytes());
     assert_eq!(run.code, 0, "{:?}", run.stderr);
 
     let direct = Sandbox::new("prompt_file_direct");
     let same = direct.write("garden.md", "# Garden\n\nThe beds face south.\n");
+    direct.write("other.md", "# Garden\n\nThe beds face north.\n");
     let target = direct.remember(&[text(&same)]);
     assert_eq!(run.counts(), target.counts());
     assert_eq!(run.counts(), counts(1, 0, 0, 0, 0));
+    assert_eq!(run.stdout.lines().count(), 2, "{}", run.stdout);
+    let stored: u64 = run
+        .totals()
+        .strip_prefix("records 3, raw bytes 31, stored bytes ")
+        .and_then(|number| number.parse().ok())
+        .expect("a whole number of stored bytes");
+    assert!(stored > 0);
     assert_eq!(
         run.totals()
             .rsplit_once(", stored bytes ")
@@ -1798,11 +1820,15 @@ fn a_file_or_folder_named_at_the_prompt_is_kept_as_a_target() {
     let (kept, direct_kept) = (asked.entries(), direct.entries());
     assert_eq!(kept.len(), 1);
     assert_eq!(kept.len(), direct_kept.len());
-    assert_eq!(kept[0].0.kind, "markdown");
+    let (meta, head) = asked.entry(&file);
+    assert_eq!(meta.kind, "markdown");
+    assert_eq!(head.records, 3);
+    let records = asked.generation(meta.id, head.generation, 3);
+    assert_eq!(records, b"# Garden\n\nThe beds face south.\n");
     assert_eq!(kept[0].0.kind, direct_kept[0].0.kind);
     assert_eq!(
-        notices,
-        [question_text(), "bilbo: Which file or folder?".to_owned()]
+        run.notices,
+        question_then(&["bilbo: Which file or folder?"])
     );
 }
 
@@ -1810,10 +1836,10 @@ fn a_file_or_folder_named_at_the_prompt_is_kept_as_a_target() {
 fn an_empty_answer_or_the_end_of_input_keeps_nothing() {
     for input in [&b"\n"[..], b""] {
         let sandbox = Sandbox::new("prompt_nothing");
-        let (run, notices) = as_a_person(&sandbox, &[], input);
+        let run = as_a_person(&sandbox, &[], input);
         assert_eq!(run.code, 0, "{input:?}: {:?}", run.stderr);
         assert_eq!(run.stdout, "", "{input:?}");
-        assert_eq!(notices, [question_text()], "{input:?}");
+        assert_eq!(run.notices, question_lines(), "{input:?}");
         assert_eq!(run.stderr, ["bilbo: nothing kept"], "{input:?}");
         sandbox.no_store_folders();
     }
@@ -1825,23 +1851,82 @@ fn a_bare_remember_with_nobody_at_the_terminal_or_with_an_option_never_asks() {
     let nobody = sandbox.piped(&[], b"1\nThe beet seeds are in the drawer.\n");
     assert_eq!((nobody.code, nobody.stderr), (2, with_usage(BARE)));
     assert_eq!(nobody.stdout, "");
-    let (tag, notices) = as_a_person(&sandbox, &["--tag", "garden"], b"1\nA note.\n");
+    assert!(nobody.notices.is_empty(), "{:?}", nobody.notices);
+    let tag = as_a_person(&sandbox, &["--tag", "garden"], b"1\nA note.\n");
     assert_eq!((tag.code, tag.stderr), (2, with_usage(BARE)));
     assert_eq!(tag.stdout, "");
-    assert!(notices.is_empty(), "{notices:?}");
+    assert!(tag.notices.is_empty(), "{:?}", tag.notices);
     sandbox.no_store_folders();
 }
 
 #[test]
 fn the_editors_answer_with_no_editor_is_the_editors_error() {
     let sandbox = Sandbox::new("prompt_editor");
-    let (run, notices) = as_a_person(&sandbox, &[], b"2\n");
+    let run = as_a_person(&sandbox, &[], b"2\n");
     assert_eq!(run.code, 2);
     assert_eq!(run.stdout, "");
-    assert_eq!(notices, [question_text()]);
+    assert_eq!(run.notices, question_lines());
     assert_eq!(
         run.stderr,
         ["bilbo: --edit needs an editor: set VISUAL or EDITOR"]
     );
     sandbox.no_store_folders();
+}
+
+#[test]
+fn a_run_that_keeps_a_written_note_serves_another_bilbos_request_for_a_pass() {
+    let served = "bilbo: ran the follows again for another bilbo: new 1, appended 0, new generation 0, unchanged 0, refused 0";
+    for (row, input) in [
+        (1, "The beet seeds are in the drawer.\n".to_owned()),
+        (2, "z".repeat(256)),
+    ] {
+        let sandbox = Sandbox::new("piped_served");
+        let followed = sandbox.write("a.md", "# Garden\n");
+        write(
+            &sandbox.dir.join("config/config.toml"),
+            format!(
+                "follow = {}\n",
+                show_follows(&[Follow {
+                    path: sandbox.notes(),
+                    kind: Some("markdown".to_owned()),
+                }])
+            ),
+        );
+        write(&sandbox.layout().state.join("store.again"), b"1");
+        let run = sandbox.piped(&["-"], input.as_bytes());
+        let entries = sandbox.entries();
+        if row == 1 {
+            assert_eq!(run.code, 0, "{:?}", run.stderr);
+            assert_eq!(run.counts(), counts(1, 0, 0, 0, 0));
+            assert_eq!(
+                run.stderr,
+                [
+                    format!("bilbo: kept the note as {}", kept_id(&run)),
+                    served.to_owned()
+                ]
+            );
+            let mut kinds: Vec<&str> = entries.iter().map(|(meta, _)| meta.kind.as_str()).collect();
+            kinds.sort_unstable();
+            assert_eq!(kinds, ["markdown", "note"]);
+            let note = entries
+                .iter()
+                .find(|(meta, _)| meta.kind == "note")
+                .expect("the note");
+            assert_eq!(note.0.id.to_string(), kept_id(&run));
+        } else {
+            assert_eq!(run.code, 1, "{:?}", run.stderr);
+            assert_eq!(run.counts(), counts(0, 0, 0, 0, 1));
+            assert_eq!(
+                run.stderr,
+                [
+                    "bilbo: refused the note: the store would keep only a placeholder for its text, which it takes for encoded data".to_owned(),
+                    served.to_owned()
+                ]
+            );
+            assert_eq!(entries.len(), 1);
+        }
+        let (meta, head) = sandbox.entry(&followed);
+        assert_eq!(meta.kind, "markdown", "row {row}");
+        assert_eq!(head.records, 1, "row {row}");
+    }
 }

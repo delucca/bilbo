@@ -1,4 +1,4 @@
-use std::io::Read;
+use std::io::{self, Read};
 use std::path::Path;
 use std::time::SystemTime;
 
@@ -10,6 +10,7 @@ use bilbo_store::labels::{CaptureLabel, Tag};
 use bilbo_store::segments::Store;
 
 use super::follows;
+use super::refused;
 use super::view::{Totals, human_totals, plain_totals};
 use crate::console::closing::Closing;
 use crate::console::env::Env;
@@ -24,15 +25,9 @@ pub struct Written {
     pub label: fn(Id) -> CaptureLabel,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Fate {
-    Goes,
-    Stays,
-}
-
 pub struct Draft<'a> {
     pub path: &'a Path,
-    pub settle: &'a mut dyn FnMut(Fate) -> Option<Message>,
+    pub remove: &'a mut dyn FnMut() -> Option<Message>,
 }
 
 fn ending(draft: &Option<&mut Draft<'_>>) -> String {
@@ -44,23 +39,38 @@ fn ending(draft: &Option<&mut Draft<'_>>) -> String {
 fn with_ending(failure: Failure, ending: &str) -> Failure {
     match failure {
         Failure::Config(line) => Failure::Config(sanitize(&format!("{line}{ending}"))),
-        Failure::Refused(line) => Failure::Refused(sanitize(&format!("{line}{ending}"))),
+        Failure::Refused(line) => refused(&format!("{line}{ending}")),
         other => other,
     }
 }
 
 pub fn from_input(input: &mut dyn Read) -> Result<String, Failure> {
     let mut bytes = Vec::new();
-    input.read_to_end(&mut bytes).map_err(|error| {
-        Failure::Refused(sanitize(&format!("cannot read standard input: {error}")))
-    })?;
+    input
+        .read_to_end(&mut bytes)
+        .map_err(|error| refused(&format!("cannot read standard input: {error}")))?;
     String::from_utf8(bytes)
         .map_err(|_| Failure::Refused("refused the note: it is not UTF-8".to_owned()))
 }
 
+pub fn id_for(
+    text: &str,
+    written: &Written,
+    brought: Option<Id>,
+    mint: impl FnOnce() -> io::Result<Id>,
+) -> Result<Option<Id>, Failure> {
+    if (written.record)(text, SystemTime::now()).is_none() {
+        return Ok(None);
+    }
+    match brought {
+        Some(id) => Ok(Some(id)),
+        None => mint().map(Some).map_err(|error| refused(&error)),
+    }
+}
+
 pub struct Note<'a, 'b> {
     pub text: &'a str,
-    pub id: Id,
+    pub id: Option<Id>,
     pub tags: &'a Tagging,
     pub draft: Option<&'a mut Draft<'b>>,
 }
@@ -79,29 +89,13 @@ pub fn keep(
         tags,
         draft,
     } = note;
-    if (written.record)(text, SystemTime::now()).is_none() {
+    let Some(id) = id_for(text, written, id, Id::mint)? else {
         return Ok(nothing_to_keep(draft));
-    }
+    };
     let after = ending(&draft);
     let label = (written.label)(id);
-    let layout = settings.layout();
-    Store::check(&layout).map_err(|error| with_ending(Failure::from(error), &after))?;
-    let notice = &mut env.notice;
-    let mut store = Store::open(&layout, settings.store.options(), &mut |n| {
-        notice(&notice_message(&n));
-    })
-    .map_err(|error| with_ending(Failure::from(error), &after))?;
-    let fresh = if tags.tags.is_empty() {
-        Vec::new()
-    } else {
-        match tag::unused(&tags.tags, &store) {
-            Ok(fresh) => fresh,
-            Err(error) => {
-                store.release();
-                return Err(store_failed(&error, None, &after));
-            }
-        }
-    };
+    let (mut store, fresh) =
+        open_store(tags, settings, env).map_err(|failure| with_ending(failure, &after))?;
     let Some(record) = (written.record)(text, SystemTime::now()) else {
         store.release();
         return Ok(nothing_to_keep(draft));
@@ -117,21 +111,13 @@ pub fn keep(
         },
     );
     let closing = match &answer {
-        WrittenAnswer::Kept { .. } => follows::finish(
+        WrittenAnswer::Kept { .. } | WrittenAnswer::Refused(_) => follows::finish(
             store,
             &settings.follow.value,
             kinds,
             indexing,
             &mut *env.notice,
-            1,
-        ),
-        WrittenAnswer::Refused(_) => follows::finish(
-            store,
-            &settings.follow.value,
-            kinds,
-            indexing,
-            &mut *env.notice,
-            0,
+            u64::from(matches!(answer, WrittenAnswer::Kept { .. })),
         ),
         _ => {
             store.release();
@@ -141,10 +127,33 @@ pub fn keep(
     answered(answer, &fresh, closing, draft)
 }
 
+fn open_store(
+    tags: &Tagging,
+    settings: &Settings,
+    env: &mut Env,
+) -> Result<(Store, Vec<Tag>), Failure> {
+    let layout = settings.layout();
+    Store::check(&layout)?;
+    let notice = &mut env.notice;
+    let store = Store::open(&layout, settings.store.options(), &mut |n| {
+        notice(&notice_message(&n));
+    })?;
+    if tags.tags.is_empty() {
+        return Ok((store, Vec::new()));
+    }
+    match tag::unused(&tags.tags, &store) {
+        Ok(fresh) => Ok((store, fresh)),
+        Err(error) => {
+            store.release();
+            Err(refused(&error))
+        }
+    }
+}
+
 pub fn nothing_to_keep(draft: Option<&mut Draft<'_>>) -> Outcome {
     let mut diagnostics = vec![Message::warning("nothing to keep: the note is empty")];
     if let Some(draft) = draft {
-        diagnostics.extend((draft.settle)(Fate::Goes));
+        diagnostics.extend((draft.remove)());
     }
     outcome(&Totals::default(), diagnostics, Exit::Refused)
 }
@@ -154,7 +163,7 @@ fn store_failed(error: &dyn std::fmt::Display, tried: Option<Id>, ending: &str) 
         Some(id) => format!("{error}; the note may have been kept as {id}{ending}"),
         None => format!("{error}{ending}"),
     };
-    Failure::Refused(sanitize(&line))
+    refused(&line)
 }
 
 pub fn answered(
@@ -189,7 +198,7 @@ pub fn answered(
             }
             diagnostics.extend(closing.messages);
             if let Some(draft) = draft {
-                diagnostics.extend((draft.settle)(Fate::Goes));
+                diagnostics.extend((draft.remove)());
             }
             let exit = if closing.failed || closing.refused {
                 Exit::Refused
@@ -228,7 +237,7 @@ fn outcome(totals: &Totals, diagnostics: Vec<Message>, exit: Exit) -> Outcome {
 
 #[cfg(test)]
 mod tests {
-    use bilbo_entries::remember::WrittenAnswer;
+    use bilbo_entries::remember::{Attempt, WrittenAnswer};
     use bilbo_store::entries::StoreError;
     use bilbo_store::id::Id;
     use bilbo_store::labels::Tag;
@@ -298,7 +307,7 @@ mod tests {
         let at = answered(
             WrittenAnswer::AtCapture {
                 id: id(),
-                error: StoreError::Missing("no store".to_owned()),
+                error: Attempt::Store(StoreError::Missing("no store".to_owned())),
             },
             &[],
             Closing::default(),
@@ -311,5 +320,75 @@ mod tests {
                 "bilbo: no store; the note may have been kept as {ID}"
             )]
         );
+
+        let none = answered(
+            WrittenAnswer::AtCapture {
+                id: id(),
+                error: Attempt::NoNewEntry,
+            },
+            &[],
+            Closing::default(),
+            None,
+        )
+        .expect_err("a failure");
+        assert_eq!(
+            none.stderr_lines(&View::PLAIN),
+            [format!(
+                "bilbo: the store did not make a new entry for the note; the note may have been kept as {ID}"
+            )]
+        );
+        assert_eq!(none.exit_code(), 1);
+    }
+
+    #[test]
+    fn a_note_with_no_text_asks_for_no_id() {
+        use std::cell::Cell;
+        use std::io;
+
+        use super::{Written, id_for};
+        use crate::console::outcome::Failure;
+
+        let notes = crate::notes();
+        let kind = Written {
+            kind: notes.kind,
+            record: notes.record,
+            label: notes.label,
+        };
+        let asked = Cell::new(0);
+        let failing = |text: &'static str| {
+            let asked = &asked;
+            move || {
+                asked.set(asked.get() + 1);
+                Err::<Id, _>(io::Error::other(text))
+            }
+        };
+        for text in ["", "  \n\t "] {
+            asked.set(0);
+            let found = id_for(text, &kind, None, failing("no random source"));
+            assert!(matches!(found, Ok(None)), "{text:?}");
+            assert_eq!(asked.get(), 0, "{text:?}");
+        }
+
+        asked.set(0);
+        let found = id_for("A sentence.", &kind, None, failing("no random source"));
+        assert_eq!(
+            found.expect_err("the minting's failure"),
+            Failure::Refused("no random source".to_owned())
+        );
+        assert_eq!(asked.get(), 1);
+
+        asked.set(0);
+        let minted = id();
+        let found = id_for("A sentence.", &kind, None, || {
+            asked.set(asked.get() + 1);
+            Ok(minted)
+        });
+        assert!(matches!(found, Ok(Some(found)) if found == minted));
+        assert_eq!(asked.get(), 1);
+
+        asked.set(0);
+        let found = id_for("A sentence.", &kind, Some(minted), failing("not asked"));
+        assert!(matches!(found, Ok(Some(found)) if found == minted));
+        assert_eq!(asked.get(), 0);
     }
 }

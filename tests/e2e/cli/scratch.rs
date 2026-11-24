@@ -3,7 +3,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{Duration, SystemTime};
+use std::time::{Duration, Instant, SystemTime};
 
 use super::{Run, bilbo, binary};
 
@@ -119,15 +119,61 @@ impl Scratch {
         bilbo(args, &pairs)
     }
 
+    pub(crate) fn run_within(
+        &self,
+        args: &[&str],
+        extra: &[(&str, &str)],
+        folder: Option<&Path>,
+        limit: Duration,
+    ) -> Run {
+        let mut command = Command::new(fs::canonicalize(binary()).expect("the binary"));
+        command
+            .env_clear()
+            .envs(self.env())
+            .envs(extra.iter().copied())
+            .args(args)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        if let Some(folder) = folder {
+            command.current_dir(folder);
+        }
+        let mut child = command.spawn().expect("bilbo starts");
+        let started = Instant::now();
+        while child.try_wait().expect("wait").is_none() {
+            if started.elapsed() > limit {
+                let _ = child.kill();
+                let _ = child.wait();
+                panic!("bilbo {args:?} did not exit within {limit:?}");
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let output = child.wait_with_output().expect("output");
+        Run {
+            code: output.status.code().expect("an exit code"),
+            stdout: String::from_utf8(output.stdout).expect("UTF-8 stdout"),
+            stderr: String::from_utf8(output.stderr).expect("UTF-8 stderr"),
+        }
+    }
+
     pub(crate) fn run_with_input(&self, args: &[&str], input: &[u8]) -> Run {
-        self.piped(args, input, None)
+        self.piped(args, input, None, false)
     }
 
     pub(crate) fn run_with_input_in(&self, args: &[&str], input: &[u8], folder: &Path) -> Run {
-        self.piped(args, input, Some(folder))
+        self.piped(args, input, Some(folder), false)
     }
 
-    fn piped(&self, args: &[&str], input: &[u8], folder: Option<&Path>) -> Run {
+    pub(crate) fn run_leaving_input_unread_in(
+        &self,
+        args: &[&str],
+        input: &[u8],
+        folder: &Path,
+    ) -> Run {
+        self.piped(args, input, Some(folder), true)
+    }
+
+    fn piped(&self, args: &[&str], input: &[u8], folder: Option<&Path>, unread: bool) -> Run {
         let mut command = Command::new(fs::canonicalize(binary()).expect("the binary"));
         command.env_clear().envs(self.env());
         if let Some(folder) = folder {
@@ -140,7 +186,13 @@ impl Scratch {
             .stderr(Stdio::piped())
             .spawn()
             .expect("bilbo runs");
-        let _ = child.stdin.take().expect("a pipe").write_all(input);
+        let written = child.stdin.take().expect("a pipe").write_all(input);
+        if let Err(error) = written {
+            assert!(
+                unread && error.kind() == std::io::ErrorKind::BrokenPipe,
+                "the bytes are not written: {error}"
+            );
+        }
         let output = child.wait_with_output().expect("bilbo ends");
         Run {
             code: output.status.code().expect("an exit code"),

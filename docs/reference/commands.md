@@ -86,7 +86,7 @@ bilbo remember --edit [--tag <tag>]...
 bilbo remember
 ```
 
-Keeps files as entries in the store. An entry is a sequence of records, numbered from 1 per generation. Run it again on a file or folder and it keeps only what is new; a note with no file is a new entry each time. It keeps the file or folder it is given; [`bilbo refresh`](#refresh) keeps every follow. A lone `-` keeps a note from standard input ([A note with no file](#a-note-with-no-file)). With no argument, on a terminal, it asks what to keep ([The prompt](#the-prompt)).
+Keeps files as entries in the store. An entry is a sequence of records, numbered from 1 per generation. Run it again on a file or folder and it keeps only what is new; a note with no file is a new entry each time. It keeps the file or folder it is given; [`bilbo refresh`](#refresh) keeps every follow. A lone `-` keeps a note from standard input, and `--edit` one written in an editor ([A note with no file](#a-note-with-no-file)). With no argument, on a terminal, it asks what to keep ([The prompt](#the-prompt)).
 
 ### Kinds
 
@@ -169,7 +169,7 @@ A config file that is a symbolic link, or that this user cannot write (read-only
 
 ### Tags
 
-`--tag <tag>` declares a tag for every entry the run keeps under the target: a new entry is kept with it, and an entry kept before gets it added, whether or not its file changed. A run never takes a tag away. A tag is parts of the letters `a` to `z` and digits joined by single hyphens, at most 64 bytes: `rust`, `carpentry-docs`. A tag an entry does not carry yet is refused when it would leave the entry with more than `tag.cap` tags, 32 unless set: the file is refused, as any refused file is, before anything of it is kept, and the files kept before it stay kept. A renamed file refused for the cap has moved all the same: its entry is under the new path, and stderr says so. A tag the entry already carries is never refused, whatever the number of its tags. `--tag` needs a target and does not stand with `--follow`: a follow keeps no tag. Standard output does not change. With `--tag`, stderr says `tagged <n> entries`, the entries whose tags the run changed, when there is one or more. A tag no entry carried before the run is said too: `tag:<name> is new`.
+`--tag <tag>` declares a tag for every entry the run keeps under the target: a new entry is kept with it, and an entry kept before gets it added, whether or not its file changed. A run never takes a tag away. A tag is parts of the letters `a` to `z` and digits joined by single hyphens, at most 64 bytes: `rust`, `carpentry-docs`. A tag an entry does not carry yet is refused when it would leave the entry with more than `tag.cap` tags, 32 unless set: the file is refused, as any refused file is, before anything of it is kept, and the files kept before it stay kept. A renamed file refused for the cap has moved all the same: its entry is under the new path, and stderr says so. A tag the entry already carries is never refused, whatever the number of its tags. `--tag` stands with a file or folder and with a note, from `-` or from `--edit`: the note is kept with the tag, as a new entry is. With nothing to keep it is a usage error, and it does not stand with `--follow`: a follow keeps no tag. Standard output does not change. With `--tag`, stderr says `tagged <n> entries`, the entries whose tags the run changed, when there is one or more. A tag no entry carried before the run is said too: `tag:<name> is new`.
 
 ```text
 bilbo remember ~/library/rust --tag rust
@@ -200,7 +200,7 @@ new <n>, appended <n>, new generation <n>, unchanged <n>, refused <n>
 records <n>, raw bytes <n>, stored bytes <n>
 ```
 
-Raw bytes are the input bytes kept; stored bytes are what the store grew by. On a terminal the same counts come as a marked message. A run that also ran the follows again for another bilbo says what that pass kept in one line on stderr. The index adds lines on stderr only when it rebuilds, leaves an entry out or fails; stdout does not change.
+Raw bytes are the input bytes kept; stored bytes are what the store grew by. On a terminal the same counts come as a marked message. A run that also ran the follows again for another bilbo says what that pass kept in one line on stderr. The index adds lines on stderr only when it rebuilds, leaves an entry out or fails; stdout does not change. An empty answer at [the prompt](#the-prompt) prints nothing on standard output: it keeps nothing, says `nothing kept` on stderr and exits 0.
 
 A second `remember` with a target waits for the first one to finish writing the store, and says so on stderr.
 
@@ -208,8 +208,8 @@ A second `remember` with a target waits for the first one to finish writing the 
 
 | Code | Meaning |
 |---|---|
-| 0 | success |
-| 1 | a file was refused, nothing was claimed under the target, a note was refused or empty, the editor failed, a pass run again for another bilbo refused a file or could not run a follow, the search index could not be updated or an entry could not be indexed, or the target or the store could not be read |
+| 0 | success, also an empty answer at the prompt, which keeps nothing |
+| 1 | a file was refused, nothing was claimed under the target, a note was refused or empty, the editor failed, standard input or an answer at the prompt could not be read, a pass run again for another bilbo refused a file or could not run a follow, the search index could not be updated or an entry could not be indexed, or the target or the store could not be read |
 | 2 | usage or config error, `--edit` with no editor named, a store root that holds bilbo 0.20's `notes/` or `library/`, a state or cache folder inside the root, or a config file `--follow` cannot write |
 
 ## refresh

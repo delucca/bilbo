@@ -42,13 +42,20 @@ pub fn execute(
     err: &View,
     write: &mut impl FnMut(&Emit) -> Result<(), Failure>,
 ) -> u8 {
+    let mut stopped: Option<Failure> = None;
     for emit in &plan.writes {
-        if let Err(failure) = write(emit) {
-            for line in &failed(&failure, err).writes {
-                let _ = write(line);
-            }
-            return failure.exit_code();
+        if stopped.is_some() && matches!(emit, Emit::Stdout(_)) {
+            continue;
         }
+        if let Err(failure) = write(emit) {
+            stopped.get_or_insert(failure);
+        }
+    }
+    if let Some(failure) = stopped {
+        for line in &failed(&failure, err).writes {
+            let _ = write(line);
+        }
+        return failure.exit_code();
     }
     plan.code
 }
@@ -159,6 +166,14 @@ mod tests {
         assert_eq!(human.writes, [stderr("\x1b[31m■\x1b[39m  no")]);
     }
 
+    fn plan_of(out: &View) -> Plan {
+        let result: Result<Outcome, Failure> = Ok(Outcome::new("hits\n").with_diagnostics(vec![
+            Message::warning("searched here"),
+            Message::warning("and here"),
+        ]));
+        plan(&result, out, &View::PLAIN)
+    }
+
     fn stdout_that_fails(plan: &Plan, err: &View) -> (u8, Vec<Emit>) {
         let mut written = Vec::new();
         let code = execute(plan, err, &mut |emit| {
@@ -172,7 +187,8 @@ mod tests {
     }
 
     #[test]
-    fn a_failed_stdout_write_exits_1_with_its_message_and_writes_nothing_after_it() {
+    fn a_failed_stdout_write_exits_1_after_the_stderr_lines_still_to_come() {
+        let failure = stderr("bilbo: cannot write to stdout: boom");
         let plan = Plan {
             writes: vec![stdout("hits\n"), stderr("bilbo: later")],
             code: 0,
@@ -181,11 +197,44 @@ mod tests {
         assert_eq!(code, 1);
         assert_eq!(
             written,
+            [stdout("hits\n"), stderr("bilbo: later"), failure.clone()]
+        );
+
+        let unpainted = View {
+            paint: false,
+            ..View::HUMAN
+        };
+        let (code, written) = stdout_that_fails(&plan_of(&unpainted), &View::PLAIN);
+        assert_eq!(code, 1);
+        assert_eq!(
+            written,
             [
                 stdout("hits\n"),
-                stderr("bilbo: cannot write to stdout: boom")
+                stderr("bilbo: searched here"),
+                stderr("bilbo: and here"),
+                failure.clone()
             ]
         );
+
+        let (code, written) = stdout_that_fails(&plan_of(&View::PLAIN), &View::PLAIN);
+        assert_eq!(code, 1);
+        assert_eq!(
+            written,
+            [
+                stderr("bilbo: searched here"),
+                stderr("bilbo: and here"),
+                stdout("hits\n"),
+                failure.clone()
+            ]
+        );
+
+        let plan = Plan {
+            writes: vec![stdout("one\n"), stderr("bilbo: line"), stdout("two\n")],
+            code: 0,
+        };
+        let (code, written) = stdout_that_fails(&plan, &View::PLAIN);
+        assert_eq!(code, 1);
+        assert_eq!(written, [stdout("one\n"), stderr("bilbo: line"), failure]);
     }
 
     #[test]

@@ -1,8 +1,9 @@
 use std::io::{self, BufRead};
 use std::path::PathBuf;
 
+use super::refused;
 use crate::console::env::Env;
-use crate::console::message::{Detail, Message, sanitize};
+use crate::console::message::{Detail, Message};
 use crate::console::outcome::{Failure, Outcome};
 use crate::console::theme::Mark;
 
@@ -43,9 +44,7 @@ pub fn line(input: &mut dyn BufRead) -> Result<Line, Failure> {
     let mut bytes = Vec::new();
     let read = input
         .read_until(b'\n', &mut bytes)
-        .map_err(|error: io::Error| {
-            Failure::Refused(sanitize(&format!("cannot read the answer: {error}")))
-        })?;
+        .map_err(|error: io::Error| refused(&format!("cannot read the answer: {error}")))?;
     if read == 0 {
         return Ok(Line::End);
     }
@@ -71,8 +70,12 @@ fn nothing() -> Outcome {
 }
 
 fn path(env: &Env, text: &str) -> PathBuf {
-    match (text.strip_prefix("~/"), (env.var)("HOME")) {
-        (Some(rest), Some(home)) => PathBuf::from(home).join(rest),
+    let home = (env.var)("HOME").filter(|home| !home.is_empty());
+    match (text.strip_prefix('~'), home) {
+        (Some(rest), Some(mut home)) if rest.starts_with('/') => {
+            home.push(rest);
+            PathBuf::from(home)
+        }
         _ => PathBuf::from(text),
     }
 }
@@ -129,6 +132,9 @@ mod tests {
     use crate::console::env::{Env, Who};
     use crate::console::message::Message;
     use crate::console::outcome::{Failure, Outcome};
+    use crate::console::theme::Mark;
+
+    type Said = Vec<(Mark, Vec<String>)>;
 
     fn cursor(bytes: &[u8]) -> Cursor<Vec<u8>> {
         Cursor::new(bytes.to_vec())
@@ -189,7 +195,7 @@ mod tests {
         }
     }
 
-    fn env(home: Option<&str>, said: &Rc<RefCell<Vec<Vec<String>>>>) -> Env {
+    fn env(home: Option<&str>, said: &Rc<RefCell<Said>>) -> Env {
         let home = home.map(OsString::from);
         let said = Rc::clone(said);
         Env {
@@ -197,26 +203,32 @@ mod tests {
             stdin: Box::new(io::empty()),
             who: Who::Person,
             notice: Box::new(move |message: &Message| {
-                said.borrow_mut().push(message.plain_lines());
+                assert!(said.borrow().len() < 50, "the prompt asks again and again");
+                said.borrow_mut()
+                    .push((message.mark, message.plain_lines()));
             }),
         }
     }
 
-    fn run(
-        home: Option<&str>,
-        bytes: &[u8],
-    ) -> (Result<Outcome, Failure>, Noted, Vec<Vec<String>>) {
+    fn run(home: Option<&str>, bytes: &[u8]) -> (Result<Outcome, Failure>, Noted, Said) {
         let said = Rc::new(RefCell::new(Vec::new()));
         let mut env = env(home, &said);
         let mut ways = Noted::default();
-        let mut input = BufReader::new(Cursor::new(bytes.to_vec()));
-        let result = ask(&mut env, &mut input, &mut ways);
+        let result = ask(&mut env, &mut cursor(bytes), &mut ways);
         let lines = said.borrow().clone();
         (result, ways, lines)
     }
 
-    fn question() -> Vec<String> {
-        super::question().plain_lines()
+    fn question() -> (Mark, Vec<String>) {
+        (Mark::Info, super::question().plain_lines())
+    }
+
+    fn info(line: &str) -> (Mark, Vec<String>) {
+        (Mark::Info, vec![format!("bilbo: {line}")])
+    }
+
+    fn warning(line: &str) -> (Mark, Vec<String>) {
+        (Mark::Warning, vec![format!("bilbo: {line}")])
     }
 
     #[test]
@@ -226,23 +238,25 @@ mod tests {
         assert_eq!(ways.ran, ["editor"]);
         assert_eq!(
             said,
-            [
-                question(),
-                vec!["bilbo: 'x' is not 1, 2 or 3".to_owned()],
-                question()
-            ]
+            [question(), warning("'x' is not 1, 2 or 3"), question()]
         );
 
         let (_, ways, said) = run(Some("/home/me"), b"3\n~/notes\n");
         assert_eq!(ways.ran, ["file /home/me/notes"]);
-        assert_eq!(
-            said,
-            [question(), vec!["bilbo: Which file or folder?".to_owned()]]
-        );
-        let (_, ways, _) = run(None, b"3\n~/notes\n");
-        assert_eq!(ways.ran, ["file ~/notes"]);
-        let (_, ways, _) = run(Some("/home/me"), b"3\n/etc/x y\n");
-        assert_eq!(ways.ran, ["file /etc/x y"]);
+        assert_eq!(said, [question(), info("Which file or folder?")]);
+        for (home, answer, path) in [
+            (Some("/home/me"), "~/notes", "/home/me/notes"),
+            (Some("/home/me"), "~//notes", "/home/me//notes"),
+            (Some("/home/me"), "~/", "/home/me/"),
+            (Some("/home/me"), "~", "~"),
+            (Some("/home/me"), "~notes", "~notes"),
+            (None, "~/notes", "~/notes"),
+            (Some(""), "~/notes", "~/notes"),
+            (Some("/home/me"), "/etc/x y", "/etc/x y"),
+        ] {
+            let (_, ways, _) = run(home, format!("3\n{answer}\n").as_bytes());
+            assert_eq!(ways.ran, [format!("file {path}")], "{home:?} {answer}");
+        }
 
         let (result, ways, said) = run(None, b"3\n\n");
         let nothing = result.expect("an outcome");
@@ -258,15 +272,21 @@ mod tests {
         assert_eq!(ways.left, b"The beet seeds\nare in the drawer.\n");
         assert_eq!(
             said[1],
-            vec!["bilbo: Type the note, then Ctrl-D on a line of its own.".to_owned()]
+            info("Type the note, then Ctrl-D on a line of its own.")
         );
     }
 
-    struct Failing;
+    struct Failing(&'static [u8]);
 
     impl Read for Failing {
-        fn read(&mut self, _: &mut [u8]) -> io::Result<usize> {
-            Err(io::Error::other("the terminal closed"))
+        fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+            if self.0.is_empty() {
+                return Err(io::Error::other("the terminal closed"));
+            }
+            let count = self.0.len().min(buffer.len());
+            buffer[..count].copy_from_slice(&self.0[..count]);
+            self.0 = &self.0[count..];
+            Ok(count)
         }
     }
 
@@ -277,16 +297,32 @@ mod tests {
         assert_eq!(ways.ran, ["typed"]);
         assert!(ways.left.is_empty());
 
-        let said = Rc::new(RefCell::new(Vec::new()));
-        let mut env = env(None, &said);
-        let mut ways = Noted::default();
-        let mut input = BufReader::new(Failing);
-        let failure = ask(&mut env, &mut input, &mut ways).expect_err("a failure");
-        assert_eq!(
-            failure,
-            Failure::Refused("cannot read the answer: the terminal closed".to_owned())
-        );
+        let failing = |prefix: &'static [u8]| {
+            let said = Rc::new(RefCell::new(Vec::new()));
+            let mut env = env(None, &said);
+            let mut ways = Noted::default();
+            let mut input = BufReader::new(Failing(prefix));
+            let failure = ask(&mut env, &mut input, &mut ways).expect_err("a failure");
+            assert_eq!(
+                failure,
+                Failure::Refused("cannot read the answer: the terminal closed".to_owned())
+            );
+            assert!(ways.ran.is_empty());
+            said.take()
+        };
+        assert_eq!(failing(b""), [question()]);
+
+        let (result, ways, said) = run(None, b"3\n");
+        let nothing = result.expect("an outcome");
         assert!(ways.ran.is_empty());
+        assert_eq!(
+            nothing.stderr_lines(&crate::console::view::View::PLAIN),
+            ["bilbo: nothing kept"]
+        );
+        assert_eq!(nothing.exit_code(), 0);
+        assert_eq!(said, [question(), info("Which file or folder?")]);
+
+        assert_eq!(failing(b"3\n"), [question(), info("Which file or folder?")]);
 
         let (result, ways, said) = run(None, b"\xff\xfe\n3\n/x\n");
         assert!(result.is_ok());
@@ -295,9 +331,22 @@ mod tests {
             said,
             [
                 question(),
-                vec!["bilbo: that answer is not text".to_owned()],
+                warning("that answer is not text"),
                 question(),
-                vec!["bilbo: Which file or folder?".to_owned()]
+                info("Which file or folder?")
+            ]
+        );
+
+        let (result, ways, said) = run(None, b"3\n\xff\xfe\n/x\n");
+        assert!(result.is_ok());
+        assert_eq!(ways.ran, ["file /x"]);
+        assert_eq!(
+            said,
+            [
+                question(),
+                info("Which file or folder?"),
+                warning("that answer is not text"),
+                info("Which file or folder?")
             ]
         );
     }

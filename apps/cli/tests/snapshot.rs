@@ -48,12 +48,16 @@ fn stdout(list: &[&str], view: &View) -> String {
     outcome.stdout(view)
 }
 
-fn stderr(list: &[&str], view: &View) -> String {
-    let failure = run(&args(list), &mut Env::quiet(), unread()).expect_err("a failure");
+fn stderr_with(list: &[&str], view: &View, settings: Result<Settings, Failure>) -> String {
+    let failure = run(&args(list), &mut Env::quiet(), settings).expect_err("a failure");
     assert_eq!(failure.exit_code(), 2, "{list:?}");
     let mut text = failure.stderr_lines(view).join("\n");
     text.push('\n');
     text
+}
+
+fn stderr(list: &[&str], view: &View) -> String {
+    stderr_with(list, view, unread())
 }
 
 fn unpainted() -> View {
@@ -155,11 +159,7 @@ fn a_usage_error_on_a_terminal_is_a_marked_message() {
 }
 
 fn stderr_of_a_verb(list: &[&str], view: &View) -> String {
-    let failure = run(&args(list), &mut Env::quiet(), Ok(defaults())).expect_err("a failure");
-    assert_eq!(failure.exit_code(), 2, "{list:?}");
-    let mut text = failure.stderr_lines(view).join("\n");
-    text.push('\n');
-    text
+    stderr_with(list, view, Ok(defaults()))
 }
 
 #[test]
@@ -177,7 +177,7 @@ fn a_bare_remember_in_both_views() {
 #[test]
 fn the_prompt_in_both_views() {
     let question = bilbo_cli::remember::prompt::question();
-    let shown = |view: &View| format!("{}\n", question.human_lines(view).join("\n"));
+    let shown = |view: &View| format!("{}\n", question.lines(view).join("\n"));
     assert_eq!(
         shown(&View::HUMAN),
         include_str!("snapshots/remember-prompt.human.ansi")

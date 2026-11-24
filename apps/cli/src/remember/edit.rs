@@ -8,10 +8,11 @@ use bilbo_entries::kind::Kind;
 use bilbo_entries::remember::Tagging;
 use bilbo_store::id::Id;
 
-use super::note::{self, Draft, Fate, Note, Written};
+use super::note::{self, Draft, Note, Written};
+use super::refused;
 use crate::console::env::Env;
 use crate::console::indexing::Indexing;
-use crate::console::message::{Message, sanitize};
+use crate::console::message::Message;
 use crate::console::outcome::{Exit, Failure, Outcome};
 use crate::console::private::{self, How};
 use crate::console::settings::Settings;
@@ -26,10 +27,13 @@ pub enum Ended {
     Signal,
 }
 
+pub trait Started {
+    fn wait(self: Box<Self>) -> io::Result<Ended>;
+}
+
 pub trait Steps {
     fn make(&mut self) -> io::Result<()>;
-    fn start(&mut self) -> io::Result<()>;
-    fn wait(&mut self) -> io::Result<Ended>;
+    fn start(&mut self) -> io::Result<Box<dyn Started>>;
     fn read(&mut self) -> io::Result<Vec<u8>>;
     fn keep(&mut self, text: &str, draft: &mut Draft<'_>) -> Result<Outcome, Failure>;
 }
@@ -38,6 +42,12 @@ pub fn editor(var: &dyn Fn(&str) -> Option<OsString>) -> Option<OsString> {
     ["VISUAL", "EDITOR"]
         .into_iter()
         .find_map(|name| var(name).filter(|value| !value.is_empty()))
+}
+
+pub fn temp(var: &dyn Fn(&str) -> Option<OsString>) -> PathBuf {
+    var("TMPDIR")
+        .filter(|value| !value.is_empty())
+        .map_or_else(|| PathBuf::from("/tmp"), PathBuf::from)
 }
 
 pub fn command(editor: &OsStr, file: &Path) -> (&'static str, Vec<OsString>) {
@@ -54,17 +64,31 @@ pub fn command(editor: &OsStr, file: &Path) -> (&'static str, Vec<OsString>) {
     )
 }
 
-pub fn remove(folder: &Path) -> Option<Message> {
-    fs::remove_dir_all(folder).err().map(|error| {
-        Message::warning(&format!(
-            "cannot remove the note's folder {}: {error}",
-            folder.display()
-        ))
-    })
+fn removal_failed(folder: &Path, error: &io::Error) -> Message {
+    Message::warning(&format!(
+        "cannot remove the note's folder {}: {error}",
+        folder.display()
+    ))
 }
 
-fn refused(line: &str) -> Failure {
-    Failure::Refused(sanitize(line))
+pub fn remove(folder: &Path) -> Option<Message> {
+    fs::remove_dir_all(folder)
+        .err()
+        .map(|error| removal_failed(folder, &error))
+}
+
+pub fn unmade(
+    folder: &Path,
+    error: &io::Error,
+    removal: Option<&io::Error>,
+) -> Result<Outcome, Failure> {
+    stopped(
+        refused(&format!(
+            "cannot make the note's folder {}: {error}",
+            folder.display()
+        )),
+        removal.map(|removal| removal_failed(folder, removal)),
+    )
 }
 
 fn stopped(failure: Failure, warning: Option<Message>) -> Result<Outcome, Failure> {
@@ -88,13 +112,16 @@ pub fn session(
             remove(&paths.folder),
         );
     }
-    if let Err(error) = steps.start() {
-        return stopped(
-            refused(&format!("cannot start the editor: {error}")),
-            remove(&paths.folder),
-        );
-    }
-    let failed = match steps.wait() {
+    let started = match steps.start() {
+        Ok(started) => started,
+        Err(error) => {
+            return stopped(
+                refused(&format!("cannot start the editor: {error}")),
+                remove(&paths.folder),
+            );
+        }
+    };
+    let failed = match started.wait() {
         Err(error) => {
             return Err(refused(&format!(
                 "cannot wait for the editor: {error}; nothing was kept; its file is {path}"
@@ -116,26 +143,17 @@ pub fn session(
             Ok(_) => Err(refused(&format!("{line}; what was saved stays in {path}"))),
         };
     }
-    let bytes = match saved {
-        Ok(bytes) => bytes,
-        Err(error) => {
-            return Err(refused(&format!(
-                "cannot read the note's file {path}: {error}"
-            )));
-        }
-    };
+    let bytes =
+        saved.map_err(|error| refused(&format!("cannot read the note's file {path}: {error}")))?;
     let Ok(text) = String::from_utf8(bytes) else {
         return Err(refused(&format!(
             "refused the note: it is not UTF-8; what was saved stays in {path}"
         )));
     };
-    let mut settle = |fate| match fate {
-        Fate::Goes => remove(&paths.folder),
-        Fate::Stays => None,
-    };
+    let mut settle = || remove(&paths.folder);
     let mut draft = Draft {
         path: &paths.file,
-        settle: &mut settle,
+        remove: &mut settle,
     };
     steps.keep(&text, &mut draft)
 }
@@ -148,7 +166,6 @@ struct Editing<'a, 'b> {
     editor: &'a OsStr,
     paths: &'a Paths,
     folder: fs::File,
-    child: Option<Child>,
     id: Id,
     tags: &'a Tagging,
     written: &'a Written,
@@ -158,11 +175,16 @@ struct Editing<'a, 'b> {
     indexing: &'a Indexing<'b>,
 }
 
-fn ended(status: ExitStatus) -> Ended {
-    match status.code() {
-        Some(code) => Ended::Exited(code),
-        None => Ended::Signal,
+struct Running(Child);
+
+impl Started for Running {
+    fn wait(mut self: Box<Self>) -> io::Result<Ended> {
+        self.0.wait().map(ended)
     }
+}
+
+fn ended(status: ExitStatus) -> Ended {
+    status.code().map_or(Ended::Signal, Ended::Exited)
 }
 
 impl Steps for Editing<'_, '_> {
@@ -170,17 +192,11 @@ impl Steps for Editing<'_, '_> {
         private::open(&self.folder, "note.md", &self.paths.file, How::New).map(drop)
     }
 
-    fn start(&mut self) -> io::Result<()> {
+    fn start(&mut self) -> io::Result<Box<dyn Started>> {
         let (program, arguments) = command(self.editor, &self.paths.file);
-        self.child = Some(Command::new(program).args(arguments).spawn()?);
-        Ok(())
-    }
-
-    fn wait(&mut self) -> io::Result<Ended> {
-        let Some(child) = self.child.as_mut() else {
-            return Err(io::Error::other("no editor was started"));
-        };
-        child.wait().map(ended)
+        Ok(Box::new(Running(
+            Command::new(program).args(arguments).spawn()?,
+        )))
     }
 
     fn read(&mut self) -> io::Result<Vec<u8>> {
@@ -194,7 +210,7 @@ impl Steps for Editing<'_, '_> {
         note::keep(
             Note {
                 text,
-                id: self.id,
+                id: Some(self.id),
                 tags: self.tags,
                 draft: Some(draft),
             },
@@ -216,30 +232,33 @@ pub fn run(
     kinds: &[Box<dyn Kind>],
     indexing: &Indexing<'_>,
 ) -> Result<Outcome, Failure> {
-    let id = Id::mint().map_err(|error| refused(&error.to_string()))?;
+    let id = Id::mint().map_err(|error| refused(&error))?;
     let name = format!(".bilbo-note-{id}");
-    let temp = (env.var)("TMPDIR")
-        .filter(|value| !value.is_empty())
-        .map_or_else(|| PathBuf::from("/tmp"), PathBuf::from);
-    let base = fs::canonicalize(&temp).unwrap_or(temp);
+    let temp = temp(&|name| (env.var)(name));
+    let given = std::path::absolute(&temp)
+        .unwrap_or_else(|_| temp.clone())
+        .join(&name);
+    let base = match fs::canonicalize(&temp) {
+        Ok(base) => base,
+        Err(error) => return unmade(&given, &error, None),
+    };
     let folder = base.join(&name);
     let paths = Paths {
         file: folder.join("note.md"),
         folder,
     };
-    let unmade = |error: &io::Error| {
-        refused(&format!(
-            "cannot make the note's folder {}: {error}",
-            paths.folder.display()
-        ))
+    let parent = match private::parent(&base) {
+        Ok(parent) => parent,
+        Err(error) => return unmade(&paths.folder, &error, None),
     };
-    let parent = fs::File::open(&base).map_err(|error| unmade(&error))?;
-    let held = private::folder(&parent, &name, &paths.folder).map_err(|error| unmade(&error))?;
+    let held = match private::folder(&parent, &name, &paths.folder) {
+        Ok(held) => held,
+        Err(failed) => return unmade(&paths.folder, &failed.error, failed.removal.as_ref()),
+    };
     let mut editing = Editing {
         editor,
         paths: &paths,
         folder: held,
-        child: None,
         id,
         tags,
         written,
@@ -260,11 +279,11 @@ mod tests {
     use std::os::unix::fs::PermissionsExt;
     use std::path::{Path, PathBuf};
 
-    use bilbo_entries::remember::WrittenAnswer;
+    use bilbo_entries::remember::{Attempt, WrittenAnswer};
     use bilbo_store::entries::StoreError;
     use bilbo_store::id::Id;
 
-    use super::{Ended, Paths, Steps, command, editor, remove, session};
+    use super::{Ended, Paths, Started, Steps, command, editor, remove, session, temp, unmade};
     use crate::console::closing::Closing;
     use crate::console::message::Message;
     use crate::console::outcome::{Failure, Outcome};
@@ -298,6 +317,20 @@ mod tests {
         assert_eq!(editor(&only_editor), Some(OsString::from("vi")));
         assert_eq!(editor(&values(&[])), None);
         assert_eq!(editor(&values(&[("VISUAL", ""), ("EDITOR", "")])), None);
+    }
+
+    #[test]
+    fn the_temp_folder_is_tmpdir_and_an_empty_value_is_unset() {
+        for (value, expected) in [
+            (Some("/var/scratch"), "/var/scratch"),
+            (Some("scratch"), "scratch"),
+            (Some(""), "/tmp"),
+            (None, "/tmp"),
+        ] {
+            let pairs: Vec<(&str, &str)> =
+                value.map(|value| ("TMPDIR", value)).into_iter().collect();
+            assert_eq!(temp(&values(&pairs)), PathBuf::from(expected), "{value:?}");
+        }
     }
 
     #[test]
@@ -348,6 +381,7 @@ mod tests {
         lost: Option<io::Error>,
         read: Option<io::Result<Vec<u8>>>,
         answer: Option<WrittenAnswer>,
+        closing: Option<Closing>,
         reads: Cell<usize>,
     }
 
@@ -360,7 +394,22 @@ mod tests {
                 lost: None,
                 read: None,
                 answer: None,
+                closing: None,
                 reads: Cell::new(0),
+            }
+        }
+    }
+
+    struct Gone {
+        lost: Option<io::Error>,
+        ended: Option<Ended>,
+    }
+
+    impl Started for Gone {
+        fn wait(self: Box<Self>) -> io::Result<Ended> {
+            match self.lost {
+                Some(error) => Err(error),
+                None => Ok(self.ended.expect("an end")),
             }
         }
     }
@@ -369,14 +418,14 @@ mod tests {
         fn make(&mut self) -> io::Result<()> {
             self.make.take().map_or(Ok(()), Err)
         }
-        fn start(&mut self) -> io::Result<()> {
-            self.start.take().map_or(Ok(()), Err)
-        }
-        fn wait(&mut self) -> io::Result<Ended> {
-            match self.lost.take() {
-                Some(error) => Err(error),
-                None => Ok(self.ended.take().expect("an end")),
+        fn start(&mut self) -> io::Result<Box<dyn Started>> {
+            if let Some(error) = self.start.take() {
+                return Err(error);
             }
+            Ok(Box::new(Gone {
+                lost: self.lost.take(),
+                ended: self.ended.take(),
+            }))
         }
         fn read(&mut self) -> io::Result<Vec<u8>> {
             self.reads.set(self.reads.get() + 1);
@@ -388,7 +437,12 @@ mod tests {
                     assert!(text.trim().is_empty(), "{text:?}");
                     Ok(note::nothing_to_keep(Some(draft)))
                 }
-                Some(answer) => note::answered(answer, &[], Closing::default(), Some(draft)),
+                Some(answer) => note::answered(
+                    answer,
+                    &[],
+                    self.closing.take().unwrap_or_default(),
+                    Some(draft),
+                ),
             }
         }
     }
@@ -446,29 +500,39 @@ mod tests {
             assert_eq!(held.removed, removed, "row {row}");
         };
 
-        let mut script = Script::new();
-        script.make = Some(io::Error::other("no room"));
-        let held = conclude(script, None);
-        said(
-            &held,
-            &[format!(
-                "bilbo: cannot make the note's file {FILE}: no room"
-            )],
-            1,
-            goes(),
-            "3",
-        );
+        let warning = "cannot remove the folder";
+        for removal in [None, Some(warning)] {
+            let name =
+                |row: &str| format!("{row}{}", removal.map_or("", |_| ", the removal fails"));
+            let after = |line: String| {
+                let mut lines = vec![line];
+                lines.extend(removal.map(|warning| format!("bilbo: {warning}")));
+                lines
+            };
+            let mut script = Script::new();
+            script.make = Some(io::Error::other("no room"));
+            let held = conclude(script, removal);
+            said(
+                &held,
+                &after(format!(
+                    "bilbo: cannot make the note's file {FILE}: no room"
+                )),
+                1,
+                goes(),
+                &name("3"),
+            );
 
-        let mut script = Script::new();
-        script.start = Some(io::Error::other("no sh"));
-        let held = conclude(script, None);
-        said(
-            &held,
-            &["bilbo: cannot start the editor: no sh".to_owned()],
-            1,
-            goes(),
-            "4",
-        );
+            let mut script = Script::new();
+            script.start = Some(io::Error::other("no sh"));
+            let held = conclude(script, removal);
+            said(
+                &held,
+                &after("bilbo: cannot start the editor: no sh".to_owned()),
+                1,
+                goes(),
+                &name("4"),
+            );
+        }
 
         let mut script = Script::new();
         script.lost = Some(io::Error::other("lost"));
@@ -606,7 +670,7 @@ mod tests {
         script.read = Some(Ok(b"a sentence".to_vec()));
         script.answer = Some(WrittenAnswer::AtCapture {
             id: id(),
-            error: StoreError::Missing("no store".to_owned()),
+            error: Attempt::Store(StoreError::Missing("no store".to_owned())),
         });
         let held = conclude(script, None);
         said(
@@ -673,5 +737,77 @@ mod tests {
             goes(),
             "5b, a removal that fails follows the run's line",
         );
+
+        for (closing, expected, row) in [
+            (
+                Closing {
+                    messages: vec![Message::info("the close's line")],
+                    failed: true,
+                    refused: false,
+                },
+                None,
+                "12, the store failed at the close",
+            ),
+            (
+                Closing {
+                    messages: vec![Message::info("the close's line")],
+                    failed: false,
+                    refused: true,
+                },
+                None,
+                "12, the close refused",
+            ),
+            (
+                Closing {
+                    messages: vec![Message::info("the close's line")],
+                    failed: true,
+                    refused: false,
+                },
+                Some(warning),
+                "12, both",
+            ),
+        ] {
+            let mut script = Script::new();
+            script.read = Some(Ok(b"a sentence".to_vec()));
+            script.answer = Some(WrittenAnswer::Kept {
+                id: id(),
+                records: 1,
+                raw_bytes: 10,
+                stored_bytes: 40,
+                tagged: false,
+            });
+            script.closing = Some(closing);
+            let held = conclude(script, expected);
+            let mut lines = vec![
+                format!("bilbo: kept the note as {ID}"),
+                "bilbo: the close's line".to_owned(),
+            ];
+            lines.extend(expected.map(|warning| format!("bilbo: {warning}")));
+            said(&held, &lines, 1, goes(), row);
+        }
+
+        let folder = Path::new(FOLDER);
+        let lines = |result: Result<Outcome, Failure>| match result {
+            Ok(outcome) => (outcome.stderr_lines(&View::PLAIN), outcome.exit_code()),
+            Err(failure) => (failure.stderr_lines(&View::PLAIN), failure.exit_code()),
+        };
+        let (shown, code) = lines(unmade(folder, &io::Error::other("no room"), None));
+        assert_eq!(
+            shown,
+            [format!(
+                "bilbo: cannot make the note's folder {FOLDER}: no room"
+            )]
+        );
+        assert_eq!(code, 1);
+        let denied = io::Error::other("denied");
+        let (shown, code) = lines(unmade(folder, &io::Error::other("no room"), Some(&denied)));
+        assert_eq!(
+            shown,
+            [
+                format!("bilbo: cannot make the note's folder {FOLDER}: no room"),
+                format!("bilbo: cannot remove the note's folder {FOLDER}: denied"),
+            ]
+        );
+        assert_eq!(code, 1);
     }
 }

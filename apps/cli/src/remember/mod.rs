@@ -16,7 +16,6 @@ use bilbo_entries::follows::Follow;
 use bilbo_entries::kind::Kind;
 use bilbo_entries::remember::{self, Output, Request, Tagging};
 use bilbo_entries::tag;
-use bilbo_store::id::Id;
 use bilbo_store::labels::Tag;
 use bilbo_store::segments::Store;
 use clap::Command;
@@ -200,10 +199,9 @@ fn typed(
     kinds: &[Box<dyn Kind>],
     indexing: &Indexing<'_>,
 ) -> Result<Outcome, Failure> {
-    let id = Id::mint().map_err(|error| refused(&error))?;
     let note = note::Note {
         text,
-        id,
+        id: None,
         tags,
         draft: None,
     };

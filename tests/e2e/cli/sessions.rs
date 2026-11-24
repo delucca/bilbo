@@ -22,7 +22,13 @@ const SECOND_PACKED: &[u8] = include_bytes!(
 );
 const ROLLOUT_ID: &str = "019a4f2e-7c1d-7b3a-9e55-2d8c41f0a6b7";
 
-fn counts(new: u64, appended: u64, generation: u64, unchanged: u64, refused: u64) -> String {
+pub(crate) fn counts(
+    new: u64,
+    appended: u64,
+    generation: u64,
+    unchanged: u64,
+    refused: u64,
+) -> String {
     format!(
         "new {new}, appended {appended}, new generation {generation}, unchanged {unchanged}, refused {refused}"
     )
@@ -80,7 +86,7 @@ fn main_session(scratch: &Scratch) -> PathBuf {
     ))
 }
 
-fn first(run: &Run) -> &str {
+pub(crate) fn first(run: &Run) -> &str {
     run.stdout.lines().next().unwrap_or_default()
 }
 

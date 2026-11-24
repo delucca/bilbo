@@ -3,7 +3,9 @@ use std::io;
 use std::os::unix::fs::MetadataExt;
 use std::path::Path;
 
-use rustix::fs::{AtFlags, FileType, Mode, OFlags, mkdirat, openat, statat, unlinkat};
+use rustix::fs::{
+    AtFlags, FileType, Mode, OFlags, mkdirat, open as open_path, openat, statat, unlinkat,
+};
 use rustix::process::geteuid;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -75,8 +77,22 @@ pub fn checked_for(file: &fs::File, path: &Path, how: How) -> io::Result<()> {
     if held { Ok(()) } else { Err(refused(path)) }
 }
 
-pub fn folder(parent: &fs::File, name: &str, path: &Path) -> io::Result<fs::File> {
-    mkdirat(parent, name, Mode::from_raw_mode(0o700))?;
+pub fn parent(path: &Path) -> io::Result<fs::File> {
+    let flags = OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC;
+    Ok(fs::File::from(open_path(path, flags, Mode::empty())?))
+}
+
+#[derive(Debug)]
+pub struct Unmade {
+    pub error: io::Error,
+    pub removal: Option<io::Error>,
+}
+
+pub fn folder(parent: &fs::File, name: &str, path: &Path) -> Result<fs::File, Unmade> {
+    mkdirat(parent, name, Mode::from_raw_mode(0o700)).map_err(|error| Unmade {
+        error: error.into(),
+        removal: None,
+    })?;
     let flags = OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC;
     let seen = openat(parent, name, flags, Mode::empty())
         .map(fs::File::from)
@@ -89,10 +105,12 @@ pub fn folder(parent: &fs::File, name: &str, path: &Path) -> io::Result<fs::File
                 Err(refused_folder(path))
             }
         });
-    if seen.is_err() {
-        let _ = unlinkat(parent, name, AtFlags::REMOVEDIR);
-    }
-    seen
+    seen.map_err(|error| Unmade {
+        error,
+        removal: unlinkat(parent, name, AtFlags::REMOVEDIR)
+            .err()
+            .map(io::Error::from),
+    })
 }
 
 pub fn open(folder: &fs::File, name: &str, path: &Path, how: How) -> io::Result<fs::File> {
@@ -125,7 +143,7 @@ mod tests {
 
     use std::io::Read;
 
-    use super::{How, checked, checked_for, folder as private_folder, is_refusal, open};
+    use super::{How, checked, checked_for, folder as private_folder, is_refusal, open, parent};
 
     fn folder(test: &str) -> (PathBuf, fs::File) {
         let base = std::env::temp_dir().join(format!("private-{test}-{}", std::process::id()));
@@ -269,7 +287,9 @@ mod tests {
         assert_eq!(error.to_string(), sentence(&said("saved")));
 
         fs::hard_link(said("saved"), said("twin")).expect("a second name");
-        symlink(said("saved"), said("link")).expect("a link");
+        fs::write(said("other"), "x").expect("a file of its own");
+        mode(&said("other"), 0o644);
+        symlink(said("other"), said("link")).expect("a link");
         fs::create_dir(said("dir")).expect("a folder");
         for name in ["saved", "twin", "link", "dir"] {
             let error = open(&dir, name, &said(name), How::Edited).expect_err(name);
@@ -304,21 +324,50 @@ mod tests {
         assert!(said("free").join("note.md").is_file());
 
         fs::create_dir(said("taken")).expect("a folder");
+        mode(&said("taken"), 0o700);
         fs::write(said("taken").join("kept"), "x").expect("a file");
         fs::write(said("file"), "y").expect("a file");
         fs::create_dir(said("target")).expect("a folder");
         symlink(said("target"), said("link")).expect("a link");
         for name in ["taken", "file", "link"] {
-            let error = private_folder(&dir, name, &said(name)).expect_err(name);
-            assert_eq!(error.kind(), std::io::ErrorKind::AlreadyExists, "{name}");
+            let failed = private_folder(&dir, name, &said(name)).expect_err(name);
+            assert_eq!(
+                failed.error.kind(),
+                std::io::ErrorKind::AlreadyExists,
+                "{name}"
+            );
+            assert!(failed.removal.is_none(), "{name}");
         }
         assert_eq!(
             fs::read_to_string(said("taken").join("kept")).expect("as it was"),
             "x"
         );
+        assert_eq!(
+            fs::metadata(said("taken"))
+                .expect("meta")
+                .permissions()
+                .mode()
+                & 0o777,
+            0o700
+        );
         assert_eq!(fs::read_to_string(said("file")).expect("as it was"), "y");
         assert!(said("link").is_symlink());
         assert_eq!(fs::read_dir(said("target")).expect("as it was").count(), 0);
+        let _ = fs::remove_dir_all(Path::new(&base));
+    }
+
+    #[test]
+    fn the_temp_folder_is_opened_as_a_folder_or_not_at_all() {
+        let (base, _) = folder("parent");
+        let said = |name: &str| base.join(name);
+        let opened = parent(&base).expect("a folder");
+        private_folder(&opened, "free", &said("free")).expect("a folder beneath it");
+        assert!(said("free").is_dir());
+        fs::write(said("file"), "x").expect("a file");
+        let error = parent(&said("file")).expect_err("a file");
+        assert_eq!(error.kind(), std::io::ErrorKind::NotADirectory);
+        let error = parent(&said("absent")).expect_err("no such name");
+        assert_eq!(error.kind(), std::io::ErrorKind::NotFound);
         let _ = fs::remove_dir_all(Path::new(&base));
     }
 }

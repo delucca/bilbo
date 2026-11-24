@@ -1,9 +1,9 @@
 use std::fs;
-use std::process::{Command, Stdio};
-use std::time::{Duration, Instant, SystemTime};
+use std::process::Command;
+use std::time::{Duration, SystemTime};
 
+use super::Run;
 use super::scratch::Scratch;
-use super::{Run, binary};
 
 const KEYS: &str = "paths.root, paths.state, paths.cache, store.seal_at, store.seal_after, \
                     store.compression, store.tear_budget, store.wait, store.poll, follow, read.budget, read.outline_width, \
@@ -453,32 +453,7 @@ fn run_within(
     extra: (&'static str, &str),
     limit: Duration,
 ) -> Run {
-    let mut env = scratch.env();
-    env.push((extra.0, extra.1.to_owned()));
-    let mut child = Command::new(binary())
-        .env_clear()
-        .envs(env.iter().map(|(name, value)| (*name, value.as_str())))
-        .args(args)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("bilbo starts");
-    let started = Instant::now();
-    while child.try_wait().expect("wait").is_none() {
-        if started.elapsed() > limit {
-            let _ = child.kill();
-            let _ = child.wait();
-            panic!("bilbo {args:?} did not exit within {limit:?}");
-        }
-        std::thread::sleep(Duration::from_millis(20));
-    }
-    let output = child.wait_with_output().expect("output");
-    Run {
-        code: output.status.code().expect("an exit code"),
-        stdout: String::from_utf8(output.stdout).expect("UTF-8 stdout"),
-        stderr: String::from_utf8(output.stderr).expect("UTF-8 stderr"),
-    }
+    scratch.run_within(args, &[extra], None, limit)
 }
 
 #[test]

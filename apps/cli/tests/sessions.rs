@@ -21,7 +21,7 @@ mod sandbox;
 mod scratch;
 mod stores;
 
-use sandbox::{Run, counts, run, text, write};
+use sandbox::{ID_A, ID_B, Run, counts, moved_line, note_with, run, text, write};
 use scratch::{scratch_dir, vars};
 use stores::{backdate, layout};
 
@@ -1014,37 +1014,14 @@ fn a_rerun_with_a_follow_that_cannot_run_exits_1() {
     );
 }
 
-const NOTE_ID: &str = "01JC5Q3V7XKM4P8R2T6W9YB0DE";
-const NOTE_ID_B: &str = "01JC5Q3V7XKM4P8R2T6W9YB0DF";
-
-fn note_text() -> String {
-    format!("---\nid: {NOTE_ID}\n---\n# A\n")
-}
-
-fn moved_line(new: &Path, old: &Path) -> String {
-    format!(
-        "bilbo: moved {}: its id {NOTE_ID} was held by file:{}",
-        text(new),
-        text(old)
-    )
-}
-
 fn one_note_followed(test: &str, second: bool) -> (Sandbox, PathBuf, PathBuf) {
-    let sandbox = Sandbox::new(test);
-    let notes = sandbox.dir.join("notes");
-    let old = notes.join("a.md");
-    write(&old, note_text().as_bytes());
-    write(
-        &sandbox.dir.join("config/config.toml"),
-        format!(
-            "[[follow]]\npath = \"{}\"\nkind = \"markdown\"\n",
-            text(&notes)
-        )
-        .as_bytes(),
-    );
+    let first = note_with(ID_A, "A");
+    let mut names = vec![("a.md", first.as_str())];
     if second {
-        write(&notes.join("z.md"), b"z\n");
+        names.push(("z.md", "z\n"));
     }
+    let (sandbox, notes) = followed_notes(test, &names);
+    let old = notes.join("a.md");
     let run = sandbox.refresh();
     assert_eq!(run.code, 0, "{:?}", run.stderr);
     assert_eq!(
@@ -1105,7 +1082,7 @@ fn refresh_does_not_say_a_move_when_its_store_fails_at_the_close() {
                 "bilbo: follow {}: unknown kind 'pdf'; kinds: markdown, session",
                 text(&other)
             ),
-            moved_line(&new, &old),
+            moved_line(&new, ID_A, &old),
         ]
     );
 }
@@ -1326,12 +1303,12 @@ fn a_withdrawn_entry_keeps_its_tags() {
 
 #[test]
 fn a_note_refused_under_another_notes_name_is_unchanged_when_it_is_moved_back() {
-    let note = |id: &str| format!("---\nid: {id}\n---\n# {id}\n");
+    let note = |id: &str| note_with(id, id);
     let (sandbox, notes) = followed_notes(
         "moved_back",
         &[
-            ("a.md", &note(NOTE_ID)),
-            ("b.md", &note(NOTE_ID_B)),
+            ("a.md", &note(ID_A)),
+            ("b.md", &note(ID_B)),
             ("c.md", "c\n"),
         ],
     );
@@ -1353,7 +1330,7 @@ fn a_note_refused_under_another_notes_name_is_unchanged_when_it_is_moved_back() 
     assert_eq!(
         run.stderr,
         [format!(
-            "bilbo: refused {}: its id {NOTE_ID} is held by file:{}, but this path was kept as entry {NOTE_ID_B}",
+            "bilbo: refused {}: its id {ID_A} is held by file:{}, but this path was kept as entry {ID_B}",
             text(&b),
             text(&a)
         )]

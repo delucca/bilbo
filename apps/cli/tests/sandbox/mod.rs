@@ -11,6 +11,21 @@ use bilbo_cli::console::outcome::Failure;
 use bilbo_cli::console::settings;
 use bilbo_cli::console::view::View;
 
+pub const ID_A: &str = "01JC5Q3V7XKM4P8R2T6W9YB0DE";
+pub const ID_B: &str = "01JC5Q3V7XKM4P8R2T6W9YB0DF";
+
+pub fn note_with(id: &str, heading: &str) -> String {
+    format!("---\nid: {id}\n---\n# {heading}\n")
+}
+
+pub fn moved_line(new: &Path, id: &str, old: &Path) -> String {
+    format!(
+        "bilbo: moved {}: its id {id} was held by file:{}",
+        text(new),
+        text(old)
+    )
+}
+
 pub struct Run {
     pub code: u8,
     pub stdout: String,

@@ -10,7 +10,8 @@ use bilbo_entries::files::{Call, Files, Memory, Node, Turning};
 use bilbo_entries::follows::{self, Follow, Planned};
 use bilbo_entries::kind::Kind;
 use bilbo_entries::remember::{
-    self, Error, Item, Moved, Outcome, Output, Request, Tagging, Tally, Written, WrittenAnswer,
+    self, Attempt, Error, Item, Moved, Outcome, Output, Request, Tagging, Tally, Written,
+    WrittenAnswer,
 };
 use bilbo_store::entries::{Generation, Head, Mark, Stamp};
 use bilbo_store::id::Id;
@@ -2378,16 +2379,23 @@ fn a_store_that_refuses_or_fails_a_written_text_says_so() {
         let mut entries = FakeEntries::new().on(&label, script);
         let answer = keep_document(&mut entries, &record, &Tagging::default());
         assert!(
-            matches!(&answer, WrittenAnswer::AtCapture { id: tried, error } if *tried == id(5) && error.to_string() == "the store did not make a new entry for the note"),
+            matches!(&answer, WrittenAnswer::AtCapture { id: tried, error: Attempt::NoNewEntry } if *tried == id(5))
+                && matches!(&answer, WrittenAnswer::AtCapture { error, .. } if error.to_string() == "the store did not make a new entry for the note"),
             "{answer:?}"
         );
         assert_eq!(entries.seen.len(), 1);
+        assert!(
+            matches!(&answer, WrittenAnswer::AtCapture { error, .. } if std::error::Error::source(error).is_none()),
+            "{answer:?}"
+        );
     }
 
     let mut failing = FakeEntries::new().on(&label, Script::Failure);
     let answer = keep_document(&mut failing, &record, &Tagging::default());
     assert!(
-        matches!(&answer, WrittenAnswer::AtCapture { id: tried, error } if *tried == id(5) && error.to_string() == "stopped at the test hook Appended"),
+        matches!(&answer, WrittenAnswer::AtCapture { id: tried, error: Attempt::Store(_) } if *tried == id(5))
+            && matches!(&answer, WrittenAnswer::AtCapture { error, .. } if error.to_string() == "stopped at the test hook Appended")
+            && matches!(&answer, WrittenAnswer::AtCapture { error, .. } if std::error::Error::source(error).is_some_and(|source| source.to_string() == "stopped at the test hook Appended")),
         "{answer:?}"
     );
 }
