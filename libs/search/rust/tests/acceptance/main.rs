@@ -1,3 +1,4 @@
+mod digest;
 mod fakes;
 mod recall;
 mod reindex;

@@ -47,7 +47,7 @@ pub struct Record<'a> {
     pub query: &'a str,
 }
 
-fn joined(items: impl Iterator<Item = String>) -> String {
+pub(crate) fn joined(items: impl Iterator<Item = String>) -> String {
     let joined: Vec<String> = items.collect();
     if joined.is_empty() {
         "-".to_owned()
@@ -56,7 +56,7 @@ fn joined(items: impl Iterator<Item = String>) -> String {
     }
 }
 
-fn escaped(query: &str) -> String {
+pub(crate) fn escaped(query: &str) -> String {
     let mut text = String::with_capacity(query.len());
     for c in query.chars() {
         match c {

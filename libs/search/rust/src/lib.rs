@@ -1,6 +1,7 @@
 pub mod analyze;
 pub mod bm25;
 pub mod chunk;
+pub mod digest;
 mod fill;
 pub mod index;
 pub mod keys;

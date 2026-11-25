@@ -49,7 +49,10 @@ alias(
 
 bilbo_rust_test(
     name = "unit",
-    compile_data = ["//:docs/reference/configuration.md"],
+    compile_data = [
+        "//:docs/reference/configuration.md",
+        "//libs/entries/rust:note_fixtures",
+    ],
     crate = ":bilbo_cli",
     layer = "unit",
     lint_config = ":lints",
@@ -93,6 +96,7 @@ bilbo_rust_test(
 bilbo_rust_test(
     name = "remember",
     srcs = [
+        "tests/keeping/mod.rs",
         "tests/remember.rs",
         "tests/sandbox/mod.rs",
         "tests/scratch/mod.rs",
@@ -148,12 +152,14 @@ bilbo_rust_test(
         "//libs/search:rust",
         "//libs/store:rust",
         "//tools/rust/provider",
+        "@crates//:serde_json",
     ] + all_crate_deps(normal_dev = True),
 )
 
 bilbo_rust_test(
     name = "sessions",
     srcs = [
+        "tests/keeping/mod.rs",
         "tests/sandbox/mod.rs",
         "tests/scratch/mod.rs",
         "tests/sessions.rs",
@@ -189,6 +195,31 @@ bilbo_rust_test(
         "//libs/entries:rust",
         "//libs/store:rust",
     ],
+)
+
+bilbo_rust_test(
+    name = "digest",
+    srcs = [
+        "tests/digest.rs",
+        "tests/note_line/mod.rs",
+        "tests/notes/mod.rs",
+        "tests/runner/mod.rs",
+        "tests/sandbox/mod.rs",
+        "tests/scratch/mod.rs",
+    ],
+    crate_root = "tests/digest.rs",
+    compile_data = [
+        "//libs/entries/rust:markdown_fixtures",
+        "//libs/entries/rust:session_fixtures",
+    ],
+    layer = "integration",
+    lint_config = ":lints",
+    deps = [
+        ":bilbo_cli",
+        "//libs/entries:rust",
+        "//libs/search:rust",
+        "//libs/store:rust",
+    ] + all_crate_deps(normal_dev = True),
 )
 
 bilbo_rust_test(
@@ -231,6 +262,7 @@ bilbo_rust_test(
         "//libs/search:rust",
         "//libs/store:rust",
         "@crates//:rustix",
+        "@crates//:serde_json",
     ] + all_crate_deps(normal_dev = True),
 )
 
@@ -252,6 +284,7 @@ bilbo_rust_test(
         "//libs/entries:rust",
         "//libs/search:rust",
         "//libs/store:rust",
+        "@crates//:serde_json",
     ] + all_crate_deps(normal_dev = True),
 )
 

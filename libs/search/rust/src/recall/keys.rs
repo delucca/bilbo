@@ -2,7 +2,10 @@ use bilbo_settings::error::Error;
 use bilbo_settings::file::File;
 use bilbo_settings::key::{About, Default, Key, Resolved, Shown, Source, quote};
 
-use crate::analyze::{self, Language};
+use crate::analyze::{self, Detect, Language, Omit};
+use crate::bm25::Bm25;
+use crate::lookup::Lookup;
+use crate::typo;
 
 pub const BUDGET: Key<usize> = Key {
     about: About {
@@ -161,7 +164,7 @@ pub const LANGUAGES: Key<Vec<Language>> = Key {
         variable: None,
         default: Default::Toml(r#"["pt"]"#),
         allowed: "a list of language codes bilbo knows, each once",
-        doc: "The languages whose function words bilbo recall leaves out of a query written in one of them; they stay searchable in what was kept. An empty list leaves none out.",
+        doc: "The languages whose function words bilbo recall and bilbo digest leave out of a query written in one of them; they stay searchable in what was kept. An empty list leaves none out.",
     },
     parse: |value| {
         let items = value.items().ok_or_else(|| value.refuse())?;
@@ -225,7 +228,7 @@ pub const READ_BATCH: Key<usize> = Key {
         variable: Some("BILBO_RECALL_READ_BATCH"),
         default: Default::Toml("4096"),
         allowed: "a whole number from 1 to 1000000",
-        doc: "The most chunks bilbo recall reads from the index at once. By default only a run of equal scores longer than the candidates reaches it. It changes no hit.",
+        doc: "The most chunks bilbo recall and bilbo digest read from the index at once. By default only a run of equal scores longer than the verb's own candidates, recall.candidates or digest.candidates, reaches it. It changes no hit and no row.",
     },
     parse: |value| {
         value
@@ -243,7 +246,7 @@ pub const TYPO_TERMS: Key<usize> = Key {
         variable: Some("BILBO_RECALL_TYPO_TERMS"),
         default: Default::Toml("3"),
         allowed: "a whole number from 0 to 10",
-        doc: "How many of the index's nearest terms bilbo recall searches in place of a query word no chunk holds; 0 turns typo matching off.",
+        doc: "How many of the index's nearest terms bilbo recall and bilbo digest search in place of a query word no chunk holds; 0 turns typo matching off.",
     },
     parse: |value| {
         value
@@ -261,7 +264,7 @@ pub const TYPO_LETTERS: Key<usize> = Key {
         variable: Some("BILBO_RECALL_TYPO_LETTERS"),
         default: Default::Toml("4"),
         allowed: "a whole number from 2 to 64",
-        doc: "The shortest query word, in letters after stemming, that bilbo recall takes for misspelt when no chunk holds it.",
+        doc: "The shortest query word, in letters after stemming, that bilbo recall and bilbo digest take for misspelt when no chunk holds it.",
     },
     parse: |value| {
         value
@@ -279,7 +282,7 @@ pub const TYPO_MAX_LETTERS: Key<usize> = Key {
         variable: Some("BILBO_RECALL_TYPO_MAX_LETTERS"),
         default: Default::Toml("64"),
         allowed: "a whole number from 2 to 64",
-        doc: "The longest query word, in letters after stemming, that bilbo recall takes for misspelt when no chunk holds it. The search for near terms holds memory for each letter of the word, so 64 is the most.",
+        doc: "The longest query word, in letters after stemming, that bilbo recall and bilbo digest take for misspelt when no chunk holds it. The search for near terms holds memory for each letter of the word, so 64 is the most.",
     },
     parse: |value| {
         value
@@ -399,6 +402,27 @@ pub fn defaults() -> Section {
 }
 
 impl Section {
+    pub fn bm25<'a>(&'a self, index: &'a dyn Lookup, detect: &'a dyn Detect) -> Bm25<'a> {
+        Bm25 {
+            index,
+            k1: self.bm25_k1.value,
+            b: self.bm25_b.value,
+            omit: Omit {
+                words: &self.question_words.value,
+                languages: &self.languages.value,
+                detect: Some(detect),
+            },
+            batch: self.read_batch.value,
+            typos: typo::Rule {
+                terms: self.typo_terms.value,
+                letters: self.typo_letters.value,
+                max_letters: self.typo_max_letters.value,
+                two_edits: self.typo_two_edits.value,
+            },
+            pair_weight: self.pair_weight.value,
+        }
+    }
+
     pub fn shown(&self) -> [Shown; 17] {
         [
             BUDGET.shown(&self.budget),
@@ -430,7 +454,7 @@ mod tests {
     use bilbo_settings::file::File;
     use bilbo_settings::key::Source;
 
-    use crate::testing::portuguese;
+    use crate::testing::{Says, Table, portuguese};
 
     use super::{ABOUT, Section, defaults, section};
 
@@ -961,6 +985,33 @@ mod tests {
         .pair_weight
         .value;
         assert!((weight - 0.5).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn the_ranker_is_the_one_the_keys_describe() {
+        let text = "[recall]\nbm25_k1 = 1.5\nbm25_b = 0.4\nquestion_words = [\"why\", \"who\"]\nlanguages = []\nread_batch = 99\ntypo_terms = 5\ntypo_letters = 6\ntypo_max_letters = 12\ntypo_two_edits = 10\npair_weight = 0.5\n";
+        let section = resolve(&[], text).expect("valid");
+        let table = Table::new();
+        let says = Says::new(None);
+        let ranker = section.bm25(&table, &says);
+        assert!(std::ptr::addr_eq(ranker.index, &raw const table));
+        assert!((ranker.k1 - 1.5).abs() < f64::EPSILON);
+        assert!((ranker.b - 0.4).abs() < f64::EPSILON);
+        assert_eq!(ranker.omit.words, ["why", "who"]);
+        assert!(ranker.omit.languages.is_empty());
+        assert_eq!(ranker.batch, 99);
+        assert_eq!(ranker.typos.terms, 5);
+        assert_eq!(ranker.typos.letters, 6);
+        assert_eq!(ranker.typos.max_letters, 12);
+        assert_eq!(ranker.typos.two_edits, 10);
+        assert!((ranker.pair_weight - 0.5).abs() < f64::EPSILON);
+        let detect = ranker.omit.detect.expect("a detector");
+        assert_eq!(detect.language("a query"), None);
+        assert_eq!(*says.asked.borrow(), ["a query"]);
+
+        let by_default = defaults();
+        let again = by_default.bm25(&table, &says);
+        assert_eq!(again.omit.languages, [portuguese()]);
     }
 
     #[test]

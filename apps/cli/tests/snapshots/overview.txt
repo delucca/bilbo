@@ -7,6 +7,7 @@ Verbs:
   remember  Keep files or a note as entries; a later run keeps what changed
   refresh   Keep what every follow gained or changed; a timer runs it
   recall    Search everything bilbo keeps and print the best chunks and notes
+  digest    Answer a session's first prompt with what bilbo keeps on it
   read      Print an entry: its outline, or its records a page at a time
   tag       List the tags, or change the tags of entries
   reindex   Rebuild the catalog and the search index from the store

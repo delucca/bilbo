@@ -21,7 +21,7 @@ pub const HEADING_WIDTH: Key<usize> = Key {
         variable: Some("BILBO_MARKDOWN_HEADING_WIDTH"),
         default: Default::Toml("100"),
         allowed: "a whole number from 20 to 1000",
-        doc: "The most characters a heading may have inside a section label of a Markdown file, an ellipsis included: a longer heading is cut and ends in one.",
+        doc: "The most characters a heading of a Markdown file may have inside a section label, or as the file's title in a row of bilbo digest, an ellipsis included: a longer heading is cut and ends in one.",
     },
     parse: |value| {
         value
@@ -64,6 +64,10 @@ impl Reader for Markdown {
 
     fn passages(&self, records: &[&[u8]]) -> Vec<Passage> {
         read::passages(records, self.heading_width)
+    }
+
+    fn title(&self, records: &[&[u8]]) -> Option<String> {
+        read::title(records, self.heading_width)
     }
 
     /// A frontmatter fence closed by a later record turns the text before it into frontmatter.
@@ -200,6 +204,45 @@ mod tests {
             })
             .map(|resolved| resolved.value)
             .map_err(|error| error.to_string())
+    }
+
+    #[test]
+    fn a_markdown_files_title_is_its_first_heading() {
+        let records = |text: &str| -> Vec<Vec<u8>> {
+            text.split_inclusive('\n')
+                .map(|line| line.as_bytes().to_vec())
+                .collect()
+        };
+        let title = |text: &str, width: usize| {
+            let records = records(text);
+            let borrowed: Vec<&[u8]> = records.iter().map(Vec::as_slice).collect();
+            Markdown::new(width).title(&borrowed)
+        };
+        let file =
+            std::str::from_utf8(include_bytes!("../../fixtures/markdown/note.md")).expect("a text");
+        assert_eq!(title(file, 100).as_deref(), Some("A synthetic note"));
+        assert_eq!(
+            title("intro\nmore\n## Second\ntext\n", 100).as_deref(),
+            Some("Second")
+        );
+        let long = "x".repeat(30);
+        assert_eq!(
+            title(&format!("# {long}\nbody\n"), 20).as_deref(),
+            Some(format!("{}\u{2026}", "x".repeat(19)).as_str())
+        );
+        assert_eq!(
+            title(
+                "---\nid: x\n# in the frontmatter\n---\n```\n# in a fence\n```\n# The real one\n",
+                100
+            )
+            .as_deref(),
+            Some("The real one")
+        );
+        let bom =
+            std::str::from_utf8(include_bytes!("../../fixtures/markdown/bom.md")).expect("a text");
+        assert_eq!(title(bom, 100).as_deref(), Some("Bom"));
+        assert_eq!(title("just some text\n", 100), None);
+        assert_eq!(title("", 100), None);
     }
 
     #[test]

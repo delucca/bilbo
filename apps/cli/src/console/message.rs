@@ -1,6 +1,7 @@
+use bilbo_search::recall::Stand;
 use bilbo_search::recall::scope::Unnamed;
 use bilbo_store::labels::Tag;
-use bilbo_store::segments::Notice;
+use bilbo_store::segments::{Cache, Notice};
 
 use crate::console::theme::{Mark, Style, paint};
 use crate::console::view::View;
@@ -166,6 +167,14 @@ pub fn sanitize(line: &str) -> String {
         .collect()
 }
 
+pub fn entry_ref(entry: bilbo_store::id::Id, shared_short: bool) -> String {
+    if shared_short {
+        entry.to_string()
+    } else {
+        entry.short().to_string()
+    }
+}
+
 pub fn line(view: &View, text: &str) -> String {
     let escaped = sanitize(text);
     if !view.terminal {
@@ -215,6 +224,36 @@ pub fn notice_message(notice: &Notice) -> Message {
     }
 }
 
+pub fn unsearched(stand: Stand, cache: &Cache) -> Option<Message> {
+    match stand {
+        Stand::NoIndex => Some(Message::error(
+            "the store has no search index bilbo can use; bilbo reindex makes it",
+        )),
+        Stand::OtherManifest => Some(Message::error(
+            "the search index was made with other settings or by another bilbo; bilbo reindex makes it again",
+        )),
+        Stand::Withheld => match cache {
+            Cache::Own(_) | Cache::Absent => None,
+            Cache::Unlocked => Some(Message::error(
+                "no bilbo has written this store from this state folder, so nothing protects its search index while it is read; bilbo refresh sets it up",
+            )),
+            Cache::NoCatalog(path) => Some(Message::error(format!(
+                "the cache folder {} holds no catalog of this store, so its search index cannot be trusted; bilbo refresh makes both again",
+                path.display()
+            ))),
+            Cache::OtherStore(path) => Some(Message::error(format!(
+                "the cache folder {} holds another store's catalog; set paths.cache to a folder of this store's own",
+                path.display()
+            ))),
+            Cache::Unsafe(path) => Some(Message::error(format!(
+                "{} is not this user's alone, or could not be checked; bilbo reads no search index under it",
+                path.display()
+            ))),
+        },
+        Stand::Current | Stand::Behind(_) | Stand::Unknown => None,
+    }
+}
+
 fn plain(mark: Mark, text: &str) -> Message {
     Message {
         mark,
@@ -231,9 +270,10 @@ mod tests {
 
     use std::path::PathBuf;
 
-    use bilbo_store::segments::Notice;
+    use bilbo_search::recall::Stand;
+    use bilbo_store::segments::{Cache, Notice};
 
-    use super::{Detail, Message, group, line, notice_message, sanitize};
+    use super::{Detail, Message, group, line, notice_message, sanitize, unsearched};
 
     #[test]
     fn a_bidirectional_control_is_shown_escaped_and_a_joiner_is_kept() {
@@ -476,6 +516,58 @@ mod tests {
             let message = notice_message(&notice);
             assert_eq!(message.mark, mark);
             assert_eq!(message.text, text);
+        }
+    }
+
+    #[test]
+    fn each_standing_with_no_search_has_its_sentence() {
+        let path = || PathBuf::from("/c/cache");
+        let cases = [
+            (
+                Stand::NoIndex,
+                Cache::Absent,
+                "the store has no search index bilbo can use; bilbo reindex makes it",
+            ),
+            (
+                Stand::OtherManifest,
+                Cache::Own(path()),
+                "the search index was made with other settings or by another bilbo; bilbo reindex makes it again",
+            ),
+            (
+                Stand::Withheld,
+                Cache::Unlocked,
+                "no bilbo has written this store from this state folder, so nothing protects its search index while it is read; bilbo refresh sets it up",
+            ),
+            (
+                Stand::Withheld,
+                Cache::NoCatalog(path()),
+                "the cache folder /c/cache holds no catalog of this store, so its search index cannot be trusted; bilbo refresh makes both again",
+            ),
+            (
+                Stand::Withheld,
+                Cache::OtherStore(path()),
+                "the cache folder /c/cache holds another store's catalog; set paths.cache to a folder of this store's own",
+            ),
+            (
+                Stand::Withheld,
+                Cache::Unsafe(path()),
+                "/c/cache is not this user's alone, or could not be checked; bilbo reads no search index under it",
+            ),
+        ];
+        for (stand, cache, text) in cases {
+            let message = unsearched(stand, &cache).expect("a sentence");
+            assert_eq!(message.mark, Mark::Error);
+            assert_eq!(message.text, text);
+            assert!(message.details.is_empty());
+        }
+        for (stand, cache) in [
+            (Stand::Withheld, Cache::Own(path())),
+            (Stand::Withheld, Cache::Absent),
+            (Stand::Current, Cache::Own(path())),
+            (Stand::Behind(2), Cache::Own(path())),
+            (Stand::Unknown, Cache::Own(path())),
+        ] {
+            assert_eq!(unsearched(stand, &cache), None);
         }
     }
 }

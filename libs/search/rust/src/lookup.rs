@@ -10,7 +10,7 @@ pub struct Posting {
     pub length: u32,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Edits {
     One,
     Two,

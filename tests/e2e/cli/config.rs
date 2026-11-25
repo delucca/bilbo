@@ -8,7 +8,7 @@ use super::scratch::Scratch;
 const KEYS: &str = "paths.root, paths.state, paths.cache, paths.temp, store.seal_at, store.seal_after, \
                     store.compression, store.tear_budget, store.wait, store.poll, follow, remember.editor, read.budget, read.outline_width, \
                     read.matches_listed, tag.cap, search.chunk_tokens, search.chunk_overlap, search.workers, \
-                    search.index_memory, search.merge_deleted_percent, search.entry_tries, search.label_batch, search.list_limit, recall.budget, recall.notes_budget, recall.candidates, recall.cap, recall.record_cap, recall.copy_share, recall.copy_words, recall.question_words, recall.languages, recall.bm25_k1, recall.bm25_b, recall.read_batch, recall.typo_terms, recall.typo_letters, recall.typo_max_letters, recall.typo_two_edits, recall.pair_weight, llm.provider, llm.response, llm.timeout, llm.poll, llm.anthropic.model, llm.anthropic.via, llm.anthropic.api.endpoint, llm.anthropic.api.version, llm.anthropic.api.key_env, llm.anthropic.api.key_command, llm.anthropic.api.headers, llm.anthropic.api.extra, llm.anthropic.tool.program, llm.anthropic.tool.effort, llm.anthropic.tool.arguments, llm.anthropic.tool.inherit, llm.anthropic.tool.environment, llm.anthropic.tool.project_files, llm.openai.model, llm.openai.via, llm.openai.api.endpoint, llm.openai.api.key_env, llm.openai.api.key_command, llm.openai.api.headers, llm.openai.api.extra, llm.openai.tool.program, llm.openai.tool.effort, llm.openai.tool.arguments, llm.openai.tool.inherit, llm.openai.tool.environment, llm.openai.tool.home, llm.openai.tool.system_files, derive.enabled, derive.in, derive.not_in, derive.instructions, derive.quiet, derive.window, derive.passage, derive.passage_head, derive.earlier, derive.names, derive.answer_tokens, derive.calls, derive.retries, derive.retry_wait, derive.retry_factor, derive.retry_limit, derive.tries, derive.failures, derive.tags.enabled, derive.tags.pick, derive.tags.instruction, derive.tags.model, derive.tags.most, derive.tags.notes, markdown.heading_width, session.unpack_floor, session.unpack_ratio, session.unpack_window, session.wide_fields";
+                    search.index_memory, search.merge_deleted_percent, search.entry_tries, search.label_batch, search.list_limit, recall.budget, recall.notes_budget, recall.candidates, recall.cap, recall.record_cap, recall.copy_share, recall.copy_words, recall.question_words, recall.languages, recall.bm25_k1, recall.bm25_b, recall.read_batch, recall.typo_terms, recall.typo_letters, recall.typo_max_letters, recall.typo_two_edits, recall.pair_weight, digest.markdown.most, digest.markdown.floor, digest.session.most, digest.session.floor, digest.session.old_after, digest.session.subagents, digest.session.parts, digest.note.most, digest.note.floor, digest.note.width, digest.candidates, digest.query, digest.wait, digest.input, digest.log.enabled, llm.provider, llm.response, llm.timeout, llm.poll, llm.anthropic.model, llm.anthropic.via, llm.anthropic.api.endpoint, llm.anthropic.api.version, llm.anthropic.api.key_env, llm.anthropic.api.key_command, llm.anthropic.api.headers, llm.anthropic.api.extra, llm.anthropic.tool.program, llm.anthropic.tool.effort, llm.anthropic.tool.arguments, llm.anthropic.tool.inherit, llm.anthropic.tool.environment, llm.anthropic.tool.project_files, llm.openai.model, llm.openai.via, llm.openai.api.endpoint, llm.openai.api.key_env, llm.openai.api.key_command, llm.openai.api.headers, llm.openai.api.extra, llm.openai.tool.program, llm.openai.tool.effort, llm.openai.tool.arguments, llm.openai.tool.inherit, llm.openai.tool.environment, llm.openai.tool.home, llm.openai.tool.system_files, derive.enabled, derive.in, derive.not_in, derive.instructions, derive.quiet, derive.window, derive.passage, derive.passage_head, derive.earlier, derive.names, derive.answer_tokens, derive.calls, derive.retries, derive.retry_wait, derive.retry_factor, derive.retry_limit, derive.tries, derive.failures, derive.tags.enabled, derive.tags.pick, derive.tags.instruction, derive.tags.model, derive.tags.most, derive.tags.notes, markdown.heading_width, session.unpack_floor, session.unpack_ratio, session.unpack_window, session.wide_fields";
 
 #[test]
 fn each_key_shows_the_source_that_won_a_variable_over_the_file_over_the_default() {
@@ -64,6 +64,21 @@ fn each_key_shows_the_source_that_won_a_variable_over_the_file_over_the_default(
              recall.typo_max_letters = 64 (default)\n\
              recall.typo_two_edits = 8 (default)\n\
              recall.pair_weight = 0.25 (default)\n\
+             digest.markdown.most = 6 (default)\n\
+             digest.markdown.floor = 8 (default)\n\
+             digest.session.most = 6 (default)\n\
+             digest.session.floor = 12 (default)\n\
+             digest.session.old_after = \"30d\" (default)\n\
+             digest.session.subagents = false (default)\n\
+             digest.session.parts = false (default)\n\
+             digest.note.most = 6 (default)\n\
+             digest.note.floor = 8 (default)\n\
+             digest.note.width = 300 (default)\n\
+             digest.candidates = 1000 (default)\n\
+             digest.query = 2000 (default)\n\
+             digest.wait = \"1s\" (default)\n\
+             digest.input = \"4 MiB\" (default)\n\
+             digest.log.enabled = true (default)\n\
              llm.provider = \"\" (default)\n\
              llm.response = \"4 MiB\" (default)\n\
              llm.timeout = \"5m\" (default)\n\

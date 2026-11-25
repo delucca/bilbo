@@ -1,8 +1,9 @@
 use std::fs;
 use std::os::unix::ffi::OsStrExt;
-use std::sync::Arc;
+use std::os::unix::fs::MetadataExt;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::channel;
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
@@ -1543,4 +1544,318 @@ fn the_store_never_writes_a_text_label() {
     let store = open(&layout);
     drop(store);
     assert_eq!(label_rows(&layout), (0, 0, 0));
+}
+
+#[test]
+fn what_a_reader_checks_is_given_without_the_store() {
+    let scratch = Scratch::new("checked_gives_the_state");
+    let layout = scratch.layout();
+    let mut store = open(&layout);
+    keep(&mut store, "a.md", b"one\n");
+    store.close().expect("close");
+    let before = snapshot_of(&layout);
+    let checked = Store::checked(&layout, sealing()).expect("checked");
+    let state = checked.state().expect("a state folder");
+    assert_eq!(
+        state.path(),
+        fs::canonicalize(&layout.state).expect("state")
+    );
+    let second = state.try_clone().expect("a second handle");
+    assert_eq!(second.path(), state.path());
+    let (first_meta, second_meta) = (
+        state.folder().metadata().expect("the folder"),
+        second.folder().metadata().expect("the folder"),
+    );
+    assert_eq!(
+        (first_meta.dev(), first_meta.ino()),
+        (second_meta.dev(), second_meta.ino())
+    );
+    drop(checked);
+    assert!(second.folder().metadata().expect("still open").is_dir());
+    drop(second);
+    assert_eq!(snapshot_of(&layout), before);
+
+    fs::remove_dir_all(&layout.state).expect("remove the state folder");
+    let checked = Store::checked(&layout, sealing()).expect("checked without a state folder");
+    assert!(checked.state().is_none());
+    assert!(!layout.state.exists(), "nothing is created");
+}
+
+#[test]
+fn checked_refuses_what_a_readers_open_refuses() {
+    let table = |name: &str| {
+        let scratch = Scratch::new(name);
+        let layout = scratch.layout();
+        (scratch, layout)
+    };
+    let kept = |layout: &Layout| {
+        let mut store = open(layout);
+        keep(&mut store, "a.md", b"one\n");
+        store.close().expect("close");
+    };
+    let mut rows: Vec<(&str, Scratch, Layout, String)> = Vec::new();
+    let inside = |layout: &Layout| {
+        format!(
+            "the state folder {} is inside the store root {}, which holds only segments",
+            layout.state.display(),
+            layout.root.display()
+        )
+    };
+    let unsafe_folder = |layout: &Layout| {
+        format!(
+            "{} can be written by others; bilbo will not use it",
+            layout.state.display()
+        )
+    };
+
+    let (scratch, layout) = table("checked_no_root");
+    let said = format!("no store at {}", layout.root.display());
+    rows.push(("no root", scratch, layout, said));
+
+    let (scratch, layout) = table("checked_older_root");
+    fs::create_dir_all(layout.root.join("notes")).expect("a 0.20 folder");
+    let said = format!(
+        "{} belongs to bilbo 0.20",
+        layout.root.join("notes").display()
+    );
+    rows.push(("a root with 0.20's notes", scratch, layout, said));
+
+    let (scratch, layout) = table("checked_state_inside_root");
+    let layout = Layout {
+        state: layout.root.join("state"),
+        ..layout
+    };
+    fs::create_dir_all(&layout.root).expect("root");
+    let said = inside(&layout);
+    rows.push(("a state folder inside the root", scratch, layout, said));
+
+    let (scratch, layout) = table("checked_state_inside_missing_root");
+    let layout = Layout {
+        state: layout.root.join("state"),
+        ..layout
+    };
+    let said = inside(&layout);
+    rows.push((
+        "a state folder inside a missing root",
+        scratch,
+        layout,
+        said,
+    ));
+
+    let (scratch, layout) = table("checked_open_state");
+    kept(&layout);
+    chmod(&layout.state, 0o777);
+    let said = unsafe_folder(&layout);
+    rows.push(("a state folder others can write", scratch, layout, said));
+
+    if let Some(other) = another_group() {
+        let (scratch, layout) = table("checked_other_group_state");
+        kept(&layout);
+        chown_group(&layout.state, other);
+        chmod(&layout.state, 0o775);
+        let said = unsafe_folder(&layout);
+        rows.push((
+            "a state folder another group can write",
+            scratch,
+            layout,
+            said,
+        ));
+    }
+
+    let (scratch, layout) = table("checked_other_root");
+    kept(&layout);
+    let other = Layout {
+        root: layout.root.with_file_name("root2"),
+        ..layout.clone()
+    };
+    fs::create_dir_all(&other.root).expect("another root");
+    let said = format!(
+        "the state folder {} belongs to the store at {}, not {}",
+        layout.state.display(),
+        layout.root.display(),
+        other.root.display()
+    );
+    rows.push(("a state folder another root recorded", scratch, other, said));
+
+    for (name, _scratch, layout, said) in &rows {
+        let checked = Store::checked(layout, sealing())
+            .err()
+            .map(|e| e.to_string());
+        let opened = Store::open_read_only(layout, sealing(), &mut |_| {})
+            .err()
+            .map(|e| e.to_string());
+        assert_eq!(checked.as_deref(), Some(said.as_str()), "{name}: checked");
+        assert_eq!(opened.as_deref(), Some(said.as_str()), "{name}: open");
+    }
+
+    let (_scratch, layout) = table("checked_own_group_state");
+    kept(&layout);
+    chown_group(&layout.state, effective_group());
+    chmod(&layout.state, 0o775);
+    assert!(Store::checked(&layout, sealing()).is_ok());
+    assert!(Store::open_read_only(&layout, sealing(), &mut |_| {}).is_ok());
+}
+
+#[test]
+fn checked_takes_no_lock() {
+    let scratch = Scratch::new("checked_no_lock");
+    let layout = scratch.layout();
+    let mut store = open(&layout);
+    keep(&mut store, "a.md", b"one\n");
+    store.close().expect("close");
+    let held: Vec<fs::File> = ["store.lock", "store.writer"]
+        .iter()
+        .map(|name| {
+            let file = fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .open(layout.state.join(name))
+                .expect("a lock file");
+            file.lock().expect("hold the lock");
+            file
+        })
+        .collect();
+    let options = Options {
+        wait: Duration::ZERO,
+        ..sealing()
+    };
+    let checked = Store::checked(&layout, options).expect("checked while the store is held");
+    assert!(checked.state().is_some());
+    drop(held);
+}
+
+#[test]
+fn checked_tells_the_hook_the_two_steps_a_readers_open_tells_it() {
+    let scratch = Scratch::new("checked_hook");
+    let layout = scratch.layout();
+    let mut store = open(&layout);
+    keep(&mut store, "a.md", b"one\n");
+    store.close().expect("close");
+
+    let heard = Arc::new(Mutex::new(Vec::new()));
+    let log = Arc::clone(&heard);
+    let hook: Hook = Box::new(move |step| {
+        log.lock().expect("log").push(step);
+        Ok(())
+    });
+    let checked = Store::checked(
+        &layout,
+        Options {
+            hook: Some(hook),
+            ..sealing()
+        },
+    )
+    .expect("checked");
+    assert_eq!(*heard.lock().expect("log"), [Step::Guarded, Step::Checked]);
+    let store = checked.open(&mut |_| {}).expect("opened");
+    drop(store);
+    assert_eq!(
+        *heard.lock().expect("log"),
+        [Step::Guarded, Step::Checked],
+        "the opening tells the hook nothing before the lock"
+    );
+
+    let failing = |options: Options| Options {
+        hook: Some(Box::new(|step| {
+            if step == Step::Checked {
+                return Err(std::io::Error::other("stop"));
+            }
+            Ok(())
+        })),
+        ..options
+    };
+    let checked = Store::checked(&layout, failing(sealing())).err();
+    let opened = Store::open_read_only(&layout, failing(sealing()), &mut |_| {}).err();
+    assert!(
+        matches!(&checked, Some(StoreError::Stopped(name)) if name == "Checked"),
+        "{checked:?}"
+    );
+    assert_eq!(
+        checked.map(|e| e.to_string()),
+        opened.map(|e| e.to_string())
+    );
+}
+
+#[test]
+fn a_store_opened_from_what_was_checked_is_the_one_that_was_checked() {
+    let scratch = Scratch::new("opened_from_checked");
+    let base = scratch.layout().root.with_file_name("from-checked");
+    let first = Layout {
+        root: base.join("a"),
+        state: base.join("a-state"),
+        cache: base.join("a-cache"),
+    };
+    let second = Layout {
+        root: base.join("b"),
+        state: base.join("b-state"),
+        cache: base.join("b-cache"),
+    };
+    let mut store = open(&first);
+    keep(&mut store, "a.md", b"one\n");
+    store.close().expect("close");
+    let mut store = open(&second);
+    keep(&mut store, "b.md", b"two\n");
+    store.close().expect("close");
+    let (root_link, state_link) = (base.join("root-link"), base.join("state-link"));
+    std::os::unix::fs::symlink(&first.root, &root_link).expect("root link");
+    std::os::unix::fs::symlink(&first.state, &state_link).expect("state link");
+    let layout = Layout {
+        root: root_link.clone(),
+        state: state_link.clone(),
+        cache: first.cache.clone(),
+    };
+
+    let checked = Store::checked(&layout, sealing()).expect("checked");
+    let checked_state = fs::canonicalize(&first.state).expect("state");
+    assert_eq!(checked.state().expect("state").path(), checked_state);
+    let held = checked
+        .state()
+        .expect("state")
+        .folder()
+        .metadata()
+        .expect("the folder's metadata");
+    fs::rename(&first.state, base.join("a-state-moved")).expect("move the folder away");
+    fs::create_dir(&first.state).expect("another folder at its resolved path");
+    chmod(&first.state, 0o700);
+    fs::remove_file(&root_link).expect("unlink the root");
+    fs::remove_file(&state_link).expect("unlink the state");
+    std::os::unix::fs::symlink(&second.root, &root_link).expect("relink the root");
+    std::os::unix::fs::symlink(&second.state, &state_link).expect("relink the state");
+
+    let duplicate = checked
+        .state()
+        .expect("state")
+        .try_clone()
+        .expect("a second handle after the folder was replaced");
+    assert_eq!(duplicate.path(), checked_state);
+    let twin = duplicate
+        .folder()
+        .metadata()
+        .expect("the folder's metadata");
+    assert_eq!((twin.dev(), twin.ino()), (held.dev(), held.ino()));
+    let named = fs::metadata(&first.state).expect("the folder at the path");
+    assert_ne!((named.dev(), named.ino()), (held.dev(), held.ino()));
+    drop(duplicate);
+
+    let store = checked.open(&mut |_| {}).expect("opened");
+    assert!(
+        store
+            .by_capture(&capture_label("a.md"))
+            .expect("by_capture")
+            .is_some()
+    );
+    assert!(
+        store
+            .by_capture(&capture_label("b.md"))
+            .expect("by_capture")
+            .is_none()
+    );
+    assert_eq!(store.state().expect("state").path(), checked_state);
+    let kept = store
+        .state()
+        .expect("state")
+        .folder()
+        .metadata()
+        .expect("the folder's metadata");
+    assert_eq!((kept.dev(), kept.ino()), (held.dev(), held.ino()));
 }

@@ -1,0 +1,25 @@
+bilbo digest: answer a session's first prompt with what bilbo keeps on it.
+
+[1mUsage:[22m
+  [36mbilbo digest[39m
+
+[2mA prompt hook runs it and hands it one JSON object on standard input, with[22m
+[2msession_id and prompt. Every prompt after a session's first prints nothing.[22m
+
+[1mOutput:[22m
+  A list for each kind with an entry at its floor or over, each under its line:
+  files: [2m<n>[22m may bear on this prompt, best first; bilbo read [2m<ref>[22m outlines one
+  [2m<ref>[22m[1m [22m[2m<capture>[22m[1m [22m[2m<title>[22m      a file's row, by tabs
+  [2m<ref>[22m[1m [22m[2m<day>[22m[1m [22m[2m<folder>[22m[1m [22m[2m<line>[22m  a row of a session or a note: its passage's
+                               ref and day, its folder, and its outline's
+                               line or the note's start. A fifth field,
+                               note: [2m<text>[22m, is a note derive wrote of it
+  [1mdigest.log[22m                   in the state folder: one line a run
+
+[1mExit:[22m
+  [1m0[22m  always, so its exit code blocks no prompt; stderr says what went wrong
+
+[1mExamples:[22m
+  echo '{"session_id":"s1","prompt":"thin the carrot rows"}' | bilbo digest
+
+[1mDocs:[22m [2mhttps://github.com/delucca/bilbo/wiki/Commands#digest[22m

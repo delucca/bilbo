@@ -11,9 +11,8 @@ pub enum Exit {
     Success,
     NothingMatched,
     Refused,
-    /// Exit 2 after the run's own lines: the config file refused the write, or a setting points the
-    /// store at a forbidden folder.
     Config,
+    Always,
 }
 
 type Human = Box<dyn Fn(&View) -> String>;
@@ -76,9 +75,16 @@ impl Outcome {
             .collect()
     }
 
+    pub fn write_failure_code(&self) -> u8 {
+        match self.exit {
+            Exit::Always => 0,
+            _ => Failure::Output(String::new()).exit_code(),
+        }
+    }
+
     pub fn exit_code(&self) -> u8 {
         match self.exit {
-            Exit::Success => 0,
+            Exit::Success | Exit::Always => 0,
             Exit::NothingMatched | Exit::Refused => 1,
             Exit::Config => 2,
         }
@@ -161,6 +167,15 @@ impl From<&bilbo_search::index::IndexError> for Failure {
             _ => error.to_string(),
         };
         Self::Refused(crate::console::message::sanitize(&text))
+    }
+}
+
+impl From<&bilbo_search::recall::Error> for Failure {
+    fn from(error: &bilbo_search::recall::Error) -> Self {
+        match error {
+            bilbo_search::recall::Error::Store(error) => Failure::from(error),
+            bilbo_search::recall::Error::Index(error) => Failure::from(error),
+        }
     }
 }
 

@@ -154,7 +154,7 @@ fn a_usage_error_on_a_terminal_is_a_marked_message() {
     );
     assert_eq!(
         stderr(&["frob"], &unpainted()),
-        "■  unknown verb 'frob'; the verbs are remember, refresh, recall, read, tag, reindex, derive, config\n   see bilbo --help\n"
+        "■  unknown verb 'frob'; the verbs are remember, refresh, recall, digest, read, tag, reindex, derive, config\n   see bilbo --help\n"
     );
 }
 
@@ -1148,4 +1148,146 @@ fn the_dry_run_with_the_tags_on_in_the_plain_view() {
     let mut text = lines(&dry).join("\n");
     text.push('\n');
     assert_eq!(text, include_str!("snapshots/derive-dry-run-tags.txt"));
+}
+
+#[test]
+fn the_digest_page_is_the_same_from_every_help_form_and_on_a_terminal() {
+    let page = include_str!("snapshots/digest-help.txt");
+    for form in [
+        &["digest", "--help"][..],
+        &["digest", "-h"],
+        &["help", "digest"],
+        &["help", "digest", "--help"],
+    ] {
+        assert_eq!(stdout(form, &View::PLAIN), page, "{form:?}");
+    }
+    assert_eq!(
+        stdout(&["digest", "--help"], &View::HUMAN),
+        include_str!("snapshots/digest-help.human.ansi")
+    );
+    assert_eq!(stdout(&["digest", "--help"], &unpainted()), page);
+}
+
+const SUMMARY: &str = "The user asked the assistant to thin the carrot rows in the north bed of /home/me/src/garden and to count the seedlings that were left. The assistant counted 142 seedlings in four rows and told the user to wait for the second leaves before thinning again, because the first leaves tear when the soil dries out.";
+
+fn row(
+    entry: &str,
+    capture: Option<&str>,
+    shared_short: bool,
+    said: bilbo_search::digest::Said,
+) -> bilbo_search::digest::Row {
+    bilbo_search::digest::Row {
+        entry: Id::parse(entry).expect("an id"),
+        capture: capture.and_then(|text| CaptureLabel::new(text.to_owned())),
+        score: 1.0,
+        shared_short,
+        said,
+    }
+}
+
+fn passage(
+    first: u64,
+    count: u64,
+    day: &str,
+    folder: Option<&str>,
+    line: Option<&str>,
+    summary: Option<&str>,
+) -> bilbo_search::digest::Said {
+    bilbo_search::digest::Said::Passage {
+        records: RecordRange { first, count },
+        day: day.to_owned(),
+        folder: folder.map(str::to_owned),
+        line: line.map(str::to_owned),
+        summary: summary.map(str::to_owned),
+    }
+}
+
+fn digested() -> Vec<(&'static str, Vec<bilbo_search::digest::Row>)> {
+    let cut: String = SUMMARY
+        .chars()
+        .take(299)
+        .chain(std::iter::once('\u{2026}'))
+        .collect();
+    assert_eq!(cut.chars().count(), 300);
+    let title = |text: &str| bilbo_search::digest::Said::Entry {
+        title: Some(text.to_owned()),
+    };
+    vec![
+        (
+            "files",
+            vec![
+                row(
+                    "01JC5Q3V7XKM4P8R2T6W9YB0DG",
+                    Some("file:/home/me/notes/garden-log.md"),
+                    true,
+                    title("The garden log"),
+                ),
+                row(
+                    "01JC5Q3V7XKM4P8R2T6W9YB0DH",
+                    Some("file:/home/me/notes/shed-roof.md"),
+                    false,
+                    bilbo_search::digest::Said::Entry { title: None },
+                ),
+            ],
+        ),
+        (
+            "sessions",
+            vec![
+                row(
+                    "01M6ZGE4KTBYYH07AS2KVMSCAF",
+                    None,
+                    false,
+                    passage(
+                        3,
+                        5,
+                        "2026-11-07",
+                        Some("/home/me/src/garden"),
+                        Some(
+                            "user: Thin the carrot rows, then tell me how many seedlings are left.",
+                        ),
+                        Some(&cut),
+                    ),
+                ),
+                row(
+                    "01M6ZFZ0V5T2K1X8Q4W7N9R3HB",
+                    None,
+                    false,
+                    passage(18, 4, "2026-11-02", None, None, None),
+                ),
+            ],
+        ),
+        (
+            "notes",
+            vec![row(
+                "01M7A2C4E6G8J0K2M4P6R8T0V2",
+                None,
+                false,
+                passage(
+                    1,
+                    1,
+                    "2026-11-06",
+                    None,
+                    Some("The beet seeds are in the drawer by the door."),
+                    None,
+                ),
+            )],
+        ),
+    ]
+}
+
+#[test]
+fn the_digest_rows_in_both_views() {
+    let owned = digested();
+    let shown: Vec<bilbo_cli::digest::view::Shown<'_>> = owned
+        .iter()
+        .map(|(word, rows)| bilbo_cli::digest::view::Shown { word, rows })
+        .collect();
+    assert_eq!(
+        bilbo_cli::digest::view::lists(&shown, &View::PLAIN),
+        include_str!("snapshots/digest-output.txt")
+    );
+    assert_eq!(
+        bilbo_cli::digest::view::lists(&shown, &View::HUMAN),
+        include_str!("snapshots/digest-output.human.ansi")
+    );
 }

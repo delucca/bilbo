@@ -8,7 +8,6 @@ pub const MINUTE: Duration = Duration::from_secs(60);
 pub const HOUR: Duration = Duration::from_secs(60 * 60);
 pub const DAY: Duration = Duration::from_secs(24 * 60 * 60);
 
-/// `20ms`, `90s`, `60m`, `1h`, one optional space; a bare number is refused.
 pub(crate) fn parse(text: &str) -> Option<Duration> {
     let digits = text.bytes().take_while(u8::is_ascii_digit).count();
     if digits == 0 {
@@ -21,6 +20,7 @@ pub(crate) fn parse(text: &str) -> Option<Duration> {
         "s" => SECOND,
         "m" => MINUTE,
         "h" => HOUR,
+        "d" => DAY,
         _ => return None,
     };
     number.checked_mul(unit.as_secs()).map(Duration::from_secs)
@@ -34,6 +34,8 @@ pub fn show(duration: Duration) -> String {
     let seconds = duration.as_secs();
     let text = if duration.subsec_nanos() != 0 {
         format!("{}ms", duration.as_millis())
+    } else if seconds >= 2 * DAY.as_secs() && seconds.is_multiple_of(DAY.as_secs()) {
+        format!("{}d", seconds / DAY.as_secs())
     } else if seconds >= 2 * HOUR.as_secs() && seconds.is_multiple_of(HOUR.as_secs()) {
         format!("{}h", seconds / HOUR.as_secs())
     } else if seconds > 0 && seconds.is_multiple_of(MINUTE.as_secs()) {
@@ -51,7 +53,7 @@ mod tests {
     use super::{DAY, HOUR, MINUTE, parse, show};
 
     #[test]
-    fn a_duration_is_whole_seconds_minutes_or_hours() {
+    fn a_duration_is_whole_seconds_minutes_hours_or_days() {
         for (text, duration) in [
             ("90s", Duration::from_secs(90)),
             ("60m", HOUR),
@@ -66,6 +68,10 @@ mod tests {
             ("1500ms", Duration::from_millis(1500)),
             ("0ms", Duration::ZERO),
             ("10m", 10 * MINUTE),
+            ("1d", DAY),
+            ("30d", 30 * DAY),
+            ("2 d", 2 * DAY),
+            ("36500d", 36500 * DAY),
         ] {
             assert_eq!(parse(text), Some(duration), "{text:?}");
         }
@@ -80,7 +86,11 @@ mod tests {
             "60M",
             "1H",
             "60min",
-            "1d",
+            "1D",
+            "1day",
+            "1.5d",
+            "1d12h",
+            "18446744073709551615d",
             "1.5h",
             "-1m",
             "+1m",
@@ -102,10 +112,14 @@ mod tests {
     }
 
     #[test]
-    fn a_duration_shows_in_hours_from_two_then_minutes_then_seconds() {
+    fn a_duration_shows_in_days_from_two_then_hours_from_two_then_minutes_then_seconds() {
         assert_eq!(show(HOUR), "\"60m\"");
         assert_eq!(show(2 * HOUR), "\"2h\"");
         assert_eq!(show(DAY), "\"24h\"");
+        assert_eq!(show(2 * DAY), "\"2d\"");
+        assert_eq!(show(30 * DAY), "\"30d\"");
+        assert_eq!(show(36 * HOUR), "\"36h\"");
+        assert_eq!(show(49 * HOUR), "\"49h\"");
         assert_eq!(show(MINUTE), "\"1m\"");
         assert_eq!(show(Duration::from_secs(90)), "\"90s\"");
         assert_eq!(show(Duration::from_secs(150 * 60)), "\"150m\"");
@@ -118,6 +132,9 @@ mod tests {
             HOUR,
             2 * HOUR,
             DAY,
+            2 * DAY,
+            30 * DAY,
+            36 * HOUR,
             Duration::from_secs(61),
             Duration::from_millis(20),
             Duration::from_millis(1500),

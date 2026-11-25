@@ -84,6 +84,7 @@ dependencies = [
  "proc-macro2",
  "runfiles",
  "rustix",
+ "serde",
  "serde_json",
  "syn 3.0.9",
  "zstd",

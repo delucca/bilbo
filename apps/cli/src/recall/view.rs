@@ -3,6 +3,7 @@ use bilbo_search::recall::Output;
 use bilbo_search::recall::hit::Hit;
 
 use crate::console::body::body;
+use crate::console::message::entry_ref;
 use crate::console::theme::{Style, paint};
 use crate::console::view::View;
 
@@ -27,11 +28,7 @@ fn header(hit: &Hit, content: &str) -> Header {
         generation: None,
         records: Some(hit.found.extent.records),
     };
-    let entry = if hit.shared_short {
-        hit.found.entry.to_string()
-    } else {
-        hit.found.entry.short().to_string()
-    };
+    let entry = entry_ref(hit.found.entry, hit.shared_short);
     Header {
         reference: format!("{entry}{locator}"),
         lines: format!("{lines} {}", if lines == 1 { "line" } else { "lines" }),

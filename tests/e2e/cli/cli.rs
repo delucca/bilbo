@@ -5,6 +5,7 @@ use std::process::{Command, Stdio};
 
 mod config;
 mod derive;
+mod digest;
 mod notes;
 mod read;
 mod recall;
@@ -50,7 +51,8 @@ pub(crate) fn bilbo<S: AsRef<OsStr>>(args: &[S], env: &[(&str, &str)]) -> Run {
 }
 
 const OVERVIEW_START: &str = "bilbo keeps durable memory for coding agents: ";
-const VERBS: &str = "; the verbs are remember, refresh, recall, read, tag, reindex, derive, config";
+const VERBS: &str =
+    "; the verbs are remember, refresh, recall, digest, read, tag, reindex, derive, config";
 const SEE: &str = "bilbo: see 'bilbo --help'\n";
 
 #[test]

@@ -18,7 +18,7 @@ pub(crate) struct Listing {
     pub more: Option<RecordRange>,
 }
 
-fn shown(text: &str, width: usize) -> String {
+pub fn shown(text: &str, width: usize) -> String {
     let line = text
         .lines()
         .find(|line| !line.trim().is_empty())
@@ -33,6 +33,15 @@ fn shown(text: &str, width: usize) -> String {
         }
         None => line.to_owned(),
     }
+}
+
+pub fn last_line(passages: &[Passage], record: u64, width: usize) -> Option<String> {
+    passages
+        .iter()
+        .filter(|passage| passage.range.first <= record)
+        .filter_map(|passage| passage.outline.as_deref())
+        .next_back()
+        .map(|line| shown(line, width))
 }
 
 pub(crate) fn outline(
@@ -82,7 +91,7 @@ pub(crate) fn outline(
 mod tests {
     use bilbo_store::entries::RecordRange;
 
-    use super::{Line, Listing, outline, shown};
+    use super::{Line, Listing, last_line, outline, shown};
     use crate::fake::{Chars, section, single};
     use crate::read::refs::Locator;
     use crate::reader::Passage;
@@ -215,5 +224,41 @@ mod tests {
         assert_eq!(at(20), format!("user: {}…", "w".repeat(13)));
         assert_eq!(at(30).chars().count(), 30);
         assert_eq!(at(66), format!("user: {}", "w".repeat(60)));
+    }
+
+    #[test]
+    fn the_last_line_at_or_before_a_record_is_its_turns() {
+        let passages = transcript();
+        let at = |record: u64| last_line(&passages, record, WIDTH);
+        for record in [2, 3, 6] {
+            assert_eq!(
+                at(record).as_deref(),
+                Some("user: first prompt"),
+                "{record}"
+            );
+        }
+        for record in [7, 8] {
+            assert_eq!(
+                at(record).as_deref(),
+                Some("user: second prompt"),
+                "{record}"
+            );
+        }
+        for record in [12, 13, 99] {
+            assert_eq!(
+                at(record).as_deref(),
+                Some("compact summary: what happened"),
+                "{record}"
+            );
+        }
+        assert_eq!(at(1), None);
+        assert_eq!(last_line(&[], 5, WIDTH), None);
+        let long = vec![prompt(2, &format!("user: {}", "w".repeat(60)))];
+        for width in [20, 30, 66] {
+            assert_eq!(
+                last_line(&long, 5, width),
+                Some(shown(long[0].outline.as_deref().expect("a line"), width))
+            );
+        }
     }
 }

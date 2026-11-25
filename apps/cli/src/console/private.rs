@@ -1,5 +1,5 @@
 use std::fs;
-use std::io;
+use std::io::{self, Write};
 use std::os::unix::fs::MetadataExt;
 use std::path::Path;
 
@@ -14,6 +14,7 @@ pub enum How {
     ReadAsOpened,
     Edited,
     Append,
+    Ledger,
     Write,
     New,
 }
@@ -127,12 +128,54 @@ pub fn open(folder: &fs::File, name: &str, path: &Path, how: How) -> io::Result<
         | match how {
             How::Read | How::ReadAsOpened | How::Edited => OFlags::RDONLY,
             How::Append => OFlags::WRONLY | OFlags::APPEND | OFlags::CREATE,
+            How::Ledger => OFlags::RDWR | OFlags::APPEND | OFlags::CREATE,
             How::Write => OFlags::WRONLY | OFlags::CREATE,
             How::New => OFlags::WRONLY | OFlags::CREATE | OFlags::EXCL,
         };
     let file = fs::File::from(openat(folder, name, flags, Mode::from_raw_mode(0o600))?);
     checked_for(&file, path, how)?;
     Ok(file)
+}
+
+trait Sink {
+    fn len(&self) -> io::Result<u64>;
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize>;
+    fn cut(&mut self, len: u64) -> io::Result<()>;
+}
+
+impl Sink for fs::File {
+    fn len(&self) -> io::Result<u64> {
+        Ok(self.metadata()?.len())
+    }
+
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        Write::write(self, bytes)
+    }
+
+    fn cut(&mut self, len: u64) -> io::Result<()> {
+        self.set_len(len)
+    }
+}
+
+pub fn append(file: &mut fs::File, line: &str, what: &str) -> io::Result<()> {
+    append_to(file, line, what)
+}
+
+fn append_to(sink: &mut dyn Sink, line: &str, what: &str) -> io::Result<()> {
+    let before = sink.len()?;
+    let failure = match sink.write(line.as_bytes()) {
+        Ok(written) if written == line.len() => return Ok(()),
+        Ok(written) => format!("wrote {written} of {} bytes", line.len()),
+        Err(error) => error.to_string(),
+    };
+    match sink.cut(before) {
+        Ok(()) => Err(io::Error::other(format!(
+            "{failure}; {what} was cut back to its length of {before} bytes"
+        ))),
+        Err(error) => Err(io::Error::other(format!(
+            "{failure}; {what} could not be cut back: {error}"
+        ))),
+    }
 }
 
 #[cfg(test)]
@@ -143,7 +186,10 @@ mod tests {
 
     use std::io::Read;
 
-    use super::{How, checked, checked_for, folder as private_folder, is_refusal, open, parent};
+    use super::{
+        How, Sink, append_to, checked, checked_for, folder as private_folder, is_refusal, open,
+        parent,
+    };
 
     fn folder(test: &str) -> (PathBuf, fs::File) {
         let base = std::env::temp_dir().join(format!("private-{test}-{}", std::process::id()));
@@ -369,5 +415,54 @@ mod tests {
         let error = parent(&said("absent")).expect_err("no such name");
         assert_eq!(error.kind(), std::io::ErrorKind::NotFound);
         let _ = fs::remove_dir_all(Path::new(&base));
+    }
+
+    struct Short {
+        bytes: Vec<u8>,
+        writes: usize,
+        fail_cut: bool,
+    }
+
+    impl Sink for Short {
+        fn len(&self) -> std::io::Result<u64> {
+            Ok(self.bytes.len() as u64)
+        }
+
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.writes += 1;
+            let part = &bytes[..bytes.len() / 2];
+            self.bytes.extend_from_slice(part);
+            Ok(part.len())
+        }
+
+        fn cut(&mut self, len: u64) -> std::io::Result<()> {
+            if self.fail_cut {
+                return Err(std::io::Error::other("no"));
+            }
+            self.bytes.truncate(usize::try_from(len).expect("a length"));
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn a_short_write_cuts_the_file_back_and_is_a_failed_append() {
+        let mut sink = Short {
+            bytes: b"before\n".to_vec(),
+            writes: 0,
+            fail_cut: false,
+        };
+        let error = append_to(&mut sink, "a whole line\n", "the log").expect_err("a failed append");
+        assert_eq!(
+            error.to_string(),
+            "wrote 6 of 13 bytes; the log was cut back to its length of 7 bytes"
+        );
+        assert_eq!(sink.bytes, b"before\n");
+        assert_eq!(sink.writes, 1, "one write");
+        sink.fail_cut = true;
+        let error = append_to(&mut sink, "a whole line\n", "the log").expect_err("a failed append");
+        assert!(
+            error.to_string().contains("could not be cut back: no"),
+            "{error}"
+        );
     }
 }

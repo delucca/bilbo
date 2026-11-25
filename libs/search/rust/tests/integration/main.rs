@@ -6,9 +6,10 @@ use std::rc::Rc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, UNIX_EPOCH};
 
-use bilbo_search::analyze::{self, Omit};
+use bilbo_search::analyze::{self, Detect, Language, Omit};
 use bilbo_search::bm25::Bm25;
 use bilbo_search::chunk::{self, Chunk, Size};
+use bilbo_search::digest::alone::Alone;
 use bilbo_search::index::{Doc, Extent, Index, IndexError};
 use bilbo_search::lookup::{self, Edits, Filter, Lookup, Near, Posting};
 use bilbo_search::position::{Manifest, Position};
@@ -4049,4 +4050,155 @@ fn a_second_list_that_names_a_document_outside_its_segment_is_an_index_error_fro
             "{what}: {error}"
         );
     }
+}
+
+struct Never;
+
+impl Detect for Never {
+    fn language(&self, _text: &str) -> Option<Language> {
+        None
+    }
+}
+
+const SHELF: [(u8, &str); 11] = [
+    (1, "carrot soup recipe with fresh herbs"),
+    (2, "carrot cake recipe for the party"),
+    (3, "carrot seeds are kept in the shed"),
+    (4, "carat weight of the ring"),
+    (5, "mortal remains of a snail"),
+    (6, "mortal coil of a hose"),
+    (7, "mortal combat of two beetles"),
+    (8, "mortor and pestle in the kitchen"),
+    (9, "the shed key is under the pot"),
+    (10, "a pot for the garden shed"),
+    (11, "garden hose near the shed"),
+];
+
+const OTHERS: [(u8, &str); 13] = [
+    (21, "carat weight of the jewel"),
+    (22, "carat weight of the jewel"),
+    (23, "carat weight of the jewel"),
+    (24, "carat weight of the jewel"),
+    (25, "carat weight of the jewel"),
+    (26, "mortar mix for the wall"),
+    (27, "mortor shell of the cannon"),
+    (28, "mortor shell of the cannon"),
+    (29, "mortor shell of the cannon"),
+    (30, "mortor shell of the cannon"),
+    (31, "mortor shell of the cannon"),
+    (32, "recipe for a shed and a garden"),
+    (33, "recipe for a shed and a garden hose"),
+];
+
+fn shelved(scratch: &Scratch, others_first: bool) {
+    let mut index = scratch.fresh();
+    let put = |index: &mut Tantivy, shelf: &[(u8, &str)], kind: &str| {
+        for (entry, text) in shelf {
+            add(index, *entry, kind, 100, &chunk(1, 1, None, text));
+        }
+    };
+    if others_first {
+        put(&mut index, &OTHERS, "memo");
+        index.commit(&position(1)).expect("commit");
+    }
+    put(&mut index, &SHELF, "lines");
+    if !others_first {
+        index.commit(&position(1)).expect("commit");
+        return;
+    }
+    index.commit(&position(2)).expect("commit");
+}
+
+fn scored(
+    section: &recall::Section,
+    index: &dyn Lookup,
+    text: &str,
+) -> (Vec<(Id, u32)>, Vec<Vec<String>>) {
+    let ranked = section
+        .bm25(index, &Never)
+        .rank(
+            &Query {
+                text: text.to_owned(),
+                kinds: Vec::new(),
+                apart: Vec::new(),
+                entries: None,
+            },
+            1000,
+        )
+        .expect("a rank");
+    (
+        ranked
+            .candidates
+            .iter()
+            .map(|candidate| (candidate.found.entry, candidate.score.to_bits()))
+            .collect(),
+        ranked
+            .expanded
+            .into_iter()
+            .map(|expanded| expanded.near)
+            .collect(),
+    )
+}
+
+#[test]
+fn a_notes_score_is_the_same_with_other_kinds_in_the_index() {
+    let alone = Scratch::new("notes_alone");
+    shelved(&alone, false);
+    let mixed = Scratch::new("notes_among_others");
+    shelved(&mixed, true);
+    let first = committed(&alone);
+    let second = committed(&mixed);
+    let notes = Filter::Kind("lines");
+    assert_ne!(
+        first.holding(&notes).expect("holding"),
+        second.holding(&notes).expect("holding"),
+        "the notes' documents keep their numbers"
+    );
+    let near = |index: &Committed, word: &str| -> Vec<(String, u64)> {
+        index
+            .near(word, Edits::One)
+            .expect("near")
+            .into_iter()
+            .map(|near| (near.term, near.documents))
+            .collect()
+    };
+    let count = |terms: &[(String, u64)], term: &str| -> u64 {
+        terms
+            .iter()
+            .find(|(each, _)| each == term)
+            .map_or(0, |(_, documents)| *documents)
+    };
+    let (own, whole) = (near(&first, "carot"), near(&second, "carot"));
+    assert!(count(&own, "carrot") > count(&own, "carat"));
+    assert!(count(&whole, "carat") > count(&whole, "carrot"));
+    let (own, whole) = (near(&first, "mortar"), near(&second, "mortar"));
+    assert!(count(&own, "mortal") > count(&own, "mortor"));
+    assert!(count(&whole, "mortor") > count(&whole, "mortal"));
+
+    let section = recall::defaults();
+    let kinds = ["lines".to_owned()];
+    let view = Alone::new(&second, &kinds).expect("a view");
+    let named = |entries: &[u8]| -> Vec<Id> { entries.iter().map(|entry| id(*entry)).collect() };
+    for (query, wanted, near_terms) in [
+        ("recipe", named(&[2, 1]), 0),
+        ("jewel", named(&[]), 0),
+        ("carot", named(&[2, 3, 1, 4]), 2),
+        ("garden shed", named(&[10, 11, 3, 9]), 0),
+        ("mortar", named(&[5, 6, 7, 8]), 2),
+    ] {
+        let (oracle, expanded) = scored(&section, &first, query);
+        let (subject, _) = scored(&section, &view, query);
+        let ids: Vec<Id> = oracle.iter().map(|(entry, _)| *entry).collect();
+        assert_eq!(ids, wanted, "{query}: the oracle");
+        assert_eq!(subject, oracle, "{query}");
+        if near_terms > 0 {
+            assert_eq!(expanded.len(), 1, "{query}");
+            assert_eq!(expanded[0].len(), near_terms, "{query}");
+        }
+    }
+    let mut unpaired = recall::defaults();
+    unpaired.pair_weight.value = 0.0;
+    let (with, _) = scored(&section, &first, "garden shed");
+    let (without, _) = scored(&unpaired, &first, "garden shed");
+    assert_ne!(with, without, "the pair bonus does work");
 }

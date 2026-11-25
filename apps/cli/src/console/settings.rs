@@ -2,16 +2,19 @@ use std::ffi::{OsStr, OsString};
 use std::io;
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use bilbo_entries::follows::Follow;
 use bilbo_entries::read;
 use bilbo_entries::tag;
+use bilbo_settings::duration::{self, DAY, MINUTE};
 use bilbo_settings::error::Error;
 use bilbo_settings::file::{File, Named};
 use bilbo_settings::folder::{self, Absolute, Folder};
 use bilbo_settings::key::{
     About, Default, First, Key, Origin, Resolved, Shown, Source, Value, quote,
 };
+use bilbo_settings::size::{self, MIB};
 use bilbo_store::keys;
 use bilbo_store::layout::Layout;
 
@@ -127,6 +130,226 @@ pub const FOLLOW: Key<Vec<Follow>> = Key {
     show: |list| show_follows(list),
 };
 
+pub const DIGEST_MARKDOWN_MOST: Key<usize> = Key {
+    about: About {
+        name: "digest.markdown.most",
+        variable: Some("BILBO_DIGEST_MARKDOWN_MOST"),
+        default: Default::Toml("6"),
+        allowed: "a whole number from 0 to 100",
+        doc: "The most Markdown files bilbo digest lists for a prompt; 0 turns that list off.",
+    },
+    parse: |value| {
+        value
+            .integer()
+            .and_then(|count| usize::try_from(count).ok())
+            .filter(|count| (0..=100).contains(count))
+            .ok_or_else(|| value.refuse())
+    },
+    show: ToString::to_string,
+};
+
+pub const DIGEST_MARKDOWN_FLOOR: Key<f64> = Key {
+    about: About {
+        name: "digest.markdown.floor",
+        variable: Some("BILBO_DIGEST_MARKDOWN_FLOOR"),
+        default: Default::Toml("8"),
+        allowed: "a number from 0 to 1000",
+        doc: "The lowest score a Markdown file's best chunk may have for bilbo digest to list the file; 0 lists every file it took.",
+    },
+    parse: |value| {
+        value
+            .decimal()
+            .filter(|floor| (0.0..=1000.0).contains(floor))
+            .ok_or_else(|| value.refuse())
+    },
+    show: ToString::to_string,
+};
+
+pub const DIGEST_SESSION_MOST: Key<usize> = Key {
+    about: About {
+        name: "digest.session.most",
+        variable: Some("BILBO_DIGEST_SESSION_MOST"),
+        default: Default::Toml("6"),
+        allowed: "a whole number from 0 to 100",
+        doc: "The most sessions bilbo digest lists for a prompt; 0 turns that list off.",
+    },
+    parse: |value| {
+        value
+            .integer()
+            .and_then(|count| usize::try_from(count).ok())
+            .filter(|count| (0..=100).contains(count))
+            .ok_or_else(|| value.refuse())
+    },
+    show: ToString::to_string,
+};
+
+pub const DIGEST_SESSION_FLOOR: Key<f64> = Key {
+    about: About {
+        name: "digest.session.floor",
+        variable: Some("BILBO_DIGEST_SESSION_FLOOR"),
+        default: Default::Toml("12"),
+        allowed: "a number from 0 to 1000",
+        doc: "The lowest score a session's best passage may have for bilbo digest to list the session; 0 lists every session it took.",
+    },
+    parse: |value| {
+        value
+            .decimal()
+            .filter(|floor| (0.0..=1000.0).contains(floor))
+            .ok_or_else(|| value.refuse())
+    },
+    show: ToString::to_string,
+};
+
+pub const DIGEST_SESSION_OLD_AFTER: Key<Duration> = Key {
+    about: About {
+        name: "digest.session.old_after",
+        variable: Some("BILBO_DIGEST_SESSION_OLD_AFTER"),
+        default: Default::Toml(r#""30d""#),
+        allowed: "between 1d and 36500d",
+        doc: "The age of a session, counted from when it began, after which bilbo digest no longer lists it.",
+    },
+    parse: |value| {
+        duration::read(value)
+            .filter(|age| (DAY..=36500 * DAY).contains(age))
+            .ok_or_else(|| value.refuse())
+    },
+    show: |age| duration::show(*age),
+};
+
+pub const DIGEST_SESSION_SUBAGENTS: Key<bool> = Key {
+    about: About {
+        name: "digest.session.subagents",
+        variable: Some("BILBO_DIGEST_SESSION_SUBAGENTS"),
+        default: Default::Toml("false"),
+        allowed: "true or false",
+        doc: "Whether bilbo digest lists a subagent's file among the sessions.",
+    },
+    parse: |value| value.boolean().ok_or_else(|| value.refuse()),
+    show: ToString::to_string,
+};
+
+pub const DIGEST_SESSION_PARTS: Key<bool> = Key {
+    about: About {
+        name: "digest.session.parts",
+        variable: Some("BILBO_DIGEST_SESSION_PARTS"),
+        default: Default::Toml("false"),
+        allowed: "true or false",
+        doc: "Whether bilbo digest lists a session at a passage that is a part of a record too long for one chunk, such as a long tool output.",
+    },
+    parse: |value| value.boolean().ok_or_else(|| value.refuse()),
+    show: ToString::to_string,
+};
+
+pub const DIGEST_NOTE_MOST: Key<usize> = Key {
+    about: About {
+        name: "digest.note.most",
+        variable: Some("BILBO_DIGEST_NOTE_MOST"),
+        default: Default::Toml("6"),
+        allowed: "a whole number from 0 to 100",
+        doc: "The most notes bilbo digest lists for a prompt; 0 turns that list off.",
+    },
+    parse: |value| {
+        value
+            .integer()
+            .and_then(|count| usize::try_from(count).ok())
+            .filter(|count| (0..=100).contains(count))
+            .ok_or_else(|| value.refuse())
+    },
+    show: ToString::to_string,
+};
+
+pub const DIGEST_NOTE_FLOOR: Key<f64> = Key {
+    about: About {
+        name: "digest.note.floor",
+        variable: Some("BILBO_DIGEST_NOTE_FLOOR"),
+        default: Default::Toml("8"),
+        allowed: "a number from 0 to 1000",
+        doc: "The lowest score a note may have for bilbo digest to list it; 0 lists every note it took.",
+    },
+    parse: |value| {
+        value
+            .decimal()
+            .filter(|floor| (0.0..=1000.0).contains(floor))
+            .ok_or_else(|| value.refuse())
+    },
+    show: ToString::to_string,
+};
+
+pub const DIGEST_NOTE_WIDTH: Key<usize> = Key {
+    about: About {
+        name: "digest.note.width",
+        variable: Some("BILBO_DIGEST_NOTE_WIDTH"),
+        default: Default::Toml("300"),
+        allowed: "a whole number from 20 to 1000",
+        doc: "The most characters of a note bilbo digest shows in a row, an ellipsis included: a longer note is cut and ends in one.",
+    },
+    parse: |value| {
+        value
+            .integer()
+            .and_then(|width| usize::try_from(width).ok())
+            .filter(|width| (20..=1000).contains(width))
+            .ok_or_else(|| value.refuse())
+    },
+    show: ToString::to_string,
+};
+
+pub const DIGEST_WAIT: Key<Duration> = Key {
+    about: About {
+        name: "digest.wait",
+        variable: Some("BILBO_DIGEST_WAIT"),
+        default: Default::Toml(r#""1s""#),
+        allowed: "between 0s and 1m",
+        doc: "How long bilbo digest waits, at a session's first prompt, for a bilbo that is writing the store before it gives up and lists nothing.",
+    },
+    parse: |value| {
+        duration::read(value)
+            .filter(|wait| *wait <= MINUTE)
+            .ok_or_else(|| value.refuse())
+    },
+    show: |wait| duration::show(*wait),
+};
+
+pub const DIGEST_INPUT: Key<u64> = Key {
+    about: About {
+        name: "digest.input",
+        variable: Some("BILBO_DIGEST_INPUT"),
+        default: Default::Toml(r#""4 MiB""#),
+        allowed: "between 1 KiB and 64 MiB",
+        doc: "The longest input, in bytes, that bilbo digest takes from a hook on standard input: a longer one is no prompt.",
+    },
+    parse: |value| {
+        size::read(value)
+            .filter(|bytes| (1024..=64 * MIB).contains(bytes))
+            .ok_or_else(|| value.refuse())
+    },
+    show: |bytes| size::show(*bytes),
+};
+
+pub const DIGEST_LOG_ENABLED: Key<bool> = Key {
+    about: About {
+        name: "digest.log.enabled",
+        variable: Some("BILBO_DIGEST_LOG_ENABLED"),
+        default: Default::Toml("true"),
+        allowed: "true or false",
+        doc: "Whether bilbo digest logs each run in digest.log in the state folder.",
+    },
+    parse: |value| value.boolean().ok_or_else(|| value.refuse()),
+    show: ToString::to_string,
+};
+
+const LISTS: [&About; 10] = [
+    &DIGEST_MARKDOWN_MOST.about,
+    &DIGEST_MARKDOWN_FLOOR.about,
+    &DIGEST_SESSION_MOST.about,
+    &DIGEST_SESSION_FLOOR.about,
+    &DIGEST_SESSION_OLD_AFTER.about,
+    &DIGEST_SESSION_SUBAGENTS.about,
+    &DIGEST_SESSION_PARTS.about,
+    &DIGEST_NOTE_MOST.about,
+    &DIGEST_NOTE_FLOOR.about,
+    &DIGEST_NOTE_WIDTH.about,
+];
+
 const PATHS: [&About; 4] = [&ROOT.about, &STATE.about, &CACHE.about, &TEMP.about];
 
 pub type KindKey = Key<usize>;
@@ -152,6 +375,13 @@ pub fn keys(kind: &[&'static KindKey], groups: &[&'static Group]) -> Vec<&'stati
         ])
         .chain(bilbo_search::keys::ABOUT)
         .chain(bilbo_search::recall::keys::ABOUT)
+        .chain(LISTS)
+        .chain(bilbo_search::digest::keys::ABOUT)
+        .chain([
+            &DIGEST_WAIT.about,
+            &DIGEST_INPUT.about,
+            &DIGEST_LOG_ENABLED.about,
+        ])
         .chain(bilbo_llm::keys::ABOUT)
         .chain(groups.iter().flat_map(|group| group.about.iter().copied()))
         .chain(bilbo_derive::keys::ABOUT)
@@ -203,6 +433,23 @@ pub fn show_follows(list: &[Follow]) -> String {
 }
 
 #[derive(Debug)]
+pub struct Digest {
+    pub markdown_most: Resolved<usize>,
+    pub markdown_floor: Resolved<f64>,
+    pub session_most: Resolved<usize>,
+    pub session_floor: Resolved<f64>,
+    pub session_old_after: Resolved<Duration>,
+    pub session_subagents: Resolved<bool>,
+    pub session_parts: Resolved<bool>,
+    pub note_most: Resolved<usize>,
+    pub note_floor: Resolved<f64>,
+    pub note_width: Resolved<usize>,
+    pub wait: Resolved<Duration>,
+    pub input: Resolved<u64>,
+    pub log_enabled: Resolved<bool>,
+}
+
+#[derive(Debug)]
 pub struct Settings {
     pub config: Resolved<PathBuf>,
     pub root: Resolved<PathBuf>,
@@ -218,6 +465,8 @@ pub struct Settings {
     pub tag_cap: Resolved<usize>,
     pub search: bilbo_search::keys::Section,
     pub recall: bilbo_search::recall::keys::Section,
+    pub digest: Digest,
+    pub digest_search: bilbo_search::digest::keys::Section,
     pub llm: bilbo_llm::keys::Section,
     pub derive: bilbo_derive::keys::Section,
     pub tags: bilbo_derive::tags::keys::Section,
@@ -267,6 +516,22 @@ impl Settings {
         shown.push(tag::CAP.shown(&self.tag_cap));
         shown.extend(self.search.shown());
         shown.extend(self.recall.shown());
+        shown.extend([
+            DIGEST_MARKDOWN_MOST.shown(&self.digest.markdown_most),
+            DIGEST_MARKDOWN_FLOOR.shown(&self.digest.markdown_floor),
+            DIGEST_SESSION_MOST.shown(&self.digest.session_most),
+            DIGEST_SESSION_FLOOR.shown(&self.digest.session_floor),
+            DIGEST_SESSION_OLD_AFTER.shown(&self.digest.session_old_after),
+            DIGEST_SESSION_SUBAGENTS.shown(&self.digest.session_subagents),
+            DIGEST_SESSION_PARTS.shown(&self.digest.session_parts),
+            DIGEST_NOTE_MOST.shown(&self.digest.note_most),
+            DIGEST_NOTE_FLOOR.shown(&self.digest.note_floor),
+            DIGEST_NOTE_WIDTH.shown(&self.digest.note_width),
+        ]);
+        shown.extend(self.digest_search.shown());
+        shown.push(DIGEST_WAIT.shown(&self.digest.wait));
+        shown.push(DIGEST_INPUT.shown(&self.digest.input));
+        shown.push(DIGEST_LOG_ENABLED.shown(&self.digest.log_enabled));
         shown.extend(self.llm.shown());
         shown.extend(self.shown.iter().cloned());
         shown.extend(self.derive.shown());
@@ -348,6 +613,22 @@ pub fn load(
         tag_cap: tag::CAP.resolve(&source)?,
         search: bilbo_search::keys::section(&source)?,
         recall: bilbo_search::recall::keys::section(&source)?,
+        digest: Digest {
+            markdown_most: DIGEST_MARKDOWN_MOST.resolve(&source)?,
+            markdown_floor: DIGEST_MARKDOWN_FLOOR.resolve(&source)?,
+            session_most: DIGEST_SESSION_MOST.resolve(&source)?,
+            session_floor: DIGEST_SESSION_FLOOR.resolve(&source)?,
+            session_old_after: DIGEST_SESSION_OLD_AFTER.resolve(&source)?,
+            session_subagents: DIGEST_SESSION_SUBAGENTS.resolve(&source)?,
+            session_parts: DIGEST_SESSION_PARTS.resolve(&source)?,
+            note_most: DIGEST_NOTE_MOST.resolve(&source)?,
+            note_floor: DIGEST_NOTE_FLOOR.resolve(&source)?,
+            note_width: DIGEST_NOTE_WIDTH.resolve(&source)?,
+            wait: DIGEST_WAIT.resolve(&source)?,
+            input: DIGEST_INPUT.resolve(&source)?,
+            log_enabled: DIGEST_LOG_ENABLED.resolve(&source)?,
+        },
+        digest_search: bilbo_search::digest::keys::section(&source)?,
         llm: bilbo_llm::keys::section(&source)?,
         derive: bilbo_derive::keys::section(&source)?,
         tags: bilbo_derive::tags::keys::section(&source)?,
@@ -486,7 +767,7 @@ mod tests {
     }
 
     #[test]
-    fn the_registry_is_the_folders_the_store_the_follows_then_the_read_tag_search_recall_llm_derive_and_kinds_keys()
+    fn the_registry_is_the_folders_the_store_the_follows_then_the_read_tag_search_recall_digest_llm_derive_and_kinds_keys()
      {
         let names: Vec<&str> = keys(&kind(), &crate::provider_keys())
             .iter()
@@ -536,6 +817,21 @@ mod tests {
                 "recall.typo_max_letters",
                 "recall.typo_two_edits",
                 "recall.pair_weight",
+                "digest.markdown.most",
+                "digest.markdown.floor",
+                "digest.session.most",
+                "digest.session.floor",
+                "digest.session.old_after",
+                "digest.session.subagents",
+                "digest.session.parts",
+                "digest.note.most",
+                "digest.note.floor",
+                "digest.note.width",
+                "digest.candidates",
+                "digest.query",
+                "digest.wait",
+                "digest.input",
+                "digest.log.enabled",
                 "llm.provider",
                 "llm.response",
                 "llm.timeout",
@@ -657,7 +953,7 @@ mod tests {
             .err(),
             Some(
                 "/c.toml:3: unknown key store.sealat; the keys are paths.root, paths.state, \
-                 paths.cache, paths.temp, store.seal_at, store.seal_after, store.compression, store.tear_budget, store.wait, store.poll, follow, remember.editor, read.budget, read.outline_width, read.matches_listed, tag.cap, search.chunk_tokens, search.chunk_overlap, search.workers, search.index_memory, search.merge_deleted_percent, search.entry_tries, search.label_batch, search.list_limit, recall.budget, recall.notes_budget, recall.candidates, recall.cap, recall.record_cap, recall.copy_share, recall.copy_words, recall.question_words, recall.languages, recall.bm25_k1, recall.bm25_b, recall.read_batch, recall.typo_terms, recall.typo_letters, recall.typo_max_letters, recall.typo_two_edits, recall.pair_weight, llm.provider, llm.response, llm.timeout, llm.poll, llm.anthropic.model, llm.anthropic.via, llm.anthropic.api.endpoint, llm.anthropic.api.version, llm.anthropic.api.key_env, llm.anthropic.api.key_command, llm.anthropic.api.headers, llm.anthropic.api.extra, llm.anthropic.tool.program, llm.anthropic.tool.effort, llm.anthropic.tool.arguments, llm.anthropic.tool.inherit, llm.anthropic.tool.environment, llm.anthropic.tool.project_files, llm.openai.model, llm.openai.via, llm.openai.api.endpoint, llm.openai.api.key_env, llm.openai.api.key_command, llm.openai.api.headers, llm.openai.api.extra, llm.openai.tool.program, llm.openai.tool.effort, llm.openai.tool.arguments, llm.openai.tool.inherit, llm.openai.tool.environment, llm.openai.tool.home, llm.openai.tool.system_files, derive.enabled, derive.in, derive.not_in, derive.instructions, derive.quiet, derive.window, derive.passage, derive.passage_head, derive.earlier, derive.names, derive.answer_tokens, derive.calls, derive.retries, derive.retry_wait, derive.retry_factor, derive.retry_limit, derive.tries, derive.failures, derive.tags.enabled, derive.tags.pick, derive.tags.instruction, derive.tags.model, derive.tags.most, derive.tags.notes, markdown.heading_width, session.unpack_floor, session.unpack_ratio, session.unpack_window, session.wide_fields"
+                 paths.cache, paths.temp, store.seal_at, store.seal_after, store.compression, store.tear_budget, store.wait, store.poll, follow, remember.editor, read.budget, read.outline_width, read.matches_listed, tag.cap, search.chunk_tokens, search.chunk_overlap, search.workers, search.index_memory, search.merge_deleted_percent, search.entry_tries, search.label_batch, search.list_limit, recall.budget, recall.notes_budget, recall.candidates, recall.cap, recall.record_cap, recall.copy_share, recall.copy_words, recall.question_words, recall.languages, recall.bm25_k1, recall.bm25_b, recall.read_batch, recall.typo_terms, recall.typo_letters, recall.typo_max_letters, recall.typo_two_edits, recall.pair_weight, digest.markdown.most, digest.markdown.floor, digest.session.most, digest.session.floor, digest.session.old_after, digest.session.subagents, digest.session.parts, digest.note.most, digest.note.floor, digest.note.width, digest.candidates, digest.query, digest.wait, digest.input, digest.log.enabled, llm.provider, llm.response, llm.timeout, llm.poll, llm.anthropic.model, llm.anthropic.via, llm.anthropic.api.endpoint, llm.anthropic.api.version, llm.anthropic.api.key_env, llm.anthropic.api.key_command, llm.anthropic.api.headers, llm.anthropic.api.extra, llm.anthropic.tool.program, llm.anthropic.tool.effort, llm.anthropic.tool.arguments, llm.anthropic.tool.inherit, llm.anthropic.tool.environment, llm.anthropic.tool.project_files, llm.openai.model, llm.openai.via, llm.openai.api.endpoint, llm.openai.api.key_env, llm.openai.api.key_command, llm.openai.api.headers, llm.openai.api.extra, llm.openai.tool.program, llm.openai.tool.effort, llm.openai.tool.arguments, llm.openai.tool.inherit, llm.openai.tool.environment, llm.openai.tool.home, llm.openai.tool.system_files, derive.enabled, derive.in, derive.not_in, derive.instructions, derive.quiet, derive.window, derive.passage, derive.passage_head, derive.earlier, derive.names, derive.answer_tokens, derive.calls, derive.retries, derive.retry_wait, derive.retry_factor, derive.retry_limit, derive.tries, derive.failures, derive.tags.enabled, derive.tags.pick, derive.tags.instruction, derive.tags.model, derive.tags.most, derive.tags.notes, markdown.heading_width, session.unpack_floor, session.unpack_ratio, session.unpack_window, session.wide_fields"
                     .to_owned()
             )
         );
@@ -1066,6 +1362,21 @@ mod tests {
                 "BILBO_DERIVE_TAGS_NOTES",
                 "BILBO_DERIVE_TRIES",
                 "BILBO_DERIVE_WINDOW",
+                "BILBO_DIGEST_CANDIDATES",
+                "BILBO_DIGEST_INPUT",
+                "BILBO_DIGEST_LOG_ENABLED",
+                "BILBO_DIGEST_MARKDOWN_FLOOR",
+                "BILBO_DIGEST_MARKDOWN_MOST",
+                "BILBO_DIGEST_NOTE_FLOOR",
+                "BILBO_DIGEST_NOTE_MOST",
+                "BILBO_DIGEST_NOTE_WIDTH",
+                "BILBO_DIGEST_QUERY",
+                "BILBO_DIGEST_SESSION_FLOOR",
+                "BILBO_DIGEST_SESSION_MOST",
+                "BILBO_DIGEST_SESSION_OLD_AFTER",
+                "BILBO_DIGEST_SESSION_PARTS",
+                "BILBO_DIGEST_SESSION_SUBAGENTS",
+                "BILBO_DIGEST_WAIT",
                 "BILBO_HOME",
                 "BILBO_LLM_ANTHROPIC_API_ENDPOINT",
                 "BILBO_LLM_ANTHROPIC_API_KEY_ENV",
@@ -1180,6 +1491,218 @@ mod tests {
         let mut all = vec![("HOME", "/h"), ("BILBO_CONFIG", "/c.toml")];
         all.extend_from_slice(env);
         settings(&all, &[("/c.toml", file.unwrap_or(""))])
+    }
+
+    fn taken_and_refused(
+        key: &str,
+        variable: &str,
+        allowed: &str,
+        taken: &[&str],
+        refused: &[&str],
+    ) {
+        for value in taken {
+            editor_with(&[(variable, value.trim_matches('"'))], None)
+                .unwrap_or_else(|error| panic!("{variable}={value}: {error}"));
+            editor_with(&[], Some(&format!("{key} = {value}\n")))
+                .unwrap_or_else(|error| panic!("{key}={value}: {error}"));
+        }
+        for value in refused {
+            let named = editor_with(&[(variable, value.trim_matches('"'))], None).expect_err(value);
+            assert!(
+                named.starts_with(&format!("{variable} must be {allowed}, got ")),
+                "{named}"
+            );
+            let held = editor_with(&[], Some(&format!("{key} = {value}\n"))).expect_err(value);
+            assert!(
+                held.starts_with(&format!("/c.toml:1: {key} must be {allowed}, got ")),
+                "{held}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_roots_keys_of_the_digest_take_their_defaults_and_refuse_what_is_outside() {
+        let settings = editor_with(&[], None).expect("the defaults");
+        assert_eq!(
+            settings.digest.wait.value,
+            std::time::Duration::from_secs(1)
+        );
+        assert_eq!(settings.digest.input.value, 4 * 1024 * 1024);
+        let set = editor_with(
+            &[
+                ("BILBO_DIGEST_WAIT", "250ms"),
+                ("BILBO_DIGEST_INPUT", "2 KiB"),
+            ],
+            None,
+        )
+        .expect("set");
+        assert_eq!(set.digest.wait.value, std::time::Duration::from_millis(250));
+        assert_eq!(set.digest.input.value, 2048);
+        taken_and_refused(
+            "digest.wait",
+            "BILBO_DIGEST_WAIT",
+            "between 0s and 1m",
+            &["\"0s\"", "\"1m\""],
+            &["\"61s\"", "\"soon\"", "\"2m\""],
+        );
+        taken_and_refused(
+            "digest.input",
+            "BILBO_DIGEST_INPUT",
+            "between 1 KiB and 64 MiB",
+            &["\"1 KiB\"", "\"64 MiB\""],
+            &["\"1023\"", "\"65 MiB\"", "\"big\""],
+        );
+    }
+
+    #[test]
+    fn digest_log_is_true_or_false() {
+        assert!(
+            editor_with(&[], None)
+                .expect("the default")
+                .digest
+                .log_enabled
+                .value
+        );
+        for (env, file) in [
+            (&[("BILBO_DIGEST_LOG_ENABLED", "false")][..], ""),
+            (&[][..], "digest.log.enabled = false\n"),
+        ] {
+            assert!(
+                !editor_with(env, Some(file))
+                    .expect("false")
+                    .digest
+                    .log_enabled
+                    .value
+            );
+        }
+        assert!(
+            editor_with(
+                &[("BILBO_DIGEST_LOG_ENABLED", "false")],
+                Some("digest.log.enabled = true\n")
+            )
+            .is_ok_and(|settings| !settings.digest.log_enabled.value)
+        );
+        taken_and_refused(
+            "digest.log.enabled",
+            "BILBO_DIGEST_LOG_ENABLED",
+            "true or false",
+            &["true", "false"],
+            &["1", "\"yes\"", "0"],
+        );
+    }
+
+    #[test]
+    fn each_lists_keys_take_their_defaults_and_refuse_what_is_outside() {
+        let d = editor_with(&[], None).expect("the defaults").digest;
+        assert_eq!(d.markdown_most.value, 6);
+        assert!((d.markdown_floor.value - 8.0).abs() < f64::EPSILON);
+        assert_eq!(d.session_most.value, 6);
+        assert!((d.session_floor.value - 12.0).abs() < f64::EPSILON);
+        assert_eq!(
+            d.session_old_after.value,
+            30 * std::time::Duration::from_secs(86_400)
+        );
+        assert!(!d.session_subagents.value && !d.session_parts.value);
+        assert_eq!(d.note_most.value, 6);
+        assert!((d.note_floor.value - 8.0).abs() < f64::EPSILON);
+        assert_eq!(d.note_width.value, 300);
+        let counts = "a whole number from 0 to 100";
+        let floors = "a number from 0 to 1000";
+        for (key, variable) in [
+            ("digest.markdown.most", "BILBO_DIGEST_MARKDOWN_MOST"),
+            ("digest.session.most", "BILBO_DIGEST_SESSION_MOST"),
+            ("digest.note.most", "BILBO_DIGEST_NOTE_MOST"),
+        ] {
+            taken_and_refused(
+                key,
+                variable,
+                counts,
+                &["0", "100"],
+                &["-1", "101", "\"x\""],
+            );
+        }
+        for (key, variable) in [
+            ("digest.markdown.floor", "BILBO_DIGEST_MARKDOWN_FLOOR"),
+            ("digest.session.floor", "BILBO_DIGEST_SESSION_FLOOR"),
+            ("digest.note.floor", "BILBO_DIGEST_NOTE_FLOOR"),
+        ] {
+            taken_and_refused(
+                key,
+                variable,
+                floors,
+                &["0", "1000", "8.5"],
+                &["-1", "1001", "\"x\""],
+            );
+        }
+        taken_and_refused(
+            "digest.session.old_after",
+            "BILBO_DIGEST_SESSION_OLD_AFTER",
+            "between 1d and 36500d",
+            &["\"1d\"", "\"36500d\"", "\"24h\"", "\"36h\""],
+            &["\"23h\"", "\"36501d\"", "30", "\"x\""],
+        );
+        for (key, variable) in [
+            ("digest.session.subagents", "BILBO_DIGEST_SESSION_SUBAGENTS"),
+            ("digest.session.parts", "BILBO_DIGEST_SESSION_PARTS"),
+        ] {
+            taken_and_refused(
+                key,
+                variable,
+                "true or false",
+                &["true", "false"],
+                &["1", "0", "\"x\""],
+            );
+        }
+        for (first, second) in [("true", "false"), ("false", "true")] {
+            let set = editor_with(
+                &[
+                    ("BILBO_DIGEST_SESSION_SUBAGENTS", first),
+                    ("BILBO_DIGEST_SESSION_PARTS", second),
+                ],
+                None,
+            )
+            .expect("set")
+            .digest;
+            assert_eq!(
+                (set.session_subagents.value, set.session_parts.value),
+                (first == "true", second == "true")
+            );
+        }
+        taken_and_refused(
+            "digest.note.width",
+            "BILBO_DIGEST_NOTE_WIDTH",
+            "a whole number from 20 to 1000",
+            &["20", "1000"],
+            &["19", "1001", "\"x\""],
+        );
+        let set = editor_with(
+            &[
+                ("BILBO_DIGEST_MARKDOWN_MOST", "1"),
+                ("BILBO_DIGEST_MARKDOWN_FLOOR", "2.5"),
+                ("BILBO_DIGEST_SESSION_MOST", "3"),
+                ("BILBO_DIGEST_SESSION_FLOOR", "4"),
+                ("BILBO_DIGEST_SESSION_OLD_AFTER", "120h"),
+                ("BILBO_DIGEST_NOTE_MOST", "7"),
+                ("BILBO_DIGEST_NOTE_FLOOR", "9"),
+                ("BILBO_DIGEST_NOTE_WIDTH", "50"),
+            ],
+            None,
+        )
+        .expect("set")
+        .digest;
+        assert_eq!(
+            (
+                set.markdown_most.value,
+                set.session_most.value,
+                set.session_old_after.value,
+                set.note_most.value,
+                set.note_width.value
+            ),
+            (1, 3, 5 * std::time::Duration::from_secs(86_400), 7, 50)
+        );
+        assert!((set.markdown_floor.value - 2.5).abs() < f64::EPSILON);
+        assert!((set.session_floor.value - 4.0).abs() < f64::EPSILON);
+        assert!((set.note_floor.value - 9.0).abs() < f64::EPSILON);
     }
 
     fn at_line_one() -> Origin {

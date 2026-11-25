@@ -21,13 +21,13 @@ use bilbo_store::labels::CaptureLabel;
 use bilbo_store::layout::Layout;
 use bilbo_store::segments::{Options, Store};
 
+mod keeping;
 mod sandbox;
 mod scratch;
 mod stores;
 
-use sandbox::{
-    ID_A, ID_B, Run, counts, moved_line, note_with, run, run_as, run_reading, text, write,
-};
+use keeping::{ID_A, ID_B, counts, moved_line, note_with, text};
+use sandbox::{Run, run, run_as, run_reading, write};
 use scratch::{scratch_dir, vars};
 use stores::{backdate, layout};
 

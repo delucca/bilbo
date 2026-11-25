@@ -63,6 +63,9 @@ pub trait Reader: Sync {
     fn preface(&self, _records: &[&[u8]]) -> Option<String> {
         None
     }
+    fn title(&self, _records: &[&[u8]]) -> Option<String> {
+        None
+    }
     /// Distinct, in the order first seen, at most `MAX_ENTRY_LABELS`: what an `EntryLabels` gives.
     fn entry_labels(&self, _records: &[&[u8]]) -> Vec<String> {
         Vec::new()
@@ -99,6 +102,13 @@ mod tests {
         let records: [&[u8]; 2] = [b"one\n", b"two\n"];
         assert_eq!(Silent.preface(&records), None);
         assert_eq!(Silent.preface(&[]), None);
+    }
+
+    #[test]
+    fn a_reader_that_does_not_say_gives_no_title() {
+        let records: [&[u8]; 2] = [b"# One\n", b"two\n"];
+        assert_eq!(Silent.title(&records), None);
+        assert_eq!(Silent.title(&[]), None);
     }
 
     #[test]

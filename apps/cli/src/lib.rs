@@ -1,6 +1,7 @@
 pub mod config;
 pub mod console;
 pub mod derive;
+pub mod digest;
 pub mod help;
 #[cfg(test)]
 mod probe;
@@ -25,7 +26,7 @@ use clap::{Command, CommandFactory, Parser, Subcommand};
 use crate::console::args::{Parsed, parse, typed, usage, verbs, with_verbs};
 use crate::console::env::{Env, Var};
 use crate::console::indexing::Indexing;
-use crate::console::outcome::{Failure, Outcome};
+use crate::console::outcome::{Exit, Failure, Outcome};
 use crate::console::reading;
 use crate::console::settings::{Group, KindKey, Settings};
 use crate::help::overview;
@@ -51,6 +52,7 @@ pub enum Verb {
     Remember(remember::Args),
     Refresh(refresh::Args),
     Recall(recall::Args),
+    Digest(digest::Args),
     Read(read::Args),
     Tag(tag::Args),
     Reindex(reindex::Args),
@@ -254,6 +256,120 @@ fn note_paragraph(bytes: &[u8]) -> Option<bilbo_derive::view::Paragraph> {
     })
 }
 
+fn collapsed(text: &str, width: usize) -> String {
+    let one = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    bilbo_entries::read::outline::shown(&one, width)
+}
+
+fn note_record(bytes: &[u8], width: usize) -> Option<(Vec<bilbo_search::digest::Source>, String)> {
+    let record = bilbo_entries::note::record::read(bytes)?;
+    let from = record
+        .from
+        .iter()
+        .map(|source| bilbo_search::digest::Source {
+            entry: source.entry,
+            generation: bilbo_store::entries::Generation(source.generation),
+            records: bilbo_store::entries::RecordRange {
+                first: source.first,
+                count: source.last - source.first + 1,
+            },
+        })
+        .collect();
+    Some((from, collapsed(&record.text, width)))
+}
+
+pub type NoteLine = Box<dyn Fn(&[u8]) -> Option<String>>;
+pub type NoteWritten = Box<dyn Fn(&[u8]) -> Option<bilbo_search::digest::Written>>;
+
+pub struct NoteWays {
+    pub line: NoteLine,
+    pub written: NoteWritten,
+}
+
+pub fn note_ways(width: usize) -> NoteWays {
+    NoteWays {
+        line: Box::new(move |bytes| note_record(bytes, width).map(|(_, text)| text)),
+        written: Box::new(move |bytes| {
+            note_record(bytes, width)
+                .map(|(from, text)| bilbo_search::digest::Written { from, text })
+        }),
+    }
+}
+
+pub fn hands<'a>(
+    settings: &Settings,
+    readers: &[Box<dyn Reader>],
+    ways: &'a NoteWays,
+) -> Result<(Vec<digest::Shelf<'a>>, bilbo_search::digest::Way<'a>), Failure> {
+    let shelves = lists(settings, readers, &*ways.line)?;
+    let way = bilbo_search::digest::Way {
+        label: &bilbo_derive::plan::label,
+        written: &*ways.written,
+    };
+    Ok((shelves, way))
+}
+
+pub fn lists<'a>(
+    settings: &Settings,
+    readers: &[Box<dyn Reader>],
+    shows: bilbo_search::digest::Line<'a>,
+) -> Result<Vec<digest::Shelf<'a>>, Failure> {
+    let markdown = bilbo_entries::markdown::Markdown::default().kind();
+    let session = bilbo_entries::session::Session::default().kind();
+    let shown = &settings.digest;
+    readers
+        .iter()
+        .map(|reader| {
+            let kind = reader.kind().to_owned();
+            let (word, list) = if kind == markdown {
+                (
+                    "files",
+                    bilbo_search::digest::List {
+                        kind,
+                        most: shown.markdown_most.value,
+                        floor: shown.markdown_floor.value,
+                        line: None,
+                        old_after: None,
+                        lists_belonging: true,
+                        lists_parts: true,
+                    },
+                )
+            } else if kind == session {
+                (
+                    "sessions",
+                    bilbo_search::digest::List {
+                        kind,
+                        most: shown.session_most.value,
+                        floor: shown.session_floor.value,
+                        line: None,
+                        old_after: Some(shown.session_old_after.value),
+                        lists_belonging: shown.session_subagents.value,
+                        lists_parts: shown.session_parts.value,
+                    },
+                )
+            } else if kind == bilbo_entries::note::NAME {
+                (
+                    "notes",
+                    bilbo_search::digest::List {
+                        kind,
+                        most: shown.note_most.value,
+                        floor: shown.note_floor.value,
+                        line: Some(shows),
+                        old_after: None,
+                        lists_belonging: true,
+                        lists_parts: true,
+                    },
+                )
+            } else {
+                return Err(Failure::Config(format!(
+                    "no list is declared for the kind {kind}"
+                )));
+            };
+            Ok(digest::Shelf { word, list })
+        })
+        .collect()
+}
+
 pub fn readers(settings: &Settings) -> Result<Vec<Box<dyn Reader>>, Failure> {
     let width = registered(settings, &bilbo_entries::markdown::HEADING_WIDTH)?;
     Ok(vec![
@@ -394,6 +510,24 @@ pub fn run_tuned(
     settings: Result<Settings, Failure>,
     tune: &Tune,
 ) -> Result<Outcome, Failure> {
+    let digest = args.get(1).is_some_and(|word| word == "digest");
+    let result = dispatch(root, args, env, settings, tune);
+    if !digest {
+        return result;
+    }
+    Ok(match result {
+        Ok(outcome) => outcome.with_exit(Exit::Always),
+        Err(failure) => digest::excused(&failure),
+    })
+}
+
+fn dispatch(
+    root: &Command,
+    args: &[OsString],
+    env: &mut Env,
+    settings: Result<Settings, Failure>,
+    tune: &Tune,
+) -> Result<Outcome, Failure> {
     match parse(root, args)? {
         Parsed::Help(topic) => help::run(root, &topic),
         Parsed::Version => Ok(Outcome::new(format!(
@@ -457,6 +591,29 @@ pub fn run_tuned(
                         env,
                         &settings,
                         &reading::of(&indexing, &committed, detect(), &apart()),
+                    )
+                }
+                Verb::Digest(_) => {
+                    let readers = readers(&settings)?;
+                    let rendering = rendering(&settings)?;
+                    let disk = |cache: &std::path::Path| index(cache, &settings.search);
+                    let indexing =
+                        tune(indexing(&settings, &readers, &rendering, &tokenizer, &disk));
+                    let committed = |cache: &std::path::Path| lookup(cache, &settings.search);
+                    let width = settings.digest.note_width.value;
+                    let ways = note_ways(width);
+                    let (shelves, way) = hands(&settings, &readers, &ways)?;
+                    let apart = apart();
+                    digest::run(
+                        root,
+                        env,
+                        &settings,
+                        &reading::of(&indexing, &committed, detect(), &apart),
+                        &digest::Hand {
+                            tokenizer: indexing.tokenizer_id,
+                            shelves: &shelves,
+                            way,
+                        },
                     )
                 }
                 Verb::Read(args) => {
@@ -1086,7 +1243,7 @@ mod tests {
             };
         assert_eq!(
             reason(&["bilbo", "help", "a\nb"]),
-            "unknown verb 'a\\nb'; the verbs are remember, refresh, recall, read, tag, reindex, derive, config"
+            "unknown verb 'a\\nb'; the verbs are remember, refresh, recall, digest, read, tag, reindex, derive, config"
         );
         assert_eq!(
             reason(&["bilbo", "help", "--a\nb"]),
@@ -1189,6 +1346,247 @@ mod tests {
             "\x1b[1mDocs:\x1b[22m \x1b[2mhttps://",
         ] {
             assert!(human.contains(styled), "{styled:?} missing in\n{human}");
+        }
+    }
+
+    fn configured(text: &str) -> Settings {
+        let text = text.to_owned();
+        crate::console::settings::load(
+            &|name| match name {
+                "HOME" => Some(OsString::from("/h")),
+                "BILBO_CONFIG" => Some(OsString::from("/c.toml")),
+                _ => None,
+            },
+            &move |path| {
+                if path == std::path::Path::new("/c.toml") {
+                    Ok(text.clone().into_bytes())
+                } else {
+                    Err(std::io::ErrorKind::NotFound.into())
+                }
+            },
+            &super::kind_keys(),
+            &super::provider_keys(),
+        )
+        .expect("settings")
+    }
+
+    #[test]
+    fn every_kind_a_reader_reads_has_a_list_with_its_word_and_its_two_keys() {
+        let settings = configured(
+            "digest.markdown.most = 1\ndigest.markdown.floor = 2.5\ndigest.session.most = 3\n\
+             digest.session.floor = 4\ndigest.session.old_after = \"5d\"\n\
+             digest.session.subagents = true\ndigest.session.parts = false\ndigest.note.most = 7\n\
+             digest.note.floor = 9\ndigest.note.width = 50\n",
+        );
+        let readers = readers(&settings).expect("the readers");
+        let ways = super::note_ways(50);
+        let shelves = super::lists(&settings, &readers, &*ways.line).expect("the lists");
+        let kinds: Vec<&str> = readers.iter().map(|reader| reader.kind()).collect();
+        let listed: Vec<&str> = shelves
+            .iter()
+            .map(|shelf| shelf.list.kind.as_str())
+            .collect();
+        assert_eq!(listed, kinds);
+        let words: Vec<&str> = shelves.iter().map(|shelf| shelf.word).collect();
+        assert!(words.iter().all(|word| !word.is_empty()));
+        let mut apart = words.clone();
+        apart.sort_unstable();
+        apart.dedup();
+        assert_eq!(apart.len(), words.len());
+        let registered: Vec<&str> =
+            crate::console::settings::keys(&super::kind_keys(), &super::provider_keys())
+                .iter()
+                .map(|about| about.name)
+                .collect();
+        for kind in &kinds {
+            for key in ["most", "floor"] {
+                let name = format!("digest.{kind}.{key}");
+                assert!(registered.contains(&name.as_str()), "{name}");
+            }
+        }
+        let by = |at: usize| &shelves[at].list;
+        assert_eq!((by(0).most, by(1).most, by(2).most), (1, 3, 7));
+        assert!((by(0).floor - 2.5).abs() < f64::EPSILON);
+        assert!((by(1).floor - 4.0).abs() < f64::EPSILON);
+        assert!((by(2).floor - 9.0).abs() < f64::EPSILON);
+        assert_eq!(by(1).old_after, Some(5 * bilbo_settings::duration::DAY));
+        assert_eq!((by(0).old_after, by(2).old_after), (None, None));
+        assert_eq!((by(1).lists_belonging, by(1).lists_parts), (true, false));
+        assert_eq!((by(0).lists_belonging, by(0).lists_parts), (true, true));
+        assert_eq!((by(2).lists_belonging, by(2).lists_parts), (true, true));
+        assert!(by(0).line.is_none() && by(1).line.is_none());
+        let line = by(2).line.expect("the notes' line");
+        let note = bilbo_entries::note::record::write(&bilbo_entries::note::record::Record {
+            text: "x".repeat(60),
+            at: None,
+            from: Vec::new(),
+        });
+        assert_eq!(line(&note).map(|text| text.chars().count()), Some(50));
+        let crossed = configured(
+            "digest.session.old_after = \"5d\"\ndigest.session.subagents = false\n\
+             digest.session.parts = true\n",
+        );
+        let ways = super::note_ways(crossed.digest.note_width.value);
+        let shelves = super::lists(&crossed, &readers, &*ways.line).expect("the lists");
+        let by = |at: usize| &shelves[at].list;
+        assert_eq!((by(1).lists_belonging, by(1).lists_parts), (false, true));
+        assert_eq!((by(0).lists_belonging, by(0).lists_parts), (true, true));
+        assert_eq!((by(2).lists_belonging, by(2).lists_parts), (true, true));
+        let wider = configured("digest.note.width = 80\n");
+        let ways = super::note_ways(wider.digest.note_width.value);
+        let shelves = super::lists(&wider, &readers, &*ways.line).expect("the lists");
+        let line = shelves[2].list.line.expect("the notes' line");
+        assert_eq!(line(&note).map(|text| text.chars().count()), Some(60));
+    }
+
+    #[test]
+    fn the_way_to_a_summary_is_derives_label_and_what_a_notes_record_says_and_shows() {
+        use bilbo_entries::note::record::{Record, Source, write};
+        use bilbo_search::digest::Written;
+        use bilbo_store::entries::{Generation, RecordRange};
+        let id = bilbo_store::id::Id::parse("01M6ZGE4KTBYYH07AS2KVMSCAF").expect("an id");
+        let settings = defaults();
+        let readers = readers(&settings).expect("the readers");
+        let ways = super::note_ways(300);
+        let (shelves, way) = super::hands(&settings, &readers, &ways).expect("the hands");
+        let notes_line = shelves[2].list.line.expect("the notes' line");
+        let label = (way.label)(id);
+        assert_eq!(label, bilbo_derive::plan::label(id));
+        assert_eq!(label.as_str(), format!("derive:{id}"));
+
+        let source = |generation: u32, first: u64, last: u64| bilbo_search::digest::Source {
+            entry: id,
+            generation: Generation(generation),
+            records: RecordRange {
+                first,
+                count: last - first + 1,
+            },
+        };
+        let note = |from: Vec<bilbo_search::digest::Source>, text: &str| {
+            Some(Written {
+                from,
+                text: text.to_owned(),
+            })
+        };
+        let derived = include_str!("../../../libs/entries/rust/fixtures/note/derived.jsonl");
+        let wanted = [
+            note(
+                vec![source(1, 3, 19)],
+                "The user asked to thin the carrot rows in the north bed and was told to wait for the second leaves.",
+            ),
+            note(
+                vec![source(1, 20, 31), source(1, 40, 41)],
+                "The user planted the beans along the south fence and noted that the soil there stayed wet. Still open: whether to add a second row.",
+            ),
+            note(
+                vec![source(1, 42, 42)],
+                "Nothing was decided about the compost bin; the question is still unresolved.",
+            ),
+            None,
+            note(
+                vec![source(1, 50, 60)],
+                "The tomato cages were moved to the greenhouse.",
+            ),
+            note(
+                vec![source(2, 61, 70)],
+                "The watering schedule was skipped for a week because of the rain.",
+            ),
+            None,
+        ];
+        let lines: Vec<&str> = derived.lines().collect();
+        assert_eq!(lines.len(), wanted.len());
+        for (line, wanted) in lines.iter().zip(&wanted) {
+            assert_eq!((way.written)(line.as_bytes()), *wanted, "{line}");
+            assert_eq!(
+                notes_line(line.as_bytes()),
+                wanted.as_ref().map(|note| note.text.clone()),
+                "{line}"
+            );
+        }
+        let by_hand = include_str!("../../../libs/entries/rust/fixtures/note/by-hand.jsonl");
+        let texts = [
+            "The beet seeds are in the drawer by the door.",
+            "The hose needs a new washer; ordered on Monday.",
+            "The fence is mended.",
+        ];
+        assert_eq!(by_hand.lines().count(), texts.len());
+        for (line, text) in by_hand.lines().zip(texts) {
+            assert_eq!((way.written)(line.as_bytes()), note(Vec::new(), text));
+            assert_eq!(notes_line(line.as_bytes()).as_deref(), Some(text));
+        }
+        for bytes in [&b"not a record"[..], b""] {
+            assert_eq!((way.written)(bytes), None);
+            assert_eq!(notes_line(bytes), None);
+        }
+
+        let of = |text: &str| {
+            write(&Record {
+                text: text.to_owned(),
+                at: None,
+                from: vec![Source {
+                    entry: id,
+                    generation: 1,
+                    first: 1,
+                    last: 1,
+                }],
+            })
+        };
+        let spaced = (way.written)(&of("  one \t two\n\n   three  ")).expect("a note");
+        assert_eq!(spaced.text, "one two three");
+        let narrow_settings = configured("digest.note.width = 40\n");
+        let narrow = super::note_ways(narrow_settings.digest.note_width.value);
+        let (narrow_shelves, narrow_way) =
+            super::hands(&narrow_settings, &readers, &narrow).expect("the hands");
+        let narrow_line = narrow_shelves[2].list.line.expect("the notes' line");
+        let exact = "a".repeat(40);
+        let over = "a".repeat(41);
+        let cut = format!("{}\u{2026}", "a".repeat(39));
+        assert_eq!(narrow_line(&of(&exact)).as_deref(), Some(exact.as_str()));
+        assert_eq!(
+            (narrow_way.written)(&of(&exact)).map(|note| note.text),
+            Some(exact.clone())
+        );
+        assert_eq!(narrow_line(&of(&over)).as_deref(), Some(cut.as_str()));
+        assert_eq!(
+            (narrow_way.written)(&of(&over)).map(|note| note.text),
+            Some(cut)
+        );
+    }
+
+    #[test]
+    fn every_run_whose_verb_word_is_digest_exits_0_and_no_other_does() {
+        let all = |list: &[&str], settings: Result<Settings, Failure>| {
+            let args: Vec<OsString> = list.iter().map(OsString::from).collect();
+            run(&args, &mut Env::quiet(), settings).expect("an outcome")
+        };
+        for list in [
+            &["bilbo", "digest", "--help"][..],
+            &["bilbo", "digest", "-h"],
+            &["bilbo", "digest", "x"],
+            &["bilbo", "digest", "--all"],
+        ] {
+            let outcome = all(list, Ok(defaults()));
+            assert_eq!(outcome.exit_code(), 0, "{list:?}");
+            assert_eq!(outcome.write_failure_code(), 0, "{list:?}");
+        }
+        let unloaded = all(
+            &["bilbo", "digest"],
+            Err(Failure::Config("the settings did not load".to_owned())),
+        );
+        assert_eq!(unloaded.exit_code(), 0);
+        assert_eq!(unloaded.write_failure_code(), 0);
+        assert_eq!(
+            unloaded.stderr_lines(&View::PLAIN),
+            ["bilbo: the settings did not load"]
+        );
+        for list in [
+            &["bilbo", "help", "digest"][..],
+            &["bilbo", "--help", "digest"],
+            &["bilbo", "--version"],
+            &["bilbo", "recall", "--help"],
+        ] {
+            let outcome = all(list, Ok(defaults()));
+            assert_eq!(outcome.write_failure_code(), 1, "{list:?}");
         }
     }
 }

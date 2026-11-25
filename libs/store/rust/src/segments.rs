@@ -146,7 +146,6 @@ pub enum Cache {
     Unsafe(PathBuf),
 }
 
-/// Made by a reader's open; `path` is the resolved path.
 pub struct State {
     path: PathBuf,
     folder: File,
@@ -159,6 +158,117 @@ impl State {
 
     pub fn folder(&self) -> &File {
         &self.folder
+    }
+
+    pub fn try_clone(&self) -> io::Result<State> {
+        Ok(State {
+            path: self.path.clone(),
+            folder: self.folder.try_clone()?,
+        })
+    }
+}
+
+pub struct Checked {
+    configured: Layout,
+    paths: Layout,
+    options: Options,
+    state: Option<State>,
+}
+
+impl Checked {
+    pub fn state(&self) -> Option<&State> {
+        self.state.as_ref()
+    }
+
+    pub fn open(self, notice: &mut dyn FnMut(Notice)) -> Result<Store, StoreError> {
+        let Checked {
+            configured,
+            mut paths,
+            options,
+            state,
+        } = self;
+        let configured = &configured;
+        let lock_path = lock_file(&paths);
+        let lock = match File::open(&lock_path) {
+            Ok(file) => {
+                lock_shared_within(&file, &lock_path, options.wait, options.poll, notice)?;
+                Some(file)
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => None,
+            Err(error) => return Err(files::io_err("lock", &lock_path, error)),
+        };
+        paths.root = current_root(&paths.root, configured)?;
+        refuse_older(&paths.root, &configured.root)?;
+        let layout = &paths;
+        if lock.is_some() {
+            check_root(layout, &layout.root, Root::Check)?;
+        }
+        let sealed = list_sealed(&layout.root)?;
+        let reader_cache = judge_cache(configured, layout, lock.is_some());
+        if let Cache::Own(cache) = &reader_cache
+            && let Some(catalog) = kept_catalog(layout, cache, &sealed)
+        {
+            return Ok(Store {
+                layout: layout.clone(),
+                reader_cache,
+                state,
+                _writer: None,
+                _lock: lock,
+                writer: None,
+                since: None,
+                catalog,
+                compressor: None,
+                options,
+                poisoned: false,
+            });
+        }
+        let mut open = if lock.is_some() {
+            files::read_optional(&open_seg(layout))?
+        } else {
+            None
+        };
+        if lock.is_some() {
+            let named = files::read_optional(&marker_file(layout))?
+                .as_deref()
+                .and_then(marker_name);
+            if let Some(name) = named {
+                let path = segment_file(layout, &name);
+                if let (Some(segment), Some(bytes)) =
+                    (files::read_optional(&path)?, open.as_deref())
+                    && bytes.len() > frame::SEGMENT_HEADER
+                {
+                    if bytes != segment {
+                        return Err(damaged(
+                            &path,
+                            first_difference(bytes, &segment),
+                            "the sealed segment differs from open.seg",
+                        ));
+                    }
+                    open = None;
+                }
+            }
+        }
+        let mut catalog = Catalog::in_memory()?;
+        populate(
+            &mut catalog,
+            layout,
+            &sealed,
+            open.as_deref(),
+            options.tear_budget,
+        )?;
+        Ok(Store {
+            layout: layout.clone(),
+            reader_cache,
+            state,
+            _writer: None,
+            _lock: lock,
+            writer: None,
+            since: None,
+            catalog,
+            compressor: None,
+            options,
+            poisoned: false,
+        })
     }
 }
 
@@ -1013,12 +1123,15 @@ impl Store {
         Ok(store)
     }
 
-    /// The options' hook hears `Step::Checked` once the paths are validated.
     pub fn open_read_only(
         configured: &Layout,
-        mut options: Options,
+        options: Options,
         notice: &mut dyn FnMut(Notice),
     ) -> Result<Store, StoreError> {
+        Store::checked(configured, options)?.open(notice)
+    }
+
+    pub fn checked(configured: &Layout, mut options: Options) -> Result<Checked, StoreError> {
         let root = guarded_root(configured)?;
         match fs::metadata(&configured.root) {
             Ok(_) => {}
@@ -1048,86 +1161,11 @@ impl Store {
         refuse_older(&paths.root, &configured.root)?;
         check_root(&paths, &paths.root, Root::Check)?;
         step(&mut options.hook, Step::Checked)?;
-        let lock_path = lock_file(&paths);
-        let lock = match File::open(&lock_path) {
-            Ok(file) => {
-                lock_shared_within(&file, &lock_path, options.wait, options.poll, notice)?;
-                Some(file)
-            }
-            Err(error) if error.kind() == io::ErrorKind::NotFound => None,
-            Err(error) => return Err(files::io_err("lock", &lock_path, error)),
-        };
-        paths.root = current_root(&paths.root, configured)?;
-        refuse_older(&paths.root, &configured.root)?;
-        let layout = &paths;
-        if lock.is_some() {
-            check_root(layout, &layout.root, Root::Check)?;
-        }
-        let sealed = list_sealed(&layout.root)?;
-        let reader_cache = judge_cache(configured, layout, lock.is_some());
-        if let Cache::Own(cache) = &reader_cache
-            && let Some(catalog) = kept_catalog(layout, cache, &sealed)
-        {
-            return Ok(Store {
-                layout: layout.clone(),
-                reader_cache,
-                state,
-                _writer: None,
-                _lock: lock,
-                writer: None,
-                since: None,
-                catalog,
-                compressor: None,
-                options,
-                poisoned: false,
-            });
-        }
-        let mut open = if lock.is_some() {
-            files::read_optional(&open_seg(layout))?
-        } else {
-            None
-        };
-        if lock.is_some() {
-            let named = files::read_optional(&marker_file(layout))?
-                .as_deref()
-                .and_then(marker_name);
-            if let Some(name) = named {
-                let path = segment_file(layout, &name);
-                if let (Some(segment), Some(bytes)) =
-                    (files::read_optional(&path)?, open.as_deref())
-                    && bytes.len() > frame::SEGMENT_HEADER
-                {
-                    if bytes != segment {
-                        return Err(damaged(
-                            &path,
-                            first_difference(bytes, &segment),
-                            "the sealed segment differs from open.seg",
-                        ));
-                    }
-                    open = None;
-                }
-            }
-        }
-        let mut catalog = Catalog::in_memory()?;
-        populate(
-            &mut catalog,
-            layout,
-            &sealed,
-            open.as_deref(),
-            options.tear_budget,
-        )?;
-        Ok(Store {
-            layout: layout.clone(),
-            reader_cache,
-            state,
-            _writer: None,
-            _lock: lock,
-            writer: None,
-            since: None,
-            catalog,
-            compressor: None,
+        Ok(Checked {
+            configured: configured.clone(),
+            paths,
             options,
-            poisoned: false,
+            state,
         })
     }
 

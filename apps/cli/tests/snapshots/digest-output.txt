@@ -1,0 +1,8 @@
+files: 2 may bear on this prompt, best first; bilbo read <ref> outlines one
+01JC5Q3V7XKM4P8R2T6W9YB0DG	file:/home/me/notes/garden-log.md	The garden log
+2T6W9YB0DH	file:/home/me/notes/shed-roof.md	-
+sessions: 2 may bear on this prompt, best first; bilbo read <ref> prints one
+AS2KVMSCAF#r3-7	2026-11-07	/home/me/src/garden	user: Thin the carrot rows, then tell me how many seedlings are left.	note: The user asked the assistant to thin the carrot rows in the north bed of /home/me/src/garden and to count the seedlings that were left. The assistant counted 142 seedlings in four rows and told the user to wait for the second leaves before thinning again, because the first leaves tear when the soil…
+Q4W7N9R3HB#r18-21	2026-11-02	-	-
+notes: 1 may bear on this prompt; bilbo read <ref> prints it
+M4P6R8T0V2#r1	2026-11-06	-	The beet seeds are in the drawer by the door.

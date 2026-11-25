@@ -26,6 +26,7 @@ const CORE: &[&str] = &[
     "analyze",
     "bm25",
     "chunk",
+    "digest",
     "fill",
     "index",
     "keys",

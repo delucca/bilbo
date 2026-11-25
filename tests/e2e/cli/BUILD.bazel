@@ -7,6 +7,7 @@ bilbo_rust_test(
         "cli.rs",
         "config.rs",
         "derive.rs",
+        "digest.rs",
         "notes.rs",
         "read.rs",
         "recall.rs",

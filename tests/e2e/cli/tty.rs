@@ -128,7 +128,7 @@ fn an_error_on_a_terminal_stderr_is_marked_while_a_piped_stdout_stays_plain() {
     assert_eq!(seen.piped, "");
     assert_eq!(
         seen.terminal,
-        "\x1b[31m■\x1b[39m  unknown verb 'frob'; the verbs are remember, refresh, recall, read, tag, reindex, derive, config\n   \x1b[2msee\x1b[22m \x1b[36mbilbo --help\x1b[39m\n"
+        "\x1b[31m■\x1b[39m  unknown verb 'frob'; the verbs are remember, refresh, recall, digest, read, tag, reindex, derive, config\n   \x1b[2msee\x1b[22m \x1b[36mbilbo --help\x1b[39m\n"
     );
 }
 
@@ -139,7 +139,7 @@ fn an_error_on_a_piped_stderr_is_plain_while_a_terminal_stdout_is_untouched() {
     assert_eq!(seen.terminal, "");
     assert_eq!(
         seen.piped,
-        "bilbo: unknown verb 'frob'; the verbs are remember, refresh, recall, read, tag, reindex, derive, config\nbilbo: see 'bilbo --help'\n"
+        "bilbo: unknown verb 'frob'; the verbs are remember, refresh, recall, digest, read, tag, reindex, derive, config\nbilbo: see 'bilbo --help'\n"
     );
 }
 

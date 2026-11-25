@@ -195,6 +195,27 @@ pub fn run(
     Finished { result, unlogged }
 }
 
+pub fn shared_shorts(
+    mut shorts: Vec<Short>,
+    entries: &dyn Entries,
+) -> Result<BTreeSet<Short>, StoreError> {
+    shorts.sort_unstable();
+    shorts.dedup();
+    Ok(if shorts.is_empty() {
+        BTreeSet::new()
+    } else {
+        let mut ending: BTreeMap<Short, usize> = BTreeMap::new();
+        for id in entries.by_shorts(&shorts)? {
+            *ending.entry(id.short()).or_default() += 1;
+        }
+        ending
+            .into_iter()
+            .filter(|(_, count)| *count > 1)
+            .map(|(short, _)| short)
+            .collect()
+    })
+}
+
 pub fn stand(
     found: Option<&Position>,
     manifest: &Manifest,
@@ -288,26 +309,12 @@ fn search(
     });
     let candidates = fused.candidates;
     let apart = fused.apart;
-    let mut shorts: Vec<Short> = candidates
+    let shorts: Vec<Short> = candidates
         .iter()
         .chain(&apart)
         .map(|candidate| candidate.found.entry.short())
         .collect();
-    shorts.sort_unstable();
-    shorts.dedup();
-    let shared = if shorts.is_empty() {
-        BTreeSet::new()
-    } else {
-        let mut ending: BTreeMap<Short, usize> = BTreeMap::new();
-        for id in entries.by_shorts(&shorts)? {
-            *ending.entry(id.short()).or_default() += 1;
-        }
-        ending
-            .into_iter()
-            .filter(|(_, count)| *count > 1)
-            .map(|(short, _)| short)
-            .collect()
-    };
+    let shared = shared_shorts(shorts, entries)?;
     let selection = RefCell::new(Selection::new(request.limits));
     let mut left_out = 0u64;
     let mut back = Readback::new(entries, readers, tokens, request.chunk);

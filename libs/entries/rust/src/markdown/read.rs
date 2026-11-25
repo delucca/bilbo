@@ -1,5 +1,3 @@
-//! A Markdown file as heading sections; every line is in exactly one passage, so the passages join back to its bytes.
-
 use std::borrow::Cow;
 
 use crate::reader::{Passage, Piece};
@@ -178,16 +176,13 @@ struct Section {
 
 fn sections(lines: &[&str], heading_width: usize) -> Vec<Section> {
     let mut sections = Vec::new();
-    let body = match frontmatter::close(lines.iter().copied()) {
-        Some(close) => {
-            sections.push(Section {
-                start: 0,
-                label: FRONTMATTER.to_owned(),
-            });
-            close + 1
-        }
-        None => 0,
-    };
+    let body = body_start(lines);
+    if body > 0 {
+        sections.push(Section {
+            start: 0,
+            label: FRONTMATTER.to_owned(),
+        });
+    }
     let headings = headings(lines, body);
     if body < lines.len() && headings.first().is_none_or(|first| first.start > body) {
         sections.push(Section {
@@ -213,12 +208,28 @@ fn sections(lines: &[&str], heading_width: usize) -> Vec<Section> {
     sections
 }
 
-/// Blank lines alone are no passage: they join the one before, or the one after at the top of the file.
-pub fn passages(records: &[&[u8]], heading_width: usize) -> Vec<Passage> {
+fn file_lines<'a>(records: &[&'a [u8]]) -> Vec<&'a str> {
     let mut lines: Vec<&str> = records.iter().map(|record| line(record)).collect();
     if let Some(first) = lines.first_mut() {
         *first = first.strip_prefix('\u{feff}').unwrap_or(first);
     }
+    lines
+}
+
+fn body_start(lines: &[&str]) -> usize {
+    frontmatter::close(lines.iter().copied()).map_or(0, |close| close + 1)
+}
+
+pub fn title(records: &[&[u8]], heading_width: usize) -> Option<String> {
+    let lines = file_lines(records);
+    let body = body_start(&lines);
+    headings(&lines, body)
+        .first()
+        .map(|heading| clip(&heading.text, heading_width).into_owned())
+}
+
+pub fn passages(records: &[&[u8]], heading_width: usize) -> Vec<Passage> {
+    let lines = file_lines(records);
     let found = sections(&lines, heading_width);
     let mut passages: Vec<Passage> = Vec::new();
     let mut carried: Option<usize> = None;
@@ -276,7 +287,7 @@ fn extend(passage: &mut Passage, records: &[&[u8]]) {
 mod tests {
     use crate::reader::Passage;
 
-    use super::{atx, passages, underline};
+    use super::{atx, passages, title, underline};
 
     const WIDTH: usize = 100;
 
@@ -751,6 +762,9 @@ mod tests {
                 .collect();
             let records: Vec<&[u8]> = records.iter().map(Vec::as_slice).collect();
             let found = passages(&records, WIDTH);
+            for width in [WIDTH, 20, 1000] {
+                let _ = title(&records, width);
+            }
             sound(&found, records.len(), case);
             let held: u64 = found.iter().map(|passage| passage.range.count).sum();
             assert_eq!(

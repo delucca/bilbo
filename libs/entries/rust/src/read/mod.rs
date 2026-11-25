@@ -81,7 +81,7 @@ pub const OUTLINE_WIDTH: Key<usize> = Key {
         variable: Some("BILBO_READ_OUTLINE_WIDTH"),
         default: Default::Toml("100"),
         allowed: "a whole number from 20 to 1000",
-        doc: "The most characters an outline line of bilbo read may have, an ellipsis included: a longer one is cut and ends in one.",
+        doc: "The most characters an outline line of bilbo read, or a title or an outline's line in a row of bilbo digest, may have, an ellipsis included: a longer one is cut and ends in one.",
     },
     parse: |value| {
         value
@@ -282,6 +282,25 @@ fn names(label: &CaptureLabel, prefix: &str) -> bool {
         .is_some_and(|uuid| refs::is_session(uuid) && uuid.to_ascii_lowercase().starts_with(prefix))
 }
 
+fn named(prefix: &str, entries: &dyn Entries) -> Result<Vec<(Id, CaptureLabel)>, StoreError> {
+    Ok(entries
+        .captures_with(prefix)?
+        .into_iter()
+        .filter(|(_, label)| names(label, prefix))
+        .collect())
+}
+
+pub fn kept_from(
+    given: &str,
+    entries: &dyn Entries,
+) -> Result<Vec<(Id, CaptureLabel)>, StoreError> {
+    if given.len() == refs::UUID && refs::is_session(given) {
+        named(&given.to_ascii_lowercase(), entries)
+    } else {
+        Ok(Vec::new())
+    }
+}
+
 pub fn resolve(target: &Target, listed: usize, entries: &dyn Entries) -> Result<Id, Error> {
     let (given, mut found): (String, Vec<(Id, Option<CaptureLabel>)>) = match target {
         Target::Entry(id) => return Ok(*id),
@@ -295,10 +314,8 @@ pub fn resolve(target: &Target, listed: usize, entries: &dyn Entries) -> Result<
         }
         Target::Session(prefix) => (
             prefix.clone(),
-            entries
-                .captures_with(prefix)?
+            named(prefix, entries)?
                 .into_iter()
-                .filter(|(_, label)| names(label, prefix))
                 .map(|(id, label)| (id, Some(label)))
                 .collect(),
         ),
@@ -492,12 +509,18 @@ mod tests {
 
     use bilbo_settings::file::File;
     use bilbo_settings::key::{Flag, Origin as From, Source};
-    use bilbo_store::entries::{Generation, RecordRange};
+    use bilbo_store::entries::{
+        Capture, CaptureError, Captured, Change, Cursor, Entries, Generation, Head, Meta,
+        RecordRange, StoreError,
+    };
     use bilbo_store::id::Id;
     use bilbo_store::labels::CaptureLabel;
 
     use super::refs::Target;
-    use super::{BUDGET, Budget, Error, MATCHES_LISTED, MOST, OUTLINE_WIDTH, OutOfRange, names};
+    use super::{
+        BUDGET, Budget, Error, MATCHES_LISTED, MOST, OUTLINE_WIDTH, OutOfRange, kept_from, names,
+        resolve,
+    };
     use bilbo_settings::key::Key;
 
     fn resolved(variable: Option<&str>) -> Result<(usize, From), String> {
@@ -749,6 +772,121 @@ mod tests {
         }
         let stdin = CaptureLabel::new("stdin".to_owned()).expect("a label");
         assert!(!names(&stdin, &UUID[..8]));
+    }
+
+    struct Kept {
+        held: Vec<(Id, CaptureLabel)>,
+        asked: std::cell::RefCell<Vec<String>>,
+    }
+
+    impl Entries for Kept {
+        fn capture(&mut self, _input: &Capture<'_>) -> Result<Captured, CaptureError> {
+            Err(CaptureError::Store(StoreError::Poisoned))
+        }
+
+        fn set_meta(&mut self, _id: Id, _meta: &Meta) -> Result<u64, StoreError> {
+            Err(StoreError::Poisoned)
+        }
+
+        fn read(
+            &self,
+            _id: Id,
+            _generation: Generation,
+            _records: RecordRange,
+        ) -> Result<Vec<Vec<u8>>, StoreError> {
+            Err(StoreError::Poisoned)
+        }
+
+        fn meta(&self, _id: Id) -> Result<Option<Meta>, StoreError> {
+            Err(StoreError::Poisoned)
+        }
+
+        fn changes(&self, _since: &Cursor) -> Result<(Vec<Change>, Cursor), StoreError> {
+            Err(StoreError::Poisoned)
+        }
+
+        fn by_capture(&self, _label: &CaptureLabel) -> Result<Option<Head>, StoreError> {
+            Err(StoreError::Poisoned)
+        }
+
+        fn extent(
+            &self,
+            _id: Id,
+            _generation: Option<Generation>,
+        ) -> Result<Option<(Generation, u64)>, StoreError> {
+            Err(StoreError::Poisoned)
+        }
+
+        fn captures_with(&self, part: &str) -> Result<Vec<(Id, CaptureLabel)>, StoreError> {
+            self.asked.borrow_mut().push(part.to_owned());
+            let mut found: Vec<(Id, CaptureLabel)> = self
+                .held
+                .iter()
+                .filter(|(_, label)| {
+                    label
+                        .as_str()
+                        .to_ascii_lowercase()
+                        .contains(&part.to_ascii_lowercase())
+                })
+                .cloned()
+                .collect();
+            found.sort_by_key(|(id, _)| *id);
+            Ok(found)
+        }
+
+        fn by_shorts(&self, _shorts: &[bilbo_store::id::Short]) -> Result<Vec<Id>, StoreError> {
+            Err(StoreError::Poisoned)
+        }
+    }
+
+    #[test]
+    fn every_entry_kept_from_a_sessions_file_is_named_by_its_id() {
+        const UUID: &str = "5c3a9e1f-0b7d-4c2e-9a41-7f2d8e6b1c03";
+        let label = |path: &str| CaptureLabel::file(Path::new(path)).expect("a label");
+        let first = Id::parse("01JC5Q3V7XKM4P8R2T6W9YB0DE").expect("id");
+        let second = Id::parse("01JC5Q3V7XKM4P8R2T6W9YB0DF").expect("id");
+        let third = Id::parse("01JC5Q3V7XKM4P8R2T6W9YB0DG").expect("id");
+        let kept = Kept {
+            held: vec![
+                (third, label(&format!("/notes/{UUID}.md"))),
+                (second, label(&format!("/p/two/{UUID}.jsonl"))),
+                (
+                    first,
+                    label(&format!("/p/one/{}.jsonl", UUID.to_uppercase())),
+                ),
+            ],
+            asked: std::cell::RefCell::new(Vec::new()),
+        };
+        let found = kept_from(UUID, &kept).expect("a lookup");
+        assert_eq!(
+            found.iter().map(|(id, _)| *id).collect::<Vec<_>>(),
+            [first, second]
+        );
+        let asked = kept.asked.borrow().len();
+        let capitals = kept_from(&UUID.to_uppercase(), &kept).expect("a lookup");
+        assert_eq!(capitals.len(), 2);
+        assert_eq!(kept.asked.borrow()[asked], UUID);
+        let before = kept.asked.borrow().len();
+        let not_hex = "5c3a9e1f-0b7d-4c2e-9a41-7f2d8e6b1c0g";
+        assert_eq!(not_hex.len(), 36);
+        for text in [&UUID[..8], &UUID[..35], not_hex, "not-a-uuid", ""] {
+            assert!(kept_from(text, &kept).expect("a lookup").is_empty());
+        }
+        assert_eq!(kept.asked.borrow().len(), before, "the store is not asked");
+        let target = Target::Session(UUID.to_owned());
+        let error = resolve(&target, 5, &kept).expect_err("two entries");
+        assert_eq!(
+            error.to_string(),
+            format!(
+                "{UUID} names 2 entries: {first} (file:/p/one/{}.jsonl), {second} (file:/p/two/{UUID}.jsonl); give the id of one",
+                UUID.to_uppercase()
+            )
+        );
+        let eight = Target::Session(UUID[..8].to_owned());
+        assert!(matches!(
+            resolve(&eight, 5, &kept),
+            Err(Error::Ambiguous { .. })
+        ));
     }
 
     #[test]

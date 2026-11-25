@@ -14,6 +14,7 @@ pub enum Emit {
 pub struct Plan {
     pub writes: Vec<Emit>,
     pub code: u8,
+    pub write_code: u8,
 }
 
 pub fn plan(result: &Result<Outcome, Failure>, out: &View, err: &View) -> Plan {
@@ -31,6 +32,7 @@ pub fn plan(result: &Result<Outcome, Failure>, out: &View, err: &View) -> Plan {
             Plan {
                 writes,
                 code: outcome.exit_code(),
+                write_code: outcome.write_failure_code(),
             }
         }
         Err(failure) => failed(failure, err),
@@ -55,7 +57,7 @@ pub fn execute(
         for line in &failed(&failure, err).writes {
             let _ = write(line);
         }
-        return failure.exit_code();
+        return plan.write_code;
     }
     plan.code
 }
@@ -68,6 +70,7 @@ fn failed(failure: &Failure, err: &View) -> Plan {
             .map(Emit::Stderr)
             .collect(),
         code: failure.exit_code(),
+        write_code: Failure::Output(String::new()).exit_code(),
     }
 }
 
@@ -192,6 +195,7 @@ mod tests {
         let plan = Plan {
             writes: vec![stdout("hits\n"), stderr("bilbo: later")],
             code: 0,
+            write_code: 1,
         };
         let (code, written) = stdout_that_fails(&plan, &View::PLAIN);
         assert_eq!(code, 1);
@@ -231,6 +235,7 @@ mod tests {
         let plan = Plan {
             writes: vec![stdout("one\n"), stderr("bilbo: line"), stdout("two\n")],
             code: 0,
+            write_code: 1,
         };
         let (code, written) = stdout_that_fails(&plan, &View::PLAIN);
         assert_eq!(code, 1);
@@ -238,10 +243,46 @@ mod tests {
     }
 
     #[test]
+    fn a_failed_write_exits_what_the_outcome_says() {
+        let failure = stderr("bilbo: cannot write to stdout: boom");
+        let always = Outcome::new("hits\n").with_exit(Exit::Always);
+        let plan_always = plan(&Ok(always), &View::PLAIN, &View::PLAIN);
+        let (code, written) = stdout_that_fails(&plan_always, &View::PLAIN);
+        assert_eq!(code, 0);
+        assert_eq!(written, [stdout("hits\n"), failure.clone()]);
+        for exit in [
+            Exit::Success,
+            Exit::NothingMatched,
+            Exit::Refused,
+            Exit::Config,
+        ] {
+            let other = Outcome::new("hits\n").with_exit(exit);
+            let plan_other = plan(&Ok(other), &View::PLAIN, &View::PLAIN);
+            let (code, written) = stdout_that_fails(&plan_other, &View::PLAIN);
+            assert_eq!(code, 1, "{exit:?}");
+            assert_eq!(written, [stdout("hits\n"), failure.clone()], "{exit:?}");
+        }
+        for (exit, wanted) in [(Exit::Always, 0), (Exit::Success, 0), (Exit::Refused, 1)] {
+            let closed = Outcome::new("hits\n").with_exit(exit);
+            let plan_closed = plan(&Ok(closed), &View::PLAIN, &View::PLAIN);
+            let mut out = Broken(Break::Write(io::ErrorKind::BrokenPipe));
+            let code = execute(&plan_closed, &View::PLAIN, &mut |emit| match emit {
+                Emit::Stdout(text) => write_result(&mut out, text),
+                Emit::Stderr(_) => Ok(()),
+            });
+            assert_eq!(
+                code, wanted,
+                "{exit:?}: a closed pipe keeps the ordinary exit"
+            );
+        }
+    }
+
+    #[test]
     fn a_failed_write_is_reported_in_the_view_of_stderr() {
         let plan = Plan {
             writes: vec![stdout("hits\n")],
             code: 0,
+            write_code: 1,
         };
         let (_, written) = stdout_that_fails(&plan, &View::HUMAN);
         assert_eq!(
@@ -255,6 +296,7 @@ mod tests {
         let plan = Plan {
             writes: vec![stderr("bilbo: warn"), stdout("hits\n")],
             code: 1,
+            write_code: 1,
         };
         let mut written = Vec::new();
         let code = execute(&plan, &View::PLAIN, &mut |emit| {

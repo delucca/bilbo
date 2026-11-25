@@ -12,6 +12,8 @@ Results go to standard output; diagnostics go to standard error, each line prefi
 | 1 | refused, problems found or nothing matched |
 | 2 | usage or config error |
 
+`bilbo digest` is the one verb that always exits 0 ([digest](#digest)).
+
 ## config
 
 ```text
@@ -44,7 +46,7 @@ The value is TOML, as the config file would hold it. The origin is `default`, th
 
 `bilbo config store.seal_at` prints `16 MiB`: a string without its quotes, any other value as TOML. A key bilbo does not know is a usage error.
 
-A config file or variable that bilbo refuses fails `bilbo config` as it fails every other verb, with the same message, except the 0.20-root refusal and the refusal of a state or cache folder inside the store root, which a verb runs when it opens the store (`the state folder <path> is inside the store root <root>, which holds only segments; set paths.state to a folder outside the root`). `bilbo config` runs neither. So `bilbo config` checks a file you edited.
+A config file or variable that bilbo refuses fails `bilbo config` as it fails every other verb, with the same message, except the 0.20-root refusal and the refusal of a state or cache folder inside the store root, which a verb runs when it opens the store, and `bilbo digest` when it checks the store's folders before that (`the state folder <path> is inside the store root <root>, which holds only segments; set paths.state to a folder outside the root`). `bilbo config` runs neither. So `bilbo config` checks a file you edited.
 
 ### set
 
@@ -384,6 +386,112 @@ Off a terminal every line bilbo writes starts with `bilbo: `. On a run that sear
 | 0 | at least one hit |
 | 1 | nothing matched, there is no store, no search index or none that bilbo can read, the store is being written for longer than `store.wait`, or the store or the index could not be read |
 | 2 | usage or config error: no query, an unknown kind, an `--in` value with no letter or digit, a `--budget` outside 256 to 1,000,000, a store root that holds bilbo 0.20's `notes/` or `library/`, or a state or cache folder inside the root |
+
+## digest
+
+```text
+bilbo digest
+```
+
+Answers the first prompt of a session with pointers to what the store holds that bears on it, Markdown files, sessions and notes, each in a list of its own, and prints nothing for every later prompt of that session. A prompt hook runs it. It only reads the store: the two files it writes are in the state folder ([A session's first prompt](#a-sessions-first-prompt), [The digest log](#the-digest-log)). It always exits 0: a harness blocks a prompt whose hook exits 2, and no exit code of `bilbo digest` does that. How long a run can take is another matter ([While bilbo writes](#while-bilbo-writes)). The default and the range of every `digest.*` key are in [Configuration](configuration.md#keys).
+
+### The hook's input
+
+Standard input is one JSON object, as Claude Code and Codex hand one to a `UserPromptSubmit` hook. Two fields are read, `session_id` and `prompt`, each a string that is not empty. In either string an escape that is half of a surrogate pair with no partner, such as `\ud83d` where a harness cut a text inside an emoji, is read as replacement characters (U+FFFD). Every other field is passed over, whatever it holds and however deep, as long as it is JSON, a field whose name holds such a half among them; and of a field named twice the last is read. An input of up to `digest.input` bytes is read whole; a longer one is no prompt, and the run stops reading one byte past the limit. An input that is not a JSON object or that lacks one of the two fields is no prompt either: the run prints nothing, marks nothing and says why on stderr. With a person at the terminal it reads nothing and says what it reads.
+
+### A session's first prompt
+
+A session is marked when its first prompt is seen, before anything is searched: one line in `digest.sessions` in the state folder, with the time and the session's id. A prompt whose session has a line there prints nothing, and opens neither the store nor the index. The first prompt is the first one whatever it got: a prompt nothing matched, one whose every match was under its list's floor and one that found the store held each use the session's one answer. A run that is stopped between the mark and its answer leaves a session with no answer; one that is stopped later may have printed it. While the state folder and the file stay as they are, no session is answered twice, also when two prompts of one session come at once. When the mark cannot be read or written the run prints nothing and says so, at every prompt, until it can: a mark that was not written is no mark. The file is made with mode 600, grows by one line a session without a bound and can be deleted at any time: a session whose line is gone, with the file or with a part of it, is treated as new at its next prompt, once: that prompt gets what any first prompt gets, which can be nothing. A line that was cut off as it was written marks nothing, and is removed when the next session is marked.
+
+### The prompt as a query
+
+The prompt is the query, cut to its first `digest.query` characters: a search takes longer the more words it has and the more the store keeps, sessions included, and the hook holds the prompt meanwhile. It is cut into words and ranked as [`recall`](#the-query) ranks a query, with `recall`'s keys: `recall.question_words`, `recall.languages`, `recall.bm25_k1`, `recall.bm25_b`, `recall.read_batch`, `recall.pair_weight` and the `recall.typo_*` keys. A slash command is searched by its words.
+
+### The lists
+
+Every kind bilbo reads has a list of its own: the Markdown files, the sessions, and the notes, which are the paragraphs `bilbo derive` wrote and the texts kept with [`bilbo remember -`](#a-note-with-no-file). No key names the kinds: a list is on unless its count is set to 0. A list's chunks are ranked among themselves: every number of a score, and the terms searched for a misspelt word, are counted over the chunks of its kind alone. So a Markdown file scores what it would score in a store that held nothing else, however many sessions the store keeps. No score of one list is compared with a score of another: a word that is rare among the files can be common among the sessions, and each list has its own floor. Of a list's best `digest.candidates` chunks each entry is taken once, at the score of its best chunk that is not passed over ([What a list leaves out](#what-a-list-leaves-out)), the best first, and at most `digest.<kind>.most` entries are taken. Of the entries taken, those at their list's floor or over are chosen for the list ([The floor](#the-floor)), and a row is then made of each chosen entry. An entry is what the store keeps as one: a session's file is one entry and has one row at most, however many of its passages match, and one session's file kept from two folders is two entries. The notes `bilbo derive` wrote from one session are one entry too, so the notes' list shows one note of a session at most, its best. None of `recall`'s budgets, caps and copy rules apply. The lists are printed in the order files, sessions, notes, and one with nothing to show is left out.
+
+### What a list leaves out
+
+- **Every list:** an entry the store no longer holds as the index has it, such as a file withdrawn since the index was made; for a row that names records, a passage the store no longer holds as indexed, such as one of a session's file that was written anew; and an entry whose records the store cannot read.
+- **Every list:** the session the prompt came from, with what belongs to it (its subagents' files, the notes written from it), when the hook's `session_id` is the whole UUID that session's file is named by, in either case of its letters. A prompt needs no pointer to its own session.
+- **The sessions' list, while `digest.session.subagents` is `false`:** a subagent's file. It is a part of the session it worked for, and that session can be listed.
+- **The sessions' list, while `digest.session.parts` is `false`:** a part of a record too long for one chunk, such as a long tool output. The session can still be listed at another passage.
+- **The sessions' list:** a session that began longer ago than `digest.session.old_after`. It goes by the one date the index holds for the session: the time of its first passage that has one, or the time bilbo captured the session when no passage has a time. It does not go by when the passage was written: a session that began before the limit is left out whole, and the day a row shows is its passage's own.
+- **The notes' list:** a note written from an entry that an earlier list of the same run chose. A session and the notes `bilbo derive` wrote from it are never both listed: once the session is chosen for its list, its notes are hidden from the notes' list, and the session's row carries the start of one of them, as its fifth field, where one was written from records of its passage and can be read. The notes of a session that was not chosen are not hidden. They are ranked as every note is, and one of them is a row only when it earns a place in the notes' list by its own score. What this rule keeps from an agent has not been measured.
+
+The two switches are the sessions' list's alone: the files' and the notes' lists leave out neither, since a note `bilbo derive` wrote belongs to the entry it was written from.
+
+What belongs to a session is what bilbo keeps as belonging to it. A subagent's file kept before its session, and not grown since, carries no mark of that session: it is an entry of its own and can be listed, also for a prompt of the session it worked for.
+
+Three things are told apart: an entry chosen for a list, an entry a chosen one hides, and a row that was made. What is left out before a list is chosen takes no place: the list goes on to its next best chunk, of the same entry or of another, until it has its count. Every list is chosen before any row is made. An entry whose records cannot be read is found only when its row is made: it has no row, nothing takes its place, and what it hid stays hidden for that run. So a chosen session whose records cannot be read is not listed, and neither are the notes written from it.
+
+### The floor
+
+An entry taken for a list is chosen when its score is at the list's floor or over; one under the floor is held back, and hides nothing. A floor of 0 chooses every entry taken. When no list has an entry at its floor or over, the run prints nothing. A score grows with the words a prompt shares with an entry, so a longer prompt passes a floor more easily. It also changes with how much of a kind the store keeps and with how common the prompt's words are there, so a floor is a number for one list, and for a store of about one size.
+
+| Key | Where its default comes from |
+|---|---|
+| `digest.markdown.floor` | Measured: a month of first prompts over some hundreds of Markdown files |
+| `digest.session.floor` | Read off one set of labelled sessions, and not confirmed on another |
+| `digest.note.floor` | Not measured: the number was taken from the one measured for Markdown files. A short note scores high |
+
+The last two are starting points. [The digest log](#the-digest-log) holds what each list showed and what its floor held back, with the scores: set them by it.
+
+### Output
+
+Standard output is empty, or for each list that has a row one line and then its rows:
+
+```text
+files: 2 may bear on this prompt, best first; bilbo read <ref> outlines one
+2T6W9YB0DG<TAB>file:/home/me/notes/garden-log.md<TAB>The garden log
+5N3K8QW1ZX<TAB>file:/home/me/notes/shed-roof.md<TAB>The shed roof
+sessions: 2 may bear on this prompt, best first; bilbo read <ref> prints one
+AS2KVMSCAF#r3-7<TAB>2026-11-07<TAB>/home/me/src/garden<TAB>user: Thin the carrot rows, then tell me how many seedlings are left.<TAB>note: The user asked the assistant to thin the carrot rows in the north bed of /home/me/src/garden and to count the seedlings that were left. The assistant counted 142 seedlings in four rows and told the user to wait for the second leaves before thinning again, because the first leaves tear when the soil…
+Q4W7N9R3HB#r18-21<TAB>2026-11-02<TAB>/home/me/src/garden<TAB>user: Here is the bed. What is the weed in the corner?
+notes: 1 may bear on this prompt; bilbo read <ref> prints it
+M4P6R8T0V2#r1<TAB>2026-11-06<TAB>-<TAB>The beet seeds are in the drawer by the door.
+```
+
+A list of one row says so: `files: 1 may bear on this prompt; bilbo read <ref> outlines it`. Fields are apart by tabs.
+
+- **A file's row** is its ref, its capture label and its title, which is the file's first heading. The ref names the file and no record: `bilbo read <ref>` prints the file's labels and its [outline](#the-outline), and each line of the outline starts with the locator that reads that section.
+- **A session's row** is the ref of a passage, the passage's day in UTC, the first folder the session's records name, and the last line the session's [outline](#the-outline) has at or before the passage: most often a prompt a person typed, sometimes a compact summary's line or an agent's message. A passage is a range of records and can hold more than one turn: the row does not say which of its records held the prompt's words. The ref names records of the session as it is kept when the digest runs. `bilbo read <ref>` prints that range of the session as it is kept when the command is run, a page at a time.
+- **A note's row** is the note's ref, the day of the records it was written from or the day it was kept, `-`, and the note from its start. `bilbo read <ref>` prints the note under its first line: what it was written from, or the day it was kept.
+- **A fifth field,** `note: ` and a text, is the start of a note `bilbo derive` wrote from records of that passage. It is a model's words about those records, as they were when it ran; the ref still reads the records themselves. Of several such notes the row shows the one that shares the most records with the passage. A session `bilbo derive` wrote nothing about has none. Whether this text helps an agent choose what to read has not been measured.
+- **What a row shows of a note,** in its line or in a fifth field, is the note from its start, with each run of white space, line feeds among them, as one space, cut to `digest.note.width` characters. For a row of the notes' list, `bilbo read <ref>` opens the note itself, a page at a time. A fifth field has no ref of its own, since the row's ref reads the session's records: [`bilbo recall`](#notes) is the way to that note's ref, which `bilbo read` then opens.
+
+Every ref is what `bilbo read` takes: the last 10 characters of the entry's id, or the whole id when another entry ends alike, and for a passage its records as `#r3-7` or `#r4`. A field with nothing to say is `-`. A title and an outline's line longer than `read.outline_width` characters are cut, and so is a note longer than `digest.note.width`; what is cut ends in `…`. A tab or a line feed in a field is written `\t` or `\n`, as `bilbo tag` writes it.
+
+A harness adds these lines to what the agent reads with the prompt, up to a size: Claude Code caps what a hook prints at 10,000 characters, and Codex at about 2,500 tokens. Over the cap a harness writes the output to a file and hands the agent that file's path in place of the lists; Claude Code adds their first 2,000 characters. Three lists of six rows each, every session's row with a note and every note cut at 300 characters, are about 5,800 characters for rows of ordinary size. That is an estimate and no bound: a file's capture label and a row's folder are printed whole, so long ones, or text that is dense in tokens, can reach a cap at those settings too. Counts or a width far over those can pass it.
+
+### The digest log
+
+Each run that reaches the state folder is logged in `digest.log` there, unless `digest.log.enabled` is `false`. A run that ends before (a usage or config error, no store, a state folder bilbo did not check) is not logged. One line a run, fields apart by tabs.
+
+Six fields come first: `d1`; the time in unix seconds; `listed`, `nothing`, `floor`, `later`, `input`, `unmarked`, `busy`, `no-index`, `other-manifest`, `withheld` or `failed`; the session's id, or `-` when the input gave none (an id that is itself `-` is written `\-`); the milliseconds from the verb's start to the moment the line was made, which leaves out the start of the process, the writing of this line and the printing of the lists; and `current`, `behind` or `unknown` for the index in a line that says `listed`, `nothing` or `floor`, or `-` in any other line.
+
+Then, in a line that says `listed`, `nothing` or `floor`, five fields for each list that is on, in the lists' order: the list's kind (`markdown`, `session`, `note`); its floor; what it listed, the best first, joined by commas; what its floor held back, in the same form; and what it left out on the way, each cause as `<cause>=<count>`, joined by commas. A listed file is `<id>=<score>`; a listed passage is `<id>#r<a>-<b>=<score>`, or `<id>#r<a>=<score>` when it is one record, with `+` after the score when its row carried a note's text. The causes are `gone` (the store no longer holds it, or could not read it), `own` (the prompt's own session), `belongs` (a subagent's file, while `digest.session.subagents` is `false`), `part` (parts of long records, while `digest.session.parts` is `false`), `old` (began longer ago than `digest.session.old_after`) and `shown` (written from an entry an earlier list chose). An entry is counted once, under the first of `gone`, `own`, `belongs`, `old` and `shown` that holds for it; `part`, and `gone` for a passage the store no longer holds, count passages. They count what was met before the list was full, and one thing after it: a chosen entry whose records then could not be read is in no row, is not among what the list listed, and adds one to `gone`. Each of the last three fields is `-` when it is empty. A list that is turned off has no fields. Every other line has the first six alone, a `failed` one too, whatever the run had ranked before it failed.
+
+`listed` says that some list has a row, `floor` that none has and some floor held an entry back, `nothing` that neither is so. `later` is a prompt of a session that was marked before. `listed`, `nothing`, `floor`, `busy` (a store held for longer than `digest.wait`), `no-index`, `other-manifest`, `withheld` and `failed` are a session's first prompt. `input` is an input that was no prompt and `unmarked` a prompt whose session could not be marked: neither says which prompt of its session it was.
+
+The file holds no text of a prompt and no text of an entry, so no title, folder or line of a row: the session's id stands for the prompt, and `bilbo read` finds the session by that id when it is the UUID its harness gave it ([The ref](#the-ref)), once the session is kept. A hook may hand any text as an id: of one that is no such UUID nothing is promised. The file is made with mode 600, grows without a bound and can be deleted at any time. A line that was cut off as it was written is removed before the next line is written, so each run's line stands whole and alone. A line that cannot be written is a warning on stderr, `the digest was not logged: <error>`; the rows do not change. A harness that stops a run can leave a mark with no line, or a `listed` line for lists no agent saw.
+
+### While bilbo writes
+
+A later prompt waits for no writer of the store. A session's first prompt reads the store as `recall` does, and waits for a bilbo that is writing it up to `digest.wait`, not `store.wait`; then it gives up, prints nothing and says `another bilbo is writing the store`. The session is marked all the same. `digest.wait` bounds that wait alone. It keeps the store open for reading until its rows are made, as `recall` does until its hits are read. A prompt of a session also takes the lock of `digest.sessions` once it has opened that file, which an input that is no prompt never does, nor a run with no state folder or with a marks' file it refuses; and every run that opens `digest.log` takes that file's lock: another `bilbo digest` holds each for one read and one write, and no key bounds those waits. When the catalog is missing or behind, a first prompt walks every segment as any reader does, which takes seconds on a large store (about three for a store of one gigabyte); with no catalog at all it then lists nothing, as `recall` would. Keep the hook's timeout over that, and `bilbo refresh` on its timer. A harness that stops a run at its timeout can do so at any point: before the session is marked, after the mark and before the lists, or once the lists are out.
+
+### What stderr holds
+
+Nothing, for a run that listed, found nothing, held every entry back or was a later prompt. Nothing either for an entry whose records could not be read: it is left out, as `recall` leaves such a hit out ([What a list leaves out](#what-a-list-leaves-out)). And nothing for a session's notes that could not be read: its row comes without a fifth field. Otherwise: a usage or config error as every verb prints it; why the input was no prompt (`cannot read standard input: <error>`, `the hook's input is longer than digest.input allows (<n> bytes)`, `the hook's input is not a JSON object`, `the hook's input has no session_id`, `the hook's input has no prompt`); `this store has no state folder that bilbo checked`; `the session was not marked, so nothing was listed: <error>`; or the store's or the index's error, in `recall`'s words. A run says one of these at most. After it, or alone, it says `the digest was not logged: <error>` when the log's line could not be written: a full disk can give both.
+
+### Exit codes
+
+| Code | Meaning |
+|---|---|
+| 0 | always: the lists, nothing to list, a later prompt, the page of `bilbo digest --help`, and every error, a usage or config error among them, also when the result cannot be written, of which a part may then have gone out |
+
+The code says nothing of how long a run took. `bilbo help digest` is `help`'s and exits as it does for every verb.
 
 ## read
 

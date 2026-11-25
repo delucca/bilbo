@@ -1,6 +1,6 @@
 use std::fmt;
 use std::path::PathBuf;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use bilbo_store::entries::{Generation, RecordRange};
 use bilbo_store::id::Id;
@@ -30,6 +30,15 @@ pub fn millis(time: SystemTime) -> i64 {
     match time.duration_since(UNIX_EPOCH) {
         Ok(after) => i64::try_from(after.as_millis()).unwrap_or(i64::MAX),
         Err(before) => i64::try_from(before.duration().as_millis()).map_or(i64::MIN, |ms| -ms),
+    }
+}
+
+pub(crate) fn instant(millis: i64) -> SystemTime {
+    let span = Duration::from_millis(millis.unsigned_abs());
+    if millis >= 0 {
+        UNIX_EPOCH + span
+    } else {
+        UNIX_EPOCH - span
     }
 }
 

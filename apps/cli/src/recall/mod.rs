@@ -3,14 +3,11 @@ pub mod view;
 
 use std::time::SystemTime;
 
-use bilbo_search::analyze::Omit;
-use bilbo_search::bm25::Bm25;
 use bilbo_search::position::Manifest;
 use bilbo_search::rank::{Expanded, Query, Ranker};
 use bilbo_search::recall::scope;
 use bilbo_search::recall::select::{Limits, Skipped};
-use bilbo_search::recall::{self, Access, Error, Finished, Request, Scoped, Stand};
-use bilbo_search::typo;
+use bilbo_search::recall::{self, Access, Finished, Request, Scoped, Stand};
 use bilbo_settings::file::File;
 use bilbo_settings::key::{Flag, Source};
 use bilbo_store::segments::{Cache, Notice, Store};
@@ -19,7 +16,9 @@ use clap::builder::NonEmptyStringValueParser;
 
 use crate::console::args::usage;
 use crate::console::env::Env;
-use crate::console::message::{Message, group, not_a_tag, notice_message, sanitize, unnamed_value};
+use crate::console::message::{
+    Message, group, not_a_tag, notice_message, sanitize, unnamed_value, unsearched,
+};
 use crate::console::outcome::{Exit, Failure, Outcome};
 use crate::console::reading::Reading;
 use crate::console::settings::Settings;
@@ -141,24 +140,9 @@ pub fn run(
         Cache::Own(path) => Some((reading.lookup)(path)),
         _ => None,
     };
-    let bm25 = index.as_deref().map(|index| Bm25 {
-        index,
-        k1: settings.recall.bm25_k1.value,
-        b: settings.recall.bm25_b.value,
-        omit: Omit {
-            words: &settings.recall.question_words.value,
-            languages: &settings.recall.languages.value,
-            detect: Some(reading.detect),
-        },
-        batch: settings.recall.read_batch.value,
-        typos: typo::Rule {
-            terms: settings.recall.typo_terms.value,
-            letters: settings.recall.typo_letters.value,
-            max_letters: settings.recall.typo_max_letters.value,
-            two_edits: settings.recall.typo_two_edits.value,
-        },
-        pair_weight: settings.recall.pair_weight.value,
-    });
+    let bm25 = index
+        .as_deref()
+        .map(|index| settings.recall.bm25(index, reading.detect));
     let rankers: Vec<&dyn Ranker> = bm25.iter().map(|ranker| ranker as &dyn Ranker).collect();
     let request = Request {
         query: Query {
@@ -283,35 +267,6 @@ fn kept(scope: &Scoped) -> Message {
     say(Mark::Info, text)
 }
 
-fn withheld(cache: &Cache) -> Option<String> {
-    match cache {
-        Cache::Own(_) | Cache::Absent => None,
-        Cache::Unlocked => Some(
-            "no bilbo has written this store from this state folder, so nothing protects its search index while it is read; bilbo refresh sets it up"
-                .to_owned(),
-        ),
-        Cache::NoCatalog(path) => Some(format!(
-            "the cache folder {} holds no catalog of this store, so its search index cannot be trusted; bilbo refresh makes both again",
-            path.display()
-        )),
-        Cache::OtherStore(path) => Some(format!(
-            "the cache folder {} holds another store's catalog; set paths.cache to a folder of this store's own",
-            path.display()
-        )),
-        Cache::Unsafe(path) => Some(format!(
-            "{} is not this user's alone, or could not be checked; bilbo reads no search index under it",
-            path.display()
-        )),
-    }
-}
-
-fn failure(error: &Error) -> Failure {
-    match error {
-        Error::Store(error) => Failure::from(error),
-        Error::Index(error) => Failure::from(error),
-    }
-}
-
 pub fn outcome(finished: Finished, cache: &Cache) -> Result<Outcome, Failure> {
     let Finished { result, unlogged } = finished;
     let unlogged =
@@ -319,7 +274,7 @@ pub fn outcome(finished: Finished, cache: &Cache) -> Result<Outcome, Failure> {
     let output = match result {
         Ok(output) => output,
         Err(error) => {
-            let failure = failure(&error);
+            let failure = Failure::from(&error);
             let Some(unlogged) = unlogged else {
                 return Err(failure);
             };
@@ -389,16 +344,7 @@ pub fn outcome(finished: Finished, cache: &Cache) -> Result<Outcome, Failure> {
     if ran && output.hits.is_empty() && output.apart.is_empty() {
         diagnostics.push(say(Mark::Info, "nothing matched".to_owned()));
     }
-    match output.stand {
-        Stand::NoIndex => diagnostics.push(Message::error(
-            "the store has no search index bilbo can use; bilbo reindex makes it",
-        )),
-        Stand::OtherManifest => diagnostics.push(Message::error(
-            "the search index was made with other settings or by another bilbo; bilbo reindex makes it again",
-        )),
-        Stand::Withheld => diagnostics.extend(withheld(cache).map(Message::error)),
-        Stand::Current | Stand::Behind(_) | Stand::Unknown => {}
-    }
+    diagnostics.extend(unsearched(output.stand, cache));
     let exit = if !ran {
         Exit::Refused
     } else if output.hits.is_empty() && output.apart.is_empty() {
