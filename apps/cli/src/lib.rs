@@ -296,15 +296,35 @@ pub fn note_ways(width: usize) -> NoteWays {
     }
 }
 
+fn summary_text(bytes: &[u8]) -> Option<String> {
+    let record = bilbo_derive::summary::record::read(bytes)?;
+    Some(record.text.split_whitespace().collect::<Vec<_>>().join(" "))
+}
+
+pub type SummaryShown = Box<dyn Fn(&[u8]) -> Option<String>>;
+
+#[must_use]
+pub fn summary_shown(settings: &Settings) -> Option<SummaryShown> {
+    if !settings.digest.summary_enabled.value {
+        return None;
+    }
+    Some(Box::new(summary_text))
+}
+
 pub fn hands<'a>(
     settings: &Settings,
     readers: &[Box<dyn Reader>],
     ways: &'a NoteWays,
+    summaries: Option<&'a SummaryShown>,
 ) -> Result<(Vec<digest::Shelf<'a>>, bilbo_search::digest::Way<'a>), Failure> {
     let shelves = lists(settings, readers, &*ways.line)?;
     let way = bilbo_search::digest::Way {
         label: &bilbo_derive::plan::label,
         written: &*ways.written,
+        summary: summaries.map(|text| bilbo_search::digest::Summary {
+            label: &bilbo_derive::summary::label,
+            text: &**text,
+        }),
     };
     Ok((shelves, way))
 }
@@ -379,7 +399,6 @@ pub fn readers(settings: &Settings) -> Result<Vec<Box<dyn Reader>>, Failure> {
     ])
 }
 
-/// One item for each reader, in the order of `readers()`.
 pub fn rendering(settings: &Settings) -> Result<String, Failure> {
     let width = registered(settings, &bilbo_entries::markdown::HEADING_WIDTH)?;
     let last = |name: &'static str| name.rsplit('.').next().unwrap_or(name);
@@ -414,7 +433,7 @@ pub fn tokenizer() -> Result<Tokenizer, Failure> {
     })
 }
 
-/// The index of a store's cache folder: nothing is opened or made before its first use.
+/// Opens and makes nothing before its first use.
 pub fn index(cache: &std::path::Path, search: &bilbo_search::keys::Section) -> Box<dyn Index> {
     Box::new(bilbo_search::tantivy::Tantivy::at(
         bilbo_search::tantivy::folder(cache),
@@ -437,6 +456,10 @@ pub fn lookup(cache: &std::path::Path, search: &bilbo_search::keys::Section) -> 
     ))
 }
 
+pub fn kept_unread() -> Vec<String> {
+    vec![bilbo_derive::summary::KIND.to_owned()]
+}
+
 pub fn indexing<'a>(
     settings: &Settings,
     readers: &'a [Box<dyn Reader>],
@@ -453,6 +476,7 @@ pub fn indexing<'a>(
                 .search
                 .workers(std::thread::available_parallelism().map_or(1, usize::from)),
             label_batch: settings.search.label_batch.value,
+            kept_unread: kept_unread(),
         },
         tries: settings.search.tries(),
         tokenizer_id: bilbo_search::qwen::ID,
@@ -602,7 +626,8 @@ fn dispatch(
                     let committed = |cache: &std::path::Path| lookup(cache, &settings.search);
                     let width = settings.digest.note_width.value;
                     let ways = note_ways(width);
-                    let (shelves, way) = hands(&settings, &readers, &ways)?;
+                    let summaries = summary_shown(&settings);
+                    let (shelves, way) = hands(&settings, &readers, &ways, summaries.as_ref())?;
                     let apart = apart();
                     digest::run(
                         root,
@@ -618,7 +643,17 @@ fn dispatch(
                 }
                 Verb::Read(args) => {
                     let readers = readers(&settings)?;
-                    read::run(root, &args, env, &settings, &readers)
+                    read::run(
+                        root,
+                        &args,
+                        env,
+                        &settings,
+                        &readers,
+                        &read::Summaries {
+                            label: &bilbo_derive::summary::label,
+                            text: &summary_text,
+                        },
+                    )
                 }
                 Verb::Tag(args) => {
                     let readers = readers(&settings)?;
@@ -984,6 +1019,19 @@ mod tests {
         let codex = built("openai", b"[llm.openai]\nvia = \"tool\"\n");
         assert!(codex.writer.describe()[0].starts_with("provider: openai, via tool, "));
         assert!(!codex.api);
+    }
+
+    #[test]
+    fn the_kinds_kept_with_no_reader_are_handed_to_every_index_run() {
+        let kept = super::kept_unread();
+        assert_eq!(kept, [bilbo_derive::summary::KIND]);
+        let settings = defaults();
+        for reader in readers(&settings).expect("the readers") {
+            assert!(!kept.iter().any(|kind| kind == reader.kind()));
+        }
+        let disk = |cache: &std::path::Path| super::index(cache, &settings.search);
+        let indexing = super::indexing(&settings, &[], "lines/1", &super::tokenizer, &disk);
+        assert_eq!(indexing.request.kept_unread, kept);
     }
 
     #[test]
@@ -1440,7 +1488,117 @@ mod tests {
     }
 
     #[test]
-    fn the_way_to_a_summary_is_derives_label_and_what_a_notes_record_says_and_shows() {
+    fn no_reader_reads_the_summarys_kind_and_its_record_is_no_note() {
+        use bilbo_derive::summary::{KIND, record};
+        use bilbo_store::entries::Generation;
+        let settings = defaults();
+        for reader in readers(&settings).expect("the readers") {
+            assert_ne!(reader.kind(), KIND);
+        }
+        for kind in listed() {
+            assert_ne!(kind.name(), KIND);
+        }
+        assert_ne!(notes().kind, KIND);
+        let summary = record::Summary {
+            text: "Thinning the carrots of the north bed: 142 seedlings counted in four rows."
+                .to_owned(),
+            instruction: "7fdf9f0d93f443e3".to_owned(),
+            provider: "anthropic".to_owned(),
+            model: "claude-haiku-5-5".to_owned(),
+            answered: Some("claude-haiku-5-5".to_owned()),
+            made: 1_794_107_564,
+            entry: bilbo_store::id::Id::parse("01M6ZGE4KTBYYH07AS2KVMSCAF").expect("an id"),
+            generation: Generation(1),
+            records: 23,
+            content: 0xabcd,
+            notes: Some(record::Notes {
+                generation: Generation(1),
+                records: 8,
+                digest: 0xff,
+            }),
+            sent: 412,
+            tokens_in: Some(790),
+            tokens_out: Some(61),
+        };
+        let bytes = format!("{}\n", record::write(&summary)).into_bytes();
+        assert!((notes().paragraph)(&bytes).is_none());
+        assert!(bilbo_derive::record::read(&bytes).is_none());
+        assert_eq!(
+            bilbo_store::opaque::filter(&bytes).as_ref(),
+            bytes.as_slice()
+        );
+    }
+
+    fn summary_record(text: &str) -> Vec<u8> {
+        use bilbo_derive::summary::record;
+        use bilbo_store::entries::Generation;
+        let summary = record::Summary {
+            text: text.to_owned(),
+            instruction: "7fdf9f0d93f443e3".to_owned(),
+            provider: "anthropic".to_owned(),
+            model: "claude-haiku-5-5".to_owned(),
+            answered: None,
+            made: 1_794_107_564,
+            entry: bilbo_store::id::Id::parse("01M6ZGE4KTBYYH07AS2KVMSCAF").expect("an id"),
+            generation: Generation(1),
+            records: 23,
+            content: 0xabcd,
+            notes: None,
+            sent: 412,
+            tokens_in: None,
+            tokens_out: None,
+        };
+        format!("{}\n", record::write(&summary)).into_bytes()
+    }
+
+    #[test]
+    fn the_way_to_a_summary_is_derives_label_and_its_records_text_whole() {
+        const EXAMPLE: &str = r#"{"summary":{"text":"Thinning the carrots of the north bed: 142 seedlings counted in four rows.","instruction":"7fdf9f0d93f443e3","by":{"provider":"anthropic","model":"claude-haiku-5-5"},"answered":"claude-haiku-5-5","made":1794107564,"of":{"entry":"01M6ZGE4KTBYYH07AS2KVMSCAF","generation":1,"records":23,"content":"0000000000000000000000000000abcd","notes":{"generation":1,"records":8,"digest":"00000000000000ff"}},"sent":412,"in":790,"out":61}}"#;
+        const RUN: &str = r#"{"run":{"kind":"session","instruction":"9f86d081884c7d65","by":{"provider":"anthropic","model":"claude-haiku-5-5"},"answered":"claude-haiku-5-5","same":true,"made":1794107564,"of":{"entry":"01M6ZGE4KTBYYH07AS2KVMSCAF","generation":1,"records":[1,811],"total":1204},"sent":19874,"in":29411,"out":2210,"written":14,"kept":12,"range":1,"names":1,"passes":0,"passed":false}}"#;
+        let readers = readers(&defaults()).expect("the readers");
+        let ways = super::note_ways(300);
+        let id = bilbo_store::id::Id::parse("01M6ZGE4KTBYYH07AS2KVMSCAF").expect("an id");
+        let settings = defaults();
+        let shown = super::summary_shown(&settings).expect("a reader while the switch is true");
+        let (_, way) = super::hands(&settings, &readers, &ways, Some(&shown)).expect("the hands");
+        let summary = way.summary.expect("a way to a summary");
+        assert_eq!((summary.label)(id), bilbo_derive::summary::label(id));
+        assert_eq!((summary.label)(id).as_str(), format!("summary:{id}"));
+        let text = |bytes: &[u8]| (summary.text)(bytes);
+        assert_eq!(
+            text(&summary_record("Thinning the carrots.")),
+            Some("Thinning the carrots.".to_owned())
+        );
+        assert_eq!(
+            text(&summary_record("one  two\tthree")),
+            Some("one two three".to_owned())
+        );
+        let note = bilbo_entries::note::record::write(&bilbo_entries::note::record::Record {
+            text: "a note".to_owned(),
+            at: None,
+            from: Vec::new(),
+        });
+        assert_eq!(text(&note), None);
+        assert_eq!(
+            text(EXAMPLE.as_bytes()).as_deref(),
+            Some("Thinning the carrots of the north bed: 142 seedlings counted in four rows.")
+        );
+        assert_eq!(text(RUN.as_bytes()), None);
+        assert_eq!(text(b"not a record"), None);
+        let long = "a".repeat(1001);
+        assert_eq!(text(&summary_record(&long)), Some(long));
+        assert_eq!(
+            text(&summary_record("one\n two\tthree")),
+            Some("one two three".to_owned())
+        );
+        let off = configured("digest.summary.enabled = false\n");
+        assert!(super::summary_shown(&off).is_none());
+        let (_, way) = super::hands(&off, &readers, &ways, None).expect("the hands");
+        assert!(way.summary.is_none());
+    }
+
+    #[test]
+    fn the_way_to_a_passages_note_is_derives_label_and_what_a_notes_record_says_and_shows() {
         use bilbo_entries::note::record::{Record, Source, write};
         use bilbo_search::digest::Written;
         use bilbo_store::entries::{Generation, RecordRange};
@@ -1448,7 +1606,7 @@ mod tests {
         let settings = defaults();
         let readers = readers(&settings).expect("the readers");
         let ways = super::note_ways(300);
-        let (shelves, way) = super::hands(&settings, &readers, &ways).expect("the hands");
+        let (shelves, way) = super::hands(&settings, &readers, &ways, None).expect("the hands");
         let notes_line = shelves[2].list.line.expect("the notes' line");
         let label = (way.label)(id);
         assert_eq!(label, bilbo_derive::plan::label(id));
@@ -1536,7 +1694,7 @@ mod tests {
         let narrow_settings = configured("digest.note.width = 40\n");
         let narrow = super::note_ways(narrow_settings.digest.note_width.value);
         let (narrow_shelves, narrow_way) =
-            super::hands(&narrow_settings, &readers, &narrow).expect("the hands");
+            super::hands(&narrow_settings, &readers, &narrow, None).expect("the hands");
         let narrow_line = narrow_shelves[2].list.line.expect("the notes' line");
         let exact = "a".repeat(40);
         let over = "a".repeat(41);

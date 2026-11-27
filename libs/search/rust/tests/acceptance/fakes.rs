@@ -611,15 +611,24 @@ impl Entries for Log {
             });
         }
         let all = &held.generations[generation.0 as usize - 1];
-        assert_eq!(
-            records,
-            RecordRange {
-                first: 1,
-                count: all.len() as u64
-            },
-            "a whole generation is read"
+        let whole = RecordRange {
+            first: 1,
+            count: all.len() as u64,
+        };
+        let last = RecordRange {
+            first: all.len() as u64,
+            count: 1,
+        };
+        let a_summary = held
+            .capture
+            .as_deref()
+            .is_some_and(|label| label.starts_with("kept:"));
+        assert!(
+            records == whole || (a_summary && records == last),
+            "a whole generation is read, and a summary's last record may be read alone: {records:?}"
         );
-        Ok(all
+        let at = usize::try_from(records.first).expect("a record") - 1;
+        Ok(all[at..]
             .iter()
             .map(|record| format!("{record}\n").into_bytes())
             .collect())
@@ -859,8 +868,7 @@ enum Op {
     Delete(Id, u64),
 }
 
-/// An index that keeps whole documents. Operations apply at `commit`, in the order they were
-/// made, so a delete takes only what was there before it.
+/// Operations apply at `commit` in the order made, so a delete takes only what was there before it.
 #[derive(Default)]
 pub struct Docs {
     pub rows: Vec<Row>,

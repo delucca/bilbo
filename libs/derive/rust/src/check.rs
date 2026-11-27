@@ -104,7 +104,7 @@ fn found(name: &str, material: &str) -> bool {
     !parts.is_empty() && parts.iter().all(|part| stands_whole(part, material))
 }
 
-fn dropped_for_names(text: &str, material: &str, share: f64) -> bool {
+pub(crate) fn dropped_for_names(text: &str, material: &str, share: f64) -> bool {
     if share <= 0.0 {
         return false;
     }

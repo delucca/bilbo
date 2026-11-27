@@ -15,3 +15,9 @@ filegroup(
     srcs = ["tags/instruction.txt"],
     visibility = ["//libs/derive/rust:__pkg__"],
 )
+
+filegroup(
+    name = "summary_instruction",
+    srcs = ["summary/instruction.txt"],
+    visibility = ["//libs/derive/rust:__pkg__"],
+)

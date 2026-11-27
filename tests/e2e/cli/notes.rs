@@ -376,7 +376,7 @@ fn a_note_piped_to_remember_is_found_by_recall_and_read_by_its_id() {
 fn derive_leaves_a_written_note_alone() {
     let scratch = Scratch::new("piped_derive");
     scratch.config(&super::scratch::closed(
-        "derive.enabled = true\nderive.in = [\"projects\"]\nllm.provider = \"anthropic\"\nllm.anthropic.model = \"claude-test-1\"\n",
+        "derive.enabled = true\nderive.in = [\"projects\"]\nderive.summary.enabled = false\nllm.provider = \"anthropic\"\nllm.anthropic.model = \"claude-test-1\"\n",
     ));
     let kept = scratch.run_with_input(&["remember", "-"], TWO_LINES);
     assert_eq!(kept.code, 0, "{}", kept.stderr);

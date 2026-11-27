@@ -4,7 +4,8 @@ use bilbo_store::entries::Generation;
 use bilbo_store::id::Id;
 use bilbo_store::labels::Tag;
 
-use super::asked::{About, number_of};
+use super::asked::About;
+use crate::instruction::number_of;
 
 const MAGIC: &str = "g1";
 

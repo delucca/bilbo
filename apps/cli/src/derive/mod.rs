@@ -11,10 +11,11 @@ use std::time::{Duration, Instant, SystemTime};
 
 use bilbo_derive::instruction::{self, Instruction};
 use bilbo_derive::keys::{CALLS, Section};
-use bilbo_derive::plan::{self, Asked, Plan, Ports, Rules, State};
+use bilbo_derive::plan::{self, Asked, Plan, Ports, Rules, State, SummaryState};
 use bilbo_derive::run::{self, Clock, Context, Ended, Event, Sinks, Which};
 use bilbo_derive::scope::Untrusted;
 use bilbo_derive::spool::bare;
+use bilbo_derive::summary;
 use bilbo_derive::tags;
 use bilbo_derive::tries::{Extent, Tries};
 use bilbo_derive::view::{Counter, Format};
@@ -42,7 +43,7 @@ use crate::console::message::{Message, notice_message, sanitize, unnamed_value};
 use crate::console::outcome::{Exit, Failure, Outcome};
 use crate::console::settings::Settings;
 use crate::console::theme::Mark;
-use disk::{Blocks, Failed, Folder, Held, Tagged};
+use disk::{Blocks, Failed, Folder, Held, Summaries, Tagged};
 use scope::Labelled;
 use view::Noted;
 
@@ -144,6 +145,7 @@ struct Job<'a> {
     section: &'a Section,
     instructions: &'a [Instruction],
     tags: Option<&'a tags::instruction::Instruction>,
+    summary: Option<&'a summary::instruction::Instruction>,
     redo: bool,
     dry: bool,
 }
@@ -175,6 +177,30 @@ fn tags_instruction(
     })
     .map(Some)
     .map_err(Failure::Config)
+}
+
+fn summary_instruction(
+    settings: &Settings,
+) -> Result<Option<summary::instruction::Instruction>, Failure> {
+    if !settings.summary.enabled.value {
+        return Ok(None);
+    }
+    summary::instruction::in_force(settings.summary.instruction.value.as_deref(), &|path| {
+        fs::read(path)
+    })
+    .map(Some)
+    .map_err(Failure::Config)
+}
+
+fn summary_rules<'a>(
+    settings: &'a Settings,
+    instruction: Option<&'a summary::instruction::Instruction>,
+) -> Option<summary::Rules<'a>> {
+    instruction.map(|held| summary::Rules {
+        section: &settings.summary,
+        instruction: &held.text,
+        id: &held.id,
+    })
 }
 
 fn tags_rules<'a>(
@@ -275,12 +301,14 @@ pub fn run(
     )
     .map_err(Failure::Config)?;
     let in_force = tags_instruction(settings)?;
+    let summary_in_force = summary_instruction(settings)?;
     let job = Job {
         settings,
         hand,
         section: &section,
         instructions: &instructions,
         tags: in_force.as_ref(),
+        summary: summary_in_force.as_ref(),
         redo: args.redo,
         dry: args.dry_run,
     };
@@ -348,13 +376,19 @@ fn go(
     } = *job;
     let mut failed = false;
     let mut spool = held.blocks().map_err(|error| refused(&error))?;
+    let mut summary_spool = held.summary_blocks().map_err(|error| refused(&error))?;
     let mut asked = held.tagged();
+    let mut summarised = held.summaries();
     replay(
         env,
         settings,
         hand,
-        &mut spool,
-        &mut asked,
+        Spools {
+            spool: &mut spool,
+            summary_spool: &mut summary_spool,
+            asked: &mut asked,
+            summarised: &mut summarised,
+        },
         said,
         &mut failed,
     )?;
@@ -376,7 +410,7 @@ fn go(
         &tokenizer,
         (&model, &tags_model),
         given,
-        Some((&tries, &asked)),
+        Some((&tries, &asked, &summarised)),
         &mut said.lines,
     )?;
     let mut exit = if looked.problems || failed {
@@ -402,7 +436,15 @@ fn go(
             .iter()
             .find(|(held, _)| held == id)
             .map_or("", |(_, kind)| kind.as_str());
-        if let Some(text) = state.and_then(|state| not_sent(text, state, kind)) {
+        let summary_state = job.summary.and_then(|_| {
+            looked
+                .plan
+                .summaries
+                .iter()
+                .find(|(held, _)| held == id)
+                .map(|(_, state)| *state)
+        });
+        if let Some(text) = state.and_then(|state| not_sent(text, state, kind, summary_state)) {
             said.lines.push(Message::warning(&text));
             exit = Exit::Refused;
         }
@@ -430,6 +472,8 @@ fn go(
                 .map(|built| -> &mut dyn Model { &mut *built.writer }),
             asked: &mut asked,
             spool: &mut spool,
+            summary_spool: &mut summary_spool,
+            summarised: &mut summarised,
             tries: &mut tries,
             log: &mut log,
             clock: &Wall,
@@ -441,6 +485,7 @@ fn go(
             format: &hand.format,
             counter: &counter,
             tags: tags_rules(settings, job.tags, &tags_model),
+            summary: summary_rules(settings, job.summary),
             redo: job.redo,
         },
     )
@@ -502,14 +547,20 @@ fn go(
             "the calls were not logged: {error}"
         )));
     }
-    let listed = spool.is_empty();
+    let listed = spool
+        .is_empty()
+        .and_then(|plain| Ok(plain && summary_spool.is_empty()?));
     let closed = finish(listed, tail, said, |said| {
         replay(
             env,
             settings,
             hand,
-            &mut spool,
-            &mut asked,
+            Spools {
+                spool: &mut spool,
+                summary_spool: &mut summary_spool,
+                asked: &mut asked,
+                summarised: &mut summarised,
+            },
             said,
             &mut failed,
         )
@@ -549,17 +600,31 @@ fn finish(
     after
 }
 
+struct Spools<'a> {
+    spool: &'a mut Blocks,
+    summary_spool: &'a mut Blocks,
+    asked: &'a mut Tagged<'static>,
+    summarised: &'a mut Summaries<'static>,
+}
+
 fn replay(
     env: &mut Env,
     settings: &Settings,
     hand: &Hand<'_>,
-    spool: &mut Blocks,
-    asked: &mut Tagged,
+    spools: Spools<'_>,
     said: &mut Said,
     failed: &mut bool,
 ) -> Result<(), Failure> {
+    let Spools {
+        spool,
+        summary_spool,
+        asked,
+        summarised,
+    } = spools;
     spool.clear_parts().map_err(|error| refused(&error))?;
-    if spool.is_empty().map_err(|error| refused(&error))? {
+    if spool.is_empty().map_err(|error| refused(&error))?
+        && summary_spool.is_empty().map_err(|error| refused(&error))?
+    {
         return Ok(());
     }
     let layout = settings.layout();
@@ -571,8 +636,10 @@ fn replay(
     let replayed = match run::replay(
         &mut store,
         spool,
+        summary_spool,
         &hand.format,
         asked,
+        summarised,
         settings.tag_cap.value,
     ) {
         Ok(replayed) => replayed,
@@ -583,7 +650,12 @@ fn replay(
                     .iter()
                     .map(|text| Message::warning(text)),
             );
-            store.release();
+            if interrupted.written > 0 {
+                let closing = (hand.finish)(store, interrupted.written, &mut *env.notice);
+                said.lines.extend(closing.messages);
+            } else {
+                store.release();
+            }
             return Err(refused(&interrupted));
         }
     };
@@ -595,7 +667,13 @@ fn replay(
             replayed.tagged
         )));
     }
-    let closing = (hand.finish)(store, replayed.captured + replayed.tagged, &mut *env.notice);
+    if replayed.summarised > 0 {
+        said.lines.push(Message::info(&format!(
+            "summarised {} entries",
+            replayed.summarised
+        )));
+    }
+    let closing = (hand.finish)(store, replayed.written(), &mut *env.notice);
     *failed |= closing.failed || closing.refused;
     said.lines.extend(closing.messages);
     Ok(())
@@ -607,7 +685,7 @@ fn look(
     tokenizer: &Tokenizer,
     (model, tags_model): (&str, &str),
     given: &[Given],
-    held: Option<(&Failed, &Tagged)>,
+    held: Option<(&Failed, &Tagged, &Summaries)>,
     lines: &mut Vec<Message>,
 ) -> Result<Looked, Failure> {
     let Job {
@@ -616,6 +694,7 @@ fn look(
         section,
         instructions,
         tags,
+        summary,
         redo,
         dry,
     } = *job;
@@ -689,8 +768,9 @@ fn look(
     lines.extend(problem_lines);
     let own;
     let mut own_asked = None;
-    let (tries, asked_port): (&Failed, &Tagged<'_>) = match held {
-        Some((held, asked)) => (held, asked),
+    let mut own_summaries = None;
+    let (tries, asked_port, summaries_port): (&Failed, &Tagged<'_>, &Summaries<'_>) = match held {
+        Some((held, asked, summarised)) => (held, asked, summarised),
         None => {
             let (state, folder) = state_folder(&store)?;
             own = Folder::at(&state, folder)
@@ -702,6 +782,7 @@ fn look(
             (
                 &own,
                 &*own_asked.insert(disk::reader(owned.folder(), &state)),
+                &*own_summaries.insert(disk::summaries_reader(owned.folder(), &state)),
             )
         }
     };
@@ -719,6 +800,7 @@ fn look(
             scope: &labelled,
             tries,
             asked: asked_port,
+            summarised: summaries_port,
         },
         &Rules {
             readers: &readers,
@@ -732,6 +814,7 @@ fn look(
             redo,
             now: SystemTime::now(),
             tags: tags_rules(settings, tags, tags_model),
+            summary: summary_rules(settings, summary),
         },
         &everything,
         asked,
@@ -896,6 +979,7 @@ fn dry(
             State::NoInstruction | State::NotNamed => {}
         }
     }
+    let binds = built.is_none_or(|built| built.writer.bound().is_ok());
     let tags_on = settings.tags.enabled.value;
     let mut tags_dry = view::TagsDry {
         pick: settings.tags.pick.value.len(),
@@ -909,6 +993,18 @@ fn dry(
             .count() as u64,
         ..view::TagsDry::default()
     };
+    let mut summaries_dry = job.summary.map(|held| view::SummariesDry {
+        due: looked
+            .plan
+            .summaries
+            .iter()
+            .filter(|(_, state)| *state == SummaryState::Due)
+            .count() as u64,
+        calls: 0,
+        tokens: 0,
+        instruction: (held.origin.clone(), held.id.clone()),
+        lines: Vec::new(),
+    });
     let mut left = section.calls.value;
     for due in &looked.plan.due {
         let mut any = false;
@@ -950,6 +1046,31 @@ fn dry(
                 tags_dry.tokens += tokens;
             }
         }
+        if let (Some(summaries), Some(planned)) = (&mut summaries_dry, &due.summary) {
+            let windowed = due.windows.iter().any(|planned| !planned.pass);
+            let (call, tokens) = if !binds {
+                (false, 0)
+            } else if windowed {
+                (true, 0)
+            } else if let (Some((_, charges)), Some(_), false) =
+                (planned.asking, &planned.made, planned.retire)
+            {
+                (
+                    usize::from(charges) < section.tries.value,
+                    planned.sent as u64,
+                )
+            } else {
+                (false, 0)
+            };
+            if call {
+                if left == 0 {
+                    break;
+                }
+                left -= 1;
+                summaries.calls += 1;
+                summaries.tokens += tokens;
+            }
+        }
     }
     for noted in &looked.noted {
         let state = looked
@@ -983,7 +1104,29 @@ fn dry(
             }
         }
     }
+    if let Some(summaries) = &mut summaries_dry {
+        for noted in &looked.noted {
+            let shown = looked
+                .plan
+                .summaries
+                .iter()
+                .find(|(entry, _)| *entry == noted.entry)
+                .map(|(_, state)| *state);
+            let has_line = looked
+                .plan
+                .states
+                .iter()
+                .any(|(entry, _)| *entry == noted.entry);
+            if let (true, Some(state)) = (has_line, shown) {
+                summaries.lines.push(view::summary_ref_line(
+                    noted.entry,
+                    &view::summary_state(state),
+                ));
+            }
+        }
+    }
     dry.tags = tags_on.then_some(tags_dry);
+    dry.summaries = summaries_dry;
     Ok(Outcome::new(joined(&view::lines(&dry)))
         .with_diagnostics(diagnostics)
         .with_exit(exit))
@@ -1016,7 +1159,13 @@ fn untrusted(why: Untrusted) -> String {
     .to_owned()
 }
 
-fn not_sent(text: &str, state: State, kind: &str) -> Option<String> {
+fn not_sent(text: &str, state: State, kind: &str, summary: Option<SummaryState>) -> Option<String> {
+    let state = match (state, summary) {
+        (State::NoInstruction, Some(SummaryState::Out(out))) => out,
+        (State::NoInstruction, Some(SummaryState::NoReader) | None) => State::NoInstruction,
+        (State::NoInstruction, Some(_)) => return None,
+        (state, _) => state,
+    };
     match state {
         State::LabelsNotCurrent => Some(format!(
             "{text} has labels that are not current; bilbo refresh brings the index up to date"
@@ -1076,6 +1225,25 @@ fn event_line(event: &Event, api: bool, charges: &[(Extent, u8)]) -> Message {
         )),
         Event::TagsPassed { entry, charges } => Message::info(&format!(
             "passed over the tags of {entry}: refused or failed in {charges} runs"
+        )),
+        Event::SummariesNotAsked { why } => Message::warning(&format!(
+            "no summary is asked in this run: {}",
+            sanitize(why)
+        )),
+        Event::SummaryRefused { entry, category } => Message::warning(&format!(
+            "refused the summary of {entry}: {}",
+            category.as_deref().unwrap_or("unknown")
+        )),
+        Event::SummaryFailed { entry, cause } => Message::warning(&format!(
+            "call failed for the summary of {entry}: {}",
+            view::summary_what(cause, api)
+        )),
+        Event::NoSummary { entry, .. } => Message::warning(&format!(
+            "call failed for the summary of {entry}: {}",
+            view::NO_SUMMARY
+        )),
+        Event::SummaryPassed { entry, charges } => Message::info(&format!(
+            "passed over the summary of {entry}: refused or failed in {charges} runs"
         )),
     }
 }
@@ -1270,6 +1438,95 @@ mod tests {
                 "bilbo: passed over the tags of {entry}: refused or failed in 3 runs"
             )]
         );
+    }
+
+    #[test]
+    fn each_line_about_a_summary_has_its_words() {
+        use bilbo_derive::summary::answer::Why;
+        use bilbo_llm::model::{Cause, What};
+        let entry = Id::from_bytes([4; 16]);
+        let said = |event: Event, api: bool| event_line(&event, api, &[]);
+        let line = said(
+            Event::SummariesNotAsked {
+                why: "unbound".to_owned(),
+            },
+            true,
+        );
+        assert_eq!(
+            line.plain_lines(),
+            ["bilbo: no summary is asked in this run: unbound".to_owned()]
+        );
+        assert_eq!(line.mark, Mark::Warning);
+        let line = said(
+            Event::SummaryRefused {
+                entry,
+                category: None,
+            },
+            true,
+        );
+        assert_eq!(
+            line.plain_lines(),
+            [format!("bilbo: refused the summary of {entry}: unknown")]
+        );
+        assert_eq!(line.mark, Mark::Warning);
+        let line = said(
+            Event::SummaryRefused {
+                entry,
+                category: Some("policy".to_owned()),
+            },
+            true,
+        );
+        assert_eq!(
+            line.plain_lines(),
+            [format!("bilbo: refused the summary of {entry}: policy")]
+        );
+        let line = said(
+            Event::NoSummary {
+                entry,
+                why: Why::Names,
+            },
+            true,
+        );
+        assert_eq!(
+            line.plain_lines(),
+            [format!(
+                "bilbo: call failed for the summary of {entry}: the answer holds no summary bilbo can keep"
+            )]
+        );
+        assert_eq!(line.mark, Mark::Warning);
+        for (api, text) in [
+            (
+                true,
+                "the answer was cut at derive.answer_tokens; raise it or lower derive.summary.window",
+            ),
+            (
+                false,
+                "the answer was cut by the tool; lower derive.summary.window",
+            ),
+        ] {
+            let line = said(
+                Event::SummaryFailed {
+                    entry,
+                    cause: Cause::new(What::Cut),
+                },
+                api,
+            );
+            assert_eq!(
+                line.plain_lines(),
+                [format!(
+                    "bilbo: call failed for the summary of {entry}: {text}"
+                )]
+            );
+            assert_eq!(line.mark, Mark::Warning);
+        }
+        let line = said(Event::SummaryPassed { entry, charges: 3 }, true);
+        assert_eq!(
+            line.plain_lines(),
+            [format!(
+                "bilbo: passed over the summary of {entry}: refused or failed in 3 runs"
+            )]
+        );
+        assert_eq!(line.mark, Mark::Info);
     }
 
     #[test]

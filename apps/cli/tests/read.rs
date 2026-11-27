@@ -1,5 +1,3 @@
-//! The ignored test reads the store the environment names.
-
 use std::collections::HashMap;
 use std::ffi::OsString;
 use std::fs;
@@ -17,11 +15,12 @@ use bilbo_entries::reader::{Passage, Reader};
 use bilbo_entries::tag::{self, Change as Tagging};
 use bilbo_store::entries::{Change, Cursor, Entries, RecordRange};
 use bilbo_store::id::Id;
-use bilbo_store::labels::Tag;
+use bilbo_store::labels::{CaptureLabel, Tag};
 use bilbo_store::segments::{Options, Store};
 
 mod note_line;
 mod notes;
+mod summaries;
 
 const CLAUDE: &str = "8f2b6d4e-1a3c-4e5f-9b7a-2c4d6e8f0a1b";
 const OLDER: &str = "5c3a9e1f-0b7d-4c2e-9a41-7f2d8e6b1c03";
@@ -1772,6 +1771,7 @@ fn default_pages(fetched: &bilbo_entries::read::Fetched, first: &str, outline: b
             &bilbo_cli::readers(&Scratch::new("read_readers").bilbo.settings())
                 .expect("the readers"),
             None,
+            None,
         )
         .expect("a page");
         let text = bilbo_cli::read::view::plain(&output, None);
@@ -1849,6 +1849,10 @@ fn the_store_is_let_go_before_a_page_is_rendered() {
         &mut Env::quiet(),
         &settings,
         &readers,
+        &bilbo_cli::read::Summaries {
+            label: &|id| CaptureLabel::new(format!("summary:{id}")).expect("a label"),
+            text: &|_| None,
+        },
     )
     .expect("an outline");
     assert_eq!(outcome.exit_code(), 0);
@@ -1948,9 +1952,8 @@ fn a_read_changes_nothing_in_the_store_the_state_or_the_cache() {
     );
 }
 
-/// `READ_BINARY`, when set, is the binary to run in place of this process. Prints counts only.
 #[test]
-#[ignore = "the done check: the lead runs it against a scratch store filled from the real folders"]
+#[ignore = "the done check: the lead runs it against a scratch store filled from the real folders, which the environment names; READ_BINARY, when set, is the binary to run"]
 #[expect(
     clippy::disallowed_macros,
     reason = "the done check prints what it counted"
@@ -2083,4 +2086,228 @@ fn a_note_entry_reads_as_any_entry() {
              end: #r1-3 of 3 records\n"
         )
     );
+}
+
+fn capture_under(scratch: &Scratch, label: &str, kind: &str, bytes: &[u8], ends: &[usize]) {
+    use bilbo_store::entries::Capture;
+    let label = CaptureLabel::new(label.to_owned()).expect("a capture label");
+    let mut store = Store::open(
+        &scratch.bilbo.settings().layout(),
+        Options::default(),
+        &mut |_| {},
+    )
+    .expect("open the store");
+    store
+        .capture(&Capture {
+            label: &label,
+            kind,
+            id: None,
+            id_label: None,
+            stamp: None,
+            bytes,
+            ends,
+            tags: &bilbo_store::labels::Tags::default(),
+        })
+        .expect("capture");
+    store.close().expect("close");
+}
+
+#[test]
+fn read_prints_an_entrys_summary_in_its_header_and_in_no_page() {
+    let scratch = Scratch::remembered("read_summary_header");
+    let id = entry(&scratch, SECTIONS);
+    let layout = scratch.bilbo.settings().layout();
+    summaries::kept(&layout, id, "The beds since March.");
+    let id_text = id.to_string();
+    for args in [
+        vec!["read", id_text.as_str()],
+        vec!["read", &id_text, "--outline"],
+    ] {
+        let run = scratch.bilbo.run(&args);
+        assert_eq!(run.code, 0, "{args:?}: {:?}", run.stderr);
+        assert!(
+            run.stdout
+                .contains("\nsummary: The beds since March.\noutline:\n"),
+            "{}",
+            run.stdout
+        );
+    }
+    let page = scratch.bilbo.run(&["read", &format!("{id_text}#r1-3")]);
+    assert_eq!(page.code, 0, "{:?}", page.stderr);
+    assert!(
+        page.stdout
+            .lines()
+            .all(|line| !line.starts_with("summary: ")),
+        "{}",
+        page.stdout
+    );
+    let plain = scratch.bilbo.run(&["read", &id_text]);
+    let switched = scratch
+        .with("BILBO_DIGEST_SUMMARY_ENABLED", "false")
+        .run(&["read", &id_text]);
+    assert_eq!(plain.stdout, switched.stdout);
+    assert_eq!(plain.stderr, switched.stderr);
+}
+
+#[test]
+fn a_summarys_entry_whose_last_record_is_none_leaves_the_header_as_it_was() {
+    let scratch = Scratch::remembered("read_summary_none");
+    let id = entry(&scratch, SECTIONS);
+    let before = scratch.bilbo.run(&["read", &id.to_string()]);
+    assert_eq!(before.code, 0, "{:?}", before.stderr);
+    let line = note_line::line(id, "A note, no summary.", None, &[(1, 1)]);
+    capture_under(
+        &scratch,
+        &format!("summary:{id}"),
+        "summary",
+        &line,
+        &[line.len()],
+    );
+    let after = scratch.bilbo.run(&["read", &id.to_string()]);
+    assert_eq!(after.code, 0, "{:?}", after.stderr);
+    assert_eq!(after.stdout, before.stdout);
+    assert!(
+        after
+            .stdout
+            .lines()
+            .all(|line| !line.starts_with("summary:"))
+    );
+}
+
+fn counted_read(scratch: &Scratch, reference: &str, calls: &std::cell::Cell<usize>) -> String {
+    let settings = scratch.bilbo.settings();
+    let readers = bilbo_cli::readers(&settings).expect("the readers");
+    let args = bilbo_cli::read::Args {
+        reference: reference.to_owned(),
+        outline: false,
+        budget: None,
+    };
+    let outcome = bilbo_cli::read::run(
+        &bilbo_cli::bilbo(),
+        &args,
+        &mut Env::quiet(),
+        &settings,
+        &readers,
+        &bilbo_cli::read::Summaries {
+            label: &|id| {
+                calls.set(calls.get() + 1);
+                CaptureLabel::new(format!("summary:{id}")).expect("a label")
+            },
+            text: &|bytes| (!bytes.is_empty()).then(|| "A summary the test reads.".to_owned()),
+        },
+    )
+    .expect("a read");
+    assert_eq!(outcome.exit_code(), 0);
+    outcome.stdout(&View::PLAIN)
+}
+
+#[test]
+fn a_summary_is_looked_up_for_a_whole_read_of_the_newest_generation_alone() {
+    let scratch = Scratch::remembered("read_summary_generation");
+    scratch.write("notes/sections.md", b"# Rewritten\n\nOne line.\n");
+    let run = scratch
+        .bilbo
+        .run(&["remember", &scratch.path("notes/sections.md")]);
+    assert_eq!(run.code, 0, "{:?}", run.stderr);
+    let id = entry(&scratch, SECTIONS);
+    summaries::kept(&scratch.bilbo.settings().layout(), id, "A planted summary.");
+    let calls = std::cell::Cell::new(0);
+    let row = "summary: A summary the test reads.\n";
+    for reference in [id.to_string(), format!("{id}#g2")] {
+        calls.set(0);
+        let text = counted_read(&scratch, &reference, &calls);
+        assert_eq!(calls.get(), 1, "{reference}");
+        assert!(text.contains(row), "{reference}: {text}");
+    }
+    for (reference, wanted) in [
+        (format!("{id}#g1"), false),
+        (format!("{id}#r1-3"), false),
+        (format!("{id}#g2:r1-3"), false),
+    ] {
+        calls.set(0);
+        let text = counted_read(&scratch, &reference, &calls);
+        assert_eq!(calls.get(), 0, "{reference}");
+        assert_eq!(text.contains(row), wanted, "{reference}");
+    }
+    let file = scratch
+        .bilbo
+        .run(&["read", &id.to_string()])
+        .stdout
+        .lines()
+        .find_map(|line| line.strip_prefix("label: "))
+        .and_then(|rest| rest.strip_suffix(" (capture)"))
+        .expect("the capture label")
+        .to_owned();
+    capture_under(&scratch, &file, "markdown", b"", &[]);
+    calls.set(0);
+    let text = counted_read(&scratch, &id.to_string(), &calls);
+    assert_eq!(calls.get(), 0);
+    assert!(!text.contains("summary:"), "{text}");
+}
+
+#[test]
+fn a_summarys_row_counts_in_the_pages_budget() {
+    let scratch = Scratch::new("read_summary_budget");
+    let mut text = String::from("# A bed log\n\n");
+    for bed in 1..=40 {
+        text.push_str(&format!("## Bed {bed}\n\nSown in row {bed}.\n\n"));
+    }
+    let mut ends = Vec::new();
+    let mut end = 0;
+    for line in text.split_inclusive('\n') {
+        end += line.len();
+        ends.push(end);
+    }
+    capture_under(
+        &scratch,
+        "file:/n/beds.md",
+        "markdown",
+        text.as_bytes(),
+        &ends,
+    );
+    let run = scratch.bilbo.run(&["reindex"]);
+    assert_eq!(run.code, 0, "{:?}", run.stderr);
+    let found = scratch.bilbo.run(&["recall", "sown"]);
+    let reference = first_ref(&found.stdout);
+    let id = entry(&scratch, reference.split('#').next().expect("an id"));
+    let outline_lines = |stdout: &str| stdout.lines().filter(|line| line.starts_with("#r")).count();
+    let more = |stdout: &str| -> u64 {
+        let line = stdout.lines().last().expect("a line");
+        assert!(line.starts_with("more: bilbo read "), "{line}");
+        let at = line.find(":r").expect("a record") + 2;
+        line[at..]
+            .chars()
+            .take_while(char::is_ascii_digit)
+            .collect::<String>()
+            .parse()
+            .expect("a number")
+    };
+    let before = scratch
+        .bilbo
+        .run(&["read", &id.to_string(), "--budget", "256"]);
+    assert_eq!(before.code, 0, "{:?}", before.stderr);
+    assert!(outline_lines(&before.stdout) >= 2, "{}", before.stdout);
+    let first_more = more(&before.stdout);
+    let long = "garden beds "
+        .repeat(30)
+        .chars()
+        .take(299)
+        .collect::<String>()
+        .trim_end()
+        .to_owned()
+        + ".";
+    assert_eq!(long.chars().count(), 300);
+    summaries::kept(&scratch.bilbo.settings().layout(), id, &long);
+    let after = scratch
+        .bilbo
+        .run(&["read", &id.to_string(), "--budget", "256"]);
+    assert_eq!(after.code, 0, "{:?}", after.stderr);
+    assert!(
+        after.stdout.contains(&format!("\nsummary: {long}\n")),
+        "{}",
+        after.stdout
+    );
+    assert!(outline_lines(&after.stdout) >= 1, "{}", after.stdout);
+    assert!(outline_lines(&after.stdout) < outline_lines(&before.stdout));
+    assert!(more(&after.stdout) < first_more);
 }

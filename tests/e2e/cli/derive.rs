@@ -5,7 +5,7 @@ use std::path::Path;
 use bilbo_provider::{Provider, Reply};
 use serde_json::json;
 
-use super::scratch::{SESSION, Scratch, UUID, closed};
+use super::scratch::{NOTE, SESSION, Scratch, UUID, closed};
 
 const KEY: &str = "sk-test-PLUM-7391";
 
@@ -31,7 +31,7 @@ fn answer() -> Reply {
 
 fn config(url: &str, extra: &str) -> String {
     format!(
-        "derive.enabled = true\nllm.provider = \"anthropic\"\nderive.in = [\"projects\"]\nderive.quiet = \"0s\"\nllm.anthropic.model = \"claude-test-1\"\nllm.anthropic.api.endpoint = \"{url}/v1/messages\"\n{extra}"
+        "derive.enabled = true\nllm.provider = \"anthropic\"\nderive.in = [\"projects\"]\nderive.quiet = \"0s\"\nderive.summary.enabled = false\nllm.anthropic.model = \"claude-test-1\"\nllm.anthropic.api.endpoint = \"{url}/v1/messages\"\n{extra}"
     )
 }
 
@@ -294,7 +294,7 @@ fn derive_through_a_tool_needs_no_key() {
     put(
         &scratch,
         &format!(
-            "derive.enabled = true\nllm.provider = \"anthropic\"\nderive.in = [\"projects\"]\nderive.quiet = \"0s\"\nllm.anthropic.via = \"tool\"\nllm.anthropic.model = \"claude-test-1\"\n\n[llm.anthropic.tool]\nprogram = {:?}\nproject_files = [\"zz-marker.md\"]\narguments = [\"-p\", \"--tools\", \"\", \"--strict-mcp-config\", \"--safe-mode\", \"--no-session-persistence\", \"--system-prompt\", \"{{instruction}}\"]\n",
+            "derive.enabled = true\nllm.provider = \"anthropic\"\nderive.in = [\"projects\"]\nderive.quiet = \"0s\"\nderive.summary.enabled = false\nllm.anthropic.via = \"tool\"\nllm.anthropic.model = \"claude-test-1\"\n\n[llm.anthropic.tool]\nprogram = {:?}\nproject_files = [\"zz-marker.md\"]\narguments = [\"-p\", \"--tools\", \"\", \"--strict-mcp-config\", \"--safe-mode\", \"--no-session-persistence\", \"--system-prompt\", \"{{instruction}}\"]\n",
             script.display().to_string()
         ),
     );
@@ -364,7 +364,7 @@ fn derive_through_codex_needs_no_key() {
     put(
         &scratch,
         &format!(
-            "derive.enabled = true\nllm.provider = \"openai\"\nderive.in = [\"projects\"]\nderive.quiet = \"0s\"\nllm.openai.via = \"tool\"\nllm.openai.model = \"model-a\"\n\n[llm.openai.tool]\nprogram = {:?}\nsystem_files = []\n",
+            "derive.enabled = true\nllm.provider = \"openai\"\nderive.in = [\"projects\"]\nderive.quiet = \"0s\"\nderive.summary.enabled = false\nllm.openai.via = \"tool\"\nllm.openai.model = \"model-a\"\n\n[llm.openai.tool]\nprogram = {:?}\nsystem_files = []\n",
             script.display().to_string()
         ),
     );
@@ -418,4 +418,107 @@ fn a_session_is_noted_and_tagged_and_found_by_its_tag() {
     );
     let none = scratch.run(&["recall", "--in", "tag:bilbo", "garden", "fence"]);
     assert!(!none.stdout.contains("=== "), "{}", none.stdout);
+}
+
+fn summarising(url: &str) -> String {
+    format!(
+        "derive.enabled = true\nllm.provider = \"anthropic\"\nderive.in = [\"projects\", \"notes\"]\nderive.quiet = \"0s\"\nderive.summary.enabled = true\nderive.summary.least = 0\nllm.anthropic.model = \"claude-test-1\"\nllm.anthropic.api.endpoint = \"{url}/v1/messages\"\ndigest.markdown.most = 6\ndigest.session.most = 6\ndigest.note.most = 6\ndigest.markdown.floor = 0\ndigest.session.floor = 0\ndigest.note.floor = 0\ndigest.session.old_after = \"36500d\"\ndigest.session.subagents = false\ndigest.session.parts = false\ndigest.note.width = 300\ndigest.summary.enabled = true\n"
+    )
+}
+
+const FILE_SUMMARY: &str = "The vegetable beds since March and what was sown in each.";
+const SESSION_SUMMARY: &str = "The garden fence was asked about.";
+
+#[test]
+fn a_session_and_a_file_get_summaries_and_digest_and_read_show_them() {
+    let scratch = Scratch::new("e2e_derive_summaries");
+    let session = scratch.dir.join(format!(
+        "home/.claude/projects/-home-me-src-garden/{UUID}.jsonl"
+    ));
+    fs::create_dir_all(session.parent().expect("a parent")).expect("folders");
+    fs::write(&session, SESSION).expect("a session");
+    let notes = scratch.dir.join("home/notes");
+    fs::create_dir_all(&notes).expect("folders");
+    fs::write(notes.join("sections.md"), NOTE).expect("a note");
+    let target = session.to_str().expect("UTF-8").to_owned();
+    for _ in 0..2 {
+        for place in [target.clone(), scratch.path("home/notes")] {
+            assert_eq!(scratch.run(&["remember", &place]).code, 0);
+        }
+        scratch.backdate(120);
+    }
+    let provider = Provider::start(vec![
+        answer(),
+        Reply::answer(200, &message(SESSION_SUMMARY)),
+        Reply::answer(200, &message(FILE_SUMMARY)),
+    ]);
+    put(&scratch, &summarising(&provider.url()));
+    let kept = derive(&scratch, &["derive", UUID]);
+    assert_eq!(kept.code, 0, "{}", kept.stderr);
+    assert_eq!(kept.stderr.trim_end(), "bilbo: summarised 1 entries");
+    let file = scratch
+        .run(&["read", "01JC5Q3V7XKM4P8R2T6W9YB0DG"])
+        .stdout
+        .lines()
+        .next()
+        .and_then(|line| line.strip_prefix("bilbo:"))
+        .expect("the file's id")
+        .to_owned();
+    let kept = derive(&scratch, &["derive", &file]);
+    assert_eq!(kept.code, 0, "{}", kept.stderr);
+    assert_eq!(kept.stderr.trim_end(), "bilbo: summarised 1 entries");
+    let digest = scratch.run_with_input(
+        &["digest"],
+        br#"{"session_id":"11111111-2222-4333-8444-555555555555","prompt":"garden beds carrots fence"}"#,
+    );
+    assert_eq!(digest.code, 0, "{}", digest.stderr);
+    assert!(
+        digest
+            .stdout
+            .lines()
+            .any(|line| line.contains("sections.md")
+                && line.ends_with(&format!("\tsummary: {FILE_SUMMARY}"))),
+        "{}",
+        digest.stdout
+    );
+    assert!(
+        digest
+            .stdout
+            .lines()
+            .any(|line| line.contains("#r")
+                && line.ends_with(&format!("\tsummary: {SESSION_SUMMARY}"))),
+        "{}",
+        digest.stdout
+    );
+    let read = scratch.run(&["read", &file]);
+    assert_eq!(read.code, 0, "{}", read.stderr);
+    assert!(
+        read.stdout
+            .contains(&format!("\nsummary: {FILE_SUMMARY}\noutline:\n")),
+        "{}",
+        read.stdout
+    );
+}
+
+#[test]
+fn a_dry_run_with_the_summary_on_prints_its_line_and_sends_nothing() {
+    let scratch = sealed("e2e_derive_summary_dry");
+    let provider = Provider::start(vec![answer()]);
+    put(&scratch, &summarising(&provider.url()));
+    let run = derive(&scratch, &["derive", "--dry-run"]);
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    let lines: Vec<&str> = run
+        .stdout
+        .lines()
+        .filter(|line| line.starts_with("summaries:"))
+        .collect();
+    assert_eq!(lines.len(), 1, "{}", run.stdout);
+    assert!(
+        lines[0].starts_with(
+            "summaries: 1 entries due; this run 1 calls, 0 tokens to send; instruction (built in, "
+        ) && lines[0].ends_with(')'),
+        "{}",
+        lines[0]
+    );
+    assert!(provider.requests().is_empty());
 }

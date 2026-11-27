@@ -953,7 +953,7 @@ fn the_spool_is_kept_in_one_capture_a_parent_and_emptied() {
     assert_eq!(world.shelf.captures.len(), 1);
     let (label, kind, id_label, bytes) = &world.shelf.captures[0];
     assert_eq!(label, &format!("derive:{parent}"));
-    assert_eq!(kind, "summary");
+    assert_eq!(kind, "paragraphs");
     assert_eq!(*id_label, Some(parent));
     assert_eq!(bytes, &expected);
     assert_eq!(world.shelf.notes_of(parent).expect("notes")[0].len(), 4);
@@ -1472,8 +1472,10 @@ fn a_spool_file_bilbo_cannot_read_stays_when_the_replay_fails() {
     let failed = bilbo_derive::run::replay(
         &mut world.shelf,
         &mut world.spooled,
+        &mut world.summary_spool,
         &format,
         &mut world.memo,
+        &mut world.noted,
         world.cap,
     );
     assert!(failed.is_err());
@@ -1733,8 +1735,10 @@ fn a_replay_that_removed_a_file_and_then_fails_still_says_so() {
     let error = bilbo_derive::run::replay(
         &mut world.shelf,
         &mut world.spooled,
+        &mut world.summary_spool,
         &format,
         &mut world.memo,
+        &mut world.noted,
         world.cap,
     )
     .expect_err("a removal that fails");

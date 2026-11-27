@@ -6,7 +6,8 @@ use bilbo_search::chunk::Size;
 use bilbo_search::digest::Said;
 use bilbo_search::digest::sessions::{Claimed, Sessions};
 use bilbo_search::digest::{
-    Chosen, First, List, Listed, Prompt, Request, Source, Turn, Way, Written, keys, list, turn,
+    Chosen, First, List, Listed, Prompt, Request, Source, Summary, Turn, Way, Written, keys, list,
+    turn,
 };
 use bilbo_search::index::IndexError;
 use bilbo_search::lookup::{Edits, Filter, Found, Lookup, Near, Posting, Totals};
@@ -62,6 +63,7 @@ fn index_with(log: &Log, readers: &[Box<dyn Reader>]) -> Docs {
             render: "lines/1".to_owned(),
             workers: 1,
             label_batch: 512,
+            kept_unread: Vec::new(),
         },
         log,
         log,
@@ -164,6 +166,7 @@ impl Ask<'static> {
             way: Way {
                 label: &kept_label,
                 written: &|_| None,
+                summary: None,
             },
         }
     }
@@ -1130,10 +1133,17 @@ fn a_row_of_an_entry_holds_its_title() {
     assert_eq!(
         *said(&kinds[0], 1),
         Said::Entry {
-            title: Some("A garden notebook w\u{2026}".to_owned())
+            title: Some("A garden notebook w\u{2026}".to_owned()),
+            summary: None,
         }
     );
-    assert_eq!(*said(&kinds[1], 2), Said::Entry { title: None });
+    assert_eq!(
+        *said(&kinds[1], 2),
+        Said::Entry {
+            title: None,
+            summary: None
+        }
+    );
     log.rewrite(1, &["# Another title", "garden hose"]);
     let watched = Watched::over(&log);
     let kinds = asked(
@@ -1151,7 +1161,8 @@ fn a_row_of_an_entry_holds_its_title() {
     assert_eq!(
         *said(&kinds[0], 1),
         Said::Entry {
-            title: Some("Another title".to_owned())
+            title: Some("Another title".to_owned()),
+            summary: None,
         },
         "the title of the newest generation, though the chunk is the first's"
     );
@@ -1209,6 +1220,7 @@ fn a_row_of_a_passage_names_its_records_its_day_its_folder_and_its_line() {
             day: "2023-11-14".to_owned(),
             folder: Some("/home/me/src/garden".to_owned()),
             line: Some(cut.clone()),
+            written: None,
             summary: None,
         },
         "the folder is the first label of the whole generation, though its record stands after"
@@ -1220,6 +1232,7 @@ fn a_row_of_a_passage_names_its_records_its_day_its_folder_and_its_line() {
             day: "2023-11-14".to_owned(),
             folder: Some("/home/me/src/garden".to_owned()),
             line: Some(cut),
+            written: None,
             summary: None,
         },
         "the nearest earlier passage with a time, and the outline line at or before the record"
@@ -1231,6 +1244,7 @@ fn a_row_of_a_passage_names_its_records_its_day_its_folder_and_its_line() {
             day: "2023-11-16".to_owned(),
             folder: None,
             line: Some("user: second prompt\u{2026}".to_owned()),
+            written: None,
             summary: None,
         },
         "the passage's own day, not the entry's"
@@ -1242,6 +1256,7 @@ fn a_row_of_a_passage_names_its_records_its_day_its_folder_and_its_line() {
             day: "2023-11-16".to_owned(),
             folder: None,
             line: Some("user: second prompt\u{2026}".to_owned()),
+            written: None,
             summary: None,
         },
         "the nearest earlier time, not the entry's own date"
@@ -1253,6 +1268,7 @@ fn a_row_of_a_passage_names_its_records_its_day_its_folder_and_its_line() {
             day: "2017-07-14".to_owned(),
             folder: None,
             line: None,
+            written: None,
             summary: None,
         },
         "the entry's date when no passage has a time, and no line when the outline begins later"
@@ -1264,6 +1280,7 @@ fn a_row_of_a_passage_names_its_records_its_day_its_folder_and_its_line() {
             day: "1970-01-01".to_owned(),
             folder: None,
             line: None,
+            written: None,
             summary: None,
         }
     );
@@ -1302,6 +1319,7 @@ fn a_passage_of_two_turns_is_listed_at_the_line_before_its_first_record() {
             day: "1970-01-01".to_owned(),
             folder: None,
             line: Some("turn three".to_owned()),
+            written: None,
             summary: None,
         }
     );
@@ -2310,7 +2328,7 @@ fn two_turns(notes: &[&str], second: bool) -> (Log, Docs) {
     (log, index)
 }
 
-fn summarized(
+fn listed_with(
     watched: &Watched<'_>,
     index: &Docs,
     kind: &str,
@@ -2321,6 +2339,7 @@ fn summarized(
         way: Way {
             label: &kept_label,
             written: &written_by,
+            summary: None,
         },
         ..Ask::plain()
     };
@@ -2337,21 +2356,21 @@ fn summarized(
     .remove(0)
 }
 
-fn summary_of(chosen: &bilbo_search::digest::Chosen, entry: u8) -> Option<String> {
+fn written_of(chosen: &bilbo_search::digest::Chosen, entry: u8) -> Option<String> {
     match said(chosen, entry) {
-        Said::Passage { summary, .. } => summary.clone(),
+        Said::Passage { written, .. } => written.clone(),
         other => panic!("a row of a passage, got {other:?}"),
     }
 }
 
 #[test]
-fn a_passages_row_carries_the_summary_written_from_its_records() {
+fn a_passages_row_carries_what_was_written_from_its_records() {
     let says = |notes: &[&str]| -> Option<String> {
         let (log, index) = two_turns(notes, false);
         let watched = Watched::over(&log);
-        let chosen = summarized(&watched, &index, "lines", "turn eight");
+        let chosen = listed_with(&watched, &index, "lines", "turn eight");
         assert_eq!(ids(&chosen), [id(1)]);
-        summary_of(&chosen, 1)
+        written_of(&chosen, 1)
     };
     assert_eq!(says(&["1:1:3-7|the note"]).as_deref(), Some("the note"));
     assert_eq!(
@@ -2425,8 +2444,8 @@ fn a_passages_row_carries_the_summary_written_from_its_records() {
                 .any(|row| (row.entry, row.first, row.count) == (id(1), 5, 3))
         );
         let watched = Watched::over(&log);
-        let chosen = summarized(&watched, &index, "lines", "turn seven");
-        summary_of(&chosen, 1)
+        let chosen = listed_with(&watched, &index, "lines", "turn seven");
+        written_of(&chosen, 1)
     };
     assert_eq!(
         five_seven(&["1:1:5-6;1:1:5-6|twice", "1:1:5-7|three"]).as_deref(),
@@ -2441,8 +2460,8 @@ fn a_passages_row_carries_the_summary_written_from_its_records() {
     let (log, index) = two_turns(&["1:1:3-7|the note"], false);
     let mut watched = Watched::over(&log);
     watched.extent_fails = Some(id(20));
-    let chosen = summarized(&watched, &index, "lines", "turn eight");
-    assert_eq!(summary_of(&chosen, 1).as_deref(), Some("the note"));
+    let chosen = listed_with(&watched, &index, "lines", "turn eight");
+    assert_eq!(written_of(&chosen, 1).as_deref(), Some("the note"));
     assert_eq!(*watched.lookups.borrow(), [format!("note:{}", id(1))]);
     assert_eq!(
         watched
@@ -2462,17 +2481,17 @@ fn a_passages_row_carries_the_summary_written_from_its_records() {
     let (mut log, index) = two_turns(&["1:1:3-7|the older text"], false);
     log.rewrite(20, &["1:1:3-7|the newer text"]);
     let watched = Watched::over(&log);
-    let chosen = summarized(&watched, &index, "lines", "turn eight");
+    let chosen = listed_with(&watched, &index, "lines", "turn eight");
     assert_eq!(
-        summary_of(&chosen, 1).as_deref(),
+        written_of(&chosen, 1).as_deref(),
         Some("the newer text"),
         "the notes are read at their own entry's newest generation"
     );
 
     let (log, index) = two_turns(&[], false);
     let watched = Watched::over(&log);
-    let chosen = summarized(&watched, &index, "lines", "turn eight");
-    assert_eq!(summary_of(&chosen, 1), None);
+    let chosen = listed_with(&watched, &index, "lines", "turn eight");
+    assert_eq!(written_of(&chosen, 1), None);
     assert!(
         watched
             .reads
@@ -2486,7 +2505,7 @@ fn a_passages_row_carries_the_summary_written_from_its_records() {
     rewritable.put(1, "memo", &["# A title", "garden hose"]);
     let index = index_with(&rewritable, &speakers());
     let watched = Watched::over(&rewritable);
-    let chosen = summarized(&watched, &index, "memo", "garden hose");
+    let chosen = listed_with(&watched, &index, "memo", "garden hose");
     assert_eq!(chosen.rows.len(), 1);
     assert!(
         !watched.events.borrow().contains(&"by_capture"),
@@ -2494,7 +2513,7 @@ fn a_passages_row_carries_the_summary_written_from_its_records() {
     );
 
     let (control_log, control_index) = two_turns(&[], true);
-    let control = summarized(
+    let control = listed_with(
         &Watched::over(&control_log),
         &control_index,
         "lines",
@@ -2505,7 +2524,7 @@ fn a_passages_row_carries_the_summary_written_from_its_records() {
         let mut watched = Watched::over(&log);
         watched.capture_lookup_fails = lookup_fails.then(|| format!("note:{}", id(1)));
         watched.read_fails = read_fails;
-        let chosen = summarized(&watched, &index, "lines", "turn eight");
+        let chosen = listed_with(&watched, &index, "lines", "turn eight");
         assert_eq!(
             chosen.rows, control.rows,
             "both rows whole and in order, beside a run with no notes"
@@ -2517,8 +2536,8 @@ fn a_passages_row_carries_the_summary_written_from_its_records() {
             [id(1), id(2)],
             "the row is there, and the one after it"
         );
-        assert_eq!(summary_of(&chosen, 1), None);
-        assert_eq!(summary_of(&chosen, 2), None);
+        assert_eq!(written_of(&chosen, 1), None);
+        assert_eq!(written_of(&chosen, 2), None);
         assert_eq!(
             (
                 chosen.gone,
@@ -2529,33 +2548,33 @@ fn a_passages_row_carries_the_summary_written_from_its_records() {
                 chosen.shown
             ),
             (0, 0, 0, 0, 0, 0),
-            "nothing is counted for a summary that failed"
+            "nothing is counted for a lookup that failed"
         );
     }
 
     let (mut log, index) = two_turns(&["1:1:3-7|first note"], true);
     log.put(21, "jots", &["2:1:1-1|second note"]);
     log.label(21, &format!("note:{}", id(2)));
-    let whole_control = summarized(&Watched::over(&log), &index, "lines", "turn eight");
-    assert_eq!(summary_of(&whole_control, 1).as_deref(), Some("first note"));
+    let whole_control = listed_with(&Watched::over(&log), &index, "lines", "turn eight");
+    assert_eq!(written_of(&whole_control, 1).as_deref(), Some("first note"));
     assert_eq!(
-        summary_of(&whole_control, 2).as_deref(),
+        written_of(&whole_control, 2).as_deref(),
         Some("second note")
     );
     let first = whole_control.rows[0].entry;
     let notes = if first == id(1) { id(20) } else { id(21) };
     let mut wanted = whole_control.rows.clone();
-    if let Said::Passage { summary, .. } = &mut wanted[0].said {
-        *summary = None;
+    if let Said::Passage { written, .. } = &mut wanted[0].said {
+        *written = None;
     }
     for (lookup_fails, read_fails) in [(true, None), (false, Some(notes))] {
         let mut watched = Watched::over(&log);
         watched.capture_lookup_fails = lookup_fails.then(|| format!("note:{first}"));
         watched.read_fails = read_fails;
-        let chosen = summarized(&watched, &index, "lines", "turn eight");
+        let chosen = listed_with(&watched, &index, "lines", "turn eight");
         assert_eq!(
             chosen.rows, wanted,
-            "the first row has its four fields and the second its summary"
+            "the first row has its four fields and the second its fifth"
         );
         assert_eq!(
             (
@@ -2929,4 +2948,351 @@ fn the_index_is_read_once_for_every_list_and_not_at_all_after_an_error() {
         6,
         "no call after an error of a ranking"
     );
+}
+
+fn kept_summary(entry: Id) -> CaptureLabel {
+    CaptureLabel::new(format!("kept:{entry}")).expect("a label")
+}
+
+fn summary_text(record: &[u8]) -> Option<String> {
+    let text = String::from_utf8_lossy(record).trim_end().to_owned();
+    (!text.is_empty()).then_some(text)
+}
+
+fn listed_summarised(
+    watched: &Watched<'_>,
+    index: &Docs,
+    summary: Option<Summary<'_>>,
+    wanted: &[List],
+    text: &str,
+) -> Vec<Chosen> {
+    let setup = Ask {
+        readers: speakers(),
+        way: Way {
+            label: &kept_label,
+            written: &written_by,
+            summary,
+        },
+        ..Ask::plain()
+    };
+    ask_read(&setup, watched, index, wanted, text, &keys::defaults())
+        .expect("a listing")
+        .lists
+}
+
+fn summary_of(chosen: &Chosen, entry: u8) -> Option<String> {
+    match said(chosen, entry) {
+        Said::Entry { summary, .. } | Said::Passage { summary, .. } => summary.clone(),
+    }
+}
+
+#[test]
+fn a_row_carries_the_summary_kept_for_its_entry() {
+    let (mut log, _) = two_turns(&["1:1:3-7|the note"], false);
+    log.put(2, "memo", &["# A garden notebook", "garden hose"]);
+    log.put(3, "memo", &["# Another notebook", "garden hose too"]);
+    log.put(21, "jots", &["The lines summary."]);
+    log.label(21, &format!("kept:{}", id(1)));
+    log.put(22, "jots", &["The notebook summary."]);
+    log.label(22, &format!("kept:{}", id(2)));
+    let index = index_with(&log, &speakers());
+    let watched = Watched::over(&log);
+    let way = Summary {
+        label: &kept_summary,
+        text: &summary_text,
+    };
+    let chosen = listed_summarised(
+        &watched,
+        &index,
+        Some(way),
+        &[list_of("lines", 6, 0.0)],
+        "turn eight",
+    );
+    match said(&chosen[0], 1) {
+        Said::Passage {
+            written, summary, ..
+        } => {
+            assert_eq!(written.as_deref(), Some("the note"));
+            assert_eq!(summary.as_deref(), Some("The lines summary."));
+        }
+        other => panic!("a row of a passage, got {other:?}"),
+    }
+    let chosen = listed_summarised(
+        &watched,
+        &index,
+        Some(way),
+        &[list_of("memo", 6, 0.0)],
+        "garden hose",
+    );
+    assert!(matches!(said(&chosen[0], 2), Said::Entry { .. }));
+    assert!(matches!(said(&chosen[0], 3), Said::Entry { .. }));
+    assert_eq!(
+        summary_of(&chosen[0], 2).as_deref(),
+        Some("The notebook summary.")
+    );
+    assert_eq!(summary_of(&chosen[0], 3), None);
+}
+
+#[test]
+fn the_last_record_of_the_summarys_entry_is_the_one_asked() {
+    let (mut log, _) = two_turns(&[], false);
+    log.put(
+        21,
+        "jots",
+        &["first summary", "second summary", "third summary"],
+    );
+    log.label(21, &format!("kept:{}", id(1)));
+    let index = index_with(&log, &speakers());
+    let asked_of: RefCell<Vec<String>> = RefCell::new(Vec::new());
+    let blind = std::cell::Cell::new(false);
+    let text = |record: &[u8]| {
+        asked_of
+            .borrow_mut()
+            .push(String::from_utf8_lossy(record).trim_end().to_owned());
+        if blind.get() && record.starts_with(b"third") {
+            None
+        } else {
+            summary_text(record)
+        }
+    };
+    let way = Summary {
+        label: &kept_summary,
+        text: &text,
+    };
+    let watched = Watched::over(&log);
+    let chosen = listed_summarised(
+        &watched,
+        &index,
+        Some(way),
+        &[list_of("lines", 6, 0.0)],
+        "turn eight",
+    );
+    assert_eq!(summary_of(&chosen[0], 1).as_deref(), Some("third summary"));
+    assert_eq!(*asked_of.borrow(), ["third summary"]);
+    let summary_reads: Vec<(Id, RecordRange)> = watched
+        .reads
+        .borrow()
+        .iter()
+        .filter(|(entry, _)| *entry == id(21))
+        .copied()
+        .collect();
+    assert_eq!(
+        summary_reads,
+        [(id(21), RecordRange { first: 3, count: 1 })]
+    );
+    blind.set(true);
+    asked_of.borrow_mut().clear();
+    let chosen = listed_summarised(
+        &Watched::over(&log),
+        &index,
+        Some(way),
+        &[list_of("lines", 6, 0.0)],
+        "turn eight",
+    );
+    assert_eq!(summary_of(&chosen[0], 1), None);
+    assert_eq!(*asked_of.borrow(), ["third summary"]);
+}
+
+#[test]
+fn with_no_way_to_a_summary_none_is_looked_up() {
+    let (mut log, _) = two_turns(&["1:1:3-7|the note"], false);
+    log.put(2, "memo", &["# A garden notebook", "garden hose"]);
+    log.put(21, "jots", &["The lines summary."]);
+    log.label(21, &format!("kept:{}", id(1)));
+    log.put(22, "jots", &["The notebook summary."]);
+    log.label(22, &format!("kept:{}", id(2)));
+    let index = index_with(&log, &speakers());
+    let watched = Watched::over(&log);
+    let chosen = listed_summarised(
+        &watched,
+        &index,
+        None,
+        &[list_of("lines", 6, 0.0), list_of("memo", 6, 0.0)],
+        "turn eight garden hose",
+    );
+    for list in &chosen {
+        for row in &list.rows {
+            let (Said::Entry { summary, .. } | Said::Passage { summary, .. }) = &row.said;
+            assert_eq!(*summary, None);
+        }
+    }
+    assert_eq!(ids(&chosen[0]), [id(1)]);
+    assert_eq!(ids(&chosen[1]), [id(2)]);
+    assert_eq!(*watched.lookups.borrow(), [format!("note:{}", id(1))]);
+    assert!(
+        watched
+            .reads
+            .borrow()
+            .iter()
+            .all(|(entry, _)| *entry != id(21) && *entry != id(22))
+    );
+}
+
+#[test]
+fn a_lookup_or_a_read_of_a_summary_that_fails_gives_the_row_without_it_and_counts_nothing() {
+    let (mut log, _) = two_turns(&[], true);
+    let before = index_with(&log, &speakers());
+    let way = Summary {
+        label: &kept_summary,
+        text: &summary_text,
+    };
+    let control = listed_summarised(
+        &Watched::over(&log),
+        &before,
+        Some(way),
+        &[list_of("lines", 6, 0.0)],
+        "turn eight",
+    )
+    .remove(0);
+    assert_eq!(summary_of(&control, 1), None);
+    log.put(21, "jots", &["The first summary."]);
+    log.label(21, &format!("kept:{}", id(1)));
+    log.put(22, "jots", &["The second summary."]);
+    log.label(22, &format!("kept:{}", id(2)));
+    let index = index_with(&log, &speakers());
+    let whole = listed_summarised(
+        &Watched::over(&log),
+        &index,
+        Some(way),
+        &[list_of("lines", 6, 0.0)],
+        "turn eight",
+    )
+    .remove(0);
+    assert_eq!(summary_of(&whole, 1).as_deref(), Some("The first summary."));
+    for (lookup_fails, read_fails) in [(true, None), (false, Some(id(21)))] {
+        let mut watched = Watched::over(&log);
+        watched.capture_lookup_fails = lookup_fails.then(|| format!("kept:{}", id(1)));
+        watched.read_fails = read_fails;
+        let chosen = listed_summarised(
+            &watched,
+            &index,
+            Some(way),
+            &[list_of("lines", 6, 0.0)],
+            "turn eight",
+        )
+        .remove(0);
+        assert_eq!(summary_of(&chosen, 1), None);
+        assert_eq!(
+            summary_of(&chosen, 2).as_deref(),
+            Some("The second summary.")
+        );
+        let mut without = chosen.rows.clone();
+        for row in &mut without {
+            let (Said::Entry { summary, .. } | Said::Passage { summary, .. }) = &mut row.said;
+            *summary = None;
+        }
+        assert_eq!(without, control.rows);
+        assert_eq!(
+            (
+                chosen.gone,
+                chosen.own,
+                chosen.belongs,
+                chosen.old,
+                chosen.part,
+                chosen.shown
+            ),
+            (
+                control.gone,
+                control.own,
+                control.belongs,
+                control.old,
+                control.part,
+                control.shown
+            )
+        );
+    }
+}
+
+#[test]
+fn a_summary_is_looked_up_for_listed_rows_alone_and_once_each() {
+    const UUID: &str = "5c3a9e1f-0b7d-4c2e-9a41-7f2d8e6b1c03";
+    let mut log = Log::new();
+    log.put(1, "lines", &["garden hose reel"]);
+    log.put(2, "lines", &["garden hose reel"]);
+    log.put(3, "lines", &["garden"]);
+    log.label(1, &format!("file:/p/proj/{UUID}.jsonl"));
+    for (n, summary) in [(1u8, 21u8), (2, 22), (3, 23)] {
+        log.put(summary, "jots", &["a summary"]);
+        log.label(summary, &format!("kept:{}", id(n)));
+    }
+    let index = index_with(&log, &speakers());
+    let scores = {
+        let watched = Watched::over(&log);
+        let chosen = listed_summarised(
+            &watched,
+            &index,
+            None,
+            &[list_of("lines", 6, 0.0)],
+            "garden hose reel",
+        )
+        .remove(0);
+        chosen
+            .rows
+            .iter()
+            .map(|row| (row.entry, f64::from(row.score)))
+            .collect::<Vec<_>>()
+    };
+    let high = scores
+        .iter()
+        .find(|(entry, _)| *entry == id(2))
+        .expect("two")
+        .1;
+    let low = scores
+        .iter()
+        .find(|(entry, _)| *entry == id(3))
+        .expect("three")
+        .1;
+    assert!(high > low);
+    let floor = (high + low) / 2.0;
+    let labels: RefCell<Vec<Id>> = RefCell::new(Vec::new());
+    let label = |entry: Id| {
+        labels.borrow_mut().push(entry);
+        kept_summary(entry)
+    };
+    let way = Summary {
+        label: &label,
+        text: &summary_text,
+    };
+    let watched = Watched::over(&log);
+    let setup = Ask {
+        readers: speakers(),
+        thread: UUID,
+        labels: &watched,
+        way: Way {
+            label: &kept_label,
+            written: &|_| None,
+            summary: Some(way),
+        },
+        ..Ask::plain()
+    };
+    let chosen = ask_read(
+        &setup,
+        &watched,
+        &index,
+        &[list_of("lines", 6, floor)],
+        "garden hose reel",
+        &keys::defaults(),
+    )
+    .expect("a listing")
+    .lists
+    .remove(0);
+    assert_eq!(ids(&chosen), [id(2)]);
+    assert_eq!((chosen.own, chosen.held_back.len()), (1, 1));
+    assert_eq!(*labels.borrow(), [id(2)]);
+    let summary_lookups: Vec<String> = watched
+        .lookups
+        .borrow()
+        .iter()
+        .filter(|label| label.starts_with("kept:"))
+        .cloned()
+        .collect();
+    assert_eq!(summary_lookups, [format!("kept:{}", id(2))]);
+    let reads: Vec<(Id, RecordRange)> = watched
+        .reads
+        .borrow()
+        .iter()
+        .filter(|(entry, _)| [id(21), id(22), id(23)].contains(entry))
+        .copied()
+        .collect();
+    assert_eq!(reads, [(id(22), RecordRange { first: 1, count: 1 })]);
 }

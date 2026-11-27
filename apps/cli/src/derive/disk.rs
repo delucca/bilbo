@@ -1,4 +1,4 @@
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::fs::{File, TryLockError};
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
@@ -7,6 +7,9 @@ use std::rc::Rc;
 use bilbo_derive::log::Log;
 use bilbo_derive::plan::Due;
 use bilbo_derive::spool::Spool;
+use bilbo_derive::summary::asked::{
+    self as summary_lines, Asked as SummaryAsked, Line as SummaryLine,
+};
 use bilbo_derive::tags::asked::{self as asked_lines, Answered, Asked, Line};
 use bilbo_derive::tries::{self, Extent, Tries};
 use bilbo_store::id::Id;
@@ -22,8 +25,11 @@ const FAILED: &str = "failed";
 const TEMPORARY: &str = "failed.tmp";
 const TAGGED: &str = "tagged";
 const TAGGED_TEMPORARY: &str = "tagged.tmp";
+const SUMMARIES: &str = "summaries";
+const SUMMARIES_TEMPORARY: &str = "summaries.tmp";
 const LOG: &str = "log";
 const BLOCK: &str = "block";
+const SUMMARY: &str = "summary";
 const PART: &str = "part";
 const WORK: &str = "work";
 
@@ -135,6 +141,8 @@ impl Folder {
                 spool,
                 spool_path,
                 sync: Rc::clone(&self.sync),
+                summaries: Rc::default(),
+                summary_next: Rc::default(),
             })),
             Err(TryLockError::WouldBlock) => Ok(None),
             Err(TryLockError::Error(error)) => Err(said("lock", &lock_path, &error)),
@@ -151,7 +159,22 @@ impl Folder {
 
 pub fn reader<'a>(state: &'a File, path: &Path) -> Tagged<'a> {
     let sync: Sync = Rc::new(flush);
-    Tagged::new(Place::State(state, path.to_owned()), &sync)
+    Tagged(Lined::new(
+        Place::State(state, path.to_owned()),
+        &sync,
+        TAGS_FILE,
+        Rc::default(),
+    ))
+}
+
+pub fn summaries_reader<'a>(state: &'a File, path: &Path) -> Summaries<'a> {
+    let sync: Sync = Rc::new(flush);
+    Summaries(Lined::new(
+        Place::State(state, path.to_owned()),
+        &sync,
+        SUMMARIES_FILE,
+        Rc::default(),
+    ))
 }
 
 pub struct Held {
@@ -161,17 +184,28 @@ pub struct Held {
     spool: File,
     spool_path: PathBuf,
     sync: Sync,
+    summaries: Rc<RefCell<Option<Vec<SummaryLine>>>>,
+    summary_next: Rc<Cell<u64>>,
 }
 
 impl Held {
     pub fn blocks(&self) -> io::Result<Blocks> {
-        let mut blocks = Blocks {
+        self.blocks_of(BLOCK, Rc::default())
+    }
+
+    pub fn summary_blocks(&self) -> io::Result<Blocks> {
+        self.blocks_of(SUMMARY, Rc::clone(&self.summary_next))
+    }
+
+    fn blocks_of(&self, kept: &'static str, next: Rc<Cell<u64>>) -> io::Result<Blocks> {
+        let blocks = Blocks {
             spool: self.spool.try_clone()?,
             path: self.spool_path.clone(),
             sync: Rc::clone(&self.sync),
-            next: 1,
+            extension: kept,
+            next,
         };
-        let greatest = [BLOCK, PART]
+        let greatest = [kept, PART]
             .into_iter()
             .map(|extension| blocks.names(extension))
             .collect::<io::Result<Vec<_>>>()?
@@ -179,7 +213,7 @@ impl Held {
             .flatten()
             .filter_map(|name| name.split('.').next()?.parse::<u64>().ok())
             .max();
-        blocks.next = match greatest {
+        let listed = match greatest {
             None => 1,
             Some(greatest) => greatest.checked_add(1).ok_or_else(|| {
                 said(
@@ -189,6 +223,7 @@ impl Held {
                 )
             })?,
         };
+        blocks.next.set(blocks.next.get().max(listed));
         Ok(blocks)
     }
 
@@ -200,10 +235,21 @@ impl Held {
     }
 
     pub fn tagged(&self) -> Tagged<'static> {
-        Tagged::new(
+        Tagged(Lined::new(
             Place::Held(Rc::clone(&self.derive), self.derive_path.clone()),
             &self.sync,
-        )
+            TAGS_FILE,
+            Rc::default(),
+        ))
+    }
+
+    pub fn summaries(&self) -> Summaries<'static> {
+        Summaries(Lined::new(
+            Place::Held(Rc::clone(&self.derive), self.derive_path.clone()),
+            &self.sync,
+            SUMMARIES_FILE,
+            Rc::clone(&self.summaries),
+        ))
     }
 
     pub fn log(&self) -> io::Result<Calls> {
@@ -219,7 +265,8 @@ pub struct Blocks {
     spool: File,
     path: PathBuf,
     sync: Sync,
-    next: u64,
+    extension: &'static str,
+    next: Rc<Cell<u64>>,
 }
 
 impl Blocks {
@@ -244,7 +291,7 @@ impl Blocks {
     }
 
     pub fn is_empty(&self) -> io::Result<bool> {
-        Ok(self.names(BLOCK)?.is_empty())
+        Ok(self.names(self.extension)?.is_empty())
     }
 
     pub fn clear_parts(&self) -> io::Result<()> {
@@ -257,7 +304,7 @@ impl Blocks {
 
 impl Spool for Blocks {
     fn keep(&mut self, bytes: &[u8]) -> io::Result<()> {
-        let number = self.next;
+        let number = self.next.get();
         let part = format!("{number:020}.{PART}");
         let part_path = self.path.join(&part);
         let mut file = private::open(&self.spool, &part, &part_path, How::New)
@@ -265,22 +312,21 @@ impl Spool for Blocks {
         file.write_all(bytes)
             .and_then(|()| file.sync_all())
             .map_err(|error| said("write", &part_path, &error))?;
-        let block = format!("{number:020}.{BLOCK}");
+        let block = format!("{number:020}.{}", self.extension);
         renameat(&self.spool, &part, &self.spool, &block)
             .map_err(|error| said("rename", &part_path, &error.into()))?;
-        (self.sync)(&self.spool, &self.path)?;
-        self.next = number.checked_add(1).ok_or_else(|| {
+        self.next.set(number.checked_add(1).ok_or_else(|| {
             said(
                 "write",
                 &self.path,
                 &io::Error::other("no number is left for a new block"),
             )
-        })?;
-        Ok(())
+        })?);
+        (self.sync)(&self.spool, &self.path)
     }
 
     fn list(&self) -> io::Result<Vec<(String, Vec<u8>)>> {
-        self.names(BLOCK)?
+        self.names(self.extension)?
             .into_iter()
             .map(|name| {
                 let path = self.path.join(&name);
@@ -440,20 +486,59 @@ enum Place<'a> {
 
 type Taken = Option<(Rc<File>, PathBuf)>;
 
-pub struct Tagged<'a> {
-    place: Place<'a>,
-    folder: RefCell<Option<Taken>>,
-    lines: RefCell<Option<Vec<Line>>>,
-    sync: Sync,
+pub struct Tagged<'a>(Lined<'a, Line>);
+
+pub struct Summaries<'a>(Lined<'a, SummaryLine>);
+
+impl Tagged<'_> {
+    #[cfg(test)]
+    fn how(&self) -> How {
+        self.0.how()
+    }
 }
 
-impl<'a> Tagged<'a> {
-    fn new(place: Place<'a>, sync: &Sync) -> Tagged<'a> {
-        Tagged {
+struct Names<L> {
+    file: &'static str,
+    temporary: &'static str,
+    parse: fn(&str) -> Option<L>,
+    line: fn(&L) -> String,
+}
+
+const TAGS_FILE: Names<Line> = Names {
+    file: TAGGED,
+    temporary: TAGGED_TEMPORARY,
+    parse: asked_lines::parse,
+    line: asked_lines::line,
+};
+
+const SUMMARIES_FILE: Names<SummaryLine> = Names {
+    file: SUMMARIES,
+    temporary: SUMMARIES_TEMPORARY,
+    parse: summary_lines::parse,
+    line: summary_lines::line,
+};
+
+struct Lined<'a, L> {
+    place: Place<'a>,
+    folder: RefCell<Option<Taken>>,
+    lines: Rc<RefCell<Option<Vec<L>>>>,
+    sync: Sync,
+    names: Names<L>,
+}
+
+impl<'a, L> Lined<'a, L> {
+    fn new(
+        place: Place<'a>,
+        sync: &Sync,
+        names: Names<L>,
+        lines: Rc<RefCell<Option<Vec<L>>>>,
+    ) -> Lined<'a, L> {
+        Lined {
             place,
             folder: RefCell::new(None),
-            lines: RefCell::new(None),
+            lines,
             sync: Rc::clone(sync),
+            names,
         }
     }
 
@@ -478,7 +563,7 @@ impl<'a> Tagged<'a> {
 
     fn open(&self, derive: &File, path: &Path) -> io::Result<Vec<u8>> {
         let mut bytes = Vec::new();
-        match private::open(derive, TAGGED, path, self.how())
+        match private::open(derive, self.names.file, path, self.how())
             .and_then(|mut file| file.read_to_end(&mut bytes))
         {
             Ok(_) => Ok(bytes),
@@ -487,17 +572,17 @@ impl<'a> Tagged<'a> {
         }
     }
 
-    fn held(&self) -> io::Result<std::cell::RefMut<'_, Vec<Line>>> {
+    fn held(&self) -> io::Result<std::cell::RefMut<'_, Vec<L>>> {
         let mut lines = self.lines.borrow_mut();
         if lines.is_none() {
             let mut found = Vec::new();
             if let Some((derive, derive_path)) = self.derive()? {
-                let bytes = self.open(&derive, &derive_path.join(TAGGED))?;
+                let bytes = self.open(&derive, &derive_path.join(self.names.file))?;
                 for line in bytes.split_inclusive(|byte| *byte == b'\n') {
                     if let Some(line) = line
                         .strip_suffix(b"\n")
                         .and_then(|line| std::str::from_utf8(line).ok())
-                        .and_then(asked_lines::parse)
+                        .and_then(self.names.parse)
                     {
                         found.push(line);
                     }
@@ -510,28 +595,33 @@ impl<'a> Tagged<'a> {
         }))
     }
 
-    fn write(&self, lines: &[Line]) -> io::Result<()> {
+    fn write(&self, lines: &[L]) -> io::Result<()> {
         let Some((derive, derive_path)) = self.derive()? else {
             return Err(io::Error::other("no folder to write what was asked in"));
         };
         let mut text = String::new();
         for line in lines {
-            text.push_str(&asked_lines::line(line));
+            text.push_str(&(self.names.line)(line));
             text.push('\n');
         }
         replace(
             &derive,
             &derive_path,
-            (TAGGED_TEMPORARY, TAGGED),
+            (self.names.temporary, self.names.file),
             &text,
             &self.sync,
         )
     }
 
-    fn change(&self, edit: impl FnOnce(&mut Vec<Line>)) -> io::Result<()> {
+    fn change(&self, edit: impl FnOnce(&mut Vec<L>)) -> io::Result<()> {
         let mut lines = self.held()?;
         edit(&mut lines);
-        self.write(&lines)
+        let written = self.write(&lines);
+        if written.is_err() {
+            drop(lines);
+            *self.lines.borrow_mut() = None;
+        }
+        written
     }
 }
 
@@ -544,14 +634,14 @@ fn of(line: &Line) -> Id {
 
 impl Asked for Tagged<'_> {
     fn answered(&self, entry: Id) -> io::Result<Option<Answered>> {
-        Ok(self.held()?.iter().find_map(|line| match line {
+        Ok(self.0.held()?.iter().find_map(|line| match line {
             Line::Answered(answered) if answered.entry == entry => Some(answered.clone()),
             _ => None,
         }))
     }
 
     fn passed(&self, entry: Id) -> io::Result<Option<u64>> {
-        Ok(self.held()?.iter().find_map(|line| match line {
+        Ok(self.0.held()?.iter().find_map(|line| match line {
             Line::Passed {
                 entry: held,
                 asking,
@@ -562,6 +652,7 @@ impl Asked for Tagged<'_> {
 
     fn charges(&self, entry: Id, asking: u64) -> io::Result<u8> {
         Ok(self
+            .0
             .held()?
             .iter()
             .find_map(|line| match line {
@@ -577,7 +668,7 @@ impl Asked for Tagged<'_> {
 
     fn charge(&mut self, entry: Id, asking: u64) -> io::Result<()> {
         let before = self.charges(entry, asking)?;
-        self.change(|lines| {
+        self.0.change(|lines| {
             lines.retain(
                 |line| !matches!(line, Line::Charged { entry: held, .. } if *held == entry),
             );
@@ -591,7 +682,7 @@ impl Asked for Tagged<'_> {
 
     fn answer(&mut self, answered: &Answered, asking: u64) -> io::Result<()> {
         let entry = answered.entry;
-        self.change(|lines| {
+        self.0.change(|lines| {
             lines.retain(|line| match line {
                 Line::Answered(_) | Line::Charged { .. } => of(line) != entry,
                 Line::Passed { asking: passed, .. } => of(line) != entry || *passed != asking,
@@ -601,13 +692,73 @@ impl Asked for Tagged<'_> {
     }
 
     fn pass(&mut self, entry: Id, asking: u64) -> io::Result<()> {
-        self.change(|lines| {
+        self.0.change(|lines| {
             lines.retain(|line| match line {
                 Line::Passed { .. } | Line::Charged { .. } => of(line) != entry,
                 Line::Answered(_) => true,
             });
             lines.push(Line::Passed { entry, asking });
         })
+    }
+}
+
+fn summary_of(line: &SummaryLine) -> Id {
+    match line {
+        SummaryLine::Passed { entry, .. } | SummaryLine::Charged { entry, .. } => *entry,
+    }
+}
+
+impl SummaryAsked for Summaries<'_> {
+    fn passed(&self, entry: Id) -> io::Result<Option<u64>> {
+        Ok(self.0.held()?.iter().find_map(|line| match line {
+            SummaryLine::Passed {
+                entry: held,
+                asking,
+            } if *held == entry => Some(*asking),
+            _ => None,
+        }))
+    }
+
+    fn charges(&self, entry: Id, asking: u64) -> io::Result<u8> {
+        Ok(self
+            .0
+            .held()?
+            .iter()
+            .find_map(|line| match line {
+                SummaryLine::Charged {
+                    entry: held,
+                    asking: charged,
+                    charges,
+                } if *held == entry && *charged == asking => Some(*charges),
+                _ => None,
+            })
+            .unwrap_or(0))
+    }
+
+    fn charge(&mut self, entry: Id, asking: u64) -> io::Result<()> {
+        let before = SummaryAsked::charges(self, entry, asking)?;
+        self.0.change(|lines| {
+            lines.retain(
+                |line| !matches!(line, SummaryLine::Charged { entry: held, .. } if *held == entry),
+            );
+            lines.push(SummaryLine::Charged {
+                entry,
+                asking,
+                charges: before.saturating_add(1).min(tries::MOST),
+            });
+        })
+    }
+
+    fn pass(&mut self, entry: Id, asking: u64) -> io::Result<()> {
+        self.0.change(|lines| {
+            lines.retain(|line| summary_of(line) != entry);
+            lines.push(SummaryLine::Passed { entry, asking });
+        })
+    }
+
+    fn settle(&mut self, entry: Id) -> io::Result<()> {
+        self.0
+            .change(|lines| lines.retain(|line| summary_of(line) != entry))
     }
 }
 
@@ -736,6 +887,53 @@ mod tests {
         assert_eq!(seen.len(), 5);
         assert_eq!(seen[4].0, state.join("derive/spool"));
         assert_eq!(seen[4].1, ["00000000000000000001.block"]);
+    }
+
+    #[test]
+    fn a_summarys_number_is_spent_once_its_block_has_its_name_though_the_sync_then_fails() {
+        use bilbo_derive::spool::Spool;
+        let scratch = Scratch::new("spent");
+        let failing = Rc::new(std::cell::Cell::new(false));
+        let flag = Rc::clone(&failing);
+        let sync: Sync = Rc::new(move |_: &File, _: &Path| {
+            if flag.get() {
+                Err(std::io::Error::other("a sync that fails"))
+            } else {
+                Ok(())
+            }
+        });
+        let held = folder(&scratch, sync)
+            .lock()
+            .expect("a lock")
+            .expect("held");
+        let mut first = held.summary_blocks().expect("a spool");
+        let mut second = held.summary_blocks().expect("a spool");
+        failing.set(true);
+        assert!(first.keep(b"one").is_err());
+        failing.set(false);
+        second.keep(b"two").expect("kept");
+        let folder = scratch.0.join("derive/spool");
+        let mut names: Vec<String> = fs::read_dir(&folder)
+            .expect("a folder")
+            .flatten()
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        assert_eq!(
+            names,
+            [
+                "00000000000000000001.summary",
+                "00000000000000000002.summary"
+            ]
+        );
+        assert_eq!(
+            fs::read(folder.join("00000000000000000001.summary")).expect("read"),
+            b"one"
+        );
+        assert_eq!(
+            fs::read(folder.join("00000000000000000002.summary")).expect("read"),
+            b"two"
+        );
     }
 
     #[test]

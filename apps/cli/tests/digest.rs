@@ -29,6 +29,7 @@ mod notes;
 mod runner;
 mod sandbox;
 mod scratch;
+mod summaries;
 
 use runner::{Run, Sandbox};
 
@@ -134,6 +135,7 @@ impl Sandbox {
             ("BILBO_DIGEST_SESSION_SUBAGENTS", "false"),
             ("BILBO_DIGEST_SESSION_PARTS", "false"),
             ("BILBO_DIGEST_NOTE_WIDTH", "300"),
+            ("BILBO_DIGEST_SUMMARY_ENABLED", "true"),
         ] {
             vars.insert(name.to_owned(), OsString::from(value));
         }
@@ -960,7 +962,7 @@ fn direct_through(
     };
     let width = settings.digest.note_width.value;
     let ways = bilbo_cli::note_ways(width);
-    let (shelves, way) = bilbo_cli::hands(&settings, &readers, &ways).expect("the hands");
+    let (shelves, way) = bilbo_cli::hands(&settings, &readers, &ways, None).expect("the hands");
     let hand = Hand {
         tokenizer: runner::tokenizer().id,
         shelves: &shelves,
@@ -1450,8 +1452,8 @@ fn a_subagents_file_and_an_old_session_are_no_rows() {
 }
 
 #[test]
-fn a_session_with_notes_written_from_it_is_listed_once_with_its_summary() {
-    let sandbox = full("digest_summary");
+fn a_session_with_notes_written_from_it_is_listed_once_with_its_note() {
+    let sandbox = full("digest_note");
     let parent = Id::parse(&sandbox.entry_of(CLAUDE)).expect("an id");
     let layout = sandbox.settings().layout();
     let wanted =
@@ -2042,5 +2044,269 @@ fn the_log_says_what_each_list_did() {
         "shed", "Monday", "thinning", "carrots", "north", "hoe", "garden", "roof", "/home/me",
     ] {
         assert!(!text.contains(word), "{word}");
+    }
+}
+
+impl Sandbox {
+    fn of_kind(&self, kind: &str) -> Vec<(Id, String)> {
+        use bilbo_store::entries::{Cursor, Entries};
+        let store = self.held();
+        let (changes, _) = store.changes(&Cursor::start()).expect("changes");
+        let mut found: Vec<(Id, String)> = changes
+            .iter()
+            .map(bilbo_store::entries::Change::id)
+            .filter_map(|id| {
+                let meta = store.meta(id).expect("meta")?;
+                (meta.kind == kind && meta.labels.id.is_none()).then(|| {
+                    (
+                        id,
+                        meta.labels
+                            .capture
+                            .map(|label| label.as_str().to_owned())
+                            .unwrap_or_default(),
+                    )
+                })
+            })
+            .collect();
+        found.sort();
+        found.dedup();
+        found
+    }
+
+    fn sections(&self) -> Id {
+        self.of_kind("markdown")
+            .into_iter()
+            .find(|(_, label)| label.ends_with("sections.md"))
+            .expect("the garden log")
+            .0
+    }
+
+    fn kept_note(&self) -> Id {
+        self.of_kind("note").first().expect("a kept note").0
+    }
+}
+
+type Planted = ([Id; 3], [Id; 3]);
+
+fn planted(sandbox: &Sandbox) -> Planted {
+    let layout = sandbox.settings().layout();
+    let file = sandbox.sections();
+    let session = Id::parse(&sandbox.entry_of(CLAUDE)).expect("an id");
+    let note = sandbox.kept_note();
+    let kept = [
+        summaries::kept(&layout, file, "The beds since March."),
+        summaries::kept(&layout, session, "Thinning the carrots."),
+        summaries::kept(&layout, note, "Where the seeds are."),
+    ];
+    ([file, session, note], kept)
+}
+
+fn listed_of(line: &[String]) -> Vec<(String, Vec<String>, Vec<String>)> {
+    let items = |field: &String| -> Vec<String> {
+        if field == "-" {
+            Vec::new()
+        } else {
+            field.split(',').map(str::to_owned).collect()
+        }
+    };
+    line[6..]
+        .chunks(5)
+        .map(|five| (five[0].clone(), items(&five[2]), items(&five[3])))
+        .collect()
+}
+
+fn summary_fields(stdout: &str) -> [Option<String>; 3] {
+    let found = blocks(stdout);
+    let last = |rows: Option<&String>| -> Option<String> {
+        rows.and_then(|row| row.rsplit('\t').next())
+            .filter(|field| field.starts_with("summary: "))
+            .map(str::to_owned)
+    };
+    let list = |word: &str| {
+        found
+            .iter()
+            .find(|(held, _)| held == word)
+            .map(|(_, rows)| rows)
+    };
+    [
+        last(list("files").and_then(|rows| rows.iter().find(|row| row.contains("sections.md")))),
+        last(list("sessions").and_then(|rows| rows.first())),
+        last(list("notes").and_then(|rows| rows.first())),
+    ]
+}
+
+#[test]
+fn a_file_a_session_and_a_kept_note_each_carry_their_summary() {
+    let sandbox = full("digest_summaries");
+    let ([file, session, note], _) = planted(&sandbox);
+    let reindexed = sandbox.keep(&["reindex"]);
+    assert_eq!(reindexed.code, 0, "{:?}", reindexed.stderr);
+    let run = sandbox.digest(&fresh(), PROMPT);
+    assert_eq!((run.code, run.stderr.clone()), (0, Vec::<String>::new()));
+    let found = blocks(&run.stdout);
+    let words: Vec<&str> = found.iter().map(|(word, _)| word.as_str()).collect();
+    assert_eq!(words, ["files", "sessions", "notes"]);
+    let garden: Vec<&str> = found[0]
+        .1
+        .iter()
+        .map(|row| row.split('\t').collect::<Vec<_>>())
+        .find(|fields| fields[1].ends_with("sections.md"))
+        .expect("the garden log's row")
+        .into_iter()
+        .collect();
+    assert_eq!(garden.len(), 4, "{garden:?}");
+    assert_eq!(garden[3], "summary: The beds since March.");
+    let session_row: Vec<&str> = found[1].1[0].split('\t').collect();
+    assert_eq!(
+        session_row.last().copied(),
+        Some("summary: Thinning the carrots.")
+    );
+    let note_row: Vec<&str> = found[2].1[0].split('\t').collect();
+    assert_eq!(note_row.len(), 5, "{note_row:?}");
+    assert_eq!(note_row[4], "summary: Where the seeds are.");
+    let log = sandbox.log();
+    let lists = listed_of(log.last().expect("a line"));
+    let kinds: Vec<&str> = lists.iter().map(|(kind, _, _)| kind.as_str()).collect();
+    assert_eq!(kinds, ["markdown", "session", "note"]);
+    let (files, sessions, notes) = (&lists[0].1, &lists[1].1, &lists[2].1);
+    let marked = |items: &Vec<String>, id: Id| -> usize {
+        items
+            .iter()
+            .filter(|item| {
+                item.starts_with(&id.to_string())
+                    && item.ends_with('*')
+                    && item[..item.len() - 1]
+                        .split_once('=')
+                        .is_some_and(|(_, score)| {
+                            score.trim_end_matches('+').parse::<f32>().is_ok()
+                        })
+            })
+            .count()
+    };
+    assert_eq!(marked(files, file), 1, "{files:?}");
+    assert_eq!(marked(sessions, session), 1, "{sessions:?}");
+    assert_eq!(marked(notes, note), 1, "{notes:?}");
+    let shed = sandbox
+        .of_kind("markdown")
+        .into_iter()
+        .find(|(_, label)| label.ends_with("shed.md"))
+        .expect("the shed")
+        .0;
+    let bare: Vec<&String> = files
+        .iter()
+        .filter(|item| item.starts_with(&shed.to_string()))
+        .collect();
+    assert_eq!(bare.len(), 1, "{files:?}");
+    let score = bare[0].split_once('=').expect("an item").1;
+    assert!(score.parse::<f32>().is_ok(), "{score}");
+    let held: Vec<&String> = lists.iter().flat_map(|(_, _, held)| held).collect();
+    assert!(held.iter().all(|item| !item.contains('*')), "{held:?}");
+    let every: usize = [files, sessions, notes]
+        .iter()
+        .map(|items| items.iter().filter(|item| item.ends_with('*')).count())
+        .sum();
+    assert_eq!(every, 3);
+    assert_eq!(files.len() + sessions.len() + notes.len(), 4, "{lists:?}");
+}
+
+#[test]
+fn with_the_switch_false_the_rows_are_those_of_a_store_with_no_summary() {
+    let sandbox = full("digest_summaries_off");
+    let before = sandbox.digest(&fresh(), PROMPT);
+    assert!(before.stdout.starts_with("files:"));
+    let baseline = sandbox.log().last().expect("a baseline line").clone();
+    planted(&sandbox);
+    let reindexed = sandbox.keep(&["reindex"]);
+    assert_eq!(reindexed.code, 0, "{:?}", reindexed.stderr);
+    let off = [("BILBO_DIGEST_SUMMARY_ENABLED", "false")];
+    let lines = sandbox.log().len();
+    let run = sandbox.digest_with(&fresh(), PROMPT, &off);
+    assert_eq!(
+        (run.code, run.stdout.clone(), run.stderr.clone()),
+        (0, before.stdout.clone(), Vec::<String>::new())
+    );
+    let log = sandbox.log();
+    assert_eq!(log.len(), lines + 1);
+    let new = log.last().expect("the new line");
+    let mask = |line: &Vec<String>| -> Vec<String> {
+        let mut masked = line.clone();
+        for at in [1, 3, 4] {
+            masked[at] = "-".to_owned();
+        }
+        masked
+    };
+    assert_eq!(mask(new), mask(&baseline));
+    assert!(new.iter().all(|field| !field.contains('*')), "{new:?}");
+    let on = sandbox.digest(&fresh(), PROMPT);
+    assert_eq!(on.stdout.matches("\tsummary: ").count(), 3, "{}", on.stdout);
+    assert_eq!(
+        summary_fields(&on.stdout),
+        [
+            Some("summary: The beds since March.".to_owned()),
+            Some("summary: Thinning the carrots.".to_owned()),
+            Some("summary: Where the seeds are.".to_owned()),
+        ],
+        "{}",
+        on.stdout
+    );
+}
+
+#[test]
+fn a_summary_is_printed_whole_however_long_it_is() {
+    let sandbox = full("digest_summaries_whole");
+    let layout = sandbox.settings().layout();
+    let long: String = "b".repeat(1001);
+    summaries::kept(&layout, sandbox.sections(), "one  two\\tthree\\nfour");
+    summaries::kept(&layout, sandbox.kept_note(), &long);
+    let reindexed = sandbox.keep(&["reindex"]);
+    assert_eq!(reindexed.code, 0, "{:?}", reindexed.stderr);
+    let run = sandbox.digest(&fresh(), PROMPT);
+    assert_eq!((run.code, run.stderr.clone()), (0, Vec::<String>::new()));
+    let found = blocks(&run.stdout);
+    let garden = found[0]
+        .1
+        .iter()
+        .find(|row| row.contains("sections.md"))
+        .expect("the garden log's row");
+    assert!(
+        garden.ends_with("\tsummary: one two three four"),
+        "{garden}"
+    );
+    let notes = &found
+        .iter()
+        .find(|(word, _)| word == "notes")
+        .expect("notes")
+        .1;
+    assert!(
+        notes[0].ends_with(&format!("\tsummary: {long}")),
+        "{notes:?}"
+    );
+}
+
+#[test]
+fn a_summarys_entry_is_never_a_row() {
+    let sandbox = full("digest_summaries_never");
+    let layout = sandbox.settings().layout();
+    let summary = summaries::kept(&layout, sandbox.sections(), "Zucchini trellis.");
+    let reindexed = sandbox.keep(&["reindex"]);
+    assert_eq!(reindexed.code, 0, "{:?}", reindexed.stderr);
+    let none = sandbox.digest(&fresh(), "zucchini trellis");
+    assert_eq!(
+        (none.code, none.stdout, none.stderr),
+        (0, String::new(), Vec::<String>::new())
+    );
+    let usual = sandbox.digest(&fresh(), PROMPT);
+    let files = file_rows(&usual.stdout);
+    assert!(
+        files.iter().any(|row| row[1].ends_with("sections.md")),
+        "{}",
+        usual.stdout
+    );
+    let (full_id, short) = (summary.to_string(), summary.short().to_string());
+    assert!(!usual.stdout.contains(&full_id), "{}", usual.stdout);
+    for row in usual.stdout.lines() {
+        let reference = row.split('\t').next().unwrap_or_default();
+        let id = reference.split('#').next().unwrap_or_default();
+        assert_ne!(id, short, "{row}");
     }
 }

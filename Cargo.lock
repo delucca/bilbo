@@ -99,6 +99,7 @@ dependencies = [
  "bilbo-llm",
  "bilbo-settings",
  "bilbo-store",
+ "serde",
  "serde_json",
  "xxhash-rust",
 ]

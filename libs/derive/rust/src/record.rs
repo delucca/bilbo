@@ -27,7 +27,7 @@ pub struct Run {
     pub passed: bool,
 }
 
-fn quoted(text: &str) -> String {
+pub(crate) fn quoted(text: &str) -> String {
     to_string(text).unwrap_or_default()
 }
 

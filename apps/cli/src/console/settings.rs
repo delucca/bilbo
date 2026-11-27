@@ -18,7 +18,7 @@ use bilbo_settings::size::{self, MIB};
 use bilbo_store::keys;
 use bilbo_store::layout::Layout;
 
-/// Not a key: the file cannot name itself.
+/// Not in `keys()`: the file cannot name itself.
 pub const CONFIG: Key<PathBuf> = Key {
     about: About {
         name: "config",
@@ -293,6 +293,18 @@ pub const DIGEST_NOTE_WIDTH: Key<usize> = Key {
     show: ToString::to_string,
 };
 
+pub const DIGEST_SUMMARY_ENABLED: Key<bool> = Key {
+    about: About {
+        name: "digest.summary.enabled",
+        variable: Some("BILBO_DIGEST_SUMMARY_ENABLED"),
+        default: Default::Toml("true"),
+        allowed: "true or false",
+        doc: "Whether bilbo digest shows on a row the summary bilbo derive wrote of the row's entry.",
+    },
+    parse: |value| value.boolean().ok_or_else(|| value.refuse()),
+    show: ToString::to_string,
+};
+
 pub const DIGEST_WAIT: Key<Duration> = Key {
     about: About {
         name: "digest.wait",
@@ -337,7 +349,7 @@ pub const DIGEST_LOG_ENABLED: Key<bool> = Key {
     show: ToString::to_string,
 };
 
-const LISTS: [&About; 10] = [
+const LISTS: [&About; 11] = [
     &DIGEST_MARKDOWN_MOST.about,
     &DIGEST_MARKDOWN_FLOOR.about,
     &DIGEST_SESSION_MOST.about,
@@ -348,6 +360,7 @@ const LISTS: [&About; 10] = [
     &DIGEST_NOTE_MOST.about,
     &DIGEST_NOTE_FLOOR.about,
     &DIGEST_NOTE_WIDTH.about,
+    &DIGEST_SUMMARY_ENABLED.about,
 ];
 
 const PATHS: [&About; 4] = [&ROOT.about, &STATE.about, &CACHE.about, &TEMP.about];
@@ -360,7 +373,6 @@ pub struct Group {
     pub resolve: fn(&Source<'_>) -> Result<Vec<Shown>, Error>,
 }
 
-/// Every key, in the order `bilbo config` lists them.
 pub fn keys(kind: &[&'static KindKey], groups: &[&'static Group]) -> Vec<&'static About> {
     PATHS
         .into_iter()
@@ -386,6 +398,7 @@ pub fn keys(kind: &[&'static KindKey], groups: &[&'static Group]) -> Vec<&'stati
         .chain(groups.iter().flat_map(|group| group.about.iter().copied()))
         .chain(bilbo_derive::keys::ABOUT)
         .chain(bilbo_derive::tags::keys::ABOUT)
+        .chain(bilbo_derive::summary::keys::ABOUT)
         .chain(kind.iter().map(|key| &key.about))
         .collect()
 }
@@ -444,6 +457,7 @@ pub struct Digest {
     pub note_most: Resolved<usize>,
     pub note_floor: Resolved<f64>,
     pub note_width: Resolved<usize>,
+    pub summary_enabled: Resolved<bool>,
     pub wait: Resolved<Duration>,
     pub input: Resolved<u64>,
     pub log_enabled: Resolved<bool>,
@@ -470,6 +484,7 @@ pub struct Settings {
     pub llm: bilbo_llm::keys::Section,
     pub derive: bilbo_derive::keys::Section,
     pub tags: bilbo_derive::tags::keys::Section,
+    pub summary: bilbo_derive::summary::keys::Section,
     pub kind: Vec<(&'static KindKey, Resolved<usize>)>,
     pub group: Vec<&'static Group>,
     shown: Vec<Shown>,
@@ -499,7 +514,6 @@ impl Settings {
         }
     }
 
-    /// Every key with its value and origin, in the order of `keys`.
     pub fn shown(&self) -> Vec<Shown> {
         let mut shown = vec![
             ROOT.shown(&self.root),
@@ -527,6 +541,7 @@ impl Settings {
             DIGEST_NOTE_MOST.shown(&self.digest.note_most),
             DIGEST_NOTE_FLOOR.shown(&self.digest.note_floor),
             DIGEST_NOTE_WIDTH.shown(&self.digest.note_width),
+            DIGEST_SUMMARY_ENABLED.shown(&self.digest.summary_enabled),
         ]);
         shown.extend(self.digest_search.shown());
         shown.push(DIGEST_WAIT.shown(&self.digest.wait));
@@ -536,6 +551,7 @@ impl Settings {
         shown.extend(self.shown.iter().cloned());
         shown.extend(self.derive.shown());
         shown.extend(self.tags.shown());
+        shown.extend(self.summary.shown());
         shown.extend(self.kind.iter().map(|(key, resolved)| key.shown(resolved)));
         shown
     }
@@ -624,6 +640,7 @@ pub fn load(
             note_most: DIGEST_NOTE_MOST.resolve(&source)?,
             note_floor: DIGEST_NOTE_FLOOR.resolve(&source)?,
             note_width: DIGEST_NOTE_WIDTH.resolve(&source)?,
+            summary_enabled: DIGEST_SUMMARY_ENABLED.resolve(&source)?,
             wait: DIGEST_WAIT.resolve(&source)?,
             input: DIGEST_INPUT.resolve(&source)?,
             log_enabled: DIGEST_LOG_ENABLED.resolve(&source)?,
@@ -632,6 +649,7 @@ pub fn load(
         llm: bilbo_llm::keys::section(&source)?,
         derive: bilbo_derive::keys::section(&source)?,
         tags: bilbo_derive::tags::keys::section(&source)?,
+        summary: bilbo_derive::summary::keys::section(&source)?,
         kind: kind
             .iter()
             .map(|key| Ok((*key, key.resolve(&source)?)))
@@ -767,6 +785,21 @@ mod tests {
     }
 
     #[test]
+    fn the_shown_keys_are_the_keys_in_their_order() {
+        let shown: Vec<&str> = settings(&[("HOME", "/h")], &[])
+            .expect("loads")
+            .shown()
+            .iter()
+            .map(|row| row.name)
+            .collect();
+        let registered: Vec<&str> = keys(&kind(), &crate::provider_keys())
+            .iter()
+            .map(|about| about.name)
+            .collect();
+        assert_eq!(shown, registered);
+    }
+
+    #[test]
     fn the_registry_is_the_folders_the_store_the_follows_then_the_read_tag_search_recall_digest_llm_derive_and_kinds_keys()
      {
         let names: Vec<&str> = keys(&kind(), &crate::provider_keys())
@@ -827,6 +860,7 @@ mod tests {
                 "digest.note.most",
                 "digest.note.floor",
                 "digest.note.width",
+                "digest.summary.enabled",
                 "digest.candidates",
                 "digest.query",
                 "digest.wait",
@@ -888,6 +922,11 @@ mod tests {
                 "derive.tags.model",
                 "derive.tags.most",
                 "derive.tags.notes",
+                "derive.summary.enabled",
+                "derive.summary.instruction",
+                "derive.summary.most",
+                "derive.summary.window",
+                "derive.summary.least",
                 "markdown.heading_width",
                 "session.unpack_floor",
                 "session.unpack_ratio",
@@ -953,7 +992,7 @@ mod tests {
             .err(),
             Some(
                 "/c.toml:3: unknown key store.sealat; the keys are paths.root, paths.state, \
-                 paths.cache, paths.temp, store.seal_at, store.seal_after, store.compression, store.tear_budget, store.wait, store.poll, follow, remember.editor, read.budget, read.outline_width, read.matches_listed, tag.cap, search.chunk_tokens, search.chunk_overlap, search.workers, search.index_memory, search.merge_deleted_percent, search.entry_tries, search.label_batch, search.list_limit, recall.budget, recall.notes_budget, recall.candidates, recall.cap, recall.record_cap, recall.copy_share, recall.copy_words, recall.question_words, recall.languages, recall.bm25_k1, recall.bm25_b, recall.read_batch, recall.typo_terms, recall.typo_letters, recall.typo_max_letters, recall.typo_two_edits, recall.pair_weight, digest.markdown.most, digest.markdown.floor, digest.session.most, digest.session.floor, digest.session.old_after, digest.session.subagents, digest.session.parts, digest.note.most, digest.note.floor, digest.note.width, digest.candidates, digest.query, digest.wait, digest.input, digest.log.enabled, llm.provider, llm.response, llm.timeout, llm.poll, llm.anthropic.model, llm.anthropic.via, llm.anthropic.api.endpoint, llm.anthropic.api.version, llm.anthropic.api.key_env, llm.anthropic.api.key_command, llm.anthropic.api.headers, llm.anthropic.api.extra, llm.anthropic.tool.program, llm.anthropic.tool.effort, llm.anthropic.tool.arguments, llm.anthropic.tool.inherit, llm.anthropic.tool.environment, llm.anthropic.tool.project_files, llm.openai.model, llm.openai.via, llm.openai.api.endpoint, llm.openai.api.key_env, llm.openai.api.key_command, llm.openai.api.headers, llm.openai.api.extra, llm.openai.tool.program, llm.openai.tool.effort, llm.openai.tool.arguments, llm.openai.tool.inherit, llm.openai.tool.environment, llm.openai.tool.home, llm.openai.tool.system_files, derive.enabled, derive.in, derive.not_in, derive.instructions, derive.quiet, derive.window, derive.passage, derive.passage_head, derive.earlier, derive.names, derive.answer_tokens, derive.calls, derive.retries, derive.retry_wait, derive.retry_factor, derive.retry_limit, derive.tries, derive.failures, derive.tags.enabled, derive.tags.pick, derive.tags.instruction, derive.tags.model, derive.tags.most, derive.tags.notes, markdown.heading_width, session.unpack_floor, session.unpack_ratio, session.unpack_window, session.wide_fields"
+                 paths.cache, paths.temp, store.seal_at, store.seal_after, store.compression, store.tear_budget, store.wait, store.poll, follow, remember.editor, read.budget, read.outline_width, read.matches_listed, tag.cap, search.chunk_tokens, search.chunk_overlap, search.workers, search.index_memory, search.merge_deleted_percent, search.entry_tries, search.label_batch, search.list_limit, recall.budget, recall.notes_budget, recall.candidates, recall.cap, recall.record_cap, recall.copy_share, recall.copy_words, recall.question_words, recall.languages, recall.bm25_k1, recall.bm25_b, recall.read_batch, recall.typo_terms, recall.typo_letters, recall.typo_max_letters, recall.typo_two_edits, recall.pair_weight, digest.markdown.most, digest.markdown.floor, digest.session.most, digest.session.floor, digest.session.old_after, digest.session.subagents, digest.session.parts, digest.note.most, digest.note.floor, digest.note.width, digest.summary.enabled, digest.candidates, digest.query, digest.wait, digest.input, digest.log.enabled, llm.provider, llm.response, llm.timeout, llm.poll, llm.anthropic.model, llm.anthropic.via, llm.anthropic.api.endpoint, llm.anthropic.api.version, llm.anthropic.api.key_env, llm.anthropic.api.key_command, llm.anthropic.api.headers, llm.anthropic.api.extra, llm.anthropic.tool.program, llm.anthropic.tool.effort, llm.anthropic.tool.arguments, llm.anthropic.tool.inherit, llm.anthropic.tool.environment, llm.anthropic.tool.project_files, llm.openai.model, llm.openai.via, llm.openai.api.endpoint, llm.openai.api.key_env, llm.openai.api.key_command, llm.openai.api.headers, llm.openai.api.extra, llm.openai.tool.program, llm.openai.tool.effort, llm.openai.tool.arguments, llm.openai.tool.inherit, llm.openai.tool.environment, llm.openai.tool.home, llm.openai.tool.system_files, derive.enabled, derive.in, derive.not_in, derive.instructions, derive.quiet, derive.window, derive.passage, derive.passage_head, derive.earlier, derive.names, derive.answer_tokens, derive.calls, derive.retries, derive.retry_wait, derive.retry_factor, derive.retry_limit, derive.tries, derive.failures, derive.tags.enabled, derive.tags.pick, derive.tags.instruction, derive.tags.model, derive.tags.most, derive.tags.notes, derive.summary.enabled, derive.summary.instruction, derive.summary.most, derive.summary.window, derive.summary.least, markdown.heading_width, session.unpack_floor, session.unpack_ratio, session.unpack_window, session.wide_fields"
                     .to_owned()
             )
         );
@@ -1355,6 +1394,11 @@ mod tests {
                 "BILBO_DERIVE_RETRY_FACTOR",
                 "BILBO_DERIVE_RETRY_LIMIT",
                 "BILBO_DERIVE_RETRY_WAIT",
+                "BILBO_DERIVE_SUMMARY_ENABLED",
+                "BILBO_DERIVE_SUMMARY_INSTRUCTION",
+                "BILBO_DERIVE_SUMMARY_LEAST",
+                "BILBO_DERIVE_SUMMARY_MOST",
+                "BILBO_DERIVE_SUMMARY_WINDOW",
                 "BILBO_DERIVE_TAGS_ENABLED",
                 "BILBO_DERIVE_TAGS_INSTRUCTION",
                 "BILBO_DERIVE_TAGS_MODEL",
@@ -1376,6 +1420,7 @@ mod tests {
                 "BILBO_DIGEST_SESSION_OLD_AFTER",
                 "BILBO_DIGEST_SESSION_PARTS",
                 "BILBO_DIGEST_SESSION_SUBAGENTS",
+                "BILBO_DIGEST_SUMMARY_ENABLED",
                 "BILBO_DIGEST_WAIT",
                 "BILBO_HOME",
                 "BILBO_LLM_ANTHROPIC_API_ENDPOINT",
@@ -1588,6 +1633,53 @@ mod tests {
             "true or false",
             &["true", "false"],
             &["1", "\"yes\"", "0"],
+        );
+    }
+
+    #[test]
+    fn the_digests_summary_switch_is_true_or_false() {
+        assert!(
+            editor_with(&[], None)
+                .expect("the default")
+                .digest
+                .summary_enabled
+                .value
+        );
+        for (env, file) in [
+            (&[("BILBO_DIGEST_SUMMARY_ENABLED", "false")][..], ""),
+            (&[][..], "digest.summary.enabled = false\n"),
+        ] {
+            assert!(
+                !editor_with(env, Some(file))
+                    .expect("false")
+                    .digest
+                    .summary_enabled
+                    .value
+            );
+        }
+        assert!(
+            editor_with(
+                &[("BILBO_DIGEST_SUMMARY_ENABLED", "false")],
+                Some("digest.summary.enabled = true\n")
+            )
+            .is_ok_and(|settings| !settings.digest.summary_enabled.value)
+        );
+        for (value, got) in [("\"yes\"", "\"yes\""), ("1", "1"), ("0", "0")] {
+            assert_eq!(
+                editor_with(&[], Some(&format!("digest.summary.enabled = {value}\n")))
+                    .err()
+                    .as_deref(),
+                Some(
+                    format!("/c.toml:1: digest.summary.enabled must be true or false, got {got}")
+                        .as_str()
+                )
+            );
+        }
+        assert_eq!(
+            editor_with(&[("BILBO_DIGEST_SUMMARY_ENABLED", "maybe")], None)
+                .err()
+                .as_deref(),
+            Some("BILBO_DIGEST_SUMMARY_ENABLED must be true or false, got \"maybe\"")
         );
     }
 

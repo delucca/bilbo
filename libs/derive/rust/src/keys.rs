@@ -13,7 +13,7 @@ use bilbo_store::labels::Tag;
 
 use crate::tries;
 
-fn count(value: &Value<'_>, range: RangeInclusive<usize>) -> Result<usize, Error> {
+pub(crate) fn count(value: &Value<'_>, range: RangeInclusive<usize>) -> Result<usize, Error> {
     value
         .integer()
         .and_then(|count| usize::try_from(count).ok())
@@ -153,7 +153,7 @@ pub const PASSAGE_HEAD: Key<f64> = Key {
         variable: Some("BILBO_DERIVE_PASSAGE_HEAD"),
         default: Default::Toml("0.5"),
         allowed: "a number from 0 to 1",
-        doc: "The share of the tokens a cut passage keeps that come from its start; the rest come from its end.",
+        doc: "The share of the tokens a cut passage keeps that come from its start; the rest come from its end. It is also the share of a summary's material kept at its start when that material is over derive.summary.window.",
     },
     parse: |value| {
         value
@@ -182,7 +182,7 @@ pub const NAMES: Key<f64> = Key {
         variable: Some("BILBO_DERIVE_NAMES"),
         default: Default::Toml("0.5"),
         allowed: "a number from 0 to 1",
-        doc: "The share of a note's names that must stand in what its call was sent, or the note is dropped.",
+        doc: "The share of a note's names that must stand in what its call was sent, or the note is dropped. A summary is refused when the share of its names found in what was sent is below it.",
     },
     parse: |value| {
         value
@@ -271,7 +271,7 @@ pub const TRIES: Key<usize> = Key {
         variable: Some("BILBO_DERIVE_TRIES"),
         default: Default::Toml("3"),
         allowed: "a whole number from 1 to 9",
-        doc: "How many refused or failed calls a stretch of records gets, one a run, before bilbo derive passes it over.",
+        doc: "How many refused or failed calls a stretch of records gets, one a run, before bilbo derive passes it over. It also counts the charges of a summary's asking before it is passed over.",
     },
     parse: |value| count(value, 1..=usize::from(tries::MOST)),
     show: ToString::to_string,

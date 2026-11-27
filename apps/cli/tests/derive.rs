@@ -235,6 +235,14 @@ impl Sandbox {
     }
 
     fn configure(&self, text: &str) {
+        self.write_config(text, true);
+    }
+
+    fn as_given(&self, text: &str) {
+        self.write_config(text, false);
+    }
+
+    fn write_config(&self, text: &str, closed_summary: bool) {
         let file = self.dir.join("config/config.toml");
         fs::write(&file, text).expect("a config file");
         let read = self.run(&["config"]);
@@ -253,6 +261,9 @@ impl Sandbox {
             }
         }
         whole.push_str(text);
+        if closed_summary && !text.contains("derive.summary") {
+            whole.push_str("\n[derive.summary]\nenabled = false\n");
+        }
         fs::write(file, whole).expect("a config file");
     }
 
@@ -4187,6 +4198,68 @@ fn a_list_that_does_not_bind_ends_the_run_at_the_first_tags_call_with_the_notes_
 }
 
 #[test]
+fn a_list_that_does_not_bind_asks_no_summary_and_writes_the_notes() {
+    let _alone = alone();
+    let sandbox = Sandbox::filled("derive-summary-unbound", false);
+    sandbox.configure(&unbound_list(&sandbox, SUMMARY_ON));
+    let first = sandbox.session(FIRST).to_string();
+    let second = sandbox.session(SECOND).to_string();
+    let run = sandbox.run(&["derive", "--calls", "4", &first, &second]);
+    assert_eq!(run.code, 0, "{:?}", run.stderr);
+    let said: Vec<&String> = run
+        .stderr
+        .iter()
+        .filter(|line| line.starts_with("bilbo: no summary is asked in this run: "))
+        .collect();
+    assert_eq!(said.len(), 1, "{:?}", run.stderr);
+    assert!(said[0].contains(UNBOUND_MODEL), "{}", said[0]);
+    assert_eq!(
+        run.stderr
+            .iter()
+            .filter(|line| line.contains("llm.anthropic.tool.arguments"))
+            .count(),
+        1,
+        "{:?}",
+        run.stderr
+    );
+    let ran = fs::read_to_string(sandbox.dir.join("out/ran")).expect("the tool's marks");
+    assert_eq!(ran.lines().count(), 2, "{ran}");
+    assert!(sandbox.notes_of(sandbox.session(FIRST)).is_some());
+    assert!(sandbox.notes_of(sandbox.session(SECOND)).is_some());
+    assert!(spool_names(&sandbox).is_empty());
+    assert!(!sandbox.derive_dir().join("summaries").exists());
+}
+
+#[test]
+fn a_dry_run_with_a_list_that_does_not_bind_counts_no_summary_call() {
+    let _alone = alone();
+    let sandbox = Sandbox::filled("derive-summary-unbound-dry", false);
+    sandbox.configure(&unbound_list(&sandbox, SUMMARY_ON));
+    let first = sandbox.session(FIRST).to_string();
+    let second = sandbox.session(SECOND).to_string();
+    let dry = sandbox.run(&["derive", "--dry-run", "--calls", "2", &first, &second]);
+    assert_eq!(dry.code, 0, "{:?}", dry.stderr);
+    assert!(
+        dry_lines(&dry, "this run:")[0].starts_with("this run: 2 calls for 2 entries, "),
+        "{}",
+        dry.stdout
+    );
+    let [line] = dry_lines(&dry, "summaries:")[..] else {
+        panic!("one summaries line: {}", dry.stdout);
+    };
+    assert!(
+        line.starts_with("summaries: 2 entries due; this run 0 calls, 0 tokens to send;"),
+        "{line}"
+    );
+    let run = sandbox.run(&["derive", "--calls", "2", &first, &second]);
+    assert_eq!(run.code, 0, "{:?}", run.stderr);
+    let ran = fs::read_to_string(sandbox.dir.join("out/ran")).expect("the tool's marks");
+    assert_eq!(ran.lines().count(), 2, "{ran}");
+    assert!(sandbox.notes_of(sandbox.session(FIRST)).is_some());
+    assert!(sandbox.notes_of(sandbox.session(SECOND)).is_some());
+}
+
+#[test]
 fn a_tags_prepare_that_fails_after_passes_alone_says_the_passes_and_exits_2() {
     let sandbox = Sandbox::filled("derive-tags-passes", false);
     let (a, b) = two_by_id(&sandbox);
@@ -4604,4 +4677,1674 @@ fn the_dry_run_names_the_tags_instruction_in_force() {
         )),
         "{tags}"
     );
+}
+
+struct StateDir(PathBuf);
+
+impl StateDir {
+    fn new(test: &str) -> StateDir {
+        let path = scratch::scratch_dir(test);
+        fs::create_dir_all(&path).expect("a state folder");
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o700)).expect("a mode");
+        StateDir(path)
+    }
+
+    fn held(&self) -> bilbo_cli::derive::disk::Held {
+        bilbo_cli::derive::disk::Folder::at(&self.0, fs::File::open(&self.0).expect("open"))
+            .lock()
+            .expect("a lock")
+            .expect("held")
+    }
+
+    fn file(&self) -> PathBuf {
+        self.0.join("derive/summaries")
+    }
+}
+
+impl Drop for StateDir {
+    fn drop(&mut self) {
+        let _ = fs::set_permissions(self.0.join("derive"), fs::Permissions::from_mode(0o700));
+        let _ = fs::remove_dir_all(&self.0);
+    }
+}
+
+#[test]
+fn the_summaries_file_keeps_its_two_line_forms_and_reads_back() {
+    use bilbo_derive::summary::asked::Asked;
+    let state = StateDir::new("summaries_forms");
+    let held = state.held();
+    let (two, three) = (Id::from_bytes([2; 16]), Id::from_bytes([3; 16]));
+    let mut summaries = held.summaries();
+    summaries.pass(two, 6).expect("passed");
+    summaries.charge(three, 7).expect("charged");
+    assert_eq!(
+        fs::read_to_string(state.file()).expect("the file"),
+        format!("passed\t{two}\t0000000000000006\ncharged\t{three}\t0000000000000007\t1\n")
+    );
+    drop(summaries);
+    drop(held);
+    let held = state.held();
+    let again = held.summaries();
+    assert_eq!(again.passed(two).expect("read"), Some(6));
+    assert_eq!(again.charges(three, 7).expect("read"), 1);
+    assert_eq!(again.charges(three, 8).expect("read"), 0);
+}
+
+#[test]
+fn a_charge_is_of_one_asking_and_a_pass_or_a_settle_takes_its_lines_out() {
+    use bilbo_derive::summary::asked::Asked;
+    let state = StateDir::new("summaries_askings");
+    let held = state.held();
+    let one = Id::from_bytes([1; 16]);
+    let mut summaries = held.summaries();
+    let no_temporary = || {
+        assert!(!state.0.join("derive/summaries.tmp").exists());
+    };
+    summaries.charge(one, 7).expect("charged");
+    no_temporary();
+    summaries.charge(one, 7).expect("charged");
+    no_temporary();
+    assert_eq!(summaries.charges(one, 7).expect("read"), 2);
+    summaries.charge(one, 8).expect("charged");
+    no_temporary();
+    assert_eq!(summaries.charges(one, 8).expect("read"), 1);
+    assert_eq!(summaries.charges(one, 7).expect("read"), 0);
+    summaries.pass(one, 8).expect("passed");
+    no_temporary();
+    assert_eq!(
+        fs::read_to_string(state.file()).expect("the file"),
+        format!("passed\t{one}\t0000000000000008\n")
+    );
+    summaries.settle(one).expect("settled");
+    no_temporary();
+    assert_eq!(fs::read_to_string(state.file()).expect("the file"), "");
+    for _ in 0..10 {
+        summaries.charge(one, 9).expect("charged");
+    }
+    assert_eq!(summaries.charges(one, 9).expect("read"), 9);
+    assert_eq!(
+        fs::read_to_string(state.file()).expect("the file"),
+        format!("charged\t{one}\t0000000000000009\t9\n")
+    );
+}
+
+#[test]
+fn two_handles_of_the_summaries_file_under_one_lock_keep_each_others_lines() {
+    use bilbo_derive::summary::asked::Asked;
+    let state = StateDir::new("summaries_handles");
+    let held = state.held();
+    let (one, two) = (Id::from_bytes([1; 16]), Id::from_bytes([2; 16]));
+    let mut first = held.summaries();
+    let mut second = held.summaries();
+    assert_eq!(first.charges(one, 7).expect("read"), 0);
+    assert_eq!(second.charges(two, 8).expect("read"), 0);
+    first.charge(one, 7).expect("charged");
+    second.charge(two, 8).expect("charged");
+    assert_eq!(
+        fs::read_to_string(state.file()).expect("the file"),
+        format!("charged\t{one}\t0000000000000007\t1\ncharged\t{two}\t0000000000000008\t1\n")
+    );
+    assert_eq!(first.charges(two, 8).expect("read"), 1);
+    assert_eq!(second.charges(one, 7).expect("read"), 1);
+}
+
+#[test]
+fn a_write_of_the_summaries_file_that_failed_leaves_nothing_of_its_change_behind() {
+    use bilbo_derive::summary::asked::Asked;
+    let state = StateDir::new("summaries_failed");
+    let held = state.held();
+    let one = Id::from_bytes([1; 16]);
+    let mut summaries = held.summaries();
+    summaries.charge(one, 7).expect("charged");
+    let derive = state.0.join("derive");
+    fs::set_permissions(&derive, fs::Permissions::from_mode(0o500)).expect("a mode");
+    summaries.charge(one, 7).expect_err("a write that fails");
+    fs::set_permissions(&derive, fs::Permissions::from_mode(0o700)).expect("a mode");
+    assert_eq!(summaries.charges(one, 7).expect("read"), 1);
+    summaries.charge(one, 7).expect("charged");
+    assert_eq!(
+        fs::read_to_string(state.file()).expect("the file"),
+        format!("charged\t{one}\t0000000000000007\t2\n")
+    );
+}
+
+#[test]
+fn a_summaries_file_that_is_no_private_file_is_refused_by_both_readers_and_no_file_is_the_empty_one()
+ {
+    use bilbo_derive::summary::asked::Asked;
+    let state = StateDir::new("summaries_private");
+    drop(state.held());
+    let handle = fs::File::open(&state.0).expect("a folder");
+    let path = state.file();
+    let sentence = format!(
+        "{} is not a private file of this user in a folder of this user",
+        path.display()
+    );
+    let entry = Id::from_bytes([1; 16]);
+    let mine = state.0.join("derive/mine");
+    fs::write(&mine, "x").expect("a file");
+    fs::set_permissions(&mine, fs::Permissions::from_mode(0o600)).expect("a mode");
+    for case in [
+        "no file",
+        "a link",
+        "a second name",
+        "a file open to others",
+    ] {
+        match case {
+            "a link" => symlink(&mine, &path).expect("a link"),
+            "a second name" => fs::hard_link(&mine, &path).expect("a name"),
+            "a file open to others" => {
+                fs::write(&path, "x").expect("a file");
+                fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).expect("a mode");
+            }
+            _ => {}
+        }
+        let held = state.held();
+        let readers = [
+            held.summaries(),
+            bilbo_cli::derive::disk::summaries_reader(&handle, &state.0),
+        ];
+        for reader in readers {
+            let found = reader.passed(entry);
+            if case == "no file" {
+                assert_eq!(found.expect("no error"), None, "{case}");
+            } else {
+                assert_eq!(found.expect_err(case).to_string(), sentence, "{case}");
+            }
+        }
+        if case != "no file" {
+            fs::remove_file(&path).expect("removed");
+        }
+    }
+}
+
+#[test]
+fn a_replay_that_kept_a_summary_alone_brings_the_index_up_to_the_store() {
+    let sandbox = Sandbox::filled("derive-summarised", false);
+    let provider = Provider::start(Vec::new());
+    let store = sandbox.store();
+    let (changes, _) = store.changes(&Cursor::start()).expect("changes");
+    let file = changes
+        .iter()
+        .map(bilbo_store::entries::Change::id)
+        .find(|id| {
+            store
+                .meta(*id)
+                .expect("meta")
+                .is_some_and(|meta| meta.kind == "markdown")
+        })
+        .expect("a file");
+    let label = store
+        .meta(file)
+        .expect("meta")
+        .and_then(|meta| meta.labels.capture)
+        .expect("a label");
+    let head = store.by_capture(&label).expect("a lookup").expect("a head");
+    drop(store);
+    assert_eq!(sandbox.run(&["reindex"]).code, 0);
+    sandbox.configure(&only(file, &provider.url()));
+    let block = bilbo_derive::summary::block::write(&bilbo_derive::summary::block::Block {
+        entry: file,
+        about: bilbo_derive::summary::asked::About {
+            generation: head.generation,
+            records: head.records,
+            content: head.mark.hash,
+            notes: None,
+        },
+        asking: 5,
+        form: bilbo_derive::summary::block::Form::Answer,
+        instruction: "i".to_owned(),
+        provider: "anthropic".to_owned(),
+        model: "claude-test-1".to_owned(),
+        answered: None,
+        made: 1_700_000_100,
+        sent: 10,
+        tokens_in: None,
+        tokens_out: None,
+        text: "The garden notes.".to_owned(),
+    });
+    let folder = sandbox.derive_dir().join("spool");
+    fs::create_dir_all(&folder).expect("a folder");
+    let kept = folder.join("00000000000000000001.summary");
+    fs::write(&kept, block).expect("a block");
+    fs::set_permissions(&kept, fs::Permissions::from_mode(0o600)).expect("a mode");
+    let run = sandbox.run(&["derive"]);
+    assert_eq!(run.code, 0, "{:?}", run.stderr);
+    assert!(
+        run.stderr
+            .iter()
+            .any(|line| line == "bilbo: summarised 1 entries"),
+        "{:?}",
+        run.stderr
+    );
+    assert!(spool_names(&sandbox).is_empty());
+    let dry = sandbox.run(&["derive", "--dry-run"]);
+    assert_eq!((dry.code, dry.stderr), (0, Vec::<String>::new()));
+}
+
+#[test]
+fn a_summarys_block_waits_in_the_spool_under_a_name_of_its_own() {
+    use bilbo_derive::spool::Spool;
+    let state = StateDir::new("summaries_spool");
+    let held = state.held();
+    let mut summary = held.summary_blocks().expect("a spool");
+    summary.keep(b"one").expect("kept");
+    summary.keep(b"two").expect("kept");
+    let mut plain = held.blocks().expect("a spool");
+    plain.keep(b"three").expect("kept");
+    let names = |extension: &str| -> Vec<String> {
+        let mut found: Vec<String> = fs::read_dir(state.0.join("derive/spool"))
+            .expect("a folder")
+            .flatten()
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .filter(|name| name.ends_with(extension))
+            .collect();
+        found.sort();
+        found
+    };
+    let mut every = names("");
+    every.sort();
+    assert_eq!(
+        every,
+        [
+            "00000000000000000001.block",
+            "00000000000000000001.summary",
+            "00000000000000000002.summary"
+        ]
+    );
+    let mut older = held.blocks().expect("a spool");
+    let listed = older.list().expect("a list");
+    assert_eq!(
+        listed
+            .iter()
+            .map(|(name, _)| name.as_str())
+            .collect::<Vec<_>>(),
+        ["00000000000000000001.block"]
+    );
+    older.remove(&listed[0].0).expect("removed");
+    assert!(older.is_empty().expect("empty"));
+    assert_eq!(names(".summary").len(), 2);
+    let mut again = held.summary_blocks().expect("a spool");
+    let kept = again.list().expect("a list");
+    assert_eq!(
+        kept.iter()
+            .map(|(name, _)| name.as_str())
+            .collect::<Vec<_>>(),
+        [
+            "00000000000000000001.summary",
+            "00000000000000000002.summary"
+        ]
+    );
+    again.keep(b"three").expect("kept");
+    assert_eq!(
+        names(".summary").last().map(String::as_str),
+        Some("00000000000000000003.summary")
+    );
+}
+
+#[test]
+fn a_replay_that_finds_its_summary_already_kept_brings_the_index_up_to_the_store() {
+    let sandbox = Sandbox::filled("derive-found", false);
+    let provider = Provider::start(Vec::new());
+    let store = sandbox.store();
+    let (changes, _) = store.changes(&Cursor::start()).expect("changes");
+    let file = changes
+        .iter()
+        .map(bilbo_store::entries::Change::id)
+        .find(|id| {
+            store
+                .meta(*id)
+                .expect("meta")
+                .is_some_and(|meta| meta.kind == "markdown")
+        })
+        .expect("a file");
+    let label = store
+        .meta(file)
+        .expect("meta")
+        .and_then(|meta| meta.labels.capture)
+        .expect("a label");
+    let head = store.by_capture(&label).expect("a lookup").expect("a head");
+    drop(store);
+    assert_eq!(sandbox.run(&["reindex"]).code, 0);
+    sandbox.configure(&only(file, &provider.url()));
+    let block = bilbo_derive::summary::block::write(&bilbo_derive::summary::block::Block {
+        entry: file,
+        about: bilbo_derive::summary::asked::About {
+            generation: head.generation,
+            records: head.records,
+            content: head.mark.hash,
+            notes: None,
+        },
+        asking: 5,
+        form: bilbo_derive::summary::block::Form::Answer,
+        instruction: "i".to_owned(),
+        provider: "anthropic".to_owned(),
+        model: "claude-test-1".to_owned(),
+        answered: None,
+        made: 1_700_000_100,
+        sent: 10,
+        tokens_in: None,
+        tokens_out: None,
+        text: "The garden notes.".to_owned(),
+    });
+    let mut record =
+        bilbo_derive::summary::record::write(&bilbo_derive::summary::record::Summary {
+            text: "The garden notes.".to_owned(),
+            instruction: "i".to_owned(),
+            provider: "anthropic".to_owned(),
+            model: "claude-test-1".to_owned(),
+            answered: None,
+            made: 1_700_000_100,
+            entry: file,
+            generation: head.generation,
+            records: head.records,
+            content: head.mark.hash,
+            notes: None,
+            sent: 10,
+            tokens_in: None,
+            tokens_out: None,
+        })
+        .into_bytes();
+    record.push(b'\n');
+    let summary_label =
+        CaptureLabel::new(bilbo_derive::summary::label(file).to_string()).expect("a label");
+    let layout = stores::layout(&sandbox.vars());
+    let mut store = Store::open(&layout, Options::default(), &mut |_| {}).expect("open the store");
+    store
+        .capture(&Capture {
+            label: &summary_label,
+            kind: bilbo_derive::summary::KIND,
+            id: None,
+            id_label: None,
+            stamp: None,
+            bytes: &record,
+            ends: &[record.len()],
+            tags: &Tags::default(),
+        })
+        .expect("capture");
+    store.close().expect("close");
+    let folder = sandbox.derive_dir().join("spool");
+    fs::create_dir_all(&folder).expect("a folder");
+    let kept = folder.join("00000000000000000001.summary");
+    fs::write(&kept, block).expect("a block");
+    fs::set_permissions(&kept, fs::Permissions::from_mode(0o600)).expect("a mode");
+    let run = sandbox.run(&["derive"]);
+    assert_eq!(run.code, 0, "{:?}", run.stderr);
+    assert!(
+        run.stderr.iter().all(|line| !line.contains("summarised")),
+        "{:?}",
+        run.stderr
+    );
+    assert!(spool_names(&sandbox).is_empty());
+    let dry = sandbox.run(&["derive", "--dry-run"]);
+    assert_eq!((dry.code, dry.stderr), (0, Vec::<String>::new()));
+}
+
+#[test]
+fn two_handles_of_the_summarys_spool_under_one_lock_number_their_blocks_apart() {
+    use bilbo_derive::spool::Spool;
+    let state = StateDir::new("summaries_numbers");
+    let held = state.held();
+    let mut first = held.summary_blocks().expect("a spool");
+    let mut second = held.summary_blocks().expect("a spool");
+    first.keep(b"one").expect("kept");
+    second.keep(b"two").expect("kept");
+    let folder = state.0.join("derive/spool");
+    let mut names: Vec<String> = fs::read_dir(&folder)
+        .expect("a folder")
+        .flatten()
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .collect();
+    names.sort();
+    assert_eq!(
+        names,
+        [
+            "00000000000000000001.summary",
+            "00000000000000000002.summary"
+        ]
+    );
+    assert_eq!(
+        fs::read(folder.join("00000000000000000001.summary")).expect("read"),
+        b"one"
+    );
+    assert_eq!(
+        fs::read(folder.join("00000000000000000002.summary")).expect("read"),
+        b"two"
+    );
+}
+
+const SUMMARY_ON: &str = "derive.summary.enabled = true\nderive.summary.least = 0\n";
+const SUMMARY_TEXT: &str = "The garden fence was asked about.";
+
+fn summarising(url: &str, id: Id, extra: &str) -> String {
+    with_tags(url, id, &format!("{SUMMARY_ON}{extra}"))
+}
+
+fn asks_for_summary(request: &Request) -> bool {
+    field(request, "system").as_str() == Some(bilbo_derive::summary::instruction::text())
+}
+
+fn summary_records(sandbox: &Sandbox, id: Id) -> Vec<String> {
+    let store = sandbox.store();
+    let Some(head) = store
+        .by_capture(&bilbo_derive::summary::label(id))
+        .expect("a lookup")
+    else {
+        return Vec::new();
+    };
+    store
+        .read(
+            head.id,
+            head.generation,
+            RecordRange {
+                first: 1,
+                count: head.records,
+            },
+        )
+        .expect("records")
+        .iter()
+        .map(|record| String::from_utf8_lossy(record).into_owned())
+        .collect()
+}
+
+fn head_of(sandbox: &Sandbox, id: Id) -> bilbo_store::entries::Head {
+    let store = sandbox.store();
+    let label = store
+        .meta(id)
+        .expect("meta")
+        .and_then(|meta| meta.labels.capture)
+        .expect("a label");
+    store.by_capture(&label).expect("a lookup").expect("a head")
+}
+
+#[test]
+fn a_run_writes_notes_then_a_summary_and_keeps_it_beside_the_entry() {
+    let sandbox = Sandbox::filled("derive-summary-run", false);
+    let first = sandbox.session(FIRST);
+    let provider = Provider::start(vec![answer(NOTE_TEXT), answer(SUMMARY_TEXT)]);
+    sandbox.configure(&summarising(&provider.url(), first, ""));
+    let run = sandbox.run(&["derive", &first.to_string()]);
+    assert_eq!(run.code, 0, "{:?}", run.stderr);
+    assert!(
+        run.stdout
+            .starts_with("entries 1, calls 2, notes 1, dropped 0, refused 0, failed 0\n"),
+        "{}",
+        run.stdout
+    );
+    assert_eq!(run.stderr, ["bilbo: summarised 1 entries".to_owned()]);
+    let records = summary_records(&sandbox, first);
+    assert_eq!(records.len(), 1);
+    let held = bilbo_derive::summary::record::read(records[0].as_bytes()).expect("a summary");
+    let head = head_of(&sandbox, first);
+    assert_eq!(held.text, SUMMARY_TEXT);
+    assert_eq!(held.instruction, bilbo_derive::summary::instruction::id());
+    assert_eq!(
+        (held.provider.as_str(), held.model.as_str()),
+        ("anthropic", "claude-test-1")
+    );
+    assert_eq!(
+        (held.generation, held.records, held.content),
+        (head.generation, head.records, head.mark.hash)
+    );
+    let notes = held.notes.expect("the notes it was written from");
+    assert_eq!((notes.generation, notes.records), (Generation(1), 2));
+    let store = sandbox.store();
+    let entry = store
+        .by_capture(&bilbo_derive::summary::label(first))
+        .expect("a lookup")
+        .expect("a head");
+    let meta = store.meta(entry.id).expect("meta").expect("an entry");
+    assert_eq!(meta.kind, bilbo_derive::summary::KIND);
+    assert_eq!(meta.labels.id, None);
+    drop(store);
+    let seen = requests(&provider);
+    assert_eq!(seen.len(), 2);
+    assert!(asks_for_summary(&seen[1]) && !asks_for_summary(&seen[0]));
+    assert!(spool_names(&sandbox).is_empty());
+}
+
+#[test]
+fn a_markdown_file_derive_in_names_gets_a_summary_of_its_text() {
+    let sandbox = Sandbox::filled("derive-summary-file", false);
+    let file = sandbox.of_kind("markdown", false)[0];
+    let provider = Provider::start(vec![answer(SUMMARY_TEXT)]);
+    sandbox.configure(&summarising(&provider.url(), file, "").replace(
+        &format!("derive.in = [\"{file}\"]"),
+        "derive.in = [\"notes\"]",
+    ));
+    let run = sandbox.run(&["derive"]);
+    assert_eq!(run.code, 0, "{:?}", run.stderr);
+    assert!(
+        run.stdout.starts_with("entries 1, calls 1, notes 0,"),
+        "{}",
+        run.stdout
+    );
+    let seen = requests(&provider);
+    assert_eq!(seen.len(), 1);
+    let text = user_text(&seen[0]);
+    assert!(text.starts_with("<entry>\n"), "{text}");
+    assert!(
+        text.ends_with("</entry>\nWrite the summary now, in at most 200 characters.\n"),
+        "{text}"
+    );
+    let first_line = String::from_utf8_lossy(NOTES[0].1)
+        .lines()
+        .next()
+        .expect("a line")
+        .to_owned();
+    assert!(text.contains(&first_line), "{text}");
+    let records = summary_records(&sandbox, file);
+    assert_eq!(records.len(), 1);
+    let held = bilbo_derive::summary::record::read(records[0].as_bytes()).expect("a summary");
+    assert!(held.notes.is_none());
+}
+
+#[test]
+fn the_summarys_request_holds_the_notes_and_nothing_bilbo_adds_of_the_entry() {
+    let sandbox = Sandbox::filled("derive-summary-request", false);
+    let first = sandbox.session(FIRST);
+    let provider = Provider::start(vec![answer(NOTE_TEXT), answer(SUMMARY_TEXT)]);
+    sandbox.configure(&summarising(&provider.url(), first, ""));
+    assert_eq!(sandbox.run(&["derive"]).code, 0);
+    let seen = requests(&provider);
+    assert!(asks_for_summary(&seen[1]));
+    let text = user_text(&seen[1]);
+    assert_eq!(
+        text,
+        "<notes>\nr1-7 2026-11-07\nThe user asked about the garden fence.\n\n</notes>\nWrite the summary now, in at most 200 characters.\n"
+    );
+    assert!(text.starts_with("<notes>\n"), "{text}");
+    assert!(
+        text.ends_with("</notes>\nWrite the summary now, in at most 200 characters.\n"),
+        "{text}"
+    );
+    assert!(
+        text.contains("The user asked about the garden fence."),
+        "{text}"
+    );
+    for absent in [
+        first.to_string(),
+        format!("derive:{first}"),
+        FIRST.to_owned(),
+        "file:".to_owned(),
+        sandbox.dir.display().to_string(),
+    ] {
+        assert!(!text.contains(&absent), "{absent}");
+    }
+}
+
+const GARDEN_ONLY: &str = "derive.tags.enabled = true\nderive.tags.pick = [\"garden\"]\n";
+
+fn copy_tree(from: &Path, to: &Path) {
+    fs::create_dir_all(to).expect("a folder");
+    for entry in fs::read_dir(from).expect("a folder").flatten() {
+        let (source, target) = (entry.path(), to.join(entry.file_name()));
+        let meta = fs::metadata(&source).expect("metadata");
+        if meta.is_dir() {
+            copy_tree(&source, &target);
+        } else {
+            fs::copy(&source, &target).expect("a copy");
+            fs::File::options()
+                .write(true)
+                .open(&target)
+                .expect("open")
+                .set_modified(meta.modified().expect("a time"))
+                .expect("a time");
+        }
+        fs::set_permissions(&target, meta.permissions()).expect("a mode");
+    }
+}
+
+#[test]
+fn with_the_summary_off_the_requests_and_the_output_are_those_of_a_run_that_never_summarised() {
+    let sandbox = Sandbox::filled("derive-summary-off", false);
+    let ids = sandbox.sessions();
+    let kept = sandbox.dir.join("pristine");
+    for folder in ["store", "state", "cache"] {
+        copy_tree(&sandbox.dir.join(folder), &kept.join(folder));
+    }
+    let mut sent = Vec::new();
+    for on in [false, true] {
+        if on {
+            for folder in ["store", "state", "cache"] {
+                fs::remove_dir_all(sandbox.dir.join(folder)).expect("removed");
+                copy_tree(&kept.join(folder), &sandbox.dir.join(folder));
+            }
+        }
+        let name = if on { "on" } else { "off" };
+        let mut replies = Vec::new();
+        for _ in &ids {
+            replies.extend([answer(NOTE_TEXT), answer("garden")]);
+            if on {
+                replies.push(answer(SUMMARY_TEXT));
+            }
+        }
+        let provider = Provider::start(replies);
+        let extra = if on {
+            format!("{GARDEN_ONLY}{SUMMARY_ON}")
+        } else {
+            GARDEN_ONLY.to_owned()
+        };
+        sandbox.configure(&only_ids(&provider.url(), &ids, &extra));
+        assert_eq!(sandbox.sessions(), ids, "{name}");
+        let run = sandbox.run(&["derive"]);
+        assert_eq!(run.code, 0, "{name}: {:?}", run.stderr);
+        let seen = requests(&provider);
+        if on {
+            assert_eq!(seen.len(), 9, "{name}");
+        } else {
+            assert_eq!(seen.len(), 6, "{name}");
+            assert!(
+                run.stdout
+                    .starts_with("entries 3, calls 6, notes 3, dropped 0, refused 0, failed 0\n"),
+                "{}",
+                run.stdout
+            );
+            assert!(seen.iter().all(|request| !asks_for_summary(request)));
+            let store = sandbox.store();
+            for id in &ids {
+                assert!(
+                    store
+                        .by_capture(&bilbo_derive::summary::label(*id))
+                        .expect("a lookup")
+                        .is_none(),
+                    "{id}"
+                );
+            }
+            drop(store);
+            assert!(sandbox.of_kind("summary", false).is_empty());
+            assert!(!sandbox.derive_dir().join("summaries").exists());
+            assert!(
+                spool_names(&sandbox)
+                    .iter()
+                    .all(|name| !name.ends_with(".summary"))
+            );
+            let log = fs::read_to_string(sandbox.derive_dir().join("log")).expect("a log");
+            assert!(log.lines().all(|line| !line.starts_with("u1\t")));
+        }
+        let windows: Vec<String> = seen
+            .iter()
+            .filter(|request| !asks_for_tags(request) && !asks_for_summary(request))
+            .map(body)
+            .collect();
+        let tags: Vec<String> = seen
+            .iter()
+            .filter(|request| asks_for_tags(request))
+            .map(body)
+            .collect();
+        sent.push((windows, tags));
+    }
+    assert_eq!(sent[0], sent[1]);
+}
+
+#[test]
+fn each_closed_gate_sends_nothing_with_the_summary_on() {
+    let cases = [
+        ("derive.enabled = false\n", "derive.enabled is false"),
+        ("llm.provider = \"\"\n", "llm.provider is not set"),
+        ("derive.in = []\n", "derive.in is empty"),
+    ];
+    for (gate, why) in cases {
+        let sandbox = Sandbox::filled("derive-summary-gates", false);
+        let first = sandbox.session(FIRST);
+        let provider = Provider::start(vec![answer(NOTE_TEXT), answer(SUMMARY_TEXT)]);
+        let mut text = summarising(&provider.url(), first, "");
+        let leaf = gate.split(' ').next().expect("a key");
+        text = text
+            .lines()
+            .filter(|line| !line.starts_with(leaf))
+            .collect::<Vec<_>>()
+            .join("\n");
+        text.push('\n');
+        text.push_str(gate);
+        sandbox.configure(&text);
+        let run = sandbox.run(&["derive"]);
+        assert_eq!(run.code, 0, "{gate}: {:?}", run.stderr);
+        assert_eq!(
+            run.stderr,
+            [format!("bilbo: derive is off: {why}")],
+            "{gate}"
+        );
+        assert!(requests(&provider).is_empty(), "{gate}");
+    }
+}
+
+fn dry_lines<'a>(run: &'a Run, start: &str) -> Vec<&'a str> {
+    run.stdout
+        .lines()
+        .filter(|line| line.starts_with(start))
+        .collect()
+}
+
+#[test]
+fn the_dry_walk_counts_the_summaries_the_run_then_makes() {
+    let sandbox = Sandbox::filled("derive-summary-walk", false);
+    let ids = sandbox.sessions();
+    let provider = Provider::start(vec![
+        answer(NOTE_TEXT),
+        answer(SUMMARY_TEXT),
+        answer(NOTE_TEXT),
+        answer(SUMMARY_TEXT),
+    ]);
+    sandbox.configure(&only_ids(&provider.url(), &ids, SUMMARY_ON));
+    let dry = sandbox.run(&["derive", "--dry-run", "--calls", "4"]);
+    assert_eq!(dry.code, 0, "{:?}", dry.stderr);
+    assert_eq!(dry_lines(&dry, "due:"), ["due: 3 entries"]);
+    assert!(
+        dry_lines(&dry, "this run:")[0].starts_with("this run: 2 calls for 2 entries, "),
+        "{}",
+        dry.stdout
+    );
+    assert_eq!(
+        dry_lines(&dry, "summaries:"),
+        [format!(
+            "summaries: 3 entries due; this run 2 calls, 0 tokens to send; instruction (built in, {})",
+            bilbo_derive::summary::instruction::id()
+        )]
+    );
+    let run = sandbox.run(&["derive", "--calls", "4"]);
+    assert_eq!(run.code, 0, "{:?}", run.stderr);
+    let seen = requests(&provider);
+    let kinds: Vec<bool> = seen.iter().map(asks_for_summary).collect();
+    assert_eq!(kinds, [false, true, false, true]);
+    assert!(
+        run.stdout.starts_with("entries 2, calls 4, notes 2,"),
+        "{}",
+        run.stdout
+    );
+    assert!(
+        run.stderr
+            .contains(&"bilbo: summarised 2 entries".to_owned()),
+        "{:?}",
+        run.stderr
+    );
+}
+
+#[test]
+fn a_dry_run_counts_the_calls_and_the_tokens_of_summaries_with_no_window() {
+    let sandbox = Sandbox::filled("derive-summary-no-window", false);
+    let first = sandbox.session(FIRST);
+    let file = sandbox.of_kind("markdown", false)[0];
+    let provider = Provider::start(vec![
+        answer(NOTE_TEXT),
+        answer(SUMMARY_TEXT),
+        answer(SUMMARY_TEXT),
+    ]);
+    sandbox.configure(&only(first, &provider.url()));
+    let notes = sandbox.run(&["derive"]);
+    assert_eq!(notes.code, 0, "{:?}", notes.stderr);
+    sandbox.configure(&only_ids(&provider.url(), &[first, file], SUMMARY_ON));
+    let dry = sandbox.run(&["derive", "--dry-run"]);
+    assert_eq!(dry.code, 0, "{:?}", dry.stderr);
+    let [line] = dry_lines(&dry, "summaries:")[..] else {
+        panic!("one summaries line: {}", dry.stdout);
+    };
+    let head = "summaries: 2 entries due; this run 2 calls, ";
+    let tail = format!(
+        " tokens to send; instruction (built in, {})",
+        bilbo_derive::summary::instruction::id()
+    );
+    let counted = line
+        .strip_prefix(head)
+        .and_then(|rest| rest.strip_suffix(tail.as_str()))
+        .unwrap_or_else(|| panic!("{line}"));
+    let tokens: u64 = counted.parse().expect("a count");
+    assert!(tokens > 0, "{line}");
+    let run = sandbox.run(&["derive"]);
+    assert_eq!(run.code, 0, "{:?}", run.stderr);
+    let log = fs::read_to_string(sandbox.derive_dir().join("log")).expect("a log");
+    let sent: Vec<u64> = log
+        .lines()
+        .filter(|line| line.starts_with("u1\t"))
+        .filter(|line| line.split('\t').nth(2) == Some("written"))
+        .map(|line| {
+            line.split('\t')
+                .nth(9)
+                .expect("sent")
+                .parse()
+                .expect("a count")
+        })
+        .collect();
+    assert_eq!(sent.len(), 2, "{log}");
+    assert_eq!(sent.iter().sum::<u64>(), tokens, "{log}");
+}
+
+#[test]
+fn with_the_key_false_a_dry_run_prints_no_line_of_the_summary() {
+    let sandbox = Sandbox::filled("derive-summary-dry", false);
+    let ids = sandbox.sessions();
+    let provider = Provider::start(Vec::new());
+    let url = provider.url();
+    sandbox.configure(&only_ids(&url, &ids, ""));
+    let off = sandbox.run(&["derive", "--dry-run"]);
+    let off_four = sandbox.run(&["derive", "--dry-run", "--calls", "4"]);
+    for line in off.stdout.lines() {
+        assert!(!line.starts_with("summaries:") && !line.starts_with("summary\t"));
+    }
+    sandbox.configure(&only_ids(&url, &ids, SUMMARY_ON));
+    let on = sandbox.run(&["derive", "--dry-run"]);
+    let kept: Vec<&str> = on
+        .stdout
+        .lines()
+        .filter(|line| !line.starts_with("summaries:") && !line.starts_with("summary\t"))
+        .collect();
+    assert_eq!(kept.join("\n") + "\n", off.stdout);
+    assert!(on.stdout.lines().any(|line| line.starts_with("summaries:")));
+    let on_four = sandbox.run(&["derive", "--dry-run", "--calls", "4"]);
+    let apart = |run: &Run| -> Vec<String> {
+        run.stdout
+            .lines()
+            .filter(|line| {
+                !line.starts_with("this run:")
+                    && !line.starts_with("summaries:")
+                    && !line.starts_with("summary\t")
+            })
+            .map(str::to_owned)
+            .collect()
+    };
+    assert_eq!(apart(&on_four), apart(&off_four));
+    assert!(
+        on_four
+            .stdout
+            .lines()
+            .any(|line| line.starts_with("provider:")),
+        "{}",
+        on_four.stdout
+    );
+    assert!(
+        dry_lines(&off_four, "this run:")[0].starts_with("this run: 3 calls for 3 entries,"),
+        "{}",
+        off_four.stdout
+    );
+    assert!(
+        dry_lines(&on_four, "this run:")[0].starts_with("this run: 2 calls for 2 entries,"),
+        "{}",
+        on_four.stdout
+    );
+}
+
+#[test]
+fn a_dry_run_gives_each_ref_its_summary_line() {
+    let sandbox = Sandbox::filled("derive-summary-refs", true);
+    let first = sandbox.session(FIRST);
+    let markdown = sandbox.of_kind("markdown", false)[0];
+    let subagent = sandbox.of_kind("session", true)[0];
+    let provider = Provider::start(vec![answer(NOTE_TEXT), answer(SUMMARY_TEXT)]);
+    sandbox.configure(&summarising(&provider.url(), first, ""));
+    let run = sandbox.run(&["derive", &first.to_string()]);
+    assert_eq!(run.code, 0, "{:?}", run.stderr);
+    let dry = sandbox.run(&[
+        "derive",
+        "--dry-run",
+        &first.to_string(),
+        &markdown.to_string(),
+        &subagent.to_string(),
+    ]);
+    assert_eq!(dry.code, 0, "{:?}", dry.stderr);
+    let refs: Vec<&str> = dry
+        .stdout
+        .lines()
+        .filter(|line| line.starts_with("entry\t") || line.starts_with("summary\t"))
+        .collect();
+    assert_eq!(refs.len(), 6, "{}", dry.stdout);
+    assert!(refs[..3].iter().all(|line| line.starts_with("entry\t")));
+    assert!(refs[3..].iter().all(|line| line.starts_with("summary\t")));
+    let ids: Vec<String> = [first, markdown, subagent]
+        .iter()
+        .map(ToString::to_string)
+        .collect();
+    for (at, id) in ids.iter().enumerate() {
+        assert!(refs[at].starts_with(&format!("entry\t{id}\t")), "{refs:?}");
+    }
+    assert_eq!(
+        &refs[3..],
+        [
+            format!("summary\t{first}\twritten"),
+            format!("summary\t{markdown}\tnot due: left out: not named by derive.in"),
+            format!("summary\t{subagent}\tnot due: left out: belongs to another entry"),
+        ]
+    );
+}
+
+#[test]
+fn a_file_named_on_the_command_line_writes_its_summary_and_warns_of_nothing() {
+    let sandbox = Sandbox::filled("derive-summary-named", false);
+    let file = sandbox.of_kind("markdown", false)[0];
+    let provider = Provider::start(vec![answer(SUMMARY_TEXT), answer(SUMMARY_TEXT)]);
+    let both = |extra: &str, named: &str| {
+        config(&provider.url(), extra).replace(
+            "derive.in = [\"sessions\"]",
+            &format!("derive.in = [{named}]"),
+        )
+    };
+    sandbox.configure(&both(SUMMARY_ON, "\"sessions\", \"notes\""));
+    let run = sandbox.run(&["derive", &file.to_string()]);
+    assert_eq!(run.code, 0, "{:?}", run.stderr);
+    assert_eq!(run.stderr, ["bilbo: summarised 1 entries".to_owned()]);
+    assert_eq!(requests(&provider).len(), 1);
+    let again = sandbox.run(&["derive", &file.to_string()]);
+    assert_eq!((again.code, again.stderr), (0, Vec::<String>::new()));
+    assert_eq!(requests(&provider).len(), 1);
+
+    let sandbox = Sandbox::filled("derive-summary-named-off", false);
+    let file = sandbox.of_kind("markdown", false)[0];
+    sandbox.configure(&both("", "\"sessions\", \"notes\""));
+    let off = sandbox.run(&["derive", &file.to_string()]);
+    assert_eq!(off.code, 1);
+    assert_eq!(requests(&provider).len(), 1);
+    assert_eq!(
+        off.stderr,
+        [format!(
+            "bilbo: {file} is of the kind markdown, which has no instruction"
+        )]
+    );
+    sandbox.configure(&both(SUMMARY_ON, "\"sessions\""));
+    let unnamed = sandbox.run(&["derive", &file.to_string()]);
+    assert_eq!(unnamed.code, 1);
+    assert_eq!(requests(&provider).len(), 1);
+    assert_eq!(
+        unnamed.stderr,
+        [format!("bilbo: {file} is not named by derive.in")]
+    );
+}
+
+fn summary_config_of_file(url: &str, file: Id, extra: &str) -> String {
+    summarising(url, file, extra).replace(
+        &format!("derive.in = [\"{file}\"]"),
+        "derive.in = [\"notes\"]",
+    )
+}
+
+#[test]
+fn an_edited_file_is_summarised_again_and_an_untouched_one_is_not() {
+    let sandbox = Sandbox::filled("derive-summary-edit", false);
+    let file = sandbox.of_kind("markdown", false)[0];
+    let provider = Provider::start(vec![
+        answer(SUMMARY_TEXT),
+        answer("The garden log changed."),
+    ]);
+    sandbox.configure(&summary_config_of_file(&provider.url(), file, ""));
+    assert_eq!(sandbox.run(&["derive"]).code, 0);
+    assert_eq!(requests(&provider).len(), 1);
+    let again = sandbox.run(&["derive"]);
+    assert_eq!(again.code, 0, "{:?}", again.stderr);
+    assert!(
+        again.stdout.starts_with("entries 0, calls 0,"),
+        "{}",
+        again.stdout
+    );
+    assert_eq!(requests(&provider).len(), 1);
+    let mut edited = NOTES[0].1.to_vec();
+    edited.extend_from_slice(b"\n## Fences\n\nThe fence was mended in spring.\n");
+    sandbox.write("notes/sections.md", &edited);
+    sandbox.seal();
+    let run = sandbox.run(&["derive"]);
+    assert_eq!(run.code, 0, "{:?}", run.stderr);
+    assert_eq!(requests(&provider).len(), 2);
+    assert_eq!(summary_records(&sandbox, file).len(), 2);
+    let dry = sandbox.run(&["derive", "--dry-run", &file.to_string()]);
+    assert_eq!(
+        dry_lines(&dry, "summary\t"),
+        [format!("summary\t{file}\twritten")]
+    );
+}
+
+#[test]
+fn a_summary_refused_in_three_runs_is_passed_over_and_redo_asks_again() {
+    let sandbox = Sandbox::filled("derive-summary-passed", false);
+    let first = sandbox.session(FIRST);
+    let provider = Provider::start(vec![answer(NOTE_TEXT)]);
+    sandbox.configure(&only(first, &provider.url()));
+    assert_eq!(sandbox.run(&["derive"]).code, 0);
+    let provider = Provider::start(vec![
+        refusal("cyber"),
+        refusal("cyber"),
+        refusal("cyber"),
+        answer(SUMMARY_TEXT),
+    ]);
+    sandbox.configure(&summarising(&provider.url(), first, ""));
+    for _ in 0..3 {
+        let run = sandbox.run(&["derive"]);
+        assert_eq!(run.code, 0, "{:?}", run.stderr);
+        assert_eq!(
+            run.stderr,
+            [format!("bilbo: refused the summary of {first}: cyber")]
+        );
+    }
+    assert_eq!(requests(&provider).len(), 3);
+    let fourth = sandbox.run(&["derive"]);
+    assert_eq!(fourth.code, 0, "{:?}", fourth.stderr);
+    assert_eq!(requests(&provider).len(), 3);
+    assert_eq!(
+        fourth.stderr,
+        [format!(
+            "bilbo: passed over the summary of {first}: refused or failed in 3 runs"
+        )]
+    );
+    let dry = sandbox.run(&["derive", "--dry-run", &first.to_string()]);
+    assert_eq!(
+        dry_lines(&dry, "summary\t"),
+        [format!("summary\t{first}\tpassed over")]
+    );
+    let redo = sandbox.run(&["derive", "--redo", &first.to_string()]);
+    assert_eq!(redo.code, 0, "{:?}", redo.stderr);
+    assert_eq!(requests(&provider).len(), 4);
+}
+
+#[test]
+fn an_answer_with_no_summary_is_said_in_bilbos_words_and_exits_1_with_the_notes_kept() {
+    let sandbox = Sandbox::filled("derive-summary-empty", false);
+    let first = sandbox.session(FIRST);
+    let provider = Provider::start(vec![answer(NOTE_TEXT), answer("")]);
+    sandbox.configure(&summarising(&provider.url(), first, ""));
+    let run = sandbox.run(&["derive", &first.to_string()]);
+    assert_eq!(run.code, 1, "{:?}", run.stderr);
+    assert!(
+        run.stdout
+            .starts_with("entries 1, calls 2, notes 1, dropped 0, refused 0, failed 1\n"),
+        "{}",
+        run.stdout
+    );
+    assert!(
+        run.stderr.contains(&format!(
+            "bilbo: call failed for the summary of {first}: the answer holds no summary bilbo can keep"
+        )),
+        "{:?}",
+        run.stderr
+    );
+    let (_, _, records) = sandbox.notes_of(first).expect("the notes");
+    assert!(
+        records[0].contains("The user asked about the garden fence."),
+        "{records:?}"
+    );
+    assert!(summary_records(&sandbox, first).is_empty());
+    let charged = fs::read_to_string(sandbox.derive_dir().join("summaries")).expect("the file");
+    assert_eq!(charged.lines().count(), 1, "{charged}");
+    let fields: Vec<&str> = charged.trim_end_matches('\n').split('\t').collect();
+    assert_eq!(fields.len(), 4, "{charged}");
+    assert_eq!(fields[0], "charged");
+    assert_eq!(fields[1], first.to_string());
+    let head = head_of(&sandbox, first);
+    let (note, generation, _) = sandbox.notes_of(first).expect("the notes");
+    let paragraph = bilbo_cli::notes().paragraph;
+    let store = sandbox.store();
+    let stored = bilbo_derive::plan::held(&store, first)
+        .expect("a lookup")
+        .expect("notes");
+    let mut digest = None;
+    for record in store
+        .read(
+            note,
+            generation,
+            RecordRange {
+                first: 1,
+                count: stored.records,
+            },
+        )
+        .expect("records")
+    {
+        let bare = bilbo_derive::spool::bare(&record);
+        if paragraph(bare).is_some() {
+            digest = Some(bilbo_derive::tags::asked::digest(digest, bare));
+        }
+    }
+    drop(store);
+    let sent = user_text(&requests(&provider)[1]);
+    let asking = bilbo_derive::summary::asked::asking(
+        first,
+        &bilbo_derive::summary::asked::About {
+            generation: head.generation,
+            records: head.records,
+            content: head.mark.hash,
+            notes: digest,
+        },
+        "anthropic",
+        "claude-test-1",
+        &bilbo_derive::summary::instruction::id(),
+        &sent,
+    );
+    assert_eq!(fields[2], format!("{asking:016x}"), "{charged}");
+    assert_eq!(fields[3], "1");
+}
+
+#[test]
+fn a_run_that_died_after_the_call_keeps_its_summary_at_the_next_run() {
+    let sandbox = Sandbox::filled("derive-summary-died", false);
+    let first = sandbox.session(FIRST);
+    let provider = Provider::start(vec![answer(NOTE_TEXT)]);
+    sandbox.configure(&only(first, &provider.url()));
+    assert_eq!(sandbox.run(&["derive"]).code, 0);
+    let head = head_of(&sandbox, first);
+    let (note, generation, _) = sandbox.notes_of(first).expect("notes");
+    let paragraph = bilbo_cli::notes().paragraph;
+    let store = sandbox.store();
+    let stored = bilbo_derive::plan::held(&store, first)
+        .expect("a lookup")
+        .expect("notes");
+    let mut digest = None;
+    for record in store
+        .read(
+            note,
+            generation,
+            RecordRange {
+                first: 1,
+                count: stored.records,
+            },
+        )
+        .expect("records")
+    {
+        let bare = bilbo_derive::spool::bare(&record);
+        if paragraph(bare).is_some() {
+            digest = Some(bilbo_derive::tags::asked::digest(digest, bare));
+        }
+    }
+    drop(store);
+    let block = bilbo_derive::summary::block::write(&bilbo_derive::summary::block::Block {
+        entry: first,
+        about: bilbo_derive::summary::asked::About {
+            generation: head.generation,
+            records: head.records,
+            content: head.mark.hash,
+            notes: digest,
+        },
+        asking: 5,
+        form: bilbo_derive::summary::block::Form::Answer,
+        instruction: bilbo_derive::summary::instruction::id(),
+        provider: "anthropic".to_owned(),
+        model: "claude-test-1".to_owned(),
+        answered: None,
+        made: 1_700_000_100,
+        sent: 10,
+        tokens_in: None,
+        tokens_out: None,
+        text: SUMMARY_TEXT.to_owned(),
+    });
+    let folder = sandbox.derive_dir().join("spool");
+    fs::create_dir_all(&folder).expect("a folder");
+    let kept = folder.join("00000000000000000001.summary");
+    fs::write(&kept, block).expect("a block");
+    fs::set_permissions(&kept, fs::Permissions::from_mode(0o600)).expect("a mode");
+    assert_eq!(spool_names(&sandbox), ["00000000000000000001.summary"]);
+    sandbox.configure(&summarising(&provider.url(), first, ""));
+    let run = sandbox.run(&["derive"]);
+    assert_eq!(run.code, 0, "{:?}", run.stderr);
+    assert_eq!(requests(&provider).len(), 1);
+    assert_eq!(run.stderr, ["bilbo: summarised 1 entries".to_owned()]);
+    let records = summary_records(&sandbox, first);
+    assert_eq!(records.len(), 1);
+    let held = bilbo_derive::summary::record::read(records[0].as_bytes()).expect("a summary");
+    assert_eq!(held.text, SUMMARY_TEXT);
+    assert_eq!(held.instruction, bilbo_derive::summary::instruction::id());
+    assert_eq!(
+        (held.provider.as_str(), held.model.as_str(), held.made),
+        ("anthropic", "claude-test-1", 1_700_000_100)
+    );
+    assert_eq!(
+        (held.generation, held.records, held.content),
+        (head.generation, head.records, head.mark.hash)
+    );
+    assert_eq!(
+        held.notes,
+        Some(bilbo_derive::summary::record::Notes {
+            generation,
+            records: stored.records,
+            digest: digest.expect("a paragraph"),
+        })
+    );
+    assert!(spool_names(&sandbox).is_empty());
+    let again = sandbox.run(&["derive"]);
+    assert_eq!((again.code, again.stderr), (0, Vec::<String>::new()));
+    assert_eq!(requests(&provider).len(), 1);
+}
+
+#[test]
+fn a_summary_instruction_of_the_settings_is_what_the_call_sends_and_the_dry_run_names() {
+    let sandbox = Sandbox::filled("derive-summary-own-instruction", false);
+    let first = sandbox.session(FIRST);
+    let file = sandbox.dir.join("summary-instruction.txt");
+    fs::write(&file, "Sum it up.\n").expect("an instruction");
+    let line = format!(
+        "derive.summary.instruction = {:?}\n",
+        file.display().to_string()
+    );
+    let provider = Provider::start(vec![answer(NOTE_TEXT), answer(SUMMARY_TEXT)]);
+    sandbox.configure(&summarising(&provider.url(), first, &line));
+    let run = sandbox.run(&["derive"]);
+    assert_eq!(run.code, 0, "{:?}", run.stderr);
+    let seen = requests(&provider);
+    assert_eq!(seen.len(), 2);
+    assert_eq!(field(&seen[1], "system").as_str(), Some("Sum it up.\n"));
+    let records = summary_records(&sandbox, first);
+    let held = bilbo_derive::summary::record::read(records[0].as_bytes()).expect("a summary");
+    let id = instruction::id("Sum it up.\n");
+    assert_eq!(held.instruction, id);
+    let dry = sandbox.run(&["derive", "--dry-run"]);
+    let summaries = dry_lines(&dry, "summaries:");
+    assert!(
+        summaries[0].ends_with(&format!("instruction ({}, {id})", file.display())),
+        "{summaries:?}"
+    );
+}
+
+#[test]
+fn a_bad_summary_instruction_file_is_a_config_error_only_while_the_summary_is_on() {
+    let sandbox = Sandbox::filled("derive-summary-bad-instruction", false);
+    let first = sandbox.session(FIRST);
+    let provider = Provider::start(vec![answer(NOTE_TEXT)]);
+    let file = sandbox.dir.join("missing-summary.txt");
+    let name = file.display().to_string();
+    let key = format!("derive.summary.instruction = {name:?}\n");
+    sandbox.configure(&summarising(&provider.url(), first, &key));
+    let said = format!(
+        "bilbo: derive.summary.instruction: cannot read {name}: No such file or directory (os error 2)"
+    );
+    for args in [&["derive"][..], &["derive", "--dry-run"][..]] {
+        let run = sandbox.run(args);
+        assert_eq!((run.code, run.stderr), (2, vec![said.clone()]), "{args:?}");
+    }
+    assert!(requests(&provider).is_empty());
+    sandbox.configure(
+        &summarising(&provider.url(), first, &key)
+            .replace("derive.enabled = true", "derive.enabled = false"),
+    );
+    let run = sandbox.run(&["derive"]);
+    assert_eq!(
+        (run.code, run.stderr),
+        (
+            0,
+            vec!["bilbo: derive is off: derive.enabled is false".to_owned()]
+        )
+    );
+    sandbox.configure(&with_tags(
+        &provider.url(),
+        first,
+        &format!("derive.summary.enabled = false\n{key}"),
+    ));
+    for args in [&["derive"][..], &["derive", "--dry-run"][..]] {
+        let run = sandbox.run(args);
+        assert_eq!(run.code, 0, "{args:?} {:?}", run.stderr);
+        assert!(run.stderr.iter().all(|line| !line.contains("summary")));
+    }
+}
+
+#[test]
+fn the_log_gets_a_u1_line_and_no_text_of_the_summary() {
+    let sandbox = Sandbox::filled("derive-summary-log", false);
+    let first = sandbox.session(FIRST);
+    let provider = Provider::start(vec![answer(NOTE_TEXT), answer(SUMMARY_TEXT)]);
+    sandbox.configure(&summarising(&provider.url(), first, ""));
+    assert_eq!(sandbox.run(&["derive", &first.to_string()]).code, 0);
+    let log = fs::read_to_string(sandbox.derive_dir().join("log")).expect("a log");
+    let d1: Vec<&str> = log
+        .lines()
+        .filter(|line| line.starts_with("d1\t"))
+        .collect();
+    let u1: Vec<&str> = log
+        .lines()
+        .filter(|line| line.starts_with("u1\t"))
+        .collect();
+    assert_eq!((d1.len(), u1.len()), (1, 1), "{log}");
+    let fields: Vec<&str> = u1[0].split('\t').collect();
+    assert_eq!(fields.len(), 16, "{}", u1[0]);
+    assert_eq!(fields[2], "written");
+    assert_eq!(fields[4], first.to_string());
+    assert!(!log.contains(SUMMARY_TEXT) && !log.contains("garden fence"));
+}
+
+#[test]
+fn a_summaries_file_bilbo_may_not_open_fails_nothing_with_the_switch_off() {
+    for on in [false, true] {
+        let sandbox = Sandbox::filled("derive-summary-link", false);
+        let first = sandbox.session(FIRST);
+        let provider = Provider::start(vec![answer(NOTE_TEXT), answer(SUMMARY_TEXT)]);
+        if on {
+            sandbox.configure(&summarising(&provider.url(), first, ""));
+        } else {
+            sandbox.configure(&only(first, &provider.url()));
+        }
+        fs::create_dir_all(sandbox.derive_dir()).expect("a folder");
+        symlink(
+            sandbox.dir.join("nowhere"),
+            sandbox.derive_dir().join("summaries"),
+        )
+        .expect("a link");
+        let run = sandbox.run(&["derive"]);
+        let dry = sandbox.run(&["derive", "--dry-run"]);
+        if on {
+            assert_eq!(run.code, 1, "{:?}", run.stderr);
+            assert!(
+                run.stderr.iter().any(|line| line.contains("summaries")),
+                "{:?}",
+                run.stderr
+            );
+        } else {
+            assert_eq!(run.code, 0, "{:?}", run.stderr);
+            assert_eq!(dry.code, 0, "{:?}", dry.stderr);
+            assert!(sandbox.notes_of(first).is_some());
+            for said in run.stderr.iter().chain(dry.stderr.iter()) {
+                assert!(!said.contains("summaries"), "{said}");
+            }
+        }
+    }
+}
+
+#[test]
+fn a_config_that_does_not_name_the_key_summarises() {
+    let sandbox = Sandbox::filled("derive-summary-default", false);
+    let first = sandbox.session(FIRST);
+    let provider = Provider::start(Vec::new());
+    sandbox.as_given(&only(first, &provider.url()));
+    let file = fs::read_to_string(sandbox.dir.join("config/config.toml")).expect("a config");
+    assert!(!file.contains("derive.summary"), "{file}");
+    let config = sandbox.run(&["config"]);
+    assert!(
+        config
+            .stdout
+            .lines()
+            .any(|line| line == "derive.summary.enabled = true (default)"),
+        "{}",
+        config.stdout
+    );
+    let dry = sandbox.run(&["derive", "--dry-run"]);
+    assert_eq!(dry.code, 0, "{:?}", dry.stderr);
+    assert!(!dry_lines(&dry, "summaries: ").is_empty(), "{}", dry.stdout);
+}
+
+fn four_queries(sandbox: &Sandbox, file: Id) -> Vec<(u8, String, Vec<String>, String)> {
+    let log = sandbox.dir.join("state/bilbo/queries.log");
+    let id = file.to_string();
+    let mut found = Vec::new();
+    for args in [
+        vec!["recall", "garden"],
+        vec!["recall", "--in", id.as_str(), "garden"],
+        vec!["recall", "--in", "notes", "garden"],
+        vec!["recall", "--in", "summary", "garden"],
+    ] {
+        let before = fs::read_to_string(&log).map_or(0, |held| held.len());
+        let run = sandbox.run(&args);
+        let written = fs::read_to_string(&log).expect("the query log");
+        let line = written[before..].to_owned();
+        assert_eq!(line.matches('\n').count(), 1, "{args:?}: {line:?}");
+        assert!(line.ends_with('\n'), "{args:?}: {line:?}");
+        let mut fields: Vec<String> = line[..line.len() - 1]
+            .split('\t')
+            .map(str::to_owned)
+            .collect();
+        assert_eq!(fields[0], "q3", "{args:?}");
+        fields[1] = "<time>".to_owned();
+        found.push((run.code, run.stdout, run.stderr, fields.join("\t") + "\n"));
+    }
+    found
+}
+
+const DIGEST_KEYS: [(&str, &str); 12] = [
+    ("BILBO_DIGEST_MARKDOWN_MOST", "6"),
+    ("BILBO_DIGEST_SESSION_MOST", "6"),
+    ("BILBO_DIGEST_NOTE_MOST", "6"),
+    ("BILBO_DIGEST_MARKDOWN_FLOOR", "0"),
+    ("BILBO_DIGEST_SESSION_FLOOR", "0"),
+    ("BILBO_DIGEST_NOTE_FLOOR", "0"),
+    ("BILBO_DIGEST_SESSION_OLD_AFTER", "36500d"),
+    ("BILBO_DIGEST_SESSION_SUBAGENTS", "false"),
+    ("BILBO_DIGEST_SESSION_PARTS", "false"),
+    ("BILBO_DIGEST_NOTE_WIDTH", "300"),
+    ("BILBO_DIGEST_SUMMARY_ENABLED", "true"),
+    ("BILBO_SEARCH_WORKERS", "2"),
+];
+
+fn digest_prompt(sandbox: &Sandbox, session: &str, prompt: &str) -> Run {
+    let mut vars = sandbox.vars();
+    for (name, value) in DIGEST_KEYS {
+        vars.insert(name.to_owned(), OsString::from(value));
+    }
+    let hook = format!("{{\"session_id\":\"{session}\",\"prompt\":\"{prompt}\"}}").into_bytes();
+    let var: Var = Rc::new(move |name| vars.get(name).cloned());
+    let said = Rc::new(RefCell::new(Vec::new()));
+    let sink = Rc::clone(&said);
+    let mut env = Env {
+        var,
+        stdin: Box::new(io::Cursor::new(hook)),
+        who: Who::Nobody,
+        notice: Box::new(move |message| sink.borrow_mut().extend(message.plain_lines())),
+    };
+    let settings = settings::load(
+        &*env.var,
+        &|path| fs::read(path),
+        &bilbo_cli::kind_keys(),
+        &bilbo_cli::provider_keys(),
+    )
+    .map_err(bilbo_cli::console::outcome::Failure::from);
+    let argv: Vec<OsString> = ["bilbo", "digest"].iter().map(OsString::from).collect();
+    let (code, stdout, lines) =
+        match bilbo_cli::run_tuned(&bilbo_cli::bilbo(), &argv, &mut env, settings, &tune) {
+            Ok(outcome) => (
+                outcome.exit_code(),
+                outcome.stdout(&bilbo_cli::console::view::View::PLAIN),
+                outcome.stderr_lines(&bilbo_cli::console::view::View::PLAIN),
+            ),
+            Err(failure) => (
+                failure.exit_code(),
+                String::new(),
+                failure.stderr_lines(&bilbo_cli::console::view::View::PLAIN),
+            ),
+        };
+    let mut stderr = said.borrow().clone();
+    stderr.extend(lines);
+    Run {
+        code,
+        stdout,
+        stderr,
+    }
+}
+
+#[test]
+fn recall_prints_the_same_bytes_once_a_summary_is_kept_and_no_index_holds_it() {
+    let sandbox = Sandbox::filled("derive-summary-recall", false);
+    let file = sandbox.of_kind("markdown", false)[0];
+    assert_eq!(sandbox.run(&["reindex"]).code, 0);
+    let provider = Provider::start(vec![answer("Zucchini trellis.")]);
+    sandbox.configure(&summary_config_of_file(&provider.url(), file, ""));
+    let before = four_queries(&sandbox, file);
+    let reindexed = sandbox.run(&["reindex"]);
+    assert_eq!(reindexed.code, 0, "{:?}", reindexed.stderr);
+    assert!(reindexed.stderr.is_empty(), "{:?}", reindexed.stderr);
+    let counts = reindexed.stdout.lines().next().expect("a line").to_owned();
+    assert!(
+        counts.contains("unread 0") && counts.contains("failed 0"),
+        "{counts}"
+    );
+    let run = sandbox.run(&["derive"]);
+    assert_eq!(run.code, 0, "{:?}", run.stderr);
+    assert_eq!(requests(&provider).len(), 1);
+    assert_eq!(run.stderr, ["bilbo: summarised 1 entries".to_owned()]);
+    let after = four_queries(&sandbox, file);
+    assert_eq!(before, after);
+    let none = sandbox.run(&["recall", "zucchini", "trellis"]);
+    assert_eq!(
+        (none.code, none.stderr.clone()),
+        (
+            1,
+            vec![
+                "bilbo: searched 4 entries".to_owned(),
+                "bilbo: nothing matched".to_owned()
+            ]
+        )
+    );
+    assert!(
+        none.stdout.lines().all(|line| !line.starts_with("=== ")),
+        "{}",
+        none.stdout
+    );
+    let again = sandbox.run(&["reindex"]);
+    assert_eq!(again.code, 0, "{:?}", again.stderr);
+    assert_eq!(
+        again.stdout.lines().count(),
+        reindexed.stdout.lines().count()
+    );
+    assert_eq!(again.stdout.lines().next().expect("a line"), counts);
+    assert!(again.stderr.is_empty(), "{:?}", again.stderr);
+    let session = "00000000-0000-4000-8000-000000000077";
+    let digest = digest_prompt(&sandbox, session, "zucchini trellis");
+    assert_eq!((digest.code, digest.stderr), (0, Vec::<String>::new()));
+    assert_eq!(digest.stdout, "");
+}
+
+fn seal_follow(sandbox: &Sandbox) {
+    stores::backdate(&stores::layout(&sandbox.vars()).state, 120);
+    let run = sandbox.run(&["refresh"]);
+    assert_eq!(run.code, 0, "{:?}", run.stderr);
+}
+
+#[test]
+fn a_file_that_is_gone_has_its_summary_retired_at_the_next_run() {
+    let sandbox = Sandbox::new("derive-summary-gone");
+    sandbox.write(
+        "notes/first.md",
+        b"# The first\n\nThe carrots were thinned in the north bed.\n",
+    );
+    sandbox.write(
+        "notes/second.md",
+        b"# The second\n\nThe tomatoes were staked along the south wall.\n",
+    );
+    let provider = Provider::start(vec![answer(SUMMARY_TEXT), answer(SUMMARY_TEXT)]);
+    let folder = sandbox.path("notes");
+    let text = format!(
+        "{}\n[[follow]]\npath = \"{folder}\"\nkind = \"markdown\"\n",
+        config(&provider.url(), SUMMARY_ON)
+            .replace("derive.in = [\"sessions\"]", "derive.in = [\"notes\"]")
+    );
+    sandbox.configure(&text);
+    let refreshed = sandbox.run(&["refresh"]);
+    assert_eq!(refreshed.code, 0, "{:?}", refreshed.stderr);
+    seal_follow(&sandbox);
+    let run = sandbox.run(&["derive"]);
+    assert_eq!(run.code, 0, "{:?}", run.stderr);
+    assert_eq!(requests(&provider).len(), 2);
+    let files = sandbox.of_kind("markdown", false);
+    assert_eq!(files.len(), 2);
+    let gone_id = files
+        .iter()
+        .copied()
+        .find(|id| {
+            sandbox
+                .store()
+                .meta(*id)
+                .expect("meta")
+                .and_then(|meta| meta.labels.capture)
+                .is_some_and(|label| label.as_str().ends_with("first.md"))
+        })
+        .expect("the first file");
+    let kept_id = files
+        .iter()
+        .copied()
+        .find(|id| *id != gone_id)
+        .expect("the other");
+    let kept_records = summary_records(&sandbox, kept_id);
+    assert_eq!(kept_records.len(), 1);
+    fs::remove_file(sandbox.dir.join("notes/first.md")).expect("removed");
+    let withdrawn = sandbox.run(&["refresh"]);
+    assert_eq!(withdrawn.code, 0, "{:?}", withdrawn.stderr);
+    seal_follow(&sandbox);
+    let next = sandbox.run(&["derive"]);
+    assert_eq!(next.code, 0, "{:?}", next.stderr);
+    assert!(next.stderr.is_empty(), "{:?}", next.stderr);
+    assert_eq!(requests(&provider).len(), 2);
+    let records = summary_records(&sandbox, gone_id);
+    assert_eq!(records.len(), 2, "{records:?}");
+    let first = bilbo_derive::summary::record::read(records[0].as_bytes()).expect("a summary");
+    assert_eq!(first.text, SUMMARY_TEXT);
+    assert!(bilbo_derive::summary::record::read(records[1].as_bytes()).is_none());
+    let withdrawn = head_of(&sandbox, gone_id);
+    assert_eq!(withdrawn.records, 0);
+    let retired: Value = serde_json::from_str(&records[1]).expect("a JSON record");
+    let summary = &retired["summary"];
+    assert!(summary["retired"].as_u64().is_some(), "{retired}");
+    assert_eq!(
+        summary.as_object().expect("an object").len(),
+        2,
+        "{retired}"
+    );
+    assert_eq!(
+        summary["of"],
+        json!({
+            "entry": gone_id.to_string(),
+            "generation": withdrawn.generation.0,
+            "records": 0,
+            "content": format!("{:032x}", withdrawn.mark.hash),
+        })
+    );
+    assert_eq!(summary_records(&sandbox, kept_id), kept_records);
+    let dry = sandbox.run(&["derive", "--dry-run", &gone_id.to_string()]);
+    assert_eq!(dry.code, 0, "{:?}", dry.stderr);
+    assert!(dry.stderr.is_empty(), "{:?}", dry.stderr);
+    assert_eq!(
+        dry_lines(&dry, "summary\t"),
+        [format!("summary\t{gone_id}\tnot due: short")]
+    );
+    let after = sandbox.run(&["derive"]);
+    assert_eq!(after.code, 0, "{:?}", after.stderr);
+    assert_eq!(summary_records(&sandbox, gone_id), records);
+    assert_eq!(summary_records(&sandbox, kept_id), kept_records);
+    let surviving = summary_records(&sandbox, kept_id);
+    assert!(
+        bilbo_derive::summary::record::read(surviving.last().expect("a record").as_bytes())
+            .is_some()
+    );
+}
+
+#[test]
+fn a_replay_that_fails_after_a_capture_still_brings_the_index_up_to_the_store() {
+    let sandbox = Sandbox::filled("derive-replay-fails-after", false);
+    let first = sandbox.session(FIRST);
+    let file = sandbox.of_kind("markdown", false)[0];
+    let provider = Provider::start(Vec::new());
+    assert_eq!(sandbox.run(&["reindex"]).code, 0);
+    sandbox.configure(&only(first, &provider.url()));
+    spooled(&sandbox, &kept_block(&sandbox, first));
+    let head = head_of(&sandbox, file);
+    let pass = bilbo_derive::summary::block::write(&bilbo_derive::summary::block::Block {
+        entry: file,
+        about: bilbo_derive::summary::asked::About {
+            generation: head.generation,
+            records: head.records,
+            content: head.mark.hash,
+            notes: None,
+        },
+        asking: 5,
+        form: bilbo_derive::summary::block::Form::Pass,
+        instruction: bilbo_derive::summary::instruction::id(),
+        provider: "anthropic".to_owned(),
+        model: String::new(),
+        answered: None,
+        made: 1_700_000_100,
+        sent: 0,
+        tokens_in: None,
+        tokens_out: None,
+        text: String::new(),
+    });
+    let kept = sandbox
+        .derive_dir()
+        .join("spool/00000000000000000001.summary");
+    fs::write(&kept, pass).expect("a block");
+    fs::set_permissions(&kept, fs::Permissions::from_mode(0o600)).expect("a mode");
+    let temporary = sandbox.derive_dir().join("summaries.tmp");
+    fs::create_dir(&temporary).expect("a folder");
+    let run = sandbox.run(&["derive"]);
+    assert_eq!(run.code, 1, "{:?}", run.stderr);
+    let last = run.stderr.last().expect("a line");
+    assert!(
+        last.starts_with("bilbo: cannot remove ") && last.contains("summaries.tmp"),
+        "{last}"
+    );
+    assert_eq!(spool_names(&sandbox), ["00000000000000000001.summary"]);
+    assert!(sandbox.notes_of(first).is_some());
+    fs::remove_dir(&temporary).expect("removed");
+    let dry = sandbox.run(&["derive", "--dry-run"]);
+    assert_eq!(dry.code, 0, "{:?}", dry.stderr);
+    assert!(dry.stderr.iter().all(|line| !line.contains("behind")));
+    let again = sandbox.run(&["derive"]);
+    assert_eq!(again.code, 0, "{:?}", again.stderr);
+    assert!(spool_names(&sandbox).is_empty());
+    let held = fs::read_to_string(sandbox.derive_dir().join("summaries")).expect("the file");
+    assert!(held.starts_with("passed\t"), "{held}");
 }

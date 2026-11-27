@@ -14,16 +14,15 @@ pub struct Request {
     /// 0 is 1.
     pub workers: usize,
     pub label_batch: usize,
+    pub kept_unread: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Output {
-    /// Entries whose newest generation is in the index, also when it gave no chunk.
+    /// Counts an entry that gave no chunk too.
     pub entries: u64,
     pub chunks: u64,
-    /// By kind.
     pub unread: BTreeMap<String, u64>,
-    /// With why.
     pub failed: Vec<(Id, String)>,
     pub index_bytes: u64,
 }

@@ -139,15 +139,17 @@ def derive_env():
     return derive
 
 
-def bilbo_config(derive, labels, settings):
+def bilbo_config(derive, labels, settings, own_summary=True):
     config = {"derive.enabled": True, "llm.provider": derive["provider"], "derive.in": labels,
-              f"llm.{derive['provider']}.via": way_of(derive), **settings}
-    return "follow = []\n" + toml_tables(config)
+              f"llm.{derive['provider']}.via": way_of(derive)}
+    if own_summary:
+        config["derive.summary.enabled"] = False
+    return "follow = []\n" + toml_tables(config | settings)
 
 
 def config_stops(derive):
     try:
-        parsed = tomllib.loads(bilbo_config(derive, [], derive.get("settings", {})))
+        parsed = tomllib.loads(bilbo_config(derive, [], derive.get("settings", {}), own_summary=False))
     except tomllib.TOMLDecodeError:
         sys.exit("bilbo-next: BILBO_EVAL_DERIVE: the settings make a config that does not parse")
     named = parsed.get("llm", {}).get("provider")
@@ -155,6 +157,8 @@ def config_stops(derive):
         sys.exit(f"bilbo-next: BILBO_EVAL_DERIVE: the settings name the provider {named!r}, not {derive['provider']!r}")
     if "tags" in parsed.get("derive", {}):
         sys.exit("bilbo-next: BILBO_EVAL_DERIVE: the arm does not tag")
+    if "summary" in parsed.get("derive", {}):
+        sys.exit("bilbo-next: BILBO_EVAL_DERIVE: the arm does not summarise")
 
 
 def way_of(derive):

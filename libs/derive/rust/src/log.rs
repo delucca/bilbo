@@ -72,7 +72,7 @@ fn text(field: &str) -> String {
     }
 }
 
-fn number<T: ToString>(field: Option<T>) -> String {
+pub(crate) fn number<T: ToString>(field: Option<T>) -> String {
     field.map_or_else(|| "-".to_owned(), |number| number.to_string())
 }
 
@@ -173,11 +173,79 @@ pub fn tags_line(call: &Tagged) -> String {
     fields.join("\t")
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SummaryVerdict {
+    Written,
+    Refused,
+    Failed,
+    Busy,
+    Stopped,
+    Passed,
+    Retired,
+}
+
+impl SummaryVerdict {
+    #[must_use]
+    pub fn word(self) -> &'static str {
+        match self {
+            SummaryVerdict::Written => "written",
+            SummaryVerdict::Refused => "refused",
+            SummaryVerdict::Failed => "failed",
+            SummaryVerdict::Busy => "busy",
+            SummaryVerdict::Stopped => "stopped",
+            SummaryVerdict::Passed => "passed",
+            SummaryVerdict::Retired => "retired",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Summarised {
+    pub at: u64,
+    pub verdict: SummaryVerdict,
+    pub kind: String,
+    pub entry: Id,
+    pub provider: String,
+    pub asked: String,
+    pub answered: Option<String>,
+    pub attempt: Option<u32>,
+    pub sent: Option<u64>,
+    pub tokens_in: Option<u64>,
+    pub tokens_out: Option<u64>,
+    pub characters: Option<u64>,
+    pub millis: u64,
+    pub reason: Option<String>,
+    pub request: Option<String>,
+}
+
+#[must_use]
+pub fn summary_line(call: &Summarised) -> String {
+    let fields = [
+        "u1".to_owned(),
+        call.at.to_string(),
+        call.verdict.word().to_owned(),
+        text(&call.kind),
+        call.entry.to_string(),
+        text(&call.provider),
+        text(&call.asked),
+        text(call.answered.as_deref().unwrap_or("")),
+        number(call.attempt),
+        number(call.sent),
+        number(call.tokens_in),
+        number(call.tokens_out),
+        number(call.characters),
+        call.millis.to_string(),
+        text(call.reason.as_deref().unwrap_or("")),
+        text(call.request.as_deref().unwrap_or("")),
+    ];
+    fields.join("\t")
+}
+
 #[cfg(test)]
 mod tests {
     use bilbo_store::id::Id;
 
-    use super::{Call, Verdict, line};
+    use super::{Call, Summarised, SummaryVerdict, Verdict, line, summary_line};
 
     const PARENT: &str = "01JC5Q3V7XKM4P8R2T6W9YB0DB";
 
@@ -307,5 +375,58 @@ mod tests {
             "t1\t1794107564\tfailed\tsession\t01JC5Q3V7XKM4P8R2T6W9YB0DB\tanthropic\tmodel-a\tmodel-b\t1\t2890\t3120\t40\t-\t-\t1500\tno-tag strays\t-"
         );
         assert_eq!(line.split('\t').count(), 17);
+    }
+
+    #[test]
+    fn a_summarys_line_is_u1_and_sixteen_fields() {
+        let call = |verdict| Summarised {
+            at: 1_794_107_564,
+            verdict,
+            kind: "session".to_owned(),
+            entry: Id::parse(PARENT).expect("id"),
+            provider: "anthropic".to_owned(),
+            asked: "model-a".to_owned(),
+            answered: Some("model-b".to_owned()),
+            attempt: Some(1),
+            sent: Some(412),
+            tokens_in: Some(790),
+            tokens_out: Some(61),
+            characters: Some(74),
+            millis: 1830,
+            reason: None,
+            request: None,
+        };
+        assert_eq!(
+            summary_line(&call(SummaryVerdict::Written)),
+            format!(
+                "u1\t1794107564\twritten\tsession\t{PARENT}\tanthropic\tmodel-a\tmodel-b\t1\t412\t790\t61\t74\t1830\t-\t-"
+            )
+        );
+        let idle = |verdict| Summarised {
+            asked: String::new(),
+            answered: None,
+            attempt: None,
+            sent: None,
+            tokens_in: None,
+            tokens_out: None,
+            characters: None,
+            millis: 0,
+            ..call(verdict)
+        };
+        let passed = summary_line(&idle(SummaryVerdict::Passed));
+        assert_eq!(
+            passed,
+            format!(
+                "u1\t1794107564\tpassed\tsession\t{PARENT}\tanthropic\t-\t-\t-\t-\t-\t-\t-\t0\t-\t-"
+            )
+        );
+        assert_eq!(
+            summary_line(&idle(SummaryVerdict::Retired)),
+            passed.replacen("passed", "retired", 1)
+        );
+        let mut spaced = call(SummaryVerdict::Failed);
+        spaced.asked = "a\tb\nc".to_owned();
+        assert_eq!(summary_line(&spaced).split('\t').count(), 16);
+        assert!(summary_line(&spaced).contains("\ta b c\t"));
     }
 }

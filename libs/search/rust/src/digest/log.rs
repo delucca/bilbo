@@ -91,17 +91,24 @@ fn locator(range: RecordRange) -> String {
 
 fn listed_item(row: &Row) -> String {
     match &row.said {
-        Said::Entry { .. } => format!("{}={}", row.entry, row.score),
+        Said::Entry { summary, .. } => format!(
+            "{}={}{}",
+            row.entry,
+            row.score,
+            if summary.is_some() { "*" } else { "" }
+        ),
         Said::Passage {
             records: range,
+            written,
             summary,
             ..
         } => format!(
-            "{}{}={}{}",
+            "{}{}={}{}{}",
             row.entry,
             locator(*range),
             row.score,
-            if summary.is_some() { "+" } else { "" }
+            if written.is_some() { "+" } else { "" },
+            if summary.is_some() { "*" } else { "" }
         ),
     }
 }
@@ -180,13 +187,14 @@ mod tests {
         }
     }
 
-    fn passage(first: u64, count: u64, summary: Option<&str>) -> Said {
+    fn passage(first: u64, count: u64, written: Option<&str>) -> Said {
         Said::Passage {
             records: RecordRange { first, count },
             day: "2026-11-07".to_owned(),
             folder: None,
             line: None,
-            summary: summary.map(str::to_owned),
+            written: written.map(str::to_owned),
+            summary: None,
         }
     }
 
@@ -223,7 +231,14 @@ mod tests {
     #[test]
     fn a_line_has_its_six_fields_and_five_for_each_list_in_order() {
         let mut files = empty("markdown", 8.0);
-        files.rows.push(row(1, 14.25, Said::Entry { title: None }));
+        files.rows.push(row(
+            1,
+            14.25,
+            Said::Entry {
+                title: None,
+                summary: None,
+            },
+        ));
         files.held_back.push(HeldBack {
             entry: id(2),
             capture: None,
@@ -415,7 +430,14 @@ mod tests {
         ];
         for score in scores {
             let mut files = empty("markdown", 8.0);
-            files.rows.push(row(1, score, Said::Entry { title: None }));
+            files.rows.push(row(
+                1,
+                score,
+                Said::Entry {
+                    title: None,
+                    summary: None,
+                },
+            ));
             let listed = Listed {
                 stand: Stand::Current,
                 lists: vec![files],
@@ -429,5 +451,53 @@ mod tests {
             let read: f32 = written.parse().unwrap_or(f32::NAN);
             assert_eq!(read.to_bits(), score.to_bits(), "{written}");
         }
+    }
+
+    #[test]
+    fn an_item_whose_row_carried_a_summary_is_marked_after_its_score() {
+        use super::listed_item;
+        let entry = |summary: Option<&str>| {
+            row(
+                1,
+                9.5,
+                Said::Entry {
+                    title: None,
+                    summary: summary.map(str::to_owned),
+                },
+            )
+        };
+        let passage_row = |written: Option<&str>, summary: Option<&str>| {
+            let mut said = passage(3, 5, written);
+            if let Said::Passage { summary: held, .. } = &mut said {
+                *held = summary.map(str::to_owned);
+            }
+            row(1, 14.25, said)
+        };
+        let file = "01JC5Q3V7XKM4P8R2T6W9YB0DG";
+        let named = |mut held: Row| {
+            held.entry = bilbo_store::id::Id::parse(file).expect("an id");
+            held
+        };
+        assert_eq!(
+            listed_item(&named(entry(Some("s")))),
+            format!("{file}=9.5*")
+        );
+        assert_eq!(listed_item(&named(entry(None))), format!("{file}=9.5"));
+        assert_eq!(
+            listed_item(&named(passage_row(Some("n"), Some("s")))),
+            format!("{file}#r3-7=14.25+*")
+        );
+        assert_eq!(
+            listed_item(&named(passage_row(None, Some("s")))),
+            format!("{file}#r3-7=14.25*")
+        );
+        assert_eq!(
+            listed_item(&named(passage_row(Some("n"), None))),
+            format!("{file}#r3-7=14.25+")
+        );
+        assert_eq!(
+            listed_item(&named(passage_row(None, None))),
+            format!("{file}#r3-7=14.25")
+        );
     }
 }

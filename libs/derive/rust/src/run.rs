@@ -8,10 +8,12 @@ use bilbo_store::opaque;
 use crate::answer;
 use crate::check::check;
 use crate::keys::Section;
-use crate::log::{self, Call, Log, TagVerdict, Tagged, Verdict};
+use crate::log::{self, Call, Log, Summarised, SummaryVerdict, TagVerdict, Tagged, Verdict};
 use crate::plan::{self, Due, Error, Planned};
 use crate::record::{self, Run, next_same};
 use crate::spool::{self, Block, Spool, bare};
+use crate::summary::asked::Asked as SummaryAsked;
+use crate::summary::{self, block::Form};
 use crate::tags::{self, asked::Asked as TagsAsked};
 use crate::tries::{Extent, Tries};
 use crate::view::{self, Counter, Format, Paragraph};
@@ -62,6 +64,12 @@ pub enum Ended {
     Prepare(String, Which),
 }
 
+enum Ready {
+    Yes,
+    Unprepared(String),
+    Unbound(String),
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Event {
     Refused {
@@ -94,6 +102,25 @@ pub enum Event {
         entry: Id,
         charges: u8,
     },
+    SummariesNotAsked {
+        why: String,
+    },
+    SummaryRefused {
+        entry: Id,
+        category: Option<String>,
+    },
+    SummaryFailed {
+        entry: Id,
+        cause: Cause,
+    },
+    NoSummary {
+        entry: Id,
+        why: summary::answer::Why,
+    },
+    SummaryPassed {
+        entry: Id,
+        charges: u8,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -108,6 +135,8 @@ pub struct Sinks<'a> {
     pub tagger: Option<&'a mut dyn Model>,
     pub asked: &'a mut dyn TagsAsked,
     pub spool: &'a mut dyn Spool,
+    pub summary_spool: &'a mut dyn Spool,
+    pub summarised: &'a mut dyn SummaryAsked,
     pub tries: &'a mut dyn Tries,
     pub log: &'a mut dyn Log,
     pub clock: &'a dyn Clock,
@@ -120,6 +149,7 @@ pub struct Context<'a> {
     pub format: &'a Format<'a>,
     pub counter: &'a Counter<'a>,
     pub tags: Option<tags::Rules<'a>>,
+    pub summary: Option<summary::Rules<'a>>,
     pub redo: bool,
 }
 
@@ -138,6 +168,7 @@ impl std::fmt::Debug for Context<'_> {
             .field("format", &self.format)
             .field("counter", &self.counter)
             .field("tags", &self.tags.is_some())
+            .field("summary", &self.summary.is_some())
             .field("redo", &self.redo)
             .finish()
     }
@@ -198,6 +229,7 @@ struct Line {
 enum Slot {
     Window(Extent),
     Asking(Id, u64),
+    Summary(Id, u64),
 }
 
 struct Machine<'a> {
@@ -205,6 +237,8 @@ struct Machine<'a> {
     tagger: Option<&'a mut dyn Model>,
     asked: &'a mut dyn TagsAsked,
     spool: &'a mut dyn Spool,
+    summary_spool: &'a mut dyn Spool,
+    summarised: &'a mut dyn SummaryAsked,
     tries: &'a mut dyn Tries,
     log: &'a mut dyn Log,
     clock: &'a dyn Clock,
@@ -216,6 +250,7 @@ struct Machine<'a> {
     answered: [bool; 2],
     prepared: [bool; 2],
     bound: [bool; 2],
+    unasked: bool,
     events: Vec<Event>,
     counted: Option<Id>,
     first_call: Option<Id>,
@@ -263,6 +298,7 @@ impl std::error::Error for Halted {}
 pub struct Interrupted {
     pub error: Error,
     pub notices: Vec<String>,
+    pub written: u64,
 }
 
 impl std::fmt::Display for Interrupted {
@@ -279,6 +315,8 @@ pub fn calls(due: &[Due], sinks: Sinks<'_>, context: &Context<'_>) -> Result<Rep
         tagger,
         asked,
         spool,
+        summary_spool,
+        summarised,
         tries,
         log,
         clock,
@@ -299,6 +337,8 @@ pub fn calls(due: &[Due], sinks: Sinks<'_>, context: &Context<'_>) -> Result<Rep
         tagger,
         asked,
         spool,
+        summary_spool,
+        summarised,
         tries,
         log,
         clock,
@@ -310,6 +350,7 @@ pub fn calls(due: &[Due], sinks: Sinks<'_>, context: &Context<'_>) -> Result<Rep
         answered: [false; 2],
         prepared: [writer_ran, false],
         bound: [false; 2],
+        unasked: false,
         events: Vec::new(),
         counted: None,
         first_call: None,
@@ -354,8 +395,14 @@ impl Machine<'_> {
     }
 
     fn entry(&mut self, entry: &Due) -> Result<Option<Ended>, Error> {
-        self.folding = self.context.tags.is_some() && entry.tags.is_some();
-        self.digest = entry.tags.as_ref().and_then(|planned| planned.notes);
+        let tagging = self.context.tags.is_some() && entry.tags.is_some();
+        let summarising = self.context.summary.is_some() && entry.summary.is_some();
+        self.folding = tagging || summarising;
+        self.digest = entry
+            .tags
+            .as_ref()
+            .and_then(|planned| planned.notes)
+            .or_else(|| entry.summary.as_ref().and_then(|planned| planned.notes));
         self.kept = false;
         let mut previous = entry.last.clone();
         let mut mine: Vec<Paragraph> = Vec::new();
@@ -407,7 +454,10 @@ impl Machine<'_> {
             mine.extend(paragraphs);
             previous = Some(run);
         }
-        self.tagging(entry, &mine)
+        if let Some(ended) = self.tagging(entry, &mine)? {
+            return Ok(Some(ended));
+        }
+        self.summarising(entry, &mine)
     }
 
     fn record(
@@ -424,10 +474,11 @@ impl Machine<'_> {
             self.writer.id().to_owned()
         };
         let provider = self.context.provider.to_owned();
+        let instruction = entry.writing();
         Run {
             kind: entry.parent.kind.clone(),
-            instruction: entry.instruction.id.clone(),
-            same: next_same(previous, &entry.instruction.id, &provider, &model),
+            instruction: instruction.id.clone(),
+            same: next_same(previous, &instruction.id, &provider, &model),
             provider,
             model,
             answered: made.answered,
@@ -506,6 +557,7 @@ impl Machine<'_> {
         match slot {
             Slot::Window(extent) => self.tries.charge(&extent)?,
             Slot::Asking(entry, asking) => self.asked.charge(entry, asking)?,
+            Slot::Summary(entry, asking) => self.summarised.charge(entry, asking)?,
         }
         Ok(())
     }
@@ -585,7 +637,7 @@ impl Machine<'_> {
         let shown: Vec<Paragraph> = entry.stored.iter().chain(mine).cloned().collect();
         let earlier = view::earlier(&shown, section.earlier.value, self.context.counter);
         let prompt = Prompt {
-            instruction: entry.instruction.text.clone(),
+            instruction: entry.writing().text.clone(),
             material: view::material(earlier, entry.preface.as_deref(), &planned.window.text),
         };
         let grounds = view::grounds(earlier, entry.preface.as_deref(), &planned.window.text);
@@ -1040,18 +1092,11 @@ impl Machine<'_> {
         } else {
             Which::Writer
         };
-        let at = which.at();
-        if !self.prepared[at] {
-            if let Err(text) = self.model(which).prepare() {
+        match self.ready(which) {
+            Ready::Yes => {}
+            Ready::Unprepared(text) | Ready::Unbound(text) => {
                 return Ok(Some(Ended::Prepare(text, which)));
             }
-            self.prepared[at] = true;
-        }
-        if !self.bound[at] {
-            if let Err(text) = self.model(which).bound() {
-                return Ok(Some(Ended::Prepare(text, which)));
-            }
-            self.bound[at] = true;
         }
         let asked = self.model(which).id().to_owned();
         let prompt = Prompt {
@@ -1170,6 +1215,376 @@ impl Machine<'_> {
         })
     }
 
+    fn summary_log(
+        &mut self,
+        entry: &Due,
+        asked: &str,
+        sent: Option<u64>,
+        verdict: SummaryVerdict,
+        line: Line,
+        characters: Option<u64>,
+    ) {
+        let text = log::summary_line(&Summarised {
+            at: seconds(self.clock.now()),
+            verdict,
+            kind: entry.parent.kind.clone(),
+            entry: entry.parent.id,
+            provider: self.context.provider.to_owned(),
+            asked: asked.to_owned(),
+            answered: line.answered,
+            attempt: line.attempt,
+            sent,
+            tokens_in: line.usage.read,
+            tokens_out: line.usage.written,
+            characters,
+            millis: line.millis,
+            reason: line.reason.or_else(|| line.cause.as_ref().map(reason)),
+            request: line.cause.and_then(|cause| cause.request),
+        });
+        self.log.append(&text);
+    }
+
+    fn ready(&mut self, which: Which) -> Ready {
+        let at = which.at();
+        if !self.prepared[at] {
+            if let Err(text) = self.model(which).prepare() {
+                return Ready::Unprepared(text);
+            }
+            self.prepared[at] = true;
+        }
+        if !self.bound[at] {
+            if let Err(text) = self.model(which).bound() {
+                return Ready::Unbound(text);
+            }
+            self.bound[at] = true;
+        }
+        Ready::Yes
+    }
+
+    fn summarising(&mut self, entry: &Due, mine: &[Paragraph]) -> Result<Option<Ended>, Error> {
+        let context = self.context;
+        let (Some(rules), Some(planned)) = (&context.summary, &entry.summary) else {
+            return Ok(None);
+        };
+        let about = summary::asked::About {
+            generation: entry.parent.generation,
+            records: entry.parent.records,
+            content: planned.head.mark.hash,
+            notes: planned.notes,
+        };
+        if planned.retire {
+            self.retire(entry, rules, &about)?;
+            return Ok(None);
+        }
+        if let (Some((number, charges)), Some(made)) = (planned.asking, &planned.made) {
+            if self.unasked {
+                return Ok(None);
+            }
+            let sent = u64::try_from(planned.sent).unwrap_or(u64::MAX);
+            let aim = (number, charges, sent);
+            return self.summary_call(entry, rules, about, made, aim);
+        }
+        let notes: Vec<Paragraph> = entry.stored.iter().chain(mine).cloned().collect();
+        let about = summary::asked::About {
+            notes: self.digest.filter(|_| !notes.is_empty()),
+            ..about
+        };
+        let known = summary::plan::Known {
+            id: entry.parent.id,
+            about,
+            of: summary::view::Of::Notes(&notes),
+            record: planned.record.as_ref(),
+            covered: true,
+        };
+        let force = summary::plan::Force {
+            provider: context.provider,
+            model: self.writer.id(),
+            redo: context.redo,
+            head: context.section.passage_head.value,
+            counter: context.counter,
+        };
+        match summary::plan::decide(&known, rules, &force, &*self.summarised)? {
+            summary::plan::Decided::Written | summary::plan::Decided::PassedOver => Ok(None),
+            summary::plan::Decided::NoNote { retire }
+            | summary::plan::Decided::Short { retire } => {
+                if retire {
+                    self.retire(entry, rules, &about)?;
+                }
+                Ok(None)
+            }
+            summary::plan::Decided::Due(_) if self.unasked => Ok(None),
+            summary::plan::Decided::Due(asking) => {
+                let sent = u64::try_from(asking.sent).unwrap_or(u64::MAX);
+                let aim = (asking.number, asking.charges, sent);
+                self.summary_call(entry, rules, about, &asking.made, aim)
+            }
+        }
+    }
+
+    fn retire(
+        &mut self,
+        entry: &Due,
+        rules: &summary::Rules<'_>,
+        about: &summary::asked::About,
+    ) -> Result<(), Error> {
+        let block = summary::block::Block {
+            entry: entry.parent.id,
+            about: summary::asked::About {
+                notes: None,
+                ..*about
+            },
+            asking: 0,
+            form: Form::Retirement,
+            instruction: rules.id.to_owned(),
+            provider: self.context.provider.to_owned(),
+            model: self.writer.id().to_owned(),
+            answered: None,
+            made: seconds(self.clock.now()),
+            sent: 0,
+            tokens_in: None,
+            tokens_out: None,
+            text: String::new(),
+        };
+        self.summary_spool.keep(&summary::block::write(&block))?;
+        let idle = Line {
+            verdict: Verdict::Passed,
+            attempt: None,
+            answered: None,
+            usage: Usage::default(),
+            tallies: None,
+            cause: None,
+            reason: None,
+            millis: 0,
+        };
+        self.summary_log(entry, "", None, SummaryVerdict::Retired, idle, None);
+        Ok(())
+    }
+
+    fn summary_call(
+        &mut self,
+        entry: &Due,
+        rules: &summary::Rules<'_>,
+        about: summary::asked::About,
+        made: &summary::view::Sent,
+        (asking, charges, sent): (u64, u8, u64),
+    ) -> Result<Option<Ended>, Error> {
+        let context = self.context;
+        let id = entry.parent.id;
+        let model = self.writer.id().to_owned();
+        let block = summary::block::Block {
+            entry: id,
+            about,
+            asking,
+            form: Form::Answer,
+            instruction: rules.id.to_owned(),
+            provider: context.provider.to_owned(),
+            model: model.clone(),
+            answered: None,
+            made: 0,
+            sent,
+            tokens_in: None,
+            tokens_out: None,
+            text: String::new(),
+        };
+        let idle = || Line {
+            verdict: Verdict::Passed,
+            attempt: None,
+            answered: None,
+            usage: Usage::default(),
+            tallies: None,
+            cause: None,
+            reason: None,
+            millis: 0,
+        };
+        if usize::from(charges) >= context.section.tries.value {
+            let pass = summary::block::Block {
+                form: Form::Pass,
+                made: seconds(self.clock.now()),
+                ..block
+            };
+            self.summary_spool.keep(&summary::block::write(&pass))?;
+            self.events
+                .push(Event::SummaryPassed { entry: id, charges });
+            self.summary_log(entry, "", None, SummaryVerdict::Passed, idle(), None);
+            return Ok(None);
+        }
+        if self.spent() {
+            return Ok(Some(Ended::Calls));
+        }
+        let which = Which::Writer;
+        match self.ready(which) {
+            Ready::Yes => {}
+            Ready::Unprepared(text) => return Ok(Some(Ended::Prepare(text, which))),
+            Ready::Unbound(why) => {
+                self.unasked = true;
+                self.events.push(Event::SummariesNotAsked { why });
+                return Ok(None);
+            }
+        }
+        let prompt = Prompt {
+            instruction: rules.instruction.to_owned(),
+            material: made.material.clone(),
+        };
+        let attempted = self.attempt(which, id, &prompt, &context.limits, |machine, line| {
+            let verdict = if line.verdict == Verdict::Busy {
+                SummaryVerdict::Busy
+            } else {
+                SummaryVerdict::Stopped
+            };
+            machine.summary_log(entry, &model, Some(sent), verdict, line, None);
+        });
+        let slot = Slot::Summary(id, asking);
+        let step = match attempted {
+            Attempted::Calls => Step::Stop(Ended::Calls),
+            Attempted::GaveUp(cause, ended) => {
+                if cause.what.whose() == Whose::Provider {
+                    Step::Stop(ended)
+                } else {
+                    self.counts.failed += 1;
+                    self.events.push(Event::SummaryFailed {
+                        entry: id,
+                        cause: cause.clone(),
+                    });
+                    self.fails(slot, which, &cause)?
+                }
+            }
+            Attempted::Cut { usage, taken } => self.summary_failure(
+                entry,
+                (&model, sent, slot),
+                &Cause::new(What::Cut),
+                usage,
+                taken,
+            )?,
+            Attempted::Failed {
+                cause,
+                usage,
+                taken,
+            } => self.summary_failure(entry, (&model, sent, slot), &cause, usage, taken)?,
+            Attempted::Refused {
+                category,
+                usage,
+                taken: (attempt, millis),
+            } => {
+                self.add(usage);
+                self.counts.refused += 1;
+                self.charge(slot)?;
+                self.answered(which)?;
+                self.events.push(Event::SummaryRefused {
+                    entry: id,
+                    category: category.clone(),
+                });
+                let line = Line {
+                    reason: Some(category.unwrap_or_else(|| "unknown".to_owned())),
+                    attempt,
+                    usage,
+                    millis,
+                    ..idle()
+                };
+                self.summary_log(
+                    entry,
+                    &model,
+                    Some(sent),
+                    SummaryVerdict::Refused,
+                    line,
+                    None,
+                );
+                Step::EndEntry
+            }
+            Attempted::Answer {
+                text,
+                usage,
+                model: answered,
+                taken: (attempt, millis),
+            } => {
+                self.add(usage);
+                let line = Line {
+                    attempt,
+                    answered: answered.clone(),
+                    usage,
+                    millis,
+                    ..idle()
+                };
+                match summary::answer::read(&text, made.body(), context.section.names.value) {
+                    summary::answer::Read::None(why) => {
+                        self.counts.failed += 1;
+                        self.events.push(Event::NoSummary { entry: id, why });
+                        self.charge(slot)?;
+                        self.answered(which)?;
+                        let line = Line {
+                            reason: Some(format!("no-summary {}", why.word())),
+                            ..line
+                        };
+                        self.summary_log(
+                            entry,
+                            &model,
+                            Some(sent),
+                            SummaryVerdict::Failed,
+                            line,
+                            None,
+                        );
+                        return Ok(None);
+                    }
+                    summary::answer::Read::Kept(kept) => {
+                        let characters = u64::try_from(kept.chars().count()).unwrap_or(u64::MAX);
+                        let kept_block = summary::block::Block {
+                            answered,
+                            made: seconds(self.clock.now()),
+                            tokens_in: usage.read,
+                            tokens_out: usage.written,
+                            text: kept,
+                            ..block
+                        };
+                        self.summary_spool
+                            .keep(&summary::block::write(&kept_block))?;
+                        self.answered(which)?;
+                        self.summary_log(
+                            entry,
+                            &model,
+                            Some(sent),
+                            SummaryVerdict::Written,
+                            line,
+                            Some(characters),
+                        );
+                        Step::EndEntry
+                    }
+                }
+            }
+        };
+        Ok(match step {
+            Step::Stop(ended) => Some(ended),
+            _ => None,
+        })
+    }
+
+    fn summary_failure(
+        &mut self,
+        entry: &Due,
+        aim: (&str, u64, Slot),
+        cause: &Cause,
+        usage: Usage,
+        (attempt, millis): (Option<u32>, u64),
+    ) -> Result<Step, Error> {
+        let (asked, sent, slot) = aim;
+        self.add(usage);
+        self.counts.failed += 1;
+        self.events.push(Event::SummaryFailed {
+            entry: entry.parent.id,
+            cause: cause.clone(),
+        });
+        let line = Line {
+            verdict: Verdict::Failed,
+            attempt,
+            answered: None,
+            usage,
+            tallies: None,
+            cause: Some(cause.clone()),
+            reason: None,
+            millis,
+        };
+        self.summary_log(entry, asked, Some(sent), SummaryVerdict::Failed, line, None);
+        self.fails(slot, Which::Writer, cause)
+    }
+
     fn tags_failure(
         &mut self,
         entry: &Due,
@@ -1204,21 +1619,47 @@ impl Machine<'_> {
 pub struct Replayed {
     pub captured: u64,
     pub tagged: u64,
+    pub summarised: u64,
+    pub retired: u64,
+    pub found: u64,
     pub notices: Vec<String>,
+}
+
+impl Replayed {
+    #[must_use]
+    pub fn written(&self) -> u64 {
+        self.captured + self.tagged + self.summarised + self.retired + self.found
+    }
+}
+
+struct Waiting<'a> {
+    pub spool: &'a mut dyn Spool,
+    pub summary_spool: &'a mut dyn Spool,
+    pub asked: &'a mut dyn TagsAsked,
+    pub summarised: &'a mut dyn SummaryAsked,
 }
 
 pub fn replay(
     entries: &mut dyn Entries,
     spool: &mut dyn Spool,
+    summary_spool: &mut dyn Spool,
     format: &Format<'_>,
     asked: &mut dyn TagsAsked,
+    summarised: &mut dyn SummaryAsked,
     cap: usize,
 ) -> Result<Replayed, Box<Interrupted>> {
     let mut replayed = Replayed::default();
-    match replay_into(entries, spool, format, asked, cap, &mut replayed) {
+    let mut waiting = Waiting {
+        spool,
+        summary_spool,
+        asked,
+        summarised,
+    };
+    match replay_into(entries, &mut waiting, format, cap, &mut replayed) {
         Ok(()) => Ok(replayed),
         Err(error) => Err(Box::new(Interrupted {
             error,
+            written: replayed.written(),
             notices: replayed.notices,
         })),
     }
@@ -1226,16 +1667,15 @@ pub fn replay(
 
 fn replay_into(
     entries: &mut dyn Entries,
-    spool: &mut dyn Spool,
+    waiting: &mut Waiting<'_>,
     format: &Format<'_>,
-    asked: &mut dyn TagsAsked,
     cap: usize,
     replayed: &mut Replayed,
 ) -> Result<(), Error> {
     let mut blocks: Vec<(String, Block)> = Vec::new();
     let mut tagged: Vec<(String, tags::block::Block)> = Vec::new();
     let mut unreadable: Vec<String> = Vec::new();
-    for (name, bytes) in spool.list()? {
+    for (name, bytes) in waiting.spool.list()? {
         match spool::read(&bytes) {
             Ok(block) => blocks.push((name, block)),
             Err(_) => match tags::block::read(&bytes) {
@@ -1244,11 +1684,20 @@ fn replay_into(
             },
         }
     }
+    let mut summaries: Vec<(String, summary::block::Block)> = Vec::new();
+    let mut unreadable_summaries: Vec<String> = Vec::new();
+    for (name, bytes) in waiting.summary_spool.list()? {
+        match summary::block::read(&bytes) {
+            Ok(block) => summaries.push((name, block)),
+            Err(_) => unreadable_summaries.push(name),
+        }
+    }
     let mut parents: Vec<Id> = Vec::new();
     for parent in blocks
         .iter()
         .map(|(_, block)| block.parent)
         .chain(tagged.iter().map(|(_, block)| block.entry))
+        .chain(summaries.iter().map(|(_, block)| block.entry))
     {
         if !parents.contains(&parent) {
             parents.push(parent);
@@ -1260,6 +1709,10 @@ fn replay_into(
             .filter(|(_, block)| block.parent == parent)
             .collect();
         let mut ours: Vec<&(String, tags::block::Block)> = tagged
+            .iter()
+            .filter(|(_, block)| block.entry == parent)
+            .collect();
+        let mut kept: Vec<&(String, summary::block::Block)> = summaries
             .iter()
             .filter(|(_, block)| block.entry == parent)
             .collect();
@@ -1284,29 +1737,189 @@ fn replay_into(
                         "dropped a run kept for {parent}: the store holds other notes for it now"
                     ));
                     for (name, _) in std::mem::take(&mut ours) {
-                        spool.remove(name)?;
+                        waiting.spool.remove(name)?;
                         replayed.notices.push(format!(
                             "dropped the tags kept for {parent}: its notes changed since they were asked"
+                        ));
+                    }
+                    for (name, _) in std::mem::take(&mut kept) {
+                        waiting.summary_spool.remove(name)?;
+                        replayed.notices.push(format!(
+                            "dropped the summary kept for {parent}: its notes changed since it was asked"
                         ));
                     }
                 }
             }
             for (name, _) in group {
-                spool.remove(name)?;
+                waiting.spool.remove(name)?;
             }
             from = to;
         }
         for (name, block) in ours {
-            replay_tags(entries, format, asked, cap, block, replayed)?;
-            spool.remove(name)?;
+            replay_tags(entries, format, &mut *waiting.asked, cap, block, replayed)?;
+            waiting.spool.remove(name)?;
+        }
+        for (name, block) in kept {
+            replay_summary(entries, format, &mut *waiting.summarised, block, replayed)?;
+            waiting.summary_spool.remove(name)?;
         }
     }
     for name in unreadable {
-        spool.remove(&name)?;
+        waiting.spool.remove(&name)?;
         replayed
             .notices
             .push(format!("dropped a spool file bilbo cannot read: {name}"));
     }
+    for name in unreadable_summaries {
+        waiting.summary_spool.remove(&name)?;
+        replayed
+            .notices
+            .push(format!("dropped a spool file bilbo cannot read: {name}"));
+    }
+    Ok(())
+}
+
+fn append_summary(entries: &mut dyn Entries, id: Id, line: &str) -> Result<(), Error> {
+    let label = summary::label(id);
+    let mut records = match entries.by_capture(&label)?.filter(|head| head.records > 0) {
+        Some(head) => plan::records_of(&*entries, &head)?,
+        None => Vec::new(),
+    };
+    records.push(opaque::filter(line.as_bytes()).into_owned());
+    let mut bytes = Vec::new();
+    let mut ends = Vec::new();
+    for record in &records {
+        bytes.extend_from_slice(record);
+        bytes.push(b'\n');
+        ends.push(bytes.len());
+    }
+    entries.capture(&Capture {
+        label: &label,
+        kind: summary::KIND,
+        id: None,
+        id_label: None,
+        stamp: None,
+        bytes: &bytes,
+        ends: &ends,
+        tags: &Tags::default(),
+    })?;
+    Ok(())
+}
+
+fn holds(record: &summary::record::Summary, block: &summary::block::Block) -> bool {
+    record.text == block.text
+        && record.instruction == block.instruction
+        && record.provider == block.provider
+        && record.model == block.model
+        && record.answered == block.answered
+        && record.made == block.made
+        && record.entry == block.entry
+        && record.generation == block.about.generation
+        && record.records == block.about.records
+        && record.content == block.about.content
+        && record.notes.map(|notes| notes.digest) == block.about.notes
+        && record.sent == block.sent
+        && record.tokens_in == block.tokens_in
+        && record.tokens_out == block.tokens_out
+}
+
+fn replay_summary(
+    entries: &mut dyn Entries,
+    format: &Format<'_>,
+    summarised: &mut dyn SummaryAsked,
+    block: &summary::block::Block,
+    replayed: &mut Replayed,
+) -> Result<(), Error> {
+    let id = block.entry;
+    let drop = |replayed: &mut Replayed, why: &str| {
+        replayed
+            .notices
+            .push(format!("dropped the summary kept for {id}: {why}"));
+    };
+    let Some(meta) = entries.meta(id)? else {
+        drop(replayed, "the store no longer holds it");
+        return Ok(());
+    };
+    let head = match &meta.labels.capture {
+        Some(label) => entries.by_capture(label)?.filter(|head| head.id == id),
+        None => None,
+    };
+    let at = (
+        block.about.generation,
+        block.about.records,
+        block.about.content,
+    );
+    if !head.is_some_and(|head| (head.generation, head.records, head.mark.hash) == at) {
+        drop(replayed, "the entry changed since it was asked");
+        return Ok(());
+    }
+    let mut notes = None;
+    if let Some(digest) = block.about.notes {
+        notes = plan::held(&*entries, id)?;
+        let found = match &notes {
+            Some(notes) => plan::digest_of(&*entries, notes, format)?,
+            None => None,
+        };
+        if found != Some(digest) {
+            drop(replayed, "its notes changed since it was asked");
+            return Ok(());
+        }
+    }
+    match block.form {
+        Form::Pass => {
+            summarised.pass(id, block.asking)?;
+            return Ok(());
+        }
+        Form::Retirement => {
+            if plan::held_summary(&*entries, id)?.is_some() {
+                let line = summary::record::retirement(
+                    id,
+                    block.about.generation,
+                    block.about.records,
+                    block.about.content,
+                    block.made,
+                );
+                append_summary(entries, id, &line)?;
+                replayed.retired += 1;
+            } else {
+                replayed.found += 1;
+            }
+        }
+        Form::Answer => {
+            let held = plan::held_summary(&*entries, id)?;
+            if held.as_ref().is_some_and(|record| holds(record, block)) {
+                replayed.found += 1;
+            } else {
+                let notes_of = match (&notes, block.about.notes) {
+                    (Some(notes), Some(digest)) => Some(summary::record::Notes {
+                        generation: notes.generation,
+                        records: notes.records,
+                        digest,
+                    }),
+                    _ => None,
+                };
+                let line = summary::record::write(&summary::record::Summary {
+                    text: block.text.clone(),
+                    instruction: block.instruction.clone(),
+                    provider: block.provider.clone(),
+                    model: block.model.clone(),
+                    answered: block.answered.clone(),
+                    made: block.made,
+                    entry: id,
+                    generation: block.about.generation,
+                    records: block.about.records,
+                    content: block.about.content,
+                    notes: notes_of,
+                    sent: block.sent,
+                    tokens_in: block.tokens_in,
+                    tokens_out: block.tokens_out,
+                });
+                append_summary(entries, id, &line)?;
+                replayed.summarised += 1;
+            }
+        }
+    }
+    summarised.settle(id)?;
     Ok(())
 }
 

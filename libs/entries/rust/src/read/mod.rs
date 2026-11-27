@@ -120,7 +120,7 @@ pub struct Request {
     pub matches_listed: usize,
 }
 
-/// One generation of an entry, read whole: a reader's state runs from its first record.
+/// Read whole: a reader's state runs from its first record.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Fetched {
     pub meta: Meta,
@@ -138,6 +138,7 @@ pub struct About {
     pub captured: SystemTime,
     pub started: Option<SystemTime>,
     pub current: Generation,
+    pub summary: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -168,8 +169,8 @@ impl Output {
         }
     }
 
-    /// As a command to run later carries it: always with the generation that was read, so a
-    /// file rewritten in between cannot make the command read other records.
+    /// Always with the generation read, so a file rewritten in between cannot make the command
+    /// read other records.
     pub fn pinned(&self, records: RecordRange) -> Locator {
         Locator {
             generation: Some(self.generation),
@@ -371,6 +372,7 @@ pub struct Shown<'s> {
     /// What the caller prints around the lines of an outline, at its longest, given the output
     /// with no line yet: it is counted before the lines are chosen.
     pub beside: &'s dyn Fn(&Output) -> String,
+    pub summary: Option<&'s str>,
 }
 
 /// Pure. The request need not be the one that was fetched: a range outside the records is refused here too.
@@ -427,6 +429,7 @@ pub fn render(
             captured: fetched.meta.captured,
             started: passages.iter().find_map(|passage| passage.at),
             current: fetched.current,
+            summary: shown.summary.map(str::to_owned),
         };
         let framed = |about: Option<About>| Output {
             body: Body::Outline {

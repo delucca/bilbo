@@ -6,7 +6,7 @@ use super::scratch::{Scratch, closed, remembered};
 
 const OTHER: &str = "11111111-2222-4333-8444-555555555555";
 const PROMPT: &str = "garden beds carrots";
-const OFF: &str = "digest.markdown.floor = 0\ndigest.session.floor = 0\ndigest.note.floor = 0\ndigest.session.old_after = \"36500d\"\ndigest.session.subagents = false\ndigest.session.parts = false\ndigest.note.width = 300\n";
+const OFF: &str = "digest.markdown.floor = 0\ndigest.session.floor = 0\ndigest.note.floor = 0\ndigest.session.old_after = \"36500d\"\ndigest.session.subagents = false\ndigest.session.parts = false\ndigest.note.width = 300\ndigest.summary.enabled = true\n";
 
 fn claude(session: &str, prompt: &str) -> Vec<u8> {
     format!(

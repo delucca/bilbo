@@ -281,6 +281,7 @@ fn run_tuned(
     let shown = Shown {
         tokens: &Wide,
         beside: &|_| String::new(),
+        summary: None,
     };
     read::render(&fetched, &request, &readers(), &shown)
 }
@@ -328,6 +329,42 @@ fn first() -> String {
     id(1).to_string()
 }
 
+fn run_summarised(shelf: &Shelf, reference: &str, summary: Option<&str>) -> Output {
+    let request = Request {
+        reference: Ref::parse(reference).expect("a ref"),
+        outline: false,
+        budget: Budget::try_from(160_000).expect("a budget the key accepts"),
+        outline_width: 100,
+        matches_listed: 5,
+    };
+    let fetched = read::fetch(&request, shelf).expect("the entry");
+    let shown = Shown {
+        tokens: &Wide,
+        beside: &|_| String::new(),
+        summary,
+    };
+    read::render(&fetched, &request, &readers(), &shown).expect("an output")
+}
+
+#[test]
+fn the_header_holds_the_summary_its_caller_hands() {
+    let shelf = shelf();
+    let with = run_summarised(&shelf, &first(), Some("The beds since March."));
+    let (about, _) = lines(&with);
+    assert_eq!(
+        about.as_ref().and_then(|about| about.summary.as_deref()),
+        Some("The beds since March.")
+    );
+    let without = run_summarised(&shelf, &first(), None);
+    let (about, _) = lines(&without);
+    assert_eq!(
+        about.as_ref().map(|about| about.summary.clone()),
+        Some(None)
+    );
+    let ranged = run_summarised(&shelf, &format!("{}#r1-3", first()), Some("A summary."));
+    assert!(matches!(ranged.body, Body::Page(_)));
+}
+
 #[test]
 fn an_entry_with_no_locator_reads_as_its_metadata_and_its_outline() {
     let shelf = shelf();
@@ -346,6 +383,7 @@ fn an_entry_with_no_locator_reads_as_its_metadata_and_its_outline() {
             captured: SystemTime::UNIX_EPOCH + Duration::from_secs(1000),
             started: Some(SystemTime::UNIX_EPOCH + Duration::from_secs(60)),
             current: Generation(1),
+            summary: None,
         })
     );
     assert_eq!(
@@ -613,6 +651,7 @@ fn the_caller_says_what_it_prints_around_an_outline_and_the_lines_get_the_rest()
                 assert_eq!((frame.total, frame.more), (9, None));
                 beside.to_owned()
             },
+            summary: None,
         };
         let output = read::render(&fetched, &request, &readers(), &shown).expect("an outline");
         lines(&output).1.len()
@@ -929,6 +968,7 @@ fn outlined(shelf: &Shelf, budget: usize) -> Output {
     let shown = Shown {
         tokens: &Bytes,
         beside: &row,
+        summary: None,
     };
     let readers: Vec<Box<dyn Reader>> = vec![Box::new(Folders)];
     read::render(&fetched, &request, &readers, &shown).expect("an outline")

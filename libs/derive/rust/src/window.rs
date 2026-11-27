@@ -37,6 +37,24 @@ fn end(range: RecordRange) -> u64 {
     range.first + range.count.saturating_sub(1)
 }
 
+pub(crate) fn cut(
+    text: &str,
+    kept: usize,
+    total: usize,
+    counter: &Counter<'_>,
+    share: f64,
+) -> String {
+    let first = ((kept as f64 * share).ceil() as usize).min(kept);
+    let head = counter.head(text, first);
+    let tail = counter.tail(text, kept - first).max(head);
+    format!(
+        "{}\n[cut: {} tokens]\n{}",
+        &text[..head],
+        total - kept,
+        &text[tail..]
+    )
+}
+
 fn rendered(
     passage: &Passage,
     kept: Option<usize>,
@@ -46,17 +64,7 @@ fn rendered(
 ) -> String {
     let text = match kept {
         None => passage.text.clone(),
-        Some(kept) => {
-            let first = ((kept as f64 * share).ceil() as usize).min(kept);
-            let head = counter.head(&passage.text, first);
-            let tail = counter.tail(&passage.text, kept - first).max(head);
-            format!(
-                "{}\n[cut: {} tokens]\n{}",
-                &passage.text[..head],
-                total - kept,
-                &passage.text[tail..]
-            )
-        }
+        Some(kept) => cut(&passage.text, kept, total, counter, share),
     };
     let mut shown = line(passage.range.first, end(passage.range), &text);
     if !shown.ends_with('\n') {
@@ -188,6 +196,20 @@ mod tests {
         passage: 0,
         head: 0.5,
     };
+
+    #[test]
+    fn the_cut_of_a_text_is_its_start_the_line_and_its_end() {
+        let text = words(0, 400);
+        let end = |from| words(from, 400);
+        assert_eq!(
+            super::cut(&text, 300, 400, &counter(), 0.5),
+            format!("{}\n[cut: 100 tokens]\n{}", words(0, 150), end(250))
+        );
+        assert_eq!(
+            super::cut(&text, 301, 400, &counter(), 0.5),
+            format!("{}\n[cut: 99 tokens]\n{}", words(0, 151), end(250))
+        );
+    }
 
     #[test]
     fn a_window_is_whole_passages_in_order_up_to_the_window() {

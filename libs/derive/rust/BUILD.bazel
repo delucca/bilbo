@@ -14,6 +14,7 @@ cargo_build_script(
     srcs = ["build.rs"],
     data = [
         "//libs/derive:instructions",
+        "//libs/derive:summary_instruction",
         "//libs/derive:tags_instruction",
     ],
     lint_config = ":lints",

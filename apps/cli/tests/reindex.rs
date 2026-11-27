@@ -26,9 +26,9 @@ use bilbo_search::rank::{Candidate, Query, Ranker};
 use bilbo_search::tantivy::{Committed, Row, Tantivy};
 use bilbo_search::tokenizer::Tokenizer;
 use bilbo_search::typo::Rule;
-use bilbo_store::entries::{Entries, Generation};
+use bilbo_store::entries::{Capture, Entries, Generation};
 use bilbo_store::id::Id;
-use bilbo_store::labels::{CaptureLabel, Labels};
+use bilbo_store::labels::{CaptureLabel, Labels, Tags};
 use bilbo_store::layout::Layout;
 use bilbo_store::segments::{Options, Store};
 
@@ -2347,10 +2347,8 @@ fn say(line: &str) {
     eprintln!("{line}");
 }
 
-/// `DONE_STORE`, `DONE_STATE` and `DONE_CACHE` are the three folders of a store `bilbo reindex` ran
-/// over. Prints counts and digests only: two indexes of one store print the same lines.
 #[test]
-#[ignore = "the done check: an index built over a scratch store"]
+#[ignore = "the done check: an index built over a scratch store; DONE_STORE, DONE_STATE and DONE_CACHE are the three folders of a store bilbo reindex ran over"]
 fn what_an_index_of_the_done_check_store_holds() {
     const START: u64 = 0xcbf2_9ce4_8422_2325;
     let cache = folder("DONE_CACHE");
@@ -2678,5 +2676,75 @@ fn an_index_made_before_sessions_named_the_folders_they_were_given_is_made_again
             .any(|line| line.contains(NO_REBUILD_LINE)),
         "{:?}",
         once.stderr
+    );
+}
+
+fn capture_of_kind(layout: &Layout, label: &str, kind: &str, text: &[u8]) {
+    let label = CaptureLabel::new(label.to_owned()).expect("a capture label");
+    let mut store = Store::open(
+        layout,
+        bilbo_store::segments::Options::default(),
+        &mut |_| {},
+    )
+    .expect("open the store");
+    store
+        .capture(&Capture {
+            label: &label,
+            kind,
+            id: None,
+            id_label: None,
+            stamp: None,
+            bytes: text,
+            ends: &[text.len()],
+            tags: &Tags::default(),
+        })
+        .expect("capture");
+    store.close().expect("close");
+}
+
+#[test]
+fn reindex_passes_over_a_summarys_entry_and_still_names_a_kind_no_reader_reads() {
+    let sandbox = Sandbox::filled("kept_unread");
+    let before = sandbox.reindex();
+    assert_eq!(before.stderr, Vec::<String>::new());
+    let [entries, chunks, unread, failed, _] = numbers(&before.stdout);
+    assert_eq!((unread, failed), (0, 0));
+    assert_eq!(bilbo_cli::kept_unread(), ["summary"]);
+    let searched = sandbox.run(&["recall", "--", "garden"]);
+    assert_eq!(searched.code, 0, "{:?}", searched.stderr);
+    assert!(!searched.stdout.is_empty());
+    assert!(
+        searched.stderr.iter().all(|line| !line.contains("behind")),
+        "{:?}",
+        searched.stderr
+    );
+    capture_of_kind(
+        &sandbox.layout(),
+        "summary:01M6ZGE4KTBYYH07AS2KVMSCAF",
+        "summary",
+        b"{\"summary\":{}}\n",
+    );
+    let after = sandbox.reindex();
+    assert_eq!(after.stderr, Vec::<String>::new());
+    let [more, rows, unread, failed, _] = numbers(&after.stdout);
+    assert_eq!((more, rows, unread, failed), (entries, chunks, 0, 0));
+    let recalled = sandbox.run(&["recall", "--", "garden"]);
+    assert_eq!(
+        (recalled.code, &recalled.stdout, &recalled.stderr),
+        (searched.code, &searched.stdout, &searched.stderr)
+    );
+    capture_of_kind(
+        &sandbox.layout(),
+        "pdf:01M6ZGE4KTBYYH07AS2KVMSCAG",
+        "pdf",
+        b"%PDF\n",
+    );
+    let pdf = sandbox.run(&["reindex"]);
+    assert_eq!(pdf.code, 0, "{:?}", pdf.stderr);
+    let [_, _, unread, _, _] = numbers(&pdf.stdout);
+    assert_eq!(unread, 1);
+    assert_eq!(
+        pdf.stderr,
+        ["bilbo: left out 1 entry of kind pdf: no reader reads it"]
     );
 }

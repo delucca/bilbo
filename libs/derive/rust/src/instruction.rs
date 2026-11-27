@@ -44,6 +44,12 @@ pub(crate) fn number(bytes: &[u8]) -> u64 {
     xxh3_64(bytes)
 }
 
+pub(crate) fn number_of(text: &str) -> Option<u64> {
+    (text.len() == 16 && text.bytes().all(|byte| byte.is_ascii_hexdigit()))
+        .then(|| u64::from_str_radix(text, 16).ok())
+        .flatten()
+}
+
 fn instruction(kind: &str, text: &str, origin: Origin) -> Instruction {
     Instruction {
         kind: kind.to_owned(),

@@ -27,6 +27,7 @@ fn request_of(chunk: Size, workers: usize) -> Request {
         render: "lines/1".to_owned(),
         workers,
         label_batch: 512,
+        kept_unread: Vec::new(),
     }
 }
 
@@ -274,6 +275,42 @@ fn an_entry_whose_kind_no_reader_reads_any_more_loses_its_documents_and_is_count
     assert_eq!(index.deletes, [(id(1), 1)]);
     assert!(index.rows.iter().all(|row| row.entry == id(2)));
     assert_eq!(index.sorted(), rebuilt(&log));
+}
+
+#[test]
+fn in_a_growth_an_entry_of_a_kept_unread_kind_loses_its_documents_and_is_counted_nowhere() {
+    let mut log = Log::new();
+    log.put(1, "lines", &["aaaaa", "bbbbb"]);
+    log.put(2, "lines", &["xxxxx"]);
+    log.label(1, "file:/home/me/notes/shed.md");
+    log.label(2, "file:/home/me/notes/loft.md");
+    let mut index = Docs::default();
+    keep(&log, &mut index);
+    assert_eq!(
+        log.with_words(&label_words("shed")).expect("entries"),
+        [id(1)]
+    );
+    log.retouch(1, |held| held.kind = "ledger".to_owned());
+    let listing = Request {
+        kept_unread: vec!["ledger".to_owned()],
+        ..request()
+    };
+    let output = keep_with(&listing, &log, &mut index, TRIES)
+        .expect("a run")
+        .expect("work");
+    assert_eq!(output.unread, unread(&[]));
+    assert_eq!(index.deletes, [(id(1), 1)]);
+    assert!(index.rows.iter().all(|row| row.entry == id(2)));
+    assert!(
+        log.with_words(&label_words("shed"))
+            .expect("entries")
+            .is_empty()
+    );
+    assert_eq!(
+        log.with_words(&label_words("loft")).expect("entries"),
+        [id(2)]
+    );
+    assert_eq!(index.sorted(), rebuilt_with(&listing, &log));
 }
 
 #[test]

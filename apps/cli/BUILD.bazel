@@ -182,6 +182,7 @@ bilbo_rust_test(
         "tests/read.rs",
         "tests/note_line/mod.rs",
         "tests/notes/mod.rs",
+        "tests/summaries/mod.rs",
     ],
     crate_root = "tests/read.rs",
     compile_data = [
@@ -206,6 +207,7 @@ bilbo_rust_test(
         "tests/runner/mod.rs",
         "tests/sandbox/mod.rs",
         "tests/scratch/mod.rs",
+        "tests/summaries/mod.rs",
     ],
     crate_root = "tests/digest.rs",
     compile_data = [

@@ -4,7 +4,15 @@ use bilbo_layout::{Tables, Tree, bans, complete, words};
 
 const PLACEMENT: &[(&str, &[&str])] = &[
     ("xxhash_rust", &["src/instruction.rs"]),
-    ("serde_json", &["src/record.rs", "tests/acceptance/"]),
+    ("serde", &["src/summary/record.rs"]),
+    (
+        "serde_json",
+        &[
+            "src/record.rs",
+            "src/summary/record.rs",
+            "tests/acceptance/",
+        ],
+    ),
     ("markdown", &[]),
     ("session", &[]),
     ("note", &[]),
@@ -35,6 +43,7 @@ const CORE: &[&str] = &[
     "run",
     "scope",
     "spool",
+    "summary",
     "tags",
     "tries",
     "view",

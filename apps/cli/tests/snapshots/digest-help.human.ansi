@@ -14,6 +14,8 @@ bilbo digest: answer a session's first prompt with what bilbo keeps on it.
                                ref and day, its folder, and its outline's
                                line or the note's start. A fifth field,
                                note: [2m<text>[22m, is a note derive wrote of it
+  [1msummary: [22m[2m<text>[22m              a row's last field: the summary derive wrote
+                               of its entry, where there is one
   [1mdigest.log[22m                   in the state folder: one line a run
 
 [1mExit:[22m

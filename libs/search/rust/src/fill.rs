@@ -289,8 +289,8 @@ impl<'r> Feed<'_, '_, 'r> {
     }
 }
 
-/// Runs `work` for every job `produce` sends, on `workers` threads, and gives the results to
-/// `adder` in the order the jobs were sent. A worker that dies is an error, never a wait.
+/// Gives the results to `adder` in the order the jobs were sent; a worker that dies is an error,
+/// never a wait.
 fn pool<'r, W>(
     workers: usize,
     work: &W,
@@ -365,6 +365,7 @@ pub(crate) struct Fill<'a> {
     pub tokens: &'a dyn Tokens,
     pub labels: &'a dyn Relabel,
     pub label_batch: usize,
+    pub kept_unread: &'a [String],
     /// `None` when the index was just emptied. Otherwise it holds the entries' documents of an
     /// earlier commit, and this has the ids whose metadata changed since.
     pub grown: Option<&'a BTreeSet<Id>>,
@@ -400,7 +401,11 @@ impl Fill<'_> {
                     };
                     let Some(reader) = readers.iter().find(|reader| reader.kind() == meta.kind)
                     else {
-                        *feed.adder.output.unread.entry(meta.kind).or_default() += 1;
+                        if self.kept_unread.contains(&meta.kind) {
+                            feed.adder.gone.push(id);
+                        } else {
+                            *feed.adder.output.unread.entry(meta.kind).or_default() += 1;
+                        }
                         feed.adder.forget(id)?;
                         continue;
                     };

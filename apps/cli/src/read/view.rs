@@ -123,6 +123,9 @@ fn about_lines(output: &Output, about: &About, show: &Show<'_>) -> String {
             ),
         ));
     }
+    if let Some(summary) = &about.summary {
+        rows.push(("summary", line(show.view, summary)));
+    }
     let mut text = show.painted(Style::Name, &format!("{SCHEME}{}", output.id)) + "\n";
     for (name, value) in rows {
         let _ = writeln!(
@@ -282,6 +285,7 @@ mod tests {
             captured: SystemTime::UNIX_EPOCH + Duration::from_secs(1_794_193_920),
             started: Some(SystemTime::UNIX_EPOCH + Duration::from_secs(1_794_069_552)),
             current: Generation(2),
+            summary: None,
         }
     }
 
@@ -546,6 +550,48 @@ mod tests {
         );
         assert!(beside(&full, None).contains(row), "left out of beside");
         assert!(!plain(&outline(Some(about()), None), None).contains("labels:"));
+    }
+
+    #[test]
+    fn a_summary_is_the_headers_last_row_before_the_outline() {
+        let held = About {
+            summary: Some("The beds since March.".to_owned()),
+            ..about()
+        };
+        let text = plain(&outline(Some(held.clone()), None), None);
+        assert!(
+            text.contains("generation: 2\nsummary: The beds since March.\noutline:\n"),
+            "{text}"
+        );
+        let many = About {
+            more_labels: 3,
+            ..held
+        };
+        let text = plain(&outline(Some(many), None), None);
+        assert!(
+            text.contains(
+                "labels: 3 more; a larger --budget lists them\nsummary: The beds since March.\noutline:\n"
+            ),
+            "{text}"
+        );
+        let bare = plain(&outline(Some(about()), None), None);
+        assert!(!bare.contains("summary:"), "{bare}");
+        assert!(bare.contains("generation: 2\noutline:\n"), "{bare}");
+    }
+
+    #[test]
+    fn a_summary_is_printed_whole_and_counts_beside_the_outline() {
+        let long = "w".repeat(2000);
+        let held = About {
+            summary: Some(long.clone()),
+            ..about()
+        };
+        let text = plain(&outline(Some(held.clone()), None), None);
+        assert!(text.contains(&format!("summary: {long}\n")), "{text}");
+        assert!(!text.contains('\u{2026}'));
+        let with = beside(&outline(Some(held), None), None);
+        let without = beside(&outline(Some(about()), None), None);
+        assert_eq!(with.len() - without.len(), "summary: \n".len() + long.len());
     }
 
     #[test]

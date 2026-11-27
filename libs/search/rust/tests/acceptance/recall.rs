@@ -72,6 +72,7 @@ fn work_request() -> Work {
         render: "lines/1".to_owned(),
         workers: 1,
         label_batch: 512,
+        kept_unread: Vec::new(),
     }
 }
 

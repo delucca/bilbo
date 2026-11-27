@@ -110,9 +110,16 @@ pub struct Written {
 }
 
 #[derive(Clone, Copy)]
+pub struct Summary<'a> {
+    pub label: &'a dyn Fn(Id) -> CaptureLabel,
+    pub text: &'a dyn Fn(&[u8]) -> Option<String>,
+}
+
+#[derive(Clone, Copy)]
 pub struct Way<'a> {
     pub label: &'a dyn Fn(Id) -> CaptureLabel,
     pub written: &'a dyn Fn(&[u8]) -> Option<Written>,
+    pub summary: Option<Summary<'a>>,
 }
 
 pub struct Request<'a> {
@@ -132,12 +139,14 @@ pub struct Request<'a> {
 pub enum Said {
     Entry {
         title: Option<String>,
+        summary: Option<String>,
     },
     Passage {
         records: RecordRange,
         day: String,
         folder: Option<String>,
         line: Option<String>,
+        written: Option<String>,
         summary: Option<String>,
     },
 }
@@ -501,6 +510,7 @@ fn row(
             title: reader
                 .title(&records)
                 .map(|title| outline::shown(&title, request.width)),
+            summary: summary_of(request, entries, pick.found.entry),
         });
     }
     let passages = reader.passages(&records);
@@ -523,11 +533,31 @@ fn row(
         day: day::utc(at),
         folder: reader.entry_labels(&records).into_iter().next(),
         line,
-        summary: summary(request, entries, pick),
+        written: written(request, entries, pick),
+        summary: summary_of(request, entries, pick.found.entry),
     })
 }
 
-fn summary(request: &Request<'_>, entries: &dyn Entries, pick: &Pick) -> Option<String> {
+fn summary_of(request: &Request<'_>, entries: &dyn Entries, entry: Id) -> Option<String> {
+    let summary = request.way.summary?;
+    let head = entries.by_capture(&(summary.label)(entry)).ok()??;
+    if head.records == 0 {
+        return None;
+    }
+    let last = entries
+        .read(
+            head.id,
+            head.generation,
+            RecordRange {
+                first: head.records,
+                count: 1,
+            },
+        )
+        .ok()?;
+    (summary.text)(last.first()?)
+}
+
+fn written(request: &Request<'_>, entries: &dyn Entries, pick: &Pick) -> Option<String> {
     let label = (request.way.label)(pick.found.entry);
     let head = entries.by_capture(&label).ok()??;
     let (newest, count) = (head.generation, head.records);

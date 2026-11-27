@@ -6,6 +6,9 @@ use bilbo_entries::reader::Reader;
 use bilbo_entries::tokens::Estimate;
 use bilbo_settings::file::File;
 use bilbo_settings::key::{Flag, Origin, Source};
+use bilbo_store::entries::{Entries, RecordRange};
+use bilbo_store::id::Id;
+use bilbo_store::labels::CaptureLabel;
 use bilbo_store::segments::{Notice, Store};
 use clap::Command;
 use clap::builder::NonEmptyStringValueParser;
@@ -61,15 +64,38 @@ Examples:
 
 Docs: https://github.com/delucca/bilbo/wiki/Commands#read";
 
+pub struct Summaries<'a> {
+    pub label: &'a dyn Fn(Id) -> CaptureLabel,
+    pub text: &'a dyn Fn(&[u8]) -> Option<String>,
+}
+
+fn summary_record(store: &Store, summaries: &Summaries<'_>, entry: Id) -> Option<Vec<u8>> {
+    let head = store.by_capture(&(summaries.label)(entry)).ok()??;
+    if head.records == 0 {
+        return None;
+    }
+    let last = store
+        .read(
+            head.id,
+            head.generation,
+            RecordRange {
+                first: head.records,
+                count: 1,
+            },
+        )
+        .ok()?;
+    last.into_iter().next()
+}
+
 const WAITING: &str = "waiting for another bilbo to finish writing the store";
 
-/// The store lock is held only while the entry's records are fetched, never while rendering.
 pub fn run(
     root: &Command,
     args: &Args,
     env: &mut Env,
     settings: &Settings,
     readers: &[Box<dyn Reader>],
+    summaries: &Summaries<'_>,
 ) -> Result<Outcome, Failure> {
     let reference = Ref::parse(&args.reference)
         .map_err(|malformed| usage(root, sanitize(&malformed.to_string()), Some("read")))?;
@@ -103,27 +129,38 @@ pub fn run(
         }
     })?;
     let fetched = read::fetch(&request, &store);
+    let last = fetched
+        .as_ref()
+        .ok()
+        .filter(|held| {
+            request.reference.locator.records.is_none()
+                && held.generation == held.current
+                && !held.records.is_empty()
+        })
+        .and_then(|held| summary_record(&store, summaries, held.meta.id));
     drop(store);
+    let summary = last.and_then(|bytes| (summaries.text)(&bytes));
 
     let given = matches!(budget.origin, Origin::Flag(_)).then_some(budget.value);
     let output = fetched
-        .and_then(|fetched| rendered(&fetched, &request, readers, given))
+        .and_then(|fetched| rendered(&fetched, &request, readers, given, summary.as_deref()))
         .map_err(|error| failure(root, &error))?;
     Ok(Outcome::new(view::plain(&output, given))
         .with_human(move |out| view::shown(&output, given, out))
         .on_every_terminal())
 }
 
-/// Outline lines are chosen after what `view::plain` prints around them.
 pub fn rendered(
     fetched: &Fetched,
     request: &Request,
     readers: &[Box<dyn Reader>],
     given: Option<Budget>,
+    summary: Option<&str>,
 ) -> Result<Output, read::Error> {
     let shown = Shown {
         tokens: &Estimate,
         beside: &|frame| view::beside(frame, given),
+        summary,
     };
     read::render(fetched, request, readers, &shown)
 }

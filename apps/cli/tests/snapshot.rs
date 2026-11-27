@@ -30,7 +30,6 @@ fn unread() -> Result<Settings, Failure> {
     ))
 }
 
-/// Every default, under a fixed HOME and with no config file.
 fn defaults() -> Settings {
     settings::load(
         &|name| (name == "HOME").then(|| "/home/u".into()),
@@ -461,7 +460,7 @@ fn read_output(
     locator: &str,
     budget: usize,
 ) -> (String, String) {
-    read_tagged(kind, label, file, locator, budget, Tags::default())
+    read_tagged(kind, label, file, locator, budget, Tags::default(), None)
 }
 
 fn read_tagged(
@@ -471,6 +470,7 @@ fn read_tagged(
     locator: &str,
     budget: usize,
     tags: Tags,
+    summary: Option<&str>,
 ) -> (String, String) {
     let fetched = Fetched {
         meta: Meta {
@@ -504,6 +504,7 @@ fn read_tagged(
         &request,
         &readers(&defaults()).expect("the readers"),
         given,
+        summary,
     )
     .expect("an output");
     (
@@ -547,7 +548,7 @@ fn an_outline_with_tags_as_read_prints_it() {
     tags.set(Tag::new("shed").expect("a tag"), Some(Standing::Removed));
     let label =
         "/home/me/.claude/projects/-home-me-src-garden/8f2b6d4e-1a3c-4e5f-9b7a-2c4d6e8f0a1b.jsonl";
-    let (plain, _) = read_tagged("session", label, CLAUDE_SESSION, "", 7000, tags);
+    let (plain, _) = read_tagged("session", label, CLAUDE_SESSION, "", 7000, tags, None);
     assert_eq!(plain, include_str!("snapshots/read-tagged-outline.txt"));
 }
 
@@ -580,6 +581,22 @@ fn a_codex_session_as_read_prints_it() {
     let (plain, human) = codex("#r1-25");
     assert_eq!(plain, include_str!("snapshots/read-codex-page.txt"));
     assert_eq!(human, include_str!("snapshots/read-codex-page.human.ansi"));
+}
+
+#[test]
+fn an_outline_with_a_summary_as_read_prints_it() {
+    let (plain, _) = read_tagged(
+        "markdown",
+        "/home/me/notes/garden-log.md",
+        NOTE,
+        "",
+        7000,
+        Tags::default(),
+        Some(
+            "The vegetable beds since March: what was sown in each, the thinning dates of the carrots, and the drainage of the north bed, which is still open.",
+        ),
+    );
+    assert_eq!(plain, include_str!("snapshots/read-summary-outline.txt"));
 }
 
 #[test]
@@ -1053,6 +1070,7 @@ fn the_dry_run_in_the_plain_view() {
     use bilbo_derive::instruction::Origin;
     let dry = Dry {
         tags: None,
+        summaries: None,
         off: vec!["derive.enabled is false".to_owned()],
         kinds: vec![
             KindRow {
@@ -1101,6 +1119,7 @@ fn the_dry_run_with_the_tags_on_in_the_plain_view() {
     use bilbo_cli::derive::view::{Dry, KindRow, NotDue, TagsDry, lines};
     use bilbo_derive::instruction::Origin;
     let dry = Dry {
+        summaries: None,
         tags: Some(TagsDry {
             due: 37,
             calls: 16,
@@ -1151,6 +1170,69 @@ fn the_dry_run_with_the_tags_on_in_the_plain_view() {
 }
 
 #[test]
+fn the_dry_run_with_the_summary_on_in_the_plain_view() {
+    use bilbo_cli::derive::view::{Dry, KindRow, NotDue, SummariesDry, TagsDry, lines};
+    use bilbo_derive::instruction::Origin;
+    let dry = Dry {
+        off: Vec::new(),
+        kinds: vec![KindRow {
+            kind: "session".to_owned(),
+            origin: Origin::Shipped,
+            instruction: "9f86d081884c7d65".to_owned(),
+        }],
+        named: 412,
+        left_out: 14,
+        due: 37,
+        not_due: NotDue {
+            growing: 12,
+            covered: 340,
+            belongs: 9,
+            passed: 2,
+            labels: 1,
+        },
+        calls: 12,
+        entries: 8,
+        tokens: 228_300,
+        limit: 20,
+        provider: vec![
+            "provider: anthropic, via api, model claude-haiku-5-5, at https://api.anthropic.com/v1/messages"
+                .to_owned(),
+            "version: 2026-10-21".to_owned(),
+            "key: the variable ANTHROPIC_API_KEY, which is set".to_owned(),
+        ],
+        entry_lines: vec![
+            "entry\t01M6ZGE4KTBYYH07AS2KVMSCAF\tcovered\t01M7Q9TDMQ9SBDXT8T7VKDGZVH\t12".to_owned(),
+            "entry\t01M6ZGF2D0XH5T0S4B7W1N9RQK\tleft out: no instruction\t-\t0".to_owned(),
+        ],
+        tags: Some(TagsDry {
+            due: 37,
+            calls: 2,
+            tokens: 2140,
+            pick: 5,
+            model: None,
+            instruction: Some((Origin::Shipped, "a5d31572b3105b1b".to_owned())),
+            lines: vec![
+                "tags\t01M6ZGE4KTBYYH07AS2KVMSCAF\tasked\tgarden".to_owned(),
+                "tags\t01M6ZGF2D0XH5T0S4B7W1N9RQK\tnot due: left out: no instruction\t-".to_owned(),
+            ],
+        }),
+        summaries: Some(SummariesDry {
+            due: 731,
+            calls: 6,
+            tokens: 14_210,
+            instruction: (Origin::Shipped, "7fdf9f0d93f443e3".to_owned()),
+            lines: vec![
+                "summary\t01M6ZGE4KTBYYH07AS2KVMSCAF\twritten".to_owned(),
+                "summary\t01M6ZGF2D0XH5T0S4B7W1N9RQK\tdue".to_owned(),
+            ],
+        }),
+    };
+    let mut text = lines(&dry).join("\n");
+    text.push('\n');
+    assert_eq!(text, include_str!("snapshots/derive-dry-run-summaries.txt"));
+}
+
+#[test]
 fn the_digest_page_is_the_same_from_every_help_form_and_on_a_terminal() {
     let page = include_str!("snapshots/digest-help.txt");
     for form in [
@@ -1191,14 +1273,15 @@ fn passage(
     day: &str,
     folder: Option<&str>,
     line: Option<&str>,
-    summary: Option<&str>,
+    written: Option<&str>,
 ) -> bilbo_search::digest::Said {
     bilbo_search::digest::Said::Passage {
         records: RecordRange { first, count },
         day: day.to_owned(),
         folder: folder.map(str::to_owned),
         line: line.map(str::to_owned),
-        summary: summary.map(str::to_owned),
+        written: written.map(str::to_owned),
+        summary: None,
     }
 }
 
@@ -1211,6 +1294,7 @@ fn digested() -> Vec<(&'static str, Vec<bilbo_search::digest::Row>)> {
     assert_eq!(cut.chars().count(), 300);
     let title = |text: &str| bilbo_search::digest::Said::Entry {
         title: Some(text.to_owned()),
+        summary: None,
     };
     vec![
         (
@@ -1226,7 +1310,10 @@ fn digested() -> Vec<(&'static str, Vec<bilbo_search::digest::Row>)> {
                     "01JC5Q3V7XKM4P8R2T6W9YB0DH",
                     Some("file:/home/me/notes/shed-roof.md"),
                     false,
-                    bilbo_search::digest::Said::Entry { title: None },
+                    bilbo_search::digest::Said::Entry {
+                        title: None,
+                        summary: None,
+                    },
                 ),
             ],
         ),
@@ -1289,5 +1376,57 @@ fn the_digest_rows_in_both_views() {
     assert_eq!(
         bilbo_cli::digest::view::lists(&shown, &View::HUMAN),
         include_str!("snapshots/digest-output.human.ansi")
+    );
+}
+
+fn with_summary(
+    rows: &mut [(&'static str, Vec<bilbo_search::digest::Row>)],
+    word: &str,
+    at: usize,
+    text: &str,
+) {
+    let list = rows
+        .iter_mut()
+        .find(|(held, _)| *held == word)
+        .expect("a list");
+    match &mut list.1[at].said {
+        bilbo_search::digest::Said::Entry { summary, .. }
+        | bilbo_search::digest::Said::Passage { summary, .. } => *summary = Some(text.to_owned()),
+    }
+}
+
+#[test]
+fn the_digest_rows_with_summaries_in_both_views() {
+    let mut owned = digested();
+    with_summary(
+        &mut owned,
+        "files",
+        0,
+        "The vegetable beds since March: what was sown in each, the thinning dates of the carrots, and the drainage of the north bed, which is still open.",
+    );
+    with_summary(
+        &mut owned,
+        "sessions",
+        0,
+        "Thinning the carrots of the north bed: 142 seedlings counted in four rows, and a second thinning planned once the second leaves show.",
+    );
+    with_summary(
+        &mut owned,
+        "sessions",
+        1,
+        "The weed in the corner of the bed, which was not identified.",
+    );
+    with_summary(&mut owned, "notes", 0, "Where the seeds are kept.");
+    let shown: Vec<bilbo_cli::digest::view::Shown<'_>> = owned
+        .iter()
+        .map(|(word, rows)| bilbo_cli::digest::view::Shown { word, rows })
+        .collect();
+    assert_eq!(
+        bilbo_cli::digest::view::lists(&shown, &View::PLAIN),
+        include_str!("snapshots/digest-summaries.txt")
+    );
+    assert_eq!(
+        bilbo_cli::digest::view::lists(&shown, &View::HUMAN),
+        include_str!("snapshots/digest-summaries.human.ansi")
     );
 }

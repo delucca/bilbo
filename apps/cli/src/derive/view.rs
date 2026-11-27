@@ -1,5 +1,5 @@
 use bilbo_derive::instruction::Origin;
-use bilbo_derive::plan::{State, TagsState};
+use bilbo_derive::plan::{State, SummaryState, TagsState};
 use bilbo_derive::run::{Counts, Ended};
 use bilbo_llm::model::{Cause, What};
 use bilbo_store::id::Id;
@@ -65,6 +65,7 @@ pub fn human(totals: &Counts, seconds: u64, view: &View) -> String {
 
 pub const NO_NOTE: &str = "the answer holds no note bilbo can keep";
 pub const NO_TAG: &str = "the answer names no tag bilbo can keep";
+pub const NO_SUMMARY: &str = "the answer holds no summary bilbo can keep";
 pub const NONE_TO_PICK: &str = "not due: none to pick from";
 pub const BOTH: &str = "the answer picks a tag and says none fits";
 
@@ -144,6 +145,18 @@ pub fn tags_what(cause: &Cause, api: bool) -> String {
         "the answer was cut at derive.answer_tokens; raise it or lower derive.tags.notes"
     } else {
         "the answer was cut by the tool; lower derive.tags.notes"
+    };
+    format!("{sentence}{}", tail(cause, api))
+}
+
+pub fn summary_what(cause: &Cause, api: bool) -> String {
+    if cause.what != What::Cut {
+        return what(cause, api);
+    }
+    let sentence = if api {
+        "the answer was cut at derive.answer_tokens; raise it or lower derive.summary.window"
+    } else {
+        "the answer was cut by the tool; lower derive.summary.window"
     };
     format!("{sentence}{}", tail(cause, api))
 }
@@ -263,6 +276,43 @@ pub fn tags_line(tags: &TagsDry) -> String {
     line
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SummariesDry {
+    pub due: u64,
+    pub calls: u64,
+    pub tokens: u64,
+    pub instruction: (Origin, String),
+    pub lines: Vec<String>,
+}
+
+pub fn summary_state(state: SummaryState) -> String {
+    match state {
+        SummaryState::Due => "due".to_owned(),
+        SummaryState::Written => "written".to_owned(),
+        SummaryState::PassedOver => "passed over".to_owned(),
+        SummaryState::NotComplete => "not due: notes not complete".to_owned(),
+        SummaryState::NoNote => "not due: no note".to_owned(),
+        SummaryState::Short => "not due: short".to_owned(),
+        SummaryState::NoReader => "not due: no reader reads its kind".to_owned(),
+        SummaryState::Out(state) => format!("not due: {}", state_text(state)),
+    }
+}
+
+pub fn summary_ref_line(entry: Id, state: &str) -> String {
+    format!("summary\t{entry}\t{state}")
+}
+
+pub fn summaries_line(summaries: &SummariesDry) -> String {
+    let (held, id) = &summaries.instruction;
+    format!(
+        "summaries: {} entries due; this run {} calls, {} tokens to send; instruction ({}, {id})",
+        summaries.due,
+        summaries.calls,
+        summaries.tokens,
+        origin(held)
+    )
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Dry {
     pub off: Vec<String>,
@@ -278,6 +328,7 @@ pub struct Dry {
     pub provider: Vec<String>,
     pub entry_lines: Vec<String>,
     pub tags: Option<TagsDry>,
+    pub summaries: Option<SummariesDry>,
 }
 
 fn origin(origin: &Origin) -> String {
@@ -336,9 +387,15 @@ pub fn lines(dry: &Dry) -> Vec<String> {
         dry.calls, dry.entries, dry.tokens, dry.limit
     ));
     lines.extend(dry.tags.iter().map(tags_line));
+    lines.extend(dry.summaries.iter().map(summaries_line));
     lines.extend(dry.provider.iter().cloned());
     lines.extend(dry.entry_lines.iter().cloned());
     lines.extend(dry.tags.iter().flat_map(|tags| tags.lines.iter().cloned()));
+    lines.extend(
+        dry.summaries
+            .iter()
+            .flat_map(|summaries| summaries.lines.iter().cloned()),
+    );
     lines
 }
 
@@ -353,8 +410,8 @@ mod tests {
     use bilbo_store::id::Id;
 
     use super::{
-        Dry, KindRow, NotDue, Noted, counts, entry_line, lines, plain, sentence, stopped, tail,
-        what, why_after,
+        Dry, KindRow, NotDue, Noted, counts, entry_line, lines, plain, sentence, stopped,
+        summary_what, tail, what, why_after,
     };
 
     #[test]
@@ -572,6 +629,22 @@ mod tests {
     }
 
     #[test]
+    fn a_cut_summary_says_which_key_to_lower() {
+        let cut = Cause::new(What::Cut);
+        assert_eq!(
+            summary_what(&cut, true),
+            "the answer was cut at derive.answer_tokens; raise it or lower derive.summary.window"
+        );
+        assert_eq!(
+            summary_what(&cut, false),
+            "the answer was cut by the tool; lower derive.summary.window"
+        );
+        let other = Cause::new(What::Timeout);
+        assert_eq!(summary_what(&other, true), what(&other, true));
+        assert_eq!(summary_what(&other, false), what(&other, false));
+    }
+
+    #[test]
     fn a_lost_login_and_a_spent_plan_of_the_tool_have_their_own_words() {
         let unauthorized = Cause::new(What::Unauthorized);
         assert_eq!(
@@ -695,5 +768,122 @@ mod tests {
             tags_ref_line(entry, super::NONE_TO_PICK, &["garden".to_owned()]),
             format!("tags\t{entry}\tnot due: none to pick from\tgarden")
         );
+    }
+
+    #[test]
+    fn each_state_of_a_summary_has_its_words() {
+        use super::summary_state;
+        use bilbo_derive::plan::SummaryState;
+        for (state, words) in [
+            (SummaryState::Due, "due"),
+            (SummaryState::Written, "written"),
+            (SummaryState::PassedOver, "passed over"),
+            (SummaryState::NotComplete, "not due: notes not complete"),
+            (SummaryState::NoNote, "not due: no note"),
+            (SummaryState::Short, "not due: short"),
+            (SummaryState::NoReader, "not due: no reader reads its kind"),
+            (
+                SummaryState::Out(State::LabelsNotCurrent),
+                "not due: left out: labels not current",
+            ),
+            (
+                SummaryState::Out(State::BelongsToAnother),
+                "not due: left out: belongs to another entry",
+            ),
+            (
+                SummaryState::Out(State::NotNamed),
+                "not due: left out: not named by derive.in",
+            ),
+            (
+                SummaryState::Out(State::LeftOut),
+                "not due: left out: derive.not_in",
+            ),
+            (
+                SummaryState::Out(State::StillGrowing),
+                "not due: still growing",
+            ),
+        ] {
+            assert_eq!(summary_state(state), words);
+        }
+    }
+
+    #[test]
+    fn the_summaries_line_counts_what_is_due_and_names_the_instruction() {
+        use super::{SummariesDry, summaries_line, summary_ref_line};
+        let mut summaries = SummariesDry {
+            due: 731,
+            calls: 6,
+            tokens: 14210,
+            instruction: (Origin::Shipped, "7fdf9f0d93f443e3".to_owned()),
+            lines: Vec::new(),
+        };
+        assert_eq!(
+            summaries_line(&summaries),
+            "summaries: 731 entries due; this run 6 calls, 14210 tokens to send; instruction (built in, 7fdf9f0d93f443e3)"
+        );
+        summaries.instruction = (
+            Origin::File(PathBuf::from("/home/me/notes/summary.txt")),
+            "4c1a70b9e2d355f0".to_owned(),
+        );
+        assert_eq!(
+            summaries_line(&summaries),
+            "summaries: 731 entries due; this run 6 calls, 14210 tokens to send; instruction (/home/me/notes/summary.txt, 4c1a70b9e2d355f0)"
+        );
+        let entry = Id::from_bytes([1; 16]);
+        assert_eq!(
+            summary_ref_line(entry, "due"),
+            format!("summary\t{entry}\tdue")
+        );
+    }
+
+    #[test]
+    fn the_summarys_lines_follow_the_tags_and_are_absent_with_none() {
+        use super::{SummariesDry, TagsDry};
+        let summaries = SummariesDry {
+            due: 1,
+            calls: 1,
+            tokens: 0,
+            instruction: (Origin::Shipped, "7fdf9f0d93f443e3".to_owned()),
+            lines: vec!["summary\tS\tdue".to_owned()],
+        };
+        let mut dry = Dry {
+            limit: 20,
+            provider: vec!["provider: p".to_owned()],
+            entry_lines: vec!["entry\tE".to_owned()],
+            ..Dry::default()
+        };
+        let before = [
+            "kinds: none",
+            "named: 0 entries by derive.in, 0 of them left out by derive.not_in",
+            "due: 0 entries",
+            "this run: 0 calls for 0 entries, 0 tokens of records to send (derive.calls 20)",
+            "provider: p",
+            "entry\tE",
+        ];
+        assert_eq!(lines(&dry), before);
+        dry.summaries = Some(summaries.clone());
+        let found = lines(&dry);
+        let at = found
+            .iter()
+            .position(|line| line.starts_with("this run:"))
+            .expect("the run's line");
+        assert!(found[at + 1].starts_with("summaries: "));
+        assert_eq!(found.last().map(String::as_str), Some("summary\tS\tdue"));
+        dry.tags = Some(TagsDry {
+            pick: 1,
+            lines: vec!["tags\tT\tasked\t-".to_owned()],
+            ..TagsDry::default()
+        });
+        let both = lines(&dry);
+        let tags_at = both
+            .iter()
+            .position(|line| line.starts_with("tags: "))
+            .expect("the tags' line");
+        assert!(both[tags_at + 1].starts_with("summaries: "));
+        let tail: Vec<&str> = both.iter().rev().take(2).map(String::as_str).collect();
+        assert_eq!(tail, ["summary\tS\tdue", "tags\tT\tasked\t-"]);
+        dry.summaries = None;
+        dry.tags = None;
+        assert_eq!(lines(&dry), before);
     }
 }

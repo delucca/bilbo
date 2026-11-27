@@ -41,6 +41,8 @@ Output:
                                ref and day, its folder, and its outline's
                                line or the note's start. A fifth field,
                                note: <text>, is a note derive wrote of it
+  summary: <text>              a row's last field: the summary derive wrote
+                               of its entry, where there is one
   digest.log                   in the state folder: one line a run
 
 Exit:

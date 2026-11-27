@@ -5,7 +5,7 @@ use bilbo_store::entries::Generation;
 use bilbo_store::id::Id;
 use bilbo_store::labels::Tag;
 
-use crate::instruction::number;
+use crate::instruction::{number, number_of};
 use crate::tries;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -66,12 +66,6 @@ pub fn line(line: &Line) -> String {
             charges,
         } => format!("charged\t{entry}\t{asking:016x}\t{charges}"),
     }
-}
-
-pub(crate) fn number_of(text: &str) -> Option<u64> {
-    (text.len() == 16 && text.bytes().all(|byte| byte.is_ascii_hexdigit()))
-        .then(|| u64::from_str_radix(text, 16).ok())
-        .flatten()
 }
 
 #[must_use]

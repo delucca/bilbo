@@ -34,6 +34,7 @@ fn request() -> Request {
         render: "lines/1".to_owned(),
         workers: 1,
         label_batch: 512,
+        kept_unread: Vec::new(),
     }
 }
 
@@ -216,6 +217,39 @@ fn an_entry_of_a_kind_no_reader_reads_is_left_out_and_counted_by_kind() {
     assert_eq!(output.unread, unread(&[("audio", 1), ("pdf", 2)]));
     assert!(output.failed.is_empty());
     assert_eq!(index.added(), [(id(2), "kept".to_owned())]);
+}
+
+#[test]
+fn an_entry_of_a_kind_the_request_keeps_unread_is_passed_over_and_counted_nowhere() {
+    let entries = || {
+        vec![
+            kept(1, "ledger", &["figures\n"]),
+            kept(2, "lines", &["kept\n"]),
+            kept(3, "pdf", &["%PDF\n"]),
+        ]
+    };
+    let mut index = Recorded::default();
+    let listing = Request {
+        kept_unread: vec!["ledger".to_owned()],
+        ..request()
+    };
+    let shelf = shelf(entries());
+    let output = run(
+        &listing,
+        &shelf,
+        &shelf,
+        &readers(),
+        &tokenizer(Bytes),
+        &mut index,
+    )
+    .expect("a run");
+    assert_eq!((output.entries, output.chunks), (1, 1));
+    assert_eq!(output.unread, unread(&[("pdf", 1)]));
+    assert!(output.failed.is_empty());
+    assert_eq!(index.added(), [(id(2), "kept".to_owned())]);
+    let mut plain = Recorded::default();
+    let output = reindex(&shelf, &mut plain).expect("a run");
+    assert_eq!(output.unread, unread(&[("ledger", 1), ("pdf", 1)]));
 }
 
 #[test]

@@ -51,7 +51,6 @@ enum Kind {
 }
 
 impl Work {
-    /// `None` when the index is continued.
     pub fn rebuilds(&self) -> Option<Reason> {
         match &self.0.kind {
             Kind::Rebuild(why) => Some(*why),
@@ -59,7 +58,7 @@ impl Work {
         }
     }
 
-    /// How many distinct entries the work names: every entry of the store for a rebuild.
+    /// Every entry of the store for a rebuild.
     pub fn entries(&self) -> usize {
         self.0.ids.len()
     }
@@ -67,12 +66,10 @@ impl Work {
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Output {
-    /// Entries whose newest generation was put in the index, also when it gave no chunk.
+    /// Counts an entry that gave no chunk too.
     pub entries: u64,
     pub chunks: u64,
-    /// By kind.
     pub unread: BTreeMap<String, u64>,
-    /// The entries this run attempted and left out, with why.
     pub failed: Vec<(Id, String)>,
     pub index_bytes: u64,
     pub rebuilt: bool,
@@ -134,8 +131,7 @@ pub fn plan(
     }))))
 }
 
-/// Does the work, and commits once, or not at all: a return with an error leaves the index at its
-/// last commit and holding no writer.
+/// Commits once or not at all: an error leaves the index at its last commit, holding no writer.
 pub fn apply(
     work: Work,
     request: &Request,
@@ -238,6 +234,7 @@ fn grow(
         entries,
         labels,
         label_batch: request.label_batch,
+        kept_unread: &request.kept_unread,
         readers,
         tokens: tokenizer.tokens.as_ref(),
         grown: Some(&meta_changed),
@@ -294,6 +291,7 @@ mod tests {
             render: "lines/1".to_owned(),
             workers: 1,
             label_batch: 512,
+            kept_unread: Vec::new(),
         };
         let readers: Vec<Box<dyn Reader>> = vec![Box::new(OnePassage)];
         let tokenizer = Tokenizer {

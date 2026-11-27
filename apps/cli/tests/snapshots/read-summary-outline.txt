@@ -1,0 +1,15 @@
+bilbo:01JC5Q3V7XKM4P8R2T6W9YB0DG
+kind: markdown
+label: file:/home/me/notes/garden-log.md (capture)
+captured: 2026-11-09 03:12 UTC
+records: 34
+generation: 1
+summary: The vegetable beds since March: what was sown in each, the thinning dates of the carrots, and the drainage of the north bed, which is still open.
+outline:
+#r1-7 frontmatter
+#r8-11 The garden log
+#r12-21 The garden log > Beds
+#r22-27 The garden log > Watering
+#r28-31 The garden log > Watering > Tools
+#r32-34 The garden log > Harvest
+end: #r1-34 of 34 records

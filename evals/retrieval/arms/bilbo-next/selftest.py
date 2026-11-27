@@ -670,6 +670,11 @@ def tags_refusals():
         stopped, runs, popens, events = drive(spelling)
         check(f"a settings table that makes a tags table under derive stops the build before the cache is started: {list(spelling)[0]}",
               stopped == "bilbo-next: BILBO_EVAL_DERIVE: the arm does not tag" and not runs and not popens, (stopped, runs, popens))
+    for spelling in ({"derive.summary.enabled": True}, {"derive.summary": {"enabled": True}}, {'derive."summary".enabled': True},
+                     {"derive.summary": {}}, {"derive.summary.most": 100}):
+        stopped, runs, popens, events = drive(spelling)
+        check(f"a settings table that makes a summary table under derive stops the build before the cache is started: {list(spelling)[0]}",
+              stopped == "bilbo-next: BILBO_EVAL_DERIVE: the arm does not summarise" and not runs and not popens, (stopped, runs, popens))
 
 
 def api_secret():
@@ -1433,7 +1438,7 @@ def settings_stops():
     check("a table given as a value makes a config that does not parse", error and "the settings make a config that does not parse" in error, error)
     check("the config the build writes is the arm's keys, then the settings",
           build.bilbo_config({"provider": "anthropic", "settings": {}}, ["a"], {"derive.tries": 2})
-          == 'follow = []\n\n[derive]\nenabled = true\nin = ["a"]\ntries = 2\n\n[llm]\nprovider = "anthropic"\n\n[llm.anthropic]\nvia = "api"\n')
+          == 'follow = []\n\n[derive]\nenabled = true\nin = ["a"]\ntries = 2\n\n[derive.summary]\nenabled = false\n\n[llm]\nprovider = "anthropic"\n\n[llm.anthropic]\nvia = "api"\n')
     secret = "https://user:hunter2@api.example.com/v1"
     error = refused({"provider": "anthropic", "settings": {"llm.anthropic.api.endpoint": secret}})
     check("an endpoint with an @ is refused, and its value is in no text", error and "no user name or password" in error and "hunter2" not in error, error)
@@ -1444,6 +1449,11 @@ def settings_stops():
         error = refused({"provider": "anthropic", "settings": spelling})
         check(f"a settings table that makes a tags table under derive is refused by the default way: {list(spelling)[0]}",
               error == "bilbo-next: BILBO_EVAL_DERIVE: the arm does not tag", error)
+    for spelling in ({"derive.summary.enabled": True}, {"derive.summary": {"enabled": True}}, {'derive."summary".enabled': True},
+                     {"derive.summary": {}}, {"derive.summary.most": 100}):
+        error = refused({"provider": "anthropic", "settings": spelling})
+        check(f"a settings table that makes a summary table under derive is refused by the default way: {list(spelling)[0]}",
+              error == "bilbo-next: BILBO_EVAL_DERIVE: the arm does not summarise", error)
     check("a settings table with no tags is taken by the default way", refused({"provider": "anthropic", "settings": {"derive.tries": 2}}) is None)
     check("an endpoint with no @ is taken", refused({"provider": "anthropic", "settings": {"llm.anthropic.api.endpoint": "https://api.example.com/v1"}}) is None)
     check("the key's variable is the setting's key_env, else the provider's own (L17)",

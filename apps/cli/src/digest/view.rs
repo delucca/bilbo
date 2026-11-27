@@ -55,15 +55,19 @@ fn field(view: &View, text: Option<&str>) -> String {
 
 fn row(row: &Row, view: &View) -> String {
     let reference = paint(view, Style::Name, &reference(row));
-    match &row.said {
-        Said::Entry { title } => {
+    let (mut text, summary) = match &row.said {
+        Said::Entry { title, summary } => {
             let capture = field(view, row.capture.as_ref().map(CaptureLabel::as_str));
-            format!("{reference}\t{capture}\t{}", field(view, title.as_deref()))
+            (
+                format!("{reference}\t{capture}\t{}", field(view, title.as_deref())),
+                summary,
+            )
         }
         Said::Passage {
             day,
             folder,
             line: outline,
+            written,
             summary,
             ..
         } => {
@@ -73,12 +77,16 @@ fn row(row: &Row, view: &View) -> String {
                 field(view, folder.as_deref()),
                 field(view, outline.as_deref())
             );
-            if let Some(summary) = summary {
-                text.push_str(&format!("\tnote: {}", line(view, summary)));
+            if let Some(written) = written {
+                text.push_str(&format!("\tnote: {}", line(view, written)));
             }
-            text
+            (text, summary)
         }
+    };
+    if let Some(summary) = summary {
+        text.push_str(&format!("\tsummary: {}", line(view, summary)));
     }
+    text
 }
 
 pub fn lists(lists: &[Shown<'_>], view: &View) -> String {
@@ -116,6 +124,7 @@ mod tests {
             shared_short: shared,
             said: Said::Entry {
                 title: title.map(str::to_owned),
+                summary: None,
             },
         }
     }
@@ -125,7 +134,7 @@ mod tests {
         records: (u64, u64),
         folder: Option<&str>,
         line: Option<&str>,
-        summary: Option<&str>,
+        written: Option<&str>,
         shared: bool,
     ) -> Row {
         Row {
@@ -141,7 +150,8 @@ mod tests {
                 day: "2026-11-07".to_owned(),
                 folder: folder.map(str::to_owned),
                 line: line.map(str::to_owned),
-                summary: summary.map(str::to_owned),
+                written: written.map(str::to_owned),
+                summary: None,
             },
         }
     }
@@ -429,5 +439,87 @@ mod tests {
         ] {
             assert!(human.contains(escape), "{escape}");
         }
+    }
+
+    fn summarised(mut held: Row, text: &str) -> Row {
+        match &mut held.said {
+            Said::Entry { summary, .. } | Said::Passage { summary, .. } => {
+                *summary = Some(text.to_owned());
+            }
+        }
+        held
+    }
+
+    fn only_row(word: &'static str, row: &Row) -> String {
+        let printed = lists(
+            &[Shown {
+                word,
+                rows: std::slice::from_ref(row),
+            }],
+            &View::PLAIN,
+        );
+        printed.lines().nth(1).expect("a row").to_owned()
+    }
+
+    #[test]
+    fn a_summary_is_a_rows_last_field_after_the_note() {
+        let short = &A[16..];
+        let file = entry(A, Some("file:/n/a.md"), Some("The garden log"), false);
+        assert_eq!(
+            only_row("files", &file),
+            format!("{short}\tfile:/n/a.md\tThe garden log")
+        );
+        assert_eq!(
+            only_row("files", &summarised(file, "The beds.")),
+            format!("{short}\tfile:/n/a.md\tThe garden log\tsummary: The beds.")
+        );
+        let both = passage(
+            A,
+            (3, 5),
+            Some("/src/garden"),
+            Some("user: thin"),
+            Some("a note"),
+            false,
+        );
+        assert_eq!(
+            only_row("sessions", &summarised(both, "The beds.")),
+            format!(
+                "{short}#r3-7\t2026-11-07\t/src/garden\tuser: thin\tnote: a note\tsummary: The beds."
+            )
+        );
+        let alone = passage(
+            A,
+            (3, 5),
+            Some("/src/garden"),
+            Some("user: thin"),
+            None,
+            false,
+        );
+        assert_eq!(
+            only_row("sessions", &alone),
+            format!("{short}#r3-7\t2026-11-07\t/src/garden\tuser: thin")
+        );
+        assert_eq!(
+            only_row("sessions", &summarised(alone, "The beds.")),
+            format!("{short}#r3-7\t2026-11-07\t/src/garden\tuser: thin\tsummary: The beds.")
+        );
+        let note = passage(A, (1, 1), None, Some("kept text"), None, false);
+        assert_eq!(
+            only_row("notes", &note),
+            format!("{short}#r1\t2026-11-07\t-\tkept text")
+        );
+        assert_eq!(
+            only_row("notes", &summarised(note, "The beds.")),
+            format!("{short}#r1\t2026-11-07\t-\tkept text\tsummary: The beds.")
+        );
+    }
+
+    #[test]
+    fn a_summary_is_written_as_any_field_is() {
+        let file = summarised(entry(A, Some("file:/n/a.md"), Some("T"), false), "a\tb\nc");
+        assert_eq!(
+            only_row("files", &file),
+            format!("{}\tfile:/n/a.md\tT\tsummary: a\\tb\\nc", &A[16..])
+        );
     }
 }

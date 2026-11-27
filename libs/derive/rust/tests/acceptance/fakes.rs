@@ -12,11 +12,15 @@ use bilbo_derive::record::{self, Run};
 use bilbo_derive::run::{self, Clock, Context, Replayed, Report, Sinks};
 use bilbo_derive::scope::{Named, Scope, Standing};
 use bilbo_derive::spool::{self, Block, Spool};
+use bilbo_derive::summary::{
+    self,
+    asked::{Asked as SummaryAsked, Line as SummaryLine},
+};
 use bilbo_derive::tags::{
     self,
     asked::{Answered, Asked as TagsAsked, Line as AskedLine},
 };
-use bilbo_derive::tries::{Extent, Tries};
+use bilbo_derive::tries::{Extent, MOST, Tries};
 use bilbo_derive::view::{Counter, Format, Paragraph};
 use bilbo_entries::reader::{Passage, Reader};
 use bilbo_entries::tokens::{Estimate, Tokens};
@@ -65,6 +69,7 @@ pub struct Shelf {
     sealed: Vec<(Id, SystemTime)>,
     pub reads: RefCell<Vec<Id>>,
     pub ranges: RefCell<Vec<(Id, u32, u64, u64)>>,
+    pub lookups: RefCell<Vec<String>>,
     pub touched: Rc<Cell<usize>>,
     pub captures: Vec<(String, String, Option<Id>, Vec<u8>)>,
     pub refuse_capture: bool,
@@ -76,11 +81,53 @@ impl Shelf {
         self.items.push(Item {
             id,
             kind: kind.to_owned(),
-            capture: None,
+            capture: CaptureLabel::new(format!("file:/n/{id}")),
             belongs: None,
             generations: vec![records.iter().map(|text| line(text)).collect()],
             tags: Tags::default(),
         });
+    }
+
+    pub fn put_summary(&mut self, id: Id, parent: Id, records: &[String]) {
+        self.items.push(Item {
+            id,
+            kind: summary::KIND.to_owned(),
+            capture: Some(summary::label(parent)),
+            belongs: None,
+            generations: vec![records.iter().map(|text| line(text)).collect()],
+            tags: Tags::default(),
+        });
+    }
+
+    pub fn summary_item(&self, parent: Id) -> Id {
+        let label = summary::label(parent);
+        self.items
+            .iter()
+            .find(|item| item.capture.as_ref() == Some(&label))
+            .expect("a summary entry")
+            .id
+    }
+
+    pub fn append_summary(&mut self, parent: Id, record: &str) {
+        let id = self.summary_item(parent);
+        self.item_mut(id)
+            .generations
+            .last_mut()
+            .expect("a generation")
+            .push(line(record));
+    }
+
+    pub fn remove(&mut self, id: Id) {
+        self.items.retain(|item| item.id != id);
+    }
+
+    pub fn rewrite(&mut self, id: Id, at: usize, record: &str) {
+        let newest = self
+            .item_mut(id)
+            .generations
+            .last_mut()
+            .expect("a generation");
+        newest[at] = line(record);
     }
 
     pub fn belong(&mut self, id: Id, to: Id) {
@@ -102,7 +149,7 @@ impl Shelf {
     pub fn put_notes(&mut self, id: Id, parent: Id, records: Vec<Vec<u8>>) {
         self.items.push(Item {
             id,
-            kind: "summary".to_owned(),
+            kind: "paragraphs".to_owned(),
             capture: CaptureLabel::new(format!("derive:{parent}")),
             belongs: Some(parent),
             generations: vec![
@@ -337,6 +384,7 @@ impl Entries for Shelf {
 
     fn by_capture(&self, label: &CaptureLabel) -> Result<Option<Head>, StoreError> {
         self.touch();
+        self.lookups.borrow_mut().push(label.to_string());
         Ok(self
             .items
             .iter()
@@ -345,7 +393,10 @@ impl Entries for Shelf {
                 id: item.id,
                 generation: Generation(item.generations.len() as u32),
                 records: item.generations.last().map_or(0, Vec::len) as u64,
-                mark: Mark { end: 0, hash: 0 },
+                mark: item
+                    .generations
+                    .last()
+                    .map_or(Mark { end: 0, hash: 0 }, |records| marked(records)),
                 stamp: None,
             }))
     }
@@ -373,6 +424,18 @@ impl Entries for Shelf {
     fn by_shorts(&self, _shorts: &[Short]) -> Result<Vec<Id>, StoreError> {
         Ok(Vec::new())
     }
+}
+
+fn marked(records: &[Vec<u8>]) -> Mark {
+    let mut hash: u128 = 0x6c62_272e_07bb_0142;
+    let mut end = 0;
+    for byte in records.iter().flatten() {
+        hash = hash
+            .wrapping_mul(0x0100_0000_01b3)
+            .wrapping_add(u128::from(*byte) + 1);
+        end += 1;
+    }
+    Mark { end, hash }
 }
 
 fn kept(id: Id, generation: usize, first: usize, count: usize) -> Kept {
@@ -510,7 +573,7 @@ pub fn read_paragraph(bytes: &[u8]) -> Option<Paragraph> {
 
 pub fn format() -> Format<'static> {
     Format {
-        kind: "summary",
+        kind: "paragraphs",
         write: &write_paragraph,
         read: &read_paragraph,
     }
@@ -745,6 +808,111 @@ impl TagsAsked for Memo {
     }
 }
 
+pub struct Noted {
+    pub lines: Vec<SummaryLine>,
+    pub asks: Cell<usize>,
+    pub writes: usize,
+    pub fail_write: Option<usize>,
+    pub fail_read: bool,
+    pub seen: Option<Rc<RefCell<Vec<String>>>>,
+}
+
+impl Default for Noted {
+    fn default() -> Noted {
+        Noted {
+            lines: Vec::new(),
+            asks: Cell::new(0),
+            writes: 0,
+            fail_write: None,
+            fail_read: false,
+            seen: None,
+        }
+    }
+}
+
+fn entry_of(line: &SummaryLine) -> Id {
+    match line {
+        SummaryLine::Passed { entry, .. } | SummaryLine::Charged { entry, .. } => *entry,
+    }
+}
+
+impl Noted {
+    fn read(&self) -> io::Result<()> {
+        self.asks.set(self.asks.get() + 1);
+        if self.fail_read {
+            return Err(io::Error::other("a read that fails"));
+        }
+        Ok(())
+    }
+
+    fn write(&mut self) -> io::Result<()> {
+        self.writes += 1;
+        if self.fail_write == Some(self.writes) {
+            return Err(io::Error::other("a write that fails"));
+        }
+        Ok(())
+    }
+}
+
+impl SummaryAsked for Noted {
+    fn passed(&self, entry: Id) -> io::Result<Option<u64>> {
+        self.read()?;
+        Ok(self.lines.iter().find_map(|line| match line {
+            SummaryLine::Passed {
+                entry: held,
+                asking,
+            } if *held == entry => Some(*asking),
+            _ => None,
+        }))
+    }
+
+    fn charges(&self, entry: Id, asking: u64) -> io::Result<u8> {
+        self.read()?;
+        Ok(self
+            .lines
+            .iter()
+            .find_map(|line| match line {
+                SummaryLine::Charged {
+                    entry: held,
+                    asking: charged,
+                    charges,
+                } if *held == entry && *charged == asking => Some(*charges),
+                _ => None,
+            })
+            .unwrap_or(0))
+    }
+
+    fn charge(&mut self, entry: Id, asking: u64) -> io::Result<()> {
+        let before = SummaryAsked::charges(self, entry, asking)?;
+        self.write()?;
+        self.lines.retain(
+            |line| !matches!(line, SummaryLine::Charged { entry: held, .. } if *held == entry),
+        );
+        self.lines.push(SummaryLine::Charged {
+            entry,
+            asking,
+            charges: before.saturating_add(1).min(MOST),
+        });
+        if let Some(seen) = &self.seen {
+            seen.borrow_mut().push(format!("charge:{entry}"));
+        }
+        Ok(())
+    }
+
+    fn pass(&mut self, entry: Id, asking: u64) -> io::Result<()> {
+        self.write()?;
+        self.lines.retain(|line| entry_of(line) != entry);
+        self.lines.push(SummaryLine::Passed { entry, asking });
+        Ok(())
+    }
+
+    fn settle(&mut self, entry: Id) -> io::Result<()> {
+        self.write()?;
+        self.lines.retain(|line| entry_of(line) != entry);
+        Ok(())
+    }
+}
+
 #[derive(Default)]
 pub struct Lines(pub Vec<String>);
 
@@ -906,6 +1074,7 @@ pub struct World {
     pub table: Table,
     pub held: Held,
     pub spooled: Spooled,
+    pub summary_spool: Spooled,
     pub lines: Lines,
     pub watch: Watch,
     pub section: Section,
@@ -921,6 +1090,10 @@ pub struct World {
     pub tags_model: String,
     pub provider: String,
     pub memo: Memo,
+    pub noted: Noted,
+    pub summary: Option<summary::keys::Section>,
+    pub summary_id: String,
+    pub summary_text: String,
     pub cap: usize,
     pub format_reads: Rc<Cell<usize>>,
     next: u8,
@@ -956,6 +1129,7 @@ impl World {
             table,
             held: Held::default(),
             spooled: Spooled::default(),
+            summary_spool: Spooled::default(),
             lines: Lines::default(),
             watch: Watch {
                 now: Cell::new(at(NOW)),
@@ -982,6 +1156,10 @@ impl World {
             tags_model: "model-a".to_owned(),
             provider: "fake".to_owned(),
             memo: Memo::default(),
+            noted: Noted::default(),
+            summary: None,
+            summary_id: summary::instruction::id(),
+            summary_text: summary::instruction::text().to_owned(),
             cap: 32,
             format_reads: Rc::new(Cell::new(0)),
             next: 0,
@@ -1095,6 +1273,75 @@ impl World {
         made
     }
 
+    pub fn summary_records(&self, parent: Id) -> Option<(Head, Vec<Vec<u8>>)> {
+        let head = self
+            .shelf
+            .by_capture(&summary::label(parent))
+            .expect("a lookup")?;
+        let records = self
+            .shelf
+            .read(
+                head.id,
+                head.generation,
+                RecordRange {
+                    first: 1,
+                    count: head.records,
+                },
+            )
+            .expect("the records");
+        Some((
+            head,
+            records
+                .iter()
+                .map(|record| record.strip_suffix(b"\n").unwrap_or(record).to_vec())
+                .collect(),
+        ))
+    }
+
+    pub fn head_of(&self, parent: Id) -> Head {
+        let label = CaptureLabel::new(format!("file:/n/{parent}")).expect("a label");
+        self.shelf
+            .by_capture(&label)
+            .expect("a lookup")
+            .expect("a head")
+    }
+
+    pub fn summary_record(&self, parent: Id, notes: Option<summary::record::Notes>) -> String {
+        let head = self.head_of(parent);
+        summary::record::write(&summary::record::Summary {
+            text: "The garden log.".to_owned(),
+            instruction: self.summary_id.clone(),
+            provider: self.provider.clone(),
+            model: "model-a".to_owned(),
+            answered: None,
+            made: NOW - 100,
+            entry: parent,
+            generation: head.generation,
+            records: head.records,
+            content: head.mark.hash,
+            notes,
+            sent: 100,
+            tokens_in: None,
+            tokens_out: None,
+        })
+    }
+
+    pub fn settle_summary(&mut self, parent: Id, notes: Option<summary::record::Notes>) -> Id {
+        let record = self.summary_record(parent, notes);
+        let made = minted(self.shelf.ids().len());
+        self.shelf.put_summary(made, parent, &[record]);
+        made
+    }
+
+    pub fn notes_of_session(&self, parent: Id) -> summary::record::Notes {
+        let (generation, records) = self.shelf.by_capture_head(parent).expect("notes");
+        summary::record::Notes {
+            generation,
+            records,
+            digest: self.notes_digest(parent),
+        }
+    }
+
     pub fn notes_digest(&self, parent: Id) -> u64 {
         let head = plan::held(&self.shelf, parent)
             .expect("a head")
@@ -1139,6 +1386,17 @@ impl World {
             })
     }
 
+    pub fn summary_rules(&self) -> Option<summary::Rules<'_>> {
+        self.summary
+            .as_ref()
+            .filter(|section| section.enabled.value)
+            .map(|section| summary::Rules {
+                section,
+                instruction: &self.summary_text,
+                id: &self.summary_id,
+            })
+    }
+
     pub fn plan(&self, asked: Asked<'_>) -> Plan {
         let format = format();
         let readers: Vec<&dyn Reader> = self.readers.iter().map(|reader| &**reader).collect();
@@ -1149,6 +1407,7 @@ impl World {
                 scope: &self.table,
                 tries: &self.held,
                 asked: &self.memo,
+                summarised: &self.noted,
             },
             &Rules {
                 readers: &readers,
@@ -1162,6 +1421,7 @@ impl World {
                 redo: self.redo,
                 now: self.watch.now.get(),
                 tags: self.tags_rules(),
+                summary: self.summary_rules(),
             },
             &self.shelf.ids(),
             asked,
@@ -1179,13 +1439,22 @@ impl World {
         tagger: Option<&mut Script>,
         plan: &Plan,
     ) -> Report {
+        self.try_calls(writer, tagger, plan).expect("calls")
+    }
+
+    pub fn try_calls(
+        &mut self,
+        writer: &mut Script,
+        tagger: Option<&mut Script>,
+        plan: &Plan,
+    ) -> Result<Report, Box<run::Halted>> {
         let reads = Rc::clone(&self.format_reads);
         let counting = move |bytes: &[u8]| {
             reads.set(reads.get() + 1);
             read_paragraph(bytes)
         };
         let format = Format {
-            kind: "summary",
+            kind: "paragraphs",
             write: &write_paragraph,
             read: &counting,
         };
@@ -1200,6 +1469,15 @@ impl World {
                 model: &self.tags_model,
                 cap: self.cap,
             });
+        let summary_rules = self
+            .summary
+            .as_ref()
+            .filter(|section| section.enabled.value)
+            .map(|section| summary::Rules {
+                section,
+                instruction: &self.summary_text,
+                id: &self.summary_id,
+            });
         let counter = Counter {
             tokens: &*self.tokens,
             bound: self.bound,
@@ -1211,6 +1489,8 @@ impl World {
                 tagger: tagger.map(|tagger| -> &mut dyn Model { tagger }),
                 asked: &mut self.memo,
                 spool: &mut self.spooled,
+                summary_spool: &mut self.summary_spool,
+                summarised: &mut self.noted,
                 tries: &mut self.held,
                 log: &mut self.lines,
                 clock: &self.watch,
@@ -1222,10 +1502,10 @@ impl World {
                 format: &format,
                 counter: &counter,
                 tags: rules,
+                summary: summary_rules,
                 redo: self.redo,
             },
         )
-        .expect("calls")
     }
 
     pub fn replay(&mut self) -> Replayed {
@@ -1237,8 +1517,10 @@ impl World {
         run::replay(
             &mut self.shelf,
             &mut self.spooled,
+            &mut self.summary_spool,
             &format,
             &mut self.memo,
+            &mut self.noted,
             self.cap,
         )
     }
