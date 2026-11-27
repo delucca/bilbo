@@ -294,6 +294,7 @@ pub fn summary_state(state: SummaryState) -> String {
         SummaryState::NoNote => "not due: no note".to_owned(),
         SummaryState::Short => "not due: short".to_owned(),
         SummaryState::NoReader => "not due: no reader reads its kind".to_owned(),
+        SummaryState::Forgotten => "not due: forgotten".to_owned(),
         SummaryState::Out(state) => format!("not due: {}", state_text(state)),
     }
 }
@@ -782,6 +783,7 @@ mod tests {
             (SummaryState::NoNote, "not due: no note"),
             (SummaryState::Short, "not due: short"),
             (SummaryState::NoReader, "not due: no reader reads its kind"),
+            (SummaryState::Forgotten, "not due: forgotten"),
             (
                 SummaryState::Out(State::LabelsNotCurrent),
                 "not due: left out: labels not current",

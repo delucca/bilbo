@@ -1,7 +1,7 @@
 use bilbo_entries::remember::{self, Output};
 use bilbo_store::labels::Tag;
 
-use crate::console::message::{Message, new_tags};
+use crate::console::message::{Message, new_tags, renders_as_written};
 
 pub fn refusals(outputs: &[Output]) -> Vec<Message> {
     outputs
@@ -52,6 +52,59 @@ pub fn withdrawals(outputs: &[Output]) -> Vec<Message> {
         .collect()
 }
 
+fn shell_word(path: &str) -> String {
+    let plain = !path.is_empty()
+        && path
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || b"/._-+:@%,=".contains(&byte));
+    if plain {
+        path.to_owned()
+    } else {
+        format!("'{}'", path.replace('\'', "'\\''"))
+    }
+}
+
+pub fn passed(outputs: &[Output]) -> Vec<Message> {
+    outputs
+        .iter()
+        .flat_map(|output| &output.items)
+        .filter_map(|item| {
+            let Some(remember::Met::Own { id, .. }) = item.forgotten.as_ref() else {
+                return None;
+            };
+            let path = item.path.to_string_lossy();
+            let said = format!("passed over {path}: its entry {id} was forgotten");
+            Some(Message::info(&if renders_as_written(&path) {
+                format!(
+                    "{said}; bilbo remember {} keeps it again",
+                    shell_word(&path)
+                )
+            } else {
+                said
+            }))
+        })
+        .collect()
+}
+
+pub fn again(outputs: &[Output]) -> Vec<Message> {
+    outputs
+        .iter()
+        .flat_map(|output| &output.items)
+        .filter_map(|item| {
+            let remember::Met::Again { id, .. } = item.forgotten.as_ref()? else {
+                return None;
+            };
+            let path = item.path.display();
+            Some(Message::info(&match item.outcome {
+                remember::Outcome::Refused(_) => format!(
+                    "took {path} back as entry {id}, which was forgotten; its file was refused"
+                ),
+                _ => format!("kept {path} again: its entry {id} was forgotten"),
+            }))
+        })
+        .collect()
+}
+
 pub fn tagged(output: &Output, fresh: &[Tag]) -> Vec<Message> {
     if output.tagged == 0 {
         return Vec::new();
@@ -65,13 +118,14 @@ pub fn tagged(output: &Output, fresh: &[Tag]) -> Vec<Message> {
 mod tests {
     use std::path::PathBuf;
 
-    use bilbo_entries::remember::{Item, Moved, Outcome, Output};
+    use bilbo_entries::remember::{Item, Met, Moved, Outcome, Output};
     use bilbo_store::entries::Generation;
     use bilbo_store::id::Id;
     use bilbo_store::labels::CaptureLabel;
 
-    use super::{moves, refusals, withdrawals};
+    use super::{again, moves, passed, refusals, withdrawals};
     use crate::console::theme::Mark;
+    use crate::console::view::View;
 
     const ID: &str = "01JC5Q3V7XKM4P8R2T6W9YB0DE";
 
@@ -100,6 +154,7 @@ mod tests {
             }),
             carried: None,
             withdrew: None,
+            forgotten: None,
         }
     }
 
@@ -179,6 +234,89 @@ mod tests {
             [format!(
                 "bilbo: withdrew /home/me/notes/decision-shed.md: its file is gone; bilbo read {ID}#g2 prints the outline of what it held"
             )]
+        );
+    }
+
+    #[test]
+    fn a_file_passed_over_says_whose_it_was_and_how_to_keep_it_again() {
+        let id = Id::parse(ID).expect("an id");
+        let mut over = item("/home/me/notes/shed.md", Outcome::Unchanged(id), false);
+        over.forgotten = Some(Met::Own { id, bytes: 0 });
+        let mut odd = item("/home/me/notes/x$(id)'s.md", Outcome::Unchanged(id), false);
+        odd.forgotten = Some(Met::Own { id, bytes: 0 });
+        let mut broken = item("/home/me/notes/x\ny.md", Outcome::Unchanged(id), false);
+        broken.forgotten = Some(Met::Own { id, bytes: 0 });
+        let mut reordering = item(
+            "/home/me/notes/x\u{202e}y.md",
+            Outcome::Unchanged(id),
+            false,
+        );
+        reordering.forgotten = Some(Met::Own { id, bytes: 0 });
+        let output = output(vec![
+            item("/home/me/notes/a.md", Outcome::Unchanged(id), false),
+            over,
+            odd,
+            broken,
+            reordering,
+        ]);
+        let messages = passed(&[output]);
+        assert!(messages.iter().all(|message| message.mark == Mark::Info));
+        assert_eq!(
+            lines(&messages),
+            [
+                format!(
+                    "bilbo: passed over /home/me/notes/shed.md: its entry {ID} was forgotten; bilbo remember /home/me/notes/shed.md keeps it again"
+                ),
+                format!(
+                    "bilbo: passed over /home/me/notes/x$(id)'s.md: its entry {ID} was forgotten; bilbo remember '/home/me/notes/x$(id)'\\''s.md' keeps it again"
+                ),
+                format!("bilbo: passed over /home/me/notes/x\\ny.md: its entry {ID} was forgotten"),
+                format!(
+                    "bilbo: passed over /home/me/notes/x\u{202e}y.md: its entry {ID} was forgotten"
+                ),
+            ]
+        );
+        for view in [&View::PLAIN, &View::HUMAN] {
+            let said: Vec<String> = messages
+                .iter()
+                .flat_map(|message| message.lines(view))
+                .collect();
+            assert_eq!(said.len(), 4, "{said:?}");
+            for (at, line) in said.iter().enumerate() {
+                assert_eq!(line.contains("keeps it again"), at < 2, "{line}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_file_kept_again_says_which_entry_came_back() {
+        let id = Id::parse(ID).expect("an id");
+        let mut kept = item("/home/me/notes/shed.md", Outcome::Appended(id), false);
+        kept.forgotten = Some(Met::Again { id, bytes: 64 });
+        let mut refused = item(
+            "/home/me/notes/garden.md",
+            Outcome::Refused("it is too large to keep: a frame holds at most 4 GiB".to_owned()),
+            false,
+        );
+        refused.forgotten = Some(Met::Again { id, bytes: 64 });
+        let mut over = item("/home/me/notes/b.md", Outcome::Unchanged(id), false);
+        over.forgotten = Some(Met::Own { id, bytes: 0 });
+        let output = output(vec![
+            item("/home/me/notes/a.md", Outcome::Unchanged(id), false),
+            kept,
+            refused,
+            over,
+        ]);
+        let messages = again(&[output]);
+        assert!(messages.iter().all(|message| message.mark == Mark::Info));
+        assert_eq!(
+            lines(&messages),
+            [
+                format!("bilbo: kept /home/me/notes/shed.md again: its entry {ID} was forgotten"),
+                format!(
+                    "bilbo: took /home/me/notes/garden.md back as entry {ID}, which was forgotten; its file was refused"
+                ),
+            ]
         );
     }
 }

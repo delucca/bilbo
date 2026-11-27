@@ -22,6 +22,7 @@ use bilbo_derive::tags::{
 };
 use bilbo_derive::tries::{Extent, MOST, Tries};
 use bilbo_derive::view::{Counter, Format, Paragraph};
+use bilbo_entries::forget::Forgotten;
 use bilbo_entries::reader::{Passage, Reader};
 use bilbo_entries::tokens::{Estimate, Tokens};
 use bilbo_llm::model::{Cause, Limits, Model, Outcome, Prompt, Usage, What};
@@ -74,6 +75,7 @@ pub struct Shelf {
     pub captures: Vec<(String, String, Option<Id>, Vec<u8>)>,
     pub refuse_capture: bool,
     pub set_metas: Vec<Id>,
+    pub asked: RefCell<Vec<String>>,
 }
 
 impl Shelf {
@@ -158,6 +160,41 @@ impl Shelf {
                     .map(|record| with_line(&record))
                     .collect(),
             ],
+            tags: Tags::default(),
+        });
+    }
+
+    pub fn relabel(&mut self, id: Id, capture: &CaptureLabel) {
+        self.item_mut(id).capture = Some(capture.clone());
+    }
+
+    pub fn forget_own(&mut self, id: Id) {
+        let item = self.item_mut(id);
+        let had = item.capture.take().expect("a capture label");
+        item.capture = Some(
+            Forgotten {
+                id,
+                held: Mark::of(b""),
+                had,
+            }
+            .label(),
+        );
+    }
+
+    pub fn put_forgotten(&mut self, id: Id, kind: &str, had: &CaptureLabel) {
+        self.items.push(Item {
+            id,
+            kind: kind.to_owned(),
+            capture: Some(
+                Forgotten {
+                    id,
+                    held: Mark::of(b""),
+                    had: had.clone(),
+                }
+                .label(),
+            ),
+            belongs: None,
+            generations: vec![Vec::new()],
             tags: Tags::default(),
         });
     }
@@ -417,8 +454,22 @@ impl Entries for Shelf {
             .map(|held| (Generation(number as u32), held.len() as u64)))
     }
 
-    fn captures_with(&self, _part: &str) -> Result<Vec<(Id, CaptureLabel)>, StoreError> {
-        Ok(Vec::new())
+    fn captures_with(&self, part: &str) -> Result<Vec<(Id, CaptureLabel)>, StoreError> {
+        self.asked.borrow_mut().push(part.to_owned());
+        let mut found: Vec<(Id, CaptureLabel)> = self
+            .items
+            .iter()
+            .filter_map(|item| {
+                let label = item.capture.clone()?;
+                label
+                    .as_str()
+                    .to_ascii_lowercase()
+                    .contains(&part.to_ascii_lowercase())
+                    .then_some((item.id, label))
+            })
+            .collect();
+        found.sort_by_key(|(id, _)| *id);
+        Ok(found)
     }
 
     fn by_shorts(&self, _shorts: &[Short]) -> Result<Vec<Id>, StoreError> {

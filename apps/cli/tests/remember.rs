@@ -1833,6 +1833,34 @@ fn a_file_or_folder_named_at_the_prompt_is_kept_as_a_target() {
 }
 
 #[test]
+fn a_forgotten_file_named_at_the_prompt_is_brought_back() {
+    let sandbox = Sandbox::new("prompt_way_back");
+    let file = sandbox.write("garden.md", "# Garden\n\nThe beds face south.\n");
+    let kept = sandbox.remember(&[text(&file)]);
+    assert_eq!(kept.code, 0, "{:?}", kept.stderr);
+    let (meta, _) = sandbox.entry(&file);
+    let id = meta.id.to_string();
+    let forgotten = run_in(&sandbox, &["forget", &id]);
+    assert_eq!(forgotten.code, 0, "{:?}", forgotten.stderr);
+
+    let answers = format!("3\n{}\n", text(&file));
+    let run = as_a_person(&sandbox, &[], answers.as_bytes());
+
+    assert_eq!(run.code, 0, "{:?}", run.stderr);
+    assert!(
+        run.stderr
+            .contains(&bilbo_cli::console::message::sanitize(&format!(
+                "bilbo: kept {} again: its entry {id} was forgotten",
+                file.display()
+            ))),
+        "{:?}",
+        run.stderr
+    );
+    let (back, _) = sandbox.entry(&file);
+    assert_eq!(back.id, meta.id);
+}
+
+#[test]
 fn an_empty_answer_or_the_end_of_input_keeps_nothing() {
     for input in [&b"\n"[..], b""] {
         let sandbox = Sandbox::new("prompt_nothing");

@@ -410,4 +410,15 @@ mod tests {
             Some(Id::from_bytes([7; 16]))
         })
     }
+    #[test]
+    fn the_records_of_a_files_first_bytes_are_the_same_whatever_follows() {
+        let kind = Markdown::default();
+        let sections: (&str, &[u8]) = (
+            "sections.md",
+            include_bytes!("../../fixtures/markdown/sections.md"),
+        );
+        for (name, bytes) in FIXTURES.into_iter().chain([sections]) {
+            crate::fake::prefixes_split_alike(&kind, name, bytes);
+        }
+    }
 }

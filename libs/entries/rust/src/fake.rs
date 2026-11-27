@@ -111,3 +111,14 @@ pub fn section(first: u64, lines: &[&str]) -> crate::reader::Passage {
         outline: None,
     }
 }
+
+pub fn prefixes_split_alike(kind: &dyn Kind, name: &str, bytes: &[u8]) {
+    let whole = kind.split(bytes).expect(name);
+    for &end in &whole {
+        let Ok(first) = kind.split(&bytes[..end]) else {
+            continue;
+        };
+        let expected: Vec<usize> = whole.iter().copied().filter(|&at| at <= end).collect();
+        assert_eq!(first, expected, "{name} up to {end}");
+    }
+}

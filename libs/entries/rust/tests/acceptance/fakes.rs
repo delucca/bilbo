@@ -213,6 +213,7 @@ pub enum Script {
     IdHeld(Option<CaptureLabel>),
     Records(String),
     Failure,
+    Answered(Captured),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -228,6 +229,12 @@ pub struct Seen {
     pub lookups_before: usize,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Write {
+    Meta(Id, Option<CaptureLabel>),
+    Capture(String),
+}
+
 #[derive(Default)]
 pub struct FakeEntries {
     pub script: HashMap<String, Script>,
@@ -237,6 +244,15 @@ pub struct FakeEntries {
     pub adopted: Vec<(Id, Option<Id>)>,
     pub labelled: Vec<(Id, Option<CaptureLabel>)>,
     pub looked: RefCell<Vec<String>>,
+    pub asked: RefCell<Vec<String>>,
+    pub writes: Vec<Write>,
+    pub fail_write: Option<usize>,
+    pub fail_meta: Option<usize>,
+    pub meta_calls: std::cell::Cell<usize>,
+    pub belonging: bool,
+    pub fail_captures_with: bool,
+    pub fail_belonging: bool,
+    pub fail_capture_of: Option<String>,
     pub lookup_fails: bool,
     pub resolving: bool,
 }
@@ -249,6 +265,12 @@ impl FakeEntries {
     #[must_use]
     pub fn on(mut self, label: &str, script: Script) -> FakeEntries {
         self.script.insert(label.to_string(), script);
+        self
+    }
+
+    #[must_use]
+    pub fn belonging(mut self) -> FakeEntries {
+        self.belonging = true;
         self
     }
 
@@ -307,6 +329,11 @@ pub fn id(n: u8) -> Id {
 /// The ids `FakeEntries` hands to an entry it creates: `id(n)` for the n-th capture.
 impl Entries for FakeEntries {
     fn capture(&mut self, input: &Capture<'_>) -> Result<Captured, CaptureError> {
+        if self.fail_write == Some(self.writes.len() + 1) {
+            self.fail_write = None;
+            return Err(CaptureError::Store(StoreError::Stopped("capture".into())));
+        }
+        self.writes.push(Write::Capture(input.label.to_string()));
         self.seen.push(Seen {
             label: input.label.to_string(),
             kind: input.kind.to_string(),
@@ -320,13 +347,21 @@ impl Entries for FakeEntries {
         });
         let n = u8::try_from(self.seen.len()).unwrap_or(u8::MAX);
         let held = self.heads.get(input.label.as_str()).map(|head| head.id);
-        let script = self.script.get(input.label.as_str()).cloned().unwrap_or(
-            if input.ends.is_empty() && held.is_some() {
-                Script::NewGeneration
-            } else {
-                Script::New
-            },
-        );
+        let current = self.heads.get(input.label.as_str()).copied();
+        let script = self
+            .script
+            .get(input.label.as_str())
+            .cloned()
+            .unwrap_or(match current {
+                Some(head) if input.ends.is_empty() && head.generation.0 > 0 => {
+                    if head.records == 0 {
+                        Script::Unchanged
+                    } else {
+                        Script::NewGeneration
+                    }
+                }
+                _ => Script::New,
+            });
         let generation = match (&script, self.heads.get(input.label.as_str())) {
             (Script::NewGeneration, Some(head)) => Generation(
                 head.generation
@@ -360,16 +395,24 @@ impl Entries for FakeEntries {
                 },
                 captured: std::time::SystemTime::UNIX_EPOCH,
             });
-            self.heads.insert(
-                input.label.to_string(),
-                Head {
+            let head = match (&script, current) {
+                (Script::Unchanged, Some(head)) => Head {
+                    stamp: input.stamp,
+                    ..head
+                },
+                _ => Head {
                     id: kept.id,
                     generation: kept.generation,
                     records: kept.records.count,
-                    mark: Mark { end: 0, hash: 0 },
+                    mark: if input.ends.is_empty() {
+                        Mark::of(b"")
+                    } else {
+                        Mark { end: 0, hash: 0 }
+                    },
                     stamp: input.stamp,
                 },
-            );
+            };
+            self.heads.insert(input.label.to_string(), head);
         }
         match script {
             Script::New => Ok(Captured::New(kept)),
@@ -379,10 +422,17 @@ impl Entries for FakeEntries {
             Script::IdHeld(by) => Err(CaptureError::IdHeld { id: kept.id, by }),
             Script::Records(what) => Err(CaptureError::Records(what)),
             Script::Failure => Err(CaptureError::Store(StoreError::Stopped("Appended".into()))),
+            Script::Answered(answer) => Ok(answer),
         }
     }
 
     fn set_meta(&mut self, id: Id, meta: &Meta) -> Result<u64, StoreError> {
+        if self.fail_write == Some(self.writes.len() + 1) {
+            self.fail_write = None;
+            return Err(StoreError::Stopped("set_meta".into()));
+        }
+        self.writes
+            .push(Write::Meta(id, meta.labels.capture.clone()));
         self.adopted.push((id, meta.labels.id));
         self.labelled.push((id, meta.labels.capture.clone()));
         let moved = self
@@ -410,6 +460,10 @@ impl Entries for FakeEntries {
     }
 
     fn meta(&self, id: Id) -> Result<Option<Meta>, StoreError> {
+        self.meta_calls.set(self.meta_calls.get() + 1);
+        if self.fail_meta == Some(self.meta_calls.get()) {
+            return Err(StoreError::Stopped("meta".into()));
+        }
         Ok(self.metas.get(&id).cloned())
     }
 
@@ -419,6 +473,9 @@ impl Entries for FakeEntries {
 
     fn by_capture(&self, label: &CaptureLabel) -> Result<Option<Head>, StoreError> {
         self.looked.borrow_mut().push(label.to_string());
+        if self.fail_capture_of.as_deref() == Some(label.as_str()) {
+            return Err(StoreError::Stopped("by_capture".into()));
+        }
         if self.lookup_fails {
             return Err(StoreError::Stopped("by_capture".into()));
         }
@@ -434,7 +491,10 @@ impl Entries for FakeEntries {
     }
 
     fn captures_with(&self, part: &str) -> Result<Vec<(Id, CaptureLabel)>, StoreError> {
-        assert!(self.resolving, "remember must not call captures_with");
+        self.asked.borrow_mut().push(part.to_string());
+        if self.fail_captures_with {
+            return Err(StoreError::Stopped("captures_with".into()));
+        }
         let mut found: Vec<(Id, CaptureLabel)> = self
             .metas
             .values()
@@ -469,8 +529,26 @@ impl Labels for FakeEntries {
         panic!("remember must not call with_words")
     }
 
-    fn belonging_to(&self, _entries: &[Id]) -> Result<Vec<Id>, StoreError> {
-        panic!("remember must not call belonging_to")
+    fn belonging_to(&self, entries: &[Id]) -> Result<Vec<Id>, StoreError> {
+        assert!(self.belonging, "remember must not call belonging_to");
+        if self.fail_belonging {
+            return Err(StoreError::Stopped("belonging_to".into()));
+        }
+        let mut seen: Vec<Id> = entries.to_vec();
+        let mut found = Vec::new();
+        let mut next = 0;
+        while next < seen.len() {
+            let above = seen[next];
+            next += 1;
+            for meta in self.metas.values() {
+                if meta.labels.id == Some(above) && !seen.contains(&meta.id) {
+                    seen.push(meta.id);
+                    found.push(meta.id);
+                }
+            }
+        }
+        found.sort_unstable();
+        Ok(found)
     }
 
     fn tagged(&self, tag: &Tag) -> Result<Vec<Id>, StoreError> {

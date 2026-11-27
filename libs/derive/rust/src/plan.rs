@@ -4,6 +4,7 @@ use std::fmt;
 use std::io;
 use std::time::SystemTime;
 
+use bilbo_entries::forget::{self, Forgotten};
 use bilbo_entries::reader::Reader;
 use bilbo_entries::tokens::Tokens;
 use bilbo_store::entries::{CaptureError, Entries, Generation, Head, RecordRange, StoreError};
@@ -96,6 +97,7 @@ pub struct Parent {
     pub belongs: bool,
     pub generation: Generation,
     pub records: u64,
+    pub forgotten: bool,
 }
 
 impl Parent {
@@ -110,6 +112,11 @@ impl Parent {
             belongs: meta.labels.id.is_some(),
             generation,
             records,
+            forgotten: meta
+                .labels
+                .capture
+                .as_ref()
+                .is_some_and(|label| Forgotten::read(id, label).is_some()),
         }))
     }
 }
@@ -163,6 +170,7 @@ pub enum SummaryState {
     Short,
     NoReader,
     Out(State),
+    Forgotten,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -245,6 +253,7 @@ enum Side<'a> {
         last: Option<&'a Run>,
         complete: bool,
         windowed: bool,
+        given_up: bool,
     },
 }
 
@@ -261,6 +270,7 @@ struct Looked {
     last: Option<Run>,
     opens: bool,
     complete: bool,
+    given_up: bool,
 }
 
 struct Judged {
@@ -281,6 +291,7 @@ struct Standings {
     stale: Vec<Id>,
     named: Vec<Id>,
     left_out: Vec<Id>,
+    had: Vec<forget::Forgotten>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -315,6 +326,7 @@ pub fn plan(
         stale,
         named: ports.scope.named(&rules.section.named.value)?.entries,
         left_out: [left_out.entries, left_out.several].concat(),
+        had: forget::held(ports.entries)?,
     };
     let considered = match asked {
         Asked::Every => entries,
@@ -397,6 +409,7 @@ pub fn plan(
                             last: looked.last.as_ref(),
                             complete: looked.complete,
                             windowed: false,
+                            given_up: looked.given_up,
                         },
                         None => Side::Text,
                     };
@@ -544,7 +557,7 @@ fn judge(
     if let Some(state) = gate.rest(parent.belongs)? {
         return Ok(Some(Judged::plain(Found::State(state))));
     }
-    cover(ports, rules, parent, instruction, *reader).map(Some)
+    cover(ports, rules, standings, parent, instruction, *reader).map(Some)
 }
 
 #[must_use]
@@ -583,6 +596,7 @@ fn last_run(entries: &dyn Entries, head: &Head) -> Result<Option<Run>, StoreErro
 fn cover(
     ports: &Ports<'_>,
     rules: &Rules<'_>,
+    standings: &Standings,
     parent: Parent,
     instruction: &Instruction,
     reader: &dyn Reader,
@@ -594,12 +608,15 @@ fn cover(
             State::Covered
         })
     };
-    if parent.records == 0 {
+    let gave = !parent.forgotten
+        && forget::given_up_by_lookup(ports.entries, &standings.had, &label(parent.id))?;
+    if parent.records == 0 || parent.forgotten || gave {
         return Ok(Judged {
             found: covered(0),
             looked: Looked {
                 parent: Some(parent),
                 instruction: Some(instruction.clone()),
+                given_up: gave,
                 ..Looked::default()
             },
         });
@@ -640,6 +657,7 @@ fn cover(
         last: last.clone(),
         opens,
         complete: complete(&last, opens),
+        given_up: false,
     };
     if !opens && frontier == parent.records {
         return Ok(Judged {
@@ -812,6 +830,7 @@ fn schedule(
                     last: due.last.as_ref(),
                     complete: false,
                     windowed: true,
+                    given_up: false,
                 };
                 summarising(ports, rules, sr, eligible, &side, &cache)?
             };
@@ -1019,6 +1038,11 @@ fn summary_pre(
     let Some(capture) = meta.labels.capture else {
         return Ok(Pre::Skip);
     };
+    if Forgotten::read(id, &capture).is_some()
+        || forget::given_up_by_lookup(ports.entries, &standings.had, &summary::label(id))?
+    {
+        return Ok(Pre::State(SummaryState::Forgotten));
+    }
     let Some(head) = ports
         .entries
         .by_capture(&capture)?
@@ -1065,10 +1089,11 @@ fn summarising(
     if let Side::Notes {
         complete: false,
         windowed: false,
+        given_up,
         ..
     } = side
     {
-        let record = if parent.records == 0 {
+        let record = if parent.records == 0 && !given_up {
             held_summary(ports.entries, parent.id)?
         } else {
             None

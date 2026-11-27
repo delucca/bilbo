@@ -155,6 +155,11 @@ pub fn new_tags(tags: &[Tag]) -> Vec<Message> {
         .collect()
 }
 
+#[must_use]
+pub fn renders_as_written(text: &str) -> bool {
+    text.chars().all(|c| !c.is_control() && !reorders(c))
+}
+
 pub fn sanitize(line: &str) -> String {
     line.chars()
         .flat_map(|c| {

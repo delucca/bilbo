@@ -1,7 +1,5 @@
 use std::fmt;
 
-use xxhash_rust::xxh3;
-
 use crate::entries::{Head, Mark};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -56,10 +54,7 @@ pub fn validate(bytes: &[u8], ends: &[usize]) -> Result<(), BadEnds> {
 }
 
 pub fn decide(head: Option<&Head>, bytes: &[u8], ends: &[usize]) -> Decision {
-    let whole = Mark {
-        end: bytes.len() as u64,
-        hash: xxh3::xxh3_128(bytes),
-    };
+    let whole = Mark::of(bytes);
     let unchanged = |action| Decision {
         action,
         mark: whole,
@@ -81,7 +76,7 @@ pub fn decide(head: Option<&Head>, bytes: &[u8], ends: &[usize]) -> Decision {
     } else {
         ends.iter().position(|&e| e == end).map(|i| i + 1)
     };
-    let prefix_holds = xxh3::xxh3_128(&bytes[..end]) == head.mark.hash;
+    let prefix_holds = head.mark.begins(bytes);
     match boundary {
         Some(k) if prefix_holds && k as u64 == head.records => {
             if end == bytes.len() {
@@ -102,6 +97,7 @@ mod tests {
     use super::*;
     use crate::entries::Generation;
     use crate::id::Id;
+    use xxhash_rust::xxh3;
 
     fn head(generation: u32, records: u64, prefix: &[u8]) -> Head {
         Head {

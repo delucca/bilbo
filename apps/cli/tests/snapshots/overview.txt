@@ -10,6 +10,7 @@ Verbs:
   digest    Answer a session's first prompt with what bilbo keeps on it
   read      Print an entry: its outline, or its records a page at a time
   tag       List the tags, or change the tags of entries
+  forget    Take entries out of recall; what they held stays readable
   reindex   Rebuild the catalog and the search index from the store
   derive    Write notes about entries that stopped growing, with a model
   config    Show each setting, its value and where it came from

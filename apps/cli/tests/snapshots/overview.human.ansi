@@ -10,6 +10,7 @@ the pages they cite, and recalls them when a later session asks.
   [1mdigest[22m    Answer a session's first prompt with what bilbo keeps on it
   [1mread[22m      Print an entry: its outline, or its records a page at a time
   [1mtag[22m       List the tags, or change the tags of entries
+  [1mforget[22m    Take entries out of recall; what they held stays readable
   [1mreindex[22m   Rebuild the catalog and the search index from the store
   [1mderive[22m    Write notes about entries that stopped growing, with a model
   [1mconfig[22m    Show each setting, its value and where it came from

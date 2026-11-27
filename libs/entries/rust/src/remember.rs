@@ -6,21 +6,29 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
 use bilbo_store::entries::{
-    Capture, CaptureError, Captured, Entries, Generation, Head, Meta, StoreError,
+    Capture, CaptureError, Captured, Entries, Generation, Head, Meta, Stamp, StoreError,
 };
 use bilbo_store::id::Id;
 use bilbo_store::labels::{CaptureLabel, StoredLabels, Tag, Tags};
 use bilbo_store::opaque;
 
 use crate::files::{At, Files, Node, at};
+use crate::forget::{self, Forgotten};
 use crate::kind::{Claim, Kind, Proposal};
 use crate::tag::{self, Change};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Run {
+    Pass,
+    ByHand,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Request {
     pub target: PathBuf,
     pub kind: Option<String>,
     pub tags: Tagging,
+    pub run: Run,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -39,6 +47,8 @@ pub struct Plan<'k> {
     /// What the walk could not read.
     pub refused: Vec<(PathBuf, String)>,
     pub tags: Tagging,
+    pub run: Run,
+    pub labelled: Option<&'k forget::Labelled<'k>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -58,12 +68,19 @@ pub struct Moved {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Met {
+    Own { id: Id, bytes: u64 },
+    Again { id: Id, bytes: u64 },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Item {
     pub path: PathBuf,
     pub outcome: Outcome,
     pub moved: Option<Moved>,
     pub carried: Option<Id>,
     pub withdrew: Option<Generation>,
+    pub forgotten: Option<Met>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -95,6 +112,7 @@ impl Output {
                     moved: None,
                     carried: None,
                     withdrew: None,
+                    forgotten: None,
                 })
                 .collect(),
             records: 0,
@@ -156,10 +174,17 @@ pub fn plan<'k>(
         None => None,
     };
     match files.canonical(&request.target) {
-        Ok(target) => claim_under(target, named, kinds, files, &request.tags),
+        Ok(target) => claim_under(target, named, kinds, files, &request.tags, request.run),
         Err(error) => {
             if error.kind() == io::ErrorKind::NotFound
-                && let Some(plan) = claim_gone(&request.target, named, kinds, files, &request.tags)?
+                && let Some(plan) = claim_gone(
+                    &request.target,
+                    named,
+                    kinds,
+                    files,
+                    &request.tags,
+                    request.run,
+                )?
             {
                 return Ok(plan);
             }
@@ -178,6 +203,7 @@ fn claim_gone<'k>(
     kinds: &'k [Box<dyn Kind>],
     files: &dyn Files,
     tags: &Tagging,
+    run: Run,
 ) -> Result<Option<Plan<'k>>, Error> {
     let Some(name) = target.file_name() else {
         return Ok(None);
@@ -189,7 +215,7 @@ fn claim_gone<'k>(
     let Ok(folder) = files.canonical(dir) else {
         return Ok(None);
     };
-    let plan = claim_under(folder.join(name), named, kinds, files, tags)?;
+    let plan = claim_under(folder.join(name), named, kinds, files, tags, run)?;
     Ok((!plan.claims.is_empty()).then_some(plan))
 }
 
@@ -199,6 +225,7 @@ fn claim_under<'k>(
     kinds: &'k [Box<dyn Kind>],
     files: &dyn Files,
     tags: &Tagging,
+    run: Run,
 ) -> Result<Plan<'k>, Error> {
     if let Some(kind) = named {
         let claims = kind.claims(files, &target);
@@ -208,6 +235,8 @@ fn claim_under<'k>(
             claims: claims.entries,
             refused: claims.refused,
             tags: tags.clone(),
+            run,
+            labelled: None,
         });
     }
 
@@ -243,6 +272,8 @@ fn claim_under<'k>(
         claims: claimed,
         refused,
         tags: tags.clone(),
+        run,
+        labelled: None,
     })
 }
 
@@ -277,9 +308,15 @@ pub fn keep(
         return Ok(output);
     };
     output.claimed = u64::try_from(plan.claims.len()).unwrap_or(u64::MAX);
+    let mut slot = None;
     for claim in &plan.claims {
-        let (path, done, trail) = keep_file(kind, claim, &plan.tags, files, entries)?;
+        let named = plan.run == Run::ByHand
+            && (plan.target == claim.label() || claim.files().contains(&plan.target));
+        let (path, done, trail) = keep_file(kind, claim, plan, named, &mut slot, files, entries)?;
         output.stored_bytes += trail.moved.as_ref().map_or(0, |moved| moved.bytes);
+        if let Some(Met::Again { bytes, .. }) = &trail.forgotten {
+            output.stored_bytes += bytes;
+        }
         let outcome = match done {
             Done::Refused(reason) => Outcome::Refused(reason),
             Done::Kept {
@@ -309,6 +346,7 @@ pub fn keep(
             moved: trail.moved,
             carried: trail.carried,
             withdrew: None,
+            forgotten: trail.forgotten,
         });
     }
     Ok(output)
@@ -319,6 +357,7 @@ struct Trail {
     moved: Option<Moved>,
     carried: Option<Id>,
     cap: Option<(PathBuf, String)>,
+    forgotten: Option<Met>,
 }
 
 enum Step {
@@ -334,7 +373,9 @@ enum Step {
 fn keep_file(
     kind: &dyn Kind,
     claim: &Claim,
-    tags: &Tagging,
+    plan: &Plan<'_>,
+    named: bool,
+    slot: &mut Option<Vec<Forgotten>>,
     files: &dyn Files,
     entries: &mut dyn Entries,
 ) -> Result<(PathBuf, Done, Trail), Error> {
@@ -348,16 +389,22 @@ fn keep_file(
         ));
     };
     let head = entries.by_capture(&label)?;
-    let entry = Held {
+    if head.is_none() {
+        listed(slot, entries)?;
+    }
+    let mut entry = Held {
         label: &label,
         head: head.as_ref(),
-        tags,
+        tags: &plan.tags,
+        forgotten: slot,
+        named,
+        labelled: plan.labelled,
     };
     let mut last = None;
     let mut not_a_file = false;
     for _ in 0..2 {
         for file in claim.files() {
-            match look(kind, claim, file, &entry, files, entries, &mut trail)? {
+            match look(kind, claim, file, &mut entry, files, entries, &mut trail)? {
                 Step::Done(done) => {
                     if matches!(done, Done::Refused(_))
                         && trail.moved.is_none()
@@ -389,13 +436,16 @@ struct Held<'a> {
     label: &'a CaptureLabel,
     head: Option<&'a Head>,
     tags: &'a Tagging,
+    forgotten: &'a mut Option<Vec<Forgotten>>,
+    named: bool,
+    labelled: Option<&'a forget::Labelled<'a>>,
 }
 
 fn look(
     kind: &dyn Kind,
     claim: &Claim,
     file: &Path,
-    entry: &Held<'_>,
+    entry: &mut Held<'_>,
     files: &dyn Files,
     entries: &mut dyn Entries,
     trail: &mut Trail,
@@ -412,7 +462,7 @@ fn look(
         Err(_) => None,
     };
     let taken = files.now();
-    let mut first = match fits(entry.tags, entry.head, entries)? {
+    let mut first = match fits(entry.tags, entry.head.map(|head| head.id), entries)? {
         Ok(first) => first,
         Err(reason) => {
             if entry.head.is_some() {
@@ -424,6 +474,16 @@ fn look(
             Tags::default()
         }
     };
+    if entry.head.is_none()
+        && !entry.named
+        && let Some(id) = unread_forgotten(entry, stamp, entries)?
+    {
+        return Ok(Step::Done(Done::Kept {
+            captured: Captured::Unchanged(id),
+            adopted: 0,
+            tagged: false,
+        }));
+    }
     if let Some(head) = entry.head
         && stamp.is_some()
         && head.stamp == stamp
@@ -463,9 +523,32 @@ fn look(
         let entries: &dyn Entries = entries;
         kind.propose(claim.label(), records, &|other| kept(entries, other))
     };
+    let holder = match proposal.id {
+        Some(id) if head.is_none_or(|head| head.id != id) => entries.meta(id)?,
+        _ => None,
+    };
+    if head.is_none() {
+        let read = Read {
+            records,
+            ends: &ends,
+            holder: holder.as_ref(),
+            stamp: stamp.filter(|stamp| !racy(stamp.modified, taken)),
+        };
+        match passed_over(kind, file, entry, &read, files, entries, trail)? {
+            Some(Meet::Over(step)) => return Ok(step),
+            Some(Meet::Back(forgotten)) => match back(&forgotten, entry, entries, trail)? {
+                Ok((kept, tags)) => {
+                    head = Some(kept);
+                    first = tags;
+                }
+                Err(reason) => return Ok(refused(reason)),
+            },
+            None => {}
+        }
+    }
     if let Some(id) = proposal.id
         && head.is_none_or(|head| head.id != id)
-        && let Some(holder) = entries.meta(id)?
+        && let Some(holder) = holder
     {
         let by = holder.labels.capture.clone();
         if let Some(head) = head {
@@ -480,7 +563,7 @@ fn look(
             Ok(kept) => head = Some(kept),
             Err(line) => return Ok(refused(line)),
         }
-        first = match fits(entry.tags, head.as_ref(), entries)? {
+        first = match fits(entry.tags, head.map(|head| head.id), entries)? {
             Ok(first) => first,
             Err(reason) => return Ok(refused(reason)),
         };
@@ -530,6 +613,214 @@ fn look(
             | CaptureError::TooLarge),
         ) => Ok(refused(error.to_string())),
     }
+}
+
+struct Read<'a> {
+    records: &'a [u8],
+    ends: &'a [usize],
+    holder: Option<&'a Meta>,
+    stamp: Option<Stamp>,
+}
+
+fn listed<'l>(
+    slot: &'l mut Option<Vec<Forgotten>>,
+    entries: &dyn Entries,
+) -> Result<&'l mut Vec<Forgotten>, Error> {
+    if slot.is_none() {
+        *slot = Some(forget::held(entries)?);
+    }
+    Ok(slot.get_or_insert_default())
+}
+
+fn unread_forgotten(
+    entry: &mut Held<'_>,
+    stamp: Option<Stamp>,
+    entries: &mut dyn Entries,
+) -> Result<Option<Id>, Error> {
+    let Some(stamp) = stamp else {
+        return Ok(None);
+    };
+    let label = entry.label;
+    for forgotten in listed(entry.forgotten, entries)?
+        .iter()
+        .filter(|forgotten| forgotten.had == *label)
+    {
+        if entries
+            .by_capture(&forgotten.label())?
+            .is_some_and(|head| forget::emptied(&head) && head.stamp == Some(stamp))
+        {
+            return Ok(Some(forgotten.id));
+        }
+    }
+    Ok(None)
+}
+
+enum Meet {
+    Over(Step),
+    Back(Forgotten),
+}
+
+fn back(
+    forgotten: &Forgotten,
+    entry: &mut Held<'_>,
+    entries: &mut dyn Entries,
+    trail: &mut Trail,
+) -> Result<Result<(Head, Tags), String>, Error> {
+    let first = match fits(entry.tags, Some(forgotten.id), entries)? {
+        Ok(first) => first,
+        Err(reason) => {
+            trail.cap = None;
+            return Ok(Err(reason));
+        }
+    };
+    let id = forgotten.id;
+    let Some(meta) = entries.meta(id)? else {
+        return Err(StoreError::Missing(format!("no entry {id}")).into());
+    };
+    let names = match entry.labelled {
+        Some(labelled) => {
+            let former = listed(entry.forgotten, &*entries)?;
+            forget::give_back(entries, former, id, labelled)?
+        }
+        None => 0,
+    };
+    let bytes = names
+        + entries.set_meta(
+            id,
+            &Meta {
+                labels: StoredLabels {
+                    capture: Some(entry.label.clone()),
+                    ..meta.labels.clone()
+                },
+                ..meta
+            },
+        )?;
+    trail.forgotten = Some(Met::Again { id, bytes });
+    trail.cap = None;
+    listed(entry.forgotten, entries)?.retain(|listed| listed.id != id);
+    match entries.by_capture(entry.label)? {
+        Some(head) => Ok(Ok((head, first))),
+        None => Err(StoreError::Missing(format!("no entry {id} under {}", entry.label)).into()),
+    }
+}
+
+fn passed_over(
+    kind: &dyn Kind,
+    file: &Path,
+    entry: &mut Held<'_>,
+    read: &Read<'_>,
+    files: &dyn Files,
+    entries: &mut dyn Entries,
+    trail: &mut Trail,
+) -> Result<Option<Meet>, Error> {
+    let label = entry.label;
+    let list = listed(entry.forgotten, entries)?;
+    let mut same = None;
+    if let Some(holder) = read.holder {
+        let id = holder.id;
+        if let Some(capture) = &holder.labels.capture
+            && let Some(forgotten) = Forgotten::read(id, capture)
+        {
+            if holder.kind != kind.name() {
+                trail.cap = None;
+                return Ok(Some(Meet::Over(refused(
+                    CaptureError::IdHeld {
+                        id,
+                        by: Some(capture.clone()),
+                    }
+                    .to_string(),
+                ))));
+            }
+            same = Some(forgotten);
+        }
+    } else {
+        for forgotten in list.iter().filter(|forgotten| forgotten.had == *label) {
+            let Ok(end) = usize::try_from(forgotten.held.end) else {
+                continue;
+            };
+            if end == 0
+                || !read.ends.contains(&end)
+                || !forgotten.held.begins(read.records)
+                || entries
+                    .meta(forgotten.id)?
+                    .is_none_or(|meta| meta.kind != kind.name())
+            {
+                continue;
+            }
+            same = Some(forgotten.clone());
+            break;
+        }
+    }
+    let Some(mut forgotten) = same else {
+        return Ok(None);
+    };
+    if entry.named {
+        return Ok(Some(Meet::Back(forgotten)));
+    }
+    let mut bytes = 0;
+    let displaced = read.holder.cloned();
+    if forgotten.had != *label
+        && let Some(meta) = displaced
+    {
+        let probe = Meta {
+            labels: StoredLabels {
+                capture: Some(forgotten.had.clone()),
+                ..meta.labels.clone()
+            },
+            ..meta.clone()
+        };
+        if gives_way(kind, &probe, file, files) {
+            forgotten.had = label.clone();
+            bytes = entries.set_meta(
+                forgotten.id,
+                &Meta {
+                    labels: StoredLabels {
+                        capture: Some(forgotten.label()),
+                        ..meta.labels
+                    },
+                    ..meta
+                },
+            )?;
+            if let Some(listed) = list.iter_mut().find(|listed| listed.id == forgotten.id) {
+                listed.had = label.clone();
+            }
+        }
+    }
+    if forgotten.had == *label
+        && entries
+            .by_capture(&forgotten.label())?
+            .as_ref()
+            .is_some_and(forget::emptied)
+    {
+        let own = forgotten.label();
+        match entries.capture(&Capture {
+            label: &own,
+            kind: kind.name(),
+            id: None,
+            id_label: None,
+            stamp: read.stamp,
+            bytes: &[],
+            ends: &[],
+            tags: &Tags::default(),
+        }) {
+            Ok(_) => {}
+            Err(CaptureError::Store(error)) => return Err(error.into()),
+            Err(error) => {
+                trail.cap = None;
+                return Ok(Some(Meet::Over(refused(error.to_string()))));
+            }
+        }
+    }
+    trail.cap = None;
+    trail.forgotten = Some(Met::Own {
+        id: forgotten.id,
+        bytes,
+    });
+    Ok(Some(Meet::Over(Step::Done(Done::Kept {
+        captured: Captured::Unchanged(forgotten.id),
+        adopted: bytes,
+        tagged: false,
+    }))))
 }
 
 fn moved(
@@ -621,17 +912,17 @@ fn first_tags(tags: &Tagging) -> Result<Tags, String> {
 
 fn fits(
     tags: &Tagging,
-    head: Option<&Head>,
+    id: Option<Id>,
     entries: &dyn Entries,
 ) -> Result<Result<Tags, String>, Error> {
-    let Some(head) = head else {
+    let Some(id) = id else {
         return Ok(first_tags(tags));
     };
     if tags.tags.is_empty() {
         return Ok(Ok(Tags::default()));
     }
     let held = entries
-        .meta(head.id)?
+        .meta(id)?
         .map(|meta| meta.labels.tags)
         .unwrap_or_default();
     let none = BTreeSet::new();
@@ -875,6 +1166,7 @@ mod tests {
             target: PathBuf::from(target),
             kind: kind.map(str::to_string),
             tags: Tagging::default(),
+            run: crate::remember::Run::ByHand,
         }
     }
 

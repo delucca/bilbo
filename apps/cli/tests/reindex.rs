@@ -418,7 +418,10 @@ impl Sandbox {
             &settings,
             &bilbo_cli::kinds(&settings).expect("the kinds"),
             &indexing,
-            &written,
+            &bilbo_cli::remember::Handed {
+                written: &written,
+                labelled: &bilbo_cli::labelled,
+            },
         )
         .expect("the remember");
         let mut stderr = said.lock().expect("notices").clone();
@@ -2218,6 +2221,7 @@ fn an_update_that_fails_is_not_tried_again_by_the_close_loop() {
             target: sandbox.dir.join("notes/first.md"),
             kind: None,
             tags: bilbo_entries::remember::Tagging::default(),
+            run: bilbo_entries::remember::Run::ByHand,
         },
         &kinds,
         &bilbo_cli::remember::disk::Disk,

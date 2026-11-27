@@ -1,4 +1,6 @@
 mod fakes;
+mod forget;
+mod forgotten;
 mod read;
 mod tag;
 
@@ -10,7 +12,7 @@ use bilbo_entries::files::{Call, Files, Memory, Node, Turning};
 use bilbo_entries::follows::{self, Follow, Planned};
 use bilbo_entries::kind::Kind;
 use bilbo_entries::remember::{
-    self, Attempt, Error, Item, Moved, Outcome, Output, Request, Tagging, Tally, Written,
+    self, Attempt, Error, Item, Moved, Outcome, Output, Request, Run, Tagging, Tally, Written,
     WrittenAnswer,
 };
 use bilbo_store::entries::{Generation, Head, Mark, Stamp};
@@ -29,6 +31,7 @@ fn request(target: &str) -> Request {
         target: PathBuf::from(target),
         kind: None,
         tags: Tagging::default(),
+        run: Run::ByHand,
     }
 }
 
@@ -214,6 +217,7 @@ fn a_file_is_refused_for_its_reason_and_the_run_goes_on() {
             moved: None,
             carried: None,
             withdrew: None,
+            forgotten: None,
         } if path == Path::new("/t/z-fine.fake")
     )));
 }
@@ -825,6 +829,7 @@ fn a_missing_target_no_kind_claims_is_the_error_it_was() {
                 target: PathBuf::from(target),
                 kind: kind.map(str::to_owned),
                 tags: Tagging::default(),
+                run: Run::ByHand,
             };
             match remember::plan(&request, &registry, &files) {
                 Err(Error::Target { path, error }) => {
@@ -1866,6 +1871,7 @@ fn a_kind_that_does_not_say_so_keeps_every_entry_and_the_store_is_not_asked() {
     pass_of(FakeKind::new(), &files, &mut entries, &["/t"]);
     assert_eq!(entries.seen.len(), 1);
     assert!(emptied(&entries).is_empty());
+    assert_eq!(*entries.asked.borrow(), vec!["forgotten:".to_string()]);
 }
 
 #[test]
@@ -1897,6 +1903,7 @@ fn a_missing_follow_and_a_follow_of_one_file_withdraw_nothing() {
     );
     pass(&files, &mut entries, &["/gone", "/t/a.fake"]);
     assert!(emptied(&entries).is_empty());
+    assert_eq!(*entries.asked.borrow(), vec!["forgotten:".to_string()]);
     assert_eq!(entries.seen.len(), 1);
     assert_eq!(entries.seen[0].label, "file:/t/a.fake");
 

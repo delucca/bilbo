@@ -13,6 +13,7 @@ use std::io::{self, BufRead, BufReader};
 use std::path::PathBuf;
 
 use bilbo_entries::follows::Follow;
+use bilbo_entries::forget::Labelled;
 use bilbo_entries::kind::Kind;
 use bilbo_entries::remember::{self, Output, Request, Tagging};
 use bilbo_entries::tag;
@@ -29,7 +30,7 @@ use crate::console::message::{Message, not_a_tag, notice_message, sanitize};
 use crate::console::outcome::{Exit, Failure, Outcome};
 use crate::console::settings::{EDITOR, Settings};
 use disk::Disk;
-use messages::{moves, refusals, tagged, withdrawals};
+use messages::{again, moves, passed, refusals, tagged, withdrawals};
 
 const SUMMARY: &str = "Keep files or a note as entries; a later run keeps what changed";
 const ABOUT: &str =
@@ -90,6 +91,16 @@ Examples:
 
 Docs: https://github.com/delucca/bilbo/wiki/Commands#remember";
 
+pub struct Handed<'a> {
+    pub written: &'a note::Written,
+    pub labelled: &'a Labelled<'a>,
+}
+
+struct Way<'a> {
+    follow: bool,
+    labelled: &'a Labelled<'a>,
+}
+
 pub fn run(
     root: &Command,
     args: Args,
@@ -97,11 +108,12 @@ pub fn run(
     settings: &Settings,
     kinds: &[Box<dyn Kind>],
     indexing: &Indexing<'_>,
-    written: &note::Written,
+    handed: &Handed<'_>,
 ) -> Result<Outcome, Failure> {
+    let written = handed.written;
     if args.target.is_none() && !args.edit {
         if args.tags.is_empty() && env.who == Who::Person {
-            return prompted(root, env, settings, kinds, indexing, written);
+            return prompted(root, env, settings, kinds, indexing, handed);
         }
         return Err(usage(
             root,
@@ -167,8 +179,13 @@ pub fn run(
         target,
         kind: args.kind,
         tags,
+        run: bilbo_entries::remember::Run::ByHand,
     };
-    keep_files(root, &request, args.follow, env, settings, kinds, indexing)
+    let way = Way {
+        follow: args.follow,
+        labelled: handed.labelled,
+    };
+    keep_files(root, &request, &way, env, settings, kinds, indexing)
 }
 
 fn edited(
@@ -213,6 +230,7 @@ fn typed(
 struct Chosen<'a, 'b> {
     root: &'a Command,
     written: &'a note::Written,
+    labelled: &'a Labelled<'a>,
     settings: &'a Settings,
     kinds: &'a [Box<dyn Kind>],
     indexing: &'a Indexing<'b>,
@@ -249,11 +267,16 @@ impl prompt::Ways for Chosen<'_, '_> {
             target,
             kind: None,
             tags: self.tags.clone(),
+            run: bilbo_entries::remember::Run::ByHand,
+        };
+        let way = Way {
+            follow: false,
+            labelled: self.labelled,
         };
         keep_files(
             self.root,
             &request,
-            false,
+            &way,
             env,
             self.settings,
             self.kinds,
@@ -268,11 +291,12 @@ fn prompted(
     settings: &Settings,
     kinds: &[Box<dyn Kind>],
     indexing: &Indexing<'_>,
-    written: &note::Written,
+    handed: &Handed<'_>,
 ) -> Result<Outcome, Failure> {
     let mut ways = Chosen {
         root,
-        written,
+        written: handed.written,
+        labelled: handed.labelled,
         settings,
         kinds,
         indexing,
@@ -288,18 +312,19 @@ fn prompted(
 fn keep_files(
     root: &Command,
     request: &Request,
-    follow: bool,
+    way: &Way<'_>,
     env: &mut Env,
     settings: &Settings,
     kinds: &[Box<dyn Kind>],
     indexing: &Indexing<'_>,
 ) -> Result<Outcome, Failure> {
-    let plan = remember::plan(request, kinds, &Disk).map_err(|error| match error {
+    let mut plan = remember::plan(request, kinds, &Disk).map_err(|error| match error {
         remember::Error::UnknownKind { .. } | remember::Error::SeveralKinds { .. } => {
             usage(root, sanitize(&error.to_string()), Some("remember"))
         }
         remember::Error::Target { .. } | remember::Error::Store(_) => refused(&error),
     })?;
+    plan.labelled = Some(way.labelled);
 
     let layout = settings.layout();
     Store::check(&layout)?;
@@ -330,7 +355,7 @@ fn keep_files(
         (output, closing)
     };
     let mut config = false;
-    if follow && !closing.failed {
+    if way.follow && !closing.failed {
         let follow = Follow {
             path: plan.target.clone(),
             kind: plan.kind.map(|kind| kind.name().to_owned()),
@@ -351,6 +376,8 @@ fn outcome(output: Output, notes: Vec<Message>, closing: Closing, config: bool) 
     if !closing.failed {
         diagnostics.extend(moves(std::slice::from_ref(&output)));
         diagnostics.extend(withdrawals(std::slice::from_ref(&output)));
+        diagnostics.extend(passed(std::slice::from_ref(&output)));
+        diagnostics.extend(again(std::slice::from_ref(&output)));
     }
     diagnostics.extend(notes);
     if output.claimed == 0 {
@@ -377,4 +404,66 @@ fn outcome(output: Output, notes: Vec<Message>, closing: Closing, config: bool) 
 
 fn refused(error: &dyn std::fmt::Display) -> Failure {
     Failure::Refused(sanitize(&error.to_string()))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+
+    use bilbo_entries::remember::{Item, Met, Outcome, Output};
+    use bilbo_store::id::Id;
+
+    use super::outcome;
+    use crate::console::closing::Closing;
+    use crate::console::message::Message;
+    use crate::console::view::View;
+
+    fn refused_after_the_way_back() -> Output {
+        let id = Id::parse("01JC5Q3V7XKM4P8R2T6W9YB0DE").expect("an id");
+        Output {
+            target: PathBuf::from("/home/me/notes"),
+            kind: Some("markdown".to_owned()),
+            claimed: 1,
+            items: vec![Item {
+                path: PathBuf::from("/home/me/notes/a.md"),
+                outcome: Outcome::Refused("it is too large to keep".to_owned()),
+                moved: None,
+                carried: None,
+                withdrew: None,
+                forgotten: Some(Met::Again { id, bytes: 64 }),
+            }],
+            records: 0,
+            raw_bytes: 0,
+            stored_bytes: 0,
+            tagged: 0,
+        }
+    }
+
+    fn lines(closing: Closing) -> Vec<String> {
+        outcome(refused_after_the_way_back(), Vec::new(), closing, false).stderr_lines(&View::PLAIN)
+    }
+
+    #[test]
+    fn a_refused_way_back_says_took_back_only_when_the_close_did_not_fail() {
+        let ended = lines(Closing::default());
+        assert_eq!(
+            ended,
+            [
+                "bilbo: refused /home/me/notes/a.md: it is too large to keep",
+                "bilbo: took /home/me/notes/a.md back as entry 01JC5Q3V7XKM4P8R2T6W9YB0DE, which was forgotten; its file was refused",
+            ]
+        );
+        let failed = lines(Closing {
+            messages: vec![Message::error("the close failed")],
+            failed: true,
+            refused: false,
+        });
+        assert_eq!(
+            failed,
+            [
+                "bilbo: refused /home/me/notes/a.md: it is too large to keep",
+                "bilbo: the close failed",
+            ]
+        );
+    }
 }

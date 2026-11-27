@@ -1,0 +1,20 @@
+bilbo forget: take entries out of recall; what they held stays readable.
+
+[1mUsage:[22m
+  [36mbilbo forget [39m[2m<ref>[22m[36m...[39m
+
+[2mAn entry gives up its capture label, so its path can be kept again. What[22m
+[2mbelongs to it goes with it: its subagents, its notes and its summary.[22m
+
+[1mOutput:[22m
+  forgotten [2m<n>[22m, belonging [2m<n>[22m, unchanged [2m<n>[22m
+
+[1mExit:[22m
+  [1m0[22m  success, also when every entry named was forgotten already
+  [1m1[22m  a ref that names no entry, a store or index failure
+  [1m2[22m  usage or config error, or a ref that names several entries
+
+[1mExamples:[22m
+  [36mbilbo forget 2T6W9YB0DE[39m
+
+[1mDocs:[22m [2mhttps://github.com/delucca/bilbo/wiki/Commands#forget[22m

@@ -2194,4 +2194,47 @@ mod tests {
         .concat();
         assert!(labels_of(&bytes).is_empty());
     }
+    #[test]
+    fn the_records_of_a_files_first_bytes_are_the_same_whatever_follows() {
+        let kind = Session::default();
+        let packed = |name: &str, bytes: &[u8]| {
+            kind.unpack(Path::new(name), bytes.to_vec())
+                .expect("a packed fixture")
+        };
+        let rollout_two = include_bytes!(
+            "../../fixtures/session/rollout-2026-11-07T08-00-00-019a5b3c-2d4e-7f60-8a1b-3c5d7e9f0a2b.jsonl"
+        );
+        let rollout_two_packed = include_bytes!(
+            "../../fixtures/session/rollout-2026-11-07T08-00-00-019a5b3c-2d4e-7f60-8a1b-3c5d7e9f0a2b.jsonl.zst"
+        );
+        let rollout_three = include_bytes!(
+            "../../fixtures/session/rollout-2026-11-08T10-00-00-019a6c4d-3e5f-7a71-9b2c-4d6e8fa0b1c3.jsonl"
+        );
+        let long =
+            include_bytes!("../../fixtures/session/8f2b6d4e-1a3c-4e5f-9b7a-2c4d6e8f0a1b.jsonl");
+        let folder =
+            include_bytes!("../../fixtures/session/7d1e4b9a-3c5f-4a2e-8b6d-0f9e1c2a3b4d.jsonl");
+        let unpacked_one = packed(
+            "rollout-2026-11-06T09-10-00-019a4f2e-7c1d-7b3a-9e55-2d8c41f0a6b7.jsonl.zst",
+            CODEX_PACKED,
+        );
+        let unpacked_two = packed(
+            "rollout-2026-11-07T08-00-00-019a5b3c-2d4e-7f60-8a1b-3c5d7e9f0a2b.jsonl.zst",
+            rollout_two_packed,
+        );
+        for (name, bytes) in [
+            ("claude", CLAUDE),
+            ("long", long),
+            ("folder", folder),
+            ("subagent", SUBAGENT),
+            ("codex", CODEX),
+            ("codex two", rollout_two),
+            ("codex three", rollout_three),
+            ("cursor", CURSOR),
+            ("codex unpacked", unpacked_one.as_slice()),
+            ("codex two unpacked", unpacked_two.as_slice()),
+        ] {
+            crate::fake::prefixes_split_alike(&kind, name, bytes);
+        }
+    }
 }

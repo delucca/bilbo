@@ -9,7 +9,7 @@ use bilbo_store::labels::Tags;
 
 use crate::files::{At, Files, Node, at};
 use crate::kind::Kind;
-use crate::remember::{self, Error, Item, Outcome, Output, Plan, Request, Tagging};
+use crate::remember::{self, Error, Item, Outcome, Output, Plan, Request, Run, Tagging};
 
 /// A `None` kind is detected as a target's is.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -39,6 +39,7 @@ pub fn plan<'k>(
                 target: follow.path.clone(),
                 kind: follow.kind.clone(),
                 tags: Tagging::default(),
+                run: Run::Pass,
             };
             match remember::plan(&request, kinds, files) {
                 Ok(plan) => Planned::Ready(follow.clone(), plan),
@@ -151,6 +152,7 @@ fn withdraw_gone(
                     moved: None,
                     carried: None,
                     withdrew: Some(head.generation),
+                    forgotten: None,
                 });
             }
             Ok(_) => output.items.push(refusal(
@@ -171,6 +173,7 @@ fn refusal(path: PathBuf, reason: String) -> Item {
         moved: None,
         carried: None,
         withdrew: None,
+        forgotten: None,
     }
 }
 

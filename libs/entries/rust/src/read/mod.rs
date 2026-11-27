@@ -333,6 +333,22 @@ pub fn resolve(target: &Target, listed: usize, entries: &dyn Entries) -> Result<
     }
 }
 
+pub(crate) fn resolve_each(
+    targets: &[Target],
+    listed: usize,
+    entries: &dyn Entries,
+) -> Result<Vec<(Id, Meta)>, Error> {
+    let mut found: Vec<(Id, Meta)> = Vec::new();
+    for target in targets {
+        let id = resolve(target, listed, entries)?;
+        let meta = entries.meta(id)?.ok_or(Error::NoEntry(Target::Entry(id)))?;
+        if found.iter().all(|(held, _)| *held != id) {
+            found.push((id, meta));
+        }
+    }
+    Ok(found)
+}
+
 pub fn fetch(request: &Request, entries: &dyn Entries) -> Result<Fetched, Error> {
     let reference = &request.reference;
     let id = resolve(&reference.target, request.matches_listed, entries)?;

@@ -243,17 +243,7 @@ impl From<Error> for ChangeError {
 }
 
 pub fn resolve(request: &Request, entries: &dyn Entries) -> Result<Vec<(Id, Meta)>, read::Error> {
-    let mut found: Vec<(Id, Meta)> = Vec::new();
-    for target in &request.targets {
-        let id = read::resolve(target, request.listed, entries)?;
-        let meta = entries
-            .meta(id)?
-            .ok_or(read::Error::NoEntry(Target::Entry(id)))?;
-        if found.iter().all(|(held, _)| *held != id) {
-            found.push((id, meta));
-        }
-    }
-    Ok(found)
+    read::resolve_each(&request.targets, request.listed, entries)
 }
 
 pub fn change<S: Entries + Labels>(

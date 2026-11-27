@@ -33,6 +33,22 @@ pub struct Mark {
     pub hash: u128,
 }
 
+impl Mark {
+    pub fn of(bytes: &[u8]) -> Self {
+        Self {
+            end: bytes.len() as u64,
+            hash: xxhash_rust::xxh3::xxh3_128(bytes),
+        }
+    }
+
+    pub fn begins(&self, bytes: &[u8]) -> bool {
+        usize::try_from(self.end)
+            .ok()
+            .and_then(|end| bytes.get(..end))
+            .is_some_and(|prefix| Self::of(prefix) == *self)
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Stamp {
     pub size: u64,
@@ -331,9 +347,43 @@ mod tests {
     use std::io;
     use std::path::{Path, PathBuf};
 
-    use super::{CaptureError, Cursor, StoreError};
+    use xxhash_rust::xxh3;
+
+    use super::{CaptureError, Cursor, Mark, StoreError};
     use crate::id::Id;
     use crate::labels::CaptureLabel;
+
+    #[test]
+    fn a_mark_is_the_length_of_its_bytes_and_their_digest() {
+        let cases: [&[u8]; 3] = [b"a\n", b"first\nsecond\n", b"\x00\xff tail"];
+        for bytes in cases {
+            let mark = Mark::of(bytes);
+            assert_eq!(mark.end, bytes.len() as u64);
+            assert_eq!(mark.hash, xxh3::xxh3_128(bytes));
+        }
+        let nothing = Mark::of(b"");
+        assert_eq!(nothing.end, 0);
+        assert_eq!(nothing.hash, xxh3::xxh3_128(b""));
+    }
+
+    #[test]
+    fn bytes_begin_with_a_mark_only_when_their_first_bytes_have_its_digest() {
+        let mark = Mark::of(b"a\nb\n");
+        let cases: [(&str, &[u8], bool); 6] = [
+            ("the same bytes", b"a\nb\n", true),
+            ("the bytes and more", b"a\nb\nc\n", true),
+            ("fewer bytes", b"a\nb", false),
+            ("one byte changed inside", b"a\nx\n", false),
+            ("one byte changed after", b"a\nb\nz", true),
+            ("other bytes of the same length", b"c\nd\n", false),
+        ];
+        for (name, bytes, expected) in cases {
+            assert_eq!(mark.begins(bytes), expected, "{name}");
+        }
+        for bytes in [&b""[..], b"anything"] {
+            assert!(Mark::of(b"").begins(bytes));
+        }
+    }
 
     #[test]
     fn every_error_says_what_failed_and_where() {

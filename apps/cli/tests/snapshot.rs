@@ -153,7 +153,7 @@ fn a_usage_error_on_a_terminal_is_a_marked_message() {
     );
     assert_eq!(
         stderr(&["frob"], &unpainted()),
-        "■  unknown verb 'frob'; the verbs are remember, refresh, recall, digest, read, tag, reindex, derive, config\n   see bilbo --help\n"
+        "■  unknown verb 'frob'; the verbs are remember, refresh, recall, digest, read, tag, forget, reindex, derive, config\n   see bilbo --help\n"
     );
 }
 
@@ -199,6 +199,7 @@ fn remembered() -> Output {
         moved: None,
         carried: None,
         withdrew: None,
+        forgotten: None,
     };
     let id = |byte: u8| Id::from_bytes([byte; 16]);
     Output {
@@ -267,6 +268,24 @@ fn the_tag_page_is_the_same_from_every_help_form_and_on_a_terminal() {
         include_str!("snapshots/tag-help.human.ansi")
     );
     assert_eq!(stdout(&["tag", "--help"], &unpainted()), page);
+}
+
+#[test]
+fn the_forget_page_is_the_same_from_every_help_form_and_on_a_terminal() {
+    let page = include_str!("snapshots/forget-help.txt");
+    for form in [
+        &["forget", "--help"][..],
+        &["forget", "-h"],
+        &["help", "forget"],
+        &["help", "forget", "--help"],
+    ] {
+        assert_eq!(stdout(form, &View::PLAIN), page, "{form:?}");
+    }
+    assert_eq!(
+        stdout(&["forget", "--help"], &View::HUMAN),
+        include_str!("snapshots/forget-help.human.ansi")
+    );
+    assert_eq!(stdout(&["forget", "--help"], &unpainted()), page);
 }
 
 #[test]
@@ -392,6 +411,7 @@ fn a_codex_session_as_the_store_keeps_it() {
         target: PathBuf::from(path),
         kind: None,
         tags: Tagging::default(),
+        run: bilbo_entries::remember::Run::ByHand,
     };
     let plan = remember::plan(&request, &kinds, &files).expect("plan");
     let mut store = Store::open(&layout, Options::default(), &mut |_| {}).expect("open");

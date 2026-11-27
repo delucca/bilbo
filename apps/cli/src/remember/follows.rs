@@ -7,7 +7,7 @@ use bilbo_store::segments::{Closed, Held, Options, Store};
 
 use super::disk::Disk;
 use super::index::update;
-use super::messages::{moves, refusals, withdrawals};
+use super::messages::{moves, passed, refusals, withdrawals};
 use super::view;
 use crate::console::closing::Closing;
 use crate::console::env::Env;
@@ -101,6 +101,7 @@ pub fn run(
     if !closing.failed {
         diagnostics.extend(moves(&outputs));
         diagnostics.extend(withdrawals(&outputs));
+        diagnostics.extend(passed(&outputs));
     }
     diagnostics.extend(closing.messages);
     Ok(outcome(
@@ -174,6 +175,7 @@ pub fn close(
                         closing.messages.extend(refusals(&outputs));
                         let mut lines = moves(&outputs);
                         lines.extend(withdrawals(&outputs));
+                        lines.extend(passed(&outputs));
                         said.push((closing.messages.len(), lines));
                         closing.messages.push(Message::info(&format!(
                             "ran the follows again for another bilbo: {}",

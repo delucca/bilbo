@@ -1,4 +1,4 @@
-use bilbo_store::labels::Tags;
+use bilbo_store::labels::{CaptureLabel, Tags};
 use std::time::{Duration, SystemTime};
 
 use bilbo_store::entries::{Capture, Entries};
@@ -17,6 +17,7 @@ use crate::summary::{self, block::Form};
 use crate::tags::{self, asked::Asked as TagsAsked};
 use crate::tries::{Extent, Tries};
 use crate::view::{self, Counter, Format, Paragraph};
+use bilbo_entries::forget;
 use bilbo_entries::tag as entry_tag;
 use bilbo_llm::model::{Cause, Limits, Model, Outcome, Prompt, Usage, What, Whose};
 
@@ -1703,7 +1704,9 @@ fn replay_into(
             parents.push(parent);
         }
     }
+    let mut had: Option<Vec<forget::Forgotten>> = None;
     for parent in parents {
+        let held_parent = plan::Parent::of(&*entries, parent)?;
         let mine: Vec<&(String, Block)> = blocks
             .iter()
             .filter(|(_, block)| block.parent == parent)
@@ -1716,6 +1719,7 @@ fn replay_into(
             .iter()
             .filter(|(_, block)| block.entry == parent)
             .collect();
+        let forgotten = held_parent.as_ref().is_some_and(|held| held.forgotten);
         let mut from = 0;
         while from < mine.len() {
             let start = &mine[from].1;
@@ -1729,7 +1733,32 @@ fn replay_into(
                 .position(|(_, block)| !same(block))
                 .map_or(mine.len(), |at| from + at);
             let group = &mine[from..to];
-            match replay_group(entries, format, group)? {
+            let mut live: Vec<&(String, Block)> = group.to_vec();
+            if forgotten {
+                replayed
+                    .notices
+                    .push(format!("dropped a run kept for {parent}: it was forgotten"));
+                live.clear();
+            } else if held_parent.is_some() && given_up(entries, &mut had, &plan::label(parent))? {
+                replayed.notices.push(format!(
+                    "dropped a run kept for {parent}: its notes were forgotten"
+                ));
+                live.clear();
+            } else if let Some(current) = &held_parent {
+                let before = live.len();
+                live.retain(|(_, block)| block.generation == current.generation);
+                for _ in live.len()..before {
+                    replayed.notices.push(format!(
+                        "dropped a run kept for {parent}: the entry changed since it was asked"
+                    ));
+                }
+            }
+            let outcome = if live.is_empty() {
+                Group::Held
+            } else {
+                replay_group(entries, format, &live)?
+            };
+            match outcome {
                 Group::Captured => replayed.captured += 1,
                 Group::Held => {}
                 Group::Moved => {
@@ -1756,11 +1785,28 @@ fn replay_into(
             from = to;
         }
         for (name, block) in ours {
-            replay_tags(entries, format, &mut *waiting.asked, cap, block, replayed)?;
+            if forgotten {
+                replayed.notices.push(format!(
+                    "dropped the tags kept for {parent}: it was forgotten"
+                ));
+            } else {
+                replay_tags(entries, format, &mut *waiting.asked, cap, block, replayed)?;
+            }
             waiting.spool.remove(name)?;
         }
         for (name, block) in kept {
-            replay_summary(entries, format, &mut *waiting.summarised, block, replayed)?;
+            if forgotten {
+                replayed.notices.push(format!(
+                    "dropped the summary kept for {parent}: it was forgotten"
+                ));
+            } else if held_parent.is_some() && given_up(entries, &mut had, &summary::label(parent))?
+            {
+                replayed.notices.push(format!(
+                    "dropped the summary kept for {parent}: its summary was forgotten"
+                ));
+            } else {
+                replay_summary(entries, format, &mut *waiting.summarised, block, replayed)?;
+            }
             waiting.summary_spool.remove(name)?;
         }
     }
@@ -1777,6 +1823,18 @@ fn replay_into(
             .push(format!("dropped a spool file bilbo cannot read: {name}"));
     }
     Ok(())
+}
+
+fn given_up(
+    entries: &dyn Entries,
+    had: &mut Option<Vec<forget::Forgotten>>,
+    label: &CaptureLabel,
+) -> Result<bool, Error> {
+    let former = match had {
+        Some(former) => former,
+        None => had.insert(forget::held(entries)?),
+    };
+    Ok(forget::given_up_by_lookup(entries, former, label)?)
 }
 
 fn append_summary(entries: &mut dyn Entries, id: Id, line: &str) -> Result<(), Error> {

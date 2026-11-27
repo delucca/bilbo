@@ -2,6 +2,7 @@ pub mod config;
 pub mod console;
 pub mod derive;
 pub mod digest;
+pub mod forget;
 pub mod help;
 #[cfg(test)]
 mod probe;
@@ -55,6 +56,7 @@ pub enum Verb {
     Digest(digest::Args),
     Read(read::Args),
     Tag(tag::Args),
+    Forget(forget::Args),
     Reindex(reindex::Args),
     Derive(derive::Args),
     Config(config::Args),
@@ -193,6 +195,13 @@ fn session(settings: &Settings) -> Result<bilbo_entries::session::Session, Failu
 
 pub fn apart() -> Vec<&'static str> {
     vec![notes().kind]
+}
+
+pub fn labelled(id: bilbo_store::id::Id) -> Vec<bilbo_store::labels::CaptureLabel> {
+    vec![
+        bilbo_derive::plan::label(id),
+        bilbo_derive::summary::label(id),
+    ]
 }
 
 pub struct Notes {
@@ -588,7 +597,10 @@ fn dispatch(
                         &settings,
                         &kinds(&settings)?,
                         &indexing,
-                        &written,
+                        &remember::Handed {
+                            written: &written,
+                            labelled: &labelled,
+                        },
                     )
                 }
                 Verb::Refresh(args) => {
@@ -679,6 +691,32 @@ fn dispatch(
                                 remember::follows::Progress::default(),
                             )
                         },
+                    )
+                }
+                Verb::Forget(args) => {
+                    let readers = readers(&settings)?;
+                    let rendering = rendering(&settings)?;
+                    let kinds = kinds(&settings)?;
+                    let disk = |cache: &std::path::Path| index(cache, &settings.search);
+                    let indexing =
+                        tune(indexing(&settings, &readers, &rendering, &tokenizer, &disk));
+                    forget::run(
+                        root,
+                        &args,
+                        env,
+                        &settings,
+                        &readers,
+                        &|store, notice| {
+                            remember::follows::finish(
+                                store,
+                                &settings.follow.value,
+                                &kinds,
+                                &indexing,
+                                notice,
+                                0,
+                            )
+                        },
+                        &labelled,
                     )
                 }
                 Verb::Reindex(args) => {
@@ -1291,7 +1329,7 @@ mod tests {
             };
         assert_eq!(
             reason(&["bilbo", "help", "a\nb"]),
-            "unknown verb 'a\\nb'; the verbs are remember, refresh, recall, digest, read, tag, reindex, derive, config"
+            "unknown verb 'a\\nb'; the verbs are remember, refresh, recall, digest, read, tag, forget, reindex, derive, config"
         );
         assert_eq!(
             reason(&["bilbo", "help", "--a\nb"]),

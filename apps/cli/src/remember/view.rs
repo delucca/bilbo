@@ -128,6 +128,7 @@ mod tests {
                     moved: None,
                     carried: None,
                     withdrew: None,
+                    forgotten: None,
                 })
                 .collect(),
             records: 3,

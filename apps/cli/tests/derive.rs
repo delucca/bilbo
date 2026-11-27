@@ -26,6 +26,7 @@ use serde_json::{Value, json};
 
 mod notes;
 mod runner;
+mod sandbox;
 mod scratch;
 mod stores;
 
@@ -315,8 +316,7 @@ impl Sandbox {
 
     fn write(&self, name: &str, bytes: &[u8]) {
         let path = self.dir.join(name);
-        fs::create_dir_all(path.parent().expect("a parent")).expect("folders");
-        fs::write(&path, bytes).expect("write");
+        sandbox::write(&path, bytes);
         let file = fs::File::options().write(true).open(&path).expect("open");
         file.set_modified(SystemTime::now() - Duration::from_secs(3600))
             .expect("backdate");
@@ -531,6 +531,7 @@ fn no_other_verb_sends_anything_with_derive_on() {
         vec!["read", &id],
         vec!["reindex"],
         vec!["config"],
+        vec!["forget", &id],
     ] {
         let args: Vec<String> = args
             .iter()
@@ -1243,7 +1244,10 @@ fn poisoned_remember(sandbox: &Sandbox, folder: &str) {
         &settings,
         &bilbo_cli::kinds(&settings).expect("the kinds"),
         &indexing,
-        &written,
+        &bilbo_cli::remember::Handed {
+            written: &written,
+            labelled: &bilbo_cli::labelled,
+        },
     )
     .expect("the remember");
 }
@@ -6347,4 +6351,209 @@ fn a_replay_that_fails_after_a_capture_still_brings_the_index_up_to_the_store() 
     assert!(spool_names(&sandbox).is_empty());
     let held = fs::read_to_string(sandbox.derive_dir().join("summaries")).expect("the file");
     assert!(held.starts_with("passed\t"), "{held}");
+}
+
+fn forget_entry(
+    sandbox: &Sandbox,
+    id: Id,
+    hook: Option<bilbo_store::segments::Hook>,
+) -> Result<bilbo_entries::forget::Output, bilbo_entries::forget::Error> {
+    let layout = stores::layout(&sandbox.vars());
+    let options = Options {
+        hook,
+        ..Options::default()
+    };
+    let mut store = Store::open(&layout, options, &mut |_| {}).expect("open the store");
+    let request = bilbo_entries::forget::Request {
+        targets: vec![bilbo_entries::read::refs::Target::Entry(id)],
+        listed: 5,
+    };
+    bilbo_entries::forget::forget(&request, &bilbo_cli::labelled, &mut store)
+}
+
+fn refreshed(sandbox: &Sandbox) {
+    let run = sandbox.run(&["refresh"]);
+    assert!(run.code <= 1, "{:?}", run.stderr);
+}
+
+const FIRST_TEXT: &str = "purslane";
+
+fn mentions_the_first(request: &Request) -> bool {
+    body(request).contains(FIRST_TEXT)
+}
+
+#[test]
+fn derive_sends_nothing_for_what_was_forgotten() {
+    let _alone = alone();
+    let sandbox = Sandbox::filled("derive-forgotten", false);
+    let first = sandbox.session(FIRST);
+    let second = sandbox.session(SECOND);
+    let both = [first, second];
+    let provider = Provider::start(vec![answer(NOTE_TEXT), answer(SUMMARY_TEXT)]);
+    sandbox.configure(&only_ids(&provider.url(), &both, SUMMARY_ON));
+    let made = sandbox.run(&["derive", &first.to_string()]);
+    assert_eq!(made.code, 0, "{:?}", made.stderr);
+    assert!(sandbox.notes_of(first).is_some());
+    assert_eq!(summary_records(&sandbox, first).len(), 1);
+    assert!(requests(&provider).iter().any(mentions_the_first));
+
+    forget_entry(&sandbox, first, None).expect("forgotten");
+    refreshed(&sandbox);
+    let control = Provider::start(vec![answer(NOTE_TEXT), answer(SUMMARY_TEXT)]);
+    sandbox.configure(&only_ids(&control.url(), &both, SUMMARY_ON));
+    let run = sandbox.run(&["derive"]);
+    assert_eq!(run.code, 0, "{:?}", run.stderr);
+    let sent = requests(&control);
+    assert!(!sent.is_empty());
+    assert!(!sent.iter().any(mentions_the_first));
+    assert!(sandbox.notes_of(second).is_some());
+    assert!(sandbox.notes_of(first).is_none());
+
+    let other = Sandbox::filled("derive-forgotten-notes", false);
+    let parent = other.session(FIRST);
+    let provider = Provider::start(vec![answer(NOTE_TEXT), answer(SUMMARY_TEXT)]);
+    other.configure(&only_ids(&provider.url(), &[parent], SUMMARY_ON));
+    let made = other.run(&["derive", &parent.to_string()]);
+    assert_eq!(made.code, 0, "{:?}", made.stderr);
+    assert_eq!(summary_records(&other, parent).len(), 1);
+    let (notes, _, _) = other.notes_of(parent).expect("notes");
+    forget_entry(&other, notes, None).expect("forgotten");
+    refreshed(&other);
+    let later = Provider::start(vec![answer(NOTE_TEXT), answer(SUMMARY_TEXT)]);
+    other.configure(&only_ids(&later.url(), &[parent], SUMMARY_ON));
+    let run = other.run(&["derive", &parent.to_string()]);
+    assert_eq!(run.code, 0, "{:?}", run.stderr);
+    assert!(requests(&later).is_empty(), "{:?}", requests(&later));
+}
+
+#[test]
+fn a_session_kept_again_by_hand_gets_its_notes_and_its_summary_again() {
+    let _alone = alone();
+    let sandbox = Sandbox::filled("derive-way-back", false);
+    let first = sandbox.session(FIRST);
+    let file = sandbox.path(&format!("sessions/claude/p/{FIRST}.jsonl"));
+    let provider = Provider::start(vec![answer(NOTE_TEXT), answer(SUMMARY_TEXT)]);
+    sandbox.configure(&only_ids(&provider.url(), &[first], SUMMARY_ON));
+    let made = sandbox.run(&["derive", &first.to_string()]);
+    assert_eq!(made.code, 0, "{:?}", made.stderr);
+    let (notes, before, _) = sandbox.notes_of(first).expect("notes");
+    assert_eq!(summary_records(&sandbox, first).len(), 1);
+
+    let forgotten = sandbox.run(&["forget", &first.to_string()]);
+    assert_eq!(forgotten.code, 0, "{:?}", forgotten.stderr);
+    let quiet = Provider::start(vec![answer(NOTE_TEXT), answer(SUMMARY_TEXT)]);
+    sandbox.configure(&only_ids(&quiet.url(), &[first], SUMMARY_ON));
+    let run = sandbox.run(&["derive", &first.to_string()]);
+    assert_eq!(run.code, 0, "{:?}", run.stderr);
+    assert!(requests(&quiet).is_empty(), "{:?}", requests(&quiet));
+
+    let back = sandbox.run(&["remember", &file]);
+    assert_eq!(back.code, 0, "{:?}", back.stderr);
+    assert!(
+        back.stderr
+            .iter()
+            .any(|line| line.starts_with("bilbo: kept ") && line.contains(" again: its entry ")),
+        "{:?}",
+        back.stderr
+    );
+    let again = Provider::start(vec![answer(NOTE_TEXT), answer(SUMMARY_TEXT)]);
+    sandbox.configure(&only_ids(&again.url(), &[first], SUMMARY_ON));
+    let run = sandbox.run(&["derive", &first.to_string()]);
+    assert_eq!(run.code, 0, "{:?}", run.stderr);
+    assert!(requests(&again).iter().any(mentions_the_first));
+    let (now, generation, _) = sandbox.notes_of(first).expect("notes again");
+    assert_eq!(now, notes);
+    assert!(generation > before, "{generation:?} {before:?}");
+    let read = sandbox.run(&["read", &first.to_string()]);
+    assert!(
+        read.stdout.lines().any(|line| line.starts_with("summary:")),
+        "{}",
+        read.stdout
+    );
+}
+
+#[test]
+fn the_dry_run_says_of_forgotten_entries_what_its_gates_reach() {
+    let _alone = alone();
+    let sandbox = Sandbox::filled("derive-forgotten-dry", false);
+    let first = sandbox.session(FIRST);
+    let second = sandbox.session(SECOND);
+    let provider = Provider::start(answers(2));
+    sandbox.configure(&only_ids(&provider.url(), &[first, second], ""));
+    let made = sandbox.run(&["derive"]);
+    assert_eq!(made.code, 0, "{:?}", made.stderr);
+    let (first_notes, _, _) = sandbox.notes_of(first).expect("notes");
+    let (second_notes, _, _) = sandbox.notes_of(second).expect("notes");
+
+    forget_entry(&sandbox, first, None).expect("forgotten");
+
+    let frames = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let counted = std::sync::Arc::clone(&frames);
+    let hook: bilbo_store::segments::Hook = Box::new(move |step| {
+        if step == bilbo_store::segments::Step::FrameWritten
+            && counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 1
+        {
+            Err(io::Error::other("disk full"))
+        } else {
+            Ok(())
+        }
+    });
+    assert!(forget_entry(&sandbox, second, Some(hook)).is_err());
+
+    let kept = sandbox::run(
+        sandbox.vars(),
+        &["remember", "-"],
+        b"A garden note with no file.\n",
+        None,
+    );
+    assert_eq!(kept.code, 0, "{:?}", kept.stderr);
+    assert!(kept.stdout.starts_with("new 1, "), "{}", kept.stdout);
+    assert!(kept.notices.is_empty(), "{:?}", kept.notices);
+    let note_id = Id::parse(
+        kept.stderr
+            .iter()
+            .find_map(|line| line.strip_prefix("bilbo: kept the note as "))
+            .expect("the kept line"),
+    )
+    .expect("an id");
+    forget_entry(&sandbox, note_id, None).expect("forgotten");
+    refreshed(&sandbox);
+
+    let ids = [first, first_notes, second, second_notes, note_id];
+    sandbox.configure(&only_ids(&provider.url(), &ids, SUMMARY_ON));
+    let args: Vec<String> = ids.iter().map(ToString::to_string).collect();
+    let mut argv = vec!["derive", "--dry-run"];
+    argv.extend(args.iter().map(String::as_str));
+    let run = sandbox.run(&argv);
+
+    assert_eq!(run.code, 0, "{:?}", run.stderr);
+    let entries: Vec<&str> = dry_lines(&run, "entry\t");
+    assert_eq!(
+        entries,
+        [
+            format!("entry\t{first}\tcovered\t-\t0"),
+            format!("entry\t{first_notes}\tleft out: no instruction\t-\t0"),
+            format!("entry\t{second}\tcovered\t{second_notes}\t1"),
+            format!("entry\t{second_notes}\tleft out: no instruction\t-\t0"),
+            format!("entry\t{note_id}\tleft out: no instruction\t-\t0"),
+        ],
+        "{}",
+        run.stdout
+    );
+    let summaries: Vec<&str> = dry_lines(&run, "summary\t");
+    assert_eq!(
+        summaries,
+        [
+            format!("summary\t{first}\tnot due: forgotten"),
+            format!("summary\t{first_notes}\tnot due: left out: belongs to another entry"),
+            format!("summary\t{second}\tnot due: forgotten"),
+            format!("summary\t{second_notes}\tnot due: left out: belongs to another entry"),
+            format!("summary\t{note_id}\tnot due: forgotten"),
+        ],
+        "{}",
+        run.stdout
+    );
+    let live = sandbox.run(&["derive", &note_id.to_string()]);
+    assert_eq!(live.code, 0, "{:?}", live.stderr);
+    assert_eq!(live.stderr, Vec::<String>::new());
 }

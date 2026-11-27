@@ -134,6 +134,7 @@ bilbo_rust_test(
         "tests/derive.rs",
         "tests/notes/mod.rs",
         "tests/runner/mod.rs",
+        "tests/sandbox/mod.rs",
         "tests/scratch/mod.rs",
         "tests/stores/mod.rs",
     ],
@@ -236,6 +237,32 @@ bilbo_rust_test(
     lint_config = ":lints",
     deps = [
         ":bilbo_cli",
+        "//libs/entries:rust",
+        "//libs/search:rust",
+        "//libs/store:rust",
+    ] + all_crate_deps(normal_dev = True),
+)
+
+bilbo_rust_test(
+    name = "forget",
+    srcs = [
+        "tests/forget.rs",
+        "tests/note_line/mod.rs",
+        "tests/notes/mod.rs",
+        "tests/runner/mod.rs",
+        "tests/sandbox/mod.rs",
+        "tests/scratch/mod.rs",
+    ],
+    crate_root = "tests/forget.rs",
+    compile_data = [
+        "//libs/entries/rust:markdown_fixtures",
+        "//libs/entries/rust:session_fixtures",
+    ],
+    layer = "integration",
+    lint_config = ":lints",
+    deps = [
+        ":bilbo_cli",
+        "//libs/derive:rust",
         "//libs/entries:rust",
         "//libs/search:rust",
         "//libs/store:rust",
