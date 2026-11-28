@@ -318,6 +318,22 @@ bilbo_rust_test(
 )
 
 bilbo_rust_test(
+    name = "plugin",
+    srcs = ["tests/plugin.rs"],
+    data = [
+        "//:.claude-plugin/marketplace.json",
+        "//:plugin",
+    ],
+    env = {"PLUGIN_ANCHOR": "$(rlocationpath //:.claude-plugin/marketplace.json)"},
+    layer = "integration",
+    lint_config = ":lints",
+    version = BILBO_VERSION,
+    deps = [
+        "@crates//:serde_json",
+    ] + all_crate_deps(normal_dev = True),
+)
+
+bilbo_rust_test(
     name = "timer",
     srcs = ["tests/timer.rs"],
     compile_data = [

@@ -1,0 +1,16 @@
+{
+  "name": "bilbo",
+  "owner": {
+    "name": "delucca"
+  },
+  "metadata": {
+    "description": "Durable memory for coding agents."
+  },
+  "plugins": [
+    {
+      "name": "bilbo",
+      "source": "./plugins/bilbo",
+      "description": "Search what bilbo keeps of earlier agent sessions and notes, and write the notes later sessions find, through the bilbo CLI."
+    }
+  ]
+}

@@ -1,0 +1,9 @@
+{
+  "name": "bilbo",
+  "description": "Search what bilbo keeps of earlier agent sessions and notes, and write the notes later sessions find, through the bilbo CLI.",
+  "author": {
+    "name": "delucca"
+  },
+  "repository": "https://github.com/delucca/bilbo",
+  "license": "Apache-2.0"
+}

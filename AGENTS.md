@@ -29,6 +29,7 @@
 - A test that a forgotten entry left `recall` asserts the count of `searched` and that no line says the index is behind or a hit was left out: `nothing matched` alone is also what a stale index gives, since `recall` checks each hit against the store.
 - A test that `derive` sends nothing for a forgotten entry brings the index up first and keeps a second entry that is due: a run stopped at the scope's gate, or with nothing due, sends nothing either.
 - The entries suite's `FakeEntries` keeps in `asked` every text `captures_with` was asked, the gone rule's folder paths and `forgotten:` alike: a test that means "nothing was asked about forgotten entries" asserts that `forgotten:` is absent, not that the list is empty.
+- After touching `plugins/`: `claude plugin validate . && claude plugin validate plugins/bilbo` (one warning each, for the version Claude's manifests leave out on purpose; never `--strict`), and an install in a throwaway `CODEX_HOME` and a throwaway `HOME` for AGY. Codex has no validator of plugins any more.
 
 ## Rust
 

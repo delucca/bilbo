@@ -1,5 +1,6 @@
 exports_files(
     [
+        ".claude-plugin/marketplace.json",
         "Cargo.toml",
         "clippy.toml",
         "docs/reference/commands.md",
@@ -13,4 +14,14 @@ exports_files(
         "rustfmt.toml",
     ],
     visibility = ["//visibility:public"],
+)
+
+filegroup(
+    name = "plugin",
+    srcs = glob([
+        ".agents/plugins/**",
+        ".claude-plugin/**",
+        "plugins/**",
+    ]),
+    visibility = ["//apps/cli:__pkg__"],
 )

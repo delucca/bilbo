@@ -1,0 +1,27 @@
+{
+  "name": "bilbo",
+  "version": "0.0.0",
+  "description": "Search what bilbo keeps of earlier agent sessions and notes, and write the notes later sessions find, through the bilbo CLI.",
+  "author": {
+    "name": "delucca"
+  },
+  "repository": "https://github.com/delucca/bilbo",
+  "license": "Apache-2.0",
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "bilbo",
+    "shortDescription": "Recall earlier sessions and keep notes",
+    "longDescription": "Search what bilbo keeps of coding-agent sessions and Markdown notes, read a hit further, and keep notes that later sessions find, with the bilbo CLI. A prompt hook lists what bears on a session's first prompt. Install the bilbo binary separately.",
+    "developerName": "delucca",
+    "category": "Developer Tools",
+    "capabilities": [
+      "Read",
+      "Write"
+    ],
+    "defaultPrompt": [
+      "Recall what we decided about the release steps",
+      "Keep this decision as a note for later sessions",
+      "What did the last session on this repo leave undone?"
+    ]
+  }
+}

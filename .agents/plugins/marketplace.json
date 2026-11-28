@@ -1,0 +1,20 @@
+{
+  "name": "bilbo",
+  "interface": {
+    "displayName": "bilbo"
+  },
+  "plugins": [
+    {
+      "name": "bilbo",
+      "source": {
+        "source": "local",
+        "path": "./plugins/bilbo"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Developer Tools"
+    }
+  ]
+}
