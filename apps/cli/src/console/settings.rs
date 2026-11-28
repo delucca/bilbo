@@ -337,6 +337,22 @@ pub const DIGEST_INPUT: Key<u64> = Key {
     show: |bytes| size::show(*bytes),
 };
 
+pub const DIGEST_AGY_TAIL: Key<u64> = Key {
+    about: About {
+        name: "digest.agy.tail",
+        variable: Some("BILBO_DIGEST_AGY_TAIL"),
+        default: Default::Toml(r#""1 MiB""#),
+        allowed: "between 1 KiB and 64 MiB",
+        doc: "The most bytes of the end of an AGY transcript that bilbo digest --agy reads for the prompt: a last step longer than that gives no prompt.",
+    },
+    parse: |value| {
+        size::read(value)
+            .filter(|bytes| (1024..=64 * MIB).contains(bytes))
+            .ok_or_else(|| value.refuse())
+    },
+    show: |bytes| size::show(*bytes),
+};
+
 pub const DIGEST_LOG_ENABLED: Key<bool> = Key {
     about: About {
         name: "digest.log.enabled",
@@ -392,6 +408,7 @@ pub fn keys(kind: &[&'static KindKey], groups: &[&'static Group]) -> Vec<&'stati
         .chain([
             &DIGEST_WAIT.about,
             &DIGEST_INPUT.about,
+            &DIGEST_AGY_TAIL.about,
             &DIGEST_LOG_ENABLED.about,
         ])
         .chain(bilbo_llm::keys::ABOUT)
@@ -460,6 +477,7 @@ pub struct Digest {
     pub summary_enabled: Resolved<bool>,
     pub wait: Resolved<Duration>,
     pub input: Resolved<u64>,
+    pub agy_tail: Resolved<u64>,
     pub log_enabled: Resolved<bool>,
 }
 
@@ -546,6 +564,7 @@ impl Settings {
         shown.extend(self.digest_search.shown());
         shown.push(DIGEST_WAIT.shown(&self.digest.wait));
         shown.push(DIGEST_INPUT.shown(&self.digest.input));
+        shown.push(DIGEST_AGY_TAIL.shown(&self.digest.agy_tail));
         shown.push(DIGEST_LOG_ENABLED.shown(&self.digest.log_enabled));
         shown.extend(self.llm.shown());
         shown.extend(self.shown.iter().cloned());
@@ -643,6 +662,7 @@ pub fn load(
             summary_enabled: DIGEST_SUMMARY_ENABLED.resolve(&source)?,
             wait: DIGEST_WAIT.resolve(&source)?,
             input: DIGEST_INPUT.resolve(&source)?,
+            agy_tail: DIGEST_AGY_TAIL.resolve(&source)?,
             log_enabled: DIGEST_LOG_ENABLED.resolve(&source)?,
         },
         digest_search: bilbo_search::digest::keys::section(&source)?,
@@ -865,6 +885,7 @@ mod tests {
                 "digest.query",
                 "digest.wait",
                 "digest.input",
+                "digest.agy.tail",
                 "digest.log.enabled",
                 "llm.provider",
                 "llm.response",
@@ -992,7 +1013,7 @@ mod tests {
             .err(),
             Some(
                 "/c.toml:3: unknown key store.sealat; the keys are paths.root, paths.state, \
-                 paths.cache, paths.temp, store.seal_at, store.seal_after, store.compression, store.tear_budget, store.wait, store.poll, follow, remember.editor, read.budget, read.outline_width, read.matches_listed, tag.cap, search.chunk_tokens, search.chunk_overlap, search.workers, search.index_memory, search.merge_deleted_percent, search.entry_tries, search.label_batch, search.list_limit, recall.budget, recall.notes_budget, recall.candidates, recall.cap, recall.record_cap, recall.copy_share, recall.copy_words, recall.question_words, recall.languages, recall.bm25_k1, recall.bm25_b, recall.read_batch, recall.typo_terms, recall.typo_letters, recall.typo_max_letters, recall.typo_two_edits, recall.pair_weight, digest.markdown.most, digest.markdown.floor, digest.session.most, digest.session.floor, digest.session.old_after, digest.session.subagents, digest.session.parts, digest.note.most, digest.note.floor, digest.note.width, digest.summary.enabled, digest.candidates, digest.query, digest.wait, digest.input, digest.log.enabled, llm.provider, llm.response, llm.timeout, llm.poll, llm.anthropic.model, llm.anthropic.via, llm.anthropic.api.endpoint, llm.anthropic.api.version, llm.anthropic.api.key_env, llm.anthropic.api.key_command, llm.anthropic.api.headers, llm.anthropic.api.extra, llm.anthropic.tool.program, llm.anthropic.tool.effort, llm.anthropic.tool.arguments, llm.anthropic.tool.inherit, llm.anthropic.tool.environment, llm.anthropic.tool.project_files, llm.openai.model, llm.openai.via, llm.openai.api.endpoint, llm.openai.api.key_env, llm.openai.api.key_command, llm.openai.api.headers, llm.openai.api.extra, llm.openai.tool.program, llm.openai.tool.effort, llm.openai.tool.arguments, llm.openai.tool.inherit, llm.openai.tool.environment, llm.openai.tool.home, llm.openai.tool.system_files, derive.enabled, derive.in, derive.not_in, derive.instructions, derive.quiet, derive.window, derive.passage, derive.passage_head, derive.earlier, derive.names, derive.answer_tokens, derive.calls, derive.retries, derive.retry_wait, derive.retry_factor, derive.retry_limit, derive.tries, derive.failures, derive.tags.enabled, derive.tags.pick, derive.tags.instruction, derive.tags.model, derive.tags.most, derive.tags.notes, derive.summary.enabled, derive.summary.instruction, derive.summary.most, derive.summary.window, derive.summary.least, markdown.heading_width, session.unpack_floor, session.unpack_ratio, session.unpack_window, session.wide_fields"
+                 paths.cache, paths.temp, store.seal_at, store.seal_after, store.compression, store.tear_budget, store.wait, store.poll, follow, remember.editor, read.budget, read.outline_width, read.matches_listed, tag.cap, search.chunk_tokens, search.chunk_overlap, search.workers, search.index_memory, search.merge_deleted_percent, search.entry_tries, search.label_batch, search.list_limit, recall.budget, recall.notes_budget, recall.candidates, recall.cap, recall.record_cap, recall.copy_share, recall.copy_words, recall.question_words, recall.languages, recall.bm25_k1, recall.bm25_b, recall.read_batch, recall.typo_terms, recall.typo_letters, recall.typo_max_letters, recall.typo_two_edits, recall.pair_weight, digest.markdown.most, digest.markdown.floor, digest.session.most, digest.session.floor, digest.session.old_after, digest.session.subagents, digest.session.parts, digest.note.most, digest.note.floor, digest.note.width, digest.summary.enabled, digest.candidates, digest.query, digest.wait, digest.input, digest.agy.tail, digest.log.enabled, llm.provider, llm.response, llm.timeout, llm.poll, llm.anthropic.model, llm.anthropic.via, llm.anthropic.api.endpoint, llm.anthropic.api.version, llm.anthropic.api.key_env, llm.anthropic.api.key_command, llm.anthropic.api.headers, llm.anthropic.api.extra, llm.anthropic.tool.program, llm.anthropic.tool.effort, llm.anthropic.tool.arguments, llm.anthropic.tool.inherit, llm.anthropic.tool.environment, llm.anthropic.tool.project_files, llm.openai.model, llm.openai.via, llm.openai.api.endpoint, llm.openai.api.key_env, llm.openai.api.key_command, llm.openai.api.headers, llm.openai.api.extra, llm.openai.tool.program, llm.openai.tool.effort, llm.openai.tool.arguments, llm.openai.tool.inherit, llm.openai.tool.environment, llm.openai.tool.home, llm.openai.tool.system_files, derive.enabled, derive.in, derive.not_in, derive.instructions, derive.quiet, derive.window, derive.passage, derive.passage_head, derive.earlier, derive.names, derive.answer_tokens, derive.calls, derive.retries, derive.retry_wait, derive.retry_factor, derive.retry_limit, derive.tries, derive.failures, derive.tags.enabled, derive.tags.pick, derive.tags.instruction, derive.tags.model, derive.tags.most, derive.tags.notes, derive.summary.enabled, derive.summary.instruction, derive.summary.most, derive.summary.window, derive.summary.least, markdown.heading_width, session.unpack_floor, session.unpack_ratio, session.unpack_window, session.wide_fields"
                     .to_owned()
             )
         );
@@ -1406,6 +1427,7 @@ mod tests {
                 "BILBO_DERIVE_TAGS_NOTES",
                 "BILBO_DERIVE_TRIES",
                 "BILBO_DERIVE_WINDOW",
+                "BILBO_DIGEST_AGY_TAIL",
                 "BILBO_DIGEST_CANDIDATES",
                 "BILBO_DIGEST_INPUT",
                 "BILBO_DIGEST_LOG_ENABLED",
@@ -1593,6 +1615,14 @@ mod tests {
         taken_and_refused(
             "digest.input",
             "BILBO_DIGEST_INPUT",
+            "between 1 KiB and 64 MiB",
+            &["\"1 KiB\"", "\"64 MiB\""],
+            &["\"1023\"", "\"65 MiB\"", "\"big\""],
+        );
+        assert_eq!(settings.digest.agy_tail.value, 1024 * 1024);
+        taken_and_refused(
+            "digest.agy.tail",
+            "BILBO_DIGEST_AGY_TAIL",
             "between 1 KiB and 64 MiB",
             &["\"1 KiB\"", "\"64 MiB\""],
             &["\"1023\"", "\"65 MiB\"", "\"big\""],

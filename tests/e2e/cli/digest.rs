@@ -108,7 +108,7 @@ fn an_unknown_option_and_a_config_error_exit_0() {
     assert_eq!((run.code, run.stdout.as_str()), (0, ""));
     assert_eq!(
         run.stderr,
-        "bilbo: unknown option '--all'\nbilbo: usage: bilbo digest\nbilbo: see 'bilbo digest --help'\n"
+        "bilbo: unknown option '--all'\nbilbo: usage: bilbo digest [--agy]\nbilbo: see 'bilbo digest --help'\n"
     );
     scratch.config(&closed("digest.nonsense = 1\n"));
     let recall = scratch.run(&["recall", "garden"]);
@@ -228,5 +228,39 @@ fn a_result_that_cannot_be_written_still_exits_0() {
         let (code, stderr) = unwritable(&scratch, &args, &input);
         assert_eq!(code, 0, "{what}: {stderr}");
         assert_eq!(stderr, control, "{what}: the whole line, and no other");
+    }
+}
+
+#[test]
+fn a_transcript_that_is_a_pipe_is_no_prompt_and_holds_nothing_up() {
+    let scratch = remembered("digest_agy_pipe");
+    let fifo = scratch.path("transcript.fifo");
+    let made = Command::new("mkfifo").arg(&fifo).status().expect("mkfifo");
+    assert!(made.success());
+    let input = format!("{{\"conversationId\":\"{OTHER}\",\"transcriptPath\":\"{fifo}\"}}");
+    let began = std::time::Instant::now();
+    let run = scratch.run_with_input(&["digest", "--agy"], input.as_bytes());
+    assert!(began.elapsed() < std::time::Duration::from_secs(20));
+    assert_eq!((run.code, run.stdout.as_str()), (0, ""));
+    assert_eq!(
+        run.stderr,
+        format!("bilbo: the transcript {fifo} is not a regular file\n")
+    );
+}
+
+#[test]
+fn digest_agy_exits_0_whatever_it_is_given() {
+    let scratch = Scratch::new("digest_agy_exit");
+    let missing = scratch.path("missing.jsonl");
+    let named = format!("{{\"conversationId\":\"{OTHER}\",\"transcriptPath\":\"{missing}\"}}");
+    for (args, input) in [
+        (&["digest", "--agy"][..], &b""[..]),
+        (&["digest", "--agy"], b"not json"),
+        (&["digest", "--agy"], named.as_bytes()),
+        (&["digest", "--agy", "--frob"], b"{}"),
+    ] {
+        let run = scratch.run_with_input(args, input);
+        assert_eq!(run.code, 0, "{args:?}: {}", run.stderr);
+        assert_eq!(run.stdout, "", "{args:?}");
     }
 }

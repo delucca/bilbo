@@ -1,6 +1,7 @@
 pub mod hook;
 pub mod log;
 pub mod seen;
+pub mod transcript;
 pub mod view;
 
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
@@ -23,11 +24,17 @@ use crate::console::view::View;
 
 const SUMMARY: &str = "Answer a session's first prompt with what bilbo keeps on it";
 const ABOUT: &str = "bilbo digest: answer a session's first prompt with what bilbo keeps on it.";
-const USAGE: &str = "bilbo digest";
+const USAGE: &str = "bilbo digest [--agy]";
 
 #[derive(Debug, clap::Args)]
 #[command(about = SUMMARY, before_help = ABOUT, override_usage = USAGE, after_help = PAGE)]
-pub struct Args {}
+pub struct Args {
+    #[arg(
+        long,
+        help = "Read Antigravity's PreInvocation input and answer in its JSON"
+    )]
+    pub agy: bool,
+}
 
 const PAGE: &str = "\
 A prompt hook runs it and hands it one JSON object on standard input, with
@@ -125,6 +132,7 @@ fn finished(
 
 pub fn run(
     root: &Command,
+    args: &Args,
     env: &mut Env,
     settings: &Settings,
     reading: &Reading<'_>,
@@ -139,7 +147,18 @@ pub fn run(
             Some("digest"),
         ));
     }
-    let given = hook::read(&mut *env.stdin, settings.digest.input.value);
+    let given = if args.agy {
+        let limit = settings.digest.agy_tail.value;
+        match hook::read_agy(&mut *env.stdin, settings.digest.input.value, &|path| {
+            transcript::tail(path, limit)
+        }) {
+            Ok(hook::Heard::Quiet) => return Ok(Outcome::new("")),
+            Ok(hook::Heard::Turn(given)) => Ok(given),
+            Err(refused) => Err(refused),
+        }
+    } else {
+        hook::read(&mut *env.stdin, settings.digest.input.value)
+    };
     let checked = Store::checked(&settings.layout(), options(settings))
         .map_err(|error| Failure::from(&error))?;
     let Some(state) = checked.state() else {
@@ -173,7 +192,9 @@ pub fn run(
                             )),
                             End::Unmarked,
                         ),
-                        Turn::First(first) => listed(checked, settings, reading, hand, &first, now),
+                        Turn::First(first) => {
+                            listed(checked, settings, reading, hand, &first, now, args.agy)
+                        }
                     }
                 }
             };
@@ -204,6 +225,7 @@ fn listed(
     hand: &Hand<'_>,
     first: &First,
     now: SystemTime,
+    agy: bool,
 ) -> Ended {
     let store = match checked.open(&mut |_| {}) {
         Ok(store) => store,
@@ -271,7 +293,11 @@ fn listed(
             .iter()
             .map(|(word, rows)| view::Shown { word, rows })
             .collect();
-        view::lists(&shown, view)
+        if agy {
+            view::injected(&view::lists(&shown, &View::PLAIN))
+        } else {
+            view::lists(&shown, view)
+        }
     };
     Ended {
         outcome: Ok(Outcome::new(text(&View::PLAIN))
@@ -344,7 +370,7 @@ mod tests {
             assert_eq!(outcome.stdout(&View::PLAIN), "", "{list:?}");
             let lines = outcome.stderr_lines(&View::PLAIN);
             assert_eq!(lines[0], reason, "{list:?}");
-            assert_eq!(lines[1], "bilbo: usage: bilbo digest", "{list:?}");
+            assert_eq!(lines[1], "bilbo: usage: bilbo digest [--agy]", "{list:?}");
             assert_eq!(lines[2], "bilbo: see 'bilbo digest --help'", "{list:?}");
             assert_eq!(lines.len(), 3, "{list:?}");
         }
@@ -354,7 +380,7 @@ mod tests {
     fn a_failure_becomes_an_outcome_that_exits_0_with_its_lines() {
         let usage = Failure::Usage {
             reason: "unknown option '--all'".to_owned(),
-            usage: vec!["usage: bilbo digest".to_owned()],
+            usage: vec!["usage: bilbo digest [--agy]".to_owned()],
             page: "bilbo digest --help".to_owned(),
         };
         for failure in [

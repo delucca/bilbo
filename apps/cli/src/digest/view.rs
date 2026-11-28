@@ -102,6 +102,15 @@ pub fn lists(lists: &[Shown<'_>], view: &View) -> String {
     text
 }
 
+pub fn injected(lists: &str) -> String {
+    if lists.is_empty() {
+        return String::new();
+    }
+    let text = lists.strip_suffix('\n').unwrap_or(lists);
+    let text = serde_json::to_string(text).unwrap_or_default();
+    format!("{{\"injectSteps\":[{{\"systemMessage\":{{\"systemMessage\":{text}}}}}]}}\n")
+}
+
 #[cfg(test)]
 mod tests {
     use bilbo_entries::read::refs::{Ref, Target};

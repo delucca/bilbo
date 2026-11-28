@@ -630,7 +630,7 @@ fn every_path_exits_0_and_says_what_went_wrong() {
         stderr,
         lines(&[
             "bilbo: unknown option '--all'",
-            "bilbo: usage: bilbo digest",
+            "bilbo: usage: bilbo digest [--agy]",
             "bilbo: see 'bilbo digest --help'",
         ])
     );
@@ -980,19 +980,25 @@ fn direct_through(
             }
         }),
     };
-    let (code, stdout, stderr) =
-        match bilbo_cli::digest::run(&bilbo_cli::bilbo(), &mut env, &settings, &reading, &hand) {
-            Ok(outcome) => (
-                outcome.exit_code(),
-                outcome.stdout(&View::PLAIN),
-                outcome.stderr_lines(&View::PLAIN),
-            ),
-            Err(failure) => (
-                failure.exit_code(),
-                String::new(),
-                failure.stderr_lines(&View::PLAIN),
-            ),
-        };
+    let (code, stdout, stderr) = match bilbo_cli::digest::run(
+        &bilbo_cli::bilbo(),
+        &bilbo_cli::digest::Args { agy: false },
+        &mut env,
+        &settings,
+        &reading,
+        &hand,
+    ) {
+        Ok(outcome) => (
+            outcome.exit_code(),
+            outcome.stdout(&View::PLAIN),
+            outcome.stderr_lines(&View::PLAIN),
+        ),
+        Err(failure) => (
+            failure.exit_code(),
+            String::new(),
+            failure.stderr_lines(&View::PLAIN),
+        ),
+    };
     let notices = said.lock().map(|held| held.clone()).unwrap_or_default();
     sandbox::Run {
         code,
@@ -1261,7 +1267,7 @@ fn a_person_at_the_terminal_is_told_what_it_reads() {
         run.stderr,
         lines(&[
             "bilbo: digest reads a prompt hook's JSON on standard input",
-            "bilbo: usage: bilbo digest",
+            "bilbo: usage: bilbo digest [--agy]",
             "bilbo: see 'bilbo digest --help'",
         ])
     );
@@ -2311,4 +2317,126 @@ fn a_summarys_entry_is_never_a_row() {
         let id = reference.split('#').next().unwrap_or_default();
         assert_ne!(id, short, "{row}");
     }
+}
+
+fn agy_input(conversation: &str, transcript: &str, number: Option<&str>) -> Vec<u8> {
+    let number = number.map_or_else(String::new, |number| format!(",\"invocationNum\":{number}"));
+    format!(
+        "{{\"conversationId\":\"{}\",\"transcriptPath\":\"{}\"{number}}}",
+        escaped(conversation),
+        escaped(transcript)
+    )
+    .into_bytes()
+}
+
+fn injected(plain: &str) -> String {
+    let text = plain.strip_suffix('\n').expect("a line feed");
+    format!(
+        "{{\"injectSteps\":[{{\"systemMessage\":{{\"systemMessage\":\"{}\"}}}}]}}\n",
+        escaped(text)
+    )
+}
+
+fn user_step(text: &str) -> String {
+    format!(
+        "{{\"type\":\"USER_INPUT\",\"content\":\"{}\"}}\n",
+        escaped(text)
+    )
+}
+
+impl Sandbox {
+    fn digest_agy(&self, input: &[u8]) -> sandbox::Run {
+        sandbox::run(self.vars_with(&[]), &["digest", "--agy"], input, None)
+    }
+
+    fn transcript(&self, steps: &str) -> String {
+        self.write("transcript.jsonl", steps.as_bytes());
+        self.path("transcript.jsonl")
+    }
+}
+
+#[test]
+fn agy_gets_the_lists_as_one_json_line() {
+    let sandbox = Sandbox::new("digest_agy_line");
+    sandbox.files();
+    let transcript = sandbox.transcript(&user_step(PROMPT));
+    let conversation = fresh();
+    let run = sandbox.digest_agy(&agy_input(&conversation, &transcript, Some("0")));
+    assert_eq!((run.code, run.stderr.clone()), (0, Vec::<String>::new()));
+    assert_eq!(run.stdout.matches('\n').count(), 1, "{}", run.stdout);
+    assert!(run.stdout.ends_with('\n'));
+    let plain = sandbox.first(PROMPT);
+    assert!(plain.stdout.starts_with("files: 2 may bear"));
+    assert_eq!(run.stdout, injected(&plain.stdout));
+    let later = sandbox.digest_agy(&agy_input(&conversation, &transcript, None));
+    assert_eq!(
+        (later.code, later.stdout, later.stderr),
+        (0, String::new(), Vec::<String>::new())
+    );
+}
+
+#[test]
+fn a_call_that_starts_no_turn_opens_no_state_folder_and_logs_nothing() {
+    let sandbox = Sandbox::new("digest_agy_quiet");
+    let run = sandbox.digest_agy(&agy_input(&fresh(), "/nowhere/t.jsonl", Some("3")));
+    assert_eq!(
+        (run.code, run.stdout, run.stderr, run.notices),
+        (0, String::new(), Vec::<String>::new(), Vec::<String>::new())
+    );
+    assert!(!sandbox.dir.join("state").exists());
+    assert!(!sandbox.log_file().exists());
+    assert!(!sandbox.dir.join("store").exists());
+}
+
+#[test]
+fn only_the_end_of_a_regular_transcript_is_read() {
+    use bilbo_cli::digest::hook::{Heard, Refused, read_agy};
+    use bilbo_cli::digest::transcript::{Unread, tail};
+
+    let sandbox = Sandbox::new("digest_transcript");
+    let limit = 1024u64;
+    sandbox.write("short.jsonl", user_step("short one").as_bytes());
+    let path = sandbox.path("short.jsonl");
+    assert_eq!(
+        tail(&path, limit).expect("a short file"),
+        user_step("short one").into_bytes()
+    );
+    let filler = format!(
+        "{{\"type\":\"SYSTEM_MESSAGE\",\"content\":\"{}\"}}\n",
+        "x".repeat(200)
+    );
+    let long = format!("{}{}", user_step("far before"), filler.repeat(15));
+    assert!(long.len() as u64 > 3 * limit);
+    sandbox.write("long.jsonl", long.as_bytes());
+    let path = sandbox.path("long.jsonl");
+    let bytes = tail(&path, limit).expect("the end");
+    assert_eq!(bytes, long.as_bytes()[long.len() - 1024..]);
+    let input = agy_input("c", &path, None);
+    let heard = read_agy(&mut &input[..], 4096, &|path| tail(path, limit));
+    assert_eq!(heard, Err(Refused::NoUserInput("c".to_owned())));
+    let nearer = format!("{}{}", filler.repeat(15), user_step("near"));
+    sandbox.write("near.jsonl", nearer.as_bytes());
+    let input = agy_input("c", &sandbox.path("near.jsonl"), None);
+    let heard = read_agy(&mut &input[..], 4096, &|path| tail(path, limit));
+    assert_eq!(heard.map(|heard| matches!(heard, Heard::Turn(_))), Ok(true));
+    assert_eq!(tail(&sandbox.path("notes"), limit), Err(Unread::NotRegular));
+    let missing = sandbox.path("missing.jsonl");
+    assert!(
+        matches!(tail(&missing, limit), Err(Unread::Failed(error)) if error.contains("No such file"))
+    );
+}
+
+#[test]
+fn an_agy_conversation_is_marked_and_matched_as_a_session_is() {
+    let sandbox = full("digest_agy_own");
+    let transcript = sandbox.transcript(&user_step(PROMPT));
+    let run = sandbox.digest_agy(&agy_input(CLAUDE, &transcript, None));
+    assert_eq!((run.code, run.stderr.clone()), (0, Vec::<String>::new()));
+    let marks = String::from_utf8(sandbox.marks()).expect("text");
+    assert!(marks.contains(CLAUDE), "{marks}");
+    assert!(run.stdout.contains("files: 2 may bear"), "{}", run.stdout);
+    assert!(run.stdout.contains("\\nnotes: "), "{}", run.stdout);
+    assert!(!run.stdout.contains("sessions: "), "{}", run.stdout);
+    let again = sandbox.digest_agy(&agy_input(CLAUDE, &transcript, None));
+    assert_eq!(again.stdout, "");
 }

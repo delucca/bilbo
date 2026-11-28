@@ -629,7 +629,7 @@ fn dispatch(
                         &reading::of(&indexing, &committed, detect(), &apart()),
                     )
                 }
-                Verb::Digest(_) => {
+                Verb::Digest(args) => {
                     let readers = readers(&settings)?;
                     let rendering = rendering(&settings)?;
                     let disk = |cache: &std::path::Path| index(cache, &settings.search);
@@ -643,6 +643,7 @@ fn dispatch(
                     let apart = apart();
                     digest::run(
                         root,
+                        &args,
                         env,
                         &settings,
                         &reading::of(&indexing, &committed, detect(), &apart),

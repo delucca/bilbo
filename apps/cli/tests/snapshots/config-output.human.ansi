@@ -54,6 +54,7 @@ digest.candidates                = 1000  [2m(default)[22m
 digest.query                     = 2000  [2m(default)[22m
 digest.wait                      = "1s"  [2m(default)[22m
 digest.input                     = "4 MiB"  [2m(default)[22m
+digest.agy.tail                  = "1 MiB"  [2m(default)[22m
 digest.log.enabled               = true  [2m(default)[22m
 llm.provider                     = ""  [2m(default)[22m
 llm.response                     = "4 MiB"  [2m(default)[22m

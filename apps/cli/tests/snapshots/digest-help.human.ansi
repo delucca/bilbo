@@ -1,7 +1,10 @@
 bilbo digest: answer a session's first prompt with what bilbo keeps on it.
 
 [1mUsage:[22m
-  [36mbilbo digest[39m
+  [36mbilbo digest [--agy][39m
+
+[1mOptions:[22m
+      [1m--agy[22m  Read Antigravity's PreInvocation input and answer in its JSON
 
 [2mA prompt hook runs it and hands it one JSON object on standard input, with[22m
 [2msession_id and prompt. Every prompt after a session's first prints nothing.[22m

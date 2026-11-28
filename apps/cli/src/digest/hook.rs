@@ -2,6 +2,8 @@ use std::io::Read;
 
 use serde::de::{Deserialize, DeserializeOwned, Deserializer, IgnoredAny, Visitor};
 
+use super::transcript::Unread;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Given {
     pub session: String,
@@ -15,12 +17,21 @@ pub enum Refused {
     NotAnObject,
     NoSession,
     NoPrompt(String),
+    NoConversation,
+    NoTranscript(String),
+    NotRegular(String, String),
+    Unreadable(String, String, String),
+    NoUserInput(String),
 }
 
 impl Refused {
     pub fn session(&self) -> Option<&str> {
         match self {
-            Refused::NoPrompt(session) => Some(session),
+            Refused::NoPrompt(session)
+            | Refused::NoTranscript(session)
+            | Refused::NotRegular(session, _)
+            | Refused::Unreadable(session, ..)
+            | Refused::NoUserInput(session) => Some(session),
             _ => None,
         }
     }
@@ -34,6 +45,13 @@ impl Refused {
             Refused::NotAnObject => "the hook's input is not a JSON object".to_owned(),
             Refused::NoSession => "the hook's input has no session_id".to_owned(),
             Refused::NoPrompt(_) => "the hook's input has no prompt".to_owned(),
+            Refused::NoConversation => "the hook's input has no conversationId".to_owned(),
+            Refused::NoTranscript(_) => "the hook's input has no transcriptPath".to_owned(),
+            Refused::NotRegular(_, path) => format!("the transcript {path} is not a regular file"),
+            Refused::Unreadable(_, path, error) => {
+                format!("cannot read the transcript {path}: {error}")
+            }
+            Refused::NoUserInput(_) => "the transcript's last steps hold no user input".to_owned(),
         }
     }
 }
@@ -63,6 +81,7 @@ impl<'de> Deserialize<'de> for Raw {
 enum Field {
     Absent,
     Other,
+    Whole(u64),
     Text(String),
 }
 
@@ -75,7 +94,13 @@ impl Field {
     }
 }
 
-pub fn read(input: &mut dyn Read, limit: u64) -> Result<Given, Refused> {
+#[derive(Debug, PartialEq, Eq)]
+pub enum Heard {
+    Turn(Given),
+    Quiet,
+}
+
+fn taken(input: &mut dyn Read, limit: u64) -> Result<Vec<u8>, Refused> {
     let mut bytes = Vec::new();
     input
         .take(limit.saturating_add(1))
@@ -84,15 +109,89 @@ pub fn read(input: &mut dyn Read, limit: u64) -> Result<Given, Refused> {
     if u64::try_from(bytes.len()).is_ok_and(|read| read > limit) {
         return Err(Refused::TooLong(limit));
     }
-    given(&bytes)
+    Ok(bytes)
 }
 
-fn given(bytes: &[u8]) -> Result<Given, Refused> {
+fn whole_object(bytes: &[u8]) -> Result<(), Refused> {
     std::str::from_utf8(bytes).map_err(|_| Refused::NotAnObject)?;
     value_at::<IgnoredAny>(bytes, 0)
         .filter(|(_, end)| skip(bytes, *end) == bytes.len())
         .ok_or(Refused::NotAnObject)?;
-    let (session, prompt) = scan(bytes).ok_or(Refused::NotAnObject)?;
+    Ok(())
+}
+
+pub fn read(input: &mut dyn Read, limit: u64) -> Result<Given, Refused> {
+    let bytes = taken(input, limit)?;
+    given(&bytes)
+}
+
+pub fn read_agy(
+    input: &mut dyn Read,
+    limit: u64,
+    tail: &dyn Fn(&str) -> Result<Vec<u8>, Unread>,
+) -> Result<Heard, Refused> {
+    let bytes = taken(input, limit)?;
+    whole_object(&bytes)?;
+    let [conversation, path, number] = scan(
+        &bytes,
+        [
+            b"conversationId".as_slice(),
+            b"transcriptPath",
+            b"invocationNum",
+        ],
+    )
+    .ok_or(Refused::NotAnObject)?;
+    if !matches!(number, Field::Absent | Field::Whole(0)) {
+        return Ok(Heard::Quiet);
+    }
+    let session = conversation.text().ok_or(Refused::NoConversation)?;
+    let path = path
+        .text()
+        .ok_or_else(|| Refused::NoTranscript(session.clone()))?;
+    let steps = tail(&path).map_err(|error| match error {
+        Unread::NotRegular => Refused::NotRegular(session.clone(), path.clone()),
+        Unread::Failed(error) => Refused::Unreadable(session.clone(), path.clone(), error),
+    })?;
+    match last_user_input(&steps) {
+        Some(prompt) => Ok(Heard::Turn(Given { session, prompt })),
+        None => Err(Refused::NoUserInput(session)),
+    }
+}
+
+fn last_user_input(steps: &[u8]) -> Option<String> {
+    for line in steps.rsplit(|byte| *byte == b'\n') {
+        if line.iter().all(u8::is_ascii_whitespace) {
+            continue;
+        }
+        whole_object(line).ok()?;
+        let [kind, content] = scan(line, [b"type".as_slice(), b"content"])?;
+        match kind.text()?.as_str() {
+            "SYSTEM_MESSAGE" => continue,
+            "USER_INPUT" => return request(&content.text()?),
+            _ => return None,
+        }
+    }
+    None
+}
+
+fn request(content: &str) -> Option<String> {
+    const OPEN: &str = "<USER_REQUEST>";
+    const CLOSE: &str = "</USER_REQUEST>";
+    let body = content
+        .find(OPEN)
+        .and_then(|open| {
+            let after = &content[open + OPEN.len()..];
+            after.find(CLOSE).map(|close| &after[..close])
+        })
+        .unwrap_or(content)
+        .trim();
+    (!body.is_empty()).then(|| body.to_owned())
+}
+
+fn given(bytes: &[u8]) -> Result<Given, Refused> {
+    whole_object(bytes)?;
+    let [session, prompt] =
+        scan(bytes, [b"session_id".as_slice(), b"prompt"]).ok_or(Refused::NotAnObject)?;
     let session = session.text().ok_or(Refused::NoSession)?;
     match prompt.text() {
         Some(prompt) => Ok(Given { session, prompt }),
@@ -116,13 +215,13 @@ fn value_at<T: DeserializeOwned>(bytes: &[u8], at: usize) -> Option<(T, usize)> 
     Some((value, at + stream.byte_offset()))
 }
 
-fn scan(bytes: &[u8]) -> Option<(Field, Field)> {
+fn scan<const N: usize>(bytes: &[u8], names: [&[u8]; N]) -> Option<[Field; N]> {
     let mut at = skip(bytes, 0);
     if bytes.get(at) != Some(&b'{') {
         return None;
     }
     at = skip(bytes, at + 1);
-    let (mut session, mut prompt) = (Field::Absent, Field::Absent);
+    let mut fields = names.map(|_| Field::Absent);
     if bytes.get(at) == Some(&b'}') {
         at += 1;
     } else {
@@ -133,20 +232,26 @@ fn scan(bytes: &[u8]) -> Option<(Field, Field)> {
                 return None;
             }
             at = skip(bytes, at + 1);
-            let wanted = key == b"session_id" || key == b"prompt";
-            let value = if wanted && bytes.get(at) == Some(&b'"') {
-                let (Raw(text), next): (Raw, usize) = value_at(bytes, at)?;
-                at = next;
-                Field::Text(String::from_utf8_lossy(&text).into_owned())
-            } else {
-                let (_, next): (IgnoredAny, usize) = value_at(bytes, at)?;
-                at = next;
-                Field::Other
+            let wanted = names.iter().position(|name| *name == key.as_slice());
+            let value = match (wanted, bytes.get(at)) {
+                (Some(_), Some(b'"')) => {
+                    let (Raw(text), next): (Raw, usize) = value_at(bytes, at)?;
+                    at = next;
+                    Field::Text(String::from_utf8_lossy(&text).into_owned())
+                }
+                (Some(_), Some(b'0'..=b'9')) => {
+                    let (number, next): (serde_json::Number, usize) = value_at(bytes, at)?;
+                    at = next;
+                    number.as_u64().map_or(Field::Other, Field::Whole)
+                }
+                _ => {
+                    let (_, next): (IgnoredAny, usize) = value_at(bytes, at)?;
+                    at = next;
+                    Field::Other
+                }
             };
-            match key.as_slice() {
-                b"session_id" => session = value,
-                b"prompt" => prompt = value,
-                _ => {}
+            if let Some(place) = wanted {
+                fields[place] = value;
             }
             at = skip(bytes, at);
             match bytes.get(at) {
@@ -159,14 +264,14 @@ fn scan(bytes: &[u8]) -> Option<(Field, Field)> {
             }
         }
     }
-    (skip(bytes, at) == bytes.len()).then_some((session, prompt))
+    (skip(bytes, at) == bytes.len()).then_some(fields)
 }
 
 #[cfg(test)]
 mod tests {
     use std::io::{self, Read};
 
-    use super::{Given, Refused, read};
+    use super::{Given, Heard, Refused, Unread, read, read_agy};
 
     const LIMIT: u64 = 4096;
 
@@ -386,5 +491,196 @@ mod tests {
             "the session is kept"
         );
         assert_eq!(Refused::NoSession.session(), None);
+    }
+
+    fn heard(input: &[u8], steps: &[u8]) -> Result<Heard, Refused> {
+        read_agy(&mut &input[..], LIMIT, &|_| Ok(steps.to_vec()))
+    }
+
+    fn turn(session: &str, prompt: &str) -> Result<Heard, Refused> {
+        Ok(Heard::Turn(Given {
+            session: session.to_owned(),
+            prompt: prompt.to_owned(),
+        }))
+    }
+
+    const AGY: &[u8] =
+        br#"{"conversationId":"c-1","transcriptPath":"/h/t.jsonl","invocationNum":0}"#;
+
+    #[test]
+    fn an_agy_input_gives_the_conversation_and_the_last_user_input() {
+        let user = |text: &str| format!("{{\"type\":\"USER_INPUT\",\"content\":{text:?}}}\n");
+        let system = "{\"type\":\"SYSTEM_MESSAGE\",\"content\":\"ephemeral\"}\n";
+        let rows: Vec<(String, Result<Heard, Refused>)> = vec![
+            (
+                user("thin the carrot rows"),
+                turn("c-1", "thin the carrot rows"),
+            ),
+            (
+                user(
+                    "<ADDITIONAL_METADATA>x</ADDITIONAL_METADATA>\n<USER_REQUEST>\n thin rows \n</USER_REQUEST>\ntail",
+                ),
+                turn("c-1", "thin rows"),
+            ),
+            (
+                format!("{}{}{system}{system}", user("first"), user("last")),
+                turn("c-1", "last"),
+            ),
+            (
+                format!("{}{system}\n  \n", user("kept")),
+                turn("c-1", "kept"),
+            ),
+            (
+                user("<USER_REQUEST>no close"),
+                turn("c-1", "<USER_REQUEST>no close"),
+            ),
+        ];
+        for (steps, wanted) in rows {
+            assert_eq!(heard(AGY, steps.as_bytes()), wanted, "{steps}");
+        }
+        let both =
+            br#"{"session_id":"other","prompt":"no","conversationId":"c-1","transcriptPath":"/t"}"#;
+        assert_eq!(heard(both, user("yes").as_bytes()), turn("c-1", "yes"));
+    }
+
+    #[test]
+    fn an_agy_call_that_starts_no_turn_is_no_prompt_and_no_error() {
+        let with = |number: &str| {
+            format!(r#"{{"conversationId":"c","transcriptPath":"/t","invocationNum":{number}}}"#)
+        };
+        let steps = b"{\"type\":\"USER_INPUT\",\"content\":\"p\"}\n";
+        for quiet in [
+            "1",
+            "7",
+            "\"0\"",
+            "0.5",
+            "-1",
+            "null",
+            "1e2",
+            "99999999999999999999",
+        ] {
+            assert_eq!(
+                heard(with(quiet).as_bytes(), steps),
+                Ok(Heard::Quiet),
+                "{quiet}"
+            );
+        }
+        assert_eq!(heard(with("0").as_bytes(), steps), turn("c", "p"));
+        let absent = br#"{"conversationId":"c","transcriptPath":"/t"}"#;
+        assert_eq!(heard(absent, steps), turn("c", "p"));
+        let nothing = br#"{"invocationNum":3}"#;
+        assert_eq!(heard(nothing, b""), Ok(Heard::Quiet));
+    }
+
+    #[test]
+    fn an_agy_input_that_is_no_prompt_says_why() {
+        let steps = b"{\"type\":\"USER_INPUT\",\"content\":\"p\"}\n";
+        let rows: Vec<(&[u8], Refused, &str)> = vec![
+            (
+                br#"{"transcriptPath":"/t"}"#,
+                Refused::NoConversation,
+                "the hook's input has no conversationId",
+            ),
+            (
+                br#"{"conversationId":7,"transcriptPath":"/t"}"#,
+                Refused::NoConversation,
+                "the hook's input has no conversationId",
+            ),
+            (
+                br#"{"conversationId":"","transcriptPath":"/t"}"#,
+                Refused::NoConversation,
+                "the hook's input has no conversationId",
+            ),
+            (
+                br#"{"conversationId":"c"}"#,
+                Refused::NoTranscript("c".to_owned()),
+                "the hook's input has no transcriptPath",
+            ),
+            (
+                br#"{"conversationId":"c","transcriptPath":""}"#,
+                Refused::NoTranscript("c".to_owned()),
+                "the hook's input has no transcriptPath",
+            ),
+            (
+                b"[1]",
+                Refused::NotAnObject,
+                "the hook's input is not a JSON object",
+            ),
+        ];
+        for (input, refused, sentence) in rows {
+            let got = heard(input, steps).expect_err("no prompt");
+            assert_eq!(got, refused);
+            assert_eq!(got.sentence(), sentence);
+        }
+        let refused = |unread: Unread| {
+            read_agy(&mut &AGY[..], LIMIT, &|_| Err(unread.clone())).expect_err("no prompt")
+        };
+        let not = refused(Unread::NotRegular);
+        assert_eq!(
+            not.sentence(),
+            "the transcript /h/t.jsonl is not a regular file"
+        );
+        assert_eq!(not.session(), Some("c-1"));
+        let failed = refused(Unread::Failed("No such file".to_owned()));
+        assert_eq!(
+            failed.sentence(),
+            "cannot read the transcript /h/t.jsonl: No such file"
+        );
+        let empty = "the transcript's last steps hold no user input";
+        for tail in [
+            &b""[..],
+            b"\n \n",
+            b"{\"type\":\"USER_INPUT\",\"content\":\"old\"}\n{\"type\":\"TOOL_CALL\"}\n",
+            b"{\"type\":\"USER_INPUT\",\"content\":\"old\"}\nnot json\n",
+            b"st\":1}\n{\"type\":\"SYSTEM_MESSAGE\",\"content\":\"s\"}\n",
+            b"{\"type\":\"USER_INPUT\",\"content\":\"  \"}\n",
+            b"{\"type\":\"USER_INPUT\",\"content\":7}\n",
+            b"{\"type\":\"USER_INPUT\"}\n",
+            b"[1]\n",
+        ] {
+            let got = heard(AGY, tail).expect_err("no prompt");
+            assert_eq!(got.sentence(), empty, "{}", String::from_utf8_lossy(tail));
+            assert_eq!(got.session(), Some("c-1"));
+        }
+        assert_eq!(
+            read_agy(&mut Fails(false), LIMIT, &|_| Ok(Vec::new())),
+            Err(Refused::Unread("the pipe broke".to_owned()))
+        );
+        let over = [AGY, b" "].concat();
+        assert_eq!(
+            read_agy(&mut &over[..], AGY.len() as u64, &|_| Ok(Vec::new())),
+            Err(Refused::TooLong(AGY.len() as u64))
+        );
+    }
+
+    #[test]
+    fn an_agy_input_passes_over_what_it_does_not_read() {
+        let steps = b"{\"type\":\"USER_INPUT\",\"content\":\"p\"}\n";
+        let many = "[".repeat(130) + &"]".repeat(130);
+        let rows: Vec<(String, Result<Heard, Refused>)> = vec![
+            (
+                format!(r#"{{"conversationId":"c","other":{many},"transcriptPath":"/t"}}"#),
+                turn("c", "p"),
+            ),
+            (
+                r#"{"conversationId":"a","conversationId":"b","transcriptPath":"/t"}"#.to_owned(),
+                turn("b", "p"),
+            ),
+            (
+                r#"{"conversationId":"c","transcriptPath":"/t","invocationNum":5,"invocationNum":0}"#.to_owned(),
+                turn("c", "p"),
+            ),
+            (
+                r#"{"conversationId":"c","transcriptPath":"/t","other":"\ud83d"}"#.to_owned(),
+                turn("c", "p"),
+            ),
+            (
+                format!(r#"{{"invocationNum":2,"conversationId":{many},"transcriptPath":7}}"#),
+                Ok(Heard::Quiet),
+            ),
+        ];
+        for (input, wanted) in rows {
+            assert_eq!(heard(input.as_bytes(), steps), wanted, "{input}");
+        }
     }
 }
